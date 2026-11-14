@@ -313,8 +313,9 @@ impl Jobs {
         let host = ShardHost { state: &self.state, region, image: "git", instance };
         let chain = ChainId::Repo(RepoId(self.net.0));
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record: self.record.clone() };
-        let raw = buckets(&self.env, &site);
-        let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
+        // This site's bucket first for each stored pack (`graftyard_git::catchup::own_first`).
+        let raw = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site));
+        let bs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
         let s = self.state.storage();
         s.put(WARMING_KEY, (self.net.0.0, &self.record)).await.map_err(|e| e.to_string())?;
         if s.get_alarm().await.ok().flatten().is_none_or(|at| at > (now_ms() + WARMING_ALARM_MS) as i64) {
@@ -327,6 +328,13 @@ impl Jobs {
         let v = serde_json::to_value(&c).unwrap_or(Value::Null);
         if c.rehydrated.is_some() {
             console_log!("shard rehydrate {}: {v}", self.net.0.0);
+        } else if c.stored.packs > 0 {
+            // Where a catch-up's stored packs came from and how its time split between their fetch and `index-pack`.
+            console_log!(
+                "shard catch-up stored {}: {}",
+                self.net.0.0,
+                serde_json::json!({ "ms": c.ms, "stored": c.stored, "entries": c.entries })
+            );
         }
         REPORTS.with(|m| m.borrow_mut().insert(self.key(), v));
         Ok(())
@@ -464,7 +472,8 @@ fn q(url: &Url, k: &str) -> Option<String> {
     url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned())
 }
 
-/// Every site's bucket, by its `BUCKET_<n>` binding.
+/// Every site's bucket, by its `BUCKET_<n>` binding, in site order. The catch-up reorders it own-first for its stored
+/// pack reads (`Jobs::run`); its marker listing reads every bucket, so order does not matter there.
 fn buckets(env: &Env, site: &SiteEnv) -> Vec<(SiteId, R2)> {
     site.sites.0.iter().filter_map(|s| env.bucket(&format!("BUCKET_{}", s.id.0)).ok().map(|b| (s.id, R2(b)))).collect()
 }
@@ -854,6 +863,7 @@ impl DurableObject for GitShard {
                 let waited = std::cell::Cell::new(0);
                 let warming_too = std::cell::Cell::new(false);
                 let a = graftyard_git::merge_cache::merge_then_catch_up(
+                    worker::Delay::from(graftyard_git::merge_cache::MERGE_WAIT),
                     || async { host.up().await.map(|_| ()) },
                     || {
                         let idle = jobs.idle();
@@ -878,7 +888,7 @@ impl DurableObject for GitShard {
                 .await;
                 let r = match a {
                     Ok(a) => Response::from_json(&a)?,
-                    Err(_) if warming_too.get() => warming()?,
+                    Err(e) if warming_too.get() || e.0 == graftyard_git::merge_cache::WARMING => warming()?,
                     Err(e) => Response::error(e.0, 422)?,
                 };
                 // Where a merge plan's time went: the whole, and the catch-up's if it ran one.

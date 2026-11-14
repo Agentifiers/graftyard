@@ -113,6 +113,28 @@ fn waits_for_rebuild(learner: bool, narrow: bool, index: bool, now: u64, ms: u64
     (learner || narrow) && index && now + ms < until
 }
 
+/// The leader's lease clock (`host::Stats::lease_clock`): per appended entry, how far its `at` (the clock leases are
+/// judged by) fell behind the isolate's clock when the entry left, and one macrotask later. Test installs only.
+#[cfg(feature = "test-faults")]
+fn lease_clock_pcts(rows: &[[u32; 2]]) -> Value {
+    let col = |i: usize| rows.iter().map(|r| r[i]).collect::<Vec<_>>();
+    json!({ "atToSend": percentiles(&col(0)), "atToNextTask": percentiles(&col(1)) })
+}
+
+/// `{n, p50, p99, max}` of `v`, sorted in place.
+fn pcts(v: &mut [u32]) -> Value {
+    v.sort_unstable();
+    let at = |p: f64| v.get(((v.len() as f64 * p) as usize).min(v.len().saturating_sub(1))).copied();
+    json!({ "n": v.len(), "p50": at(0.5), "p99": at(0.99), "max": v.last() })
+}
+
+/// `pcts` of each of a read's stages (`host::Stats::read_stages`): `grant`, `waited`, and `total`, and how many waited.
+fn read_stage_pcts(rows: &[[u32; 3]]) -> Value {
+    let col = |i: usize| rows.iter().map(|r| r[i]).collect::<Vec<_>>();
+    json!({ "grant": pcts(&mut col(0)), "waited": pcts(&mut col(1)), "total": pcts(&mut col(2)),
+        "waitedN": rows.iter().filter(|r| r[1] > 0).count() })
+}
+
 /// How long a started read waits for its grant, and the answer when it does not come: a read-index read waits
 /// FOLLOWER_WAIT and answers `overloaded`, which the edge takes to the next member without `suspect`; a leader's read
 /// waits three call deadlines and answers `busy`.
@@ -482,6 +504,8 @@ impl<F: Family> Routes<F> {
                     | "/isolate"
                     | "/deps_log"
                     | "/arrivals"
+                    | "/trace"
+                    | "/elections"
             );
             if !observe && url.path() != "/sever" && self.host.severed() {
                 crate::faults::count("severed:in");
@@ -504,8 +528,20 @@ impl<F: Family> Routes<F> {
                 let t0 = now_ms();
                 let body = req.bytes().await?;
                 let t1 = now_ms();
+                #[cfg(feature = "test-faults")]
+                if let Some(sent) = req.headers().get("x-graft-sent").ok().flatten().and_then(|v| v.parse().ok()) {
+                    // From a header: decoding the body here as well held a second decoded copy of every append
+                    // while `raft` decoded it again (gate 16's storm, `tests/am1/results/narrow-reads-3.md`).
+                    let from = req.headers().get("x-graft-from").ok().flatten().and_then(|v| v.parse().ok());
+                    self.host.trace_at(t0, Trace::CallArrived, from.unwrap_or(0), 0, sent, t1 - t0);
+                }
                 let r = self.raft(&body).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
+                #[cfg(feature = "test-faults")]
+                let r = r.and_then(|mut res| {
+                    res.headers_mut().set("x-graft-left", &now_ms().to_string())?;
+                    Ok(res)
+                });
                 r
             }
             (Method::Post, "/commit") => {
@@ -603,6 +639,20 @@ impl<F: Family> Routes<F> {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.learners(body)).await
             }
+            // `?clock=1` (L0-12's clock line): this isolate's clock read now and again after one awaited macrotask.
+            // A busy leader whose clock lags the others' shows it here: `now` read before the event loop runs again
+            // is the time the input began, and the second read is the time a lease decision taken next would use.
+            // Test installs only.
+            #[cfg(feature = "test-faults")]
+            (Method::Get, "/status") if url.query_pairs().any(|(k, v)| k == "clock" && v == "1") => {
+                let before = now_ms();
+                Delay::from(Duration::ZERO).await;
+                let mut v = self.status();
+                v["clockBefore"] = json!(before);
+                v["clockAfter"] = json!(now_ms());
+                v["leaseClock"] = json!(self.host.stats.borrow().lease_clock.last().copied());
+                Response::from_json(&v)
+            }
             (Method::Get, "/status") => Response::from_json(&self.status()),
             // The committed entries `from..=to` with the family's fields (a repository's packs): the git cache
             // shard's `ChainLog::entries`.
@@ -695,9 +745,25 @@ impl<F: Family> Routes<F> {
                 let prefix = crate::registry::query(&url, "prefix").unwrap_or_default();
                 self.ready_or(|| async { Response::from_json(&self.host.audit_json(&prefix)?) }).await
             }
+            // narrow-reads-3's trace saver (`tests/nr3/tsave.mjs`): the `Stats::trace` rows after `since` (ms), as one
+            // array and no `Value` tree, so a run keeps a member's rows from before its isolate resets.
+            (Method::Get, "/trace") => {
+                let since: u64 = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let s = self.host.stats.borrow();
+                let rows: Vec<&[u64; 6]> = s.trace.iter().filter(|r| r[0] > since).collect();
+                Response::from_json(&rows)
+            }
             (Method::Get, "/faults") => self.faults(crate::registry::query(&url, "rid").ok()),
             (Method::Get, "/deps_log") => self.deps_log(),
             (Method::Get, "/isolate") => Response::from_json(&crate::faults::isolate_json(&self.host.env)),
+            // The election trace (`host::Elect`): rows `[at, kind, term, peer, index, extra]` with `at` past `since`,
+            // and this isolate's clock.
+            (Method::Get, "/elections") => {
+                let since: u64 = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let rows: Vec<[u64; 6]> =
+                    self.host.stats.borrow().elections.iter().filter(|r| r[0] > since).copied().collect();
+                Response::from_json(&json!({ "rows": rows, "now": now_ms() }))
+            }
             (Method::Get, "/arrivals") => {
                 let since = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                 self.arrivals(since)
@@ -916,14 +982,25 @@ impl<F: Family> Routes<F> {
 
     /// A granted read's answer, `{"value": <value>, "index": n, "meta": ..}`, streamed out of the shared `value` bytes
     /// while it holds its places under READS_MAX and HEAVY_READS (`held_body`).
-    fn reply_read(&self, value: Rc<[u8]>, index: u64, held: (InFlight, Option<InFlight>)) -> Result<Response> {
+    /// `stages`, `[grant, waited]` ms, is how long the read waited for its grant (the leader's read index applied, on a
+    /// follower or learner) and then for its answer's build (narrow-reads-3), which the edge adds to its `server-timing`.
+    fn reply_read(
+        &self,
+        value: Rc<[u8]>,
+        index: u64,
+        held: (InFlight, Option<InFlight>),
+        stages: [u32; 2],
+    ) -> Result<Response> {
         if self.host.fold_lost() {
             return Response::error("member reset: fold storage lost", 503);
         }
-        let tail = format!(r#","index":{index},"meta":{}}}"#, self.meta()).into_bytes();
+        let tail =
+            format!(r#","index":{index},"stages":[{},{}],"meta":{}}}"#, stages[0], stages[1], self.meta()).into_bytes();
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
-        Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, held))?.with_headers(headers))
+        let counted = host::Counted::new(&self.host.answer_bytes, value.len());
+        Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, (held, counted)))?
+            .with_headers(headers))
     }
 
     fn reply(&self, mut v: Value) -> Result<Response> {
@@ -971,8 +1048,15 @@ impl<F: Family> Routes<F> {
                 let mut out = self.host.callers.borrow_mut().take(from);
                 out.append(&mut back);
                 for e in &out {
-                    if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
-                        self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0);
+                    match &e.msg {
+                        raft::Message::ReadIndexRes { batch, index } => {
+                            self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0)
+                        }
+                        raft::Message::Append(a) => {
+                            let last = a.entries.last().map_or(a.prev_index.0, |x| x.index.0);
+                            self.host.trace(Trace::AppendTaken, from.0, a.round, last, a.commit.0)
+                        }
+                        _ => {}
                     }
                 }
                 self.raft_reply(out)
@@ -1193,54 +1277,79 @@ impl<F: Family> Routes<F> {
         }
         let held = (InFlight::new(&self.host.reads_in_flight), heavy.then(|| InFlight::new(&self.host.heavy_reads)));
         let (wait, late) = read_wait(index);
-        let until = now_ms() + wait.as_millis() as u64;
-        loop {
-            let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
-            let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
-            self.host.dispatch(out, None);
-            let rx = match (r, rx) {
-                (Ok(_), Some(rx)) => rx,
-                (Err(nl), _) => {
-                    return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
-                }
-                (Ok(_), None) => unreachable!("a started read has a waiter"),
+        let t0 = now_ms();
+        let until = t0 + wait.as_millis() as u64;
+        let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
+        let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
+        self.host.dispatch(out, None);
+        let rx = match (r, rx) {
+            (Ok(_), Some(rx)) => rx,
+            (Err(nl), _) => {
+                return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
+            }
+            (Ok(_), None) => unreachable!("a started read has a waiter"),
+        };
+        self.host.served();
+        let left = Duration::from_millis(until.saturating_sub(t0));
+        let mut answer = within(left, rx).await;
+        let granted = now_ms();
+        // An answer whose rebuild is not yet due (`family::dump_wait`, `family::narrow_wait`). A read-index read that
+        // may wait sleeps until the build is due, then is answered at the member's state then, which is at or above
+        // the leader's read index for this read (`raft::Member::fresh_after`): no second read-index round. A voter's
+        // dump read and a leader's plain read are shed.
+        while let Some(Ok(Ok((host::ReadBody::Shed(ms, g), _)))) = &answer {
+            let (ms, g) = (*ms, g.clone());
+            let Some(g) = g.filter(|_| waits_for_rebuild(learner, narrow, index, now_ms(), ms, until)) else {
+                self.host.stats.borrow_mut().shed_reads += 1;
+                return self.reply(graftyard_lookup::overloaded_reply(ms));
             };
-            self.host.served();
-            let left = Duration::from_millis(until.saturating_sub(now_ms()));
-            return match within(left, rx).await {
-                // A stale dump whose rebuild is not yet due (`family::dump_wait`). A learner's read waits for the
-                // rebuild and is granted again, so it answers the state at its new grant; a voter's is shed.
-                Some(Ok(Ok((host::ReadBody::Shed(ms), _)))) => {
-                    if waits_for_rebuild(learner, narrow, index, now_ms(), ms, until) {
-                        self.host.stats.borrow_mut().waited_reads += 1;
-                        worker::Delay::from(Duration::from_millis(ms)).await;
-                        continue;
-                    }
-                    self.host.stats.borrow_mut().shed_reads += 1;
-                    self.reply(graftyard_lookup::overloaded_reply(ms))
-                }
-                Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held),
-                Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
-                Some(Err(_)) => Response::error("member reset", 503),
-                None => {
-                    if index {
-                        self.host.stats.borrow_mut().follower_late += 1;
-                    }
-                    self.reply(late)
-                }
+            self.host.stats.borrow_mut().waited_reads += 1;
+            worker::Delay::from(Duration::from_millis(ms.max(1))).await;
+            answer = match self.host.answer_after(&g, &q) {
+                Some(r) => Some(Ok(r)),
+                None => return Response::error("member reset: fold storage lost", 503),
             };
+        }
+        let done = now_ms();
+        let d = |a: u64, b: u64| b.saturating_sub(a) as u32;
+        let stages = [d(t0, granted), d(granted, done)];
+        if index && matches!(answer, Some(Ok(Ok(_)))) {
+            let mut s = self.host.stats.borrow_mut();
+            if s.read_stages.len() < host::SAMPLES_MAX {
+                s.read_stages.push([stages[0], stages[1], d(t0, done)]);
+            }
+        }
+        match answer {
+            Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held, stages),
+            Some(Ok(Ok((host::ReadBody::Shed(..), _)))) => unreachable!("a shed answer is waited out above"),
+            Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
+            Some(Err(_)) => Response::error("member reset", 503),
+            None => {
+                if index {
+                    self.host.stats.borrow_mut().follower_late += 1;
+                }
+                self.reply(late)
+            }
         }
     }
 
     /// `campaign` with no body, `suspect` with `{colo, term}`. Campaigns start only here, from requests.
     fn verdict(&self, report: Option<Value>) -> Result<Response> {
         let v = match report {
-            None => self.host.input(|m, t| m.campaign(t))?,
+            None => {
+                let v = self.host.input(|m, t| m.campaign(t))?;
+                #[cfg(feature = "test-faults")]
+                self.host.elect_asked(255, 0, v == Verdict::Started);
+                v
+            }
             Some(b) => {
                 let colo = raft::Colo(b.get("colo").and_then(Value::as_u64).unwrap_or(0) as u32);
                 let term = raft::Term(b.get("term").and_then(Value::as_u64).unwrap_or(0));
                 let about = site_field(&b, "about", "suspect")?;
-                self.host.input(|m, t| m.suspect(t, colo, about, term))?
+                let v = self.host.input(|m, t| m.suspect(t, colo, about, term))?;
+                #[cfg(feature = "test-faults")]
+                self.host.elect_asked(about.0, term.0, v == Verdict::Started);
+                v
             }
         };
         self.reply(json!({ "verdict": verdict_str(v) }))
@@ -1312,6 +1421,29 @@ impl<F: Family> Routes<F> {
         Response::from_json(&rows)
     }
 
+    /// The leader memory split the operator asked for on every gate run (narrow-reads-3, gate 13 on), in bytes: the
+    /// fold's rows buffered until their transaction runs and the isolate's read caches; the log entries in memory;
+    /// the messages held for learners' next calls; and in-flight bodies, the member calls sent and not yet ended,
+    /// the read answers still streaming, and the statements queued for the next transaction.
+    fn mem_split(&self) -> Value {
+        let core = self.host.core.borrow();
+        let (rows, row_bytes) = core.as_ref().map_or((0, 0), |c| F::buffered(&c.m.group_fold().fold));
+        let held = self.host.callers.borrow_mut().held_stats(false);
+        let (stmts, stmt_bytes) = self.host.queued();
+        json!({
+            "fold": { "rows": rows, "rowBytes": row_bytes, "caches": crate::family::cache_bytes() },
+            "log": core.as_ref().map(|c| c.m.log_bytes()),
+            "held": held.iter().map(|h| h.2).sum::<usize>(),
+            "inFlight": {
+                "calls": self.host.call_bytes.get(),
+                "answers": self.host.answer_bytes.get(),
+                "stmts": stmts,
+                "stmtBytes": stmt_bytes,
+                "admitted": core.as_ref().map(|c| c.admitted.len()),
+            },
+        })
+    }
+
     fn stats(&self, reset: bool, summary: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
         // `?summary=1`: percentiles in place of the sample arrays, and no trace, calls, or peers. A loaded leader's raw
@@ -1350,9 +1482,19 @@ impl<F: Family> Routes<F> {
                     "pressure": a.pressure,
                 })),
                 "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
+                // narrow-reads-3's leader memory: the log entries in memory, and per learner the messages held for its
+                // next call, their bytes now and at most since the last reset, and its calls open.
+                "logBytes": self.host.core.borrow().as_ref().map(|c| c.m.log_bytes()),
+                "held": self.host.callers.borrow_mut().held_stats(reset).into_iter()
+                    .map(|(s, n, b, peak, open)| json!([s.0, n, b, peak, open])).collect::<Vec<_>>(),
+                "memSplit": self.mem_split(),
             });
             let mut v = v;
             v["busyPages"] = json!(s.busy_pages);
+            #[cfg(feature = "test-faults")]
+            {
+                v["leaseClock"] = lease_clock_pcts(&s.lease_clock);
+            }
             if reset {
                 s.reset();
             }
@@ -1410,6 +1552,11 @@ impl<F: Family> Routes<F> {
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
         v["waitedReads"] = json!(s.waited_reads);
+        // narrow-reads-3: each read-index read's grant, rebuild wait, and total ms, as p50/p99/max, and each narrow
+        // answer's build ms.
+        v["readStages"] = read_stage_pcts(&s.read_stages);
+        v["narrowBuildMs"] = pcts(&mut s.narrow_build_ms.clone());
+        v["narrowBuilds"] = json!(crate::family::narrow_builds());
         v["raftIn"] = json!(s.raft_in);
         v["placedOverNear"] = json!(s.placed_over_near);
         #[cfg(feature = "test-faults")]

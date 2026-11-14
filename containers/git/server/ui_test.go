@@ -355,14 +355,19 @@ func TestUICompare(t *testing.T) {
 	push()
 
 	var o struct {
-		MergeBase *string `json:"merge_base"`
-		AheadBy   int     `json:"ahead_by"`
-		BehindBy  int     `json:"behind_by"`
+		MergeBase    *string `json:"merge_base"`
+		AheadBy      int     `json:"ahead_by"`
+		BehindBy     int     `json:"behind_by"`
+		Additions    int     `json:"additions"`
+		Deletions    int     `json:"deletions"`
+		ChangedFiles int     `json:"changed_files"`
 	}
 	if code, body := uiGet(t, s, "/ui/compare?net=7&base="+base+"&head="+head, &o); code != 200 {
 		t.Fatalf("compare: %d %s", code, body)
 	}
-	if o.MergeBase == nil || *o.MergeBase != fork || o.AheadBy != 3 || o.BehindBy != 2 {
+	// From the merge base: head's three one-line files, and none of base's b1 and b2.
+	if o.MergeBase == nil || *o.MergeBase != fork || o.AheadBy != 3 || o.BehindBy != 2 || o.Additions != 3 ||
+		o.Deletions != 0 || o.ChangedFiles != 3 {
 		t.Fatalf("compare: %+v", o)
 	}
 	o.MergeBase = nil
@@ -372,6 +377,26 @@ func TestUICompare(t *testing.T) {
 	}
 	if code, body := uiGet(t, s, "/ui/compare?net=7&base="+strings.Repeat("ef", 20)+"&head="+head, nil); code != 404 {
 		t.Fatalf("missing base: %d %s", code, body)
+	}
+
+	// A rename with an edit, a deletion, and a binary file, while base edits the renamed file's old lines after the
+	// fork. GHES counts a pull request from the merge base: the rename is one file (+1 -1), the deletion -2, the
+	// binary file one file with no lines; base's own edit counts nowhere. A diff from base's tip would also count it.
+	run(t, wt, "", "checkout", "-q", "main")
+	fork2 := commitMsg(t, wt, map[string]string{"old.txt": "a\nb\nc\nd\ne\nf\ng\nh\n", "gone.txt": "x\ny\n"}, "fork 2")
+	run(t, wt, "", "checkout", "-qb", "pr2")
+	run(t, wt, "", "mv", "old.txt", "new.txt")
+	run(t, wt, "", "rm", "-q", "gone.txt")
+	head2 := commitMsg(t, wt, map[string]string{"new.txt": "a\nb\nc\nd\ne\nf\ng\nH\n", "logo.bin": "\x00\x01\x02"}, "pr2")
+	run(t, wt, "", "checkout", "-q", "main")
+	base2 := commitMsg(t, wt, map[string]string{"old.txt": "A\nb\nc\nd\ne\nf\ng\nh\n", "more.txt": "1\n2\n3\n"}, "base 2")
+	push()
+	if code, body := uiGet(t, s, "/ui/compare?net=7&base="+base2+"&head="+head2, &o); code != 200 {
+		t.Fatalf("compare 2: %d %s", code, body)
+	}
+	if o.MergeBase == nil || *o.MergeBase != fork2 || o.AheadBy != 1 || o.BehindBy != 1 || o.Additions != 1 ||
+		o.Deletions != 3 || o.ChangedFiles != 3 {
+		t.Fatalf("compare 2: %+v", o)
 	}
 }
 

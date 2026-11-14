@@ -85,6 +85,8 @@ struct Known {
 thread_local! {
     static KNOWN: RefCell<HashMap<ChainId, Known>> = RefCell::new(HashMap::new());
     static COLO: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Per isolate: each learner's answer times to `read_spread` as this isolate saw them (`Timed`).
+    static ANSWER_MS: RefCell<HashMap<(SiteId, String), Timed>> = RefCell::new(HashMap::new());
 }
 
 /// The colo this isolate's `suspect` reports from `call_opt` carry; an edge sets it per request.
@@ -394,27 +396,105 @@ pub const FOLLOWER_CALL: Duration = Duration::from_millis(2_000);
 /// sheds waits at most about three FOLLOWER_WAITs before its 503.
 const SPREAD_TRIES: usize = 3;
 
-/// The members a read-index read goes to, in order: the cached config's learners, rotated by `pick`, then its
-/// followers (the voters, else the record's bootstrap members, without the cached leader), rotated by `pick` too, at
-/// most SPREAD_TRIES. With no leader cached every voter is a candidate: a member that leads serves the read itself.
+/// How far behind the best learner's score a learner may be and still share its reads [guess]: the near learners
+/// answered at p99 0.8 to 1.2 s and the far ones (apac from an enam leader) at 2.2 to 3.0 s (`design/DESIGN.md`,
+/// "Follower read"), so a margin well under that gap keeps the far ones out and the near ones sharing the load.
+pub const ROUTE_MARGIN: Duration = Duration::from_millis(200);
+/// The weight of a new answer time in a learner's moving average and deviation [guess]: one slow answer moves each a
+/// fifth of the way.
+const ROUTE_WEIGHT: f64 = 0.2;
+/// A learner's score is its average plus this many deviations [guess], so one whose answers vary (it sheds, or
+/// answers late now and then) scores worse than its average says: ordered by the average alone, one learner took 50.2%
+/// of gate 15's reads and shed 54 and answered 720 late (`tests/am1/results/narrow-reads-3.md`, "The herding guard").
+pub const ROUTE_DEV: f64 = 4.0;
+/// At least this many learners share an isolate's reads [guess]: with fewer within ROUTE_MARGIN of the best, the next
+/// best are added while they score under ROUTE_LATE, so no one learner takes much more than a third of them.
+pub const ROUTE_SPREAD: usize = 3;
+/// A learner scored at or past this is not added to the reads' share [guess]: a member answers `overloaded` once it
+/// has not applied the leader's index in its FOLLOWER_WAIT (1 s), so such a learner mostly answers late.
+pub const ROUTE_LATE: Duration = Duration::from_millis(1_000);
+/// A learner this isolate has not timed for this long counts as untimed [guess]: eligible, and not setting the best,
+/// so a learner that recovers is timed again, while one that stays slow is asked about that often by each isolate.
+pub const ROUTE_STALE: Duration = Duration::from_secs(10);
+
+/// One learner's answer times as one isolate saw them: their moving average and mean deviation, in ms, and when it
+/// last timed one (`now_ms`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Timed {
+    mean: f64,
+    dev: f64,
+    at: u64,
+}
+
+impl Timed {
+    /// The learner's score at `now`: its average plus ROUTE_DEV deviations, or `None` once untimed for ROUTE_STALE.
+    fn score(&self, now: u64) -> Option<f64> {
+        (now.saturating_sub(self.at) < ROUTE_STALE.as_millis() as u64).then_some(self.mean + ROUTE_DEV * self.dev)
+    }
+
+    /// After one more answer time `sample_ms` at `now`: the first sample, or one after ROUTE_STALE, starts afresh;
+    /// then the average and the deviation each move ROUTE_WEIGHT of the way.
+    fn after(prev: Option<Timed>, sample_ms: f64, now: u64) -> Timed {
+        match prev.filter(|p| p.score(now).is_some()) {
+            None => Timed { mean: sample_ms, dev: 0.0, at: now },
+            Some(p) => {
+                let d = sample_ms - p.mean;
+                Timed { mean: p.mean + ROUTE_WEIGHT * d, dev: p.dev + ROUTE_WEIGHT * (d.abs() - p.dev), at: now }
+            }
+        }
+    }
+}
+
+/// `timed_spread_order` with no learner timed: the learners rotated by `pick`, then the followers.
+#[cfg(test)]
 fn spread_order(
     learners: Vec<(SiteId, String)>,
     voters: Vec<(SiteId, String)>,
     leader: Option<SiteId>,
     pick: usize,
 ) -> Vec<Target> {
-    let rotated = |v: Vec<(SiteId, String)>| {
-        let mut out: Vec<Target> = v.into_iter().map(|(site, do_name)| Target { site, do_name }).collect();
-        if !out.is_empty() {
-            let n = pick % out.len();
-            out.rotate_left(n);
+    timed_spread_order(learners.into_iter().map(|(s, n)| (s, n, None)).collect(), voters, leader, pick)
+}
+
+/// The members a read-index read goes to, in order: the cached config's learners, then its followers (the voters,
+/// else the record's bootstrap members, without the cached leader), rotated by `pick`, at most SPREAD_TRIES. With no
+/// leader cached every voter is a candidate: a member that leads serves the read itself. Each learner carries this
+/// isolate's score of it in ms (`Timed::score`), `None` if untimed. The eligible learners come first, in config order
+/// rotated by `pick`: the untimed ones, those within ROUTE_MARGIN of the best timed score, and, while fewer than
+/// ROUTE_SPREAD, the next best scored under ROUTE_LATE. The rest follow by ascending score.
+fn timed_spread_order(
+    learners: Vec<(SiteId, String, Option<f64>)>,
+    voters: Vec<(SiteId, String)>,
+    leader: Option<SiteId>,
+    pick: usize,
+) -> Vec<Target> {
+    fn rotated<T>(mut v: Vec<T>, pick: usize) -> Vec<T> {
+        if !v.is_empty() {
+            let n = pick % v.len();
+            v.rotate_left(n);
         }
-        out
-    };
-    let mut out = rotated(learners);
-    out.extend(rotated(voters.into_iter().filter(|(s, _)| Some(*s) != leader).collect()));
+        v
+    }
+    let best = learners.iter().filter_map(|l| l.2).fold(f64::INFINITY, f64::min);
+    let (margin, late) = (ROUTE_MARGIN.as_millis() as f64, ROUTE_LATE.as_millis() as f64);
+    let (mut near, mut far): (Vec<_>, Vec<_>) =
+        learners.into_iter().partition(|l| l.2.is_none_or(|s| s <= best + margin));
+    far.sort_by(|a, b| a.2.unwrap_or(0.0).total_cmp(&b.2.unwrap_or(0.0)));
+    let pad = far.iter().take_while(|l| l.2.is_some_and(|s| s < late)).count();
+    near.extend(far.drain(..pad.min(ROUTE_SPREAD.saturating_sub(near.len()))));
+    let mut out: Vec<Target> =
+        rotated(near, pick).into_iter().chain(far).map(|(site, do_name, _)| Target { site, do_name }).collect();
+    let followers =
+        voters.into_iter().filter(|(s, _)| Some(*s) != leader).map(|(site, do_name)| Target { site, do_name });
+    out.extend(rotated(followers.collect(), pick));
     out.truncate(SPREAD_TRIES);
     out
+}
+
+/// The answer time a learner's answer to `read_spread` records, in ms: its elapsed time if its value is used, else
+/// FOLLOWER_CALL (shed, overloaded, `busy`, `notLeader`, a 4xx or 5xx, or no answer).
+fn answer_sample(r: Option<(u16, &Value)>, elapsed_ms: f64) -> f64 {
+    if follower_answer_usable(r) { elapsed_ms } else { FOLLOWER_CALL.as_millis() as f64 }
 }
 
 /// What `read_spread` does with the answers it got, in order.
@@ -456,11 +536,13 @@ fn follower_answer_usable(r: Option<(u16, &Value)>) -> bool {
 }
 
 /// A read off the leader (`design/DESIGN.md`, "Follower read"): `body` (`{"q": ..}`) goes with `"index": true` to
-/// the members `spread_order` names, learners first, until one answers with a value. If none did and one shed it,
+/// the members `timed_spread_order` names, learners first, until one answers with a value. If none did and one shed it,
 /// the read fails with an error naming OVERLOADED, which the caller answers 503 with `Retry-After`, and the leader is
 /// never asked; only if none shed it does it go to the leader by `call_opt` (`spread_verdict`). A member's answer
 /// holds every entry acknowledged before the read arrived: it waited for the leader's confirmed commit index.
-/// Learners and followers never raise `suspect` and never count as missed.
+/// Learners and followers never raise `suspect` and never count as missed. Each learner asked records its answer
+/// time in this isolate's moving average and deviation (`answer_sample`, `Timed`), whose score orders the learners
+/// of the next read.
 pub async fn read_spread(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -474,16 +556,34 @@ pub async fn read_spread(
         known.voters
     };
     let pick = (js_sys::Math::random() * 1024.0) as usize;
+    let now = now_ms();
+    let learners: Vec<(SiteId, String, Option<f64>)> = ANSWER_MS.with(|m| {
+        let m = m.borrow();
+        known.learners.into_iter().map(|(s, n)| (s, n.clone(), m.get(&(s, n)).and_then(|t| t.score(now)))).collect()
+    });
+    let n_learners = learners.len();
     let mut indexed = body.clone();
     indexed["index"] = json!(true);
     let bytes = indexed.to_string();
     let mut answers = Vec::new();
-    for t in spread_order(known.learners, voters, known.leader, pick) {
+    // The learners come first in the order, so the first `n_learners` asked are learners, and only they are timed.
+    for (i, t) in timed_spread_order(learners, voters, known.leader, pick).into_iter().enumerate() {
+        let start = now_ms();
         let r = post_within(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL).await;
+        let seen = r.as_ref().map(|(s, v)| (*s, v));
+        if i < n_learners {
+            let sample = answer_sample(seen, now_ms().saturating_sub(start) as f64);
+            ANSWER_MS.with(|m| {
+                let mut m = m.borrow_mut();
+                let key = (t.site, t.do_name.clone());
+                let a = Timed::after(m.get(&key).copied(), sample, now_ms());
+                m.insert(key, a);
+            });
+        }
+        let usable = follower_answer_usable(seen);
         if let Some((_, v)) = &r {
             learn_config(chain, v);
         }
-        let usable = follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v)));
         answers.push(r);
         if usable {
             let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
@@ -1068,8 +1168,84 @@ async fn place(
 
 // ---- the `Release` view ----
 
+/// The isolate's genesis and where it came from: the edge's deploy-time binding, or the `Release` view.
+#[derive(Clone)]
+enum Held {
+    Bound(graftyard_release::Genesis),
+    View(graftyard_release::Genesis),
+}
+
 thread_local! {
-    static GENESIS: RefCell<Option<graftyard_release::Genesis>> = const { RefCell::new(None) };
+    static GENESIS: RefCell<Option<Held>> = const { RefCell::new(None) };
+    /// The binding was refused, or the view held another genesis: this isolate reads the view from now on.
+    static BOUND_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The binding matched the view once (`check_bound`).
+    static CHECKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Seeds the isolate's genesis from the edge's `GRAFTYARD_GENESIS_SIGNED` binding (the signed genesis's stored bytes in
+/// hex, `design/DESIGN.md`, "Install operations", Genesis, step 6), accepted with `accept_genesis` against `anchor`
+/// exactly as the bytes a `Release` member answers are. Only an isolate that holds no genesis and has not refused or
+/// dropped the binding reads it; a binding that is not hex, unsigned, or another install's is refused once, and the
+/// isolate reads the view instead. Returns the refusal.
+pub fn bind_genesis(
+    anchor: &graftyard_release::Anchor,
+    bound: impl FnOnce() -> Option<String>,
+) -> std::result::Result<(), String> {
+    if BOUND_OFF.with(|o| o.get()) || GENESIS.with(|g| g.borrow().is_some()) {
+        return Ok(());
+    }
+    let Some(text) = bound() else { return Ok(()) };
+    let accepted = unhex(text.trim()).ok_or_else(|| "GRAFTYARD_GENESIS_SIGNED is not hex".to_string()).and_then(|b| {
+        graftyard_release::accept_genesis(anchor, &b)
+            .map_err(|e| format!("GRAFTYARD_GENESIS_SIGNED: {}: {e}", e.variant()))
+    });
+    match accepted {
+        Ok(g) => {
+            GENESIS.with(|c| *c.borrow_mut() = Some(Held::Bound(g)));
+            Ok(())
+        }
+        Err(e) => {
+            BOUND_OFF.with(|o| o.set(true));
+            Err(e)
+        }
+    }
+}
+
+/// The genesis this isolate holds, from the binding or the view.
+fn held_genesis() -> Option<graftyard_release::Genesis> {
+    GENESIS.with(|g| g.borrow().clone()).map(|(Held::Bound(g) | Held::View(g))| g)
+}
+
+/// Whether the isolate's genesis came from the binding.
+pub fn genesis_bound() -> bool {
+    GENESIS.with(|g| matches!(*g.borrow(), Some(Held::Bound(_))))
+}
+
+/// A system chain call under the binding's record found no group or failed, which a placement that a later entry
+/// moved (`LeaveEvaluation`) would cause, and so would a `Names` or `jti` shard not created yet. Reads the `Release`
+/// view once and compares: the same genesis keeps the binding for the rest of the isolate; another one replaces it, for
+/// good, and returns true, so the caller retries under the view's record. A failed read keeps the binding and asks
+/// again on the next miss. A genesis from the view, or one already checked, returns false at once.
+pub async fn check_bound(b: &Bindings<'_>, anchor: &graftyard_release::Anchor) -> bool {
+    if !genesis_bound() || CHECKED.with(|c| c.get()) {
+        return false;
+    }
+    let Ok(bytes) = read_genesis(b).await else { return false };
+    settle_bound(graftyard_release::accept_genesis(anchor, &bytes).ok())
+}
+
+/// `check_bound`'s decision on the view it read: `None` (unreadable or refused) keeps the binding; the same genesis
+/// keeps it and marks it checked; another replaces it for good and returns true.
+fn settle_bound(view: Option<graftyard_release::Genesis>) -> bool {
+    let Some(view) = view else { return false };
+    if held_genesis().as_ref() == Some(&view) {
+        CHECKED.with(|c| c.set(true));
+        return false;
+    }
+    BOUND_OFF.with(|o| o.set(true));
+    GENESIS.with(|c| *c.borrow_mut() = Some(Held::View(view)));
+    true
 }
 
 pub fn system_of(chain: ChainId) -> Option<graftyard_types::SystemChain> {
@@ -1092,20 +1268,21 @@ pub async fn read_genesis(b: &Bindings<'_>) -> std::result::Result<Vec<u8>, Stri
     unhex(hex).ok_or_else(|| "the genesis is not hex".into())
 }
 
-/// The accepted genesis, read once per isolate and accepted against the caller's own trust anchor, so a member that
-/// answers with another install's or an unsigned genesis is refused (`design/DESIGN.md`, Shape, the `Release` view).
-/// Milestone 1 builds no entry that changes it.
+/// The accepted genesis: the edge's binding once `bind_genesis` accepted it, else read once per isolate from the
+/// `Release` group and accepted against the caller's own trust anchor, so a member that answers with another install's
+/// or an unsigned genesis is refused (`design/DESIGN.md`, Shape, the `Release` view). Milestone 1 builds no entry that
+/// changes it.
 pub async fn genesis(
     b: &Bindings<'_>,
     anchor: &graftyard_release::Anchor,
 ) -> std::result::Result<graftyard_release::Genesis, String> {
-    if let Some(g) = GENESIS.with(|g| g.borrow().clone()) {
+    if let Some(g) = held_genesis() {
         return Ok(g);
     }
     let bytes = read_genesis(b).await?;
     let g = graftyard_release::accept_genesis(anchor, &bytes)
         .map_err(|e| format!("the Release group's genesis: {}: {e}", e.variant()))?;
-    GENESIS.with(|c| *c.borrow_mut() = Some(g.clone()));
+    GENESIS.with(|c| *c.borrow_mut() = Some(Held::View(g.clone())));
     Ok(g)
 }
 
@@ -1174,6 +1351,126 @@ mod tests {
             assert!(!readable(&v, &keys), "{v}");
         }
         assert_eq!(unreadable()["unsupported"]["family"], 0);
+    }
+
+    /// A signed genesis for install `n` under customer seed `seed`, its `Names` record at `names_gen`.
+    fn signed_genesis(n: u8, seed: &[u8; 32], names_gen: u32) -> (graftyard_release::Genesis, Vec<u8>) {
+        use graftyard_release::*;
+        use graftyard_types::{AccountId, DbId, Region, Site, SiteLink, SystemChain};
+        let install = InstallId(Ulid::new(Timestamp(1_790_000_000_000), [n; 10]));
+        let site = |id: u8, region| Site {
+            id: SiteId(id),
+            script: format!("graft-site-{id}"),
+            account: "acct".into(),
+            region,
+            jurisdiction: None,
+            bucket: format!("graft-packs-{id}"),
+            release: None,
+            link: SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        let g = Genesis {
+            install,
+            account: AccountId(DbId(1)),
+            keys: Keys {
+                generation: 0,
+                customer: public_key(seed),
+                vendor: None,
+                release: public_key(&[3; 32]),
+                drain: public_key(&[4; 32]),
+                executor: public_key(&[5; 32]),
+                agents_executor: None,
+                ring: Default::default(),
+            },
+            sites: [site(0, Region::Enam), site(1, Region::Weur), site(2, Region::Apac)].into_iter().collect(),
+            placements: [SystemChain::Release, SystemChain::Names, SystemChain::Tokens, SystemChain::Ids]
+                .into_iter()
+                .map(|c| (c, rec(if c == SystemChain::Names { names_gen } else { 1 }, None)))
+                .collect(),
+            evaluation: false,
+            restore: None,
+        };
+        let bound = Bound { install, group: ChainId::Release, prev: None, parent: None };
+        let mut e = SignedEntry::unsigned(bound, ReleaseEntry::Genesis(Box::new(g.clone())));
+        e.sign(seed);
+        (g, e.encode())
+    }
+
+    fn anchor_for(n: u8, seed: &[u8; 32]) -> graftyard_release::Anchor {
+        graftyard_release::Anchor {
+            install: graftyard_release::InstallId(Ulid::new(Timestamp(1_790_000_000_000), [n; 10])),
+            customer: graftyard_release::public_key(seed),
+        }
+    }
+
+    fn reset_genesis() {
+        GENESIS.with(|g| *g.borrow_mut() = None);
+        BOUND_OFF.with(|o| o.set(false));
+        CHECKED.with(|c| c.set(false));
+    }
+
+    /// The binding is accepted only as a `Release` member's answer is: this install's genesis, signed by its customer
+    /// key. Another install's, another key's, an unsigned one, a flipped byte, or text that is not hex is refused, and
+    /// the isolate then reads the view for good, even when a good binding is offered later.
+    #[test]
+    fn the_genesis_binding_is_accepted_only_against_the_anchor() {
+        let (seed, other) = ([7; 32], [8; 32]);
+        let a = anchor_for(1, &seed);
+        let (g, good) = signed_genesis(1, &seed, 1);
+        let unsigned = {
+            let mut e = graftyard_release::SignedEntry::decode(&good).unwrap();
+            e.sigs.clear();
+            e.encode()
+        };
+        let mut flipped = good.clone();
+        let mid = flipped.len() / 2;
+        flipped[mid] ^= 1;
+        let bad = [
+            hex(&signed_genesis(2, &seed, 1).1),
+            hex(&signed_genesis(1, &other, 1).1),
+            hex(&unsigned),
+            hex(&flipped),
+            "zz".into(),
+        ];
+        for b in bad {
+            reset_genesis();
+            assert!(bind_genesis(&a, || Some(b.clone())).is_err(), "{}", &b[..8.min(b.len())]);
+            assert!(!genesis_bound() && held_genesis().is_none());
+            assert!(bind_genesis(&a, || Some(hex(&good))).is_ok());
+            assert!(!genesis_bound(), "a refused binding is not retried in the same isolate");
+        }
+        reset_genesis();
+        assert!(bind_genesis(&a, || None).is_ok());
+        assert!(held_genesis().is_none(), "an absent binding reads the view");
+        assert!(bind_genesis(&a, || Some(hex(&good))).is_ok());
+        assert!(genesis_bound());
+        assert_eq!(held_genesis(), Some(g));
+    }
+
+    /// A miss under the binding compares it with the view: an unreadable view keeps it and asks again later; the same
+    /// genesis keeps it and is not read again; another one (a moved placement) replaces it for good, so the caller
+    /// retries under the view's record.
+    #[test]
+    fn a_miss_under_the_binding_defers_to_a_different_view() {
+        let seed = [7; 32];
+        let a = anchor_for(1, &seed);
+        let (g, good) = signed_genesis(1, &seed, 1);
+        let (moved, _) = signed_genesis(1, &seed, 2);
+        reset_genesis();
+        bind_genesis(&a, || Some(hex(&good))).unwrap();
+        assert!(!settle_bound(None));
+        assert!(genesis_bound() && !CHECKED.with(|c| c.get()), "an unreadable view keeps the binding unchecked");
+        assert!(!settle_bound(Some(g.clone())));
+        assert!(genesis_bound() && CHECKED.with(|c| c.get()), "the same genesis keeps the binding, checked");
+        reset_genesis();
+        bind_genesis(&a, || Some(hex(&good))).unwrap();
+        assert!(settle_bound(Some(moved.clone())), "another genesis tells the caller to retry");
+        assert!(!genesis_bound());
+        assert_eq!(held_genesis(), Some(moved.clone()));
+        let names = held_genesis().unwrap().placement(graftyard_types::SystemChain::Names).unwrap().generation;
+        assert_eq!(names, 2, "system chains now use the view's record");
+        assert!(bind_genesis(&a, || Some(hex(&good))).is_ok());
+        assert_eq!(held_genesis(), Some(moved), "the binding never comes back in this isolate");
     }
 
     fn rec(generation: u32, moving_from: Option<PlacementRecord>) -> PlacementRecord {
@@ -1248,6 +1545,164 @@ mod tests {
         // Four learners: three asked, no follower.
         let four = v(&[(0, "l0"), (1, "l1"), (2, "l2"), (0, "l3")]);
         assert_eq!(names(spread_order(four, all, Some(SiteId(0)), 3)), ["l3", "l0", "l1"]);
+    }
+
+    /// Learners in config order, on sites 1 and 2 by turns, each with this isolate's average in ms.
+    fn timed(ls: &[(&str, Option<f64>)]) -> Vec<(SiteId, String, Option<f64>)> {
+        ls.iter().enumerate().map(|(i, (n, a))| (SiteId(1 + (i % 2) as u8), n.to_string(), *a)).collect()
+    }
+
+    fn voters() -> Vec<(SiteId, String)> {
+        [(0, "a"), (1, "b"), (2, "c")].iter().map(|(i, n)| (SiteId(*i), n.to_string())).collect()
+    }
+
+    fn first(t: &[Target]) -> &str {
+        &t[0].do_name
+    }
+
+    /// Near learners at 300 and 350 ms and far ones at 1,800 and 2,400 ms, interleaved so config order is not
+    /// ascending order.
+    fn mixed() -> Vec<(SiteId, String, Option<f64>)> {
+        timed(&[
+            ("far2400", Some(2_400.0)),
+            ("near300", Some(300.0)),
+            ("far1800", Some(1_800.0)),
+            ("near350", Some(350.0)),
+        ])
+    }
+
+    /// (a, b) With two near learners within ROUTE_MARGIN and two far ones, no `pick` puts a far learner first, and
+    /// each near learner comes first for some `pick`: the near set shares the reads, not only the single fastest.
+    #[test]
+    fn a_read_goes_to_a_near_learner_and_both_near_ones_share_it() {
+        let mut firsts = std::collections::BTreeSet::new();
+        for pick in 0..16 {
+            let o = timed_spread_order(mixed(), voters(), Some(SiteId(0)), pick);
+            assert!(first(&o).starts_with("near"), "pick {pick}: {o:?}");
+            assert!(!o[1].do_name.starts_with("far"), "pick {pick}: the second is the other near learner: {o:?}");
+            firsts.insert(first(&o).to_string());
+        }
+        assert_eq!(firsts.into_iter().collect::<Vec<_>>(), ["near300", "near350"]);
+    }
+
+    /// (c) With ROUTE_SPREAD learners already inside the margin, so none is padded in, a learner exactly ROUTE_MARGIN
+    /// behind the best is in the near set and comes first for some `pick`; one a millisecond past it never does.
+    #[test]
+    fn the_margin_is_inclusive_at_its_edge() {
+        let m = ROUTE_MARGIN.as_millis() as f64;
+        let with =
+            |edge: f64| timed(&[("fast", Some(500.0)), ("b", Some(510.0)), ("c", Some(520.0)), ("edge", Some(edge))]);
+        let (at, past) = (with(500.0 + m), with(500.0 + m + 1.0));
+        let firsts = |ls: &Vec<(SiteId, String, Option<f64>)>| {
+            (0..16)
+                .map(|p| first(&timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), p)).to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert!(firsts(&at).contains("edge"), "{:?}", firsts(&at));
+        assert_eq!(firsts(&past).into_iter().collect::<Vec<_>>(), ["b", "c", "fast"]);
+    }
+
+    /// (d) A learner this isolate has not timed, or not for ROUTE_STALE, is eligible and does not set the best: it
+    /// shares the reads with the near learners, and the far ones stay out, so a recovered learner is timed again.
+    #[test]
+    fn an_untimed_learner_is_eligible_and_does_not_set_the_best() {
+        let ls =
+            timed(&[("near300", Some(300.0)), ("new", None), ("near350", Some(350.0)), ("far1800", Some(1_800.0))]);
+        let mut firsts = std::collections::BTreeSet::new();
+        for pick in 0..16 {
+            let o = timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), pick);
+            assert_ne!(first(&o), "far1800", "pick {pick}: {o:?}");
+            firsts.insert(first(&o).to_string());
+        }
+        assert_eq!(firsts.into_iter().collect::<Vec<_>>(), ["near300", "near350", "new"]);
+        // More timed learners near the best than padding would admit: an untimed one must not shut any of them out.
+        let ls = timed(&[("new", None), ("a300", Some(300.0)), ("b310", Some(310.0)), ("c320", Some(320.0))]);
+        let firsts: std::collections::BTreeSet<String> =
+            (0..16).map(|p| first(&timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), p)).to_string()).collect();
+        assert_eq!(firsts.into_iter().collect::<Vec<_>>(), ["a300", "b310", "c320", "new"]);
+        let t = Timed { mean: 300.0, dev: 0.0, at: 1_000 };
+        let stale = 1_000 + ROUTE_STALE.as_millis() as u64;
+        assert_eq!(t.score(stale - 1), Some(300.0));
+        assert_eq!(t.score(stale), None, "untimed once ROUTE_STALE has passed");
+        assert_eq!(Timed::after(Some(t), 900.0, stale), Timed { mean: 900.0, dev: 0.0, at: stale }, "starts afresh");
+    }
+
+    /// (e) The herding guard. One learner answers fastest and steadily (200 ms), and every other is well past
+    /// ROUTE_MARGIN but answers in time (600 to 900 ms): the fastest still gets no more than 1 in ROUTE_SPREAD of the
+    /// first places, and the next best share them. Ordered by the average alone, gate 15's fastest learner took 50.2%
+    /// of the reads and shed 54. A learner scored at ROUTE_LATE or past it (a far one answering at FOLLOWER_WAIT)
+    /// never comes first while others answer in time.
+    #[test]
+    fn the_fastest_learner_gets_a_bounded_share() {
+        let ls = timed(&[
+            ("slow900", Some(900.0)),
+            ("fast", Some(200.0)),
+            ("late", Some(ROUTE_LATE.as_millis() as f64)),
+            ("mid600", Some(600.0)),
+            ("mid700", Some(700.0)),
+        ]);
+        let mut n = std::collections::BTreeMap::<String, usize>::new();
+        let picks = 60;
+        for pick in 0..picks {
+            let o = timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), pick);
+            *n.entry(first(&o).to_string()).or_default() += 1;
+            assert_eq!(o.len(), SPREAD_TRIES);
+            assert!(o.iter().all(|t| t.do_name != "late"), "pick {pick}: a late learner was asked: {o:?}");
+        }
+        assert_eq!(n.keys().map(String::as_str).collect::<Vec<_>>(), ["fast", "mid600", "mid700"], "{n:?}");
+        assert!(n["fast"] * ROUTE_SPREAD <= picks, "the fastest took {} of {picks}: {n:?}", n["fast"]);
+        // With enough learners inside the margin, none is padded in.
+        let three = timed(&[("a", Some(200.0)), ("b", Some(250.0)), ("c", Some(380.0)), ("d", Some(600.0))]);
+        for pick in 0..16 {
+            assert_ne!(first(&timed_spread_order(three.clone(), voters(), Some(SiteId(0)), pick)), "d");
+        }
+    }
+
+    /// (f) A shed, overloaded, `notLeader`, 5xx, or missing answer records FOLLOWER_CALL, a value its elapsed time.
+    /// A learner's first sample is its average with no deviation; then each sample moves the average and the mean
+    /// deviation ROUTE_WEIGHT of the way, and the score is the average plus ROUTE_DEV deviations, so a learner whose
+    /// answers swing scores worse than a steady one with the same average.
+    #[test]
+    fn a_learners_score_is_its_average_plus_its_deviation() {
+        let call = FOLLOWER_CALL.as_millis() as f64;
+        assert_eq!(answer_sample(Some((200, &json!({ "value": 1, "index": 3 }))), 312.0), 312.0);
+        let nl = json!({ "error": { "notLeader": { "term": 3 } } });
+        for (status, v) in [(200, overloaded_reply(250)), (200, json!({ "busy": true })), (200, nl), (503, Value::Null)]
+        {
+            assert_eq!(answer_sample(Some((status, &v)), 40.0), call, "{status} {v}");
+        }
+        assert_eq!(answer_sample(None, 2_000.0), call);
+        let first = Timed::after(None, 300.0, 0);
+        assert_eq!((first.mean, first.dev, first.score(0)), (300.0, 0.0, Some(300.0)));
+        // 300 ms, then one 2,300 ms answer: average 300 + 0.2 * 2,000 = 700, deviation 0.2 * 2,000 = 400,
+        // score 700 + 4 * 400 = 2,300.
+        let t = Timed::after(Some(first), 2_300.0, 10);
+        assert!((t.mean - 700.0).abs() < 1e-9 && (t.dev - 400.0).abs() < 1e-9, "{t:?}");
+        assert!((t.score(10).unwrap() - (700.0 + ROUTE_DEV * 400.0)).abs() < 1e-9);
+        // Steady at 500 against swinging 200 / 800 around the same average: the steady one scores better.
+        let (mut steady, mut swing) = (Timed::after(None, 500.0, 0), Timed::after(None, 500.0, 0));
+        for i in 1..40u64 {
+            steady = Timed::after(Some(steady), 500.0, i);
+            swing = Timed::after(Some(swing), if i % 2 == 0 { 200.0 } else { 800.0 }, i);
+        }
+        assert!(swing.score(40).unwrap() > steady.score(40).unwrap() + ROUTE_MARGIN.as_millis() as f64);
+    }
+
+    /// (g) After the near set the far learners come in ascending average, whatever their config order, then the
+    /// followers rotated by `pick` with the cached leader skipped; SPREAD_TRIES still truncates.
+    #[test]
+    fn far_learners_follow_in_ascending_order_then_followers() {
+        let ls = timed(&[("far2400", Some(2_400.0)), ("near300", Some(300.0)), ("far1800", Some(1_800.0))]);
+        for pick in 0..16 {
+            let o = timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), pick);
+            let n: Vec<&str> = o.iter().map(|t| t.do_name.as_str()).collect();
+            assert_eq!(n, ["near300", "far1800", "far2400"], "pick {pick}");
+        }
+        let one_far = timed(&[("far1800", Some(1_800.0)), ("near300", Some(300.0))]);
+        let o = timed_spread_order(one_far.clone(), voters(), Some(SiteId(0)), 0);
+        assert_eq!(o.iter().map(|t| t.do_name.as_str()).collect::<Vec<_>>(), ["near300", "far1800", "b"]);
+        let o = timed_spread_order(one_far, voters(), Some(SiteId(0)), 1);
+        assert_eq!(o.iter().map(|t| t.do_name.as_str()).collect::<Vec<_>>(), ["near300", "far1800", "c"]);
     }
 
     /// When no member asked answers a value: if any shed it (`overloaded`, `busy`, a 5xx, no answer), the read is

@@ -560,7 +560,12 @@ pub struct CommentId(DbId);
 /// conversation resolution before merging" does, and merges read only Core. `Resolved` names only the thread, so a
 /// thread's first review comment (`Created` on a review with no `reply_to`), which opens it unresolved and maps it to
 /// its pull request, and every `Deleted`, which does not say whether it named a thread, also touch Core. So those three
-/// `Comment` events touch both tiers (M2-WP2, `crates/git/src/tiers.rs`).
+/// `Comment` events touch both tiers (M2-WP2, `crates/git/src/tiers.rs`). A review comment made outside a review (REST
+/// `POST /pulls/{n}/comments`, a reply too) is, as on GHES, a single-comment review's: `decide` adds a COMMENTED review
+/// with no body on the comment's commit to the same entry, after the comment, and the comment names it. From repository
+/// format 32.22 it is a `SingleComment`, so every such commenter gets one and an APPROVED or CHANGES_REQUESTED verdict
+/// stays, as GHES keeps it. Before 32.22 it is a `Submitted`, which replaces a verdict, so a commenter who holds one
+/// gets no review.
 pub enum CommentEvent {
     Created { id: CommentId, on: CommentTarget, author: Actor, body: Box<str>, reply_to: Option<CommentId> },
     Edited { id: CommentId, body: Box<str>, actor: Actor }, Deleted { id: CommentId, actor: Actor },
@@ -574,11 +579,14 @@ pub enum DiffSide { Left, Right }
 pub struct ReviewId(DbId);
 /// `Submitted` touches both tiers: the core `review_verdict` row keeps (reviewer, state, commit), and the metadata
 /// tier keeps the body. `Dismissed` touches both tiers, because it removes the core `review_verdict`. A `Pending`
-/// review is visible only to its author and is never a verdict.
+/// review is visible only to its author and is never a verdict. `SingleComment` (format 32.22) is a review comment's
+/// COMMENTED single-comment review with no body: both tiers, like `Submitted`, but it writes the core `review_verdict`
+/// only when the reviewer has none or a COMMENTED one, so it never replaces an APPROVED or CHANGES_REQUESTED verdict.
 pub enum ReviewEvent {
     Submitted { id: ReviewId, n: IssueNumber, reviewer: Actor, state: ReviewState, commit: ObjectId, body: Box<str> },
     Dismissed { id: ReviewId, message: Box<str>, actor: Actor },
-    Requested { n: IssueNumber, reviewers: SmallVec<[Grantee; 2]>, removed: bool, actor: Actor } }
+    Requested { n: IssueNumber, reviewers: SmallVec<[Grantee; 2]>, removed: bool, actor: Actor },
+    SingleComment { id: ReviewId, n: IssueNumber, reviewer: Actor, commit: ObjectId } }
 pub enum ReviewState { Pending, Approved, ChangesRequested, Commented }
 /// A name is at most 50 characters [unverified] and compares case-insensitively within a repository.
 pub struct LabelId(DbId); pub struct LabelName(Box<str>);
@@ -1079,6 +1087,7 @@ Graftyard ships one signed release in every mode. `design/DESIGN.md`, "Deploymen
 - *The private API.* Every route is under `/_t/ui/`, a prefix no GHES path uses and no login may claim (`RESERVED`), behind the same authentication, `resolve`, and read gate as `/api/v3/repos/{owner}/{repo}`. A read that the members or the git cache shard could not answer is 503 with `Retry-After` (1 s when shed, else 5 s), as the API's reads are. Git-derived routes ask the network's git cache shard (`/ui/*` on the container, `containers/git/server/ui.go`) in `shard_order`; a ref is resolved to a commit from the repository's fold first, so the shard only reads commits. Routes:
   - `GET resolve/{splat}`, `tree-commits/{ref}[/{path}]`, `blame/{ref}/{path}`, and `readme[?ref=]`: the file tree with each entry's last commit, a blame, and a directory's README.
   - `GET pulls/{n}/files` and `pulls/{n}/commits`: the pull request's diff from the merge base (GHES `diff-entry` items, at most 3,000 files and 5 MiB of patch) and its commits oldest first (GHES `commit` items, at most 250).
+  - The public pull request's `commits`, `additions`, `deletions`, and `changed_files` (REST `pull-request`, GraphQL `additions`, `deletions`, and `commits.totalCount`) are the shard's `/ui/compare` for the base tip and head: `ahead_by`, and the diff from the merge base to the head with renames found, a binary file counted as a changed file with no lines, as GHES counts them. The edge renders the reply, reads the compare for each pair the render asked for, and renders again; a pair the shard does not answer counts 0, as every count did before. A webhook payload rendered by the site still counts 0 [inference: the site reads no shard].
   - `GET pulls/{n}/events`, `pulls/{n}/threads`, and `pulls/{n}/merge-requirements`: the pull request's own timeline events, each review thread's resolution, and what stands between it and a merge, computed from the fold as `mergeStateStatus` is, with `behind_by` from the shard.
   - `GET pulls/{n}/viewed` answers `{"paths": []}`, because no fold holds viewed files yet; its `PUT` and the other writes the mock has (thread resolution, draft, auto-merge) are not served.
   - `GET subscription/events` answers `{"events": null}` (no custom watch).

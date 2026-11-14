@@ -46,6 +46,8 @@ pub struct Op {
     pub pack: usize,
     /// For a push, the ref's value it expects.
     pub expect: Option<String>,
+    /// Bytes the command carries that no event stores (`KvCmd::Write::render`).
+    pub render: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +114,11 @@ pub struct Load {
     /// Every alarm a member raised: (time, site, alarm).
     pub alarms: Vec<(u64, SiteId, String)>,
     pub fixed_capacity: Option<f32>,
+    /// Added to every message's one-way delay, ms: lengthens the round to a hosted one's.
+    pub slow_ms: u64,
+    /// Per entry the leader appended: when, until its commit, in ms once it committed (`rounds`).
+    appended: BTreeMap<u64, u64>,
+    pub rounds: Vec<u64>,
 }
 
 fn event_bytes(e: &KvEvent) -> usize {
@@ -167,6 +174,9 @@ impl Load {
             placement_ok: true,
             alarms: Vec::new(),
             fixed_capacity: None,
+            slow_ms: 0,
+            appended: BTreeMap::new(),
+            rounds: Vec::new(),
         };
         l.on(leader, |m, now| m.campaign(now));
         for _ in 0..400 {
@@ -213,6 +223,7 @@ impl Load {
                 let jitter = self.rng.below(20);
                 let at = self.now
                     + ONE_WAY[e.from.0 as usize][e.to.0 as usize]
+                    + self.slow_ms
                     + (bytes as f64 * US_PER_BYTE / 1000.0) as u64
                     + jitter;
                 self.seq += 1;
@@ -231,6 +242,16 @@ impl Load {
             out = self.members[i].self_ack(now, ack).persist(&mut self.disks[i]).1;
         }
         let m = &self.members[i];
+        if m.role() == Role::Leader {
+            for k in before.0 + 1..=m.last_index().0 {
+                self.appended.entry(k).or_insert(self.now);
+            }
+            let commit = m.state().commit.0;
+            while let Some((&k, &at)) = self.appended.first_key_value().filter(|(k, _)| **k <= commit) {
+                self.appended.remove(&k);
+                self.rounds.push(self.now - at);
+            }
+        }
         if m.role() == Role::Leader && m.last_index() > before {
             for k in before.0 + 1..=m.last_index().0 {
                 if let Some(e) = m.log().iter().find(|e| e.index.0 == k)
@@ -298,6 +319,7 @@ impl Load {
             actor: op.actor,
             push: op.kind != Kind::Side,
             pack: l.pack,
+            render: op.render,
         };
         let a = Admit {
             class: op.class,

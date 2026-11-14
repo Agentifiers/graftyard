@@ -369,3 +369,67 @@ fn a_half_hung_leader_with_slow_followers_is_replaced() {
         led_all[led_all.len() - 1]
     );
 }
+
+/// A leader whose loop lags, with slow storage on both followers: LoopLag hands off to a follower, and the group must
+/// keep a leader. After each `STEP_DOWN` that names a target a member serves within 3 s (the target, or the old leader
+/// when the target refuses), and no seed is without a serving member for over 8 s. On main `1f51c6f` a follower with four slow confirms in the window (under
+/// `confirm_slow_min`'s six) campaigned against that fresh leader; its real vote left after its own slow confirm,
+/// deposed the leader on the higher term and was refused LogBehind, and seed 910 went 12.5 s with no leader (LM-1's
+/// round 15c on m26c: a fresh leader lost its term about 13 s in with no StepDown).
+#[test]
+fn a_looplag_leader_with_slow_followers_hands_off_and_holds() {
+    let n: u64 = std::env::var("RAFT_SLOW_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(24);
+    let mut failed = Vec::new();
+    let (mut worst, mut handoffs) = (0, 0);
+    for seed in 900..900 + n {
+        let mut sim = Sim::new(seed, Faults::WAN, CLIENTS, 3);
+        let warm = Timestamp(sim.now.0 + WARM_MS);
+        while sim.now < warm {
+            sim.step(true);
+        }
+        let sick = leader_now(&sim).expect("leader after warm-up");
+        let start = sim.now;
+        let until = Timestamp(start.0 + FAULT_MS);
+        sim.site_faults.push(SiteFault { site: sick, from: start, until, kind: FaultKind::LoopLag(300) });
+        for s in SITES.iter().filter(|s| **s != sick) {
+            sim.site_faults.push(SiteFault { site: *s, from: start, until, kind: FaultKind::SlowConfirm(300, 1_050) });
+        }
+        let (mut gap, mut since) = (0, None);
+        // Named hand-offs not yet followed by a serving member: (alarm index, when).
+        let (mut seen, mut open) = (sim.alarms.len(), Vec::new());
+        while sim.now < until {
+            sim.step(true);
+            for a in &sim.alarms[seen..] {
+                if matches!(a.2, graftyard_raft::Alarm::StepDown { to: Some(_), .. }) {
+                    handoffs += 1;
+                    open.push((a.0, format!("{:?}", a.2)));
+                }
+            }
+            seen = sim.alarms.len();
+            let serving = sim.serving(&SITES).is_some();
+            if serving {
+                open.retain(|(at, _)| sim.now.0 == at.0);
+            }
+            for (at, why) in open.iter().filter(|(at, _)| sim.now.0 > at.0 + 3_000) {
+                failed.push(format!("seed {seed}: nobody served within 3 s of {why} at {} ms", at.0 - start.0));
+            }
+            open.retain(|(at, _)| sim.now.0 <= at.0 + 3_000);
+            match (serving, since) {
+                (false, None) => since = Some(sim.now),
+                (true, Some(t)) => {
+                    gap = gap.max(sim.now.0 - t.0);
+                    since = None;
+                }
+                _ => {}
+            }
+        }
+        worst = worst.max(gap);
+        if gap > 8_000 {
+            failed.push(format!("seed {seed}: {gap} ms with no member serving"));
+        }
+        sim.settle(4_000);
+        assert_eq!(common::history::check(&sim.history), common::history::Verdict::Ok, "seed {seed}: not linearizable");
+    }
+    eprintln!("loop lag, slow followers: {handoffs} named hand-offs, longest unserved {worst} ms");
+    assert!(failed.is_empty(), "{failed:?}");
+}

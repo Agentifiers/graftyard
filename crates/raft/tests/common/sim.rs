@@ -204,6 +204,16 @@ pub struct Edge {
 
 /// FOLLOWER_WAIT in `workers/site/src/member.rs`.
 pub const FOLLOWER_WAIT_MS: u64 = 1_000;
+/// Granted spread reads answered later through `Member::fresh_after`, per mille: a learner's narrow API answer whose
+/// build was not due (`workers/site/src/member.rs`).
+const LATER_SHARE: u64 = 300;
+
+/// When a granted spread read `id` is answered later (LATER_SHARE of them), the ms after its grant, under
+/// FOLLOWER_WAIT_MS.
+fn later_ms(id: ReadId) -> Option<u64> {
+    let h = id.0.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29);
+    (h % 1000 < LATER_SHARE).then_some((h >> 12) % FOLLOWER_WAIT_MS)
+}
 
 /// A member-to-member call the host is timing: its failure report, and when its deadline passes.
 struct PendingCall {
@@ -298,12 +308,15 @@ struct Op {
     spread: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Wait {
     Ticket(Ticket),
     Read(ReadId),
     /// A read-index read on a follower, which sheds it at `retry_at`.
     Spread(SiteId, ReadId),
+    /// A granted read-index read whose answer the follower builds later, as a narrow API answer whose build was not
+    /// due: answered through `Member::fresh_after` at `retry_at`, at the follower's state then.
+    Later(SiteId, graftyard_raft::ReadGrant),
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -1310,6 +1323,28 @@ impl Sim {
             if self.now < op.retry_at {
                 continue;
             }
+            if let Some(Wait::Later(s, g)) = &op.wait {
+                let (s, g) = (*s, g.clone());
+                // A member that crashed meanwhile lost the waiter with its object: the edge sees a shed read.
+                let v = self.member(s).map(|m| {
+                    let HOp::Get { key } = &op.op else { unreachable!() };
+                    m.fresh_after(&g).map(|f| f.fold().0.get(key).cloned())
+                });
+                let op = self.ops[c].take().expect("op");
+                match v {
+                    Some(Ok(v)) => {
+                        self.stats.reads += 1;
+                        self.stats.spread_reads += 1;
+                        self.finish(op, Some(HOut::Value(v)));
+                        self.progressed();
+                    }
+                    _ => {
+                        self.stats.shed += 1;
+                        self.finish(op, None);
+                    }
+                }
+                continue;
+            }
             if matches!(op.wait, Some(Wait::Spread(..))) {
                 // The follower did not answer within FOLLOWER_WAIT: `overloaded`, a 503, no `suspect`.
                 let op = self.ops[c].take().expect("op");
@@ -1338,7 +1373,7 @@ impl Sim {
             return;
         }
         let op = self.ops[c].as_ref().expect("op");
-        let (target, id, wait, missed) = (op.target, op.id, op.wait, op.missed);
+        let (target, id, wait, missed) = (op.target, op.id, op.wait.clone(), op.missed);
         let hop = op.op.clone();
         let write = op.receipt.is_some();
         let retry = Timestamp(self.now.0 + self.receipt_wait(write));
@@ -1731,6 +1766,14 @@ impl Sim {
             .position(|o| o.as_ref().is_some_and(|o| matches!(o.wait, Some(Wait::Spread(f, r)) if f == s && r == id)));
         if let Some(c) = spread {
             match result {
+                // Chosen by the read's id, not the run's generator, so every seed's other draws are unchanged.
+                Ok(g) if later_ms(id).is_some() => {
+                    // The answer is built later, within FOLLOWER_WAIT, without a new read-index round.
+                    let later = Timestamp(self.now.0 + later_ms(id).expect("checked"));
+                    let o = self.ops[c].as_mut().expect("op");
+                    o.wait = Some(Wait::Later(s, g));
+                    o.retry_at = later;
+                }
                 Ok(g) => {
                     let m = self.member(s).expect("up");
                     let fresh = m.fresh(&g).expect("grant used in the same step");

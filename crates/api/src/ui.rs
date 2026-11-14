@@ -180,11 +180,7 @@ pub fn merge_requirements(r: &Repo<'_>, n: &str, behind_by: u32) -> Reply {
 pub fn pull_shas(r: &Repo<'_>, n: &str) -> Option<(ObjectId, ObjectId)> {
     let it = pull(r, n)?;
     let (p, head) = it.pull.as_ref()?;
-    let head_sha = match head.state {
-        PrState::Open { .. } => head.head_sha,
-        PrState::Closed { final_head, .. } | PrState::Merged { final_head, .. } => final_head,
-    };
-    Some((r.ref_value(&p.base).unwrap_or(p.base_sha), head_sha))
+    Some(r.pull_pair(p, head))
 }
 
 /// `GET pulls/{n}/commits`: the shard's commits (`{commits: [{sha, raw}]}`) as GHES `commit` items, oldest first.

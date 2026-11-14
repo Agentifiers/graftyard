@@ -900,3 +900,170 @@ fn check_run_creates_take_distinct_ids_from_the_block_in_decide() {
     });
     assert_eq!(named_e.count(), 1, "applied once");
 }
+
+// ---- admission's write marks ----
+
+/// The repository leader's admission, as its `/status` reports it.
+fn admission(w: &World) -> graftyard_raft::AdmissionView {
+    w.repo.members[w.repo.leader().0 as usize].admission().expect("the leader's admission")
+}
+
+fn open_issue(who: i64, t: &str) -> RepoCmd {
+    issue(
+        user(who),
+        IssueOp::OpenIssue { title: t.into(), body: "".into(), labels: SmallVec::new(), assignees: SmallVec::new() },
+    )
+}
+
+/// `hot` from `RepoFold`'s marks: HOT_PUSHES is 2 a second over HOT_WINDOW's 5 s, so 10 pushes in one entry leave the
+/// group cold and 11 turn it hot. Writes that move no ref never do.
+#[test]
+fn a_repo_group_turns_hot_above_the_push_rate_and_stays_cold_below_it() {
+    let mut w = World::new();
+    let pushes = |from: u32, n: u32| -> Vec<RepoCmd> {
+        let p = |i| RepoCmd::Push(push(user(WRITER), vec![up(&format!("refs/heads/h{i}"), None, Some(oid(i)))], &[]));
+        (from..from + n).map(p).collect()
+    };
+    let o = w.commit_all((0..11).map(|i| open_issue(WRITER, &format!("i{i}"))).collect());
+    assert!(o.iter().all(Result::is_ok), "{o:?}");
+    assert!(!admission(&w).hot, "11 issues moved no ref");
+    // Past the seed's push of `main`, so the window holds only what follows.
+    let window = graftyard_raft::admit::HOT_WINDOW.as_millis() as u64;
+    w.now = Timestamp(w.now.0 + window);
+    let o = w.commit_all(pushes(0, 10));
+    assert!(o.iter().all(|o| refs(o) == [RefOutcome::Ok]), "{o:?}");
+    assert!(!admission(&w).hot, "10 pushes in 5 s is 2 a second, not above it");
+    // Past the window those 10 no longer count, so a fresh 11 is what turns it hot.
+    w.now = Timestamp(w.now.0 + window);
+    let o = w.commit_all(pushes(100, 11));
+    assert!(o.iter().all(|o| refs(o) == [RefOutcome::Ok]), "{o:?}");
+    assert!(admission(&w).hot, "11 pushes in 5 s");
+}
+
+/// DEMOTE_PER_MIN from `RepoFold`'s marks: a user token the edge classes Human keeps Human through 59 committed writes
+/// in the minute, pushes and issues alike, and the 60th demotes it to Agent.
+#[test]
+fn an_actor_past_demote_per_min_is_demoted() {
+    use graftyard_raft::admit::{ActorKey, Admit, AdmitClass, DEMOTE_PER_MIN};
+    let mut w = World::new();
+    let mut cmds: Vec<RepoCmd> = (0..30)
+        .map(|i| RepoCmd::Push(push(user(WRITER), vec![up(&format!("refs/heads/d{i}"), None, Some(oid(i)))], &[])))
+        .collect();
+    cmds.extend((0..DEMOTE_PER_MIN - 1 - 30).map(|i| open_issue(WRITER, &format!("d{i}"))));
+    let o = w.commit_all(cmds);
+    assert!(o.iter().all(Result::is_ok), "{o:?}");
+    let class = |w: &mut World, i: u32| {
+        let a = Admit {
+            class: AdmitClass::Human,
+            actor: Some(ActorKey(WRITER as u64)),
+            push: false,
+            inline: 0,
+            placement_ok: true,
+        };
+        let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
+        let c = open_issue(WRITER, &format!("probe{i}"));
+        let class = w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted").class;
+        w.settle();
+        class
+    };
+    assert_eq!(class(&mut w, 0), AdmitClass::Human, "59 writes in the minute");
+    assert_eq!(class(&mut w, 1), AdmitClass::Agent, "60 writes in the minute");
+    // Another user is not counted with it.
+    let a = Admit {
+        class: AdmitClass::Human,
+        actor: Some(ActorKey(WRITER2 as u64)),
+        push: false,
+        inline: 0,
+        placement_ok: true,
+    };
+    let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
+    let c = open_issue(WRITER2, "other");
+    assert_eq!(w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted").class, AdmitClass::Human);
+    w.settle();
+}
+
+/// Format 32.22 through real members: a review comment outside a review by a reviewer who approved gets its
+/// single-comment review, a `SingleComment`, and the pull request's verdict stays APPROVED, as on GHES. A COMMENTED
+/// verdict is replaced by the next one, and a later APPROVE still replaces the single-comment review's. The command
+/// crosses the binding as 32.22, and the replay answers the comment's id.
+#[test]
+fn an_approvers_review_comment_gets_its_review_and_keeps_the_approval() {
+    use graftyard_git::issues::{CommentTarget, DiffSide, LineAnchor, ReviewEvent};
+    let mut w = World::new();
+    w.set("refs/heads/f", oid(70));
+    let open = IssueOp::OpenPr {
+        head: HeadSpec { repo: REPO, branch: name("refs/heads/f") },
+        base: name("refs/heads/main"),
+        title: "t".into(),
+        body: "b".into(),
+        draft: false,
+        head_sha: oid(70),
+        base_sha: w.get("refs/heads/main").unwrap(),
+    };
+    let n = IssueNumber(number(&w.commit(issue(user(WRITER), open))));
+    let verdicts = |w: &mut World| {
+        let f = w.fold();
+        graftyard_fold::Read::prefix(&*f.core, "review_verdict", &[tiers::n_key(n)])
+            .into_iter()
+            .filter_map(|(k, _)| tiers::get_rec::<tiers::VerdictRow>(&*f.core, "review_verdict", &k))
+            .map(|r| r.state)
+            .collect::<Vec<_>>()
+    };
+    let review = |state| IssueOp::Review { n, state, commit: oid(70), body: "".into() };
+    w.commit(issue(user(WRITER2), review(ReviewState::Approved))).unwrap();
+    let at = LineAnchor { commit: oid(70), path: "a.rs".into(), line: 1, start_line: None, side: DiffSide::Right };
+    let comment = |reply_to| IssueOp::Comment {
+        on: CommentTarget::Review { n, review: None, at: at.clone() },
+        body: "nit".into(),
+        reply_to,
+    };
+    let call = |w: &mut World, op| {
+        let mut c = IssueCall::new(op, user(WRITER2), w.rid(), serde_json::Value::Null);
+        c.reviews = true;
+        RepoCmd::Issue(Box::new(c))
+    };
+    let cmd = call(&mut w, comment(None));
+    let v = serde_json::to_value(&cmd).unwrap();
+    assert_eq!(v["issue"]["format"], serde_json::json!([0x20, 22]));
+    assert_eq!(serde_json::from_value::<RepoCmd>(v).unwrap(), cmd);
+    let id = match w.commit(cmd) {
+        Ok(RepoOut::Issue(c)) => match c.out {
+            IssueOut::Id(id) => id,
+            o => panic!("{o:?}"),
+        },
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(verdicts(&mut w), [ReviewState::Approved], "the approval stays");
+    // The comment names a COMMENTED review with no body, which the metadata tier lists.
+    let f = w.fold();
+    let row: tiers::CommentRow = tiers::get_rec(&*f.meta, "comment", &[tiers::int(id.0)]).unwrap();
+    let CommentTarget::Review { review: Some(r), .. } = row.on else { panic!("{row:?}") };
+    let rr: tiers::ReviewRow = tiers::get_rec(&*f.meta, "review", &[tiers::int(r.0.0)]).unwrap();
+    assert_eq!((rr.state, &*rr.body, rr.reviewer), (ReviewState::Commented, "", Some(AccountId(DbId(WRITER2)))));
+    let l = w.repo.leader();
+    let single = w.repo.members[l.0 as usize].log().iter().any(|e| match &e.body {
+        graftyard_raft::EntryBody::Events(evs) => {
+            evs.iter().any(|e| matches!(e, RepoEvent::Review(ReviewEvent::SingleComment { id: x, .. }) if *x == r))
+        }
+        _ => false,
+    });
+    assert!(single, "committed as SingleComment");
+    // A reply by the same approver: its own review, the approval still stands.
+    let reply = call(&mut w, comment(Some(graftyard_git::issues::CommentId(id))));
+    w.commit(reply).unwrap();
+    assert_eq!(verdicts(&mut w), [ReviewState::Approved]);
+    // Changes requested, then a comment: still CHANGES_REQUESTED.
+    w.commit(issue(user(WRITER2), review(ReviewState::ChangesRequested))).unwrap();
+    let c2 = call(&mut w, comment(None));
+    w.commit(c2).unwrap();
+    assert_eq!(verdicts(&mut w), [ReviewState::ChangesRequested]);
+    // A commenter with no verdict: the single-comment review is theirs; an APPROVE then replaces it.
+    let mut c3 = IssueCall::new(comment(None), user(OWNER), w.rid(), serde_json::Value::Null);
+    c3.reviews = true;
+    w.commit(RepoCmd::Issue(Box::new(c3))).unwrap();
+    assert_eq!(verdicts(&mut w).iter().filter(|s| **s == ReviewState::Commented).count(), 1);
+    w.commit(issue(user(OWNER), review(ReviewState::Approved))).unwrap();
+    let mut v = verdicts(&mut w);
+    v.sort_by_key(|s| *s as u8);
+    assert_eq!(v, [ReviewState::Approved, ReviewState::ChangesRequested]);
+}

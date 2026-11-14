@@ -2483,6 +2483,120 @@ Branch `f67-r12` (`tests/m0/results/f67.md`, "Rules 12 and 13").
 
 **Flip.** A live seed past 30 s in the 4,000-seed window, or a healthy group whose `/transfer` or drain hand-off rule 13 refuses for longer than one `STEP_DOWN` window.
 
+### `narrow-reads-3`: a read that waits for an answer's build is answered at or above its floor, with no second read-index, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65).
+
+**Decision.** Every read grant carries a floor (`raft::ReadGrant::floor`): the commit index the leader confirmed for that read, its read index on a follower or learner and its applied index on the leader. A member keeps each narrow API query's newest answer with the index it was built at and whether the metadata tier was loaded, and serves it to any read whose floor it covers. A read whose floor is newer waits for the next build, spaced by `NARROW_EVERY_MS` (now 100 ms), and is then answered at the member's state at that moment (`raft::Member::fresh_after`, same boot only), with no second read-index round. A follower or learner numbers its read-index batches from its boot (`RemoteReads::starting_at`). Reads answered in one input share an answer only at the same floor.
+
+**Why.** After `narrow-reads-2`, the learners' narrow tier read set API p99 at journey 9 (2.2 to 2.6 s on the edge, 8 learners at 200 reads/s), and each learner counted 448 to 4,427 reads that waited for a build and 428 to 3,461 answered late in 300 s [measured, `tests/am1/results/narrow-reads-2.md`]. Each wait slept the build's spacing and then redid the read-index: a new batch behind the one in flight (50 ms floor and a leader round trip), and in that time the tiers moved again, so the answer it waited for was stale once more and the read could wait again until `FOLLOWER_WAIT`. A build of journey 9's queries over 500 PRs costs 2 to 4 ms natively [measured], so the spacing protects little and the repeated read-index cost most of the wait [inference].
+
+**Safety.** The rule stays "no answer older than the commit index the leader confirmed for that read": an answer built at index `i` is the fold at `i`, which is a function of the committed log, so an answer at `i >= floor` holds every entry acknowledged before the read arrived. Answering later at the member's current state is also at or above the floor, since its applied index never moves back within a boot. The simulator now answers 30% of granted follower reads later through `fresh_after`; its live sweep found that an answer the leader sent a follower's previous boot (late, or held for a learner's next call) matched the new boot's first batch number and granted a read below an acknowledged write. That is a bug on `main` too, and it is now a regression test (`a_read_index_answer_from_a_previous_boot_grants_nothing`, which fails on `main` 20147db).
+
+**Beat.** Adding learners, which costs money every month and moves the queue (operator). Sharing one in-flight read-index among waiters only: the batch already shares one, and the cost was the second round per wait, not the first. Serving the newest cached answer whatever its index, which would answer below the floor. Removing `NARROW_EVERY_MS` outright: with no spacing a learner rebuilds on every entry for every query, and the hosted run should show the build share first.
+
+**Evidence.** `crates/raft/tests/leadership.rs` (floor and `fresh_after`; the previous-boot answer), the simulator with deferred reads (long sweep and Porcupine below), `workers/site/src/fanout.rs` (an answer below the floor is never served, a covered floor never waits, loading and loaded answers are kept apart, another query's answer never serves), `workers/site/src/host.rs` (shared answers keyed by floor); `tests/nr3/plant.py` catches 11 of 11. Hosted on `graft-m3e`, 500 agents, 8 learners, two runs with no leader change: the tier read's edge p99 fell from 2,879 ms to 1,964 and 1,669 ms, learners' `late` answers from 96 to 3,399 each to 7 to 2,472 and 17 to 263, and every narrow build took 0 ms on the isolate's clock; API p99 was 2,112 ms (99.97% served) and 3,279 ms (99.9%), the second set by cold edge isolates' identity and `Release` genesis reads, not the tier read; 0 stale answers in 449 read-your-write rounds (`tests/am1/results/narrow-reads-3.md`).
+
+**Flip.** A hosted run where the grant stage (`readStages.grant`, `tier_grant`) rather than the build wait sets the learner p99, which would make sharing or shortening the read-index round the next change. A narrow build that costs a learner more than about 20% of its CPU at journey 9, which would raise `NARROW_EVERY_MS` again.
+
+### The edge carries its signed genesis as a deploy-time variable, and a wrong placement sends it to the `Release` view, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). Approved by the operator with the conditions below.
+
+**Decision.** The deploy tool writes the committed signed genesis (the file whose SHA-256 is `install.toml`'s `genesis`) into the edge script as `GRAFTYARD_GENESIS_SIGNED`, hex, and refuses any other file. An edge isolate accepts it once with `accept_genesis` against its own anchor, as it accepts a `Release` member's answer; an absent, unsigned, malformed, or other-install binding is refused for the isolate's lifetime and the isolate reads the view. A system chain call under the bound record that finds no group or fails, and a system write that may create a group, first read the view once (`graftyard_lookup::check_bound`): the same genesis keeps the binding for the isolate, another replaces it for good and the call is retried under the view's record. Site scripts are unchanged ("Install operations", Genesis, step 6).
+
+**Why.** On a clean 500-agent run the API p99 was 3.3 s, set by cold edge isolates whose `Release` genesis, token, name, `Placement`, and `Authz` reads took 1.2 to 3.8 s before the tier read; the `Release` group's follower answered 3,566 reads at p99 1.87 s [measured, `tests/am1/results/narrow-reads-3.md`]. The genesis never changes for an install (a restore is a new install), and the edge already ships its anchor, so the bytes add no trust: a forged binding is refused by the same check.
+
+**Beat.** Caching the view longer (the cold isolate still reads it once, which is the tail). A site-script variable too (a site day for every script, for reads sites make rarely). Trusting the binding without a fallback, which a `LeaveEvaluation` that moves a system placement would leave pointing at the old groups.
+
+**Evidence.** `crates/lookup` tests `the_genesis_binding_is_accepted_only_against_the_anchor` (another install, another key, unsigned, a flipped byte, not hex: each refused and never retried) and `a_miss_under_the_binding_defers_to_a_different_view`; `tests/nr3/plant.py` mutants 11 to 14.
+
+**Flip.** An entry that moves system placements often enough that isolates pay the view read on most misses, or a deploy path that cannot read the committed genesis.
+
+### A read-index answer follows the entries the asker needs, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Where a far learner's wait goes"; F65). The operator's option (a), built after the split it asked for.
+
+**Decision.** When the leader answers a learner's read-index batch at index i (`read_resolved`) and has not sent it the entries through i, it first sends that learner AppendEntries, each within `APPEND_BYTES_MAX` and none while the learner's link is lossy (F67 rule 13): after the calls in flight, up to `PIPELINE` calls in all, as a voter's pipeline would; or, when a refusal or failure emptied that pipeline, from the first entry the learner has not acknowledged (`next`). A voter is sent every entry as it is cut, so it gets nothing extra. Two builds went before. f1ab1a61 sent nothing once the pipeline was empty: gate7 and gate8 cut three far learners' wait for entries to p99 0.4 to 1.7 s, but one apac learner a run waited p99 4.8 to 7.8 s, because its calls and their hedged copies ended out of order, an append that overtook an earlier one was refused, the refusal emptied the pipeline, and the entries waited `CALL_DEADLINE` for a resend [measured, `tests/nr3/rows/trace-gate8.json.gz`: 313 of that learner's 455 holds over 500 ms had an append arrive behind a later one]. c95216cc re-sent from `next` on every read instead: gate9 took the leader to 122 MiB, its group changed leader twice, and 73.5% of API reads were served [measured; that the re-sent entries caused the change is an inference]. 617ed5b9 sent one call per read: gate10 served 99.38% at API p99 2,717 ms with seven learners at total wait p99 1.1 to 1.9 s, but apac l5 stayed about 12 entries behind, getting one to two per 350 ms round trip, at p99 6.3 s [measured, `tests/nr3/rows/trace-gate10.json.gz`]. A learner calling the leader gets both in the same response, entries first, and steps them through the normal append path. An answer with no entries ahead of it stays valid: the asker commits through i by digest if it holds entry i, and otherwise waits to apply i as before. No commit, lease, or grant rule changes; the extra AppendEntries carries no transfer and counts toward no quorum.
+
+**Why.** gate6 (repo:65550, 500 agents, 300 s, the reverted tree plus traces) split each far learner's wait per read. weur and apac learners had their `ReadIndexRes` at p99 476 to 639 ms, then waited p50 574 to 668 ms and p99 1.9 to 4.5 s for the entries through the read index, and applied them at p99 461 to 709 ms. In 1,236 to 1,309 of about 1,500 batches each, those entries came in a later response to the learner's own call, not with the answer [measured]. The leader sends a learner one AppendEntries at a time and holds it for the learner's next call (`workers/site/src/callers.rs`), so the entries the answer names were usually not yet sent. (ii) dominates, which the operator set as the condition for (a).
+
+**Beat.** (c), pipelining every append to learners, was tried and reverted ("Not adopted: pipelining AppendEntries to learners"): it gave no gain and took the leader to 126 MiB, because it held up to `PIPELINE` batches per learner whenever entries arrived. This sends entries only when a read needs them and the learner was not sent them. (b), a learner-side fetch, is two round trips where this is none extra. Routing reads by measured answer time stays unbuilt: the split shows the wait is not the far link's round trip.
+
+**Evidence.** `crates/raft/tests/scenarios.rs`, `a_learner_read_index_answer_follows_the_entries_it_needs`, fails on the tree without it and on both earlier builds; `tests/nr3/plant.py` mutants 15 to 21 (no entries, f1ab1a61's nothing after a refusal, c95216cc's re-send on every read, none while a call is out, off by one, a lossy learner, 617ed5b9's one call per read) are all caught. Rows `tests/nr3/rows/a1-b0-29-gate{6,7,8,9,10}.jsonl` with their `run-*.status`, and the split from `tests/nr3/split.mjs`.
+
+**Flip.** The far learners' wait for entries after their answer stays over about 500 ms at p99 with this in place, or the leader's memory or egress rises toward its limits with 8 learners reading.
+
+### Not adopted: pipelining AppendEntries to learners, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Learners pipelined"; F65). The operator's choice (c), built as 682468de and reverted.
+
+**Decision.** `send_append` keeps pipelining only to voters (`voter && !lossy`); a learner gets one AppendEntries call at a time.
+
+**Why.** On B0-29 at 500 agents with 8 learners (gate5, repo:65549), pipelining learners left the far learners' apply wait after their `ReadIndexRes` where it was. At p99, weur went from 969 and 764 ms to 1,415 and 878 ms, and apac from 1,670 and 1,442 ms to 1,671 and 1,858 ms. Far learners still answered `late` to 1,743 to 2,870 of 7,800 to 9,400 reads, and API p99 was 2,475 ms at 99.92% served [measured]. The leader's peak memory rose to 126 MiB, against 67 to 80 MiB in every earlier final-tree run, near the 128 MB isolate [measured; the cause, pipelined batches held per learner, is an inference]. A learner that is calling the leader gets its messages in the response to its next call (`workers/site/src/callers.rs`), so the leader made 1,119 to 1,129 calls to each voter in 300 s but only 46 to 60 to each learner [measured]; the pipeline had few calls to change.
+
+**Beat.** Kept for the record: piggybacking entries on `ReadIndexRes` stays unbuilt until a split of the apply wait shows the wait for entries dominates (operator).
+
+**Evidence.** Rows `tests/nr3/rows/a1-b0-29-gate5.jsonl`, `run-gate5.status`, `egress-gate5.txt`, `mem-gate5.json`.
+
+**Flip.** A learner that receives AppendEntries as calls (not in responses), with apply wait set by appends one call late.
+
+### `narrow-reads-3`: the edge routes a learner read by measured answer time, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). The operator's routing decision after gate 11.
+
+**Decision.** `read_spread` (`crates/lookup`) still sends one request per read, learners first, at most `SPREAD_TRIES` members. Each edge isolate keeps a moving average of each learner's answer time as it saw it (`ROUTE_WEIGHT` 0.2 [guess]; a shed, refused or unanswered read counts as `FOLLOWER_CALL`), and orders learners by it: those within `ROUTE_MARGIN` (200 ms [guess]) of the fastest come first, rotated at random among themselves, then the rest by ascending average, then the followers. A learner it has not timed counts as fastest. One read in `ROUTE_EXPLORE` (20 [guess]) ignores the averages, so a learner that recovers is timed again. Every learner still does its read-index, so the choice changes latency and never what a read sees.
+
+**Why.** Picked at random, the far learners (apac from an enam leader) answered about a quarter of reads at p99 2.2 to 3.0 s against p99 0.8 to 1.2 s on the near ones, which set the API p99 at 2.6 s on gate 11 [measured, `tests/nr3/rows/run-gate11.status`]. A far edge pays one far round trip to a near-leader learner instead.
+
+**Beat.** A per-region gate (operator: a substitution). The hedge, which doubled learner load and served fewer reads ("Not adopted: the edge hedging a slow learner read"). Always the single fastest learner, which would put an edge's whole load on one learner.
+
+**Evidence.** `crates/lookup/src/lib.rs` tests: near learners share reads, the margin is inclusive at its edge, an untimed learner comes first, an exploring read may go far, the average moves by the weight with a shed counted as `FOLLOWER_CALL`, far learners follow in ascending order. Each fails on one of four mutants: always the fastest, no margin, untimed as slowest, a strict margin. The hosted per-learner read share, CPU and memory come from the gate runs on the adopted B0-29 shape.
+
+**Flip.** One learner taking so much of the reads that it sheds or runs hot (CPU or memory near its limits), or the far learners' answers falling within `ROUTE_MARGIN` of the near ones, which makes the ordering moot.
+
+### `narrow-reads-3`: the edge spreads a learner read over at least three learners, by a score that counts variance, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The herding guard"; F65). The operator's decision after gate 15: a herding guard before site day 13, not after another miss.
+
+**Decision.** `timed_spread_order` (`crates/lookup`) scores each learner by its moving average plus `ROUTE_DEV` (4 [guess]) moving mean deviations, both at `ROUTE_WEIGHT` (0.2). The eligible learners are the untimed ones, those within `ROUTE_MARGIN` (200 ms) of the best timed score, and, while there are fewer than `ROUTE_SPREAD` (3 [guess]), the next best scored under `ROUTE_LATE` (1 s, a member's `FOLLOWER_WAIT`). A read goes to one of them at random, and the rest follow by score. A learner this isolate has not timed for `ROUTE_STALE` (10 s [guess]) counts as untimed: eligible, and not setting the best. That replaces the one read in `ROUTE_EXPLORE` that went to any learner at random. It is still one request per read, and every learner still does its read-index.
+
+**Why.** Gate 15 missed by 19 ms with one learner taking 50.2% of the reads, shedding 54 and answering 720 late: ordered by the average alone, the fastest learner drew the reads that then slowed it. The far learners answered at `FOLLOWER_WAIT` 425 to 1,567 times each, mostly from the random one-in-20 reads [measured, gate 15]. Replayed over gates 13 to 15's traces, the guard cut the busiest learner's share on gate 15 from 36% to 24%, late answers from 2.6% to 1.7% of reads, and the projected API p99 from 1.44 to 1.25 s; on gate 13 from 1.50 to 1.29 s; on gate 14 it was flat at 0.76 s [inference, `tests/nr3/route.py`].
+
+**Beat.** The mean-plus-deviation score alone, which in the replay left the busiest learner at 33% on gate 15 with explore kept. A random choice between the two best-scored learners ("top two"), which in the replay put 36% on one learner on gate 14 and gave a higher p99 on gates 13 and 15 (1.64 and 1.58 s). A spread of 4, no better than 3 in the replay. Keeping `ROUTE_EXPLORE`, which sends one read in 20 to a far learner that then answers late; the stale rule times a recovered learner without it.
+
+**Evidence.** `crates/lookup/src/lib.rs` tests: the fastest learner gets at most one in `ROUTE_SPREAD` of the first places and a learner scored at `ROUTE_LATE` is never asked while others answer in time; an untimed or stale learner is eligible and does not set the best; the score is the average plus the deviation, and a swinging learner scores worse than a steady one; the margin is inclusive at its edge. `tests/nr3/plant.py` plants six mutants of the guard (no spread, padding past `ROUTE_LATE`, no deviation, no staleness, an untimed learner as the best, spread off by one); all are caught. The replay is `tests/nr3/route.py`; the hosted read share comes from gates 16 on.
+
+**Flip.** A gate where a learner padded in by the spread sheds or answers late often enough to raise the API p99 above what routing to the best alone gave, or where the deviation keeps a learner that recovered out for long after `ROUTE_STALE`.
+
+### `narrow-reads-3`: a follower or learner keeps several read-index batches in flight, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Gate 12 on fdf363f3"; F65). The operator's decision 3 after gate 12: find what makes a busy learner's read slow and fix it before the next gates.
+
+**Decision.** A follower or learner keeps up to `READ_PIPELINE` (8 [guess]) read-index batches in flight (`crates/raft/src/member/install.rs`), still sending at most one per `FOLLOWER_READ_EVERY` or `LEARNER_READ_EVERY`. Each `ReadIndexRes` grants only the reads of the batch it names, in whatever order answers arrive. A batch unanswered for CALL_DEADLINE is resent on its own, and F67 rule 12 holds per batch: one whose every read failed past CAMPAIGN_DEADLINE leaves flight, and failing reads that were sent still count as a failed call. Batches stay numbered from the boot, so an earlier boot's answer grants nothing.
+
+**Why.** Gate 12's "own apply p99 1.3 to 1.6 s" on the near learners was an artifact of the split script, which counted a read already applied when its answer came (40 to 44% of them) as waiting for the next apply. Counted right, their apply is p99 0 to 6 ms and their storage confirms p99 84 to 158 ms, so neither storage, apply CPU, nor the read share set their reads. The read-index batch did: with one in flight, a read waited out the batch ahead and then its own round trip, a grant wait of p99 0.9 to 1.6 s against round trips of p99 0.6 to 0.9 s [measured, gate 12 traces]. A replay of those round trips puts the near learners' wait at p99 0.63 to 0.77 s with 8 in flight, and the edge's API p99 at about 1.2 s against 1.8 s with 1 [inference].
+
+**Beat.** More learners or a lower `LEARNER_READ_EVERY`, which add leader calls without removing the wait behind a slow batch. Granting every batch in flight on any answer, which grants a read below a write acknowledged after an older batch's index (the kept test fails on it). Routing on a learner's answer variance as well as its mean, a smaller lever in the same replay, left for after the gates.
+
+**Evidence.** `each_read_index_answer_grants_only_its_own_batch` (`crates/raft/tests/leadership.rs`), with answers in order and reversed; `every_unanswered_read_index_batch_is_a_failed_call` now runs more rounds than `READ_PIPELINE`. `tests/nr3/plant.py` plants four mutants (every batch granted by one answer, the oldest batch granted by any answer, later reads joining a batch in flight, one batch in flight) and rule 12's again; all are caught. The long sweep and Porcupine, and the hosted gates on the adopted B0-29 shape, are in the results file.
+
+**Flip.** A near learner whose grant wait stays near two round trips with batches in flight, or a leader whose `ReadIndex` load or memory rises with them: then the wait is elsewhere, in the learner's isolate or the leader's input queue.
+
+### Not adopted: the edge hedging a slow learner read, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The final tree's gate runs"; F65).
+
+**Decision.** `read_spread` stays one member at a time, learners rotated. A hedge that asked the faster of two random learners first and the next learner after 400 ms was built, tested, and run hosted (8c54adb), then reverted.
+
+**Why.** On the final tree (main 84d29c2 merged), 22% of tier reads spent 0.9 to 1.5 s on a first learner that answered `late` before the next began, and a replay of the sampled stages put the hedged tier p99 near 1.9 s [inference]. Hosted, with `ENTRY_MAX` on both sides to hold the commit path still, the hedge took API p99 from 2,519 to 2,306 ms but served 97.11% against 99.74%: each learner took 17,000 to 22,000 reads in 300 s against 7,900 to 12,400, and answered `late` to 1,835 to 9,968 of them against 239 to 4,621, so the extra reads turned into the misses they were meant to cover [measured]. With ENTRY_SOFT the two hedged runs served 81.9% (driver-capped behind a commit p99 of 18.6 s) and 98.69% at API p99 1,988 ms [measured].
+
+**Beat.** Kept for the decision: no learners added (operator).
+
+**Evidence.** Rows `tests/nr3/rows/a1-b0-29-{abmax,abmax2,gate3,gate4}.jsonl`.
+
+**Flip.** Learners with spare read capacity at journey 9, so that a second read is not answered `late`: for example, far learners whose apply wait falls under about 300 ms at p99.
+
 ### F67 reopened: no hand-off to a suspected member, a hand-off's bar ends with it, and a 4,000-seed live window, 2026-11-13
 
 Branch `f67-wide` (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
@@ -3180,3 +3294,41 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** On 200 seeds each, the term rose by 1.3 a minute on average with all three slow and 0.3 with both followers slow, against 4.3 and 3.8 on main (60 seeds); no seed was leaderless for 20 s. A gray leader with one slow and one healthy follower is moved through the healthy one; a dead leader is replaced by a slow follower CAMPAIGN_DEADLINE after its last append; a half-hung leader with slow followers is replaced within F67's bound (p50 12.6 s, max 17.0 s over 60 seeds, as on main), because check quorum ends its leadership and so its appends. Kept tests: `slow_storage_everywhere_keeps_one_leader` and `slow_storage_on_both_followers_keeps_the_leader` (`crates/raft/tests/liveness.rs`), both failing on main; `a_slow_follower_holds_back_while_a_healthy_one_moves_a_gray_leader` and `a_slow_follower_still_replaces_a_dead_leader` (`crates/raft/tests/scenarios.rs`); `a_half_hung_leader_with_slow_followers_is_replaced` (`liveness.rs`). `tests/m0carried/plant11.py` plants the rules.
 
 **Flip.** A gray leader that F67 moved on main and that this keeps leading past 20 s; a slow follower held back while no leader commits; or hosted evidence that a follower's answer time does not track its storage.
+
+### `admission-stored-bytes`: admission prices a command by what its entry stores, 2026-11-14
+
+**Decision.** Admission and the entry cut price a command by `Command::stored_len`, about what its events add to the entry, in place of its encoded length. By default the two are the same. A repository's issue command leaves out its `render`, the reply its leader renders from the `&Acked`, which no event stores. COMMAND_MAX and ENTRY_MAX still count the whole encoded command, so the bytes in flight stay bounded.
+
+**Why.** On B0-33's smoke (m26c, main 2456b8f) admission priced every agent command at about 10.8 KB (agent p50 10,842 B), so capacity was ENTRY_SOFT over 10.8 KB a round, 30 to 47 commands/s against the 140 line, and agentQueued sat at AGENT_QUEUE_MAX. The leader's 505 confirm transactions stored p50 1,910 B for 7.6 commands an entry [measured, LM-1 round 15, `tests/am1/results/lm1-memory.md` on `lm1-memory`]. With the real codec over m3org's Authz fold, an issue command's render was 10,262 to 10,426 B (the owner's AuthzFold as hex, 9,974 B for a comment) and the rest 538 to 635 B; an agent push is about 405 B without its pack and has no render [measured, LM-1 round 15b].
+
+**Beat.** Pricing an entry's events after `decide`: the cut picks commands before they decide, so it would need a second pass. Shrinking the render the edge sends: a separate change, which also cuts the AppendEntries bytes every follower receives (below).
+
+**Evidence.** `b0_33_with_hosted_render_bytes_admits_140_agent_commands_per_second` (`crates/raft/tests/admission.rs`): B0-33's mix with a 10.3 KB render on every side command, which stores about 550 B, at round p50 225 and 315 ms, admits 252 and 250 agent commands/s with none refused, and no entry stores over ENTRY_SOFT past its first command. On main's pricing it admits 23/s with capacity 46/s. `an_issue_commands_render_is_not_priced` (`crates/git/tests/agent_bytes.rs`) holds the issue command's pricing. `tests/m0carried/plant12.py` plants the rule.
+
+**Flip.** A hosted B0-33 run whose entries store more than ENTRY_SOFT past their first command, or whose confirm p99 rises with the entries this admits.
+
+**Open, for a second change: dropped, 2026-11-14.** An earlier version of this paragraph said the render crosses every AppendEntries, about 80 KB of renders per B0-33 entry against 1.9 KB stored, and so bears on the far-leg p99. That is false: the leader builds each entry from the events `decide` returns (`LogEntry { body: EntryBody::Events(events) }`, `crates/raft/src/member/leader.rs`), no `RepoEvent` holds the render, and a follower receives events, not commands [code-read]. The render travels only in the edge's command to the leader, about 10 KB per issue command. Having the leader build `HostedDir.authz` from its own `Authz` dependency would save that request body but cost a 10 KB fold clone per command out of `decide`, and the reply would render from the leader's read of the fold, not the edge's, so a grant that changed between the two reads changes the reply. The operator declined it (option (a)). `ENTRY_MAX` still counts the render on the leader's cut: `decisions/OPEN-QUESTIONS.md`, F70.
+
+### `m4-web-3`: a single-comment review leaves an APPROVED or CHANGES_REQUESTED verdict as it is (format 32.22), 2026-11-14
+
+**Decision.** A REST review comment outside a review commits its single-comment review as `ReviewEvent::SingleComment` (tag 3) in repository format 32.22 (`REPO_FORMAT_REVIEWS`). Its fold writes the reviewer's core `review_verdict` only over none or a COMMENTED one, so every such commenter gets a review and an APPROVED or CHANGES_REQUESTED verdict stays. The edge marks the comment 32.22 once `FormatsEnable` enabled it; before that, decide writes a `Submitted` and gives a commenter who holds such a verdict no review. 32.20 and 32.21 are other branches' (`b030-split`, `m4-actions`).
+
+**Why.** GHES gives every review comment made outside a review a COMMENTED review and keeps the reviewer's approval: `reviewDecision` and merge protection read the approval, not the comment. A `Submitted` COMMENTED replaces the verdict in the fold, so the pull request lost its approval, or kept the commenter's comment without a review (`m4-web-2`).
+
+**Beat.** Changing how `Submitted` COMMENTED applies, which would change what every earlier entry folds to and so every chain's digest at the next refold. Skipping the review for such commenters, which leaves `pull_request_review_id: null` where GHES sets it.
+
+**Evidence.** `an_approvers_review_comment_gets_its_review_and_keeps_the_approval` (`crates/git/tests/agent_gates.rs`) through real members, which fails when the fold replaces the verdict; hosted single-comment reviews on `m3org/web38-a` PR #3 (`tests/m4/results/m4-wp5.md`).
+
+**Flip.** GHES 3.22 replacing an approval with a later single-comment review, or a reviews UI that needs a COMMENTED verdict beside an approval.
+
+### `liveness-looplag-handoff`: a follower judges its own storage slow at `commit_fail_min` slow confirms, 2026-11-14
+
+**Decision.** `storage_slow`, the campaign gate `liveness-slow-storage` added, counts a follower's own storage as slow at `commit_fail_min` (3) confirms over `confirm_p99_ms` in the window, with the p99 over it, in place of the leader's `confirm_slow_min` (6). The gate itself, `peer_storage_slow` and F67's `suspect` counting are unchanged.
+
+**Why.** LM-1's round 15c on m26c: a fresh leader, the target of a LoopLag hand-off, lost its term about 13 s in with no StepDown logged. The simulator reproduced it with LoopLag on the leader and slow confirms on both followers: over seeds 900 to 1099, 18 went over 5 s with no member serving, worst 12.7 s. In seed 910 the hand-off worked (term 3). Then a follower with 4 of 11 confirms at 1.05 s in the window read healthy, passed pre-vote, sent its real vote after its own slow confirm, and deposed the leader on the higher term. It was refused LogBehind, and nobody led for 12.5 s. A follower confirms about once per append it accepts, so it rarely reaches the six a leader's confirm rule counts [measured, simulator, `tests/m0/results/looplag-handoff.md`].
+
+**Beat.** Ignoring a higher-term vote while a leader is live: the operator rejected it, since it blocks the healthy follower F67 relies on. Lowering `confirm_slow_min` for leaders too: that moves STEP_DOWN's own measured line (B0-06).
+
+**Evidence.** `a_looplag_leader_with_slow_followers_hands_off_and_holds` (`crates/raft/tests/liveness.rs`) fails on main `1f51c6f` (seeds 904 at 8.5 s and 910 at 12.5 s unserved) and passes here, worst 4.9 s. Over 200 seeds, seeds unserved for more than 5 s went from 18 to 4, and the worst from 12.7 s to 5.6 s. The slow-storage term rise over 200 seeds is 0.94 a minute with every member slow and 0.20 with both followers slow, against 1.33 and 0.30. `long_liveness` at 60 seeds moved all 60 by STEP_DOWN for calls, slow and lag. `tests/m0carried/plant11.py` gains a mutant that restores six.
+
+**Flip.** A follower that the lower count holds back while no leader commits, or a gray leader F67 moved that this keeps leading past 20 s.

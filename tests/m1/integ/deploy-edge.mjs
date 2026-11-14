@@ -1,13 +1,16 @@
 // Deploys the git edge (workers/edge) as graft-m1-edge against the site members of an install: one MEMBER_<n>,
 // REGISTRY_<n>, and SHARD_<n> binding per site with script_name, and BUCKET_<n> per site. Usage:
 //   node tests/m1/integ/deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis <genesis.json>]
-//                                       [--anchor <install.toml>] [--no-shard] [--ops <graft-ops name>] [--var K=V ...]
-//                                       [--web <web/dist/client>]
+//                                       [--anchor <install.toml>] [--genesis-signed <genesis.signed>] [--no-shard]
+//                                       [--ops <graft-ops name>] [--var K=V ...] [--web <web/dist/client>]
 // `--genesis` (test-faults only) is the test install's stand-in for the Release view; `--anchor` sets the trust anchor
-// a product edge accepts the Release group's genesis against. `--no-shard` leaves out SHARD_<n>, for site scripts
+// a product edge accepts the Release group's genesis against. `--genesis-signed` (with `--anchor`) writes the committed
+// signed genesis into GRAFTYARD_GENESIS_SIGNED, hex, after checking its SHA-256 is install.toml's `genesis` digest,
+// so a cold isolate needs no Release read (design/DESIGN.md, "Install operations", Genesis, step 6). `--no-shard` leaves out SHARD_<n>, for site scripts
 // with no `GitShard` class (git requests then fail; the release endpoint does not need a shard). `graftyard sites
 // add` deploys the class, so an install it built needs no `--no-shard`.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
 const [sitesPath, name, ...flags] = process.argv.slice(2);
-if (!sitesPath || !name) throw new Error("usage: deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis g.json] [--anchor install.toml] [--no-shard] [--var K=V]");
+if (!sitesPath || !name) throw new Error("usage: deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis g.json] [--anchor install.toml] [--genesis-signed g.signed] [--no-shard] [--var K=V]");
 const sites = JSON.parse(readFileSync(sitesPath, "utf8"));
 const flag = (f) => { const i = flags.indexOf(f); return i >= 0 ? flags[i + 1] : null; };
 const tf = flags.includes("--test-faults");
@@ -25,6 +28,19 @@ if (genesis && !tf) throw new Error("--genesis is a test-faults shortcut");
 const anchorFile = flag("--anchor");
 const anchor = anchorFile ? Object.fromEntries(readFileSync(anchorFile, "utf8").split("\n")
   .map((l) => l.match(/^(install|customer_key)\s*=\s*"([^"]*)"/)).filter(Boolean).map((m) => [m[1], m[2]])) : null;
+// The committed genesis: install.toml's `genesis` is the SHA-256 of the signed bytes `graftyard install` sent and the
+// Release group answered 201 for. Any other file is refused here, and the edge also accepts it only against the anchor.
+const signedFile = flag("--genesis-signed");
+let genesisSigned = null;
+if (signedFile) {
+  if (!anchorFile) throw new Error("--genesis-signed needs --anchor <install.toml>");
+  const bytes = readFileSync(signedFile);
+  const committed = (readFileSync(anchorFile, "utf8").match(/^genesis\s*=\s*"([0-9a-f]{64})"/m) || [])[1];
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (!committed) throw new Error(`${anchorFile} names no committed genesis digest`);
+  if (digest !== committed) throw new Error(`${signedFile} is not the committed genesis (${digest.slice(0, 8)}…, install.toml has ${committed.slice(0, 8)}…)`);
+  genesisSigned = bytes.toString("hex");
+}
 const extra = Object.fromEntries(flags.flatMap((f, i) => flags[i - 1] === "--var" ? [f.split(/=(.*)/s).slice(0, 2)] : []));
 
 const edge = join(root, "workers/edge");
@@ -55,6 +71,7 @@ const cfg = {
     GRAFTYARD_SITES: JSON.stringify(sites),
     ...(genesis ? { GRAFTYARD_GENESIS: JSON.stringify(genesis) } : {}),
     ...(anchor ? { GRAFTYARD_INSTALL: anchor.install, GRAFTYARD_CUSTOMER_KEY: anchor.customer_key } : {}),
+    ...(genesisSigned ? { GRAFTYARD_GENESIS_SIGNED: genesisSigned } : {}),
     ...extra,
   },
   limits: { cpu_ms: 300000 },

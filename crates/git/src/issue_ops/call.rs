@@ -43,6 +43,12 @@ pub use crate::repo::REPO_FORMAT_REPOS;
 /// cursor and whose `CheckRun` moves that cursor: a release that reads only up to 32.17 would apply the entry without
 /// moving it and could hand the same id out again. Always under an App's claims.
 pub const REPO_FORMAT_CHECKS: Format = Format { family: 0x20, version: 18 };
+/// A review comment outside a review whose entry carries its single-comment review as `ReviewEvent::SingleComment`
+/// (tag 3), which a release that reads only up to 32.21 cannot decode, and which leaves an APPROVED or
+/// CHANGES_REQUESTED verdict alone. 32.20 is B0-30's `REPO_FORMAT_SPLIT` and 32.21 M4-WP3's `REPO_FORMAT_ACTIONS`
+/// (other branches). The edge marks it (`IssueCall::reviews`) once `FormatsEnable` enabled it. Under a `ghs_` token it
+/// carries the App's claims, as 32.9 does.
+pub const REPO_FORMAT_REVIEWS: Format = Format { family: 0x20, version: 22 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -59,6 +65,9 @@ pub struct IssueCall {
     /// events: a draft's plan-block lease, or a task's leases released by its cancel or finish. A lease command is
     /// always 32.14.
     pub leases: bool,
+    /// Format 32.22 (`REPO_FORMAT_REVIEWS`): the edge enabled it and the command is a review comment outside a review
+    /// (`IssueCall::single_comment`), so its review is a `SingleComment`.
+    pub reviews: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -79,6 +88,9 @@ impl IssueCall {
         // as 32.9 does.
         if self.op.is_hook() {
             return crate::hooks::REPO_FORMAT_HOOKS;
+        }
+        if self.reviews {
+            return REPO_FORMAT_REVIEWS;
         }
         if matches!(self.op, IssueOp::CreateCheck(_)) {
             return REPO_FORMAT_CHECKS;
@@ -113,7 +125,23 @@ impl IssueCall {
     }
 
     pub fn new(op: IssueOp<BlobRef>, actor: Principal, request: RequestId, render: Value) -> IssueCall {
-        IssueCall { op, actor, request, render, confirmed: None, agent: false, session: None, leases: false }
+        IssueCall {
+            op,
+            actor,
+            request,
+            render,
+            confirmed: None,
+            agent: false,
+            session: None,
+            leases: false,
+            reviews: false,
+        }
+    }
+
+    /// Whether `op` is a review comment outside a review, which 32.22 gives a `SingleComment` review. Never a lease,
+    /// task, hook, or agent command, so the mark takes no other format's place.
+    pub fn single_comment<B>(op: &IssueOp<B>) -> bool {
+        matches!(op, IssueOp::Comment { on: crate::issues::CommentTarget::Review { review: None, .. }, .. })
     }
 
     /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names. The blob is its oid and size:
@@ -203,6 +231,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             crate::repo::REPO_FORMAT_LEASES,
             crate::hooks::REPO_FORMAT_HOOKS,
             REPO_FORMAT_CHECKS,
+            REPO_FORMAT_REVIEWS,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -216,13 +245,15 @@ impl<'de> Deserialize<'de> for IssueCall {
         let hooks = fmt(crate::hooks::REPO_FORMAT_HOOKS);
         // 32.18 always carries an App's claims.
         let checks = fmt(REPO_FORMAT_CHECKS);
+        // 32.22 carries an App's claims, or none for a user, as 32.16 does.
+        let reviews = fmt(REPO_FORMAT_REVIEWS);
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         if !tasks && (w.agent_session.is_some() || w.claims.as_ref().is_some_and(|c| c.task.is_some())) {
             return Err(serde::de::Error::custom("a task claim or a session rides only in format 32.12"));
         }
-        let actor = match (app || agent || tasks || hooks || checks, w.claims) {
+        let actor = match (app || agent || tasks || hooks || checks || reviews, w.claims) {
             (true, Some(c)) => Principal::installation(&c),
-            (false, Some(_)) | (true, None) if !agent && !tasks && !hooks => {
+            (false, Some(_)) | (true, None) if !agent && !tasks && !hooks && !reviews => {
                 return Err(serde::de::Error::custom(
                     "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
                 ));
@@ -240,6 +271,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         // In 32.14 the tag carries the mark, and `agent` is implied (`agent_events`).
         c.leases = leases && !c.op.is_lease();
         c.agent = agent;
+        c.reviews = reviews && IssueCall::single_comment(&c.op);
         // One form per command: a format that does not match the command is malformed.
         let got = c.format();
         if !fmt(got) {
@@ -291,7 +323,7 @@ impl IssueCall {
         } else if self.op.is_lease() {
             cmd.decide_lease(&view, deps, s.at())?
         } else {
-            cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases)?
+            cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases, self.reviews)?
         };
         Ok((evs, IssueCallOut { out, render: self.render.clone() }))
     }

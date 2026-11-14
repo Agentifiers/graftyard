@@ -58,22 +58,26 @@ pub type ReadResult = Result<(ReadBody, Index), NotLeader>;
 /// query granted in the same input share one copy (`shared_answer`). The `Value` tree is dropped at once, so one
 /// quorum round that grants hundreds of reads no longer holds hundreds of trees until each is sent: 600 refs reads
 /// granted together took an idle leader from 56 to 94 MB, and on B0-29 600 reads ended in one millisecond before
-/// the apac leader's `exceededMemory` (`tests/am1/results/lm1-memory.md`, "Rows"). `Shed`: a whole-tier read whose
-/// dump rebuild is not due yet (`family::dump_wait`), with the ms until it is.
+/// the apac leader's `exceededMemory` (`tests/am1/results/lm1-memory.md`, "Rows"). `Shed`: a whole-tier or narrow
+/// read whose rebuild is not due yet (`family::dump_wait`, `family::narrow_wait`), with the ms until it is and the
+/// read's grant, which `Host::answer_after` answers later without another read-index round.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReadBody {
     Json(Rc<[u8]>),
-    Shed(u64),
+    Shed(u64, Option<raft::ReadGrant>),
 }
 
-/// The answer for query `q` from `built`, the answers already made in this input, else from `build`, kept for the
-/// input's other reads of the same query. `built` must not outlive the input: its answers are at that input's grant.
+/// The answer for query `q` granted at `floor` from `built`, the answers already made in this input, else from
+/// `build`, kept for the input's other reads of the same query and floor. `built` must not outlive the input: its
+/// answers are at that input's grant. The floor is part of the key because a cached narrow answer may be older than
+/// the input's state, and is good only for reads whose floor it covers (`family::narrow_bytes`).
 pub fn shared_answer(
     built: &mut HashMap<String, ReadBody>,
     q: &Value,
+    floor: u64,
     build: impl FnOnce() -> ReadBody,
 ) -> (ReadBody, bool) {
-    let key = q.to_string();
+    let key = format!("{floor} {q}");
     if let Some(b) = built.get(&key) {
         return (b.clone(), true);
     }
@@ -86,11 +90,11 @@ pub fn shared_answer(
 /// (`family::dump_every`): `Shed` when a stale dump's rebuild is not due (checked here, where the dump would be
 /// built, so one granted batch rebuilds at most once per `every`); else the family's shared bytes (`read_bytes`, one
 /// copy for every read at this state, from any input); else `read_json` serialized.
-pub fn fold_answer<F: Family>(fold: &F::Fold, q: &Value, now: u64, every: u64) -> ReadBody {
-    if let Some(ms) = F::heavy_wait(fold, q, now, every) {
-        return ReadBody::Shed(ms);
+pub fn fold_answer<F: Family>(fold: &F::Fold, q: &Value, floor: u64, now: u64, every: u64) -> ReadBody {
+    if let Some(ms) = F::heavy_wait(fold, q, floor, now, every) {
+        return ReadBody::Shed(ms, None);
     }
-    if let Some(b) = F::read_bytes(fold, q) {
+    if let Some(b) = F::read_bytes(fold, q, floor) {
         return ReadBody::Json(b);
     }
     ReadBody::Json(serde_json::to_vec(&F::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into())
@@ -104,7 +108,7 @@ const DRAIN_IDLE_MS: u64 = 60_000;
 /// entries are applied. Longer logs skip it: replaying them would hold every request row the log ever carried.
 const RESTORE_CHECK_MAX: u64 = 20_000;
 /// Latency samples kept for `/stats`.
-const SAMPLES_MAX: usize = 200_000;
+pub const SAMPLES_MAX: usize = 200_000;
 /// Storage confirms and truncations kept for `ack_json`'s `selfSyncedAt`: an `Acked` is answered within seconds of
 /// its commit, and a confirm row a minute old covers every index at or below it.
 const SYNCED_KEEP: usize = 256;
@@ -170,6 +174,16 @@ pub struct Stats {
     /// member's clock at apply, in ms. On a follower it includes the commit round and the wait for the next
     /// AppendEntries that carries the commit (BF-20).
     pub apply_ms: Vec<u32>,
+    /// Leader, per input that appended an `Events` entry: its `at` (the step's clock, which judges every lease the entry
+    /// decides, `ExtendLeases` and expiry) to `now_ms()` once the step returned, and to one macrotask later. A busy
+    /// isolate whose clock reads stale shows a gap here (L0-12 m3fr2: the leader's `/status` read 350 to 800 ms below
+    /// both followers). Test installs only.
+    #[cfg(feature = "test-faults")]
+    pub lease_clock: Vec<[u32; 2]>,
+    /// Test installs: this member's election trace, oldest first, each `[at, kind, term, peer, index, extra]`
+    /// (`Elect`), at most ELECT_MAX. Kept apart from `trace`, which a leader's appends fill in seconds.
+    #[cfg(feature = "test-faults")]
+    pub elections: VecDeque<[u64; 6]>,
     /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
     /// gate holds the entry's AppendEntries for this long.
     pub confirm_ms: Vec<u32>,
@@ -198,8 +212,14 @@ pub struct Stats {
     pub busy_pages: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
     pub shared_reads: u32,
-    /// A learner's whole-tier reads that waited for a dump rebuild and were granted again, instead of shed.
+    /// A learner's whole-tier reads, and any read-index member's narrow reads, that waited for a rebuild instead of
+    /// being shed, counted once per wait.
     pub waited_reads: u32,
+    /// Read-index reads this member answered, each `[grant, waited, total]` in ms: arrival to the leader's read index
+    /// applied and granted, the time spent waiting for a rebuild, and arrival to the answer (narrow-reads-3).
+    pub read_stages: Vec<[u32; 3]>,
+    /// The ms each narrow API answer took to build (`family::narrow_bytes`).
+    pub narrow_build_ms: Vec<u32>,
     /// Read-index reads this member served as a follower, refused to the leader (`Family::follower_serves`), and
     /// answered `overloaded` after FOLLOWER_WAIT (`crate::member`).
     pub follower_reads: u32,
@@ -288,6 +308,8 @@ impl Stats {
         self.deps_ms.clear();
         self.dep_fails.clear();
         self.queue_ms.clear();
+        self.read_stages.clear();
+        self.narrow_build_ms.clear();
         self.entries = 0;
         self.commands = 0;
         self.failed_calls = 0;
@@ -342,11 +364,130 @@ pub enum Trace {
     Stepped = 15,
     /// The deferred transaction ran: `ms` how long after it was deferred, `index` its statements.
     Flushed = 16,
+    /// An AppendEntries was stepped here: `index` the last entry it carried (its `prev_index` when empty), `ms` its
+    /// commit, `batch` 0 when it rode the response to this member's own call, 1 when the leader sent it as a call
+    /// (narrow-reads-3's split of a learner's apply wait).
+    AppendStepped = 17,
+    /// An AppendEntries for a learner calling this member was held for its next call's response (`crate::callers`):
+    /// `batch` its round, `index` its last entry, `ms` its commit.
+    AppendHeld = 18,
+    /// A held AppendEntries left in the response to a learner's call: `batch` its round, `index` its last entry, `ms`
+    /// its commit.
+    AppendTaken = 19,
+    /// A `/raft` call arrived here (narrow-reads-3's wire split): `peer` its sender, `index` the sender's clock when
+    /// it issued the fetch (`x-graft-sent`), `ms` how long its body took to read. Logged when the handler starts, so
+    /// against `index` it bounds the wire plus this isolate's input queue, and against `IndexTaken` the body and decode.
+    #[cfg(feature = "test-faults")]
+    CallArrived = 20,
+    /// The answer to this member's `/raft` call to `peer` reached it: `index` the callee's clock when its handler
+    /// returned the answer (`x-graft-left`), `ms` 0. Against `index` it bounds the output gate plus the wire back.
+    #[cfg(feature = "test-faults")]
+    AnswerArrived = 21,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
 #[cfg(feature = "test-faults")]
 const TRACE_MAX: usize = 60_000;
+
+/// Election trace rows kept per member: L0-12's ten kills, each a few dozen rows, many times over.
+#[cfg(feature = "test-faults")]
+const ELECT_MAX: usize = 2_000;
+
+/// One election trace row's kind (`Stats::elections`), each seen by the host around a step (L0-12 m3fr2's 18 s and
+/// 26 s leaderless spans, split into pre-vote, vote, and first commit).
+#[cfg(any(test, feature = "test-faults"))]
+#[derive(Clone, Copy)]
+pub enum Elect {
+    /// This member sent a vote request to `peer`: `extra` 1 for a pre-vote, `index` its last index, `term` the term
+    /// asked for.
+    VoteSent = 1,
+    /// This member answered `peer`'s vote request: `term` the term asked for, `extra` 1 for a pre-vote, `index` 0 when
+    /// granted, else its `Deny` code (`deny_code`).
+    VoteAnswered = 2,
+    /// The role changed in this step: `index` the old role, `extra` the new (`role_code`), `term` the term after.
+    Role = 3,
+    /// A leader's commit index first moved in its term: `index` the commit.
+    FirstCommit = 4,
+    /// A campaign ended: `extra` 1 won, 0 lost (CAMPAIGN_DEADLINE or a higher term).
+    CampaignEnded = 5,
+    /// A `/suspect` report (`peer` the member reported, `term` the reported term) or a `/campaign` request (`peer`
+    /// 255, `term` 0): `extra` 1 when it started a pre-vote, else 0.
+    #[cfg_attr(not(feature = "test-faults"), allow(dead_code))]
+    Asked = 6,
+}
+
+#[cfg(any(test, feature = "test-faults"))]
+fn role_code(r: Role) -> u64 {
+    match r {
+        Role::Follower => 0,
+        Role::Candidate => 1,
+        Role::Leader => 2,
+    }
+}
+
+/// `Deny` as a number, 0 for none, in the enum's order.
+#[cfg(any(test, feature = "test-faults"))]
+fn deny_code(d: Option<raft::Deny>) -> u64 {
+    use raft::Deny::*;
+    match d {
+        None => 0,
+        Some(Stale) => 1,
+        Some(NoConfig) => 2,
+        Some(NotMember) => 3,
+        Some(Leader) => 4,
+        Some(Promised) => 5,
+        Some(LogBehind) => 6,
+        Some(Contending) => 7,
+        Some(Quarantine) => 8,
+        Some(Voted) => 9,
+        Some(Drained) => 10,
+        Some(Suspected) => 11,
+    }
+}
+
+/// The election rows (`Elect`) of one step at `t`, from the role, term, and commit before (`was`) and after (`now`) and
+/// what the step sent and resolved. `first` holds the term whose first leader commit was logged, so each term's is
+/// logged once.
+#[cfg(any(test, feature = "test-faults"))]
+fn elect_rows<C: raft::Command>(
+    was: (Role, raft::Term, Index),
+    now: (Role, raft::Term, Index),
+    out: &Out<C>,
+    first: &Cell<u64>,
+    t: u64,
+) -> Vec<[u64; 6]> {
+    let mut rows = Vec::new();
+    let (role, term, commit) = now;
+    if role != was.0 {
+        rows.push([t, Elect::Role as u64, term.0, 0, role_code(was.0), role_code(role)]);
+    }
+    for e in out.early.iter().chain(&out.messages) {
+        match &e.msg {
+            raft::Message::Vote(r) => {
+                rows.push([t, Elect::VoteSent as u64, r.term.0, u64::from(e.to.0), r.last_index.0, u64::from(r.pre)])
+            }
+            raft::Message::VoteRes(r) => rows.push([
+                t,
+                Elect::VoteAnswered as u64,
+                r.asked.0,
+                u64::from(e.to.0),
+                deny_code(r.deny),
+                u64::from(r.pre),
+            ]),
+            _ => {}
+        }
+    }
+    for r in &out.resolutions {
+        if let Resolution::Campaign(v @ (raft::Verdict::Won | raft::Verdict::Lost)) = r {
+            rows.push([t, Elect::CampaignEnded as u64, term.0, 0, 0, u64::from(*v == raft::Verdict::Won)]);
+        }
+    }
+    if role == Role::Leader && commit > was.2 && first.get() != term.0 {
+        first.set(term.0);
+        rows.push([t, Elect::FirstCommit as u64, term.0, 0, commit.0, 0]);
+    }
+    rows
+}
 
 /// One message kind's calls: how many, how they ended, their times, and the slowest, newest last.
 #[derive(Default, serde::Serialize)]
@@ -432,6 +573,10 @@ const PEER_MSG_MAX: usize = 200;
 pub struct PeerCalls {
     /// Answered within CALL_DEADLINE.
     pub ok: u32,
+    /// Every call to this peer that ended, and their encoded bytes: a leader's egress per member (narrow-reads-3,
+    /// learners pipelined).
+    pub sent: u32,
+    pub sent_bytes: u64,
     pub failed: BTreeMap<&'static str, u32>,
     pub late: u32,
     pub late_ms_max: u32,
@@ -593,6 +738,10 @@ pub struct Host<F: Family> {
     pub heavy_reads: Rc<Cell<u32>>,
     /// Reads of any kind in flight on this member, until their answer is sent (`crate::member::READS_MAX`).
     pub reads_in_flight: Rc<Cell<u32>>,
+    /// Bytes of the bodies of member calls this member has sent and not yet seen end, and of read answers still
+    /// streaming, each counted once per call or read though a shared answer is one copy (`/stats` `memSplit`).
+    pub call_bytes: Rc<Cell<usize>>,
+    pub answer_bytes: Rc<Cell<usize>>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -611,6 +760,9 @@ pub struct Host<F: Family> {
     synced: RefCell<VecDeque<(u64, u64)>>,
     /// The last log index the queued transaction leaves, when it appends.
     queued_last: Cell<Option<u64>>,
+    /// Test installs: the term whose first leader commit has an `Elect::FirstCommit` row.
+    #[cfg(feature = "test-faults")]
+    first_commit: Cell<u64>,
     /// Truncations stepped, numbered, with the index each left the log at.
     truncs: RefCell<VecDeque<(u64, u64)>>,
     /// Commands refused `NeedIdBlock`, waiting for the lease loop: request id, command, and their waiters.
@@ -654,6 +806,22 @@ pub struct Host<F: Family> {
     /// `set_drained` only when they change.
     #[cfg(feature = "test-faults")]
     drained: RefCell<Option<(String, BTreeSet<u8>)>>,
+}
+
+/// `n` bytes counted in a gauge for as long as this lives.
+pub struct Counted(Rc<Cell<usize>>, usize);
+
+impl Counted {
+    pub fn new(gauge: &Rc<Cell<usize>>, n: usize) -> Counted {
+        gauge.set(gauge.get() + n);
+        Counted(gauge.clone(), n)
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(self.1));
+    }
 }
 
 pub fn err(m: impl Into<String>) -> Error {
@@ -1208,6 +1376,8 @@ impl<F: Family> Host<F> {
             served_at: Cell::new(0),
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
+            call_bytes: Rc::new(Cell::new(0)),
+            answer_bytes: Rc::new(Cell::new(0)),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),
@@ -1218,6 +1388,8 @@ impl<F: Family> Host<F> {
             stats: RefCell::new(Stats::default()),
             synced: RefCell::new(VecDeque::new()),
             queued_last: Cell::new(None),
+            #[cfg(feature = "test-faults")]
+            first_commit: Cell::new(0),
             truncs: RefCell::new(VecDeque::new()),
             blocked: RefCell::new(Vec::new()),
             leasing: Cell::new(false),
@@ -1274,10 +1446,44 @@ impl<F: Family> Host<F> {
     #[cfg(not(feature = "test-faults"))]
     pub fn trace_at(&self, _: u64, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
 
+    /// Test installs: the election rows of one step (`elect_rows`), kept in `Stats::elections`.
+    #[cfg(feature = "test-faults")]
+    fn note_elect(&self, m: &raft::Member<F::C>, was: (Role, raft::Term, Index), out: &Out<F::C>, t: u64) {
+        let now = (m.role(), m.term(), m.state().commit);
+        let rows = elect_rows(was, now, out, &self.first_commit, t);
+        if !rows.is_empty() {
+            let mut s = self.stats.borrow_mut();
+            for r in rows {
+                if s.elections.len() >= ELECT_MAX {
+                    s.elections.pop_front();
+                }
+                s.elections.push_back(r);
+            }
+        }
+    }
+
+    /// Test installs: an `Elect::Asked` row for a `/suspect` report about `about` (255 for `/campaign`).
+    #[cfg(feature = "test-faults")]
+    pub fn elect_asked(&self, about: u8, term: u64, started: bool) {
+        let mut s = self.stats.borrow_mut();
+        if s.elections.len() >= ELECT_MAX {
+            s.elections.pop_front();
+        }
+        let t = now_ms();
+        s.elections.push_back([t, Elect::Asked as u64, term, u64::from(about), 0, u64::from(started)]);
+    }
+
     /// Test installs: traces a `ReadIndexRes` stepped here, `own` when it answered this member's own call.
     pub fn trace_res<E>(&self, e: &raft::Envelope<E>, own: bool) {
-        if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
-            self.trace(Trace::ResStepped, e.from.0, *batch, index.map_or(0, |(i, _)| i.0), u64::from(!own));
+        match &e.msg {
+            raft::Message::ReadIndexRes { batch, index } => {
+                self.trace(Trace::ResStepped, e.from.0, *batch, index.map_or(0, |(i, _)| i.0), u64::from(!own))
+            }
+            raft::Message::Append(a) => {
+                let last = a.entries.last().map_or(a.prev_index.0, |x| x.index.0);
+                self.trace(Trace::AppendStepped, e.from.0, u64::from(!own), last, a.commit.0)
+            }
+            _ => {}
         }
     }
 
@@ -1423,11 +1629,16 @@ impl<F: Family> Host<F> {
         let core = guard.as_mut().ok_or_else(|| err("member not joined"))?;
         let t = now_ms();
         let applied0 = core.applied;
+        #[cfg(feature = "test-faults")]
+        let was = (core.m.role(), core.m.term(), core.m.state().commit);
         let ready = f(&mut core.m, Timestamp(t));
         self.note(core, &ready.writes, t);
         #[cfg(feature = "test-faults")]
         let appended = self.appended_kill(core, &ready.writes);
         let wrote = !ready.writes.is_empty();
+        #[cfg(feature = "test-faults")]
+        let ready_appended_events =
+            ready.writes.iter().any(|w| matches!(w, Write::Append(e) if matches!(e.body, EntryBody::Events(_))));
         for w in &ready.writes {
             match w {
                 Write::Append(e) => self.queued_last.set(Some(e.index.0)),
@@ -1456,6 +1667,8 @@ impl<F: Family> Host<F> {
             installed: None,
         };
         let (r, mut out) = ready.persist(&mut store);
+        #[cfg(feature = "test-faults")]
+        self.note_elect(&core.m, was, &out, t);
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
         if let Some(b) = store.installed {
             self.queued_last.set(Some(b.index.0));
@@ -1506,7 +1719,22 @@ impl<F: Family> Host<F> {
                     .any(|e| matches!(&e.msg, raft::Message::Append(a) if !a.entries.is_empty()));
             self.unconfirmed.borrow_mut().push((id, timed.then(now_ms), out.self_ack.take()));
         }
+        #[cfg(feature = "test-faults")]
+        let lease_at = core.m.role() == Role::Leader && ready_appended_events;
         drop(guard);
+        #[cfg(feature = "test-faults")]
+        if lease_at {
+            let sent = now_ms().saturating_sub(t) as u32;
+            let h = self.clone();
+            spawn_local(async move {
+                Delay::from(Duration::ZERO).await;
+                let next = now_ms().saturating_sub(t) as u32;
+                let mut s = h.stats.borrow_mut();
+                if s.lease_clock.len() < SAMPLES_MAX {
+                    s.lease_clock.push([sent, next]);
+                }
+            });
+        }
         if wrote {
             self.trace(Trace::Stepped, 0, 0, self.queued_last.get().unwrap_or(0), now_ms().saturating_sub(t));
         }
@@ -1684,6 +1912,17 @@ impl<F: Family> Host<F> {
         let _ = rx.await;
     }
 
+    /// The statements queued for the next transaction, and roughly their bytes (`/stats` `memSplit`).
+    pub fn queued(&self) -> (usize, usize) {
+        let q = self.queue.borrow();
+        let val = |v: &SqlStorageValue| match v {
+            SqlStorageValue::String(t) => t.len(),
+            SqlStorageValue::Blob(b) => b.len(),
+            _ => 8,
+        };
+        (q.len(), q.iter().map(|(sql, args)| sql.len() + args.iter().map(val).sum::<usize>()).sum())
+    }
+
     /// Runs every queued statement in one transaction, releases the outputs that waited for it, and reports the
     /// storage confirm, and each `SelfAck`, once `sync()` says the writes are durable. The Durable Object confirms
     /// writes in order, so one `sync()` covers every input queued so far.
@@ -1831,7 +2070,8 @@ impl<F: Family> Host<F> {
                             // read answers the whole fold in the crate's codec, hex, for another group's `deps`.
                             let v = result.and_then(|g| {
                                 core.m.fresh(&g).map(|f| {
-                                    let (body, hit) = shared_answer(&mut built, &q, || {
+                                    let floor = g.floor().0;
+                                    let (body, hit) = shared_answer(&mut built, &q, floor, || {
                                         // `probe`: only that a member leads (`graftyard_lookup::create`).
                                         let body = if q.get("probe").is_some() {
                                             Value::Null
@@ -1846,7 +2086,7 @@ impl<F: Family> Host<F> {
                                             Err(_) => json!({ "badRequestId": rid }),
                                         }
                                         } else {
-                                            return fold_answer::<F>(f.fold(), &q, now, every);
+                                            return self.timed_answer(f.fold(), &q, floor, now, every);
                                         };
                                         ReadBody::Json(
                                             serde_json::to_vec(&body).unwrap_or_else(|_| b"null".to_vec()).into(),
@@ -1855,6 +2095,11 @@ impl<F: Family> Host<F> {
                                     if hit {
                                         self.stats.borrow_mut().shared_reads += 1;
                                     }
+                                    // A read whose answer is not built yet keeps its own grant, for `answer_after`.
+                                    let body = match body {
+                                        ReadBody::Shed(ms, _) => ReadBody::Shed(ms, Some(g.clone())),
+                                        b => b,
+                                    };
                                     (body, f.index())
                                 })
                             });
@@ -2003,7 +2248,23 @@ impl<F: Family> Host<F> {
             return;
         }
         // A learner calling this member gets the message in the response to its next call, never as a call back.
-        let Some(e) = self.callers.borrow_mut().route(e.to, e, now_ms()) else { return };
+        let held = match &e.msg {
+            raft::Message::Append(a) => {
+                Some((e.to.0, a.round, a.entries.last().map_or(a.prev_index.0, |x| x.index.0), a.commit.0))
+            }
+            _ => None,
+        };
+        // Held bytes are counted by the entries' encoding, as the log counts them (`raft::Member::log_bytes`).
+        let bytes = match &e.msg {
+            raft::Message::Append(a) => a.entries.iter().map(|x| raft::encode_entry(x).len()).sum(),
+            _ => 0,
+        };
+        let Some(e) = self.callers.borrow_mut().route(e.to, e, bytes, now_ms()) else {
+            if let Some((to, round, last, commit)) = held {
+                self.trace(Trace::AppendHeld, to, round, last, commit);
+            }
+            return;
+        };
         self.call(e);
     }
 
@@ -2013,6 +2274,7 @@ impl<F: Family> Host<F> {
         let queued = now_ms();
         spawn_local(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
+            let _counted = Counted::new(&h.call_bytes, body.len());
             let call = Call::of(&e, body.len());
             let traced = call.append.filter(|_| call.entries > 0);
             if let Some((round, _, last)) = traced {
@@ -2190,6 +2452,8 @@ impl<F: Family> Host<F> {
             }
         }
         let p = s.peers.entry(c.to).or_default();
+        p.sent += 1;
+        p.sent_bytes += c.bytes as u64;
         let tag = match &end {
             End::Ok => {
                 p.ok += 1;
@@ -2259,6 +2523,11 @@ impl<F: Family> Host<F> {
         {
             let h = Headers::new();
             let _ = h.set("x-graft-hop", &hop.to_string());
+            let _ = h.set("x-graft-sent", &now_ms().to_string());
+            // The sender's address, so the callee traces `CallArrived` without decoding the body a second time.
+            if let Some(me) = self.core.borrow().as_ref().map(|c| c.m.me()) {
+                let _ = h.set("x-graft-from", &me.0.to_string());
+            }
             init.with_headers(h);
         }
         #[cfg(not(feature = "test-faults"))]
@@ -2266,6 +2535,10 @@ impl<F: Family> Host<F> {
         let req =
             Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
         let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
+        #[cfg(feature = "test-faults")]
+        if let Some(left) = res.headers().get("x-graft-left").ok().flatten().and_then(|v| v.parse().ok()) {
+            self.trace(Trace::AnswerArrived, to.0, 0, left, 0);
+        }
         let status = res.status_code();
         if status != 200 {
             let text = res.text().await.unwrap_or_default();
@@ -2320,6 +2593,45 @@ impl<F: Family> Host<F> {
             }
         }
         rx
+    }
+
+    /// `fold_answer`, with the ms of each narrow answer it builds kept in `Stats::narrow_build_ms`.
+    fn timed_answer(&self, fold: &F::Fold, q: &Value, floor: u64, now: u64, every: u64) -> ReadBody {
+        let (n, t) = (crate::family::narrow_builds(), now_ms());
+        let body = fold_answer::<F>(fold, q, floor, now, every);
+        if crate::family::narrow_builds() > n {
+            let mut s = self.stats.borrow_mut();
+            if s.narrow_build_ms.len() < SAMPLES_MAX {
+                s.narrow_build_ms.push(now_ms().saturating_sub(t) as u32);
+            }
+        }
+        body
+    }
+
+    /// The answer to read `q`, granted in an earlier input as `g`, at this member's state now
+    /// (`raft::Member::fresh_after`): for a read whose answer was not built at its grant (`ReadBody::Shed`), once the
+    /// build is due, with no second read-index round. It may be `Shed` again when another read took the build slot
+    /// with an answer below this read's floor. `None` when the object is resetting.
+    pub fn answer_after(self: &Rc<Self>, g: &raft::ReadGrant, q: &Value) -> Option<ReadResult> {
+        let now = now_ms();
+        let (r, lost) = {
+            let core = self.core.borrow();
+            let c = core.as_ref()?;
+            let every = crate::family::dump_every(c.m.me());
+            let r = c.m.fresh_after(g).map(|f| {
+                let body = match self.timed_answer(f.fold(), q, g.floor().0, now, every) {
+                    ReadBody::Shed(ms, _) => ReadBody::Shed(ms, Some(g.clone())),
+                    b => b,
+                };
+                (body, f.index())
+            });
+            (r, self.lost_cause(&c.m))
+        };
+        if let Some(why) = lost {
+            self.fail_lost(&why);
+            return None;
+        }
+        Some(r)
     }
 
     pub fn wait_read(&self, id: ReadId, q: Value) -> oneshot::Receiver<ReadResult> {
@@ -3037,6 +3349,63 @@ pub fn rid_from(s: &str) -> Result<RequestId> {
 
 #[cfg(test)]
 mod tests {
+    /// The election rows split a leaderless span: a pre-vote's requests leave as candidate-to-be (no role change), the
+    /// vote's step moves Follower to Candidate, the win moves Candidate to Leader, and only the leader's first commit
+    /// move in its term is a `FirstCommit` row; a later commit, or a follower's, is not.
+    #[test]
+    fn election_rows_mark_pre_vote_vote_win_and_one_first_commit_per_term() {
+        use super::{Elect, elect_rows};
+        use graftyard_raft::{Envelope, Index, Message, Out, Resolution, Role, Term, Verdict, VoteReq};
+        use graftyard_types::{SiteId, Timestamp};
+        type C = graftyard_git::repo::RepoCmd;
+        let vote = |to: u8, term: u64, pre: bool| Envelope {
+            from: SiteId(1),
+            to: SiteId(to),
+            msg: Message::Vote(VoteReq {
+                term: Term(term),
+                candidate: SiteId(1),
+                pre,
+                last_index: Index(40),
+                last_term: Term(3),
+                transfer: None,
+                boots: [Timestamp(0); 2],
+                stepped_down_at: None,
+                bootstrapped: true,
+            }),
+        };
+        let kinds = |rows: &[[u64; 6]]| rows.iter().map(|r| r[1]).collect::<Vec<_>>();
+        let first = Cell::new(0);
+        let (fr, ft, fc) = (Role::Follower, Term(3), Index(40));
+
+        let pre = Out::<C> { messages: vec![vote(0, 4, true), vote(2, 4, true)], ..Default::default() };
+        let rows = elect_rows((fr, ft, fc), (Role::Follower, Term(3), Index(40)), &pre, &first, 100);
+        assert_eq!(kinds(&rows), [Elect::VoteSent as u64; 2]);
+        assert!(rows.iter().all(|r| r[5] == 1 && r[2] == 4 && r[4] == 40));
+
+        let real = Out::<C> { messages: vec![vote(0, 4, false)], ..Default::default() };
+        let rows = elect_rows((fr, ft, fc), (Role::Candidate, Term(4), Index(40)), &real, &first, 200);
+        assert_eq!(kinds(&rows), [Elect::Role as u64, Elect::VoteSent as u64]);
+        assert_eq!(rows[0][2..], [4, 0, 0, 1]);
+
+        let won = Out::<C> { resolutions: vec![Resolution::Campaign(Verdict::Won)], ..Default::default() };
+        let rows = elect_rows((Role::Candidate, Term(4), fc), (Role::Leader, Term(4), Index(40)), &won, &first, 300);
+        assert_eq!(kinds(&rows), [Elect::Role as u64, Elect::CampaignEnded as u64]);
+        assert_eq!((rows[0][4], rows[0][5], rows[1][5]), (1, 2, 1));
+
+        let none = Out::<C>::default();
+        let lead = (Role::Leader, Term(4), Index(40));
+        let rows = elect_rows(lead, (Role::Leader, Term(4), Index(41)), &none, &first, 400);
+        assert_eq!(kinds(&rows), [Elect::FirstCommit as u64]);
+        assert_eq!((rows[0][0], rows[0][2], rows[0][4]), (400, 4, 41));
+        assert!(
+            elect_rows((Role::Leader, Term(4), Index(41)), (Role::Leader, Term(4), Index(42)), &none, &first, 500)
+                .is_empty()
+        );
+        assert!(elect_rows((fr, Term(5), fc), (Role::Follower, Term(5), Index(41)), &none, &first, 600).is_empty());
+        let rows = elect_rows((Role::Leader, Term(6), fc), (Role::Leader, Term(6), Index(41)), &none, &first, 700);
+        assert_eq!(kinds(&rows), [Elect::FirstCommit as u64]);
+    }
+
     /// An alarm whose invocation never ran (canceled) is re-armed once it is overdue, not left as the sooner one.
     #[test]
     fn an_overdue_alarm_is_set_again() {
@@ -3093,19 +3462,23 @@ mod tests {
             ReadBody::Json(v.as_bytes().to_vec().into())
         };
         let a = serde_json::json!({ "refs": { "after": "YQ" } });
-        let (first, hit) = shared_answer(&mut built, &a, || make("1"));
+        let (first, hit) = shared_answer(&mut built, &a, 4, || make("1"));
         assert!(!hit);
-        let (again, hit) = shared_answer(&mut built, &a, || make("2"));
+        let (again, hit) = shared_answer(&mut built, &a, 4, || make("2"));
         assert!(hit);
         assert_eq!(again, first);
         let (ReadBody::Json(x), ReadBody::Json(y)) = (&first, &again) else { panic!("json") };
         assert!(std::rc::Rc::ptr_eq(x, y), "one copy, not one per read");
         let b = serde_json::json!({ "refs": { "after": "Yg" } });
-        let (other, hit) = shared_answer(&mut built, &b, || make("3"));
+        let (other, hit) = shared_answer(&mut built, &b, 4, || make("3"));
         assert!(!hit);
         assert_eq!(other, ReadBody::Json(b"3".to_vec().into()));
+        // A read of the same query with a newer floor does not take an answer built for an older one.
+        let (newer, hit) = shared_answer(&mut built, &a, 5, || make("4"));
+        assert!(!hit, "another floor is another answer");
+        assert_eq!(newer, ReadBody::Json(b"4".to_vec().into()));
         drop(make);
-        assert_eq!(builds, 2);
+        assert_eq!(builds, 3);
     }
 
     use futures_channel::oneshot;

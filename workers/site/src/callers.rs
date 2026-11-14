@@ -33,6 +33,9 @@ struct Caller<E> {
     open: u32,
     last: u64,
     held: Vec<E>,
+    /// The encoded bytes of `held`, and the most it held at once since `/stats` was read (narrow-reads-3).
+    held_bytes: usize,
+    held_peak: usize,
     /// A call waiting for a message to be held for it (`wake`).
     wake: Vec<oneshot::Sender<()>>,
 }
@@ -48,7 +51,14 @@ impl<E> Callers<E> {
     /// cycle, and their AppendEntries must leave at once.
     pub fn began(&mut self, from: SiteId, now: u64) {
         if learner_slot(from).is_some() {
-            let c = self.by.entry(from).or_insert(Caller { open: 0, last: now, held: Vec::new(), wake: Vec::new() });
+            let c = self.by.entry(from).or_insert(Caller {
+                open: 0,
+                last: now,
+                held: Vec::new(),
+                held_bytes: 0,
+                held_peak: 0,
+                wake: Vec::new(),
+            });
             c.open += 1;
             c.last = now;
         }
@@ -62,11 +72,13 @@ impl<E> Callers<E> {
         }
     }
 
-    /// `msg` for `to` at `now`: held for `to`'s next call, or handed back to be sent as a call.
-    pub fn route(&mut self, to: SiteId, msg: E, now: u64) -> Option<E> {
+    /// `msg` for `to` at `now`, of `bytes` encoded: held for `to`'s next call, or handed back to be sent as a call.
+    pub fn route(&mut self, to: SiteId, msg: E, bytes: usize, now: u64) -> Option<E> {
         match self.by.get_mut(&to) {
             Some(c) if c.open > 0 || now < c.last + QUIET => {
                 c.held.push(msg);
+                c.held_bytes += bytes;
+                c.held_peak = c.held_peak.max(c.held_bytes);
                 for w in c.wake.drain(..) {
                     let _ = w.send(());
                 }
@@ -78,7 +90,25 @@ impl<E> Callers<E> {
 
     /// The messages held for `from`, for the response to its call.
     pub fn take(&mut self, from: SiteId) -> Vec<E> {
-        self.by.get_mut(&from).map(|c| std::mem::take(&mut c.held)).unwrap_or_default()
+        self.by
+            .get_mut(&from)
+            .map(|c| {
+                c.held_bytes = 0;
+                std::mem::take(&mut c.held)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Per learner: messages and bytes held now, the most bytes held at once since the last call with `reset`, and
+    /// calls open. Clears the peaks when `reset`.
+    pub fn held_stats(&mut self, reset: bool) -> Vec<(SiteId, usize, usize, usize, u32)> {
+        let out = self.by.iter().map(|(s, c)| (*s, c.held.len(), c.held_bytes, c.held_peak, c.open)).collect();
+        if reset {
+            for c in self.by.values_mut() {
+                c.held_peak = c.held_bytes;
+            }
+        }
+        out
     }
 
     /// Held messages for learners that stopped calling: no call in progress and none for `QUIET`. They leave as calls,
@@ -143,7 +173,7 @@ mod tests {
             }
             if ms % 20 == 0 {
                 let call = match callers.as_deref_mut() {
-                    Some(c) => c.route(l, 1, ms).is_some() || !c.due(ms).is_empty(),
+                    Some(c) => c.route(l, 1, 0, ms).is_some() || !c.due(ms).is_empty(),
                     None => true,
                 };
                 if call {
@@ -170,18 +200,18 @@ mod tests {
     fn a_learner_that_stops_calling_is_called_again_after_quiet() {
         let l = learner_addr(3);
         let mut c: Callers<u32> = Callers::default();
-        assert_eq!(c.route(l, 1, 0), Some(1), "a learner that never called is called");
-        assert_eq!(c.route(LEADER, 2, 0), Some(2), "a voter is always called");
+        assert_eq!(c.route(l, 1, 0, 0), Some(1), "a learner that never called is called");
+        assert_eq!(c.route(LEADER, 2, 0, 0), Some(2), "a voter is always called");
         c.began(l, 10);
-        assert_eq!(c.route(l, 3, 20), None, "held while its call is open");
+        assert_eq!(c.route(l, 3, 0, 20), None, "held while its call is open");
         c.ended(l, 40);
-        assert_eq!(c.route(l, 4, 40 + QUIET - 1), None, "held inside QUIET");
+        assert_eq!(c.route(l, 4, 0, 40 + QUIET - 1), None, "held inside QUIET");
         assert!(c.due(40 + QUIET - 1).is_empty() && c.holding());
         assert_eq!(c.due(40 + QUIET), vec![3, 4], "sent once it stopped calling");
         assert!(!c.holding());
-        assert_eq!(c.route(l, 5, 40 + QUIET), Some(5), "then called as before");
+        assert_eq!(c.route(l, 5, 0, 40 + QUIET), Some(5), "then called as before");
         c.began(l, 2_000);
-        c.route(l, 6, 2_001);
+        c.route(l, 6, 0, 2_001);
         assert_eq!(c.take(l), vec![6], "its next call takes what was held");
     }
 }

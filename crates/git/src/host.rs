@@ -4,12 +4,12 @@
 
 use std::collections::BTreeSet;
 
-use graftyard_types::{ChainId, Digest, NetworkId, Region, Timestamp};
+use graftyard_types::{ChainId, Digest, NetworkId, Region, SiteId, Timestamp};
 use serde::Deserialize;
 use worker::{Conditional, Container, Fetcher, Headers, Include, Method, Request, RequestInit, Response, State};
 
 use crate::bucket::{Bucket, ObjectInfo, PutNew, StoreError};
-use crate::catchup::{Ingested, Rehydrating, Report, Saved, ShardIo};
+use crate::catchup::{Ingested, Rehydrating, Report, Saved, ShardIo, StoredMs};
 use crate::ingest::ChainLog;
 use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
@@ -807,15 +807,20 @@ impl ShardHost<'_> {
 
     /// Catch-up before serving, and `rehydrate` when the disk has no cursor (`crate::catchup`): a page of the log at a
     /// time, stored packs streamed from a bucket to the container, and every page saved before the next.
+    ///
+    /// `buckets` is read in the order given for a stored pack (`crate::catchup::own_first`: the shard's own site's
+    /// first), and all of them for the markers.
     pub async fn catch_up(
         &self,
         network: NetworkId,
         chains: &[ChainId],
-        buckets: &[&R2],
+        buckets: &[(SiteId, &R2)],
         log: &impl ChainLog,
     ) -> Result<Report, StoreError> {
-        let io = Io { host: self, network, buckets };
-        crate::catchup::catch_up(&io, &io, log, network, chains, &|| js_sys::Date::now() as u64).await
+        let io = Io { host: self, network, buckets, stored: Default::default() };
+        let mut r = crate::catchup::catch_up(&io, &io, log, network, chains, &|| js_sys::Date::now() as u64).await?;
+        r.stored = io.stored.take();
+        Ok(r)
     }
 
     /// Whether the disk holds a cursor for `network`, so a catch-up reads from the log rather than rehydrating.
@@ -839,16 +844,22 @@ impl ShardHost<'_> {
         format!("rehydrating:{}", network.0.0)
     }
 
-    /// Ingests one pack's bytes: `Later` when the container answers 409.
-    async fn ingest_body(&self, network: NetworkId, sum: Digest, body: JsBody) -> Result<Option<Ingested>, StoreError> {
+    /// Ingests one pack's bytes: `Later` when the container answers 409, with the container's own timing of a pack it
+    /// took (`IngestMs`; zero from an image that does not report it).
+    async fn ingest_body(
+        &self,
+        network: NetworkId,
+        sum: Digest,
+        body: JsBody,
+    ) -> Result<Option<(Ingested, IngestMs)>, StoreError> {
         let path = format!("/ingest?net={}&sha256={}", network.0.0, sum.hex());
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(body.0));
         let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
         let mut r = self.port()?.fetch_request(req).await.map_err(worker_err)?;
         match r.status_code() {
-            200 => Ok(Some(Ingested::Done)),
-            409 => Ok(Some(Ingested::Later)),
+            200 => Ok(Some((Ingested::Done, r.json().await.unwrap_or_default()))),
+            409 => Ok(Some((Ingested::Later, IngestMs::default()))),
             // A copy whose bytes do not match the checksum: the caller tries the next bucket.
             422 if r.text().await.unwrap_or_default().starts_with("checksum") => Ok(None),
             c => Err(StoreError(format!("ingest {}: {c} {}", sum.hex(), r.text().await.unwrap_or_default()))),
@@ -863,7 +874,19 @@ struct JsBody(wasm_bindgen::JsValue);
 struct Io<'a, 'h> {
     host: &'a ShardHost<'h>,
     network: NetworkId,
-    buckets: &'a [&'a R2],
+    buckets: &'a [(SiteId, &'a R2)],
+    stored: std::cell::RefCell<StoredMs>,
+}
+
+/// The container's `/ingest` answer for a pack it took: its spool (the body onto its disk) and `index-pack` times.
+#[derive(Debug, Default, Deserialize)]
+struct IngestMs {
+    #[serde(default)]
+    bytes: u64,
+    #[serde(default)]
+    spool_ms: u64,
+    #[serde(default)]
+    index_ms: u64,
 }
 
 impl ShardIo for Io<'_, '_> {
@@ -911,7 +934,7 @@ impl ShardIo for Io<'_, '_> {
             let mut out = Vec::with_capacity(packs.len());
             for (sum, b) in packs {
                 let b = JsBody(js_sys::Uint8Array::from(*b).into());
-                out.push(self.host.ingest_body(self.network, *sum, b).await?.ok_or_else(|| {
+                out.push(self.host.ingest_body(self.network, *sum, b).await?.map(|(a, _)| a).ok_or_else(|| {
                     StoreError(format!("ingest {}: the bytes do not match their checksum", sum.hex()))
                 })?);
             }
@@ -930,19 +953,35 @@ impl ShardIo for Io<'_, '_> {
             })
             .collect()
     }
-    /// From each bucket in turn, its object's body streamed into the container's `/ingest`, which checks the
-    /// checksum as it writes: a copy that does not match is refused, and the next bucket's is tried.
+    /// From each bucket in turn, in the order the caller gave (its own site's first), its object's body streamed into
+    /// the container's `/ingest`, which checks the checksum as it writes: a copy that does not match is refused, and
+    /// the next bucket's is tried. Each pack's source and times go into `stored`.
     async fn ingest_stored(&self, id: PackId, checksum: Digest) -> Result<Ingested, StoreError> {
         let key = R2Key::Pack { network: self.network, id }.to_string();
-        for b in self.buckets {
-            let Some(o) = b.0.get(&key).execute().await.map_err(err)? else { continue };
-            let Some(body) = o.body() else { continue };
-            let worker::ResponseBody::Stream(s) = body.response_body().map_err(worker_err)? else { continue };
-            if let Some(r) = self.host.ingest_body(self.network, checksum, JsBody(s.into())).await? {
-                return Ok(r);
+        let t0 = js_sys::Date::now() as u64;
+        let got = crate::catchup::first_copy(self.buckets, |b: &&R2| {
+            let (b, key): (&R2, String) = (b, key.clone());
+            async move {
+                let Some(o) = b.0.get(&key).execute().await.map_err(err)? else { return Ok(None) };
+                let Some(body) = o.body() else { return Ok(None) };
+                let worker::ResponseBody::Stream(s) = body.response_body().map_err(worker_err)? else {
+                    return Ok(None);
+                };
+                self.host.ingest_body(self.network, checksum, JsBody(s.into())).await
             }
-        }
-        Err(StoreError(format!("{key}: no bucket holds a copy matching its checksum")))
+        })
+        .await?;
+        let Some((site, (a, ms))) = got else {
+            return Err(StoreError(format!("{key}: no bucket holds a copy matching its checksum")));
+        };
+        let mut st = self.stored.borrow_mut();
+        st.packs += 1;
+        st.bytes += ms.bytes;
+        st.total_ms += js_sys::Date::now() as u64 - t0;
+        st.spool_ms += ms.spool_ms;
+        st.index_ms += ms.index_ms;
+        *st.from_site.entry(site.0).or_default() += 1;
+        Ok(a)
     }
     async fn put_refs_page(&self, refs: &[(String, String)], start: bool, done: bool) -> Result<(), StoreError> {
         self.host.put_refs_page(self.network, refs, start, done).await
@@ -955,7 +994,7 @@ impl ShardIo for Io<'_, '_> {
     }
     async fn markers(&self) -> Result<Vec<(PackId, Marker)>, StoreError> {
         let mut out = Vec::new();
-        for b in self.buckets {
+        for (_, b) in self.buckets {
             out.extend(markers(*b, self.network).await?);
         }
         Ok(out)

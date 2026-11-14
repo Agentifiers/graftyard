@@ -74,7 +74,7 @@ struct Queued<C> {
     /// Its encoded length, and the Agent-class inline pack bytes it carries (0 for every other class).
     bytes: usize,
     agent_inline: usize,
-    /// Its encoded length without its Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: what ENTRY_SOFT counts.
+    /// Its `stored_len` without its Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: what ENTRY_SOFT counts.
     soft_bytes: usize,
     at: Timestamp,
 }
@@ -88,8 +88,8 @@ struct Admission<C> {
     agent_inline: usize,
     tokens: f32,
     tokens_at: Timestamp,
-    /// The commit round of an `Events` entry, and the encoded bytes of an admitted command without its Agent inline pack,
-    /// as moving averages.
+    /// The commit round of an `Events` entry, and an admitted command's `stored_len` without its Agent inline pack, as
+    /// moving averages.
     round_ms: f32,
     cmd_bytes: f32,
     /// When the last `Events` entry was cut.
@@ -758,7 +758,7 @@ impl<C: Command> Member<C> {
                 lead.by_request.insert(id, seq);
                 let ad = &mut lead.admission;
                 let agent_inline = if class == AdmitClass::Agent { a.inline } else { 0 };
-                let soft_bytes = len.saturating_sub(agent_inline);
+                let soft_bytes = cmd.stored_len().saturating_sub(agent_inline);
                 ad.cmd_bytes = 0.98 * ad.cmd_bytes + 0.02 * soft_bytes as f32;
                 if class == AdmitClass::Agent {
                     ad.agent_bytes += len;
@@ -1278,13 +1278,52 @@ impl<C: Command> Member<C> {
         }
     }
 
+    /// Before the answer to a learner's read-index batch at `index`: when it was not yet sent the entries through
+    /// `index`, an AppendEntries that leaves ahead of the `ReadIndexRes`, in the same response while the learner calls
+    /// this member (`design/DESIGN.md`, "Follower read"). Without it a far learner's entries trailed its answer by one
+    /// or two more of its calls: p50 574 to 668 ms and p99 1.9 to 4.5 s on weur and apac at 500 agents, against a
+    /// read-index round trip of p99 476 to 639 ms. With calls in flight it follows them, within PIPELINE. With none,
+    /// because a refusal or failure emptied the pipeline, it goes from the first entry the learner has not
+    /// acknowledged: a far learner's calls end in any order, one that overtook another was refused, and with nothing
+    /// sent until CALL_DEADLINE's resend one apac learner a run waited p99 4.8 to 7.8 s for its entries. Re-sending
+    /// from that entry on every read instead took the leader to 122 MiB and lost its leadership. Not to a voter, which
+    /// is sent every entry as it is cut, nor on a lossy link (F67 rule 13); `tests/am1/results/narrow-reads-3.md`,
+    /// "Where a far learner's wait goes".
+    pub(super) fn append_for_read(&mut self, peer: SiteId, index: Index) {
+        if quorum::is_voter(self.log_config(), peer) || self.link_lossy(peer) {
+            return;
+        }
+        // Up to PIPELINE calls, so a learner behind by more than one call's bytes catches up: with one per read, an
+        // apac learner got one to two entries per 350 ms round trip, each call held to APPEND_BYTES_MAX, while the
+        // leader committed more, and stayed about 12 entries behind (gate10, `tests/nr3/rows/trace-gate10.json.gz`).
+        for _ in 0..PIPELINE {
+            let Some(lead) = self.lead.as_ref() else { return };
+            let next = lead.next.get(&peer).copied().unwrap_or(self.last().next());
+            // A catch-up read from storage, or an install, is out or due: `tick` sends it.
+            if next <= self.base.index || self.install.as_ref().is_some_and(|s| Index(next.0 - 1) < s.through) {
+                return;
+            }
+            match lead.pipe.get(&peer).map(|p| (p.len(), p.last().map(|l| l.1))) {
+                Some((n, Some(through))) if through < index && n < PIPELINE => self.append_to(peer, false, true),
+                Some((_, Some(_))) => return,
+                _ if lead.matched(peer) < index => self.send_append(peer, true),
+                _ => return,
+            }
+        }
+    }
+
     /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
     /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
     fn send_append(&mut self, peer: SiteId, force: bool) {
+        self.append_to(peer, force, false);
+    }
+
+    /// `send_append`, with `read` pipelining a learner as a voter (`append_for_read`).
+    fn append_to(&mut self, peer: SiteId, force: bool, read: bool) {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
         let base = self.base.index;
-        let voter = quorum::is_voter(self.log_config(), peer);
+        let voter = read || quorum::is_voter(self.log_config(), peer);
         let lossy = self.link_lossy(peer);
         let Some(lead) = self.lead.as_mut() else { return };
         let next = *lead.next.entry(peer).or_insert(last.next());
@@ -1766,6 +1805,7 @@ impl<C: Command> Member<C> {
                     boot: self.boot,
                     step: self.step,
                     index: self.fold.applied(),
+                    floor: self.fold.applied(),
                     via_round: needs_round || !lease,
                     remote: false,
                 })
@@ -1789,6 +1829,18 @@ impl<C: Command> Member<C> {
             && grant.step == self.step
             && grant.index == self.fold.applied();
         if ok { Ok(Fresh { fold: &self.fold.fold, index: grant.index }) } else { Err(self.not_leader()) }
+    }
+
+    /// The member's fold now, for a read granted in an earlier input of this boot: every applied entry is committed,
+    /// and within a boot the applied index never moves back (an install only moves it forward), so this state is at or
+    /// above the grant's floor (`ReadGrant::floor`) and holds every entry acknowledged before the read arrived, as the
+    /// grant's own state did. A host that could not answer at the grant (an answer whose build was not due) answers
+    /// here later without another read-index round. Refused after the member restarted (`boot`).
+    pub fn fresh_after(&self, grant: &ReadGrant) -> Result<Fresh<'_, C::Fold>, NotLeader> {
+        if grant.boot != self.boot {
+            return Err(self.not_leader());
+        }
+        Ok(Fresh { fold: &self.fold.fold, index: self.fold.applied() })
     }
 
     /// The `extend` of the next entry this leader appends (`design/DESIGN.md`, Shape, `ExtendLeases`): with a stall

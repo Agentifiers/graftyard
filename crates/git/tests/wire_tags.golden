@@ -537,6 +537,7 @@ git::issues::Grantee 1 Team 0102
 git::issues::ReviewEvent 0 Submitted 000201000001010101010101010101010101010101010101010161
 git::issues::ReviewEvent 1 Dismissed 0102016100
 git::issues::ReviewEvent 2 Requested 0201000000
+git::issues::ReviewEvent 3 SingleComment 030201000101010101010101010101010101010101010101
 git::issues::LabelEvent 0 Defined 0002016101010100
 git::issues::LabelEvent 1 Deleted 0102
 git::issues::LabelEvent 2 Applied 0201000000

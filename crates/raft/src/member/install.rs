@@ -8,8 +8,8 @@
 //!   the round, so it acks no AppendEntries before it has applied `through`. A learner and a `ReplaceMember` member join
 //!   the same way.
 //! - **Read index.** A follower or learner answers a read by asking the leader for a read index and waiting until it
-//!   has applied it. Reads are batched: one batch in flight, sent at most every `FOLLOWER_READ_EVERY` (10 ms) from a
-//!   follower and `LEARNER_READ_EVERY` (50 ms) from a learner.
+//!   has applied it. Reads are batched: up to `READ_PIPELINE` batches in flight, each answered on its own, sent at
+//!   most every `FOLLOWER_READ_EVERY` (10 ms) from a follower and `LEARNER_READ_EVERY` (50 ms) from a learner.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -28,8 +28,13 @@ use crate::{CALL_DEADLINE, after};
 
 /// A follower's read-index batches: at most one every 10 ms.
 const FOLLOWER_READ_EVERY: Duration = Duration::from_millis(10);
-/// A learner's: one request in flight, at most one every 50 ms.
+/// A learner's: at most one every 50 ms.
 pub const LEARNER_READ_EVERY: Duration = Duration::from_millis(50);
+/// Read-index batches one member keeps in flight at most [guess]. The send floor above bounds the calls a second, so
+/// this bounds only how long a read waits behind a slow round trip: with one in flight, a read that arrived waited out
+/// the batch ahead of it and then its own, and a near learner's grant wait reached p99 0.9 to 1.6 s at 500 agents
+/// against round trips of p99 0.6 to 0.9 s (`tests/am1/results/narrow-reads-3.md`, "Gate 12 on fdf363f3").
+pub const READ_PIPELINE: usize = 8;
 
 /// Reads by id, with when each arrived.
 type Arrived = Vec<(ReadId, Timestamp)>;
@@ -39,8 +44,8 @@ type Arrived = Vec<(ReadId, Timestamp)>;
 pub(super) struct RemoteReads {
     /// Not yet in a batch: id and arrival.
     queued: Arrived,
-    /// The batch in flight: its number, when it was last sent, and its reads.
-    inflight: Option<(u64, Timestamp, Arrived)>,
+    /// The batches in flight, oldest first: each one's number, when it was last sent, and its reads.
+    inflight: Vec<(u64, Timestamp, Arrived)>,
     /// Answered: each read's index, waiting until this member has applied it.
     waiting: Vec<(ReadId, Timestamp, Index)>,
     next_batch: u64,
@@ -214,13 +219,17 @@ impl<C: Command> Member<C> {
         let every = if self.is_learner() { LEARNER_READ_EVERY } else { FOLLOWER_READ_EVERY };
         let Some(leader) = self.leader.filter(|l| *l != self.cfg.me) else { return };
         let r = &mut self.remote;
-        if r.inflight.is_some() || r.queued.is_empty() || r.last_sent.is_some_and(|t| self.now < after(t, every)) {
+        if r.inflight.len() >= READ_PIPELINE
+            || r.queued.is_empty()
+            || r.last_sent.is_some_and(|t| self.now < after(t, every))
+        {
             return;
         }
         r.next_batch += 1;
         let batch = r.next_batch;
         r.last_sent = Some(self.now);
-        r.inflight = Some((batch, self.now, std::mem::take(&mut r.queued)));
+        let reads = std::mem::take(&mut r.queued);
+        r.inflight.push((batch, self.now, reads));
         self.send(leader, Message::ReadIndex { batch });
     }
 
@@ -243,6 +252,9 @@ impl<C: Command> Member<C> {
         match self.remote.serving.remove(&id) {
             Some((to, batch)) => {
                 let index = result.ok().and_then(|g| self.digest_at(g.index).map(|d| (g.index, d)));
+                if let Some((i, _)) = index {
+                    self.append_for_read(to, i);
+                }
                 self.send(to, Message::ReadIndexRes { batch, index })
             }
             None => self.out.resolutions.push(Resolution::Read { id, result }),
@@ -250,10 +262,8 @@ impl<C: Command> Member<C> {
     }
 
     pub(super) fn on_read_index_res(&mut self, from: SiteId, batch: u64, index: Option<(Index, Digest)>) {
-        if self.remote.inflight.as_ref().is_none_or(|b| b.0 != batch) {
-            return;
-        }
-        let (_, _, reads) = self.remote.inflight.take().expect("checked");
+        let Some(at) = self.remote.inflight.iter().position(|b| b.0 == batch) else { return };
+        let (_, _, reads) = self.remote.inflight.remove(at);
         match index {
             Some((i, d)) => {
                 // An idle leader sends no append that would carry its commit. Entry `i` is committed, and digests
@@ -280,24 +290,25 @@ impl<C: Command> Member<C> {
 
     /// Grants every answered read whose index this member has applied, and fails those past CAMPAIGN_DEADLINE.
     pub(super) fn check_remote(&mut self) {
-        if self.remote.waiting.is_empty() && self.remote.queued.is_empty() && self.remote.inflight.is_none() {
+        if self.remote.waiting.is_empty() && self.remote.queued.is_empty() && self.remote.inflight.is_empty() {
             return;
         }
         let (applied, now) = (self.fold.applied(), self.now);
         let late = |at: Timestamp| now >= after(at, CAMPAIGN_DEADLINE);
         let nl = self.not_leader();
-        let grant = |m: &Self| ReadGrant {
+        let grant = |m: &Self, floor: Index| ReadGrant {
             term: m.state.term,
             boot: m.boot,
             step: m.step,
             index: applied,
+            floor,
             via_round: true,
             remote: true,
         };
         let waiting = std::mem::take(&mut self.remote.waiting);
         for (id, at, i) in waiting {
             if i <= applied {
-                let g = grant(self);
+                let g = grant(self, i);
                 self.out.resolutions.push(Resolution::Read { id, result: Ok(g) });
             } else if late(at) {
                 self.out.resolutions.push(Resolution::Read { id, result: Err(nl.clone()) });
@@ -309,15 +320,13 @@ impl<C: Command> Member<C> {
         let mut failed = Vec::new();
         r.queued.retain(|(id, at)| !late(*at) || (failed.push(*id), false).1);
         let unanswered = failed.len();
-        if let Some((_, _, reads)) = &mut r.inflight {
+        for (_, _, reads) in &mut r.inflight {
             reads.retain(|(id, at)| !late(*at) || (failed.push(*id), false).1);
-            // A batch whose every read failed is dropped, so the next one goes out. Kept, it was resent forever to a
-            // half-hung leader that never answered, the reads queued behind it failed as never sent, which is no
-            // failed call, and the follower never forgot that leader or campaigned (F67 rule 12).
-            if reads.is_empty() {
-                r.inflight = None;
-            }
         }
+        // A batch whose every read failed is dropped, so the next one goes out. Kept, it was resent forever to a
+        // half-hung leader that never answered, the reads queued behind it failed as never sent, which is no failed
+        // call, and the follower never forgot that leader or campaigned (F67 rule 12).
+        r.inflight.retain(|(_, _, reads)| !reads.is_empty());
         // The leader left a read-index batch unanswered for CAMPAIGN_DEADLINE (F67): the design's "read-index call to
         // the leader fails". This member forgets that leader, so its reads answer `NotLeader` naming none, which the
         // edge reports with `suspect`, and a voter whose promise has lapsed campaigns now. Without it a group read
@@ -340,12 +349,16 @@ impl<C: Command> Member<C> {
 
     /// Time passing for remote reads: a batch unanswered after CALL_DEADLINE is sent again, and queued reads go out.
     pub(super) fn tick_remote(&mut self) {
-        if let Some((batch, sent, _)) = &mut self.remote.inflight
-            && self.now >= after(*sent, CALL_DEADLINE)
-        {
-            *sent = self.now;
-            let batch = *batch;
-            if let Some(l) = self.leader.filter(|l| *l != self.cfg.me) {
+        let now = self.now;
+        let mut resend = Vec::new();
+        for (batch, sent, _) in &mut self.remote.inflight {
+            if now >= after(*sent, CALL_DEADLINE) {
+                *sent = now;
+                resend.push(*batch);
+            }
+        }
+        if let Some(l) = self.leader.filter(|l| *l != self.cfg.me) {
+            for batch in resend {
                 self.send(l, Message::ReadIndex { batch });
             }
         }
