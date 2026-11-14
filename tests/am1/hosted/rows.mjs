@@ -90,7 +90,9 @@ if (which === "l012") {
   row(OUT, { step: "holder exclusive", status: held.status, lease: held.body?.lease?.id });
   log(`holder: ${held.status} ${held.body?.lease?.id}`);
   const g = new Git(R).as(admin);
-  g.clone();
+  // With no clone every commit below fails, and each REST write reads "sha" wasn't supplied, not a refusal.
+  const cl = g.clone();
+  if (!cl.ok) throw new Error(`clone ${R}: ${cl.out.slice(0, 300)}`);
   const main = g.run(["rev-parse", "HEAD"]).out.trim();
   const commitTouching = (k) => {
     g.run(["checkout", "-q", "--detach", main]);
