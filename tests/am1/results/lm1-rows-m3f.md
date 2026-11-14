@@ -125,6 +125,33 @@ No member held that push. It never reached `/commit`. The other five have no edg
 
 Either answer still fails B0-32's gate (acknowledged within 5 s, or `ng … admission full`). The real failure is validation on cold shards: first-shard validates at the 15 s home wait while the pool shards rehydrated. That is what the warm-up and `write_mark` (`INLINE_MAX_HOT` staging on a hot group) should change.
 
+### L0-12 m3fr1: fail
+
+Repository 65554 (`fm3fr1-l012`). Replay run `mwfza2tr`, 06:18:59Z to 06:28:59Z: 500 agents with a lease each, 500 feed long-pollers, leader killed every 60 s. Then the 30-minute stall (`stall.mjs`), then the refusals (`rows.mjs l012 100`, `AgentsExclusive`, holder m3-member's Exclusive lease on `l012/<tag>/**`).
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| No overlapping Exclusive holders over `DRIFT` (500 ms) | 156 overlap samples, 0 over 0 ms | Pass |
+| Measured member clock offsets under 500 ms | Spread `lowerMs` 1,260 (at least one round had two members at least 1.26 s apart); `maxAbsOffsetMs` 3,321 is against the orb's clock, not the gate quantity. Site 1's samples read a dead object (below) | **Fail** |
+| Every lease live before the stall is live after, `expires` moved by the stall | 20 of 20 live, moved 1,803 to 1,804 s for a 1,801 s stall | Pass |
+| The late Exclusive acquire succeeds | 201, 0 conflicts (07:15:36Z) | Pass |
+| Feed: each event within 3 s at p99 outside leader kills | p99 25,622 ms, p50 1,147 ms (15,886 events, 10 kills) | **Fail** |
+| Refusals: 100 of 100 for the two `ActorKind::Agent` kinds, 0 of 100 for the other three | Table below | Pass for the four kinds that ran; `Graftyard MCP` below |
+
+| Kind | Gate | Pushes | REST ref writes |
+|---|---|---|---|
+| Confined vendor App | 100 refused | 100 refused (`leased Exclusive by user 7100002`) | 100 × 422 refused |
+| Flagged App without `confine` | 0 refused | 100 accepted | 100 accepted |
+| Human PAT | 0 refused | 100 accepted | 100 accepted |
+| Graftyard-run App (`graftyard-workspace`) | 100 refused | 100 refused (`push needs a live task`) | 100 × 422 refused |
+| `Graftyard MCP` | 0 refused | see below | see below |
+
+The run also tried an unflagged App, which is not one of the row's five kinds: 96 accepted, and 4 REST writes got 422 `Object does not exist` (their scratch commits had not landed yet [guess]).
+
+`Graftyard MCP` did not run inside the row: `rows.sh`'s 7,200 s timeout ended the refusal phase at 09:15:36Z, after five kinds of about 21 minutes each. It was run alone on the same repository and holder setup (`ROWS_L012_ONLY`). The first lone run (09:20Z) is void: its admin clone failed unseen, so all 100 REST writes read 422 `"sha" wasn't supplied` and all 100 pushes were rejected with no refusal text. `rows.mjs` now stops on a failed clone (`4fc6e736`), and the kind was run again at 09:35Z.
+
+The two fails stand whatever `Graftyard MCP` shows. Their causes are below.
+
 ### 4. L0-12 m3fr1: the clock and feed fails, what the kept data shows
 
 **Every site-1 probe read a dead object.** Site 1's voter of repo:65554 is `repo:65554#6#f1` (a replacement, generation 6). `lib.mjs` `statuses()` and a1.mjs's clock sampler called site 1 by site alone, which reaches the first generation's `#1#f1`. That object answered at term 2, last 3, and commit 3 before, during, and after the row (checked live at 07:46Z: `#6#f1` follower at term 17, `#1#f1` follower at term 2). So site 1's column in `terms.mjs` and `admit.mjs` and site 1's clock samples are not the voter's. Fixed in `d90d0ab`: `statuses()` and the clock sampler now call each site's current voter from the committed config.
