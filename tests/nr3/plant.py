@@ -238,7 +238,9 @@ def main():
                 code, out, broke = run(t)
             finally:
                 open(p, 'wb').write(orig)
-                os.remove(JOURNAL)
+                # A concurrent `--check` (the pre-commit hook) may already have restored it from the journal.
+                if os.path.exists(JOURNAL):
+                    os.remove(JOURNAL)
             if broke:
                 print(f'{i:2} DID NOT COMPILE  {name}', flush=True)
             elif code != 0:
