@@ -321,10 +321,8 @@ impl GitShard {
     }
 
     /// Its own site's bucket first, then the other copies.
-    fn my_buckets(&self, site: u8) -> Result<Vec<R2>> {
-        let mut v: Vec<(SiteId, R2)> = buckets(&self.env)?;
-        v.sort_by_key(|(s, _)| (s.0 != site, s.0));
-        Ok(v.into_iter().map(|(_, b)| b).collect())
+    fn my_buckets(&self, site: u8) -> Result<Vec<(SiteId, R2)>> {
+        Ok(graftyard_git::catchup::own_first(SiteId(site), buckets(&self.env)?))
     }
 }
 
@@ -341,7 +339,7 @@ impl DurableObject for GitShard {
         let site = self.me().await?;
         let host = self.host(site);
         let owned = self.my_buckets(site)?;
-        let bs: Vec<&R2> = owned.iter().collect();
+        let bs: Vec<(SiteId, &R2)> = owned.iter().map(|(s, b)| (*s, b)).collect();
         let log = StubChain { stub: chain_stub(&self.env)? };
         let path = url.path().to_owned();
         if !matches!(path.as_str(), "/kill" | "/status" | "/teardown") {

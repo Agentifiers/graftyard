@@ -501,11 +501,13 @@ impl IssueCmd {
         v: &RepoView<'_>,
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
-        self.decide_in(v, deps, false, None, false)
+        self.decide_in(v, deps, false, None, false, false)
     }
 
     /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
     /// carry `AgentMeta`, `AgentGate`, and `AgentPolicy`. The agent refusals write nothing and apply in any format.
+    /// `reviews` says it is format 32.22 (`call::REPO_FORMAT_REVIEWS`), so a review comment outside a review submits
+    /// its review as `ReviewEvent::SingleComment`.
     pub fn decide_in(
         &self,
         v: &RepoView<'_>,
@@ -513,6 +515,7 @@ impl IssueCmd {
         agent: bool,
         session: Option<&graftyard_identity::SessionId>,
         leases: bool,
+        reviews: bool,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
         let app = match (&self.actor.actor, &self.actor.credential) {
@@ -744,17 +747,17 @@ impl IssueCmd {
                 let id = v.next_id(if thread { Tier::Core } else { Tier::Metadata })?;
                 // A review comment outside a review, a reply too, is as on GHES a single-comment review's: a COMMENTED
                 // review with no body on the comment's commit, after the comment so `replay` answers the comment's
-                // id. The review's id is Core's next: after the thread's own in Core's block for a new thread. Not
-                // for a commenter whose current verdict approves or requests changes, which a COMMENTED `Submitted`
-                // would replace in the fold: that comment keeps no review [inference: GHES gives it one and keeps
-                // the verdict; the fold has no review that leaves the verdict alone].
+                // id. The review's id is Core's next: after the thread's own in Core's block for a new thread. In
+                // format 32.22 it is a `SingleComment`, which leaves an APPROVED or CHANGES_REQUESTED verdict as it
+                // is, as GHES does. In an earlier format it is a `Submitted`, which would replace that verdict, so a
+                // commenter who holds one gets no review there.
                 let single = match on {
                     CommentTarget::Review { n, review: None, at } => {
                         let who = int(me.map_or(0, |a| a.0.0));
                         let verdict =
                             get_rec::<crate::tiers::VerdictRow>(v.core(), "review_verdict", &[n_key(*n), who]);
                         match verdict.map(|r| r.state) {
-                            Some(ReviewState::Approved | ReviewState::ChangesRequested) => None,
+                            Some(ReviewState::Approved | ReviewState::ChangesRequested) if !reviews => None,
                             _ => {
                                 let review = if thread {
                                     let block = ids(v.core()).block();
@@ -781,13 +784,17 @@ impl IssueCmd {
                 };
                 let mut evs = one(RepoEvent::Comment(ev));
                 if let Some((n, review, at)) = single {
-                    evs.push(RepoEvent::Review(ReviewEvent::Submitted {
-                        id: review,
-                        n,
-                        reviewer: me,
-                        state: ReviewState::Commented,
-                        commit: at.commit,
-                        body: "".into(),
+                    evs.push(RepoEvent::Review(if reviews {
+                        ReviewEvent::SingleComment { id: review, n, reviewer: me, commit: at.commit }
+                    } else {
+                        ReviewEvent::Submitted {
+                            id: review,
+                            n,
+                            reviewer: me,
+                            state: ReviewState::Commented,
+                            commit: at.commit,
+                            body: "".into(),
+                        }
                     }));
                 }
                 Ok((evs, IssueOut::Id(id)))

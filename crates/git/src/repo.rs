@@ -855,7 +855,10 @@ impl Fold for RepoFold {
             )
             | RepoEvent::Comment(C::Resolved { actor: a, .. })
             | RepoEvent::Review(
-                R::Submitted { reviewer: a, .. } | R::Dismissed { actor: a, .. } | R::Requested { actor: a, .. },
+                R::Submitted { reviewer: a, .. }
+                | R::Dismissed { actor: a, .. }
+                | R::Requested { actor: a, .. }
+                | R::SingleComment { reviewer: a, .. },
             )
             | RepoEvent::Labels(LabelEvent::Applied { actor: a, .. })
             | RepoEvent::LfsLock(LfsLockEvent::Deleted { actor: a, .. })
@@ -2195,6 +2198,20 @@ impl Command for RepoCmd {
             RepoCmd::Lifecycle(c) => RepoOut::Lifecycle(c.replay(events)),
             RepoCmd::Counts(c) => RepoOut::Counts(c.replay(events)),
             RepoCmd::ConsumerCursor(c) => RepoOut::Counts(c.replay(events)),
+        }
+    }
+    /// An issue command without its `render`, the reply the leader renders from its `&Acked`, which no event stores:
+    /// over m3org's Authz fold it was 10,262 to 10,426 of a command's 10.8 KB, and the rest, 538 to 635 bytes, is about
+    /// what its events store (LM-1 round 15b, `tests/am1/results/lm1-memory.md` on `lm1-memory`). A merge's `encode`
+    /// already leaves its render out.
+    fn stored_len(&self) -> usize {
+        match self {
+            // The command encodes as JSON, so `"render": null` in place of the render is the bare command's length.
+            RepoCmd::Issue(c) => {
+                let render = serde_json::to_vec(&c.render).map_or(0, |v| v.len());
+                self.encoded_len() - render.saturating_sub(4)
+            }
+            _ => self.encoded_len(),
         }
     }
 }

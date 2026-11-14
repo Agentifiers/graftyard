@@ -190,7 +190,8 @@ pub enum KvCmd {
         value: String,
     },
     /// A write as admission sees it: a push is a compare-and-set of `key` from `expect` (refused `Stale` otherwise),
-    /// any other write a put. `pack` bytes ride inline.
+    /// any other write a put. `pack` bytes ride inline. `render` bytes ride in the command and no event stores them,
+    /// as an `IssueCall`'s reply render (`Command::stored_len`).
     Write {
         key: String,
         expect: Option<String>,
@@ -198,6 +199,7 @@ pub enum KvCmd {
         actor: Option<u64>,
         push: bool,
         pack: usize,
+        render: usize,
     },
 }
 
@@ -234,7 +236,7 @@ impl Record for KvCmd {
                 e.bytes(&vec![0; *bytes]);
             }
             KvCmd::Future => e.u8(4),
-            KvCmd::Write { key, expect, value, actor, push, pack } => {
+            KvCmd::Write { key, expect, value, actor, push, pack, render } => {
                 e.u8(5);
                 e.str(key);
                 opt(&mut e, expect.as_ref());
@@ -242,6 +244,7 @@ impl Record for KvCmd {
                 e.option(actor.as_ref(), |e, a| e.u64(*a));
                 e.u8(u8::from(*push));
                 e.bytes(&vec![0; *pack]);
+                e.bytes(&vec![0; *render]);
             }
             KvCmd::PutDep { key, value } => {
                 e.u8(6);
@@ -307,5 +310,11 @@ impl Command for KvCmd {
     fn replay(&self, _events: &[KvEvent]) -> bool {
         // A refused command leaves no row, so a row means the command applied.
         true
+    }
+    fn stored_len(&self) -> usize {
+        match self {
+            KvCmd::Write { render, .. } => self.encoded_len() - render,
+            _ => self.encoded_len(),
+        }
     }
 }
