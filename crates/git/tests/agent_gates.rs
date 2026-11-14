@@ -900,3 +900,84 @@ fn check_run_creates_take_distinct_ids_from_the_block_in_decide() {
     });
     assert_eq!(named_e.count(), 1, "applied once");
 }
+
+// ---- admission's write marks ----
+
+/// The repository leader's admission, as its `/status` reports it.
+fn admission(w: &World) -> graftyard_raft::AdmissionView {
+    w.repo.members[w.repo.leader().0 as usize].admission().expect("the leader's admission")
+}
+
+fn open_issue(who: i64, t: &str) -> RepoCmd {
+    issue(
+        user(who),
+        IssueOp::OpenIssue { title: t.into(), body: "".into(), labels: SmallVec::new(), assignees: SmallVec::new() },
+    )
+}
+
+/// `hot` from `RepoFold`'s marks: HOT_PUSHES is 2 a second over HOT_WINDOW's 5 s, so 10 pushes in one entry leave the
+/// group cold and 11 turn it hot. Writes that move no ref never do.
+#[test]
+fn a_repo_group_turns_hot_above_the_push_rate_and_stays_cold_below_it() {
+    let mut w = World::new();
+    let pushes = |from: u32, n: u32| -> Vec<RepoCmd> {
+        let p = |i| RepoCmd::Push(push(user(WRITER), vec![up(&format!("refs/heads/h{i}"), None, Some(oid(i)))], &[]));
+        (from..from + n).map(p).collect()
+    };
+    let o = w.commit_all((0..11).map(|i| open_issue(WRITER, &format!("i{i}"))).collect());
+    assert!(o.iter().all(Result::is_ok), "{o:?}");
+    assert!(!admission(&w).hot, "11 issues moved no ref");
+    // Past the seed's push of `main`, so the window holds only what follows.
+    let window = graftyard_raft::admit::HOT_WINDOW.as_millis() as u64;
+    w.now = Timestamp(w.now.0 + window);
+    let o = w.commit_all(pushes(0, 10));
+    assert!(o.iter().all(|o| refs(o) == [RefOutcome::Ok]), "{o:?}");
+    assert!(!admission(&w).hot, "10 pushes in 5 s is 2 a second, not above it");
+    // Past the window those 10 no longer count, so a fresh 11 is what turns it hot.
+    w.now = Timestamp(w.now.0 + window);
+    let o = w.commit_all(pushes(100, 11));
+    assert!(o.iter().all(|o| refs(o) == [RefOutcome::Ok]), "{o:?}");
+    assert!(admission(&w).hot, "11 pushes in 5 s");
+}
+
+/// DEMOTE_PER_MIN from `RepoFold`'s marks: a user token the edge classes Human keeps Human through 59 committed writes
+/// in the minute, pushes and issues alike, and the 60th demotes it to Agent.
+#[test]
+fn an_actor_past_demote_per_min_is_demoted() {
+    use graftyard_raft::admit::{ActorKey, Admit, AdmitClass, DEMOTE_PER_MIN};
+    let mut w = World::new();
+    let mut cmds: Vec<RepoCmd> = (0..30)
+        .map(|i| RepoCmd::Push(push(user(WRITER), vec![up(&format!("refs/heads/d{i}"), None, Some(oid(i)))], &[])))
+        .collect();
+    cmds.extend((0..DEMOTE_PER_MIN - 1 - 30).map(|i| open_issue(WRITER, &format!("d{i}"))));
+    let o = w.commit_all(cmds);
+    assert!(o.iter().all(Result::is_ok), "{o:?}");
+    let class = |w: &mut World, i: u32| {
+        let a = Admit {
+            class: AdmitClass::Human,
+            actor: Some(ActorKey(WRITER as u64)),
+            push: false,
+            inline: 0,
+            placement_ok: true,
+        };
+        let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
+        let c = open_issue(WRITER, &format!("probe{i}"));
+        let class = w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted").class;
+        w.settle();
+        class
+    };
+    assert_eq!(class(&mut w, 0), AdmitClass::Human, "59 writes in the minute");
+    assert_eq!(class(&mut w, 1), AdmitClass::Agent, "60 writes in the minute");
+    // Another user is not counted with it.
+    let a = Admit {
+        class: AdmitClass::Human,
+        actor: Some(ActorKey(WRITER2 as u64)),
+        push: false,
+        inline: 0,
+        placement_ok: true,
+    };
+    let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
+    let c = open_issue(WRITER2, "other");
+    assert_eq!(w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted").class, AdmitClass::Human);
+    w.settle();
+}
