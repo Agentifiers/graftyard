@@ -1055,6 +1055,9 @@ impl<F: Family> Routes<F> {
             let f = raft::Command::format(&c.cmd);
             *self.host.stats.borrow_mut().received.entry(format!("recv:{}.{}", f.family, f.version)).or_insert(0) += 1;
             let cmd = c.cmd.clone();
+            // LM-1 round 14: what admission prices each command at (`Admission::cmd_bytes`), by the class it queued
+            // under: its encoded bytes without an Agent inline pack.
+            let priced = (raft::Record::encoded_len(&c.cmd), c.admit.map_or(0, |a| a.inline));
             let (r, out) = match c.admit {
                 None => {
                     let (r, out) = self.host.step(|m, t| m.commit(t, rid, c.cmd))?;
@@ -1062,6 +1065,9 @@ impl<F: Family> Routes<F> {
                 }
                 Some(a) => self.host.step(|m, t| m.commit_as(t, rid, c.cmd, a.admit()))?,
             };
+            if let Ok(a) = &r {
+                self.host.stats.borrow_mut().admitted_bytes(a.class, priced.0, priced.1);
+            }
             let w = match r {
                 Ok(a) => Ok((a.ticket, self.host.wait_ticket(a.ticket, Some((rid, at, Some(cmd)))))),
                 Err(e) => {
@@ -1350,9 +1356,12 @@ impl<F: Family> Routes<F> {
                     "pressure": a.pressure,
                     // LM-1 round 14: B0-33 committed about 33 commands/s of small entries against 252 offered, so the
                     // measured capacity the token bucket refills from is read alongside the queue.
-                    "capacity": a.capacity, "retryAfterS": a.retry_after_s,
+                    "capacity": a.capacity, "retryAfterS": a.retry_after_s, "cmdBytes": a.cmd_bytes,
+                    "roundMs": a.round_ms,
                 })),
                 "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
+                "admittedBytes": host::admitted_bytes_summary(&s.admitted_bytes),
+                "bigTx": s.big_tx.iter().map(|(n, b, mix)| json!({ "stmts": n, "bytes": b, "mix": mix })).collect::<Vec<_>>(),
             });
             let mut v = v;
             v["busyPages"] = json!(s.busy_pages);

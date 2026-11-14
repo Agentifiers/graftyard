@@ -1728,6 +1728,17 @@ large transactions (many statements), not by entry bytes in general; with Worker
 synchronous CPU inside `transactionSync` would read as later inputs' `gate` and `turn`, and those read 0 for 99.8% of
 confirms, so the isolate was not busy enough to delay them [inference from the clock rule].
 
+**The 3 large confirms [partly measured].** They fell in the window (stats reset at 05:41:07Z), so they were not the
+archive alarm's `Promoted` (index 32) and `Archived` (index 34), which Workers Logs show at 05:37:07Z and 05:37:08Z,
+before it; no other archive, promote or install line appears for the group through 05:47Z, and the learners' "no
+install source" lines are from 05:37Z too. So they were not Promoted, Archived or an install. What is left is a fold
+write: a leader transaction of up to 1,560 statements is many entries' apply in one input (each applied request
+writes its `request` row, and `store_fold` seals each tier row it changed), together with the queued appends of the
+inputs a deferred flush holds, whose log rows carry up to `AGENT_INLINE_ENTRY` of Agent inline packs each. A learner
+catch-up writes nothing on the leader. Which of the two carried the bytes is not measured: `/stats?summary=1` now
+keeps the statement mix (verb and table, count and bytes) of a member's newest 20 transactions of 100 KB or more
+(`bigTx`), and `a1.mjs` records it, so m26's B0-33 names them [the split between apply and appends is unverified].
+
 **Why B0-33 still fails: admission capacity.** Commit p50 / p99 29,888 / 30,363 ms, all of it queue (`queue:slot`
 p99 30,096 ms: commands wait AGENT_WAIT for the entry ahead) while the round is short (p50 196, p99 364 ms) and
 `queue:post` p99 245 ms. The leader cut 1,351 entries of 9,844 commands in the 335 s window, 7.3 per entry and about
@@ -1737,9 +1748,16 @@ not bind them, so the cut is held to about 7 commands an entry by the token buck
 capacity, where capacity is ENTRY_SOFT over the moving average of command bytes times entries per second at the
 moving average of the round (`crates/raft/src/member/leader.rs`, `Admission::capacity`). The average command bytes
 counts every class's soft bytes, so a few large human or bot commands lower the per-entry estimate for all
-[inference; not measured on this run]. `/stats?summary=1`'s `admission` now also returns `capacity` and
-`retryAfterS`, and `a1.mjs` samples the leader's admission every 10 s into the row (`leader` row field `admission`),
-for the next site day.
+[inference; not measured on this run]. `/stats?summary=1`'s `admission` now also returns `capacity`,
+`retryAfterS`, and the two moving averages the estimate uses, `cmdBytes` and `roundMs` (`AdmissionView`, a field
+addition in `crates/raft/src`, no behavior change), and `admittedBytes` gives each class's admitted commands' priced
+bytes (count, p50, p99, max, sum, and the sum of those of 10 KB or more). `a1.mjs` samples the leader's admission
+every 10 s into the row (field `admission`). Their tests fail on plants 92 and 93.
+
+The parent's arithmetic (2026-11-14): about 29 commands/s admitted at a 196 ms round means the bucket sized itself
+near 58/s, which at ENTRY_SOFT 100 KB needs `cmdBytes` near 9 KB, while entries carried 7.3 commands at a p50 of
+3.6 KB, so a mean raised by a few large commands may price every entry as byte-full [inference; m26's B0-33 runs
+first to measure it].
 
 Other lines: human pushes 109 of 189 ok, p99 29.7 s; merge:only p99 10.2 s; the fast user 470 of 495 ok (25 × 503);
 read:ref p99 9.0 s; leader 457 req/s with 0 feed polls.

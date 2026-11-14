@@ -365,6 +365,10 @@ pub struct AdmissionView {
     pub hot: bool,
     pub pressure: bool,
     pub retry_after_s: u32,
+    /// The moving averages `capacity` is computed from when it is measured: an admitted command's encoded bytes without
+    /// its Agent inline pack, and an `Events` entry's commit round in ms (LM-1 round 14's question of what prices B0-33).
+    pub cmd_bytes: f32,
+    pub round_ms: f32,
 }
 
 /// A read the host started with `Member::read`; its `Resolution::Read` carries the same id.

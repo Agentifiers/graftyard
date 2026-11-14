@@ -128,6 +128,39 @@ pub struct ConfirmSplit {
     pub bytes: u32,
 }
 
+/// The kinds of statement in a transaction of 100 KB or more (`CONFIRM_BIG`), each its count and argument bytes, keyed
+/// by the statement's verb and table (`stmt_kind`): which writes a large confirm carried (LM-1 round 14's 416 to 834
+/// KB confirms of up to 1,560 statements). The newest `BIG_KEPT` are kept.
+pub type BigTx = (u32, u32, Vec<(String, u32, u32)>);
+const CONFIRM_BIG: u32 = 100_000;
+const BIG_KEPT: usize = 20;
+
+/// A statement's verb and table: `INSERT log`, `DELETE request`, `INSERT "core_t3_pr"`.
+fn stmt_kind(q: &str) -> String {
+    let w: Vec<&str> = q.split_whitespace().collect();
+    let verb = w.first().copied().unwrap_or("?");
+    let table = w
+        .iter()
+        .position(|x| x.eq_ignore_ascii_case("INTO") || x.eq_ignore_ascii_case("FROM"))
+        .and_then(|i| w.get(i + 1))
+        .map(|t| t.split('(').next().unwrap_or(t).trim_matches('"'))
+        .unwrap_or("?");
+    format!("{verb} {table}")
+}
+
+/// Each statement kind's count and argument bytes in `stmts`, largest bytes first.
+fn stmt_mix(stmts: &[Stmt]) -> Vec<(String, u32, u32)> {
+    let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for st in stmts {
+        let e = by.entry(stmt_kind(st.0)).or_default();
+        e.0 += 1;
+        e.1 = e.1.saturating_add(stmt_bytes(std::slice::from_ref(st)).1);
+    }
+    let mut v: Vec<(String, u32, u32)> = by.into_iter().map(|(k, (n, b))| (k, n, b)).collect();
+    v.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
 /// Transaction sizes `confirm_split_summary` groups by: under 100 KB, under 1 MB, and the rest [guess for the bounds:
 /// ENTRY_SOFT is 100 KB, and a human pack is about 1 MiB].
 const CONFIRM_BYTES: [(&str, u32); 3] = [("lt100k", 100_000), ("lt1m", 1_000_000), ("ge1m", u32::MAX)];
@@ -160,6 +193,24 @@ pub fn confirm_split_summary(xs: &[ConfirmSplit]) -> Value {
                 "stmts": f(|c| c.stmts),
                 "bytes": f(|c| c.bytes),
             }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// `/stats?summary=1`'s `admittedBytes`: per class, the count, p50, p99 and max of the priced bytes, their sum, and the
+/// sum of those at or over 10 KB, so a reader sees which commands move `Admission::cmd_bytes`' mean.
+pub fn admitted_bytes_summary(by: &BTreeMap<&'static str, Vec<u32>>) -> Value {
+    let mut out = serde_json::Map::new();
+    for (k, xs) in by {
+        let mut s = xs.clone();
+        s.sort_unstable();
+        let at = |p: f64| s.get(((p * s.len() as f64) as usize).min(s.len().saturating_sub(1))).copied();
+        let sum: u64 = s.iter().map(|&x| u64::from(x)).sum();
+        let big: u64 = s.iter().filter(|&&x| x >= 10_000).map(|&x| u64::from(x)).sum();
+        out.insert(
+            k.to_string(),
+            json!({ "n": s.len(), "p50": at(0.5), "p99": at(0.99), "max": s.last(), "sum": sum, "sumOver10k": big }),
         );
     }
     Value::Object(out)
@@ -249,6 +300,8 @@ pub struct Stats {
     pub confirm_ms: Vec<u32>,
     /// Leader: each timed confirm split (`ConfirmSplit`), for `confirm_split_summary`.
     pub confirm_split: Vec<ConfirmSplit>,
+    /// Every member: the statement mix of its newest transactions of `CONFIRM_BIG` or more (`BigTx`).
+    pub big_tx: Vec<BigTx>,
     /// Leader: one AppendEntries call with entries, send to reply, per follower site, in ms.
     pub append_ms: BTreeMap<u8, Vec<u32>>,
     pub entries: u32,
@@ -302,6 +355,9 @@ pub struct Stats {
     /// Commands this member received, by format (`recv:<family>.<version>`), and `recv:unsupported` for bodies whose
     /// command it could not decode.
     pub received: BTreeMap<String, u32>,
+    /// Leader: each admitted command's priced bytes (encoded, less an Agent inline pack), by the class
+    /// it queued under (`admitted_bytes_summary`).
+    pub admitted_bytes: BTreeMap<&'static str, Vec<u32>>,
     pub alarms: Vec<String>,
     /// Object alarms that fired, and when the last one did.
     pub alarm_runs: u32,
@@ -359,6 +415,22 @@ impl Stats {
         self.test_merge_shed += v["shed"].as_u64().unwrap_or(0) as u32;
     }
 
+    /// Records one admitted command's priced bytes: `len` encoded, less `inline` when it queued as Agent, as
+    /// `Admission::cmd_bytes` counts it.
+    pub fn admitted_bytes(&mut self, class: raft::admit::AdmitClass, len: usize, inline: usize) {
+        use raft::admit::AdmitClass as A;
+        let (name, soft) = match class {
+            A::Human => ("human", len),
+            A::MergeQueue => ("mergeQueue", len),
+            A::Bot => ("bot", len),
+            A::Agent => ("agent", len.saturating_sub(inline)),
+        };
+        let v = self.admitted_bytes.entry(name).or_default();
+        if v.len() < SAMPLES_MAX {
+            v.push(soft.min(u32::MAX as usize) as u32);
+        }
+    }
+
     /// `/stats?reset=1`: drops the samples and counts a row reads back, and restarts the inbound clock.
     pub fn reset(&mut self) {
         self.commit_ms.clear();
@@ -367,6 +439,7 @@ impl Stats {
         self.apply_steps.clear();
         self.confirm_ms.clear();
         self.confirm_split.clear();
+        self.big_tx.clear();
         self.append_ms.clear();
         self.raft_in.clear();
         self.deps_ms.clear();
@@ -374,6 +447,7 @@ impl Stats {
         self.queue_ms.clear();
         self.queue_slot_ms.clear();
         self.queue_post_ms.clear();
+        self.admitted_bytes.clear();
         self.entries = 0;
         self.commands = 0;
         self.failed_calls = 0;
@@ -1783,6 +1857,13 @@ impl<F: Family> Host<F> {
     fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
         let stmts = std::mem::take(&mut *self.queue.borrow_mut());
         let (n_stmts, n_bytes) = stmt_bytes(&stmts);
+        if n_bytes >= CONFIRM_BIG {
+            let mut s = self.stats.borrow_mut();
+            if s.big_tx.len() >= BIG_KEPT {
+                s.big_tx.remove(0);
+            }
+            s.big_tx.push((n_stmts, n_bytes, stmt_mix(&stmts)));
+        }
         commit_tx(&self.state.storage(), stmts)?;
         if let Some(r) = self.requests.borrow().as_ref() {
             r.flushed();
@@ -3206,6 +3287,41 @@ mod tests {
         assert_eq!(v["ge1m"]["storage"]["p99"], 5, "a turn-bound confirm");
         let two = confirm_split_summary(&[c(100, 90, 1), c(80, 0, 2)]);
         assert_eq!(two["lt100k"]["storage"]["p99"], 80, "per sample: max(10, 80), not 100 - 90");
+    }
+
+    /// LM-1 round 14: an Agent command is priced without its inline pack and a Human one with all its bytes, and the
+    /// summary's sums show which commands carry the mean.
+    #[test]
+    fn admitted_bytes_price_an_agent_command_without_its_pack() {
+        use graftyard_raft::admit::AdmitClass as A;
+        let mut s = super::Stats::default();
+        s.admitted_bytes(A::Agent, 41_000, 40_000);
+        s.admitted_bytes(A::Human, 41_000, 40_000);
+        s.admitted_bytes(A::Agent, 300, 0);
+        let v = super::admitted_bytes_summary(&s.admitted_bytes);
+        assert_eq!(v["agent"]["n"], 2);
+        assert_eq!(v["agent"]["sum"], 1_300);
+        assert_eq!(v["agent"]["sumOver10k"], 0);
+        assert_eq!(v["human"]["sum"], 41_000, "a human command's pack is priced");
+        assert_eq!(v["human"]["sumOver10k"], 41_000);
+    }
+
+    /// A large transaction's mix names each statement's verb and table, quoted or not, largest bytes first.
+    #[test]
+    fn a_big_transaction_names_its_tables() {
+        use worker::SqlStorageValue as V;
+        assert_eq!(super::stmt_kind("INSERT OR REPLACE INTO log (idx, term) VALUES (?, ?)"), "INSERT log");
+        assert_eq!(super::stmt_kind("DELETE FROM \"core_t3_pr\" WHERE k0 = ?"), "DELETE core_t3_pr");
+        assert_eq!(super::stmt_kind("INSERT INTO request (rid) VALUES (?)"), "INSERT request");
+        let stmts = vec![
+            ("INSERT INTO request (rid) VALUES (?)", vec![V::Blob(vec![0; 10])]),
+            ("INSERT OR REPLACE INTO log (idx) VALUES (?)", vec![V::Blob(vec![0; 500])]),
+            ("INSERT INTO request (rid) VALUES (?)", vec![V::Blob(vec![0; 20])]),
+        ];
+        assert_eq!(
+            super::stmt_mix(&stmts),
+            vec![("INSERT log".to_string(), 1, 500), ("INSERT request".to_string(), 2, 30)]
+        );
     }
 
     /// The bytes a transaction carries: blobs and text by length, other values 8 each.

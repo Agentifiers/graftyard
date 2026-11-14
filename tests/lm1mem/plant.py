@@ -277,6 +277,14 @@ MUTANTS = [
     ('confirm split: integer arguments count no bytes', HOST,
      '            _ => 8,\n        })', '            _ => 0,\n        })',
      ['cargo', '-p', 'graftyard-site', '--lib', 'a_transaction_counts']),
+    # Round 14's admission and large-transaction instruments (`workers/site/src/host.rs`).
+    ('admitted bytes: an Agent command is priced with its inline pack', HOST,
+     '            A::Agent => ("agent", len.saturating_sub(inline)),', '            A::Agent => ("agent", len),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'admitted_bytes_price']),
+    ('big transaction: the table is the word after the verb, not after INTO or FROM', HOST,
+     '''.position(|x| x.eq_ignore_ascii_case("INTO") || x.eq_ignore_ascii_case("FROM"))''',
+     '''.position(|_| true)''',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_big_transaction']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

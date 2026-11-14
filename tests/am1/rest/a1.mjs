@@ -973,6 +973,9 @@ const v = {
       .map(([k, xs]) => [k, ps(xs)])),
     // Round 12's confirm split by transaction size: the gate wait, the turn queue, and storage (`sync - turn`).
     confirmSplit: lstats.confirmSplit ?? null,
+    // Round 14: admitted commands' priced bytes by class (what moves admission's `cmdBytes`), and the statement mix of
+    // the leader's newest transactions of 100 KB or more.
+    admittedBytes: lstats.admittedBytes ?? null, bigTx: lstats.bigTx ?? null,
     depFails: lstats.depFails,
     // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
     entries: lstats.entries, commands: lstats.commands,
