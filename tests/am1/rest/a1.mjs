@@ -548,6 +548,26 @@ if (plan.openPrs) {
   for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; }
 }
 
+// No learner catches up inside the window: before it starts, every learner has applied the leader's commit index as
+// setup left it (up to 120 s), so a learner's join and catch-up, which raised a leader's wasm high-water from 28 to
+// 73 MiB on graft-m3e (narrow-reads-3), falls in setup on every row. The wait and the leader's memory then are logged.
+{
+  const st = await statuses(CHAIN);
+  const lead = st.find((s) => s.role === "leader");
+  const ls = (st.find((s) => s.config)?.config?.config?.normal?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
+  if (lead && ls.length) {
+    const since = Date.now();
+    let behind = ls;
+    while (behind.length && Date.now() - since < 120_000) {
+      const at = await Promise.all(behind.map(async (l) => (await member(CHAIN, l.site, "/status", undefined, 15_000, l.name).catch(() => ({}))).v?.applied ?? 0));
+      behind = behind.filter((_, i) => at[i] < lead.commit);
+      if (behind.length) await sleep(2_000);
+    }
+    const mem = (await member(CHAIN, lead.site, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v?.wasmMemMb ?? null;
+    writeRow(OUT, { step: "learners caught up", learners: ls.length, behind: behind.length, commit: lead.commit, waitMs: Date.now() - since, leaderWasmMb: mem });
+    log(`learners caught up to ${lead.commit}: ${ls.length - behind.length}/${ls.length} in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
+  }
+}
 t0 = Date.now() + 5_000;
 end = t0 + seconds * 1000;
 
