@@ -693,6 +693,59 @@ fn a_promised_voter_refuses_a_cut_off_rival() {
     assert_ne!(c.m(C).role(), Role::Leader);
 }
 
+/// A voter that granted a rival's pre-vote starts no campaign of its own for one CALL_DEADLINE, so the rival's real
+/// vote is not split. Before, suspect reports that reached B and C together started both, each passed pre-vote, and
+/// each refused the other as `Voted` while A was silent, for three terms (`long_liveness` writes seeds 3052 and 14011).
+#[test]
+fn a_voter_that_granted_a_rivals_pre_vote_lets_it_win() {
+    let mut c = Cluster::new(23);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(B).term();
+    c.crash(A);
+    c.advance(10_001);
+    assert_eq!(c.on(C, |m, now| m.campaign(now)), Verdict::Started);
+    let pre = c.inbox.iter().position(|e| e.to == B).expect("pre-vote to B");
+    let pre = c.inbox.remove(pre);
+    c.on(B, |m, now| m.step(now, C, pre.msg.clone()));
+    // A report about A reaches B before C's real vote does.
+    c.advance(50);
+    assert_eq!(c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(3), A, term)), Verdict::Busy);
+    // C's pre-vote sent again, as when B's answer is lost, does not extend the wait: one CALL_DEADLINE per term asked.
+    c.advance(850);
+    c.on(B, |m, now| m.step(now, C, pre.msg));
+    c.advance(101);
+    assert_eq!(c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(3), A, term)), Verdict::Started);
+    c.deliver(|e| e.to != A);
+    assert_eq!(c.m(C).role(), Role::Leader);
+    assert_eq!(c.m(C).term(), Term(term.0 + 1));
+}
+
+/// A voter whose own pre-vote is out, granting a lower-id rival's pre-vote, drops its own: else a third voter (the gray
+/// leader, in `long_liveness` writes seed 15198) grants both, and both split the real vote.
+#[test]
+fn a_voter_that_grants_a_rivals_pre_vote_drops_its_own() {
+    let mut c = Cluster::new(29);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(B).term();
+    // A restarts as a follower and so grants any pre-vote whose log is as current as its own, as the gray leader did.
+    c.crash(A);
+    c.advance(10_001);
+    c.restart(A);
+    assert_eq!(c.on(C, |m, now| m.campaign(now)), Verdict::Started);
+    assert_eq!(c.on(B, |m, now| m.campaign(now)), Verdict::Started);
+    let from_b = c.inbox.iter().position(|e| e.from == B && e.to == C).expect("B's pre-vote to C");
+    let from_b = c.inbox.remove(from_b);
+    c.on(C, |m, now| m.step(now, B, from_b.msg));
+    // A grants both pre-votes, but its storage fails, so no real vote reaches it in time: only B goes on to the real
+    // vote, and C grants it.
+    c.deliver(|e| !(e.to == A && matches!(&e.msg, Message::Vote(v) if !v.pre)));
+    assert_eq!(c.m(B).role(), Role::Leader);
+    assert_eq!(c.m(B).term(), Term(term.0 + 1));
+    assert_eq!(c.m(C).term(), Term(term.0 + 1));
+}
+
 /// A vote is persisted before the grant leaves, and a restart keeps it: no second vote in that term.
 #[test]
 fn a_restarted_voter_does_not_vote_twice_in_a_term() {
