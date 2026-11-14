@@ -3079,6 +3079,18 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** A group whose background placement leaves it `Degraded` or without a leader, which `fresh.mjs` checks after each run. Or commit latency on new groups during the placement window that some caller cannot take.
 
+#### A read before `RepoOwner` commits answers 404
+
+**Decision.** A repository member asked to join reads the `RepoOwner` row through `Names`. When the `Names` leader answers with no row, the member refuses with `{"refused": {"noRepoOwner": id}}`, distinct from a read that failed (`{"source": ..}`). `graftyard_lookup::create` names `NOT_CREATED` in its error only when a majority of the bootstrap members refused that way. The edge's repository reads that create the group on first use (`tier_rows`, `api_rows`, and the read gate's `core_rows`) answer that error 404 on REST, the GraphQL `NOT_FOUND`, and git's "Repository not found." The read gate returns `Hidden` without caching it. Every other failure stays 503, including a member that holds the row but has not joined yet.
+
+**Why.** After the change above, a `GET /repos/{o}/{r}` sent while its create ran answered 503 "0 of 3 joined" on 35 of 129 such reads, in the 10 to 30 s before `RepoOwner` commits [measured, `tests/am1/results/fresh-repo.md`]. The repository does not exist for any caller in that window. GitHub answers 404 for a repository no one can see, and 503 tells a client to retry against an outage. A majority is required so that a single member whose `Names` read raced the commit cannot hide a repository that exists.
+
+**Beat.** Reading `RepoOwner` on the edge before every first-use create, which adds a `Names` read to a path that only needs it when the create fails. Treating any "0 of 3 joined" as 404, which would make an outage look like "not found".
+
+**Evidence.** `crates/lookup/src/lib.rs`, `only_a_majority_with_no_repo_owner_row_is_not_created`; the hosted rerun in `tests/am1/results/fresh-repo.md`, "Follow-up: 404 before `RepoOwner`".
+
+**Flip.** A 404 for a repository whose `RepoOwner` row had committed, or members of an older release whose refusals keep the window at 503 after a site day.
+
 #### `mkrepos.mjs` sends a create once
 
 **Decision.** `tests/am1/runs/mkrepos.mjs` sends `POST /orgs/m3org/repos` once with a 400 s timeout. It no longer re-sends the request through `api`, and it no longer counts a 422 followed by a 200 GET as a create.

@@ -1,8 +1,9 @@
 // fresh-repo's hosted check (tests/am1/results/fresh-repo.md): N fresh m3org repositories created back to back, one
 // at a time, each followed by a push to `main`. Each create is sent once and never re-sent, so a slow create is
 // measured, not hidden behind a 422 and a GET (`tests/am1/runs/mkrepos.mjs` did that on m23). For each repository:
-//   - the create's status and wall, and every `GET /repos/m3org/<name>` sent every 3 s while it runs (LM-1's 503
-//     "0 of 3 joined" was such a read: measured, not judged, since the repository does not exist until the 201);
+//   - the create's status and wall, and every `GET /repos/m3org/<name>` sent every 3 s while it runs: each must be
+//     404 (not created yet) or 200. LM-1's 503 "0 of 3 joined" was such a read; with JOINED_503_OK=1 (main before
+//     the follow-up) it is counted, not judged;
 //   - after the 201: `GET /repos` must answer 200, and `main` must be in ls-refs on the first read (auto_init's commit,
 //     which the create acknowledged);
 //   - a push of one commit to `main`, then ls-refs on the next read must name the pushed commit;
@@ -11,8 +12,8 @@
 //   - at the end, once the last create's placement has had PLACE_WAIT_MS (default 150 s), each group's newest committed config is a
 //     `Normal` one of 3 voters (the tools edge's `/status`): the background placement finished and left no group
 //     `Degraded`.
-// Writes one JSON row per repository to OUT, then a summary; exits 1 on any create failure, slow create, read after
-// the 201 that is not 200, missing `main`, failed push, or group without 3 voters.
+// Writes one JSON row per repository to OUT, then a summary; exits 1 on any create failure, slow create, read during it that is not 200 or 404,
+// read after the 201 that is not 200, missing `main`, failed push, or group without 3 voters.
 //   node tests/am1/fresh/fresh.mjs PREFIX N OUT
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -28,7 +29,8 @@ const call = (method, path, body, ms) => fetch(`${EDGE}${path}`, {
 }).then(async (r) => ({ status: r.status, body: await r.text() })).catch((e) => ({ status: 0, body: String(e) }));
 const CREATE_MAX_MS = Number(process.env.CREATE_MAX_MS ?? 60_000);
 const PLACE_WAIT_MS = Number(process.env.PLACE_WAIT_MS ?? 150_000);
-const fails = { create: 0, slow: 0, readAfter: 0, mainAfterCreate: 0, push: 0, mainAfterPush: 0, voters: 0 };
+const JOINED_503_OK = process.env.JOINED_503_OK === "1";
+const fails = { create: 0, slow: 0, during: 0, readAfter: 0, mainAfterCreate: 0, push: 0, mainAfterPush: 0, voters: 0 };
 const made = [];
 const createMs = [];
 const during = {};
@@ -49,7 +51,10 @@ for (let i = 0; i < n; i++) {
   done = true;
   await racing;
   const v = { name, at: new Date(t0).toISOString(), status: r.status, createMs: Date.now() - t0, reads };
-  for (const x of reads) during[x.status] = (during[x.status] ?? 0) + 1;
+  for (const x of reads) {
+    during[x.status] = (during[x.status] ?? 0) + 1;
+    if (x.status !== 200 && x.status !== 404 && !(JOINED_503_OK && /joined/.test(x.msg ?? ""))) fails.during++;
+  }
   if (r.status !== 201) {
     fails.create++;
     v.body = r.body.slice(0, 300);

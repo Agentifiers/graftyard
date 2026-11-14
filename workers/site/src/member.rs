@@ -1649,7 +1649,12 @@ impl<F: Family> Routes<F> {
             }
             Source::Owner(owner) => owner_record(&self.host.env, owner).await.map_err(|e| json!({ "source": e }))?,
             Source::Repo { repo, owner } => {
-                let named = repo_owner(&self.host.env, repo).await.map_err(|e| json!({ "source": e }))?;
+                // No row yet is its own refusal: the repository's create has not committed `RepoOwner`, so the edge
+                // answers its read as for a repository the caller cannot see (`graftyard_lookup::NOT_CREATED`).
+                let named = repo_owner_row(&self.host.env, repo)
+                    .await
+                    .map_err(|e| json!({ "source": e }))?
+                    .ok_or_else(|| json!({ "noRepoOwner": repo.0.0 }))?;
                 if named != owner {
                     return Err(json!({ "notTheRepoOwner": named.0.0 }));
                 }
@@ -2406,12 +2411,16 @@ pub async fn owner_record(env: &Env, owner: AccountId) -> std::result::Result<Pl
 
 /// A repository's owner, from its `RepoOwner` row on `Names` shard `name_shard(Repo(repo))`, through `fresh`.
 pub async fn repo_owner(env: &Env, repo: graftyard_types::RepoId) -> std::result::Result<AccountId, String> {
+    repo_owner_row(env, repo).await?.ok_or_else(|| format!("{repo:?} has no RepoOwner row"))
+}
+
+/// `repo_owner`, with `None` only when the `Names` leader answered and holds no row; a read that failed is `Err`.
+async fn repo_owner_row(env: &Env, repo: graftyard_types::RepoId) -> std::result::Result<Option<AccountId>, String> {
     let chain = ChainId::Names(graftyard_identity::name_shard(&graftyard_identity::NameKey::Repo(repo)));
     let record = crate::release::system_record(env, chain).await?;
     let (v, _) = lookup::call(env, chain, &record, "/read", &json!({ "q": { "repoOwner": repo.0.0 } })).await?;
     serde_json::from_value::<Option<AccountId>>(v.pointer("/value/repoOwner").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("{repo:?} has no RepoOwner row"))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
