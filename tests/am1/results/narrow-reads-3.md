@@ -477,6 +477,43 @@ completing: 15.7 s, seed 11431), and Porcupine finds every history linearizable:
 Rows: `tests/nr3/rows/a1-b0-29-gate12.jsonl`, `run-gate12.status`, `lmem-gate12.jsonl`, `mem-gate12.json`,
 `egress-gate12.txt`, `fresh-gate12.jsonl`, `trace-gate12.json.gz`.
 
+### Gate 13 on main 31d19c9: READ_PIPELINE in, the API line passes
+
+The first gate counting toward the streak: main 31d19c9 (narrow-reads-3 merged, with READ_PIPELINE, the read floor
+and the entries ahead of a learner's answer), site day 12 from that commit, the adopted B0-29 shape. Repo 65558,
+window 09:44:37 to 09:54:37Z, torn down [measured]:
+
+| Line | Gate 13 | Gate 12 (1 batch in flight) | B0-29 pass |
+| --- | --- | --- | --- |
+| API p50 / p99, served | 499 / 1,575 ms, 99.96% (112,716 reads) | 672 / 2,011 ms, 99.93% | p99 ≤ 2,000 ms, ≥ 99% |
+| Tier read at the edge, p50 / p99 | 466 / 1,438 ms (grant p99 933, build wait p99 100) | 636 / 1,935 ms | |
+| Commit p50 / p99 | 411 / 1,638 ms (queue p99 1,372, round 341, confirm 112) | 997 / 5,140 ms | p99 ≤ 600 ms (B0-02's) |
+| merge:only p99 | 2,169 ms | 5,985 ms | ≤ 2 s |
+| Leader | site 0, term 2 throughout | same | no change |
+| Read-your-write | 150 of 150, 0 stale | 150 of 150, 0 stale | 0 stale |
+
+A pass on the API line, 425 ms under it. Setup: 500 of 500 PRs opened, 8 learners caught up in 2.5 s, leader 11.7 MiB.
+
+**Leader memory.** 82 MiB by the analytics peak, under the 100 MiB stop line, and 46.9 MiB by `/stats`. `memSplit` at
+the `/stats` peak (09:54Z): log 8.0 MB (the `LOG_BYTES` cap), read caches 1.67 MB (dumps 1.61 MB, narrow 54 KB), held
+61 KB, in-flight call bodies 163 KB, fold rows buffered 0, statements queued 0. Over the window in-flight call bodies
+peaked at 393 KB, read answers streaming at 219 KB and queued statements at 124 KB. So what `memSplit` names stays
+under 10 MB, and the remaining 35 to 70 MiB is wasm memory the isolate already grew, which it never returns
+(`wasmMemMb` only grows) [measured; that the rest is past allocation high-water, not live data, is an inference].
+Learners peaked at 59 to 66 MiB.
+
+**Read share** (`readStages` n): l3 24.7%, l6 23.7%, l7 12.1%, l4 11.7%, l5 9.4%, l0 8.6%, l2 7.4%, l1 2.5%. Reads
+spread wider than gate 12's 71% on two learners. Grant p99 851 to 986 ms on every learner, with `late` 487 to 1,381
+each and at most 24 shed.
+
+**The round trip** (`tests/nr3/legs.py gate13`, p50 / p90 / p99 ms): out 31 to 74 / 140 to 276 / 286 to 571, and back
+77 to 194 / 439 to 1,008 / 1,308 to 1,702. The leg out is shorter at p50 and p99 than on gate 12. The leg back's
+p90 and p99 are longer, with 8 batches per learner in flight. Leader confirms overlap 27 to 34% of batches, against
+53 to 65%. This tree has no send timestamps, so wire and input queue are still not separated.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate13.jsonl`, `run-gate13.status`, `lmem-gate13.jsonl`, `mem-gate13.json`,
+`egress-gate13.txt`, `fresh-gate13.jsonl`, `trace-gate13.json.gz`. Spend to 09:58Z: $21.73 of $40.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
