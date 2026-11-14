@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use graftyard_release::view::{ABANDON_MS, Freshness, Need, Replica, VIEW_CALL_MS};
+use graftyard_release::view::{ABANDON_MS, COPY_MS, Freshness, Need, Replica, VIEW_CALL_MS};
 use graftyard_release::{Anchor, Script, VersionId};
 use graftyard_types::{ChainId, PlacementRecord, SiteTable, Timestamp};
 use serde_json::{Value, json};
@@ -27,6 +27,11 @@ struct View {
     isolate: Option<u32>,
     /// The `Release` leader's site, as the last member that answered named it (`meta.leader`).
     leader: Option<graftyard_types::SiteId>,
+    /// A cold refresh's read of the sites' copies is still running.
+    copying: bool,
+    /// Each copy read that answered: site, ms from the cold refresh's start, the copy's entries, and how many this
+    /// replica took from it.
+    copies: Vec<(u8, u64, u64, u64)>,
 }
 
 thread_local! {
@@ -44,9 +49,13 @@ pub fn set_stale_max(ms: u64) {
 }
 
 /// Brings the view up to `Freshness::need` before a request is served: waits for a refresh only when the view is due
-/// for a wait, and then at most VIEW_CALL_MS from this request's arrival; otherwise starts one beside the request.
+/// for a wait, and then at most VIEW_CALL_MS from this request's arrival (COPY_MS for an isolate that holds no view,
+/// `cold`); otherwise starts one beside the request.
 pub async fn ensure(b: &Bindings<'_>, anchor: &Anchor, ctx: Option<&Context>) {
     let arrived = now_ms();
+    if with(|r| r.count()) == 0 {
+        return cold(b, anchor, ctx, arrived).await;
+    }
     loop {
         let now = now_ms();
         match VIEW.with(|v| v.borrow().fresh.need(now)) {
@@ -71,6 +80,36 @@ pub async fn ensure(b: &Bindings<'_>, anchor: &Anchor, ctx: Option<&Context>) {
     }
 }
 
+/// The first requests of an isolate that holds no view (`design/DESIGN.md`, Shape, `POINTER_TTL`). The refresh runs
+/// beside them and also reads every site's copy of the group's entries (`copies`). They wait until the group answers or
+/// a copy is taken, and at most COPY_MS from arrival, then go out with what is held: unpinned if neither came, as
+/// before the copy existed. The refresh goes on beside later requests, so the group's view replaces the copy.
+async fn cold(b: &Bindings<'_>, anchor: &Anchor, ctx: Option<&Context>, arrived: u64) {
+    let now = now_ms();
+    match VIEW.with(|v| v.borrow().fresh.need(now)) {
+        Need::Wait if VIEW.with(|v| v.borrow().fresh.running.is_none()) => {
+            VIEW.with(|v| v.borrow_mut().fresh.start(now, true));
+            beside(b.env, b.sites, anchor, ctx, now);
+        }
+        Need::Wait => {}
+        // A cold isolate whose refresh failed, or one beside requests: no request waits for it.
+        Need::Refresh => return refresh_beside(b.env, b.sites, anchor, ctx, false),
+        Need::Use => return,
+    }
+    while now_ms() < arrived + COPY_MS {
+        // The waited refresh is still running and no copy was taken, or it failed while the copies are still read.
+        let waiting = VIEW.with(|v| {
+            let v = v.borrow();
+            matches!(v.fresh.running, Some((_, true))) || (v.replica.count() == 0 && v.copying)
+        });
+        if !waiting {
+            break;
+        }
+        Delay::from(Duration::from_millis(10)).await;
+    }
+    VIEW.with(|v| v.borrow_mut().fresh.detach());
+}
+
 /// A refresh now, whatever `Freshness` says, for at most VIEW_CALL_MS: the release endpoint's second look before it
 /// refuses an entry whose signer its view does not hold, which a `Keys` committed since the last refresh may add.
 pub async fn refresh_now(b: &Bindings<'_>, anchor: &Anchor) {
@@ -92,11 +131,27 @@ pub fn refresh_beside(env: &Env, sites: &SiteTable, anchor: &Anchor, ctx: Option
         _ => return,
     }
     VIEW.with(|v| v.borrow_mut().fresh.start(now, false));
+    beside(env, sites, anchor, ctx, now);
+}
+
+/// Runs the refresh that started at `now` as a task, for at most ABANDON_MS.
+fn beside(env: &Env, sites: &SiteTable, anchor: &Anchor, ctx: Option<&Context>, now: u64) {
     let (env, sites, anchor) = (env.clone(), sites.clone(), *anchor);
+    let cold = with(|r| r.count()) == 0;
+    if cold {
+        VIEW.with(|v| v.borrow_mut().copying = true);
+    }
     let task = async move {
         let b = Bindings { env: &env, sites: &sites };
-        if crate::within(Duration::from_millis(ABANDON_MS), refresh(&b, &anchor, now)).await.is_none() {
-            failed(format!("no member answered within {ABANDON_MS} ms"));
+        let group = async {
+            if crate::within(Duration::from_millis(ABANDON_MS), refresh(&b, &anchor, now)).await.is_none() {
+                failed(format!("no member answered within {ABANDON_MS} ms"));
+            }
+        };
+        if cold {
+            futures_util::future::join(group, copies(&b, &anchor, now)).await;
+        } else {
+            group.await;
         }
     };
     match ctx {
@@ -146,7 +201,9 @@ pub fn brief() -> String {
         let mut v = v.borrow_mut();
         let id = *v.isolate.get_or_insert_with(|| (js_sys::Math::random() * 4_294_967_296.0) as u32);
         let age = v.fresh.fetched.map(|t| now_ms().saturating_sub(t).to_string()).unwrap_or_else(|| "none".into());
-        format!("count={};failing={};age={age};isolate={id:08x}", v.replica.count(), v.fresh.failing)
+        // The copy this isolate took, as `<site>@<ms>`, or `none`.
+        let copy = v.copies.iter().find(|c| c.3 > 0).map_or("none".into(), |c| format!("{}@{}", c.0, c.1));
+        format!("count={};failing={};age={age};isolate={id:08x};copy={copy}", v.replica.count(), v.fresh.failing)
     })
 }
 
@@ -163,6 +220,8 @@ pub fn status() -> Value {
             "oks": v.oks,
             "fails": v.fails,
             "lastError": v.last_error,
+            "copies": v.copies.iter().map(|c| json!({ "site": c.0, "ms": c.1, "entries": c.2, "took": c.3 }))
+                .collect::<Vec<_>>(),
             "pointers": {
                 "edge": f.pointers.edge.map(|x| x.to_string()),
                 "ops": f.pointers.ops.map(|x| x.to_string()),
@@ -174,6 +233,41 @@ pub fn status() -> Value {
             })).collect::<Vec<_>>(),
         })
     })
+}
+
+/// Reads every site's copy of the group's entries at once, for COPY_MS at most, and offers each to the replica as it
+/// answers (`Replica::adopt`: all of a copy's entries checked against this isolate's anchor or none of them, and only
+/// a copy longer than what is held). The first copy taken releases the requests waiting on the cold refresh.
+async fn copies(b: &Bindings<'_>, anchor: &Anchor, start: u64) {
+    let reads = b.sites.0.iter().map(|s| async move {
+        let name = graftyard_types::MemberRegistry::for_chain(s.id, ChainId::Release).do_name();
+        let stub = b.registry(s.id, &name).ok()?;
+        let mut res = stub.fetch_with_str("https://registry/release_copy").await.ok()?;
+        let v = res.json::<Value>().await.ok()?;
+        let copy: Vec<(Vec<u8>, Timestamp)> = v["entries"]
+            .as_array()?
+            .iter()
+            .filter_map(|e| Some((unhex(e[0].as_str()?)?, Timestamp(e[1].as_u64()?))))
+            .collect();
+        let ms = now_ms().saturating_sub(start);
+        VIEW.with(|w| {
+            let mut w = w.borrow_mut();
+            let took = match w.replica.adopt(anchor, &copy) {
+                Ok(n) => n,
+                Err(e) => {
+                    w.last_error = Some(format!("site {} copy refused: {}: {e}", s.id.0, e.variant()));
+                    0
+                }
+            };
+            w.copies.push((s.id.0, ms, copy.len() as u64, took));
+            if took > 0 {
+                w.fresh.detach();
+            }
+        });
+        Some(())
+    });
+    let _ = crate::within(Duration::from_millis(COPY_MS), futures_util::future::join_all(reads)).await;
+    VIEW.with(|v| v.borrow_mut().copying = false);
 }
 
 /// One refresh that started at `start`: the members to ask, one at a time with VIEW_CALL_MS each, until one answers.

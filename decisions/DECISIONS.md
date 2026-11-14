@@ -3131,7 +3131,7 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Evidence.** BF-43 run 2 (every request pinned by +3.2 s) and BF-8 (168,705 requests through a 601 s blackhole, p99 73 ms, none blocked), `tests/m5/results/m5-wp2.md`; `a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group`; plants 9 to 11. It gives a cold isolate nothing to keep: BF-8's isolates started during the blackhole served unpinned (`decisions/OPEN-QUESTIONS.md`, R20).
 
-**Flip.** A hosted run where an isolate's first request after an idle period waits its full second on a group that answers slowly but does answer, or an operator decision on R20 that cold isolates wait for the pins.
+**Flip.** A hosted run where an isolate's first request after an idle period waits its full second on a group that answers slowly but does answer, or an operator decision on R20 that cold isolates wait for the pins. R20 was decided for a copy outside the group instead ("A copy of the `Release` group's entries outside the group", below).
 
 #### A pointer undo moves the script's deployed release
 
@@ -3156,6 +3156,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** BF-48 hosted; `an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until`, `an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival`, `a_committed_stale_mode_is_honored_until_its_until`, `a_flag_covers_only_its_scope`; plants 12 to 20. The edge's signer precheck: `the_edge_prechecks_signers_against_its_cached_keys`, plants 21 and 22.
 
 **Flip.** A pending flag that a member could not verify because its `Keys` lagged the edge's, which would need the edge to send the `Keys` entry with it.
+
+#### A copy of the `Release` group's entries outside the group
+
+**Decision.** Every `Release` member, on the alarm right after it applies entries and on restore, writes the signed entries it applied, with their entry times and positions, to a copy in the `Release` chain's own `MemberRegistry` object on its site (`registry#36`, route `/release_copy`; `workers/site/src/release.rs`, `copy`; `workers/site/src/registry.rs`). The copy only grows: a write adds positions it lacks and changes nothing past a gap. An isolate that holds no view reads every site's copy beside its first refresh, for at most `COPY_MS` (500 ms), and takes one only through `Replica::adopt`: every entry it lacks passes `check` against the isolate's own anchor or none is taken, and a copy no longer than what the isolate holds adds nothing. Its first requests wait for the group or a taken copy, at most `COPY_MS` from arrival, then go out with what is held, unpinned if neither came. The refresh goes on beside later requests, so the group's view replaces the copy once a member answers (operator decision on R20, option 1, 2026-11-14).
+
+**Why.** BF-8 run 2 failed "requests keep the last pointers" only on isolates that started during the blackhole: the 18 started before held the pin on 15,451 of 15,451 requests, and of the 126 started during it, 123 held no view and served 122,791 of 153,254 requests unpinned, 1,214 of them on N+2 (`tests/m5/results/m5-wp2.md`). The registry is an existing per-site class that every script with the group's bindings already reaches, and the site fault and a blackholed group do not take it down, so it is not a new failure domain. The row is the committed entries themselves rather than a summary of the pins, because pins derive from many entries (a later intent clears one), and only the signed history lets an isolate check the copy against its anchor as it checks a member's page.
+
+**Beat.** Cold requests waiting for the group (option 2): breaks "no request waits on the group". Narrowing BF-8's row to isolates started before the blackhole (option 3): a substitution. A new Durable Object class or store for the copy: a new failure domain. A binding or variable carrying the last pin: a new script version per pin, which a site day must ship.
+
+**Evidence.** `a_cold_isolate_takes_a_sites_copy_whole_and_an_older_copy_never_rolls_its_view_back` and the cold case of `a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group` (`crates/release/src/tests/group.rs`); plants 2 and 3 in `tests/m5/plant_wp2.py`. BF-8 run 3: BF8RUN3.
+
+**Flip.** A cold read whose copies miss `COPY_MS` on more than 1% of cold isolates while a registry answers, which would raise the bound; or a `Release` log too long for one registry read, which would need a signed snapshot.
 
 #### The run stands in for `graft-ops`'s executor
 

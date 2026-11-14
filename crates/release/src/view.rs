@@ -9,6 +9,10 @@
 //!   adds nothing, and a page that starts past the replica's count is a gap, refused.
 //! - **Fail static.** A refresh that fails keeps the last view and is retried after `RETRY_MS`, not a full
 //!   `POINTER_TTL`, and no request waits on it (`Freshness`).
+//! - **The copy outside the group.** Each member writes the committed entries it applied to the `Release` chain's
+//!   `MemberRegistry` object on its own site. A cold isolate whose first refresh has no answer reads the copies for COPY_MS
+//!   and takes one only through `adopt`: every entry checked against its own anchor, all or nothing, and never
+//!   shorter than what it holds, so a stale copy cannot roll a view back and the group's view replaces it.
 //! - **Uncommitted `StaleMode`.** A flag the group could not commit reaches isolates through members' `pending`
 //!   rows. Each isolate verifies it again against its own cached `Keys` and honors it only while `until` is in the
 //!   future and at most `STALE_MAX` after the flag's first arrival.
@@ -29,6 +33,13 @@ pub const RETRY_MS: u64 = 1_000;
 pub const VIEW_CALL_MS: u64 = 1_000;
 /// A refresh beside requests still running after this long is replaced: three members at VIEW_CALL_MS each.
 pub const ABANDON_MS: u64 = 4 * VIEW_CALL_MS;
+/// The deadline of a cold isolate's read of the copies of the group's entries that the members keep, one per site, in
+/// the `Release` chain's own `MemberRegistry` object on that site (`design/DESIGN.md`, Shape, `POINTER_TTL`). The read
+/// asks every site at once and takes what answered by then. An idle Durable Object round trip between regions is 111 to
+/// 135 ms at p50 with p99 within 10 ms of it [measured, `tests/m0/results/m0-wp2.md`, "Transport"], so the near
+/// site's copy, and normally all three, answer well inside it; and it is half of VIEW_CALL_MS, the wait a cold request
+/// already has, so the read adds no wait [inference; BF-8 run 3 measures the reads, `tests/m5/results/m5-wp2.md`].
+pub const COPY_MS: u64 = 500;
 
 /// The `Cloudflare-Workers-Version-Overrides` value that pins `script` to `v`: a Structured Fields dictionary whose
 /// value is a String (https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/).
@@ -113,6 +124,14 @@ impl Freshness {
         self.running = None;
     }
 
+    /// The refresh requests wait for goes on beside them instead: a cold isolate took a site's copy, or the wait ran
+    /// out. Requests serve what is held, and the group's view replaces it once a member answers.
+    pub fn detach(&mut self) {
+        if let Some((r, true)) = self.running {
+            self.running = Some((r, false));
+        }
+    }
+
     /// A refresh reached no member by `now`: the view held stays.
     pub fn failed(&mut self, now: u64) {
         self.next = now + RETRY_MS;
@@ -192,6 +211,19 @@ impl Replica {
             self.fold.check(anchor, *at, &ev)?;
             self.fold.apply(&ev, *at);
             n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Takes a site's copy of the group's committed entries from position 0, as the members wrote it: only when every
+    /// entry the replica lacks passes `check`, so a copy with a bad or unsigned entry moves nothing, and a copy no
+    /// longer than the replica adds nothing, so an older copy never rolls a newer view back. Returns how many entries
+    /// it added.
+    pub fn adopt(&mut self, anchor: &Anchor, copy: &[(Vec<u8>, Timestamp)]) -> Result<u64, Refusal> {
+        let mut next = self.clone();
+        let n = next.extend(anchor, 0, copy)?;
+        if n > 0 {
+            *self = next;
         }
         Ok(n)
     }

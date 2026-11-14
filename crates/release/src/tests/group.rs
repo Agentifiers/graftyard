@@ -878,7 +878,8 @@ fn every_entry_kind_keeps_its_tag_and_bytes() {
 // ---- The cached view (M5-WP2) ----
 
 use crate::view::{
-    ABANDON_MS, Freshness, Need, POINTER_TTL_MS, RETRY_MS, Replica, covers, mismatch, verify_stale, version_override,
+    ABANDON_MS, COPY_MS, Freshness, Need, POINTER_TTL_MS, RETRY_MS, Replica, covers, mismatch, verify_stale,
+    version_override,
 };
 
 /// The group's committed entries as a member's `/view` pages them: each entry's bytes with its time.
@@ -944,6 +945,49 @@ fn a_replica_refuses_another_installs_or_a_tampered_history() {
     late[i].1 = Timestamp(late[i].1.0 + 5 * HOUR);
     let mut r = Replica::default();
     assert!(r.extend(&g.a, 0, &late).is_err());
+}
+
+#[test]
+fn a_cold_isolate_takes_a_sites_copy_whole_and_an_older_copy_never_rolls_its_view_back() {
+    let mut g = pinned();
+    let old = page(&g, 0, g.log.len());
+    let b = g.done(2);
+    g.ok(b);
+    g.upload(3);
+    let b =
+        g.intent(3, Intent::EdgeRoll { release: rel(3).0 }, &[ReleaseEntry::EdgePointer { pin: rel(1).0 }], &VENDOR);
+    g.ok(b);
+    let new = page(&g, 0, g.log.len());
+    // A cold isolate takes the copy written while the pin was live, and pins.
+    let mut cold = Replica::default();
+    assert_eq!(cold.adopt(&g.a, &old).unwrap(), old.len() as u64);
+    assert_eq!(cold.pin(Script::Edge), Some(vid(1, 3)));
+    // The group answers later with the roll that cleared the pin: its view replaces the copy's.
+    let n = cold.count();
+    cold.extend(&g.a, n, &new[n as usize..]).unwrap();
+    assert_eq!((cold.count(), cold.pin(Script::Edge)), (new.len() as u64, None));
+    // A copy older than the view held, from a site whose members fell behind, adds nothing and keeps the newer view.
+    assert_eq!(cold.adopt(&g.a, &old).unwrap(), 0);
+    assert_eq!((cold.count(), cold.pin(Script::Edge)), (new.len() as u64, None));
+    assert_eq!(cold.fold, g.f);
+    // A copy with one bad signature, or one entry unsigned, is ignored whole: no entry of it is used.
+    let mut bad = old.clone();
+    let last = bad[old.len() - 1].0.len() - 1;
+    bad[old.len() - 1].0[last] ^= 1;
+    let mut unsigned = old.clone();
+    let mut e = SignedEntry::decode(&unsigned[old.len() - 1].0).unwrap();
+    e.sigs.clear();
+    unsigned[old.len() - 1].0 = e.encode();
+    for copy in [bad, unsigned] {
+        let mut r = Replica::default();
+        assert!(r.adopt(&g.a, &copy).is_err());
+        assert_eq!((r.count(), r.pin(Script::Edge)), (0, None));
+    }
+    // Another install's copy, read against this install's anchor, moves nothing.
+    let other = Anchor { install: install(2), customer: public_key(&OTHER) };
+    let mut r = Replica::default();
+    assert!(r.adopt(&other, &old).is_err());
+    assert_eq!(r.count(), 0);
 }
 
 #[test]
@@ -1035,6 +1079,12 @@ fn a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_grou
     let mut cold = Freshness::default();
     cold.failed(0);
     assert_eq!(cold.need(RETRY_MS), Need::Refresh);
+    // A cold isolate that took a site's copy stops waiting while its refresh goes on beside requests.
+    let mut cold = Freshness::default();
+    cold.start(0, true);
+    cold.detach();
+    assert_eq!(cold.need(COPY_MS), Need::Use);
+    assert_eq!(cold.need(ABANDON_MS), Need::Refresh);
     // The next refresh that reaches a member ends it; one that started earlier does not make the view older.
     f.ok(700_000);
     f.ok(690_000);
