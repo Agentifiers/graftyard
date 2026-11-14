@@ -125,4 +125,32 @@ No member held that push. It never reached `/commit`. The other five have no edg
 
 Either answer still fails B0-32's gate (acknowledged within 5 s, or `ng … admission full`). The real failure is validation on cold shards: first-shard validates at the 15 s home wait while the pool shards rehydrated. That is what the warm-up and `write_mark` (`INLINE_MAX_HOT` staging on a hot group) should change.
 
+### 4. L0-12 m3fr1: the clock and feed fails, what the kept data shows
+
+**Every site-1 probe read a dead object.** Site 1's voter of repo:65554 is `repo:65554#6#f1` (a replacement, generation 6). `lib.mjs` `statuses()` and a1.mjs's clock sampler called site 1 by site alone, which reaches the first generation's `#1#f1`. That object answered at term 2, last 3, and commit 3 before, during, and after the row (checked live at 07:46Z: `#6#f1` follower at term 17, `#1#f1` follower at term 2). So site 1's column in `terms.mjs` and `admit.mjs` and site 1's clock samples are not the voter's. Fixed in `d90d0ab`: `statuses()` and the clock sampler now call each site's current voter from the committed config.
+
+**Leader churn.** The kept trace is `lm1-rows-m3f-data/terms-m3fr1-l0-12.jsonl`; site 1's column is the dead object. Sites 0 and 2 show the following:
+
+- Through the first 5 kills (06:18:59 to 06:25:11) the term held at 2. Each kill gave a 1 s gap, and site 0 led again.
+- From 06:25:11 to 06:28:59 the term climbed from 2 to 15, with 4 kills in that window. Leadership went 0 → 1 → 0 → 1. Leaderless spans ran 4 to 48 s; 06:26:31 to 06:27:19 had no member reporting leader.
+- Over the 600 s, site 0 led 471 s, site 1 110 s, and none 19 s.
+
+All 10 kill pushes answered ok. The trace went to LM-1. This build is before main `2456b8f` (liveness-slow-storage).
+
+**Clock (`maxAbsOffsetMs` 3,321, `lowerMs` 1,260).**
+
+- `maxAbsOffsetMs` is the offset from this orb's clock, not between members, so it is not the gate quantity. Measured live at 07:46Z, the orb ran 778 to 832 ms behind all three members, which agreed within 54 ms.
+- The gate quantity is the member spread. `lowerMs` 1,260 means that in at least one round, two members' kept intervals were at least 1.26 s apart. That fails the under 500 ms line.
+- Which member and which round are not recoverable: the row kept only the summary, and site 1's samples came from the dead `#1#f1`.
+- Hypothesis, not checked: a member answering `/status` mid-churn or mid-reset reports a `now` far from the others. The raw samples (round, site, offset, rtt, term, role) are now kept in the row (`d90d0ab`) to settle it.
+
+**Feed (p99 25.6 s outside kills).**
+
+- 16,100 of 49,954 polls (32%) answered `lagging`, and 33,854 `hold`.
+- The driver's kill window is 15 s after each kill push. The churn ran 230 s, so most of it counts as "outside kills". Feed events in a leaderless span wait for the next leader's commit.
+- Hypothesis: the p99 is the churn, not the feed path. It is not checked, because the row kept no per-event times or members.
+- The row now keeps the slowest 1% of events outside kills, with the member that served each and the poller's misses before the hold (`d90d0ab`).
+
+**Next:** rerun L0-12 on main `5c0f06f` with these instruments. The churn may be gone on the liveness build; if the clock spread or the feed p99 still fails, the raw data names the member.
+
 ## Cost
