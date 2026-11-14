@@ -2023,3 +2023,61 @@ side of `in` is the follower's input queue is not separable without send timesta
 The four enam learners serve 78% (one of them 41%), so the spread is uneven inside a site; the API p99 held anyway.
 
 **Cost** $116.92 at 11:14Z (containers $47.04); the row cost about $2.29. Sweep "sweep ok" (5 torn down).
+
+### Round 16c: B0-29's leader load, an idle baseline, and leader memory (from round 16b's data, 2026-11-14)
+
+**Where the sites run [measured, `durableObjectsInvocationsAdaptiveGroups` `coloCode`].** repo:131334's voters:
+site a (enam) **ATL**, site b (weur) **LHR**, site c (apac) **NRT**. So the near follower is London from Atlanta, a
+transatlantic pair, not one region. The members' own `/rtt` rows (median of 20 sequential `/ping`s, taken at join):
+a↔b 90 / 100 ms, a↔c 164 / 159 ms, b↔c 221 / 222 ms (131335's: 92 / 96, 152 / 158, 222 / 230).
+
+**Idle baseline [measured, the leader's trace after the window].** AppendEntries the leader sent from 11:01:39 to
+11:09:45Z, with no load, of 143 to 1,412 bytes: to site 1 (LHR) 102 to 122 ms (12 calls), to site 2 (NRT) 159 to
+185 ms; one of 256 KB took 378 and 354 ms. Under load (the window, 2,809 calls to site 1), by entry bytes:
+
+| bytes | n | near (LHR) p50 / p99 | far (NRT) p50 / p99 |
+|---|---|---|---|
+| under 4 KB | 1,268 | 144 / 332 | 202 / 396 |
+| 4 to 16 KB | 60 | 160 / 316 | 203 / 428 |
+| 16 to 64 KB | 697 | 156 / 339 | 214 / 385 |
+| 64 to 128 KB | 560 | 178 / 412 | 239 / 553 |
+| 128 KB and up | 224 | 201 / 406 | 262 / 496 |
+
+So the near leg is about one ATL↔LHR round trip (idle 102 to 122 ms), plus about 30 to 40 ms at p50 under load
+whatever the size, plus about 60 ms more for entries over 128 KB; the p99 sits about 200 ms over idle even for
+entries under 4 KB. Round 16b's `in` p50 58 ms is about half the idle round trip (wire), and `back` p50 95 ms is
+about 45 ms over the other half: the excess is on the reply side. Whether that is the leader's input queue (its
+continuation waiting to run) or the reply's delivery is not separable without send stamps on the follower's clock
+[the parent's guess; unverified]. The leader's `AppendQueued → AppendIssued` is 0 ms at p99 (2,809 calls), so the
+leader does not delay the send.
+
+**The leader isolate's load [measured].** `durableObjectsPeriodicGroups` for the leader object (aa7bf08b), per
+minute in the window: CPU 11.4 to 13.0 s a minute = **19 to 22% of one core** (108 s over 10:50 to 11:01Z), active
+60 s of 60, about 700k to 880k rows read and 16k written a minute. Its inbound (its own `inbound` counts, 10:52:44 to
+11:01:44Z, 540 s): `/raft` 43,187 (80/s: learners' calls and their ReadIndex), `/commit` 8,926 (16.5/s), `/read`
+6,131 (11.4/s), `/entries` 2,306, `/status` 1,363; about 115 requests a second, so **about 1.7 ms of CPU a request**
+on average. By route (Workers Logs, which logged 17,579 of those invocations, 86 s of CPU, so a sample): `/raft`
+4.3 ms each and 48% of logged CPU, `/read` **12.3 ms each and 26%**, `/commit` 3.8 ms and 15%, `/entries` 3.0 ms
+and 7%. Scaled by the inbound counts, reads are about a quarter of the leader's CPU (more with the ReadIndex answers
+inside `/raft`, which the logs do not split), commits about an eighth. The followers ran 10 to 11% of a core (site
+b) and 8 to 10% (site c). So the leader is not CPU-saturated on average; a 20% busy isolate still queues inputs that
+arrive in a burst, which is consistent with, but does not prove, a reply-side wait. **LOOP_LAG:** no `StepDown`
+appears in Workers Logs for 10:50 to 11:02Z on any site, and the leader held term 2; the ticker's `Lag` trace (kind
+8) was not in `legs.mjs`'s filter for this row, so per-tick lag was not sampled here [not measured]; it is in B0-35's
+sampler.
+
+**Leader memory [partly measured].** a1.mjs's admission samples read the leader's wasm memory rising 28 → 41 (60 s)
+→ 67 (180 s) → 80 (300 s) → 88 (420 s) → 92 MiB (485 s, then flat to 596 s). Wasm linear memory only grows, so
+this is a high-water mark, not what is live. `memSplit` was not sampled during the row; read on the same object at
+11:25Z (a new isolate, `since` 11:25:28Z, wasm 16.8 MiB): log 6.1 MB (`LOG_BYTES` caps it at 8 MB), fold rows 0,
+caches 0, held 0, in flight 0. So the named buckets account for at most about 8 MB of the 92 MiB; what reached the
+high-water mark is not named by them [unverified: the candidates are transient read answers (12.3 ms of CPU and
+about 12k rows read a second suggest large ones) and allocator growth that is never returned]. B0-35's sampler now
+records `memSplit`, `logBytes` and wasm every minute, to tell a steady bucket from a transient peak.
+
+**A memory event at the row's end [measured].** Site a's stateless script (not a member) logged "Worker exceeded
+memory limit." 28 times at 11:00:53Z, all on `POST https://site/prsync/first`: the in-band first attempt of a
+`PrSync` batch, which the leader runs as a new stateless invocation through its own `SITE` binding
+(`workers/site/src/prsync.rs`, `in_band`). 28 at one timestamp is one isolate failing the invocations it held, ten
+seconds after the window ended. No member logged one, and no row line moved. Its cause is not traced [unverified];
+B0-35 (500 polled PRs, test merges each push) exercises that path harder, so its row is checked for the same event.

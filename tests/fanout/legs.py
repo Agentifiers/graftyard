@@ -35,6 +35,8 @@ def main():
             key = (m["site"], m["name"])
             if m.get("inbound"):
                 reads[key].append((s["at"], m["inbound"].get("/read", 0), m["voter"], m["role"]))
+            if m.get("summary"):
+                continue
             if m["role"] is True:
                 leader = m["site"]
                 q = {}

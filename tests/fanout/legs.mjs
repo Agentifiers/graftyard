@@ -27,9 +27,15 @@ for (let k = 0; Date.now() < until; k++) {
     const r = await member(chain, w.site, "/stats", undefined, 20_000, w.name).catch((e) => ({ status: 0, v: { error: String(e).slice(0, 80) } }));
     const v = r.v ?? {};
     return { site: w.site, name: w.name ?? null, voter: !!w.voter, role: v.role ?? null, inbound: v.inbound ?? null,
-      raftIn: v.raftIn ?? null, trace: (v.trace ?? []).filter((x) => [10, 12, 13, 14, 15, 16, 17].includes(x[1])),
+      raftIn: v.raftIn ?? null, trace: (v.trace ?? []).filter((x) => [8, 10, 12, 13, 14, 15, 16, 17].includes(x[1])),
       confirmMs: v.confirmMs?.length, error: v.error };
   }));
+  // The leader's memory split (narrow-reads-3's `memSplit`, `logBytes`, `held`) from the light summary, every sample.
+  if (lead !== undefined) {
+    const sm = (await member(chain, lead, "/stats?summary=1", undefined, 15_000, names[lead]).catch(() => ({}))).v ?? {};
+    out.push({ site: lead, summary: true, wasmMemMb: sm.wasmMemMb, logBytes: sm.logBytes, memSplit: sm.memSplit, held: sm.held,
+      entries: sm.entries, commands: sm.commands });
+  }
   writeFileSync(`${dir}/legs-${String(k).padStart(3, "0")}.json`, JSON.stringify({ at: new Date(t).toISOString(), chain, members: out }));
   await sleep(Math.max(0, Number(every) * 1000 - (Date.now() - t)));
 }
