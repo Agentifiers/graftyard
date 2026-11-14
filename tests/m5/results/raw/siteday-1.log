@@ -1,0 +1,464 @@
+2026-11-14T15:01:56Z
+194ca041
+?? tests/m5/results/raw/siteday-1.log
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: ⬇️  Downloading Wasm Bindgen@0.2.130...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling cfg-if v1.0.5
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling const-oid v0.9.6
+   Compiling generic-array v0.14.7
+   Compiling typenum v1.20.1
+   Compiling memchr v2.8.3
+   Compiling zerofrom v0.1.8
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.4
+   Compiling zerovec v0.11.9
+   Compiling wasm-bindgen-shared v0.2.130
+   Compiling futures-core v0.3.34
+   Compiling unicode-ident v1.0.27
+   Compiling pin-project-lite v0.2.17
+   Compiling thiserror v2.0.21
+   Compiling libm v0.2.16
+   Compiling wasm-bindgen v0.2.130
+   Compiling futures-task v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling slab v0.4.12
+   Compiling rand_core v0.6.4
+   Compiling futures-util v0.3.34
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling tinystr v0.8.5
+   Compiling num-traits v0.2.19
+   Compiling smallvec v1.16.4
+   Compiling writeable v0.6.4
+   Compiling utf_types v1.0.0
+   Compiling itoa v1.0.18
+   Compiling litemap v0.8.3
+   Compiling utf8_iter v1.1.0
+   Compiling icu_locale_core v2.4.0
+   Compiling potential_utf v0.1.6
+   Compiling zerotrie v0.2.5
+   Compiling icu_properties_data v2.4.0
+   Compiling zerocopy v0.8.63
+   Compiling zmij v1.0.23
+   Compiling icu_normalizer_data v2.4.0
+   Compiling icu_collections v2.4.0
+   Compiling js-sys v0.3.107
+   Compiling arrayvec v0.7.8
+   Compiling icu_provider v2.4.0
+   Compiling zeroize v1.9.1
+   Compiling serde_json v1.0.154
+   Compiling graftyard-types v0.1.0 (/home/user/workspace/repo/crates/types)
+   Compiling signature v2.2.0
+   Compiling subtle v2.6.1
+   Compiling bytes v1.12.1
+   Compiling icu_properties v2.4.0
+   Compiling curve25519-dalek v4.1.3
+   Compiling icu_normalizer v2.4.0
+   Compiling der v0.7.10
+   Compiling cobs v0.3.0
+   Compiling percent-encoding v2.3.2
+   Compiling form_urlencoded v1.2.2
+   Compiling spki v0.7.3
+   Compiling postcard v1.1.3
+   Compiling ppv-lite86 v0.2.21
+   Compiling idna_adapter v1.2.2
+   Compiling rand_chacha v0.3.1
+   Compiling ed25519 v2.2.3
+   Compiling num-integer v0.1.47
+   Compiling spin v0.9.9
+   Compiling num-bigint-dig v0.8.6
+   Compiling lazy_static v1.5.1
+   Compiling num-iter v0.1.46
+   Compiling ed25519-dalek v2.2.0
+   Compiling rand v0.8.8
+   Compiling idna v1.1.0
+   Compiling graftyard-raft v0.1.0 (/home/user/workspace/repo/crates/raft)
+   Compiling pkcs8 v0.10.2
+   Compiling http v1.5.0
+   Compiling ryu v1.0.23
+   Compiling crc32fast v1.5.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling http-body v1.1.0
+   Compiling pin-project v1.1.13
+   Compiling pkcs1 v0.7.5
+   Compiling url v2.5.8
+   Compiling strum v0.28.0
+   Compiling tokio v1.54.1
+   Compiling futures-channel v0.3.34
+   Compiling simd-adler32 v0.3.10
+   Compiling matchit v0.7.3
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.9.1
+   Compiling rsa v0.9.10
+   Compiling web-sys v0.3.107
+   Compiling wasm-bindgen-futures v0.4.80
+   Compiling serde-wasm-bindgen v0.6.5
+   Compiling chrono v0.4.45
+   Compiling thiserror v1.0.69
+   Compiling base64 v0.22.1
+   Compiling graftyard-identity v0.1.0 (/home/user/workspace/repo/crates/identity)
+   Compiling flate2 v1.1.10
+   Compiling graftyard-fold v0.1.0 (/home/user/workspace/repo/crates/fold)
+   Compiling combine v4.6.9
+   Compiling sha1 v0.10.7
+   Compiling graftyard-release v0.1.0 (/home/user/workspace/repo/crates/release)
+   Compiling worker-sys v0.8.7
+   Compiling wasm-streams v0.7.0
+   Compiling graphql-parser v0.4.1
+   Compiling graftyard-wire v0.1.0 (/home/user/workspace/repo/crates/wire)
+   Compiling worker v0.8.7
+   Compiling graftyard-git v0.1.0 (/home/user/workspace/repo/crates/git)
+   Compiling graftyard-lookup v0.1.0 (/home/user/workspace/repo/crates/lookup)
+   Compiling graftyard-api v0.1.0 (/home/user/workspace/repo/crates/api)
+   Compiling graftyard-site v0.1.0 (/home/user/workspace/repo/workers/site)
+    Finished `release` profile [optimized] target(s) in 6m 13s
+[INFO]: ⬇️  Downloading Wasm Opt@132...
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 9m 13s
+[INFO]: 📦   Your wasm pkg is ready to publish at /home/user/workspace/repo/workers/site/build/.tmp.
+[INFO]: ⬇️  Downloading Esbuild@0.28.2...
+
+  index.js  41.9kb
+
+⚡ Done in 10ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3c-site-a.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0
+────────────────────
+
+Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 13400.38 KiB / gzip: 3787.66 KiB
+Worker Startup Time: 7 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_0 (Member)                                                        Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3c-site-b)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3c-site-c)                           Durable Object            
+env.REGISTRY_0 (Registry)                                                    Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3c-site-b)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3c-site-c)                       Durable Object            
+env.SHARD_0 (GitShard)                                                       Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3c-site-b)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3c-site-c)                          Durable Object            
+env.HOOKSEQ_0 (HookSequencer)                                                Durable Object            
+env.SEARCH_0 (SearchShard)                                                   Durable Object            
+env.INBOX_0 (Inbox)                                                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m3c-site-a)                                                  Worker                    
+env.OPS (graft-m3c-ops)                                                      Worker                    
+env.SITE_ID ("0")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+env.GRAFTYARD_STALE_MAX_MS ("120000")                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m3c-site-a (4.65 sec)
+Deployed graft-m3c-site-a triggers (1.58 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3c-prsync-a
+  Consumer for graft-m3c-prsync-a
+Current Version ID: 0dc0b1ef-7b9e-4447-84ce-c3bf92d1503c
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3c-site-b.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 13400.38 KiB / gzip: 3787.66 KiB
+Worker Startup Time: 9 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_1 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3c-site-a)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3c-site-c)                           Durable Object            
+env.REGISTRY_1 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3c-site-a)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3c-site-c)                       Durable Object            
+env.SHARD_1 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3c-site-a)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3c-site-c)                          Durable Object            
+env.HOOKSEQ_1 (HookSequencer)                                                Durable Object            
+env.SEARCH_1 (SearchShard)                                                   Durable Object            
+env.INBOX_1 (Inbox)                                                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m3c-site-b)                                                  Worker                    
+env.OPS (graft-m3c-ops)                                                      Worker                    
+env.SITE_ID ("1")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+env.GRAFTYARD_STALE_MAX_MS ("120000")                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m3c-site-b (4.56 sec)
+Deployed graft-m3c-site-b triggers (1.45 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3c-prsync-b
+  Consumer for graft-m3c-prsync-b
+Current Version ID: 7247a80d-0b52-4bed-896f-961baf631e6c
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3c-site-c.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 13400.38 KiB / gzip: 3787.66 KiB
+Worker Startup Time: 11 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_2 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3c-site-a)                           Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3c-site-b)                           Durable Object            
+env.REGISTRY_2 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3c-site-a)                       Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3c-site-b)                       Durable Object            
+env.SHARD_2 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3c-site-a)                          Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3c-site-b)                          Durable Object            
+env.HOOKSEQ_2 (HookSequencer)                                                Durable Object            
+env.SEARCH_2 (SearchShard)                                                   Durable Object            
+env.INBOX_2 (Inbox)                                                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m3c-site-c)                                                  Worker                    
+env.OPS (graft-m3c-ops)                                                      Worker                    
+env.SITE_ID ("2")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+env.GRAFTYARD_STALE_MAX_MS ("120000")                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m3c-site-c (3.73 sec)
+Deployed graft-m3c-site-c triggers (1.34 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3c-prsync-c
+  Consumer for graft-m3c-prsync-c
+Current Version ID: 7075c3bf-da56-4d3c-8061-d8871583b78c
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3c-site-a.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 13400.38 KiB / gzip: 3787.66 KiB
+Worker Startup Time: 6 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_0 (Member)                                                        Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3c-site-b)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3c-site-c)                           Durable Object            
+env.REGISTRY_0 (Registry)                                                    Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3c-site-b)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3c-site-c)                       Durable Object            
+env.SHARD_0 (GitShard)                                                       Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3c-site-b)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3c-site-c)                          Durable Object            
+env.HOOKSEQ_0 (HookSequencer)                                                Durable Object            
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m3c-site-b)                   Durable Object            
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m3c-site-c)                   Durable Object            
+env.SEARCH_0 (SearchShard)                                                   Durable Object            
+env.SEARCH_1 (SearchShard, defined in graft-m3c-site-b)                      Durable Object            
+env.SEARCH_2 (SearchShard, defined in graft-m3c-site-c)                      Durable Object            
+env.INBOX_0 (Inbox)                                                          Durable Object            
+env.INBOX_1 (Inbox, defined in graft-m3c-site-b)                             Durable Object            
+env.INBOX_2 (Inbox, defined in graft-m3c-site-c)                             Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m3c-site-a)                                                  Worker                    
+env.OPS (graft-m3c-ops)                                                      Worker                    
+env.SITE_ID ("0")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+env.GRAFTYARD_STALE_MAX_MS ("120000")                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m3c-site-a (4.10 sec)
+Deployed graft-m3c-site-a triggers (1.21 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3c-prsync-a
+  Consumer for graft-m3c-prsync-a
+Current Version ID: 9d6ee802-623c-4d8b-9f6c-3cfd1d0d5056
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3c-site-b.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 13400.38 KiB / gzip: 3787.66 KiB
+Worker Startup Time: 8 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_1 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3c-site-a)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3c-site-c)                           Durable Object            
+env.REGISTRY_1 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3c-site-a)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3c-site-c)                       Durable Object            
+env.SHARD_1 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3c-site-a)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3c-site-c)                          Durable Object            
+env.HOOKSEQ_1 (HookSequencer)                                                Durable Object            
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m3c-site-a)                   Durable Object            
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m3c-site-c)                   Durable Object            
+env.SEARCH_1 (SearchShard)                                                   Durable Object            
+env.SEARCH_0 (SearchShard, defined in graft-m3c-site-a)                      Durable Object            
+env.SEARCH_2 (SearchShard, defined in graft-m3c-site-c)                      Durable Object            
+env.INBOX_1 (Inbox)                                                          Durable Object            
+env.INBOX_0 (Inbox, defined in graft-m3c-site-a)                             Durable Object            
+env.INBOX_2 (Inbox, defined in graft-m3c-site-c)                             Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m3c-site-b)                                                  Worker                    
+env.OPS (graft-m3c-ops)                                                      Worker                    
+env.SITE_ID ("1")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+env.GRAFTYARD_STALE_MAX_MS ("120000")                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m3c-site-b (4.05 sec)
+Deployed graft-m3c-site-b triggers (1.07 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3c-prsync-b
+  Consumer for graft-m3c-prsync-b
+Current Version ID: 9d43afc6-c1f3-49ae-a2f2-b712925e3ba5
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3c-site-c.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 13400.38 KiB / gzip: 3787.66 KiB
+Worker Startup Time: 7 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_2 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3c-site-a)                           Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3c-site-b)                           Durable Object            
+env.REGISTRY_2 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3c-site-a)                       Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3c-site-b)                       Durable Object            
+env.SHARD_2 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3c-site-a)                          Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3c-site-b)                          Durable Object            
+env.HOOKSEQ_2 (HookSequencer)                                                Durable Object            
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m3c-site-a)                   Durable Object            
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m3c-site-b)                   Durable Object            
+env.SEARCH_2 (SearchShard)                                                   Durable Object            
+env.SEARCH_0 (SearchShard, defined in graft-m3c-site-a)                      Durable Object            
+env.SEARCH_1 (SearchShard, defined in graft-m3c-site-b)                      Durable Object            
+env.INBOX_2 (Inbox)                                                          Durable Object            
+env.INBOX_0 (Inbox, defined in graft-m3c-site-a)                             Durable Object            
+env.INBOX_1 (Inbox, defined in graft-m3c-site-b)                             Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m3c-site-c)                                                  Worker                    
+env.OPS (graft-m3c-ops)                                                      Worker                    
+env.SITE_ID ("2")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+env.GRAFTYARD_STALE_MAX_MS ("120000")                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m3c-site-c (3.80 sec)
+Deployed graft-m3c-site-c triggers (1.97 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3c-prsync-c
+  Consumer for graft-m3c-prsync-c
+Current Version ID: b9829950-9c5b-44c9-be9b-97ba3cf47497
+site exit 0
+2026-11-14T15:12:04Z
+DONE

@@ -1833,3 +1833,351 @@ fn after_a_failed_call_the_next_call_starts_from_what_the_voter_holds() {
     c.sync(A);
     assert_eq!(c.m(C).digests(), c.m(A).digests());
 }
+
+/// `Lead::done` keeps resolved tickets by count, by the bytes their commands carry that no event stores (DONE_BYTES),
+/// and for OUTCOME_KEEP. An edge whose `outcome` comes after its ticket was pruned gets `NotLeader` naming the same
+/// leader, asks `outcome_by_request`, and gets the committed outcome from the `request` row, `Acked` built inside
+/// `outcome::replay`. Kept by count alone, 4,096 issue outcomes with their reply renders held about 60 MB of a
+/// leader's heap (`tests/m0/results/memory-budgets.md`).
+#[test]
+fn a_late_outcome_after_its_ticket_was_pruned_is_answered_from_the_request_row() {
+    let w = |k: &str, render: usize| KvCmd::Write {
+        key: k.into(),
+        expect: None,
+        value: "v".into(),
+        actor: None,
+        push: false,
+        pack: 0,
+        render,
+    };
+    let rid = |i: u128| RequestId(graftyard_raft::Ulid(i));
+    let late = |c: &Cluster, t: graftyard_raft::Ticket, i: u128, cmd: &KvCmd, index: Index| {
+        match c.m(A).outcome(t) {
+            Some(Err(CommitError::NotLeader(nl))) => assert_eq!(nl.leader, Some(A), "names the same leader"),
+            other => panic!("a pruned ticket answers NotLeader, got {other:?}"),
+        }
+        match c.m(A).outcome_by_request(rid(i), cmd).unwrap() {
+            ByRequest::Done(a) => assert_eq!((a.index, a.out), (index, true), "the committed outcome, from its row"),
+            _ => panic!("expected Done from the request row"),
+        }
+    };
+    let mut c = Cluster::new(91);
+    c.elect(A);
+    c.sync(A);
+
+    // By age: one small command, answered at once, then asked again past OUTCOME_KEEP.
+    let small = w("aged", 0);
+    let t = admit(&mut c, A, 500, small.clone());
+    c.deliver_all();
+    let index = c.m(A).outcome(t).expect("resolved").expect("committed").index;
+    let keep = graftyard_raft::OUTCOME_KEEP.as_millis() as u64;
+    c.run(keep - 1_000, 500, |_| true);
+    assert!(matches!(c.m(A).outcome(t), Some(Ok(_))), "kept inside OUTCOME_KEEP");
+    c.run(2_000, 500, |_| true);
+    assert_eq!(c.m(A).role(), Role::Leader);
+    late(&c, t, 500, &small, index);
+
+    // By bytes: 100 commands each carrying 100 KB no event stores, 10 MB against DONE_BYTES, resolved together.
+    let big: Vec<_> = (0..100u128).map(|i| (600 + i, w(&format!("b{i}"), 100_000))).collect();
+    let tickets: Vec<_> = big.iter().map(|(i, cmd)| admit(&mut c, A, *i, cmd.clone())).collect();
+    c.deliver_all();
+    c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+    c.deliver_all();
+    let newest = c.m(A).outcome(*tickets.last().unwrap()).expect("resolved");
+    assert!(newest.is_ok(), "the newest outcome is kept");
+    let kept = tickets.iter().filter(|t| matches!(c.m(A).outcome(**t), Some(Ok(_)))).count();
+    assert!(kept <= graftyard_raft::DONE_BYTES / 100_000, "{kept} outcomes of 100 KB kept, past DONE_BYTES");
+    assert!(kept >= graftyard_raft::DONE_BYTES / 100_000 - 2, "only {kept} kept");
+    let first = &big[0];
+    let index = c.m(A).group_fold().request(rid(first.0)).expect("its row").index;
+    late(&c, tickets[0], first.0, &first.1, index);
+}
+
+/// A host's calls to members that never answer, or answer late, as `workers/site`'s `call` treats them: each
+/// AppendEntries is reported missed at CALL_DEADLINE, and its body stays alive until its answer comes or the host gives
+/// up LATE_LIMIT (10 s) later and reports it ended. The bytes counted are the entries' canonical encoding, measured
+/// here, not the leader's own count.
+struct Silent {
+    to: Vec<SiteId>,
+    /// None: they never answer. Some(ms): each answers this long after it was sent, as an empty learner that stores
+    /// any call chained to what it holds, and answers a call with no entries at once.
+    late: Option<u64>,
+    /// What each holds, when they answer.
+    held: std::collections::BTreeMap<SiteId, Index>,
+    /// How long after a call was sent the host stops awaiting it and reports it ended: CALL_DEADLINE plus LATE_LIMIT,
+    /// or sooner for a call that fails late with an error, as one to a callee that reset does.
+    ends: u64,
+    /// (sent, leader, request, bytes, reported missed).
+    calls: Vec<(u64, SiteId, graftyard_raft::Envelope<common::kv::KvEvent>, usize, bool)>,
+    /// AppendEntries with entries sent to them.
+    sent: usize,
+    /// The most bytes alive at once: to one peer, to every learner, and in all.
+    peer: usize,
+    learners: usize,
+    total: usize,
+}
+
+const LATE_LIMIT_MS: u64 = 10_000;
+
+impl Silent {
+    fn new(to: Vec<SiteId>, late: Option<u64>) -> Silent {
+        let ends = graftyard_raft::CALL_DEADLINE.as_millis() as u64 + LATE_LIMIT_MS;
+        Silent { to, late, held: Default::default(), ends, calls: Vec::new(), sent: 0, peer: 0, learners: 0, total: 0 }
+    }
+
+    /// The answer a late member gives `e`, storing its entries if they chain to what it holds.
+    fn answer(&mut self, e: &graftyard_raft::Envelope<common::kv::KvEvent>) -> Option<graftyard_raft::AppendRes> {
+        let Message::Append(a) = &e.msg else { return None };
+        let held = self.held.entry(e.to).or_insert(Index(0));
+        let ok = a.prev_index <= *held;
+        if ok {
+            *held = (*held).max(Index(a.prev_index.0 + a.entries.len() as u64));
+        }
+        Some(graftyard_raft::AppendRes {
+            term: a.term,
+            boot: a.boot,
+            round: a.round,
+            sent_at: a.sent_at,
+            prev_index: a.prev_index,
+            ok,
+            matched: if ok { Index(a.prev_index.0 + a.entries.len() as u64) } else { Index(0) },
+            last: *held,
+            promise: false,
+            refused: None,
+            stepped_down_at: None,
+            boots: [Timestamp(0); 2],
+            release: config(B).release,
+        })
+    }
+
+    /// Delivers everything queued: messages to the silent members become calls.
+    fn pump(&mut self, c: &mut Cluster) {
+        for _ in 0..1_000 {
+            let batch = std::mem::take(&mut c.inbox);
+            if batch.is_empty() {
+                break;
+            }
+            for e in batch {
+                if self.to.contains(&e.to) {
+                    match &e.msg {
+                        Message::Append(a) if a.entries.is_empty() && self.late.is_some() => {
+                            let res = self.answer(&e).expect("an append");
+                            let to = e.to;
+                            c.on(e.from, |m, now| m.step(now, to, Message::AppendRes(res)));
+                        }
+                        Message::Append(a) => {
+                            let bytes = a.entries.iter().map(|x| graftyard_raft::encode_entry(x).len()).sum();
+                            self.sent += 1;
+                            self.calls.push((c.now.0, e.from, e, bytes, false));
+                        }
+                        _ => {}
+                    }
+                } else if c.members.get(e.to.0 as usize).is_some_and(Option::is_some) {
+                    let graftyard_raft::Envelope { from, to, msg } = e;
+                    c.on(to, |m, now| m.step(now, from, msg));
+                }
+            }
+        }
+        self.measure();
+    }
+
+    fn measure(&mut self) {
+        let learner = |s: SiteId| graftyard_types::learner_slot(s).is_some();
+        let mut by: std::collections::BTreeMap<SiteId, usize> = Default::default();
+        for (_, _, e, b, _) in &self.calls {
+            *by.entry(e.to).or_default() += b;
+        }
+        self.peer = self.peer.max(by.values().copied().max().unwrap_or(0));
+        self.learners = self.learners.max(by.iter().filter(|(s, _)| learner(**s)).map(|(_, b)| b).sum());
+        self.total = self.total.max(by.values().sum());
+    }
+
+    /// Time passes by `ms`: late answers arrive, members tick, and the host reports missed deadlines and ended calls.
+    fn advance(&mut self, c: &mut Cluster, ms: u64) {
+        c.now = Timestamp(c.now.0 + ms);
+        let deadline = graftyard_raft::CALL_DEADLINE.as_millis() as u64;
+        let now = c.now.0;
+        let mut keep = Vec::new();
+        for mut call in std::mem::take(&mut self.calls) {
+            let leader = call.1;
+            if c.members[leader.0 as usize].is_none() {
+                continue;
+            }
+            let Message::Append(a) = &call.2.msg else { unreachable!() };
+            let (to, round) = (call.2.to, a.round);
+            let answered = self.late.is_some_and(|l| now >= call.0 + l);
+            if !call.4 && now >= call.0 + deadline {
+                call.4 = true;
+                let f = call.2.failure(true).expect("an append");
+                c.on(leader, |m, t| m.call_failed(t, f));
+            }
+            if answered && now < call.0 + self.ends {
+                let res = self.answer(&call.2).expect("an append");
+                c.on(leader, |m, t| m.step(t, to, Message::AppendRes(res)));
+                c.on(leader, |m, t| m.call_ended(t, to, round));
+            } else if answered || now >= call.0 + self.ends {
+                c.on(leader, |m, t| m.call_ended(t, to, round));
+            } else {
+                keep.push(call);
+            }
+        }
+        self.calls = keep;
+        for s in SITES {
+            if c.members[s.0 as usize].is_some() {
+                c.on(s, |m, now| m.tick(now));
+            }
+        }
+        self.pump(c);
+    }
+}
+
+fn big_put(k: &str, bytes: usize) -> KvCmd {
+    put(k, &"v".repeat(bytes))
+}
+
+/// The outgoing byte budget (`PEER_OUT_MAX`): a follower that answers nothing while the leader cuts 1 MB entries
+/// holds at most PEER_OUT_MAX of AppendEntries bodies alive in the leader's host, while the healthy follower commits
+/// every entry. Before, the core resent each missed call at once and on every tick, and pipelined up to PIPELINE
+/// more, while the host still awaited each for LATE_LIMIT: 10.0 MB alive to one silent voter here, and m3f's new
+/// leader sent each voter 10.7 to 11.2 MB in a minute against an 8 MB log (`tests/m0/results/memory-budgets.md`).
+#[test]
+fn a_silent_follower_holds_at_most_peer_out_max_of_the_leaders_calls() {
+    // `ends`: when the host stops awaiting each call to C. Returns the most bytes alive to C, and how many 500 ms
+    // steps after C answers again it has caught up.
+    let run = |ends: Option<u64>| {
+        let mut c = Cluster::new(93);
+        c.elect(A);
+        c.sync(A);
+        let mut h = Silent::new(vec![C], None);
+        h.ends = ends.unwrap_or(h.ends);
+        for i in 0..40u128 {
+            admit(&mut c, A, 7_000 + i, big_put(&format!("big{i}"), 1_000_000));
+            h.pump(&mut c);
+            h.advance(&mut c, 500);
+        }
+        for _ in 0..30 {
+            h.advance(&mut c, 500);
+        }
+        // Outcomes are pruned after OUTCOME_KEEP, so read the commits from the leader's applied fold.
+        let committed = (0..40).filter(|i| c.value(A, &format!("big{i}")).is_some()).count();
+        assert_eq!(committed, 40, "B commits every entry with C silent");
+        // C answers again; its lost calls end as the host gives up on them, the budget frees, and C catches up.
+        h.to.clear();
+        let steps = (1..=40).find(|_| {
+            h.advance(&mut c, 500);
+            c.m(C).last_index() == c.m(A).last_index()
+        });
+        (h.peer, h.sent, steps.expect("C caught up"))
+    };
+    let (peer, never, _) = run(None);
+    assert!(peer <= graftyard_raft::PEER_OUT_MAX, "{peer} bytes alive to the silent follower");
+    assert!(peer >= 1_000_000, "C was sent its calls: {peer}");
+    // Calls that fail late with an error, 2 s after they were sent: the host's `call_ended` frees the budget then, not
+    // at OUT_KEEP, so the leader retries C about every 2 s rather than every OUT_KEEP, and C catches up within a few
+    // steps of answering again.
+    let (peer, retried, steps) = run(Some(2_000));
+    assert!(retried >= 3 * never, "{retried} calls to C with late errors against {never} with none ended");
+    assert!(peer <= graftyard_raft::PEER_OUT_MAX, "{peer} bytes alive with late errors");
+    assert!(steps <= 6, "C caught up {steps} steps after it answered again");
+}
+
+/// With one follower silent, small commands commit as fast as with both followers answering: each in the step it is
+/// admitted, at the same final commit index. A voter with no call alive always gets one, so the budget never holds
+/// back the healthy follower.
+#[test]
+fn a_silent_follower_costs_the_commit_rate_nothing() {
+    let run = |silent: Vec<SiteId>| {
+        let mut c = Cluster::new(94);
+        c.elect(A);
+        c.sync(A);
+        let mut h = Silent::new(silent, None);
+        let mut late = 0;
+        for i in 0..400u128 {
+            let t = admit(&mut c, A, 8_000 + i, put(&format!("k{i}"), &"x".repeat(2_000)));
+            h.pump(&mut c);
+            if !matches!(c.m(A).outcome(t), Some(Ok(_))) {
+                late += 1;
+            }
+            h.advance(&mut c, 50);
+        }
+        (late, c.m(A).state().commit)
+    };
+    let healthy = run(Vec::new());
+    assert_eq!(healthy.0, 0, "every command commits in its own step with both followers");
+    assert_eq!(run(vec![C]), healthy, "the same with C silent");
+}
+
+/// A placement of the three voters and `n` learners, all on the sim's three sites.
+fn with_learners(c: &mut Cluster, l: SiteId, n: u8) -> Vec<SiteId> {
+    use graftyard_raft::GroupConfig;
+    use graftyard_types::{Member as MemberRef, MemberKind, Placement, PlacementChecks, Region, Rtt, Site, SiteTable};
+    let Some((_, GroupConfig::Normal(p))) = c.m(l).committed_config().cloned() else { panic!("normal config") };
+    let site = |id: SiteId, region| Site {
+        id,
+        script: String::new(),
+        account: "x".into(),
+        region,
+        jurisdiction: None,
+        bucket: String::new(),
+        release: None,
+        link: graftyard_types::SiteLink::Binding { member_class: "Member".into() },
+        spare: false,
+    };
+    let table = SiteTable(vec![site(A, Region::Enam), site(B, Region::Weur), site(C, Region::Apac)]);
+    let rtt: Vec<(SiteId, Rtt)> =
+        [(A, B), (A, C), (B, C)].iter().map(|&(x, y)| (x, Rtt { peer: y, median_ms: 80, at: Timestamp(0) })).collect();
+    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt, near: &[] };
+    let learners: Vec<MemberRef> = (0..n)
+        .map(|k| MemberRef::new(CHAIN, SITES[usize::from(k % 3)], MemberKind::Learner, k, p.next_generation()))
+        .collect();
+    let addrs = learners.iter().map(|m| m.addr()).collect();
+    let np = Placement::new(p.voters().iter().cloned().collect(), learners.into_iter().collect(), p.home(), &checks)
+        .unwrap();
+    c.on(l, |m, now| m.reconfigure(now, GroupConfig::Normal(Box::new(np.clone())))).unwrap();
+    addrs
+}
+
+/// The outgoing byte budget across peers (`LEARNERS_OUT_MAX`, `OUT_MAX`): a new leader that must catch up eight
+/// learners, none of which answers, keeps at most LEARNERS_OUT_MAX alive to them and OUT_MAX in all, and still
+/// commits through the healthy voter. Before, each learner got its own catch-up calls and their resends, and B0-33's
+/// new leaders reset holding 58.3 MB of call bodies and 42.9 MB of messages for learners
+/// (`tests/m0/results/memory-budgets.md`).
+#[test]
+fn a_new_leader_catching_up_silent_learners_stays_within_out_max() {
+    let mut c = Cluster::new(95);
+    c.elect(A);
+    c.sync(A);
+    let learners = with_learners(&mut c, A, 8);
+    // The learners answer nothing while A leads, so the log grows past them.
+    let mut h = Silent::new(learners.clone(), None);
+    h.pump(&mut c);
+    h.advance(&mut c, 1_100);
+    for i in 0..12u128 {
+        admit(&mut c, A, 9_000 + i, big_put(&format!("l{i}"), 1_000_000));
+        h.pump(&mut c);
+        h.advance(&mut c, 300);
+    }
+    // A new leader: A goes, and B wins once the promises lapse. Every learner is empty and answers each call 3 s
+    // after it was sent: past CALL_DEADLINE, so the leader resends while the first copy is still alive.
+    c.crash(A);
+    let mut h = Silent::new(learners, Some(3_000));
+    for _ in 0..(graftyard_raft::ELECTION_AFTER.as_millis() as u64 / 500 + 1) {
+        h.advance(&mut c, 500);
+    }
+    c.on(B, |m, now| m.campaign(now));
+    h.pump(&mut c);
+    for _ in 0..4 {
+        h.advance(&mut c, 200);
+    }
+    assert_eq!(c.m(B).role(), Role::Leader, "B won");
+    let t = admit(&mut c, B, 9_500, put("after", "v"));
+    for _ in 0..60 {
+        h.advance(&mut c, 500);
+    }
+    let _ = t;
+    assert_eq!(c.value(B, "after").as_deref(), Some("v"), "B commits through C");
+    assert!(h.learners <= graftyard_raft::LEARNERS_OUT_MAX, "{} bytes alive to learners", h.learners);
+    assert!(h.total <= graftyard_raft::OUT_MAX, "{} bytes alive in all", h.total);
+    assert!(h.peer <= graftyard_raft::PEER_OUT_MAX, "{} bytes alive to one learner", h.peer);
+    assert!(h.learners >= 2_000_000, "the learners were sent catch-up calls: {}", h.learners);
+}

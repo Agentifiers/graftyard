@@ -64,8 +64,28 @@ pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> u
 pub const PIPELINE: usize = 4;
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
-/// Resolved tickets kept for a late `outcome` call.
+/// Resolved tickets kept for a late `outcome` call: at most DONE_KEEP of them, DONE_BYTES of the bytes their commands
+/// carry that no event stores (`encoded_len` less `stored_len`, an issue command's reply render, which its outcome
+/// keeps), and none past OUTCOME_KEEP. An `outcome` for a ticket pruned from here answers `NotLeader` naming this
+/// leader, and the edge asks `outcome_by_request`, which answers a committed command from its `request` row. Kept by
+/// count alone, 4,096 issue outcomes with their renders held about 60 MB of a leader's heap [measured, native
+/// allocator, `tests/m0/results/memory-budgets.md`].
 const DONE_KEEP: usize = 4096;
+pub const DONE_BYTES: usize = 8_000_000;
+/// The edge asks `outcome` within COMMIT_HOLD plus one call of a ticket's resolution, or after a missed 11 s
+/// `/outcome` call [guess, with margin].
+pub const OUTCOME_KEEP: Duration = Duration::from_secs(15);
+/// AppendEntries bytes (their entries' canonical encoding) a leader keeps alive on its calls to one peer, to all its
+/// learners together, and to every peer together, from the send until the call's answer, an error, or the host's
+/// `call_ended` (`Member::calls_out`). A voter with no call alive always gets one, so the budget never stops a commit
+/// [guess]. Before, nothing bounded the sum: the host awaits a missed call for LATE_LIMIT (10 s) while the core resends,
+/// and new leaders held 58.3 MB of call bodies and 42.9 MB of messages held for learners before their isolates reset
+/// (`tests/m0/results/memory-budgets.md`).
+pub const PEER_OUT_MAX: usize = 2_000_000;
+pub const LEARNERS_OUT_MAX: usize = 4_000_000;
+pub const OUT_MAX: usize = 8_000_000;
+/// A call the host never reports ended stops counting after this: past CALL_DEADLINE plus the host's 10 s LATE_LIMIT.
+pub const OUT_KEEP: Duration = Duration::from_secs(12);
 
 struct Queued<C> {
     seq: u64,
@@ -77,6 +97,13 @@ struct Queued<C> {
     /// Its `stored_len` without its Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: what ENTRY_SOFT counts.
     soft_bytes: usize,
     at: Timestamp,
+}
+
+impl<C> Queued<C> {
+    /// The bytes the command carries that no event stores: its encoded length less its `stored_len`.
+    fn unstored(&self) -> usize {
+        self.bytes.saturating_sub(self.soft_bytes + self.agent_inline)
+    }
 }
 
 /// The leader's admission state (`crate::admit`): one lane per class, the agent token bucket, and the capacity
@@ -219,7 +246,8 @@ struct Deciding<C: Command> {
     ids: SmallVec<[u64; 2]>,
 }
 
-type Decided<C> = (u64, Result<<C as Command>::Out, <C as Command>::Err>);
+/// A decided command: its seq, the bytes its outcome keeps that no event stores (`Lead::done`), and its result.
+type Decided<C> = (u64, usize, Result<<C as Command>::Out, <C as Command>::Err>);
 type Outcome<C> = Result<Acked<<C as Command>::Out>, CommitError<<C as Command>::Err>>;
 
 pub(super) struct Lead<C: Command> {
@@ -263,7 +291,9 @@ pub(super) struct Lead<C: Command> {
     reads: Vec<(ReadId, Timestamp, bool)>,
     /// The latest commit proof this leadership counted.
     proof: Option<QuorumProof>,
-    done: BTreeMap<u64, Outcome<C>>,
+    /// Resolved tickets for a late `outcome`, by seq: when each resolved, its priced bytes, and its result.
+    done: BTreeMap<u64, (Timestamp, usize, Outcome<C>)>,
+    done_bytes: usize,
     /// Replies to rounds below this are ignored: the leader truncated its uncommitted tail after they were sent, so
     /// their `matched` may name entries it no longer holds.
     pub(super) min_round: u64,
@@ -351,7 +381,8 @@ impl<C: Command> Member<C> {
             lease_end: Timestamp(0),
             sent: BTreeMap::new(),
             pipe: BTreeMap::new(),
-            round: 0,
+            // Rounds never repeat within a boot, so `calls_out` keys an earlier leadership's calls apart.
+            round: self.lead.as_ref().map_or(self.rounds, |l| l.round).max(self.rounds),
             admission: Admission::new(self.now),
             seq: 0,
             commit_floor: Index(0),
@@ -365,6 +396,7 @@ impl<C: Command> Member<C> {
             reads: Vec::new(),
             proof: None,
             done: BTreeMap::new(),
+            done_bytes: 0,
             min_round: 0,
             transfer: None,
             health: super::health::LeaderHealth::default(),
@@ -418,6 +450,7 @@ impl<C: Command> Member<C> {
     /// then answers the re-send from its `request` row.
     pub(super) fn end_leadership(&mut self) {
         let Some(lead) = self.lead.take() else { return };
+        self.rounds = lead.round;
         // A leadership that ends while its `STEP_DOWN` transfer runs ended by STEP_DOWN.
         if lead.transfer.as_ref().is_some_and(|t| t.step_down) {
             self.state.stepped_down_at = Some(self.now);
@@ -433,7 +466,7 @@ impl<C: Command> Member<C> {
             .drain()
             .map(|q| q.seq)
             .chain(lead.deciding.iter().flat_map(|d| d.batch.iter().map(|q| q.seq)))
-            .chain(lead.pending.iter().flat_map(|(_, d)| d.iter().map(|(s, _)| *s)));
+            .chain(lead.pending.iter().flat_map(|(_, d)| d.iter().map(|(s, _, _)| *s)));
         let tickets: Vec<Ticket> = seqs.map(|s| self.ticket(s)).collect();
         for ticket in tickets {
             self.out.resolutions.push(Resolution::Ticket { ticket, result: Err(CommitError::NotLeader(nl.clone())) });
@@ -803,7 +836,7 @@ impl<C: Command> Member<C> {
         if ticket.term != self.state.term || ticket.boot != self.boot {
             return nl();
         }
-        if let Some(r) = lead.done.get(&ticket.seq) {
+        if let Some((_, _, r)) = lead.done.get(&ticket.seq) {
             return Some(r.clone());
         }
         let pending = lead.by_request.values().any(|s| *s == ticket.seq);
@@ -934,7 +967,7 @@ impl<C: Command> Member<C> {
             match self.fold.request(q.id) {
                 Some(row) => {
                     let acked = outcome::replay(row.index, &proof, q.cmd.replay(&row.events));
-                    self.resolve(q.seq, Some(q.id), Ok(acked));
+                    self.resolve(q.seq, Some(q.id), q.unstored(), Ok(acked));
                 }
                 None => fresh.push(q),
             }
@@ -1094,7 +1127,7 @@ impl<C: Command> Member<C> {
             }
         }
         for q in old {
-            self.resolve(q.seq, Some(q.id), Err(CommitError::Full { retry_after_s }));
+            self.resolve(q.seq, Some(q.id), 0, Err(CommitError::Full { retry_after_s }));
         }
     }
 
@@ -1148,11 +1181,11 @@ impl<C: Command> Member<C> {
                         }
                         events.extend(evs);
                         requests.push((q.id, start..events.len() as u32));
-                        decided.push((q.seq, Ok(out)));
+                        decided.push((q.seq, q.unstored(), Ok(out)));
                     }
                     Err(err) => {
                         self.out.refused.push((self.last().next(), q.id));
-                        decided.push((q.seq, Err(err)));
+                        decided.push((q.seq, q.unstored(), Err(err)));
                     }
                 }
             }
@@ -1225,7 +1258,7 @@ impl<C: Command> Member<C> {
         self.advance_commit();
     }
 
-    fn resolve(&mut self, seq: u64, id: Option<RequestId>, result: Outcome<C>) {
+    fn resolve(&mut self, seq: u64, id: Option<RequestId>, unstored: usize, result: Outcome<C>) {
         let ticket = self.ticket(seq);
         let lead = self.lead.as_mut().expect("leading");
         lead.admission.resolved(seq);
@@ -1235,11 +1268,24 @@ impl<C: Command> Member<C> {
             }
             None => lead.by_request.retain(|_, s| *s != seq),
         }
-        lead.done.insert(seq, result.clone());
-        while lead.done.len() > DONE_KEEP {
+        if let Some((_, b, _)) = lead.done.insert(seq, (self.now, unstored, result.clone())) {
+            lead.done_bytes -= b;
+        }
+        lead.done_bytes += unstored;
+        self.prune_done();
+        self.out.resolutions.push(Resolution::Ticket { ticket, result });
+    }
+
+    /// Drops the oldest resolved tickets past DONE_KEEP, DONE_BYTES, or OUTCOME_KEEP (`Lead::done`).
+    fn prune_done(&mut self) {
+        let Some(lead) = self.lead.as_mut() else { return };
+        let old = Timestamp(self.now.0.saturating_sub(OUTCOME_KEEP.as_millis() as u64));
+        while let Some((_, (at, b, _))) = lead.done.first_key_value()
+            && (lead.done.len() > DONE_KEEP || lead.done_bytes > DONE_BYTES || *at < old)
+        {
+            lead.done_bytes -= *b;
             lead.done.pop_first();
         }
-        self.out.resolutions.push(Resolution::Ticket { ticket, result });
     }
 
     /// The host reported the call for `round` to `to` failed. If it is the outstanding call, retry at once, at most
@@ -1347,12 +1393,31 @@ impl<C: Command> Member<C> {
         } else {
             None
         };
+        let prev = after.unwrap_or(Index(next.0 - 1));
+        let install = after.is_none() && self.install.as_ref().is_some_and(|s| prev < s.through);
+        // The entries this call carries and their bytes; a catch-up from storage carries at most APPEND_BYTES_MAX past
+        // its first entry, which `catchup` counts once the host read them.
+        let (window, bytes) = if install {
+            (0..0, 0)
+        } else if prev < base {
+            (0..0, APPEND_BYTES_MAX)
+        } else {
+            // Subtract the absolute indexes in u64 first: on wasm32 a cast to usize would truncate them. The
+            // differences are bounded by the in-memory window, so they fit.
+            let from = (prev.0 - base.0) as usize;
+            let to = ((last.0 - base.0) as usize).min(from + CATCHUP_MAX);
+            let n = append_batch(&self.log[from..to]);
+            (from..from + n, self.sizes[from..from + n].iter().sum())
+        };
+        if !self.out_allows(peer, bytes) {
+            return;
+        }
+        let lead = self.lead.as_mut().expect("leading");
         lead.matched.entry(peer).or_insert(Index(0));
         let transfer = lead.transfer.as_ref().map(|t| (t.to, t.id));
         lead.round += 1;
         let round = lead.round;
         lead.sent.insert(peer, (round, now));
-        let prev = after.unwrap_or(Index(next.0 - 1));
         if after.is_none() {
             lead.pipe.remove(&peer);
             if self.send_install(peer, prev, round) {
@@ -1365,14 +1430,12 @@ impl<C: Command> Member<C> {
             self.out.catchup.push(super::Catchup { to: peer, round, from: prev, through });
             return;
         }
-        // Subtract the absolute indexes in u64 first: on wasm32 a cast to usize would truncate them. The differences
-        // are bounded by the in-memory window, so they fit.
-        let from = (prev.0 - self.base.index.0) as usize;
-        let to = ((last.0 - self.base.index.0) as usize).min(from + CATCHUP_MAX);
-        let window = &self.log[from..to];
-        let entries = window[..append_batch(window)].to_vec();
+        let entries = self.log[window].to_vec();
         let through = Index(prev.0 + entries.len() as u64);
         self.lead.as_mut().expect("leading").pipe.entry(peer).or_default().push((round, through));
+        if bytes > 0 {
+            self.calls_out.insert((peer, round), (now, bytes));
+        }
         let req = AppendReq {
             term,
             leader: me,
@@ -1388,6 +1451,29 @@ impl<C: Command> Member<C> {
             lead_seq: self.state.lead_seq,
         };
         self.send(peer, Message::Append(req));
+    }
+
+    /// Whether a call of `bytes` to `peer` fits PEER_OUT_MAX, LEARNERS_OUT_MAX, and OUT_MAX beside the calls alive,
+    /// dropping those older than OUT_KEEP first. A voter with none alive always gets one.
+    fn out_allows(&mut self, peer: SiteId, bytes: usize) -> bool {
+        let old = Timestamp(self.now.0.saturating_sub(OUT_KEEP.as_millis() as u64));
+        self.calls_out.retain(|_, (at, _)| *at >= old);
+        if bytes == 0 {
+            return true;
+        }
+        let learner = |s: SiteId| graftyard_types::learner_slot(s).is_some();
+        let (mut mine, mut learners, mut total) = (0, 0, 0);
+        for (&(s, _), &(_, b)) in &self.calls_out {
+            total += b;
+            mine += if s == peer { b } else { 0 };
+            learners += if learner(s) { b } else { 0 };
+        }
+        if !learner(peer) && mine == 0 {
+            return true;
+        }
+        mine + bytes <= PEER_OUT_MAX
+            && (!learner(peer) || learners + bytes <= LEARNERS_OUT_MAX)
+            && total + bytes <= OUT_MAX
     }
 
     /// The stored entries an `Out::catchup` asked for, `max(from, 1)..=through` in order: the entry at `from` gives the
@@ -1414,6 +1500,8 @@ impl<C: Command> Member<C> {
             let lead = self.lead.as_mut().expect("leading");
             let transfer = lead.transfer.as_ref().map(|t| (t.to, t.id));
             lead.sent.insert(c.to, (c.round, now));
+            let bytes = entries.iter().map(|e| crate::encode_entry(e).len()).sum();
+            self.calls_out.insert((c.to, c.round), (now, bytes));
             let req = AppendReq {
                 term,
                 leader: me,
@@ -1434,6 +1522,10 @@ impl<C: Command> Member<C> {
     }
 
     pub(super) fn on_append_res(&mut self, from: SiteId, res: AppendRes) {
+        // Any answer ends its call, in any role or term: its bytes stop counting (`out_allows`).
+        if res.boot == self.boot {
+            self.calls_out.remove(&(from, res.round));
+        }
         if res.term > self.state.term {
             self.step_down(res.term);
             return;
@@ -1593,7 +1685,7 @@ impl<C: Command> Member<C> {
         let lead = self.lead.as_mut().expect("leading");
         let mut seqs: Vec<u64> = Vec::new();
         if let Some((_, decided)) = lead.pending.take() {
-            seqs.extend(decided.iter().map(|(s, _)| *s));
+            seqs.extend(decided.iter().map(|(s, _, _)| *s));
         }
         if let Some((_, block)) = lead.block_pending.take() {
             self.out.resolutions.push(Resolution::IdBlock { block, result: Err(nl.clone()) });
@@ -1617,7 +1709,7 @@ impl<C: Command> Member<C> {
         lead.sent.clear();
         lead.ready_at = lead.ready_at.min(commit);
         for seq in seqs {
-            self.resolve(seq, None, Err(CommitError::NotLeader(nl.clone())));
+            self.resolve(seq, None, 0, Err(CommitError::NotLeader(nl.clone())));
         }
         if self.last() > commit {
             self.truncate_from(commit.next());
@@ -1704,8 +1796,8 @@ impl<C: Command> Member<C> {
                     if let Some((_, id)) = lead.record_pending.take() {
                         self.out.resolutions.push(Resolution::Recorded { id, result: Ok(index) });
                     }
-                    for (seq, result) in decided {
-                        self.resolve(seq, None, outcome::settle(index, &proof, result));
+                    for (seq, unstored, result) in decided {
+                        self.resolve(seq, None, unstored, outcome::settle(index, &proof, result));
                     }
                 }
                 self.after_ack();
@@ -1822,6 +1914,11 @@ impl<C: Command> Member<C> {
         self.lead.as_mut().expect("leading").reads = keep;
     }
 
+    /// `stale()`: this member's fold at `applied`, on any role, with no grant. The caller holds the flag that allows it.
+    pub fn stale(&self) -> crate::Stale<'_, C::Fold> {
+        crate::Stale { fold: &self.fold.fold, index: self.fold.applied() }
+    }
+
     /// `fresh`, second half: the view a grant allows, only before the member's next input. A grant from
     /// `read_index` gives a follower's or learner's fold.
     pub fn fresh(&self, grant: &ReadGrant) -> Result<Fresh<'_, C::Fold>, NotLeader> {
@@ -1917,6 +2014,7 @@ impl<C: Command> Member<C> {
         }
         self.check_reads();
         self.expire_agents();
+        self.prune_done();
         self.pump();
     }
 }

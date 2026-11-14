@@ -1,0 +1,49 @@
+21:07:56.388 probe -> {"index":1277,"prev":"3be2c41b1f55dfa1ff00de50be05744976f1215a1cb8e8aa893a66c19a2434ed","status":409}
+21:07:57.310 upload-N -> {"digest":"4c038be61796a5414df5e729383b2038b388c37f68fa784b79b14732e8009c4f","index":1278,"status":201}
+21:07:57.391 release N 337a4512a3cfbd8626af697d84079b048e3ff6743fddcf6803a4dc1530cb5d3d -> edge 52f05950-b49c-42b9-a4d2-7d0aafb6c894
+21:07:58.004 upload-N1 -> {"digest":"bfb83957a5f686ca39229d164396b6813d87b00899fe321604d64fa428b5a16a","index":1279,"status":201}
+21:07:58.088 release N1 4f15b9d0f935beb9814a65e287931d070167b496f717889985e7a4e0942e40a7 -> edge 5cfcecc3-da40-43d7-9150-8500323e1a0c
+21:07:58.922 upload-N2 -> {"digest":"c1aef5c136c83f55f451c4066096b4c57b40c8453d7cc0338825d13dd03cc1b4","index":1280,"status":201}
+21:07:59.006 release N2 3cd8ef6e2e35eae3036c29b20acfd69a636f47bf85f6464ce54d29315aeccb21 -> edge a02b9c73-7d7a-4bd7-9091-bb9abe7fba03
+21:07:59.437 roll-to-n -> {"digest":"68c0ef608aae753673327f94ba47bbc456cc48195ae5c9f229330c3e98579752","index":1281,"status":201}
+21:07:59.875 roll-to-n-done -> {"digest":"4eb8642c39da02c35b997ac620c4c0e0da0a3b04dff32a4398e48726dee3659f","index":1282,"status":201}
+21:08:45.500 bf43-roll-n1 -> {"digest":"8702e9e92c156ff8d5549d7254952b30c68324caecf938447fbf765200a0a524","index":1283,"status":201}
+21:08:45.583 event roll1 
+21:08:49.064 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@99 5cfcecc3-da40-43d7-9150-8500323e1a0c@1", "t0": 1794690525585
+21:08:49.724 bf43-step0 -> {"digest":"1dc0a417721bfb1b3c3206a5686551f774e9dfc363e039838f340c866543f9b0","index":1284,"status":201}
+21:10:21.776 deployments before-undo: 22856dfc-89d3-404b-8b70-92c13ddc980e 2026-11-14T21:08:50.915962Z [('52f05950', 99), ('5cfcecc3', 1)]
+21:10:21.783 event api-blocked 
+21:10:24.068 bf43-undo -> {"digest":"8f0183b71c52098eec470a451413f9ffe626849333bf67579f76684bfd1fbeed","index":1285,"status":201}
+21:10:24.137 event undo 
+21:11:24.141 event api-unblocked 
+21:11:25.986 deployments after-undo: 22856dfc-89d3-404b-8b70-92c13ddc980e 2026-11-14T21:08:50.915962Z [('52f05950', 99), ('5cfcecc3', 1)]
+21:11:29.251 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@100", "t0": 1794690685988
+21:11:29.879 bf43-done -> {"digest":"4a0423ad417576ac7c17a943c9e4367902d0796c5d671ae2aa4dfbe4db0455e6","index":1286,"status":201}
+21:11:50.565 bf43-roll-n2 -> {"digest":"c554af3014b0bbff5bbaa87ec7aad2a44f27d6bdd14963d8c4243df64b584197","index":1287,"status":201}
+21:11:50.645 event roll2 
+21:11:54.126 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@99 a02b9c73-7d7a-4bd7-9091-bb9abe7fba03@1", "t0": 1794690710646
+21:11:54.791 bf43-roll2-step0 -> {"digest":"fc726d1b4f31aeb3dfa3a67c39842358bc534a1fac215260c5c22fa8109af75d","index":1288,"status":201}
+21:13:24.881 event bf43-end 
+21:14:10.536 bf8-pin-n -> {"digest":"6dd9babe42e89bde4bfd33119b1affaf3ab111d05faa406efba0042f1af47d46","index":1289,"status":201}
+21:14:10.608 event pin 
+21:14:57.146 event blackhole 
+21:24:57.683 event blackhole-off 
+21:25:30.797 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@100", "t0": 1794691527686
+21:25:31.347 bf8-i2-done -> {"digest":"83a219f8d074073f0dcf1543ecbdbfa94801ab60efd7647fe3c3b80340de58ae","index":1290,"status":201}
+21:25:32.029 bf8-roll-drops-undo -> {"message":"an EdgeRoll that drops version 3cd8ef6e2e35eae3036c29b20acfd69a636f47bf85f6464ce54d29315aeccb21 an undo still names","refusal":"DropsUndoVersion","status":422}
+21:25:32.080 event refused-roll 
+21:25:32.661 bf8-roll-n1 -> {"digest":"216f05af4ece3732b98af046fd64b3317c9ba227374fa6508da0334a35e56c8c","index":1292,"status":201}
+21:25:32.736 event roll3 
+21:25:36.185 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@99 5cfcecc3-da40-43d7-9150-8500323e1a0c@1", "t0": 1794691532737
+21:25:36.651 bf8-i3-step0 -> {"digest":"f8d1f65b304a3abadbe03ab4f7a0933fa95bc4f7697898e618fae8395206b46c","index":1293,"status":201}
+21:26:09.650 event deployed "split": "5cfcecc3-da40-43d7-9150-8500323e1a0c@100", "t0": 1794691566723
+21:26:09.652 event dropped-n 
+21:26:11.232 deployments dropped-n: e3c8c70e-2fea-4dcd-a650-528b27ef4c14 2026-11-14T21:26:11.751711Z [('5cfcecc3', 100)]
+21:26:31.957 bf8-pin-outside -> {"digest":"9e6e6ee0a9d17703ea98445b70742aa5898ff71c2f0dbeef4219e41b22c61520","index":1294,"status":201}
+21:26:32.038 event pin-outside 
+21:27:35.062 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@100", "t0": 1794691652041
+21:27:35.065 event restored-n 
+21:28:05.571 bf8-i3-done -> {"digest":"47b4426acd15c77ad43b41ded45670b7d7623e4d0f7ab72ecd7749d764e0b868","index":1295,"status":201}
+21:28:06.291 bf8-roll-clear -> {"digest":"77239ec8f226269d0587a24e8fed290cb3a702d7934b31c73f749970c58cfe43","index":1296,"status":201}
+21:28:06.945 bf8-i4-done -> {"digest":"47f854449a695aa4a23b4db3c79169cd1b1997392ae28b85037d72a23cf030d9","index":1297,"status":201}
+21:28:22.021 event bf8-end 

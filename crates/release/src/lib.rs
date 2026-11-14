@@ -14,6 +14,7 @@
 mod codec;
 mod group;
 mod types;
+pub mod view;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use graftyard_types::{
@@ -26,7 +27,7 @@ use smallvec::SmallVec;
 pub use codec::Malformed;
 pub use group::{
     Accepted, Current, Drained, Pointers, ReleaseFold, STALE_MAX, Upload, ZERO_ACKS, formats_enable_message,
-    presign_undo, undo_entry,
+    presign_undo, roll_steps, undo_entry,
 };
 pub use types::{
     Bound, DayTarget, Format, FormatSet, Genesis, ImageRef, InstallId, Intent, IntentId, IntentState, KeyId, Keys,
@@ -208,6 +209,8 @@ pub enum Refusal {
     NotLost(SiteId),
     #[error("IntentStep {got}, the next step is {want}")]
     WrongStep { want: u8, got: u8 },
+    #[error("a {kind} has {steps} forward steps (ROLL_STEPS)")]
+    PastLastStep { kind: &'static str, steps: u8 },
     #[error("{0}")]
     BadState(&'static str),
     #[error("bad release record: {0}")]
@@ -245,6 +248,7 @@ impl Refusal {
             Refusal::DropsUndoVersion(_) => "DropsUndoVersion",
             Refusal::NotLost(_) => "NotLost",
             Refusal::WrongStep { .. } => "WrongStep",
+            Refusal::PastLastStep { .. } => "PastLastStep",
             Refusal::BadState(_) => "BadState",
             Refusal::BadRecord(_) => "BadRecord",
             Refusal::Rejected(_) => "Rejected",

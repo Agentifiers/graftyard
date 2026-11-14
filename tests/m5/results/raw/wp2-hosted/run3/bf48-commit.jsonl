@@ -1,0 +1,6 @@
+{"flag":"a","t":1794678915192,"site":0,"commit":{"error":{"stale":{"until":1794678978758}},"meta":{"configIndex":455,"leader":0,"term":82}}}
+{"flag":"a","t":1794678915433,"site":1,"commit":{"error":{"stale":{"until":1794678978758}},"meta":{"configIndex":1,"leader":null,"term":82}}}
+{"flag":"a","t":1794678915610,"site":2,"commit":{"error":{"stale":{"until":1794678978758}},"meta":{"configIndex":455,"leader":0,"term":82}}}
+{"flag":"b","t":1794679072636,"site":0,"commit":{"error":{"stale":{"until":1794679179720}},"meta":{"configIndex":455,"leader":0,"term":82}}}
+{"flag":"b","t":1794679072873,"site":1,"commit":{"error":{"stale":{"until":1794679179720}},"meta":{"configIndex":1,"leader":null,"term":82}}}
+{"flag":"b","t":1794679073054,"site":2,"commit":{"error":{"stale":{"until":1794679179720}},"meta":{"configIndex":455,"leader":0,"term":82}}}
