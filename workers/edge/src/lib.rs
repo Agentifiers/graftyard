@@ -955,6 +955,27 @@ impl Ctx<'_> {
         graftyard_lookup::Bindings { env: self.env, sites: self.sites }
     }
 
+    /// A call to `graft-ops` over the `OPS` `fetch()` binding, with a version override while the cached view's
+    /// `OpsPointer` pins it (`design/DESIGN.md`, Shape, `Pointers`; journey 7). `OPS_SCRIPT` names the script the
+    /// override header keys on. The edge reads the view only here and in the release endpoint, so only those requests
+    /// refresh it (`graftyard_lookup::view::ensure`).
+    async fn ops(&self, url: &str, mut init: RequestInit) -> Result<Response> {
+        if let Some(a) = &self.anchor {
+            graftyard_lookup::view::ensure(&self.bindings(), a, Some(self.ctx)).await;
+        }
+        if let (Some(v), Ok(name)) =
+            (graftyard_lookup::view::pin(graftyard_release::Script::Ops), self.env.var("OPS_SCRIPT"))
+        {
+            let h = Headers::new();
+            h.set(
+                "cloudflare-workers-version-overrides",
+                &graftyard_release::view::version_override(&name.to_string(), v),
+            )?;
+            init.with_headers(h);
+        }
+        self.env.service("OPS")?.fetch(url, Some(init)).await
+    }
+
     /// A system chain's record: from the `Release` view, accepted against this script's anchor. With `test-faults`
     /// only, `GRAFTYARD_GENESIS` stands in for the view on a test install with no `Release` group.
     async fn system_record(&self, chain: ChainId) -> std::result::Result<PlacementRecord, String> {
@@ -2013,7 +2034,15 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             let for_ms = qp("for_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(30 * 86_400_000);
             let until = from + for_ms;
             let rate = qp("rate").and_then(|v| v.parse::<f64>().ok());
-            json!({ "site": site, "from": from, "until": until, "rate": rate })
+            // M5-WP2: `chains=release,repo:7` fails only those chains' members; `group_only=1` only their
+            // member-to-member Raft calls, so the group cannot commit and members still answer `/read` and `/view`.
+            let chains: Vec<String> =
+                qp("chains").map(|c| c.split(',').map(str::to_owned).collect()).unwrap_or_default();
+            let group_only = qp("group_only").is_some();
+            // `hang_ms=H`: a hit call hangs H ms before it fails, a blackhole rather than a refusal (B0-07's gray site).
+            let hang_ms = qp("hang_ms").and_then(|v| v.parse::<u64>().ok());
+            json!({ "site": site, "from": from, "until": until, "rate": rate, "chains": chains,
+                    "group_only": group_only, "hang_ms": hang_ms })
         };
         let mut set = Vec::new();
         for s in &c.sites.0 {
@@ -2396,7 +2425,7 @@ fn colo_id(req: &Request) -> u32 {
 }
 
 #[event(fetch)]
-async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let rid = RequestId(Ulid::new(now(), rand10()));
     let cfg = Config::read(&env)?;
     let url = req.url()?;
@@ -2415,12 +2444,49 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         console_error!("{e}");
     }
     graftyard_lookup::set_colo(colo_id(&req));
+    // The version this request ran, from the version metadata binding, for `graft-front`'s mismatch check. Only a
+    // request that asks for it (`graft-front` sends `FRONT_HEADER`) gets the header, and `graft-front` takes it off
+    // the client's response, so no client response changes.
+    let report = req.headers().has(FRONT_HEADER)?;
+    let r = serve(req, &env, &ctx, rid, &cfg, url, path, &sites, anchor).await;
+    match (r, report.then(|| env.get_binding::<WorkerVersionMetadata>("VERSION"))) {
+        (Ok(res), Some(Ok(v))) => {
+            // A response whose headers are immutable (an R2 or subrequest body passed through) is copied once.
+            if res.headers().set(EDGE_VERSION_HEADER, &v.id()).is_ok() {
+                return Ok(res);
+            }
+            let headers = res.headers().clone();
+            headers.set(EDGE_VERSION_HEADER, &v.id())?;
+            let status = res.status_code();
+            Ok(Response::from_body(res.body().clone())?.with_status(status).with_headers(headers))
+        }
+        (r, _) => r,
+    }
+}
+
+/// The request header `graft-front` sends, asking for `EDGE_VERSION_HEADER`.
+pub const FRONT_HEADER: &str = "x-graftyard-front";
+/// The response header that carries the edge version that served a request (`graft-front`'s mismatch check).
+pub const EDGE_VERSION_HEADER: &str = "x-graftyard-edge-version";
+
+#[allow(clippy::too_many_arguments)]
+async fn serve(
+    mut req: Request,
+    env: &Env,
+    ctx: &Context,
+    rid: RequestId,
+    cfg: &Config,
+    url: Url,
+    path: String,
+    sites: &SiteTable,
+    anchor: Option<Anchor>,
+) -> Result<Response> {
     let c = Ctx {
-        env: &env,
-        ctx: &ctx,
-        cfg: &cfg,
+        env,
+        ctx,
+        cfg,
         rid,
-        sites: &sites,
+        sites,
         anchor,
         colo: colo_id(&req),
         token_app: std::cell::Cell::new(None),
@@ -2578,7 +2644,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
-            upload_pack(&c, &mut req, repo, &ctx).await
+            upload_pack(&c, &mut req, repo, ctx).await
         }
         Route::Rpc { service: Service::ReceivePack, .. } => {
             if req.method() != Method::Post {

@@ -1,0 +1,219 @@
+2026-11-14T15:22:44Z
+npm notice run npx
+npm notice run 'wrangler' secret put BED_TOKEN --name graft-m3c-m5-edge
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+🌀 Creating the secret for the Worker "graft-m3c-m5-edge"
+✨ Success! Uploaded secret BED_TOKEN
+bed secret exit 0
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+    Finished `release` profile [optimized] target(s) in 0.10s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 23.03s
+[INFO]: 📦   Your wasm pkg is ready to publish at /home/user/workspace/repo/workers/edge/build/.tmp.
+
+  index.js  30.5kb
+
+⚡ Done in 8ms
+npm notice run npx
+npm notice run 'wrangler' versions upload -c graft-m3c-m5-edge.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+Total Upload: 4539.17 KiB / gzip: 1485.29 KiB
+Worker Startup Time: 8 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                     
+env.MEMBER_0 (Member, defined in graft-m3c-site-a)                           Durable Object               
+env.REGISTRY_0 (Registry, defined in graft-m3c-site-a)                       Durable Object               
+env.SHARD_0 (GitShard, defined in graft-m3c-site-a)                          Durable Object               
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m3c-site-a)                   Durable Object               
+env.SEARCH_0 (SearchShard, defined in graft-m3c-site-a)                      Durable Object               
+env.INBOX_0 (Inbox, defined in graft-m3c-site-a)                             Durable Object               
+env.MEMBER_1 (Member, defined in graft-m3c-site-b)                           Durable Object               
+env.REGISTRY_1 (Registry, defined in graft-m3c-site-b)                       Durable Object               
+env.SHARD_1 (GitShard, defined in graft-m3c-site-b)                          Durable Object               
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m3c-site-b)                   Durable Object               
+env.SEARCH_1 (SearchShard, defined in graft-m3c-site-b)                      Durable Object               
+env.INBOX_1 (Inbox, defined in graft-m3c-site-b)                             Durable Object               
+env.MEMBER_2 (Member, defined in graft-m3c-site-c)                           Durable Object               
+env.REGISTRY_2 (Registry, defined in graft-m3c-site-c)                       Durable Object               
+env.SHARD_2 (GitShard, defined in graft-m3c-site-c)                          Durable Object               
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m3c-site-c)                   Durable Object               
+env.SEARCH_2 (SearchShard, defined in graft-m3c-site-c)                      Durable Object               
+env.INBOX_2 (Inbox, defined in graft-m3c-site-c)                             Durable Object               
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                    
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                    
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                    
+env.OPS (graft-m3c-ops)                                                      Worker                       
+env.VERSION                                                                  Worker Version Metadata      
+env.PLAN ("pro")                                                             Environment Variable         
+env.SSH_OPTION ("off")                                                       Environment Variable         
+env.EDGE_CAP_BYTES ("80000000")                                              Environment Variable         
+env.FORMATS_ENABLED ("32.1,32.4,32.5,32.6,32.7,32.9,32.11,3...")             Environment Variable         
+env.PART_BYTES ("5242880")                                                   Environment Variable         
+env.HOST ("graft-m3c-m5-edge.<workers-subdomain>.w...")                        Environment Variable         
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable         
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable         
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable         
+env.OPS_SCRIPT ("graft-m3c-ops")                                             Environment Variable         
+env.EDGE_TAG ("N1")                                                          Environment Variable         
+
+Uploaded graft-m3c-m5-edge (1.78 sec)
+Worker Version ID: ed76a9f6-eb91-4acc-99ae-2ab637a2ee70
+
+To deploy this version to production traffic use the command wrangler versions deploy
+
+Changes to non-versioned settings (config properties 'logpush' or 'tail_consumers') take effect after your next deployment using the command wrangler versions deploy
+
+Changes to triggers (routes, custom domains, cron schedules, etc) must be applied with the command wrangler triggers deploy
+
+upload N1 exit 0
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+    Finished `release` profile [optimized] target(s) in 0.09s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 22.77s
+[INFO]: 📦   Your wasm pkg is ready to publish at /home/user/workspace/repo/workers/edge/build/.tmp.
+
+  index.js  30.5kb
+
+⚡ Done in 9ms
+npm notice run npx
+npm notice run 'wrangler' versions upload -c graft-m3c-m5-edge.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+Total Upload: 4539.17 KiB / gzip: 1485.29 KiB
+Worker Startup Time: 9 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                     
+env.MEMBER_0 (Member, defined in graft-m3c-site-a)                           Durable Object               
+env.REGISTRY_0 (Registry, defined in graft-m3c-site-a)                       Durable Object               
+env.SHARD_0 (GitShard, defined in graft-m3c-site-a)                          Durable Object               
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m3c-site-a)                   Durable Object               
+env.SEARCH_0 (SearchShard, defined in graft-m3c-site-a)                      Durable Object               
+env.INBOX_0 (Inbox, defined in graft-m3c-site-a)                             Durable Object               
+env.MEMBER_1 (Member, defined in graft-m3c-site-b)                           Durable Object               
+env.REGISTRY_1 (Registry, defined in graft-m3c-site-b)                       Durable Object               
+env.SHARD_1 (GitShard, defined in graft-m3c-site-b)                          Durable Object               
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m3c-site-b)                   Durable Object               
+env.SEARCH_1 (SearchShard, defined in graft-m3c-site-b)                      Durable Object               
+env.INBOX_1 (Inbox, defined in graft-m3c-site-b)                             Durable Object               
+env.MEMBER_2 (Member, defined in graft-m3c-site-c)                           Durable Object               
+env.REGISTRY_2 (Registry, defined in graft-m3c-site-c)                       Durable Object               
+env.SHARD_2 (GitShard, defined in graft-m3c-site-c)                          Durable Object               
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m3c-site-c)                   Durable Object               
+env.SEARCH_2 (SearchShard, defined in graft-m3c-site-c)                      Durable Object               
+env.INBOX_2 (Inbox, defined in graft-m3c-site-c)                             Durable Object               
+env.BUCKET_0 (graft-m3c-site-a-packs)                                        R2 Bucket                    
+env.BUCKET_1 (graft-m3c-site-b-packs)                                        R2 Bucket                    
+env.BUCKET_2 (graft-m3c-site-c-packs)                                        R2 Bucket                    
+env.OPS (graft-m3c-ops)                                                      Worker                       
+env.VERSION                                                                  Worker Version Metadata      
+env.PLAN ("pro")                                                             Environment Variable         
+env.SSH_OPTION ("off")                                                       Environment Variable         
+env.EDGE_CAP_BYTES ("80000000")                                              Environment Variable         
+env.FORMATS_ENABLED ("32.1,32.4,32.5,32.6,32.7,32.9,32.11,3...")             Environment Variable         
+env.PART_BYTES ("5242880")                                                   Environment Variable         
+env.HOST ("graft-m3c-m5-edge.<workers-subdomain>.w...")                        Environment Variable         
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable         
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable         
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable         
+env.OPS_SCRIPT ("graft-m3c-ops")                                             Environment Variable         
+env.EDGE_TAG ("N2")                                                          Environment Variable         
+
+Uploaded graft-m3c-m5-edge (5.06 sec)
+Worker Version ID: 2ba6460e-c88e-4523-8526-5b2feb0d132b
+
+To deploy this version to production traffic use the command wrangler versions deploy
+
+Changes to non-versioned settings (config properties 'logpush' or 'tail_consumers') take effect after your next deployment using the command wrangler versions deploy
+
+Changes to triggers (routes, custom domains, cron schedules, etc) must be applied with the command wrangler triggers deploy
+
+upload N2 exit 0
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling digest v0.10.7
+   Compiling num-traits v0.2.19
+   Compiling signature v2.2.0
+   Compiling ed25519 v2.2.3
+   Compiling sha2 v0.10.9
+   Compiling curve25519-dalek v4.1.3
+   Compiling graftyard-types v0.1.0 (/home/user/workspace/repo/crates/types)
+   Compiling ed25519-dalek v2.2.0
+   Compiling chrono v0.4.45
+   Compiling graftyard-release v0.1.0 (/home/user/workspace/repo/crates/release)
+   Compiling graftyard-raft v0.1.0 (/home/user/workspace/repo/crates/raft)
+   Compiling worker v0.8.7
+   Compiling graftyard-lookup v0.1.0 (/home/user/workspace/repo/crates/lookup)
+   Compiling graftyard-front v0.1.0 (/home/user/workspace/repo/workers/front)
+    Finished `release` profile [optimized] target(s) in 12.40s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 15.24s
+[INFO]: 📦   Your wasm pkg is ready to publish at /home/user/workspace/repo/workers/front/build/.tmp.
+
+  index.js  24.4kb
+
+⚡ Done in 6ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3c-front.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+Total Upload: 633.47 KiB / gzip: 200.93 KiB
+Worker Startup Time: 4 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                     
+env.MEMBER_0 (Member, defined in graft-m3c-site-a)                           Durable Object               
+env.REGISTRY_0 (Registry, defined in graft-m3c-site-a)                       Durable Object               
+env.MEMBER_1 (Member, defined in graft-m3c-site-b)                           Durable Object               
+env.REGISTRY_1 (Registry, defined in graft-m3c-site-b)                       Durable Object               
+env.MEMBER_2 (Member, defined in graft-m3c-site-c)                           Durable Object               
+env.REGISTRY_2 (Registry, defined in graft-m3c-site-c)                       Durable Object               
+env.EDGE (graft-m3c-m5-edge)                                                 Worker                       
+env.VERSION                                                                  Worker Version Metadata      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3c-site-a",...")             Environment Variable         
+env.GRAFTYARD_INSTALL ("01M742HEA2SBCYP1VW26624KMW")                         Environment Variable         
+env.GRAFTYARD_CUSTOMER_KEY ("3327abc8a0d9be55277db28227ff3ece67c26...")      Environment Variable         
+env.EDGE_SCRIPT ("graft-m3c-m5-edge")                                        Environment Variable         
+
+Uploaded graft-m3c-front (1.04 sec)
+Deployed graft-m3c-front triggers (0.38 sec)
+  https://graft-m3c-front.<workers-subdomain>.workers.dev
+Current Version ID: 14a6f9b4-af97-46f3-941e-70bea5214322
+front exit 0
+npm notice run npx
+npm notice run 'wrangler' secret put FRONT_TOKEN --name graft-m3c-front
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+🌀 Creating the secret for the Worker "graft-m3c-front"
+✨ Success! Uploaded secret FRONT_TOKEN
+front secret exit 0
+npm notice run npx
+npm notice run 'wrangler' versions list --name graft-m3c-m5-edge --json
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+versions exit 0
+2026-11-14T15:24:10Z
+DONE

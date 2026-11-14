@@ -19,6 +19,19 @@ use crate::{Anchor, Bound, Refusal, SignedEntry, check_genesis, check_keys};
 pub const ZERO_ACKS: u64 = 24 * 3_600_000;
 /// The longest an uncommitted `StaleMode` is honored after it arrives (Shape, "The read path") [guess].
 pub const STALE_MAX: u64 = 24 * 3_600_000;
+/// `ROLL_STEPS` for the scripts that roll by percentage ("Install operations", Site day): the share of requests the
+/// rolled version serves at each step, N kept in the deployment beside it. An `EdgeRoll` runs 1%, 10%, 50%, then 100%;
+/// `FrontRoll`, `OpsRoll`, `McpRoll`, and `ControllerRoll` run 1% for `FIRST_DAY`, then 100%.
+pub fn roll_steps(i: &Intent) -> Option<&'static [u8]> {
+    match i {
+        Intent::EdgeRoll { .. } => Some(&[1, 10, 50, 100]),
+        Intent::FrontRoll { .. } | Intent::OpsRoll { .. } | Intent::McpRoll { .. } | Intent::ControllerRoll { .. } => {
+            Some(&[1, 100])
+        }
+        _ => None,
+    }
+}
+
 /// The secrets the agents account's `graft-ops` rotates, whose `Rotate` the agents executor key may step.
 const AGENTS_SECRETS: [SecretName; 2] = [SecretName::AgentsAppKey, SecretName::WorkspaceAppKey];
 
@@ -55,6 +68,17 @@ pub struct Pointers {
 }
 
 impl Pointers {
+    /// The pin of `script`: `None` follows the deployment split.
+    pub fn get(&self, s: Script) -> Option<VersionId> {
+        match s {
+            Script::Edge => self.edge,
+            Script::Ops => self.ops,
+            Script::Mcp => self.mcp,
+            Script::Controller => self.controller,
+            _ => None,
+        }
+    }
+
     fn slot(&mut self, s: Script) -> Option<&mut Option<VersionId>> {
         match s {
             Script::Edge => Some(&mut self.edge),
@@ -158,7 +182,7 @@ fn role(k: &Keys, key: &KeyId) -> Option<Role> {
     }
 }
 
-fn verify_raw(key: &KeyId, msg: &[u8], sig: &Signature) -> Result<(), Refusal> {
+pub(crate) fn verify_raw(key: &KeyId, msg: &[u8], sig: &Signature) -> Result<(), Refusal> {
     let vk = VerifyingKey::from_bytes(&key.0).map_err(|_| Refusal::BadSignature)?;
     vk.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(&sig.0)).map_err(|_| Refusal::BadSignature)
 }
@@ -451,6 +475,12 @@ impl ReleaseFold {
                 if *step != c.next {
                     return Err(Refusal::WrongStep { want: c.next, got: *step });
                 }
+                // A roll's forward steps are its `ROLL_STEPS`; an undo's or an abort's steps are graft-ops's own.
+                if let (IntentState::Running { .. }, Some(steps)) = (c.state, roll_steps(&c.intent.intent))
+                    && usize::from(*step) >= steps.len()
+                {
+                    return Err(Refusal::PastLastStep { kind: c.intent.intent.kind(), steps: steps.len() as u8 });
+                }
                 Ok(())
             }
             ReleaseEntry::IntentDone { intent } => {
@@ -634,6 +664,9 @@ impl ReleaseFold {
                     return Err(refuse("RestorePlacement is refused while its site is drained"));
                 }
             }
+            Intent::FrontRoll { .. } if !i.undo.is_empty() => {
+                return Err(refuse("a FrontRoll carries no undo: graft-ops returns graft-front to N through the API"));
+            }
             Intent::Rotate { slot, .. } => {
                 if *slot > 1 {
                     return Err(refuse("a secret has slots 0 and 1"));
@@ -736,6 +769,11 @@ impl ReleaseFold {
                     let v = self.uploads[&pin.0].versions.iter().find(|(s, _)| *s == script).map(|(_, v)| *v);
                     if let Some(slot) = self.pointers.slot(script) {
                         *slot = v;
+                    }
+                    // The script now runs the pin, which graft-ops deploys at 100% with the rolled release kept beside
+                    // it, so the next roll of the script keeps the pin, not the release the undo left.
+                    if let Some((_, rolled)) = self.deployed.get(&script).copied() {
+                        self.deployed.insert(script, (Some(rolled), pin));
                     }
                 }
                 let parent = entry.bound.parent.expect("an undo binds its parent");

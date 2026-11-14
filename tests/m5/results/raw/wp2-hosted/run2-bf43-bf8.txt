@@ -1,0 +1,32 @@
+BF-43: 92463 requests, 92463 200
+  before the undo: 40518 requests, 250 on N+1 (0.62%)
+  undo 201 at +0; first request carrying the pin at +1002 ms
+  requests off N after the undo: 7; last one started at +2238 ms
+  requests from +5 s to the next roll: 23869, off N or unpinned: 0
+  with the API blocked (64 s): 17648 requests, 17641 on N
+  after the next EdgeRoll's 201: 26583 requests; last pinned one at +3303 ms; pinned after +5 s: 0
+  under the second 1% split: 16232 requests, 173 on N+2
+  alarms: 0
+BF-8: 259742 requests
+  (A) blackhole 601 s: 168705 requests, 168705 200, 45914 carried the pin, 167491 ran N, p50 23 ms p99 73 ms max 1451 ms
+  views failing during it: 166880 of 168705
+  repository reads during it: 1110, 1110 200, p50 462 ms max 3708 ms
+  (B) EdgeRoll whose undo names N+2: {"message": "an EdgeRoll that drops version 034ef100302b53f9dd005d505dfa3bff2c76b37435c73da5bb3f3bf6c2f91481 an undo still names", "refusal": "DropsUndoVersion", "status": 422}
+  pointer outside the deployment at +0: first alarm at +465 ms; 21310 alarmed of 21886 requests until N was back; silent pinned mismatches: 0
+  ALARM lines in the front's tail: 198
+  isolates started before the blackhole: 18, 15451 requests, pinned 15451, ran N 15451, p99 63 ms
+  isolates started during the blackhole: 126, 153254 requests, pinned 30463, ran N 152040, p99 74 ms
+  not alarmed after the outside pin: 617, pins ['none'], last at +3720 ms
+BF-48: 1723 member reads
+  bf48-stale-a: {"message": "", "refusal": "", "status": 202}
+  bf48-stale-b: {"message": "", "refusal": "", "status": 202}
+  flag A site 0: first stale() at +2213 ms, last at +75819 ms, first non-stale read sent at +76210 ms; honored until +78376 ms on the orb's clock; after it: 109 reads, kinds ['value']
+  flag A site 1: first stale() at +1292 ms, last at +75880 ms, first non-stale read sent at +76210 ms; honored until +78376 ms on the orb's clock; after it: 109 reads, kinds ['error']
+  flag A site 2: first stale() at +2336 ms, last at +75909 ms, first non-stale read sent at +76210 ms; honored until +78376 ms on the orb's clock; after it: 109 reads, kinds ['error']
+  flag B site 0: first stale() at +None ms, last at +None ms, first non-stale read sent at +None ms; honored until +None ms on the orb's clock; after it: 0 reads, kinds []
+  flag B site 1: first stale() at +None ms, last at +None ms, first non-stale read sent at +None ms; honored until +None ms on the orb's clock; after it: 0 reads, kinds []
+  flag B site 2: first stale() at +None ms, last at +None ms, first non-stale read sent at +None ms; honored until +None ms on the orb's clock; after it: 0 reads, kinds []
+  control repository: 435 reads, stale 0
+  write probe flag None site 0: {"unsupported": {"family": 0, "version": 0}}
+  write probe flag None site 1: {"unsupported": {"family": 0, "version": 0}}
+  write probe flag None site 2: {"unsupported": {"family": 0, "version": 0}}

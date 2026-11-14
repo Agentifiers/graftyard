@@ -745,6 +745,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftyard-front"
+version = "0.1.0"
+dependencies = [
+ "graftyard-lookup",
+ "graftyard-release",
+ "graftyard-types",
+ "serde_json",
+ "worker",
+]
+
+[[package]]
 name = "graftyard-git"
 version = "0.1.0"
 dependencies = [

@@ -3107,6 +3107,80 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.
 
+### M5-WP2: the cached `Release` view, pin-only pointers, and `graft-front`, as built (2026-11-14)
+
+#### The view is a replica of the group's fold, not a copy of a member's answer
+
+**Decision.** Each `graft-front`, edge, and site isolate holds its own `ReleaseFold`, built by replaying the group's committed entries, read by position from a member's `/view` (`{"from": n}`, entries with their entry times, plus `pending` rows), through the same `check` and `apply` a follower runs, against the isolate's own trust anchor (`crates/release/src/view.rs`, `Replica`; `crates/lookup/src/view.rs`). A page that starts past the replica's count is a gap and refused, and a member behind it adds nothing, so the view never moves backward. A refresh reads members, the last-named leader first, until one that names itself leader answers; a follower's page is applied on the way.
+
+**Why.** "Refreshed from any member's applied state and never moved backward" (`build/BUILD-PLAN.md`, M5-WP2). A member's answer trusted as a summary would let one bad member set a pointer; replayed entries verify by their signatures and bound `prev`, so a member can only withhold. A follower applies a commit only when a later round carries it, and an idle `Release` group sends none, so a view read from a follower can lag a commit until the group's next entry.
+
+**Beat.** A signed snapshot of the fold, which needs a signer that is not the group. Stopping at the first member that answers, leader first when one is known: BF-43's first run had isolates whose hint was empty read a follower, and requests ran unpinned for up to 59 s after the undo's 201, until the next entry. A follower `/view` that waits for a read-index round, which costs the leader a round per isolate refresh.
+
+**Evidence.** `a_replica_replays_the_group_from_any_member_and_never_moves_backward` and `a_replica_refuses_another_installs_or_a_tampered_history` (`crates/release/src/tests/group.rs`, "The cached view (M5-WP2)"); plants 0 to 2 in `tests/m5/plant_wp2.py`; BF-43 runs 1 and 2 (`tests/m5/results/m5-wp2.md`).
+
+**Flip.** A `Release` log too long to replay on a cold isolate inside VIEW_CALL_MS, which would need a snapshot the anchor can check.
+
+#### When a request waits on the view
+
+**Decision.** `Freshness::need`: a busy isolate refreshes beside its requests at POINTER_TTL - RETRY_MS (4 s); a request waits, at most VIEW_CALL_MS (1 s) from its arrival, only when the view is missing or POINTER_TTL old and the last refresh did not fail; once a refresh has failed, or while one beside requests has hung for under ABANDON_MS (4 s), no request waits, and the refresh is retried every RETRY_MS beside them.
+
+**Why.** BF-43 needs every request pinned within POINTER_TTL of the undo, and BF-8 needs no request blocked on a blackholed group. A refresh at the TTL itself would leave requests between TTL and the refresh's answer on an old view.
+
+**Beat.** Waiting on every refresh (BF-8's blackhole would hold every request 1 s). Never waiting (a cold isolate's first requests would carry no pin for up to a round trip after a pin, BF-43's tail).
+
+**Evidence.** BF-43 run 2 (every request pinned by +3.2 s) and BF-8 (168,705 requests through a 601 s blackhole, p99 73 ms, none blocked), `tests/m5/results/m5-wp2.md`; `a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group`; plants 9 to 11. It gives a cold isolate nothing to keep: BF-8's isolates started during the blackhole served unpinned (`decisions/OPEN-QUESTIONS.md`, R20).
+
+**Flip.** A hosted run where an isolate's first request after an idle period waits its full second on a group that answers slowly but does answer, or an operator decision on R20 that cold isolates wait for the pins. R20 was decided for a copy outside the group instead ("A copy of the `Release` group's entries outside the group", below).
+
+#### A pointer undo moves the script's deployed release
+
+**Decision.** A committed `EdgePointer` (or other pointer) undo sets `deployed[script]` to (the rolled release, the pin), so the next roll of that script keeps the pin beside its new release, and `DropsUndoVersion` judges against the pin. `roll_steps` bounds an `EdgeRoll` to 4 `IntentStep`s and the 1%-then-100% rolls to 2 (`Refusal::PastLastStep`), and a `FrontRoll` with an undo is refused.
+
+**Why.** After an undo, `graft-ops` deploys the pin at 100% (Shape, `Rollback`), so the release the next roll keeps is the pin, not the one the undo left. A step past `ROLL_STEPS` would record progress no deployment made. `graft-front` is the swap mechanism and has no pin of its own ("Downtime", `graft-front` and `graft-ops`).
+
+**Beat.** Leaving `deployed` at the rolled release, under which BF-8's refused roll would have been accepted.
+
+**Evidence.** BF-8's refused `EdgeRoll` hosted; `the_next_roll_of_the_pinned_script_clears_the_pin_and_keeps_the_pinned_release` and `rolls_take_only_their_roll_steps_and_a_front_roll_carries_no_undo`; plants 3 to 6. `graft_front_alarms_only_when_a_pinned_call_ran_another_version` and plants 7 and 8 cover the alarm and the override header.
+
+**Flip.** Edge deployments that keep more than two versions.
+
+#### An uncommitted `StaleMode`, and how members serve it
+
+**Decision.** The edge commits a `StaleMode` for at most 10 s; on a 503 it verifies the flag against its view (`verify_stale`: the customer key alone, this install, no parent, `until` ahead) and writes it to every member's `release_pending` row, each member verifying against its own applied `Keys`, and answers 202 `{pending, of, rows}`. Isolates read the rows with the view, verify them again, and honor a flag until min(`until`, earliest arrival + STALE_MAX). A covered non-`Release` member answers `/read` from `stale()` with `"stale": {"until"}` and `/commit*` with `{"error": {"stale": {"until"}}}`. `GRAFTYARD_STALE_MAX_MS` (test-faults only) lowers STALE_MAX so a hosted run sees the bound end a flag.
+
+**Why.** "A `StaleMode` that cannot commit is written to every reachable member's `pending` row and verified against the cached `Keys`" (`build/BUILD-PLAN.md`, M5-WP2). The earliest arrival bounds a flag replayed later to a second member. A write answered as an error, not a missed call, returns at once instead of being resent for a minute.
+
+**Beat.** Committing the flag through another group (it is the `Release` group's own outage). Honoring from the latest arrival, which lets a replay extend it.
+
+**Evidence.** BF-48 hosted; `an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until`, `an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival`, `a_committed_stale_mode_is_honored_until_its_until`, `a_flag_covers_only_its_scope`; plants 12 to 20. The edge's signer precheck: `the_edge_prechecks_signers_against_its_cached_keys`, plants 21 and 22.
+
+**Flip.** A pending flag that a member could not verify because its `Keys` lagged the edge's, which would need the edge to send the `Keys` entry with it.
+
+#### A copy of the `Release` group's entries outside the group
+
+**Decision.** Every `Release` member, on the alarm right after it applies entries and on restore, writes the signed entries it applied, with their entry times and positions, to a copy in the `Release` chain's own `MemberRegistry` object on its site (`registry#36`, route `/release_copy`; `workers/site/src/release.rs`, `copy`; `workers/site/src/registry.rs`). The copy only grows: a write adds positions it lacks and changes nothing past a gap. A refresh that requests wait for, on an isolate that holds no view or one idle past POINTER_TTL, also reads every site's copy, for at most `COPY_MS` (500 ms), and takes one only through `Replica::adopt`: every entry it lacks passes `check` against the isolate's own anchor or none is taken, and a copy no longer than what the isolate holds adds nothing. The waiting requests go out when the group answers or when every copy has answered, so they carry the longest copy; a cold request waits at most `COPY_MS` from arrival and an idle one at most VIEW_CALL_MS, then goes out with what is held, unpinned if nothing came. The refresh goes on beside later requests, so the group's view replaces the copy once a member answers (operator decision on R20, option 1, 2026-11-14).
+
+**Why.** BF-8 run 2 failed "requests keep the last pointers" only on isolates that started during the blackhole: the 18 started before held the pin on 15,451 of 15,451 requests, and of the 126 started during it, 123 held no view and served 122,791 of 153,254 requests unpinned, 1,214 of them on N+2 (`tests/m5/results/m5-wp2.md`). The registry is an existing per-site class that every script with the group's bindings already reaches, and the site fault and a blackholed group do not take it down, so it is not a new failure domain. The row is the committed entries themselves rather than a summary of the pins, because pins derive from many entries (a later intent clears one), and only the signed history lets an isolate check the copy against its anchor as it checks a member's page.
+
+**Beat.** Releasing the requests on the first copy taken, and reading copies only on an isolate that holds no view (BF-8 run 3: a follower site's copy of the idle group lagged the leader's by one entry, so 159 requests on isolates started during the blackhole went out unpinned in their first 1.4 s, and six isolates idle from BF-43 to BF-8 kept a view without the pin through the whole blackhole, 4,059 requests). Cold requests waiting for the group (option 2): breaks "no request waits on the group". Narrowing BF-8's row to isolates started before the blackhole (option 3): a substitution. A new Durable Object class or store for the copy: a new failure domain. A binding or variable carrying the last pin: a new script version per pin, which a site day must ship.
+
+**Evidence.** `a_cold_isolate_takes_a_sites_copy_whole_and_an_older_copy_never_rolls_its_view_back` and the cold case of `a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group` (`crates/release/src/tests/group.rs`); plants 2 and 3 in `tests/m5/plant_wp2.py`. BF-8 run 4, 601 s blackhole, as written (`tests/m5/results/m5-wp2.md`): 200,416 of 200,416 requests answered 200 and carried the pin, all on N, p99 56 ms, max 1,060 ms. The 37 isolates started before the blackhole pinned 33,642 of 33,642; the 240 started during it pinned 166,774 of 166,774, each minute of starts from 0 to 9 at 100%. Every one of the 277 took a site's copy (sites 0 and 2), read in 81 ms at p50 and 139 ms at most. Cold-start requests (an isolate's first 600 ms) were 28 ms at p50, 508 ms at p99, 674 ms at most, under `COPY_MS` plus the request. BF-8 run 2 for comparison: 15,451 of 15,451 pinned on isolates started before, 30,463 of 153,254 on the 126 started during. Run 3, with the first copy releasing the wait and idle isolates reading none: 159 of 151,717 unpinned on cold isolates and 4,059 on six idle ones.
+
+**Flip.** Copy reads that miss `COPY_MS` on more than 1% of cold isolates while a registry answers (run 4's slowest was 139 ms of 500), which would raise the bound; a `Release` log too long for one registry read, which would need a signed snapshot; or a fault class that takes every site's registry with the members, which leaves the gap R20 named.
+
+#### The run stands in for `graft-ops`'s executor
+
+**Decision.** M5-WP3 builds `graft-ops` executing intents. Until then BF-43 and BF-8 deploy each split with `wrangler versions deploy` from the orb (the ops path) and commit the executor-signed `IntentStep` and `IntentDone` with a key the run holds. The edge versions N, N+1, and N+2 are three uploads of the same build with a distinguishing variable.
+
+**Why.** The rows test the request path: a pointer read by `graft-front` with no API call. Who deploys the split does not change what a request sees.
+
+**Beat.** Waiting for M5-WP3, which would leave the pointer path untested hosted until then.
+
+**Evidence.** `tests/m5/wp2-hosted.sh`; `tests/m5/results/m5-wp2.md`.
+
+**Flip.** M5-WP3's gate, which reruns BF-43 with `graft-ops` executing.
+
 ### M4-WP2's hosted half, as built (2026-11-13)
 
 #### M4-WP2's consumers run in band on the leader alarm

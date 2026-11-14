@@ -1,0 +1,19 @@
+21:04:51.720 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@100", "t0": 1794690288410
+21:04:56.054 bf8-i2-done -> {"digest":"25bdf8dd4b9300c62c5344285b913f95e231a4c9ccfffafb822a18a135e91795","index":1267,"status":201}
+21:04:56.460 bf8-roll-drops-undo -> {"message":"an EdgeRoll that drops version 96ae44ca47d1f249e62a23e2acf80f3d4d52102781935b0b0e7a78d9c1656f52 an undo still names","refusal":"DropsUndoVersion","status":422}
+21:04:56.517 event refused-roll 
+21:04:57.405 bf8-roll-n1 -> {"digest":"3dc9c5d18caad4e7d8e00460deebb41196a3291c247c70ae1e2319892ab654e6","index":1269,"status":201}
+21:04:57.489 event roll3 
+21:05:06.028 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@99 5cfcecc3-da40-43d7-9150-8500323e1a0c@1", "t0": 1794690297490
+21:05:06.930 bf8-i3-step0 -> {"digest":"d79868b1e894389eae14c60914c84e1ef54ca713f190f7e8bbeedf41e9b06fea","index":1270,"status":201}
+21:05:40.366 event deployed "split": "5cfcecc3-da40-43d7-9150-8500323e1a0c@100", "t0": 1794690337017
+21:05:40.369 event dropped-n 
+21:05:42.325 deployments dropped-n: 637bebbc-21a6-4ad4-bdec-ee783a4d8bab 2026-11-14T21:05:42.320694Z [('5cfcecc3', 100)]
+21:06:03.344 bf8-pin-outside -> {"digest":"0d29d6b2350b0d32521bddd7fb84ea393f7ed67257369fcebce39c77f8bcf38a","index":1271,"status":201}
+21:06:03.429 event pin-outside 
+21:07:07.042 event deployed "split": "52f05950-b49c-42b9-a4d2-7d0aafb6c894@100", "t0": 1794690423435
+21:07:07.045 event restored-n 
+21:07:39.227 bf8-i3-done -> {"digest":"e0a50378e04a34b5974d6b6c1bf5124836fb5200ee169679b8b93f9a47b905f8","index":1274,"status":201}
+21:07:40.116 bf8-roll-clear -> {"digest":"80ab0e4902dde534bfba6f48a4f759157b0ba41cbb6057c86827e25638cfb623","index":1275,"status":201}
+21:07:40.623 bf8-i4-done -> {"digest":"3be2c41b1f55dfa1ff00de50be05744976f1215a1cb8e8aa893a66c19a2434ed","index":1276,"status":201}
+21:07:55.709 event bf8-end 

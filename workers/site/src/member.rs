@@ -494,6 +494,26 @@ fn rtt_rows(state: &State, env: &Env) -> Result<Vec<(SiteId, Rtt)>> {
         .collect())
 }
 
+/// Until when a `StaleMode` flag, committed or pending, covers this member's chain in this isolate's cached `Release`
+/// view, which a call here refreshes beside the request when it is due (`graftyard_lookup::view`): every isolate,
+/// members included, caches the view. A `Release` member's own chain is never covered, so it reads no view.
+fn stale_until<F: Family>(h: &Host<F>) -> Option<graftyard_types::Timestamp> {
+    let (chain, owner) = h.core.try_borrow().ok()?.as_ref().map(|c| (c.join.chain, c.join.owner))?;
+    if chain == ChainId::Release {
+        return None;
+    }
+    if graftyard_lookup::view::due() {
+        let anchor = crate::release::anchor(&h.env)?;
+        let site = SiteEnv::read(&h.env).ok()?;
+        #[cfg(feature = "test-faults")]
+        if let Some(ms) = h.env.var("GRAFTYARD_STALE_MAX_MS").ok().and_then(|v| v.to_string().parse().ok()) {
+            graftyard_lookup::view::set_stale_max(ms);
+        }
+        graftyard_lookup::view::refresh_beside(&h.env, &site.sites, &anchor, None, true);
+    }
+    graftyard_lookup::view::stale_until(chain, owner)
+}
+
 /// The member's routes for one command family.
 struct Routes<F: Family> {
     host: Rc<Host<F>>,
@@ -534,7 +554,14 @@ impl<F: Family> Routes<F> {
                 crate::faults::count("severed:in");
                 return Response::error("member severed (injected)", 503);
             }
-            if !observe && let Some(hang) = crate::faults::site_fault(&self.host.env).await {
+            if !observe
+                && let Some(hang) = crate::faults::site_fault(
+                    &self.host.env,
+                    self.host.chain(),
+                    matches!(url.path(), "/raft" | "/campaign" | "/suspect"),
+                )
+                .await
+            {
                 crate::faults::count("site_fault:in");
                 if hang > 0 {
                     Delay::from(Duration::from_millis(hang)).await;
@@ -566,6 +593,11 @@ impl<F: Family> Routes<F> {
                     Ok(res)
                 });
                 r
+            }
+            // Stale mode: writes return 503. Answered as an error the caller returns at once (`commit_hedged`), not
+            // as a missed call it would send again for a minute.
+            (Method::Post, "/commit" | "/commit_many") if let Some(until) = stale_until(&self.host) => {
+                self.reply(json!({ "error": { "stale": { "until": until.0 } } }))
             }
             (Method::Post, "/commit") => {
                 let body = match self.decode::<CommitReq<F>>(&req.bytes().await?) {
@@ -1261,6 +1293,11 @@ impl<F: Family> Routes<F> {
                 json!({ "key": body.get("key").and_then(Value::as_str).ok_or_else(|| err("read needs key or q"))? })
             }
         };
+        // While a customer-signed `StaleMode` covers this chain in this isolate's cached `Release` view, every read is
+        // `stale()`, on any member and with no lease or read-index round; never without the flag.
+        if let Some(until) = stale_until(&self.host) {
+            return self.read_stale(&q, until);
+        }
         // `{"index": true}`: a follower's or learner's read, by read-index against the leader (`Member::read_index`).
         let index = body.get("index").and_then(Value::as_bool).unwrap_or(false);
         // A whole-tier dump past HEAVY_READS in flight on a leader is shed at once, as a 200 the lookup retries
@@ -1354,6 +1391,24 @@ impl<F: Family> Routes<F> {
                 self.reply(late)
             }
         }
+    }
+
+    /// A stale read (`design/DESIGN.md`, Shape, "The read path", `stale()`): this member's fold at `applied`, with no
+    /// lease and no read-index round, answered with `"stale": {"until": ms}` beside the value.
+    fn read_stale(&self, q: &Value, until: graftyard_types::Timestamp) -> Result<Response> {
+        self.host.stats.borrow_mut().stale_reads += 1;
+        let (value, index) = {
+            let core = self.host.core.borrow();
+            let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+            let s = c.m.stale();
+            let v = match host::fold_answer::<F>(s.fold(), q, s.index().0, now_ms(), family::dump_every(c.m.me())) {
+                host::ReadBody::Json(b) => b,
+                host::ReadBody::Shed(ms, _) => return self.reply(graftyard_lookup::overloaded_reply(ms)),
+            };
+            (v, s.index().0)
+        };
+        let v: Value = serde_json::from_slice(&value).unwrap_or(Value::Null);
+        self.reply(json!({ "value": v, "index": index, "stale": { "until": until.0 } }))
     }
 
     /// `campaign` with no body, `suspect` with `{colo, term}`. Campaigns start only here, from requests.
@@ -1580,6 +1635,9 @@ impl<F: Family> Routes<F> {
         v["readStages"] = read_stage_pcts(&s.read_stages);
         v["narrowBuildMs"] = pcts(&mut s.narrow_build_ms.clone());
         v["narrowBuilds"] = json!(crate::family::narrow_builds());
+        // M5-WP2: reads served by `stale()`, and this isolate's cached `Release` view.
+        v["staleReads"] = json!(s.stale_reads);
+        v["releaseView"] = graftyard_lookup::view::status();
         v["raftIn"] = json!(s.raft_in);
         v["placedOverNear"] = json!(s.placed_over_near);
         #[cfg(feature = "test-faults")]

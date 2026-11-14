@@ -54,12 +54,11 @@ impl<'a, F> Fresh<'a, F> {
     }
 }
 
-/// The fold at `applied`, served only under a customer-signed `StaleMode` flag. The flag lives in the `Release`
-/// group, which is not built yet, so nothing constructs one.
+/// The fold at `applied`, with no lease and no read-index round, so it may miss entries acknowledged elsewhere. Only
+/// `Member::stale` builds one, and the host asks for it only while a customer-signed `StaleMode` flag covers the
+/// group (`design/DESIGN.md`, Shape, "The read path"; the flag is in the `Release` view the host caches).
 pub struct Stale<'a, F> {
-    #[allow(dead_code)]
     pub(crate) fold: &'a F,
-    #[allow(dead_code)]
     pub(crate) index: Index,
 }
 

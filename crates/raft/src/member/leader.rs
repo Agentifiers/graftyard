@@ -1820,6 +1820,11 @@ impl<C: Command> Member<C> {
         self.lead.as_mut().expect("leading").reads = keep;
     }
 
+    /// `stale()`: this member's fold at `applied`, on any role, with no grant. The caller holds the flag that allows it.
+    pub fn stale(&self) -> crate::Stale<'_, C::Fold> {
+        crate::Stale { fold: &self.fold.fold, index: self.fold.applied() }
+    }
+
     /// `fresh`, second half: the view a grant allows, only before the member's next input. A grant from
     /// `read_index` gives a follower's or learner's fold.
     pub fn fresh(&self, grant: &ReadGrant) -> Result<Fresh<'_, C::Fold>, NotLeader> {
