@@ -854,6 +854,7 @@ impl DurableObject for GitShard {
                 let waited = std::cell::Cell::new(0);
                 let warming_too = std::cell::Cell::new(false);
                 let a = graftyard_git::merge_cache::merge_then_catch_up(
+                    worker::Delay::from(graftyard_git::merge_cache::MERGE_WAIT),
                     || async { host.up().await.map(|_| ()) },
                     || {
                         let idle = jobs.idle();
@@ -878,7 +879,7 @@ impl DurableObject for GitShard {
                 .await;
                 let r = match a {
                     Ok(a) => Response::from_json(&a)?,
-                    Err(_) if warming_too.get() => warming()?,
+                    Err(e) if warming_too.get() || e.0 == graftyard_git::merge_cache::WARMING => warming()?,
                     Err(e) => Response::error(e.0, 422)?,
                 };
                 // Where a merge plan's time went: the whole, and the catch-up's if it ran one.

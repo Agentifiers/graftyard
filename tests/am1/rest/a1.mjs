@@ -64,7 +64,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
-  "first-for": { type: "string" }, b034: { type: "string" } } });
+  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" } } });
 
 // ---- the plan, from the rows ----
 
@@ -356,6 +356,10 @@ if (opt["kill-every"]) plan.killEvery = Number(opt["kill-every"]);
 const b034 = opt.b034 ? JSON.parse((await import("node:fs")).readFileSync(opt.b034, "utf8")) : null;
 if (b034) { plan.mergesPerMin = 0; plan.tipMovesPerMin = 10; }
 if (opt.pollers !== undefined) plan.pollers = Number(opt.pollers);
+// `--open-prs N`: N draft PRs opened in this run before its window, each on an agent's own head branch, so the first N
+// agents' pushes are head pushes with their PrSync and test-merge records, as B0-29's row text has them. B0-35's
+// mergeable pollers stay off. LM-1 round 12's agreed B0-29 shape is 500 (tests/am1/results/lm1-memory.md).
+if (opt["open-prs"] !== undefined) plan.openPrs = Number(opt["open-prs"]);
 if (opt["push-every"] !== undefined) plan.pushEvery = Number(opt["push-every"]);
 const restPolls = Math.min(1, Math.max(0, Number(opt["rest-polls"] ?? 0)));
 
@@ -549,6 +553,26 @@ if (plan.openPrs) {
   for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; }
 }
 
+// No learner catches up inside the window: before it starts, every learner has applied the leader's commit index as
+// setup left it (up to 120 s), so a learner's join and catch-up, which raised a leader's wasm high-water from 28 to
+// 73 MiB on graft-m3e (narrow-reads-3), falls in setup on every row. The wait and the leader's memory then are logged.
+{
+  const st = await statuses(CHAIN);
+  const lead = st.find((s) => s.role === "leader");
+  const ls = (st.find((s) => s.config)?.config?.config?.normal?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
+  if (lead && ls.length) {
+    const since = Date.now();
+    let behind = ls;
+    while (behind.length && Date.now() - since < 120_000) {
+      const at = await Promise.all(behind.map(async (l) => (await member(CHAIN, l.site, "/status", undefined, 15_000, l.name).catch(() => ({}))).v?.applied ?? 0));
+      behind = behind.filter((_, i) => at[i] < lead.commit);
+      if (behind.length) await sleep(2_000);
+    }
+    const mem = (await member(CHAIN, lead.site, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v?.wasmMemMb ?? null;
+    writeRow(OUT, { step: "learners caught up", learners: ls.length, behind: behind.length, commit: lead.commit, waitMs: Date.now() - since, leaderWasmMb: mem });
+    log(`learners caught up to ${lead.commit}: ${ls.length - behind.length}/${ls.length} in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
+  }
+}
 t0 = Date.now() + 5_000;
 end = t0 + seconds * 1000;
 
@@ -980,6 +1004,8 @@ const v = {
       ...Object.entries(lstats.appendMs ?? {}).map(([k, xs]) => [`append:${k}`, xs]),
       ...Object.entries(lstats.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
       .map(([k, xs]) => [k, ps(xs)])),
+    // Round 12's confirm split by transaction size: the gate wait, the turn queue, and storage (`sync - turn`).
+    confirmSplit: lstats.confirmSplit ?? null,
     depFails: lstats.depFails,
     // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
     entries: lstats.entries, commands: lstats.commands,

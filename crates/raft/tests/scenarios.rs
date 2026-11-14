@@ -693,6 +693,134 @@ fn a_promised_voter_refuses_a_cut_off_rival() {
     assert_ne!(c.m(C).role(), Role::Leader);
 }
 
+/// A voter that granted a rival's pre-vote starts no campaign of its own for one CALL_DEADLINE, so the rival's real
+/// vote is not split. Before, suspect reports that reached B and C together started both, each passed pre-vote, and
+/// each refused the other as `Voted` while A was silent, for three terms (`long_liveness` writes seeds 3052 and 14011).
+#[test]
+fn a_voter_that_granted_a_rivals_pre_vote_lets_it_win() {
+    let mut c = Cluster::new(23);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(B).term();
+    c.crash(A);
+    c.advance(10_001);
+    assert_eq!(c.on(C, |m, now| m.campaign(now)), Verdict::Started);
+    let pre = c.inbox.iter().position(|e| e.to == B).expect("pre-vote to B");
+    let pre = c.inbox.remove(pre);
+    c.on(B, |m, now| m.step(now, C, pre.msg.clone()));
+    // A report about A reaches B before C's real vote does.
+    c.advance(50);
+    assert_eq!(c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(3), A, term)), Verdict::Busy);
+    // C's pre-vote sent again, as when B's answer is lost, does not extend the wait: one CALL_DEADLINE per term asked.
+    c.advance(850);
+    c.on(B, |m, now| m.step(now, C, pre.msg));
+    c.advance(101);
+    assert_eq!(c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(3), A, term)), Verdict::Started);
+    c.deliver(|e| e.to != A);
+    assert_eq!(c.m(C).role(), Role::Leader);
+    assert_eq!(c.m(C).term(), Term(term.0 + 1));
+}
+
+/// A voter whose own pre-vote is out, granting a lower-id rival's pre-vote, drops its own: else a third voter (the gray
+/// leader, in `long_liveness` writes seed 15198) grants both, and both split the real vote.
+#[test]
+fn a_voter_that_grants_a_rivals_pre_vote_drops_its_own() {
+    let mut c = Cluster::new(29);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(B).term();
+    // A restarts as a follower and so grants any pre-vote whose log is as current as its own, as the gray leader did.
+    c.crash(A);
+    c.advance(10_001);
+    c.restart(A);
+    assert_eq!(c.on(C, |m, now| m.campaign(now)), Verdict::Started);
+    assert_eq!(c.on(B, |m, now| m.campaign(now)), Verdict::Started);
+    let from_b = c.inbox.iter().position(|e| e.from == B && e.to == C).expect("B's pre-vote to C");
+    let from_b = c.inbox.remove(from_b);
+    c.on(C, |m, now| m.step(now, B, from_b.msg));
+    // A grants both pre-votes, but its storage fails, so no real vote reaches it in time: only B goes on to the real
+    // vote, and C grants it.
+    c.deliver(|e| !(e.to == A && matches!(&e.msg, Message::Vote(v) if !v.pre)));
+    assert_eq!(c.m(B).role(), Role::Leader);
+    assert_eq!(c.m(B).term(), Term(term.0 + 1));
+    assert_eq!(c.m(C).term(), Term(term.0 + 1));
+}
+
+/// Six confirms of 1.05 s on `s`: within one STEP_DOWN window its storage would trip the confirm rule.
+fn slow_storage(c: &mut Cluster, s: SiteId) {
+    for _ in 0..6 {
+        c.slow_confirm(s, 1_050);
+    }
+}
+
+/// A report about the leader A to `s` from colo `colo`.
+fn report(c: &mut Cluster, s: SiteId, colo: u32) -> Verdict {
+    let term = c.m(s).term();
+    c.on(s, |m, now| m.suspect(now, graftyard_raft::Colo(colo), A, term))
+}
+
+/// A gray leader with one slow and one healthy follower. Two colos report A to both, so both withhold their promises,
+/// while A keeps appending. Once the promises lapse, the slow follower does not campaign against a leader still
+/// appending to it, and the healthy one does and wins. So judging by the candidate's own storage keeps F67's move of
+/// a gray leader.
+#[test]
+fn a_slow_follower_holds_back_while_a_healthy_one_moves_a_gray_leader() {
+    let mut c = Cluster::new(31);
+    c.elect(A);
+    c.sync(A);
+    for s in [B, C] {
+        assert_eq!(report(&mut c, s, 1), Verdict::Promised);
+        assert_eq!(report(&mut c, s, 2), Verdict::Promised);
+    }
+    // A keeps appending, which renews no promise while they withhold; their promises lapse within ELECTION_AFTER.
+    for i in 0..4 {
+        c.advance(1_000);
+        let _ = admit(&mut c, A, 10 + i, put("k", "v"));
+        c.deliver_all();
+    }
+    let _ = admit(&mut c, A, 20, put("k", "w"));
+    c.deliver_all();
+    // C's storage had one slow confirm, under STEP_DOWN's six: that is no reason to hold back.
+    c.slow_confirm(C, 1_050);
+    let _ = admit(&mut c, A, 21, put("k", "x"));
+    c.deliver_all();
+    // B's sixth slow confirm is still running: it counts, or a member whose storage has stopped answering would look
+    // healthier than one whose confirms end slowly.
+    for _ in 0..5 {
+        c.slow_confirm(B, 1_050);
+    }
+    let stuck = c.members[B.0 as usize].as_mut().expect("B is up").confirm_begin(c.now);
+    c.advance(1_050);
+    let _ = admit(&mut c, A, 22, put("k", "y"));
+    c.deliver_all();
+    assert!(c.m(B).state().promise_until < c.now && c.m(C).state().promise_until < c.now, "promises lapsed");
+    assert_eq!(report(&mut c, B, 3), Verdict::MayNotLead, "a slow follower deposed a leader that still appends");
+    c.on(B, |m, now| m.confirm_end(now, stuck));
+    assert_eq!(report(&mut c, C, 3), Verdict::Started, "one slow confirm held a healthy follower back");
+    c.deliver_all();
+    assert_eq!(c.m(C).role(), Role::Leader);
+}
+
+/// The hold on a slow follower lasts only while the leader appends: CAMPAIGN_DEADLINE after the last append, a
+/// follower whose storage is still slow campaigns as any other does, so a dead leader is replaced.
+#[test]
+fn a_slow_follower_still_replaces_a_dead_leader() {
+    let mut c = Cluster::new(37);
+    c.elect(A);
+    c.sync(A);
+    let t = admit(&mut c, A, 1, put("k", "v"));
+    c.deliver_all();
+    assert_eq!(c.m(A).outcome(t).unwrap().map(|a| a.out), Ok(true));
+    c.crash(A);
+    // B's promise to A lapses ELECTION_AFTER after A's last append; its storage is slow over the last 6.3 s of that.
+    c.advance(3_750);
+    slow_storage(&mut c, B);
+    let term = c.m(B).term();
+    assert_eq!(c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(1), A, term)), Verdict::Started);
+    c.deliver_all();
+    assert_eq!(c.m(B).role(), Role::Leader);
+}
+
 /// A vote is persisted before the grant leaves, and a restart keeps it: no second vote in that term.
 #[test]
 fn a_restarted_voter_does_not_vote_twice_in_a_term() {
@@ -1448,6 +1576,161 @@ fn a_voter_is_pipelined_unless_its_link_is_lossy() {
     // Every call failing, at least `commit_fail_min` of them: lossy, one call at a time.
     let lossy = usize::from(graftyard_raft::STEP_DOWN.commit_fail_min);
     assert_eq!(silent_calls(lossy), 1, "a voter on a lossy link");
+}
+
+/// A learner's read-index answer is preceded by the entries it needs: when the leader answers a learner's batch at
+/// index i and has not sent it entries through i, an AppendEntries through i, carrying a commit at or past i, leaves
+/// ahead of the `ReadIndexRes`, so both ride one response to the learner's call. Before, a learner got one call at a
+/// time, its entries trailed its answer by one or two more calls, and far learners waited p99 1.9 to 4.5 s for them.
+/// With a call in flight the append follows it, with no entry sent twice: re-sent from the acknowledged entry on every
+/// read, the leader reached 122 MiB. After a refusal emptied the pipeline it goes from the acknowledged entry at once:
+/// a far learner's calls end in any order, and waiting for CALL_DEADLINE's resend held one apac learner's entries p99
+/// 4.8 to 7.8 s (`tests/am1/results/narrow-reads-3.md`, "Where a far learner's wait goes"). A learner whose link is
+/// lossy still gets one call at a time (F67 rule 13).
+#[test]
+fn a_learner_read_index_answer_follows_the_entries_it_needs() {
+    use graftyard_raft::{GroupConfig, STEP_DOWN};
+    use graftyard_types::{
+        Member as MemberRef, MemberKind, Placement, PlacementChecks, Region, Rtt, Site, SiteTable, learner_addr,
+    };
+    // Per read, the first entry of an append ahead of the answer that carried entries through the read index and a
+    // commit at or past it, or None; with the tick's call's first entry and the entry after its last. The learner
+    // acknowledges no append; `fail` of its first calls failed with an error. Before the second read, a refusal of
+    // an older call empties the leader's pipeline to the learner.
+    let before_answer = |fail: usize| {
+        let mut c = Cluster::new(49);
+        c.elect(A);
+        c.sync(A);
+        let Some((_, GroupConfig::Normal(p))) = c.m(A).committed_config().cloned() else { panic!("normal config") };
+        let l = MemberRef::new(CHAIN, B, MemberKind::Learner, 0, p.next_generation());
+        let addr = learner_addr(0);
+        let site = |id: SiteId, region| Site {
+            id,
+            script: String::new(),
+            account: "x".into(),
+            region,
+            jurisdiction: None,
+            bucket: String::new(),
+            release: None,
+            link: graftyard_types::SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        let table = SiteTable(vec![site(A, Region::Enam), site(B, Region::Weur), site(C, Region::Apac)]);
+        let rtt: Vec<(SiteId, Rtt)> = [(A, B), (A, C), (B, C)]
+            .iter()
+            .map(|&(x, y)| (x, Rtt { peer: y, median_ms: 80, at: Timestamp(0) }))
+            .collect();
+        let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt, near: &[] };
+        let np =
+            Placement::new(p.voters().iter().cloned().collect(), [l].into_iter().collect(), p.home(), &checks).unwrap();
+        c.on(A, |m, now| m.reconfigure(now, GroupConfig::Normal(Box::new(np.clone())))).unwrap();
+        // Voters answer; the learner is not run here, and its calls stay outstanding unless failed.
+        let failed = std::cell::Cell::new(0);
+        let step = |c: &mut Cluster| {
+            for _ in 0..4 {
+                for e in std::mem::take(&mut c.inbox) {
+                    if e.to != addr {
+                        let graftyard_raft::Envelope { from, to, msg } = e;
+                        c.on(to, |m, now| m.step(now, from, msg));
+                    } else if failed.get() < fail && matches!(&e.msg, Message::Append(_)) {
+                        failed.set(failed.get() + 1);
+                        let f = e.failure(false).expect("an append");
+                        c.on(A, |m, now| m.call_failed(now, f));
+                    }
+                }
+            }
+        };
+        for i in 0..10u128 {
+            admit(&mut c, A, 9_960 + i, put(&format!("r{i}"), "v"));
+            step(&mut c);
+        }
+        assert_eq!(failed.get(), fail);
+        // Past CALL_DEADLINE, so a leader whose retries to the learner ran out sends a fresh call from its tick.
+        c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+        let mut early = None;
+        for _ in 0..4 {
+            for e in std::mem::take(&mut c.inbox) {
+                match &e.msg {
+                    Message::Append(a) if e.to == addr => early = early.or(Some(a.clone())),
+                    _ if e.to == addr => {}
+                    _ => {
+                        let graftyard_raft::Envelope { from, to, msg } = e;
+                        c.on(to, |m, now| m.step(now, from, msg));
+                    }
+                }
+            }
+        }
+        let early = early.expect("the tick's call to the learner");
+        // Entries commit while the learner's call is out, so it was sent none of them: exactly one, then two more.
+        let mut out = Vec::new();
+        for (batch, n) in [(7u64, 1u128), (8, 2), (9, 3)] {
+            for i in 0..n {
+                // The third read's entries are 60 KB each, so one call carries one of them (APPEND_BYTES_MAX).
+                let v = if batch == 9 { "x".repeat(60_000) } else { "v".into() };
+                admit(&mut c, A, 9_980 + u128::from(batch) * 10 + i, put(&format!("s{batch}{i}"), &v));
+                step(&mut c);
+            }
+            // A refusal of an older call comes back, as one that a later call overtook would: it empties the leader's
+            // pipeline to the learner while the newest call is still out, and is not the current probe, so the
+            // leader does not re-send for it.
+            if batch == 8 {
+                let piped = &early;
+                let res = graftyard_raft::AppendRes {
+                    term: piped.term,
+                    boot: piped.boot,
+                    round: 1,
+                    sent_at: piped.sent_at,
+                    prev_index: Index(1),
+                    ok: false,
+                    matched: Index(0),
+                    last: Index(1),
+                    promise: false,
+                    refused: None,
+                    stepped_down_at: None,
+                    boots: [Timestamp(0); 2],
+                    release: config(B).release,
+                };
+                c.on(A, |m, now| m.step(now, addr, Message::AppendRes(res)));
+                c.inbox.retain(|e| e.to != addr);
+            }
+            let read_index = c.m(A).state().commit;
+            c.on(A, |m, now| m.step(now, addr, Message::ReadIndex { batch }));
+            let to_l: Vec<_> = std::mem::take(&mut c.inbox).into_iter().filter(|e| e.to == addr).collect();
+            let res = to_l.iter().position(|e| matches!(e.msg, Message::ReadIndexRes { batch: b, .. } if b == batch));
+            let res = res.expect("A answered the learner's batch");
+            let Message::ReadIndexRes { index: Some((i, _)), .. } = &to_l[res].msg else { panic!("a granted read") };
+            assert_eq!(*i, read_index, "the answer names the leader's commit");
+            if batch == 9 {
+                // Behind by three calls' bytes: three calls ahead of the answer, together through the read index.
+                let calls: Vec<_> = to_l[..res]
+                    .iter()
+                    .filter_map(|e| match &e.msg {
+                        Message::Append(a) if !a.entries.is_empty() => Some(a),
+                        _ => None,
+                    })
+                    .collect();
+                let through = calls.iter().filter_map(|a| a.entries.last()).map(|e| e.index).max();
+                out.push(through.filter(|t| *t >= read_index).map(|_| calls.len() as u64));
+                continue;
+            }
+            out.push(to_l[..res].iter().find_map(|e| match &e.msg {
+                Message::Append(a)
+                    if a.entries.last().is_some_and(|x| x.index >= read_index) && a.commit >= read_index =>
+                {
+                    Some(a.prev_index.0 + 1)
+                }
+                _ => None,
+            }));
+        }
+        (early.prev_index.0 + 1, out, early.entries.last().map_or(early.prev_index.0, |e| e.index.0) + 1)
+    };
+    // With the tick's call in flight, the first append follows it; after the refusal emptied the pipeline, the second
+    // goes from the entry the learner has not acknowledged, the tick's call's first. A lossy learner gets neither.
+    let (first, out, after) = before_answer(0);
+    assert_eq!(out[0], Some(after), "a learner on a clean link, with a call in flight");
+    assert_eq!(out[1], Some(first), "a learner on a clean link, after a refusal");
+    assert_eq!(out[2], Some(3), "a learner three calls' bytes behind gets three calls");
+    assert_eq!(before_answer(usize::from(STEP_DOWN.commit_fail_min)).1, [None; 3], "a learner on a lossy link");
 }
 
 /// B0-02's r330-6 (`tests/m0/results/carried-8.md`): a far voter more than ten entries behind catches up in calls of

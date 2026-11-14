@@ -6,3 +6,4 @@ export BED_TOKEN_FILE=$HOME/.graft-m3e/bed.token
 export M3_STATE=$HOME/.graft-m3e/m3
 export INSTALL=graft-m3e
 export HELD=${HELD:-999}
+export TOOLS_TOKEN_FILE=$HOME/.graft-m3e/tools.token

@@ -185,14 +185,19 @@ pub fn chain_of(ask: &CacheAsk) -> (ObjectId, Vec<(IssueNumber, ObjectId)>, Merg
 /// `warm`), and merges again before it catches up itself: racing it cost a second catch-up, 250 to 700 ms on 38 of
 /// 105 weur samples (same file, bm2-latency). It waits only after a miss: under journey 9's pushes some validate's
 /// catch-up is nearly always running, and a merge that waited first waited 64 to 2,151 ms for commits it already had
-/// (LM-1 round 7, 500 agents).
-pub async fn merge_then_catch_up<U, Fu, W, Fw, M, Fm, C, Fc>(
+/// (LM-1 round 7, 500 agents). All of it ends at `deadline` with `Err(StoreError("warming"))`, so the caller answers
+/// a 503 its client retries while the catch-up goes on: unbounded, a merge on a shard behind a hot group's log waited
+/// out the edge's 180 s on catch-ups of 172 to 581 s and the client got no answer (B0-31, `tests/am1/results/
+/// lm1-rows-m3f.md`).
+pub async fn merge_then_catch_up<D, U, Fu, W, Fw, M, Fm, C, Fc>(
+    deadline: D,
     up: U,
     in_flight: W,
     mut merge: M,
     catch_up: C,
 ) -> Result<ChainAnswer, StoreError>
 where
+    D: std::future::Future<Output = ()>,
     U: FnOnce() -> Fu,
     Fu: std::future::Future<Output = Result<(), StoreError>>,
     W: FnOnce() -> Fw,
@@ -202,17 +207,32 @@ where
     C: FnOnce() -> Fc,
     Fc: std::future::Future<Output = Result<(), StoreError>>,
 {
-    up().await?;
-    if let Some(a) = merge().await? {
-        return Ok(a);
+    let work = async {
+        up().await?;
+        if let Some(a) = merge().await? {
+            return Ok(a);
+        }
+        in_flight().await;
+        if let Some(a) = merge().await? {
+            return Ok(a);
+        }
+        catch_up().await?;
+        merge()
+            .await?
+            .ok_or_else(|| StoreError("a commit of the merge is not in the git cache after catching up".into()))
+    };
+    match futures_util::future::select(std::pin::pin!(work), std::pin::pin!(deadline)).await {
+        futures_util::future::Either::Left((r, _)) => r,
+        futures_util::future::Either::Right(_) => Err(StoreError(WARMING.into())),
     }
-    in_flight().await;
-    if let Some(a) = merge().await? {
-        return Ok(a);
-    }
-    catch_up().await?;
-    merge().await?.ok_or_else(|| StoreError("a commit of the merge is not in the git cache after catching up".into()))
 }
+
+/// How long `GitCacheShard::merge` waits on the shard's catch-ups before answering `warming` [guess: the edge's
+/// `VALIDATE_WAIT_HOME_S`, which a push already waits on a home shard's catch-up].
+pub const MERGE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// `merge_then_catch_up`'s error past its deadline.
+pub const WARMING: &str = "warming";
 
 /// The catch-ups running on one shard object for one network, so a merge can wait for them (`merge_then_catch_up`'s
 /// `in_flight`). Single-threaded, as a Durable Object is: `start` marks one running until its `Running` drops, and
@@ -405,6 +425,7 @@ mod tests {
             let (merges, catchups) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
             let (caught, running) = (std::cell::Cell::new(held), std::cell::Cell::new(false));
             let r = futures_executor::block_on(merge_then_catch_up(
+                std::future::pending(),
                 || {
                     running.set(true);
                     async { Ok(()) }
@@ -432,6 +453,7 @@ mod tests {
         // Missing: the merge, again after any catch-up in flight (none here), then one catch-up and the merge again.
         assert_eq!(run(false), (Ok(answer()), 3, 1), "a commit missing: one catch-up, then the merge again");
         let still_missing = futures_executor::block_on(merge_then_catch_up(
+            std::future::pending(),
             || async { Ok(()) },
             || async {},
             || async { Ok(None) },
@@ -470,6 +492,7 @@ mod tests {
             sp.spawn_local(async move {
                 let c3 = c2.clone();
                 let r = merge_then_catch_up(
+                    std::future::pending(),
                     || async { Ok(()) },
                     || {
                         let idle = g.idle();
@@ -506,6 +529,7 @@ mod tests {
         let gate = CatchUps::default();
         let running = gate.start();
         let r = merge_then_catch_up(
+            std::future::pending(),
             || async { Ok(()) },
             || gate.idle(),
             || async { Ok(Some(answer())) },
@@ -517,6 +541,38 @@ mod tests {
         // No catch-up running: the merge does not wait.
         let idle = CatchUps::default().idle();
         assert_eq!(futures_executor::block_on(idle), ());
+    }
+
+    /// A merge whose commit is missing while the shard's catch-up never ends (a rehydrate, or a hot group's log
+    /// tail) answers `warming` at its deadline, not when the catch-up does; one that merges first is not cut.
+    #[test]
+    fn a_merge_behind_a_catch_up_that_never_ends_answers_warming_at_its_deadline() {
+        use futures_util::FutureExt;
+        let (tx, rx) = futures_channel::oneshot::channel::<()>();
+        let mut f = std::pin::pin!(merge_then_catch_up(
+            async {
+                let _ = rx.await;
+            },
+            || async { Ok(()) },
+            std::future::pending,
+            || async { Ok(None) },
+            || async { Ok(()) },
+        ));
+        assert_eq!(f.as_mut().now_or_never(), None, "waiting on the catch-up in flight");
+        tx.send(()).unwrap();
+        assert_eq!(futures_executor::block_on(f), Err(StoreError(WARMING.into())));
+        let merged = merge_then_catch_up(
+            async {},
+            || async { Ok(()) },
+            std::future::pending,
+            || async { Ok(Some(answer())) },
+            || async { Ok(()) },
+        );
+        assert_eq!(
+            futures_executor::block_on(merged),
+            Ok(answer()),
+            "a deadline already passed still takes a merge in one poll"
+        );
     }
 
     /// Three catch-ups on one network, the first running when the other two arrive: they run one at a time, each after

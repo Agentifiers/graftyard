@@ -11,6 +11,10 @@ pub struct ReadGrant {
     pub(crate) boot: u64,
     pub(crate) step: u64,
     pub(crate) index: Index,
+    /// The commit index the leader confirmed for this read after it arrived: on the leader, its applied index at the
+    /// grant; on a follower or learner, the leader's read index. Every state from here to `index` holds every entry
+    /// acknowledged before the read arrived.
+    pub(crate) floor: Index,
     pub(crate) via_round: bool,
     /// Granted on a follower or learner after the leader's read index (`Member::read_index`).
     pub(crate) remote: bool,
@@ -20,6 +24,12 @@ impl ReadGrant {
     /// The applied index the read sees.
     pub fn index(&self) -> Index {
         self.index
+    }
+
+    /// The lowest index an answer to this read may be at (`ReadGrant::floor`): an answer built earlier at a state from
+    /// `floor` to `index` is as fresh as one built now.
+    pub fn floor(&self) -> Index {
+        self.floor
     }
 
     /// Whether the grant needed a read-index round because the lease had run out.

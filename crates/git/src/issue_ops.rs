@@ -464,8 +464,10 @@ impl IssueCmd {
             IssueOp::RecordCheck(_) | IssueOp::CreateCheck(_) | IssueOp::RecordStatus(_) => both,
             // A release may create its tag in Core.
             IssueOp::PutRelease { .. } => both,
-            // A new review thread, a resolution, or a deletion may change the core unresolved count.
+            // A new review thread, a resolution, or a deletion may change the core unresolved count; a review comment
+            // outside a review submits its single-comment review, whose verdict is Core's.
             IssueOp::Comment { on: CommentTarget::Review { .. }, reply_to: None, .. } => both,
+            IssueOp::Comment { on: CommentTarget::Review { review: None, .. }, .. } => both,
             IssueOp::Resolve { .. } | IssueOp::DeleteComment { .. } => both,
             IssueOp::InviteCollaborator { .. }
             | IssueOp::AnswerInvitation { .. }
@@ -740,14 +742,55 @@ impl IssueCmd {
                 // A review thread's first comment touches Core (`tier_of`), so its id comes from Core.
                 let thread = matches!(on, CommentTarget::Review { .. }) && reply_to.is_none();
                 let id = v.next_id(if thread { Tier::Core } else { Tier::Metadata })?;
+                // A review comment outside a review, a reply too, is as on GHES a single-comment review's: a COMMENTED
+                // review with no body on the comment's commit, after the comment so `replay` answers the comment's
+                // id. The review's id is Core's next: after the thread's own in Core's block for a new thread. Not
+                // for a commenter whose current verdict approves or requests changes, which a COMMENTED `Submitted`
+                // would replace in the fold: that comment keeps no review [inference: GHES gives it one and keeps
+                // the verdict; the fold has no review that leaves the verdict alone].
+                let single = match on {
+                    CommentTarget::Review { n, review: None, at } => {
+                        let who = int(me.map_or(0, |a| a.0.0));
+                        let verdict =
+                            get_rec::<crate::tiers::VerdictRow>(v.core(), "review_verdict", &[n_key(*n), who]);
+                        match verdict.map(|r| r.state) {
+                            Some(ReviewState::Approved | ReviewState::ChangesRequested) => None,
+                            _ => {
+                                let review = if thread {
+                                    let block = ids(v.core()).block();
+                                    block.and_then(|b| b.id(b.index_of(id)? + 1)).ok_or(IssueErr::NeedIdBlock)?
+                                } else {
+                                    v.next_id(Tier::Core)?
+                                };
+                                Some((*n, ReviewId(review), at.clone()))
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                let on = match &single {
+                    Some((n, review, at)) => CommentTarget::Review { n: *n, review: Some(*review), at: at.clone() },
+                    None => on.clone(),
+                };
                 let ev = CommentEvent::Created {
                     id: CommentId(id),
-                    on: on.clone(),
+                    on,
                     author: me,
                     body: body.clone(),
                     reply_to: *reply_to,
                 };
-                Ok((one(RepoEvent::Comment(ev)), IssueOut::Id(id)))
+                let mut evs = one(RepoEvent::Comment(ev));
+                if let Some((n, review, at)) = single {
+                    evs.push(RepoEvent::Review(ReviewEvent::Submitted {
+                        id: review,
+                        n,
+                        reviewer: me,
+                        state: ReviewState::Commented,
+                        commit: at.commit,
+                        body: "".into(),
+                    }));
+                }
+                Ok((evs, IssueOut::Id(id)))
             }
             IssueOp::EditComment { id, body } => {
                 let row = get_rec::<CommentRow>(v.meta(), "comment", &[int(id.0.0)]).ok_or(IssueErr::NotFound)?;
