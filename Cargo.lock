@@ -668,6 +668,7 @@ dependencies = [
  "smallvec",
  "url",
  "wasm-bindgen",
+ "wasm-streams",
  "web-sys",
  "worker",
 ]
@@ -693,6 +694,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "flate2",
+ "futures-channel",
  "futures-executor",
  "futures-util",
  "graftyard-fold",

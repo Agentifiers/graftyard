@@ -27,10 +27,12 @@ use graftyard_git::host::R2;
 use graftyard_git::refs::{Atomicity, ObjectId, RefName};
 use graftyard_git::repo::{ATOMIC_REFS_MAX, Push, REPO_FORMAT_V1, REPO_FORMAT_V2};
 use graftyard_git::smart::{
-    self, Plan, PushCaps, ReceivePack, Refusal, Route, Service, cap_refusal, parse_receive_pack, parse_v2,
+    self, BodyReader, Plan, PushCaps, ReceivePack, Refusal, Route, Service, cap_refusal, parse_receive_pack, parse_v2,
     receive_pack_advertisement, receive_pack_caps, upload_pack_v2_advertisement, wants_v2, wrap,
 };
-use graftyard_git::{Copies, INLINE_MAX, ObjectMeta, PART_SIZE, PackId, PackIndex, PackStore, Stage, TeeError};
+use graftyard_git::{
+    Copies, INLINE_MAX, ObjectMeta, PART_SIZE, PackId, PackIndex, PackStore, Stage, Streamed, TeeError,
+};
 use graftyard_identity::{
     Actor, Credential, Login, LoginRow, NameKey, OpaqueToken, Principal, RepoName, ScopeSet, UserId, account_shard,
     name_shard,
@@ -804,21 +806,76 @@ fn unreadable_reply() -> CallErrorWire {
 
 // ---- receive-pack ----
 
-/// Reads the body up to the edge's cap. `Err(n)` when the stream passed the cap at `n` bytes; the edge then stops
-/// reading and answers, which reaches git because the plan limit is above the cap.
-async fn read_capped(req: &mut Request, cap: u64) -> Result<std::result::Result<Vec<u8>, (Vec<u8>, u64)>> {
-    let mut s = req.stream()?;
-    let mut buf = Vec::new();
-    while let Some(c) = s.next().await {
-        let c = c?;
-        buf.extend_from_slice(&c);
-        if buf.len() as u64 > cap {
-            let n = buf.len() as u64;
-            buf.truncate(64 << 10);
-            return Ok(Err((buf, n)));
+/// The cap refusal (`smart::cap_refusal`) against the body's first `smart::CAP_HEAD` bytes, inflated when the body
+/// is gzip, with the commands they name or, when they name none, refusing every ref git reports.
+fn over_cap(c: &Ctx<'_>, gz: bool, head: &[u8], path: &str) -> Result<Response> {
+    let head = if gz { gunzip(head, c.cfg.cap).unwrap_or_else(|_| head.to_vec()) } else { head.to_vec() };
+    let rp = parse_receive_pack(&head).unwrap_or(ReceivePack {
+        updates: Vec::new(),
+        caps: PushCaps { report_status: true, side_band_64k: true, ..PushCaps::default() },
+        options: Vec::new(),
+        pack_at: 0,
+    });
+    let r = cap_refusal(c.cfg.plan, c.cfg.ssh_option, c.cfg.cap, &c.cfg.host, path);
+    git_result(c.rid, Service::ReceivePack, r.render(&rp))
+}
+
+/// Why a streamed body's rest stopped short: it passed the cap, or the request broke off.
+enum Cut {
+    OverCap,
+    Broke(Error),
+}
+
+/// The rest of a body that streams (`smart::Read::Stream`): the pack bytes already read, then the request's chunks,
+/// each counted against the cap.
+struct Tail {
+    pack: Vec<u8>,
+    cap_head: Vec<u8>,
+    rest: std::pin::Pin<Box<dyn futures_util::Stream<Item = std::result::Result<Vec<u8>, Cut>>>>,
+}
+
+impl Tail {
+    fn new(s: graftyard_git::smart::Streaming, body: ByteStream, cap: u64) -> Tail {
+        Tail { pack: s.pack, cap_head: s.cap_head, rest: Box::pin(capped(body, s.read, cap)) }
+    }
+}
+
+/// `body`'s chunks, counted on from the `read` bytes before them, until the count passes `cap`.
+fn capped(
+    body: impl futures_util::Stream<Item = Result<Vec<u8>>>,
+    read: u64,
+    cap: u64,
+) -> impl futures_util::Stream<Item = std::result::Result<Vec<u8>, Cut>> {
+    let mut n = read;
+    body.map(move |c| {
+        let c = c.map_err(Cut::Broke)?;
+        n += c.len() as u64;
+        if n > cap { Err(Cut::OverCap) } else { Ok(c) }
+    })
+}
+
+/// `r`, once a streamed body's rest is read to its end: an answer the edge gives before it reads the pack still
+/// waits for the whole body, so a body over the cap is answered the cap refusal, as when the edge read every body
+/// whole before it answered.
+async fn after_body(c: &Ctx<'_>, tail: &mut Option<Tail>, path: &str, r: Result<Response>) -> Result<Response> {
+    match drain(c, tail, path).await? {
+        Some(cap) => Ok(cap),
+        None => r,
+    }
+}
+
+/// Reads a streamed body's rest to its end, keeping none of it: the cap refusal when it passed the cap.
+async fn drain(c: &Ctx<'_>, tail: &mut Option<Tail>, path: &str) -> Result<Option<Response>> {
+    let Some(t) = tail.take() else { return Ok(None) };
+    let mut rest = t.rest;
+    while let Some(x) = rest.next().await {
+        match x {
+            Ok(_) => {}
+            Err(Cut::OverCap) => return over_cap(c, false, &t.cap_head, path).map(Some),
+            Err(Cut::Broke(e)) => return Err(e),
         }
     }
-    Ok(Ok(buf))
+    Ok(None)
 }
 
 /// A Worker isolate's memory, 128 MB [doc: Workers limits]: a body that inflates past it cannot be served.
@@ -919,34 +976,42 @@ async fn receive_pack(
 ) -> Result<Response> {
     let Some(actor) = who else { return unauthorized(c.rid, "No anonymous write access.") };
     let gz = req.headers().get("content-encoding")?.is_some_and(|e| e == "gzip");
-    let body = match read_capped(&mut req, c.cfg.cap).await? {
-        Ok(b) => b,
-        Err((head, _)) => {
-            let head = if gz { gunzip(&head, c.cfg.cap).unwrap_or(head) } else { head };
-            let rp = parse_receive_pack(&head).unwrap_or(ReceivePack {
-                updates: Vec::new(),
-                caps: PushCaps { report_status: true, side_band_64k: true, ..PushCaps::default() },
-                options: Vec::new(),
-                pack_at: 0,
-            });
-            let r = cap_refusal(c.cfg.plan, c.cfg.ssh_option, c.cfg.cap, &c.cfg.host, path);
-            return git_result(c.rid, Service::ReceivePack, r.render(&rp));
+    // The body is held while it may be one the edge buffers: until its commands are read and more than INLINE_MAX of
+    // pack follows them (`smart::BodyReader`). The rest of a longer body streams (`tail`). A gzip body, which git
+    // sends only below `postBuffer`, is held whole, inflated once it ended.
+    let mut s = req.stream()?;
+    let mut head = if gz { BodyReader::whole(c.cfg.cap) } else { BodyReader::new(c.cfg.cap) };
+    let streams = loop {
+        let Some(chunk) = s.next().await else { break false };
+        match head.push(&chunk?) {
+            smart::Read::More => {}
+            smart::Read::OverCap => return over_cap(c, gz, head.cap_head(), path),
+            smart::Read::Stream => break true,
         }
     };
-    let body = if gz { gunzip(&body, c.cfg.cap)? } else { body };
-    // git's `probe_rpc` (remote-curl.c): before streaming a request over `http.postBuffer` it posts a bare flush,
-    // after authentication, and streams the real body only on a 200. Nothing reaches the group.
-    if body == b"0000" {
-        return git_result(c.rid, Service::ReceivePack, Vec::new());
-    }
-    let rp = match parse_receive_pack(&body) {
-        Ok(r) => r,
-        Err(e) => return text(c.rid, 400, &format!("{e}\n")),
+    let (rp, body, mut tail) = if streams {
+        let (rp, st) = head.streaming();
+        (rp, Vec::new(), Some(Tail::new(st, s, c.cfg.cap)))
+    } else {
+        let body = match head.end() {
+            smart::Ended::Whole(b) => b,
+            smart::Ended::Bad(e) => return text(c.rid, 400, &format!("{e}\n")),
+        };
+        let body = if gz { gunzip(&body, c.cfg.cap)? } else { body };
+        // git's `probe_rpc` (remote-curl.c): before streaming a request over `http.postBuffer` it posts a bare flush,
+        // after authentication, and streams the real body only on a 200. Nothing reaches the group.
+        if body == b"0000" {
+            return git_result(c.rid, Service::ReceivePack, Vec::new());
+        }
+        match parse_receive_pack(&body) {
+            Ok(rp) => (rp, body, None),
+            Err(e) => return text(c.rid, 400, &format!("{e}\n")),
+        }
     };
     let atomicity = if rp.caps.atomic { Atomicity::AllOrNothing } else { Atomicity::PerRef };
     let refuse = |r: Refusal| git_result(c.rid, Service::ReceivePack, r.render(&rp));
     if atomicity == Atomicity::AllOrNothing && rp.updates.len() > ATOMIC_REFS_MAX {
-        return refuse(Refusal::too_many_atomic(rp.updates.len()));
+        return after_body(c, &mut tail, path, refuse(Refusal::too_many_atomic(rp.updates.len()))).await;
     }
     let mut push = Push {
         updates: rp.updates.clone(),
@@ -966,7 +1031,7 @@ async fn receive_pack(
     let late = [graftyard_git::repo::REPO_FORMAT_STATELESS, graftyard_git::repo::REPO_FORMAT_TASKS];
     let f = graftyard_raft::Command::format(&push);
     if late.contains(&f) && !c.cfg.enabled.contains(&f) {
-        return unsupported(c.rid, f.family, f.version);
+        return after_body(c, &mut tail, path, unsupported(c.rid, f.family, f.version)).await;
     }
     // Format 2 carries the client's agent. A forced unknown format is sent with format 2's fields and its own tag.
     let format = c.cfg.push_format();
@@ -976,9 +1041,10 @@ async fn receive_pack(
     // `design/SHARED.md`, "Refs and pushes", Size: the updates alone over the cap refuse the whole push.
     let alone = push.encoded_len_without_pack();
     if alone > COMMAND_MAX {
-        return refuse(Refusal::updates_too_large(alone, COMMAND_MAX, push.updates.len()));
+        let r = refuse(Refusal::updates_too_large(alone, COMMAND_MAX, push.updates.len()));
+        return after_body(c, &mut tail, path, r).await;
     }
-    let pack = &body[rp.pack_at..];
+    let pack = body.get(rp.pack_at..).unwrap_or_default();
     let mut index = None;
     let deletes_only = push.updates.iter().all(|u| u.new.is_none());
     // AM1: a push that may be an agent's asks the git cache for `validate`'s detail and carries what it gives
@@ -988,11 +1054,12 @@ async fn receive_pack(
     // Only updates with a new tip get detail, so a push of deletes alone asks for none.
     let mut got: Vec<graftyard_git::agent::RefDetail> = Vec::new();
     if !deletes_only {
-        if pack.is_empty() {
+        if pack.is_empty() && tail.is_none() {
             return refuse(Refusal::unpack_failed("no pack"));
         }
-        // Inline only when the pack fits INLINE_MAX and the push with it stays under COMMAND_MAX.
-        let inline = pack.len() <= INLINE_MAX && alone + pack.len() + 16 < COMMAND_MAX;
+        // Inline only when the pack fits INLINE_MAX and the push with it stays under COMMAND_MAX. A pack that streams
+        // has more than INLINE_MAX.
+        let inline = tail.is_none() && pack.len() <= INLINE_MAX && alone + pack.len() + 16 < COMMAND_MAX;
         // While placement fails a pack that cannot go inline cannot be placed: an agent's is refused at once in the
         // admission shape (B0-31's placement-failing half), any other's is a 503 (Failure modes, R2 outage).
         if placement_failing(c) && !inline {
@@ -1000,11 +1067,12 @@ async fn receive_pack(
                 admission(c, &push.actor, &[], true, 0).await,
                 Some(a) if a.class == graftyard_git::group::ClassWire::Agent
             );
-            return if agentish {
+            let r = if agentish {
                 refuse(Refusal::agent_full(OUTAGE_RETRY_S))
             } else {
                 text(c.rid, 503, "pack store: placement is failing; retry\n")
             };
+            return after_body(c, &mut tail, path, r).await;
         }
         let tips: Vec<String> = push.updates.iter().filter_map(|u| u.new.map(|o| o.hex())).collect();
         let raw = buckets(c.env, c.sites)?;
@@ -1012,24 +1080,46 @@ async fn receive_pack(
         let refs: Vec<(SiteId, &R2)> =
             raw.iter().filter(|(s, _)| repo.record.sites.contains(s)).map(|(s, b)| (*s, b)).collect();
         let store = PackStore { sites: c.sites, buckets: &refs, copies: Copies::TwoRegions };
-        let stage = Stage {
-            network: NetworkId(repo.id.0),
-            id: PackId(Ulid::new(now(), rand10())),
-            meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid },
-            bytes: pack,
-            inline,
-            part: c.cfg.part,
-        };
+        let id = PackId(Ulid::new(now(), rand10()));
+        let meta = ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid };
         let detail_out = std::cell::RefCell::new(Vec::new());
-        let validate = async {
-            let (ix, d) = validate(c, repo, pack, &tips, &detail, agent.is_some()).await?;
-            *detail_out.borrow_mut() = d;
-            ix.ok_or_else(|| ShardRefusal::Invalid("validate gave no index".to_owned()))
+        let streamed = tail.is_some();
+        let placed = match tail.take() {
+            None => {
+                let stage = Stage { network: NetworkId(repo.id.0), id, meta, bytes: pack, inline, part: c.cfg.part };
+                let validate = async {
+                    let (ix, d) = validate(c, repo, pack, &tips, &detail, agent.is_some()).await?;
+                    *detail_out.borrow_mut() = d;
+                    ix.ok_or_else(|| ShardRefusal::Invalid("validate gave no index".to_owned()))
+                };
+                store.place_teed(stage, validate).await
+            }
+            // `design/DESIGN.md`, journey 1, step 2: the pack streams to the buckets in parts and to the git cache,
+            // and the edge holds two parts of it, whatever its size.
+            Some(mut t) => {
+                let s = Streamed { network: NetworkId(repo.id.0), id, meta, part: c.cfg.part };
+                let pack = futures_util::stream::once(std::future::ready(Ok(std::mem::take(&mut t.pack))));
+                let pipe = graftyard_git::Pipe::default();
+                let validate = async {
+                    let r = validate_streamed(c, repo, pipe.reader(), &tips, &detail, agent.is_some()).await;
+                    // The shard answered: whatever it did not read, the tee hands it no more.
+                    pipe.stop();
+                    let (ix, d) = r?;
+                    *detail_out.borrow_mut() = d;
+                    ix.ok_or_else(|| ShardRefusal::Invalid("validate gave no index".to_owned()))
+                };
+                match store.place_streamed(s, pack.chain(&mut t.rest), &pipe, validate).await {
+                    Ok(r) => r,
+                    Err(Cut::OverCap) => return over_cap(c, false, &t.cap_head, path),
+                    Err(Cut::Broke(e)) => return Err(e),
+                }
+            }
         };
-        match store.place_teed(stage, validate).await {
+        match placed {
             Ok((d, ix)) => {
                 push.pack = Some(d.into_pack());
-                index = Some(ix);
+                // Only an inline pack is staged again (`AdmitError::Stage`), from its bytes.
+                index = (!streamed).then_some(ix);
                 got = detail_out.into_inner();
             }
             Err(TeeError::Invalid(e)) => match shard_refusal(&e) {
@@ -1040,6 +1130,10 @@ async fn receive_pack(
             },
             Err(TeeError::Place(e)) => return text(c.rid, 503, &format!("pack store: {e}\n")),
         }
+    }
+    // A push of deletes alone takes no pack, but its body is still read to its end against the cap.
+    if let Some(r) = drain(c, &mut tail, path).await? {
+        return Ok(r);
     }
     if let Some(a) = &agent {
         agents::fill_push(c, a, &mut push, &got, path);
@@ -1284,7 +1378,8 @@ pub(crate) async fn validate(
     let mut tries = Vec::new();
     let sites = shard_order(repo, pinned);
     for (i, site) in sites.iter().copied().enumerate() {
-        let r = validate_on(c, repo, site, &shard_url(&url, i, sites.len()), &head, detail).await;
+        let body = || Some(js_sys::Uint8Array::from(&head[..]).into());
+        let r = validate_on(c, repo, site, &shard_url(&url, i, sites.len()), &body, detail).await;
         let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
         mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
         match r {
@@ -1299,6 +1394,45 @@ pub(crate) async fn validate(
         }
     }
     Err(validate_failed(tries))
+}
+
+/// `validate` for a pack that streams (`PackStore::place_streamed`): the body is the tips and detail, then the pack as
+/// the tee hands it on. The body is read once, so the pack is sent to one shard, the first of `shard_order`, with the
+/// last try's wait, and no trailer: it is known only at the pack's end, so the shard validates the push itself
+/// rather than forwarding it to a fan-out shard. A shard that fails without a 422 or 429 is `Unavailable`, which the
+/// push answers 503 `Retry-After`, as when every shard failed.
+async fn validate_streamed(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    pack: graftyard_git::PipeReader,
+    tips: &[String],
+    detail: &str,
+    agent: bool,
+) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), ShardRefusal> {
+    let mut head = tips.join("\n").into_bytes();
+    if !tips.is_empty() || detail.is_empty() {
+        head.push(b'\n');
+    }
+    let url = validate_url(repo.id, head.len(), detail.len(), agent, &[]);
+    head.extend_from_slice(detail.as_bytes());
+    let chunks = futures_util::stream::once(std::future::ready(Ok(head)))
+        .chain(pack)
+        .map(|c| c.map(|b| js_sys::Uint8Array::from(&b[..]).into()).map_err(|e| wasm_bindgen::JsValue::from_str(&e)));
+    let body = std::cell::RefCell::new(Some(wasm_streams::ReadableStream::from_stream(chunks).into_raw()));
+    let body = || body.borrow_mut().take().map(Into::into);
+    #[cfg(feature = "test-faults")]
+    let pinned = c.shard;
+    #[cfg(not(feature = "test-faults"))]
+    let pinned = None;
+    let site = shard_order(repo, pinned)[0];
+    let r = validate_on(c, repo, site, &shard_url(&url, 1, 2), &body, detail).await;
+    let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
+    mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
+    match r {
+        Ok(r) => Ok(r),
+        Err((429, s)) => Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
+        Err((status, e)) => Err(validate_failed(vec![(site, status, e)])),
+    }
 }
 
 /// The tries `validate` made, each `(site, status, body)` with status 0 for a failed call, in order, and none
@@ -1356,12 +1490,12 @@ async fn validate_on(
     repo: &Repo,
     site: SiteId,
     url: &str,
-    head: &[u8],
+    body: &dyn Fn() -> Option<wasm_bindgen::JsValue>,
     detail: &str,
 ) -> Result<std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), (u16, String)>> {
     let send = |url: String| async move {
         let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head).into()));
+        init.with_method(Method::Post).with_body(body());
         shard_at(c, repo, Some(site))?.fetch_with_request(Request::new_with_init(&url, &init)?).await
     };
     let mut r = send(url.to_owned()).await?;
@@ -2381,8 +2515,24 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        ShardRefusal, gunzip, shard_refusal, shard_url, validate_failed, validate_sites, validate_url, warm_first,
+        Cut, ShardRefusal, capped, gunzip, shard_refusal, shard_url, validate_failed, validate_sites, validate_url,
+        warm_first,
     };
+
+    /// A streamed body's cap counts the bytes the edge read ahead of the stream, so a body one byte over the cap is
+    /// refused at the chunk that passes it, wherever the head ended, and one at the cap is read to its end.
+    #[test]
+    fn a_streamed_body_counts_its_head_against_the_cap() {
+        use futures_util::{FutureExt, StreamExt};
+        let run = |read: u64, cap: u64| {
+            let body = futures_util::stream::iter((0..4).map(|_| Ok(vec![0u8; 100])));
+            let out: Vec<_> = capped(body, read, cap).collect().now_or_never().expect("ready");
+            out.iter().map(|c| matches!(c, Err(Cut::OverCap))).collect::<Vec<bool>>()
+        };
+        assert_eq!(run(1000, 1400), [false; 4]);
+        assert_eq!(run(1000, 1399), [false, false, false, true]);
+        assert_eq!(run(1050, 1199), [false, true, true, true]);
+    }
     /// The shard picks the fan-out shard from the URL's trailer without reading the body, so the trailer must be
     /// the pack's last 20 bytes, not its first; an agent's validate is marked so the container sheds it first.
     #[test]

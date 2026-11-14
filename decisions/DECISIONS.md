@@ -2146,6 +2146,20 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 **Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
 
+### Pushes stream through the edge, 2026-11-14
+
+LM-1's B0-34 seed on `graft-m2b` failed every 60 MB push with `exceededMemory` or a hung exception on the edge: `receive_pack` read the whole body into one `Vec` before it parsed the commands, then copied it into the validate body and each bucket's put. B0-20 (`design/DESIGN.md`, Milestone 0) fails a push that needs buffering, so this is a code gap and the row stays as written.
+
+**Decision.** The edge holds a push body only while it may still be inline: until its commands parse and more than `INLINE_MAX` of pack follows them (`graftyard_git::smart::BodyReader`). Such a body, and a gzip body, which git sends only below `postBuffer`, is handled as before, from the whole body. The rest of a longer body streams through `PackStore::place_streamed`: the tee hashes it, hands it on to validate through a one-chunk pipe, and fills two part buffers in JavaScript memory (`JsPart`), each put to every bucket still taking the pack before it is filled again. The cap counts every byte, and a body past it is answered the same `cap_refusal`. A streamed validate goes to the first shard of `shard_order` only, with a 60 s wait and no trailer, and a non-422, non-429 answer is a 503 `Retry-After`. The `DurablePack` still needs validate's index to name the SHA-256 and length the tee read.
+
+**Why.** Two parts bound the isolate's pack bytes at 32 MiB at `PART_SIZE` whatever the push's size, and a part in a `Uint8Array` is passed to R2 as a view, so neither the wasm heap nor a copy per bucket holds it. The validate body cannot be read twice, and the trailer is the pack's last 20 bytes.
+
+**Beat.** Buffering up to the cap and streaming above it: B0-34's 60 MB pushes are under any cap. Retrying validate on the next shard: it needs the body again, so the edge would hold it. Putting each part to two buckets and leaving the third to the filler: the filler copies whole packs, and the tee would still wait on two. Answering an early refusal (atomic refs, format, `COMMAND_MAX`, placement failing) before the rest of the body is read: the old code read the body first, so a body over the cap got the cap refusal, and it still does.
+
+**Evidence.** `the_edge_holds_a_push_body_only_while_its_pack_may_be_inline` and `a_push_body_the_edge_does_not_stream_reads_as_when_it_was_held_whole` in `crates/git/src/smart.rs`; `a_streamed_pack_holds_two_parts_whatever_its_size`, `a_streamed_pack_is_durable_only_on_the_bytes_validate_indexed`, and `a_streamed_pack_that_breaks_off_places_nothing` in `crates/git/src/store.rs`; `tests/streampush/plant.py`; the hosted pushes on `graft-m3f` in `tests/am1/results/stream-push.md`.
+
+**Flip.** A hosted push whose edge memory grows with the pack's size, or streamed pushes that answer 503 often enough on a warming home shard that a buffered retry across shards would serve them better.
+
 ### LM-1 round 6: shards stream push bodies and cap validates, 2026-11-12
 
 Round 6's baseline (`tests/am1/results/lm1-memory.md`, section 13) failed B0-31, B0-32, and B0-34 in the git cache, not in the group: the first shard's Durable Object read each push body (`req.bytes()`) and copied it three or four times before the container saw it, and the container ran every validate at once.
