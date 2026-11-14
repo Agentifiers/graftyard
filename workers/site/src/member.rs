@@ -1278,6 +1278,12 @@ impl<F: Family> Routes<F> {
                 graftyard_types::ChainId::Repo(r) => crate::feed::FEEDS.with(|f| f.borrow().get(&r).map(|f| f.borrow().status())),
                 _ => None,
             },
+            // The leader's admission as `capacity` sizes it, cheap enough to poll every second: LM-1's B0-31 trace
+            // (does a mix of large commands shrink `cmd_bytes`'s capacity until agents wait out AGENT_WAIT).
+            "admission": c.m.admission().map(|a| json!({
+                "capacity": a.capacity, "roundMs": a.round_ms, "cmdBytes": a.cmd_bytes, "queued": a.queued,
+                "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot, "pressure": a.pressure,
+            })),
             "now": now_ms(),
         })
     }

@@ -9,8 +9,16 @@ import { leaderOf, log, member } from "../am1/hosted/lib.mjs";
 const [chain, load] = process.argv.slice(2);
 if (!/^(repo|authz):/.test(chain ?? "") || !load) throw new Error("usage: learners.mjs repo:ID|authz:ID region:rate[,region:rate]");
 const reads = load.split(",").map((x) => { const [r, n] = x.split(":"); return [r, Number(n)]; });
+// A fresh group's config is still joint while its background placement runs (fresh-repo, dd046f2): `/learners` answers
+// "the committed config is not Normal" until it settles, so wait up to 120 s for it (rows m24s33 placed none).
+let p, v;
+for (const t0 = Date.now(); ; ) {
+  const leader = await leaderOf(chain);
+  p = await member(chain, leader, "/learners", { load: { reads } }, 120_000);
+  v = p.v ?? {};
+  if (!/not Normal/.test(String(v.error ?? "")) || Date.now() - t0 > 120_000) break;
+  await new Promise((r) => setTimeout(r, 3_000));
+}
 const leader = await leaderOf(chain);
-const p = await member(chain, leader, "/learners", { load: { reads } }, 120_000);
-const v = p.v ?? {};
 log(`${chain} leader ${leader}: learners ${JSON.stringify(v.learners ?? v.error ?? p.status).slice(0, 400)} config ${v.configIndex}`);
 process.exit(v.error ? 1 : 0);

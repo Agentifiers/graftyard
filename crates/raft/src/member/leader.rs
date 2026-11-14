@@ -664,6 +664,8 @@ impl<C: Command> Member<C> {
             hot: self.hot(),
             pressure: self.pressure(cap),
             retry_after_s: retry_after_s(ad.agent().len(), cap),
+            round_ms: ad.round_ms,
+            cmd_bytes: ad.cmd_bytes,
         })
     }
 
