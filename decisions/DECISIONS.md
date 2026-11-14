@@ -2146,6 +2146,20 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 **Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
 
+### Pushes stream through the edge, 2026-11-14
+
+LM-1's B0-34 seed on `graft-m2b` failed every 60 MB push with `exceededMemory` or a hung exception on the edge: `receive_pack` read the whole body into one `Vec` before it parsed the commands, then copied it into the validate body and each bucket's put. B0-20 (`design/DESIGN.md`, Milestone 0) fails a push that needs buffering, so this is a code gap and the row stays as written.
+
+**Decision.** The edge holds a push body only while it may still be inline: until its commands parse and more than `INLINE_MAX` of pack follows them (`graftyard_git::smart::BodyReader`). Such a body, and a gzip body, which git sends only below `postBuffer`, is handled as before, from the whole body. The rest of a longer body streams through `PackStore::place_streamed`: the tee hashes it, hands it on to validate through a one-chunk pipe, and fills two part buffers in JavaScript memory (`JsPart`), each put to every bucket still taking the pack before it is filled again. The cap counts every byte, and a body past it is answered the same `cap_refusal`. A streamed validate goes to the first shard of `shard_order` only, with a 60 s wait and no trailer, and a non-422, non-429 answer is a 503 `Retry-After`. The `DurablePack` still needs validate's index to name the SHA-256 and length the tee read.
+
+**Why.** Two parts bound the isolate's pack bytes at 32 MiB at `PART_SIZE` whatever the push's size, and a part in a `Uint8Array` is passed to R2 as a view, so neither the wasm heap nor a copy per bucket holds it. The validate body cannot be read twice, and the trailer is the pack's last 20 bytes.
+
+**Beat.** Buffering up to the cap and streaming above it: B0-34's 60 MB pushes are under any cap. Retrying validate on the next shard: it needs the body again, so the edge would hold it. Putting each part to two buckets and leaving the third to the filler: the filler copies whole packs, and the tee would still wait on two. Answering an early refusal (atomic refs, format, `COMMAND_MAX`, placement failing) before the rest of the body is read: the old code read the body first, so a body over the cap got the cap refusal, and it still does.
+
+**Evidence.** `the_edge_holds_a_push_body_only_while_its_pack_may_be_inline` and `a_push_body_the_edge_does_not_stream_reads_as_when_it_was_held_whole` in `crates/git/src/smart.rs`; `a_streamed_pack_holds_two_parts_whatever_its_size`, `a_streamed_pack_is_durable_only_on_the_bytes_validate_indexed`, and `a_streamed_pack_that_breaks_off_places_nothing` in `crates/git/src/store.rs`; `tests/streampush/plant.py`; the hosted pushes on `graft-m3f` in `tests/am1/results/stream-push.md`.
+
+**Flip.** A hosted push whose edge memory grows with the pack's size, or streamed pushes that answer 503 often enough on a warming home shard that a buffered retry across shards would serve them better.
+
 ### LM-1 round 6: shards stream push bodies and cap validates, 2026-11-12
 
 Round 6's baseline (`tests/am1/results/lm1-memory.md`, section 13) failed B0-31, B0-32, and B0-34 in the git cache, not in the group: the first shard's Durable Object read each push body (`req.bytes()`) and copied it three or four times before the container saw it, and the container ran every validate at once.
@@ -3132,3 +3146,87 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 #### The gate on the final tree, 2026-11-13
 
 **Measured, not a decision.** On main `84d29c2` (F67 rules 10 to 13) plus the pipeline and `LOOP_LAG`, B0-02's gate passed 7 of 8 at 300 and 5 of 8 at 330 (`tests/m0/results/carried-8.md`). The near-gap shape did not recur (no near call of 400 ms or more outside r330-6) and no leader was clamped, so neither rule above is reversed. Two misses meet the `ENTRY_SOFT` flip ("capped entries do not lower commit p99") at 330: one 60 KB entry per round at a round p50 of 169 to 174 ms holds the group to 322 to 331 commands/s. One miss is a far follower whose catch-up calls of 319 to 717 KB missed `CALL_DEADLINE`, so `failed_to` turned off its pipeline and every later call carried the backlog; with a slow near follower, `CommitErrors` moved leadership to the far site. The next step is the operator's (C20).
+
+### M4-WP1's hosted half: webhook attempts run in per-hook lanes, 2026-11-13
+
+**Decision.** The `HookSequencer` keeps order, the delivery rows, and the cursor halves, and signs every request. It sends each attempt through the hook's lane, `hooklane:<wire>:<hook>`, an object of the same class on the store's site that keeps nothing. One lane call carries a queue's run: its head and up to `RUN_MAX` (8) deliveries queued behind it, sent in order and stopped at the first non-2xx or after `RUN_FOR_MS` (2 s). The store records each sent delivery as its queue's attempt only once it is the queue's front (`Sequencer::queued_after`, `next_in_run`), so one attempt in flight per (chain, hook) and chain order hold as before. Lanes are named and routed by `LANE_WIRE`, so a store on a new release never reaches a lane still running an old one.
+
+**Why.** BF-57's healthy p99 stayed at 2.1 to 3.2 s through runs 8 to 12, because every POST ran inside the owner's one object behind its other work. A probe at 49 busy queues put the POST at 184 to 301 ms p50 inside one object, at 205 ms from an invocation of the site script over its own `SITE` binding, which runs beside its caller, and at 7 ms from a separate object (`graft-m4-probe-sb5`, `-sb8`, 2026-11-13). Run 13, on the `SITE` binding, had p99 9.4 s. Run 14, on per-hook lanes with one attempt per call, had p99 2.10 s, and all 124 late deliveries were behind earlier entries of their own queue. Run 16, with runs, had p99 1.11 s and none over 2 s (`tests/m4/results/m4-wp1-hosted.md`) [measured].
+
+**Beat.** Stateless delivery Workers over the site script's own `SITE` binding, as DESIGN's Shape first read and as `prsync::in_band` does (run 13, 9.4 s). Batching the store's report writes (runs 10 to 12, no gain). Attempts through Queues (latency). One lane call per attempt (run 14, 2.10 s).
+
+**Evidence.** `tests/m4/results/m4-wp1-hosted.md`, BF-57 runs 13 to 16. `a_run_sends_a_queues_waiting_deliveries_in_order_under_one_slot` (`crates/git/src/sequencer.rs`).
+
+**Flip.** A run in which lanes do not shorten the healthy tail against the store's own POSTs, or a chain-order inversion that a run causes.
+
+### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
+
+Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).
+
+#### A create starts its group's near placement and does not wait for it
+
+**Decision.** `graftyard_lookup::create` sends the new group's leader `/place` with `{"background": true}`. The leader answers `{"placing": true}` at once, or `notLeader`, and runs the same near check (`place_inner`: up to `PLACE_TRIES` re-placements, the nearest kept) under `wait_until` after it answers. It holds the daily check's `near_check` marker while it runs, so a second ask, or the daily check, does not start another placement of the same group. A create therefore returns once a member leads, and the group serves while it is placed, as it already does through a daily re-placement. `PLACE_FOR` stays 240 s, so an edge built from this branch still works with a member built before it, which ignores the field and places before it answers.
+
+**Why.** On `graft-m2b` and `graft-m3c` the enam to weur pair measures 105 to 136 ms, over enam's 100 ms `NEAR_RTT`, so every new group spent all 8 tries. Each try's join measures 20 round trips to each peer, so a group took 60 to 95 s to place. A fresh repository can make two new groups, its `Names` shard and its own, so its create took up to 141 s [measured, `tests/am1/results/fresh-repo.md`]. LM-1's 503 "0 of 3 joined … has no RepoOwner row" was a `GET /repos` sent while its create was still placing the `Names` shard group, before `RepoOwner` committed: every member checks that row before it joins, so all three refused. Its missing `main` was `tests/am1/runs/mkrepos.mjs` taking a re-sent create's 422 plus a 200 GET as a finished create while the first create was still placing, and in one case after the client had given up on it at 180 s, so `push_init` had not run. No acknowledged write was missing from a read [measured, Workers Logs, same file]. The `m0-carried-4` amendment already made the bound "a goal, not a gate". Nothing about the create's result depends on the placement, so the create no longer needs to wait for it.
+
+**Beat.** Answering a read of a repository with no `RepoOwner` row with 404 instead of trying to join, as the only change. It does not shorten the create, and a 140 s create also outlasts clients' timeouts, as it outlasted mkrepos'. It is still open as a second change: after this one, a `GET /repos` sent while a create runs answered 503 "0 of 3 joined" on 35 of 129 such reads, in the 10 to 30 s before `RepoOwner` commits [measured, `tests/am1/results/fresh-repo.md`]. No read after a 201 did. Fewer `RTT_SAMPLES` or `PLACE_TRIES`, which only shorten each try, and leave a create waiting on several. A bound relative to each install's baseline, which the `m0-carried-4` amendment rejected.
+
+**Evidence.** `tests/am1/results/fresh-repo.md` [measured]. `tests/am1/fresh/fresh.mjs` creates repositories back to back, never re-sending a create. It fails on main's sites (a create over 60 s) and passes on this branch's. No cargo test can reach the change: it is the order of two Durable Object calls, and only workerd runs the site's members.
+
+**Flip.** A group whose background placement leaves it `Degraded` or without a leader, which `fresh.mjs` checks after each run. Or commit latency on new groups during the placement window that some caller cannot take.
+
+#### A read before `RepoOwner` commits answers 404
+
+**Decision.** A repository member asked to join reads the `RepoOwner` row through `Names`. When the `Names` leader answers with no row, the member refuses with `{"refused": {"noRepoOwner": id}}`, distinct from a read that failed (`{"source": ..}`). `graftyard_lookup::create` names `NOT_CREATED` in its error only when a majority of the bootstrap members refused that way. The edge's repository reads that create the group on first use (`tier_rows`, `api_rows`, and the read gate's `core_rows`) answer that error 404 on REST, the GraphQL `NOT_FOUND`, and git's "Repository not found." The read gate returns `Hidden` without caching it. Every other failure stays 503, including a member that holds the row but has not joined yet.
+
+**Why.** After the change above, a `GET /repos/{o}/{r}` sent while its create ran answered 503 "0 of 3 joined" on 35 of 129 such reads, in the 10 to 30 s before `RepoOwner` commits [measured, `tests/am1/results/fresh-repo.md`]. The repository does not exist for any caller in that window. GitHub answers 404 for a repository no one can see, and 503 tells a client to retry against an outage. A majority is required so that a single member whose `Names` read raced the commit cannot hide a repository that exists.
+
+**Beat.** Reading `RepoOwner` on the edge before every first-use create, which adds a `Names` read to a path that only needs it when the create fails. Treating any "0 of 3 joined" as 404, which would make an outage look like "not found".
+
+**Evidence.** `crates/lookup/src/lib.rs`, `only_a_majority_with_no_repo_owner_row_is_not_created`; the hosted rerun in `tests/am1/results/fresh-repo.md`, "Follow-up: 404 before `RepoOwner`".
+
+**Flip.** A 404 for a repository whose `RepoOwner` row had committed, or members of an older release whose refusals keep the window at 503 after a site day.
+
+#### `mkrepos.mjs` sends a create once
+
+**Decision.** `tests/am1/runs/mkrepos.mjs` sends `POST /orgs/m3org/repos` once with a 400 s timeout. It no longer re-sends the request through `api`, and it no longer counts a 422 followed by a 200 GET as a create.
+
+**Why.** That fallback started LM-1's runs on repositories whose create was still placing (131317) or had been abandoned (131320).
+
+**Beat.** Keeping the fallback and waiting for `main`, as LM-1's `a1.mjs` does, which hides a create that never finished.
+
+**Evidence.** `tests/am1/results/fresh-repo.md`, "Bug 2".
+
+**Flip.** None needed. A driver that must survive a lost answer should read the repository's `main`, not its settings.
+
+### `liveness-split-vote`: a voter that granted a rival's pre-vote waits before its own, 2026-11-14
+
+#### A pre-vote grant holds back the granter's own campaign
+
+**Decision.** Two rules in `crates/raft/src/member/election.rs`. Pre-vote grants and refusals are otherwise unchanged.
+- A voter that grants a rival's pre-vote starts no campaign of its own for one CALL_DEADLINE (1 s) from the first grant for that asked term (`pre_granted`). A repeated pre-vote for the same term does not extend the wait.
+- A voter whose own pre-vote is out when it grants a rival's drops its own (`lose_campaign`, with its usual backoff). A real campaign it already started is kept.
+
+**Why.** `long_liveness`'s writes-fail target (every group moved within 20 s) missed seed 14011 on main (21.5 s) and seed 3052 on `m0-adaptive-append` (21.9 s). The trace of 14011: with site 0's writes failing, followers 1 and 2 lost their promises together, and the same `suspect` reports, which every edge sends to both, started both within 31 to 117 ms, three terms running (4, 5 and 6). Each granted the other's pre-vote: site 2's reached site 1 just before the report that started site 1, and a campaigning member denies only a higher id as `Contending`, so site 2 granted site 1. Both entered the real vote and each refused the other as `Voted`. Site 0 never answered in time, so each campaign ran its full CAMPAIGN_DEADLINE (3 s), lost, backed off 100 to 400 ms, and the next report started both again [measured, simulator, `tests/m0/results/split-vote.md`]. The random backoff does not separate them because the reports, not the backoff, set when they start. The first rule alone fixed 14011 and 3052 but, over 20,000 seeds, made two other seeds fail that pass on main: 15198 (3 leader changes) and 21945 (22.2 s). In both, each follower's own pre-vote was already out when it granted the other's, so the wait did not apply; the gray leader, still a follower answering pre-votes, granted both, and the two real votes split. The second rule closes that path.
+
+**Beat.** A longer or wider random backoff: the restart comes from the reports, which arrive at both voters together, so a backoff only delays both. Denying a pre-vote while the voter has granted one, which needs a second refusal kind on the wire. Letting a lost real vote end before CAMPAIGN_DEADLINE when every answer is `Voted`, which shortens each failed term but does not stop the next split.
+
+**Evidence.** `a_voter_that_granted_a_rivals_pre_vote_lets_it_win` and `a_voter_that_grants_a_rivals_pre_vote_drops_its_own` (`crates/raft/tests/scenarios.rs`), each failing without its rule. `tests/m0carried/plant10.py` plants seven mutants of the two rules. The writes-fail scan, the long sweep and Porcupine are in `tests/m0/results/split-vote.md`.
+
+**Flip.** A history in which the wait delays an election past the liveness bound, for example a rival whose pre-vote passes and whose real vote never arrives, repeated each term; or a writes-fail seed over 20 s that is still a split vote.
+
+### `liveness-slow-storage`: slow storage does not move leadership it cannot cure, 2026-11-14
+
+#### A follower with slow storage does not depose a leader still appending, and no slow follower is a STEP_DOWN target
+
+**Decision.** Two rules in `crates/raft`. F67's `suspect` counting and pre-vote refusals are unchanged.
+- A follower whose own storage would trip `STEP_DOWN`'s confirm rule (over the window, at least `confirm_slow_min` confirms over `confirm_p99_ms`, ended or still running, and the p99 over it: `storage_slow`) starts no campaign while a leader's AppendEntries reached it within CAMPAIGN_DEADLINE (`appended_at`, `election.rs` `try_campaign`). The 2 x ELECTION_AFTER waiver does not lift it, since the leader is heard.
+- A leader picks no `STEP_DOWN` target whose AppendEntries answers in the window ran over `confirm_p99_ms` past its fastest at least `commit_fail_min` times (`peer_storage_slow`, `health.rs` `check_health`): a follower answers after its own storage confirms, so its slow confirms show in its round trips. With no target left the leader holds, as before.
+
+**Why.** LM-1's k-4 churn, which a read-only reviewer reproduced in the simulator on a7d28e5 and 84d29c2 with slow confirms on every member. On main a21ecdf, 30% of confirms at 1.05 s for a minute raised the term by 4.3 a minute on average with all three slow, and 3.8 with both followers slow, over 60 seeds each (up to 7 in one seed) [measured, simulator, `tests/m0/results/slow-storage.md`]. The traces showed two paths: a confirm-tripped leader handed off to a follower just as slow, which tripped the same way within one window; and a follower whose promises `suspect` withheld campaigned, passed pre-vote, and its real vote, sent after its own slow confirm, raised every voter's term and deposed the leader even when it lost on `LogBehind`.
+
+**Beat.** The reviewer's three candidates. (a) skipping a target by its reply RTT over `confirm_p99_ms`, which this keeps in a softer form, as an excess over the follower's fastest answer, because the far follower's RTT alone is near that line. (b) counting a `suspect` report only if the leader's commit index stopped at the follower, which changes F67's detection of a gray leader that still commits slowly. (c) ignoring a higher-term RequestVote while a live leader's append arrived within the election timeout (Raft thesis section 4.2.3), which also blocks the healthy follower that F67 relies on to move a gray leader. The gate here is the candidate's own storage, so a healthy follower still campaigns.
+
+**Evidence.** On 200 seeds each, the term rose by 1.3 a minute on average with all three slow and 0.3 with both followers slow, against 4.3 and 3.8 on main (60 seeds); no seed was leaderless for 20 s. A gray leader with one slow and one healthy follower is moved through the healthy one; a dead leader is replaced by a slow follower CAMPAIGN_DEADLINE after its last append; a half-hung leader with slow followers is replaced within F67's bound (p50 12.6 s, max 17.0 s over 60 seeds, as on main), because check quorum ends its leadership and so its appends. Kept tests: `slow_storage_everywhere_keeps_one_leader` and `slow_storage_on_both_followers_keeps_the_leader` (`crates/raft/tests/liveness.rs`), both failing on main; `a_slow_follower_holds_back_while_a_healthy_one_moves_a_gray_leader` and `a_slow_follower_still_replaces_a_dead_leader` (`crates/raft/tests/scenarios.rs`); `a_half_hung_leader_with_slow_followers_is_replaced` (`liveness.rs`). `tests/m0carried/plant11.py` plants the rules.
+
+**Flip.** A gray leader that F67 moved on main and that this keeps leading past 20 s; a slow follower held back while no leader commits; or hosted evidence that a follower's answer time does not track its storage.

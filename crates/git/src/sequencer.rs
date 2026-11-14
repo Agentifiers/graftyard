@@ -240,8 +240,10 @@ impl Sequencer {
         self.chain_hooks.insert(chain, now);
     }
 
-    /// The consumer moved `chain` to another store: its queued deliveries end here unattempted, and an attempt
-    /// running now is the last. What it recorded is forgotten, so a later batch fills it again from `replay_from`.
+    /// The consumer moved `chain` to another store: its queued deliveries are deleted here, and an attempt running
+    /// now is the last. What it recorded is forgotten, so a later batch fills it again from `replay_from`; a deleted
+    /// delivery is then recorded again under its GUID, where one only marked finished would read as held and never
+    /// be attempted.
     pub fn drop_chain(&mut self, chain: ChainId) {
         let keys: Vec<QueueKey> = self.queues.keys().filter(|k| k.chain == Some(chain)).copied().collect();
         for k in keys {
@@ -251,6 +253,8 @@ impl Sequencer {
             q.items.extend(keep);
             for g in gone {
                 self.finish(g);
+                self.deliveries.remove(&g);
+                self.by_attempt.retain(|_, a| *a != g);
             }
         }
         self.recorded.remove(&chain);
@@ -394,6 +398,82 @@ impl Sequencer {
         out
     }
 
+    /// After `prev`'s report, its queue's next attempt, for whoever ran `prev` to run at once, so a busy queue does not
+    /// wait for the next `start` round. `None` unless a slot is free with one left for every other queue waiting to
+    /// start (and, for a failing hook, within its half for every failing one waiting), so `start` still reaches them.
+    pub fn next_in_queue(&mut self, prev: &Start, now: Timestamp) -> Option<Start> {
+        let d = self.deliveries.get(&prev.guid)?;
+        let key = if prev.redelivery {
+            QueueKey { chain: None, hook: d.hook }
+        } else {
+            QueueKey { chain: d.entry.map(|(c, _, _)| c), hook: d.hook }
+        };
+        let cap = usize::from(HOOK_OWNER_CONCURRENCY);
+        let (total, failing) = self.in_flight();
+        let is_failing = self.failing.contains(&key.hook);
+        let (mut waiting, mut waiting_failing) = (0, 0);
+        for (k, q) in &self.queues {
+            if *k != key && q.running.is_none() && !q.items.is_empty() && now >= q.not_before {
+                waiting += 1;
+                waiting_failing += usize::from(self.failing.contains(&k.hook));
+            }
+        }
+        if total + waiting >= cap || (is_failing && failing + waiting_failing >= cap / 2) {
+            return None;
+        }
+        if !self.targets.get(&key.hook).is_some_and(|t| t.active) {
+            return None;
+        }
+        let q = self.queues.get_mut(&key)?;
+        if q.running.is_some() || now < q.not_before {
+            return None;
+        }
+        let &(guid, manual) = q.items.front()?;
+        let attempt = self.next_attempt;
+        self.next_attempt += 1;
+        q.running = Some(Running { attempt, started: now });
+        self.by_attempt.insert(attempt, guid);
+        Some(Start { guid, hook: key.hook, attempt, redelivery: manual })
+    }
+
+    /// The deliveries queued behind `s` on its queue, at most `max`, none a manual redelivery: what a host may send
+    /// after `s` in the same run, in order, while the queue's one slot is `s`'s. Empty unless `s` is the queue's
+    /// running attempt.
+    pub fn queued_after(&self, s: &Start, max: usize) -> Vec<Guid> {
+        let Some(key) = self.chain_queue(s) else { return Vec::new() };
+        let Some(q) = self.queues.get(&key) else { return Vec::new() };
+        if q.running.map(|r| r.attempt) != Some(s.attempt) {
+            return Vec::new();
+        }
+        q.items.iter().skip(1).take_while(|(_, manual)| !manual).take(max).map(|(g, _)| *g).collect()
+    }
+
+    /// After `prev`'s report, `guid` as the attempt the host already sent at `at` in the same run as `prev`
+    /// (`queued_after`). It takes `prev`'s slot, not a new one. `None` unless `guid` is now the queue's front and the
+    /// queue may run it (nothing running, no backoff, the hook still active); the host then leaves it to be sent
+    /// again under its GUID, which at-least-once allows.
+    pub fn next_in_run(&mut self, prev: &Start, guid: Guid, at: Timestamp) -> Option<Start> {
+        let key = self.chain_queue(prev)?;
+        if !self.targets.get(&key.hook).is_some_and(|t| t.active) {
+            return None;
+        }
+        let q = self.queues.get_mut(&key)?;
+        if q.running.is_some() || at < q.not_before || q.items.front() != Some(&(guid, false)) {
+            return None;
+        }
+        let attempt = self.next_attempt;
+        self.next_attempt += 1;
+        q.running = Some(Running { attempt, started: at });
+        self.by_attempt.insert(attempt, guid);
+        Some(Start { guid, hook: key.hook, attempt, redelivery: false })
+    }
+
+    /// The queue an automatic attempt `s` runs on; `None` for a manual redelivery, which runs alone.
+    fn chain_queue(&self, s: &Start) -> Option<QueueKey> {
+        let d = self.deliveries.get(&s.guid).filter(|_| !s.redelivery)?;
+        Some(QueueKey { chain: d.entry.map(|(c, _, _)| c), hook: d.hook })
+    }
+
     fn finish(&mut self, guid: Guid) {
         let Some(d) = self.deliveries.get_mut(&guid) else { return };
         if d.done {
@@ -493,6 +573,19 @@ impl Sequencer {
         self.deliveries.get(guid)
     }
 
+    /// Takes a delivery's body out, leaving it empty, for a host that stores bodies apart from the rows and keeps
+    /// only unfinished deliveries' bodies in memory; `None` for a delivery not held (pruned or dropped).
+    pub fn take_body(&mut self, guid: &Guid) -> Option<Box<[u8]>> {
+        self.deliveries.get_mut(guid).map(|d| std::mem::take(&mut d.body))
+    }
+
+    /// Puts back a body `take_body` took, or one the host read from its own storage.
+    pub fn set_body(&mut self, guid: &Guid, body: Box<[u8]>) {
+        if let Some(d) = self.deliveries.get_mut(guid) {
+            d.body = body;
+        }
+    }
+
     /// `GET .../hooks/{hook}/deliveries`: one item per attempt, newest first, after the attempt id `before` (the
     /// cursor), at most `per_page`.
     pub fn list(&self, hook: HookId, before: Option<u64>, per_page: usize) -> Vec<(&HookDelivery, &Attempt)> {
@@ -527,6 +620,11 @@ impl Sequencer {
         self.by_attempt.retain(|_, g| live.contains_key(g));
     }
 
+    /// Every delivery held, done or not.
+    pub fn deliveries(&self) -> impl Iterator<Item = &HookDelivery> {
+        self.deliveries.values()
+    }
+
     /// Deliveries held, for tests and the store's size.
     pub fn len(&self) -> usize {
         self.deliveries.len()
@@ -542,12 +640,18 @@ impl Sequencer {
     }
 }
 
-/// Where the consumer starts reading `chain`: past what the store holds, or, for a store that holds nothing of the
-/// chain (a new or a rebuilt one), from the committed `replay_from`.
+/// Where the consumer starts reading `chain`: past what the store holds; for a store that holds nothing of the chain
+/// (a new or a rebuilt one), from the committed `replay_from`; and for one that holds it only to before the committed
+/// `read` (the consumer recorded the rest in another site's store and came back), past what it holds or from
+/// `replay_from`, whichever is later, since every entry before `replay_from` is finished. Starting from `replay_from`
+/// every time instead never caught up once a batch was cut short of `read`: graft-m4a's j4 then moved one entry per
+/// slow-hook attempt (BF-57 run 4). The consumer sends a batch as a replay when it starts past what the store holds.
 pub fn consumer_start(cursor: HookCursor, recorded: Option<Index>) -> Index {
+    let from_replay = Index(cursor.replay_from.0.saturating_sub(1).min(cursor.read.0));
     match recorded {
-        Some(r) => r.max(cursor.read),
-        None => Index(cursor.replay_from.0.saturating_sub(1).min(cursor.read.0)),
+        Some(r) if r >= cursor.read => r,
+        Some(r) => r.max(from_replay),
+        None => from_replay,
     }
 }
 
@@ -694,6 +798,70 @@ mod tests {
     }
 
     #[test]
+    fn a_run_sends_a_queues_waiting_deliveries_in_order_under_one_slot() {
+        let mut s = seq(&[(1, false), (2, false)]);
+        s.record(CHAIN, Index(4), vec![row(1, 1), row(2, 1), row(3, 1), row(4, 1), row(1, 2)], Timestamp(0));
+        let a = s.start(Timestamp(0)).into_iter().find(|x| x.hook == HookId(DbId(1))).unwrap();
+        let after = s.queued_after(&a, 2);
+        let idx = |s: &Sequencer, g: &Guid| s.delivery(g).unwrap().entry.unwrap().1;
+        assert_eq!(
+            after.iter().map(|g| idx(&s, g)).collect::<Vec<_>>(),
+            [Index(2), Index(3)],
+            "behind the head, at most 2"
+        );
+        // Not before its predecessor is reported: the queue's slot is still `a`'s.
+        assert!(s.next_in_run(&a, after[0], Timestamp(1)).is_none());
+        s.report(a.attempt, Timestamp(1), Some(200), false, None);
+        // Only the queue's front, in order.
+        assert!(s.next_in_run(&a, after[1], Timestamp(1)).is_none(), "entry 3 is not the front");
+        let b = s.next_in_run(&a, after[0], Timestamp(1)).expect("entry 2 is the front");
+        assert_eq!((b.guid, b.hook), (after[0], HookId(DbId(1))));
+        assert!(s.queued_after(&a, 2).is_empty(), "a reported attempt has no run behind it");
+        assert_eq!(s.in_flight().0, 2, "the run keeps hook 1's one slot; hook 2 has the other");
+        s.report(b.attempt, Timestamp(2), Some(200), false, None);
+        assert!(s.delivery(&after[0]).unwrap().done);
+        // A deleted hook's queue runs nothing more.
+        s.set_chain_targets(CHAIN, &[(HookId(DbId(1)), rec(false)), (HookId(DbId(2)), rec(false))]);
+        s.set_chain_targets(CHAIN, &[(HookId(DbId(2)), rec(false))]);
+        assert!(s.next_in_run(&b, after[1], Timestamp(3)).is_none());
+    }
+
+    #[test]
+    fn a_report_starts_its_queues_next_attempt_only_with_a_slot_left_for_each_waiting_queue() {
+        let mut s = seq(&[(1, false), (2, false)]);
+        s.record(CHAIN, Index(3), vec![row(1, 1), row(2, 1), row(3, 1)], Timestamp(0));
+        let a = s.start(Timestamp(0)).remove(0);
+        s.report(a.attempt, Timestamp(1), Some(200), false, None);
+        let b = s.next_in_queue(&a, Timestamp(1)).expect("nothing else waits");
+        assert_eq!(s.delivery(&b.guid).unwrap().entry.unwrap().1, Index(2), "chain order");
+        assert!(s.next_in_queue(&a, Timestamp(1)).is_none(), "the queue already runs one");
+        // 51 healthy queues and 50 slots: the one `start` left waiting keeps its slot.
+        let mut h = seq(&[]);
+        let hooks: Vec<_> = (1..=51).map(|h| (HookId(DbId(h)), rec(false))).collect();
+        h.set_targets(&hooks);
+        h.record(CHAIN, Index(2), (1..=51).flat_map(|k| [row(1, k), row(2, k)]).collect(), Timestamp(0));
+        let first = h.start(Timestamp(0));
+        assert_eq!(first.len(), usize::from(HOOK_OWNER_CONCURRENCY));
+        h.report(first[0].attempt, Timestamp(1), Some(200), false, None);
+        assert!(h.next_in_queue(&first[0], Timestamp(1)).is_none(), "the 51st queue waits for this slot");
+        assert_eq!(h.start(Timestamp(1)).len(), 1);
+        // A failing hook's chained start stays within its half of the slots.
+        let mut f = seq(&[]);
+        let hooks: Vec<_> = (1..=26).map(|h| (HookId(DbId(h)), rec(false))).collect();
+        f.set_targets(&hooks);
+        f.record(CHAIN, Index(3), (1..=26).flat_map(|h| [row(1, h), row(2, h), row(3, h)]).collect(), Timestamp(0));
+        for x in f.start(Timestamp(0)) {
+            f.report(x.attempt, Timestamp(1), Some(500), false, None);
+        }
+        let again = f.start(Timestamp(2));
+        assert_eq!(again.len(), usize::from(HOOK_OWNER_CONCURRENCY) / 2, "26 failing hooks, 25 slots");
+        let last = again[0].clone();
+        f.report(last.attempt, Timestamp(3), Some(500), false, None);
+        let next = f.next_in_queue(&last, Timestamp(3));
+        assert!(next.is_none(), "the waiting 26th failing queue is not passed over: {next:?}");
+    }
+
+    #[test]
     fn round_robin_resumes_after_a_queue_that_emptied() {
         // Hook 1's queue empties and is dropped while it was the last served; hook 2's must still be served.
         let mut s = seq(&[(1, false), (2, false)]);
@@ -798,6 +966,12 @@ mod tests {
         let g: BTreeSet<Guid> = fresh.deliveries.keys().copied().collect();
         assert!(g.iter().all(|x| s.deliveries.contains_key(x)));
         assert_eq!(consumer_start(cur, Some(Index(4))), Index(4));
+        // A store the consumer comes back to holds the chain to 50 while the committed cursor reads 100 with entry 10
+        // the oldest unfinished: it continues past 50, not from 9 again, and one that holds less than 9 starts at 9.
+        let back = HookCursor { read: Index(100), replay_from: Index(10) };
+        assert_eq!(consumer_start(back, Some(Index(50))), Index(50));
+        assert_eq!(consumer_start(back, Some(Index(5))), Index(9));
+        assert_eq!(consumer_start(back, Some(Index(120))), Index(120));
     }
 
     #[test]
@@ -872,6 +1046,15 @@ mod tests {
         s.report(a.attempt, Timestamp(1), Some(200), false, None);
         assert!(s.start(Timestamp(2)).is_empty(), "entries 2 and 3 are not attempted here");
         assert!(s.idle());
+        // The consumer comes back to this store and replays from `replay_from` under the same GUIDs: the entries it
+        // dropped unattempted are attempted now, and the one attempted before is not again.
+        s.record(CHAIN, Index(3), vec![row(1, 1), row(2, 1), row(3, 1)], Timestamp(3));
+        let b = s.start(Timestamp(3));
+        assert_eq!(b.len(), 1);
+        assert_eq!(s.delivery(&b[0].guid).unwrap().entry.unwrap().1, Index(2));
+        s.report(b[0].attempt, Timestamp(4), Some(200), false, None);
+        let c = s.start(Timestamp(5));
+        assert_eq!(s.delivery(&c[0].guid).unwrap().entry.unwrap().1, Index(3));
     }
 
     #[test]

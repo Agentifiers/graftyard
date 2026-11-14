@@ -591,15 +591,19 @@ impl<F: Family> Routes<F> {
                 self.ready_or(|| self.replace(body)).await
             }
             (Method::Post, "/place") => {
+                let body = req.json::<Value>().await.unwrap_or(Value::Null);
                 // Test installs: `{"near_ms": MS}` bounds every region at MS, so a hosted run can make every try miss.
                 #[cfg(feature = "test-faults")]
-                let near = req.json::<Value>().await.ok().and_then(|b| b["near_ms"].as_u64()).map(|ms| {
+                let near = body["near_ms"].as_u64().map(|ms| {
                     [graftyard_types::Region::Enam, graftyard_types::Region::Weur, graftyard_types::Region::Apac]
                         .map(|r| (r, ms as u16))
                         .to_vec()
                 });
                 #[cfg(not(feature = "test-faults"))]
                 let near = None;
+                if body["background"].as_bool() == Some(true) {
+                    return self.ready_or(|| async { self.place_background(near) }).await;
+                }
                 self.ready_or(|| self.place(near)).await
             }
             (Method::Post, "/move") => {
@@ -1672,7 +1676,12 @@ impl<F: Family> Routes<F> {
             }
             Source::Owner(owner) => owner_record(&self.host.env, owner).await.map_err(|e| json!({ "source": e }))?,
             Source::Repo { repo, owner } => {
-                let named = repo_owner(&self.host.env, repo).await.map_err(|e| json!({ "source": e }))?;
+                // No row yet is its own refusal: the repository's create has not committed `RepoOwner`, so the edge
+                // answers its read as for a repository the caller cannot see (`graftyard_lookup::NOT_CREATED`).
+                let named = repo_owner_row(&self.host.env, repo)
+                    .await
+                    .map_err(|e| json!({ "source": e }))?
+                    .ok_or_else(|| json!({ "noRepoOwner": repo.0.0 }))?;
                 if named != owner {
                     return Err(json!({ "notTheRepoOwner": named.0.0 }));
                 }
@@ -2016,6 +2025,44 @@ impl<F: Family> Routes<F> {
         match self.place_inner(near.as_deref().unwrap_or(graftyard_types::NEAR_RTT)).await? {
             Ok(v) | Err(v) => self.reply(v),
         }
+    }
+
+    /// `/place` with `{"background": true}`, as `graftyard_lookup::create` sends it: the same check, run under
+    /// `wait_until` after the answer, so a create returns once its group leads instead of after up to `PLACE_TRIES`
+    /// joins of about 7 s each (`decisions/DECISIONS.md`, "`fresh-repo`"). It answers `notLeader` at once, so the
+    /// caller asks the member that leads, and `{"placing": true}` otherwise. It holds the daily check's marker
+    /// (`near_check`), so two placements of one group never run at once; a second ask while one runs only answers.
+    fn place_background(&self, near: Option<Vec<(graftyard_types::Region, u16)>>) -> Result<Response> {
+        let (chain, nl) = {
+            let core = self.host.core.borrow();
+            let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+            (c.join.chain, (c.m.role() != Role::Leader).then(|| host::nl_json(&c.m.not_leader())))
+        };
+        if let Some(nl) = nl {
+            return self.reply(json!({ "error": { "notLeader": nl } }));
+        }
+        let sql = self.host.state.storage().sql();
+        let now = now_ms();
+        let busy: Option<u64> = host::rows(&sql, "SELECT v FROM me WHERE k = 'near_check'", vec![])?
+            .first()
+            .and_then(|r| host::text(&r[0]).ok().and_then(|t| t.parse().ok()));
+        if busy.is_some_and(|t| now.saturating_sub(t) < NEAR_CHECK_FOR) {
+            return self.reply(json!({ "placing": true, "since": busy }));
+        }
+        sql.exec("INSERT OR REPLACE INTO me (k, v) VALUES ('near_check', ?)", vec![now.to_string().into()])?;
+        let me = Routes { host: self.host.clone() };
+        self.host.state.wait_until(async move {
+            let r = me.place_inner(near.as_deref().unwrap_or(graftyard_types::NEAR_RTT)).await;
+            match &r {
+                Ok(Ok(v)) => console_log!("placement of {chain}: {v}"),
+                Ok(Err(v)) => console_error!("placement of {chain} failed: {v}"),
+                Err(e) => console_error!("placement of {chain} failed: {e}"),
+            }
+            if let Err(e) = me.host.state.storage().sql().exec("DELETE FROM me WHERE k = 'near_check'", None) {
+                console_error!("placement of {chain}: marker: {e}");
+            }
+        });
+        self.reply(json!({ "placing": true }))
     }
 
     async fn place_inner(&self, near: &[(graftyard_types::Region, u16)]) -> Result<std::result::Result<Value, Value>> {
@@ -2391,12 +2438,16 @@ pub async fn owner_record(env: &Env, owner: AccountId) -> std::result::Result<Pl
 
 /// A repository's owner, from its `RepoOwner` row on `Names` shard `name_shard(Repo(repo))`, through `fresh`.
 pub async fn repo_owner(env: &Env, repo: graftyard_types::RepoId) -> std::result::Result<AccountId, String> {
+    repo_owner_row(env, repo).await?.ok_or_else(|| format!("{repo:?} has no RepoOwner row"))
+}
+
+/// `repo_owner`, with `None` only when the `Names` leader answered and holds no row; a read that failed is `Err`.
+async fn repo_owner_row(env: &Env, repo: graftyard_types::RepoId) -> std::result::Result<Option<AccountId>, String> {
     let chain = ChainId::Names(graftyard_identity::name_shard(&graftyard_identity::NameKey::Repo(repo)));
     let record = crate::release::system_record(env, chain).await?;
     let (v, _) = lookup::call(env, chain, &record, "/read", &json!({ "q": { "repoOwner": repo.0.0 } })).await?;
     serde_json::from_value::<Option<AccountId>>(v.pointer("/value/repoOwner").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("{repo:?} has no RepoOwner row"))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

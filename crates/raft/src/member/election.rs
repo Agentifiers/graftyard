@@ -129,6 +129,14 @@ impl<C: Command> Member<C> {
         if barred && !waived {
             return Verdict::MayNotLead;
         }
+        // A member whose own storage would trip STEP_DOWN's confirm rule does not campaign against a leader that
+        // appended to it within CAMPAIGN_DEADLINE, even one `suspect` reports withhold its promises from: it would lead
+        // no better and step down on winning, and its higher term deposes a leader that still commits (LM-1's k-4
+        // churn: slow confirms on both followers cost 3 to 5 terms a minute per seed). The waiver does not lift it:
+        // the leader is heard.
+        if self.now < after(self.appended_at, CAMPAIGN_DEADLINE) && self.storage_slow() {
+            return Verdict::MayNotLead;
+        }
         // A restarted leader resumes `led_term` after one round rather than start a new term.
         if self.state.led_term == Some(self.state.term) {
             self.become_leader(true);
@@ -137,7 +145,7 @@ impl<C: Command> Member<C> {
         if self.now < self.state.promise_until {
             return Verdict::Promised;
         }
-        if self.now < self.backoff_until || self.now < self.retry_pre_at {
+        if self.now < self.backoff_until || self.now < self.retry_pre_at || self.now < self.pre_granted.1 {
             return Verdict::Busy;
         }
         self.start_campaign(true, None);
@@ -418,6 +426,18 @@ impl<C: Command> Member<C> {
             }
             if self.drained.contains(&req.candidate) && !waived {
                 return deny(self, Deny::Drained);
+            }
+            // A member that grants a rival's pre-vote and then starts its own is granted in turn, as the lower id or
+            // by a voter not yet campaigning, so both pass pre-vote and split the real vote: with the third voter
+            // silent, each campaign ran CAMPAIGN_DEADLINE, and suspect reports, which reach both together, restarted
+            // both, for three terms (long_liveness writes seeds 3052 and 14011).
+            if self.pre_granted.0 != req.term {
+                self.pre_granted = (req.term, after(self.now, CALL_DEADLINE));
+            }
+            // A pre-vote of its own already out stops too: a third voter that grants both lets both into the real vote
+            // (`long_liveness` writes seeds 15198 and 21945).
+            if self.campaign.as_ref().is_some_and(|c| c.pre()) {
+                self.lose_campaign();
             }
             return VoteRes { term: self.state.term, asked: req.term, pre: true, granted: true, deny: None };
         }

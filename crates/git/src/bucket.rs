@@ -80,3 +80,59 @@ pub trait Bucket {
     /// an error.
     async fn abort_upload(&self, key: &str, upload_id: &str) -> Result<(), StoreError>;
 }
+
+/// A bucket that takes a pack in parts while it streams (`crate::PackStore::place_streamed`).
+pub trait Multipart: Bucket {
+    /// One part's buffer. The tee fills it once and puts that one copy to every bucket.
+    type Part: PartBuf;
+    /// A create-only put of a pack that fit one part, with R2 checking `sha256`, as `put_new`.
+    async fn put_whole(
+        &self,
+        key: &str,
+        part: &Self::Part,
+        sha256: Digest,
+        meta: &[(String, String)],
+    ) -> Result<PutNew, StoreError>;
+    /// Starts a multipart upload of `key` and journals its id under `journal` (`R2Key::Upload`), so the sweeper can
+    /// abort it if the writer dies, and answers its upload id. The key is a fresh `PackId`, so no other writer holds
+    /// it; a key that exists anyway is `Err(PutNew::Exists)`, as `put_new_parts` answers it.
+    async fn start_upload(
+        &self,
+        key: &str,
+        journal: &str,
+        meta: &[(String, String)],
+    ) -> Result<Result<String, PutNew>, StoreError>;
+    /// Puts part `n` (from 1) and returns its etag.
+    async fn put_part(&self, key: &str, upload_id: &str, n: u16, part: &Self::Part) -> Result<String, StoreError>;
+    /// Completes the upload from its parts' numbers and etags, in order, then deletes its journal.
+    async fn complete_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+        journal: &str,
+        parts: &[(u16, String)],
+    ) -> Result<(), StoreError>;
+}
+
+/// One part's bytes as the tee reads them: filled, put, then cleared and filled again.
+pub trait PartBuf {
+    fn with_capacity(n: usize) -> Self;
+    fn push(&mut self, b: &[u8]);
+    fn filled(&self) -> usize;
+    fn clear(&mut self);
+}
+
+impl PartBuf for Vec<u8> {
+    fn with_capacity(n: usize) -> Self {
+        Vec::with_capacity(n)
+    }
+    fn push(&mut self, b: &[u8]) {
+        self.extend_from_slice(b);
+    }
+    fn filled(&self) -> usize {
+        self.len()
+    }
+    fn clear(&mut self) {
+        Vec::clear(self);
+    }
+}

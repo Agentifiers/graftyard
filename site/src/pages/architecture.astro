@@ -41,6 +41,7 @@ const failures = [
   ['A whole region lost', 'The other two sites still form a quorum; the group elects a leader there', 'Measured 11.0 to 12.9 s, then normal'],
   ['A region slow or erroring (gray)', 'Sites report a sick member; a busy leader steps down on its own', 'Leaders move off within about 20 s'],
   ['A site deploy', 'The site is drained first: leaders transfer away before it resets, one site a day', 'Targets zero failed writes'],
+  ['A git cache lost on every site at once', 'Each site rebuilds its cache from R2 and the log; the repository itself never lived there', 'Measured 168 to 276 s for 2.21 GB, <code>fsck</code> clean'],
   ['R2 down everywhere', 'Pushes under 1 MiB ride inside the log entry instead of a pack bucket', 'Small pushes still land'],
   ['Cloudflare down everywhere', 'An optional lifeboat on the customer\'s own hosts serves clones and reads to enrolled developers', 'Read-only until it returns'],
 ];

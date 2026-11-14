@@ -1,8 +1,9 @@
 ---
 // Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/m2/results/m2-wp6.md,
 // tests/m3/results/m3-close.md, m3-hosted.md, m3-finish.md, m3-rows.md, m3-repos.md, m3-wp5.md, tests/am1/results/am1-wp2.md,
-// am1-wp5.md, am1-rest.md, lf4-rest.md, tests/m0/results/carried.md, f67.md and design/DESIGN.md ("Scale"), as of
-// 2026-11-13. The Rust test count is a full `cargo test --workspace` run. Update this page when those files change.
+// am1-wp5.md, am1-rest.md, lf4-rest.md, merge-p99.md, tests/m0/results/carried.md, carried-8.md, f67.md,
+// tests/m4/results/m4-wp1-hosted.md, m4-wp2.md and design/DESIGN.md ("Scale"), as of
+// 2026-11-14. The Rust test count is a full `cargo test --workspace` run. Update this page when those files change.
 import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import Table from '../components/Table.astro';
@@ -58,11 +59,20 @@ const identityRows = [
   ['Switch sign-in to OIDC (BF-36)', 'A real OIDC provider, code flow with PKCE', ok('10 of 10') + ': the next sign-in uses OIDC and a password sign-in is refused'],
   ['A suspended user\'s pushes (BF-3)', '200 pushes after the suspension', ok('200 of 200') + ' refused'],
 ];
+const eventRows = [
+  ['One webhook timing out at 10 s beside 49 healthy hooks of the same owner (BF-57)', '10 events/s, 9,800 deliveries', ok('p99 1.07 s') + ' first attempt for the healthy hooks; 0 out of order on all 50'],
+  ['The site holding a hook owner\'s delivery queue killed with deliveries pending (BF-58)', '2,465 events, 5 hooks', ok('12,325 of 12,325') + ' deliveries arrived; 0 under a new GUID'],
+  ['Star a repository and comment on a watched issue, then rebuild the inbox (BF-5)', 'Hosted', ok('1.4 s') + ' to show both; read state kept through the rebuild'],
+  ['Rebuild an inbox; 10,000 stars, then a refold (BF-67)', 'Hosted', ok('Pass') + '. Read and done state kept; all 10,000 stars listed'],
+  ['An EU-resident org\'s search, with one search shard killed (BF-68)', 'Hosted, <code>eu</code> jurisdiction', ok('Pass') + '. Documents only in EU shards; <code>incomplete_results</code> until the rebuild, then full'],
+];
 const latencyRows = [
   ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
   ['Idle ping, leader to the weur member', 'p50 135 ms', 'p99 151 to 216 ms', 'B0-01, Milestone 0'],
   ['Commit, one entry in flight, 15 runs', 'p50 172 to 370 ms', 'p99 399 to 690 ms', 'B0-01, Milestone 0'],
   ['Commit on the production Rust host, 6 runs at 100 commands/s', 'p50 165 to 280 ms', ok('p99 244 to 377 ms'), 'B0-01 rerun, 2026-11-11'],
+  ['Group commit on the production Rust host, 16 runs at 300 and 330 commands/s', ok('16 of 16') + ' under 600 ms', ok('p99 249 to 579 ms'), 'B0-02, 2026-11-13'],
+  ['A pull request merge while 500 agents push to the same repository, 3 ten-minute runs', 'p50 838 to 944 ms', ok('p99 1,208 to 1,571 ms'), 'B0-29 merge line, 2 s'],
   ['Learner reads, 16 learners at 1,000 reads/s each, Milestone 0', '16,000 reads/s, 0 failed', 'p99 683 to 743 ms', 'B0-18'],
   ['The same on the production host, under 10 pushes/s, 6 runs', '0 failed reads', 'worst learner p99 560 to 853 ms', 'B0-18 rerun, BM-3'],
   ['Merge on a newly elected leader, client in its region, 300 samples', '0 over 2 s', 'p99 1.36 s', 'BM-2'],
@@ -79,7 +89,7 @@ const latencyRows = [
       <div class="doc-head">
         <p class="eyebrow">Evidence overview</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
-        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 13 November 2026, failures included.</p>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 14 November 2026, failures included.</p>
         <p class="more"><a class="link" href="/evidence/all/">Every check, benchmark and baseline, in full<Fragment set:html={ARROW} /></a></p>
       </div>
       <ul class="kpis">
@@ -133,6 +143,18 @@ const latencyRows = [
     </div>
   </section>
 
+  <section class="section" id="events" aria-labelledby="events-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Webhooks, notifications and search</p>
+        <h2 id="events-h">Every event comes from a committed change, and none is lost</h2>
+        <p>Webhooks, notifications and search are fed from each repository's committed log through cursors. An event exists only if its change committed, and a crash means a resend, never a gap.</p>
+      </div>
+      <Table head={['Check', 'Runs', 'Result']} rows={eventRows} />
+      <p class="note">On the hosted test install <code>graft-m4a</code>, 13 and 14 November 2026. Each repeat delivery keeps the GUID of its first attempt, so receivers that dedupe by <code>X-GitHub-Delivery</code> see each event once.</p>
+    </div>
+  </section>
+
   <section class="section" id="identity" aria-labelledby="identity-h">
     <div class="wrap">
       <div class="sec-head">
@@ -153,7 +175,7 @@ const latencyRows = [
         <p>A write waits for one round to the nearest site in another region. That is the price of losing nothing when a region goes down. Reads from the leader's region pay no such round.</p>
       </div>
       <Table head={['Measure', 'Median', 'Tail', 'Gate']} rows={latencyRows} />
-      <p class="note">The production Rust host now passes the 600 ms commit line in 6 of 6 runs, 6,000 commands each with none failed. At 300 commands/s it passes in 7 of 8 runs, and that gate is still open.</p>
+      <p class="note">The production Rust host passes the 600 ms commit line at 100 commands/s in 6 of 6 runs, and at 300 to 330 commands/s in 16 of 16, with no command failed in either.</p>
     </div>
   </section>
 
