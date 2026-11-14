@@ -38,6 +38,11 @@ struct Bed {
     marks: RefCell<usize>,
     /// Planted faults: buckets an archive put reaches.
     put_to: usize,
+    /// A virtual clock in ms, and the shard's promotion rate in bytes/s (0: free): each `/promote` advances the clock
+    /// by the pack bytes it names over the rate, as the shard's pack-objects and validate of them take.
+    clock: std::cell::Cell<f64>,
+    rate: std::cell::Cell<f64>,
+    sizes: RefCell<std::collections::HashMap<Digest, u64>>,
 }
 
 fn row(e: &LogEntry<RepoEvent>) -> Vec<u8> {
@@ -53,6 +58,9 @@ impl Bed {
             promoted: RefCell::new(Vec::new()),
             marks: RefCell::new(0),
             put_to: 2,
+            clock: Default::default(),
+            rate: Default::default(),
+            sizes: Default::default(),
         }
     }
 
@@ -99,7 +107,14 @@ impl ArchiveHost for Bed {
         let fold = &m.group_fold().fold;
         let sum = |after: u64| self.stored(l).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum();
         let total = sum(fold.archived().map_or(0, |a| a.to.0));
-        let unpromoted = sum(fold.promoted().map_or(0, |p| p.to.0));
+        // As the site reads it: each row's length, and its bytes when it is short.
+        let after = fold.promoted().map_or(0, |p| p.to.0);
+        let rows = self.stored(l).into_iter().filter(|e| e.index.0 > after).map(|e| {
+            let r = row(&e);
+            let len = r.len() as u64;
+            (len, (len < log_archive::SHORT_ROW).then_some(r))
+        });
+        let unpromoted = log_archive::pack_bytes_above(rows, u64::MAX);
         Some(View::of(ChainId::Repo(REPO), fold, m.state().commit, total, unpromoted))
     }
 
@@ -111,6 +126,10 @@ impl ArchiveHost for Bed {
 
     async fn promote(&self, sums: &[Digest], _request: RequestId) -> Result<PackRef, String> {
         self.promoted.borrow_mut().push(sums.to_vec());
+        if self.rate.get() > 0.0 {
+            let bytes: u64 = sums.iter().map(|s| self.sizes.borrow().get(s).copied().unwrap_or(0)).sum();
+            self.clock.set(self.clock.get() + bytes as f64 * 1_000.0 / self.rate.get());
+        }
         // The shard's complete pack of those objects; here, a stand-in body naming them.
         let mut bytes = b"PACK".to_vec();
         for s in sums {
@@ -482,4 +501,109 @@ fn promotion_runs_ahead_of_archiving_and_bounds_the_tail_a_rehydrate_reads() {
         .sum();
     assert!(first > range_max, "the first promotion took {first} bytes of log, one range is {range_max}");
     assert!(first <= range_max * log_archive::PROMOTE_RANGES + largest);
+}
+
+/// A pushed pack of `bytes` stored in the buckets: its entry's row is a pointer of about a hundred bytes.
+fn push_stored(b: &Bed, k: u32, bytes: u64) {
+    b.sizes.borrow_mut().insert(Digest([k as u8; 32]), bytes);
+    let ev = RepoEvent::Refs {
+        push: RequestId(Ulid(u128::from(k) << 32 | 7)),
+        actor: None,
+        updates: vec![up(&format!("refs/heads/s{k}"), None, Some(oid(k)))],
+        pack: Some(PackRef::Stored {
+            id: PackId(Ulid(u128::from(k) << 64 | 1)),
+            checksum: Digest([k as u8; 32]),
+            bytes,
+            sites: SiteSet(0b111),
+        }),
+    };
+    b.w.borrow_mut().record(vec![ev]);
+}
+
+/// Promote-ahead counts the pack bytes above the last promotion, stored packs included, not the log's row bytes. A
+/// network made only of stored pushes (B0-34's seed, repo:131296: 257 packs of about 10 MB, 2.62 GB, in a 294-entry
+/// log) never passed `cap / PROMOTE_AHEAD` of rows, so it never promoted, and every cold rehydrate re-indexed every
+/// pushed pack (`tests/am1/results/lm1-rows-m3f.md`, "Stored packs and their index"). Here 40 stored pushes of a
+/// fifth of the bound each, with the log's rows far under it, promote, in ranges that each fit `PROMOTE_MAX`.
+#[test]
+fn stored_pushes_alone_promote_ahead_once_their_pack_bytes_pass_the_bound() {
+    let b = Bed::new();
+    let cap = 1_000 * CAP;
+    let ahead = cap / log_archive::PROMOTE_AHEAD;
+    snapshot(&b);
+    let pack = ahead / 5;
+    let mut promotions = Vec::new();
+    for k in 0..40 {
+        push_stored(&b, k, pack);
+        for _ in 0..20 {
+            match block_on(log_archive::step(&b, cap, CAP, log_archive::PROMOTE_MAX)).unwrap() {
+                Step::Idle => break,
+                Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
+                Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
+            }
+        }
+        let unpromoted = b.view().unwrap().unpromoted;
+        assert!(unpromoted <= ahead + pack, "push {k}: {unpromoted} pack bytes above the last promotion");
+    }
+    assert!(b.bytes(b.leader()) < ahead / 100, "the rows alone stay far under the bound");
+    assert!(promotions.len() >= 5, "{promotions:?}");
+    assert!(promotions.windows(2).all(|p| p[1].0 == p[0].1 + 1), "{promotions:?}");
+    // Each promotion names the stored packs of its range.
+    assert!(b.promoted.borrow().iter().all(|s| !s.is_empty()));
+}
+
+/// The promote-ahead trigger against push rates, on a virtual clock: stored pushes arrive at a rate, and each
+/// promotion takes its pack bytes at the shard's measured promotion rate. The rate is an estimate from the hosted
+/// index-pack rate of thin pushed packs, 1.4 to 1.55 MB/s (repo:131296 on m29, `tests/am1/results/lm1-rows-m3f.md`,
+/// "Stored packs and their index"), since a promotion's validate indexes the same bytes; it is not yet measured hosted.
+/// Below the rate the tail above the last promotion stays within the bound plus one promotion. Above it, as B0-31's
+/// agents at about 4 MB/s are, the tail grows at the difference, and the trigger stays bounded: every promotion takes
+/// at most `PROMOTE_MAX` of packs, so one step holds the archive run at most `PROMOTE_MAX` over the rate, under its
+/// `STEP_FOR`. That growth is the `DECISIONS.md` flip to shard-streamed promotion ("Promote-ahead counts pack bytes").
+#[test]
+fn promotion_keeps_up_below_its_rate_and_stays_bounded_above_it() {
+    const RATE: f64 = 1.45e6;
+    const PACK: u64 = 1 << 20;
+    let mut out = Vec::new();
+    for push_rate in [0.5e6, 1.0e6, 2.0e6, 4.0e6] {
+        let b = Bed::new();
+        b.rate.set(RATE);
+        let cap = 4_000 * CAP;
+        let ahead = cap / log_archive::PROMOTE_AHEAD;
+        snapshot(&b);
+        let gap_ms = PACK as f64 * 1_000.0 / push_rate;
+        let (mut next_push, mut k, mut worst_step_ms, mut tail_end) = (0.0f64, 0u32, 0.0f64, 0u64);
+        let end_ms = 600_000.0;
+        while b.clock.get() < end_ms {
+            // Every push due by now, then one alarm step.
+            while next_push <= b.clock.get() {
+                push_stored(&b, k, PACK);
+                k += 1;
+                next_push += gap_ms;
+            }
+            let t0 = b.clock.get();
+            match block_on(log_archive::step(&b, cap, CAP, log_archive::PROMOTE_MAX)).unwrap() {
+                Step::Idle => b.clock.set(next_push),
+                Step::Promoted { .. } => worst_step_ms = worst_step_ms.max(b.clock.get() - t0),
+                Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
+            }
+            tail_end = b.view().unwrap().unpromoted;
+        }
+        let one = log_archive::PROMOTE_MAX as f64 * 1_000.0 / RATE;
+        assert!(worst_step_ms <= one + 1.0, "{push_rate}: a promotion step took {worst_step_ms} ms");
+        if push_rate < RATE {
+            assert!(
+                tail_end <= ahead + log_archive::PROMOTE_MAX + PACK,
+                "{push_rate} B/s: {tail_end} pack bytes above the last promotion, bound {ahead}"
+            );
+        } else {
+            // Behind by about the difference over the run, less what the bound absorbs.
+            let behind = (push_rate - RATE) * end_ms / 1_000.0;
+            assert!(tail_end as f64 > behind * 0.5, "{push_rate} B/s: {tail_end} above, expected about {behind}");
+        }
+        out.push((push_rate / 1e6, tail_end / 1_000_000, worst_step_ms as u64));
+    }
+    println!(
+        "promotion at {RATE} B/s over 600 s: (push MB/s, MB above the last promotion at the end, longest step ms) {out:?}"
+    );
 }

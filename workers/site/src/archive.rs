@@ -129,11 +129,17 @@ async fn run(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
     h.settled().await;
     let sql = h.state.storage().sql();
     let s = SiteHost { h, sql };
+    let (max, range) = cap();
+    log_archive::step(&s, max, range, PROMOTE_MAX).await
+}
+
+/// `LOG_MAX_BYTES` and `ARCHIVE_RANGE_MAX`, or a test install's override.
+fn cap() -> (u64, u64) {
     #[cfg(feature = "test-faults")]
-    if let Some((max, range)) = CAP.with(|c| c.get()) {
-        return log_archive::step(&s, max, range, PROMOTE_MAX).await;
+    if let Some(c) = CAP.with(|c| c.get()) {
+        return c;
     }
-    log_archive::step(&s, graftyard_fold::LOG_MAX_BYTES, ARCHIVE_RANGE_MAX, PROMOTE_MAX).await
+    (graftyard_fold::LOG_MAX_BYTES, ARCHIVE_RANGE_MAX)
 }
 
 /// Test installs: sets or clears this isolate's cap override, and forgets when each member last summed its log so
@@ -152,6 +158,11 @@ struct SiteHost<'a> {
 }
 
 impl SiteHost<'_> {
+    /// Promote-ahead's bound, past which `View::unpromoted` need not count further.
+    fn ahead_bound(&self) -> u64 {
+        cap().0 / log_archive::PROMOTE_AHEAD
+    }
+
     fn chain(&self) -> std::result::Result<(ChainId, graftyard_types::PlacementRecord), String> {
         let core = self.h.core.borrow();
         let c = core.as_ref().ok_or("not joined")?;
@@ -179,7 +190,20 @@ impl ArchiveHost for SiteHost<'_> {
             Some(rows(&self.sql, q, vec![crate::host::i(after)]).ok()?.first().and_then(|r| int(&r[0]).ok())? as u64)
         };
         let total = sum(fold.archived().map_or(0, |a| a.to.0))?;
-        let unpromoted = sum(fold.promoted().map_or(0, |p| p.to.0))?;
+        // Pack bytes, not row bytes, read only until past promote-ahead's bound, so the walk costs at most that much.
+        let after = fold.promoted().map_or(0, |p| p.to.0);
+        let ahead = self.ahead_bound();
+        let q = "SELECT length(row), CASE WHEN length(row) < ? THEN row END FROM log WHERE idx > ? ORDER BY idx";
+        let it = self
+            .sql
+            .exec(q, vec![crate::host::i(log_archive::SHORT_ROW), crate::host::i(after)])
+            .ok()?
+            .raw()
+            .map_while(|r| {
+                let r = r.ok()?;
+                Some((int(&r[0]).ok()? as u64, blob(&r[1]).ok().map(|b| b.to_vec())))
+            });
+        let unpromoted = log_archive::pack_bytes_above(it, ahead);
         Some(View::of(c.join.chain, fold, c.m.state().commit, total, unpromoted))
     }
 
