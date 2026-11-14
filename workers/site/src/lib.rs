@@ -16,6 +16,7 @@ mod archive;
 mod audit;
 #[cfg(feature = "test-faults")]
 mod b030;
+mod broker;
 mod callers;
 mod family;
 mod fanout;
@@ -42,6 +43,7 @@ mod snap;
 mod sweep;
 mod tier;
 
+pub use broker::RunnerBroker;
 pub use hookseq::HookSequencer;
 pub use inbox::Inbox;
 pub use logrelay::LogRelay;

@@ -1,0 +1,103 @@
+//! A parsed workflow's jobs as `CreateRun`'s `JobSpec`s (`design/SHARED.md`, "Actions runs and jobs"): each matrix
+//! configuration its own job, named as the runner's `MatrixBuilder` names it, with `runs-on` as its labels, its steps
+//! as the runner's JSON, and `needs` by position in the list (`ActionsOp::CreateRun`), every need before its job.
+
+use smallvec::SmallVec;
+
+use crate::ids::JobId;
+use crate::labels::LabelSet;
+use crate::runsvc;
+use crate::shard::JobSpec;
+use crate::workflow::template::T;
+use crate::workflow::{Workflow, matrix};
+use graftyard_types::DbId;
+
+/// The run's jobs, or the first reason the workflow cannot run: a bad matrix, bad labels, or a job whose `needs`
+/// names a job that is not in the workflow (the parser refuses cycles).
+pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
+    // The workflow's jobs in an order where every need comes first; `needs` are checked acyclic by the parser.
+    let mut order: Vec<usize> = Vec::new();
+    let mut placed = vec![false; w.jobs.len()];
+    while order.len() < w.jobs.len() {
+        let before = order.len();
+        for (i, j) in w.jobs.iter().enumerate() {
+            let ready =
+                j.needs.iter().flatten().all(|n| w.jobs.iter().position(|x| &x.id == n).is_some_and(|p| placed[p]));
+            if !placed[i] && ready {
+                placed[i] = true;
+                order.push(i);
+            }
+        }
+        if order.len() == before {
+            return Err("a job's needs name a job that is not in the workflow".into());
+        }
+    }
+    // Each workflow job's positions in the output, which its dependents' `needs` name.
+    let mut at: Vec<Vec<usize>> = vec![Vec::new(); w.jobs.len()];
+    let mut out: Vec<JobSpec> = Vec::new();
+    for i in order {
+        let j = &w.jobs[i];
+        let labels: Vec<String> = match j.runs_on.as_ref().map(|n| &n.t) {
+            Some(T::Str(s)) => vec![s.clone()],
+            Some(T::Seq(v)) => v.iter().filter_map(|n| n.str().map(String::from)).collect(),
+            _ => vec!["self-hosted".into()],
+        };
+        let labels = LabelSet::parse(&labels).map_err(|e| format!("{}: runs-on: {e}", j.id))?;
+        let needs: SmallVec<[JobId; 4]> = j
+            .needs
+            .iter()
+            .flatten()
+            .filter_map(|n| w.jobs.iter().position(|x| &x.id == n))
+            .flat_map(|p| at[p].clone())
+            .map(|p| JobId(DbId(p as i64)))
+            .collect();
+        let steps: Box<str> = runsvc::steps_json(&j.steps).to_string().into();
+        let configs = matrix::expand(j.strategy.as_ref(), j.name.str())
+            .map_err(|e| format!("{}: {}", j.id, e.join("; ")))?
+            .map(|s| s.configurations)
+            .unwrap_or_default();
+        let name = j.name.str().map_or_else(|| j.id.clone(), String::from);
+        let mut one = |name: String, m: SmallVec<[(Box<str>, Box<str>); 4]>| {
+            at[i].push(out.len());
+            out.push(JobSpec {
+                id: JobId(DbId(0)),
+                name: name.into(),
+                labels: labels.clone(),
+                needs: needs.clone(),
+                matrix: m,
+                environment: None,
+                steps: steps.clone(),
+            });
+        };
+        let with_matrix: Vec<_> = configs.iter().filter(|c| c.matrix != matrix::Data::Null).collect();
+        if with_matrix.is_empty() {
+            one(name.clone(), SmallVec::new());
+        }
+        for c in with_matrix {
+            let matrix::Data::Map(pairs) = &c.matrix else { continue };
+            let m = pairs.iter().map(|(k, v)| (k.as_str().into(), v.json().to_string().into())).collect();
+            one(c.name.clone().unwrap_or_else(|| name.clone()), m);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_matrix_job_and_its_dependent_need_every_leg() {
+        let src = "on: push\njobs:\n  report:\n    needs: build\n    runs-on: [self-hosted, linux]\n    steps:\n      - run: echo done\n  build:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        os: [one, two]\n    steps:\n      - run: echo ${{ matrix.os }}\n";
+        let p = crate::workflow::parse("ci.yml", src);
+        assert!(p.ok(), "{:?}", p.errors);
+        let specs = job_specs(&p.workflow).unwrap();
+        let names: Vec<&str> = specs.iter().map(|s| &*s.name).collect();
+        // `report` is written first but needs both legs of `build`, so it comes after them and needs positions 0, 1.
+        assert_eq!(names, ["build (one)", "build (two)", "report"]);
+        assert_eq!(&specs[2].needs[..], &[JobId(DbId(0)), JobId(DbId(1))]);
+        assert!(specs[0].needs.is_empty());
+        assert_eq!(&*specs[0].matrix[0].1, "\"one\"");
+        assert!(specs[2].labels.fits(&LabelSet::parse(["self-hosted", "linux", "x64"]).unwrap()));
+    }
+}

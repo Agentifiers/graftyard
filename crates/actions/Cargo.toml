@@ -12,6 +12,7 @@ graftyard-fold = { path = "../fold" }
 graftyard-git = { path = "../git" }
 graftyard-raft = { path = "../raft" }
 graftyard-types.workspace = true
+graftyard-wire = { path = "../wire" }
 # Verifies a runner's RS256 or PS256 client assertion; public-key operations only, as graftyard-identity uses it.
 rsa = { version = "0.9", default-features = false, features = ["sha2"] }
 serde.workspace = true
@@ -22,7 +23,6 @@ thiserror.workspace = true
 yaml-rust2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
-graftyard-wire = { path = "../wire" }
 rand = "0.8"
 tiny_http = "0.12"
 tungstenite = "0.24"

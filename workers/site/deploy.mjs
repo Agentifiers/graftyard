@@ -5,12 +5,14 @@
 //   node workers/site/deploy.mjs <sites.json> [--genesis <genesis.json>] [--skip-build] [--test-faults] [--vars <vars.json>]
 //                                [--image <digest-pinned image>] [--anchor <install.toml>] [--roll-shards <edge url>]
 //                                [--ops <graft-ops script>] [--var K=V ...] [--only <site id>] [--down <site id>]
-//                                [--audit-stream <Basin Pipelines stream id>]
+//                                [--audit-stream <Basin Pipelines stream id>] [--run-key <store id>/<secret name>]
 // `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
 // (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S, and `GRAFTYARD_HOST`, the API host webhook
 // payloads name). `--ops` binds the install's `graft-ops` as `OPS`, which `HookSequencer` unwraps hook secrets with.
 // `--audit-stream <id>` binds that Basin Pipelines stream as `AUDIT_STREAM`, which the `Audit` consumer sends each
 // scanned identity entry's rows to before it moves its cursor (workers/site/src/audit.rs).
+// `--run-key <store id>/<secret name>` binds that Secrets Store secret as `RUN_SERVICE_KEY`, the run-service key the
+// Actions leaders sign runner and job tokens with (decisions/DECISIONS.md, "M4-WP3: the run service's signing key").
 // `--var K=V` adds one more variable to every site deployed. `--only <id>` deploys that site alone (its phase 2
 // config), leaving the others' versions and members untouched. `--down <id>` sets `GRAFTYARD_SITE_DOWN=1` on that
 // site, which stops every class it hosts as if the site were lost (workers/site/src/lib.rs, `site_down`); the next
@@ -48,6 +50,8 @@ const ii = flags.indexOf("--image");
 const image = ii >= 0 ? flags[ii + 1] : null;
 const si = flags.indexOf("--audit-stream");
 const auditStream = si >= 0 ? flags[si + 1] : null;
+const rki = flags.indexOf("--run-key");
+const runKey = rki >= 0 ? flags[rki + 1].split("/") : null;
 const oi = flags.indexOf("--ops");
 const ops = oi >= 0 ? flags[oi + 1] : null;
 const ai = flags.indexOf("--anchor");
@@ -73,14 +77,14 @@ const wrangler = (args) =>
 // A site binds every site's `GitShard` class, its own first: Cloudflare attaches the container config to the first
 // binding of the class, which must be the script's own. Another site's binding is how the archive alarm promotes on
 // that site's shard while its own rehydrates (workers/site/src/archive.rs, `SiteHost::promote`).
-// `HookSequencer` (v3), `SearchShard`, and `Inbox` (v4), and `LogRelay` (v5) are new to scripts that exist, so phase 1
-// binds only a site's own; phase 2, once every site has the class, binds every site's.
-const NEW_CLASSES = ["HOOKSEQ", "SEARCH", "INBOX", "LOGRELAY"];
+// `HookSequencer` (v3), `SearchShard` and `Inbox` (v4), and `LogRelay` and `RunnerBroker` (v5) are new to scripts that
+// exist, so phase 1 binds only a site's own; phase 2, once every site has the class, binds every site's.
+const NEW_CLASSES = ["HOOKSEQ", "SEARCH", "INBOX", "LOGRELAY", "BROKER"];
 function bindings(self, targets, phase1 = false) {
   const own = targets.filter((s) => s.id === self.id);
   const order = [...own, ...targets.filter((s) => s.id !== self.id)];
   return [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"],
-    ["SEARCH", "SearchShard"], ["INBOX", "Inbox"], ["LOGRELAY", "LogRelay"]].flatMap(([b, cls]) =>
+    ["SEARCH", "SearchShard"], ["INBOX", "Inbox"], ["LOGRELAY", "LogRelay"], ["BROKER", "RunnerBroker"]].flatMap(([b, cls]) =>
     order.filter((s) => !(phase1 && NEW_CLASSES.includes(b) && s.id !== self.id)).map((s) => ({
       name: `${b}_${s.id}`,
       class_name: cls,
@@ -113,6 +117,7 @@ function config(site, targets, own = true, phase1 = false) {
       ...(ops ? [{ binding: "OPS", service: ops }] : []),
     ],
     r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
+    ...(runKey ? { secrets_store_secrets: [{ binding: "RUN_SERVICE_KEY", store_id: runKey[0], secret_name: runKey[1] }] } : {}),
     ...(auditStream ? { pipelines: [{ binding: "AUDIT_STREAM", stream: auditStream }] } : {}),
     containers: [{
       class_name: "GitShard",
@@ -131,13 +136,13 @@ function config(site, targets, own = true, phase1 = false) {
     triggers: { crons: [SWEEP_CRON] },
     // v2 adds the git cache shard class to scripts that v1 created with members and registries only; v3 the owners'
     // webhook delivery stores (M4-WP1); v4 the search shards and the accounts' `Inbox` objects (M4-WP2); v5 the
-    // Actions jobs' live-log relays (M4-WP3).
+    // Actions jobs' live-log relays and the runners' brokers (M4-WP3).
     migrations: [
       { tag: "v1", new_sqlite_classes: ["Member", "Registry"] },
       { tag: "v2", new_sqlite_classes: ["GitShard"] },
       { tag: "v3", new_sqlite_classes: ["HookSequencer"] },
       { tag: "v4", new_sqlite_classes: ["SearchShard", "Inbox"] },
-      { tag: "v5", new_sqlite_classes: ["LogRelay"] },
+      { tag: "v5", new_sqlite_classes: ["LogRelay", "RunnerBroker"] },
     ],
     observability: { enabled: true },
   };

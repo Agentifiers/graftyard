@@ -9,6 +9,7 @@ pub mod relay;
 pub mod run_owner;
 pub mod runsvc;
 pub mod shard;
+pub mod specs;
 pub mod workflow;
 
 pub use ids::{ACTIONS_SHARDS, JobId, OWNER_SCOPE_SHARD, RunId, RunnerId, RunnerSessionId, actions_shard};

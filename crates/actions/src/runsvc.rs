@@ -113,8 +113,10 @@ impl Urls {
     pub fn token(&self) -> String {
         format!("{}oauth/token", self.services)
     }
-    pub fn feed(&self, job: JobId) -> String {
-        format!("{}logrelay/{}", self.services, job.0.0).replacen("http", "ws", 1)
+    /// The job's live-log socket on the relay of `site`, the site whose shard leader took `acquirejob` (DESIGN Shape,
+    /// "Identity": the relay lives there and `FeedStreamUrl` names it).
+    pub fn feed(&self, site: u8, job: JobId) -> String {
+        format!("{}logrelay/{site}/{}", self.services, job.0.0).replacen("http", "ws", 1)
     }
 }
 
@@ -330,6 +332,8 @@ pub fn orch_id(run_id: i64, job: JobId, attempt: u16) -> String {
 
 /// What a job message is built from beyond its steps.
 pub struct JobMessage<'a> {
+    /// The site whose relay takes the live log (`Urls::feed`).
+    pub relay_site: u8,
     pub job: JobId,
     pub attempt: u16,
     pub run_id: i64,
@@ -385,7 +389,7 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
         "resources": {"endpoints": [{
             "name": "SystemVssConnection", "url": urls.run(),
             "authorization": {"scheme": "OAuth", "parameters": {"AccessToken": m.job_token}},
-            "data": {"FeedStreamUrl": urls.feed(m.job)},
+            "data": {"FeedStreamUrl": urls.feed(m.relay_site, m.job)},
         }]},
         "contextData": Value::Object(ctx),
         "variables": Value::Object(vars),
@@ -393,6 +397,75 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
         "workspace": {},
         "mask": m.secrets.iter().map(|(_, v)| json!({"type": "regex", "value": v})).collect::<Vec<_>>(),
     })
+}
+
+/// What `acquire_message` needs beyond the fold: the repository's name, the token the job's `GITHUB_TOKEN` is, the
+/// job token, the relay's site, and when the lease ends. Secrets and variables are opened by the host first.
+pub struct Acquired<'a> {
+    pub repository: &'a str,
+    pub owner_login: &'a str,
+    pub relay_site: u8,
+    pub github_token: &'a str,
+    pub job_token: &'a str,
+    pub locked_until: Timestamp,
+    pub secrets: Vec<(String, String)>,
+    pub variables: Vec<(String, String)>,
+}
+
+/// The `acquirejob` answer for `job` of `run`, as `job_message` renders it, with `github.*` from the run.
+pub fn acquire_message(
+    urls: &Urls,
+    run: &crate::shard::WorkflowRun,
+    job: &crate::shard::JobRow,
+    a: &Acquired<'_>,
+) -> Value {
+    let hex: String = run.head_sha.iter().map(|b| format!("{b:02x}")).collect();
+    let github = ctx_dict([
+        ("repository", json!(a.repository)),
+        ("repository_owner", json!(a.owner_login)),
+        ("event_name", json!(&*run.event)),
+        ("ref", json!(&*run.head_ref)),
+        ("sha", json!(hex)),
+        ("server_url", json!(urls.server)),
+        ("api_url", json!(format!("{}/api/v3", urls.server))),
+        ("workflow", json!(&*run.workflow)),
+        ("run_id", json!(run.id.0.0.to_string())),
+        ("run_number", json!("1")),
+        ("run_attempt", json!(run.attempt.to_string())),
+        ("job", json!(&*job.spec.name)),
+        ("actor", json!(a.owner_login)),
+    ]);
+    let matrix: Vec<(String, Value)> =
+        job.spec.matrix.iter().map(|(k, v)| (k.to_string(), serde_json::from_str(v).unwrap_or(Value::Null))).collect();
+    let m = JobMessage {
+        relay_site: a.relay_site,
+        job: job.spec.id,
+        attempt: run.attempt,
+        run_id: run.id.0.0,
+        job_name: &job.spec.name,
+        display_name: &job.spec.name,
+        github,
+        matrix: if matrix.is_empty() {
+            Value::Null
+        } else {
+            ctx_dict(matrix.iter().map(|(k, v)| (k.as_str(), context_of(v))))
+        },
+        strategy: Value::Null,
+        steps: serde_json::from_str(&job.spec.steps).unwrap_or(Value::Array(Vec::new())),
+        secrets: a.secrets.clone(),
+        variables: a.variables.clone(),
+        github_token: a.github_token,
+        job_token: a.job_token,
+        locked_until: &graftyard_wire::time::iso(a.locked_until),
+    };
+    job_message(urls, &m)
+}
+
+/// The step-log blob's key in the job's run bucket, from a results call's `step_backend_id` (or `job` for the job's
+/// whole log): `actions/<job>/<step>`.
+pub fn blob_key(job: JobId, step: &str) -> Option<String> {
+    let ok = !step.is_empty() && step.len() <= 64 && step.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    ok.then(|| format!("actions/{}/{step}", job.0.0))
 }
 
 /// A job's steps as the runner's `ActionStep` JSON, as the runner's `PipelineTemplateConverter.ConvertToStep` builds

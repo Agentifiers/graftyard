@@ -301,7 +301,12 @@ fn decode(s: &str) -> String {
 
 /// One `/ui/<route>` read on the network's git cache shards (`crate::shard_read`): the shard's JSON, its 4xx as is,
 /// or 503 with `Retry-After` for anything else.
-async fn shard_json(c: &Ctx<'_>, rd: &Read, route: &str, q: &[(&str, String)]) -> std::result::Result<Value, Reply> {
+pub(crate) async fn shard_json(
+    c: &Ctx<'_>,
+    rd: &Read,
+    route: &str,
+    q: &[(&str, String)],
+) -> std::result::Result<Value, Reply> {
     let mut s = url::form_urlencoded::Serializer::new(String::new());
     s.append_pair("repo", &rd.repo.id.0.0.to_string());
     for (k, v) in q {

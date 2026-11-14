@@ -18,18 +18,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::Group;
-use graftyard_actions::runsvc::{self, Grant, JobMessage, ServiceKey, Urls};
+use graftyard_actions::runsvc::{self, Grant, ServiceKey, Urls};
 use graftyard_actions::shard::{
-    ACTIONS_FORMAT, ActionsActor, ActionsCmd, ActionsErr, ActionsFold, ActionsOp, ActionsOut, JobSpec, RunnerRecord,
+    ACTIONS_FORMAT, ActionsActor, ActionsCmd, ActionsErr, ActionsFold, ActionsOp, ActionsOut, RunnerRecord,
     RunnerScope, WorkflowRun,
 };
-use graftyard_actions::workflow::{self, matrix};
+use graftyard_actions::workflow;
 use graftyard_actions::{JobEvent, JobId, JobState, LabelSet, RunnerId, RunnerSessionId};
 use graftyard_raft::CommitError;
 use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, Timestamp};
 use rsa::pkcs8::EncodePublicKey;
 use serde_json::{Value, json};
-use smallvec::SmallVec;
 
 const OWNER: AccountId = AccountId(DbId(100));
 const CHAIN: ChainId = ChainId::Actions(OWNER, 3);
@@ -294,48 +293,17 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         n.0 / 1000 + runsvc::JOB_TOKEN_TTL_S,
         Some(orch),
     );
-    let matrix: Vec<(String, Value)> =
-        j.spec.matrix.iter().map(|(k, v)| (k.to_string(), serde_json::from_str(v).unwrap_or(Value::Null))).collect();
-    let github = runsvc::ctx_dict([
-        ("repository", json!("owner/repo")),
-        ("repository_owner", json!("owner")),
-        ("event_name", json!(&*run.run.event)),
-        ("ref", json!(&*run.run.head_ref)),
-        ("sha", json!(hex(&run.run.head_sha))),
-        ("server_url", json!(h.urls.server)),
-        ("api_url", json!(format!("{}/api/v3", h.urls.server))),
-        ("workflow", json!(&*run.run.workflow)),
-        ("run_id", json!(run.run.id.0.0.to_string())),
-        ("run_number", json!("1")),
-        ("run_attempt", json!(run.run.attempt.to_string())),
-        ("job", json!(&*j.spec.name)),
-        ("actor", json!("owner")),
-    ]);
-    let m = JobMessage {
-        job,
-        attempt: run.run.attempt,
-        run_id: run.run.id.0.0,
-        job_name: &j.spec.name,
-        display_name: &j.spec.name,
-        github,
-        matrix: if matrix.is_empty() {
-            Value::Null
-        } else {
-            runsvc::ctx_dict(matrix.iter().map(|(k, v)| (k.as_str(), runsvc::context_of(v))))
-        },
-        strategy: Value::Null,
-        steps: serde_json::from_str(&j.spec.steps).unwrap(),
-        secrets: Vec::new(),
-        variables: Vec::new(),
+    let a = runsvc::Acquired {
+        repository: "owner/repo",
+        owner_login: "owner",
+        relay_site: 0,
         github_token: "ghs_test",
         job_token: &job_token,
-        locked_until: &graftyard_wire::time::iso(Timestamp(n.0 + 600_000)),
+        locked_until: Timestamp(n.0 + 600_000),
+        secrets: Vec::new(),
+        variables: Vec::new(),
     };
-    (200, runsvc::job_message(&h.urls, &m))
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    (200, runsvc::acquire_message(&h.urls, &run.run, &j, &a))
 }
 
 fn job_event(h: &Host, job: JobId, event: JobEvent) -> (u16, Value) {
@@ -448,34 +416,7 @@ fn main() {
     let src = std::fs::read_to_string(wf).unwrap();
     let parsed = workflow::parse(wf, &src);
     assert!(parsed.ok(), "{:?}", parsed.errors);
-    let mut jobs = Vec::new();
-    for j in &parsed.workflow.jobs {
-        let labels: Vec<String> = match j.runs_on.as_ref().map(|n| &n.t) {
-            Some(workflow::template::T::Str(s)) => vec![s.clone()],
-            Some(workflow::template::T::Seq(v)) => v.iter().filter_map(|n| n.str().map(String::from)).collect(),
-            _ => vec!["self-hosted".into()],
-        };
-        let steps = runsvc::steps_json(&j.steps).to_string();
-        let strategy = matrix::expand(j.strategy.as_ref(), j.name.str()).unwrap();
-        let configs = strategy.map(|s| s.configurations).unwrap_or_default();
-        let one = |name: String, m: SmallVec<[(Box<str>, Box<str>); 4]>| JobSpec {
-            id: JobId(DbId(0)),
-            name: name.into(),
-            labels: LabelSet::parse(&labels).unwrap(),
-            needs: SmallVec::new(),
-            matrix: m,
-            environment: None,
-            steps: steps.clone().into(),
-        };
-        if configs.is_empty() || configs.iter().all(|c| c.matrix == matrix::Data::Null) {
-            jobs.push(one(j.id.clone(), SmallVec::new()));
-        }
-        for c in configs.iter().filter(|c| c.matrix != matrix::Data::Null) {
-            let matrix::Data::Map(pairs) = &c.matrix else { continue };
-            let m = pairs.iter().map(|(k, v)| (k.as_str().into(), v.json().to_string().into())).collect();
-            jobs.push(one(c.name.clone().unwrap_or_else(|| j.id.clone()), m));
-        }
-    }
+    let jobs = graftyard_actions::specs::job_specs(&parsed.workflow).unwrap();
     let run = WorkflowRun {
         id: graftyard_actions::RunId(DbId(0)),
         repo: REPO,
