@@ -15,6 +15,10 @@ Shard image `sha256:de39c828…`, built from main's `containers/git` (`b4a7510`:
 
 ## Site day
 
+**m3fr2's (second) site day:** 2026-11-14, 10:04Z to 10:18:30Z, from `lm1-rows-m3f` `d438f437`: main `1d331994` merged, with `repo-write-mark` (`RepoFold::write_mark`, `MERGE_WAIT`) and `admission-stored-bytes` (admission prices `stored_len`; an issue command's render is not priced), plus `retryAfterS` in `/status` admission and LM-1's `terms.mjs` (`bdc7f8b`, live voters). New shard image `sha256:4ab9de37…` from main's `containers/git` at `2fd459ce`, standard-4. Sites `cc66a386` / `1c62907b` / `54e6bc4d` (phase 1 `79d61116` / `9daba21f` / `ec875942`), edge `817c4adc`. Checked: `GET /repos/m3org/j4` 200, `repo:65536` leader on site 0 answering `admission.retryAfterS`.
+
+**m3fr1's site day:**
+
 2026-11-14, 05:02Z to 05:17Z, `tests/fanout/siteday-m3f.sh`, logged in `install-m3f.md` on main. Sites `4440f04d` / `664f2927` / `dfd53b45` (phase 1 `9f3d53c2` / `03930d80` / `fea147c4`), edge `a197b7fd`, built from `lm1-rows-m3f` `7e5b63f`. After the deploy, `GET /repos/m3org/j4` answered 200 and `repo:65536`'s leader answered the new `/status` admission fields. The install's own Apps (`tests/am1/rest/apps.mjs`, for L0-12's Graftyard-run and MCP kinds) were registered at 05:59Z: `graftyard-workspace` 196608, `graftyard-agent` 262144, `graftyard-mcp` 327680, installations 7190011 to 7190013 on `m3org`.
 
 ## Rows m3fr1 (2026-11-14, `tests/fanout/rows-m3f.sh`, TAG `m3fr1`)
