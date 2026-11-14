@@ -3,7 +3,9 @@
 // seeded comment bodies, read through the parent's leader once before the split and again every 30 min, which must
 // match. On a leaderless gap over GAP_MAX_S (30), any SQLITE_FULL, or a body mismatch, it writes tests/am1/raw/b030-STOP
 // with the reason, so the load stops at once (it resumes from its state once the file is removed), and
-// tests/am1/raw/b030r2-ALERT. Rows go to tests/am1/raw/b030r2-watch.jsonl.
+// tests/am1/raw/b030r2-ALERT. Also (operator, 2026-11-14): a log over LOG_MAX_BYTES whose leader's `archivedTo` has not
+// moved for ARCHIVE_STALL_MIN (30) minutes, or a log over LOG_MAX_BYTES by LOG_OVER (5%), so members not truncating
+// never runs on toward SQLITE_FULL. Rows go to tests/am1/raw/b030r2-watch.jsonl.
 //   node tests/am1/b030split/watch.mjs
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { log, row, sleep, statuses, voter } from "../hosted/lib.mjs";
@@ -15,6 +17,10 @@ const STOP = "tests/am1/raw/b030-STOP";
 const ALERT = "tests/am1/raw/b030r2-ALERT";
 const GAP_MAX_S = Number(process.env.GAP_MAX_S ?? 30);
 const SAMPLE = 100;
+const LOG_MAX_BYTES = 2 * 2 ** 30;
+const LOG_OVER = Number(process.env.LOG_OVER ?? 0.05);
+const ARCHIVE_STALL_MIN = Number(process.env.ARCHIVE_STALL_MIN ?? 30);
+let archived = { to: -1, at: Date.now() }, archiveAlerted = false;
 const rows = JSON.parse(readFileSync("tests/am1/raw/b030-seed.json", "utf8")).rows;
 const keys = Array.from({ length: SAMPLE }, (_, i) => 2 ** 40 + Math.floor((i * rows) / SAMPLE));
 
@@ -59,6 +65,13 @@ for (;;) {
       lastSplit = sp;
     }
     if (v.sqliteFull > 0) alert(`SQLITE_FULL ${v.sqliteFull} on site ${led.site}`);
+    if (typeof v.archivedTo === "number" && v.archivedTo !== archived.to) archived = { to: v.archivedTo, at: now };
+    const over = (v.logBytes ?? 0) > LOG_MAX_BYTES;
+    if (!archiveAlerted && over && (v.logBytes > LOG_MAX_BYTES * (1 + LOG_OVER) || now - archived.at > ARCHIVE_STALL_MIN * 60_000)) {
+      archiveAlerted = true;
+      alert(`archive not keeping the log at its cap: log ${v.logBytes} B, archivedTo ${v.archivedTo} unchanged since ${new Date(archived.at).toISOString()}`);
+    }
+    if (now % 600_000 < 5_000) row(OUT, { kind: "log", at: new Date().toISOString(), logBytes: v.logBytes, archivedTo: v.archivedTo, truncatedTo: v.truncatedTo, promotedTo: v.promotedTo, dbBytes: v.dbBytes });
     // Bodies: a baseline before the split drops the parent's text, then a comparison every 30 min.
     if (!base && !v.split?.state?.dropped) {
       const b = await bodies(led.site);
