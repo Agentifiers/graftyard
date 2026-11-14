@@ -68,7 +68,7 @@ Two problems showed up, and both are product bugs:
 
 Tests: `host::tests::a_leaderless_voter_with_work_due_acts_after_the_bound_only`,
 `host::tests::paced_writes_wait_twice_their_commit_up_to_the_cap`, and
-`split::tests::a_split_needs_its_leader_only_while_a_step_is_due`. Plants 15 to 24 in `tests/am1/b030split/plant.py`
+`split::tests::a_split_needs_its_leader_only_while_a_step_is_due`. Plants 15–24 in `tests/am1/b030split/plant.py`
 cover these rules: the bound counted from each check, from the first check rather than the lapse, or not at all; acting
 again on every check; acting while a promise runs; campaigning past a named leader; acting with no work due; pacing
 by 1x; pacing uncapped; a child that needs a leader; and a finished pass that needs one.
@@ -89,7 +89,38 @@ From Nov 12 00:00Z to Nov 13 16:45Z, `graft-m1` billed $171.42 of containers for
   running, and with `--teardown` it tears those down first. Every run here ends with it. At 00:22Z on Nov 14 the only
   running shards were net 1048586's three standard-4s. They were torn down, and the check then listed none.
 
-## Smoke 2: split and slim with no keeper
+## Smoke 2: split and slim with no keeper, `repo:1048587`, 2026-11-14
+
+`m3org/b030-s2` was seeded to 421 MB of member SQLite: 140,000 comment rows of about 1.8 KB. Each member's `SPLIT_AT`
+was set just under that with `/bench_seed {"splitAt"}`. Driver: `tests/am1/b030split/smoke2.mjs`, with no keeper.
+Raw data is in `tests/am1/raw/b030split-smoke2.{log,jsonl}`.
+
+| Check | Result |
+|---|---|
+| Leader elected with no request, after `splitAt` on a leaderless group | 1 s |
+| `MetaSeed`, child restore | index 6; 140,000 rows (256 MB) in about 160 s per member |
+| Parent stall before `MetaDropped` | No alarm after 05:36:42Z. Fixed by `12f53da` (a split under way re-arms every 60 s); its site day landed at 05:55Z |
+| Leaderless voters (`keep led`) | Followers probed the named leader every 20 s, and each probe was answered (`ReadId`), so none deposed it. At 05:59:14Z site b campaigned and led within 5 s. That was the only gap: 5 s |
+| `MetaDropped` | index 14, 05:59:16Z |
+| Leader cut for 15 s with `/sever`, at 06:02:25Z | Site b's voter campaigned at 06:02:41Z, and the group led again by 06:02:42Z. The driver's 5 s poll saw no leaderless sample |
+| Slim pass | 05:59:16 to 06:08:33Z |
+| Parent member SQLite | 421 MB before; 9.5 / 10.2 / 10.2 MB after |
+| Sampled comment bodies after vs before | 100 of 100 equal |
+| `SQLITE_FULL` | 0 |
+| `StepDown` while slimming | **11**, all `CommitErrors`, 10 with `to: None` (a 1, b 4, c 3, a 3 by leader) |
+| Cost, 05:28 to 06:15Z | $3.68 DO and Workers, $0.22 containers |
+
+The leaderless fix held: the longest gap was 5 s, against 39 minutes in smoke 1. Pacing alone did not stop the step-downs.
+Each 512-row `MetaSlim` rewrote about 0.9 MB of rows. Workers Logs from 06:04 to 06:05Z on sites b and c show 44
+follower `/raft` calls: p50 0.65 s, p90 1.8 s, max 2.8 s, and 14 over `CALL_DEADLINE` (1 s). From 05:56 to 05:57Z, before
+the slim, nine calls ran at p90 0.72 s with none over 1 s. Pacing spaces the entries out, but a single entry's apply still
+holds a follower's call past the deadline, and missed deadlines on both followers are what `CommitErrors` counts.
+
+**Fix** (`4cc1eae`): a `MetaSlim` entry stops at the row that brings what it has looked at to `SLIM_BYTES` (128 KiB),
+and the next entry starts after that row (`decisions/DECISIONS.md`, "One `MetaSlim` entry looks at no more than 128
+KiB of rows"). Test: `a_slim_entry_stops_at_its_bytes_and_the_next_takes_the_rest`. Plants 25 and 26 are both caught.
+
+## Smoke 3: split and slim at `SLIM_BYTES`, no keeper
 
 Not run yet.
 

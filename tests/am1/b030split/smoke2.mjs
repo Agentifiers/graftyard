@@ -21,7 +21,7 @@ import { leaderOf, log, member, row, sleep, statuses } from "../hosted/lib.mjs";
 
 const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8"));
 const C = `repo:${REPO.repo}`;
-const OUT = "tests/am1/raw/b030split-smoke2.jsonl";
+const OUT = `tests/am1/raw/b030split-${process.env.TAG ?? "smoke2"}.jsonl`;
 const SAMPLE = 100;
 const sha = (s) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 const seeded = JSON.parse(readFileSync("tests/am1/raw/b030-seed.json", "utf8"));
