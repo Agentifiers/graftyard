@@ -12,7 +12,9 @@ cd "$(dirname "$0")/../../.."
 export BED_TOKEN_FILE=$HOME/.graft-wp6/bed.token
 R=tests/am1/raw
 NAME=${NAME:-b0-30-r2}
-seeded() { [ -s $R/b030-seed.json ] && grep -q "\"repo:$(jq .repo $R/b030-repo.json)\"" $R/b030-seed.json; }
+# Seeded: the seed of the rerun's own repository is done (b030-repo.json names m3org/$NAME, and b030-seed.json names it).
+seeded() { grep -q "\"m3org/$NAME\"" $R/b030-repo.json 2>/dev/null && [ -s $R/b030-seed.json ] \
+  && grep -q "\"repo:$(jq .repo $R/b030-repo.json)\"" $R/b030-seed.json; }
 case "$1" in
   seed)
     # After the rerun's site day (tests/am1/b030split/siteday.sh) has landed.
@@ -24,7 +26,9 @@ case "$1" in
       echo "exit $?"; date -u +%FT%TZ; echo DONE; } >> $R/b030r2-seed.log 2>&1 ;;
   load)
     until seeded; do sleep 60; done
-    node tests/am1/b030/load.mjs >> $R/b030r2-load.log 2>&1 ;;
+    # No keepHome: handing leadership back to site 0 was the first run's aid for a promotion that worked only on a warm
+    # home shard (b0-30.md, "Blocked on", 7), which hot-shards-2 removed; like the keeper, it would steer leadership.
+    B030_HOME=none node tests/am1/b030/load.mjs >> $R/b030r2-load.log 2>&1 ;;
   monitor)
     until seeded; do sleep 60; done
     STOP_USD=${STOP_USD:-175} B030_SINCE=$(cat $R/b030r2.start) MONITOR_S=900 node tests/am1/b030/monitor.mjs >> $R/b030r2-monitor.log 2>&1 ;;
