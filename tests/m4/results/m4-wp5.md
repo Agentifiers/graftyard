@@ -80,13 +80,26 @@ Site day 26 (M4 Actions, 09:10Z on 2026-11-14) put git shard image `sha256:969fd
 
 A fresh review comment on PR #3 at 09:22:00Z (`POST /pulls/3/comments`, `docs/fresh.md` line 1) answered `id` 491524 with `pull_request_review_id` 491525, which `GET /pulls/3/reviews` lists as COMMENTED with an empty body on the head commit. Its reply (`in_reply_to` 491524) answered 458756 with review 491526. The timeline shows both comments once, inside m3-admin's "reviewed" entry. BF-38 at 09:26Z: **6 passed, 1 pending** (live log) in 46.4 s.
 
+### Format 32.22 on graft-m4a: an approver's review comment
+
+Site day 27 (M4 Actions, 10:18Z on 2026-11-14) put members that read 32.22 on all three sites (`f0cef289` / `98fa6950` / `dce37093`), and edge day 9 (`4a4dcf9a`, main `a2d918f1`) added 32.22 to `FORMATS_ENABLED`. The same probe ran on m3org/web38-a PR #3 before and after (`m3-member`, write access, approves through `addPullRequestReview`, then posts a review comment and a reply):
+
+| | Before 32.22 (edge `bcb4ed2a`, 10:08Z) | After (edge `4a4dcf9a`, 10:22Z) |
+| --- | --- | --- |
+| Comment's `pull_request_review_id` | `null` (491531) | 491534, COMMENTED, empty body, by m3-member |
+| Reply's `pull_request_review_id` | `null` (458758) | 491535 |
+| Merge box's reviews row (`/_t/ui/…/merge-requirements`) | "Changes approved" | "Changes approved" |
+| Reviewers sidebar | m3-member Approved | m3-member Approved |
+
+The timeline shows the 10:23 comment and its reply once, inside m3-member's "reviewed" entry; the 10:08 comment, which has no review, shows on its own through the unlisted-thread view. BF-38 on `4a4dcf9a` at 10:25Z: **6 passed, 1 pending** (live log) in 43.1 s.
+
 ### Comments that still need the timeline's unlisted-thread view (`91464e1`)
 
 The timeline still shows a thread whose review is not listed, because these comments have no review:
 - every review comment created over REST before site day 26 put `m4-web-2`'s decide on the sites, 09:10Z on 2026-11-14: on graft-m4a, `m3org/web38-a` PR #1's "Cap this at 10 s…" (BF-38's seed) is one;
-- until an edge enables format 32.22, a comment by a reviewer whose verdict on that pull request is APPROVED or CHANGES_REQUESTED.
+- a comment by a reviewer whose verdict on that pull request was APPROVED or CHANGES_REQUESTED, made before an edge enabled format 32.22: on graft-m4a, 10:22Z on 2026-11-14 (edge day 9), so PR #3's 491531 and its reply 458758 are two.
 
-Once 32.22 is enabled, only the first group remains, and those comments stay as they are: no event rewrites a committed comment's `review`. The view can go when no install holds such a comment, which for graft-m4a means reseeding BF-38's repository.
+No new comment joins either group, and those comments stay as they are: no event rewrites a committed comment's `review`. The view can go when no install holds such a comment, which for graft-m4a means reseeding BF-38's repository.
 
 ## Edge days
 
@@ -98,6 +111,7 @@ Once 32.22 is enabled, only the first group remains, and those comments stay as 
 | 6 | `91464e1` (timeline threads, agent card) | `3911b234` |
 | 7 | main `334d968` + `m4-actions` `108c1b2` + `m4-wp2` `4e9da43`, for M4-WP2 | `3d41cbe7` |
 | 8 | main `5c0f06fb` + `m4-web-2` `97841ed` (counts, single-comment reviews; `8014ebb`) | `bcb4ed2a` |
+| 9 | main `a2d918f1` (`m4-web-3`: format 32.22 in `FORMATS_ENABLED`) | `4a4dcf9a` |
 
 Each was built from `m4-web` merged with `origin/m4-actions` `83afa6d`, deployed with `deploy-edge.mjs --web`, and logged in `tests/am1/results/install-m4a.md` on main.
 
@@ -114,5 +128,4 @@ Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2
 ## Pending
 
 - BF-38's running-job live log, and BF-61: both need `LogRelay` from M4-WP3.
-- Format 32.22 (`ReviewEvent::SingleComment`, `m4-web-3`): a site day onto a release that reads it, then an edge day that adds 32.22 to `FORMATS_ENABLED`, then, on graft-m4a, an approver's review comment: it should get its review while the pull request stays APPROVED.
 - The chrome widgets whose REST routes the edge does not serve yet (F61) render nothing.
