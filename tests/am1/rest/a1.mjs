@@ -573,6 +573,9 @@ if (plan.openPrs) {
 }
 t0 = Date.now() + 5_000;
 end = t0 + seconds * 1000;
+// A SIGTERM (`tests/fanout/memguard.mjs`'s stop) ends the load window now, so the row is still written, as `stopped`.
+let stopped = null;
+process.on("SIGTERM", () => { stopped = new Date().toISOString(); end = Math.min(end, Date.now()); log(`SIGTERM: window ended at ${stopped}`); });
 
 // The scheduler: each kind at its rate, Poisson, with at most `cap` in flight per kind.
 const inflight = {};
@@ -952,10 +955,12 @@ const lstats = endStats.commitMs?.n ? endStats : (lateStats ?? endStats);
 const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
 // A sample array, or `/stats?summary=1`'s `{n, p50, p99}` of one.
 const ps = (x) => (Array.isArray(x) || x == null ? { n: x?.length, p50: pct(x, 0.5), p99: pct(x, 0.99) } : { n: x.n, p50: x.p50, p99: x.p99 });
-const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.length, perS: +(xs.length / seconds).toFixed(2), p50: pct(xs, 0.5), p99: pct(xs, 0.99), codes: codes[k] }]));
+// A stopped window's rates are over the seconds it ran.
+const ran = stopped ? Math.max(1, (end - t0) / 1000) : seconds;
+const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.length, perS: +(xs.length / ran).toFixed(2), p50: pct(xs, 0.5), p99: pct(xs, 0.99), codes: codes[k] }]));
 const feedLat = seen.map((x) => x[2]);
 const v = {
-  row, run: RUN, seconds, agents: plan.agents, offered: offered(plan), byKind: sum,
+  row, run: RUN, seconds, ...(stopped ? { stopped, ranSeconds: +ran.toFixed(1) } : {}), agents: plan.agents, offered: offered(plan), byKind: sum,
   feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
       return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}) },
