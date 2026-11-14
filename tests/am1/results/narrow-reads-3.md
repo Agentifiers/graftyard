@@ -581,6 +581,43 @@ this tree has no send timestamps to split wire from input queue].
 Rows: `tests/nr3/rows/a1-b0-29-gate15.jsonl`, `run-gate15.status`, `lmem-gate15.jsonl`, `mem-gate15.json`,
 `egress-gate15.txt`, `fresh-gate15.jsonl`, `trace-gate15.json.gz`.
 
+### The herding guard (after gate 15)
+
+Gate 15's miss had one learner, l7, take 50.2% of the reads; it shed 54 and answered 720 late. Routing by the average
+alone sends every read to the fastest learner, which those reads then slow, and the one read in 20 sent at random went
+to far learners that answered at `FOLLOWER_WAIT` (425 to 1,567 late each). The operator asked for the simplest guard a
+replay shows works, before site day 13.
+
+**The rule** (`crates/lookup`, `timed_spread_order` and `Timed`): a learner's score is its moving average plus 4 moving
+mean deviations. Eligible are the untimed learners, those within 200 ms of the best timed score, and, while fewer than
+3, the next best scored under 1 s. A read goes to one of them at random, then the rest by score. A learner untimed for
+10 s counts as untimed again, which replaces the one-in-20 random read. So a learner that mostly answers late
+(score past 1 s) is asked only after the eligible ones, which answers the operator's second question with the same rule.
+
+**The replay** (`tests/nr3/route.py`, over each gate's learner traces: a read leaves in the next 50 ms batch, takes
+the round trip and read index of the traced batch nearest its send, waits for that learner's applied index, answers
+late at 1 s and moves on, three members at most; 4 edge isolates at 200 reads/s, 120 ms of edge stages) [inference]:
+
+| Gate | Routing | Projected API p99 | Reads over 2 s | Late answers | Busiest learner |
+| --- | --- | --- | --- | --- | --- |
+| 13 | average only, 1 in 20 random (as built) | 1,504 ms | 0.36% | 2.98% | 17.5% |
+| 13 | guard | 1,288 ms | 0.22% | 1.64% | 19.1% |
+| 14 | as built | 757 ms | 0.02% | 0.40% | 26.2% |
+| 14 | guard | 764 ms | 0.02% | 0.31% | 25.2% |
+| 15 | as built | 1,444 ms | 0.34% | 2.61% | 36.0% |
+| 15 | guard | 1,254 ms | 0.31% | 1.71% | 24.1% |
+
+Also tried, and beaten in the same replay: the deviation score alone, with the random read kept (busiest 33% on gate
+15); a random pick between the two best-scored learners (busiest 36% on gate 14, p99 1.64 and 1.58 s on gates 13 and
+15); a spread of 4 (no better than 3). The replay holds each learner's answer times as traced, so it cannot show the
+herding feeding on itself, which is what gate 15 measured; the gain there is likely larger than projected. It also runs
+about 0.6 s under gate 15's measured 2,019 ms, so its absolute numbers are optimistic and only the comparison counts.
+
+**Tests and plants.** Kept tests in `crates/lookup`: the fastest learner gets at most 1 in 3 of the first places while
+the others answer in time, and a learner scored at 1 s is never asked; an untimed or stale learner is eligible and
+sets no best; the score counts the deviation, so a swinging learner scores worse than a steady one at the same
+average; the margin is inclusive at its edge. `tests/nr3/plant.py` adds six mutants of the guard; all six are caught.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
