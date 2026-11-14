@@ -3144,3 +3144,15 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** On 200 seeds each, the term rose by 1.3 a minute on average with all three slow and 0.3 with both followers slow, against 4.3 and 3.8 on main (60 seeds); no seed was leaderless for 20 s. A gray leader with one slow and one healthy follower is moved through the healthy one; a dead leader is replaced by a slow follower CAMPAIGN_DEADLINE after its last append; a half-hung leader with slow followers is replaced within F67's bound (p50 12.6 s, max 17.0 s over 60 seeds, as on main), because check quorum ends its leadership and so its appends. Kept tests: `slow_storage_everywhere_keeps_one_leader` and `slow_storage_on_both_followers_keeps_the_leader` (`crates/raft/tests/liveness.rs`), both failing on main; `a_slow_follower_holds_back_while_a_healthy_one_moves_a_gray_leader` and `a_slow_follower_still_replaces_a_dead_leader` (`crates/raft/tests/scenarios.rs`); `a_half_hung_leader_with_slow_followers_is_replaced` (`liveness.rs`). `tests/m0carried/plant11.py` plants the rules.
 
 **Flip.** A gray leader that F67 moved on main and that this keeps leading past 20 s; a slow follower held back while no leader commits; or hosted evidence that a follower's answer time does not track its storage.
+
+#### A single-comment review leaves an APPROVED or CHANGES_REQUESTED verdict as it is (format 32.22)
+
+**Decision.** A REST review comment outside a review commits its single-comment review as `ReviewEvent::SingleComment` (tag 3) in repository format 32.22 (`REPO_FORMAT_REVIEWS`). Its fold writes the reviewer's core `review_verdict` only over none or a COMMENTED one, so every such commenter gets a review and an APPROVED or CHANGES_REQUESTED verdict stays. The edge marks the comment 32.22 once `FormatsEnable` enabled it; before that, decide writes a `Submitted` and gives a commenter who holds such a verdict no review. 32.20 and 32.21 are other branches' (`b030-split`, `m4-actions`).
+
+**Why.** GHES gives every review comment made outside a review a COMMENTED review and keeps the reviewer's approval: `reviewDecision` and merge protection read the approval, not the comment. A `Submitted` COMMENTED replaces the verdict in the fold, so the pull request lost its approval, or kept the commenter's comment without a review (`m4-web-2`).
+
+**Beat.** Changing how `Submitted` COMMENTED applies, which would change what every earlier entry folds to and so every chain's digest at the next refold. Skipping the review for such commenters, which leaves `pull_request_review_id: null` where GHES sets it.
+
+**Evidence.** `an_approvers_review_comment_gets_its_review_and_keeps_the_approval` (`crates/git/tests/agent_gates.rs`) through real members, which fails when the fold replaces the verdict; hosted single-comment reviews on `m3org/web38-a` PR #3 (`tests/m4/results/m4-wp5.md`).
+
+**Flip.** GHES 3.22 replacing an approval with a later single-comment review, or a reviews UI that needs a COMMENTED verdict beside an approval.

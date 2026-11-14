@@ -55,7 +55,9 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Settings(_) => both,
         RepoEvent::IssueChanged { change: IssueChange::State { .. } | IssueChange::Draft(_), .. } => both,
         RepoEvent::IssueChanged { .. } => TierSet::METADATA,
-        RepoEvent::Review(ReviewEvent::Submitted { .. } | ReviewEvent::Dismissed { .. }) => both,
+        RepoEvent::Review(
+            ReviewEvent::Submitted { .. } | ReviewEvent::Dismissed { .. } | ReviewEvent::SingleComment { .. },
+        ) => both,
         RepoEvent::Review(ReviewEvent::Requested { .. }) => TierSet::METADATA,
         // The core count of unresolved review threads per pull request (`review_thread` and `unresolved`). SHARED's
         // `tier_of` says "Comment only Metadata, except a `Resolved`, which touches both", but `Resolved` names only
@@ -726,6 +728,21 @@ impl RepoTiers {
                 }
             }
             RepoEvent::Review(ReviewEvent::Requested { .. }) => {}
+            // A single-comment review is the reviewer's verdict only over none or a COMMENTED one.
+            RepoEvent::Review(ReviewEvent::SingleComment { id, n, reviewer, commit }) => {
+                assigned(w, ev, Tier::Core, id.0);
+                let who = int(reviewer.map_or(0, |a| a.0.0));
+                let old = get_rec::<VerdictRow>(w, "review_verdict", &[n_key(*n), who.clone()]);
+                if old.as_ref().is_some_and(|o| o.state != ReviewState::Commented) {
+                    return;
+                }
+                if let Some(old) = old {
+                    w.delete("verdict_by_review", &[int(old.review.0.0)]);
+                }
+                let row = VerdictRow { review: *id, state: ReviewState::Commented, commit: *commit };
+                put_rec(w, "review_verdict", vec![n_key(*n), who], &row);
+                put_rec(w, "verdict_by_review", vec![int(id.0.0)], &(n.0, reviewer.map_or(0, |a| a.0.0)));
+            }
             RepoEvent::Rule(r) => {
                 assigned(w, ev, Tier::Core, r.id);
                 match &r.protection {
@@ -1004,6 +1021,21 @@ impl RepoTiers {
                             at,
                         },
                     );
+                    mark(w, "review_by_pull", vec![n_key(*n), int(id.0.0)]);
+                    touch(w, *n, &|_| {});
+                }
+                ReviewEvent::SingleComment { id, n, reviewer, commit } => {
+                    assigned(w, ev, Tier::Metadata, id.0);
+                    let row = ReviewRow {
+                        n: *n,
+                        reviewer: *reviewer,
+                        state: ReviewState::Commented,
+                        commit: *commit,
+                        body: "".into(),
+                        dismissed: None,
+                        at,
+                    };
+                    put_rec(w, "review", vec![int(id.0.0)], &row);
                     mark(w, "review_by_pull", vec![n_key(*n), int(id.0.0)]);
                     touch(w, *n, &|_| {});
                 }

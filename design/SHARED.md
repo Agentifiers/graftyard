@@ -561,10 +561,11 @@ pub struct CommentId(DbId);
 /// thread's first review comment (`Created` on a review with no `reply_to`), which opens it unresolved and maps it to
 /// its pull request, and every `Deleted`, which does not say whether it named a thread, also touch Core. So those three
 /// `Comment` events touch both tiers (M2-WP2, `crates/git/src/tiers.rs`). A review comment made outside a review (REST
-/// `POST /pulls/{n}/comments`, a reply too) is, as on GHES, a single-comment review's: `decide` adds a `Submitted`
-/// COMMENTED review with no body on the comment's commit to the same entry, after the comment, and the comment names it.
-/// A commenter whose current verdict approves or requests changes gets no review, because a COMMENTED `Submitted`
-/// replaces the verdict [inference: GHES keeps the verdict; the fold has no review that leaves it alone].
+/// `POST /pulls/{n}/comments`, a reply too) is, as on GHES, a single-comment review's: `decide` adds a COMMENTED review
+/// with no body on the comment's commit to the same entry, after the comment, and the comment names it. From repository
+/// format 32.22 it is a `SingleComment`, so every such commenter gets one and an APPROVED or CHANGES_REQUESTED verdict
+/// stays, as GHES keeps it. Before 32.22 it is a `Submitted`, which replaces a verdict, so a commenter who holds one
+/// gets no review.
 pub enum CommentEvent {
     Created { id: CommentId, on: CommentTarget, author: Actor, body: Box<str>, reply_to: Option<CommentId> },
     Edited { id: CommentId, body: Box<str>, actor: Actor }, Deleted { id: CommentId, actor: Actor },
@@ -578,11 +579,14 @@ pub enum DiffSide { Left, Right }
 pub struct ReviewId(DbId);
 /// `Submitted` touches both tiers: the core `review_verdict` row keeps (reviewer, state, commit), and the metadata
 /// tier keeps the body. `Dismissed` touches both tiers, because it removes the core `review_verdict`. A `Pending`
-/// review is visible only to its author and is never a verdict.
+/// review is visible only to its author and is never a verdict. `SingleComment` (format 32.22) is a review comment's
+/// COMMENTED single-comment review with no body: both tiers, like `Submitted`, but it writes the core `review_verdict`
+/// only when the reviewer has none or a COMMENTED one, so it never replaces an APPROVED or CHANGES_REQUESTED verdict.
 pub enum ReviewEvent {
     Submitted { id: ReviewId, n: IssueNumber, reviewer: Actor, state: ReviewState, commit: ObjectId, body: Box<str> },
     Dismissed { id: ReviewId, message: Box<str>, actor: Actor },
-    Requested { n: IssueNumber, reviewers: SmallVec<[Grantee; 2]>, removed: bool, actor: Actor } }
+    Requested { n: IssueNumber, reviewers: SmallVec<[Grantee; 2]>, removed: bool, actor: Actor },
+    SingleComment { id: ReviewId, n: IssueNumber, reviewer: Actor, commit: ObjectId } }
 pub enum ReviewState { Pending, Approved, ChangesRequested, Commented }
 /// A name is at most 50 characters [unverified] and compares case-insensitively within a repository.
 pub struct LabelId(DbId); pub struct LabelName(Box<str>);
