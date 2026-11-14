@@ -16,10 +16,27 @@ while (!(id = idOf()) && Date.now() < until) await sleep(2_000);
 if (!id) throw new Error(`${name}: no id`);
 const chain = `repo:${id}`;
 let names = {};
+// Election rows (`/elections`, test-faults) every ELECT_EVERY ms per voter, since an isolate reset loses them: one
+// `{ elect: [[at, kind, term, peer, index, extra], ...] }` line per voter per read.
+const electEvery = Number(process.env.ELECT_EVERY ?? 20_000);
+const since = [0, 0, 0];
+let lastElect = 0;
 while (Date.now() < until) {
   const t = Date.now();
   const got = await voterNames(chain).catch(() => ({}));
   if (Object.keys(got).length) names = got;
+  if (t - lastElect >= electEvery) {
+    lastElect = t;
+    await Promise.all([0, 1, 2].map(async (site) => {
+      try {
+        const rows = (await member(chain, site, `/elections?since=${since[site]}`, undefined, 5_000, names[site])).v?.rows ?? [];
+        if (rows.length) since[site] = rows[rows.length - 1][0];
+        console.log(JSON.stringify({ at: new Date(t).toISOString(), site, name: names[site], elect: rows }));
+      } catch (e) {
+        console.log(JSON.stringify({ at: new Date(t).toISOString(), site, electError: String(e).slice(0, 100) }));
+      }
+    }));
+  }
   await Promise.all([0, 1, 2].map(async (site) => {
     try {
       const v = (await member(chain, site, "/stats?summary=1", undefined, 5_000, names[site])).v ?? {};
