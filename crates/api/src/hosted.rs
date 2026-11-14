@@ -444,6 +444,11 @@ pub enum What {
     CheckRunCreated {
         id: i64,
     },
+    /// An Actions secret or variable write (M4-WP3, format 32.23): 201 for a new name (`IssueOut::Created`), else 204,
+    /// GitHub's codes for `PUT .../secrets/{name}`, `POST .../variables`, and `PATCH`/`DELETE` [doc: GHES 3.22 REST,
+    /// "Actions secrets" and "Actions variables"]. A variable create on a taken name is 409, which `gh variable set`
+    /// takes as "PATCH instead" [measured: cli/cli `pkg/cmd/variable/set/http.go`].
+    ActionsConfig,
 }
 
 /// The render request an issue command carries to its leader.
@@ -560,6 +565,10 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::Hook { created } => WireReply::of(&crate::webhooks::saved(acked, &r, *created)),
         What::ReviewCommentCreated { n } => WireReply::of(&crate::rest::review_comment_created(acked, &r, *n)),
         What::CheckRunCreated { id } => WireReply::of(&crate::rest::check_run_created(acked, &r, *id)),
+        What::ActionsConfig => WireReply::of(&match acked.out {
+            IssueOut::Created => Reply::empty(201),
+            _ => Reply::empty(204),
+        }),
     }
 }
 
@@ -586,6 +595,10 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::CheckRunCreated { .. } => {
             WireReply::of(&crate::rest::write_refused(e, "rest/checks/runs#create-a-check-run"))
         }
+        What::ActionsConfig => WireReply::of(&match e {
+            IssueErr::Exists => Reply::error(409, "Already exists", "rest/actions/variables"),
+            e => crate::webhooks::refused(e),
+        }),
     }
 }
 

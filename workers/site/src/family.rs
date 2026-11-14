@@ -593,6 +593,7 @@ impl Family for Repo {
             git::watch::REPO_FORMAT_WATCH,
             git::issue_ops::call::REPO_FORMAT_REVIEWS,
             git::run_checks::REPO_FORMAT_ACTIONS,
+            git::secrets::REPO_FORMAT_SECRETS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

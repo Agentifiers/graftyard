@@ -72,9 +72,17 @@ fn seal_keys_rotate_and_org_rows_follow_their_rules() {
     assert_eq!(graftyard_raft::Command::format(&cmd(OPS, put_key(key("1", 10)))), AUTHZ_FORMAT_V12);
     assert_eq!(refused(w.authz_cmd(org, cmd(as_user(member), put_key(key("1", 10))))), AuthzErr::Forbidden);
     w.authz_cmd(org, cmd(OPS, put_key(key("1", 10)))).unwrap();
-    // A re-send is a no-op; another key under the same id is refused.
+    // A re-send is a no-op; another key under the same id is refused; the same key rewrapped under another slot
+    // (the wrapping key's rotation) replaces its private half and nothing else.
     w.authz_cmd(org, cmd(OPS, put_key(key("1", 10)))).unwrap();
     assert_eq!(refused(w.authz_cmd(org, cmd(OPS, put_key(key("1", 11))))), AuthzErr::BadRecord);
+    let rewrapped =
+        |k: SealKey| SealKey { private: Wrapped { slot: 1, nonce: [5; 12], ciphertext: vec![6; 48].into() }, ..k };
+    let swapped = SealKey { public: [99; 32], ..rewrapped(key("1", 10)) };
+    assert_eq!(refused(w.authz_cmd(org, cmd(OPS, put_key(swapped)))), AuthzErr::BadRecord);
+    w.authz_cmd(org, cmd(OPS, put_key(rewrapped(key("1", 10))))).unwrap();
+    let f: AuthzFold = w.authz(org).fresh_leader();
+    assert_eq!(f.actions().seal_keys["1"], rewrapped(key("1", 10)));
     let name = ActionsName::parse("deploy_token").unwrap();
     let all = SecretScope::Org { visibility: SecretVisibility::All, repos: smallvec![] };
     let put = |scope: SecretScope, key_id: &str| AuthzOp::PutOrgSecret {

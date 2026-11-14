@@ -668,6 +668,13 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (_, ["orgs", _, "teams", ..] | ["user", "memberships", "orgs", _]) => {
                 crate::collab::org_route(c, req, p).await
             }
+            (_, ["orgs", _, "actions", "secrets" | "variables", ..]) => {
+                let segs: Vec<&str> = p.trim_end_matches('/').split('/').skip(1).collect();
+                match crate::secrets::org_route(c, req, &segs).await? {
+                    Some(r) => Ok(r),
+                    None => Ok(Reply::not_found()),
+                }
+            }
             (Method::Post, ["orgs", org, "repos"]) => {
                 let body = req.json().await.unwrap_or(Value::Null);
                 crate::repos::create(c, req, crate::repos::Via::Org((*org).to_owned()), body).await
@@ -1560,6 +1567,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         return Ok(r);
     }
     if let Some(r) = crate::hooks::repo_route(c, req, &rd, who.as_ref(), tail, host).await? {
+        return Ok(r);
+    }
+    if let Some(r) = crate::secrets::repo_route(c, req, &rd, who.as_ref(), tail).await? {
         return Ok(r);
     }
     if let Some(r) = crate::activity::repo_route(c, req, &rd, who.as_ref(), tail, query, host).await? {

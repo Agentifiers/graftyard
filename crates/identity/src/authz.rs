@@ -1973,15 +1973,16 @@ impl AuthzCmd {
             _ => Err(AuthzErr::BadRecord),
         };
         match &self.op {
-            AuthzOp::PutSealKey { key } => {
-                if a.seal_keys.get(&key.key_id) == Some(key) {
-                    return none();
+            AuthzOp::PutSealKey { key } => match a.seal_keys.get(&key.key_id) {
+                Some(k) if k == key => none(),
+                // The wrapping key's rotation: the same key, its private half wrapped again under another slot.
+                Some(k) if SealKey { private: key.private.clone(), ..k.clone() } == *key => {
+                    one(AuthzEvent::SealKey { key_id: key.key_id.clone(), key: Some(key.clone()) })
                 }
-                if a.seal_keys.contains_key(&key.key_id) || key.retired.is_some() || key.key_id.is_empty() {
-                    return Err(AuthzErr::BadRecord);
-                }
-                one(AuthzEvent::SealKey { key_id: key.key_id.clone(), key: Some(key.clone()) })
-            }
+                Some(_) => Err(AuthzErr::BadRecord),
+                None if key.retired.is_some() || key.key_id.is_empty() => Err(AuthzErr::BadRecord),
+                None => one(AuthzEvent::SealKey { key_id: key.key_id.clone(), key: Some(key.clone()) }),
+            },
             AuthzOp::RetireSealKey { key_id, drop } => {
                 let Some(k) = a.seal_keys.get(key_id) else { return none() };
                 if *drop {

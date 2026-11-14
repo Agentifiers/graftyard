@@ -61,6 +61,7 @@ mod precreate;
 mod rcache;
 mod release;
 mod repos;
+mod secrets;
 mod transfer;
 mod ui;
 mod usertok;
@@ -2431,6 +2432,11 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         && let Some(r) = actions::graftyard_route(&c, &mut req, rest).await?
     {
         return Ok(r);
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
+        && let Some(r) = secrets::graftyard_route(&c, &mut req, rest).await?
+    {
+        return agents::respond(&c, r);
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
         && graftyard_api::agents::route(rest).is_some()

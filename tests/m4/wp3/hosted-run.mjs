@@ -63,7 +63,9 @@ async function startRunner() {
 }
 
 await startRunner();
-const d = must("dispatch", await api("POST", `${A}/dispatch`, admin, { workflow: path, ref: "main" }), 201, 200);
+// `HOSTED_RUN_FORK=1` marks the run as a fork pull request's (BF-59's fork-PR job: no fork route exists yet).
+const fork = process.env.HOSTED_RUN_FORK === "1";
+const d = must("dispatch", await api("POST", `${A}/dispatch`, admin, { workflow: path, ref: "main", ...(fork ? { fork: true } : {}) }), 201, 200);
 const run = d.run;
 log(`run ${run} created on ${d.shard} with ${d.jobs} jobs`);
 const t0 = Date.now();

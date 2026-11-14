@@ -410,8 +410,9 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 github_token: b["github_token"].as_str().unwrap_or(""),
                 job_token: &job_token,
                 locked_until: Timestamp(now + graftyard_actions::JOB_LEASE.as_millis() as u64),
-                secrets: Vec::new(),
-                variables: Vec::new(),
+                // Opened by the edge through `graft-ops` for this job alone; never logged or stored here.
+                secrets: serde_json::from_value(b["secrets"].clone()).unwrap_or_default(),
+                variables: serde_json::from_value(b["variables"].clone()).unwrap_or_default(),
             };
             json!({ "status": 200, "body": runsvc::acquire_message(&urls, &run, &row, &a), "repo": run.repo })
         }
