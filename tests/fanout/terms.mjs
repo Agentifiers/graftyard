@@ -17,11 +17,15 @@ if (!id) throw new Error(`${name}: no id`);
 const chain = `repo:${id}`;
 console.log(JSON.stringify({ at: new Date().toISOString(), chain }));
 let last = "";
+let names = {};
 while (Date.now() < until) {
   const t = Date.now();
   // Each site's current voter by name: a call by site alone reaches the first generation's object, and fresh-repo's
   // background placement replaces a voter (m25cap500's site 1 read its removed `#1#f1`, stale at commit 1).
-  const names = await voterNames(chain).catch(() => ({}));
+  // While no member leads, `voterNames` finds no config and answers `{}`: keep the last names, or the sample reads
+  // the dead first-generation object (m26c's site 1 at 07:01:04 to 07:01:18 read `#1#f1`, frozen at term 2).
+  const got = await voterNames(chain).catch(() => ({}));
+  if (Object.keys(got).length) names = got;
   const st = await Promise.all([0, 1, 2].map(async (s) => {
     try { return { site: s, ...(await member(chain, s, "/status", undefined, 15_000, names[s])).v }; } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
   }));

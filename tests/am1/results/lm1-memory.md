@@ -1802,7 +1802,7 @@ enam 4,000, weur 2,000, apac 2,000 (0 of 8 caught up at the 120 s wait, as on m2
 | side:human | 493 of 516 ok, 23 GraphQL 503, p99 6,280 ms |
 | merge:only | 16 of 18 200, 2 409, p99 7,560 ms |
 | `/suspect` on leader | 1,696; leader 280 req/s |
-| leader changes | 1 (term 2 → 4), leaderless about 17 s |
+| leader changes | 2 (0 → 1 at term 3, 1 → 2 at term 4), leaderless at most about 1 s and about 3 s (corrected in round 15c) |
 
 **Admission samples [measured].** Capacity fell from 78/s at start to 30–47/s and stayed there; `retryAfterS` rose to
 41–66 s; `agentQueued` sat at about 1,000 (AGENT_QUEUE_MAX); `roundMs` 198–322; `cmdBytes` 8,000–10,900.
@@ -1830,17 +1830,16 @@ or let the command exclude bytes it does not store) or in what the edge puts in 
 (raft) call. No fix here.
 
 **Leader change [measured].** 07:01:14Z, Workers Logs `member alarm` from site a's leader: `StepDown { why: LoopLag {
-clamped: 2 }, to: Some(SiteId(1)) }`. Term 3 never formed (site 1 stayed at term 2, its promise lapsed); site 2 led at
-term 4 from 07:01:21Z. Leaderless 07:01:04Z to about 07:01:21Z, about 17 s. So LOOP_LAG fired on this tree under
-B0-33's load, where round 12's m24c step-down was `Confirm` and m25 held; this run fails the zero-leader-change line.
+clamped: 2 }, to: Some(SiteId(1)) }`. Site 1 led term 3, then site 2 term 4 from 07:01:21Z; this run fails the
+zero-leader-change line. (The first version of this paragraph said term 3 never formed and the group was leaderless
+about 17 s; that read a dead object, see round 15c.)
 
 **The large confirms, round 14's question 2 [measured].** `bigTx` holds 3 transactions of 114–204 KB, 125–157
 statements: `INSERT request` 27–35 rows (36–45 KB), `INSERT m_path_set` 22–27 rows (32–40 KB), and one `INSERT log`
 row of 36–131 KB. So the large confirms are fold applies of many requests (their `request` rows and the metadata
 tier's `m_path_set` rows) together with one log row, not `Promoted`, `Archived`, an install, or a learner catch-up.
 
-**Verdict.** B0-33 fails on m26c: commit p99 30,975 ms, 897 of 12,480 agent pushes, one leader change with about 17 s
-leaderless. B0-33 stops here, as the parent ordered, until the admission pricing is settled.
+**Verdict.** B0-33 fails on m26c: commit p99 30,975 ms, 897 of 12,480 agent pushes, two leader changes (round 15c). B0-33 stops here, as the parent ordered, until the admission pricing is settled.
 
 **Cost.** $112.17 at 07:25Z (containers $46.15).
 
@@ -1882,3 +1881,30 @@ needs no seed. Plan on the fixed main: one site day (about $1), smokes at 250 an
 500-PR shape (about $3 with the opens), B0-33 (about $1.5), B0-35 (about $2.5), B0-34 last at 900 s on b034-mono
 (about $3 to $5 with the warm pool and the kill), plus idle drift (about $0.35 an hour). Total about $13 to $16 over
 $112.26 now (07:41Z, containers $46.21), so about $125 to $128 of the $150 cap, with room for one rerun.
+
+### Round 15c: correction, m26c's leader change (2026-11-14)
+
+The m3f rows thread found that `terms.mjs` can sample a dead voter object: `voterNames` takes the voter names from a
+leader's committed config, so with no member leading it answers `{}`, and the sample then calls the site by site
+alone, which reaches the first-generation object. That is what m26c's site-1 column shows from 07:01:04Z to 07:01:18Z:
+term 2, leader 0, its promise lapsed 598 to 612 s (the `#1#f1` fresh-repo placement replaced before the run). The
+live members say otherwise:
+
+| at (Z) | site 0 | site 2 |
+|---|---|---|
+| 07:01:04.7 | follower, term 3, no leader, voted 1, promise 2.8 s | same |
+| 07:01:05.7 | follower, term 3, leader 1, promise 9.1 s | same, 9.3 s |
+| 07:01:07.7 | term 3, leader 1, promise 9.9 s (renewed) | same, 10.0 s |
+| 07:01:18.7 | term 3, leader 1, promise lapsed 0.4 s | lapsed 0.03 s |
+| 07:01:21.8 | term 4, leader 2 | leader, term 4 |
+
+So the `LoopLag` transfer worked: site 1 won term 3 and renewed the followers' promises, so it led. Its promises then
+lapsed, and site 2 took term 4. That is two leader changes, with no member leading for at most about 1 s at 07:01:04Z
+and about 3 s from 07:01:18Z, not one change and about 17 s. Why site 1 lost term 3 is not measured (no `member
+alarm` StepDown from site b in Workers Logs for 07:01:00Z to 07:01:30Z, and site 1's live `/status` was never
+sampled). The only StepDown logged is site a's at 07:01:14.760Z, after the followers already followed site 1 at term
+3 from 07:01:05Z; that timestamp is not explained [unverified]. Round 15's B0-33 verdict (Fail) stands.
+
+The other traces in `tests/fanout/raw/terms-*.jsonl` (m24s33, m24s33b, m24s33c, m25s33) have no sample with a promise
+lapsed over 60 s, so this misread is only in m26s33. `terms.mjs` now keeps the last voter names it saw while no
+member leads.
