@@ -7,7 +7,7 @@
 #   DEPLOY=/tmp/farB ARM=adapt bash tests/m0carried/farleg.sh
 set -uo pipefail
 cd "${DEPLOY:?}"
-export CARGO_TARGET_DIR=/home/user/scratch/far-target
+export CARGO_TARGET_DIR=/home/user/scratch/far-target-$ARM
 export BED_TOKEN_FILE=$HOME/.graft-m3d/bed.token
 IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:15f6ed1b1d4b2b08c8adccbce713e89762677c3656dd7ee9a99bdd4bcab025c5
 VARS=$(mktemp); echo '{"SHARD_INSTANCE": "standard-4"}' > $VARS
