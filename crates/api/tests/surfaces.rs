@@ -1603,7 +1603,15 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
     keep_rest("trust-issue-comments", "/repos/{owner}/{repo}/issues/{issue_number}/comments", &comments);
     assert_eq!(list_issue_comments(&r, "99", "").status, 404);
 
-    // A pending review is the reviewer's own draft and not listed; a dismissed approval reads DISMISSED.
+    // A pending review is the reviewer's own draft and not listed; a dismissed approval reads DISMISSED. Each review
+    // comment made outside a review, a reply too, is its own single-comment review, COMMENTED with no body, as GHES
+    // makes one; its id is the comment's `pull_request_review_id`.
+    let review_comments = list_review_comments(&r, "2", "");
+    let review_of = |id: i64| {
+        let objects = review_comments.value().as_array().unwrap();
+        objects.iter().find(|c| c["id"] == id).unwrap()["pull_request_review_id"].as_i64()
+    };
+    let (single, single_reply) = (review_of(comment).expect("a review"), review_of(reply).expect("a review"));
     let reviews = list_reviews(&r, "2", "");
     let got: Vec<(i64, &str, &str)> = reviews
         .value()
@@ -1612,10 +1620,17 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
         .iter()
         .map(|v| (v["id"].as_i64().unwrap(), v["body"].as_str().unwrap(), v["state"].as_str().unwrap()))
         .collect();
-    assert_eq!(got, [(review, "review body", "COMMENTED"), (approval, "approved then dismissed", "DISMISSED")]);
+    assert_eq!(
+        got,
+        [
+            (review, "review body", "COMMENTED"),
+            (approval, "approved then dismissed", "DISMISSED"),
+            (single, "", "COMMENTED"),
+            (single_reply, "", "COMMENTED")
+        ]
+    );
     keep_rest("trust-reviews", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews", &reviews);
 
-    let review_comments = list_review_comments(&r, "2", "");
     let objects = review_comments.value().as_array().unwrap();
     let got: Vec<(i64, &str)> =
         objects.iter().map(|c| (c["id"].as_i64().unwrap(), c["body"].as_str().unwrap())).collect();
@@ -1694,7 +1709,7 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
     );
     assert_eq!(
         views("/repos/o/r/pulls/2/reviews", &reviews),
-        [t("review body", true), t("approved then dismissed", true)]
+        [t("review body", true), t("approved then dismissed", true), t("", false), t("", true)]
     );
     assert_eq!(
         views("/repos/o/r/pulls/2/comments", &review_comments),

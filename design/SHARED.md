@@ -560,7 +560,11 @@ pub struct CommentId(DbId);
 /// conversation resolution before merging" does, and merges read only Core. `Resolved` names only the thread, so a
 /// thread's first review comment (`Created` on a review with no `reply_to`), which opens it unresolved and maps it to
 /// its pull request, and every `Deleted`, which does not say whether it named a thread, also touch Core. So those three
-/// `Comment` events touch both tiers (M2-WP2, `crates/git/src/tiers.rs`).
+/// `Comment` events touch both tiers (M2-WP2, `crates/git/src/tiers.rs`). A review comment made outside a review (REST
+/// `POST /pulls/{n}/comments`, a reply too) is, as on GHES, a single-comment review's: `decide` adds a `Submitted`
+/// COMMENTED review with no body on the comment's commit to the same entry, after the comment, and the comment names it.
+/// A commenter whose current verdict approves or requests changes gets no review, because a COMMENTED `Submitted`
+/// replaces the verdict [inference: GHES keeps the verdict; the fold has no review that leaves it alone].
 pub enum CommentEvent {
     Created { id: CommentId, on: CommentTarget, author: Actor, body: Box<str>, reply_to: Option<CommentId> },
     Edited { id: CommentId, body: Box<str>, actor: Actor }, Deleted { id: CommentId, actor: Actor },
