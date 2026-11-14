@@ -2048,7 +2048,12 @@ impl<F: Family> Host<F> {
             }
             _ => None,
         };
-        let Some(e) = self.callers.borrow_mut().route(e.to, e, now_ms()) else {
+        // Held bytes are counted by the entries' encoding, as the log counts them (`raft::Member::log_bytes`).
+        let bytes = match &e.msg {
+            raft::Message::Append(a) => a.entries.iter().map(|x| raft::encode_entry(x).len()).sum(),
+            _ => 0,
+        };
+        let Some(e) = self.callers.borrow_mut().route(e.to, e, bytes, now_ms()) else {
             if let Some((to, round, last, commit)) = held {
                 self.trace(Trace::AppendHeld, to, round, last, commit);
             }

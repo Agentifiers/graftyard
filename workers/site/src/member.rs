@@ -1390,6 +1390,11 @@ impl<F: Family> Routes<F> {
                     "pressure": a.pressure,
                 })),
                 "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
+                // narrow-reads-3's leader memory: the log entries in memory, and per learner the messages held for its
+                // next call, their bytes now and at most since the last reset, and its calls open.
+                "logBytes": self.host.core.borrow().as_ref().map(|c| c.m.log_bytes()),
+                "held": self.host.callers.borrow_mut().held_stats(reset).into_iter()
+                    .map(|(s, n, b, peak, open)| json!([s.0, n, b, peak, open])).collect::<Vec<_>>(),
             });
             let mut v = v;
             v["busyPages"] = json!(s.busy_pages);

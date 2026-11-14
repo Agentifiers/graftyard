@@ -28,6 +28,15 @@
 //     [--as-admin]       # every request under the admin's PAT, for installs that cannot mint App tokens
 //     [--rest-polls F]   # B0-35: this share of the `mergeable` polls is REST `GET pulls/{n}` (default 0, all GraphQL)
 //     [--first-for MS]   # B0-35, test installs: the leader gives each `PrSync` first attempt MS before the queue re-sends it
+//     [--b034 FILE]      # B0-34 as written, on the seeded 5 GB monorepo (tests/fanout/b034.sh). FILE is JSON:
+//                        # `bare` (the local torvalds/linux clone) and `future` (the first-parent commits after the
+//                        # seeded main), which replace the PR merges: 10 a minute push the next one to main, so the
+//                        # tip moves along real history; `second` {repo, chain, who}, a network of another owner made
+//                        # hot from `secondAt` s; `hostile` [{repo, chain, who}], three networks of a third owner made hot from
+//                        # `hostileAt` s; `hotPushPerS` and `hotClonePerS` per hot network (M0: 1 and 3). Clones are
+//                        # depth 1 and stop at the first byte (5 GB a clone cannot cross the orb). k of every network
+//                        # is read every 30 s. No Cloudflare API call is the static check in b034.sh: no request path
+//                        # can reach the API, so "unreachable" holds by construction (`design/DESIGN.md`, Invariants).
 //
 // B0-35 pushes to its open PRs' head branches, so each push asks the network's shard for a test merge, adds `mergeable`
 // to its list reads, and writes `testMerges`: each site's shard budget over the window (`/_bed/shard_status`, the
@@ -48,13 +57,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
+import { clockSpread } from "./clock.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
-  "first-for": { type: "string" } } });
+  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" } } });
 
 // ---- the plan, from the rows ----
 
@@ -310,6 +320,17 @@ if (opt.selftest) {
     const enc = (ms) => { let o = ""; for (let k = 0; k < 10; k++) { o = CROCKFORD[ms % 32] + o; ms = Math.floor(ms / 32); } return `${o}0000000000000000`; };
     const lease = ulidMs(held) === 1469918176385 && overlapMs(held, 60, enc(1469918176385 + 59_700)) === 300
       && overlapMs(held, 60, enc(1469918176385 + 60_001)) === -1;
+    // L0-12's clock spread (clock.mjs). Round 1 is rows-m19's idle shape, three members within 60 ms on round trips of
+    // 70, 180 and 240 ms; round 2's 3,000 ms round trip on site 0 is queueing and is rejected, not widened (widening
+    // it read 3.2 s). Site 2's floor is 480 ms in the apac rounds, so 680 is kept and 681 rejected: the cap is over each
+    // site's own floor. Round 5 is a real 900 ms skew: at least 850 and at most 950.
+    const cs = (round, site, offset, rtt) => ({ round, site, offset, rtt });
+    const idle = clockSpread([cs(1, 0, 8000, 70), cs(1, 1, 8030, 180), cs(1, 2, 8060, 240), cs(2, 0, 6500, 3000), cs(2, 1, 8040, 190)]);
+    const apac = clockSpread([cs(3, 0, 0, 60), cs(3, 2, 10, 480), cs(4, 0, 0, 60), cs(4, 2, 10, 680), cs(4, 2, 1500, 681)]);
+    const skew = clockSpread([cs(5, 0, 0, 50), cs(5, 1, 900, 50)]);
+    const clock = JSON.stringify(idle) === JSON.stringify({ upperMs: 240, lowerMs: 0, rounds: 1, kept: 4, rejected: 1 })
+      && JSON.stringify(apac) === JSON.stringify({ upperMs: 380, lowerMs: 0, rounds: 2, kept: 4, rejected: 1 })
+      && skew.upperMs === 950 && skew.lowerMs === 850 && clockSpread([cs(6, 0, 0, 50)]).upperMs === null;
     // merge:only's split: `tier` and `authz` overlap, so the gap counts the longer; a merge with no shard timing
     // adds no shard stage.
     const sp = mergeSplit([
@@ -317,8 +338,8 @@ if (opt.selftest) {
       { timing: "auth;dur=40, authz;dur=600, tier;dur=100, merge_plan;dur=100, commit;dur=400, total;dur=1140", shard: "" },
     ]);
     const split = sp.gap.n === 2 && sp.gap.max === 300 && sp.tier.max === 900 && sp["shard:merge"].n === 1 && sp.total.p99 === 1900;
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split, clock }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split || !clock
       || why !== "refused pack N bytes over INLINE_MAX_HOT N" || unp !== "refused unpacker error: validate: shard N after N ms") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
@@ -330,7 +351,15 @@ const seconds = Number(opt.seconds ?? 600);
 const plan = planFor(row, { agents: opt.agents ? Number(opt.agents) : undefined, seconds,
   apiReads: opt["api-reads"] !== undefined ? Number(opt["api-reads"]) : undefined, refReads: opt["ref-reads"] !== undefined ? Number(opt["ref-reads"]) : undefined });
 if (opt["kill-every"]) plan.killEvery = Number(opt["kill-every"]);
+// B0-34 as written: the tip moves along real history in place of PR merges (a merge commit would leave main off the
+// history the next move fast-forwards to).
+const b034 = opt.b034 ? JSON.parse((await import("node:fs")).readFileSync(opt.b034, "utf8")) : null;
+if (b034) { plan.mergesPerMin = 0; plan.tipMovesPerMin = 10; }
 if (opt.pollers !== undefined) plan.pollers = Number(opt.pollers);
+// `--open-prs N`: N draft PRs opened in this run before its window, each on an agent's own head branch, so the first N
+// agents' pushes are head pushes with their PrSync and test-merge records, as B0-29's row text has them. B0-35's
+// mergeable pollers stay off. LM-1 round 12's agreed B0-29 shape is 500 (tests/am1/results/lm1-memory.md).
+if (opt["open-prs"] !== undefined) plan.openPrs = Number(opt["open-prs"]);
 if (opt["push-every"] !== undefined) plan.pushEvery = Number(opt["push-every"]);
 const restPolls = Math.min(1, Math.max(0, Number(opt["rest-polls"] ?? 0)));
 
@@ -364,7 +393,12 @@ let t0 = Date.now() + 15_000;
 let end = t0 + seconds * 1000;
 const lat = {};
 const codes = {};
-const note = (k, ms, code) => { (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1; };
+// B0-34 as written keeps each phase's pushes, merges, and clones apart (`b034Phase`).
+const PHASED = /^(push:|read:clone|tip:move|hot:)/;
+const note = (k, ms, code) => {
+  if (b034 && PHASED.test(k)) k += b034Phase();
+  (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1;
+};
 const pct = (xs, p) => { const s = [...(xs ?? [])].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
 const mergeSteps = [];
 const humanInFlight = {};
@@ -390,18 +424,23 @@ const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toStrin
 const placeFailing = () => plan.placeFailAt !== undefined && Date.now() >= t0 + plan.placeFailAt * 1000;
 const half = (k) => (plan.placeFailAt === undefined ? k : `${k}${placeFailing() ? "@fail" : "@up"}`);
 const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-token": BED } : {});
-async function git(path, tok, body, headers = {}) {
+async function git(path, tok, body, headers = {}, repo = R) {
   const t = Date.now();
   try {
-    const r = await fetch(`${EDGE}/${R}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(120_000) });
+    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(120_000) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
   } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t }; }
 }
 const lsRefs = (tok, prefix) => git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt(`ref-prefix ${prefix}\n`), Buffer.from("0000")]),
   { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" });
 const tip = async (ref) => (await lsRefs(admin, ref)).text.match(new RegExp(`([0-9a-f]{40}) ${ref}\\n`))?.[1] ?? null;
+// A fresh repository's `main` (auto_init) was missing from ls-refs for seconds after its 201 on m23 (2 of 4 creates):
+// wait up to 120 s and log the wait, so it is measured rather than a failed run.
+const mainSince = Date.now();
 let main = await tip("refs/heads/main");
+while (!main && Date.now() - mainSince < 120_000) { await sleep(2_000); main = await tip("refs/heads/main"); }
 if (!main) throw new Error("the repository has no main");
+if (Date.now() - mainSince > 1_000) log(`main appeared in ls-refs after ${Date.now() - mainSince} ms`);
 
 /** One push of `bytes` to `ref` from `from` (old tip or null); returns [result, ms, new tip]. */
 const pushed = new Map(); // commit id -> ack time, for feed latency
@@ -509,6 +548,26 @@ if (plan.openPrs) {
   for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; }
 }
 
+// No learner catches up inside the window: before it starts, every learner has applied the leader's commit index as
+// setup left it (up to 120 s), so a learner's join and catch-up, which raised a leader's wasm high-water from 28 to
+// 73 MiB on graft-m3e (narrow-reads-3), falls in setup on every row. The wait and the leader's memory then are logged.
+{
+  const st = await statuses(CHAIN);
+  const lead = st.find((s) => s.role === "leader");
+  const ls = (st.find((s) => s.config)?.config?.config?.normal?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
+  if (lead && ls.length) {
+    const since = Date.now();
+    let behind = ls;
+    while (behind.length && Date.now() - since < 120_000) {
+      const at = await Promise.all(behind.map(async (l) => (await member(CHAIN, l.site, "/status", undefined, 15_000, l.name).catch(() => ({}))).v?.applied ?? 0));
+      behind = behind.filter((_, i) => at[i] < lead.commit);
+      if (behind.length) await sleep(2_000);
+    }
+    const mem = (await member(CHAIN, lead.site, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v?.wasmMemMb ?? null;
+    writeRow(OUT, { step: "learners caught up", learners: ls.length, behind: behind.length, commit: lead.commit, waitMs: Date.now() - since, leaderWasmMb: mem });
+    log(`learners caught up to ${lead.commit}: ${ls.length - behind.length}/${ls.length} in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
+  }
+}
 t0 = Date.now() + 5_000;
 end = t0 + seconds * 1000;
 
@@ -539,6 +598,26 @@ const stages = (r) => {
 };
 let pushN = 0;
 let labelN = 0;
+/** A v2 fetch of `want` from `repo`: time to its first byte as `kind`. `firstByte` (B0-34's 5 GB network) asks depth
+ *  1 and cancels after the first byte; otherwise the whole answer is read. */
+async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
+  const s = Date.now();
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 120_000);
+  try {
+    const r = await fetch(`${EDGE}/${repo}.git/git-upload-pack`, { method: "POST", signal: ctl.signal,
+      headers: { ...auth(tok), "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
+      body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), pkt(`want ${want}\n`),
+        ...(firstByte ? [pkt("deepen 1\n")] : []), pkt("done\n"), Buffer.from("0000")]) });
+    const reader = r.body.getReader();
+    await reader.read();
+    note(kind, Date.now() - s, String(r.status));
+    if (firstByte) await reader.cancel();
+    else while (!(await reader.read()).done);
+    return String(r.status);
+  } catch (e) { note(kind, Date.now() - s, `error ${String(e).slice(0, 30)}`); return "error"; }
+  finally { clearTimeout(timer); }
+}
 const jobs = [
   // Each agent pushes every pushEvery s, its start spread over the first interval.
   ...agents.map((a) => (async () => {
@@ -618,16 +697,7 @@ const jobs = [
   every("read:api", plan.apiReads, async () => stages(Math.random() < 0.5
     ? await api("GET", `/api/v3/repos/${R}/issues?per_page=30`, admin)
     : await api("POST", "/api/graphql", admin, { query: `query { repository(owner: "m3org", name: "${opt.repo}") { pullRequests(last: 10) { nodes { number isDraft${plan.openPrs ? " mergeable" : ""} } } } }` }))),
-  every("read:clone", plan.clones, async () => {
-    const s = Date.now();
-    const r = await fetch(`${EDGE}/${R}.git/git-upload-pack`, { method: "POST", headers: { ...auth(admin), "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
-      body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), pkt(`want ${main}\n`), pkt("done\n"), Buffer.from("0000")]) });
-    const reader = r.body.getReader();
-    await reader.read();
-    note("read:cloneTtfb", Date.now() - s, String(r.status));
-    while (!(await reader.read()).done);
-    return String(r.status);
-  }, 20),
+  every("read:clone", plan.clones, () => cloneTtfb(R, main, "read:cloneTtfb", !!b034), 20),
   every("fast-user", (plan.fastUser ?? 0) / 60, async () => st(await api("POST", "/api/graphql", tokens.member, { query: "mutation($i: AddCommentInput!) { addComment(input: $i) { subject { id } } }", variables: { i: { subjectId: target.id, body: "a1 fast" } } }))),
   every("read:mergeable", plan.prPollers ? plan.prPollers * (1 - restPolls) / plan.prPollEvery : 0, async () => {
     const pr = pick(openPrs);
@@ -690,21 +760,10 @@ if (plan.leases) for (let k = 0; k < PROBE_PAIRS; k++) {
     }
   })());
 }
-// Member clock offsets against the orb, from `/status` `now` at each response's midpoint: each sample's bound is its
-// offset plus half the round trip (L0-12's measured-offset line).
+// Member clock samples for L0-12: each member's `/status` `now` against the midpoint of its round trip, every 15 s.
 const clockSamples = [];
 let clockRound = 0;
-// L0-12's line is the members' offsets from each other, not from this orb (whose clock ran about 4 s behind
-// Cloudflare's in round 6): per round of three samples, the widest spread of offsets, each widened by half its RTT.
-const clockSpread = (xs) => {
-  const by = new Map();
-  for (const c of xs) by.set(c.round, [...(by.get(c.round) ?? []), c]);
-  const spreads = [...by.values()].filter((r) => r.length > 1).map((r) => {
-    const half = (c) => c.bound - Math.abs(c.offset);
-    return Math.max(...r.map((c) => c.offset + half(c))) - Math.min(...r.map((c) => c.offset - half(c)));
-  });
-  return spreads.length ? Math.round(Math.max(...spreads)) : null;
-};
+// L0-12's clock line: `clockSpread` in clock.mjs.
 if (plan.leases) jobs.push((async () => {
   await sleep(Math.max(0, t0 - Date.now()));
   while (Date.now() < end) {
@@ -714,7 +773,7 @@ if (plan.leases) jobs.push((async () => {
       try {
         const v = (await member(CHAIN, site, "/status", undefined, 5_000)).v;
         const e = Date.now();
-        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, bound: Math.abs(v.now - (s + e) / 2) + (e - s) / 2 });
+        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s });
       } catch { /* a member mid-kill */ }
     }));
     await sleep(15_000);
@@ -727,6 +786,69 @@ if (opt["kill-shard-at"]) jobs.push((async () => {
   const r = await bedGet(`/_bed/kill?repo=${id}`);
   writeRow(OUT, { step: "shard kill", status: r.status, at: Date.now() - t0 });
 })());
+
+// B0-34 as written. Phase marks go in the row's file; every kind measured in a phase is suffixed with it.
+function b034Phase() {
+  const past = (at) => at !== undefined && at !== null && Date.now() >= t0 + Number(at) * 1000;
+  return past(b034.hostileAt) ? "@hostile" : past(b034.secondAt) ? "@second" : past(opt["kill-shard-at"]) ? "@kill" : "@j9";
+}
+const kTimeline = []; // [s since t0, chain, k]
+if (b034) {
+  const { execFileSync: ex } = await import("node:child_process");
+  // The tip: the next real first-parent commit, fast-forwarded onto main under the admin's PAT from the bare clone.
+  const g = new (await import("../hosted/lib.mjs")).Git(R).as(admin);
+  let next = 0;
+  jobs.push(every("tip:move", plan.tipMovesPerMin / 60, async () => {
+    const c = b034.future[next];
+    if (!c) return "no more history";
+    next++;
+    const r = g.run(["push", "-q", g.url, `${c}:refs/heads/main`], b034.bare);
+    if (r.ok) { main = c; return "ok"; }
+    return `refused ${r.out.split("\n").filter(Boolean).slice(-1)[0]?.replace(/[0-9a-f]{12,}/g, "H").slice(0, 80) ?? ""}`;
+  }, 1));
+  void ex;
+  // A hot network of another owner: pushes of one new blob on its own branches and depth-1 clones read whole.
+  const hot = (n, from, tag) => {
+    const tips = {};
+    const tok = tokens[n.who];
+    const pushPerS = b034.hotPushPerS ?? 1, clonePerS = b034.hotClonePerS ?? 3;
+    const at = async () => { await sleep(Math.max(0, t0 + from * 1000 - Date.now())); };
+    return [
+      (async () => { await at(); await every(`hot:push${tag}`, pushPerS, async () => {
+        const k = Math.floor(Math.random() * 20), ref = `refs/heads/b034-${RUN}-${k}`;
+        const base = tips[ref] ?? (await git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt("ref-prefix refs/heads/main\n"), Buffer.from("0000")]),
+          { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" }, n.repo)).text.match(/([0-9a-f]{40}) refs\/heads\/main\n/)?.[1];
+        const { pack, commit } = onePack(`b034/${k}.txt`, randomBytes(20_000), tips[ref] ?? base, `b034 ${ref}`, Math.floor(Date.now() / 1000));
+        const r = await git("git-receive-pack", tok, receiveBody(ref, tips[ref] ?? null, commit, pack), { "content-type": "application/x-git-receive-pack-request" }, n.repo);
+        const res = r.status === 200 ? pushResult(r.text) : `http ${r.status}`;
+        if (res === "ok") tips[ref] = commit;
+        return res;
+      }, 8); })(),
+      (async () => { await at(); await every(`hot:clone${tag}`, clonePerS, async () => {
+        const t = (await git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt("ref-prefix refs/heads/main\n"), Buffer.from("0000")]),
+          { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" }, n.repo)).text.match(/([0-9a-f]{40}) refs\/heads\/main\n/)?.[1];
+        return t ? cloneTtfb(n.repo, t, `hot:cloneTtfb${tag}`, false, tok) : "no main";
+      }, 8); })(),
+    ];
+  };
+  if (b034.second) jobs.push(...hot(b034.second, b034.secondAt, ":second"));
+  for (const [i, h] of (b034.hostile ?? []).entries()) jobs.push(...hot(h, b034.hostileAt, `:hostile${i + 1}`));
+  // k of every network, every 30 s, from each group's leader (`ranges`, as tests/fanout/k.mjs reads it).
+  const nets = [CHAIN, b034.second?.chain, ...(b034.hostile ?? []).map((h) => h.chain)].filter(Boolean);
+  jobs.push((async () => {
+    await sleep(Math.max(0, t0 - Date.now()));
+    while (Date.now() < end) {
+      for (const c of nets) {
+        try {
+          const l = (await statuses(c)).filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
+          const v = l ? await member(c, l.site, "/read", { q: { ranges: true } }, 15_000) : null;
+          kTimeline.push([Math.round((Date.now() - t0) / 1000), c, v?.v?.value?.fanout ?? null]);
+        } catch { kTimeline.push([Math.round((Date.now() - t0) / 1000), c, null]); }
+      }
+      await sleep(30_000);
+    }
+  })());
+}
 
 // The feed: pollers straight to followers and learners, as the edge sends them, each watching one agent group.
 const seen = []; // [poller, ref, ms after its push's ack, seen at]
@@ -825,24 +947,35 @@ const v = {
     commitMs: ps(lstats.commitMs),
     // Round 5's commit split: admission to append (`queueMs`, which holds the entry's dep reads), the dep reads by
     // chain kind (`depsMs`), append to apply (`roundMs`: storage confirm and quorum), and the confirm alone.
-    split: Object.fromEntries([["queue", lstats.queueMs], ["round", lstats.roundMs], ["confirm", lstats.confirmMs],
+    // Round 10 adds each follower's AppendEntries call time (`append:<site>`) and append to apply (`apply`), so the
+    // round splits into the near follower's leg and the leader's own confirm.
+    // `queue:slot` waits for the entries ahead; `queue:post` is the command's own entry's cut, dep reads and decide.
+    split: Object.fromEntries([["queue", lstats.queueMs], ["queue:slot", lstats.queueSlotMs], ["queue:post", lstats.queuePostMs],
+      ["round", lstats.roundMs], ["confirm", lstats.confirmMs], ["apply", lstats.applyMs],
+      ...Object.entries(lstats.appendMs ?? {}).map(([k, xs]) => [`append:${k}`, xs]),
       ...Object.entries(lstats.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
       .map(([k, xs]) => [k, ps(xs)])),
+    // Round 12's confirm split by transaction size: the gate wait, the turn queue, and storage (`sync - turn`).
+    confirmSplit: lstats.confirmSplit ?? null,
     depFails: lstats.depFails,
+    // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
+    entries: lstats.entries, commands: lstats.commands,
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
+  ...(b034 ? { b034: { kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
+    secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {
     overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,
       maxMs: overlaps.length ? Math.max(...overlaps.map(([o]) => o)) : null, p50: pct(overlaps.map(([o]) => o), 0.5),
       asksP50: pct(overlaps.map(([, n]) => n), 0.5) },
     // A grant is decided on its leader's own `at`, so the stamps alone never show two leaders' clock skew: the bound
-    // on a real overlap adds the widest spread of member clocks seen (each offset widened by half its round trip).
-    overlapBoundMs: overlaps.length && clockSamples.length ? Math.round(Math.max(...overlaps.map(([o]) => o))
-      + Math.max(...clockSamples.map((c) => c.offset + (c.bound - Math.abs(c.offset)))) - Math.min(...clockSamples.map((c) => c.offset - (c.bound - Math.abs(c.offset))))) : null,
-    clock: { samples: clockSamples.length, memberSpreadMs: clockSpread(clockSamples), maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null,
-      maxBoundMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => c.bound))) : null },
+    // on a real overlap adds the members' clock spread (clock.mjs's upper bound).
+    overlapBoundMs: overlaps.length && clockSpread(clockSamples).upperMs != null
+      ? Math.round(Math.max(...overlaps.map(([o]) => o)) + clockSpread(clockSamples).upperMs) : null,
+    clock: { samples: clockSamples.length, ...clockSpread(clockSamples),
+      maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
   ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
     pollAnswers: codes["read:mergeable"] ?? {}, restPollAnswers: codes["read:mergeableRest"] ?? {},
