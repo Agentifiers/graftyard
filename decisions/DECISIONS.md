@@ -3112,3 +3112,19 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** `tests/am1/results/fresh-repo.md`, "Bug 2".
 
 **Flip.** None needed. A driver that must survive a lost answer should read the repository's `main`, not its settings.
+
+### `liveness-split-vote`: a voter that granted a rival's pre-vote waits before its own, 2026-11-14
+
+#### A pre-vote grant holds back the granter's own campaign
+
+**Decision.** Two rules in `crates/raft/src/member/election.rs`. Pre-vote grants and refusals are otherwise unchanged.
+- A voter that grants a rival's pre-vote starts no campaign of its own for one CALL_DEADLINE (1 s) from the first grant for that asked term (`pre_granted`). A repeated pre-vote for the same term does not extend the wait.
+- A voter whose own pre-vote is out when it grants a rival's drops its own (`lose_campaign`, with its usual backoff). A real campaign it already started is kept.
+
+**Why.** `long_liveness`'s writes-fail target (every group moved within 20 s) missed seed 14011 on main (21.5 s) and seed 3052 on `m0-adaptive-append` (21.9 s). The trace of 14011: with site 0's writes failing, followers 1 and 2 lost their promises together, and the same `suspect` reports, which every edge sends to both, started both within 31 to 117 ms, three terms running (4, 5 and 6). Each granted the other's pre-vote: site 2's reached site 1 just before the report that started site 1, and a campaigning member denies only a higher id as `Contending`, so site 2 granted site 1. Both entered the real vote and each refused the other as `Voted`. Site 0 never answered in time, so each campaign ran its full CAMPAIGN_DEADLINE (3 s), lost, backed off 100 to 400 ms, and the next report started both again [measured, simulator, `tests/m0/results/split-vote.md`]. The random backoff does not separate them because the reports, not the backoff, set when they start. The first rule alone fixed 14011 and 3052 but, over 20,000 seeds, made two other seeds fail that pass on main: 15198 (3 leader changes) and 21945 (22.2 s). In both, each follower's own pre-vote was already out when it granted the other's, so the wait did not apply; the gray leader, still a follower answering pre-votes, granted both, and the two real votes split. The second rule closes that path.
+
+**Beat.** A longer or wider random backoff: the restart comes from the reports, which arrive at both voters together, so a backoff only delays both. Denying a pre-vote while the voter has granted one, which needs a second refusal kind on the wire. Letting a lost real vote end before CAMPAIGN_DEADLINE when every answer is `Voted`, which shortens each failed term but does not stop the next split.
+
+**Evidence.** `a_voter_that_granted_a_rivals_pre_vote_lets_it_win` and `a_voter_that_grants_a_rivals_pre_vote_drops_its_own` (`crates/raft/tests/scenarios.rs`), each failing without its rule. `tests/m0carried/plant10.py` plants seven mutants of the two rules. The writes-fail scan, the long sweep and Porcupine are in `tests/m0/results/split-vote.md`.
+
+**Flip.** A history in which the wait delays an election past the liveness bound, for example a rival whose pre-vote passes and whose real vote never arrives, repeated each term; or a writes-fail seed over 20 s that is still a split vote.

@@ -703,6 +703,9 @@ pub struct Member<C: Command> {
     forgot: Option<SiteId>,
     /// A voter refused this member's pre-vote as `Suspected`: it starts no other campaign until then, half the bar.
     retry_pre_at: Timestamp,
+    /// The term this member last granted a rival's pre-vote for, and until when it starts no campaign of its own:
+    /// the rival asked first, so it gets one CALL_DEADLINE to win. Once per asked term.
+    pre_granted: (Term, Timestamp),
     /// The highest index of this member's log that it knows is durable on its own storage: the stored log at
     /// `restore`, then raised only by `self_ack`. A leader counts itself toward a commit only up to here.
     own_durable: Index,
@@ -838,6 +841,7 @@ impl<C: Command> Member<C> {
             stand_aside_until: Timestamp(0),
             forgot: None,
             retry_pre_at: Timestamp(0),
+            pre_granted: (Term(0), Timestamp(0)),
             own_durable,
             own_durable_at: Timestamp(0),
             epoch: 0,
