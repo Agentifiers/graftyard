@@ -1,0 +1,37 @@
+{
+ "job": 1179662,
+ "conclusion": "Success",
+ "fork": false,
+ "want": {
+  "repo": [
+   "4cae0cd192fdaaa6",
+   29
+  ],
+  "env": [
+   "12d22ce4934a4204",
+   29
+  ],
+  "org": [
+   "0b27375041163f45",
+   29
+  ]
+ },
+ "seen": {
+  "repo": [
+   "4cae0cd192fdaaa6",
+   29
+  ],
+  "env": [
+   "12d22ce4934a4204",
+   29
+  ],
+  "org": [
+   "0b27375041163f45",
+   29
+  ]
+ },
+ "varOk": true,
+ "ok": true,
+ "logStatus": 200,
+ "dir": "/tmp/bf59/job-rot2-mwgsrrqb"
+}

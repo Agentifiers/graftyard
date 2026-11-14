@@ -1,0 +1,57 @@
+{
+ "lists": {
+  "repo": {
+   "secrets": [
+    {
+     "created_at": "2026-11-14T18:47:09Z",
+     "name": "BF59_DBG",
+     "updated_at": "2026-11-14T18:47:09Z"
+    },
+    {
+     "created_at": "2026-11-14T19:07:38Z",
+     "name": "BF59_REPO",
+     "updated_at": "2026-11-14T19:07:38Z"
+    }
+   ],
+   "total_count": 2
+  },
+  "env": {
+   "secrets": [
+    {
+     "created_at": "2026-11-14T19:07:41Z",
+     "name": "BF59_ENV",
+     "updated_at": "2026-11-14T19:07:41Z"
+    }
+   ],
+   "total_count": 1
+  },
+  "org": {
+   "secrets": [
+    {
+     "created_at": "2026-11-14T19:07:43Z",
+     "name": "BF59_ORG",
+     "updated_at": "2026-11-14T19:07:43Z",
+     "visibility": "selected"
+    }
+   ],
+   "total_count": 1
+  },
+  "key": {
+   "key": "KQhNy/OY/3Z2xUP/AbECRxy4FVniR4AE1Uu4D2m+IUo=",
+   "key_id": "1478349346864660411"
+  },
+  "vars": {
+   "total_count": 1,
+   "variables": [
+    {
+     "created_at": "2026-11-14T19:07:46Z",
+     "name": "BF59_VAR",
+     "updated_at": "2026-11-14T19:07:46Z",
+     "value": "bf59-plain-variable"
+    }
+   ]
+  },
+  "repoId": 65554
+ },
+ "leaked": 0
+}

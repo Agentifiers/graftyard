@@ -11,7 +11,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 | BF-54 | Not built | Waits for the step-3 estimate's approval (lead, 2026-11-14) |
 | BF-55 | Not built | Not run |
 | BF-56 | Pass (both kills) | Not run |
-| BF-59 | Not built | Not run |
+| BF-59 | `graft-ops` open, reseal, and rewrap (PyNaCl oracle); key rules (`crates/identity/tests/sealed.rs`) | **Pass** (19:07Z to 19:31Z): repository, environment, and org secrets read right before and after both rotations; a fork-PR job sees none; no plaintext in 1,296 committed entries, 34 run files, runner diagnostics, or Workers Logs |
 
 A row passes only hosted, with an unmodified `actions/runner`. The in-memory halves below check the engine's rules on real members first.
 
@@ -81,6 +81,28 @@ Site day 28 (14:15Z) put the `Actions` family, `/runsvc`, `RunnerBroker`, `LogRe
 - **BF-61's relay kill** (M4 web runs the row; this is the relay side). Site day 30 (15:40Z) added `LogRelay` `/abort`, `ctx.abort()` reached only through a binding. Job 1114120 of run 1114119 on `m3org/wp3-live` streamed through `logrelay:1114120` on site 0 with two viewers attached, and a scratch Worker bound to the `LogRelay` classes (`graft-m4a-relaykill`, deleted after) aborted it at 15:47:05.05Z. The runner noticed on its next send, about 27 s later, retried twice at once (two harmless `ResultServer` exceptions as the attempts raced), and reconnected within 1 s to a fresh relay with no tail. Its lease kept renewing and the job completed `Success` at 15:52:15Z. Its `/logs` then held all 600 counter lines with none missing (37,382 B) [measured]. M4 web's spec stalled on a page action after saving the log, so the lead asked for one clean printed rerun with no new site day: job 1114123 of run 1114122, relay on site 0, aborted at 16:20:00.113Z, behaved the same (the runner reconnected about 29 s later on its next send; `Success` at 16:25:37Z; all 600 lines in `/logs`) [measured]. The spec then printed a clean pass (`1 passed`, M4 web's `tests/m4/results/m4-wp5.md` on `m4-web-7` `f12a64e3`): 220 live lines with none over 2 s, the socket closed with no `end`, the page on saved logs 2.2 s later, and the final log holding every line the page saw live.
 - **The `line.at` skew is the orb's clock.** The orb's clock runs about 5 s behind Cloudflare's: the kill Worker's `Date.now()` read 5.03 s after the orb's send, and the edge's `Date` 5 s after the orb's. The runner ran on the orb, so its timestamps, not the relay's, were behind [measured on two readings].
 - **Not yet checked:** a viewer's close arrives about 10 s after `no-stream` (M4 web, edge day 10), or not within 12 s (edge day 11). The web viewer falls back on `no-stream` itself; BF-61's kill path falls back on the close, so it is checked there.
+
+## BF-59 hosted: secrets across both rotations
+
+Driver `tests/m4/wp3/bf59.mjs`, workflow `tests/m4/wp3/hosted/bf59.yml` (one job with `environment: bf59env`; each step prints a secret only as the first 16 hex of its SHA-256 and its length, and the variable as text). Repository `m3org/wp3-bf59` (65554), unmodified runner 2.338.2. Site day 32 (`17dff43c` / `57066014` / `30444906`), edge day 15 (`1524eb37`), then edge day 16 (`b9a67f48`) for the rotation fix below. Three random 29-character values were kept only in the run directory (mode 600).
+
+| Step | Result |
+| --- | --- |
+| `gh secret set` 2.102.1: `BF59_REPO` (`-R`), `BF59_ENV` (`--env bf59env`), `BF59_ORG` (`--org m3org --visibility selected --repos wp3-bf59`); `gh variable set BF59_VAR` | each exit 0; the three list routes show the names and no value; one owner key `1478349346864660411` |
+| Job 1179653 | Success; repo, env, and org each print the right hash and length 29; `var bf59-plain-variable` |
+| Fork-PR job 1179656 (run marked `fork` through the dispatch route) | Success; all three print the empty value's hash `e3b0c44298fc1c14` and length 0; the variable still reads |
+| `rotate-seal-key` (run 2) | 200: new key `3052770262353804737`; 4 records resealed (3 repository and environment, 1 org); keys `1478349346864660411` and `6243795946503046962` retired and dropped; afterwards no repository row or the org's fold names either |
+| Job 1179659 after it | Success, all three right |
+| Wrapping key: slot B created (`graft-m4a-secrets-wrap-key-b`); `graft-m4a-ops` `cb75d656` with A and B, B current; `rewrap-secrets` | 200: 1 `SealKey` and 65 hook secrets rewrapped under slot 1 across 16 repositories; a second run rewraps nothing |
+| Slot A cleared: `graft-m4a-ops` `459c7362` with B alone | job 1179662 Success, all three right; a ping to hook 229398 arrived signed (`x-hub-signature-256`), 200 |
+| Scan (`bf59.mjs scan`) | 0 hits for any value, its base64, or its hex in every committed entry of `repo:65554` and `authz:7100001` on all three members (1,296 entries) and in 34 run files including runner logs and diagnostics |
+| Workers Logs (`tests/m4/wp3/bf59-logs.mjs`, 18:40Z to 19:31Z) | 0 hits in messages or request URLs of the edge, ops, and three site scripts (423, 148, 17,511, 7,211, 3,289 events); a control query for strings that are logged matched 6 and 18 events |
+
+Found on the way, both fixed and redeployed before the run that counts:
+
+- **An empty 201 broke `gh secret set`.** go-gh decodes every non-204 body, so a new secret answered 201 with no body made `gh` report "unexpected end of JSON input" although the write committed. A new secret or variable now answers 201 `{}` (`What::ActionsConfig`, kept test in `crates/api/tests/surfaces.rs`). Site day 32 and edge day 15.
+- **Rotation reseals shared one request id.** The first `rotate-seal-key` resealed the org secret and one repository secret of three, and kept the old key: every repository command it committed carried the edge request's id, so the leader answered the second and third as replays of the first. Each command a rotation commits now has its own id (`commit_issue_as`). Edge day 16; the rotation run again finished the reseal and dropped both older keys.
+- The driver's first job read `/logs` before the job's log was joined and through a JSON helper that cut a text body to 300 characters; it now reads raw and waits for the joined log. Jobs 1179653 and 1179656 were checked from a raw re-read of the same `/logs`.
 
 ## The parser: `crates/actions/src/workflow`
 
