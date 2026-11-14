@@ -21,6 +21,8 @@ use graftyard_types::{ChainId, MemberRegistry, PlacementRecord, RegistryRow, Sit
 use serde_json::{Value, json};
 use worker::*;
 
+pub mod view;
+
 /// How long one lookup-and-call keeps trying.
 pub const LOOKUP_FOR: Duration = Duration::from_secs(20);
 /// One call's deadline.
@@ -1311,13 +1313,26 @@ pub async fn genesis(
     Ok(g)
 }
 
-/// A system chain's record from the `Release` view.
+/// A system chain's record from the `Release` view: the cached view's genesis once this isolate holds one (which a
+/// `LeaveEvaluation` moves), else the genesis this isolate accepted, else the chain's own `MemberRegistry` row, as
+/// step 3 of the lookup rule finds any group whose record the caller lacks, and only then a read of the genesis from
+/// the `Release` group. So a cold isolate reaches a group that exists without waiting on the `Release` group
+/// (`design/DESIGN.md`, Shape, `POINTER_TTL`: "no request waits on the group"); only a group not created yet, such as
+/// a `Names` shard on its first use, needs the genesis read.
 pub async fn system_record(
     b: &Bindings<'_>,
     anchor: &graftyard_release::Anchor,
     chain: ChainId,
 ) -> std::result::Result<PlacementRecord, String> {
     let sc = system_of(chain).ok_or_else(|| format!("{chain} is not a system chain"))?;
+    let held = view::with(|v| v.fold.genesis.clone()).or_else(held_genesis);
+    if let Some(g) = held {
+        return g.placement(sc).cloned().ok_or_else(|| format!("the genesis has no {sc:?} record"));
+    }
+    view::refresh_beside(b.env, b.sites, anchor, None, true);
+    if let Some(r) = registry_record(b, chain).await {
+        return Ok(r);
+    }
     let g = genesis(b, anchor).await?;
     g.placement(sc).cloned().ok_or_else(|| format!("the genesis has no {sc:?} record"))
 }

@@ -225,6 +225,8 @@ pub struct Stats {
     pub follower_reads: u32,
     pub follower_refused: u32,
     pub follower_late: u32,
+    /// Reads served by `stale()` under a `StaleMode` flag (`crate::member`, `read_stale`).
+    pub stale_reads: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
     pub catchups: u32,
     pub leases: u32,
@@ -1577,6 +1579,12 @@ impl<F: Family> Host<F> {
         self.core.borrow().is_some()
     }
 
+    /// The chain this member was joined to, if it is joined.
+    #[cfg(feature = "test-faults")]
+    pub fn chain(&self) -> Option<graftyard_types::ChainId> {
+        self.core.try_borrow().ok()?.as_ref().map(|c| c.join.chain)
+    }
+
     fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], t: u64) {
         let mut s = self.stats.borrow_mut();
         let (leading, term) = (core.m.role() == Role::Leader, core.m.term());
@@ -2293,7 +2301,7 @@ impl<F: Family> Host<F> {
             let drop_reply = matches!(e.msg, raft::Message::Append(_));
             drop(e);
             #[cfg(feature = "test-faults")]
-            if let Some(hang) = crate::faults::site_fault(&h.env).await {
+            if let Some(hang) = crate::faults::site_fault(&h.env, h.chain(), true).await {
                 crate::faults::count(&format!("site_fault:out>{}", to.0));
                 // A hang past CALL_DEADLINE is a missed deadline, as a blackholed call is (B0-07's gray site).
                 if hang >= raft::CALL_DEADLINE.as_millis() as u64 {

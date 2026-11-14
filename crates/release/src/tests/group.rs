@@ -22,6 +22,8 @@ struct G {
     at: Timestamp,
     /// Every accepted entry's bytes, in order: the history BF-6 replays.
     log: Vec<Vec<u8>>,
+    /// Each accepted entry's time, as the member stores it in `release_at`.
+    ats: Vec<Timestamp>,
 }
 
 fn rel(n: u8) -> (ReleaseId, Vec<u8>) {
@@ -47,7 +49,7 @@ fn id(n: u8) -> IntentId {
 
 impl G {
     fn new() -> G {
-        let mut g = G { a: anchor(), f: ReleaseFold::default(), at: T0, log: Vec::new() };
+        let mut g = G { a: anchor(), f: ReleaseFold::default(), at: T0, log: Vec::new(), ats: Vec::new() };
         let mut gs = genesis_for(install(1), &CUSTOMER);
         gs.keys.agents_executor = Some(public_key(&AGENTS));
         g.ok(signed(gs, &CUSTOMER));
@@ -61,6 +63,7 @@ impl G {
         self.f.check(&self.a, self.at, &ev).unwrap();
         self.f.apply(&ev, self.at);
         self.log.push(bytes.to_vec());
+        self.ats.push(self.at);
         Ok(())
     }
 
@@ -870,4 +873,294 @@ fn every_entry_kind_keeps_its_tag_and_bytes() {
     for (i, w) in want.iter().enumerate() {
         assert_eq!(got.get(i).map(String::as_str), Some(*w), "tag {i} changed: the Release codec is append-only");
     }
+}
+
+// ---- The cached view (M5-WP2) ----
+
+use crate::view::{
+    ABANDON_MS, Freshness, Need, POINTER_TTL_MS, RETRY_MS, Replica, covers, mismatch, verify_stale, version_override,
+};
+
+/// The group's committed entries as a member's `/view` pages them: each entry's bytes with its time.
+fn page(g: &G, from: usize, to: usize) -> Vec<(Vec<u8>, Timestamp)> {
+    g.log[from..to].iter().cloned().zip(g.ats[from..to].iter().copied()).collect()
+}
+
+/// A history with a pinned edge: releases 1 and 2 uploaded, the edge rolled to 1, then an `EdgeRoll` to 2 whose
+/// pre-signed `EdgePointer` back to 1 committed after step 0 (1%).
+fn pinned() -> G {
+    let mut g = rolled();
+    let pin = ReleaseEntry::EdgePointer { pin: rel(1).0 };
+    let b = g.intent(2, Intent::EdgeRoll { release: rel(2).0 }, std::slice::from_ref(&pin), &VENDOR);
+    g.ok(b);
+    let b = g.step(2, 0);
+    g.ok(b);
+    let b = g.undo(2, &pin, &VENDOR);
+    g.ok(b);
+    g
+}
+
+#[test]
+fn a_replica_replays_the_group_from_any_member_and_never_moves_backward() {
+    let g = pinned();
+    let n = g.log.len();
+    let mut r = Replica::default();
+    // A member behind the replica, then one ahead: the replica takes only what it lacks.
+    assert_eq!(r.extend(&g.a, 0, &page(&g, 0, n - 2)).unwrap(), (n - 2) as u64);
+    assert_eq!(r.extend(&g.a, 0, &page(&g, 0, n - 3)).unwrap(), 0);
+    assert_eq!(r.count(), (n - 2) as u64);
+    assert_eq!(r.extend(&g.a, (n - 3) as u64, &page(&g, n - 3, n)).unwrap(), 2);
+    assert_eq!(r.fold, g.f);
+    assert_eq!(r.pin(Script::Edge), Some(vid(1, 3)));
+    // A page past the replica is a gap, and moves nothing.
+    let mut short = Replica::default();
+    short.extend(&g.a, 0, &page(&g, 0, 2)).unwrap();
+    assert!(short.extend(&g.a, 3, &page(&g, 3, n)).is_err());
+    assert_eq!(short.count(), 2);
+}
+
+#[test]
+fn a_replica_refuses_another_installs_or_a_tampered_history() {
+    let g = pinned();
+    let n = g.log.len();
+    // Another install's group, read by an isolate whose anchor is this install's.
+    let mut other = G { a: Anchor { install: install(2), customer: public_key(&OTHER) }, ..G::new() };
+    other.f = ReleaseFold::default();
+    other.log.clear();
+    other.ats.clear();
+    other.ok(signed(genesis_for(install(2), &OTHER), &OTHER));
+    let mut r = Replica::default();
+    assert!(r.extend(&g.a, 0, &page(&other, 0, 1)).is_err());
+    assert_eq!(r.count(), 0);
+    // A member whose fifth entry's signature does not verify: the four before it stay, nothing after it applies.
+    let mut bad = page(&g, 0, n);
+    let last = bad[4].0.len() - 1;
+    bad[4].0[last] ^= 1;
+    assert!(r.extend(&g.a, 0, &bad).is_err());
+    assert_eq!(r.count(), 4);
+    // An intent whose entry time is past its not_after is refused as the follower refuses it.
+    let mut late = page(&g, 0, n);
+    let i = late.len() - 3;
+    late[i].1 = Timestamp(late[i].1.0 + 5 * HOUR);
+    let mut r = Replica::default();
+    assert!(r.extend(&g.a, 0, &late).is_err());
+}
+
+#[test]
+fn the_next_roll_of_the_pinned_script_clears_the_pin_and_keeps_the_pinned_release() {
+    let mut g = pinned();
+    let b = g.done(2);
+    g.ok(b);
+    g.upload(3);
+    // The undo left the edge on release 1 at 100%, release 2 beside it. A roll to 3 keeps 1, so an undo back to 2
+    // could never apply.
+    let to2 = ReleaseEntry::EdgePointer { pin: rel(2).0 };
+    assert_eq!(
+        g.no(g.intent(3, Intent::EdgeRoll { release: rel(3).0 }, &[to2], &VENDOR)),
+        Refusal::DropsUndoVersion(rel(2).0)
+    );
+    let to1 = ReleaseEntry::EdgePointer { pin: rel(1).0 };
+    let b = g.intent(3, Intent::EdgeRoll { release: rel(3).0 }, &[to1], &VENDOR);
+    g.ok(b);
+    let mut r = Replica::default();
+    r.extend(&g.a, 0, &page(&g, 0, g.log.len())).unwrap();
+    assert_eq!(r.pin(Script::Edge), None);
+    assert_eq!(r.pin(Script::Ops), None);
+}
+
+#[test]
+fn rolls_take_only_their_roll_steps_and_a_front_roll_carries_no_undo() {
+    let mut g = rolled();
+    let b = g.intent(2, Intent::EdgeRoll { release: rel(2).0 }, &[], &VENDOR);
+    g.ok(b);
+    for s in 0..4 {
+        let b = g.step(2, s);
+        g.ok(b);
+    }
+    assert_eq!(g.no(g.step(2, 4)), Refusal::PastLastStep { kind: "EdgeRoll", steps: 4 });
+    let b = g.done(2);
+    g.ok(b);
+    let undo = ReleaseEntry::EdgePointer { pin: rel(1).0 };
+    assert!(matches!(
+        g.no(g.intent(3, Intent::FrontRoll { release: rel(2).0 }, &[undo], &VENDOR)),
+        Refusal::Rejected(_)
+    ));
+    let b = g.intent(3, Intent::FrontRoll { release: rel(2).0 }, &[], &VENDOR);
+    g.ok(b);
+    for s in 0..2 {
+        let b = g.step(3, s);
+        g.ok(b);
+    }
+    assert_eq!(g.no(g.step(3, 2)), Refusal::PastLastStep { kind: "FrontRoll", steps: 2 });
+}
+
+#[test]
+fn graft_front_alarms_only_when_a_pinned_call_ran_another_version() {
+    let v = vid(1, 3);
+    assert!(!mismatch(None, Some("0e6a1b2c-0000-4000-8000-000000000001")));
+    assert!(!mismatch(None, None));
+    assert!(!mismatch(Some(v), Some(&v.to_string())));
+    assert!(mismatch(Some(v), Some(&vid(2, 3).to_string())));
+    assert!(mismatch(Some(v), None));
+    assert!(mismatch(Some(v), Some("not-a-version")));
+    assert_eq!(version_override("graft-edge", v), format!("graft-edge=\"{v}\""));
+}
+
+#[test]
+fn a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group() {
+    let mut f = Freshness::default();
+    // A cold isolate's first request waits, and so does every request that arrives while it waits.
+    assert_eq!(f.need(0), Need::Wait);
+    f.start(0, true);
+    assert_eq!(f.need(500), Need::Wait);
+    f.ok(0);
+    // Refreshed beside requests RETRY_MS before it is POINTER_TTL old.
+    let (refresh, expire) = (POINTER_TTL_MS - RETRY_MS, POINTER_TTL_MS);
+    assert_eq!(f.need(refresh - 1), Need::Use);
+    assert_eq!(f.need(refresh), Need::Refresh);
+    // A refresh beside requests that hangs leaves them on the view held, even past POINTER_TTL: no request waits
+    // when the group stops answering under load. One hung past ABANDON_MS is replaced.
+    f.start(refresh, false);
+    assert_eq!(f.need(expire), Need::Use);
+    assert_eq!(f.need(refresh + ABANDON_MS - 1), Need::Use);
+    assert_eq!(f.need(refresh + ABANDON_MS), Need::Refresh);
+    // A failed refresh keeps the view, and from then on no request waits, however old the view.
+    f.failed(refresh + ABANDON_MS);
+    let t = refresh + ABANDON_MS;
+    assert_eq!(f.fetched, Some(0));
+    assert_eq!(f.need(t + RETRY_MS - 1), Need::Use);
+    assert_eq!(f.need(t + RETRY_MS), Need::Refresh);
+    assert_eq!(f.need(t + 600_000), Need::Refresh);
+    // So does a cold isolate whose first refresh failed.
+    let mut cold = Freshness::default();
+    cold.failed(0);
+    assert_eq!(cold.need(RETRY_MS), Need::Refresh);
+    // The next refresh that reaches a member ends it; one that started earlier does not make the view older.
+    f.ok(700_000);
+    f.ok(690_000);
+    assert_eq!((f.fetched, f.failing), (Some(700_000), false));
+    // An isolate idle past POINTER_TTL waits on its next request, so it never serves a pin older than that.
+    assert_eq!(f.need(700_000 + POINTER_TTL_MS - 1), Need::Refresh);
+    assert_eq!(f.need(700_000 + POINTER_TTL_MS), Need::Wait);
+}
+
+/// An uncommitted `StaleMode` on `g`'s install, signed by `seed`, bound to the last digest.
+fn stale_flag(g: &G, scope: Scope, until: Timestamp, seed: &[u8; 32]) -> Vec<u8> {
+    g.entry(ReleaseEntry::StaleMode { scope, until }, &[seed])
+}
+
+#[test]
+fn an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until() {
+    let g = pinned();
+    let now = g.at;
+    let until = Timestamp(now.0 + HOUR);
+    let repo = Scope::Repo(RepoId(DbId(42)));
+    assert_eq!(verify_stale(&g.f, &stale_flag(&g, repo, until, &CUSTOMER), now), Ok((repo, until)));
+    for seed in [&VENDOR, &EXECUTOR, &DRAIN, &OTHER] {
+        assert!(verify_stale(&g.f, &stale_flag(&g, repo, until, seed), now).is_err());
+    }
+    // Two signatures, the customer's among them.
+    assert!(
+        verify_stale(&g.f, &g.entry(ReleaseEntry::StaleMode { scope: repo, until }, &[&CUSTOMER, &VENDOR]), now)
+            .is_err()
+    );
+    assert!(verify_stale(&g.f, &stale_flag(&g, repo, now, &CUSTOMER), now).is_err());
+    // Another install's flag, and a flag bound to a parent intent.
+    let mut e = SignedEntry::decode(&stale_flag(&g, repo, until, &CUSTOMER)).unwrap();
+    e.bound.install = install(2);
+    e.sigs.clear();
+    e.sign(&CUSTOMER);
+    assert!(matches!(verify_stale(&g.f, &e.encode(), now), Err(Refusal::WrongInstall { .. })));
+    let mut e = SignedEntry::decode(&stale_flag(&g, repo, until, &CUSTOMER)).unwrap();
+    e.bound.parent = Some(id(2));
+    e.sigs.clear();
+    e.sign(&CUSTOMER);
+    assert!(matches!(verify_stale(&g.f, &e.encode(), now), Err(Refusal::BadBound(_))));
+    // Any other entry kind, customer-signed.
+    assert!(verify_stale(&g.f, &g.entry(ReleaseEntry::SiteLost { site: SiteId(1) }, &[&CUSTOMER]), now).is_err());
+}
+
+#[test]
+fn an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival() {
+    let g = pinned();
+    let mut r = Replica::default();
+    r.extend(&g.a, 0, &page(&g, 0, g.log.len())).unwrap();
+    let arrived = g.at;
+    let repo = RepoId(DbId(42));
+    let chain = ChainId::Repo(repo);
+    // `until` 30 h out: honored for STALE_MAX (24 h) after the first arrival any member recorded.
+    let long = stale_flag(&g, Scope::Repo(repo), Timestamp(arrived.0 + 30 * HOUR), &CUSTOMER);
+    let f = r.offer_pending(&long, Timestamp(arrived.0 + HOUR), arrived).unwrap();
+    assert_eq!(f.honored_until(STALE_MAX), Timestamp(arrived.0 + HOUR + STALE_MAX));
+    // The same bytes from another member that recorded an earlier arrival move the bound earlier, never later.
+    r.offer_pending(&long, arrived, arrived).unwrap();
+    r.offer_pending(&long, Timestamp(arrived.0 + 2 * HOUR), arrived).unwrap();
+    let end = Timestamp(arrived.0 + STALE_MAX);
+    assert_eq!(r.stale_until(chain, None, arrived), Some(end));
+    assert_eq!(r.stale_until(chain, None, Timestamp(end.0 - 1)), Some(end));
+    assert_eq!(r.stale_until(chain, None, end), None);
+    // A short flag ends at its own `until`.
+    let short_until = Timestamp(arrived.0 + 600_000);
+    let short = stale_flag(&g, Scope::Repo(RepoId(DbId(43))), short_until, &CUSTOMER);
+    r.offer_pending(&short, arrived, arrived).unwrap();
+    let c43 = ChainId::Repo(RepoId(DbId(43)));
+    assert_eq!(r.stale_until(c43, None, Timestamp(short_until.0 - 1)), Some(short_until));
+    assert_eq!(r.stale_until(c43, None, short_until), None);
+    r.prune(short_until);
+    assert_eq!(r.pending.len(), 1);
+    // Offered after its `until`, a flag is refused and kept by no one.
+    assert!(r.offer_pending(&short, arrived, short_until).is_err());
+    assert_eq!(r.pending.len(), 1);
+}
+
+#[test]
+fn a_committed_stale_mode_is_honored_until_its_until() {
+    let mut g = pinned();
+    let until = Timestamp(g.at.0 + 30 * HOUR);
+    let b = stale_flag(&g, Scope::Install, until, &CUSTOMER);
+    g.ok(b);
+    let mut r = Replica::default();
+    r.extend(&g.a, 0, &page(&g, 0, g.log.len())).unwrap();
+    let chain = ChainId::Repo(RepoId(DbId(7)));
+    assert_eq!(r.stale_until(chain, None, Timestamp(until.0 - 1)), Some(until));
+    assert_eq!(r.stale_until(chain, None, until), None);
+}
+
+#[test]
+fn a_flag_covers_only_its_scope() {
+    let (a, b) = (AccountId(DbId(1)), AccountId(DbId(2)));
+    let (r1, r2) = (RepoId(DbId(10)), RepoId(DbId(11)));
+    assert!(covers(Scope::Install, ChainId::Repo(r1), None));
+    assert!(covers(Scope::Install, ChainId::Names(graftyard_types::NameShard(3)), None));
+    assert!(!covers(Scope::Install, ChainId::Release, None));
+    assert!(covers(Scope::Repo(r1), ChainId::Repo(r1), None));
+    assert!(covers(Scope::Repo(r1), ChainId::RepoMeta(r1), None));
+    assert!(!covers(Scope::Repo(r1), ChainId::Repo(r2), None));
+    assert!(!covers(Scope::Repo(r1), ChainId::Authz(a), None));
+    assert!(covers(Scope::Owner(a), ChainId::Authz(a), None));
+    assert!(!covers(Scope::Owner(a), ChainId::Authz(b), None));
+    assert!(covers(Scope::Owner(a), ChainId::Repo(r1), Some(a)));
+    assert!(!covers(Scope::Owner(a), ChainId::Repo(r1), Some(b)));
+    assert!(!covers(Scope::Owner(a), ChainId::Names(graftyard_types::NameShard(3)), None));
+}
+
+#[test]
+fn the_edge_prechecks_signers_against_its_cached_keys() {
+    let g = pinned();
+    let mut r = Replica::default();
+    r.extend(&g.a, 0, &page(&g, 0, g.log.len())).unwrap();
+    let ok = SignedEntry::decode(&g.entry(ReleaseEntry::Halt { intent: id(2) }, &[&CUSTOMER])).unwrap();
+    assert_eq!(r.precheck(&ok), Ok(()));
+    let unknown = SignedEntry::decode(&g.entry(ReleaseEntry::Halt { intent: id(2) }, &[&OTHER])).unwrap();
+    assert_eq!(r.precheck(&unknown), Err(Refusal::UnknownKey(public_key(&OTHER))));
+    let mut forged = ok.clone();
+    forged.sigs[0].1.0[3] ^= 1;
+    assert_eq!(r.precheck(&forged), Err(Refusal::BadSignature));
+    let mut other = ok.clone();
+    other.bound.install = install(2);
+    assert!(matches!(r.precheck(&other), Err(Refusal::WrongInstall { .. })));
+    // A Keys that rotates the customer key carries the new key's signature too.
+    let rotated = g.keys(|k| k.customer = public_key(&NEW_CUSTOMER));
+    let k = SignedEntry::decode(&g.entry(ReleaseEntry::Keys(Box::new(rotated)), &[&CUSTOMER, &NEW_CUSTOMER])).unwrap();
+    assert_eq!(r.precheck(&k), Ok(()));
 }

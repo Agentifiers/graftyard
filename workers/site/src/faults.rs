@@ -189,7 +189,7 @@ pub fn drop_append_reply(env: &Env, to: u8) -> bool {
 
 /// BM-1's site fault: site `site`'s member class fails every call from `from` until `until` (epoch ms), or with
 /// `rate` below 1 that share of them, each call rolled on its own (the gray fault).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, serde::Serialize)]
 pub struct SiteFault {
     pub site: Option<u8>,
     #[serde(default)]
@@ -202,6 +202,15 @@ pub struct SiteFault {
     /// `hang` rule did (`tests/m0/src/faults.ts`). Calls past CALL_DEADLINE are then deadline misses.
     #[serde(default)]
     pub hang_ms: Option<u64>,
+    /// M5-WP2: when not empty, only the members of these chains (their text form, `release`, `repo:<id>`) fail;
+    /// members of every other chain, and an object that is not joined, run as usual. BF-8 and BF-48 blackhole the
+    /// `Release` group this way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<String>,
+    /// Only member-to-member Raft calls fail (each send, and an inbound `/raft`, `/campaign`, or `/suspect`): the
+    /// group cannot commit, and every member still answers calls from Workers. BF-48's group that cannot commit.
+    #[serde(default)]
+    pub members_only: bool,
 }
 
 /// A `SiteFault.site` naming every site at once.
@@ -230,23 +239,24 @@ async fn read_site_fault(env: &Env) -> Option<SiteFault> {
 fn keep(plan: Option<SiteFault>) {
     SITE_FAULT.with(|c| {
         let mut c = c.borrow_mut();
-        let old = c.as_ref().map(|c| c.plan).unwrap_or_default();
+        let old = c.as_ref().map(|c| c.plan.clone()).unwrap_or_default();
         *c = Some(Cached { plan: plan.unwrap_or(old), fetched: crate::now_ms(), refreshing: false });
     });
 }
 
 /// Whether this call of this script's site fails now, and after how long: `Some(0)` at once, `Some(ms)` after
-/// hanging `ms` (the plan's `hang_ms`). The first call in an isolate waits for the plan; a stale plan is reread in the
+/// hanging `ms` (the plan's `hang_ms`). `chain` is the calling or called member's chain, `raft` whether the call is a
+/// member-to-member Raft call. The first call in an isolate waits for the plan; a stale plan is reread in the
 /// background, so the plan's object never sits on the measured path.
-pub async fn site_fault(env: &Env) -> Option<u64> {
+pub async fn site_fault(env: &Env, chain: Option<graftyard_types::ChainId>, raft: bool) -> Option<u64> {
     let Ok(me) = crate::SiteEnv::read(env).map(|s| s.id.0) else { return None };
     let now = crate::now_ms();
     let state = SITE_FAULT
-        .with(|c| c.borrow().as_ref().map(|c| (c.plan, now >= c.fetched + SITE_FAULT_TTL_MS && !c.refreshing)));
+        .with(|c| c.borrow().as_ref().map(|c| (c.plan.clone(), now >= c.fetched + SITE_FAULT_TTL_MS && !c.refreshing)));
     let plan = match state {
         None => {
             keep(read_site_fault(env).await);
-            SITE_FAULT.with(|c| c.borrow().as_ref().map(|c| c.plan).unwrap_or_default())
+            SITE_FAULT.with(|c| c.borrow().as_ref().map(|c| c.plan.clone()).unwrap_or_default())
         }
         Some((plan, stale)) => {
             if stale {
@@ -265,6 +275,8 @@ pub async fn site_fault(env: &Env) -> Option<u64> {
     let hit = (plan.site == Some(me) || plan.site == Some(ALL_SITES))
         && plan.from <= now
         && now < plan.until
+        && (plan.chains.is_empty() || chain.is_some_and(|x| plan.chains.contains(&x.to_string())))
+        && (raft || !plan.members_only)
         && plan.rate.is_none_or(roll);
     hit.then_some(plan.hang_ms.unwrap_or(0))
 }

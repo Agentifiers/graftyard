@@ -87,9 +87,12 @@ pub async fn record_for(env: &Env, chain: ChainId) -> Result<PlacementRecord, St
 pub struct ReleaseState {
     pub fold: ReleaseFold,
     pub anchor: Option<Anchor>,
-    /// Every accepted entry's bytes, in order: what the `release_entry` table stores. The entry times `apply` reads
-    /// are in the fold itself (a drain's `since`), from `release_at`.
+    /// Every accepted entry's bytes, in order: what the `release_entry` table stores.
     pub entries: Vec<Box<[u8]>>,
+    /// Each entry's time, from `release_at`, which `/view` pages with the bytes so an isolate's replica checks each
+    /// entry at the time the group did. The genesis's is 0: its check reads no time, and a genesis row stored before
+    /// `release_at` existed has none.
+    pub ats: Vec<Timestamp>,
 }
 
 /// The accepted entry's canonical bytes.
@@ -143,6 +146,7 @@ impl Scratch for ReleaseScratch<'_> {
 impl ReleaseState {
     fn apply_at(&mut self, ev: &Accepted, at: Timestamp) {
         self.fold.apply(&ev.release(), at);
+        self.ats.push(if self.entries.is_empty() { Timestamp(0) } else { at });
         self.entries.push(ev.0.clone().into_boxed_slice());
     }
 }
@@ -238,7 +242,7 @@ impl Family for Release {
         vec![RELEASE_FORMAT, RELEASE_FORMAT_2]
     }
     fn new_fold(_sql: &SqlStorage, _join: &Join) -> ReleaseState {
-        ReleaseState { fold: ReleaseFold::default(), anchor: cached_anchor(), entries: Vec::new() }
+        ReleaseState { fold: ReleaseFold::default(), anchor: cached_anchor(), entries: Vec::new(), ats: Vec::new() }
     }
     fn store_fold(_fold: &ReleaseState, entries: &[&raft::LogEntry<Accepted>], stmts: &mut Vec<Stmt>) {
         for e in entries {
@@ -328,6 +332,80 @@ impl Family for Release {
     fn source(_join: &Join) -> Source {
         Source::Anchor
     }
+    fn schema() -> &'static [&'static str] {
+        &[PENDING_SCHEMA]
+    }
+    fn route_paths() -> &'static [&'static str] {
+        &["/view", "/pending"]
+    }
+    /// `/view` and `/pending` (`design/DESIGN.md`, Shape, `POINTER_TTL` and `STALE_MAX`).
+    async fn route(
+        host: &std::rc::Rc<crate::host::Host<Self>>,
+        path: &str,
+        body: Value,
+    ) -> Option<worker::Result<Value>> {
+        match path {
+            "/view" => Some(view(host, &body)),
+            "/pending" => Some(pending(host, &body)),
+            _ => None,
+        }
+    }
+}
+
+/// The uncommitted `StaleMode` flags this member was handed, outside the log: the entry's bytes and the first time
+/// any edge wrote it here. Rows past STALE_MAX are deleted on the next write.
+pub const PENDING_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS release_pending (digest BLOB PRIMARY KEY, bytes BLOB NOT NULL, arrived INTEGER NOT NULL)";
+
+/// How many entries one `/view` page carries.
+const VIEW_PAGE: usize = 100;
+
+/// `/view {"from": n}`: this member's applied state from position `from` (0 is the genesis), for an isolate's
+/// replica: `count`, up to VIEW_PAGE `entries` as `[hex, at]`, and every `pending` row as `[hex, arrived]`. Any member
+/// answers from what it applied, with no read-index round, so a view refresh never waits on a quorum; the replica
+/// replays and checks each entry itself, and never moves backward.
+fn view(host: &crate::host::Host<Release>, body: &Value) -> worker::Result<Value> {
+    let from = body.get("from").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let core = host.core.borrow();
+    let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
+    let f = &c.m.group_fold().fold;
+    let entries: Vec<Value> =
+        f.entries.iter().zip(&f.ats).skip(from).take(VIEW_PAGE).map(|(b, at)| json!([hex(b), at.0])).collect();
+    let pending: Vec<Value> = rows(&host.state.storage().sql(), "SELECT bytes, arrived FROM release_pending", vec![])?
+        .iter()
+        .map(|r| Ok(json!([hex(blob(&r[0])?), crate::host::int(&r[1])?])))
+        .collect::<worker::Result<_>>()?;
+    Ok(json!({ "count": f.entries.len(), "entries": entries, "pending": pending }))
+}
+
+/// `/pending {"entry": hex}`: keeps an uncommitted `StaleMode` that verifies against this member's own applied `Keys`
+/// (customer key alone, this install, no parent, `until` ahead), with the first arrival kept. Answers the row.
+fn pending(host: &crate::host::Host<Release>, body: &Value) -> worker::Result<Value> {
+    let bytes =
+        body.get("entry").and_then(Value::as_str).and_then(unhex).ok_or_else(|| crate::host::err("entry: hex"))?;
+    let now = crate::now_ms();
+    {
+        let core = host.core.borrow();
+        let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
+        if let Err(e) = graftyard_release::view::verify_stale(&c.m.group_fold().fold.fold, &bytes, Timestamp(now)) {
+            return Ok(json!({ "refused": { "err": e.variant(), "message": e.to_string() } }));
+        }
+    }
+    let digest = graftyard_release::SignedEntry::decode(&bytes).map_err(|e| crate::host::err(e.to_string()))?.digest();
+    let sql = host.state.storage().sql();
+    sql.exec(
+        "DELETE FROM release_pending WHERE arrived < ?",
+        vec![crate::host::i(now.saturating_sub(graftyard_release::STALE_MAX))],
+    )?;
+    sql.exec(
+        "INSERT OR IGNORE INTO release_pending (digest, bytes, arrived) VALUES (?, ?, ?)",
+        vec![digest.0.to_vec().into(), bytes.into(), crate::host::i(now)],
+    )?;
+    let arrived = rows(&sql, "SELECT arrived FROM release_pending WHERE digest = ?", vec![digest.0.to_vec().into()])?
+        .first()
+        .map(|r| crate::host::int(&r[0]))
+        .transpose()?
+        .unwrap_or(now as i64);
+    Ok(json!({ "pending": { "digest": digest.hex(), "arrived": arrived } }))
 }
 
 pub const RELEASE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS release_entry (idx INTEGER NOT NULL, k INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (idx, k))";

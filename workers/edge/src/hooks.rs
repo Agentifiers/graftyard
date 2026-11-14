@@ -31,11 +31,10 @@ use crate::api::{Read, commit_issue, unavailable};
 /// `graft-ops` wraps a hook secret under `SecretsWrapKey`'s current slot. The secret travels only in this request's
 /// body over the service binding, never in a URL or a log line.
 async fn wrap(c: &Ctx<'_>, secret: &str) -> std::result::Result<Wrapped, Reply> {
-    let ops = c.env.service("OPS").map_err(|_| unavailable("no graft-ops binding"))?;
     let mut init = RequestInit::new();
     let body = serde_json::json!({ "secret": secret }).to_string();
     init.with_method(Method::Post).with_body(Some(body.into()));
-    let mut res = ops.fetch("https://graft-ops/wrap", Some(init)).await.map_err(|_| unavailable("graft-ops"))?;
+    let mut res = c.ops("https://graft-ops/wrap", init).await.map_err(|_| unavailable("graft-ops"))?;
     if res.status_code() != 200 {
         return Err(unavailable(&format!("graft-ops did not wrap the secret ({})", res.status_code())));
     }
