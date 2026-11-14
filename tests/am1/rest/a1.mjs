@@ -553,7 +553,10 @@ if (plan.openPrs) {
 // 73 MiB on graft-m3e (narrow-reads-3), falls in setup on every row. The wait and the leader's memory then are logged.
 {
   const st = await statuses(CHAIN);
-  const lead = st.find((s) => s.role === "leader");
+  const lead = st.find((s) => s.role === "leader") ?? await (async () => {
+    const site = await (await import("../hosted/lib.mjs")).leaderOf(CHAIN).catch(() => undefined);
+    return site === undefined ? undefined : (await statuses(CHAIN)).find((s) => s.site === site);
+  })();
   const ls = (st.find((s) => s.config)?.config?.config?.normal?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
   if (lead && ls.length) {
     const since = Date.now();
@@ -901,7 +904,10 @@ function latestBudget(now, seen) {
   return now.map((b, s) => (!b || (seen[s] && b.since !== seen[s].since && b.computed < seen[s].computed)) ? seen[s] ?? b : b);
 }
 const leaderBefore = await statuses(CHAIN);
-const leader = leaderBefore.find((s) => s.role === "leader")?.site;
+// One `/status` round can miss the leader (m25cap500, 131326: "leader site undefined", and the row lost its leader
+// stats), so `leaderOf` asks again, up to 20 s.
+const leader = leaderBefore.find((s) => s.role === "leader")?.site
+  ?? await (await import("../hosted/lib.mjs")).leaderOf(CHAIN).catch(() => undefined);
 if (leader !== undefined) await member(CHAIN, leader, "/stats?reset=1", undefined, 15_000);
 // `--first-for`: round 5's concurrent re-sends, on purpose. Every member gets it, so a leader elected mid-run has it too.
 if (opt["first-for"]) for (const s of [0, 1, 2]) {

@@ -1657,3 +1657,53 @@ PR opens inside `a1.mjs` (their transient 503s, about 160 per setup on graft-m3e
 "open PRs" row); then a wait of up to 120 s for every learner to apply the leader's commit index, logged with the
 leader's `wasmMemMb` ("learners caught up"). So no learner joins or catches up inside the window (28 to 73 MiB of
 leader high-water on graft-m3e).
+
+### Round 13: m25 on m0-adaptive-append, its B0-29 A/B, and B0-29 on the agreed 500-PR shape (2026-11-14)
+
+**Deploy m25.** Worktree `731bbb60`: `lm1-memory` `1d7a7805` (main dd046f2 plus this branch's `confirmSplit`) merged
+with origin/m0-adaptive-append `4ba495d` (main 82a0bf9: pipelining stops only on lost calls, a per-link call bound
+that halves on a lost call and grows back, a pipelined call that overtakes the one ahead waits behind it, and a behind
+voter gets calls until PIPELINE are out). The merge's `crates/raft` equals `4ba495d`'s, whose long sweep, Porcupine and
+B0-02 gate (16 of 16) its thread ran; fmt, site wasm32 clippy with and without `test-faults`, and the site and raft
+tests pass on the merge. Sites `8dbaa3fb`, `8e51a76d`, `366c1f53`; edge `3a9061ff`; `SHARD_INSTANCE=standard-4`; image
+`sha256:f6d2ef408c76…`. The first site day failed at once on the worktree's missing ignored `tests/am1/raw/runs`.
+
+All three arms: 500 agents, 180 s, k 4 granted, learners enam 4,000, weur 2,000, apac 2,000, each learner caught up
+before the window.
+
+| Arm | Commit p50 / p99 (ms) | Queue p99 (slot / post) | Round p50 / p99 | Confirm p99 | Near / far follower append p99 | Commands per entry | Agent push p99 | API p99, served |
+|---|---|---|---|---|---|---|---|---|
+| main dd046f2, fresh repo (m24c, 131324) | 347 / 575 | 417 (343 / 240) | 149 / 256 | 102 | 255 / 459 | 3.41 (3,180 / 932) | 7.2 s | 2,707, 99.9% |
+| adaptive-append, fresh repo (m25, 131328) | 350 / 682 | 489 (377 / 245) | 152 / 286 | 51 | 291 / 701 | 3.44 (3,164 / 920) | 8.9 s | 2,684, 99.9% |
+| adaptive-append, 500 open PRs (m25, 131327) | 429 / 865 | 575 (514 / 249) | 192 / 407 | 71 | 459 / 892 | 3.83 (2,875 / 750) | 13.6 s | 3,408, 99.0% |
+
+All three held term 2 with 0 feed polls on the leader; agent pushes 759 / 759, 749 / 749 and 741 / 743 ok; merge:only
+p99 2,363, 1,353 and 1,647 ms.
+
+**adaptive-append's A/B [measured, one run per arm, on two deploys an hour apart].** On a fresh repository the tree is
+not better on journey 9: commit p99 682 against 575 ms, with the same entries (3.44 against 3.41 commands per entry)
+and a lower leader confirm (51 against 102 ms). The difference is the far follower's AppendEntries (p99 701 against
+459 ms) and, behind it, the slot wait (377 against 343). The round's p99 still follows the near follower (286 against
+256), so the far leg reaches commit only through the wait for the entry ahead. One run each is inside run-to-run
+spread for p99 (round 11's two arms on one tree differed by 43 ms; rounds 10 and 12, 44 and 39); the far leg's 242 ms
+is the one large move, and the 500-PR arm on the same tree shows it again (892).
+
+**B0-29 on the agreed shape (500 open PRs) [measured, one smoke].** 500 of 500 PRs opened with no failure; the learners
+caught up in 2.6 s, leader `wasmMemMb` 20.6 MiB then. Against the same tree's fresh arm, PR-heavy commands fill entries
+somewhat more (3.83 against 3.44 commands per entry; 155 of 750 confirms, 21%, carried 100 KB to 1 MB, p50 143 KB,
+against 131 of 920), and they do not slow confirms: `confirmSplit` storage p99 is 71 ms under 100 KB and 76 ms from 100
+KB to 1 MB, against 51 and 52 on the fresh arm. The commit's extra 183 ms is the slot wait (514 against 377) behind a
+longer round (p99 407 against 286) whose near and far legs both slowed (459 and 892 against 291 and 701). So on this
+shape B0-29's commit line is the round's follower legs, not the leader's confirm and not entry fill.
+
+**Confirm split's turn queue reads 0 throughout** (`gate` and `turn` p99 0 in every group of every arm). Either the
+deferred flush and a zero-delay timer run in the same turn as the input on a lightly loaded leader, or Workers' clock,
+which advances only across I/O, hides the wait; at B0-29's load `sync` equals storage. B0-33's smoke, whose confirms
+reached p99 1.7 s, is where the split decides between the two levers.
+
+**Driver fixes.** `a1.mjs` read the leader from one `/status` round; the first fresh arm (131326, run `mwfx2jp3`) got
+none ("leader site undefined") and kept no commit split, so it was rerun as 131328. `a1.mjs` now falls back to
+`leaderOf` (up to 20 s). In that first arm the learner wait reported 0 of 8 caught up after 120 s while each learner,
+read by name later, stood at index 918 [unverified why].
+
+Cost after round 13: $108.44 of $150 at 05:21Z (containers $45.74); every sweep "sweep ok".
