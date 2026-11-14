@@ -706,6 +706,48 @@ fills the followers is not measured, and the follower side has no `memSplit` [in
 Rows: `tests/nr3/rows/a1-b0-29-abwithout.jsonl`, `run-abwithout.status`, `lmem-abwithout.jsonl`,
 `mem-abwithout.json`, `egress-abwithout.txt`, `fresh-abwithout.jsonl`, `trace-abwithout.json.gz`.
 
+### The gate 16 A/B, arm "with": main a5a85d9, no storm, API p99 2,304 ms
+
+Site day 14 from main a5a85d9 (decode-once merged): site exit 0, edge exit 0. Repo 65563, 500 of 500 PRs opened,
+learners caught up in 2.6 s, window 13:44:47 to 13:54:47Z, torn down. `lmem.mjs` now samples every voter every 2 s,
+and `tsave.mjs` saved every voter's trace each minute (54 saves) [measured]:
+
+| Line | Arm "with" (a5a85d9) | Arm "without" (a858bfb) | Gate 15 (31d19c9) |
+| --- | --- | --- | --- |
+| API p50 / p99, served | 525 / 2,304 ms, 99.92% (116,666 reads, 89 answered 503) | 266 / 22,977 ms, 41.03% | 365 / 2,019 ms, 99.89% |
+| Commit p50 / p99 | 538 / 2,225 ms (6,474 commits; queue p99 1,919, confirm 129) | 24,534 / 30,609 ms | 409 / 2,249 ms |
+| Agent pushes ok | 2,500 of 2,500, p99 5,762 ms | 1,048 of 2,500 | 2,498 of 2,500 |
+| Leader | site 0, term 2 throughout | term 2 to 21 | term 2 throughout |
+| Analytics peak: f0 / f1 / f2 | **81 / 62 / 63 MiB** | 285 / 310 / 341 MiB | 84 MiB on f0 |
+| exceededMemory a / b / c | 0 / 0 / 0 | 2,342 / 4,235 / 3,572 | 13 / 0 / 0 |
+| `/snapshot_commit` calls | 4, first at 13:38:48 (setup) | 56, through the window | 8 |
+| Read-your-write | 150 of 150, 0 stale | same | same |
+
+`/stats` agrees: wasm high-water 48.6 MiB on the leader and 24.8 and 25.4 MiB on the followers. Per minute the
+leader's analytics peak rose from 59 to 81 MiB, and the followers' from 34 to 62 MiB.
+
+**The A/B's answer.** Without the second decode, no member stormed. With it, every voter stormed on both runs of the
+same tree (gate 16 and arm "without"). That makes the double decode the trigger, though the local measurement says
+it held no second copy at once, and the m3f thread saw voter resets on a tree without it. The snapshot path differs
+too: 4 `/snapshot_commit` calls here against 56 and 30. Whether the storm feeds the snapshot retries or the retries
+feed the storm is not measured [inference]. The m3f thread is reproducing its own resets with these instruments.
+
+**The API line misses.** 2,304 ms at 99.92% served is over the 2 s line, on the tree the streak would resume on.
+Read shares under the herding guard: l6 28.7%, l7 16.5%, l0 14.1%, l1 14.0%, l2 11.1%, l4 6.7%, l3 6.0%, l5 2.9%, so
+the busiest learner took 28.7% against gate 15's 50.2%. Grant p99 was 707 to 1,000 ms on every learner, with 524 to
+3,863 late each. The edge tier read p99 was 2,252 ms.
+
+**Wire split** (send timestamps, leader trace from `tsave.mjs`). On every learner the leader's handler, from
+`CallArrived` to `x-graft-left`, is p50 0 and p99 98 to 296 ms. The rest of the round trip (both wires, the leader's
+input queue, and its output gate) is p50 95 to 302, p90 337 to 1,207, and p99 914 to 2,219 ms. So the slow read-index
+round trips are spent outside the leader's handler. Splitting that rest into wire and input queue needs the two
+clocks' skew. An estimate from each learner's fastest 2% of trips gives negative leg times on some learners, so it is
+not reliable and I report no split [measured for handler versus rest; the wire versus queue split is unresolved].
+Commit path, leader to voter: out p99 494 and 607 ms, back p99 673 and 245 ms, both carrying the same skew.
+
+Rows: `tests/nr3/rows/a1-b0-29-abwith.jsonl`, `run-abwith.status`, `lmem-abwith.jsonl.gz`, `mem-abwith.json`,
+`egress-abwith.txt`, `fresh-abwith.jsonl`, `trace-abwith.json.gz`, `tsave-abwith.jsonl.gz`.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
