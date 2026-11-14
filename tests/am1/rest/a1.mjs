@@ -931,6 +931,8 @@ const v = {
       ...Object.entries(lstats.appendMs ?? {}).map(([k, xs]) => [`append:${k}`, xs]),
       ...Object.entries(lstats.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
       .map(([k, xs]) => [k, ps(xs)])),
+    // Round 12's confirm split by transaction size: the gate wait, the turn queue, and storage (`sync - turn`).
+    confirmSplit: lstats.confirmSplit ?? null,
     depFails: lstats.depFails,
     // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
     entries: lstats.entries, commands: lstats.commands,

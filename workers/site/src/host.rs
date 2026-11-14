@@ -113,6 +113,72 @@ fn queue_split(admitted: u64, last_apply: u64, appended: u64) -> (u32, u32) {
     let freed = last_apply.clamp(admitted, appended);
     ((freed - admitted) as u32, (appended - freed) as u32)
 }
+/// One leader confirm split, LM-1 round 12's question of why B0-33's confirm p99 reached 1.7 s: `gate`, the input's
+/// step to the start of the transaction that carried its writes (the deferred flush's macrotask, so the isolate's turn
+/// queue); `sync`, that start to `sync()`'s continuation (storage, plus the continuation's own turn); `turn`, a
+/// zero-delay timer set at the same start to its firing, capped at `sync` (the turn queue then, so `sync - turn` is
+/// about storage alone); and the transaction's statements and argument bytes. Workers' clock advances only across
+/// I/O, so the synchronous `transactionSync` reads as 0 ms here and shows up as other inputs' turn wait.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConfirmSplit {
+    pub gate: u32,
+    pub sync: u32,
+    pub turn: u32,
+    pub stmts: u32,
+    pub bytes: u32,
+}
+
+/// Transaction sizes `confirm_split_summary` groups by: under 100 KB, under 1 MB, and the rest [guess for the bounds:
+/// ENTRY_SOFT is 100 KB, and a human pack is about 1 MiB].
+const CONFIRM_BYTES: [(&str, u32); 3] = [("lt100k", 100_000), ("lt1m", 1_000_000), ("ge1m", u32::MAX)];
+
+/// `/stats?summary=1`'s `confirmSplit`: for each transaction size group, the count and the p50 and p99 of `gate`,
+/// `sync`, `turn`, `sync - turn` (`storage`), the statements, and the bytes.
+pub fn confirm_split_summary(xs: &[ConfirmSplit]) -> Value {
+    let pct = |mut v: Vec<u32>| {
+        v.sort_unstable();
+        let at = |p: f64| v.get(((p * v.len() as f64) as usize).min(v.len().saturating_sub(1))).copied();
+        json!({ "p50": at(0.5), "p99": at(0.99) })
+    };
+    let mut out = serde_json::Map::new();
+    let mut lo = 0;
+    for (name, hi) in CONFIRM_BYTES {
+        let g: Vec<&ConfirmSplit> = xs.iter().filter(|c| c.bytes >= lo && c.bytes < hi).collect();
+        lo = hi;
+        if g.is_empty() {
+            continue;
+        }
+        let f = |k: fn(&ConfirmSplit) -> u32| pct(g.iter().map(|c| k(c)).collect());
+        out.insert(
+            name.to_string(),
+            json!({
+                "n": g.len(),
+                "gate": f(|c| c.gate),
+                "sync": f(|c| c.sync),
+                "turn": f(|c| c.turn),
+                "storage": f(|c| c.sync.saturating_sub(c.turn)),
+                "stmts": f(|c| c.stmts),
+                "bytes": f(|c| c.bytes),
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// A transaction's statements and argument bytes, for `ConfirmSplit`.
+fn stmt_bytes(stmts: &[Stmt]) -> (u32, u32) {
+    let b: usize = stmts
+        .iter()
+        .flat_map(|(_, a)| a)
+        .map(|v| match v {
+            SqlStorageValue::Blob(b) => b.len(),
+            SqlStorageValue::String(s) => s.len(),
+            _ => 8,
+        })
+        .sum();
+    (stmts.len() as u32, b.min(u32::MAX as usize) as u32)
+}
+
 /// Storage confirms and truncations kept for `ack_json`'s `selfSyncedAt`: an `Acked` is answered within seconds of
 /// its commit, and a confirm row a minute old covers every index at or below it.
 const SYNCED_KEEP: usize = 256;
@@ -181,6 +247,8 @@ pub struct Stats {
     /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
     /// gate holds the entry's AppendEntries for this long.
     pub confirm_ms: Vec<u32>,
+    /// Leader: each timed confirm split (`ConfirmSplit`), for `confirm_split_summary`.
+    pub confirm_split: Vec<ConfirmSplit>,
     /// Leader: one AppendEntries call with entries, send to reply, per follower site, in ms.
     pub append_ms: BTreeMap<u8, Vec<u32>>,
     pub entries: u32,
@@ -298,6 +366,7 @@ impl Stats {
         self.apply_ms.clear();
         self.apply_steps.clear();
         self.confirm_ms.clear();
+        self.confirm_split.clear();
         self.append_ms.clear();
         self.raft_in.clear();
         self.deps_ms.clear();
@@ -1713,6 +1782,7 @@ impl<F: Family> Host<F> {
     /// writes in order, so one `sync()` covers every input queued so far.
     fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
         let stmts = std::mem::take(&mut *self.queue.borrow_mut());
+        let (n_stmts, n_bytes) = stmt_bytes(&stmts);
         commit_tx(&self.state.storage(), stmts)?;
         if let Some(r) = self.requests.borrow().as_ref() {
             r.flushed();
@@ -1736,10 +1806,22 @@ impl<F: Family> Host<F> {
         if !pending.is_empty() {
             let h = self.clone();
             let began = now_ms();
+            // `ConfirmSplit::turn`: a zero-delay timer set beside the `sync()`, whose firing time is the turn queue.
+            let turned = Rc::new(Cell::new(None));
+            if pending.iter().any(|p| p.1.is_some()) {
+                let turned = turned.clone();
+                spawn_local(async move {
+                    Delay::from(Duration::ZERO).await;
+                    turned.set(Some(now_ms()));
+                });
+            }
             spawn_local(async move {
                 if h.state.storage().sync().await.is_err() || h.dying.get() {
                     return;
                 }
+                let synced_at = now_ms();
+                let sync = synced_at.saturating_sub(began) as u32;
+                let turn = turned.get().map_or(sync, |t: u64| (t.saturating_sub(began) as u32).min(sync));
                 let applied = h.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.applied.0)).unwrap_or(0);
                 h.trace(Trace::Confirm, 0, 0, applied, now_ms().saturating_sub(began));
                 if let Some(l) = last {
@@ -1756,6 +1838,10 @@ impl<F: Family> Host<F> {
                         let mut s = h.stats.borrow_mut();
                         if s.confirm_ms.len() < SAMPLES_MAX {
                             s.confirm_ms.push(now_ms().saturating_sub(t0) as u32);
+                        }
+                        if s.confirm_split.len() < SAMPLES_MAX {
+                            let gate = began.saturating_sub(t0) as u32;
+                            s.confirm_split.push(ConfirmSplit { gate, sync, turn, stmts: n_stmts, bytes: n_bytes });
                         }
                     }
                     let _ = h.input(|m, t| m.confirm_end(t, id));
@@ -3103,6 +3189,31 @@ mod tests {
         assert_eq!(queue_split(1_000, 1_500, 1_150), (150, 0), "an apply later than the append clamps to it");
         let (slot, post) = queue_split(7, 40, 100);
         assert_eq!(slot + post, 93, "the split sums to the queue time");
+    }
+
+    /// LM-1 round 12's confirm split: each transaction lands in its size group by its bytes (a 100 KB one is not
+    /// under 100 KB), and `storage` is `sync` less the turn wait, per sample, not p99(sync) less p99(turn).
+    #[test]
+    fn a_confirm_split_groups_by_bytes_and_takes_the_turn_out_of_storage() {
+        use super::{ConfirmSplit, confirm_split_summary};
+        let c = |sync, turn, bytes| ConfirmSplit { gate: 3, sync, turn, stmts: 2, bytes };
+        let v = confirm_split_summary(&[c(40, 30, 99_999), c(900, 10, 100_000), c(50, 45, 2_000_000)]);
+        assert_eq!(v["lt100k"]["n"], 1);
+        assert_eq!(v["lt100k"]["storage"]["p99"], 10);
+        assert_eq!(v["lt1m"]["n"], 1, "100,000 bytes is the second group");
+        assert_eq!(v["lt1m"]["storage"]["p99"], 890, "a storage-bound confirm");
+        assert_eq!(v["lt1m"]["turn"]["p99"], 10);
+        assert_eq!(v["ge1m"]["storage"]["p99"], 5, "a turn-bound confirm");
+        let two = confirm_split_summary(&[c(100, 90, 1), c(80, 0, 2)]);
+        assert_eq!(two["lt100k"]["storage"]["p99"], 80, "per sample: max(10, 80), not 100 - 90");
+    }
+
+    /// The bytes a transaction carries: blobs and text by length, other values 8 each.
+    #[test]
+    fn a_transaction_counts_its_argument_bytes() {
+        use worker::SqlStorageValue as V;
+        let stmts = vec![("a", vec![V::Blob(vec![0; 1_000]), V::Integer(7)]), ("b", vec![V::String("xyz".into())])];
+        assert_eq!(super::stmt_bytes(&stmts), (2, 1_011));
     }
 
     /// `/stats`' `testMerges`: first attempts' asks and sheds add up, and the shard's latest counts are kept, not

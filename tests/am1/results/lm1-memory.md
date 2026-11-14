@@ -1548,3 +1548,50 @@ ls-refs for seconds after the 201 (`a1.mjs` stopped with "the repository has no 
 120 s for `main` and logs the wait; 131321's appeared after 1,704 ms. Not yet traced.
 
 Cost after round 11: $86.98 of $150 (containers $29.23); every shard torn down.
+
+### Round 12: m24c, B0-33's leader churn traced, and the B0-29 entry A/B against ENTRY_MAX (2026-11-14)
+
+**Deploy m24c.** `lm1-memory` `6065130` (main dd046f2: m0-carried-8's ENTRY_SOFT 100 KB, APPEND_BYTES_MAX 100 KB,
+PIPELINE 4 and LOOP_LAG; F67 rules 10 to 13; the pool lease heartbeat c0f521b; the tier fold fix; fresh-repo). Sites
+`7a2a620c`, `f7bb90ce`, `27504d93`; edge `66d2d952`; `SHARD_INSTANCE=standard-4`; image `sha256:f6d2ef408c76…`. Full
+checks passed on `6065130`.
+
+**B0-33's churn (smoke, repo 131323, k 4, 8 learners, `tests/fanout/terms.mjs` once a second).** One leader move in
+the run, and it was the leader's own STEP_DOWN on its storage confirm: at 03:19:15Z a CommitErrors trip (3 of 5 calls
+to each follower failed) held; at 03:20:45Z site 1 led at term 3; the old leader's alarm log shows a Confirm
+step-down at 03:20:54Z with confirm p99 1,673 ms. 1,105 `/suspect` reports started no election, no LoopLag
+step-down fired, and no transfer or drain hand-off ran, so F67 rules 10 to 13 and LOOP_LAG are not implicated
+[measured]. m22's climb from term 2 to 10 on 84d29c2 does not reproduce on dd046f2. The same smoke without learners
+(131322) held term 2 with one CommitErrors trip that held, commit p99 5,163 ms. B0-33 still fails on load: commit
+p99 30.9 s, 1,454 of 12,441 agent pushes ok and 10,966 refused `full`, because admission sizes its capacity from the
+round, which includes the 1.7 s confirm.
+
+**B0-29 A/B (diagnosis, not a row).** 500 agents, 180 s, k 4 granted, learners enam 4,000, weur 2,000, apac 2,000,
+fresh repositories. The ENTRY_MAX arm sets `/stats?entry=1500000` on every member.
+
+| Arm | Commit p50 / p99 (ms) | Queue p99 | Slot p99 | Post p99 | Round p50 / p99 | Confirm p99 | Far follower append p50 / p99 | Commands per entry | Agent push p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| As built, 100 KB (131324) | 347 / 575 | 417 | 343 | 240 | 149 / 256 | 102 | 245 / 459 | 3.41 (3,180 / 932) | 7.2 s |
+| ENTRY_MAX (131325) | 349 / 614 | 433 | 336 | 208 | 154 / 276 | 100 | 332 / 635 | 3.41 (3,167 / 928) | 7.1 s |
+
+Both arms held their leader at term 2 with no `/suspect` on the leader and 0 feed polls on it. Agent pushes 759 /
+759 and 767 / 767 ok; merge:only p99 2,363 and 1,341 ms; API p99 2,707 and 3,188 ms (the ENTRY_MAX arm had 131
+read 503s).
+
+**Reading [measured on one deploy, one run per arm].** On a fresh repository the cap does not bind: both arms cut
+the same 3.41 commands per entry, so the 100 KB cap and ENTRY_MAX give the same entries, and the 39 ms gap in commit
+p99 is run-to-run spread. The as-built arm's 575 ms is the first B0-29-shaped run under the 600 ms line, against
+869 ms on m23 (`c8c7943`) with 4.84 commands per entry; this deploy's rounds are shorter (p99 256 against 419 ms) and
+its confirm too (p99 102 against 227). One run, so not a gate result. narrow-reads-3's graft-m3e runs (500 open PRs:
+60 KB cap 2.9 s against ENTRY_MAX 949 ms) differ from these in the repository, not the tree's cap: there the cap
+binds, here it does not. Whether a PR-heavy repository's non-agent commands fill ENTRY_SOFT is not yet measured
+[unverified].
+
+**Confirm split instrument (for m25).** `/stats?summary=1` now carries `confirmSplit`: for each leader confirm, the
+input's step to the start of its transaction (`gate`, the deferred flush's macrotask), that start to `sync()`'s
+continuation (`sync`), a zero-delay timer set beside it (`turn`, the isolate's turn queue), and `storage`
+(`sync - turn` per sample), grouped by the transaction's bytes (under 100 KB, under 1 MB, larger). `a1.mjs` reports
+it as `leader.confirmSplit`. Its tests fail on plants 89 to 91. Workers' clock advances only across I/O, so the
+synchronous `transactionSync` itself reads as 0 ms and shows up in later inputs' `gate` and `turn`.
+
+Cost after round 12: $106.76 of $150 (containers $45.53); `teardown.py --sweep` reported "sweep ok".

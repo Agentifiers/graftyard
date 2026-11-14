@@ -266,6 +266,17 @@ MUTANTS = [
     ('queue split: an apply before admission counts as slot wait', HOST,
      '    let freed = last_apply.clamp(admitted, appended);', '    let freed = last_apply.min(appended).max(1_000);',
      ['cargo', '-p', 'graftyard-site', '--lib', 'a_queue_splits']),
+    # Round 12's confirm split (`workers/site/src/host.rs`, `confirm_split_summary`, `stmt_bytes`).
+    ('confirm split: a transaction at a group\'s bound stays in the group below', HOST,
+     'xs.iter().filter(|c| c.bytes >= lo && c.bytes < hi)', 'xs.iter().filter(|c| c.bytes > lo && c.bytes <= hi)',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_confirm_split']),
+    ('confirm split: storage is p99(sync) less p99(turn), not per sample', HOST,
+     '"storage": f(|c| c.sync.saturating_sub(c.turn)),',
+     '"storage": json!({ "p99": f(|c| c.sync)["p99"].as_u64().unwrap_or(0).saturating_sub(f(|c| c.turn)["p99"].as_u64().unwrap_or(0)) }),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_confirm_split']),
+    ('confirm split: integer arguments count no bytes', HOST,
+     '            _ => 8,\n        })', '            _ => 0,\n        })',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_transaction_counts']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
