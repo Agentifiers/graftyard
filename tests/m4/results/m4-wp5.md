@@ -1,6 +1,6 @@
 # M4-WP5: the web app on a hosted edge
 
-BUILD-PLAN M4-WP5 asks for the web app reading public GraphQL and REST with persisted queries plus the private `/_t/ui/*` API, an HTML shell with the first route's data inlined, immutable static assets, one error boundary and query per region, and BF-38 and BF-61 under Playwright on a hosted edge. **BF-38 passes on graft-m4a, its running-job live log included (edge day 12, 15:09Z on 2026-11-14). BF-61 passes on its pass column (edge day 13, 15:42Z to 15:52Z): lines within 2 s, the fallback within a second of the relay's kill, and a complete final log; its Playwright run did not finish its own report (below).**
+BUILD-PLAN M4-WP5 asks for the web app reading public GraphQL and REST with persisted queries plus the private `/_t/ui/*` API, an HTML shell with the first route's data inlined, immutable static assets, one error boundary and query per region, and BF-38 and BF-61 under Playwright on a hosted edge. **BF-38 passes on graft-m4a, its running-job live log included (edge day 12, 15:09Z on 2026-11-14). BF-61's hosted figures meet its pass column (edge day 13, 15:42Z to 15:52Z): lines within 2 s, the fallback within a second of the relay's kill, and a complete final log. Its spec did not print its own result (below), and a row passes as written, so BF-61 counts once `bf61.spec.mjs` prints one clean result on M4 Actions' next aborted job, with no new site day. That run is M4-WP5's last item.**
 
 Branch `m4-web`, cut from `origin/main` at `20147db`, merged with main at `3b18ded` (M5-WP1's `release.rs`, which graft-m4a edges need).
 
@@ -165,6 +165,12 @@ Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2
 
 ## Pending
 
-- BF-61's spec run to its own report: the hosted figures are in, from the probe and screenshots; a rerun of `bf61.spec.mjs` on a fresh live.yml job would print them as one result.
-- After a kill, the fallback shows the running step's lines only once it ends, because the runner uploads a step's log at the step's end [inference]. The page does not rejoin the relay when the runner reconnects.
+- BF-61's printed result: `bf61.spec.mjs` on M4 Actions' next aborted live.yml job, which they schedule with their next hosted row (no new site day). M4-WP5 is done when it prints clean.
+
+## Open items
+
+These are known limits of the live log after a relay kill. BF-61's row does not test them, so they are not failures.
+
+- **The fallback shows a running step's lines only once that step ends.** `/logs` for a running job serves the step logs the runner has uploaded, and the runner uploads a step's log at the step's end [inference, M4 Actions]. On job 1114120 the page held steps 1 and 2 from the kill until step 3 ended.
+- **The page does not rejoin the relay.** After the kill the runner reconnected its feed to a fresh relay about 27 s later [M4 Actions' runner log], but the viewer stays on the saved log, polled every 3 s, until the job ends.
 - The chrome widgets whose REST routes the edge does not serve yet (F61) render nothing.
