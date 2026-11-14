@@ -25,6 +25,12 @@ H = {"authorization": f"Bearer {tok}"}
 api = lambda p: json.load(urllib.request.urlopen(urllib.request.Request(
     f"https://api.cloudflare.com/client/v4/accounts/{acct}/containers/{p}", headers=H), timeout=60))["result"]
 done = {}
+if sweep:
+    # A site fault left armed (L0-12's stall killed mid-run, m3fr2: `site=255` for 30 minutes) fails every member
+    # call, so `/_bed/kill` cannot read the repository's record and every teardown answers 500. Clear it first.
+    r = subprocess.run(["curl", "-s", "-m", "60", "-H", "@-", "-o", "/dev/null", "-w", "%{http_code}",
+                        f"{edge}/_bed/fault?off=1"], input=f"x-bed-token: {bed}\n", capture_output=True, text=True)
+    print(f"site fault off: {r.stdout or f'fail({r.returncode})'}", flush=True)
 for app in api("applications"):
     if not app["name"].startswith(os.environ.get("INSTALL", "graft-m2b") + "-site-"):
         continue
@@ -70,3 +76,7 @@ if "--sweep" in sys.argv[1:]:
         print(f"SWEEP FAILED: {len(left)} shard containers still running: {left}", file=sys.stderr)
         sys.exit(2)
     print("sweep: no shard container running")
+elif any(k != "200" for k in codes):
+    # A non-200 teardown leaves its container running; callers print "torn down" only on exit 0.
+    print(f"TEARDOWN FAILED: {codes}", file=sys.stderr)
+    sys.exit(1)
