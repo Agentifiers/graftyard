@@ -3058,3 +3058,31 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `tests/m4/results/m4-wp1-hosted.md`, BF-57 runs 13 to 16. `a_run_sends_a_queues_waiting_deliveries_in_order_under_one_slot` (`crates/git/src/sequencer.rs`).
 
 **Flip.** A run in which lanes do not shorten the healthy tail against the store's own POSTs, or a chain-order inversion that a run causes.
+
+### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
+
+Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).
+
+#### A create starts its group's near placement and does not wait for it
+
+**Decision.** `graftyard_lookup::create` sends the new group's leader `/place` with `{"background": true}`. The leader answers `{"placing": true}` at once, or `notLeader`, and runs the same near check (`place_inner`: up to `PLACE_TRIES` re-placements, the nearest kept) under `wait_until` after it answers. It holds the daily check's `near_check` marker while it runs, so a second ask, or the daily check, does not start another placement of the same group. A create therefore returns once a member leads, and the group serves while it is placed, as it already does through a daily re-placement. `PLACE_FOR` stays 240 s, so an edge built from this branch still works with a member built before it, which ignores the field and places before it answers.
+
+**Why.** On `graft-m2b` and `graft-m3c` the enam to weur pair measures 105 to 136 ms, over enam's 100 ms `NEAR_RTT`, so every new group spent all 8 tries. Each try's join measures 20 round trips to each peer, so a group took 60 to 95 s to place. A fresh repository can make two new groups, its `Names` shard and its own, so its create took up to 141 s [measured, `tests/am1/results/fresh-repo.md`]. LM-1's 503 "0 of 3 joined … has no RepoOwner row" was a `GET /repos` sent while its create was still placing the `Names` shard group, before `RepoOwner` committed: every member checks that row before it joins, so all three refused. Its missing `main` was `tests/am1/runs/mkrepos.mjs` taking a re-sent create's 422 plus a 200 GET as a finished create while the first create was still placing, and in one case after the client had given up on it at 180 s, so `push_init` had not run. No acknowledged write was missing from a read [measured, Workers Logs, same file]. The `m0-carried-4` amendment already made the bound "a goal, not a gate". Nothing about the create's result depends on the placement, so the create no longer needs to wait for it.
+
+**Beat.** Answering a read of a repository with no `RepoOwner` row with 404 instead of trying to join, as the only change. It does not shorten the create, and a 140 s create also outlasts clients' timeouts, as it outlasted mkrepos'. It is still open as a second change: after this one, a `GET /repos` sent while a create runs answered 503 "0 of 3 joined" on 35 of 129 such reads, in the 10 to 30 s before `RepoOwner` commits [measured, `tests/am1/results/fresh-repo.md`]. No read after a 201 did. Fewer `RTT_SAMPLES` or `PLACE_TRIES`, which only shorten each try, and leave a create waiting on several. A bound relative to each install's baseline, which the `m0-carried-4` amendment rejected.
+
+**Evidence.** `tests/am1/results/fresh-repo.md` [measured]. `tests/am1/fresh/fresh.mjs` creates repositories back to back, never re-sending a create. It fails on main's sites (a create over 60 s) and passes on this branch's. No cargo test can reach the change: it is the order of two Durable Object calls, and only workerd runs the site's members.
+
+**Flip.** A group whose background placement leaves it `Degraded` or without a leader, which `fresh.mjs` checks after each run. Or commit latency on new groups during the placement window that some caller cannot take.
+
+#### `mkrepos.mjs` sends a create once
+
+**Decision.** `tests/am1/runs/mkrepos.mjs` sends `POST /orgs/m3org/repos` once with a 400 s timeout. It no longer re-sends the request through `api`, and it no longer counts a 422 followed by a 200 GET as a create.
+
+**Why.** That fallback started LM-1's runs on repositories whose create was still placing (131317) or had been abandoned (131320).
+
+**Beat.** Keeping the fallback and waiting for `main`, as LM-1's `a1.mjs` does, which hides a create that never finished.
+
+**Evidence.** `tests/am1/results/fresh-repo.md`, "Bug 2".
+
+**Flip.** None needed. A driver that must survive a lost answer should read the repository's `main`, not its settings.

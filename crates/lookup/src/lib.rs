@@ -959,9 +959,9 @@ async fn leaderless(
 
 /// Creates `chain`'s group from `record` if the lookup finds none: joins its bootstrap members with `join` (the
 /// `/join` fields beyond `chain`, `me`, and `record`), each of which checks the record against its source and claims
-/// the generation, then campaigns on the record's home until a member leads, and then has the leader run the near
-/// check (`place`), which may re-place a follower and fails the create if no try passes. Joins are idempotent, and a
-/// member of a generation that lost the claim refuses, so two callers at once still build one group.
+/// the generation, then campaigns on the record's home until a member leads, and then starts the leader's near check
+/// (`place`), which runs after the create returns. Joins are idempotent, and a member of a generation that lost the
+/// claim refuses, so two callers at once still build one group.
 pub async fn create(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -1007,13 +1007,17 @@ pub async fn create(
     Err(format!("{chain}: created, but no member leads"))
 }
 
-/// How long `create` waits for a new group's `/place`: PLACE_TRIES joins, each measuring two voters 20 times, plus
-/// the leader's own 20 round trips to each, and three config changes [inference from apac round trips of about 250 ms].
+/// How long `create` waits for a new group's `/place`. A member that takes `background` answers before it measures
+/// anything; one built before it ignores the field and answers after PLACE_TRIES joins, each measuring two voters
+/// 20 times, plus three config changes [inference from apac round trips of about 250 ms], so the bound stays.
 const PLACE_FOR: Duration = Duration::from_secs(240);
 
-/// The near check on a new group (`design/DESIGN.md`, "Placement is checked by latency"): its leader re-places a
-/// voter until the home has one within `NEAR_RTT`, or keeps the nearest try; only an error such as a lost leader or
-/// a refused config change fails the create, never the bound alone.
+/// Starts the near check on a new group (`design/DESIGN.md`, "Placement is checked by latency"): its leader
+/// re-places a voter until the home has one within `NEAR_RTT`, or keeps the nearest try, under `wait_until` after it
+/// answers (`{"background": true}`). Each try's join measures 20 round trips to each peer, so a home over the bound
+/// on every try held a create for about 60 to 95 s, and a read of the repository in that time found no `RepoOwner`
+/// row and failed "0 of 3 joined" (`tests/am1/results/fresh-repo.md`). The group serves while it is placed, as it
+/// does through a daily re-placement. Only a leader that cannot be reached fails the create.
 async fn place(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -1022,7 +1026,7 @@ async fn place(
 ) -> std::result::Result<(), String> {
     let mut leader = leader;
     for _ in 0..3 {
-        match post_within(b, leader.site, &leader.do_name, "/place", b"{}", PLACE_FOR).await {
+        match post_within(b, leader.site, &leader.do_name, "/place", br#"{"background":true}"#, PLACE_FOR).await {
             Some((200, v)) if v.get("error").is_none() => return Ok(()),
             // Leadership moved, as it does to `home` after a create: place from the member that leads now.
             Some((200, v)) if v.pointer("/error/notLeader").is_some() => {
