@@ -4,7 +4,7 @@ This file records M4-WP1's hosted half on `graft-m4a`, a product build with `sta
 
 Branch `m4-actions`. Every site day is in `install-m4a.md`'s site-day log. The raw data is in `tests/m4/results/raw/`: `bf57-runN.jsonl` holds the driver's rows, and `bf57-runN-sink.json` holds the receiver's log where it was kept. The driver is `tests/m4/wp1/bf57.mjs`.
 
-Status: **in progress.** **BF-57 passes** (run 16, site day 18). **BF-58 passes** (run 2, site days 21 and 22). The hosted `Audit` stream is not done yet.
+Status: **in progress.** **BF-57 passes** (run 16, site day 18). **BF-58 passes** (run 2, site days 21 and 22). The `Audit` stream reaches a Basin Pipelines sink (site day 25). M4-WP1's hosted half is done.
 
 ## BF-57: one hook timing out at 10 s beside 49 healthy hooks, 10 events/s
 
@@ -102,6 +102,19 @@ The row as written:
 
 Site a's members took the down version at 23:14:11Z, but Workers Logs show its `HookSequencer` objects ran day 18's `dedb3861` through the whole 4-minute window (last call 23:19:27Z), so the store was never down. What the run did show is option A, the store reset alone: from 23:19Z the store restarted empty under `GRAFTYARD_HOOKSEQ_RESET_BEFORE` and replayed. 10,800 of 10,800 pairs were delivered, 0 under two GUIDs, 1,061 repeats after the reset, the first 0.92 s after it. This is the lead's extra check of the empty-store replay; it is not counted as the row. Run 2 adds the `dead` mark, so the outage is timed from the store's own kill.
 
+## The `Audit` consumer and its Basin Pipelines stream
+
+Basin Pipelines is GA in `research/cloudflare.md`'s first table and in DESIGN's Stack. Search is M4-WP2's. The `Audit` consumer (finisher) was already built in M3; this half adds its stream: each batch sends one row per event of the identity entries it scanned (`graftyard_identity::audit::stream_rows`, keyed `chain:index:slot`, variant and id fields only, never a hash, key, or secret) to an `AUDIT_STREAM` binding before it moves its cursor, so every event reaches the stream at least once (`workers/site/src/audit.rs`; kept test `audit_stream_rows_name_each_event_once_and_the_cursor_passes_them`). DESIGN folds the stream into the `event pipeline` component's Failure modes and Deployment modes rows.
+
+**On graft-m4a.** Stream `graft_m4a_audit` (schema: `id`, `chain`, `index`, `slot`, `at`, `action`, `fields`), pipeline `graft_m4a_audit_pipe`, and an R2 JSON sink into bucket `graft-m4a-audit`, rolling every 30 s. Site days 23 to 25 turned on `GRAFTYARD_AUDIT=1` with `--audit-stream`:
+
+- **Day 23.** Every batch failed with "audit stream send returned no promise": the binding's `send` answers an `RpcPromise`, a thenable that is not a `Promise` instance. Fixed in [`38b5bcda`](https://github.com/Agentifiers/graftyard/commit/38b5bcda) by adopting it through `Promise.resolve`.
+- **Day 24.** Every batch failed with "The RPC receiver does not implement the method `call`": the binding's `send` is an RPC stub, so `Function.prototype.call` reaches the stream as a method name. Fixed in [`6abceebf`](https://github.com/Agentifiers/graftyard/commit/6abceebf) with `Reflect.apply`. A scratch probe Worker bound to the same stream showed both behaviors before each deploy.
+- **Day 25.** Passes. In the first two minutes the consumers streamed the backlog from each cursor: one 5.6 MB file of 40,981 rows (40,952 `Names`, 28 `Authz`, 1 `Tokens`). 889 ids appear twice: the batches that failed on day 24 had sent some chunks before the failing one, and the cursor did not move, so they were sent again, which is the at-least-once the design states. Then `tests/m4/wp1/audit-stream.mjs` added a new SSH key for the admin at 01:07:06Z. Its `SshKey` row (`tokens:909:5:0`, `fields: {account: 7100003}`) reached the sink **144 s** after the write: `FINISH_AFTER` (60 s), the alarm, the stream, and the 30 s roll. **No row holds key material.** Raw data `raw/audit-stream-run1.jsonl`.
+
 ## Cost
 
-`tests/fanout/m2bcost.py` for graft-m4a, 2026-11-13 00:00Z to 20:00Z: **$22.13** for the whole install. Containers are $13.19 of it. They are the `standard-4` git shards, which every thread on graft-m4a uses; BF-57 does not touch git. Durable Objects are 5.08 M requests and 1.67 M active seconds. The figure covers M4 web's, M4-WP2's and M5-WP1's use of the install too.
+`tests/fanout/m2bcost.py` for graft-m4a. It meters the `graft-m4a-*` scripts and namespaces, so it covers every thread's use of the install.
+
+- **This work's windows, 2026-11-13 08:40Z to 2026-11-14 01:10Z: $24.12.** Containers are $13.98 of it, the `standard-4` git shards, which every thread on graft-m4a shares and none of this work started (BF-57 and BF-58 do not touch git; every shard was torn down at 20:20Z and 20:59Z). The rest is **$10.14** of Durable Objects and Workers (4.60 M DO requests, 1.60 M active seconds, 93,813 Worker requests), which also includes M4 web's, M4-WP2's, and M5-WP1's use in those hours, so this work's share is at most $10.14, under the $30 cap. The receiver Workers, the probe Workers, the stream, and the R2 sink cost cents.
+- **The whole install, 2026-11-13 00:00Z to 2026-11-14 01:10Z: $25.91**, containers $14.54.

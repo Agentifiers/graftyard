@@ -1167,7 +1167,10 @@ fn audit_stream_rows_name_each_event_once_and_the_cursor_passes_them() {
     assert!(!text.contains("hash"), "no hash reaches the stream: {text}");
     // Owed nothing, but rows were streamed: the batch still commits the cursor past them.
     let through = Index(log.len() as u64);
-    assert!(!audit::needs_batch(Index(0), through, &[], 0), "without rows, nothing owed and under a stride is no batch");
+    assert!(
+        !audit::needs_batch(Index(0), through, &[], 0),
+        "without rows, nothing owed and under a stride is no batch"
+    );
     assert!(audit::needs_batch(Index(0), through, &[], rows.len()));
     let mut f = Finisher::new(chain, Timestamp(u64::MAX / 2), Index(0), through, Vec::new()).streamed(rows.len());
     let Want::Submit(step) = f.want() else { panic!("the cursor step") };

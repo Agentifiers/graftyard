@@ -26,7 +26,9 @@ log(`add key: ${add.status} id ${add.body?.id}`);
 if (add.status !== 201) throw new Error(JSON.stringify(add.body).slice(0, 300));
 row(out, { kind: "writes", at: t0, add: add.status, keyId: add.body.id });
 
-const wrangler = (...a) => execFileSync("npx", ["-y", "wrangler@4", ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const wrangler = (...a) => execFileSync("npx", ["-y", "wrangler@4", ...a],
+  { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 30 });
+const read = new Map(); // a sink file never changes once written
 // The sink writes `audit/<uuid>.json`, with no date partition on graft-m4a's sink (measured 2026-11-14).
 const prefix = "audit/";
 /** Every row in the sink's files, listed through the R2 API and read with wrangler. */
@@ -35,8 +37,8 @@ async function sinkRows() {
     { headers: { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } }).then((r) => r.json());
   const rows = [];
   for (const o of list.result ?? []) {
-    const text = wrangler("r2", "object", "get", `${BUCKET}/${o.key}`, "--remote", "--pipe");
-    for (const l of text.split("\n").filter(Boolean)) rows.push({ file: o.key, ...JSON.parse(l) });
+    if (!read.has(o.key)) read.set(o.key, wrangler("r2", "object", "get", `${BUCKET}/${o.key}`, "--remote", "--pipe"));
+    for (const l of read.get(o.key).split("\n").filter(Boolean)) rows.push({ file: o.key, ...JSON.parse(l) });
   }
   return rows;
 }
