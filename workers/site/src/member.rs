@@ -424,9 +424,32 @@ async fn depth_hop(env: &Env, me: &MemberRef, k: u64) -> Value {
     }
 }
 
-fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>) -> Value {
+fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>, me: &str) -> Value {
     let r = m.meta();
-    json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 })
+    let mut v = json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 });
+    if removed(m.committed_config().map(|c| &c.1), me) {
+        v["removed"] = json!(true);
+    }
+    v
+}
+
+/// Whether `config`, the member's latest committed one, no longer names the member `me` (its `do_name`): a voter a
+/// replacement removed, or a learner dropped. It keeps answering with that config (`design/DESIGN.md`, Shape, "Sites
+/// and placement"), and every reply's `meta` says `removed`, so a caller takes the config and never reads the
+/// member's own `NotLeader` naming no leader as a leaderless group (B0-32 m3fr2: site b's first-generation voter,
+/// replaced at config index 3, drew 72 `/suspect` reports at a leader in term 2). No config yet is not removed.
+fn removed(config: Option<&raft::GroupConfig>, me: &str) -> bool {
+    let Some(c) = config else { return false };
+    let names = |p: &graftyard_types::Placement| p.voters().iter().chain(p.learners()).any(|m| &*m.do_name == me);
+    match c {
+        raft::GroupConfig::Normal(p) => !names(p),
+        // The lost site's voter is out of the group, as `quorum::voters` counts it; learners stay.
+        raft::GroupConfig::Degraded { placement, lost } => {
+            !placement.voters().iter().any(|m| &*m.do_name == me && m.site != *lost)
+                && !placement.learners().iter().any(|m| &*m.do_name == me)
+        }
+        raft::GroupConfig::Joint { old, new } => !names(old) && !names(new),
+    }
 }
 
 /// The site id at `k` in a request body, refused when it is missing or past `u8`, so `{"site": 258}` never names
@@ -831,7 +854,7 @@ impl<F: Family> Routes<F> {
     }
 
     fn meta(&self) -> Value {
-        self.host.core.borrow().as_ref().map_or(Value::Null, |c| meta(&c.m))
+        self.host.core.borrow().as_ref().map_or(Value::Null, |c| meta(&c.m, &c.join.me.do_name))
     }
 
     #[cfg(feature = "test-faults")]
@@ -1377,7 +1400,7 @@ impl<F: Family> Routes<F> {
             "stalledSince": s.stalled_since.map(|t| t.0),
             "boots": [s.boots[0].0, s.boots[1].0],
             "boot": c.m.boot().to_string(),
-            "meta": meta(&c.m),
+            "meta": meta(&c.m, &c.join.me.do_name),
             "config": c.m.committed_config().map(|(i, cfg)| json!({ "index": i.0, "config": cfg })),
             "boot1": c.m.digest_of(raft::Index(1)).map(|d| d.hex()),
             "family": format!("{:?}", Kind::of(&c.join)),
@@ -2546,6 +2569,36 @@ mod tests {
     use serde_json::json;
 
     use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_wait, site_field};
+
+    /// A member is removed once its latest committed config no longer names it: a replaced voter (B0-32 m3fr2's
+    /// `#1#f1` after its site's `#2#f1` joined), and a `Degraded` config's lost voter. Its replacement, the other
+    /// voters, a learner, and a member with no config yet are not.
+    #[test]
+    fn a_member_its_config_no_longer_names_is_removed() {
+        use graftyard_raft::GroupConfig;
+        use graftyard_types::{ChainId, DbId, Member, MemberKind, RepoId};
+        let chain = ChainId::Repo(RepoId(DbId(65556)));
+        let m = |s: u8, g: u32| Member::new(chain, SiteId(s), MemberKind::Full, s, g);
+        let l = Member::new(chain, SiteId(2), MemberKind::Learner, 0, 3);
+        let p = |v1: u32, ls: Vec<Member>| -> Box<graftyard_types::Placement> {
+            serde_json::from_value(
+                json!({ "voters": [m(0, 1), m(1, v1), m(2, 1)], "learners": ls, "home": 0, "generation": 3 }),
+            )
+            .unwrap()
+        };
+        let normal = GroupConfig::Normal(p(2, vec![l.clone()]));
+        let degraded = GroupConfig::Degraded { placement: p(1, vec![]), lost: SiteId(1) };
+        let joint = GroupConfig::Joint { old: p(1, vec![]), new: p(2, vec![]) };
+        let removed = |c: Option<&GroupConfig>, me: &Member| super::removed(c, &me.do_name);
+        assert!(removed(Some(&normal), &m(1, 1)), "the replaced voter");
+        assert!(!removed(Some(&normal), &m(1, 2)), "its replacement");
+        assert!(!removed(Some(&normal), &m(0, 1)));
+        assert!(!removed(Some(&normal), &l), "a learner the config names");
+        assert!(removed(Some(&degraded), &m(1, 1)), "the lost site's voter");
+        assert!(!removed(Some(&degraded), &m(2, 1)));
+        assert!(!removed(Some(&joint), &m(1, 1)) && !removed(Some(&joint), &m(1, 2)), "both halves of a Joint");
+        assert!(!removed(None, &m(1, 1)), "no config yet");
+    }
 
     /// The summary's p50 and p99 are nearest-rank over the sorted samples, the same rule as `a1.mjs`'s `pct`, so a
     /// row judged from `?summary=1` matches one judged from the raw arrays; samples arrive out of order.
