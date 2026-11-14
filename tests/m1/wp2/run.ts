@@ -5,6 +5,7 @@
 //   node tests/m1/wp2/run.ts bf13  --run NAME [--rounds 400] [--groups 8] [--early]
 //   node tests/m1/wp2/run.ts bench --run NAME [--seconds 60] [--rate 100] [--bytes 1024] [--near-ms MS]
 //                                  [--chain repo:N] [--body array|stream] [--arrival sql|mem] [--entry soft|max|<bytes>]   # reuse a group; B0-02's A/B switches
+//                                  [--mix j9]   # journey 9's command sizes (edge.ts `benchValue`), the far-leg check
 //   node tests/m1/wp2/run.ts audit --run NAME      # BF-12 audit of every group's three members
 //
 // BF-12: each group appends unique tokens `i,` to one register, one command per kill. Kill modes alternate
@@ -20,6 +21,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, options
   "down-every": { type: "string", default: "25" }, rounds: { type: "string", default: "400" },
   seconds: { type: "string", default: "60" }, rate: { type: "string", default: "100" }, bytes: { type: "string", default: "1024" },
   early: { type: "boolean", default: false }, "near-ms": { type: "string" }, body: { type: "string" }, chain: { type: "string" }, arrival: { type: "string" }, entry: { type: "string" },
+  mix: { type: "string" },
 } });
 const row = positionals[0];
 if (!opt.run || !row) throw new Error("usage: node tests/m1/wp2/run.ts bf12|bf13|bench|audit --run NAME");
@@ -259,7 +261,7 @@ async function bench(): Promise<void> {
   const t0 = Date.now();
   while (Date.now() - t0 < seconds * 1000) {
     const rs = await Promise.all(Array.from({ length: callers }, () =>
-      edge<any>("/bench", { chain, n: Math.round(WORKERS * perWorker * CHUNK_S), concurrency: WORKERS, bytes: Number(opt.bytes), ratePerWorker: perWorker }).catch((e) => ({ error: String(e) }))));
+      edge<any>("/bench", { chain, n: Math.round(WORKERS * perWorker * CHUNK_S), concurrency: WORKERS, bytes: Number(opt.bytes), ratePerWorker: perWorker, mix: opt.mix }).catch((e) => ({ error: String(e) }))));
     for (const r of rs) {
       if (r.error) { log(r.error); continue; }
       client.push(...r.lat); failed += r.failed; done += r.n - r.failed; colo = r.colo;
@@ -276,7 +278,7 @@ async function bench(): Promise<void> {
     .catch(() => null);
   const lat: number[] = leader.r.commitMs, round: number[] = leader.r.roundMs;
   const s = {
-    row: "b0-01 (M1-WP2 Rust host)", run: opt.run, body: opt.body ?? "stream", arrival: opt.arrival ?? "sql", entry: opt.entry ?? "soft", bytes: Number(opt.bytes), chain, at: new Date().toISOString(), seconds: wallS, edgeColo: colo, leader: leader.site, rtt,
+    row: "b0-01 (M1-WP2 Rust host)", run: opt.run, body: opt.body ?? "stream", arrival: opt.arrival ?? "sql", entry: opt.entry ?? "soft", bytes: Number(opt.bytes), mix: opt.mix ?? null, chain, at: new Date().toISOString(), seconds: wallS, edgeColo: colo, leader: leader.site, rtt,
     commands: done, failed, throughputPerS: Math.round(done / wallS), entries: leader.r.entries,
     commandsPerEntry: Math.round((leader.r.commands / leader.r.entries) * 10) / 10,
     commitMs: { p50: pct(lat, 0.5), p99: pct(lat, 0.99), max: pct(lat, 1), n: lat.length },

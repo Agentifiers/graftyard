@@ -364,6 +364,10 @@ pub enum Trace {
     /// A held AppendEntries left in the response to a learner's call: `batch` its round, `index` its last entry, `ms`
     /// its commit.
     AppendTaken = 19,
+    /// The far-leg check (`tests/m0/results/farleg.md`): an `AppendEnded` call's reply for its round. `index` is 0
+    /// ok, 1 refused for a gap (it arrived before the call ahead), 2 refused by `verify`, 3 any other refusal; `ms`
+    /// is the call's first entry.
+    AppendAnswered = 20,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -2195,6 +2199,17 @@ impl<F: Family> Host<F> {
             for r in replies {
                 let from = r.from;
                 h.trace_res(&r, true);
+                if let (Some((round, first, _)), raft::Message::AppendRes(a)) = (traced, &r.msg)
+                    && a.round == round
+                {
+                    let code = match (a.ok, &a.refused) {
+                        (true, _) => 0,
+                        (false, Some(_)) => 2,
+                        (false, None) if a.prev_index > a.last => 1,
+                        (false, None) => 3,
+                    };
+                    h.trace(Trace::AppendAnswered, call.to, round, code, first);
+                }
                 if h.input(|m, t| m.step(t, from, r.msg)).is_err() {
                     break;
                 }

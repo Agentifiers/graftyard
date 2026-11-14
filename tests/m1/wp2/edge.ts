@@ -352,9 +352,21 @@ async function bf13(e: Edge, k: string, client0: number, mode: string, down_ms: 
   return { k, ids, leader, warm: warm.ok, results, read: g, fault: rows[0] ?? null, landed: rows.length, history, trace: tr };
 }
 
-/** B0-01-style load from inside the edge: `n` puts of `bytes` bytes, `conc` workers, each paced at `rate` per s. */
-async function bench(e: Edge, n: number, conc: number, rate: number, bytes: number) {
-  const value = "x".repeat(bytes);
+/** One command's value under `mix`: "j9" is journey 9's group commands as the follower links see them (B0-29,
+ *  `tests/am1/rest/a1.mjs` `journey9`): agent pushes, 4.17 of 27.6 commands/s, carry a 10 to 70 KB pack inline; the
+ *  rest, and the 5% of pushes whose 1 MiB pack is not inline, are about 1 KB (LM-1 round 13's journey-9 leader cut no
+ *  entry of 1 MB or more, `tests/am1/results/lm1-memory.md` on `lm1-memory`). Pushes go to four keys, so a register
+ *  holds few large values. Otherwise every value is `bytes`. */
+function benchValue(mix: string | undefined, bytes: number, k: number): { key: string; value: string } {
+  if (mix === "j9" && Math.random() < 4.17 / 27.6 && Math.random() >= 0.05) {
+    return { key: `push${k % 4}`, value: "p".repeat(10_000 + Math.floor(Math.random() * 60_000)) };
+  }
+  return { key: `bench${k % 64}`, value: "x".repeat(bytes) };
+}
+
+/** B0-01-style load from inside the edge: `n` puts of `bytes` bytes (or `mix`'s), `conc` workers, each paced at `rate`
+ *  per s. */
+async function bench(e: Edge, n: number, conc: number, rate: number, bytes: number, mix?: string) {
   const lat: number[] = [];
   const errors: Record<string, number> = {};
   let i = 0, failed = 0;
@@ -364,7 +376,7 @@ async function bench(e: Edge, n: number, conc: number, rate: number, bytes: numb
     while (i < n) {
       const k = i++;
       const t = Date.now();
-      const r = await e.write({ kind: "put", key: `bench${k % 64}`, value }, rid(), []);
+      const r = await e.write({ kind: "put", ...benchValue(mix, bytes, k) }, rid(), []);
       if (r.ok) lat.push(Date.now() - t); else { failed++; errors[r.error] = (errors[r.error] ?? 0) + 1; }
       if (rate) await sleep(Math.max(0, 1000 / rate - (Date.now() - t)));
     }
@@ -418,7 +430,7 @@ export default {
         }
         case "/bf12": return json({ colo, kills: await bf12(e, body.key, body.from ?? 0, body.plan ?? [{ mode: "after_quorum" }]) });
         case "/bf13": return json({ colo, ...(await bf13(e, body.key, body.client0 ?? 0, body.mode ?? "before_commit", body.down_ms ?? 0)) });
-        case "/bench": return json({ colo, ...(await bench(e, body.n ?? 100, body.concurrency ?? 5, body.ratePerWorker ?? 0, body.bytes ?? 1024)) });
+        case "/bench": return json({ colo, ...(await bench(e, body.n ?? 100, body.concurrency ?? 5, body.ratePerWorker ?? 0, body.bytes ?? 1024, body.mix)) });
       }
     } catch (err) {
       return json({ error: String(err) }, 500);
