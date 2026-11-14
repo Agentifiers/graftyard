@@ -20,6 +20,8 @@ RAFT = ['-p', 'graftyard-raft', '--release', '--test', 'admission']
 GIT = ['-p', 'graftyard-git', '--test', 'agent_load', '--test', 'prsync', '--lib']
 WIRE = ['-p', 'graftyard-wire', '--lib']
 FOLD = ['-p', 'graftyard-fold', '--test', 'install']
+R = 'crates/git/src/repo.rs'
+MARKS = ['-p', 'graftyard-git', '--test', 'agent_gates']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -87,6 +89,15 @@ MUTANTS = [
     ('LOG_MAX_BYTES ignored: only the 30-day rule archives', FS,
      '    let mut over = log.iter().map(|e| e.2).sum::<u64>().saturating_sub(max_bytes);',
      '    let mut over = 0 * log.iter().map(|e| e.2).sum::<u64>().saturating_sub(max_bytes);', FOLD),
+    ('RepoFold marks no writes: hot and DEMOTE_PER_MIN never fire on a repository', R,
+     '        actor.map(|a| WriteMark { actor: Some(a), push: false })\n    }',
+     '        let _ = actor;\n        None\n    }', MARKS),
+    ('RepoFold drops the push mark: a Refs counts as a write, not a push', R,
+     '                return Some(WriteMark { actor: by(actor), push });',
+     '                return Some(WriteMark { actor: by(actor), push: push && false });', MARKS),
+    ('RepoFold marks every write a push', R,
+     '        actor.map(|a| WriteMark { actor: Some(a), push: false })',
+     '        actor.map(|a| WriteMark { actor: Some(a), push: true })', MARKS),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

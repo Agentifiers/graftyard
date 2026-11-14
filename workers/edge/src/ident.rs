@@ -59,16 +59,24 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
         // sharded system chain is, so the leader of the caller's next write can read it as a dependency; until then
         // it holds no revocation.
         let chain = ChainId::Tokens(graftyard_identity::jti_shard(&jti));
-        let record = c.system_record(chain).await?;
         let b = c.bindings();
         let q = json!({ "q": { "jti": jti.0.to_string() } }).to_string();
-        Ok::<_, String>(Some(match graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await? {
-            Some((v, _, _)) => v.pointer("/value/jti").and_then(Value::as_u64).is_some_and(|exp| exp > now().0),
-            None => {
-                graftyard_lookup::create(&b, chain, &record, &json!({})).await?;
-                false
+        loop {
+            let record = c.system_record(chain).await?;
+            match graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await {
+                Ok(Some((v, _, _))) => {
+                    let exp = v.pointer("/value/jti").and_then(Value::as_u64);
+                    return Ok::<_, String>(Some(exp.is_some_and(|exp| exp > now().0)));
+                }
+                // A miss under the genesis binding: the view's record, if it differs, before creating anything.
+                _ if c.rebind().await => continue,
+                Ok(None) => {
+                    graftyard_lookup::create(&b, chain, &record, &json!({})).await?;
+                    return Ok(Some(false));
+                }
+                Err(e) => return Err(e),
             }
-        }))
+        }
     };
     let revoked = crate::rcache::through(&crate::rcache::JTIS, jti.0.0, at, read_class, read_jti);
     let (keys, revoked) = futures_util::future::join(keys, revoked).await;
@@ -111,6 +119,8 @@ fn bad_credentials() -> Reply {
 
 /// Commits `cmd` on a system chain through the lookup rule, under this request's id; `Err` is the reply to send.
 pub async fn commit_system(c: &Ctx<'_>, chain: ChainId, cmd: Value) -> std::result::Result<Value, Reply> {
+    // A write may create the group, so an isolate on the genesis binding checks it against the view first (once).
+    c.rebind().await;
     let record = c.system_record(chain).await.map_err(|e| crate::api::unavailable(&e))?;
     let b = c.bindings();
     if let Err(e) = graftyard_lookup::create(&b, chain, &record, &json!({})).await {

@@ -12,7 +12,7 @@ export const HOST = EDGE.split("//")[1];
 export const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
 const MAIN = process.env.GRAFT_MAIN_CHECKOUT ?? "/home/user/workspace/repo";
 const M3H = process.env.M3_STATE ?? `${process.env.HOME}/.graft-m3h`;
-const TOOLS_TOKEN = readFileSync(`${MAIN}/tests/m0/.m0-token`, "utf8").trim();
+const TOOLS_TOKEN = readFileSync(process.env.TOOLS_TOKEN_FILE ?? `${MAIN}/tests/m0/.m0-token`, "utf8").trim();
 export const BED = readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 export const state = JSON.parse(readFileSync(`${M3H}/m3.json`, "utf8"));
 export const tokens = Object.fromEntries(readFileSync(`${M3H}/m3-tokens.txt`, "utf8").trim().split("\n").map((l) => l.split(" ")));

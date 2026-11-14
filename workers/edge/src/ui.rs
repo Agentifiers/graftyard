@@ -299,6 +299,42 @@ fn decode(s: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Reads the git cache's counts for every (base tip, head) pair a render of `rd` asked for (`HostedDir::asked`) into
+/// `rd.dir.compares`, so the next render shows GHES's `commits`, `additions`, `deletions`, and `changed_files`. Returns
+/// whether it read any. A pair the shard did not answer stays 0, as before the shard computed counts.
+pub(crate) async fn read_compares(c: &Ctx<'_>, rd: &Read) -> bool {
+    let mut asked = std::mem::take(&mut *rd.dir.asked.borrow_mut());
+    if asked.is_empty() {
+        return false;
+    }
+    // A list that selects the counts reads at most `COMPARES_MAX` pairs; the rest count 0.
+    asked.truncate(COMPARES_MAX);
+    let reads = asked
+        .iter()
+        .map(|(b, h)| async move { shard_json(c, rd, "compare", &[("base", b.hex()), ("head", h.hex())]).await });
+    let got = futures_util::future::join_all(reads).await;
+    for (pair, x) in asked.into_iter().zip(got) {
+        record_compare(rd, pair, x.as_ref().unwrap_or(&Value::Null));
+    }
+    true
+}
+
+/// The most (base tip, head) pairs one request reads from the shard for counts [guess: a page of 25 pull requests,
+/// with room, well under the Workers subrequest limit].
+const COMPARES_MAX: usize = 50;
+
+/// Records the shard's `/ui/compare` reply for `pair` as the counts the next render of `rd` shows.
+fn record_compare(rd: &Read, pair: (graftyard_git::refs::ObjectId, graftyard_git::refs::ObjectId), x: &Value) {
+    let n = |k: &str| x[k].as_u64().map_or(0, |v| v as u32);
+    let counts = graftyard_api::view::Compare {
+        commits: n("ahead_by"),
+        additions: n("additions"),
+        deletions: n("deletions"),
+        changed_files: n("changed_files"),
+    };
+    rd.dir.compares.borrow_mut().push((pair, counts));
+}
+
 /// One `/ui/<route>` read on the network's git cache shards (`crate::shard_read`): the shard's JSON, its 4xx as is,
 /// or 503 with `Retry-After` for anything else.
 async fn shard_json(c: &Ctx<'_>, rd: &Read, route: &str, q: &[(&str, String)]) -> std::result::Result<Value, Reply> {
@@ -464,10 +500,6 @@ async fn seed(c: &Ctx<'_>, req: &Request, host: &Host, path: &str, tab: Option<&
                 k.extend(rest.iter().map(|s| json!(s)));
                 key(&k)
             };
-            let (pr, _) = graftyard_api::rest::get_pull_asks(&v, n);
-            let Some(pr) = ok(pr) else { return Some(json!({ "at": js_sys::Date::now() as u64, "queries": out })) };
-            let head = pr["head"]["sha"].as_str().unwrap_or_default().to_owned();
-            out.push(json!([nk(&[]), pr]));
             for (k, x) in [
                 ("reviews", graftyard_api::rest::list_reviews(&v, n, "per_page=100")),
                 ("comments", graftyard_api::rest::list_review_comments(&v, n, "per_page=100")),
@@ -499,6 +531,14 @@ async fn seed(c: &Ctx<'_>, req: &Request, host: &Host, path: &str, tab: Option<&
                 }
             };
             let (compare, commits, files) = futures_util::future::join3(compare, commits, files).await;
+            // The pull renders after the compare, so its counts are the shard's.
+            if let (Some(pair), Some(x)) = (shas, &compare) {
+                record_compare(&rd, pair, x);
+            }
+            let (pr, _) = graftyard_api::rest::get_pull_asks(&v, n);
+            let Some(pr) = ok(pr) else { return Some(json!({ "at": js_sys::Date::now() as u64, "queries": out })) };
+            let head = pr["head"]["sha"].as_str().unwrap_or_default().to_owned();
+            out.push(json!([nk(&[]), pr]));
             if let Some(x) = compare
                 && let Some(m) =
                     ok(graftyard_api::ui::merge_requirements(&v, n, x["behind_by"].as_u64().unwrap_or(0) as u32))
