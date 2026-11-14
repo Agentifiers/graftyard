@@ -221,10 +221,16 @@ async fn members(b: &Bindings<'_>) -> Result<Vec<Target>, (String, bool)> {
     Ok(out)
 }
 
+/// Reads members in `members` order and stops after the first that names itself leader. A follower applies an entry
+/// only once a later round carries its commit, and an idle group sends none, so a follower's applied state can lag a
+/// commit until the group's next entry (BF-43's first run: 59 s, `tests/m5/results/m5-wp2.md`). A follower's page is
+/// applied too, so a refresh that reaches no leader still moves the view as far as any member that answered.
 async fn read(b: &Bindings<'_>, anchor: &Anchor) -> Result<(), (String, bool)> {
     let mut last = String::from("no member answered");
+    let mut any = false;
     for t in members(b).await? {
         let mut answered = false;
+        let mut leads = false;
         for _ in 0..PAGES {
             let from = with(|r| r.count());
             let body = json!({ "from": from }).to_string();
@@ -238,8 +244,19 @@ async fn read(b: &Bindings<'_>, anchor: &Anchor) -> Result<(), (String, bool)> {
                 break;
             };
             answered = true;
-            let leader = v.pointer("/meta/leader").and_then(Value::as_u64).and_then(|l| u8::try_from(l).ok());
-            VIEW.with(|w| w.borrow_mut().leader = leader.map(graftyard_types::SiteId));
+            // A follower answers no leader: it keeps the hint, unless the member hinted at no longer leads.
+            let leader = v
+                .pointer("/meta/leader")
+                .and_then(Value::as_u64)
+                .and_then(|l| u8::try_from(l).ok())
+                .map(graftyard_types::SiteId);
+            leads = leader == Some(t.site);
+            VIEW.with(|w| {
+                let mut w = w.borrow_mut();
+                if leader.is_some() || w.leader == Some(t.site) {
+                    w.leader = leader;
+                }
+            });
             let page: Vec<(Vec<u8>, Timestamp)> = v["entries"]
                 .as_array()
                 .into_iter()
@@ -269,9 +286,10 @@ async fn read(b: &Bindings<'_>, anchor: &Anchor) -> Result<(), (String, bool)> {
                 Ok(_) => {}
             }
         }
-        if answered {
+        any |= answered;
+        if leads {
             return Ok(());
         }
     }
-    Err((last, false))
+    if any { Ok(()) } else { Err((last, false)) }
 }
