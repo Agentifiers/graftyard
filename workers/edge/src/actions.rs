@@ -149,7 +149,11 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
             answer(c, chain, json!({ "op": "complete", "grant": g, "conclusion": b["conclusion"] })).await
         }
         (Method::Post, r, Some((chain, Grant::Job { job, .. }))) if r.starts_with("results/") => {
-            results(c, chain, job, r.rsplit('/').next().unwrap_or(""), &b)
+            let method = r.rsplit('/').next().unwrap_or("");
+            if method == "WorkflowStepsUpdate" {
+                keep_steps(c, chain, job, &b).await?;
+            }
+            results(c, chain, job, method, &b)
         }
         (_, _, None) => service_error(401),
         _ => service_error(404),
@@ -235,6 +239,10 @@ async fn blob_put(c: &Ctx<'_>, req: &mut Request, method: Method, tail: &str) ->
         return service_error(404);
     };
     let job = JobId(DbId(j));
+    // Only the log kinds `results` hands out; `actions/<job>/steps` is the edge's own.
+    if !["logs-", "diag-", "summary-"].iter().any(|k| name.starts_with(k)) {
+        return service_error(404);
+    }
     let Some(key) = runsvc::blob_key(job, name) else { return service_error(404) };
     let chain = ChainId::Actions(AccountId(DbId(o)), s);
     let running = job_row(c, chain, job).await.is_some_and(|r| matches!(r.state, JobState::InProgress { .. }));
@@ -454,4 +462,101 @@ pub async fn graftyard_route(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Resu
         Err(x) => x,
     };
     crate::agents::respond(c, reply.with("content-type", "application/json; charset=utf-8")).map(Some)
+}
+
+// ---- GHES `rest:actions` reads
+
+/// `GET runs/{id}`, `GET runs/{id}/jobs`, and `GET jobs/{id}` under `/repos/{o}/{r}/actions/`, rendered by
+/// `graftyard_actions::rest` from the repository's shard rows. A run or job of another repository is 404.
+pub async fn rest_read(c: &Ctx<'_>, rd: &Read, view: &graftyard_api::view::Repo<'_>, tail: &[&str]) -> Result<Reply> {
+    let chain = ChainId::Actions(rd.repo.owner, actions_shard(rd.repo.id));
+    let id = |s: &str| s.parse::<i64>().ok();
+    let run_id = match tail {
+        ["runs", r] | ["runs", r, "jobs"] => id(r),
+        ["jobs", j] => match id(j) {
+            Some(j) => job_row(c, chain, JobId(DbId(j))).await.map(|row| row.run.0.0),
+            None => None,
+        },
+        _ => None,
+    };
+    let Some(run_id) = run_id else { return Ok(Reply::not_found()) };
+    let v = match shard_read(c, chain, json!({ "run": run_id })).await {
+        Ok(v) => v,
+        Err(e) => return Ok(unavailable(&e)),
+    };
+    let Ok(run) = serde_json::from_value::<WorkflowRun>(v["run"]["run"].clone()) else { return Ok(Reply::not_found()) };
+    if run.repo != rd.repo.id {
+        return Ok(Reply::not_found());
+    }
+    let jobs: Vec<JobRow> =
+        v["jobs"].as_array().into_iter().flatten().filter_map(|j| serde_json::from_value(j.clone()).ok()).collect();
+    // The fold keeps no creation time; the earliest time it holds stands in for it, a queued job's `since` or a
+    // completed job's `at` [inference: both are at or after the run's creation].
+    let created = jobs
+        .iter()
+        .filter_map(|j| match &j.state {
+            JobState::Queued { since, .. } => Some(*since),
+            JobState::Completed { at, .. } => Some(*at),
+            _ => None,
+        })
+        .min()
+        .map(graftyard_wire::time::iso)
+        .unwrap_or_else(|| graftyard_wire::time::iso(crate::now()));
+    let host = graftyard_wire::Host::new(&c.cfg.host, false).map_err(|e| Error::RustError(format!("{e:?}")))?;
+    let repository = graftyard_api::activity::minimal_repository(view);
+    let full_name = format!("{}/{}", rd.at.owner, rd.at.name);
+    let x = graftyard_actions::rest::Ctx {
+        web: &host.web(),
+        api: &host.api(),
+        full_name: &full_name,
+        repository: &repository,
+    };
+    let bucket = c.env.bucket(&format!("BUCKET_{}", rd.repo.record.home.0))?;
+    let render = async |j: &JobRow| -> Result<Value> {
+        let steps = match bucket.get(format!("actions/{}/steps", j.spec.id.0.0)).execute().await? {
+            Some(o) => match o.body() {
+                Some(b) => serde_json::from_slice::<Vec<Value>>(&b.bytes().await?).unwrap_or_default(),
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        let runner = j.state.runner().map(|r| (r.0.0, format!("runner-{}", r.0.0)));
+        Ok(graftyard_actions::rest::job(&x, &run, j, &created, &steps, runner.as_ref().map(|(i, n)| (*i, n.as_str()))))
+    };
+    Ok(match tail {
+        ["runs", _] => Reply::json(
+            200,
+            graftyard_actions::rest::workflow_run(&x, &run, &jobs, &created, &graftyard_wire::time::iso(crate::now())),
+        ),
+        ["runs", _, "jobs"] => {
+            let mut out = Vec::new();
+            for j in &jobs {
+                out.push(render(j).await?);
+            }
+            Reply::json(200, json!({ "total_count": out.len(), "jobs": out }))
+        }
+        ["jobs", j] => match jobs.iter().find(|row| Some(row.spec.id.0.0) == id(j)) {
+            Some(row) => Reply::json(200, render(row).await?),
+            None => Reply::not_found(),
+        },
+        _ => Reply::not_found(),
+    })
+}
+
+/// The runner's `WorkflowStepsUpdate`, merged into `actions/<job>/steps` in the owner's home bucket, which the GHES
+/// `job` reads render as `steps`. Best effort: a lost update leaves the last report.
+async fn keep_steps(c: &Ctx<'_>, chain: ChainId, job: JobId, update: &Value) -> Result<()> {
+    let Ok(record) = shard_record(c, chain).await else { return Ok(()) };
+    let bucket = c.env.bucket(&format!("BUCKET_{}", record.home.0))?;
+    let key = format!("actions/{}/steps", job.0.0);
+    let mut kept: Vec<Value> = match bucket.get(&key).execute().await? {
+        Some(o) => match o.body() {
+            Some(b) => serde_json::from_slice(&b.bytes().await?).unwrap_or_default(),
+            None => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    graftyard_actions::rest::merge_steps(&mut kept, update);
+    bucket.put(&key, serde_json::to_vec(&kept)?).execute().await?;
+    Ok(())
 }

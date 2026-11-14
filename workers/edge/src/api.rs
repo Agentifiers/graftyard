@@ -1582,6 +1582,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         }
         (Method::Get, ["issues"]) => rest::list_issues(&r, query),
         (Method::Get, ["actions", "jobs", job, "logs"]) => crate::actions::job_log(c, &rd, job).await?,
+        (Method::Get, ["actions", "runs", _] | ["actions", "runs", _, "jobs"] | ["actions", "jobs", _]) => {
+            crate::actions::rest_read(c, &rd, &r, &tail[1..]).await?
+        }
         // LF-4's trust resources over REST (F61): each read renders the pinned GHES 3.22 shape from the fold, and a
         // commit from the git cache shard.
         // A writer's or an App's poll asks the shard for the test merge its `mergeable` lacks, as GraphQL's single-PR
