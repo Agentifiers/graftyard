@@ -362,7 +362,7 @@ impl DurableObject for GitShard {
         let (net, chain) = (NetworkId(DbId(repo)), ChainId::Repo(RepoId(DbId(repo))));
         let host = self.host();
         let raw = buckets(&self.env)?;
-        let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
+        let bs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
         let log = GroupLog {
             stub: self.env.durable_object("GROUP")?.get_by_name_with_location_hint(&format!("repo:{repo}"), "enam")?,
         };
