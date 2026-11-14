@@ -387,7 +387,7 @@ thread_local! {
 fn narrow_hit(repo: RepoId, text: &str, floor: u64, loaded: bool) -> Option<std::rc::Rc<[u8]>> {
     NARROW.with(|n| {
         n.borrow().get(&repo).and_then(|v| {
-            v.iter().find(|(t, _, l, _)| t == text && *l == loaded).map(|(_, _, _, b)| b.clone())
+            v.iter().find(|(t, at, l, _)| t == text && *at >= floor && *l == loaded).map(|(_, _, _, b)| b.clone())
         })
     })
 }
