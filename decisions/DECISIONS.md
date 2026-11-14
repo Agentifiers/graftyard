@@ -3357,6 +3357,18 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** A hosted run where a healthy voter or learner falls behind with its peer's bytes at PEER_OUT_MAX, or a leader that held a call back past OUT_MAX while a quorum was answering.
 
+### `memory-budgets` (3): a member sheds reads past ANSWER_BYTES_MAX of distinct answer bytes in flight, 2026-11-14
+
+**Decision.** Every member, leader, follower, or learner, counts the distinct bytes of read answers still streaming out of it, an answer that many reads share (`family::dump_bytes`, `shared_answer`) counted once by the address of its shared bytes. While they reach ANSWER_BYTES_MAX (16 MB), any new read is shed `overloaded`, which the edge takes to the next member without `suspect`.
+
+**Why.** READS_MAX (256) and HEAVY_READS (16) cap reads by count, not by bytes. A new leader had 22.9 MB of answers in flight one second after it won and reset 18 s later, and B0-33's leaders 26 to 30.5 MB [measured, m3fr3 and LM-1 round 17]. Counting a shared answer per read would shed a learner streaming one 1 MB dump to 16 readers, which `learner-dumps` showed costs 74% of reads.
+
+**Beat.** A lower READS_MAX: narrow reads of a few KB would shed long before any memory mattered. Counting per read: see above.
+
+**Evidence.** `distinct_answer_bytes_past_the_cap_shed_and_a_shared_answer_counts_once` (`workers/site/src/member.rs`): 40 reads of one 1 MB dump count 1 MB and serve; 15 more distinct answers reach 16 MB and shed a learner's read and the leader's; the cap lifts as they finish.
+
+**Flip.** A hosted run whose reads shed at ANSWER_BYTES_MAX with the isolate's memory well under the limit, or an isolate reset with answers under it.
+
 ### `prsync-first-once`: a `PrSync` attempt ends at `FIRST_FOR`, and a test merge shed after waiting `TURN_WAIT_MS` in line, 2026-11-14
 
 #### An attempt ends at `FIRST_FOR` in the invocation that runs it, and the leader waits for its answer
