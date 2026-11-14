@@ -8,12 +8,13 @@
 //! `gh api repos/o/r/issues?sort=updated` calls, and `POST /repos/{owner}/{repo}/labels`, which `gh label create`
 //! calls before `gh issue create -l bug`.
 
+use graftyard_fold::Val;
 use graftyard_git::issues::{
     AnnotationLevel, CheckAnnotation, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus,
     CheckSuiteId, CommentId, CommentTarget, DiffSide, IssueNumber, LineAnchor, ReviewState, Url,
 };
 use graftyard_git::refs::{ObjectId, RefName};
-use graftyard_git::tiers::CommentRow;
+use graftyard_git::tiers::{CommentRow, IssueRow};
 use graftyard_types::{DbId, Timestamp};
 use serde_json::{Value, json};
 
@@ -1026,21 +1027,34 @@ pub fn list_issues(r: &Repo<'_>, query: &str) -> Reply {
     }
     let page = Page::parse(query);
     // Filter, sort, then page, over every item: a selection (`crate::narrow`).
+    // With no label filter, the sort keys are all on the `issue` row, so the selection reads the `issue` table in a
+    // few scans and no `pull` or `pull_head` row; with labels, every item as before.
     let mut select = || {
-        let mut all: Vec<Item> = Vec::new();
-        for kind in [graftyard_git::issues::IssueKind::Issue, graftyard_git::issues::IssueKind::PullRequest] {
-            all.extend(r.list(kind, state, None, usize::MAX, &has).0);
+        let mut all: Vec<(IssueNumber, IssueRow)> = Vec::new();
+        if want.is_empty() {
+            let opens = state.opens();
+            for (k, cols) in r.meta.prefix("issue", &[]) {
+                let (Some(Val::Int(n)), Some(Val::Blob(b))) = (k.first(), cols.first()) else { continue };
+                let row: IssueRow = postcard::from_bytes(b).expect("a fold row this release wrote");
+                if opens.contains(&row.open) {
+                    all.push((IssueNumber(*n as u32), row));
+                }
+            }
+        } else {
+            for kind in [graftyard_git::issues::IssueKind::Issue, graftyard_git::issues::IssueKind::PullRequest] {
+                all.extend(r.list(kind, state, None, usize::MAX, &has).0.into_iter().map(|i| (i.n, i.row)));
+            }
         }
         match sort {
-            Some("updated") => all.sort_by_key(|i| (i.row.updated, i.n)),
-            Some("comments") => all.sort_by_key(|i| (i.row.comments, i.n)),
-            _ => all.sort_by_key(|i| (i.row.created, i.n)),
+            Some("updated") => all.sort_by_key(|(n, row)| (row.updated, *n)),
+            Some("comments") => all.sort_by_key(|(n, row)| (row.comments, *n)),
+            _ => all.sort_by_key(|(n, row)| (row.created, *n)),
         }
         if param(query, "direction") != Some("asc") {
             all.reverse();
         }
         let more = all.len() > page.end();
-        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|i| i.n), all.len(), more)
+        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|(n, _)| *n), all.len(), more)
     };
     let pick = r.dir.pick(&format!("issues?{query}"), &mut select);
     let more = pick.more;

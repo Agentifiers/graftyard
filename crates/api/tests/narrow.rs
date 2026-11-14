@@ -36,6 +36,7 @@ struct Row {
     n: u32,
     pull: bool,
     open: bool,
+    merged: bool,
     created: u64,
     updated: u64,
     comments: u32,
@@ -54,10 +55,13 @@ fn rows(c: &Chain) -> Vec<Row> {
                 .filter_map(|(k, _)| get_rec::<LabelRow>(m, "label", &[k[1].clone()]))
                 .map(|l| l.name.0.to_lowercase())
                 .collect();
+            let head: Option<graftyard_git::issues::PullHead> =
+                get_rec(&c.members[0].core, "pull_head", &[graftyard_fold::Val::Int(i64::from(n))]);
             Some(Row {
                 n,
                 pull: r.kind == graftyard_git::issues::IssueKind::PullRequest,
                 open: r.open,
+                merged: head.is_some_and(|h| matches!(h.state, graftyard_git::issues::PrState::Merged { .. })),
                 created: r.created.0,
                 updated: r.updated.0,
                 comments: r.comments,
@@ -100,9 +104,14 @@ fn rest_oracle(c: &Chain, q: &str) -> (Vec<u32>, bool) {
 
 /// A connection's page by number, newest first: the items of `pull` kind in `states`, after the cursor, first `n`;
 /// with the count of every match and whether more follow.
-fn gql_oracle(c: &Chain, pull: bool, open: Option<bool>, after: Option<u32>, n: usize) -> (Vec<u32>, usize, bool) {
+fn gql_oracle(c: &Chain, pull: bool, states: &[&str], after: Option<u32>, n: usize) -> (Vec<u32>, usize, bool) {
+    let state = |r: &Row| match (r.open, r.merged) {
+        (true, _) => "OPEN",
+        (false, true) => "MERGED",
+        (false, false) => "CLOSED",
+    };
     let mut all: Vec<Row> =
-        rows(c).into_iter().filter(|r| r.pull == pull && open.is_none_or(|o| r.open == o)).collect();
+        rows(c).into_iter().filter(|r| r.pull == pull && (states.is_empty() || states.contains(&state(r)))).collect();
     all.sort_by_key(|r| std::cmp::Reverse(r.n));
     let total = all.len();
     let page: Vec<u32> = all.iter().map(|r| r.n).filter(|i| after.is_none_or(|a| *i < a)).collect();
@@ -271,6 +280,24 @@ fn big() -> Chain {
             }),
         )
         .unwrap();
+    }
+    // Two merged pull requests, so CLOSED and MERGED select different items while `issue_order` files both as not
+    // open: a connection paged from the order's keys alone for `states: [CLOSED]` would list the merged ones too.
+    for (n, tip) in [(8u32, 200u8), (26, 201)] {
+        let main = c.repo(0, &host(), &Dir::new(WRITER)).ref_value(&name("refs/heads/main"));
+        let ev = graftyard_git::repo::RepoEvent::Merged {
+            n: IssueNumber(n),
+            base: graftyard_git::refs::RefUpdate { name: name("refs/heads/main"), expect: main, new: Some(oid(tip)) },
+            head: oid(100 + n as u8),
+            method: graftyard_git::issues::MergeMethod::Merge,
+            also: Vec::new(),
+            pack: None,
+            verified: graftyard_git::merge::TreeDiffDigest(graftyard_types::Digest([0; 32])),
+            engine: graftyard_git::merge::EngineVersion("t".into()),
+            by: graftyard_identity::UserId(AccountId(DbId(OWNER))),
+        };
+        let tag = graftyard_git::tiers::tier_of(&ev);
+        c.entry(graftyard_raft::EntryBody::Events(vec![ev]), tag);
     }
     c
 }
@@ -449,12 +476,21 @@ fn items(meta: &MemStore) -> Vec<u32> {
 #[test]
 fn rest_issue_lists_are_the_whole_tier_bytes_and_hold_only_their_page() {
     let c = big();
-    let mut cases = 0;
+    let (mut cases, mut partial, mut empty) = (0, 0, 0);
     for state in ["", "state=open&", "state=closed&", "state=all&"] {
         for sort in ["", "sort=created&", "sort=updated&", "sort=comments&"] {
             for dir in ["", "direction=asc&"] {
                 for labels in ["", "labels=bug&", "labels=bug,ui&"] {
-                    for page in ["per_page=7", "per_page=7&page=2", "per_page=7&page=4", "per_page=100", "page=9"] {
+                    for page in [
+                        "per_page=7",
+                        "per_page=7&page=2",
+                        "per_page=7&page=4",
+                        "per_page=7&page=5",
+                        "per_page=7&page=6",
+                        "per_page=7&page=7",
+                        "per_page=100",
+                        "page=9",
+                    ] {
                         let q = format!("{state}{sort}{dir}{labels}{page}");
                         let (_, meta) = same_rest(&c, &["issues"], &q);
                         let h = host();
@@ -469,6 +505,9 @@ fn rest_issue_lists_are_the_whole_tier_bytes_and_hold_only_their_page() {
                             .collect();
                         let (want, more) = rest_oracle(&c, &q);
                         assert_eq!(got, want, "{q}: GHES's page");
+                        let per = if q.contains("per_page=7") { 7 } else { 30 };
+                        partial += usize::from(!got.is_empty() && got.len() < per && q.contains("page="));
+                        empty += usize::from(got.is_empty());
                         let next = whole.header("link").is_some_and(|l| l.contains("rel=\"next\""));
                         assert_eq!(next, more, "{q}: a next link iff more items follow");
                         let mut sorted = want.clone();
@@ -480,7 +519,8 @@ fn rest_issue_lists_are_the_whole_tier_bytes_and_hold_only_their_page() {
             }
         }
     }
-    assert_eq!(cases, 480);
+    assert_eq!(cases, 768);
+    assert!(partial > 20 && empty > 20, "last partial pages {partial} and empty pages {empty} are both covered");
     // A page of a list of 40 is under 1/4 of the whole tier's issue rows.
     let (_, meta) = same_rest(&c, &["issues"], "per_page=5");
     assert_eq!(items(&meta).len(), 5);
@@ -566,7 +606,7 @@ fn graphql_connections_are_the_whole_tier_reply() {
         .iter()
         .map(|n| n["number"].as_u64().unwrap() as u32)
         .collect();
-    assert_eq!(nums, gql_oracle(&c, true, None, None, 10).0);
+    assert_eq!(nums, gql_oracle(&c, true, &[], None, 10).0);
     // Two connections of one kind with different arguments are two selections.
     let two = r#"query { repository(owner: "o", name: "r") { a: pullRequests(first: 2) { nodes { number } }
         b: pullRequests(first: 3, states: [CLOSED]) { totalCount nodes { number } } } }"#;
@@ -575,11 +615,23 @@ fn graphql_connections_are_the_whole_tier_reply() {
         let (q, vars) = list(f);
         let pull = f.starts_with("Pull");
         let root = if pull { "pullRequests" } else { "issues" };
-        for (limit, after) in [(30, None), (5, None), (5, Some(30)), (5, Some(31)), (100, Some(2)), (1, Some(40))] {
-            for (states, open) in [
-                (json!(["OPEN"]), Some(true)),
-                (json!(["CLOSED"]), Some(false)),
-                (json!(["OPEN", "CLOSED", "MERGED"]), None),
+        for (limit, after) in [
+            (30, None),
+            (5, None),
+            (5, Some(30)),
+            (5, Some(31)),
+            (100, Some(2)),
+            (1, Some(40)),
+            (30, Some(4)),
+            (5, Some(1)),
+        ] {
+            for (states, want_states) in [
+                (json!(["OPEN"]), &["OPEN"][..]),
+                (json!(["CLOSED"]), &["CLOSED"][..]),
+                (json!(["MERGED"]), &["MERGED"][..]),
+                (json!(["CLOSED", "MERGED"]), &["CLOSED", "MERGED"][..]),
+                (json!(["OPEN", "MERGED"]), &["OPEN", "MERGED"][..]),
+                (json!(["OPEN", "CLOSED", "MERGED"]), &[][..]),
             ] {
                 // `IssueState` has no MERGED.
                 let states = if pull {
@@ -609,7 +661,13 @@ fn graphql_connections_are_the_whole_tier_reply() {
                 if !stated || conn.is_null() {
                     continue;
                 }
-                let (want, total, more) = gql_oracle(&c, pull, open, after, limit);
+                // An issue has no MERGED state: its filtered list is what the query sends.
+                let want_states: Vec<&str> = if pull {
+                    want_states.to_vec()
+                } else {
+                    states.as_array().unwrap().iter().filter_map(Value::as_str).collect()
+                };
+                let (want, total, more) = gql_oracle(&c, pull, &want_states, after, limit);
                 let got: Vec<u32> =
                     conn["nodes"].as_array().unwrap().iter().map(|n| n["number"].as_u64().unwrap() as u32).collect();
                 assert_eq!(got, want, "{f} {v}");
@@ -780,4 +838,292 @@ fn a_selection_the_member_did_not_make_is_known() {
     let r = Repo { host: &h, at: d.home(), core: &core, meta: &meta, dir: &dir };
     rest_get(&r, &["issues"], "per_page=3", Index(9));
     assert!(picks.missed());
+}
+
+/// Counts what a member's narrow build reads: storage statements (a `get`, or a `scan` of up to its limit, as
+/// `TierSql` runs each as one SQLite query) and the rows they return.
+struct Counted<'a> {
+    inner: &'a dyn Read,
+    reads: &'a std::cell::Cell<(usize, usize)>,
+}
+
+impl Read for Counted<'_> {
+    fn get(&self, table: &str, key: &[graftyard_fold::Val]) -> Option<Vec<graftyard_fold::Val>> {
+        let v = self.inner.get(table, key);
+        let (s, r) = self.reads.get();
+        self.reads.set((s + 1, r + usize::from(v.is_some())));
+        v
+    }
+    fn scan(
+        &self,
+        table: &str,
+        from: &[graftyard_fold::Val],
+        limit: usize,
+    ) -> Vec<(graftyard_fold::Key, Vec<graftyard_fold::Val>)> {
+        let v = self.inner.scan(table, from, limit);
+        let (s, r) = self.reads.get();
+        self.reads.set((s + 1, r + v.len()));
+        v
+    }
+}
+
+/// A repository with `n` open pull requests and an issue, each pull request with one comment, as B0-29's is.
+fn wide(n: u32) -> Chain {
+    let mut c = Chain::new(1);
+    c.push("refs/heads/main", oid(1));
+    c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
+    for i in 1..=n {
+        let branch = format!("refs/heads/b{i}");
+        c.push(&branch, oid((i % 200) as u8 + 2));
+        let author = if i % 2 == 0 { READER } else { WRITER };
+        c.commit(
+            author,
+            IssueOp::OpenPr {
+                head: graftyard_git::issues::HeadSpec { repo: REPO, branch: name(&branch) },
+                base: name("refs/heads/main"),
+                title: format!("pr {i}").into(),
+                body: "p".into(),
+                draft: false,
+                head_sha: oid((i % 200) as u8 + 2),
+                base_sha: oid(1),
+            },
+        )
+        .unwrap();
+        c.commit(
+            READER,
+            IssueOp::Comment { on: CommentTarget::Issue(IssueNumber(i)), body: "c".into(), reply_to: None },
+        )
+        .unwrap();
+    }
+    c
+}
+
+/// What one narrow build reads, (statements, rows), for the reply and for `named` apart.
+fn build_reads(c: &Chain, route: Route) -> ((usize, usize), (usize, usize)) {
+    let m = &c.members[0];
+    let (reply, named) = (std::cell::Cell::new((0, 0)), std::cell::Cell::new((0, 0)));
+    let (core, meta) = (Counted { inner: &m.core, reads: &reply }, Counted { inner: &m.meta, reads: &reply });
+    let (nc, nm) = (Counted { inner: &m.core, reads: &named }, Counted { inner: &m.meta, reads: &named });
+    let names = || graftyard_api::hosted::accounts(&nc, &nm);
+    let spec = Spec { at: Dir::new(WRITER).home(), route };
+    let v = answer(&core, Some(&meta), 9, &serde_json::to_value(spec).unwrap(), &names);
+    assert!(v.get("whole").is_none() && v.get("error").is_none(), "answered narrowly: {v}");
+    (reply.get(), named.get())
+}
+
+/// A 30-item page of a 500-pull-request repository reads the order index and the page's items, not every item: at
+/// most 200 storage statements and 900 rows for the reply, where loading every item before paging took 1,556 to
+/// 1,655 statements and 2,093 to 2,348 rows. A REST list sorts by the `issue` row's keys, so it reads the `issue`
+/// table in two scans plus the page, not `issue`, `pull`, and `pull_head` of every item.
+#[test]
+fn a_page_of_a_wide_repository_reads_its_page_not_every_item() {
+    let c = wide(500);
+    let rest = |q: &str| Route::Rest {
+        tail: vec!["issues".into()],
+        query: q.into(),
+        path: "/repos/o/r/issues".into(),
+        agent: false,
+    };
+    let gql = |q: &str| gql_route(q, json!({}));
+    let cases = [
+        ("issues?per_page=30", rest("per_page=30")),
+        ("issues?sort=updated&page=9", rest("sort=updated&direction=asc&per_page=30&page=9")),
+        (
+            "pullRequests(first: 30, OPEN)",
+            gql(
+                r#"query { repository(owner: "o", name: "r") { pullRequests(first: 30, states: [OPEN]) { totalCount nodes { number title } } } }"#,
+            ),
+        ),
+        (
+            "pullRequests(last: 10)",
+            gql(
+                r#"query { repository(owner: "o", name: "r") { pullRequests(last: 10) { nodes { number isDraft mergeable } } } }"#,
+            ),
+        ),
+    ];
+    for (what, route) in cases {
+        let ((stmts, rows), _) = build_reads(&c, route);
+        assert!(stmts <= 200, "{what}: {stmts} storage statements for a 30-item page");
+        assert!(rows <= 900, "{what}: {rows} rows for a 30-item page");
+    }
+}
+
+/// `named` from the tiers' derived index (`hosted::NamedIndex`), as a member keeps it: built from the rows once, then
+/// moved by every row `apply` writes.
+fn indexed(core: &MemStore, meta: &MemStore, at: Index) -> std::collections::BTreeSet<AccountId> {
+    use graftyard_api::hosted::NamedIndex;
+    use graftyard_types::Tier;
+    let (c, m) = (NamedIndex::build(core, Tier::Core, at), NamedIndex::build(meta, Tier::Metadata, at));
+    c.accounts().chain(m.accounts()).collect()
+}
+
+/// A member keeps each tier's `NamedIndex` through `Store::wrote` and `Store::applied`: a store that does what
+/// `TierSql` does for them.
+#[derive(Clone, Debug, Default)]
+struct Kept {
+    rows: MemStore,
+    named: graftyard_api::hosted::NamedIndex,
+}
+
+impl graftyard_fold::Store for Kept {
+    fn get(&self, t: &str, k: &[graftyard_fold::Val]) -> Option<graftyard_fold::Stored> {
+        graftyard_fold::Store::get(&self.rows, t, k)
+    }
+    fn put(&mut self, t: &str, k: graftyard_fold::Key, r: graftyard_fold::Stored) {
+        self.rows.put(t, k, r)
+    }
+    fn delete(&mut self, t: &str, k: &[graftyard_fold::Val]) {
+        self.rows.delete(t, k)
+    }
+    fn scan(&self, t: &str, f: &[graftyard_fold::Val], l: usize) -> Vec<(graftyard_fold::Key, graftyard_fold::Stored)> {
+        graftyard_fold::Store::scan(&self.rows, t, f, l)
+    }
+    fn wrote(
+        &mut self,
+        t: &str,
+        k: &[graftyard_fold::Val],
+        o: Option<&graftyard_fold::Stored>,
+        n: Option<&graftyard_fold::Stored>,
+    ) {
+        self.named.wrote(t, k, o, n)
+    }
+    fn applied(&mut self, i: Index) {
+        self.named.applied(i)
+    }
+}
+
+/// The accounts every naming row of `big()` names, written out by hand: authors, the assignee, the reviewer a review
+/// request names (not a naming row), status creators, and the merger.
+#[test]
+fn named_is_every_account_the_tiers_name_and_the_kept_index_follows_apply() {
+    use graftyard_types::Tier;
+    let c = big();
+    let m = &c.members[0];
+    let at = Index(c.log_len);
+    let whole = graftyard_api::hosted::accounts(&m.core, &m.meta);
+    // Authors are WRITER and READER, comments READER, statuses WRITER, the merges OWNER; the review request's
+    // account is named by no naming row.
+    let want: std::collections::BTreeSet<AccountId> = [OWNER, WRITER, READER].map(|a| AccountId(DbId(a))).into();
+    assert_eq!(whole, want);
+    assert!(!whole.contains(&AccountId(DbId(unnamed()))));
+    assert_eq!(indexed(&m.core, &m.meta, at), whole);
+    // Kept through apply from the empty tiers: after every entry it equals the scan of the tiers at that entry.
+    let (mut core, mut meta) = (Kept::default(), Kept::default());
+    core.named = graftyard_api::hosted::NamedIndex::build(&core.rows, Tier::Core, Index(0));
+    meta.named = graftyard_api::hosted::NamedIndex::build(&meta.rows, Tier::Metadata, Index(0));
+    let t = tiers();
+    let mut seen = std::collections::BTreeSet::new();
+    for e in &c.log {
+        graftyard_fold::apply(&t, &mut core, Tier::Core, e).unwrap();
+        graftyard_fold::apply(&t, &mut meta, Tier::Metadata, e).unwrap();
+        assert!(core.named.current(e.index) && meta.named.current(e.index), "kept through entry {:?}", e.index);
+        let kept: std::collections::BTreeSet<AccountId> = core.named.accounts().chain(meta.named.accounts()).collect();
+        assert_eq!(kept, graftyard_api::hosted::accounts(&core.rows, &meta.rows), "at entry {:?}", e.index);
+        seen.extend(kept);
+    }
+    assert_eq!(seen, want);
+    // A tier changed other than by apply (an install swaps the tables) stands at another index: not current.
+    let mut later = meta.named.clone();
+    later.applied(Index(at.0 + 5));
+    assert!(!later.current(at) && !later.current(Index(at.0 + 5)), "an index skipped over is not current");
+}
+
+/// The last row naming an account takes it out of `named`, and a row naming it again brings it back: WRITER is
+/// named only by its comment here.
+#[test]
+fn an_account_leaves_named_when_its_last_row_goes() {
+    use graftyard_types::Tier;
+    let mut c = Chain::new(1);
+    c.push("refs/heads/main", oid(1));
+    c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
+    let open =
+        IssueOp::OpenIssue { title: "t".into(), body: "b".into(), labels: SmallVec::new(), assignees: SmallVec::new() };
+    c.commit(READER, open).unwrap();
+    let mut meta = Kept { rows: c.members[0].meta.clone(), ..Kept::default() };
+    meta.named = graftyard_api::hosted::NamedIndex::build(&meta.rows, Tier::Metadata, Index(c.log_len));
+    let applied = |c: &Chain, meta: &mut Kept| {
+        let e = c.log.last().unwrap().clone();
+        graftyard_fold::apply(&tiers(), meta, Tier::Metadata, &e).unwrap();
+        assert!(meta.named.current(e.index));
+        let kept: std::collections::BTreeSet<AccountId> = meta.named.accounts().collect();
+        assert_eq!(kept, graftyard_api::hosted::accounts(&MemStore::default(), &c.members[0].meta));
+        kept.contains(&AccountId(DbId(WRITER)))
+    };
+    let on = CommentTarget::Issue(IssueNumber(1));
+    let id = match c.commit(WRITER, IssueOp::Comment { on: on.clone(), body: "x".into(), reply_to: None }).unwrap() {
+        IssueOut::Id(id) => graftyard_git::issues::CommentId(id),
+        o => panic!("{o:?}"),
+    };
+    assert!(applied(&c, &mut meta), "the comment names its author");
+    let second = match c.commit(WRITER, IssueOp::Comment { on, body: "y".into(), reply_to: None }).unwrap() {
+        IssueOut::Id(id) => graftyard_git::issues::CommentId(id),
+        o => panic!("{o:?}"),
+    };
+    assert!(applied(&c, &mut meta));
+    c.commit(WRITER, IssueOp::DeleteComment { id }).unwrap();
+    assert!(applied(&c, &mut meta), "a second comment still names the author");
+    c.commit(WRITER, IssueOp::DeleteComment { id: second }).unwrap();
+    assert!(!applied(&c, &mut meta), "the author left with their last comment");
+}
+
+/// A member restored from a snapshot taken before the index existed holds only the snapshot's rows and builds the
+/// index from them: its `named`, and the narrow answer's login picks, equal a member's that applied the log.
+#[test]
+fn a_member_restored_from_an_older_snapshot_answers_the_same_named() {
+    use graftyard_fold::SnapshotJob;
+    use graftyard_types::{ChainId, ReleaseId, Tier};
+    let c = big();
+    let m = &c.members[0];
+    let at = Index(c.log_len);
+    let schema = |t| <graftyard_git::tiers::RepoTiers as graftyard_fold::Tiered>::schema(t);
+    let fmt = graftyard_raft::Format { family: 0x20, version: 3 };
+    let mut restored = [MemStore::default(), MemStore::default()];
+    for (i, (tier, src)) in [(Tier::Core, &m.core), (Tier::Metadata, &m.meta)].into_iter().enumerate() {
+        let mut live = src.clone();
+        let mut job =
+            SnapshotJob::begin(&mut live, schema(tier), ChainId::Repo(REPO), ReleaseId([1; 32]), fmt).unwrap();
+        let mut frames = Vec::new();
+        while let Some(f) = job.next(&live, 64) {
+            frames.push(f);
+        }
+        graftyard_fold::restore(&mut restored[i], &schema(tier), &frames, (ChainId::Repo(REPO), at)).unwrap();
+        assert_eq!(graftyard_fold::fold_digest(&restored[i], tier), graftyard_fold::fold_digest(src, tier));
+        assert!(graftyard_fold::Store::get(&restored[i], "named", &[]).is_none(), "no stored index rides the snapshot");
+    }
+    let [core, meta] = &restored;
+    assert_eq!(indexed(core, meta, at), indexed(&m.core, &m.meta, at));
+    assert_eq!(indexed(core, meta, at), graftyard_api::hosted::accounts(&m.core, &m.meta));
+    for route in [rest_route(&["issues"], "per_page=5"), rest_route(&["pulls", "2"], "")] {
+        let ask = |core: &MemStore, meta: &MemStore| {
+            let named = || indexed(core, meta, at);
+            let spec = Spec { at: Dir::new(WRITER).home(), route: route.clone() };
+            answer(core, Some(meta), 9, &serde_json::to_value(spec).unwrap(), &named)
+        };
+        assert_eq!(ask(core, meta), ask(&m.core, &m.meta), "the restored member's narrow answer");
+    }
+}
+
+/// `named` from the kept index reads no row: a narrow build of `pulls/{n}` at 500 PRs reads its object only, where
+/// the scan read every issue, comment, and pull request head (over 1,500 rows; 1,512 point reads on main).
+#[test]
+fn named_from_the_kept_index_reads_no_row() {
+    use graftyard_types::Tier;
+    let c = wide(500);
+    let m = &c.members[0];
+    let at = Index(c.log_len);
+    let (ci, mi) = (
+        graftyard_api::hosted::NamedIndex::build(&m.core, Tier::Core, at),
+        graftyard_api::hosted::NamedIndex::build(&m.meta, Tier::Metadata, at),
+    );
+    let reads = std::cell::Cell::new((0, 0));
+    let (core, meta) = (Counted { inner: &m.core, reads: &reads }, Counted { inner: &m.meta, reads: &reads });
+    let named = || ci.accounts().chain(mi.accounts()).collect();
+    let spec = Spec { at: Dir::new(WRITER).home(), route: rest_route(&["pulls", "250"], "") };
+    let kept = answer(&core, Some(&meta), 9, &serde_json::to_value(spec.clone()).unwrap(), &named);
+    let (stmts, _) = reads.get();
+    assert!(stmts <= 40, "pulls/250 with the kept index: {stmts} storage reads");
+    let ((_, _), (_, scanned_rows)) = build_reads(&c, spec.route.clone());
+    assert!(scanned_rows >= 1_500, "the scan this replaces read {scanned_rows} rows");
+    let scanned = || graftyard_api::hosted::accounts(&m.core, &m.meta);
+    assert_eq!(kept, answer(&m.core, Some(&m.meta), 9, &serde_json::to_value(spec).unwrap(), &scanned));
 }
