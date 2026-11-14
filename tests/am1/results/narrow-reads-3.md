@@ -748,6 +748,45 @@ Commit path, leader to voter: out p99 494 and 607 ms, back p99 673 and 245 ms, b
 Rows: `tests/nr3/rows/a1-b0-29-abwith.jsonl`, `run-abwith.status`, `lmem-abwith.jsonl.gz`, `mem-abwith.json`,
 `egress-abwith.txt`, `fresh-abwith.jsonl`, `trace-abwith.json.gz`, `tsave-abwith.jsonl.gz`.
 
+### Where the round trip's tail goes, from arm "with"'s traces (no new run)
+
+The operator asked, after the A/B, whether the part of a learner's read-index round trip that lies outside the
+leader's handler is the Durable Object output gate or the leader's input queue. Arm "with" has every call's four
+times: send S and answer R on the learner's clock, handler start A and return L on the leader's. `rest` =
+(R − S) − (L − A) needs no skew. `tests/nr3/gates.py abwith` takes each answer's output gates from the confirm
+intervals, Confirm (10) as [at − ms, at]: the leader's gate is L to the end of the leader confirm running at L, and
+the learner's is S to the end of its own confirm running at S, since its outgoing call waits for its earlier writes
+too [measured]:
+
+| Learner | rest p50 / p90 / p99 ms | Leader gate, share of rest ≥ p90 / ≥ p99 | Learner gate, share of rest ≥ p90 / ≥ p99 | Learner confirm p50 / p99 |
+| --- | --- | --- | --- | --- |
+| l0 | 112 / 691 / 1,738 | 3% / 1% | 17% / 15% | 31 / 268 |
+| l1 | 175 / 337 / 914 | 8% / 2% | 12% / 36% | 31 / 189 |
+| l2 | 202 / 402 / 1,383 | 4% / 0% | 4% / 9% | 18 / 122 |
+| l3 | 188 / 1,207 / 1,722 | 1% / 0% | 49% / 35% | 51 / 1,447 |
+| l4 | 212 / 561 / 1,688 | 3% / 0% | 9% / 14% | 41 / 249 |
+| l5 | 302 / 1,197 / 2,219 | 1% / 1% | 22% / 39% | 54 / 996 |
+| l6 | 97 / 349 / 1,205 | 7% / 3% | 9% / 12% | 33 / 189 |
+| l7 | 95 / 796 / 1,609 | 2% / 0% | 20% / 14% | 43 / 669 |
+
+**The leader's output gate does not explain the tail.** It holds 0 to 8% of the slowest tenth and 0 to 3% of the
+slowest hundredth on every learner. Leader confirms are p50 50 ms and p99 158 ms, and most answers leave with none
+running. **The learner's own output gate** explains 4 to 49% at p90 and 9 to 39% at p99. That is most on l3 and l5,
+whose confirms reach p99 1,447 and 996 ms.
+
+**The leader's input queue: some signs, not a measure.** The leader's clock moves only across I/O and the trace has
+no "input finished" row, so the gap from the previous input's end to CallArrived cannot be read exactly. The nearest
+measure, A minus the leader's last row before it, is p50 6 to 12 ms on both slow and fast trips, because the leader
+is always busy. What does tell slow from fast: 43 to 79% of the slow tenth's calls arrive in a millisecond shared
+with 3 or more other arrivals, against 7 to 19% of fast trips, and their answers leave bunched the same way. Inputs
+released together after waiting is what an input queue looks like [inference]. Answers are also taken on the
+learner in heavier turns: 10 to 28 trace rows at R's millisecond on slow trips against 5 to 9 on fast ones. The
+learners ran at 41 to 66% of a core (243 to 396 CPU s in 600 s), against 21% on the leader.
+
+So half or more of most learners' tail (everywhere except l3) is left as both wires, the leader's input queue and
+the learner's turn. The one-way split stays unresolved, because Workers' frozen clock makes S and L lower bounds and
+the per-leg minima drift past the median.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
