@@ -775,6 +775,67 @@ fn the_core_tier_counts_unresolved_review_threads_per_pull_request() {
     assert_eq!(c.log.last().unwrap().tiers, TierSet::METADATA);
 }
 
+/// A review comment outside a review is a single-comment review's, as GHES makes one: the comment names a COMMENTED
+/// review with no body, submitted in the same entry, whose id follows the thread's in Core's block, and the command
+/// still answers the comment's id. Two threads in one entry take four distinct ids. A reply gets its own review too.
+/// A commenter whose verdict approves keeps it, so that comment names no review.
+#[test]
+fn a_review_comment_outside_a_review_is_a_single_comment_reviews() {
+    let mut c = setup(1, 90);
+    c.push("refs/heads/f", oid(2));
+    let n = open_pr(&mut c, "refs/heads/f", oid(2));
+    let review_of = |c: &Chain, id: DbId| {
+        let m = &c.members[0];
+        let Some(Val::Blob(b)) = m.meta.get("comment", &[Val::Int(id.0)]).and_then(|v| v.into_iter().next()) else {
+            panic!("no comment {id:?}")
+        };
+        let row: graftyard_git::tiers::CommentRow = postcard::from_bytes(&b).unwrap();
+        let CommentTarget::Review { review, .. } = row.on else { panic!() };
+        review.map(|r| r.0)
+    };
+    let reviews = |c: &Chain| {
+        graftyard_git::merge::reviews_of(&c.members[0].core, n).into_iter().map(|r| r.state).collect::<Vec<_>>()
+    };
+    let thread = review_comment(&mut c, n, None);
+    assert_eq!(review_of(&c, thread), Some(DbId(thread.0 + 1)), "Core's next id, after the thread's");
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::CORE.union(TierSet::METADATA));
+    assert_eq!(reviews(&c), [ReviewState::Commented]);
+    assert_eq!(c.rows(Tier::Metadata, "review"), 1);
+    let reply = review_comment(&mut c, n, Some(graftyard_git::issues::CommentId(thread)));
+    let r = review_of(&c, reply).expect("a reply's own review");
+    assert!(r != DbId(thread.0 + 1) && r != reply && r != thread);
+    // Two new threads in one entry.
+    let at = graftyard_git::issues::LineAnchor {
+        commit: oid(2),
+        path: "b.rs".into(),
+        line: 2,
+        start_line: None,
+        side: graftyard_git::issues::DiffSide::Right,
+    };
+    let cmd = |i: u128| IssueCmd {
+        op: IssueOp::Comment {
+            on: CommentTarget::Review { n, review: None, at: at.clone() },
+            body: "nit".into(),
+            reply_to: None,
+        },
+        actor: who(READER),
+        request: RequestId(Ulid(1_000 + i)),
+    };
+    let outs = c.commit_all(&[cmd(0), cmd(1)]);
+    let [Ok(IssueOut::Id(a)), Ok(IssueOut::Id(b))] = outs.as_slice() else { panic!("{outs:?}") };
+    let mut all = vec![*a, *b, review_of(&c, *a).unwrap(), review_of(&c, *b).unwrap()];
+    all.sort();
+    all.dedup();
+    assert_eq!(all.len(), 4, "{all:?}");
+    // An approver's comment leaves the approval as it is.
+    c.commit(READER, IssueOp::Review { n, state: ReviewState::Approved, commit: oid(2), body: "".into() }).unwrap();
+    let before = c.rows(Tier::Metadata, "review");
+    let after_approval = review_comment(&mut c, n, None);
+    assert_eq!(review_of(&c, after_approval), None);
+    assert_eq!(reviews(&c), [ReviewState::Approved]);
+    assert_eq!(c.rows(Tier::Metadata, "review"), before);
+}
+
 /// After a simulated `MetaSplit`, the parent keeps only Core and the child only Metadata
 /// (`design/DESIGN.md`, Shape, `CHILD_GROUP_AT`). Each assigns ids from its own cursor and reads nothing of the other.
 #[test]

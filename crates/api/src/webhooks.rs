@@ -303,7 +303,7 @@ pub(crate) fn pull_request(r: &Repo<'_>, it: &Item) -> Value {
             "user": simple_user(r.host, r.dir, Some(r.at.owner_id)), "repo": repo.clone() })
     };
     let base_tip = r.ref_value(&pull.base).unwrap_or(pull.base_sha);
-    let c = r.dir.compare(base_tip, head.head_sha);
+    let c = r.counts(pull, head);
     let labels: Vec<Value> = r.labels_of(it.n).iter().map(|(id, l)| crate::rest::label_json(r, *id, l)).collect();
     let assignees: Vec<Value> = r.assignees_of(it.n).into_iter().map(|a| simple_user(r.host, r.dir, Some(a))).collect();
     let open = matches!(head.state, PrState::Open { .. });

@@ -75,8 +75,9 @@ impl Pick {
     }
 }
 
-/// The git cache's diff summary of a pull request.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The git cache's diff summary of a pull request, from the merge base of its base tip and head to the head, as GHES
+/// counts `commits`, `additions`, `deletions`, and `changed_files` (the shard's `/ui/compare`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Compare {
     pub commits: u32,
     pub additions: u32,
@@ -146,6 +147,22 @@ impl Repo<'_> {
 
     pub fn ref_value(&self, name: &RefName) -> Option<ObjectId> {
         get_rec(self.core, "ref", &[ref_key(name)])
+    }
+
+    /// The base tip and head a pull request's diff, compare, commits, and counts are read at: a closed or merged
+    /// one's final head.
+    pub fn pull_pair(&self, pull: &PullRow, head: &PullHead) -> (ObjectId, ObjectId) {
+        let head_sha = match head.state {
+            PrState::Open { .. } => head.head_sha,
+            PrState::Closed { final_head, .. } | PrState::Merged { final_head, .. } => final_head,
+        };
+        (self.ref_value(&pull.base).unwrap_or(pull.base_sha), head_sha)
+    }
+
+    /// The git cache's counts for pull request `pull` (`Directory::compare`).
+    pub fn counts(&self, pull: &PullRow, head: &PullHead) -> Compare {
+        let (base, head) = self.pull_pair(pull, head);
+        self.dir.compare(base, head)
     }
 
     pub fn item(&self, n: IssueNumber) -> Option<Item> {

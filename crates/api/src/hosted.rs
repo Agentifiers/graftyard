@@ -287,6 +287,13 @@ pub struct HostedDir {
     /// binding: a write's leader renders over its own whole tiers.
     #[serde(skip)]
     pub picks: crate::narrow::Picks,
+    /// The git cache's counts for the (base tip, head) pairs the edge read from the shard (`/ui/compare`). A pair it
+    /// did not read counts 0 and is recorded in `asked`, so the edge reads the pairs a render asked for and renders
+    /// again. Cells, so the edge fills them while a `Repo` over this directory is borrowed.
+    #[serde(skip)]
+    pub compares: std::cell::RefCell<Vec<((ObjectId, ObjectId), Compare)>>,
+    #[serde(skip)]
+    pub asked: std::cell::RefCell<Vec<(ObjectId, ObjectId)>>,
 }
 
 mod authz_hex {
@@ -343,10 +350,19 @@ impl Directory for HostedDir {
     fn viewer(&self) -> Option<AccountId> {
         self.viewer
     }
-    /// The git cache's compare is not wired, so a pull request's counts are zero [inference: gh prints them only in
-    /// `pr view`'s header].
-    fn compare(&self, _: ObjectId, _: ObjectId) -> Compare {
-        Compare::default()
+    /// The git cache's counts the edge read for the pair (`compares`), or 0 for a pair it did not read, which is then
+    /// recorded in `asked`.
+    fn compare(&self, base: ObjectId, head: ObjectId) -> Compare {
+        match self.compares.borrow().iter().find(|(k, _)| *k == (base, head)) {
+            Some((_, c)) => *c,
+            None => {
+                let mut asked = self.asked.borrow_mut();
+                if !asked.contains(&(base, head)) {
+                    asked.push((base, head));
+                }
+                Compare::default()
+            }
+        }
     }
     fn agent_app(&self, app: graftyard_identity::AppId) -> bool {
         self.install.as_ref().is_some_and(|a| a.agent_app(app).is_some())
