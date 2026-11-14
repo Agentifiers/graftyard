@@ -503,7 +503,9 @@ pub async fn sweep_all<B: Bucket, R: RequestSource>(
     Ok(out)
 }
 
-/// Copies a committed pack into `to`, create-only, checking the bytes against the marker.
+/// Copies a committed pack into `to`, create-only, checking the bytes against the marker, and its stored `.idx` when
+/// the source holds one: a promotion puts the idx only beside the copies its placement waited for, and without it a
+/// rehydrate that reads this bucket runs `index-pack` (`crate::catchup`). The idx is derived, so its copy may fail.
 async fn fill<B: Bucket>(from: &B, to: &B, network: NetworkId, id: PackId, m: &Marker) -> Result<(), StoreError> {
     use sha2::{Digest as _, Sha256};
     let key = R2Key::Pack { network, id }.to_string();
@@ -514,6 +516,11 @@ async fn fill<B: Bucket>(from: &B, to: &B, network: NetworkId, id: PackId, m: &M
     }
     let meta = from.head(&key).await?.map(|o| o.meta).unwrap_or_default();
     to.put_new(&key, &body, sum, &meta).await?;
+    let idx_key = R2Key::Idx { network, id }.to_string();
+    if let Ok(Some(idx)) = from.get(&idx_key).await {
+        let idx_meta = from.head(&idx_key).await.ok().flatten().map(|o| o.meta).unwrap_or_default();
+        let _ = to.put_new(&idx_key, &idx, graftyard_types::Digest(Sha256::digest(&idx).into()), &idx_meta).await;
+    }
     put_marker(to, network, id, m).await
 }
 
@@ -616,13 +623,18 @@ mod tests {
         let id = pid(2, T0);
         put_pack(&bed.b[1], id, 2, rid(2), T0);
         put_mark(&bed.b[1], id, &marker(2, 40));
+        let idx = R2Key::Idx { network: NET, id }.to_string();
+        let range = [("from".to_owned(), "1".to_owned()), ("to".to_owned(), "40".to_owned())];
+        bed.b[1].plant(&idx, b"the idx", Timestamp(T0), &range);
         let r = bed.run(&Rows::default(), T0 + 100 * H);
         assert!(r.failed.is_empty(), "{:?}", r.failed);
         for s in 0..3 {
             assert!(bed.has(s, &pack_key(id)) && bed.has(s, &mark_key(id)), "site {s}");
         }
-        // The fill copied the bytes and the metadata.
+        // The fill copied the bytes and the metadata, and the stored idx with its range.
         assert_eq!(block_on(bed.b[0].get(&pack_key(id).to_string())).unwrap(), Some(body(2)));
+        assert_eq!(block_on(bed.b[2].get(&idx)).unwrap().as_deref(), Some(&b"the idx"[..]));
+        assert_eq!(block_on(bed.b[2].head(&idx)).unwrap().map(|o| o.meta), Some(range.to_vec()));
         // A second run has nothing to do.
         assert!(bed.run(&Rows::default(), T0 + 101 * H).plan.actions.is_empty());
     }

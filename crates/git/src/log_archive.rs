@@ -227,13 +227,40 @@ pub struct View {
     pub archived_to: Index,
     /// The stored log's bytes above `archived_to`.
     pub total: u64,
-    /// The stored log's bytes above the last `Promoted`'s `to`.
+    /// The pack bytes the entries above the last `Promoted`'s `to` name, inline and stored (`pack_bytes_above`): what a
+    /// rehydrate indexes on top of the promotions.
     pub unpromoted: u64,
 }
 
+/// The pack bytes the entries of `rows` name, inline and stored, counted until past `stop_past`: promote-ahead's
+/// measure (`View::unpromoted`). A stored pack's row is only its pointer, so the log's row bytes left a network made
+/// of stored pushes unpromoted for good: repo:131296's 257 pushed packs, 2.62 GB, sat above its last promotion in a
+/// 294-entry log, and a cold rehydrate re-indexed every one for 1,694 to 1,872 s (`tests/am1/results/lm1-rows-m3f.md`,
+/// "Stored packs and their index").
+///
+/// Each row comes as its length and, when it is under `SHORT_ROW`, its bytes: a row that long or longer is counted by
+/// its length, which an inline pack's row about equals, so the host never reads a long row back. A short row is
+/// decoded for the stored packs it names; one that does not decode counts its length.
+pub fn pack_bytes_above(rows: impl IntoIterator<Item = (u64, Option<Vec<u8>>)>, stop_past: u64) -> u64 {
+    let mut sum = 0u64;
+    for (len, row) in rows {
+        sum += match row {
+            Some(r) => codec::from_bytes::<LogEntry<RepoEvent>>(&r).map_or(len, |e| pack_bytes(&e).max(len)),
+            None => len,
+        };
+        if sum > stop_past {
+            break;
+        }
+    }
+    sum
+}
+
+/// Rows under this many bytes are read back and decoded by `pack_bytes_above`; longer ones count their length.
+pub const SHORT_ROW: u64 = 4_096;
+
 impl View {
     /// The view of a repository member's fold: `total` is its stored log's bytes above the last archive, and
-    /// `unpromoted` those above the last promotion.
+    /// `unpromoted` the pack bytes its entries above the last promotion name (`pack_bytes_above`).
     pub fn of(chain: ChainId, fold: &crate::repo::RepoFold, commit: Index, total: u64, unpromoted: u64) -> View {
         let snapshotted = [graftyard_types::Tier::Core, graftyard_types::Tier::Metadata]
             .into_iter()
@@ -266,9 +293,9 @@ pub trait ArchiveHost {
     fn view(&self) -> Option<View>;
     /// The stored rows above `after`, in index order, read lazily.
     fn rows(&self, after: Index) -> Result<Rows<'_>, String>;
-    /// The packs under these checksums as one complete pack, validated and placed: the home shard's `/promote` and
-    /// `/validate`, then `PackStore::place`. Always `Stored`.
-    async fn promote(&self, sums: &[Digest], request: RequestId) -> Result<PackRef, String>;
+    /// The packs under these checksums as one complete pack, validated and placed with its `.idx`, which names the
+    /// range `from..=to`: the home shard's `/promote` and `/validate`, then `PackStore::place`. Always `Stored`.
+    async fn promote(&self, sums: &[Digest], from: Index, to: Index, request: RequestId) -> Result<PackRef, String>;
     /// The `Committed` marker of a stored pack at `index`.
     async fn mark(&self, pack: &PackRef, index: Index);
     /// Create-only puts of the archive object; how many buckets hold it.
@@ -341,7 +368,7 @@ pub async fn step<H: ArchiveHost>(h: &H, max_bytes: u64, range_max: u64, promote
     let entries = within_promote_max(range, promote_max)?;
     let (from, to) = (Index(done.0 + 1), entries.last().expect("at least one").index);
     let request = promote_request(v.chain, from, to);
-    let pack = h.promote(&promotion_sums(&entries), request).await?;
+    let pack = h.promote(&promotion_sums(&entries), from, to, request).await?;
     if !matches!(pack, PackRef::Stored { .. }) {
         return Err("a promoted pack is always stored".into());
     }

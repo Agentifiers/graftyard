@@ -35,6 +35,29 @@
 //	POST /ingest-batch?net=N         body: per pack, "<sha256> <bytes>\n" and its bytes. Each ingested as /ingest
 //	                                 does, in order; {"results": ["done"|"later", ...]}, "later" for /ingest's 409.
 //	                                 422 for the call on a checksum mismatch or another index-pack failure
+//	POST /spool?net=N&sha256=H       body: a stored pack, streamed. Spools it, holding no lock, to
+//	                                 <data>/spool/stored-<net>-<H>.pack for a later /ingest &spooled=1, so a
+//	                                 catch-up fetches several packs at once and still ingests them in log order.
+//	                                 {"bytes","spool_ms"}, or {"have": true} when H is already ingested; 422
+//	                                 "checksum ..." on a mismatch, leaving nothing behind. Each call deletes stored-*
+//	                                 files older than an hour, which a cut-off catch-up leaves
+//	PUT  /spool-idx?net=N&sha256=H   body: the stored .idx of pack H (at most 64 MiB), staged beside the spooled
+//	                                 pack as <data>/spool/stored-<net>-<H>.idx. {"bytes"}. No lock
+//	POST /ingest?net=N&sha256=H&spooled=1  empty body: ingests the pack /spool staged; 404 "not spooled" without one.
+//	                                 The already-ingested and /validate-kept-aside cases answer as /ingest does. A
+//	                                 staged idx that passes checkIdx against the pack is loaded instead of running
+//	                                 index-pack: the lock is held only to rename the pack and idx into objects/pack
+//	                                 and record them. {"ingested","bytes","idx": "used","index_ms": 0,"lock_ms"};
+//	                                 otherwise /ingest's index-pack and its answer (409, 422) plus "idx": "none" or
+//	                                 "rejected" (with "idxError") and "lock_ms", the time the network's lock was
+//	                                 held. The spooled files are deleted when done, except on 409, so the same call
+//	                                 works again once the bases are here
+//	GET  /idx?net=N&sha256=H         the .idx of the pack /validate kept aside under H, as bytes; 404 when there is
+//	                                 none. The archive's promotion stores it beside the promoted pack
+//	POST /connected?net=N[&objects=1|tips]  git rev-list --quiet --all (--objects with objects=1; with objects=tips,
+//	                                 every commit and then each ref tip's whole tree) under the lock shared:
+//	                                 {"connected","ms","refs","error" (only when not connected)}, 200 either way.
+//	                                 A rehydrate's backstop after it loaded packs without index-pack
 //	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
 //	                                 first page deletes every ref it does not list, done=1 on the last sets HEAD;
 //	                                 neither is one page that is the whole set. Refs naming objects not here are
@@ -1157,8 +1180,12 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "bad sha256")
 		return
 	}
+	spooled := r.URL.Query().Get("spooled") == "1"
 	if _, err := os.Stat(filepath.Join(rp, "graft", want+".objs")); err == nil {
 		io.Copy(io.Discard, r.Body)
+		if spooled {
+			removeStored(net, want)
+		}
 		jsonOut(w, map[string]any{"ingested": false})
 		return
 	}
@@ -1170,6 +1197,9 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 		l.Unlock()
 		io.Copy(io.Discard, r.Body)
+		if spooled {
+			removeStored(net, want)
+		}
 		if err != nil {
 			fail(w, 500, "%v", err)
 			return
@@ -1178,6 +1208,10 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l.Unlock()
+	if spooled {
+		ingestSpooled(w, net, rp, want)
+		return
+	}
 	// The spool's time is the body's read, from a bucket when a catch-up streams a stored pack here; index_ms is
 	// index-pack's: the shard reports both per catch-up, to tell a slow fetch from a slow unpack or index.
 	t0 := time.Now()
@@ -1192,24 +1226,353 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "checksum %s, want %s", sum, want)
 		return
 	}
+	indexMs, _, code, err := indexIngest(net, rp, file, sum)
+	if err != nil {
+		fail(w, code, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": indexMs})
+}
+
+// indexIngest is /ingest's tail: under the network's lock alone, index-pack --strict --fix-thin of file into the
+// repository, its objects recorded under sum, and the multi-pack-index's count. It answers index-pack's time (to the
+// end of the midx step, as /ingest always reported it) and how long it held the lock, or the status to answer and the
+// error: 409 when a thin pack's bases or a named object are not here yet, 422 for another index-pack failure.
+func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, err error) {
+	l := lock(net)
 	l.Lock()
-	defer l.Unlock()
 	t1 := time.Now()
+	defer func() {
+		lockMs = time.Since(t1).Milliseconds()
+		l.Unlock()
+	}()
 	name, err := indexPack(rp, []string{derivedEnv}, file)
 	if err != nil {
 		if unresolved(err) {
-			fail(w, 409, "%v", err)
-		} else {
-			fail(w, 422, "%v", err)
+			return 0, 0, 409, err
 		}
-		return
+		return 0, 0, 422, err
 	}
 	if err := record(rp, sum, name, filepath.Join(rp, "objects")); err != nil {
+		return 0, 0, 500, err
+	}
+	midxAfterIngest(net, rp)
+	return time.Since(t1).Milliseconds(), 0, 0, nil
+}
+
+// storedPath is where /spool and /spool-idx stage stored pack sum of network net (ext ".pack" or ".idx") for
+// /ingest &spooled=1.
+func storedPath(net, sum, ext string) string {
+	return filepath.Join(data, "spool", "stored-"+net+"-"+sum+ext)
+}
+
+func removeStored(net, sum string) {
+	os.Remove(storedPath(net, sum, ".pack"))
+	os.Remove(storedPath(net, sum, ".idx"))
+}
+
+// sweepStored deletes staged stored packs and indexes older than an hour: a catch-up cut off between its spools and
+// their ingests leaves them.
+func sweepStored() {
+	old, _ := filepath.Glob(filepath.Join(data, "spool", "stored-*"))
+	for _, f := range old {
+		if st, err := os.Stat(f); err == nil && time.Since(st.ModTime()) > time.Hour {
+			os.Remove(f)
+		}
+	}
+}
+
+// handleSpool stages a stored pack for /ingest &spooled=1. It holds no lock, so a catch-up fetches its next packs
+// from the bucket while the network ingests the earlier ones in log order.
+func handleSpool(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	want := r.URL.Query().Get("sha256")
+	if !sumRe.MatchString(want) {
+		fail(w, 400, "bad sha256")
+		return
+	}
+	sweepStored()
+	if _, err := os.Stat(filepath.Join(rp, "graft", want+".objs")); err == nil {
+		io.Copy(io.Discard, r.Body)
+		jsonOut(w, map[string]any{"have": true})
+		return
+	}
+	t0 := time.Now()
+	file, sum, n, err := spool(filepath.Join(data, "spool"), r.Body)
+	if err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
-	midxAfterIngest(net, rp)
-	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": time.Since(t1).Milliseconds()})
+	if sum != want {
+		os.Remove(file)
+		// The shard tries the next site's bucket on a body starting "checksum".
+		fail(w, 422, "checksum %s, want %s", sum, want)
+		return
+	}
+	if err := os.Rename(file, storedPath(net, want, ".pack")); err != nil {
+		os.Remove(file)
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"bytes": n, "spool_ms": time.Since(t0).Milliseconds()})
+}
+
+// maxIdxBytes caps /spool-idx's body. An index is 28 bytes an object plus about 1 KiB, a few percent of its pack.
+const maxIdxBytes = 64 << 20
+
+// handleSpoolIdx stages the stored .idx of a pack beside it for /ingest &spooled=1, which checks it before use.
+func handleSpoolIdx(w http.ResponseWriter, r *http.Request) {
+	net, _, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	want := r.URL.Query().Get("sha256")
+	if !sumRe.MatchString(want) {
+		fail(w, 400, "bad sha256")
+		return
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, maxIdxBytes+1))
+	if err != nil {
+		fail(w, 400, "%v", err)
+		return
+	}
+	if len(b) > maxIdxBytes {
+		fail(w, 413, "idx over %d bytes", maxIdxBytes)
+		return
+	}
+	dir := filepath.Join(data, "spool")
+	os.MkdirAll(dir, 0o755)
+	f, err := os.CreateTemp(dir, "in-*.idx")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), storedPath(net, want, ".idx"))
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"bytes": len(b)})
+}
+
+// checkIdx says why idx is not the pack index v2 of the pack whose first 12 bytes are packHead and last 20 bytes are
+// packTrailer, or "" when it is: its own SHA-1 trailer holds, the pack checksum it carries is the pack's trailer, its
+// object count is the pack header's, and its size fits that count. A promoted pack is not thin, so the index the
+// promotion's own index-pack wrote describes these exact bytes; a stored one that passes is loaded without index-pack.
+func checkIdx(idx, packHead, packTrailer []byte) string {
+	const fixed = 8 + 256*4 + 40
+	if len(idx) < fixed {
+		return fmt.Sprintf("idx is %d bytes, shorter than the %d of an empty index", len(idx), fixed)
+	}
+	if string(idx[:4]) != "\377tOc" {
+		return fmt.Sprintf("idx magic %x is not a version 2 index's", idx[:4])
+	}
+	if v := binary.BigEndian.Uint32(idx[4:8]); v != 2 {
+		return fmt.Sprintf("idx version %d, want 2", v)
+	}
+	body, sum := idx[:len(idx)-20], idx[len(idx)-20:]
+	if h := sha1.Sum(body); !bytes.Equal(h[:], sum) {
+		return "idx checksum does not match its contents"
+	}
+	if len(packTrailer) != 20 {
+		return fmt.Sprintf("pack trailer is %d bytes", len(packTrailer))
+	}
+	if !bytes.Equal(idx[len(idx)-40:len(idx)-20], packTrailer) {
+		return fmt.Sprintf("idx is for pack %x, this pack is %x", idx[len(idx)-40:len(idx)-20], packTrailer)
+	}
+	if len(packHead) < 12 || string(packHead[:4]) != "PACK" {
+		return "not a pack"
+	}
+	if v := binary.BigEndian.Uint32(packHead[4:8]); v != 2 && v != 3 {
+		return fmt.Sprintf("pack version %d", v)
+	}
+	n := int64(binary.BigEndian.Uint32(idx[8+255*4:]))
+	if packN := int64(binary.BigEndian.Uint32(packHead[8:12])); n != packN {
+		return fmt.Sprintf("idx holds %d objects, the pack %d", n, packN)
+	}
+	if want := fixed + n*28; int64(len(idx)) < want || (int64(len(idx))-want)%8 != 0 {
+		return fmt.Sprintf("idx is %d bytes, which %d objects do not fit", len(idx), n)
+	}
+	return ""
+}
+
+// stagedIdx checks the staged idx of a spooled pack against the pack and answers the pack's name (its trailer in
+// hex) and "used", or "none" when no idx is staged, or "rejected" and why.
+func stagedIdx(packFile, idxFile string) (name, state, why string) {
+	idx, err := os.ReadFile(idxFile)
+	if err != nil {
+		return "", "none", ""
+	}
+	f, err := os.Open(packFile)
+	if err != nil {
+		return "", "rejected", err.Error()
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", "rejected", err.Error()
+	}
+	if st.Size() < 32 {
+		return "", "rejected", fmt.Sprintf("pack is %d bytes", st.Size())
+	}
+	head, trailer := make([]byte, 12), make([]byte, 20)
+	if _, err := f.ReadAt(head, 0); err != nil {
+		return "", "rejected", err.Error()
+	}
+	if _, err := f.ReadAt(trailer, st.Size()-20); err != nil {
+		return "", "rejected", err.Error()
+	}
+	if why := checkIdx(idx, head, trailer); why != "" {
+		return "", "rejected", why
+	}
+	return hex.EncodeToString(trailer), "used", ""
+}
+
+// ingestSpooled is /ingest &spooled=1 once the pack is neither ingested nor kept aside by /validate: the pack /spool
+// staged goes in with its staged idx when that passes checkIdx, holding the network's lock only for two renames and
+// the record, and through index-pack otherwise.
+func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
+	file, idxFile := storedPath(net, sum, ".pack"), storedPath(net, sum, ".idx")
+	st, err := os.Stat(file)
+	if err != nil {
+		fail(w, 404, "not spooled")
+		return
+	}
+	n := st.Size()
+	name, state, why := stagedIdx(file, idxFile)
+	if state != "used" {
+		indexMs, lockMs, code, err := indexIngest(net, rp, file, sum)
+		if code == 409 {
+			// Kept, so the call sent again once the bases are here needs no second spool.
+			fail(w, code, "%v", err)
+			return
+		}
+		removeStored(net, sum)
+		if err != nil {
+			fail(w, code, "%v", err)
+			return
+		}
+		out := map[string]any{"ingested": true, "bytes": n, "spool_ms": 0, "index_ms": indexMs, "idx": state,
+			"lock_ms": lockMs}
+		if why != "" {
+			out["idxError"] = why
+		}
+		jsonOut(w, out)
+		return
+	}
+	defer removeStored(net, sum)
+	l := lock(net)
+	l.Lock()
+	t0 := time.Now()
+	err = func() error {
+		dst := filepath.Join(rp, "objects", "pack", "pack-"+name)
+		if _, err := os.Stat(dst + ".pack"); err != nil {
+			// The pack before its index, as index-pack and a quarantine's migration order them: git finds a pack by
+			// its index.
+			if err := os.Rename(file, dst+".pack"); err != nil {
+				return err
+			}
+			if err := os.Rename(idxFile, dst+".idx"); err != nil {
+				os.Remove(dst + ".pack")
+				return err
+			}
+		}
+		if err := record(rp, sum, name, filepath.Join(rp, "objects")); err != nil {
+			return err
+		}
+		midxAfterIngest(net, rp)
+		return nil
+	}()
+	lockMs := time.Since(t0).Milliseconds()
+	l.Unlock()
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "idx": "used", "index_ms": 0, "lock_ms": lockMs})
+}
+
+// handleIdx answers the .idx of the pack /validate kept aside under sha256, for the archive's promotion to store
+// beside the promoted pack.
+func handleIdx(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	want := r.URL.Query().Get("sha256")
+	if !sumRe.MatchString(want) {
+		fail(w, 400, "bad sha256")
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	idx, _ := filepath.Glob(filepath.Join(rp, "graft", "validated-"+want, "pack", "pack-*.idx"))
+	if len(idx) != 1 {
+		fail(w, 404, "no validated pack %s", want)
+		return
+	}
+	b, err := os.ReadFile(idx[0])
+	if err != nil {
+		fail(w, 404, "%v", err)
+		return
+	}
+	w.Header().Set("content-type", "application/octet-stream")
+	w.Write(b)
+}
+
+// handleConnected is a rehydrate's backstop after it loaded stored packs by their stored indexes, with no index-pack
+// checking that each object's links are here: every ref's history (and with objects=1 every object it reaches)
+// must be in the repository.
+func handleConnected(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	// A repack holds no network lock and deletes the packs it rolled up as it ends, so this waits for it, as /fsck
+	// does, rather than answer false for a pack that moved.
+	repacking.Lock()
+	defer repacking.Unlock()
+	t0 := time.Now()
+	refs, err := listRefs(rp, []string{derivedEnv})
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	// objects=1 walks every object of every ref's history: about 4 s for git/git's 424,499 objects here, so minutes
+	// for a network the size of linux. objects=tips walks every commit, then the whole tree at each ref's tip only.
+	var argsets [][]string
+	switch r.URL.Query().Get("objects") {
+	case "1":
+		argsets = [][]string{{"rev-list", "--quiet", "--all", "--objects"}}
+	case "tips":
+		argsets = [][]string{{"rev-list", "--quiet", "--all"}, {"rev-list", "--quiet", "--objects", "--no-walk", "--all"}}
+	default:
+		argsets = [][]string{{"rev-list", "--quiet", "--all"}}
+	}
+	for _, args := range argsets {
+		if _, err = git(rp, []string{derivedEnv}, nil, args...); err != nil {
+			break
+		}
+	}
+	out := map[string]any{"connected": err == nil, "refs": len(refs), "ms": time.Since(t0).Milliseconds()}
+	if err != nil {
+		out["error"] = err.Error()
+	}
+	jsonOut(w, out)
 }
 
 // handleIngestBatch is /ingest for many packs in one call: a catch-up's or rehydrate's run of inline packs from one
@@ -2149,6 +2512,10 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/validate", handleValidate)
 	m.HandleFunc("/ingest", handleIngest)
 	m.HandleFunc("/ingest-batch", handleIngestBatch)
+	m.HandleFunc("POST /spool", handleSpool)
+	m.HandleFunc("PUT /spool-idx", handleSpoolIdx)
+	m.HandleFunc("GET /idx", handleIdx)
+	m.HandleFunc("POST /connected", handleConnected)
 	m.HandleFunc("/refs", handleRefs)
 	m.HandleFunc("/promote", handlePromote)
 	m.HandleFunc("/have", handleHave)

@@ -3520,3 +3520,49 @@ LM-1's B0-34 on `graft-m2b` m29 held k 1 on all five networks for 900 s: no pool
 **Evidence.** `the_step_up_is_reserved_ahead_and_never_commits_to_a_cold_slot` and `a_lapsed_lease_tears_its_slots_down_once` in `crates/git/tests/agent_load.rs`; `only_a_clients_call_starts_a_shard_or_keeps_it_warm` in `crates/git/tests/shard.rs`; plants 86 to 90 in `tests/lm1mem/plant.py`.
 
 **Flip.** A hosted B0-34 whose pool warms keep k from stepping because rehydrate outlasts the load's high line, or pool shards that bill outside the hot hours `cost.py` prices.
+
+### `stored-fetch`: a promotion stores its `.idx`, and a rehydrate loads it and skips the pushes it covers, 2026-11-14
+
+LM-1's B0-34 warm on m29 (main 04f8b3a6) rehydrated repo:131296, the 5 GB linux seed, cold in 1,884 to 2,595 s a shard against DESIGN's 120 s line (fail over 600 s), and every `/catchup` before it timed out at its 120 s client limit [measured, `tests/fanout/raw/rehydrate-131296-m29.json`].
+
+#### A promotion stores its pack's `.idx`, and a rehydrate loads it in place of `index-pack`
+
+**Decision.** The archive's promotion reads the `.idx` that its own `/validate` wrote for the promoted pack (`GET /idx` on the same shard) and puts it under `R2Key::Idx` in every bucket the pack's placement held, create-only, before `Promoted` commits. Its custom metadata names the pack's chain and its range, `from` and `to`. The third-bucket filler copies the `.idx` with the pack. A rehydrate's marked phase streams each promoted pack to the container (`/spool`, no lock) with its `.idx` (`/spool-idx`). The container checks the `.idx` against the pack (version 2, its own SHA-1, the pack's trailer, the object count) and moves both into the repository under the network lock, with no `index-pack`; a missing or rejected `.idx` falls back to `index-pack --strict --fix-thin`. Pushed packs stay thin and as the client sent them.
+
+**Why.** The m29 rehydrate's 257 stored packs were pushes, 2.62 GB, never promoted: `View::unpromoted` counted row bytes, and a stored pack's row is a pointer, so promote-ahead never fired (fixed in this branch's first commit). Each shard's time was 90 to 96% `index-pack --fix-thin`, 1,694 to 2,496 s at 1.0 to 1.55 MB/s, and 53 to 94 s the spool from R2. A fetch that runs in parallel alone saves at most the spool. Locally, on 4 CPUs, a 5.5 MB pack loaded through its `.idx` held the lock 1 ms against 123 ms for `index-pack` (`TestSpooledIdxHoldsLockShorter`).
+
+**Beat.** Storing pushes fixed (G5's first question): the edge tees the pushed bytes to R2 while the shard validates, so fixed packs would mean a second upload of the shard's output per push. A parallel fetch alone: it removes only the spool's share. Running `index-pack` across 4 vCPU: about 470 s at m29's rates, still over the line.
+
+**Evidence.** `a_rehydrate_of_promoted_packs_loads_their_stored_idx_and_skips_the_pushes_they_cover` and `a_corrupt_stored_idx_falls_back_to_index_pack` (`crates/git/tests/catchup.rs`), and `containers/git/server/stored_test.go`. Both catch-up tests fail with main's behaviour.
+
+**Flip.** Shard-streamed promotion, where the shard puts the pack and its `.idx` itself, if hosted promotion cannot keep up with B0-31's agent push rate, or if a network's unpromoted pack bytes stay above 512 MiB for more than an hour. A hosted B0-34 cold warm whose `idx_rejected` is above zero on packs this branch promoted means the check or the copy is wrong.
+
+#### Coverage comes from the committed `Promoted` record; the `.idx` metadata only caches it
+
+**Decision.** A rehydrate does not load a pushed pack whose entry lies in a range that both a committed `Promoted` record (the chain's last one, or one whose entry the marked phase reads) and its pack's `.idx` metadata cover, and only when the rehydrate loads that promoted pack. After the marked phase, the tail, and the refs, the container must answer `/connected?objects=tips`: every ref's history, and the whole tree at each ref's tip, present. If it does not, the skipped packs load in index order, the check runs again, and the miss is reported as `fault`. A disk that still fails drops its cursor and place and never serves, so the next call rehydrates from nothing. This is the read side of `Compacted.consumed`; nothing writes `Compacted` yet.
+
+**Why.** An object's custom metadata is not committed state: a wrong or stale range there would skip packs the shard needs, and objects would be missing with nothing to flag them. Without the skip, a promoted network still loads every pushed pack the promotion holds, which costs the same `index-pack` time as before.
+
+**Beat.** Trusting the metadata alone. Writing `Compacted` now: it touches the fold and the sweeper's deletes, and the skip needs only the read.
+
+**Evidence.** `idx_metadata_wider_than_its_promoted_record_skips_nothing_outside_the_record` and `a_planted_missing_object_in_a_covered_pack_falls_back_to_the_skipped_packs_and_passes` (`crates/git/tests/catchup.rs`), both failing with main's behaviour.
+
+**Flip.** A hosted rehydrate that reports a `fault`: the promotion's pack missed an object of its range, which is a promotion bug to fix there.
+
+#### Stored packs are fetched four at a time and ingested in log order
+
+**Decision.** A catch-up or rehydrate fetches up to `FETCH_AT_ONCE` (4) stored packs at once onto the container's disk, at most `AHEAD_PACKS` (8) and `AHEAD_BYTES` (64 MiB) ahead of the ingest, and ingests them strictly in log order. A catch-up does not fetch a `Promoted` entry's own pack: it applies the range's entries first, so the disk already holds every object of it.
+
+**Why.** On B0-31 m3fr4 the apac shard's catch-up spent about 500 ms a pack in per-pack round trips outside spool and `index-pack`. A Workers invocation has at most six connections waiting for response headers [doc, Workers limits], and a `/spool` call waits for its headers until the container has the whole body, so four leave one for the in-order ingest and one for the next log page. The bounds are counted on the container's disk, where the fetched bodies wait.
+
+**Evidence.** `a_catch_up_fetches_stored_packs_at_once_and_ingests_them_in_log_order`: 60 packs with the first one slow, 11.5 s against 34.5 s one at a time, ingested in order. `a_cold_rehydrate_of_5_gb_projects_under_120_s_and_the_serial_fetch_does_not`, at m29's site c rates (up 34.2 s, 27.9 MB/s one stream, 375 ms a pack, the `.idx` 3.5% of its pack): the seed's 257 packs in 83 s against 227 s one at a time, and 5 GB as 100 promotions of 48 MiB in 90 s against 258 s. All of these fail with main's behaviour [inference: the multi-stream R2 rate into one container is unmeasured and assumed equal to the one-stream rate].
+
+**Flip.** B0-34's hosted cold warm on this branch over 120 s with a summed spool rate near the one-stream rate: the container's link or R2 caps the sum, and the 5 GB line needs a design change, not more fetches.
+
+#### Promotion's measured rate is under B0-31's push rate
+
+**Decision.** `PROMOTE_MAX` stays 48 MiB on the site's path. The unpromoted tail of a network pushed faster than promotion runs is open question G9.
+
+**Why.** On git/git's first-parent history, 30 thin pushes of 100 commits (29.2 MB) promoted as one: `pack-objects` 4.65 s (57.9 MB out), and the validate's `index-pack` 6.50 s with its default threads (11.97 s with one), 0.0 s connectivity. So 2.62 MB/s of pushed bytes, CPU-bound, against about 4 MB/s from B0-31's agents. `pack-objects` writing files gives a pack that differs from its `--stdout` output, so the stored `.idx` is the validate's, from the bytes that are placed. A promoted pack is 1.6 to 4.3 times its thin pushes' bytes, more for shorter ranges (2.3x at 30 pushes per promotion, 4.3x at one). The push-rate sweep at 2.62 MB/s over 600 s ends 3, 0, 754, and 1,957 MB above the last promotion at 1, 2, 4, and 6 MB/s, each step at most 19.2 s [measured locally, `tests/am1/results/lm1-rows-m3f.md`, "Promotion rate"; `promotion_keeps_up_below_its_rate_and_stays_bounded_above_it`]. A growing tail costs slower rehydrates, not correctness. Shard-streamed promotion lifts the site's memory bound, not this CPU one.
+
+**Flip.** The same as the first decision's: hosted promotion MB/s under B0-31's push rate, measured in B0-34's drain of repo:131296.

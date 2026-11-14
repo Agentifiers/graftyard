@@ -887,14 +887,14 @@ if (plan.pollers) {
   }
 }
 
-// B0-35's instruments: each site's shard of the network, its test-merge budget's counts (null before any merge).
+// B0-35's and B0-31's instruments: each site's shard of the network, its test-merge budget's counts (null before any merge).
 const budgets = () => Promise.all([0, 1, 2].map(async (s) => {
   try { return JSON.parse((await bedGet(`/_bed/shard_status?repo=${CHAIN.split(":")[1]}&shard=${s}`)).body).testMerges ?? null; } catch { return null; }
 }));
-const budgetBefore = plan.openPrs ? await budgets() : null;
+const budgetBefore = await budgets();
 // The shard object keeps its counts in memory, and hosted it restarted 10 to 30 s after the load stopped
 // (`tests/am1/results/merge-budget-2.md`), so the run samples them every 15 s and keeps the latest of each site.
-const budgetSeen = plan.openPrs ? [...budgetBefore] : null;
+const budgetSeen = [...budgetBefore];
 /** Each site's counts after the window: the read now, or, for a site whose object restarted since (a later `since`
  *  with fewer merges, or none), the last sample of the run. */
 function latestBudget(now, seen) {
@@ -918,7 +918,7 @@ if (leader !== undefined) jobs.push((async () => {
   await sleep(Math.max(0, end - 20_000 - Date.now()));
   lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
 })());
-if (plan.openPrs) jobs.push((async () => {
+jobs.push((async () => {
   while (Date.now() < end) {
     await sleep(15_000);
     (await budgets()).forEach((b, s) => { if (b && (!budgetSeen[s] || b.since === budgetSeen[s].since || b.computed >= budgetSeen[s].computed)) budgetSeen[s] = b; });
@@ -927,7 +927,7 @@ if (plan.openPrs) jobs.push((async () => {
 await Promise.all(jobs);
 if (opt["first-for"]) for (const s of [0, 1, 2]) await member(CHAIN, s, "/bench_seed", { prsyncFirstFor: 0 }, 15_000).catch(() => {});
 // Give the last pushes' first attempts time to reach the shard.
-const budgetAfter = plan.openPrs ? latestBudget((await sleep(15_000), await budgets()), budgetSeen) : null;
+const budgetAfter = latestBudget((await sleep(15_000), await budgets()), budgetSeen);
 const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
 // Always `?summary=1`: a loaded leader's raw arrays (megabytes) rebuilt its wasm instance (round 6, B0-29).
@@ -977,9 +977,10 @@ const v = {
     clock: { samples: clockSamples.length, ...clockSpread(clockSamples),
       maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
-  ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
+  // Every plan, not only `openPrs`: B0-31's agents' test merges go through the same budget (m3fr4 wrote none).
+  testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
     pollAnswers: codes["read:mergeable"] ?? {}, restPollAnswers: codes["read:mergeableRest"] ?? {},
-    firstFor: opt["first-for"] ? Number(opt["first-for"]) : null } } : {}),
+    firstFor: opt["first-for"] ? Number(opt["first-for"]) : null },
 };
 writeRow(OUT, v);
 log(JSON.stringify(v).slice(0, 4000));

@@ -17,9 +17,20 @@
 //! - **Every page is saved before the next is applied.** Catch-up saves its cursor after each page. Rehydrate saves its
 //!   tail cursor after each page and skips the stored packs the container already holds (`ShardIo::have`), so a run
 //!   cut off at any point, by a caller's deadline or an isolate reset, resumes on the same disk where it stopped.
+//!
+//! Stored packs are fetched ahead and ingested in log order (`FETCH_AT_ONCE`, `AHEAD_PACKS`, `AHEAD_BYTES`): each is
+//! spooled onto the container's disk with no lock while the packs before it ingest, so a pack's bucket read overlaps
+//! the others'. A promoted pack comes with its stored `.idx`, which the container checks against the pack and loads in
+//! place of `index-pack`. A rehydrate skips the pushed packs a committed `Promoted` covers (`skippable`), the read side
+//! of `Compacted.consumed`, and checks the result with `ShardIo::connected` before it serves.
 #![allow(async_fn_in_trait)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::{Pin, pin};
+use std::task::Poll;
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use graftyard_types::{ChainId, Digest, Index, NetworkId, SiteId};
 use serde::{Deserialize, Serialize};
@@ -44,12 +55,40 @@ const PROBE_AT_ONCE: usize = 16;
 /// pages a catch-up holds.
 pub const INGEST_BATCH_BYTES: usize = 4_000_000;
 
+/// Stored packs being fetched into the container at once. Each `/spool` call waits for its response headers until the
+/// container has the whole body, and a Workers invocation has at most six connections waiting for headers [doc,
+/// `research/cloudflare.md`, Workers limits]: four spools leave one for the in-order ingest and one for the next log
+/// page, so neither queues behind the fetches.
+pub const FETCH_AT_ONCE: usize = 4;
+/// Stored packs fetched and not yet ingested, at most: they wait on the container's disk, not in the object's memory.
+pub const AHEAD_PACKS: usize = 8;
+/// And their bytes, at most, unless the next pack alone is larger.
+pub const AHEAD_BYTES: u64 = 64 << 20;
+
 /// The container's answer to one ingest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ingested {
     Done,
     /// 409: a base or a named object is not on the disk yet; the pack is tried again after the others.
     Later,
+}
+
+/// Where `ShardIo::fetch_stored` left a stored pack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fetched {
+    /// On the container's disk for `ShardIo::ingest_spooled`.
+    Spooled,
+    /// The container already holds it.
+    Have,
+}
+
+/// The promoted range a stored `.idx`'s custom metadata names: a cache of the pack's `Promoted`, never trusted alone.
+pub type IdxRange = (ChainId, Index, Index);
+
+/// The range a stored `.idx`'s custom metadata names (`store::Place::idx_range`), if it names one.
+pub fn idx_range(meta: &[(String, String)]) -> Option<IdxRange> {
+    let get = |k: &str| meta.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    Some((get("chain")?.parse().ok()?, Index(get("from")?.parse().ok()?), Index(get("to")?.parse().ok()?)))
 }
 
 /// The container a shard object starts, and the buckets its stored packs come from.
@@ -62,8 +101,16 @@ pub trait ShardIo {
     async fn have(&self, sums: &[Digest]) -> Result<BTreeSet<Digest>, StoreError>;
     /// Inline packs, each with the SHA-256 of its bytes, ingested in order in one call: one answer per pack.
     async fn ingest(&self, packs: &[(Digest, &[u8])]) -> Result<Vec<Ingested>, StoreError>;
-    /// A stored pack, from the first bucket whose copy matches `checksum`, straight to the container.
-    async fn ingest_stored(&self, id: PackId, checksum: Digest) -> Result<Ingested, StoreError>;
+    /// A stored pack, from the first bucket whose copy matches `checksum`, streamed onto the container's disk without
+    /// its lock, and with `idx` its stored `.idx` beside it. Several run at once.
+    async fn fetch_stored(&self, id: PackId, checksum: Digest, idx: bool) -> Result<Fetched, StoreError>;
+    /// Ingests a pack `fetch_stored` spooled: through its stored `.idx` when that checks against the pack, otherwise
+    /// with `index-pack`. `Later` keeps it spooled for the next try.
+    async fn ingest_spooled(&self, checksum: Digest) -> Result<Ingested, StoreError>;
+    /// Every stored `.idx` of the network's packs in the buckets, with the range its custom metadata names, if any.
+    async fn idx_ranges(&self) -> Result<BTreeMap<PackId, Option<IdxRange>>, StoreError>;
+    /// Whether the history of every ref, and the whole tree at each ref's tip, is on the disk: `Ok(Err(why))` when not.
+    async fn connected(&self) -> Result<Result<(), String>, StoreError>;
     async fn put_refs_page(&self, refs: &[(String, String)], start: bool, done: bool) -> Result<(), StoreError>;
     async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError>;
     /// Evicts other networks so `incoming` more bytes fit; the networks evicted.
@@ -111,6 +158,11 @@ pub struct StoredMs {
     pub index_ms: u64,
     /// Packs served by each site's bucket.
     pub from_site: BTreeMap<u8, u32>,
+    /// Packs loaded through their stored `.idx`, and stored `.idx` the container refused (then `index-pack` ran).
+    pub idx_used: u32,
+    pub idx_rejected: u32,
+    /// The network lock's hold time over the stored packs' ingests.
+    pub lock_ms: u64,
 }
 
 /// A rehydrate in progress on one disk: whether its marked phase finished, how far its tail got, and per chain the
@@ -123,6 +175,10 @@ pub struct Rehydrating {
     /// again, which `have` makes cheap.
     #[serde(default)]
     pub loaded: Vec<(ChainId, Index)>,
+    /// Pushed packs the marked phase skipped because a promotion covers them (`skippable`), for the check before the
+    /// rehydrate serves.
+    #[serde(default)]
+    pub skipped: Vec<PackId>,
 }
 
 /// The shard object's own storage for one network, each value with the id of the disk it describes.
@@ -153,6 +209,10 @@ pub struct Rehydrated {
     pub resumed: bool,
     /// Calls to the container that ingested packs (`INGEST_BATCH_BYTES`).
     pub calls: usize,
+    /// Pushed packs a promotion covered, not loaded.
+    pub skipped: usize,
+    /// Why the check after a skip failed, before the skipped packs were loaded and it passed: a fault to report.
+    pub fault: Option<String>,
 }
 
 /// What a catch-up did.
@@ -198,24 +258,129 @@ fn inline_bytes(page: &[LogPacks]) -> usize {
         .sum()
 }
 
+/// One fetch of `Ahead`'s list, answering its place in the list.
+type Fetch<'a> = Pin<Box<dyn Future<Output = (usize, Result<Fetched, StoreError>)> + 'a>>;
+
+/// Stored packs fetched ahead of the ingest, in order, within `FETCH_AT_ONCE`, `AHEAD_PACKS`, and `AHEAD_BYTES`.
+struct Ahead<'a> {
+    list: Vec<(Digest, PackId, u64, bool)>,
+    start: Box<dyn Fn(usize) -> Fetch<'a> + 'a>,
+    running: FuturesUnordered<Fetch<'a>>,
+    done: BTreeMap<usize, Result<Fetched, StoreError>>,
+    started: usize,
+    taken: usize,
+    held: u64,
+}
+
+impl<'a> Ahead<'a> {
+    fn new<I: ShardIo>(io: &'a I, list: Vec<(Digest, PackId, u64, bool)>) -> Ahead<'a> {
+        let l = list.clone();
+        Ahead {
+            list,
+            start: Box::new(move |k| {
+                let (sum, id, _, idx) = l[k];
+                Box::pin(async move { (k, io.fetch_stored(id, sum, idx).await) })
+            }),
+            running: FuturesUnordered::new(),
+            done: BTreeMap::new(),
+            started: 0,
+            taken: 0,
+            held: 0,
+        }
+    }
+
+    fn pump(&mut self, cx: &mut std::task::Context<'_>) {
+        loop {
+            while self.started < self.list.len()
+                && self.running.len() < FETCH_AT_ONCE
+                && self.started - self.taken < AHEAD_PACKS
+                && (self.started == self.taken || self.held + self.list[self.started].2 <= AHEAD_BYTES)
+            {
+                self.held += self.list[self.started].2;
+                self.running.push((self.start)(self.started));
+                self.started += 1;
+            }
+            match self.running.poll_next_unpin(cx) {
+                Poll::Ready(Some((k, r))) => {
+                    self.done.insert(k, r);
+                }
+                _ => return,
+            }
+        }
+    }
+
+    /// The next stored pack's fetch, once it ends, with the later ones going on meanwhile.
+    async fn take(&mut self) -> Result<Fetched, StoreError> {
+        let k = self.taken;
+        let r = std::future::poll_fn(|cx| {
+            self.pump(cx);
+            match self.done.remove(&k) {
+                Some(r) => Poll::Ready(r),
+                None => Poll::Pending,
+            }
+        })
+        .await;
+        self.taken += 1;
+        self.held -= self.list[k].2;
+        r
+    }
+
+    /// `op`, with the fetches going on beside it.
+    async fn beside<T>(&mut self, op: impl Future<Output = T>) -> T {
+        let mut op = pin!(op);
+        std::future::poll_fn(|cx| {
+            self.pump(cx);
+            op.as_mut().poll(cx)
+        })
+        .await
+    }
+}
+
 /// Ingests `loads` in order; a pack answered `Later` is tried again after the others, until a pass makes no progress.
-/// Runs of inline packs go in one call each, up to `INGEST_BATCH_BYTES`; a stored pack goes alone, from its bucket.
-/// `Ok(n)` with the packs ingested, or `Err(Unresolved)` naming how many never resolved. `calls` counts the calls.
-async fn ingest_all<I: ShardIo>(io: &I, loads: &[Load], calls: &mut usize) -> Result<Result<usize, usize>, StoreError> {
+/// Runs of inline packs go in one call each, up to `INGEST_BATCH_BYTES`. Stored packs are fetched ahead (`Ahead`) and
+/// each ingested alone, in its place in the order; those in `with_idx` come with their stored `.idx`. `Ok(n)` with the
+/// packs ingested, or `Err(Unresolved)` naming how many never resolved. `calls` counts the calls.
+async fn ingest_all<I: ShardIo>(
+    io: &I,
+    loads: &[Load],
+    with_idx: &BTreeSet<PackId>,
+    calls: &mut usize,
+) -> Result<Result<usize, usize>, StoreError> {
     // The packs a call cut off part way through this list already ingested are not sent again: a page's inline packs
     // are up to `ENTRIES_PAGE_BYTES`, and a caller whose deadline falls inside every page would otherwise never pass it.
     let sums: Vec<Digest> = loads.iter().map(load_sum).collect();
     let held = if loads.len() > 1 { io.have(&sums).await? } else { BTreeSet::new() };
     let mut left: Vec<(Digest, &Load)> = sums.into_iter().zip(loads).filter(|(s, _)| !held.contains(s)).collect();
     let mut done = held.len();
+    // A pack answered `Later` stays spooled on the container, so the next pass ingests it without a second fetch.
+    let mut spooled: BTreeSet<Digest> = BTreeSet::new();
     while !left.is_empty() {
         let before = left.len();
         let mut retry = Vec::new();
+        let ahead_list: Vec<(Digest, PackId, u64, bool)> = left
+            .iter()
+            .filter_map(|(s, l)| match l {
+                Load::Stored { id, bytes, .. } if !spooled.contains(s) => {
+                    Some((*s, *id, *bytes, with_idx.contains(id)))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut ahead = Ahead::new(io, ahead_list);
         let mut i = 0;
         while i < left.len() {
-            let (_, l) = left[i];
+            let (s, l) = left[i];
             let (run, answers) = match l {
-                Load::Stored { id, checksum, .. } => (1, vec![io.ingest_stored(*id, *checksum).await?]),
+                Load::Stored { .. } => {
+                    let fetched = if spooled.contains(&s) { Fetched::Spooled } else { ahead.take().await? };
+                    match fetched {
+                        Fetched::Have => (1, vec![Ingested::Done]),
+                        Fetched::Spooled => {
+                            *calls += 1;
+                            (1, vec![ahead.beside(io.ingest_spooled(s)).await?])
+                        }
+                    }
+                }
                 Load::Inline { .. } => {
                     let mut batch: Vec<(Digest, &[u8])> = Vec::new();
                     let mut bytes = 0;
@@ -227,18 +392,23 @@ async fn ingest_all<I: ShardIo>(io: &I, loads: &[Load], calls: &mut usize) -> Re
                         bytes += b.len();
                         batch.push((*s, b.as_slice()));
                     }
-                    let a = io.ingest(&batch).await?;
+                    let a = ahead.beside(io.ingest(&batch)).await?;
                     if a.len() != batch.len() {
                         return Err(StoreError(format!("{} answers for {} packs", a.len(), batch.len())));
                     }
+                    *calls += 1;
                     (batch.len(), a)
                 }
             };
-            *calls += 1;
             for (k, a) in answers.into_iter().enumerate() {
                 match a {
                     Ingested::Done => done += 1,
-                    Ingested::Later => retry.push(left[i + k]),
+                    Ingested::Later => {
+                        if matches!(left[i + k].1, Load::Stored { .. }) {
+                            spooled.insert(left[i + k].0);
+                        }
+                        retry.push(left[i + k]);
+                    }
                 }
             }
             i += run;
@@ -249,6 +419,35 @@ async fn ingest_all<I: ShardIo>(io: &I, loads: &[Load], calls: &mut usize) -> Re
         left = retry;
     }
     Ok(Ok(done))
+}
+
+/// The pushed packs among `marks` that a rehydrate's marked phase need not load, because a committed promotion covers
+/// them: a pack is skipped only when its entry lies in a `Promoted` record read from the log (`records`, by promoted
+/// pack) and in the range that pack's stored `.idx` names (`idx`), and that promoted pack is itself loaded. The idx
+/// metadata alone is never enough: an object's custom metadata is not committed state, and a range wider than the
+/// record would skip packs no promotion holds. This is the read side of `Compacted.consumed`, which nothing writes yet.
+pub fn skippable(
+    marks: &[(PackId, Marker)],
+    records: &BTreeMap<PackId, (ChainId, Promoted)>,
+    idx: &BTreeMap<PackId, Option<IdxRange>>,
+) -> BTreeSet<PackId> {
+    let loaded: BTreeSet<PackId> = marks.iter().map(|(id, _)| *id).collect();
+    let covers: Vec<(ChainId, Index, Index)> = records
+        .iter()
+        .filter(|(q, _)| loaded.contains(q))
+        .filter_map(|(q, (c, p))| {
+            let (ic, f, t) = (*idx.get(q)?)?;
+            let (from, to) = (p.from.max(f), p.to.min(t));
+            (ic == *c && from <= to).then_some((*c, from, to))
+        })
+        .collect();
+    marks
+        .iter()
+        .filter(|(id, m)| {
+            !records.contains_key(id) && covers.iter().any(|(c, f, t)| *c == m.chain && m.index >= *f && m.index <= *t)
+        })
+        .map(|(id, _)| *id)
+        .collect()
 }
 
 fn load_sum(l: &Load) -> Digest {
@@ -359,12 +558,16 @@ async fn apply_page<I: ShardIo, S: Saved>(
     match mode {
         Mode::CatchUp { cursor, seen } => {
             let changes = ref_changes(&page, cursor.at(chain), last).ok_or(Stop::NoRefs)?;
+            // A `Promoted` entry follows its range, and a catch-up applies entries in order, so the disk already holds
+            // every object of a promoted pack it reaches: fetching it again cost each shard the whole range's bytes.
+            let promoted: BTreeSet<PackId> =
+                page.iter().filter_map(|e| e.promoted.as_ref()?.pack.stored_id()).collect();
             let plan: Vec<Load> = catch_up_plan(cursor, chain, &page, last)
                 .into_iter()
-                .filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)))
+                .filter(|l| l.stored_id().is_none_or(|id| !promoted.contains(&id) && seen.insert(id)))
                 .collect();
             drop(page);
-            match ingest_all(io, &plan, &mut t.calls).await? {
+            match ingest_all(io, &plan, &BTreeSet::new(), &mut t.calls).await? {
                 Ok(n) => t.packs += n,
                 Err(n) => return Err(Stop::Unresolved(unresolved(chain, n, from, last))),
             }
@@ -374,6 +577,8 @@ async fn apply_page<I: ShardIo, S: Saved>(
             saved.put_cursor(disk, cursor).await?;
         }
         Mode::Tail { state, seen, consumed } => {
+            let promoted: BTreeSet<PackId> =
+                page.iter().filter_map(|e| e.promoted.as_ref()?.pack.stored_id()).collect();
             let plan: Vec<Load> = rehydrate_plan(&[], consumed, &[], &page)
                 .into_iter()
                 .filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)))
@@ -388,7 +593,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
                     Load::Stored { .. } => t.packs += 1,
                 }
             }
-            if let Err(n) = ingest_all(io, &plan, &mut t.calls).await? {
+            if let Err(n) = ingest_all(io, &plan, &promoted, &mut t.calls).await? {
                 return Err(Stop::Unresolved(unresolved(chain, n, from, last)));
             }
             state.tail.advance(chain, last);
@@ -495,7 +700,12 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         Some(s) => s,
         None => {
             io.init(true).await?;
-            let s = Rehydrating { marked: false, tail: IngestCursor::new(network), loaded: Vec::new() };
+            let s = Rehydrating {
+                marked: false,
+                tail: IngestCursor::new(network),
+                loaded: Vec::new(),
+                skipped: Vec::new(),
+            };
             saved.put_rehydrating(&disk, &s).await?;
             s
         }
@@ -537,10 +747,28 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         // of one entry, which the tail start keeps in the log.
         let mut promoted: BTreeSet<PackId> = last.iter().filter_map(|(_, p)| p.as_ref()?.pack.stored_id()).collect();
         let starts: BTreeMap<ChainId, Index> = last.iter().map(|(c, p)| (*c, tail_start(p.as_ref()))).collect();
+        // A pack whose stored `.idx` names a promoted range is read the same way wherever its entry lies, so its
+        // `Promoted` record, not the metadata, says what it covers (`skippable`). An entry already archived cannot be
+        // read; its range's pushed packs load as before.
+        let idx = io.idx_ranges().await?;
+        let mut firsts: BTreeMap<ChainId, Index> = BTreeMap::new();
+        for chain in chains {
+            firsts.insert(*chain, log.head(*chain).await?.first);
+        }
+        let mut records: BTreeMap<PackId, (ChainId, Promoted)> = BTreeMap::new();
+        for (c, p) in &last {
+            if let Some(p) = p
+                && let Some(id) = p.pack.stored_id()
+            {
+                records.insert(id, (*c, p.clone()));
+            }
+        }
         let probe: Vec<&(PackId, Marker)> = marks
             .iter()
             .filter(|(id, m)| {
-                !consumed.contains(id) && !promoted.contains(id) && starts.get(&m.chain).is_some_and(|f| m.index >= *f)
+                let tail = starts.get(&m.chain).is_some_and(|f| m.index >= *f);
+                let named = matches!(idx.get(id), Some(Some(_))) && firsts.get(&m.chain).is_some_and(|f| m.index >= *f);
+                !consumed.contains(id) && !promoted.contains(id) && (tail || named)
             })
             .collect();
         for chunk in probe.chunks(PROBE_AT_ONCE) {
@@ -550,13 +778,16 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
                 let Some(e) = page.iter().find(|e| e.index == m.index) else {
                     return Err(StoreError(format!("{}: entry {} of a marker was not answered", m.chain, m.index.0)));
                 };
-                if e.promoted.as_ref().and_then(|p| p.pack.stored_id()) == Some(*id) {
+                if let Some(p) = e.promoted.as_ref().filter(|p| p.pack.stored_id() == Some(*id)) {
                     promoted.insert(*id);
+                    records.insert(*id, (m.chain, p.clone()));
                 }
             }
         }
         let at: BTreeMap<PackId, Index> = marks.iter().map(|(id, m)| (*id, m.index)).collect();
-        let mut todo = marked;
+        let skip = skippable(&marks, &records, &idx);
+        let mut todo: Vec<Load> =
+            marked.into_iter().filter(|l| l.stored_id().is_none_or(|id| !skip.contains(&id))).collect();
         for (id, m) in &marks {
             if promoted.contains(id) && seen.insert(*id) {
                 todo.push(Load::Stored { id: *id, bytes: m.bytes, checksum: m.checksum });
@@ -566,10 +797,12 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             let id = l.stored_id();
             (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))
         });
-        match ingest_all(io, &todo, &mut r.calls).await? {
+        let with_idx: BTreeSet<PackId> = promoted.iter().filter(|id| idx.contains_key(id)).copied().collect();
+        match ingest_all(io, &todo, &with_idx, &mut r.calls).await? {
             Ok(n) => r.stored += n,
             Err(n) => return Err(StoreError(format!("{n} marked packs have bases no pack provides"))),
         }
+        state.skipped = skip.into_iter().collect();
         state.marked = true;
         state.loaded = last.iter().map(|(c, p)| (*c, tail_start(p.as_ref()))).collect();
         saved.put_rehydrating(&disk, &state).await?;
@@ -638,6 +871,36 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     // the cursor, 338 entries of j9h's took 38 s, and each push the home took waited out its 15 s
     // (`tests/am1/results/hot-shards-3.md`, "The 05:12 stall"). A run cut off before here leaves the place, which the
     // next catch-up from the cursor drops once it reaches the head.
+    // The backstop for the packs a promotion covered (`skippable`): the history of every ref, and each tip's tree, must
+    // be on the disk. A miss loads the skipped packs, in index order, checks again, and is reported as a fault; a disk
+    // that still misses an object never serves, and the next call rehydrates from nothing.
+    r.skipped = state.skipped.len();
+    if !state.skipped.is_empty()
+        && let Err(why) = io.connected().await?
+    {
+        r.fault = Some(why);
+        let skipped: BTreeSet<PackId> = state.skipped.iter().copied().collect();
+        let mut back: Vec<(Index, Load)> = marks
+            .iter()
+            .filter(|(id, _)| skipped.contains(id))
+            .map(|(id, m)| (m.index, Load::Stored { id: *id, bytes: m.bytes, checksum: m.checksum }))
+            .collect();
+        back.sort_by_key(|(i, _)| *i);
+        let back: Vec<Load> = back.into_iter().map(|(_, l)| l).collect();
+        let loaded = ingest_all(io, &back, &BTreeSet::new(), &mut r.calls).await?;
+        let again = io.connected().await?;
+        if let (Ok(_), Ok(())) = (&loaded, &again) {
+            r.stored += back.len();
+        } else {
+            saved.drop_cursor().await?;
+            saved.drop_rehydrating().await?;
+            let why = again.err().unwrap_or_else(|| "skipped packs have bases no pack provides".into());
+            return Err(StoreError(format!(
+                "network {}: not connected after loading every skipped pack: {why}",
+                network.0.0
+            )));
+        }
+    }
     saved.drop_rehydrating().await?;
     evicted.extend(t.evicted);
     evicted.extend(c.evicted);
