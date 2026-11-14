@@ -1,0 +1,3 @@
+{"site":0,"commit":{"error":{"unsupported":{"family":0,"version":0}},"meta":{"configIndex":455,"leader":0,"term":82}}}
+{"site":1,"commit":{"error":{"unsupported":{"family":0,"version":0}},"meta":{"configIndex":1,"leader":null,"term":82}}}
+{"site":2,"commit":{"error":{"unsupported":{"family":0,"version":0}},"meta":{"configIndex":455,"leader":0,"term":82}}}

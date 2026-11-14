@@ -1,0 +1,24 @@
+plant 0 (a replica re-applies entries a member behind it sends): caught by group::a_replica_replays_the_group_from_any_member_and_never_moves_backward
+plant 1 (a replica takes a page past its count (a gap)): caught by group::a_replica_replays_the_group_from_any_member_and_never_moves_backward
+plant 2 (a replica applies entries without the group's check): caught by group::a_replica_refuses_another_installs_or_a_tampered_history
+plant 3 (the next roll of a pinned script keeps the pin): caught by group::a_pointer_undo_pins_the_version_and_the_next_roll_clears_it, group::the_next_roll_of_the_pinned_script_clears_the_pin_and_keeps_the_pinned_release
+plant 4 (an undo leaves the deployment as the roll left it, so the next roll may drop the pinned release): caught by group::the_next_roll_of_the_pinned_script_clears_the_pin_and_keeps_the_pinned_release
+plant 5 (a roll steps past its ROLL_STEPS): caught by group::rolls_take_only_their_roll_steps_and_a_front_roll_carries_no_undo
+plant 6 (a FrontRoll carries an undo): caught by group::rolls_take_only_their_roll_steps_and_a_front_roll_carries_no_undo
+plant 7 (graft-front stays silent when a pinned call reports no version): caught by group::graft_front_alarms_only_when_a_pinned_call_ran_another_version
+plant 8 (the version override header is not a Structured Fields string): caught by group::graft_front_alarms_only_when_a_pinned_call_ran_another_version
+plant 9 (a request waits on a group whose refresh failed): caught by group::a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group
+plant 10 (a request waits behind a refresh beside requests that hangs): caught by group::a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group
+plant 11 (a view is refreshed only once it is POINTER_TTL old, so a pin can take longer to land): caught by group::a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group
+plant 12 (an uncommitted StaleMode is taken from a key other than the customer's): caught by group::an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until
+plant 13 (an uncommitted StaleMode whose until has passed is honored): caught by group::an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival, group::an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until
+plant 14 (an uncommitted StaleMode bound to a parent intent is taken): caught by group::an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until
+plant 15 (an uncommitted StaleMode for another install is taken): caught by group::an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until
+plant 16 (an uncommitted flag is honored past STALE_MAX): caught by group::an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival
+plant 17 (a later member's arrival moves an uncommitted flag's bound later): caught by group::an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival
+plant 18 (a committed StaleMode is not honored): caught by group::a_committed_stale_mode_is_honored_until_its_until
+plant 19 (a Repo flag covers every repository): caught by group::a_flag_covers_only_its_scope, group::an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival
+plant 20 (an Owner flag covers another owner's chains): caught by group::a_flag_covers_only_its_scope
+plant 21 (the edge's precheck passes a signer outside the cached Keys): caught by group::the_edge_prechecks_signers_against_its_cached_keys
+plant 22 (the edge's precheck skips signatures): caught by group::the_edge_prechecks_signers_against_its_cached_keys
+exit 0

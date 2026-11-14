@@ -1,0 +1,16 @@
+BF-48: 2601 member reads
+  bf48-stale-a: {"message": "", "refusal": "", "status": 202}
+  bf48-stale-b: {"message": "", "refusal": "", "status": 202}
+  flag A site 0: first stale() at +2443 ms, last at +76032 ms, first non-stale read sent at +76424 ms; honored until +76077 ms on the orb's clock; after it: 119 reads, kinds ['value']
+  flag A site 1: first stale() at +527 ms, last at +76117 ms, first non-stale read sent at +76424 ms; honored until +76077 ms on the orb's clock; after it: 119 reads, kinds ['error']
+  flag A site 2: first stale() at +3056 ms, last at +76152 ms, first non-stale read sent at +76424 ms; honored until +76077 ms on the orb's clock; after it: 119 reads, kinds ['error']
+  flag B site 0: first stale() at +841 ms, last at +119636 ms, first non-stale read sent at +120030 ms; honored until +119604 ms on the orb's clock; after it: 131 reads, kinds ['value']
+  flag B site 1: first stale() at +1439 ms, last at +119700 ms, first non-stale read sent at +120030 ms; honored until +119604 ms on the orb's clock; after it: 131 reads, kinds ['error']
+  flag B site 2: first stale() at +3459 ms, last at +119737 ms, first non-stale read sent at +120030 ms; honored until +119604 ms on the orb's clock; after it: 131 reads, kinds ['error']
+  control repository: 654 reads, stale 0
+  write probe flag a site 0: {"stale": {"until": 1794678978758}}
+  write probe flag a site 1: {"stale": {"until": 1794678978758}}
+  write probe flag a site 2: {"stale": {"until": 1794678978758}}
+  write probe flag b site 0: {"stale": {"until": 1794679179720}}
+  write probe flag b site 1: {"stale": {"until": 1794679179720}}
+  write probe flag b site 2: {"stale": {"until": 1794679179720}}

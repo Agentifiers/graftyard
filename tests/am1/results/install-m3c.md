@@ -50,6 +50,16 @@ Site day `fresh-repo`, 2026-11-13 21:57Z to 22:05Z (`tests/am1/results/fresh-rep
 
 Site day `fresh-repo` follow-up, 2026-11-13 23:29Z to 23:39Z: sites a / b / c `41cd80ad` / `722b4bc3` / `050633c6`, edge `a3fc5083`, from `fresh-repo` `8843399` (the 404 before `RepoOwner`), with the same flags, image, and `SHARD_INSTANCE`. The shards of repositories 65646 to 65655 were torn down after the run.
 
+Site and edge days `m5-wp2`, 2026-11-14 (`tests/m5/results/m5-wp2.md`; `tests/m5/wp2-siteday.sh`): test-faults, `--anchor`, image `sha256:f6d2ef40…`, `SHARD_INSTANCE=standard-4`, `--ops graft-m3c-ops`, and `GRAFTYARD_STALE_MAX_MS=120000` (test-faults only; the next site day without it restores the compiled 24 h). Before the first, the live versions were sites `41cd80ad` / `722b4bc3` / `050633c6`, edge `a3fc5083`, ops `ee85c0b0`.
+
+| Day | Window | Sites a / b / c | Built from |
+| --- | --- | --- | --- |
+| 1 | 15:01Z to 15:12Z | `9d6ee802` / `9d43afc6` / `b9829950` (via phase 1 `0dc0b1ef` / `7247a80d` / `7075c3bf`) | `m5-wp2` `194ca041` (before the rebase) |
+| 2 | 16:23Z to 16:35Z | `cce69c4b` / `dd8d29b1` / `be7ac60c` (via `7c8ef8e4` / `41779273` / `1537937b`) | `94abc7dc`..`38b21451`, rebased on main `a8cca2cf` |
+| 3 | 16:48Z to 17:00Z | `64d8afcf` / `9933fafc` / `9379827a` (via `664baa29` / `83b1c0f7` / `d2fc0fe9`) | `b52fdd78` (a view refresh reads on to the leader) |
+
+`graft-m3c-edge` was not changed. The rows ran through two scratch scripts, deleted after: `graft-m3c-m5-edge` (a product-shaped test-faults edge with `HOST` set to the front's host and `BED_TOKEN`; after day 3, N `3ba676ce`, with N+1 `d42016e1` and N+2 `0ea53421` uploaded with `--upload-only`) and `graft-m3c-front` (`71c00065`, `FRONT_TOKEN` set). The `Release` group took `Keys` generation 1 (executor and drain keys held in `~/.graft-m3c/m5wp2`, mode 0700) and the runs' uploads and intents, and was left with nothing current.
+
 ## Point the drivers at it
 
 `source tests/am1/lf13/env-m3c.sh` sets `GRAFT_EDGE`, `GRAFT_TOOLS_EDGE`, `BED_TOKEN_FILE`, `M3_STATE=~/.graft-m3c/m3`, `INSTALL=graft-m3c` (for `tests/fanout/m2bcost.py` and `containers.py`), and `HELD=999`. `tests/m0/.m0-token` was a symlink to `~/.graft-m3c/tools.token` while seeding (it is git-ignored) and was removed after.

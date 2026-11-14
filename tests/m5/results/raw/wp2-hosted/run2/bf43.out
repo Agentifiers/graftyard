@@ -1,0 +1,18 @@
+17:25:26.140 bf43-roll-n1 -> {"digest":"6b751f8746ab4b61c7cd7415ec1d05b53e915dbbc7cbd613682415bc13d1b492","index":1232,"status":201}
+17:25:26.317 event roll1 
+17:25:31.168 event deployed "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@99 d42016e1-e03c-4c35-8b4f-837f23791310@1", "t0": 1794677126318
+17:25:32.449 bf43-step0 -> {"digest":"88923c44fcee461676e8fa5129feb5b2f916cac44750897a8786efd0f971beef","index":1233,"status":201}
+17:27:05.600 deployments before-undo: f051bf3f-3d1f-430a-84c7-d5b1e27f304b 2026-11-14T17:25:32.325019Z [('3ba676ce', 99), ('d42016e1', 1)]
+17:27:05.620 event api-blocked 
+17:27:09.856 bf43-undo -> {"digest":"c24d1927e39dee727a11ce0d384dc700a325647ef2afe07ed8286351db1516e3","index":1234,"status":201}
+17:27:10.008 event undo 
+17:28:10.024 event api-unblocked 
+17:28:12.444 deployments after-undo: f051bf3f-3d1f-430a-84c7-d5b1e27f304b 2026-11-14T17:25:32.325019Z [('3ba676ce', 99), ('d42016e1', 1)]
+17:28:15.539 event deployed "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@100", "t0": 1794677292445
+17:28:16.086 bf43-done -> {"digest":"dd923cc39e167cb62f34d63c640462487bb698d31b094d84fb26b9b66e9fddf7","index":1235,"status":201}
+17:28:37.380 bf43-roll-n2 -> {"digest":"3db3e0d4b7f859accd0355e77b9e5512f1c76e19f9695583405234e7f401adc1","index":1236,"status":201}
+17:28:37.510 event roll2 
+17:28:42.572 event deployed "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@99 0ea53421-a914-4a36-a736-2d6fe048089a@1", "t0": 1794677317511
+17:28:43.572 bf43-roll2-step0 -> {"digest":"40fb846dbb9df97173cc66835478eeeafe4661919cb688bededd8c796bd9e077","index":1237,"status":201}
+17:30:13.725 event bf43-end 
+exit 0

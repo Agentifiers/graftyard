@@ -1,0 +1,8 @@
+17:54:18.752 event blackhole 
+17:55:00.083 bf48-stale-a -> {"message":"","refusal":"","status":202}
+17:55:00.129 event stale-a 
+17:57:37.519 bf48-stale-b -> {"message":"","refusal":"","status":202}
+17:57:37.576 event stale-b 
+18:00:43.918 event blackhole-off 
+18:01:03.929 event bf48-end 
+exit 0
