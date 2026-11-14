@@ -303,10 +303,12 @@ fn decode(s: &str) -> String {
 /// `rd.dir.compares`, so the next render shows GHES's `commits`, `additions`, `deletions`, and `changed_files`. Returns
 /// whether it read any. A pair the shard did not answer stays 0, as before the shard computed counts.
 pub(crate) async fn read_compares(c: &Ctx<'_>, rd: &Read) -> bool {
-    let asked = std::mem::take(&mut *rd.dir.asked.borrow_mut());
+    let mut asked = std::mem::take(&mut *rd.dir.asked.borrow_mut());
     if asked.is_empty() {
         return false;
     }
+    // A list that selects the counts reads at most `COMPARES_MAX` pairs; the rest count 0.
+    asked.truncate(COMPARES_MAX);
     let reads = asked
         .iter()
         .map(|(b, h)| async move { shard_json(c, rd, "compare", &[("base", b.hex()), ("head", h.hex())]).await });
@@ -316,6 +318,10 @@ pub(crate) async fn read_compares(c: &Ctx<'_>, rd: &Read) -> bool {
     }
     true
 }
+
+/// The most (base tip, head) pairs one request reads from the shard for counts [guess: a page of 25 pull requests,
+/// with room, well under the Workers subrequest limit].
+const COMPARES_MAX: usize = 50;
 
 /// Records the shard's `/ui/compare` reply for `pair` as the counts the next render of `rd` shows.
 fn record_compare(rd: &Read, pair: (graftyard_git::refs::ObjectId, graftyard_git::refs::ObjectId), x: &Value) {
