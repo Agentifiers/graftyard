@@ -981,3 +981,89 @@ fn an_actor_past_demote_per_min_is_demoted() {
     assert_eq!(w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted").class, AdmitClass::Human);
     w.settle();
 }
+
+/// Format 32.22 through real members: a review comment outside a review by a reviewer who approved gets its
+/// single-comment review, a `SingleComment`, and the pull request's verdict stays APPROVED, as on GHES. A COMMENTED
+/// verdict is replaced by the next one, and a later APPROVE still replaces the single-comment review's. The command
+/// crosses the binding as 32.22, and the replay answers the comment's id.
+#[test]
+fn an_approvers_review_comment_gets_its_review_and_keeps_the_approval() {
+    use graftyard_git::issues::{CommentTarget, DiffSide, LineAnchor, ReviewEvent};
+    let mut w = World::new();
+    w.set("refs/heads/f", oid(70));
+    let open = IssueOp::OpenPr {
+        head: HeadSpec { repo: REPO, branch: name("refs/heads/f") },
+        base: name("refs/heads/main"),
+        title: "t".into(),
+        body: "b".into(),
+        draft: false,
+        head_sha: oid(70),
+        base_sha: w.get("refs/heads/main").unwrap(),
+    };
+    let n = IssueNumber(number(&w.commit(issue(user(WRITER), open))));
+    let verdicts = |w: &mut World| {
+        let f = w.fold();
+        graftyard_fold::Read::prefix(&*f.core, "review_verdict", &[tiers::n_key(n)])
+            .into_iter()
+            .filter_map(|(k, _)| tiers::get_rec::<tiers::VerdictRow>(&*f.core, "review_verdict", &k))
+            .map(|r| r.state)
+            .collect::<Vec<_>>()
+    };
+    let review = |state| IssueOp::Review { n, state, commit: oid(70), body: "".into() };
+    w.commit(issue(user(WRITER2), review(ReviewState::Approved))).unwrap();
+    let at = LineAnchor { commit: oid(70), path: "a.rs".into(), line: 1, start_line: None, side: DiffSide::Right };
+    let comment = |reply_to| IssueOp::Comment {
+        on: CommentTarget::Review { n, review: None, at: at.clone() },
+        body: "nit".into(),
+        reply_to,
+    };
+    let call = |w: &mut World, op| {
+        let mut c = IssueCall::new(op, user(WRITER2), w.rid(), serde_json::Value::Null);
+        c.reviews = true;
+        RepoCmd::Issue(Box::new(c))
+    };
+    let cmd = call(&mut w, comment(None));
+    let v = serde_json::to_value(&cmd).unwrap();
+    assert_eq!(v["issue"]["format"], serde_json::json!([0x20, 22]));
+    assert_eq!(serde_json::from_value::<RepoCmd>(v).unwrap(), cmd);
+    let id = match w.commit(cmd) {
+        Ok(RepoOut::Issue(c)) => match c.out {
+            IssueOut::Id(id) => id,
+            o => panic!("{o:?}"),
+        },
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(verdicts(&mut w), [ReviewState::Approved], "the approval stays");
+    // The comment names a COMMENTED review with no body, which the metadata tier lists.
+    let f = w.fold();
+    let row: tiers::CommentRow = tiers::get_rec(&*f.meta, "comment", &[tiers::int(id.0)]).unwrap();
+    let CommentTarget::Review { review: Some(r), .. } = row.on else { panic!("{row:?}") };
+    let rr: tiers::ReviewRow = tiers::get_rec(&*f.meta, "review", &[tiers::int(r.0.0)]).unwrap();
+    assert_eq!((rr.state, &*rr.body, rr.reviewer), (ReviewState::Commented, "", Some(AccountId(DbId(WRITER2)))));
+    let l = w.repo.leader();
+    let single = w.repo.members[l.0 as usize].log().iter().any(|e| match &e.body {
+        graftyard_raft::EntryBody::Events(evs) => {
+            evs.iter().any(|e| matches!(e, RepoEvent::Review(ReviewEvent::SingleComment { id: x, .. }) if *x == r))
+        }
+        _ => false,
+    });
+    assert!(single, "committed as SingleComment");
+    // A reply by the same approver: its own review, the approval still stands.
+    let reply = call(&mut w, comment(Some(graftyard_git::issues::CommentId(id))));
+    w.commit(reply).unwrap();
+    assert_eq!(verdicts(&mut w), [ReviewState::Approved]);
+    // Changes requested, then a comment: still CHANGES_REQUESTED.
+    w.commit(issue(user(WRITER2), review(ReviewState::ChangesRequested))).unwrap();
+    let c2 = call(&mut w, comment(None));
+    w.commit(c2).unwrap();
+    assert_eq!(verdicts(&mut w), [ReviewState::ChangesRequested]);
+    // A commenter with no verdict: the single-comment review is theirs; an APPROVE then replaces it.
+    let mut c3 = IssueCall::new(comment(None), user(OWNER), w.rid(), serde_json::Value::Null);
+    c3.reviews = true;
+    w.commit(RepoCmd::Issue(Box::new(c3))).unwrap();
+    assert_eq!(verdicts(&mut w).iter().filter(|s| **s == ReviewState::Commented).count(), 1);
+    w.commit(issue(user(OWNER), review(ReviewState::Approved))).unwrap();
+    let mut v = verdicts(&mut w);
+    v.sort_by_key(|s| *s as u8);
+    assert_eq!(v, [ReviewState::Approved, ReviewState::ChangesRequested]);
+}

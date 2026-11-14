@@ -749,6 +749,12 @@ async fn commit_issue_in(
     call.leases = !call.op.is_lease()
         && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_LEASES)
         && graftyard_git::lease::marks(&call.op, &rd.core);
+    // 32.22 for a review comment outside a review, whose single-comment review then leaves an APPROVED or
+    // CHANGES_REQUESTED verdict alone. A 32.8 or 32.14 mark wins, and the comment keeps that format's review.
+    call.reviews = !call.agent
+        && !call.leases
+        && IssueCall::single_comment(&call.op)
+        && c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_REVIEWS);
     if !c.cfg.enabled.contains(&call.format()) {
         let f = call.format();
         return Ok(unavailable(&format!(

@@ -778,7 +778,8 @@ fn the_core_tier_counts_unresolved_review_threads_per_pull_request() {
 /// A review comment outside a review is a single-comment review's, as GHES makes one: the comment names a COMMENTED
 /// review with no body, submitted in the same entry, whose id follows the thread's in Core's block, and the command
 /// still answers the comment's id. Two threads in one entry take four distinct ids. A reply gets its own review too.
-/// A commenter whose verdict approves keeps it, so that comment names no review.
+/// Before format 32.22 (`IssueCmd::decide`), a commenter whose verdict approves keeps it, so that comment names no
+/// review; 32.22's `SingleComment` gives it one (`agent_gates.rs`, `an_approvers_review_comment_gets_its_review_...`).
 #[test]
 fn a_review_comment_outside_a_review_is_a_single_comment_reviews() {
     let mut c = setup(1, 90);

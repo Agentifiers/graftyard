@@ -210,9 +210,34 @@ pub enum Grantee {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewEvent {
-    Submitted { id: ReviewId, n: IssueNumber, reviewer: ActorId, state: ReviewState, commit: ObjectId, body: Box<str> },
-    Dismissed { id: ReviewId, message: Box<str>, actor: ActorId },
-    Requested { n: IssueNumber, reviewers: SmallVec<[Grantee; 2]>, removed: bool, actor: ActorId },
+    Submitted {
+        id: ReviewId,
+        n: IssueNumber,
+        reviewer: ActorId,
+        state: ReviewState,
+        commit: ObjectId,
+        body: Box<str>,
+    },
+    Dismissed {
+        id: ReviewId,
+        message: Box<str>,
+        actor: ActorId,
+    },
+    Requested {
+        n: IssueNumber,
+        reviewers: SmallVec<[Grantee; 2]>,
+        removed: bool,
+        actor: ActorId,
+    },
+    /// Format 32.22 (`crate::issue_ops::call::REPO_FORMAT_REVIEWS`): the COMMENTED single-comment review of a review
+    /// comment made outside a review, with no body. It is a verdict only for a reviewer with no APPROVED or
+    /// CHANGES_REQUESTED verdict, which it never replaces, as GHES keeps them.
+    SingleComment {
+        id: ReviewId,
+        n: IssueNumber,
+        reviewer: ActorId,
+        commit: ObjectId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -3258,3 +3258,15 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Flip.** A hosted B0-33 run whose entries store more than ENTRY_SOFT past their first command, or whose confirm p99 rises with the entries this admits.
 
 **Open, for a second change.** The render still crosses every AppendEntries: each issue command sends its owner's whole Authz fold, about 10 KB, to every follower, so B0-33's 7.6-command entries carry about 80 KB of renders against 1.9 KB stored. The leader holds the same fold as a dependency (`IssueCall::deps` names the owner's `Authz` chain), so it could build the render's `HostedDir.authz` itself and the edge could send none. That would also cut the far follower's per-call bytes, a candidate in the far-leg question [inference].
+
+#### A single-comment review leaves an APPROVED or CHANGES_REQUESTED verdict as it is (format 32.22)
+
+**Decision.** A REST review comment outside a review commits its single-comment review as `ReviewEvent::SingleComment` (tag 3) in repository format 32.22 (`REPO_FORMAT_REVIEWS`). Its fold writes the reviewer's core `review_verdict` only over none or a COMMENTED one, so every such commenter gets a review and an APPROVED or CHANGES_REQUESTED verdict stays. The edge marks the comment 32.22 once `FormatsEnable` enabled it; before that, decide writes a `Submitted` and gives a commenter who holds such a verdict no review. 32.20 and 32.21 are other branches' (`b030-split`, `m4-actions`).
+
+**Why.** GHES gives every review comment made outside a review a COMMENTED review and keeps the reviewer's approval: `reviewDecision` and merge protection read the approval, not the comment. A `Submitted` COMMENTED replaces the verdict in the fold, so the pull request lost its approval, or kept the commenter's comment without a review (`m4-web-2`).
+
+**Beat.** Changing how `Submitted` COMMENTED applies, which would change what every earlier entry folds to and so every chain's digest at the next refold. Skipping the review for such commenters, which leaves `pull_request_review_id: null` where GHES sets it.
+
+**Evidence.** `an_approvers_review_comment_gets_its_review_and_keeps_the_approval` (`crates/git/tests/agent_gates.rs`) through real members, which fails when the fold replaces the verdict; hosted single-comment reviews on `m3org/web38-a` PR #3 (`tests/m4/results/m4-wp5.md`).
+
+**Flip.** GHES 3.22 replacing an approval with a later single-comment review, or a reviews UI that needs a COMMENTED verdict beside an approval.
