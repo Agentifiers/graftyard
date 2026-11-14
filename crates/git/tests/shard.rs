@@ -163,6 +163,10 @@ fn only_a_clients_call_starts_a_shard_or_keeps_it_warm() {
     assert_eq!(serve(Caller::Warm, true), Serve::Run { touch: false });
     assert_eq!(serve(Caller::Client, false), Serve::Run { touch: true });
     assert_eq!(serve(Caller::Client, true), Serve::Run { touch: true });
+    // The leader's warm of a pool slot its network holds starts a stopped one (a pool shard nobody started never
+    // becomes warm) but is not a request: the ledger tears the slot down when the lease goes.
+    assert_eq!(serve(Caller::PoolWarm, false), Serve::Run { touch: false });
+    assert_eq!(serve(Caller::PoolWarm, true), Serve::Run { touch: false });
     // Hourly warms on a running shard, with no client after hour 0: it lapses a day after the client, as it would
     // with no warms at all.
     let client = Timestamp(0);

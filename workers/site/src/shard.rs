@@ -625,7 +625,13 @@ impl DurableObject for GitShard {
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record };
         // A new leadership's `warm` (`crate::prsync`) is the one caller no client asked for: it catches up a running
         // shard and starts no stopped one, and it never counts as the shard's last request.
-        let caller = if path == "/catchup" && q(&url, "warm").is_some() { Caller::Warm } else { Caller::Client };
+        // The network leader's warm of a pool slot its network holds (`warm=pool`, `crate::fanout`) starts a stopped
+        // container: a pool shard nobody started never becomes warm.
+        let caller = match (path.as_str(), q(&url, "warm").as_deref()) {
+            ("/catchup", Some("pool")) => Caller::PoolWarm,
+            ("/catchup", Some(_)) => Caller::Warm,
+            _ => Caller::Client,
+        };
         let running = self.state.container().is_some_and(|c| c.running());
         match graftyard_git::serve(caller, running) {
             Serve::Skip => return Response::from_json(&json!({ "skipped": "stopped" })),
@@ -994,11 +1000,35 @@ impl DurableObject for GitShard {
             let down = s.get::<u64>("pool_down_until").await.ok().flatten().is_some_and(|t| now.0 < t);
             #[cfg(not(feature = "test-faults"))]
             let down = false;
+            let mut idle = Vec::new();
             if !down {
-                ledger.beat(now);
+                idle = ledger.beat(now);
                 s.put(LEDGER_KEY, &ledger).await?;
             }
             arm_beat(&s, &ledger, now).await?;
+            // Slots no lease holds any more are torn down, so the pool runs only for networks hot in the last
+            // `LOAD_STALE` (`graftyard_git::PoolLedger::beat`). Slot 0 is this object's own container.
+            for slot in idle {
+                let r = if slot == 0 {
+                    host.destroy().await.map_err(se)
+                } else {
+                    let name = format!("git#{}#pool:{}", site.id.0, 1 + slot);
+                    match crate::fanout::stub(&self.env, &site.sites, site.id, &name) {
+                        Ok(st) => {
+                            let mut init = RequestInit::new();
+                            init.with_method(Method::Post);
+                            st.fetch_with_request(Request::new_with_init("https://shard/teardown", &init)?)
+                                .await
+                                .map(|_| ())
+                        }
+                        Err(e) => Err(e),
+                    }
+                };
+                match r {
+                    Ok(()) => console_log!("pool slot {slot} on site {} torn down: no lease holds it", site.id.0),
+                    Err(e) => console_error!("pool slot {slot} teardown: {e}"),
+                }
+            }
         }
         renewed?;
         // A catch-up an isolate reset cut off (its `warming` key outlived it) starts again here, from its saved page,

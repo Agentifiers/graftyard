@@ -259,6 +259,17 @@ MUTANTS = [
      '    let (last, rest) = sites.split_last().expect("validate_sites always holds the home site");\n    for (i, site) in rest.iter()',
      '    let (last, _rest) = sites.split_last().expect("validate_sites always holds the home site");\n    for (i, site) in sites.iter()',
      ['cargo', '-p', 'graftyard-edge', '--lib', 'a_streamed_pack_goes']),
+    # pool-warm: the step up is reserved and warmed ahead, waits for a cold slot, and a lapsed slot is torn down.
+    ('pool-warm: no reservation on the high line (the step pays a cold rehydrate)', 'crates/git/src/shard.rs',
+     '    match (high && k < FANOUT_MAX).then_some(k) {', '    match (false && high && k < FANOUT_MAX).then_some(k) {', ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'the_step_up']),
+    ('pool-warm: a step commits to a cold slot', 'crates/git/src/shard.rs',
+     '    if ready(0) && ready(1) { next } else { k }', '    if ready(0) || true { next } else { k }', ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'the_step_up']),
+    ('pool-warm: a waited step restarts the high line (commits FANOUT_UP_FOR late)', 'crates/git/src/shard.rs',
+     '        self.f = prior;', '        let _ = prior;', ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'the_step_up']),
+    ('pool-warm: a lapsed lease leaves its slots running', 'crates/git/src/shard.rs',
+     '        self.idle.extend(lapsed);', '        drop(lapsed);', ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'a_lapsed_lease']),
+    ('pool-warm: a pool warm starts no stopped shard', 'crates/git/src/shard.rs',
+     '        Caller::PoolWarm => Serve::Run { touch: false },', '        Caller::PoolWarm => Serve::Skip,', ['cargo', '-p', 'graftyard-git', '--test', 'shard', 'only_a_clients_call']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
