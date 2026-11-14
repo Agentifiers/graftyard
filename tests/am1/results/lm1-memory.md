@@ -2155,3 +2155,106 @@ first attempt as still running (so `batch()` does not hand out another First whi
 `FIRST_FOR`; and bound a batch's merges (or its PR count) so one attempt fits `FIRST_FOR`. Not fixed here.
 
 **Cost** $119.59 at 11:44Z (containers $47.29). Sweep "sweep ok".
+
+### Round 17: B0-33 on m28 (main 4438539), two runs; the voters reset under the 5,000-agent mix (2026-11-14)
+
+**Deploy m28.** lm1-memory 4f9380ad = main 4438539 (decode-once: no second decode of a `/raft` body; leader-clock-check)
+plus round 17's instruments. Sites a 36077144, b 3ff70714, c d2743d76, edge 6c620ce7, image `sha256:79bec25d`
+(built from d8c09451; `containers/` unchanged since), standard-4, test-faults. Checks: full checks33 pass (check_names
+and check_links only on `.worktrees/`, clean in a fresh worktree); the long sweep and Porcupine pass on a858bfb, and
+4438539 adds no `crates/raft` change. Plants 94 and 95 (`readsBy`'s kind) caught.
+
+**Instruments.** `tests/fanout/memguard.mjs` reads every voter's `/stats?summary=1` (`wasmMemMb`, `memSplit`) every 2 s
+and SIGTERMs `a1.mjs` once any voter passes 120 MiB; `a1.mjs` then ends its window and writes the row as `stopped`.
+`tests/nr3/tsave.mjs` saves each voter's trace each minute, so a reset loses none of it. `/stats` `readsBy` counts each
+member's `/read`s by kind, plain or read-index, and whether `Family::follower_serves` lets a follower answer it.
+`tests/fanout/legs.py` splits the reply leg with main's send stamps (trace kinds 20, 21).
+
+**Run 1, m28r33** (repo 131336, run `mwghmvck`, 14:20:24Z). Not a gate run: I stopped it at 79 s by hand after the
+first leader change, which is not the stop rule (memguard never fired). Learners caught up 0 of 8 in 120 s before the
+window. Leader site 0 peaked at 70.2 MiB, then its object lost its wasm instance at 14:21:02Z ("Cannot invoke closure
+from previous WASM instance" ×8, "Promise will never complete." ×738, then `exception` on 589 `/commit`, 80 `/outcome`,
+47 `/raft`), with no `exceeded its memory limit` event on any site; terms 2 → 5 in 36 s.
+
+**Run 2, m28r33b** (repo 131337, run `mwgikx95`, 300 s from 14:45:08.7Z, ran in full; memguard never fired). Learners
+caught up 8 of 8 in 15 s.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | m28r33b | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 2,674 ms (n 274, p50 674); queue p99 40.5 s; `merge:only` p99 15.4 s (3 of 7 ok); `push:human` 8 ok of 186 | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 269 commands in 63 entries at the end leader's `/stats` (term 12, so only its own term); 1,645 agent pushes ok in 300 s = 5.5/s at the client | fail |
+| Zero leader changes | term 2 → 12; leader site 0 183 s, site 1 25 s, site 2 9 s, none 82 s of 300 | fail |
+| Zero `suspect` reports | 2,774 on site 0, 4,928 on site 1, 605 on site 2 | fail |
+| Every refusal `ng` or 429 `retry-after` | 503s from the read gate ("every member asked shed the read: overloaded", "not leader", "no answer") and the git cache (`{"warming":true}`) | fail |
+
+Admission never bound: capacity 405–1,859/s, `cmdBytes` 489–988, `retryAfterS` 1–2, agent queue at most 54; admitted
+agent commands priced p50 498 B, max 898 B (the pricing fix holds). Reads: learners served 96.1% of the window's
+`/read`s (76,144 of 79,224).
+
+**Voter resets.** Seven resets in the window, every one below the 120 MiB stop line:
+
+| reset | site | role before | wasm MiB at the last sample | Workers Logs |
+|---|---|---|---|---|
+| 14:47:35–47 | 0 (a) | leader | 95.9 | "previous WASM instance" ×1,087, "Promise will never complete" ×309; one `storage write failed: … isolate exceeded its memory limit` at 14:48:03 |
+| 14:48:01–21 | 1 (b) | leader | 40.6 | "Durable Object's isolate exceeded its memory limit and was reset" ×805 at 14:48:30 (`POST /raft`) |
+| 14:48:55–49:11 | 2 (c) | follower | 31.1 | "previous WASM instance" ×504 at 14:49:19–21 |
+| 14:49:22–26 | 1 (b) | leader | 38.5 | "previous WASM instance" ×50, "exceeded its memory limit" ×597 at 14:49:44 |
+| 14:49:49–51 | 0 (a) | leader | 74.4 | "exceeded its memory limit" ×274 at 14:50:01 |
+| 14:49:46–51 | 1 (b) | leader | 47.3 | "exceeded" ×556 at 14:49:57 |
+| 14:50:04–28 | 2 (c) | follower | 31.2 | — |
+
+So the isolates are reset for memory while the wasm heap reads 31 to 96 MiB. `wasmMemMb` is the wasm linear memory
+only; the isolate's limit counts the JS heap as well, where request and response bodies, `fetch` streams and the
+promises of held requests live. What memSplit counted in the minute before each reset (bytes in Rust's own buffers):
+
+- the in-memory log at 6.4–8.1 MB on every voter, flat once it reached its window (14:46:05 onward);
+- the dump cache at 1.1–1.87 MB;
+- in-flight read answers peaking at 9.2 MB (site 0 before 14:47:35), then 26–30.5 MB (sites 0 and 1 before 14:49:26–51);
+- in-flight member-call bodies peaking at 5.0 MB (site 1), then 58.3 MB (site 0 before 14:49:49) and 16.9 MB (site 1);
+- bytes held for learners peaking at 1.0 MB, then 42.9 MB (site 0) and 11.5 MB (site 1);
+- queued statements at most 216 KB.
+
+Site 0's first reset (14:47:35) came with only about 10 MB of these buffers and the heap flat at 95.9 MiB since
+14:46:45, so the counted buffers do not explain it; the later resets came with 30 to 100 MB of answers, call bodies
+and held learner messages, all of which reach the JS side as `Response` bodies too. [inference: the JS-side copies of
+those bodies, which `wasmMemMb` does not see, take the isolate past its limit; not measured, since no instrument reads
+the JS heap.] The growth after the first leader change is the catch-up: each new leader resends the log tail to two
+voters and eight learners at once.
+
+**Reply-leg split** (main's send stamps, matched exactly: the follower's `CallArrived` carries the leader's issue time):
+
+| | site 1 (LHR) p50/p99 ms | site 2 (NRT) p50/p99 ms |
+|---|---|---|
+| idle (before the window), round trip on the wire | 93 / 119 (n 113) | 263 / 297 (n 113) |
+| idle, follower's send (handler return to reply out) | 0 / 0 | 0 / 2 |
+| idle, leader's input queue (reply arrival to stepped) | 0 / 1 | 0 / 3 |
+| load (window until site 0's reset), leg | 207 / 526 (n 364) | 374 / 1,359 (n 341) |
+| load, wire round trip (offset cancels) | 199 / 514 | 347 / 1,044 |
+| load, follower's send | 0 / 121 | 0 / 427 |
+| load, leader's input queue | 0 / 31 | 0 / 362 |
+| load, half the asymmetry ("skew") | 678 / 1,445 | 669 / 1,445 |
+
+The leader's input queue is 0 at p50 and at most 31 / 362 ms at p99, so the loaded excess is not the leader queueing
+replies behind `/read`. The wire round trip itself doubles and more, and the asymmetry says the delay sits in the
+outbound half: the follower stamps an arrival only when its own isolate runs the handler, so its input queue is in
+that half. The leader's ticker logged no Lag sample (no tick 20 ms late) in the window. [inference: the excess is the
+follower isolates' input queues under the 5,000-agent mix of `/suspect` (4,928 on site 1), `/entries` (3,162) and
+`/read`, not the network.] Run 1's 23 and 17 matched calls agree (idle 124/159 and 250/321; under load the skew rose
+to 2.7 s).
+
+**Leader reads that could go to learners** (`readsBy`, run 2's leaders at the end): site 0 5,286 `/read`s, 4,468 of
+them (84.5%) follower-servable, every one sent plain, none by read-index (`rows` dumps 2,965, `rows.access` 1,364,
+`rows.agent` 139); the rest are leader-only (`probe` 486, `ranges` 321, `prsync` 11). Site 1, leader for 25 s, 8,409
+`/read`s, 95.6% servable. Run 1's site 0: 11,807, 91.6% servable. The edge's read gate sends these to a voter as plain
+reads; learners already carry 96% of read-index reads.
+
+**Verdict.** B0-33 fails on m28 on every line. What binds is not admission (pricing fixed) but the voters' isolates
+resetting for memory under the mix, below 96 MiB of wasm heap, which then churns the leader (term 2 → 12) and turns
+commit p99 into seconds. This is the m3f thread's storm (8,465 voter resets on L0-12) reproduced on B0-33 with no
+double decode.
+
+**Raw.** `tests/am1/raw/a1-b0-33-mwghmvck.jsonl`, `a1-b0-33-mwgikx95.jsonl`; `tests/fanout/raw/memguard-m28r33{,b}.jsonl`,
+`terms-m28r33{,b}.jsonl`, `tsave-m28r33{,b}.jsonl.xz`, `m28r33{,b}-legs.tar.xz`.
+
+**Cost** $122.56 at 14:54Z (containers $47.72). Sweep "sweep ok" after both runs. B0-34 started at 14:55Z on the same
+deploy with memguard and terms on `repo:131296`.
