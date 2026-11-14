@@ -32,6 +32,11 @@ async function run(s) {
     } catch (e) {
       fails++;
       log(`site ${s} start ${start} failed (${fails}): ${String(e).slice(0, 200)}`);
+      // A snapshot that began before this script's `hold` never finishes under it, and the seed is refused while it
+      // runs (smoke 3, site 1 of repo:1048589, 18 min). Abandon it; it starts again from `begin` after the release.
+      if (String(e).includes("a snapshot is running") && fails >= 3) {
+        log(`site ${s} abort: ${JSON.stringify((await member(chain, s, "/bench_seed", { snap: "abort" })).v)}`);
+      }
       await sleep(Math.min(60_000, 5_000 * fails));
       continue;
     }
