@@ -2321,3 +2321,55 @@ commands (5.8 an entry); term 2 throughout, site 0 leader, 139.3 req/s on it. Ag
 
 **Raw.** `tests/am1/raw/a1-b0-35-mwgm9uwu.jsonl`, `tests/fanout/raw/memguard-m29r35.jsonl`, `terms-m29r35.jsonl`,
 `rows-m29r35.status`. **Cost** $125.69 at 16:49Z (containers $48.25). Sweep "sweep ok".
+
+### Round 18b: B0-34 on m29, with the warm step; the cold 5 GB rehydrate fails DESIGN's 120 s line (2026-11-14)
+
+**Warm step** (`tests/fanout/b034warm.mjs`, inside `b034.sh` before learners and k; not the row's time). repo:131296
+(m3org/b034-mono), from 16:50:17Z, 45-minute limit. Raw `tests/fanout/raw/b034warm-m29.jsonl`.
+
+- ls-refs through the edge listed `main` at **1,936 s (32.3 min)**; 24 tries before it answered 503 `{"warming":true}`.
+- `/_bed/catchup?shard=S&wait=60`: every call timed out at the 120 s client limit (15 per site) until site 2's
+  answered 200 at 1,936 s and site 0's at 2,003 s; site 1's never did within the warm step's 5-minute tail.
+- Round 17b on m28 agrees: still warming 28 minutes after its start.
+
+**The shards' own rehydrate reports** (Workers Logs `shard rehydrate 131296`, raw
+`tests/fanout/raw/rehydrate-131296-m29.json`), for the fix's sizing (the m3f thread owns it):
+
+| shard | done at | catch-up total | stored packs | bytes | spool (bucket read) | `index-pack` | packs by bucket |
+|---|---|---|---|---|---|---|---|
+| site a (`git#0`) | 17:23:48Z | 1,994 s | 257 | 2,623,972,857 | 57 s (0.22 s/pack) | 1,872 s (7.3 s/pack, 1.40 MB/s) | site 0: 256, site 1: 1 |
+| site c (`git#2`) | 17:22:46Z | 1,932 s | 257 | 2,623,972,857 | 94 s (0.37 s/pack) | 1,694 s (6.6 s/pack, 1.55 MB/s) | site 2: 216, site 0: 41 |
+| site b (`git#1`) | 17:34:33Z | 2,639 s | 257 | 2,623,972,857 | 53 s (0.21 s/pack) | 2,496 s (9.7 s/pack, 1.05 MB/s) | site 1: 230, site 0: 27 |
+
+Each report: 288 entries, 257 markers, 4 inline packs (2.46 MB, held at most 2.46 MB at once); the phases before the
+stored packs (`up` 32–34 s, markers, the marked phase 36–43 s in all) are small. A pack averages 10.2 MB.
+`index-pack` is 90–96% of the stored-pack time; the bucket read is 2–5%.
+
+**DESIGN check.** `design/DESIGN.md`, Milestone 0's table: "Container rehydration of a 5 GB network from R2 | At most
+120 s | Over 600 s". Measured: 1,932 to 2,639 s per shard for this network (2.62 GB of stored packs, 5.02 GB pushed),
+3.2 to 4.4 times the fail line. **Fail**, a finding apart from B0-34's row. [inference: a bounded parallel fetch saves
+at most the spool, 53–94 s per shard; reaching 120 s needs `index-pack` in parallel or avoided, for example ingesting a
+stored pack with a prebuilt index.]
+
+**Row** (run `mwgoigqa`, 900 s from 17:31:15Z, learners 8/8 in 13.6 s, home shard killed at 300 s, the second network
+at 420 s, the hostile owner's three at 600 s). Site 0 led at term 2 throughout; voter peaks 31.1 / 23.1 / 23.1 MiB (memguard never
+fired); no `exceeded` message on any site. Commit p50/p99 338/1,144 ms (502 samples, 466 commands in 195 entries).
+
+| B0-34 line (`build/BUILD-PLAN.md`) | m29 | verdict |
+|---|---|---|
+| k set in band from `NetworkLoad` and the hot pool, ≤ 8 per site | k 1 throughout on all five networks (`kTimeline`, `kMax` 1) | fail (k never stepped) |
+| The hostile owner held to its per-owner pool budget; the monorepo's k not reduced by another owner | k 1 everywhere, so untested | not measured |
+| Human push p99 ≤ 3 s beyond transfer | 4 of 36 ok; p99 189–304 s by phase; the rest 503 `warming` or client timeouts | fail |
+| Clone TTFB p99 ≤ 1 s throughout (fail over 5 s) | 5 of 35 answered 200; p99 137.7–197.8 s by phase | fail |
+| No Cloudflare API call from a request path | 0 files (`b034.sh`'s check) | pass |
+
+Agent pushes 31 of 3,192 ok, most `503 git cache: no shard could check the pack ({"warming":true})`: the kill at
+300 s (17:36Z) sent the home site's traffic to site b's shard, which was still rehydrating (done 17:34:33Z) or was
+reached through a shard that answered `warming`. `tip:move` 3 of 11 ok. The second network's and the hostile owner's
+pushes went through (33 of 41 ok), their clones mostly did not (5 of 24).
+
+**Verdict.** B0-34 fails on m29. What binds is the git cache: every shard of this network needed 32 to 44 minutes to
+rehydrate, so after the kill no warm shard was left, and k never left 1, so `fanout` added none.
+
+**Cost** $127.06 at 17:52Z (containers $49.34). Sweep after the row: "no shard container running" (b034-mono's shards
+torn down at the end, as the run ends here).

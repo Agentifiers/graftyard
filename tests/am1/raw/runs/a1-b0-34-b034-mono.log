@@ -1,15 +1,11 @@
-2026-11-14T14:59:42Z
-4f9380ad
-a1.mjs b0-34 --repo b034-mono --chain repo:131296 --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-m28.json
-file:///home/user/workspace/repo/tests/am1/rest/a1.mjs:442
-if (!main) throw new Error("the repository has no main");
-                 ^
-
-Error: the repository has no main
-    at file:///home/user/workspace/repo/tests/am1/rest/a1.mjs:442:18
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-
-Node.js v26.12.0
-exit 1
-2026-11-14T15:01:55Z
+2026-11-14T17:27:55Z
+4f62456d
+a1.mjs b0-34 --repo b034-mono --chain repo:131296 --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-m29.json
+2026-11-14T17:28:11.567Z main appeared in ls-refs after 3085 ms
+2026-11-14T17:30:49.892Z tasks 100/100
+2026-11-14T17:31:10.438Z learners caught up to 399: 8/8 in 13564 ms, leader wasm 24.24832 MiB
+2026-11-14T17:31:11.263Z b0-34 run mwgoigqa: 500 agents, 900 s from 2026-11-14T17:31:15.438Z, leader site 0
+2026-11-14T17:48:47.333Z {"row":"b0-34","run":"mwgoigqa","seconds":900,"agents":500,"offered":{"agentPushesPerS":4.17,"agentSidePerS":12.71,"agentClassPerS":16.88,"hostMadePerS":8.34,"unservedPerS":3.33,"groupCommandsPerS":27.5,"agentClassWithHostPerS":25.2,"meanPackBytes":90429,"feedPollers":500,"refReadsPerS":33,"apiReadsPerS":200,"mergesPerMin":0},"byKind":{"side:draftPr":{"n":23,"perS":0.03,"p50":25142,"p99":145924,"codes":{"no branch":4,"ok":19}},"side:leaseRenew":{"n":68,"perS":0.08,"p50":80582,"p99":146490,"codes":{"200":58,"404":1,"no lease":9}},"tip:move@j9":{"n":5,"perS":0.01,"p50":24529,"p99":79796,"codes":{"ok":3,"refused fatal: the remote end hung up unexpectedly":2}},"api:auth":{"n":4604,"perS":5.12,"p50":0,"p99":1011,"codes":{"200":4604}},"api:resolve":{"n":4604,"perS":5.12,"p50":0,"p99":2475,"codes":{"200":4604}},"api:authz":{"n":4604,"perS":5.12,"p50":0,"p99":0,"codes":{"200":4604}},"api:tier_grant":{"n":4604,"perS":5.12,"p50":91,"p99":519,"codes":{"200":4604}},"api:tier_wait":{"n":4604,"perS":5.12,"p50":0,"p99":25,"codes":{"200":4604}},"api:tier":{"n":4604,"perS":5.12,"p50":203,"p99":940,"codes":{"200":4604}},"api:logins":{"n":4604,"perS":5.12,"p50":0,"p99":940,"codes":{"200":4604}},"api:render":{"n":4604,"perS":5.12,"p50":0,"p99":0,"codes":{"200":4604}},"api:total":{"n":4604,"perS":5.12,"p50":361,"p99":2840,"codes":{"200":4604}},"read:api":{"n":4608,"perS":5.12,"p50":461,"p99":144376,"codes":{"200":4604,"skipped: cap":4}},"read:ref":{"n":819,"perS":0.91,"p50":128952,"p99":162439,"codes":{"0":193,"200":95,"503":531}},"side:human":{"n":73,"perS":0.08,"p50":25973,"p99":145925,"codes":{"gql 503":2,"ok":71}},"side:standIn":{"n":98,"perS":0.11,"p50":79864,"p99":146514,"codes":{"200":98}},"side:taskEdit":{"n":65,"perS":0.07,"p50":25612,"p99":145962,"codes":{"200":64,"503":1}},"push:agent@j9":{"n":435,"perS":0.48,"p50":81375,"p99":163247,"codes":{"full":65,"ok":22,"http 503 git cache: no shard could check the pack (site N's shard answered N: {\"warming\":true}); retry":210,"http 0 TypeError: fetch failed":98,"http 503 <!DOCTYPE html>\n<!--[if lt IE N]> <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE N]>    <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endi":22,"http 500 <!DOCTYPE html>\n<!--[if lt IE N]> <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE N]>    <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endi":18}},"side:lease":{"n":38,"perS":0.04,"p50":80572,"p99":143785,"codes":{"201":33,"204":4,"404":1}},"feed":{"n":7028,"perS":7.81,"p50":246,"p99":586441,"codes":{"hold":832,"lagging":2,"gone":6107,"error":87}},"side:label":{"n":68,"perS":0.08,"p50":10862,"p99":145925,"codes":{"403":34,"404":34}},"side:comment":{"n":57,"perS":0.06,"p50":81197,"p99":146120,"codes":{"ok":57}},"push:human@j9":{"n":8,"perS":0.01,"p50":45754,"p99":188963,"codes":{"ok":3,"skipped: cap":2,"http 503 <!DOCTYPE html>\n<!--[if lt IE N]> <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE N]>    <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endi":1,"http 500 <!DOCTYPE html>\n<!--[if lt IE N]> <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE N]>    <html class=\"no-js ieN oldie\" lang=\"en-US\"> <![endi":1,"http 503 git cache: no shard could check the pack (site N's shard answered N: {\"warming\":true}); retry":1}},"read:cloneTtfb@j9":{"n":10,"perS":0.01,"p50":118316,"p99":197767,"codes":{"200":4,"503":5,"error AbortError: This operation was":1}},"read:clone@j9":{"n":10,"perS":0.01,"p50":118317,"p99":197768,"codes":{"200":4,"503":5,"error":1}},"tip:move@kill":{"n":1,"perS":0,"p50":138422,"p99":138422,"codes":{"refused fatal: the remote end hung up unexpectedly":1}},"push:agent@kill":{"n":257,"perS":0.29,"p50":142180,"p99":223690,"codes":{"http 503 git cache: no shard could check the pack (site N's shard answered N: {\"warming\":true}); retry":211,"ok":9,"full":37}},"read:cloneTtfb@kill":{"n":7,"perS":0.01,"p50":141003,"p99":142485,"codes":{"200":1,"503":6}},"r
+exit 0
+2026-11-14T17:48:47Z
 DONE
