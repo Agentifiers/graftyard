@@ -3247,6 +3247,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A workflow on which the runner and the npm oracle disagree in a way the gates see, which would make the C# parser the oracle. Or a schema version the runner ships that the npm package does not.
 
+### M4-WP3: how BF-56 gets a required check, a cancel, and its two kills on a product install, 2026-11-14
+
+**Decision.** BF-56 runs on graft-m4a through product routes and three operator-only fault routes. The rule is GHES's `PUT /repos/{o}/{r}/branches/{branch}/protection` (`crates/api/src/protection.rs`), which commits `IssueOp::SetRule` (format 32.5) on the repository chain for a repository admin, with `GET` and `DELETE` beside it; a branch's rule is the one whose pattern is the branch's name, and a `restrictions` other than `null` is refused 422. The cancel is GHES's `POST /repos/{o}/{r}/actions/runs/{run_id}/cancel`, which commits `CancelRun` on the shard for a caller with write access and answers 202 `{}`, or 409 for a completed run. The kills: a member's `/abort` resets one member (`ctx.abort()`), so killing a repository's leader leaves its group leaderless until an election; an Actions member's `/owner_fault` either holds `RunOwner` rounds for `hold_ms`, which places the commit-path kill between `RunCreated` and the round that writes the checks, or, with `kill`, resets the member after the next round's repository writes and before its shard half. The edge forwards none of the three; only a scratch Worker bound to the `Member` classes reaches them, as BF-61's relay kill did. A `RunOwner` read cut at its byte cap that touched no run commits `OwnerCursor` alone, so runner traffic cannot hold a later run's checks.
+
+**Why.** No product route wrote `SetRule`: M2-WP3 seeded rules through the test-faults `/bench_seed`, and graft-m4a's sites are product builds. The branch protection route is `rest:branches`' T0 surface anyway, so it serves clients as well as the gate, and cancel is `rest:actions`'. A reset is the kill the in-memory gate models (a crashed leader, and a `RunOwner` that died between its two halves), and `ctx.abort()` is what a lost isolate does, so it needs no other fault machinery in the product build. Routes reached only through a binding keep clients away from them, the same line `LogRelay`'s `/abort` drew on site day 30.
+
+**Beat.** A test-faults site day for the run, which would reset every member twice and leave the product build untested. A `Rule` seeded with `/record`, which is test-faults and skips `decide`'s admin check. Killing the repository leader with `/sever`, which is test-faults only. A sleep inside the round for the `RunOwner` kill, which an alarm's time limit could end at an unplanned place.
+
+**Evidence.** `crates/api/tests/surfaces.rs`, `branch_protection_put_edits_the_branch_s_rule_and_delete_removes_it` (a `PUT` edits the branch's rule instead of adding a second, both `contexts` and `checks` become required, `DELETE` leaves it unprotected, a writer is refused). `crates/actions/tests/gates.rs`, both BF-56 tests, for the shape the hosted kills reproduce. BF-56 on graft-m4a (`tests/m4/results/m4-wp3.md`).
+
+**Flip.** A ruleset route (`rest:repos` rules) that clients use instead of branch protection, which would compile to the same `Rule` rows. Or a fault the gate needs that a reset cannot make, such as a member that answers but never commits.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).

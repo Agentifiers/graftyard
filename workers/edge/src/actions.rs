@@ -676,6 +676,40 @@ pub async fn rest_read(c: &Ctx<'_>, rd: &Read, view: &graftyard_api::view::Repo<
     })
 }
 
+/// `POST /repos/{o}/{r}/actions/runs/{run_id}/cancel`: 202 `{}` once `CancelRun` committed on the shard, for a caller
+/// with write access, as on GHES [doc: GHES 3.22 REST, "Cancel a workflow run"]; a run of another repository is 404.
+/// A run already completed answers 409, GitHub's "Cannot cancel a workflow run that is completed."
+pub async fn cancel_run(c: &Ctx<'_>, rd: &Read, who: &Principal, run: &str) -> Result<Reply> {
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let folds: Vec<&dyn graftyard_identity::AuthzRead> =
+        rd.dir.authz.iter().map(|a| a as &dyn graftyard_identity::AuthzRead).collect();
+    let Actor::User(me) = who.actor else {
+        return Ok(Reply::error(403, "Resource not accessible by integration", "rest"));
+    };
+    if graftyard_identity::permission(who, &folds, &access) < Some(RepoPermission::Write) {
+        return Ok(Reply::not_found());
+    }
+    let Ok(run) = run.parse::<i64>() else { return Ok(Reply::not_found()) };
+    let chain = ChainId::Actions(rd.repo.owner, actions_shard(rd.repo.id));
+    let v = match shard_read(c, chain, json!({ "run": run })).await {
+        Ok(v) => v,
+        Err(e) => return Ok(unavailable(&e)),
+    };
+    let Ok(row) = serde_json::from_value::<graftyard_actions::shard::RunRow>(v["run"].clone()) else {
+        return Ok(Reply::not_found());
+    };
+    if row.run.repo != rd.repo.id {
+        return Ok(Reply::not_found());
+    }
+    if matches!(row.status, graftyard_actions::RunStatus::Completed(_)) {
+        return Ok(Reply::error(409, "Cannot cancel a workflow run that is completed.", "rest/actions/workflow-runs"));
+    }
+    Ok(match runsvc_call(c, chain, &json!({ "op": "cancel", "run": run, "admin": me.0 })).await {
+        Ok((s, v)) => Reply::json(s, v["body"].clone()),
+        Err(e) => unavailable(&e),
+    })
+}
+
 /// The runner's `WorkflowStepsUpdate`, merged into `actions/<job>/steps` in the owner's home bucket, which the GHES
 /// `job` reads render as `steps`. Best effort: a lost update leaves the last report.
 async fn keep_steps(c: &Ctx<'_>, chain: ChainId, job: JobId, update: &Value) -> Result<()> {

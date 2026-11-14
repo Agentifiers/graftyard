@@ -1787,6 +1787,40 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
+        (Method::Post, ["actions", "runs", run, "cancel"]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            crate::actions::cancel_run(c, &rd, &who, run).await?
+        }
+        // `rest:branches` (BF-56's rule): admin only, as on GHES; the leader checks again in `SetRule`'s `decide`.
+        (method @ (Method::Get | Method::Put | Method::Delete), ["branches", branch @ .., "protection"])
+            if !branch.is_empty() =>
+        {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+            let folds: Vec<&dyn graftyard_identity::AuthzRead> =
+                rd.dir.authz.iter().map(|a| a as &dyn graftyard_identity::AuthzRead).collect();
+            if graftyard_identity::permission(&who, &folds, &access) != Some(graftyard_identity::RepoPermission::Admin)
+            {
+                return Ok(Reply::error(404, "Not Found", graftyard_api::protection::DOC));
+            }
+            let branch = branch.join("/");
+            let what = What::Protection { branch: branch.clone() };
+            let plan = match method {
+                Method::Get => Err(graftyard_api::protection::get(&r, &branch)),
+                Method::Put => graftyard_api::protection::plan_put(&r, &branch, &body(req.bytes().await?)),
+                _ => graftyard_api::protection::plan_delete(&r, &branch),
+            };
+            match plan {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), what).await?,
+                Err(x) => x,
+            }
+        }
         (Method::Put, ["pulls", n, "merge"]) => {
             let who = match need(&who) {
                 Ok(w) => w,

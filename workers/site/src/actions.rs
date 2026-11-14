@@ -12,6 +12,11 @@
 //!   names the grant. The leader commits the runner's or job's command, and signs tokens with `RUN_SERVICE_KEY`, the
 //!   Secrets Store binding only the sites hold (`decisions/DECISIONS.md`, "M4-WP3: the run service's signing key").
 //!   `acquire` opens the job's `LogRelay` on this site, which `FeedStreamUrl` names; `complete` ends it.
+//! - **`RunOwner`** (`graftyard_actions::run_owner`, BF-56) runs in the leader's alarm after the lease check: it reads
+//!   the committed entries after the fold's `owner_cursor` from this member's log, commits each repository's
+//!   `RunChecksCmd` through the lookup, and only once each is acknowledged (or refused `Gone`) commits the shard half,
+//!   `SetRunStatus` and last `OwnerCursor`. Every request id comes from the round's content, so a round replayed after
+//!   a crash, a leader change, or a lost answer commits nothing twice. A round that did not finish arms the alarm again.
 
 use std::rc::Rc;
 
@@ -60,13 +65,32 @@ impl Family for Actions {
     }
     async fn on_alarm(host: &Rc<Host<Self>>) {
         expire(host).await;
+        run_owner(host).await;
     }
     fn route_paths() -> &'static [&'static str] {
-        &["/runsvc"]
+        &["/runsvc", "/owner_fault"]
     }
     async fn route(host: &Rc<Host<Self>>, path: &str, body: Value) -> Option<worker::Result<Value>> {
         match path {
             "/runsvc" => Some(runsvc_route(host, body).await),
+            // BF-56's `RunOwner` faults, which only an operator's binding sends (the edge forwards only `/runsvc`):
+            // `{"kill": true}` resets this member after the next round's repository half and before its shard half,
+            // and `{"hold_ms": N}` runs no round for N ms, so a driver can kill a repository's commit path between
+            // `RunCreated` and the round that writes its checks.
+            "/owner_fault" => {
+                let Some(chain) = host.core.borrow().as_ref().map(|c| c.join.chain) else {
+                    return Some(Ok(json!({ "error": "not joined" })));
+                };
+                let now = crate::now_ms();
+                if body["kill"].as_bool() == Some(true) {
+                    OWNER_KILL.with(|k| k.borrow_mut().insert(chain));
+                }
+                if let Some(ms) = body["hold_ms"].as_u64() {
+                    OWNER_HOLD.with(|k| k.borrow_mut().insert(chain, now + ms));
+                    host.arm_in(ms as i64 + 100);
+                }
+                Some(Ok(json!({ "armed": true, "at": now })))
+            }
             _ => None,
         }
     }
@@ -141,6 +165,10 @@ impl Family for Actions {
 thread_local! {
     /// The queue-move count each shard last hinted its broker at.
     static HINTED: std::cell::RefCell<std::collections::HashMap<ChainId, u64>> = Default::default();
+    /// The shards whose leader `/owner_fault` armed, once each: keyed by chain, since an isolate hosts other shards.
+    static OWNER_KILL: std::cell::RefCell<std::collections::HashSet<ChainId>> = Default::default();
+    /// The shards whose `RunOwner` `/owner_fault` holds, until when (epoch ms).
+    static OWNER_HOLD: std::cell::RefCell<std::collections::HashMap<ChainId, u64>> = Default::default();
 }
 
 /// The leader's alarm: a hint to this site's broker when the queue moved since the last one (`crate::broker::hint`),
@@ -174,6 +202,145 @@ async fn expire(h: &Rc<Host<Actions>>) {
     if !matches!(crate::host::within(std::time::Duration::from_secs(10), w).await, Some(Ok(Ok(_)))) {
         h.arm_in(5_000);
     }
+}
+
+/// The most stored log bytes one `RunOwner` round reads: a round past it stops at the entry before, and the next alarm
+/// goes on from the cursor it committed [guess: a 256-job matrix's `RunCreated` is under 200 KB].
+const OWNER_ROUND_BYTES: usize = 1 << 20;
+
+/// How soon a `RunOwner` round that did not finish runs again.
+const OWNER_RETRY_MS: i64 = 2_000;
+
+/// One `RunOwner` round on the leader (module docs).
+async fn run_owner(h: &Rc<Host<Actions>>) {
+    let (chain, fold, from, commit) = {
+        let core = h.core.borrow();
+        let Some(c) = core.as_ref().filter(|c| c.m.role() == Role::Leader) else { return };
+        let f = &c.m.group_fold().fold;
+        (c.join.chain, f.clone(), f.owner_cursor, c.m.state().commit)
+    };
+    if commit <= from {
+        return;
+    }
+    if OWNER_HOLD.with(|k| k.borrow().get(&chain).is_some_and(|until| *until > crate::now_ms())) {
+        return;
+    }
+    let ChainId::Actions(owner, _) = chain else { return };
+    // The committed entries after the cursor, up to OWNER_ROUND_BYTES of them.
+    let sql = h.state.storage().sql();
+    let (mut events, mut through, mut bytes) = (Vec::new(), from, 0usize);
+    while through < commit {
+        let next = raft::Index(through.0 + 1);
+        let Some((e, n)) = crate::host::stored_entry_sized::<Actions>(&sql, next) else { break };
+        if bytes > 0 && bytes + n > OWNER_ROUND_BYTES {
+            break;
+        }
+        bytes += n;
+        if let raft::EntryBody::Events(evs) = e.body {
+            events.extend(evs);
+        }
+        through = next;
+    }
+    if through == from {
+        return;
+    }
+    let runs = graftyard_actions::run_owner::touched(&fold, events.iter());
+    // A read cut at OWNER_ROUND_BYTES that touched no run still moves the cursor, or a megabyte of runner entries
+    // would hold every later run back. An uncut idle read leaves it, so the cursor's own entry starts no round.
+    if runs.is_empty() && through < commit {
+        let op = ActionsOp::OwnerCursor { through };
+        if let Err(e) = owner_shard_half(h, chain, through, vec![op]).await {
+            worker::console_error!("{chain} RunOwner idle cursor through {}: {e}", through.0);
+        }
+        h.arm_in(OWNER_RETRY_MS.min(CHECK_AFTER_MS));
+        return;
+    }
+    let mut gone = std::collections::BTreeSet::new();
+    let done = loop {
+        let r = graftyard_actions::run_owner::round(chain, &fold, &runs, through, &gone);
+        if r.checks.is_empty() && r.then.is_empty() {
+            return;
+        }
+        match owner_round(h, chain, owner, &r, &mut gone).await {
+            Ok(true) if !r.checks.is_empty() && OWNER_KILL.with(|k| k.borrow_mut().remove(&chain)) => {
+                worker::console_log!("{chain} RunOwner killed after its repository half, through {}", through.0);
+                h.dying.set(true);
+                crate::host::abort(&h.state, "graftyard RunOwner kill");
+                return;
+            }
+            Ok(true) => break owner_shard_half(h, chain, through, r.then).await,
+            // A repository answered `Gone`: the round is built again without it, and cancels its runs.
+            Ok(false) => continue,
+            Err(e) => break Err(e),
+        }
+    };
+    if let Err(e) = done {
+        worker::console_error!("{chain} RunOwner through {}: {e}", through.0);
+        h.arm_in(OWNER_RETRY_MS);
+    } else if through < commit {
+        h.arm_in(OWNER_RETRY_MS.min(CHECK_AFTER_MS));
+    }
+}
+
+/// The round's repository half: `Ok(true)` once every `RunChecksCmd` was acknowledged, `Ok(false)` when one answered
+/// `Gone` (added to `gone`), and an error for anything else, which retries the whole round.
+async fn owner_round(
+    h: &Rc<Host<Actions>>,
+    chain: ChainId,
+    owner: graftyard_types::AccountId,
+    r: &graftyard_actions::run_owner::Round,
+    gone: &mut std::collections::BTreeSet<graftyard_types::RepoId>,
+) -> Result<bool, String> {
+    if r.checks.is_empty() {
+        return Ok(true);
+    }
+    let record = crate::member::owner_record(&h.env, owner).await?;
+    let site = crate::SiteEnv::read(&h.env).map_err(|e| e.to_string())?;
+    let b = graftyard_lookup::Bindings { env: &h.env, sites: &site.sites };
+    for (repo, cmd) in &r.checks {
+        let body =
+            serde_json::to_value(graftyard_git::repo::RepoCmd::RunChecks(cmd.clone())).map_err(|e| e.to_string())?;
+        let done = graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &record, cmd.request, body).await?;
+        let out = &done["ok"]["out"]["RunChecks"];
+        if out == "Gone" {
+            gone.insert(*repo);
+            return Ok(false);
+        }
+        if out.get("Applied").is_none() {
+            // `Unavailable` (the metadata tier loading), a refusal, or no outcome: the round runs again.
+            return Err(format!("{chain} RunChecks on repo:{}: {done}", repo.0.0));
+        }
+    }
+    Ok(true)
+}
+
+/// The round's shard half, in order, each under a request id from its place in the round.
+async fn owner_shard_half(
+    h: &Rc<Host<Actions>>,
+    chain: ChainId,
+    through: raft::Index,
+    then: Vec<ActionsOp>,
+) -> Result<(), String> {
+    for (i, op) in then.into_iter().enumerate() {
+        let mut key = Vec::new();
+        graftyard_fold::canon::write(&mut key, &(through.0, i as u32));
+        let rid = act::consumer_request(chain, &key);
+        let cmd = ActionsCmd { actor: ActionsActor::Operator, op };
+        let admitted = match h.input(|m, t| m.commit(t, rid, cmd)) {
+            Ok(Ok(a)) => a,
+            Ok(Err(e)) => return Err(crate::host::call_error_json(&e).to_string()),
+            Err(e) => return Err(e.to_string()),
+        };
+        h.served();
+        match crate::host::within(std::time::Duration::from_secs(10), h.wait_ticket(admitted.ticket, None)).await {
+            Some(Ok(Ok(_))) => {}
+            // A refusal of a command the round built from the fold is a replay (`Duplicate`) or a status that already
+            // holds: the next command still goes.
+            Some(Ok(Err(_))) => {}
+            _ => return Err("the shard half did not commit in 10 s".into()),
+        }
+    }
+    Ok(())
 }
 
 // ---- the run service, on the leader
@@ -446,6 +613,20 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 worker::console_error!("{chain} logrelay end {}: {e}", job.0.0);
             }
             json!({ "status": 200, "body": {} })
+        }
+        // GHES `POST .../actions/runs/{id}/cancel` from a caller the edge found has write access: `CancelRun`, whose
+        // `Cancel`s `RunOwner` writes as conclusions, and whose running jobs' runners get the broker's cancellation.
+        ("cancel", None) => {
+            let (Ok(admin), Some(run)) = (serde_json::from_value(b["admin"].clone()), b["run"].as_i64()) else {
+                return Ok(refused(400, "admin and run are required"));
+            };
+            let run = RunId(DbId(run));
+            match commit(h, fresh_rid(), ActionsActor::Admin(admin), ActionsOp::CancelRun { run }).await {
+                Ok(Ok(_)) => json!({ "status": 202, "body": {} }),
+                Ok(Err(ActionsErr::NotFound)) => refused(404, "Not Found"),
+                Ok(r) => refused(409, r),
+                Err(e) => refused(503, e),
+            }
         }
         // `CreateRun` from the trigger (the edge's dispatch until `ActionsTrigger` runs on the repository leader).
         ("create_run", None) => {

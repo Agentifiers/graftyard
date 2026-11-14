@@ -449,6 +449,11 @@ pub enum What {
     /// "Actions secrets" and "Actions variables"]. A variable create on a taken name is 409, which `gh variable set`
     /// takes as "PATCH instead" [measured: cli/cli `pkg/cmd/variable/set/http.go`].
     ActionsConfig,
+    /// `PUT` and `DELETE /repos/{o}/{r}/branches/{branch}/protection` (`crate::protection`): 200 with the
+    /// `protected-branch` object, or 204 for a delete.
+    Protection {
+        branch: String,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -567,6 +572,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::CheckRunCreated { id } => WireReply::of(&crate::rest::check_run_created(acked, &r, *id)),
         // GitHub's 201 carries `{}`, and go-gh decodes every non-204 body, so an empty one fails `gh secret set`
         // [measured: gh 2.102.1, "unexpected end of JSON input"].
+        What::Protection { branch } => WireReply::of(&crate::protection::saved(acked, &r, branch)),
         What::ActionsConfig => WireReply::of(&match acked.out {
             IssueOut::Created => Reply::json(201, serde_json::json!({})),
             _ => Reply::empty(204),
@@ -597,6 +603,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::CheckRunCreated { .. } => {
             WireReply::of(&crate::rest::write_refused(e, "rest/checks/runs#create-a-check-run"))
         }
+        What::Protection { .. } => WireReply::of(&crate::protection::refused(e)),
         What::ActionsConfig => WireReply::of(&match e {
             IssueErr::Exists => Reply::error(409, "Already exists", "rest/actions/variables"),
             e => crate::webhooks::refused(e),
