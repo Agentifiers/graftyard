@@ -305,6 +305,31 @@ pub enum IssueOp<B = DurableBlob> {
     /// run id, and the same id as its suite's, from the metadata tier's `IdBlock` cursor, so whatever ids `run` and
     /// `suite` carry here are ignored.
     CreateCheck(CheckRunUpdate),
+    // ---- M4-WP3, format 32.23 (`crate::secrets`) ----
+    /// `PUT /repos/{o}/{r}/actions/secrets/{name}` and `PUT .../environments/{env}/secrets/{name}`: the sealed bytes
+    /// the client sent, under the owner's key `key_id`. Admin only.
+    PutActionsSecret {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+        sealed: Box<[u8]>,
+        key_id: Box<str>,
+    },
+    DeleteActionsSecret {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+    },
+    /// `POST .../actions/variables` (`create: true`, refused for an existing name) and `PATCH .../variables/{name}`
+    /// (`create: false`, refused for a missing one), and the environment routes.
+    PutActionsVariable {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+        value: Box<str>,
+        create: bool,
+    },
+    DeleteActionsVariable {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -367,12 +392,29 @@ impl<B> IssueOp<B> {
             O::PutHook { id, record } => O::PutHook { id, record },
             O::DeleteHook { id } => O::DeleteHook { id },
             O::CreateCheck(c) => O::CreateCheck(c),
+            O::PutActionsSecret { scope, name, sealed, key_id } => O::PutActionsSecret { scope, name, sealed, key_id },
+            O::DeleteActionsSecret { scope, name } => O::DeleteActionsSecret { scope, name },
+            O::PutActionsVariable { scope, name, value, create } => {
+                O::PutActionsVariable { scope, name, value, create }
+            }
+            O::DeleteActionsVariable { scope, name } => O::DeleteActionsVariable { scope, name },
         })
     }
 
     /// Whether this is a lease command (`crate::lease::decide`).
     pub fn is_lease(&self) -> bool {
         matches!(self, IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. })
+    }
+
+    /// Whether this is a secret or variable command, format 32.23.
+    pub fn is_secret(&self) -> bool {
+        matches!(
+            self,
+            IssueOp::PutActionsSecret { .. }
+                | IssueOp::DeleteActionsSecret { .. }
+                | IssueOp::PutActionsVariable { .. }
+                | IssueOp::DeleteActionsVariable { .. }
+        )
     }
 
     /// Whether this is a hook command, format 32.16.
@@ -406,6 +448,8 @@ pub enum IssueOut {
     TaskFinal(graftyard_identity::SessionId, crate::task::TaskApiState),
     /// A lease acquire or renew applied: the lease's id, whose row the leader renders.
     Lease(crate::lease::LeaseId),
+    /// A secret or variable that had no row was written: GHES answers 201, and 204 for an update.
+    Created,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -475,6 +519,10 @@ impl IssueCmd {
             | IssueOp::CancelInvitation { .. } => TierSet::CORE,
             IssueOp::SetAgentPolicy(_) | IssueOp::DeleteRepo { .. } => TierSet::CORE,
             IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. } => TierSet::CORE,
+            IssueOp::PutActionsSecret { .. }
+            | IssueOp::DeleteActionsSecret { .. }
+            | IssueOp::PutActionsVariable { .. }
+            | IssueOp::DeleteActionsVariable { .. } => TierSet::CORE,
             // `Settings` writes the metadata tier's `retention` too.
             IssueOp::InitRepo(_) => both,
             // A task's core row changes on every task command, and its metadata row on a create, a `pr`, or a summary.
@@ -1269,6 +1317,70 @@ impl IssueCmd {
                 crate::hooks::hook(v.core(), *id).ok_or(IssueErr::NotFound)?;
                 Ok((one(RepoEvent::Hook { id: *id, record: None, actor: me, created: false }), IssueOut::Done))
             }
+            IssueOp::PutActionsSecret { scope, name, sealed, key_id } => {
+                need(RepoPermission::Admin)?;
+                secret_scope_ok(scope)?;
+                // A sealed box is the 32-byte ephemeral key, the 16-byte tag, and the value.
+                if sealed.len() <= 48 || sealed.len() > 48 + crate::secrets::VALUE_MAX_BYTES || key_id.is_empty() {
+                    return Err(IssueErr::Invalid("a secret is a sealed box of at most 48 KB under the owner's key"));
+                }
+                let had = crate::secrets::secret(v.core(), scope, name).is_some();
+                if !had && crate::secrets::secrets(v.core(), scope).len() >= crate::secrets::SECRETS_PER_SCOPE_MAX {
+                    return Err(IssueErr::Invalid("a repository or environment has at most 100 secrets"));
+                }
+                let record = graftyard_identity::sealed::SecretRecord {
+                    sealed: sealed.clone(),
+                    key_id: key_id.clone(),
+                    updated: v.at,
+                };
+                let ev = RepoEvent::ActionsSecret {
+                    scope: scope.clone(),
+                    name: name.clone(),
+                    record: Some(record),
+                    actor: me,
+                };
+                Ok((one(ev), if had { IssueOut::Done } else { IssueOut::Created }))
+            }
+            IssueOp::DeleteActionsSecret { scope, name } => {
+                need(RepoPermission::Admin)?;
+                crate::secrets::secret(v.core(), scope, name).ok_or(IssueErr::NotFound)?;
+                let ev = RepoEvent::ActionsSecret { scope: scope.clone(), name: name.clone(), record: None, actor: me };
+                Ok((one(ev), IssueOut::Done))
+            }
+            IssueOp::PutActionsVariable { scope, name, value, create } => {
+                need(RepoPermission::Admin)?;
+                secret_scope_ok(scope)?;
+                if value.len() > crate::secrets::VALUE_MAX_BYTES {
+                    return Err(IssueErr::Invalid("a variable is at most 48 KB"));
+                }
+                let old = crate::secrets::variable(v.core(), scope, name);
+                match (create, &old) {
+                    (true, Some(_)) => return Err(IssueErr::Exists),
+                    (false, None) => return Err(IssueErr::NotFound),
+                    (false, Some(o)) if o.value == *value => return Ok((SmallVec::new(), IssueOut::Done)),
+                    _ => {}
+                }
+                if old.is_none()
+                    && crate::secrets::variables(v.core(), scope).len() >= crate::secrets::VARIABLES_PER_SCOPE_MAX
+                {
+                    return Err(IssueErr::Invalid("a repository or environment has at most 500 variables"));
+                }
+                let record = graftyard_identity::sealed::VariableRecord { value: value.clone(), updated: v.at };
+                let ev = RepoEvent::ActionsVariable {
+                    scope: scope.clone(),
+                    name: name.clone(),
+                    record: Some(record),
+                    actor: me,
+                };
+                Ok((one(ev), if *create { IssueOut::Created } else { IssueOut::Done }))
+            }
+            IssueOp::DeleteActionsVariable { scope, name } => {
+                need(RepoPermission::Admin)?;
+                crate::secrets::variable(v.core(), scope, name).ok_or(IssueErr::NotFound)?;
+                let ev =
+                    RepoEvent::ActionsVariable { scope: scope.clone(), name: name.clone(), record: None, actor: me };
+                Ok((one(ev), IssueOut::Done))
+            }
         }
     }
 
@@ -1431,6 +1543,11 @@ impl IssueCmd {
             }
             // GitHub's App permission for repository webhooks.
             IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. } => smallvec![w("repository_hooks")],
+            // GitHub's App permissions for Actions secrets and variables.
+            IssueOp::PutActionsSecret { .. } | IssueOp::DeleteActionsSecret { .. } => smallvec![w("secrets")],
+            IssueOp::PutActionsVariable { .. } | IssueOp::DeleteActionsVariable { .. } => {
+                smallvec![w("actions_variables")]
+            }
         }
     }
 
@@ -1486,6 +1603,14 @@ fn agent_refusal<B>(op: &IssueOp<B>, v: &RepoView<'_>) -> Option<crate::agent::A
         IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. } => {
             Some(AgentRefusal::new(AgentRule::Rules, "refused: agents may not edit webhooks"))
         }
+        // An agent writing a secret could exfiltrate it through a workflow it also pushes [inference: DESIGN's agent
+        // rules refuse settings edits, and secrets are settings].
+        IssueOp::PutActionsSecret { .. }
+        | IssueOp::DeleteActionsSecret { .. }
+        | IssueOp::PutActionsVariable { .. }
+        | IssueOp::DeleteActionsVariable { .. } => {
+            Some(AgentRefusal::new(AgentRule::Rules, "refused: agents may not edit Actions secrets or variables"))
+        }
         IssueOp::PutRelease { .. } | IssueOp::DeleteRelease { .. } | IssueOp::PutAsset { .. } => {
             Some(AgentRefusal::of(AgentRule::Release))
         }
@@ -1508,6 +1633,17 @@ fn agent_refusal<B>(op: &IssueOp<B>, v: &RepoView<'_>) -> Option<crate::agent::A
 }
 
 /// A hook record the chain accepts: an `http` or `https` URL, and at least one event, each GHES 3.22's or `*`.
+/// A repository chain holds only repository and environment rows; an org's are on its `Authz` chain.
+fn secret_scope_ok(s: &graftyard_identity::sealed::SecretScope) -> Result<(), IssueErr> {
+    match s {
+        graftyard_identity::sealed::SecretScope::Org { .. } => Err(IssueErr::Invalid("an org secret is the org's")),
+        graftyard_identity::sealed::SecretScope::Env(e) if e.0.is_empty() || e.0.len() > 255 => {
+            Err(IssueErr::Invalid("an environment name is 1 to 255 characters"))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn hook_ok(r: &crate::hooks::HookRecord) -> Result<(), IssueErr> {
     let url = &*r.url.0;
     let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));

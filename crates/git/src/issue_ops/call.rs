@@ -89,6 +89,10 @@ impl IssueCall {
         if self.op.is_hook() {
             return crate::hooks::REPO_FORMAT_HOOKS;
         }
+        // 32.23 likewise: a secret or variable command is never an agent, task, or lease command.
+        if self.op.is_secret() {
+            return crate::secrets::REPO_FORMAT_SECRETS;
+        }
         if self.reviews {
             return REPO_FORMAT_REVIEWS;
         }
@@ -232,6 +236,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             crate::hooks::REPO_FORMAT_HOOKS,
             REPO_FORMAT_CHECKS,
             REPO_FORMAT_REVIEWS,
+            crate::secrets::REPO_FORMAT_SECRETS,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -247,13 +252,15 @@ impl<'de> Deserialize<'de> for IssueCall {
         let checks = fmt(REPO_FORMAT_CHECKS);
         // 32.22 carries an App's claims, or none for a user, as 32.16 does.
         let reviews = fmt(REPO_FORMAT_REVIEWS);
+        // 32.23 carries an App's claims, or none for a user, as 32.16 does.
+        let secrets = fmt(crate::secrets::REPO_FORMAT_SECRETS);
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         if !tasks && (w.agent_session.is_some() || w.claims.as_ref().is_some_and(|c| c.task.is_some())) {
             return Err(serde::de::Error::custom("a task claim or a session rides only in format 32.12"));
         }
-        let actor = match (app || agent || tasks || hooks || checks || reviews, w.claims) {
+        let actor = match (app || agent || tasks || hooks || checks || reviews || secrets, w.claims) {
             (true, Some(c)) => Principal::installation(&c),
-            (false, Some(_)) | (true, None) if !agent && !tasks && !hooks && !reviews => {
+            (false, Some(_)) | (true, None) if !agent && !tasks && !hooks && !reviews && !secrets => {
                 return Err(serde::de::Error::custom(
                     "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
                 ));

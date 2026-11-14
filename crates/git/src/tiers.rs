@@ -88,6 +88,8 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Fanout { .. } => TierSet::CORE,
         RepoEvent::Hook { .. } | RepoEvent::HookCursor(_) => TierSet::CORE,
         RepoEvent::Watchers(_) => TierSet::METADATA,
+        RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => TierSet::CORE,
+        RepoEvent::Reserved43 => TierSet::METADATA,
     }
 }
 
@@ -155,6 +157,9 @@ pub const CORE: Schema = Schema {
         // M4-WP1, 32.16: repository webhooks by id, and the `Webhooks` consumer's `HookCursor`.
         t("hook", &["id"]),
         t("hook_cursor", &[]),
+        // M4-WP3, 32.23: Actions secrets and variables by scope (`""` or `env:<name>`) and name.
+        t("actions_secret", &["scope", "name"]),
+        t("actions_variable", &["scope", "name"]),
     ],
 };
 
@@ -859,6 +864,8 @@ impl RepoTiers {
             }
             RepoEvent::PathSet(_) => {}
             RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
+            RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => crate::secrets::write_core(w, ev),
+            RepoEvent::Reserved43 => {}
         }
     }
 

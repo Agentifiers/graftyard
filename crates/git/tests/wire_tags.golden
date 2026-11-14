@@ -44,6 +44,9 @@ git::repo::RepoEvent 39 Fanout 2701
 git::repo::RepoEvent 40 Hook 2802000000
 git::repo::RepoEvent 41 HookCursor 290101
 git::repo::RepoEvent 42 Watchers 2a00
+git::repo::RepoEvent 43 Reserved43 2b
+git::repo::RepoEvent 44 ActionsSecret 2c0001610000
+git::repo::RepoEvent 45 ActionsVariable 2d0001610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 0 OpenIssue 00016101610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 1 OpenPr 01020000016101610001010101010101010101010101010101010101010101010101010101010101010101010101010101
 git::issue_ops::IssueOp<git::blob::BlobRef> 2 Close 0201
@@ -85,6 +88,10 @@ git::issue_ops::IssueOp<git::blob::BlobRef> 37 ReleaseLease 251a3030303030303030
 git::issue_ops::IssueOp<git::blob::BlobRef> 38 PutHook 26000161000000000000
 git::issue_ops::IssueOp<git::blob::BlobRef> 39 DeleteHook 2702
 git::issue_ops::IssueOp<git::blob::BlobRef> 40 CreateCheck 28020202010101010101010101010101010101010101010101610100000000000000
+git::issue_ops::IssueOp<git::blob::BlobRef> 41 PutActionsSecret 29000161000161
+git::issue_ops::IssueOp<git::blob::BlobRef> 42 DeleteActionsSecret 2a000161
+git::issue_ops::IssueOp<git::blob::BlobRef> 43 PutActionsVariable 2b000161016100
+git::issue_ops::IssueOp<git::blob::BlobRef> 44 DeleteActionsVariable 2c000161
 id::AuthzEvent 0 Opened 000000
 id::AuthzEvent 1 Member 010200
 id::AuthzEvent 2 Grant 02020200
@@ -766,3 +773,10 @@ actions::RunStatus 2 Completed 0200
 git::run_checks::RunChecksOut 0 Applied 0001
 git::run_checks::RunChecksOut 1 Gone 01
 git::run_checks::RunChecksOut 2 Unavailable 02
+# M4-WP3: inside RepoEvent::ActionsSecret and ActionsVariable (32.23). RepoEvent 43 holds b030-split's Split.
+id::sealed::SecretScope 0 Repo 00
+id::sealed::SecretScope 1 Env 010161
+id::sealed::SecretScope 2 Org 020000
+id::sealed::SecretVisibility 0 All 00
+id::sealed::SecretVisibility 1 Private 01
+id::sealed::SecretVisibility 2 Selected 02

@@ -28,6 +28,111 @@ impl std::fmt::Debug for Wrapped {
     }
 }
 
+// ---- Actions secrets and variables (`design/SHARED.md`, "Actions", Secrets and variables). Wire tags: add variants
+// at the end only.
+
+/// SHARED's `SealKey`: one X25519 key pair per owner, whose `public` `gh secret set` seals to with
+/// `crypto_box_seal`. `key_id` is the decimal key id GitHub's clients send back. `private` is the X25519 secret
+/// wrapped under `SecretsWrapKey`; only `graft-ops` opens it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealKey {
+    pub key_id: Box<str>,
+    pub public: [u8; 32],
+    pub private: Wrapped,
+    pub created: graftyard_types::Timestamp,
+    pub retired: Option<graftyard_types::Timestamp>,
+}
+
+/// SHARED's `ActionsName`: upper-case letters, digits, and underscores, not starting with a digit or `GITHUB_`.
+/// GitHub stores names upper-cased, so `parse` upper-cases [unverified as GitHub's exact rule].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ActionsName(Box<str>);
+
+impl ActionsName {
+    pub fn parse(s: &str) -> Option<ActionsName> {
+        let up = s.to_ascii_uppercase();
+        let ok = !up.is_empty()
+            && up.len() <= 255
+            && up.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            && !up.as_bytes()[0].is_ascii_digit()
+            && !up.starts_with("GITHUB_");
+        ok.then(|| ActionsName(up.into()))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A deployment environment's name, as the workflow's `environment:` and the REST path give it. GitHub matches
+/// environment names case-insensitively [unverified]; they are kept as given and compared as given here.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct EnvName(pub Box<str>);
+
+/// SHARED's `SecretVisibility`, an org secret's or variable's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum SecretVisibility {
+    All,
+    Private,
+    Selected,
+}
+
+/// SHARED's `SecretScope`. A repository chain carries `Repo` and `Env`; an owner's `Authz` chain carries `Org`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecretScope {
+    Repo,
+    Env(EnvName),
+    Org { visibility: SecretVisibility, repos: smallvec::SmallVec<[graftyard_types::RepoId; 4]> },
+}
+
+impl SecretScope {
+    /// Whether a job of repository `repo` (`private` when it is not public) reads a row of this scope, given the
+    /// repository the row is on (`None` for an owner's row) and the job's environment. A repository's own rows reach
+    /// only its jobs, an environment's only jobs naming it, and an org row as its visibility says: `Private` reaches
+    /// private and internal repositories (SHARED, \"Who decrypts\").
+    pub fn reaches(
+        &self,
+        on: Option<graftyard_types::RepoId>,
+        repo: graftyard_types::RepoId,
+        private: bool,
+        env: Option<&EnvName>,
+    ) -> bool {
+        match self {
+            SecretScope::Repo => on == Some(repo),
+            SecretScope::Env(e) => on == Some(repo) && env == Some(e),
+            SecretScope::Org { visibility, repos } => {
+                on.is_none()
+                    && match visibility {
+                        SecretVisibility::All => true,
+                        SecretVisibility::Private => private,
+                        SecretVisibility::Selected => repos.contains(&repo),
+                    }
+            }
+        }
+    }
+}
+
+/// SHARED's `SecretRecord`: the `crypto_box_seal` output the client sent, under the owner's key `key_id`. Rotation
+/// replaces `sealed` and `key_id` with a reseal under the new key. `Debug` prints neither the bytes nor their length.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretRecord {
+    pub sealed: Box<[u8]>,
+    pub key_id: Box<str>,
+    pub updated: graftyard_types::Timestamp,
+}
+
+impl std::fmt::Debug for SecretRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretRecord {{ key_id: {}, updated: {:?} }}", self.key_id, self.updated)
+    }
+}
+
+/// SHARED's `VariableRecord`. Variables are plain text, as on GitHub.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VariableRecord {
+    pub value: Box<str>,
+    pub updated: graftyard_types::Timestamp,
+}
+
 /// A hook's secret, unwrapped. Never printed, never stored.
 #[derive(Clone, PartialEq, Eq)]
 pub struct HookSecret(pub Box<[u8]>);
