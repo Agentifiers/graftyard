@@ -26,9 +26,11 @@ node tests/fanout/k.mjs "repo:$rid" "${K:-4}" >> "$ST" 2>&1
 # ENTRY=max|soft|<bytes>: a diagnostic A/B of the leader's entry cap (test-faults `/stats?entry=`, `Host::entry_soft`),
 # set on every voter so a moved leader keeps it. Not a gate row.
 [ -n "${ENTRY:-}" ] && for s in 0 1 2; do node -e "const {member}=await import('./tests/am1/hosted/lib.mjs'); const v=(await member('repo:$rid',$s,'/stats?entry=$ENTRY')).v; console.log('entry $ENTRY site $s', v?.entrySoft)" --input-type=module >> "$ST" 2>&1; done
-# The leader's memory, log bytes, and held bytes per learner every 15 s from here to the window's end (lmem.mjs).
+# The leader's memory, log bytes, and held bytes per learner every 2 s (LMEM_EVERY ms) from here to the window's end
+# (lmem.mjs), and every voter's trace rows each minute (tsave.mjs), which survive a member's reset (after gate 16).
 rm -f tests/nr3/raw/.lmem-$TAG.done
-DONE_FILE=tests/nr3/raw/.lmem-$TAG.done node tests/nr3/lmem.mjs "repo:$rid" > tests/nr3/raw/lmem-$TAG.jsonl 2>&1 &
+DONE_FILE=tests/nr3/raw/.lmem-$TAG.done EVERY=${LMEM_EVERY:-2000} node tests/nr3/lmem.mjs "repo:$rid" > tests/nr3/raw/lmem-$TAG.jsonl 2>&1 &
+DONE_FILE=tests/nr3/raw/.lmem-$TAG.done node tests/nr3/tsave.mjs "repo:$rid" > tests/nr3/raw/tsave-$TAG.jsonl 2>&1 &
 node tests/ld/lstats.mjs "repo:$rid" >> "$ST" 2>&1
 node tests/ld/dumpsize.mjs "repo:$rid" 0 2>&1 | head -1 >> "$ST"
 echo "$(date -u +%FT%TZ) b0-29 start" >> "$ST"

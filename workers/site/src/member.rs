@@ -493,6 +493,7 @@ impl<F: Family> Routes<F> {
                     | "/isolate"
                     | "/deps_log"
                     | "/arrivals"
+                    | "/trace"
             );
             if !observe && url.path() != "/sever" && self.host.severed() {
                 crate::faults::count("severed:in");
@@ -517,11 +518,10 @@ impl<F: Family> Routes<F> {
                 let t1 = now_ms();
                 #[cfg(feature = "test-faults")]
                 if let Some(sent) = req.headers().get("x-graft-sent").ok().flatten().and_then(|v| v.parse().ok()) {
-                    let from = raft::codec::from_bytes::<Vec<raft::Envelope<F::Ev>>>(&body)
-                        .ok()
-                        .and_then(|e| e.first().map(|e| e.from.0))
-                        .unwrap_or(0);
-                    self.host.trace_at(t0, Trace::CallArrived, from, 0, sent, t1 - t0);
+                    // From a header: decoding the body here as well held a second decoded copy of every append
+                    // while `raft` decoded it again (gate 16's storm, `tests/am1/results/narrow-reads-3.md`).
+                    let from = req.headers().get("x-graft-from").ok().flatten().and_then(|v| v.parse().ok());
+                    self.host.trace_at(t0, Trace::CallArrived, from.unwrap_or(0), 0, sent, t1 - t0);
                 }
                 let r = self.raft(&body).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
@@ -718,6 +718,14 @@ impl<F: Family> Routes<F> {
             (Method::Get, "/audit") => {
                 let prefix = crate::registry::query(&url, "prefix").unwrap_or_default();
                 self.ready_or(|| async { Response::from_json(&self.host.audit_json(&prefix)?) }).await
+            }
+            // narrow-reads-3's trace saver (`tests/nr3/tsave.mjs`): the `Stats::trace` rows after `since` (ms), as one
+            // array and no `Value` tree, so a run keeps a member's rows from before its isolate resets.
+            (Method::Get, "/trace") => {
+                let since: u64 = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let s = self.host.stats.borrow();
+                let rows: Vec<&[u64; 6]> = s.trace.iter().filter(|r| r[0] > since).collect();
+                Response::from_json(&rows)
             }
             (Method::Get, "/faults") => self.faults(crate::registry::query(&url, "rid").ok()),
             (Method::Get, "/deps_log") => self.deps_log(),

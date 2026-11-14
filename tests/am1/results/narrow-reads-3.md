@@ -618,6 +618,56 @@ the others answer in time, and a learner scored at 1 s is never asked; an untime
 sets no best; the score counts the deviation, so a swinging learner scores worse than a steady one at the same
 average; the margin is inclusive at its edge. `tests/nr3/plant.py` adds six mutants of the guard; all six are caught.
 
+### Gate 16 on main a858bfb: the leader's isolate runs out of memory, and the run stops
+
+Site day 13 from main a858bfb (the herding guard, send timestamps under test-faults, main 0f09638 with the admission
+pricing fix): site exit 0, edge exit 0. Repo 65561, 500 of 500 PRs opened, learners caught up in 2.5 s with the leader
+at 11.6 MiB, window 11:57:48 to 12:07:48Z, torn down [measured]:
+
+| Line | Gate 16 | Gate 15 |
+| --- | --- | --- |
+| API p50 / p99, served | 348 / 21,789 ms, 65.96% (116,235 reads: 11,349 answered 503, 28,223 skipped at the driver cap) | 365 / 2,019 ms, 99.89% |
+| Commit p50 / p99 | 18,002 / 22,760 ms (499 commits, queue p99 22,523) | 409 / 2,249 ms (6,428 commits) |
+| Agent pushes ok | 1,779 of 2,500 (400 access-row reads shed, 267 no outcome) | 2,498 of 2,500 |
+| Leader | site 0, term 2 to 15 (members reset, see below) | site 0, term 2 throughout |
+| Leader peak, analytics | 258 MiB on `repo:65561#1#f0`; 298 and 278 MiB on the voters | 84 MiB |
+| exceededMemory, site scripts | a 1,930, b 3,431, c 3,923 in the window | a 13, b 0, c 0 |
+| Read-your-write | 150 of 150, 0 stale | same |
+
+**This is the stop line, not an API miss.** Analytics put the leader at 258 MiB, past the operator's 100 MiB line.
+Per minute (`durableObjectsPeriodicGroups`, max memory, MiB):
+
+| Minute | Leader f0 | Voter f2 | Voter f1 (gen 7) |
+| --- | --- | --- | --- |
+| 11:58 to 12:01 | 59 to 67 | 55 to 60 | 29 to 35 |
+| 12:02 | 77 | 60 | 88 |
+| 12:03 | 257 | 258 | 258 |
+| 12:04 to 12:07 | 117 to 258 | 106 to 298 | 259 to 278 |
+
+At 12:03:18.930Z the leader's storage write failed with "Durable Object's isolate exceeded its memory limit and was
+reset" (Workers Logs, f0). The host aborted on it as designed (`storage write failed`), and all three voters'
+isolates then reset over and over: a 1,930, b 3,431, c 3,923 exceededMemory outcomes from 12:03 to the end, against
+13 on gate 15. Commits stalled behind it at 18 to 23 s, and API reads were shed or capped. Until 12:02 the run looked
+like gate 15: learners' read-index calls p50 55 to 293 ms, `/stats` wasm 22 to 39 MiB, log 8 MB, no leader change.
+
+**What grew is not named yet.** `memSplit` at 15 s intervals shows the leader's log at its 8 MB cap, read caches
+under 1 MB, held at most 8, and `inFlight.calls` (encoded bodies of member calls in flight) at 0.1 to 0.36 MB before
+12:03. After the first reset it reached 9.1 MB on site 2 (12:03:53) and `inFlight.answers` 19.6 MB on site 0
+(12:04:39). The 15 s samples straddle the jump from 77 to 257 MiB, so none of them catches it. That the in-flight call
+and answer bodies fill the isolate during the storm is likely, but not measured [inference]. Gate 15's analytics peak
+was 84 MiB on the old tree. This tree adds the admission pricing fix, which lets more commands into each entry, and
+LM-1's m27 already saw API p99 4.0 s on it.
+
+**Wire split: not answerable on this gate.** The leader's trace restarted with its isolate at 12:06:29, so the leader
+side of the healthy minutes (11:58 to 12:03) is gone. The learners' side survived: from 11:57:48 to 12:03:00 the leg
+back (learner arrival minus the leader's `x-graft-left`) has a spread above its median of p90 200 to 444 ms and p99
+356 to 839 ms. Its median is −733 to +82 ms, which is clock skew between isolates. Without the leader's `CallArrived`
+rows the skew cannot be cancelled, so wire and input queue stay unseparated. The commit path's split (`v1`, `v2`)
+covers only 12:07 to 12:09, after the storm.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate16.jsonl`, `run-gate16.status`, `lmem-gate16.jsonl`, `mem-gate16.json`,
+`egress-gate16.txt`, `fresh-gate16.jsonl`, `trace-gate16.json.gz`.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
