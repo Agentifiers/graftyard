@@ -277,3 +277,21 @@ fn default_commands_events_and_folds_keep_mains_bytes() {
         assert_eq!(g, w);
     }
 }
+
+/// Admission prices a command by `stored_len` (`graftyard_raft::Command`): an issue command's reply render, which no
+/// event stores, is left out, and a 10 KB render (an owner's Authz fold, as B0-33's) changes nothing; everything else
+/// is priced whole.
+#[test]
+fn an_issue_commands_render_is_not_priced() {
+    use graftyard_raft::Command;
+    let comment = || IssueOp::Comment { on: CommentTarget::Issue(IssueNumber(1)), body: "hi".into(), reply_to: None };
+    let with = |render| RepoCmd::Issue(Box::new(IssueCall::new(comment(), user(101), RequestId(Ulid(5)), render)));
+    let bare = with(serde_json::Value::Null);
+    let big = with(serde_json::json!({ "authz": "ab".repeat(5_000) }));
+    assert!(big.encoded_len() > bare.encoded_len() + 10_000);
+    assert_eq!(big.stored_len(), bare.stored_len());
+    assert_eq!(bare.stored_len(), bare.encoded_len());
+    for (what, c) in commands().into_iter().filter(|(w, _)| !w.starts_with("issue")) {
+        assert_eq!(c.stored_len(), c.encoded_len(), "{what}");
+    }
+}
