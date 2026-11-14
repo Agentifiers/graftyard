@@ -325,6 +325,31 @@ l5's raw trace (`tests/nr3/rows/trace-gate10.json.gz`) shows no refusal and no g
 
 Rows: `tests/nr3/rows/a1-b0-29-gate10.jsonl`, `run-gate10.status`, `fresh-gate10.jsonl`, `mem-gate10.json`, `trace-gate10.json.gz`. repo:65554 torn down.
 
+### Gate 11 on 875b9542: up to PIPELINE calls per read
+
+Site day from 875b9542 (sites and edge exit 0). The sweep on 875b9542 passed: HARSH 15,735 ms, gray 27,226 ms, live 28,340 ms, Porcupine Ok ×3. gate11 is repo:65555, load from 00:49:05Z.
+
+- **API:** 99.48% served (296 × 503, 6 driver-capped), p50 787 ms, **p99 2,635 ms**; tier p99 2,501 ms. **Fails.**
+- **Commit:** p99 3,369 ms. Agent push 1,243 of 1,244 ok.
+- **Other:** no leader change; 0 stale in 149 probe rounds.
+- **Memory:** **leader peak 119 MiB** (gates 9 and 10: 122 and 118); learners 56 to 61 MiB.
+
+Per learner, from the raw traces, ReadIndex sent to applied (p50 / p99, ms):
+
+| Learner | gate8 (f1ab1a61) | gate10 (617ed5b9) | gate11 (875b9542) |
+| --- | --- | --- | --- |
+| l1 weur | 268 / 1,771 | 240 / 1,008 | 238 / 938 |
+| l4 weur | 225 / 1,323 | 287 / 1,615 | 262 / 1,144 |
+| l2 apac | 497 / 2,431 | 297 / 1,516 | 451 / 2,958 |
+| l5 apac | 1,194 / 5,335 | 1,277 / 6,303 | 342 / 2,197 |
+| enam l0, l3, l6, l7 | 64 to 168 / 736 to 1,327 | 77 to 126 / 676 to 874 | 103 to 162 / 805 to 920 |
+
+- **The catch-up worked.** No learner stays behind for a run: l5's p50 fell from 1.2 s to 342 ms.
+- **The apac tail is still 2.2 to 3.0 s at p99.** Its hold p99 is 1.6 to 2.3 s. On the leader, 168 to 250 of about 970 appends held for each apac learner carried nothing past one already held for it, against 2 to 34 on enam. That fits responses that cross the far link out of order, or late [inference].
+- **The weur and enam learners total under 1.2 s at p99.** The edge picks a learner at random, so about a quarter of reads go to apac.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate11.jsonl`, `run-gate11.status`, `fresh-gate11.jsonl`, `mem-gate11.json`, `trace-gate11.json.gz`. repo:65555 torn down.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
