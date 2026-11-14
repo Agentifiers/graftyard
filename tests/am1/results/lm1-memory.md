@@ -1908,3 +1908,40 @@ sampled). The only StepDown logged is site a's at 07:01:14.760Z, after the follo
 The other traces in `tests/fanout/raw/terms-*.jsonl` (m24s33, m24s33b, m24s33c, m25s33) have no sample with a promise
 lapsed over 60 s, so this misread is only in m26s33. `terms.mjs` now keeps the last voter names it saw while no
 member leads.
+
+### Round 16: m27 on main 2b1938e (admission prices `stored_len`), smokes (2026-11-14)
+
+**Deploy m27.** lm1-memory 3dfc08d8 = main 2b1938e (B0-02's pricing fix, narrow-reads-3's READ_PIPELINE, m4-web-2)
+plus this branch's instruments, whose `admittedBytes` now prices `stored_len` as admission does. Image e4257d49
+(rebuilt: main's `ui.go` compare counts ship in the shard image); sites a 5b592602, b 775ad4a2, c a22f3454 (each
+site deployed twice by `siteday.sh`; these are the second); standard-4; NOROLL; 10:04Z. Full checks (checks30) pass;
+`check_names` and `check_links` pass in a clean worktree (2,695 files, 3,249 citations). Long sweep (sweep16/17) exit
+0, longest healthy-quorum stall 15,735 / 25,169 / 23,771 ms; Porcupine Ok on all three histories (156,325, 2,230,496
+and the third). Plants 92 and 93 caught.
+
+**Smokes**, B0-29's agreed shape (fresh repo, learners enam 4,000 / weur 2,000 / apac 2,000 then k 4, 500 PRs opened
+before the window), 180 s each:
+
+| line | s250 (131332) | s500 (131333) |
+|---|---|---|
+| commit p50 / p99 | 351 / 968 ms | 480 / 1,671 ms |
+| queue / queue:slot p99 | 625 / 596 | 1,193 / 1,151 |
+| round p99 (near / far append) | 443 (503 / 727) | 746 (687 / 867) |
+| confirm p99 (storage, <100 KB / 100 KB–1 MB) | 71 / 262 | 179 / 88 |
+| entries / commands | 836 / 1,829 | 658 / 3,027 (4.6 an entry) |
+| agent pushes | 385 / 385, p99 5.7 s | 745 / 746 (1 503 on access rows), p99 9.6 s |
+| merge:only p99 | 1,358 | 1,285 |
+| API reads | 34,373, 100% 200, p99 1.6 s | 34,757: 34,029 200, 66 503, 662 driver cap; p99 4.0 s |
+| leader | term 2 held, 108 req/s, 0 `/suspect` | term 2 held, 123 req/s, 0 `/suspect` |
+| admission capacity / retryAfterS | 218–1,078 /s, 1–2 s | 151–1,066 /s, 1–2 s |
+| cmdBytes (moving mean) / agentQueued max | 740–2,431 / 4 | 716–2,015 / 8 |
+| admittedBytes agent p50 / p99 | 509 / 906 | 509 / 905 |
+| leader wasm | 28 → 52 MiB | 28 → 67 MiB |
+
+The pricing fix holds: agent-class commands price at p50 509 bytes (m26c: 10,842), capacity sits at hundreds a second
+(m26c: 30–47), and the agent queue never passes 8. At 500 the commit p99 (1,671 ms) is past B0-29's fail line (1 s);
+it is the queue's slot wait (1,151) behind a round of 746 ms, whose far leg reads 867 ms, not admission (Retry-After
+1–2 s, queue under 10) and not the confirm (179). That is round 13's finding again on this shape: the line is the
+round's follower legs. B0-29 runs as the gate row (600 s) next, as the operator ordered.
+
+Cost $114.62 at 10:41Z (containers $46.80); the smokes' sweep "sweep ok" (6 torn down).
