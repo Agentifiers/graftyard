@@ -68,6 +68,15 @@ The run service's pure half is `crates/actions/src/runsvc.rs` (JIT config, the O
 - **Routing.** A runner's `clientId` holds its owner, registration shard, and id, and each token names its Actions shard, so the edge routes every run-service call with no lookup. Job GUIDs carry the full 53-bit id. The matrix run passed again after the change: 2 jobs `Success`, 154 live-log frames, 12 blobs [measured].
 - **Found:** a job token's `orch_id` must hold no spaces, because the runner sends it in its `User-Agent` (`tests/m4/wp3/runner-protocol.md`).
 
+## Hosted on graft-m4a: the run service and LogRelay
+
+Site day 28 (14:15Z) put the `Actions` family, `/runsvc`, `RunnerBroker`, `LogRelay`, and `RUN_SERVICE_KEY` (Secrets Store) on all three sites. Edge days 10 and 11 by M4 web put `workers/edge/src/actions.rs` on the edge, with `RUN_SERVICE_PUBLIC`. Site day 29 (14:45Z) fixed the one hosted failure. `tests/m4/wp3/hosted-run.mjs` drives an unmodified `actions/runner` 2.338.2 through product routes only: it registers an ephemeral runner (`POST /api/graftyard/v1/repos/{o}/{r}/actions/runners`), writes its JIT config with `examples/jitconfig.rs`, and dispatches a workflow read from the git shard's `/ui/blob`.
+
+- **Found on day 28:** a new Actions shard's first command answered 422 `NeedIdBlock`. `/runsvc` waited on its ticket without handing over the command, so the host's lease loop had nothing to re-send after leasing a block. The command now goes with the ticket, as `/commit`'s does (`f0282e80`).
+- **Live log, 14:47Z** (`tests/m4/wp3/hosted/live.yml`, one line a second for 10 minutes): the runner took job 1114114 of run 1114113 on `m3org/wp3-live` (shard `actions:7100001.8`) 4 s after dispatch. A viewer on `/_t/logrelay/repos/m3org/wp3-live/jobs/1114114` got `hello` with the tail, then `line` messages p50 339 ms and at most 375 ms after the runner printed them, over 23 lines [measured]. The relay's `line.at` is to the second.
+- **GHES reads** on the same run: `actions/runs/{id}`, `runs/{id}/jobs`, and `jobs/{id}` answer 200, with the runner's step report as `steps` (1 and 2 `completed`/`success`, 3 `in_progress`, 4 `queued`) [measured].
+- **Not yet checked:** a viewer's close arrives about 10 s after `no-stream` (M4 web, edge day 10), or not within 12 s (edge day 11). The web viewer falls back on `no-stream` itself; BF-61's kill path falls back on the close, so it is checked there.
+
 ## The parser: `crates/actions/src/workflow`
 
 - **`template`** reads YAML (`yaml-rust2`, default features off, which builds for wasm32) into template tokens and validates them against `workflow-v1.0.json`, the oracle's schema with descriptions removed, so allowed contexts, required properties, and error text come from the same data the runner uses.
@@ -86,4 +95,4 @@ The run service's pure half is `crates/actions/src/runsvc.rs` (JIT config, the O
 
 ## Cost
 
-No hosted spend in step 2 so far: nothing has been deployed.
+`INSTALL=graft-m4a python3 tests/fanout/m2bcost.py`, 2026-11-14 14:10Z to 14:50Z (site days 28 and 29, the edge days, and the live run): $0.53, of which containers $0.51 (git shards started by the resets). The whole install 00:00Z to 14:50Z: $8.47, containers $7.66.
