@@ -1707,3 +1707,52 @@ none ("leader site undefined") and kept no commit split, so it was rerun as 1313
 read by name later, stood at index 918 [unverified why].
 
 Cost after round 13: $109.01 of $150 at 05:35Z (containers $45.79); every sweep "sweep ok".
+
+### Round 14: B0-33's confirm split, and why the row fails (m25, 2026-11-14)
+
+**Run.** Deploy m25 (round 13). B0-33 smoke, repo 131329 (`fm25s33-b033`), 5,000 agents, 300 s, k 4 granted, learners
+enam 4,000, weur 2,000, apac 2,000, `tests/fanout/terms.mjs` once a second with each follower's promise (raw:
+`tests/fanout/raw/terms-m25s33.jsonl`).
+
+**Leader: held.** Term 2 from start to end on all three members; no `member alarm` StepDown in Workers Logs for
+05:36Z to 05:47Z; both followers held a promise to the leader the whole run (it lapsed and was renewed within a
+second at 05:39:10Z and in the idle tail after 05:46:51Z, never with an election). So on this tree the leader-change
+and `suspect` lines hold for one run, where m22 (84d29c2) climbed to term 10 and m24c (dd046f2) moved once on a
+`Confirm` step-down.
+
+**Confirm split [measured].** The leader's confirm is short and storage-bound: confirm p99 166 ms (m24c's B0-33: 1,673
+ms). Of 1,351 timed confirms, 1,348 carried under 100 KB (p50 3.6 KB, p99 46 KB): storage p99 149 ms, `gate` and
+`turn` p99 0. The other 3 carried 416 to 834 KB and up to 1,560 statements: storage p99 818 ms, `gate` 154 and `turn`
+28 ms. So the answer to the parent's question on this run is storage, not the turn queue, and it is driven by the few
+large transactions (many statements), not by entry bytes in general; with Workers' clock advancing only across I/O,
+synchronous CPU inside `transactionSync` would read as later inputs' `gate` and `turn`, and those read 0 for 99.8% of
+confirms, so the isolate was not busy enough to delay them [inference from the clock rule].
+
+**Why B0-33 still fails: admission capacity.** Commit p50 / p99 29,888 / 30,363 ms, all of it queue (`queue:slot`
+p99 30,096 ms: commands wait AGENT_WAIT for the entry ahead) while the round is short (p50 196, p99 364 ms) and
+`queue:post` p99 245 ms. The leader cut 1,351 entries of 9,844 commands in the 335 s window, 7.3 per entry and about
+29 commands/s, against 252 agent-class commands/s offered: 2,328 of 12,538 agent pushes ok (10,200 `full`), about 7.8
+agent pushes and 20.8 side commands/s admitted against the gate's 140. With entries of 3.6 KB at p50, ENTRY_SOFT does
+not bind them, so the cut is held to about 7 commands an entry by the token bucket, `AGENT_SHARE` times the measured
+capacity, where capacity is ENTRY_SOFT over the moving average of command bytes times entries per second at the
+moving average of the round (`crates/raft/src/member/leader.rs`, `Admission::capacity`). The average command bytes
+counts every class's soft bytes, so a few large human or bot commands lower the per-entry estimate for all
+[inference; not measured on this run]. `/stats?summary=1`'s `admission` now also returns `capacity` and
+`retryAfterS`, and `a1.mjs` samples the leader's admission every 10 s into the row (`leader` row field `admission`),
+for the next site day.
+
+Other lines: human pushes 109 of 189 ok, p99 29.7 s; merge:only p99 10.2 s; the fast user 470 of 495 ok (25 × 503);
+read:ref p99 9.0 s; leader 457 req/s with 0 feed polls.
+
+**Learner wait.** The pre-window wait again read 0 of 8 caught up after 120 s at commit 114 on a fresh repository, as
+in round 13's first fresh arm, while the 500-PR arms read 8 of 8 within 3 s [unverified why; a learner's `/status`
+before it has applied its first append may not report `applied`].
+
+Cost after round 14: $110.68 of $150 (containers $45.90); the run's sweep "sweep ok".
+
+**Gate-row tree.** The parent: gate rows build on main, not on m25's merge (adaptive-append is not merging yet).
+`lm1-memory` now merges origin/main `34a3316f`, which brings liveness-split-vote (a21ecdf0, a raft change whose long
+sweep and Porcupine its own record shows passing, `tests/m0/results/split-vote.md`). Full checks on the merge: fmt,
+workspace clippy, wasm32 clippy for site, edge and ops with and without `test-faults`, `cargo test --workspace`,
+`go test` and `check_design` pass; `check_names` and `check_links` fail only on `.worktrees/` and pass in a clean
+worktree (2,605 files; 3,235 citations).

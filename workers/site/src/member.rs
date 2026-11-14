@@ -1348,6 +1348,9 @@ impl<F: Family> Routes<F> {
                 "admission": self.host.core.borrow().as_ref().and_then(|c| c.m.admission()).map(|a| json!({
                     "queued": a.queued, "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot,
                     "pressure": a.pressure,
+                    // LM-1 round 14: B0-33 committed about 33 commands/s of small entries against 252 offered, so the
+                    // measured capacity the token bucket refills from is read alongside the queue.
+                    "capacity": a.capacity, "retryAfterS": a.retry_after_s,
                 })),
                 "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
             });

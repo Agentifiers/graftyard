@@ -924,6 +924,16 @@ if (leader !== undefined) jobs.push((async () => {
   await sleep(Math.max(0, end - 20_000 - Date.now()));
   lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
 })());
+// Round 14: the leader's admission every 10 s (capacity, queued, agent queue and bytes, pressure), from the summary.
+const admissionSeen = [];
+if (leader !== undefined) jobs.push((async () => {
+  await sleep(Math.max(0, t0 - Date.now()));
+  while (Date.now() < end) {
+    const v = (await member(CHAIN, leader, "/stats?summary=1", undefined, 10_000).catch(() => ({}))).v;
+    if (v?.admission) admissionSeen.push({ s: Math.round((Date.now() - t0) / 1000), ...v.admission, wasmMemMb: v.wasmMemMb });
+    await sleep(10_000);
+  }
+})());
 if (plan.openPrs) jobs.push((async () => {
   while (Date.now() < end) {
     await sleep(15_000);
@@ -971,6 +981,7 @@ const v = {
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
   ...(b034 ? { b034: { kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
+  ...(admissionSeen.length ? { admission: admissionSeen } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {
     overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,
