@@ -1332,6 +1332,7 @@ impl<F: Family> Routes<F> {
             "admission": c.m.admission().map(|a| json!({
                 "capacity": a.capacity, "roundMs": a.round_ms, "cmdBytes": a.cmd_bytes, "queued": a.queued,
                 "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot, "pressure": a.pressure,
+                "retryAfterS": a.retry_after_s,
             })),
             "now": now_ms(),
         })
