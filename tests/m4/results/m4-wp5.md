@@ -67,6 +67,27 @@ Built from main `5c0f06fb` merged with `m4-web-2` `97841ed` (which ships `8014eb
 
 Checked: `/api/v3/user`, `/repos/m3org/j4`, `pulls/1`, `pulls/3`, `/hooks`, `/api/v3/meta`, and git `info/refs` answer 200; the shell answers 200 to a document request; an asset answers 200 with `public, max-age=31536000, immutable`. BF-38 at 08:41Z on 2026-11-14: **6 passed, 1 pending** (live log) in 46.8 s. The diff tab's "Files changed 0" and "+0 −0" are the counts above; the tree and patches show 3 files.
 
+### After site day 26: counts and single-comment reviews, hosted
+
+Site day 26 (M4 Actions, 09:10Z on 2026-11-14) put git shard image `sha256:969fd147…` and main `d41da860`'s site code, which includes `m4-web-2`, on all three sites. `m3org/web38-a`'s shards (repository 65542) had run since 06:47Z on the old image, and a container keeps its image until it restarts, so M4 Actions tore them down at 09:23Z; the next read started them on the new one. The edge stayed `bcb4ed2a`.
+
+| Read, 09:25Z | PR #1 | PR #3 |
+| --- | --- | --- |
+| REST `commits` / `additions` / `deletions` / `changed_files` | 2 / 8 / 2 / 3 (were 2 / 0 / 0 / 0) | 1 / 1 / 0 / 1 (were 1 / 0 / 0 / 0) |
+| GraphQL `additions` / `deletions` / `commits.totalCount` | 8 / 2 / 2 | 1 / 0 / 1 |
+| `/_t/ui` files, summed | +8 −2, 3 files | +1 −0, 1 file |
+| Web tab bar | "Files changed 3", "+8 −2" | "Files changed 1" |
+
+A fresh review comment on PR #3 at 09:22:00Z (`POST /pulls/3/comments`, `docs/fresh.md` line 1) answered `id` 491524 with `pull_request_review_id` 491525, which `GET /pulls/3/reviews` lists as COMMENTED with an empty body on the head commit. Its reply (`in_reply_to` 491524) answered 458756 with review 491526. The timeline shows both comments once, inside m3-admin's "reviewed" entry. BF-38 at 09:26Z: **6 passed, 1 pending** (live log) in 46.4 s.
+
+### Comments that still need the timeline's unlisted-thread view (`91464e1`)
+
+The timeline still shows a thread whose review is not listed, because these comments have no review:
+- every review comment created over REST before site day 26 put `m4-web-2`'s decide on the sites, 09:10Z on 2026-11-14: on graft-m4a, `m3org/web38-a` PR #1's "Cap this at 10 s…" (BF-38's seed) is one;
+- until an edge enables format 32.22, a comment by a reviewer whose verdict on that pull request is APPROVED or CHANGES_REQUESTED.
+
+Once 32.22 is enabled, only the first group remains, and those comments stay as they are: no event rewrites a committed comment's `review`. The view can go when no install holds such a comment, which for graft-m4a means reseeding BF-38's repository.
+
 ## Edge days
 
 | Edge day | `m4-web` | Version |
@@ -88,10 +109,10 @@ Each was built from `m4-web` merged with `origin/m4-actions` `83afa6d`, deployed
 
 `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T03:00:00Z 2026-11-13T13:30:00Z`: **$4.52** for the whole install that day (all threads sharing it), under the $25 cap. Containers are $3.03 of it.
 
-Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2026-11-14T08:45:00Z` is **$24.47** (containers $14.51), mostly M4 Actions' load runs on the shared install. With the earlier window's $4.52, the install has spent about $29 since 03:00Z on 2026-11-13, past the $25 cap.
+Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2026-11-14T08:45:00Z` is **$24.47** (containers $14.51), mostly M4 Actions' load runs on the shared install. With the earlier window's $4.52, the install has spent about $29 since 03:00Z on 2026-11-13, past the $25 cap. The lead ruled that the cap counts only this thread's own share (its edge days and BF-38 runs), as for M4 Actions, so the shared install's container hours are not in it.
 
 ## Pending
 
 - BF-38's running-job live log, and BF-61: both need `LogRelay` from M4-WP3.
-- A site day with git shard image `sha256:969fd147…` and a site script that includes `m4-web-2`, for the counts' `additions`, `deletions`, and `changed_files` and for single-comment reviews; then re-check PR #1's counts and a new review comment's `pull_request_review_id`.
+- Format 32.22 (`ReviewEvent::SingleComment`, `m4-web-3`): a site day onto a release that reads it, then an edge day that adds 32.22 to `FORMATS_ENABLED`, then, on graft-m4a, an approver's review comment: it should get its review while the pull request stays APPROVED.
 - The chrome widgets whose REST routes the edge does not serve yet (F61) render nothing.
