@@ -69,8 +69,8 @@ pub use shard::{
     validator, warm_sites, warming_now,
 };
 pub use store::{
-    Copies, PART_SIZE, PackStore, Place, PlaceError, PutOutcome, Stage, TeeError, durable_sites, mark_committed,
-    put_marker,
+    Copies, PART_SIZE, PackStore, Pipe, PipeReader, Place, PlaceError, PutOutcome, Stage, Streamed, TeeError,
+    durable_sites, mark_committed, put_marker,
 };
 pub use sweep::{
     Action, Alarm, BucketView, CronBudget, Lookup, Plan, RequestRow, RequestSource, SweepAll, SweepReport, decide,

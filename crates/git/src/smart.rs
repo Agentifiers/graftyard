@@ -5,6 +5,7 @@
 use graftyard_raft::Acked;
 use thiserror::Error;
 
+use crate::pack::INLINE_MAX;
 use crate::pkt::{self, Band, Pkt, PktError, Reader};
 use crate::refs::{ObjectId, RefName, RefUpdate};
 use crate::repo::{ATOMIC_REFS_MAX, PushOut, RefOutcome, RejectReason};
@@ -290,6 +291,117 @@ pub fn parse_receive_pack(body: &[u8]) -> Result<ReceivePack, RequestError> {
         }
     }
     Ok(ReceivePack { updates, caps, options, pack_at: r.pos() })
+}
+
+/// How many of a body's first bytes the cap refusal parses, as it always has: the commands it names come from them.
+pub const CAP_HEAD: usize = 64 << 10;
+
+/// The edge's read of a receive-pack body ahead of its pack (`design/DESIGN.md`, journey 1, step 2). It holds the
+/// body while it may still be one the edge buffers whole: until the commands are read and more than `INLINE_MAX` of
+/// pack follows them, which no inline pack has. Then the rest streams (`Read::Stream`). A body whose commands do not
+/// parse is held to `INLINE_MAX`, then only counted, so it is answered as if it had been held whole. Commands that
+/// have not ended are held, up to the cap, as the edge held every body: a refusal names each of their refs. Every byte
+/// counts against the cap, and the first `CAP_HEAD` are kept for the cap refusal.
+pub struct BodyReader {
+    cap: u64,
+    n: u64,
+    buf: Vec<u8>,
+    first: Vec<u8>,
+    /// Parse again once `buf` is this long: twice its length at the last try, so the parses cost at most twice the
+    /// commands' bytes.
+    next_try: usize,
+    head: Option<ReceivePack>,
+    bad: Option<RequestError>,
+}
+
+/// What `BodyReader::push` decides after a chunk.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Read {
+    More,
+    /// The body passed the cap: answer `cap_refusal` against `BodyReader::cap_head`.
+    OverCap,
+    /// The commands are read and more than `INLINE_MAX` of pack follows: the rest of the body streams.
+    Stream,
+}
+
+/// A body that ended without passing the cap or streaming.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// All of it, as the edge has always read it.
+    Whole(Vec<u8>),
+    /// Its commands do not parse, and it was too long to hold: the error a parse of the whole body gives.
+    Bad(RequestError),
+}
+
+/// A body that streams: the pack bytes read so far, and the body's first `CAP_HEAD` bytes.
+pub struct Streaming {
+    pub pack: Vec<u8>,
+    pub cap_head: Vec<u8>,
+    /// Bytes of the body read so far.
+    pub read: u64,
+}
+
+impl BodyReader {
+    pub fn new(cap: u64) -> BodyReader {
+        BodyReader { cap, n: 0, buf: Vec::new(), first: Vec::new(), next_try: 0, head: None, bad: None }
+    }
+
+    pub fn push(&mut self, c: &[u8]) -> Read {
+        self.n += c.len() as u64;
+        let keep = (CAP_HEAD - self.first.len()).min(c.len());
+        self.first.extend_from_slice(&c[..keep]);
+        if self.n > self.cap {
+            return Read::OverCap;
+        }
+        if self.bad.is_some() {
+            return Read::More;
+        }
+        self.buf.extend_from_slice(c);
+        if self.head.is_none() && self.buf.len() >= self.next_try {
+            match parse_receive_pack(&self.buf) {
+                Ok(rp) => self.head = Some(rp),
+                Err(RequestError::Unterminated | RequestError::Pkt(PktError::Truncated(_))) => {
+                    self.next_try = self.buf.len() * 2;
+                }
+                // Any other error is the whole body's too, but a short body is still held whole, so the probe's bare
+                // flush and every short body read as before.
+                Err(e) if self.buf.len() > INLINE_MAX => {
+                    self.bad = Some(e);
+                    self.buf = Vec::new();
+                }
+                Err(_) => self.next_try = INLINE_MAX + 1,
+            }
+        }
+        match &self.head {
+            Some(rp) if self.buf.len() - rp.pack_at > INLINE_MAX => Read::Stream,
+            _ => Read::More,
+        }
+    }
+
+    /// A reader that holds the whole body whatever it holds: a gzip body, which the edge inflates only once it ended.
+    pub fn whole(cap: u64) -> BodyReader {
+        BodyReader { next_try: usize::MAX, ..BodyReader::new(cap) }
+    }
+
+    /// The body's first `CAP_HEAD` bytes.
+    pub fn cap_head(&self) -> &[u8] {
+        &self.first
+    }
+
+    /// The body after `Read::Stream`: its commands, and what it read past them.
+    pub fn streaming(mut self) -> (ReceivePack, Streaming) {
+        let rp = self.head.expect("Read::Stream comes only after the commands parsed");
+        let pack = self.buf.split_off(rp.pack_at);
+        (rp, Streaming { pack, cap_head: self.first, read: self.n })
+    }
+
+    /// The body once it ended.
+    pub fn end(self) -> Ended {
+        match self.bad {
+            Some(e) => Ended::Bad(e),
+            None => Ended::Whole(self.buf),
+        }
+    }
 }
 
 fn reason(r: &RejectReason) -> &str {
@@ -684,6 +796,101 @@ mod tests {
         // A request with push-options in its caps must carry the options section.
         let body = request(&[ok], "report-status push-options", &[], b"");
         assert_eq!(parse_receive_pack(&body[..body.len() - 4]), Err(RequestError::Unterminated));
+    }
+
+    /// How `BodyReader` read `body` fed in `chunk`-byte chunks with a cap of `cap`: where it stopped, and for a body
+    /// that streams, the commands, the pack bytes it held, and how many body bytes it had read.
+    #[derive(Debug, PartialEq)]
+    enum Fed {
+        Ended(Ended),
+        OverCap(Vec<u8>, usize),
+        Stream(ReceivePack, Vec<u8>, u64),
+    }
+
+    fn feed(mut r: BodyReader, body: &[u8], chunk: usize) -> Fed {
+        for (i, c) in body.chunks(chunk).enumerate() {
+            match r.push(c) {
+                Read::More => {}
+                Read::OverCap => return Fed::OverCap(r.cap_head().to_vec(), i),
+                Read::Stream => {
+                    let (rp, s) = r.streaming();
+                    return Fed::Stream(rp, s.pack, s.read);
+                }
+            }
+        }
+        Fed::Ended(r.end())
+    }
+
+    /// The edge holds a push's body only while it may be inline: a pack of INLINE_MAX bytes is read whole, as the edge
+    /// always read every body, and one byte more streams once that byte arrives, so the edge holds at most the
+    /// commands, INLINE_MAX, and one chunk of any pack, however large. A buffering reader fails here on every large
+    /// body.
+    #[test]
+    fn the_edge_holds_a_push_body_only_while_its_pack_may_be_inline() {
+        let cmds = [cmd(ObjectId::ZERO, oid(1), "refs/heads/main"), cmd(oid(2), oid(3), "refs/heads/dev")];
+        let caps = "report-status side-band-64k push-options agent=git/2.47.0";
+        let at = request(&cmds, caps, &["ci.skip"], b"").len();
+        let pack = |n: usize| (0..n).map(|i| (i * 7 % 251) as u8).collect::<Vec<u8>>();
+        // Commands split over chunks of every size, down to one byte, parse the same.
+        for chunk in [1, 5, 1000, 64 << 10] {
+            let body = request(&cmds, caps, &["ci.skip"], &pack(INLINE_MAX));
+            assert_eq!(feed(BodyReader::new(1 << 40), &body, chunk), Fed::Ended(Ended::Whole(body.clone())), "{chunk}");
+        }
+        for (n, chunk) in [(INLINE_MAX + 1, 1 << 10), (INLINE_MAX + 1, 1), (60 << 20, 64 << 10)] {
+            let body = request(&cmds, caps, &["ci.skip"], &pack(n));
+            let Fed::Stream(rp, held, read) = feed(BodyReader::new(1 << 40), &body, chunk) else {
+                panic!("a pack of {n} bytes in {chunk}-byte chunks did not stream")
+            };
+            assert_eq!(rp, parse_receive_pack(&body).unwrap());
+            assert!(held.len() > INLINE_MAX && held.len() <= INLINE_MAX + chunk, "held {} of {n}", held.len());
+            assert_eq!(read as usize, at + held.len(), "it held every byte it read past the commands");
+            assert_eq!(&body[at..read as usize], &held[..]);
+        }
+        // Deletes only: no pack, read whole.
+        let del = request(&[cmd(oid(2), ObjectId::ZERO, "refs/heads/old")], "report-status", &[], b"");
+        assert_eq!(feed(BodyReader::new(1 << 40), &del, 3), Fed::Ended(Ended::Whole(del.clone())));
+    }
+
+    /// Every other body is answered as when the edge read it whole: the probe's bare flush and a body that parses to
+    /// an error come back whole; a long body whose commands are bad is answered the error a whole-body parse gives,
+    /// without holding it; a gzip body is held whole, whatever its length; and the cap counts every byte, keeping the
+    /// first `CAP_HEAD`, whether the body streams or not.
+    #[test]
+    fn a_push_body_the_edge_does_not_stream_reads_as_when_it_was_held_whole() {
+        assert_eq!(feed(BodyReader::new(100), b"0000", 1), Fed::Ended(Ended::Whole(b"0000".to_vec())));
+        let bad = request(&[cmd(ObjectId::ZERO, oid(1), "HEAD")], "report-status", &[], &[7; 100]);
+        assert_eq!(feed(BodyReader::new(1 << 40), &bad, 9), Fed::Ended(Ended::Whole(bad.clone())));
+        let big = request(&[cmd(ObjectId::ZERO, oid(1), "HEAD")], "report-status", &[], &[7; 3 << 20]);
+        assert_eq!(
+            feed(BodyReader::new(1 << 40), &big, 64 << 10),
+            Fed::Ended(Ended::Bad(parse_receive_pack(&big).unwrap_err()))
+        );
+        // No flush in a long body: not a push git sends, and parsed as the whole body parses.
+        let mut runon = Vec::new();
+        while runon.len() <= INLINE_MAX + 10 {
+            pkt::data(&mut runon, &cmd(ObjectId::ZERO, oid(1), "refs/heads/main"));
+        }
+        assert_eq!(
+            feed(BodyReader::new(1 << 40), &runon, 4096),
+            Fed::Ended(Ended::Whole(runon.clone())),
+            "an unterminated body is held: a parse never fails on it before it ends"
+        );
+        let long = request(&[cmd(ObjectId::ZERO, oid(1), "refs/heads/main")], "report-status", &[], &[1; 3 << 20]);
+        assert_eq!(feed(BodyReader::whole(1 << 40), &long, 64 << 10), Fed::Ended(Ended::Whole(long.clone())));
+        // The cap: one byte over is refused, at the chunk that passed it, with the first CAP_HEAD bytes kept. (Past
+        // the head the edge counts a streamed body's rest itself.)
+        let short = request(&[cmd(ObjectId::ZERO, oid(1), "refs/heads/main")], "report-status", &[], &[1; 500_000]);
+        for (body, r) in [(&short, BodyReader::new as fn(u64) -> BodyReader), (&long, BodyReader::whole)] {
+            let cap = body.len() as u64 - 1;
+            assert_eq!(feed(r(cap + 1), body, 1000), Fed::Ended(Ended::Whole(body.clone())));
+            let at = body.len().div_ceil(1000) - 1;
+            assert_eq!(feed(r(cap), body, 1000), Fed::OverCap(body[..CAP_HEAD].to_vec(), at));
+        }
+        assert_eq!(feed(BodyReader::new(10), &long, 1000), Fed::OverCap(long[..1000].to_vec(), 0));
+        // A long bad body is no longer held, but every byte still counts.
+        let cap = big.len() as u64 - 1;
+        let at = big.len().div_ceil(1000) - 1;
+        assert_eq!(feed(BodyReader::new(cap), &big, 1000), Fed::OverCap(big[..CAP_HEAD].to_vec(), at));
     }
 
     #[test]

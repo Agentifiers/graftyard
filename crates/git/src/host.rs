@@ -159,6 +159,133 @@ impl Bucket for R2 {
     }
 }
 
+/// One part of a streamed pack, held as a JavaScript `Uint8Array` rather than in wasm memory, so every bucket's put
+/// reads the one copy and the isolate's wasm heap holds none of the pack (`PackStore::place_streamed`).
+pub struct JsPart {
+    buf: js_sys::Uint8Array,
+    len: u32,
+}
+
+impl crate::bucket::PartBuf for JsPart {
+    fn with_capacity(n: usize) -> Self {
+        JsPart { buf: js_sys::Uint8Array::new_with_length(n as u32), len: 0 }
+    }
+    fn push(&mut self, b: &[u8]) {
+        self.buf.subarray(self.len, self.len + b.len() as u32).copy_from(b);
+        self.len += b.len() as u32;
+    }
+    fn filled(&self) -> usize {
+        self.len as usize
+    }
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+impl JsPart {
+    /// The filled bytes as a view, not a copy. A put reads it before it resolves, and the tee refills the part only
+    /// after every put of it resolved.
+    fn view(&self) -> js_sys::Uint8Array {
+        self.buf.subarray(0, self.len)
+    }
+}
+
+impl R2 {
+    fn raw(&self) -> &worker::worker_sys::R2Bucket {
+        use wasm_bindgen::JsCast;
+        AsRef::<wasm_bindgen::JsValue>::as_ref(&self.0).unchecked_ref()
+    }
+}
+
+/// Awaits an R2 binding promise.
+async fn js(p: Result<js_sys::Promise, wasm_bindgen::JsValue>) -> Result<wasm_bindgen::JsValue, StoreError> {
+    let p = p.map_err(|e| err(worker::Error::from(e)))?;
+    worker::wasm_bindgen_futures::JsFuture::from(p).await.map_err(|e| err(worker::Error::from(e)))
+}
+
+fn object(pairs: &[(&str, wasm_bindgen::JsValue)]) -> js_sys::Object {
+    let o = js_sys::Object::new();
+    for (k, v) in pairs {
+        let _ = js_sys::Reflect::set(&o, &(*k).into(), v);
+    }
+    o
+}
+
+fn meta_object(meta: &[(String, String)]) -> wasm_bindgen::JsValue {
+    let o = js_sys::Object::new();
+    for (k, v) in meta {
+        let _ = js_sys::Reflect::set(&o, &k.into(), &v.into());
+    }
+    o.into()
+}
+
+/// The streamed tee's parts go to the binding as views of their `JsPart`, which the runtime reads as bytes
+/// (`R2PutValue`'s `kj::Array<kj::byte>`), so no part is copied back into wasm memory.
+impl crate::bucket::Multipart for R2 {
+    type Part = JsPart;
+
+    async fn put_whole(
+        &self,
+        key: &str,
+        part: &JsPart,
+        sha256: Digest,
+        meta: &[(String, String)],
+    ) -> Result<PutNew, StoreError> {
+        let sum = js_sys::Uint8Array::from(&sha256.0[..]).buffer();
+        let opts = object(&[
+            ("onlyIf", object(&[("etagDoesNotMatch", "*".into())]).into()),
+            ("sha256", sum.into()),
+            ("customMetadata", meta_object(meta)),
+        ]);
+        let v = js(self.raw().put(key.to_owned(), part.view().into(), opts.into())).await?;
+        if v.is_null() {
+            return Ok(PutNew::Exists(self.head(key).await?.and_then(|o| o.sha256)));
+        }
+        Ok(PutNew::Created)
+    }
+
+    async fn start_upload(
+        &self,
+        key: &str,
+        journal: &str,
+        meta: &[(String, String)],
+    ) -> Result<Result<String, PutNew>, StoreError> {
+        if let Some(o) = self.head(key).await? {
+            return Ok(Err(PutNew::Exists(o.sha256)));
+        }
+        let m: std::collections::HashMap<String, String> = meta.iter().cloned().collect();
+        let u = self.0.create_multipart_upload(key).custom_metadata(m).execute().await.map_err(err)?;
+        let id = u.upload_id().await;
+        let mut jm = std::collections::HashMap::new();
+        jm.insert("upload".to_owned(), id.clone());
+        self.0.put(journal, Vec::<u8>::new()).custom_metadata(jm).execute().await.map_err(err)?;
+        Ok(Ok(id))
+    }
+
+    async fn put_part(&self, key: &str, upload_id: &str, n: u16, part: &JsPart) -> Result<String, StoreError> {
+        use wasm_bindgen::JsCast;
+        let u: worker::worker_sys::R2MultipartUpload = self
+            .raw()
+            .resume_multipart_upload(key.to_owned(), upload_id.to_owned())
+            .map_err(|e| err(worker::Error::from(e)))?
+            .unchecked_into();
+        let p: worker::worker_sys::R2UploadedPart = js(u.upload_part(n, part.view().into())).await?.unchecked_into();
+        p.etag().map_err(|e| err(worker::Error::from(e)))
+    }
+
+    async fn complete_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+        journal: &str,
+        parts: &[(u16, String)],
+    ) -> Result<(), StoreError> {
+        let u = self.0.resume_multipart_upload(key, upload_id).map_err(err)?;
+        u.complete(parts.iter().map(|(n, e)| worker::UploadedPart::new(*n, e.clone()))).await.map_err(err)?;
+        self.0.delete(journal).await.map_err(err)
+    }
+}
+
 /// Starts a multipart upload of a pack and journals its upload id in the same bucket first, so the sweeper can abort
 /// it if the uploader dies. The Workers binding cannot list multipart uploads.
 pub async fn start_upload(
