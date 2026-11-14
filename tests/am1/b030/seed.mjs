@@ -6,11 +6,14 @@
 //   node tests/am1/b030/seed.mjs [TARGET=4000000000]
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { log, member, sleep } from "../hosted/lib.mjs";
-const chain = `repo:${JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8")).repo}`;
+const repo = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8")).repo;
+const chain = `repo:${repo}`;
 const TARGET = Number(process.argv[2] ?? 4_000_000_000);
 const BATCH = 10_000;
 const WRITTEN = 2;
-const file = (s) => `tests/am1/raw/b030-seed.${s}`;
+// Per repository, so a new repository never resumes from another one's finished seed (smoke 3 on repo:1048588 read
+// smoke 2's files, seeded no row, and split a 1.4 MB group).
+const file = (s) => `tests/am1/raw/b030-seed.${repo}.${s}`;
 const lines = (s) => (existsSync(file(s)) ? readFileSync(file(s), "utf8").trim().split("\n").filter(Boolean).map((l) => l.split(" ")) : []);
 
 for (const s of [0, 1, 2]) log(`hold ${s}: ${JSON.stringify((await member(chain, s, "/bench_seed", { snap: "hold" })).v)}`);
