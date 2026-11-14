@@ -29,7 +29,7 @@ const faq = [
   ['Where does Graftyard run?', 'Only on Cloudflare: as a managed service, in your own Cloudflare account, or self-hosted.'],
   ['Why not build it on Cloudflare Artifacts?', 'A new Artifacts repository is capped at 1 GB and lives in one place. The full answer has its own page.'],
   ['Can AI coding agents use Graftyard?', 'Yes, as GitHub Apps with ordinary tokens. An opt-in agent layer adds task leases and an activity feed.'],
-  ['When can I use Graftyard?', 'It is in build: Milestones 0 to 3 are closed, through identity and authorization. Milestone 4, webhooks and Actions, is next.'],
+  ['When can I use Graftyard?', 'It is in build: Milestones 0 to 3 are closed, through identity and authorization. Milestone 4 is under way: webhooks, notifications, search and the web app run on a test install, and Actions is next.'],
 ];
 const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
 ---
@@ -73,6 +73,8 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
 .gh-source a { text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
 @media (max-width: 767px) { .gh-services { grid-template-columns: minmax(0, 1fr); } .gh-bars { gap: 1px; height: 32px; } }
 #clients .frame--split { padding: 0; }
+.shot { margin: 0; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: #0d0d0d; align-self: start; }
+.shot img { display: block; width: 100%; height: auto; }
 #clients .frame .dg { position: absolute; inset: 0; }
 @media (min-width: 640px) and (max-width: 1023px) { #clients .frame--split { --ratio: 56%; } }
 @media (max-width: 379px) { .hero__window .ui-term .ui-term__key { width: 48px; } .hero__window .ui-term__track { font-size: 11.5px; } .hero__window .ui-term__ln { padding-inline: 12px; } .hero__window .ui-term__log { gap: 8px; } }
@@ -236,6 +238,26 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
           <p class="more"><a class="link" href="/evidence/#chaos">The chaos runs<Fragment set:html={ARROW} /></a></p>
         </div>
         <Film name="chaos-loop" label="Members reset and leadership moves between three sites while writes keep landing and none is lost" class="span-7 start-6" />
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="web" aria-labelledby="web-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="web-h">A web app your team already knows how to use</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">Repositories, pull requests, diffs, checks and reviews, in a layout GitHub users read without a tour. It reads the same GHES 3.22 REST and GraphQL as every other client, plus a small private API for files and diffs.</p>
+          <ul class="facts">
+            <li><b>0 API calls</b> before first paint: each page arrives with its first data already in the HTML.</li>
+            <li><b>One failing panel stays one failing panel.</b> With the checks query forced to fail, only the checks region showed an error.</li>
+            <li><b>Passed under Playwright</b> on a hosted test install: sign-in, repository, pull request timeline, diff and checks.</li>
+          </ul>
+          <p class="more"><a class="link" href="/evidence/#events">Webhooks, notifications and search<Fragment set:html={ARROW} /></a></p>
+        </div>
+        <figure class="shot span-7 start-6" data-visual>
+          <img src="/shots/web-checks.jpg" width="1600" height="1013" loading="lazy" alt="The Graftyard web app in dark mode: a pull request's Checks tab with four passing checks, two pending commit statuses, reviewers and the author trust panel.">
+        </figure>
       </div>
     </div>
   </section>
