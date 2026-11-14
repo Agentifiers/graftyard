@@ -1706,4 +1706,4 @@ none ("leader site undefined") and kept no commit split, so it was rerun as 1313
 `leaderOf` (up to 20 s). In that first arm the learner wait reported 0 of 8 caught up after 120 s while each learner,
 read by name later, stood at index 918 [unverified why].
 
-Cost after round 13: $108.44 of $150 at 05:21Z (containers $45.74); every sweep "sweep ok".
+Cost after round 13: $109.01 of $150 at 05:35Z (containers $45.79); every sweep "sweep ok".
