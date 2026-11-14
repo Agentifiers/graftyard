@@ -486,7 +486,7 @@ impl<'r> Node<'r> {
             "mergeStateStatus" => leaf(self.merge_state()),
             "reviewDecision" => leaf(self.review_decision()),
             "additions" | "deletions" => {
-                let c = r.dir.compare(pull.base_sha, head.head_sha);
+                let c = r.counts(pull, head);
                 leaf(if f == "additions" { c.additions } else { c.deletions })
             }
             "commits" => obj(Commits {
@@ -494,7 +494,7 @@ impl<'r> Node<'r> {
                 base: pull.base.clone(),
                 head: head.head_sha,
                 a: a.clone(),
-                total: { r.dir.compare(pull.base_sha, head.head_sha).commits },
+                total: r.counts(pull, head).commits,
             }),
             "reviews" => {
                 let nodes = r

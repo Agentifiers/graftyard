@@ -1911,3 +1911,35 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
     let e = render_err(&render(What::CheckRunCreated { id: 1 }), &IssueErr::Forbidden);
     assert_eq!(e.status, 403);
 }
+
+/// A pull request's `commits`, `additions`, `deletions`, and `changed_files` are the git cache's counts for its (base
+/// tip, head), in REST and GraphQL alike: a render over a pair the edge has not read counts 0 and records the pair in
+/// `asked`, and once the edge stores the shard's counts the next render shows them. The base tip is the branch's
+/// current one, not the one the pull request was opened on.
+#[test]
+fn a_pull_requests_counts_are_the_git_caches_for_its_base_tip_and_head() {
+    use graftyard_api::hosted::HostedDir;
+    use graftyard_api::view::Compare;
+    let mut c = seeded();
+    c.push("refs/heads/main", oid(7));
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(WRITER))), ..Default::default() };
+    let m = &c.members[0];
+    let r = Repo { host: &h, at: dir.home(), core: &m.core, meta: &m.meta, dir: &hosted };
+    let counts =
+        |v: &Value| (v["commits"].clone(), v["additions"].clone(), v["deletions"].clone(), v["changed_files"].clone());
+    let before = get_pull(&r, "2");
+    assert_eq!(counts(before.value()), (json!(0), json!(0), json!(0), json!(0)));
+    assert_eq!(*hosted.asked.borrow(), vec![(oid(7), oid(2))], "the current base tip, not the opening one");
+    hosted
+        .compares
+        .borrow_mut()
+        .push(((oid(7), oid(2)), Compare { commits: 2, additions: 5, deletions: 3, changed_files: 4 }));
+    let after = get_pull(&r, "2");
+    assert_eq!(counts(after.value()), (json!(2), json!(5), json!(3), json!(4)));
+    let q = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) {
+        additions deletions commits { totalCount } } } }"#;
+    let v = query(&Request::parse(q, None, None).unwrap(), Some(&r));
+    let pr = &v["data"]["repository"]["pullRequest"];
+    assert_eq!((&pr["additions"], &pr["deletions"], &pr["commits"]["totalCount"]), (&json!(5), &json!(3), &json!(2)));
+}

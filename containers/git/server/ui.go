@@ -790,10 +790,30 @@ func handleUICompare(w http.ResponseWriter, r *http.Request) {
 	behind, _ := strconv.Atoi(f[0])
 	ahead, _ := strconv.Atoi(f[1])
 	var m *string
+	adds, dels, files := 0, 0, 0
 	if mb != "" {
 		m = &mb
+		// A pull request's counts, as GHES gives them: the diff from the merge base to the head, renames found, a
+		// binary file counted as a file with no lines.
+		out, err := git(rp, literal, nil, "-c", "core.quotePath=false", "diff", "-M", "--no-color", "--no-ext-diff",
+			"--no-textconv", "-z", "--raw", "--numstat", "--no-abbrev", "--end-of-options", mb, head, "--")
+		if err != nil {
+			fail(w, 500, "%v", err)
+			return
+		}
+		fs, err := diffFiles(out)
+		if err != nil {
+			fail(w, 500, "%v", err)
+			return
+		}
+		for _, f := range fs {
+			adds += f.Additions
+			dels += f.Deletions
+		}
+		files = len(fs)
 	}
-	jsonOut(w, map[string]any{"merge_base": m, "ahead_by": ahead, "behind_by": behind})
+	jsonOut(w, map[string]any{"merge_base": m, "ahead_by": ahead, "behind_by": behind,
+		"additions": adds, "deletions": dels, "changed_files": files})
 }
 
 const prCommitsMax = 250 // GitHub lists at most 250 of a pull request's commits
