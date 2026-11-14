@@ -21,6 +21,48 @@ Shard image `sha256:de39c828…`, built from main's `containers/git` (`b4a7510`:
 
 2026-11-14, 05:02Z to 05:17Z, `tests/fanout/siteday-m3f.sh`, logged in `install-m3f.md` on main. Sites `4440f04d` / `664f2927` / `dfd53b45` (phase 1 `9f3d53c2` / `03930d80` / `fea147c4`), edge `a197b7fd`, built from `lm1-rows-m3f` `7e5b63f`. After the deploy, `GET /repos/m3org/j4` answered 200 and `repo:65536`'s leader answered the new `/status` admission fields. The install's own Apps (`tests/am1/rest/apps.mjs`, for L0-12's Graftyard-run and MCP kinds) were registered at 05:59Z: `graftyard-workspace` 196608, `graftyard-agent` 262144, `graftyard-mcp` 327680, installations 7190011 to 7190013 on `m3org`.
 
+## Rows m3fr3 (2026-11-14, TAG `m3fr3`, `ROWS="l0-12"`, `L012_REPLAY_ONLY=1`)
+
+On the 13:33Z site day from `lm1-rows-m3f` `1fc80ec1` (main `44385391`: `bucket-own-first`, `narrow-reads-3`'s herding guard, `decode-once`, `leader-clock-check`), image `sha256:c7650ed2…`. The `retired-voter` fix (main `fef67dee`) was **not deployed** on this site day; the next scheduled site day carries it. L0-12's replay ran alone as the parent's memory-storm reproducer, a diagnostic run, not a gate run. Beside it: every voter's `/stats?summary=1` every 2 s (`vmem.mjs`, wasm high-water and `memSplit`), its `/elections` rows every 20 s, each voter's `/trace` every minute (`tsave.mjs`), `terms.mjs` and `admit.mjs`. Memory resets, `/snapshot_commit` calls and installs per member and minute come from Workers Logs (`tests/fanout/wlnames.py`). Raw: `tests/am1/raw/a1-l0-12-mwggu4r3.jsonl`, `tests/fanout/raw/{vmem,tsave,terms,admit}-m3fr3-l0-12.jsonl`.
+
+Repository 65558, run `mwggu4r3`, 14:28:33Z to 14:38:33Z, 500 agents, 10 leader kills. Sweep after: SWEEP2 OK, no graft-m3f shard container running (Containers API, 53 instances, 0 running). Cost $19.95 of $40 at 14:44Z.
+
+### The storm reproduced, and starts on the leader
+
+Memory resets (`exceededMemory` outcomes) per voter, by second:
+
+| Voter | Reset outcomes by second (count) | Outcomes / "memory limit" log lines |
+|---|---|---|
+| site a `repo:65558#1#f0` | 14:33:20 (79), 14:34:08–09 (331), 14:35:42–54 (751), 14:36:38–44 (886) | 2,047 / 4,272 |
+| site b `repo:65558#1#f1` | 14:36:19 (999), 14:36:27 (618), 14:36:51–37:06 (2,241) | 3,858 / 4,329 |
+| site c `repo:65558#1#f2` | none | 0 / 1 |
+
+- **No snapshot path.** No `/snapshot_commit`, no `install {`, `install not started` or `abandoned` line at any member of 65558 in 14:27 to 14:45Z. m3fr2's storm (11:38 to 11:52Z) had none either. The narrow-reads-3 lead does not hold on graft-m3f.
+- **The first reset is site a's, and site a was the leader** (term 5, from 14:33:03; the leadership had moved site a → b → c → a by then). Site b's first reset, at 14:36:19, also came while it led (term 8, from 14:36:00). Site c led from 14:37:29 to the end and never reset. So far every reset whose voter's role is known in the second before it is a voter that had just become leader.
+
+### What the counted bytes show in the minute before each first reset
+
+`memSplit` counts: fold rows, the fold caches (dumps, narrow, named), log bytes, learner holds (`held`), and in-flight call bodies, answer bodies and statements.
+
+- **Site a's first reset, 14:33:20.** Site a was a follower until 14:33:03 at wasm 47.8 MiB (its high-water since leading at 14:29), log 8.1 MB, dumps 1.1 MB, everything in flight 0. It won term 5 at 14:33:03; no `/stats` sample answered from 14:33:02 to 14:33:21 (19 s gap), so the last counted bytes before the reset are a follower's: about 9.2 MB counted against a 47.8 MiB heap. The calls it took in the 25 s before (Workers Logs): 3,958 `/read`, 446 `/raft`, 328 `/commit`.
+- **Site b's first reset, 14:36:19.** At 14:36:01, one second after it won term 8: wasm 30.2 MiB, **answers in flight 22.9 MB**, calls 2.7 MB, log 8.0 MB, admitted 47. The next sample answered at 14:36:25, after the reset. In the 24 s before: 1,756 `/read`, 890 `/raft`, 92 `/commit`.
+- **Site a's later reset, 14:36:38.** It won term 9 at 14:36:27: at 14:36:25 **calls in flight 29.0 MB**, at 14:36:27 calls 26.0 MB and answers 20.3 MB (46 MB counted, wasm 26.8 MiB), at 14:36:32 answers 20.4 MB; reset at 14:36:38. In the 23 s before: 2,485 `/read`, 1,357 `/raft`.
+- **Site b, 14:36:45** (between its resets): wasm 78.9 MiB with **learner holds 38.7 MB**, the biggest number of the run.
+- **Site c as leader, 14:37:29 on (no reset).** Wasm 42.8, then 55.0 MiB; calls in flight at most 1.2 MB, holds at most 0.6 MB. Its `/trace`: in its first minute it queued 11.2 MB of AppendEntries to site a and 10.7 MB to site b (83 calls each), and held 67 to 82 AppendEntries per learner.
+
+**Reading.** At each reset after the first, the counted bytes are a new leader's resend of the log tail: call bodies 26 to 29 MB, answers 20 to 23 MB, learner holds up to 38.7 MB, all within a few seconds of its election, against an 8 MB log. That matches LM-1's B0-33 on main `4438539` (round 17: call bodies up to 58.3 MB, holds up to 42.9 MB). The first reset is not explained by counted bytes: the last sample before it was a follower's 9.2 MB counted against 47.8 MiB of wasm, and the 19 s before the reset after the election has no sample. **What `memSplit` does not cover:** the JS heap (request and response objects, the `fetch` bodies queued in the runtime, the streamed answers' chunks once handed to the runtime), the decoded copies of incoming `/raft` bodies while they are stepped, and wasm the allocator holds but no counter names (fragmentation; the heap only grows). The sample gap is itself the shape of the problem: the new leader stops answering `/stats` in the seconds the bytes would show.
+
+### Elections and terms
+
+Term 2 to 12 over the window on the live voters (10 kills): 14:32:49 to 14:33:03 had 13 `CampaignEnded` rows for term 4 on sites a and c with no leader for 14 s, and 14:36:00 to 14:36:27 had 9 for term 8. Site a led term 7 from 14:33:45 through its resets at 14:34:08 and 14:35:42, and term 9 from 14:36:27 until its reset at 14:36:38. One more election at 14:40:44Z (term 13, site a), after the window, during the row's teardown reads.
+
+### Other lines (diagnostic; this run is not a gate run)
+
+- **Feed:** p50 1,349 ms, p99 8,379 ms (outside kills p99 8,595 ms), max 21.3 s. The slow 1% outside kills were served by site c, the last leader.
+- **Clock:** `maxAbsOffsetMs` 1,674 ms, and every voter reads 1.5 to 1.7 s ahead of the driver at its median (site a 1,505, site b 1,576, site c 1,606 ms). The orb's own clock reads 1.5 to 2.0 s behind the edge's `Date` header (three probes, ±500 ms). So most of the offset is the **driver's clock**, not a member's; the run's spread between members in one round is up to 2.3 s, from site a's reset leader at −677 ms. `clock.mjs` should subtract a driver offset measured against the edge before the gate line is judged.
+- **Leases:** 126 overlap samples, none above 0 ms (max −914 ms).
+- **Pushes:** agent 1,960 ok of 2,491; 422 got 503 "every member asked shed the read: overloaded", 74 "not leader", 11 500 "created, but no member leads".
+
 ## Rows m3fr2 (2026-11-14, TAG `m3fr2`, `ROWS="b0-31 b0-32 l0-12"`)
 
 On the 10:04Z site day (`d438f437`: `repo-write-mark` and `admission-stored-bytes`). Each row on a fresh repository with learners enam 4,000, weur 2,000, apac 2,000, k 4 granted, the row's shards torn down after it. `admit.mjs` read capacity, `cmdBytes` and `retryAfterS` every second. Raw files: `tests/am1/raw/a1-<row>-<run>.jsonl`, `tests/fanout/raw/{terms,admit}-m3fr2-<row>.jsonl`, `tests/fanout/raw/rows-m3fr2.status` (git-ignored).
