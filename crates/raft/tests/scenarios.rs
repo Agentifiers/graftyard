@@ -780,13 +780,14 @@ fn a_slow_follower_holds_back_while_a_healthy_one_moves_a_gray_leader() {
     }
     let _ = admit(&mut c, A, 20, put("k", "w"));
     c.deliver_all();
-    // C's storage had one slow confirm, under STEP_DOWN's six: that is no reason to hold back.
+    // C's storage had one slow confirm, under `commit_fail_min`'s three: that is no reason to hold back.
     c.slow_confirm(C, 1_050);
     let _ = admit(&mut c, A, 21, put("k", "x"));
     c.deliver_all();
-    // B's sixth slow confirm is still running: it counts, or a member whose storage has stopped answering would look
-    // healthier than one whose confirms end slowly.
-    for _ in 0..5 {
+    // B's third slow confirm is still running: it counts, or a member whose storage has stopped answering would look
+    // healthier than one whose confirms end slowly. The clock runs on as long as six would take.
+    c.advance(3 * 1_050);
+    for _ in 0..2 {
         c.slow_confirm(B, 1_050);
     }
     let stuck = c.members[B.0 as usize].as_mut().expect("B is up").confirm_begin(c.now);
