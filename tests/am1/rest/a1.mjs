@@ -376,7 +376,7 @@ if (opt.dry) {
 // ---- the live run ----
 
 if (!opt.repo || !opt.chain) throw new Error("--repo NAME and --chain repo:ID are required for a live run");
-const { api, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens } = await import("../hosted/lib.mjs");
+const { api, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens, voterAt } = await import("../hosted/lib.mjs");
 const RUN = opt.run ?? Date.now().toString(36);
 const R = `m3org/${opt.repo}`;
 const CHAIN = opt.chain;
@@ -429,7 +429,7 @@ async function git(path, tok, body, headers = {}, repo = R) {
   try {
     const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
-  } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t }; }
+  } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.cause?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
 }
 const lsRefs = (tok, prefix) => git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt(`ref-prefix ${prefix}\n`), Buffer.from("0000")]),
   { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" });
@@ -444,6 +444,7 @@ if (Date.now() - mainSince > 1_000) log(`main appeared in ls-refs after ${Date.n
 
 /** One push of `bytes` to `ref` from `from` (old tip or null); returns [result, ms, new tip]. */
 const pushed = new Map(); // commit id -> ack time, for feed latency
+const recentAgent = []; // [ok, ms] of the latest agent pushes, for B0-32's warm-up
 async function push(tok, ref, from, path, bytes, extra = {}) {
   const { pack, commit } = onePack(path, bytes, from ?? main, `a1 ${ref}`, Math.floor(Date.now() / 1000));
   const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra });
@@ -451,7 +452,7 @@ async function push(tok, ref, from, path, bytes, extra = {}) {
   // and every row passes `scan`).
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
-  return [res, r.ms, res === "ok" ? commit : from];
+  return [res, r.ms, res === "ok" ? commit : from, r.err];
 }
 const size = () => plan.packFixed ?? (Math.random() < plan.bigShare ? plan.bigBytes : plan.packMin + Math.floor(Math.random() * (plan.packMax - plan.packMin)));
 
@@ -609,6 +610,7 @@ const jobs = [
       a.tip = nu;
       if (kill) kills.push(s);
       note(half(kill ? "push:killed" : "push:agent"), ms, res);
+      if (!kill) { recentAgent.push([res === "ok", ms]); if (recentAgent.length > 200) recentAgent.splice(0, 100); }
       await sleep(Math.max(0, Math.min(end - Date.now(), plan.pushEvery * 1000 - (Date.now() - s))));
     }
   })()),
@@ -693,16 +695,40 @@ const jobs = [
   }),
   (async () => { while (Date.now() < end) { await sleep(Math.min(40 * 60_000, end - Date.now())); if (Date.now() < end) await refreshApp(); } })(),
 ];
+// B0-32's burst "rides a hot group": the journey 9 load runs until the leader reports `hot` and the network's shards
+// are warm, then the burst fires and the row runs `seconds - burst.at` past it. Warm is the last WARM_PUSHES agent
+// pushes all acknowledged within 5 s, which a cold pool shard's `warming` refusals and 15 s home waits fail (m3fr1:
+// a 5-minute-old group's pool shards rehydrated during the burst).
+const WARM_PUSHES = 30, WARM_MAX_S = 900;
 if (plan.burst) jobs.push((async () => {
   await sleep(Math.max(0, t0 + plan.burst.at * 1000 - Date.now()));
+  const w0 = Date.now();
+  let hot = false, warm = false, polls = 0;
+  while (Date.now() - w0 < WARM_MAX_S * 1000) {
+    const l = (await statuses(CHAIN)).filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
+    hot = !!l?.admission?.hot;
+    warm = recentAgent.length >= WARM_PUSHES && recentAgent.slice(-WARM_PUSHES).every(([ok, ms]) => ok && ms <= 5_000);
+    polls++;
+    if (hot && warm) break;
+    await sleep(2_000);
+  }
+  writeRow(OUT, { step: "burst warm-up", seconds: Math.round((Date.now() - w0) / 1000) + plan.burst.at, hot, warm, polls,
+    lastAgentMs: recentAgent.slice(-WARM_PUSHES).map(([, ms]) => ms) });
+  log(`burst warm-up: hot ${hot}, warm ${warm} after ${Math.round((Date.now() - w0) / 1000) + plan.burst.at} s`);
+  end = Math.max(end, Date.now() + (seconds - plan.burst.at) * 1000);
   const s = Date.now();
+  // Client-side record of every burst push, so one with no edge event still shows when it was sent and how it ended.
+  const sent = [];
   const r = await Promise.all(Array.from({ length: plan.burst.pushes }, (_, k) => sleep((k * 1000) / plan.burst.pushes).then(async () => {
     const a = agents[k % agents.length];
-    const [res, ms] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
+    const at = Date.now();
+    const [res, ms, , err] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
     note("push:burst", ms, res);
+    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), ...(err ? { err } : {}) });
     return [res, Date.now() - s];
   })));
-  writeRow(OUT, { step: "burst", pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}) });
+  writeRow(OUT, { step: "burst", hot, warm, pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
+    unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")) });
 })());
 // L0-12's overlap probe. Pair k's holder takes `a1p/<RUN>/<k>/**` Exclusive for PROBE_TTL_S and never renews it;
 // from 2 s before its end the other task asks for the same scope every PROBE_EVERY_MS until it gets a 201, which is
@@ -751,9 +777,10 @@ if (plan.leases) jobs.push((async () => {
     await Promise.all([0, 1, 2].map(async (site) => {
       const s = Date.now();
       try {
-        const v = (await member(CHAIN, site, "/status", undefined, 5_000)).v;
+        // The site's current voter object: by site alone a replaced voter's first-generation object answers.
+        const v = (await member(CHAIN, site, "/status", undefined, 5_000, voterAt(CHAIN, site))).v;
         const e = Date.now();
-        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s });
+        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s, term: v.term, role: v.role });
       } catch { /* a member mid-kill */ }
     }));
     await sleep(15_000);
@@ -845,7 +872,7 @@ if (plan.pollers) {
   for (let k = 0; k < plan.pollers; k++) {
     jobs.push((async () => {
       await sleep(Math.max(0, t0 - Date.now()) + (k % 500) * 4);
-      let cursor = null;
+      let cursor = null, misses = {};
       const m = serve[k % serve.length];
       while (Date.now() < end) {
         const s = Date.now();
@@ -854,14 +881,17 @@ if (plan.pollers) {
             token: `a1-${RUN}-${k}`, ip: `a1ip-${k}` }, 40_000, m.name);
           const v = r.v ?? {};
           note("feed", Date.now() - s, v.admit ?? `status ${r.status}`);
+          // Polls since this poller last held: what an event seen late waited on (lagging, full, notServing, errors).
+          const missed = misses;
+          if (v.admit === "hold") misses = {}; else misses[v.admit ?? `status ${r.status}`] = (misses[v.admit ?? `status ${r.status}`] ?? 0) + 1;
           if (v.cursor) cursor = v.cursor;
           for (const e of v.events ?? []) {
             const p = e[2]?.AgentPush;
             const head = p ? (typeof p.head === "string" ? p.head : Buffer.from(p.head).toString("hex")) : null;
-            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head), Date.now()]);
+            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head), Date.now(), m.site, missed]);
           }
           if (v.admit && v.admit !== "hold") await sleep(1000);
-        } catch (e) { note("feed", Date.now() - s, "error"); await sleep(1000); }
+        } catch (e) { note("feed", Date.now() - s, "error"); misses.error = (misses.error ?? 0) + 1; await sleep(1000); }
       }
     })());
   }
@@ -903,7 +933,8 @@ if (leader !== undefined && plan.placeFailAt !== undefined) jobs.push((async () 
   log(`buckets-up half: commit ${JSON.stringify(upStats?.commitMs ?? null)}`);
 })());
 if (leader !== undefined) jobs.push((async () => {
-  await sleep(Math.max(0, end - 20_000 - Date.now()));
+  // `end` can move later (B0-32's warm-up), so wait on it as it stands.
+  while (Date.now() < end - 20_000) await sleep(Math.min(5_000, end - 20_000 - Date.now()));
   lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
 })());
 if (plan.openPrs) jobs.push((async () => {
@@ -930,7 +961,11 @@ const v = {
   row, run: RUN, seconds, agents: plan.agents, offered: offered(plan), byKind: sum,
   feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
-      return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}) },
+      return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}),
+    // The slowest 1% outside kills: which member served them and what the poller's misses were before the hold.
+    slow: (() => { const out = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k));
+      const cut = pct(out.map((x) => x[2]), 0.99) ?? Infinity;
+      return out.filter((x) => x[2] >= cut).slice(0, 200).map(([k, , ms, at, site, miss]) => ({ k, ms, at, site, miss })); })() },
   leader: { statsFrom, before: leader, after: after.find((s) => s.role === "leader")?.site, terms: after.map((s) => [s.site, s.role, s.term]),
     commitMs: ps(lstats.commitMs),
     // B0-31: `commitMs` above is then the placement-failing half alone, and this the buckets-up half.
@@ -962,7 +997,7 @@ const v = {
     // on a real overlap adds the members' clock spread (clock.mjs's upper bound).
     overlapBoundMs: overlaps.length && clockSpread(clockSamples).upperMs != null
       ? Math.round(Math.max(...overlaps.map(([o]) => o)) + clockSpread(clockSamples).upperMs) : null,
-    clock: { samples: clockSamples.length, ...clockSpread(clockSamples),
+    clock: { samples: clockSamples.length, ...clockSpread(clockSamples), raw: clockSamples.map((c) => [c.round, c.site, Math.round(c.offset), c.rtt, c.term, c.role]),
       maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
   ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
