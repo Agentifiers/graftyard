@@ -40,9 +40,15 @@ use crate::{SiteEnv, now_ms};
 /// How soon after it applies entries a leading repository member's alarm runs the dispatcher.
 pub const LEADER_ALARM_MS: i64 = ALARM_MS;
 
-/// A first attempt with no answer by then counts as failed, and its batch goes to the queue at once [guess: the
-/// lookup's own 20 s, plus a cold shard's catch-up].
-const FIRST_FOR: std::time::Duration = std::time::Duration::from_secs(25);
+/// An attempt's run, first or re-sent (`git::prsync::FIRST_FOR_MS`): the invocation that runs it ends it there.
+const FIRST_FOR: std::time::Duration = std::time::Duration::from_millis(git::prsync::FIRST_FOR_MS);
+/// How much longer than its attempt's deadline the leader waits for the answer [guess: a same-site service binding's
+/// answer, and the two isolates' clocks]. Past it the attempt counts as failed and its batch goes to the queue at
+/// once, and by then the attempt has ended, so the leader never starts a second while the first runs. Under
+/// REDELIVER_AFTER_MS - FIRST_FOR_MS, so the dispatcher hears the answer before it would count the attempt as lost
+/// (`Dispatcher::batch`).
+const ANSWER_MARGIN_MS: u64 = 2_000;
+const _: () = assert!(git::prsync::FIRST_FOR_MS + ANSWER_MARGIN_MS < git::prsync::REDELIVER_AFTER_MS);
 
 /// Which leadership a dispatcher belongs to: the term, and the member's boot, so an object reset and restored in the
 /// same isolate and term (a `/reset`, a failed write) starts a new one and waits on no attempt of its old self.
@@ -62,9 +68,10 @@ thread_local! {
     static FIRST_FOR_MS: RefCell<HashMap<String, u64>> = RefCell::default();
 }
 
-/// Test installs: this member gives each first attempt `ms` before it counts as failed and is sent again through the
-/// queue (`/bench_seed {"prsyncFirstFor": ms}`, 0 to clear). The attempt it gave up on runs on, so its merges and the
-/// re-send's reach the shard at once, as LM-1 round 5's re-sends did (`tests/am1/results/merge-budget-3.md`).
+/// Test installs: this member gives each first attempt `ms` before it ends and counts as failed, and is sent again
+/// through the queue (`/bench_seed {"prsyncFirstFor": ms}`, 0 to clear). The attempt ends at that deadline too, so a
+/// short one shows an attempt cut halfway, then its re-send. Before LM-1 round 16d the attempt ran on, so its merges
+/// and the re-send's reached the shard at once (`tests/am1/results/merge-budget-3.md`).
 #[cfg(feature = "test-faults")]
 pub fn first_for(h: &Rc<Host<Repo>>, ms: u64) -> Value {
     let key = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
@@ -90,6 +97,12 @@ pub struct Message {
     pub batch: SyncBatch,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<graftyard_types::PlacementRecord>,
+    /// A first attempt's end, in ms on the leader's clock. Its invocation ends it then, or FIRST_FOR after it started
+    /// it if that comes first (`attempt`), so an invocation that starts late ends no later than the leader expects,
+    /// and one whose clock runs behind still ends within FIRST_FOR. The leader waits for its answer until then and
+    /// ANSWER_MARGIN_MS. A queue message has none, so its attempt runs FIRST_FOR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<u64>,
 }
 
 /// The leader's half, on the member's alarm.
@@ -143,9 +156,11 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     let batch = d.batch(cursor, Timestamp(now_ms()));
     let mut first = None;
     match batch {
-        Some((b, Delivery::First)) => first = Some(Message { repo: repo.0.0, batch: b, record: Some(record) }),
+        Some((b, Delivery::First)) => {
+            first = Some(Message { repo: repo.0.0, batch: b, record: Some(record), deadline: None })
+        }
         Some((b, Delivery::Again)) => {
-            let m = Message { repo: repo.0.0, batch: b, record: Some(record) };
+            let m = Message { repo: repo.0.0, batch: b, record: Some(record), deadline: None };
             if let Err(e) = enqueue(h, &m).await {
                 d.unsent();
                 note(h, format!("prsync send {}..{}: {e}", m.batch.from.0, m.batch.through.0));
@@ -173,7 +188,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         console_log!("prsync {} first dropped (test fault)", repo.0.0);
         first = None;
     }
-    if let Some(m) = first {
+    if let Some(mut m) = first {
         h.stats.borrow_mut().prsync_first += 1;
         // Weak, as `Host::kick`'s loop: a member reset while its attempt runs must not stay alive for it (F47).
         let w = Rc::downgrade(h);
@@ -182,15 +197,20 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         let mut first_for = FIRST_FOR;
         #[cfg(feature = "test-faults")]
         if let Some(ms) = FIRST_FOR_MS.with(|d| d.borrow().get(&key).copied()) {
-            first_for = std::time::Duration::from_millis(ms);
+            // Never longer than FIRST_FOR, which `attempt` holds it to anyway: a longer wait would outlast
+            // REDELIVER_AFTER_MS, and the dispatcher would start a second first attempt while this one ran.
+            first_for = std::time::Duration::from_millis(ms).min(FIRST_FOR);
         }
+        let t0 = now_ms();
+        m.deadline = Some(t0 + first_for.as_millis() as u64);
         spawn_local(async move {
-            let t0 = now_ms();
-            // A first attempt past `first_for` is not cancelled: the stateless invocation `in_band` started runs to its
-            // end under its own `wait_until`, and only this member stops waiting for it.
-            let r = crate::host::within(first_for, in_band(&env, &m))
+            // The invocation `in_band` starts ends the attempt by its deadline (`attempt`), so this member waits for
+            // its answer. Only past the deadline and ANSWER_MARGIN_MS, when the attempt has ended, does it count it as
+            // failed and let the dispatcher hand out the next first attempt.
+            let wait = first_for + std::time::Duration::from_millis(ANSWER_MARGIN_MS);
+            let r = crate::host::within(wait, in_band(&env, &m))
                 .await
-                .unwrap_or_else(|| Err(format!("no answer in {} ms", first_for.as_millis())));
+                .unwrap_or_else(|| Err(format!("no answer in {} ms", wait.as_millis())));
             let ms = now_ms() - t0;
             let (from, through) = (m.batch.from.0, m.batch.through.0);
             match &r {
@@ -240,14 +260,15 @@ async fn in_band(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     }
 }
 
-/// The site script's fetch handler for `in_band`: one batch, answered with what `one` returned. A 500 carries its error.
+/// The site script's fetch handler for `in_band`: one batch, answered with what `attempt` returned. A 500 carries its
+/// error.
 pub async fn first_handled(mut req: Request, env: Env, ctx: &Context) -> Result<Response> {
     let m: Message = req.json().await?;
-    // The attempt runs under `wait_until`, so a leader that stops waiting (`FIRST_FOR`) does not cancel it halfway
-    // between two commits; its commands are idempotent either way.
+    // The attempt runs under `wait_until`, so a dropped connection does not cancel it halfway; it ends at its deadline
+    // either way (`attempt`), and its commands are idempotent.
     let (tx, rx) = futures_channel::oneshot::channel();
     ctx.wait_until(async move {
-        let _ = tx.send(one(&env, &m).await);
+        let _ = tx.send(attempt(&env, &m).await);
     });
     match rx.await {
         Ok(Ok(v)) => Response::from_json(&v),
@@ -396,7 +417,7 @@ pub async fn consume(batch: MessageBatch<Value>, env: Env) -> Result<()> {
         let t0 = now_ms();
         // From the leader's send to this handler, on two clocks.
         let queued = t0.saturating_sub(m.timestamp().as_millis());
-        match one(&env, &body).await {
+        match attempt(&env, &body).await {
             Ok(v) => {
                 console_log!(
                     "prsync {} {}..{} queued {queued}ms handled {}ms {v}",
@@ -439,7 +460,19 @@ async fn record_of(env: &Env, repo: RepoId) -> std::result::Result<graftyard_typ
     Ok(record)
 }
 
-async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
+/// One attempt at a batch, first or re-sent: `one`, ended at its deadline, never more than FIRST_FOR from now.
+/// Dropping `one` there drops its reads, merge answers, and calls, so an attempt the leader gave up on holds nothing
+/// after it. `one` itself stops asking merges early enough to commit by then (`git::prsync::test_merges`), so a cut is
+/// for a read or a commit that did not answer, and the batch is sent again from the cursor.
+async fn attempt(env: &Env, m: &Message) -> std::result::Result<Value, String> {
+    let start = now_ms();
+    let end = m.deadline.unwrap_or(u64::MAX).min(start + git::prsync::FIRST_FOR_MS).max(start);
+    crate::host::within(std::time::Duration::from_millis(end - start), one(env, m, start, end))
+        .await
+        .unwrap_or_else(|| Err(format!("attempt ended at its deadline, {} ms", end - start)))
+}
+
+async fn one(env: &Env, m: &Message, start: u64, end: u64) -> std::result::Result<Value, String> {
     let repo = RepoId(DbId(m.repo));
     let chain = ChainId::Repo(repo);
     let mut t = vec![now_ms()];
@@ -460,21 +493,31 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     if cursor >= m.batch.through {
         return Ok(json!({ "skipped": cursor.0 }));
     }
-    let mut merges = Vec::new();
-    let mut shed = Vec::new();
-    let (mut budget, mut asked) = (Value::Null, 0);
-    for view in &views {
-        let Some((base, head)) = view.needs_merge() else { continue };
-        asked += 1;
-        // TEST_MERGE_BUDGET is the shard's: a head push's merge comes back `Shed` past the budget by more than one
-        // merge, and its `mergeable` stays null.
-        let (answer, b) = merge(env, &site, repo, view.n, base, head).await?;
-        budget = b;
-        git::prsync::take(answer, view.n, base, head, &mut merges, &mut shed)?;
-    }
+    // TEST_MERGE_BUDGET is the shard's: a head push's merge comes back `Shed` past the budget by more than one merge, or
+    // when its turn came past TURN_WAIT_MS, and its `mergeable` stays null. One the shard has not answered by the time
+    // merges must stop counts as shed too, and so do those left unasked then.
+    let budget = RefCell::new(Value::Null);
+    let until = git::prsync::merges_until(start, end);
+    let site = &site;
+    let got = git::prsync::test_merges(&views, now_ms, until, |n, base, head, left| {
+        let budget = &budget;
+        async move {
+            let wait = std::time::Duration::from_millis(left);
+            match crate::host::within(wait, merge(env, site, repo, n, base, head)).await {
+                Some(r) => {
+                    let (a, b) = r?;
+                    *budget.borrow_mut() = b;
+                    Ok(a)
+                }
+                None => Ok(git::prsync::MergeAnswer::Shed { shed: true }),
+            }
+        }
+    })
+    .await?;
     t.push(now_ms());
-    let shed_n = shed.len();
-    let cmds = git::prsync::commands(&m.batch, &views, merges, shed);
+    let (asked, unasked, shed_n) = (got.asked, got.unasked, got.shed.len());
+    let budget = budget.into_inner();
+    let cmds = git::prsync::commands(&m.batch, &views, got.merges, got.shed);
     let mut events = 0;
     for c in cmds {
         let rid = c.request;
@@ -486,7 +529,15 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     t.push(now_ms());
     // Milliseconds in each step: record, read, merges, commits.
     let steps: Vec<u64> = t.windows(2).map(|w| w[1] - w[0]).collect();
-    Ok(json!({ "prs": views.len(), "events": events, "ms": steps, "asked": asked, "shed": shed_n, "budget": budget }))
+    Ok(json!({
+        "prs": views.len(),
+        "events": events,
+        "ms": steps,
+        "asked": asked,
+        "unasked": unasked,
+        "shed": shed_n,
+        "budget": budget
+    }))
 }
 
 /// The test merge on this site's shard of the network, as a head push's (`MergeCause::HeadPush`), with the network's
