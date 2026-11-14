@@ -22,7 +22,7 @@ fn secs(default: u64) -> u64 {
 }
 
 fn op(at: u64, class: AdmitClass, actor: Option<u64>, kind: Kind, key: String, pack: usize) -> Op {
-    Op { at, class, actor, kind, key, pack, expect: None }
+    Op { at, class, actor, kind, key, pack, expect: None, render: 0 }
 }
 
 /// Journey 9's mix from `t0` for `secs`: 500 agents push distinct refs every 2 min (4.17/s; 40 KB, 5% at 1 MiB),
@@ -398,6 +398,46 @@ fn b0_33_at_measured_capacity_every_agent_command_is_admitted() {
     // every 50 ms round floor, a second.
     let bound = graftyard_raft::ENTRY_SOFT as f32 / 200.0 * 1000.0 / 50.0;
     assert!(cap <= bound, "capacity {cap:.0}/s above the ENTRY_SOFT bound {bound:.0}/s");
+}
+
+/// B0-33's mix with its hosted command sizes (LM-1 round 15b, `tests/am1/results/lm1-memory.md` on `lm1-memory`, the
+/// real codec over m3org's Authz fold): every side command an `IssueCall` of about 10.8 KB whose reply render, 10.3 KB,
+/// no event stores, and a hosted round of 200 to 320 ms. Priced by encoded length, capacity was ENTRY_SOFT over 10.8 KB
+/// a round, 30 to 47 commands/s on m26c; priced by what the log stores, the agent bucket admits B0-33's 140 line, and
+/// every entry's stored bytes stay within ENTRY_SOFT past its first command.
+#[test]
+fn b0_33_with_hosted_render_bytes_admits_140_agent_commands_per_second() {
+    const RENDER: usize = 10_300;
+    let s = secs(30);
+    for slow in [50, 90] {
+        let mut l = Load::new(10, ENAM);
+        l.slow_ms = slow;
+        l.agent = |a| a.is_some_and(|a| a >= 10_000);
+        let t0 = l.now + 100;
+        // A side command stores about 550 bytes (538 to 635 measured): its key carries them.
+        let ops = b0_33_ops(t0, s).into_iter().map(|o| match o.kind {
+            Kind::Side => Op { key: format!("{}/{}", o.key, "k".repeat(500)), render: RENDER, ..o },
+            _ => o,
+        });
+        l.offer(ops);
+        l.drain(s * 1000 + 40_000);
+        let m = b0_33_measure(&l, t0, s);
+        let cap = l.members[0].admission().expect("leading").capacity;
+        let stored = l.entries.iter().map(|e| e.2).max().unwrap_or(0);
+        let round = pct(&mut l.rounds.clone(), 50.0);
+        println!(
+            "B0-33 with {RENDER} B renders, one-way +{slow} ms: round p50 {round} ms, capacity {cap:.0}/s, {:.1} agent \
+             commands/s admitted, {} refused, Human p99 {} ms, largest entry {stored} stored bytes",
+            m.agent_per_s, m.refused, m.human_p99
+        );
+        assert!((200..=320).contains(&round), "round p50 {round} ms, not a hosted one");
+        assert!(m.agent_per_s >= 140.0, "{:.1} agent commands/s at a {round} ms round", m.agent_per_s);
+        assert!(m.human_p99 <= 1_000, "Human p99 {} ms", m.human_p99);
+        // Past its first command (at most a Human push of 8 KiB) an entry stores at most ENTRY_SOFT besides its agent
+        // packs, which AGENT_INLINE_ENTRY bounds.
+        let over: Vec<_> = l.entries.iter().filter(|e| e.2 - e.3 > graftyard_raft::ENTRY_SOFT + 9 * KIB).collect();
+        assert!(over.is_empty(), "entries over ENTRY_SOFT of stored bytes: {over:?}");
+    }
 }
 
 #[test]

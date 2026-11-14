@@ -31,8 +31,8 @@ New pieces are one Worker script (`graft-mcp`) in the install account, an insigh
 ```rust
 // ---- Agent load and agent safety (journey 9; the layer is design/AGENT-LAYER.md) ----
 /// Leader admission inside group commit. Lanes in every entry are Human and MergeQueue, then Agent up to AGENT_FLOOR of
-/// capacity, then Bot, then Agent up to AGENT_SHARE. Capacity is the group's measured entries/s times commands per entry
-/// at the current byte mix, and the Agent cap is a token bucket of AGENT_SHARE x capacity. A command is Agent when its
+/// capacity, then Bot, then Agent up to AGENT_SHARE. Capacity is measured entries/s times commands per entry by stored
+/// bytes (no reply render); the Agent cap is a token bucket of AGENT_SHARE x capacity. A command is Agent when its
 /// actor is an `AgentApp` (`Graftyard MCP` included), when a ref under an agent prefix or a PR with `AgentMeta` caused it
 /// (PrSync, test-merge records, check runs, statuses), when an App token's push carries a trailer that classes it
 /// (`TrailerKey`), when a user token sends `X-Graftyard-Agent-Session` (which grants nothing), or when its actor, user
