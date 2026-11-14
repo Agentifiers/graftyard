@@ -285,6 +285,14 @@ MUTANTS = [
      '''.position(|x| x.eq_ignore_ascii_case("INTO") || x.eq_ignore_ascii_case("FROM"))''',
      '''.position(|_| true)''',
      ['cargo', '-p', 'graftyard-site', '--lib', 'a_big_transaction']),
+    ('readsBy: a rows read is named by the query\'s first key, so a narrow read after `packed` reads as `packed`', MEM,
+     '        Some(r) => first(r).map_or_else(|| "rows".into(), |sub| format!("rows.{sub}")),',
+     '        Some(_) => first(q).unwrap_or_else(|| "rows".into()),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'every_read_is_shed']),
+    ('readsBy: a rows read with a selector is counted as a whole-tier dump', MEM,
+     '        Some(r) => first(r).map_or_else(|| "rows".into(), |sub| format!("rows.{sub}")),',
+     '        Some(r) => first(r).map_or_else(|| "rows".into(), |_| "rows".into()),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'every_read_is_shed']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

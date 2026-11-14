@@ -27,7 +27,7 @@ for (let k = 0; Date.now() < until; k++) {
     const r = await member(chain, w.site, "/stats", undefined, 20_000, w.name).catch((e) => ({ status: 0, v: { error: String(e).slice(0, 80) } }));
     const v = r.v ?? {};
     return { site: w.site, name: w.name ?? null, voter: !!w.voter, role: v.role ?? null, inbound: v.inbound ?? null,
-      raftIn: v.raftIn ?? null, trace: (v.trace ?? []).filter((x) => [8, 10, 12, 13, 14, 15, 16, 17].includes(x[1])),
+      raftIn: v.raftIn ?? null, trace: (v.trace ?? []).filter((x) => [8, 10, 12, 13, 14, 15, 16, 17, 20, 21].includes(x[1])),
       confirmMs: v.confirmMs?.length, error: v.error };
   }));
   // The leader's memory split (narrow-reads-3's `memSplit`, `logBytes`, `held`) from the light summary, every sample.

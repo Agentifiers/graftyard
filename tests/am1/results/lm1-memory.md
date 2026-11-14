@@ -2093,9 +2093,10 @@ apac 2,000, k 4, 500 open PRs and 500 PR pollers every 5 s, 600 s from 11:23:33Z
 |---|---|---|
 | Test-merge vCPU within `TEST_MERGE_BUDGET` (fail: over budget) | 0.603 vCPU used of a 1.0 vCPU budget (`TEST_MERGE_BUDGET` 0.25 of a standard-4 shard's 4 vCPU), no overrun, 0 shed | pass |
 | Zero computes from list fields | 0 list computes of 102,592 list asks; 5,339 computes from 55,795 single-PR GETs | pass |
-| Actions dispatch p99 at most 10 s (fail over 30 s) | not measured: the driver starts no workflow runs, and `prsync::demand` has no caller before Milestone 4 | not measured |
+| Actions dispatch p99 at most 10 s (fail over 30 s) | not measured: the driver starts no workflow runs, and `prsync::demand` has no caller before Milestone 4 | open: waits for Milestone 4 Actions' dispatch |
 
-So B0-35 passes on its two measured lines and dispatch stays unmeasured, as in rounds 8 and 9. The test merges'
+So B0-35 is open, not passed: its two measured lines pass, and its dispatch line stays unmeasured, as in rounds 8
+and 9, until Milestone 4 Actions' dispatch exists (parent decision, 2026-11-14). The test merges'
 own wait is what clients see: of 5,378 merges, the wait histogram's mass sits in its top buckets (3,143 over 120 s,
 1,411 at 60 to 120 s), max 265 s; `mergeable` answered `UNKNOWN` to 58,189 of 59,216 polls (98.3%) and `MERGEABLE`
 to 949. Commit p50 / p99 369 / 685 ms (queue p99 449, round 305, confirm 70), 3,137 entries carried 15,393 commands

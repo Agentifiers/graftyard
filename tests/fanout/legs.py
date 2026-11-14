@@ -9,9 +9,24 @@ trace Stepped 15 (ms the synchronous step and persist), Confirm 10 (ms the `sync
 taken on one clock each; only `send -> receive` crosses clocks (leader issue to follower t0), so it carries any skew.
 Per matched call: leg = leader issue to end; in = follower t0 - leader issue (wire out plus the follower's input
 queue); body; step; gate = work - step (the output gate: waiting for the confirm); back = leg - in - body - work.
+
+Round 17 (main a858bfb's send stamps, test-faults): the leader's AnswerArrived 21 (`peer` the follower, `index` the
+follower's clock when its handler returned the answer, `x-graft-left`; logged at the leader when the fetch's response
+headers arrived) splits `back` into fsend = left - (t0 + body + work) on the follower's clock (its handler's return to
+the response leaving: the runtime's output gate) and wire_back = leader arrival - left (crosses clocks), and lq =
+AppendEnded - arrival on the leader's clock (the response body read and decode, before the reply is stepped). The
+follower's CallArrived 20 (`index` the leader's `x-graft-sent`) gives wire_in = t0 - sent (crosses clocks). The clock
+offset cancels in wire_in + wire_back, the round trip's network and both input queues; `skew` estimates it from each
+pair's asymmetry, which is only valid if the two directions take about the same time. Both arrival stamps are taken
+when the receiving isolate's code runs, so wire_in holds the follower's input queue and wire_back the leader's event
+loop wait as well as the network; the leader's Lag 8 samples (its 100 ms ticker woken late) bound that wait.
 """
 import glob, json, sys
 from collections import defaultdict
+
+
+KEYS = ["leg", "inn", "body", "step", "gate", "sync", "back", "wire", "bytes"]
+STAMP_KEYS = ["wire_in", "fsend", "wire_back", "lq", "rtt_wire", "skew"]
 
 
 def pct(xs, p):
@@ -27,6 +42,8 @@ def main():
     raft_in = defaultdict(dict)  # site -> t0 -> row
     stepped = defaultdict(dict)  # site -> at -> ms
     confirm = defaultdict(dict)
+    answered = defaultdict(list)  # leader: peer -> [(arrival at leader, follower's left stamp)]
+    arrived = defaultdict(dict)  # follower site -> t0 -> leader's sent stamp
     reads = defaultdict(list)  # (site, name) -> [(at, inbound /read)]
     leader = None
     for f in sorted(glob.glob(f"{d}/legs-*.json")):
@@ -47,6 +64,8 @@ def main():
                         q[(peer, batch)] = (at, ms)
                     elif k == 13 and (peer, batch) in q:
                         q[(peer, batch)] = (q[(peer, batch)][0] + ms, q[(peer, batch)][1])
+                    elif k == 21:
+                        answered[peer].append((at, index))
                 for at, k, peer, batch, index, ms in m["trace"]:
                     if k == 14 and (peer, batch) in q:
                         issued, nbytes = q[(peer, batch)]
@@ -59,6 +78,8 @@ def main():
                         stepped[m["site"]][at] = ms
                     elif k == 10:
                         confirm[m["site"]][at] = ms
+                    elif k == 20:
+                        arrived[m["site"]][at] = index
     iso = lambda ms: __import__("datetime").datetime.fromtimestamp(ms / 1000, __import__("datetime").UTC).strftime("%Y-%m-%dT%H:%M:%S")
     out = {}
     for site in sorted(raft_in):
@@ -80,18 +101,29 @@ def main():
             leg = end - iss
             inn = t0 - iss
             back = leg - inn - body - work
-            legs.append(dict(leg=leg, inn=inn, body=body, step=step, gate=max(0, work - step), sync=sync,
-                             back=back, wire=inn + back, bytes=nbytes))
+            x = dict(leg=leg, inn=inn, body=body, step=step, gate=max(0, work - step), sync=sync,
+                     back=back, wire=inn + back, bytes=nbytes)
+            # Send stamps: the answer whose left stamp falls after this handler's work, arriving before the end.
+            done = t0 + body + work
+            ans = [(a, left) for a, left in answered[site] if done - 5 <= left <= done + 2000 and iss <= a <= end]
+            sent = arrived[site].get(t0)
+            if ans and sent is not None:
+                a, left = min(ans, key=lambda p: p[1])
+                x.update(fsend=left - done, wire_back=a - left, lq=end - a, wire_in=t0 - sent,
+                         rtt_wire=(t0 - sent) + (a - left), skew=((t0 - sent) - (a - left)) // 2)
+            legs.append(x)
         if not legs:
             continue
-        f = lambda k: (pct([x[k] for x in legs], 0.5), pct([x[k] for x in legs], 0.99))
+        f = lambda k: (pct([x[k] for x in legs if k in x], 0.5), pct([x[k] for x in legs if k in x], 0.99))
         slow = sorted(legs, key=lambda x: -x["leg"])[: max(1, len(legs) // 100)]
-        g = lambda k: round(sum(x[k] for x in slow) / len(slow))
-        out[site] = dict(n=len(legs), **{k: f(k) for k in ["leg", "inn", "body", "step", "gate", "sync", "back", "wire", "bytes"]},
-                         slowest_1pct_mean={k: g(k) for k in ["leg", "inn", "body", "step", "gate", "sync", "back", "wire"]})
+        g = lambda k: round(sum(x[k] for x in slow if k in x) / max(1, sum(k in x for x in slow)))
+        stamped = sum("fsend" in x for x in legs)
+        out[site] = dict(n=len(legs), stamped=stamped, **{k: f(k) for k in KEYS + STAMP_KEYS},
+                         slowest_1pct_mean={k: g(k) for k in KEYS[:-1] + (STAMP_KEYS if stamped else [])})
     print("leader", leader)
     for site, v in out.items():
-        print(f"site {site} n {v['n']}:", " ".join(f"{k} {v[k][0]}/{v[k][1]}" for k in ["leg", "inn", "body", "step", "gate", "sync", "back", "wire", "bytes"]))
+        print(f"site {site} n {v['n']} stamped {v['stamped']}:",
+              " ".join(f"{k} {v[k][0]}/{v[k][1]}" for k in KEYS + (STAMP_KEYS if v["stamped"] else [])))
         print("   slowest 1% mean:", v["slowest_1pct_mean"])
     # Entries: the bytes of each round's AppendEntries to the near follower.
     share = {}

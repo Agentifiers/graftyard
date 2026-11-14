@@ -316,6 +316,9 @@ pub struct Stats {
     /// Requests this member received, by route, since `inbound_since` (B0-18's leader load).
     pub inbound: BTreeMap<String, u32>,
     pub inbound_since: u64,
+    /// `/read`s this member received since `inbound_since`, by `kind:plain|index:f|l` (`crate::member`'s `read_kind`;
+    /// `f` when `Family::follower_serves` would let a follower answer it): which leader reads could go to learners.
+    pub reads_by: BTreeMap<String, u32>,
     pub failed_calls: u32,
     pub dep_reads: u32,
     /// Leader: each `DepsWanted` read, `DepsWanted` to `deps_read`, in ms, under `all`, and each chain's own read under
@@ -470,6 +473,7 @@ impl Stats {
         self.trace.clear();
         self.hops.clear();
         self.inbound.clear();
+        self.reads_by.clear();
         self.inbound_since = now_ms();
     }
 }

@@ -58,6 +58,17 @@ const ARRIVALS_MEM_MAX: usize = 40_000;
 /// 1 s or less, so 256 leaves room for a second's worth.
 pub const READS_MAX: u32 = 256;
 
+/// A `/read`'s kind for `Stats::reads_by`: `rows` for a whole-tier dump, `rows.<selector>` for a narrow rows read
+/// (`rows.api`, `rows.access`, `rows.merge`, ...), whatever else the query carries (`packed`, `at`), and otherwise the
+/// query's first key (`refs`, `ranges`, `key`, ...).
+fn read_kind(q: &Value) -> String {
+    let first = |v: &Value| v.as_object().and_then(|o| o.keys().next().cloned());
+    match q.get("rows") {
+        Some(r) => first(r).map_or_else(|| "rows".into(), |sub| format!("rows.{sub}")),
+        None => first(q).unwrap_or_else(|| "none".into()),
+    }
+}
+
 /// A whole-tier read: `{"rows": true}`, not a narrow `{"rows": {"access" | "agent" | "merge": ..}}` one.
 fn heavy_read(q: &Value) -> bool {
     q.get("rows").is_some_and(Value::is_boolean)
@@ -1223,6 +1234,19 @@ impl<F: Family> Routes<F> {
             None => (false, SiteId(0), false, None),
         };
         let learner = graftyard_types::learner_slot(me).is_some();
+        // LM-1 round 17: which reads reach this member, plain or read-index, and whether a follower could serve them.
+        *self
+            .host
+            .stats
+            .borrow_mut()
+            .reads_by
+            .entry(format!(
+                "{}:{}:{}",
+                read_kind(&q),
+                if index { "index" } else { "plain" },
+                if servable { "f" } else { "l" }
+            ))
+            .or_insert(0) += 1;
         let (reads, heavies) = (self.host.reads_in_flight.get(), self.host.heavy_reads.get());
         match gate(index, leading, me, servable, heavy, reads, heavies) {
             Gate::Serve => {}
@@ -1456,6 +1480,7 @@ impl<F: Family> Routes<F> {
             });
             let mut v = v;
             v["busyPages"] = json!(s.busy_pages);
+            v["readsBy"] = json!(s.reads_by);
             if reset {
                 s.reset();
             }
@@ -1507,6 +1532,7 @@ impl<F: Family> Routes<F> {
         // B0-35's instruments: the network's test-merge budget as its shard last reported it, and this leader's
         // head-push merges asked and shed since the last reset (`crate::prsync`).
         // Round 5's commit split: each entry's dep reads, by chain kind, and each command's wait to its entry's append.
+        v["readsBy"] = json!(s.reads_by);
         v["depsMs"] = json!(s.deps_ms);
         v["depFails"] = json!(s.dep_fails);
         v["queueMs"] = json!(s.queue_ms);
@@ -2509,7 +2535,9 @@ mod tests {
     use graftyard_types::SiteId;
     use serde_json::json;
 
-    use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_wait, site_field};
+    use super::{
+        Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_kind, read_wait, site_field,
+    };
 
     /// The summary's p50 and p99 are nearest-rank over the sorted samples, the same rule as `a1.mjs`'s `pct`, so a
     /// row judged from `?summary=1` matches one judged from the raw arrays; samples arrive out of order.
@@ -2533,6 +2561,15 @@ mod tests {
         for narrow in [json!({ "rows": { "access": true } }), json!({ "rows": { "merge": 7 } }), json!({ "dep": true })]
         {
             assert!(!heavy_read(&narrow), "{narrow}");
+        }
+        // `readsBy` names a dump `rows` and a narrow read by its selector, whatever other keys sort before `rows`.
+        for (q, kind) in [
+            (json!({ "rows": true, "ranges": true, "packed": true }), "rows"),
+            (json!({ "packed": true, "rows": { "merge": 7 } }), "rows.merge"),
+            (json!({ "at": 9, "rows": { "api": { "list": "pulls" } } }), "rows.api"),
+            (json!({ "refs": { "limit": 10 } }), "refs"),
+        ] {
+            assert_eq!(read_kind(&q), kind, "{q}");
         }
         // (index, leading, servable, heavy, reads, heavies)
         assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS - 1), Gate::Serve);
