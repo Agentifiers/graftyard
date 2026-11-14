@@ -26,7 +26,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use graftyard_git::log_archive::{self, ARCHIVE_RANGE_MAX, ArchiveHost, PROMOTE_MAX, Step, View};
+use graftyard_git::log_archive::{self, ARCHIVE_RANGE_MAX, ARCHIVE_SLACK, ArchiveHost, PROMOTE_MAX, Run, Step, View};
 use graftyard_git::{self as git, Bucket as _, PackIndex, PackRef, PutNew};
 use graftyard_raft::{Index, RequestId, Role};
 use graftyard_types::{ChainId, Digest, NetworkId, SiteId, Timestamp, Ulid};
@@ -39,6 +39,12 @@ use crate::{SiteEnv, now_ms};
 
 /// How often a leader sums its stored log's bytes to ask whether an archive is due [guess].
 const SUM_EVERY_MS: u64 = 60_000;
+// A log that passes the archive's trigger just after a sum grows one `SUM_EVERY_MS` more before a run starts: the
+// trigger sits below the cap by more than that at the rate the band is sized for (`log_archive::ARCHIVE_SLACK`).
+const _: () = assert!(
+    graftyard_fold::LOG_MAX_BYTES / ARCHIVE_SLACK / 2
+        > log_archive::DESIGN_LOG_BYTES_PER_S * (SUM_EVERY_MS + BUSY_MS as u64) / 1_000
+);
 /// After a run that did work, the next alarm comes this soon, so a due range drains piece by piece.
 const BUSY_MS: i64 = 200;
 /// A run starts no new step after this long [guess], so a member's isolate is not held by one drain for ever.
@@ -59,6 +65,9 @@ thread_local! {
     static LEFT: RefCell<std::collections::HashMap<String, u64>> = RefCell::new(Default::default());
     /// When each member last summed its log, by object name.
     static SUMMED: RefCell<std::collections::HashMap<String, u64>> = RefCell::new(Default::default());
+    /// Each member's drain run, by object name, kept across the runs that continue it after `DRAIN_FOR_MS`, so a run
+    /// that passed the trigger archives down to the floor (`log_archive::Run`).
+    static RUN: RefCell<std::collections::HashMap<String, Run>> = RefCell::new(Default::default());
 }
 
 /// Starts one run on a leading repository member, unless one is in flight or the log was summed under a minute ago
@@ -82,10 +91,12 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
     RUNNING.with(|r| r.borrow_mut().insert(key.clone()));
     let w = Rc::downgrade(h);
     spawn_local(async move {
+        let mut run = RUN.with(|r| r.borrow().get(&key).copied().unwrap_or_default());
         let r = match w.upgrade() {
-            Some(h) => drain(&h).await,
+            Some(h) => drain(&h, &mut run).await,
             None => Ok(Step::Idle),
         };
+        RUN.with(|r| r.borrow_mut().insert(key.clone(), run));
         RUNNING.with(|r| r.borrow_mut().remove(&key));
         LEFT.with(|l| match &r {
             Ok(Step::Idle) => l.borrow_mut().remove(&key),
@@ -123,12 +134,12 @@ pub fn leader_due(h: &Rc<Host<Repo>>) -> bool {
 const LEFT_FOR_MS: u64 = 600_000;
 
 /// Steps until nothing is due, a step fails, or `DRAIN_FOR_MS` has passed: the last step's result.
-async fn drain(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
+async fn drain(h: &Rc<Host<Repo>>, r: &mut Run) -> std::result::Result<Step, String> {
     let began = now_ms();
     loop {
         let t0 = now_ms();
         let (s, took) =
-            crate::host::within(STEP_FOR, run(h)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
+            crate::host::within(STEP_FOR, run(h, r)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
         if s == Step::Idle {
             return Ok(s);
         }
@@ -151,8 +162,8 @@ fn note(h: &Rc<Host<Repo>>, m: String) {
     }
 }
 
-/// One step, and how long its entry took to commit.
-async fn run(h: &Rc<Host<Repo>>) -> std::result::Result<(Step, u64), String> {
+/// One step of the run, and how long its entry took to commit.
+async fn run(h: &Rc<Host<Repo>>, r: &mut Run) -> std::result::Result<(Step, u64), String> {
     h.settled().await;
     let sql = h.state.storage().sql();
     let s = SiteHost { h, sql, recorded_ms: std::cell::Cell::new(0) };
@@ -160,7 +171,7 @@ async fn run(h: &Rc<Host<Repo>>) -> std::result::Result<(Step, u64), String> {
     let (max, range) = CAP.with(|c| c.get()).unwrap_or((graftyard_fold::LOG_MAX_BYTES, ARCHIVE_RANGE_MAX));
     #[cfg(not(feature = "test-faults"))]
     let (max, range) = (graftyard_fold::LOG_MAX_BYTES, ARCHIVE_RANGE_MAX);
-    let step = log_archive::step(&s, max, range, PROMOTE_MAX).await?;
+    let step = log_archive::step(&s, r, max, range, PROMOTE_MAX).await?;
     Ok((step, s.recorded_ms.get()))
 }
 

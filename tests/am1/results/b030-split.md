@@ -235,6 +235,25 @@ keepHome (`B030_HOME=none`). Drivers: `tests/am1/b030split/rerun.sh` (seed, load
     was wrong: the watcher's later readings include that minute's growth.
   Bodies 100/100, `SQLITE_FULL` 0, no leaderless gap, no StepDown from 18:27Z.
 
+### Third drain fix: a hysteresis band per run
+
+The operator approved hysteresis (2026-11-14, relayed by T-01a17bda); this is the last hosted fix: if it misses, the
+load stops and is reported. A drain run starts when the stored log passes the trigger, `LOG_MAX_BYTES` less
+`LOG_MAX_BYTES / ARCHIVE_SLACK / 2`, and archives down to the floor, the cap less `LOG_MAX_BYTES / ARCHIVE_SLACK`. The
+run holds the floor as its target across steps, and across the `DRAIN_FOR_MS` continuations, until one step archives
+all the way to it (`log_archive::Run`). Promoting ahead goes first only until a run passes its trigger.
+
+- **Sizing.** `ARCHIVE_SLACK` 16 to 8: trigger 2.013 GB, floor 1.879 GB, a 134 MB half-band. One `SUM_EVERY_MS` plus
+  `BUSY_MS` at twice the row's log rate (`DESIGN_LOG_BYTES_PER_S`, 1.2 MB/s: 113 entries a minute of about 320 KB,
+  doubled) is 72 MB. The operator's estimate was about 80 MB; both fit. `workers/site/src/archive.rs` asserts it at
+  compile time.
+- **Kept test.** `the_log_stays_under_its_cap_through_the_sum_wait` (`crates/git/tests/log_archive.rs`) starts just
+  under the trigger with the log promoted, then feeds input through the sum wait at 0.5, 1, 1.5 and 2 times the row's
+  rate. It checks that the log never passes `LOG_MAX_BYTES` and that every run over the trigger reaches the floor
+  before `Idle`. Peaks: 616, 618, 624 and 631 KB against a 653 KB scaled cap (trigger 612, floor 571).
+  - A version that promoted ahead first until the log passed the cap reached 653,086 B at 2x, and failed (plant 40).
+  - On e9418153's rule the log passes the cap (plant 38).
+
 ## Cost
 
 | Window | DO and Workers | Containers |

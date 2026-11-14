@@ -5,7 +5,8 @@
 // with the reason, so the load stops at once (it resumes from its state once the file is removed), and
 // tests/am1/raw/b030r2-ALERT. Also (operator, 2026-11-14): a log over LOG_MAX_BYTES whose leader's `archivedTo` has not
 // moved for ARCHIVE_STALL_MIN (30) minutes, or a log over LOG_MAX_BYTES by LOG_OVER (5%), so members not truncating
-// never runs on toward SQLITE_FULL. Rows go to tests/am1/raw/b030r2-watch.jsonl.
+// never runs on toward SQLITE_FULL. And (operator, the third drain fix): once the log is under LOG_MAX_BYTES after the
+// resume, any later reading over it stops the load. Rows go to tests/am1/raw/b030r2-watch.jsonl.
 //   node tests/am1/b030split/watch.mjs
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { log, row, sleep, statuses, voter } from "../hosted/lib.mjs";
@@ -42,6 +43,7 @@ async function bodies(site) {
 
 const BASE = "tests/am1/raw/b030r2-bodies.json";
 let base = existsSync(BASE) ? JSON.parse(readFileSync(BASE, "utf8")) : null;
+let underOnce = false, capAlerted = false;
 let seenLeader = false, since = null, alerted = false, lastSplit = "", lastBodies = 0, longest = 0;
 for (;;) {
   const st = await statuses(C);
@@ -70,6 +72,11 @@ for (;;) {
     if (!archiveAlerted && over && (v.logBytes > LOG_MAX_BYTES * (1 + LOG_OVER) || now - archived.at > ARCHIVE_STALL_MIN * 60_000)) {
       archiveAlerted = true;
       alert(`archive not keeping the log at its cap: log ${v.logBytes} B, archivedTo ${v.archivedTo} unchanged since ${new Date(archived.at).toISOString()}`);
+    }
+    if (typeof v.logBytes === "number" && !over) underOnce = true;
+    if (underOnce && over && !capAlerted) {
+      capAlerted = true;
+      alert(`the log passed LOG_MAX_BYTES after it was under it: ${v.logBytes} B, archivedTo ${v.archivedTo}`);
     }
     if (now % 600_000 < 5_000) row(OUT, { kind: "log", at: new Date().toISOString(), logBytes: v.logBytes, archivedTo: v.archivedTo, truncatedTo: v.truncatedTo, promotedTo: v.promotedTo, dbBytes: v.dbBytes });
     // Bodies: a baseline before the split drops the parent's text, then a comparison every 30 min.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """b030-split: planted bugs in the metadata child group (`crates/git/src/split.rs`, `workers/site/src/split.rs`,
 `crates/git/src/repo.rs`), the leader-only work rules (`workers/site/src/host.rs`, `paced` and `keep_led`), and the archive
-drain's throughput (`crates/git/src/log_archive.rs`, 27 to 37). Plants
+drain's throughput and its hysteresis band (`crates/git/src/log_archive.rs`, 27 to 41). Plants
 one mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE. Never run it while a site day builds
 from this worktree. Run from the worktree root:
 
@@ -102,18 +102,20 @@ MUTANTS = [
      'pub const PROMOTE_RANGES: u64 = 8;', 'pub const PROMOTE_RANGES: u64 = 4;', A),
     ('one archive object an entry, as in the rerun', ARCH,
      'pub const ARCHIVE_PIECES: usize = 8;', 'pub const ARCHIVE_PIECES: usize = 1;', A),
-    ('archiving goes before promoting ahead, as in the rerun', ARCH,
-     '    let ahead_first = ahead && v.total <= max_bytes + max_bytes / ARCHIVE_SLACK;',
-     '    let ahead_first = false;', A),
-    ('promoting ahead goes first however far the log is over its cap', ARCH,
-     '    let ahead_first = ahead && v.total <= max_bytes + max_bytes / ARCHIVE_SLACK;',
+    # Was 'archiving goes before promoting ahead': under the band only a draining run or LOG_KEEP makes a range due, and
+    # a draining run archives first anyway, so that mutant became equivalent (MISSED, third drain fix).
+    ('promoting ahead before both tiers have a snapshot', ARCH,
+     '    let ahead = v.snapshotted && v.unpromoted > max_bytes / PROMOTE_AHEAD;',
+     '    let ahead = v.unpromoted > max_bytes / PROMOTE_AHEAD;', A),
+    ('promoting ahead goes first however far into its run the log is', ARCH,
+     '    let ahead_first = ahead && !run.draining;',
      '    let ahead_first = ahead;', A),
     ('an archive step reads the next range from the start of the last, so pieces overlap', ARCH,
-     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target(v.total, max_bytes), range_max)?;',
-     '            d = due(total, h.rows(Index(from.0 - 1))?, v.now, v.snapshotted, v.commit, target(v.total, max_bytes), range_max)?;', A),
-    ('an archive step\'s later pieces are cut against the cap, not the step\'s target (the resume at day 1.82)', ARCH,
-     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target(v.total, max_bytes), range_max)?;',
-     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;', A),
+     '        let more = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target, range_max)?;',
+     '        let more = due(total, h.rows(Index(from.0 - 1))?, v.now, v.snapshotted, v.commit, target, range_max)?;', A),
+    ('an archive step\'s later pieces are cut against the trigger, not the run\'s target (the resume at day 1.82)', ARCH,
+     '        let more = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target, range_max)?;',
+     '        let more = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target + target / 14, range_max)?;', A),
     ('an archive step archives past the last promotion', ARCH,
      '        let Next::Archive { to, .. } = next(v.promoted.as_ref(), from, to) else { break };',
      '        let Next::Archive { .. } = next(v.promoted.as_ref(), from, to) else { break };', A),
@@ -125,14 +127,28 @@ MUTANTS = [
      '            .collect()\n    }\n    async fn truncated', '            .take(1)\n            .collect()\n    }\n    async fn truncated', AS),
     ('a promotion waits the full minute on a shard with another after it', SHARD,
      '    if next { PROMOTE_NEXT_WAIT_S } else { PROMOTE_WAIT_S }', '    PROMOTE_WAIT_S', G),
+    # Hysteresis (the second resume's stalls, simulated day 1.905 to 2.005).
+    ('e9418153\'s rule: a run starts only over the cap and its target is set per step', ARCH,
+     '        self.draining |= total > trigger(max_bytes);\n        if self.draining { floor(max_bytes) } else { trigger(max_bytes) }',
+     '        self.draining = total > max_bytes;\n        if self.draining { floor(max_bytes) } else { max_bytes }', A),
+    ('the trigger without the run\'s hold: the floor is the target only while the log is over the trigger', ARCH,
+     '        self.draining |= total > trigger(max_bytes);', '        self.draining = total > trigger(max_bytes);', A),
+    ('promoting ahead goes first until the log is over its cap, not until the run passes its trigger', ARCH,
+     '    let ahead_first = ahead && !run.draining;', '    let ahead_first = ahead && v.total <= max_bytes;', A),
+    ('a run ends after any archive step, wherever the log is', ARCH,
+     '        reached = to == due_to && more.is_none();', '        reached = true;', A),
 ]
 
 
 def run(tests):
     kind, args, filt = tests
     env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'])
-    r = subprocess.run(['cargo', 'test', *args, '--no-fail-fast', '--', filt], cwd=ROOT, env=env,
-                       capture_output=True, text=True)
+    # A mutant that loops a test forever is caught by the time limit (mutant 32 of the third drain fix did).
+    try:
+        r = subprocess.run(['cargo', 'test', *args, '--no-fail-fast', '--', filt], cwd=ROOT, env=env,
+                           capture_output=True, text=True, timeout=1200)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess([], 1), '', ['(timed out after 1200 s)']
     out = r.stdout + r.stderr
     failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
     return r, out, failed

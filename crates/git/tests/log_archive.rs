@@ -19,7 +19,7 @@ use std::cell::RefCell;
 
 use futures_executor::block_on;
 use graftyard_fold::{ARCHIVE_HEADER, check_archive_header, decode_archive_some};
-use graftyard_git::log_archive::{self, ArchiveHost, Next, Step, View};
+use graftyard_git::log_archive::{self, ArchiveHost, Next, Run, Step, View};
 use graftyard_git::mem::MemBucket;
 use graftyard_git::{Bucket, PackId, Promoted, PutNew, R2Key};
 use graftyard_raft::{LogEntry, codec};
@@ -43,6 +43,10 @@ struct Bed {
     scale: Option<f64>,
     /// How often a promotion's read paused (`ArchiveHost::pause`).
     pauses: std::cell::Cell<usize>,
+    /// Each stored entry's row length, by index and `prev`, so summing the log does not re-encode it.
+    lens: RefCell<std::collections::HashMap<(u64, [u8; 32]), u64>>,
+    /// The drain run the steps belong to, as the site keeps it (`log_archive::Run`).
+    run: RefCell<Run>,
 }
 
 fn row(e: &LogEntry<RepoEvent>) -> Vec<u8> {
@@ -61,6 +65,8 @@ impl Bed {
             clock: std::cell::Cell::new(0.0),
             scale: None,
             pauses: std::cell::Cell::new(0),
+            lens: RefCell::new(std::collections::HashMap::new()),
+            run: RefCell::new(Run::default()),
         }
     }
 
@@ -89,11 +95,19 @@ impl Bed {
     }
 
     fn bytes(&self, m: usize) -> u64 {
-        self.stored(m).iter().map(|e| row(e).len() as u64).sum()
+        self.sum_after(m, 0)
+    }
+
+    /// The bytes of member `m`'s stored rows above `after`.
+    fn sum_after(&self, m: usize, after: u64) -> u64 {
+        let (w, from, mut lens) = (self.w.borrow(), self.held_from.borrow()[m], self.lens.borrow_mut());
+        let held = w.repo.disks[m].log.iter().filter(|e| e.index.0 >= from && e.index.0 > after);
+        held.map(|e| *lens.entry((e.index.0, e.prev.0)).or_insert_with(|| row(e).len() as u64)).sum()
     }
 
     fn step(&self, range_max: u64) -> Step {
-        let s = block_on(log_archive::step(self, CAP, range_max, log_archive::PROMOTE_MAX)).expect("an archive step");
+        let s = block_on(log_archive::step(self, &mut self.run.borrow_mut(), CAP, range_max, log_archive::PROMOTE_MAX))
+            .expect("an archive step");
         self.truncate();
         s
     }
@@ -122,10 +136,10 @@ impl ArchiveHost for Bed {
         let w = self.w.borrow();
         let m = &w.repo.members[l];
         let fold = &m.group_fold().fold;
-        let sum = |after: u64| self.stored(l).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum();
-        let total = sum(fold.archived().map_or(0, |a| a.to.0));
-        let unpromoted = sum(fold.promoted().map_or(0, |p| p.to.0));
-        Some(View::of(ChainId::Repo(REPO), fold, m.state().commit, total, unpromoted))
+        let (archived, promoted) = (fold.archived().map_or(0, |a| a.to.0), fold.promoted().map_or(0, |p| p.to.0));
+        let view = |total, unpromoted| View::of(ChainId::Repo(REPO), fold, m.state().commit, total, unpromoted);
+        let (total, unpromoted) = (self.sum_after(l, archived), self.sum_after(l, promoted));
+        Some(view(total, unpromoted))
     }
 
     fn rows(&self, after: Index) -> Result<log_archive::Rows<'_>, String> {
@@ -376,7 +390,7 @@ fn an_archive_held_in_one_bucket_is_never_recorded() {
     }
     snapshot(&b);
     assert!(matches!(b.step(CAP), Step::Promoted { .. }));
-    let e = block_on(log_archive::step(&b, CAP, CAP, log_archive::PROMOTE_MAX)).unwrap_err();
+    let e = block_on(log_archive::step(&b, &mut b.run.borrow_mut(), CAP, CAP, log_archive::PROMOTE_MAX)).unwrap_err();
     assert!(e.contains("in 1 buckets"), "{e}");
     let w = b.w.borrow();
     assert!(w.repo.members.iter().all(|m| m.group_fold().fold.archived().is_none()));
@@ -394,7 +408,7 @@ fn promotions_fit_the_cap_and_an_entry_over_it_alone_is_refused() {
     snapshot(&b);
     let mut steps = Vec::new();
     let err = loop {
-        match block_on(log_archive::step(&b, CAP, CAP, 5_000)) {
+        match block_on(log_archive::step(&b, &mut b.run.borrow_mut(), CAP, CAP, 5_000)) {
             Ok(s) => steps.push(s),
             Err(e) => break e,
         }
@@ -451,8 +465,8 @@ fn due_refuses_a_gap_and_a_row_of_another_entry() {
     assert_eq!((d.from, d.to, d.rows.len()), (Index(1), Index(3), 3));
 }
 
-/// `ARCHIVE_SLACK`: a log one byte over the cap is cut to `cap - cap/16`, not to the cap, so one alarm archives a
-/// range of entries rather than one entry each time a write crosses the cap.
+/// `due` cuts the log to the target it is given: a run that passed the trigger asks for the floor, the cap less
+/// `cap / ARCHIVE_SLACK`, so one alarm archives a range of entries rather than one entry each time a write crosses it.
 #[test]
 fn a_log_over_the_cap_is_cut_below_it_by_the_slack() {
     let b = Bed::new();
@@ -463,9 +477,10 @@ fn a_log_over_the_cap_is_cut_below_it_by_the_slack() {
     let total: u64 = rows.iter().map(|(_, r)| r.len() as u64).sum();
     let now = Timestamp(0);
     let cap = total - 1;
-    let d = log_archive::due(total, rows.clone(), now, true, Index(u64::MAX), cap, u64::MAX).unwrap().unwrap();
+    let d = log_archive::due(total, rows.clone(), now, true, Index(u64::MAX), log_archive::floor(cap), u64::MAX);
+    let d = d.unwrap().unwrap();
     let cut: u64 = d.rows.iter().map(|(_, _, r)| r.len() as u64).sum();
-    assert!(total - cut <= cap - cap / log_archive::ARCHIVE_SLACK, "left {} over {}", total - cut, cap);
+    assert!(total - cut <= log_archive::floor(cap), "left {} over {}", total - cut, cap);
     assert!(d.rows.len() > 1, "one alarm archives more than the entry that crossed the cap");
     // Under the cap and inside LOG_KEEP, nothing is due.
     assert_eq!(log_archive::due(total, rows, now, true, Index(u64::MAX), total, u64::MAX).unwrap(), None);
@@ -506,14 +521,16 @@ fn promotion_runs_ahead_of_archiving_and_bounds_the_tail_a_rehydrate_reads() {
         push(&b, k, 1_500);
     }
     assert!(unpromoted(&b) > ahead);
-    let s = block_on(log_archive::step(&b, cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
+    let s = block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
     assert_eq!(s, Step::Idle, "no snapshot yet");
     snapshot(&b);
     let (mut promotions, mut worst, mut largest) = (Vec::new(), 0u64, 0u64);
     for k in 30..400 {
         push(&b, k, 300 + (k as usize * 37) % 2_000);
         for _ in 0..20 {
-            match block_on(log_archive::step(&b, cap, range_max, log_archive::PROMOTE_MAX)).unwrap() {
+            match block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, range_max, log_archive::PROMOTE_MAX))
+                .unwrap()
+            {
                 Step::Idle => break,
                 Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
                 Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
@@ -576,7 +593,8 @@ fn drain_at(r: f64, backlog: bool) -> Result<(), String> {
     let cap = 64 * range_max;
     let promote_max = (log_archive::PROMOTE_MAX as f64 / k) as u64;
     let step = |b: &Bed| {
-        let s = block_on(log_archive::step(b, cap, range_max, promote_max)).expect("a drain step");
+        let s =
+            block_on(log_archive::step(b, &mut b.run.borrow_mut(), cap, range_max, promote_max)).expect("a drain step");
         b.truncate();
         s
     };
@@ -634,8 +652,8 @@ fn drain_at(r: f64, backlog: bool) -> Result<(), String> {
         100.0 * idle_share
     );
     let mut bad = Vec::new();
-    if peak > cap + cap / log_archive::ARCHIVE_SLACK {
-        bad.push("the log passed its cap by more than the slack");
+    if peak > cap {
+        bad.push("the log passed its cap");
     }
     if worst > bound || promoted1 - promoted0 + bound / entry < last1 - last0 {
         bad.push("promotion fell behind the log");
@@ -684,7 +702,7 @@ fn a_large_promotion_reads_its_range_in_pieces_and_names_every_pack_once() {
     let range_max = 1 << 20;
     // A tail of about 9 MB is over `cap / PROMOTE_AHEAD` and nothing is due to archive.
     let cap = 64 << 20;
-    let s = block_on(log_archive::step(&b, cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
+    let s = block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
     let Step::Promoted { from, to, .. } = s else { panic!("{s:?}") };
     assert!(b.pauses.get() >= 2, "{} pauses for {} entries", b.pauses.get(), to.0 - from.0 + 1);
     let all = b.w.borrow().repo.disks[0].log.clone();
@@ -693,4 +711,136 @@ fn a_large_promotion_reads_its_range_in_pieces_and_names_every_pack_once() {
     assert!(bytes > range_max * 4 && bytes <= range_max * log_archive::PROMOTE_RANGES + 400_000, "{bytes}");
     assert_eq!(from, Index(1));
     assert_eq!(b.promoted.borrow().last().unwrap(), &log_archive::promotion_sums(&range));
+}
+
+/// The second resume's stall, at 0.5 to 2 times the row's rate: a drain run starts once the log passes the trigger,
+/// archives down to the floor before it goes `Idle`, and the log never passes the cap, though an idle leader sums its
+/// log only once a `SUM_EVERY_MS` and input goes on arriving through the wait. The bed models the site's cadence
+/// (`workers/site/src/archive.rs`): steps one after another, each charged its entry and pacing as in
+/// `the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs`; a run continued at once after `DRAIN_FOR_MS`
+/// with its `Run`; and after `Idle` the next run a sum wait later. Its cap is 64 archive ranges, `LOG_MAX_BYTES / 16`
+/// at hosted sizes, and its sum wait is `SUM_EVERY_MS / 16`, so a wait's input is the same share of the band as hosted.
+/// It starts just under the trigger. On e9418153's rule (a run starts only over the cap and cuts below it per step)
+/// the log passes the cap in every wait (plant 38), and with the trigger but without the run's hold (plant 39) a run
+/// goes `Idle` above the floor.
+#[test]
+fn the_log_stays_under_its_cap_through_the_sum_wait() {
+    let rates: Vec<f64> = match std::env::var("SUM_WAIT_RATE") {
+        Ok(r) => vec![r.parse().expect("a rate")],
+        Err(_) => vec![0.5, 1.0, 1.5, 2.0],
+    };
+    let failures: Vec<String> = std::thread::scope(|sc| {
+        let runs: Vec<_> = rates.iter().map(|&r| sc.spawn(move || sum_wait_at(r))).collect();
+        runs.into_iter().filter_map(|t| t.join().expect("no panic").err()).collect()
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The site's sum wait and run length (`workers/site/src/archive.rs`, `SUM_EVERY_MS`, `DRAIN_FOR_MS`).
+const SUM_EVERY_MS: f64 = 60_000.0;
+const DRAIN_FOR_MS: f64 = 90_000.0;
+
+fn sum_wait_at(r: f64) -> Result<(), String> {
+    let mut b = Bed::new();
+    let range_max = 6 * 1_700;
+    let k = (log_archive::ARCHIVE_RANGE_MAX as f64) / range_max as f64;
+    b.scale = Some(k);
+    let scale: f64 = std::env::var("SUM_WAIT_SCALE").map_or(4.0, |v| v.parse().unwrap());
+    let cap = (graftyard_fold::LOG_MAX_BYTES as f64 / k / scale) as u64;
+    let wait = SUM_EVERY_MS / scale;
+    let promote_max = (log_archive::PROMOTE_MAX as f64 / k) as u64;
+    let step = |b: &Bed| {
+        let s = block_on(log_archive::step(b, &mut b.run.borrow_mut(), cap, range_max, promote_max)).expect("a step");
+        b.truncate();
+        s
+    };
+    let total = |b: &Bed| {
+        let m = b.leader();
+        let after = b.w.borrow().repo.members[m].group_fold().fold.archived().map_or(0, |a| a.to.0);
+        b.sum_after(m, after)
+    };
+    let mut n = 0u32;
+    while b.bytes(b.leader()) < log_archive::trigger(cap) {
+        push(&b, n, 1_400);
+        n += 1;
+    }
+    snapshot(&b);
+    // Promoted up to the log's head, as the rerun was; then pushes take the log over the trigger during the wait.
+    let mut promoting = 0;
+    while block_on(log_archive::step(&b, &mut Run::default(), cap, range_max, promote_max)).unwrap() != Step::Idle {
+        promoting += 1;
+        assert!(promoting < 100, "the seed's promotions do not end");
+    }
+    let rate = r * TWICE_THE_ROW_MB_S / 2.0;
+    let gap = |b: &Bed| {
+        let e = b.stored(b.leader()).last().map_or(0, |e| row(e).len()) as f64;
+        e * k / 1e6 / rate * 1_000.0
+    };
+    let (end, mut next, mut peak, mut runs, mut bad) = (300_000.0, 0.0f64, 0u64, 0u32, Vec::new());
+    let (mut idle_short, mut short) = (0u32, 0u64);
+    b.clock.set(0.0);
+    let mut sum_at = wait;
+    let feed = |b: &Bed, n: &mut u32, next: &mut f64, peak: &mut u64| {
+        while *next <= b.clock.get() {
+            push(b, *n, 1_400);
+            *n += 1;
+            *next += gap(b);
+        }
+        // Only pushes in between, so the log is at its largest after the last.
+        *peak = (*peak).max(total(b));
+    };
+    while b.clock.get() < end {
+        // Idle until the next sum, input arriving all along.
+        while b.clock.get() < sum_at {
+            b.clock.set(next.min(sum_at));
+            feed(&b, &mut n, &mut next, &mut peak);
+        }
+        // One run: steps until `Idle`, each run continued at once after `DRAIN_FOR_MS` with its `Run` kept. A run
+        // that saw the log over the trigger must archive down to the floor (`reached`) before it goes `Idle`.
+        let began = b.clock.get();
+        let (mut over, mut low) = (false, u64::MAX);
+        loop {
+            over |= total(&b) > log_archive::trigger(cap);
+            let s = step(&b);
+            // The log right after an archive step, before the input that arrived while it ran.
+            if matches!(s, Step::Archived { .. }) {
+                low = low.min(total(&b));
+            }
+            feed(&b, &mut n, &mut next, &mut peak);
+            if s == Step::Idle {
+                break;
+            }
+            if b.clock.get() > end + DRAIN_FOR_MS {
+                return Err(format!("{r}x the row: a run that never goes Idle"));
+            }
+            if b.clock.get() >= began + DRAIN_FOR_MS {
+                b.charge(200.0);
+            }
+        }
+        runs += 1;
+        // Within the bytes of the run's own last entries.
+        if over && low > log_archive::floor(cap) + range_max / 2 {
+            idle_short += 1;
+            short = short.max(low - log_archive::floor(cap));
+        }
+        sum_at = b.clock.get() + wait;
+    }
+    let out = format!(
+        "{r}x the row: {runs} runs in {:.0} modeled s; peak log {peak} against a cap of {cap} (trigger {}, floor {}); \
+         {idle_short} runs over the trigger went Idle short of the floor, by up to {short}",
+        end / 1_000.0,
+        log_archive::trigger(cap),
+        log_archive::floor(cap)
+    );
+    println!("sum wait at {out}");
+    if peak > cap {
+        bad.push("the log passed its cap");
+    }
+    if idle_short > 0 {
+        bad.push("a run over the trigger went Idle before it reached the floor");
+    }
+    if runs < 2 {
+        bad.push("fewer than two runs: the wait was never crossed");
+    }
+    if bad.is_empty() { Ok(()) } else { Err(format!("{out}: {}", bad.join(", "))) }
 }
