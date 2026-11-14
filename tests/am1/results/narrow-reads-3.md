@@ -925,6 +925,83 @@ invocations, not 32 learner totals, splits apply from answers. That is one gate-
 writes clear of its own output gate"). It flips if, after (b), the learner's gate is measured at more than 30% of the
 gap between the API p99 and 2 s.
 
+### Instrument run (b) on 55a9b58: heavy learner CPU is fold point reads inside narrow builds
+
+One 300 s run in the arm "with" shape, from f6a99fc1, whose product code is 55a9b58's: main 8f76a54e plus the
+per-invocation counter (`workers/site/src/inv.rs`, test-faults). 8 learners, 500 open PRs, 500 agents. The B0-29
+window ran 19:18:14Z to 19:23:14Z on repository 65564. Site day 15 and the edge day both exited 0. No stop rule fired:
+the watcher checked the voters' analytics peak every 30 s against 120 MiB, and spend against $48.
+
+| | Arm "with" (600 s, a5a85d9) | inv1 (300 s, 55a9b58) |
+| --- | --- | --- |
+| read:api n | 116,666 | 58,479 |
+| p50 / p99 | 525 / 2,304 ms | 540 / 2,687 ms |
+| 503 | 89 | 174 (0.30%) |
+| served | 99.92% | 99.70% |
+| Leader changes | 0 | 0 |
+| Voter analytics peak f0 / f1 / f2 | — | 77 / 57 / 55 MiB |
+| Learner peak | — | 59 to 64 MiB |
+
+The run is an instrument, not a gate: its p99 of 2,687 ms is over 2 s, as arm "with" was.
+
+**Join [measured].** `tests/nr3/inv.py` joined 41,026 voter and 94,176 learner invocations with Workers Logs CPU by
+request id. Learners used 1,198 CPU s, of which `/read` is 93.9%, `/feed` 2.8%, the ticker 3.0%, and `/raft` 0.4%.
+Invocations of 50 ms or more (6,775) carry 1,097 s, 92%.
+
+**Heavy learner CPU by cause [measured, counts per invocation].** Each heavy invocation goes to the first cause it
+holds, in this order:
+
+| Cause | Share of heavy learner CPU |
+| --- | --- |
+| A narrow answer build (REST or GraphQL) | 76.7% |
+| No counted cause: CPU from tasks the counter did not tag | 13.2% |
+| Cached answer only | 3.9% |
+| A whole-tier dump build | 3.4% |
+| Apply only (entries applied, no build) | 2.8% |
+
+Per learner, invocations with a build carry 71 to 82% of heavy CPU. The least-squares fit of CPU on the counts gives
+the fold SQL reads (`TierSql::query`) 52 to 68% of heavy CPU on every learner, with 12 to 25% unexplained. Entries
+applied take 0 to 8%, decoded bytes 1 to 5%, rows and row KB written 0 to 8%, and confirm wait none.
+- Confirm wait is wall time, not CPU: 192 s of confirm wall in 1,921 heavy invocations, with pendStart p50 0.
+- The premise holds that CPU follows the invocation that started the work: a REST or GraphQL build costs 0.043 ms
+  of CPU per fold read, both kinds alike, over 7,188 builds.
+
+**Why a build reads so much [measured locally, `cargo test` scratch counter over `narrow::answer`, 500 open PRs
+with one comment each].** A build issues 2,605 fold reads on average in the run. Locally:
+
+| Route | Reads for the reply | Reads for `named_accounts` |
+| --- | --- | --- |
+| `issues?per_page=30` | 1,655 (530 each of `issue`, `pull`, `pull_head` gets) | 1,512 |
+| GraphQL `pullRequests(first: 20, states: [OPEN])` | 1,565 (520 each of the same) | 1,512 |
+| `pulls/250` | 17 | 1,512 |
+
+Both causes are in the code:
+- `view::Repo::list` loads every item of the kind and state (`item`: `issue`, `pull`, and `pull_head` gets) before
+  the selection sorts and pages it (`rest.rs` issues, `gql.rs` connections). A 30-item page reads all 500.
+- `named_accounts` (`workers/site/src/family.rs`) re-runs `hosted::accounts` over every issue, comment, and
+  `pull_head` whenever the tiers' state changes. Its cache is keyed by `dump_key`, which changes with nearly every
+  entry at B0-29's write rate.
+
+**The fix it points to [proposal, not built].** Make a narrow build's fold reads scale with the page, not the
+repository:
+1. **Page from the order index first.** When the order is `issue_order`'s (GraphQL connections, newest number first)
+   and the filter needs only kind and state, scan `issue_order` keys alone, which is a few batched scans. Count from
+   the keys and load only the page's items. For REST `sort=created|updated|comments`, keep sort keys in an index the
+   fold maintains (`created` already exists as a table), or load only the `issue` row for sorting, not `pull` and
+   `pull_head`. Filters that need more (labels, assignee, head, base) keep today's path.
+2. **Maintain `named` in the fold.** A metadata table counting references per account, keyed by name shard, written
+   at apply. Then `named` is a prefix read of the lowest LOGIN_SHARDS_MAX shards plus point gets for the asked
+   accounts, in place of a scan of every row.
+
+Together these cut a build from about 2,600 reads to tens. At 0.043 ms a read, that is about 750 of the learners'
+1,198 CPU s in this window, from about 0.5 to about 0.2 cores per learner [inference]. Whether that closes the p99
+gap (687 ms here) is not shown. A busy learner answers late, but the round-trip split of arm "with" put the tail on
+the leg back. Item 2 adds a fold table, so it needs a DESIGN edit first ("Follower read", the narrow-read rows), and
+replies must stay byte-identical: the `narrow.rs` oracle tests cover both items.
+
+Rows: `tests/nr3/rows/a1-b0-29-inv1.jsonl`, `run-inv1.status`, `watch-inv1.jsonl`, `inv-inv1.jsonl.gz` (one line
+per invocation: CPU, wall, path, counts).
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
@@ -1017,6 +1094,9 @@ No design cost moves:
 - Learner count and read rate are unchanged.
 - A learner now does at most one read-index round per read, where it did up to several. That lowers learner-to-leader calls; `scripts/cost.py` prices learner reads as one Durable Object request each and does not count retries.
 - The cost scripts were not rerun.
+
+After the instrument run (b): spend from 2026-11-13T04:17Z to 2026-11-14T19:45Z is **$41.08** (`m2bcost.py`),
+under the $48 stop and the $55 cap. Repository 65564 and its pool shards are torn down (`teardown.py --pools`).
 
 ## Push p99
 

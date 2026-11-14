@@ -11,7 +11,7 @@ share of the heavy invocations' CPU is its coefficient times its count there, ov
 only.
   python3 tests/nr3/inv.py 65564 2026-11-14T17:00:00Z 2026-11-14T17:05:00Z inv1
 """
-import collections, json, os, sys, urllib.request
+import collections, json, os, sys, time, urllib.request
 from datetime import datetime
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
@@ -25,8 +25,14 @@ HEAVY = 50
 
 
 def post(url, body):
-    return json.load(urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                                                   headers=H), timeout=90))
+    for n in range(5):
+        try:
+            return json.load(urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(body).encode(),
+                                                                           method="POST", headers=H), timeout=90))
+        except OSError:
+            if n == 4:
+                raise
+            time.sleep(5 * (n + 1))
 
 
 def names():
@@ -100,13 +106,24 @@ def solve(X, y):
 
 ids = names()
 rows = {}
+# Each member's rows are cached in tests/nr3/raw/inv-TAG/, so a rerun after a network failure resumes.
+cache = f"tests/nr3/raw/inv-{tag}"
+os.makedirs(cache, exist_ok=True)
 for oid, nm in sorted(ids.items(), key=lambda kv: kv[1]):
+    path = f"{cache}/{nm}.json"
+    if os.path.exists(path):
+        for req, r in json.load(open(path)).items():
+            rows[req] = {**r, "c": collections.Counter(r["c"])}
+        continue
+    mine = {}
     for sc in "abc":
-        n = sum(window(f"{P}-site-{sc}", oid, t, min(ms(b), t + 10_000), rows) for t in range(ms(a), ms(b), 10_000))
+        n = sum(window(f"{P}-site-{sc}", oid, t, min(ms(b), t + 10_000), mine) for t in range(ms(a), ms(b), 10_000))
         if n:
-            for r in rows.values():
-                r.setdefault("member", nm)
             break
+    for r in mine.values():
+        r["member"] = nm
+    json.dump(mine, open(path, "w"))
+    rows.update(mine)
 os.makedirs("tests/nr3/raw", exist_ok=True)
 with open(f"tests/nr3/raw/inv-{tag}.jsonl", "w") as f:
     for req, r in rows.items():
