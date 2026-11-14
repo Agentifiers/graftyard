@@ -350,6 +350,67 @@ Per learner, from the raw traces, ReadIndex sent to applied (p50 / p99, ms):
 
 Rows: `tests/nr3/rows/a1-b0-29-gate11.jsonl`, `run-gate11.status`, `fresh-gate11.jsonl`, `mem-gate11.json`, `trace-gate11.json.gz`. repo:65555 torn down.
 
+### Gate 12 on fdf363f3: the adopted B0-29 shape, with routing by answer time
+
+The operator adopted LM-1's B0-29 shape (lm1-memory.md, round 12) for every gate run: a fresh repository, 8 learners
+and k 4 placed first, then `a1.mjs b0-29 --open-prs 500 --seconds 600`, which opens 500 draft PRs on the agents' own
+head branches and waits for every learner to apply the leader's commit before its window. Gates 1 to 11 ran on idle
+PR rows at k 1 and stay recorded but do not count. The tree has the leader's held-bytes and log-bytes instruments
+(`/stats?summary=1`, sampled every 15 s by `tests/nr3/lmem.mjs`) and the edge's routing by measured answer time.
+The first try (repo 65556) exited before setup on a missing `clock.mjs` and ran no load.
+
+Repo 65557, 06:28 to 06:38Z [measured]:
+
+| Line | Gate 12 | B0-29 pass |
+| --- | --- | --- |
+| API p50 / p99, served | 672 / 2,011 ms, 99.93% (117,092 reads) | p99 ≤ 2,000 ms, ≥ 99% |
+| Tier read at the edge, p50 / p99 | 636 / 1,935 ms | |
+| Commit p50 / p99 | 997 / 5,140 ms (queue p99 4,798, round p99 493, confirm p99 280) | p99 ≤ 600 ms |
+| merge:only p99 | 5,985 ms | ≤ 2 s |
+| Leader | site 0, term 2 throughout, 82.5 req/s, 0 feed polls | no change |
+| Read-your-write | 150 of 150 rounds, 0 stale | 0 stale |
+
+A miss on API p99 by 11 ms, and on the commit and merge lines, which LM-1 owns.
+
+**Leader memory.** Setup: 500 of 500 PRs opened with no failure, all 8 learners caught up in 2.6 s, leader wasm 11.3
+MiB at the window's start. In the window the leader's high-water was 47.6 MiB by `/stats` and 83 MiB by the analytics
+API's per-minute peak (76 MiB for most of it), against 118 to 125 MiB on gates 9 to 11. `logBytes` sat at the 8 MB
+`LOG_BYTES` cap, held bytes per learner peaked at 0.10 to 0.37 MB, and across all 8 at 214 KB. Learners peaked at 57
+to 62 MiB. The jump at learner join that set gates 9 to 11's baseline does not happen when learners join a near-empty
+log, so no code change was made for it.
+
+**Routing by answer time.** Reads per learner (`readStages` n): l6 40.2%, l3 30.8%, l1 10.2%, l7 7.4%, l4 6.1%, l0
+3.6%, l2 1.0%, l5 0.7% of 121,587. The two apac learners (l2, l5) took 1.7% between them, against about a quarter
+before, and their apply wait (p99 2.9 and 5.1 s) no longer reaches many reads. Two enam learners took 71%, but no
+learner ran hot: CPU-s per learner in the window did not follow its read share (narrow answers are built at most once
+per `NARROW_EVERY_MS` and shared), peaks stayed at 57 to 62 MiB, and no learner shed more than 56 reads.
+
+| Learner | Region | Reads | CPU-s | Peak MiB | late |
+| --- | --- | --- | --- | --- | --- |
+| l0 | enam | 4,390 | 328.5 | 59 | 595 |
+| l1 | weur | 12,393 | 197.9 | 60 | 463 |
+| l2 | apac | 1,191 | 119.6 | 61 | 1,252 |
+| l3 | enam | 37,418 | 305.6 | 60 | 548 |
+| l4 | weur | 7,470 | 142.1 | 61 | 638 |
+| l5 | apac | 865 | 91.8 | 61 | 1,704 |
+| l6 | enam | 48,923 | 274.7 | 62 | 521 |
+| l7 | enam | 8,937 | 349.7 | 57 | 840 |
+
+**What sets the API p99 now.** Per read on each learner (`tests/nr3/split.mjs`), p99 in ms:
+
+| Learner | Read-index round trip | Wait for entries | Own apply | Total |
+| --- | --- | --- | --- | --- |
+| l3, l6, l7 (enam, 71% and 7% of reads) | 578 to 830 | 263 to 310 | 1,302 to 1,372 | 1,403 to 1,467 |
+| l0 (enam) | 899 | 389 | 1,576 | 1,733 |
+| l1, l4 (weur) | 726 to 789 | 443 to 533 | 852 to 987 | 1,227 to 1,531 |
+| l2, l5 (apac) | 1,005 to 1,007 | 2,516 to 5,101 | 1,578 to 1,772 | 3,226 to 5,588 |
+
+The learners that serve most reads now spend most of their p99 on their own apply, behind storage confirms, which F65
+already named as the next limit after the far learners' wait [measured; that confirms set the apply is an inference].
+
+Rows: `tests/nr3/rows/a1-b0-29-gate12.jsonl`, `run-gate12.status`, `lmem-gate12.jsonl`, `mem-gate12.json`,
+`egress-gate12.txt`, `fresh-gate12.jsonl`, `trace-gate12.json.gz`.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
