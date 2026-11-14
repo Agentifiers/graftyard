@@ -80,5 +80,8 @@ if [ -z "${NO_LF13:-}" ]; then
     done
   done
 fi
+# Every running shard container on the install, not only this run's rows (teardown.py --sweep): exit 2 names any left.
+if python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; then echo "$(date -u +%FT%TZ) sweep ok" >> "$ST"
+else echo "$(date -u +%FT%TZ) SWEEP FAILED: shard containers still running, see above" >> "$ST"; fi
 echo ALLDONE >> "$ST"
 exec sleep infinity

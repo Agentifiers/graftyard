@@ -38,5 +38,8 @@ for s in $SMOKES; do
   python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
   echo "$(date -u +%FT%TZ) cost $(T0_FILE=${T0_FILE:-tests/fanout/raw/siteday-r2.t0} bash tests/fanout/cost.sh 2>/dev/null)" >> "$ST"
 done
+# Every running shard container on the install (teardown.py --sweep): exit 2 names any left.
+if python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; then echo "$(date -u +%FT%TZ) sweep ok" >> "$ST"
+else echo "$(date -u +%FT%TZ) SWEEP FAILED: shard containers still running, see above" >> "$ST"; fi
 echo DONE >> "$ST"
 exec sleep infinity
