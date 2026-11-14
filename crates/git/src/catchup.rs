@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use graftyard_types::{ChainId, Digest, Index, NetworkId};
+use graftyard_types::{ChainId, Digest, Index, NetworkId, SiteId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -70,6 +70,47 @@ pub trait ShardIo {
     async fn make_room(&self, incoming: u64) -> Result<Vec<i64>, StoreError>;
     /// The network's `Committed` markers from every bucket of the placement.
     async fn markers(&self) -> Result<Vec<(PackId, Marker)>, StoreError>;
+}
+
+/// The order a shard on site `me` reads a stored pack's buckets in: its own site's first, then the others in site
+/// order. Each bucket holds a copy of every pack its site placed, so a pack is usually found in the first one read; in
+/// site order every shard read site 0's bucket first, and the apac shard of B0-31 m3fr2 pulled every 1 MiB pack from
+/// enam, a cross-region read per pack, and fell minutes behind (`tests/am1/results/lm1-rows-m3f.md`, m3fr2, B0-31).
+/// Listings that need every bucket (`ShardIo::markers`) read them all, in any order.
+pub fn own_first<T>(me: SiteId, buckets: impl IntoIterator<Item = (SiteId, T)>) -> Vec<(SiteId, T)> {
+    let mut v: Vec<(SiteId, T)> = buckets.into_iter().collect();
+    v.sort_by_key(|(s, _)| (*s != me, s.0));
+    v
+}
+
+/// The first bucket, in the order given, whose copy `take` accepts, and what it answered: `take` answers `None` for a
+/// bucket that lacks the object or holds a copy that does not match its checksum, and the next bucket is tried.
+/// `ShardIo::ingest_stored` reads a stored pack this way, over `own_first`'s order.
+pub async fn first_copy<T, R, F, Fut>(buckets: &[(SiteId, T)], mut take: F) -> Result<Option<(SiteId, R)>, StoreError>
+where
+    F: FnMut(&T) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<R>, StoreError>>,
+{
+    for (site, b) in buckets {
+        if let Some(r) = take(b).await? {
+            return Ok(Some((*site, r)));
+        }
+    }
+    Ok(None)
+}
+
+/// Where a catch-up's stored packs came from and where their time went, per pack summed: the whole ingest, the
+/// container's spool (the bucket's body streamed onto its disk, so the read from the bucket) and its `index-pack`
+/// (unpack, delta resolution, and the index). The shard host fills it; `catch_up` leaves it empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct StoredMs {
+    pub packs: u32,
+    pub bytes: u64,
+    pub total_ms: u64,
+    pub spool_ms: u64,
+    pub index_ms: u64,
+    /// Packs served by each site's bucket.
+    pub from_site: BTreeMap<u8, u32>,
 }
 
 /// A rehydrate in progress on one disk: whether its marked phase finished, how far its tail got, and per chain the
@@ -130,6 +171,8 @@ pub struct Report {
     pub disk: String,
     /// Each step's end, in ms from the start.
     pub ms: Vec<(&'static str, u64)>,
+    /// The stored packs' fetch and index time (`StoredMs`).
+    pub stored: StoredMs,
 }
 
 /// The last index of `page`, a run of entries that must start at `from`, be contiguous, and end at or before `to`.
@@ -424,6 +467,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         held_max: t.held_max,
         disk,
         ms,
+        stored: StoredMs::default(),
     })
 }
 
@@ -608,5 +652,6 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         disk,
         ms,
         rehydrated: Some(r),
+        stored: StoredMs::default(),
     })
 }
