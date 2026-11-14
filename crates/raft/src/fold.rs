@@ -113,6 +113,14 @@ pub trait Command: Record + Clone {
     ) -> Result<(SmallVec<[Ev<Self>; 4]>, Self::Out), Self::Err>;
     /// The output for a duplicate request, rebuilt from the events its first commit stored.
     fn replay(&self, events: &[Ev<Self>]) -> Self::Out;
+    /// About what this command's events will add to its entry, before `decide` makes them: what admission prices and
+    /// ENTRY_SOFT counts. By default its encoded length. A command that carries bytes no event stores, such as the
+    /// reply an `IssueCall`'s leader renders, leaves them out: priced whole, B0-33's 10.8 KB issue commands, of which
+    /// about 550 bytes reach the log, held capacity to 30 to 47 commands/s against 140 (LM-1 round 15,
+    /// `tests/am1/results/lm1-memory.md` on `lm1-memory`). COMMAND_MAX and ENTRY_MAX still count `encoded_len`.
+    fn stored_len(&self) -> usize {
+        self.encoded_len()
+    }
 }
 
 /// A `request` table row: the entry that carried the request and its events.
