@@ -311,7 +311,7 @@ impl Harness {
             |_, e| owed.extend(audit::authz_owed(OWNER, e)),
         )
         .expect("the committed log is in memory");
-        if !audit::needs_batch(cursor, scanned.through, &owed) {
+        if !audit::needs_batch(cursor, scanned.through, &owed, 0) {
             return Ok(None);
         }
         let chain = ChainId::Authz(OWNER);

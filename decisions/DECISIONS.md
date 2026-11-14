@@ -3047,6 +3047,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Measured, not a decision.** On main `84d29c2` (F67 rules 10 to 13) plus the pipeline and `LOOP_LAG`, B0-02's gate passed 7 of 8 at 300 and 5 of 8 at 330 (`tests/m0/results/carried-8.md`). The near-gap shape did not recur (no near call of 400 ms or more outside r330-6) and no leader was clamped, so neither rule above is reversed. Two misses meet the `ENTRY_SOFT` flip ("capped entries do not lower commit p99") at 330: one 60 KB entry per round at a round p50 of 169 to 174 ms holds the group to 322 to 331 commands/s. One miss is a far follower whose catch-up calls of 319 to 717 KB missed `CALL_DEADLINE`, so `failed_to` turned off its pipeline and every later call carried the backlog; with a slow near follower, `CommitErrors` moved leadership to the far site. The next step is the operator's (C20).
 
+### M4-WP1's hosted half: webhook attempts run in per-hook lanes, 2026-11-13
+
+**Decision.** The `HookSequencer` keeps order, the delivery rows, and the cursor halves, and signs every request. It sends each attempt through the hook's lane, `hooklane:<wire>:<hook>`, an object of the same class on the store's site that keeps nothing. One lane call carries a queue's run: its head and up to `RUN_MAX` (8) deliveries queued behind it, sent in order and stopped at the first non-2xx or after `RUN_FOR_MS` (2 s). The store records each sent delivery as its queue's attempt only once it is the queue's front (`Sequencer::queued_after`, `next_in_run`), so one attempt in flight per (chain, hook) and chain order hold as before. Lanes are named and routed by `LANE_WIRE`, so a store on a new release never reaches a lane still running an old one.
+
+**Why.** BF-57's healthy p99 stayed at 2.1 to 3.2 s through runs 8 to 12, because every POST ran inside the owner's one object behind its other work. A probe at 49 busy queues put the POST at 184 to 301 ms p50 inside one object, at 205 ms from an invocation of the site script over its own `SITE` binding, which runs beside its caller, and at 7 ms from a separate object (`graft-m4-probe-sb5`, `-sb8`, 2026-11-13). Run 13, on the `SITE` binding, had p99 9.4 s. Run 14, on per-hook lanes with one attempt per call, had p99 2.10 s, and all 124 late deliveries were behind earlier entries of their own queue. Run 16, with runs, had p99 1.11 s and none over 2 s (`tests/m4/results/m4-wp1-hosted.md`) [measured].
+
+**Beat.** Stateless delivery Workers over the site script's own `SITE` binding, as DESIGN's Shape first read and as `prsync::in_band` does (run 13, 9.4 s). Batching the store's report writes (runs 10 to 12, no gain). Attempts through Queues (latency). One lane call per attempt (run 14, 2.10 s).
+
+**Evidence.** `tests/m4/results/m4-wp1-hosted.md`, BF-57 runs 13 to 16. `a_run_sends_a_queues_waiting_deliveries_in_order_under_one_slot` (`crates/git/src/sequencer.rs`).
+
+**Flip.** A run in which lanes do not shorten the healthy tail against the store's own POSTs, or a chain-order inversion that a run causes.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).
