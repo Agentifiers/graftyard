@@ -1535,9 +1535,11 @@ fn a_learner_read_index_answer_follows_the_entries_it_needs() {
         let early = early.expect("the tick's call to the learner");
         // Entries commit while the learner's call is out, so it was sent none of them: exactly one, then two more.
         let mut out = Vec::new();
-        for (batch, n) in [(7u64, 1u128), (8, 2)] {
+        for (batch, n) in [(7u64, 1u128), (8, 2), (9, 3)] {
             for i in 0..n {
-                admit(&mut c, A, 9_980 + u128::from(batch) * 10 + i, put(&format!("s{batch}{i}"), "v"));
+                // The third read's entries are 60 KB each, so one call carries one of them (APPEND_BYTES_MAX).
+                let v = if batch == 9 { "x".repeat(60_000) } else { "v".into() };
+                admit(&mut c, A, 9_980 + u128::from(batch) * 10 + i, put(&format!("s{batch}{i}"), &v));
                 step(&mut c);
             }
             // A refusal of an older call comes back, as one that a later call overtook would: it empties the leader's
@@ -1570,6 +1572,19 @@ fn a_learner_read_index_answer_follows_the_entries_it_needs() {
             let res = res.expect("A answered the learner's batch");
             let Message::ReadIndexRes { index: Some((i, _)), .. } = &to_l[res].msg else { panic!("a granted read") };
             assert_eq!(*i, read_index, "the answer names the leader's commit");
+            if batch == 9 {
+                // Behind by three calls' bytes: three calls ahead of the answer, together through the read index.
+                let calls: Vec<_> = to_l[..res]
+                    .iter()
+                    .filter_map(|e| match &e.msg {
+                        Message::Append(a) if !a.entries.is_empty() => Some(a),
+                        _ => None,
+                    })
+                    .collect();
+                let through = calls.iter().filter_map(|a| a.entries.last()).map(|e| e.index).max();
+                out.push(through.filter(|t| *t >= read_index).map(|_| calls.len() as u64));
+                continue;
+            }
             out.push(to_l[..res].iter().find_map(|e| match &e.msg {
                 Message::Append(a)
                     if a.entries.last().is_some_and(|x| x.index >= read_index) && a.commit >= read_index =>
@@ -1586,7 +1601,8 @@ fn a_learner_read_index_answer_follows_the_entries_it_needs() {
     let (first, out, after) = before_answer(0);
     assert_eq!(out[0], Some(after), "a learner on a clean link, with a call in flight");
     assert_eq!(out[1], Some(first), "a learner on a clean link, after a refusal");
-    assert_eq!(before_answer(usize::from(STEP_DOWN.commit_fail_min)).1, [None, None], "a learner on a lossy link");
+    assert_eq!(out[2], Some(3), "a learner three calls' bytes behind gets three calls");
+    assert_eq!(before_answer(usize::from(STEP_DOWN.commit_fail_min)).1, [None; 3], "a learner on a lossy link");
 }
 
 /// B0-02's r330-6 (`tests/m0/results/carried-8.md`): a far voter more than ten entries behind catches up in calls of

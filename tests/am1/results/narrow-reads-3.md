@@ -308,6 +308,23 @@ c95216cc's read append was a forced send from `next` on every read that found th
 
 Rows: `tests/nr3/rows/a1-b0-29-gate9.jsonl`, `run-gate9.status`, `fresh-gate9.jsonl`, `mem-gate9.json`, `trace-gate9.json.gz`. repo:65553 torn down.
 
+### Gate 10 on 617ed5b9: seven learners under 2 s, one apac learner behind
+
+Site day from 617ed5b9 (sites and edge exit 0). The sweep on 617ed5b9 passed: HARSH 15,735 ms, gray 27,226 ms, live 28,340 ms, Porcupine Ok ×3. gate10 is repo:65554, load from 00:08:36Z.
+
+- **API:** 99.38% served (229 × 503, 126 driver-capped), p50 715 ms, **p99 2,717 ms**; tier p99 2,581 ms. **Fails.**
+- **Commit:** p99 1,483 ms. Agent push 1,236 of 1,237 ok.
+- **Other:** no leader change; 0 stale in 149 probe rounds.
+- **Memory:** **leader peak 118 MiB**, against 61 to 70 MiB in gates 6 to 8; learners 58 to 62 MiB. With gate9's 122 MiB, sending from `next` after a refusal goes with higher leader memory. I have not found why [measured; cause unknown].
+
+Total wait from `ReadIndex` sent to applied, p99: l0 1,202, l1 1,201, l2 1,539, l3 1,311, l4 1,929, l6 1,145, l7 1,409, and **l5 (apac) 6,303 ms** (hold p99 5,582 ms, 6,825 of 9,748 reads `late`).
+
+l5's raw trace (`tests/nr3/rows/trace-gate10.json.gz`) shows no refusal and no gap. Every read's response carried one or two AppendEntries, each about one entry, held to `APPEND_BYTES_MAX` (entries near ENTRY_SOFT). A round trip took about 350 ms, the leader cut entries faster, and l5 stayed about 12 entries behind for the run. One call per read cannot catch up a learner whose round trip carries less than the leader commits.
+
+**Change:** the read's AppendEntries now go up to `PIPELINE` calls in all, each within `APPEND_BYTES_MAX`, after the calls in flight. The kept test adds a third read with entries of 60 KB each, three behind, and asserts three calls go ahead of the answer. Plant 21 (617ed5b9's one call per read) is caught, as are 15 to 20.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate10.jsonl`, `run-gate10.status`, `fresh-gate10.jsonl`, `mem-gate10.json`, `trace-gate10.json.gz`. repo:65554 torn down.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.

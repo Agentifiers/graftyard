@@ -1293,17 +1293,22 @@ impl<C: Command> Member<C> {
         if quorum::is_voter(self.log_config(), peer) || self.link_lossy(peer) {
             return;
         }
-        let Some(lead) = self.lead.as_ref() else { return };
-        let next = lead.next.get(&peer).copied().unwrap_or(self.last().next());
-        // A catch-up read from storage, or an install, is out or due: `tick` sends it.
-        if next <= self.base.index || self.install.as_ref().is_some_and(|s| Index(next.0 - 1) < s.through) {
-            return;
-        }
-        match lead.pipe.get(&peer).and_then(|p| p.last()) {
-            Some(&(_, through)) if through < index => self.append_to(peer, false, true),
-            Some(_) => {}
-            None if lead.matched(peer) < index => self.send_append(peer, true),
-            None => {}
+        // Up to PIPELINE calls, so a learner behind by more than one call's bytes catches up: with one per read, an
+        // apac learner got one to two entries per 350 ms round trip, each call held to APPEND_BYTES_MAX, while the
+        // leader committed more, and stayed about 12 entries behind (gate10, `tests/nr3/rows/trace-gate10.json.gz`).
+        for _ in 0..PIPELINE {
+            let Some(lead) = self.lead.as_ref() else { return };
+            let next = lead.next.get(&peer).copied().unwrap_or(self.last().next());
+            // A catch-up read from storage, or an install, is out or due: `tick` sends it.
+            if next <= self.base.index || self.install.as_ref().is_some_and(|s| Index(next.0 - 1) < s.through) {
+                return;
+            }
+            match lead.pipe.get(&peer).map(|p| (p.len(), p.last().map(|l| l.1))) {
+                Some((n, Some(through))) if through < index && n < PIPELINE => self.append_to(peer, false, true),
+                Some((_, Some(_))) => return,
+                _ if lead.matched(peer) < index => self.send_append(peer, true),
+                _ => return,
+            }
         }
     }
 
