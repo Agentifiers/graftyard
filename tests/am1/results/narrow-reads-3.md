@@ -829,7 +829,8 @@ does not close the gap. Learners were mid-confirm 7 to 18% of the run, and l3 26
    - Gap found: `advance_commit` builds `acked` from `lead.matched`, learners included, and `proof_for` writes all of
      them into the `QuorumProof`. Today a learner's AppendRes waits at its gate for its write, so the proof is true.
      Under `allowUnconfirmed` it would name a learner copy that is not durable. **The proof must list voters only.**
-     The simulator's `ack_check` asserts that every site the proof counts holds the entry on disk.
+     The simulator's `ack_check` asserts that every site the proof counts holds the entry on disk. This matters only
+     under `allowUnconfirmed`, so the code is left as it is (operator, with (a) not adopted).
 2. **A learner applies only committed entries.** It sets `commit` from `req.commit.min(matched)`
    (`member/follower.rs`), and a leader's `commit`, even a deposed one's, covers only committed entries (log
    matching). So what a learner holds in memory and has not confirmed is committed. Serving it serves no uncommitted
@@ -918,8 +919,11 @@ dump) came from collinear counts and does not survive these native timings.
 
 **What (b) needs to be settled:** one counter per `/read` invocation, under test-faults, logged with its CPU:
 entries applied, append bytes decoded, rows written, and answers built by kind. Regressing over thousands of
-invocations, not 32 learner totals, splits apply from answers. That is one gate-shaped run. **No spend until the
-operator picks.**
+invocations, not 32 learner totals, splits apply from answers. That is one gate-shaped run.
+
+**The operator's pick: (b).** (a) is recorded as not adopted (`decisions/DECISIONS.md`, "Not adopted: a learner's
+writes clear of its own output gate"). It flips if, after (b), the learner's gate is measured at more than 30% of the
+gap between the API p99 and 2 s.
 
 ## The bug the simulator found
 
