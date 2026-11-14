@@ -1,7 +1,7 @@
 #!/bin/bash
-# b030-split site day on graft-m1 (sites a to d): the rerun day (main 1f51c6f with liveness-slow-storage 2456b8f; the split arms its check inside the alarm, 7c495d9), MetaSlim entries bounded by SLIM_BYTES (4cc1eae), the leader-only work pacing and keep-led (d879b0b) and the split's own re-arm, the metadata child group (MetaSplit, MetaSeed, MetaDropped, MetaSlim),
+# b030-split site day on graft-m1 (sites a to d): the rerun day (main 31d19c9: liveness-slow-storage, repo-write-mark, m4-web-2, narrow-reads-3 with READ_PIPELINE; the split arms its check inside the alarm, 7c495d9), MetaSlim entries bounded by SLIM_BYTES (4cc1eae), the leader-only work pacing and keep-led (d879b0b) and the split's own re-arm, the metadata child group (MetaSplit, MetaSeed, MetaDropped, MetaSlim),
 # the archive drain loop, and main's hot-shards 1 to 4 (promotion on a warm shard, in-band /archive/promote, the
-# rehydrate resume fix). Shard image: main's newest containers commit 35c398c (hot-shards-4). SHARD_INSTANCE is
+# rehydrate resume fix). Shard image: hot-shards-4's (35c398c); main's later e7a584ed changes only the M4 UI's /ui routes, which B0-30 never calls. SHARD_INSTANCE is
 # standard-4 (operator approval for test installs). GRAFTYARD_REPO_REQUEST_RETENTION_S = 9600 as in site day 8
 # (tests/am1/b030/siteday8.sh): 30 days in 40 h scales the 48 h REQUEST_RETENTION to 160 min.
 # Idempotent: skipped once its log ends in DONE.
