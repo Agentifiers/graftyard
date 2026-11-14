@@ -285,6 +285,10 @@ fn a_shard_answers_warming_at_once_only_to_a_caller_with_somewhere_else_to_go() 
     assert!(!warming_now(true, false, false), "a catch-up, not a rehydrate, is short");
     assert!(warming_now(false, false, true) && warming_now(true, false, true));
     assert!(!warming_now(false, false, false));
+    // A promotion waits briefly on a shard with another after it, so one behind costs one short wait: a new leader's
+    // first promotion waited the full 60 s on a shard still catching up (B0-30's rerun). The last try waits longest.
+    assert!(promote_wait_s(true) <= 10 && promote_wait_s(false) == PROMOTE_WAIT_S);
+    assert!(promote_wait_s(true) < promote_wait_s(false));
 }
 
 /// A pool shard that answered `warming` gets no push for `POOL_COLD_SKIP_MS`, then is tried again, so a carried-over

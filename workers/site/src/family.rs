@@ -182,10 +182,10 @@ pub trait Family: 'static {
     fn row_packs(_events: &[Self::Ev]) -> Value {
         json!([])
     }
-    /// The archive an applied entry commits: members record its range (`archive_key`) and truncate their stored log
-    /// through `to` once they can HEAD the key in two buckets.
-    fn archived(_e: &raft::LogEntry<Self::Ev>) -> Option<ArchivedRange> {
-        None
+    /// The archives an applied entry commits, in order: members record each range (`archive_key`) and truncate their
+    /// stored log through its `to` once they can HEAD its key in two buckets.
+    fn archived(_e: &raft::LogEntry<Self::Ev>) -> Vec<ArchivedRange> {
+        Vec::new()
     }
     /// After the stored log was truncated below `to`: a family that hosts `InstallSnapshot` names its source
     /// (`crate::load::set_source`).
@@ -1249,14 +1249,16 @@ impl Family for Repo {
         });
         json!(git::repo::packs_of(events).into_iter().chain(promoted).collect::<Vec<_>>())
     }
-    fn archived(e: &raft::LogEntry<Self::Ev>) -> Option<ArchivedRange> {
-        let raft::EntryBody::Events(evs) = &e.body else { return None };
-        evs.iter().find_map(|ev| match ev {
-            git::repo::RepoEvent::Archived(a) if matches!(a.key, git::R2Key::Archive { .. }) => {
-                Some(ArchivedRange { key: a.key.to_string(), from: a.from.0, to: a.to.0, to_at: a.to_at.0 })
-            }
-            _ => None,
-        })
+    fn archived(e: &raft::LogEntry<Self::Ev>) -> Vec<ArchivedRange> {
+        let raft::EntryBody::Events(evs) = &e.body else { return Vec::new() };
+        evs.iter()
+            .filter_map(|ev| match ev {
+                git::repo::RepoEvent::Archived(a) if matches!(a.key, git::R2Key::Archive { .. }) => {
+                    Some(ArchivedRange { key: a.key.to_string(), from: a.from.0, to: a.to.0, to_at: a.to_at.0 })
+                }
+                _ => None,
+            })
+            .collect()
     }
     async fn truncated(host: &std::rc::Rc<crate::host::Host<Self>>, to: raft::Index) {
         crate::load::set_source(host, to).await;

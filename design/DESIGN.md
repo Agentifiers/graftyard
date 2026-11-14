@@ -1069,8 +1069,9 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// Before the leader archives a range, the home shard packs every pack it names into one self-contained `DurablePack`
 /// and the leader commits `Promoted`; `Archived` follows once `Promoted` covers the range (an empty pack if it names
-/// none). It promotes ahead too, once the log above the last `Promoted` passes LOG_MAX_BYTES / 32 [guess], so rehydrate
-/// tails stay small (`tests/am1/results/b0-30.md`, blockers 9 to 11). `Compacted.consumed` names only promoted packs,
+/// none). It promotes ahead first, once the log above the last `Promoted` passes LOG_MAX_BYTES / 32 [guess], unless the
+/// log is a sixteenth over its cap, so rehydrate tails stay small (`b0-30.md`, 9 to 11). A promotion takes 8 ranges and
+/// an `Archived` entry 8 objects, so the drain outruns twice B0-30's pushes [inference, `b030-split.md`, "B0-30 rerun"]. `Compacted.consumed` names only promoted packs,
 /// and restore checks an inline pack, which has no `checksum`, by its entry's digest chain.
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs

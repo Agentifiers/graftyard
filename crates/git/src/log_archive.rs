@@ -26,11 +26,17 @@ pub const ARCHIVE_RANGE_MAX: u64 = 2 << 20;
 /// promoted, and the alarm reports it, rather than ending the isolate.
 pub const PROMOTE_MAX: u64 = 48 << 20;
 
-/// A promotion takes up to this many archive ranges of log at once [guess]: each promotion is a git cache shard round
-/// trip and an entry of its own, and in B0-30 a promote then an archive per `ARCHIVE_RANGE_MAX` range drained about
-/// 0.2 MB/s against 0.8 MB/s of pushes (`tests/am1/results/b0-30.md`, blocker 7). The archives that follow still go
-/// one range at a time, and `PROMOTE_MAX` still bounds the pack bytes.
-pub const PROMOTE_RANGES: u64 = 4;
+/// A promotion takes up to this many archive ranges of log at once, and one archive step puts up to `ARCHIVE_PIECES`
+/// objects of `ARCHIVE_RANGE_MAX` each and records them in one entry [inference from B0-30's rerun]. Each step pays
+/// its entry's commit and twice that again in pacing (`workers/site/src/host.rs`, `paced`), about 1.35 s, so with 4
+/// ranges a promotion and one range an archive the rerun's drain spent 2.3 s per 2 MiB archived and 3.4 s per 8 MiB
+/// promoted: about 0.67 MB/s against 0.72 MB/s of log applied, and the log passed its cap by 5% at the first leader
+/// change (`tests/am1/results/b030-split.md`, "B0-30 rerun"). At 8 and 8, with an object's two bucket puts at once,
+/// the same costs give about 1.7 MB/s, past twice the rerun's log rate (`crates/git/tests/log_archive.rs`,
+/// `the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs`). `PROMOTE_MAX` still bounds a promotion's pack
+/// bytes, and an archive step builds one object at a time, so memory holds one range of rows as before.
+pub const PROMOTE_RANGES: u64 = 8;
+pub const ARCHIVE_PIECES: usize = 8;
 
 /// The leader promotes ahead of archiving once the stored log above the last `Promoted` passes the cap divided by
 /// this [guess: 64 MiB at `LOG_MAX_BYTES`]. A git cache shard rehydrates from the last `Promoted` by reading every
@@ -128,31 +134,6 @@ fn pack_bytes(e: &LogEntry<RepoEvent>) -> u64 {
         .sum()
 }
 
-/// The first entries whose packs fit `promote_max` together, at least one: a promotion takes the range in pieces
-/// as an archive does. A first entry alone over it is refused, and the alarm reports it each time it runs.
-pub fn within_promote_max(
-    entries: Vec<LogEntry<RepoEvent>>,
-    promote_max: u64,
-) -> Result<Vec<LogEntry<RepoEvent>>, String> {
-    let mut taken = 0u64;
-    let mut out = Vec::new();
-    for e in entries {
-        let b = pack_bytes(&e);
-        if taken.saturating_add(b) > promote_max {
-            if out.is_empty() {
-                return Err(format!(
-                    "entry {} names {b} pack bytes, over the {promote_max} a promotion holds",
-                    e.index.0
-                ));
-            }
-            break;
-        }
-        taken += b;
-        out.push(e);
-    }
-    Ok(out)
-}
-
 /// The SHA-256 of every pack the entries name, in order and once each: the checksums under which the git cache shard
 /// ingested them, which its `/promote` packs into one complete pack. Inline packs and stored ones both count: a pushed
 /// pack is thin, so a stored pack's bases may be in an inline pack of the range, and the reverse (BF-18).
@@ -205,9 +186,12 @@ pub fn promote_request(chain: ChainId, from: Index, to: Index) -> RequestId {
     request(&[b"graftyard-log-promote", chain.to_string().as_bytes(), &from.0.to_be_bytes(), &to.0.to_be_bytes()])
 }
 
-/// The request id of the `Archived` for an archive object, from its digest.
-pub fn archive_request(digest: Digest) -> RequestId {
-    request(&[b"graftyard-log-archive", &digest.0])
+/// The request id of the entry that records these archive objects, from their digests in order: one object's is the
+/// same as before `ARCHIVE_PIECES`.
+pub fn archive_request(digests: &[Digest]) -> RequestId {
+    let mut parts: Vec<&[u8]> = vec![b"graftyard-log-archive"];
+    parts.extend(digests.iter().map(|d| &d.0[..]));
+    request(&parts)
 }
 
 /// The stored rows `ArchiveHost::rows` yields, `(index, row)` in index order.
@@ -255,8 +239,18 @@ impl View {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Idle,
-    Promoted { from: Index, to: Index, index: Index },
-    Archived { from: Index, to: Index, index: Index, key: String },
+    Promoted {
+        from: Index,
+        to: Index,
+        index: Index,
+    },
+    /// One entry's archive objects, `from..=to` in all, and their keys in order.
+    Archived {
+        from: Index,
+        to: Index,
+        index: Index,
+        keys: Vec<String>,
+    },
 }
 
 /// The leader's I/O, which the site implements over its storage, its shard, and its buckets.
@@ -275,85 +269,154 @@ pub trait ArchiveHost {
     async fn put(&self, key: &str, bytes: &[u8], digest: Digest) -> Result<usize, String>;
     /// Records the events under `request` and waits for the entry: its index.
     async fn record(&self, request: RequestId, events: Vec<RepoEvent>) -> Result<Index, String>;
+    /// Lets the member's other work run: a promotion decodes and hashes its range on the leader, about 4 ms a MiB
+    /// in wasm, and pauses every `PAUSE_EVERY` bytes of rows so its loop never falls behind by a whole range.
+    async fn pause(&self) {}
 }
 
-/// The committed stored entries from `rows` (index order, after the last promotion), up to `budget` bytes of rows and
-/// at least one: the next promotion's range before `PROMOTE_MAX` cuts it. A gap or a row that does not decode is an
-/// error.
-fn promotion_range(
-    rows: impl IntoIterator<Item = (Index, Vec<u8>)>,
+/// A promotion pauses after this many bytes of rows (`ArchiveHost::pause`), and reads its rows again after each.
+pub const PAUSE_EVERY: u64 = 2 << 20;
+
+/// The next promotion, read from the stored log above `after` one row at a time: up to `budget` bytes of committed
+/// rows and at least one, cut before an entry whose packs would take the total past `promote_max`. An entry alone
+/// over it is refused. A gap or a row that does not decode is an error.
+struct Plan {
+    to: Index,
+    /// `promotion_sums` of the range.
+    sums: Vec<Digest>,
+    /// The range's stored packs and their entries, which the promotion marks again.
+    stored: Vec<(PackRef, Index)>,
+}
+
+async fn plan<H: ArchiveHost>(
+    h: &H,
     after: Index,
     committed: Index,
     budget: u64,
-) -> Result<Vec<LogEntry<RepoEvent>>, String> {
-    let (mut out, mut taken, mut want) = (Vec::new(), 0u64, after.0 + 1);
-    for (i, row) in rows {
-        if i > committed || (!out.is_empty() && taken + row.len() as u64 > budget) {
+    promote_max: u64,
+) -> Result<Option<Plan>, String> {
+    let (mut p, mut taken, mut packed, mut paused) =
+        (Plan { to: after, sums: Vec::new(), stored: Vec::new() }, 0, 0, 0);
+    'read: loop {
+        let mut more = false;
+        for (i, row) in h.rows(p.to)? {
+            let first = p.to == after;
+            if i > committed || (!first && taken + row.len() as u64 > budget) {
+                break 'read;
+            }
+            if i.0 != p.to.0 + 1 {
+                return Err(format!("the stored log lacks entry {}", p.to.0 + 1));
+            }
+            let e: LogEntry<RepoEvent> = codec::from_bytes(&row).map_err(|e| format!("row {}: {e}", i.0))?;
+            if e.index != i {
+                return Err(format!("row {} holds entry {}", i.0, e.index.0));
+            }
+            let b = pack_bytes(&e);
+            if packed + b > promote_max {
+                if first {
+                    return Err(format!(
+                        "entry {} names {b} pack bytes, over the {promote_max} a promotion holds",
+                        i.0
+                    ));
+                }
+                break 'read;
+            }
+            packed += b;
+            taken += row.len() as u64;
+            p.to = i;
+            for sum in promotion_sums(std::slice::from_ref(&e)) {
+                if !p.sums.contains(&sum) {
+                    p.sums.push(sum);
+                }
+            }
+            if let graftyard_raft::EntryBody::Events(evs) = &e.body {
+                p.stored.extend(packs_of(evs).into_iter().filter(|x| x.stored_id().is_some()).map(|x| (x, i)));
+            }
+            if taken >= paused + PAUSE_EVERY {
+                (paused, more) = (taken, true);
+                break;
+            }
+        }
+        if !more {
             break;
         }
-        if i.0 != want {
-            return Err(format!("the stored log lacks entry {want}"));
-        }
-        let e: LogEntry<RepoEvent> = codec::from_bytes(&row).map_err(|e| format!("row {}: {e}", i.0))?;
-        if e.index != i {
-            return Err(format!("row {} holds entry {}", i.0, e.index.0));
-        }
-        taken += row.len() as u64;
-        want += 1;
-        out.push(e);
+        // The cursor is dropped before the pause, so no write meanwhile runs under it; the read resumes above `to`.
+        h.pause().await;
     }
-    Ok(out)
+    Ok((p.to != after).then_some(p))
 }
 
-/// One step of the archive: nothing; an archive of the next due range, as far as the last promotion covers it; or a
-/// promotion, of the due range when no promotion covers it, or ahead of archiving once the log above the last
-/// promotion passes `max_bytes / PROMOTE_AHEAD`. Every promotion starts right after the last one and takes up to
-/// `PROMOTE_RANGES` ranges of log and `promote_max` pack bytes.
+/// One step of the archive: nothing; a promotion; or up to `ARCHIVE_PIECES` archive objects of the next due ranges,
+/// as far as the last promotion covers them, recorded in one entry. A promotion goes first once the log above the
+/// last promotion passes `max_bytes / PROMOTE_AHEAD`, even with a range due, unless the log is over its cap by more
+/// than `max_bytes / ARCHIVE_SLACK`: in the rerun, archiving first left each promotion just ahead of the archive, and
+/// the log above it stood at 2.07 GB, the whole tail a cold shard's rehydrate reads. Otherwise a due range the last
+/// promotion does not cover is promoted. Every promotion starts right after the
+/// last one and takes up to `PROMOTE_RANGES` ranges of log and `promote_max` pack bytes.
 pub async fn step<H: ArchiveHost>(h: &H, max_bytes: u64, range_max: u64, promote_max: u64) -> Result<Step, String> {
     let Some(v) = h.view() else { return Ok(Step::Idle) };
     let d = due(v.total, h.rows(v.archived_to)?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;
     let done = Index(v.promoted.as_ref().map_or(0, |p| p.to.0));
-    if let Some(d) = d.as_ref() {
-        if d.from.0 != v.archived_to.0 + 1 {
-            return Err(format!("the stored log starts at {} after an archive through {}", d.from.0, v.archived_to.0));
-        }
-        if let Next::Archive { from, to } = next(v.promoted.as_ref(), d.from, d.to) {
-            let rows: Vec<_> = d.rows.iter().filter(|(i, _, _)| *i <= to).cloned().collect();
-            let (bytes, a) = archive_object(v.chain, &rows)?;
-            let key = a.key.to_string();
-            let held = h.put(&key, &bytes, a.digest).await?;
-            if held < 2 {
-                return Err(format!("archive {key} is in {held} buckets"));
-            }
-            let index = h.record(archive_request(a.digest), vec![RepoEvent::Archived(a)]).await?;
-            return Ok(Step::Archived { from, to, index, key });
-        }
+    if let Some(d) = d.as_ref()
+        && d.from.0 != v.archived_to.0 + 1
+    {
+        return Err(format!("the stored log starts at {} after an archive through {}", d.from.0, v.archived_to.0));
     }
     // Ahead of archiving only once both tiers have a snapshot, as an archive waits for: a group that has none yet is
     // new, and its first snapshot comes on its first alarms (`graftyard_fold::snapshot_due`).
-    if d.is_none() && (!v.snapshotted || v.unpromoted <= max_bytes / PROMOTE_AHEAD) {
-        return Ok(Step::Idle);
+    // Promoting ahead goes first while the log is within one slack of its cap, and archiving first past that: a new
+    // leader whose tail is far above the bound would otherwise promote for minutes while the log grows past the cap.
+    let ahead = v.snapshotted && v.unpromoted > max_bytes / PROMOTE_AHEAD;
+    let ahead_first = ahead && v.total <= max_bytes + max_bytes / ARCHIVE_SLACK;
+    match d {
+        Some(d) if !ahead_first && matches!(next(v.promoted.as_ref(), d.from, d.to), Next::Archive { .. }) => {
+            return archive(h, &v, d, max_bytes, range_max).await;
+        }
+        None if !ahead => return Ok(Step::Idle),
+        _ => {}
     }
-    let range = promotion_range(h.rows(done)?, done, v.commit, range_max.saturating_mul(PROMOTE_RANGES))?;
-    if range.is_empty() {
-        return Ok(Step::Idle);
-    }
-    let entries = within_promote_max(range, promote_max)?;
-    let (from, to) = (Index(done.0 + 1), entries.last().expect("at least one").index);
+    let budget = range_max.saturating_mul(PROMOTE_RANGES);
+    let Some(plan) = plan(h, done, v.commit, budget, promote_max).await? else { return Ok(Step::Idle) };
+    let (from, to) = (Index(done.0 + 1), plan.to);
     let request = promote_request(v.chain, from, to);
-    let pack = h.promote(&promotion_sums(&entries), request).await?;
+    let pack = h.promote(&plan.sums, request).await?;
     if !matches!(pack, PackRef::Stored { .. }) {
         return Err("a promoted pack is always stored".into());
     }
     // The range's own stored packs are marked again below the promotion, as the bed's archive route does.
-    for e in &entries {
-        let graftyard_raft::EntryBody::Events(evs) = &e.body else { continue };
-        for p in packs_of(evs).iter().filter(|p| p.stored_id().is_some()) {
-            h.mark(p, e.index).await;
-        }
+    for (p, index) in &plan.stored {
+        h.mark(p, *index).await;
     }
     let p = Promoted { from, to, pack: pack.clone() };
     let index = h.record(request, vec![RepoEvent::Promoted(p)]).await?;
     h.mark(&pack, index).await;
     Ok(Step::Promoted { from, to, index })
+}
+
+/// Archives `first`, a due range the last promotion covers at least in part, and the due ranges after it while the
+/// promotion covers them, up to `ARCHIVE_PIECES` objects: each object is built and put in two buckets before the next
+/// range is read, so memory holds one range of rows, and one entry records them all.
+async fn archive<H: ArchiveHost>(h: &H, v: &View, first: Due, max_bytes: u64, range_max: u64) -> Result<Step, String> {
+    let (mut total, mut d, mut done) = (v.total, Some(first), Vec::new());
+    while let Some(Due { from, to, rows }) = d.take() {
+        let Next::Archive { to, .. } = next(v.promoted.as_ref(), from, to) else { break };
+        let rows: Vec<_> = rows.into_iter().filter(|(i, _, _)| *i <= to).collect();
+        total = total.saturating_sub(rows.iter().map(|(_, _, r)| r.len() as u64).sum());
+        let (object, a) = archive_object(v.chain, &rows)?;
+        drop(rows);
+        let key = a.key.to_string();
+        let held = h.put(&key, &object, a.digest).await?;
+        if held < 2 {
+            return Err(format!("archive {key} is in {held} buckets"));
+        }
+        done.push((a, key));
+        if done.len() < ARCHIVE_PIECES {
+            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;
+        }
+    }
+    let (from, to) = (done[0].0.from, done[done.len() - 1].0.to);
+    let request = archive_request(&done.iter().map(|(a, _)| a.digest).collect::<Vec<_>>());
+    let (events, keys): (Vec<_>, Vec<_>) = done.into_iter().map(|(a, k)| (RepoEvent::Archived(a), k)).unzip();
+    let index = h.record(request, events).await?;
+    Ok(Step::Archived { from, to, index, keys })
 }

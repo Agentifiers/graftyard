@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """b030-split: planted bugs in the metadata child group (`crates/git/src/split.rs`, `workers/site/src/split.rs`,
-`crates/git/src/repo.rs`), and the leader-only work rules (`workers/site/src/host.rs`, `paced` and `keep_led`). Plants
+`crates/git/src/repo.rs`), the leader-only work rules (`workers/site/src/host.rs`, `paced` and `keep_led`), and the archive
+drain's throughput (`crates/git/src/log_archive.rs`, 27 to 36). Plants
 one mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE. Never run it while a site day builds
 from this worktree. Run from the worktree root:
 
@@ -15,9 +16,15 @@ REPO = 'crates/git/src/repo.rs'
 SITE = 'workers/site/src/split.rs'
 FAMILY = 'workers/site/src/family.rs'
 HOST = 'workers/site/src/host.rs'
+ARCH = 'crates/git/src/log_archive.rs'
+SHARD = 'crates/git/src/shard.rs'
+FAMILYS = FAMILY
 T = ('cargo', ['-p', 'graftyard-git', '--test', 'split'], '')
 S = ('cargo', ['-p', 'graftyard-site', '--features', 'test-faults', '--lib'], 'split::')
 H = ('cargo', ['-p', 'graftyard-site', '--features', 'test-faults', '--lib'], 'host::')
+A = ('cargo', ['-p', 'graftyard-git', '--test', 'log_archive'], '')
+AS = ('cargo', ['-p', 'graftyard-site', '--features', 'test-faults', '--lib'], 'archive::')
+G = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'warming')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -88,6 +95,31 @@ MUTANTS = [
      '            if bytes >= SLIM_BYTES {\n                end = false;', '            if false {\n                end = false;', T),
     ('a slim entry cut by its bytes moves on to the next table, skipping the rest of this one', SPLIT,
      '                end = false;\n                break;', '                break;', T),
+    # Drain throughput (rerun stop at simulated day 1.82).
+    ('the rerun\'s promotion size: 4 archive ranges a promotion', ARCH,
+     'pub const PROMOTE_RANGES: u64 = 8;', 'pub const PROMOTE_RANGES: u64 = 4;', A),
+    ('one archive object an entry, as in the rerun', ARCH,
+     'pub const ARCHIVE_PIECES: usize = 8;', 'pub const ARCHIVE_PIECES: usize = 1;', A),
+    ('archiving goes before promoting ahead, as in the rerun', ARCH,
+     '    let ahead_first = ahead && v.total <= max_bytes + max_bytes / ARCHIVE_SLACK;',
+     '    let ahead_first = false;', A),
+    ('promoting ahead goes first however far the log is over its cap', ARCH,
+     '    let ahead_first = ahead && v.total <= max_bytes + max_bytes / ARCHIVE_SLACK;',
+     '    let ahead_first = ahead;', A),
+    ('an archive step reads the next range from the start of the last, so pieces overlap', ARCH,
+     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;',
+     '            d = due(total, h.rows(Index(from.0 - 1))?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;', A),
+    ('an archive step archives past the last promotion', ARCH,
+     '        let Next::Archive { to, .. } = next(v.promoted.as_ref(), from, to) else { break };',
+     '        let Next::Archive { .. } = next(v.promoted.as_ref(), from, to) else { break };', A),
+    ('a promotion never pauses its read', ARCH,
+     '            if taken >= paused + PAUSE_EVERY {', '            if false && taken >= paused + PAUSE_EVERY {', A),
+    ('a promotion\'s read after a pause starts over from the last promotion', ARCH,
+     '        for (i, row) in h.rows(p.to)? {', '        for (i, row) in h.rows(after)? {', A),
+    ('members truncate through the first of an entry\'s archives only', FAMILYS,
+     '            .collect()\n    }\n    async fn truncated', '            .take(1)\n            .collect()\n    }\n    async fn truncated', AS),
+    ('a promotion waits the full minute on a shard with another after it', SHARD,
+     '    if next { PROMOTE_NEXT_WAIT_S } else { PROMOTE_WAIT_S }', '    PROMOTE_WAIT_S', G),
 ]
 
 

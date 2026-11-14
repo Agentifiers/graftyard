@@ -182,7 +182,24 @@ Two problems:
 
 ## B0-30 rerun
 
-Not run yet.
+`repo:1048590` (m3org/b0-30-r2) on graft-m1, site day d6d4c22 (landed 09:46Z), standard-4 shards, no keeper and no
+keepHome (`B030_HOME=none`). Drivers: `tests/am1/b030split/rerun.sh` (seed, load, monitor, cross, watch).
+
+- **Cap.** STOP_USD started at $175 under a $250 thread cap. On 2026-11-14 at about 13:40Z the user raised the cap
+  to $260, and STOP_USD to $185 (relayed by T-01a17bda). `tests/am1/raw/b030-stop-usd` holds 185, which
+  `monitor.mjs` reads on its next row.
+- **Stopped at simulated day 1.82 (12:49:42Z).** The watcher's 5% rule tripped: log 2,257,289,087 B, more than 5% over
+  `LOG_MAX_BYTES`. The drain had zero margin. One `Promoted` of about 25 entries then five `Archived` of about 5
+  entries each ran every 13 to 15 s, about 134 entries a minute archived against 132 to 134 applied. Archiving a due
+  range came before promoting ahead, so the log above the last promotion grew from 0.29 to 2.07 GB. At 12:49:02Z the
+  leader on site a stepped down (`LoopLag`, to site 1). The new leader's first promotion took 61.7 s: its call to site
+  0's shard (`/promote?wait=60&next=1`) waited 59.99 s on a catch-up that had not finished before it tried the next
+  site. The log was back under the cap by 12:54Z. At 13:16Z: `SQLITE_FULL` 0, bodies 100/100, no leaderless gap,
+  db 6.53 to 6.54 GB.
+- **The tree changes at simulated day 1.82.** The operator chose to fix and resume, not to resume as is (a drain at
+  zero margin fails the row by design) or reseed. The fix is a product change with its own tests and plants, shipped
+  through one site day from b030-split plus main (which adds own-bucket-first, decode-once and leader-clock-check).
+  The load resumes from `tests/am1/raw/b030-state.json`. Details follow once it has landed.
 
 ## Cost
 

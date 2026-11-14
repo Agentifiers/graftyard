@@ -126,12 +126,14 @@ const LEFT_FOR_MS: u64 = 600_000;
 async fn drain(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
     let began = now_ms();
     loop {
+        let t0 = now_ms();
         let (s, took) =
             crate::host::within(STEP_FOR, run(h)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
         if s == Step::Idle {
             return Ok(s);
         }
-        console_log!("archive {s:?}");
+        // The step's wall time and its entry's commit, which the drain's throughput bound is built from.
+        console_log!("archive {s:?} in {} ms, commit {took} ms", now_ms() - t0);
         h.stats.borrow_mut().archive_steps += 1;
         if now_ms() >= began + DRAIN_FOR_MS {
             return Ok(s);
@@ -230,6 +232,11 @@ impl ArchiveHost for SiteHost<'_> {
         in_band(&self.h.env, &Promote { chain, record, sums: sums.to_vec(), request }).await
     }
 
+    /// One timer turn, so the member's inputs and its Raft tick run between pieces of a promotion's read.
+    async fn pause(&self) {
+        Delay::from(std::time::Duration::from_millis(1)).await;
+    }
+
     async fn mark(&self, pack: &PackRef, index: Index) {
         let (Ok((chain, _)), Ok(raw)) = (self.chain(), self.buckets()) else { return };
         let ChainId::Repo(repo) = chain else { return };
@@ -240,10 +247,14 @@ impl ArchiveHost for SiteHost<'_> {
 
     /// The first two of the record's sites, as the bed's archive route put them; `Host::truncate` HEADs every
     /// site's bucket, so any two count.
+    /// Both puts at once, from the same bytes: an archive step puts up to `ARCHIVE_PIECES` objects, and their puts are
+    /// most of its time (`log_archive::PROMOTE_RANGES`).
     async fn put(&self, key: &str, bytes: &[u8], digest: Digest) -> std::result::Result<usize, String> {
+        let buckets = self.buckets()?;
+        let puts = buckets.iter().take(2).map(|(_, b)| b.put_new(key, bytes, digest, &[]));
         let mut held = 0;
-        for (_, b) in self.buckets()?.iter().take(2) {
-            match b.put_new(key, bytes, digest, &[]).await.map_err(|e| e.0)? {
+        for r in futures_util::future::join_all(puts).await {
+            match r.map_err(|e| e.0)? {
                 PutNew::Created => held += 1,
                 PutNew::Exists(Some(d)) if d == digest => held += 1,
                 PutNew::Exists(_) => {}
@@ -376,8 +387,8 @@ async fn promote_on(
     next: bool,
 ) -> std::result::Result<(Vec<u8>, PackIndex), (u16, String)> {
     // `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
-    // (`git::promote_sites`).
-    let path = format!("/promote?wait={}&{}", git::PROMOTE_WAIT_S, if next { "next=1&" } else { "" });
+    // (`git::promote_sites`), shorter when another site's shard follows (`git::promote_wait_s`).
+    let path = format!("/promote?wait={}&{}", git::promote_wait_s(next), if next { "next=1&" } else { "" });
     let pack = shard(env, site, p, at, &path, body.to_vec()).await?;
     // `via=0`: the shard that built the pack validates it. Through `fanout` it went to a pool shard, whose
     // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
@@ -445,10 +456,10 @@ mod tests {
         }
     }
 
-    /// The `Archived` the alarm records is one `Host::truncate` acts on: `Family::archived` reads its key and range,
-    /// and the key names the object the alarm put, so a member HEADs the same key in the buckets.
+    /// The `Archived` events the alarm records are the ones `Host::truncate` acts on: `Family::archived` reads each
+    /// key and range, and each key names the object the alarm put, so a member HEADs the same key in the buckets.
     #[test]
-    fn the_alarm_s_archived_is_the_range_members_truncate_through() {
+    fn the_alarm_s_archived_events_are_the_ranges_members_truncate_through() {
         let rows: Vec<_> =
             (3..=5).map(|i| (Index(i), Timestamp(1_000 * i), codec::to_bytes(&entry(i, vec![])))).collect();
         let chain = ChainId::Repo(RepoId(DbId(9)));
@@ -456,8 +467,14 @@ mod tests {
         assert!(bytes.len() > 3 * rows[0].2.len());
         let key = a.key.to_string();
         assert!(key.starts_with("archive/repo:9/"), "{key}");
-        let r = Repo::archived(&entry(6, vec![RepoEvent::Archived(a)])).expect("an archive range");
-        assert_eq!((r.key, r.from, r.to, r.to_at), (key, 3, 5, 5_000));
+        let rows2: Vec<_> =
+            (6..=7).map(|i| (Index(i), Timestamp(1_000 * i), codec::to_bytes(&entry(i, vec![])))).collect();
+        let (_, a2) = log_archive::archive_object(chain, &rows2).unwrap();
+        let key2 = a2.key.to_string();
+        // An entry that records several objects names each, in order, so a member truncates through each in turn.
+        let r = Repo::archived(&entry(8, vec![RepoEvent::Archived(a), RepoEvent::Archived(a2)]));
+        let got: Vec<_> = r.into_iter().map(|r| (r.key, r.from, r.to, r.to_at)).collect();
+        assert_eq!(got, [(key, 3, 5, 5_000), (key2, 6, 7, 7_000)]);
     }
 
     /// The sweeper's `request` row for a `Promoted` names its stored pack, so a marker the alarm failed to put is

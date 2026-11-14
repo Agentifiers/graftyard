@@ -880,7 +880,7 @@ pub enum KeepLed {
 /// its stored state, so a reset keeps it), 0 for none. `found`: when it was first found unheard, for a member that
 /// never promised. `acted`: when it last probed or campaigned, 0 for not since it last heard a leader.
 pub fn keep_led(heard: bool, named: bool, needs: bool, lapsed: u64, found: u64, acted: u64, now: u64) -> KeepLed {
-    if heard || !needs {
+    if !needs {
         return KeepLed::Off;
     }
     let base = if lapsed > 0 { lapsed } else { found }.max(acted);
@@ -1030,7 +1030,7 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
                             vec![codec::to_bytes(b).into()],
                         ));
                     }
-                    if let Some(a) = F::archived(e) {
+                    for a in F::archived(e) {
                         self.stmts.push((
                             "INSERT OR REPLACE INTO archive_keys (from_idx, to_idx, to_at, key) VALUES (?, ?, ?, ?)",
                             vec![i(a.from), i(a.to), i(a.to_at), a.key.clone().into()],
@@ -1825,9 +1825,17 @@ impl<F: Family> Host<F> {
             self.fail();
             return Err(err(format!("storage write failed: {e}")));
         }
-        for (key, to) in archived {
+        // In order, one task for all: an entry records up to `ARCHIVE_PIECES` ranges, and each truncates only once its
+        // own key is in two buckets.
+        if !archived.is_empty() {
             let h = self.clone();
-            spawn_local(async move { h.truncate(&key, to).await });
+            spawn_local(async move {
+                for (key, to) in archived {
+                    if !h.truncate(&key, to).await {
+                        break;
+                    }
+                }
+            });
         }
         Ok((r, out))
     }
@@ -1837,9 +1845,10 @@ impl<F: Family> Host<F> {
     /// can HEAD in two buckets"). The row at `to` stays as the stored log's base: its term and digest anchor the next
     /// entry, and restore starts above it. Entries through `to` are archived either way (`RepoFold::first_index`).
     /// A key in fewer than two buckets truncates nothing and raises an alarm; re-putting the copy is not built.
-    async fn truncate(self: &Rc<Self>, key: &str, to: u64) {
+    /// Whether the log was truncated.
+    async fn truncate(self: &Rc<Self>, key: &str, to: u64) -> bool {
         self.settled().await;
-        let Ok(site) = SiteEnv::read(&self.env) else { return };
+        let Ok(site) = SiteEnv::read(&self.env) else { return false };
         let mut held = 0;
         for s in &site.sites.0 {
             if let Ok(b) = self.env.bucket(&format!("BUCKET_{}", s.id.0))
@@ -1851,13 +1860,17 @@ impl<F: Family> Host<F> {
         if held < 2 {
             console_error!("archive {key} is in {held} buckets; the log is not truncated");
             self.stats.borrow_mut().alarms.push(format!("{} archive {key} in {held} buckets", now_ms()));
-            return;
+            return false;
         }
         match self.state.storage().sql().exec("DELETE FROM log WHERE idx < ?", vec![i(to)]) {
             Ok(_) => self.stats.borrow_mut().truncated_to = to,
-            Err(e) => return console_error!("truncate below {to}: {e}"),
+            Err(e) => {
+                console_error!("truncate below {to}: {e}");
+                return false;
+            }
         }
         F::truncated(self, Index(to)).await;
+        true
     }
 
     /// A command marked `before_commit*` whose entry this input appends.
