@@ -420,10 +420,14 @@ const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toStrin
 const placeFailing = () => plan.placeFailAt !== undefined && Date.now() >= t0 + plan.placeFailAt * 1000;
 const half = (k) => (plan.placeFailAt === undefined ? k : `${k}${placeFailing() ? "@fail" : "@up"}`);
 const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-token": BED } : {});
+// Past the edge's own worst case, so every push ends in the edge's answer and none in the driver's timeout: three
+// shards' validate waits (15 + 60 + 60 s) then the commit. At 120 s, B0-32's burst pushes still in their third
+// shard's wait were cut and counted as lost (lm1-rows-m3f.md, B0-32).
+const GIT_TIMEOUT_MS = 200_000;
 async function git(path, tok, body, headers = {}, repo = R) {
   const t = Date.now();
   try {
-    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(120_000) });
+    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
   } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t }; }
 }
@@ -890,6 +894,14 @@ log(`${row} run ${RUN}: ${plan.agents} agents, ${seconds} s from ${new Date(t0).
 let lateStats = null;
 // Only with `?summary=1` (percentiles, no raw arrays): the raw read of a loaded leader reset its wasm instance and
 // moved the leader (B0-29, 131261, 23:44:20Z), so the late read runs only on a release that answers summaries.
+// B0-31 gates commit p99 with buckets up on its own: the leader's stats at `placeFailAt`, then reset, so the end read
+// holds only the placement-failing half.
+let upStats = null;
+if (leader !== undefined && plan.placeFailAt !== undefined) jobs.push((async () => {
+  await sleep(Math.max(0, t0 + plan.placeFailAt * 1000 - Date.now()));
+  upStats = (await member(CHAIN, leader, "/stats?summary=1&reset=1", undefined, 15_000).catch(() => ({}))).v ?? null;
+  log(`buckets-up half: commit ${JSON.stringify(upStats?.commitMs ?? null)}`);
+})());
 if (leader !== undefined) jobs.push((async () => {
   await sleep(Math.max(0, end - 20_000 - Date.now()));
   lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
@@ -921,6 +933,8 @@ const v = {
       return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}) },
   leader: { statsFrom, before: leader, after: after.find((s) => s.role === "leader")?.site, terms: after.map((s) => [s.site, s.role, s.term]),
     commitMs: ps(lstats.commitMs),
+    // B0-31: `commitMs` above is then the placement-failing half alone, and this the buckets-up half.
+    ...(plan.placeFailAt !== undefined ? { commitMsByHalf: { up: ps(upStats?.commitMs), fail: ps(lstats.commitMs) } } : {}),
     // Round 5's commit split: admission to append (`queueMs`, which holds the entry's dep reads), the dep reads by
     // chain kind (`depsMs`), append to apply (`roundMs`: storage confirm and quorum), and the confirm alone.
     // Round 10 adds each follower's AppendEntries call time (`append:<site>`) and append to apply (`apply`), so the
