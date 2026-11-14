@@ -32,6 +32,8 @@ def main():
     for f in sorted(glob.glob(f"{d}/legs-*.json")):
         s = json.load(open(f))
         for m in s["members"]:
+            if m.get("summary"):
+                continue
             key = (m["site"], m["name"])
             if m.get("inbound"):
                 reads[key].append((s["at"], m["inbound"].get("/read", 0), m["voter"], m["role"]))

@@ -2081,3 +2081,76 @@ memory limit." 28 times at 11:00:53Z, all on `POST https://site/prsync/first`: t
 (`workers/site/src/prsync.rs`, `in_band`). 28 at one timestamp is one isolate failing the invocations it held, ten
 seconds after the window ended. No member logged one, and no row line moved. Its cause is not traced [unverified];
 B0-35 (500 polled PRs, test merges each push) exercises that path harder, so its row is checked for the same event.
+
+### Round 16d: B0-35 gate row on m27, and the `/prsync/first` memory failures (2026-11-14)
+
+**Run.** `rows.sh m27r35`, `ROWS="b0-35"`: fresh repo `fm27r35-b035` (131335), learners enam 4,000 / weur 2,000 /
+apac 2,000, k 4, 500 open PRs and 500 PR pollers every 5 s, 600 s from 11:23:33Z, standard-4, no redeploy. Raw:
+`tests/am1/raw/a1-b0-35-mwgb90vc.jsonl`, `tests/fanout/raw/terms-m27r35.jsonl`, `tests/fanout/raw/m27r35b-legs.tar.xz`,
+`tests/fanout/raw/prsync-131335.txt` (Workers Logs `prsync 131335` lines).
+
+| B0-35 line (`build/BUILD-PLAN.md`) | m27 | verdict |
+|---|---|---|
+| Test-merge vCPU within `TEST_MERGE_BUDGET` (fail: over budget) | 0.603 vCPU used of a 1.0 vCPU budget (`TEST_MERGE_BUDGET` 0.25 of a standard-4 shard's 4 vCPU), no overrun, 0 shed | pass |
+| Zero computes from list fields | 0 list computes of 102,592 list asks; 5,339 computes from 55,795 single-PR GETs | pass |
+| Actions dispatch p99 at most 10 s (fail over 30 s) | not measured: the driver starts no workflow runs, and `prsync::demand` has no caller before Milestone 4 | not measured |
+
+So B0-35 passes on its two measured lines and dispatch stays unmeasured, as in rounds 8 and 9. The test merges'
+own wait is what clients see: of 5,378 merges, the wait histogram's mass sits in its top buckets (3,143 over 120 s,
+1,411 at 60 to 120 s), max 265 s; `mergeable` answered `UNKNOWN` to 58,189 of 59,216 polls (98.3%) and `MERGEABLE`
+to 949. Commit p50 / p99 369 / 685 ms (queue p99 449, round 305, confirm 70), 3,137 entries carried 15,393 commands
+(4.91 an entry), term 2 throughout, 142.6 req/s, 0 feed polls on the leader, 82 `/suspect`. API reads 116,703 of
+117,250 200 (99.53% of all; 509 driver cap, 38 503), p99 1,872 ms. Agent pushes 2,495 / 2,500 ok (3 client fetch
+failures, 1 shard "Durable Object is overloaded"), merge:only p99 4,321 ms (3 shard-overloaded 503s). Admission:
+capacity 296 to 1,189/s, `retryAfterS` at most 2, `agentQueued` at most 7. Leader wasm 28 → 78 MiB.
+
+**Near AppendEntries split (same method as 16b).** Site 1 (LHR) n 1,465: call p50 / p99 174 / 323, in 81 / 214,
+body 12 / 97, step / gate / confirm 0, back 79 / 267, in + back 160 / 309. Far (NRT) n 1,623: 237 / 547. Same shape
+as B0-29: the follower adds nothing; the legs are wire plus a reply-side excess.
+
+**Leader memory, sampled each minute [measured, `memSplit`].** wasm 65.7 MiB at 11:27Z and 78.0 MiB from 11:30Z
+(flat after); log 7.9 to 8.1 MB (at `LOG_BYTES`); dump cache 1.42 → 1.73 MB; narrow cache 95 KB; held 0 to 29 KB;
+in-flight call bodies 0 to 264 KB, answers 0 to 29 KB. So the named buckets hold about 10 MB at most, steady, while
+the wasm high-water mark sits 68 MB above them: the peak is transient, not a bucket that grows [inference: wasm
+memory only grows, and every bucket sampled flat]. Loop lag: 0 `Lag` trace entries (ticks 20 ms or more late) in
+any sample of the leader's trace ring, so its 100 ms ticker was never 20 ms late in the sampled spans.
+
+**Reads by member.** Learners 94.3% (enam l7 25.1%, l3 21.3%, l0 20.7%, l6 12.2%; apac l2 6.8%, l5 2.7%; weur l4
+3.3%, l1 2.1%), leader 3.8%, followers 1.9% and 0.0%. The enam learners serve 79%, more evenly than B0-29 (top one
+25% against 41%).
+
+**The `POST /prsync/first` memory failures (the parent's item 3) [measured, cause traced].** In B0-29 (131334), the
+leader's `PrSync` first attempts ran in band 155 times, 0.6 to 5.1 s each, until 10:51:06Z. From 10:51:31Z every
+first attempt timed out at the leader's `FIRST_FOR` (25 s): 19 in a row, each over a larger batch (894..914, then
+894..1036, 914..1148, up to 1272..3683: 20 to 2,411 entries, the PRs every entry since the cursor touched), and the
+chain parked 3 times (`PARK_AFTER` 10). The queue's re-sends of the same batches were handled, slowly: 894..1035 in
+172.5 s (136 merges asked, 52,580 list asks on the shard's budget), 914..1147 in 333 s (225 merges asked).
+
+The 14 `exceededMemory` invocations (the 28 log lines are each invocation's message and its error) are those
+abandoned first attempts. Workers Logs give each one's wall time: 486, 460, 435, 390, 364, 339, 314, 289, 242, 216,
+191, 166, 141 and 36 s. Subtracted from 11:00:53.567Z, they started at 10:52:47, 10:53:12, 10:53:37, 10:54:23 … 10:58:32
+and 11:00:17Z, the leader's first-attempt sends 25 s apart, matching its "no answer in 25000 ms" lines. So: `in_band`
+(`workers/site/src/prsync.rs`) sends each batch to the site script's own `/prsync/first`, and `first_handled` runs
+`one()` under `ctx.wait_until`, which the leader's `within(first_for, …)` does not cancel (by design: "A first
+attempt past `first_for` is not cancelled"). After `FIRST_FOR` the leader's `Dispatcher` (`crates/git/src/prsync.rs`,
+`finished(false)` → `unsent()`) is due again, and `batch()` hands out a new First over the cursor's whole range, so a
+new attempt starts every 25 s while the old ones still run. Those stateless invocations landed in one isolate, which
+held 14 concurrent `one()` calls, each with its `SyncRead` of every PR the batch names (`views`, up to every open
+PR: 500) and the merge answers it collected (`MergeAnswer::Clean` carries the merge's pack, base64, up to
+`MERGE_BYTES_PER_COMMAND` a command), until the isolate passed 128 MB and all 14 failed together at 11:00:53Z. 4 more
+were `canceled` after 30, 174, 299 and 476 s. So it is not one PR or one large pack: it is overlapping attempts over
+the same growing batch, with no bound on how many run at once [the per-attempt bytes are not measured; the
+mechanism is measured from start times, wall times and the leader's log].
+
+Why the first attempts stopped finishing at 10:51Z: each one runs its merges one after another on the network's
+shard (`merge()` in a loop over `views`), and the shard's budget queue was by then long (`inFlightMax` 17 on that
+row's shard, and B0-35's 3,593 with waits to 265 s), so one attempt of 100 or more merges cannot finish in 25 s.
+In B0-35 the same pattern ran: 10 first attempts timed out from 11:24:18Z and one answered 500 "Durable Object is
+overloaded" (the shard), the chain parked twice, the queue handled 834..1069 after 606 s queued; there were 9
+`canceled` and no `exceededMemory`, so the overlap stayed under the limit there.
+
+This is a product bug, not a test artefact. Candidate fixes, for the owner of `prsync.rs` to choose: count a timed-out
+first attempt as still running (so `batch()` does not hand out another First while it runs), or cancel it at
+`FIRST_FOR`; and bound a batch's merges (or its PR count) so one attempt fits `FIRST_FOR`. Not fixed here.
+
+**Cost** $119.59 at 11:44Z (containers $47.29). Sweep "sweep ok".
