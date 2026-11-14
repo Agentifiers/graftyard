@@ -493,6 +493,7 @@ impl<F: Family> Routes<F> {
                     | "/isolate"
                     | "/deps_log"
                     | "/arrivals"
+                    | "/trace"
             );
             if !observe && url.path() != "/sever" && self.host.severed() {
                 crate::faults::count("severed:in");
@@ -718,6 +719,14 @@ impl<F: Family> Routes<F> {
             (Method::Get, "/audit") => {
                 let prefix = crate::registry::query(&url, "prefix").unwrap_or_default();
                 self.ready_or(|| async { Response::from_json(&self.host.audit_json(&prefix)?) }).await
+            }
+            // narrow-reads-3's trace saver (`tests/nr3/tsave.mjs`): the `Stats::trace` rows after `since` (ms), as one
+            // array and no `Value` tree, so a run keeps a member's rows from before its isolate resets.
+            (Method::Get, "/trace") => {
+                let since: u64 = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let s = self.host.stats.borrow();
+                let rows: Vec<&[u64; 6]> = s.trace.iter().filter(|r| r[0] > since).collect();
+                Response::from_json(&rows)
             }
             (Method::Get, "/faults") => self.faults(crate::registry::query(&url, "rid").ok()),
             (Method::Get, "/deps_log") => self.deps_log(),

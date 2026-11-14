@@ -6,6 +6,19 @@
 # the leader's IndexTaken from that peer with the same rounded number between send and answer (20 ms skew allowed).
 import json,sys,bisect,collections
 D=json.load(open(f"tests/nr3/raw/trace-{sys.argv[1]}.json"))
+# tsave.mjs's minute saves (after gate 16): every voter's rows, kept across its resets, merged into the end-of-run
+# leader's `f<site>` and the voters' `v<site>`.
+try:
+    lead_key=next(k for k in D if k.startswith("f"))
+    for l in open(f"tests/nr3/raw/tsave-{sys.argv[1]}.jsonl"):
+        r=json.loads(l)
+        if "rows" not in r: continue
+        k=lead_key if f"f{r['site']}"==lead_key else f"v{r['site']}"
+        D[k]=D.get(k,[])+r["rows"]
+    for k in D:
+        if k[0] in "fv": D[k]=sorted(dict.fromkeys(tuple(x) for x in D[k]), key=lambda r: r[0])
+except FileNotFoundError:
+    pass
 def pct(xs,q):
     xs=sorted(xs); return xs[min(len(xs)-1,int(q*len(xs)))] if xs else None
 f=next(v for k,v in D.items() if k.startswith("f")); T0,T1=f[0][0],f[-1][0]  # the leader, whichever site
