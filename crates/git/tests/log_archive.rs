@@ -539,16 +539,36 @@ fn promotion_runs_ahead_of_archiving_and_bounds_the_tail_a_rehydrate_reads() {
     assert!(first <= range_max * log_archive::PROMOTE_RANGES + largest);
 }
 
-/// The drain keeps up with twice B0-30's push rate at the rerun's measured step costs, with half that again to spare.
-/// The bed is B0-30 scaled down with its ratios kept: an archive range of six entries of about 1.6 KB, as hosted six of
-/// 323 KB fill 2 MiB, and a cap of 64 ranges; each bed byte stands for `k` hosted bytes in the cost model. First, for
-/// 5 modeled minutes, pushes arrive at twice the row's rate on the drain's clock and the drain steps whenever anything
-/// is due: the log never passes its cap by more than the slack, and the tail above the last promotion stays inside
-/// `cap / PROMOTE_AHEAD` and one promotion. Then a backlog of 32 ranges lands at once, as after a leader change, and
-/// the drain's rate through it must be at least 1.5 times the input's. At the rerun's constants (4 ranges a
-/// promotion, one object an archive step) the drain falls behind in the first part, as it did hosted.
+/// The drain keeps up with B0-30's pushes from half to twice the row's rate at the rerun's measured step costs, both
+/// archiving and promoting, and with margin. The bed is B0-30 scaled down with its ratios kept: an archive range of six
+/// entries of about 1.6 KB, as hosted six of 323 KB fill 2 MiB, and a cap of 64 ranges; each bed byte stands for `k`
+/// hosted bytes in the cost model. At each rate, from a log at its cap and fully promoted, pushes arrive on the drain's
+/// modeled clock for 2.5 modeled minutes and the drain steps whenever anything is due:
+///
+/// - the log never passes its cap by more than the slack;
+/// - promotion keeps pace: the tail above the last promotion stays inside `cap / PROMOTE_AHEAD` and one promotion, and
+///   `promotedTo` advances as far as the log does, less that tail;
+/// - the drain is idle at least 0.8 of `1 - r/2` of the time at `r` times the row's rate: about what a drain with
+///   twice the row's rate in hand would be. The resume's bug (one object a step at the row's own rate) idled 16% at 1x
+///   here against 48%.
+///
+/// The rates straddle the point where one archive range builds up between steps, where the resume at day 1.82 found
+/// steps of one object each (125 entries a minute archived and 77 promoted against 129 applied). Then, at twice the
+/// row, a backlog of 32 ranges lands at once, as after a leader change: the first step archives before it promotes,
+/// and the drain's rate through the backlog is at least 1.5 times the input's. The rerun's constants (4 ranges a
+/// promotion, one object an archive step) fail it (plants 27 and 28 in `tests/am1/b030split/plant.py`).
 #[test]
 fn the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs() {
+    let rates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+    let failures: Vec<String> = std::thread::scope(|sc| {
+        let runs: Vec<_> = rates.iter().map(|&r| sc.spawn(move || drain_at(r, r == 2.0))).collect();
+        runs.into_iter().filter_map(|t| t.join().expect("no panic").err()).collect()
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// One rate of `the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs`, as `r` times the row's pushes.
+fn drain_at(r: f64, backlog: bool) -> Result<(), String> {
     let mut b = Bed::new();
     let range_max = 6 * 1_700;
     let k = (log_archive::ARCHIVE_RANGE_MAX as f64) / range_max as f64;
@@ -568,19 +588,24 @@ fn the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs() {
     snapshot(&b);
     // The drain catches up before the clock starts, as it had hosted before the rerun's load.
     while step(&b) != Step::Idle {}
+    let fold = |b: &Bed| {
+        let w = b.w.borrow();
+        let m = &w.repo.members[b.leader()];
+        let f = &m.group_fold().fold;
+        (m.last_index().0, f.promoted().map_or(0, |p| p.to.0), f.archived().map_or(0, |a| a.to.0))
+    };
     let tail = |b: &Bed| {
-        let after = b.w.borrow().repo.members[b.leader()].group_fold().fold.promoted().map_or(0, |p| p.to.0);
+        let after = fold(b).1;
         b.stored(b.leader()).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum::<u64>()
     };
-    let archived_to =
-        |b: &Bed| b.w.borrow().repo.members[b.leader()].group_fold().fold.archived().map_or(0, |a| a.to.0);
+    let rate = r * TWICE_THE_ROW_MB_S / 2.0;
     // The modeled time between pushes: each one's hosted bytes over the input rate.
     let gap = |b: &Bed| {
         let e = b.stored(b.leader()).last().map_or(0, |e| row(e).len()) as f64;
-        e * k / 1e6 / TWICE_THE_ROW_MB_S * 1_000.0
+        e * k / 1e6 / rate * 1_000.0
     };
-    let (end, mut next, mut peak, mut worst) = (300_000.0, 0.0, 0u64, 0u64);
-    let first = n;
+    let (end, mut next, mut idle, mut peak, mut worst) = (150_000.0, 0.0, 0.0, 0u64, 0u64);
+    let (last0, promoted0, _) = fold(&b);
     b.clock.set(0.0);
     while b.clock.get() < end {
         while next <= b.clock.get() {
@@ -590,38 +615,59 @@ fn the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs() {
         }
         // The drain's entries are charged by the bed; the step's own CPU is not modeled.
         if step(&b) == Step::Idle {
+            idle += next - b.clock.get();
             b.clock.set(next);
         }
         peak = peak.max(b.bytes(b.leader()));
         worst = worst.max(tail(&b));
     }
-    // The backlog: 32 ranges at once, drained with no input.
-    let (from, t0) = (archived_to(&b), b.clock.get());
-    for _ in 0..192 {
-        push(&b, n, 1_400);
-        n += 1;
-    }
-    // A log far over its cap archives before it promotes ahead, however long the tail: only an archive truncates.
-    assert!(
-        b.bytes(b.leader()) > cap + cap / log_archive::ARCHIVE_SLACK && tail(&b) > cap / log_archive::PROMOTE_AHEAD
-    );
-    let s = step(&b);
-    assert!(matches!(s, Step::Archived { .. }), "{s:?} first on a log over its cap");
-    while step(&b) != Step::Idle {}
-    let all = b.w.borrow().repo.disks[0].log.clone();
-    let bytes: u64 =
-        all.iter().filter(|e| e.index.0 > from && e.index.0 <= archived_to(&b)).map(|e| row(e).len() as u64).sum();
-    let rate = bytes as f64 * k / 1e6 / ((b.clock.get() - t0) / 1_000.0);
-    println!(
-        "drain at twice B0-30's pushes ({TWICE_THE_ROW_MB_S:.2} MB/s): {} entries in {:.0} modeled s, peak log {peak} \
-         against a cap of {cap}, worst unpromoted tail {worst}; a 32-range backlog drained at {rate:.2} MB/s",
-        n - first - 192,
-        end / 1_000.0,
-    );
-    assert!(peak <= cap + cap / log_archive::ARCHIVE_SLACK, "the log reached {peak} bytes against a cap of {cap}");
+    let (last1, promoted1, _) = fold(&b);
     let ahead = cap / log_archive::PROMOTE_AHEAD;
-    assert!(worst <= ahead + range_max * log_archive::PROMOTE_RANGES, "an unpromoted tail of {worst} against {ahead}");
-    assert!(rate >= 1.5 * TWICE_THE_ROW_MB_S, "the backlog drained at {rate:.2} MB/s");
+    let bound = ahead + range_max * log_archive::PROMOTE_RANGES;
+    let entry = row(b.stored(b.leader()).last().unwrap()).len() as u64;
+    let idle_share = idle / end;
+    let mut out = format!(
+        "{r}x the row ({rate:.2} MB/s): {} entries applied, {} promoted; idle {:.0}%; peak log {peak} of a cap of \
+         {cap}, worst unpromoted tail {worst} of {bound}",
+        last1 - last0,
+        promoted1 - promoted0,
+        100.0 * idle_share
+    );
+    let mut bad = Vec::new();
+    if peak > cap + cap / log_archive::ARCHIVE_SLACK {
+        bad.push("the log passed its cap by more than the slack");
+    }
+    if worst > bound || promoted1 - promoted0 + bound / entry < last1 - last0 {
+        bad.push("promotion fell behind the log");
+    }
+    // At r times the row a drain with twice the row in hand idles 1 - r/2 of the time; a fifth of that is the
+    // model's slack for the time a step's entries wait on one another.
+    if idle_share < 0.8 * (1.0 - r / 2.0) {
+        bad.push("the drain has less than about twice the row's rate in hand");
+    }
+    if backlog {
+        let (from, t0) = (fold(&b).2, b.clock.get());
+        for _ in 0..192 {
+            push(&b, n, 1_400);
+            n += 1;
+        }
+        // A log far over its cap archives before it promotes ahead, however long the tail: only an archive truncates.
+        let first = step(&b);
+        if !matches!(first, Step::Archived { .. }) {
+            bad.push("a log over its cap promoted before it archived");
+        }
+        while step(&b) != Step::Idle {}
+        let all = b.w.borrow().repo.disks[0].log.clone();
+        let to = fold(&b).2;
+        let bytes: u64 = all.iter().filter(|e| e.index.0 > from && e.index.0 <= to).map(|e| row(e).len() as u64).sum();
+        let through = bytes as f64 * k / 1e6 / ((b.clock.get() - t0) / 1_000.0);
+        out += &format!("; a 32-range backlog drained at {through:.2} MB/s");
+        if through < 1.5 * TWICE_THE_ROW_MB_S {
+            bad.push("the backlog drained under 1.5 times twice the row");
+        }
+    }
+    println!("drain at {out}");
+    if bad.is_empty() { Ok(()) } else { Err(format!("{out}: {}", bad.join(", "))) }
 }
 
 /// A promotion of many megabytes reads its range in pieces of `PAUSE_EVERY` bytes and lets the member run between

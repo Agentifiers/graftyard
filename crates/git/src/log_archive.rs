@@ -97,8 +97,7 @@ pub fn due(
             }
         }
     });
-    let target = if total > max_bytes { max_bytes - max_bytes / ARCHIVE_SLACK } else { max_bytes };
-    let range = archive_due_walk(total, walk, now, snapshotted, committed, target, range_max);
+    let range = archive_due_walk(total, walk, now, snapshotted, committed, target(total, max_bytes), range_max);
     if let Some(f) = fail {
         return Err(f);
     }
@@ -106,6 +105,11 @@ pub fn due(
         kept.retain(|(i, _, _)| *i <= to);
         Due { from, to, rows: kept }
     }))
+}
+
+/// The size `due` cuts the log down to: the cap less `max_bytes / ARCHIVE_SLACK` once `total` is over the cap.
+fn target(total: u64, max_bytes: u64) -> u64 {
+    if total > max_bytes { max_bytes - max_bytes / ARCHIVE_SLACK } else { max_bytes }
 }
 
 /// What to do with the due range `from..=to`, given the last `Promoted`: archive the part it covers, or, when it
@@ -410,8 +414,11 @@ async fn archive<H: ArchiveHost>(h: &H, v: &View, first: Due, max_bytes: u64, ra
             return Err(format!("archive {key} is in {held} buckets"));
         }
         done.push((a, key));
+        // Against the step's own target: once its first piece took the log under the cap, the cap would be the
+        // target again and nothing past it due, so at the row's own rate every step carried one object (B0-30's
+        // resume at day 1.82, 17:26Z to 17:29Z: 125 entries a minute archived against 129 applied).
         if done.len() < ARCHIVE_PIECES {
-            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;
+            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target(v.total, max_bytes), range_max)?;
         }
     }
     let (from, to) = (done[0].0.from, done[done.len() - 1].0.to);

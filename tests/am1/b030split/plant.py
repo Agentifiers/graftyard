@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """b030-split: planted bugs in the metadata child group (`crates/git/src/split.rs`, `workers/site/src/split.rs`,
 `crates/git/src/repo.rs`), the leader-only work rules (`workers/site/src/host.rs`, `paced` and `keep_led`), and the archive
-drain's throughput (`crates/git/src/log_archive.rs`, 27 to 36). Plants
+drain's throughput (`crates/git/src/log_archive.rs`, 27 to 37). Plants
 one mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE. Never run it while a site day builds
 from this worktree. Run from the worktree root:
 
@@ -107,8 +107,11 @@ MUTANTS = [
      '    let ahead_first = ahead && v.total <= max_bytes + max_bytes / ARCHIVE_SLACK;',
      '    let ahead_first = ahead;', A),
     ('an archive step reads the next range from the start of the last, so pieces overlap', ARCH,
-     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;',
-     '            d = due(total, h.rows(Index(from.0 - 1))?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;', A),
+     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target(v.total, max_bytes), range_max)?;',
+     '            d = due(total, h.rows(Index(from.0 - 1))?, v.now, v.snapshotted, v.commit, target(v.total, max_bytes), range_max)?;', A),
+    ('an archive step\'s later pieces are cut against the cap, not the step\'s target (the resume at day 1.82)', ARCH,
+     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, target(v.total, max_bytes), range_max)?;',
+     '            d = due(total, h.rows(to)?, v.now, v.snapshotted, v.commit, max_bytes, range_max)?;', A),
     ('an archive step archives past the last promotion', ARCH,
      '        let Next::Archive { to, .. } = next(v.promoted.as_ref(), from, to) else { break };',
      '        let Next::Archive { .. } = next(v.promoted.as_ref(), from, to) else { break };', A),

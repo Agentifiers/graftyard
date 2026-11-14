@@ -199,7 +199,19 @@ keepHome (`B030_HOME=none`). Drivers: `tests/am1/b030split/rerun.sh` (seed, load
 - **The tree changes at simulated day 1.82.** The operator chose to fix and resume, not to resume as is (a drain at
   zero margin fails the row by design) or reseed. The fix is a product change with its own tests and plants, shipped
   through one site day from b030-split plus main (which adds own-bucket-first, decode-once and leader-clock-check).
-  The load resumes from `tests/am1/raw/b030-state.json`. Details follow once it has landed.
+  The load resumes from `tests/am1/raw/b030-state.json`.
+- **First resume, 17:23:35Z to 17:30:32Z (simulated day 1.82 to 1.905), site day 2e34351 (DONE 16:57:04Z).** The 2.07 GB
+  backlog drained in about 2 minutes: each step archived 8 objects of about 44 entries, and each promotion took 50
+  entries (16 MB) in 3.6 to 4.8 s. After the backlog every step carried one object. On site 0, from 17:26:17Z to
+  17:29:01Z: 125 entries a minute archived and 77 promoted, against 129 applied, with the unpromoted tail rising from
+  57 MB to 108 MB, under the 1.5x rule. I stopped the load (`b030-STOP`).
+  The cause is a bug in the first fix: only a step's first piece was cut against the cap less the slack. Bodies were
+  100/100, `SQLITE_FULL` 0, and there was no leaderless gap and no StepDown.
+  The second fix cuts every piece against the step's own target, and the kept test now sweeps 0.5 to 2 times the row's
+  rate, checking that promotion keeps pace at each rate (`decisions/DECISIONS.md`, the drain entry's correction).
+  The same site day also lacked `keep_led`'s `heard` guard (`if heard || !needs`). A plant's mutation of `host.rs`
+  was in the worktree when 3117f62 was committed, so a voter that still held a promise could act on leader-only work.
+  No StepDown or keep-led line appeared on any site from 16:57Z to 17:40Z. The guard is back in the next commit.
 
 ## Cost
 

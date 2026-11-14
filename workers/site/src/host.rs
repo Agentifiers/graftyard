@@ -880,7 +880,7 @@ pub enum KeepLed {
 /// its stored state, so a reset keeps it), 0 for none. `found`: when it was first found unheard, for a member that
 /// never promised. `acted`: when it last probed or campaigned, 0 for not since it last heard a leader.
 pub fn keep_led(heard: bool, named: bool, needs: bool, lapsed: u64, found: u64, acted: u64, now: u64) -> KeepLed {
-    if !needs {
+    if heard || !needs {
         return KeepLed::Off;
     }
     let base = if lapsed > 0 { lapsed } else { found }.max(acted);
