@@ -212,6 +212,22 @@ keepHome (`B030_HOME=none`). Drivers: `tests/am1/b030split/rerun.sh` (seed, load
   The same site day also lacked `keep_led`'s `heard` guard (`if heard || !needs`). A plant's mutation of `host.rs`
   was in the worktree when 3117f62 was committed, so a voter that still held a promise could act on leader-only work.
   No StepDown or keep-led line appeared on any site from 16:57Z to 17:40Z. The guard is back in the next commit.
+- **Second resume, 18:32:49Z to 18:40:53Z (simulated day 1.905 to 2.005), site day 09fdeaa (DONE 18:27:26Z).** Each step
+  now archives 8 objects (41 to 46 entries, 5 to 9 s apart), and each promotion takes 39 to 60 entries in 3.5 to 6.5 s.
+  Leader readings, site 0, 18:34:42Z to 18:40:06Z (5.39 min):
+  - applied 113 a minute, archived 148 a minute (1.31x), promoted 111 a minute;
+  - unpromoted tail 64 to 100 MB, back to 66 MB, around `LOG_MAX_BYTES / PROMOTE_AHEAD` (67 MB);
+  - log 2.155 to 2.201 GB on the watcher's measure, which never fell to the cap less the slack and never rose. The cap
+    is 2.147 GB, so the log stayed over it; the 5% line is 2.255 GB.
+
+  The rule asks for 1.5x, so this stops as the operator set (no third hosted fix). The log line shows two pauses of 64
+  and 66 s, each right after a promotion. Over the other 276 s the drain archived 1,020 entries, 222 a minute, 1.96x
+  applied.
+  - Inference: those pauses are `SUM_EVERY_MS` (60 s). A step whose view finds the log above the last archive at or under
+    the cap returns `Idle`, and the next sum waits a minute. The watcher's `logBytes` reads above the cap at those
+    moments, so the two measures differ by about 40 MB. That is not verified.
+
+  Bodies 100/100, `SQLITE_FULL` 0, no leaderless gap, no StepDown from 18:27Z.
 
 ## Cost
 
