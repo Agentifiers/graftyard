@@ -113,6 +113,14 @@ fn waits_for_rebuild(learner: bool, narrow: bool, index: bool, now: u64, ms: u64
     (learner || narrow) && index && now + ms < until
 }
 
+/// The leader's lease clock (`host::Stats::lease_clock`): per appended entry, how far its `at` (the clock leases are
+/// judged by) fell behind the isolate's clock when the entry left, and one macrotask later. Test installs only.
+#[cfg(feature = "test-faults")]
+fn lease_clock_pcts(rows: &[[u32; 2]]) -> Value {
+    let col = |i: usize| rows.iter().map(|r| r[i]).collect::<Vec<_>>();
+    json!({ "atToSend": percentiles(&col(0)), "atToNextTask": percentiles(&col(1)) })
+}
+
 /// `{n, p50, p99, max}` of `v`, sorted in place.
 fn pcts(v: &mut [u32]) -> Value {
     v.sort_unstable();
@@ -494,6 +502,7 @@ impl<F: Family> Routes<F> {
                     | "/deps_log"
                     | "/arrivals"
                     | "/trace"
+                    | "/elections"
             );
             if !observe && url.path() != "/sever" && self.host.severed() {
                 crate::faults::count("severed:in");
@@ -627,6 +636,20 @@ impl<F: Family> Routes<F> {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.learners(body)).await
             }
+            // `?clock=1` (L0-12's clock line): this isolate's clock read now and again after one awaited macrotask.
+            // A busy leader whose clock lags the others' shows it here: `now` read before the event loop runs again
+            // is the time the input began, and the second read is the time a lease decision taken next would use.
+            // Test installs only.
+            #[cfg(feature = "test-faults")]
+            (Method::Get, "/status") if url.query_pairs().any(|(k, v)| k == "clock" && v == "1") => {
+                let before = now_ms();
+                Delay::from(Duration::ZERO).await;
+                let mut v = self.status();
+                v["clockBefore"] = json!(before);
+                v["clockAfter"] = json!(now_ms());
+                v["leaseClock"] = json!(self.host.stats.borrow().lease_clock.last().copied());
+                Response::from_json(&v)
+            }
             (Method::Get, "/status") => Response::from_json(&self.status()),
             // The committed entries `from..=to` with the family's fields (a repository's packs): the git cache
             // shard's `ChainLog::entries`.
@@ -730,6 +753,14 @@ impl<F: Family> Routes<F> {
             (Method::Get, "/faults") => self.faults(crate::registry::query(&url, "rid").ok()),
             (Method::Get, "/deps_log") => self.deps_log(),
             (Method::Get, "/isolate") => Response::from_json(&crate::faults::isolate_json(&self.host.env)),
+            // The election trace (`host::Elect`): rows `[at, kind, term, peer, index, extra]` with `at` past `since`,
+            // and this isolate's clock.
+            (Method::Get, "/elections") => {
+                let since: u64 = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let rows: Vec<[u64; 6]> =
+                    self.host.stats.borrow().elections.iter().filter(|r| r[0] > since).copied().collect();
+                Response::from_json(&json!({ "rows": rows, "now": now_ms() }))
+            }
             (Method::Get, "/arrivals") => {
                 let since = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                 self.arrivals(since)
@@ -1302,12 +1333,20 @@ impl<F: Family> Routes<F> {
     /// `campaign` with no body, `suspect` with `{colo, term}`. Campaigns start only here, from requests.
     fn verdict(&self, report: Option<Value>) -> Result<Response> {
         let v = match report {
-            None => self.host.input(|m, t| m.campaign(t))?,
+            None => {
+                let v = self.host.input(|m, t| m.campaign(t))?;
+                #[cfg(feature = "test-faults")]
+                self.host.elect_asked(255, 0, v == Verdict::Started);
+                v
+            }
             Some(b) => {
                 let colo = raft::Colo(b.get("colo").and_then(Value::as_u64).unwrap_or(0) as u32);
                 let term = raft::Term(b.get("term").and_then(Value::as_u64).unwrap_or(0));
                 let about = site_field(&b, "about", "suspect")?;
-                self.host.input(|m, t| m.suspect(t, colo, about, term))?
+                let v = self.host.input(|m, t| m.suspect(t, colo, about, term))?;
+                #[cfg(feature = "test-faults")]
+                self.host.elect_asked(about.0, term.0, v == Verdict::Started);
+                v
             }
         };
         self.reply(json!({ "verdict": verdict_str(v) }))
@@ -1449,6 +1488,10 @@ impl<F: Family> Routes<F> {
             });
             let mut v = v;
             v["busyPages"] = json!(s.busy_pages);
+            #[cfg(feature = "test-faults")]
+            {
+                v["leaseClock"] = lease_clock_pcts(&s.lease_clock);
+            }
             if reset {
                 s.reset();
             }

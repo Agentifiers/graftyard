@@ -174,6 +174,16 @@ pub struct Stats {
     /// member's clock at apply, in ms. On a follower it includes the commit round and the wait for the next
     /// AppendEntries that carries the commit (BF-20).
     pub apply_ms: Vec<u32>,
+    /// Leader, per input that appended an `Events` entry: its `at` (the step's clock, which judges every lease the entry
+    /// decides, `ExtendLeases` and expiry) to `now_ms()` once the step returned, and to one macrotask later. A busy
+    /// isolate whose clock reads stale shows a gap here (L0-12 m3fr2: the leader's `/status` read 350 to 800 ms below
+    /// both followers). Test installs only.
+    #[cfg(feature = "test-faults")]
+    pub lease_clock: Vec<[u32; 2]>,
+    /// Test installs: this member's election trace, oldest first, each `[at, kind, term, peer, index, extra]`
+    /// (`Elect`), at most ELECT_MAX. Kept apart from `trace`, which a leader's appends fill in seconds.
+    #[cfg(feature = "test-faults")]
+    pub elections: VecDeque<[u64; 6]>,
     /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
     /// gate holds the entry's AppendEntries for this long.
     pub confirm_ms: Vec<u32>,
@@ -378,6 +388,106 @@ pub enum Trace {
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
 #[cfg(feature = "test-faults")]
 const TRACE_MAX: usize = 60_000;
+
+/// Election trace rows kept per member: L0-12's ten kills, each a few dozen rows, many times over.
+#[cfg(feature = "test-faults")]
+const ELECT_MAX: usize = 2_000;
+
+/// One election trace row's kind (`Stats::elections`), each seen by the host around a step (L0-12 m3fr2's 18 s and
+/// 26 s leaderless spans, split into pre-vote, vote, and first commit).
+#[cfg(any(test, feature = "test-faults"))]
+#[derive(Clone, Copy)]
+pub enum Elect {
+    /// This member sent a vote request to `peer`: `extra` 1 for a pre-vote, `index` its last index, `term` the term
+    /// asked for.
+    VoteSent = 1,
+    /// This member answered `peer`'s vote request: `term` the term asked for, `extra` 1 for a pre-vote, `index` 0 when
+    /// granted, else its `Deny` code (`deny_code`).
+    VoteAnswered = 2,
+    /// The role changed in this step: `index` the old role, `extra` the new (`role_code`), `term` the term after.
+    Role = 3,
+    /// A leader's commit index first moved in its term: `index` the commit.
+    FirstCommit = 4,
+    /// A campaign ended: `extra` 1 won, 0 lost (CAMPAIGN_DEADLINE or a higher term).
+    CampaignEnded = 5,
+    /// A `/suspect` report (`peer` the member reported, `term` the reported term) or a `/campaign` request (`peer`
+    /// 255, `term` 0): `extra` 1 when it started a pre-vote, else 0.
+    #[cfg_attr(not(feature = "test-faults"), allow(dead_code))]
+    Asked = 6,
+}
+
+#[cfg(any(test, feature = "test-faults"))]
+fn role_code(r: Role) -> u64 {
+    match r {
+        Role::Follower => 0,
+        Role::Candidate => 1,
+        Role::Leader => 2,
+    }
+}
+
+/// `Deny` as a number, 0 for none, in the enum's order.
+#[cfg(any(test, feature = "test-faults"))]
+fn deny_code(d: Option<raft::Deny>) -> u64 {
+    use raft::Deny::*;
+    match d {
+        None => 0,
+        Some(Stale) => 1,
+        Some(NoConfig) => 2,
+        Some(NotMember) => 3,
+        Some(Leader) => 4,
+        Some(Promised) => 5,
+        Some(LogBehind) => 6,
+        Some(Contending) => 7,
+        Some(Quarantine) => 8,
+        Some(Voted) => 9,
+        Some(Drained) => 10,
+        Some(Suspected) => 11,
+    }
+}
+
+/// The election rows (`Elect`) of one step at `t`, from the role, term, and commit before (`was`) and after (`now`) and
+/// what the step sent and resolved. `first` holds the term whose first leader commit was logged, so each term's is
+/// logged once.
+#[cfg(any(test, feature = "test-faults"))]
+fn elect_rows<C: raft::Command>(
+    was: (Role, raft::Term, Index),
+    now: (Role, raft::Term, Index),
+    out: &Out<C>,
+    first: &Cell<u64>,
+    t: u64,
+) -> Vec<[u64; 6]> {
+    let mut rows = Vec::new();
+    let (role, term, commit) = now;
+    if role != was.0 {
+        rows.push([t, Elect::Role as u64, term.0, 0, role_code(was.0), role_code(role)]);
+    }
+    for e in out.early.iter().chain(&out.messages) {
+        match &e.msg {
+            raft::Message::Vote(r) => {
+                rows.push([t, Elect::VoteSent as u64, r.term.0, u64::from(e.to.0), r.last_index.0, u64::from(r.pre)])
+            }
+            raft::Message::VoteRes(r) => rows.push([
+                t,
+                Elect::VoteAnswered as u64,
+                r.asked.0,
+                u64::from(e.to.0),
+                deny_code(r.deny),
+                u64::from(r.pre),
+            ]),
+            _ => {}
+        }
+    }
+    for r in &out.resolutions {
+        if let Resolution::Campaign(v @ (raft::Verdict::Won | raft::Verdict::Lost)) = r {
+            rows.push([t, Elect::CampaignEnded as u64, term.0, 0, 0, u64::from(*v == raft::Verdict::Won)]);
+        }
+    }
+    if role == Role::Leader && commit > was.2 && first.get() != term.0 {
+        first.set(term.0);
+        rows.push([t, Elect::FirstCommit as u64, term.0, 0, commit.0, 0]);
+    }
+    rows
+}
 
 /// One message kind's calls: how many, how they ended, their times, and the slowest, newest last.
 #[derive(Default, serde::Serialize)]
@@ -650,6 +760,9 @@ pub struct Host<F: Family> {
     synced: RefCell<VecDeque<(u64, u64)>>,
     /// The last log index the queued transaction leaves, when it appends.
     queued_last: Cell<Option<u64>>,
+    /// Test installs: the term whose first leader commit has an `Elect::FirstCommit` row.
+    #[cfg(feature = "test-faults")]
+    first_commit: Cell<u64>,
     /// Truncations stepped, numbered, with the index each left the log at.
     truncs: RefCell<VecDeque<(u64, u64)>>,
     /// Commands refused `NeedIdBlock`, waiting for the lease loop: request id, command, and their waiters.
@@ -1275,6 +1388,8 @@ impl<F: Family> Host<F> {
             stats: RefCell::new(Stats::default()),
             synced: RefCell::new(VecDeque::new()),
             queued_last: Cell::new(None),
+            #[cfg(feature = "test-faults")]
+            first_commit: Cell::new(0),
             truncs: RefCell::new(VecDeque::new()),
             blocked: RefCell::new(Vec::new()),
             leasing: Cell::new(false),
@@ -1330,6 +1445,33 @@ impl<F: Family> Host<F> {
 
     #[cfg(not(feature = "test-faults"))]
     pub fn trace_at(&self, _: u64, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
+
+    /// Test installs: the election rows of one step (`elect_rows`), kept in `Stats::elections`.
+    #[cfg(feature = "test-faults")]
+    fn note_elect(&self, m: &raft::Member<F::C>, was: (Role, raft::Term, Index), out: &Out<F::C>, t: u64) {
+        let now = (m.role(), m.term(), m.state().commit);
+        let rows = elect_rows(was, now, out, &self.first_commit, t);
+        if !rows.is_empty() {
+            let mut s = self.stats.borrow_mut();
+            for r in rows {
+                if s.elections.len() >= ELECT_MAX {
+                    s.elections.pop_front();
+                }
+                s.elections.push_back(r);
+            }
+        }
+    }
+
+    /// Test installs: an `Elect::Asked` row for a `/suspect` report about `about` (255 for `/campaign`).
+    #[cfg(feature = "test-faults")]
+    pub fn elect_asked(&self, about: u8, term: u64, started: bool) {
+        let mut s = self.stats.borrow_mut();
+        if s.elections.len() >= ELECT_MAX {
+            s.elections.pop_front();
+        }
+        let t = now_ms();
+        s.elections.push_back([t, Elect::Asked as u64, term, u64::from(about), 0, u64::from(started)]);
+    }
 
     /// Test installs: traces a `ReadIndexRes` stepped here, `own` when it answered this member's own call.
     pub fn trace_res<E>(&self, e: &raft::Envelope<E>, own: bool) {
@@ -1487,11 +1629,16 @@ impl<F: Family> Host<F> {
         let core = guard.as_mut().ok_or_else(|| err("member not joined"))?;
         let t = now_ms();
         let applied0 = core.applied;
+        #[cfg(feature = "test-faults")]
+        let was = (core.m.role(), core.m.term(), core.m.state().commit);
         let ready = f(&mut core.m, Timestamp(t));
         self.note(core, &ready.writes, t);
         #[cfg(feature = "test-faults")]
         let appended = self.appended_kill(core, &ready.writes);
         let wrote = !ready.writes.is_empty();
+        #[cfg(feature = "test-faults")]
+        let ready_appended_events =
+            ready.writes.iter().any(|w| matches!(w, Write::Append(e) if matches!(e.body, EntryBody::Events(_))));
         for w in &ready.writes {
             match w {
                 Write::Append(e) => self.queued_last.set(Some(e.index.0)),
@@ -1520,6 +1667,8 @@ impl<F: Family> Host<F> {
             installed: None,
         };
         let (r, mut out) = ready.persist(&mut store);
+        #[cfg(feature = "test-faults")]
+        self.note_elect(&core.m, was, &out, t);
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
         if let Some(b) = store.installed {
             self.queued_last.set(Some(b.index.0));
@@ -1570,7 +1719,22 @@ impl<F: Family> Host<F> {
                     .any(|e| matches!(&e.msg, raft::Message::Append(a) if !a.entries.is_empty()));
             self.unconfirmed.borrow_mut().push((id, timed.then(now_ms), out.self_ack.take()));
         }
+        #[cfg(feature = "test-faults")]
+        let lease_at = core.m.role() == Role::Leader && ready_appended_events;
         drop(guard);
+        #[cfg(feature = "test-faults")]
+        if lease_at {
+            let sent = now_ms().saturating_sub(t) as u32;
+            let h = self.clone();
+            spawn_local(async move {
+                Delay::from(Duration::ZERO).await;
+                let next = now_ms().saturating_sub(t) as u32;
+                let mut s = h.stats.borrow_mut();
+                if s.lease_clock.len() < SAMPLES_MAX {
+                    s.lease_clock.push([sent, next]);
+                }
+            });
+        }
         if wrote {
             self.trace(Trace::Stepped, 0, 0, self.queued_last.get().unwrap_or(0), now_ms().saturating_sub(t));
         }
@@ -3185,6 +3349,63 @@ pub fn rid_from(s: &str) -> Result<RequestId> {
 
 #[cfg(test)]
 mod tests {
+    /// The election rows split a leaderless span: a pre-vote's requests leave as candidate-to-be (no role change), the
+    /// vote's step moves Follower to Candidate, the win moves Candidate to Leader, and only the leader's first commit
+    /// move in its term is a `FirstCommit` row; a later commit, or a follower's, is not.
+    #[test]
+    fn election_rows_mark_pre_vote_vote_win_and_one_first_commit_per_term() {
+        use super::{Elect, elect_rows};
+        use graftyard_raft::{Envelope, Index, Message, Out, Resolution, Role, Term, Verdict, VoteReq};
+        use graftyard_types::{SiteId, Timestamp};
+        type C = graftyard_git::repo::RepoCmd;
+        let vote = |to: u8, term: u64, pre: bool| Envelope {
+            from: SiteId(1),
+            to: SiteId(to),
+            msg: Message::Vote(VoteReq {
+                term: Term(term),
+                candidate: SiteId(1),
+                pre,
+                last_index: Index(40),
+                last_term: Term(3),
+                transfer: None,
+                boots: [Timestamp(0); 2],
+                stepped_down_at: None,
+                bootstrapped: true,
+            }),
+        };
+        let kinds = |rows: &[[u64; 6]]| rows.iter().map(|r| r[1]).collect::<Vec<_>>();
+        let first = Cell::new(0);
+        let (fr, ft, fc) = (Role::Follower, Term(3), Index(40));
+
+        let pre = Out::<C> { messages: vec![vote(0, 4, true), vote(2, 4, true)], ..Default::default() };
+        let rows = elect_rows((fr, ft, fc), (Role::Follower, Term(3), Index(40)), &pre, &first, 100);
+        assert_eq!(kinds(&rows), [Elect::VoteSent as u64; 2]);
+        assert!(rows.iter().all(|r| r[5] == 1 && r[2] == 4 && r[4] == 40));
+
+        let real = Out::<C> { messages: vec![vote(0, 4, false)], ..Default::default() };
+        let rows = elect_rows((fr, ft, fc), (Role::Candidate, Term(4), Index(40)), &real, &first, 200);
+        assert_eq!(kinds(&rows), [Elect::Role as u64, Elect::VoteSent as u64]);
+        assert_eq!(rows[0][2..], [4, 0, 0, 1]);
+
+        let won = Out::<C> { resolutions: vec![Resolution::Campaign(Verdict::Won)], ..Default::default() };
+        let rows = elect_rows((Role::Candidate, Term(4), fc), (Role::Leader, Term(4), Index(40)), &won, &first, 300);
+        assert_eq!(kinds(&rows), [Elect::Role as u64, Elect::CampaignEnded as u64]);
+        assert_eq!((rows[0][4], rows[0][5], rows[1][5]), (1, 2, 1));
+
+        let none = Out::<C>::default();
+        let lead = (Role::Leader, Term(4), Index(40));
+        let rows = elect_rows(lead, (Role::Leader, Term(4), Index(41)), &none, &first, 400);
+        assert_eq!(kinds(&rows), [Elect::FirstCommit as u64]);
+        assert_eq!((rows[0][0], rows[0][2], rows[0][4]), (400, 4, 41));
+        assert!(
+            elect_rows((Role::Leader, Term(4), Index(41)), (Role::Leader, Term(4), Index(42)), &none, &first, 500)
+                .is_empty()
+        );
+        assert!(elect_rows((fr, Term(5), fc), (Role::Follower, Term(5), Index(41)), &none, &first, 600).is_empty());
+        let rows = elect_rows((Role::Leader, Term(6), fc), (Role::Leader, Term(6), Index(41)), &none, &first, 700);
+        assert_eq!(kinds(&rows), [Elect::FirstCommit as u64]);
+    }
+
     /// An alarm whose invocation never ran (canceled) is re-armed once it is overdue, not left as the sooner one.
     #[test]
     fn an_overdue_alarm_is_set_again() {
