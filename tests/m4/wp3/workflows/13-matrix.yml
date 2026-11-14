@@ -1,0 +1,35 @@
+on: push
+jobs:
+  docs:
+    runs-on: ${{ matrix.os }}
+    name: Docs ${{ matrix.fruit }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        fruit: [apple, pear]
+        animal: [cat, dog]
+        include:
+          - color: green
+          - color: pink
+            animal: cat
+          - fruit: apple
+            shape: circle
+          - fruit: banana
+          - fruit: banana
+            animal: cat
+  nested:
+    runs-on: x
+    strategy:
+      matrix:
+        cfg: [{os: linux, v: 1.5}, {os: Windows, v: 2}]
+        flag: [true, false]
+        exclude:
+          - cfg: {os: windows}
+            flag: false
+    steps: [{run: x}]
+  dyn:
+    runs-on: x
+    strategy:
+      matrix: ${{ fromJSON('{"a":[1]}') }}
+    steps: [{run: x}]

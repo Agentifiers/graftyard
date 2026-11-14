@@ -536,7 +536,7 @@ fn render(
 }
 
 /// The API host payload URLs name: the edge's `HOST`, which the site scripts get as `GRAFTYARD_HOST`.
-fn api_host(env: &Env) -> String {
+pub(crate) fn api_host(env: &Env) -> String {
     env.var("GRAFTYARD_HOST").map(|v| v.to_string()).unwrap_or_else(|_| "graftyard.dev".into())
 }
 
