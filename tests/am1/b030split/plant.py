@@ -83,6 +83,11 @@ MUTANTS = [
     ('a split needs its leader once the slim pass is done', SITE,
      '    !fold.child && !matches!(git::split::plan(&*fold.core, &fold.meta, bytes, split_at, None), SplitStep::Idle)',
      '    !fold.child && git::split::slim_cursor(&fold.meta).is_none_or(|_| true)', S),
+    # A `MetaSlim` entry's byte bound (`SLIM_BYTES`).
+    ('a slim entry ignores its byte bound within a scan batch', SPLIT,
+     '            if bytes >= SLIM_BYTES {\n                end = false;', '            if false {\n                end = false;', T),
+    ('a slim entry cut by its bytes moves on to the next table, skipping the rest of this one', SPLIT,
+     '                end = false;\n                break;', '                break;', T),
 ]
 
 

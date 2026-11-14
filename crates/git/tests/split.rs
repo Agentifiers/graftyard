@@ -483,6 +483,38 @@ fn the_slim_pass_takes_each_row_once_across_batches() {
     }
 }
 
+/// A `MetaSlim` entry stops at the row that reaches `SLIM_BYTES`, however few rows that is, and the next entry starts at
+/// the row after it: with 60 KB bodies the first entry slims some but not all of nine comments, the pass takes at least
+/// three entries, and every comment ends slimmed.
+#[test]
+fn a_slim_entry_stops_at_its_bytes_and_the_next_takes_the_rest() {
+    use graftyard_git::split::SLIM_BYTES;
+    let mut p = Parent::new();
+    let n = p.open_issue("b");
+    let big = "x".repeat(60_000);
+    assert!(SLIM_BYTES < 9 * big.len() / 3, "nine bodies need at least three entries");
+    let ids: Vec<_> = (0..9).map(|_| p.comment(n, &big)).collect();
+    let body = |p: &Parent, id: &CommentId| p.row::<CommentRow>("comment", &[int(id.0.0)]).unwrap().body;
+    p.record(RepoEvent::Split(SplitEntry::MetaSplit { child: ChainId::RepoMeta(REPO) })).unwrap();
+    let _ = p.snapshot();
+    let SplitStep::Seed { at, key } = p.step(None) else { panic!() };
+    p.record(RepoEvent::Split(SplitEntry::MetaSeed { at, key })).unwrap();
+    p.record(RepoEvent::Split(SplitEntry::MetaDropped { seed: at })).unwrap();
+    p.record(RepoEvent::Split(SplitEntry::MetaSlim)).unwrap();
+    let first = ids.iter().filter(|id| &*body(&p, id) == SLIMMED).count();
+    assert!(first > 0 && first < ids.len(), "the first entry slimmed {first} of {}", ids.len());
+    let mut slims = 1;
+    while p.step(Some(&ChildView { seeded: true, loaded: true })) == SplitStep::Slim {
+        p.record(RepoEvent::Split(SplitEntry::MetaSlim)).unwrap();
+        slims += 1;
+        assert!(slims < 100);
+    }
+    assert!(slims >= 3, "{slims} slim entries");
+    for (i, id) in ids.iter().enumerate() {
+        assert_eq!(&*body(&p, id), SLIMMED, "comment {i}");
+    }
+}
+
 /// A fill takes only the slimmed field: a task whose prompt was slimmed and whose summary the parent set after the
 /// seed reads the child's prompt and the parent's summary; a release body slimmed reads the child's.
 #[test]

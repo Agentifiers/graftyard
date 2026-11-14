@@ -7,8 +7,8 @@
 //!   child on its own placement record, and records the same `MetaSeed` there. Each child member restores that
 //!   snapshot into its metadata tier, which no entry writes after, and serves reads of it once restored.
 //! - **Commit point.** Once the child leader has restored it, the parent records `MetaDropped { seed: p }`. Then the
-//!   leader records `MetaSlim` entries until one pass is done, each slimming the next `SLIM_ROWS` rows of its metadata
-//!   tier (`slim`): a row last written at or before p loses the text no `decide` reads, which the child's snapshot
+//!   leader records `MetaSlim` entries until one pass is done, each slimming the next `SLIM_ROWS` rows, at most about
+//!   `SLIM_BYTES`, of its metadata tier (`slim`): a row last written at or before p loses the text no `decide` reads, which the child's snapshot
 //!   holds, replaced by `SLIMMED`, and `provenance` and `path_set` rows, which no read serves, go. A row written after
 //!   p keeps its text, so the child never needs a later entry and its log holds only its bootstrap, a `Noop` a term,
 //!   and `MetaSeed`. Every table and column `decide` reads stays, so every command still decides and commits on the
@@ -32,6 +32,11 @@ pub const SPLIT_AT: u64 = 7 << 30;
 /// Metadata rows one `MetaSlim` entry looks at [guess]: about 1 MB of rows read and rewritten, as an archive step's
 /// batch. A metadata snapshot running on the writer copies each row it slims once into `snap_undo`.
 pub const SLIM_ROWS: usize = 512;
+/// Row bytes (key and columns) one `MetaSlim` entry looks at, past which it stops after the row that crossed it. At
+/// 512 rows of about 1.8 KB, about 0.9 MB, followers' `/raft` calls took p90 1.8 s against CALL_DEADLINE's 1 s, and
+/// paced entries still tripped STEP_DOWN 11 times in 9 minutes; at about 290 KB they took 0.4 to 0.55 s
+/// [measured, `tests/am1/results/b030-split.md`, smokes 1 and 2]. 128 KiB keeps one entry's apply near 0.3 s.
+pub const SLIM_BYTES: usize = 128 << 10;
 /// The text of a slimmed row: a read takes it from the child's row. A body that is this string anyway reads the same
 /// from the child.
 pub const SLIMMED: &str = "\u{0}";
@@ -233,20 +238,25 @@ pub fn plan(
     }
 }
 
-/// One `MetaSlim`: the next `SLIM_ROWS` rows of `SLIM_TABLES` after the cursor, in one pass. A row last written after
-/// the seed keeps its text: the child's snapshot lacks it, and the parent keeps every text written since. Every member
-/// writes the same rows.
+/// One `MetaSlim`: the next rows of `SLIM_TABLES` after the cursor, in one pass, up to `SLIM_ROWS` rows and up to the
+/// row that reaches `SLIM_BYTES`. A row last written after the seed keeps its text: the child's snapshot lacks it, and
+/// the parent keeps every text written since. Every member writes the same rows.
 fn slim(w: &mut dyn Rows) {
     let Some(mut cur) = slim_cursor(w).filter(|c| !c.done) else { return };
-    let mut left = SLIM_ROWS;
-    while left > 0 && !cur.done {
+    let (mut left, mut bytes) = (SLIM_ROWS, 0);
+    while left > 0 && bytes < SLIM_BYTES && !cur.done {
         let table = SLIM_TABLES[cur.table as usize];
         // A scan starts at its key, so the cursor's own row comes back first after the first batch.
         let want = left + 1 + usize::from(!cur.last.is_empty());
         let batch: Vec<_> =
             w.scan(table, &cur.last, want).into_iter().filter(|(k, _)| cur.last.is_empty() || *k != cur.last).collect();
-        let end = batch.len() <= left;
-        for (k, _) in batch.into_iter().take(left) {
+        let mut end = batch.len() <= left;
+        for (k, cols) in batch.into_iter().take(left) {
+            if bytes >= SLIM_BYTES {
+                end = false;
+                break;
+            }
+            bytes += k.iter().chain(&cols).map(val_bytes).sum::<usize>();
             if w.written(table, &k).is_some_and(|i| i <= cur.seed) {
                 slim_row(w, table, &k);
             }
@@ -260,6 +270,15 @@ fn slim(w: &mut dyn Rows) {
         }
     }
     put_rec(w, "split", key("slim"), &cur);
+}
+
+fn val_bytes(v: &Val) -> usize {
+    match v {
+        Val::Null => 1,
+        Val::Int(_) => 8,
+        Val::Text(t) => t.len(),
+        Val::Blob(b) => b.len(),
+    }
 }
 
 fn slim_row(w: &mut dyn Rows, table: &str, k: &[Val]) {

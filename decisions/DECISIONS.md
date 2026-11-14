@@ -3156,3 +3156,15 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** `a_voter_that_granted_a_rivals_pre_vote_lets_it_win` and `a_voter_that_grants_a_rivals_pre_vote_drops_its_own` (`crates/raft/tests/scenarios.rs`), each failing without its rule. `tests/m0carried/plant10.py` plants seven mutants of the two rules. The writes-fail scan, the long sweep and Porcupine are in `tests/m0/results/split-vote.md`.
 
 **Flip.** A history in which the wait delays an election past the liveness bound, for example a rival whose pre-vote passes and whose real vote never arrives, repeated each term; or a writes-fail seed over 20 s that is still a split vote.
+
+### One `MetaSlim` entry looks at no more than 128 KiB of rows (2026-11-14)
+
+**Decision.** A `MetaSlim` entry slims the next rows after its cursor until it has looked at `SLIM_ROWS` (512) rows or until the row that brings the keys and columns it looked at to `SLIM_BYTES` (128 KiB), whichever comes first (`crates/git/src/split.rs`, `slim`). The next entry starts at the row after the last one it looked at, in the same table. Pacing ("A leader paces its own background writes") is unchanged.
+
+**Why.** Smoke 2 on `repo:1048587` (seeded with about 1.8 KB comments) paced each `MetaSlim` by twice its commit, and the leader still stepped down 11 times in 9 minutes on `CommitErrors` while the slim ran, against 0 before it and after it. Pacing spaced the entries but did not shorten them: each 512-row entry rewrote about 0.9 MB of rows, and the followers' `/raft` calls in that window ran at p50 0.65 s and p90 1.8 s, 14 of 44 sampled over `CALL_DEADLINE` (1 s), against p90 0.72 s with none over it before the slim [measured, Workers Logs, `tests/am1/results/b030-split.md`, "Smoke 2"]. Missed deadlines on both followers are exactly what `STEP_DOWN`'s `CommitErrors` counts. A follower's call time grows with the rows an entry rewrites, so the bound that keeps it inside `CALL_DEADLINE` is on bytes, not on rows.
+
+**Beat.** A larger `PACE`: the time between entries does not change how long one entry's apply holds a follower's `/raft` call. Fewer rows (`SLIM_ROWS` 128): metadata rows vary from a few hundred bytes to the 64 KiB body limit, so a row count bounds nothing. Excusing deadline misses on a follower's background apply in `STEP_DOWN`: a `crates/raft` change for a cost a site can avoid.
+
+**Evidence.** `a_slim_entry_stops_at_its_bytes_and_the_next_takes_the_rest` (`crates/git/tests/split.rs`); plants 25 and 26 in `tests/am1/b030split/plant.py`; smoke 3 in `tests/am1/results/b030-split.md`.
+
+**Flip.** Follower `/raft` calls over `CALL_DEADLINE` during a slim at 128 KiB entries, or a slim pass so long that the parent passes `CHILD_GROUP_AT` before it ends.

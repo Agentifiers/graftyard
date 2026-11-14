@@ -376,7 +376,7 @@ pub const RESET_QUARANTINE: Duration = Duration::from_secs(300);
 /// never reads").
 pub const CHILD_GROUP_AT: u64 = 8 << 30;
 pub const SPLIT_AT: u64 = 7 << 30;  // a seed restores the whole tier on each child member, for hours [guess]
-pub const SLIM_ROWS: usize = 512;   // about 1 MB of rows a `MetaSlim` entry [guess]
+pub const SLIM_ROWS: usize = 512;   // and at most SLIM_BYTES = 128 KiB of rows a `MetaSlim` [measured, smoke 2]
 pub enum SplitEntry { MetaSplit { child: ChainId }, MetaSeed { at: Index, key: R2Key }, MetaDropped { seed: Index },
                       MetaSlim }
 /// One import entry (SHARED, `rest:migrations`). `apply` applies each `event` with `created` and `author` in place of the
