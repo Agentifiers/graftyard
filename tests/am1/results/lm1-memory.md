@@ -2373,3 +2373,98 @@ rehydrate, so after the kill no warm shard was left, and k never left 1, so `fan
 
 **Cost** $127.06 at 17:52Z (containers $49.34). Sweep after the row: "no shard container running" (b034-mono's shards
 torn down at the end, as the run ends here).
+
+### Round 18c: B0-34 trace from m29's logs: why k stayed 1, why pushes got `warming`, and what came before the kill (2026-11-14)
+
+No hosted spend: Workers Logs (shard objects `git#<s>#net:131296`, ids 6c3553f3 / 8cdabda8 / 617c87d6), the container
+CPU dataset, two ledger reads (`/_bed/pool`), and `mwgoigqa`'s rows. Cost $127.09 at the end; sweep "no shard container
+running".
+
+**What actually happened.** From 17:31:48Z, 33 s into the window, the home shard (site 0) answered no validate 200 again.
+Site 2's last 200 was in 17:32, site 1's in 17:35. After that, every validate on each site waited out its `wait` and
+answered 503 `warming`: site 0's at 14.9–15.1 s (`wait=15`), site 2's at 59–61 s (`wait=60`), site 1's at 15–22 s.
+
+| minute | site 0 validate 200 / 503 | site 1 | site 2 | container CPU-s, sites 0 / 1 / 2 (cgroup, 240 = 4 vCPU) |
+|---|---|---|---|---|
+| 17:31 | 10 / 0 (36 × 429 slots full) | – | 0 / 0 | 193 / 69 / 203 |
+| 17:32 | 0 / 84 | 0 / 82 | 12 / 64 (29 × 429) | 240 / 81 / 228 |
+| 17:33 | 0 / 293 | 0 / 289 | 0 / 47 | 250 / 80 / 226 |
+| 17:34 | 0 / 23 | 6 / 57 | 0 / 254 | 198 / 104 / 202 |
+| 17:35 | 0 / 168 | 10 / 17 (37 × 429) | 0 / 19 | 188 / 227 / 200 |
+| 17:36 | 0 / 23 | 0 / 123 | 0 / 3 | 187 / 127 / 201 |
+| 17:37–17:46 | 0 / 2,000+ | 0 / 2,000+ | 0 / 2,000+ | site 0 torn down 17:37:29, then ~70 (rehydrating); 1 and 2 at 156–209 |
+
+The kill (`/_bed/kill`, sent at 300 s) reached site 0's shard at 17:37:22Z (`/teardown` 200 at 17:37:29, ≈374 s of the
+window; the driver logged 200 at 496 s). The catch-up that had run on site 0 since about 17:32 ended only then, with
+`shard catch-up 131296: Error: Network connection lost.`
+
+**Why the catch-ups stopped: a cancelled depth-1 clone leaves the network's lock held [inference: timing on all three
+sites, plus a local reproduction of the mechanism; no container stderr was captured].** B0-34's `cloneTtfb`
+(`tests/am1/rest/a1.mjs`) cancels its fetch after the first byte. The container's `handleUploadPack`
+(`containers/git/server/main.go`) holds the network's lock shared, copies upload-pack's stdout to the response, and then
+calls `cmd.Wait()`. When the client has gone, the copy fails and returns. Nothing reads the pipe or kills the child, so
+`git upload-pack` blocks on a full pipe, `Wait` never returns, and the shared lock is never released. The next catch-up's
+`/ingest` then waits for the lock alone. Go's `RWMutex` makes every later `RLock` (validate, ls-refs, upload-pack) wait
+behind that writer, so the catch-up never ends and every validate's `Jobs::wait` times out to `warming`. Locally, a Go
+program with the same copy and wait calls (`head -c 1G /dev/zero` as the child and a writer that fails after one chunk)
+stayed in `cmd.Wait` for over 10 s, with the waiting writer and a later reader both blocked. The timing on each site:
+
+| site | first cancelled clone (shard `/upload-pack`, outcome canceled) | last validate 200 |
+|---|---|---|
+| 0 | started ≈17:31:41 (ended 17:33:35, 114 s wall) | 17:31:48 |
+| 2 | started ≈17:32:06 (ended 17:33:37, 91.5 s) | 17:32 |
+| 1 | started ≈17:35:01 (ended 17:35:53, 53 s) | 17:35 |
+
+Round 18b's verdict line, "after the kill no warm shard was left", is wrong: no shard was serving well before the kill.
+
+**1. Why k stayed 1.**
+- **Reports.** `fanout`'s input comes only from inside a `/validate` that has caught up (`workers/site/src/shard.rs`,
+  the `due` block after `caught_up()`). From 17:32 no validate caught up, so the leader (site 0, `repo:131296#1#f0`) got
+  three `/fanout` calls in the whole window: 17:31:33, 17:32:06 and 17:34:34. `fanout` steps only when the larger warm
+  site's `cpu_p99` stays above `FANOUT_UP` 0.75 for `FANOUT_UP_FOR` 180 s, which three reports in 3 minutes cannot show.
+  The `cpu_p99` values in those reports were not logged (not measured).
+- **CPU.** The containers did burn CPU: about 3.2–4.2 vCPU on sites 0 and 2 from the warm's end, and on site 1 from its
+  rehydrate's end at 17:34:33. Each site's jump follows its own rehydrate's end, so it is the `/refs` → `startRepack`
+  geometric repack of 257 packs plus its commit-graph [inference]. That is derived work, which `/load` leaves out by
+  design (A31). So the network's `NetworkLoad` read near idle even if more reports had arrived.
+- **Hot pool.** No pool shard was warm for the monorepo. None of the 13 pool objects that exist (`git#0#pool:1–7`,
+  `git#1#pool:1,2,4–6`, `git#2#pool:1`) ran a container from 16:45 to 17:50. Both warm sites' ledgers hold no lease
+  (`/_bed/pool?site=0` and `site=1` give `{"leases":[]}`); this network's warm sites are 0 and 1 by `warm_sites`'
+  rendezvous. With k 1 and no step, `pool_ask(1, None)` is `None`, so the leader never asks a ledger. A pool shard
+  catches up only when a granted push is forwarded to it with `pool=1`, and with no cursor it answers `warming`
+  (`warming_now`'s `pool_cold`).
+- **DESIGN versus code.** DESIGN, Shape, `HOT_POOL`: "Idle pool shards keep hot networks warm, holding the parts up to
+  the tip, so a step needs no rehydrate". Costs: "Its idle shards keep hot networks warm, so a step up in k needs no
+  rehydrate". No code warms a pool shard for a network before a grant: `prsync::warm` catches up only each Full site's
+  first shard (`git#<s>#net:<repo>`, `promote_sites`). So a step up here would have meant a 32–44 minute rehydrate on
+  each granted pool shard (round 18b's figures).
+
+**2. Why pushes after the kill got 503 `warming`.**
+- **The path.** The edge's `validate` (`workers/edge/src/lib.rs`) tries `shard_order`: `validate_sites` lists the home,
+  then every other Full site in record order, and sites this isolate saw fail in the last `COLD_SHARD_MS` (30 s) go last.
+  `shard_url` gives the first try `wait=15` and later tries `wait=60`, and every try but the last carries `next=1`.
+  `validate_on` calls `shard_at(site)`, which is always that site's first shard `git#<site>#net:<repo>`, never a pool
+  shard. So it does use another site's warm shard: the 503s on sites 1 and 2 above are those fallbacks.
+- **Where the code departs.** `validate_streamed`, used for a pack over `INLINE_MAX` (1 MiB), sends the body to the
+  first site of `shard_order` only, with one try (`shard_url(&url, 1, 2)`). DESIGN, Shape, `IngestCursor`, says "Pushes,
+  fetches and the archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503". This
+  row's agent packs averaged 90 KB, so it bound only big human pushes.
+- **What bound this row.** There was no serving shard to fall back to. Every Full site's shard had the stuck catch-up
+  described above, so each answered `warming` after its full wait. After 17:37:29, site 0's new container was
+  rehydrating, and it answered `next=1` callers at once (189 answers in 0–1 s at 17:40). DESIGN's failure-modes row for
+  git caches at data-center scope says "Each network is warm on two sites, … so the other warm site already holds k
+  shards". That holds only while the other site's shard can catch up. The container bug above defeats it on every site
+  at once, because every site's shard serves the same cancelled clones.
+
+**3. How much of the miss came before the kill.** `note()` is called when a request ends, so a phase is the phase it
+finished in.
+- **Before the kill (`@j9`, 0–300 s).** Human pushes: 8, 3 ok, p50 45.8 s, p99 189.0 s. Clone time to first byte: 10, 4
+  answered 200, p50 118.3 s, p99 197.8 s (the row's highest). Agent pushes: 435, 22 ok, 210 of them `warming`.
+- **Kill phase (`@kill`, 300–420 s).** Human push p99 304.1 s and clone p99 142.5 s. These requests ended after 300 s,
+  but at those durations they started before it.
+- **So:** the human push and clone misses are already whole before the kill. The stall began at 33 s of the window, and
+  the kill was not the cause.
+
+**For the owner.** The fix is likely in `handleUploadPack`: kill the child, or drain its stdout, once the response write
+fails, and release the lock before `cmd.Wait`. It needs a test where a client cancels mid-stream and a later
+ingest-then-validate still completes. The pool-warming gap and `validate_streamed`'s single try are separate departures.
