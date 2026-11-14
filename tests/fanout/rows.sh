@@ -17,7 +17,11 @@ K=${K:-4}
 ROWS=${ROWS:-"b0-29 b0-32 b0-34 b0-31 b0-33 l0-12 b0-35"}
 id() { awk -v n="$1" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt"; }
 tracers=()
+# TRACE=1: vmem.mjs writes MEMSTOP once a voter's counted high-water passes MEM_STOP_MIB (120 MiB); the row in
+# progress is stopped and no later row runs.
+MEMSTOP=tests/fanout/raw/.memstop-$TAG
 for row in $ROWS; do
+  [ -e "$MEMSTOP" ] && { echo "$(date -u +%FT%TZ) MEMSTOP: $(cat $MEMSTOP)" >> "$ST"; break; }
   # The $15 stop: no new row once the window has cost STOP_USD (default $12). With T0_FILE the window starts there
   # and counts the m2b shard containers too (tests/fanout/cost.sh).
   c=$(bash tests/fanout/cost.sh 2>/dev/null); echo "$(date -u +%FT%TZ) cost $c" >> "$ST"
@@ -31,7 +35,7 @@ for row in $ROWS; do
     node tests/fanout/terms.mjs "$repo" 10800 > tests/fanout/raw/terms-$TAG-$row.jsonl 2>&1 & tracers+=($!)
     node tests/fanout/admit.mjs "$repo" 10800 > tests/fanout/raw/admit-$TAG-$row.jsonl 2>&1 & tracers+=($!)
     # Every voter's memory split every 2 s (vmem.mjs), for L0-12's memory resets.
-    node tests/fanout/vmem.mjs "$repo" 10800 > tests/fanout/raw/vmem-$TAG-$row.jsonl 2>&1 & tracers+=($!)
+    MEM_STOP_FILE=$MEMSTOP node tests/fanout/vmem.mjs "$repo" 10800 > tests/fanout/raw/vmem-$TAG-$row.jsonl 2>&1 & tracers+=($!)
   fi
   node tests/am1/runs/mkrepos.mjs "$repo" >> "$ST" 2>&1
   rid=$(id "$repo")
@@ -64,7 +68,11 @@ for row in $ROWS; do
     DONE_FILE=tests/fanout/raw/.tsave-$TAG-$row.done node tests/nr3/tsave.mjs "repo:$rid" \
       > tests/fanout/raw/tsave-$TAG-$row.jsonl 2>&1 & tracers+=($!)
   fi
+  if [ -n "${TRACE:-}" ]; then
+    ( while [ ! -e "$MEMSTOP" ]; do sleep 5; done; pkill -f "a1.mjs $row --repo $repo " ) & tracers+=($!)
+  fi
   bash tests/am1/runs/a1.sh "$row" "$repo" "$rid" $flags
+  [ -e "$MEMSTOP" ] && echo "$(date -u +%FT%TZ) $row stopped: MEMSTOP $(cat $MEMSTOP)" >> "$ST"
   [ -n "${TRACE:-}" ] && touch tests/fanout/raw/.tsave-$TAG-$row.done
   # Back to k = 1, which releases the network's pool leases: a lease is only renewed or released by its own network,
   # and the ledger shifts every lease past a call gap of LEDGER_GAP, so a network torn down at k > 1 kept its owner's

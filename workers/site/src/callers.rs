@@ -133,6 +133,12 @@ impl<E> Callers<E> {
         rx
     }
 
+    /// The encoded bytes held for every learner now (`Host::mark_mem`).
+    #[cfg(feature = "test-faults")]
+    pub fn held_total(&self) -> usize {
+        self.by.values().map(|c| c.held_bytes).sum()
+    }
+
     /// Whether messages wait for a learner, so the ticker keeps running until `due` sends them.
     pub fn holding(&self) -> bool {
         self.by.values().any(|c| !c.held.is_empty())

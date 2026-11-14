@@ -736,6 +736,7 @@ impl<F: Family> Routes<F> {
                 self.stats(
                     crate::registry::query(&url, "reset").is_ok(),
                     crate::registry::query(&url, "summary").is_ok(),
+                    crate::registry::query(&url, "high").is_ok(),
                 )
             }
             (Method::Post, p) if F::route_paths().contains(&p) => {
@@ -1022,6 +1023,8 @@ impl<F: Family> Routes<F> {
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
         let counted = host::Counted::new(&self.host.answer_bytes, value.len());
+        #[cfg(feature = "test-faults")]
+        self.host.mark_mem();
         Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, (held, counted)))?
             .with_headers(headers))
     }
@@ -1474,7 +1477,7 @@ impl<F: Family> Routes<F> {
         })
     }
 
-    fn stats(&self, reset: bool, summary: bool) -> Result<Response> {
+    fn stats(&self, reset: bool, summary: bool, #[allow(unused)] high: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
         // `?summary=1`: percentiles in place of the sample arrays, and no trace, calls, or peers. A loaded leader's raw
         // `/stats` serialized megabytes, and its wasm instance was rebuilt right after (LM-1 round 6, B0-29).
@@ -1524,6 +1527,12 @@ impl<F: Family> Routes<F> {
             #[cfg(feature = "test-faults")]
             {
                 v["leaseClock"] = lease_clock_pcts(&s.lease_clock);
+                // The counted bytes' high-water since the last `high=1` read (`Host::mark_mem`), and now; `high=1`
+                // starts the next one from now, so each 2 s sample shows the peak of the seconds since the one before.
+                v["memHigh"] = json!(s.mem_high);
+                if high {
+                    s.mem_high = Default::default();
+                }
             }
             if reset {
                 s.reset();

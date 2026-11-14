@@ -57,7 +57,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
-import { clockSpread } from "./clock.mjs";
+import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
@@ -330,7 +330,14 @@ if (opt.selftest) {
     const skew = clockSpread([cs(5, 0, 0, 50), cs(5, 1, 900, 50)]);
     const clock = JSON.stringify(idle) === JSON.stringify({ upperMs: 240, lowerMs: 0, rounds: 1, kept: 4, rejected: 1 })
       && JSON.stringify(apac) === JSON.stringify({ upperMs: 380, lowerMs: 0, rounds: 2, kept: 4, rejected: 1 })
-      && skew.upperMs === 950 && skew.lowerMs === 850 && clockSpread([cs(6, 0, 0, 50)]).upperMs === null;
+      && skew.upperMs === 950 && skew.lowerMs === 850 && clockSpread([cs(6, 0, 0, 50)]).upperMs === null
+      // The driver offset (clock.mjs `dateBounds`): Cloudflare 1,700 ms ahead of this orb. A probe at orb 10,000 to
+      // 10,100 reads Date 11,000 (offset in [900, 2,000]); one at 10,350 to 10,450 reads 12,000 ([1,550, 2,650]); one
+      // at 10,200 to 10,280 reads 11,000 ([720, 1,800]). Together: [1,550, 1,800], which holds the true 1,700. A probe
+      // whose Date is two seconds off from the others empties the intersection.
+      && JSON.stringify(dateBounds([{ s: 10_000, e: 10_100, date: 11_000 }, { s: 10_350, e: 10_450, date: 12_000 },
+        { s: 10_200, e: 10_280, date: 11_000 }])) === JSON.stringify({ lo: 1550, hi: 1800, offsetMs: 1675, n: 3 })
+      && dateBounds([{ s: 10_000, e: 10_100, date: 11_000 }, { s: 10_000, e: 10_100, date: 13_000 }]) === null;
     // merge:only's split: `tier` and `authz` overlap, so the gap counts the longer; a merge with no shard timing
     // adds no shard stage.
     const sp = mergeSplit([
@@ -797,7 +804,11 @@ if (plan.leases) for (let k = 0; k < PROBE_PAIRS; k++) {
 const clockSamples = [];
 let clockRound = 0;
 // L0-12's clock line: `clockSpread` in clock.mjs.
+// The driver's clock against the edge's `Date` (clock.mjs `driverOffset`), before the window and after it: each
+// member offset is judged against Cloudflare's clock, not this orb's (m3fr3: the orb read 1.5 to 2.0 s behind).
+const driverClock = {};
 if (plan.leases) jobs.push((async () => {
+  driverClock.before = await driverOffset(`${EDGE}/api/v3/meta`);
   await sleep(Math.max(0, t0 - Date.now()));
   while (Date.now() < end) {
     clockRound++;
@@ -816,6 +827,7 @@ if (plan.leases) jobs.push((async () => {
     }));
     await sleep(15_000);
   }
+  driverClock.after = await driverOffset(`${EDGE}/api/v3/meta`);
 })());
 if (opt["kill-shard-at"]) jobs.push((async () => {
   await sleep(Math.max(0, t0 + Number(opt["kill-shard-at"]) * 1000 - Date.now()));
@@ -1037,6 +1049,10 @@ if (leader !== undefined) {
   log(`leader peers: failedCalls ${full.failedCalls} ${JSON.stringify(Object.fromEntries(Object.entries(full.peers ?? {}).map(([p, c]) => [p, { ok: c.ok, failed: c.failed, late: c.late, lateFailed: c.lateFailed }]))).slice(0, 600)}`);
 }
 const lstats = endStats.commitMs?.n ? endStats : (lateStats ?? endStats);
+function driverMs() {
+  const xs = [driverClock.before, driverClock.after].filter(Boolean).map((d) => d.offsetMs);
+  return xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
+}
 const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
 // A sample array, or `/stats?summary=1`'s `{n, p50, p99}` of one.
 const ps = (x) => (Array.isArray(x) || x == null ? { n: x?.length, p50: pct(x, 0.5), p99: pct(x, 0.99) } : { n: x.n, p50: x.p50, p99: x.p99 });
@@ -1086,7 +1102,12 @@ const v = {
       ? Math.round(Math.max(...overlaps.map(([o]) => o)) + clockSpread(clockSamples).upperMs) : null,
     clock: { samples: clockSamples.length, ...clockSpread(clockSamples), raw: clockSamples.map((c) => [c.round, c.site, Math.round(c.offset), c.rtt, c.term, c.role,
       c.before == null ? null : Math.round(c.before), c.tick, c.lease]),
-      maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
+      // The gate line: each member's offset less the driver's (the mean of its before and after readings, or the
+      // one that answered), so it is the member against Cloudflare's clock. `maxAbsOffsetRawMs` is against this orb.
+      driver: driverClock, driverOffsetMs: driverMs(),
+      maxAbsOffsetMs: clockSamples.length && driverMs() != null
+        ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset - driverMs())))) : null,
+      maxAbsOffsetRawMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
   ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
     pollAnswers: codes["read:mergeable"] ?? {}, restPollAnswers: codes["read:mergeableRest"] ?? {},
