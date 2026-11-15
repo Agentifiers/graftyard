@@ -2589,3 +2589,63 @@ past entry 17 it could only repeat the 25 to 30 minute cold rehydrate above, and
 Row: **not run**. Sweep after the stop: "no shard container running".
 
 **Cost** $130.32 at 01:10Z (containers $50.03).
+
+### Round 21: B0-34 on m33 (main fb4a1b66, promote-stream): the drain's 45-minute stop fires before the first promotion; row not run (2026-11-15)
+
+**Deploy m33.** lm1-memory 43cc5225 = main fb4a1b66 (promote-stream merged) plus this branch's instruments and one new
+log line: each promotion prints its range, pack count, bytes, ms and the site isolate's wasm memory before and after
+(`archive::promote_handled`); `tests/fanout/promomem.py` reads each site script's peak memory by minute. Shard image
+`sha256:b63da3e6`, the same digest as m31 (promote-stream changed no `containers/` code). Site versions a bc6e0ab6,
+b 38691f29, c 846992eb; edge 60b0334f; standard-4, NOROLL, test-faults.
+
+**Run** `DRAIN=1 DRAIN_MIN=45 b034.sh m33` from 03:34:25Z. Raw `tests/fanout/raw/b034drain-m33.jsonl`,
+`b034-m33.status`.
+
+**The drain: stopped at its limit, 0 promotions.** Promotions stayed at `Promoted { 17..17 }` (from m31) for the whole
+2,724 s. Promote-ahead picked the right next range, `Some((18, 18))`, the 53,125,950 B entry the old cap refused, so the
+cap fix works as far as `log_archive` goes: no `over the ... a promotion holds` alarm this round. But all 24 tries, every
+2 min from 03:35:21Z to 04:20:04Z, got `503 {"warming":true}` from site a's shard, then from b and c with `next=1`,
+each after its 60 s `wait`. Each try's line: `1 packs, 0 B in 60,37x ms, wasm 1.8 -> 1.8 MB`. The exit 2 summary reads
+`firstS: null, promotedTo: 17`.
+
+**Not measured:** the site's memory during the streamed promotion of entry 18, and the hosted promotion MB/s G9 needs.
+No promotion reached the stream. The site scripts' peak memory over the window was 27 to 36.5 MB, with wasm 1.8 MB
+except one site-a `scriptThrewException` at 04:00 (wasm 170.2 MB), the same pattern as m31 at 00:30 and 00:45 (167.5 and
+175.0 MB). It is not a promotion: none got past the shard.
+
+**Why every shard stayed warming for 45 min (m31's took 25 to 29).** Container CPU by 5 minutes, each site:
+
+| window | a | b | c |
+|---|---|---|---|
+| m31 00:30–00:50 | 333–370 s | 331–362 s | 337–372 s |
+| m33 03:35–03:55 | 334–369 s | 332–369 s | 335–375 s |
+| m33 04:05–04:15 | 674–955 s | 1,019–1,026 s | 789–1,011 s |
+
+Through about 04:00 every shard ran exactly m31's profile: about 1.15 vCPU, the thin packs' `index-pack --fix-thin`.
+Only entries 7..17 have a stored `.idx` (2 of 396 objects under `pack/131296/` in site a's bucket, with `from`/`to` 7..16
+and 17..17), so 249 of the 260 pushed packs still re-indexed. Then all three jumped to about 3.3 to 3.4 vCPU and stayed
+there to the stop, and no `shard rehydrate` line appeared; m31's came at that point.
+
+The code explains the jump [inference from the code and the CPU; the container logs nothing for these phases]:
+`catchup::rehydrate` writes the refs pages, and the last page (`done=true`) makes the container's `/refs` call
+`startRepack`, a background `git repack -d --geometric=2` with the default delta window, here over about 265 packs and
+2.6 GB of linux. Then, because the marked phase skipped the pushed packs that promotions 7..16 and 17..17 cover
+(`state.skipped` non-empty, new since stored-fetch), it calls the backstop `io.connected()`. The container's
+`handleConnected` takes `repacking.Lock()` and waits for the whole repack. The rehydrate's place is dropped only
+after that check, so the shard answers `warming` until the repack ends. In m31 nothing was skipped (no `.idx` existed
+yet), so `connected` never ran and the shard served while the repack ran behind it.
+
+So two separate things held the drain:
+
+1. **Cold-start order (design).** The first promotion needs a warm shard, and a cold shard of an unpromoted network
+   re-indexes every thin push first: about 26 min here. A drain started on cold shards cannot reach its first
+   promotion inside DESIGN's 120 s, or inside the warm step's own wait, until the network is promoted. That was known
+   (round 20); this round confirms it again at the same rate.
+2. **A new wait (code).** stored-fetch's backstop `/connected` waits on `repacking`, and the rehydrate's own last
+   `/refs` starts that repack just before it. Every rehydrate that skipped a covered pack now adds a whole geometric
+   repack of the network to its time. Here that was at least 20 min, still running at the stop.
+
+**Cold warm and row: not run** (the drain exits 2, so b034.sh stops). Sweep after the stop: two passes, "sweep: no
+shard container running".
+
+**Cost** $131.15 at 04:25Z (containers $50.67); this round cost about $0.70.
