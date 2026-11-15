@@ -385,6 +385,27 @@ pub enum Trace {
     /// returned the answer (`x-graft-left`), `ms` 0. Against `index` it bounds the output gate plus the wire back.
     #[cfg(feature = "test-faults")]
     AnswerArrived = 21,
+    // 22 is `AppendAnswered` on the held far-leg merge (`m0-adaptive-append`).
+    /// F74's call trace (`tests/m0/results/f74-trace.md`): this member's `/raft` fetch to `peer` is about to be issued.
+    /// `at` is the `x-graft-sent` stamp, `batch` the call's id (`x-graft-call`, per host, so the callee's
+    /// `CallArrived` and `CallLeft` and this member's `AnswerArrived` carry it too), `index` this member's `/raft`
+    /// fetches then waiting for response headers, this one included, and `ms` its event-loop lag (`Host::loop_lag`).
+    #[cfg(feature = "test-faults")]
+    CallSent = 23,
+    /// F74's call trace: this member's `/raft` handler for a call from `peer` returned. `at` is the `x-graft-left`
+    /// stamp, `batch` the call's id, `index` the handler's entry (the top of `Routes::fetch`, before any injected
+    /// fault awaits; `CallArrived` comes after them and the body), and `ms` this member's event-loop lag there.
+    #[cfg(feature = "test-faults")]
+    CallLeft = 24,
+}
+
+/// F74: how far behind this isolate's event loop reads at `now`, from the member's 100 ms ticker: the lateness of its
+/// last wake, or how overdue its pending tick is, whichever is larger; 0 when the ticker is stopped (`next_due` 0).
+/// Workers' clock advances only on I/O, so a turn spent in JavaScript is invisible until the next I/O's stamp, and a
+/// lag here is a stall that pushed I/O past the tick's due time, not the CPU time of any one turn.
+#[cfg(any(test, feature = "test-faults"))]
+fn loop_lag(now: u64, last_late: u64, next_due: u64) -> u64 {
+    if next_due == 0 { 0 } else { last_late.max(now.saturating_sub(next_due)) }
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -813,6 +834,16 @@ pub struct Host<F: Family> {
     /// `set_drained` only when they change.
     #[cfg(feature = "test-faults")]
     drained: RefCell<Option<(String, BTreeSet<u8>)>>,
+    /// F74: the last `/raft` call id this host issued (`Trace::CallSent`). It starts at the host's build time in ms
+    /// times 1,000, so ids stay unique across the object's resets and under 2^53, where a JSON trace keeps them exact.
+    #[cfg(feature = "test-faults")]
+    call_seq: Cell<u64>,
+    /// F74: this host's `/raft` fetches waiting for response headers.
+    #[cfg(feature = "test-faults")]
+    awaiting: Rc<Cell<usize>>,
+    /// F74: the ticker's last wake lateness and its pending tick's due time, 0 when stopped (`loop_lag`).
+    #[cfg(feature = "test-faults")]
+    tick_lag: Rc<Cell<(u64, u64)>>,
 }
 
 /// `n` bytes counted in a gauge for as long as this lives.
@@ -1469,6 +1500,12 @@ impl<F: Family> Host<F> {
             hop: Cell::new(2),
             #[cfg(feature = "test-faults")]
             drained: RefCell::new(None),
+            #[cfg(feature = "test-faults")]
+            call_seq: Cell::new(now_ms() * 1_000),
+            #[cfg(feature = "test-faults")]
+            awaiting: Rc::new(Cell::new(0)),
+            #[cfg(feature = "test-faults")]
+            tick_lag: Rc::new(Cell::new((0, 0))),
         });
         #[cfg(feature = "test-faults")]
         for q in crate::faults::SCHEMA {
@@ -1504,6 +1541,13 @@ impl<F: Family> Host<F> {
 
     #[cfg(not(feature = "test-faults"))]
     pub fn trace_at(&self, _: u64, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
+
+    /// F74: this isolate's event-loop lag now (`loop_lag`).
+    #[cfg(feature = "test-faults")]
+    pub fn loop_lag(&self) -> u64 {
+        let (late, due) = self.tick_lag.get();
+        loop_lag(now_ms(), late, due)
+    }
 
     /// Test installs: the election rows of one step (`elect_rows`), kept in `Stats::elections`.
     #[cfg(feature = "test-faults")]
@@ -2605,24 +2649,35 @@ impl<F: Family> Host<F> {
             });
         }
         #[cfg(feature = "test-faults")]
-        {
+        let (id, awaiting) = {
+            let id = self.call_seq.get() + 1;
+            self.call_seq.set(id);
+            // Counted until the response headers arrive, or until the call is dropped unanswered.
+            let awaiting = Counted::new(&self.awaiting, 1);
+            let sent = now_ms();
             let h = Headers::new();
             let _ = h.set("x-graft-hop", &hop.to_string());
-            let _ = h.set("x-graft-sent", &now_ms().to_string());
+            let _ = h.set("x-graft-sent", &sent.to_string());
+            let _ = h.set("x-graft-call", &id.to_string());
             // The sender's address, so the callee traces `CallArrived` without decoding the body a second time.
             if let Some(me) = self.core.borrow().as_ref().map(|c| c.m.me()) {
                 let _ = h.set("x-graft-from", &me.0.to_string());
             }
             init.with_headers(h);
-        }
+            // No I/O runs between this stamp and the fetch below, so the fetch is issued at this clock value.
+            self.trace_at(sent, Trace::CallSent, to.0, id, self.awaiting.get() as u64, self.loop_lag());
+            (id, awaiting)
+        };
         #[cfg(not(feature = "test-faults"))]
         let _ = hop;
         let req =
             Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
         let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
         #[cfg(feature = "test-faults")]
+        drop(awaiting);
+        #[cfg(feature = "test-faults")]
         if let Some(left) = res.headers().get("x-graft-left").ok().flatten().and_then(|v| v.parse().ok()) {
-            self.trace(Trace::AnswerArrived, to.0, 0, left, 0);
+            self.trace(Trace::AnswerArrived, to.0, id, left, 0);
         }
         let status = res.status_code();
         if status != 200 {
@@ -2926,17 +2981,29 @@ impl<F: Family> Host<F> {
         // The loop holds the host only between timers: after `ctx.abort()` the object's timers never fire, and a loop
         // that held it across one kept the whole reset member in the isolate's memory (F47).
         let w = Rc::downgrade(self);
+        #[cfg(feature = "test-faults")]
+        let tick_lag = self.tick_lag.clone();
         spawn_local(async move {
+            #[cfg(feature = "test-faults")]
+            let mut late = 0;
             loop {
                 let due = now_ms() + TICK.as_millis() as u64;
+                #[cfg(feature = "test-faults")]
+                tick_lag.set((late, due));
                 Delay::from(TICK).await;
                 let Some(h) = w.upgrade() else { return };
                 let lag = now_ms().saturating_sub(due);
+                #[cfg(feature = "test-faults")]
+                {
+                    late = lag;
+                }
                 if lag >= 20 {
                     h.trace(Trace::Lag, 0, 0, 0, lag);
                 }
                 if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {
                     h.ticking.set(false);
+                    #[cfg(feature = "test-faults")]
+                    h.tick_lag.set((0, 0));
                     return;
                 }
             }
@@ -3493,6 +3560,17 @@ mod tests {
     }
 
     /// An alarm whose invocation never ran (canceled) is re-armed once it is overdue, not left as the sooner one.
+    /// F74's loop lag: a stopped ticker reads 0; a running one reads the larger of its last wake's lateness and how
+    /// overdue its pending tick is, so a stall shows while it lasts, not only after the tick that ends it.
+    #[test]
+    fn loop_lag_reads_the_pending_ticks_overdue_time_or_the_last_wakes() {
+        use super::loop_lag;
+        assert_eq!(loop_lag(5_000, 300, 0), 0, "stopped ticker");
+        assert_eq!(loop_lag(1_050, 0, 1_100), 0, "pending tick not due");
+        assert_eq!(loop_lag(1_050, 40, 1_100), 40, "last wake was 40 ms late");
+        assert_eq!(loop_lag(3_100, 40, 1_100), 2_000, "pending tick 2 s overdue");
+    }
+
     #[test]
     fn an_overdue_alarm_is_set_again() {
         use super::{ALARM_LATE_MS, rearm};

@@ -540,6 +540,9 @@ struct Routes<F: Family> {
 
 impl<F: Family> Routes<F> {
     async fn fetch(&self, mut req: Request, url: Url) -> Result<Response> {
+        // F74's call trace: the handler's entry, before any injected fault awaits, and the loop lag there.
+        #[cfg(feature = "test-faults")]
+        let (entered, entry_lag) = (now_ms(), self.host.loop_lag());
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
         #[cfg(feature = "test-faults")]
@@ -597,18 +600,27 @@ impl<F: Family> Routes<F> {
                 let t0 = now_ms();
                 let body = req.bytes().await?;
                 let t1 = now_ms();
+                // F74's call trace: the caller's call id and address.
+                #[cfg(feature = "test-faults")]
+                let (id, from) = {
+                    let header = |k: &str| req.headers().get(k).ok().flatten().and_then(|v| v.parse::<u64>().ok());
+                    (header("x-graft-call").unwrap_or(0), header("x-graft-from").unwrap_or(0) as u8)
+                };
                 #[cfg(feature = "test-faults")]
                 if let Some(sent) = req.headers().get("x-graft-sent").ok().flatten().and_then(|v| v.parse().ok()) {
                     // From a header: decoding the body here as well held a second decoded copy of every append
                     // while `raft` decoded it again (gate 16's storm, `tests/am1/results/narrow-reads-3.md`).
-                    let from = req.headers().get("x-graft-from").ok().flatten().and_then(|v| v.parse().ok());
-                    self.host.trace_at(t0, Trace::CallArrived, from.unwrap_or(0), 0, sent, t1 - t0);
+                    self.host.trace_at(t0, Trace::CallArrived, from, id, sent, t1 - t0);
                 }
                 let r = self.raft(&body).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
                 #[cfg(feature = "test-faults")]
                 let r = r.and_then(|mut res| {
-                    res.headers_mut().set("x-graft-left", &now_ms().to_string())?;
+                    let left = now_ms();
+                    res.headers_mut().set("x-graft-left", &left.to_string())?;
+                    if id != 0 {
+                        self.host.trace_at(left, Trace::CallLeft, from, id, entered, entry_lag);
+                    }
                     Ok(res)
                 });
                 r
