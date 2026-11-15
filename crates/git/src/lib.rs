@@ -62,13 +62,14 @@ pub use pack::{
     PackIndex, PackRef, Promoted, REQUEST_RETENTION,
 };
 pub use shard::{
-    Caller, DISK_USE_PCT, DiskRepo, FANOUT_DOWN, FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP, FANOUT_UP_FOR, Fanout,
-    GitCacheShard, HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, KEEP_WARM_MS, LEDGER_BEAT, LEDGER_GAP, LOAD_STALE,
-    LoadReports, NetworkLoad, POOL_COLD_SKIP_MS, PROMOTE_WAIT_S, PoolLease, PoolLedger, REGION_RETRIES, RENEW_EVERY,
-    RegionCheck, Renewal, SHARDS, Serve, WARM_FOR, clone_cache_buckets, combine, container_regions, evict_plan, fanout,
-    granted_k, image_for, keep_warm_due, may_start, object_name, owner_share, pool_ask, pool_forward, pool_grants,
-    pool_keep, pool_reserve, promote_moves_on, promote_sites, push_validator, region_check, renewal, serve, shards_for,
-    validate_status, validator, warm_sites, warm_step, warming_now,
+    Caller, CatchUpStep, CatchUps, DISK_USE_PCT, DiskRepo, FANOUT_DOWN, FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP,
+    FANOUT_UP_FOR, Fanout, GitCacheShard, HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, KEEP_WARM_MS, LEDGER_BEAT,
+    LEDGER_GAP, LOAD_STALE, LoadReports, NetworkLoad, POOL_COLD_SKIP_MS, PROMOTE_WAIT_S, PoolLease, PoolLedger,
+    REGION_RETRIES, RENEW_EVERY, RegionCheck, Renewal, SHARDS, Serve, ValidateOn, WARM_FOR, clone_cache_buckets,
+    combine, container_regions, evict_plan, fanout, granted_k, image_for, keep_warm_due, may_start, object_name,
+    owner_share, pool_ask, pool_forward, pool_grants, pool_keep, pool_reserve, promote_moves_on, promote_sites,
+    push_validator, region_check, renewal, serve, shards_for, validate_on, validate_status, validator, warm_sites,
+    warm_step, warming_now,
 };
 pub use store::{
     Copies, PART_SIZE, PackStore, Pipe, PipeReader, Place, PlaceError, PutOutcome, Stage, Streamed, TeeError,

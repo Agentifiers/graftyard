@@ -484,6 +484,107 @@ func unresolved(err error) bool {
 		strings.Contains(s, "did not receive expected object")
 }
 
+// missingBase is whether a validate stopped on an object the disk does not hold, as git 2.56 words it: index-pack
+// --fix-thin's "pack has N unresolved deltas", --strict's "did not receive expected object", and the connectivity
+// walk's "bad object", "bad tree object", "missing <type> object" and "Could not read". Narrower than unresolved:
+// anything else, such as a truncated pack's "early EOF" or an fsck error, stays the pack's refusal.
+func missingBase(err error) bool {
+	s := err.Error()
+	for _, m := range []string{"unresolved delta", "did not receive expected object", "bad object", "bad tree object",
+		"missing blob object", "missing tree object", "missing commit object", "Could not read"} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// errBehind: the disk's refs are older than an update's detail needs (`behind`).
+var errBehind = errors.New("the disk's refs are behind this push")
+
+// behind is whether a disk=1 validate's detail would read refs older than the push: an update's old tip is not the
+// disk's ref (zero for none), or a commit its new tip reaches that no disk ref reaches is not in the push's own pack
+// (`have`), as when a catch-up ingested a page's packs and has not applied its refs. Either way the shard catches up
+// and asks again (`hold`), so the new commits and the merge base never come from refs a commit the push builds on
+// has passed.
+func behind(rp string, env []string, us []update, have map[string]bool) (bool, error) {
+	for _, u := range us {
+		if zero(u.New) {
+			continue
+		}
+		cur, _ := git(rp, env, nil, "rev-parse", "--verify", "-q", u.Ref)
+		if c := strings.TrimSpace(string(cur)); c != u.Old && !(c == "" && zero(u.Old)) {
+			return true, nil
+		}
+		out, err := git(rp, env, nil, "rev-list", u.New, "--not", "--all")
+		if err != nil {
+			return false, err
+		}
+		for _, c := range strings.Fields(string(out)) {
+			if !have[c] {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// cmpErr is err, or other when err is nil.
+func cmpErr(err, other error) error {
+	if err != nil {
+		return err
+	}
+	return other
+}
+
+// heldRe names a request a disk=1 validate kept for its retry after a catch-up (`held=<id>`).
+var heldRe = regexp.MustCompile(`^held-[0-9]+$`)
+
+// heldHead is what a kept request needs besides its pack: the tips, the detail's updates, and the pack's SHA-256 and
+// size as spooled.
+type heldHead struct {
+	Tips    []string `json:"tips"`
+	Updates []update `json:"updates"`
+	Sum     string   `json:"sum"`
+	N       int64    `json:"n"`
+}
+
+var heldSeq atomic.Int64
+
+// heldDir is where a kept request lives: under the data disk, not the repository, so a network the disk does not
+// hold yet keeps one too.
+func heldDir(id string) string { return filepath.Join(data, "held", id) }
+
+// hold keeps a disk=1 validate's request under heldDir, its spooled pack moved in, and answers 409
+// {"missingBase": true, "held": "held-<n>"}: the shard catches up and asks again with held=, because the body
+// streamed once. A kept request no retry claimed within the hour a commit may take is dropped here.
+func hold(w http.ResponseWriter, file string, h heldHead, why error) {
+	old, _ := filepath.Glob(heldDir("held-*"))
+	for _, d := range old {
+		if st, err := os.Stat(d); err == nil && time.Since(st.ModTime()) > time.Hour {
+			os.RemoveAll(d)
+		}
+	}
+	id := fmt.Sprintf("held-%d%03d", time.Now().UnixNano(), heldSeq.Add(1)%1000)
+	hd := heldDir(id)
+	err := os.MkdirAll(hd, 0o755)
+	if err == nil && h.N > 0 {
+		err = os.Rename(file, filepath.Join(hd, "pack"))
+	}
+	if err == nil {
+		b, _ := json.Marshal(h)
+		err = os.WriteFile(filepath.Join(hd, "head.json"), b, 0o644)
+	}
+	if err != nil {
+		os.RemoveAll(hd)
+		fail(w, 500, "%v", err)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(map[string]any{"missingBase": true, "held": id, "why": why.Error()})
+}
+
 func handleInit(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, false)
 	if !ok {
@@ -649,11 +750,12 @@ func (g *validateGate) retryAfterLocked() int {
 }
 
 func handleValidate(w http.ResponseWriter, r *http.Request) {
-	net, rp, ok := netParam(w, r, true)
+	query := r.URL.Query()
+	// A disk=1 validate on a network this disk does not hold is a missing base too (`hold`).
+	net, rp, ok := netParam(w, r, query.Get("disk") != "1")
 	if !ok {
 		return
 	}
-	query := r.URL.Query()
 	agent := query.Get("class") == "agent"
 	derivedValidate := query.Get("derived") == "1"
 	var validateEnv []string
@@ -662,6 +764,15 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	} else {
 		validating.Add(1) // waiting for admission or running: the queue
 		defer validating.Add(-1)
+	}
+	// disk=1: checked against this disk as it stands, with no catch-up first. A missing base, or refs older than the
+	// detail needs, answers 409 missingBase with the request kept (`hold`); held=<id> asks for that request again once
+	// the shard caught up, when every failure is the pack's again (design/DESIGN.md, Shape, "Git cache shards").
+	disk := query.Get("disk") == "1"
+	heldID := query.Get("held")
+	if heldID != "" && !heldRe.MatchString(heldID) {
+		fail(w, 400, "bad held")
+		return
 	}
 	release, retryAfter, err := validateAdmission.acquire(r.Context(), agent, agentValidateWait)
 	if err != nil {
@@ -674,59 +785,84 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	var tips []string
-	if t := query.Get("tips"); t != "" {
-		tips = strings.Split(t, ",")
-	}
-	body := io.Reader(r.Body)
-	if k := query.Get("tipsn"); k != "" {
-		var n int64
-		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
-			fail(w, 400, "bad tipsn")
-			return
-		}
-		head := make([]byte, n)
-		if _, err := io.ReadFull(r.Body, head); err != nil {
-			fail(w, 400, "body shorter than tipsn")
-			return
-		}
-		tips = append(tips, strings.Fields(string(head))...)
-	}
-	// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
 	var updates []update
-	if k := query.Get("detailn"); k != "" {
-		var n int64
-		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
-			fail(w, 400, "bad detailn")
-			return
+	var file, sum string
+	var n int64
+	if heldID != "" {
+		hd := heldDir(heldID)
+		defer os.RemoveAll(hd)
+		var h heldHead
+		b, err := os.ReadFile(filepath.Join(hd, "head.json"))
+		if err == nil {
+			err = json.Unmarshal(b, &h)
 		}
-		head := make([]byte, n)
-		if _, err := io.ReadFull(r.Body, head); err != nil {
-			fail(w, 400, "body shorter than detailn")
-			return
-		}
-		us, err := parseUpdates(string(head))
 		if err != nil {
-			fail(w, 400, "%v", err)
+			// Gone with a restart or the hour's sweep: this shard's state, not the pack's (`validate_status`).
+			fail(w, 503, "no held request %s", heldID)
 			return
 		}
-		updates = us
-	}
-	for _, t := range tips {
-		if !hexRe.MatchString(t) {
-			fail(w, 400, "bad tip %q", t)
+		tips, updates, sum, n, file = h.Tips, h.Updates, h.Sum, h.N, filepath.Join(hd, "pack")
+	} else {
+		if t := query.Get("tips"); t != "" {
+			tips = strings.Split(t, ",")
+		}
+		if k := query.Get("tipsn"); k != "" {
+			var n int64
+			if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
+				fail(w, 400, "bad tipsn")
+				return
+			}
+			head := make([]byte, n)
+			if _, err := io.ReadFull(r.Body, head); err != nil {
+				fail(w, 400, "body shorter than tipsn")
+				return
+			}
+			tips = append(tips, strings.Fields(string(head))...)
+		}
+		// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
+		if k := query.Get("detailn"); k != "" {
+			var n int64
+			if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
+				fail(w, 400, "bad detailn")
+				return
+			}
+			head := make([]byte, n)
+			if _, err := io.ReadFull(r.Body, head); err != nil {
+				fail(w, 400, "body shorter than detailn")
+				return
+			}
+			us, err := parseUpdates(string(head))
+			if err != nil {
+				fail(w, 400, "%v", err)
+				return
+			}
+			updates = us
+		}
+		for _, t := range tips {
+			if !hexRe.MatchString(t) {
+				fail(w, 400, "bad tip %q", t)
+				return
+			}
+		}
+		// The pack is spooled before the network's lock: a body streamed from the edge can take seconds, and while a
+		// validate held the lock shared through it, a waiting writer (a catch-up's /ingest) held every new ls-refs and
+		// validate behind it (LM-1 round 6: the home shard's ls-refs walls rose from 2.7 to 12 s within a minute at
+		// 0.65 vCPU; `TestValidateBodyHoldsNoLock`).
+		var err error
+		if file, sum, n, err = spool(filepath.Join(data, "spool"), r.Body); err != nil {
+			fail(w, 500, "%v", err)
 			return
 		}
+		defer os.Remove(file)
 	}
-	// The pack is spooled before the network's lock: a body streamed from the edge can take seconds, and while a
-	// validate held the lock shared through it, a waiting writer (a catch-up's /ingest) held every new ls-refs and
-	// validate behind it (LM-1 round 6: the home shard's ls-refs walls rose from 2.7 to 12 s within a minute at 0.65
-	// vCPU; `TestValidateBodyHoldsNoLock`).
-	file, sum, n, err := spool(filepath.Join(data, "spool"), body)
-	if err != nil {
-		fail(w, 500, "%v", err)
-		return
+	// A disk=1 failure on an object the disk lacks keeps the request for the shard's retry; any other is the pack's.
+	refuse := func(what string, err error) {
+		if disk && (err == errBehind || missingBase(err)) {
+			hold(w, file, heldHead{tips, updates, sum, n}, err)
+			return
+		}
+		fail(w, 422, "%s: %v", what, err)
 	}
-	defer os.Remove(file)
 	// Shared: a validate writes only its own quarantine and reads the repository's objects and refs, so validates of
 	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
 	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
@@ -735,7 +871,11 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	l.RLock()
 	defer l.RUnlock()
 	if _, err := os.Stat(rp); err != nil {
-		fail(w, 404, "no repository for network %s", net)
+		if disk {
+			hold(w, file, heldHead{tips, updates, sum, n}, errBehind)
+		} else {
+			fail(w, 404, "no repository for network %s", net)
+		}
 		return
 	}
 	sweepValidated(rp)
@@ -755,9 +895,15 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}()
 	if n == 0 && len(updates) > 0 {
 		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
+		if disk {
+			if b, err := behind(rp, validateEnv, updates, nil); err != nil || b {
+				refuse("detail", cmpErr(err, errBehind))
+				return
+			}
+		}
 		d, err := details(rp, validateEnv, updates)
 		if err != nil {
-			fail(w, 422, "detail: %v", err)
+			refuse("detail", err)
 			return
 		}
 		jsonOut(w, map[string]any{"detail": d})
@@ -773,14 +919,14 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	os.MkdirAll(filepath.Join(q, "pack"), 0o755)
 	name, err := indexPack(rp, env, file)
 	if err != nil {
-		fail(w, 422, "index-pack: %v", err)
+		refuse("index-pack", err)
 		return
 	}
 	if len(tips) > 0 {
 		// Tips on stdin: a push may name 10,000 of them.
 		in := strings.Join(tips, "\n") + "\n"
 		if _, err := git(rp, env, strings.NewReader(in), "rev-list", "--objects", "--quiet", "--stdin", "--not", "--all"); err != nil {
-			fail(w, 422, "connectivity: %v", err)
+			refuse("connectivity", err)
 			return
 		}
 	}
@@ -800,9 +946,19 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	// Detail reads the quarantine, so it runs before the pack is set aside.
 	out := map[string]any{"checksum": sum, "bytes": n, "objects": len(objs), "trailer": trailer}
 	if len(updates) > 0 {
+		if disk {
+			have := map[string]bool{}
+			for _, o := range objs {
+				have[o] = true
+			}
+			if b, err := behind(rp, env, updates, have); err != nil || b {
+				refuse("detail", cmpErr(err, errBehind))
+				return
+			}
+		}
 		d, err := details(rp, env, updates)
 		if err != nil {
-			fail(w, 422, "detail: %v", err)
+			refuse("detail", err)
 			return
 		}
 		out["detail"] = d
