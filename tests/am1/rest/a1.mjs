@@ -637,9 +637,11 @@ const jobs = [
     while (Date.now() < end) {
       const s = Date.now();
       const kill = plan.killEvery && ++pushN % Math.max(1, Math.round(plan.killEvery * plan.agents / plan.pushEvery)) === 0;
+      // The leader as the kill push leaves, read beside it so the push is not delayed.
+      const seenAt = kill ? leaderSeen() : null;
       const [res, ms, nu] = await push(app, a.ref, a.tip, `a1/${a.group}/${a.i}/f.txt`, randomBytes(size()), kill ? { "x-graft-kill": "after_quorum" } : {});
       a.tip = nu;
-      if (kill) kills.push(s);
+      if (kill) { kills.push(s); killRows.push(killRow(s, ms, res, seenAt)); }
       note(half(kill ? "push:killed" : "push:agent"), ms, res);
       if (!kill) { recentAgent.push([res === "ok", ms]); if (recentAgent.length > 200) recentAgent.splice(0, 100); }
       await sleep(Math.max(0, Math.min(end - Date.now(), plan.pushEvery * 1000 - (Date.now() - s))));
@@ -906,6 +908,28 @@ const seen = []; // [poller, ref, ms after its push's ack, seen at]
 // is inside a kill (an election, ELECTION_AFTER plus a campaign, about 10 s [inference]).
 const kills = [];
 const KILL_WINDOW_MS = 15_000;
+// Each kill as its own `kill` row (m3fr6 kept only the count): when it was sent, the leader the driver saw then (site,
+// term, boot), and after the push answered, the leader then and whether that site's member booted again, which is the
+// site the kill reset. `boot` is drawn when a member object starts, so a changed boot is a reset member.
+const killRows = [];
+const leaderSeen = async () => {
+  const st = await statuses(CHAIN).catch(() => []);
+  const l = st.filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
+  return { at: Date.now(), leader: l?.site ?? null, term: l?.term ?? null, boots: Object.fromEntries(st.map((x) => [x.site, x.boot ?? null])) };
+};
+const killRow = async (sent, ms, res, seenAt) => {
+  const before = await seenAt;
+  // The killed member resets after its quorum; read again once it has had KILL_SETTLE_MS to come back.
+  await sleep(KILL_SETTLE_MS);
+  const after = await leaderSeen();
+  const reset = Object.keys(after.boots).filter((s) => before.boots[s] && after.boots[s] && before.boots[s] !== after.boots[s]).map(Number);
+  const r = { step: "kill", sent, ms, res, before: { at: before.at, leader: before.leader, term: before.term },
+    after: { at: after.at, leader: after.leader, term: after.term }, reset, killed: reset.includes(before.leader) ? before.leader : (reset[0] ?? null) };
+  writeRow(OUT, r);
+  log(`kill ${new Date(sent).toISOString()}: leader ${before.leader} term ${before.term} -> ${after.leader} term ${after.term}, reset ${JSON.stringify(reset)}`);
+  return r;
+};
+const KILL_SETTLE_MS = 5_000;
 if (plan.pollers) {
   // The members a poll may go to, as the edge's `feed_members` lists them (workers/edge/src/agents.rs): learners
   // first, then the voters that do not lead, re-read every 60 s and at once when a voter answers `notServing` (it
@@ -1033,6 +1057,7 @@ jobs.push((async () => {
   }
 })());
 await Promise.all(jobs);
+const killLog = await Promise.all(killRows);
 if (opt["first-for"]) for (const s of [0, 1, 2]) await member(CHAIN, s, "/bench_seed", { prsyncFirstFor: 0 }, 15_000).catch(() => {});
 // Give the last pushes' first attempts time to reach the shard.
 const budgetAfter = latestBudget((await sleep(15_000), await budgets()), budgetSeen);
@@ -1060,6 +1085,7 @@ const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.
 const feedLat = seen.map((x) => x[2]);
 const v = {
   row, run: RUN, seconds, agents: plan.agents, offered: offered(plan), byKind: sum,
+  ...(killLog.length ? { kills: killLog.map(({ sent, before, after, reset, killed, res }) => ({ sent, leader: before.leader, term: before.term, killed, reset, after: after.leader, termAfter: after.term, res })) } : {}),
   feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
       return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}),
