@@ -16,7 +16,7 @@ Branch `m4-runners`, rebased onto main 4833094d. The choices are in `decisions/D
   - The hosted label table, which is SHARED's.
   - `decide`'s rule for a hosted `PutRunner` (`admit`): the runner is ephemeral, `Owner`-scoped, and carries exactly one row's labels. Past `HOSTED_CAP` (20) hosted runners it is refused `TooMany`, and the count includes the entry's earlier commands.
   - The rule for a hosted `DeleteRunner` (`may_delete`): a delete by anyone but the runner itself is refused while the runner holds a job.
-  - `ShardSummary` and `Broker::demand` (`demand`, `HostedDemand`, `LabelDemand`), with the broker's memory in `Seen`.
+  - `ShardSummary` and `Broker::demand` (`demand`, `HostedDemand`, `LabelDemand`), with `Seen` in the broker object's storage (see "The smoke run").
 - **The site** (`workers/site/src/actions.rs`, `broker.rs`):
   - `/read {"hosted": true}` answers a shard's summary.
   - `/runsvc` adds two ops. `register_hosted` answers 201, or 409 at the cap. `delete_hosted` answers 204, or 422 while the runner holds a job.
@@ -57,6 +57,15 @@ Two more tests in the same file:
 - A runner that the demand read listed stale but that took a job before its delete keeps both the job and its Sandbox.
 - The cap holds inside one entry, and `decide` refuses a `Repo`-scope runner and a runner with a partial row as hosted registrations.
 
+## The smoke run on graft-m4a
+
+Repository `m3org/wp4-smoke`, run 1900544, one `ubuntu-latest` job (`tests/m4/wp4/hosted/smoke.yml`), dispatched at about 16:37Z after site day 42, edge day 20, and `graftyard runners init` (`tests/am1/results/install-m4a.md`). It found two bugs.
+
+1. **The Sandbox did not start.** The 16:40:51Z pass registered runner 1704299, then `setSandboxName` failed: `TypeError: The RPC receiver does not implement the method "apply"`. `call_js` in `workers/runners/src/worker.rs` called the RPC stub's method with `Function::apply`, which the stub proxies as an RPC method named `apply`; it now uses `Reflect::apply`. Redeployed with a second `runners init` at 16:43:46Z (`tests/m4/raw/wp4/runners-init.log`).
+2. **The runner that never started never went stale.** 1704299 had no Sandbox and never polled. Demand listed it idle against the one queued job, so every pass after 16:45Z answered `start []` and started nothing. It should have gone stale `HOSTED_IDLE` (600 s) after the broker first saw it, but at 17:13:52Z it still had not, with demand read every 5 minutes by the sweep and every 34 s by a probe (`tests/m4/raw/wp4/smoke-demand-34s.log`). With the probe reading every 6 to 11 s from 17:22:37Z, it went stale at 17:32:42Z, 10 min 5 s later (`smoke-demand-8s.log`). So the broker object left memory between reads 34 s apart and lost its in-memory `Seen`, and each read saw the runner afresh [inference from the two cadences; Cloudflare documents hibernation after 10 s idle, Durable Objects, "Lifecycle of a Durable Object" [doc]]. The fix keeps `Seen` as one JSON value in the object's storage (`workers/site/src/broker.rs`, `SEEN_KEY`). The test is `hosted::tests::seen_ages_runners_across_stored_reads`, and plant 21 drops `first` from the stored value. The fix is site code and ships on a site day.
+
+Then the 17:35:50Z sweep deleted 1704299, destroyed its Sandbox, registered 1704300, and started its Sandbox. The job completed `Success` at 17:36:22Z, 32 s after the sweep. At 17:38Z both Sandboxes, `runner-1704299` and `runner-1704300`, were `inactive` in `graft-runners-sandboxstd3` (1704300's since 17:36:33Z, 11 s after its job), and demand answered no runners and no queue.
+
 ## Plants: `tests/m4/wp4/plant.py`
 
 21 of 21 caught after the rebase onto main 4833094d (plant 12 is BF-55's "never rematch an ephemeral runner" rule, which holds for hosted runners because they are ephemeral and `Owner`-scoped; plants 18 to 20 are `graftyard runners upgrade`'s). The first run missed two. "Start ignores the cap's room" got through because every test queued only one row; `hosted::tests::rows_share_the_caps_room` now queues two. "A runner whose job completed is not stale" got through because every runner that had held a job was also past `HOSTED_IDLE`; the demand test now queues jobs while those runners are stale. One planned plant was dropped: "the cap counts only the fold" cannot be written without reaching into the scratch's private fields.
@@ -84,6 +93,7 @@ Two more tests in the same file:
 | 18 | `runners upgrade` deploys a release whose signature does not verify | the upgrade refusal test |
 | 19 | `runners upgrade` goes to 100% before the canary day | the canary test |
 | 20 | `runners upgrade` rolls the image with the 10% canary | the canary test |
+| 21 | The broker's stored `Seen` drops each runner's first sight (the smoke run's bug) | `seen_ages_runners_across_stored_reads` |
 
 ## Cost estimate for the hosted runs
 

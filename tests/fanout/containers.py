@@ -13,7 +13,9 @@ P = os.environ.get("INSTALL", "graft-m2b")
 H = {"authorization": f"Bearer {tok}", "content-type": "application/json"}
 apps = json.load(urllib.request.urlopen(urllib.request.Request(
     f"https://api.cloudflare.com/client/v4/accounts/{acct}/containers/applications", headers=H), timeout=60))["result"]
-ids = {x["id"].replace("-", ""): x["name"] for x in apps if x["name"].startswith(f"{P}-site-")}
+# The applications by name prefix: the install's site shards unless APPS names another, such as graft-runners-sandbox.
+A = os.environ.get("APPS", f"{P}-site-")
+ids = {x["id"].replace("-", ""): x["name"] for x in apps if x["name"].startswith(A)}
 nets = {n for n in os.environ.get("NETS", "").split(",") if n}
 mine = set()
 for app in apps if nets else ():

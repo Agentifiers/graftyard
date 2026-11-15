@@ -19,11 +19,13 @@
 //! - **A leader move.** After each ask, a broker whose site no longer leads its shard (the lookup learned another
 //!   leader) answers the poll empty with `moved`, so the edge looks the leader up again and the runner's next poll
 //!   reaches the broker on the new leader's site (BF-55).
-//! - **State** is the held polls and the summaries only, in the isolate's memory; a broker that restarts loses held
-//!   polls, and the runners poll again under their sessions, which are entries in the group (BF-55).
+//! - **State** is the held polls and the summaries, in the isolate's memory; a broker that restarts loses held polls,
+//!   and the runners poll again under their sessions, which are entries in the group (BF-55). The one stored value is
+//!   hosted demand's `Seen` (below).
 //! - **Hosted demand** (M4-WP4, `/demand` `{owner, record}`, on the owner's registration-shard broker): each of the
 //!   owner's 16 shards' hosted summaries read at once (`/read {"hosted": true}`, cut at `SUMMARY_WAIT`), then
-//!   `graftyard_actions::hosted::demand` with the object's `Seen` memory of when it first saw each hosted runner. A
+//!   `graftyard_actions::hosted::demand` with the object's `Seen`, kept in its storage, of when it first saw each
+//!   hosted runner: an object idle between reads leaves memory, and an in-memory `Seen` never aged a runner. A
 //!   hosted runner is ephemeral and `Owner`-scoped, so `Taken` keeps it from a second job as it does any such runner.
 
 use std::cell::{Cell, RefCell};
@@ -55,6 +57,9 @@ const NO_GROUP_FRESH_MS: u64 = 30_000;
 const SUMMARY_WAIT: Duration = Duration::from_secs(3);
 /// A shard whose read failed or timed out is asked again after this, keeping its last summary [guess].
 const FAILED_FRESH_MS: u64 = 5_000;
+/// The storage key of `graftyard_actions::hosted::Seen`, when this object first saw each hosted runner and whether it
+/// saw it hold a job (M4-WP4).
+const SEEN_KEY: &str = "hosted-seen";
 
 /// What a broker knows of one shard.
 enum Known {
@@ -84,8 +89,8 @@ pub struct RunnerBroker {
     summaries: RefCell<std::collections::BTreeMap<u8, (u64, Known)>>,
     /// `Owner` scope: the ephemeral runners this object matched or saw holding a job, which take one job each.
     taken: RefCell<Taken>,
-    /// M4-WP4: when this object first saw each hosted runner, and whether it saw it hold a job.
-    seen: RefCell<graftyard_actions::hosted::Seen>,
+    /// M4-WP4: the object's storage, which keeps `Seen` under `SEEN_KEY`.
+    state: State,
 }
 
 impl RunnerBroker {
@@ -337,15 +342,21 @@ impl RunnerBroker {
                 Ok(s) => s,
                 Err(e) => return Response::error(e, 503),
             };
-        let d = hosted::demand(&shards, hosted::HOSTED_CAP, Timestamp(crate::now_ms()), &mut self.seen.borrow_mut());
+        // `Seen` lives in storage: an object idle between reads leaves memory and loses its fields (M4-WP4 smoke run).
+        let storage = self.state.storage();
+        let stored: Option<String> = storage.get(SEEN_KEY).await?;
+        let mut seen: hosted::Seen = stored.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+        let d = hosted::demand(&shards, hosted::HOSTED_CAP, Timestamp(crate::now_ms()), &mut seen);
+        storage.put(SEEN_KEY, serde_json::to_string(&seen)?).await?;
         Response::from_json(&d)
     }
 }
 
 impl DurableObject for RunnerBroker {
-    fn new(_state: State, env: Env) -> Self {
+    fn new(state: State, env: Env) -> Self {
         RunnerBroker {
             env,
+            state,
             held: Cell::new(0),
             polls: Cell::new(0),
             last_poll: Cell::new(0),
@@ -353,7 +364,6 @@ impl DurableObject for RunnerBroker {
             waiters: RefCell::new(Vec::new()),
             summaries: RefCell::new(Default::default()),
             taken: RefCell::new(Default::default()),
-            seen: RefCell::new(Default::default()),
         }
     }
 

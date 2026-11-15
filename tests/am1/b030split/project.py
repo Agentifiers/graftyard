@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """project.py -> the B0-30 stop rule from data (operator, 2026-11-15): from the last HOURS (3) hours of the load's
 minute rows, its push rate, then the pushes owed at day 30 if that rate holds, the drain's wall time at the same rate,
-and the total cost: the run-only meter's last reading plus its hourly rate over the active time and the drain, plus
+and the total cost: the run-only meter's last reading plus its hourly rate while the load ran (pauses skipped) over the active time and
+the drain, plus
 SPLIT_USD (58) for the split. Prints one JSON line with `stop` true when the total passes STOP_USD (from
 tests/am1/raw/b030-stop-usd) or the drain passes DRAIN_MAX_H (24)."""
 import datetime as D, json, os, re
@@ -37,8 +38,16 @@ for l in open(f"{RAW}/b030r2-monitor.log"):
     m = re.match(r"(\S+) monitor day \S+ .* cost \$([\d.]+)", l)
     if m:
         mon.append((t(m[1]), float(m[2])))
+# Only intervals the load ran through: a monitor interval that overlaps a pause (a gap of 2 min or more in the minute
+# rows, or the time since the last minute row while stopped) is skipped, since it bills almost nothing. Counting one
+# from the 16:16Z pause left the rate at $1.88 an hour against a running $2.05 until it left the window at 19:32Z.
+pauses = [(t(a["at"]), t(b["at"])) for a, b in zip(rows, rows[1:]) if (t(b["at"]) - t(a["at"])).total_seconds() >= 120]
+if (D.datetime.now(D.UTC) - t(last["at"])).total_seconds() >= 120:
+    pauses.append((t(last["at"]), D.datetime.max.replace(tzinfo=D.UTC)))
 w = [m for m in mon if m[0] >= mon[-1][0] - D.timedelta(hours=HOURS)]
-usd_h = (w[-1][1] - w[0][1]) / ((w[-1][0] - w[0][0]).total_seconds() / 3600) if len(w) > 1 and w[-1][0] > w[0][0] else 0.0
+ran = [(a, b) for a, b in zip(w, w[1:]) if not any(p0 < b[0] and a[0] < p1 for p0, p1 in pauses)]
+h = sum((b[0] - a[0]).total_seconds() for a, b in ran) / 3600
+usd_h = sum(b[1] - a[1] for a, b in ran) / h if h else 0.0
 spent = mon[-1][1]
 total = spent + usd_h * (active_left_h + drain_h) + SPLIT_USD
 stop_usd = float(open(f"{RAW}/b030-stop-usd").read().strip())

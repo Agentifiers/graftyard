@@ -65,9 +65,10 @@ async function sandboxes() {
     const v = await cf(`/containers/applications/${a.id}/instances?per_page=1000`);
     for (const i of v.result?.instances ?? []) {
       all += 1;
-      const st = i.current_placement?.status?.health ?? i.state ?? "unknown";
+      // The instances list answers `status.state`; a stopped Sandbox stays listed `inactive` (smoke run).
+      const st = i.status?.state ?? "unknown";
       states[st] = (states[st] ?? 0) + 1;
-      if (!["stopped", "failed", "stopping", "deleted"].includes(st)) running += 1;
+      if (!["inactive", "stopped", "failed", "stopping", "deleted"].includes(st)) running += 1;
     }
   }
   return { running, all, states };

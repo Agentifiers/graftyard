@@ -77,6 +77,9 @@ MUTANTS = [
      '            for a3 in cf.container_apps()? {\n'
      '                cf.roll_container_app(a3["id"].as_str().unwrap_or(""), &json!({ "image": a.image }))?;\n'
      '            }', CLI),
+    # ---- the broker's stored Seen ----
+    ('the broker\'s stored Seen drops first sight', H,
+     '    first: BTreeMap<RunnerId, Timestamp>,', '    #[serde(skip)]\n    first: BTreeMap<RunnerId, Timestamp>,', T),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
