@@ -489,8 +489,22 @@ async fn authz_get(
     if c.leader_reads.get() {
         graftyard_lookup::call_opt(b, chain, record, "/read", q.to_string().as_bytes()).await
     } else {
-        graftyard_lookup::read_spread(b, chain, record, q).await
+        spread_read(c, b, chain, record, q).await
     }
+}
+
+/// `graftyard_lookup::read_spread` for this request: a write asks again while the members shed the read, for up to
+/// LOOKUP_FOR, so a shed `Authz` or access read does not fail a push or a REST write; any other request answers 503
+/// at once.
+pub(crate) async fn spread_read(
+    c: &Ctx<'_>,
+    b: &graftyard_lookup::Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    q: &serde_json::Value,
+) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
+    let retry = if c.write.get() { graftyard_lookup::LOOKUP_FOR } else { std::time::Duration::ZERO };
+    graftyard_lookup::read_spread_for(b, chain, record, q, retry).await
 }
 
 /// `authz_read`, `None` when it cannot be read.
@@ -944,6 +958,9 @@ struct Ctx<'a> {
     /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
     /// as before.
     read_class: std::cell::Cell<bool>,
+    /// A write (a push, a REST call other than `GET`, a GraphQL mutation): a read its members shed is asked again
+    /// after the wait they named, within LOOKUP_FOR, rather than failing the write 503 (`spread_read`).
+    write: std::cell::Cell<bool>,
     /// A REST merge (`api::rest_merge`): its owner's `Authz` reads, the name lookup and the fold, go to the `Authz`
     /// group's leader by `call_opt`, as its rows go to the repository's (`merge-p99`). False for every other request.
     leader_reads: std::cell::Cell<bool>,
@@ -2495,6 +2512,7 @@ async fn serve(
         token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
         read_class: std::cell::Cell::new(false),
+        write: std::cell::Cell::new(false),
         leader_reads: std::cell::Cell::new(false),
         timing: api::Timing::default(),
         #[cfg(feature = "test-faults")]
@@ -2607,6 +2625,10 @@ async fn serve(
             (owner.clone(), repo.clone())
         }
     };
+    c.write.set(matches!(
+        route,
+        Route::InfoRefs { service: Some(Service::ReceivePack), .. } | Route::Rpc { service: Service::ReceivePack, .. }
+    ));
     let repo = match resolve(&c, &owner, &name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return text(rid, 404, "Repository not found.\n"),

@@ -545,6 +545,8 @@ impl<F: Family> Routes<F> {
         let (entered, entry_lag) = (now_ms(), self.host.loop_lag());
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
+        // A peer's `/raft` call or an edge's request carries its sender's clock (`crate::clock`).
+        self.host.stamped(req.headers().get(crate::clock::STAMP).ok().flatten());
         #[cfg(feature = "test-faults")]
         self.host.hop.set(req.headers().get("x-graft-hop").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(2));
         // Inside an injected `down_ms` window the member answers no Raft or edge call; the harness reads still work.
@@ -731,11 +733,11 @@ impl<F: Family> Routes<F> {
             // Test installs only.
             #[cfg(feature = "test-faults")]
             (Method::Get, "/status") if url.query_pairs().any(|(k, v)| k == "clock" && v == "1") => {
-                let before = now_ms();
+                let before = self.host.now();
                 Delay::from(Duration::ZERO).await;
                 let mut v = self.status();
                 v["clockBefore"] = json!(before);
-                v["clockAfter"] = json!(now_ms());
+                v["clockAfter"] = json!(self.host.now());
                 v["leaseClock"] = json!(self.host.stats.borrow().lease_clock.last().copied());
                 Response::from_json(&v)
             }
@@ -856,7 +858,7 @@ impl<F: Family> Routes<F> {
                 let since: u64 = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                 let rows: Vec<[u64; 6]> =
                     self.host.stats.borrow().elections.iter().filter(|r| r[0] > since).copied().collect();
-                Response::from_json(&json!({ "rows": rows, "now": now_ms() }))
+                Response::from_json(&json!({ "rows": rows, "now": self.host.now() }))
             }
             (Method::Get, "/arrivals") => {
                 let since = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -873,7 +875,7 @@ impl<F: Family> Routes<F> {
             (Method::Post, "/sever") => {
                 let body = req.json::<Value>().await?;
                 let ms = body["for_ms"].as_u64().unwrap_or(0);
-                let now = now_ms();
+                let now = self.host.now();
                 let until = if ms == 0 { 0 } else { now + ms };
                 let cell = if body["half"].as_bool() == Some(true) {
                     &self.host.half_hung_until
@@ -1211,6 +1213,7 @@ impl<F: Family> Routes<F> {
     fn raft_reply(&self, back: Vec<raft::Envelope<F::Ev>>) -> Result<Response> {
         let mut res = Response::from_bytes(raft::codec::to_bytes(&back))?;
         res.headers_mut().set("content-type", "application/octet-stream")?;
+        res.headers_mut().set(crate::clock::STAMP, &self.host.now().to_string())?;
         Ok(res)
     }
 
@@ -1390,6 +1393,9 @@ impl<F: Family> Routes<F> {
         let t0 = now_ms();
         let until = t0 + wait.as_millis() as u64;
         let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
+        if leading && r.is_ok() && self.host.clock.borrow().suspect() {
+            self.host.stats.borrow_mut().lease_fallbacks += 1;
+        }
         let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
         self.host.dispatch(out, None);
         let rx = match (r, rx) {
@@ -1518,7 +1524,7 @@ impl<F: Family> Routes<F> {
                 graftyard_types::ChainId::Repo(r) => crate::feed::FEEDS.with(|f| f.borrow().get(&r).map(|f| f.borrow().status())),
                 _ => None,
             },
-            "now": now_ms(),
+            "now": self.host.now(),
         })
     }
 
@@ -1553,6 +1559,17 @@ impl<F: Family> Routes<F> {
     /// fold's rows buffered until their transaction runs and the isolate's read caches; the log entries in memory;
     /// the messages held for learners' next calls; and in-flight bodies, the member calls sent and not yet ended,
     /// the read answers still streaming, and the statements queued for the next transaction.
+    /// The clock guard's evidence (`crate::clock`): the lag of every stamp seen since the last reset, as counts per
+    /// bucket (`lagBuckets[0]` a lag of 0, `[i]` below 2^i ms), the largest, the window the guard reads now, whether it
+    /// is suspect, and the reads a leader sent to a round because it was.
+    fn clock_json(&self, s: &host::Stats) -> Value {
+        let c = self.host.clock.borrow();
+        json!({
+            "lagBuckets": s.clock_lag, "lagMax": s.clock_lag_max, "window": c.lags().collect::<Vec<_>>(),
+            "suspect": c.suspect(), "leaseFallbacks": s.lease_fallbacks,
+        })
+    }
+
     fn mem_split(&self) -> Value {
         let core = self.host.core.borrow();
         let (rows, row_bytes) = core.as_ref().map_or((0, 0), |c| F::buffered(&c.m.group_fold().fold));
@@ -1604,6 +1621,7 @@ impl<F: Family> Routes<F> {
                 "inboundMs": now_ms().saturating_sub(s.inbound_since),
                 "failedCalls": s.failed_calls,
                 "shedReads": s.shed_reads,
+                "clock": self.clock_json(&s),
                 "waitedReads": s.waited_reads,
                 "dumpBuilds": crate::family::dump_builds(),
                 "testMerges": { "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed },
@@ -1685,6 +1703,7 @@ impl<F: Family> Routes<F> {
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
         v["waitedReads"] = json!(s.waited_reads);
+        v["clock"] = self.clock_json(&s);
         // narrow-reads-3: each read-index read's grant, rebuild wait, and total ms, as p50/p99/max, and each narrow
         // answer's build ms.
         v["readStages"] = read_stage_pcts(&s.read_stages);

@@ -481,12 +481,12 @@ async fn api_rows(
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let q = json!({ "q": { "rows": { "api": spec } } });
-    let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+    let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
     if let Ok(None) = v {
         if let Err(r) = first_use(c, repo).await? {
             return Ok(Err(r));
         }
-        v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+        v = crate::spread_read(c, &b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
     }
     Ok(match v {
         Ok(Some(v)) => Ok(v),
@@ -536,7 +536,7 @@ pub(crate) async fn tier_rows(
     let read = || async {
         let r = match merge {
             Some(_) => graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.to_string().as_bytes()).await,
-            None => graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await,
+            None => crate::spread_read(c, &b, chain, &repo.record, &q).await,
         };
         r.map(|o| o.map(|(v, _, _)| v))
     };
@@ -586,13 +586,13 @@ pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<s
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let q = json!({ "q": { "rows": { which: true }, "ranges": true } });
-    let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await;
+    let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
     if let Ok(None) = v {
         if let Err(e) = ensure_group(c, repo).await {
             // `crate::read_gate` reads "not created yet" as a repository the caller cannot see.
             return if graftyard_lookup::is_not_created(&e) { Ok(Err(e)) } else { Err(Error::RustError(e)) };
         }
-        v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await;
+        v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
     }
     Ok(match v {
         Ok(Some((v, _, _))) => match TierRows::from_value(&v["value"]) {
@@ -1247,6 +1247,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     let merging = merge_pull_id(&gq);
     // A query is read-class (`Ctx::read_class`); a mutation, including a merge, reads everything fresh.
     c.read_class.set(!gq.is_mutation().unwrap_or(true));
+    c.write.set(!c.read_class.get());
     // The caller's token and the repository are read at once: neither read needs the other.
     let find = async {
         match &target {
@@ -1514,6 +1515,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // A `GET` is read-class (`Ctx::read_class`). Any request reads its token and `o/r` at once, as `timed` stages:
     // neither needs the other. A write used to resolve after its token, untimed (`merge-p99`).
     c.read_class.set(method == Method::Get);
+    c.write.set(method != Method::Get);
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
     let find = async {

@@ -57,6 +57,11 @@ impl Cluster {
         self.members[s.0 as usize].as_ref().expect("member is up")
     }
 
+    /// The member at `s`, for a host setting such as `set_clock_suspect`.
+    pub fn m_mut(&mut self, s: SiteId) -> &mut Member<KvCmd> {
+        self.members[s.0 as usize].as_mut().expect("member is up")
+    }
+
     /// Runs one input on `s`, persists it, and queues its outputs. Storage confirms at once, so the input's
     /// `SelfAck` goes straight back to the member.
     pub fn on<R>(&mut self, s: SiteId, f: impl FnOnce(&mut Member<KvCmd>, Timestamp) -> Ready<KvCmd, R>) -> R {

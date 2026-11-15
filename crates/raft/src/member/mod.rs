@@ -732,6 +732,9 @@ pub struct Member<C: Command> {
     admit_capacity: Option<f32>,
     /// Where `cut` stops filling an entry past its first command (`set_entry_soft`).
     entry_soft: usize,
+    /// The host's clock may lag real time by DRIFT / 2 or more (`set_clock_suspect`): a leader then grants no read on
+    /// its lease, only after a round sent after the read arrived.
+    clock_suspect: bool,
     /// The last `DepsWanted` id. Never reset by a new leadership, so a late answer to an earlier leadership's read
     /// cannot decide a later batch; it starts from the boot value, so neither can one from before a restart.
     next_deps: u64,
@@ -867,6 +870,7 @@ impl<C: Command> Member<C> {
             remote: install::RemoteReads::starting_at(boot),
             admit_capacity: None,
             entry_soft: crate::ENTRY_SOFT,
+            clock_suspect: false,
             // The top bit clear leaves 2^63 ids before a wrap.
             next_deps: boot >> 1,
             calls_out: BTreeMap::new(),

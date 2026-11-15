@@ -691,6 +691,15 @@ impl<C: Command> Member<C> {
         self.entry_soft = bytes.min(ENTRY_MAX);
     }
 
+    /// Whether the host's clock may read DRIFT / 2 or more behind real time (`design/DESIGN.md`, Shape, `DRIFT`): a
+    /// busy isolate's clock can read up to seconds before the event it handles, so a lease check on it could serve past
+    /// the lease. While set when a read arrives, `fresh` grants it only after a round sent after its arrival, which
+    /// rests on the quorum's acks, not on this clock. The flag is read at arrival only: a read that arrived on a live
+    /// lease and a trusted clock is linearized at its arrival, so a later grant on that lease is still safe.
+    pub fn set_clock_suspect(&mut self, suspect: bool) {
+        self.clock_suspect = suspect;
+    }
+
     /// What admission sees now, as leader: capacity, queued agent commands and bytes, whether the group is hot and
     /// under pressure. `None` on a follower.
     pub fn admission(&self) -> Option<AdmissionView> {
@@ -1887,6 +1896,7 @@ impl<C: Command> Member<C> {
         let lead = self.lead.as_mut().expect("leading");
         let lease = lead.ready
             && lead.transfer.is_none()
+            && !self.clock_suspect
             && now < Timestamp(lead.lease_end.0.saturating_sub(DRIFT.as_millis() as u64));
         lead.reads.push((id, now, !lease));
         if !lease {
