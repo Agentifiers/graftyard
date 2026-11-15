@@ -51,15 +51,22 @@ function logsHits(from, to) {
   }
   return out;
 }
+// Only this run's group: its Member and GitShard objects (tests/am1/b030/objects.py, refreshed each row so the child
+// group's join), and its own network's shard containers. Another group on graft-m1 is not this run's cost (B0-30
+// rerun: smoke 1's repo:1048586 reinstalled on site b while the load was stopped, 19.5 M rows).
+const OBJECTS = "tests/am1/raw/b030-objects.txt";
 function usage(from) {
-  try { return JSON.parse(execFileSync("python3", ["tests/am1/b030/usage.py", from, new Date().toISOString()]).toString()); }
+  try {
+    writeFileSync(OBJECTS, execFileSync("python3", ["tests/am1/b030/objects.py", String(REPO.repo), from, new Date().toISOString()]).toString());
+  } catch (e) { log(`objects: ${String(e).slice(0, 120)}; keeping the last list`); }
+  try { return JSON.parse(execFileSync("python3", ["tests/am1/b030/usage.py", from, new Date().toISOString()], { env: { ...process.env, B030_OBJECTS: OBJECTS } }).toString()); }
   catch (e) { return { error: String(e).slice(0, 120) }; }
 }
 // graft-m1's shard containers over the same window (tests/fanout/containers.py), which usage.py leaves out; a run on
 // standard-4 shards counts them toward STOP_USD.
 function containers(from) {
   try {
-    return JSON.parse(execFileSync("python3", ["tests/fanout/containers.py", from, new Date().toISOString()], { env: { ...process.env, INSTALL: "graft-m1" } }).toString());
+    return JSON.parse(execFileSync("python3", ["tests/fanout/containers.py", from, new Date().toISOString()], { env: { ...process.env, INSTALL: "graft-m1", NETS: String(REPO.repo) } }).toString());
   } catch (e) { return { error: String(e).slice(0, 120) }; }
 }
 

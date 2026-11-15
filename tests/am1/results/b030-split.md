@@ -265,11 +265,46 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     75 MB after the promotions that follow. It does not grow from cycle to cycle;
   - archive steps 41 to 46 entries, 7 to 10 s apart (Workers Logs, site a);
   - `SQLITE_FULL` 0, no StepDown since 12:49:02Z, no leaderless gap, no watcher alert.
-- **Idle spend while the load was stopped (18:41Z to 23:04Z): $23.16** ($20.89 DO and Workers, $2.27 containers).
-  About $20 of it is not this group. Site b's member of smoke 1's `repo:1048586` (DO `a217c64f…`) wrote 19.4 M rows
-  from 20:00Z to 22:45Z. In Workers Logs it reinstalled a 3.16 GB tier (`install`, 3,467,920 rows, through 16,259,
-  1,022 s), with 300 `no install source` notes from 21:45Z to 22:27Z. `usage.py` counts every graft-m1 namespace, so
-  the rerun's meter includes it. The rest is the watcher and cross polling, which were stopped at 21:40Z.
+- **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
+  graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
+  (`objectId_in` on `durableObjectsPeriodicGroups` and `durableObjectsInvocationsAdaptiveGroups`), and container usage
+  by instance (`instanceId`), so nothing is subtracted:
+  - `tests/am1/b030/objects.py` lists the group's Member and GitShard objects. These are every object whose Workers
+    Logs name `repo:1048590`, `repo=1048590` or `1048590/`, and the child's `repo-meta:1048590` once it exists. Six so
+    far: members a `6fd8c123…`, b `f13385ed…`, c `13d912fe…`, and shards a `2b6ed590…`, b `1c6a9537…`, c `59f9e8d8…`.
+    `monitor.mjs` refreshes the list on every row.
+  - With `B030_OBJECTS`, `usage.py` counts DO requests, rows written and active time on those objects only. Workers
+    requests and CPU have no object dimension and stay install-wide, so the meter still slightly over-counts.
+  - With `NETS=1048590`, `containers.py` counts only `git#<site>#net:1048590` instances.
+  - Corrected spend at day 2.8 (00:07Z): $23.41 ($18.65 DO and Workers, $4.76 containers), against $48.64 on the old
+    meter. From 18:41Z to 23:04Z, with the load stopped, the run's own objects cost $0.16 and its shards $1.50. The old
+    meter's $23.16 for that window was smoke 1's `repo:1048586`, whose site b member (`a217c64f…`) wrote 19.5 M rows
+    reinstalling a 3.16 GB tier (`install`, 3,467,920 rows through 16,259, 1,022 s), plus smoke 3's `git#0#net:1048589`
+    container and other installs' objects.
+  - STOP_USD stays at $185 (the user's number), now judged on this meter.
+  - Projection on this meter: $23.56 at simulated day 2.83 (00:09Z). The load runs at $2.12 an hour (23:10Z to
+    00:10Z: $1.69 DO and Workers, $0.43 containers; 10:30Z to 12:30Z was $1.97 an hour). The remaining 36.2 h of active
+    time costs about $77, and the split about $58 (smoke 1's window, an upper bound, since that was the install-wide
+    meter). Total about $158, $27 under STOP_USD.
+- **Teardown of smoke 1's and smoke 3's leftovers (2026-11-15, 00:09Z to 00:12Z).** No row or thread named
+  `repo:1048586` as live:
+  - `tests/am1/results` names it only as B0-30's first run ("left as it is ... for the rerun to inspect or replace")
+    and as smoke 1.
+  - No other branch's results file names it.
+  - The drivers read `tests/am1/raw/b030-repo.json` (1048590).
+  - `git#0#net:1048589` (smoke 3's shard, running since 09:34Z) was torn down with `teardown.py 1048589 1048589` (200).
+    `repo:1048586` had no running shard.
+  - Each member of `repo-meta:1048586` and `repo:1048586` was cleared with the test route `/retire`, as
+    `tests/m3/wirefix/recreate.mjs` does: storage deleted, object reset (`tests/am1/raw/b030-retire-1048586.log`).
+    Before, `repo:1048586` was led on site 1 at term 379, commit 36,576. Its members held 2.77, 3.04 and 2.77 GB of
+    SQLite with logs of 1.88, 2.15 and 1.88 GB, archivedTo 18,041 / 16,259 / 18,041; the metadata tier was dropped at
+    the split. `repo-meta:1048586` held 4.25 GB on sites 0 and 2 (the seeded tier at 28,595) and 1.4 MB on site 1, at
+    commit 9 to 11.
+  - After, all six members answer "not joined". `shards.py --keep 1048590` lists only the rerun's three shards.
+  - Its R2 archives and snapshots are left in the buckets. They are what `RestoredTo` reads, and they cost storage
+    only.
+  - `teardown.py --sweep` is on `lm1-rows-m3f`, not on this branch. `shards.py` (this branch's end-of-run check) did
+    the same check.
 
 ## Cost
 
