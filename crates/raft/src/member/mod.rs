@@ -367,6 +367,10 @@ pub struct AdmissionView {
     pub hot: bool,
     pub pressure: bool,
     pub retry_after_s: u32,
+    /// The moving averages `capacity` is sized from: the commit round in ms and a command's bytes as ENTRY_SOFT
+    /// counts them. Read only by test hosts tracing admission (LM-1's B0-31).
+    pub round_ms: f32,
+    pub cmd_bytes: f32,
 }
 
 /// A read the host started with `Member::read`; its `Resolution::Read` carries the same id.

@@ -801,6 +801,7 @@ impl<F: Family> Routes<F> {
                 self.stats(
                     crate::registry::query(&url, "reset").is_ok(),
                     crate::registry::query(&url, "summary").is_ok(),
+                    crate::registry::query(&url, "high").is_ok(),
                 )
             }
             (Method::Post, p) if F::route_paths().contains(&p) => {
@@ -1095,6 +1096,8 @@ impl<F: Family> Routes<F> {
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
         let counted = host::Answers::hold(&self.host.answers, &value);
+        #[cfg(feature = "test-faults")]
+        self.host.mark_mem();
         Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, (held, counted)))?
             .with_headers(headers))
     }
@@ -1524,6 +1527,13 @@ impl<F: Family> Routes<F> {
                 graftyard_types::ChainId::Repo(r) => crate::feed::FEEDS.with(|f| f.borrow().get(&r).map(|f| f.borrow().status())),
                 _ => None,
             },
+            // The leader's admission as `capacity` sizes it, cheap enough to poll every second: LM-1's B0-31 trace
+            // (does a mix of large commands shrink `cmd_bytes`'s capacity until agents wait out AGENT_WAIT).
+            "admission": c.m.admission().map(|a| json!({
+                "capacity": a.capacity, "roundMs": a.round_ms, "cmdBytes": a.cmd_bytes, "queued": a.queued,
+                "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot, "pressure": a.pressure,
+                "retryAfterS": a.retry_after_s,
+            })),
             "now": self.host.now(),
         })
     }
@@ -1594,7 +1604,7 @@ impl<F: Family> Routes<F> {
         })
     }
 
-    fn stats(&self, reset: bool, summary: bool) -> Result<Response> {
+    fn stats(&self, reset: bool, summary: bool, #[allow(unused)] high: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
         // `?summary=1`: percentiles in place of the sample arrays, and no trace, calls, or peers. A loaded leader's raw
         // `/stats` serialized megabytes, and its wasm instance was rebuilt right after (LM-1 round 6, B0-29).
@@ -1645,6 +1655,12 @@ impl<F: Family> Routes<F> {
             #[cfg(feature = "test-faults")]
             {
                 v["leaseClock"] = lease_clock_pcts(&s.lease_clock);
+                // The counted bytes' high-water since the last `high=1` read (`Host::mark_mem`), and now; `high=1`
+                // starts the next one from now, so each 2 s sample shows the peak of the seconds since the one before.
+                v["memHigh"] = json!(s.mem_high);
+                if high {
+                    s.mem_high = Default::default();
+                }
             }
             if reset {
                 s.reset();
