@@ -270,6 +270,8 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     (None, p99 2,025 ms, 6 of 28 slow) at 23:55:44Z. The watcher saw no leaderless gap (longest 0 s at its 5 s poll),
     and site 0 leads again. A fourth, on site b at 00:11:28Z, was smoke 1's member during its `/retire`, not this
     group (matched by DO id).
+  - 03:29:05Z (simulated day 5.34): LoopLag to Some(1) on site a's member, rest phase. Leadership went to site 2 at
+    term 16, and the watcher saw no leaderless gap (0 s).
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
   (`objectId_in` on `durableObjectsPeriodicGroups` and `durableObjectsInvocationsAdaptiveGroups`), and container usage
@@ -306,6 +308,10 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     the split. `repo-meta:1048586` held 4.25 GB on sites 0 and 2 (the seeded tier at 28,595) and 1.4 MB on site 1, at
     commit 9 to 11.
   - After, all six members answer "not joined". `shards.py --keep 1048590` lists only the rerun's three shards.
+  - Missed at first: site b's voter was a replacement, `repo:1048586#5#f1`, not the generation-1 name that `/retire`
+    reached. It stayed joined at term 379, commit 36,576 (6.20 GB, log 1.88 GB). Logging "keep led: no leader seen ...
+    campaign Ok(Started)" every 10 s, it wrote no rows (active time only), so it cost almost nothing. Retired by name at
+    03:34Z (2026-11-15). It answers "not joined", and its alarms stopped.
   - Its R2 archives and snapshots are left in the buckets. They are what `RestoredTo` reads, and they cost storage
     only.
   - `teardown.py --sweep` is on `lm1-rows-m3f`, not on this branch. `shards.py` (this branch's end-of-run check) did
