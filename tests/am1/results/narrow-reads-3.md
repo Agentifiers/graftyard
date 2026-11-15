@@ -803,6 +803,36 @@ Rows read for the reply fall from 2,093 to 2,348 to 592 to 799 (the REST list re
 - (2): an index that skipped entries counted current (stale after an install); a delete that does not uncount; zero
   counts kept; the merger in the wrong tier; `apply` not telling the store; comments naming no one.
 
+### Gate 17 on narrow-builds 88dcb5c2: API p99 1,982 ms, 100.00% served, a pass
+
+Site day 16 and the edge day ran from 88dcb5c2, which has the same product code as main dc269249. The gate shape is
+unchanged from gate 16 and arm "with": a fresh repo (65565) with 500 open PRs, 8 learners at k 4, 500 agents, 600 s
+from 23:58:40Z, read-your-write probe of 150 rounds, and watcher stop at 100 MiB on any voter. Rows are in
+`tests/nr3/rows/*-gate17.*`.
+
+| Line | Gate 15 (main) | Arm "with" (a5a85d9) | Gate 17 (88dcb5c2) | Gate |
+| --- | --- | --- | --- | --- |
+| read:api p99 | 2,019 ms | 2,304 ms | **1,982 ms** | ≤ 2 s, fail > 5 s |
+| read:api p50 | | | 282 ms | |
+| Served | | 99.92% | **100.00%** (115,682 of 115,687; 5 × 503) | ≥ 99% |
+| Read-your-write | | | **150 of 150, 0 stale** | 150 of 150 |
+| Voter peak, watcher (30 s) | 84 / 64 MiB | | **70 / 62 / 29 MiB** | stop > 100 MiB |
+| Voter peak, analytics | | | 84 / 62 MiB (f0 / f2) | |
+| Leader changes | | | **0** (term 2 throughout) | |
+| Commit p99 (LM-1 line) | | | 2,383 ms (p50 586) | not on the API streak |
+| merge:only p99 (LM-1 line) | | | 3,360 ms (p50 1,037; 15 × 409 base moved) | not on the API streak |
+| Learner CPU | | | 943.9 CPU s over 8 learners | |
+
+`api:tier` is p99 1,681 ms and `api:total` p99 1,911 ms; `push:agent` p99 is 5,774 ms over 2,499 pushes. Learner
+memory peaked at 62 to 69 MiB. The pass is narrow: 18 ms under the line. Learner CPU fell to 943.9 CPU s in 600 s
+from instrument run (b)'s 1,198 CPU s in 300 s, about 0.20 cores per learner against about 0.50, which matches the
+inference in the instrument-run section. Two isolate exceptions (one per site) appear in the analytics outcomes.
+
+The memory stop for this gate was 100 MiB, the standing gate rule. The instrument run's line was 120 MiB, and the
+report for that run named 120. Neither line was approached.
+
+Spend on graft-m3e since 2026-11-13T04:17Z: $42.87 after the run and the pool sweep (the sweep found 0 shards left).
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
