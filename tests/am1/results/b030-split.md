@@ -272,6 +272,13 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     group (matched by DO id).
   - 03:29:05Z (simulated day 5.34): LoopLag to Some(1) on site a's member, rest phase. Leadership went to site 2 at
     term 16, and the watcher saw no leaderless gap (0 s).
+  - 03:38:58Z to 03:44:58Z (simulated day 5.4 to 5.5): seven CommitErrors StepDowns on site a's member, all `to: None`.
+    These are holds: no follower qualified, so leadership did not move, and the watcher saw no gap. Six fell inside one
+    archive run (03:42:43Z to 03:45:27Z, 22 `Archived` entries 7 to 12 s apart). Followers' `/raft` calls over
+    03:41Z to 03:46Z ran p50 617 ms (max 3.1 s) on site b and p50 3.1 s (max 3.2 s) on site c, all ok. The CommitErrors
+    rule counts calls past `CALL_DEADLINE`: 3 to 9 of 15 to 23 per follower. Earlier archive runs (`ARCHIVE_SLACK` 16,
+    shorter runs) did not trip this way. The floor-to-trigger band makes each run about 130 MB, so the archive paces
+    for 2 to 3 minutes at a time.
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
   (`objectId_in` on `durableObjectsPeriodicGroups` and `durableObjectsInvocationsAdaptiveGroups`), and container usage
