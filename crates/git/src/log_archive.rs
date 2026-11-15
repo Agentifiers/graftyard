@@ -21,9 +21,12 @@ use crate::repo::{RepoEvent, packs_of};
 /// member's state, and a 4 MB batch of a large member's log took its isolate past 128 MB (`workers/site/src/load.rs`,
 /// `BATCH_BYTES`), so a due range goes in pieces of this size; the alarm runs again at once after each piece.
 pub const ARCHIVE_RANGE_MAX: u64 = 2 << 20;
-/// The most pack bytes one promotion takes [guess]: the shard's complete pack comes back whole into the site's
-/// memory before it is placed, and is about the size of the packs it packs. A range whose packs name more is not
-/// promoted, and the alarm reports it, rather than ending the isolate.
+/// The most pack bytes one promotion batches [guess]: about 19 s of the shard's `pack-objects` and validate at the
+/// measured 2.62 MB/s (`decisions/DECISIONS.md`, "Promotion's measured rate is under B0-31's push rate"), inside the
+/// site's `STEP_FOR` (`workers/site/src/archive.rs`). It bounds no memory: the site streams the shard's pack to the
+/// buckets in parts and to the validate, holding two parts whatever its size (`PackStore::place_streamed`), so a
+/// first entry over it promotes alone, never refused. Refused, B0-34's drain stalled for good at a 53 MB push
+/// (`tests/am1/results/lm1-memory.md`, round 20).
 pub const PROMOTE_MAX: u64 = 48 << 20;
 
 /// A promotion takes up to this many archive ranges of log at once [guess]: each promotion is a git cache shard round
@@ -129,28 +132,19 @@ fn pack_bytes(e: &LogEntry<RepoEvent>) -> u64 {
 }
 
 /// The first entries whose packs fit `promote_max` together, at least one: a promotion takes the range in pieces
-/// as an archive does. A first entry alone over it is refused, and the alarm reports it each time it runs.
-pub fn within_promote_max(
-    entries: Vec<LogEntry<RepoEvent>>,
-    promote_max: u64,
-) -> Result<Vec<LogEntry<RepoEvent>>, String> {
+/// as an archive does. A first entry alone over it promotes alone.
+pub fn within_promote_max(entries: Vec<LogEntry<RepoEvent>>, promote_max: u64) -> Vec<LogEntry<RepoEvent>> {
     let mut taken = 0u64;
     let mut out = Vec::new();
     for e in entries {
         let b = pack_bytes(&e);
-        if taken.saturating_add(b) > promote_max {
-            if out.is_empty() {
-                return Err(format!(
-                    "entry {} names {b} pack bytes, over the {promote_max} a promotion holds",
-                    e.index.0
-                ));
-            }
+        if !out.is_empty() && taken.saturating_add(b) > promote_max {
             break;
         }
-        taken += b;
+        taken = taken.saturating_add(b);
         out.push(e);
     }
-    Ok(out)
+    out
 }
 
 /// The SHA-256 of every pack the entries name, in order and once each: the checksums under which the git cache shard
@@ -365,7 +359,7 @@ pub async fn step<H: ArchiveHost>(h: &H, max_bytes: u64, range_max: u64, promote
     if range.is_empty() {
         return Ok(Step::Idle);
     }
-    let entries = within_promote_max(range, promote_max)?;
+    let entries = within_promote_max(range, promote_max);
     let (from, to) = (Index(done.0 + 1), entries.last().expect("at least one").index);
     let request = promote_request(v.chain, from, to);
     let pack = h.promote(&promotion_sums(&entries), from, to, request).await?;

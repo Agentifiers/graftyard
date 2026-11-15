@@ -657,11 +657,11 @@ impl ShardHost<'_> {
         }
     }
 
-    /// One complete pack of every object the given ingested packs brought: the home shard's half of `Promoted`.
-    pub async fn promote(&self, network: NetworkId, sums: &[Digest]) -> Result<Vec<u8>, StoreError> {
+    /// One complete pack of every object the given ingested packs brought: the home shard's half of `Promoted`. The
+    /// container's answer, its body unread, so the pack streams on to the caller and is never held here.
+    pub async fn promote(&self, network: NetworkId, sums: &[Digest]) -> Result<Response, StoreError> {
         let body: String = sums.iter().map(|s| format!("{}\n", s.hex())).collect();
-        let mut r = self.ok(Method::Post, &format!("/promote?net={}", network.0.0), Some(body.into_bytes())).await?;
-        r.bytes().await.map_err(worker_err)
+        self.ok(Method::Post, &format!("/promote?net={}", network.0.0), Some(body.into_bytes())).await
     }
 
     /// The test merge of `head` into `base` (`GitCacheShard::merge` without the plan): the container's `/merge`, which

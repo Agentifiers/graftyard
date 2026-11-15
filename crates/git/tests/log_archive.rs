@@ -347,44 +347,65 @@ fn an_archive_held_in_one_bucket_is_never_recorded() {
     assert_eq!(*b.held_from.borrow(), [1; 3]);
 }
 
-/// Promotions are cut so their packs fit the cap, and an entry whose pack alone passes it is refused before the
-/// shard is asked: nothing is recorded for it.
+/// Promotions are cut so their packs fit the cap, and an entry whose pack alone passes it promotes alone, so the
+/// archive passes it. Refused, B0-34's drain stopped for good at a 53 MB push over `PROMOTE_MAX`
+/// (`tests/am1/results/lm1-memory.md`, round 20).
 #[test]
-fn promotions_fit_the_cap_and_an_entry_over_it_alone_is_refused() {
+fn promotions_fit_the_cap_and_an_entry_over_it_promotes_alone() {
     let b = Bed::new();
     for k in 0..80 {
         push(&b, k, 1_500);
     }
     snapshot(&b);
     let mut steps = Vec::new();
-    let err = loop {
-        match block_on(log_archive::step(&b, CAP, CAP, 5_000)) {
-            Ok(s) => steps.push(s),
-            Err(e) => break e,
+    loop {
+        match block_on(log_archive::step(&b, CAP, CAP, 5_000)).expect("no entry is refused") {
+            Step::Idle => break,
+            s => steps.push(s),
         }
         b.truncate();
-        assert!(steps.len() < 50);
-    };
-    // The first stored pack (9,000 bytes, push 1) is the first entry over the cap.
-    assert!(err.contains("names 9000 pack bytes, over the 5000 a promotion holds"), "{err}");
-    assert!(steps.iter().any(|s| matches!(s, Step::Promoted { .. })), "{steps:?}");
+        assert!(steps.len() < 200, "{steps:?}");
+    }
     let w = b.w.borrow();
     let all = &w.repo.disks[0].log;
-    let p = w.repo.members[0].group_fold().fold.promoted().unwrap();
-    let bytes: usize = all
+    let packs = |from: Index, to: Index| -> Vec<(Index, usize)> {
+        all.iter()
+            .filter(|e| e.index >= from && e.index <= to)
+            .flat_map(|e| match &e.body {
+                graftyard_raft::EntryBody::Events(evs) => graftyard_git::repo::packs_of(evs)
+                    .into_iter()
+                    .map(|p| match p {
+                        PackRef::Inline(b) => (e.index, b.len()),
+                        PackRef::Stored { bytes, .. } => (e.index, bytes as usize),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    };
+    let promotions: Vec<(Index, Index)> = steps
         .iter()
-        .filter(|e| e.index >= p.from && e.index <= p.to)
-        .filter_map(|e| match &e.body {
-            graftyard_raft::EntryBody::Events(evs) => Some(graftyard_git::repo::packs_of(evs)),
+        .filter_map(|s| match s {
+            Step::Promoted { from, to, .. } => Some((*from, *to)),
             _ => None,
         })
-        .flatten()
-        .map(|p| match p {
-            PackRef::Inline(b) => b.len(),
-            PackRef::Stored { bytes, .. } => bytes as usize,
-        })
-        .sum();
-    assert!(bytes <= 5_000, "{bytes}");
+        .collect();
+    // Each promotion fits the cap, or is one entry whose pack alone passes it: every stored push (9,000 bytes).
+    let mut alone = 0;
+    for (from, to) in &promotions {
+        let p = packs(*from, *to);
+        let bytes: usize = p.iter().map(|(_, n)| n).sum();
+        if bytes > 5_000 {
+            assert!(p.iter().all(|(i, _)| *i == p[0].0), "{from:?}..{to:?} holds {p:?} over the cap");
+            assert_eq!(p.first().map(|(i, _)| *i), Some(*from), "the entry over the cap starts its promotion");
+            alone += 1;
+        }
+    }
+    // Pushes 1, 6, ..., 76 are stored: 16 of them, each promoted alone.
+    assert_eq!(alone, 16, "{promotions:?}");
+    // The archive passes the first of them.
+    let first = packs(Index(1), Index(u64::MAX)).into_iter().find(|(_, n)| *n > 5_000).unwrap().0;
+    assert!(steps.iter().any(|s| matches!(s, Step::Archived { to, .. } if *to > first)), "{steps:?}");
 }
 
 #[test]

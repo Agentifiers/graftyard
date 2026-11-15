@@ -3561,11 +3561,25 @@ LM-1's B0-34 warm on m29 (main 04f8b3a6) rehydrated repo:131296, the 5 GB linux 
 
 #### Promotion's measured rate is under B0-31's push rate
 
-**Decision.** `PROMOTE_MAX` stays 48 MiB on the site's path. The unpromoted tail of a network pushed faster than promotion runs is open question G9.
+**Decision.** `PROMOTE_MAX` stays 48 MiB as the most pack bytes one promotion batches; since `promote-stream` it bounds no site memory and refuses no entry ("`promote-stream`" below). The unpromoted tail of a network pushed faster than promotion runs is open question G9.
 
 **Why.** On git/git's first-parent history, 30 thin pushes of 100 commits (29.2 MB) promoted as one: `pack-objects` 4.65 s (57.9 MB out), and the validate's `index-pack` 6.50 s with its default threads (11.97 s with one), 0.0 s connectivity. So 2.62 MB/s of pushed bytes, CPU-bound, against about 4 MB/s from B0-31's agents. `pack-objects` writing files gives a pack that differs from its `--stdout` output, so the stored `.idx` is the validate's, from the bytes that are placed. A promoted pack is 1.6 to 4.3 times its thin pushes' bytes, more for shorter ranges (2.3x at 30 pushes per promotion, 4.3x at one). The push-rate sweep at 2.62 MB/s over 600 s ends 3, 0, 754, and 1,957 MB above the last promotion at 1, 2, 4, and 6 MB/s, each step at most 19.2 s [measured locally, `tests/am1/results/lm1-rows-m3f.md`, "Promotion rate"; `promotion_keeps_up_below_its_rate_and_stays_bounded_above_it`]. A growing tail costs slower rehydrates, not correctness. Shard-streamed promotion lifts the site's memory bound, not this CPU one.
 
 **Flip.** The same as the first decision's: hosted promotion MB/s under B0-31's push rate, measured in B0-34's drain of repo:131296.
+
+### `promote-stream`: a promotion streams the shard's pack to the buckets, and an entry over `PROMOTE_MAX` promotes alone, 2026-11-15
+
+LM-1's B0-34 drain on `graft-m2b` m31 (main dc269249) promoted entries 7..16 and 17..17 of repo:131296, then stalled for good at entry 18, a 53,125,950 B stored push over `PROMOTE_MAX` (48 MiB): `within_promote_max` refused it on every alarm, and nothing after it could promote or archive (`tests/am1/results/lm1-memory.md`, round 20).
+
+**Decision.** The site's promotion reads the shard's `/promote` answer as a stream (the shard passes the container's body through unread) and tees it with `PackStore::place_promoted` to the placement's buckets in `PART_SIZE` multipart parts and, through a `Pipe`, to the `/validate?derived=1&via=0` on the same shard, holding the commands and at most two parts whatever the pack's size, as the edge's streamed push does (DESIGN, journey 1, step 2). Once both answered, it reads the `.idx` that validate wrote and puts it beside the pack in each bucket that holds it, with the chain and the range as `from` and `to`, as `stored-fetch` writes it. `PROMOTE_MAX` now only bounds how many pack bytes one promotion batches (about 19 s of `pack-objects` and validate at 2.62 MB/s): a range's first entry over it promotes alone, never refused. A shard whose pack breaks off mid-stream is passed over for the next Full site's, like one that failed before its first byte, because each attempt reads a fresh pack from its own shard under a fresh `PackId`.
+
+**Why.** `PROMOTE_MAX` existed only because `promote` held the shard's whole complete pack in the site's 128 MB isolate before `place`. Streaming removes that bound at the root, so a push the edge accepted (up to its cap below 100 MB on Pro) can always be promoted and archived past.
+
+**Beat.** Capping pushes at `PROMOTE_MAX`: it refuses pushes DESIGN allows, and a repository of one big push could never be served. Treating an over-cap pushed pack as self-contained and recording it as its own promotion: pushed packs are thin, so it is unsound. Raising the cap for a lone entry: it only moves the cliff, a 90 MB push would put a 90 MB-plus pack whole into a 128 MB isolate.
+
+**Evidence.** `promotions_fit_the_cap_and_an_entry_over_it_promotes_alone` (`crates/git/tests/log_archive.rs`): at a 5,000 B cap every 9,000 B stored push promotes alone, 16 of 16, and the archive passes the first; on main it fails with "entry 6 names 9000 pack bytes, over the 5000 a promotion holds". `a_promotion_streams_through_two_parts_and_stores_its_idx` (`crates/git/src/store.rs`): a 112 MiB promotion, over twice `PROMOTE_MAX`, at 16 MiB parts holds at most two `MemPart`s at once, validate reads it whole, two buckets hold the same bytes in order, and the `.idx` lands with `from` and `to`; a refused validate asks for no `.idx`, and a shard with none stores the pack alone. Plants 94 to 100 in `tests/lm1mem/plant.py` and plant 4 in `tests/am1/rest/plant.py`, all caught [the hosted site memory of a streamed promotion is not yet measured; the edge's tee held under 37 MB for 60 MB to 2 GiB pushes, `tests/am1/results/stream-push.md`].
+
+**Flip.** A hosted promotion whose site isolate passes about two parts plus its baseline, or a drain that still stops on an entry: then the tee does not stream on the site's path and the bound must be found there.
 
 ### `narrow-builds` (1): a list's selection pages from `issue_order`'s keys and reads only the page's items, 2026-11-14
 
