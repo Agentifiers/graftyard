@@ -279,6 +279,23 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     rule counts calls past `CALL_DEADLINE`: 3 to 9 of 15 to 23 per follower. Earlier archive runs (`ARCHIVE_SLACK` 16,
     shorter runs) did not trip this way. The floor-to-trigger band makes each run about 130 MB, so the archive paces
     for 2 to 3 minutes at a time.
+  - The operator ruled (2026-11-15) that B0-30 has no leader-change line: it passes on member SQLite under
+    `CHILD_GROUP_AT` with zero `SQLITE_FULL`, archived entries readable for `RestoredTo`, and the child group taking
+    the tier past the line. The holds and the LoopLag change do not count against it. StepDowns are still recorded
+    by phase and target. If the holds keep lining up with long archive runs, an OPEN-QUESTIONS row is proposed at
+    checkpoint (b).
+  - `tests/am1/b030split/holds.py FROM TO` lines them up from Workers Logs, on the group's own objects only: each
+    archive run (consecutive `Archived` lines from one site under 30 s apart), the StepDowns, and each follower's
+    `/raft` count, p50, max and calls past 3,000 ms during the run and the same length before it. For 03:00Z to
+    03:56Z, eleven runs of 67 to 211 s and 10 to 20 entries:
+    - The seven holds all fell in two runs on site a: 03:36:54Z to 03:39:12Z (138 s, 1 hold) and 03:42:43Z to
+      03:45:27Z (164 s, the longest run on site a, 6 holds). The 03:29:05Z LoopLag fell at the end of the 03:26:40Z
+      run.
+    - Runs with no StepDown had follower p50 321 to 428 ms, max 828 to 2,630 ms, and none past 3,000 ms.
+    - In the 03:42:43Z run, the followers' members logged almost nothing (site b none, site c 10 fetches), so there
+      are no follower `/raft` times for it. The 3.1 s calls seen earlier on site c were other graft-m1 objects, not
+      this group's member (matched by DO id). Whether follower calls ran past `CALL_DEADLINE` in that run is not
+      known.
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
   (`objectId_in` on `durableObjectsPeriodicGroups` and `durableObjectsInvocationsAdaptiveGroups`), and container usage
