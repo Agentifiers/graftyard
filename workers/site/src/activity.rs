@@ -115,7 +115,7 @@ fn rid(parts: &str) -> RequestId {
 }
 
 /// A command through this member, waiting for its outcome.
-async fn commit_here<F: crate::family::Family>(h: &Rc<Host<F>>, rid: RequestId, cmd: F::C) -> Result<()> {
+pub(crate) async fn commit_here<F: crate::family::Family>(h: &Rc<Host<F>>, rid: RequestId, cmd: F::C) -> Result<()> {
     let admitted = h.input(|m, t| m.commit(t, rid, cmd))?;
     let a = admitted.map_err(|e| Error::RustError(crate::host::call_error_json(&e).to_string()))?;
     h.served();

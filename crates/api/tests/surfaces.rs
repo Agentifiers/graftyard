@@ -25,8 +25,8 @@ use graftyard_fold::{MemStore, fold_digest, meta};
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::{
     AppId, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget,
-    DiffSide, IssueNumber, LabelName, LineAnchor, MergeMethod, Protection, RepoSettings, RequiredChecks, ReviewState,
-    StatusId, StatusState, StatusUpdate, Url, Visibility,
+    DiffSide, Grouping, IssueNumber, LabelName, LineAnchor, MergeMethod, Protection, RepoSettings, RequiredChecks,
+    ReviewState, StatusId, StatusState, StatusUpdate, Url, Visibility,
 };
 use graftyard_raft::{EntryBody, TierSet};
 use graftyard_types::{AccountId, DbId, Tier, Timestamp};
@@ -2009,4 +2009,27 @@ fn branch_protection_put_edits_the_branch_s_rule_and_delete_removes_it() {
     // A writer's PUT is refused by the leader, as `SetRule` needs admin.
     let op = plan_put(&r, "main", &body).unwrap();
     assert!(matches!(c.commit(WRITER, op), Err(IssueErr::Forbidden)));
+
+    // BF-37: `merge_queue` sets the rule's queue from GHES's ruleset parameters; a later PUT without the key keeps it,
+    // `null` removes it, and a parameter out of GHES's bounds is 422.
+    let mq = json!({ "check_response_timeout_minutes": 10, "grouping_strategy": "ALLGREEN", "max_entries_to_build": 4,
+        "min_entries_to_merge": 1, "max_entries_to_merge": 3, "min_entries_to_merge_wait_minutes": 0, "merge_method": "SQUASH" });
+    let mut with = body.clone();
+    with["merge_queue"] = mq;
+    let put = |c: &mut Chain, b: &Value| {
+        let op = plan_put(&c.repo(0, &h, &dir), "main", b);
+        op.map(|op| c.commit(OWNER, op).unwrap()).map_err(|r| r.status)
+    };
+    let queue = |c: &Chain| graftyard_git::queue::queue_settings(&c.repo(0, &h, &dir).rules());
+    put(&mut c, &with).unwrap();
+    let q = queue(&c).expect("a queue");
+    assert_eq!((q.max_build, q.max_merge, q.min_merge, q.check_timeout_minutes), (4, 3, 1, 10));
+    assert_eq!((q.grouping, q.method), (Grouping::AllGreen, MergeMethod::Squash));
+    put(&mut c, &body).unwrap();
+    assert!(queue(&c).is_some(), "a PUT without merge_queue keeps the queue");
+    with["merge_queue"]["max_entries_to_build"] = json!(101);
+    assert_eq!(put(&mut c, &with), Err(422));
+    with["merge_queue"] = Value::Null;
+    put(&mut c, &with).unwrap();
+    assert!(queue(&c).is_none(), "null removes it");
 }

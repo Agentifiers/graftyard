@@ -1,0 +1,17 @@
+on:
+  merge_group:
+    branches: [main]
+jobs:
+  ci:
+    name: queue-ci
+    runs-on: self-hosted
+    # BF-37's failing pull request sets this to 1 in its own copy of the file, so every queue ref holding its change
+    # fails, and a ref rebuilt without it passes (the workflow is read at the queue ref's tip).
+    env:
+      BF37_FAIL: "0"
+    steps:
+      - name: Check the queue ref
+        run: |
+          echo "ref $GITHUB_REF event $GITHUB_EVENT_NAME sha $GITHUB_SHA"
+          sleep 20
+          test "$BF37_FAIL" = 0

@@ -297,8 +297,8 @@ pub fn counts_plan(
 
 /// `Notify`'s or `Search`'s position on this chain, `{"consumerCursor": ..}`, format 32.19: the core
 /// `consumer_cursor` row (`RepoEvent::ConsumerCursor`, tag 22), committed after the batch's notices are in every
-/// `Inbox` or its documents in their shards, so a lost batch runs again and only rewrites what it wrote. Only those two
-/// consumers send it: `PrSync` and `MergeQueue` commit theirs with their own work.
+/// `Inbox` or its documents in their shards, so a lost batch runs again and only rewrites what it wrote. Those two and
+/// `ActionsTrigger` send it: `PrSync` and `MergeQueue` commit theirs with their own work.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsumerCursorCmd {
     pub consumer: crate::issues::Consumer,
@@ -313,11 +313,12 @@ impl Record for ConsumerCursorCmd {
 }
 
 impl ConsumerCursorCmd {
-    /// Only forward, and only for `Notify` and `Search`; anything else commits nothing.
+    /// Only forward, and only for `Notify`, `Search`, and `ActionsTrigger` (BF-37, which commits its cursor after the
+    /// runs it created); anything else commits nothing.
     pub fn decide(&self, s: &RepoScratch<'_>) -> (SmallVec<[RepoEvent; 4]>, CountsOut) {
-        use crate::issues::Consumer::{Notify, Search};
+        use crate::issues::Consumer::{ActionsTrigger, Notify, Search};
         let cur = crate::tiers::consumer_cursor(s.core(), self.consumer);
-        if !matches!(self.consumer, Notify | Search) || self.through <= cur {
+        if !matches!(self.consumer, Notify | Search | ActionsTrigger) || self.through <= cur {
             return (SmallVec::new(), CountsOut { applied: 0 });
         }
         let ev = RepoEvent::ConsumerCursor { consumer: self.consumer, through: self.through };
