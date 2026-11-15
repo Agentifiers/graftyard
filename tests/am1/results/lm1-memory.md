@@ -3240,3 +3240,115 @@ B0-34's TTFB line depends on it.
 `tests/fanout/instcpu.py`, `shardtimeline.py`, `georepack.sh`, `d1upload.py`.
 
 **Cost** $137.15 at 13:15Z (containers $54.09); this round spent nothing hosted. $7.85 left before $145.
+
+### Round 25 (local, no hosted spend): repack-keep, fixes 1 and 2 for B0-34's shard saturation, and the drivers (2026-11-15)
+
+**Branch `repack-keep`** at 0c171e6d, off main 4833094d (code, tests, plants, DESIGN and DECISIONS). The drivers are on this
+branch. Not deployed; it runs on the next site day, once the composed-miss branch and B0-02's read-index fix merge too.
+
+**Fix 1: promotions a rehydrate loads are kept.** `ingestSpooled` writes `pack-<name>.keep` beside a pack it loads
+through its stored `.idx`. Only a promotion stores one. `startRepack` counts only unkept packs against `repackAt` (50).
+`runRepack` adds `--write-midx`, so a multi-pack index covers every pack, kept or not. Without it, 61 kept promotions
+plus the tail would be 62 lookups per object.
+
+**Fix 2: whatever repack remains runs low and bounded.** `runRepack` runs `nice -n 19 git -c pack.threads=2 -c
+pack.windowMemory=256m repack -d -q --geometric=2 --write-midx`. Its commit-graph also runs at nice 19 (`gitLow`).
+Alpine's busybox has `nice`, so the image needs nothing new.
+
+**Gate: the local georepack, with promoted packs kept** (`tests/fanout/georepack-keep.sh`). Its input is round 24c's
+33 promotions (6-step complete ranges of B0-34's plan, 6.48 GB) plus a 12-pack pushed tail, 6.76 GB in 45 packs.
+
+| run | repack wall | repack CPU | maxrss | midx | commit-graph | packs after | promotions untouched |
+|---|---|---|---|---|---|---|---|
+| round 24c: no keep, unbounded (33 packs, no tail) | 325 s | 588 CPU-s (1.81 vCPU) | 9.8 GB | n/a | 15 s | 1 (2.18 GB) | 0 of 33 |
+| **fix 1 + 2: kept, nice 19, 2 threads, 256m window** | **98 s** | **104 CPU-s (1.06 vCPU)** | **5.49 GB** | 3 s | 15 s | 34 (33 kept + 1) | **33 of 33**, midx verifies |
+| fix 2 alone (no keep: as a network whose promotions predate the keep) | 757 s | 620 CPU-s (0.82 vCPU) | **9.20 GB** | 3 s | 17 s | 1 (2.23 GB) | 0 of 33 |
+
+- Fix 1 cuts the repack's CPU 5.7× and its memory from 9.8 to 5.5 GB.
+- **Fix 2 bounds CPU, not memory.** Alone, it spread the same work (620 CPU-s) over 2.3 times the wall time and kept
+  9.20 GB of memory. `pack.windowMemory` bounds only the delta window, while a whole-network roll's memory is the
+  object list and the bases. So fix 1 is the fix for the 12 GiB cap, and fix 2 makes whatever repack remains yield
+  the CPU.
+- The 5.49 GB is the tail's roll: git maps the kept packs to resolve the tail's thin deltas against them, and their
+  pages count in its RSS [inference]. The container has 12 GiB, so it fits with room for clones.
+- The roll still costs about 1 vCPU for about 100 s. At nice 19, that CPU is taken only when nothing else wants it.
+
+**Can a catch-up or validate still wait behind the repack?**
+- **Not on its lock.** Catch-ups (`/ingest`, `/refs`), validates and upload-packs never take `repacking`. Only evict, a
+  fresh init, `/fsck` and `/connected` do, and that was already so (LM-1 round 7).
+- **On its CPU, much less.** It runs at nice 19 on 2 threads. Under CFS a nice-0 task gets about 1,000 times a nice-19
+  task's share of a contended CPU, so a catch-up or validate needing a vCPU takes it [inference: not measured hosted;
+  `TestRepackRunsLowAndProcsListsIt` shows only that the repack runs at nice 19].
+- **Still possible: memory.** A repack at about 5.5 GB plus four depth-1 linux upload-packs at 1.1 GB each fits in
+  12 GiB. Two shards' worth of clone storm on top could still reach the limit, and `nice` does not bound memory.
+- **Still possible: `/connected`.** A rehydrate's backstop, run a second time after a fault, waits for the repack, as
+  before. Only the fault path pays this (`crates/git/src/catchup.rs`).
+- **Not addressed: the cold warm's own CPU.** It is spool and ingest work, not the repack.
+
+**Instrument: the shard object's `/status?repo=` now lists `procs`.** The container's new `GET /procs` returns every
+running git process: pid, command (cut to 160 bytes), nice, CPU seconds including reaped children, and RSS in MB, most
+CPU first. `ShardHost::procs` reads it, and only from a running container. Test drivers already read `/status` through
+`/_bed/shard_status`, so `tests/am1/mb3/shardstatus.mjs` shows it with no change.
+
+**Tests, failing on main.**
+- `TestRehydratesRepackLeavesPromotedPacks` (`containers/git/server/repack_test.go`) loads 53 promotions through their
+  `.idx` (more than `repackAt`), then a 56-push tail, then `/refs`. It requires the following:
+  - the promotions alone start no repack;
+  - after the tail's repack, every promotion is still on disk byte for byte;
+  - the tail rolled;
+  - the multi-pack index names every pack and verifies;
+  - fsck is clean and main resolves.
+  On main it fails at the first check: "1 packs after /refs over 53 promotions alone".
+- `TestRepackRunsLowAndProcsListsIt`:
+  - `/procs` finds a nice-19 git process by its pid, with its command, nice and RSS, most CPU first;
+  - every git that `runRepack` starts runs at nice 19, seen by a `git` wrapper on PATH;
+  - `pack.threads=2` and `pack.windowmemory=256m` reach git, seen through `GIT_TRACE2` parameters.
+  On main it fails with "/procs: 404".
+- `TestConnectedRunsBeforeTheRehydratesRepack`'s last step now waits out the released repack's commit-graph before
+  it checks that a new one starts. Beside the new tests, that commit-graph held the lock long enough to make the check
+  flaky.
+
+**Plants, `tests/m0carried/plant17.py`: 10 of 10 caught.**
+- no `.keep`;
+- the threshold counting kept packs;
+- the count looking for the wrong suffix;
+- no `--write-midx`;
+- four threads;
+- no window bound;
+- `gitLow` at normal priority;
+- the repack through `git` and not `gitLow`;
+- `/procs` reading no nice value;
+- `/procs` matching `nice` and not `git`.
+
+`--pack-kept-objects` is not a plant: under `--geometric`, git leaves kept packs byte for byte with it too (checked
+locally), so it is the same program.
+
+**Design.**
+- DESIGN, Shape, `rehydrate`'s text: a promotion's pack loaded through its `.idx` is kept; the repack rolls unkept packs
+  only, at nice 19 on 2 threads, with a midx over all; the 24c and 25 measurements.
+- The git caches noisy-tenant row names the bound and the kept promotions.
+- DESIGN stays at 2,200 lines: the rehydrate paragraph was tightened to make room.
+- DECISIONS: "`repack-keep`: promotions a rehydrate loads are kept, and the repack runs low and bounded". It covers the
+  decision, why, what it beat (an idle-time repack, no repack, a cgroup cap, a bigger container), the evidence, and the
+  flip.
+
+**Drivers** (this branch).
+- **The task API pages with `per_page` and `after`.** `tests/fanout/closetasks.mjs OWNER/REPO [--dry]` replaces round
+  24c's one-off. It lists every task in a non-final state (queued, in_progress, idle, waiting_for_user), following
+  the `Link` header's `rel="next"` URL and its opaque `after` (AGENT-LAYER, "API reference"). A repeated id stops the run.
+  It then cancels each task, lists again, and creates and cancels one probe. Round 24c's loop passed `page=N`, which
+  the API ignores, so it read the first page every time.
+  - The "3,900 tasks" were that loop's misreading, not an API bug.
+  - Run `--dry` on b034-mono at 13:44Z: 0 open tasks.
+- **b034.sh checks the edge before the row.** It now requires `EDGE_LOG`, the site day's edge deploy log. `tests/fanout/
+  edgever.py` reads the log's last "Current Version ID" and checks that `graft-m2b-edge`'s live deployment is that
+  version at 100%. It exits 3 when the log names none, as m36's did, and 4 when another version or a split serves.
+  b034.sh stops before setup on either. Checked against the logs on hand:
+  - m36's log: exit 3, "names no deployed version";
+  - m33's log: exit 4, serving `bfed05b9`;
+  - m34's log: exit 0, `bfed05b9` at 100%.
+
+**Checks on `repack-keep` (0c171e6d):** fmt; workspace clippy; wasm32 clippy for site and edge, each with and without `test-faults`, and ops; `cargo test --workspace` 977 passed, 0 failed, 3 ignored; `go test` in `containers/git/server` ok; the three `scripts/check_*.py` OK. `crates/raft` is untouched, so no sweep or Porcupine run.
+
+**Cost.** $137.15, unchanged: no hosted spend. The next site day (B0-34, then B0-33) has a $3 cap and waits for the
+operator's go once the three branches merge.

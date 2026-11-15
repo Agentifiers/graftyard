@@ -3,7 +3,8 @@
 # resumable; the monorepo is 5 GB of torvalds/linux, the others git/git), then a1.mjs b0-34 --b034 with the home shard
 # killed at 300 s, the second network hot from 420 s and the hostile owner's three from 600 s, over 900 s. The repos
 # are kept between rounds. Before the run, a static check that no request path can call the Cloudflare API.
-#   [SEED_ONLY=1] [LEARNERS=...] B034_DIR=$HOME/b034 bash tests/fanout/b034.sh <tag>
+#   EDGE_LOG=tests/am1/raw/runs/fanout-mNN-edge.log [SEED_ONLY=1] [LEARNERS=...] B034_DIR=$HOME/b034 \
+#     bash tests/fanout/b034.sh <tag>
 # Needs $B034_DIR/linux.git and $B034_DIR/git.git (bare clones). Output: tests/fanout/raw/b034-<tag>.status.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -16,6 +17,13 @@ s() { echo "$(date -u +%FT%TZ) $*" >> "$ST"; }
 # No Cloudflare API call from a request path (B0-34's fail line): the only `api.cloudflare.com` in a request-serving
 # crate would be a bug; the deploy and ops tools are not request paths.
 n=$(rg -l "api\.cloudflare\.com" workers/edge/src workers/site/src crates --type rust | wc -l); s "api.cloudflare.com in request paths: $n files"
+# Round 24c: the m36 site day's edge deploy stopped while compiling, and the rows ran on the previous edge. EDGE_LOG
+# names the site day's edge log (tests/am1/raw/runs/fanout<TAG>-edge.log); the row stops unless that version serves.
+if [ -n "${EDGE_LOG:-}" ]; then
+  python3 tests/fanout/edgever.py "$EDGE_LOG" >> "$ST" 2>&1 || { s "b0-34 stopped: the edge is not the site day's"; echo DONE >> "$ST"; exec sleep infinity; }
+else
+  s "b0-34 stopped: EDGE_LOG (the site day's edge deploy log) is not set"; echo DONE >> "$ST"; exec sleep infinity
+fi
 node tests/fanout/b034setup.mjs >> "$ST" 2>&1 || { s "setup failed"; exec sleep infinity; }
 J=$M3_STATE/b034.json
 [ -s "$D/plan-git.txt" ] || python3 tests/fanout/b034plan.py "$D/git.git" "$D/plan-git.txt" 1e12 60e6 0 >> "$ST" 2>&1
