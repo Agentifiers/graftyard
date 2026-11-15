@@ -1,0 +1,18 @@
+on:
+  merge_group:
+    branches: [main]
+jobs:
+  ci:
+    name: queue-ci
+    runs-on: self-hosted
+    steps:
+      - name: Check the queue ref
+        # BF-37's failing pull request sets this to 1 in its own copy of the file, so every queue ref holding its
+        # change fails, and a ref rebuilt without it passes (the workflow is read at the queue ref's tip). Step-level,
+        # because graft-m4a's day-35 build drops job-level env (fixed in crates/actions/src/specs.rs).
+        env:
+          BF37_FAIL: "0"
+        run: |
+          echo "ref $GITHUB_REF event $GITHUB_EVENT_NAME sha $GITHUB_SHA"
+          sleep 20
+          test "$BF37_FAIL" = 0

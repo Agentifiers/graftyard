@@ -3333,6 +3333,30 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A ruleset route (`rest:repos` rules) that clients use instead of branch protection, which would compile to the same `Rule` rows. Or a fault the gate needs that a reset cannot make, such as a member that answers but never commits.
 
+### M4-WP3: BF-37's merge queue setting and `ActionsTrigger` for `merge_group`, 2026-11-15
+
+**Decision.** Three pieces. (1) The branch protection `PUT` takes an optional `merge_queue` object holding GHES's `merge_queue` ruleset rule's seven `parameters` (`crates/api/src/protection.rs`), stored in the rule's `Protection.merge_queue`; `null` removes the queue and a body without the key keeps it. (2) `ActionsTrigger` runs `merge_group` only, in band on the repository leader's alarm (`workers/site/src/actions_trigger.rs`, pure half `crates/actions/src/trigger.rs`): from its own `ConsumerCursor { ActionsTrigger }` row it lists each `GroupBuilt`'s queue refs, reads `.github/workflows` at each ref's tip from the site's git cache shard, and commits each matching workflow's `CreateRun` on the repository's Actions shard; it commits its cursor through `ConsumerCursorCmd` (format 32.19, now also for `ActionsTrigger`) after a batch that built a ref, or every 1,000 entries. (3) A `merge_group` run's `RunKey` names its queue ref after the workflow path, because one `GroupBuilt` entry builds several refs; that `CreateRun` is format 0x15.2, which only a release that keys runs so reads. go-playground/webhooks v6.4.0, the latest release, has no `merge_group` type: its unmodified `Parse`, asked for `merge_group`, checks the delivery's HMAC and then answers "unknown event merge_group" (a bad signature answers `ErrHMACVerificationFailed` first). So BF-37's receiver (`tests/m4/wp3/bf37/`) runs `github.Parse` on every delivery, takes `PullRequestPayload` for `pull_request.enqueued` and `.dequeued`, and for `merge_group` counts the library's signature check passed only on that exact answer, then decodes the body into a struct written to GitHub's documented `merge_group` shape.
+
+**Why.** No product route set a merge queue: M2-WP3 seeded its rule through the test-faults `/record`, and graft-m4a's sites are product builds. GHES sets the queue through rulesets, a whole new surface; one optional key on the route BF-56 already uses is the smallest product path, and a GHES client never sends it. A repository's push and pull request triggers still come from the admin dispatch route, so `ActionsTrigger` builds only what BF-37 needs, on the same in-band pattern as `Notify` and `Search` (`crate::activity`), which needs no queue. The run key with the ref keeps SHARED's at-most-once rule per event: GitHub sends one `merge_group.checks_requested` per queue ref, and a key without the ref would let only the first ref's run through.
+
+**Beat.** A rulesets route (`POST /repos/{o}/{r}/rulesets`), which is the GHES way but a new surface with its own read shapes. Seeding the rule with a test-faults site day. A per-entry run key, which creates one run for a whole group. A full `ActionsTrigger` for push and pull request in this package, which no M4-WP3 gate needs. Patching go-playground/webhooks, which would no longer be the unmodified client the row names.
+
+**Evidence.** `crates/actions/src/trigger.rs` tests (two queue refs of one entry give two runs with distinct keys at their own tips; only a `merge_group` workflow for the base runs). `crates/git/tests/merge_queue.rs`, BF-21 (100 seeds): no `gh-readonly-queue/*` ref is left after the landings and the ejection, while 900 were seen mid-run. `crates/api/tests/surfaces.rs`, branch protection (`merge_queue` set, kept, bounded, removed). `crates/api/tests/activity_gates.rs`, the cursor test (`ActionsTrigger` moves its own cursor). BF-37 on graft-m4a (`tests/m4/results/m4-wp3.md`).
+
+**Flip.** A rulesets route, which would compile to the same `Protection.merge_queue`. Push and pull request triggers moving into `ActionsTrigger`, which retires the dispatch route's stand-in. A go-playground/webhooks release with `merge_group`, which the harness would then call through `Parse`.
+
+### M4-WP3: job and workflow `env` ride on each step, 2026-11-15
+
+**Decision.** `specs::job_specs` merges the workflow's `env`, then the job's, then the step's own into each step's `environment` in the job message, a later key replacing an earlier one; an `env` that is a single expression rather than a mapping replaces the outer one whole.
+
+**Why.** BF-37's first hosted run (`tests/m4/raw/bf37/run1/`) failed every `merge_group` run, the passing pull request's too: the runner's log of job 1507329 shows the step's header with no `env` and `test "$BF37_FAIL" = 0` exiting 1. The job message never carried job-level or workflow-level `env` (`runsvc::steps_json` rendered only the step's), and BF-59's workflow, the only earlier one with `env`, set it on the step. Folding the outer levels into each step reaches the same environment the runner builds from GitHub's job message, in the order GitHub documents (workflow, job, step, the most specific winning) [doc: "Variables" in GitHub's Actions docs], with no new message field.
+
+**Beat.** Sending the job-level mapping as the job message's `environmentVariables`, the field GitHub's own service fills; it needs the runner's evaluation of that list against the job's contexts, which no gate exercises yet, and the per-step merge reaches the same values for literal `env`. Moving BF-37's `env` to the step only, which leaves the product gap.
+
+**Evidence.** `crates/actions/src/specs.rs` test `workflow_and_job_env_reach_each_step_innermost_wins` (keys overlapping at all three levels; it fails on the old code). BF-37's hosted rerun ran on the day-35 build, which lacks this fix, so its workflow sets `env` on the step.
+
+**Flip.** A job-level `env` expression that reads a context only the job's evaluation has (such as `needs` outputs) and must not be re-evaluated per step, which moves the job's `env` to `environmentVariables`.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).
@@ -3566,6 +3590,20 @@ LM-1's B0-34 warm on m29 (main 04f8b3a6) rehydrated repo:131296, the 5 GB linux 
 **Why.** On git/git's first-parent history, 30 thin pushes of 100 commits (29.2 MB) promoted as one: `pack-objects` 4.65 s (57.9 MB out), and the validate's `index-pack` 6.50 s with its default threads (11.97 s with one), 0.0 s connectivity. So 2.62 MB/s of pushed bytes, CPU-bound, against about 4 MB/s from B0-31's agents. `pack-objects` writing files gives a pack that differs from its `--stdout` output, so the stored `.idx` is the validate's, from the bytes that are placed. A promoted pack is 1.6 to 4.3 times its thin pushes' bytes, more for shorter ranges (2.3x at 30 pushes per promotion, 4.3x at one). The push-rate sweep at 2.62 MB/s over 600 s ends 3, 0, 754, and 1,957 MB above the last promotion at 1, 2, 4, and 6 MB/s, each step at most 19.2 s [measured locally, `tests/am1/results/lm1-rows-m3f.md`, "Promotion rate"; `promotion_keeps_up_below_its_rate_and_stays_bounded_above_it`]. A growing tail costs slower rehydrates, not correctness. Shard-streamed promotion lifts the site's memory bound, not this CPU one.
 
 **Flip.** The same as the first decision's: hosted promotion MB/s under B0-31's push rate, measured in B0-34's drain of repo:131296.
+
+### `connected-after`: a rehydrate's connectivity backstop runs before its repack, 2026-11-15
+
+LM-1's B0-34 drain on `graft-m2b` m33 (main fb4a1b66) held every shard of repo:131296 at `warming` for the whole 45 minutes. From about 04:00Z, where m31's rehydrates finished, all three containers ran at 3.3 to 3.4 vCPU with no `shard rehydrate` report to the stop (`tests/am1/results/lm1-memory.md`, round 21).
+
+**Decision.** A rehydrate that skipped pushed packs a promotion covers sends its last ref page with `repack=0`, so the container's `/refs` starts no repack. Its backstop `/connected?repack=1` then walks every ref's history and each tip's tree, and starts the network's repack once the walk ends, passed or failed. A rehydrate that skipped nothing, and every catch-up, keep today's path: the last ref page starts the repack. `/connected` and `/fsck` keep taking the repack lock.
+
+**Why.** `/connected` waits for any running repack, because a repack deletes the packs it rolled up as it ends, and hosted `/fsck` read false right after one (`tests/am1/results/hot-shards-3.md`). The rehydrate's own last ref page had just started a geometric repack of the whole network, 2.6 GB of linux there. So the check waited out the whole repack, and the shard's place, dropped only after the check, kept it answering `warming`. In m31 nothing was skipped (no stored `.idx` yet), so the check never ran and the shard served while the repack ran behind it.
+
+**Beat.** Dropping the repack lock from `/connected`: a check that runs while a repack deletes packs is not shown safe. Skipping the repack after a rehydrate: every ingested pack stays its own pack, and git commands slow as packs grow (`containers/git/server/main.go`, `repackAt`). Running the check before the last ref page: the check walks the refs, so they must be written first.
+
+**Evidence.** `TestConnectedRunsBeforeTheRehydratesRepack` (`containers/git/server/convoy_test.go`): with `runRepack` held, `/connected` answers within 5 s and only then starts the repack, after a passing and after a failing walk, and a last ref page without `repack=0` still starts it at once. On main it fails with "the last ref page started a repack though the rehydrate's check follows it". In `crates/git/tests/catchup.rs`, the skip tests assert the order `connected` then `repack` (and on a fault, `connected, repack, connected, repack`), and a rehydrate that skipped nothing asserts `repack` alone. Plants 101 to 106 in `tests/lm1mem/plant.py`.
+
+**Flip.** A hosted rehydrate whose check reads false on a pack a concurrent repack moved: the order is not enough, and the repack must also wait for something the check holds.
 
 ### `promote-stream`: a promotion streams the shard's pack to the buckets, and an entry over `PROMOTE_MAX` promotes alone, 2026-11-15
 

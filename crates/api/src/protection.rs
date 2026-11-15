@@ -8,7 +8,9 @@
 //! not resolved from logins here [inference: no gate needs it].
 
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
-use graftyard_git::issues::{AppId, BranchRule, Protection, RequiredChecks, RequiredReviews};
+use graftyard_git::issues::{
+    AppId, BranchRule, Grouping, MergeMethod, MergeQueueSettings, Protection, RequiredChecks, RequiredReviews,
+};
 use graftyard_raft::Acked;
 use graftyard_types::DbId;
 use serde_json::{Value, json};
@@ -84,10 +86,44 @@ pub fn plan_put(r: &Repo<'_>, branch: &str, body: &Value) -> Result<IssueOp, Rep
         conversation_resolution: flag("required_conversation_resolution"),
         lock_branch: flag("lock_branch"),
         signatures: false,
-        merge_queue: None,
+        merge_queue: match body.get("merge_queue") {
+            Some(Value::Null) => None,
+            Some(q) => Some(merge_queue(q)?),
+            None => rule_of(r, branch).and_then(|x| x.protection?.merge_queue),
+        },
     };
     let id = rule_of(r, branch).map(|x| x.id);
     Ok(IssueOp::SetRule { id, pattern: branch.into(), protection: Some(protection) })
+}
+
+/// The merge queue a `PUT` sets, a Graftyard extension (`decisions/DECISIONS.md`, "M4-WP3: BF-37's merge queue
+/// setting and `ActionsTrigger`"): `merge_queue` holds GHES's `merge_queue` ruleset rule's `parameters`, all seven
+/// required, and `null` removes the queue. A body without the key keeps the rule's queue, as a GHES branch protection
+/// `PUT` leaves a ruleset's queue alone; GHES itself ignores the key, so a GHES client's `PUT` behaves as on GHES.
+fn merge_queue(q: &Value) -> Result<MergeQueueSettings, Reply> {
+    let bad = || invalid("Invalid merge_queue.");
+    let n = |k: &str, max: u64| q[k].as_u64().filter(|v| *v <= max).ok_or_else(bad);
+    let grouping = match q["grouping_strategy"].as_str() {
+        Some("ALLGREEN") => Grouping::AllGreen,
+        Some("HEADGREEN") => Grouping::HeadGreen,
+        _ => return Err(bad()),
+    };
+    let method = match q["merge_method"].as_str() {
+        Some("MERGE") => MergeMethod::Merge,
+        Some("SQUASH") => MergeMethod::Squash,
+        Some("REBASE") => MergeMethod::Rebase,
+        _ => return Err(bad()),
+    };
+    // GHES's bounds: a timeout of 1 to 360 minutes, at most 100 entries to build or merge, and a wait of at most 360.
+    Ok(MergeQueueSettings {
+        check_timeout_minutes: n("check_response_timeout_minutes", 360)?.max(1) as u16,
+        grouping,
+        max_build: n("max_entries_to_build", 100)?.max(1) as u8,
+        min_merge: n("min_entries_to_merge", 100)? as u8,
+        max_merge: n("max_entries_to_merge", 100)?.max(1) as u8,
+        min_wait_minutes: n("min_entries_to_merge_wait_minutes", 360)? as u16,
+        method,
+    })
 }
 
 /// `DELETE`'s command, or 404 for a branch with no rule.

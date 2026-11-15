@@ -1,0 +1,147 @@
+{
+  "repo": "m3org/wp3-bf37c",
+  "repoChain": "repo:65558",
+  "prs": {
+    "a": 1,
+    "b": 2,
+    "c": 3
+  },
+  "heads": {
+    "a": "cb82627a5e114f4b3535f52738bf131c4b59e067",
+    "b": "710c4b693c288c385ff1ff2918e81b9487105253",
+    "c": "8e9d754e7b643ccf80d014995fe9fdb0b097982b"
+  },
+  "offsetMs": 6433,
+  "hook": 1671169,
+  "refs": [
+    {
+      "ref": "refs/heads/gh-readonly-queue/main/pr-1-2d5420133d7441db10ae7a79298aa3352b2bf5d1",
+      "sha": "d0f46248b17533fc0e0073a9c8a01877a196e025",
+      "firstSeen": 1794712928571,
+      "goneAt": 1794713029276,
+      "runs": [
+        1114172
+      ],
+      "event": "merge_group",
+      "headSha": "d0f46248b17533fc0e0073a9c8a01877a196e025",
+      "conclusion": "Success",
+      "checksRequested": true,
+      "destroyed": true
+    },
+    {
+      "ref": "refs/heads/gh-readonly-queue/main/pr-2-d0f46248b17533fc0e0073a9c8a01877a196e025",
+      "sha": "a1d081dc50dc7d04c7f3159b9822c3b32b593f5a",
+      "firstSeen": 1794712928571,
+      "goneAt": 1794713029276,
+      "runs": [
+        1114174
+      ],
+      "event": "merge_group",
+      "headSha": "a1d081dc50dc7d04c7f3159b9822c3b32b593f5a",
+      "conclusion": "Failure",
+      "checksRequested": true,
+      "destroyed": true
+    },
+    {
+      "ref": "refs/heads/gh-readonly-queue/main/pr-3-a1d081dc50dc7d04c7f3159b9822c3b32b593f5a",
+      "sha": "b37fb632cfe0f86a128d863a3186b4a7aa1caaa4",
+      "firstSeen": 1794712928571,
+      "goneAt": 1794713029276,
+      "runs": [
+        1114176
+      ],
+      "event": "merge_group",
+      "headSha": "b37fb632cfe0f86a128d863a3186b4a7aa1caaa4",
+      "conclusion": "Failure",
+      "checksRequested": true,
+      "destroyed": true
+    },
+    {
+      "ref": "refs/heads/gh-readonly-queue/main/pr-3-d0f46248b17533fc0e0073a9c8a01877a196e025",
+      "sha": "b2e53229d040c46f84d6cc26ab44f2c52345456a",
+      "firstSeen": 1794713029276,
+      "goneAt": 1794713107765,
+      "runs": [
+        1114184
+      ],
+      "event": "merge_group",
+      "headSha": "b2e53229d040c46f84d6cc26ab44f2c52345456a",
+      "conclusion": "Success",
+      "checksRequested": true,
+      "destroyed": true
+    }
+  ],
+  "runs": [
+    {
+      "id": 1114172,
+      "head_ref": "refs/heads/gh-readonly-queue/main/pr-1-2d5420133d7441db10ae7a79298aa3352b2bf5d1",
+      "jobs": [
+        [
+          "queue-ci",
+          "Completed",
+          "Success"
+        ]
+      ]
+    },
+    {
+      "id": 1114174,
+      "head_ref": "refs/heads/gh-readonly-queue/main/pr-2-d0f46248b17533fc0e0073a9c8a01877a196e025",
+      "jobs": [
+        [
+          "queue-ci",
+          "Completed",
+          "Failure"
+        ]
+      ]
+    },
+    {
+      "id": 1114176,
+      "head_ref": "refs/heads/gh-readonly-queue/main/pr-3-a1d081dc50dc7d04c7f3159b9822c3b32b593f5a",
+      "jobs": [
+        [
+          "queue-ci",
+          "Completed",
+          "Failure"
+        ]
+      ]
+    },
+    {
+      "id": 1114184,
+      "head_ref": "refs/heads/gh-readonly-queue/main/pr-3-d0f46248b17533fc0e0073a9c8a01877a196e025",
+      "jobs": [
+        [
+          "queue-ci",
+          "Completed",
+          "Success"
+        ]
+      ]
+    }
+  ],
+  "deliveries": {
+    "byEventAction": {
+      "merge_group.checks_requested": 4,
+      "merge_group.destroyed": 4,
+      "ping.ping": 1,
+      "pull_request.closed": 2,
+      "pull_request.dequeued": 1,
+      "pull_request.enqueued": 3,
+      "pull_request.opened": 3
+    },
+    "deliveries": 18,
+    "failed": 0
+  },
+  "checks": {
+    "aAndCMerged": true,
+    "bNotMerged": true,
+    "queueRefsBuilt": true,
+    "aRunOnEachQueueRef": true,
+    "everyQueueRefDeleted": true,
+    "noQueueRefLeft": true,
+    "checksRequestedForEachRef": true,
+    "destroyedForEachRef": true,
+    "enqueuedForEach": true,
+    "dequeuedForB": true,
+    "everyDeliveryParsed": true
+  },
+  "pass": true
+}

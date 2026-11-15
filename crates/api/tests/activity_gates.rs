@@ -1102,7 +1102,7 @@ fn bf68_eu_documents_stay_in_eu_shards_a_killed_shard_reports_incomplete_until_i
 
 /// Notify's rules, on one comment: the actor is never notified, an ignored repository notifies nobody, an explicit
 /// thread unsubscription stops a watcher but not a mention, and the author hears of a comment. Then
-/// `ConsumerCursorCmd` moves only forward, and only for `Notify` and `Search`.
+/// `ConsumerCursorCmd` moves only forward, and only for `Notify`, `Search`, and `ActionsTrigger`.
 #[test]
 fn notify_skips_the_actor_ignorers_and_unsubscribers_but_not_a_mention_and_cursors_only_move_forward() {
     let mut b = Bed::new();
@@ -1177,6 +1177,10 @@ fn notify_skips_the_actor_ignorers_and_unsubscribers_but_not_a_mention_and_curso
         RepoOut::Counts(watch::CountsOut { applied: 0 }),
         "PrSync commits its own"
     );
+    // BF-37's `ActionsTrigger` keeps its own cursor, apart from `Notify`'s.
+    assert_eq!(mv(&mut b, Consumer::ActionsTrigger, 2), RepoOut::Counts(watch::CountsOut { applied: 1 }));
+    assert_eq!(tiers::consumer_cursor(&*b.leader_fold(REPO).core, Consumer::ActionsTrigger), graftyard_types::Index(2));
+    assert_eq!(cur(&mut b), graftyard_types::Index(5));
 }
 
 /// The Inbox keeps each thread's newest notice whatever order chains deliver in, and a redelivered or older entry of

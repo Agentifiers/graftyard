@@ -58,7 +58,7 @@ impl Family for Actions {
     type C = ActionsCmd;
 
     fn reads() -> Vec<Format> {
-        vec![act::ACTIONS_FORMAT]
+        vec![act::ACTIONS_FORMAT, act::ACTIONS_FORMAT_MERGE_GROUP]
     }
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
         leading.then_some(CHECK_AFTER_MS)
@@ -122,6 +122,23 @@ impl Family for Actions {
             let jobs: Vec<Value> =
                 f.run_jobs(RunId(r)).into_iter().map(|j| serde_json::to_value(j).unwrap_or(Value::Null)).collect();
             return json!({ "run": f.run(RunId(r)), "jobs": jobs });
+        }
+        // `{"repoRuns": repo}`: every run of the repository with its trigger, for BF-37's driver (the edge's admin
+        // `GET runs`), newest first, at most 200.
+        if let Some(repo) = id_of(q, "repoRuns") {
+            let runs: Vec<Value> = f
+                .runs
+                .iter()
+                .rev()
+                .filter(|(_, r)| r.run.repo.0 == repo)
+                .take(200)
+                .map(|(id, r)| {
+                    let sha: String = r.run.head_sha.iter().map(|b| format!("{b:02x}")).collect();
+                    json!({ "id": id, "event": r.run.event, "workflow": r.run.workflow, "head_ref": r.run.head_ref,
+                        "head_sha": sha, "trigger": r.run.trigger.1.0, "status": r.status })
+                })
+                .collect();
+            return json!({ "runs": runs });
         }
         if let Some(r) = id_of(q, "runner") {
             let r = RunnerId(r);

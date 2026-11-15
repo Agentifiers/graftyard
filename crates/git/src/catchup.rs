@@ -110,8 +110,16 @@ pub trait ShardIo {
     /// Every stored `.idx` of the network's packs in the buckets, with the range its custom metadata names, if any.
     async fn idx_ranges(&self) -> Result<BTreeMap<PackId, Option<IdxRange>>, StoreError>;
     /// Whether the history of every ref, and the whole tree at each ref's tip, is on the disk: `Ok(Err(why))` when not.
-    async fn connected(&self) -> Result<Result<(), String>, StoreError>;
-    async fn put_refs_page(&self, refs: &[(String, String)], start: bool, done: bool) -> Result<(), StoreError>;
+    /// The check waits for a running repack, so with `repack` the container starts the repack only after it.
+    async fn connected(&self, repack: bool) -> Result<Result<(), String>, StoreError>;
+    /// A page of the whole ref set; the last page (`done`) also starts the container's repack when `repack`.
+    async fn put_refs_page(
+        &self,
+        refs: &[(String, String)],
+        start: bool,
+        done: bool,
+        repack: bool,
+    ) -> Result<(), StoreError>;
     async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError>;
     /// Evicts other networks so `incoming` more bytes fit; the networks evicted.
     async fn make_room(&self, incoming: u64) -> Result<Vec<i64>, StoreError>;
@@ -838,7 +846,11 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             let (page, index) = log.refs_page(*chain, after.take()).await?;
             let done = page.next.is_none() && i + 1 == chains.len();
             r.refs += page.refs.len();
-            io.put_refs_page(&page.refs, r.pages == 0, done).await?;
+            // A rehydrate that skipped covered packs runs the backstop next, which waits for any repack: the repack
+            // starts after it instead (`ShardIo::connected`). Started here, the backstop waited out a whole repack of
+            // the network, 20 minutes and more for 2.6 GB, answering `warming` (`tests/am1/results/lm1-memory.md`,
+            // round 21).
+            io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty()).await?;
             r.pages += 1;
             first.get_or_insert(index);
             match page.next {
@@ -873,10 +885,12 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     // next catch-up from the cursor drops once it reaches the head.
     // The backstop for the packs a promotion covered (`skippable`): the history of every ref, and each tip's tree, must
     // be on the disk. A miss loads the skipped packs, in index order, checks again, and is reported as a fault; a disk
-    // that still misses an object never serves, and the next call rehydrates from nothing.
+    // that still misses an object never serves, and the next call rehydrates from nothing. The check starts the
+    // network's repack once its walk ends, passed or failed, since the last ref page left it (above); a second check
+    // after a fault waits for that repack, a cost only the fault path pays.
     r.skipped = state.skipped.len();
     if !state.skipped.is_empty()
-        && let Err(why) = io.connected().await?
+        && let Err(why) = io.connected(true).await?
     {
         r.fault = Some(why);
         let skipped: BTreeSet<PackId> = state.skipped.iter().copied().collect();
@@ -888,7 +902,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         back.sort_by_key(|(i, _)| *i);
         let back: Vec<Load> = back.into_iter().map(|(_, l)| l).collect();
         let loaded = ingest_all(io, &back, &BTreeSet::new(), &mut r.calls).await?;
-        let again = io.connected().await?;
+        let again = io.connected(true).await?;
         if let (Ok(_), Ok(())) = (&loaded, &again) {
             r.stored += back.len();
         } else {

@@ -82,6 +82,9 @@ struct Disk {
     in_flight: Cell<usize>,
     in_flight_max: Cell<usize>,
     connected_calls: Cell<usize>,
+    /// The container's repack starts and backstop checks in order: "repack" when a call started the repack (the last
+    /// ref page, or a check after its walk), "connected" when a check walked.
+    events: RefCell<Vec<&'static str>>,
 }
 
 /// A virtual clock: `sleep` ends once `run` has moved the clock to its time, which it does whenever every task waits.
@@ -237,8 +240,12 @@ impl ShardIo for Disk {
         Ok(self.idx.borrow().iter().map(|(id, (_, r))| (*id, *r)).collect())
     }
     /// History is a chain, object i's parent i - 1: connected when every object's parent is here, and every ref's.
-    async fn connected(&self) -> Result<Result<(), String>, StoreError> {
+    async fn connected(&self, repack: bool) -> Result<Result<(), String>, StoreError> {
         self.connected_calls.set(self.connected_calls.get() + 1);
+        self.events.borrow_mut().push("connected");
+        if repack {
+            self.events.borrow_mut().push("repack");
+        }
         let objs = self.objects.borrow();
         if let Some(o) = objs.iter().find(|o| **o > 1 && !objs.contains(&(**o - 1))) {
             return Ok(Err(format!("missing object {}", o - 1)));
@@ -250,8 +257,17 @@ impl ShardIo for Disk {
         }
         Ok(Ok(()))
     }
-    async fn put_refs_page(&self, refs: &[(String, String)], start: bool, _done: bool) -> Result<(), StoreError> {
+    async fn put_refs_page(
+        &self,
+        refs: &[(String, String)],
+        start: bool,
+        done: bool,
+        repack: bool,
+    ) -> Result<(), StoreError> {
         self.tick()?;
+        if done && repack {
+            self.events.borrow_mut().push("repack");
+        }
         let mut r = self.refs.borrow_mut();
         if start {
             r.clear();
@@ -722,6 +738,9 @@ fn a_rehydrate_reads_the_log_only_above_the_last_promoted() {
     let h = r.rehydrated.expect("a rehydrate");
     assert_eq!(h.entries, 51, "entries 451..=501");
     assert_eq!(h.inline, 50);
+    // Nothing skipped, so no check: the last ref page starts the repack, as before the backstop existed.
+    assert_eq!(h.skipped, 0);
+    assert_eq!(*b.disk.events.borrow(), ["repack"]);
     b.assert_serves_head();
 }
 
@@ -900,6 +919,9 @@ fn a_rehydrate_of_promoted_packs_loads_their_stored_idx_and_skips_the_pushes_the
     assert_eq!(b.disk.index_packs.get(), 50, "only the tail's 50 pushed packs ran index-pack");
     assert_eq!(b.pushed_fetched(), 50);
     assert_eq!(b.disk.connected_calls.get(), 1, "one check before serving");
+    // The check walks before the repack starts: started by the last ref page, the check waited out the whole repack
+    // (`tests/am1/results/lm1-memory.md`, round 21).
+    assert_eq!(*b.disk.events.borrow(), ["connected", "repack"]);
     b.assert_serves_head();
 }
 
@@ -963,6 +985,8 @@ fn a_planted_missing_object_in_a_covered_pack_falls_back_to_the_skipped_packs_an
     let h = r.rehydrated.expect("a rehydrate");
     assert!(h.fault.as_deref().is_some_and(|f| f.contains("60")), "{:?}", h.fault);
     assert_eq!(b.disk.connected_calls.get(), 2, "checked, loaded the skipped packs, checked again");
+    // A failed walk starts the repack too; only the second check, on the fault path, follows it.
+    assert_eq!(*b.disk.events.borrow(), ["connected", "repack", "connected", "repack"]);
     b.assert_serves_head();
     assert!(b.store.rehydrating.borrow().is_none());
 }
