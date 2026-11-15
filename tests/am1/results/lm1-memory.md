@@ -3352,3 +3352,40 @@ locally), so it is the same program.
 
 **Cost.** $137.15, unchanged: no hosted spend. The next site day (B0-34, then B0-33) has a $3 cap and waits for the
 operator's go once the three branches merge.
+
+### Round 25b (no hosted spend): the next site day's probes for repack memory and kept promotions (2026-11-15)
+
+repack-keep is merged as main 8d79a32f. The site day waits for the composed-miss branch and B0-02's read-index fix,
+so one image tests all three. The cap is $3, for B0-34's row then B0-33's.
+
+**(a) Repack memory.** Locally, a kept repack peaked at 5.49 GB. A clone storm on top of it (1.1 GB per depth-1 linux
+upload-pack) could still reach standard-4's 12 GiB. Two sources show it:
+- `tests/fanout/shardprocs.mjs` (new). Every 15 s from the warm's start to the row's end, b034.sh starts it in the
+  background. For each site's shard it reads `/status?repo=` through `/_bed/shard_status`, which starts no container.
+  It writes `gitRssMb` (the RSS summed over every running git process), the top four processes (command, nice,
+  CPU-s, RSS) and the network's pack counts.
+  Output: `tests/fanout/raw/shardprocs-<tag>.jsonl`.
+- `tests/fanout/instcpu.py FROM TO net:131296` afterwards: each instance's peak container memory and disk per minute
+  (`containersMetricsAdaptiveGroups`), as round 24c read them.
+- **The rule on the day.** A shard whose container memory reaches about 11.9 GiB, the cap m36 sat at, is recorded as a
+  finding: the minute, the process holding the memory (from `top`) and its RSS, and whether the repack was among
+  them. It is not chased during the row. The row's verdict stays against its gate line.
+
+**(b) Every promotion kept.** `/procs?net=N` now also answers `packs: {count, bytes, kept, kept_bytes}` for the
+network's repository. The shard object's `/status` passes it on inside `procs`.
+- After the cold warm, b034.sh writes "b0-34 kept packs after the warm" with each site's `kept` and `count`.
+- Expected: `kept` equals that shard's rehydrate `idx_used`. That was 61 on m36: every promotion on repo:131296,
+  8.62 GB, all from before fix 2.
+- A later repack leaves `kept` unchanged, because it rolls only unkept packs. So `kept` read at the row's end must
+  still be 61.
+- This is recorded, not a stop. A shard with fewer kept packs than `idx_used` means a promotion went in through
+  `index-pack` (a stored `.idx` rejected), which the rehydrate report's `idx_rejected` also counts.
+
+**Code.** Branch `procs-packs` off main 8d79a32f:
+- `handleProcs` takes `net`. `ShardHost::procs` takes the network, and the shard object's `/status` passes it.
+- `TestRehydratesRepackLeavesPromotedPacks` now checks `/procs?net=7` reports every promotion as kept, out of the
+  repository's pack count.
+- `tests/m0carried/plant17.py` gains mutant 10, which counts every pack as kept. It is caught: 11 of 11 now.
+
+**Smoke, read only.** `shardprocs.mjs 131296` at 14:56Z: all three sites answered 200 with `running: false`, and the
+sweep found no shard container running. So the probe starts nothing.

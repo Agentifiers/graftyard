@@ -3,7 +3,7 @@
 # resumable; the monorepo is 5 GB of torvalds/linux, the others git/git), then a1.mjs b0-34 --b034 with the home shard
 # killed at 300 s, the second network hot from 420 s and the hostile owner's three from 600 s, over 900 s. The repos
 # are kept between rounds. Before the run, a static check that no request path can call the Cloudflare API.
-#   EDGE_LOG=tests/am1/raw/runs/fanout-mNN-edge.log [SEED_ONLY=1] [LEARNERS=...] B034_DIR=$HOME/b034 \
+#   EDGE_LOG=tests/am1/raw/runs/fanout-mNN-edge.log [SEED_ONLY=1] [LEARNERS=...] [PROCS_S=3600] B034_DIR=$HOME/b034 \
 #     bash tests/fanout/b034.sh <tag>
 # Needs $B034_DIR/linux.git and $B034_DIR/git.git (bare clones). Output: tests/fanout/raw/b034-<tag>.status.
 set -uo pipefail
@@ -65,11 +65,24 @@ if [ -n "${DRAIN:-}" ]; then
   python3 tests/fanout/netimages.py "${chain#repo:}" --none >> "$ST" 2>&1 || { s "b0-34 a shard of the network runs before the cold warm"; echo DONE >> "$ST"; exec sleep infinity; }
 fi
 s "b0-34 warm start"
+# Round 25's probes: each shard's git processes (RSS, nice) and the network's kept packs, every 15 s from the warm to
+# the row's end (tests/fanout/shardprocs.mjs). A shard at its memory cap is recorded as a finding, not chased.
+node tests/fanout/shardprocs.mjs "${chain#repo:}" "${PROCS_S:-3600}" 15 > tests/fanout/raw/shardprocs-$TAG.jsonl 2>&1 &
 node tests/fanout/b034warm.mjs "${chain#repo:}" "$(q "d['mono']['repo']")" "${WARM_MIN:-45}" > tests/fanout/raw/b034warm-$TAG.jsonl 2>&1
 w=$?; s "b0-34 warm exit $w $(tail -1 tests/fanout/raw/b034warm-$TAG.jsonl)"
 # Round 23: every shard the warm started runs the expected image (IMG, a sha256: prefix), recorded beside the rehydrates.
 [ -n "${IMG:-}" ] && { python3 tests/fanout/netimages.py "${chain#repo:}" --image "$IMG" >> "$ST" 2>&1; s "b0-34 warm images exit $?"; }
 [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
+# (b): after the cold warm, each running shard's kept packs against its rehydrate's idx_used (recorded, not a stop).
+sleep 20; python3 - tests/fanout/raw/shardprocs-$TAG.jsonl >> "$ST" <<'PY'
+import json, sys
+last = {}
+for l in open(sys.argv[1]):
+    try: d = json.loads(l)
+    except ValueError: continue
+    if d.get("packs"): last[d["site"]] = d["packs"]
+print("b0-34 kept packs after the warm: " + json.dumps({s: {"kept": p["kept"], "count": p["count"]} for s, p in sorted(last.items())}))
+PY
 [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "$chain" "$LEARNERS" >> "$ST" 2>&1
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
 s "b0-34 $mono $chain start"
