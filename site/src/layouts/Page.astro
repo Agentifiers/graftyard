@@ -6,7 +6,7 @@ import Logo from '../components/Logo.astro';
 interface Props {
   title: string;
   description: string;
-  current?: 'agents' | 'evidence' | 'architecture' | 'artifacts';
+  current?: 'agents' | 'evidence' | 'status' | 'architecture' | 'artifacts';
   doc?: boolean;
   extraCss?: string[];
 }
@@ -17,6 +17,7 @@ const ogImage = new URL('/brand/graftyard-og-1200x630.png', Astro.site).href;
 const pages = [
   { key: 'agents', href: '/agents/', label: 'Agents' },
   { key: 'evidence', href: '/evidence/', label: 'Evidence' },
+  { key: 'status', href: '/status/', label: 'Status' },
   { key: 'architecture', href: '/architecture/', label: 'Architecture' },
   { key: 'artifacts', href: '/why-not-artifacts/', label: 'Why not Artifacts' },
 ];

@@ -1,14 +1,13 @@
 {
   "source": "https://mrshu.github.io/github-statuses/",
   "sourceAuthor": "Marek Šuppa",
-  "asOf": "2026-11-14",
-  "from": "2026-08-17",
-  "incidents": 61,
-  "uptime": "93.23",
-  "downtimeMinutes": 8780,
-  "daysWithIncident": 40,
+  "asOf": "2026-11-15",
+  "from": "2026-08-18",
+  "incidents": 60,
+  "uptime": "93.58",
+  "downtimeMinutes": 8325,
+  "daysWithIncident": 39,
   "days": [
-    "critical",
     "major",
     "none",
     "critical",
@@ -90,6 +89,7 @@
     "major",
     "minor",
     "minor",
+    "none",
     "none",
     "none",
     "none",
@@ -102,33 +102,33 @@
   "services": [
     {
       "name": "Git Operations",
-      "uptime": "99.38",
-      "downtimeMinutes": 804
+      "uptime": "99.73",
+      "downtimeMinutes": 349
     },
     {
       "name": "Webhooks",
-      "uptime": "99.25",
-      "downtimeMinutes": 967
+      "uptime": "99.60",
+      "downtimeMinutes": 512
     },
     {
       "name": "API Requests",
-      "uptime": "98.08",
-      "downtimeMinutes": 2490
+      "uptime": "98.43",
+      "downtimeMinutes": 2035
     },
     {
       "name": "Issues",
-      "uptime": "98.46",
-      "downtimeMinutes": 1996
+      "uptime": "98.81",
+      "downtimeMinutes": 1541
     },
     {
       "name": "Pull Requests",
-      "uptime": "98.13",
-      "downtimeMinutes": 2419
+      "uptime": "98.48",
+      "downtimeMinutes": 1964
     },
     {
       "name": "Actions",
-      "uptime": "97.12",
-      "downtimeMinutes": 3732
+      "uptime": "97.47",
+      "downtimeMinutes": 3277
     }
   ],
   "longest": {
