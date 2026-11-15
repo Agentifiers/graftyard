@@ -433,6 +433,18 @@ impl ShardHost<'_> {
         self.port()?.fetch_request(req).await.map_err(worker_err)
     }
 
+    /// Bucket object `key`'s body streamed to the container's `path`, never in the isolate's memory: the container's
+    /// answer, or `None` when the bucket has no such object.
+    async fn put_stream(&self, b: &R2, key: &str, method: Method, path: &str) -> Result<Option<Response>, StoreError> {
+        let Some(o) = b.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+        let Some(body) = o.body() else { return Ok(None) };
+        let worker::ResponseBody::Stream(st) = body.response_body().map_err(worker_err)? else { return Ok(None) };
+        let mut init = RequestInit::new();
+        init.with_method(method).with_body(Some(st.into()));
+        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
+        Ok(Some(self.port()?.fetch_request(req).await.map_err(worker_err)?))
+    }
+
     async fn ok(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Result<Response, StoreError> {
         let mut r = self.call(method, path, body, &[]).await?;
         if r.status_code() >= 300 {
@@ -976,16 +988,8 @@ impl ShardIo for Io<'_, '_> {
         let got = crate::catchup::first_copy(self.buckets, |b: &&R2| {
             let (b, key, idx_key): (&R2, String, String) = (b, key.clone(), idx_key.clone());
             async move {
-                let Some(o) = b.0.get(&key).execute().await.map_err(err)? else { return Ok(None) };
-                let Some(body) = o.body() else { return Ok(None) };
-                let worker::ResponseBody::Stream(st) = body.response_body().map_err(worker_err)? else {
-                    return Ok(None);
-                };
                 let path = format!("/spool?net={net}&sha256={}", checksum.hex());
-                let mut init = RequestInit::new();
-                init.with_method(Method::Post).with_body(Some(st.into()));
-                let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
-                let mut r = self.host.port()?.fetch_request(req).await.map_err(worker_err)?;
+                let Some(mut r) = self.host.put_stream(b, &key, Method::Post, &path).await? else { return Ok(None) };
                 let s: Spool = match r.status_code() {
                     200 => r.json().await.map_err(worker_err)?,
                     // The previous release's image: the pack is read from the bucket again at its turn.
@@ -997,19 +1001,15 @@ impl ShardIo for Io<'_, '_> {
                     c => return Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
                 };
                 if idx && !s.have {
-                    // The index is a few percent of its pack: read whole, then put, from this bucket or, when its
-                    // pack put finished after the placement returned, from the first other that holds one. Derived:
-                    // without it the container runs `index-pack`, so a failed read or put is not an error.
-                    let mut got = b.get(&idx_key).await.ok().flatten();
-                    for (_, o) in self.buckets {
-                        if got.is_some() {
+                    // Streamed as the pack is, so `FETCH_AT_ONCE` fetches hold none of their bytes in the isolate:
+                    // from this bucket or, when its pack put finished after the placement returned, from the first
+                    // other that holds one. Derived: without it the container runs `index-pack`, so a failed read or
+                    // put is not an error.
+                    let path = format!("/spool-idx?net={net}&sha256={}", checksum.hex());
+                    for o in std::iter::once(b).chain(self.buckets.iter().map(|(_, o)| *o)) {
+                        if self.host.put_stream(o, &idx_key, Method::Put, &path).await.unwrap_or(None).is_some() {
                             break;
                         }
-                        got = o.get(&idx_key).await.ok().flatten();
-                    }
-                    if let Some(i) = got {
-                        let path = format!("/spool-idx?net={net}&sha256={}", checksum.hex());
-                        let _ = self.host.ok(Method::Put, &path, Some(i)).await;
                     }
                 }
                 Ok(Some(s))

@@ -1061,11 +1061,11 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 /// first placement's orphan). When one exists, it writes the missing marker. An object older than REQUEST_RETENTION
 /// with neither is kept and alarmed [measured, `tests/m1/results/m1-wp4.md`, BF-19, `request` table stubbed].
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
-/// Before archiving a range, the home shard packs every pack it names into one self-contained `DurablePack` and the leader
-/// commits `Promoted`, then `Archived` (an empty pack if none); ahead too, past LOG_MAX_BYTES / 32 above the last
-/// `Promoted` [guess, B0-30]. The site streams the pack to the buckets in parts and its validate, two parts held as in the
-/// edge's tee, so PROMOTE_MAX only batches: an entry over it promotes alone (refused, B0-34's drain stalled [measured,
-/// `lm1-memory` round 20]). `Compacted.consumed` names promoted packs; restore checks inline ones by digest chain.
+/// Before archiving a range, the home shard packs the objects its packs brought (no `--fix-thin` bases), named by tree
+/// entry, into one self-contained `DurablePack` [measured, `lm1-memory` 23b]; the leader commits `Promoted`, then
+/// `Archived`; ahead too, past LOG_MAX_BYTES / 32 above the last `Promoted` [guess, B0-30]. The site streams it to the
+/// buckets and its validate in parts, so PROMOTE_MAX only batches: an entry over it promotes alone [measured,
+/// `lm1-memory` 20]. `Compacted.consumed` names promoted packs; restore checks inline ones by digest chain.
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
 /// each member chain's entries name after its last `Promoted`, a page at a time with the next read meanwhile (two pages
@@ -1077,7 +1077,7 @@ pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* alway
 /// committed `Promoted` and its `.idx` metadata both cover are not loaded (the read side of `Compacted.consumed`); then
 /// every ref's history and tip tree must be on disk, checked before the rehydrate's repack (after, it waited one out
 /// [measured, `lm1-memory` 21]), else the skipped packs load and it checks again; a disk failing both never serves.
-/// Stored packs stream four at once, 8 and 64 MiB ahead, in log order. Thin pushes: 1.0 to 1.55 MB/s [measured, G5].
+/// Stored packs and `.idx` stream to disk, four at once of any size [measured, `fetchmem`], in log order. Thin: G5.
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or
