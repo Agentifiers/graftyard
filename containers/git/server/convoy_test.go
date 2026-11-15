@@ -427,7 +427,10 @@ func TestConnectedRunsBeforeTheRehydratesRepack(t *testing.T) {
 	}
 	release <- struct{}{}
 
-	// Without repack=0 the last page starts it at once, as before.
+	// Without repack=0 the last page starts it at once, as before. The released repack's commit-graph still holds
+	// the repack lock for a moment, so wait it out first.
+	repacking.Lock()
+	repacking.Unlock()
 	put("")
 	select {
 	case <-started:

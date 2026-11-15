@@ -464,6 +464,16 @@ impl ShardHost<'_> {
         r.json().await.map_err(worker_err)
     }
 
+    /// The container's running git processes (`GET /procs`: command, nice, CPU seconds, RSS), most CPU first, as JSON
+    /// for `/status`. A container that is not running lists none and is not started for it.
+    pub async fn procs(&self) -> Result<serde_json::Value, StoreError> {
+        if !self.container()?.running() {
+            return Ok(serde_json::Value::Null);
+        }
+        let mut r = self.ok(Method::Get, "/procs", None).await?;
+        r.json().await.map_err(worker_err)
+    }
+
     pub async fn health(&self) -> Result<Health, StoreError> {
         let mut r = self.ok(Method::Get, "/health", None).await?;
         r.json().await.map_err(worker_err)
