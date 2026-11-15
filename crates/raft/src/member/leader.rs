@@ -62,6 +62,10 @@ pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> u
 /// live-sweep group 50 s (seed 11497). One miss does not stop it: a far voter that missed once and lost its pipeline
 /// for the window caught up one backlog call at a time, and each missed again (r330-6).
 pub const PIPELINE: usize = 4;
+/// The least time between two read-index rounds while the earlier one is unanswered (`Member::read_round`) [guess]:
+/// beside a follower's 10 ms read batching, it caps read rounds at 50 a second per voter, whatever the member clock
+/// does.
+pub const READ_ROUND_GAP: Duration = Duration::from_millis(20);
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
 /// Resolved tickets kept for a late `outcome` call: at most DONE_KEEP of them, DONE_BYTES of the bytes their commands
@@ -291,7 +295,7 @@ pub(super) struct Lead<C: Command> {
     record_pending: Option<(Index, RequestId)>,
     /// Waiting reads: when each arrived, and whether the lease had lapsed then, so it needs a round.
     reads: Vec<(ReadId, Timestamp, bool)>,
-    /// When the latest read round left (`read_round`): a read arriving at the same time shares it.
+    /// When the latest read round left (`read_round`): a read that arrived at or before then shares it.
     read_round: Option<Timestamp>,
     /// The latest commit proof this leadership counted.
     proof: Option<QuorumProof>,
@@ -1933,20 +1937,23 @@ impl<C: Command> Member<C> {
         Ok(id)
     }
 
-    /// A read-index round, to the voters only: a learner's answer counts toward no quorum. Reads that arrive at the
-    /// same clock reading share one round, which counts for each since it left at or after each arrived; a read at a
-    /// later reading sends its own, as before. A Workers clock moves only on I/O, so a burst of reads one isolate turn
-    /// steps reads one time, and a round to every target per read sent B0-33's leader 250 to 560 AppendEntries to each
-    /// of its 10 targets in one millisecond, all but one a duplicate, each answered by a learner with its own call
-    /// (`tests/m0/results/read-rounds.md`). One round out at a time instead held reads to its answer, and in the
-    /// simulator's gray half lengthened the stalls these rounds cut short as retries (23 seeds over 20 s against 12).
+    /// A read-index round, to the voters only (a learner's answer counts toward no quorum), for the reads that need
+    /// one and arrived after the latest round left. Every grant still comes from a round sent at or after the read
+    /// arrived. The next round leaves once the latest is answered, or READ_ROUND_GAP after it left if it is not, so
+    /// rounds per voter stay at most one per answer or per gap. Shared per clock reading instead (read-rounds), a
+    /// lease-clock floor raised by each newer peer stamp gave reads in one turn new readings, and L0-12 m3fr6's leader
+    /// still sent up to 99 rounds to each voter in one millisecond (`tests/m0/results/read-round-gap.md`).
     fn read_round(&mut self) {
+        let answered = self.quorum_since(|l| &l.acked_at);
         let now = self.now;
-        let Some(lead) = self.lead.as_mut() else { return };
-        if lead.read_round == Some(now) {
+        let Some(lead) = self.lead.as_ref() else { return };
+        let last = lead.read_round;
+        let waiting = lead.reads.iter().any(|(_, arrived, needs)| *needs && last.is_none_or(|t| *arrived > t));
+        let free = last.is_none_or(|t| now >= after(t, READ_ROUND_GAP) || answered.is_some_and(|a| a >= t));
+        if !waiting || !free {
             return;
         }
-        lead.read_round = Some(now);
+        self.lead.as_mut().expect("leading").read_round = Some(now);
         for p in self.peers() {
             self.send_append(p, true);
         }
@@ -1985,6 +1992,7 @@ impl<C: Command> Member<C> {
             self.read_resolved(id, result);
         }
         self.lead.as_mut().expect("leading").reads = keep;
+        self.read_round();
     }
 
     /// `stale()`: this member's fold at `applied`, on any role, with no grant. The caller holds the flag that allows it.
