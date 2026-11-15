@@ -13,7 +13,10 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')
 H = 'crates/actions/src/hosted.rs'
 S = 'crates/actions/src/shard.rs'
 C = 'workers/runners/src/control.rs'
+B = 'crates/actions/src/broker.rs'
+R = 'cli/src/runners.rs'
 T = ['-p', 'graftyard-actions', '-p', 'graftyard-runners', '--lib', '--test', 'bf60']
+CLI = ['-p', 'graftyard', 'runners::']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -46,6 +49,10 @@ MUTANTS = [
      ' && now.0 < first.0 + HOSTED_IDLE.as_millis() as u64 =>', ' =>', T),
     ('a busy runner is listed stale', H,
      '        if held.contains(r) {\n            continue;\n        }', '', T),
+    # ---- BF-55's broker rule, for hosted runners ----
+    ('a broker matches a hosted runner again after its job', B,
+     '            Pick::Match { .. } if !complete || ephemeral && self.0.contains(&runner) => Pick::Idle,',
+     '            Pick::Match { .. } if !complete => Pick::Idle,', T),
     # ---- graft-runners: one pass ----
     ('a refused delete still destroys the Sandbox', C,
      '                Ok(false) => report.kept_busy += 1,',
@@ -59,6 +66,17 @@ MUTANTS = [
     ('every label runs on standard-3', C,
      '        if row.vcpu > 2 { Instance::Standard4 } else { Instance::Standard3 }',
      '        let _ = row;\n        Instance::Standard3', T),
+    # ---- graftyard runners upgrade ----
+    ('upgrade deploys a release whose signature does not verify', R,
+     '        .map_err(|_| "release.json\'s signature does not verify under the release key".to_string())?;',
+     '        .ok();', CLI),
+    ('upgrade goes to 100% before the canary day', R, '            if age < CANARY {', '            if false {', CLI),
+    ('upgrade rolls the image with the 10% canary', R,
+     '            let new = cf.upload_version(&spec.script, &meta, &bundle.modules())?;',
+     '            let new = cf.upload_version(&spec.script, &meta, &bundle.modules())?;\n'
+     '            for a3 in cf.container_apps()? {\n'
+     '                cf.roll_container_app(a3["id"].as_str().unwrap_or(""), &json!({ "image": a.image }))?;\n'
+     '            }', CLI),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

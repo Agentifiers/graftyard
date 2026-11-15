@@ -441,9 +441,9 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Beat.** Runners inside the install account.
 
-**Evidence.** `design/DESIGN.md`, "Stack" and "Failure modes" (`git caches`). `history/review/cloudflare-interrogate.md` CF-ACT-9.
+**Evidence.** `design/DESIGN.md`, "Stack" and "Failure modes" (`git caches`). `history/review/cloudflare-interrogate.md` CF-ACT-9. **Weakened, 2026-11-15:** the capacity reason was set against an account cap of 1,500 vCPU; the Containers limits page now gives 15,000 [doc: https://developers.cloudflare.com/containers/platform/limits/, read 2026-11-15], so the 2,000-developer git caches' 384 vCPU reserve is 39x under it, and runners would rarely take vCPU a site loss needs. What keeps the separate account is the security reason: a hosted runner's environment has no trust into and no route to the install's accounts other than the public front (`design/SHARED.md`, "Actions", Hosted runners), and an account boundary is what makes that hold for code a job runs.
 
-**Flip.** None stated.
+**Flip.** An isolation primitive inside one account that gives a Sandbox no binding, credential, or route into the install's Workers, Durable Objects, and buckets as strongly as an account boundary does; or an account vCPU cap low enough again that runners and git caches compete for it, which would restore the capacity reason too.
 
 ## Agents
 
@@ -751,7 +751,7 @@ Choices made while running Milestone 0 that change a gate or what a gate reads.
 
 **Beat.** The `default` policy, which had a platform-enforced `max_instances`, a `regions` constraint, and application-wide rollouts.
 
-**Cost accepted.** The cap and the region check are Graftyard code, not platform limits, so a bug there could exceed the cap or misplace a container, with the account's 1,500 vCPU and the 70% alarm as the only backstop. The policy is in beta. Every container process has root's capabilities, so file permissions inside the git image protect nothing. The design never relied on them, and each container starts with `enableInternet: false`.
+**Cost accepted.** The cap and the region check are Graftyard code, not platform limits, so a bug there could exceed the cap or misplace a container, with the account's vCPU limit (1,500 when decided, 15,000 since: Containers limits page, 2026-11-15) and the 70% alarm as the only backstop. The policy is in beta. Every container process has root's capabilities, so file permissions inside the git image protect nothing. The design never relied on them, and each container starts with `enableInternet: false`.
 
 **Evidence.** `tests/m0/results/b0-16.md`, `tests/m0/results/container-placement.json`, `tests/m0/results/container-survival.json`. https://developers.cloudflare.com/containers/configuration/scheduling-policy/ and https://developers.cloudflare.com/workers/wrangler/configuration/ ("Wrangler rejects every other Container application field for this policy, including `image`, `instance_type`, `max_instances`, rollout settings, and placement constraints"). `design/DESIGN.md`, Shape ("Git cache shards (derived)"), "Failure modes" (`git caches`), and Milestone 0 (the container placement row, B0-38 in `build/BUILD-PLAN.md`).
 

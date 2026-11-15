@@ -23,9 +23,11 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use common::Group;
+use graftyard_actions::broker::{Pick, Taken};
 use graftyard_actions::hosted::{self, HostedDemand, HostedLabel, Seen, ShardSummary};
 use graftyard_actions::shard::{
-    ACTIONS_FORMAT, ActionsActor, ActionsCmd, ActionsErr, ActionsFold, ActionsOp, ActionsOut, JobSpec, WorkflowRun,
+    ACTIONS_FORMAT, ACTIONS_FORMAT_OWNER_MATCH, ActionsActor, ActionsCmd, ActionsErr, ActionsFold, ActionsOp,
+    ActionsOut, JobSpec, WorkflowRun,
 };
 use graftyard_actions::{
     ACTIONS_SHARDS, Conclusion, JobEvent, JobId, JobState, LabelSet, OWNER_SCOPE_SHARD, RunId, RunnerId,
@@ -83,13 +85,17 @@ struct World {
     newest_first: bool,
     full: u32,
     kept_busy: u32,
+    /// The broker's memory of the ephemeral runners it matched or saw holding a job (BF-55's `Taken`).
+    taken: Taken,
+    /// Matches committed to a hung runner, which never takes them.
+    rematched: u32,
 }
 
 impl World {
     fn new() -> World {
         let now = Timestamp(1_000_000);
-        let mut shard =
-            Group::new(ChainId::Actions(OWNER, OWNER_SCOPE_SHARD), vec![ACTIONS_FORMAT], ActionsFold::default(), now);
+        let reads = vec![ACTIONS_FORMAT, ACTIONS_FORMAT_OWNER_MATCH];
+        let mut shard = Group::new(ChainId::Actions(OWNER, OWNER_SCOPE_SHARD), reads, ActionsFold::default(), now);
         shard.id_block(now, IdBlock::whole(0, 9).unwrap());
         World {
             now,
@@ -106,6 +112,8 @@ impl World {
             newest_first: false,
             full: 0,
             kept_busy: 0,
+            taken: Taken::default(),
+            rematched: 0,
         }
     }
 
@@ -195,6 +203,8 @@ impl World {
                 }
                 Phase::Idle => self.poll(r),
                 Phase::Running { job, ends } if self.now >= ends => self.finish(r, job),
+                // The listener polls while its worker runs, and a hung runner's listener keeps polling.
+                Phase::Running { .. } | Phase::Hung => self.poll(r),
                 _ => {}
             }
         }
@@ -207,14 +217,22 @@ impl World {
         self.boxes.get_mut(&r).expect("live").phase = phase;
     }
 
-    /// The broker's match: the oldest queued job this runner's labels take, committed against its version.
+    /// One poll as the owner's broker serves it (`workers/site/src/broker.rs`, BF-55's rules): the registration
+    /// shard's record, then `Taken::pick` over the shard's summary, and the operator's `MatchOwner` for a match. A
+    /// hosted runner is ephemeral and `Owner`-scoped, so a runner this broker matched or saw holding a job is never
+    /// matched again. A runner that took its match acquires it at once; a hung one never does.
     fn poll(&mut self, r: RunnerId) {
         let Some(rec) = self.fold().runners.get(&r).cloned() else { return };
-        let Some((job, _, _, version)) = self.fold().queued().into_iter().find(|(_, l, _, _)| l.fits(&rec.labels))
-        else {
+        let sum = self.fold().summary();
+        let picked = self.taken.pick(&[(OWNER_SCOPE_SHARD, &sum)], true, r, &rec.labels, rec.ephemeral, self.now);
+        let Pick::Match { job, version, .. } = picked else { return };
+        let op = ActionsOp::MatchOwner { job, version, runner: r, labels: rec.labels.clone() };
+        self.cmd(ActionsActor::Operator, op).unwrap();
+        self.taken.matched(r);
+        if self.boxes[&r].phase == Phase::Hung {
+            self.rematched += 1;
             return;
-        };
-        self.cmd(ActionsActor::Runner(r), ActionsOp::Job { job, version, event: JobEvent::Matched(r) }).unwrap();
+        }
         self.cmd(ActionsActor::Runner(r), ActionsOp::Job { job, version: version + 1, event: JobEvent::Acquired })
             .unwrap();
         let ends = Timestamp(self.now.0 + self.lengths[&job]);
@@ -400,6 +418,7 @@ fn bf60_fifty_jobs_under_a_cap_of_twenty_with_overlapping_sweeps() {
     assert!(w.full > 0, "the overlapping passes reached the cap and `decide` refused past it");
     assert!(w.boxes.is_empty(), "Sandboxes left 10 minutes after the last job: {:?}", w.boxes);
     assert_eq!(w.registered(), 0, "hosted registrations left 10 minutes after the last job");
+    assert_eq!(w.rematched, 0, "a hung ephemeral runner, still polling, was matched a second job");
     assert!(errors.is_empty(), "{errors:?}");
     eprintln!(
         "BF-60: last job {} s after queueing; {} Sandboxes started; at most {} registered and {} Sandboxes at once; \

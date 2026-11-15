@@ -1,14 +1,14 @@
 # M4-WP4, hosted runners on Sandboxes: results
 
-Branch `m4-runners`, from main f6db1765. The choices are in `decisions/DECISIONS.md`, "M4-WP4: how hosted runners register, count against the cap, and go stale, 2026-11-15". Nothing was deployed, no runner account exists, and nothing was spent on Sandboxes or Cloudflare: the hosted rows wait for the operator's approval of the estimate below.
+Branch `m4-runners`, rebased onto main 4833094d. The choices are in `decisions/DECISIONS.md`, "M4-WP4: how hosted runners register, count against the cap, and go stale, 2026-11-15". The operator approved the estimate below with a $25 stop. The runner account exists: "Graftyard Runners", `<cf-runner-account-id>`, on Workers Paid, workers.dev subdomain `graftyard-runners`. Its account-owned token is the project secret `CLOUDFLARE_RUNNER_API_TOKEN`. On 2026-11-15 it verified at `/accounts/{id}/tokens/verify` and read Workers scripts, Durable Object namespaces, Containers, the registry, and Secrets Store. Its policy grants Workers Scripts, Containers (Cloudchamber), Secrets Store, Workers Observability, Workers Routes, and Account Settings Write. The account then held no script, no container application, and no store. Nothing is deployed yet: the hosted rows wait for the lead's merge to main.
 
 ## Status
 
 | Row | In memory | Hosted |
 | --- | --- | --- |
-| BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | Not run: waits for the estimate's approval |
-| BM-4 | (M4-WP3's matrix with an unmodified runner) | Not run: waits for the estimate's approval |
-| BF-54 | (M4-WP3's broker cap) | Not run: waits for the estimate's approval |
+| BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | Not run: waits for the merge and the deploys |
+| BM-4 | (M4-WP3's matrix with an unmodified runner) | Not run: waits for the merge and the deploys |
+| BF-54 | (M4-WP3's broker cap) | Not run: waits for the merge and the deploys |
 
 ## What is built
 
@@ -32,8 +32,14 @@ Branch `m4-runners`, from main f6db1765. The choices are in `decisions/DECISIONS
   - Triggers: an HMAC-verified `workflow_job` webhook runs a pass for its owner after answering 202, and the 5-minute cron runs a pass for every owner.
   - `entry.mjs` exports the SDK's `Sandbox` class twice, one class per instance type. `worker-build --release` builds `index.js` with `fetch` and `scheduled`, and esbuild bundles `entry.mjs` against `@cloudflare/sandbox` 0.12.14.
   - `deploy.mjs` writes the wrangler config. It has been run only with `--config-only`.
-- **The runner image** (`containers/runner/Dockerfile`): the `cloudflare/sandbox` 0.12.14 base plus `actions/runner` 2.338.2, checked against its release SHA-256. Not built, because the orb cannot reach the Docker daemon. The first hosted run builds it.
-- **Not built:** `graftyard runners init` and `graftyard runners upgrade`. `HOSTED_OWNERS` (owner to installation id) stands in for listing the App's installations, which the install does not serve yet.
+- **The runner image** (`containers/runner/Dockerfile`): the `cloudflare/sandbox` 0.12.14 base plus `actions/runner` 2.338.2, checked against its release SHA-256. It builds in the orb: 2.04 GB, with `Runner.Listener --version` answering 2.338.2 and `/container-server/sandbox` present. `tests/m4/wp4/image.sh <tag>` builds it and pushes it to the runner account's registry, then prints the digest-pinned name. The orb's user is not in the docker group, but passwordless `sudo` reaches the daemon, so the script runs `sudo docker build` and gives wrangler's push a `WRANGLER_DOCKER_BIN` wrapper around `sudo docker`. `wrangler containers build` cannot run here, because it passes `--load` and the engine has no buildx. This is the same `docker build` and `wrangler containers push` that `tests/am1/hotshards/image.sh` used for the git image.
+- **The bundle.** `node workers/runners/deploy.mjs <runners.json> --config-only`, then `wrangler deploy -c <config> --dry-run --containers-rollout=none --outdir <dir>`, writes `entry.js` and one `.wasm` module, about 1.2 MiB. The Sandbox SDK imports `node:path/posix`, so both deploy paths set `nodejs_compat`, as the SDK's templates do.
+- **CLI** (`cli/src/runners.rs`). Both commands use `CLOUDFLARE_RUNNER_API_TOKEN`, so the install's deploy token never reaches the runner account.
+  - `graftyard runners init --account $R` writes `HostedRunnersAppKey` to the runner account's Secrets Store `graft-runners`. It uploads `graft-runners` with its bindings, its `v1` migration, the 5-minute sweep, and the workers.dev route for the App's webhook. Then it creates the `standard-3` and `standard-4` container applications from the image's digest. A rerun creates nothing that already exists.
+  - `graftyard runners upgrade` deploys only a `release.json` that verifies under the release key (Ed25519 over the raw record, as `ReleaseUploaded.record_sig`) and lists every bundle file's SHA-256 and the image digest. Its first run uploads a version tagged with the release id and sends it 10%. A run at least a day later sends it 100% and rolls both container applications to the image (DESIGN, "Failure modes", `actions state` [guess]).
+  - Gap: a container application holds one image, so the 10% half runs the old image. The release registry's record has no image list yet (SHARED, "The registry"); `images` is this command's field.
+  - Stub tests, 5: init writes the key only to Secrets Store and creates both instance types on their namespaces; a tag-pinned image is refused; upgrade refuses a wrong key, a changed module, and another image; the canary stays at 10% until a day has passed.
+- `HOSTED_OWNERS` (owner to installation id) stands in for listing the App's installations, which the install does not serve yet.
 
 ## BF-60 in memory: `workers/runners/tests/bf60.rs`
 
@@ -53,7 +59,7 @@ Two more tests in the same file:
 
 ## Plants: `tests/m4/wp4/plant.py`
 
-17 of 17 caught. The first run missed two. "Start ignores the cap's room" got through because every test queued only one row; `hosted::tests::rows_share_the_caps_room` now queues two. "A runner whose job completed is not stale" got through because every runner that had held a job was also past `HOSTED_IDLE`; the demand test now queues jobs while those runners are stale. One planned plant was dropped: "the cap counts only the fold" cannot be written without reaching into the scratch's private fields.
+21 of 21 caught after the rebase onto main 4833094d (plant 12 is BF-55's "never rematch an ephemeral runner" rule, which holds for hosted runners because they are ephemeral and `Owner`-scoped; plants 18 to 20 are `graftyard runners upgrade`'s). The first run missed two. "Start ignores the cap's room" got through because every test queued only one row; `hosted::tests::rows_share_the_caps_room` now queues two. "A runner whose job completed is not stale" got through because every runner that had held a job was also past `HOSTED_IDLE`; the demand test now queues jobs while those runners are stale. One planned plant was dropped: "the cap counts only the fold" cannot be written without reaching into the scratch's private fields.
 
 | # | Plant | Caught by |
 | --- | --- | --- |
@@ -69,11 +75,15 @@ Two more tests in the same file:
 | 9 | A runner whose job completed is not stale | the demand test |
 | 10 | An idle runner is never stale by age | the demand test |
 | 11 | A busy runner is listed stale | the demand test |
-| 12 | A refused delete still destroys the Sandbox | the stale-runner test, the pass test |
-| 13 | A stale runner's Sandbox is destroyed without deleting it | bf60, the stale-runner test, the pass test |
-| 14 | The vCPU stop is ignored | the vCPU test |
-| 15 | Registered runners are not counted toward the vCPU stop | the vCPU test |
-| 16 | Every label runs on `standard-3` | the pass test, the vCPU test |
+| 12 | A broker matches a hosted runner again after its job (BF-55's rule) | bf60, the broker's ephemeral-runner test |
+| 13 | A refused delete still destroys the Sandbox | the stale-runner test, the pass test |
+| 14 | A stale runner's Sandbox is destroyed without deleting it | bf60, the stale-runner test, the pass test |
+| 15 | The vCPU stop is ignored | the vCPU test |
+| 16 | Registered runners are not counted toward the vCPU stop | the vCPU test |
+| 17 | Every label runs on `standard-3` | the pass test, the vCPU test |
+| 18 | `runners upgrade` deploys a release whose signature does not verify | the upgrade refusal test |
+| 19 | `runners upgrade` goes to 100% before the canary day | the canary test |
+| 20 | `runners upgrade` rolls the image with the 10% canary | the canary test |
 
 ## Cost estimate for the hosted runs
 
@@ -92,7 +102,7 @@ Two more tests in the same file:
 
 - **Instance type: `standard-4`.** It is the largest type, at 12 GiB [doc]. A listener holds about 85 MB idle and a job's worker about 95 MB more [measured, lead]. Memory binds, not vCPU.
 - **100 listeners per instance.** 100 × 85 MB plus 512 MiB for the Sandbox server and OS [guess] is 9,012 of 12,288 MiB. The remaining 3.2 GiB holds 34 concurrent workers per instance before memory runs out, or 850 jobs at once across the run.
-- **25 instances**, 100 vCPU in all. That is far under the account's concurrent vCPU limit, which the limits page now gives as 15,000 (the design and `research/agents.md` give 1,500).
+- **25 instances**, 100 vCPU in all. That is far under the account's limit of 15,000 concurrent vCPU (Containers limits page, read 2026-11-15).
 - **Run length: about 36 min, budgeted at 60.**
   - 3 min for the image pull and start [guess].
   - 8.3 min for 2,500 registrations plus 2,500 session opens at 10 a second.
@@ -115,6 +125,6 @@ All of these pass on the branch:
 - `cargo fmt --check`.
 - `cargo clippy --workspace --all-targets -- -D warnings`.
 - wasm32 clippy for `workers/site` and `workers/edge`, each with and without `test-faults`, and for `workers/front` and `workers/runners`. CI now runs the last one too.
-- `cargo test --workspace`: 966 tests in 88 binaries, 0 failed.
+- `cargo test --workspace`: 992 tests in 90 binaries, 0 failed.
 - `go test ./...` in `tests/m0/porcupine` and `containers/git/server`.
 - `scripts/check_design.py`, `check_names.py`, and `check_links.py`.

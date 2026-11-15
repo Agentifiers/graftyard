@@ -23,13 +23,15 @@ const config = {
   name: c.script,
   main: "entry.mjs",
   compatibility_date: "2026-10-01",
+  // The Sandbox SDK's bundle imports `node:path/posix`; its templates set this flag.
+  compatibility_flags: ["nodejs_compat"],
   workers_dev: true,
   preview_urls: false,
   vars: {
     GRAFTYARD_URL: c.graftyard_url,
     HOSTED_RUNNERS_APP_ID: String(c.app_id),
     HOSTED_OWNERS: JSON.stringify(c.owners),
-    ACCOUNT_VCPU: String(c.account_vcpu ?? 1500),
+    ACCOUNT_VCPU: String(c.account_vcpu ?? 15000),
   },
   secrets_store_secrets: [{ binding: "HOSTED_RUNNERS_APP_KEY", store_id: storeId, secret_name: secretName }],
   durable_objects: {

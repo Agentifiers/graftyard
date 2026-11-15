@@ -128,7 +128,7 @@ impl Live {
             app_id: var(&env, "HOSTED_RUNNERS_APP_ID")?.parse().map_err(|_| "HOSTED_RUNNERS_APP_ID")?,
             key: app_key(&pem)?,
             owners: owners.into_iter().filter(|(o, _)| only.is_none_or(|x| x.eq_ignore_ascii_case(o))).collect(),
-            vcpu: var(&env, "ACCOUNT_VCPU").ok().and_then(|v| v.parse().ok()).unwrap_or(1_500),
+            vcpu: var(&env, "ACCOUNT_VCPU").ok().and_then(|v| v.parse().ok()).unwrap_or(15_000),
             tokens: RefCell::default(),
             env,
         })

@@ -20,10 +20,20 @@ pub struct Module<'a> {
 
 impl Cf {
     pub fn from_env(account: &str) -> Res<Cf> {
-        let token = std::env::var("CLOUDFLARE_API_TOKEN")
-            .map_err(|_| "CLOUDFLARE_API_TOKEN is not set: the deploy token comes from the environment".to_string())?;
+        Cf::from_env_var(account, "CLOUDFLARE_API_TOKEN")
+    }
+
+    /// The same, with the token from `var`: the runner account's commands read `CLOUDFLARE_RUNNER_API_TOKEN`, so the
+    /// install's deploy token is never sent to another account.
+    pub fn from_env_var(account: &str, var: &str) -> Res<Cf> {
+        let token =
+            std::env::var(var).map_err(|_| format!("{var} is not set: the deploy token comes from the environment"))?;
         let base = std::env::var("GRAFTYARD_CF_API").unwrap_or_else(|_| "https://api.cloudflare.com/client/v4".into());
-        Ok(Cf { base: base.trim_end_matches('/').into(), account: account.into(), token })
+        Ok(Cf::with(&base, account, &token))
+    }
+
+    pub fn with(base: &str, account: &str, token: &str) -> Cf {
+        Cf { base: base.trim_end_matches('/').into(), account: account.into(), token: token.into() }
     }
 
     fn url(&self, path: &str) -> String {
@@ -80,6 +90,45 @@ impl Cf {
 
     /// Uploads and deploys one version of `script` (`PUT /workers/scripts/{name}`, multipart).
     pub fn put_script(&self, script: &str, metadata: &Value, modules: &[Module]) -> Res<()> {
+        self.multipart("PUT", &format!("/workers/scripts/{script}"), metadata, modules).map(|_| ())
+    }
+
+    /// Uploads one version of `script` without deploying it (`POST /workers/scripts/{name}/versions`), and answers its id.
+    pub fn upload_version(&self, script: &str, metadata: &Value, modules: &[Module]) -> Res<String> {
+        let v = self.multipart("POST", &format!("/workers/scripts/{script}/versions"), metadata, modules)?;
+        v["result"]["id"].as_str().map(String::from).ok_or_else(|| "version upload returned no id".into())
+    }
+
+    /// The versions and percentages of the script's latest deployment, and when it was made.
+    pub fn deployed(&self, script: &str) -> Res<(Vec<(String, f64)>, String)> {
+        let v = self.call("GET", &format!("/workers/scripts/{script}/deployments"), &[], None)?;
+        let d = &v["result"]["deployments"][0];
+        let versions = d["versions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|x| (x["version_id"].as_str().unwrap_or("").to_string(), x["percentage"].as_f64().unwrap_or(0.0)))
+            .collect();
+        Ok((versions, d["created_on"].as_str().unwrap_or("").to_string()))
+    }
+
+    /// A version's annotations (`workers/tag` and `workers/message`).
+    pub fn version_tag(&self, script: &str, version: &str) -> Res<Option<String>> {
+        let v = self.call("GET", &format!("/workers/scripts/{script}/versions/{version}"), &[], None)?;
+        Ok(v["result"]["annotations"]["workers/tag"].as_str().map(String::from))
+    }
+
+    /// A percentage deployment of `versions`, whose percentages sum to 100.
+    pub fn deploy_versions(&self, script: &str, versions: &[(&str, u8)], message: &str) -> Res<()> {
+        let body = json!({
+            "strategy": "percentage",
+            "versions": versions.iter().map(|(id, p)| json!({ "version_id": id, "percentage": p })).collect::<Vec<_>>(),
+            "annotations": { "workers/message": message },
+        });
+        self.json("POST", &format!("/workers/scripts/{script}/deployments"), &[], &body).map(|_| ())
+    }
+
+    fn multipart(&self, method: &str, path: &str, metadata: &Value, modules: &[Module]) -> Res<Value> {
         let boundary = format!("graftyard{}", crate::config::hex(&crate::config::random::<12>()));
         let mut body = Vec::new();
         let mut part = |name: &str, filename: Option<&str>, ct: &str, bytes: &[u8]| {
@@ -99,8 +148,7 @@ impl Cf {
         }
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
         let ct = format!("multipart/form-data; boundary={boundary}");
-        self.call("PUT", &format!("/workers/scripts/{script}"), &[], Some((&ct, &body)))?;
-        Ok(())
+        self.call(method, path, &[], Some((&ct, &body)))
     }
 
     pub fn workers_dev(&self, script: &str) -> Res<bool> {
@@ -140,6 +188,25 @@ impl Cf {
 
     pub fn create_container_app(&self, body: &Value) -> Res<()> {
         self.json("POST", "/containers/applications", &[], body).map(|_| ())
+    }
+
+    /// Every container application in the account.
+    pub fn container_apps(&self) -> Res<Vec<Value>> {
+        let v = self.call("GET", "/containers/applications", &[], None)?;
+        Ok(v["result"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// Changes an application's configuration, then rolls it out to every instance as wrangler does (`full_auto`).
+    pub fn roll_container_app(&self, id: &str, configuration: &Value) -> Res<()> {
+        self.json("PATCH", &format!("/containers/applications/{id}"), &[], &json!({ "configuration": configuration }))?;
+        let body = json!({
+            "description": "graftyard runners upgrade",
+            "strategy": "rolling",
+            "kind": "full_auto",
+            "step_percentage": 100,
+            "target_configuration": configuration,
+        });
+        self.json("POST", &format!("/containers/applications/{id}/rollouts"), &[], &body).map(|_| ())
     }
 
     pub fn delete_script(&self, script: &str) -> Res<()> {
