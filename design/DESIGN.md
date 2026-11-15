@@ -1047,8 +1047,8 @@ pub enum R2Key { Pack { network: NetworkId, id: PackId }, Idx { network: Network
                  ArchiveCache { network: NetworkId, commit: Oid, prefix: Digest, format: ArchiveFormat } /* derived */,
                  Committed { of: Box<R2Key> } /* marker for a committed `Pack` or `Blob`: (chain, index, checksum, bytes) */,
                  Upload { network: NetworkId, id: PackId } /* journal of an in-flight multipart upload's id */ }
-/// The marker's checksum and size, also in its metadata, let the filler verify a copy without the chain. The binding
-/// cannot list open multipart uploads, so the edge journals each under `Upload` first (`tests/m1/results/m1-wp4.md`).
+/// The marker's checksum and size, also in its metadata, let the filler verify a copy without the chain: it streams the copy bucket to bucket, and the binding
+/// checks both, since 16 copies read whole killed every cron run [measured, `tests/am1/results/r22-sweep-fill.md`]. The binding cannot list open multipart uploads, so the edge journals each under `Upload` first (`tests/m1/results/m1-wp4.md`).
 /// `from_at` and `to_at` let `RepoRestore` find the last index with `at <= t` inside an archived range from the fold
 /// alone (M0-WP8 found the day-0 index truncated on every member by day 30).
 pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_at: Timestamp, pub to_at: Timestamp,

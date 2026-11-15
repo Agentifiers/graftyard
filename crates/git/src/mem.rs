@@ -20,6 +20,8 @@ pub struct MemBucket {
     fail_puts: Cell<bool>,
     fail_gets: Cell<bool>,
     fail_prefix: RefCell<Option<String>>,
+    /// Bytes `get` has handed to callers: on a Workers host, bytes in the isolate's memory.
+    read: Cell<u64>,
 }
 
 impl MemBucket {
@@ -43,6 +45,11 @@ impl MemBucket {
     /// Fails only puts whose key starts with `prefix`, such as markers.
     pub fn fail_puts_under(&self, prefix: Option<&str>) {
         *self.fail_prefix.borrow_mut() = prefix.map(str::to_owned);
+    }
+
+    /// The bytes `get` has returned so far.
+    pub fn bytes_read(&self) -> u64 {
+        self.read.get()
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -96,7 +103,30 @@ impl Bucket for MemBucket {
 
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
         self.readable()?;
-        Ok(self.objects.borrow().get(key).map(|(b, _)| b.clone()))
+        let b = self.objects.borrow().get(key).map(|(b, _)| b.clone());
+        self.read.set(self.read.get() + b.as_ref().map_or(0, |b| b.len() as u64));
+        Ok(b)
+    }
+
+    async fn copy_new(
+        &self,
+        from: &Self,
+        key: &str,
+        expect: Option<(u64, Digest)>,
+    ) -> Result<Option<PutNew>, StoreError> {
+        from.readable()?;
+        let Some((body, info)) = from.objects.borrow().get(key).cloned() else { return Ok(None) };
+        if let Some((n, sum)) = expect
+            && (body.len() as u64 != n || Digest(Sha256::digest(&body).into()) != sum)
+        {
+            return Err(StoreError(format!("{key}: the copy's length or SHA-256 is not the expected one")));
+        }
+        self.put_failing(key)?;
+        if let Some((_, i)) = self.objects.borrow().get(key) {
+            return Ok(Some(PutNew::Exists(i.sha256)));
+        }
+        self.plant(key, &body, Timestamp(self.now.get()), &info.meta);
+        Ok(Some(PutNew::Created))
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {

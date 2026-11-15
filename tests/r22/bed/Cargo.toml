@@ -1,0 +1,24 @@
+[package]
+name = "sweepmem"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[features]
+edge = []
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+graftyard-git = { path = "../../../crates/git", features = ["worker"] }
+graftyard-types = { path = "../../../crates/types" }
+worker = "0.8.7"
+sha2 = "0.10"
+serde_json = "1"
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1

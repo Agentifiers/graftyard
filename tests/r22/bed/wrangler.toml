@@ -1,0 +1,12 @@
+name = "sweepmem"
+main = "./build/index.js"
+compatibility_date = "2026-10-01"
+[[r2_buckets]]
+binding = "A"
+bucket_name = "bed-a-packs"
+[[r2_buckets]]
+binding = "B"
+bucket_name = "bed-b-packs"
+[[r2_buckets]]
+binding = "C"
+bucket_name = "bed-c-packs"

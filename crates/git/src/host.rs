@@ -101,6 +101,45 @@ impl Bucket for R2 {
         }
     }
 
+    /// The source's body goes into the put through a `FixedLengthStream` of the expected length, so the runtime moves
+    /// the bytes and none enter wasm memory; R2 checks the length as the stream ends and the SHA-256 before it stores.
+    /// The pipe runs on its own: a put refused by its precondition may never read the stream.
+    async fn copy_new(
+        &self,
+        from: &Self,
+        key: &str,
+        expect: Option<(u64, Digest)>,
+    ) -> Result<Option<PutNew>, StoreError> {
+        let Some(o) = from.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+        let meta: Vec<(String, String)> = o.custom_metadata().unwrap_or_default().into_iter().collect();
+        let len = expect.map_or(o.size(), |(n, _)| n);
+        let Some(body) = o.body() else { return Ok(None) };
+        let worker::ResponseBody::Stream(src) = body.response_body().map_err(worker_err)? else {
+            return Err(StoreError(format!("{key}: the source's body is not a stream")));
+        };
+        let fixed = match u32::try_from(len) {
+            Ok(n) => worker::worker_sys::FixedLengthStream::new(n),
+            Err(_) => worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len)),
+        }
+        .map_err(|e| err(worker::Error::from(e)))?;
+        let piped = src.pipe_to(&fixed.writable());
+        worker::wasm_bindgen_futures::spawn_local(async move {
+            let _ = worker::wasm_bindgen_futures::JsFuture::from(piped).await;
+        });
+        let mut opts: Vec<(&str, wasm_bindgen::JsValue)> = vec![
+            ("onlyIf", object(&[("etagDoesNotMatch", "*".into())]).into()),
+            ("customMetadata", meta_object(&meta)),
+        ];
+        if let Some((_, sum)) = expect {
+            opts.push(("sha256", js_sys::Uint8Array::from(&sum.0[..]).buffer().into()));
+        }
+        let v = js(self.raw().put(key.to_owned(), fixed.readable().into(), object(&opts).into())).await?;
+        if v.is_null() {
+            return Ok(Some(PutNew::Exists(self.head(key).await?.and_then(|o| o.sha256))));
+        }
+        Ok(Some(PutNew::Created))
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;

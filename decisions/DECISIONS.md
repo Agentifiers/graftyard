@@ -3781,3 +3781,15 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 **Evidence.** `reads_at_one_instant_share_one_round_and_no_learner_gets_it` (`crates/raft/tests/scenarios.rs`) fails on main: 200 reads at one instant sent 200 rounds to each voter. `tests/m0carried/plant18.py`. The long sweep passed (2,000 HARSH, 2,000 GRAY, 4,000 live seeds), and Porcupine on h, h.gray and h.live returned Ok on 153,165, 2,247,416 and 5,961,247 operations (`tests/m0/results/read-rounds.md`). The same seeds' gray half with the rule: 12 seeds over 20 s, the longest 27.5 s, against main's 12 and 22.7 s.
 
 **Flip.** A hosted B0-33 whose voters still send tens of duplicate AppendEntries per target in one millisecond, which would point to another per-read broadcast; or a row whose reads wait measurably longer for their grant than on main.
+
+### `r22-sweep-fill`: the sweeper's filler streams a copy from bucket to bucket, 2026-11-15
+
+**Decision.** The third-bucket filler (`graftyard_git::sweep`, `fill`) copies a committed pack and its stored `.idx` with `Bucket::copy_new`. On Workers the source's body is piped into a `FixedLengthStream` of the marker's length, and that stream is the create-only put's body, with the marker's SHA-256 as the put's `sha256`. No byte of the copy enters wasm memory, and R2 refuses a copy whose length or SHA-256 is not the marker's.
+
+**Why.** Every run of site a's `*/15` cron on `graft-m2b` since 2026-11-13 ended "Promise will never complete." at wasm 150 to 195 MB, and site a's orphan sweep and fold audit had not finished since (R22). The fill read each pack whole to check and re-put it, 16 at once. Network 131296, B0-34's 5 GB monorepo, has 71 third-bucket copies to fill, 996 MB, and the first 16 are 8 to 53 MB each, 328 MB in all; the failing runs' only R2 GETs were those packs. The cursor is stored only at the end of a run, so each run started at 131292 and died on 131296.
+
+**Beat.** (a) A lower fill concurrency: one 53 MB pack read whole is already a third of an isolate's 128 MB, and promoted packs reach 207 MB. (b) Multipart copies in 16 MiB parts through wasm, as the edge's tee does: it bounds memory but adds the part buffers, upload journals, and abort paths for a copy the runtime can make itself. (c) Storing the cursor before each network: the run would still die on 131296, one network further on.
+
+**Evidence.** `tests/am1/results/r22-sweep-fill.md`: the failing run's trace and R2 reads, and the local workerd bed (`tests/r22/bed/run.sh`), where one sweep of 16 fills of 20 MB took 382.3 MB of wasm memory on `origin/main` and 1.3 MB with the change, with every copy byte-identical and wrong lengths and checksums refused. `sweep::tests::committed_pack_in_one_bucket_with_a_marker_is_filled_never_deleted` fails on main (218 bytes read, 0 expected). `tests/r22/plant.py`: 6 of 6.
+
+**Flip.** A hosted cron run that streams a pack but whose put the binding refuses for its length, or a platform change that drops `FixedLengthStream` as a known-length body for R2 `put`.
