@@ -7,6 +7,7 @@
 #   amp orb service start b030-monitor --command 'bash tests/am1/b030split/rerun.sh monitor'
 #   amp orb service start b030-cross   --command 'bash tests/am1/b030split/rerun.sh cross'
 #   amp orb service start b030-watch   --command 'bash tests/am1/b030split/rerun.sh watch'
+#   amp orb service start b030-drain   --command 'bash tests/am1/b030split/rerun.sh drain'
 # STOP_USD (default 175) is the rerun's own spend, DO, Workers and containers, from the start time in
 # tests/am1/raw/b030r2.start. To change it mid-run, write the new number to tests/am1/raw/b030-stop-usd.
 cd "$(dirname "$0")/../../.."
@@ -30,6 +31,9 @@ case "$1" in
     # No keepHome: handing leadership back to site 0 was the first run's aid for a promotion that worked only on a warm
     # home shard (b0-30.md, "Blocked on", 7), which hot-shards-2 removed; like the keeper, it would steer leadership.
     B030_HOME=none node tests/am1/b030/load.mjs >> $R/b030r2-load.log 2>&1 ;;
+  drain)
+    # After load.mjs stops at day 30: every push its schedule still owed, at its concurrency (operator, 2026-11-15).
+    node tests/am1/b030/drain.mjs >> $R/b030r2-drain.log 2>&1 ;;
   monitor)
     until seeded; do sleep 60; done
     STOP_USD=${STOP_USD:-175} B030_SINCE=$(cat $R/b030r2.start) MONITOR_S=900 node tests/am1/b030/monitor.mjs >> $R/b030r2-monitor.log 2>&1 ;;

@@ -7,18 +7,18 @@ up with long archive runs, and follower calls past CALL_DEADLINE with them?).
 - StepDowns come from the group's own objects only (tests/am1/raw/b030-objects.txt), each with its site, kind, target,
   and whether it fell inside an archive run.
 - For each run, and for the same length of time just before it, every follower site's `/raft` p50, max and count past
-  CALL_DEADLINE_MS (3000), from the group's member objects.
+  CALL_DEADLINE_MS (1000, `raft::CALL_DEADLINE`), from the group's member objects.
 Token from the environment, by header only."""
 import datetime as D, json, os, re, statistics as S, sys, time, urllib.error, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
 def fetch(r):
-    """The logs API answers a 500 now and then; retry it twice."""
+    """The logs API answers a 500 or times out a handshake now and then; retry it twice."""
     for i in range(3):
         try:
             return json.load(urllib.request.urlopen(r, timeout=60))
-        except urllib.error.HTTPError as e:
-            if e.code < 500 or i == 2:
+        except (urllib.error.URLError, TimeoutError) as e:
+            if (isinstance(e, urllib.error.HTTPError) and e.code < 500) or i == 2:
                 raise
             time.sleep(5 * (i + 1))
 
@@ -26,7 +26,7 @@ def fetch(r):
 ms = lambda iso: int(D.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
 iso = lambda t: D.datetime.fromtimestamp(t / 1000, D.UTC).strftime("%H:%M:%S")
 a, b = ms(sys.argv[1]), ms(sys.argv[2])
-RUN_GAP_S, DEADLINE = 30, int(os.environ.get("CALL_DEADLINE_MS", "3000"))
+RUN_GAP_S, DEADLINE = 30, int(os.environ.get("CALL_DEADLINE_MS", "1000"))
 run_ids = {l.strip() for l in open("tests/am1/raw/b030-objects.txt") if l.strip()}
 SITES = {"a": 0, "b": 1, "c": 2}
 

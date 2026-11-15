@@ -98,7 +98,8 @@ for (;;) {
     if (s > GAP_MAX_S && !alerted) { alerted = true; alert(`leaderless ${Math.round(s)} s since ${new Date(since).toISOString()}`); }
   }
   if (now % 600_000 < 5_000) row(OUT, { kind: "tick", at: new Date().toISOString(), longestGapS: longest, leader: led?.site ?? null });
-  if (existsSync("tests/am1/raw/b030-load.done")) break;
+  // The run ends after the drain (tests/am1/b030/drain.mjs), which pushes what load.mjs owed when it stopped at day 30.
+  if (existsSync("tests/am1/raw/b030-run.done")) break;
   await sleep(5_000);
 }
 log(`watch: done, longest gap ${longest} s`);

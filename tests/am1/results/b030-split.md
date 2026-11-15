@@ -307,6 +307,99 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     - 05:32Z and 05:33Z: 77 and 74 pushes, p50 5.9 and 6.4 s, max 10.1 s;
     - on either side: 88 to 112 pushes, p50 4.1 to 5.2 s.
     Every push was acknowledged and `batchFail` stayed 0.
+- **Correction: `CALL_DEADLINE` is 1 s.** `raft::CALL_DEADLINE` is 1 s (`crates/raft/src/lib.rs`). `holds.py` counted
+  follower calls past 3,000 ms, so every "none past `CALL_DEADLINE`" above was judged at the wrong line. From 16:25Z
+  it counts past 1,000 ms (`CALL_DEADLINE_MS`). At 1 s, quiet runs at 08:00Z to 08:40Z had 0 to 4 calls past it per
+  follower, and runs at 15:35Z to 16:17Z had 5 to 19.
+
+### Load stopped at simulated day 14.92: the push path slowed as the repository grew
+
+- **What happened.** From about 10Z the load fell behind its schedule:
+  - Pushes a minute (hourly means): 96 at 07Z to 09Z, then 90 (10Z), 87 (11Z), 82 (12Z), 78 (13Z), 73 (14Z) and
+    66 (15Z). The schedule asks for 96 (1.6 a second).
+  - The load's own push p50 rose from 4.3 to 4.9 s (07Z to 10Z) to 6.9 to 7.2 s (14Z to 15Z). With 8 pushes in flight,
+    that caps throughput near 8 / p50.
+  - The pushes owed (`pushDue`) were 37 to 52 until 09Z. They reached 6,604 at the stop.
+  - Every push sent was acknowledged: 40 `pushFails` over the whole run, `batchFail` 0.
+- **StepDowns rose with it.** Per 20-minute window: 2 (13:12Z), 4 (14:12Z), 3 (14:52Z), 7 (15:12Z), 13 (15:32Z) and
+  9 (15:32Z to 16:17Z). The term went from 24 to 32 between 14:55Z and 15:33Z. All were rest phase, and the longest
+  leaderless gap was 6 s (13:05:30Z and 15:24:55Z). Totals over the rerun: CommitErrors 43 holds and 4 handovers,
+  LoopLag 3 holds and 6 handovers, Confirm 1 hold (`tests/am1/raw/b030r2-stepdowns.txt`).
+- **The stop (16:16:23Z, day 14.916).** I wrote `b030-STOP` on the operator's stop rule, before I had computed the
+  projection the rule needs. Computed after the stop (16:20Z), on the run-only meter ($58.53 at the stop, $2.15 an
+  hour) plus the split's $58:
+  - throughput flat at 15Z's 66 a minute: about 43,500 owed at day 30, a drain of about 11 h, total about $183;
+  - throughput still falling as it did from 07Z to 15Z: about 82,000 owed, a drain of about 69 h, total about $307.
+
+  The first case is under both stop lines and the second is over both. The trend through 16Z (70 a minute) does not
+  settle which. So the load is paused, not ended: `b030-load.done` was renamed to
+  `tests/am1/raw/b030r2-load-stopped-at-1616Z`, and the state resumes from `b030-state.json`.
+- **The drain.** `tests/am1/b030/drain.mjs` (`rerun.sh drain`) starts once `load.mjs` writes `b030-load.done` at
+  day 30. It pushes every owed push at the same concurrency (8 in flight, one per branch), with load.mjs's pack shape
+  and state, sending each one again up to 3 times. It stops on `b030-STOP` and resumes from the state. At the end it
+  writes `b030-drain.done` (owed, carried, lost, wall time) and `b030-run.done`; the watcher now ends on
+  `b030-run.done`. Tested locally against a fake edge that indexes every pack with `git index-pack --strict` and
+  checks each push's parent is its branch's last tip. It answers 503 to one push in 7 and a stale `ng` once:
+  - 37 owed: 37 carried, 0 lost, 7 resent, 0 wrong parents;
+  - 400 owed, stopped by a STOP file after 96 and then resumed: 400 carried in total, 0 lost, 0 wrong parents,
+    `pushDue` 0.
+
+#### Push latency: which phase grew
+
+From Workers Logs only, with no hosted change. Each hour's median is from a 3-minute sample at :20
+(`.amp/in/b030diag/timeline.py`), on site a's leader, at a flat ~96 then falling push rate:
+
+| Hour (Z) | Edge receive-pack | Shard `/validate` | Shard `/merge` (PrSync) | Member `/commit` | Follower `/raft` b / c |
+|---|---|---|---|---|---|
+| 03 | 4,439 ms | 1,412 ms | 1,475 ms | 1,102 ms | 412 / 413 ms |
+| 07 | 4,185 | 1,869 | 2,002 | 974 | 410 / 414 |
+| 09 | 4,090 | 1,994 | 2,086 | 892 | 421 / 441 |
+| 11 | 5,096 | 2,609 | 2,771 | 978 | 429 / 432 |
+| 13 | 6,105 | 2,978 | 3,426 | 1,060 | 553 / 522 |
+| 15 | 6,616 | 3,539 | 3,919 | 1,066 | 495 / 516 |
+
+- **The commit round did not grow.** `/commit` stayed at 0.9 to 1.1 s and the follower calls at 0.4 to 0.55 s.
+  Apply is inside the commit round.
+- **The git cache shard grew.** `/validate` went from 1.4 s to 3.5 s (2.5x), and the PrSync test merges from
+  1.5 s to 3.9 s (2.7x). The wall time of a validate is all in the container: the shard isolate's CPU is 8 to 11 ms.
+  Other shard measures grew the same way:
+  - catch-up ingest per entry, 356 ms (03Z) to 601 ms (15Z);
+  - `Promoted`, p50 5.8 s (05Z) to 10.1 s (15:40Z);
+  - PrSync's first attempt, handled in 191 to 196 s at 05Z and 08Z, 269 to 272 s at 12Z and 345 to 351 s at 15Z.
+- **The shard container is near saturated.** Site 0's shard container (standard-4) used 5,335 CPU-s in the 03Z hour,
+  6,576 at 08Z and 7,062 at 13Z, about 1.5 to 2 of its 4 vCPUs on average. Its `cpu_p99`, which leaves out derived
+  work (ingest, refs, repack and promotion), read 0.62 to 0.66 at 16:07Z. Sites 1 and 2's shards used 200 to 700 CPU-s
+  an hour, about a tenth of site 0's.
+- **What grows with the repository is the ref count.** PrSync writes `refs/pull/N/head` and `refs/pull/N/merge` for
+  a pull request it handles while the pull request is open, and nothing deletes them when it closes (no delete of
+  either in `crates/git/src`). Each of load.mjs's pull requests is open for 20 simulated minutes, about 67 s of wall
+  time, against PrSync's 191 to 351 s first attempts, so only some get refs: 10,567 of the 90,240 opened. At 16:01Z
+  the repository held 21,134 refs under `refs/pull/`, against 501 branches. The count was not read earlier in the
+  run, so its growth rate is inferred, not measured. Validate's connectivity walk (`rev-list --objects --stdin
+  --not --all`) and detail walk, and every merge's `--not --all`, start from every ref. A local check on git 2.56 with
+  reftable and one commit per ref timed the walk for a one-commit push at 4.7 ms with 500 refs and 75 ms with 21,000
+  without a commit-graph, or 2.7 to 25 ms with one. That is a 9 to 16x growth per walk, but tens of ms against a
+  2 s rise, so the walk alone is not the whole cost. The rest of the growth is not measured. It may be in index-pack,
+  in the walks contending for the container's CPU with the shard's own repack and promotions, or in the reftable
+  stack that each ref write grows. The shard's `/status` on this deploy has no `procs`, so the split by process is
+  not available.
+- **The hypothesis.** Per-push work grows with the repository: confirmed for the git cache shard (validate, test
+  merges, ingest and promote all grew 1.7 to 2.7x), and not for the commit round. The cause in code that fits is
+  PrSync's refs: `refs/pull/N/{head,merge}` stay after their pull request closes, so `--not --all` grows with every
+  pull request ever opened (load.mjs opens 6,050 a simulated day). That is a hypothesis: the timings line up with the
+  ref count, but the cost of each walk was not measured on the hosted shard.
+- **The site b holds at 15:22:47Z to 15:23:52Z.** Five CommitErrors holds, outside any `Archived` run but not outside
+  archive work: site b, newly leader after a LoopLag handover at 15:22:24Z, ran four `Promoted` steps from 15:22:41Z
+  to 15:23:03Z (5.2 to 9.1 s each). `holds.py` counts only `Archived` lines as runs. In the same 110 s its member used
+  33.3 CPU-s in 583 invocations: `/commit` 103 ms, `/read` 50 ms and `/raft` 38 ms of CPU each. Site a's member, as
+  leader, used 5.1 CPU-s in 667 invocations over the same length of time, and 5.6 CPU-s at 08:20Z. Its alarms ran
+  4.3 to 7.8 s of wall time each. Each hold counted 12 to 44 calls per follower with 3 to 7 failed, where a failed
+  call is one past the 1 s `CALL_DEADLINE`. A new leader on a site whose member and shard are not warm pays several
+  times the CPU per call while it also promotes, so its follower calls miss the deadline.
+- **What I did not check.** Whether reftable compaction or index-pack's own time is the growing part; the hosted
+  cost of `--not --all` at 21,000 refs; and whether site a's shard container's CPU limits validates (the container's
+  per-process split needs main's `procs`).
+
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
   (`objectId_in` on `durableObjectsPeriodicGroups` and `durableObjectsInvocationsAdaptiveGroups`), and container usage
