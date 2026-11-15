@@ -87,8 +87,9 @@
 //	                                 last request's time in ms, kept as <repo>/graft-used's mtime
 //	POST /evict?net=N                deletes the repository; 409 while a request holds it, so a clone streaming
 //	                                 from it is never cut
-//	GET  /procs                      {"procs": [{"pid","cmd","nice","cpu_s","rss_mb"}]}: every running git process,
-//	                                 most CPU first, for the shard object's /status
+//	GET  /procs[?net=N]              {"procs": [{"pid","cmd","nice","cpu_s","rss_mb"}]}: every running git process,
+//	                                 most CPU first, for the shard object's /status; with net, also "packs":
+//	                                 {"count","bytes","kept","kept_bytes"} of that network's repository
 //	GET  /load                       {"cpu_p99","queue_depth"}: the last minute's p99 busy fraction of the
 //	                                 container's vCPUs, one sample a second, and the client validates waiting or
 //	                                 running. CPU excludes derived work (ingest, refs, repack, promotion packs, init,
@@ -1041,7 +1042,30 @@ func handleProcs(w http.ResponseWriter, r *http.Request) {
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CPUs > out[j].CPUs })
-	jsonOut(w, map[string]any{"procs": out})
+	res := map[string]any{"procs": out}
+	// With net, the network's packs on this disk: how many, how many kept (`.keep`, the promotions a rehydrate loaded
+	// through their stored .idx), and their bytes, so a run can check that a cold warm kept every promotion.
+	if net := r.URL.Query().Get("net"); netRe.MatchString(net) {
+		if _, err := os.Stat(repo(net)); err == nil {
+			packs, _ := filepath.Glob(filepath.Join(repo(net), "objects", "pack", "pack-*.pack"))
+			var n, kept int
+			var bytes, keptBytes int64
+			for _, f := range packs {
+				st, err := os.Stat(f)
+				if err != nil {
+					continue
+				}
+				n++
+				bytes += st.Size()
+				if _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".keep"); err == nil {
+					kept++
+					keptBytes += st.Size()
+				}
+			}
+			res["packs"] = map[string]any{"count": n, "bytes": bytes, "kept": kept, "kept_bytes": keptBytes}
+		}
+	}
+	jsonOut(w, res)
 }
 
 // handleLoad answers the container's NetworkLoad (design/DESIGN.md, Shape, `NetworkLoad`): cpu_p99, the 99th

@@ -254,6 +254,19 @@ func TestRehydratesRepackLeavesPromotedPacks(t *testing.T) {
 	if n, kept := packCount(repo("7")), len(promos); n > kept+2 || n >= before {
 		t.Fatalf("%d packs from %d, with %d promotions kept: the tail did not roll", n, before, kept)
 	}
+	// /procs?net= counts the network's packs and its kept ones, as a run checks a cold warm kept every promotion.
+	resp, err = http.Get(s.URL + "/procs?net=7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Packs struct{ Count, Kept int }
+	}
+	json.NewDecoder(resp.Body).Decode(&listed)
+	resp.Body.Close()
+	if listed.Packs.Kept != len(promos) || listed.Packs.Count != packCount(repo("7")) {
+		t.Fatalf("/procs?net=7 packs %+v, want %d kept of %d", listed.Packs, len(promos), packCount(repo("7")))
+	}
 	if out := run(t, repo("7"), "", "multi-pack-index", "verify", "--no-progress"); strings.Contains(out, "error") {
 		t.Fatalf("multi-pack-index verify: %s", out)
 	}
