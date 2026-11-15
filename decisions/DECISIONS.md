@@ -3660,3 +3660,15 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 **Evidence.** `a_thousand_open_agent_commands_hold_one_copy_and_none_after_a_higher_term` (`crates/git/tests/admitted_memory.rs`): 500 issue commands with m3org-shaped renders and 500 agent pushes with 64 KB packs, all open, hold 9.9 MB of heap against 17.8 MB on main; after a higher term deposes the leader, 15.7 KB, and on main 1,000 tickets never resolve for the host. `a_leadership_deposed_by_a_higher_term_answers_its_tickets_as_issued` and `a_term_resumed_in_the_same_boot_never_reissues_a_ticket` (`crates/raft/tests/scenarios.rs`) fail on main. `tests/m0carried/plant14.py`. `tests/m0/results/admitted-bytes.md`.
 
 **Flip.** A hosted B0-33 whose leader heap still grows with open tickets past the core's `admittedBytes` times 2, or a `NeedIdBlock` re-send that finds no command on its ticket.
+
+### `learner-reset`: a new member at an address, learner or voter, starts with nothing the leader held for that address, 2026-11-15
+
+**Decision.** When a config change names a new member at an address (a voter's site, or a learner's slot address `learner_addr(slot)`), absent before or under a different `do_name`, the leader resets its per-peer state for that address (`next` to its last index, `matched` to 0, and `matched_at`, `sent`, `pipe`, `promised_at`, `acked_at`, `retries` and `refusals` cleared), and ignores answers to rounds it sent before the change to that address (`Lead::member_from`). The one-voter-change rule still compares voters by site.
+
+**Why.** B0-33 (LM-1 round 23, `tests/am1/results/lm1-memory.md`): the reset ran for new voter sites only. `/learners` places each generation on the same slots, so a leader that had placed generation 2 kept its `matched` of about 748 for each new, empty generation-3 learner, probed it at prev 748 on every call, and was refused 1,776 times (144.9 MB) for the whole row; the learners applied nothing, `append_for_read` sent them no entries for reads at or below the stale index, and the read gate answered 503. A late answer from the old member at an address, to a call sent before the change, would have set the same stale `matched` after the reset.
+
+**Beat.** Keying the leader's per-peer state by `do_name` instead of address: every message, `calls_out`, the host's callers, and the trace key by address, so the whole path would change for one reset. Resetting every learner on any config change: a change that keeps a learner's name would restart its catch-up.
+
+**Evidence.** `a_second_learner_generation_on_the_same_slots_catches_up` (`crates/raft/tests/scenarios.rs`) fails on main, and with the reset but no round guard. `tests/m0carried/plant15.py`. `tests/m0/results/learner-reset.md`.
+
+**Flip.** A hosted row in which a learner placed on a slot an earlier generation used takes longer to catch up than a learner placed on a fresh slot.
