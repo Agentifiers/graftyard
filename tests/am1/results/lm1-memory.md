@@ -2940,3 +2940,161 @@ That leaves the marked phase **about 60 s**.
    and `pack-objects` per pushed byte 2.8 to 4.3 MB/s locally. Hosted, the split of a promotion's time is unmeasured.
 6. **A lower promote-ahead threshold** cuts the 40 s tail, but adds more small promotions, the slowest per pushed
    byte. Not proposed.
+
+### Round 24: B0-34 on m36 (main cfd46001, fetch-ahead), cold warm 127 to 135 s, then the row (2026-11-15)
+
+**Deploy m36.** Main cfd46001: learner-reset, proof-voters, f74-trace, lease-clock, admitted-bytes and fetch-ahead.
+- New shard image `sha256:7e8ff9c4620c7b077504508ce25db54cbc93f9c93484aefa39d4501a6d1dcb65`, built from the merge's
+  `containers/`, standard-4, NOROLL, test-faults.
+- Sites a `17d8d623`, b `eefb3167`, c `fe25cdd2`; the edge redeployed with current formats.
+- The site day ran from a clean worktree at cfd46001. The drivers ran from this branch (b034.sh, memguard.mjs,
+  terms.mjs, b034warm.mjs and netimages.py are not on main), with main's `tsave.mjs` and `tests/f74/calls.py`.
+- Spend before: $134.83.
+
+**Fix 1 alone.** Fix 2, promotions that pack only their range's own objects by name, applies to new promotions only.
+repo:131296's existing promotions stay at about 3.2 times the pushes they cover, so this warm measures fix 1 alone:
+four stored packs of any size fetching at once, with the `.idx` streamed.
+
+**Cold warm.** Sequence:
+- 11:01Z: teardown and sweep, "sweep: no shard container running", and `netimages.py 131296 --none`: 0 running.
+- 11:02:09Z: the warm started (`b034warm-m36.jsonl`).
+- `netimages.py --image sha256:7e8ff9c4` afterwards: 3 running, 0 on another image.
+
+| shard | total | up | marked phase | tail | `/connected` and follow | stored packs | `idx_used` | spool (summed) | per stream | in total over the marked phase | streams at once (spool / marked) | `index-pack` (summed) | lock |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| site a `git#0` | 126.9 s | 32.9 s | 66.8 s | 11.5 s | 13.7 s | 70 (8.63 GB) | 61 | 188.2 s | 45.9 MB/s | 129.3 MB/s | 2.82 | 8.1 s | 35.3 s |
+| site c `git#2` | 134.3 s | 35.2 s | 70.6 s | 12.1 s | 14.0 s | 70 | 61 | 163.6 s | 52.8 MB/s | 122.3 MB/s | 2.32 | 8.5 s | 41.7 s |
+| site b `git#1` | 135.3 s | 35.3 s | 65.4 s | 14.6 s | 18.3 s | 70 | 61 | 140.1 s | 61.6 MB/s | 132.0 MB/s | 2.14 | 10.4 s | 56.4 s |
+
+Each shard skipped 256 pushed packs that promotions cover, with no backstop fault and 0 `.idx` rejected. ls-refs
+listed main at 137.8 s; the warm's catch-ups ended at 129.6, 137.7 and 136.9 s.
+
+**Against DESIGN's 120 s line: fail (127 to 135 s), under the 600 s fail value**, against 154 to 214 s in round 23 on
+the same packs.
+- The marked phase fell from 101 to 155 s to 65 to 71 s. The summed spool is now 2.1 to 2.8 times the marked phase,
+  so the fetches overlap, where in round 23 it was less than the phase.
+- R2 into one container: 46 to 62 MB/s per stream with about 2 to 3 streams at once, 122 to 132 MB/s in total. Round
+  23's one stream ran at 67 to 107 MB/s. So the sum is above the one-stream rate, and the `fetch-ahead` flip ("a summed
+  spool rate near the one-stream rate") does not fire. Per stream it falls [inference: a per-container cap near
+  130 MB/s, which more streams would not raise].
+- Container start (`up`), 33 to 35 s, is now the largest fixed cost. With it, the tail (11.5 to 14.6 s, down from 39 to
+  45 s: promote-ahead promoted more of it during round 23's row, 256 packs skipped against 250) and the backstop
+  (13.7 to 18.3 s), 120 s leaves the marked phase about 55 s. At 130 MB/s that is about 7.2 GB, and this network
+  holds 8.63 GB of promoted packs. Fix 2's 25% fewer promoted bytes on new promotions, or G9's roll-up, would bring it
+  under [inference from these phases].
+- Site memory during the warm: no member or shard object failed. memguard samples begin at the row, below.
+
+**Row: fail.** a1 run `mwhq9e0l`, 11:09:50Z to 11:24:50Z, 500 agents, exit 0. The home shard was killed at 300 s;
+the second network was hot from 420 s and the hostile owner's three from 600 s.
+- **The learner fix holds.** `learners.mjs` placed generation 4 (`repo:131296#4#l0..l7`) at config 828. By 11:08Z
+  every learner had applied 928 of the leader's commit 929, and at 11:13Z 1,330 to 1,334 against the voters' 1,330.
+  a1's wait read "0/8 in 120690 ms" only because it compares `applied < commit` on a moving commit: each learner stayed
+  within one entry, where round 23's learners stayed at 0.
+- **Memory and terms.** memguard: 550 samples, voter peaks 34.8 / 29.5 / 29.6 MiB, no 120 MiB stop. terms.mjs:
+  term 2 throughout, leader site 0. `inFlight.admitted` peaked at 8 tickets and `inFlight.admittedBytes` at 87,180 B,
+  both on the leader.
+- **Commit path.** Leader commit p50 257 ms, p99 529 ms (n 2,473). `read:api` 85,526 of 85,526 ok, p99 2,115 ms.
+- **The git path did not serve.** Every shard ran at 3.5 to 4 vCPU from 11:08Z, which is 210 to 520 CPU-s a minute
+  across the three, to the row's end. The shards answered most `upload-pack` and `validate` calls 503 after their full
+  15 s or 60 s wait, or the caller gave up at 43 s. For example, site a `upload-pack`: 204 × 200 at 11:10, then 503s
+  every minute to 11:24; site c `validate` 11:14: 76 × 503 and 80 cancelled.
+  - The catch-ups behind them were slow: site b caught up 1,139 entries in 19.7 s at 11:16:19Z. Site a's catch-up
+    ended "Network connection lost" at 11:15:06Z (the kill) and again at 11:20:50Z.
+  - The results:
+    - clone time to first byte at j9 (0 to 300 s): 40 of 40 aborted at 120 s;
+    - human pushes at j9: 8 ok of 172 (160 skipped at the cap), p99 121 s;
+    - agent pushes at j9: 132 ok of 859 (478 `full`, 245 timeouts);
+    - tasks 0 of 100 ("The requester has too many open tasks": earlier rows' tasks are still open);
+    - feed 14,770 polls, 2,649 `gone`.
+  - **k stayed 1** on every network, as in rounds 18 and 23.
+  - The cause of the shards' saturation is not isolated here [not measured]. Round 18c's inference was the geometric
+    repack after each rehydrate plus validates, and these numbers fit it but do not prove it.
+
+**Verdict against B0-34's line.** Gate: k in band at most 8, hostile owner held to its pool budget, human push p99 at
+most 3 s beyond transfer, clone TTFB p99 at most 1 s. Fail values: k over 8, any Cloudflare API call, the monorepo's k
+reduced by another owner, or TTFB p99 over 5 s.
+- **Fail:** clone TTFB p99 121.5 s at j9 and human push p99 121 s at j9.
+- **Holds:** no Cloudflare API call (0 files in request paths); k never over 8; the monorepo's k never reduced by
+  another owner (it stayed 1).
+- **Undecided:** the hostile budget and k in band, because nothing stepped.
+
+**Site memory.** `promomem.py` returned no rows for 11:02 to 11:06Z, so the warm's site memory is not measured. Its
+only row near the window is site a at 11:00Z, the site day's first invocation: `scriptThrewException`, wasm 177.5 MB,
+version `e7c34df8`, the version the deploy replaced.
+
+**Raw.** `tests/fanout/raw/b034-m36.status`, `b034warm-m36.jsonl`, `memguard-b034m36.jsonl`, `terms-b034m36.jsonl`,
+`a1-b0-34-m36.jsonl` (a copy of `tests/am1/raw/a1-b0-34-mwhq9e0l.jsonl`), `rehydrate-131296-m36.txt` (the three
+`shard rehydrate` reports). Sweep after the row: 17 torn down, then one more `git#1#net:131296` that started at
+11:28:20Z after it; "sweep: no shard container running".
+
+**Cost** $136.32 at 11:29Z (containers $53.91); site day, warm and row about $1.49.
+
+### Round 24b: B0-33 on m36 (main cfd46001) with the F74 trace: the full 300 s ran under the memory guard; terms 2 to 19, learners' read-index calls the bulk of member calls (2026-11-15)
+
+**Run** `tests/fanout/b033.sh m36r33` (rows.sh's b0-33 row as written: fresh repo, 8 learners, k 4, 300 s, 5,000
+agents), with `tsave.mjs` at `LEARNERS=1 EVERY=10000`.
+- Repo `fm36r33-b033` (131341), run `mwhr84r9`, 11:36:36Z to 11:41:36Z, exit 0.
+- k 4 granted at 11:31:38Z (grants [2,1,6] on sites 0 and 2). Tasks 100 of 100.
+- a1's learner wait read "0/8 in 122002 ms" against commit 114. It is the same moving-commit read as round 24's B0-34,
+  where every learner was within one entry [not checked for this repo before the window].
+
+**Memory: the guard never fired.** 313 samples, voter peaks 40.3 / 44.2 / 51.3 MiB against round 19's stop at
+122.7 MiB at 189 s. `inFlight` (memSplit), the most on any sample:
+
+| site | `admitted` | `admittedBytes` |
+|---|---|---|
+| 0 | 257 | 2,895,947 B |
+| 1 | 61 | 690,362 B |
+| 2 | 231 | 2,602,706 B |
+
+So admitted-bytes holds an open ticket's command to about 11 KB on average (2.9 MB over 257 tickets), and the
+memory storm of rounds 17 and 19 is gone.
+
+**Leaders: churn, term 2 to 19.** terms.mjs: term 2 at 11:31:09Z, then 5 at 11:37:38Z, 6 (site 1) 11:38:00, 8, 9 (site
+2), 10 (site 0), 11, 12, 13, 14 by 11:40:20Z, 15 to 17 by 11:41:30Z, and 19 at the row's end. 94 of the 939 member reads
+memguard made went unanswered.
+
+**The trace** (`calls.py tsave-m36r33.jsonl --from 11:36:36Z --to 11:41:36Z`, `calls-m36r33.{txt,tsv.xz}`):
+
+| calls | sent | reached the callee | answered |
+|---|---|---|---|
+| learner → voter (read-index) | 270,129 | 42,277 | 108,421 |
+| voter → voter (raft) | 12,778 | 6,542 | 5,152 |
+| voter → learner (append) | 3,146 | 3,110 | 2,422 |
+
+- **Learners' calls to the voters are 94% of all member calls:** 307 a second at p50 and up to 14,325 in one second.
+  Each learner sends about 15,000 calls to site 0 and 10,000 to each of sites 1 and 2 in 300 s.
+- **Voter → voter calls mostly never reached the callee** in the 10 s buckets where terms changed. For example
+  11:37:00 to 11:37:40Z: 240 sent, 0 reached, while learners sent 31,472 calls to the voters. When voter calls did
+  arrive (11:38:10, 2,702 sent, 1,222 reached), `work` was 0 to 2 ms at p99: the callee's handler was fast once entered.
+- **The time is in the legs, not in the handler.** Voter → voter `out` p50 up to 6.3 s (2→1) and p99 up to 40 s
+  (2→0), `back` up to 7.3 s, `work` p99 at most 2 ms. Learner → voter totals p50 6 to 10 s. All of this is on callers
+  whose loop lag at send was under 100 ms.
+- **Reading [inference from the trace, not proven]:** the learners' read-index calls queue ahead of the voters' raft
+  calls at each voter, behind the six connections a Workers invocation has waiting for headers, or in workerd's
+  per-object input queue. The heartbeats and votes then arrive seconds late or never, and elections follow. This is
+  F74's question (`decisions/OPEN-QUESTIONS.md`), and the trace is for B0-02, which owns raft and the member calls.
+
+**Row numbers.**
+- Offered: 252 agent-class group commands a second (41.7 agent pushes a second, mean pack 90 KB).
+- Agent pushes: 345 ok of 12,503. 6,668 got "every member asked shed the read: overloaded"; the rest were `not leader`,
+  `no answer` and timeouts.
+- Leader commit p50 2,058 ms, p99 4,622 ms (n 544, at the end leader only).
+- Merges: 0 ok of 57 (30 skipped at the cap).
+- Human pushes: 1 ok of 185 (153 skipped at the cap).
+- `side:comment` 112 ok of 5,576.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | m36 | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 4,622 ms; merges 0 of 27 attempted ok; human pushes 1 of 32 attempted ok | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 345 agent pushes ok in 300 s, 1.15/s at the client | fail |
+| Zero leader changes and `suspect` | term 2 → 19 | fail |
+
+**Raw.**
+- `tests/fanout/raw/rows-m36r33.status`, `memguard-m36r33.{jsonl,err}`, `terms-m36r33.jsonl`.
+- `tsave-m36r33.jsonl.xz` (58.8 MB raw), `calls-m36r33.txt`, `calls-m36r33.tsv.xz`.
+- `a1-b0-33-m36.jsonl` (a copy of `tests/am1/raw/a1-b0-33-mwhr84r9.jsonl`).
+- Sweep after the row: "sweep: no shard container running", twice.
+
+**Cost** $137.04 at 11:46Z (containers $54.09). Round 24 in all, the site day, cold warm, B0-34's row and B0-33, cost
+$2.21 from $134.83.
