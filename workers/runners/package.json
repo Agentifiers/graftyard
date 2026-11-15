@@ -1,0 +1,8 @@
+{
+  "name": "graft-runners",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.14"
+  }
+}

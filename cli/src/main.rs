@@ -9,6 +9,7 @@ mod config;
 mod genesis;
 mod placement;
 mod release;
+mod runners;
 mod sites;
 
 use std::path::{Path, PathBuf};
@@ -95,6 +96,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ReleaseCmd,
     },
+    /// `graft-runners` in the runner account, with `CLOUDFLARE_RUNNER_API_TOKEN` (`cli/src/runners.rs`).
+    Runners {
+        #[command(subcommand)]
+        cmd: RunnersCmd,
+    },
     /// Sends the signed genesis to the edge, which writes it to the empty Release group.
     Install {
         #[arg(long)]
@@ -124,6 +130,50 @@ enum ReleaseCmd {
         input: PathBuf,
         #[arg(long)]
         edge: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunnersCmd {
+    /// Writes `HostedRunnersAppKey`, deploys `graft-runners` with its sweep, and creates its Sandbox applications.
+    Init {
+        #[arg(long)]
+        account: String,
+        /// `workers/runners/deploy.mjs`'s `runners.json`.
+        #[arg(long)]
+        spec: PathBuf,
+        /// The folder `wrangler deploy --dry-run --outdir` wrote.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The runner image in the runner account's registry, pinned by digest.
+        #[arg(long)]
+        image: String,
+        /// The `graftyard-hosted-runners` App's private key (PEM).
+        #[arg(long)]
+        app_key: PathBuf,
+        /// A file holding the App's webhook secret.
+        #[arg(long)]
+        webhook_secret: PathBuf,
+    },
+    /// Deploys a signed release: 10% first, then 100% and the new image on a run a day later.
+    Upgrade {
+        #[arg(long)]
+        account: String,
+        #[arg(long)]
+        spec: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        image: String,
+        /// The release's `release.json`, which lists every bundle file's SHA-256 and the image digest.
+        #[arg(long)]
+        record: PathBuf,
+        /// Its Ed25519 signature: 64 bytes, or 128 hex characters.
+        #[arg(long)]
+        sig: PathBuf,
+        /// The vendor's release-signing public key.
+        #[arg(long)]
+        release_key: PathBuf,
     },
 }
 
@@ -323,6 +373,27 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Release { cmd: ReleaseCmd::Post { input, edge } } => release::post(config, &input, edge.as_deref()),
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
+        Cmd::Runners { cmd: RunnersCmd::Init { account, spec, bundle, image, app_key, webhook_secret } } => {
+            runners::init(runners::InitArgs {
+                account: &account,
+                spec: &spec,
+                bundle: &bundle,
+                image: &image,
+                app_key: &app_key,
+                webhook_secret: &webhook_secret,
+            })
+        }
+        Cmd::Runners { cmd: RunnersCmd::Upgrade { account, spec, bundle, image, record, sig, release_key } } => {
+            runners::upgrade(runners::UpgradeArgs {
+                account: &account,
+                spec: &spec,
+                bundle: &bundle,
+                image: &image,
+                record: &record,
+                sig: &sig,
+                release_key: &release_key,
+            })
+        }
         Cmd::Admin { cmd: AdminCmd::Bootstrap { account, link_out, out } } => {
             admin::bootstrap(account, &link_out, &out)
         }

@@ -470,6 +470,12 @@ impl<'a> ActionsScratch<'a> {
     pub fn run_jobs(&self, r: RunId) -> Vec<&JobRow> {
         self.run(r).map_or_else(Vec::new, |row| row.jobs.iter().filter_map(|j| self.job(*j)).collect())
     }
+    /// Every runner with its record, the overlay's over the fold's.
+    pub fn runners(&self) -> impl Iterator<Item = (RunnerId, &RunnerRecord)> {
+        let over = self.runners.iter().filter_map(|(k, v)| v.as_ref().map(|v| (*k, v)));
+        let base = self.base.runners.iter().filter(|(k, _)| !self.runners.contains_key(k)).map(|(k, v)| (*k, v));
+        over.chain(base)
+    }
     pub fn runners_in(&self, scope: RunnerScope) -> usize {
         let over = self.runners.values().flatten().filter(|r| r.scope == scope).count();
         let base = self.base.runners.iter().filter(|(k, r)| r.scope == scope && !self.runners.contains_key(k)).count();
@@ -811,13 +817,17 @@ impl Command for ActionsCmd {
                 if s.runners_in(r.scope) >= RUNNERS_PER_SCOPE_MAX {
                     return Err(ActionsErr::TooMany);
                 }
+                if r.hosted {
+                    crate::hosted::admit(s, r)?;
+                }
                 let id = RunnerId(s.ids.peek_n(1).ok_or(ActionsErr::NeedIdBlock)?);
                 Ok((smallvec![ActionsEvent::Runner { id, record: Some(r.clone()) }], ActionsOut::Runner(id)))
             }
             ActionsOp::DeleteRunner(id) => {
                 only(admin || self.actor == Runner(*id))?;
-                if s.runner(*id).is_none() {
-                    return none();
+                let Some(rec) = s.runner(*id) else { return none() };
+                if rec.hosted {
+                    crate::hosted::may_delete(s, &self.actor, *id)?;
                 }
                 Ok((smallvec![ActionsEvent::Runner { id: *id, record: None }], ActionsOut::Done))
             }

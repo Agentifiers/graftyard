@@ -140,6 +140,10 @@ impl Family for Actions {
                 .collect();
             return json!({ "runs": runs });
         }
+        // M4-WP4: what the owner's broker reads from each shard for hosted demand (`graftyard_actions::hosted`).
+        if q.get("hosted").and_then(Value::as_bool) == Some(true) {
+            return serde_json::to_value(graftyard_actions::hosted::summary(f)).unwrap_or(Value::Null);
+        }
         if let Some(r) = id_of(q, "runner") {
             let r = RunnerId(r);
             return json!({ "runner": f.runners.get(&r), "session": f.sessions.get(&r) });
@@ -493,6 +497,37 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                     json!({ "status": 201, "body": { "runner": RunnerAt { owner, shard, runner: id } } })
                 }
                 Ok(r) => refused(422, r),
+                Err(e) => refused(503, e),
+            }
+        }
+        // M4-WP4: a hosted registration from the edge, which verified the `graftyard-hosted-runners` App's installation
+        // token on this owner; `decide` checks the record and the owner's cap (`graftyard_actions::hosted::admit`).
+        ("register_hosted", None) => {
+            let rec: act::RunnerRecord =
+                serde_json::from_value(b["record"].clone()).map_err(|e| worker::Error::RustError(e.to_string()))?;
+            if !rec.hosted {
+                return Ok(refused(422, "not a hosted runner"));
+            }
+            match commit(h, fresh_rid(), ActionsActor::Operator, ActionsOp::PutRunner(rec)).await {
+                Ok(Ok(ActionsOut::Runner(id))) => {
+                    json!({ "status": 201, "body": { "runner": RunnerAt { owner, shard, runner: id } } })
+                }
+                Ok(Err(ActionsErr::TooMany)) => refused(409, "the owner runs its cap of hosted runners"),
+                Ok(r) => refused(422, r),
+                Err(e) => refused(503, e),
+            }
+        }
+        // M4-WP4: the hosted-runner service deletes a stale hosted runner, refused while it holds a job.
+        ("delete_hosted", None) => {
+            let Some(id) = b["runner"].as_i64().map(|r| RunnerId(DbId(r))) else { return Ok(refused(400, "runner")) };
+            let hosted =
+                h.core.borrow().as_ref().and_then(|c| c.m.group_fold().fold.runners.get(&id).map(|r| r.hosted));
+            if hosted == Some(false) {
+                return Ok(refused(404, "not a hosted runner"));
+            }
+            match commit(h, fresh_rid(), ActionsActor::Operator, ActionsOp::DeleteRunner(id)).await {
+                Ok(Ok(_)) => json!({ "status": 204, "body": null }),
+                Ok(Err(e)) => refused(422, e),
                 Err(e) => refused(503, e),
             }
         }

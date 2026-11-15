@@ -54,6 +54,7 @@ mod api;
 mod bed_rows;
 mod collab;
 mod hooks;
+mod hosted;
 mod ident;
 mod keys;
 mod oidc;
@@ -2558,6 +2559,12 @@ async fn serve(
     }
     if let Some(rest) = path.strip_prefix(actions::VIEWER) {
         return actions::viewer(&c, req, rest).await;
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX) {
+        let segs: Vec<&str> = rest.trim_start_matches('/').split('/').collect();
+        if let Some(r) = hosted::route(&c, &mut req, &segs).await? {
+            return agents::respond(&c, r.with("content-type", "application/json; charset=utf-8"));
+        }
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
         && let Some(r) = actions::graftyard_route(&c, &mut req, rest).await?

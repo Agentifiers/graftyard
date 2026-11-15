@@ -86,7 +86,7 @@ INSTANCE = {"small": ("standard-2", 1, 6, 12), "medium": ("standard-3", 2, 8, 16
 SCRATCH_GB = 4                     # disk per shard kept free for index-pack, repack, and upload-pack scratch [guess]
 WARM_COPIES = 2                    # each network is warm on its home site and one more
 SSH_CONTAINERS = (3, 0.25, 1, 4)   # basic instances running sshd and cloudflared replicas, one per site
-ACCOUNT_VCPU = 1500                # Containers default account limit
+ACCOUNT_VCPU = 15000               # Containers default account limit (limits page, 2026-11-15)
 # Hot pool (FX-11): counted in each site's shard start cap at every tier, so it uses the tier's
 # instance size. Expected hot networks [guess 1] times FANOUT_MAX - 1.
 HOT_POOL_PER_SITE = 1 * (8 - 1)

@@ -897,6 +897,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftyard-runners"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures-executor",
+ "futures-util",
+ "graftyard-actions",
+ "graftyard-identity",
+ "graftyard-raft",
+ "graftyard-types",
+ "js-sys",
+ "rsa",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "worker",
+]
+
+[[package]]
 name = "graftyard-site"
 version = "0.1.0"
 dependencies = [

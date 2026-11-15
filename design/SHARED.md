@@ -812,9 +812,12 @@ pub trait Broker {
 }
 /// Per hosted label: the queued jobs no runner holds, the runners to start, and the hosted runners to destroy.
 /// `start` counts already-registered idle hosted runners against `queued` and stays under the owner's cap. Each
-/// `start` entry names its registration scope: the org for an org, or the repository for a user-owned repository.
-/// `stale` lists hosted runners idle for 10 minutes [guess] after registration, or whose job completed.
-pub struct HostedDemand { pub labels: Vec<(Box<str>, LabelDemand)>, pub stale: Vec<RunnerId> }
+/// `start` entry names the owner's `Owner` scope, for a user as for an org, so one group counts every hosted runner
+/// against the cap [inference, `decisions/DECISIONS.md`, "M4-WP4"]. `stale` lists hosted runners idle for 10 minutes
+/// [guess] after the broker first saw them, whose job completed, or idle beyond their label's queued jobs. `runners`
+/// is every registered hosted runner with its label, which the service sums against `RUNNER_VCPU_STOP_PCT`.
+pub struct HostedDemand { pub labels: Vec<(Box<str>, LabelDemand)>, pub stale: Vec<RunnerId>,
+                          pub runners: Vec<(RunnerId, Box<str>)> }
 pub struct LabelDemand { pub queued: u32, pub oldest: Option<Timestamp>, pub start: SmallVec<[(RunnerScope, u16); 2]> }
 ```
 
@@ -860,7 +863,7 @@ Label matching: the `RunnerBroker` of each (owner, runner scope) (`design/DESIGN
 
 - The hosted-runner service learns of work only from the `Owner`-scope broker's `demand`, served at `GET /api/graftyard/v1/owners/{owner}/actions/hosted/demand`. It authenticates as the install's `graftyard-hosted-runners` App, installed on each owner that enables hosted runners with self-hosted-runner write permission.
 - A `workflow_job` webhook to that App, with retries on, prompts a demand read. A sweep of the App's installations every 5 minutes [guess] catches a lost webhook.
-- For each `start` entry it calls `generate-jitconfig` for the named scope with the hosted label, and starts a sandbox that runs the runner with that config. It destroys the sandbox when the runner exits or appears in `stale`, then deletes the runner's registration.
+- For each `start` entry it registers one runner for the named scope with the hosted label at `POST /api/graftyard/v1/owners/{owner}/actions/hosted/runners`, the Graftyard form of `generate-jitconfig` that takes the runner's public key, writes the JIT config with the private key it generated, and starts a sandbox that runs the runner with that config. GHES's `generate-jitconfig` answers a config built from a key the server holds, and Graftyard's install never holds a runner's private key [inference, `decisions/DECISIONS.md`, "M4-WP4"]. A runner that exits deletes its own registration and stops its sandbox. For a runner in `stale` the service deletes the registration first (`DELETE .../hosted/runners/{id}`), which `decide` refuses while the runner holds a job, and destroys the sandbox only after the delete commits, so a runner matched since the demand read keeps its job.
 - Each owner runs at most 20 hosted runners at once [guess], unless its `OrgPolicy` sets another cap. `decide` refuses a hosted registration past the cap, so two overlapping demand reads never start more runners than the cap. A job whose labels match no hosted label waits like a job with no runner, until the queue limit.
 
 Every value in the hosted label table is a [guess]. Hosted runners are Linux x64 only [guess: the Sandbox CPU architecture is unchecked].

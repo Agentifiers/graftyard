@@ -21,6 +21,10 @@
 //!   reaches the broker on the new leader's site (BF-55).
 //! - **State** is the held polls and the summaries only, in the isolate's memory; a broker that restarts loses held
 //!   polls, and the runners poll again under their sessions, which are entries in the group (BF-55).
+//! - **Hosted demand** (M4-WP4, `/demand` `{owner, record}`, on the owner's registration-shard broker): each of the
+//!   owner's 16 shards' hosted summaries read at once (`/read {"hosted": true}`, cut at `SUMMARY_WAIT`), then
+//!   `graftyard_actions::hosted::demand` with the object's `Seen` memory of when it first saw each hosted runner. A
+//!   hosted runner is ephemeral and `Owner`-scoped, so `Taken` keeps it from a second job as it does any such runner.
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
@@ -80,6 +84,8 @@ pub struct RunnerBroker {
     summaries: RefCell<std::collections::BTreeMap<u8, (u64, Known)>>,
     /// `Owner` scope: the ephemeral runners this object matched or saw holding a job, which take one job each.
     taken: RefCell<Taken>,
+    /// M4-WP4: when this object first saw each hosted runner, and whether it saw it hold a job.
+    seen: RefCell<graftyard_actions::hosted::Seen>,
 }
 
 impl RunnerBroker {
@@ -285,6 +291,57 @@ impl RunnerBroker {
     }
 }
 
+impl RunnerBroker {
+    /// `Broker::demand`: every shard's hosted summary, then the owner's `HostedDemand`. BF-55's every-shard rule holds
+    /// here too: each read is cut at `SUMMARY_WAIT`, a shard counts as empty only when the lookup finds no group or a
+    /// majority of its members answer "not joined", and any other shard that does not answer fails the read with 503,
+    /// so `graft-runners` starts and destroys nothing on a partial view (DESIGN, Failure modes, `actions state`).
+    async fn demand(&self, b: Value) -> Result<Response> {
+        use graftyard_actions::hosted::{self, ShardSummary};
+        let owner: Option<AccountId> = serde_json::from_value(b["owner"].clone()).ok();
+        let record: Option<PlacementRecord> = serde_json::from_value(b["record"].clone()).ok();
+        let (Some(owner), Some(record)) = (owner, record) else { return Response::error("owner and record", 400) };
+        let site = crate::SiteEnv::read(&self.env)?;
+        let bind = graftyard_lookup::Bindings { env: &self.env, sites: &site.sites };
+        let q = json!({ "q": { "hosted": true } }).to_string();
+        let reads = (0..ACTIONS_SHARDS).map(|shard| {
+            let (bind, q, record) = (&bind, &q, &record);
+            async move {
+                let chain = ChainId::Actions(owner, shard);
+                let call = graftyard_lookup::call_opt(bind, chain, record, "/read", q.as_bytes());
+                match crate::host::within(SUMMARY_WAIT, call).await {
+                    Some(Ok(Some((v, _, _)))) => {
+                        serde_json::from_value::<ShardSummary>(v["value"].clone()).map_err(|e| format!("{chain}: {e}"))
+                    }
+                    Some(Ok(None)) => Ok(ShardSummary::default()),
+                    _ => {
+                        let ms = record.bootstrap_members(chain);
+                        let posts =
+                            ms.iter().map(|m| graftyard_lookup::post(bind, m.site, &m.do_name, "/read", q.as_bytes()));
+                        let unjoined = futures_util::future::join_all(posts)
+                            .await
+                            .iter()
+                            .filter(|a| matches!(a, Some((409, _))))
+                            .count();
+                        if unjoined * 2 > ms.len() {
+                            Ok(ShardSummary::default())
+                        } else {
+                            Err(format!("{chain}: no answer"))
+                        }
+                    }
+                }
+            }
+        });
+        let shards =
+            match futures_util::future::join_all(reads).await.into_iter().collect::<std::result::Result<Vec<_>, _>>() {
+                Ok(s) => s,
+                Err(e) => return Response::error(e, 503),
+            };
+        let d = hosted::demand(&shards, hosted::HOSTED_CAP, Timestamp(crate::now_ms()), &mut self.seen.borrow_mut());
+        Response::from_json(&d)
+    }
+}
+
 impl DurableObject for RunnerBroker {
     fn new(_state: State, env: Env) -> Self {
         RunnerBroker {
@@ -296,6 +353,7 @@ impl DurableObject for RunnerBroker {
             waiters: RefCell::new(Vec::new()),
             summaries: RefCell::new(Default::default()),
             taken: RefCell::new(Default::default()),
+            seen: RefCell::new(Default::default()),
         }
     }
 
@@ -314,6 +372,10 @@ impl DurableObject for RunnerBroker {
                     let _ = w.send(());
                 }
                 Response::from_json(&json!({ "held": self.held.get() }))
+            }
+            "/demand" => {
+                let b: Value = req.json().await?;
+                self.demand(b).await
             }
             "/stats" => Response::from_json(
                 &json!({ "held": self.held.get(), "polls": self.polls.get(), "lastPoll": self.last_poll.get() }),
