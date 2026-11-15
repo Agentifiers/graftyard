@@ -2391,9 +2391,20 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The pack is built under the network's shared lock and written after it is released. Its reader is the archive's
+	// tee, which hands the bytes to the promotion's own validate, and that validate waits for a catch-up first, whose
+	// /ingest takes the lock alone. Written under the lock, the pack stalled once the socket filled: the catch-up
+	// waited on the lock, every validate and merge queued behind the waiting writer, and all of it held until the
+	// validate gave up after PROMOTE_WAIT_S (B0-31 m3fr6: three 60 s stalls on the apac shard, 18 MergeQueue merges
+	// answered `warming`; `tests/am1/results/promote-unlock.md`, `TestPromoteWritesItsPackOutsideTheLock`).
 	l := lock(net)
 	l.RLock()
-	defer l.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			l.RUnlock()
+		}
+	}()
 	seen := map[string]bool{}
 	var ids []string
 	sc := bufio.NewScanner(r.Body)
@@ -2432,6 +2443,8 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	// Exactly these objects, deltas only within the pack, so it is complete. A tree entry's basename gives
 	// pack-objects a name by which to group delta candidates.
 	out, err := git(rp, []string{derivedEnv}, &oids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
+	l.RUnlock()
+	locked = false
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
