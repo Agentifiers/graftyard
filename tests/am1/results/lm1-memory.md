@@ -3098,3 +3098,145 @@ memguard made went unanswered.
 
 **Cost** $137.04 at 11:46Z (containers $54.09). Round 24 in all, the site day, cold warm, B0-34's row and B0-33, cost
 $2.21 from $134.83.
+
+### Round 24c (no hosted spend): what held B0-34's shard CPU, container start-up, promotions before fix 2, the task close, and site a's cron (2026-11-15)
+
+**Answer: the shard's own geometric repack after the cold rehydrate, which outgrew the container's 12 GiB.** It was not
+clients' upload-pack. Evidence, all from data already collected (`containersUsageAdaptiveGroups`,
+`containersMetricsAdaptiveGroups`, and the `GitShard` events in Workers Logs):
+- **CPU with no requests.** The rehydrates ended at 11:04:33 to 11:04:41Z. From 11:05 to 11:09Z the shards had no client
+  request at all, only the warm's `/catchup` polls of 0.1 to 0.6 s each. Even so each container's CPU climbed from 1.3 to
+  3.5 vCPU: 770, 662 and 760 CPU-s over those five minutes on sites a, b and c. The row's traffic began at 11:10. So
+  the work that held the CPU began before any upload-pack or validate.
+- **Memory at the cap.** Each container's peak memory reached 11.95 GiB of standard-4's 12 GiB at 11:05Z, and stayed
+  there to the row's end on sites b and c, and on site a until the kill at 11:15. Disk stayed at 9.6 GB, so nothing was
+  written: the repack was still searching deltas.
+- **One repack seen to its end.** Site a's new instance (after the 11:15 kill) rehydrated at 152 to 170 MB/s
+  (11:15 to 11:16), then sat at 11.95 GiB again. At 11:22 to 11:24 its disk grew from 9.6 to 12.4 GB, the repack
+  writing its pack. At 11:25 the disk fell to 7.6, then 3.2 GB, the rolled-up packs deleted, and memory fell to
+  4.5 GiB. That same minute site a served its first upload-packs since 11:12: 186 × 200. 8.6 GB of packs rolled into
+  about 3 GB is the ratio of the local repack below (6.48 to 2.18 GB).
+- **Local repack, same shape.** `tests/fanout/georepack.sh` built 33 promoted packs from B0-34's plan the way the
+  promotions made them (6-step complete ranges, 6.48 GB, against the 8.63 GB hosted). Then it ran the shard's own
+  `git repack -d -q --geometric=2` (`containers/git/server/main.go`, `runRepack`) on 4 threads: **325 s wall, 588 CPU-s
+  (1.81 vCPU), maxrss 9.8 GB**, giving 1 pack of 2.18 GB. `commit-graph write` added 15 s. Scaled to 8.63 GB that is
+  about 13 GB of memory [inference], over the container's 12 GiB. So hosted, the repack ran pinned at the memory cap:
+  8 minutes on site a's second instance, and more than 23 minutes, unfinished, on sites b and c.
+- **Why clients got `warming`.** Every upload-pack and validate first waits for the shard object's catch-up
+  (`workers/site/src/shard.rs`, `caught_up`). A catch-up `/ingest`s and puts `/refs` on a container at its memory cap
+  and 4 vCPU, so it ran slowly or not at all. For example, site b caught up 1,139 entries in 19.7 s at 11:16:19Z, and
+  then the next catch-up waited. Between catch-ups, everything queued behind them answered 503 `warming` after its
+  15 s or 60 s wait. The bursts of 200s in the table are the minutes a catch-up ended.
+- **Why k stayed 1.** `/load` leaves out derived work, and the repack is derived (A31), so `fanout` saw an idle network
+  while the CPU was saturated, as round 18c inferred.
+- Upload-pack is a lesser load but a real one. One depth-1 protocol-v2 upload-pack of the linux tip costs 24.8 CPU-s and
+  1.10 GB RSS, sending 301 MB in 14.6 s; four at once took 102 CPU-s in 52 s (`tests/fanout/d1upload.py`, local). Each
+  B0-34 clone misses, because the clone cache holds no `clone/131296/` entry in any bucket. The edge writes the tee to
+  R2 only when the body is whole (`workers/edge/src/lib.rs`, `upload_pack`), and B0-34's probe cancels after the first
+  byte, so the cache never fills [inference from the code]. DESIGN's composed depth-1 misses (0.2 to 0.5 CPU-s a miss)
+  are not in the code (below).
+
+**Timeline per shard** (vCPU from `containersUsageAdaptiveGroups`; peak memory and disk from
+`containersMetricsAdaptiveGroups`; `GitShard` upload-pack and validate starts by result, 200 against everything else,
+503, cancelled or error). Site a's instance changes at 11:15 (the kill); site b's last minute is a new instance.
+
+| minute | a: vCPU, mem GiB, disk GB | a: upload-pack ok/not, validate ok/not | b: vCPU, mem, disk | b: up, val | c: vCPU, mem, disk | c: up, val |
+|---|---|---|---|---|---|---|
+| 11:03 | 2.23, 8.48, 5.5 | 0/0, 0/0 | 2.44, 7.62, 5.4 | 0/0, 0/0 | 2.11, 6.57, 4.6 | 0/0, 0/0 |
+| 11:04 | 1.33, 11.74, 9.6 | 0/1, 0/0 | 1.3, 9.93, 8.5 | 1/1, 0/0 | 1.29, 10.25, 8.5 | 0/2, 0/0 |
+| 11:05 | 1.44, 11.95, 9.6 | 1/0, 0/0 | 1.45, 11.95, 9.6 | 0/0, 0/0 | 1.47, 11.95, 9.6 | 0/0, 0/0 |
+| 11:06 | 1.83, 11.95, 9.6 | 0/0, 0/0 | 1.84, 11.95, 9.6 | 0/0, 0/0 | 1.78, 11.95, 9.6 | 0/0, 0/0 |
+| 11:07 | 2.49, 11.95, 9.6 | 0/0, 0/0 | 1.82, 11.95, 9.6 | 0/0, 0/0 | 2.37, 11.95, 9.6 | 0/0, 0/0 |
+| 11:08 | 3.46, 11.95, 9.6 | 0/0, 0/0 | 2.37, 11.95, 9.6 | 0/0, 0/0 | 3.51, 11.95, 9.6 | 0/0, 0/0 |
+| 11:09 | 3.61, 11.95, 9.6 | 0/0, 0/0 | 3.55, 11.95, 9.6 | 0/0, 0/0 | 3.53, 11.95, 9.6 | 0/0, 0/0 |
+| 11:10 | 3.97, 11.94, 9.6 | 204/469, 9/122 | 3.75, 11.95, 9.6 | 126/60, 9/51 | 3.49, 11.95, 9.6 | 79/0, 0/18 |
+| 11:11 | 4.17, 11.95, 9.6 | 0/68, 0/120 | 4.17, 11.95, 9.6 | 0/392, 0/118 | 3.99, 11.93, 9.6 | 285/0, 105/88 |
+| 11:12 | 4.15, 11.95, 9.6 | 266/89, 11/188 | 4.14, 11.95, 9.6 | 0/148, 0/112 | 4.12, 11.95, 9.6 | 0/310, 0/158 |
+| 11:13 | 4.16, 11.96, 9.6 | 0/327, 0/140 | 4.14, 11.96, 9.6 | 0/103, 0/146 | 3.91, 11.95, 9.6 | 150/137, 8/267 |
+| 11:14 | 4.16, 11.96, 9.6 | 0/155, 0/143 | 4.16, 11.96, 9.6 | 0/246, 0/143 | 4.16, 11.95, 9.6 | 0/240, 0/156 |
+| 11:15 | 2.42, 4.59, 2.0 | 0/320, 0/253 | 4.16, 11.95, 9.6 | 0/183, 0/240 | 4.19, 11.95, 9.6 | 0/215, 0/181 |
+| 11:16 | 1.63, 9.46, 9.6 | 0/229, 0/215 | 3.99, 11.94, 9.8 | 125/293, 8/307 | 4.17, 11.95, 9.6 | 0/272, 0/324 |
+| 11:17 | 1.25, 11.94, 9.6 | 0/286, 0/173 | 4.18, 11.94, 9.8 | 0/500, 0/309 | 4.04, 11.95, 9.6 | 395/218, 11/233 |
+| 11:18 | 1.3, 11.95, 9.6 | 0/25, 0/112 | 4.18, 11.95, 9.8 | 0/253, 0/177 | 4.19, 11.95, 9.6 | 0/185, 0/149 |
+| 11:19 | 2.68, 11.95, 9.6 | 0/110, 0/59 | 4.16, 11.94, 9.8 | 0/35, 0/112 | 4.19, 11.95, 9.6 | 0/61, 0/151 |
+| 11:20 | 3.69, 11.95, 9.6 | 0/60, 0/165 | 4.17, 11.95, 9.8 | 0/4, 0/14 | 4.2, 11.95, 9.6 | 0/5, 0/34 |
+| 11:21 | 3.59, 11.95, 9.6 | 0/12, 0/131 | 4.14, 11.95, 9.8 | 43/112, 9/474 | 4.17, 11.95, 9.6 | 0/11, 0/56 |
+| 11:22 | 3.08, 11.95, 10.0 | 0/0, 0/0 | 4.18, 11.95, 9.9 | 0/2, 0/6 | 4.19, 11.95, 9.6 | 0/112, 0/390 |
+| 11:23 | 3.21, 11.95, 11.4 | 0/164, 0/390 | 4.2, 11.95, 9.9 | 0/4, 0/0 | 3.94, 11.94, 9.6 | 0/0, 0/2 |
+| 11:24 | 2.12, 11.95, 12.4 | 0/9, 0/12 | 3.58, 11.96, 9.9 | 0/435, 0/472 | 3.96, 11.96, 9.9 | 189/0, 12/406 |
+| 11:25 | 3.36, 4.5, 7.6 | 186/8, 0/0 | 3.35, 11.96, 9.9 | 0/8, 0/1 | 4.17, 11.96, 9.9 | 0/244, 0/68 |
+| 11:26 | 2.93, 4.59, 3.2 | 0/0, 3/0 | 3.34, 11.96, 9.9 | 0/0, 0/0 | 4.17, 11.96, 10.0 | 0/2, 0/0 |
+| 11:27 | 0.02, 3.75, 3.2 | 0/0, 0/0 | 3.35, 11.96, 9.9 | 0/0, 0/0 | 3.44, 11.95, 10.0 | 0/0, 0/0 |
+| 11:28 | 0.01, 3.72, 3.2 | 0/0, 0/0 | 1.95, 5.04, 0.2 | 0/0, 0/0 | –, 0.0, 0.0 | 0/0, 0/0 |
+
+How many ran at once (summed wall over 60 s, `tests/fanout/raw/shardtimeline-m36.jsonl`): upload-pack 20 to 311 and
+validate 20 to 334 per shard. Almost all of it was time spent waiting in the shard object for the catch-up, not git
+processes.
+
+**Missing measurement.** The container logs nothing per process, and Workers Logs holds no container stdout or stderr.
+So the repack is named from its signature: CPU with no requests, memory at the cap, the disk's write-then-delete, and
+the local run. It is not named from a process list. A cheap instrument for the next run: `/load` or `/status` lists
+the running git children (command, CPU-s, RSS), and the shard object logs it each minute while a repack runs.
+
+**Proposed fix (design first, not built).**
+1. **The repack after a rehydrate leaves promoted packs alone.** Promoted packs are already complete and
+   delta-searched. A rehydrate writes `.keep` beside each pack it loaded through a stored `.idx`. `git repack
+   --geometric=2` then rolls only the pushed tail (local check: geometric rolled no kept pack) and writes the
+   multi-pack index and commit-graph. Those cover the merge slowdown with many packs that `REPACK_AT` was set for.
+   DESIGN's git caches row and the rehydrate text change, plus a DECISIONS entry. Flip: merges or validates slow over
+   the kept packs as they did over 1,950 packs (`tests/m2/results/m2-wp6.md`).
+2. **Bound the repack that remains.** `pack.threads=2`, `pack.windowMemory` (for example 256 MiB), and the repack run
+   under `nice`, so derived work cannot take all 4 vCPU or the memory cap from serving. G9's roll-up, which is not
+   built, needs the same bound.
+3. **The clone cache fills from the shard, not from the edge's tee of a read the client may cut.** It could also be
+   filled after a push, as DESIGN says ("the edge asks the network's shard to fill the clone-cache entry"). This is
+   only for B0-34's TTFB row. It is a separate change, and the composed miss is the larger one.
+The measurement for 1 is cheap and local: georepack with the promoted packs kept, against the same 33 packs.
+
+**Container start-up (33 to 35 s): the platform's, not ours.**
+- The image is 74.8 MB (alpine, git 2.56, the Go server).
+- The entrypoint is `shard-server`: `raiseOpenFileLimit`, `sampleCPU` in a goroutine, then `ListenAndServe`. A local
+  `docker run` answered `/health` in 8 ms.
+- Hosted, the containers API's instance `started_at` came about 20 s after the warm's start (11:02:09 against 11:02:27
+  to 11:02:30Z); the rest is boot to the first `/health`.
+- So all of it is scheduling, image pull and boot on the platform's side [inference: `up` is measured from `start()` to
+  the first `/health` on 200 ms polls]. Nothing in the image or entrypoint is ours to cut.
+
+**Promotions that predate fix 2.** All 61 promoted packs with stored `.idx` on repo:131296 predate fix 2: 8,615,058,647
+B, dated 2026-11-15 00:54:40Z to 07:38:33Z (2 at 00h, 15 at 05h, 41 at 06h, 3 at 07h). fetch-ahead (main cfd46001)
+deployed at about 11:00Z. No promotion has run since. The list is in `tests/fanout/raw/promoted-131296-m36.json` (time,
+bytes, id).
+- **Estimate if they were re-promoted under fix 2** [inference]:
+  - Round 23b's local fixture gave about 25% fewer promoted bytes, so about 6.46 GB.
+  - At the warm's measured 122 to 132 MB/s, the marked phase is about 49 to 53 s instead of 65 to 71 s.
+  - With m36's other phases unchanged (up, tail, `/connected`), totals come to about 110 / 117 / 119 s for sites a, c
+    and b: just under 120 s, with no margin.
+- A re-promotion is still 6.5 GB of complete packs, so the repack above (9.8 GB maxrss at 6.48 GB locally) would still
+  saturate the shard. Fix 1 above is needed either way.
+
+**Tasks closed on b034-mono.** 100 queued tasks were cancelled through `POST .../tasks/{id}/cancel` with the test
+installation token (all 200), leaving 0 queued.
+- The list API returned the same page for every page number. So the 3,900 "tasks" it seemed to list were 100 unique
+  ones, the per-requester cap `TASKS_OPEN_PER_REQUESTER`.
+- A probe create then returned 201 (`196608.m36-probe-after-close`), and the probe was cancelled.
+
+**Corrections to round 24.**
+- The 11:00Z site-a `scriptThrewException` at wasm 177.5 MB (version `e7c34df8`) was the `*/15` cron, not the site
+  day's first invocation. It is now `decisions/OPEN-QUESTIONS.md` R22 (on branch `oq-r22`).
+- The m36 site day's edge deploy did not complete. `fanout-m36-edge.log` stops while compiling `graftyard-lookup`, and
+  `graft-m2b-edge` stayed on `bfed05b9` (deployed 05:18Z, m34). Round 24's rows ran with an edge from 1552e999, without
+  cfd46001's edge changes (lease-clock's edge half). The edge had 4 `exceededMemory` on b034-mono upload-pack at
+  11:24:37Z.
+
+**Design contradiction.** DESIGN, Shape, "Git cache shards (derived)": "A depth-1 fetch that misses the clone cache, for
+a commit whose tree is close to a cached tip's, is composed: the shard sends the tip's cached depth-1 pack plus a pack
+of the wanted commit's objects missing from it". Nothing in `containers/git/server`, `crates/git` or the workers
+composes a miss: a miss is a stock `git upload-pack`, 25 CPU-s on linux. BUILD-PLAN's B0-34 line, "with the
+composed-miss rules now in the design", is consistent with that. The design states it as built behavior, though, and
+B0-34's TTFB line depends on it.
+
+**Raw.** `tests/fanout/raw/instcpu-m36.jsonl` (vCPU, memory and disk per instance and minute),
+`shardtimeline-m36.jsonl`, `shardev-m36.jsonl.xz` (17,593 `GitShard` events), `promoted-131296-m36.json`. Tools:
+`tests/fanout/instcpu.py`, `shardtimeline.py`, `georepack.sh`, `d1upload.py`.
+
+**Cost** $137.15 at 13:15Z (containers $54.09); this round spent nothing hosted. $7.85 left before $145.
