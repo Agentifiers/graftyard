@@ -396,11 +396,24 @@ pub struct Room {
 }
 
 /// `ShardHost::validate`'s answer: the pack's index (none for a detail-only call) and each update's detail, or the
-/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`.
+/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`, or, checked
+/// on the disk as it stands, a base or ref the disk does not hold yet: the container kept the request as `held`, to
+/// be checked again once the shard caught up (`OnDisk::Held`).
 #[derive(Debug)]
 pub enum Validated {
     Done(Option<PackIndex>, Vec<crate::agent::RefDetail>),
     Busy { retry_after_s: u32 },
+    MissingBase { held: String },
+}
+
+/// Which disk a validate checks against: one the shard just caught up, the disk as it stands (`disk=1`), whose
+/// missing base is `Validated::MissingBase`, or a request the container kept on one, checked again after a
+/// catch-up with no body (`held=`). Every failure but a missing base on `AsItStands` is the pack's.
+#[derive(Clone, Copy, Debug)]
+pub enum OnDisk<'a> {
+    CaughtUp,
+    AsItStands,
+    Held(&'a str),
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,7 +640,9 @@ impl ShardHost<'_> {
     /// round 6). An agent's validate (`agent`) may wait for one of the container's slots at most 2 s, and is then
     /// `Validated::Busy`; a human's waits. `derived` marks the shard's own archive promotion, whose CPU the container
     /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
-    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`.
+    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`, and a
+    /// 409 `missingBase` on `OnDisk::AsItStands` is `MissingBase`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn validate(
         &self,
         network: NetworkId,
@@ -635,10 +650,16 @@ impl ShardHost<'_> {
         detailn: usize,
         agent: bool,
         derived: bool,
+        disk: OnDisk<'_>,
         body: Option<wasm_bindgen::JsValue>,
     ) -> Result<Validated, (Option<u16>, StoreError)> {
         let none = |e: StoreError| (None, e);
         let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
+        match disk {
+            OnDisk::CaughtUp => {}
+            OnDisk::AsItStands => path.push_str("&disk=1"),
+            OnDisk::Held(id) => path.push_str(&format!("&held={id}")),
+        }
         if detailn > 0 {
             path.push_str(&format!("&detailn={detailn}"));
         }
@@ -656,6 +677,19 @@ impl ShardHost<'_> {
         if r.status_code() == 429 {
             let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
             return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
+        }
+        if r.status_code() == 409 && matches!(disk, OnDisk::AsItStands) {
+            #[derive(Deserialize)]
+            struct Held {
+                #[serde(rename = "missingBase")]
+                missing_base: bool,
+                held: String,
+            }
+            let t = r.text().await.unwrap_or_default();
+            return match serde_json::from_str::<Held>(&t) {
+                Ok(h) if h.missing_base => Ok(Validated::MissingBase { held: h.held }),
+                _ => Err((Some(409), StoreError(format!("validate: 409 {t}")))),
+            };
         }
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();

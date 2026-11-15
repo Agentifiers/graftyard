@@ -684,6 +684,76 @@ pub fn validate_status(container: Option<u16>) -> u16 {
     }
 }
 
+/// One shard object's catch-ups of one network, numbered from 1 as they start (`workers/site/src/shard.rs`, `Jobs`):
+/// whether one runs, the number of the latest started, and of the latest that ended without an error.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CatchUps {
+    pub running: bool,
+    pub started: u64,
+    pub ok: u64,
+}
+
+/// What a caller that needs a catch-up numbered `from` or later does next: go on, start one, or wait for the running
+/// one to end and ask again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatchUpStep {
+    Done,
+    Start,
+    Await,
+}
+
+impl CatchUps {
+    /// The number of the next catch-up to start: the first that reads the group's head after anything committed
+    /// before this call. The one running now may have read it earlier.
+    pub fn next(&self) -> u64 {
+        self.started + 1
+    }
+
+    pub fn step(&self, from: u64) -> CatchUpStep {
+        if self.ok >= from {
+            CatchUpStep::Done
+        } else if self.running {
+            CatchUpStep::Await
+        } else {
+            CatchUpStep::Start
+        }
+    }
+
+    /// Starts one unless one runs; true when it did.
+    pub fn start(&mut self) -> bool {
+        if self.running {
+            return false;
+        }
+        self.running = true;
+        self.started += 1;
+        true
+    }
+
+    pub fn end(&mut self, ok: bool) {
+        self.running = false;
+        if ok {
+            self.ok = self.started;
+        }
+    }
+}
+
+/// Which disk a shard checks a push against (`crate::host::OnDisk`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValidateOn {
+    /// After a catch-up that started after the push arrived.
+    CaughtUp,
+    /// As it stands, with a catch-up only when the container finds a base or ref it lacks.
+    Disk,
+}
+
+/// A push validates on the disk as it stands once this isolate caught the running container up (`cursor`): its
+/// disk then holds every committed pack up to some index and ref tips whose history is whole, so a pack that
+/// resolves and connects there resolves and connects on any later disk. The archive's promotion (`derived`) and a
+/// container this isolate never caught up catch up first (design/DESIGN.md, Shape, "Git cache shards (derived)").
+pub fn validate_on(derived: bool, running: bool, cursor: bool) -> ValidateOn {
+    if derived || !running || !cursor { ValidateOn::CaughtUp } else { ValidateOn::Disk }
+}
+
 /// How often a leading member catches up every Full site's first shard of its network while it applies entries
 /// [guess]. A shard that serves nothing falls behind by every push the home validated: at j9g's home-shard kill, site b's
 /// was 1,100 entries behind and site c's 1,900, so each push's fallback catch-up outlasted the edge's waits (15 s, then
