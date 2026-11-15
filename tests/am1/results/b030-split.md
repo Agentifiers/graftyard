@@ -526,6 +526,36 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
 - **Resumed at 21:24:24Z, simulated day 17.627** (operator, 2026-11-15). `b030-STOP` renamed
   `tests/am1/raw/b030r2-STOP-2012Z`, the renamed `.done` files deleted, and `b030-load`, `b030-drain` and
   `b030-watch` restarted; the load continued from its state at 121,248 pushes. Stop rule: STOP_USD $225, drain 24 h.
+- **The first two hours after the resume (21:24Z to 23:32Z, simulated day 17.63 to 19.23).** Hourly samples, 3
+  minutes at :20 on site a's leader (`tests/am1/b030split/hourly.py`, `tests/am1/raw/b030r2-hourly.jsonl`):
+
+  | Sample | Shard `/validate` p50 | `/merge` p50 | Pushes a minute (hour) | `/procs`, six snapshots |
+  |---|---|---|---|---|
+  | 15Z, before the site day | 3,539 ms | 3,919 ms | 66 | not on that image |
+  | 22:00 to 22:03Z | 425 ms (217) | 1,315 ms (71) | 81 | no git process |
+  | 22:20 to 22:23Z | 432 ms (180) | 1,747 ms (71) | 80 | one `index-pack`, 0.0 CPU-s |
+  | 23:20 to 23:23Z | 399 ms (258) | 1,382 ms (82) | 80 | `pack-objects` 0.9 CPU-s, `index-pack` 0.1 |
+
+  - Validate did not stay near 3.5 s, so G13 records the catch-up wait, with what the roll cleared from the
+    shards' disks, as the cause; the roll changed both at once.
+  - The load ran 79.3 pushes a minute over the 126 minutes, against 60.5 before the stop, with `batchFail` 0. Its own
+    push p50 stayed at 4.4 to 7.5 s a minute (hour medians 5.3, 5.1 and 5.5 s). The edge's receive-pack p50 was 5.0 s
+    at 21:27Z, and site a's member `/commit` p50 1.0 s. The time is now outside the shard.
+  - Pushes answered HTTP 503 (git cache: no shard could check the pack, or a pack store error; the edge does not log
+    which): 194, 370 and 185 in the 21Z, 22Z and 23Z hours, about 4 to 8% of pushes, against 0 to 9 an hour before the
+    site day. In 23:20 to 23:23Z, all 10 edge 503s fell between 23:20:05Z and 23:20:44Z, within 3 s of each of three
+    CommitErrors holds on site a (23:20:04Z, 23:20:23Z, 23:20:33Z), and every validate on the three sites answered 200.
+    The load retries them, so no push is lost.
+  - StepDowns rose: 115 from 21:24Z to 23:12Z and 17 more to 23:32Z, against 2 to 13 per 20 minutes before. All are
+    rest-phase holds, 129 of 132 CommitErrors and 3 Confirm, 130 on site a, and 130 fell inside archive runs (131 to
+    188 s each, 5 to 11 holds a run). The term went from 43 to 47, with the longest leaderless gap 6 s. Follower `/raft`
+    in those runs: b p50 165 to 180 ms, max 1.1 to 1.6 s; c p50 254 to 270 ms, max 1.1 to 8.6 s; 2 to 8 calls a run
+    past CALL_DEADLINE (1 s).
+  - Archive: about 93 entries a minute applied, 92 archived and 92 promoted; log 1.95 to 2.03 GB, under its cap at
+    every reading; member SQLite 7.17 to 7.39 GB, zero `SQLITE_FULL`.
+  - Cost on the run-only meter: $66.51 at the resume, $70.94 at 23:20Z. One meter interval, 22:20 to 22:35Z, billed
+    $1.03 (DO rows written 927,000 against about 400,000), and the others $0.50 to $0.51. `project.py` at 23:32Z:
+    79.3 a minute, 29,867 owed at day 30, a 6.3 h drain, total $176.9 against $225.
 
 ## Cost
 
