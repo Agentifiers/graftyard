@@ -65,12 +65,14 @@ fn app_key(pem: &str) -> std::result::Result<RsaPrivateKey, String> {
         .map_err(|e| format!("HOSTED_RUNNERS_APP_KEY: {e}"))
 }
 
-/// Calls `obj[method](...args)` and awaits its result, a promise or not.
+/// Calls `obj[method](...args)` and awaits its result, a promise or not. `Reflect.apply`, not `f.apply`: on a Durable
+/// Object RPC stub every property is a remote method, so `f.apply` would call a remote `apply` (seen on the first
+/// hosted start, 2026-11-15: "The RPC receiver does not implement the method \"apply\"").
 async fn call_js(obj: &JsValue, method: &str, args: &[JsValue]) -> std::result::Result<JsValue, String> {
     let f: Function = Reflect::get(obj, &method.into())
         .and_then(|f| f.dyn_into())
         .map_err(|_| format!("{method} is not a function"))?;
-    let out = f.apply(obj, &args.iter().collect::<Array>()).map_err(|e| format!("{method}: {e:?}"))?;
+    let out = Reflect::apply(&f, obj, &args.iter().collect::<Array>()).map_err(|e| format!("{method}: {e:?}"))?;
     JsFuture::from(Promise::resolve(&out)).await.map_err(|e| format!("{method}: {e:?}"))
 }
 
