@@ -2855,3 +2855,88 @@ The learner defect is a Raft-core bug in `crates/raft/src` [verified].
 `tests/am1/raw/a1-b0-34-mwhibsq2.jsonl`). Sweep after the row: 21 torn down, "sweep: no shard container running".
 
 **Cost** $134.38 at 07:49Z (containers $53.17); this round cost about $1.41.
+
+### Round 23b (local, no hosted spend): why promoted packs are 3.3 times the pushed bytes, and what a 120 s rehydrate of 5 GB needs (2026-11-15)
+
+**The method, so the hosted shape can be reproduced.** The method runs on B0-34's own seed: `~/b034/linux.git` and
+`~/b034/plan.txt`, the same pushes repo:131296 took, on the orb's 4 CPUs.
+- **Pushed bytes:** one thin pack per plan step, `pack-objects --revs --thin` of each step against the one before.
+- **Promoted bytes:** the shard's way, `pack-objects` of a range's object ids (`/promote` sends ids only, no path
+  names), complete, six steps a range. That matches m34's hosted promotions of 2 to 10 entries.
+- Scripts: `tests/fanout/promsize/{measure,m2,rollup}.sh`. Outputs: `tests/fanout/raw/promsize-*.txt`.
+
+**The local model reproduces the hosted ratio.**
+- Hosted (m34's 50 promotions after entry 18, against the pushed bytes their entries name,
+  `promsize-m34-ratio.txt`): 2.84 to 4.55 times, about 3.2 at the median.
+- Local (steps 8..200): 6,323,782,500 B promoted against 2,007,790,379 B pushed thin, **3.15 times**.
+
+**Why [measured locally].** Every promotion is self-contained, so no object is stored twice. But every file a range
+touches pays one whole base in that range, where a thin push stored it as a delta against an earlier range.
+The factor falls as the range grows (complete `--revs` packs against the sum of the steps' thin packs):
+
+| range | complete | thin pushes | ratio | `pack-objects` time |
+|---|---|---|---|---|
+| 6 steps (194..200) | 99.6 MB | 30.7 MB | 3.24 | 11 s |
+| 24 steps | 286.3 MB | 115.7 MB | 2.47 | 27 s |
+| 96 steps | 1,295.5 MB | 701.9 MB | 1.85 | 105 s |
+| 192 steps | 3,693.8 MB | 2,007.8 MB | 1.84 | 200 s |
+
+Three things in the shard's promotion add to it. Measured on step 96 (14.3 MB thin, 45.7 MB as a complete `--revs`
+pack):
+- **The id list has no path names:** 53.3 MB, plus 17%. `pack-objects` groups delta candidates by path, and an id
+  alone gives it none.
+- **The id list repeats the bases that `--fix-thin` appended:** 61.2 MB, plus 15%.
+  - `record` lists every object of the pushed pack's `.idx`. After `--fix-thin`, that index includes the 6,621
+    bases it appended from earlier pushes (14.9 MB on disk), so they go into this promotion too.
+  - The batched inline path (`ingestRun`) already drops them, by offset.
+  - So the operator's guess is half right: bases from earlier promotions are repeated, about 15%. Most of the rest
+    is that each range is complete.
+- **Delta reuse:** 24 steps rebuilt with `--no-reuse-delta` are 217.1 MB, not 286.3 MB, but take 43 s, not 27 s.
+
+**Roll-up.** I made the 6-step promotions of steps 8..200 as their own packs and ran one `git repack -a -d` over them:
+6.32 GB became **2,175,795,442 B, 1.04 times the pushed bytes**. It took 385 s of wall time on 4 threads, with
+8.6 GB resident.
+
+**Where round 23's rehydrate time went [verified in the code; the hosted numbers fit it].** The marked phase fetched
+**one stored pack at a time**, not four.
+- `Ahead::pump` starts another fetch only while the bytes fetched ahead stay within `AHEAD_BYTES` (64 MiB), or when
+  nothing is ahead. Every promoted pack is 106 to 207 MB, so the first fetch alone passes the cap.
+- The hosted numbers fit: each shard's summed spool time (79.5, 92.3, 126.6 s) is less than its marked phase (100.6,
+  122.3, 155.4 s). Four overlapping fetches would sum to more than the wall time.
+- So round 23 measured R2 at **one stream: 67 to 107 MB/s** (8.53 GB over the summed spool). The four-stream rate is
+  still unmeasured.
+- The remaining 38 to 43 s of `index-pack` is the 11 pushed packs below the first promotion, which have no `.idx`.
+  The 60 packs loaded by `.idx` cost about 0.28 s each under the lock.
+
+**What a 120 s rehydrate of 5 GB of pushes needs [inference from round 23's phases].** Fixed costs:
+- start, markers and refs: about 2 s;
+- `/connected` and the follow: about 13 s;
+- the tail under promote-ahead's 64 MiB threshold: 39 to 45 s, about 64 MB of thin re-index at 1.0 to 1.55 MB/s.
+
+That leaves the marked phase **about 60 s**.
+
+| promoted shape | bytes for 5 GB pushed | rate needed in 60 s | streams at 67 to 107 MB/s each |
+|---|---|---|---|
+| today, 6-step ranges (3.15x) | 15.8 GB | 263 MB/s | 3 to 4, if R2 holds per stream |
+| id list with paths and no `--fix-thin` bases (about 2.4x) | 12.0 GB | 200 MB/s | 2 to 3 |
+| rolled up (1.04x) | 5.2 GB | 87 MB/s | 1 to 2 |
+
+**Candidates, weighed against G9's hosted 0.49 MB/s of pushed bytes:**
+1. **Let `AHEAD_BYTES` admit four large packs.** The spool waits on the container's disk, not in memory. It is a site
+   constant and adds no CPU. It is the biggest lever for this network, but the four-stream R2 rate is unmeasured.
+2. **Promotion sends ids with path names and leaves out the bases `--fix-thin` appended** (`record` keeps them apart
+   by offset, as `ingestRun` does). This is container-only, about 25% fewer promoted bytes, and less `pack-objects`
+   work per promotion, so it helps G9 rather than costing it.
+3. **Roll up promoted packs as `Compacted { consumed, produced }`.** SHARED already defines that event, and the
+   rehydrate already skips what it consumes, but nothing writes it yet.
+   - It brings the bytes to about 1.04 times the pushed bytes and the pack count to a few.
+   - Its CPU competes with promotion on the same shard: 385 s on 4 threads for 2.2 GB.
+   - Its memory needs a bound (`--window-memory`, or a geometric roll-up of the newest packs only). One whole
+     repack took 8.6 GB resident.
+   - It needs a design entry: who triggers it, the network chain's entry, and how a rehydrate orders the packs.
+4. **Thin promotions against earlier ones: rejected.** A thin pack's stored `.idx` cannot be used (G5), so every
+   rehydrate would re-index at 1 to 1.5 MB/s, an hour for 5 GB.
+5. **Longer ranges per promotion** (raise `PROMOTE_MAX`, today 48 MiB of pushed bytes): 3.2 to 2.5 times at 24 steps,
+   and `pack-objects` per pushed byte 2.8 to 4.3 MB/s locally. Hosted, the split of a promotion's time is unmeasured.
+6. **A lower promote-ahead threshold** cuts the 40 s tail, but adds more small promotions, the slowest per pushed
+   byte. Not proposed.
