@@ -58,6 +58,7 @@ import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
 import { clockSpread } from "./clock.mjs";
+import { r2list } from "../../fanout/r2list.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
@@ -604,8 +605,23 @@ const stages = (r) => {
 };
 let pushN = 0;
 let labelN = 0;
+// B0-34 round 26: every first-byte probe's clone-cache answer, and on a miss its `x-graft-compose` (composed, or stock
+// with its reason) and whether the shard's spool left `clone/<net>/<key>/0` in R2 within a minute of the cancel.
+const missRows = [];
+const fillChecks = [];
+/** The edge's CloneKey digest (crates/git/src/clone.rs `CloneKey::digest`) for the probe's fetch: one want, depth 1,
+ *  no filter, caps `no-progress` and `ofs-delta`, no `include-tag` (so no tags digest). */
+function cloneKeyHex(net, want) {
+  const wants = createHash("sha256").update(Buffer.from(want, "hex")).digest();
+  const be64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
+  const h = createHash("sha256").update("graftyard/clone/1\0").update(be64(net)).update(wants).update(be64(2))
+    .update("\0none").update("\0");
+  for (const c of ["no-progress", "ofs-delta"]) h.update(c).update("\0");
+  return h.update(Buffer.alloc(32)).digest("hex");
+}
 /** A v2 fetch of `want` from `repo`: time to its first byte as `kind`. `firstByte` (B0-34's 5 GB network) asks depth
- *  1 and cancels after the first byte; otherwise the whole answer is read. */
+ *  1 with `ofs-delta` (the composable shape a `git clone --depth 1` sends) and cancels after the first byte; otherwise
+ *  the whole answer is read. */
 async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
   const s = Date.now();
   const ctl = new AbortController();
@@ -613,11 +629,29 @@ async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
   try {
     const r = await fetch(`${EDGE}/${repo}.git/git-upload-pack`, { method: "POST", signal: ctl.signal,
       headers: { ...auth(tok), "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
-      body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), pkt(`want ${want}\n`),
-        ...(firstByte ? [pkt("deepen 1\n")] : []), pkt("done\n"), Buffer.from("0000")]) });
+      body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), ...(firstByte ? [pkt("ofs-delta\n")] : []),
+        pkt(`want ${want}\n`), ...(firstByte ? [pkt("deepen 1\n")] : []), pkt("done\n"), Buffer.from("0000")]) });
     const reader = r.body.getReader();
     await reader.read();
-    note(kind, Date.now() - s, String(r.status));
+    const ms = Date.now() - s;
+    note(kind, ms, String(r.status));
+    if (firstByte && b034) {
+      const cache = r.headers.get("x-graft-clone-cache"), compose = r.headers.get("x-graft-compose");
+      note(`${kind}:${cache ?? "nocache"}`, ms, compose ?? String(r.status));
+      if (cache === "miss") {
+        const row = { at: new Date(s).toISOString(), ms, status: r.status, compose, want, key: cloneKeyHex(Number(CHAIN.split(":")[1]), want), filled: null };
+        missRows.push(row);
+        fillChecks.push((async () => {
+          const by = Date.now() + 60_000;
+          while (Date.now() < by) {
+            await sleep(10_000);
+            const found = (await r2list(`clone/${CHAIN.split(":")[1]}/${row.key}/0`)).filter((x) => x.keys?.length).map((x) => x.site);
+            if (found.length) { row.filled = { sites: found, afterS: Math.round((Date.now() - s) / 1000) }; return; }
+          }
+          row.filled = false;
+        })());
+      }
+    }
     if (firstByte) await reader.cancel();
     else while (!(await reader.read()).done);
     return String(r.status);
@@ -944,6 +978,8 @@ jobs.push((async () => {
   }
 })());
 await Promise.all(jobs);
+// The last first-byte misses' R2 checks run up to a minute past the window.
+await Promise.all(fillChecks);
 if (opt["first-for"]) for (const s of [0, 1, 2]) await member(CHAIN, s, "/bench_seed", { prsyncFirstFor: 0 }, 15_000).catch(() => {});
 // Give the last pushes' first attempts time to reach the shard.
 const budgetAfter = latestBudget((await sleep(15_000), await budgets()), budgetSeen);
@@ -987,7 +1023,9 @@ const v = {
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
-  ...(b034 ? { b034: { kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
+  ...(b034 ? { b034: { misses: missRows, missSummary: { n: missRows.length,
+      compose: missRows.reduce((m, x) => ((m[x.compose ?? "none"] = (m[x.compose ?? "none"] ?? 0) + 1), m), {}),
+      filled: missRows.filter((x) => x.filled).length, notFilled: missRows.filter((x) => x.filled === false).length }, kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),

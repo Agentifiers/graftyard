@@ -83,6 +83,16 @@ for l in open(sys.argv[1]):
     if d.get("packs"): last[d["site"]] = d["packs"]
 print("b0-34 kept packs after the warm: " + json.dumps({s: {"kept": p["kept"], "count": p["count"]} for s, p in sorted(last.items())}))
 PY
+# Round 26: the composed-miss chain the builder (home site's first shard) put at warm, per warm bucket: compose/<net>/
+# objects with their sizes and last-modified, beside the warm's end (did the base land before the row's first miss?).
+compose() { node tests/fanout/r2list.mjs "compose/${chain#repo:}/" | python3 -c "
+import json, sys
+for l in sys.stdin:
+    d = json.loads(l); ks = d.get('keys') or []
+    print('b0-34 compose $1 site', d['site'], json.dumps({'n': len(ks), 'bytes': sum(k['size'] for k in ks),
+          'files': [(k['key'].split('/')[-1][:24], k['size'], k['modified']) for k in ks][:8], **({'error': d['error']} if 'error' in d else {})}))
+" >> "$ST" 2>&1; }
+compose "after the warm"
 [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "$chain" "$LEARNERS" >> "$ST" 2>&1
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
 s "b0-34 $mono $chain start"
@@ -91,6 +101,7 @@ node tests/fanout/memguard.mjs "$chain" 1100 2 120 > tests/fanout/raw/memguard-b
 node tests/fanout/terms.mjs "$chain" 1100 > tests/fanout/raw/terms-b034$TAG.jsonl 2>&1 &
 bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
 s "b0-34 done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-34-$mono.log)"
+compose "at the row's end"
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
 echo DONE >> "$ST"
 exec sleep infinity
