@@ -42,8 +42,9 @@ From every read of `Lead::matched` in `crates/raft/src`:
   `proof_for` lists every acked address in `QuorumProof::acks`. A scratch run listed both learners there beside the
   two voters. With a stale `matched`, an `Acked`'s evidence named a learner as durable through an entry it did not
   hold. With the fix, a new learner appears there only after it acks. Learners in the proof are not new: [inference]
-  harmless to the ack checks, which require at least a quorum of distinct sites including the answering one. They are
-  flagged here for the operator, not changed.
+  harmless to the ack checks, which require at least a quorum of distinct sites including the answering one. Since
+  `proof-voters` (58469a6a), `proof_for` names only the voters of the config the commit counted, so a learner never
+  appears in `acks`, `sites`, or the edge's `quorum`.
 - **No effect:** transfer and hand-off targets, `STEP_DOWN`'s picks, and the move home all filter to voters.
   Compaction (`log::compact`) reads only the applied index and the window. The archive works from applied entries.
   `place_learners` picks regions from load alone. `/learners` and `tests/fanout/learners.mjs` have no caught-up test,

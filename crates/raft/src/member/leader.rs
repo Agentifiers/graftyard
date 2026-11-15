@@ -1855,12 +1855,15 @@ impl<C: Command> Member<C> {
         }
     }
 
-    /// The evidence for a commit at `n` by `acked`: each site's durable index as this leader counted it and when it
-    /// learned it, with the entry's `at` and the time now.
+    /// The evidence for a commit at `n` by `acked`: each voter's durable index as this leader counted it and when it
+    /// learned it, with the entry's `at` and the time now. Only the voters of the config the commit counted are named:
+    /// a learner never makes a write durable, and the edge shows these sites to callers as the write's quorum.
     fn proof_for(&self, n: Index, acked: &BTreeSet<SiteId>) -> QuorumProof {
         let lead = self.lead.as_ref().expect("leading");
+        let voters = quorum::voters(self.log_config());
         let acks: Vec<DurableAck> = acked
             .iter()
+            .filter(|s| voters.contains(s))
             .map(|s| {
                 if *s == self.cfg.me {
                     DurableAck { site: *s, durable: self.own_durable, at: self.own_durable_at }
