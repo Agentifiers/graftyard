@@ -484,6 +484,33 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   - `teardown.py --sweep` is on `lm1-rows-m3f`, not on this branch. `shards.py` (this branch's end-of-run check) did
     the same check.
 
+### Second stop at simulated day 17.62, and site day 9
+
+- **The stop (20:12:25Z, day 17.619).** `project.py` printed `stop: true`: total $185.6 against STOP_USD $185
+  ($65.77 spent at $2.06 an hour, 60.5 pushes a minute, 49,211 owed at day 30, a 13.6 h drain). I wrote `b030-STOP`
+  and the load stopped at 20:12:56Z. The drain service started on `b030-load.done`, saw `b030-STOP`, pushed none of
+  the 14,072 owed and wrote `b030-run.done` 11 ms later, which ended the watcher. The three `.done` files were renamed
+  `*.done-stop2012Z` so the end steps would not run. At the stop: member SQLite at most 7.30 GB, log 1.939 GB, zero
+  `SQLITE_FULL`; the split had not started (SPLIT_AT is 7.52 GB).
+- **The forecast was about $5 low from 16:46Z to 19:12Z.** `project.py` took its hourly cost rate from the first and
+  last monitor rows of its 3-hour window. Until 19:32Z that window held the 16:20Z row, inside the pause, which billed
+  $0.10 in 15 minutes, so the rate read $1.88 an hour against a running $2.05. `project.py` now counts only monitor
+  intervals the load ran through (a gap of 2 minutes or more in the minute rows, or a stopped load, is a pause). At
+  20:29Z the fixed rule reads $2.06 an hour where the old one read $1.99.
+- **Stop line raised to $225 (user's approval, about 20:25Z on 2026-11-15, relayed by the operator).** STOP_USD in
+  `tests/am1/raw/b030-stop-usd` is now 225. The 24 h drain limit is unchanged.
+- **Site day 9 (announced 20:40Z, start 20:50Z).** The operator chose a site day from main and a resume over ending:
+  ending would fail the split clause, and a failed 30-day row costs a full rerun. The site script is `cb24cb47`,
+  b030-split (`9cb76687`) merged with main `c653084d`; main's new code is M4 (the broker's stored `Seen`, Sandbox RPC)
+  and nothing in the split or archive paths. Against what this run ran since 78cf4070, the split code
+  (`crates/git/src/split.rs`, `workers/site/src/split.rs`) is unchanged; the archive gains main's promote-stream (the
+  pack streams from the shard to the buckets and the validate; an entry over `PROMOTE_MAX` promotes alone), its
+  `View::unpromoted` counts pack bytes, not row bytes (`pack_bytes_above`; equal for this run's inline pushes), and the
+  fold's `Store` gains `wrote` and `applied` hooks. The band, the run hold and promote-ahead are unchanged. New git
+  image `graft-m1-site-gitshard-git@sha256:8c972c8b…94a8` (tag `b030s9`, `tests/am1/raw/b030split-image-9.log`), from
+  main's `containers/git`: disk-validate (`/validate?disk=1`), repack-keep, and `/procs` on `/status`. Running shards
+  are rolled to it (`--roll-shards`). Site variables unchanged. Script: `tests/am1/b030split/siteday.sh`.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
