@@ -1,0 +1,96 @@
+2026-11-15T20:42:38.245Z setup {"repoId":65565,"chain":"actions:7100001.11","N":2500}
+2026-11-15T20:50:25.391Z keys {"seconds":467}
+2026-11-15T20:54:36.773Z registered {"registered":2500,"failed":0,"seconds":251}
+2026-11-15T20:54:43.755Z box started {"box":"bf54-box-14","runners":100,"ok":true}
+2026-11-15T20:54:46.922Z box started {"box":"bf54-box-0","runners":100,"ok":true}
+2026-11-15T20:54:49.329Z box started {"box":"bf54-box-21","runners":100,"ok":true}
+2026-11-15T20:54:54.532Z box started {"box":"bf54-box-11","runners":100,"ok":true}
+2026-11-15T20:55:00.671Z box started {"box":"bf54-box-20","runners":100,"ok":true}
+2026-11-15T20:55:22.393Z box started {"box":"bf54-box-2","runners":100,"ok":true}
+2026-11-15T20:55:25.265Z box started {"box":"bf54-box-17","runners":100,"ok":true}
+2026-11-15T20:55:45.256Z box started {"box":"bf54-box-6","runners":100,"ok":true}
+2026-11-15T20:55:47.539Z box started {"box":"bf54-box-18","runners":100,"ok":true}
+2026-11-15T20:55:48.710Z box started {"box":"bf54-box-12","runners":100,"ok":true}
+2026-11-15T20:55:49.155Z box started {"box":"bf54-box-5","runners":100,"ok":true}
+2026-11-15T20:55:51.260Z box started {"box":"bf54-box-8","runners":100,"ok":true}
+2026-11-15T20:55:54.806Z box started {"box":"bf54-box-1","runners":100,"ok":true}
+2026-11-15T20:55:56.029Z box started {"box":"bf54-box-16","runners":100,"ok":true}
+2026-11-15T20:56:07.047Z box started {"box":"bf54-box-3","runners":100,"ok":true}
+2026-11-15T20:56:13.454Z box started {"box":"bf54-box-22","runners":100,"ok":true}
+2026-11-15T20:56:19.990Z box started {"box":"bf54-box-13","runners":100,"ok":true}
+2026-11-15T20:56:21.070Z box started {"box":"bf54-box-10","runners":100,"ok":true}
+2026-11-15T20:56:21.437Z box started {"box":"bf54-box-23","runners":100,"ok":true}
+2026-11-15T20:56:23.082Z box started {"box":"bf54-box-19","runners":100,"ok":true}
+2026-11-15T20:56:29.840Z box started {"box":"bf54-box-4","runners":100,"ok":true}
+2026-11-15T20:56:31.966Z box started {"box":"bf54-box-24","runners":100,"ok":true}
+2026-11-15T20:56:42.177Z box started {"box":"bf54-box-9","runners":100,"ok":true}
+2026-11-15T20:56:43.032Z box started {"box":"bf54-box-15","runners":100,"ok":true}
+2026-11-15T20:58:08.381Z box started {"box":"bf54-box-7","runners":100,"ok":true}
+2026-11-15T20:58:09.723Z held 0 (max 0); listeners 1120 of 1120 started, 0 exited, 0 workers; box memory max 1542 MiB
+2026-11-15T20:58:40.190Z held 0 (max 0); listeners 1382 of 1382 started, 0 exited, 0 workers; box memory max 1769 MiB
+2026-11-15T20:59:10.571Z held 0 (max 0); listeners 1634 of 1635 started, 0 exited, 0 workers; box memory max 2001 MiB
+2026-11-15T20:59:40.932Z held 0 (max 0); listeners 1887 of 1887 started, 0 exited, 0 workers; box memory max 2197 MiB
+2026-11-15T21:00:11.366Z held 0 (max 0); listeners 2094 of 2094 started, 0 exited, 0 workers; box memory max 2235 MiB
+2026-11-15T21:00:41.761Z held 0 (max 0); listeners 2266 of 2266 started, 0 exited, 0 workers; box memory max 2268 MiB
+2026-11-15T21:01:12.185Z held 0 (max 0); listeners 2367 of 2367 started, 0 exited, 0 workers; box memory max 2294 MiB
+2026-11-15T21:01:42.548Z held 0 (max 0); listeners 2438 of 2438 started, 0 exited, 0 workers; box memory max 2317 MiB
+2026-11-15T21:02:13.008Z held 0 (max 0); listeners 2477 of 2477 started, 0 exited, 0 workers; box memory max 2336 MiB
+2026-11-15T21:02:43.388Z held 0 (max 0); listeners 2491 of 2491 started, 0 exited, 0 workers; box memory max 2361 MiB
+2026-11-15T21:03:13.780Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2389 MiB
+2026-11-15T21:03:43.781Z every listener started {"at":1794776593780,"maxHeld":0}
+2026-11-15T21:03:44.316Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2412 MiB
+2026-11-15T21:04:14.760Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2454 MiB
+2026-11-15T21:04:45.189Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2519 MiB
+2026-11-15T21:05:15.777Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2574 MiB
+2026-11-15T21:05:46.149Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2650 MiB
+2026-11-15T21:06:16.751Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2686 MiB
+2026-11-15T21:06:47.113Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2705 MiB
+2026-11-15T21:07:17.512Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2721 MiB
+2026-11-15T21:07:47.888Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2755 MiB
+2026-11-15T21:08:18.349Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 0 workers; box memory max 2775 MiB
+2026-11-15T21:08:48.350Z held {"maxHeld":0}
+2026-11-15T21:09:28.041Z held 0 (max 0); listeners 2500 of 2500 started, 0 exited, 16 workers; box memory max 2889 MiB
+2026-11-15T21:10:17.318Z held 0 (max 0); listeners 2473 of 2500 started, 27 exited, 27 workers; box memory max 3007 MiB
+2026-11-15T21:11:33.744Z held 0 (max 0); listeners 2428 of 2500 started, 72 exited, 7 workers; box memory max 3007 MiB
+2026-11-15T21:12:01.506Z held 0 (max 0); listeners 2420 of 2500 started, 80 exited, 4 workers; box memory max 3007 MiB
+2026-11-15T21:12:53.890Z held 0 (max 0); listeners 2403 of 2500 started, 97 exited, 11 workers; box memory max 3007 MiB
+2026-11-15T21:14:08.859Z held 0 (max 0); listeners 2376 of 2500 started, 124 exited, 13 workers; box memory max 3043 MiB
+2026-11-15T21:14:41.926Z held 0 (max 0); listeners 2363 of 2500 started, 137 exited, 15 workers; box memory max 3102 MiB
+2026-11-15T21:15:14.131Z held 0 (max 0); listeners 2348 of 2500 started, 152 exited, 14 workers; box memory max 3102 MiB
+2026-11-15T21:16:01.525Z held 0 (max 0); listeners 2329 of 2500 started, 171 exited, 9 workers; box memory max 3174 MiB
+2026-11-15T21:16:55.863Z held 0 (max 0); listeners 2316 of 2500 started, 184 exited, 3 workers; box memory max 3174 MiB
+2026-11-15T21:17:39.422Z held 0 (max 0); listeners 2309 of 2500 started, 191 exited, 11 workers; box memory max 3174 MiB
+2026-11-15T21:18:30.390Z held 0 (max 0); listeners 2296 of 2500 started, 204 exited, 8 workers; box memory max 3174 MiB
+2026-11-15T21:19:16.621Z held 0 (max 0); listeners 2283 of 2500 started, 217 exited, 9 workers; box memory max 3253 MiB
+2026-11-15T21:20:06.088Z held 0 (max 0); listeners 2266 of 2500 started, 234 exited, 7 workers; box memory max 3253 MiB
+2026-11-15T21:20:59.133Z held 0 (max 0); listeners 2252 of 2500 started, 248 exited, 7 workers; box memory max 3253 MiB
+2026-11-15T21:22:00.055Z held 0 (max 0); listeners 2235 of 2500 started, 265 exited, 2 workers; box memory max 3253 MiB
+2026-11-15T21:22:59.896Z held 0 (max 0); listeners 2219 of 2500 started, 281 exited, 14 workers; box memory max 3310 MiB
+2026-11-15T21:23:53.475Z held 0 (max 0); listeners 2183 of 2500 started, 317 exited, 13 workers; box memory max 3317 MiB
+2026-11-15T21:24:59.093Z held 0 (max 0); listeners 2161 of 2500 started, 339 exited, 6 workers; box memory max 3387 MiB
+2026-11-15T21:25:56.480Z held 0 (max 0); listeners 2147 of 2500 started, 353 exited, 5 workers; box memory max 3387 MiB
+2026-11-15T21:26:48.724Z held 0 (max 0); listeners 2127 of 2500 started, 373 exited, 6 workers; box memory max 3387 MiB
+2026-11-15T21:27:36.103Z held 0 (max 0); listeners 2116 of 2500 started, 384 exited, 14 workers; box memory max 3406 MiB
+2026-11-15T21:28:37.189Z held 0 (max 0); listeners 2097 of 2500 started, 402 exited, 17 workers; box memory max 3406 MiB
+2026-11-15T21:29:23.912Z held 0 (max 0); listeners 2072 of 2500 started, 428 exited, 10 workers; box memory max 3406 MiB
+2026-11-15T21:30:07.794Z held 0 (max 0); listeners 2056 of 2500 started, 444 exited, 15 workers; box memory max 3406 MiB
+2026-11-15T21:30:45.892Z held 0 (max 0); listeners 2040 of 2500 started, 460 exited, 15 workers; box memory max 3406 MiB
+2026-11-15T21:31:14.239Z held 0 (max 0); listeners 2025 of 2500 started, 475 exited, 3 workers; box memory max 3406 MiB
+2026-11-15T21:32:09.000Z held 0 (max 0); listeners 2020 of 2500 started, 480 exited, 0 workers; box memory max 3406 MiB
+2026-11-15T21:32:56.815Z held 0 (max 0); listeners 2020 of 2500 started, 480 exited, 9 workers; box memory max 3406 MiB
+2026-11-15T21:33:43.856Z held 0 (max 0); listeners 2011 of 2500 started, 489 exited, 4 workers; box memory max 3406 MiB
+2026-11-15T21:34:18.643Z held 0 (max 0); listeners 2006 of 2500 started, 494 exited, 0 workers; box memory max 3406 MiB
+2026-11-15T21:34:44.012Z held 0 (max 0); listeners 2005 of 2500 started, 495 exited, 2 workers; box memory max 3406 MiB
+2026-11-15T21:35:25.682Z held 0 (max 0); listeners 2003 of 2500 started, 497 exited, 5 workers; box memory max 3406 MiB
+2026-11-15T21:35:57.936Z held 0 (max 0); listeners 1998 of 2500 started, 502 exited, 4 workers; box memory max 3406 MiB
+2026-11-15T21:36:28.326Z held 0 (max 0); listeners 1994 of 2500 started, 506 exited, 2 workers; box memory max 3406 MiB
+2026-11-15T21:36:57.328Z held 0 (max 0); listeners 1992 of 2500 started, 508 exited, 1 workers; box memory max 3406 MiB
+2026-11-15T21:37:29.323Z held 0 (max 0); listeners 1991 of 2500 started, 509 exited, 0 workers; box memory max 3406 MiB
+2026-11-15T21:37:58.840Z held 0 (max 0); listeners 1991 of 2500 started, 509 exited, 0 workers; box memory max 3406 MiB
+2026-11-15T21:38:30.013Z held 0 (max 0); listeners 1991 of 2500 started, 509 exited, 0 workers; box memory max 3406 MiB
+2026-11-15T21:39:01.158Z held 0 (max 0); listeners 1991 of 2500 started, 509 exited, 1 workers; box memory max 3406 MiB
+2026-11-15T21:39:22.920Z runs finished {"runs":32,"jobs":512}
+2026-11-15T21:42:23.318Z held 0 (max 0); listeners 1990 of 2500 started, 510 exited, 0 workers; box memory max 3406 MiB
+2026-11-15T21:44:00.163Z BF-54 {"polls503PastCap":true,"noSessionInvalid":true,"noRunnerExitedWithoutJob":true,"noListenerRestart":true,"jobStartP99Under35sFor503Runners":false,"noJobUnstartedAfter60s":false,"rePollWithin30s":"from diag-*.txt (tests/m4/wp4/bf54-repoll.mjs)"}; held max 0; 503 runners 2495; job start {"n":512,"p50":40.159,"p99":60.176,"max":60.176}; for 503 runners {"n":384,"p50":33.374,"p99":60.176,"max":60.176}
+2026-11-15T21:44:00.163Z observation done; tear down with tests/m4/wp4/bf54-teardown.mjs {}
+EXIT 0

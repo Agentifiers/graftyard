@@ -1,0 +1,40 @@
+{
+  "repo": "m3org/wp4-bf54p",
+  "boxes": 2,
+  "per": 10,
+  "runners": 20,
+  "runs": [],
+  "events": [
+    {
+      "at": 1794774283451,
+      "what": "setup",
+      "repoId": 65564,
+      "chain": "actions:7100001.10",
+      "N": 20
+    },
+    {
+      "at": 1794774320982,
+      "what": "registered",
+      "registered": 20,
+      "failed": 0,
+      "seconds": 38
+    },
+    {
+      "at": 1794774324614,
+      "what": "box started",
+      "box": "bf54-box-1",
+      "runners": 10,
+      "ok": true
+    },
+    {
+      "at": 1794774326141,
+      "what": "box started",
+      "box": "bf54-box-0",
+      "runners": 10,
+      "ok": true
+    }
+  ],
+  "repoId": 65564,
+  "chain": "actions:7100001.10",
+  "boxesUpS": 5
+}

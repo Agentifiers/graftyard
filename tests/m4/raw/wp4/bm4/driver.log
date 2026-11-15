@@ -1,0 +1,8 @@
+2026-11-15T19:37:16.352Z setup {"jobChain":"actions:7100001.7","regChain":"actions:7100001.0"}
+2026-11-15T19:37:19.516Z run created {"run":1900546}
+2026-11-15T19:43:00.067Z kill {"site":0,"registrationLeader":{"site":0,"term":6},"counts":{"InProgress":7,"Assigned":1},"cmd":"DEPLOY_TREE=/tmp/m4a-deploy IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:d18537d5c102e6053bfedf89ad1c641c0c7e0e405033444ed9faab652f6a3206 bash tests/m4/wp3/bf55-kill.sh down"}
+2026-11-15T19:43:11.826Z kill command done {"code":0}
+2026-11-15T19:48:09.293Z old leader dead {"site":0,"status":null}
+2026-11-15T19:48:50.843Z restore never ran: the old leader never went dead {}
+2026-11-15T19:48:51.739Z BM-4: PASS {"jobs8":true,"siteFailedMidRun":true,"everyLegSucceeded":true,"runSucceeded":true,"noJobOnTwoRunners":true}
+EXIT 0

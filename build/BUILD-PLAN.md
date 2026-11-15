@@ -1224,7 +1224,14 @@ BF-54 settles the runner's backoff on 503 (`decisions/OPEN-QUESTIONS.md`, F26).
 
 It also carries BM-4's matrix run.
 
-**Built so far (2026-11-15), no hosted run** (`tests/m4/results/m4-wp4.md`). The install side: the hosted label table, `decide`'s per-owner cap on hosted registrations and its refusal to delete a hosted runner that holds a job (`crates/actions/src/hosted.rs`), `Broker::demand` on the owner's `RunnerBroker` under BF-55's every-shard rule, and the edge's `GET .../hosted/demand`, `POST .../hosted/runners`, and `DELETE .../hosted/runners/{id}`. `graft-runners` in `workers/runners`: one pass (`control.rs`), the Workers host (`worker.rs`, `entry.mjs`), a deploy script, and the runner image (`containers/runner/Dockerfile`, built in the orb; `tests/m4/wp4/image.sh` pushes it). CLI: `graftyard runners init` and `graftyard runners upgrade` (`cli/src/runners.rs`). BF-60's in-memory half passes on three real members with a fake Sandbox host, with runners polling through BF-55's `Taken`, and `tests/m4/wp4/plant.py` catches every plant. The runner account exists, and the operator approved the estimate (about $12 to $19, with a $25 stop); the hosted BF-60, BM-4, and BF-54 follow the merge.
+**Hosted rows (2026-11-15, graft-m4a and the runner account, $12.68 of the $25 stop)** (`tests/m4/results/m4-wp4.md`):
+
+- **BF-60 passes**: run 1966182, on the sweep alone.
+- **BM-4 passes**: run 1900546, with site a down mid-run.
+- **BF-54 fails on job start.** The 503s, re-polls, and sessions pass, which settles F26. But a `Repo`-scope match whose answer was lost waits out its lease (`decisions/OPEN-QUESTIONS.md`, F76), so the row stays open until F76's fix and a rerun.
+- Queue latency on the sweep alone is about 10 minutes at p50, which is R24's gap.
+
+**Built so far (2026-11-15)**. The install side: the hosted label table, `decide`'s per-owner cap on hosted registrations and its refusal to delete a hosted runner that holds a job (`crates/actions/src/hosted.rs`), `Broker::demand` on the owner's `RunnerBroker` under BF-55's every-shard rule, and the edge's `GET .../hosted/demand`, `POST .../hosted/runners`, and `DELETE .../hosted/runners/{id}`. `graft-runners` in `workers/runners`: one pass (`control.rs`), the Workers host (`worker.rs`, `entry.mjs`), a deploy script, and the runner image (`containers/runner/Dockerfile`, built in the orb; `tests/m4/wp4/image.sh` pushes it). CLI: `graftyard runners init` and `graftyard runners upgrade` (`cli/src/runners.rs`). BF-60's in-memory half passes on three real members with a fake Sandbox host, with runners polling through BF-55's `Taken`, and `tests/m4/wp4/plant.py` catches every plant. The runner account exists, and the operator approved the estimate (about $12 to $19, with a $25 stop).
 
 ### M4-WP5. The web app [inference placement]
 

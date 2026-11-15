@@ -1,0 +1,13 @@
+on: workflow_dispatch
+jobs:
+  leg:
+    runs-on: [self-hosted, bf54]
+    strategy:
+      matrix:
+        a: [0, 1, 2, 3]
+        b: [0, 1, 2, 3]
+    steps:
+      - name: BF-54 leg
+        run: |
+          echo "leg ${{ matrix.a }}-${{ matrix.b }} on $RUNNER_NAME, run $GITHUB_RUN_ID"
+          sleep 20
