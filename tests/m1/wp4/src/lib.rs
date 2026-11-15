@@ -184,6 +184,17 @@ impl Bucket for Killed<'_> {
     async fn get(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, StoreError> {
         self.inner.get(key).await
     }
+    async fn copy_new(
+        &self,
+        from: &Self,
+        key: &str,
+        expect: Option<(u64, Digest)>,
+    ) -> std::result::Result<Option<graftyard_git::PutNew>, StoreError> {
+        if self.deny.is_some_and(|d| key.starts_with(d)) {
+            return Err(StoreError("killed".into()));
+        }
+        self.inner.copy_new(from.inner, key, expect).await
+    }
     async fn list(&self, prefix: &str) -> std::result::Result<Vec<graftyard_git::ObjectInfo>, StoreError> {
         self.inner.list(prefix).await
     }
@@ -270,6 +281,7 @@ impl Bed {
                 bytes: &body,
                 index: &ix,
                 idx: None,
+                idx_range: None,
                 inline_max: INLINE_MAX,
             };
             match store.place(place).await {
@@ -305,6 +317,7 @@ impl Bed {
                 bytes: &body,
                 index: &ix,
                 idx: None,
+                idx_range: None,
                 inline_max: INLINE_MAX,
             };
             match store.place(place).await {

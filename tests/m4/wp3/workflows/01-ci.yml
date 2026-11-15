@@ -1,0 +1,43 @@
+name: CI
+on:
+  merge_group:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'release/**']
+    paths-ignore: ['docs/**']
+concurrency: ci-${{ github.ref }}
+env:
+  TOP: "1"
+jobs:
+  build:
+    runs-on: [self-hosted, linux]
+    strategy:
+      matrix:
+        os: [a, b]
+        node: [18, 20]
+        include:
+          - os: c
+            node: 22
+        exclude:
+          - os: b
+            node: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: echo ${{ matrix.os }}
+        name: Echo
+        env:
+          X: y
+      - run: echo '{done}' ${{ matrix.node }} and ${{ github.sha }}
+  test:
+    needs: build
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - run: make test
+      - run: make test2
+        id: second
+        if: ${{ always() }}

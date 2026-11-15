@@ -209,6 +209,12 @@ pub struct Stats {
     pub queue_ms: Vec<u32>,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
+    /// Every stamp's lag (`crate::clock`), stamp minus this isolate's clock, by bucket: 0, then below 2^i ms for i
+    /// from 1, the last bucket open; and the largest seen.
+    pub clock_lag: [u32; 16],
+    pub clock_lag_max: u64,
+    /// Leader: reads that started while the clock was suspect, so waited for a round instead of the lease.
+    pub lease_fallbacks: u32,
     /// Local `/entries` pages capped at `ENTRIES_BUSY_PAGE_BYTES` because other reads were in flight.
     pub busy_pages: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
@@ -226,6 +232,8 @@ pub struct Stats {
     pub follower_reads: u32,
     pub follower_refused: u32,
     pub follower_late: u32,
+    /// Reads served by `stale()` under a `StaleMode` flag (`crate::member`, `read_stale`).
+    pub stale_reads: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
     pub catchups: u32,
     pub leases: u32,
@@ -323,6 +331,9 @@ impl Stats {
         self.trace.clear();
         self.hops.clear();
         self.inbound.clear();
+        self.clock_lag = [0; 16];
+        self.clock_lag_max = 0;
+        self.lease_fallbacks = 0;
         self.inbound_since = now_ms();
     }
 }
@@ -386,6 +397,27 @@ pub enum Trace {
     /// returned the answer (`x-graft-left`), `ms` 0. Against `index` it bounds the output gate plus the wire back.
     #[cfg(feature = "test-faults")]
     AnswerArrived = 21,
+    // 22 is `AppendAnswered` on the held far-leg merge (`m0-adaptive-append`).
+    /// F74's call trace (`tests/m0/results/f74-trace.md`): this member's `/raft` fetch to `peer` is about to be issued.
+    /// `at` is the `x-graft-sent` stamp, `batch` the call's id (`x-graft-call`, per host, so the callee's
+    /// `CallArrived` and `CallLeft` and this member's `AnswerArrived` carry it too), `index` this member's `/raft`
+    /// fetches then waiting for response headers, this one included, and `ms` its event-loop lag (`Host::loop_lag`).
+    #[cfg(feature = "test-faults")]
+    CallSent = 23,
+    /// F74's call trace: this member's `/raft` handler for a call from `peer` returned. `at` is the `x-graft-left`
+    /// stamp, `batch` the call's id, `index` the handler's entry (the top of `Routes::fetch`, before any injected
+    /// fault awaits; `CallArrived` comes after them and the body), and `ms` this member's event-loop lag there.
+    #[cfg(feature = "test-faults")]
+    CallLeft = 24,
+}
+
+/// F74: how far behind this isolate's event loop reads at `now`, from the member's 100 ms ticker: the lateness of its
+/// last wake, or how overdue its pending tick is, whichever is larger; 0 when the ticker is stopped (`next_due` 0).
+/// Workers' clock advances only on I/O, so a turn spent in JavaScript is invisible until the next I/O's stamp, and a
+/// lag here is a stall that pushed I/O past the tick's due time, not the CPU time of any one turn.
+#[cfg(any(test, feature = "test-faults"))]
+fn loop_lag(now: u64, last_late: u64, next_due: u64) -> u64 {
+    if next_due == 0 { 0 } else { last_late.max(now.saturating_sub(next_due)) }
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -698,8 +730,11 @@ pub struct Core<F: Family> {
     pub join: Join,
     applied: Index,
     waiters: HashMap<Ticket, Vec<oneshot::Sender<Outcome<F>>>>,
-    /// The request id, admission time, and command of each ticket this boot admitted, for kills, latency, and the
-    /// id-block lease loop's re-send.
+    /// The request id and admission time of each ticket this boot admitted, for kills and latency, and what the
+    /// ticket needs at resolution beyond them: `F::marked`'s slim command for the marker puts after an `Acked`, or,
+    /// once `decide` refused it, the core's own command (`Out::refused`) for the id-block lease loop's re-send. A
+    /// whole copy of every admitted command held 60 to 80 KB a ticket on B0-33's leaders (LM-1 round 19,
+    /// `tests/m0/results/admitted-bytes.md`).
     pub admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>,
     reads: HashMap<ReadId, (Value, oneshot::Sender<ReadResult>)>,
     #[cfg(feature = "test-faults")]
@@ -744,10 +779,15 @@ pub struct Host<F: Family> {
     pub heavy_reads: Rc<Cell<u32>>,
     /// Reads of any kind in flight on this member, until their answer is sent (`crate::member::READS_MAX`).
     pub reads_in_flight: Rc<Cell<u32>>,
+    /// This member's clock: the isolate's, raised to the freshest stamp a peer or the edge sent (`crate::clock`).
+    /// Every input steps at it, and every reading the member gives out is it.
+    pub clock: RefCell<crate::clock::Clock>,
     /// Bytes of the bodies of member calls this member has sent and not yet seen end, and of read answers still
     /// streaming, each counted once per call or read though a shared answer is one copy (`/stats` `memSplit`).
     pub call_bytes: Rc<Cell<usize>>,
-    pub answer_bytes: Rc<Cell<usize>>,
+    /// Distinct bytes of read answers still streaming: a shared answer once, however many reads stream it
+    /// (`crate::member::ANSWER_BYTES_MAX`).
+    pub answers: Rc<RefCell<Answers>>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -812,6 +852,16 @@ pub struct Host<F: Family> {
     /// `set_drained` only when they change.
     #[cfg(feature = "test-faults")]
     drained: RefCell<Option<(String, BTreeSet<u8>)>>,
+    /// F74: the last `/raft` call id this host issued (`Trace::CallSent`). It starts at the host's build time in ms
+    /// times 1,000, so ids stay unique across the object's resets and under 2^53, where a JSON trace keeps them exact.
+    #[cfg(feature = "test-faults")]
+    call_seq: Cell<u64>,
+    /// F74: this host's `/raft` fetches waiting for response headers.
+    #[cfg(feature = "test-faults")]
+    awaiting: Rc<Cell<usize>>,
+    /// F74: the ticker's last wake lateness and its pending tick's due time, 0 when stopped (`loop_lag`).
+    #[cfg(feature = "test-faults")]
+    tick_lag: Rc<Cell<(u64, u64)>>,
 }
 
 /// `n` bytes counted in a gauge for as long as this lives.
@@ -827,6 +877,58 @@ impl Counted {
 impl Drop for Counted {
     fn drop(&mut self) {
         self.0.set(self.0.get().saturating_sub(self.1));
+    }
+}
+
+/// Reports an AppendEntries call ended when the task that awaited it ends, by any path (`Member::call_ended`).
+struct Ended<F: Family>(Rc<Host<F>>, Option<(SiteId, u64)>);
+
+impl<F: Family> Drop for Ended<F> {
+    fn drop(&mut self) {
+        if let Some((to, round)) = self.1 {
+            let _ = self.0.input(|m, t| m.call_ended(t, to, round));
+        }
+    }
+}
+
+/// The read answers streaming out of this member, by the address of their shared bytes, with how many reads stream
+/// each, and their distinct bytes. An answer's address is unique while a hold keeps it alive.
+#[derive(Default)]
+pub struct Answers {
+    by: HashMap<usize, u32>,
+    bytes: usize,
+}
+
+impl Answers {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Counts `v` while the returned hold lives: its bytes once, however many reads hold it.
+    pub fn hold(this: &Rc<RefCell<Answers>>, v: &Rc<[u8]>) -> AnswerHeld {
+        let key = v.as_ptr() as usize;
+        let mut a = this.borrow_mut();
+        let n = a.by.entry(key).or_insert(0);
+        *n += 1;
+        if *n == 1 {
+            a.bytes += v.len();
+        }
+        AnswerHeld(this.clone(), key, v.len())
+    }
+}
+
+pub struct AnswerHeld(Rc<RefCell<Answers>>, usize, usize);
+
+impl Drop for AnswerHeld {
+    fn drop(&mut self) {
+        let mut a = self.0.borrow_mut();
+        if let Some(n) = a.by.get_mut(&self.1) {
+            *n -= 1;
+            if *n == 0 {
+                a.by.remove(&self.1);
+                a.bytes -= self.2;
+            }
+        }
     }
 }
 
@@ -1442,8 +1544,9 @@ impl<F: Family> Host<F> {
             unheard: Cell::new((0, 0)),
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
+            clock: RefCell::new(crate::clock::Clock::default()),
             call_bytes: Rc::new(Cell::new(0)),
-            answer_bytes: Rc::new(Cell::new(0)),
+            answers: Rc::new(RefCell::new(Answers::default())),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),
@@ -1476,6 +1579,12 @@ impl<F: Family> Host<F> {
             hop: Cell::new(2),
             #[cfg(feature = "test-faults")]
             drained: RefCell::new(None),
+            #[cfg(feature = "test-faults")]
+            call_seq: Cell::new(now_ms() * 1_000),
+            #[cfg(feature = "test-faults")]
+            awaiting: Rc::new(Cell::new(0)),
+            #[cfg(feature = "test-faults")]
+            tick_lag: Rc::new(Cell::new((0, 0))),
         });
         #[cfg(feature = "test-faults")]
         for q in crate::faults::SCHEMA {
@@ -1511,6 +1620,13 @@ impl<F: Family> Host<F> {
 
     #[cfg(not(feature = "test-faults"))]
     pub fn trace_at(&self, _: u64, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
+
+    /// F74: this isolate's event-loop lag now (`loop_lag`).
+    #[cfg(feature = "test-faults")]
+    pub fn loop_lag(&self) -> u64 {
+        let (late, due) = self.tick_lag.get();
+        loop_lag(now_ms(), late, due)
+    }
 
     /// Test installs: the election rows of one step (`elect_rows`), kept in `Stats::elections`.
     #[cfg(feature = "test-faults")]
@@ -1584,7 +1700,7 @@ impl<F: Family> Host<F> {
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
         let (mut m, ready) =
-            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(now_ms()), seed())
+            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(self.now()), seed())
                 .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
@@ -1646,6 +1762,12 @@ impl<F: Family> Host<F> {
         self.core.borrow().is_some()
     }
 
+    /// The chain this member was joined to, if it is joined.
+    #[cfg(feature = "test-faults")]
+    pub fn chain(&self) -> Option<graftyard_types::ChainId> {
+        self.core.try_borrow().ok()?.as_ref().map(|c| c.join.chain)
+    }
+
     fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], t: u64) {
         let mut s = self.stats.borrow_mut();
         let (leading, term) = (core.m.role() == Role::Leader, core.m.term());
@@ -1684,6 +1806,22 @@ impl<F: Family> Host<F> {
         }
     }
 
+    /// This member's clock (`crate::clock::Clock::now`): every input steps at it, and every reading the member gives
+    /// out, such as `/status`'s `now`, is it.
+    pub fn now(&self) -> u64 {
+        self.clock.borrow_mut().now(now_ms())
+    }
+
+    /// A sender's clock stamp (`crate::clock::STAMP`) on a call to this member or a reply to its call.
+    pub fn stamped(&self, v: Option<String>) {
+        if let Some(stamp) = crate::clock::parse(v) {
+            let lag = self.clock.borrow_mut().stamp(stamp, now_ms());
+            let mut s = self.stats.borrow_mut();
+            s.clock_lag[(u64::BITS - lag.leading_zeros()).min(15) as usize] += 1;
+            s.clock_lag_max = s.clock_lag_max.max(lag);
+        }
+    }
+
     /// One input to the member: run it, make its writes durable, and return its reply and outputs, not yet released
     /// (`dispatch` releases them). The kill faults fire here.
     pub fn step<R>(
@@ -1696,10 +1834,12 @@ impl<F: Family> Host<F> {
         self.kick();
         let mut guard = self.core.try_borrow_mut().map_err(|_| err("member core busy"))?;
         let core = guard.as_mut().ok_or_else(|| err("member not joined"))?;
-        let t = now_ms();
+        let t = self.now();
         let applied0 = core.applied;
         #[cfg(feature = "test-faults")]
         let was = (core.m.role(), core.m.term(), core.m.state().commit);
+        // The read lease rests on this clock: while stamps showed it lagging, reads wait for a round (`crate::clock`).
+        core.m.set_clock_suspect(self.clock.borrow().suspect());
         let ready = f(&mut core.m, Timestamp(t));
         self.note(core, &ready.writes, t);
         #[cfg(feature = "test-faults")]
@@ -1780,7 +1920,7 @@ impl<F: Family> Host<F> {
         core.applied = applied;
         let early = std::mem::take(&mut out.early);
         if wrote {
-            let id = core.m.confirm_begin(Timestamp(now_ms()));
+            let id = core.m.confirm_begin(Timestamp(self.now()));
             let timed = core.m.role() == Role::Leader
                 && early
                     .iter()
@@ -1892,7 +2032,7 @@ impl<F: Family> Host<F> {
             // The crate names the admitted commands this entry's `decide` refused.
             let carried: BTreeSet<RequestId> = e.requests.iter().map(|(r, _)| *r).collect();
             let refused: Vec<String> =
-                out.refused.iter().filter(|(i, _)| *i == e.index).map(|(_, r)| r.to_string()).collect();
+                out.refused.iter().filter(|(i, _, _)| *i == e.index).map(|(_, r, _)| r.to_string()).collect();
             Some(Fault {
                 rid,
                 kill,
@@ -2099,6 +2239,13 @@ impl<F: Family> Host<F> {
             // The answers this input built, by query: valid only at this input's grants (`shared_answer`).
             let mut built: HashMap<String, ReadBody> = HashMap::new();
             let every = crate::family::dump_every(core.m.me());
+            // A refusal resolves only once its entry commits, in this output or a later one: its ticket keeps the
+            // command until then, for the lease loop.
+            for (_, rid, cmd) in out.refused {
+                if let Some(a) = core.admitted.values_mut().find(|(r, _, _)| *r == rid) {
+                    a.2 = Some(cmd);
+                }
+            }
             for r in out.resolutions {
                 match r {
                     Resolution::Ticket { ticket, result } => {
@@ -2371,11 +2518,19 @@ impl<F: Family> Host<F> {
             }
             // What `call_failed` needs, so the envelope and its entries are not held while a late answer is awaited.
             let (to, on_miss, on_error) = (e.to, e.failure(true), e.failure(false));
+            // However the call ends, its AppendEntries bytes stop counting in the core's budget (`call_ended`).
+            let _ended = Ended(
+                h.clone(),
+                match &e.msg {
+                    raft::Message::Append(a) if a.boot == h.boot() => Some((to, a.round)),
+                    _ => None,
+                },
+            );
             #[cfg(feature = "test-faults")]
             let drop_reply = matches!(e.msg, raft::Message::Append(_));
             drop(e);
             #[cfg(feature = "test-faults")]
-            if let Some(hang) = crate::faults::site_fault(&h.env).await {
+            if let Some(hang) = crate::faults::site_fault(&h.env, h.chain(), true).await {
                 crate::faults::count(&format!("site_fault:out>{}", to.0));
                 // A hang past CALL_DEADLINE is a missed deadline, as a blackholed call is (B0-07's gray site).
                 if hang >= raft::CALL_DEADLINE.as_millis() as u64 {
@@ -2459,6 +2614,11 @@ impl<F: Family> Host<F> {
                 }
             }
         });
+    }
+
+    /// This boot's id, which its AppendEntries carry.
+    fn boot(&self) -> u64 {
+        self.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.m.boot())).unwrap_or(0)
     }
 
     fn call_failed(self: &Rc<Self>, f: Option<raft::CallFailure>) {
@@ -2601,25 +2761,38 @@ impl<F: Family> Host<F> {
                 let _ = wasm_bindgen_futures::JsFuture::from(closed).await;
             });
         }
+        let h = Headers::new();
+        let _ = h.set(crate::clock::STAMP, &self.now().to_string());
         #[cfg(feature = "test-faults")]
-        {
-            let h = Headers::new();
+        let (id, awaiting) = {
+            let id = self.call_seq.get() + 1;
+            self.call_seq.set(id);
+            // Counted until the response headers arrive, or until the call is dropped unanswered.
+            let awaiting = Counted::new(&self.awaiting, 1);
+            let sent = now_ms();
             let _ = h.set("x-graft-hop", &hop.to_string());
-            let _ = h.set("x-graft-sent", &now_ms().to_string());
+            let _ = h.set("x-graft-sent", &sent.to_string());
+            let _ = h.set("x-graft-call", &id.to_string());
             // The sender's address, so the callee traces `CallArrived` without decoding the body a second time.
             if let Some(me) = self.core.borrow().as_ref().map(|c| c.m.me()) {
                 let _ = h.set("x-graft-from", &me.0.to_string());
             }
-            init.with_headers(h);
-        }
+            // No I/O runs between this stamp and the fetch below, so the fetch is issued at this clock value.
+            self.trace_at(sent, Trace::CallSent, to.0, id, self.awaiting.get() as u64, self.loop_lag());
+            (id, awaiting)
+        };
+        init.with_headers(h);
         #[cfg(not(feature = "test-faults"))]
         let _ = hop;
         let req =
             Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
         let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
+        self.stamped(res.headers().get(crate::clock::STAMP).ok().flatten());
+        #[cfg(feature = "test-faults")]
+        drop(awaiting);
         #[cfg(feature = "test-faults")]
         if let Some(left) = res.headers().get("x-graft-left").ok().flatten().and_then(|v| v.parse().ok()) {
-            self.trace(Trace::AnswerArrived, to.0, 0, left, 0);
+            self.trace(Trace::AnswerArrived, to.0, id, left, 0);
         }
         let status = res.status_code();
         if status != 200 {
@@ -2856,7 +3029,8 @@ impl<F: Family> Host<F> {
             h.leasing.set(false);
             let blocked = std::mem::take(&mut *h.blocked.borrow_mut());
             for (old, rid, cmd) in blocked {
-                let (r2, out) = match h.step(|m, t| m.commit(t, rid, cmd.clone())) {
+                let marked = F::marked(&cmd);
+                let (r2, out) = match h.step(|m, t| m.commit(t, rid, cmd)) {
                     Ok(x) => x,
                     Err(_) => break,
                 };
@@ -2864,7 +3038,7 @@ impl<F: Family> Host<F> {
                     Ok(a) => {
                         if let Some(core) = h.core.borrow_mut().as_mut() {
                             let at = now_ms();
-                            core.admitted.insert(a.ticket, (rid, at, Some(cmd)));
+                            core.admitted.insert(a.ticket, (rid, at, marked));
                             let waiting = core.waiters.remove(&old).unwrap_or_default();
                             core.waiters.entry(a.ticket).or_default().extend(waiting);
                             core.reissued.insert(old, a.ticket);
@@ -2922,17 +3096,29 @@ impl<F: Family> Host<F> {
         // The loop holds the host only between timers: after `ctx.abort()` the object's timers never fire, and a loop
         // that held it across one kept the whole reset member in the isolate's memory (F47).
         let w = Rc::downgrade(self);
+        #[cfg(feature = "test-faults")]
+        let tick_lag = self.tick_lag.clone();
         spawn_local(async move {
+            #[cfg(feature = "test-faults")]
+            let mut late = 0;
             loop {
                 let due = now_ms() + TICK.as_millis() as u64;
+                #[cfg(feature = "test-faults")]
+                tick_lag.set((late, due));
                 Delay::from(TICK).await;
                 let Some(h) = w.upgrade() else { return };
                 let lag = now_ms().saturating_sub(due);
+                #[cfg(feature = "test-faults")]
+                {
+                    late = lag;
+                }
                 if lag >= 20 {
                     h.trace(Trace::Lag, 0, 0, 0, lag);
                 }
                 if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {
                     h.ticking.set(false);
+                    #[cfg(feature = "test-faults")]
+                    h.tick_lag.set((0, 0));
                     return;
                 }
             }
@@ -3571,6 +3757,17 @@ mod tests {
     }
 
     /// An alarm whose invocation never ran (canceled) is re-armed once it is overdue, not left as the sooner one.
+    /// F74's loop lag: a stopped ticker reads 0; a running one reads the larger of its last wake's lateness and how
+    /// overdue its pending tick is, so a stall shows while it lasts, not only after the tick that ends it.
+    #[test]
+    fn loop_lag_reads_the_pending_ticks_overdue_time_or_the_last_wakes() {
+        use super::loop_lag;
+        assert_eq!(loop_lag(5_000, 300, 0), 0, "stopped ticker");
+        assert_eq!(loop_lag(1_050, 0, 1_100), 0, "pending tick not due");
+        assert_eq!(loop_lag(1_050, 40, 1_100), 40, "last wake was 40 ms late");
+        assert_eq!(loop_lag(3_100, 40, 1_100), 2_000, "pending tick 2 s overdue");
+    }
+
     #[test]
     fn an_overdue_alarm_is_set_again() {
         use super::{ALARM_LATE_MS, rearm};

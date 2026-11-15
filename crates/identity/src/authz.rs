@@ -28,8 +28,9 @@ use crate::org::{
     OrgPolicy, TeamEvent, TeamId, TeamRow, is_install_account,
 };
 use crate::overlay::{Overlay, SetOverlay, Table};
+use crate::sealed::{ActionsName, SealKey, SecretRecord, SecretScope, VariableRecord};
 use crate::tokens::RepoScope;
-use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11};
+use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AUTHZ_FORMAT_V12};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AccountKind {
@@ -158,6 +159,23 @@ pub enum AuthzEvent {
         key: RepoNameKey,
         repo: RepoId,
         init: Box<str>,
+    },
+    // ---- M4-WP3, format 12 ----
+    /// SHARED's `SealKey`, one of the owner's: minted, retired (`retired` set), or dropped (`key: None`) once no record
+    /// names it.
+    SealKey {
+        key_id: Box<str>,
+        key: Option<SealKey>,
+    },
+    /// An org secret: its scope (`SecretScope::Org`) and the sealed bytes the client sent. `row: None` deletes it.
+    OrgSecret {
+        name: ActionsName,
+        row: Option<(SecretScope, SecretRecord)>,
+    },
+    /// An org variable. `row: None` deletes it.
+    OrgVariable {
+        name: ActionsName,
+        row: Option<(SecretScope, VariableRecord)>,
     },
 }
 
@@ -301,6 +319,19 @@ impl Record for AuthzEvent {
                 enc::repo(&mut e, *repo);
                 e.str(init);
             }
+            // M4-WP3: by the canonical rule of `graftyard_fold::canon`, as the repository's newer events are.
+            AuthzEvent::SealKey { key_id, key } => {
+                e.u8(18);
+                graftyard_fold::canon::write(e.0, &(key_id, key));
+            }
+            AuthzEvent::OrgSecret { name, row } => {
+                e.u8(19);
+                graftyard_fold::canon::write(e.0, &(name, row));
+            }
+            AuthzEvent::OrgVariable { name, row } => {
+                e.u8(20);
+                graftyard_fold::canon::write(e.0, &(name, row));
+            }
         }
     }
 }
@@ -358,16 +389,105 @@ pub struct AgentRows {
     pub agent_apps: BTreeMap<AppId, AgentApp>,
     pub agents_enabled: bool,
     pub agents_workspace: WorkspaceMode,
-    /// The `Audit` consumer's cursor (`AuthzEvent::AuditCursor`, format 0x12.4), a trailing part of its own, so a fold
-    /// whose cursor never moved keeps AM1-WP2's bytes.
-    pub more: Index,
+    /// The `Audit` consumer's cursor (`AuthzEvent::AuditCursor`, format 0x12.4), then M4-WP3's Actions rows: a
+    /// trailing part of its own, so a fold whose cursor never moved and that holds no Actions row keeps AM1-WP2's bytes.
+    pub more: CursorRows,
 }
 
 tail_serde!(AgentRows {
     agent_apps: BTreeMap<AppId, AgentApp>,
     agents_enabled: bool,
     agents_workspace: WorkspaceMode,
-} more: Index);
+} more: CursorRows);
+
+/// The `Audit` cursor, then M4-WP3's rows as a trailing part, so a fold with none keeps its cursor's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CursorRows {
+    pub cursor: Index,
+    pub more: ActionsRows,
+}
+
+impl serde::Serialize for CursorRows {
+    /// A fold with no Actions row writes the cursor alone, as the `Index` it was before M4-WP3.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        if self.more == ActionsRows::default() {
+            return self.cursor.serialize(s);
+        }
+        let mut t = s.serialize_tuple(3)?;
+        t.serialize_element(&self.cursor)?;
+        t.serialize_element(&1u8)?;
+        t.serialize_element(&self.more)?;
+        t.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CursorRows {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = CursorRows;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("CursorRows")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<CursorRows, A::Error> {
+                let cursor: Index = seq.next_element()?.ok_or_else(|| serde::de::Error::missing_field("cursor"))?;
+                let more = match seq.next_element::<u8>() {
+                    Ok(Some(1)) => seq.next_element()?.ok_or_else(|| serde::de::Error::missing_field("more"))?,
+                    Ok(Some(m)) => {
+                        return Err(serde::de::Error::invalid_value(
+                            serde::de::Unexpected::Unsigned(u64::from(m)),
+                            &"1, the marker of a fold's trailing part",
+                        ));
+                    }
+                    Ok(None) | Err(_) => ActionsRows::default(),
+                };
+                Ok(CursorRows { cursor, more })
+            }
+        }
+        d.deserialize_tuple(3, V)
+    }
+}
+
+/// M4-WP3's rows on the owner's chain (`design/SHARED.md`, "Actions", Secrets and variables): the owner's `SealKey`s
+/// by `key_id`, and its org secrets and variables by name, each with the scope that says which repositories read it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionsRows {
+    pub seal_keys: BTreeMap<Box<str>, SealKey>,
+    pub secrets: BTreeMap<ActionsName, (SecretScope, SecretRecord)>,
+    pub variables: BTreeMap<ActionsName, (SecretScope, VariableRecord)>,
+}
+
+impl ActionsRows {
+    fn write(&mut self, ev: &AuthzEvent) {
+        match ev {
+            AuthzEvent::SealKey { key_id, key: Some(k) } => {
+                self.seal_keys.insert(key_id.clone(), k.clone());
+            }
+            AuthzEvent::SealKey { key_id, key: None } => {
+                self.seal_keys.remove(key_id);
+            }
+            AuthzEvent::OrgSecret { name, row: Some(r) } => {
+                self.secrets.insert(name.clone(), r.clone());
+            }
+            AuthzEvent::OrgSecret { name, row: None } => {
+                self.secrets.remove(name);
+            }
+            AuthzEvent::OrgVariable { name, row: Some(r) } => {
+                self.variables.insert(name.clone(), r.clone());
+            }
+            AuthzEvent::OrgVariable { name, row: None } => {
+                self.variables.remove(name);
+            }
+            _ => {}
+        }
+    }
+
+    /// The key `GET .../secrets/public-key` returns: the newest unretired.
+    pub fn current_key(&self) -> Option<&SealKey> {
+        self.seal_keys.values().filter(|k| k.retired.is_none()).max_by_key(|k| (k.created, k.key_id.clone()))
+    }
+}
 
 /// M3-WP3's rows: teams, team grants, the policy, invitations, `InstanceAuth`, and the enterprise. A scratch view
 /// copies them on its entry's first write to them (`Cow`): they are small next to names and grants.
@@ -480,7 +600,12 @@ impl AuthzFold {
 
     /// Every entry through this index is one the `Audit` consumer finished or found nothing owed for.
     pub fn audit_cursor(&self) -> Index {
-        self.more.more.more
+        self.more.more.more.cursor
+    }
+
+    /// The owner's Actions rows: `SealKey`s and org secrets and variables.
+    pub fn actions(&self) -> &ActionsRows {
+        &self.more.more.more.more
     }
 
     /// The name `/repositories/{id}` renders a repository under, for the owner its `RepoOwner` row names: its `Live`
@@ -699,6 +824,8 @@ where
         AuthzEvent::AgentApp { app, row: Some(r) } => t.agent_apps.put(*app, r.clone()),
         AuthzEvent::AgentApp { app, row: None } => t.agent_apps.del(app),
         AuthzEvent::OrgAgents { .. } | AuthzEvent::AuditCursor { .. } | AuthzEvent::RepoCreate { .. } => {}
+        // `ActionsRows::write`'s.
+        AuthzEvent::SealKey { .. } | AuthzEvent::OrgSecret { .. } | AuthzEvent::OrgVariable { .. } => {}
         AuthzEvent::Team(TeamEvent::Created { team, .. }) => t.ids.apply_assigned(team.0),
         AuthzEvent::Invitation(InvitationEvent::Sent { id, .. }) => t.ids.apply_assigned(id.0),
         // `OrgRows::write`'s.
@@ -727,6 +854,8 @@ pub struct AuthzScratch<'a> {
     /// `OrgPolicy.agents_enabled` and `agents_workspace`, which `AgentRows` stores.
     agents: (bool, WorkspaceMode),
     org: Cow<'a, OrgRows>,
+    /// M4-WP3's rows, copied on the entry's first write to them.
+    actions: Cow<'a, ActionsRows>,
     /// The entry's time, which an invitation's `expires` is set from and compared with.
     at: Timestamp,
 }
@@ -812,6 +941,9 @@ impl Scratch for AuthzScratch<'_> {
         if touches_org(ev) {
             self.org.to_mut().write(ev);
         }
+        if matches!(ev, AuthzEvent::SealKey { .. } | AuthzEvent::OrgSecret { .. } | AuthzEvent::OrgVariable { .. }) {
+            self.actions.to_mut().write(ev);
+        }
         if let AuthzEvent::OrgAgents { enabled, workspace } = ev {
             self.agents = (*enabled, *workspace);
         }
@@ -834,6 +966,9 @@ impl Scratch for AuthzScratch<'_> {
             } if !free_for(self.name(key), *repo) => Err(format!("{key:?} is held by {:?}", self.name(key)).into()),
             AuthzEvent::RepoCreate { key, repo, .. } if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) => {
                 Err(format!("{key:?} is not live for {repo:?}").into())
+            }
+            AuthzEvent::SealKey { key_id, key: Some(k) } if k.key_id != *key_id => {
+                Err(format!("{key_id} holds {}", k.key_id).into())
             }
             AuthzEvent::App { app, record: Some(r) } if r.id != *app => Err(format!("{app:?} holds {:?}", r.id).into()),
             AuthzEvent::App { app, record: Some(_) } if self.closed.contains(app) => {
@@ -905,6 +1040,7 @@ impl Fold for AuthzFold {
             agent_apps: Overlay::new(&self.more.more.agent_apps),
             agents: (self.more.more.agents_enabled, self.more.more.agents_workspace),
             org: Cow::Borrowed(&self.more.org),
+            actions: Cow::Borrowed(&self.more.more.more.more),
             at,
         }
     }
@@ -926,13 +1062,14 @@ impl Fold for AuthzFold {
             },
         );
         self.more.org.write(ev);
+        self.more.more.more.more.write(ev);
         if let AuthzEvent::OrgAgents { enabled, workspace } = ev {
             self.more.more.agents_enabled = *enabled;
             self.more.more.agents_workspace = *workspace;
         }
         // Never back: two cursor commands in one entry leave the later of the two.
         if let AuthzEvent::AuditCursor { through } = ev {
-            self.more.more.more = self.more.more.more.max(*through);
+            self.more.more.more.cursor = self.more.more.more.cursor.max(*through);
         }
     }
     fn apply_id_block(&mut self, b: IdBlock) {
@@ -1110,6 +1247,38 @@ pub enum AuthzOp {
         key: RepoNameKey,
         repo: RepoId,
     },
+    // ---- M4-WP3, format 12 ----
+    /// A new `SealKey` that `graft-ops` generated and wrapped (`POST /actions/sealkey`): the first public-key read's,
+    /// or a rotation's. Refused for a `key_id` the owner already has. An owner admin, or `graft-ops`.
+    PutSealKey {
+        key: SealKey,
+    },
+    /// Retires a key, which then seals no new secret; its records are resealed and it is dropped once none names it.
+    /// `drop: true` drops a retired key and is refused while a record of this chain names it.
+    RetireSealKey {
+        key_id: Box<str>,
+        drop: bool,
+    },
+    /// `PUT /orgs/{org}/actions/secrets/{name}`. Org only.
+    PutOrgSecret {
+        name: ActionsName,
+        scope: SecretScope,
+        sealed: Box<[u8]>,
+        key_id: Box<str>,
+    },
+    DeleteOrgSecret {
+        name: ActionsName,
+    },
+    /// `POST /orgs/{org}/actions/variables` (`create: true`) and `PATCH .../variables/{name}`.
+    PutOrgVariable {
+        name: ActionsName,
+        scope: SecretScope,
+        value: Box<str>,
+        create: bool,
+    },
+    DeleteOrgVariable {
+        name: ActionsName,
+    },
 }
 
 /// The largest `init` a `CreateRepoWith` carries [guess: a `RepoSettings` with a description and twenty topics is
@@ -1160,6 +1329,8 @@ pub enum AuthzErr {
     NoInstallation,
     /// 422: a `GraftyardRun` or `Mcp` `AgentApp` for an App the install does not own.
     NotOwnApp,
+    /// 404: an org secret or variable that does not exist (M4-WP3).
+    NoRecord,
 }
 
 impl Record for AuthzCmd {
@@ -1311,6 +1482,30 @@ impl Record for AuthzCmd {
                 e.u8(31);
                 e.str(key.as_str());
                 enc::repo(&mut e, *repo);
+            }
+            AuthzOp::PutSealKey { key } => {
+                e.u8(32);
+                graftyard_fold::canon::write(e.0, key);
+            }
+            AuthzOp::RetireSealKey { key_id, drop } => {
+                e.u8(33);
+                graftyard_fold::canon::write(e.0, &(key_id, drop));
+            }
+            AuthzOp::PutOrgSecret { name, scope, sealed, key_id } => {
+                e.u8(34);
+                graftyard_fold::canon::write(e.0, &(name, scope, sealed, key_id));
+            }
+            AuthzOp::DeleteOrgSecret { name } => {
+                e.u8(35);
+                graftyard_fold::canon::write(e.0, name);
+            }
+            AuthzOp::PutOrgVariable { name, scope, value, create } => {
+                e.u8(36);
+                graftyard_fold::canon::write(e.0, &(name, scope, value, create));
+            }
+            AuthzOp::DeleteOrgVariable { name } => {
+                e.u8(37);
+                graftyard_fold::canon::write(e.0, name);
             }
         }
     }
@@ -1754,6 +1949,95 @@ impl AuthzCmd {
                     Ok((smallvec![ev], AuthzOut::Done))
                 }
             },
+            AuthzOp::PutSealKey { .. }
+            | AuthzOp::RetireSealKey { .. }
+            | AuthzOp::PutOrgSecret { .. }
+            | AuthzOp::DeleteOrgSecret { .. }
+            | AuthzOp::PutOrgVariable { .. }
+            | AuthzOp::DeleteOrgVariable { .. } => self.decide_actions(s),
+        }
+    }
+
+    /// M4-WP3's ops, after `decide_op`'s admin check. A key's id is unique; a retired key seals nothing new; a key is
+    /// dropped only once no org secret names it (the repository chains' records are resealed by the rotation job,
+    /// which drops the key last). Org rows need an org and a sealed box under one of the owner's unretired keys.
+    fn decide_actions(&self, s: &AuthzScratch<'_>) -> Decided {
+        use crate::sealed::SecretVisibility;
+        let a = &*s.actions;
+        let none = || Ok((SmallVec::new(), AuthzOut::Done));
+        let one = |ev: AuthzEvent| Ok((smallvec![ev], AuthzOut::Done));
+        let org_scope = |sc: &SecretScope| match sc {
+            SecretScope::Org { visibility, repos } if *visibility == SecretVisibility::Selected || repos.is_empty() => {
+                Ok(())
+            }
+            _ => Err(AuthzErr::BadRecord),
+        };
+        match &self.op {
+            AuthzOp::PutSealKey { key } => match a.seal_keys.get(&key.key_id) {
+                Some(k) if k == key => none(),
+                // The wrapping key's rotation: the same key, its private half wrapped again under another slot.
+                Some(k) if SealKey { private: key.private.clone(), ..k.clone() } == *key => {
+                    one(AuthzEvent::SealKey { key_id: key.key_id.clone(), key: Some(key.clone()) })
+                }
+                Some(_) => Err(AuthzErr::BadRecord),
+                None if key.retired.is_some() || key.key_id.is_empty() => Err(AuthzErr::BadRecord),
+                None => one(AuthzEvent::SealKey { key_id: key.key_id.clone(), key: Some(key.clone()) }),
+            },
+            AuthzOp::RetireSealKey { key_id, drop } => {
+                let Some(k) = a.seal_keys.get(key_id) else { return none() };
+                if *drop {
+                    if k.retired.is_none() || a.secrets.values().any(|(_, r)| r.key_id == *key_id) {
+                        return Err(AuthzErr::BadRecord);
+                    }
+                    return one(AuthzEvent::SealKey { key_id: key_id.clone(), key: None });
+                }
+                if k.retired.is_some() {
+                    return none();
+                }
+                let key = SealKey { retired: Some(s.at), ..k.clone() };
+                one(AuthzEvent::SealKey { key_id: key_id.clone(), key: Some(key) })
+            }
+            AuthzOp::PutOrgSecret { name, scope, sealed, key_id } => {
+                org_only(s)?;
+                org_scope(scope)?;
+                // A sealed box is the 32-byte ephemeral key, the 16-byte tag, and at most 48 KB of value.
+                let unretired = a.seal_keys.get(key_id).is_some_and(|k| k.retired.is_none());
+                if !unretired || sealed.len() <= 48 || sealed.len() > 48 + 48 * 1024 {
+                    return Err(AuthzErr::BadRecord);
+                }
+                let record = SecretRecord { sealed: sealed.clone(), key_id: key_id.clone(), updated: s.at };
+                one(AuthzEvent::OrgSecret { name: name.clone(), row: Some((scope.clone(), record)) })
+            }
+            AuthzOp::DeleteOrgSecret { name } => {
+                org_only(s)?;
+                if !a.secrets.contains_key(name) {
+                    return Err(AuthzErr::NoRecord);
+                }
+                one(AuthzEvent::OrgSecret { name: name.clone(), row: None })
+            }
+            AuthzOp::PutOrgVariable { name, scope, value, create } => {
+                org_only(s)?;
+                org_scope(scope)?;
+                if value.len() > 48 * 1024 {
+                    return Err(AuthzErr::BadRecord);
+                }
+                match (create, a.variables.get(name)) {
+                    (true, Some(_)) => return Err(AuthzErr::Taken),
+                    (false, None) => return Err(AuthzErr::NoRecord),
+                    (false, Some((sc, r))) if sc == scope && r.value == *value => return none(),
+                    _ => {}
+                }
+                let record = VariableRecord { value: value.clone(), updated: s.at };
+                one(AuthzEvent::OrgVariable { name: name.clone(), row: Some((scope.clone(), record)) })
+            }
+            AuthzOp::DeleteOrgVariable { name } => {
+                org_only(s)?;
+                if !a.variables.contains_key(name) {
+                    return Err(AuthzErr::NoRecord);
+                }
+                one(AuthzEvent::OrgVariable { name: name.clone(), row: None })
+            }
+            _ => unreachable!("only M4-WP3's ops"),
         }
     }
 }
@@ -1769,6 +2053,12 @@ impl Command for AuthzCmd {
         match self.op {
             AuthzOp::AuditCursor { .. } => AUTHZ_FORMAT_V4,
             AuthzOp::CreateRepoWith { .. } | AuthzOp::AbortCreate { .. } => AUTHZ_FORMAT_V11,
+            AuthzOp::PutSealKey { .. }
+            | AuthzOp::RetireSealKey { .. }
+            | AuthzOp::PutOrgSecret { .. }
+            | AuthzOp::DeleteOrgSecret { .. }
+            | AuthzOp::PutOrgVariable { .. }
+            | AuthzOp::DeleteOrgVariable { .. } => AUTHZ_FORMAT_V12,
             AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }
             | AuthzOp::CloseApp { .. }

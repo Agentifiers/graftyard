@@ -831,3 +831,174 @@ fn merge_waits_are_counted_in_buckets_and_read_against_the_coalescing_window() {
     let s = budgets.borrow().stats(net(3)).unwrap();
     assert_eq!((s.wait_max_ms, s.wait_ms(1.0)), (3_000.0, Some(3_000.0)), "the catch-up is waited");
 }
+
+/// The step up is reserved ahead of `FANOUT_UP_FOR` and commits only to caught-up slots, as the leader's `/fanout`
+/// runs it (`workers/site/src/fanout.rs`): from the first report above `FANOUT_UP`, `pool_reserve` asks both ledgers
+/// for one slot past the k - 1 served, which the leader warms (`Caller::PoolWarm`); `granted_k` then `warm_step`
+/// commit the step only once that slot answered caught up on both warm sites. B0-34 on m29 held k 1 for 900 s with no
+/// pool shard ever started, and a step there would have waited on a 32-minute rehydrate per slot
+/// (`tests/am1/results/lm1-memory.md`, rounds 18b and 18c).
+#[test]
+fn the_step_up_is_reserved_ahead_and_never_commits_to_a_cold_slot() {
+    use graftyard_git::{LoadReports, PoolLedger, granted_k, pool_ask, pool_reserve, warm_step};
+    let (s0, s1, n) = (SiteId(0), SiteId(1), net(1));
+    let share = |_| 6;
+    // At k 1 a cool network asks no ledger, and neither does a hot one under the old rule until its step.
+    assert_eq!(pool_reserve(1, None, false, false), None);
+    assert_eq!(pool_ask(1, None), None);
+    // The first report above the up line reserves one slot at k 1, and k past the k - 1 served at higher k.
+    assert_eq!(pool_reserve(1, None, true, false), Some(1));
+    assert_eq!(pool_reserve(3, None, true, false), Some(3));
+    assert_eq!(pool_reserve(3, Some(5), true, false), Some(4), "a bigger step asks for what it steps to");
+    assert_eq!(pool_reserve(FANOUT_MAX, None, true, false), Some(FANOUT_MAX - 1), "nothing past FANOUT_MAX");
+    assert_eq!(pool_reserve(3, None, false, false), Some(2), "below the line it renews what it serves");
+    // Below the line again, a held reservation is given back, at k 1 too, where nothing else would ask a ledger.
+    assert_eq!(pool_reserve(1, None, false, true), Some(0));
+    assert_eq!(pool_reserve(3, None, false, true), Some(2));
+
+    // `warm` is when each site's reserved slot answers caught up, in minutes; `None` never in the run.
+    let run = |warm_at: [Option<u64>; 2]| -> (Vec<u8>, Option<u64>) {
+        let mut r = LoadReports::default();
+        let mut ledgers = [PoolLedger::default(), PoolLedger::default()];
+        let mut k = 1u8;
+        let mut ks = Vec::new();
+        let mut reserved_at = None;
+        for m in 0..=12u64 {
+            // Each warm site's report runs the leader's whole `/fanout`, as hosted.
+            for (i, (site, cpu)) in [(s1, 0.9), (s0, 0.95)].into_iter().enumerate() {
+                let now = Timestamp(m * MIN + i as u64);
+                let prior = r.f;
+                let step = r.report([s0, s1], site, load(cpu), k, now);
+                let Some(want) = pool_reserve(k, step, r.high(), r.reserved) else { continue };
+                let slots = ledgers.each_mut().map(|l| l.ask(n, 1, want, now, share));
+                if slots.iter().all(|s| s.len() > usize::from(k) - 1) {
+                    reserved_at.get_or_insert(m);
+                }
+                let warm = warm_at.map(|w| w.is_some_and(|w| m >= w));
+                let w: [Vec<bool>; 2] = [0, 1].map(|s| vec![warm[s]; slots[s].len()]);
+                let granted = granted_k(k, step.unwrap_or(k), slots.each_ref().map(|s| Some(s.len() as u8)));
+                let next = warm_step(k, granted, [&slots[0], &slots[1]], [&w[0], &w[1]]);
+                if step.is_some_and(|s| s > k) && next == k {
+                    r.step_waited(prior);
+                }
+                k = next;
+                r.reserved = r.high() && want >= k;
+            }
+            ks.push(k);
+        }
+        (ks, reserved_at)
+    };
+    // Warm within the window: the slot is reserved at minute 0 and the step commits at FANOUT_UP_FOR, 3 min.
+    let up_for = FANOUT_UP_FOR.as_secs() / 60;
+    let (ks, reserved) = run([Some(2), Some(2)]);
+    assert_eq!(reserved, Some(0), "the slot is reserved at the first high report, before the step");
+    assert_eq!(ks[up_for as usize - 1], 1);
+    assert_eq!(ks[up_for as usize], 2, "the step commits at FANOUT_UP_FOR once its slot is warm: {ks:?}");
+    // One site's slot catches up only at minute 7, past the window: k stays 1, then steps at minute 7, not 3 min later.
+    let (ks, _) = run([Some(1), Some(7)]);
+    assert!(ks[..7].iter().all(|k| *k == 1), "no step to a cold slot: {ks:?}");
+    assert_eq!(ks[7], 2, "the waited step commits at the first report after its slot is warm: {ks:?}");
+    // A slot that never catches up: no step in the whole run.
+    let (ks, _) = run([Some(0), None]);
+    assert!(ks.iter().all(|k| *k == 1), "{ks:?}");
+}
+
+/// A step waiting on cold slots keeps them leased, so the warm that follows each ask reaches them and the step commits
+/// once they answer caught up. On `graft-m2b` m30 a forced k 4 on a fresh network (want 3) found every slot cold, kept
+/// k 1, trimmed its grants to k - 1 = 0, and so never warmed a slot or stepped. A slot here is warm once it was held,
+/// and so warmed, through an earlier call, as the leader's `WARM` map keeps only slots the network still holds.
+#[test]
+fn a_waiting_step_keeps_its_cold_slots_until_they_warm() {
+    use graftyard_git::{PoolLedger, granted_k, pool_keep, warm_step};
+    use std::collections::HashMap;
+    let (n, share) = (net(1), |_| 6);
+    for (want, target) in [(3, 4), (2, 3)] {
+        let mut ledgers = [PoolLedger::default(), PoolLedger::default()];
+        let mut warmed: HashMap<(usize, u16), u64> = HashMap::new();
+        let mut ks = Vec::new();
+        let mut k = 1u8;
+        for call in 0..4u64 {
+            let now = Timestamp(call * 1_000);
+            let slots = ledgers.each_mut().map(|l| l.ask(n, 1, want, now, share));
+            let granted = granted_k(k, target, slots.each_ref().map(|s| Some(s.len() as u8)));
+            let w = [0, 1].map(|s| slots[s].iter().map(|x| warmed.get(&(s, *x)).is_some_and(|c| *c < call)).collect());
+            let w: [Vec<bool>; 2] = w;
+            let next = warm_step(k, granted, [&slots[0], &slots[1]], [&w[0], &w[1]]);
+            let keep = pool_keep(want, granted, next, false);
+            let held = [0, 1].map(|s| {
+                if slots[s].len() > usize::from(keep) {
+                    ledgers[s].ask(n, 1, keep, now, share)
+                } else {
+                    slots[s].clone()
+                }
+            });
+            warmed.retain(|(s, x), _| held[*s].contains(x));
+            for (s, h) in held.iter().enumerate() {
+                for x in h {
+                    warmed.entry((s, *x)).or_insert(call);
+                }
+            }
+            k = next;
+            ks.push(k);
+        }
+        assert_eq!(
+            ks,
+            [1, target, target, target],
+            "want {want}: the step commits at the first call its slots are warm"
+        );
+    }
+    // Nothing waits: a granted step keeps k - 1, a reservation one more, and a lone site's extra grant is given back.
+    assert_eq!(pool_keep(3, 4, 4, false), 3);
+    assert_eq!(pool_keep(1, 2, 2, true), 1);
+    assert_eq!(pool_keep(6, 1, 1, false), 0);
+    // A step that waits while one site granted 3 and the other 1 (granted_k 2) keeps only what both granted.
+    assert_eq!(pool_keep(3, 2, 1, false), 1, "the larger site's extra slots are given back");
+}
+
+/// A pool slot runs only while a lease holds it: a slot whose lease lapsed, or that its network gave back, is handed
+/// to the ledger object's heartbeat (`beat`) to tear down once, and a slot another lease took again is not torn down.
+/// Without it a slot started by a pool warm ran until its container's inactivity timeout, past the priced "warm only
+/// for networks hot in the last hour" (`design/DESIGN.md`, Costs).
+#[test]
+fn a_lapsed_lease_tears_its_slots_down_once() {
+    use graftyard_git::{LEDGER_BEAT, LOAD_STALE, PoolLedger};
+    let share = |_| 6;
+    let (stale, beat) = (LOAD_STALE.as_millis() as u64, LEDGER_BEAT.as_millis() as u64);
+    let mut l = PoolLedger::default();
+    let held = l.ask(net(1), 1, 3, Timestamp(0), share);
+    assert_eq!(held.len(), 3);
+    assert_eq!(l.beat(Timestamp(1)), Vec::<u16>::new(), "a live lease tears nothing down");
+    // Give one back: that slot is torn down at the next beat, the other two are not.
+    let kept = l.ask(net(1), 1, 2, Timestamp(beat), share);
+    let gone: Vec<u16> = held.iter().copied().filter(|s| !kept.contains(s)).collect();
+    assert_eq!(l.beat(Timestamp(beat + 1)), gone);
+    assert_eq!(l.beat(Timestamp(beat + 2)), Vec::<u16>::new(), "each slot once");
+    // No renewal after that: the beats, on time, hand both kept slots over once the lease lapses, and then stop.
+    let mut now = Timestamp(beat + 2);
+    let mut down = Vec::new();
+    while let Some(next) = l.beat_due(now) {
+        now = next;
+        down.extend(l.beat(now));
+        assert!(now.0 < 100 * beat);
+    }
+    let mut both = kept.clone();
+    both.sort();
+    assert_eq!(down, both);
+    assert!(l.leases.is_empty());
+    assert!(now.0 >= beat + stale && now.0 < beat + stale + 2 * beat, "lapsed at {} ms", now.0);
+    // A slot given back and taken by another network before the beat stays up.
+    let mut l = PoolLedger::default();
+    let a = l.ask(net(1), 1, 1, Timestamp(0), share);
+    l.ask(net(1), 1, 0, Timestamp(1), share);
+    let b = l.ask(net(2), 2, 6, Timestamp(2), share);
+    assert!(b.contains(&a[0]));
+    assert_eq!(l.beat(Timestamp(3)), Vec::<u16>::new());
+    // A slot given back keeps the heartbeat armed though no lease is left, until its beat tears it down.
+    let mut l = PoolLedger::default();
+    l.ask(net(1), 1, 1, Timestamp(0), share);
+    l.ask(net(1), 1, 0, Timestamp(1), share);
+    assert!(l.leases.is_empty());
+    assert!(l.beat_due(Timestamp(1)).is_some(), "a beat is due to tear the given-back slot down");
+    assert_eq!(l.beat(Timestamp(2)).len(), 1);
+    assert_eq!(l.beat_due(Timestamp(2)), None);
+}

@@ -14,8 +14,10 @@ crate-type = ["cdylib"]
 test-faults = []
 
 [dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+graftyard-actions = { path = "../../crates/actions" }
 graftyard-api = { path = "../../crates/api" }
 graftyard-fold = { path = "../../crates/fold" }
 graftyard-git = { path = "../../crates/git", features = ["worker"] }

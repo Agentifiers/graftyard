@@ -34,16 +34,10 @@ fn admit(c: &mut Cluster, s: SiteId, id: u128, cmd: KvCmd) -> Ticket {
     c.on(s, |m, now| m.commit(now, RequestId(Ulid(id)), cmd)).expect("admitted").ticket
 }
 
-/// The ticket's latest resolution. A leadership that ends on a higher term answers `NotLeader` under that term, so
-/// such an answer matches by boot and seq; seq restarts with each leadership, so any other must match whole.
+/// The ticket's latest resolution.
 fn result(c: &Cluster, t: Ticket) -> Option<Result<bool, CommitError<KvErr>>> {
     c.resolutions.iter().rev().find_map(|(_, r)| match r {
         Resolution::Ticket { ticket, result } if *ticket == t => Some(result.clone().map(|a| a.out)),
-        Resolution::Ticket { ticket, result: Err(e @ CommitError::NotLeader(_)) }
-            if (ticket.boot, ticket.seq) == (t.boot, t.seq) && ticket.term.0 == t.term.0 + 1 =>
-        {
-            Some(Err(e.clone()))
-        }
         _ => None,
     })
 }

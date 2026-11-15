@@ -509,7 +509,7 @@ def a1_rates():
 		f"warm shards with the predictor's k = {k2} on the second site, ${((k - 1) + (k2 - 1)) * per:,.0f} a month if held; the monthly sizing at {PUSHES} pushes a task "
 		f"gives k = {monthly_k} |")
 	print(f"| Hot pool per site | {cf.shards('large')['hot_pool']} instances; reserved vCPU at 2,000 developers "
-		f"{cf.shards('large')['reserved_vcpu']:,.1f} of 1,500 |")
+		f"{cf.shards('large')['reserved_vcpu']:,.1f} of {cf.ACCOUNT_VCPU:,} |")
 	print(f"| Conflict predictor demand on the second warm site | {predict_mean:.1f} vCPU at the measured "
 		f"{PREDICT_MEAN_PAIRS} pairs a push, so k = {k2} there, cap {cap:.0f} vCPU; {predict:.1f} vCPU if every push used all "
 		f"{PREDICT_PAIRS} pairs ({min(1, cap / predict):.0%} of pairs at peak) |")

@@ -3,12 +3,14 @@
 //   node tests/m1/integ/deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis <genesis.json>]
 //                                       [--anchor <install.toml>] [--genesis-signed <genesis.signed>] [--no-shard]
 //                                       [--ops <graft-ops name>] [--var K=V ...] [--web <web/dist/client>]
+//                                       [--upload-only]
 // `--genesis` (test-faults only) is the test install's stand-in for the Release view; `--anchor` sets the trust anchor
 // a product edge accepts the Release group's genesis against. `--genesis-signed` (with `--anchor`) writes the committed
 // signed genesis into GRAFTYARD_GENESIS_SIGNED, hex, after checking its SHA-256 is install.toml's `genesis` digest,
 // so a cold isolate needs no Release read (design/DESIGN.md, "Install operations", Genesis, step 6). `--no-shard` leaves out SHARD_<n>, for site scripts
 // with no `GitShard` class (git requests then fail; the release endpoint does not need a shard). `graftyard sites
-// add` deploys the class, so an install it built needs no `--no-shard`.
+// add` deploys the class, so an install it built needs no `--no-shard`. `--upload-only` uploads a version without
+// deploying it (`wrangler versions upload`), so an `EdgeRoll` can deploy it beside N by percentage (M5-WP2).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -57,7 +59,7 @@ const cfg = {
   compatibility_date: "2026-10-01",
   workers_dev: true,
   preview_urls: false,
-  durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"], ["SEARCH", "SearchShard"], ["INBOX", "Inbox"]]
+  durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"], ["SEARCH", "SearchShard"], ["INBOX", "Inbox"], ["LOGRELAY", "LogRelay"], ["BROKER", "RunnerBroker"]]
     .filter(([b]) => !(noShard && b === "SHARD")).map(([b, cls]) => ({ name: `${b}_${s.id}`, class_name: cls, script_name: s.script }))) },
   r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
   // `--web <dir>`: the web app's build (`npm run build` in web/, `VITE_MOCK_API=false`) as the `ASSETS` binding, with
@@ -65,6 +67,8 @@ const cfg = {
   ...(flag("--web") ? { assets: { directory: resolve(flag("--web")), binding: "ASSETS", run_worker_first: true } } : {}),
   // `--ops <name>`: the `fetch()` binding to `graft-ops` that mints installation tokens (M3-WP4).
   ...(flag("--ops") ? { services: [{ binding: "OPS", service: flag("--ops") }] } : {}),
+  // The version that ran, which the edge reports to `graft-front` (M5-WP2).
+  version_metadata: { binding: "VERSION" },
   vars: {
     PLAN: "pro", SSH_OPTION: "off", EDGE_CAP_BYTES: "80000000", FORMATS_ENABLED: "32.1", PART_BYTES: "5242880",
     HOST: `${name}.<workers-subdomain>.workers.dev`,
@@ -72,10 +76,12 @@ const cfg = {
     ...(genesis ? { GRAFTYARD_GENESIS: JSON.stringify(genesis) } : {}),
     ...(anchor ? { GRAFTYARD_INSTALL: anchor.install, GRAFTYARD_CUSTOMER_KEY: anchor.customer_key } : {}),
     ...(genesisSigned ? { GRAFTYARD_GENESIS_SIGNED: genesisSigned } : {}),
+    ...(flag("--ops") ? { OPS_SCRIPT: flag("--ops") } : {}),
     ...extra,
   },
   limits: { cpu_ms: 300000 },
   observability: { enabled: true },
 };
 writeFileSync(join(gen, `${name}.jsonc`), JSON.stringify(cfg, null, 2));
-execFileSync("npx", ["--prefix", join(root, "tests/m0"), "wrangler", "deploy", "-c", `${name}.jsonc`], { cwd: gen, stdio: "inherit" });
+const cmd = flags.includes("--upload-only") ? ["versions", "upload"] : ["deploy"];
+execFileSync("npx", ["--prefix", join(root, "tests/m0"), "wrangler", ...cmd, "-c", `${name}.jsonc`], { cwd: gen, stdio: "inherit" });

@@ -373,6 +373,21 @@ pub enum RepoEvent {
     // Format 32.20 (`crate::split::REPO_FORMAT_SPLIT`): tag 43.
     /// A metadata split's steps (`crate::split`), which only the parent's or the child's leader records itself.
     Split(crate::split::SplitEntry),
+    // M4-WP3, format 32.23 (`crate::secrets::REPO_FORMAT_SECRETS`): tags 44 and 45.
+    /// Core. SHARED's repository or environment secret: the sealed bytes the client sent. `record: None` deletes it.
+    ActionsSecret {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+        record: Option<graftyard_identity::sealed::SecretRecord>,
+        actor: Option<AccountId>,
+    },
+    /// Core. SHARED's repository or environment variable. `record: None` deletes it.
+    ActionsVariable {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+        record: Option<graftyard_identity::sealed::VariableRecord>,
+        actor: Option<AccountId>,
+    },
 }
 
 impl RepoEvent {
@@ -849,7 +864,9 @@ impl Fold for RepoFold {
             | RepoEvent::LfsObject { actor, .. }
             | RepoEvent::Created { actor }
             | RepoEvent::Deleted { actor, .. }
-            | RepoEvent::Hook { actor, .. } => by(actor),
+            | RepoEvent::Hook { actor, .. }
+            | RepoEvent::ActionsSecret { actor, .. }
+            | RepoEvent::ActionsVariable { actor, .. } => by(actor),
             RepoEvent::Comment(
                 C::Created { author: a, .. } | C::Edited { actor: a, .. } | C::Deleted { actor: a, .. },
             )
@@ -1811,6 +1828,13 @@ impl Record for RepoEvent {
             // M4-WP2, 32.19: tag 42.
             RepoEvent::Watchers(u) => return tagged(out, 42, u),
             RepoEvent::Split(x) => return tagged(out, 43, x),
+            // M4-WP3, 32.23: tags 44 and 45.
+            RepoEvent::ActionsSecret { scope, name, record, actor } => {
+                return tagged(out, 44, &(scope, name, record, actor));
+            }
+            RepoEvent::ActionsVariable { scope, name, record, actor } => {
+                return tagged(out, 45, &(scope, name, record, actor));
+            }
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1989,6 +2013,9 @@ pub enum RepoCmd {
     Counts(crate::watch::CountsCmd),
     /// `Notify`'s or `Search`'s cursor (`crate::watch`), `{"consumerCursor": ..}`, format 32.19.
     ConsumerCursor(crate::watch::ConsumerCursorCmd),
+    /// `RunOwner`'s check suite, check runs, and required checks (`crate::run_checks`), `{"runChecks": ..}`,
+    /// format 32.21.
+    RunChecks(crate::run_checks::RunChecksCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2001,6 +2028,7 @@ pub enum RepoOut {
     HookCursor(crate::hooks::HookCursorOut),
     Lifecycle(crate::lifecycle::LifecycleOut),
     Counts(crate::watch::CountsOut),
+    RunChecks(crate::run_checks::RunChecksOut),
 }
 
 /// An issue command's refusal carries its render request too, so the member renders the client's error reply.
@@ -2023,7 +2051,8 @@ impl crate::smart::PushOutOf for RepoOut {
             | RepoOut::Transfer(_)
             | RepoOut::HookCursor(_)
             | RepoOut::Lifecycle(_)
-            | RepoOut::Counts(_) => None,
+            | RepoOut::Counts(_)
+            | RepoOut::RunChecks(_) => None,
         }
     }
 }
@@ -2041,6 +2070,7 @@ impl Serialize for RepoCmd {
             Lifecycle(&'a crate::lifecycle::Lifecycle),
             Counts(&'a crate::watch::CountsCmd),
             ConsumerCursor(&'a crate::watch::ConsumerCursorCmd),
+            RunChecks(&'a crate::run_checks::RunChecksCmd),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
@@ -2052,6 +2082,7 @@ impl Serialize for RepoCmd {
             RepoCmd::Lifecycle(c) => Tagged::Lifecycle(c).serialize(s),
             RepoCmd::Counts(c) => Tagged::Counts(c).serialize(s),
             RepoCmd::ConsumerCursor(c) => Tagged::ConsumerCursor(c).serialize(s),
+            RepoCmd::RunChecks(c) => Tagged::RunChecks(c).serialize(s),
         }
     }
 }
@@ -2080,6 +2111,8 @@ impl<'de> Deserialize<'de> for RepoCmd {
             serde_json::from_value(c).map(RepoCmd::Counts).map_err(D::Error::custom)
         } else if let Some(c) = one("consumerCursor") {
             serde_json::from_value(c).map(RepoCmd::ConsumerCursor).map_err(D::Error::custom)
+        } else if let Some(c) = one("runChecks") {
+            serde_json::from_value(c).map(RepoCmd::RunChecks).map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("not a repository command"))
         }
@@ -2098,6 +2131,28 @@ impl Record for RepoCmd {
             RepoCmd::Lifecycle(c) => c.encode(out),
             RepoCmd::Counts(c) => c.encode(out),
             RepoCmd::ConsumerCursor(c) => c.encode(out),
+            RepoCmd::RunChecks(c) => c.encode(out),
+        }
+    }
+}
+
+impl RepoCmd {
+    /// What the committing leader's marker puts read after an `Acked` (`workers/site`, `Family::after_ok`), or `None`
+    /// when they put nothing: a push's stored pack ref, without any inline bytes, and the blob an issue command's
+    /// member confirmed, without its reply render. A leader host keeps this with each open ticket in place of the
+    /// whole command, which held each render and inline pack a second time beside the core's copy
+    /// (`tests/m0/results/admitted-bytes.md`).
+    pub fn marked(&self) -> Option<RepoCmd> {
+        match self {
+            RepoCmd::Push(p) if matches!(p.pack, Some(PackRef::Stored { .. })) => Some(RepoCmd::Push(p.clone())),
+            RepoCmd::Issue(c) if c.confirmed.is_some() => {
+                let op = c.op.clone();
+                let mut slim =
+                    crate::issue_ops::call::IssueCall::new(op, c.actor.clone(), c.request, serde_json::Value::Null);
+                slim.confirmed = c.confirmed;
+                Some(RepoCmd::Issue(Box::new(slim)))
+            }
+            _ => None,
         }
     }
 }
@@ -2118,6 +2173,7 @@ impl Command for RepoCmd {
             RepoCmd::HookCursor(_) => crate::hooks::REPO_FORMAT_HOOKS,
             RepoCmd::Lifecycle(c) => c.format(),
             RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) => crate::watch::REPO_FORMAT_WATCH,
+            RepoCmd::RunChecks(_) => crate::run_checks::REPO_FORMAT_ACTIONS,
         }
     }
     fn tiers(&self) -> TierSet {
@@ -2131,6 +2187,7 @@ impl Command for RepoCmd {
             RepoCmd::Lifecycle(c) => c.tiers(),
             RepoCmd::Counts(c) => c.tiers(),
             RepoCmd::ConsumerCursor(_) => TierSet::CORE,
+            RepoCmd::RunChecks(c) => c.tiers(),
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
@@ -2142,7 +2199,7 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => c.deps(),
             RepoCmd::HookCursor(_) => SmallVec::new(),
             RepoCmd::Lifecycle(c) => c.deps(fold),
-            RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) => SmallVec::new(),
+            RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) | RepoCmd::RunChecks(_) => SmallVec::new(),
         }
     }
     fn decide(
@@ -2183,6 +2240,10 @@ impl Command for RepoCmd {
                 let (e, o) = c.decide(s);
                 Ok((e, RepoOut::Counts(o)))
             }
+            RepoCmd::RunChecks(c) => {
+                let (e, o) = c.decide(s);
+                Ok((e, RepoOut::RunChecks(o)))
+            }
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
@@ -2198,6 +2259,7 @@ impl Command for RepoCmd {
             RepoCmd::Lifecycle(c) => RepoOut::Lifecycle(c.replay(events)),
             RepoCmd::Counts(c) => RepoOut::Counts(c.replay(events)),
             RepoCmd::ConsumerCursor(c) => RepoOut::Counts(c.replay(events)),
+            RepoCmd::RunChecks(c) => RepoOut::RunChecks(c.replay(events)),
         }
     }
     /// An issue command without its `render`, the reply the leader renders from its `&Acked`, which no event stores:

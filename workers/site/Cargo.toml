@@ -17,6 +17,7 @@ test-faults = []
 arrayvec.workspace = true
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
+graftyard-actions = { path = "../../crates/actions" }
 graftyard-api = { path = "../../crates/api" }
 graftyard-fold = { path = "../../crates/fold" }
 graftyard-git = { path = "../../crates/git", features = ["worker"] }
@@ -25,10 +26,12 @@ graftyard-lookup = { path = "../../crates/lookup" }
 graftyard-raft = { path = "../../crates/raft" }
 graftyard-release = { path = "../../crates/release" }
 graftyard-types.workspace = true
+graftyard-wire = { path = "../../crates/wire" }
 postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 smallvec.workspace = true
 wasm-bindgen-futures = "0.4"
+wasm-streams = "0.7"
 worker = { workspace = true, features = ["queue"] }

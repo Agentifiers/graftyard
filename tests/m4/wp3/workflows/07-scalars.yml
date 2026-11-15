@@ -1,0 +1,33 @@
+on: push
+jobs:
+  a:
+    runs-on: x
+    steps:
+      - run: |
+          echo ${{ github.sha }}
+            indented 'q' {b}
+          last
+      - run: >-
+          folded ${{ github.ref }}
+          more
+      - run: "dq ${{ github.ref }} \t x"
+      - run: plain ${{ github.ref }}
+          continued
+      - run: |
+          no expr
+          here
+      - name: ${{ 'lit' }}
+        run: echo ${{ 1 }} ${{ true }} ${{ 'a''b' }}
+        env:
+          A: 3.10
+          B: 1e3
+          C: 0x1F
+          D: ~
+          E: True
+          F: 0o17
+          G: .inf
+          H: -0
+          I: 1_000
+          J: 012
+          K: 'quoted 12'
+          L: !!str 5

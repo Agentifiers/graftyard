@@ -226,46 +226,119 @@ impl TierRows {
 
 // ---- the directory ----
 
+/// The tables whose rows name an account a reply may render, by tier: authors, assignees, reviewers, status creators,
+/// release authors, asset uploaders, lock owners, and mergers.
+const NAMING: [(graftyard_types::Tier, &str); 9] = {
+    use graftyard_types::Tier::{Core, Metadata};
+    [
+        (Metadata, "issue"),
+        (Metadata, "issue_assignee"),
+        (Metadata, "comment"),
+        (Metadata, "review"),
+        (Metadata, "status"),
+        (Metadata, "release"),
+        (Metadata, "asset"),
+        (Metadata, "lfs_lock"),
+        (Core, "pull_head"),
+    ]
+};
+
+/// The account one row of a `NAMING` table names, from its key and columns. Each such row names at most one.
+fn row_account(table: &str, key: &[Val], cols: &[Val]) -> Option<AccountId> {
+    use graftyard_git::issues::{PrState, PullHead, StatusUpdate};
+    use graftyard_git::tiers::{AssetRow, CommentRow, IssueRow, LockRow, ReleaseRow, ReviewRow, Timed};
+    fn rec<T: serde::de::DeserializeOwned>(cols: &[Val]) -> T {
+        match cols.first() {
+            Some(Val::Blob(b)) => postcard::from_bytes(b).expect("a fold row this release wrote"),
+            _ => panic!("a fold row has no record"),
+        }
+    }
+    match table {
+        "issue" => rec::<IssueRow>(cols).author,
+        "issue_assignee" => match key.get(1) {
+            Some(Val::Int(a)) => Some(AccountId(DbId(*a))),
+            _ => None,
+        },
+        "comment" => rec::<CommentRow>(cols).author,
+        "review" => rec::<ReviewRow>(cols).reviewer,
+        "status" => Some(rec::<Timed<StatusUpdate>>(cols).rec.creator),
+        "release" => rec::<ReleaseRow>(cols).rec.author,
+        "asset" => rec::<AssetRow>(cols).uploader,
+        "lfs_lock" => Some(rec::<LockRow>(cols).owner),
+        "pull_head" => match rec::<PullHead>(cols).state {
+            PrState::Merged { by, .. } => Some(by.0),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Every account a repository's tiers name, so the edge can read their logins before it renders (F50): authors,
 /// assignees, reviewers, mergers, status creators, release authors, asset uploaders, and lock owners. Each comes from
-/// the typed row `Repo` reads, so a reply names no account outside this set.
+/// the typed row `Repo` reads, so a reply names no account outside this set. One scan of each `NAMING` table.
 pub fn accounts(core: &dyn Read, meta: &dyn Read) -> std::collections::BTreeSet<AccountId> {
-    use graftyard_git::issues::{PrState, PullHead, StatusUpdate};
-    use graftyard_git::tiers::{AssetRow, CommentRow, IssueRow, LockRow, ReleaseRow, ReviewRow, Timed, get_rec};
     let mut out = std::collections::BTreeSet::new();
-    let keys = |r: &dyn Read, table: &str| r.prefix(table, &[]).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
-    for k in keys(meta, "issue") {
-        out.extend(get_rec::<IssueRow>(meta, "issue", &k).and_then(|i| i.author));
-    }
-    for k in keys(meta, "issue_assignee") {
-        if let Some(Val::Int(a)) = k.get(1) {
-            out.insert(AccountId(DbId(*a)));
-        }
-    }
-    for k in keys(meta, "comment") {
-        out.extend(get_rec::<CommentRow>(meta, "comment", &k).and_then(|c| c.author));
-    }
-    for k in keys(meta, "review") {
-        out.extend(get_rec::<ReviewRow>(meta, "review", &k).and_then(|c| c.reviewer));
-    }
-    for k in keys(meta, "status") {
-        out.extend(get_rec::<Timed<StatusUpdate>>(meta, "status", &k).map(|s| s.rec.creator));
-    }
-    for k in keys(meta, "release") {
-        out.extend(get_rec::<ReleaseRow>(meta, "release", &k).and_then(|x| x.rec.author));
-    }
-    for k in keys(meta, "asset") {
-        out.extend(get_rec::<AssetRow>(meta, "asset", &k).and_then(|a| a.uploader));
-    }
-    for k in keys(meta, "lfs_lock") {
-        out.extend(get_rec::<LockRow>(meta, "lfs_lock", &k).map(|l| l.owner));
-    }
-    for k in keys(core, "pull_head") {
-        if let Some(PrState::Merged { by, .. }) = get_rec::<PullHead>(core, "pull_head", &k).map(|h| h.state) {
-            out.insert(by.0);
-        }
+    for (tier, table) in NAMING {
+        let r = if tier == graftyard_types::Tier::Core { core } else { meta };
+        out.extend(r.prefix(table, &[]).iter().filter_map(|(k, v)| row_account(table, k, v)));
     }
     out
+}
+
+/// The accounts one tier's `NAMING` rows name, with how many rows name each: `accounts` for that tier, kept by
+/// `apply` instead of read again. A member holds one per tier in memory, never stored (`design/SHARED.md`, "Folds",
+/// derived indexes). `wrote` moves the counts with each row `apply` changes, and `applied` moves `at` to the entry
+/// `apply` finished, but only from the entry before it: a tier changed any other way (an install swaps its tables)
+/// stands at another index, and `current` is false until it is built again from the rows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NamedIndex {
+    at: Option<Index>,
+    counts: BTreeMap<AccountId, u32>,
+}
+
+impl NamedIndex {
+    /// Built from `r`'s rows of `tier`, which stands at `at`.
+    pub fn build(r: &dyn Read, tier: graftyard_types::Tier, at: Index) -> NamedIndex {
+        let mut n = NamedIndex { at: Some(at), counts: BTreeMap::new() };
+        for (_, table) in NAMING.iter().filter(|(t, _)| *t == tier) {
+            for (k, v) in r.prefix(table, &[]) {
+                n.add(row_account(table, &k, &v), 1);
+            }
+        }
+        n
+    }
+
+    fn add(&mut self, a: Option<AccountId>, by: i64) {
+        let Some(a) = a else { return };
+        let n = self.counts.entry(a).or_insert(0);
+        *n = (i64::from(*n) + by).max(0) as u32;
+        if *n == 0 {
+            self.counts.remove(&a);
+        }
+    }
+
+    /// A row of `table` changes from `old` to `new` (`graftyard_fold::Store::wrote`).
+    pub fn wrote(&mut self, table: &str, key: &[Val], old: Option<&Stored>, new: Option<&Stored>) {
+        if self.at.is_none() || !NAMING.iter().any(|(_, t)| *t == table) {
+            return;
+        }
+        self.add(old.and_then(|o| row_account(table, key, &o.cols)), -1);
+        self.add(new.and_then(|n| row_account(table, key, &n.cols)), 1);
+    }
+
+    /// `apply` finished entry `index` (`graftyard_fold::Store::applied`).
+    pub fn applied(&mut self, index: Index) {
+        self.at = self.at.filter(|a| a.0 + 1 == index.0).map(|_| index);
+    }
+
+    /// Whether the counts are the tier's at `applied`.
+    pub fn current(&self, applied: Index) -> bool {
+        self.at == Some(applied)
+    }
+
+    pub fn accounts(&self) -> impl Iterator<Item = AccountId> + '_ {
+        self.counts.keys().copied()
+    }
 }
 
 /// The accounts a request's replies name, as the edge read them: the owner's `Authz` fold for permissions and the
@@ -444,6 +517,16 @@ pub enum What {
     CheckRunCreated {
         id: i64,
     },
+    /// An Actions secret or variable write (M4-WP3, format 32.23): 201 `{}` for a new name (`IssueOut::Created`), else 204,
+    /// GitHub's codes for `PUT .../secrets/{name}`, `POST .../variables`, and `PATCH`/`DELETE` [doc: GHES 3.22 REST,
+    /// "Actions secrets" and "Actions variables"]. A variable create on a taken name is 409, which `gh variable set`
+    /// takes as "PATCH instead" [measured: cli/cli `pkg/cmd/variable/set/http.go`].
+    ActionsConfig,
+    /// `PUT` and `DELETE /repos/{o}/{r}/branches/{branch}/protection` (`crate::protection`): 200 with the
+    /// `protected-branch` object, or 204 for a delete.
+    Protection {
+        branch: String,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -560,6 +643,13 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::Hook { created } => WireReply::of(&crate::webhooks::saved(acked, &r, *created)),
         What::ReviewCommentCreated { n } => WireReply::of(&crate::rest::review_comment_created(acked, &r, *n)),
         What::CheckRunCreated { id } => WireReply::of(&crate::rest::check_run_created(acked, &r, *id)),
+        // GitHub's 201 carries `{}`, and go-gh decodes every non-204 body, so an empty one fails `gh secret set`
+        // [measured: gh 2.102.1, "unexpected end of JSON input"].
+        What::Protection { branch } => WireReply::of(&crate::protection::saved(acked, &r, branch)),
+        What::ActionsConfig => WireReply::of(&match acked.out {
+            IssueOut::Created => Reply::json(201, serde_json::json!({})),
+            _ => Reply::empty(204),
+        }),
     }
 }
 
@@ -586,6 +676,11 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::CheckRunCreated { .. } => {
             WireReply::of(&crate::rest::write_refused(e, "rest/checks/runs#create-a-check-run"))
         }
+        What::Protection { .. } => WireReply::of(&crate::protection::refused(e)),
+        What::ActionsConfig => WireReply::of(&match e {
+            IssueErr::Exists => Reply::error(409, "Already exists", "rest/actions/variables"),
+            e => crate::webhooks::refused(e),
+        }),
     }
 }
 

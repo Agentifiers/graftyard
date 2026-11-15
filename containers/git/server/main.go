@@ -35,6 +35,29 @@
 //	POST /ingest-batch?net=N         body: per pack, "<sha256> <bytes>\n" and its bytes. Each ingested as /ingest
 //	                                 does, in order; {"results": ["done"|"later", ...]}, "later" for /ingest's 409.
 //	                                 422 for the call on a checksum mismatch or another index-pack failure
+//	POST /spool?net=N&sha256=H       body: a stored pack, streamed. Spools it, holding no lock, to
+//	                                 <data>/spool/stored-<net>-<H>.pack for a later /ingest &spooled=1, so a
+//	                                 catch-up fetches several packs at once and still ingests them in log order.
+//	                                 {"bytes","spool_ms"}, or {"have": true} when H is already ingested; 422
+//	                                 "checksum ..." on a mismatch, leaving nothing behind. Each call deletes stored-*
+//	                                 files older than an hour, which a cut-off catch-up leaves
+//	PUT  /spool-idx?net=N&sha256=H   body: the stored .idx of pack H (at most 64 MiB), staged beside the spooled
+//	                                 pack as <data>/spool/stored-<net>-<H>.idx. {"bytes"}. No lock
+//	POST /ingest?net=N&sha256=H&spooled=1  empty body: ingests the pack /spool staged; 404 "not spooled" without one.
+//	                                 The already-ingested and /validate-kept-aside cases answer as /ingest does. A
+//	                                 staged idx that passes checkIdx against the pack is loaded instead of running
+//	                                 index-pack: the lock is held only to rename the pack and idx into objects/pack
+//	                                 and record them. {"ingested","bytes","idx": "used","index_ms": 0,"lock_ms"};
+//	                                 otherwise /ingest's index-pack and its answer (409, 422) plus "idx": "none" or
+//	                                 "rejected" (with "idxError") and "lock_ms", the time the network's lock was
+//	                                 held. The spooled files are deleted when done, except on 409, so the same call
+//	                                 works again once the bases are here
+//	GET  /idx?net=N&sha256=H         the .idx of the pack /validate kept aside under H, as bytes; 404 when there is
+//	                                 none. The archive's promotion stores it beside the promoted pack
+//	POST /connected?net=N[&objects=1|tips]  git rev-list --quiet --all (--objects with objects=1; with objects=tips,
+//	                                 every commit and then each ref tip's whole tree) under the lock shared:
+//	                                 {"connected","ms","refs","error" (only when not connected)}, 200 either way.
+//	                                 A rehydrate's backstop after it loaded packs without index-pack
 //	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
 //	                                 first page deletes every ref it does not list, done=1 on the last sets HEAD;
 //	                                 neither is one page that is the whole set. Refs naming objects not here are
@@ -42,7 +65,8 @@
 //	POST /refs?net=N                 a catch-up's ref changes, the same lines, the zero oid a delete
 //	GET  /refs?net=N                 every ref, the same lines
 //	POST /promote?net=N              body: SHA-256s of ingested packs, one per line. Answers one complete (not thin)
-//	                                 pack of every object those packs brought
+//	                                 pack of every object those packs brought, named by its tree entry where there is one
+//	                                 so pack-objects can group delta candidates by name
 //	POST /have?net=N                 body: SHA-256s, one per line. {"have": [...]}: those already ingested, so a
 //	                                 resumed rehydrate skips them
 //	GET  /info-refs?net=N            upload-pack's advertisement, in the protocol the git-protocol header asks for
@@ -63,6 +87,9 @@
 //	                                 last request's time in ms, kept as <repo>/graft-used's mtime
 //	POST /evict?net=N                deletes the repository; 409 while a request holds it, so a clone streaming
 //	                                 from it is never cut
+//	GET  /procs[?net=N]              {"procs": [{"pid","cmd","nice","cpu_s","rss_mb"}]}: every running git process,
+//	                                 most CPU first, for the shard object's /status; with net, also "packs":
+//	                                 {"count","bytes","kept","kept_bytes"} of that network's repository
 //	GET  /load                       {"cpu_p99","queue_depth"}: the last minute's p99 busy fraction of the
 //	                                 container's vCPUs, one sample a second, and the client validates waiting or
 //	                                 running. CPU excludes derived work (ingest, refs, repack, promotion packs, init,
@@ -105,6 +132,8 @@
 //	                                 .txt, README, then the first other README.* by name, all case-insensitive):
 //	                                 {"name","path","sha","size","text"}. 404 when there is none, 422 over 1 MiB or
 //	                                 binary
+//	GET  /ui/blob?net=N&commit=C&path=P  regular file P (not "", a symlink, or a directory): {"path","sha","size",
+//	                                 "text"}. 404 when it is not a regular file, 422 over 1 MiB or binary
 package main
 
 import (
@@ -207,7 +236,17 @@ func (m *cpuMeter) git(dir string, env []string, stdin io.Reader, args ...string
 }
 
 func gitWithMeter(m *cpuMeter, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	return runGit(exec.Command("git", args...), m, dir, env, stdin, args...)
+}
+
+// gitLow runs git at the lowest CPU priority (`nice -n 19`, which execs git in the same process, so the derived
+// accounting follows it), for derived work that must yield the vCPUs to catch-ups, validates, and reads: the repack
+// and its commit-graph (LM-1 round 24c, where a post-rehydrate repack held all 4 vCPU of each shard for minutes).
+func gitLow(dir string, env []string, args ...string) ([]byte, error) {
+	return runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil, dir, env, nil, args...)
+}
+
+func runGit(cmd *exec.Cmd, m *cpuMeter, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), ident...), env...)
 	cmd.Stdin = stdin
@@ -440,11 +479,20 @@ func idxObjects(idx string, env []string) ([]string, error) {
 }
 
 // record keeps, per ingested pack (by the SHA-256 of the bytes as sent), the objects it brought, for /promote.
-func record(r, sum, packName string, objDir string) error {
-	objs, err := idxObjects(filepath.Join(objDir, "pack", "pack-"+packName+".idx"), []string{derivedEnv})
+// index-pack --fix-thin appends bases after the sent pack's trailer: sent is the length as sent, so entries before
+// sent-20 are its own. Zero or less keeps the whole index, for an aside directory written by an older release.
+func record(r, sum, packName string, objDir string, sent int64) error {
+	entries, err := idxEntries(filepath.Join(objDir, "pack", "pack-"+packName+".idx"), []string{derivedEnv})
 	if err != nil {
 		return err
 	}
+	var objs []string
+	for _, e := range entries {
+		if sent <= 0 || e.offset < sent-20 {
+			objs = append(objs, e.oid)
+		}
+	}
+	sort.Strings(objs)
 	os.MkdirAll(filepath.Join(r, "graft"), 0o755)
 	tmp := filepath.Join(r, "graft", sum+".tmp")
 	if err := os.WriteFile(tmp, []byte(strings.Join(objs, "\n")+"\n"), 0o644); err != nil {
@@ -457,6 +505,107 @@ func unresolved(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "unresolved delta") || strings.Contains(s, "missing") ||
 		strings.Contains(s, "did not receive expected object")
+}
+
+// missingBase is whether a validate stopped on an object the disk does not hold, as git 2.56 words it: index-pack
+// --fix-thin's "pack has N unresolved deltas", --strict's "did not receive expected object", and the connectivity
+// walk's "bad object", "bad tree object", "missing <type> object" and "Could not read". Narrower than unresolved:
+// anything else, such as a truncated pack's "early EOF" or an fsck error, stays the pack's refusal.
+func missingBase(err error) bool {
+	s := err.Error()
+	for _, m := range []string{"unresolved delta", "did not receive expected object", "bad object", "bad tree object",
+		"missing blob object", "missing tree object", "missing commit object", "Could not read"} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// errBehind: the disk's refs are older than an update's detail needs (`behind`).
+var errBehind = errors.New("the disk's refs are behind this push")
+
+// behind is whether a disk=1 validate's detail would read refs older than the push: an update's old tip is not the
+// disk's ref (zero for none), or a commit its new tip reaches that no disk ref reaches is not in the push's own pack
+// (`have`), as when a catch-up ingested a page's packs and has not applied its refs. Either way the shard catches up
+// and asks again (`hold`), so the new commits and the merge base never come from refs a commit the push builds on
+// has passed.
+func behind(rp string, env []string, us []update, have map[string]bool) (bool, error) {
+	for _, u := range us {
+		if zero(u.New) {
+			continue
+		}
+		cur, _ := git(rp, env, nil, "rev-parse", "--verify", "-q", u.Ref)
+		if c := strings.TrimSpace(string(cur)); c != u.Old && !(c == "" && zero(u.Old)) {
+			return true, nil
+		}
+		out, err := git(rp, env, nil, "rev-list", u.New, "--not", "--all")
+		if err != nil {
+			return false, err
+		}
+		for _, c := range strings.Fields(string(out)) {
+			if !have[c] {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// cmpErr is err, or other when err is nil.
+func cmpErr(err, other error) error {
+	if err != nil {
+		return err
+	}
+	return other
+}
+
+// heldRe names a request a disk=1 validate kept for its retry after a catch-up (`held=<id>`).
+var heldRe = regexp.MustCompile(`^held-[0-9]+$`)
+
+// heldHead is what a kept request needs besides its pack: the tips, the detail's updates, and the pack's SHA-256 and
+// size as spooled.
+type heldHead struct {
+	Tips    []string `json:"tips"`
+	Updates []update `json:"updates"`
+	Sum     string   `json:"sum"`
+	N       int64    `json:"n"`
+}
+
+var heldSeq atomic.Int64
+
+// heldDir is where a kept request lives: under the data disk, not the repository, so a network the disk does not
+// hold yet keeps one too.
+func heldDir(id string) string { return filepath.Join(data, "held", id) }
+
+// hold keeps a disk=1 validate's request under heldDir, its spooled pack moved in, and answers 409
+// {"missingBase": true, "held": "held-<n>"}: the shard catches up and asks again with held=, because the body
+// streamed once. A kept request no retry claimed within the hour a commit may take is dropped here.
+func hold(w http.ResponseWriter, file string, h heldHead, why error) {
+	old, _ := filepath.Glob(heldDir("held-*"))
+	for _, d := range old {
+		if st, err := os.Stat(d); err == nil && time.Since(st.ModTime()) > time.Hour {
+			os.RemoveAll(d)
+		}
+	}
+	id := fmt.Sprintf("held-%d%03d", time.Now().UnixNano(), heldSeq.Add(1)%1000)
+	hd := heldDir(id)
+	err := os.MkdirAll(hd, 0o755)
+	if err == nil && h.N > 0 {
+		err = os.Rename(file, filepath.Join(hd, "pack"))
+	}
+	if err == nil {
+		b, _ := json.Marshal(h)
+		err = os.WriteFile(filepath.Join(hd, "head.json"), b, 0o644)
+	}
+	if err != nil {
+		os.RemoveAll(hd)
+		fail(w, 500, "%v", err)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(map[string]any{"missingBase": true, "held": id, "why": why.Error()})
 }
 
 func handleInit(w http.ResponseWriter, r *http.Request) {
@@ -624,11 +773,12 @@ func (g *validateGate) retryAfterLocked() int {
 }
 
 func handleValidate(w http.ResponseWriter, r *http.Request) {
-	net, rp, ok := netParam(w, r, true)
+	query := r.URL.Query()
+	// A disk=1 validate on a network this disk does not hold is a missing base too (`hold`).
+	net, rp, ok := netParam(w, r, query.Get("disk") != "1")
 	if !ok {
 		return
 	}
-	query := r.URL.Query()
 	agent := query.Get("class") == "agent"
 	derivedValidate := query.Get("derived") == "1"
 	var validateEnv []string
@@ -637,6 +787,15 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	} else {
 		validating.Add(1) // waiting for admission or running: the queue
 		defer validating.Add(-1)
+	}
+	// disk=1: checked against this disk as it stands, with no catch-up first. A missing base, or refs older than the
+	// detail needs, answers 409 missingBase with the request kept (`hold`); held=<id> asks for that request again once
+	// the shard caught up, when every failure is the pack's again (design/DESIGN.md, Shape, "Git cache shards").
+	disk := query.Get("disk") == "1"
+	heldID := query.Get("held")
+	if heldID != "" && !heldRe.MatchString(heldID) {
+		fail(w, 400, "bad held")
+		return
 	}
 	release, retryAfter, err := validateAdmission.acquire(r.Context(), agent, agentValidateWait)
 	if err != nil {
@@ -649,59 +808,84 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	var tips []string
-	if t := query.Get("tips"); t != "" {
-		tips = strings.Split(t, ",")
-	}
-	body := io.Reader(r.Body)
-	if k := query.Get("tipsn"); k != "" {
-		var n int64
-		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
-			fail(w, 400, "bad tipsn")
-			return
-		}
-		head := make([]byte, n)
-		if _, err := io.ReadFull(r.Body, head); err != nil {
-			fail(w, 400, "body shorter than tipsn")
-			return
-		}
-		tips = append(tips, strings.Fields(string(head))...)
-	}
-	// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
 	var updates []update
-	if k := query.Get("detailn"); k != "" {
-		var n int64
-		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
-			fail(w, 400, "bad detailn")
-			return
+	var file, sum string
+	var n int64
+	if heldID != "" {
+		hd := heldDir(heldID)
+		defer os.RemoveAll(hd)
+		var h heldHead
+		b, err := os.ReadFile(filepath.Join(hd, "head.json"))
+		if err == nil {
+			err = json.Unmarshal(b, &h)
 		}
-		head := make([]byte, n)
-		if _, err := io.ReadFull(r.Body, head); err != nil {
-			fail(w, 400, "body shorter than detailn")
-			return
-		}
-		us, err := parseUpdates(string(head))
 		if err != nil {
-			fail(w, 400, "%v", err)
+			// Gone with a restart or the hour's sweep: this shard's state, not the pack's (`validate_status`).
+			fail(w, 503, "no held request %s", heldID)
 			return
 		}
-		updates = us
-	}
-	for _, t := range tips {
-		if !hexRe.MatchString(t) {
-			fail(w, 400, "bad tip %q", t)
+		tips, updates, sum, n, file = h.Tips, h.Updates, h.Sum, h.N, filepath.Join(hd, "pack")
+	} else {
+		if t := query.Get("tips"); t != "" {
+			tips = strings.Split(t, ",")
+		}
+		if k := query.Get("tipsn"); k != "" {
+			var n int64
+			if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
+				fail(w, 400, "bad tipsn")
+				return
+			}
+			head := make([]byte, n)
+			if _, err := io.ReadFull(r.Body, head); err != nil {
+				fail(w, 400, "body shorter than tipsn")
+				return
+			}
+			tips = append(tips, strings.Fields(string(head))...)
+		}
+		// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
+		if k := query.Get("detailn"); k != "" {
+			var n int64
+			if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
+				fail(w, 400, "bad detailn")
+				return
+			}
+			head := make([]byte, n)
+			if _, err := io.ReadFull(r.Body, head); err != nil {
+				fail(w, 400, "body shorter than detailn")
+				return
+			}
+			us, err := parseUpdates(string(head))
+			if err != nil {
+				fail(w, 400, "%v", err)
+				return
+			}
+			updates = us
+		}
+		for _, t := range tips {
+			if !hexRe.MatchString(t) {
+				fail(w, 400, "bad tip %q", t)
+				return
+			}
+		}
+		// The pack is spooled before the network's lock: a body streamed from the edge can take seconds, and while a
+		// validate held the lock shared through it, a waiting writer (a catch-up's /ingest) held every new ls-refs and
+		// validate behind it (LM-1 round 6: the home shard's ls-refs walls rose from 2.7 to 12 s within a minute at
+		// 0.65 vCPU; `TestValidateBodyHoldsNoLock`).
+		var err error
+		if file, sum, n, err = spool(filepath.Join(data, "spool"), r.Body); err != nil {
+			fail(w, 500, "%v", err)
 			return
 		}
+		defer os.Remove(file)
 	}
-	// The pack is spooled before the network's lock: a body streamed from the edge can take seconds, and while a
-	// validate held the lock shared through it, a waiting writer (a catch-up's /ingest) held every new ls-refs and
-	// validate behind it (LM-1 round 6: the home shard's ls-refs walls rose from 2.7 to 12 s within a minute at 0.65
-	// vCPU; `TestValidateBodyHoldsNoLock`).
-	file, sum, n, err := spool(filepath.Join(data, "spool"), body)
-	if err != nil {
-		fail(w, 500, "%v", err)
-		return
+	// A disk=1 failure on an object the disk lacks keeps the request for the shard's retry; any other is the pack's.
+	refuse := func(what string, err error) {
+		if disk && (err == errBehind || missingBase(err)) {
+			hold(w, file, heldHead{tips, updates, sum, n}, err)
+			return
+		}
+		fail(w, 422, "%s: %v", what, err)
 	}
-	defer os.Remove(file)
 	// Shared: a validate writes only its own quarantine and reads the repository's objects and refs, so validates of
 	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
 	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
@@ -710,7 +894,11 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	l.RLock()
 	defer l.RUnlock()
 	if _, err := os.Stat(rp); err != nil {
-		fail(w, 404, "no repository for network %s", net)
+		if disk {
+			hold(w, file, heldHead{tips, updates, sum, n}, errBehind)
+		} else {
+			fail(w, 404, "no repository for network %s", net)
+		}
 		return
 	}
 	sweepValidated(rp)
@@ -730,9 +918,15 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}()
 	if n == 0 && len(updates) > 0 {
 		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
+		if disk {
+			if b, err := behind(rp, validateEnv, updates, nil); err != nil || b {
+				refuse("detail", cmpErr(err, errBehind))
+				return
+			}
+		}
 		d, err := details(rp, validateEnv, updates)
 		if err != nil {
-			fail(w, 422, "detail: %v", err)
+			refuse("detail", err)
 			return
 		}
 		jsonOut(w, map[string]any{"detail": d})
@@ -748,14 +942,14 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	os.MkdirAll(filepath.Join(q, "pack"), 0o755)
 	name, err := indexPack(rp, env, file)
 	if err != nil {
-		fail(w, 422, "index-pack: %v", err)
+		refuse("index-pack", err)
 		return
 	}
 	if len(tips) > 0 {
 		// Tips on stdin: a push may name 10,000 of them.
 		in := strings.Join(tips, "\n") + "\n"
 		if _, err := git(rp, env, strings.NewReader(in), "rev-list", "--objects", "--quiet", "--stdin", "--not", "--all"); err != nil {
-			fail(w, 422, "connectivity: %v", err)
+			refuse("connectivity", err)
 			return
 		}
 	}
@@ -775,14 +969,29 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	// Detail reads the quarantine, so it runs before the pack is set aside.
 	out := map[string]any{"checksum": sum, "bytes": n, "objects": len(objs), "trailer": trailer}
 	if len(updates) > 0 {
+		if disk {
+			have := map[string]bool{}
+			for _, o := range objs {
+				have[o] = true
+			}
+			if b, err := behind(rp, env, updates, have); err != nil || b {
+				refuse("detail", cmpErr(err, errBehind))
+				return
+			}
+		}
 		d, err := details(rp, env, updates)
 		if err != nil {
-			fail(w, 422, "detail: %v", err)
+			refuse("detail", err)
 			return
 		}
 		out["detail"] = d
 	}
-	// Kept aside under the pack's SHA-256 until /ingest names it.
+	// Kept aside under the pack's SHA-256 until /ingest names it. The sent length lets adopt leave the bases
+	// --fix-thin appended out of the pack's object list.
+	if err := os.WriteFile(filepath.Join(q, "bytes"), []byte(strconv.FormatInt(n, 10)), 0o644); err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
 	if err := finishValidate(net, rp, q, sum); err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -937,6 +1146,82 @@ func sampleCPU() {
 		}
 		cpuSamples.Unlock()
 	}
+}
+
+// gitProc is one running git process, for /procs: what a shard spends its CPU and memory on.
+type gitProc struct {
+	Pid  int     `json:"pid"`
+	Cmd  string  `json:"cmd"`
+	Nice int     `json:"nice"`
+	CPUs float64 `json:"cpu_s"` // its own CPU plus its reaped children's, since it started
+	RSS  int64   `json:"rss_mb"`
+}
+
+// handleProcs lists every running git process with its command line (at most 160 bytes), nice value, CPU seconds and
+// resident memory, read from /proc. B0-34's shards ran at 4 vCPU for minutes with no request in flight, and nothing on
+// the container said which git process it was (tests/am1/results/lm1-memory.md, round 24c); the shard object's
+// /status passes this list on.
+func handleProcs(w http.ResponseWriter, r *http.Request) {
+	out := []gitProc{}
+	ents, _ := os.ReadDir("/proc")
+	for _, e := range ents {
+		var pid int
+		if _, err := fmt.Sscan(e.Name(), &pid); err != nil {
+			continue
+		}
+		cmd, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil || len(cmd) == 0 {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(cmd), "\x00"), "\x00")
+		if filepath.Base(args[0]) != "git" && !strings.HasPrefix(filepath.Base(args[0]), "git-") {
+			continue
+		}
+		_, usec, ok := procCPU(pid)
+		if !ok {
+			continue
+		}
+		p := gitProc{Pid: pid, Cmd: strings.Join(args, " "), CPUs: float64(usec) / 1e6}
+		if len(p.Cmd) > 160 {
+			p.Cmd = p.Cmd[:160]
+		}
+		if st, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+			if f := strings.Fields(string(st[bytes.LastIndexByte(st, ')')+1:])); len(f) > 16 {
+				fmt.Sscan(f[16], &p.Nice) // field 19
+			}
+		}
+		if st, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid)); err == nil {
+			var size, res int64
+			fmt.Sscan(string(st), &size, &res)
+			p.RSS = res * int64(os.Getpagesize()) >> 20
+		}
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CPUs > out[j].CPUs })
+	res := map[string]any{"procs": out}
+	// With net, the network's packs on this disk: how many, how many kept (`.keep`, the promotions a rehydrate loaded
+	// through their stored .idx), and their bytes, so a run can check that a cold warm kept every promotion.
+	if net := r.URL.Query().Get("net"); netRe.MatchString(net) {
+		if _, err := os.Stat(repo(net)); err == nil {
+			packs, _ := filepath.Glob(filepath.Join(repo(net), "objects", "pack", "pack-*.pack"))
+			var n, kept int
+			var bytes, keptBytes int64
+			for _, f := range packs {
+				st, err := os.Stat(f)
+				if err != nil {
+					continue
+				}
+				n++
+				bytes += st.Size()
+				if _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".keep"); err == nil {
+					kept++
+					keptBytes += st.Size()
+				}
+			}
+			res["packs"] = map[string]any{"count": n, "bytes": bytes, "kept": kept, "kept_bytes": keptBytes}
+		}
+	}
+	jsonOut(w, res)
 }
 
 // handleLoad answers the container's NetworkLoad (design/DESIGN.md, Shape, `NetworkLoad`): cpu_p99, the 99th
@@ -1125,24 +1410,28 @@ func sweepValidated(rp string) {
 }
 
 // adopt moves a pack /validate kept aside under sum into the repository: pack, then rev, then index, as receive-pack
-// migrates a quarantine. False when there is none.
-func adopt(rp, sum string) (string, bool, error) {
+// migrates a quarantine. It also answers the sent length validate saved, or zero for an older aside without it, and
+// false when there is no pack.
+func adopt(rp, sum string) (name string, sent int64, ok bool, err error) {
 	src := filepath.Join(rp, "graft", "validated-"+sum)
 	idx, _ := filepath.Glob(filepath.Join(src, "pack", "pack-*.idx"))
 	if len(idx) != 1 {
-		return "", false, nil
+		return "", 0, false, nil
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(idx[0]), "pack-"), ".idx")
+	name = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(idx[0]), "pack-"), ".idx")
+	if b, err := os.ReadFile(filepath.Join(src, "bytes")); err == nil {
+		sent, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	}
 	for _, ext := range []string{".pack", ".rev", ".idx"} {
 		from := filepath.Join(src, "pack", "pack-"+name+ext)
 		if _, err := os.Stat(from); err == nil {
 			if err := os.Rename(from, filepath.Join(rp, "objects", "pack", "pack-"+name+ext)); err != nil {
-				return "", true, err
+				return "", sent, true, err
 			}
 		}
 	}
 	os.RemoveAll(src)
-	return name, true, nil
+	return name, sent, true, nil
 }
 
 func handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -1155,19 +1444,26 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "bad sha256")
 		return
 	}
+	spooled := r.URL.Query().Get("spooled") == "1"
 	if _, err := os.Stat(filepath.Join(rp, "graft", want+".objs")); err == nil {
 		io.Copy(io.Discard, r.Body)
+		if spooled {
+			removeStored(net, want)
+		}
 		jsonOut(w, map[string]any{"ingested": false})
 		return
 	}
 	l := lock(net)
 	l.Lock()
-	if name, ok, err := adopt(rp, want); ok {
+	if name, sent, ok, err := adopt(rp, want); ok {
 		if err == nil {
-			err = record(rp, want, name, filepath.Join(rp, "objects"))
+			err = record(rp, want, name, filepath.Join(rp, "objects"), sent)
 		}
 		l.Unlock()
 		io.Copy(io.Discard, r.Body)
+		if spooled {
+			removeStored(net, want)
+		}
 		if err != nil {
 			fail(w, 500, "%v", err)
 			return
@@ -1176,6 +1472,10 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l.Unlock()
+	if spooled {
+		ingestSpooled(w, net, rp, want)
+		return
+	}
 	// The spool's time is the body's read, from a bucket when a catch-up streams a stored pack here; index_ms is
 	// index-pack's: the shard reports both per catch-up, to tell a slow fetch from a slow unpack or index.
 	t0 := time.Now()
@@ -1190,24 +1490,382 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "checksum %s, want %s", sum, want)
 		return
 	}
+	indexMs, _, code, err := indexIngest(net, rp, file, sum)
+	if err != nil {
+		fail(w, code, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": indexMs})
+}
+
+// indexIngest is /ingest's tail: under the network's lock alone, index-pack --strict --fix-thin of file into the
+// repository, its objects recorded under sum, and the multi-pack-index's count. It answers index-pack's time (to the
+// end of the midx step, as /ingest always reported it) and how long it held the lock, or the status to answer and the
+// error: 409 when a thin pack's bases or a named object are not here yet, 422 for another index-pack failure.
+func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, err error) {
+	l := lock(net)
 	l.Lock()
-	defer l.Unlock()
 	t1 := time.Now()
+	defer func() {
+		lockMs = time.Since(t1).Milliseconds()
+		l.Unlock()
+	}()
+	st, err := os.Stat(file)
+	if err != nil {
+		return 0, 0, 500, err
+	}
 	name, err := indexPack(rp, []string{derivedEnv}, file)
 	if err != nil {
 		if unresolved(err) {
-			fail(w, 409, "%v", err)
-		} else {
-			fail(w, 422, "%v", err)
+			return 0, 0, 409, err
 		}
+		return 0, 0, 422, err
+	}
+	if err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
+		return 0, 0, 500, err
+	}
+	midxAfterIngest(net, rp)
+	return time.Since(t1).Milliseconds(), 0, 0, nil
+}
+
+// storedPath is where /spool and /spool-idx stage stored pack sum of network net (ext ".pack" or ".idx") for
+// /ingest &spooled=1.
+func storedPath(net, sum, ext string) string {
+	return filepath.Join(data, "spool", "stored-"+net+"-"+sum+ext)
+}
+
+func removeStored(net, sum string) {
+	os.Remove(storedPath(net, sum, ".pack"))
+	os.Remove(storedPath(net, sum, ".idx"))
+}
+
+// sweepStored deletes staged stored packs and indexes older than an hour: a catch-up cut off between its spools and
+// their ingests leaves them.
+func sweepStored() {
+	old, _ := filepath.Glob(filepath.Join(data, "spool", "stored-*"))
+	for _, f := range old {
+		if st, err := os.Stat(f); err == nil && time.Since(st.ModTime()) > time.Hour {
+			os.Remove(f)
+		}
+	}
+}
+
+// handleSpool stages a stored pack for /ingest &spooled=1. It holds no lock, so a catch-up fetches its next packs
+// from the bucket while the network ingests the earlier ones in log order.
+func handleSpool(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
 		return
 	}
-	if err := record(rp, sum, name, filepath.Join(rp, "objects")); err != nil {
+	want := r.URL.Query().Get("sha256")
+	if !sumRe.MatchString(want) {
+		fail(w, 400, "bad sha256")
+		return
+	}
+	sweepStored()
+	if _, err := os.Stat(filepath.Join(rp, "graft", want+".objs")); err == nil {
+		io.Copy(io.Discard, r.Body)
+		jsonOut(w, map[string]any{"have": true})
+		return
+	}
+	t0 := time.Now()
+	file, sum, n, err := spool(filepath.Join(data, "spool"), r.Body)
+	if err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
-	midxAfterIngest(net, rp)
-	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": time.Since(t1).Milliseconds()})
+	if sum != want {
+		os.Remove(file)
+		// The shard tries the next site's bucket on a body starting "checksum".
+		fail(w, 422, "checksum %s, want %s", sum, want)
+		return
+	}
+	if err := os.Rename(file, storedPath(net, want, ".pack")); err != nil {
+		os.Remove(file)
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"bytes": n, "spool_ms": time.Since(t0).Milliseconds()})
+}
+
+// maxIdxBytes caps /spool-idx's body. An index is 28 bytes an object plus about 1 KiB, a few percent of its pack.
+const maxIdxBytes = 64 << 20
+
+// handleSpoolIdx stages the stored .idx of a pack beside it for /ingest &spooled=1, which checks it before use.
+func handleSpoolIdx(w http.ResponseWriter, r *http.Request) {
+	net, _, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	want := r.URL.Query().Get("sha256")
+	if !sumRe.MatchString(want) {
+		fail(w, 400, "bad sha256")
+		return
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, maxIdxBytes+1))
+	if err != nil {
+		fail(w, 400, "%v", err)
+		return
+	}
+	if len(b) > maxIdxBytes {
+		fail(w, 413, "idx over %d bytes", maxIdxBytes)
+		return
+	}
+	dir := filepath.Join(data, "spool")
+	os.MkdirAll(dir, 0o755)
+	f, err := os.CreateTemp(dir, "in-*.idx")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), storedPath(net, want, ".idx"))
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"bytes": len(b)})
+}
+
+// checkIdx says why idx is not the pack index v2 of the pack whose first 12 bytes are packHead and last 20 bytes are
+// packTrailer, or "" when it is: its own SHA-1 trailer holds, the pack checksum it carries is the pack's trailer, its
+// object count is the pack header's, and its size fits that count. A promoted pack is not thin, so the index the
+// promotion's own index-pack wrote describes these exact bytes; a stored one that passes is loaded without index-pack.
+func checkIdx(idx, packHead, packTrailer []byte) string {
+	const fixed = 8 + 256*4 + 40
+	if len(idx) < fixed {
+		return fmt.Sprintf("idx is %d bytes, shorter than the %d of an empty index", len(idx), fixed)
+	}
+	if string(idx[:4]) != "\377tOc" {
+		return fmt.Sprintf("idx magic %x is not a version 2 index's", idx[:4])
+	}
+	if v := binary.BigEndian.Uint32(idx[4:8]); v != 2 {
+		return fmt.Sprintf("idx version %d, want 2", v)
+	}
+	body, sum := idx[:len(idx)-20], idx[len(idx)-20:]
+	if h := sha1.Sum(body); !bytes.Equal(h[:], sum) {
+		return "idx checksum does not match its contents"
+	}
+	if len(packTrailer) != 20 {
+		return fmt.Sprintf("pack trailer is %d bytes", len(packTrailer))
+	}
+	if !bytes.Equal(idx[len(idx)-40:len(idx)-20], packTrailer) {
+		return fmt.Sprintf("idx is for pack %x, this pack is %x", idx[len(idx)-40:len(idx)-20], packTrailer)
+	}
+	if len(packHead) < 12 || string(packHead[:4]) != "PACK" {
+		return "not a pack"
+	}
+	if v := binary.BigEndian.Uint32(packHead[4:8]); v != 2 && v != 3 {
+		return fmt.Sprintf("pack version %d", v)
+	}
+	n := int64(binary.BigEndian.Uint32(idx[8+255*4:]))
+	if packN := int64(binary.BigEndian.Uint32(packHead[8:12])); n != packN {
+		return fmt.Sprintf("idx holds %d objects, the pack %d", n, packN)
+	}
+	if want := fixed + n*28; int64(len(idx)) < want || (int64(len(idx))-want)%8 != 0 {
+		return fmt.Sprintf("idx is %d bytes, which %d objects do not fit", len(idx), n)
+	}
+	return ""
+}
+
+// stagedIdx checks the staged idx of a spooled pack against the pack and answers the pack's name (its trailer in
+// hex) and "used", or "none" when no idx is staged, or "rejected" and why.
+func stagedIdx(packFile, idxFile string) (name, state, why string) {
+	idx, err := os.ReadFile(idxFile)
+	if err != nil {
+		return "", "none", ""
+	}
+	f, err := os.Open(packFile)
+	if err != nil {
+		return "", "rejected", err.Error()
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", "rejected", err.Error()
+	}
+	if st.Size() < 32 {
+		return "", "rejected", fmt.Sprintf("pack is %d bytes", st.Size())
+	}
+	head, trailer := make([]byte, 12), make([]byte, 20)
+	if _, err := f.ReadAt(head, 0); err != nil {
+		return "", "rejected", err.Error()
+	}
+	if _, err := f.ReadAt(trailer, st.Size()-20); err != nil {
+		return "", "rejected", err.Error()
+	}
+	if why := checkIdx(idx, head, trailer); why != "" {
+		return "", "rejected", why
+	}
+	return hex.EncodeToString(trailer), "used", ""
+}
+
+// ingestSpooled is /ingest &spooled=1 once the pack is neither ingested nor kept aside by /validate: the pack /spool
+// staged goes in with its staged idx when that passes checkIdx, holding the network's lock only for two renames and
+// the record, and through index-pack otherwise.
+func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
+	file, idxFile := storedPath(net, sum, ".pack"), storedPath(net, sum, ".idx")
+	st, err := os.Stat(file)
+	if err != nil {
+		fail(w, 404, "not spooled")
+		return
+	}
+	n := st.Size()
+	name, state, why := stagedIdx(file, idxFile)
+	if state != "used" {
+		indexMs, lockMs, code, err := indexIngest(net, rp, file, sum)
+		if code == 409 {
+			// Kept, so the call sent again once the bases are here needs no second spool.
+			fail(w, code, "%v", err)
+			return
+		}
+		removeStored(net, sum)
+		if err != nil {
+			fail(w, code, "%v", err)
+			return
+		}
+		out := map[string]any{"ingested": true, "bytes": n, "spool_ms": 0, "index_ms": indexMs, "idx": state,
+			"lock_ms": lockMs}
+		if why != "" {
+			out["idxError"] = why
+		}
+		jsonOut(w, out)
+		return
+	}
+	defer removeStored(net, sum)
+	l := lock(net)
+	l.Lock()
+	t0 := time.Now()
+	err = func() error {
+		dst := filepath.Join(rp, "objects", "pack", "pack-"+name)
+		if _, err := os.Stat(dst + ".pack"); err != nil {
+			// The pack before its index, as index-pack and a quarantine's migration order them: git finds a pack by
+			// its index.
+			if err := os.Rename(file, dst+".pack"); err != nil {
+				return err
+			}
+			if err := os.Rename(idxFile, dst+".idx"); err != nil {
+				os.Remove(dst + ".pack")
+				return err
+			}
+		}
+		// Only a promotion stores an `.idx`, and its pack is complete and already delta-searched, so it is kept: the
+		// geometric repack then rolls only the pushed tail (`unkeptPacks`), where rolling 8.6 GB of promotions held
+		// every shard of B0-34 at 4 vCPU for minutes (tests/am1/results/lm1-memory.md, rounds 24c and 25).
+		if err := os.WriteFile(dst+".keep", nil, 0o644); err != nil {
+			return err
+		}
+		if err := record(rp, sum, name, filepath.Join(rp, "objects"), n); err != nil {
+			return err
+		}
+		midxAfterIngest(net, rp)
+		return nil
+	}()
+	lockMs := time.Since(t0).Milliseconds()
+	l.Unlock()
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "idx": "used", "index_ms": 0, "lock_ms": lockMs})
+}
+
+// handleIdx answers the .idx of the pack /validate kept aside under sha256, for the archive's promotion to store
+// beside the promoted pack.
+func handleIdx(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	want := r.URL.Query().Get("sha256")
+	if !sumRe.MatchString(want) {
+		fail(w, 400, "bad sha256")
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	idx, _ := filepath.Glob(filepath.Join(rp, "graft", "validated-"+want, "pack", "pack-*.idx"))
+	if len(idx) != 1 {
+		fail(w, 404, "no validated pack %s", want)
+		return
+	}
+	b, err := os.ReadFile(idx[0])
+	if err != nil {
+		fail(w, 404, "%v", err)
+		return
+	}
+	w.Header().Set("content-type", "application/octet-stream")
+	w.Write(b)
+}
+
+// handleConnected is a rehydrate's backstop after it loaded stored packs by their stored indexes, with no index-pack
+// checking that each object's links are here: every ref's history (and with objects=1 every object it reaches)
+// must be in the repository. With repack=1 it starts the repack the rehydrate's last /refs page left to it
+// (`repack=0`) once its walk ends, passed or failed: started before the walk, the walk waited for the whole repack,
+// 20 minutes and more of a 2.6 GB network, and the shard answered `warming` all that time (tests/am1/results/
+// lm1-memory.md, round 21).
+func handleConnected(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	out, err := connectedWalk(net, rp, r.URL.Query().Get("objects"))
+	if r.URL.Query().Get("repack") == "1" {
+		started := startRepack(net, rp)
+		if out != nil {
+			out["repack"] = started
+		}
+	}
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, out)
+}
+
+// connectedWalk is /connected's walk under the network's shared lock and the repack lock; an error is a ref listing
+// that failed, not a missing object.
+func connectedWalk(net, rp, objects string) (map[string]any, error) {
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	// A repack holds no network lock and deletes the packs it rolled up as it ends, so this waits for it, as /fsck
+	// does, rather than answer false for a pack that moved.
+	repacking.Lock()
+	defer repacking.Unlock()
+	t0 := time.Now()
+	refs, err := listRefs(rp, []string{derivedEnv})
+	if err != nil {
+		return nil, err
+	}
+	// objects=1 walks every object of every ref's history: about 4 s for git/git's 424,499 objects here, so minutes
+	// for a network the size of linux. objects=tips walks every commit, then the whole tree at each ref's tip only.
+	var argsets [][]string
+	switch objects {
+	case "1":
+		argsets = [][]string{{"rev-list", "--quiet", "--all", "--objects"}}
+	case "tips":
+		argsets = [][]string{{"rev-list", "--quiet", "--all"}, {"rev-list", "--quiet", "--objects", "--no-walk", "--all"}}
+	default:
+		argsets = [][]string{{"rev-list", "--quiet", "--all"}}
+	}
+	for _, args := range argsets {
+		if _, err = git(rp, []string{derivedEnv}, nil, args...); err != nil {
+			break
+		}
+	}
+	out := map[string]any{"connected": err == nil, "refs": len(refs), "ms": time.Since(t0).Milliseconds()}
+	if err != nil {
+		out["error"] = err.Error()
+	}
+	return out, nil
 }
 
 // handleIngestBatch is /ingest for many packs in one call: a catch-up's or rehydrate's run of inline packs from one
@@ -1268,10 +1926,10 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// A pack /validate kept aside moves in on its own, with no second index-pack.
-		name, adopted, err := adopt(rp, p.sum)
+		name, sent, adopted, err := adopt(rp, p.sum)
 		if adopted {
 			if err == nil {
-				err = record(rp, p.sum, name, filepath.Join(rp, "objects"))
+				err = record(rp, p.sum, name, filepath.Join(rp, "objects"), sent)
 			}
 			if err != nil {
 				fail(w, 500, "pack %d: %v", i, err)
@@ -1304,6 +1962,10 @@ func ingestRun(net, rp, dir string, packs []batchPack, run []int, results []stri
 	}
 	if len(run) == 1 {
 		p := packs[run[0]]
+		st, err := os.Stat(p.file)
+		if err != nil {
+			return err
+		}
 		name, err := indexPack(rp, []string{derivedEnv}, p.file)
 		if err != nil {
 			if unresolved(err) {
@@ -1312,7 +1974,7 @@ func ingestRun(net, rp, dir string, packs []batchPack, run []int, results []stri
 			}
 			return fmt.Errorf("pack %d (%s): %v", run[0], p.sum, err)
 		}
-		if err := record(rp, p.sum, name, filepath.Join(rp, "objects")); err != nil {
+		if err := record(rp, p.sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
 			return err
 		}
 		midxAfterIngest(net, rp)
@@ -1638,7 +2300,11 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		setHead(rp, head)
-		repack = startRepack(net, rp)
+		// repack=0: a rehydrate that skipped covered packs runs /connected next, which waits for any repack, so it
+		// asks /connected to start the repack after its walk instead (tests/am1/results/lm1-memory.md, round 21).
+		if q.Get("repack") != "0" {
+			repack = startRepack(net, rp)
+		}
 	}
 	jsonOut(w, map[string]any{"refs": len(want), "skipped": skipped, "repack": repack})
 }
@@ -1657,6 +2323,19 @@ func packCount(rp string) int {
 	return len(p)
 }
 
+// unkeptPacks counts the packs a geometric repack may roll: those without a `.keep`. Kept promotions stay out of the
+// count, or a shard holding more than repackAt of them would repack on every catch-up's /refs.
+func unkeptPacks(rp string) int {
+	p, _ := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.pack"))
+	n := 0
+	for _, f := range p {
+		if _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".keep"); err != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // startRepack runs `git repack -d --geometric=2` on the repository in the background when it holds more than repackAt
 // packs and no repack runs on this shard, and says whether it started one. /refs is the last step of every catch-up
 // and rehydrate, so this is the shard's repack after a catch-up. A geometric repack rolls whole packs into larger ones
@@ -1666,7 +2345,7 @@ func packCount(rp string) int {
 // every upload, validate, and ingest of the network for its whole run, seconds once the packs reach 100 MB (LM-1
 // round 7, `TestRepackHoldsNoNetworkLock`). Only evict and a fresh init, which delete the repository, wait for it.
 func startRepack(net, rp string) bool {
-	if packCount(rp) <= repackAt || !repacking.TryLock() {
+	if unkeptPacks(rp) <= repackAt || !repacking.TryLock() {
 		return false
 	}
 	go func() {
@@ -1680,7 +2359,7 @@ func startRepack(net, rp string) bool {
 		// A commit-graph over every ref's history: validate's two `--not --all` walks read each ref's tip from the
 		// packs without one, so their CPU grew with the refs, 7.8 to 14.9 ms a call, and the shard's CPU climbed
 		// within every B0-29 run until it saturated a vCPU (tests/am1/results/hot-shards-3.md).
-		if _, err := git(rp, []string{derivedEnv}, nil, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
+		if _, err := gitLow(rp, []string{derivedEnv}, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
 			fmt.Fprintf(os.Stderr, "commit-graph %s: %v\n", net, err)
 		}
 	}()
@@ -1690,9 +2369,13 @@ func startRepack(net, rp string) bool {
 // runRepack is the repack itself; tests slow it down. It searches deltas with git's default window: each push's pack
 // deltas only within itself, so without a search the objects of a file changed by many pushes stay whole, and a shard
 // held 2.07 times the pushed bytes of real history and 13 times journey 9's (`tests/am1/results/hot-shards-3.md`,
-// "--window=0 disk growth"). The search holds no lock (startRepack), so it no longer queues validates.
+// "--window=0 disk growth"). The search holds no lock (startRepack), so it no longer queues validates. It leaves kept
+// packs (promotions) alone and writes a multi-pack-index over every pack, kept or not, so lookups stay one index
+// however many promotions a shard holds. It runs at nice 19 on two of the four vCPU with the delta window's memory
+// bounded per thread, so it takes what catch-ups, validates, and reads leave (LM-1 round 25).
 var runRepack = func(rp string) error {
-	_, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2")
+	_, err := gitLow(rp, []string{derivedEnv}, "-c", "pack.threads=2", "-c", "pack.windowMemory=256m",
+		"repack", "-d", "-q", "--geometric=2", "--write-midx")
 	return err
 }
 
@@ -1705,7 +2388,7 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	l.RLock()
 	defer l.RUnlock()
 	seen := map[string]bool{}
-	var oids bytes.Buffer
+	var ids []string
 	sc := bufio.NewScanner(r.Body)
 	for sc.Scan() {
 		sum := strings.TrimSpace(sc.Text())
@@ -1721,11 +2404,26 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		for _, o := range strings.Fields(string(b)) {
 			if !seen[o] {
 				seen[o] = true
-				oids.WriteString(o + "\n")
+				ids = append(ids, o)
 			}
 		}
 	}
-	// Exactly these objects, deltas only within the pack, so it is complete.
+	names, err := objectNames(rp, ids)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	var oids bytes.Buffer
+	for _, oid := range ids {
+		oids.WriteString(oid)
+		if name := names[oid]; name != "" {
+			oids.WriteByte(' ')
+			oids.WriteString(name)
+		}
+		oids.WriteByte('\n')
+	}
+	// Exactly these objects, deltas only within the pack, so it is complete. A tree entry's basename gives
+	// pack-objects a name by which to group delta candidates.
 	out, err := git(rp, []string{derivedEnv}, &oids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
 	if err != nil {
 		fail(w, 500, "%v", err)
@@ -1733,6 +2431,103 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("x-objects", fmt.Sprint(len(seen)))
 	w.Write(out)
+}
+
+// objectNames names each id by the first tree entry that names it. Commits, tags, root trees, and blobs no tree in
+// the set names stay unnamed. Each tree is read from cat-file's stream separately, not the output as a whole.
+func objectNames(rp string, oids []string) (map[string]string, error) {
+	names := map[string]string{}
+	wanted := map[string]bool{}
+	for _, oid := range oids {
+		wanted[oid] = true
+	}
+	if len(oids) == 0 {
+		return names, nil
+	}
+	in := strings.Join(oids, "\n") + "\n"
+	out, err := git(rp, []string{derivedEnv}, strings.NewReader(in), "cat-file", "--batch-check=%(objectname) %(objecttype)")
+	if err != nil {
+		return nil, err
+	}
+	var trees []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[1] == "tree" {
+			trees = append(trees, f[0])
+		}
+	}
+	if len(trees) == 0 {
+		return names, nil
+	}
+
+	cmd := exec.Command("git", "cat-file", "--batch")
+	cmd.Dir = rp
+	cmd.Env = append(append(os.Environ(), ident...), derivedEnv)
+	cmd.Stdin = strings.NewReader(strings.Join(trees, "\n") + "\n")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(stdout)
+	hashBytes := len(oids[0]) / 2
+	parseErr := func() error {
+		for range trees {
+			header, err := br.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			f := strings.Fields(header)
+			if len(f) != 3 || f[1] != "tree" {
+				return fmt.Errorf("cat-file printed %q", header)
+			}
+			size, err := strconv.Atoi(f[2])
+			if err != nil || size < 0 {
+				return fmt.Errorf("cat-file printed %q", header)
+			}
+			raw := make([]byte, size)
+			if _, err := io.ReadFull(br, raw); err != nil {
+				return err
+			}
+			if nl, err := br.ReadByte(); err != nil || nl != '\n' {
+				return fmt.Errorf("cat-file tree %s has no terminating newline", f[0])
+			}
+			for at := 0; at < len(raw); {
+				rel := bytes.IndexByte(raw[at:], ' ')
+				if rel < 0 {
+					return fmt.Errorf("cat-file tree %s has a bad entry", f[0])
+				}
+				sp := at + rel
+				rel = bytes.IndexByte(raw[sp+1:], 0)
+				if rel < 0 {
+					return fmt.Errorf("cat-file tree %s has a bad entry name", f[0])
+				}
+				nul := sp + 1 + rel
+				if nul+1+hashBytes > len(raw) {
+					return fmt.Errorf("cat-file tree %s has a short object id", f[0])
+				}
+				oid := hex.EncodeToString(raw[nul+1 : nul+1+hashBytes])
+				if wanted[oid] && names[oid] == "" {
+					names[oid] = strings.ReplaceAll(string(raw[sp+1:nul]), "\n", " ")
+				}
+				at = nul + 1 + hashBytes
+			}
+		}
+		return nil
+	}()
+	if parseErr != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return nil, parseErr
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("git cat-file: %v: %s", err, strings.TrimSpace(errb.String()))
+	}
+	return names, nil
 }
 
 // handleHave lists the named pack sums already ingested here, in the request's order.
@@ -1824,8 +2619,12 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		// An ls-refs reply: small, so buffered and cut.
 		b, _ := io.ReadAll(stdout)
 		w.Write(lsRefsOnly(b, sessions))
-	} else {
-		io.CopyBuffer(w, stdout, make([]byte, 64<<10))
+	} else if _, err := io.CopyBuffer(w, stdout, make([]byte, 64<<10)); err != nil {
+		// The caller went away mid-pack (B0-34's time-to-first-byte probe cancels after one byte). Nothing reads the
+		// pipe again, so upload-pack blocked on it, `Wait` never returned, and the shared lock stalled the next /ingest
+		// and every validate queued behind that writer, on all three shards of the network (LM-1 round 18c,
+		// `TestCancelledCloneReleasesTheLock`).
+		cmd.Process.Kill()
 	}
 	if err := cmd.Wait(); err != nil {
 		fmt.Fprintf(os.Stderr, "upload-pack: %v: %s\n", err, errb.String())
@@ -2143,6 +2942,10 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/validate", handleValidate)
 	m.HandleFunc("/ingest", handleIngest)
 	m.HandleFunc("/ingest-batch", handleIngestBatch)
+	m.HandleFunc("POST /spool", handleSpool)
+	m.HandleFunc("PUT /spool-idx", handleSpoolIdx)
+	m.HandleFunc("GET /idx", handleIdx)
+	m.HandleFunc("POST /connected", handleConnected)
 	m.HandleFunc("/refs", handleRefs)
 	m.HandleFunc("/promote", handlePromote)
 	m.HandleFunc("/have", handleHave)
@@ -2154,6 +2957,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
 	m.HandleFunc("/load", handleLoad)
+	m.HandleFunc("GET /procs", handleProcs)
 	m.HandleFunc("GET /ui/resolve", handleUIResolve)
 	m.HandleFunc("GET /ui/tree", handleUITree)
 	m.HandleFunc("GET /ui/blame", handleUIBlame)
@@ -2161,6 +2965,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("GET /ui/compare", handleUICompare)
 	m.HandleFunc("GET /ui/commits", handleUICommits)
 	m.HandleFunc("GET /ui/readme", handleUIReadme)
+	m.HandleFunc("GET /ui/blob", handleUIBlob)
 	return m
 }
 

@@ -357,7 +357,7 @@ impl DurableObject for GitShard {
                 let tipsn = head.len();
                 head.extend_from_slice(&req.bytes().await?);
                 let body = Some(js_sys::Uint8Array::from(head.as_slice()).into());
-                match host.validate(NET, tipsn, 0, false, false, body).await {
+                match host.validate(NET, tipsn, 0, false, false, graftyard_git::host::OnDisk::CaughtUp, body).await {
                     Ok(graftyard_git::host::Validated::Done(Some(ix), _)) => Response::from_json(&ix),
                     Ok(_) => Response::error("validate gave no index", 422),
                     Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
@@ -367,7 +367,7 @@ impl DurableObject for GitShard {
                 host.catch_up(NET, &[CHAIN], &bs, &log).await.map_err(se)?;
                 let sums: Vec<Digest> =
                     req.json::<Vec<String>>().await?.iter().filter_map(|s| Digest::parse_hex(s)).collect();
-                Response::from_bytes(host.promote(NET, &sums).await.map_err(se)?)
+                host.promote(NET, &sums).await.map_err(se)
             }
             "/fsck" => Response::from_json(&host.fsck(NET).await.map_err(se)?),
             // The LRU on a real container: `fill` empty filler networks (ids NET_ID + 1..), then `make_room` for
@@ -483,6 +483,7 @@ async fn push(env: &Env, url: &Url, body: Vec<u8>) -> Result<Response> {
         bytes: &body,
         index: &ix,
         idx: None,
+        idx_range: None,
         inline_max: INLINE_MAX,
     };
     let durable = store.place(place).await.map_err(|e| Error::RustError(e.to_string()))?;
@@ -533,6 +534,7 @@ async fn archive(env: &Env, from: u64, to: u64) -> Result<Response> {
         bytes: &promoted,
         index: &ix,
         idx: None,
+        idx_range: None,
         inline_max: 0,
     };
     let pack = store.place(place).await.map_err(|e| Error::RustError(e.to_string()))?.into_pack();

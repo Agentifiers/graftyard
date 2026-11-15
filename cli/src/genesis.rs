@@ -367,7 +367,7 @@ pub fn install(config: &Path, genesis: &Path, edge: Option<&str>) -> Res<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;

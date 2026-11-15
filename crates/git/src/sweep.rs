@@ -503,17 +503,17 @@ pub async fn sweep_all<B: Bucket, R: RequestSource>(
     Ok(out)
 }
 
-/// Copies a committed pack into `to`, create-only, checking the bytes against the marker.
+/// Copies a committed pack into `to`, create-only, with `to` refusing bytes whose size or SHA-256 is not the marker's,
+/// and its stored `.idx` when the source holds one: a promotion puts the idx only beside the copies its placement
+/// waited for, and without it a rehydrate that reads this bucket runs `index-pack` (`crate::catchup`). The idx is
+/// derived, so its copy may fail. Both stream from bucket to bucket (`Bucket::copy_new`): read whole, 16 fills at once
+/// of a 5 GB monorepo's packs held 328 MB, and site a's cron died on that network on every run (R22).
 async fn fill<B: Bucket>(from: &B, to: &B, network: NetworkId, id: PackId, m: &Marker) -> Result<(), StoreError> {
-    use sha2::{Digest as _, Sha256};
     let key = R2Key::Pack { network, id }.to_string();
-    let body = from.get(&key).await?.ok_or_else(|| StoreError(format!("{key} vanished from the source")))?;
-    let sum = graftyard_types::Digest(Sha256::digest(&body).into());
-    if sum != m.checksum || body.len() as u64 != m.bytes {
-        return Err(StoreError(format!("{key}: source copy does not match its marker")));
-    }
-    let meta = from.head(&key).await?.map(|o| o.meta).unwrap_or_default();
-    to.put_new(&key, &body, sum, &meta).await?;
+    to.copy_new(from, &key, Some((m.bytes, m.checksum)))
+        .await?
+        .ok_or_else(|| StoreError(format!("{key} vanished from the source")))?;
+    let _ = to.copy_new(from, &R2Key::Idx { network, id }.to_string(), None).await;
     put_marker(to, network, id, m).await
 }
 
@@ -616,13 +616,21 @@ mod tests {
         let id = pid(2, T0);
         put_pack(&bed.b[1], id, 2, rid(2), T0);
         put_mark(&bed.b[1], id, &marker(2, 40));
+        let idx = R2Key::Idx { network: NET, id }.to_string();
+        let range = [("from".to_owned(), "1".to_owned()), ("to".to_owned(), "40".to_owned())];
+        bed.b[1].plant(&idx, b"the idx", Timestamp(T0), &range);
         let r = bed.run(&Rows::default(), T0 + 100 * H);
         assert!(r.failed.is_empty(), "{:?}", r.failed);
         for s in 0..3 {
             assert!(bed.has(s, &pack_key(id)) && bed.has(s, &mark_key(id)), "site {s}");
         }
-        // The fill copied the bytes and the metadata.
+        // Store to store: the sweeper read none of the bytes it copied, which on a Workers host would sit in the
+        // isolate's memory, 16 fills at once (R22).
+        assert_eq!(bed.b[1].bytes_read(), 0);
+        // The fill copied the bytes and the metadata, and the stored idx with its range.
         assert_eq!(block_on(bed.b[0].get(&pack_key(id).to_string())).unwrap(), Some(body(2)));
+        assert_eq!(block_on(bed.b[2].get(&idx)).unwrap().as_deref(), Some(&b"the idx"[..]));
+        assert_eq!(block_on(bed.b[2].head(&idx)).unwrap().map(|o| o.meta), Some(range.to_vec()));
         // A second run has nothing to do.
         assert!(bed.run(&Rows::default(), T0 + 101 * H).plan.actions.is_empty());
     }
@@ -724,6 +732,26 @@ mod tests {
         assert_eq!(r.plan.alarms, vec![Alarm::BadCopy { site: SiteId(1), id }]);
         assert!(bed.has(0, &pack_key(id)) && bed.has(2, &mark_key(id)));
         assert_eq!(block_on(bed.b[1].get(&pack_key(id).to_string())).unwrap().as_deref(), Some(&b"short"[..]));
+    }
+
+    #[test]
+    fn a_multipart_copy_whose_bytes_differ_from_its_marker_is_not_spread() {
+        // A multipart copy carries no SHA-256, so its size alone makes it a source; the fill must still check the
+        // bytes against the marker's checksum before the bucket keeps them.
+        use crate::bucket::{Multipart, PartBuf};
+        let bed = Bed::new();
+        let id = pid(15, T0);
+        let (key, journal) = (pack_key(id).to_string(), R2Key::Upload { network: NET, id }.to_string());
+        let mut part = crate::mem::MemPart::with_capacity(0);
+        part.push(&vec![0xee; body(15).len()]);
+        let up = block_on(bed.b[0].start_upload(&key, &journal, &[])).unwrap().unwrap();
+        let etag = block_on(bed.b[0].put_part(&key, &up, 1, &part)).unwrap();
+        block_on(bed.b[0].complete_upload(&key, &up, &journal, &[(1, etag)])).unwrap();
+        put_mark(&bed.b[0], id, &marker(15, 3));
+        let r = bed.run(&Rows::default(), T0 + 100 * H);
+        assert_eq!(r.failed.len(), 2, "{:?}", r.plan.actions);
+        assert!(!bed.has(1, &pack_key(id)) && !bed.has(2, &pack_key(id)));
+        assert!(!bed.has(1, &mark_key(id)) && !bed.has(2, &mark_key(id)));
     }
 
     #[test]

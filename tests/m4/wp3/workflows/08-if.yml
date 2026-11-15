@@ -1,0 +1,32 @@
+on: [push]
+jobs:
+  a:
+    runs-on: x
+    if: ${{ always() }}
+    steps:
+      - run: a
+        if: failure() || cancelled()
+      - run: b
+        if: "!cancelled()"
+      - run: c
+        if: ${{ github.event_name == 'push' && contains(github.ref, 'main') }}
+      - run: d
+        if: ''
+      - run: e
+        if: steps.x.outputs.y == 'SUCCESS'
+  b:
+    needs: a
+    runs-on: x
+    if: needs.a.result == 'success' || Success()
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 30
+    steps:
+      - uses: docker://alpine:3.19
+      - uses: actions/setup-node@v4
+        continue-on-error: true
+      - uses: actions/setup-node@v4
+      - uses: owner/repo/path/to@v1
+      - uses: weird
+      - id: mine
+        run: x
+      - run: y

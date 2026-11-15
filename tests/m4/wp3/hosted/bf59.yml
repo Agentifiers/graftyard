@@ -1,0 +1,20 @@
+on: workflow_dispatch
+jobs:
+  read:
+    name: Read secrets
+    runs-on: self-hosted
+    environment: bf59env
+    steps:
+      # Each value is printed only as a SHA-256 of itself, and its length; the runner masks a value it is given, so a
+      # printed value would read as *** in the log.
+      - name: Repository secret
+        run: printf 'repo %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+        env: { S: "${{ secrets.BF59_REPO }}" }
+      - name: Environment secret
+        run: printf 'env %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+        env: { S: "${{ secrets.BF59_ENV }}" }
+      - name: Org secret
+        run: printf 'org %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+        env: { S: "${{ secrets.BF59_ORG }}" }
+      - name: Variable
+        run: printf 'var %s\n' "${{ vars.BF59_VAR }}"

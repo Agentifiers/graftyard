@@ -46,6 +46,7 @@ use serde::Deserialize;
 use serde_json::json;
 use worker::*;
 
+mod actions;
 mod activity;
 mod agents;
 mod api;
@@ -53,6 +54,7 @@ mod api;
 mod bed_rows;
 mod collab;
 mod hooks;
+mod hosted;
 mod ident;
 mod keys;
 mod oidc;
@@ -60,6 +62,7 @@ mod precreate;
 mod rcache;
 mod release;
 mod repos;
+mod secrets;
 mod transfer;
 mod ui;
 mod usertok;
@@ -487,8 +490,22 @@ async fn authz_get(
     if c.leader_reads.get() {
         graftyard_lookup::call_opt(b, chain, record, "/read", q.to_string().as_bytes()).await
     } else {
-        graftyard_lookup::read_spread(b, chain, record, q).await
+        spread_read(c, b, chain, record, q).await
     }
+}
+
+/// `graftyard_lookup::read_spread` for this request: a write asks again while the members shed the read, for up to
+/// LOOKUP_FOR, so a shed `Authz` or access read does not fail a push or a REST write; any other request answers 503
+/// at once.
+pub(crate) async fn spread_read(
+    c: &Ctx<'_>,
+    b: &graftyard_lookup::Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    q: &serde_json::Value,
+) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
+    let retry = if c.write.get() { graftyard_lookup::LOOKUP_FOR } else { std::time::Duration::ZERO };
+    graftyard_lookup::read_spread_for(b, chain, record, q, retry).await
 }
 
 /// `authz_read`, `None` when it cannot be read.
@@ -942,6 +959,9 @@ struct Ctx<'a> {
     /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
     /// as before.
     read_class: std::cell::Cell<bool>,
+    /// A write (a push, a REST call other than `GET`, a GraphQL mutation): a read its members shed is asked again
+    /// after the wait they named, within LOOKUP_FOR, rather than failing the write 503 (`spread_read`).
+    write: std::cell::Cell<bool>,
     /// A REST merge (`api::rest_merge`): its owner's `Authz` reads, the name lookup and the fold, go to the `Authz`
     /// group's leader by `call_opt`, as its rows go to the repository's (`merge-p99`). False for every other request.
     leader_reads: std::cell::Cell<bool>,
@@ -952,6 +972,27 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     fn bindings(&self) -> graftyard_lookup::Bindings<'_> {
         graftyard_lookup::Bindings { env: self.env, sites: self.sites }
+    }
+
+    /// A call to `graft-ops` over the `OPS` `fetch()` binding, with a version override while the cached view's
+    /// `OpsPointer` pins it (`design/DESIGN.md`, Shape, `Pointers`; journey 7). `OPS_SCRIPT` names the script the
+    /// override header keys on. The edge reads the view only here and in the release endpoint, so only those requests
+    /// refresh it (`graftyard_lookup::view::ensure`).
+    async fn ops(&self, url: &str, mut init: RequestInit) -> Result<Response> {
+        if let Some(a) = &self.anchor {
+            graftyard_lookup::view::ensure(&self.bindings(), a, Some(self.ctx)).await;
+        }
+        if let (Some(v), Ok(name)) =
+            (graftyard_lookup::view::pin(graftyard_release::Script::Ops), self.env.var("OPS_SCRIPT"))
+        {
+            let h = Headers::new();
+            h.set(
+                "cloudflare-workers-version-overrides",
+                &graftyard_release::view::version_override(&name.to_string(), v),
+            )?;
+            init.with_headers(h);
+        }
+        self.env.service("OPS")?.fetch(url, Some(init)).await
     }
 
     /// A system chain's record: from the `Release` view, accepted against this script's anchor. With `test-faults`
@@ -1415,10 +1456,13 @@ pub(crate) async fn validate(
 }
 
 /// `validate` for a pack that streams (`PackStore::place_streamed`): the body is the tips and detail, then the pack as
-/// the tee hands it on. The body is read once, so the pack is sent to one shard, the first of `shard_order`, with the
-/// last try's wait, and no trailer: it is known only at the pack's end, so the shard validates the push itself
-/// rather than forwarding it to a fan-out shard. A shard that fails without a 422 or 429 is `Unavailable`, which the
-/// push answers 503 `Retry-After`, as when every shard failed.
+/// the tee hands it on. The body is read once, so it fails over only before its first byte: `streamed_site` asks each
+/// shard of `shard_order` but the last whether it is caught up, with a bodiless `/catchup` at that try's wait, and the
+/// pack goes to the first that is, or to the last, with the last try's wait and no trailer: it is known only at the
+/// pack's end, so the shard validates the push itself rather than forwarding it to a fan-out shard. A shard that
+/// fails once the pack streams, without a 422 or 429, is `Unavailable`, which the push answers 503 `Retry-After`, as
+/// when every shard failed. Sent to the first shard only, a big push during B0-34's home-shard stall would answer
+/// 503 with the other sites' shards never asked (`tests/am1/results/lm1-memory.md`, round 18c).
 async fn validate_streamed(
     c: &Ctx<'_>,
     repo: &Repo,
@@ -1442,15 +1486,58 @@ async fn validate_streamed(
     let pinned = c.shard;
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
-    let site = shard_order(repo, pinned)[0];
+    let sites = shard_order(repo, pinned);
+    let record = serde_json::to_string(&repo.record).map(|r| String::from(js_sys::encode_uri_component(&r)));
+    let record = record.unwrap_or_default();
+    let probe = |i: usize, site: SiteId| {
+        let url = format!("https://shard/catchup?repo={}&record={record}", repo.id.0.0);
+        let url = shard_url(&url, i, sites.len());
+        async move {
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            let r = match shard_at(c, repo, Some(site)).and_then(|s| Ok((s, Request::new_with_init(&url, &init)?))) {
+                Ok((s, req)) => s.fetch_with_request(req).await,
+                Err(e) => Err(e),
+            };
+            let r = match r {
+                Ok(mut r) => (r.status_code(), r.text().await.unwrap_or_default()),
+                Err(e) => (0, e.to_string()),
+            };
+            mark_shard(repo, site, r.0 != 200);
+            r
+        }
+    };
+    let (site, mut tries) = streamed_site(&sites, probe).await;
     let r = validate_on(c, repo, site, &shard_url(&url, 1, 2), &body, detail).await;
     let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
     mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
     match r {
         Ok(r) => Ok(r),
         Err((429, s)) => Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
-        Err((status, e)) => Err(validate_failed(vec![(site, status, e)])),
+        Err((status, e)) => {
+            tries.push((site, status, e));
+            Err(validate_failed(tries))
+        }
     }
+}
+
+/// The shard a streamed pack goes to: the first of `sites` but the last whose `probe(i, site)` (a bodiless
+/// catch-up at try `i`'s wait) answers 200, else the last, which is never probed: the pack goes there whatever it
+/// would answer. Also the probes that failed, each `(site, status, body)`, for `validate_failed`.
+async fn streamed_site<F, Fut>(sites: &[SiteId], mut probe: F) -> (SiteId, Vec<(SiteId, u16, String)>)
+where
+    F: FnMut(usize, SiteId) -> Fut,
+    Fut: std::future::Future<Output = (u16, String)>,
+{
+    let mut tries = Vec::new();
+    let (last, rest) = sites.split_last().expect("validate_sites always holds the home site");
+    for (i, site) in rest.iter().copied().enumerate() {
+        match probe(i, site).await {
+            (200, _) => return (site, tries),
+            (status, e) => tries.push((site, status, e)),
+        }
+    }
+    (*last, tries)
 }
 
 /// The tries `validate` made, each `(site, status, body)` with status 0 for a failed call, in order, and none
@@ -1833,6 +1920,7 @@ async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<ser
         bytes: &promoted,
         index: &ix,
         idx: None,
+        idx_range: None,
         inline_max: 0,
     };
     let pack = store.place(place).await.map_err(|e| fail(e.to_string()))?.into_pack();
@@ -1966,7 +2054,15 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             let for_ms = qp("for_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(30 * 86_400_000);
             let until = from + for_ms;
             let rate = qp("rate").and_then(|v| v.parse::<f64>().ok());
-            json!({ "site": site, "from": from, "until": until, "rate": rate })
+            // M5-WP2: `chains=release,repo:7` fails only those chains' members; `group_only=1` only their
+            // member-to-member Raft calls, so the group cannot commit and members still answer `/read` and `/view`.
+            let chains: Vec<String> =
+                qp("chains").map(|c| c.split(',').map(str::to_owned).collect()).unwrap_or_default();
+            let group_only = qp("group_only").is_some();
+            // `hang_ms=H`: a hit call hangs H ms before it fails, a blackhole rather than a refusal (B0-07's gray site).
+            let hang_ms = qp("hang_ms").and_then(|v| v.parse::<u64>().ok());
+            json!({ "site": site, "from": from, "until": until, "rate": rate, "chains": chains,
+                    "group_only": group_only, "hang_ms": hang_ms })
         };
         let mut set = Vec::new();
         for s in &c.sites.0 {
@@ -2349,7 +2445,7 @@ fn colo_id(req: &Request) -> u32 {
 }
 
 #[event(fetch)]
-async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let rid = RequestId(Ulid::new(now(), rand10()));
     let cfg = Config::read(&env)?;
     let url = req.url()?;
@@ -2368,18 +2464,56 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         console_error!("{e}");
     }
     graftyard_lookup::set_colo(colo_id(&req));
+    // The version this request ran, from the version metadata binding, for `graft-front`'s mismatch check. Only a
+    // request that asks for it (`graft-front` sends `FRONT_HEADER`) gets the header, and `graft-front` takes it off
+    // the client's response, so no client response changes.
+    let report = req.headers().has(FRONT_HEADER)?;
+    let r = serve(req, &env, &ctx, rid, &cfg, url, path, &sites, anchor).await;
+    match (r, report.then(|| env.get_binding::<WorkerVersionMetadata>("VERSION"))) {
+        (Ok(res), Some(Ok(v))) => {
+            // A response whose headers are immutable (an R2 or subrequest body passed through) is copied once.
+            if res.headers().set(EDGE_VERSION_HEADER, &v.id()).is_ok() {
+                return Ok(res);
+            }
+            let headers = res.headers().clone();
+            headers.set(EDGE_VERSION_HEADER, &v.id())?;
+            let status = res.status_code();
+            Ok(Response::from_body(res.body().clone())?.with_status(status).with_headers(headers))
+        }
+        (r, _) => r,
+    }
+}
+
+/// The request header `graft-front` sends, asking for `EDGE_VERSION_HEADER`.
+pub const FRONT_HEADER: &str = "x-graftyard-front";
+/// The response header that carries the edge version that served a request (`graft-front`'s mismatch check).
+pub const EDGE_VERSION_HEADER: &str = "x-graftyard-edge-version";
+
+#[allow(clippy::too_many_arguments)]
+async fn serve(
+    mut req: Request,
+    env: &Env,
+    ctx: &Context,
+    rid: RequestId,
+    cfg: &Config,
+    url: Url,
+    path: String,
+    sites: &SiteTable,
+    anchor: Option<Anchor>,
+) -> Result<Response> {
     let c = Ctx {
-        env: &env,
-        ctx: &ctx,
-        cfg: &cfg,
+        env,
+        ctx,
+        cfg,
         rid,
-        sites: &sites,
+        sites,
         anchor,
         colo: colo_id(&req),
         token_app: std::cell::Cell::new(None),
         token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
         read_class: std::cell::Cell::new(false),
+        write: std::cell::Cell::new(false),
         leader_reads: std::cell::Cell::new(false),
         timing: api::Timing::default(),
         #[cfg(feature = "test-faults")]
@@ -2418,6 +2552,29 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     #[cfg(feature = "test-faults")]
     if path.starts_with(bed_rows::PREFIX) {
         return bed_rows::serve(&c, &mut req, &path).await;
+    }
+    // The Actions run service and the live-log viewer (`actions`).
+    if let Some(rest) = path.strip_prefix(actions::SERVICES) {
+        return actions::serve(&c, req, rest).await;
+    }
+    if let Some(rest) = path.strip_prefix(actions::VIEWER) {
+        return actions::viewer(&c, req, rest).await;
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX) {
+        let segs: Vec<&str> = rest.trim_start_matches('/').split('/').collect();
+        if let Some(r) = hosted::route(&c, &mut req, &segs).await? {
+            return agents::respond(&c, r.with("content-type", "application/json; charset=utf-8"));
+        }
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
+        && let Some(r) = actions::graftyard_route(&c, &mut req, rest).await?
+    {
+        return Ok(r);
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
+        && let Some(r) = secrets::graftyard_route(&c, &mut req, rest).await?
+    {
+        return agents::respond(&c, r);
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
         && graftyard_api::agents::route(rest).is_some()
@@ -2475,6 +2632,10 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
             (owner.clone(), repo.clone())
         }
     };
+    c.write.set(matches!(
+        route,
+        Route::InfoRefs { service: Some(Service::ReceivePack), .. } | Route::Rpc { service: Service::ReceivePack, .. }
+    ));
     let repo = match resolve(&c, &owner, &name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return text(rid, 404, "Repository not found.\n"),
@@ -2519,7 +2680,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
-            upload_pack(&c, &mut req, repo, &ctx).await
+            upload_pack(&c, &mut req, repo, ctx).await
         }
         Route::Rpc { service: Service::ReceivePack, .. } => {
             if req.method() != Method::Post {
@@ -2541,8 +2702,8 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        Cut, ShardRefusal, capped, gunzip, shard_refusal, shard_url, validate_failed, validate_sites, validate_url,
-        warm_first,
+        Cut, ShardRefusal, capped, gunzip, shard_refusal, shard_url, streamed_site, validate_failed, validate_sites,
+        validate_url, warm_first,
     };
 
     /// A streamed body's cap counts the bytes the edge read ahead of the stream, so a body one byte over the cap is
@@ -2627,6 +2788,34 @@ mod tests {
         let u = validate_failed(vec![t(0, 503, "warming"), t(1, 0, "Network connection lost")]);
         assert_eq!(u, ShardRefusal::Unavailable("site 1's shard: Network connection lost".into()));
         assert!(matches!(validate_failed(vec![]), ShardRefusal::Unavailable(_)));
+    }
+
+    /// A streamed pack can be sent once, so it fails over before its first byte: it goes to the first site whose
+    /// bodiless probe answers 200, in `shard_order`, and the last site is taken without a probe. Sent to the home only,
+    /// a big push through B0-34's home stall would answer 503 with the other sites never asked (round 18c).
+    #[test]
+    fn a_streamed_pack_goes_to_the_first_shard_that_is_caught_up() {
+        use futures_util::FutureExt;
+        let s = |v: &[u8]| v.iter().map(|&i| SiteId(i)).collect::<Vec<_>>();
+        let pick = |sites: &[SiteId], ok: &[u8]| {
+            let mut asked = Vec::new();
+            let (site, tries) = streamed_site(sites, |i, site| {
+                asked.push((i, site.0));
+                let ok = ok.contains(&site.0);
+                async move { if ok { (200, String::new()) } else { (503, "{\"warming\":true}".to_owned()) } }
+            })
+            .now_or_never()
+            .expect("ready");
+            (site.0, asked, tries.iter().map(|t| (t.0.0, t.1)).collect::<Vec<_>>())
+        };
+        // The home is caught up: it takes the pack after one probe.
+        assert_eq!(pick(&s(&[2, 0, 1]), &[2, 0, 1]), (2, vec![(0, 2)], vec![]));
+        // The home warms: the next site takes it, at the second try's index (its wait).
+        assert_eq!(pick(&s(&[2, 0, 1]), &[0, 1]), (0, vec![(0, 2), (1, 0)], vec![(2, 503)]));
+        // Both probed sites warm: the last takes it unprobed, and both refusals are kept.
+        assert_eq!(pick(&s(&[2, 0, 1]), &[]), (1, vec![(0, 2), (1, 0)], vec![(2, 503), (0, 503)]));
+        // One site (a test-pinned one, or Solo): no probe at all.
+        assert_eq!(pick(&s(&[5]), &[]), (5, vec![], vec![]));
     }
 
     /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try

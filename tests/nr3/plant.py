@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, read-index batches in flight (`crates/raft`), and the edge's herding guard (`crates/lookup`). Plants one mutant at a time,
+(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, read-index batches in flight (`crates/raft`), the edge's herding guard (`crates/lookup`), narrow-builds' selections from `issue_order` keys
+(`crates/api`), and the accounts index `apply` keeps (`hosted::NamedIndex`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
 
     python3 tests/nr3/plant.py          # every mutant
     python3 tests/nr3/plant.py 0 3      # by number
+    python3 tests/nr3/plant.py --check  # residue only: exit 1 if a mutant is left in the tree (the pre-commit hook)
+
+A mutant reached a commit twice on 2026-11-14 when a run was killed mid-mutant, which no `finally` survives. So the
+original bytes go to a journal (`tests/nr3/raw/.plant-journal`) before each mutation and leave it only once restored;
+a run, and `--check`, first restores any journal a killed run left. SIGTERM and SIGINT restore and exit. After the
+run, and in `--check`, every mutant's original text must be in its file exactly once and `git diff` of the planted
+files must be what it was before the run; otherwise the runner exits 1 and names the residue.
 """
-import os, subprocess, sys
+import json, os, signal, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 INSTALL = 'crates/raft/src/member/install.rs'
@@ -18,6 +26,12 @@ FAM = 'workers/site/src/family.rs'
 HOST = 'workers/site/src/host.rs'
 LOOKUP = 'crates/lookup/src/lib.rs'
 ELECTION = 'crates/raft/src/member/election.rs'
+VIEW = 'crates/api/src/view.rs'
+GQL = 'crates/api/src/gql.rs'
+REST = 'crates/api/src/rest.rs'
+NARROW = ('graftyard-api', '--test', 'narrow')
+HOSTED = 'crates/api/src/hosted.rs'
+FTIER = 'crates/fold/src/tier.rs'
 RAFT = ('graftyard-raft', '--test', 'leadership')
 LK = ('graftyard-lookup', '--lib', 'tests')
 SITE = ('graftyard-site', '--lib', 'tests')
@@ -117,9 +131,74 @@ MUTANTS = [
      '        let reads = std::mem::take(&mut r.queued);\n        match r.inflight.last_mut() {\n            Some(b) => b.2.extend(reads),\n            None => r.inflight.push((batch, self.now, reads)),\n        }', RAFT),
     ('pipeline: one batch in flight, as before', INSTALL,
      '        if r.inflight.len() >= READ_PIPELINE', '        if !r.inflight.is_empty()', RAFT),
+    # narrow-builds (1): selections paged from `issue_order`'s keys.
+    ('keys: issue_order numbers oldest first', VIEW,
+     '        all.sort_unstable_by(|a, b| b.cmp(a));\n        all\n', '        all.sort_unstable();\n        all\n', NARROW),
+    ('keys: one open flag only (State All lists the open items alone)', VIEW,
+     '        for open in state.opens() {\n            let prefix = order_key(kind, *open, IssueNumber(0))[..2].to_vec();\n            all.extend(',
+     '        for open in &state.opens()[..1] {\n            let prefix = order_key(kind, *open, IssueNumber(0))[..2].to_vec();\n            all.extend(', NARROW),
+    ('keys: a connection pages from the keys whatever MERGED and CLOSED ask (filter after paging)', GQL,
+     '                && has("MERGED") == opens.contains(&false)));', '                || true));', NARROW),
+    ('keys: totalCount counts the page, not every match', GQL,
+     '        let total = all.len();\n        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i < a)).collect();\n        Pick::of_numbers(page.iter().copied().take(n), total, page.len() > n)',
+     '        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i < a)).collect();\n        let total = page.len().min(n);\n        Pick::of_numbers(page.iter().copied().take(n), total, page.len() > n)', NARROW),
+    ('keys: the cursor is inclusive (page boundary off by one)', GQL,
+     '        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i < a)).collect();\n        Pick::of_numbers(page',
+     '        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i <= a)).collect();\n        Pick::of_numbers(page', NARROW),
+    ('keys: a connection still loads every item before paging (main\'s cost)', GQL,
+     '        let all: Vec<IssueNumber> = if by_keys {', '        let all: Vec<IssueNumber> = if by_keys && false {', NARROW),
+    ('rest: no label filter keeps every state', REST,
+     '                if opens.contains(&row.open) {', '                if opens.contains(&row.open) || true {', NARROW),
+    ('rest: the next link looks one page past the end (more off by one)', REST,
+     '        let more = all.len() > page.end();\n        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|(n, _)| *n)',
+     '        let more = all.len() >= page.end();\n        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|(n, _)| *n)', NARROW),
+    ('rest: labels page before filtering', REST,
+     '        if want.is_empty() {\n            let opens = state.opens();', '        if true {\n            let opens = state.opens();', NARROW),
+    # narrow-builds (2): the accounts a tier names, kept by `apply` (`hosted::NamedIndex`).
+    ('named: an index that skipped entries counts as current (stale after an install)', HOSTED,
+     '        self.at = self.at.filter(|a| a.0 + 1 == index.0).map(|_| index);', '        self.at = Some(index);', NARROW),
+    ('named: a deleted row does not uncount its account', HOSTED,
+     '        self.add(old.and_then(|o| row_account(table, key, &o.cols)), -1);\n', '', NARROW),
+    ('named: an account counted to zero stays named', HOSTED,
+     '        if *n == 0 {\n            self.counts.remove(&a);\n        }\n', '', NARROW),
+    ('named: a merger is not named (pull_head counted in no tier)', HOSTED,
+     '        (Core, "pull_head"),\n', '        (Metadata, "pull_head"),\n', NARROW),
+    ('named: apply does not tell the store of a row it writes', FTIER,
+     '        self.store.wrote(table, &key, old.as_ref(), Some(&row));\n', '', NARROW),
+    ('named: a comment names no account', HOSTED,
+     '        "comment" => rec::<CommentRow>(cols).author,', '        "comment" => rec::<CommentRow>(cols).author.filter(|_| false),', NARROW),
 ]
 
 ENV = dict(os.environ, CARGO_INCREMENTAL='0')
+JOURNAL = os.path.join(ROOT, 'tests', 'nr3', 'raw', '.plant-journal')
+
+
+def recover():
+    """Restores the file a killed run left mutated, from its journal."""
+    if not os.path.exists(JOURNAL):
+        return
+    j = json.load(open(JOURNAL))
+    open(os.path.join(ROOT, j['file']), 'wb').write(bytes.fromhex(j['orig']))
+    os.remove(JOURNAL)
+    print(f'restored {j["file"]} from a killed run\'s journal', flush=True)
+
+
+def planted_diff():
+    files = sorted({m[1] for m in MUTANTS})
+    return subprocess.run(['git', 'diff', '--', *files], cwd=ROOT, capture_output=True, text=True).stdout
+
+
+def residue():
+    """Mutants left in the tree: a mutant's original text missing from its file, or not exactly once."""
+    out = []
+    for i, (name, f, old, new, t) in enumerate(MUTANTS):
+        if open(os.path.join(ROOT, f)).read().count(old) != 1:
+            out.append(f'{i:2} {name} ({f})')
+    return out
+
+
+def stop(signum, frame):
+    raise KeyboardInterrupt(f'signal {signum}')
 
 
 def run(t):
@@ -131,29 +210,53 @@ def run(t):
 
 
 def main():
+    recover()
+    if sys.argv[1:] == ['--check']:
+        left = residue()
+        for r in left:
+            print(f'RESIDUE {r}')
+        sys.exit(1 if left else 0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    before = planted_diff()
     pick = [int(a) for a in sys.argv[1:]] or range(len(MUTANTS))
     caught = 0
-    for i in pick:
-        name, f, old, new, t = MUTANTS[i]
-        p = os.path.join(ROOT, f)
-        orig = open(p, 'rb').read()
-        s = orig.decode()
-        if s.count(old) != 1:
-            print(f'{i:2} NOT FOUND  {name}', flush=True)
-            continue
-        open(p, 'w').write(s.replace(old, new))
-        try:
-            code, out, broke = run(t)
-        finally:
-            open(p, 'wb').write(orig)
-        if broke:
-            print(f'{i:2} DID NOT COMPILE  {name}', flush=True)
-        elif code != 0:
-            caught += 1
-            fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
-            print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]', flush=True)
-        else:
-            print(f'{i:2} MISSED  {name}', flush=True)
+    try:
+        for i in pick:
+            name, f, old, new, t = MUTANTS[i]
+            p = os.path.join(ROOT, f)
+            orig = open(p, 'rb').read()
+            s = orig.decode()
+            if s.count(old) != 1:
+                print(f'{i:2} NOT FOUND  {name}', flush=True)
+                continue
+            with open(JOURNAL + '.tmp', 'w') as j:
+                json.dump({'file': f, 'orig': orig.hex()}, j)
+            os.replace(JOURNAL + '.tmp', JOURNAL)
+            try:
+                open(p, 'w').write(s.replace(old, new))
+                code, out, broke = run(t)
+            finally:
+                open(p, 'wb').write(orig)
+                # A concurrent `--check` (the pre-commit hook) may already have restored it from the journal.
+                if os.path.exists(JOURNAL):
+                    os.remove(JOURNAL)
+            if broke:
+                print(f'{i:2} DID NOT COMPILE  {name}', flush=True)
+            elif code != 0:
+                caught += 1
+                fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
+                print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]', flush=True)
+            else:
+                print(f'{i:2} MISSED  {name}', flush=True)
+    finally:
+        left, after = residue(), planted_diff()
+        for r in left:
+            print(f'RESIDUE {r}', flush=True)
+        if after != before:
+            print('RESIDUE: git diff of the planted files changed during the run', flush=True)
+        if left or after != before:
+            sys.exit(1)
     print(f'{caught} of {len(pick)} caught')
 
 

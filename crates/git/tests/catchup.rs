@@ -7,7 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use futures_executor::block_on;
-use graftyard_git::catchup::{INGEST_BATCH_BYTES, Ingested, Rehydrating, Report, Saved, ShardIo, catch_up};
+use graftyard_git::catchup::{
+    Fetched, INGEST_BATCH_BYTES, IdxRange, Ingested, Rehydrating, Report, Saved, ShardIo, catch_up,
+};
 use graftyard_git::group::RefsPage;
 use graftyard_git::{ChainLog, Head, IngestCursor, LogPacks, Marker, PackId, PackRef, Promoted, StoreError};
 use graftyard_types::{ChainId, DbId, Digest, Index, NetworkId, RepoId, SiteSet, Ulid};
@@ -60,6 +62,69 @@ struct Disk {
     asks: RefCell<Vec<usize>>,
     /// Every call fails once this many more ingests have run: a caller's deadline or an isolate reset.
     cut_after: Cell<Option<usize>>,
+    /// Stored `.idx` objects: the index (here the SHA-256 of the pack it indexes, or other bytes for a bad one) and
+    /// the range its custom metadata names.
+    idx: RefCell<BTreeMap<PackId, (Digest, Option<IdxRange>)>>,
+    /// Packs spooled onto the disk, each with its staged index if one came.
+    spooled: RefCell<BTreeMap<Digest, (PackId, Option<Digest>)>>,
+    /// Packs ingested through their stored index, and through `index-pack`.
+    idx_used: Cell<usize>,
+    index_packs: Cell<usize>,
+    /// Checksums in the order the container ingested them.
+    order: RefCell<Vec<Digest>>,
+    /// The virtual clock, and how long a pack's fetch (`slow`'s time for that pack, else `fetch_ms`) and its
+    /// `index-pack` take on it.
+    clock: Clock,
+    fetch_ms: Cell<u64>,
+    slow: RefCell<BTreeMap<PackId, u64>>,
+    index_ms: Cell<u64>,
+    /// Fetches in flight now, and the most at once.
+    in_flight: Cell<usize>,
+    in_flight_max: Cell<usize>,
+    connected_calls: Cell<usize>,
+    /// The container's repack starts and backstop checks in order: "repack" when a call started the repack (the last
+    /// ref page, or a check after its walk), "connected" when a check walked.
+    events: RefCell<Vec<&'static str>>,
+}
+
+/// A virtual clock: `sleep` ends once `run` has moved the clock to its time, which it does whenever every task waits.
+#[derive(Default)]
+struct Clock {
+    now: Cell<u64>,
+    timers: RefCell<Vec<(u64, std::task::Waker)>>,
+}
+
+impl Clock {
+    async fn sleep(&self, ms: u64) {
+        let until = self.now.get() + ms;
+        std::future::poll_fn(|cx| {
+            if self.now.get() >= until {
+                return std::task::Poll::Ready(());
+            }
+            self.timers.borrow_mut().push((until, cx.waker().clone()));
+            std::task::Poll::Pending
+        })
+        .await
+    }
+
+    /// Runs `f` to its end on this clock.
+    fn run<T>(&self, f: impl std::future::Future<Output = T>) -> T {
+        let mut f = std::pin::pin!(f);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                return v;
+            }
+            let mut t = self.timers.borrow_mut();
+            let next = t.iter().map(|(u, _)| *u).min().expect("every task waits and no timer is set");
+            self.now.set(self.now.get().max(next));
+            let due: Vec<_> = t.extract_if(.., |(u, _)| *u <= next).collect();
+            drop(t);
+            for (_, w) in due {
+                w.wake();
+            }
+        }
+    }
 }
 
 impl Disk {
@@ -75,6 +140,7 @@ impl Disk {
         self.objects.borrow_mut().clear();
         self.ingested.borrow_mut().clear();
         self.refs.borrow_mut().clear();
+        self.spooled.borrow_mut().clear();
     }
 
     fn tick(&self) -> Result<(), StoreError> {
@@ -97,6 +163,7 @@ impl Disk {
         }
         self.objects.borrow_mut().extend(p.brings);
         self.ingested.borrow_mut().insert(s);
+        self.order.borrow_mut().push(s);
         Ingested::Done
     }
 }
@@ -133,16 +200,74 @@ impl ShardIo for Disk {
             })
             .collect())
     }
-    async fn ingest_stored(&self, id: PackId, checksum: Digest) -> Result<Ingested, StoreError> {
-        self.tick()?;
-        self.ingests.set(self.ingests.get() + 1);
+    async fn fetch_stored(&self, id: PackId, checksum: Digest, idx: bool) -> Result<Fetched, StoreError> {
         self.fetched.set(self.fetched.get() + 1);
+        if self.ingested.borrow().contains(&checksum) {
+            return Ok(Fetched::Have);
+        }
         let b = self.bucket.borrow().get(&id).cloned().ok_or_else(|| StoreError("no such pack".into()))?;
         assert_eq!(sum(&b), checksum);
-        Ok(self.take(checksum, &b))
+        self.in_flight.set(self.in_flight.get() + 1);
+        self.in_flight_max.set(self.in_flight_max.get().max(self.in_flight.get()));
+        let ms = self.slow.borrow().get(&id).copied().unwrap_or(self.fetch_ms.get());
+        self.clock.sleep(ms).await;
+        self.in_flight.set(self.in_flight.get() - 1);
+        let staged = if idx { self.idx.borrow().get(&id).map(|(i, _)| *i) } else { None };
+        self.spooled.borrow_mut().insert(checksum, (id, staged));
+        Ok(Fetched::Spooled)
     }
-    async fn put_refs_page(&self, refs: &[(String, String)], start: bool, _done: bool) -> Result<(), StoreError> {
+    async fn ingest_spooled(&self, checksum: Digest) -> Result<Ingested, StoreError> {
         self.tick()?;
+        self.ingests.set(self.ingests.get() + 1);
+        let (id, staged) = *self.spooled.borrow().get(&checksum).ok_or_else(|| StoreError("not spooled".into()))?;
+        let b = self.bucket.borrow().get(&id).cloned().unwrap();
+        // As the container checks a staged index against the pack's trailer: a bad one falls back to index-pack.
+        let used = staged == Some(checksum);
+        if !used {
+            self.index_packs.set(self.index_packs.get() + 1);
+            self.clock.sleep(self.index_ms.get()).await;
+        }
+        let a = self.take(checksum, &b);
+        if a == Ingested::Done {
+            self.spooled.borrow_mut().remove(&checksum);
+            if used {
+                self.idx_used.set(self.idx_used.get() + 1);
+            }
+        }
+        Ok(a)
+    }
+    async fn idx_ranges(&self) -> Result<BTreeMap<PackId, Option<IdxRange>>, StoreError> {
+        Ok(self.idx.borrow().iter().map(|(id, (_, r))| (*id, *r)).collect())
+    }
+    /// History is a chain, object i's parent i - 1: connected when every object's parent is here, and every ref's.
+    async fn connected(&self, repack: bool) -> Result<Result<(), String>, StoreError> {
+        self.connected_calls.set(self.connected_calls.get() + 1);
+        self.events.borrow_mut().push("connected");
+        if repack {
+            self.events.borrow_mut().push("repack");
+        }
+        let objs = self.objects.borrow();
+        if let Some(o) = objs.iter().find(|o| **o > 1 && !objs.contains(&(**o - 1))) {
+            return Ok(Err(format!("missing object {}", o - 1)));
+        }
+        for o in self.refs.borrow().values() {
+            if !objs.contains(&u64::from_str_radix(o, 16).unwrap()) {
+                return Ok(Err(format!("ref to missing {o}")));
+            }
+        }
+        Ok(Ok(()))
+    }
+    async fn put_refs_page(
+        &self,
+        refs: &[(String, String)],
+        start: bool,
+        done: bool,
+        repack: bool,
+    ) -> Result<(), StoreError> {
+        self.tick()?;
+        if done && repack {
+            self.events.borrow_mut().push("repack");
+        }
         let mut r = self.refs.borrow_mut();
         if start {
             r.clear();
@@ -494,11 +619,12 @@ fn a_cut_off_rehydrate_resumes_and_never_starts_again_from_nothing() {
         }
         b.disk.cut_after.set(None);
         assert_eq!(b.disk.inits.get(), 1, "cut {cut}: the repository was started again");
-        // Every stored pack (the promoted one, 22 below the tail and 33 in it) fetched once, and every pack ingested
-        // once, plus at most the one pack in flight at each cut.
+        // Every stored pack (the promoted one, 22 below the tail and 33 in it) fetched once, plus at each cut the packs
+        // fetched ahead and not yet ingested (`AHEAD_PACKS`), and every pack ingested once, plus the one in flight.
         let stored = b.disk.bucket.borrow().len();
         assert_eq!(stored, 56);
-        assert!(b.disk.fetched.get() <= stored + attempts, "cut {cut}: {} stored fetches", b.disk.fetched.get());
+        let refetch = attempts * graftyard_git::catchup::AHEAD_PACKS;
+        assert!(b.disk.fetched.get() <= stored + refetch, "cut {cut}: {} stored fetches", b.disk.fetched.get());
         assert!(b.disk.ingests.get() <= stored + 267 + attempts, "cut {cut}: {} ingests", b.disk.ingests.get());
         assert!(b.store.rehydrating.borrow().is_none());
         // The 301 tail entries above the promotion are read about once: each cut-off run re-reads at most the two pages
@@ -612,6 +738,9 @@ fn a_rehydrate_reads_the_log_only_above_the_last_promoted() {
     let h = r.rehydrated.expect("a rehydrate");
     assert_eq!(h.entries, 51, "entries 451..=501");
     assert_eq!(h.inline, 50);
+    // Nothing skipped, so no check: the last ref page starts the repack, as before the backstop existed.
+    assert_eq!(h.skipped, 0);
+    assert_eq!(*b.disk.events.borrow(), ["repack"]);
     b.assert_serves_head();
 }
 
@@ -753,4 +882,229 @@ fn a_shard_reads_its_own_sites_bucket_first_and_falls_back() {
     assert_eq!(read(2), (None, vec![2, 0, 1]));
     // Site 1 reads its own first, then the others in site order.
     assert_eq!(read(1).1, vec![1, 0, 2]);
+}
+
+impl Bed {
+    fn run_timed(&self) -> Result<Report, StoreError> {
+        self.disk.clock.run(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], &|| 0))
+    }
+
+    /// Stores the `.idx` of promotion `1_000_000 + to`, good or not, with the range its metadata names.
+    fn idx(&self, to: u64, good: bool, range: Option<(u64, u64)>) {
+        let id = PackId(Ulid(1_000_000 + to as u128));
+        let b = self.disk.bucket.borrow().get(&id).cloned().expect("a promoted pack");
+        let i = if good { sum(&b) } else { sum(b"another pack") };
+        self.disk.idx.borrow_mut().insert(id, (i, range.map(|(f, t)| (CHAIN, Index(f), Index(t)))));
+    }
+
+    fn pushed_fetched(&self) -> usize {
+        // Every pushed pack the bed holds is `PackId(i)` for entry i; promotions are above 1,000,000.
+        self.disk.order.borrow().len() - self.disk.idx_used.get()
+    }
+}
+
+/// G5: a rehydrate loads a promoted pack through its stored `.idx`, with no `index-pack`, and the pushed packs the
+/// promotion covers are not fetched at all; the network still serves every ref at the head. On main every pushed pack
+/// and the promotion each ran `index-pack`, 6.6 to 7.3 s a 10 MB pack on m29 (`tests/fanout/raw/rehydrate-131296-m29.json`).
+#[test]
+fn a_rehydrate_of_promoted_packs_loads_their_stored_idx_and_skips_the_pushes_they_cover() {
+    let b = bed(150, 0, 1);
+    b.promote_range(1, 100);
+    b.idx(100, true, Some((1, 100)));
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    assert_eq!(h.skipped, 100, "pushed packs 1..=100 are covered");
+    assert!(h.fault.is_none(), "{:?}", h.fault);
+    assert_eq!(b.disk.idx_used.get(), 1, "the promotion went in through its idx");
+    assert_eq!(b.disk.index_packs.get(), 50, "only the tail's 50 pushed packs ran index-pack");
+    assert_eq!(b.pushed_fetched(), 50);
+    assert_eq!(b.disk.connected_calls.get(), 1, "one check before serving");
+    // The check walks before the repack starts: started by the last ref page, the check waited out the whole repack
+    // (`tests/am1/results/lm1-memory.md`, round 21).
+    assert_eq!(*b.disk.events.borrow(), ["connected", "repack"]);
+    b.assert_serves_head();
+}
+
+/// A stored `.idx` that does not check against its pack (here, another pack's) is refused by the container, which
+/// runs `index-pack` instead; the rehydrate is otherwise the same and serves the head.
+#[test]
+fn a_corrupt_stored_idx_falls_back_to_index_pack() {
+    let b = bed(150, 0, 1);
+    b.promote_range(1, 100);
+    b.idx(100, false, Some((1, 100)));
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    assert_eq!(r.rehydrated.expect("a rehydrate").skipped, 100);
+    assert_eq!(b.disk.idx_used.get(), 0);
+    assert_eq!(b.disk.index_packs.get(), 51, "the promotion and the tail's 50 ran index-pack");
+    b.assert_serves_head();
+}
+
+/// Rule 1: what a promotion covers comes from its committed `Promoted` record, and the `.idx` metadata only caches it.
+/// Here the first promotion's metadata claims 1..=100 while its record says 1..=50, and the last promotion (51..=100)
+/// has no stored idx. Pushed packs 51..=100 lie in no range both agree on, so they all load: trusting the metadata
+/// would skip them with nothing to flag it.
+#[test]
+fn idx_metadata_wider_than_its_promoted_record_skips_nothing_outside_the_record() {
+    let b = bed(150, 0, 1);
+    b.promote_range(1, 50);
+    b.idx(50, true, Some((1, 100)));
+    b.promote_range(51, 100);
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    assert_eq!(h.skipped, 50, "only 1..=50, the record's range");
+    let loaded: BTreeSet<u64> = b.disk.order.borrow().iter().filter_map(|s| b.pushed_index(s)).collect();
+    assert!((51..=100).all(|i| loaded.contains(&i)), "a pushed pack in 51..=100 was skipped");
+    assert!(!(1..=50).any(|i| loaded.contains(&i)));
+    b.assert_serves_head();
+}
+
+/// The backstop: a promotion whose pack lacks an object (planted: entry 60's) passes the marked phase, since nothing
+/// there checks connectivity, and fails the check before serving. The rehydrate loads the skipped pushed packs, checks
+/// again, reports the fault, and serves the head.
+#[test]
+fn a_planted_missing_object_in_a_covered_pack_falls_back_to_the_skipped_packs_and_passes() {
+    let b = bed(150, 0, 1);
+    let p = Pack { brings: (1..=100).filter(|o| *o != 60).collect(), needs: vec![], pad: 0 };
+    let bytes = bytes_of(&p);
+    let id = PackId(Ulid(1_000_100));
+    b.disk.bucket.borrow_mut().insert(id, bytes.clone());
+    let at = b.log.head() + 1;
+    b.disk.markers.borrow_mut().push((id, Marker { chain: CHAIN, index: Index(at), checksum: sum(&bytes), bytes: 1 }));
+    let pack = PackRef::Stored { id, checksum: sum(&bytes), bytes: bytes.len() as u64, sites: SiteSet(3) };
+    let pr = Promoted { from: Index(1), to: Index(100), pack };
+    b.log.entries.borrow_mut().push(LogPacks {
+        index: Index(at),
+        packs: vec![],
+        promoted: Some(pr.clone()),
+        consumed: vec![],
+        refs: Some(vec![]),
+    });
+    *b.log.promoted.borrow_mut() = Some(pr);
+    b.idx(100, true, Some((1, 100)));
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    assert!(h.fault.as_deref().is_some_and(|f| f.contains("60")), "{:?}", h.fault);
+    assert_eq!(b.disk.connected_calls.get(), 2, "checked, loaded the skipped packs, checked again");
+    // A failed walk starts the repack too; only the second check, on the fault path, follows it.
+    assert_eq!(*b.disk.events.borrow(), ["connected", "repack", "connected", "repack"]);
+    b.assert_serves_head();
+    assert!(b.store.rehydrating.borrow().is_none());
+}
+
+impl Bed {
+    /// The entry index of a pushed pack by its checksum, or `None` for a promotion.
+    fn pushed_index(&self, s: &Digest) -> Option<u64> {
+        self.disk
+            .bucket
+            .borrow()
+            .iter()
+            .find(|(_, b)| sum(b) == *s)
+            .map(|(id, _)| id.0.0 as u64)
+            .filter(|i| *i < 1_000_000)
+    }
+}
+
+/// A catch-up behind K stored packs fetches several at once and still ingests them in log order: the first pack's
+/// fetch is slow, so the later ones finish first, and none goes in before it. Within `FETCH_AT_ONCE`, which leaves two
+/// of a Workers invocation's six connections waiting for headers to the ingest and the next log page [doc].
+#[test]
+fn a_catch_up_fetches_stored_packs_at_once_and_ingests_them_in_log_order() {
+    use graftyard_git::catchup::FETCH_AT_ONCE;
+    let b = bed(80, 0, 1);
+    let marks = b.disk.markers.borrow().clone();
+    b.log.entries.borrow_mut().truncate(20);
+    b.disk.markers.borrow_mut().retain(|(_, m)| m.index.0 <= 20);
+    b.run().unwrap();
+    b.log.entries.replace(bed(80, 0, 1).log.entries.into_inner());
+    *b.disk.markers.borrow_mut() = marks;
+    b.disk.order.borrow_mut().clear();
+    b.disk.fetch_ms.set(500);
+    b.disk.slow.borrow_mut().insert(PackId(Ulid(21)), 5_000);
+    let r = b.run_timed().unwrap_or_else(|e| panic!("{}", e.0));
+    assert_eq!(r.packs, 60);
+    let order: Vec<u64> = b.disk.order.borrow().iter().filter_map(|s| b.pushed_index(s)).collect();
+    assert_eq!(order, (21..=80).collect::<Vec<_>>(), "ingested out of log order");
+    assert!(b.disk.in_flight_max.get() > 1 && b.disk.in_flight_max.get() <= FETCH_AT_ONCE);
+    const { assert!(FETCH_AT_ONCE + 2 <= 6, "the ingest and the next page keep a connection each") };
+    // One after another: 5 s + 59 × 0.5 s = 34.5 s. Ahead: while pack 21 takes 5 s, only `AHEAD_PACKS` - 1 more are
+    // fetched past it, so the other 52 follow at `FETCH_AT_ONCE` at a time: 5 s + 13 × 0.5 s = 11.5 s.
+    let serial = 5_000 + 59 * 500;
+    let ahead = 5_000 + (59 - (graftyard_git::catchup::AHEAD_PACKS as u64 - 1)).div_ceil(FETCH_AT_ONCE as u64) * 500;
+    let took = b.disk.clock.now.get();
+    assert!(took <= ahead, "{took} ms against {ahead} ms bounded, {serial} ms one at a time");
+    b.assert_serves_head();
+}
+
+/// The 120 s line for a cold rehydrate of a 5 GB network (`design/DESIGN.md`, "Failure modes", git caches), projected
+/// from m29's measured cold rehydrate of repo:131296 (`tests/fanout/raw/rehydrate-131296-m29.json`): 257 packs,
+/// 2,623,972,857 bytes. Site c, the slower: container up 34.2 s; spool 94.0 s in all, so 27.9 MB/s on one stream; and
+/// 96 s outside spool and `index-pack`, 375 ms a pack. A stored `.idx` adds its bytes, 3.5% of the pack's (a 57.9 MB
+/// promoted pack's was 2.0 MB), and holds the lock about 1 ms (`containers/git/server/stored_test.go`).
+///
+/// The open variable is R2's throughput with `FETCH_AT_ONCE` streams into one container: the projection assumes each
+/// stream keeps the one-stream rate. If the container's link or R2 caps the sum at the one-stream rate, the fetch saves
+/// only the per-pack overhead, and the 5 GB case does not reach 120 s.
+#[test]
+fn a_cold_rehydrate_of_5_gb_projects_under_120_s_and_the_serial_fetch_does_not() {
+    use graftyard_git::catchup::FETCH_AT_ONCE;
+    const UP_MS: u64 = 34_200;
+    const PER_PACK_MS: u64 = 375;
+    const BYTES_PER_MS: f64 = 2_623_972_857.0 / 94_004.0;
+    const IDX_SHARE: f64 = 0.035;
+    let fetch = |bytes: f64| PER_PACK_MS + (bytes * (1.0 + IDX_SHARE) / BYTES_PER_MS) as u64;
+    let mut out = Vec::new();
+    // The seed as it stands (257 packs of 10.2 MB), and 5 GB in promotions of `PROMOTE_MAX` (48 MiB) each.
+    for (what, n, bytes) in [("seed", 257u64, 2_623_972_857.0 / 257.0), ("5 GB", 100, 50_331_648.0)] {
+        let b = bed(n, 0, 1);
+        for k in 1..=n {
+            b.promote_range(k, k);
+            b.idx(k, true, Some((k, k)));
+        }
+        b.disk.fetch_ms.set(fetch(bytes));
+        let r = b.run_timed().unwrap_or_else(|e| panic!("{what}: {}", e.0));
+        let h = r.rehydrated.expect("a rehydrate");
+        assert_eq!((h.skipped as u64, b.disk.idx_used.get() as u64), (n, n), "{what}");
+        assert_eq!(b.disk.index_packs.get(), 0, "{what}");
+        let took = UP_MS + b.disk.clock.now.get();
+        let serial = UP_MS + n * fetch(bytes);
+        out.push((what, took / 1_000, serial / 1_000));
+        assert!(took <= 120_000, "{what}: {took} ms with {FETCH_AT_ONCE} fetches at once");
+        assert!(serial > 120_000, "{what}: {serial} ms one at a time is already under the line");
+        b.assert_serves_head();
+    }
+    println!("cold rehydrate, site c rates: (case, s with the fetch ahead, s one at a time) {out:?}");
+}
+
+/// Repo:131296's promoted packs were 106 to 207 MB each, every one past `AHEAD_BYTES`, so main's cap fetched them one
+/// at a time: the marked phase took 101 to 155 s of m35's cold warm (`tests/am1/results/lm1-memory.md`, round 23). The
+/// first `FETCH_AT_ONCE` packs ahead start whatever their size, and the disk, not the object, holds them.
+#[test]
+fn large_promoted_packs_fetch_four_at_once_and_still_ingest_in_log_order() {
+    use graftyard_git::catchup::{AHEAD_BYTES, FETCH_AT_ONCE};
+    const BIG: u64 = 207_000_000;
+    const { assert!(BIG > AHEAD_BYTES) };
+    let n = 12;
+    let b = bed(n, 0, 1);
+    for k in 1..=n {
+        b.promote_range(k, k);
+        b.idx(k, true, Some((k, k)));
+    }
+    // The markers the rehydrate plans from name each promoted pack at 207 MB.
+    for (id, m) in b.disk.markers.borrow_mut().iter_mut() {
+        if id.0.0 >= 1_000_000 {
+            m.bytes = BIG;
+        }
+    }
+    b.disk.fetch_ms.set(2_000);
+    let r = b.run_timed().unwrap_or_else(|e| panic!("{}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    assert_eq!((h.skipped as u64, b.disk.idx_used.get() as u64), (n, n));
+    assert_eq!(b.disk.in_flight_max.get(), FETCH_AT_ONCE, "large packs fetched {} at once", b.disk.in_flight_max.get());
+    let promoted: Vec<Digest> =
+        (1..=n).map(|k| sum(&b.disk.bucket.borrow()[&PackId(Ulid(1_000_000 + k as u128))])).collect();
+    assert_eq!(*b.disk.order.borrow(), promoted, "ingested out of log order");
+    // Twelve 2 s fetches four at a time: 6 s, against 24 s one at a time.
+    let took = b.disk.clock.now.get();
+    assert!(took <= 3 * 2_000 + 1_000, "{took} ms for {n} large packs");
+    b.assert_serves_head();
 }

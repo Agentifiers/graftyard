@@ -292,6 +292,7 @@ macro_rules! table {
 }
 
 fn current() -> (Vec<String>, Vec<String>) {
+    use graftyard_actions as actions;
     use graftyard_fold as fold;
     use graftyard_git as git;
     use graftyard_identity as id;
@@ -343,6 +344,13 @@ fn current() -> (Vec<String>, Vec<String>) {
         id::UserRecord, git::watch::WatcherUpdate, git::inbox::Reason, git::search::Domain,
         // B0-30's metadata split: inside `RepoEvent::Split`.
         git::split::SplitEntry,
+        // M4-WP3: the Actions family's stored events and commands (format 0x15.1), and the repository's
+        // `RunChecksCmd` reply.
+        actions::shard::ActionsEvent, actions::shard::ActionsOp, actions::shard::ActionsActor, actions::shard::ActionsOut,
+        actions::shard::ActionsErr, actions::shard::RunnerScope, actions::Conclusion, actions::JobState,
+        actions::JobEvent, actions::RunStatus, git::run_checks::RunChecksOut,
+        // M4-WP3: inside `RepoEvent::ActionsSecret` and `ActionsVariable`.
+        id::sealed::SecretScope, id::sealed::SecretVisibility,
     }
 }
 

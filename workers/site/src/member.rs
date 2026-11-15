@@ -57,6 +57,11 @@ const ARRIVALS_MEM_MAX: usize = 40_000;
 /// (`tests/am1/results/lm1-memory.md`, "Rows"). The leader takes about 300 req/s at journey 9, mostly reads of
 /// 1 s or less, so 256 leaves room for a second's worth.
 pub const READS_MAX: u32 = 256;
+/// Distinct bytes of read answers a voter or learner streams at once, a shared answer counted once
+/// (`host::Answers`) [guess]: past it any new read is shed `overloaded`. A new leader had 22.9 MB of answers in flight
+/// one second after it won and reset 18 s later, and B0-33's leaders 26 to 30.5 MB, under the isolate's 128 MiB
+/// (`tests/m0/results/memory-budgets.md`).
+pub const ANSWER_BYTES_MAX: usize = 16_000_000;
 
 /// A whole-tier read: `{"rows": true}`, not a narrow `{"rows": {"access" | "agent" | "merge": ..}}` one.
 fn heavy_read(q: &Value) -> bool {
@@ -88,12 +93,26 @@ enum Gate {
 /// learner's reads at one state share one copy (`family::dump_bytes`), while a learner never votes, so its reads
 /// delay no AppendEntries reply or confirm of the group's. At HEAVY_READS, learners shed 58 to 72% of journey 9's
 /// whole-tier reads at 10% CPU and 65 MB (`tests/am1/results/learner-dumps.md`).
-fn gate(index: bool, leading: bool, me: SiteId, servable: bool, heavy: bool, reads: u32, heavies: u32) -> Gate {
+/// `answers`, the distinct answer bytes streaming, sheds any read past ANSWER_BYTES_MAX.
+#[allow(clippy::too_many_arguments)]
+fn gate(
+    index: bool,
+    leading: bool,
+    me: SiteId,
+    servable: bool,
+    heavy: bool,
+    reads: u32,
+    heavies: u32,
+    answers: usize,
+) -> Gate {
     let learner = graftyard_types::learner_slot(me).is_some();
     if index && !leading && !servable {
         return Gate::NotLeader;
     }
-    if reads >= READS_MAX || (heavy && (leading || index) && !learner && heavies >= HEAVY_READS) {
+    if reads >= READS_MAX
+        || answers >= ANSWER_BYTES_MAX
+        || (heavy && (leading || index) && !learner && heavies >= HEAVY_READS)
+    {
         return Gate::Shed;
     }
     Gate::Serve
@@ -232,6 +251,7 @@ pub enum Hosted {
     Identity(Rc<Host<family::Identity>>),
     Repo(Rc<Host<family::Repo>>),
     Release(Rc<Host<crate::release::Release>>),
+    Actions(Rc<Host<crate::actions::Actions>>),
     #[cfg(feature = "test-faults")]
     Register(Rc<Host<family::Register>>),
 }
@@ -324,6 +344,7 @@ macro_rules! each {
             Hosted::Identity($x) => $body,
             Hosted::Repo($x) => $body,
             Hosted::Release($x) => $body,
+            Hosted::Actions($x) => $body,
             #[cfg(feature = "test-faults")]
             Hosted::Register($x) => $body,
         }
@@ -340,6 +361,7 @@ impl Hosted {
             Kind::Identity => Hosted::Identity(Host::new(state, env)),
             Kind::Repo => Hosted::Repo(Host::new(state, env)),
             Kind::Release => Hosted::Release(Host::new(state, env)),
+            Kind::Actions => Hosted::Actions(Host::new(state, env)),
             #[cfg(feature = "test-faults")]
             Kind::Register => Hosted::Register(Host::new(state, env)),
         })
@@ -427,9 +449,32 @@ async fn depth_hop(env: &Env, me: &MemberRef, k: u64) -> Value {
     }
 }
 
-fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>) -> Value {
+fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>, me: &str) -> Value {
     let r = m.meta();
-    json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 })
+    let mut v = json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 });
+    if removed(m.committed_config().map(|c| &c.1), me) {
+        v["removed"] = json!(true);
+    }
+    v
+}
+
+/// Whether `config`, the member's latest committed one, no longer names the member `me` (its `do_name`): a voter a
+/// replacement removed, or a learner dropped. It keeps answering with that config (`design/DESIGN.md`, Shape, "Sites
+/// and placement"), and every reply's `meta` says `removed`, so a caller takes the config and never reads the
+/// member's own `NotLeader` naming no leader as a leaderless group (B0-32 m3fr2: site b's first-generation voter,
+/// replaced at config index 3, drew 72 `/suspect` reports at a leader in term 2). No config yet is not removed.
+fn removed(config: Option<&raft::GroupConfig>, me: &str) -> bool {
+    let Some(c) = config else { return false };
+    let names = |p: &graftyard_types::Placement| p.voters().iter().chain(p.learners()).any(|m| &*m.do_name == me);
+    match c {
+        raft::GroupConfig::Normal(p) => !names(p),
+        // The lost site's voter is out of the group, as `quorum::voters` counts it; learners stay.
+        raft::GroupConfig::Degraded { placement, lost } => {
+            !placement.voters().iter().any(|m| &*m.do_name == me && m.site != *lost)
+                && !placement.learners().iter().any(|m| &*m.do_name == me)
+        }
+        raft::GroupConfig::Joint { old, new } => !names(old) && !names(new),
+    }
 }
 
 /// The site id at `k` in a request body, refused when it is missing or past `u8`, so `{"site": 258}` never names
@@ -471,6 +516,26 @@ fn rtt_rows(state: &State, env: &Env) -> Result<Vec<(SiteId, Rtt)>> {
         .collect())
 }
 
+/// Until when a `StaleMode` flag, committed or pending, covers this member's chain in this isolate's cached `Release`
+/// view, which a call here refreshes beside the request when it is due (`graftyard_lookup::view`): every isolate,
+/// members included, caches the view. A `Release` member's own chain is never covered, so it reads no view.
+fn stale_until<F: Family>(h: &Host<F>) -> Option<graftyard_types::Timestamp> {
+    let (chain, owner) = h.core.try_borrow().ok()?.as_ref().map(|c| (c.join.chain, c.join.owner))?;
+    if chain == ChainId::Release {
+        return None;
+    }
+    if graftyard_lookup::view::due() {
+        let anchor = crate::release::anchor(&h.env)?;
+        let site = SiteEnv::read(&h.env).ok()?;
+        #[cfg(feature = "test-faults")]
+        if let Some(ms) = h.env.var("GRAFTYARD_STALE_MAX_MS").ok().and_then(|v| v.to_string().parse().ok()) {
+            graftyard_lookup::view::set_stale_max(ms);
+        }
+        graftyard_lookup::view::refresh_beside(&h.env, &site.sites, &anchor, None, true);
+    }
+    graftyard_lookup::view::stale_until(chain, owner)
+}
+
 /// The member's routes for one command family.
 struct Routes<F: Family> {
     host: Rc<Host<F>>,
@@ -478,8 +543,13 @@ struct Routes<F: Family> {
 
 impl<F: Family> Routes<F> {
     async fn fetch(&self, mut req: Request, url: Url) -> Result<Response> {
+        // F74's call trace: the handler's entry, before any injected fault awaits, and the loop lag there.
+        #[cfg(feature = "test-faults")]
+        let (entered, entry_lag) = (now_ms(), self.host.loop_lag());
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
+        // A peer's `/raft` call or an edge's request carries its sender's clock (`crate::clock`).
+        self.host.stamped(req.headers().get(crate::clock::STAMP).ok().flatten());
         #[cfg(feature = "test-faults")]
         self.host.hop.set(req.headers().get("x-graft-hop").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(2));
         // Inside an injected `down_ms` window the member answers no Raft or edge call; the harness reads still work.
@@ -511,7 +581,14 @@ impl<F: Family> Routes<F> {
                 crate::faults::count("severed:in");
                 return Response::error("member severed (injected)", 503);
             }
-            if !observe && let Some(hang) = crate::faults::site_fault(&self.host.env).await {
+            if !observe
+                && let Some(hang) = crate::faults::site_fault(
+                    &self.host.env,
+                    self.host.chain(),
+                    matches!(url.path(), "/raft" | "/campaign" | "/suspect"),
+                )
+                .await
+            {
                 crate::faults::count("site_fault:in");
                 if hang > 0 {
                     Delay::from(Duration::from_millis(hang)).await;
@@ -528,21 +605,35 @@ impl<F: Family> Routes<F> {
                 let t0 = now_ms();
                 let body = req.bytes().await?;
                 let t1 = now_ms();
+                // F74's call trace: the caller's call id and address.
+                #[cfg(feature = "test-faults")]
+                let (id, from) = {
+                    let header = |k: &str| req.headers().get(k).ok().flatten().and_then(|v| v.parse::<u64>().ok());
+                    (header("x-graft-call").unwrap_or(0), header("x-graft-from").unwrap_or(0) as u8)
+                };
                 #[cfg(feature = "test-faults")]
                 if let Some(sent) = req.headers().get("x-graft-sent").ok().flatten().and_then(|v| v.parse().ok()) {
                     // From a header: decoding the body here as well held a second decoded copy of every append
                     // while `raft` decoded it again (gate 16's storm, `tests/am1/results/narrow-reads-3.md`).
-                    let from = req.headers().get("x-graft-from").ok().flatten().and_then(|v| v.parse().ok());
-                    self.host.trace_at(t0, Trace::CallArrived, from.unwrap_or(0), 0, sent, t1 - t0);
+                    self.host.trace_at(t0, Trace::CallArrived, from, id, sent, t1 - t0);
                 }
                 let r = self.raft(&body).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
                 #[cfg(feature = "test-faults")]
                 let r = r.and_then(|mut res| {
-                    res.headers_mut().set("x-graft-left", &now_ms().to_string())?;
+                    let left = now_ms();
+                    res.headers_mut().set("x-graft-left", &left.to_string())?;
+                    if id != 0 {
+                        self.host.trace_at(left, Trace::CallLeft, from, id, entered, entry_lag);
+                    }
                     Ok(res)
                 });
                 r
+            }
+            // Stale mode: writes return 503. Answered as an error the caller returns at once (`commit_hedged`), not
+            // as a missed call it would send again for a minute.
+            (Method::Post, "/commit" | "/commit_many") if let Some(until) = stale_until(&self.host) => {
+                self.reply(json!({ "error": { "stale": { "until": until.0 } } }))
             }
             (Method::Post, "/commit") => {
                 let body = match self.decode::<CommitReq<F>>(&req.bytes().await?) {
@@ -645,11 +736,11 @@ impl<F: Family> Routes<F> {
             // Test installs only.
             #[cfg(feature = "test-faults")]
             (Method::Get, "/status") if url.query_pairs().any(|(k, v)| k == "clock" && v == "1") => {
-                let before = now_ms();
+                let before = self.host.now();
                 Delay::from(Duration::ZERO).await;
                 let mut v = self.status();
                 v["clockBefore"] = json!(before);
-                v["clockAfter"] = json!(now_ms());
+                v["clockAfter"] = json!(self.host.now());
                 v["leaseClock"] = json!(self.host.stats.borrow().lease_clock.last().copied());
                 Response::from_json(&v)
             }
@@ -726,6 +817,14 @@ impl<F: Family> Routes<F> {
                 })
                 .await
             }
+            // BF-56's kill of a repository's commit path on a product install: the member resets (`ctx.abort()`), as a
+            // lost isolate does, and restores as a follower, so its group has no leader until an election. Only an
+            // operator's binding sends it: the edge forwards no path a client names to a member.
+            (Method::Post, "/abort") => {
+                self.host.dying.set(true);
+                host::abort(&self.host.state, "graftyard member abort");
+                Response::from_json(&json!({ "aborted": true, "at": now_ms() }))
+            }
             #[cfg(feature = "test-faults")]
             _ => self.test_route(req, url).await,
             #[cfg(not(feature = "test-faults"))]
@@ -762,7 +861,7 @@ impl<F: Family> Routes<F> {
                 let since: u64 = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                 let rows: Vec<[u64; 6]> =
                     self.host.stats.borrow().elections.iter().filter(|r| r[0] > since).copied().collect();
-                Response::from_json(&json!({ "rows": rows, "now": now_ms() }))
+                Response::from_json(&json!({ "rows": rows, "now": self.host.now() }))
             }
             (Method::Get, "/arrivals") => {
                 let since = crate::registry::query(&url, "since").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -779,7 +878,7 @@ impl<F: Family> Routes<F> {
             (Method::Post, "/sever") => {
                 let body = req.json::<Value>().await?;
                 let ms = body["for_ms"].as_u64().unwrap_or(0);
-                let now = now_ms();
+                let now = self.host.now();
                 let until = if ms == 0 { 0 } else { now + ms };
                 let cell = if body["half"].as_bool() == Some(true) {
                     &self.host.half_hung_until
@@ -834,7 +933,7 @@ impl<F: Family> Routes<F> {
     }
 
     fn meta(&self) -> Value {
-        self.host.core.borrow().as_ref().map_or(Value::Null, |c| meta(&c.m))
+        self.host.core.borrow().as_ref().map_or(Value::Null, |c| meta(&c.m, &c.join.me.do_name))
     }
 
     #[cfg(feature = "test-faults")]
@@ -998,7 +1097,7 @@ impl<F: Family> Routes<F> {
             format!(r#","index":{index},"stages":[{},{}],"meta":{}}}"#, stages[0], stages[1], self.meta()).into_bytes();
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
-        let counted = host::Counted::new(&self.host.answer_bytes, value.len());
+        let counted = host::Answers::hold(&self.host.answers, &value);
         Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, (held, counted)))?
             .with_headers(headers))
     }
@@ -1047,6 +1146,16 @@ impl<F: Family> Routes<F> {
             Ok(mut back) => {
                 let mut out = self.host.callers.borrow_mut().take(from);
                 out.append(&mut back);
+                // AppendEntries held for this caller, or built for it while stepping its call, leave in this response,
+                // not as calls: their bytes stop counting now (`raft::Member::call_ended`).
+                let boot = self.host.core.borrow().as_ref().map(|c| c.m.boot());
+                for e in &out {
+                    if let raft::Message::Append(a) = &e.msg
+                        && Some(a.boot) == boot
+                    {
+                        let _ = self.host.input(|m, t| m.call_ended(t, from, a.round));
+                    }
+                }
                 for e in &out {
                     match &e.msg {
                         raft::Message::ReadIndexRes { batch, index } => {
@@ -1107,6 +1216,7 @@ impl<F: Family> Routes<F> {
     fn raft_reply(&self, back: Vec<raft::Envelope<F::Ev>>) -> Result<Response> {
         let mut res = Response::from_bytes(raft::codec::to_bytes(&back))?;
         res.headers_mut().set("content-type", "application/octet-stream")?;
+        res.headers_mut().set(crate::clock::STAMP, &self.host.now().to_string())?;
         Ok(res)
     }
 
@@ -1141,7 +1251,7 @@ impl<F: Family> Routes<F> {
             let at = now_ms();
             let f = raft::Command::format(&c.cmd);
             *self.host.stats.borrow_mut().received.entry(format!("recv:{}.{}", f.family, f.version)).or_insert(0) += 1;
-            let cmd = c.cmd.clone();
+            let marked = F::marked(&c.cmd);
             let (r, out) = match c.admit {
                 None => {
                     let (r, out) = self.host.step(|m, t| m.commit(t, rid, c.cmd))?;
@@ -1150,7 +1260,7 @@ impl<F: Family> Routes<F> {
                 Some(a) => self.host.step(|m, t| m.commit_as(t, rid, c.cmd, a.admit()))?,
             };
             let w = match r {
-                Ok(a) => Ok((a.ticket, self.host.wait_ticket(a.ticket, Some((rid, at, Some(cmd)))))),
+                Ok(a) => Ok((a.ticket, self.host.wait_ticket(a.ticket, Some((rid, at, marked))))),
                 Err(e) => {
                     #[cfg(feature = "test-faults")]
                     if let Some(core) = self.host.core.borrow_mut().as_mut() {
@@ -1255,6 +1365,11 @@ impl<F: Family> Routes<F> {
                 json!({ "key": body.get("key").and_then(Value::as_str).ok_or_else(|| err("read needs key or q"))? })
             }
         };
+        // While a customer-signed `StaleMode` covers this chain in this isolate's cached `Release` view, every read is
+        // `stale()`, on any member and with no lease or read-index round; never without the flag.
+        if let Some(until) = stale_until(&self.host) {
+            return self.read_stale(&q, until);
+        }
         // `{"index": true}`: a follower's or learner's read, by read-index against the leader (`Member::read_index`).
         let index = body.get("index").and_then(Value::as_bool).unwrap_or(false);
         // A whole-tier dump past HEAVY_READS in flight on a leader is shed at once, as a 200 the lookup retries
@@ -1277,7 +1392,8 @@ impl<F: Family> Routes<F> {
         };
         let learner = graftyard_types::learner_slot(me).is_some();
         let (reads, heavies) = (self.host.reads_in_flight.get(), self.host.heavy_reads.get());
-        match gate(index, leading, me, servable, heavy, reads, heavies) {
+        let answers = self.host.answers.borrow().bytes();
+        match gate(index, leading, me, servable, heavy, reads, heavies, answers) {
             Gate::Serve => {}
             Gate::NotLeader => {
                 self.host.stats.borrow_mut().follower_refused += 1;
@@ -1300,6 +1416,9 @@ impl<F: Family> Routes<F> {
         loop {
             let t0 = now_ms();
             let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
+            if leading && r.is_ok() && self.host.clock.borrow().suspect() {
+                self.host.stats.borrow_mut().lease_fallbacks += 1;
+            }
             let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
             self.host.dispatch(out, None);
             let rx = match (r, rx) {
@@ -1363,6 +1482,24 @@ impl<F: Family> Routes<F> {
         }
     }
 
+    /// A stale read (`design/DESIGN.md`, Shape, "The read path", `stale()`): this member's fold at `applied`, with no
+    /// lease and no read-index round, answered with `"stale": {"until": ms}` beside the value.
+    fn read_stale(&self, q: &Value, until: graftyard_types::Timestamp) -> Result<Response> {
+        self.host.stats.borrow_mut().stale_reads += 1;
+        let (value, index) = {
+            let core = self.host.core.borrow();
+            let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+            let s = c.m.stale();
+            let v = match host::fold_answer::<F>(s.fold(), q, s.index().0, now_ms(), family::dump_every(c.m.me())) {
+                host::ReadBody::Json(b) => b,
+                host::ReadBody::Shed(ms, _) => return self.reply(graftyard_lookup::overloaded_reply(ms)),
+            };
+            (v, s.index().0)
+        };
+        let v: Value = serde_json::from_slice(&value).unwrap_or(Value::Null);
+        self.reply(json!({ "value": v, "index": index, "stale": { "until": until.0 } }))
+    }
+
     /// `campaign` with no body, `suspect` with `{colo, term}`. Campaigns start only here, from requests.
     fn verdict(&self, report: Option<Value>) -> Result<Response> {
         let v = match report {
@@ -1410,7 +1547,7 @@ impl<F: Family> Routes<F> {
             "stalledSince": s.stalled_since.map(|t| t.0),
             "boots": [s.boots[0].0, s.boots[1].0],
             "boot": c.m.boot().to_string(),
-            "meta": meta(&c.m),
+            "meta": meta(&c.m, &c.join.me.do_name),
             "config": c.m.committed_config().map(|(i, cfg)| json!({ "index": i.0, "config": cfg })),
             "boot1": c.m.digest_of(raft::Index(1)).map(|d| d.hex()),
             "family": format!("{:?}", Kind::of(&c.join)),
@@ -1420,7 +1557,7 @@ impl<F: Family> Routes<F> {
                 graftyard_types::ChainId::Repo(r) => crate::feed::FEEDS.with(|f| f.borrow().get(&r).map(|f| f.borrow().status())),
                 _ => None,
             },
-            "now": now_ms(),
+            "now": self.host.now(),
         })
     }
 
@@ -1455,6 +1592,17 @@ impl<F: Family> Routes<F> {
     /// fold's rows buffered until their transaction runs and the isolate's read caches; the log entries in memory;
     /// the messages held for learners' next calls; and in-flight bodies, the member calls sent and not yet ended,
     /// the read answers still streaming, and the statements queued for the next transaction.
+    /// The clock guard's evidence (`crate::clock`): the lag of every stamp seen since the last reset, as counts per
+    /// bucket (`lagBuckets[0]` a lag of 0, `[i]` below 2^i ms), the largest, the window the guard reads now, whether it
+    /// is suspect, and the reads a leader sent to a round because it was.
+    fn clock_json(&self, s: &host::Stats) -> Value {
+        let c = self.host.clock.borrow();
+        json!({
+            "lagBuckets": s.clock_lag, "lagMax": s.clock_lag_max, "window": c.lags().collect::<Vec<_>>(),
+            "suspect": c.suspect(), "leaseFallbacks": s.lease_fallbacks,
+        })
+    }
+
     fn mem_split(&self) -> Value {
         let core = self.host.core.borrow();
         let (rows, row_bytes) = core.as_ref().map_or((0, 0), |c| F::buffered(&c.m.group_fold().fold));
@@ -1466,10 +1614,15 @@ impl<F: Family> Routes<F> {
             "held": held.iter().map(|h| h.2).sum::<usize>(),
             "inFlight": {
                 "calls": self.host.call_bytes.get(),
-                "answers": self.host.answer_bytes.get(),
+                "callsOut": core.as_ref().map(|c| c.m.calls_out_bytes()),
+                "answers": self.host.answers.borrow().bytes(),
                 "stmts": stmts,
                 "stmtBytes": stmt_bytes,
                 "admitted": core.as_ref().map(|c| c.admitted.len()),
+                // Every copy an open ticket holds: the core's queued, frozen, and decided commands
+                // (`raft::Member::admitted_bytes`) and what the host kept with each ticket (`Core::admitted`).
+                "admittedBytes": core.as_ref().map(|c| c.m.admitted_bytes()
+                    + c.admitted.values().filter_map(|(_, _, k)| k.as_ref()).map(raft::Record::encoded_len).sum::<usize>()),
             },
         })
     }
@@ -1501,6 +1654,7 @@ impl<F: Family> Routes<F> {
                 "inboundMs": now_ms().saturating_sub(s.inbound_since),
                 "failedCalls": s.failed_calls,
                 "shedReads": s.shed_reads,
+                "clock": self.clock_json(&s),
                 "waitedReads": s.waited_reads,
                 "dumpBuilds": crate::family::dump_builds(),
                 "testMerges": { "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed },
@@ -1582,11 +1736,15 @@ impl<F: Family> Routes<F> {
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
         v["waitedReads"] = json!(s.waited_reads);
+        v["clock"] = self.clock_json(&s);
         // narrow-reads-3: each read-index read's grant, rebuild wait, and total ms, as p50/p99/max, and each narrow
         // answer's build ms.
         v["readStages"] = read_stage_pcts(&s.read_stages);
         v["narrowBuildMs"] = pcts(&mut s.narrow_build_ms.clone());
         v["narrowBuilds"] = json!(crate::family::narrow_builds());
+        // M5-WP2: reads served by `stale()`, and this isolate's cached `Release` view.
+        v["staleReads"] = json!(s.stale_reads);
+        v["releaseView"] = graftyard_lookup::view::status();
         v["raftIn"] = json!(s.raft_in);
         v["placedOverNear"] = json!(s.placed_over_near);
         #[cfg(feature = "test-faults")]
@@ -2579,6 +2737,37 @@ mod tests {
     use serde_json::json;
 
     use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_wait, site_field};
+    use crate::host;
+
+    /// A member is removed once its latest committed config no longer names it: a replaced voter (B0-32 m3fr2's
+    /// `#1#f1` after its site's `#2#f1` joined), and a `Degraded` config's lost voter. Its replacement, the other
+    /// voters, a learner, and a member with no config yet are not.
+    #[test]
+    fn a_member_its_config_no_longer_names_is_removed() {
+        use graftyard_raft::GroupConfig;
+        use graftyard_types::{ChainId, DbId, Member, MemberKind, RepoId};
+        let chain = ChainId::Repo(RepoId(DbId(65556)));
+        let m = |s: u8, g: u32| Member::new(chain, SiteId(s), MemberKind::Full, s, g);
+        let l = Member::new(chain, SiteId(2), MemberKind::Learner, 0, 3);
+        let p = |v1: u32, ls: Vec<Member>| -> Box<graftyard_types::Placement> {
+            serde_json::from_value(
+                json!({ "voters": [m(0, 1), m(1, v1), m(2, 1)], "learners": ls, "home": 0, "generation": 3 }),
+            )
+            .unwrap()
+        };
+        let normal = GroupConfig::Normal(p(2, vec![l.clone()]));
+        let degraded = GroupConfig::Degraded { placement: p(1, vec![]), lost: SiteId(1) };
+        let joint = GroupConfig::Joint { old: p(1, vec![]), new: p(2, vec![]) };
+        let removed = |c: Option<&GroupConfig>, me: &Member| super::removed(c, &me.do_name);
+        assert!(removed(Some(&normal), &m(1, 1)), "the replaced voter");
+        assert!(!removed(Some(&normal), &m(1, 2)), "its replacement");
+        assert!(!removed(Some(&normal), &m(0, 1)));
+        assert!(!removed(Some(&normal), &l), "a learner the config names");
+        assert!(removed(Some(&degraded), &m(1, 1)), "the lost site's voter");
+        assert!(!removed(Some(&degraded), &m(2, 1)));
+        assert!(!removed(Some(&joint), &m(1, 1)) && !removed(Some(&joint), &m(1, 2)), "both halves of a Joint");
+        assert!(!removed(None, &m(1, 1)), "no config yet");
+    }
 
     /// The summary's p50 and p99 are nearest-rank over the sorted samples, the same rule as `a1.mjs`'s `pct`, so a
     /// row judged from `?summary=1` matches one judged from the raw arrays; samples arrive out of order.
@@ -2604,20 +2793,20 @@ mod tests {
             assert!(!heavy_read(&narrow), "{narrow}");
         }
         // (index, leading, servable, heavy, reads, heavies)
-        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS - 1), Gate::Serve);
-        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS), Gate::Shed);
+        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS - 1, 0), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS, 0), Gate::Shed);
         assert_eq!(
-            gate(false, false, V, true, true, HEAVY_READS, HEAVY_READS),
+            gate(false, false, V, true, true, HEAVY_READS, HEAVY_READS, 0),
             Gate::Serve,
             "a plain follower read answers NotLeader"
         );
-        assert_eq!(gate(false, true, V, false, false, HEAVY_READS * 4, HEAVY_READS * 4), Gate::Serve);
-        assert_eq!(gate(false, true, V, false, false, READS_MAX - 1, 0), Gate::Serve);
-        assert_eq!(gate(false, true, V, false, false, READS_MAX, 0), Gate::Shed, "a narrow read past READS_MAX");
-        assert_eq!(gate(false, false, V, false, false, READS_MAX, 0), Gate::Shed, "on a follower too");
+        assert_eq!(gate(false, true, V, false, false, HEAVY_READS * 4, HEAVY_READS * 4, 0), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, false, READS_MAX - 1, 0, 0), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, false, READS_MAX, 0, 0), Gate::Shed, "a narrow read past READS_MAX");
+        assert_eq!(gate(false, false, V, false, false, READS_MAX, 0, 0), Gate::Shed, "on a follower too");
         let n = std::rc::Rc::new(std::cell::Cell::new(0));
         let held: Vec<_> = (0..READS_MAX).map(|_| InFlight::new(&n)).collect();
-        assert_eq!(gate(false, true, V, false, false, n.get(), 0), Gate::Shed);
+        assert_eq!(gate(false, true, V, false, false, n.get(), 0, 0), Gate::Shed);
         drop(held);
         assert_eq!(n.get(), 0);
     }
@@ -2628,12 +2817,12 @@ mod tests {
     /// leader's index answers `overloaded`, never a value and never a 5xx the edge would report with `suspect`.
     #[test]
     fn a_follower_serves_only_its_reads_under_the_caps_and_never_stale() {
-        assert_eq!(gate(true, false, V, true, true, 0, 0), Gate::Serve);
-        assert_eq!(gate(true, false, V, false, false, 0, 0), Gate::NotLeader);
-        assert_eq!(gate(true, false, V, false, true, READS_MAX, HEAVY_READS), Gate::NotLeader);
-        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS), Gate::Shed, "HEAVY_READS on a follower");
-        assert_eq!(gate(true, false, V, true, false, READS_MAX, 0), Gate::Shed, "READS_MAX on a follower");
-        assert_eq!(gate(true, true, V, false, false, 0, 0), Gate::Serve, "a leader serves every read-index read");
+        assert_eq!(gate(true, false, V, true, true, 0, 0, 0), Gate::Serve);
+        assert_eq!(gate(true, false, V, false, false, 0, 0, 0), Gate::NotLeader);
+        assert_eq!(gate(true, false, V, false, true, READS_MAX, HEAVY_READS, 0), Gate::NotLeader);
+        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS, 0), Gate::Shed, "HEAVY_READS on a follower");
+        assert_eq!(gate(true, false, V, true, false, READS_MAX, 0, 0), Gate::Shed, "READS_MAX on a follower");
+        assert_eq!(gate(true, true, V, false, false, 0, 0, 0), Gate::Serve, "a leader serves every read-index read");
         let (wait, late) = read_wait(true);
         assert_eq!(wait, super::FOLLOWER_WAIT);
         assert!(late.get("overloaded").is_some() && late.get("value").is_none(), "{late}");
@@ -2650,14 +2839,14 @@ mod tests {
     fn a_learner_serves_whole_tier_reads_past_the_heavy_cap_and_waits_for_a_due_rebuild() {
         use super::waits_for_rebuild;
         // (index, leading, me, servable, heavy, reads, heavies): V a voter's address, L a learner's
-        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a learner past HEAVY_READS");
-        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS * 8), Gate::Serve);
-        assert_eq!(gate(true, false, L, true, true, READS_MAX, 0), Gate::Shed, "READS_MAX on a learner");
-        assert_eq!(gate(true, false, L, true, false, READS_MAX, 0), Gate::Shed);
-        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS), Gate::Shed, "a follower keeps HEAVY_READS");
-        assert_eq!(gate(false, true, V, false, true, 0, HEAVY_READS), Gate::Shed, "the leader keeps HEAVY_READS");
-        assert_eq!(gate(true, false, L, false, true, 0, 0), Gate::NotLeader, "a learner's leader-only read");
-        assert_eq!(gate(false, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a plain read answers NotLeader");
+        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS, 0), Gate::Serve, "a learner past HEAVY_READS");
+        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS * 8, 0), Gate::Serve);
+        assert_eq!(gate(true, false, L, true, true, READS_MAX, 0, 0), Gate::Shed, "READS_MAX on a learner");
+        assert_eq!(gate(true, false, L, true, false, READS_MAX, 0, 0), Gate::Shed);
+        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS, 0), Gate::Shed, "a follower keeps HEAVY_READS");
+        assert_eq!(gate(false, true, V, false, true, 0, HEAVY_READS, 0), Gate::Shed, "the leader keeps HEAVY_READS");
+        assert_eq!(gate(true, false, L, false, true, 0, 0, 0), Gate::NotLeader, "a learner's leader-only read");
+        assert_eq!(gate(false, false, L, true, true, 0, HEAVY_READS, 0), Gate::Serve, "a plain read answers NotLeader");
         // (learner, index, now, ms until the rebuild, deadline)
         assert!(waits_for_rebuild(true, false, true, 1_000, 499, 1_500));
         assert!(!waits_for_rebuild(true, false, true, 1_000, 500, 1_500), "a rebuild at the deadline is too late");
@@ -2693,6 +2882,30 @@ mod tests {
         assert_eq!(n.get(), 1);
         drop(cut);
         assert_eq!(n.get(), 0);
+    }
+
+    /// ANSWER_BYTES_MAX counts the distinct bytes of answers still streaming: one answer shared by many reads counts
+    /// once, so a learner streaming one dump to READS_MAX - 1 readers is not shed, while distinct answers past it shed
+    /// every read, voter or learner, until enough of them finish. Counted per read instead, 20 reads of one 1 MB dump
+    /// would shed at 16; uncapped, a new leader held 22.9 MB of answers a second after it won and reset 18 s later.
+    #[test]
+    fn distinct_answer_bytes_past_the_cap_shed_and_a_shared_answer_counts_once() {
+        use super::ANSWER_BYTES_MAX;
+        let answers = std::rc::Rc::new(std::cell::RefCell::new(host::Answers::default()));
+        let dump: std::rc::Rc<[u8]> = vec![7u8; 1_000_000].into();
+        let shared: Vec<_> = (0..40).map(|_| host::Answers::hold(&answers, &dump)).collect();
+        assert_eq!(answers.borrow().bytes(), 1_000_000, "one dump, however many reads stream it");
+        let at = |a: usize| gate(true, false, L, true, true, 40, 40, a);
+        assert_eq!(at(answers.borrow().bytes()), Gate::Serve);
+        let distinct: Vec<std::rc::Rc<[u8]>> = (0..15).map(|i| vec![i as u8; 1_000_000].into()).collect();
+        let held: Vec<_> = distinct.iter().map(|d| host::Answers::hold(&answers, d)).collect();
+        assert_eq!(answers.borrow().bytes(), ANSWER_BYTES_MAX);
+        assert_eq!(at(answers.borrow().bytes()), Gate::Shed, "16 MB of distinct answers sheds a learner's read");
+        assert_eq!(gate(false, true, V, false, false, 0, 0, answers.borrow().bytes()), Gate::Shed, "and the leader's");
+        drop(held);
+        assert_eq!(at(answers.borrow().bytes()), Gate::Serve, "the cap lifts as answers finish");
+        drop(shared);
+        assert_eq!(answers.borrow().bytes(), 0);
     }
 
     /// A site id past `u8` is refused, never truncated onto another site.

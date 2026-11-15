@@ -1,0 +1,26 @@
+on: [push, pull_request, merge_group]
+jobs:
+  a:
+    runs-on: self-hosted
+    steps:
+      - uses: ./local
+      - uses: actions/cache@v4
+  b:
+    needs: [a]
+    runs-on: self-hosted
+    environment:
+      name: staging
+      url: https://x.example
+    concurrency:
+      group: b-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      J: ${{ secrets.TOKEN }}
+    steps:
+      - run: echo $J
+  c:
+    needs: [a, b]
+    runs-on: [self-hosted, gpu]
+    steps:
+      - run: x
+      - run: y

@@ -21,8 +21,12 @@ use graftyard_types::{ChainId, MemberRegistry, PlacementRecord, RegistryRow, Sit
 use serde_json::{Value, json};
 use worker::*;
 
+pub mod view;
+
 /// How long one lookup-and-call keeps trying.
 pub const LOOKUP_FOR: Duration = Duration::from_secs(20);
+/// The header on every call to a member that carries the sender's clock in ms (the site's `clock::STAMP`).
+pub const MEMBER_CLOCK: &str = "x-graft-clock";
 /// One call's deadline.
 pub const CALL: Duration = Duration::from_millis(3_500);
 
@@ -106,11 +110,14 @@ fn learn(chain: ChainId, nl: &Value) {
     let Some(c) = nl.get("config").filter(|c| !c.is_null()) else { return };
     let index = c.get("index").and_then(Value::as_u64).unwrap_or(0);
     let Ok(cfg) = serde_json::from_value::<GroupConfig>(c["config"].clone()) else { return };
-    let p = match &cfg {
-        GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => p,
-        GroupConfig::Joint { new, .. } => new,
+    let (p, lost) = match &cfg {
+        GroupConfig::Normal(p) => (p, None),
+        GroupConfig::Degraded { placement, lost } => (placement, Some(*lost)),
+        GroupConfig::Joint { new, .. } => (new, None),
     };
-    let voters = p.voters().iter().map(|m| (m.site, m.do_name.to_string())).collect();
+    // A `Degraded` config's lost site has no voter (`graftyard_raft::quorums::voters`): its old member is not asked
+    // or reported to.
+    let voters = p.voters().iter().filter(|m| Some(m.site) != lost).map(|m| (m.site, m.do_name.to_string())).collect();
     let learners = p.learners().iter().map(|m| (m.site, m.do_name.to_string())).collect();
     KNOWN.with(|k| {
         let mut k = k.borrow_mut();
@@ -121,6 +128,19 @@ fn learn(chain: ChainId, nl: &Value) {
             e.config_index = index;
         }
     });
+}
+
+/// Whether a member's `NotLeader` naming no leader says nothing about the group: the member says it was removed
+/// (`meta.removed`, its committed config no longer names it), or its config is older than the one this isolate holds,
+/// so it has not heard the group since. Such an answer is followed by its config, never reported with `suspect` as a
+/// leaderless group (B0-32 m3fr2: a replaced voter at config index 3, against the group's 9, drew 72 reports at a
+/// leader in term 2).
+fn stale_answer(chain: ChainId, v: &Value, nl: &Value) -> bool {
+    if v.pointer("/meta/removed").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let index = nl.pointer("/config/index").and_then(Value::as_u64).unwrap_or(0);
+    KNOWN.with(|k| k.borrow().get(&chain).is_some_and(|e| index < e.config_index))
 }
 
 fn learn_leader(chain: ChainId, v: &Value) {
@@ -165,6 +185,11 @@ pub async fn post_within(
     let stub = b.member(to, do_name).ok()?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
+    // The sender's clock: a member raises its own clock to the freshest stamp it sees (`MEMBER_CLOCK`). Edge
+    // isolates are many and rarely saturated, so theirs stay fresh when every member is busy.
+    let h = Headers::new();
+    h.set(MEMBER_CLOCK, &now_ms().to_string()).ok()?;
+    init.with_headers(h);
     let req = Request::new_with_init(&format!("https://member{path}"), &init).ok()?;
     let call = async move {
         let mut res = stub.fetch_with_request(req).await.ok()?;
@@ -348,13 +373,16 @@ pub async fn call_opt(
                 }
             };
             if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
-                term = term.max(nl.get("term").and_then(Value::as_u64).unwrap_or(0));
+                let stale = stale_answer(chain, &v, nl);
+                if !stale {
+                    term = term.max(nl.get("term").and_then(Value::as_u64).unwrap_or(0));
+                }
                 learn(chain, nl);
                 if nl.get("config").is_none_or(Value::is_null) {
                     last = format!("{name}: no config");
                     continue;
                 }
-                if nl.get("leader").is_none_or(Value::is_null) {
+                if nl.get("leader").is_none_or(Value::is_null) && !stale {
                     leaderless.get_or_insert(Target { site: s, do_name: name.clone() });
                 }
                 // Follow a named leader first, then the config's voters.
@@ -504,9 +532,9 @@ enum Spread {
     Use(usize),
     /// None answered a value and at least one could not take it: `overloaded` (at its caps, behind, or installing),
     /// `busy`, a 5xx, or no answer within FOLLOWER_CALL ("Durable Object is overloaded" is a failed call).
-    /// The caller answers 503 with `Retry-After`, and the leader is not asked, so a read the members shed never lands
-    /// on the leader's thread.
-    Shed,
+    /// The leader is not asked, so a read the members shed never lands on the leader's thread. The ms to wait before
+    /// asking again: the largest `retryAfterMs` an `overloaded` answer named, else OVERLOAD_RETRY_MS.
+    Shed(u64),
     /// Every one asked declined it as not its to serve: it answered `notLeader` (a leader-only query, its metadata
     /// tier is loading, or it knows no leader) or a 4xx (not joined: a group not created yet), or none was asked. The
     /// leader by `call_opt`, which finds a group not yet created and reports a leaderless one with `suspect`.
@@ -523,7 +551,14 @@ fn spread_verdict(answers: &[Option<(u16, &Value)>]) -> Spread {
         Some((s, _)) => (400..500).contains(s),
         None => false,
     };
-    if answers.iter().all(declined) { Spread::Leader } else { Spread::Shed }
+    if answers.iter().all(declined) {
+        return Spread::Leader;
+    }
+    let wait = answers.iter().filter_map(|r| match classify(*r, false) {
+        Answer::Overloaded(ms) => Some(ms),
+        _ => None,
+    });
+    Spread::Shed(wait.max().unwrap_or(OVERLOAD_RETRY_MS).clamp(50, 2_000))
 }
 
 /// Whether a follower's answer to a read-index read is used. Only a value is. `notLeader` (it names the leader, or its
@@ -549,6 +584,54 @@ pub async fn read_spread(
     record: &PlacementRecord,
     body: &Value,
 ) -> std::result::Result<Option<(Value, Step, Target)>, String> {
+    read_spread_for(b, chain, record, body, Duration::ZERO).await
+}
+
+/// `read_spread`, asked again after the wait its members named while they shed it, for up to `retry_for`
+/// (`retry_shed`). A write's lookup takes LOOKUP_FOR, as `call_opt` does: a stalled `Authz` leader left both followers
+/// without a read index for 7.4 s, and the read's push failed 503 though the group answered again 7 s later
+/// (`tests/am1/results/lease-clock.md`, "The shed Authz read"). A read-class request takes zero and answers 503 at once.
+pub async fn read_spread_for(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    body: &Value,
+    retry_for: Duration,
+) -> std::result::Result<Option<(Value, Step, Target)>, String> {
+    let until = now_ms() + retry_for.as_millis() as u64;
+    let wait = |ms| Delay::from(Duration::from_millis(ms));
+    retry_shed(until, now_ms, || spread_once(b, chain, record, body), wait).await.and_then(|r| r)
+}
+
+/// Runs `attempt` until it answers, waiting the ms each shed answer names, while that wait ends before `until` (ms);
+/// a shed answer past it is the read's error, naming OVERLOADED.
+async fn retry_shed<T, A, W>(
+    until: u64,
+    now: impl Fn() -> u64,
+    mut attempt: impl FnMut() -> A,
+    mut wait: impl FnMut(u64) -> W,
+) -> std::result::Result<T, String>
+where
+    A: Future<Output = std::result::Result<T, (String, u64)>>,
+    W: Future<Output = ()>,
+{
+    loop {
+        match attempt().await {
+            Ok(v) => return Ok(v),
+            Err((_, ms)) if now() + ms < until => wait(ms).await,
+            Err((why, _)) => return Err(why),
+        }
+    }
+}
+
+/// One pass of `read_spread`: `Err` with the wait when every member asked shed it.
+#[allow(clippy::type_complexity)]
+async fn spread_once(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    body: &Value,
+) -> std::result::Result<std::result::Result<Option<(Value, Step, Target)>, String>, (String, u64)> {
     let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
     let voters = if known.voters.is_empty() {
         record.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string())).collect()
@@ -589,14 +672,14 @@ pub async fn read_spread(
             let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
             learn_leader(chain, &v);
             refresh_config(b, chain, &t, &v).await;
-            return Ok(Some((v, Step::Cached, t)));
+            return Ok(Ok(Some((v, Step::Cached, t))));
         }
     }
     let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
     match spread_verdict(&seen) {
         Spread::Use(_) => unreachable!("a usable answer returned above"),
-        Spread::Shed => Err(format!("{chain}: every member asked shed the read: {OVERLOADED}")),
-        Spread::Leader => call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await,
+        Spread::Shed(ms) => Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms)),
+        Spread::Leader => Ok(call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await),
     }
 }
 
@@ -643,6 +726,9 @@ async fn refresh_config(b: &Bindings<'_>, chain: ChainId, from: &Target, v: &Val
 pub const OVERLOADED: &str = "overloaded";
 /// How many times `call_opt` asks a member that answered `overloaded` again before it gives up.
 const OVERLOAD_TRIES: u32 = 4;
+/// The wait before a shed spread read is asked again when no member named one (`Spread::Shed`): it timed out or was
+/// `busy`. The members' own `retryAfterMs` for a shed read.
+const OVERLOAD_RETRY_MS: u64 = 250;
 
 /// A member's answer to a heavy read past its in-flight cap: a 200, so it is never a missed call, with `busy`, so a
 /// lookup built before `overloaded` skips it without a `suspect` report too.
@@ -955,13 +1041,19 @@ pub async fn commit_hedged(
             }
             continue;
         };
-        term = term.max(v.pointer("/meta/term").and_then(Value::as_u64).unwrap_or(0));
-        if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
+        let nl = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader"));
+        let stale = nl.is_some_and(|nl| stale_answer(chain, &v, nl));
+        if !stale {
+            term = term.max(v.pointer("/meta/term").and_then(Value::as_u64).unwrap_or(0));
+        }
+        if let Some(nl) = nl {
             learn(chain, nl);
             forget_leader(chain);
             let named = nl.get("leader").and_then(Value::as_u64);
+            // A removed or stale member's answer is a lookup again, not a leaderless group.
             target = match named {
                 Some(_) => None,
+                None if stale => None,
                 None => leaderless(b, chain, &t, term, colo, &mut tries).await,
             };
             note(json!({ "notLeader": t.site.0, "leader": named, "next": target.as_ref().map(|t| t.site.0) }));
@@ -1286,13 +1378,26 @@ pub async fn genesis(
     Ok(g)
 }
 
-/// A system chain's record from the `Release` view.
+/// A system chain's record from the `Release` view: the cached view's genesis once this isolate holds one (which a
+/// `LeaveEvaluation` moves), else the genesis this isolate accepted, else the chain's own `MemberRegistry` row, as
+/// step 3 of the lookup rule finds any group whose record the caller lacks, and only then a read of the genesis from
+/// the `Release` group. So a cold isolate reaches a group that exists without waiting on the `Release` group
+/// (`design/DESIGN.md`, Shape, `POINTER_TTL`: "no request waits on the group"); only a group not created yet, such as
+/// a `Names` shard on its first use, needs the genesis read.
 pub async fn system_record(
     b: &Bindings<'_>,
     anchor: &graftyard_release::Anchor,
     chain: ChainId,
 ) -> std::result::Result<PlacementRecord, String> {
     let sc = system_of(chain).ok_or_else(|| format!("{chain} is not a system chain"))?;
+    let held = view::with(|v| v.fold.genesis.clone()).or_else(held_genesis);
+    if let Some(g) = held {
+        return g.placement(sc).cloned().ok_or_else(|| format!("the genesis has no {sc:?} record"));
+    }
+    view::refresh_beside(b.env, b.sites, anchor, None, true);
+    if let Some(r) = registry_record(b, chain).await {
+        return Ok(r);
+    }
     let g = genesis(b, anchor).await?;
     g.placement(sc).cloned().ok_or_else(|| format!("the genesis has no {sc:?} record"))
 }
@@ -1729,7 +1834,7 @@ mod tests {
             vec![Some((200, &named)), Some((409, &null)), None],
             vec![Some((200, &leaderless)), Some((200, &shed))],
         ] {
-            assert_eq!(spread_verdict(&answers), Spread::Shed, "{answers:?}");
+            assert!(matches!(spread_verdict(&answers), Spread::Shed(_)), "{answers:?}");
         }
         for answers in [
             vec![Some((200, &named)), Some((200, &named))],
@@ -1740,6 +1845,50 @@ mod tests {
         ] {
             assert_eq!(spread_verdict(&answers), Spread::Leader, "{answers:?}");
         }
+    }
+
+    /// A shed spread read waits the longest `retryAfterMs` its members named, else OVERLOAD_RETRY_MS (one timed out or
+    /// was `busy`).
+    #[test]
+    fn a_shed_spread_waits_what_its_members_named() {
+        let (slow, fast, busy) = (overloaded_reply(700), overloaded_reply(300), json!({ "busy": true }));
+        assert_eq!(spread_verdict(&[Some((200, &fast)), None, Some((200, &slow))]), Spread::Shed(700));
+        assert_eq!(spread_verdict(&[None, Some((200, &busy))]), Spread::Shed(OVERLOAD_RETRY_MS));
+    }
+
+    /// A write's shed read is asked again after each wait its members named while that wait ends before its deadline,
+    /// and answers once they serve it; past the deadline, or with none (a read-class request), the shed is its error.
+    #[test]
+    fn a_shed_read_is_retried_inside_its_deadline_only() {
+        use futures_util::FutureExt;
+        use std::cell::{Cell, RefCell};
+        let run = |until: u64, sheds: Vec<u64>| {
+            let (clock, waits, left) = (Cell::new(1_000u64), RefCell::new(Vec::new()), RefCell::new(sheds));
+            let r = retry_shed(
+                until,
+                || clock.get(),
+                || {
+                    let mut l = left.borrow_mut();
+                    let next = (!l.is_empty()).then(|| l.remove(0));
+                    async move { next.map_or(Ok("value"), |ms| Err((format!("shed: {OVERLOADED}"), ms))) }
+                },
+                |ms| {
+                    waits.borrow_mut().push(ms);
+                    clock.set(clock.get() + ms);
+                    async {}
+                },
+            )
+            .now_or_never()
+            .expect("no real wait");
+            (r, waits.into_inner())
+        };
+        assert_eq!(run(9_000, vec![700, 300]), (Ok("value"), vec![700, 300]));
+        // 1,000 + 700 = 1,700 < 2,000, then 1,700 + 400 is past it.
+        let (r, waits) = run(2_000, vec![700, 400, 100]);
+        assert!(r.is_err_and(|e| e.contains(OVERLOADED)));
+        assert_eq!(waits, vec![700]);
+        let (r, waits) = run(1_000, vec![250]);
+        assert!(r.is_err() && waits.is_empty());
     }
 
     /// A config's learners are learned with its voters, and an older config never replaces a newer one's.
@@ -1762,6 +1911,39 @@ mod tests {
         assert!(k.learners[0].1.contains("#l0"), "{:?}", k.learners);
         learn(chain, &nl(4, p(1, &[])));
         assert_eq!(KNOWN.with(|k| k.borrow().get(&chain).unwrap().learners.len()), 2, "an older config is ignored");
+    }
+
+    /// B0-32 m3fr2's retired voter: a `NotLeader` naming no leader from a member that says it was removed, or whose
+    /// config is older than the one this isolate holds, is no evidence the group is leaderless; one from a member at
+    /// the current config is. A `Degraded` config's lost site is no voter to ask.
+    #[test]
+    fn a_removed_or_stale_members_answer_is_not_a_leaderless_group() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(14)));
+        let m = |s: u8, g: u32| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, g);
+        let place = |gen1: u32| json!({ "voters": [m(0, 1), m(1, gen1), m(2, 1)], "learners": [], "home": 0, "generation": gen1 });
+        let nl = |index: u64, config: Value| json!({ "term": 2, "leader": null, "config": { "index": index, "config": config } });
+        let answer = |nl: &Value, removed: bool| {
+            let mut v = json!({ "error": { "notLeader": nl } });
+            v["meta"] = if removed { json!({ "term": 2, "removed": true }) } else { json!({ "term": 2 }) };
+            v
+        };
+        let current = nl(9, json!({ "normal": place(2) }));
+        let old = nl(3, json!({ "degraded": { "placement": place(1), "lost": 1 } }));
+        // Nothing learned yet: an old member's answer counts as stale only by its own `removed`.
+        assert!(!stale_answer(chain, &answer(&old, false), &old));
+        assert!(stale_answer(chain, &answer(&old, true), &old));
+        learn(chain, &old);
+        let k = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap();
+        assert_eq!(k.voters.iter().map(|(s, _)| s.0).collect::<Vec<_>>(), [0, 2], "the lost site is no voter");
+        learn(chain, &current);
+        assert!(KNOWN.with(|k| k.borrow().get(&chain).unwrap().voters.iter().any(|(_, n)| n == "repo:14#2#f1")));
+        assert!(stale_answer(chain, &answer(&old, false), &old), "index 3 against the 9 held");
+        assert!(!stale_answer(chain, &answer(&current, false), &current), "the current config's answer counts");
+        assert!(!stale_answer(
+            chain,
+            &answer(&nl(10, json!({ "normal": place(2) })), false),
+            &nl(10, json!({ "normal": place(2) }))
+        ));
     }
 
     /// Only a value from a follower is used. A follower that names the leader, sheds or is behind (`overloaded`), is

@@ -1,0 +1,8 @@
+name = "fetchmem"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+[[r2_buckets]]
+binding = "B"
+bucket_name = "fetchmem"
+[vars]
+SINK = "http://127.0.0.1:8791"

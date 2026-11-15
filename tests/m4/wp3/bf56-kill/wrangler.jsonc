@@ -1,0 +1,8 @@
+{ "name": "graft-m4a-memberkill", "main": "index.js", "compatibility_date": "2025-09-01",
+  "durable_objects": { "bindings": [
+    { "name": "MEMBER_0", "class_name": "Member", "script_name": "graft-m4a-site-a" },
+    { "name": "MEMBER_1", "class_name": "Member", "script_name": "graft-m4a-site-b" },
+    { "name": "MEMBER_2", "class_name": "Member", "script_name": "graft-m4a-site-c" },
+    { "name": "BROKER_0", "class_name": "RunnerBroker", "script_name": "graft-m4a-site-a" },
+    { "name": "BROKER_1", "class_name": "RunnerBroker", "script_name": "graft-m4a-site-b" },
+    { "name": "BROKER_2", "class_name": "RunnerBroker", "script_name": "graft-m4a-site-c" } ] } }

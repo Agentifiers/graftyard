@@ -11,7 +11,7 @@ use graftyard_git::issues::{
 use graftyard_git::pack::PackRef;
 use graftyard_git::prsync::{
     Delivery, Dispatcher, MergeAnswer, PARK_AFTER, PrSync, REDELIVER_AFTER_MS, REPO_FORMAT_V3, SyncBatch, SyncRead,
-    TestMerge, commands, scan,
+    TestMerge, commands, scan, test_merges,
 };
 use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoCmd, RepoEvent, RepoFold, RepoOut};
@@ -286,14 +286,13 @@ impl Cache {
         ObjectId(std::array::from_fn(|i| base.0[i].wrapping_mul(31) ^ head.0[i].wrapping_add(7) ^ 0x5a))
     }
 
-    fn merge(&mut self, n: IssueNumber, base: ObjectId, head: ObjectId) -> TestMerge {
+    fn answer(&mut self, base: ObjectId, head: ObjectId) -> MergeAnswer {
         self.runs += 1;
-        let a = if self.conflicts.contains(&head) {
+        if self.conflicts.contains(&head) {
             MergeAnswer::Conflict { conflict: vec!["f".into()] }
         } else {
             MergeAnswer::Clean { merge: Self::merge_commit(base, head).hex(), pack: vec![0x50; self.pack_bytes] }
-        };
-        a.test_merge(n, base, head).unwrap()
+        }
     }
 }
 
@@ -350,44 +349,44 @@ impl Pipe {
         // Through the member route's JSON, as the consumer Worker reads it.
         let wire = serde_json::to_value(SyncRead::of(&g.fold().core, REPO, &b.prs)).unwrap();
         let vs = serde_json::from_value::<SyncRead>(wire).unwrap().views;
-        let (mut merges, mut shed) = (Vec::new(), Vec::new());
-        for v in &vs {
-            let Some((base, head)) = v.needs_merge() else { continue };
-            let Some((budgets, clock, cost)) = &self.budget else {
-                merges.push(self.cache.merge(v.n, base, head));
-                continue;
-            };
-            // The shard's `/merge`: its answer through JSON, as the consumer reads it, then `take`.
-            clock.set(clock.get().max(g.now.0));
-            let cache = &mut self.cache;
-            let a = futures_executor::block_on(graftyard_git::prsync::budgeted(
-                budgets,
-                graftyard_types::NetworkId(REPO.0),
-                graftyard_git::prsync::MergeCause::HeadPush,
-                v.n,
-                || clock.get(),
-                || async { Ok::<(), ()>(()) },
-                || async {
-                    clock.set(clock.get() + cost);
-                    cache.runs += 1;
-                    let a = if cache.conflicts.contains(&head) {
-                        MergeAnswer::Conflict { conflict: vec!["f".into()] }
-                    } else {
-                        MergeAnswer::Clean {
-                            merge: Cache::merge_commit(base, head).hex(),
-                            pack: vec![0x50; cache.pack_bytes],
-                        }
-                    };
-                    // No CPU reported, so the shard charges the merge's wall time on its clock.
-                    Ok((a, None))
-                },
-            ))
-            .unwrap()
-            .unwrap_or(MergeAnswer::Shed { shed: true });
-            let a: MergeAnswer = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
-            graftyard_git::prsync::take(a, v.n, base, head, &mut merges, &mut shed).unwrap();
-        }
-        commands(b, &vs, merges, shed)
+        // The site's merge loop (`test_merges`), with no deadline: these tests do not time the attempt.
+        let got = futures_executor::block_on(test_merges(
+            &vs,
+            || 0,
+            u64::MAX,
+            |n, base, head, _| {
+                let a = self.answer(g, n, base, head);
+                async move { Ok(a) }
+            },
+        ))
+        .unwrap();
+        commands(b, &vs, got.merges, got.shed)
+    }
+
+    /// The shard's `/merge` answer, through JSON as the consumer reads it: the cache's merge, under the budget when
+    /// one is set.
+    fn answer(&mut self, g: &G, n: IssueNumber, base: ObjectId, head: ObjectId) -> MergeAnswer {
+        let Some((budgets, clock, cost)) = &self.budget else { return self.cache.answer(base, head) };
+        clock.set(clock.get().max(g.now.0));
+        let cache = &mut self.cache;
+        // Every future here is ready at once, and `plan` already runs inside an executor.
+        let a = futures_util::FutureExt::now_or_never(graftyard_git::prsync::budgeted(
+            budgets,
+            graftyard_types::NetworkId(REPO.0),
+            graftyard_git::prsync::MergeCause::HeadPush,
+            n,
+            || clock.get(),
+            || async { Ok::<(), ()>(()) },
+            || async {
+                clock.set(clock.get() + cost);
+                // No CPU reported, so the shard charges the merge's wall time on its clock.
+                Ok((cache.answer(base, head), None))
+            },
+        ))
+        .expect("ready")
+        .unwrap()
+        .unwrap_or(MergeAnswer::Shed { shed: true });
+        serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap()
     }
 
     fn consume(&mut self, g: &mut G, b: &SyncBatch) {
@@ -884,6 +883,137 @@ fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
     assert_eq!(g.get(&head_ref(IssueNumber(1))), Some(oid(3)), "the head ref still moves");
     let st = p.budget.as_ref().unwrap().0.borrow().stats(graftyard_types::NetworkId(REPO.0)).unwrap();
     assert_eq!((st.computed, st.shed, st.spent_ms), (1, 1, 10_000.0), "one charged at its measured time, one shed");
+}
+
+/// LM-1 round 16d: a first attempt must end inside FIRST_FOR_MS with its cursor moved, however long the shard's line.
+/// On B0-29 each attempt asked its merges one after another behind the network's turn, whose line on B0-35 reached
+/// 3,593 merges and 265 s of wait with nothing shed, so no attempt of 100 or more merges ended in 25 s, the leader
+/// handed out a new one every 25 s while the old ones ran, and 14 failed together past 128 MB.
+///
+/// Here 30 merges from other callers are in line at t = 0, each 1 s of wall on the shard (20 ms of CPU, so the budget
+/// itself sheds nothing), and a 40-PR batch's attempt starts with them. Its merges must stop by COMMIT_RESERVE_MS before
+/// FIRST_FOR_MS, every pull request must come out merged or shed, and no merge may run after waiting past
+/// TURN_WAIT_MS. Main's loop, which asked every merge and waited out every turn, ended its merges at 41 s here
+/// (`tests/firstonce/plant.py`, mutants 0 and 1 together).
+#[test]
+fn a_batch_behind_a_long_merge_line_ends_inside_first_for_and_sheds_the_rest() {
+    use futures_util::task::LocalSpawnExt;
+    use graftyard_git::prsync::{
+        Budgets, COMMIT_RESERVE_MS, FIRST_FOR_MS, MergeCause, TURN_WAIT_MS, budgeted, instance_vcpu, merges_until,
+    };
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    #[derive(Default)]
+    struct Clock {
+        now: Cell<u64>,
+        waiting: RefCell<Vec<(u64, std::task::Waker)>>,
+    }
+    struct Sleep(Rc<Clock>, u64);
+    impl std::future::Future for Sleep {
+        type Output = ();
+        fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+            if self.0.now.get() >= self.1 {
+                return std::task::Poll::Ready(());
+            }
+            self.0.waiting.borrow_mut().push((self.1, cx.waker().clone()));
+            std::task::Poll::Pending
+        }
+    }
+    const WALL: u64 = 1_000;
+    assert_eq!(merges_until(0, FIRST_FOR_MS), FIRST_FOR_MS - COMMIT_RESERVE_MS);
+    assert_eq!(merges_until(1_000, 4_000), 2_500, "a short test-install deadline keeps half for its commits");
+    let net = graftyard_types::NetworkId(REPO.0);
+    let budgets = Rc::new(RefCell::new(Budgets::new(instance_vcpu("standard-4").unwrap())));
+    let clock = Rc::new(Clock::default());
+    let ran = Rc::new(Cell::new(0u32));
+    // One merge on the shard: in line for the network's turn, then WALL of wall time.
+    let shard = {
+        let (budgets, clock, ran) = (budgets.clone(), clock.clone(), ran.clone());
+        move |n: u32| {
+            let (budgets, clock, ran) = (budgets.clone(), clock.clone(), ran.clone());
+            async move {
+                let c = clock.clone();
+                budgeted(
+                    &budgets,
+                    net,
+                    MergeCause::HeadPush,
+                    IssueNumber(n),
+                    || c.now.get(),
+                    || async { Ok::<(), String>(()) },
+                    || async {
+                        ran.set(ran.get() + 1);
+                        Sleep(clock.clone(), clock.now.get() + WALL).await;
+                        Ok((MergeAnswer::Conflict { conflict: vec!["f".into()] }, Some(20.0)))
+                    },
+                )
+                .await
+                .map(|a| a.unwrap_or(MergeAnswer::Shed { shed: true }))
+            }
+        }
+    };
+    let mut pool = futures_executor::LocalPool::new();
+    for i in 0..30 {
+        let m = shard(1_000 + i);
+        pool.spawner().spawn_local(async move { m.await.map(drop).unwrap() }).unwrap();
+    }
+    // The batch's views: 40 open PRs, each lacking its merge.
+    let views: Vec<graftyard_git::prsync::PrView> = (1..=40)
+        .map(|n| graftyard_git::prsync::PrView {
+            n: IssueNumber(n),
+            open: true,
+            same_repo: true,
+            head: oid(100 + n),
+            base: name("refs/heads/main"),
+            base_tip: Some(oid(1)),
+            head_ref: None,
+            merge: None,
+        })
+        .collect();
+    let out = Rc::new(RefCell::new(None));
+    let (o, c, views2, shard2) = (out.clone(), clock.clone(), views.clone(), shard.clone());
+    let until = merges_until(0, FIRST_FOR_MS);
+    pool.spawner()
+        .spawn_local(async move {
+            let now = || c.now.get();
+            let got = test_merges(&views2, now, until, |n, _, _, left| {
+                // The site's `within`: an answer not back by the time merges stop counts as shed.
+                let (m, stop) = (shard2(n.0), Sleep(c.clone(), c.now.get() + left));
+                async move {
+                    match futures_util::future::select(Box::pin(m), Box::pin(stop)).await {
+                        futures_util::future::Either::Left((a, _)) => a,
+                        futures_util::future::Either::Right(_) => Ok(MergeAnswer::Shed { shed: true }),
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            *o.borrow_mut() = Some((got, c.now.get()));
+        })
+        .unwrap();
+    loop {
+        pool.run_until_stalled();
+        let next = clock.waiting.borrow().iter().map(|(t, _)| *t).min();
+        let Some(next) = next else { break };
+        clock.now.set(next);
+        let due: Vec<_> = clock.waiting.borrow_mut().drain(..).collect();
+        due.into_iter().for_each(|(_, w)| w.wake());
+    }
+    let (got, back) = out.borrow_mut().take().expect("the batch's merges ended");
+    assert!(back <= FIRST_FOR_MS - COMMIT_RESERVE_MS, "the batch's merges ended at {back} ms, past their deadline");
+    assert_eq!(got.merges.len() + got.shed.len(), views.len(), "every pull request is merged or shed");
+    assert_eq!(got.asked + got.unasked, 40);
+    assert!(got.unasked >= 25, "15 s of 1 s merges cannot ask 40: {} unasked", got.unasked);
+    let s = budgets.borrow().stats(net).unwrap();
+    assert_eq!(s.computed, ran.get());
+    assert_eq!(s.computed + s.shed, 30 + got.asked, "every merge that reached the shard ran or was shed");
+    assert!(s.late > 0, "the line's tail waited past TURN_WAIT_MS and was shed");
+    assert!(s.wait_max_ms <= TURN_WAIT_MS as f32, "a merge ran after waiting {} ms", s.wait_max_ms);
+    // The batch's commands still move its heads and the cursor, and name every shed head, so `mergeable` reads null.
+    let batch = SyncBatch { from: Index(5), through: Index(9), prs: views.iter().map(|v| v.n).collect() };
+    let shed = got.shed.len();
+    let cmds = commands(&batch, &views, got.merges, got.shed);
+    assert_eq!(cmds.last().unwrap().through, Some(Index(9)));
+    assert_eq!((cmds[0].heads.len(), cmds[0].unmerged.len()), (40, shed));
 }
 
 /// A30: an on-demand merge (a single-PR GET's or Actions dispatch's, `on_demand`) records the PR's current test merge

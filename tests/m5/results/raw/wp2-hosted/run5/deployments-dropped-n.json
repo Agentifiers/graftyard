@@ -1,0 +1,180 @@
+
+
+[
+  {
+    "id": "c44ccd0f-2b75-44b6-9138-3b851af6883e",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:04:53.583287Z"
+  },
+  {
+    "id": "685dd91a-f8c0-4aa2-8648-0d9f03615fd4",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T21:05:06.18999Z"
+  },
+  {
+    "id": "637bebbc-21a6-4ad4-bdec-ee783a4d8bab",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:05:42.320694Z"
+  },
+  {
+    "id": "3ba4bbe4-0dcf-4e0d-870b-787ad29b612c",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:07:08.836654Z"
+  },
+  {
+    "id": "22856dfc-89d3-404b-8b70-92c13ddc980e",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T21:08:50.915962Z"
+  },
+  {
+    "id": "0b48436c-1fb8-4b06-afc7-e618a9bc1e54",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:11:31.103679Z"
+  },
+  {
+    "id": "a9b8b617-cb03-44d7-a4b4-24b9f3d8331e",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "a02b9c73-7d7a-4bd7-9091-bb9abe7fba03",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T21:11:55.830131Z"
+  },
+  {
+    "id": "88f5e6c1-73b8-43f3-a7e1-b66369bcfe5b",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:25:32.806273Z"
+  },
+  {
+    "id": "020cf246-0aa4-42be-affb-313244e79131",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T21:25:37.869203Z"
+  },
+  {
+    "id": "e3c8c70e-2fea-4dcd-a650-528b27ef4c14",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:26:11.751711Z"
+  }
+]

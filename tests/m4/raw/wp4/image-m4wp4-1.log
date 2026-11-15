@@ -1,0 +1,160 @@
+2026-11-15T16:09:52Z
+aa4a9d9c
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+npm notice run npx
+npm notice run 'wrangler' containers push graft-runners-runner:m4wp4-1
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.162.0
+────────────────────
+
+WARNING! Your credentials are stored unencrypted in '/root/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+Login Succeeded
+The push refers to repository [registry.cloudflare.com/<cf-runner-account-id>/graft-runners-runner]
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+60a58b513e91: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+1bc5e3111775: Waiting
+9456be0b5ce9: Waiting
+dc541b8d0272: Waiting
+60a58b513e91: Waiting
+60a58b513e91: Waiting
+9456be0b5ce9: Waiting
+4f4fb700ef54: Waiting
+1bc5e3111775: Pushed
+d6bfda0d6f06: Waiting
+d6bfda0d6f06: Waiting
+4f4fb700ef54: Waiting
+6224c1b64018: Waiting
+60a58b513e91: Pushed
+d6bfda0d6f06: Waiting
+4f4fb700ef54: Waiting
+6224c1b64018: Waiting
+d6bfda0d6f06: Waiting
+4f4fb700ef54: Waiting
+4f4fb700ef54: Waiting
+6224c1b64018: Waiting
+6224c1b64018: Waiting
+6224c1b64018: Waiting
+5a2e318f5c9c: Waiting
+d6bfda0d6f06: Pushed
+4f4fb700ef54: Pushed
+c802a3122aa4: Waiting
+5a2e318f5c9c: Waiting
+c802a3122aa4: Waiting
+5a2e318f5c9c: Waiting
+c802a3122aa4: Waiting
+5a2e318f5c9c: Waiting
+c802a3122aa4: Waiting
+c802a3122aa4: Waiting
+5a2e318f5c9c: Waiting
+dc541b8d0272: Pushed
+17948245ed42: Waiting
+17948245ed42: Waiting
+17948245ed42: Waiting
+17948245ed42: Waiting
+17948245ed42: Waiting
+17948245ed42: Waiting
+c802a3122aa4: Pushed
+792a412fb72b: Waiting
+792a412fb72b: Waiting
+5a2e318f5c9c: Pushed
+4f4fb700ef54: Pushed
+4ff5aed28bc5: Waiting
+792a412fb72b: Waiting
+4ff5aed28bc5: Waiting
+792a412fb72b: Waiting
+4ff5aed28bc5: Waiting
+4ff5aed28bc5: Waiting
+792a412fb72b: Waiting
+792a412fb72b: Waiting
+4ff5aed28bc5: Waiting
+4ff5aed28bc5: Waiting
+4ff5aed28bc5: Pushed
+9456be0b5ce9: Pushed
+5af1bfa4026a: Waiting
+16e3db06d4aa: Waiting
+5af1bfa4026a: Waiting
+16e3db06d4aa: Waiting
+5af1bfa4026a: Waiting
+16e3db06d4aa: Waiting
+16e3db06d4aa: Waiting
+5af1bfa4026a: Waiting
+5af1bfa4026a: Waiting
+16e3db06d4aa: Waiting
+16e3db06d4aa: Waiting
+e447b6fc8aa5: Waiting
+6224c1b64018: Pushed
+4f4fb700ef54: Pushed
+16e3db06d4aa: Waiting
+e447b6fc8aa5: Waiting
+e447b6fc8aa5: Waiting
+e447b6fc8aa5: Waiting
+e447b6fc8aa5: Waiting
+e447b6fc8aa5: Waiting
+9e6958b78c04: Waiting
+5af1bfa4026a: Pushed
+9e6958b78c04: Waiting
+9e6958b78c04: Waiting
+9e6958b78c04: Waiting
+9e6958b78c04: Waiting
+e447b6fc8aa5: Pushed
+76d0cd86ba9d: Waiting
+76d0cd86ba9d: Waiting
+76d0cd86ba9d: Waiting
+76d0cd86ba9d: Waiting
+9e6958b78c04: Pushed
+76d0cd86ba9d: Waiting
+16e3db06d4aa: Pushed
+76d0cd86ba9d: Waiting
+792a412fb72b: Pushed
+17948245ed42: Pushed
+76d0cd86ba9d: Pushed
+m4wp4-1: digest: sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea size: 4743
+Pushed image: registry.cloudflare.com/<cf-runner-account-id>/graft-runners-runner:m4wp4-1
+graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+registry.cloudflare.com/<cf-runner-account-id>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+2026-11-15T16:10:29Z
+DONE

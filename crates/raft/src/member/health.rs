@@ -93,6 +93,10 @@ impl<C: Command> Member<C> {
         self.begin(now);
         match f.call {
             FailedCall::Append { term, boot, round, sent_at } => {
+                // An error ends the call; a missed deadline does not, because the host still awaits it.
+                if boot == self.boot && !f.deadline {
+                    self.calls_out.remove(&(f.to, round));
+                }
                 if self.role == Role::Leader && term == self.state.term && boot == self.boot {
                     self.record_call(f.to, round, false, f.deadline, sent_at);
                     self.append_failed(f.to, round);
@@ -102,6 +106,20 @@ impl<C: Command> Member<C> {
             FailedCall::Ping { probe, n } => self.on_pong(f.to, probe, n, false),
         }
         self.finish(())
+    }
+
+    /// The host ended a call this member sent: answered, failed, or given up LATE_LIMIT past its deadline. Its
+    /// AppendEntries bytes stop counting against PEER_OUT_MAX, LEARNERS_OUT_MAX, and OUT_MAX (`leader::out_allows`).
+    /// A host calls it only for a call of this boot.
+    pub fn call_ended(&mut self, now: Timestamp, to: SiteId, round: u64) -> Ready<C, ()> {
+        self.begin(now);
+        self.calls_out.remove(&(to, round));
+        self.finish(())
+    }
+
+    /// AppendEntries bytes alive on this member's calls (`call_ended`), for the host's memory split.
+    pub fn calls_out_bytes(&self) -> usize {
+        self.calls_out.values().map(|(_, b)| b).sum()
     }
 
     /// A storage confirm began: the host started making this member's writes durable (every `Ready` with writes,

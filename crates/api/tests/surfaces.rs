@@ -25,8 +25,8 @@ use graftyard_fold::{MemStore, fold_digest, meta};
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::{
     AppId, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget,
-    DiffSide, IssueNumber, LabelName, LineAnchor, MergeMethod, Protection, RepoSettings, RequiredChecks, ReviewState,
-    StatusId, StatusState, StatusUpdate, Url, Visibility,
+    DiffSide, Grouping, IssueNumber, LabelName, LineAnchor, MergeMethod, Protection, RepoSettings, RequiredChecks,
+    ReviewState, StatusId, StatusState, StatusUpdate, Url, Visibility,
 };
 use graftyard_raft::{EntryBody, TierSet};
 use graftyard_types::{AccountId, DbId, Tier, Timestamp};
@@ -1925,6 +1925,14 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
     assert_eq!(e.status, 404);
     let e = render_err(&render(What::CheckRunCreated { id: 1 }), &IssueErr::Forbidden);
     assert_eq!(e.status, 403);
+    // An Actions secret or variable write: a new name is 201 with a JSON body (go-gh decodes every non-204 reply, so
+    // an empty 201 fails `gh secret set`), an update is 204, and a variable create on a taken name is 409, which
+    // `gh variable set` answers with a PATCH.
+    let wire = render_ok(&render(What::ActionsConfig), &ack(IssueOut::Created), &m.core, &m.meta);
+    assert_eq!((wire.status, wire.body), (201, Some(json!({}))));
+    let wire = render_ok(&render(What::ActionsConfig), &ack(IssueOut::Done), &m.core, &m.meta);
+    assert_eq!((wire.status, wire.body), (204, None));
+    assert_eq!(render_err(&render(What::ActionsConfig), &IssueErr::Exists).status, 409);
 }
 
 /// A pull request's `commits`, `additions`, `deletions`, and `changed_files` are the git cache's counts for its (base
@@ -1957,4 +1965,71 @@ fn a_pull_requests_counts_are_the_git_caches_for_its_base_tip_and_head() {
     let v = query(&Request::parse(q, None, None).unwrap(), Some(&r));
     let pr = &v["data"]["repository"]["pullRequest"];
     assert_eq!((&pr["additions"], &pr["deletions"], &pr["commits"]["totalCount"]), (&json!(5), &json!(3), &json!(2)));
+}
+
+/// `rest:branches`' branch protection, as BF-56 seeds its rule: a `PUT` on a branch with a rule edits that rule rather
+/// than adding a second, its `contexts` and `checks` both become required names, the reply and a `GET` render the rule
+/// the entry left, and a `DELETE` leaves the branch unprotected.
+#[test]
+fn branch_protection_put_edits_the_branch_s_rule_and_delete_removes_it() {
+    use graftyard_api::protection::{get, plan_delete, plan_put, saved};
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(OWNER));
+    let before = c.repo(0, &h, &dir).rules();
+    assert_eq!(before.len(), 1, "seeded's rule on main");
+    let body = json!({
+        "required_status_checks": { "strict": true, "contexts": ["build"], "checks": [{ "context": "test", "app_id": 2 }] },
+        "enforce_admins": true, "required_pull_request_reviews": null, "restrictions": null,
+    });
+    let op = plan_put(&c.repo(0, &h, &dir), "main", &body).unwrap();
+    let IssueOut::Id(id) = c.commit(OWNER, op).unwrap() else { panic!() };
+    let r = c.repo(0, &h, &dir);
+    assert_eq!((r.rules().len(), id), (1, before[0].id), "the same rule, edited");
+    assert!(r.is_required(&name("refs/heads/main"), "build", Some(AppId(DbId(9)))));
+    assert!(r.is_required(&name("refs/heads/main"), "test", Some(AppId(DbId(2)))));
+    assert!(!r.is_required(&name("refs/heads/main"), "test", Some(AppId(DbId(9)))), "test only from App 2");
+    assert!(!r.is_required(&name("refs/heads/main"), "ci", None), "the PUT replaced the old checks");
+    let reply = saved(&ack(IssueOut::Id(id)), &r, "main");
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.value()["required_status_checks"]["contexts"], json!(["build", "test"]));
+    assert_eq!(reply.value()["enforce_admins"]["enabled"], json!(true));
+    assert_eq!(get(&r, "main").value(), reply.value());
+    // A body missing one of GitHub's four required keys, or naming a wildcard branch, is 422 before any commit.
+    assert_eq!(plan_put(&r, "main", &json!({ "required_status_checks": null })).unwrap_err().status, 422);
+    assert_eq!(plan_put(&r, "rel*", &body).unwrap_err().status, 422);
+    assert_eq!(get(&r, "f").status, 404);
+
+    let op = plan_delete(&r, "main").unwrap();
+    let out = c.commit(OWNER, op).unwrap();
+    let r = c.repo(0, &h, &dir);
+    assert_eq!(saved(&ack(out), &r, "main").status, 204);
+    assert_eq!(get(&r, "main").status, 404);
+    assert!(!r.is_required(&name("refs/heads/main"), "build", None));
+    assert_eq!(plan_delete(&r, "main").unwrap_err().status, 404);
+    // A writer's PUT is refused by the leader, as `SetRule` needs admin.
+    let op = plan_put(&r, "main", &body).unwrap();
+    assert!(matches!(c.commit(WRITER, op), Err(IssueErr::Forbidden)));
+
+    // BF-37: `merge_queue` sets the rule's queue from GHES's ruleset parameters; a later PUT without the key keeps it,
+    // `null` removes it, and a parameter out of GHES's bounds is 422.
+    let mq = json!({ "check_response_timeout_minutes": 10, "grouping_strategy": "ALLGREEN", "max_entries_to_build": 4,
+        "min_entries_to_merge": 1, "max_entries_to_merge": 3, "min_entries_to_merge_wait_minutes": 0, "merge_method": "SQUASH" });
+    let mut with = body.clone();
+    with["merge_queue"] = mq;
+    let put = |c: &mut Chain, b: &Value| {
+        let op = plan_put(&c.repo(0, &h, &dir), "main", b);
+        op.map(|op| c.commit(OWNER, op).unwrap()).map_err(|r| r.status)
+    };
+    let queue = |c: &Chain| graftyard_git::queue::queue_settings(&c.repo(0, &h, &dir).rules());
+    put(&mut c, &with).unwrap();
+    let q = queue(&c).expect("a queue");
+    assert_eq!((q.max_build, q.max_merge, q.min_merge, q.check_timeout_minutes), (4, 3, 1, 10));
+    assert_eq!((q.grouping, q.method), (Grouping::AllGreen, MergeMethod::Squash));
+    put(&mut c, &body).unwrap();
+    assert!(queue(&c).is_some(), "a PUT without merge_queue keeps the queue");
+    with["merge_queue"]["max_entries_to_build"] = json!(101);
+    assert_eq!(put(&mut c, &with), Err(422));
+    with["merge_queue"] = Value::Null;
+    put(&mut c, &with).unwrap();
+    assert!(queue(&c).is_none(), "null removes it");
 }

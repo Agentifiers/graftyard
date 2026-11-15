@@ -2,14 +2,14 @@
 //! (`GitCacheShard::validate`, `upload_pack`, `rehydrate`, and catch-up behind the `IngestCursor`). A site script's shard
 //! class holds a `ShardHost` and calls these; the throwaway M1 scripts under `tests/m1/` do the same today.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_types::{ChainId, Digest, NetworkId, Region, SiteId, Timestamp};
 use serde::Deserialize;
 use worker::{Conditional, Container, Fetcher, Headers, Include, Method, Request, RequestInit, Response, State};
 
 use crate::bucket::{Bucket, ObjectInfo, PutNew, StoreError};
-use crate::catchup::{Ingested, Rehydrating, Report, Saved, ShardIo, StoredMs};
+use crate::catchup::{Fetched, IdxRange, Ingested, Rehydrating, Report, Saved, ShardIo, StoredMs, idx_range};
 use crate::ingest::ChainLog;
 use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
@@ -99,6 +99,45 @@ impl Bucket for R2 {
             Some(b) => Ok(Some(b.bytes().await.map_err(err)?)),
             None => Ok(Some(Vec::new())),
         }
+    }
+
+    /// The source's body goes into the put through a `FixedLengthStream` of the expected length, so the runtime moves
+    /// the bytes and none enter wasm memory; R2 checks the length as the stream ends and the SHA-256 before it stores.
+    /// The pipe runs on its own: a put refused by its precondition may never read the stream.
+    async fn copy_new(
+        &self,
+        from: &Self,
+        key: &str,
+        expect: Option<(u64, Digest)>,
+    ) -> Result<Option<PutNew>, StoreError> {
+        let Some(o) = from.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+        let meta: Vec<(String, String)> = o.custom_metadata().unwrap_or_default().into_iter().collect();
+        let len = expect.map_or(o.size(), |(n, _)| n);
+        let Some(body) = o.body() else { return Ok(None) };
+        let worker::ResponseBody::Stream(src) = body.response_body().map_err(worker_err)? else {
+            return Err(StoreError(format!("{key}: the source's body is not a stream")));
+        };
+        let fixed = match u32::try_from(len) {
+            Ok(n) => worker::worker_sys::FixedLengthStream::new(n),
+            Err(_) => worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len)),
+        }
+        .map_err(|e| err(worker::Error::from(e)))?;
+        let piped = src.pipe_to(&fixed.writable());
+        worker::wasm_bindgen_futures::spawn_local(async move {
+            let _ = worker::wasm_bindgen_futures::JsFuture::from(piped).await;
+        });
+        let mut opts: Vec<(&str, wasm_bindgen::JsValue)> = vec![
+            ("onlyIf", object(&[("etagDoesNotMatch", "*".into())]).into()),
+            ("customMetadata", meta_object(&meta)),
+        ];
+        if let Some((_, sum)) = expect {
+            opts.push(("sha256", js_sys::Uint8Array::from(&sum.0[..]).buffer().into()));
+        }
+        let v = js(self.raw().put(key.to_owned(), fixed.readable().into(), object(&opts).into())).await?;
+        if v.is_null() {
+            return Ok(Some(PutNew::Exists(self.head(key).await?.and_then(|o| o.sha256))));
+        }
+        Ok(Some(PutNew::Created))
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
@@ -357,11 +396,24 @@ pub struct Room {
 }
 
 /// `ShardHost::validate`'s answer: the pack's index (none for a detail-only call) and each update's detail, or the
-/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`.
+/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`, or, checked
+/// on the disk as it stands, a base or ref the disk does not hold yet: the container kept the request as `held`, to
+/// be checked again once the shard caught up (`OnDisk::Held`).
 #[derive(Debug)]
 pub enum Validated {
     Done(Option<PackIndex>, Vec<crate::agent::RefDetail>),
     Busy { retry_after_s: u32 },
+    MissingBase { held: String },
+}
+
+/// Which disk a validate checks against: one the shard just caught up, the disk as it stands (`disk=1`), whose
+/// missing base is `Validated::MissingBase`, or a request the container kept on one, checked again after a
+/// catch-up with no body (`held=`). Every failure but a missing base on `AsItStands` is the pack's.
+#[derive(Clone, Copy, Debug)]
+pub enum OnDisk<'a> {
+    CaughtUp,
+    AsItStands,
+    Held(&'a str),
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,6 +485,18 @@ impl ShardHost<'_> {
         self.port()?.fetch_request(req).await.map_err(worker_err)
     }
 
+    /// Bucket object `key`'s body streamed to the container's `path`, never in the isolate's memory: the container's
+    /// answer, or `None` when the bucket has no such object.
+    async fn put_stream(&self, b: &R2, key: &str, method: Method, path: &str) -> Result<Option<Response>, StoreError> {
+        let Some(o) = b.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+        let Some(body) = o.body() else { return Ok(None) };
+        let worker::ResponseBody::Stream(st) = body.response_body().map_err(worker_err)? else { return Ok(None) };
+        let mut init = RequestInit::new();
+        init.with_method(method).with_body(Some(st.into()));
+        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
+        Ok(Some(self.port()?.fetch_request(req).await.map_err(worker_err)?))
+    }
+
     async fn ok(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Result<Response, StoreError> {
         let mut r = self.call(method, path, body, &[]).await?;
         if r.status_code() >= 300 {
@@ -449,6 +513,17 @@ impl ShardHost<'_> {
             return Ok(crate::shard::NetworkLoad::default());
         }
         let mut r = self.ok(Method::Get, "/load", None).await?;
+        r.json().await.map_err(worker_err)
+    }
+
+    /// The container's running git processes (`GET /procs`: command, nice, CPU seconds, RSS), most CPU first, and the
+    /// network's pack counts (all and kept), as JSON for `/status`. A container that is not running lists none and is
+    /// not started for it.
+    pub async fn procs(&self, network: NetworkId) -> Result<serde_json::Value, StoreError> {
+        if !self.container()?.running() {
+            return Ok(serde_json::Value::Null);
+        }
+        let mut r = self.ok(Method::Get, &format!("/procs?net={}", network.0.0), None).await?;
         r.json().await.map_err(worker_err)
     }
 
@@ -565,7 +640,9 @@ impl ShardHost<'_> {
     /// round 6). An agent's validate (`agent`) may wait for one of the container's slots at most 2 s, and is then
     /// `Validated::Busy`; a human's waits. `derived` marks the shard's own archive promotion, whose CPU the container
     /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
-    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`.
+    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`, and a
+    /// 409 `missingBase` on `OnDisk::AsItStands` is `MissingBase`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn validate(
         &self,
         network: NetworkId,
@@ -573,10 +650,16 @@ impl ShardHost<'_> {
         detailn: usize,
         agent: bool,
         derived: bool,
+        disk: OnDisk<'_>,
         body: Option<wasm_bindgen::JsValue>,
     ) -> Result<Validated, (Option<u16>, StoreError)> {
         let none = |e: StoreError| (None, e);
         let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
+        match disk {
+            OnDisk::CaughtUp => {}
+            OnDisk::AsItStands => path.push_str("&disk=1"),
+            OnDisk::Held(id) => path.push_str(&format!("&held={id}")),
+        }
         if detailn > 0 {
             path.push_str(&format!("&detailn={detailn}"));
         }
@@ -594,6 +677,19 @@ impl ShardHost<'_> {
         if r.status_code() == 429 {
             let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
             return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
+        }
+        if r.status_code() == 409 && matches!(disk, OnDisk::AsItStands) {
+            #[derive(Deserialize)]
+            struct Held {
+                #[serde(rename = "missingBase")]
+                missing_base: bool,
+                held: String,
+            }
+            let t = r.text().await.unwrap_or_default();
+            return match serde_json::from_str::<Held>(&t) {
+                Ok(h) if h.missing_base => Ok(Validated::MissingBase { held: h.held }),
+                _ => Err((Some(409), StoreError(format!("validate: 409 {t}")))),
+            };
         }
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();
@@ -625,9 +721,16 @@ impl ShardHost<'_> {
         refs: &[(String, String)],
         start: bool,
         done: bool,
+        repack: bool,
     ) -> Result<(), StoreError> {
         let body: String = refs.iter().map(|(r, o)| format!("{o} {r}\n")).collect();
-        let path = format!("/refs?net={}&start={}&done={}", network.0.0, u8::from(start), u8::from(done));
+        let path = format!(
+            "/refs?net={}&start={}&done={}&repack={}",
+            network.0.0,
+            u8::from(start),
+            u8::from(done),
+            u8::from(repack)
+        );
         self.ok(Method::Put, &path, Some(body.into_bytes())).await.map(|_| ())
     }
 
@@ -647,11 +750,21 @@ impl ShardHost<'_> {
         r.json().await.map_err(worker_err)
     }
 
-    /// One complete pack of every object the given ingested packs brought: the home shard's half of `Promoted`.
-    pub async fn promote(&self, network: NetworkId, sums: &[Digest]) -> Result<Vec<u8>, StoreError> {
+    /// The `.idx` of the pack `/validate` kept aside under `sum`, or `None`, also from an image without `/idx`.
+    pub async fn validated_idx(&self, network: NetworkId, sum: Digest) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut r =
+            self.call(Method::Get, &format!("/idx?net={}&sha256={}", network.0.0, sum.hex()), None, &[]).await?;
+        match r.status_code() {
+            200 => Ok(Some(r.bytes().await.map_err(worker_err)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// One complete pack of every object the given ingested packs brought: the home shard's half of `Promoted`. The
+    /// container's answer, its body unread, so the pack streams on to the caller and is never held here.
+    pub async fn promote(&self, network: NetworkId, sums: &[Digest]) -> Result<Response, StoreError> {
         let body: String = sums.iter().map(|s| format!("{}\n", s.hex())).collect();
-        let mut r = self.ok(Method::Post, &format!("/promote?net={}", network.0.0), Some(body.into_bytes())).await?;
-        r.bytes().await.map_err(worker_err)
+        self.ok(Method::Post, &format!("/promote?net={}", network.0.0), Some(body.into_bytes())).await
     }
 
     /// The test merge of `head` into `base` (`GitCacheShard::merge` without the plan): the container's `/merge`, which
@@ -817,7 +930,7 @@ impl ShardHost<'_> {
         buckets: &[(SiteId, &R2)],
         log: &impl ChainLog,
     ) -> Result<Report, StoreError> {
-        let io = Io { host: self, network, buckets, stored: Default::default() };
+        let io = Io { host: self, network, buckets, stored: Default::default(), direct: Default::default() };
         let mut r = crate::catchup::catch_up(&io, &io, log, network, chains, &|| js_sys::Date::now() as u64).await?;
         r.stored = io.stored.take();
         Ok(r)
@@ -844,22 +957,16 @@ impl ShardHost<'_> {
         format!("rehydrating:{}", network.0.0)
     }
 
-    /// Ingests one pack's bytes: `Later` when the container answers 409, with the container's own timing of a pack it
-    /// took (`IngestMs`; zero from an image that does not report it).
-    async fn ingest_body(
-        &self,
-        network: NetworkId,
-        sum: Digest,
-        body: JsBody,
-    ) -> Result<Option<(Ingested, IngestMs)>, StoreError> {
+    /// Ingests one pack's bytes: `Later` when the container answers 409, `None` for bytes that do not match `sum`.
+    async fn ingest_body(&self, network: NetworkId, sum: Digest, body: JsBody) -> Result<Option<Ingested>, StoreError> {
         let path = format!("/ingest?net={}&sha256={}", network.0.0, sum.hex());
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(body.0));
         let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
         let mut r = self.port()?.fetch_request(req).await.map_err(worker_err)?;
         match r.status_code() {
-            200 => Ok(Some((Ingested::Done, r.json().await.unwrap_or_default()))),
-            409 => Ok(Some((Ingested::Later, IngestMs::default()))),
+            200 => Ok(Some(Ingested::Done)),
+            409 => Ok(Some(Ingested::Later)),
             // A copy whose bytes do not match the checksum: the caller tries the next bucket.
             422 if r.text().await.unwrap_or_default().starts_with("checksum") => Ok(None),
             c => Err(StoreError(format!("ingest {}: {c} {}", sum.hex(), r.text().await.unwrap_or_default()))),
@@ -876,17 +983,9 @@ struct Io<'a, 'h> {
     network: NetworkId,
     buckets: &'a [(SiteId, &'a R2)],
     stored: std::cell::RefCell<StoredMs>,
-}
-
-/// The container's `/ingest` answer for a pack it took: its spool (the body onto its disk) and `index-pack` times.
-#[derive(Debug, Default, Deserialize)]
-struct IngestMs {
-    #[serde(default)]
-    bytes: u64,
-    #[serde(default)]
-    spool_ms: u64,
-    #[serde(default)]
-    index_ms: u64,
+    /// Stored packs a container on the previous release's image (`git_prev`, no `/spool`) takes from the bucket at
+    /// their turn instead, by checksum.
+    direct: std::cell::RefCell<BTreeMap<Digest, PackId>>,
 }
 
 impl ShardIo for Io<'_, '_> {
@@ -934,7 +1033,7 @@ impl ShardIo for Io<'_, '_> {
             let mut out = Vec::with_capacity(packs.len());
             for (sum, b) in packs {
                 let b = JsBody(js_sys::Uint8Array::from(*b).into());
-                out.push(self.host.ingest_body(self.network, *sum, b).await?.map(|(a, _)| a).ok_or_else(|| {
+                out.push(self.host.ingest_body(self.network, *sum, b).await?.ok_or_else(|| {
                     StoreError(format!("ingest {}: the bytes do not match their checksum", sum.hex()))
                 })?);
             }
@@ -954,37 +1053,164 @@ impl ShardIo for Io<'_, '_> {
             .collect()
     }
     /// From each bucket in turn, in the order the caller gave (its own site's first), its object's body streamed into
-    /// the container's `/ingest`, which checks the checksum as it writes: a copy that does not match is refused, and
-    /// the next bucket's is tried. Each pack's source and times go into `stored`.
-    async fn ingest_stored(&self, id: PackId, checksum: Digest) -> Result<Ingested, StoreError> {
+    /// the container's `/spool`, which checks the checksum as it writes: a copy that does not match is refused, and the
+    /// next bucket's is tried. With `idx`, the stored `.idx` from the same bucket goes to `/spool-idx`; a missing one
+    /// leaves the ingest to `index-pack`. Each pack's source and spool time go into `stored`.
+    async fn fetch_stored(&self, id: PackId, checksum: Digest, idx: bool) -> Result<Fetched, StoreError> {
+        #[derive(Deserialize)]
+        struct Spool {
+            #[serde(default)]
+            have: bool,
+            #[serde(default)]
+            bytes: u64,
+            #[serde(default)]
+            spool_ms: u64,
+        }
         let key = R2Key::Pack { network: self.network, id }.to_string();
-        let t0 = js_sys::Date::now() as u64;
+        let idx_key = R2Key::Idx { network: self.network, id }.to_string();
+        let net = self.network.0.0;
         let got = crate::catchup::first_copy(self.buckets, |b: &&R2| {
-            let (b, key): (&R2, String) = (b, key.clone());
+            let (b, key, idx_key): (&R2, String, String) = (b, key.clone(), idx_key.clone());
             async move {
-                let Some(o) = b.0.get(&key).execute().await.map_err(err)? else { return Ok(None) };
-                let Some(body) = o.body() else { return Ok(None) };
-                let worker::ResponseBody::Stream(s) = body.response_body().map_err(worker_err)? else {
-                    return Ok(None);
+                let path = format!("/spool?net={net}&sha256={}", checksum.hex());
+                let Some(mut r) = self.host.put_stream(b, &key, Method::Post, &path).await? else { return Ok(None) };
+                let s: Spool = match r.status_code() {
+                    200 => r.json().await.map_err(worker_err)?,
+                    // The previous release's image: the pack is read from the bucket again at its turn.
+                    404 | 405 => {
+                        self.direct.borrow_mut().insert(checksum, id);
+                        return Ok(Some(Spool { have: false, bytes: 0, spool_ms: 0 }));
+                    }
+                    422 if r.text().await.unwrap_or_default().starts_with("checksum") => return Ok(None),
+                    c => return Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
                 };
-                self.host.ingest_body(self.network, checksum, JsBody(s.into())).await
+                if idx && !s.have {
+                    // Streamed as the pack is, so `FETCH_AT_ONCE` fetches hold none of their bytes in the isolate:
+                    // from this bucket or, when its pack put finished after the placement returned, from the first
+                    // other that holds one. Derived: without it the container runs `index-pack`, so a failed read or
+                    // put is not an error.
+                    let path = format!("/spool-idx?net={net}&sha256={}", checksum.hex());
+                    for o in std::iter::once(b).chain(self.buckets.iter().map(|(_, o)| *o)) {
+                        if self.host.put_stream(o, &idx_key, Method::Put, &path).await.unwrap_or(None).is_some() {
+                            break;
+                        }
+                    }
+                }
+                Ok(Some(s))
             }
         })
         .await?;
-        let Some((site, (a, ms))) = got else {
+        let Some((site, s)) = got else {
             return Err(StoreError(format!("{key}: no bucket holds a copy matching its checksum")));
         };
         let mut st = self.stored.borrow_mut();
-        st.packs += 1;
-        st.bytes += ms.bytes;
-        st.total_ms += js_sys::Date::now() as u64 - t0;
-        st.spool_ms += ms.spool_ms;
-        st.index_ms += ms.index_ms;
         *st.from_site.entry(site.0).or_default() += 1;
+        st.spool_ms += s.spool_ms;
+        st.bytes += s.bytes;
+        Ok(if s.have { Fetched::Have } else { Fetched::Spooled })
+    }
+    /// `/ingest&spooled=1`: the container's answer, with its times and whether it used the stored `.idx`.
+    async fn ingest_spooled(&self, checksum: Digest) -> Result<Ingested, StoreError> {
+        #[derive(Default, Deserialize)]
+        struct Out {
+            #[serde(default)]
+            index_ms: u64,
+            #[serde(default)]
+            lock_ms: u64,
+            #[serde(default)]
+            idx: String,
+        }
+        let t0 = js_sys::Date::now() as u64;
+        let direct = self.direct.borrow().get(&checksum).copied();
+        if let Some(id) = direct {
+            let key = R2Key::Pack { network: self.network, id }.to_string();
+            let got = crate::catchup::first_copy(self.buckets, |b: &&R2| {
+                let (b, key): (&R2, String) = (b, key.clone());
+                async move {
+                    let Some(o) = b.0.get(&key).execute().await.map_err(err)? else { return Ok(None) };
+                    let Some(body) = o.body() else { return Ok(None) };
+                    let worker::ResponseBody::Stream(st) = body.response_body().map_err(worker_err)? else {
+                        return Ok(None);
+                    };
+                    self.host.ingest_body(self.network, checksum, JsBody(st.into())).await
+                }
+            })
+            .await?;
+            let (_, a) =
+                got.ok_or_else(|| StoreError(format!("{key}: no bucket holds a copy matching its checksum")))?;
+            if a == Ingested::Done {
+                self.direct.borrow_mut().remove(&checksum);
+                self.stored.borrow_mut().packs += 1;
+            }
+            return Ok(a);
+        }
+        let path = format!("/ingest?net={}&sha256={}&spooled=1", self.network.0.0, checksum.hex());
+        let mut r = self.host.call(Method::Post, &path, None, &[]).await?;
+        let (a, o) = match r.status_code() {
+            200 => (Ingested::Done, r.json::<Out>().await.unwrap_or_default()),
+            409 => (Ingested::Later, Out::default()),
+            c => return Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
+        };
+        let mut st = self.stored.borrow_mut();
+        if a == Ingested::Done {
+            st.packs += 1;
+        }
+        st.total_ms += js_sys::Date::now() as u64 - t0;
+        st.index_ms += o.index_ms;
+        st.lock_ms += o.lock_ms;
+        match o.idx.as_str() {
+            "used" => st.idx_used += 1,
+            "rejected" => st.idx_rejected += 1,
+            _ => {}
+        }
         Ok(a)
     }
-    async fn put_refs_page(&self, refs: &[(String, String)], start: bool, done: bool) -> Result<(), StoreError> {
-        self.host.put_refs_page(self.network, refs, start, done).await
+    /// None from a container on the previous release's image (`git_prev`), which has no `/connected` to check a
+    /// rehydrate that skipped packs, so it loads every one as before.
+    async fn idx_ranges(&self) -> Result<BTreeMap<PackId, Option<IdxRange>>, StoreError> {
+        let mut out = BTreeMap::new();
+        if self.host.image != "git" {
+            return Ok(out);
+        }
+        for (_, b) in self.buckets {
+            for o in b.list(&R2Key::pack_prefix(self.network)).await? {
+                if let Ok(R2Key::Idx { id, .. }) = o.key.parse::<R2Key>() {
+                    let r = idx_range(&o.meta);
+                    let e = out.entry(id).or_insert(r);
+                    if e.is_none() {
+                        *e = r;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+    async fn connected(&self, repack: bool) -> Result<Result<(), String>, StoreError> {
+        #[derive(Deserialize)]
+        struct Out {
+            connected: bool,
+            #[serde(default)]
+            error: String,
+        }
+        let mut r = self
+            .host
+            .ok(
+                Method::Post,
+                &format!("/connected?net={}&objects=tips&repack={}", self.network.0.0, u8::from(repack)),
+                None,
+            )
+            .await?;
+        let o: Out = r.json().await.map_err(worker_err)?;
+        Ok(if o.connected { Ok(()) } else { Err(o.error) })
+    }
+    async fn put_refs_page(
+        &self,
+        refs: &[(String, String)],
+        start: bool,
+        done: bool,
+        repack: bool,
+    ) -> Result<(), StoreError> {
+        self.host.put_refs_page(self.network, refs, start, done, repack).await
     }
     async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError> {
         self.host.apply_refs(self.network, changes).await

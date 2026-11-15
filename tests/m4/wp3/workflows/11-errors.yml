@@ -1,0 +1,16 @@
+on: push
+env:
+  X: ${{ env.Y }}
+jobs:
+  a:
+    runs-on: x
+    runs-on: y
+    steps:
+      - id: __bad
+        run: x
+      - id: dup
+        run: x
+      - id: dup
+        run: y
+      - run: ${{ github.sha
+      - name: none

@@ -335,7 +335,7 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
   settle which. So the load is paused, not ended: `b030-load.done` was renamed to
   `tests/am1/raw/b030r2-load-stopped-at-1616Z`, and the state resumes from `b030-state.json`.
 - **The stop was premature; resumed at 16:36:01Z.** The operator ruled (2026-11-15): resume, record the growth as an
-  open question (G10), and change nothing hosted mid-run. The pause ran 16:16:23Z to 16:36:01Z at day 14.916. No
+  open question (G13), and change nothing hosted mid-run. The pause ran 16:16:23Z to 16:36:01Z at day 14.916. No
   pushes or rows were sent and no simulated time passed (`load.mjs` advances active time only while it runs). The
   watcher had ended on the transient `b030-load.done` at 16:16:33Z and was restarted with the load. The drain service
   (`b030-drain`) waits for `b030-load.done`.
@@ -430,13 +430,14 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   this is observed behaviour, not documented: GitHub community discussion #11922; mtilson's `refs/pull` gist; Fluffy
   and Flakey, "What is a GitHub Pull Request merge branch?". It is not verified on GHES 3.22. `design/SHARED.md`,
   "Pull request state never diverges from refs", names both refs as derived and says nothing about close. So deleting
-  head refs on close is not an option. Deleting merge refs on close would match GitHub, but it halves the ref count at
-  most.
+  head refs on close is not an option. Deleting `refs/pull/N/merge` on close matches GitHub's observed behaviour and
+  would halve the ref count at most; it is recorded as an option, unverified on GHES 3.22, not a fix to build now.
 - **What I did not check.** Whether index-pack's own time is the growing part, and how the validates' lock wait splits
-  against repack. Both need main's `/procs` and a lock-wait measure on a hosted run. Main now has repack-keep
-  (`0c171e6d`) and `/procs` (`0c171e6d`, `361a1dc0`). Branch `disk-validate` (`23fc1dd0`, not yet on main) validates a
-  push on the shard's disk as it stands, skipping the catch-up wait. This run's deploy predates all three. Open
-  question G10 (`decisions/OPEN-QUESTIONS.md`) records it.
+  against repack. With the refs measured at 120 ms at most, the lock wait (ii) is the lead. What would measure it is
+  on main: disk-validate (merged as `a304d3fc`) validates a push on the shard's disk as it stands, skipping the
+  pushes' catch-up wait, and `/procs` (`0c171e6d`, `361a1dc0`) shows what the container runs; main also has
+  repack-keep (`0c171e6d`). This run's deploy predates all three. The next B0-30-shaped run from main would show
+  whether validate time stays flat. Open question G13 (`decisions/OPEN-QUESTIONS.md`) records it.
 
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object

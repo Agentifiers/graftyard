@@ -14,6 +14,7 @@
 mod codec;
 mod group;
 mod types;
+pub mod view;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use graftyard_types::{
@@ -26,7 +27,7 @@ use smallvec::SmallVec;
 pub use codec::Malformed;
 pub use group::{
     Accepted, Current, Drained, Pointers, ReleaseFold, STALE_MAX, Upload, ZERO_ACKS, formats_enable_message,
-    presign_undo, undo_entry,
+    presign_undo, roll_steps, undo_entry,
 };
 pub use types::{
     Bound, DayTarget, Format, FormatSet, Genesis, ImageRef, InstallId, Intent, IntentId, IntentState, KeyId, Keys,
@@ -122,6 +123,17 @@ pub fn public_key(seed: &[u8; 32]) -> KeyId {
     KeyId(SigningKey::from_bytes(seed).verifying_key().to_bytes())
 }
 
+/// Checks a release record's signature under `key`, as the group checks `ReleaseUploaded.record_sig`: over the raw
+/// `release.json` bytes. `graftyard runners upgrade` deploys only a record that passes.
+pub fn verify_record(key: &KeyId, record: &[u8], sig: &Signature) -> Result<(), Refusal> {
+    group::verify_raw(key, record, sig)
+}
+
+/// The signature `verify_record` checks, for tests and the vendor's hand tools.
+pub fn sign_record(seed: &[u8; 32], record: &[u8]) -> Signature {
+    Signature(ed25519_dalek::Signer::sign(&SigningKey::from_bytes(seed), record).to_bytes())
+}
+
 /// The trust anchor: the `GRAFTYARD_INSTALL` and `GRAFTYARD_CUSTOMER_KEY` variables that Wrangler set on every script
 /// it created. It never changes after install.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +220,8 @@ pub enum Refusal {
     NotLost(SiteId),
     #[error("IntentStep {got}, the next step is {want}")]
     WrongStep { want: u8, got: u8 },
+    #[error("a {kind} has {steps} forward steps (ROLL_STEPS)")]
+    PastLastStep { kind: &'static str, steps: u8 },
     #[error("{0}")]
     BadState(&'static str),
     #[error("bad release record: {0}")]
@@ -245,6 +259,7 @@ impl Refusal {
             Refusal::DropsUndoVersion(_) => "DropsUndoVersion",
             Refusal::NotLost(_) => "NotLost",
             Refusal::WrongStep { .. } => "WrongStep",
+            Refusal::PastLastStep { .. } => "PastLastStep",
             Refusal::BadState(_) => "BadState",
             Refusal::BadRecord(_) => "BadRecord",
             Refusal::Rejected(_) => "Rejected",

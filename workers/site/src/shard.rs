@@ -90,7 +90,7 @@ async fn arm_beat(s: &Storage, ledger: &graftyard_git::PoolLedger, now: Timestam
 /// A catch-up in the background, and the callers waiting for it to end.
 #[derive(Default)]
 struct Run {
-    running: bool,
+    runs: graftyard_git::CatchUps,
     waiters: Vec<futures_channel::oneshot::Sender<std::result::Result<(), String>>>,
 }
 
@@ -103,7 +103,7 @@ const ALARM_HOLDS: std::time::Duration = std::time::Duration::from_secs(600);
 /// Storage key: a catch-up is running or was cut off, with the record it reads the group through.
 const WARMING_KEY: &str = "warming";
 /// The container's read-only routes for the web app (`containers/git/server/ui.go`), forwarded as `/ui/<route>`.
-const UI_ROUTES: [&str; 7] = ["resolve", "tree", "blame", "diff", "compare", "readme", "commits"];
+const UI_ROUTES: [&str; 8] = ["resolve", "tree", "blame", "diff", "compare", "readme", "commits", "blob"];
 
 /// The shard container's instance type when the site sets no `SHARD_INSTANCE`: the 50-developer tier's
 /// (`design/DESIGN.md`, Shape, `HOT_POOL`). A site day sets the tier's size, `standard-4` at 2,000 developers, which
@@ -278,12 +278,7 @@ impl Jobs {
     fn start(&self) {
         let started = RUNS.with(|r| {
             let mut r = r.borrow_mut();
-            let run = r.entry(self.key()).or_default();
-            if run.running {
-                return false;
-            }
-            run.running = true;
-            true
+            r.entry(self.key()).or_default().runs.start()
         });
         if !started {
             return;
@@ -294,10 +289,11 @@ impl Jobs {
             if let Err(e) = &r {
                 console_error!("shard catch-up {}: {e}", me.net.0.0);
             }
-            let waiters = RUNS.with(|r| {
-                let mut r = r.borrow_mut();
-                let run = r.entry(me.key()).or_default();
-                run.running = false;
+            let ok = r.is_ok();
+            let waiters = RUNS.with(|m| {
+                let mut m = m.borrow_mut();
+                let run = m.entry(me.key()).or_default();
+                run.runs.end(ok);
                 std::mem::take(&mut run.waiters)
             });
             for w in waiters {
@@ -347,7 +343,7 @@ impl Jobs {
         let (tx, rx) = futures_channel::oneshot::channel();
         RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
         // A catch-up that is running started before this call: this waits for it, then for the next one.
-        let running = RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.running));
+        let running = RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.runs.running));
         let next = async {
             if running {
                 let _ = rx.await;
@@ -370,9 +366,48 @@ impl Jobs {
         r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
     }
 
+    /// Starts a catch-up unless one runs, and answers the number of the first run to start after this call, which
+    /// reads the group's head after anything committed before it (`wait_from`).
+    fn start_from(&self) -> u64 {
+        let from = RUNS.with(|r| r.borrow().get(&self.key()).map_or(1, |run| run.runs.next()));
+        self.start();
+        from
+    }
+
+    /// Waits until a catch-up numbered `from` or later (`start_from`) has ended without an error, at most `wait`, with
+    /// `wait`'s answers past it or on a failed run (`graftyard_git::CatchUps::step`).
+    async fn wait_from(
+        &self,
+        from: u64,
+        wait: Option<std::time::Duration>,
+    ) -> std::result::Result<(), Result<Response>> {
+        use graftyard_git::CatchUpStep;
+        let next = async {
+            loop {
+                let runs = RUNS.with(|r| r.borrow().get(&self.key()).map(|run| run.runs).unwrap_or_default());
+                match runs.step(from) {
+                    CatchUpStep::Done => return Ok::<(), String>(()),
+                    CatchUpStep::Start => self.start(),
+                    CatchUpStep::Await => {}
+                }
+                let (tx, rx) = futures_channel::oneshot::channel();
+                RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
+                rx.await.unwrap_or_else(|_| Err("the catch-up ended".into()))?;
+            }
+        };
+        let r = match wait {
+            Some(d) => match crate::host::within(d, next).await {
+                Some(r) => r,
+                None => return Err(warming()),
+            },
+            None => next.await,
+        };
+        r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
+    }
+
     /// Ends once no catch-up of the network runs here.
     async fn idle(&self) {
-        if !RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.running)) {
+        if !RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.runs.running)) {
             return;
         }
         let (tx, rx) = futures_channel::oneshot::channel();
@@ -515,7 +550,8 @@ impl DurableObject for GitShard {
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };
         let path = url.path().to_owned();
-        // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments).
+        // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments) and the
+        // container's running git processes and the network's pack counts, all and kept (`procs`).
         if path == "/status" {
             let running = self.state.container().is_some_and(|c| c.running());
             let net = q(&url, "repo").and_then(|v| v.parse().ok()).map(|r| NetworkId(DbId(r)));
@@ -536,6 +572,12 @@ impl DurableObject for GitShard {
                 None => None,
             };
             let cursor = net.and_then(|n| CURSORS.with(|m| m.borrow().get(&(self.run_key.clone(), n.0.0)).copied()));
+            // The git processes running on the container, so a saturated shard says which one holds its CPU and
+            // memory (LM-1 round 24c, where only its signature named the repack).
+            let procs = match net {
+                Some(n) => host.procs(n).await.ok(),
+                None => None,
+            };
             return Response::from_json(&json!({
                 "running": running,
                 "alarm": self.state.storage().get_alarm().await?,
@@ -545,6 +587,7 @@ impl DurableObject for GitShard {
                 "pool": net.map(pool_slots),
                 "rehydrating": rehydrating,
                 "cursor": cursor,
+                "procs": procs,
             }));
         }
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.
@@ -625,7 +668,13 @@ impl DurableObject for GitShard {
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record };
         // A new leadership's `warm` (`crate::prsync`) is the one caller no client asked for: it catches up a running
         // shard and starts no stopped one, and it never counts as the shard's last request.
-        let caller = if path == "/catchup" && q(&url, "warm").is_some() { Caller::Warm } else { Caller::Client };
+        // The network leader's warm of a pool slot its network holds (`warm=pool`, `crate::fanout`) starts a stopped
+        // container: a pool shard nobody started never becomes warm.
+        let caller = match (path.as_str(), q(&url, "warm").as_deref()) {
+            ("/catchup", Some("pool")) => Caller::PoolWarm,
+            ("/catchup", Some(_)) => Caller::Warm,
+            _ => Caller::Client,
+        };
         let running = self.state.container().is_some_and(|c| c.running());
         match graftyard_git::serve(caller, running) {
             Serve::Skip => return Response::from_json(&json!({ "skipped": "stopped" })),
@@ -656,7 +705,8 @@ impl DurableObject for GitShard {
         // `wait`. A pool shard forwarded a push (`pool=1`) while it holds no cursor for its disk answers that too: a
         // rehydrate of a hot group's tail outlasts the push (`tests/am1/results/b0-30.md`, "Why it crossed"), and the
         // first shard validates the push itself. Either way the catch-up goes on in the background.
-        if matches!(path.as_str(), "/validate" | "/info-refs" | "/upload-pack" | "/promote") {
+        // `/catchup` too: the edge's probe before a streamed pack (`validate_streamed`) asks it with `next=1`.
+        if matches!(path.as_str(), "/validate" | "/info-refs" | "/upload-pack" | "/promote" | "/catchup") {
             let follows = q(&url, "next").is_some();
             let rehydrating = follows && host.rehydrating(net).await;
             let pool_cold = path == "/validate" && q(&url, "pool").is_some() && !host.warm(net).await.unwrap_or(false);
@@ -667,7 +717,20 @@ impl DurableObject for GitShard {
         }
         match path.as_str() {
             "/validate" => {
-                if let Err(r) = caught_up().await {
+                // The archive's own promotion (`derived`) is not a push: it reports no load and never forwards.
+                let derived = q(&url, "derived").is_some();
+                // A push validates against this disk as it stands, with no catch-up first, and the shard catches up
+                // only when the container finds a base or ref the disk lacks (`OnDisk`, below). Caught up first, every
+                // forwarded push of m3fr5c's B0-32 burst waited out two catch-up runs, the network shard's and the
+                // pool shard's, each grown to 4 to 9.5 s by every shard ingesting every burst pack
+                // (`tests/am1/results/disk-validate.md`). A catch-up starts either way, in the background, so the disk
+                // and the network's k keep moving, and a missing base waits only for one that started after this call
+                // arrived, not for the one in progress and then another (`Jobs::wait`). A promotion, or a container
+                // this isolate holds no cursor for, catches up first.
+                let cursor = CURSORS.with(|m| m.borrow().contains_key(&(obj.clone(), net.0.0)));
+                let on_disk = graftyard_git::validate_on(derived, running, cursor) == graftyard_git::ValidateOn::Disk;
+                let from = jobs.start_from();
+                if !on_disk && let Err(r) = jobs.wait_from(from, wait).await {
                     return r;
                 }
                 // The body is never read here: it streams to the container or to the pool shard (LM-1 round 6, where
@@ -678,7 +741,7 @@ impl DurableObject for GitShard {
                     (num("tipsn"), num("detailn"), q(&url, "class").as_deref() == Some("agent"));
                 let body = || req.inner().body().map(wasm_bindgen::JsValue::from);
                 // `fanout`: the network's first shard forwards a push to the one of the k that rendezvous on its id
-                // picks (`graftyard_git::push_validator`), which catches up before it validates. The push id is the
+                // picks (`graftyard_git::push_validator`), which validates it on its own disk. The push id is the
                 // pack's trailer, its own SHA-1, the same on every re-send, which the caller names (`trailer`). A pool
                 // shard never forwards (`via`). One that cannot answer leaves the push to the first shard: the body
                 // is gone with the forward, so the caller sends it again with `via` (`x-graft-fanout-failed`). The
@@ -698,8 +761,6 @@ impl DurableObject for GitShard {
                     }
                     due
                 });
-                // The archive's own promotion (`derived`) is not a push: it reports no load and never forwards.
-                let derived = q(&url, "derived").is_some();
                 if due && q(&url, "via").is_none() && !derived {
                     let own = host.load().await.unwrap_or_default();
                     let (env, sites, me, rec) = (self.env.clone(), site.sites.clone(), site.id, log.record.clone());
@@ -793,7 +854,21 @@ impl DurableObject for GitShard {
                 }
                 // Only the container's own 4xx (a 429 is `Busy`) is the pack's answer; a call to it that broke (a kill
                 // mid-push) is this shard's, a 503 the edge moves past (`graftyard_git::validate_status`).
-                match host.validate(net, tipsn, detailn, agent, derived, body()).await {
+                use graftyard_git::host::{OnDisk, Validated};
+                let disk = if on_disk { OnDisk::AsItStands } else { OnDisk::CaughtUp };
+                let r = match host.validate(net, tipsn, detailn, agent, derived, disk, body()).await {
+                    // The container kept the request: once a catch-up that started after it ran, the same request is
+                    // checked again, and every failure then is the pack's, as on a shard caught up first.
+                    Ok(Validated::MissingBase { held }) => {
+                        if let Err(r) = jobs.wait_from(from, wait).await {
+                            return r;
+                        }
+                        host.validate(net, tipsn, detailn, agent, derived, OnDisk::Held(&held), None).await
+                    }
+                    r => r,
+                };
+                match r {
+                    Ok(Validated::MissingBase { .. }) => Response::error("validate: a held request missed again", 503),
                     Ok(graftyard_git::host::Validated::Done(Some(ix), _)) if detailn == 0 => Response::from_json(&ix),
                     Ok(graftyard_git::host::Validated::Done(ix, detail)) => {
                         Response::from_json(&json!({ "index": ix, "detail": detail }))
@@ -837,9 +912,22 @@ impl DurableObject for GitShard {
                     .iter()
                     .map(|h| graftyard_types::Digest::parse_hex(h).ok_or_else(|| Error::RustError(format!("sum {h}"))))
                     .collect::<Result<_>>()?;
-                Response::from_bytes(host.promote(net, &sums).await.map_err(se)?)
+                // The container's pack streams through to the archive's promotion, which tees it to the buckets
+                // in parts: buffered here, a promotion held the whole pack in this isolate.
+                host.promote(net, &sums).await.map_err(se)
             }
             "/fsck" => Response::from_json(&host.fsck(net).await.map_err(se)?),
+            // The `.idx` of a pack this shard's `/validate` kept aside, for the archive's promotion to store with it.
+            // No catch-up: the promotion's own validate just wrote it.
+            "/idx" => {
+                let sum = q(&url, "sha256")
+                    .and_then(|h| graftyard_types::Digest::parse_hex(&h))
+                    .ok_or_else(|| Error::RustError("sha256".into()))?;
+                match host.validated_idx(net, sum).await.map_err(se)? {
+                    Some(b) => Response::from_bytes(b),
+                    None => Response::error("no validated pack", 404),
+                }
+            }
             // `GitCacheShard::merge` for a real merge or a merge-queue group (`method`), after catching up.
             "/merge" if q(&url, "method").is_some() => {
                 let oid = |v: &str| {
@@ -993,11 +1081,35 @@ impl DurableObject for GitShard {
             let down = s.get::<u64>("pool_down_until").await.ok().flatten().is_some_and(|t| now.0 < t);
             #[cfg(not(feature = "test-faults"))]
             let down = false;
+            let mut idle = Vec::new();
             if !down {
-                ledger.beat(now);
+                idle = ledger.beat(now);
                 s.put(LEDGER_KEY, &ledger).await?;
             }
             arm_beat(&s, &ledger, now).await?;
+            // Slots no lease holds any more are torn down, so the pool runs only for networks hot in the last
+            // `LOAD_STALE` (`graftyard_git::PoolLedger::beat`). Slot 0 is this object's own container.
+            for slot in idle {
+                let r = if slot == 0 {
+                    host.destroy().await.map_err(se)
+                } else {
+                    let name = format!("git#{}#pool:{}", site.id.0, 1 + slot);
+                    match crate::fanout::stub(&self.env, &site.sites, site.id, &name) {
+                        Ok(st) => {
+                            let mut init = RequestInit::new();
+                            init.with_method(Method::Post);
+                            st.fetch_with_request(Request::new_with_init("https://shard/teardown", &init)?)
+                                .await
+                                .map(|_| ())
+                        }
+                        Err(e) => Err(e),
+                    }
+                };
+                match r {
+                    Ok(()) => console_log!("pool slot {slot} on site {} torn down: no lease holds it", site.id.0),
+                    Err(e) => console_error!("pool slot {slot} teardown: {e}"),
+                }
+            }
         }
         renewed?;
         // A catch-up an isolate reset cut off (its `warming` key outlived it) starts again here, from its saved page,

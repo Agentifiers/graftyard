@@ -89,6 +89,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Hook { .. } | RepoEvent::HookCursor(_) => TierSet::CORE,
         RepoEvent::Watchers(_) => TierSet::METADATA,
         RepoEvent::Split(x) => crate::split::tiers(x),
+        RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => TierSet::CORE,
     }
 }
 
@@ -158,6 +159,9 @@ pub const CORE: Schema = Schema {
         t("hook_cursor", &[]),
         // Format 32.20: a metadata split's state (`crate::split::SplitState`).
         t("split", &["k"]),
+        // M4-WP3, 32.23: Actions secrets and variables by scope (`""` or `env:<name>`) and name.
+        t("actions_secret", &["scope", "name"]),
+        t("actions_variable", &["scope", "name"]),
     ],
 };
 
@@ -865,6 +869,7 @@ impl RepoTiers {
             RepoEvent::PathSet(_) => {}
             RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
             RepoEvent::Split(x) => crate::split::write_core(w, x, at),
+            RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => crate::secrets::write_core(w, ev),
         }
     }
 

@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -137,6 +140,110 @@ func TestValidateBodyHoldsNoLock(t *testing.T) {
 	}
 }
 
+// A clone the client gives up on releases the network's lock. B0-34's time-to-first-byte probe cancels each depth-1
+// fetch after its first byte; upload-pack's copy to the gone client failed, nothing read its stdout again, so git
+// blocked on the full pipe, `cmd.Wait` never returned, and the shared lock stayed held. The next catch-up's /ingest
+// waited to take it alone and every later validate queued behind that writer: all three shards of the monorepo
+// answered `warming` from 33 s into the window (`tests/am1/results/lm1-memory.md`, round 18c).
+func TestCancelledCloneReleasesTheLock(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	// Incompressible content, well past the pipe's and the sockets' buffers, so upload-pack is still writing when
+	// the client goes.
+	big := make([]byte, 8<<20)
+	r := uint32(1)
+	for i := range big {
+		r ^= r << 13
+		r ^= r >> 17
+		r ^= r << 5
+		big[i] = byte(r)
+	}
+	base := commit(t, wt, map[string]string{"big.bin": string(big)})
+	run(t, wt, "", "push", "-q", repo("7"), "main")
+	putRefs(t, s.URL, base)
+
+	pkt := func(l string) string { return fmt.Sprintf("%04x%s", len(l)+4, l) }
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", s.URL+"/upload-pack?net=7", strings.NewReader(
+		pkt("command=fetch\n")+"0001"+pkt("no-progress\n")+pkt("want "+base+"\n")+pkt("deepen 1\n")+pkt("done\n")+"0000"))
+	req.Header.Set("git-protocol", "version=2")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resp.Body.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	resp.Body.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	run(t, wt, "", "checkout", "-q", "-B", "one", base)
+	t1 := commit(t, wt, map[string]string{"one": "1\n"})
+	p1 := packOfWt(t, wt, t1, base)
+	sum := sha256.Sum256(p1)
+	run(t, wt, "", "checkout", "-q", "-B", "two", base)
+	t2 := commit(t, wt, map[string]string{"two": "2\n"})
+	p2 := packOfWt(t, wt, t2, base)
+	done := make(chan string, 1)
+	go func() {
+		if code, body := postBody(t, s.URL+"/ingest?net=7&sha256="+hex.EncodeToString(sum[:]), p1); code != 200 {
+			done <- fmt.Sprintf("ingest: %d %s", code, body)
+			return
+		}
+		if code, _, body := validateDetail(t, s.URL, []string{t2}, nil, p2); code != 200 {
+			done <- fmt.Sprintf("validate: %d %s", code, body)
+			return
+		}
+		done <- ""
+	}()
+	select {
+	case e := <-done:
+		if e != "" {
+			t.Fatal(e)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("an /ingest and a validate after a cancelled clone did not finish in 10 s: the clone still holds the lock")
+	}
+
+	// The same through the handler alone, with a writer that fails after its first write: it returns and frees the lock.
+	req2, _ := http.NewRequest("POST", "/upload-pack?net=7", strings.NewReader(
+		pkt("command=fetch\n")+"0001"+pkt("no-progress\n")+pkt("want "+base+"\n")+pkt("deepen 1\n")+pkt("done\n")+"0000"))
+	req2.Header.Set("git-protocol", "version=2")
+	returned := make(chan struct{})
+	go func() {
+		mux().ServeHTTP(&failAfter{h: http.Header{}, left: 1}, req2)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("upload-pack's handler did not return after its response write failed")
+	}
+	if !lock("7").TryLock() {
+		t.Fatal("the network's lock is still held after upload-pack's write failed")
+	}
+	lock("7").Unlock()
+}
+
+// failAfter is a ResponseWriter that takes `left` writes, then fails every one, as a gone client's connection does.
+type failAfter struct {
+	h    http.Header
+	left int
+}
+
+func (f *failAfter) Header() http.Header { return f.h }
+func (f *failAfter) WriteHeader(int)     {}
+func (f *failAfter) Write(p []byte) (int, error) {
+	if f.left == 0 {
+		return 0, io.ErrClosedPipe
+	}
+	f.left--
+	return len(p), nil
+}
+
 // A repack holds no network lock: while one runs (held here at its start), an ls-refs, an /ingest, and a validate of
 // the same network answer, and evict refuses. With the lock held alone for the repack, every one of them waited for
 // it, seconds once a shard's packs reach 100 MB (LM-1 round 7).
@@ -233,4 +340,102 @@ func TestRepackHoldsNoNetworkLock(t *testing.T) {
 		t.Fatalf("fsck: %s", out)
 	}
 	run(t, repo("7"), "", "cat-file", "-e", side)
+}
+
+// A rehydrate that skipped covered packs ends with its last ref page (repack=0) and then the backstop /connected
+// (repack=1). The check answers while a repack, held here at its start, would still be running, and only then does the
+// repack start, whether the walk passed or failed. Before, the last ref page started the repack and the check waited
+// for all of it: 20 minutes and more of 2.6 GB on B0-34 m33, with the shard answering `warming` throughout
+// (tests/am1/results/lm1-memory.md, round 21). A /refs without repack=0 still starts the repack, as a plain
+// rehydrate's and a catch-up's do.
+func TestConnectedRunsBeforeTheRehydratesRepack(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	base := commit(t, wt, map[string]string{"README": "r\n"})
+	run(t, wt, "", "push", "-q", repo("7"), "main")
+	prev := base
+	for i := 0; i <= repackAt; i++ {
+		tip := commit(t, wt, map[string]string{"f": fmt.Sprintf("%d\n", i)})
+		idx := exec.Command("git", "index-pack", "--stdin", "--fix-thin")
+		idx.Dir = repo("7")
+		idx.Stdin = bytes.NewReader(packOfWt(t, wt, tip, prev))
+		if out, err := idx.CombinedOutput(); err != nil {
+			t.Fatalf("index-pack: %v %s", err, out)
+		}
+		prev = tip
+	}
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	old := runRepack
+	runRepack = func(rp string) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}
+	defer func() { runRepack = old }()
+	defer close(release)
+	put := func(q string) {
+		req, _ := http.NewRequest("PUT", s.URL+"/refs?net=7&start=1&done=1"+q, strings.NewReader(prev+" refs/heads/main\n"))
+		r, err := http.DefaultClient.Do(req)
+		if err != nil || r.StatusCode != 200 {
+			t.Fatalf("PUT /refs%s: %v %v", q, err, r)
+		}
+		r.Body.Close()
+	}
+	check := func() map[string]any {
+		got := make(chan map[string]any, 1)
+		go func() { got <- connected(t, s.URL, "&objects=tips&repack=1") }()
+		select {
+		case v := <-got:
+			return v
+		case <-time.After(5 * time.Second):
+			t.Fatal("/connected did not answer in 5 s: it waited on the rehydrate's own repack")
+			return nil
+		}
+	}
+
+	put("&repack=0")
+	select {
+	case <-started:
+		t.Fatal("the last ref page started a repack though the rehydrate's check follows it")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if v := check(); v["connected"] != true || v["repack"] != true {
+		t.Fatalf("connected: %v", v)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check did not start the repack after its walk")
+	}
+	release <- struct{}{}
+
+	// A failed walk starts the repack too: a ref to a commit whose tree is not here.
+	bad := run(t, repo("7"), "tree 1111111111111111111111111111111111111111\nparent "+prev+"\n\nbroken\n",
+		"hash-object", "-t", "commit", "--literally", "-w", "--stdin")
+	prev = bad
+	put("&repack=0")
+	if v := check(); v["connected"] != false || v["repack"] != true {
+		t.Fatalf("connected over a missing tree: %v", v)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a failed check did not start the repack")
+	}
+	release <- struct{}{}
+
+	// Without repack=0 the last page starts it at once, as before. The released repack's commit-graph still holds
+	// the repack lock for a moment, so wait it out first.
+	repacking.Lock()
+	repacking.Unlock()
+	put("")
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a last ref page without repack=0 started no repack")
+	}
+	release <- struct{}{}
 }

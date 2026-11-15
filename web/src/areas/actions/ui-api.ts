@@ -87,9 +87,12 @@ export type RelayMessage =
   | { type: "end"; conclusion: string }
   | { type: "no-stream" };
 
-export const relayPath = (jobId: number | ":jobId") => `/_t/logrelay/jobs/${jobId}`;
+// The edge checks read access to the repository, as for `/_t/ui/repos/...`, and joins the
+// relay on the repository's home site.
+export const relayPath = (owner: string, repo: string, jobId: number | string) =>
+  `/_t/logrelay/repos/${owner}/${repo}/jobs/${jobId}`;
 
-export function relayUrl(jobId: number) {
+export function relayUrl(owner: string, repo: string, jobId: number) {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${window.location.host}${relayPath(jobId)}`;
+  return `${scheme}://${window.location.host}${relayPath(owner, repo, jobId)}`;
 }

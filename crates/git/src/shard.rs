@@ -140,6 +140,8 @@ pub const LOAD_STALE: Duration = Duration::from_secs(180);
 pub struct LoadReports {
     pub sites: ArrayVec<(SiteId, Timestamp, NetworkLoad), 2>,
     pub f: Fanout,
+    /// Whether this leadership's last ask held one slot past the k - 1 served (`pool_reserve`).
+    pub reserved: bool,
 }
 
 impl LoadReports {
@@ -161,6 +163,19 @@ impl LoadReports {
         let loads = [fresh(warm[0]), fresh(warm[1])];
         let next = fanout([&loads[0], &loads[1]], k, now, &mut self.f);
         (next != k.clamp(1, FANOUT_MAX)).then_some(next)
+    }
+
+    /// Whether the larger warm load is above `FANOUT_UP` now, so the leader reserves the next pool slot ahead of the
+    /// step (`pool_reserve`).
+    pub fn high(&self) -> bool {
+        self.f.high_since.is_some()
+    }
+
+    /// A step `report` answered that the leader did not commit, because a slot it would serve from was not caught up
+    /// (`warm_step`): the hysteresis goes back to `prior`, what it was before that report, so the high line keeps its
+    /// start and the step commits at the first report after the slot answers caught up, not `FANOUT_UP_FOR` later.
+    pub fn step_waited(&mut self, prior: Fanout) {
+        self.f = prior;
     }
 }
 
@@ -226,6 +241,15 @@ pub struct PoolLease {
 pub struct PoolLedger {
     pub leases: Vec<PoolLease>,
     pub seen: Option<Timestamp>,
+    /// Slots a lease gave up (it lapsed, or its network asked for fewer) and no lease holds again, which the ledger
+    /// object's heartbeat tears down (`beat`), so a pool shard runs only while a network holds it
+    /// (`design/DESIGN.md`, Shape, `HOT_POOL`).
+    #[serde(default)]
+    pub idle: Vec<u16>,
+}
+
+fn held_all(l: &Option<PoolLease>) -> Vec<u16> {
+    l.as_ref().map_or(Vec::new(), |l| l.slots.clone())
 }
 
 impl PoolLedger {
@@ -241,7 +265,11 @@ impl PoolLedger {
                 l.at = Timestamp((l.at.0 + gap).min(now.0));
             }
         }
-        self.leases.retain(|l| now.0 < l.at.0 + LOAD_STALE.as_millis() as u64);
+        let stale = LOAD_STALE.as_millis() as u64;
+        let lapsed: Vec<u16> =
+            self.leases.iter().filter(|l| now.0 >= l.at.0 + stale).flat_map(|l| l.slots.iter().copied()).collect();
+        self.idle.extend(lapsed);
+        self.leases.retain(|l| now.0 < l.at.0 + stale);
     }
 
     /// `network`'s ask for `want` pool shards (its wanted k - 1) at `now`, which also renews its lease. Every other
@@ -271,6 +299,8 @@ impl PoolLedger {
             self.leases.iter().flat_map(|l| l.slots.iter().copied()).chain(slots.iter().copied()).collect();
         let free = by_weight(&network_key(network), 0..HOT_POOL).into_iter().filter(|s| !taken.contains(s));
         slots.extend(free.take(g - slots.len()));
+        self.idle.extend(held_all(&mine).into_iter().filter(|x| !slots.contains(x)));
+        self.idle.retain(|x| !slots.contains(x));
         if !slots.is_empty() {
             self.leases.push(PoolLease { network, owner, slots: slots.clone(), at: now });
         }
@@ -282,14 +312,24 @@ impl PoolLedger {
     /// Without it a ledger called less often than LEDGER_GAP shifted every lease at each call, and none ever lapsed:
     /// two networks torn down at k 4 held their owner's whole share for 95 minutes (LM-1's m21,
     /// `lm1-memory` round 10).
-    pub fn beat(&mut self, now: Timestamp) {
+    ///
+    /// Answers the slots to tear down now: those a lease gave up (it lapsed, or its network asked for fewer) that no
+    /// lease holds again, each once. The object calls `/teardown` on each (`workers/site/src/shard.rs`, `alarm`), so
+    /// the pool runs only for networks hot in the last `LOAD_STALE`, inside what `scripts/cost.py` prices.
+    pub fn beat(&mut self, now: Timestamp) -> Vec<u16> {
         self.settle(now);
         self.seen = Some(now);
+        let held: Vec<u16> = self.leases.iter().flat_map(|l| l.slots.iter().copied()).collect();
+        let mut out: Vec<u16> = std::mem::take(&mut self.idle).into_iter().filter(|x| !held.contains(x)).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
-    /// When the ledger's object must next `beat`: `LEDGER_BEAT` after `now` while it holds a lease, never otherwise.
+    /// When the ledger's object must next `beat`: `LEDGER_BEAT` after `now` while it holds a lease or a slot to tear
+    /// down, never otherwise.
     pub fn beat_due(&self, now: Timestamp) -> Option<Timestamp> {
-        (!self.leases.is_empty()).then(|| Timestamp(now.0 + LEDGER_BEAT.as_millis() as u64))
+        (!self.leases.is_empty() || !self.idle.is_empty()).then(|| Timestamp(now.0 + LEDGER_BEAT.as_millis() as u64))
     }
 
     /// The network's first shard on this site, once a minute while it serves pushes: renews `network`'s lease as it
@@ -314,6 +354,48 @@ impl PoolLedger {
 pub fn pool_ask(k: u8, step: Option<u8>) -> Option<u8> {
     let want = step.unwrap_or(k).clamp(1, FANOUT_MAX);
     (want > 1 || k > 1).then_some(want - 1)
+}
+
+/// The pool shards the leader asks both warm sites' ledgers for after a load report, with the step up reserved
+/// ahead (`design/DESIGN.md`, Shape, `HOT_POOL`): while the larger warm load is above `FANOUT_UP` (`high`) and k is
+/// below `FANOUT_MAX`, it asks for k pool shards, one past the k - 1 it serves from, from the first high report, so
+/// the reserved slot is started and caught up (`Caller::PoolWarm`) during `FANOUT_UP_FOR` instead of after the step.
+/// Otherwise it is `pool_ask`, except that a reservation this leadership holds (`reserved`) is given back at k - 1:
+/// the first shard renews its whole lease each minute, so a slot no ask releases would never lapse. `None` when
+/// nothing is held or wanted.
+pub fn pool_reserve(k: u8, step: Option<u8>, high: bool, reserved: bool) -> Option<u8> {
+    let k = k.clamp(1, FANOUT_MAX);
+    let ask = pool_ask(k, step);
+    match (high && k < FANOUT_MAX).then_some(k) {
+        Some(r) => Some(ask.map_or(r, |a| a.max(r))),
+        None if reserved => Some(ask.unwrap_or(k - 1)),
+        None => ask,
+    }
+}
+
+/// The k a step up may commit given which of the granted slots are caught up: `next` (`granted_k`'s answer) only when
+/// it does not pass the committed `k` or every slot it would serve from on both warm sites is warm, else `k`. A step
+/// to a cold slot would send pushes to a shard that answers `warming` for the length of a rehydrate (32 minutes for
+/// B0-34's monorepo, `tests/am1/results/lm1-memory.md`, round 18b), so the step waits, keeping the high line, until
+/// the reserved slots catch up. `warm[s]` is, per warm site, whether each slot in `slots[s]` (in grant order) answered
+/// its last `PoolWarm` catch-up 200; the step serves from the first `next - 1` of them.
+pub fn warm_step(k: u8, next: u8, slots: [&[u16]; 2], warm: [&[bool]; 2]) -> u8 {
+    if next <= k {
+        return next;
+    }
+    let n = usize::from(next - 1);
+    let ready = |s: usize| slots[s].len() >= n && warm[s].len() >= n && warm[s][..n].iter().all(|w| *w);
+    if ready(0) && ready(1) { next } else { k }
+}
+
+/// The pool shards a network keeps on each warm site after its leader asked for `want`, both ledgers granted up to
+/// `granted` (`granted_k`), and it committed `next` (`warm_step`): the k - 1 it serves, or with `reserve` one past
+/// it up to `want`; and while a step waits on cold slots (`next` < `granted`), every slot that step would serve from,
+/// so they stay leased and warm until it commits. Trimming a waiting step to `next` - 1 gave its slots back before
+/// they were warmed, so it never stepped (LM-1 m30: a forced k 4 on a fresh network kept k 1).
+pub fn pool_keep(want: u8, granted: u8, next: u8, reserve: bool) -> u8 {
+    let served = if reserve { want.min(next) } else { next.saturating_sub(1) };
+    if next < granted { served.max(granted - 1) } else { served }
 }
 
 /// The k a network's leader commits after asking both warm sites' ledgers for `want` - 1 pool shards. A step up goes
@@ -434,6 +516,10 @@ pub fn renewal(now: Timestamp, last_request: Timestamp) -> Renewal {
 pub enum Caller {
     Client,
     Warm,
+    /// The network leader's warm of a pool shard its network holds (`warm=pool` on `/catchup`): it starts a stopped
+    /// container, since a pool shard nobody started never becomes warm, but is not a request, so it keeps none warm
+    /// past its lease; the ledger tears the slot down when the lease is given up (`PoolLedger::beat`).
+    PoolWarm,
 }
 
 /// What the shard object does with a call, given whether its container runs.
@@ -452,6 +538,7 @@ pub fn serve(caller: Caller, running: bool) -> Serve {
         Caller::Client => Serve::Run { touch: true },
         Caller::Warm if running => Serve::Run { touch: false },
         Caller::Warm => Serve::Skip,
+        Caller::PoolWarm => Serve::Run { touch: false },
     }
 }
 
@@ -606,6 +693,76 @@ pub fn validate_status(container: Option<u16>) -> u16 {
         Some(s) if (400..500).contains(&s) => 422,
         _ => 503,
     }
+}
+
+/// One shard object's catch-ups of one network, numbered from 1 as they start (`workers/site/src/shard.rs`, `Jobs`):
+/// whether one runs, the number of the latest started, and of the latest that ended without an error.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CatchUps {
+    pub running: bool,
+    pub started: u64,
+    pub ok: u64,
+}
+
+/// What a caller that needs a catch-up numbered `from` or later does next: go on, start one, or wait for the running
+/// one to end and ask again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatchUpStep {
+    Done,
+    Start,
+    Await,
+}
+
+impl CatchUps {
+    /// The number of the next catch-up to start: the first that reads the group's head after anything committed
+    /// before this call. The one running now may have read it earlier.
+    pub fn next(&self) -> u64 {
+        self.started + 1
+    }
+
+    pub fn step(&self, from: u64) -> CatchUpStep {
+        if self.ok >= from {
+            CatchUpStep::Done
+        } else if self.running {
+            CatchUpStep::Await
+        } else {
+            CatchUpStep::Start
+        }
+    }
+
+    /// Starts one unless one runs; true when it did.
+    pub fn start(&mut self) -> bool {
+        if self.running {
+            return false;
+        }
+        self.running = true;
+        self.started += 1;
+        true
+    }
+
+    pub fn end(&mut self, ok: bool) {
+        self.running = false;
+        if ok {
+            self.ok = self.started;
+        }
+    }
+}
+
+/// Which disk a shard checks a push against (`crate::host::OnDisk`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValidateOn {
+    /// After a catch-up that started after the push arrived.
+    CaughtUp,
+    /// As it stands, with a catch-up only when the container finds a base or ref it lacks.
+    Disk,
+}
+
+/// A push validates on the disk as it stands once this isolate caught the running container up (`cursor`): its
+/// disk then holds every committed pack up to some index and ref tips whose history is whole, so a pack that
+/// resolves and connects there resolves and connects on any later disk. The archive's promotion (`derived`) and a
+/// container this isolate never caught up catch up first (design/DESIGN.md, Shape, "Git cache shards (derived)").
+pub fn validate_on(derived: bool, running: bool, cursor: bool) -> ValidateOn {
+    if derived || !running || !cursor { ValidateOn::CaughtUp } else { ValidateOn::Disk }
 }
 
 /// How often a leading member catches up every Full site's first shard of its network while it applies entries

@@ -1,6 +1,6 @@
 # M4-WP5: the web app on a hosted edge
 
-BUILD-PLAN M4-WP5 asks for the web app reading public GraphQL and REST with persisted queries plus the private `/_t/ui/*` API, an HTML shell with the first route's data inlined, immutable static assets, one error boundary and query per region, and BF-38 and BF-61 under Playwright on a hosted edge. **BF-38 passes on graft-m4a, except its running-job live log, which needs `LogRelay` (M4-WP3) and is pending. BF-61 is pending for the same reason.**
+BUILD-PLAN M4-WP5 asks for the web app reading public GraphQL and REST with persisted queries plus the private `/_t/ui/*` API, an HTML shell with the first route's data inlined, immutable static assets, one error boundary and query per region, and BF-38 and BF-61 under Playwright on a hosted edge. **BF-38 passes on graft-m4a, its running-job live log included (edge day 12, 15:09Z on 2026-11-14). BF-61 passes on graft-m4a: `bf61.spec.mjs` printed one clean result on wp3-live job 1114123 at 16:25Z on 2026-11-14 (edge day 13, no new site day), with lines within 2 s, the fallback 2.2 s after the relay's kill, and a complete final log. M4-WP5 is done.**
 
 Branch `m4-web`, cut from `origin/main` at `20147db`, merged with main at `3b18ded` (M5-WP1's `release.rs`, which graft-m4a edges need).
 
@@ -44,7 +44,7 @@ Run at 13:24Z on 2026-11-13 against `graft-m4a-edge` `3911b234` (product build):
 | PR diff (`?tab=files`) | 12 queries seeded; the file tree and patches rendered; 0 seeded reads; 0 requests before FCP (1,360 ms) |
 | PR checks (`?tab=checks`) | 10 queries seeded; "1 of 3 checks passed, 1 failed, 1 running" and `ci/preview`; 0 seeded reads; 0 requests before FCP (1,092 ms) |
 | Checks query forced to fail | check-runs removed from the seed and answered `503` with `Retry-After: 1`: 13 failed reads (the region's retries plus the tab bar's and merge box's reads). **Only `checks` showed an error**; the header, tabs, and sidebar rendered. On the timeline with the same fault, no region showed an error |
-| Running job's live log | **pending**: needs `LogRelay` (M4-WP3) |
+| Running job's live log | **passed** on edge `3bd23b1d` (below): the page joined the job's relay, showed Live, and drew new lines as the runner sent them |
 
 The reads after first paint are the chrome's own widgets (notifications, watch, star, branch count, check-suites for re-run buttons, reactions), which the design leaves unseeded. Several of those answer 404 on this edge because their REST routes are not served yet (F61), and their widgets render nothing on a 404.
 
@@ -93,6 +93,56 @@ Site day 27 (M4 Actions, 10:18Z on 2026-11-14) put members that read 32.22 on al
 
 The timeline shows the 10:23 comment and its reply once, inside m3-member's "reviewed" entry; the 10:08 comment, which has no review, shows on its own through the unlisted-thread view. BF-38 on `4a4dcf9a` at 10:25Z: **6 passed, 1 pending** (live log) in 43.1 s.
 
+### The running job's live log, hosted (edge days 10 to 13)
+
+M4-WP3's run service went to graft-m4a on site day 28 (`LogRelay`, `RunnerBroker`) and edge day 10 (`workers/edge/src/actions.rs`). M4 Actions ran an unmodified runner 2.338.2 on `m3org/wp3-live` (private) with `tests/m4/wp3/hosted/live.yml`, which prints one line a second for ten minutes. The viewer opens `/_t/logrelay/repos/{owner}/{repo}/jobs/{job}` (`m4-web-5` `c4fe2898`).
+
+- **Job 1114114, edge 11 (`4ba3663e`), 14:50Z: 6 passed, 1 failed.** The job page rendered from the new GHES reads (`actions/runs/{id}`, `runs/{id}/jobs`, `jobs/{id}`), but its socket was refused. A browser `WebSocket` cannot send `x-graftyard-web: 1`, so `ui::session` read the viewer as anonymous and the private repository's relay answered 404. The fallback then read `/logs`, which was 404 while the job ran, and the region showed "Could not load the log". Fixed on the edge: an upgrade whose `Origin` is the edge's own `https://` origin uses the session cookie (`464e1d3d`, edge day 12; SHARED, "Sign-in and the session cookie"). M4 Actions made a running job's `/logs` serve its finished steps (`m4-actions-2` `8afafac5`, edge day 13).
+- **Job 1114117, edge 12 (`3bd23b1d`), 15:09Z: 7 passed** in 50.6 s, with `BF38_JOB={"repo":"m3org/wp3-live","run":1114116,"job":1114117}`. The page showed Live and the line count grew, with `hello` and `line` frames on the socket. The other six steps matched earlier runs: 4, 12, 12, and 10 queries seeded, 0 seeded reads before render or first paint, `mergeable` `MERGEABLE`, and 11 check-run reads answered 503 with only the checks region in error. A second capture at 15:10:49Z, scrolled to the live cursor, shows line 283 stamped 15:10:48.25 under "streaming", and the count grew 294 → 299 in 5 s.
+- **Socket probe** alongside, with m3-admin's token: for each line, the delay from the runner's own timestamp in its text to arrival.
+
+| Job | Lines | Gaps | Lag p50 | p99 | max | End |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1114114 (joined 14:52:54Z) | 276 | 0 | 350 ms | 608 ms | 744 ms | `end` succeeded, close 1000 |
+| 1114117 (joined 15:09:10Z) | 418 | 0 | 408 ms | 571 ms | 707 ms | `end` succeeded, close 1000 |
+
+Afterwards `/logs` answered 200 with 623 lines (37,385 B) for each job, and the job read `completed` / `success` with five successful steps. The relay's own `line.at` is the site's clock at arrival, to the second, and ran about 4 s ahead of the runner and the edge [measured, cause not checked], so the lags above use the runner's timestamp.
+
+Checked on edge 12 with a real session cookie: the edge's `Origin` opens the socket; a foreign `Origin`, no `Origin`, or the edge's `Origin` without the cookie is refused.
+
+### BF-61: the running job's live log, then a killed `LogRelay` (edge day 13)
+
+Site day 30 (M4 Actions, 15:40Z) gave `LogRelay` an `/abort` that only a binding reaches. M4 Actions ran live.yml as wp3-live run 1114119, job 1114120 (runner from 15:42:01Z; relay `logrelay:1114120` on site a), and at 15:47:00.025Z by its orb's clock (15:47:05.05Z by Cloudflare's) aborted that relay through a scratch Worker, answered 200 `{"aborted":true}`. `tests/m4/bf38/bf61.spec.mjs` ran the web page from 15:42:45Z with `BF61_JOB={"repo":"m3org/wp3-live","run":1114119,"job":1114120}`, and the socket probe ran beside it.
+
+| Check | Result |
+| --- | --- |
+| Lines within 2 s | probe: 251 lines (runner lines 47 to 297), no seq gaps, lag p50 302 ms, p99 422 ms, max 529 ms from the runner's timestamp; the page showed Live from 15:42:58Z |
+| The kill | the probe's socket errored after line 297 (runner 15:46:59.50) with no `end`; the page's socket closed at the same moment and it showed "Live stream unavailable, showing saved logs (refreshing)" by 15:47:06Z, with no error region |
+| Fallback | the page polled `/logs` every 3 s; while step 3 ran it held steps 1 and 2 only, because the runner uploads a step's log at the step's end |
+| Final log | the job ended `completed` / `success` (15:52:15Z, Cloudflare); `/logs` 200 with 623 lines, the counter's lines 1 to 600 all present (lines 298 to 330, across the abort and the runner's reconnect, included) and `last step`; a fresh load of the page reads 624 lines from the saved log, "Success in 10m 13s", every step completed, no error region |
+
+Both lag figures use timestamps from different clocks: the runner's on M4 Actions' orb, which reads about 5 s behind Cloudflare's, and the probe's on this orb, about 4.5 s behind Cloudflare's (three `Date` readings, 15:49Z). The two orbs agree to about half a second, so the lags hold to that much; the relay's `line.at`, from the site's clock, is why it read about 4 s ahead of the runner.
+
+After the abort the runner noticed on its next send, about 27 s later, and reconnected its feed within a second to a fresh relay with no tail [M4 Actions' runner log]. A viewer joining at 15:47:39Z got `hello` with an empty tail and, before the reconnect, no lines. The page did not rejoin: it stays on the saved log until the job ends.
+
+The spec's run did not print its result: after it saved `final.log` at 15:52:14Z it stalled on a page action with no timeout, most likely the scroll to `line 600`, which a completed job's page keeps in a collapsed step [inference], and it was stopped at 15:56Z, before its 20-minute test timeout. Every figure above comes from the probe, the screenshots, `final.log`, and the fresh page load. The spec now drops that action and sets a 30 s action timeout.
+
+### BF-61, printed (wp3-live job 1114123)
+
+M4 Actions started live.yml as run 1114122, job 1114123 (relay `logrelay:1114123` on site a), at 16:15Z and aborted the relay at 16:20:00.113Z by Cloudflare's clock through `graft-m4a-relaykill`, answered 200 `{"aborted":true}`. The runner noticed about 33 s later and reconnected to a fresh relay; the job ended `success`. `bf61.spec.mjs` attached at 16:16:05Z and printed **1 passed (9.6 min)**:
+
+```
+BF61_RESULTS {"live":{"n":220,"first":51,"last":270},"closedAt":"2026-11-14T16:19:55.204Z","endBeforeClose":false,"fallbackMs":2237,"linesShownAfterFallback":14,"conclusion":"success","final":{"lines":623,"counted":600,"missingCount":[],"lastStep":true,"liveLinesMissing":[],"pageLines":624,"pageSource":"saved"},"lag":{"n":220,"p50":392,"p99":500,"max":665,"over2s":0}}
+```
+
+| BF-61 column | Result |
+| --- | --- |
+| Lines appear within 2 s | 220 lines on the page's socket (runner lines 51 to 270), lag p50 392 ms, p99 500 ms, max 665 ms, none over 2 s |
+| After the kill, the viewer falls back to step log blobs | the socket closed at 16:19:55.2Z on this orb's clock (about 16:20:00 on Cloudflare's) with no `end`; "showing saved logs (refreshing)" 2.2 s later, with no error region |
+| The final log is complete | `/logs` 623 lines with the counter's 1 to 600 and `last step`; every line the page saw live is in it; the page shows 624 saved lines, "Success in 10m 13s" |
+
+The socket probe beside it agreed: 229 lines with no gaps, runner lag p50 386 ms, max 663 ms, dropped after line 270 with no `end`.
+
 ### Comments that still need the timeline's unlisted-thread view (`91464e1`)
 
 The timeline still shows a thread whose review is not listed, because these comments have no review:
@@ -112,6 +162,10 @@ No new comment joins either group, and those comments stay as they are: no event
 | 7 | main `334d968` + `m4-actions` `108c1b2` + `m4-wp2` `4e9da43`, for M4-WP2 | `3d41cbe7` |
 | 8 | main `5c0f06fb` + `m4-web-2` `97841ed` (counts, single-comment reviews; `8014ebb`) | `bcb4ed2a` |
 | 9 | main `a2d918f1` (`m4-web-3`: format 32.22 in `FORMATS_ENABLED`) | `4a4dcf9a` |
+| 10 | m4a-deploy `f731c443` (M4-WP3's run service) + `m4-web-5` `c4fe2898` (the viewer path) + main `303fad5f`; `RUN_SERVICE_PUBLIC` | `474233ba` |
+| 11 | main `5ba2c7d8` + `m4-actions` `7d0a7bfe` (GHES run and job reads) + `m4-web-5` `bafca7cc` | `4ba3663e` |
+| 12 | edge day 11 + `m4-web-5` `464e1d3d` (the viewer socket's session by `Origin`) | `3bd23b1d` |
+| 13 | main `e8e1f4da` + `m4-actions-2` `8afafac5` (a running job's `/logs`) + `m4-web-5` `464e1d3d` | `6a9c119b` (BF-61) |
 
 Each was built from `m4-web` merged with `origin/m4-actions` `83afa6d`, deployed with `deploy-edge.mjs --web`, and logged in `tests/am1/results/install-m4a.md` on main.
 
@@ -127,5 +181,11 @@ Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2
 
 ## Pending
 
-- BF-38's running-job live log, and BF-61: both need `LogRelay` from M4-WP3.
 - The chrome widgets whose REST routes the edge does not serve yet (F61) render nothing.
+
+## Open items
+
+These are known limits of the live log after a relay kill. BF-61's row does not test them, so they are not failures.
+
+- **The fallback shows a running step's lines only once that step ends.** `/logs` for a running job serves the step logs the runner has uploaded, and the runner uploads a step's log at the step's end [inference, M4 Actions]. On job 1114120 the page held steps 1 and 2 from the kill until step 3 ended.
+- **The page does not rejoin the relay.** After the kill the runner reconnected its feed to a fresh relay about 27 s later [M4 Actions' runner log], but the viewer stays on the saved log, polled every 3 s, until the job ends.

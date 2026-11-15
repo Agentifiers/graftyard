@@ -165,6 +165,7 @@ fn pack(bytes: &[u8]) -> DurablePack {
         bytes,
         index: &index,
         idx: None,
+        idx_range: None,
         inline_max: graftyard_git::INLINE_MAX,
     };
     futures_executor::block_on(store.place(place)).unwrap()
@@ -801,6 +802,17 @@ fn bf21(seed: u64, kill: bool) -> Option<bool> {
         assert!(merged_state(&g, n), "seed {seed}: #{n} was lost");
     }
     assert!(Consumer::view(&g).entries.is_empty(), "seed {seed}: the queue is not empty");
+    // BF-37: every queue ref a group built is gone once its entry landed or was ejected, by the same entry.
+    let left: Vec<String> = graftyard_fold::Read::prefix(&*g.fold().core, "ref", &[])
+        .into_iter()
+        .filter_map(|(k, _)| match k.first() {
+            Some(graftyard_fold::Val::Blob(b)) if b.starts_with(b"refs/heads/gh-readonly-queue/") => {
+                Some(String::from_utf8_lossy(&b[..]).into_owned())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(left.is_empty(), "seed {seed}: queue refs left over: {left:?}");
     g.assert_agree();
     survived
 }

@@ -119,6 +119,52 @@ impl DurableObject for Registry {
                     rows.into_iter().map(|g| (g.k, g.generation)).collect();
                 Response::from_json(&m)
             }
+            // The copy of the `Release` group's committed entries outside the group, in the `Release` chain's own
+            // registry object on each site (`design/DESIGN.md`, Shape, `POINTER_TTL`): each signed entry's bytes and
+            // time by position, as the members applied them. A PUT `{"from": n, "entries": [[hex, at], ..]}` adds the
+            // entries at positions from `n` that the copy lacks, and changes nothing when `n` is past the copy (a gap),
+            // so the copy only grows and never moves backward; it answers the copy's count. A GET answers
+            // `{"count": n, "entries": [[hex, at], ..]}`. A cold isolate checks every entry against its own anchor.
+            (Method::Put, "/release_copy") | (Method::Get, "/release_copy") => {
+                sql.exec(
+                    "CREATE TABLE IF NOT EXISTS release_copy (idx INTEGER PRIMARY KEY, bytes BLOB NOT NULL, at INTEGER NOT NULL)",
+                    None,
+                )?;
+                #[derive(Deserialize)]
+                struct N {
+                    n: i64,
+                }
+                let count = |sql: &SqlStorage| -> Result<i64> {
+                    let r: Vec<N> = sql.exec("SELECT COUNT(*) AS n FROM release_copy", None)?.to_array()?;
+                    Ok(r.first().map_or(0, |r| r.n))
+                };
+                if req.method() == Method::Put {
+                    #[derive(Deserialize)]
+                    struct Put {
+                        from: i64,
+                        entries: Vec<(String, i64)>,
+                    }
+                    let p: Put = req.json().await?;
+                    if p.from <= count(&sql)? {
+                        for (k, (hex, at)) in p.entries.iter().enumerate() {
+                            let bytes = crate::host::unhex(hex).ok_or_else(|| Error::RustError("entry: hex".into()))?;
+                            sql.exec(
+                                "INSERT OR IGNORE INTO release_copy (idx, bytes, at) VALUES (?, ?, ?)",
+                                vec![(p.from + k as i64).into(), bytes.into(), (*at).into()],
+                            )?;
+                        }
+                    }
+                    return Response::from_json(&serde_json::json!({ "count": count(&sql)? }));
+                }
+                let rows = crate::host::rows(&sql, "SELECT bytes, at FROM release_copy ORDER BY idx", vec![])?;
+                let entries = rows
+                    .iter()
+                    .map(|r| {
+                        Ok(serde_json::json!([crate::host::hex(crate::host::blob(&r[0])?), crate::host::int(&r[1])?]))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Response::from_json(&serde_json::json!({ "count": entries.len(), "entries": entries }))
+            }
             (Method::Get, "/rows") => {
                 let site = SiteId(query(&url, "site")?.parse().map_err(|_| Error::RustError("site".into()))?);
                 let rows: Vec<Row> = sql.exec("SELECT row FROM registry ORDER BY chain", None)?.to_array()?;

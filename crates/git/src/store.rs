@@ -79,6 +79,9 @@ pub struct Place<'a> {
     pub index: &'a PackIndex,
     /// The shard's `.idx`, put beside the pack in each bucket that holds it. Derived: a failure is not an error.
     pub idx: Option<&'a [u8]>,
+    /// A promotion's range, written as the `.idx`'s `from` and `to` custom metadata beside the pack's chain: a cache
+    /// of its `Promoted`, which a rehydrate checks against the record (`crate::catchup::skippable`).
+    pub idx_range: Option<(Index, Index)>,
     /// `INLINE_MAX`, or `INLINE_MAX_HOT` for an agent push on a hot group.
     pub inline_max: usize,
 }
@@ -123,13 +126,31 @@ impl<B: Bucket> PackStore<'_, B> {
         let sites = verdict?;
         drop(puts);
         if let Some(idx) = p.idx {
-            let idx_key = R2Key::Idx { network: p.network, id: p.id }.to_string();
-            let idx_sum = Digest(Sha256::digest(idx).into());
-            for (site, bucket) in self.buckets.iter().filter(|(s, _)| sites.contains(*s)) {
-                let _ = (site, bucket.put_new(&idx_key, idx, idx_sum, &meta).await);
-            }
+            self.put_idx(p.network, p.id, p.meta, idx, p.idx_range, sites).await;
         }
         Ok(DurablePack::seal(PackRef::Stored { id: p.id, checksum, bytes: p.bytes.len() as u64, sites }))
+    }
+
+    /// A placed pack's `.idx` beside it in each bucket of `sites`, create-only, with the pack's chain and, for a
+    /// promotion, its range as `from` and `to`. Derived: a failed put is not an error.
+    async fn put_idx(
+        &self,
+        network: NetworkId,
+        id: PackId,
+        meta: ObjectMeta,
+        idx: &[u8],
+        range: Option<(Index, Index)>,
+        sites: SiteSet,
+    ) {
+        let idx_key = R2Key::Idx { network, id }.to_string();
+        let idx_sum = Digest(Sha256::digest(idx).into());
+        let mut idx_meta = meta.to_pairs().to_vec();
+        if let Some((from, to)) = range {
+            idx_meta.extend([("from".to_owned(), from.0.to_string()), ("to".to_owned(), to.0.to_string())]);
+        }
+        for (_, bucket) in self.buckets.iter().filter(|(s, _)| sites.contains(*s)) {
+            let _ = bucket.put_new(&idx_key, idx, idx_sum, &idx_meta).await;
+        }
     }
 }
 
@@ -549,6 +570,49 @@ impl<B: crate::bucket::Multipart> PackStore<'_, B> {
         Ok(seal())
     }
 
+    /// A promotion's pack as the site reads it from the shard's `/promote` (`design/DESIGN.md`, Shape, `Promoted`): it
+    /// streams to the buckets in parts and, through a `Pipe`, to `validate` on the same shard, so the site holds two
+    /// parts whatever the pack's size and `PROMOTE_MAX` bounds only how much one promotion batches. Once both
+    /// answered, the `.idx` that validate wrote (`idx` of the pack's SHA-256; `None` stores the pack alone) goes
+    /// beside it in each bucket that holds it, with `range` as its `from` and `to`. The outer `Err` is the pack's
+    /// stream breaking off, the shard's failure.
+    pub async fn place_promoted<S, X, V, F, E, I, G>(
+        &self,
+        s: Streamed,
+        pack: S,
+        validate: V,
+        idx: I,
+        range: Option<(Index, Index)>,
+    ) -> Result<Result<PackRef, TeeError<E>>, X>
+    where
+        S: futures_util::Stream<Item = Result<Vec<u8>, X>>,
+        V: FnOnce(PipeReader) -> F,
+        F: std::future::Future<Output = Result<PackIndex, E>>,
+        I: FnOnce(Digest) -> G,
+        G: std::future::Future<Output = Option<Vec<u8>>>,
+    {
+        let (network, id, meta) = (s.network, s.id, s.meta);
+        let pipe = Pipe::default();
+        let reader = pipe.reader();
+        let fed = &pipe;
+        let validate = async move {
+            let r = validate(reader).await;
+            // The shard answered: whatever it did not read, the tee hands it no more.
+            fed.stop();
+            r
+        };
+        let pack = match self.place_streamed(s, pack, &pipe, validate).await? {
+            Ok((d, _)) => d.into_pack(),
+            Err(e) => return Ok(Err(e)),
+        };
+        if let PackRef::Stored { checksum, sites, .. } = &pack
+            && let Some(b) = idx(*checksum).await
+        {
+            self.put_idx(network, id, meta, &b, range, *sites).await;
+        }
+        Ok(Ok(pack))
+    }
+
     /// The two-of-three rule over the buckets whose upload `counts`.
     fn held(&self, ups: &Ups, regions: &[Region], counts: impl Fn(&Upload) -> bool) -> Result<SiteSet, PlaceError> {
         let ups = ups.borrow();
@@ -771,6 +835,7 @@ mod tests {
             bytes,
             index,
             idx: Some(b"idx"),
+            idx_range: None,
             inline_max: INLINE_MAX,
         }
     }
@@ -1016,6 +1081,86 @@ mod tests {
         assert!(matches!(r, Err(TeeError::Place(PlaceError::TooFew { .. }))), "{:?}", r.err());
         assert_eq!(got, pack, "validate still reads the whole pack");
         assert!(a.open_uploads().is_empty() && b.open_uploads().is_empty() && c.open_uploads().is_empty());
+    }
+
+    /// A promotion of 112 MiB (seven `PART_SIZE` parts, over twice `PROMOTE_MAX`) streams from the shard through two
+    /// part buffers: validate reads it whole from the pipe, two buckets hold the same bytes, and the `.idx` validate
+    /// wrote goes beside it with the range as `from` and `to`. A validate that refuses places no `.idx`, and a shard
+    /// with no `.idx` stores the pack alone.
+    #[test]
+    fn a_promotion_streams_through_two_parts_and_stores_its_idx() {
+        let sites = tri();
+        let (a, b, c) = (MemBucket::default(), MemBucket::default(), MemBucket::default());
+        let buckets = [(SiteId(0), &a), (SiteId(1), &b), (SiteId(2), &c)];
+        let store = PackStore { sites: &sites, buckets: &buckets, copies: Copies::TwoRegions };
+        const CHUNK: usize = 1 << 20;
+        let base: Vec<u8> = (0..CHUNK).map(|j| (j * 13 % 251) as u8).collect();
+        // Each chunk differs in its first bytes, so a part put out of order or twice changes the object.
+        let chunk = |i: usize| -> Vec<u8> {
+            let mut c = base.clone();
+            c[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            c
+        };
+        let run = |id: u128, chunks: usize, refuse: bool, idx: Option<&'static [u8]>| {
+            let s = Streamed { network: NET, id: stage(b"x", id, false).id, meta: meta(), part: PART_SIZE };
+            let pack = futures_util::stream::iter((0..chunks).map(|i| Ok::<_, ()>(chunk(i))));
+            let read = std::cell::Cell::new(None);
+            let validate = |mut r: PipeReader| {
+                let read = &read;
+                async move {
+                    let mut sha = Sha256::new();
+                    let mut n = 0u64;
+                    while let Some(c) = r.next().await {
+                        let c = c.map_err(|_| "broke")?;
+                        n += c.len() as u64;
+                        sha.update(&c);
+                    }
+                    let checksum = Digest(sha.finalize().into());
+                    read.set(Some((checksum, n)));
+                    if refuse {
+                        return Err("index-pack refused");
+                    }
+                    Ok(PackIndex { checksum, bytes: n, objects: 1, trailer: "t".into() })
+                }
+            };
+            let asked = std::cell::Cell::new(None);
+            let get_idx = |sum: Digest| {
+                asked.set(Some(sum));
+                async move { idx.map(<[u8]>::to_vec) }
+            };
+            crate::mem::MemPart::reset_peak();
+            let r = block_on(store.place_promoted(s, pack, validate, get_idx, Some((Index(17), Index(17)))));
+            (r.expect("the stream did not fail"), read.get(), crate::mem::MemPart::reset_peak(), asked.get())
+        };
+        let chunks = 112;
+        assert!((chunks * CHUNK) as u64 > 2 * crate::log_archive::PROMOTE_MAX);
+        let (r, read, peak, asked) = run(41, chunks, false, Some(b"the idx"));
+        let PackRef::Stored { id, checksum, bytes, sites: held } = r.unwrap() else { panic!("stored") };
+        let (want, n) = read.expect("validate read the pack");
+        assert_eq!((checksum, bytes, n), (want, (chunks * CHUNK) as u64, (chunks * CHUNK) as u64));
+        assert!(peak <= 2, "a 112 MiB promotion held {peak} parts at once");
+        assert_eq!(asked, Some(want), "the .idx is asked for under the pack's SHA-256");
+        assert!(held.len() >= 2);
+        let (key, idx_key) =
+            (R2Key::Pack { network: NET, id }.to_string(), R2Key::Idx { network: NET, id }.to_string());
+        for x in held.iter() {
+            let bucket = buckets[x.0 as usize].1;
+            let got = block_on(bucket.get(&key)).unwrap().unwrap();
+            assert_eq!(got.len(), chunks * CHUNK);
+            assert!(got.chunks(CHUNK).enumerate().all(|(i, c)| c == chunk(i)), "the object is the pack, in order");
+            let info = block_on(bucket.head(&idx_key)).unwrap().expect("the .idx beside the pack");
+            assert_eq!(block_on(bucket.get(&idx_key)).unwrap().as_deref(), Some(&b"the idx"[..]));
+            assert_eq!((info.meta("from"), info.meta("to")), (Some("17"), Some("17")));
+            assert_eq!(info.meta("chain"), Some(meta().to_pairs()[0].1.as_str()));
+        }
+        // Refused: no pack and no `.idx` is asked for.
+        let (r, _, _, asked) = run(42, 3, true, Some(b"the idx"));
+        assert_eq!(r.unwrap_err(), TeeError::Invalid("index-pack refused"));
+        assert_eq!(asked, None);
+        // A shard with no `.idx`: the pack alone.
+        let (r, _, _, _) = run(43, 3, false, None);
+        let PackRef::Stored { id, .. } = r.unwrap() else { panic!("stored") };
+        assert!(block_on(a.head(&R2Key::Idx { network: NET, id }.to_string())).unwrap().is_none());
     }
 
     /// A body that breaks off is the outer `Err`: no `DurablePack`, validate's pipe ends in an error, and the open
