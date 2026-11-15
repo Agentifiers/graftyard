@@ -386,3 +386,58 @@ func TestCancelledFillStillSpoolsTheWholeAnswer(t *testing.T) {
 		t.Fatalf("a failed fill left a spooled answer: %d", r.StatusCode)
 	}
 }
+
+// The chain's builds are derived work and run at nice 19, as the repack does, so they yield the vCPUs to validates and
+// catch-ups (LM-1 round 24c); a composed miss a client waits on runs at normal priority. Seen by a git on PATH ahead of
+// the real one that writes its own nice value.
+func TestChainBuildsRunAtNice19(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	history(t, wt, 10, 20, 2)
+	pushTip(t, wt)
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "nice")
+	wrap := "#!/bin/sh\necho \"$(nice) $1\" >> " + log + "\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	seen := func() []string {
+		b, _ := os.ReadFile(log)
+		os.Remove(log)
+		return strings.Split(strings.TrimSpace(string(b)), "\n")
+	}
+	niced := func(what string) {
+		lines := seen()
+		for _, l := range lines {
+			if !strings.HasPrefix(l, "19 ") {
+				t.Fatalf("%s ran git at nice %q: %q", what, l, lines)
+			}
+		}
+		if !strings.Contains(strings.Join(lines, "\n"), "19 pack-objects") {
+			t.Fatalf("%s ran no pack-objects: %q", what, lines)
+		}
+	}
+	// Niced, the build is still on the CPU meter.
+	if o := compose(t, s.URL, "&start=1"); o["cpuMs"].(float64) <= 0 {
+		t.Fatalf("the base's CPU went unmetered: %v", o["cpuMs"])
+	}
+	niced("the base")
+	commit(t, wt, map[string]string{"d0/f0.txt": "moved\n"})
+	main := pushTip(t, wt)
+	seen()
+	compose(t, s.URL, "")
+	niced("a part")
+	if r, _ := uploadV2(t, s.URL+"/upload-pack?net=7", fetchBody(main)); r.Header.Get("x-graft-compose") != "composed" {
+		t.Fatalf("not composed: %q", r.Header.Get("x-graft-compose"))
+	}
+	for _, l := range seen() {
+		if strings.HasPrefix(l, "19 ") {
+			t.Fatalf("the composed miss ran git at nice 19: %q", l)
+		}
+	}
+}

@@ -246,6 +246,11 @@ func gitLow(dir string, env []string, args ...string) ([]byte, error) {
 	return runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil, dir, env, nil, args...)
 }
 
+// gitLow on the meter, with stdin: the composed-miss chain's builds (compose.go, handleCompose).
+func (m *cpuMeter) gitLow(dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
+	return runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), m, dir, env, stdin, args...)
+}
+
 func runGit(cmd *exec.Cmd, m *cpuMeter, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), ident...), env...)

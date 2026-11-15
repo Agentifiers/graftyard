@@ -135,14 +135,18 @@ func chainFirst(net, rp string) []string {
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(rp, "objects")}
 }
 
+// gitRun runs git on a cpuMeter: m.gitLow, at nice 19, for the chain's builds, which are derived work and must yield
+// the vCPUs to validates and catch-ups (as the repack does, LM-1 round 24c); m.git for a miss a client waits on.
+type gitRun func(dir string, env []string, stdin io.Reader, args ...string) ([]byte, error)
+
 // newObjects is the root tree of `to` and every tree and blob in its tree that differs from tree `from`, each with
 // its path, which pack-objects groups delta candidates by. Gitlinks name no object here.
-func newObjects(rp string, env []string, from, to string, m *cpuMeter) ([]string, error) {
-	root, err := m.git(rp, env, nil, "rev-parse", to+"^{tree}")
+func newObjects(rp string, env []string, from, to string, g gitRun) ([]string, error) {
+	root, err := g(rp, env, nil, "rev-parse", to+"^{tree}")
 	if err != nil {
 		return nil, err
 	}
-	out, err := m.git(rp, env, nil, "diff-tree", "-r", "-t", from, to)
+	out, err := g(rp, env, nil, "diff-tree", "-r", "-t", from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -159,13 +163,13 @@ func newObjects(rp string, env []string, from, to string, m *cpuMeter) ([]string
 }
 
 // missingFromChain keeps the objects the chain's packs do not hold, once each.
-func missingFromChain(net, rp string, objs []string, m *cpuMeter) ([]string, error) {
+func missingFromChain(net, rp string, objs []string, g gitRun) ([]string, error) {
 	var in bytes.Buffer
 	for _, o := range objs {
 		in.WriteString(strings.SplitN(o, " ", 2)[0] + "\n")
 	}
 	env := []string{"GIT_OBJECT_DIRECTORY=" + composeObjects(net), "GIT_ALTERNATE_OBJECT_DIRECTORIES="}
-	out, err := m.git(rp, env, &in, "cat-file", "--batch-check=%(objectname)")
+	out, err := g(rp, env, &in, "cat-file", "--batch-check=%(objectname)")
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +194,7 @@ func missingFromChain(net, rp string, objs []string, m *cpuMeter) ([]string, err
 func packTo(net, rp string, env []string, objs []string, name string, m *cpuMeter) error {
 	dir := filepath.Join(composeObjects(net), "pack")
 	os.MkdirAll(dir, 0o755)
-	out, err := m.git(rp, env, strings.NewReader(strings.Join(objs, "\n")+"\n"), "pack-objects", "-q",
+	out, err := m.gitLow(rp, env, strings.NewReader(strings.Join(objs, "\n")+"\n"), "pack-objects", "-q",
 		"--delta-base-offset", "--window=0", "--threads=1", filepath.Join(dir, "tmp-build"))
 	if err != nil {
 		return err
@@ -224,7 +228,7 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 	var m cpuMeter
 	tip := r.URL.Query().Get("tip")
 	if tip == "" {
-		out, err := m.git(rp, nil, nil, "rev-parse", "-q", "--verify", "HEAD^{commit}")
+		out, err := m.gitLow(rp, nil, nil, "rev-parse", "-q", "--verify", "HEAD^{commit}")
 		if err != nil {
 			jsonOut(w, map[string]any{"head": nil, "built": []string{}, "why": "no HEAD"})
 			return
@@ -239,7 +243,7 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]any{"head": h, "built": []string{}, "cpuMs": 0})
 		return
 	}
-	treeOut, err := m.git(rp, nil, nil, "rev-parse", tip+"^{tree}")
+	treeOut, err := m.gitLow(rp, nil, nil, "rev-parse", tip+"^{tree}")
 	if err != nil {
 		fail(w, 422, "%v", err)
 		return
@@ -251,7 +255,7 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 	var name string
 	if !have || len(h.Parts)+1 >= foldEvery {
 		// A base: every tree and blob of the tip, from the chain's packs and the repository.
-		objs, err := m.git(rp, env, nil, "rev-list", "--objects", tree)
+		objs, err := m.gitLow(rp, env, nil, "rev-list", "--objects", tree)
 		if err != nil {
 			fail(w, 500, "%v", err)
 			return
@@ -264,9 +268,9 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		objs, err := newObjects(rp, env, h.Tree, tip, &m)
+		objs, err := newObjects(rp, env, h.Tree, tip, m.gitLow)
 		if err == nil {
-			objs, err = missingFromChain(net, rp, objs, &m)
+			objs, err = missingFromChain(net, rp, objs, m.gitLow)
 		}
 		if err == nil {
 			name = "part-" + h.tip() + "-" + tip
@@ -505,14 +509,14 @@ func composeMiss(w http.ResponseWriter, out io.Writer, net, rp, want string, inc
 		packs = append(packs, chainPack{f, st.Size() - 32, binary.BigEndian.Uint32(head[8:])})
 	}
 	env := inCompose(net)
-	objs, err := newObjects(rp, env, h.Tree, want, &m)
+	objs, err := newObjects(rp, env, h.Tree, want, m.git)
 	if err != nil {
 		return false, "diff: " + err.Error()
 	}
 	if len(objs) > composeDiffMax {
 		return false, "over the diff cap"
 	}
-	objs, err = missingFromChain(net, rp, append([]string{want + " "}, objs...), &m)
+	objs, err = missingFromChain(net, rp, append([]string{want + " "}, objs...), m.git)
 	if err != nil {
 		return false, err.Error()
 	}

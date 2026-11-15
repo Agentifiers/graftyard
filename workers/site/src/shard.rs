@@ -79,8 +79,9 @@ impl Compose {
         (self.obj.clone(), self.net.0.0)
     }
 
-    /// Starts a step unless one runs. `base`: with no chain yet, the builder builds a base.
-    fn start(&self, base: bool) {
+    /// Starts a step unless one runs. `miss`: a composable upload-pack asks, so a shard other than the builder installs
+    /// the chain too; after a catch-up (`!miss`) only the builder steps.
+    fn start(&self, miss: bool) {
         let started = COMPOSES.with(|m| {
             let mut m = m.borrow_mut();
             let run = m.entry(self.key()).or_default();
@@ -92,7 +93,7 @@ impl Compose {
         let me = self.clone();
         self.state.wait_until(async move {
             let synced = COMPOSES.with(|m| m.borrow().get(&me.key()).and_then(|r| r.synced.clone()));
-            let r = me.run(base, synced).await;
+            let r = me.run(miss, synced).await;
             if let Err(e) = &r {
                 console_error!("shard compose {}: {e}", me.net.0.0);
             }
@@ -131,7 +132,7 @@ impl Compose {
 
     async fn run(
         &self,
-        base: bool,
+        miss: bool,
         synced: Option<graftyard_git::compose::ChainHead>,
     ) -> std::result::Result<Option<graftyard_git::compose::ChainHead>, String> {
         let site = SiteEnv::read(&self.env).map_err(|e| e.to_string())?;
@@ -143,7 +144,7 @@ impl Compose {
         let first = ns.id_from_name(&format!("git#{}#net:{}", site.id.0, self.net.0.0)).map_err(|e| e.to_string())?;
         let builder = site.id == home && first.to_string() == self.state.id().to_string();
         // After a catch-up only the builder steps; any other shard installs the chain when a miss asks for it.
-        if !builder && !base {
+        if !builder && !miss {
             return Ok(None);
         }
         let ids: Vec<SiteId> = site.sites.0.iter().map(|s| s.id).collect();
@@ -154,7 +155,9 @@ impl Compose {
             .filter(|(s, _)| warm.contains(s))
             .collect();
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
-        host.ready_chain(self.net, &bs, builder, base, synced.as_ref()).await.map_err(|e| e.0)
+        // The builder builds the base at warm, on the first catch-up of a network with no chain, at nice 19 in the
+        // container, so a cold first miss usually finds a chain rather than waiting out `COMPOSE_WAIT` for stock.
+        host.ready_chain(self.net, &bs, builder, synced.as_ref()).await.map_err(|e| e.0)
     }
 }
 
@@ -443,7 +446,8 @@ impl Jobs {
             );
         }
         REPORTS.with(|m| m.borrow_mut().insert(self.key(), v));
-        // The builder takes the composed-miss chain's next part in the background; the catch-up does not wait for it.
+        // The builder takes the composed-miss chain's next step in the background, its base on a network with none;
+        // the catch-up does not wait for it.
         Compose {
             state: self.state.clone(),
             env: self.env.clone(),

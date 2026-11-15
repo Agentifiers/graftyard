@@ -1127,8 +1127,8 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// warm sites' buckets. A depth-1 miss with one want, no haves or filter, SHA-1, and `ofs-delta` is composed: a base of
 /// the tip's trees and blobs, a part per tip move of its objects earlier packs lack, and a pack of the want's own new
 /// objects, under one pack header and trailer. No object is in two packs and no delta leaves its pack, so the client's
-/// `index-pack` takes it as is. The home site's first shard builds each part after the catch-up that brings the move,
-/// folds every 20 moves into a new base, and writes the warm buckets' `compose/<net>/base-<tip>` and
+/// `index-pack` takes it. At nice 19, the home site's first shard builds the base at warm and each part after the
+/// catch-up that brings the move, folds every 20 moves, and writes the warm buckets' `compose/<net>/base-<tip>` and
 /// `part-<from>-<to>`, then the chain's `head`, which other shards follow. A shard composes only from a chain at HEAD;
 /// a want far from it, a missing part, or `include-tag` on an annotated tag gets stock `upload-pack`. Only such misses
 /// wait for the chain step. Direct pushes take no merge, so parts follow catch-ups, and `refs/pull/N/merge` stays on

@@ -902,12 +902,11 @@ impl ShardHost<'_> {
         Ok(h.and_then(crate::compose::ChainHead::checked))
     }
 
-    /// The chain's next step on the container, to the repository's HEAD (`/compose`): a base when `start` and there is
-    /// no chain, a part, or a fold. Answers the head after it and the files it built.
+    /// The chain's next step on the container, to the repository's HEAD (`/compose?start=1`): a base when there is no
+    /// chain, a part, or a fold. Answers the head after it and the files it built.
     pub async fn compose_step(
         &self,
         network: NetworkId,
-        start: bool,
     ) -> Result<(Option<crate::compose::ChainHead>, Vec<String>), StoreError> {
         #[derive(Deserialize)]
         struct Out {
@@ -915,7 +914,7 @@ impl ShardHost<'_> {
             #[serde(default)]
             built: Vec<String>,
         }
-        let path = format!("/compose?net={}{}", network.0.0, if start { "&start=1" } else { "" });
+        let path = format!("/compose?net={}&start=1", network.0.0);
         let mut r = self.ok(Method::Post, &path, None).await?;
         let o: Out = r.json().await.map_err(worker_err)?;
         Ok((o.head, o.built))
@@ -943,7 +942,7 @@ impl ShardHost<'_> {
     }
 
     /// Readies the network's composed-miss chain (`crate::compose`). The builder, the home site's first shard, takes
-    /// the container's next step to HEAD (a base only when `start`), then brings each of `buckets`, the warm sites',
+    /// the container's next step to HEAD (a base when it holds no chain, at nice 19 in the container), then brings each of `buckets`, the warm sites',
     /// up to its chain: the files that bucket's head lacks, then the head, and after a fold it deletes the files the
     /// new head does not name; `synced`, the head it last put to the buckets, skips that when nothing moved. Any other
     /// shard installs the chain the first of `buckets` names, fetching only the files its container lacks; one missing
@@ -953,7 +952,6 @@ impl ShardHost<'_> {
         network: NetworkId,
         buckets: &[&R2],
         builder: bool,
-        start: bool,
         synced: Option<&crate::compose::ChainHead>,
     ) -> Result<Option<crate::compose::ChainHead>, StoreError> {
         use crate::compose::ChainHead;
@@ -963,7 +961,7 @@ impl ShardHost<'_> {
             Ok(v.and_then(|v| serde_json::from_slice::<ChainHead>(&v).ok()).and_then(ChainHead::checked))
         };
         if builder {
-            let (Some(head), _) = self.compose_step(network, start).await? else { return Ok(None) };
+            let (Some(head), _) = self.compose_step(network).await? else { return Ok(None) };
             if synced == Some(&head) {
                 return Ok(Some(head));
             }
