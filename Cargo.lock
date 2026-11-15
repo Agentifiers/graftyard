@@ -919,6 +919,7 @@ dependencies = [
  "sha2",
  "smallvec",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "worker",
 ]
 

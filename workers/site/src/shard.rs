@@ -844,7 +844,9 @@ impl DurableObject for GitShard {
                     .iter()
                     .map(|h| graftyard_types::Digest::parse_hex(h).ok_or_else(|| Error::RustError(format!("sum {h}"))))
                     .collect::<Result<_>>()?;
-                Response::from_bytes(host.promote(net, &sums).await.map_err(se)?)
+                // The container's pack streams through to the archive's promotion, which tees it to the buckets
+                // in parts: buffered here, a promotion held the whole pack in this isolate.
+                host.promote(net, &sums).await.map_err(se)
             }
             "/fsck" => Response::from_json(&host.fsck(net).await.map_err(se)?),
             // The `.idx` of a pack this shard's `/validate` kept aside, for the archive's promotion to store with it.

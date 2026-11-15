@@ -367,7 +367,7 @@ impl DurableObject for GitShard {
                 host.catch_up(NET, &[CHAIN], &bs, &log).await.map_err(se)?;
                 let sums: Vec<Digest> =
                     req.json::<Vec<String>>().await?.iter().filter_map(|s| Digest::parse_hex(s)).collect();
-                Response::from_bytes(host.promote(NET, &sums).await.map_err(se)?)
+                host.promote(NET, &sums).await.map_err(se)
             }
             "/fsck" => Response::from_json(&host.fsck(NET).await.map_err(se)?),
             // The LRU on a real container: `fill` empty filler networks (ids NET_ID + 1..), then `make_room` for
