@@ -330,20 +330,6 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<PackRef, String>
     // but a 200 or the pack's 422 (`git::promote_sites`, `git::promote_moves_on`): after a reset this site's shard
     // rehydrates the tail for half an hour, and every promotion meanwhile answered 503 warming, so archiving
     // stopped behind it (`tests/am1/results/hot-shards.md`).
-    let mut last = String::new();
-    let mut built = None;
-    let sites = git::promote_sites(&p.record, site.id);
-    for (i, at) in sites.iter().copied().enumerate() {
-        match promote_on(env, &site, p, at, &body, i + 1 < sites.len()).await {
-            Ok(r) => {
-                built = Some(r);
-                break;
-            }
-            Err((status, e)) if git::promote_moves_on(status) => last = e,
-            Err((_, e)) => return Err(e),
-        }
-    }
-    let (pack, ix, idx) = built.ok_or(last)?;
     let raw: Vec<(SiteId, git::host::R2)> = p
         .record
         .sites
@@ -352,26 +338,36 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<PackRef, String>
         .collect::<std::result::Result<_, String>>()?;
     let refs: Vec<(SiteId, &git::host::R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
     let store = git::PackStore { sites: &site.sites, buckets: &refs, copies: git::Copies::TwoRegions };
-    // The id is fresh per attempt: an attempt whose `Promoted` never committed leaves an unmarked pack, which
-    // the sweeper deletes once its `request` row is still missing past `ORPHAN_AFTER`.
-    let mut rand = [0u8; 10];
-    rand.copy_from_slice(&p.request.0.0.to_be_bytes()[6..]);
-    let place = git::Place {
-        network: NetworkId(repo.0),
-        id: git::PackId(Ulid::new(Timestamp(now_ms()), rand)),
-        meta: git::ObjectMeta { chain: p.chain, request: p.request },
-        bytes: &pack,
-        index: &ix,
-        // The `.idx` the shard's validate wrote, so a rehydrate loads the pack without `index-pack`.
-        idx: idx.as_deref(),
-        idx_range: p.range.map(|(f, t)| (Index(f), Index(t))),
-        inline_max: 0,
-    };
-    store.place(place).await.map(|d| d.into_pack()).map_err(|e| e.to_string())
+    let mut last = String::new();
+    let sites = git::promote_sites(&p.record, site.id);
+    for (i, at) in sites.iter().copied().enumerate() {
+        // The id is fresh per attempt: an attempt whose `Promoted` never committed leaves an unmarked pack, which
+        // the sweeper deletes once its `request` row is still missing past `ORPHAN_AFTER`.
+        let mut rand = [0u8; 10];
+        rand.copy_from_slice(&p.request.0.0.to_be_bytes()[6..]);
+        rand[0] ^= i as u8;
+        let s = git::Streamed {
+            network: NetworkId(repo.0),
+            id: git::PackId(Ulid::new(Timestamp(now_ms()), rand)),
+            meta: git::ObjectMeta { chain: p.chain, request: p.request },
+            part: git::PART_SIZE,
+        };
+        match promote_on(env, &site, p, at, &body, i + 1 < sites.len(), &store, s).await {
+            Ok(r) => return r,
+            Err((status, e)) if git::promote_moves_on(status) => last = e,
+            Err((_, e)) => return Err(e),
+        }
+    }
+    Err(last)
 }
 
-/// `/promote` and the `/validate` of its pack on one site's shard, the validate on the shard that built the pack.
-/// `next`: another site's shard follows, so a shard that is rehydrating answers 503 `warming` at once.
+/// `/promote` and the `/validate` of its pack on one site's shard, the validate on the shard that built the pack. The
+/// pack streams from the shard's `/promote` to the buckets in parts and to the validate (`PackStore::place_promoted`),
+/// so this isolate holds two parts of it whatever its size, and a range whose first entry is over `PROMOTE_MAX`
+/// promotes alone. Every pack comes from its own shard, so a shard that fails mid-pack is passed over as one that
+/// failed before it: `Err((status, body))`, as `promote_moves_on` reads it. The inner `Err` is the buckets', the same
+/// on every shard. `next`: another site's shard follows, so a shard that is rehydrating answers 503 `warming` at once.
+#[allow(clippy::too_many_arguments)]
 async fn promote_on(
     env: &Env,
     site: &SiteEnv,
@@ -379,33 +375,61 @@ async fn promote_on(
     at: SiteId,
     body: &[u8],
     next: bool,
-) -> std::result::Result<(Vec<u8>, PackIndex, Option<Vec<u8>>), (u16, String)> {
+    store: &git::PackStore<'_, git::host::R2>,
+    s: git::Streamed,
+) -> std::result::Result<std::result::Result<PackRef, String>, (u16, String)> {
     // `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
     // (`git::promote_sites`).
     let path = format!("/promote?wait={}&{}", git::PROMOTE_WAIT_S, if next { "next=1&" } else { "" });
-    let pack = shard(env, site, p, at, &path, body.to_vec()).await?;
+    let body = js_sys::Uint8Array::from(body).into();
+    let pack = shard_call(env, site, p, at, &path, Some(body)).await?.stream().map_err(|e| (0, e.to_string()))?;
+    let pack = futures_util::StreamExt::map(pack, |c| c.map_err(|e| e.to_string()));
     // `via=0`: the shard that built the pack validates it. Through `fanout` it went to a pool shard, whose
     // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
     // `derived=1`: not a push, so it reports no `NetworkLoad` and its CPU stays out of `fanout`'s k (A31).
-    let path = format!("/validate?tipsn=0&via=0&derived=1&wait={}&", git::PROMOTE_WAIT_S);
-    let ix: PackIndex =
-        serde_json::from_slice(&shard(env, site, p, at, &path, pack.clone()).await?).map_err(|e| (0, e.to_string()))?;
+    let validate = |reader: git::PipeReader| async move {
+        let path = format!("/validate?tipsn=0&via=0&derived=1&wait={}&", git::PROMOTE_WAIT_S);
+        let chunks = futures_util::StreamExt::map(reader, |c| {
+            c.map(|b| js_sys::Uint8Array::from(&b[..]).into()).map_err(|e| wasm_bindgen::JsValue::from_str(&e))
+        });
+        let body = wasm_streams::ReadableStream::from_stream(chunks).into_raw();
+        let ix = shard(env, site, p, at, &path, Some(body.into())).await?;
+        serde_json::from_slice::<PackIndex>(&ix).map_err(|e| (0, e.to_string()))
+    };
     // Derived: a shard without `/idx` (the previous image) or a failed read stores the pack alone, as before.
-    let sum = Digest(<sha2::Sha256 as sha2::Digest>::digest(&pack).into());
-    let idx = shard(env, site, p, at, &format!("/idx?sha256={}&", sum.hex()), Vec::new()).await.ok();
-    Ok((pack, ix, idx))
+    let idx =
+        |sum: Digest| async move { shard(env, site, p, at, &format!("/idx?sha256={}&", sum.hex()), None).await.ok() };
+    let range = p.range.map(|(f, t)| (Index(f), Index(t)));
+    match store.place_promoted(s, pack, validate, idx, range).await {
+        Err(e) => Err((0, format!("the shard's pack broke off: {e}"))),
+        Ok(Ok(pack)) => Ok(Ok(pack)),
+        Ok(Err(git::TeeError::Invalid(e))) => Err(e),
+        Ok(Err(git::TeeError::Place(e))) => Ok(Err(e.to_string())),
+    }
 }
 
-/// Site `at`'s git cache shard of the network, whose catch-up reads the group through the record: `Err((status,
-/// body))` for an answer other than 200, status 0 for a failed call.
+/// Site `at`'s git cache shard of the network, its answer's body: `shard_call`'s.
 async fn shard(
     env: &Env,
     site: &SiteEnv,
     p: &Promote,
     at: SiteId,
     path: &str,
-    body: Vec<u8>,
+    body: Option<wasm_bindgen::JsValue>,
 ) -> std::result::Result<Vec<u8>, (u16, String)> {
+    shard_call(env, site, p, at, path, body).await?.bytes().await.map_err(|e| (0, e.to_string()))
+}
+
+/// Site `at`'s git cache shard of the network, whose catch-up reads the group through the record: its answer, body
+/// unread, or `Err((status, body))` for an answer other than 200, status 0 for a failed call.
+async fn shard_call(
+    env: &Env,
+    site: &SiteEnv,
+    p: &Promote,
+    at: SiteId,
+    path: &str,
+    body: Option<wasm_bindgen::JsValue>,
+) -> std::result::Result<Response, (u16, String)> {
     let fail = |e: String| (0, e);
     let ChainId::Repo(repo) = p.chain else { return Err(fail("not a repository chain".into())) };
     let region = site.sites.get(at).ok_or_else(|| fail(format!("site {} is not in GRAFTYARD_SITES", at.0)))?.region;
@@ -416,7 +440,7 @@ async fn shard(
     let rec = serde_json::to_string(&p.record).map_err(|e| fail(e.to_string()))?;
     let url = format!("https://shard{path}repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
     let mut init = RequestInit::new();
-    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
+    init.with_method(Method::Post).with_body(body);
     let req = Request::new_with_init(&url, &init).map_err(|e| fail(e.to_string()))?;
     let mut r = stub.fetch_with_request(req).await.map_err(|e| fail(e.to_string()))?;
     if r.status_code() != 200 {
@@ -425,7 +449,7 @@ async fn shard(
             format!("shard {path}: {} {}", r.status_code(), r.text().await.unwrap_or_default()),
         ));
     }
-    r.bytes().await.map_err(|e| fail(e.to_string()))
+    Ok(r)
 }
 
 #[cfg(test)]

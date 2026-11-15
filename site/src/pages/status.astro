@@ -1,0 +1,83 @@
+---
+// Build status, for readers: every milestone in build/BUILD-PLAN.md (src/data/milestones.ts).
+// Update src/data/milestones.ts when a milestone's state changes.
+import Page from '../layouts/Page.astro';
+import MilestoneStrip from '../components/MilestoneStrip.astro';
+import { milestones, label } from '../data/milestones';
+
+const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
+---
+<Page title="Status: where the Graftyard build stands | Graftyard"
+  description="Every Graftyard milestone, from the platform measurements to self-hosted installs: what is closed, what is under way, and the results behind each."
+  current="status" doc>
+<style is:global slot="head">
+/* status page: the milestone list (the strip styles itself) */
+
+.ms { display: grid; margin: 0; padding: 0; list-style: none; }
+.ms > li { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 9fr); gap: var(--s-4) var(--gutter); padding: var(--s-8) 0; border-top: 1px solid var(--line); scroll-margin-top: calc(var(--nav) + var(--s-5)); }
+.ms > li:last-child { border-bottom: 1px solid var(--line); }
+.ms__side { display: grid; gap: var(--s-3); align-content: start; }
+.ms__code { font: var(--display-weight) clamp(32px, 1.6vw + 22px, 48px)/1 var(--font-display); letter-spacing: var(--display-tracking); color: var(--ink); }
+.st { justify-self: start; display: inline-flex; align-items: center; gap: 8px; padding: 3px 12px; border-radius: 999px; border: 1px solid var(--line-strong); font: 500 var(--t-small)/1.4 var(--font-text); color: var(--muted); }
+.st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; border: 1px solid currentColor; }
+.st--done { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+.st--done::before { background: currentColor; }
+.st--now { color: var(--ink); border-color: var(--accent); }
+.st--now::before { background: var(--accent); border-color: var(--accent); }
+html[data-theme="light"] .st--done { color: #3f6a12; }
+.ms__when { font-size: var(--t-small); color: var(--muted); }
+.ms__main { display: grid; gap: var(--s-5); min-width: 0; max-width: 76ch; }
+.ms__main h2 { font-size: clamp(26px, 1.2vw + 18px, 36px); line-height: 1.12; text-wrap: balance; }
+.ms__main > p { font-size: var(--t-lead); line-height: 1.5; color: var(--ink); }
+.ms__group h3 { font: 500 var(--t-small)/1.4 var(--font-text); color: var(--muted); margin-bottom: var(--s-3); }
+.ms__group ul { display: grid; gap: var(--s-3); margin: 0; padding-left: 1.2em; }
+.ms__group li { color: var(--ink); }
+.ms__group li::marker { color: var(--muted); }
+.ms__group b { font-weight: 500; }
+.ms__after { padding: var(--s-4) var(--s-5); border-left: 2px solid var(--accent); background: var(--surface); color: var(--ink); }
+.rid { color: var(--muted); font-size: 0.86em; white-space: nowrap; }
+@media (max-width: 767px) {
+  .ms > li { grid-template-columns: minmax(0, 1fr); padding: var(--s-7) 0; }
+  .ms__side { grid-template-columns: auto auto 1fr; align-items: center; gap: var(--s-4); }
+}
+</style>
+  <section class="section" aria-labelledby="st-h">
+    <div class="wrap">
+      <div class="doc-head">
+        <p class="eyebrow">Status</p>
+        <h1 id="st-h">Where the build stands</h1>
+        <p class="t-lead">Milestones 0 to 3 build a working code host for people, one that GitHub clients treat as GitHub Enterprise Server 3.22. AM1 adds what that host needs to carry hundreds of AI coding agents safely on one repository. The rest makes it operable, recoverable and installable anywhere.</p>
+      </div>
+      <MilestoneStrip base="" />
+    </div>
+  </section>
+
+  <section class="section" id="milestones" aria-label="Milestones">
+    <div class="wrap">
+      <ol class="ms">
+        {milestones.map((m) => (
+          <li id={m.id}>
+            <div class="ms__side">
+              <span class="ms__code">{m.code}</span>
+              <span class={`st st--${m.state}`}>{label[m.state]}</span>
+              <span class="ms__when">{m.when}</span>
+            </div>
+            <div class="ms__main">
+              <h2>{m.name}</h2>
+              <p set:html={m.lead} />
+              {m.groups?.map((g) => (
+                <div class="ms__group">
+                  <h3>{g.title}</h3>
+                  <ul>{g.items.map((i) => <li set:html={i} />)}</ul>
+                </div>
+              ))}
+              {m.after && <p class="ms__after" set:html={m.after} />}
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p class="note">From <code>build/BUILD-PLAN.md</code> and the results files it cites, in the Graftyard repository. Each milestone closes only when every row of its gate meets its pass line, on a hosted install, unchanged. The labels after each line are the plan's row ids. <a href="/evidence/all/">All results</a> lists every row with its numbers.</p>
+      <p class="more"><a class="link" href="/evidence/">See the evidence<Fragment set:html={ARROW} /></a></p>
+    </div>
+  </section>
+</Page>
