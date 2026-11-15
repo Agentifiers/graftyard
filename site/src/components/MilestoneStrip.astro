@@ -1,0 +1,24 @@
+---
+// Every milestone as one segment in build order, filled when closed, striped while under way, outlined when planned,
+// with the counts under it. Each segment links to its milestone on the Status page (`base` is '' there).
+import { milestones, label, count, asOf } from '../data/milestones';
+
+interface Props { base?: string }
+const { base = '/status/' } = Astro.props;
+---
+<ol class="ms-strip" aria-label="Milestones in build order">
+  {milestones.map((m) => <li class={`is-${m.state}`}><a href={`${base}#${m.id}`} aria-label={`${m.code}, ${label[m.state]}`}>{m.code}</a></li>)}
+</ol>
+<p class="ms-key"><span><b>{count('done')}</b> closed</span><span><b>{count('now')}</b> under way</span><span><b>{count('next')}</b> to come</span><span>In build order, as of {asOf}</span></p>
+<style is:global>
+.ms-strip { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 6px; margin: var(--s-8) 0 0; padding: 0; list-style: none; }
+.ms-strip a { display: grid; gap: var(--s-2); align-content: start; min-height: 44px; color: var(--ink); text-decoration: none; font: 500 var(--t-small)/1.2 var(--font-text); }
+.ms-strip a::before { content: ""; display: block; height: 10px; border-radius: 3px; border: 1px solid var(--line-strong); }
+.ms-strip .is-done a::before { background: var(--accent); border-color: var(--accent); }
+.ms-strip .is-now a::before { background: repeating-linear-gradient(135deg, var(--accent) 0 4px, transparent 4px 8px); border-color: var(--accent); }
+.ms-strip .is-next a { color: var(--muted); }
+.ms-strip a:hover { color: var(--accent); }
+.ms-key { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); margin-top: var(--s-5); font-size: var(--t-small); color: var(--muted); }
+.ms-key b { color: var(--ink); font-weight: 500; }
+@media (max-width: 639px) { .ms-strip { grid-template-columns: repeat(6, minmax(0, 1fr)); row-gap: var(--s-5); } }
+</style>
