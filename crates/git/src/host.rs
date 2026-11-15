@@ -464,13 +464,14 @@ impl ShardHost<'_> {
         r.json().await.map_err(worker_err)
     }
 
-    /// The container's running git processes (`GET /procs`: command, nice, CPU seconds, RSS), most CPU first, as JSON
-    /// for `/status`. A container that is not running lists none and is not started for it.
-    pub async fn procs(&self) -> Result<serde_json::Value, StoreError> {
+    /// The container's running git processes (`GET /procs`: command, nice, CPU seconds, RSS), most CPU first, and the
+    /// network's pack counts (all and kept), as JSON for `/status`. A container that is not running lists none and is
+    /// not started for it.
+    pub async fn procs(&self, network: NetworkId) -> Result<serde_json::Value, StoreError> {
         if !self.container()?.running() {
             return Ok(serde_json::Value::Null);
         }
-        let mut r = self.ok(Method::Get, "/procs", None).await?;
+        let mut r = self.ok(Method::Get, &format!("/procs?net={}", network.0.0), None).await?;
         r.json().await.map_err(worker_err)
     }
 

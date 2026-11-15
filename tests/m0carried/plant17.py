@@ -48,6 +48,9 @@ MUTANTS = [
     ('/procs misses git run through nice (matches the parent only)', MAIN,
      '\t\tif filepath.Base(args[0]) != "git" && !strings.HasPrefix(filepath.Base(args[0]), "git-") {',
      '\t\tif filepath.Base(args[0]) != "nice" {'),
+    ('/procs?net= counts every pack as kept', MAIN,
+     '\t\t\t\tif _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".keep"); err == nil {\n\t\t\t\t\tkept++',
+     '\t\t\t\t{\n\t\t\t\t\tkept++'),
 ]
 
 

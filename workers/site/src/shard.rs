@@ -516,7 +516,7 @@ impl DurableObject for GitShard {
         let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };
         let path = url.path().to_owned();
         // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments) and the
-        // container's running git processes (`procs`).
+        // container's running git processes and the network's pack counts, all and kept (`procs`).
         if path == "/status" {
             let running = self.state.container().is_some_and(|c| c.running());
             let net = q(&url, "repo").and_then(|v| v.parse().ok()).map(|r| NetworkId(DbId(r)));
@@ -540,7 +540,7 @@ impl DurableObject for GitShard {
             // The git processes running on the container, so a saturated shard says which one holds its CPU and
             // memory (LM-1 round 24c, where only its signature named the repack).
             let procs = match net {
-                Some(_) => host.procs().await.ok(),
+                Some(n) => host.procs(n).await.ok(),
                 None => None,
             };
             return Response::from_json(&json!({
