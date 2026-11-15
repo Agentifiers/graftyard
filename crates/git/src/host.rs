@@ -625,9 +625,16 @@ impl ShardHost<'_> {
         refs: &[(String, String)],
         start: bool,
         done: bool,
+        repack: bool,
     ) -> Result<(), StoreError> {
         let body: String = refs.iter().map(|(r, o)| format!("{o} {r}\n")).collect();
-        let path = format!("/refs?net={}&start={}&done={}", network.0.0, u8::from(start), u8::from(done));
+        let path = format!(
+            "/refs?net={}&start={}&done={}&repack={}",
+            network.0.0,
+            u8::from(start),
+            u8::from(done),
+            u8::from(repack)
+        );
         self.ok(Method::Put, &path, Some(body.into_bytes())).await.map(|_| ())
     }
 
@@ -1094,20 +1101,32 @@ impl ShardIo for Io<'_, '_> {
         }
         Ok(out)
     }
-    async fn connected(&self) -> Result<Result<(), String>, StoreError> {
+    async fn connected(&self, repack: bool) -> Result<Result<(), String>, StoreError> {
         #[derive(Deserialize)]
         struct Out {
             connected: bool,
             #[serde(default)]
             error: String,
         }
-        let mut r =
-            self.host.ok(Method::Post, &format!("/connected?net={}&objects=tips", self.network.0.0), None).await?;
+        let mut r = self
+            .host
+            .ok(
+                Method::Post,
+                &format!("/connected?net={}&objects=tips&repack={}", self.network.0.0, u8::from(repack)),
+                None,
+            )
+            .await?;
         let o: Out = r.json().await.map_err(worker_err)?;
         Ok(if o.connected { Ok(()) } else { Err(o.error) })
     }
-    async fn put_refs_page(&self, refs: &[(String, String)], start: bool, done: bool) -> Result<(), StoreError> {
-        self.host.put_refs_page(self.network, refs, start, done).await
+    async fn put_refs_page(
+        &self,
+        refs: &[(String, String)],
+        start: bool,
+        done: bool,
+        repack: bool,
+    ) -> Result<(), StoreError> {
+        self.host.put_refs_page(self.network, refs, start, done, repack).await
     }
     async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError> {
         self.host.apply_refs(self.network, changes).await

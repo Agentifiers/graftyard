@@ -304,6 +304,29 @@ MUTANTS = [
      '            Ok((d, _)) => d.into_pack(),\n            Err(e) => {\n                let _ = idx(Digest([0; 32])).await;\n                return Ok(Err(e));\n            }',
      ['cargo', '-p', 'graftyard-git', '--lib', 'a_promotion_streams']),
 
+    # connected-after: a rehydrate that skipped covered packs starts its repack after the backstop, not before.
+    ('connected-after: the last ref page starts the repack though the check follows (main\'s order)', 'crates/git/src/catchup.rs',
+     'io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty()).await?;',
+     'io.put_refs_page(&page.refs, r.pages == 0, done, true).await?;',
+     ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_of_promoted_packs_loads']),
+    ('connected-after: no rehydrate\'s last ref page starts the repack', 'crates/git/src/catchup.rs',
+     'io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty()).await?;',
+     'io.put_refs_page(&page.refs, r.pages == 0, done, false).await?;',
+     ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_reads_the_log_only']),
+    ('connected-after: the backstop never starts the repack', 'crates/git/src/catchup.rs',
+     '        && let Err(why) = io.connected(true).await?', '        && let Err(why) = io.connected(false).await?',
+     ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_of_promoted_packs_loads']),
+    ('connected-after: the container ignores repack=0 on the last ref page', 'containers/git/server/main.go',
+     '\t\tif q.Get("repack") != "0" {', '\t\tif true {', ['go', 'TestConnectedRunsBeforeTheRehydratesRepack']),
+    ('connected-after: /connected starts the repack before its walk', 'containers/git/server/main.go',
+     '\tout, err := connectedWalk(net, rp, r.URL.Query().Get("objects"))\n\tif r.URL.Query().Get("repack") == "1" {\n\t\tstarted := startRepack(net, rp)',
+     '\tstarted := r.URL.Query().Get("repack") == "1" && startRepack(net, rp)\n\tout, err := connectedWalk(net, rp, r.URL.Query().Get("objects"))\n\tif r.URL.Query().Get("repack") == "1" {',
+     ['go', 'TestConnectedRunsBeforeTheRehydratesRepack']),
+    ('connected-after: a failed walk starts no repack', 'containers/git/server/main.go',
+     '\tif r.URL.Query().Get("repack") == "1" {\n\t\tstarted := startRepack(net, rp)',
+     '\tif r.URL.Query().Get("repack") == "1" && out != nil && out["connected"] == true {\n\t\tstarted := startRepack(net, rp)',
+     ['go', 'TestConnectedRunsBeforeTheRehydratesRepack']),
+
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

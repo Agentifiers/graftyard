@@ -1533,12 +1533,32 @@ func handleIdx(w http.ResponseWriter, r *http.Request) {
 
 // handleConnected is a rehydrate's backstop after it loaded stored packs by their stored indexes, with no index-pack
 // checking that each object's links are here: every ref's history (and with objects=1 every object it reaches)
-// must be in the repository.
+// must be in the repository. With repack=1 it starts the repack the rehydrate's last /refs page left to it
+// (`repack=0`) once its walk ends, passed or failed: started before the walk, the walk waited for the whole repack,
+// 20 minutes and more of a 2.6 GB network, and the shard answered `warming` all that time (tests/am1/results/
+// lm1-memory.md, round 21).
 func handleConnected(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
 		return
 	}
+	out, err := connectedWalk(net, rp, r.URL.Query().Get("objects"))
+	if r.URL.Query().Get("repack") == "1" {
+		started := startRepack(net, rp)
+		if out != nil {
+			out["repack"] = started
+		}
+	}
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, out)
+}
+
+// connectedWalk is /connected's walk under the network's shared lock and the repack lock; an error is a ref listing
+// that failed, not a missing object.
+func connectedWalk(net, rp, objects string) (map[string]any, error) {
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
@@ -1549,13 +1569,12 @@ func handleConnected(w http.ResponseWriter, r *http.Request) {
 	t0 := time.Now()
 	refs, err := listRefs(rp, []string{derivedEnv})
 	if err != nil {
-		fail(w, 500, "%v", err)
-		return
+		return nil, err
 	}
 	// objects=1 walks every object of every ref's history: about 4 s for git/git's 424,499 objects here, so minutes
 	// for a network the size of linux. objects=tips walks every commit, then the whole tree at each ref's tip only.
 	var argsets [][]string
-	switch r.URL.Query().Get("objects") {
+	switch objects {
 	case "1":
 		argsets = [][]string{{"rev-list", "--quiet", "--all", "--objects"}}
 	case "tips":
@@ -1572,7 +1591,7 @@ func handleConnected(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		out["error"] = err.Error()
 	}
-	jsonOut(w, out)
+	return out, nil
 }
 
 // handleIngestBatch is /ingest for many packs in one call: a catch-up's or rehydrate's run of inline packs from one
@@ -2003,7 +2022,11 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		setHead(rp, head)
-		repack = startRepack(net, rp)
+		// repack=0: a rehydrate that skipped covered packs runs /connected next, which waits for any repack, so it
+		// asks /connected to start the repack after its walk instead (tests/am1/results/lm1-memory.md, round 21).
+		if q.Get("repack") != "0" {
+			repack = startRepack(net, rp)
+		}
 	}
 	jsonOut(w, map[string]any{"refs": len(want), "skipped": skipped, "repack": repack})
 }

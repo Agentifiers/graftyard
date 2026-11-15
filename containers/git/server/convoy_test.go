@@ -341,3 +341,98 @@ func TestRepackHoldsNoNetworkLock(t *testing.T) {
 	}
 	run(t, repo("7"), "", "cat-file", "-e", side)
 }
+
+// A rehydrate that skipped covered packs ends with its last ref page (repack=0) and then the backstop /connected
+// (repack=1). The check answers while a repack, held here at its start, would still be running, and only then does the
+// repack start, whether the walk passed or failed. Before, the last ref page started the repack and the check waited
+// for all of it: 20 minutes and more of 2.6 GB on B0-34 m33, with the shard answering `warming` throughout
+// (tests/am1/results/lm1-memory.md, round 21). A /refs without repack=0 still starts the repack, as a plain
+// rehydrate's and a catch-up's do.
+func TestConnectedRunsBeforeTheRehydratesRepack(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	base := commit(t, wt, map[string]string{"README": "r\n"})
+	run(t, wt, "", "push", "-q", repo("7"), "main")
+	prev := base
+	for i := 0; i <= repackAt; i++ {
+		tip := commit(t, wt, map[string]string{"f": fmt.Sprintf("%d\n", i)})
+		idx := exec.Command("git", "index-pack", "--stdin", "--fix-thin")
+		idx.Dir = repo("7")
+		idx.Stdin = bytes.NewReader(packOfWt(t, wt, tip, prev))
+		if out, err := idx.CombinedOutput(); err != nil {
+			t.Fatalf("index-pack: %v %s", err, out)
+		}
+		prev = tip
+	}
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	old := runRepack
+	runRepack = func(rp string) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}
+	defer func() { runRepack = old }()
+	defer close(release)
+	put := func(q string) {
+		req, _ := http.NewRequest("PUT", s.URL+"/refs?net=7&start=1&done=1"+q, strings.NewReader(prev+" refs/heads/main\n"))
+		r, err := http.DefaultClient.Do(req)
+		if err != nil || r.StatusCode != 200 {
+			t.Fatalf("PUT /refs%s: %v %v", q, err, r)
+		}
+		r.Body.Close()
+	}
+	check := func() map[string]any {
+		got := make(chan map[string]any, 1)
+		go func() { got <- connected(t, s.URL, "&objects=tips&repack=1") }()
+		select {
+		case v := <-got:
+			return v
+		case <-time.After(5 * time.Second):
+			t.Fatal("/connected did not answer in 5 s: it waited on the rehydrate's own repack")
+			return nil
+		}
+	}
+
+	put("&repack=0")
+	select {
+	case <-started:
+		t.Fatal("the last ref page started a repack though the rehydrate's check follows it")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if v := check(); v["connected"] != true || v["repack"] != true {
+		t.Fatalf("connected: %v", v)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check did not start the repack after its walk")
+	}
+	release <- struct{}{}
+
+	// A failed walk starts the repack too: a ref to a commit whose tree is not here.
+	bad := run(t, repo("7"), "tree 1111111111111111111111111111111111111111\nparent "+prev+"\n\nbroken\n",
+		"hash-object", "-t", "commit", "--literally", "-w", "--stdin")
+	prev = bad
+	put("&repack=0")
+	if v := check(); v["connected"] != false || v["repack"] != true {
+		t.Fatalf("connected over a missing tree: %v", v)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a failed check did not start the repack")
+	}
+	release <- struct{}{}
+
+	// Without repack=0 the last page starts it at once, as before.
+	put("")
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a last ref page without repack=0 started no repack")
+	}
+	release <- struct{}{}
+}

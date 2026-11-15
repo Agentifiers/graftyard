@@ -3591,6 +3591,20 @@ LM-1's B0-34 warm on m29 (main 04f8b3a6) rehydrated repo:131296, the 5 GB linux 
 
 **Flip.** The same as the first decision's: hosted promotion MB/s under B0-31's push rate, measured in B0-34's drain of repo:131296.
 
+### `connected-after`: a rehydrate's connectivity backstop runs before its repack, 2026-11-15
+
+LM-1's B0-34 drain on `graft-m2b` m33 (main fb4a1b66) held every shard of repo:131296 at `warming` for the whole 45 minutes. From about 04:00Z, where m31's rehydrates finished, all three containers ran at 3.3 to 3.4 vCPU with no `shard rehydrate` report to the stop (`tests/am1/results/lm1-memory.md`, round 21).
+
+**Decision.** A rehydrate that skipped pushed packs a promotion covers sends its last ref page with `repack=0`, so the container's `/refs` starts no repack. Its backstop `/connected?repack=1` then walks every ref's history and each tip's tree, and starts the network's repack once the walk ends, passed or failed. A rehydrate that skipped nothing, and every catch-up, keep today's path: the last ref page starts the repack. `/connected` and `/fsck` keep taking the repack lock.
+
+**Why.** `/connected` waits for any running repack, because a repack deletes the packs it rolled up as it ends, and hosted `/fsck` read false right after one (`tests/am1/results/hot-shards-3.md`). The rehydrate's own last ref page had just started a geometric repack of the whole network, 2.6 GB of linux there. So the check waited out the whole repack, and the shard's place, dropped only after the check, kept it answering `warming`. In m31 nothing was skipped (no stored `.idx` yet), so the check never ran and the shard served while the repack ran behind it.
+
+**Beat.** Dropping the repack lock from `/connected`: a check that runs while a repack deletes packs is not shown safe. Skipping the repack after a rehydrate: every ingested pack stays its own pack, and git commands slow as packs grow (`containers/git/server/main.go`, `repackAt`). Running the check before the last ref page: the check walks the refs, so they must be written first.
+
+**Evidence.** `TestConnectedRunsBeforeTheRehydratesRepack` (`containers/git/server/convoy_test.go`): with `runRepack` held, `/connected` answers within 5 s and only then starts the repack, after a passing and after a failing walk, and a last ref page without `repack=0` still starts it at once. On main it fails with "the last ref page started a repack though the rehydrate's check follows it". In `crates/git/tests/catchup.rs`, the skip tests assert the order `connected` then `repack` (and on a fault, `connected, repack, connected, repack`), and a rehydrate that skipped nothing asserts `repack` alone. Plants 101 to 106 in `tests/lm1mem/plant.py`.
+
+**Flip.** A hosted rehydrate whose check reads false on a pack a concurrent repack moved: the order is not enough, and the repack must also wait for something the check holds.
+
 ### `promote-stream`: a promotion streams the shard's pack to the buckets, and an entry over `PROMOTE_MAX` promotes alone, 2026-11-15
 
 LM-1's B0-34 drain on `graft-m2b` m31 (main dc269249) promoted entries 7..16 and 17..17 of repo:131296, then stalled for good at entry 18, a 53,125,950 B stored push over `PROMOTE_MAX` (48 MiB): `within_promote_max` refused it on every alarm, and nothing after it could promote or archive (`tests/am1/results/lm1-memory.md`, round 20).
