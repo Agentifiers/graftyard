@@ -510,6 +510,22 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   image `graft-m1-site-gitshard-git@sha256:8c972c8b…94a8` (tag `b030s9`, `tests/am1/raw/b030split-image-9.log`), from
   main's `containers/git`: disk-validate (`/validate?disk=1`), repack-keep, and `/procs` on `/status`. Running shards
   are rolled to it (`--roll-shards`). Site variables unchanged. Script: `tests/am1/b030split/siteday.sh`.
+- **Site day 9 done (20:50:15Z to 21:23:5xZ, exit 0; `tests/am1/raw/b030split-siteday-9.log`).** Sites a to d
+  deployed in two phases, the last versions a `491c7ce5`, b `a50c6921`, c `05dbc6e9`, d `edd24be7`. The roll killed
+  and caught up each shard of net 1048590 on the new image: site 0 by 21:08Z, site 1 by 21:14Z, site 2 by 21:23Z
+  (`kill 200, catchup 200` each). Checks after it:
+  - The group kept its state: leader site a at term 43 before and after, applied 145,845, archivedTo 140,589,
+    promotedTo 145,625, log 1.953 GB, member SQLite 7.198 GB, zero `SQLITE_FULL`.
+  - `/status` shows `procs` on all three shards (no git process running at 21:24Z, one pack of 57.7 to 58.0 MB each).
+  - The archive's promotion still validates with `derived=1` (3 calls, p50 1,227 ms in 21:22 to 21:24Z), and
+    `validate_on` catches a derived validate up first [code: `crates/git/src/shard.rs`, `validate_on`].
+  - Push validates: 105 in 21:22 to 21:24Z, p50 376 ms, max 2,472 ms, against 3,539 ms at 15Z. The shard object's
+    log line is its own URL, which carries no `disk` flag (the flag is on its call to the container), so that these
+    ran on `disk=1` is [inference] from the drop and from `validate_on` (a pushed validate on a running container this
+    isolate has caught up goes on the disk as it stands). No `missingBase` or `held=` in site a's logs in that window.
+- **Resumed at 21:24:24Z, simulated day 17.627** (operator, 2026-11-15). `b030-STOP` renamed
+  `tests/am1/raw/b030r2-STOP-2012Z`, the renamed `.done` files deleted, and `b030-load`, `b030-drain` and
+  `b030-watch` restarted; the load continued from its state at 121,248 pushes. Stop rule: STOP_USD $225, drain 24 h.
 
 ## Cost
 
