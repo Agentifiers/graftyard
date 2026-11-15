@@ -1233,7 +1233,7 @@ impl<F: Family> Routes<F> {
             let at = now_ms();
             let f = raft::Command::format(&c.cmd);
             *self.host.stats.borrow_mut().received.entry(format!("recv:{}.{}", f.family, f.version)).or_insert(0) += 1;
-            let cmd = c.cmd.clone();
+            let marked = F::marked(&c.cmd);
             let (r, out) = match c.admit {
                 None => {
                     let (r, out) = self.host.step(|m, t| m.commit(t, rid, c.cmd))?;
@@ -1242,7 +1242,7 @@ impl<F: Family> Routes<F> {
                 Some(a) => self.host.step(|m, t| m.commit_as(t, rid, c.cmd, a.admit()))?,
             };
             let w = match r {
-                Ok(a) => Ok((a.ticket, self.host.wait_ticket(a.ticket, Some((rid, at, Some(cmd)))))),
+                Ok(a) => Ok((a.ticket, self.host.wait_ticket(a.ticket, Some((rid, at, marked))))),
                 Err(e) => {
                     #[cfg(feature = "test-faults")]
                     if let Some(core) = self.host.core.borrow_mut().as_mut() {
@@ -1557,6 +1557,10 @@ impl<F: Family> Routes<F> {
                 "stmts": stmts,
                 "stmtBytes": stmt_bytes,
                 "admitted": core.as_ref().map(|c| c.admitted.len()),
+                // Every copy an open ticket holds: the core's queued, frozen, and decided commands
+                // (`raft::Member::admitted_bytes`) and what the host kept with each ticket (`Core::admitted`).
+                "admittedBytes": core.as_ref().map(|c| c.m.admitted_bytes()
+                    + c.admitted.values().filter_map(|(_, _, k)| k.as_ref()).map(raft::Record::encoded_len).sum::<usize>()),
             },
         })
     }

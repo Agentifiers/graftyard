@@ -384,14 +384,18 @@ async fn commit(
 ) -> Result<Result<ActionsOut, ActionsErr>, String> {
     let cmd = ActionsCmd { actor, op };
     let at = crate::now_ms();
-    let admitted = h.input(|m, t| m.commit(t, rid, cmd.clone())).map_err(|e| e.to_string())?;
-    let a = admitted.map_err(|e| crate::host::call_error_json(&e).to_string())?;
+    let (admitted, out) = h.step(|m, t| m.commit(t, rid, cmd)).map_err(|e| e.to_string())?;
+    // Registered as admitted before the input's output is released, so a `NeedIdBlock` refusal is parked for the lease
+    // loop with the core's copy of the command (`Out::refused`), which records a block and re-sends it, as `/commit`
+    // does.
+    let a = admitted.map_err(|e| crate::host::call_error_json(&e).to_string());
+    let rx = a.as_ref().ok().map(|a| h.wait_ticket(a.ticket, Some((rid, at, None))));
+    h.dispatch(out, None);
+    let a = a?;
     h.served();
     let t = a.ticket;
     let end = crate::now_ms() + 10_000;
-    // The command goes with the ticket, so a `NeedIdBlock` refusal is parked for the lease loop, which records a block
-    // and re-sends it, as `/commit` does.
-    let mut rx = h.wait_ticket(t, Some((rid, at, Some(cmd))));
+    let mut rx = rx.expect("admitted");
     loop {
         let left = std::time::Duration::from_millis(end.saturating_sub(crate::now_ms()).max(1));
         match crate::host::within(left, &mut rx).await {

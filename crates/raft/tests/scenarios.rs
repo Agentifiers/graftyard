@@ -2181,3 +2181,56 @@ fn a_new_leader_catching_up_silent_learners_stays_within_out_max() {
     assert!(h.peer <= graftyard_raft::PEER_OUT_MAX, "{} bytes alive to one learner", h.peer);
     assert!(h.learners >= 2_000_000, "the learners were sent catch-up calls: {}", h.learners);
 }
+
+/// A leadership that ends on a higher term answers each ticket it held under the ticket it issued. Answered under the
+/// new term, a host keyed by the issued ticket matched none: B0-33's deposed leaders kept 581 to 1,172 open tickets,
+/// each with its command and waiters, for minutes (LM-1 round 19, `tests/m0/results/admitted-bytes.md`).
+#[test]
+fn a_leadership_deposed_by_a_higher_term_answers_its_tickets_as_issued() {
+    let mut c = Cluster::new(92);
+    c.elect(A);
+    c.sync(A);
+    let t = admit(&mut c, A, 700, put("k", "v"));
+    c.inbox.clear();
+    // B and C elect B without A; B's first append then deposes A.
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1);
+    c.inbox.clear();
+    c.on(B, |m, now| m.campaign(now));
+    c.deliver(|e| e.to != A);
+    assert_eq!(c.m(B).role(), Role::Leader);
+    for _ in 0..20 {
+        c.advance(200);
+        c.deliver_all();
+    }
+    assert!(c.m(A).term() > t.term, "A was deposed by a higher term");
+    let r = c.ticket_results(t);
+    assert!(
+        matches!(r.as_slice(), [Resolution::Ticket { result: Err(CommitError::NotLeader(_)), .. }]),
+        "the issued ticket resolves NotLeader once: {r:?}"
+    );
+}
+
+/// A leader whose term's `Noop` reached no quorum gives up and keeps `led_term`; resuming that term in the same boot
+/// issues new seqs, so an old ticket never answers with a newer command's outcome (B0-11's class, within one boot).
+#[test]
+fn a_term_resumed_in_the_same_boot_never_reissues_a_ticket() {
+    let mut c = Cluster::new(93);
+    c.elect(A);
+    c.sync(A);
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1);
+    c.deliver(|_| false);
+    // B wins, but no AppendEntries reaches anyone: its `Noop` reaches no quorum.
+    c.on(B, |m, now| m.campaign(now));
+    c.deliver(|e| !matches!(e.msg, Message::Append(_)));
+    assert_eq!(c.m(B).role(), Role::Leader);
+    let first = admit(&mut c, B, 701, put("k", "first"));
+    for _ in 0..40 {
+        c.advance(100);
+        c.deliver(|e| !matches!(e.msg, Message::Append(_)));
+    }
+    assert_eq!(c.m(B).role(), Role::Follower);
+    assert_eq!(c.m(B).state().led_term, Some(first.term), "kept led_term to resume");
+    let second = admit(&mut c, B, 702, put("k", "second"));
+    assert_eq!((second.term, second.boot), (first.term, first.boot), "resumed in the same term and boot");
+    assert_ne!(second, first, "a resumed leadership issued a ticket its last one issued");
+}
