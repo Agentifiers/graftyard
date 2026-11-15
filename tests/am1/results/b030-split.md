@@ -334,6 +334,16 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
   The first case is under both stop lines and the second is over both. The trend through 16Z (70 a minute) does not
   settle which. So the load is paused, not ended: `b030-load.done` was renamed to
   `tests/am1/raw/b030r2-load-stopped-at-1616Z`, and the state resumes from `b030-state.json`.
+- **The stop was premature; resumed at 16:36:01Z.** The operator ruled (2026-11-15): resume, record the growth as an
+  open question (G10), and change nothing hosted mid-run. The pause ran 16:16:23Z to 16:36:01Z at day 14.916. No
+  pushes or rows were sent and no simulated time passed (`load.mjs` advances active time only while it runs). The
+  watcher had ended on the transient `b030-load.done` at 16:16:33Z and was restarted with the load. The drain service
+  (`b030-drain`) waits for `b030-load.done`.
+- **The stop rule now runs on data.** `tests/am1/b030split/project.py` projects each hour from the last 3 hours of
+  minute rows: the push rate, the owed pushes at day 30 if that rate holds, the drain's wall time at that rate, and the
+  total on the run-only meter plus $58 for the split. It stops when the total passes STOP_USD ($185) or the drain
+  passes 24 h. At the resume (16:37Z): 70.6 pushes a minute, about 37,200 owed at day 30, an 8.8 h drain, a total of
+  $172.2 at $1.92 an hour. Over 6 hours: 77.3 a minute, about 29,200 owed, 6.3 h, $170.7.
 - **The drain.** `tests/am1/b030/drain.mjs` (`rerun.sh drain`) starts once `load.mjs` writes `b030-load.done` at
   day 30. It pushes every owed push at the same concurrency (8 in flight, one per branch), with load.mjs's pack shape
   and state, sending each one again up to 3 times. It stops on `b030-STOP` and resumes from the state. At the end it
@@ -384,10 +394,10 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   stack that each ref write grows. The shard's `/status` on this deploy has no `procs`, so the split by process is
   not available.
 - **The hypothesis.** Per-push work grows with the repository: confirmed for the git cache shard (validate, test
-  merges, ingest and promote all grew 1.7 to 2.7x), and not for the commit round. The cause in code that fits is
-  PrSync's refs: `refs/pull/N/{head,merge}` stay after their pull request closes, so `--not --all` grows with every
-  pull request ever opened (load.mjs opens 6,050 a simulated day). That is a hypothesis: the timings line up with the
-  ref count, but the cost of each walk was not measured on the hosted shard.
+  merges, ingest and promote all grew 1.7 to 2.7x), and not for the commit round. PrSync's refs were the first
+  candidate: `refs/pull/N/{head,merge}` stay after their pull request closes, so `--not --all` grows with every pull
+  request PrSync handled. Measured offline below, they explain about 120 ms of a validate's 2.1 s rise at most, so
+  they are not the cause.
 - **The site b holds at 15:22:47Z to 15:23:52Z.** Five CommitErrors holds, outside any `Archived` run but not outside
   archive work: site b, newly leader after a LoopLag handover at 15:22:24Z, ran four `Promoted` steps from 15:22:41Z
   to 15:23:03Z (5.2 to 9.1 s each). `holds.py` counts only `Archived` lines as runs. In the same 110 s its member used
@@ -396,9 +406,37 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   4.3 to 7.8 s of wall time each. Each hold counted 12 to 44 calls per follower with 3 to 7 failed, where a failed
   call is one past the 1 s `CALL_DEADLINE`. A new leader on a site whose member and shard are not warm pays several
   times the CPU per call while it also promotes, so its follower calls miss the deadline.
-- **What I did not check.** Whether reftable compaction or index-pack's own time is the growing part; the hosted
-  cost of `--not --all` at 21,000 refs; and whether site a's shard container's CPU limits validates (the container's
-  per-process split needs main's `procs`).
+- **The ref count, measured offline.** I built the shard container from site day 78cf4070's tree and ran it locally
+  on a repository of this run's shape. It has `main` and 500 branches, each tip a commit with load.mjs's 323 KB blob,
+  plus one commit per pull request on its branch's chain, written with fast-import. Each pull request has
+  `refs/pull/N/head` and `/merge`. Pushes, validates, ingests and ref writes went over HTTP the way the shard calls
+  them. Medians of 15 calls (`/tmp/vb/bench.py`, not kept):
+
+  | Repository | `/validate` | `/merge` | `/ingest` | `/refs` |
+  |---|---|---|---|---|
+  | 500 pull refs | 14 ms | 26 ms | 2 ms | 2 ms |
+  | 21,000 pull refs, packs as ingested | 134 ms | 32 ms | 3 ms | 3 ms |
+  | 21,000 pull refs, after repack and commit-graph | 23 ms | 25 ms | 2 ms | 2 ms |
+
+  21,000 refs add about 120 ms to a validate before the shard's repack writes a commit-graph, and about 10 ms after.
+  They add about 6 ms to a merge. The hosted rise was about 2,100 ms on validate and 2,400 ms on merge, so the ref
+  count is not the main cause.
+- **Lock wait.** This deploy logs no lock wait: the container's `/validate` and the shard object's route have no
+  `lock_ms` or similar. A validate takes the network's lock shared. `/ingest`, `/refs` and a repack's writers take it
+  alone, so a validate queues behind a catch-up's writers. The container ran at 1.5 to 2 of 4 vCPUs with `cpu_p99`
+  0.62 to 0.66, not CPU-bound, so waiting is the stronger lead. It has no number on this run.
+- **What GHES does on close.** GitHub keeps `refs/pull/N/head` after a pull request closes or merges, for history,
+  and removes `refs/pull/N/merge`. GitHub's docs call both refs temporary and read-only and say nothing about close, so
+  this is observed behaviour, not documented: GitHub community discussion #11922; mtilson's `refs/pull` gist; Fluffy
+  and Flakey, "What is a GitHub Pull Request merge branch?". It is not verified on GHES 3.22. `design/SHARED.md`,
+  "Pull request state never diverges from refs", names both refs as derived and says nothing about close. So deleting
+  head refs on close is not an option. Deleting merge refs on close would match GitHub, but it halves the ref count at
+  most.
+- **What I did not check.** Whether index-pack's own time is the growing part, and how the validates' lock wait splits
+  against repack. Both need main's `/procs` and a lock-wait measure on a hosted run. Main now has repack-keep
+  (`0c171e6d`) and `/procs` (`0c171e6d`, `361a1dc0`). Branch `disk-validate` (`23fc1dd0`, not yet on main) validates a
+  push on the shard's disk as it stands, skipping the catch-up wait. This run's deploy predates all three. Open
+  question G10 (`decisions/OPEN-QUESTIONS.md`) records it.
 
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
