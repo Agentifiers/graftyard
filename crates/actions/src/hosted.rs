@@ -6,8 +6,10 @@
 //!   `OWNER_SCOPE_SHARD` with exactly one table row's labels, so one group's `decide` counts all of them against the
 //!   cap, and two overlapping demand reads never start more (`decisions/DECISIONS.md`, "M4-WP4").
 //! - **Staleness** needs times the fold does not keep (when a runner was first seen, whether it ever held a job), so
-//!   the broker keeps them in memory (`Seen`), as a broker's other state is derived. A broker that restarts sees every
-//!   idle runner afresh, which delays its staleness by at most `HOSTED_IDLE` and never makes a busy runner stale.
+//!   the broker keeps them (`Seen`) in its object's storage, read before and written after each demand read. In
+//!   memory alone they did not last: an object idle for seconds leaves memory, so with reads 34 s or more apart every
+//!   read saw each runner afresh and a runner whose Sandbox never started held its cap slot and its job's start for
+//!   good [measured, `tests/m4/results/m4-wp4.md`, "The smoke run"].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -174,8 +176,8 @@ pub fn record(row: &HostedLabel, name: &str, key: Box<[u8]>, version: &str) -> R
 }
 
 /// The broker's memory of each hosted runner it has seen registered: when it first saw it, and whether it ever saw it
-/// hold a job. A runner is forgotten once its registration is gone.
-#[derive(Clone, Debug, Default)]
+/// hold a job. A runner is forgotten once its registration is gone. The broker stores it as JSON.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seen {
     first: BTreeMap<RunnerId, Timestamp>,
     held: BTreeSet<RunnerId>,
@@ -319,6 +321,24 @@ mod tests {
         let d = demand(&[s], 20, Timestamp(10), &mut Seen::default());
         let starts: Vec<(&str, u16)> = d.labels.iter().map(|(n, x)| (&**n, x.start[0].1)).collect();
         assert_eq!(starts, vec![("ubuntu-latest", 15), ("ubuntu-24.04-4core", 5)]);
+    }
+
+    /// The broker keeps `Seen` as JSON in its storage and every demand read starts from what it stored, since an
+    /// object idle for seconds leaves memory: a runner then still goes stale `HOSTED_IDLE` after its first sight, and
+    /// one that held a job stays marked. Kept in memory only, runner 1704299 of the smoke run never went stale.
+    #[test]
+    fn seen_ages_runners_across_stored_reads() {
+        let read = |hosted: &[i64], held: &[i64], t: u64, stored: &str| {
+            let mut seen: Seen = serde_json::from_str(stored).unwrap();
+            let d = demand(&[shard(2, hosted, held)], 20, Timestamp(t), &mut seen);
+            (d, serde_json::to_string(&seen).unwrap())
+        };
+        let idle = HOSTED_IDLE.as_millis() as u64;
+        let (_, j) = read(&[1, 2], &[2], 1_000, &serde_json::to_string(&Seen::default()).unwrap());
+        let (d, j) = read(&[1, 2], &[], 1_000 + idle - 1, &j);
+        assert_eq!(d.stale, vec![r(2)], "2 held a job and holds none; 1 is not yet idle HOSTED_IDLE");
+        let (d, _) = read(&[1, 2], &[], 1_000 + idle, &j);
+        assert_eq!((d.starts(), d.stale), (2, vec![r(1), r(2)]), "1 idle HOSTED_IDLE since its first sight");
     }
 
     /// Idle runners beyond the queued jobs are stale, the most recently seen first, and an empty queue starts nothing.
