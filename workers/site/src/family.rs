@@ -719,6 +719,7 @@ impl Family for Repo {
         crate::merge_queue::on_alarm(host).await;
         crate::hookseq::on_alarm(host).await;
         crate::activity::on_alarm(host).await;
+        crate::actions_trigger::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
         crate::archive::on_alarm(host);
     }

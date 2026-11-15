@@ -40,7 +40,7 @@ The runner contract is measured in `tests/m4/wp3/runner-protocol.md`, against th
 ## Workflows
 
 - **The parser** is a Rust port of the runner's `GitHub.Actions.WorkflowParser` and `MatrixBuilder`, with `@actions/workflow-parser` 0.3.61 as the differential oracle (SHARED, Workflow engine). The schema is data: the oracle's `workflow-v1.0` with descriptions removed, so the port reads every definition the runner reads, not only the gates' subset [measured: 59 workflows match, `tests/m4/results/m4-wp3.md`]. YAML comes from `yaml-rust2` 0.10 with default features off [measured: builds for wasm32]. `MatrixBuilder` is ported from the C# source, because the npm oracle has no matrix builder.
-- **`on: merge_group`** runs on the queue ref the merge queue built (`crates/git/src/queue.rs`), with `github.ref` the queue ref and `github.event_name` `merge_group`. BF-37 adds go-playground/webhooks parsing of `merge_group`, `pull_request.enqueued`, and `pull_request.dequeued`, which M4-WP1's payloads already carry.
+- **`on: merge_group`** runs on the queue ref the merge queue built (`crates/git/src/queue.rs`), with `github.ref` the queue ref and `github.event_name` `merge_group`. BF-37 adds go-playground/webhooks parsing of `merge_group`, `pull_request.enqueued`, and `pull_request.dequeued`, which M4-WP1's payloads already carry. As built (BF-37): `ActionsTrigger` runs only `merge_group`, in band on the repository leader's alarm with its own `ConsumerCursor` row (`workers/site/src/actions_trigger.rs`); a `merge_group` run's key names its queue ref (format 0x15.2); and the branch protection `PUT` takes GHES's `merge_queue` ruleset parameters (`decisions/DECISIONS.md`, "M4-WP3: BF-37's merge queue setting and `ActionsTrigger` for `merge_group`").
 
 ## Logs
 

@@ -11,6 +11,7 @@ use serde::Deserialize;
 use worker::*;
 
 mod actions;
+mod actions_trigger;
 mod activity;
 mod archive;
 mod audit;

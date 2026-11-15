@@ -18,8 +18,8 @@
 //!   which is the relay's site unless the leader moved since `acquirejob`; a relay with no runner answers `no-stream`.
 //! - **Graftyard's own routes**, `/api/graftyard/v1/repos/{o}/{r}/actions/...`, for a repository admin: `runners`
 //!   registers an ephemeral runner and answers its JIT config pieces, `dispatch` runs a workflow file at a ref, and
-//!   `runs/{id}` and `jobs/{id}` read the shard. They stand in for `ActionsTrigger` and GHES's registration flow until
-//!   those land, and change no GHES reply.
+//!   `runs`, `runs/{id}`, and `jobs/{id}` read the shard. They stand in for push and pull request triggers and GHES's
+//!   registration flow until those land (`ActionsTrigger` runs `merge_group` on the sites), and change no GHES reply.
 //!
 //! Nothing here calls the Cloudflare API.
 
@@ -523,6 +523,11 @@ pub async fn admin_route(c: &Ctx<'_>, req: &mut Request, rd: &Read, who: &Princi
             }
         }
         (Method::Post, ["dispatch"]) => dispatch(c, rd, chain, &b).await?,
+        // Every run of the repository with its event and ref, newest first (BF-37 finds `merge_group` runs by ref).
+        (Method::Get, ["runs"]) => match shard_read(c, chain, json!({ "repoRuns": rd.repo.id.0.0 })).await {
+            Ok(v) => Reply::json(200, v),
+            Err(e) => unavailable(&e),
+        },
         (Method::Get, [kind @ ("runs" | "jobs"), id]) => {
             let Ok(id) = id.parse::<i64>() else { return Ok(Reply::not_found()) };
             let k = if *kind == "runs" { "run" } else { "job" };

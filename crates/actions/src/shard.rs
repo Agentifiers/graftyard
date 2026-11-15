@@ -29,6 +29,9 @@ use crate::labels::LabelSet;
 
 /// The Actions family's first format (`tests/m4/results/m4-wp3-design.md`, "Formats and tags").
 pub const ACTIONS_FORMAT: Format = Format { family: 0x15, version: 1 };
+/// BF-37's `CreateRun` of a `merge_group` run, whose run key names its queue ref (`WorkflowRun::key`). Only
+/// `ActionsTrigger` on a repository leader of a release that reads it sends one; every other command stays 0x15.1.
+pub const ACTIONS_FORMAT_MERGE_GROUP: Format = Format { family: 0x15, version: 2 };
 
 #[cfg(test)]
 const JOB_LEASE_MS: u64 = crate::job::JOB_LEASE.as_millis() as u64;
@@ -65,8 +68,20 @@ pub struct WorkflowRun {
 }
 
 impl WorkflowRun {
+    /// SHARED's `(chain, index, workflow path)`. One `GroupBuilt` entry builds several queue refs, each its own
+    /// `merge_group` event, so a `merge_group` run's key also names its queue ref (after a newline, which no path
+    /// holds). Only format 0x15.2 carries such a run, so a member that keys runs the old way never decides one.
     pub fn key(&self) -> RunKey {
-        RunKey { chain: self.trigger.0, index: self.trigger.1, workflow: self.workflow.clone() }
+        let workflow = if self.is_merge_group() {
+            format!("{}\n{}", self.workflow, self.head_ref).into()
+        } else {
+            self.workflow.clone()
+        };
+        RunKey { chain: self.trigger.0, index: self.trigger.1, workflow }
+    }
+
+    pub fn is_merge_group(&self) -> bool {
+        &*self.event == "merge_group"
     }
 }
 
@@ -741,7 +756,10 @@ impl Command for ActionsCmd {
     type Err = ActionsErr;
 
     fn format(&self) -> Format {
-        ACTIONS_FORMAT
+        match &self.op {
+            ActionsOp::CreateRun { run, .. } if run.is_merge_group() => ACTIONS_FORMAT_MERGE_GROUP,
+            _ => ACTIONS_FORMAT,
+        }
     }
     fn tiers(&self) -> TierSet {
         TierSet::CORE
