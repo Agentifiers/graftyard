@@ -80,6 +80,76 @@ The unmeasured variable is R2's throughput with four streams into one container;
 
 This branch's catch-up change helps B0-32 and B0-31 the same way: stored packs fetched four at a time ahead of the in-order ingest, and a promoted range's pack not fetched again by a catch-up that already applied the range.
 
+## Rows m3fr6 (2026-11-15, TAG `m3fr6`, `ROWS="l0-12 b0-31 b0-32"`, `STOP_USD=46`)
+
+**Build and site day.** `lm1-rows-m3f6` `520020fe`: main `a304d3fc` with this branch's drivers and test-faults instruments, including two read-only raft `AdmissionView` fields (`round_ms`, `cmd_bytes`) and `vmem.mjs`'s per-voter `/stats` `clock`. The build ran with these main merges: `read-rounds` (`def9d6c1`), `repack-keep` (`8d79a32f`), `r22-sweep-fill` (`450bcae4`), `disk-validate` (`e7139c2e`) and `lease-clock` (`04577c42`). New shard image `sha256:b78eacca…`, built from main's `containers/git` at `a304d3fc` (`/validate?disk=1`, `held=`), on standard-4. Site day 17:17:57Z to 17:32:27Z: sites `0f1ce3ee` / `116b517b` / `f603b1b4` (phase 1 `0375142b` / `f4e758b6` / `d5d1056f`), edge `65a6583a`. Each step exited 0. After it, `j4` answered 200, `repo:65536` was led on site 0 at term 4, and every voter's `/stats` `clock` read lag 0 and `leaseFallbacks` 0. R22 second look: site a's `*/15` cron logged `sweep {` at 17:33:42Z and `fold audit {` at 17:35:01Z, with no "never complete".
+
+Rows ran with `TRACE=1`, `LEARNERS=enam:4000,weur:2000,apac:2000` and `TEARDOWN=1`, from 17:36Z. **B0-32 did not run:** after B0-31, rows.sh's stop read graft-m3f's spend at $47.99, over `STOP_USD` 46 (see Cost). The end-of-run sweep found `git#2#net:65568` (B0-31's apac network shard) still running at 21:37:43Z and printed SWEEP FAILED. The second sweep tore it down and printed "no shard container running" (SWEEP2 OK, 21:38:11Z). After the service stopped, `teardown.py --sweep` ran twice more, at 21:39Z and 21:41Z, and both printed "no shard container running".
+
+### L0-12: fail
+
+Repository 65567 (`fm3fr6-l012`), k 4 from 17:38:49Z. The 8 learners had caught up 0 of 8 after 122 s. Replay run `mwi4cbu9`, 18:17:14Z to 18:27:14Z: 500 agents with a lease each, 500 feed long-pollers, and a leader kill every 60 s (10 kill pushes: 9 ok, 1 × 503). Stall 18:31:43Z to 19:01:47Z (`stalledMs` 1,801,162), the late acquire at 19:12:36Z, then refusals 19:12:52Z to 21:13:42Z, seven kinds.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| No two holders overlap Exclusive leases for longer than `DRIFT` (500 ms) | 111 samples, 0 over 0 ms, max −11,330 ms; with the clock spread, the bound is −10,818 ms | Pass |
+| Measured member clock offsets under 500 ms | During the replay, against Cloudflare's clock (driver offset 5,335 ms): **972 ms** on the 76 samples kept by the round-trip filter, and 6,289 ms raw over all 97. The members' clocks were 56 to 512 ms apart (`lowerMs` / `upperMs`). Before and after the stall, at rest: spread at most 324 and 228 ms | **Fail** |
+| Every lease live before the stall is live after it, `expires` moved by the recorded stall | 20 of 20 live, `expires` moved 1,772,000 to 1,773,000 ms for a 1,801 s stall | Pass [inference: the 28 to 29 s gap is the lease renewals' own step, not checked] |
+| The late Exclusive acquire succeeds | Idle 60 s lease 201, then the overlapping Exclusive acquire 201 with 0 conflicts | Pass |
+| Feed: each event within 3 s at p99 outside leader kills; fail over 2 s | 19,286 events outside kills: p50 1,178 ms, **p99 2,954 ms** (all 20,818: p99 4,360, max 16,876) | Between the lines: under 3 s, over the 2 s fail line |
+| 100 of 100 refused for each `ActorKind::Agent` kind, 0 of 100 for the other three | Table below | Pass |
+
+| Kind | Gate | Pushes | REST ref writes |
+|---|---|---|---|
+| Confined vendor App | 100 refused | 100 refused (`leased Exclusive by user 7100002`) | 100 × 422 refused |
+| Flagged App without `confine` | 0 refused | 100 accepted | 100 accepted |
+| Human PAT | 0 refused | 100 accepted | 100 accepted |
+| Graftyard-run App (`graftyard-workspace`) | 100 refused | 100 refused (`push needs a live task`) | 100 × 422 refused |
+| `Graftyard MCP` | 0 refused | 100 accepted | 100 accepted |
+
+An unflagged App also ran, though it is not one of the row's five kinds: 100 and 100 accepted. The refusal counts are exact for the first time on this install (m3fr5b was off by one on two kinds).
+
+**Leader churn (the comparison point for B0-02's minimum round gap).** Term **2 to 32** over 18:16:09Z to 18:26:16Z (`tests/fanout/raw/terms-m3fr6-l0-12.jsonl`); term 33 after the stall. Churn began before the first kill, during the learners' catch-up. **16 `StepDown`s** in Workers Logs (`member alarm: StepDown`), 18:16:31Z to 18:25:37Z: 13 `CommitErrors` (site a 6, site b 6, site c 1) and 3 `Confirm` (site a, 18:20:48Z to 18:21:07Z, for example p99 998 ms with 7 of 9 slow). Only 3 leader aborts from the kills show in Workers Logs, all on site c (18:18:22Z, 18:19:32Z, 18:26:04Z); the driver kept no kill times (fixed on this branch, `ab45d58e`). Elections: wins per site 11 / 8 / 9, campaigns lost 6 / 6 / 29. Leader commit p50/p99 2,258 / 17,312 ms, queue p99 15.6 s, 8,574 failed calls. In the F74 call trace (`tests/f74/calls.py`, deadline 1 s), 46,794 of 111,415 `/raft` calls missed or went unanswered; the largest leg was out (sent to entered) in 22,959 of them and the callee's work in 2,217. B0-02's analysis: forced read rounds still come in bursts, because `read-rounds` shares a round per clock reading and `lease-clock`'s floor moves the clock on each peer stamp [B0-02's reading of this trace]. The trace and files went to the B0-02 thread.
+
+**Clock lag and lease fallbacks per member** (`/stats` `clock` at 18:40Z; buckets 0, then under 2^i ms):
+
+| Site | lagMax | leaseFallbacks | Stamps lagging 256 ms or more |
+|---|---|---|---|
+| 0 | 5,687 ms | 11,543 | 110,725 of 137,735 |
+| 1 | 4,300 ms | 10,296 | 52,329 of 95,674 |
+| 2 | 163 ms | 0 | 0 of 803 |
+
+**API reads (B0-29's line, the lease fallbacks' cost).** `read:api` p99 22,450 ms: 46,259 × 200, 21,487 × 503 and 47,798 skipped at the driver's cap. B0-29's line is p99 at most 2 s with 99% served, and fails over 5 s. Under this churn the fallback's own share cannot be separated from the elections'.
+
+### B0-31: fail (between the lines)
+
+Repository 65568 (`fm3fr6-b031`). It rehomed on site 2 (apac), which led at term 3, and k reached 4 at 21:17:18Z. The 8 learners had caught up 0 of 8 after 120 s. Run `mwic5as1`: 500 agents and 1 MiB packs for 600 s from 21:23:39Z, with every bucket's placement failing from 300 s.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Commit p99 at most 1 s with buckets up | Leader stats, buckets-up half: 5,365 commits, p50 1,009 ms, **p99 2,895 ms** | **Fail**, between the lines (under the 3 s fail line) |
+| While placement fails, Human and MergeQueue commit p99 at most 3 s | Leader stats, failing half (all commands): 4,237, p50 996, p99 1,650 ms. End to end at the client: Human push p99 11.4 s (157), Human side commands p99 3.5 s (454), `merge:only` p99 17.0 s (32) | Pass on the leader's commit line [the leader's split is not per class; inference that Human and MergeQueue sit within it] |
+| …and 0 Human or MergeQueue refused | Human pushes: 146 ok, 11 stale (race with the agents' pushes to the same ref, not a refusal), 0 refused. Merges: 16 × 200, 5 × 409 `Base branch was modified`, **11 × 503** `the git cache: … {"warming":true}` | **Fail** (MergeQueue: 11 refused) |
+| Agent pushes over `INLINE_MAX_HOT` refused at once in the `ng` shape | 1,245 `full` in the `ng` shape (p50 1.9 s, p99 5.0 s), 15 ok, 1 client fetch failure, 0 × 503 | Pass on shape [the 15 ok went through before admission filled] |
+
+**The apac leader held** the whole row: term 2 to 3 (the rehoming), 0 changes during load, 0 `StepDown` lines in Workers Logs from 21:15Z to 21:35Z, 16 failed calls, 0 feed polls on the leader. Against m3fr5c (term 3 to 16, commit p99 5.9 s, Human push p99 35.4 s, 121 × 503 shed on agents): no churn, commit p99 2.9 s, Human push p99 11.4 s, 0 agent 503s. With buckets up, agent pushes all committed (1,240 ok) but p99 72.5 s.
+
+**disk-validate on this row.** Workers Logs on the three sites from 21:17Z to 21:34:30Z have no `missingBase`, `held=` or `disk=1` lines; the shard logs no line on a held push, so this says nothing about how often a held retry ran.
+
+**Clock lag and lease fallbacks per member** (`/stats` `clock` at 21:35:41Z):
+
+| Site | lagMax | leaseFallbacks |
+|---|---|---|
+| 0 | 280 ms | 0 |
+| 1 | 224 ms | 0 |
+| 2 (leader) | 727 ms | 107 |
+
+**API reads (B0-29's line).** `read:api` 107,273 × 200, 0 × 503: p99 1,906 ms with buckets up and 1,193 ms with placement failing, both under B0-29's 2 s line, with 107 lease fallbacks on the leader.
+
+### B0-32: not run
+
+rows.sh stopped before it at $47.99 (above), as `STOP_USD` 46 asks. disk-validate's burst result is still owed.
+
 ## Rows m3fr5b (2026-11-15, TAG `m3fr5b`, `ROWS="l0-12 b0-31 b0-32"`)
 
 **Build and site day.** `lm1-rows-m3f5`: main `dc269249` (stored-fetch, memory-budgets, shard-cancel, pool-warm) with this branch's drivers and test-faults instruments (`9ef481d7`), then `k.mjs` from `lm1-memory` `980daa4a` (`f40f6bf7`), which asks for the forced k again until pool-warm's slots are caught up. Full checks on `9ef481d7` in a clean worktree: fmt, clippy (workspace and wasm), cargo test, Go, design, names and links all passed. New shard image `sha256:c8d3a831…`, built from that tree's `containers/git` (the same as main's), on standard-4. Site day 2026-11-14 23:57:55Z to 2026-11-15 00:14:44Z: sites `329d440e` / `3de20354` / `aaa83b74`, then `f2c01d3c` / `29c4c3cf` / `c0e61a1d`, edge `8dd6b30b`. Each exited 0. After it, `j4` answered 200 and `repo:65536`'s leader answered with `memHigh`.
@@ -543,6 +613,8 @@ All 10 kill pushes answered ok. The trace went to LM-1. This build is before mai
 **Next:** rerun L0-12 on main `5c0f06f` with these instruments. The churn may be gone on the liveness build; if the clock spread or the feed p99 still fails, the raw data names the member.
 
 ## Cost
+
+**$48.06** at 21:39Z on 2026-11-15, graft-m3f only, after the 17:18Z site day, the new image and rows m3fr6 (`source tests/am1/lf13/env-m3f.sh; T0_FILE=tests/am1/raw/m3f-t0.t0 bash tests/fanout/cost.sh`, containers $21.45), with no shard container running. Rows m3fr6 and their site day cost $14.50 (from $33.56 at 17:36:51Z). **Correction:** `tests/fanout/m2bcost.py` prices graft-m2b unless `INSTALL` names another install, and between these readings the meter was run without `env-m3f.sh` sourced, which read graft-m2b ($33.57 at 21:39Z, containers $8.79; `INSTALL=graft-m2b` reads the same). The m3fr6 progress figures sent to the parent thread ($33.41 to $33.52) were graft-m2b's. The earlier figures below came from rows-m3f.sh's own `cost` lines or a sourced shell, and are graft-m3f's [inference from the 17:36Z line, which matches: $33.56, containers $13.23].
 
 **$32.90** at 04:45Z on 2026-11-15, after the 23:58Z site day, rows m3fr5b and the B0-31 rerun m3fr5c (`T0_FILE=tests/am1/raw/m3f-t0.t0 bash tests/fanout/cost.sh`, graft-m3f only, containers $13.23), with no shard container running. Earlier: **$26.38** at 02:29Z on 2026-11-15.
 
