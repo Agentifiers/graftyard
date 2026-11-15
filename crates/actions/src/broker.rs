@@ -49,6 +49,22 @@ impl ActionsFold {
         let queued = self.queued().into_iter().map(|(j, l, s, v)| (j, l.clone(), s, v)).collect();
         Summary { queued, held }
     }
+
+    /// A `Repo`-scope runner's poll, which the leader of `shard` (its registration and jobs shard) answers with the
+    /// `Owner`-scope rule, `Taken::pick`, over this one shard, always read whole. So a match whose answer was lost is
+    /// resent after `RESEND_AFTER`, and an ephemeral runner matched or seen holding a job takes no second one (F76: on
+    /// BF-54, `Repo`-scope runners whose answers were lost waited out 10-minute leases instead).
+    pub fn repo_pick(
+        &self,
+        shard: u8,
+        taken: &mut Taken,
+        runner: RunnerId,
+        labels: &LabelSet,
+        ephemeral: bool,
+        now: Timestamp,
+    ) -> Pick {
+        taken.pick(&[(shard, &self.summary())], true, runner, labels, ephemeral, now)
+    }
 }
 
 /// What a poll does.

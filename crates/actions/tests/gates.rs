@@ -635,6 +635,48 @@ fn of_two_runners_matched_to_one_job_only_the_first_commits() {
     );
 }
 
+/// F76 (BF-54 hosted): a `Repo`-scope runner whose poll lost its match's answer gets that job on a later poll, within
+/// `RESEND_AFTER` plus one poll, and never a second job. Each poll is the shard leader's `match`: `repo_pick` over the
+/// leader's fold, then `Matched` committed for a match. The runner's first answer is dropped (its poll timed out), so
+/// it holds nothing and polls again every 5 s, as a listener whose poll failed does.
+#[test]
+fn a_repo_scope_runner_whose_match_answer_was_lost_gets_the_job_on_a_later_poll() {
+    use graftyard_actions::broker::{Pick, RESEND_AFTER, Taken};
+    let mut w = World::new();
+    w.register(1);
+    // Polled only here, not by the world's simulated runners.
+    let r = w.runners.pop().unwrap();
+    let labels = LabelSet::parse(["self-hosted", "linux", "x64"]).unwrap();
+    let run = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("build", &[]), spec("test", &[])]);
+    let jobs = w.fold().run(run).unwrap().jobs.clone();
+    let mut taken = Taken::default();
+    let mut answered: Vec<(Timestamp, Pick)> = Vec::new();
+    let matched_at = w.now;
+    for poll in 0.. {
+        let f = w.fold();
+        let p = f.repo_pick(3, &mut taken, r, &labels, false, w.now);
+        if let Pick::Match { job, version, .. } = p {
+            let m = ActionsCmd {
+                actor: ActionsActor::Runner(r),
+                op: ActionsOp::Job { job, version, event: JobEvent::Matched(r) },
+            };
+            assert!(matches!(w.shard_cmd(m), Some(Ok(_))), "the match commits");
+        }
+        // The first answer is lost; every later one reaches the runner.
+        if poll > 0 && !matches!(p, Pick::Busy | Pick::Idle) {
+            answered.push((w.now, p));
+            break;
+        }
+        w.run_for(5_000);
+        assert!(w.now.0 < matched_at.0 + 2 * 60_000, "no answer after 2 minutes: {p:?}");
+    }
+    let (at, p) = answered.pop().unwrap();
+    assert_eq!(p, Pick::Resend { shard: 3, job: jobs[0] }, "the lost match again, not the second job");
+    assert!(at.0 - matched_at.0 <= RESEND_AFTER.as_millis() as u64 + 5_000, "after {} ms", at.0 - matched_at.0);
+    // The second job was never matched to it while it held the first.
+    assert!(matches!(w.fold().job(jobs[1]).unwrap().state, JobState::Queued { .. }));
+}
+
 // ---- the abort path ----
 
 /// The repository is deleted while a run is in progress: `RunChecksCmd` answers `Gone`, and `RunOwner` cancels the run

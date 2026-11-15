@@ -144,6 +144,29 @@ This is the `Repo`-scope half of BF-55's lost-answer finding, which was fixed on
 
 They were stopped at 21:59:16Z to 21:59:20Z through GitShard `/teardown` (all 200 `torn_down`) from a scratch Worker `graft-m4a-shardkill` bound to the three site scripts' `GitShard` classes. The Worker was then deleted, and at 21:59:49Z the API listed 0 running on sites a, b, and c.
 
+## F76: the lost `Repo`-scope matches, measured
+
+Branch `f76-repo-resend`. Measured from the BF-54 run's Workers Logs (the telemetry API's exact count view, by second) and `durableObjectsPeriodicGroups`. `tests/m4/raw/wp4/f76/trace.md` keeps the queries' output.
+
+**Why a held 50 s poll was answered after 100 s.** The broker died. It was not a slow leader.
+
+- From 21:09:20Z, the first minute with jobs, the broker `broker:actions:7100001.11` on site a ended `exceededMemory` 14 times in 25 minutes. Each death failed 618 to 1,836 held polls in the same second. Sites b and c had 7 more as the edge moved polls there.
+- Its peak memory was 47 to 109 MiB while it held 2,000 polls with no jobs (20:58Z to 21:08Z, no deaths). With jobs it was 256 to 270 MiB.
+- A death drops every held poll, including any whose match the leader had just committed. The edge's `GET broker/message` then waited out the runner's 100 s timeout: 84 to 346 edge polls a minute ended at 100 s from 21:10Z, against 0 before 21:09Z.
+- **The leader's load did not cause it.**
+  - The registration shard's leader member used 7 to 18 s of CPU a minute, 12 to 30% of one thread, the same before and after the jobs.
+  - `/runsvc` asks reached the leader at 17,425 to 26,050 a minute during the hold, about 290 to 430 a second, which is 2,000 polls asking every `ASK_EVERY` (5 s).
+  - Before the jobs it answered them at p50 1 to 17 ms and p99 under 600 ms. Once jobs ran, it answered at p50 84 to 1,298 ms and p99 2.0 to 3.0 s, while it also committed matches, acquires, renewals, and finishes. Its leader stepped down 8 times between 21:10Z and 21:35Z (`StepDown { CommitErrors }`, 6 on site a and 2 on site b).
+- **What filled the memory is an inference.** Every hint after a queue move woke all 2,000 held polls at once, and each ask holds its request, the lookup's future, and its answer. With answers at 0.3 to 1.3 s instead of a few ms, about ten times as many asks were in flight at each wake. The trace has no per-object heap breakdown.
+
+**The fixes, one rule each:**
+
+- **Resend in both scopes.** The `Repo`-scope `match` now answers with `ActionsFold::repo_pick`, which is `Taken::pick`, BF-55's `Owner`-scope rule, over the one shard. A job its runner holds `Assigned` past `RESEND_AFTER` is handed to it again, a runner holding any other job gets nothing, and an ephemeral runner takes one job. `MATCHED` is replaced by a per-shard `Taken`.
+- **At most `ASKS_MAX` (64) asks in flight per broker.** A poll past them waits in line.
+- **Test.** `a_repo_scope_runner_whose_match_answer_was_lost_gets_the_job_on_a_later_poll` (`crates/actions/tests/gates.rs`) passes. With main's rule swapped into `repo_pick`, it fails with "no answer after 2 minutes: Busy".
+- **Plants** 22 to 24 are caught.
+- The BF-54 rerun on this branch's site day decides whether `ASKS_MAX` is enough.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
@@ -184,6 +207,9 @@ BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 
 | 19 | `runners upgrade` goes to 100% before the canary day | the canary test |
 | 20 | `runners upgrade` rolls the image with the 10% canary | the canary test |
 | 21 | The broker's stored `Seen` drops each runner's first sight (the smoke run's bug) | `seen_ages_runners_across_stored_reads` |
+| 22 | A `Repo`-scope poll never resends a lost match (main's rule, F76) | `a_repo_scope_runner_whose_match_answer_was_lost_gets_the_job_on_a_later_poll` |
+| 23 | A `Repo`-scope poll matches a runner that holds a job a second job | the same |
+| 24 | A summary forgets when a job was matched, so nothing is ever resent | the same, and `bf55` |
 
 ## Cost estimate for the hosted runs
 
