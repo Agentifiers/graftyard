@@ -208,6 +208,12 @@ pub struct Stats {
     pub queue_ms: Vec<u32>,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
+    /// Every stamp's lag (`crate::clock`), stamp minus this isolate's clock, by bucket: 0, then below 2^i ms for i
+    /// from 1, the last bucket open; and the largest seen.
+    pub clock_lag: [u32; 16],
+    pub clock_lag_max: u64,
+    /// Leader: reads that started while the clock was suspect, so waited for a round instead of the lease.
+    pub lease_fallbacks: u32,
     /// Local `/entries` pages capped at `ENTRIES_BUSY_PAGE_BYTES` because other reads were in flight.
     pub busy_pages: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
@@ -322,6 +328,9 @@ impl Stats {
         self.trace.clear();
         self.hops.clear();
         self.inbound.clear();
+        self.clock_lag = [0; 16];
+        self.clock_lag_max = 0;
+        self.lease_fallbacks = 0;
         self.inbound_since = now_ms();
     }
 }
@@ -743,6 +752,9 @@ pub struct Host<F: Family> {
     pub heavy_reads: Rc<Cell<u32>>,
     /// Reads of any kind in flight on this member, until their answer is sent (`crate::member::READS_MAX`).
     pub reads_in_flight: Rc<Cell<u32>>,
+    /// This member's clock: the isolate's, raised to the freshest stamp a peer or the edge sent (`crate::clock`).
+    /// Every input steps at it, and every reading the member gives out is it.
+    pub clock: RefCell<crate::clock::Clock>,
     /// Bytes of the bodies of member calls this member has sent and not yet seen end, and of read answers still
     /// streaming, each counted once per call or read though a shared answer is one copy (`/stats` `memSplit`).
     pub call_bytes: Rc<Cell<usize>>,
@@ -1435,6 +1447,7 @@ impl<F: Family> Host<F> {
             served_at: Cell::new(0),
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
+            clock: RefCell::new(crate::clock::Clock::default()),
             call_bytes: Rc::new(Cell::new(0)),
             answers: Rc::new(RefCell::new(Answers::default())),
             #[cfg(feature = "test-faults")]
@@ -1577,7 +1590,7 @@ impl<F: Family> Host<F> {
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
         let (mut m, ready) =
-            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(now_ms()), seed())
+            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(self.now()), seed())
                 .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
@@ -1680,6 +1693,22 @@ impl<F: Family> Host<F> {
         }
     }
 
+    /// This member's clock (`crate::clock::Clock::now`): every input steps at it, and every reading the member gives
+    /// out, such as `/status`'s `now`, is it.
+    pub fn now(&self) -> u64 {
+        self.clock.borrow_mut().now(now_ms())
+    }
+
+    /// A sender's clock stamp (`crate::clock::STAMP`) on a call to this member or a reply to its call.
+    pub fn stamped(&self, v: Option<String>) {
+        if let Some(stamp) = crate::clock::parse(v) {
+            let lag = self.clock.borrow_mut().stamp(stamp, now_ms());
+            let mut s = self.stats.borrow_mut();
+            s.clock_lag[(u64::BITS - lag.leading_zeros()).min(15) as usize] += 1;
+            s.clock_lag_max = s.clock_lag_max.max(lag);
+        }
+    }
+
     /// One input to the member: run it, make its writes durable, and return its reply and outputs, not yet released
     /// (`dispatch` releases them). The kill faults fire here.
     pub fn step<R>(
@@ -1692,10 +1721,12 @@ impl<F: Family> Host<F> {
         self.kick();
         let mut guard = self.core.try_borrow_mut().map_err(|_| err("member core busy"))?;
         let core = guard.as_mut().ok_or_else(|| err("member not joined"))?;
-        let t = now_ms();
+        let t = self.now();
         let applied0 = core.applied;
         #[cfg(feature = "test-faults")]
         let was = (core.m.role(), core.m.term(), core.m.state().commit);
+        // The read lease rests on this clock: while stamps showed it lagging, reads wait for a round (`crate::clock`).
+        core.m.set_clock_suspect(self.clock.borrow().suspect());
         let ready = f(&mut core.m, Timestamp(t));
         self.note(core, &ready.writes, t);
         #[cfg(feature = "test-faults")]
@@ -1776,7 +1807,7 @@ impl<F: Family> Host<F> {
         core.applied = applied;
         let early = std::mem::take(&mut out.early);
         if wrote {
-            let id = core.m.confirm_begin(Timestamp(now_ms()));
+            let id = core.m.confirm_begin(Timestamp(self.now()));
             let timed = core.m.role() == Role::Leader
                 && early
                     .iter()
@@ -2604,22 +2635,24 @@ impl<F: Family> Host<F> {
                 let _ = wasm_bindgen_futures::JsFuture::from(closed).await;
             });
         }
+        let h = Headers::new();
+        let _ = h.set(crate::clock::STAMP, &self.now().to_string());
         #[cfg(feature = "test-faults")]
         {
-            let h = Headers::new();
             let _ = h.set("x-graft-hop", &hop.to_string());
             let _ = h.set("x-graft-sent", &now_ms().to_string());
             // The sender's address, so the callee traces `CallArrived` without decoding the body a second time.
             if let Some(me) = self.core.borrow().as_ref().map(|c| c.m.me()) {
                 let _ = h.set("x-graft-from", &me.0.to_string());
             }
-            init.with_headers(h);
         }
+        init.with_headers(h);
         #[cfg(not(feature = "test-faults"))]
         let _ = hop;
         let req =
             Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
         let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
+        self.stamped(res.headers().get(crate::clock::STAMP).ok().flatten());
         #[cfg(feature = "test-faults")]
         if let Some(left) = res.headers().get("x-graft-left").ok().flatten().and_then(|v| v.parse().ok()) {
             self.trace(Trace::AnswerArrived, to.0, 0, left, 0);

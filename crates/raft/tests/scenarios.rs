@@ -507,6 +507,40 @@ fn reads_need_the_lease_or_a_round() {
     assert!(c.m(A).fresh(&g).is_err(), "a grant outlived the next input");
 }
 
+/// A host whose clock may lag (`set_clock_suspect`): inside a lease the read waits for a round sent after it
+/// arrived, and only that round grants it. Cleared, the lease grants at once again.
+#[test]
+fn a_suspect_clock_grants_reads_only_by_a_round() {
+    let mut c = Cluster::new(13);
+    c.elect(A);
+    let read = |c: &mut Cluster| -> (graftyard_raft::ReadId, Option<bool>) {
+        c.resolutions.clear();
+        let id = c.on(A, |m, now| m.read(now)).expect("leading");
+        let r = c.resolutions.iter().find_map(|(_, r)| match r {
+            Resolution::Read { id: i, result: Ok(g) } if *i == id => Some(g.via_round()),
+            _ => None,
+        });
+        (id, r)
+    };
+    assert_eq!(read(&mut c).1, Some(false), "inside the lease, granted at once");
+    c.m_mut(A).set_clock_suspect(true);
+    // Past the election's round, whose acks were sent in the same millisecond as a read now would arrive.
+    c.advance(1);
+    c.inbox.clear();
+    let (id, at_once) = read(&mut c);
+    assert_eq!(at_once, None, "a suspect clock granted a read on the lease");
+    // Rounds sent before the read arrived do not count: only the broadcast the read started grants it.
+    assert!(c.inbox.iter().any(|e| e.from == A), "the read sent no round");
+    c.deliver_all();
+    let granted = c.resolutions.iter().find_map(|(_, r)| match r {
+        Resolution::Read { id: i, result: Ok(g) } if *i == id => Some(g.via_round()),
+        _ => None,
+    });
+    assert_eq!(granted, Some(true), "the read's own round grants it");
+    c.m_mut(A).set_clock_suspect(false);
+    assert_eq!(read(&mut c).1, Some(false), "cleared, the lease grants at once");
+}
+
 /// The output gate: a member that crashes before its writes are durable sent nothing, so a vote it would have
 /// granted is not counted and its term is not lost.
 #[test]
