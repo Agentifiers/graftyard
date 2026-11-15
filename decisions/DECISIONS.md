@@ -3575,7 +3575,7 @@ LM-1's B0-34 warm on m29 (main 04f8b3a6) rehydrated repo:131296, the 5 GB linux 
 
 #### Stored packs are fetched four at a time and ingested in log order
 
-**Decision.** A catch-up or rehydrate fetches up to `FETCH_AT_ONCE` (4) stored packs at once onto the container's disk, at most `AHEAD_PACKS` (8) and `AHEAD_BYTES` (64 MiB) ahead of the ingest, and ingests them strictly in log order. A catch-up does not fetch a `Promoted` entry's own pack: it applies the range's entries first, so the disk already holds every object of it.
+**Decision.** A catch-up or rehydrate fetches up to `FETCH_AT_ONCE` (4) stored packs at once onto the container's disk, at most `AHEAD_PACKS` (8) ahead of the ingest and, past the first four, `AHEAD_BYTES` (64 MiB) ("`fetch-ahead`" above), and ingests them strictly in log order. A catch-up does not fetch a `Promoted` entry's own pack: it applies the range's entries first, so the disk already holds every object of it.
 
 **Why.** On B0-31 m3fr4 the apac shard's catch-up spent about 500 ms a pack in per-pack round trips outside spool and `index-pack`. A Workers invocation has at most six connections waiting for response headers [doc, Workers limits], and a `/spool` call waits for its headers until the container has the whole body, so four leave one for the in-order ingest and one for the next log page. The bounds are counted on the container's disk, where the fetched bodies wait.
 
@@ -3590,6 +3590,41 @@ LM-1's B0-34 warm on m29 (main 04f8b3a6) rehydrated repo:131296, the 5 GB linux 
 **Why.** On git/git's first-parent history, 30 thin pushes of 100 commits (29.2 MB) promoted as one: `pack-objects` 4.65 s (57.9 MB out), and the validate's `index-pack` 6.50 s with its default threads (11.97 s with one), 0.0 s connectivity. So 2.62 MB/s of pushed bytes, CPU-bound, against about 4 MB/s from B0-31's agents. `pack-objects` writing files gives a pack that differs from its `--stdout` output, so the stored `.idx` is the validate's, from the bytes that are placed. A promoted pack is 1.6 to 4.3 times its thin pushes' bytes, more for shorter ranges (2.3x at 30 pushes per promotion, 4.3x at one). The push-rate sweep at 2.62 MB/s over 600 s ends 3, 0, 754, and 1,957 MB above the last promotion at 1, 2, 4, and 6 MB/s, each step at most 19.2 s [measured locally, `tests/am1/results/lm1-rows-m3f.md`, "Promotion rate"; `promotion_keeps_up_below_its_rate_and_stays_bounded_above_it`]. A growing tail costs slower rehydrates, not correctness. Shard-streamed promotion lifts the site's memory bound, not this CPU one.
 
 **Flip.** The same as the first decision's: hosted promotion MB/s under B0-31's push rate, measured in B0-34's drain of repo:131296.
+
+### `fetch-ahead`: four stored packs of any size fetch at once, and a promotion packs only its range's own objects by name, 2026-11-15
+
+LM-1's B0-34 cold warm on `graft-m2b` m35 (image 36c17feb) took 154, 183, and 214 s against DESIGN's 120 s line. Spool summed 80 to 127 s for 8.53 GB of promoted packs, on a network of about 2.6 GB of pushes (`tests/am1/results/lm1-memory.md`, round 23).
+
+**Decision.** Two changes:
+- A catch-up or rehydrate starts up to `FETCH_AT_ONCE` (4) stored pack fetches ahead of the ingest whatever their size. `AHEAD_BYTES` (64 MiB) bounds only the packs past those four, within `AHEAD_PACKS` (8). The stored `.idx` streams from the bucket into the container's `/spool-idx` as the pack does (`ShardHost::put_stream`), so the shard object holds no byte of either.
+- `record` lists only the objects a pushed pack brought: offsets before the sent length minus its 20-byte trailer, so not the bases `--fix-thin` appended. `/validate` saves the sent length for `adopt`. `/promote` gives `pack-objects` each object's tree-entry name. The promoted pack stays complete and holds exactly the same objects as before.
+
+**Why.** `Ahead::pump` started another fetch only while the bytes ahead fit 64 MiB, or when nothing was ahead. Every promoted pack of repo:131296 is 106 to 207 MB, so the marked phase fetched one at a time: each shard's summed spool (79.5, 92.3, 126.6 s) is under its marked phase (100.6, 122.3, 155.4 s). The fetched bodies wait on the container's 20 GB disk, not in memory, so the byte cap protected nothing the site holds. Promoted packs are 3.15 times the pushed bytes they cover locally, against about 3.2 hosted. The causes:
+- each range is packed complete: 3.24 times at 6 steps, 2.47 at 24, 1.85 at 96;
+- the id list has no names: plus 17% on step 96;
+- it repeats the bases `--fix-thin` appended: plus 15%.
+
+The batched inline path (`ingestRun`) already dropped those bases by offset. Fewer and named objects also mean less `pack-objects` work per promotion, so the change helps G9's 0.49 MB/s rather than costing it [measured locally, round 23b].
+
+**Beat.**
+- **Thin promotions against earlier promotions.** A thin pack's stored `.idx` cannot be loaded (G5), so every rehydrate would re-index at 1.0 to 1.55 MB/s: about an hour for 5 GB.
+- **A lower promote-ahead threshold.** It cuts the 39 to 45 s re-index of the tail, but makes more and smaller promotions, which are the slowest per pushed byte and the largest per pushed byte. G9's rate is the binding problem.
+- **Longer ranges by raising `PROMOTE_MAX`.** 24 steps pack at 2.47 times against 3.24 at 6, but each promotion takes longer, at G9's same CPU rate.
+- **A roll-up of promoted packs (`Compacted { consumed, produced }`)** is not built now. It reached 1.04 times, but took 385 s on 4 threads for 2.2 GB and 8.6 GB resident. It is G9's next lever.
+
+**Evidence.**
+- `large_promoted_packs_fetch_four_at_once_and_still_ingest_in_log_order` (`crates/git/tests/catchup.rs`): twelve 207 MB promoted packs reach 4 fetches at once and ingest in log order. On main it fails with 1 at once.
+- `tests/fanout/fetchmem` (local workerd, R2 bodies streamed into a slowed `/spool` stand-in): peak RSS 115 MB with one 207 MB fetch and 118 MB with four, from 113 MB idle. The control that reads each pack whole reaches 532 and 1,849 MB.
+- `TestRecordKeepsOnlyThePacksOwnObjects` (`containers/git/server/promote_test.go`): a thin pack's recorded objects are exactly its range's, on direct ingest, on adopt after `/validate`, and in `/ingest-batch`'s one-pack branch. On main it records 42 against 36.
+- `TestPromotedPackIsCompleteAndHoldsExactlyTheRange`: `index-pack --strict` with no `--fix-thin` accepts the promoted pack in an empty repository, and its index is exactly the six ranges' objects.
+- `TestPromotedPackIsSmallerThanMainsWay`: 154,117 B against main's 265,424 B (58%).
+- Plants 107 to 113 in `tests/lm1mem/plant.py`, all caught.
+
+The four-stream R2 rate into one container is unmeasured [inference: B0-34's next cold warm measures it]. Repo:131296's existing promotions stay at about 3.2 times, because only new promotions shrink.
+
+**Flip.**
+- For the fetch: B0-34's cold warm on this change with a summed spool rate near round 23's one-stream 67 to 107 MB/s. That would mean the container's link or R2 caps the sum, and the 5 GB line needs fewer bytes (G9's roll-up), not more streams.
+- For the promotion: a hosted rehydrate whose `.idx` load or `/connected` reports a missing object in a promoted pack.
 
 ### `connected-after`: a rehydrate's connectivity backstop runs before its repack, 2026-11-15
 

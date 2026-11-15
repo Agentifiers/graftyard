@@ -65,7 +65,8 @@
 //	POST /refs?net=N                 a catch-up's ref changes, the same lines, the zero oid a delete
 //	GET  /refs?net=N                 every ref, the same lines
 //	POST /promote?net=N              body: SHA-256s of ingested packs, one per line. Answers one complete (not thin)
-//	                                 pack of every object those packs brought
+//	                                 pack of every object those packs brought, named by its tree entry where there is one
+//	                                 so pack-objects can group delta candidates by name
 //	POST /have?net=N                 body: SHA-256s, one per line. {"have": [...]}: those already ingested, so a
 //	                                 resumed rehydrate skips them
 //	GET  /info-refs?net=N            upload-pack's advertisement, in the protocol the git-protocol header asks for
@@ -465,11 +466,20 @@ func idxObjects(idx string, env []string) ([]string, error) {
 }
 
 // record keeps, per ingested pack (by the SHA-256 of the bytes as sent), the objects it brought, for /promote.
-func record(r, sum, packName string, objDir string) error {
-	objs, err := idxObjects(filepath.Join(objDir, "pack", "pack-"+packName+".idx"), []string{derivedEnv})
+// index-pack --fix-thin appends bases after the sent pack's trailer: sent is the length as sent, so entries before
+// sent-20 are its own. Zero or less keeps the whole index, for an aside directory written by an older release.
+func record(r, sum, packName string, objDir string, sent int64) error {
+	entries, err := idxEntries(filepath.Join(objDir, "pack", "pack-"+packName+".idx"), []string{derivedEnv})
 	if err != nil {
 		return err
 	}
+	var objs []string
+	for _, e := range entries {
+		if sent <= 0 || e.offset < sent-20 {
+			objs = append(objs, e.oid)
+		}
+	}
+	sort.Strings(objs)
 	os.MkdirAll(filepath.Join(r, "graft"), 0o755)
 	tmp := filepath.Join(r, "graft", sum+".tmp")
 	if err := os.WriteFile(tmp, []byte(strings.Join(objs, "\n")+"\n"), 0o644); err != nil {
@@ -807,7 +817,12 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		}
 		out["detail"] = d
 	}
-	// Kept aside under the pack's SHA-256 until /ingest names it.
+	// Kept aside under the pack's SHA-256 until /ingest names it. The sent length lets adopt leave the bases
+	// --fix-thin appended out of the pack's object list.
+	if err := os.WriteFile(filepath.Join(q, "bytes"), []byte(strconv.FormatInt(n, 10)), 0o644); err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
 	if err := finishValidate(net, rp, q, sum); err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -1150,24 +1165,28 @@ func sweepValidated(rp string) {
 }
 
 // adopt moves a pack /validate kept aside under sum into the repository: pack, then rev, then index, as receive-pack
-// migrates a quarantine. False when there is none.
-func adopt(rp, sum string) (string, bool, error) {
+// migrates a quarantine. It also answers the sent length validate saved, or zero for an older aside without it, and
+// false when there is no pack.
+func adopt(rp, sum string) (name string, sent int64, ok bool, err error) {
 	src := filepath.Join(rp, "graft", "validated-"+sum)
 	idx, _ := filepath.Glob(filepath.Join(src, "pack", "pack-*.idx"))
 	if len(idx) != 1 {
-		return "", false, nil
+		return "", 0, false, nil
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(idx[0]), "pack-"), ".idx")
+	name = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(idx[0]), "pack-"), ".idx")
+	if b, err := os.ReadFile(filepath.Join(src, "bytes")); err == nil {
+		sent, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	}
 	for _, ext := range []string{".pack", ".rev", ".idx"} {
 		from := filepath.Join(src, "pack", "pack-"+name+ext)
 		if _, err := os.Stat(from); err == nil {
 			if err := os.Rename(from, filepath.Join(rp, "objects", "pack", "pack-"+name+ext)); err != nil {
-				return "", true, err
+				return "", sent, true, err
 			}
 		}
 	}
 	os.RemoveAll(src)
-	return name, true, nil
+	return name, sent, true, nil
 }
 
 func handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -1191,9 +1210,9 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	l := lock(net)
 	l.Lock()
-	if name, ok, err := adopt(rp, want); ok {
+	if name, sent, ok, err := adopt(rp, want); ok {
 		if err == nil {
-			err = record(rp, want, name, filepath.Join(rp, "objects"))
+			err = record(rp, want, name, filepath.Join(rp, "objects"), sent)
 		}
 		l.Unlock()
 		io.Copy(io.Discard, r.Body)
@@ -1246,6 +1265,10 @@ func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, er
 		lockMs = time.Since(t1).Milliseconds()
 		l.Unlock()
 	}()
+	st, err := os.Stat(file)
+	if err != nil {
+		return 0, 0, 500, err
+	}
 	name, err := indexPack(rp, []string{derivedEnv}, file)
 	if err != nil {
 		if unresolved(err) {
@@ -1253,7 +1276,7 @@ func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, er
 		}
 		return 0, 0, 422, err
 	}
-	if err := record(rp, sum, name, filepath.Join(rp, "objects")); err != nil {
+	if err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
 		return 0, 0, 500, err
 	}
 	midxAfterIngest(net, rp)
@@ -1487,7 +1510,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 				return err
 			}
 		}
-		if err := record(rp, sum, name, filepath.Join(rp, "objects")); err != nil {
+		if err := record(rp, sum, name, filepath.Join(rp, "objects"), n); err != nil {
 			return err
 		}
 		midxAfterIngest(net, rp)
@@ -1652,10 +1675,10 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// A pack /validate kept aside moves in on its own, with no second index-pack.
-		name, adopted, err := adopt(rp, p.sum)
+		name, sent, adopted, err := adopt(rp, p.sum)
 		if adopted {
 			if err == nil {
-				err = record(rp, p.sum, name, filepath.Join(rp, "objects"))
+				err = record(rp, p.sum, name, filepath.Join(rp, "objects"), sent)
 			}
 			if err != nil {
 				fail(w, 500, "pack %d: %v", i, err)
@@ -1688,6 +1711,10 @@ func ingestRun(net, rp, dir string, packs []batchPack, run []int, results []stri
 	}
 	if len(run) == 1 {
 		p := packs[run[0]]
+		st, err := os.Stat(p.file)
+		if err != nil {
+			return err
+		}
 		name, err := indexPack(rp, []string{derivedEnv}, p.file)
 		if err != nil {
 			if unresolved(err) {
@@ -1696,7 +1723,7 @@ func ingestRun(net, rp, dir string, packs []batchPack, run []int, results []stri
 			}
 			return fmt.Errorf("pack %d (%s): %v", run[0], p.sum, err)
 		}
-		if err := record(rp, p.sum, name, filepath.Join(rp, "objects")); err != nil {
+		if err := record(rp, p.sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
 			return err
 		}
 		midxAfterIngest(net, rp)
@@ -2093,7 +2120,7 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	l.RLock()
 	defer l.RUnlock()
 	seen := map[string]bool{}
-	var oids bytes.Buffer
+	var ids []string
 	sc := bufio.NewScanner(r.Body)
 	for sc.Scan() {
 		sum := strings.TrimSpace(sc.Text())
@@ -2109,11 +2136,26 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		for _, o := range strings.Fields(string(b)) {
 			if !seen[o] {
 				seen[o] = true
-				oids.WriteString(o + "\n")
+				ids = append(ids, o)
 			}
 		}
 	}
-	// Exactly these objects, deltas only within the pack, so it is complete.
+	names, err := objectNames(rp, ids)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	var oids bytes.Buffer
+	for _, oid := range ids {
+		oids.WriteString(oid)
+		if name := names[oid]; name != "" {
+			oids.WriteByte(' ')
+			oids.WriteString(name)
+		}
+		oids.WriteByte('\n')
+	}
+	// Exactly these objects, deltas only within the pack, so it is complete. A tree entry's basename gives
+	// pack-objects a name by which to group delta candidates.
 	out, err := git(rp, []string{derivedEnv}, &oids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
 	if err != nil {
 		fail(w, 500, "%v", err)
@@ -2121,6 +2163,103 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("x-objects", fmt.Sprint(len(seen)))
 	w.Write(out)
+}
+
+// objectNames names each id by the first tree entry that names it. Commits, tags, root trees, and blobs no tree in
+// the set names stay unnamed. Each tree is read from cat-file's stream separately, not the output as a whole.
+func objectNames(rp string, oids []string) (map[string]string, error) {
+	names := map[string]string{}
+	wanted := map[string]bool{}
+	for _, oid := range oids {
+		wanted[oid] = true
+	}
+	if len(oids) == 0 {
+		return names, nil
+	}
+	in := strings.Join(oids, "\n") + "\n"
+	out, err := git(rp, []string{derivedEnv}, strings.NewReader(in), "cat-file", "--batch-check=%(objectname) %(objecttype)")
+	if err != nil {
+		return nil, err
+	}
+	var trees []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[1] == "tree" {
+			trees = append(trees, f[0])
+		}
+	}
+	if len(trees) == 0 {
+		return names, nil
+	}
+
+	cmd := exec.Command("git", "cat-file", "--batch")
+	cmd.Dir = rp
+	cmd.Env = append(append(os.Environ(), ident...), derivedEnv)
+	cmd.Stdin = strings.NewReader(strings.Join(trees, "\n") + "\n")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(stdout)
+	hashBytes := len(oids[0]) / 2
+	parseErr := func() error {
+		for range trees {
+			header, err := br.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			f := strings.Fields(header)
+			if len(f) != 3 || f[1] != "tree" {
+				return fmt.Errorf("cat-file printed %q", header)
+			}
+			size, err := strconv.Atoi(f[2])
+			if err != nil || size < 0 {
+				return fmt.Errorf("cat-file printed %q", header)
+			}
+			raw := make([]byte, size)
+			if _, err := io.ReadFull(br, raw); err != nil {
+				return err
+			}
+			if nl, err := br.ReadByte(); err != nil || nl != '\n' {
+				return fmt.Errorf("cat-file tree %s has no terminating newline", f[0])
+			}
+			for at := 0; at < len(raw); {
+				rel := bytes.IndexByte(raw[at:], ' ')
+				if rel < 0 {
+					return fmt.Errorf("cat-file tree %s has a bad entry", f[0])
+				}
+				sp := at + rel
+				rel = bytes.IndexByte(raw[sp+1:], 0)
+				if rel < 0 {
+					return fmt.Errorf("cat-file tree %s has a bad entry name", f[0])
+				}
+				nul := sp + 1 + rel
+				if nul+1+hashBytes > len(raw) {
+					return fmt.Errorf("cat-file tree %s has a short object id", f[0])
+				}
+				oid := hex.EncodeToString(raw[nul+1 : nul+1+hashBytes])
+				if wanted[oid] && names[oid] == "" {
+					names[oid] = strings.ReplaceAll(string(raw[sp+1:nul]), "\n", " ")
+				}
+				at = nul + 1 + hashBytes
+			}
+		}
+		return nil
+	}()
+	if parseErr != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return nil, parseErr
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("git cat-file: %v: %s", err, strings.TrimSpace(errb.String()))
+	}
+	return names, nil
 }
 
 // handleHave lists the named pack sums already ingested here, in the request's order.
