@@ -296,6 +296,17 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
       are no follower `/raft` times for it. The 3.1 s calls seen earlier on site c were other graft-m1 objects, not
       this group's member (matched by DO id). Whether follower calls ran past `CALL_DEADLINE` in that run is not
       known.
+  - 05:31:25Z to 05:33:31Z (simulated day 6.85): eight more CommitErrors holds on site a, all `to: None`. Five fell
+    inside the archive run 05:30:31Z to 05:32:51Z (140 s, 17 entries) and three in the 40 s after it. Each counted 3
+    to 7 of 15 to 23 calls per follower past `CALL_DEADLINE`. As at 03:42Z, the followers' members logged almost
+    nothing in that window (site b 4 alarms, site c 24), so there are no follower `/raft` wall times for it. Every
+    run between the two clusters (16 runs, 49 to 150 s) had no StepDown, with follower p50 337 to 420 ms and max
+    under 2.7 s.
+  - The load's own pushes show the slowdown in both clusters (`tests/am1/raw/b030-load.jsonl`, per minute):
+    - 03:43Z and 03:44Z: 69 and 74 pushes, p50 6.7 and 6.3 s, max 11.9 and 12.5 s;
+    - 05:32Z and 05:33Z: 77 and 74 pushes, p50 5.9 and 6.4 s, max 10.1 s;
+    - on either side: 88 to 112 pushes, p50 4.1 to 5.2 s.
+    Every push was acknowledged and `batchFail` stayed 0.
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
   (`objectId_in` on `durableObjectsPeriodicGroups` and `durableObjectsInvocationsAdaptiveGroups`), and container usage
