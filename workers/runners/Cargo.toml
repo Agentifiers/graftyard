@@ -1,0 +1,33 @@
+[package]
+name = "graftyard-runners"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# `graft-runners` (`design/DESIGN.md`, Shape, `graft-runners`; Stack, Workers, Sandbox SDK, Cron Triggers): the Worker
+# in the runner account that starts and destroys one Sandbox per hosted runner. `control` is plain Rust, tested
+# natively against real members and a fake Sandbox host (`tests/bf60.rs`); `worker` is the Workers host.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+graftyard-actions = { path = "../../crates/actions" }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+graftyard-identity = { path = "../../crates/identity" }
+# Signs the App JWT (RS256) with `HostedRunnersAppKey`, and reads each runner's key pair, which WebCrypto generates.
+# No default features, so it builds for wasm32; signing PKCS#1 v1.5 needs no randomness.
+rsa = { version = "0.9", default-features = false, features = ["sha2"] }
+js-sys = "0.3"
+worker.workspace = true
+
+[dev-dependencies]
+futures-executor = "0.3"
+futures-util = { version = "0.3", default-features = false }
+graftyard-raft = { path = "../../crates/raft" }
+graftyard-types.workspace = true
+smallvec.workspace = true

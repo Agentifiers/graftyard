@@ -60,7 +60,7 @@ fn service_error(status: u16) -> Result<Response> {
 
 /// The owner's `Placement` record, which places its Actions shards (DESIGN Shape, `PlacementRecord`), with the shard's
 /// group created on first use.
-async fn shard_record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<PlacementRecord, String> {
+pub async fn shard_record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<PlacementRecord, String> {
     let ChainId::Actions(owner, _) = chain else { return Err("not an Actions shard".into()) };
     let record = crate::placement(c, owner).await?.ok_or("the owner has no Placement row")?;
     graftyard_lookup::create(&c.bindings(), chain, &record, &json!({})).await?;
@@ -68,7 +68,7 @@ async fn shard_record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<Placem
 }
 
 /// One `/runsvc` call on the shard's leader: its `(status, body)` and the whole answer.
-async fn runsvc_call(c: &Ctx<'_>, chain: ChainId, body: &Value) -> std::result::Result<(u16, Value), String> {
+pub async fn runsvc_call(c: &Ctx<'_>, chain: ChainId, body: &Value) -> std::result::Result<(u16, Value), String> {
     let record = shard_record(c, chain).await?;
     let (v, _) = graftyard_lookup::call(&c.bindings(), chain, &record, "/runsvc", body).await?;
     Ok((v["status"].as_u64().unwrap_or(500) as u16, v))
@@ -321,7 +321,7 @@ async fn poll(c: &Ctx<'_>, chain: ChainId, g: Grant) -> Result<Response> {
 
 /// The site the shard's leader is on: the lookup's cached leader, else the one a probe read finds, else the record's
 /// home.
-async fn leader_site(c: &Ctx<'_>, chain: ChainId, record: &PlacementRecord) -> SiteId {
+pub async fn leader_site(c: &Ctx<'_>, chain: ChainId, record: &PlacementRecord) -> SiteId {
     if let Some(t) = graftyard_lookup::cached_leader(chain) {
         return t.site;
     }

@@ -3,6 +3,7 @@
 //! caller passes in. The design as built is `tests/m4/results/m4-wp3-design.md`.
 
 pub mod broker;
+pub mod hosted;
 pub mod ids;
 pub mod job;
 pub mod labels;
