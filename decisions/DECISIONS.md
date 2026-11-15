@@ -3684,3 +3684,15 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 **Evidence.** `a_shed_read_is_retried_inside_its_deadline_only` and `a_shed_spread_waits_what_its_members_named` (`crates/lookup/src/lib.rs`). `tests/m0carried/plant15.py`.
 
 **Flip.** A hosted row where writes wait out `LOOKUP_FOR` on shed reads often enough to move their p99, which would put the members' capacity, not the retry, in question.
+
+### `learner-reset`: a new member at an address, learner or voter, starts with nothing the leader held for that address, 2026-11-15
+
+**Decision.** When a config change names a new member at an address (a voter's site, or a learner's slot address `learner_addr(slot)`), absent before or under a different `do_name`, the leader resets its per-peer state for that address (`next` to its last index, `matched` to 0, and `matched_at`, `sent`, `pipe`, `promised_at`, `acked_at`, `retries` and `refusals` cleared), and ignores answers to rounds it sent before the change to that address (`Lead::member_from`). The one-voter-change rule still compares voters by site.
+
+**Why.** B0-33 (LM-1 round 23, `tests/am1/results/lm1-memory.md`): the reset ran for new voter sites only. `/learners` places each generation on the same slots, so a leader that had placed generation 2 kept its `matched` of about 748 for each new, empty generation-3 learner, probed it at prev 748 on every call, and was refused 1,776 times (144.9 MB) for the whole row; the learners applied nothing, `append_for_read` sent them no entries for reads at or below the stale index, and the read gate answered 503. A late answer from the old member at an address, to a call sent before the change, would have set the same stale `matched` after the reset.
+
+**Beat.** Keying the leader's per-peer state by `do_name` instead of address: every message, `calls_out`, the host's callers, and the trace key by address, so the whole path would change for one reset. Resetting every learner on any config change: a change that keeps a learner's name would restart its catch-up.
+
+**Evidence.** `a_second_learner_generation_on_the_same_slots_catches_up` (`crates/raft/tests/scenarios.rs`) fails on main, and with the reset but no round guard. `tests/m0carried/plant16.py`. `tests/m0/results/learner-reset.md`.
+
+**Flip.** A hosted row in which a learner placed on a slot an earlier generation used takes longer to catch up than a learner placed on a fresh slot.

@@ -299,6 +299,9 @@ pub(super) struct Lead<C: Command> {
     /// Replies to rounds below this are ignored: the leader truncated its uncommitted tail after they were sent, so
     /// their `matched` may name entries it no longer holds.
     pub(super) min_round: u64,
+    /// Per address whose member changed in this leadership (`take_config`), the first round sent to the new member:
+    /// a reply to an earlier round came from the old member there and moves nothing for the new one.
+    member_from: BTreeMap<SiteId, u64>,
     /// The transfer in progress.
     pub(super) transfer: Option<super::transfer::Transfer>,
     /// `STEP_DOWN`'s inputs and state.
@@ -402,6 +405,7 @@ impl<C: Command> Member<C> {
             done: BTreeMap::new(),
             done_bytes: 0,
             min_round: 0,
+            member_from: BTreeMap::new(),
             transfer: None,
             health: super::health::LeaderHealth::default(),
             refusals: BTreeMap::new(),
@@ -576,7 +580,22 @@ impl<C: Command> Member<C> {
                 .map(|m| (m.site, m.do_name.clone()))
                 .collect()
         };
+        // Each member's `do_name` by address (`Member::addr`): every voter, and every learner, by its slot's address.
+        let members = |c: &GroupConfig| -> BTreeMap<SiteId, Box<str>> {
+            let voters = quorum::voters(c);
+            let ps: Vec<&graftyard_types::Placement> = match c {
+                GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => vec![p],
+                GroupConfig::Joint { old, new } => vec![old, new],
+            };
+            ps.iter()
+                .flat_map(|p| p.voters().iter().filter(|m| voters.contains(&m.site)).chain(p.learners()))
+                .map(|m| (m.addr(), m.do_name.clone()))
+                .collect()
+        };
         let (a, b) = (names(cur), names(&next));
+        // Every address, voter or learner, whose member is new: absent before, or named differently.
+        let (was, now) = (members(cur), members(&next));
+        let added: Vec<SiteId> = now.iter().filter(|(s, n)| was.get(*s) != Some(*n)).map(|(s, _)| *s).collect();
         let changed = a.keys().filter(|s| !b.contains_key(s)).count() + b.keys().filter(|s| !a.contains_key(s)).count();
         if changed > 1 || a.iter().any(|(s, n)| b.get(s).is_some_and(|m| m != n)) {
             return Err(ReconfigError::NotOneChange);
@@ -597,14 +616,15 @@ impl<C: Command> Member<C> {
             body: EntryBody::Config(next),
         };
         let index = e.index;
-        let added: Vec<SiteId> = b.keys().filter(|s| !a.contains_key(s)).copied().collect();
         self.push_entry(e);
-        // A site that comes back names a new member: nothing the old member on that site answered may count for it,
-        // or its old `matched` would count toward a quorum the new member is not in. It starts from the leader's
-        // next index and backs up from its answers.
+        // A new member at an address keeps nothing the old member there answered: its old `matched` would count toward
+        // a quorum the new member is not in, and a new, empty learner whose slot kept `matched` was probed at that
+        // index forever and never caught up (B0-33, LM-1 round 23: 1,776 calls, 144.9 MB, all refused). It starts
+        // from the leader's next index and backs up from its answers.
         let next_index = self.last();
         let lead = self.lead.as_mut().expect("leading");
         for p in added {
+            lead.member_from.insert(p, lead.round + 1);
             lead.next.insert(p, next_index);
             lead.matched.insert(p, Index(0));
             lead.matched_at.remove(&p);
@@ -1576,8 +1596,9 @@ impl<C: Command> Member<C> {
                 lead.pipe.remove(&from);
             }
         }
-        if res.round < lead.min_round {
-            // Sent before the leader truncated its uncommitted tail: `matched` may name entries it no longer holds.
+        if res.round < lead.min_round || lead.member_from.get(&from).is_some_and(|r| res.round < *r) {
+            // Sent before the leader truncated its uncommitted tail, so `matched` may name entries it no longer holds;
+            // or sent to the member this address named before, whose log is not the new member's.
             return;
         }
         let matched = lead.matched.entry(from).or_insert(Index(0));
