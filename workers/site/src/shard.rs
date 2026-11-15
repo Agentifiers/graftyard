@@ -515,7 +515,8 @@ impl DurableObject for GitShard {
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };
         let path = url.path().to_owned();
-        // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments).
+        // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments) and the
+        // container's running git processes (`procs`).
         if path == "/status" {
             let running = self.state.container().is_some_and(|c| c.running());
             let net = q(&url, "repo").and_then(|v| v.parse().ok()).map(|r| NetworkId(DbId(r)));
@@ -536,6 +537,12 @@ impl DurableObject for GitShard {
                 None => None,
             };
             let cursor = net.and_then(|n| CURSORS.with(|m| m.borrow().get(&(self.run_key.clone(), n.0.0)).copied()));
+            // The git processes running on the container, so a saturated shard says which one holds its CPU and
+            // memory (LM-1 round 24c, where only its signature named the repack).
+            let procs = match net {
+                Some(_) => host.procs().await.ok(),
+                None => None,
+            };
             return Response::from_json(&json!({
                 "running": running,
                 "alarm": self.state.storage().get_alarm().await?,
@@ -545,6 +552,7 @@ impl DurableObject for GitShard {
                 "pool": net.map(pool_slots),
                 "rehydrating": rehydrating,
                 "cursor": cursor,
+                "procs": procs,
             }));
         }
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.

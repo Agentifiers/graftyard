@@ -87,6 +87,8 @@
 //	                                 last request's time in ms, kept as <repo>/graft-used's mtime
 //	POST /evict?net=N                deletes the repository; 409 while a request holds it, so a clone streaming
 //	                                 from it is never cut
+//	GET  /procs                      {"procs": [{"pid","cmd","nice","cpu_s","rss_mb"}]}: every running git process,
+//	                                 most CPU first, for the shard object's /status
 //	GET  /load                       {"cpu_p99","queue_depth"}: the last minute's p99 busy fraction of the
 //	                                 container's vCPUs, one sample a second, and the client validates waiting or
 //	                                 running. CPU excludes derived work (ingest, refs, repack, promotion packs, init,
@@ -233,7 +235,17 @@ func (m *cpuMeter) git(dir string, env []string, stdin io.Reader, args ...string
 }
 
 func gitWithMeter(m *cpuMeter, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	return runGit(exec.Command("git", args...), m, dir, env, stdin, args...)
+}
+
+// gitLow runs git at the lowest CPU priority (`nice -n 19`, which execs git in the same process, so the derived
+// accounting follows it), for derived work that must yield the vCPUs to catch-ups, validates, and reads: the repack
+// and its commit-graph (LM-1 round 24c, where a post-rehydrate repack held all 4 vCPU of each shard for minutes).
+func gitLow(dir string, env []string, args ...string) ([]byte, error) {
+	return runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil, dir, env, nil, args...)
+}
+
+func runGit(cmd *exec.Cmd, m *cpuMeter, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), ident...), env...)
 	cmd.Stdin = stdin
@@ -979,6 +991,59 @@ func sampleCPU() {
 	}
 }
 
+// gitProc is one running git process, for /procs: what a shard spends its CPU and memory on.
+type gitProc struct {
+	Pid  int     `json:"pid"`
+	Cmd  string  `json:"cmd"`
+	Nice int     `json:"nice"`
+	CPUs float64 `json:"cpu_s"` // its own CPU plus its reaped children's, since it started
+	RSS  int64   `json:"rss_mb"`
+}
+
+// handleProcs lists every running git process with its command line (at most 160 bytes), nice value, CPU seconds and
+// resident memory, read from /proc. B0-34's shards ran at 4 vCPU for minutes with no request in flight, and nothing on
+// the container said which git process it was (tests/am1/results/lm1-memory.md, round 24c); the shard object's
+// /status passes this list on.
+func handleProcs(w http.ResponseWriter, r *http.Request) {
+	out := []gitProc{}
+	ents, _ := os.ReadDir("/proc")
+	for _, e := range ents {
+		var pid int
+		if _, err := fmt.Sscan(e.Name(), &pid); err != nil {
+			continue
+		}
+		cmd, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil || len(cmd) == 0 {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(cmd), "\x00"), "\x00")
+		if filepath.Base(args[0]) != "git" && !strings.HasPrefix(filepath.Base(args[0]), "git-") {
+			continue
+		}
+		_, usec, ok := procCPU(pid)
+		if !ok {
+			continue
+		}
+		p := gitProc{Pid: pid, Cmd: strings.Join(args, " "), CPUs: float64(usec) / 1e6}
+		if len(p.Cmd) > 160 {
+			p.Cmd = p.Cmd[:160]
+		}
+		if st, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+			if f := strings.Fields(string(st[bytes.LastIndexByte(st, ')')+1:])); len(f) > 16 {
+				fmt.Sscan(f[16], &p.Nice) // field 19
+			}
+		}
+		if st, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid)); err == nil {
+			var size, res int64
+			fmt.Sscan(string(st), &size, &res)
+			p.RSS = res * int64(os.Getpagesize()) >> 20
+		}
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CPUs > out[j].CPUs })
+	jsonOut(w, map[string]any{"procs": out})
+}
+
 // handleLoad answers the container's NetworkLoad (design/DESIGN.md, Shape, `NetworkLoad`): cpu_p99, the 99th
 // percentile of the last minute's one-second busy fractions of its vCPUs, and queue_depth, the client validates waiting
 // or running now. CPU excludes derived work (ingest, refs, repack, promotion packs, init, and derived validates), because
@@ -1509,6 +1574,12 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 				os.Remove(dst + ".pack")
 				return err
 			}
+		}
+		// Only a promotion stores an `.idx`, and its pack is complete and already delta-searched, so it is kept: the
+		// geometric repack then rolls only the pushed tail (`unkeptPacks`), where rolling 8.6 GB of promotions held
+		// every shard of B0-34 at 4 vCPU for minutes (tests/am1/results/lm1-memory.md, rounds 24c and 25).
+		if err := os.WriteFile(dst+".keep", nil, 0o644); err != nil {
+			return err
 		}
 		if err := record(rp, sum, name, filepath.Join(rp, "objects"), n); err != nil {
 			return err
@@ -2072,6 +2143,19 @@ func packCount(rp string) int {
 	return len(p)
 }
 
+// unkeptPacks counts the packs a geometric repack may roll: those without a `.keep`. Kept promotions stay out of the
+// count, or a shard holding more than repackAt of them would repack on every catch-up's /refs.
+func unkeptPacks(rp string) int {
+	p, _ := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.pack"))
+	n := 0
+	for _, f := range p {
+		if _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".keep"); err != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // startRepack runs `git repack -d --geometric=2` on the repository in the background when it holds more than repackAt
 // packs and no repack runs on this shard, and says whether it started one. /refs is the last step of every catch-up
 // and rehydrate, so this is the shard's repack after a catch-up. A geometric repack rolls whole packs into larger ones
@@ -2081,7 +2165,7 @@ func packCount(rp string) int {
 // every upload, validate, and ingest of the network for its whole run, seconds once the packs reach 100 MB (LM-1
 // round 7, `TestRepackHoldsNoNetworkLock`). Only evict and a fresh init, which delete the repository, wait for it.
 func startRepack(net, rp string) bool {
-	if packCount(rp) <= repackAt || !repacking.TryLock() {
+	if unkeptPacks(rp) <= repackAt || !repacking.TryLock() {
 		return false
 	}
 	go func() {
@@ -2095,7 +2179,7 @@ func startRepack(net, rp string) bool {
 		// A commit-graph over every ref's history: validate's two `--not --all` walks read each ref's tip from the
 		// packs without one, so their CPU grew with the refs, 7.8 to 14.9 ms a call, and the shard's CPU climbed
 		// within every B0-29 run until it saturated a vCPU (tests/am1/results/hot-shards-3.md).
-		if _, err := git(rp, []string{derivedEnv}, nil, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
+		if _, err := gitLow(rp, []string{derivedEnv}, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
 			fmt.Fprintf(os.Stderr, "commit-graph %s: %v\n", net, err)
 		}
 	}()
@@ -2105,9 +2189,13 @@ func startRepack(net, rp string) bool {
 // runRepack is the repack itself; tests slow it down. It searches deltas with git's default window: each push's pack
 // deltas only within itself, so without a search the objects of a file changed by many pushes stay whole, and a shard
 // held 2.07 times the pushed bytes of real history and 13 times journey 9's (`tests/am1/results/hot-shards-3.md`,
-// "--window=0 disk growth"). The search holds no lock (startRepack), so it no longer queues validates.
+// "--window=0 disk growth"). The search holds no lock (startRepack), so it no longer queues validates. It leaves kept
+// packs (promotions) alone and writes a multi-pack-index over every pack, kept or not, so lookups stay one index
+// however many promotions a shard holds. It runs at nice 19 on two of the four vCPU with the delta window's memory
+// bounded per thread, so it takes what catch-ups, validates, and reads leave (LM-1 round 25).
 var runRepack = func(rp string) error {
-	_, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2")
+	_, err := gitLow(rp, []string{derivedEnv}, "-c", "pack.threads=2", "-c", "pack.windowMemory=256m",
+		"repack", "-d", "-q", "--geometric=2", "--write-midx")
 	return err
 }
 
@@ -2689,6 +2777,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
 	m.HandleFunc("/load", handleLoad)
+	m.HandleFunc("GET /procs", handleProcs)
 	m.HandleFunc("GET /ui/resolve", handleUIResolve)
 	m.HandleFunc("GET /ui/tree", handleUITree)
 	m.HandleFunc("GET /ui/blame", handleUIBlame)
