@@ -8,13 +8,18 @@
 //! shard's leader must answer (its site hosts the broker), the poll picks from every shard's summary with
 //! `graftyard_actions::broker::pick`, and the chosen shard's leader commits `MatchOwner`. The kill crashes site 0, where
 //! every group's leader is, and drops one match's answer with it, as a broker lost with its site loses a poll it held.
+//!
+//! The runners are ephemeral, as the hosted run's: each polls while its job runs (the listener's `status=Busy` poll),
+//! leaves one poll held after its job ends, then deletes its record and is replaced by a new one. A broker on another
+//! site after the kill never matched the runners already running, so only `Taken` keeps that last poll from matching
+//! a job no runner takes (BF-55 run 1).
 
 mod common;
 
 use std::collections::BTreeMap;
 
 use common::{Group, SITES};
-use graftyard_actions::broker::{Pick, RESEND_AFTER, Summary, pick};
+use graftyard_actions::broker::{Pick, RESEND_AFTER, Summary, Taken};
 use graftyard_actions::shard::{
     ACTIONS_FORMAT, ACTIONS_FORMAT_OWNER_MATCH, ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold,
     ActionsOp, ActionsOut, JobSpec, RunnerRecord, RunnerScope, WorkflowRun,
@@ -55,6 +60,8 @@ struct Runner {
     id: RunnerId,
     /// The job this runner took: (shard, job, finishes at).
     job: Option<(u8, JobId, Timestamp)>,
+    /// Its job ended: one last poll, then its record goes and a new runner takes its place.
+    leaving: bool,
 }
 
 struct World {
@@ -74,6 +81,9 @@ struct World {
     /// When a job was last matched or acquired.
     last_dispatch: Timestamp,
     summaries: BTreeMap<u8, (Timestamp, Summary)>,
+    /// Each site's broker object's `Taken`.
+    taken: BTreeMap<SiteId, Taken>,
+    runners_started: usize,
 }
 
 impl World {
@@ -100,6 +110,8 @@ impl World {
             polls_served: Vec::new(),
             last_dispatch: now,
             summaries: BTreeMap::new(),
+            taken: BTreeMap::new(),
+            runners_started: 0,
         }
     }
 
@@ -117,23 +129,28 @@ impl World {
         }
     }
 
+    /// One ephemeral `Owner`-scope runner on the registration shard, if its leader answers.
+    fn new_runner(&mut self) -> Option<Runner> {
+        self.runners_started += 1;
+        let rec = RunnerRecord {
+            scope: RunnerScope::Owner,
+            name: format!("bf55-{}", self.runners_started).into(),
+            labels: self.labels.clone(),
+            key: Box::new([1]),
+            ephemeral: true,
+            hosted: false,
+            version: "2.338.2".into(),
+        };
+        match self.commit(OWNER_SCOPE_SHARD, cmd(ActionsActor::Operator, ActionsOp::PutRunner(rec))) {
+            Some(Ok(ActionsOut::Runner(id))) => Some(Runner { id, job: None, leaving: false }),
+            _ => None,
+        }
+    }
+
     fn register(&mut self) {
-        for i in 0..RUNNERS {
-            let rec = RunnerRecord {
-                scope: RunnerScope::Owner,
-                name: format!("bf55-{i}").into(),
-                labels: self.labels.clone(),
-                key: Box::new([1]),
-                ephemeral: false,
-                hosted: false,
-                version: "2.338.2".into(),
-            };
-            let Some(Ok(ActionsOut::Runner(id))) =
-                self.commit(OWNER_SCOPE_SHARD, cmd(ActionsActor::Operator, ActionsOp::PutRunner(rec)))
-            else {
-                panic!("register")
-            };
-            self.runners.push(Runner { id, job: None });
+        for _ in 0..RUNNERS {
+            let r = self.new_runner().expect("register");
+            self.runners.push(r);
         }
     }
 
@@ -187,7 +204,8 @@ impl World {
         Some(s)
     }
 
-    /// One poll by runner `i`, as the hosted broker serves it.
+    /// One poll by runner `i`, as the hosted broker serves it. A runner that holds a job or is leaving takes nothing
+    /// it is handed.
     fn poll(&mut self, i: usize) {
         let Some(broker) = self.shards[&OWNER_SCOPE_SHARD].leader() else { return };
         // The registration shard holds the runner's record; it is what the broker's first ask reads.
@@ -197,8 +215,10 @@ impl World {
         let shards: Vec<u8> = self.shards.keys().copied().collect();
         let sums: Vec<(u8, Summary)> = shards.iter().filter_map(|s| self.summary(*s).map(|x| (*s, x))).collect();
         let refs: Vec<(u8, &Summary)> = sums.iter().map(|(s, x)| (*s, x)).collect();
+        let complete = sums.len() == shards.len();
         let labels = self.labels.clone();
-        let (shard, job) = match pick(&refs, id, &labels, self.now) {
+        let picked = self.taken.entry(broker).or_default().pick(&refs, complete, id, &labels, true, self.now);
+        let (shard, job) = match picked {
             Pick::Busy | Pick::Idle => return,
             Pick::Resend { shard, job } => (shard, job),
             Pick::Match { shard, job, version } => {
@@ -209,6 +229,7 @@ impl World {
                     Some(Ok(_)) => {}
                     _ => return,
                 }
+                self.taken.entry(broker).or_default().matched(id);
                 self.matched.entry((shard, job)).or_default().push(id);
                 self.last_dispatch = self.now;
                 if std::mem::take(&mut self.lose_next_answer) {
@@ -217,6 +238,9 @@ impl World {
                 (shard, job)
             }
         };
+        if self.runners[i].job.is_some() || self.runners[i].leaving {
+            return;
+        }
         // The runner's `acquirejob` on the job's shard.
         let Some(v) = self.shards[&shard].leader().map(|_| self.shards[&shard].fold().job(job).unwrap().version) else {
             return;
@@ -246,8 +270,22 @@ impl World {
             self.commit(s, cmd(ActionsActor::Operator, ActionsOp::ExpireLeases));
         }
         for i in 0..self.runners.len() {
+            if self.runners[i].leaving {
+                // Its last poll, then `DELETE session` deletes its record, and a new runner registers.
+                let id = self.runners[i].id;
+                self.poll(i);
+                if matches!(
+                    self.commit(OWNER_SCOPE_SHARD, cmd(ActionsActor::Runner(id), ActionsOp::DeleteRunner(id))),
+                    Some(Ok(_))
+                ) && let Some(r) = self.new_runner()
+                {
+                    self.runners[i] = r;
+                }
+                continue;
+            }
             if let Some((shard, job, until)) = self.runners[i].job {
                 if self.now < until {
+                    self.poll(i);
                     continue;
                 }
                 let Some(v) =
@@ -258,6 +296,7 @@ impl World {
                 let f = ActionsOp::Job { job, version: v, event: JobEvent::Finished(Conclusion::Success) };
                 if matches!(self.commit(shard, cmd(ActionsActor::Job(job), f)), Some(Ok(_))) {
                     self.runners[i].job = None;
+                    self.runners[i].leaving = true;
                 }
                 continue;
             }

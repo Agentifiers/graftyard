@@ -11,9 +11,11 @@
 //!   503 with `Retry-After: 15`.
 //! - **`Owner` scope** (BF-55). The registration shard's `match` answers `owner` with the runner's labels instead of a
 //!   match, since the runner takes jobs from all 16 of the owner's shards. The broker then reads each shard's summary
-//!   (`{"summary": true}`, kept `SUMMARY_FRESH`; a shard with no group is asked again after `NO_GROUP_FRESH`), picks
-//!   with `graftyard_actions::broker::pick`, and asks the chosen shard's leader to commit `MatchOwner`. A job matched
-//!   but sitting `Assigned` past `RESEND_AFTER`, its answer lost with a broker or a site, is handed to its runner again.
+//!   (`{"summary": true}`, kept `SUMMARY_FRESH`; a shard with no group is asked again after `NO_GROUP_FRESH`; every
+//!   read is cut at `SUMMARY_WAIT`), picks with `graftyard_actions::broker::Taken`, and asks the chosen shard's leader
+//!   to commit `MatchOwner`. A job matched but sitting `Assigned` past `RESEND_AFTER`, its answer lost with a broker or
+//!   a site, is handed to its runner again. Each ask reads the registration shard first, so a runner deleted while its
+//!   poll was held is not matched, and an ephemeral runner this object saw holding a job is not matched again.
 //! - **A leader move.** After each ask, a broker whose site no longer leads its shard (the lookup learned another
 //!   leader) answers the poll empty with `moved`, so the edge looks the leader up again and the runner's next poll
 //!   reaches the broker on the new leader's site (BF-55).
@@ -24,9 +26,9 @@ use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use futures_channel::oneshot;
-use graftyard_actions::broker::{Pick, Summary, pick};
+use graftyard_actions::broker::{Pick, Summary, Taken};
 use graftyard_actions::runsvc::{self, Grant};
-use graftyard_actions::{ACTIONS_SHARDS, LabelSet, RunnerId};
+use graftyard_actions::{ACTIONS_SHARDS, LabelSet};
 use graftyard_types::{AccountId, ChainId, PlacementRecord, Timestamp};
 use serde_json::{Value, json};
 use worker::*;
@@ -43,6 +45,22 @@ const ASK_EVERY: Duration = Duration::from_secs(5);
 const SUMMARY_FRESH_MS: u64 = 1_000;
 /// A shard with no group is asked again after this [guess: SHARED's 30 s reload].
 const NO_GROUP_FRESH_MS: u64 = 30_000;
+/// How long a poll waits for the shards' summary reads [guess]. A read still running then counts as failed, so a lost
+/// site's members cannot hold a match: a lookup of a group with no members on the other sites answers `None` only when
+/// every member says "not joined", and a lost site's members answer 503, so it ran its whole 20 s (BF-55 run 1).
+const SUMMARY_WAIT: Duration = Duration::from_secs(3);
+/// A shard whose read failed or timed out is asked again after this, keeping its last summary [guess].
+const FAILED_FRESH_MS: u64 = 5_000;
+
+/// What a broker knows of one shard.
+enum Known {
+    /// Its summary, read at the time given.
+    Read(Summary),
+    /// No group: the lookup found none, or a majority of its members answered "not joined".
+    NoGroup,
+    /// Its last read failed: the summary before it, if any.
+    Failed(Option<Summary>),
+}
 
 #[durable_object]
 pub struct RunnerBroker {
@@ -58,10 +76,10 @@ pub struct RunnerBroker {
     handed: RefCell<std::collections::BTreeMap<String, (u8, i64)>>,
     /// Polls waiting for a hint: woken all at once when one arrives.
     waiters: RefCell<Vec<oneshot::Sender<()>>>,
-    /// `Owner` scope: each shard's summary and when it was read (`None`: no group).
-    summaries: RefCell<std::collections::BTreeMap<u8, (u64, Option<Summary>)>>,
-    /// `Owner` scope: the ephemeral runners this object matched, which take one job each (as the leader's `MATCHED`).
-    taken: RefCell<std::collections::BTreeSet<RunnerId>>,
+    /// `Owner` scope: what this object knows of each shard, and when it learned it.
+    summaries: RefCell<std::collections::BTreeMap<u8, (u64, Known)>>,
+    /// `Owner` scope: the ephemeral runners this object matched or saw holding a job, which take one job each.
+    taken: RefCell<Taken>,
 }
 
 impl RunnerBroker {
@@ -93,7 +111,6 @@ impl RunnerBroker {
         let end = crate::now_ms() + POLL_HOLD.as_millis() as u64;
         let who = b["grant"].to_string();
         let mut ask = json!({ "op": "match", "grant": b["grant"] });
-        let mut owner_scope: Option<Value> = None;
         let mut quick = 0;
         loop {
             let held = self.handed.borrow().get(&who).copied();
@@ -110,15 +127,14 @@ impl RunnerBroker {
                 self.handed.borrow_mut().remove(&who);
                 return v;
             }
-            let answer = match &owner_scope {
-                None => self.ask(chain, &record, &ask).await,
-                Some(o) => self.owner_match(owner, &record, &b["grant"], o).await,
+            // Every ask reads the registration shard first, so a runner whose record went (its `DELETE session`, after
+            // its one job) while this poll was held is not matched: the runner stopped listening, and the broker keeps
+            // a poll the runner cancelled (BF-55 run 1).
+            let answer = match self.ask(chain, &record, &ask).await {
+                Ok(v) if v.get("owner").is_some() => self.owner_match(owner, &record, &b["grant"], &v["owner"]).await,
+                a => a,
             };
             match answer {
-                Ok(v) if owner_scope.is_none() && v.get("owner").is_some() => {
-                    owner_scope = Some(v["owner"].clone());
-                    continue;
-                }
                 Ok(v) if !v["body"].is_null() || v["status"] != 200 => {
                     if let Some(j) = v["job"].as_i64() {
                         let s = v["shard"].as_u64().map_or(own_shard, |s| s as u8);
@@ -162,17 +178,15 @@ impl RunnerBroker {
         };
         let ephemeral = o["ephemeral"].as_bool().unwrap_or(true);
         let now = crate::now_ms();
-        let sums = self.summaries(owner, record).await;
+        let (sums, complete) = self.summaries(owner, record).await;
         let refs: Vec<(u8, &Summary)> = sums.iter().map(|(s, x)| (*s, x)).collect();
         let urls = runsvc::Urls::new(&format!("https://{}", crate::hookseq::api_host(&self.env)));
-        match pick(&refs, runner, &labels, Timestamp(now)) {
+        let picked = self.taken.borrow_mut().pick(&refs, complete, runner, &labels, ephemeral, Timestamp(now));
+        match picked {
             Pick::Busy | Pick::Idle => Ok(json!({ "status": 200, "body": null })),
             Pick::Resend { shard, job } => Ok(
                 json!({ "status": 200, "body": runsvc::owner_job_request(&urls, now, shard, job), "job": job, "shard": shard }),
             ),
-            Pick::Match { .. } if ephemeral && self.taken.borrow().contains(&runner) => {
-                Ok(json!({ "status": 200, "body": null }))
-            }
             Pick::Match { shard, job, version } => {
                 let body =
                     json!({ "op": "match_owner", "grant": grant, "job": job, "version": version, "labels": labels });
@@ -180,7 +194,7 @@ impl RunnerBroker {
                 self.summaries.borrow_mut().remove(&shard);
                 if !v["body"].is_null() {
                     if ephemeral {
-                        self.taken.borrow_mut().insert(runner);
+                        self.taken.borrow_mut().matched(runner);
                     }
                     v["shard"] = json!(shard);
                 }
@@ -189,17 +203,24 @@ impl RunnerBroker {
         }
     }
 
-    /// Every shard's summary, each read again once older than `SUMMARY_FRESH_MS` (`NO_GROUP_FRESH_MS` for a shard
-    /// with no group), all at once. A shard that did not answer keeps its last summary.
-    async fn summaries(&self, owner: AccountId, record: &PlacementRecord) -> Vec<(u8, Summary)> {
+    /// Every shard's summary, and whether every shard with a group was read: each is read again once older than
+    /// `SUMMARY_FRESH_MS` (`NO_GROUP_FRESH_MS` for a shard with no group, `FAILED_FRESH_MS` after a failed read), all
+    /// at once and for at most `SUMMARY_WAIT`. A failed shard keeps its last summary but makes the set incomplete,
+    /// unless a majority of its members answer "not joined", which a group that holds jobs cannot have: its entries
+    /// committed on a majority of joined members [inference]. That check is what tells a lost site's 503s from a
+    /// shard with no group, which the lookup cannot while it waits for the lost members (BF-55 run 1).
+    async fn summaries(&self, owner: AccountId, record: &PlacementRecord) -> (Vec<(u8, Summary)>, bool) {
         let now = crate::now_ms();
-        let stale: Vec<u8> = (0..ACTIONS_SHARDS)
-            .filter(|s| match self.summaries.borrow().get(s) {
-                Some((at, Some(_))) => now.saturating_sub(*at) > SUMMARY_FRESH_MS,
-                Some((at, None)) => now.saturating_sub(*at) > NO_GROUP_FRESH_MS,
-                None => true,
-            })
-            .collect();
+        let due = |k: &Known, at: u64| {
+            let fresh = match k {
+                Known::Read(_) => SUMMARY_FRESH_MS,
+                Known::NoGroup => NO_GROUP_FRESH_MS,
+                Known::Failed(_) => FAILED_FRESH_MS,
+            };
+            now.saturating_sub(at) > fresh
+        };
+        let stale: Vec<u8> =
+            (0..ACTIONS_SHARDS).filter(|s| self.summaries.borrow().get(s).is_none_or(|(at, k)| due(k, *at))).collect();
         if !stale.is_empty()
             && let Ok(site) = crate::SiteEnv::read(&self.env)
         {
@@ -208,26 +229,59 @@ impl RunnerBroker {
             let reads = stale.iter().map(|s| {
                 let (b, q) = (&b, &q);
                 async move {
-                    (
-                        *s,
-                        graftyard_lookup::call_opt(b, ChainId::Actions(owner, *s), record, "/read", q.as_bytes()).await,
-                    )
+                    let chain = ChainId::Actions(owner, *s);
+                    let call = graftyard_lookup::call_opt(b, chain, record, "/read", q.as_bytes());
+                    let known = match crate::host::within(SUMMARY_WAIT, call).await {
+                        Some(Ok(Some((v, _, _)))) => {
+                            serde_json::from_value::<Summary>(v["value"].clone()).ok().map(Known::Read)
+                        }
+                        Some(Ok(None)) => Some(Known::NoGroup),
+                        r => {
+                            if let Some(Err(e)) = r {
+                                console_error!("broker summary {chain}: {e}");
+                            }
+                            None
+                        }
+                    };
+                    let known = match known {
+                        Some(k) => k,
+                        None => {
+                            let ms = record.bootstrap_members(chain);
+                            let posts =
+                                ms.iter().map(|m| graftyard_lookup::post(b, m.site, &m.do_name, "/read", q.as_bytes()));
+                            let unjoined = futures_util::future::join_all(posts)
+                                .await
+                                .iter()
+                                .filter(|a| matches!(a, Some((409, _))))
+                                .count();
+                            if unjoined * 2 > ms.len() { Known::NoGroup } else { Known::Failed(None) }
+                        }
+                    };
+                    (*s, known)
                 }
             });
-            for (s, r) in futures_util::future::join_all(reads).await {
-                match r {
-                    Ok(Some((v, _, _))) => {
-                        let sum = serde_json::from_value::<Summary>(v["value"].clone()).ok();
-                        self.summaries.borrow_mut().insert(s, (now, sum));
-                    }
-                    Ok(None) => {
-                        self.summaries.borrow_mut().insert(s, (now, None));
-                    }
-                    Err(e) => console_error!("broker summary actions:{}.{s}: {e}", owner.0.0),
-                }
+            for (s, known) in futures_util::future::join_all(reads).await {
+                let mut m = self.summaries.borrow_mut();
+                let known = match known {
+                    Known::Failed(_) => Known::Failed(match m.remove(&s) {
+                        Some((_, Known::Read(x) | Known::Failed(Some(x)))) => Some(x),
+                        _ => None,
+                    }),
+                    k => k,
+                };
+                m.insert(s, (now, known));
             }
         }
-        self.summaries.borrow().iter().filter_map(|(s, (_, x))| x.clone().map(|x| (*s, x))).collect()
+        let m = self.summaries.borrow();
+        let complete = (0..ACTIONS_SHARDS).all(|s| matches!(m.get(&s), Some((_, Known::Read(_) | Known::NoGroup))));
+        let sums = m
+            .iter()
+            .filter_map(|(s, (_, k))| match k {
+                Known::Read(x) | Known::Failed(Some(x)) => Some((*s, x.clone())),
+                _ => None,
+            })
+            .collect();
+        (sums, complete)
     }
 }
 

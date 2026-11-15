@@ -45,8 +45,12 @@ const must = (what, r, ...ok) => {
   return r.body;
 };
 
+// A member's `/status`, or null: a member on the down version answers 503 "site down" (run 1 read that as alive).
 async function statusOf(chain, site) {
-  try { return (await member(chain, site, "/status", undefined, 15_000)).v; } catch { return null; }
+  try {
+    const r = await member(chain, site, "/status", undefined, 15_000);
+    return r.status === 200 && r.v && typeof r.v === "object" ? r.v : null;
+  } catch { return null; }
 }
 async function leader(chain) {
   const st = (await Promise.all([0, 1, 2].map((s) => statusOf(chain, s)))).filter(Boolean);
@@ -147,13 +151,25 @@ const statsBefore = {};
 let killed = null, killDone = null, dead = null, firstNewPoll = null, lastQueuedChange = cf(), longestStall = 0, lastQueued = null;
 const gaps = [];
 let killProc = null;
-// The kill runs beside the loop; `dead` is when the old leader's member first fails to answer.
+// The kill runs beside the loop; `dead` is when the old leader's member first stops answering as the leader. A
+// running object keeps its version for minutes after a deploy (BF-58), so this, not the deploy, is the kill's time.
+// `RESTORE` (a command, the site id appended) brings the site back `RESTORE_AFTER_S` (180) after `dead`.
+let restoreProc = null;
 async function watchDead() {
   while (!dead) {
     const st = await statusOf(regChain, regLeader.site);
-    if (!st || st.joined === false) { dead = cf(); event("old leader dead", { site: regLeader.site }); return; }
+    if (!st || st.joined === false || st.role !== "leader") {
+      dead = cf();
+      event("old leader dead", { site: regLeader.site, status: st && { role: st.role, term: st.term } });
+      break;
+    }
     await sleep(1000);
   }
+  if (!process.env.RESTORE) return;
+  await sleep(Number(process.env.RESTORE_AFTER_S ?? 180) * 1000);
+  event("restore", { cmd: process.env.RESTORE });
+  restoreProc = spawn("bash", ["-c", `${process.env.RESTORE} ${regLeader.site}`], { stdio: ["ignore", "inherit", "inherit"] });
+  restoreProc.on("exit", (code) => event("restore command done", { code }));
 }
 const t0 = Date.now();
 for (;;) {
@@ -225,5 +241,5 @@ Object.assign(result, { run, killed, dead, killDone, firstNewPoll, firstNewPollA
 writeFileSync(join(out, "result.json"), JSON.stringify(result, null, 2));
 log(`BF-55: ${result.pass ? "PASS" : "FAIL"} ${JSON.stringify(checks)}`);
 log(`  first new-site poll ${result.firstNewPollAfterDeadMs ?? "none"} ms after the old leader went dead; longest stall ${longestStall} ms; ${n} runners; ${JSON.stringify(counts)}; versions ${JSON.stringify(versions)}`);
-if (killProc && killProc.exitCode === null) await new Promise((r) => killProc.on("exit", r));
+for (const p of [killProc, restoreProc]) if (p && p.exitCode === null) await new Promise((r) => p.on("exit", r));
 process.exit(result.pass ? 0 : 1);

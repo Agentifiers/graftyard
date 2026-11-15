@@ -80,6 +80,44 @@ pub fn pick(shards: &[(u8, &Summary)], runner: RunnerId, labels: &LabelSet, now:
         .map_or(Pick::Idle, |(shard, (job, _, _, version))| Pick::Match { shard, job: *job, version: *version })
 }
 
+/// The ephemeral runners one broker object saw holding a job or matched: each takes one job, and its record outlives
+/// that job until its `DELETE session`, so a poll it left held (the runner cancels it as its job ends) must not match it
+/// again. A broker that took over after a leader move did not match the runner's job, but sees it held in a summary
+/// while it runs (BF-55 run 1, `tests/m4/results/m4-wp3.md`). In memory: a broker that restarts also drops its polls.
+#[derive(Clone, Debug, Default)]
+pub struct Taken(std::collections::BTreeSet<RunnerId>);
+
+impl Taken {
+    /// `pick`, except that an ephemeral runner seen holding a job, or matched, is offered nothing more, and that no
+    /// match is made unless `complete`: every shard with a group was read in this poll. A shard not read could hold
+    /// the runner's earlier match, committed by a broker whose answer was lost, and a second match would leave that job
+    /// `Assigned` to a runner that never takes it until its lease ends (the in-memory BF-55 found this after the kill:
+    /// the jobs' shard had no leader yet, so the new broker matched the runner on another shard).
+    pub fn pick(
+        &mut self,
+        shards: &[(u8, &Summary)],
+        complete: bool,
+        runner: RunnerId,
+        labels: &LabelSet,
+        ephemeral: bool,
+        now: Timestamp,
+    ) -> Pick {
+        match pick(shards, runner, labels, now) {
+            Pick::Match { .. } if !complete || ephemeral && self.0.contains(&runner) => Pick::Idle,
+            p @ (Pick::Busy | Pick::Resend { .. }) if ephemeral => {
+                self.0.insert(runner);
+                p
+            }
+            p => p,
+        }
+    }
+
+    /// The runner's match committed.
+    pub fn matched(&mut self, runner: RunnerId) {
+        self.0.insert(runner);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +153,28 @@ mod tests {
         assert_eq!(pick(&[(0, &a), (7, &b), (3, &fresh)], r, &me, now), Pick::Busy);
         assert_eq!(pick(&[(0, &a), (7, &b), (3, &running)], r, &me, now), Pick::Busy);
         assert_eq!(pick(&[(0, &Summary::default())], r, &me, now), Pick::Idle);
+    }
+
+    /// BF-55 run 1: a broker that never matched an ephemeral runner saw it running a job, then got a poll the runner left
+    /// held after the job ended, and matched it a second job it never took.
+    #[test]
+    fn an_ephemeral_runner_seen_holding_a_job_is_never_matched_again() {
+        let (r, other) = (RunnerId(DbId(9)), RunnerId(DbId(10)));
+        let me = l(&["self-hosted", "linux"]);
+        let now = Timestamp(100_000);
+        let queued = Summary { queued: vec![(JobId(DbId(3)), l(&["linux"]), Timestamp(20), 0)], held: vec![] };
+        let running = Summary { held: vec![(r, JobId(DbId(2)), None)], ..queued.clone() };
+        let mut t = Taken::default();
+        assert_eq!(t.pick(&[(4, &running)], true, r, &me, true, now), Pick::Busy);
+        // Its job finished: a fitting job is queued, and the runner holds none.
+        assert_eq!(t.pick(&[(4, &queued)], true, r, &me, true, now), Pick::Idle);
+        // Another runner, and the same runner when it is not ephemeral, still match, unless a shard was not read.
+        let m = Pick::Match { shard: 4, job: JobId(DbId(3)), version: 0 };
+        assert_eq!(t.pick(&[(4, &queued)], false, other, &me, true, now), Pick::Idle);
+        assert_eq!(t.pick(&[(4, &queued)], true, other, &me, true, now), m);
+        assert_eq!(t.pick(&[(4, &queued)], true, r, &me, false, now), m);
+        // A runner this broker matched takes nothing more either.
+        t.matched(other);
+        assert_eq!(t.pick(&[(4, &queued)], true, other, &me, true, now), Pick::Idle);
     }
 }

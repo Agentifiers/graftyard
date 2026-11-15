@@ -154,6 +154,14 @@ MUTANTS = [
     ('the broker picks the newest fitting job', B,
      '        .min_by_key(|(s, (job, _, since, _))| (*since, *s, *job))',
      '        .max_by_key(|(s, (job, _, since, _))| (*since, *s, *job))', ['-p', 'graftyard-actions', '--lib']),
+    # BF-55 run 1's defects (`tests/m4/results/m4-wp3.md`).
+    ('a broker forgets the ephemeral runners it saw holding a job', B,
+     '            p @ (Pick::Busy | Pick::Resend { .. }) if ephemeral => {\n                self.0.insert(runner);\n                p\n            }\n',
+     '', ['-p', 'graftyard-actions', '--test', 'bf55', '--lib']),
+    ('a broker matches with a shard unread', B,
+     '            Pick::Match { .. } if !complete || ephemeral && self.0.contains(&runner) => Pick::Idle,',
+     '            Pick::Match { .. } if ephemeral && self.0.contains(&runner) => Pick::Idle,',
+     ['-p', 'graftyard-actions', '--test', 'bf55', '--lib']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
