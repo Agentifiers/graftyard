@@ -7,8 +7,26 @@
 // warm) and `drainS` (first to last promotion). Past `limit` minutes in all, exit 2. A stop short of the tail is exit 3,
 // except that a 503 warming in the first WARM_GRACE_S (2700) is the shard's cold rehydrate, not a stall. Read only.
 //   node tests/fanout/b034drain.mjs <repo:ID> <owner/name> [limit minutes 90]
-import { api, leaderOf, member, sleep, tokens } from "../am1/hosted/lib.mjs";
+import { api, leaderOf, logFrom, member, sleep, tokens } from "../am1/hosted/lib.mjs";
 const [chain, repo, limitMin = "90"] = process.argv.slice(2);
+// Round 23: drained is the design's own rule, promote-ahead's threshold: the pack bytes the entries above the last
+// `Promoted` name (`log_archive::pack_bytes_above`: a stored pack's `bytes`, an inline pack's decoded length) at or
+// under LOG_MAX_BYTES / PROMOTE_AHEAD, 2 GiB / 32 = 64 MiB. Round 22's `to >= target - 8` was not reachable, since
+// promote-ahead stops at that threshold by design.
+const AHEAD = Number(process.env.AHEAD_BYTES ?? (2 * 2 ** 30) / 32);
+async function unpromoted(after) {
+  let sum = 0, packs = 0;
+  for (let from = after + 1; ; from += 100) {
+    const page = await logFrom(chain, from, 100);
+    // Each row counts at least its own length, as `pack_bytes_above` does.
+    for (const e of page) {
+      const b = (e.packs ?? []).reduce((a, p) => a + (p.stored ? p.stored.bytes : Math.floor((p.inline?.length ?? 0) * 3 / 4)), 0);
+      sum += Math.max(b, e.bytes ?? 0);
+      packs += (e.packs ?? []).length;
+    }
+    if (page.length < 100 || sum > AHEAD) return { bytes: sum, packs };
+  }
+}
 const t0 = Date.now();
 const lim = Number(limitMin) * 60;
 const s = () => +((Date.now() - t0) / 1000).toFixed(1);
@@ -27,18 +45,21 @@ for (;;) {
     target ??= st.commit;
     const to = r.promoted?.to ?? 0;
     first ??= to;
+    const up = await unpromoted(to);
     out({ kind: "drain", leader, term: st.term, commit: st.commit, last: st.last, promotedTo: to, promotedFrom: r.promoted?.from,
-          pack: r.promoted?.pack, archivedTo: r.archived?.to ?? null, target, alarms: al.slice(-8) });
+          pack: r.promoted?.pack, archivedTo: r.archived?.to ?? null, target, unpromoted: up.bytes, unpromotedPacks: up.packs,
+          ahead: AHEAD, alarms: al.slice(-8) });
     if (to !== last) { if (last !== null) { lastMoveS = s(); firstS ??= lastMoveS; } last = to; }
-    // Drained only when the promotions reach the pushed tail; a promotion that stops short of it for STILL_S is a
-    // stall (round 20: entry 18's one 53 MB pack over PROMOTE_MAX stopped every run at 17 of 648), exit 3.
+    // Drained once the pack bytes above the last promotion are under promote-ahead's threshold, at once: promote-ahead
+    // starts nothing more. A promotion that stops short of it for STILL_S is a stall (round 20: entry 18's one 53 MB
+    // pack over PROMOTE_MAX stopped every run at 17 of 648), exit 3.
     // Round 22: in the first WARM_GRACE_S (45 min), promotions answered 503 warming are the leader site's shard still
     // rehydrating cold, not a stall. Those 503s reach no member alarm (round 21's 89 samples read none), so the grace
     // is by time: no stall ends the drain before it.
-    const drained = to >= target - 8;
-    if (lastMoveS !== null && s() - lastMoveS >= still && (drained || s() >= grace)) {
-      out({ kind: "summary", drained, stalled: !drained, firstS, drainS: +(lastMoveS - firstS).toFixed(1), promotedFrom0: first,
-            promotedTo: to, target, alarms: al.slice(-3) });
+    const drained = up.bytes <= AHEAD;
+    if (drained || (lastMoveS !== null && s() - lastMoveS >= still && s() >= grace)) {
+      out({ kind: "summary", drained, stalled: !drained, firstS, drainS: lastMoveS === null ? null : +(lastMoveS - (firstS ?? 0)).toFixed(1),
+            promotedFrom0: first, promotedTo: to, target, unpromoted: up.bytes, unpromotedPacks: up.packs, alarms: al.slice(-3) });
       process.exit(drained ? 0 : 3);
     }
   } catch (e) { out({ kind: "error", e: String(e).slice(0, 160) }); }

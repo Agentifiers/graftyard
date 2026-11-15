@@ -53,10 +53,14 @@ if [ -n "${DRAIN:-}" ]; then
   w=$?; kill $KEEP 2>/dev/null; s "b0-34 drain exit $w $(tail -1 tests/fanout/raw/b034drain-$TAG.jsonl)"
   [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
   python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "b0-34 shards torn down before the cold warm"
+  # Round 23: the warm must rehydrate cold, so no shard of the network may run when it starts (exit 2 otherwise).
+  python3 tests/fanout/netimages.py "${chain#repo:}" --none >> "$ST" 2>&1 || { s "b0-34 a shard of the network runs before the cold warm"; echo DONE >> "$ST"; exec sleep infinity; }
 fi
 s "b0-34 warm start"
 node tests/fanout/b034warm.mjs "${chain#repo:}" "$(q "d['mono']['repo']")" "${WARM_MIN:-45}" > tests/fanout/raw/b034warm-$TAG.jsonl 2>&1
 w=$?; s "b0-34 warm exit $w $(tail -1 tests/fanout/raw/b034warm-$TAG.jsonl)"
+# Round 23: every shard the warm started runs the expected image (IMG, a sha256: prefix), recorded beside the rehydrates.
+[ -n "${IMG:-}" ] && { python3 tests/fanout/netimages.py "${chain#repo:}" --image "$IMG" >> "$ST" 2>&1; s "b0-34 warm images exit $?"; }
 [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
 [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "$chain" "$LEARNERS" >> "$ST" 2>&1
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1

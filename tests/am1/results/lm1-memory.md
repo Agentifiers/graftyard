@@ -2760,3 +2760,98 @@ and then idled. Round 21's sweep tore the containers down at 04:23Z, but a new l
 again at 06:59Z after the next shard object restarted one on its alarm).
 
 **Cost** $132.97 at 06:59Z (containers $52.29); this round cost about $1.61.
+
+### Round 23: B0-34 on m34 (main 1552e999), tag m35: drained to the promote-ahead threshold, cold warm 154 to 214 s on 36c17feb, row fails because its 8 new learners never caught up (2026-11-15)
+
+**Deploy.** Unchanged from round 22 (no site day): sites a e7c34df8, b 5b91624b, c bc99d3f1; edge bfed05b9; shard image
+`sha256:36c17feb`. Run `DRAIN=1 DRAIN_MIN=90 WARM_MIN=45 IMG=sha256:36c17feb b034.sh m35` from 07:18:03Z.
+
+**Tooling changes (this commit).**
+- `b034drain.mjs`: drained is the design's own rule, the pack bytes above the last `Promoted` at or under
+  `LOG_MAX_BYTES / PROMOTE_AHEAD` (64 MiB), summed from the log the way `log_archive::pack_bytes_above` does (a stored
+  pack's `bytes`, an inline pack's length, at least the row's). Round 22's `to >= target - 8` could not be met.
+- `netimages.py`: the running shard containers of one network with their image digests; `--none` exits 2 if any runs,
+  `--image` exits 3 on another digest. `b034.sh` runs it after the teardown (no shard may run before the cold warm) and
+  after the warm (every shard the warm started runs `IMG`).
+
+**The tail drained before m35 started.** After round 22's sweep (06:59Z), the group woke at 07:03:49Z (noop entries
+737 and 738; what woke it was not traced). The leadership's warm catch-ups restarted all three shards cold on 36c17feb,
+which rehydrated in 243.5 s (b), 351.4 s (a), and 381.3 s (c): 80 stored packs, 58 loaded by their stored `.idx`,
+239 pushed packs skipped. Promotion then resumed: `Some((263, 269))` at 07:10:25Z and `Some((270, 275))` at 07:11:48Z.
+The round 22 promotions after its stop, plus those two, made 8 promotions from 06:49:03Z to 07:11:48Z: 1,134,011,885 B
+in 562.4 s, 2.02 MB/s promoted. Entries 235..275 cover 39 pushed packs of 295,583,003 B. At m35's start the
+unpromoted pack bytes above entry 275 were 63,871,110 B (45 packs), under 67,108,864, so the watcher read drained in
+8.4 s (`b034drain-m35.jsonl`). **G9's rate from round 22 stands:** connected-after changed only the container's
+`/refs` and `/connected`, not `/promote`, and the streaming runs in the site from 1552e999, so the 1.65 MB/s promoted
+and 0.49 MB/s of pushed bytes measured promotion as it ships.
+
+**Cold warm: the first hosted test of connected-after.** Teardown at 07:18:45Z: 3 torn down, "sweep: no shard container
+running", `netimages.py 131296 --none`: 0 running. The warm started 07:18:47Z. Every shard it started ran
+`sha256:36c17feb394f20d8619365190f266c4d48b1a0aca493f4d5833d9ace950207c9` (`netimages.py --image`: 3 running,
+0 on another image).
+
+| shard | rehydrate done | total | marked phase | tail | `/connected` and follow (refs to end) | stored packs | `idx_used` | rejected | spool (summed) | `index-pack` (summed) | lock |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| site b `git#1` | 07:21:37Z | 153.9 s | 100.6 s | 39.4 s | 11.9 s | 71 (8.53 GB) | 60 | 0 | 79.5 s | 38.1 s | 54.9 s |
+| site c `git#2` | 07:22:07Z | 182.5 s | 122.3 s | 44.8 s | 13.1 s | 71 | 60 | 0 | 92.3 s | 43.2 s | 63.4 s |
+| site a `git#0` | 07:22:37Z | 214.1 s | 155.4 s | 43.3 s | 13.2 s | 71 | 60 | 0 | 126.6 s | 42.5 s | 61.9 s |
+
+Every shard skipped 250 pushed packs that promotions cover, and no backstop fault was found (`fault: null`). ls-refs
+listed main at 163 s; the warm's summary had catch-ups done at 155.7 / 186 / 215.7 s. **Against DESIGN's 120 s line:
+fail (154 to 214 s), under the 600 s fail value**, against 1,507 to 2,639 s on rounds 18b and 20.
+- `/connected` no longer waits on the repack. The span from the last refs page to the rehydrate's end, which holds the
+  backstop walk, was 11.9 to 13.2 s, not round 21's 20 minutes and more.
+- The repack starts when `/connected`'s walk ends, by construction (`handleConnected` calls `startRepack` after
+  `connectedWalk`). The container logs no repack start, so the order comes from the code. Site b's container CPU
+  rose to 108 s in the minute its rehydrate ended (07:22) [inference: the repack].
+- The time goes to the marked phase, 101 to 155 s. Its 71 stored packs (8.53 GB, each promotion's pack is 3.3 times
+  the pushes it covers) are fetched four at a time, and 11 packs without a stored `.idx` re-index. The spool now costs
+  more than `index-pack`.
+
+**Row: fail, for a reason outside the git path.** a1 run `mwhibsq2`, 07:31:38Z to 07:46:38Z, exit 0.
+- **Cause [verified in the code and on the live leader]:** `learners.mjs` placed 8 new learners at config 749, as
+  generation 3 (`repo:131296#3#l0..l7`) on the addresses generation 2 used (192 to 199). The leader had led term 2 since
+  before generation 2 was placed (config 295, 2026-11-14). `Member::reconfigure` resets `next`/`matched` only for the
+  sites its `names()` lists, and that lists voters only (`crates/raft/src/member/leader.rs`, `reconfigure`, "A site that
+  comes back names a new member: nothing the old member on that site answered may count for it"). So each new, empty
+  learner kept its predecessor's `matched`, about 748.
+  - `on_append_res` keeps `next >= matched.next()`, so every probe to it went out at prev 748 with entries 749 to 752.
+    Leader `/stats` showed all 32 recent appends to 192 as `first 749, last 752`, 1,776 sent, 144.9 MB.
+  - The learner refused each one with `last 0`. Learner `l0` showed applied 0, commit 0, config null, 16,187
+    `AppendStepped` of indexes 752 to 759 in its trace, 10,089 reads, and 10,057 answered late.
+  - `a1.mjs`'s wait read "learners caught up to 749: 0/8 in 121788 ms".
+  - Snapshot: `tests/fanout/raw/learners-m35.json.xz`.
+- **What it did to the row.** The read gate's access rows go to learners first. Each learner never applied the read
+  index and answered `overloaded`, and the edge answered 503 "every member asked shed the read: overloaded". Results:
+  - agent pushes ok: 23 of 1,223 (j9), 4 of 500 (kill), 2 of 365 (second), 23 of 1,501 (hostile);
+  - human pushes ok: 5 of 125 at j9;
+  - `read:api`: 1,299 × 200, 58,305 × 503;
+  - clone TTFB at j9: p50 4.05 s, p99 72.3 s, 12 of 192 ok;
+  - task creation: 0 of 100;
+  - k stayed 1 on all five networks;
+  - feed: 212,684 polls, all `lagging`.
+- **Same failure before.** Three earlier B0-33 tries show the same "0/8 in 120 s" (fm25s33, fm26s33, fm28r33). The tries
+  that caught up 8/8 (fm28r33b, fm30r33b) [inference: had a new leadership in between, which starts every peer's
+  `matched` at 0].
+- **Memory was not the cause.** memguard: 550 samples, voter peaks 37.8 / 19.6 / 17.6 MiB, no 120 MiB stop, no term
+  change (terms.mjs: term 2 throughout).
+
+**Verdict against B0-34's line.** Gate: k in band at most 8, hostile owner held to its pool budget, human push p99 at
+most 3 s beyond transfer, clone TTFB p99 at most 1 s. Fail values: k over 8, any Cloudflare API call, the monorepo's k
+reduced by another owner, or TTFB p99 over 5 s.
+- **Fail:** TTFB p99 72.3 s.
+- **Holds:** no Cloudflare API call (0 files in request paths); k never over 8; the monorepo's k never reduced by
+  another owner (it stayed 1).
+- **Undecided:** the hostile budget and k in band, because nothing stepped.
+
+The learner defect is a Raft-core bug in `crates/raft/src` [verified].
+- A scratch simulator test reproduced it, and was not committed: 2 learners placed under one leader caught up to 9. A
+  second generation on the same addresses, empty, stayed at 0 against commit 15.
+- The fix: reset `next`/`matched` for every peer whose member name changes, learners included. It needs a regression
+  test, plants, the long sweep and Porcupine, and a rerun of the row.
+
+**Raw.** `tests/fanout/raw/b034-m35.status`, `b034drain-m35.jsonl`, `b034warm-m35.jsonl`, `memguard-b034m35.jsonl`,
+`terms-b034m35.jsonl`, `keepled-m35.jsonl`, `learners-m35.json.xz`, `a1-b0-34-m35.jsonl` (a copy of
+`tests/am1/raw/a1-b0-34-mwhibsq2.jsonl`). Sweep after the row: 21 torn down, "sweep: no shard container running".
+
+**Cost** $134.38 at 07:49Z (containers $53.17); this round cost about $1.41.
