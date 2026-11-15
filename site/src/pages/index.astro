@@ -3,6 +3,7 @@ import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import status from '../data/github-status.json';
 import MilestoneStrip from '../components/MilestoneStrip.astro';
+import AgentifiersLogo from '../components/AgentifiersLogo.astro';
 import { milestones } from '../data/milestones';
 
 // the outage section: GitHub's last 90 days, from The Missing GitHub Status Page (scripts/github-status.mjs)
@@ -77,6 +78,13 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
 .gh-source a { text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
 @media (max-width: 767px) { .gh-services { grid-template-columns: minmax(0, 1fr); } .gh-bars { gap: 1px; height: 32px; } }
 #clients .frame--split { padding: 0; }
+/* built by Agentifiers: their wordmark beside two lines and a link */
+#maker .maker { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: var(--s-6) var(--gutter); align-items: center; padding: clamp(var(--s-6), 3vw, var(--s-8)); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+#maker .maker__logo { display: block; color: var(--ink); text-decoration: none; justify-self: start; }
+#maker .maker__logo .agf-logo { display: block; width: min(100%, 360px); height: auto; }
+#maker .maker__text { display: grid; gap: var(--s-4); }
+#maker .maker__text p:not(.eyebrow) { color: var(--ink); max-width: 56ch; }
+@media (max-width: 767px) { #maker .maker { grid-template-columns: minmax(0, 1fr); } #maker .maker__logo .agf-logo { width: 220px; } }
 #build .sec-head + .ms-strip { margin-top: 0; }
 #build .ms-now { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-6) var(--gutter); margin: var(--s-8) 0 0; padding: 0; list-style: none; }
 #build .ms-now > li { display: grid; gap: var(--s-2); align-content: start; padding-top: var(--s-4); border-top: 1px solid var(--line); }
@@ -287,6 +295,20 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
         {underWay.map((m) => <li><a href={`/status/#${m.id}`}><b>{m.code}</b><h3>{m.name}</h3><span>{m.when}</span></a></li>)}
       </ul>
       <p class="more"><a class="link" href="/status/">Every milestone, in detail<Fragment set:html={ARROW} /></a></p>
+    </div>
+  </section>
+
+  <section class="section" id="maker" aria-labelledby="maker-h">
+    <div class="wrap">
+      <div class="maker">
+        <a class="maker__logo" href="https://agentifiers.com" aria-label="Agentifiers"><AgentifiersLogo /></a>
+        <div class="maker__text">
+          <p class="eyebrow">Who builds it</p>
+          <h2 id="maker-h">Graftyard is built by Agentifiers</h2>
+          <p>Agentifiers builds AI agents that do the work and ask a person first. Graftyard is the code host that rule needs: agents propose, and people decide.</p>
+          <p><a class="link" href="https://agentifiers.com">agentifiers.com<Fragment set:html={ARROW} /></a></p>
+        </div>
+      </div>
     </div>
   </section>
 
