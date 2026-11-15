@@ -265,6 +265,11 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     75 MB after the promotions that follow. It does not grow from cycle to cycle;
   - archive steps 41 to 46 entries, 7 to 10 s apart (Workers Logs, site a);
   - `SQLITE_FULL` 0, no StepDown since 12:49:02Z, no leaderless gap, no watcher alert.
+  - Through 00:16Z (simulated day 2.89): log at or under 2.026 GB at all 22 readings. Three StepDowns on site a's
+    member, all in the rest phase: LoopLag to Some(1) at 23:43:11Z, then CommitErrors (None) at 23:55:29Z and Confirm
+    (None, p99 2,025 ms, 6 of 28 slow) at 23:55:44Z. The watcher saw no leaderless gap (longest 0 s at its 5 s poll),
+    and site 0 leads again. A fourth, on site b at 00:11:28Z, was smoke 1's member during its `/retire`, not this
+    group (matched by DO id).
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
   (`objectId_in` on `durableObjectsPeriodicGroups` and `durableObjectsInvocationsAdaptiveGroups`), and container usage
