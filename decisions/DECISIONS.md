@@ -3357,6 +3357,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A job-level `env` expression that reads a context only the job's evaluation has (such as `needs` outputs) and must not be re-evaluated per step, which moves the job's `env` to `environmentVariables`.
 
+### M4-WP3: BF-55's `Owner`-scope matching, 2026-11-15
+
+**Decision.** `Owner`-scope runners register on `OWNER_SCOPE_SHARD` (0), as DESIGN's `actions_shard` says, through the admin route's `"scope": "owner"` for an admin of the owner. Their broker reads all 16 shards' summaries (`ActionsFold::summary`, `{"summary": true}`) and picks the oldest fitting job with `graftyard_actions::broker::pick`. Because the job's shard holds no record of the runner, the broker sends the runner's labels in a new command, `ActionsOp::MatchOwner { job, version, runner, labels }` (tag 10, format 0x15.3), which only `Operator` sends and which commits the same `Job { Matched }` event as a local match, against the job's version. The job request names the shard (`runsvc::owner_job_guid`, GUID kind `0x10 | shard`), and the edge routes `acquirejob` by it. Two rules for a leader move: a committed match whose answer was lost is handed to its runner again on a poll more than `RESEND_AFTER` (30 s) after the match, and a broker whose site no longer leads its shard answers empty with `moved`, so the edge forgets the leader and asks the broker the next lookup finds within the same poll.
+
+**Why.** BF-55 needs an `Owner` scope, and none existed: the admin route registered only `Repo` runners, and `match` read only its own shard. A match on another shard cannot use `Job { Matched }` from the runner, because that shard's `decide` checks the runner's record, which only shard 0 has. Carrying the labels in an operator command keeps `decide` pure and needs no cross-shard `deps` read, a shape the group has never had. The resend and `moved` rules are what a killed broker site needs: without the resend, a match committed just before the kill sits `Assigned` until its 10-minute lease ends, which is BF-55's fail column (dispatch stalled over 60 s); without `moved`, polls keep reaching the old site's broker until the edge's cached leader expires.
+
+**Beat.** A `deps` read of shard 0's runner record from the job's shard, which makes every remote match depend on shard 0's leader answering. Registering an `Owner` runner's record on all 16 shards, which multiplies registration writes 16 times and must keep 16 copies in step. One broker object per (owner, scope) as DESIGN keys it, which needs the scope in every runner token; the per-shard object already serves both scopes (DECISIONS, "M4-WP3: the run service's signing key").
+
+**Evidence.** `crates/actions/tests/bf55.rs`: 24 `Owner` runners, a 256-job matrix over two repositories on two shards other than 0, site 0 killed after 80 jobs, where every group led, with one match's answer lost. Polls reach a broker on the new leader site, every job is matched once and acquired once, and no gap between dispatches passes 60 s. `crates/actions/src/broker.rs` test (oldest fitting job over the shards; resend at 30 s and not at 29.999 s). Plants 41 to 45 in `tests/m4/wp3/plant.py`, all caught. BF-55 on graft-m4a (`tests/m4/results/m4-wp3.md`).
+
+**Flip.** A runner whose `acquirejob` after a delivered match takes more than `RESEND_AFTER`, which would make the resend race it; GHES's org-runner registration flow landing, which would replace the admin route's `scope` with GHES's own route to the same record.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).

@@ -58,7 +58,7 @@ impl Family for Actions {
     type C = ActionsCmd;
 
     fn reads() -> Vec<Format> {
-        vec![act::ACTIONS_FORMAT, act::ACTIONS_FORMAT_MERGE_GROUP]
+        vec![act::ACTIONS_FORMAT, act::ACTIONS_FORMAT_MERGE_GROUP, act::ACTIONS_FORMAT_OWNER_MATCH]
     }
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
         leading.then_some(CHECK_AFTER_MS)
@@ -143,6 +143,11 @@ impl Family for Actions {
         if let Some(r) = id_of(q, "runner") {
             let r = RunnerId(r);
             return json!({ "runner": f.runners.get(&r), "session": f.sessions.get(&r) });
+        }
+        // `{"summary": true}`: the queued jobs and the runners holding a job, which an `Owner`-scope broker reads from
+        // each of the owner's shards (`graftyard_actions::broker`, BF-55).
+        if q.get("summary").and_then(Value::as_bool) == Some(true) {
+            return serde_json::to_value(f.summary()).unwrap_or(Value::Null);
         }
         if q.get("queued").and_then(Value::as_bool) == Some(true) {
             let queued: Vec<Value> = f
@@ -544,6 +549,12 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                         json!({ "status": 400, "body": { "source": "actions-broker-listener", "errorKind": "RunnerSessionInvalid" } }),
                     );
                 };
+                // An `Owner`-scope runner takes jobs from every shard of the owner: the broker matches it from their
+                // summaries (`match_owner`), so this shard only answers what it may take.
+                if rec.scope == act::RunnerScope::Owner {
+                    return Ok(json!({ "status": 200, "body": null,
+                                      "owner": { "labels": rec.labels, "ephemeral": rec.ephemeral } }));
+                }
                 let held = f.jobs.iter().find(|(_, j)| j.state.runner() == Some(runner)).map(|(id, _)| *id);
                 let pick = f.queued().into_iter().find(|(_, l, _, _)| l.fits(&rec.labels)).map(|(j, _, _, v)| (j, v));
                 (pick, held, rec.ephemeral)
@@ -564,6 +575,25 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 Err(e) => refused(503, e),
             }
         }
+        // An `Owner`-scope runner's match on this shard, chosen by its broker from the owner's summaries; the broker
+        // read the runner's labels on its registration shard, which holds the record (BF-55).
+        ("match_owner", Some(Grant::Runner { runner })) => {
+            let (Ok(job), Some(version), Ok(labels)) = (
+                serde_json::from_value::<JobId>(b["job"].clone()),
+                b["version"].as_u64(),
+                serde_json::from_value::<graftyard_actions::LabelSet>(b["labels"].clone()),
+            ) else {
+                return Ok(refused(400, "job, version, and labels"));
+            };
+            let op = ActionsOp::MatchOwner { job, version, runner, labels };
+            match commit(h, fresh_rid(), ActionsActor::Operator, op).await {
+                Ok(Ok(_)) => {
+                    json!({ "status": 200, "body": runsvc::owner_job_request(&urls, now, shard, job), "job": job })
+                }
+                Ok(Err(e)) => json!({ "status": 200, "body": null, "refused": format!("{e:?}") }),
+                Err(e) => refused(503, e),
+            }
+        }
         ("cancelled", Some(Grant::Runner { runner })) => {
             // A job this runner was matched to and that ended `Cancelled` while it ran: the broker sends it once.
             let job: Option<JobId> = serde_json::from_value(b["job"].clone()).ok();
@@ -573,7 +603,9 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             json!({ "status": 200, "body": c.then(|| runsvc::job_cancellation(now, job.expect("job"))) , "runner": runner })
         }
         ("acquire", Some(Grant::Runner { runner })) => {
-            let Some(job) = b["jobMessageId"].as_str().and_then(runsvc::job_of_guid) else {
+            // A `Repo`-scope runner's request names the job; an `Owner`-scope runner's also names this shard.
+            let id = b["jobMessageId"].as_str().unwrap_or("");
+            let Some(job) = runsvc::job_of_guid(id).or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j)) else {
                 return Ok(refused(404, "no job"));
             };
             let Some((row, _)) = fold_job(job) else { return Ok(refused(404, "no job")) };
