@@ -16,7 +16,7 @@ use crate::quorum::{self, DurableAck, QuorumProof};
 use crate::read::{Fresh, ReadGrant};
 use crate::types::{
     Admitted, CallError, CommitError, EntryBody, ExtendLeases, Format, GroupConfig, Index, LogEntry, Next, NotLeader,
-    RequestId, Ticket, TierSet,
+    RequestId, Term, Ticket, TierSet,
 };
 use crate::{CALL_DEADLINE, COMMAND_MAX, DRIFT, ENTRY_MAX, LEASE, after};
 
@@ -252,6 +252,8 @@ type Outcome<C> = Result<Acked<<C as Command>::Out>, CommitError<<C as Command>:
 
 pub(super) struct Lead<C: Command> {
     started: Timestamp,
+    /// The term this leadership issued its tickets in, which `step_down` may have raised before the leadership ends.
+    term: Term,
     /// The leader serves once `commit` reaches this and a quorum answered a round sent at or after `started`: the
     /// term's `Noop`, or for a resumed `led_term` the last entry it held when it restarted.
     ready_at: Index,
@@ -371,6 +373,7 @@ impl<C: Command> Member<C> {
         self.early_from = Index(0);
         self.lead = Some(Lead {
             started: self.now,
+            term: self.state.term,
             ready_at: Index(0),
             ready: false,
             next: peers.iter().map(|p| (*p, next)).collect(),
@@ -384,7 +387,8 @@ impl<C: Command> Member<C> {
             // Rounds never repeat within a boot, so `calls_out` keys an earlier leadership's calls apart.
             round: self.lead.as_ref().map_or(self.rounds, |l| l.round).max(self.rounds),
             admission: Admission::new(self.now),
-            seq: 0,
+            // Seqs never repeat within a boot either: a ticket names (term, boot, seq), and a resumed term keeps both.
+            seq: self.lead.as_ref().map_or(self.seqs, |l| l.seq).max(self.seqs),
             commit_floor: Index(0),
             by_request: BTreeMap::new(),
             deciding: None,
@@ -451,6 +455,7 @@ impl<C: Command> Member<C> {
     pub(super) fn end_leadership(&mut self) {
         let Some(lead) = self.lead.take() else { return };
         self.rounds = lead.round;
+        self.seqs = lead.seq;
         // A leadership that ends while its `STEP_DOWN` transfer runs ended by STEP_DOWN.
         if lead.transfer.as_ref().is_some_and(|t| t.step_down) {
             self.state.stepped_down_at = Some(self.now);
@@ -467,7 +472,10 @@ impl<C: Command> Member<C> {
             .map(|q| q.seq)
             .chain(lead.deciding.iter().flat_map(|d| d.batch.iter().map(|q| q.seq)))
             .chain(lead.pending.iter().flat_map(|(_, d)| d.iter().map(|(s, _, _)| *s)));
-        let tickets: Vec<Ticket> = seqs.map(|s| self.ticket(s)).collect();
+        // Each ticket as it was issued: `step_down` raised the term first, and a host keys its waiters and admitted
+        // commands by the issued ticket (LM-1 round 19, `tests/m0/results/admitted-bytes.md`).
+        let (term, boot) = (lead.term, self.boot);
+        let tickets: Vec<Ticket> = seqs.map(|seq| Ticket { term, boot, seq }).collect();
         for ticket in tickets {
             self.out.resolutions.push(Resolution::Ticket { ticket, result: Err(CommitError::NotLeader(nl.clone())) });
         }
@@ -698,6 +706,17 @@ impl<C: Command> Member<C> {
             pressure: self.pressure(cap),
             retry_after_s: retry_after_s(ad.agent().len(), cap),
         })
+    }
+
+    /// The bytes of the commands this leader holds for tickets it has not resolved: each queued or frozen command's
+    /// encoded length, and for the entry in flight what each decided outcome keeps that no event stores (its reply
+    /// render). For the host's memory split (`inFlight.admittedBytes`).
+    pub fn admitted_bytes(&self) -> usize {
+        let Some(lead) = &self.lead else { return 0 };
+        let queued: usize = lead.admission.lanes.iter().flat_map(Lane::iter).map(|q| q.bytes).sum();
+        let frozen: usize = lead.deciding.iter().flat_map(|d| &d.batch).map(|q| q.bytes).sum();
+        let decided: usize = lead.pending.iter().flat_map(|(_, d)| d).map(|(_, unstored, _)| unstored).sum();
+        queued + frozen + decided
     }
 
     /// Pushes a second over the last HOT_WINDOW of committed entries, above HOT_PUSHES.
@@ -1168,7 +1187,7 @@ impl<C: Command> Member<C> {
             if let Some(x) = extend {
                 s.extend(x);
             }
-            for q in &batch {
+            for q in batch {
                 tiers = tiers.union(q.cmd.tiers());
                 format = format.max(q.cmd.format());
                 match q.cmd.decide(&s, deps) {
@@ -1182,8 +1201,8 @@ impl<C: Command> Member<C> {
                         decided.push((q.seq, q.unstored(), Ok(out)));
                     }
                     Err(err) => {
-                        self.out.refused.push((self.last().next(), q.id));
                         decided.push((q.seq, q.unstored(), Err(err)));
+                        self.out.refused.push((self.last().next(), q.id, q.cmd));
                     }
                 }
             }

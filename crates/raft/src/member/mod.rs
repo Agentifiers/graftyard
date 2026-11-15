@@ -565,9 +565,11 @@ pub struct Out<C: Command> {
     pub deps: Vec<DepsWanted>,
     pub deps_used: Vec<DepsUsed>,
     pub alarms: Vec<Alarm>,
-    /// Per entry this input decided, the admitted requests whose command `decide` refused. Each refusal's ticket
-    /// resolves `Refused` only if that entry commits; if it is lost, the re-sent command is decided again.
-    pub refused: Vec<(Index, RequestId)>,
+    /// Per entry this input decided, the admitted requests whose command `decide` refused, each with the core's own
+    /// copy of the command, moved out of the batch. Each refusal's ticket resolves `Refused` only if that entry
+    /// commits; if it is lost, the re-sent command is decided again. A host that re-sends a refusal itself (the
+    /// `NeedIdBlock` lease loop) takes the command from here instead of keeping a copy of every admitted command.
+    pub refused: Vec<(Index, RequestId, C)>,
     /// Present when these writes append to this leader's log.
     pub self_ack: Option<SelfAck>,
     /// Followers behind this leader's in-memory window: read the entries from storage and pass them to
@@ -739,6 +741,9 @@ pub struct Member<C: Command> {
     calls_out: BTreeMap<(SiteId, u64), (Timestamp, usize)>,
     /// The last round any leadership of this boot sent, so rounds never repeat and `calls_out` keys stay distinct.
     rounds: u64,
+    /// The last ticket seq any leadership of this boot issued, so a leadership that resumes the same term in the same
+    /// boot (after a `Noop` that reached no quorum) never reissues a ticket an edge may still ask `outcome` for.
+    seqs: u64,
 }
 
 impl<C: Command> Member<C> {
@@ -866,6 +871,7 @@ impl<C: Command> Member<C> {
             next_deps: boot >> 1,
             calls_out: BTreeMap::new(),
             rounds: 0,
+            seqs: 0,
         })
     }
 

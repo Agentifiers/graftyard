@@ -697,8 +697,11 @@ pub struct Core<F: Family> {
     pub join: Join,
     applied: Index,
     waiters: HashMap<Ticket, Vec<oneshot::Sender<Outcome<F>>>>,
-    /// The request id, admission time, and command of each ticket this boot admitted, for kills, latency, and the
-    /// id-block lease loop's re-send.
+    /// The request id and admission time of each ticket this boot admitted, for kills and latency, and what the
+    /// ticket needs at resolution beyond them: `F::marked`'s slim command for the marker puts after an `Acked`, or,
+    /// once `decide` refused it, the core's own command (`Out::refused`) for the id-block lease loop's re-send. A
+    /// whole copy of every admitted command held 60 to 80 KB a ticket on B0-33's leaders (LM-1 round 19,
+    /// `tests/m0/results/admitted-bytes.md`).
     pub admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>,
     reads: HashMap<ReadId, (Value, oneshot::Sender<ReadResult>)>,
     #[cfg(feature = "test-faults")]
@@ -1872,7 +1875,7 @@ impl<F: Family> Host<F> {
             // The crate names the admitted commands this entry's `decide` refused.
             let carried: BTreeSet<RequestId> = e.requests.iter().map(|(r, _)| *r).collect();
             let refused: Vec<String> =
-                out.refused.iter().filter(|(i, _)| *i == e.index).map(|(_, r)| r.to_string()).collect();
+                out.refused.iter().filter(|(i, _, _)| *i == e.index).map(|(_, r, _)| r.to_string()).collect();
             Some(Fault {
                 rid,
                 kill,
@@ -2079,6 +2082,13 @@ impl<F: Family> Host<F> {
             // The answers this input built, by query: valid only at this input's grants (`shared_answer`).
             let mut built: HashMap<String, ReadBody> = HashMap::new();
             let every = crate::family::dump_every(core.m.me());
+            // A refusal resolves only once its entry commits, in this output or a later one: its ticket keeps the
+            // command until then, for the lease loop.
+            for (_, rid, cmd) in out.refused {
+                if let Some(a) = core.admitted.values_mut().find(|(r, _, _)| *r == rid) {
+                    a.2 = Some(cmd);
+                }
+            }
             for r in out.resolutions {
                 match r {
                     Resolution::Ticket { ticket, result } => {
@@ -2849,7 +2859,8 @@ impl<F: Family> Host<F> {
             h.leasing.set(false);
             let blocked = std::mem::take(&mut *h.blocked.borrow_mut());
             for (old, rid, cmd) in blocked {
-                let (r2, out) = match h.step(|m, t| m.commit(t, rid, cmd.clone())) {
+                let marked = F::marked(&cmd);
+                let (r2, out) = match h.step(|m, t| m.commit(t, rid, cmd)) {
                     Ok(x) => x,
                     Err(_) => break,
                 };
@@ -2857,7 +2868,7 @@ impl<F: Family> Host<F> {
                     Ok(a) => {
                         if let Some(core) = h.core.borrow_mut().as_mut() {
                             let at = now_ms();
-                            core.admitted.insert(a.ticket, (rid, at, Some(cmd)));
+                            core.admitted.insert(a.ticket, (rid, at, marked));
                             let waiting = core.waiters.remove(&old).unwrap_or_default();
                             core.waiters.entry(a.ticket).or_default().extend(waiting);
                             core.reissued.insert(old, a.ticket);

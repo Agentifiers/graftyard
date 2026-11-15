@@ -64,7 +64,7 @@ impl Cluster {
         let m = self.members[s.0 as usize].as_mut().expect("member is up");
         let (r, mut out) = f(m, now).persist(&mut self.disks[s.0 as usize]);
         loop {
-            self.refused.extend(out.refused.drain(..).map(|(i, r)| (s, i, r)));
+            self.refused.extend(out.refused.drain(..).map(|(i, r, _)| (s, i, r)));
             self.deps.extend(out.deps.drain(..).map(|d| (s, now, d)));
             self.deps_used.extend(out.deps_used.drain(..).map(|d| (s, d)));
             self.inbox.extend(out.early.drain(..).chain(out.messages.drain(..)));
