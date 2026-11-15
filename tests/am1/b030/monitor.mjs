@@ -64,6 +64,15 @@ function usage(from) {
 }
 // graft-m1's shard containers over the same window (tests/fanout/containers.py), which usage.py leaves out; a run on
 // standard-4 shards counts them toward STOP_USD.
+// A failed reading (an API timeout) retries twice, then carries the last good one forward, so a cost line never
+// counts $0 for a source it could not read (04:23Z on 2026-11-15: a TLS timeout read containers as $0).
+let lastU = null, lastK = null;
+function retried(f) {
+  for (let i = 0; ; i++) {
+    const v = f();
+    if (!v.error || i >= 2) return v;
+  }
+}
 function containers(from) {
   try {
     return JSON.parse(execFileSync("python3", ["tests/fanout/containers.py", from, new Date().toISOString()], { env: { ...process.env, INSTALL: "graft-m1", NETS: String(REPO.repo) } }).toString());
@@ -81,8 +90,10 @@ for (;;) {
   for (const m of members) delete m.meta;
   const buckets = Object.fromEntries(BUCKETS.map((b) => [b, bucket(b)]));
   const full = logsHits(lastAt, at);
-  const u = usage(SINCE);
-  const k = containers(SINCE);
+  let u = retried(() => usage(SINCE));
+  let k = retried(() => containers(SINCE));
+  if (u.error || u.cost == null) u = { ...(lastU ?? {}), stale: u.error ?? "no cost" }; else lastU = u;
+  if (k.error || k.containers_usd == null) k = { ...(lastK ?? {}), stale: k.error ?? "no cost" }; else lastK = k;
   // R2: two Class A puts per archive object and two per promoted pack, plus storage pro rata; small next to DO.
   const objs = Object.values(buckets).reduce((a, b) => a + (b.objects ?? 0), 0);
   const r2 = objs * 2 * 4.5e-6 + (Object.values(buckets).reduce((a, b) => a + (b.bytes ?? 0), 0) / 1e9) * 0.015 * ((at - Date.parse(SINCE)) / (30 * 86_400_000));
