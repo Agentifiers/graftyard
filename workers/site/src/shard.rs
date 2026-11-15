@@ -46,6 +46,119 @@ thread_local! {
     static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, Fan>> = Default::default();
     /// Per pool shard object name, when it last answered a forwarded push `warming` (`graftyard_git::pool_forward`).
     static POOL_COLD: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
+    /// Per (shard object instance, network): the composed-miss chain's step running in the background (`Compose`),
+    /// the depth-1 upload-packs waiting for it, and the head the builder last put to the buckets.
+    static COMPOSES: std::cell::RefCell<std::collections::HashMap<(String, i64), ComposeRun>> = Default::default();
+}
+
+#[derive(Default)]
+struct ComposeRun {
+    running: bool,
+    waiters: Vec<futures_channel::oneshot::Sender<()>>,
+    synced: Option<graftyard_git::compose::ChainHead>,
+}
+
+/// How long a composable depth-1 upload-pack waits for its shard's chain step before it goes on [guess]: a base of
+/// linux took 11 CPU-s to build and is 300 MB to fetch, and past this the container serves stock, as with no chain.
+const COMPOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// One network's composed-miss chain on one shard object (`graftyard_git::host::ShardHost::ready_chain`). It is its
+/// own step, run in the background after this shard's catch-ups on the builder and before a composable upload-pack
+/// everywhere: no validate or catch-up waits for it, only the depth-1 upload-packs that the chain may answer.
+#[derive(Clone)]
+struct Compose {
+    state: std::rc::Rc<State>,
+    env: Env,
+    obj: String,
+    net: NetworkId,
+    record: PlacementRecord,
+}
+
+impl Compose {
+    fn key(&self) -> (String, i64) {
+        (self.obj.clone(), self.net.0.0)
+    }
+
+    /// Starts a step unless one runs. `miss`: a composable upload-pack asks, so a shard other than the builder installs
+    /// the chain too; after a catch-up (`!miss`) only the builder steps.
+    fn start(&self, miss: bool) {
+        let started = COMPOSES.with(|m| {
+            let mut m = m.borrow_mut();
+            let run = m.entry(self.key()).or_default();
+            !std::mem::replace(&mut run.running, true)
+        });
+        if !started {
+            return;
+        }
+        let me = self.clone();
+        self.state.wait_until(async move {
+            let synced = COMPOSES.with(|m| m.borrow().get(&me.key()).and_then(|r| r.synced.clone()));
+            let r = me.run(miss, synced).await;
+            if let Err(e) = &r {
+                console_error!("shard compose {}: {e}", me.net.0.0);
+            }
+            let waiters = COMPOSES.with(|m| {
+                let mut m = m.borrow_mut();
+                let run = m.entry(me.key()).or_default();
+                run.running = false;
+                if let Ok(Some(h)) = r {
+                    run.synced = Some(h);
+                }
+                std::mem::take(&mut run.waiters)
+            });
+            for w in waiters {
+                let _ = w.send(());
+            }
+        });
+    }
+
+    /// Waits for a step that starts after this call, at most `COMPOSE_WAIT`.
+    async fn ready(&self) {
+        let ended = || {
+            let (tx, rx) = futures_channel::oneshot::channel();
+            COMPOSES.with(|m| m.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
+            rx
+        };
+        let next = async {
+            if COMPOSES.with(|m| m.borrow().get(&self.key()).is_some_and(|r| r.running)) {
+                let _ = ended().await;
+            }
+            let rx = ended();
+            self.start(true);
+            let _ = rx.await;
+        };
+        crate::host::within(COMPOSE_WAIT, next).await;
+    }
+
+    async fn run(
+        &self,
+        miss: bool,
+        synced: Option<graftyard_git::compose::ChainHead>,
+    ) -> std::result::Result<Option<graftyard_git::compose::ChainHead>, String> {
+        let site = SiteEnv::read(&self.env).map_err(|e| e.to_string())?;
+        let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
+        let instance = instance(&self.env).map_err(|e| e.to_string())?.0;
+        let host = ShardHost { state: &self.state, region, image: "git", instance };
+        let home = self.record.home;
+        let ns = self.env.durable_object(&format!("SHARD_{}", site.id.0)).map_err(|e| e.to_string())?;
+        let first = ns.id_from_name(&format!("git#{}#net:{}", site.id.0, self.net.0.0)).map_err(|e| e.to_string())?;
+        let builder = site.id == home && first.to_string() == self.state.id().to_string();
+        // After a catch-up only the builder steps; any other shard installs the chain when a miss asks for it.
+        if !builder && !miss {
+            return Ok(None);
+        }
+        let ids: Vec<SiteId> = site.sites.0.iter().map(|s| s.id).collect();
+        let mut warm = graftyard_git::warm_sites(self.net, home, &ids).to_vec();
+        warm.dedup();
+        let raw: Vec<(SiteId, R2)> = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site))
+            .into_iter()
+            .filter(|(s, _)| warm.contains(s))
+            .collect();
+        let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
+        // The builder builds the base at warm, on the first catch-up of a network with no chain, at nice 19 in the
+        // container, so a cold first miss usually finds a chain rather than waiting out `COMPOSE_WAIT` for stock.
+        host.ready_chain(self.net, &bs, builder, synced.as_ref()).await.map_err(|e| e.0)
+    }
 }
 
 /// One network's `FANOUT` entry in this isolate.
@@ -333,6 +446,16 @@ impl Jobs {
             );
         }
         REPORTS.with(|m| m.borrow_mut().insert(self.key(), v));
+        // The builder takes the composed-miss chain's next step in the background, its base on a network with none;
+        // the catch-up does not wait for it.
+        Compose {
+            state: self.state.clone(),
+            env: self.env.clone(),
+            obj: self.obj.clone(),
+            net: self.net,
+            record: self.record.clone(),
+        }
+        .start(false);
         Ok(())
     }
 
@@ -890,7 +1013,44 @@ impl DurableObject for GitShard {
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
-                let r = host.upload_pack(net, path == "/info-refs", body, &proto, &enc).await.map_err(se)?;
+                // A depth-1 fetch the chain may answer waits, bounded, for this shard's chain step; nothing else does
+                // (`Compose`). The edge sends the body gunzipped.
+                let composable = body.as_deref().is_some_and(|b| {
+                    enc.is_empty()
+                        && graftyard_git::smart::parse_v2(b).is_ok_and(|v| graftyard_git::compose::composable(&v))
+                });
+                if composable {
+                    let compose = Compose {
+                        state: self.state.clone(),
+                        env: self.env.clone(),
+                        obj: obj.clone(),
+                        net,
+                        record: log.record.clone(),
+                    };
+                    compose.ready().await;
+                }
+                // A clone-cache miss (`fill=<CloneKey digest>`): the container spools the whole answer whether or not
+                // the client reads it to the end, and this object puts it to the home bucket, where the edge reads.
+                let fill = q(&url, "fill").and_then(|h| graftyard_types::Digest::parse_hex(&h));
+                let r = match (fill, body) {
+                    (Some(spool), Some(b)) => {
+                        let r = host.upload_pack_spooled(net, b, &proto, &enc, spool).await.map_err(se)?;
+                        if r.headers().get("x-graft-spool")?.is_some() {
+                            let key = graftyard_git::key::R2Key::CloneCache { network: net, key: spool, replica: 0 };
+                            let (state, env, home) = (self.state.clone(), self.env.clone(), log.record.home);
+                            let (region, inst) = (region, instance(&self.env)?.0);
+                            self.state.wait_until(async move {
+                                let host = ShardHost { state: &state, region, image: "git", instance: inst };
+                                let Ok(b) = env.bucket(&format!("BUCKET_{}", home.0)).map(R2) else { return };
+                                if let Err(e) = host.put_spooled(spool, &[&b], &key.to_string()).await {
+                                    console_error!("shard clone-cache fill {}: {e}", net.0.0);
+                                }
+                            });
+                        }
+                        r
+                    }
+                    (_, body) => host.upload_pack(net, path == "/info-refs", body, &proto, &enc).await.map_err(se)?,
+                };
                 let h = Headers::new();
                 for (k, v) in r.headers().entries() {
                     h.set(&k, &v)?;
