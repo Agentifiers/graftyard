@@ -2378,3 +2378,54 @@ fn a_commit_with_learners_caught_up_names_only_voters_in_its_proof() {
     assert!(named.iter().all(|s| SITES.contains(s)), "the proof names only voters: {named:?}");
     assert!(named.len() >= 2 && named.contains(&A), "a voter quorum: {named:?}");
 }
+
+/// B0-33 (`tests/m0/results/read-rounds.md`): reads that need a round and arrive at one clock reading share one
+/// round, and no read round goes to a learner, whose answer counts toward no quorum. A Workers clock moves only on I/O,
+/// so a burst of reads one isolate turn steps arrive at one time: with a round to every target per read, the leader
+/// sent each of its 10 targets 250 to 560 AppendEntries in one millisecond, and its heartbeats waited behind them.
+#[test]
+fn reads_at_one_instant_share_one_round_and_no_learner_gets_it() {
+    let mut c = Cluster::new(43);
+    c.elect(A);
+    c.sync(A);
+    let learners = with_learners(&mut c, A, 8);
+    let voters = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| e.to.0 < 192;
+    c.deliver(voters);
+    c.inbox.clear();
+    // Every read needs a round, as on a suspect clock.
+    c.m_mut(A).set_clock_suspect(true);
+    c.advance(1);
+    c.inbox.clear();
+    c.resolutions.clear();
+    let appends =
+        |c: &Cluster, to: SiteId| c.inbox.iter().filter(|e| e.to == to && matches!(e.msg, Message::Append(_))).count();
+    let burst: Vec<_> = (0..200).map(|_| c.on(A, |m, now| m.read(now)).expect("leading")).collect();
+    for s in [B, C] {
+        assert_eq!(appends(&c, s), 1, "200 reads at one instant sent {} rounds to {s:?}", appends(&c, s));
+    }
+    for l in &learners {
+        assert_eq!(appends(&c, *l), 0, "a read round went to learner {l:?}");
+    }
+    // A read a millisecond later is not covered by that round, so it sends its own.
+    c.advance(1);
+    c.inbox.retain(voters);
+    let later = c.on(A, |m, now| m.read(now)).expect("leading");
+    assert_eq!(appends(&c, B) + appends(&c, C), 4, "a read after the round left sent none of its own");
+    let granted = |c: &Cluster, id| {
+        c.resolutions
+            .iter()
+            .any(|(_, r)| matches!(r, Resolution::Read { id: i, result: Ok(g) } if *i == id && g.via_round()))
+    };
+    // Only the first round answered: it grants the burst, not the later read.
+    let (first, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut c.inbox).into_iter().partition(|e| match &e.msg {
+        Message::Append(a) => a.sent_at.0 < c.now.0,
+        _ => false,
+    });
+    c.inbox = first;
+    c.deliver(voters);
+    assert!(burst.iter().all(|id| granted(&c, *id)), "the shared round did not grant every read it covered");
+    assert!(!granted(&c, later), "a round sent before a read arrived granted it");
+    c.inbox = rest;
+    c.deliver(voters);
+    assert!(granted(&c, later), "the later read's own round did not grant it");
+}

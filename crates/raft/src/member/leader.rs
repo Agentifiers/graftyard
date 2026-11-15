@@ -291,6 +291,8 @@ pub(super) struct Lead<C: Command> {
     record_pending: Option<(Index, RequestId)>,
     /// Waiting reads: when each arrived, and whether the lease had lapsed then, so it needs a round.
     reads: Vec<(ReadId, Timestamp, bool)>,
+    /// When the latest read round left (`read_round`): a read arriving at the same time shares it.
+    read_round: Option<Timestamp>,
     /// The latest commit proof this leadership counted.
     proof: Option<QuorumProof>,
     /// Resolved tickets for a late `outcome`, by seq: when each resolved, its priced bytes, and its result.
@@ -401,6 +403,7 @@ impl<C: Command> Member<C> {
             records: VecDeque::new(),
             record_pending: None,
             reads: Vec::new(),
+            read_round: None,
             proof: None,
             done: BTreeMap::new(),
             done_bytes: 0,
@@ -1924,10 +1927,29 @@ impl<C: Command> Member<C> {
             && now < Timestamp(lead.lease_end.0.saturating_sub(DRIFT.as_millis() as u64));
         lead.reads.push((id, now, !lease));
         if !lease {
-            self.broadcast(true);
+            self.read_round();
         }
         self.check_reads();
         Ok(id)
+    }
+
+    /// A read-index round, to the voters only: a learner's answer counts toward no quorum. Reads that arrive at the
+    /// same clock reading share one round, which counts for each since it left at or after each arrived; a read at a
+    /// later reading sends its own, as before. A Workers clock moves only on I/O, so a burst of reads one isolate turn
+    /// steps reads one time, and a round to every target per read sent B0-33's leader 250 to 560 AppendEntries to each
+    /// of its 10 targets in one millisecond, all but one a duplicate, each answered by a learner with its own call
+    /// (`tests/m0/results/read-rounds.md`). One round out at a time instead held reads to its answer, and in the
+    /// simulator's gray half lengthened the stalls these rounds cut short as retries (23 seeds over 20 s against 12).
+    fn read_round(&mut self) {
+        let now = self.now;
+        let Some(lead) = self.lead.as_mut() else { return };
+        if lead.read_round == Some(now) {
+            return;
+        }
+        lead.read_round = Some(now);
+        for p in self.peers() {
+            self.send_append(p, true);
+        }
     }
 
     fn check_reads(&mut self) {
