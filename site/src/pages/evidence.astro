@@ -2,8 +2,8 @@
 // Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/m2/results/m2-wp6.md,
 // tests/m3/results/m3-close.md, m3-hosted.md, m3-finish.md, m3-rows.md, m3-repos.md, m3-wp5.md, tests/am1/results/am1-wp2.md,
 // am1-wp5.md, am1-rest.md, lf4-rest.md, merge-p99.md, tests/m0/results/carried.md, carried-8.md, f67.md,
-// tests/m4/results/m4-wp1-hosted.md, m4-wp2.md and design/DESIGN.md ("Scale"), as of
-// 2026-11-14. The Rust test count is a full `cargo test --workspace` run. Update this page when those files change.
+// tests/m4/results/m4-wp1-hosted.md, m4-wp2.md, m4-wp3.md and design/DESIGN.md ("Scale"), as of
+// 2026-11-15. The Rust test count is a full `cargo test --workspace` run. Update this page when those files change.
 import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import Table from '../components/Table.astro';
@@ -66,6 +66,13 @@ const eventRows = [
   ['Rebuild an inbox; 10,000 stars, then a refold (BF-67)', 'Hosted', ok('Pass') + '. Read and done state kept; all 10,000 stars listed'],
   ['An EU-resident org\'s search, with one search shard killed (BF-68)', 'Hosted, <code>eu</code> jurisdiction', ok('Pass') + '. Documents only in EU shards; <code>incomplete_results</code> until the rebuild, then full'],
 ];
+const actionsRows = [
+  ['A runner killed mid-job, its Actions group left idle (BF-4)', 'One job, renewing every 60 s for 7 minutes', ok('Failed at its lease end') + ', 10 min after its last renew, with only the lease alarm committing'],
+  ['A merge queue with <code>merge_group</code> workflows (BF-37)', '3 pull requests, one failing; 4 queue refs built', ok('4 of 4') + ' refs got one run each and were deleted 10 s after landing or ejection; 18 of 18 deliveries parsed'],
+  ['The site leading the runners\' registration shard killed during a 256-job matrix (BF-55)', '256 jobs, ephemeral runners scoped to the owner', ok('256 of 256') + ' jobs ran once, none assigned twice; polls reached the new leader\'s site in 11.5 s'],
+  ['The commit path, then the run\'s owner, killed before required checks are written (BF-56)', 'Two runs of 6 required jobs, one cancelled', ok('Every') + ' required check concluded, at most 10.4 s after its job finished'],
+  ['Repository, environment and org secrets, then both keys rotated (BF-59)', 'A job reading all three, and a fork pull request\'s job', ok('Pass') + '. Right values before and after both rotations; the fork saw none; no plaintext in 1,296 entries or any log'],
+];
 const latencyRows = [
   ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
   ['Idle ping, leader to the weur member', 'p50 135 ms', 'p99 151 to 216 ms', 'B0-01, Milestone 0'],
@@ -89,7 +96,7 @@ const latencyRows = [
       <div class="doc-head">
         <p class="eyebrow">Evidence overview</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
-        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 14 November 2026, failures included.</p>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 15 November 2026, failures included.</p>
         <p class="more"><a class="link" href="/evidence/all/">Every check, benchmark and baseline, in full<Fragment set:html={ARROW} /></a></p>
       </div>
       <ul class="kpis">
@@ -155,7 +162,19 @@ const latencyRows = [
     </div>
   </section>
 
-  <section class="section" id="identity" aria-labelledby="identity-h">
+  <section class="section" id="actions" aria-labelledby="actions-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Actions</p>
+        <h2 id="actions-h">Unmodified GitHub runners, with sites failing under them</h2>
+        <p>Jobs run on the stock <code>actions/runner</code>, the same binary GitHub ships. Each check kills something mid-run and then reads back what every job and check ended as.</p>
+      </div>
+      <Table head={['Check', 'Runs', 'Result']} rows={actionsRows} />
+      <p class="note">On the hosted test install <code>graft-m4a</code>, 14 and 15 November 2026, with runner 2.338.2. Hosted runners on Cloudflare Sandboxes, 2,500 runners on one broker, and the Milestone 4 gate are still to run; the <a href="/status/#m4">Status page</a> tracks them.</p>
+    </div>
+  </section>
+
+  <section class="section" id="identity aria-labelledby="identity-h">
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow">Tokens and sign-in</p>
