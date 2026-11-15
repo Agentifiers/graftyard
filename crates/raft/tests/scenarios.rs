@@ -2379,12 +2379,13 @@ fn a_commit_with_learners_caught_up_names_only_voters_in_its_proof() {
     assert!(named.len() >= 2 && named.contains(&A), "a voter quorum: {named:?}");
 }
 
-/// B0-33 (`tests/m0/results/read-rounds.md`): reads that need a round and arrive at one clock reading share one
-/// round, and no read round goes to a learner, whose answer counts toward no quorum. A Workers clock moves only on I/O,
-/// so a burst of reads one isolate turn steps arrive at one time: with a round to every target per read, the leader
-/// sent each of its 10 targets 250 to 560 AppendEntries in one millisecond, and its heartbeats waited behind them.
+/// L0-12 m3fr6 (`tests/m0/results/read-round-gap.md`): reads that need a round send at most one round per voter per
+/// READ_ROUND_GAP while it is unanswered, and none to a learner, whose answer counts toward no quorum, however the clock
+/// moves within a turn. A lease-clock floor raised by each newer peer stamp gave every read in a turn its own reading,
+/// and with a round per reading the leader sent up to 99 rounds to each voter in one millisecond. Each read is still
+/// granted only by a round that left after it arrived.
 #[test]
-fn reads_at_one_instant_share_one_round_and_no_learner_gets_it() {
+fn reads_send_at_most_one_round_per_gap_while_the_clock_climbs_and_no_learner_gets_it() {
     let mut c = Cluster::new(43);
     c.elect(A);
     c.sync(A);
@@ -2397,35 +2398,62 @@ fn reads_at_one_instant_share_one_round_and_no_learner_gets_it() {
     c.advance(1);
     c.inbox.clear();
     c.resolutions.clear();
-    let appends =
-        |c: &Cluster, to: SiteId| c.inbox.iter().filter(|e| e.to == to && matches!(e.msg, Message::Append(_))).count();
-    let burst: Vec<_> = (0..200).map(|_| c.on(A, |m, now| m.read(now)).expect("leading")).collect();
-    for s in [B, C] {
-        assert_eq!(appends(&c, s), 1, "200 reads at one instant sent {} rounds to {s:?}", appends(&c, s));
-    }
-    for l in &learners {
-        assert_eq!(appends(&c, *l), 0, "a read round went to learner {l:?}");
-    }
-    // A read a millisecond later is not covered by that round, so it sends its own.
-    c.advance(1);
-    c.inbox.retain(voters);
-    let later = c.on(A, |m, now| m.read(now)).expect("leading");
-    assert_eq!(appends(&c, B) + appends(&c, C), 4, "a read after the round left sent none of its own");
+    // DESIGN's cap: at most one unanswered read round per 20 ms, 50 a second per voter.
+    let cap: u64 = 50;
     let granted = |c: &Cluster, id| {
         c.resolutions
             .iter()
             .any(|(_, r)| matches!(r, Resolution::Read { id: i, result: Ok(g) } if *i == id && g.via_round()))
     };
-    // Only the first round answered: it grants the burst, not the later read.
-    let (first, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut c.inbox).into_iter().partition(|e| match &e.msg {
-        Message::Append(a) => a.sent_at.0 < c.now.0,
-        _ => false,
-    });
-    c.inbox = first;
+    // One second of a busy turn's shape: 200 reads, the floored clock one ms higher at each, while no round is
+    // answered. Each read arrives at a new clock reading.
+    let mut held = Vec::new();
+    let mut asked = Vec::new();
+    let mut to_learners = 0;
+    for _ in 0..1_000u64 {
+        c.now = Timestamp(c.now.0 + 1);
+        if asked.len() < 200 {
+            asked.push((c.now, c.on(A, |m, now| m.read(now)).expect("leading")));
+            // Only reads step here, so an AppendEntries to a learner now is a read round, not a heartbeat.
+            to_learners += c.inbox.iter().filter(|e| !voters(e) && matches!(e.msg, Message::Append(_))).count();
+        } else {
+            c.on(A, |m, now| m.tick(now));
+        }
+        held.extend(std::mem::take(&mut c.inbox).into_iter().filter(voters));
+    }
+    let per_voter =
+        |to: SiteId| held.iter().filter(|e| e.from == A && e.to == to && matches!(e.msg, Message::Append(_))).count();
+    for s in [B, C] {
+        assert!(
+            per_voter(s) as u64 <= cap + 2,
+            "{} rounds to {s:?} in 1 s for 200 reads on a climbing clock, against a cap of {cap}",
+            per_voter(s)
+        );
+    }
+    assert_eq!(to_learners, 0, "{to_learners} read rounds went to the {} learners", learners.len());
+    // Answered in order, every read is granted, each by a round that left at or after it arrived.
+    c.inbox = held;
     c.deliver(voters);
-    assert!(burst.iter().all(|id| granted(&c, *id)), "the shared round did not grant every read it covered");
-    assert!(!granted(&c, later), "a round sent before a read arrived granted it");
-    c.inbox = rest;
+    for (at, id) in &asked {
+        assert!(granted(&c, *id), "the read asked at {at:?} was never granted");
+    }
+    // A read 1 ms after an answered round, well inside the gap, sends its own round at once, and only that round
+    // grants it.
+    c.advance(1);
+    c.inbox.retain(voters);
     c.deliver(voters);
-    assert!(granted(&c, later), "the later read's own round did not grant it");
+    let first = c.on(A, |m, now| m.read(now)).expect("leading");
+    c.deliver(voters);
+    assert!(granted(&c, first), "a read on a free slot was never granted");
+    c.advance(1);
+    c.inbox.clear();
+    c.resolutions.clear();
+    let late = c.on(A, |m, now| m.read(now)).expect("leading");
+    assert!(!granted(&c, late), "a read was granted by a round that left before it arrived");
+    for s in [B, C] {
+        let sent = c.inbox.iter().filter(|e| e.to == s && matches!(e.msg, Message::Append(_))).count();
+        assert_eq!(sent, 1, "a read after an answered round sent {sent} rounds to {s:?} instead of one at once");
+    }
+    c.deliver(voters);
+    assert!(granted(&c, late), "the read's own round did not grant it");
 }

@@ -843,7 +843,7 @@ pub enum WorkspaceMode { Fork, InRepo }
 // ---- The read path ----
 /// A fold that includes every entry acknowledged before `arrived`. Only the leader builds one, once its term's `Noop`
 /// is applied: from its fold while `now < lease_end - DRIFT`, else after a read-index round to the voters (renewing the
-/// lease), which every read that arrived at the same clock reading shares (read-rounds; one per read flooded B0-33).
+/// lease), at most one per READ_ROUND_GAP (20 ms [guess]) until answered, shared by every read that arrived first.
 /// Read-index answers wait for the same `Noop`. `Fresh` reads touch SQLite after the lease check and serve isolate-held
 /// state only under a key read there (F65's dump), so a replaced instance cannot answer. Followers batch read-index
 /// requests every 10 ms, learners every 50 ms resent once after HEDGE (500 ms [guess]); each answers once applied.
