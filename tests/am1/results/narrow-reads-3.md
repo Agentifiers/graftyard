@@ -833,6 +833,36 @@ report for that run named 120. Neither line was approached.
 
 Spend on graft-m3e since 2026-11-13T04:17Z: $42.87 after the run and the pool sweep (the sweep found 0 shards left).
 
+### Gates 18 and 19 on the same site day: the streak
+
+The operator counted gate 17 as pass 1 of three. Gates 18 and 19 ran back to back on site day 16 and the same edge day,
+with nothing deployed or changed between them, in gate 17's shape, each on a fresh repo that was torn down and
+followed by a pool sweep. Rows are in `tests/nr3/rows/*-gate18.*` and `*-gate19.*`.
+
+| Line | Gate 17 | Gate 18 | Gate 19 | Gate |
+| --- | --- | --- | --- | --- |
+| Repo, window | 65565, 23:58:40Z | 65566, 00:28:24Z | 65567, 00:47:34Z | 600 s |
+| read:api p99 | 1,982 ms | **1,566 ms** | **1,339 ms** | ≤ 2 s, fail > 5 s |
+| read:api p50 | 282 ms | 270 ms | 293 ms | |
+| Served | 100.00% (5 × 503) | **100.00%** (118,732 of 118,732) | **100.00%** (119,432 of 119,432) | ≥ 99% |
+| Read-your-write | 150 of 150, 0 stale | **150 of 150, 0 stale** | **150 of 150, 0 stale** | 150 of 150 |
+| Voter peak, watcher | 70 / 62 / 29 MiB | 70 / 60 / 29 MiB | 70 / 62 / 58 MiB | stop > 100 MiB |
+| Voter peak, analytics | 84 / 62 MiB | 70 / 60 MiB | 70 / 62 MiB | |
+| Leader changes | 0 | **0** | **0** | |
+| Commit p99 (LM-1 line) | 2,383 ms | 1,664 ms (p50 429) | 1,706 ms (p50 444) | not on the API streak |
+| merge:only p99 (LM-1 line) | 3,360 ms | 2,383 ms (p50 1,020; 5 × 409) | 2,152 ms (p50 969; 11 × 409) | not on the API streak |
+| push:agent p99 | 5,774 ms | 5,861 ms (1 fetch failed) | 5,048 ms | |
+| Learner CPU, 600 s | 943.9 CPU s | 847.1 CPU s | 1,002.6 CPU s | |
+| Learner memory peak | 62 to 69 MiB | 62 to 68 MiB | 63 to 73 MiB | |
+| Isolate exceptions | 2 (a 1, b 1) | 1 (a) | 1 (a) | |
+| Spend after sweep | $42.87 | $44.52 | $46.13 | stop before 19 if > $53 |
+
+All three gates pass every line, so the API streak on this tree is three in a row: p99 1,982, 1,566 and 1,339 ms
+against the 2 s line, every read served, every read-your-write round fresh, no leader change, and no voter above 84 MiB.
+Gate 17's 18 ms margin was the worst of the three; the other two clear the line by 434 and 661 ms. inv.py's per-cause CPU
+split was skipped for gates 18 and 19, as allowed, after it hung on gate 17. Each repo was torn down by run.sh and each
+pool sweep found 0 shards left. Spend on graft-m3e since 2026-11-13T04:17Z is $46.13 after gate 19's sweep.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
