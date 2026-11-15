@@ -797,6 +797,18 @@ Choices made while running Milestone 0 that change a gate or what a gate reads.
 
 **Flip.** A replay where CI clones arrive before the fill lands and the object refuses them, which would add the claim with a shorter poll. A network whose CI depth varies, which would fill more than one depth.
 
+### The clone cache fills from the shard (2026-11-15)
+
+**Decision.** On a clone-cache miss the edge names the entry's key to the shard (`fill=<CloneKey digest>`) and streams the shard's answer to the client without keeping a copy. The container writes the whole answer to a spool file as well as to the client, and goes on writing after the client stops reading. It keeps the spool only if `upload-pack` or the composed answer ended cleanly with a flush and no `ERR`. The shard object then streams the spool into the home site's bucket under `R2Key::CloneCache` with replica 0, through a `FixedLengthStream` of its length, so R2 stores it only when the whole length arrives. One fill per key runs at a time on a container; a second request for the key in that time is served and not spooled.
+
+**Why.** LM-1 round 24c found 0 `clone/131296/` entries in R2 after B0-34. The edge wrote its tee to R2 only when the client had read the body to the end, and B0-34's first-byte probe cancels after the first byte, so every probe missed. Each miss then ran a stock depth-1 upload-pack at about 25 CPU-s and 1.1 GB (`tests/am1/results/lm1-memory.md`, branch `lm1-memory`, "Round 24c"). The tee also buffered the whole answer in the edge isolate before the put.
+
+**Beat.** Keeping the edge's tee and reading the store side to its end after the client goes: the edge's `wait_until` would hold a 300 MB body in wasm memory. Filling on push only (`The edge fills a new tip's clone-cache entry when a push commits`): it covers CI's depth on the new tip, not every miss.
+
+**Evidence.** `TestCancelledFillStillSpoolsTheWholeAnswer` (`containers/git/server/compose_test.go`): a stock fill and a composed fill whose client cancels after one byte each leave the whole answer spooled with its length, and a second fill of the key is not spooled. The end-to-end check, an entry in R2 after a cancelled clone, is LM-1's next B0-34 run.
+
+**Flip.** A hosted B0-34 that still leaves no entry after cancelled probes, or spool files that fill a shard's disk.
+
 ### Pushes over the plan's body limit get Cloudflare's 413 (2026-10-29)
 
 > "sure, whatever you think is best"
@@ -848,6 +860,17 @@ The operator left the question, raised from M0-WP6 as G5 and now closed, to the 
 **Evidence.** `tests/m0/results/m0-wp9.md`, B0-34: `results/raw/wp9-b0-34-gitcpu-r1.json`, `wp9-b0-34-r1.json`, `wp9-b0-34-r2.json`; third pass, runs `b0-34-r3` to `-r7`, and "Proposed design edits" 25. The composed pack, and base plus two parts plus a merge commit, passed `index-pack` and fsck locally, with a tree equal to the tip's.
 
 **Flip.** A client whose `index-pack` refuses the composed pack, or a network whose agent checkouts are far from any cached tip. For the per-move rules: part builds that fall behind the tip at a network's merge rate, so misses wait on stale tips, or a measured CI cost from merge refs built on the last built tip rather than the current one.
+
+**As built (2026-11-15).** The container builds and serves the chain (`containers/git/server/compose.go`), and the shard object readies it (`graftyard_git::compose`, `ShardHost::ready_chain`, `workers/site/src/shard.rs`, `Compose`). Where the code departs from the text above:
+
+- Only a fetch with one want, `deepen 1`, no haves, no filter, SHA-1, and `ofs-delta` is composed. Everything else gets stock `upload-pack`, and so does a want that is not a ref's tip, a want whose tree differs from the chain tip's in more than 20,000 entries, a chain not at HEAD, a missing part, and `include-tag` when an annotated tag points at the want. Correctness first: stock is always there.
+- The builder is the home site's first shard, after each catch-up that moves HEAD, not "the shard that took the merge". Direct pushes move the tip with no merge, and merges run on the leader's shard, which may be another site's. Other shards install the chain the first warm bucket's `head` names and keep their old chain while a file is missing.
+- `refs/pull/N/merge` is not built on an older tip. PrSync keeps its mergeable semantics, building it on the current base; the pull head's miss is composed from the chain at HEAD plus the head's own new objects.
+- R2 holds, per network, `compose/<net>/base-<tip>` and `compose/<net>/part-<from>-<to>`, each a `.pack` and `.idx`, and `compose/<net>/head`, which names the chain and is written last.
+- The chain step is its own background job per network. Only a composable depth-1 upload-pack waits for it, at most 20 s [guess], and validates and catch-ups never do.
+- Measured on a linux fixture (6.46 GiB, 12.0M objects, 60 first-parent moves; `tests/m0/results/composed-miss.md`): base 10.2 to 11.1 CPU-s, part p50 0.02 and at most 3.2 to 3.5 CPU-s, fold 1.49 to 1.58 CPU-s. A composed miss sent its first pack bytes at 0.011 to 0.018 s and finished in 0.77 to 0.97 s with 0.01 to 0.02 CPU-s of git work. A stock miss sent its first 64 KiB of pack at 5.0 to 5.1 s and finished in 15.4 to 15.6 s at 29.9 to 30.2 CPU-s. M0-WP9 had 0.72 to 0.74 s and 0.35 s.
+
+**Flip (as built).** A hosted B0-34 where composed misses still fall back to stock for most CI clones (`x-graft-compose` names why), or where a part build after a big move holds the home shard long enough that misses on other shards wait past their bound.
 
 ### Agent pushes over `INLINE_MAX_HOT` are refused while placement fails (2026-10-30)
 

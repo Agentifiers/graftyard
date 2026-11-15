@@ -21,7 +21,7 @@
 //! on pushes, and the `GRAFTYARD_GENESIS` stand-in for the `Release` view.
 
 use futures_util::StreamExt;
-use graftyard_git::clone::{CloneKey, cacheable_response, tags_digest};
+use graftyard_git::clone::{CloneKey, tags_digest};
 use graftyard_git::group::{CallErrorWire, CommitReq, PushOutcome, RefsPage, RefsReply};
 use graftyard_git::host::R2;
 use graftyard_git::refs::{Atomicity, ObjectId, RefName};
@@ -1687,13 +1687,13 @@ pub(crate) async fn push_init(
 
 // ---- upload-pack ----
 
-async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context) -> Result<Response> {
+async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Response> {
     let proto = req.headers().get("git-protocol")?.unwrap_or_default();
     let enc = req.headers().get("content-encoding")?.unwrap_or_default();
     let raw = req.bytes().await?;
     let body = if enc == "gzip" { gunzip(&raw, c.cfg.cap)? } else { raw };
-    // The clone cache: a v2 fetch with no haves, read from R2 by its `CloneKey`, else upload-pack on the shard with
-    // its output teed to the client and to R2.
+    // The clone cache: a v2 fetch with no haves, read from R2 by its `CloneKey`, else upload-pack on the shard, which
+    // fills the cache.
     // BF-18 clones from a chosen shard (`x-graft-shard`) bypass the clone cache, so the shard serves every one.
     #[cfg(feature = "test-faults")]
     let cache_ok = c.shard.is_none();
@@ -1728,41 +1728,25 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
             return Ok(Response::from_bytes(b)?.with_headers(h));
         }
     }
-    let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
+    // A miss names its key (`fill=`): the shard spools the whole answer and puts it to the cache itself, so a client
+    // that stops reading still leaves an entry. The edge's own tee stored only answers a client read to the end, and
+    // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard").
+    let fill = key.as_ref().map_or(String::new(), |k| format!("&fill={}", k.digest().hex()));
+    let url = format!("https://shard/upload-pack?repo={}{fill}", repo.id.0.0);
     let mut r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
     let hh = git_headers(c.rid, &Service::UploadPack.result_type())?;
     if r.status_code() != 200 {
         return text(c.rid, 503, &format!("git cache: {} {}\n", r.status_code(), r.text().await.unwrap_or_default()));
     }
-    if let Some(cursor) = r.headers().get("x-graft-cursor")? {
-        hh.set("x-graft-cursor", &cursor)?;
+    for k in ["x-graft-cursor", "x-graft-compose"] {
+        if let Some(v) = r.headers().get(k)? {
+            hh.set(k, &v)?;
+        }
     }
-    let Some(k) = key else {
-        return Ok(Response::from_body(r.body().clone())?.with_headers(hh));
-    };
-    // Tee: the client's copy streams as the shard sends; the other is written to R2 after it ends, if whole.
-    hh.set("x-graft-clone-cache", "miss")?;
-    let ResponseBody::Stream(s) = r.body().clone() else {
-        return Ok(Response::from_body(r.body().clone())?.with_headers(hh));
-    };
-    let parts = s.tee();
-    let (client, store): (web_sys::ReadableStream, web_sys::ReadableStream) =
-        (parts.get(0).into(), parts.get(1).into());
-    let r2 = k.r2_key(0).to_string();
-    let env = c.env.clone();
-    ctx.wait_until(async move {
-        let mut st = ByteStream::from(store);
-        let mut buf = Vec::new();
-        while let Some(Ok(c)) = st.next().await {
-            buf.extend_from_slice(&c);
-        }
-        if cacheable_response(&buf)
-            && let Ok(b) = env.bucket(&cache_binding)
-        {
-            let _ = b.put(&r2, buf).execute().await;
-        }
-    });
-    Ok(Response::from_body(ResponseBody::Stream(client))?.with_headers(hh))
+    if key.is_some() {
+        hh.set("x-graft-clone-cache", "miss")?;
+    }
+    Ok(Response::from_body(r.body().clone())?.with_headers(hh))
 }
 
 // ---- advertisements ----
@@ -2680,7 +2664,7 @@ async fn serve(
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
-            upload_pack(&c, &mut req, repo, ctx).await
+            upload_pack(&c, &mut req, repo).await
         }
         Route::Rpc { service: Service::ReceivePack, .. } => {
             if req.method() != Method::Post {
