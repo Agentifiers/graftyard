@@ -201,6 +201,8 @@ for (;;) {
     }
     const done = counts.Completed ?? 0;
     if (!killed && done >= 64) {
+      // The leader at kill time: day 39's resets moved it back to its preferred site after setup (run 2's first try).
+      regLeader = (await leader(regChain)) ?? regLeader;
       killed = cf();
       event("kill", { regLeader, done, cmd: process.env.KILL });
       if (process.env.KILL) {

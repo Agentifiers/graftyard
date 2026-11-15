@@ -1,0 +1,22 @@
+{
+  "url": "wss://graft-m4a-edge.<workers-subdomain>.workers.dev/_t/logrelay/repos/m3org/wp3-live/jobs/1114200",
+  "opened": "2026-11-15T08:08:32.087Z",
+  "hello": {
+    "tail": 55
+  },
+  "lines": 59,
+  "end": null,
+  "close": null,
+  "types": {
+    "hello": 1,
+    "line": 59
+  },
+  "n": 59,
+  "p50": 206,
+  "p99": 315,
+  "max": 315,
+  "over2s": 0,
+  "gaps": 0,
+  "firstSeq": 55,
+  "lastSeq": 113
+}
