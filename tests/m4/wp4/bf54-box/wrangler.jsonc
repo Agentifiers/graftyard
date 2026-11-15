@@ -1,0 +1,7 @@
+{ "name": "graft-runners-bf54", "main": "index.mjs", "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"], "workers_dev": true, "preview_urls": false,
+  "durable_objects": { "bindings": [ { "name": "BOX", "class_name": "Bf54Box" } ] },
+  "containers": [ { "class_name": "Bf54Box", "instance_type": "standard-4", "max_instances": 25,
+    "image": "registry.cloudflare.com/<cf-runner-account-id>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea" } ],
+  "migrations": [ { "tag": "v1", "new_sqlite_classes": ["Bf54Box"] } ],
+  "observability": { "enabled": true } }

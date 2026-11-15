@@ -1,0 +1,355 @@
+{
+  "repo": "m3org/wp4-bf60",
+  "repoId": 65562,
+  "run": 1966080,
+  "before": {
+    "demand": {
+      "labels": [],
+      "runners": [],
+      "stale": []
+    },
+    "sandboxes": {
+      "running": 0,
+      "all": 2,
+      "states": {
+        "inactive": 2
+      }
+    }
+  },
+  "lastJobS": 1700,
+  "maxRegistered": 18,
+  "maxSandboxes": 18,
+  "after": {
+    "at": 1794767989855,
+    "demand": {
+      "labels": [],
+      "runners": [],
+      "stale": []
+    },
+    "sandboxes": {
+      "running": 0,
+      "all": 52,
+      "states": {
+        "inactive": 52
+      }
+    }
+  },
+  "queueToStartS": {
+    "n": 50,
+    "p50": 592.622,
+    "p90": 1182.755,
+    "max": 1207.383
+  },
+  "jobs": {
+    "1966081": {
+      "queuedS": 3.262,
+      "startedS": 288.8,
+      "doneS": 361.37,
+      "conclusion": "Success"
+    },
+    "1966082": {
+      "queuedS": 3.262,
+      "startedS": 288.8,
+      "doneS": 361.37,
+      "conclusion": "Success"
+    },
+    "1966083": {
+      "queuedS": 3.262,
+      "startedS": 298.249,
+      "doneS": 382.757,
+      "conclusion": "Success"
+    },
+    "1966084": {
+      "queuedS": 3.262,
+      "startedS": 306.137,
+      "doneS": 398.95,
+      "conclusion": "Success"
+    },
+    "1966085": {
+      "queuedS": 3.262,
+      "startedS": 306.137,
+      "doneS": 420.312,
+      "conclusion": "Success"
+    },
+    "1966086": {
+      "queuedS": 3.262,
+      "startedS": 351.288,
+      "doneS": 470.824,
+      "conclusion": "Success"
+    },
+    "1966087": {
+      "queuedS": 3.262,
+      "startedS": 361.37,
+      "doneS": 480.882,
+      "conclusion": "Success"
+    },
+    "1966088": {
+      "queuedS": 3.262,
+      "startedS": 382.757,
+      "doneS": 512.879,
+      "conclusion": "Success"
+    },
+    "1966089": {
+      "queuedS": 3.262,
+      "startedS": 382.757,
+      "doneS": 522.341,
+      "conclusion": "Success"
+    },
+    "1966090": {
+      "queuedS": 3.262,
+      "startedS": 392.028,
+      "doneS": 541.248,
+      "conclusion": "Success"
+    },
+    "1966091": {
+      "queuedS": 3.262,
+      "startedS": 392.028,
+      "doneS": 550.675,
+      "conclusion": "Success"
+    },
+    "1966092": {
+      "queuedS": 3.262,
+      "startedS": 409.661,
+      "doneS": 567.353,
+      "conclusion": "Success"
+    },
+    "1966093": {
+      "queuedS": 3.262,
+      "startedS": 420.312,
+      "doneS": 595.884,
+      "conclusion": "Success"
+    },
+    "1966094": {
+      "queuedS": 3.262,
+      "startedS": 437.186,
+      "doneS": 617.917,
+      "conclusion": "Success"
+    },
+    "1966095": {
+      "queuedS": 3.262,
+      "startedS": 453.089,
+      "doneS": 648.393,
+      "conclusion": "Success"
+    },
+    "1966096": {
+      "queuedS": 3.262,
+      "startedS": 453.089,
+      "doneS": 648.393,
+      "conclusion": "Success"
+    },
+    "1966097": {
+      "queuedS": 3.262,
+      "startedS": 462.304,
+      "doneS": 668.832,
+      "conclusion": "Success"
+    },
+    "1966098": {
+      "queuedS": 3.262,
+      "startedS": 462.304,
+      "doneS": 678.302,
+      "conclusion": "Success"
+    },
+    "1966099": {
+      "queuedS": 3.262,
+      "startedS": 480.882,
+      "doneS": 707.711,
+      "conclusion": "Success"
+    },
+    "1966100": {
+      "queuedS": 3.262,
+      "startedS": 491.456,
+      "doneS": 725.454,
+      "conclusion": "Success"
+    },
+    "1966101": {
+      "queuedS": 3.262,
+      "startedS": 578.506,
+      "doneS": 821.47,
+      "conclusion": "Success"
+    },
+    "1966102": {
+      "queuedS": 3.262,
+      "startedS": 578.506,
+      "doneS": 838.08,
+      "conclusion": "Success"
+    },
+    "1966103": {
+      "queuedS": 3.262,
+      "startedS": 588.057,
+      "doneS": 849.099,
+      "conclusion": "Success"
+    },
+    "1966104": {
+      "queuedS": 3.262,
+      "startedS": 588.057,
+      "doneS": 859.022,
+      "conclusion": "Success"
+    },
+    "1966105": {
+      "queuedS": 3.262,
+      "startedS": 595.884,
+      "doneS": 876.649,
+      "conclusion": "Success"
+    },
+    "1966106": {
+      "queuedS": 3.262,
+      "startedS": 595.884,
+      "doneS": 885.758,
+      "conclusion": "Success"
+    },
+    "1966107": {
+      "queuedS": 3.262,
+      "startedS": 595.884,
+      "doneS": 885.758,
+      "conclusion": "Success"
+    },
+    "1966108": {
+      "queuedS": 3.262,
+      "startedS": 608.645,
+      "doneS": 913.917,
+      "conclusion": "Success"
+    },
+    "1966109": {
+      "queuedS": 3.262,
+      "startedS": 608.645,
+      "doneS": 924.094,
+      "conclusion": "Success"
+    },
+    "1966110": {
+      "queuedS": 3.262,
+      "startedS": 617.917,
+      "doneS": 934.455,
+      "conclusion": "Success"
+    },
+    "1966111": {
+      "queuedS": 3.262,
+      "startedS": 637.274,
+      "doneS": 960.981,
+      "conclusion": "Success"
+    },
+    "1966112": {
+      "queuedS": 3.262,
+      "startedS": 648.393,
+      "doneS": 981.105,
+      "conclusion": "Success"
+    },
+    "1966113": {
+      "queuedS": 3.262,
+      "startedS": 876.649,
+      "doneS": 1227.525,
+      "conclusion": "Success"
+    },
+    "1966114": {
+      "queuedS": 3.262,
+      "startedS": 876.649,
+      "doneS": 1227.525,
+      "conclusion": "Success"
+    },
+    "1966115": {
+      "queuedS": 3.262,
+      "startedS": 885.758,
+      "doneS": 1236.571,
+      "conclusion": "Success"
+    },
+    "1966116": {
+      "queuedS": 3.262,
+      "startedS": 885.758,
+      "doneS": 1253.771,
+      "conclusion": "Success"
+    },
+    "1966117": {
+      "queuedS": 3.262,
+      "startedS": 885.758,
+      "doneS": 1270.289,
+      "conclusion": "Success"
+    },
+    "1966118": {
+      "queuedS": 3.262,
+      "startedS": 892.764,
+      "doneS": 1287.769,
+      "conclusion": "Success"
+    },
+    "1966119": {
+      "queuedS": 3.262,
+      "startedS": 892.764,
+      "doneS": 1297.351,
+      "conclusion": "Success"
+    },
+    "1966120": {
+      "queuedS": 3.262,
+      "startedS": 903.188,
+      "doneS": 1315.434,
+      "conclusion": "Success"
+    },
+    "1966121": {
+      "queuedS": 3.262,
+      "startedS": 903.188,
+      "doneS": 1315.434,
+      "conclusion": "Success"
+    },
+    "1966122": {
+      "queuedS": 3.262,
+      "startedS": 903.188,
+      "doneS": 1334.74,
+      "conclusion": "Success"
+    },
+    "1966123": {
+      "queuedS": 3.262,
+      "startedS": 913.917,
+      "doneS": 1345.222,
+      "conclusion": "Success"
+    },
+    "1966124": {
+      "queuedS": 3.262,
+      "startedS": 913.917,
+      "doneS": 1354.417,
+      "conclusion": "Success"
+    },
+    "1966125": {
+      "queuedS": 3.262,
+      "startedS": 1186.017,
+      "doneS": 1624.649,
+      "conclusion": "Success"
+    },
+    "1966126": {
+      "queuedS": 3.262,
+      "startedS": 1186.017,
+      "doneS": 1644.39,
+      "conclusion": "Success"
+    },
+    "1966127": {
+      "queuedS": 3.262,
+      "startedS": 1195.04,
+      "doneS": 1660.48,
+      "conclusion": "Success"
+    },
+    "1966128": {
+      "queuedS": 3.262,
+      "startedS": 1201.622,
+      "doneS": 1677.36,
+      "conclusion": "Success"
+    },
+    "1966129": {
+      "queuedS": 3.262,
+      "startedS": 1201.622,
+      "doneS": 1693.483,
+      "conclusion": "Success"
+    },
+    "1966130": {
+      "queuedS": 3.262,
+      "startedS": 1210.645,
+      "doneS": 1700.261,
+      "conclusion": "Success"
+    }
+  },
+  "checks": {
+    "jobs50": true,
+    "atMost20RegisteredAtOnce": true,
+    "atMost20SandboxesAtOnce": true,
+    "everyJobFinished": true,
+    "everyJobSucceeded": true,
+    "noSandboxLeft10MinAfter": true,
+    "noRegistrationLeft10MinAfter": true
+  },
+  "pass": true
+}

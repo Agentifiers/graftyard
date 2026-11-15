@@ -1,0 +1,177 @@
+{
+  "repo": "m3org/wp4-bm4",
+  "repoId": 65563,
+  "jobChain": "actions:7100001.7",
+  "events": [
+    {
+      "at": 1794771436352,
+      "what": "setup",
+      "jobChain": "actions:7100001.7",
+      "regChain": "actions:7100001.0"
+    },
+    {
+      "at": 1794771439516,
+      "what": "run created",
+      "run": 1900546
+    },
+    {
+      "at": 1794771780067,
+      "what": "kill",
+      "site": 0,
+      "registrationLeader": {
+        "site": 0,
+        "term": 6
+      },
+      "counts": {
+        "InProgress": 7,
+        "Assigned": 1
+      },
+      "cmd": "DEPLOY_TREE=/tmp/m4a-deploy IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:d18537d5c102e6053bfedf89ad1c641c0c7e0e405033444ed9faab652f6a3206 bash tests/m4/wp3/bf55-kill.sh down"
+    },
+    {
+      "at": 1794771791826,
+      "what": "kill command done",
+      "code": 0
+    },
+    {
+      "at": 1794772089293,
+      "what": "old leader dead",
+      "site": 0,
+      "status": null
+    },
+    {
+      "at": 1794772130843,
+      "what": "restore never ran: the old leader never went dead"
+    }
+  ],
+  "run": 1900546,
+  "killSite": 0,
+  "killed": 1794771780067,
+  "dead": 1794772089293,
+  "runConclusion": "success",
+  "twice": [],
+  "holders": {
+    "1900547": [
+      1704421
+    ],
+    "1900548": [
+      1704422
+    ],
+    "1900549": [
+      1704423
+    ],
+    "1900550": [
+      1704424
+    ],
+    "1900551": [
+      1704425
+    ],
+    "1900552": [
+      1704426
+    ],
+    "1900553": [
+      1704427
+    ],
+    "1900554": [
+      1704428
+    ]
+  },
+  "jobs": [
+    {
+      "id": 1900547,
+      "name": "matrix (a, 1)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794771969507,
+          "conclusion": "Success"
+        }
+      }
+    },
+    {
+      "id": 1900548,
+      "name": "matrix (a, 2)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794771971087,
+          "conclusion": "Success"
+        }
+      }
+    },
+    {
+      "id": 1900549,
+      "name": "matrix (a, 3)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794771969931,
+          "conclusion": "Success"
+        }
+      }
+    },
+    {
+      "id": 1900550,
+      "name": "matrix (a, 4)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794771971229,
+          "conclusion": "Success"
+        }
+      }
+    },
+    {
+      "id": 1900551,
+      "name": "matrix (b, 1)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794771975942,
+          "conclusion": "Success"
+        }
+      }
+    },
+    {
+      "id": 1900552,
+      "name": "matrix (b, 2)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794772041444,
+          "conclusion": "Success"
+        }
+      }
+    },
+    {
+      "id": 1900553,
+      "name": "matrix (b, 3)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794772048788,
+          "conclusion": "Success"
+        }
+      }
+    },
+    {
+      "id": 1900554,
+      "name": "matrix (b, 4)",
+      "version": 4,
+      "state": {
+        "Completed": {
+          "at": 1794772108650,
+          "conclusion": "Success"
+        }
+      }
+    }
+  ],
+  "checks": {
+    "jobs8": true,
+    "siteFailedMidRun": true,
+    "everyLegSucceeded": true,
+    "runSucceeded": true,
+    "noJobOnTwoRunners": true
+  },
+  "pass": true
+}
