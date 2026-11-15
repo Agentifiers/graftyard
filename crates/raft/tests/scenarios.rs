@@ -2332,3 +2332,49 @@ fn a_second_learner_generation_on_the_same_slots_catches_up() {
         h.held
     );
 }
+
+/// A commit's proof names the voters that made it durable and no learner, even when learners hold the entry: the edge
+/// shows `QuorumProof::sites` to callers as the write's quorum (`graftyard_git::group`, `outcome_wire`), and every
+/// address with a matched index used to be listed, so a caught-up learner showed as a site the write was durable on.
+#[test]
+fn a_commit_with_learners_caught_up_names_only_voters_in_its_proof() {
+    let mut c = Cluster::new(98);
+    c.elect(A);
+    c.sync(A);
+    let learners = with_learners(&mut c, A, 2);
+    let mut h = Silent::new(learners.clone(), Some(10));
+    for i in 0..3u128 {
+        admit(&mut c, A, 9_300 + i, put(&format!("w{i}"), "v"));
+        h.pump(&mut c);
+        h.advance(&mut c, 200);
+    }
+    for _ in 0..10 {
+        h.advance(&mut c, 200);
+    }
+    // The learners answer first, so they hold the entry by the time the voters' answers commit it.
+    let t = admit(&mut c, A, 9_400, put("p", "v"));
+    let mut voters = Vec::new();
+    for _ in 0..5 {
+        for e in std::mem::take(&mut c.inbox) {
+            if graftyard_types::learner_slot(e.to).is_some() { c.inbox.push(e) } else { voters.push(e) }
+        }
+        h.pump(&mut c);
+        h.advance(&mut c, 20);
+    }
+    let entry = c.m(A).log().last().expect("an entry").index;
+    assert!(c.m(A).state().commit < entry, "not committed before the voters answer");
+    assert!(learners.iter().all(|l| h.held[l] >= entry), "the learners hold the entry: {:?} of {entry:?}", h.held);
+    for graftyard_raft::Envelope { from, to, msg } in voters {
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    for _ in 0..5 {
+        c.deliver_all();
+        h.advance(&mut c, 50);
+    }
+    let r = c.ticket_results(t);
+    let [Resolution::Ticket { result: Ok(a), .. }] = r.as_slice() else { panic!("committed: {r:?}") };
+    let named: Vec<SiteId> = a.quorum().acks().iter().map(|d| d.site).collect();
+    assert_eq!(a.quorum().sites(), named.as_slice());
+    assert!(named.iter().all(|s| SITES.contains(s)), "the proof names only voters: {named:?}");
+    assert!(named.len() >= 2 && named.contains(&A), "a voter quorum: {named:?}");
+}
