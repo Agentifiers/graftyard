@@ -40,6 +40,16 @@ PY
 # The warm step (round 18): every site's shard of the monorepo caught up and ls-refs listing main before the window,
 # at most WARM_MIN minutes (default 45); its time is not the row's. Past the limit the row is not run. It runs before
 # learners.mjs and k.mjs, whose leader reads found an idle group with no leader (round 17b); the catch-ups wake it.
+# Round 20's drain (stored-fetch): before the cold warm, the archive's promote-ahead promotes the network's thin stored
+# pushes under the pack-bytes trigger, timed on its own (b034drain.mjs), at most DRAIN_MIN minutes per phase.
+# Then every shard is torn down (teardown.py --sweep), so the warm is cold against the promoted packs.
+if [ -n "${DRAIN:-}" ]; then
+  s "b0-34 drain start"
+  node tests/fanout/b034drain.mjs "$chain" "$(q "d['mono']['repo']")" "${DRAIN_MIN:-45}" > tests/fanout/raw/b034drain-$TAG.jsonl 2>&1
+  w=$?; s "b0-34 drain exit $w $(tail -1 tests/fanout/raw/b034drain-$TAG.jsonl)"
+  [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
+  python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "b0-34 shards torn down before the cold warm"
+fi
 s "b0-34 warm start"
 node tests/fanout/b034warm.mjs "${chain#repo:}" "$(q "d['mono']['repo']")" "${WARM_MIN:-45}" > tests/fanout/raw/b034warm-$TAG.jsonl 2>&1
 w=$?; s "b0-34 warm exit $w $(tail -1 tests/fanout/raw/b034warm-$TAG.jsonl)"
@@ -47,6 +57,9 @@ w=$?; s "b0-34 warm exit $w $(tail -1 tests/fanout/raw/b034warm-$TAG.jsonl)"
 [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "$chain" "$LEARNERS" >> "$ST" 2>&1
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
 s "b0-34 $mono $chain start"
+# The row's memory guard: 2 s samples of every voter, a1.mjs stopped past 120 MiB (round 17's instruments).
+node tests/fanout/memguard.mjs "$chain" 1100 2 120 > tests/fanout/raw/memguard-b034$TAG.jsonl 2> tests/fanout/raw/memguard-b034$TAG.err &
+node tests/fanout/terms.mjs "$chain" 1100 > tests/fanout/raw/terms-b034$TAG.jsonl 2>&1 &
 bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
 s "b0-34 done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-34-$mono.log)"
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
