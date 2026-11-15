@@ -1,0 +1,18 @@
+{"at":"2026-11-15T00:59:41.629Z","s":65.8,"kind":"ls-refs","status":503,"ms":65764,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-15T01:00:35.830Z","s":120,"kind":"catchup","site":0,"status":0,"ms":120006,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:00:35.864Z","s":120,"kind":"catchup","site":1,"status":0,"ms":120001,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:00:35.865Z","s":120,"kind":"catchup","site":2,"status":0,"ms":120001,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:01:01.672Z","s":145.8,"kind":"ls-refs","status":503,"ms":65033,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-15T01:02:22.190Z","s":226.4,"kind":"ls-refs","status":503,"ms":65517,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-15T01:02:40.841Z","s":245,"kind":"catchup","site":0,"status":0,"ms":120006,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:02:40.865Z","s":245,"kind":"catchup","site":1,"status":0,"ms":120001,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:02:40.866Z","s":245,"kind":"catchup","site":2,"status":0,"ms":120000,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:03:42.114Z","s":306.3,"kind":"ls-refs","status":503,"ms":64923,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-15T01:04:45.849Z","s":370,"kind":"catchup","site":0,"status":0,"ms":120006,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:04:45.866Z","s":370,"kind":"catchup","site":1,"status":0,"ms":120000,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:04:45.867Z","s":370,"kind":"catchup","site":2,"status":0,"ms":120000,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:05:01.398Z","s":385.6,"kind":"ls-refs","status":503,"ms":64273,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-15T01:06:21.934Z","s":466.1,"kind":"ls-refs","status":503,"ms":65531,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-15T01:06:50.855Z","s":495,"kind":"catchup","site":0,"status":0,"ms":120004,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:06:50.867Z","s":495,"kind":"catchup","site":1,"status":0,"ms":120000,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T01:06:50.868Z","s":495,"kind":"catchup","site":2,"status":0,"ms":120000,"v":"TimeoutError: The operation was aborted due to timeout"}

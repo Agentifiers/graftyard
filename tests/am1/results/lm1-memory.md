@@ -2533,3 +2533,59 @@ needs) or capping admitted bytes with a fast `Full`.
 **Raw.** `tests/am1/raw/a1-b0-33-mwh1akmb.jsonl`; `tests/fanout/raw/memguard-m30r33b.{jsonl,err}`,
 `terms-m30r33b.jsonl`, `tsave-m30r33b.jsonl.xz`, `rows-m30r33b.status`; skipped try `rows-m30r33.status`. **Cost**
 $129.82 at 23:45Z (containers $49.63). Sweep "no shard container running".
+
+### Round 20: B0-34 on m31 (main dc269249, stored-fetch): the promotion drain stalls at entry 18's 53 MB pack; row not run (2026-11-15)
+
+**Deploy m31.** lm1-memory b94d0acc = main dc269249 (stored-fetch, pool-keep, m4-actions-2, narrow-builds) plus this
+branch's instruments. New shard image `sha256:b63da3e6` (main's `containers/`, with stored-fetch's `/spool`, `/idx`
+and `/connected`). Sites a 4dcf32e1, b c9cc88e0, c 6044ab64, edge 3ed63d67; standard-4, NOROLL, test-faults. Full
+checks on the merge: 961 tests, 0 failed, Go and every clippy pass (check_names and check_links only on `.worktrees/`;
+both pass on main in a clean worktree, round 19).
+
+**Run** `DRAIN=1 b034.sh m31` (b034drain.mjs, then a sweep, then the cold warm, then the row with memguard and terms),
+from 00:27:32Z. Raw `tests/fanout/raw/b034drain-m31.jsonl`, `b034warm-m31.jsonl`, `b034-m31.status`.
+
+repo:131296 as found: 648 entries, the last promotion `Promoted { 1..6 }` from the seed (a 257 B stored pack), 260
+stored packs above it, 2,628,169,642 bytes; by bucket, site b's shard read 234 from its own bucket and 27 from site 0,
+site c's 220 and 41.
+
+**The drain.**
+
+| step | time (from 00:27:32Z) | what |
+|---|---|---|
+| promote-ahead fires | 00:28:53 (81 s) | the archive asks site a's shard for `/promote`; `503 {"warming":true}` every 2 min after |
+| site a's shard cold rehydrate | about 00:28:22 → 00:54:40 | no `shard rehydrate` line in Workers Logs for site a (sites b and c below) |
+| first promotion | 00:54:42 (1,630 s) | `Promoted { 7..16 }` (entry 15's and 16's packs, 40.4 MB) |
+| second promotion | 00:54:52 (1,640 s) | `Promoted { 17..17 }` (12.7 MB) |
+| stall | 00:54:52 on | every run: `archive: entry 18 names 53125950 pack bytes, over the 50331648 a promotion holds` |
+
+**Drain verdict: stalled, not drained.** The time to the first promotion was 1,630 s (27.2 min), almost all of it the
+leader site's shard rehydrating the thin packs cold. Then the drain moved 2 of 648 entries in 10 s and stopped: entry
+18 carries one 53,125,950 B stored push, over `PROMOTE_MAX` (48 MiB, 50,331,648 B), and `within_promote_max` refuses a
+first entry alone over the cap, so every later run repeats the same refusal and nothing past index 17 can promote. Of
+260 stored packs it is the only one over 48 MiB (the seed's 30 MB plan steps produce packs of 10 to 53 MB). So under
+stored-fetch's trigger, repo:131296 cannot drain at all; the 2.62 MB/s figure was never reached, and the 45-minute
+stop did not decide it. The watcher read the stall as drained (its "no move for 180 s" rule); it now exits 3 for a
+stop short of the tail.
+
+[inference, the m3f thread's call: a single entry over `PROMOTE_MAX` needs a path, either promoting it alone past the
+cap, or storing a pushed pack above the cap as already self-contained, or a push-side cap at `PROMOTE_MAX`.]
+
+**Cold rehydrates in this round (no stored `.idx` existed yet, `idx_used` 0):**
+
+| shard | done | total | stored packs | bytes | spool | `index-pack` |
+|---|---|---|---|---|---|---|
+| site b (`git#1`) | 00:53:00Z | 1,507 s | 261 | 2,628,169,899 | 28.7 s | 1,458 s (5.6 s/pack, 1.80 MB/s) |
+| site c (`git#2`) | 00:57:15Z | 1,762 s | 261 | 2,628,169,899 | 29.4 s | 1,709 s (6.5 s/pack, 1.54 MB/s) |
+
+Against m29: the fetch ahead halved the spool (53 to 94 s → 29 s), but `index-pack --fix-thin` still holds the lock
+for 97% of the time (`lock_ms` = `index_ms`), and the totals (1,507 and 1,762 s) fail DESIGN's 120 s line (fail over
+600 s) as m29's did. stored-fetch's projected 83 s applies once the packs are promoted with stored indexes, which the
+stall prevents.
+
+**The cold warm and the row.** The warm started at 00:58:35Z on shards torn down after the stall; I stopped it at
+01:07:40Z, 9 minutes in (all catch-ups at the 120 s client limit, ls-refs 503 `warming`), because with no promotion
+past entry 17 it could only repeat the 25 to 30 minute cold rehydrate above, and the row as written could not start.
+Row: **not run**. Sweep after the stop: "no shard container running".
+
+**Cost** $130.32 at 01:10Z (containers $50.03).

@@ -28,9 +28,13 @@ for (;;) {
     out({ kind: "drain", leader, term: st.term, commit: st.commit, last: st.last, promotedTo: to, promotedFrom: r.promoted?.from,
           pack: r.promoted?.pack, archivedTo: r.archived?.to ?? null, target, alarms: al.slice(-8) });
     if (to !== last) { if (last !== null) { lastMoveS = s(); firstS ??= lastMoveS; } last = to; }
+    // Drained only when the promotions reach the pushed tail; a promotion that stops short of it for STILL_S is a
+    // stall (round 20: entry 18's one 53 MB pack over PROMOTE_MAX stopped every run at 17 of 648), exit 3.
     if (lastMoveS !== null && s() - lastMoveS >= still) {
-      out({ kind: "summary", drained: true, firstS, drainS: +(lastMoveS - firstS).toFixed(1), promotedFrom0: first, promotedTo: to, target });
-      process.exit(0);
+      const drained = to >= target - 8;
+      out({ kind: "summary", drained, stalled: !drained, firstS, drainS: +(lastMoveS - firstS).toFixed(1), promotedFrom0: first,
+            promotedTo: to, target, alarms: al.slice(-3) });
+      process.exit(drained ? 0 : 3);
     }
   } catch (e) { out({ kind: "error", e: String(e).slice(0, 160) }); }
   if ((firstS === null && s() > lim) || (firstS !== null && s() - firstS > lim)) {
