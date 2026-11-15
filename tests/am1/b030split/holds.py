@@ -9,9 +9,20 @@ up with long archive runs, and follower calls past CALL_DEADLINE with them?).
 - For each run, and for the same length of time just before it, every follower site's `/raft` p50, max and count past
   CALL_DEADLINE_MS (3000), from the group's member objects.
 Token from the environment, by header only."""
-import datetime as D, json, os, re, statistics as S, sys, urllib.request
+import datetime as D, json, os, re, statistics as S, sys, time, urllib.error, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+def fetch(r):
+    """The logs API answers a 500 now and then; retry it twice."""
+    for i in range(3):
+        try:
+            return json.load(urllib.request.urlopen(r, timeout=60))
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or i == 2:
+                raise
+            time.sleep(5 * (i + 1))
+
+
 ms = lambda iso: int(D.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
 iso = lambda t: D.datetime.fromtimestamp(t / 1000, D.UTC).strftime("%H:%M:%S")
 a, b = ms(sys.argv[1]), ms(sys.argv[2])
@@ -21,14 +32,15 @@ SITES = {"a": 0, "b": 1, "c": 2}
 
 
 def events(svc, filters, fr, to):
-    out, step = [], 600_000
+    # The events view returns at most 100 events a query, so read in 2-minute windows.
+    out, step = [], 120_000
     for t in range(fr, to, step):
         body = {"queryId": "q", "timeframe": {"from": t, "to": min(to, t + step)}, "view": "events", "limit": 100,
                 "parameters": {"filters": [{"key": "$metadata.service", "operation": "eq", "type": "string", "value": svc},
                                            *filters]}}
         r = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
             data=json.dumps(body).encode(), headers={"authorization": f"Bearer {tok}", "content-type": "application/json"}, method="POST")
-        out += json.load(urllib.request.urlopen(r, timeout=60))["result"]["events"]["events"]
+        out += fetch(r)["result"]["events"]["events"]
     return [e for e in out if e.get("$workers", {}).get("durableObjectId") in run_ids]
 
 
@@ -63,7 +75,7 @@ def calls(s, fr, to):
         r = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
             data=json.dumps(body).encode(), headers={"authorization": f"Bearer {tok}", "content-type": "application/json"}, method="POST")
         out = {}
-        for c in json.load(urllib.request.urlopen(r, timeout=60))["result"]["calculations"]:
+        for c in fetch(r)["result"]["calculations"]:
             for x in c["aggregates"]:
                 if x["groups"][0]["value"] in run_ids:
                     out[c["calculation"].split("(")[0]] = x["value"]
