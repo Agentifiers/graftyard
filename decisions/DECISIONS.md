@@ -3345,6 +3345,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A rulesets route, which would compile to the same `Protection.merge_queue`. Push and pull request triggers moving into `ActionsTrigger`, which retires the dispatch route's stand-in. A go-playground/webhooks release with `merge_group`, which the harness would then call through `Parse`.
 
+### M4-WP3: job and workflow `env` ride on each step, 2026-11-15
+
+**Decision.** `specs::job_specs` merges the workflow's `env`, then the job's, then the step's own into each step's `environment` in the job message, a later key replacing an earlier one; an `env` that is a single expression rather than a mapping replaces the outer one whole.
+
+**Why.** BF-37's first hosted run (`tests/m4/raw/bf37/run1/`) failed every `merge_group` run, the passing pull request's too: the runner's log of job 1507329 shows the step's header with no `env` and `test "$BF37_FAIL" = 0` exiting 1. The job message never carried job-level or workflow-level `env` (`runsvc::steps_json` rendered only the step's), and BF-59's workflow, the only earlier one with `env`, set it on the step. Folding the outer levels into each step reaches the same environment the runner builds from GitHub's job message, in the order GitHub documents (workflow, job, step, the most specific winning) [doc: "Variables" in GitHub's Actions docs], with no new message field.
+
+**Beat.** Sending the job-level mapping as the job message's `environmentVariables`, the field GitHub's own service fills; it needs the runner's evaluation of that list against the job's contexts, which no gate exercises yet, and the per-step merge reaches the same values for literal `env`. Moving BF-37's `env` to the step only, which leaves the product gap.
+
+**Evidence.** `crates/actions/src/specs.rs` test `workflow_and_job_env_reach_each_step_innermost_wins` (keys overlapping at all three levels; it fails on the old code). BF-37's hosted rerun ran on the day-35 build, which lacks this fix, so its workflow sets `env` on the step.
+
+**Flip.** A job-level `env` expression that reads a context only the job's evaluation has (such as `needs` outputs) and must not be re-evaluated per step, which moves the job's `env` to `environmentVariables`.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).

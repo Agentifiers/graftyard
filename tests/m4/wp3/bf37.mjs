@@ -14,11 +14,21 @@
 // go-playground/webhooks (`tests/m4/wp3/bf37/main.go`).
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { Git, api, log, member, row, sleep, tokens } from "../../am1/hosted/lib.mjs";
+import { join, resolve } from "node:path";
+import { Git, api as api1, log, member, row, sleep, tokens } from "../../am1/hosted/lib.mjs";
 
-const [out, ...runnerDirs] = process.argv.slice(2);
-const NAME = "wp3-bf37";
+// A 503 that says "retry" (a new repository's tier rows shedding a read) is retried, as a GHES client would.
+async function api(...a) {
+  for (let i = 0; ; i++) {
+    const r = await api1(...a);
+    if (r.status !== 503 || i >= 5) return r;
+    await sleep(3000);
+  }
+}
+
+const [outArg, ...runnerDirs] = process.argv.slice(2);
+const out = resolve(outArg);
+const NAME = process.env.BF37_REPO || "wp3-bf37";
 const R = `m3org/${NAME}`;
 const admin = tokens.admin;
 const SINK = process.env.BF37_SINK ?? "https://graft-m4a-bf37sink.<workers-subdomain>.workers.dev";

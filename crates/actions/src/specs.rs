@@ -8,7 +8,7 @@ use crate::ids::JobId;
 use crate::labels::LabelSet;
 use crate::runsvc;
 use crate::shard::JobSpec;
-use crate::workflow::template::T;
+use crate::workflow::template::{Node, T};
 use crate::workflow::{Workflow, matrix};
 use graftyard_types::DbId;
 
@@ -51,7 +51,19 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
             .flat_map(|p| at[p].clone())
             .map(|p| JobId(DbId(p as i64)))
             .collect();
-        let steps: Box<str> = runsvc::steps_json(&j.steps).to_string().into();
+        // The job message carries no `environmentVariables`, so the workflow's and the job's `env` reach the runner
+        // as each step's own: workflow, then job, then the step's keys, a later key replacing an earlier one, which
+        // is the runner's order (decisions/DECISIONS.md, "M4-WP3: job and workflow `env` ride on each step").
+        let steps: Vec<_> = j
+            .steps
+            .iter()
+            .map(|s| {
+                let mut s = s.clone();
+                s.env = [w.env.as_ref(), j.env.as_ref(), s.env.as_ref()].into_iter().flatten().fold(None, merge_env);
+                s
+            })
+            .collect();
+        let steps: Box<str> = runsvc::steps_json(&steps).to_string().into();
         let configs = matrix::expand(j.strategy.as_ref(), j.name.str())
             .map_err(|e| format!("{}: {}", j.id, e.join("; ")))?
             .map(|s| s.configurations)
@@ -90,6 +102,16 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
     Ok(out)
 }
 
+/// `inner`'s keys over `outer`'s. An `env` that is one expression, not a mapping, cannot be merged by key, so the
+/// innermost one wins whole.
+fn merge_env(outer: Option<Node>, inner: &Node) -> Option<Node> {
+    let (Some(T::Map(o)), T::Map(i)) = (outer.as_ref().map(|n| &n.t), &inner.t) else { return Some(inner.clone()) };
+    let mut m: Vec<(Node, Node)> =
+        o.iter().filter(|(k, _)| !i.iter().any(|(ik, _)| ik.str() == k.str())).cloned().collect();
+    m.extend(i.iter().cloned());
+    Some(Node { t: T::Map(m), ..inner.clone() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +140,28 @@ mod tests {
         assert!(p.ok(), "{:?}", p.errors);
         let envs: Vec<_> = job_specs(&p.workflow).unwrap().into_iter().map(|s| s.environment).collect();
         assert_eq!(envs, [Some("prod".into()), Some("staging".into()), None]);
+    }
+
+    /// BF-37 run 1: a job-level `env` never reached the runner. Each step's environment is workflow, then job, then
+    /// step keys, the innermost value winning.
+    #[test]
+    fn workflow_and_job_env_reach_each_step_innermost_wins() {
+        let src = "on: push\nenv:\n  A: w\n  B: w\njobs:\n  j:\n    runs-on: x\n    env:\n      B: j\n      C: j\n    steps:\n      - run: one\n        env:\n          C: s\n      - run: two\n";
+        let p = crate::workflow::parse("ci.yml", src);
+        assert!(p.ok(), "{:?}", p.errors);
+        let steps: serde_json::Value = serde_json::from_str(&job_specs(&p.workflow).unwrap()[0].steps).unwrap();
+        let env = |i: usize| -> Vec<(String, String)> {
+            let mut v: Vec<_> = steps[i]["environment"]["map"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|kv| (kv["Key"].as_str().unwrap().into(), kv["Value"].as_str().unwrap().into()))
+                .collect();
+            v.sort();
+            v
+        };
+        let kv = |a: &[(&str, &str)]| a.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        assert_eq!(env(0), kv(&[("A", "w"), ("B", "j"), ("C", "s")]));
+        assert_eq!(env(1), kv(&[("A", "w"), ("B", "j"), ("C", "j")]));
     }
 }

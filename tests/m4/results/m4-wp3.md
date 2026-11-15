@@ -7,7 +7,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 | Row | In memory | Hosted (graft-m4a) |
 | --- | --- | --- |
 | BF-4 | Pass, also with the real runner killed | Pass (run 1179649): failed at its lease end, 10 min after the renew answered, 10 min 4 s after it was sent |
-| BF-37 | Parser and filter built (`merge_group`, `pull_request` `enqueued`/`dequeued`); trigger not wired | Not run |
+| BF-37 | `ActionsTrigger` for `merge_group` (`crates/actions/src/trigger.rs`); BF-21 leaves no queue ref | **Pass** (03:21Z to 03:25Z, site day 35): a run on each of the 4 queue refs built, every ref deleted 10 s after its landing or ejection, all 18 deliveries parsed by go-playground/webhooks v6.4.0 |
 | BF-54 | Not built | Waits for the step-3 estimate's approval (lead, 2026-11-14) |
 | BF-55 | Not built | Not run |
 | BF-56 | Pass (both kills) | **Pass**, both kills (23:18Z to 23:24Z, site day 34): every required check concluded, matching its job, at most 10.4 s after the job's `Completed` |
@@ -112,6 +112,22 @@ Driver `tests/m4/wp3/bf56.mjs`, workflow `tests/m4/wp3/hosted/bf56.yml` (build, 
 - **`RunOwner`** (runs 1376317 and 1376324). `/owner_fault {kill}` armed on the shard leader before the runs; its first round committed the repository's checks, then reset the leader before its shard half (site 0's member booted again at 23:21:53Z and was re-elected), and the next round replayed under the same request ids. The same 12 conclusions; largest lag 7.7 s [measured].
 - **Found by run 1** (day 33, commit path, `tests/m4/raw/bf56/commit-run1.json`, which also passed, largest lag 9.3 s): an ephemeral runner finishing a cancelled job polled once more before it exited, was matched to run A's `test`, and exited, so `test` sat `Assigned` until its 10-minute lease requeued it. The leader now matches an ephemeral runner at most once (`workers/site/src/actions.rs`, site day 34). The first `RunOwner` run on day 33 was cut by an orb executor restart after its kill fired and was not counted.
 - **Not BF-56's:** shard `actions:7100001.12`'s site 1 voter (`#2#f1`, a replacement) read commit 1 under its first-generation name while the leader was at 156; under its own name it was at the leader's index throughout. The driver's polls use each voter's own name.
+
+## BF-37 hosted: `merge_group` runs and the queue's deliveries
+
+Driver `tests/m4/wp3/bf37.mjs`, workflow `tests/m4/wp3/hosted/bf37.yml`, repository `m3org/wp3-bf37c` (`repo:65558`), site day 35 and edge day 18, unmodified runner 2.338.2 on two runner directories. Results in `tests/m4/raw/bf37/` (`result.json`, `deliveries.json`, `parsed.jsonl`, `polls.jsonl`, `run3.log`). `main`'s rule requires `queue-ci` with a merge queue (the protection `PUT`'s `merge_queue`). Pull requests #1 and #3 pass; #2 sets `BF37_FAIL: "1"` in its copy of the workflow, so every queue ref holding it fails. A hook on the repository sends every event to `graft-m4a-bf37sink`, and each delivery is replayed through go-playground/webhooks v6.4.0's unmodified `github.Parse` with the hook's secret (`tests/m4/wp3/bf37/main.go`). Times are Cloudflare's (the orb ran 6.4 s behind); the driver lists the queue refs over smart HTTP every 2 s or so, so a deletion time is up to one poll late.
+
+| Queue ref | Built | Run | Conclusion | Ended by | Deleted |
+| --- | --- | --- | --- | --- | --- |
+| `pr-1-2d542013` | 03:22:08 | 1114172 | Success | #1 landed, 03:23:39 | 03:23:49 |
+| `pr-2-d0f46248` | 03:22:08 | 1114174 | Failure | #2 ejected (`dequeued`), 03:23:39 | 03:23:49 |
+| `pr-3-a1d081dc` | 03:22:08 | 1114176 | Failure (holds #2) | rebuilt without #2, 03:23:39 | 03:23:49 |
+| `pr-3-d0f46248` | 03:23:49 | 1114184 | Success | #3 landed, 03:24:59 | 03:25:07 |
+
+- **Runs.** `ActionsTrigger` created one `merge_group` run on each built ref, at the ref's tip, and none on any other ref. #1 and #3 merged; #2 did not.
+- **Deletion.** Every queue ref was gone within 10 s of the delivery that ended it, against the gate's 5 minutes, and `ls-remote` lists no `gh-readonly-queue` ref after the run.
+- **Deliveries.** 18, none failed: `pull_request` `opened` 3, `enqueued` 3 (one per PR), `dequeued` 1 (#2), `closed` 2; `merge_group` `checks_requested` 4 and `destroyed` 4 (one each per ref); and the ping. `Parse` accepted every signature. For `merge_group`, which v6.4.0 has no type for, it answers "unknown event merge_group" after the HMAC check, and the harness decodes the body itself (DECISIONS, "M4-WP3: BF-37's merge queue setting and `ActionsTrigger` for `merge_group`").
+- **Found by run 1** (`tests/m4/raw/bf37/run1/`, `m3org/wp3-bf37`): every run failed, #1's too, because the job message dropped job-level `env`: the runner's log of job 1507329 shows the step with no `env`, and `test "$BF37_FAIL" = 0` exited 1. `crates/actions/src/specs.rs` now merges the workflow's and the job's `env` into each step (DECISIONS, "M4-WP3: job and workflow `env` ride on each step"); that fix is not on graft-m4a yet, so the passing run's workflow sets `env` on its step. Run 2 (`run2b/`, `m3org/wp3-bf37b`) was stopped: the driver passed a relative output path to runners started in their own directories, so none started. Its three queued runs were cancelled.
 
 ## The parser: `crates/actions/src/workflow`
 
