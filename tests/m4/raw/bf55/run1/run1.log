@@ -1,0 +1,6 @@
+START=08:11:37Z
+2026-11-15T08:12:09.394Z repo m3org/wp3-bf55b (repo:65560), jobs on actions:7100001.4, runners on actions:7100001.0; Cloudflare 7086 ms ahead
+2026-11-15T08:12:25.007Z registration shard leader {"regLeader":{"site":0,"term":2}}
+2026-11-15T08:12:44.874Z run created {"run":1769472}
+2026-11-15T08:23:33.684Z kill {"regLeader":{"site":0,"term":2},"done":64,"cmd":"bash tests/m4/wp3/bf55-kill.sh down"}
+2026-11-15T08:23:43.703Z kill command done {"code":0}

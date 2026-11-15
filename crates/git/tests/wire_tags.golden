@@ -740,6 +740,7 @@ actions::shard::ActionsOp 6 CloseSession 0602
 actions::shard::ActionsOp 7 SetRunStatus 0702
 actions::shard::ActionsOp 8 CancelRun 0802
 actions::shard::ActionsOp 9 OwnerCursor 0901
+actions::shard::ActionsOp 10 MatchOwner 0a02010200
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202

@@ -32,6 +32,8 @@ pub const ACTIONS_FORMAT: Format = Format { family: 0x15, version: 1 };
 /// BF-37's `CreateRun` of a `merge_group` run, whose run key names its queue ref (`WorkflowRun::key`). Only
 /// `ActionsTrigger` on a repository leader of a release that reads it sends one; every other command stays 0x15.1.
 pub const ACTIONS_FORMAT_MERGE_GROUP: Format = Format { family: 0x15, version: 2 };
+/// BF-55's `MatchOwner`, which only a broker of a release that reads it sends; its event is the 0x15.1 `Job` event.
+pub const ACTIONS_FORMAT_OWNER_MATCH: Format = Format { family: 0x15, version: 3 };
 
 #[cfg(test)]
 const JOB_LEASE_MS: u64 = crate::job::JOB_LEASE.as_millis() as u64;
@@ -598,6 +600,15 @@ pub enum ActionsOp {
     OwnerCursor {
         through: Index,
     },
+    /// An `Owner`-scope runner's match on a shard other than its registration shard (BF-55): the owner's broker read
+    /// the runner's record on `OWNER_SCOPE_SHARD` and sends its labels, since this shard holds no record of it. Only
+    /// `Operator` (the broker's call to the leader) sends it; it commits the same `Matched(runner)` a local match does.
+    MatchOwner {
+        job: JobId,
+        version: u64,
+        runner: RunnerId,
+        labels: LabelSet,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -758,6 +769,7 @@ impl Command for ActionsCmd {
     fn format(&self) -> Format {
         match &self.op {
             ActionsOp::CreateRun { run, .. } if run.is_merge_group() => ACTIONS_FORMAT_MERGE_GROUP,
+            ActionsOp::MatchOwner { .. } => ACTIONS_FORMAT_OWNER_MATCH,
             _ => ACTIONS_FORMAT,
         }
     }
@@ -853,6 +865,20 @@ impl Command for ActionsCmd {
                     return none();
                 }
                 Ok((smallvec![ActionsEvent::OwnerCursor { through: *through }], ActionsOut::Done))
+            }
+            ActionsOp::MatchOwner { job, version, runner, labels } => {
+                only(operator)?;
+                let j = s.job(*job).ok_or(ActionsErr::NotFound)?;
+                if !j.spec.labels.fits(labels) {
+                    return Err(ActionsErr::Illegal("the runner does not take this job's labels".into()));
+                }
+                if j.version != *version {
+                    return Err(ActionsErr::Stale(j.version));
+                }
+                let event = JobEvent::Matched(*runner);
+                let next = transition(&j.state, &event, &j.spec.labels, s.at())
+                    .map_err(|e| ActionsErr::Illegal(e.to_string().into()))?;
+                Ok((smallvec![ActionsEvent::Job { job: *job, version: *version, event }], ActionsOut::Job(next)))
             }
         }
     }
