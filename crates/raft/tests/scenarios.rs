@@ -2234,3 +2234,67 @@ fn a_term_resumed_in_the_same_boot_never_reissues_a_ticket() {
     assert_eq!((second.term, second.boot), (first.term, first.boot), "resumed in the same term and boot");
     assert_ne!(second, first, "a resumed leadership issued a ticket its last one issued");
 }
+
+/// A second learner generation on the same slots catches up. `/learners` places each new generation at the same
+/// addresses (`learner_addr(slot)`) under new names; the leader reset its per-peer state only for voters, so each new,
+/// empty learner kept the old one's `matched`, was probed at that index forever, refused every probe, and applied
+/// nothing (B0-33, LM-1 round 23: 1,776 calls and 144.9 MB to eight learners, all refused, for the whole row). The
+/// same holds for a learner removed and placed again under a new name.
+#[test]
+fn a_second_learner_generation_on_the_same_slots_catches_up() {
+    let mut c = Cluster::new(97);
+    c.elect(A);
+    c.sync(A);
+    let learners = with_learners(&mut c, A, 2);
+    let mut h = Silent::new(learners.clone(), Some(10));
+    let fill = |c: &mut Cluster, h: &mut Silent, from: u128| {
+        for i in 0..5u128 {
+            admit(c, A, from + i, put(&format!("k{}", from + i), "v"));
+            h.pump(c);
+            h.advance(c, 200);
+        }
+        for _ in 0..20 {
+            h.advance(c, 200);
+        }
+    };
+    fill(&mut c, &mut h, 9_000);
+    let first = c.m(A).state().commit;
+    assert!(learners.iter().all(|l| h.held[l] >= first), "the first generation caught up: {:?}", h.held);
+    // The next generation, on the same sites and slots, with new names: new members that hold nothing. Calls to the
+    // old generation are still out, and the old members answer them after the change, with everything they hold.
+    admit(&mut c, A, 9_050, put("k9050", "v"));
+    h.pump(&mut c);
+    let out = std::mem::take(&mut h.calls);
+    assert!(!out.is_empty(), "calls to the old generation are out");
+    assert_eq!(with_learners(&mut c, A, 2), learners);
+    let mut old = Silent::new(learners.clone(), Some(10));
+    old.held = std::mem::take(&mut h.held);
+    for (_, leader, e, _, _) in out {
+        let res = old.answer(&e).expect("an append");
+        let (to, round) = (e.to, res.round);
+        c.on(leader, |m, t| m.step(t, to, Message::AppendRes(res)));
+        c.on(leader, |m, t| m.call_ended(t, to, round));
+    }
+    fill(&mut c, &mut h, 9_100);
+    let last = c.m(A).state().commit;
+    assert!(last > first);
+    assert!(
+        learners.iter().all(|l| h.held.get(l) == Some(&last)),
+        "the second generation caught up: {:?} of {last:?}",
+        h.held
+    );
+    // Removed, then placed again under a third generation's names.
+    assert!(with_learners(&mut c, A, 0).is_empty());
+    for _ in 0..5 {
+        h.advance(&mut c, 200);
+    }
+    assert_eq!(with_learners(&mut c, A, 2), learners);
+    h.held.clear();
+    fill(&mut c, &mut h, 9_200);
+    let last = c.m(A).state().commit;
+    assert!(
+        learners.iter().all(|l| h.held.get(l) == Some(&last)),
+        "the third generation caught up: {:?} of {last:?}",
+        h.held
+    );
+}
