@@ -41,11 +41,11 @@ PY
 # at most WARM_MIN minutes (default 45); its time is not the row's. Past the limit the row is not run. It runs before
 # learners.mjs and k.mjs, whose leader reads found an idle group with no leader (round 17b); the catch-ups wake it.
 # Round 20's drain (stored-fetch): before the cold warm, the archive's promote-ahead promotes the network's thin stored
-# pushes under the pack-bytes trigger, timed on its own (b034drain.mjs), at most DRAIN_MIN minutes per phase.
+# pushes under the pack-bytes trigger, timed on its own (b034drain.mjs), at most DRAIN_MIN minutes in all (default 90).
 # Then every shard is torn down (teardown.py --sweep), so the warm is cold against the promoted packs.
 if [ -n "${DRAIN:-}" ]; then
   s "b0-34 drain start"
-  node tests/fanout/b034drain.mjs "$chain" "$(q "d['mono']['repo']")" "${DRAIN_MIN:-45}" > tests/fanout/raw/b034drain-$TAG.jsonl 2>&1
+  node tests/fanout/b034drain.mjs "$chain" "$(q "d['mono']['repo']")" "${DRAIN_MIN:-90}" > tests/fanout/raw/b034drain-$TAG.jsonl 2>&1
   w=$?; s "b0-34 drain exit $w $(tail -1 tests/fanout/raw/b034drain-$TAG.jsonl)"
   [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
   python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "b0-34 shards torn down before the cold warm"

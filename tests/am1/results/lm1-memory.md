@@ -2611,7 +2611,10 @@ each after its 60 s `wait`. Each try's line: `1 packs, 0 B in 60,37x ms, wasm 1.
 **Not measured:** the site's memory during the streamed promotion of entry 18, and the hosted promotion MB/s G9 needs.
 No promotion reached the stream. The site scripts' peak memory over the window was 27 to 36.5 MB, with wasm 1.8 MB
 except one site-a `scriptThrewException` at 04:00 (wasm 170.2 MB), the same pattern as m31 at 00:30 and 00:45 (167.5 and
-175.0 MB). It is not a promotion: none got past the shard.
+175.0 MB). It is not a promotion: none got past the shard. Traced (note only, not chased): each is the site
+script's `scheduled` handler, the `*/15 * * * *` cron (`sweep::run`, then `fold_audit::run`), ending `exception` with
+"Promise will never complete." after 234 to 255 s wall and 2.9 to 3.6 s CPU: m33 at 04:04:14Z (cron 04:00), m31 at
+00:33:56Z and 00:48:53Z (crons 00:30 and 00:45). Only site a shows it in these windows.
 
 **Why every shard stayed warming for 45 min (m31's took 25 to 29).** Container CPU by 5 minutes, each site:
 
