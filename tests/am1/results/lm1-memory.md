@@ -2652,3 +2652,111 @@ So two separate things held the drain:
 shard container running".
 
 **Cost** $131.15 at 04:25Z (containers $50.67); this round cost about $0.70.
+
+### Round 22: B0-34 on m34 (main 1552e999, promote-stream and connected-after): 51 streamed promotions drain entries 18 to 234 at 1.65 MB/s with the site at 18.7 MiB wasm; the 90-minute stop fires short of the tail; warm and row not run (2026-11-15)
+
+**Deploy m34.** lm1-memory 71bec610 = main 1552e999 (connected-after merged) plus this branch's instruments. Shard image
+`sha256:36c17feb` (connected-after's container). Sites a e7c34df8, b 5b91624b, c bc99d3f1; edge bfed05b9; standard-4,
+NOROLL, test-faults. Run `DRAIN=1 DRAIN_MIN=90 b034.sh m34` from 05:18:05Z (drain stop 90 minutes in all, no stall exit
+in the first 45). Raw `tests/fanout/raw/b034drain-m34.jsonl`, `b034-m34.status`, `keepled-m34.jsonl`.
+
+**The group idled out.** 3 minutes into the drain (05:21Z) all three members of repo:131296 were followers at term 2,
+and the drain read `no leader` for 11 samples: its watcher reads members only (`/status`, `/read`, `/stats`), which a
+group does not count as clients, and nothing else touched the group. The archive alarm runs only on a leader, so
+promotion stopped with it. At 05:32Z one edge read woke site 0 back to leader (the term stayed 2), and
+`tests/fanout/keepled.mjs` (one edge read a minute) kept it led to the end. `b034.sh` now starts keepled for the drain's length. The shard warm at the drain's start was also cut short: the
+container instances still running from round 21's m33 were the same disks (site a's `git#0#net:131296` ran from
+04:33:55Z on the old image `b63da3e6` until 06:55Z), so this round's first promotion went to an already rehydrated
+shard, not a cold one (below).
+
+**The drain: streamed promotion works and holds the site flat.**
+
+- First promotion at 05:31:55Z (845 s after the start; 10 of those minutes are the idle-out above): `Some((18, 18))`,
+  entry 18's 53,125,950 B push, now **promoted, 61,072,183 B in 29.9 s, wasm 1.9 → 3.5 MB**. The cap refusal of round
+  20 is gone.
+- **Entry 18's site memory:** the promotion runs in its own site-a invocation (`/archive/promote`). Its wasm went 1.9 to
+  3.5 MB in the promotion's own log line. Over the whole drain, every promotion's after-value is at most 18.7 MB, reached
+  by the fourth (21..22, 146 MB) and flat after it through a 207 MB promotion. The only site-a invocations over 18.7 MB
+  wasm in the window are the six `*/15` crons, 156.6 to 195.1 MB, `scriptThrewException` (round 21's note: `sweep::run`
+  and `fold_audit::run`), the same as before promote-stream and not a promotion.
+- **51 promotions, entries 18..234: 211 pushed packs, 2,217,077,014 pushed bytes (the stored packs those entries name),
+  7,404,855,988 promoted bytes in 4,489.6 s of promotion time: 1.65 MB/s of promoted bytes, 0.49 MB/s of pushed bytes
+  covered.** By phase: promotions 2 to 19 (05:33 to 06:06Z) 1.32 MB/s, the last 10 (06:37 to 06:49Z) 1.95 MB/s. A
+  promoted pack is 3.3 times the pushed bytes it covers on this history (7.40 / 2.22 GB), so the pushed-byte rate G9
+  compares against B0-31's pushes is **0.49 MB/s**, against the 2.62 MB/s measured locally (`lm1-rows-m3f.md`,
+  "Promotion rate"). [measured; promoted bytes and ms from each promotion's log line, pushed bytes from the log's
+  entries 18..234]
+- Stop: 06:48:07Z, exit 2 at the 90-minute limit, `promotedTo` 227 (234 by the last line at 06:49:03Z), against a
+  target of 678 (commit 730 at the stop). Left above the last promotion: 49 stored packs, 357,944,637 B (entries 235 to
+  the end). The drain did not finish; at the late rate it needs about 12 more minutes of promotion, but promote-ahead
+  also stops by design once less than `LOG_MAX_BYTES / 32` (64 MiB) of packs sit above the last promotion, so "drained"
+  for b034drain.mjs's rule (`to >= target - 8`) is not reachable as written either [inference from
+  `log_archive::step`].
+
+Promotion table:
+
+| at | range | pushed packs | promoted bytes | ms | MB/s | wasm before → after |
+|---|---|---|---|---|---|---|
+| 05:31:55 | 18..18 | 1 | 61,072,183 | 29,901 | 2.04 | 1.9 → 3.5 |
+| 05:33:05 | 19..20 | 2 | 114,260,865 | 68,134 | 1.68 | 3.5 → 13.6 |
+| 05:34:41 | 21..22 | 2 | 146,427,041 | 93,553 | 1.57 | 13.6 → 18.7 |
+| 05:36:24 | 23..24 | 2 | 145,385,404 | 100,470 | 1.45 | 18.7 → 18.7 |
+| 05:37:46 | 25..26 | 2 | 125,374,222 | 80,276 | 1.56 | 18.7 → 18.7 |
+| 05:39:40 | 27..28 | 2 | 156,846,812 | 111,074 | 1.41 | 18.7 → 18.7 |
+| 05:41:50 | 29..31 | 3 | 164,651,524 | 128,124 | 1.29 | 18.7 → 18.7 |
+| 05:43:31 | 32..33 | 2 | 118,368,840 | 96,970 | 1.22 | 18.7 → 18.7 |
+| 05:45:03 | 34..35 | 2 | 119,869,890 | 89,429 | 1.34 | 18.7 → 18.7 |
+| 05:47:01 | 36..37 | 2 | 150,739,008 | 115,482 | 1.31 | 18.7 → 18.7 |
+| 05:49:24 | 38..39 | 2 | 179,812,627 | 139,841 | 1.29 | 18.7 → 18.7 |
+| 05:52:13 | 40..42 | 3 | 207,310,890 | 166,943 | 1.24 | 18.7 → 18.7 |
+| 05:54:13 | 43..44 | 2 | 144,931,350 | 116,590 | 1.24 | 18.7 → 18.7 |
+| 05:56:46 | 45..47 | 3 | 169,168,555 | 150,044 | 1.13 | 18.7 → 18.7 |
+| 05:59:01 | 48..50 | 3 | 169,163,215 | 132,168 | 1.28 | 18.7 → 18.7 |
+| 06:01:34 | 51..54 | 4 | 148,915,235 | 149,675 | 0.99 | 18.7 → 18.7 |
+| 06:04:10 | 55..58 | 4 | 183,507,098 | 151,893 | 1.21 | 18.7 → 18.7 |
+| 06:06:06 | 59..60 | 2 | 173,507,412 | 112,902 | 1.54 | 18.7 → 18.7 |
+| 06:07:36 | 61..62 | 2 | 131,261,634 | 86,662 | 1.51 | 18.7 → 18.7 |
+| 06:08:59 | 63..65 | 3 | 206,394,995 | 80,703 | 2.56 | 18.7 → 18.7 |
+| 06:10:10 | 66..68 | 3 | 123,412,816 | 68,305 | 1.81 | 18.7 → 18.7 |
+| 06:11:25 | 69..70 | 2 | 131,756,177 | 72,392 | 1.82 | 18.7 → 18.7 |
+| 06:12:40 | 71..73 | 3 | 134,903,179 | 71,304 | 1.89 | 18.7 → 18.7 |
+| 06:13:59 | 74..76 | 3 | 129,021,949 | 76,217 | 1.69 | 18.7 → 18.7 |
+| 06:15:09 | 77..80 | 4 | 132,400,296 | 67,054 | 1.97 | 18.7 → 18.7 |
+| 06:16:23 | 81..84 | 4 | 126,245,557 | 70,848 | 1.78 | 18.7 → 18.7 |
+| 06:17:38 | 85..88 | 4 | 130,918,235 | 71,200 | 1.84 | 18.7 → 18.7 |
+| 06:18:48 | 89..92 | 4 | 134,861,742 | 67,074 | 2.01 | 18.7 → 18.7 |
+| 06:20:04 | 93..98 | 4 | 124,651,479 | 71,803 | 1.74 | 18.7 → 18.7 |
+| 06:21:10 | 99..102 | 4 | 117,557,062 | 62,400 | 1.88 | 18.7 → 18.7 |
+| 06:22:08 | 103..105 | 3 | 106,688,727 | 55,325 | 1.93 | 18.7 → 18.7 |
+| 06:23:20 | 106..109 | 4 | 140,104,970 | 69,003 | 2.03 | 18.7 → 18.7 |
+| 06:24:29 | 110..113 | 4 | 127,409,443 | 65,786 | 1.94 | 18.7 → 18.7 |
+| 06:25:59 | 114..119 | 6 | 147,945,855 | 86,027 | 1.72 | 18.7 → 18.7 |
+| 06:27:13 | 120..126 | 7 | 149,478,383 | 69,501 | 2.15 | 18.7 → 18.7 |
+| 06:28:21 | 127..130 | 4 | 121,493,527 | 63,846 | 1.90 | 18.7 → 18.7 |
+| 06:29:40 | 131..136 | 6 | 162,401,476 | 76,002 | 2.14 | 18.7 → 18.7 |
+| 06:31:05 | 137..140 | 4 | 144,031,465 | 80,507 | 1.79 | 18.7 → 18.7 |
+| 06:32:35 | 141..145 | 5 | 160,209,364 | 86,311 | 1.86 | 18.7 → 18.7 |
+| 06:34:15 | 146..150 | 5 | 201,093,617 | 96,270 | 2.09 | 18.7 → 18.7 |
+| 06:35:26 | 151..155 | 5 | 132,610,610 | 67,225 | 1.97 | 18.7 → 18.7 |
+| 06:36:48 | 156..161 | 6 | 150,785,279 | 78,029 | 1.93 | 18.7 → 18.7 |
+| 06:38:04 | 162..167 | 6 | 149,693,875 | 72,603 | 2.06 | 18.7 → 18.7 |
+| 06:39:22 | 168..173 | 6 | 143,249,407 | 74,005 | 1.94 | 18.7 → 18.7 |
+| 06:40:47 | 174..180 | 7 | 161,669,360 | 81,318 | 1.99 | 18.7 → 18.7 |
+| 06:42:08 | 181..185 | 5 | 154,673,848 | 77,268 | 2.00 | 18.7 → 18.7 |
+| 06:43:39 | 186..195 | 10 | 160,012,207 | 87,728 | 1.82 | 18.7 → 18.7 |
+| 06:45:00 | 196..208 | 9 | 153,484,202 | 75,007 | 2.05 | 18.7 → 18.7 |
+| 06:46:31 | 209..217 | 9 | 156,988,903 | 86,504 | 1.81 | 18.7 → 18.7 |
+| 06:47:46 | 218..227 | 10 | 142,278,306 | 70,289 | 2.02 | 18.7 → 18.7 |
+| 06:49:03 | 228..234 | 7 | 135,855,872 | 71,625 | 1.90 | 18.7 → 18.7 |
+
+**Cold rehydrate: not measured this round.** No `shard rehydrate 131296` report appeared, because no shard rehydrated:
+site a's container from round 21 (started 04:33:55Z, image `b63da3e6`) was still running when the drain began, with its
+cursor, and served every promotion; sites b and c ran at 1.0 vCPU until 05:40 to 05:45Z (round 21's leftover rehydrates)
+and then idled. Round 21's sweep tore the containers down at 04:23Z, but a new leadership's `warm=1` catch-ups at 04:33:55Z
+(`Member shard warm 131296 site 0..2`, after round 21's diagnostic edge read) restarted all three before this round. So whether
+`/connected` now runs before the repack is not yet shown hosted; the code and its tests are on main.
+
+**Cold warm and row: not run** (drain exit 2). Sweeps after the stop: "sweep: no shard container running" (06:55Z, and
+again at 06:59Z after the next shard object restarted one on its alarm).
+
+**Cost** $132.97 at 06:59Z (containers $52.29); this round cost about $1.61.

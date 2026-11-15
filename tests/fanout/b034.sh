@@ -43,10 +43,14 @@ PY
 # Round 20's drain (stored-fetch): before the cold warm, the archive's promote-ahead promotes the network's thin stored
 # pushes under the pack-bytes trigger, timed on its own (b034drain.mjs), at most DRAIN_MIN minutes in all (default 90).
 # Then every shard is torn down (teardown.py --sweep), so the warm is cold against the promoted packs.
+# Round 22: the drain's watcher reads only members, which a group does not count as clients, so repo:131296 idled out
+# to followers 3 minutes in and its archive alarm stopped. One edge read a minute keeps it led through the drain.
 if [ -n "${DRAIN:-}" ]; then
+  node tests/fanout/keepled.mjs "$(q "d['mono']['repo']")" "${DRAIN_MIN:-90}" > tests/fanout/raw/keepled-$TAG.jsonl 2>&1 &
+  KEEP=$!
   s "b0-34 drain start"
   node tests/fanout/b034drain.mjs "$chain" "$(q "d['mono']['repo']")" "${DRAIN_MIN:-90}" > tests/fanout/raw/b034drain-$TAG.jsonl 2>&1
-  w=$?; s "b0-34 drain exit $w $(tail -1 tests/fanout/raw/b034drain-$TAG.jsonl)"
+  w=$?; kill $KEEP 2>/dev/null; s "b0-34 drain exit $w $(tail -1 tests/fanout/raw/b034drain-$TAG.jsonl)"
   [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
   python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "b0-34 shards torn down before the cold warm"
 fi
