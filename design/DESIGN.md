@@ -1272,6 +1272,10 @@ pub fn actions_shard(run: &WorkflowRun) -> u8;
 /// tries, then after 0 to 15 s, session intact [measured, BF-54]. A relay hibernates its sockets and keeps 1,000 lines [guess].
 pub struct RunnerBroker { pub owner: AccountId, pub scope: RunnerScope }   pub struct LogRelay { pub job: JobId }
 pub const BROKER_HELD_MAX: u32 = 2_000;   // held long polls per broker object [guess]
+/// A broker's asks of its shard's leader in flight at once; past them a poll waits its turn. A hint wakes every held
+/// poll, and on BF-54 a broker of 2,000 polls ended `exceededMemory` 21 times in 25 minutes, dropping them all [measured,
+/// F76; that its asks in flight held the memory is an inference].
+pub const ASKS_MAX: u32 = 64;             // [guess]
 /// Site-script class, one per hook owner on its `home` site: SHARED's delivery store (`HookDelivery` rows) and sequencer.
 /// Delivery Workers: keyless `hooklane:<wire>:<hook>` objects, each POSTing a queue's signed run in order [measured, `tests/m4/results/m4-wp1-hosted.md`]; one unreported for 30 s is re-sent under its GUID.
 pub struct HookSequencer { pub owner: AccountId }
