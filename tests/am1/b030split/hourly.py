@@ -6,6 +6,8 @@ and each site shard's /status `procs` top processes by CPU. Appends the line to 
 """
 import datetime as D, json, os, re, subprocess, sys
 RAW = "tests/am1/raw"
+RUN = os.environ.get("B030_RUN", "b030r2")
+REPO = json.load(open(f"{RAW}/b030-repo.json"))["repo"]
 now = D.datetime.now(D.UTC)
 h = D.datetime.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else now.replace(minute=0, second=0, microsecond=0) - D.timedelta(hours=1)
 h = h.replace(tzinfo=D.UTC) if h.tzinfo is None else h
@@ -19,8 +21,8 @@ w0 = D.datetime.fromtimestamp(a, D.UTC)
 row = {"hour": h.strftime("%Y-%m-%dT%H:%MZ"), "sampled": f"{w0:%H:%M}-{w0 + D.timedelta(minutes=3):%H:%M}Z"}
 for s in "abc":
     # The shard object's log line is its own URL; `disk=1` is on its call to the container and is not logged.
-    v = [e["wall"] for e in logs(f"graft-m1-site-{s}", "shard/validate?repo=1048590&tipsn") if e.get("wall") is not None]
-    m = [e["wall"] for e in logs(f"graft-m1-site-{s}", "shard/merge?repo=1048590") if e.get("wall") is not None]
+    v = [e["wall"] for e in logs(f"graft-m1-site-{s}", f"shard/validate?repo={REPO}&tipsn") if e.get("wall") is not None]
+    m = [e["wall"] for e in logs(f"graft-m1-site-{s}", f"shard/merge?repo={REPO}") if e.get("wall") is not None]
     if v or m:
         row[s] = {"validate": [len(v), p50(v)], "merge": [len(m), p50(m)]}
 mins = [json.loads(l) for l in open(f"{RAW}/b030-load.jsonl") if '"kind":"minute"' in l]
@@ -33,7 +35,7 @@ if len(inh) > 1:
 import time
 seen = {}
 for _ in range(6):
-    st = subprocess.run(["node", "tests/am1/mb3/shardstatus.mjs", "1048590"], capture_output=True, text=True, timeout=120).stdout
+    st = subprocess.run(["node", "tests/am1/mb3/shardstatus.mjs", str(REPO)], capture_output=True, text=True, timeout=120).stdout
     for l in st.splitlines():
         r = json.loads(l)
         try:
@@ -50,4 +52,4 @@ for (site, _), (cmd, cpu) in seen.items():
 row["procs"] = {s: sorted(((round(c, 1), k) for k, c in v.items()), reverse=True)[:3] for s, v in sorted(by.items())}
 row["procsSnapshots"] = 6
 print(json.dumps(row))
-open(f"{RAW}/b030r2-hourly.jsonl", "a").write(json.dumps(row) + "\n")
+open(f"{RAW}/{RUN}-hourly.jsonl", "a").write(json.dumps(row) + "\n")

@@ -68,7 +68,8 @@ function usage(from) {
   catch (e) { return { error: String(e).slice(0, 120) }; }
 }
 // graft-m1's shard containers over the same window (tests/fanout/containers.py), which usage.py leaves out; a run on
-// standard-4 shards counts them toward STOP_USD.
+// standard-4 shards counts them toward STOP_USD. B030_ALL_CONTAINERS (the third run) counts every graft-m1 site
+// container, fanout pool shards (`git#<site>#pool:<n>`) included, not only the run's network.
 // A failed reading (an API timeout) retries twice, then carries the last good one forward, so a cost line never
 // counts $0 for a source it could not read (04:23Z on 2026-11-15: a TLS timeout read containers as $0).
 let lastU = null, lastK = null;
@@ -80,7 +81,7 @@ function retried(f) {
 }
 function containers(from) {
   try {
-    return JSON.parse(execFileSync("python3", ["tests/fanout/containers.py", from, new Date().toISOString()], { env: { ...process.env, INSTALL: "graft-m1", NETS: String(REPO.repo) } }).toString());
+    return JSON.parse(execFileSync("python3", ["tests/fanout/containers.py", from, new Date().toISOString()], { env: { ...process.env, INSTALL: "graft-m1", NETS: process.env.B030_ALL_CONTAINERS ? "" : String(REPO.repo) } }).toString());
   } catch (e) { return { error: String(e).slice(0, 120) }; }
 }
 

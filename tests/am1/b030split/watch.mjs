@@ -6,16 +6,20 @@
 // tests/am1/raw/b030r2-ALERT. Also (operator, 2026-11-14): a log over LOG_MAX_BYTES whose leader's `archivedTo` has not
 // moved for ARCHIVE_STALL_MIN (30) minutes, or a log over LOG_MAX_BYTES by LOG_OVER (5%), so members not truncating
 // never runs on toward SQLITE_FULL. And (operator, the third drain fix): once the log is under LOG_MAX_BYTES after the
-// resume, any later reading over it stops the load. Rows go to tests/am1/raw/b030r2-watch.jsonl.
-//   node tests/am1/b030split/watch.mjs
+// resume, any later reading over it stops the load. And (operator, 2026-11-16, the third run): a leader's commit index
+// unchanged for STALL_S (60) s alerts (no STOP: a stalled group fails the row by itself, and the load's own retries
+// are not an operator step). Rows go to tests/am1/raw/$B030_RUN-watch.jsonl (default b030r2).
+//   B030_RUN=b030r3 node tests/am1/b030split/watch.mjs
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { log, row, sleep, statuses, voter } from "../hosted/lib.mjs";
 
 const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8"));
 const C = `repo:${REPO.repo}`;
-const OUT = "tests/am1/raw/b030r2-watch.jsonl";
+const RUN = process.env.B030_RUN ?? "b030r2";
+const OUT = `tests/am1/raw/${RUN}-watch.jsonl`;
 const STOP = "tests/am1/raw/b030-STOP";
-const ALERT = "tests/am1/raw/b030r2-ALERT";
+const ALERT = `tests/am1/raw/${RUN}-ALERT`;
+const STALL_S = Number(process.env.STALL_S ?? 60);
 const GAP_MAX_S = Number(process.env.GAP_MAX_S ?? 30);
 const SAMPLE = 100;
 const LOG_MAX_BYTES = 2 * 2 ** 30;
@@ -25,11 +29,11 @@ let archived = { to: -1, at: Date.now() }, archiveAlerted = false;
 const rows = JSON.parse(readFileSync("tests/am1/raw/b030-seed.json", "utf8")).rows;
 const keys = Array.from({ length: SAMPLE }, (_, i) => 2 ** 40 + Math.floor((i * rows) / SAMPLE));
 
-function alert(why) {
+function alert(why, stop = true) {
   log(`ALERT ${why}`);
   row(OUT, { kind: "alert", at: new Date().toISOString(), why });
   appendFileSync(ALERT, `${new Date().toISOString()} ${why}\n`);
-  if (!existsSync(STOP)) writeFileSync(STOP, `watch: ${why}\n`);
+  if (stop && !existsSync(STOP)) writeFileSync(STOP, `watch: ${why}\n`);
 }
 
 async function bodies(site) {
@@ -41,10 +45,12 @@ async function bodies(site) {
   return out;
 }
 
-const BASE = "tests/am1/raw/b030r2-bodies.json";
+const BASE = `tests/am1/raw/${RUN}-bodies.json`;
 let base = existsSync(BASE) ? JSON.parse(readFileSync(BASE, "utf8")) : null;
 let underOnce = false, capAlerted = false;
 let seenLeader = false, since = null, alerted = false, lastSplit = "", lastBodies = 0, longest = 0;
+// The stall alert: the newest leader's commit index and when it last moved; one alert a stall, again after it moves.
+let commit = { at: -1, since: Date.now(), alerted: false };
 for (;;) {
   const st = await statuses(C);
   const led = st.filter((s) => s.role === "leader").sort((a, b) => b.term - a.term)[0];
@@ -59,6 +65,13 @@ for (;;) {
       alerted = false;
     }
     seenLeader = true;
+    if (led.commit !== commit.at) {
+      if (commit.alerted) row(OUT, { kind: "stallEnd", at: new Date().toISOString(), s: Math.round((now - commit.since) / 1000), commit: led.commit });
+      commit = { at: led.commit, since: now, alerted: false };
+    } else if (!commit.alerted && now - commit.since > STALL_S * 1000) {
+      commit.alerted = true;
+      alert(`stall: commit ${led.commit} unchanged for ${Math.round((now - commit.since) / 1000)} s with site ${led.site} leading at term ${led.term}`, false);
+    }
     const v = (await voter(C, led.site, "/bench_seed", { b030: { size: true } }, 30_000).catch(() => ({ v: {} }))).v ?? {};
     const sp = JSON.stringify({ child: !!v.split?.state?.child, seed: v.split?.state?.seed?.[0] ?? null, dropped: !!v.split?.state?.dropped, slim: v.split?.slim ? { done: v.split.slim.done, table: v.split.slim.table } : null });
     if (sp !== lastSplit) {
