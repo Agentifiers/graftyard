@@ -2673,6 +2673,7 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         console_error!("{e}");
     }
     graftyard_lookup::set_colo(colo_id(&req));
+    graftyard_lookup::set_client();
     // The version this request ran, from the version metadata binding, for `graft-front`'s mismatch check. Only a
     // request that asks for it (`graft-front` sends `FRONT_HEADER`) gets the header, and `graft-front` takes it off
     // the client's response, so no client response changes.

@@ -240,6 +240,50 @@ fn held_body<G: 'static>(
 }
 /// A member measures again only on a day it served a request and has not measured yet.
 const DAY_MS: u64 = 86_400_000;
+
+/// Whether the daily near check measures now: a client call reached this member within DRAIN_IDLE_MS (`client_at`,
+/// 0 in an isolate no client call reached), and it has no rows or one is a day old.
+fn near_due(now: u64, client_at: u64, rows: &[(SiteId, graftyard_types::Rtt)]) -> bool {
+    now.saturating_sub(client_at) < crate::host::DRAIN_IDLE_MS
+        && (rows.is_empty() || rows.iter().any(|r| now.saturating_sub(r.1.at.0) >= DAY_MS))
+}
+
+/// What the daily near check does with a fresh measurement.
+#[derive(Debug, PartialEq, Eq)]
+enum NearStep {
+    /// The home is within `NEAR_RECHECK`: any note is cleared.
+    Clear,
+    /// Over it for the first time: noted, nothing moves.
+    Note,
+    /// Over it again with the note under a day old.
+    Wait,
+    /// Over it on two measurements a day or more apart: the nearest voter is re-placed.
+    Replace,
+}
+
+/// The daily near check's step from the home's rows (`rows`), its voters, and when it was first noted over the bound
+/// (`since`): the bound is `NEAR_RECHECK`, not `NEAR_RTT`, so a pair inside its own spread never moves a member.
+fn near_next(
+    sites: &graftyard_types::SiteTable,
+    rows: &[(SiteId, graftyard_types::Rtt)],
+    voters: &[graftyard_types::Member],
+    home: SiteId,
+    since: Option<u64>,
+    now: u64,
+) -> NearStep {
+    let checks = graftyard_types::PlacementChecks {
+        sites,
+        separate_accounts: false,
+        rtt: rows,
+        near: graftyard_types::NEAR_RECHECK,
+    };
+    match (checks.check_near(voters, home).is_err(), since) {
+        (false, _) => NearStep::Clear,
+        (true, None) => NearStep::Note,
+        (true, Some(t)) if now.saturating_sub(t) >= DAY_MS => NearStep::Replace,
+        (true, Some(_)) => NearStep::Wait,
+    }
+}
 /// How long the daily near check's marker holds off another check: past PLACE_TRIES re-placements.
 const NEAR_CHECK_FOR: u64 = 600_000;
 
@@ -613,6 +657,10 @@ impl<F: Family> Routes<F> {
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
         // A peer's `/raft` call or an edge's request carries its sender's clock (`crate::clock`).
         self.host.stamped(req.headers().get(crate::clock::STAMP).ok().flatten());
+        // An edge's call for a client: the daily near check runs only after one (`near_due`).
+        if req.headers().has(graftyard_lookup::CLIENT_CALL)? {
+            self.host.client_at.set(now_ms());
+        }
         #[cfg(feature = "test-faults")]
         self.host.hop.set(req.headers().get("x-graft-hop").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(2));
         // Inside an injected `down_ms` window the member answers no Raft or edge call; the harness reads still work.
@@ -1988,11 +2036,12 @@ impl<F: Family> Routes<F> {
         Ok(())
     }
 
-    /// The daily near check (`design/DESIGN.md`, "Placement is checked by latency"), on the leader's alarm, which
-    /// runs only while the leader serves, so it never wakes an idle group. A leader on its group's home whose rows
-    /// are a day old measures the other voters again; a home over `NEAR_RTT` is noted (`near_over`), and over again
-    /// at the next day's measurement it re-places the nearest voter (`place_inner`). A home back under the bound
-    /// clears the note.
+    /// The daily near check (`design/DESIGN.md`, "Placement is checked by latency"), on the leader's alarm, while a
+    /// client call reached this member in the last DRAIN_IDLE_MS (`near_due`): a cron, audit, sweep, or peer call
+    /// keeps the alarm running but never starts a check. A leader on its group's home whose rows are a day old measures
+    /// the other voters again and reads them against `NEAR_RECHECK` (`near_next`): a home over it is noted
+    /// (`near_over`), and over it again at a measurement a day or more later re-places the nearest voter
+    /// (`place_inner`, which still aims for `NEAR_RTT`). A home within it clears the note.
     async fn recheck(&self) -> Result<()> {
         let (me, cfg) = {
             let core = self.host.core.borrow();
@@ -2005,7 +2054,7 @@ impl<F: Family> Routes<F> {
         }
         let now = now_ms();
         let rows = rtt_rows(&self.host.state, &self.host.env)?;
-        if !rows.is_empty() && rows.iter().all(|r| now.saturating_sub(r.1.at.0) < DAY_MS) {
+        if !near_due(now, self.host.client_at.get(), &rows) {
             return Ok(());
         }
         // One check at a time: the alarm fires again while this one measures. The marker is read and written with no
@@ -2027,29 +2076,22 @@ impl<F: Family> Routes<F> {
             self.store_rtt(v.site, ms?, now)?;
         }
         let rows = rtt_rows(&self.host.state, &self.host.env)?;
-        let checks = graftyard_types::PlacementChecks {
-            sites: &site.sites,
-            separate_accounts: false,
-            rtt: &rows,
-            near: graftyard_types::NEAR_RTT,
-        };
-        let over = checks.check_near(p.voters(), me).is_err();
         let since: Option<u64> = host::rows(&sql, "SELECT v FROM me WHERE k = 'near_over'", vec![])?
             .first()
             .and_then(|r| host::text(&r[0]).ok().and_then(|t| t.parse().ok()));
-        match (over, since) {
-            (false, _) => {
+        match near_next(&site.sites, &rows, p.voters(), me, since, now) {
+            NearStep::Clear => {
                 sql.exec("DELETE FROM me WHERE k = 'near_over'", None)?;
             }
-            (true, None) => {
+            NearStep::Note => {
                 sql.exec("INSERT OR REPLACE INTO me (k, v) VALUES ('near_over', ?)", vec![now.to_string().into()])?;
             }
-            (true, Some(t)) if now.saturating_sub(t) >= DAY_MS => {
+            NearStep::Replace => {
                 sql.exec("DELETE FROM me WHERE k = 'near_over'", None)?;
                 let r = self.place_inner(graftyard_types::NEAR_RTT).await?;
                 console_log!("daily near check re-placed: {r:?}");
             }
-            (true, Some(_)) => {}
+            NearStep::Wait => {}
         }
         sql.exec("DELETE FROM me WHERE k = 'near_check'", None)?;
         Ok(())
@@ -2932,9 +2974,66 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_kind, read_wait, site_field,
+        DAY_MS, Gate, HEAVY_READS, InFlight, NearStep, READS_MAX, gate, heavy_read, near_due, near_next, percentiles,
+        read_kind, read_wait, site_field,
     };
     use crate::host;
+
+    /// The daily near check moves a member only on readings past the pair's own spread, twice a day apart: an enam
+    /// home's weur follower at 131 ms, the top of what re-placed healthy groups on 2026-11-16 read, never moves; one at
+    /// 151 ms is noted, waits under a day, and moves at a day; 150 itself is within; an apac home takes its own bound,
+    /// and a nearer far voter decides. The check starts only after a client call in the last minute.
+    #[test]
+    fn the_daily_near_check_moves_only_past_the_spread_and_only_after_a_client_call() {
+        use graftyard_types::{
+            ChainId, DbId, Member, MemberKind, Region, RepoId, Rtt, Site, SiteLink, SiteTable, Timestamp,
+        };
+        let site = |id: u8, region| Site {
+            id: SiteId(id),
+            script: String::new(),
+            account: String::new(),
+            region,
+            jurisdiction: None,
+            bucket: String::new(),
+            release: None,
+            link: SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        let sites = SiteTable(vec![site(0, Region::Enam), site(1, Region::Weur), site(2, Region::Apac)]);
+        let chain = ChainId::Repo(RepoId(DbId(65549)));
+        let voters: Vec<Member> = (0..3).map(|s| Member::new(chain, SiteId(s), MemberKind::Full, s, 1)).collect();
+        let now = 10 * DAY_MS;
+        let rows = |home: u8, a: (u8, u16), b: (u8, u16)| {
+            [a, b]
+                .map(|(peer, ms)| (SiteId(home), Rtt { peer: SiteId(peer), median_ms: ms, at: Timestamp(now) }))
+                .to_vec()
+        };
+        let step = |r: &[(SiteId, Rtt)], home: u8, since| near_next(&sites, r, &voters, SiteId(home), since, now);
+
+        let healthy = rows(0, (1, 131), (2, 198));
+        assert_eq!(step(&healthy, 0, None), NearStep::Clear);
+        assert_eq!(step(&healthy, 0, Some(now - DAY_MS)), NearStep::Clear, "a note clears once within the spread");
+        assert_eq!(step(&rows(0, (1, 150), (2, 198)), 0, Some(now - DAY_MS)), NearStep::Clear);
+        let far = rows(0, (1, 151), (2, 198));
+        assert_eq!(step(&far, 0, None), NearStep::Note);
+        assert_eq!(step(&far, 0, Some(now - DAY_MS + 1)), NearStep::Wait);
+        assert_eq!(step(&far, 0, Some(now - DAY_MS)), NearStep::Replace);
+        // A nearer voter on the far site still counts as near.
+        assert_eq!(step(&rows(0, (1, 151), (2, 140)), 0, Some(now - DAY_MS)), NearStep::Clear);
+        // An apac home: 260 is inside B0-12's p99 enam to apac pair, 298 is past half again over 198.
+        assert_eq!(step(&rows(2, (0, 260), (1, 300)), 2, Some(now - DAY_MS)), NearStep::Clear);
+        assert_eq!(step(&rows(2, (0, 298), (1, 300)), 2, Some(now - DAY_MS)), NearStep::Replace);
+
+        let old = rows(0, (1, 100), (2, 198))
+            .into_iter()
+            .map(|(s, r)| (s, Rtt { at: Timestamp(0), ..r }))
+            .collect::<Vec<_>>();
+        assert!(near_due(now, now - 1_000, &old), "a client call a second ago, rows a day old");
+        assert!(near_due(now, now - 1_000, &[]), "no rows yet");
+        assert!(!near_due(now, 0, &old), "only internal calls since the isolate started");
+        assert!(!near_due(now, now - crate::host::DRAIN_IDLE_MS, &old), "the last client call a minute ago");
+        assert!(!near_due(now, now - 1_000, &healthy), "rows measured today");
+    }
 
     /// A member is removed once its latest committed config no longer names it: a replaced voter (B0-32 m3fr2's
     /// `#1#f1` after its site's `#2#f1` joined), and a `Degraded` config's lost voter. Its replacement, the other

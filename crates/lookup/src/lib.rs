@@ -29,6 +29,10 @@ pub const LOOKUP_FOR: Duration = Duration::from_secs(20);
 pub const MEMBER_CLOCK: &str = "x-graft-clock";
 /// One call's deadline.
 pub const CALL: Duration = Duration::from_millis(3_500);
+/// The header on a call an edge makes for a client: the member counts it as served for the daily near check
+/// (`workers/site/src/member.rs`, `near_due`); a site's own calls (cron, fold audit, sweep, a peer's lookup) never carry
+/// it.
+pub const CLIENT_CALL: &str = "x-graft-client";
 
 /// The install's sites and the bindings that reach their classes.
 pub struct Bindings<'a> {
@@ -91,6 +95,7 @@ struct Known {
 thread_local! {
     static KNOWN: RefCell<HashMap<ChainId, Known>> = RefCell::new(HashMap::new());
     static COLO: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static CLIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Per isolate: each learner's answer times to `read_spread` as this isolate saw them (`Timed`).
     static ANSWER_MS: RefCell<HashMap<(SiteId, String), Timed>> = RefCell::new(HashMap::new());
 }
@@ -98,6 +103,23 @@ thread_local! {
 /// The colo this isolate's `suspect` reports from `call_opt` carry; an edge sets it per request.
 pub fn set_colo(colo: u32) {
     COLO.with(|c| c.set(colo));
+}
+
+/// Marks this isolate's member calls as made for a client (`CLIENT_CALL`); an edge sets it, a site script never does.
+pub fn set_client() {
+    CLIENT.with(|c| c.set(true));
+}
+
+/// A member call's headers: the sender's clock, and `CLIENT_CALL` from an edge.
+fn call_headers() -> Option<Headers> {
+    // The sender's clock: a member raises its own clock to the freshest stamp it sees (`MEMBER_CLOCK`). Edge
+    // isolates are many and rarely saturated, so theirs stay fresh when every member is busy.
+    let h = Headers::new();
+    h.set(MEMBER_CLOCK, &now_ms().to_string()).ok()?;
+    if CLIENT.with(|c| c.get()) {
+        h.set(CLIENT_CALL, "1").ok()?;
+    }
+    Some(h)
 }
 
 /// Which step of the rule found the group.
@@ -206,11 +228,7 @@ pub async fn post_within(
     let stub = b.member(to, do_name).ok()?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
-    // The sender's clock: a member raises its own clock to the freshest stamp it sees (`MEMBER_CLOCK`). Edge
-    // isolates are many and rarely saturated, so theirs stay fresh when every member is busy.
-    let h = Headers::new();
-    h.set(MEMBER_CLOCK, &now_ms().to_string()).ok()?;
-    init.with_headers(h);
+    init.with_headers(call_headers()?);
     let req = Request::new_with_init(&format!("https://member{path}"), &init).ok()?;
     let call = async move {
         let mut res = stub.fetch_with_request(req).await.ok()?;
@@ -227,9 +245,7 @@ async fn post_join(b: &Bindings<'_>, to: SiteId, do_name: &str, body: &[u8]) -> 
     let stub = b.member(to, do_name).ok()?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
-    let h = Headers::new();
-    h.set(MEMBER_CLOCK, &now_ms().to_string()).ok()?;
-    init.with_headers(h);
+    init.with_headers(call_headers()?);
     let req = Request::new_with_init("https://member/join", &init).ok()?;
     let call = async move {
         let mut res = stub.fetch_with_request(req).await.ok()?;

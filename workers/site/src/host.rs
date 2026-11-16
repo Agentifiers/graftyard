@@ -104,7 +104,7 @@ pub fn fold_answer<F: Family>(fold: &F::Fold, q: &Value, floor: u64, now: u64, e
 const TICK: Duration = Duration::from_millis(100);
 const ACTIVE_FOR_MS: u64 = 3_000;
 const DRAIN_CHECK_MS: i64 = 2_000;
-const DRAIN_IDLE_MS: u64 = 60_000;
+pub const DRAIN_IDLE_MS: u64 = 60_000;
 /// Restore compares the fold loaded from its tables with the log replayed through `applied`, while at most this many
 /// entries are applied. Longer logs skip it: replaying them would hold every request row the log ever carried.
 const RESTORE_CHECK_MAX: u64 = 20_000;
@@ -1015,6 +1015,10 @@ pub struct Host<F: Family> {
     active_until: Cell<u64>,
     alarm_at: Cell<u64>,
     served_at: Cell<u64>,
+    /// When this member last took a call an edge made for a client (`graftyard_lookup::CLIENT_CALL`); 0 in a fresh
+    /// isolate. The daily near check runs only within DRAIN_IDLE_MS of it, so a cron, audit, sweep, or peer call never
+    /// starts one.
+    pub client_at: Cell<u64>,
     /// While this voter has leader-only work and hears no leader: when it first found so, and when it last acted
     /// (`keep_led`); (0, 0) otherwise.
     unheard: Cell<(u64, u64)>,
@@ -1790,6 +1794,7 @@ impl<F: Family> Host<F> {
             active_until: Cell::new(0),
             alarm_at: Cell::new(0),
             served_at: Cell::new(0),
+            client_at: Cell::new(0),
             unheard: Cell::new((0, 0)),
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
