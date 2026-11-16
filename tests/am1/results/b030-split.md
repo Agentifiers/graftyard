@@ -1132,6 +1132,48 @@ Approved by the user (about $185, relayed by the operator 13:40Z). b030-fixes me
 - **hourly.py fix.** Main's receipt rule puts `record=` before `tipsn` in a push validate's URL, so the old
   `validate?repo=N&tipsn` filter matched none (18:00Z's row reads 0). It now matches on `tipsn=` anywhere.
 
+### Third run stopped by the operator (2026-11-16 20:13Z, account over budget)
+
+The operator stopped all hosted work: the account's bill for Oct 27 to Nov 16 is $2,328 against an $800 budget
+($1,349 containers, $804 DO rows written). The third run ends at simulated day 1.2 with no verdict.
+
+- **Stopped at 20:13:23Z.** `b030-STOP` was written and the services stopped: load, drain, cross, watch, monitor,
+  seed and siteday. The watch schedule is paused. At the stop the run's meter read $5.55 (DO and Workers $4.4, plus
+  containers). The group was healthy: SQLite 6.30 / 6.30 / 6.34 GB, log 1.97 to 2.04 GB, archivedTo 7,880,
+  `SQLITE_FULL` 0 (`tests/am1/raw/b030r3-final.jsonl`).
+- **Containers.** `teardown.py --sweep` (`INSTALL=graft-m1`, pools included) tore down `git#0` and `git#1` of
+  net:1048591, both standard-4 (200 each). At 20:14:12Z the Containers API listed 0 running across all 8 graft-m1
+  apps (site-a to d, lin-a to c, wp6-bed), and 0 again at 20:15:40Z, 20:22:13Z and 20:26:09Z. graft-m1 has no
+  Sandbox or runner app.
+- **Retired with `/retire`** (`tests/am1/b030split/retire-r3.mjs`, log `tests/am1/raw/b030-retire-r3.log`), every
+  member answering "not joined" after:
+  - 20:16:48Z: `repo:1048591` (`#1#f0`, `#1#f1`, `#1#f2`). It had no child group yet.
+  - 20:25:53Z, B0-30's earlier test groups, still joined and idle: `repo:1048585` (3), and `repo:` and
+    `repo-meta:` for 1048587 (smoke 2), 1048588 (smoke 3's first try) and 1048589 (smoke 3), 18 more. That is 21
+    in all. 1048586 and 1048590 were already retired.
+- **Still joined, not retired.** Every other group on graft-m1 belongs to earlier AM1 work, not B0-30: site a homes
+  148 repository chains. The fold audit (`*/15`, 4 chains a run, `GRAFTYARD_AUDIT=1` since site day 9) reads one chain
+  a quarter-hour and fails with a 404 on its f2 member (repo:489004 to 489007). It writes about 10 rows a run.
+- **What was writing [measured, `durableObjectsPeriodicGroups` by namespace, every graft-m1 namespace].**
+
+  | Window | Rows written an hour | DO-hours an hour | What |
+  |---|---|---|---|
+  | 12:00 to 16:00Z | about 4,200 | 1.5 | idle: 669 objects, at most 152 rows each in 4 h |
+  | 17:00Z | 11.1 M | 2.5 | the seed's 1.34 M rows of 1,800 B on three members |
+  | 19:00 to 20:00Z | 1.55 M | 21.3 | the load: three members of repo:1048591 |
+  | 20:15 to 20:30Z | 37,600 (9,395 a quarter) | 2.0 | after the stop and the first retire |
+
+  - graft-m1 wrote 92.5 M rows ($92.54) and 318.4 DO-hours from 2026-11-15 20:00Z to 2026-11-16 20:00Z. Nearly all is
+    the B0-30 runs: the second run's load and split (2.4 to 2.7 M an hour, 22 DO-hours an hour, through 07:00Z), site
+    c's install (10.1 M at 08:00Z, 5.0 M at 10:00Z, 3.7 M at 11:00Z), the third run's seed and load. When no run was
+    going (12:00 to 16:00Z), it wrote about 4,200 rows and 1.5 DO-hours an hour.
+- **The run meters undercount.** graft-m1 wrote 419.7 M DO rows from Nov 1 to 16 ($419.71), and its containers
+  billed $852.62 from Oct 27 (the leak, Nov 6 to 13, $802). B0-30's meter counted only the run's own objects
+  (`objects.py` from Workers Logs) and its own network's containers. The second run's meter read $118.95 of DO and
+  Workers at 10:39Z, with 117.3 M rows counted, against 154.2 M rows for all graft-m1 namespaces in the same
+  window (2026-11-14 09:46Z to 2026-11-16 11:44Z). So objects the logs did not name, such as smoke groups and earlier generations, were off the
+  meter.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
