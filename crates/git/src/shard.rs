@@ -532,6 +532,24 @@ pub enum Caller {
     /// container, since a pool shard nobody started never becomes warm, but is not a request, so it keeps none warm
     /// past its lease; the ledger tears the slot down when the lease is given up (`PoolLedger::beat`).
     PoolWarm,
+    /// A due range's archive promotion (`warm=start` on its `/promote`, `/validate` and `/idx`): it starts a stopped
+    /// shard, since the log cannot archive past the range otherwise, but is no client's request, so it keeps none warm.
+    /// A shard with no client in `WARM_FOR` lapses `PROMOTE_LAPSE` after its last such call (`promote_lapse`).
+    Start,
+}
+
+/// How long a shard that only a due range's promotion runs stays up after that promotion's last call [guess]: long
+/// enough for the drain run's next promotion, minutes apart, to find it running. Held as a `Caller::Client`, each such
+/// start kept a quiet group's container a day: 131330's due range started five on idle `graft-m2b`
+/// (`tests/am1/results/lm1-memory.md`, round 34).
+pub const PROMOTE_LAPSE: Duration = Duration::from_secs(600);
+
+/// The inactivity timeout to set once a call has been served, if it changes: `PROMOTE_LAPSE` after a `Caller::Start`
+/// call on a shard whose last client request (`last_request`) is `WARM_FOR` old or older, or that never had one; a
+/// client's later request touches the shard, which sets `INACTIVITY` again (`ShardHost::touch`).
+pub fn promote_lapse(caller: Caller, now: Timestamp, last_request: Option<Timestamp>) -> Option<Duration> {
+    let idle = last_request.is_none_or(|l| renewal(now, l) == Renewal::Lapse);
+    (caller == Caller::Start && idle).then_some(PROMOTE_LAPSE)
 }
 
 /// What the shard object does with a call, given whether its container runs.
@@ -552,6 +570,7 @@ pub enum Serve {
 pub fn caller(path: &str, warm: Option<&str>) -> Caller {
     match warm {
         Some("pool") if path == "/catchup" => Caller::PoolWarm,
+        Some("start") => Caller::Start,
         Some(_) => Caller::Warm,
         None => Caller::Client,
     }
@@ -562,7 +581,7 @@ pub fn serve(caller: Caller, running: bool) -> Serve {
         Caller::Client => Serve::Run { touch: true },
         Caller::Warm if running => Serve::Run { touch: false },
         Caller::Warm => Serve::Skip,
-        Caller::PoolWarm => Serve::Run { touch: false },
+        Caller::PoolWarm | Caller::Start => Serve::Run { touch: false },
     }
 }
 

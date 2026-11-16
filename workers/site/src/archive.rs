@@ -518,7 +518,8 @@ async fn shard_call(
         .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", at.0, repo.0.0), region.hint()))
         .map_err(|e| fail(e.to_string()))?;
     let rec = serde_json::to_string(&p.record).map_err(|e| fail(e.to_string()))?;
-    let warm = if p.warm { "warm=1&" } else { "" };
+    // A due range's promotion starts a stopped shard but is no client's request (`git::Caller::Start`).
+    let warm = if p.warm { "warm=1&" } else { "warm=start&" };
     let url = format!("https://shard{path}{warm}repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(body);

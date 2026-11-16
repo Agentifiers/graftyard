@@ -837,6 +837,7 @@ impl DurableObject for GitShard {
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record };
         // A new leadership's `warm` (`crate::prsync`) and promote-ahead's calls (`crate::archive`) are the callers no
         // client asked for: they run on a running shard, start no stopped one, and never count as its last request.
+        // A due range's promotion (`warm=start`) starts one but is no request either, and on a quiet shard it lapses.
         // The network leader's warm of a pool slot its network holds (`warm=pool`, `crate::fanout`) starts a stopped
         // container: a pool shard nobody started never becomes warm.
         let caller = graftyard_git::caller(&path, q(&url, "warm").as_deref());
@@ -854,7 +855,17 @@ impl DurableObject for GitShard {
                     self.rearm_beat().await?;
                 }
             }
-            Serve::Run { touch: false } => {}
+            Serve::Run { touch: false } => {
+                // A due range's promotion started or found a shard no client used in `WARM_FOR`: it stops
+                // `PROMOTE_LAPSE` after this call, not after the 6 h a start sets (`graftyard_git::promote_lapse`).
+                let last: Option<u64> = self.state.storage().get("last_request").await?;
+                if let Some(d) = graftyard_git::promote_lapse(caller, Timestamp(now_ms()), last.map(Timestamp)) {
+                    if !running {
+                        host.up().await.map_err(se)?;
+                    }
+                    host.set_inactivity(d.as_millis() as u64).await.map_err(se)?;
+                }
+            }
         }
         // Every catch-up runs in the background on this object (`Jobs`), so one a caller stops waiting for goes on,
         // saving each page, and the next caller finds the shard warmer. Requests that arrive while one runs share the
