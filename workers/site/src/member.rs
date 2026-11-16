@@ -1660,6 +1660,9 @@ impl<F: Family> Routes<F> {
                 "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot, "pressure": a.pressure,
                 "retryAfterS": a.retry_after_s,
             })),
+            // L0-12's drain wait (`tests/fanout/drain.mjs`): the reads this member still serves, here as well as in
+            // `/stats`, whose full form serialized megabytes on a loaded leader.
+            "readsInFlight": self.host.reads_in_flight.get(),
             "now": self.host.now(),
         })
     }
