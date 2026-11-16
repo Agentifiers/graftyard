@@ -830,6 +830,143 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
     commit index.
 - Nothing hosted was changed. The monitor, cross, watch and restore samplers keep reading.
 
+## B0-30 rerun: verdict (operator decision (b), 2026-11-16 about 09:30Z)
+
+**The row fails.** The parent group stopped committing at simulated day 25.83 and cannot reach day 30 without an
+operator stepping in. Its member SQLite on site c passed `CHILD_GROUP_AT`, because its install was loading back the
+metadata tier the child group had taken.
+
+Options (a) and (c) would also have been an operator stepping in during a gate row, so a pass after either would not
+be a pass as written. Nothing hosted was changed after the stall.
+
+| Gate line | Result |
+|---|---|
+| Member SQLite under `CHILD_GROUP_AT` (8 GiB, 8,589,934,592 B) | **Fails.** Site c's parent member passed it at about 09:43Z and stood at 10,184,200,192 B (9.48 GiB) at 10:44:47Z, still growing. Sites a and b: 5,346,017,280 and 5,277,802,496 B. The child: 3,836,465,152 B on each of three members |
+| Zero `SQLITE_FULL` | Held to the end: 0 on all six members, in the monitor's log search and in Workers Logs to 10:46Z. Site c did not reach the store's limit by the 10:45Z cutoff, so its behaviour at full was not observed |
+| Archived entries readable for `RestoredTo` | Not judged: `verify.mjs` was not run, because the group cannot commit. Site c's install had not reached the source's 6,381 archive objects (still on the metadata snapshot, entries 0) |
+| A child group takes the tier past the line | Held for the group as a whole: split at day 19.5, child loaded on all three, parent dropped. Site c's member then pulled the tier back in (cause 1) |
+
+### Cause 1: a parent install reloads the metadata tier the child holds
+
+- Site c fell behind the leader's archive horizon at about 08:00Z.
+- Its `InstallSnapshot` source (`load::source`) names the newest metadata snapshot at or below `through`. After
+  `MetaDropped`, that is the parent's pre-split snapshot to 159,387 (3,249,617,556 B). So the install loads the whole
+  tier into scratch tables beside the member's own 5.7 GB.
+- The install restarted five times between 08:00 and 08:14Z, once at each new leader `truncatedTo` (a new source starts
+  a new job).
+- After the parent stalled, the source held still and the job ran without a restart from 08:13Z: 1,517 batches and
+  2.74 GB of the 3.25 GB snapshot by 10:43Z, at about 15 MB a minute. Site c's SQLite grew 25 to 30 MB a minute.
+
+### Cause 2: a re-placement's `Degraded { lost: 1 }` cannot commit while site c installs
+
+- **Entry 208,160 is `Degraded { lost: 1 }` [measured].**
+  - No route returns an entry's body, so I rebuilt its canonical bytes (`crates/raft/src/encode.rs`) for 196
+    candidates. The candidates were `Normal` and `Degraded { lost: 0, 1, 2 }`, with f1 at generations 5 to 11 and the
+    placement generation at 5 to 11, all at term 153, index 208,160, `at` 1794816842248, `prev` 7de84e60….
+  - Exactly one matched the stored digest `7c6d197d…`: `Degraded { lost: 1 }` over the generation-5 placement (a #1,
+    b #5, c #1).
+- **Why it cannot commit.** `quorum::stored` for `Degraded` needs every voter but the lost one, so sites a and c. Site
+  c has been installing since 08:00Z and acks nothing until its install finishes. Every later entry (no-ops of terms
+  154 and 155; site a's log reached 212,292 by 10:45Z) waits behind it.
+  - Site b's log ends at 208,169. It sees no leader and asks for pre-votes at term 156, which site a refuses as
+    leader.
+- **Who wrote it [measured, apart from the trigger].** It was the background `/place` that the edge's
+  `graftyard_lookup::create` starts:
+  - site a: `/join` twice at 08:13:51Z (71 and 34 ms) and `/campaign` at 08:14:01Z;
+  - all three members re-measured round trips from 08:13:52 to 08:14:04Z (about 100 `/ping`s from site a). Site c
+    stored 290 and 292 ms;
+  - `Degraded` was appended at 08:14:02.248Z;
+  - a second `create` came at 08:14:24 to 08:14:27Z (`/join`, `/campaign`, `/place`, and the `/place` call on site a
+    ran 19.7 s).
+  - The home's stored rtt to site b is 123 ms, over `NEAR_RTT`'s 100 ms for enam, so `place_inner` re-placed site b
+    through `replace_on`, which commits `Degraded` first.
+  - The tries `#6#f1` to `#9#f1` answer `/rtt` with `[]` (joined, then cleared). `#9#f1` is generation 5 + 4.
+  - `replace_on`'s `change(Normal)` waits 20 s for the `Degraded` entry, then fails. It logs nothing on that path, so
+    the end of the placement is not in Workers Logs.
+  - That a lookup found no leader in the leaderless seconds around 08:14Z, and so ran `create`, is [inference]: a
+    `create` runs only when its probe `/read` answers no leader.
+- **The `#9#f1` 409s.** The shard's catch-up and prsync to site b named `repo:1048590#9#f1` and got 409 (not joined)
+  from 08:11:33Z, 2.5 minutes before this placement.
+  - That fits registry-restore's finding (`b365051f`, merged to main in `34253d49`, after this run's deploy): an
+    earlier placement's losing try left site b's registry row naming `#9#f1`. I found no log of that earlier placement
+    in the windows I read, so it stays [inference].
+  - Registry-restore fixes the row. It does not stop a re-placement from committing `Degraded` while a member
+    installs.
+
+### Site c at the cutoff (10:45Z)
+
+- Applied 199,808, `installing` true, its one install job still running (no restart, no `abandoned`, no `install
+  failed` in Workers Logs, 09:30 to 10:46Z).
+- It answered its `/raft` calls (100 in 10:40 to 10:45Z, all ok) and was out of the quorum as an acker, as an
+  installing member is.
+- Nothing committed was lost: sites a and b hold commit 208,159, and site a's log keeps every uncommitted entry.
+- `SQLITE_FULL` never came: at 10.18 GB the store still took writes, so the limit is at least 10 GiB on this account.
+  The member's behaviour at full is not measured.
+
+### Run totals
+
+- Simulated day 25.827 of 30. 162,457 pushes; 29,279 owed and not pushed (the drain carried none).
+- StepDowns counted to 06:10Z: 901 `CommitErrors`, 16 `LoopLag`, 14 `Confirm`, 8 handovers. Not counted after
+  06:10Z. Longest leaderless gap 13 s over 52 gaps.
+- Tree changes at days 1.82, 1.905 and 2.005; the pause at day 14.916 (16:16:23Z to 16:36:01Z); the stops at day 17.62
+  (cost, then site day 9) and day 25.83 (this stall); the drain carried 0.
+- Spend on the meter: $139.70 at 10:39Z, of which the split $42.85 and the slim $13.38. That is under the $145 hard
+  stop and the $225 line.
+- Wrap-up: services stopped at 10:46Z.
+  - `shards.py --teardown` tore down the network's three shard containers twice (200 each).
+  - Each time, site a's leader's archive `/promote` (about every 2 min, `leader_due`) started them again within a
+    minute, and its catch-up then failed on `#9#f1: 409`. The containers keep coming back while that leader runs.
+  - The install stays standing as asked, so stopping them for good needs a hosted change (retire the group, or a site
+    script whose stalled leader does not promote).
+
+### Design proposals (not built)
+
+1. **After `MetaDropped`, a parent's install source names no metadata snapshot.**
+   - `InstallSnapshot.metadata` is already an `Option`. `load::source` sets it to `None` once the fold's split state
+     is `dropped`.
+   - The installing member keeps the metadata tables at their slim shape, empty, with `RestoredTo` and the split
+     state from the core snapshot's fold. Reads fill slimmed text from the child, as they do on every parent member.
+   - Between `MetaSeed` and `MetaDropped`, the parent still names its metadata snapshot, since the child may not
+     hold the tier yet.
+   - **Test:** a member that falls behind after `MetaDropped` installs with no metadata snapshot read, ends under its
+     pre-install size, and answers a slimmed comment's body from the child. A plant that keeps `metadata: Some(..)`
+     fails on the bytes read.
+   - **Design:** DESIGN Shape (`InstallSnapshot`, `MetaDropped`); the split's install case is not written today, so
+     this is a gap, not a contradiction.
+2. **A re-placement must not leave the group unable to commit.**
+   - `replace_on` commits `Degraded { lost: to }`, whose quorum is every other voter. With a voter installing or
+     behind, that is a config no quorum can store. Two changes, either sufficient:
+     - (a) `replace_on` and `place_inner` refuse to start, and the daily check skips, while any voter other than `to`
+       is not matched within `CATCHUP_MAX` of the leader's last index or is past the install source's `through`. A
+       re-placement is a goal, not an emergency, so waiting costs nothing.
+     - (b) If a `Degraded` entry has not committed within `CALL_DEADLINE`'s multiple that `change` waits (20 s), the
+       leader truncates it from its uncommitted tail and goes back to `Normal`. Raft lets a leader drop its own
+       uncommitted config only by a new leader overwriting it, so (b) is a `crates/raft` change that needs the long
+       sweep and Porcupine. (a) needs neither.
+   - **Tie to `NEAR_RTT` during a leaderless gap:** the trigger was the edge's lookup `create` running in leaderless
+     seconds on a group that already exists. It re-ran `/place`, which re-placed a member already over `NEAR_RTT`
+     (123 ms) on a 25-day-old group under load.
+     - `create` should start `/place` only for a group it bootstrapped in this call (`joined * 2 > members.len()`
+       from its own `/join`s), not when the joins answered "already joined".
+     - A group the daily check already judged keeps its `near_over` rule.
+   - **Test:** a hosted-shaped sim with one voter installing, then `/place`. With (a), no config entry; on the
+     current code, a stall.
+3. **Registry-restore and `#9#f1`.**
+   - Registry-restore (`b365051f`) puts the kept member's row back after a re-placement, so the shard and edge would
+     no longer call `#9#f1`. That covers the 409s from 08:11:33Z, if they came from an earlier placement's losing
+     try, as its LM-1 round 29 case did.
+   - It does not cover cause 2: the row is written only when `replace_on` ends, and here `replace_on` never got past
+     its `Degraded` commit.
+   - With proposal 2(a) the placement would not have started.
+
+### A full B0-30 rerun
+
+- At this run's rates: about $140 to day 25.8 including the split's $42.85, plus about 4.2 simulated days at $2.29 an
+  hour (about 13 h) and an 11 to 12 h drain. project.py's last full projection was $181.7.
+- So about **$180 to $185**, plus one site day carrying proposals 1 and 2 (and main's registry-restore, edge
+  read-gate retry and disk-validate).
+- About 40 h of load and 12 h of drain.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
