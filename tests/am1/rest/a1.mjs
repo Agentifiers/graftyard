@@ -472,7 +472,10 @@ async function push(tok, ref, from, path, bytes, extra = {}) {
 // push-reads: a test edge's `server-timing` on every push (resolve, auth, install, gate, context, validate, admission,
 // commit, stage, total), each stage's ms by name, plus how many commits ran the create probe (`probe`) and how many
 // pushes staged before their first commit (`stagefirst`).
-const pushStages = {}; const pushMarks = { timed: 0, probed: 0, stagedFirst: 0, commits: 0 };
+// receipt-rule: each commit's `/commit` sends (`send`), receipts missed while the member was busy and so neither
+// resent at once nor reported (`busy`), `/outcome_by_request` asks while a send was open (`ask`), other missed
+// receipts (`missed`), and `suspect` reports, one entry each.
+const pushStages = {}; const pushMarks = { timed: 0, probed: 0, stagedFirst: 0, commits: 0, send: 0, busy: 0, ask: 0, missed: 0, suspect: 0 };
 function notePushTiming(h, res) {
   if (!h) return;
   pushMarks.timed++;
@@ -482,6 +485,7 @@ function notePushTiming(h, res) {
     seen[m[1]] = (seen[m[1]] ?? 0) + 1;
   }
   pushMarks.probed += seen.probe ?? 0; pushMarks.stagedFirst += seen.stagefirst ? 1 : 0; pushMarks.commits += seen.commit ?? 0;
+  for (const k of ["send", "busy", "ask", "missed", "suspect"]) pushMarks[k] += seen[k] ?? 0;
 }
 const size = () => plan.packFixed ?? (Math.random() < plan.bigShare ? plan.bigBytes : plan.packMin + Math.floor(Math.random() * (plan.packMax - plan.packMin)));
 
