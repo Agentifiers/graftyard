@@ -778,6 +778,58 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
     under load. I record its start, its duration, the member's lag after, and `SQLITE_FULL`, and report at once if
     the restore fails or loops. Nothing is changed for it.
 
+### Site c crossed, and the parent stopped committing (2026-11-16, simulated day 25.4 to 25.83)
+
+- **The crossing.** Site c's margin reached zero at about 08:00Z (`b030r2-restore.jsonl`). The leader's
+  `truncatedTo` was 199,957 at 08:00:26Z, and site c's applied stopped at 199,808, where it still stands.
+- **The install restarted on every archive run.** From 08:00Z, site c's SQLite climbed and fell back five times, for
+  example 5.70 → 5.95 GB and then 5.70 GB at 08:04:58Z. Each fall came at a new leader `truncatedTo` (200,121,
+  200,519, 200,694, 200,861, 200,984). Each truncation names a new install source, and `load::want` starts a new job
+  for a new source (`workers/site/src/load.rs`, `want`), which drops the scratch tables.
+  - While the load runs, the leader archives every few minutes, and a 3.25 GB load takes hours, so under load this
+    install never finishes [inference from the code and the five restarts].
+  - Since the parent stopped committing at 08:14Z, the source has held still at `through` 200,984. That job has run
+    since about 08:13Z.
+- **The install reloads the metadata tier the parent dropped.** The source is the core snapshot to 200,000 (27.6 MB,
+  loaded) and the parent's last metadata snapshot, to 159,387 (3,249,617,556 bytes). That metadata snapshot predates
+  `MetaDropped`.
+  - `load::source` takes the newest metadata snapshot at or below `through`, split or not. So a parent member that
+    installs after the split loads the whole tier back, into scratch tables beside its own 5.7 GB.
+  - At 09:15Z the job stood at 1.20 of 3.25 GB, loading about 19 MB a minute. Site c's SQLite was 7.85 GB at
+    09:17:33Z and growing 29.8 MB a minute.
+  - At that rate it passes `CHILD_GROUP_AT` (8 GiB) at about 09:42Z and 10 GB, `SQLITE_FULL`, at about 10:29Z,
+    before the load finishes [projection].
+  - This is a gap in the split's design: after `MetaDropped`, the parent's install source should name no metadata
+    snapshot, because the child holds the tier.
+- **The parent has committed nothing since 08:14:02Z.**
+  - Commit and applied stand at 208,159 on sites a and b.
+  - Entry 208,160 is a `Config` entry appended at 08:14:02.248Z in term 153, and it never committed. Terms 154 and 155
+    appended no-ops on top of it, and the term-155 leader (site a) has appended to 209,558.
+  - Site b's log ends at 208,169. Site b has no leader in its view and keeps asking for pre-votes at term 156, which
+    site a refuses as leader (`/elections`). Site c is installing.
+  - Since 08:14Z every push answers 503. The shard's catch-up, warm and prsync calls fail on
+    `repo:1048590#9#f1: 409` (member not joined), and the first of these was at 08:11:33Z. `batchFail` rose from 0 to
+    73 by 08:32Z.
+  - I wrote `b030-STOP` at 08:33:02Z. The load ended at day 25.827 with 162,457 pushes, and the drain ended at once
+    with nothing carried. 29,279 pushes are still owed.
+  - **Cause [inference].** The leader's `/place` re-placed site b's member: `replace_on` commits `Degraded { lost: 1 }`
+    and then joins new members of site 1 (`#6#f1` to `#9#f1`).
+    - The evidence: the placement's join, `/campaign` and `/place` calls on all three sites at 08:13:51 to 08:14:27Z;
+      `/place` on site a at 08:14:22Z; members `#6#f1` to `#9#f1` that answer `{"joined": false}`; and the shard
+      naming `#9#f1`. `rtt` on site a has a → b at 123 ms, over `NEAR_RTT`'s 100 ms.
+    - The `/join`, `/campaign` and `/place` sequence is the edge's `graftyard_lookup::create`. It runs when a lookup
+      finds no leader, which matches the leaderless seconds around 08:14Z.
+    - Under `Degraded { lost: 1 }`, an entry commits only when sites a and c both hold it (`quorum::stored`). Site c is
+      installing, so nothing commits until its install ends, and `SQLITE_FULL` is projected to come first.
+    - I have not read 208,160's body. That it is `Degraded { lost: 1 }` is an inference from the quorum math and the
+      logs.
+    - One fact cuts against this: a prsync call already failed on `#9#f1: 409` at 08:11:33Z, before 208,160 was
+      appended. So `#9#f1` may be a refused try from an earlier placement whose registry row the shard reads. The
+      stall itself is measured; who appended 208,160, and why, is not.
+  - The watcher raised no alert: a leader existed the whole time, and it alerts on a leaderless gap, not on a stalled
+    commit index.
+- Nothing hosted was changed. The monitor, cross, watch and restore samplers keep reading.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
