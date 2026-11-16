@@ -577,6 +577,99 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   site-a member (`6fd8c123…`) in 22:30Z, against about 43,000 every other five minutes; not traced further, since the
   split's rows are a different object and a different cause.
 
+- **The child's restore finished, and the parent dropped (Workers Logs, `tests/am1/raw/b030r2-child.jsonl`).** Each
+  child member logged `split: child restored … 4,949,926 rows, 3,241,503,104 bytes`: site a's member at 00:14:38Z
+  (1,265 s), the other two at 00:27:58Z and 00:28:20Z (1,996 s and 2,179 s). The parent's leader committed
+  `MetaDropped { seed: 157929 }` at index 162,475 at 00:28:58Z, and the slim pass started on table 0 (`issue`).
+  - At 00:56Z all three child members read `childLoaded` true, commit 5, log 674 B, SQLite 3,836,465,152 B each.
+  - The child had no leader at 00:56Z: all three are followers at term 2. That is allowed: a child needs no leader
+    (`split::needs_leader`), and a fill read campaigns. The bodies check at 00:54:55Z, the first one after
+    `MetaDropped`, read 100 of 100 equal. The slim had not yet reached the seeded comments, so the fill path is not
+    exercised yet.
+  - Parent SQLite peaked at 7,556,329,472 B (00:28:55Z), then read 7.360 / 7.299 / 7.386 GB at 00:56Z. The slim's
+    cursor moved from issue key 1,006,532 (00:33:53Z) to 1,049,274 (00:56:59Z). The parent's leader moved to site b at
+    term 60.
+  - `SQLITE_FULL` 0 on all six members at every reading.
+- **The split's cost, measured (`tests/am1/b030split/project.py`, operator, 2026-11-16).** The restore wrote 29.7 M
+  DO rows on the three child objects from 23:45Z to 00:45Z: $29.72 on usage.py with only those objects. One
+  five-minute row on site c's child (`24b734c0…`, 00:10Z) wrote 5.2 M. The old rule added a flat $58 for the split
+  and also took the restore into its run rate, so it counted the restore twice:
+  - At 00:26:26Z it printed `stop: true`: $8.17 an hour, total $316.2. At 00:49:09Z: $12.66 an hour, total $423.6.
+  - I did not stop on these, because the operator had already ordered the measurement fixed. Both lines are in
+    `tests/am1/raw/b030r2-notes.txt`.
+- **The fix, the same kind as the pause window.** The run rate now skips meter intervals that overlap the split: from
+  the first watch row with a child to the slim pass's end.
+  - The split's cost is in the meter as it is spent, so only what is left of it is added. The `splitSoFar` field reports
+    the meter's rise since the last row before the split, less the run rate.
+  - What is left after the restore is the slim. Its estimate, `SLIM_EST_USD` ($18.25), is smoke 1's measured slim on its
+    three parent members (`61f46f63…`, `cfb22d9a…`, `ebda6705…`, 20:22Z to 22:57Z on 2026-11-13: 20.0 M rows, $20.04)
+    scaled from 3.56 GB to this child's 3.24 GB. The slim's spend counts from the first meter row after `MetaDropped`.
+  - If the slim passes its estimate, each reading adds one more hour at the slim's own rate and sets
+    `slimOverEstimate`.
+- **Before and after, on the same data (00:49:09Z):** old rule $12.66 an hour, total $423.6, stop. New rule $2.29 an
+  hour, split so far $29.47, slim left $18.25, total $169.0 against $225, drain 7.6 h, no stop.
+  - The total is $103.43 spent, plus $2.29 an hour over 13.6 h of active time and the 7.6 h drain, plus $18.25.
+  - While the slim runs, the rate comes from the last 3 hours before the split [inference: the rate after the slim
+    should be lower, since the parent is smaller].
+  - Pacing makes the slim slow. Parent members wrote 72,000 to 83,000 rows per five minutes in 00:30 to 00:35Z,
+    against about 42,000 before. If that holds, 4.95 M slimmed rows take about 12 h and cost about $15 [inference].
+- **Holds and archive runs (`tests/am1/b030split/runs.py`, `tests/am1/raw/b030r2-runs.jsonl`).** These are archive
+  runs on the parent's leader, with StepDowns from 15 s before a run to 15 s after it.
+
+  | Window | Runs | Archived a run (mean, range) | Length (mean, range) | Archived MB, all runs | Holds in runs / outside | Holds a run (mean, max) | Pearson holds vs archived / length | Spearman holds vs archived |
+  |---|---|---|---|---|---|---|---|---|
+  | 18:10 to 20:12Z, before the site day | 20 (19 on a, 1 on b) | 450 (68 to 584) | 186 s (24 to 260) | 3,360 | 25 / 1 | 1.25, 3 | 0.16 / 0.15 | −0.03 |
+  | 21:30 to 23:30Z, after it | 20 (all on a) | 571 (194 to 741) | 242 s (84 to 323) | 4,346 | 128 / 1 | 6.4, 11 | 0.11 / 0.11 | 0.03 |
+  | 23:40 to 00:00Z, the F74 ring | 3 | 509 | 235 s | 587 | 40 / 0 | 13.3, 20 | 0.83 / 0.92 (n = 3) | 0.5 |
+
+  - The guess that more entries a run means more holds does not hold within a window: both 20-run windows correlate
+    at 0.16 and 0.11 at most.
+  - Across the site day, holds a run rose about 5 times while entries a run rose 27%. Pooled over both windows the
+    Pearson is 0.42, and that comes from the shift between windows, not from the size of each run.
+  - Nearly every hold is inside an archive run: 153 of 155 in the two windows. So the run itself, or what changed at
+    the site day, is the lead, not its size [inference].
+- **Follower `/raft` legs during runs (F74's `tests/f74/calls.py`, ring 23:42 to 00:00Z on site a's leader).** Out and
+  back are skew-corrected as calls.py does. Rows: `tests/am1/raw/b030r2-calls-*.tsv`.
+
+  | Interval | Calls | Missed 1 s | Largest leg out / back / work | Leader to b: total p50/max, work p50 | Leader to c: total p50/max, work p50 |
+  |---|---|---|---|---|---|
+  | Run 23:44:03Z (284 s) | 3,057 | 424 | 264 / 139 / 11 | 369 / 3,204, 102 ms | 573 / 2,897, 178 ms |
+  | Run 23:51:35Z (320 s) | 3,742 | 695 | 358 / 307 / 21 | 401 / 2,859, 88 ms | 585 / 3,417, 193 ms |
+  | Between them, 23:48:47 to 23:51:35Z | 1,911 | 58 | 51 / 6 / 1 | 326 / 1,721, 116 ms | 480 / 2,067, 191 ms |
+
+  - Misses are 7 to 12 times as frequent inside runs. Out is the largest leg in most of them, and follower work stays
+    at 88 to 193 ms p50.
+  - Caller lag at send was under 100 ms for 11,872 of 11,911 calls. So the time is in transit or in a caller-side wait
+    that the loop-lag ticker does not see [inference]. That matches F74's isolate-stall question, and the rows went to
+    B0-02's thread (T-01a1ccdd-804f-769d-b81a-5f937e3309df).
+  - The 23:51:35Z run overlaps the split's first minutes, so it is not a clean run.
+- **Proposed OPEN-QUESTIONS row (not added; for the operator):** "Does a sustained archive run slow follower commits?"
+  - On B0-30's rerun, 153 of 155 CommitErrors holds fell inside archive runs, and follower `/raft` misses are 7 to 12
+    times as frequent inside a run.
+  - The largest leg is out, not follower work.
+  - Holds a run do not track entries a run (Pearson ≤ 0.16 per window), but they rose about 5 times across site day 9.
+  - Candidates, all unmeasured:
+    - the leader's R2 puts and `Promoted` commits sharing its isolate with the `/raft` fetches;
+    - site day 9's image or script;
+    - more pushes a minute after the site day (80 against 66).
+- **503s near holds (`tests/am1/b030split/near.py`, `tests/am1/raw/b030r2-near.jsonl`).** Edge receive-pack 503s per
+  hour, counted within 3 s of a hold or outside every hold:
+
+  | Hour | 200s | 503s | Within 3 s of a hold | Outside | Holds |
+  |---|---|---|---|---|---|
+  | 18Z | 3,565 | 4 | 0 | 4 | 15 |
+  | 19Z | 3,580 | 1 | 0 | 1 | 9 |
+  | 20Z (stop at 20:12Z) | 689 | 1 | 0 | 1 | 5 |
+  | 21Z (resume at 21:24Z) | 2,706 | 189 | 88 | 101 | 41 |
+  | 22Z | 4,795 | 373 | 188 | 185 | 64 |
+  | 23Z | 4,604 | 470 | 252 | 218 | 81 |
+
+  - About half fall within 3 s of a hold (528 of 1,032 after the resume), so the results do not say "commit-side". The
+    other half have no hold near them.
+  - This corrects my two-hour report: there I counted all 10 of the 23:20Z sample's 503s as near holds, and near.py
+    counts 6 of 10.
+  - No code change was made, as ruled.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
