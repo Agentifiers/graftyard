@@ -1126,25 +1126,25 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// test merges, predictions, and clone misses are shed first. A hot network's clone-cache entries are written to both
 /// warm sites' buckets. A depth-1 miss with one want, no haves or filter, SHA-1, and `ofs-delta` is composed: a base of
 /// the tip's trees and blobs, a part per tip move of its objects earlier packs lack, and a pack of the want's own new
-/// objects, under one pack header and trailer. No object is in two packs and no delta leaves its pack, so the client's
-/// `index-pack` takes it. At nice 19, the home site's first shard builds the base at warm and each part after the
-/// catch-up that brings the move, folds every 20 moves, and writes the warm buckets' `compose/<net>/base-<tip>` and
-/// `part-<from>-<to>`, then the chain's `head`, which other shards follow. A shard composes only from a chain at HEAD;
-/// a want far from it, a missing part, or `include-tag` on an annotated tag gets stock `upload-pack`. Only such misses
-/// wait for the chain step. Direct pushes take no merge, so parts follow catch-ups, and `refs/pull/N/merge` stays on
-/// the current tip as PrSync builds it. The shard writes each miss's whole answer to the clone cache, read or not. On
-/// torvalds/linux a part cost 0.02 CPU-s at p50 and 3.5 at most, a fold 1.5, and a composed miss's pack began at 0.02
-/// s, against 5 s and 28 to 30 CPU-s stock [measured, `tests/m0/results/composed-miss.md`]. A shard object starts its
-/// container with `ctx.container.start()`, naming its image, the tier's instance size, and `enableInternet: false`, so
-/// the container reaches R2 and members only through its object. It starts one only while its index is under `count +
-/// HOT_POOL`. With no `max_instances` in the policy, this check over a fixed set of shard names is each site's start
-/// cap. At start the object reads `CLOUDFLARE_REGION` in the container and replaces one outside its site's regions, at
-/// most three times, then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum, renewed hourly by its
-/// alarm until 24 h after its last request, and set by any object instance that finds it running [measured,
-/// `hot-shards`]. Each site-script version's image map holds its release's git image as `git` and the prior one's as
-/// `git_prev`. A new version restarts no running container [measured, `container-survival.json`], so a shard changes
-/// image only when its site's `ContainerDay` step covers it, and returns to `git_prev` on that day's committed
-/// `Rollback { target: Containers(site) }`. Per site, `count + HOT_POOL` lets any two sites carry every network warm.
+/// objects, under one pack header and trailer. No object is in two packs and no delta leaves its pack, so `index-pack`
+/// takes it. At nice 19 the home's first shard builds the base at warm, a part per move after its catch-up, and a fold
+/// every 20, and writes the warm buckets' `compose/<net>/base-<tip>`, `part-<from>-<to>`, and `head`, which others
+/// follow. A want at a ref's tip or behind HEAD composes from the shard's chain, lagging or not, plus its diff from the
+/// chain tip, with no lock or catch-up first; past 20,000 changed entries, with `include-tag` on an annotated tag, or
+/// with no chain, stock `upload-pack` runs after a catch-up. Direct pushes take no merge, so parts follow catch-ups;
+/// `refs/pull/N/merge` stays as PrSync builds it. The shard writes each miss's whole answer to the clone cache, read or
+/// not, and the edge streams a hit from R2. On torvalds/linux a composed miss's pack began at 0.02 s, stock's at 5 s
+/// after 30 CPU-s [measured, `tests/m0/results/composed-miss.md`]. A shard object starts its container with
+/// `ctx.container.start()`, naming its image, the tier's instance size, and `enableInternet: false`, so the container
+/// reaches R2 and members only through its object. It starts one only while its index is under `count + HOT_POOL`. With
+/// no `max_instances` in the policy, this check over a fixed set of shard names is each site's start cap. At start the
+/// object reads `CLOUDFLARE_REGION` in the container and replaces one outside its site's regions, at most three times,
+/// then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum, renewed hourly by its alarm until 24 h
+/// after its last request, and set by any object instance that finds it running [measured, `hot-shards`]. Each
+/// site-script version's image map holds its release's git image as `git` and the prior one's as `git_prev`. A new
+/// version restarts no running container [measured, `container-survival.json`], so a shard changes image only when its
+/// site's `ContainerDay` step covers it, and returns to `git_prev` on that day's committed `Rollback { target:
+/// Containers(site) }`. Per site, `count + HOT_POOL` lets any two sites carry every network warm.
 pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
 pub fn shards_for(network: NetworkId, site: SiteId, count: u16, pool: &[u16]) -> ArrayVec<GitCacheShard, 8>;
 pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cost.py` from a [guess] working set

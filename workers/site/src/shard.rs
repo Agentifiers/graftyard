@@ -47,7 +47,8 @@ thread_local! {
     /// Per pool shard object name, when it last answered a forwarded push `warming` (`graftyard_git::pool_forward`).
     static POOL_COLD: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
     /// Per (shard object instance, network): the composed-miss chain's step running in the background (`Compose`),
-    /// the depth-1 upload-packs waiting for it, and the head the builder last put to the buckets.
+    /// the depth-1 upload-packs waiting for it, and the chain its container last held: the head the builder last put
+    /// to the buckets, or the one another shard installed.
     static COMPOSES: std::cell::RefCell<std::collections::HashMap<(String, i64), ComposeRun>> = Default::default();
 }
 
@@ -112,8 +113,14 @@ impl Compose {
         });
     }
 
-    /// Waits for a step that starts after this call, at most `COMPOSE_WAIT`.
+    /// Waits for a step that starts after this call, at most `COMPOSE_WAIT`, only while this object has seen no chain
+    /// on its container: one that has starts the step in the background and goes on, since the container composes
+    /// from a chain behind HEAD too.
     async fn ready(&self) {
+        if COMPOSES.with(|m| m.borrow().get(&self.key()).is_some_and(|r| r.synced.is_some())) {
+            self.start(true);
+            return;
+        }
         let ended = || {
             let (tx, rx) = futures_channel::oneshot::channel();
             COMPOSES.with(|m| m.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
@@ -1006,15 +1013,41 @@ impl DurableObject for GitShard {
                 }
             }
             "/info-refs" | "/upload-pack" => {
-                if let Err(r) = caught_up().await {
-                    return r;
-                }
-                let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
-                // A depth-1 fetch the chain may answer waits, bounded, for this shard's chain step; nothing else does
-                // (`Compose`). The edge sends the body gunzipped.
+                // A clone-cache miss (`fill=<CloneKey digest>`): the container spools the whole answer whether or not
+                // the client reads it to the end, and this object puts it to the home bucket, where the edge reads.
+                let fill = q(&url, "fill").and_then(|h| graftyard_types::Digest::parse_hex(&h));
+                let filled = |r: &Response| -> Result<()> {
+                    let Some(spool) = fill.filter(|_| r.headers().get("x-graft-spool").ok().flatten().is_some()) else {
+                        return Ok(());
+                    };
+                    let key = graftyard_git::key::R2Key::CloneCache { network: net, key: spool, replica: 0 };
+                    let (state, env, home) = (self.state.clone(), self.env.clone(), log.record.home);
+                    let inst = instance(&self.env)?.0;
+                    self.state.wait_until(async move {
+                        let host = ShardHost { state: &state, region, image: "git", instance: inst };
+                        let Ok(b) = env.bucket(&format!("BUCKET_{}", home.0)).map(R2) else { return };
+                        if let Err(e) = host.put_spooled(spool, &[&b], &key.to_string()).await {
+                            console_error!("shard clone-cache fill {}: {e}", net.0.0);
+                        }
+                    });
+                    Ok(())
+                };
+                let reply = |r: Response, at: u64| -> Result<Response> {
+                    let h = Headers::new();
+                    for (k, v) in r.headers().entries() {
+                        h.set(&k, &v)?;
+                    }
+                    h.set("x-graft-cursor", &at.to_string())?;
+                    Ok(r.with_headers(h))
+                };
+                // A depth-1 fetch the chain may answer waits, bounded, for this shard's chain step, and nothing else
+                // does (`Compose`). On a running shard it is asked composed first, before any catch-up: a composed
+                // answer needs only the chain and the want, and in round 26 a composed miss's first byte waited 1.3 to
+                // 68.7 s, behind catch-ups that ran with every tip move. The container answers 409 when it would serve
+                // stock, and only then does the miss wait for a catch-up. The edge sends the body gunzipped.
                 let composable = body.as_deref().is_some_and(|b| {
                     enc.is_empty()
                         && graftyard_git::smart::parse_v2(b).is_ok_and(|v| graftyard_git::compose::composable(&v))
@@ -1028,35 +1061,32 @@ impl DurableObject for GitShard {
                         record: log.record.clone(),
                     };
                     compose.ready().await;
-                }
-                // A clone-cache miss (`fill=<CloneKey digest>`): the container spools the whole answer whether or not
-                // the client reads it to the end, and this object puts it to the home bucket, where the edge reads.
-                let fill = q(&url, "fill").and_then(|h| graftyard_types::Digest::parse_hex(&h));
-                let r = match (fill, body) {
-                    (Some(spool), Some(b)) => {
-                        let r = host.upload_pack_spooled(net, b, &proto, &enc, spool).await.map_err(se)?;
-                        if r.headers().get("x-graft-spool")?.is_some() {
-                            let key = graftyard_git::key::R2Key::CloneCache { network: net, key: spool, replica: 0 };
-                            let (state, env, home) = (self.state.clone(), self.env.clone(), log.record.home);
-                            let (region, inst) = (region, instance(&self.env)?.0);
-                            self.state.wait_until(async move {
-                                let host = ShardHost { state: &state, region, image: "git", instance: inst };
-                                let Ok(b) = env.bucket(&format!("BUCKET_{}", home.0)).map(R2) else { return };
-                                if let Err(e) = host.put_spooled(spool, &[&b], &key.to_string()).await {
-                                    console_error!("shard clone-cache fill {}: {e}", net.0.0);
-                                }
-                            });
+                    if running && let Some(b) = &body {
+                        let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
+                        let r = host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.map_err(se)?;
+                        if r.status_code() == 200 {
+                            filled(&r)?;
+                            return reply(r, at);
                         }
+                        // A container that restarted holds no chain: the next miss waits for the step again.
+                        if r.headers().get("x-graft-compose")?.as_deref() == Some("stock: no chain") {
+                            COMPOSES.with(|m| m.borrow_mut().entry(compose.key()).or_default().synced = None);
+                        }
+                    }
+                }
+                if let Err(r) = caught_up().await {
+                    return r;
+                }
+                let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
+                let r = match (fill, body) {
+                    (Some(_), Some(b)) => {
+                        let r = host.upload_pack_spooled(net, b, &proto, &enc, fill, false).await.map_err(se)?;
+                        filled(&r)?;
                         r
                     }
                     (_, body) => host.upload_pack(net, path == "/info-refs", body, &proto, &enc).await.map_err(se)?,
                 };
-                let h = Headers::new();
-                for (k, v) in r.headers().entries() {
-                    h.set(&k, &v)?;
-                }
-                h.set("x-graft-cursor", &at.to_string())?;
-                Ok(r.with_headers(h))
+                reply(r, at)
             }
             // A new leadership's `warm` (`crate::prsync`) comes here; a merge that arrives meanwhile waits for it.
             "/catchup" => match caught_up().await {
