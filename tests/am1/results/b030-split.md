@@ -670,6 +670,77 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
     counts 6 of 10.
   - No code change was made, as ruled.
 
+- **The 503s: one message, the push's read gate (operator, 2026-11-16).** The load counts each failed push as
+  `push http 503` and keeps no text, so I took the text another way, with no code change and nothing hosted changed.
+  - **Probe.** `tests/am1/b030split/probe.mjs` (`b030probe`, 01:25 to 01:45Z, 547 calls every 2 s) posted git's
+    bare-flush probe (`0000`) to `git-receive-pack` with the load's token. The edge runs the same resolve and read
+    gate as for a real push, then answers 200 without reaching the group. 488 answered 200. All 59 others were 503
+    with one message: `the repository's access rows did not answer; retry (repo:1048590: every member asked shed the
+    read: overloaded)`. Wall time 1.7 to 4.1 s, p50 2.9 s.
+  - **Push traces.** I followed each edge 503 by trace id through Workers Logs (`/tmp`-only scripts):
+    - 22 of 22 between 14:00 and 20:12Z (before the site day);
+    - 2 of 2 at 22:00 to 22:01Z;
+    - 10 of 10 at 01:00 to 01:03Z.
+
+    Every one had the same shape. The group's member calls were only one or two follower `/read`s, on sites b and c,
+    one usually near 1 s; there was no `/validate` and no `/commit`, and the edge answered at 1.9 to 5.3 s (p50 about
+    2.9 s). A 200 push in the same windows ran 8 to 15 s through `/validate`, `/commit` and `/outcome`. So the 503s,
+    before and after site day 9, come from the read gate, not from the shard or the commit [inference from trace shape
+    and the probe's text].
+  - **The code path.** `workers/edge/src/lib.rs`, the router's read gate (`read_gate` then the `Err(e)` arm, "the
+    repository's access rows did not answer").
+    - `read_gate` reads the group's `access` rows with `api::core_rows`, which uses `spread_read` →
+      `graftyard_lookup::read_spread_for`. That asks the followers by read-index: two followers, no learners on this
+      group.
+    - A follower that has not applied the leader's read index within FOLLOWER_WAIT (1 s) answers `overloaded`
+      (`workers/site/src/member.rs`, `read_wait`). When both do, `spread_verdict` returns `Shed`, and the edge answers
+      503 without asking the leader.
+  - **Why it rose across site day 9.** Unmeasured. What I can see:
+    - The edge script did not change: `graft-m1-edge` has run version `19b495a1` since 2026-11-13 19:59Z. So the
+      change is on the member side.
+    - The site script went from `78cf4070` to `cb24cb47`. That brought main's lease-clock (`27eece68`: lease reads
+      take a round while the clock lags) and memory-budgets (`0cc44e68`, `b5f7199e`: answer and AppendEntries byte
+      budgets). Either could slow a follower's read-index grant. Neither is measured.
+    - The deployed edge predates lease-clock's other half, "a write retries a shed spread read" for LOOKUP_FOR
+      (`crates/lookup/src/lib.rs`, `read_spread_for`). On main's edge these pushes would have waited and gone through,
+      not answered 503 [inference from the code].
+  - **Follower read stats now (member `/stats`, 01:49 and 02:11Z, `tests/am1/raw/b030r2-readstats.jsonl`).**
+    - Site b: 10,522 follower reads, 2,394 late (23%), grant p50 539 ms, p99 985 ms.
+    - Site c: 7,491 follower reads, 6,004 late (80%), grant p50 554 ms, p99 977 ms.
+    - No reads shed on any member (`shedReads` 0). So `overloaded` here is the 1 s FOLLOWER_WAIT running out, not the
+      READS_MAX or byte cap.
+    - A grant p99 at 0.98 s against a 1 s wait means a small slowdown tips both followers over at once.
+  - **Site c falls behind.** Its member was 0 to 5 entries behind the leader through 23:18Z. Since 23:33Z it has
+    fallen 15, 243, 428, 582, 883, 1,125, 1,267, 1,566, 1,750, 1,869 and 2,091 behind (monitor rows to 02:09Z), applying
+    66 to 88 entries a minute against the leader's 77 to 106. That is why site c's read-index reads are mostly late.
+    - The lag started with the split (MetaSplit 23:51Z). Site c's child member restored the largest seed burst
+      (5.2 M rows in the 00:10Z five minutes), and the slim's entries rewrite rows on every parent member. That this
+      slows site c is [inference].
+    - The lag does not touch the gate. Site c's SQLite is 7.26 GB, log 2.00 GB, zero `SQLITE_FULL`.
+  - About half the 503s fall within 3 s of a hold (near.py). That fits the cause: a hold stalls the leader's rounds,
+    so both followers miss the grant. The other half are a follower's normal late tail [inference].
+  - Nothing fixed mid-run, as ruled.
+- **The fill path on slimmed rows (`tests/am1/b030split/fill.mjs`, 01:54:57 to 01:55:02Z,
+  `tests/am1/raw/b030r2-fill.jsonl`).** The slim had moved into the comment table, cursor key 2^40 + 21,024. So two of
+  the watcher's 100 sampled seeded comments (keys 2^40 and 2^40 + 13,400) were already slimmed on the parent. I read
+  each through the parent's leader (site b) twice, and read two unslimmed sample rows as a control.
+  - **Before:** the child's three members were followers at term 2, no leader, commit 5.
+  - **Slimmed rows:** both read back equal to the pre-split baseline.
+    - Key 2^40: 714 ms the first time, 195 ms the second (the isolate's child-row cache).
+    - Key 2^40 + 13,400: 511 ms, then 531 ms.
+    - Control reads of unslimmed rows: 422 ms (one other answered `notLeader`, as the parent's leadership moved then).
+  - **The fill reached the child.** Workers Logs show child site c's member answer `/read` (318 ms) and child site a's
+    (441 ms) in the first read's window, after correcting for the orb clock running about 6 s behind Cloudflare's.
+  - **The fill campaigned.** After the reads, child site a led at commit 7 (from 5), with b and c following it. So a
+    fill read on a leaderless child started an election, as designed (`split::needs_leader` is false for a child; a
+    fill read campaigns).
+  - Follower read-index reads of those rows answered `notLeader`: a follower does not serve point row reads
+    (`follower_serves`), so the edge goes to the leader for them.
+  - **Owed before verify:** run `fill.mjs 10` again once the slim has passed more of the 100 sample keys, so that ten
+    or more slimmed rows are read, not two.
+- **G14 added to `decisions/OPEN-QUESTIONS.md`** after a merge of origin/main (`a45a316f`), which took G10. The table
+  now reads Git and storage 14, Total 146, recounted from the rows.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
