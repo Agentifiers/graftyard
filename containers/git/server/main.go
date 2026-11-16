@@ -2379,10 +2379,17 @@ func startRepack(net, rp string) bool {
 // "--window=0 disk growth"). The search holds no lock (startRepack), so it no longer queues validates. It leaves kept
 // packs (promotions) alone and writes a multi-pack-index over every pack, kept or not, so lookups stay one index
 // however many promotions a shard holds. It runs at nice 19 on two of the four vCPU with the delta window's memory
-// bounded per thread, so it takes what catch-ups, validates, and reads leave (LM-1 round 25).
+// bounded per thread, so it takes what catch-ups, validates, and reads leave (LM-1 round 25). Each kept pack is also
+// named with --keep-pack: the roll's `pack-objects --stdin-packs` walks history from the tail's commits for its
+// name-hash hints and stops only at packs kept in core, not at a `.keep` on disk, so without it the walk read every
+// promotion's trees, and 2.9 times their bytes stayed mapped (LM-1 round 27).
 var runRepack = func(rp string) error {
-	_, err := gitLow(rp, []string{derivedEnv}, "-c", "pack.threads=2", "-c", "pack.windowMemory=256m",
-		"repack", "-d", "-q", "--geometric=2", "--write-midx")
+	args := []string{"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "repack", "-d", "-q", "--geometric=2", "--write-midx"}
+	keeps, _ := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.keep"))
+	for _, k := range keeps {
+		args = append(args, "--keep-pack="+strings.TrimSuffix(filepath.Base(k), ".keep")+".pack")
+	}
+	_, err := gitLow(rp, []string{derivedEnv}, args...)
 	return err
 }
 

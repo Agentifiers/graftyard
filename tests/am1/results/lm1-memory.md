@@ -3554,6 +3554,92 @@ post-row restarts both read "sweep: no shard container running".
 
 **Cost.** $140.26 at 00:22Z, containers $54.74. The site day, warm and row cost $2.55, against the $3 cap.
 
+### Round 27 (local, no hosted spend): what held the repack's 10.9 GB, the `--keep-pack` fix, and the cold warm under 120 s (2026-11-16)
+
+**The premise needs one correction first.** Round 26 read "all three shards sat at 11.9 GiB of 12 GiB and restarted"
+as the repack and the upload-packs filling memory. The container metrics say otherwise:
+- At 23:45 to 23:48Z, before the row, every shard had 0 git processes (`shardprocs`) and a container memory metric of
+  9.15 to 9.7 GiB, with 9.6 GB on disk. In m36 the metric read 11.95 GiB with the same 9.6 GB disk. The metric
+  follows disk use, so page cache or a memory-backed disk is counted [inference; no swap, and Cloudflare's docs
+  say only that an instance out of memory is OOM-killed and restarted].
+- Every exit 137 came at teardown or sweep times, not in the row: site c at 00:07:27Z (row end), b at 00:15:59Z,
+  a at 00:18:13Z (after the sweeps). Site 0's 23:54:30Z reset is a1's scripted shard kill (t0 + 304.6 s =
+  23:54:15.9Z).
+- So no restart in the row is shown to be an OOM. `/procs` RSS is statm resident, which counts mapped pack files, so
+  the 9.6 to 10.9 GB repack RSS was mostly file-backed pages.
+
+**Repro.** `tests/fanout/repackmem.sh` (new): 33 kept 6-step promotions of B0-34's plan (6.5 GB, with `.keep`s, as a
+rehydrate leaves them), then a tail of 21 one-step pushes and 1,200 agent pushes in a1.mjs's shape, one pack each:
+1,254 packs. It samples every git process's RssAnon and RssFile from /proc each second. One run at a time (flock);
+two overlapping runs in round 26's notes corrupted the fixture, and their failures are discarded.
+
+| case | largest RssAnon | its RssFile | wall | after |
+|---|---|---|---|---|
+| main's repack, 1,221-pack tail | 2.22 to 2.24 GB | 4.16 GB | 119 to 143 s | 34 packs, 33 kept, connectivity ok |
+| main's repack, 12-pack tail | 2.23 GB | 4.06 GB | 130 to 132 s | ok |
+| `--keep-pack` per kept pack, 1,221-pack tail | 1.69 to 1.70 GB | 1.45 GB | 68 to 87 s | ok |
+| `--keep-pack`, 12-pack tail | 1.69 GB | 1.35 GB | 68 to 74 s | ok |
+| `--keep-pack`, `pack.windowMemory=64m` | 1.66 GB | 1.45 GB | 82 s | ok |
+| 22 stock depth-1 upload-packs alone | 0.33 to 0.46 GB each, 8.85 GB summed over 44 processes | 29 GB summed (shared) | 284 s | — |
+| 22 upload-packs beside the `--keep-pack` repack | 9.13 GB summed over 47 | 29.4 GB summed | 423 s | ok |
+
+(The TAIL=12 runs first set every agent ref without the agent packs, so connectivity failed there; the fixture now
+sets main alone for TAIL=12 and the rerun above is clean.)
+
+**Telling the three apart.**
+- **Pack count: not it.** A 12-pack tail and a 1,221-pack tail give the same peak, 2.23 against 2.24 GB on main and
+  1.69 on both with the fix.
+- **The object walk into kept packs: the repack's share.** A geometric repack runs `pack-objects --stdin-packs`. Its
+  walk for name-hash hints stops only at packs kept in core (`--keep-pack`, or `^`-excluded), not at a `.keep` on
+  disk (git 2.56.0 source, `stdin_packs_include_check` checks `KEPT_PACK_IN_CORE`). So it walks from the tail's
+  commits through every promotion's trees.
+  - On git/git (`/tmp/kw.sh`, 1 kept base and 33 steps): 205,989 kept-pack accesses against 76,560 with
+    `--keep-pack`, and pack-objects' peak RssAnon fell from 224 to 111 MB. Same output, 4,437 objects written.
+  - The Go test's 53 kept promotions: 106 tree reads on main, under one per promotion with the fix.
+  - At B0-34's scale the fix drops the repack's private memory 0.55 GB (24%), its mapped file pages 2.9× (4.16 to
+    1.45 GB), and its wall time about 45%.
+- **The rest of the repack's private 1.7 GB is neither the window nor the tail.** A 64 MB window gives 1.66 GB and a
+  12-pack tail 1.69 GB. Not attributed further [not measured]; it does not grow with the tail.
+- **Concurrent upload-packs are the larger private consumer.** 22 stock depth-1 upload-packs held 8.85 GB private,
+  about 0.4 GB each. That path (stock misses beside the composed ones) is the composed-miss thread's.
+
+**The honest bound.** Repack private memory is about 1.7 GB at this network, with about 1.45 GB of mapped kept
+pages, and does not grow with the tail. Each stock depth-1 upload-pack adds about 0.4 GB private. 22 concurrent stock
+misses are about 9 GB, so the 12 GiB container holds the repack plus roughly 20 to 25 stock misses before the disk's
+counted pages, and fewer if the metric's 9.6 GiB of disk counts against the same cap [inference]. So the bound worth
+stating is on concurrent stock upload-packs, not on packs per roll: no cap on packs or objects per roll is needed,
+since the tail's count did not move the peak.
+
+**Fix (branch `repack-mem`).** `runRepack` passes `--keep-pack=<pack>.pack` for every kept pack
+(`containers/git/server/main.go`). Design first: DESIGN, Shape, `rehydrate`; DECISIONS, "`repack-keep-pack`".
+- `TestRehydratesRepackLeavesPromotedPacks` now traces pack access during the rehydrate's repack and fails on main:
+  "the repack read 106 trees and blobs of 53 kept promotions".
+- `tests/m0carried/plant17.py`: three new plants (no `--keep-pack`; naming the `.keep` file instead of the pack;
+  only the first kept pack named). Its older plants were updated to the new argument list, and plant 6 (`gitLow` at
+  normal priority) was updated to match after composed-miss added a second `gitLow`. 14 of 14 caught.
+
+**Point 4: the cold warm (150 to 158 s against 120 s), and what would bring it under.**
+- Phases on m37: up 33.7 to 36.0 s, marked phase 73 to 83 s for 8.64 GB of stored packs at 104 to 118 MB/s in total
+  (35 to 49 MB/s a stream, 2.4 to 3.0 streams at once of AHEAD's 4), tail 20 to 31 s, `/connected` and follow 12 to
+  16 s.
+- **Why fix 2 doesn't reach the 61 old promotions:** it changes how `/promote` builds a pack, and all 61 on
+  repo:131296 were promoted before it (round 24c). A committed `Promoted` is never rebuilt, so they stay at about
+  3.2 times the pushes they cover.
+- **Re-promoting 131296 under fix 2:** about 25% fewer bytes, 8.64 to about 6.46 GB. At 104 to 118 MB/s the marked
+  phase falls to about 55 to 62 s, and the total to about 125 to 140 s on m37's other phases. **Not under 120 s alone.**
+- **More streams:** the warm ran 2.4 to 3.0 of 4 streams at once at 35 to 49 MB/s each. If each stream keeps its rate
+  [guess], 8 streams at about 6 at once would carry about 230 MB/s: 8.64 GB in about 38 s, total about 100 to 120 s.
+  Site memory stays bounded per stream (`fetch-ahead` streams to the container), so the cost is R2 reads at once.
+  Marginal on its own.
+- **Both:** 6.46 GB at about 230 MB/s is about 28 s, total about 95 to 110 s [inference].
+- **G9's roll-up at 1.04 times the pushes:** about 2.2 GB, about 20 s at 110 MB/s, total about 90 to 100 s. It costs
+  385 s on 4 threads and 8.6 GB resident per roll-up (round 23b), so it needs the memory bound G9 names.
+- **The fixed part:** up 33 to 36 s is the platform's start (round 24c), and the tail plus `/connected` is 32 to 47 s,
+  which only promotion keeping up (G9) shrinks. With the platform's 34 s, under 120 s needs the stored packs read in
+  about 39 to 54 s, so 4 streams at today's 104 to 118 MB/s reach it only below about 4.3 to 5.9 GB of stored packs.
+- **Proposal, not built:** re-promote 131296 under fix 2, and raise AHEAD from 4 to 8 streams with a local site-memory
+  check at 8 × 207 MB as fix 1's test did at 4. Together about 95 to 110 s. The roll-up stays G9's next lever.
+
 ### Budget change (2026-11-16, about 01:58Z)
 
 The user raised LM-1's stop from $145 to $155, relayed by the operator thread at about 01:58Z. The $155 is only for
