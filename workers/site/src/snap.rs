@@ -428,7 +428,10 @@ fn begin(
         return Ok(false);
     }
     let due = || -> Result<bool> {
-        if snapshot_due(last, m.applied, m.at, 0) {
+        // A split parent's slim pass just ended: the slimmed tier is snapshotted at once (`slim_snapshot_due`).
+        if snapshot_due(last, m.applied, m.at, 0)
+            || (t == Tier::Metadata && git::split::slim_snapshot_due(core, &*store))
+        {
             return Ok(true);
         }
         let k = tier_int(t) as usize;
