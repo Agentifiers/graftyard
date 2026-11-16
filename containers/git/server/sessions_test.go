@@ -36,6 +36,7 @@ func smartHTTP(t *testing.T, s *httptest.Server, net string) string {
 		}
 		defer resp.Body.Close()
 		w.Header().Set("content-type", resp.Header.Get("content-type"))
+		w.Header().Set("x-graft-compose", resp.Header.Get("x-graft-compose"))
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}))

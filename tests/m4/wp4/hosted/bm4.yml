@@ -1,0 +1,15 @@
+on: workflow_dispatch
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [a, b]
+        n: [1, 2, 3, 4]
+    steps:
+      - name: Leg before the site fails
+        run: echo "BM-4 leg ${{ matrix.os }}-${{ matrix.n }} on $(nproc) vCPU, runner $RUNNER_NAME, run $GITHUB_RUN_ID"
+      - name: Leg through the site failure
+        run: sleep 300
+      - name: Leg after
+        run: echo "leg ${{ matrix.os }}-${{ matrix.n }} done"

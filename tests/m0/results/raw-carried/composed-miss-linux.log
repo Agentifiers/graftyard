@@ -1,0 +1,75 @@
+=== RUN   TestLinuxComposedMissCost
+    compose_linux_test.go:51: base at b556f1c4: cpu 10.20 s, wall 10.13 s
+    compose_linux_test.go:63: move 1 a91337fb: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 2 90d9e367: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 3 c53d8fc9: part cpu 0.06 s, wall 0.06 s
+    compose_linux_test.go:63: move 4 a7963b12: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 5 bdeb84ed: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 6 d4872371: part cpu 0.01 s, wall 0.01 s
+    compose_linux_test.go:63: move 7 543b7d2c: part cpu 0.17 s, wall 0.16 s
+    compose_linux_test.go:63: move 8 fd7e9dc9: part cpu 0.07 s, wall 0.07 s
+    compose_linux_test.go:63: move 9 d164c7d7: part cpu 0.02 s, wall 0.01 s
+    compose_linux_test.go:63: move 10 91fd3a15: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 11 c1c70a84: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 12 a41e3649: part cpu 0.06 s, wall 0.05 s
+    compose_linux_test.go:63: move 13 12419f30: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 14 7f75cd8c: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 15 fa4ad798: part cpu 0.04 s, wall 0.04 s
+    compose_linux_test.go:63: move 16 bef911b8: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 17 d1829ebf: part cpu 0.02 s, wall 0.01 s
+    compose_linux_test.go:63: move 18 40f3717a: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 19 2ebb9de2: part cpu 0.04 s, wall 0.04 s
+    compose_linux_test.go:63: move 20 11b6438b: fold cpu 1.50 s, wall 1.44 s
+    compose_linux_test.go:63: move 21 2651f6de: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 22 25fccf43: part cpu 0.01 s, wall 0.01 s
+    compose_linux_test.go:63: move 23 e6f836ef: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 24 8a651625: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 25 e0d8e8de: part cpu 3.18 s, wall 3.13 s
+    compose_linux_test.go:63: move 26 7475ea8b: part cpu 0.01 s, wall 0.01 s
+    compose_linux_test.go:63: move 27 e4fb7e5e: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 28 f1bfe400: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 29 b3dfbde6: part cpu 0.01 s, wall 0.01 s
+    compose_linux_test.go:63: move 30 05e72bd3: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 31 5f5be658: part cpu 0.11 s, wall 0.11 s
+    compose_linux_test.go:63: move 32 5b84c729: part cpu 0.02 s, wall 0.01 s
+    compose_linux_test.go:63: move 33 a9e71988: part cpu 0.01 s, wall 0.01 s
+    compose_linux_test.go:63: move 34 f7c68e9d: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 35 067c5c24: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 36 0eaee8fc: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 37 79eb6679: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 38 9d66f26f: part cpu 0.07 s, wall 0.07 s
+    compose_linux_test.go:63: move 39 ae7e0f32: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 40 df43528e: fold cpu 1.50 s, wall 1.45 s
+    compose_linux_test.go:63: move 41 aed8bd53: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 42 baa6744d: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 43 f34775c0: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 44 ee838993: part cpu 0.02 s, wall 0.01 s
+    compose_linux_test.go:63: move 45 d3e7c23e: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 46 7e1392a4: part cpu 0.45 s, wall 0.45 s
+    compose_linux_test.go:63: move 47 b970ee43: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 48 3db1c74a: part cpu 0.04 s, wall 0.04 s
+    compose_linux_test.go:63: move 49 831615b0: part cpu 0.02 s, wall 0.01 s
+    compose_linux_test.go:63: move 50 e93fd809: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 51 2800868f: part cpu 0.05 s, wall 0.04 s
+    compose_linux_test.go:63: move 52 97d73c82: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 53 0716b41b: part cpu 0.02 s, wall 0.01 s
+    compose_linux_test.go:63: move 54 b21c45d2: part cpu 0.09 s, wall 0.09 s
+    compose_linux_test.go:63: move 55 860b3016: part cpu 0.01 s, wall 0.01 s
+    compose_linux_test.go:63: move 56 cba88960: part cpu 0.03 s, wall 0.03 s
+    compose_linux_test.go:63: move 57 68271fbe: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 58 aacb7797: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 59 54975c65: part cpu 0.02 s, wall 0.02 s
+    compose_linux_test.go:63: move 60 23c62304: fold cpu 1.51 s, wall 1.46 s
+    compose_linux_test.go:66: moves: p50 0.02 s, max 3.18 s CPU
+    compose_linux_test.go:118: composed tip: composed, first byte 0.011 s, first 64 KiB of pack 0.011 s, wall 0.97 s, cpu 1.80 s (server and client), 302040346 bytes
+    compose_linux_test.go:118: composed tip: composed, first byte 0.013 s, first 64 KiB of pack 0.014 s, wall 0.85 s, cpu 1.51 s (server and client), 302040346 bytes
+    compose_linux_test.go:118: composed pull head: composed, first byte 0.017 s, first 64 KiB of pack 0.018 s, wall 0.77 s, cpu 1.37 s (server and client), 302066067 bytes
+    compose_linux_test.go:118: composed pull head: composed, first byte 0.013 s, first 64 KiB of pack 0.013 s, wall 0.77 s, cpu 1.37 s (server and client), 302066067 bytes
+    compose_linux_test.go:118: composed pull head (checked): composed, first byte 0.015 s, first 64 KiB of pack 0.015 s, wall 0.77 s, cpu 1.36 s (server and client), 302066067 bytes
+    compose_linux_test.go:131: client side: index-pack --strict, fsck --strict, checkout: cpu 25.46 s
+    compose_linux_test.go:118: stock tip: stock: no chain, first byte 0.005 s, first 64 KiB of pack 4.958 s, wall 15.58 s, cpu 29.90 s (server and client), 301048241 bytes
+    compose_linux_test.go:118: stock pull head: stock: no chain, first byte 0.002 s, first 64 KiB of pack 5.097 s, wall 15.35 s, cpu 30.18 s (server and client), 301047600 bytes
+    compose_linux_test.go:147: chain: 1 packs: base 302016314
+--- PASS: TestLinuxComposedMissCost (79.24s)
+PASS
+ok  	graftyard/containers/git/server	79.275s

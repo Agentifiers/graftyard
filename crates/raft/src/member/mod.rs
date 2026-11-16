@@ -35,6 +35,7 @@ mod transfer;
 pub use install::{LEARNER_READ_EVERY, READ_PIPELINE};
 pub use leader::{
     APPEND_BYTES_MAX, DONE_BYTES, LEARNERS_OUT_MAX, OUT_KEEP, OUT_MAX, OUTCOME_KEEP, PEER_OUT_MAX, PIPELINE,
+    READ_ROUND_GAP,
 };
 pub use log::{FoldView, verify};
 
@@ -367,6 +368,10 @@ pub struct AdmissionView {
     pub hot: bool,
     pub pressure: bool,
     pub retry_after_s: u32,
+    /// The moving averages `capacity` is sized from: the commit round in ms and a command's bytes as ENTRY_SOFT
+    /// counts them. Read only by test hosts tracing admission (LM-1's B0-31).
+    pub round_ms: f32,
+    pub cmd_bytes: f32,
 }
 
 /// A read the host started with `Member::read`; its `Resolution::Read` carries the same id.

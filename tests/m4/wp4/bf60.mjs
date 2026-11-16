@@ -10,9 +10,12 @@
 //   source tests/am1/lf13/env-m4a.sh
 //   node tests/m4/wp4/bf60.mjs <out dir>        (RUNNER_ACCOUNT and CLOUDFLARE_RUNNER_API_TOKEN for the Sandbox count)
 //
-// Observed every 10 s: the owner's hosted demand (registered hosted runners, through the App's installation token),
-// and the runner account's running Sandbox instances (Containers API, both applications). After the last job, it
-// keeps observing for 10 minutes and then reads both once more.
+// Observed every 10 s: the runner account's running Sandbox instances (Containers API, both applications), and the
+// owner's hosted demand (registered hosted runners, through the App's installation token) every `DEMAND_EVERY_S`
+// (default 10). A demand read reaches the owner's `RunnerBroker`, so reads every 10 s keep it in memory; with
+// `DEMAND_EVERY_S=300` the driver reads demand only as often as the sweep, and the broker can leave memory between
+// reads, which tests its stored `Seen`. After the last job, it keeps observing for 10 minutes and then reads both once
+// more.
 import { createSign } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -97,8 +100,9 @@ const run = must("dispatch", await api("POST", `${A}/dispatch`, admin, { workflo
 const t0 = Date.now();
 log(`run ${run} dispatched`);
 const jobs = new Map(); // id -> {queued, started, done, conclusion}
-let maxRegistered = 0, maxSandboxes = 0, lastDone = null, nextSample = 0;
-const result = { repo: R, repoId, run, before };
+const DEMAND_EVERY = Number(process.env.DEMAND_EVERY_S ?? 10) * 1000;
+let maxRegistered = 0, maxSandboxes = 0, lastDone = null, nextSample = 0, nextDemand = 0, d = {};
+const result = { repo: R, repoId, run, before, demandEveryS: DEMAND_EVERY / 1000 };
 for (;;) {
   const r = await api("GET", `${A}/runs/${run}`, admin);
   const now = Date.now();
@@ -114,13 +118,15 @@ for (;;) {
   }
   if (now >= nextSample) {
     nextSample = now + 10_000;
-    const [d, s] = await Promise.all([demand(), sandboxes()]);
-    const registered = d.runners?.length ?? null;
+    const fresh = now >= nextDemand;
+    if (fresh) { nextDemand = now + DEMAND_EVERY; d = await demand(); }
+    const s = await sandboxes();
+    const registered = fresh ? d.runners?.length ?? null : null;
     maxRegistered = Math.max(maxRegistered, registered ?? 0);
     maxSandboxes = Math.max(maxSandboxes, s.running);
     const counts = {};
     for (const e of jobs.values()) { const k = e.done ? "done" : e.started ? "started" : "queued"; counts[k] = (counts[k] ?? 0) + 1; }
-    row(samples, { t: now, s: Math.round((now - t0) / 1000), registered, stale: d.stale?.length ?? null, starts: d.labels?.map(([l, x]) => [l, x.queued, x.start]) ?? d, sandboxes: s, counts });
+    row(samples, { t: now, s: Math.round((now - t0) / 1000), registered, ...(fresh ? { stale: d.stale?.length ?? null, starts: d.labels?.map(([l, x]) => [l, x.queued, x.start]) ?? d } : {}), sandboxes: s, counts });
     log(`+${Math.round((now - t0) / 1000)}s jobs ${JSON.stringify(counts)} registered ${registered} sandboxes ${s.running} (${JSON.stringify(s.states)})`);
   }
   const done = [...jobs.values()].filter((e) => e.done).length;
@@ -133,8 +139,10 @@ for (;;) {
 if (lastDone) {
   log("every job done; watching 10 minutes for leftover Sandboxes");
   while (Date.now() < lastDone + 10 * 60_000) {
-    const [d, s] = await Promise.all([demand(), sandboxes()]);
-    row(samples, { t: Date.now(), after: true, registered: d.runners?.length ?? null, sandboxes: s });
+    const fresh = Date.now() >= nextDemand;
+    if (fresh) { nextDemand = Date.now() + DEMAND_EVERY; d = await demand(); }
+    const s = await sandboxes();
+    row(samples, { t: Date.now(), after: true, registered: fresh ? d.runners?.length ?? null : null, sandboxes: s });
     maxSandboxes = Math.max(maxSandboxes, s.running);
     await sleep(30_000);
   }

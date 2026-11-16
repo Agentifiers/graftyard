@@ -325,6 +325,27 @@ impl crate::bucket::Multipart for R2 {
     }
 }
 
+/// A container response's body put to `b` under `key` through a `FixedLengthStream` of its `content-length`, so the
+/// bytes never enter wasm memory and R2 stores the object only if the whole length arrived. `false` when the
+/// response names no length or is not a stream.
+async fn put_body(b: &R2, key: &str, r: Response) -> Result<bool, StoreError> {
+    let Some(len) = r.headers().get("content-length").map_err(worker_err)?.and_then(|v| v.parse::<u64>().ok()) else {
+        return Ok(false);
+    };
+    let worker::ResponseBody::Stream(src) = r.body().clone() else { return Ok(false) };
+    let fixed = match u32::try_from(len) {
+        Ok(n) => worker::worker_sys::FixedLengthStream::new(n),
+        Err(_) => worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len)),
+    }
+    .map_err(|e| err(worker::Error::from(e)))?;
+    let piped = src.pipe_to(&fixed.writable());
+    worker::wasm_bindgen_futures::spawn_local(async move {
+        let _ = worker::wasm_bindgen_futures::JsFuture::from(piped).await;
+    });
+    js(b.raw().put(key.to_owned(), fixed.readable().into(), js_sys::Object::new().into())).await?;
+    Ok(true)
+}
+
 /// Starts a multipart upload of a pack and journals its upload id in the same bucket first, so the sweeper can abort
 /// it if the uploader dies. The Workers binding cannot list multipart uploads.
 pub async fn start_upload(
@@ -837,6 +858,164 @@ impl ShardHost<'_> {
         }
         let method = if info_refs { Method::Get } else { Method::Post };
         self.call(method, &path, body, &h).await
+    }
+
+    /// A depth-1 fill of the clone cache (`spool=<key>`): the container answers the client as `upload_pack` does and
+    /// writes the whole answer to its disk, to its end whoever reads it; `spooled` then reads it.
+    pub async fn upload_pack_spooled(
+        &self,
+        network: NetworkId,
+        body: Vec<u8>,
+        git_protocol: &str,
+        content_encoding: &str,
+        spool: Digest,
+    ) -> Result<Response, StoreError> {
+        let mut h = vec![("git-protocol", git_protocol)];
+        if !content_encoding.is_empty() {
+            h.push(("content-encoding", content_encoding));
+        }
+        self.call(Method::Post, &format!("/upload-pack?net={}&spool={}", network.0.0, spool.hex()), Some(body), &h)
+            .await
+    }
+
+    /// The whole answer a spooled upload-pack wrote, put to each of `to` under `key` without passing through the
+    /// isolate's memory, then deleted from the container. `Ok(false)` when the container holds no whole answer: the
+    /// upload-pack failed, or another fill of the key spooled it.
+    pub async fn put_spooled(&self, spool: Digest, to: &[&R2], key: &str) -> Result<bool, StoreError> {
+        let path = format!("/spooled?id={}", spool.hex());
+        let mut put = false;
+        for b in to {
+            let r = self.call(Method::Get, &path, None, &[]).await?;
+            if r.status_code() != 200 {
+                break;
+            }
+            put |= put_body(b, key, r).await?;
+        }
+        let _ = self.call(Method::Delete, &path, None, &[]).await;
+        Ok(put)
+    }
+
+    /// The container's composed-miss chain (`/compose-head`), `None` when it holds none.
+    pub async fn chain(&self, network: NetworkId) -> Result<Option<crate::compose::ChainHead>, StoreError> {
+        let mut r = self.ok(Method::Get, &format!("/compose-head?net={}", network.0.0), None).await?;
+        let h: Option<crate::compose::ChainHead> = r.json().await.map_err(worker_err)?;
+        Ok(h.and_then(crate::compose::ChainHead::checked))
+    }
+
+    /// The chain's next step on the container, to the repository's HEAD (`/compose?start=1`): a base when there is no
+    /// chain, a part, or a fold. Answers the head after it and the files it built.
+    pub async fn compose_step(
+        &self,
+        network: NetworkId,
+    ) -> Result<(Option<crate::compose::ChainHead>, Vec<String>), StoreError> {
+        #[derive(Deserialize)]
+        struct Out {
+            head: Option<crate::compose::ChainHead>,
+            #[serde(default)]
+            built: Vec<String>,
+        }
+        let path = format!("/compose?net={}&start=1", network.0.0);
+        let mut r = self.ok(Method::Post, &path, None).await?;
+        let o: Out = r.json().await.map_err(worker_err)?;
+        Ok((o.head, o.built))
+    }
+
+    /// One chain file from the container to `b` under its `R2Key::Compose`.
+    pub async fn store_chain_file(&self, network: NetworkId, b: &R2, file: &str) -> Result<(), StoreError> {
+        let r = self.ok(Method::Get, &format!("/compose-file?net={}&name={file}", network.0.0), None).await?;
+        put_body(b, &R2Key::Compose { network, file: file.to_owned() }.to_string(), r).await.map(|_| ())
+    }
+
+    /// One chain file from the first of `buckets` that holds it, streamed to the container's staging; `false` when
+    /// none does.
+    pub async fn fetch_chain_file(&self, network: NetworkId, buckets: &[&R2], file: &str) -> Result<bool, StoreError> {
+        let key = R2Key::Compose { network, file: file.to_owned() }.to_string();
+        let path = format!("/compose-file?net={}&name={file}", network.0.0);
+        for b in buckets {
+            if let Some(r) = self.put_stream(b, &key, Method::Put, &path).await?
+                && r.status_code() == 200
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Readies the network's composed-miss chain (`crate::compose`). The builder, the home site's first shard, takes
+    /// the container's next step to HEAD (a base when it holds no chain, at nice 19 in the container), then brings each of `buckets`, the warm sites',
+    /// up to its chain: the files that bucket's head lacks, then the head, and after a fold it deletes the files the
+    /// new head does not name; `synced`, the head it last put to the buckets, skips that when nothing moved. Any other
+    /// shard installs the chain the first of `buckets` names, fetching only the files its container lacks; one missing
+    /// file leaves its chain as it was, so its misses go to stock upload-pack. Answers the chain the container holds.
+    pub async fn ready_chain(
+        &self,
+        network: NetworkId,
+        buckets: &[&R2],
+        builder: bool,
+        synced: Option<&crate::compose::ChainHead>,
+    ) -> Result<Option<crate::compose::ChainHead>, StoreError> {
+        use crate::compose::ChainHead;
+        let head_key = R2Key::Compose { network, file: "head".into() }.to_string();
+        let read_head = async |b: &R2| -> Result<Option<ChainHead>, StoreError> {
+            let v = Bucket::get(b, &head_key).await?;
+            Ok(v.and_then(|v| serde_json::from_slice::<ChainHead>(&v).ok()).and_then(ChainHead::checked))
+        };
+        if builder {
+            let (Some(head), _) = self.compose_step(network).await? else { return Ok(None) };
+            if synced == Some(&head) {
+                return Ok(Some(head));
+            }
+            for b in buckets {
+                let old = read_head(b).await?;
+                if old.as_ref() == Some(&head) {
+                    continue;
+                }
+                for f in head.to_fetch(old.as_ref()) {
+                    self.store_chain_file(network, b, &f).await?;
+                }
+                b.0.put(&head_key, serde_json::to_vec(&head).map_err(err)?).execute().await.map_err(err)?;
+                if old.is_some_and(|o| o.base != head.base) {
+                    let keep = head.files();
+                    let stale: Vec<String> = Bucket::list(*b, &format!("compose/{}/", network.0.0))
+                        .await?
+                        .into_iter()
+                        .map(|o| o.key)
+                        .filter(|k| k != &head_key && !keep.iter().any(|f| k.ends_with(&format!("/{f}"))))
+                        .collect();
+                    Bucket::delete(*b, &stale).await?;
+                }
+            }
+            return Ok(Some(head));
+        }
+        let mut head = None;
+        for b in buckets {
+            if let Some(h) = read_head(b).await? {
+                head = Some(h);
+                break;
+            }
+        }
+        let Some(head) = head else { return Ok(None) };
+        let had = self.chain(network).await?;
+        if had.as_ref() == Some(&head) {
+            return Ok(had);
+        }
+        for f in head.to_fetch(had.as_ref()) {
+            if !self.fetch_chain_file(network, buckets, &f).await? {
+                return Ok(had);
+            }
+        }
+        Ok(if self.install_chain(network, &head).await? { Some(head) } else { had })
+    }
+
+    /// Installs `head` on the container once its files are staged; `false` when the container still lacks one.
+    pub async fn install_chain(
+        &self,
+        network: NetworkId,
+        head: &crate::compose::ChainHead,
+    ) -> Result<bool, StoreError> {
+        let body = serde_json::to_vec(head).map_err(err)?;
+        let r = self.call(Method::Put, &format!("/compose-head?net={}", network.0.0), Some(body), &[]).await?;
+        Ok(r.status_code() == 200)
     }
 
     /// `git archive` of one commit of `network` (`codeload-archives`).

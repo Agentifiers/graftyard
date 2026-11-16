@@ -94,14 +94,19 @@ export async function voter(chain, site, path, body, deadline = 30_000) {
 
 /** Every member's `/status` of a chain (sites 0..n-1), from each site's current voter: a site whose first
  * generation's object answers with an older config than another member's is read again by the newer config's name. */
+// The current voters' names, per chain, as `statuses` last read them (main's `voterAt`, L0-12 m3fr1).
+const voterName = new Map();
 export async function statuses(chain, n = 3) {
   const one = (s, name) => member(chain, s, "/status", undefined, 15_000, name).then((r) => ({ site: s, ...r.v }), (e) => ({ site: s, error: String(e).slice(0, 100) }));
   const sts = await Promise.all([...Array(n).keys()].map((s) => one(s)));
   const newest = sts.filter((st) => st.config?.config?.normal?.voters).sort((a, b) => (b.config.index ?? 0) - (a.config.index ?? 0))[0];
   if (!newest) return sts;
   const names = Object.fromEntries(newest.config.config.normal.voters.map((v) => [v.site, v.do_name]));
+  voterName.set(chain, names);
   return Promise.all(sts.map((st) => (st.doName && names[st.site] && st.doName !== names[st.site] ? one(st.site, names[st.site]) : st)));
 }
+/** The current voter object's name at `site`, as `statuses` last saw it (undefined: the first generation's). */
+export const voterAt = (chain, site) => voterName.get(chain)?.[site];
 /** Each site's current voter object of a chain, from a member's committed config: a voter replaced since the group
  * was made has a later generation's name, and a call by site alone reaches the first generation's object. */
 export async function voterNames(chain) {

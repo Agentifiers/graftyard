@@ -246,6 +246,11 @@ func gitLow(dir string, env []string, args ...string) ([]byte, error) {
 	return runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil, dir, env, nil, args...)
 }
 
+// gitLow on the meter, with stdin: the composed-miss chain's builds (compose.go, handleCompose).
+func (m *cpuMeter) gitLow(dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
+	return runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), m, dir, env, stdin, args...)
+}
+
 func runGit(cmd *exec.Cmd, m *cpuMeter, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), ident...), env...)
@@ -401,7 +406,8 @@ func handleEvict(w http.ResponseWriter, r *http.Request) {
 	}
 	defer repacking.Unlock()
 	rp := repo(net)
-	freed := dirBytes(rp)
+	freed := dirBytes(rp) + dirBytes(composeDir(net))
+	os.RemoveAll(composeDir(net))
 	if err := os.RemoveAll(rp); err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -619,6 +625,7 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("fresh") == "1" {
 		repacking.Lock() // a repack holds no network lock (startRepack)
 		os.RemoveAll(rp)
+		os.RemoveAll(composeDir(net))
 		repacking.Unlock()
 	}
 	if _, err := os.Stat(rp); err == nil {
@@ -2384,9 +2391,20 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The pack is built under the network's shared lock and written after it is released. Its reader is the archive's
+	// tee, which hands the bytes to the promotion's own validate, and that validate waits for a catch-up first, whose
+	// /ingest takes the lock alone. Written under the lock, the pack stalled once the socket filled: the catch-up
+	// waited on the lock, every validate and merge queued behind the waiting writer, and all of it held until the
+	// validate gave up after PROMOTE_WAIT_S (B0-31 m3fr6: three 60 s stalls on the apac shard, 18 MergeQueue merges
+	// answered `warming`; `tests/am1/results/promote-unlock.md`, `TestPromoteWritesItsPackOutsideTheLock`).
 	l := lock(net)
 	l.RLock()
-	defer l.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			l.RUnlock()
+		}
+	}()
 	seen := map[string]bool{}
 	var ids []string
 	sc := bufio.NewScanner(r.Body)
@@ -2425,6 +2443,8 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	// Exactly these objects, deltas only within the pack, so it is complete. A tree entry's basename gives
 	// pack-objects a name by which to group delta candidates.
 	out, err := git(rp, []string{derivedEnv}, &oids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
+	l.RUnlock()
+	locked = false
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -2587,6 +2607,30 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
+	// A clone-cache fill (`spool=<key>`, one at a time per key): the whole answer also goes to a file, written to its
+	// end after the client goes, which the shard object puts to the clone cache (compose.go, "the clone-cache fill").
+	out := io.Writer(flushOnWrite{w})
+	var done func(bool)
+	if id := r.URL.Query().Get("spool"); !advertise && spoolRe.MatchString(id) {
+		var f *os.File
+		if f, done = startSpool(id); f != nil {
+			w.Header().Set("x-graft-spool", id)
+			out = &tee{file: f, client: out}
+		}
+	}
+	ended := false
+	if done != nil {
+		defer func() { done(ended) }()
+	}
+	if want, tag, ok := composable(body); !advertise && ok && strings.Contains(proto, "version=2") {
+		w.Header().Set("content-type", "application/x-git-upload-pack-result")
+		if answered, why := composeMiss(w, out, net, rp, want, tag); answered {
+			ended = why == ""
+			return
+		} else {
+			w.Header().Set("x-graft-compose", "stock: "+why)
+		}
+	}
 	var sessions []string
 	if strings.Contains(proto, "version=2") {
 		sessions = sessionPrefixes(body)
@@ -2619,16 +2663,18 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		// An ls-refs reply: small, so buffered and cut.
 		b, _ := io.ReadAll(stdout)
 		w.Write(lsRefsOnly(b, sessions))
-	} else if _, err := io.CopyBuffer(w, stdout, make([]byte, 64<<10)); err != nil {
+	} else if _, err := io.CopyBuffer(out, stdout, make([]byte, 64<<10)); err != nil {
 		// The caller went away mid-pack (B0-34's time-to-first-byte probe cancels after one byte). Nothing reads the
 		// pipe again, so upload-pack blocked on it, `Wait` never returned, and the shared lock stalled the next /ingest
 		// and every validate queued behind that writer, on all three shards of the network (LM-1 round 18c,
-		// `TestCancelledCloneReleasesTheLock`).
+		// `TestCancelledCloneReleasesTheLock`). A spooled answer reaches here only when its file fails.
 		cmd.Process.Kill()
 	}
-	if err := cmd.Wait(); err != nil {
+	err := cmd.Wait()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "upload-pack: %v: %s\n", err, errb.String())
 	}
+	ended = err == nil
 }
 
 // The host-owned refs (`crates/git` `agent::HOST_REFS`) and the session logs under them (`agent::SESSION_REFS`):
@@ -2951,6 +2997,10 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/have", handleHave)
 	m.HandleFunc("/info-refs", func(w http.ResponseWriter, r *http.Request) { upload(w, r, true) })
 	m.HandleFunc("/upload-pack", func(w http.ResponseWriter, r *http.Request) { upload(w, r, false) })
+	m.HandleFunc("POST /compose", handleCompose)
+	m.HandleFunc("/compose-head", handleComposeHead)
+	m.HandleFunc("/compose-file", handleComposeFile)
+	m.HandleFunc("/spooled", handleSpooled)
 	m.HandleFunc("/fsck", handleFsck)
 	m.HandleFunc("/merge", handleMerge)
 	m.HandleFunc("/archive", handleArchive)
