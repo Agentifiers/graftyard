@@ -1030,10 +1030,16 @@ impl Family for Repo {
             let index = graftyard_fold::meta(&*fold.core).applied.0;
             return graftyard_api::narrow::answer(&fold.core, meta, index, spec, &|| named_accounts(fold));
         }
-        if q.get("rows").and_then(|r| r.get("access")).is_some() {
-            let core = graftyard_api::hosted::TierRows::access_rows(&fold.core);
+        if let Some(r) = q.get("rows").filter(|r| r.get("access").is_some()) {
+            // A push's read gate and its agent rows in one read (`{"access": true, "agent": true}`): both sets, and
+            // `"agent": true` beside them, so an edge whose member predates this reads the agent rows on their own.
+            let both = r.get("agent").is_some();
+            let mut core = graftyard_api::hosted::TierRows::access_rows(&fold.core);
+            if both {
+                core.extend(graftyard_api::hosted::TierRows::agent_rows(&fold.core));
+            }
             let index = graftyard_fold::meta(&*fold.core).applied.0;
-            return serde_json::to_value(graftyard_api::hosted::TierRows {
+            let mut v = serde_json::to_value(graftyard_api::hosted::TierRows {
                 index,
                 core,
                 meta: None,
@@ -1041,6 +1047,10 @@ impl Family for Repo {
                 picks: None,
             })
             .unwrap_or(Value::Null);
+            if both {
+                v["agent"] = json!(true);
+            }
+            return v;
         }
         let core_only = match q.get("rows") {
             Some(r) if r.get("agent").is_some() => Some(graftyard_api::hosted::TierRows::agent_rows(&fold.core)),
