@@ -1,0 +1,29 @@
+2026-11-16T21:39:30Z start d947d8e48 /home/user/workspace/siteday
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-16T21:39:49Z start sweep ok
+2026-11-16T21:39:51Z cost account 0.34 since 2026-11-16T20:30:00Z, run 0.24 since 2026-11-16T20:52:14Z, at b0-33
+2026-11-16T21:40:23.470Z m3org/fm41b33-b033 = 131345
+2026-11-16T21:41:40.922Z repo:131345 leader 0: learners [{"addr":192,"doName":"repo:131345#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131345#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131345#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131345#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131345#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131345#2#l5","join":20 config 11
+2026-11-16T21:41:46.293Z repo:131345 leader 0: set k 4: {"grants":[[0,[1,2,0]],[1,[1,2,0]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-16T21:41:56.634Z repo:131345 leader 0: set k 4: {"grants":[[0,[1,2,0]],[1,[1,2,0]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-16T21:42:06.992Z repo:131345 leader 0: set k 4: {"grants":[[0,[1,2,0]],[1,[1,2,0]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-16T21:42:17.381Z repo:131345 leader 0: set k 4: {"grants":[[0,[1,2,0]],[1,[1,2,0]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-16T21:42:27.713Z repo:131345 leader 0: set k 4: {"grants":[[0,[1,2,0]],[1,[1,2,0]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-16T21:42:38.236Z repo:131345 leader 0: set k 4: {"grants":[[0,[1,2,0]],[1,[1,2,0]]],"k":4,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-16T21:42:38.361Z repo:131345 leader 0: k 4 at 12
+2026-11-16T21:42:38Z b0-33 fm41b33-b033 131345 start
+2026-11-16T21:54:45.792Z repo:131345 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":290,"leader":0,"term":20},"stepped":true,"want":0}
+2026-11-16T21:54:46.095Z repo:131345 leader 0: k 1 at 294
+2026-11-16T21:54:46Z b0-33 fm41b33-b033 131345 done exit 0
+2026-11-16T21:54:53Z torn down 131345
+site fault off: 200
+git#0#pool:2 200
+git#0#pool:3 200
+git#0#pool:1 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-16T21:55:12Z sweep ok
+ALLDONE
+B033DONE

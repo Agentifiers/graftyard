@@ -1,0 +1,27 @@
+edge: graft-m2b-edge serves 8c67d1ff at 100% (rev 617e2b0a4), as tests/am1/raw/runs/fanout-m41-edge.log deployed
+2026-11-16T21:39:29Z meter (account, run) 0.34 0.24 before b033, expected +$1.5, stop $120 account, $25 run
+2026-11-16T21:40:34Z meter (account, run) 0.34 0.24
+2026-11-16T21:41:35Z meter (account, run) 0.34 0.24
+2026-11-16T21:42:38Z meter (account, run) 0.35 0.25
+2026-11-16T21:43:41Z meter (account, run) 0.36 0.26
+2026-11-16T21:44:44Z meter (account, run) 0.38 0.28
+2026-11-16T21:45:47Z meter (account, run) 0.42 0.31
+2026-11-16T21:46:49Z meter (account, run) 0.43 0.33
+2026-11-16T21:47:53Z meter (account, run) 0.46 0.36
+2026-11-16T21:48:55Z meter (account, run) 0.48 0.37
+2026-11-16T21:50:01Z meter (account, run) 0.7 0.6
+2026-11-16T21:51:04Z meter (account, run) 1.16 1.09
+2026-11-16T21:52:07Z meter (account, run) 1.55 1.45
+2026-11-16T21:53:09Z meter (account, run) 1.78 1.68
+2026-11-16T21:54:11Z meter (account, run) 1.99 1.89
+2026-11-16T21:55:14Z meter (account, run) 2.19 2.09
+2026-11-16T21:56:17Z meter (account, run) 2.27 2.17
+2026-11-16T21:56:30Z b033 ended: ALLDONE
+site fault off: 200
+git#2#net:131345 200
+git#1#net:131345 200
+{"torn_down": 2, "codes": {"200": 2}}
+sweep: no shard container running
+2026-11-16T21:56:50Z sweep exit 0
+2026-11-16T21:56:52Z meter (account, run) 2.27 2.17 after b033 and the sweep
+DONE
