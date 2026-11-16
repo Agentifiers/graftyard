@@ -495,6 +495,49 @@ fn site_field(b: &Value, k: &str, what: &str) -> Result<SiteId> {
     u8::try_from(n).map(SiteId).map_err(|_| err(format!("{what}: {k} {n} is not a site id")))
 }
 
+/// A `/join` answer, with `graftyard_lookup::JOINED_FRESH` when this join built the member's core, so a lookup's
+/// `create` places only a group it bootstrapped.
+fn joined(r: Result<Response>, fresh: bool) -> Result<Response> {
+    let r = r?;
+    if fresh {
+        r.headers().set(graftyard_lookup::JOINED_FRESH, "1")?;
+    }
+    Ok(r)
+}
+
+/// How far a voter that a `Degraded` config needs may stand behind the leader's commit when the config is proposed
+/// [guess: the leader's `CATCHUP_MAX`, one AppendEntries' worth]. A voter further behind may be installing a snapshot,
+/// and acks nothing until its install ends: B0-30's rerun committed `Degraded { lost: 1 }` with site c 8,351 entries
+/// behind and installing, and the parent committed nothing again (`tests/am1/results/b030-split.md`, "Cause 2").
+const PLACE_LAG_MAX: u64 = 64;
+
+/// Proof that every voter a `Degraded` config needs was caught up when the leader asked (`degraded_needs`); only it
+/// lets `Routes::degrade` propose one.
+struct Ready(());
+
+/// For a leader at `commit`, the voters other than itself and the one being replaced, each with its applied index, or
+/// `None` if its `/status` did not answer: `Ready`, or the ones behind by more than `PLACE_LAG_MAX` or unknown.
+fn degraded_needs(commit: u64, applied: &[(SiteId, Option<u64>)]) -> std::result::Result<Ready, Value> {
+    let behind: Vec<Value> = applied
+        .iter()
+        .filter(|(_, a)| a.is_none_or(|a| commit.saturating_sub(a) > PLACE_LAG_MAX))
+        .map(|(s, a)| json!({ "site": s.0, "applied": a, "commit": commit }))
+        .collect();
+    if behind.is_empty() { Ok(Ready(())) } else { Err(json!(behind)) }
+}
+
+/// A leader's transfer to a member that may not lead (`Family::may_lead`): refused at once, so the leader picks another
+/// target instead of waiting out its LEASE; the member never steps it. `None` for every other message, or a member
+/// that may lead.
+fn refuse_lead<E>(may_lead: bool, e: &raft::Envelope<E>) -> Option<raft::Envelope<E>> {
+    match e.msg {
+        raft::Message::TimeoutNow { term, transfer } if !may_lead => {
+            Some(raft::Envelope { from: e.to, to: e.from, msg: raft::Message::TransferRefused { term, transfer } })
+        }
+        _ => None,
+    }
+}
+
 fn verdict_str(v: Verdict) -> &'static str {
     match v {
         Verdict::Leader => "leader",
@@ -1202,7 +1245,12 @@ impl<F: Family> Routes<F> {
     async fn raft_steps(&self, from: SiteId, envs: Vec<raft::Envelope<F::Ev>>) -> Result<Vec<raft::Envelope<F::Ev>>> {
         let mut back = Vec::new();
         let mut asked = Vec::new();
+        let may_lead = F::may_lead(&self.host);
         for e in envs {
+            if let Some(no) = refuse_lead(may_lead, &e) {
+                back.push(no);
+                continue;
+            }
             if let raft::Message::ReadIndex { batch } = &e.msg {
                 self.host.trace(Trace::IndexTaken, from.0, *batch, 0, 0);
                 asked.push(*batch);
@@ -1545,6 +1593,11 @@ impl<F: Family> Routes<F> {
 
     /// `campaign` with no body, `suspect` with `{colo, term}`. Campaigns start only here, from requests.
     fn verdict(&self, report: Option<Value>) -> Result<Response> {
+        // A member whose install dropped its metadata tables does not campaign until the install has run
+        // (`Family::may_lead`).
+        if !F::may_lead(&self.host) {
+            return self.reply(json!({ "verdict": verdict_str(Verdict::MayNotLead) }));
+        }
         let v = match report {
             None => {
                 let v = self.host.input(|m, t| m.campaign(t))?;
@@ -1864,9 +1917,10 @@ impl<F: Family> Routes<F> {
         // lookup rule read, and a learner holds no vote and is placed again by `place_learners`. It measures nothing:
         // `Placement::new` checks voter pairs only.
         let learner = join.me.kind == graftyard_types::MemberKind::Learner;
+        let fresh = !self.host.joined();
         if learner {
             self.store_join(&join)?;
-            return Response::from_json(&json!([]));
+            return joined(Response::from_json(&json!([])), fresh);
         }
         let reg = MemberRegistry::for_chain(site.id, join.chain);
         let mut put = RequestInit::new();
@@ -1908,7 +1962,7 @@ impl<F: Family> Routes<F> {
                 self.store_rtt(peer.site, median, now)?;
             }
         }
-        Response::from_json(&rtt_rows(&self.host.state, env)?)
+        joined(Response::from_json(&rtt_rows(&self.host.state, env)?), fresh)
     }
 
     fn store_join(&self, join: &Join) -> Result<()> {
@@ -2239,7 +2293,14 @@ impl<F: Family> Routes<F> {
         }
         let old = p.voters().iter().find(|m| m.site == to).cloned().ok_or_else(|| err("no member on that site"))?;
         let t0 = now_ms();
-        if let Err(e) = self.change(raft::GroupConfig::Degraded { placement: p.clone(), lost: to }).await {
+        let ready = match self.voters_ready(&p, me, to).await? {
+            Ok(r) => r,
+            Err(behind) => {
+                console_log!("placement of {chain} waits: {behind}");
+                return Ok(Err(json!({ "error": "a voter the degraded config needs is behind", "behind": behind })));
+            }
+        };
+        if let Err(e) = self.degrade(ready, p.clone(), to).await {
             return Ok(Err(json!({ "error": format!("degraded: {e}") })));
         }
         let site = SiteEnv::read(&self.host.env)?;
@@ -2366,6 +2427,40 @@ impl<F: Family> Routes<F> {
             v["nearOver"] = json!(ms);
         }
         Ok(Ok(v))
+    }
+
+    /// `Degraded { lost: to }`, whose quorum is every voter but `to`, so only once `voters_ready` found each of those
+    /// caught up (`Ready`).
+    async fn degrade(
+        &self,
+        _ready: Ready,
+        p: Box<graftyard_types::Placement>,
+        to: SiteId,
+    ) -> std::result::Result<u64, String> {
+        self.change(raft::GroupConfig::Degraded { placement: p, lost: to }).await
+    }
+
+    /// Each voter `Degraded { lost: to }` would need, other than this leader, by its `/status`: `Ready` when every one
+    /// has applied to within `PLACE_LAG_MAX` of this leader's commit, else the ones that have not
+    /// (`degraded_needs`).
+    async fn voters_ready(
+        &self,
+        p: &graftyard_types::Placement,
+        me: SiteId,
+        to: SiteId,
+    ) -> Result<std::result::Result<Ready, Value>> {
+        let commit = self.host.core.borrow().as_ref().map_or(0, |c| c.m.state().commit.0);
+        let site = SiteEnv::read(&self.host.env)?;
+        let mut applied = Vec::new();
+        for v in p.voters().iter().filter(|v| v.site != me && v.site != to) {
+            let a = match site.member(&self.host.env, v.site, &v.do_name)?.fetch_with_str("https://member/status").await
+            {
+                Ok(mut r) if r.status_code() == 200 => r.json::<Value>().await.ok().and_then(|s| s["applied"].as_u64()),
+                _ => None,
+            };
+            applied.push((v.site, a));
+        }
+        Ok(degraded_needs(commit, &applied))
     }
 
     /// Puts `kept`'s registry row back on its site once a re-placement's tries are done, over any row that still names
@@ -2866,6 +2961,43 @@ mod tests {
         assert!(!removed(Some(&degraded), &m(2, 1)));
         assert!(!removed(Some(&joint), &m(1, 1)) && !removed(Some(&joint), &m(1, 2)), "both halves of a Joint");
         assert!(!removed(None, &m(1, 1)), "no config yet");
+    }
+
+    /// (ii)(a): a re-placement starts only when every voter its `Degraded` config needs is within PLACE_LAG_MAX of the
+    /// leader's commit. B0-30's case: site c installing at 199,808 against commit 208,159; a voter whose status did not
+    /// answer is not taken as caught up; the boundary is inclusive; the member being replaced and the leader are not
+    /// asked, so they are not in `applied`.
+    #[test]
+    fn a_degraded_config_waits_for_every_voter_it_needs() {
+        let (c, commit) = (SiteId(2), 208_159);
+        assert!(super::degraded_needs(commit, &[(c, Some(199_808))]).is_err(), "B0-30: site c installing");
+        assert!(super::degraded_needs(commit, &[(c, None)]).is_err(), "no answer is not caught up");
+        assert!(super::degraded_needs(commit, &[(c, Some(commit - super::PLACE_LAG_MAX))]).is_ok(), "at the bound");
+        assert!(super::degraded_needs(commit, &[(c, Some(commit - super::PLACE_LAG_MAX - 1))]).is_err());
+        assert!(super::degraded_needs(commit, &[(c, Some(commit + 3))]).is_ok(), "ahead of the leader's commit");
+        assert!(super::degraded_needs(commit, &[]).is_ok(), "a two-voter group needs only the leader");
+        let two = [(SiteId(1), Some(commit)), (c, Some(150_000))];
+        let behind = super::degraded_needs(commit, &two).err().unwrap();
+        assert_eq!(behind, json!([{ "site": 2, "applied": 150_000, "commit": commit }]), "names only the one behind");
+    }
+
+    /// (i-3): a member whose install dropped its metadata tables refuses a leader's transfer back to that leader, with
+    /// the transfer's own term and id, and steps nothing else differently; a member that may lead takes it.
+    #[test]
+    fn a_member_that_may_not_lead_refuses_a_transfer() {
+        use graftyard_raft::{Envelope, Message, Term, TransferId};
+        let (leader, me) = (SiteId(0), SiteId(2));
+        let t = Envelope::<()> {
+            from: leader,
+            to: me,
+            msg: Message::TimeoutNow { term: Term(155), transfer: TransferId(7) },
+        };
+        let no = super::refuse_lead(false, &t).expect("refused");
+        assert_eq!((no.from, no.to), (me, leader));
+        assert!(matches!(no.msg, Message::TransferRefused { term: Term(155), transfer: TransferId(7) }));
+        assert!(super::refuse_lead(true, &t).is_none(), "a member that may lead takes the transfer");
+        let ping = Envelope::<()> { from: leader, to: me, msg: Message::Ping { probe: 1, n: 1 } };
+        assert!(super::refuse_lead(false, &ping).is_none(), "only a transfer is refused");
     }
 
     /// The summary's p50 and p99 are nearest-rank over the sorted samples, the same rule as `a1.mjs`'s `pct`, so a
