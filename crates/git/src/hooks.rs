@@ -49,6 +49,19 @@ pub const HOOKS_PER_REPO_MAX: usize = 20;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct HookId(pub DbId);
 
+impl HookId {
+    /// An App's webhook, as its owner's delivery store keys it: the App id negated, which no repository hook takes
+    /// (`design/SHARED.md`, "Event fan-out", App deliveries).
+    pub fn app(app: graftyard_identity::AppId) -> HookId {
+        HookId(DbId(-app.0.0))
+    }
+
+    /// The App whose webhook this is, for an id `app` made.
+    pub fn as_app(self) -> Option<graftyard_identity::AppId> {
+        (self.0.0 < 0).then(|| graftyard_identity::AppId(DbId(-self.0.0)))
+    }
+}
+
 /// SHARED's `HookContentType`. Wire tags: add variants at the end only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HookContentType {
@@ -183,8 +196,25 @@ pub static SUBSCRIPTIONS: &[(&str, &[crate::issues::Consumer])] = {
         ("check_run", &[Webhooks, MergeQueue]),
         ("merge_group", &[Webhooks]),
         ("ping", &[Webhooks]),
+        ("workflow_job", &[Webhooks]),
     ]
 };
+
+/// The repository permission an App's installation needs at least read on to get `event`, for the events
+/// `SUBSCRIPTIONS` renders (GHES 3.22's "Webhook events and payloads": "To subscribe to this event, a GitHub App must
+/// have at least read-level access for ...") [doc]. A ping goes only to the hook it names.
+pub fn app_permission(event: &str) -> Option<&'static str> {
+    Some(match event {
+        "push" | "create" | "delete" => "contents",
+        "pull_request" => "pull_requests",
+        "issues" | "issue_comment" => "issues",
+        "status" => "statuses",
+        "check_run" => "checks",
+        "merge_group" => "merge_queues",
+        "workflow_job" => "actions",
+        _ => return None,
+    })
+}
 
 // ---- the fold ----
 
@@ -325,6 +355,8 @@ pub enum Subject {
     },
     Status(StatusUpdate),
     CheckRun(CheckRunUpdate),
+    /// One Actions job's step (R24).
+    WorkflowJob(crate::workflow_job::WorkflowJobUpdate),
     /// A queue entry's group (`merge_group`): the base, the queue ref, and its tips.
     MergeGroup {
         base: RefName,
@@ -425,6 +457,9 @@ pub fn webhooks(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>) -> Vec<W
                 if let Some(a) = action {
                     out.push(w("check_run", Some(a), Subject::CheckRun(c.clone())));
                 }
+            }
+            RepoEvent::WorkflowJob(u) => {
+                out.push(w("workflow_job", Some(u.action.name()), Subject::WorkflowJob(u.clone())))
             }
             RepoEvent::Queue(q) => queue_webhooks(q, &mut out),
             // A new hook's ping, to that hook only: SHARED's "queues a `ping` delivery when it reads a new `Hook` entry".

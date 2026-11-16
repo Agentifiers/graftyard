@@ -22,6 +22,12 @@ J = 'crates/actions/src/job.rs'
 F = 'workers/site/src/family.rs'
 A = 'crates/api/src/hosted.rs'
 SITE = ['-p', 'graftyard-site', '--lib', 'fanout::']
+O = 'crates/actions/src/run_owner.rs'
+Q = 'crates/git/src/sequencer.rs'
+K = 'crates/git/src/run_checks.rs'
+W = 'crates/api/src/webhooks.rs'
+HK = 'crates/git/src/hooks.rs'
+R24 = G + ['-p', 'graftyard-api', '--test', 'webhooks']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -111,6 +117,30 @@ MUTANTS = [
      '        for t in ["actions_secret", "actions_variable"] {', '        for t in ["actions_secret"] {', SITE),
     ('a follower sends the actions rows to the leader', F,
      ' || r.get("actions").is_some(),', ',', SITE),
+    # ---- R24: `workflow_job` to an App ----
+    ('a job with needs is never queued (the fold read, not the entries)', O,
+     '                    (_, JobEvent::NeedsMet | JobEvent::LeaseExpired) => JobAction::Queued,',
+     '                    (_, JobEvent::LeaseExpired) => JobAction::Queued,', R24),
+    ('a replayed step is written again', K,
+     '            if held.as_ref().is_some_and(|h| h.action >= u.action) {', '            if false {', R24),
+    ('the completed step forgets its runner', K,
+     '                    runner: u.runner.or(h.runner),', '                    runner: u.runner,', R24),
+    ('an App without actions read gets workflow_job', Q,
+     '            let read = a.permissions.0.get(need).is_some_and(|x| *x >= graftyard_identity::Access::Read);',
+     '            let read = true;', R24),
+    ('an installation on other repositories reaches this one', Q,
+     '            graftyard_identity::RepoScope::Selected(r) => r.contains(&repo),',
+     '            graftyard_identity::RepoScope::Selected(_) => true,', R24),
+    ('the App\'s rows share the hook\'s GUID', Q,
+     '                out.push(row(a.hook, body));', '                out.push(NewDelivery { hook: a.hook, ..row(HookId(graftyard_types::DbId(1)), body) });', R24),
+    ('an App\'s request names the stored hook id', W,
+     '        ("x-github-hook-id", d.hook.as_app().map_or(d.hook.0.0, |a| a.0.0).to_string()),',
+     '        ("x-github-hook-id", d.hook.0.0.to_string()),', R24),
+    ('an App\'s body has no installation', W,
+     '        m.insert("installation".into(), json!({ "id": id, "node_id": node }));', '        let _ = (id, node);', R24),
+    ('workflow_job renders as queued for every step', HK,
+     'out.push(w("workflow_job", Some(u.action.name()), Subject::WorkflowJob(u.clone())))',
+     'out.push(w("workflow_job", Some("queued"), Subject::WorkflowJob(u.clone())))', R24),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

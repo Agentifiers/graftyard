@@ -178,7 +178,7 @@ impl NodeId {
 
     /// The legacy spelling, for tests and for clients that send it back.
     pub fn encode_legacy(ty: NodeType, id: i64) -> String {
-        b64(format!("0{}:{}{id}", ty.type_name().len(), ty.type_name()).as_bytes(), B64STD, true)
+        legacy(ty.type_name(), id)
     }
 
     /// The repository the id routes to: its own id for a repository, the leading id for a new-format scoped id, and
@@ -254,6 +254,11 @@ fn msgpack_read(b: &[u8]) -> Option<(i64, &[u8])> {
 
 const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 const B64STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// A legacy id of a GraphQL type no handler resolves, such as a webhook's `IntegrationInstallation`.
+pub fn legacy(type_name: &str, id: i64) -> String {
+    b64(format!("0{}:{type_name}{id}", type_name.len()).as_bytes(), B64STD, true)
+}
 
 pub(crate) fn b64(b: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
     let mut s = String::new();

@@ -1260,7 +1260,7 @@ pub enum NamesEvent { LoginClaimed { key: LoginKey, account: AccountId, kind: Ac
                       AccountLogin { account: AccountId, login: Login } /* on account_shard(account), tag 12 */ }
 /// SHARED's run, job, runner, and session events on an owner's `Actions` shards (0x15.1). `Job` applies `transition` at the
 /// job's version; leases extend only by `ExtendLeases`. The leader's DO alarm commits `LeaseExpired` or `QueueExpired` at
-/// the earliest deadline. `RunOwner` alone writes `RunStatus`, and `OwnerCursor` after its `RunChecks` (32.21).
+/// the earliest deadline. `RunOwner` alone writes `RunStatus`, and `OwnerCursor` after its `RunChecks` (32.21; 32.24 adds each job's `WorkflowJob` steps, SHARED's Workflow run).
 pub enum ActionsEvent { RunCreated { run: WorkflowRun, jobs: Vec<JobSpec> }, RunStatus { run: RunId, status: RunStatus },
     Job { job: JobId, version: u64, event: JobEvent }, Runner { id: RunnerId, record: Option<RunnerRecord> },
     Session { runner: RunnerId, session: Option<RunnerSessionId> }, OwnerCursor { through: Index } }
@@ -1272,7 +1272,7 @@ pub fn actions_shard(run: &WorkflowRun) -> u8;
 /// tries, then after 0 to 15 s, session intact [measured, BF-54]. A relay hibernates its sockets and keeps 1,000 lines [guess]. A broker has at most ASKS_MAX asks of its shard's leader in flight, and past them a poll waits its turn: a hint wakes every held poll, and on BF-54 a broker of 2,000 polls ended `exceededMemory` 21 times in 25 minutes, dropping them all [measured, F76; that its asks in flight held the memory is an inference].
 pub struct RunnerBroker { pub owner: AccountId, pub scope: RunnerScope }   pub struct LogRelay { pub job: JobId }
 pub const BROKER_HELD_MAX: u32 = 2_000;   pub const ASKS_MAX: u32 = 64;   // held long polls, and asks in flight, per broker object [guess]
-/// Site-script class, one per hook owner on its `home` site: SHARED's delivery store (`HookDelivery` rows) and sequencer.
+/// Site-script class, one per hook owner on its `home` site: SHARED's delivery store (`HookDelivery` rows) and sequencer, with each App installed on the owner as hook `-app` (SHARED, "Event fan-out", App deliveries).
 /// Delivery Workers: keyless `hooklane:<wire>:<hook>` objects, each POSTing a queue's signed run in order [measured, `tests/m4/results/m4-wp1-hosted.md`]; one unreported for 30 s is re-sent under its GUID.
 pub struct HookSequencer { pub owner: AccountId }
 /// `graft-runners`, a Worker in the runner account, is SHARED's hosted-runner service. It holds `HostedRunnersAppKey`,

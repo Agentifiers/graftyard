@@ -230,11 +230,21 @@ impl Sequencer {
     }
 
     /// `chain`'s hooks as its consumer read them with a batch: their current records, and a hook the chain listed
-    /// before and no longer does (deleted) loses its target, so its queued deliveries end with no attempt.
+    /// before and no longer does (deleted) loses its target, so its queued deliveries end with no attempt. An App's
+    /// webhook is listed by every chain its installation reaches, so it keeps its target while another chain lists it.
     pub fn set_chain_targets(&mut self, chain: ChainId, hooks: &[(HookId, HookRecord)]) {
         let now: BTreeSet<HookId> = hooks.iter().map(|(id, _)| *id).collect();
-        for gone in self.chain_hooks.get(&chain).into_iter().flatten().filter(|h| !now.contains(h)) {
-            self.targets.remove(gone);
+        let others = |h: &HookId| self.chain_hooks.iter().any(|(c, hs)| *c != chain && hs.contains(h));
+        let gone: Vec<HookId> = self
+            .chain_hooks
+            .get(&chain)
+            .into_iter()
+            .flatten()
+            .filter(|h| !now.contains(h) && !others(h))
+            .copied()
+            .collect();
+        for g in gone {
+            self.targets.remove(&g);
         }
         self.set_targets(hooks);
         self.chain_hooks.insert(chain, now);
@@ -665,17 +675,77 @@ pub fn cursor_to_commit(committed: HookCursor, want: HookCursor, recorded_rows: 
     (want != committed && (recorded_rows || replay_moved || stride)).then_some(want)
 }
 
+/// An App installed on the repository's owner, as a delivery target (SHARED, "Event fan-out", App deliveries): its
+/// installation, the installation's permissions, and its webhook as a hook record keyed `HookId::app`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppTarget {
+    pub installation: graftyard_identity::InstallationId,
+    pub permissions: graftyard_identity::PermissionSet,
+    pub hook: HookId,
+    pub record: HookRecord,
+}
+
+/// The App targets of `repo`: each live installation on its owner (`installations`, the owner's `Authz` rows) whose
+/// repository selection reaches it and whose App's record (`app`, read from the App owner's `Authz`) has a webhook
+/// and subscribes to an event. `webhook_secret` holds the raft-codec bytes of a `Wrapped`; a secret that does not
+/// decode leaves the App out, so no attempt goes unsigned.
+pub fn app_targets<'a>(
+    installations: &std::collections::BTreeMap<
+        graftyard_identity::InstallationId,
+        graftyard_identity::InstallationState,
+    >,
+    repo: RepoId,
+    app: impl Fn(graftyard_identity::AppId) -> Option<&'a graftyard_identity::AppRecord>,
+) -> Vec<AppTarget> {
+    let mut out = Vec::new();
+    for (id, st) in installations {
+        let Some(row) = &st.row else { continue };
+        let reaches = match &row.repos {
+            graftyard_identity::RepoScope::All => true,
+            graftyard_identity::RepoScope::Selected(r) => r.contains(&repo),
+        };
+        let Some(rec) = app(row.app).filter(|r| reaches && !r.events.is_empty()) else { continue };
+        let Some(url) = rec.webhook.clone() else { continue };
+        let secret = match &rec.webhook_secret {
+            Some(b) => match graftyard_raft::codec::from_bytes::<graftyard_identity::sealed::Wrapped>(b) {
+                Ok(w) => Some(w),
+                Err(_) => continue,
+            },
+            None => None,
+        };
+        let record = HookRecord {
+            url,
+            events: rec.events.clone(),
+            content_type: crate::hooks::HookContentType::Json,
+            active: true,
+            insecure_ssl: false,
+            secret,
+            retry: false,
+        };
+        out.push(AppTarget {
+            installation: *id,
+            permissions: row.permissions.clone(),
+            hook: HookId::app(row.app),
+            record,
+        });
+    }
+    out
+}
+
 /// The `Webhooks` consumer's rows for one committed entry `e` of `repo`'s chain: one per (webhook, hook that takes
 /// it), with the GUID `delivery_guid` derives from (`generation`, chain, index, slot, hook), so a replay derives the
 /// same ones. A ping goes to its own hook only. `core` is the fold the consumer reads with the entry, whose hooks get
-/// the rows; `render` is the payload renderer (`graftyard_api::webhooks::payload`), called once per webhook some hook
-/// takes, and a webhook it renders as `None` is skipped.
+/// the rows; `apps` are the App targets, each of which gets a webhook it subscribes to when its installation has
+/// read on the event's permission (`crate::hooks::app_permission`). `render` is the payload renderer
+/// (`graftyard_api::webhooks::payload`), called once per webhook some hook takes with `None`, and once per App that
+/// takes it with its installation; a webhook it renders as `None` is skipped.
 pub fn plan(
     core: &dyn graftyard_fold::Read,
     repo: RepoId,
     generation: u64,
     e: &graftyard_raft::LogEntry<crate::repo::RepoEvent>,
-    mut render: impl FnMut(&crate::hooks::Webhook) -> Option<Vec<u8>>,
+    apps: &[AppTarget],
+    mut render: impl FnMut(&crate::hooks::Webhook, Option<graftyard_identity::InstallationId>) -> Option<Vec<u8>>,
 ) -> Vec<NewDelivery> {
     let chain = ChainId::Repo(repo);
     // A hook gets the entries from its own creation on: the consumer reads behind the log, so the fold may already
@@ -695,20 +765,29 @@ pub fn plan(
             })
             .map(|(id, _)| *id)
             .collect();
-        if to.is_empty() {
-            continue;
+        let row = |hook, body| NewDelivery {
+            guid: crate::hooks::delivery_guid(generation, chain, e.index, slot, hook),
+            hook,
+            entry: Some((chain, e.index, slot)),
+            event: w.event.into(),
+            action: w.action.map(Into::into),
+            repo: Some(repo),
+            body,
+        };
+        if !to.is_empty()
+            && let Some(body) = render(w, None)
+        {
+            out.extend(to.into_iter().map(|hook| row(hook, body.clone())));
         }
-        let Some(body) = render(w) else { continue };
-        for hook in to {
-            out.push(NewDelivery {
-                guid: crate::hooks::delivery_guid(generation, chain, e.index, slot, hook),
-                hook,
-                entry: Some((chain, e.index, slot)),
-                event: w.event.into(),
-                action: w.action.map(Into::into),
-                repo: Some(repo),
-                body: body.clone(),
-            });
+        let Some(need) = crate::hooks::app_permission(w.event).filter(|_| w.target.is_none()) else { continue };
+        for a in apps {
+            let read = a.permissions.0.get(need).is_some_and(|x| *x >= graftyard_identity::Access::Read);
+            if read
+                && a.record.takes(w.event)
+                && let Some(body) = render(w, Some(a.installation))
+            {
+                out.push(row(a.hook, body));
+            }
         }
     }
     out

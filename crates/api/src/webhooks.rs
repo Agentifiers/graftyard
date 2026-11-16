@@ -218,11 +218,56 @@ pub fn payload(r: &Repo<'_>, w: &Webhook, hook: Option<(HookId, &HookRow)>, at: 
             }
             envelope(r, None, with_action(m))
         }
+        Subject::WorkflowJob(u) => envelope(r, None, with_action(obj(json!({ "workflow_job": workflow_job(r, u) })))),
         Subject::Ping { hook: id } => {
             let (id, row) = hook.filter(|(h, _)| h == id)?;
             ping(r, id, row)
         }
     })
+}
+
+/// GHES's `workflow_job` object for one step. `steps` is empty: the runner's step reports live in the job's blob, which
+/// the consumer does not read [inference: the 3.22 schema requires the array, not its items]. `startup_failure` and
+/// `stale`, which the completed schema's enum lacks, are sent as `failure` [inference].
+fn workflow_job(r: &Repo<'_>, u: &graftyard_git::workflow_job::WorkflowJobUpdate) -> Value {
+    use graftyard_git::workflow_job::JobAction;
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, n) = (&r.at.owner, &r.at.name);
+    let (id, run) = (u.job.0, u.run.0);
+    let conclusion = u.conclusion.map(|c| match c {
+        graftyard_git::issues::CheckConclusion::StartupFailure | graftyard_git::issues::CheckConclusion::Stale => {
+            "failure"
+        }
+        c => crate::rest::conclusion(c),
+    });
+    let runner = u.runner.map(|x| x.0);
+    let created = iso(u.created);
+    json!({
+        "id": id, "run_id": run, "run_url": format!("{api}/repos/{o}/{n}/actions/runs/{run}"),
+        "run_attempt": u.attempt, "node_id": format!("CR_{id}"), "head_sha": u.head_sha.hex(),
+        "url": format!("{api}/repos/{o}/{n}/actions/jobs/{id}"),
+        "html_url": format!("{web}/{o}/{n}/actions/runs/{run}/job/{id}"),
+        "status": u.action.name(), "conclusion": conclusion,
+        "created_at": created, "started_at": u.started.map_or_else(|| created.clone(), iso),
+        "completed_at": u.completed.map(iso).filter(|_| u.action == JobAction::Completed),
+        "name": &*u.name, "steps": [], "check_run_url": format!("{api}/repos/{o}/{n}/check-runs/{id}"),
+        "labels": u.labels.iter().map(|l| &**l).collect::<Vec<_>>(),
+        "runner_id": runner, "runner_name": runner.map(|x| format!("runner-{x}")),
+        "runner_group_id": runner.map(|_| 1), "runner_group_name": runner.map(|_| "Default"),
+        "workflow_name": u.workflow.rsplit('/').next().unwrap_or(&u.workflow),
+        "head_branch": u.head_ref.strip_prefix("refs/heads/"),
+    })
+}
+
+/// An App's body: the payload with GHES's `installation` (`simple-installation`), which only a delivery to an App
+/// carries.
+pub fn with_installation(mut v: Value, installation: graftyard_identity::InstallationId) -> Value {
+    if let Some(m) = v.as_object_mut() {
+        let id = installation.0.0;
+        let node = graftyard_wire::ids::legacy("IntegrationInstallation", id);
+        m.insert("installation".into(), json!({ "id": id, "node_id": node }));
+    }
+    v
 }
 
 /// A `ping` for hook `id` (a new hook's, or `POST .../pings`).
@@ -393,7 +438,8 @@ pub fn request(
         ("content-type", ct.to_owned()),
         ("x-github-delivery", d.guid.to_string()),
         ("x-github-event", d.event.to_string()),
-        ("x-github-hook-id", d.hook.0.0.to_string()),
+        // An App's webhook is keyed by its negated id in the store, and named by the App's id on the wire.
+        ("x-github-hook-id", d.hook.as_app().map_or(d.hook.0.0, |a| a.0.0).to_string()),
         ("x-github-hook-installation-target-type", target.0.to_owned()),
         ("x-github-hook-installation-target-id", target.1.to_string()),
         ("x-github-enterprise-version", graftyard_wire::ENTERPRISE_VERSION.to_owned()),

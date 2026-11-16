@@ -50,6 +50,7 @@ pub mod task;
 pub mod tiers;
 pub mod transfer;
 pub mod watch;
+pub mod workflow_job;
 
 #[cfg(feature = "worker")]
 pub mod host;

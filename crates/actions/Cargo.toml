@@ -23,6 +23,8 @@ thiserror.workspace = true
 yaml-rust2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
+# R24's test builds App records and installations for `graftyard_git::sequencer::app_targets`.
+graftyard-identity = { path = "../identity" }
 rand = "0.8"
 tiny_http = "0.12"
 tungstenite = "0.24"
