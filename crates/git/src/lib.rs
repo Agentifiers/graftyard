@@ -78,6 +78,6 @@ pub use store::{
     durable_sites, mark_committed, put_marker,
 };
 pub use sweep::{
-    Action, Alarm, BucketView, CronBudget, Lookup, Plan, RequestRow, RequestSource, SweepAll, SweepReport, decide,
-    networks, sweep, sweep_all,
+    Action, Alarm, BucketView, CONSUMED_KEEP, CronBudget, Lookup, Plan, RequestRow, RequestSource, SweepAll,
+    SweepReport, consumed_deletable, decide, networks, sweep, sweep_all,
 };

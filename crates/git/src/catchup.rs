@@ -444,7 +444,8 @@ async fn ingest_all<I: ShardIo>(
 /// them: a pack is skipped only when its entry lies in a `Promoted` record read from the log (`records`, by promoted
 /// pack) and in the range that pack's stored `.idx` names (`idx`), and that promoted pack is itself loaded. The idx
 /// metadata alone is never enough: an object's custom metadata is not committed state, and a range wider than the
-/// record would skip packs no promotion holds. This is the read side of `Compacted.consumed`, which nothing writes yet.
+/// record would skip packs no promotion holds. This is the read side of `Compacted.consumed`: a roll's produced pack
+/// covers its consumed range as a `Promoted` record, so `rehydrate` loads it in place of everything in the range.
 pub fn skippable(
     marks: &[(PackId, Marker)],
     records: &BTreeMap<PackId, (ChainId, Promoted)>,
@@ -733,9 +734,23 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     for (id, m) in io.markers().await? {
         marks.entry(id).or_insert(m);
     }
-    let marks: Vec<(PackId, Marker)> = marks.into_iter().collect();
     r.markers = marks.len();
-    let consumed = log.consumed(network).await?;
+    // Each chain's rolls, oldest first (`ChainLog::compactions`). A roll counts only once its produced pack is
+    // stored and marked: a markerless produced pack loads nowhere, so the roll's consumed packs load as before, while
+    // they exist (`decisions/DECISIONS.md`, `roll-up`, "Rehydrate prefers a rolled pack"). Every counted roll's
+    // consumed packs are dropped wherever they appear, and its produced pack joins the promotions below.
+    let mut consumed: BTreeSet<PackId> = BTreeSet::new();
+    let mut rolls: Vec<(ChainId, PackId, Promoted)> = Vec::new();
+    for chain in chains {
+        for c in log.compactions(*chain).await? {
+            let Some(id) = c.produced.stored_id().filter(|id| marks.contains_key(id)) else {
+                continue;
+            };
+            consumed.extend(c.consumed.iter().copied());
+            rolls.push((*chain, id, Promoted { from: c.from, to: c.to, pack: c.produced.clone() }));
+        }
+    }
+    let marks: Vec<(PackId, Marker)> = marks.into_iter().collect();
     let mut last: Vec<(ChainId, Option<Promoted>)> = Vec::with_capacity(chains.len());
     for chain in chains {
         last.push((*chain, log.last_promoted(*chain).await?.map(|(_, p)| p)));
@@ -782,6 +797,13 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
                 records.insert(id, (*c, p.clone()));
             }
         }
+        // Each counted roll's produced pack is read like the promotion whose range it replaced: its record makes
+        // `skippable` skip the pushed packs of `from..=to`, it loads first from the markers with its stored `.idx`
+        // (`with_idx`), and no probe reads its entry.
+        for (chain, id, p) in &rolls {
+            records.insert(*id, (*chain, p.clone()));
+            promoted.insert(*id);
+        }
         let probe: Vec<&(PackId, Marker)> = marks
             .iter()
             .filter(|(id, m)| {
@@ -814,7 +836,13 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         todo.sort_by_key(|l| {
             let id = l.stored_id();
-            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))
+            // The promoted and produced group first, oldest by the range its record covers: a roll's produced pack is
+            // marked at an entry far above the promotions it replaced, far above later promotions' markers, and by
+            // marker index it would load after packs whose objects name its. Pushed packs follow, by marker index.
+            (
+                !id.is_some_and(|id| promoted.contains(&id)),
+                id.and_then(|id| records.get(&id).map(|(_, p)| p.from).or_else(|| at.get(&id).copied())),
+            )
         });
         let with_idx: BTreeSet<PackId> = promoted.iter().filter(|id| idx.contains_key(id)).copied().collect();
         match ingest_all(io, &todo, &with_idx, &mut r.calls).await? {

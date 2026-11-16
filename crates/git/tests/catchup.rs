@@ -11,7 +11,7 @@ use graftyard_git::catchup::{
     Fetched, INGEST_BATCH_BYTES, IdxRange, Ingested, Rehydrating, Report, Saved, ShardIo, catch_up,
 };
 use graftyard_git::group::RefsPage;
-use graftyard_git::{ChainLog, Head, IngestCursor, LogPacks, Marker, PackId, PackRef, Promoted, StoreError};
+use graftyard_git::{ChainLog, Compacted, Head, IngestCursor, LogPacks, Marker, PackId, PackRef, Promoted, StoreError};
 use graftyard_types::{ChainId, DbId, Digest, Index, NetworkId, RepoId, SiteSet, Ulid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -58,6 +58,8 @@ struct Disk {
     /// Calls that ingested inline packs.
     calls: Cell<usize>,
     fetched: Cell<usize>,
+    /// The ids stored packs were fetched in, in ingest-list order.
+    fetch_order: RefCell<Vec<PackId>>,
     /// The length of each `have` ask.
     asks: RefCell<Vec<usize>>,
     /// Every call fails once this many more ingests have run: a caller's deadline or an isolate reset.
@@ -201,6 +203,7 @@ impl ShardIo for Disk {
             .collect())
     }
     async fn fetch_stored(&self, id: PackId, checksum: Digest, idx: bool) -> Result<Fetched, StoreError> {
+        self.fetch_order.borrow_mut().push(id);
         self.fetched.set(self.fetched.get() + 1);
         if self.ingested.borrow().contains(&checksum) {
             return Ok(Fetched::Have);
@@ -358,6 +361,8 @@ struct Log {
     /// The index the first refs page is read at, when it is older than the head: the chain moved while the pages were
     /// read, so the rehydrate catches up from it.
     first_refs_at: Cell<Option<u64>>,
+    /// The chain's committed rolls, oldest first, as `ChainLog::compactions` reads them from the fold.
+    rolls: RefCell<Vec<Compacted>>,
 }
 
 impl Log {
@@ -432,8 +437,8 @@ impl ChainLog for Log {
     async fn last_promoted(&self, _c: ChainId) -> Result<Option<(Index, Promoted)>, StoreError> {
         Ok(self.promoted.borrow().clone().map(|p| (p.to, p)))
     }
-    async fn consumed(&self, _n: NetworkId) -> Result<BTreeSet<PackId>, StoreError> {
-        Ok(BTreeSet::new())
+    async fn compactions(&self, _c: ChainId) -> Result<Vec<Compacted>, StoreError> {
+        Ok(self.rolls.borrow().clone())
     }
 }
 
@@ -469,6 +474,7 @@ fn bed(n: u64, pad: usize, stored_every: u64) -> Bed {
             index: Index(i),
             packs: vec![pack],
             promoted: None,
+            compacted: None,
             consumed: vec![],
             refs: Some(refs),
         });
@@ -482,6 +488,7 @@ fn bed(n: u64, pad: usize, stored_every: u64) -> Bed {
         served: Cell::new(0),
         refs_page: 3,
         first_refs_at: Cell::new(None),
+        rolls: RefCell::new(Vec::new()),
     };
     Bed { disk, store: Store::default(), log }
 }
@@ -516,10 +523,48 @@ impl Bed {
             index: Index(at),
             packs: vec![],
             promoted: Some(pr.clone()),
+            compacted: None,
             consumed: vec![],
             refs: Some(vec![]),
         });
         *self.log.promoted.borrow_mut() = Some(pr);
+    }
+
+    /// Entry `i`'s push lands as a stored pack with a marker, as a push over `INLINE_MAX` bytes does.
+    fn stored_at(&self, i: u64) {
+        let mut entries = self.log.entries.borrow_mut();
+        let e = entries.iter_mut().find(|e| e.index.0 == i).expect("an entry at i");
+        let PackRef::Inline(b) = e.packs[0].clone() else { panic!("entry {i} already stored") };
+        let id = PackId(Ulid(i as u128));
+        self.disk.bucket.borrow_mut().insert(id, b.clone());
+        self.disk
+            .markers
+            .borrow_mut()
+            .push((id, Marker { chain: CHAIN, index: Index(i), checksum: sum(&b), bytes: b.len() as u64 }));
+        e.packs[0] = PackRef::Stored { id, checksum: sum(&b), bytes: b.len() as u64, sites: SiteSet(3) };
+    }
+
+    /// One roll (`decisions/DECISIONS.md`, `roll-up`): the consumed promotions rolled into one complete, stored pack,
+    /// recorded as `Compacted` at a new entry and listed by `ChainLog::compactions`. Its `Committed` marker is this
+    /// caller's to write, as `mark_committed` writes a promotion's.
+    fn roll(&self, from: u64, to: u64, consumed: &[PackId]) -> PackId {
+        let p = Pack { brings: (from..=to).collect(), needs: vec![], pad: 0 };
+        let b = bytes_of(&p);
+        let id = PackId(Ulid(2_000_000 + to as u128));
+        self.disk.bucket.borrow_mut().insert(id, b.clone());
+        let produced = PackRef::Stored { id, checksum: sum(&b), bytes: b.len() as u64, sites: SiteSet(3) };
+        let c = Compacted { consumed: consumed.to_vec(), produced, from: Index(from), to: Index(to) };
+        self.log.rolls.borrow_mut().push(c.clone());
+        let at = self.log.head() + 1;
+        self.log.entries.borrow_mut().push(LogPacks {
+            index: Index(at),
+            packs: vec![],
+            promoted: None,
+            compacted: Some(c),
+            consumed: vec![],
+            refs: Some(vec![]),
+        });
+        id
     }
 
     /// The disk serves the head: every object, and the fold's refs exactly.
@@ -976,6 +1021,7 @@ fn a_planted_missing_object_in_a_covered_pack_falls_back_to_the_skipped_packs_an
         index: Index(at),
         packs: vec![],
         promoted: Some(pr.clone()),
+        compacted: None,
         consumed: vec![],
         refs: Some(vec![]),
     });
@@ -991,7 +1037,93 @@ fn a_planted_missing_object_in_a_covered_pack_falls_back_to_the_skipped_packs_an
     assert!(b.store.rehydrating.borrow().is_none());
 }
 
+/// Three promotions of 1..=30, the first two rolled into R (1..=20) whose marker and stored `.idx` say the rolled
+/// range, and pushed packs at 5, 15, 25. The rehydrate loads R in P1 and P2's place, oldest first with its `.idx`,
+/// then P3: nothing else loads, so a cold shard reads 2 packs where it read 3 and every pushed one
+/// (`decisions/DECISIONS.md`, `roll-up`, "Rehydrate prefers a rolled pack").
+#[test]
+fn a_roll_loads_its_produced_pack_in_place_of_the_promotions_it_consumed() {
+    let b = bed(30, 0, 0);
+    for i in [5, 15, 25] {
+        b.stored_at(i);
+    }
+    b.promote_range(1, 10);
+    b.promote_range(11, 20);
+    b.promote_range(21, 30);
+    let p1 = PackId(Ulid(1_000_010));
+    let p2 = PackId(Ulid(1_000_020));
+    let rolled = b.roll(1, 20, &[p1, p2]);
+    let produced = b.disk.bucket.borrow()[&rolled].clone();
+    b.disk.markers.borrow_mut().push((
+        rolled,
+        Marker { chain: CHAIN, index: Index(b.log.head()), checksum: sum(&produced), bytes: produced.len() as u64 },
+    ));
+    b.rolled_idx(rolled, Some((1, 20)));
+    b.idx(30, true, Some((21, 30)));
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    // R loads first, then P3: nothing loads twice between them, and no consumed promotion loads.
+    assert_eq!(b.ingested_ids(), [2_000_020, 1_000_030], "R replaced P1 and P2 and loads first");
+    assert_eq!(
+        *b.disk.fetch_order.borrow(),
+        [rolled, PackId(Ulid(1_000_030))],
+        "the produced pack is fetched before the promotion after its range"
+    );
+    // The pushed packs of the rolled range and of P3's range load nowhere.
+    assert_eq!(h.skipped, 3, "the pushed packs at 5, 15 and 25");
+    assert!(h.fault.is_none(), "{:?}", h.fault);
+    assert_eq!(b.disk.idx_used.get(), 2, "R and P3 both went in through their idx");
+    assert_eq!(b.disk.index_packs.get(), 0);
+    b.assert_serves_head();
+}
+
+/// The same log with R's marker never written: the roll does not count, so its consumed promotions still load, while
+/// they exist, and the produced pack loads nowhere. The disk ends up with the same objects either way.
+#[test]
+fn a_roll_without_a_marker_for_its_produced_pack_consumes_nothing() {
+    let b = bed(30, 0, 0);
+    for i in [5, 15, 25] {
+        b.stored_at(i);
+    }
+    b.promote_range(1, 10);
+    b.promote_range(11, 20);
+    b.promote_range(21, 30);
+    let p1 = PackId(Ulid(1_000_010));
+    let p2 = PackId(Ulid(1_000_020));
+    let rolled = b.roll(1, 20, &[p1, p2]);
+    b.idx(30, true, Some((21, 30)));
+    b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    // The three promotions load in range order, the pushed packs nothing covers behind them, and R never.
+    assert_eq!(b.ingested_ids(), [1_000_010, 1_000_020, 1_000_030, 5, 15]);
+    assert!(!b.disk.fetch_order.borrow().contains(&rolled), "R has no marker, so nothing loads it");
+    b.assert_serves_head();
+}
+
 impl Bed {
+    /// The produced pack's stored `.idx`, with the range its custom metadata names.
+    fn rolled_idx(&self, id: PackId, range: Option<(u64, u64)>) {
+        let b = self.disk.bucket.borrow().get(&id).cloned().expect("the produced pack");
+        self.disk.idx.borrow_mut().insert(id, (sum(&b), range.map(|(f, t)| (CHAIN, Index(f), Index(t)))));
+    }
+
+    /// The ids of the packs the container ingested, in ingested order.
+    fn ingested_ids(&self) -> Vec<u128> {
+        self.disk
+            .order
+            .borrow()
+            .iter()
+            .map(|s| {
+                self.disk
+                    .bucket
+                    .borrow()
+                    .iter()
+                    .find(|(_, b)| sum(b) == *s)
+                    .map(|(id, _)| id.0.0)
+                    .expect("the container ingested a bucket pack")
+            })
+            .collect()
+    }
+
     /// The entry index of a pushed pack by its checksum, or `None` for a promotion.
     fn pushed_index(&self, s: &Digest) -> Option<u64> {
         self.disk

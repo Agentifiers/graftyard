@@ -171,6 +171,7 @@ fn catch_up_applies_the_entries_ref_changes_and_ends_at_the_folds_refs() {
         index: Index(11 + i as u64),
         packs: Vec::new(),
         promoted: None,
+        compacted: None,
         consumed: Vec::new(),
         refs: Some(entry_ref_changes(evs)),
     })

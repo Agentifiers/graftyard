@@ -138,8 +138,8 @@ fn compacted_keeps_its_wire_tag() {
     // `codec::to_bytes` prefixes its own version byte; the following postcard payload starts with the variant tag.
     let postcard = graftyard_raft::codec::to_bytes(&ev);
     assert_eq!(postcard[0], graftyard_raft::codec::CODEC_VERSION);
-    assert_eq!(postcard[1], 46);
+    assert_eq!(postcard[1], 47);
     let mut record = Vec::new();
     Record::encode(&ev, &mut record);
-    assert_eq!(record[0], 46);
+    assert_eq!(record[0], 47);
 }

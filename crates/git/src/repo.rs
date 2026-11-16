@@ -71,9 +71,9 @@ pub const REPO_FORMAT_LEASES: Format = Format { family: 0x20, version: 14 };
 /// `fanout` (`design/DESIGN.md`, Shape, `NetworkLoad` and `fanout`): `RepoEvent::Fanout`, tag 39, which a network
 /// group's leader records itself when k changes. No client command carries it, so every earlier form keeps its bytes.
 pub const REPO_FORMAT_FANOUT: Format = Format { family: 0x20, version: 15 };
-/// `roll-up`: `RepoEvent::Compacted`, tag 46, which only a leader of this release records itself
+/// `roll-up`: `RepoEvent::Compacted`, tag 47, which only a leader of this release records itself
 /// (`crate::log_archive`).
-pub const REPO_FORMAT_ROLLUP: Format = Format { family: 0x20, version: 24 };
+pub const REPO_FORMAT_ROLLUP: Format = Format { family: 0x20, version: 25 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -391,7 +391,10 @@ pub enum RepoEvent {
         record: Option<graftyard_identity::sealed::VariableRecord>,
         actor: Option<AccountId>,
     },
-    // roll-up, format 32.24 (`REPO_FORMAT_ROLLUP`): tag 46.
+    /// Tag 46, held for M4-WP4's R24 `WorkflowJob` (format 32.24), so the tags after it match on every branch. Never
+    /// written or decided: a release that has `WorkflowJob` replaces this variant with it.
+    Reserved46,
+    // roll-up, format 32.25 (`REPO_FORMAT_ROLLUP`): tag 47.
     /// Core. A roll of the chain's oldest consecutive promoted packs (`crate::pack::Compacted`), committed by the
     /// leader in an entry of its own; `verify` checks it against the fold's `promoted_log`.
     Compacted(crate::pack::Compacted),
@@ -1906,7 +1909,8 @@ impl Record for RepoEvent {
             RepoEvent::ActionsVariable { scope, name, record, actor } => {
                 return tagged(out, 45, &(scope, name, record, actor));
             }
-            RepoEvent::Compacted(c) => return tagged(out, 46, c),
+            RepoEvent::Reserved46 => return tagged(out, 46, &()),
+            RepoEvent::Compacted(c) => return tagged(out, 47, c),
         };
         e.u8(0);
         e.u128(push.0.0);

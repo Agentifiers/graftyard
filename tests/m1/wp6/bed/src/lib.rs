@@ -11,14 +11,15 @@
 //!   up behind its `IngestCursor` from `Group` before every call.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 
 use graftyard_git::group::{
     CommitReply, CommitReq, OutcomeReply, OutcomeReq, PushOutcome, ReadReply, RefsPage, decode_commit,
 };
 use graftyard_git::host::{R2, ShardHost};
 use graftyard_git::standin::{MemberRows, Seed, StandIn};
-use graftyard_git::{Bucket, ChainLog, Head, LogPacks, PackId, PackRef, Promoted, R2Key, StoreError, mark_committed};
+use graftyard_git::{
+    Bucket, ChainLog, Compacted, Head, LogPacks, PackId, PackRef, Promoted, R2Key, StoreError, mark_committed,
+};
 use graftyard_raft::{Write, codec};
 use graftyard_types::{ChainId, DbId, Index, NetworkId, Region, ReleaseId, RepoId, SiteId, Timestamp};
 use serde::Deserialize;
@@ -335,8 +336,8 @@ impl ChainLog for GroupLog {
     async fn last_promoted(&self, _c: ChainId) -> std::result::Result<Option<(Index, Promoted)>, StoreError> {
         Ok(None)
     }
-    async fn consumed(&self, _n: NetworkId) -> std::result::Result<BTreeSet<PackId>, StoreError> {
-        Ok(BTreeSet::new())
+    async fn compactions(&self, _c: ChainId) -> std::result::Result<Vec<Compacted>, StoreError> {
+        Ok(Vec::new())
     }
 }
 

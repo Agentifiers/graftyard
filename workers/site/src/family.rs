@@ -676,8 +676,11 @@ fn repo_read(fold: &git::repo::RepoFold, q: &Value) -> Value {
     }
     if q.get("ranges").is_some() {
         // `fanout`: the committed k, which the network's first shard reads on every catch-up (`crate::fanout`).
+        // `compactions`: every committed roll, which the shard's `ChainLog::compactions` reads the produced packs of
+        // in place of their consumed promotions (`decisions/DECISIONS.md`, `roll-up`).
         return json!({
             "promoted": fold.promoted(),
+            "compactions": fold.compactions(),
             "archived": fold.archived(),
             "first": fold.first_index().0,
             "fanout": fold.fanout_k(),
@@ -713,6 +716,7 @@ impl Family for Repo {
     /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook. 32.21 is
     /// M4-WP3's `RunChecksCmd`, which only `RunOwner` sends, from a release whose Actions leaders run it. 32.22 is a
     /// review comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
+    /// 32.25 is `RepoEvent::Compacted`, which only a leader of this release records itself.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -737,6 +741,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_REVIEWS,
             git::run_checks::REPO_FORMAT_ACTIONS,
             git::secrets::REPO_FORMAT_SECRETS,
+            git::repo::REPO_FORMAT_ROLLUP,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

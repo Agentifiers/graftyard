@@ -816,6 +816,13 @@ impl ShardHost<'_> {
         self.ok(Method::Post, &format!("/promote?net={}", network.0.0), Some(body.into_bytes())).await
     }
 
+    /// One complete pack of every object of the given stored promoted packs, oldest first: the home shard's half of
+    /// `Compacted` (`decisions/DECISIONS.md`, `roll-up`), streamed on as `promote`'s is.
+    pub async fn roll(&self, network: NetworkId, sums: &[Digest]) -> Result<Response, StoreError> {
+        let body: String = sums.iter().map(|s| format!("{}\n", s.hex())).collect();
+        self.ok(Method::Post, &format!("/roll?net={}", network.0.0), Some(body.into_bytes())).await
+    }
+
     /// The test merge of `head` into `base` (`GitCacheShard::merge` without the plan): the container's `/merge`, which
     /// runs merge-tree, commit-tree, and the tree-diff check in a quarantine and leaves the repository unchanged. With
     /// the answer, the CPU ms of the merge's own git processes (`cpuMs`), which TEST_MERGE_BUDGET is charged.

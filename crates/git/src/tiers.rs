@@ -51,6 +51,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         | RepoEvent::Promoted(_)
         | RepoEvent::Archived(_)
         | RepoEvent::Compacted(_) => TierSet::CORE,
+        RepoEvent::Reserved46 => TierSet::CORE,
         RepoEvent::RequiredCheck { .. } => TierSet::CORE,
         RepoEvent::Rule(_) => TierSet::CORE,
         RepoEvent::IssueOpened { .. } | RepoEvent::PrOpened { .. } | RepoEvent::PrClosed { .. } => both,
@@ -164,7 +165,7 @@ pub const CORE: Schema = Schema {
         // M4-WP3, 32.23: Actions secrets and variables by scope (`""` or `env:<name>`) and name.
         t("actions_secret", &["scope", "name"]),
         t("actions_variable", &["scope", "name"]),
-        // roll-up, 32.24: every committed `Promoted` by its `from`, and every `Compacted` by its `from`.
+        // roll-up, 32.25: every committed `Promoted` by its `from`, and every `Compacted` by its `from`.
         t("promoted_log", &["from"]),
         t("compacted", &["from"]),
     ],
@@ -673,7 +674,7 @@ impl RepoTiers {
                 }
                 crate::queue::write(w, q, at);
             }
-            RepoEvent::Refused { .. } => {}
+            RepoEvent::Refused { .. } | RepoEvent::Reserved46 => {}
             RepoEvent::Promoted(p) => {
                 put_rec(w, "promoted", Vec::new(), p);
                 put_rec(w, "promoted_log", vec![Val::Int(p.from.0 as i64)], p);
