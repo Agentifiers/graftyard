@@ -1,0 +1,21 @@
+2026-11-16T22:31:55.826Z repo:131345#1#f0 site 0 before: follower t20 c295; /retire: null
+2026-11-16T22:31:55.837Z repo:131345#2#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:56.345Z repo:131345#10#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:56.373Z repo:131345#2#l7 site 0 before: follower t20 c294; /retire: null
+2026-11-16T22:31:56.375Z repo:131345#1#f1 site 1 before: follower t20 c289; /retire: null
+2026-11-16T22:31:56.376Z repo:131345#2#l0 site 0 before: follower t20 c294; /retire: null
+2026-11-16T22:31:56.376Z repo:131345#2#l6 site 0 before: follower t20 c294; /retire: null
+2026-11-16T22:31:56.845Z repo:131345#2#l3 site 0 before: follower t20 c294; /retire: null
+2026-11-16T22:31:57.250Z repo:131345#2#l1 site 1 before: follower t20 c294; /retire: null
+2026-11-16T22:31:57.367Z repo:131345#5#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:57.499Z repo:131345#4#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:57.560Z repo:131345#3#f1 site 1 before: follower t20 c295; /retire: null
+2026-11-16T22:31:57.574Z repo:131345#6#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:57.756Z repo:131345#2#l4 site 1 before: follower t20 c294; /retire: null
+2026-11-16T22:31:57.923Z repo:131345#7#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:57.978Z repo:131345#8#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:58.168Z repo:131345#9#f1 site 1 before: not joined; /retire: "member not joined"
+2026-11-16T22:31:58.678Z repo:131345#1#f2 site 2 before: follower t20 c295; /retire: null
+2026-11-16T22:31:59.028Z repo:131345#2#l2 site 2 before: follower t20 c294; /retire: null
+2026-11-16T22:31:59.031Z repo:131345#2#l5 site 2 before: follower t20 c294; /retire: null
+2026-11-16T22:32:15.124Z retired 20/20 not joined

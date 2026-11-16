@@ -1,0 +1,5 @@
+site 0: 203 spools, 9.09 GB in 143.6 s = 63.3 MB/s in total; per stream p50 8.7 MB/s, bytes-weighted 26.2 MB/s; streams busy mean 2.42, most 4; peak 5 s bin 130.2 MB/s; from site {0: 203}
+site 1: 203 spools, 9.09 GB in 125.6 s = 72.4 MB/s in total; per stream p50 11.9 MB/s, bytes-weighted 47.1 MB/s; streams busy mean 1.54, most 4; peak 5 s bin 184.7 MB/s; from site {1: 202, 0: 1}
+site 2: 203 spools, 9.09 GB in 90.7 s = 100.3 MB/s in total; per stream p50 10.7 MB/s, bytes-weighted 42.8 MB/s; streams busy mean 2.34, most 4; peak 5 s bin 217.0 MB/s; from site {2: 202, 0: 1}
+site 2 pool:7: 203 spools, 9.09 GB in 84.3 s = 107.8 MB/s in total; per stream p50 8.9 MB/s, bytes-weighted 53.5 MB/s; streams busy mean 2.01, most 4; peak 5 s bin 258.2 MB/s; from site {2: 202, 0: 1}
+site 2 pool:7 beside site 2, 14 bins both busy: site 2 119.7 MB/s + site 2 pool:7 129.7 MB/s = 249.4 MB/s; site 2 alone 35.6 MB/s
