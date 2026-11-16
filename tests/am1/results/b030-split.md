@@ -335,7 +335,7 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
   settle which. So the load is paused, not ended: `b030-load.done` was renamed to
   `tests/am1/raw/b030r2-load-stopped-at-1616Z`, and the state resumes from `b030-state.json`.
 - **The stop was premature; resumed at 16:36:01Z.** The operator ruled (2026-11-15): resume, record the growth as an
-  open question (G13), and change nothing hosted mid-run. The pause ran 16:16:23Z to 16:36:01Z at day 14.916. No
+  open question (G14), and change nothing hosted mid-run. The pause ran 16:16:23Z to 16:36:01Z at day 14.916. No
   pushes or rows were sent and no simulated time passed (`load.mjs` advances active time only while it runs). The
   watcher had ended on the transient `b030-load.done` at 16:16:33Z and was restarted with the load. The drain service
   (`b030-drain`) waits for `b030-load.done`.
@@ -437,7 +437,7 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   on main: disk-validate (merged as `a304d3fc`) validates a push on the shard's disk as it stands, skipping the
   pushes' catch-up wait, and `/procs` (`0c171e6d`, `361a1dc0`) shows what the container runs; main also has
   repack-keep (`0c171e6d`). This run's deploy predates all three. The next B0-30-shaped run from main would show
-  whether validate time stays flat. Open question G13 (`decisions/OPEN-QUESTIONS.md`) records it.
+  whether validate time stays flat. Open question G14 (`decisions/OPEN-QUESTIONS.md`) records it.
 
 - **The run's own meter (2026-11-15, 00:07Z).** `usage.py` counted every graft-m1 namespace, and `containers.py` every
   graft-m1 shard, so other groups on the install were charged to the rerun. Durable Object analytics split by object
@@ -536,7 +536,7 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   | 22:20 to 22:23Z | 432 ms (180) | 1,747 ms (71) | 80 | one `index-pack`, 0.0 CPU-s |
   | 23:20 to 23:23Z | 399 ms (258) | 1,382 ms (82) | 80 | `pack-objects` 0.9 CPU-s, `index-pack` 0.1 |
 
-  - Validate did not stay near 3.5 s, so G13 records the catch-up wait, with what the roll cleared from the
+  - Validate did not stay near 3.5 s, so G14 records the catch-up wait, with what the roll cleared from the
     shards' disks, as the cause; the roll changed both at once.
   - The load ran 79.3 pushes a minute over the 126 minutes, against 60.5 before the stop, with `batchFail` 0. Its own
     push p50 stayed at 4.4 to 7.5 s a minute (hour medians 5.3, 5.1 and 5.5 s). The edge's receive-pack p50 was 5.0 s
@@ -722,7 +722,7 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   - Nothing fixed mid-run, as ruled (operator, 2026-11-16): the load retries them and loses none, and main's edge
     already retries a write's shed read within LOOKUP_FOR, so the fix ships with the next edge deploy. Site day 9
     deployed the four site scripts and kept edge `19b495a1` from 2026-11-13, so this run's edge is older than its
-    members. Recorded as `decisions/OPEN-QUESTIONS.md` G15. Hourly 503s from the load's tally: 1 to 9 an hour from
+    members. Recorded as `decisions/OPEN-QUESTIONS.md` G16. Hourly 503s from the load's tally: 1 to 9 an hour from
     14Z to 20Z, then 194, 370, 472 and 754 in the 21Z to 00Z hours.
 - **Site c's parent member, watched (operator, 2026-11-16).** Monitor rows, 15 minutes apart:
 
@@ -759,8 +759,9 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
     (`follower_serves`), so the edge goes to the leader for them.
   - **Owed before verify:** run `fill.mjs 10` again once the slim has passed more of the 100 sample keys, so that ten
     or more slimmed rows are read, not two.
-- **G14 added to `decisions/OPEN-QUESTIONS.md`** after a merge of origin/main (`a45a316f`), which took G10. The table
-  now reads Git and storage 14, Total 146, recounted from the rows.
+- **G15 added to `decisions/OPEN-QUESTIONS.md`** after a merge of origin/main (`a45a316f`), which took G10. The table
+  now reads Git and storage 14, Total 146, recounted from the rows. (Numbered G14 then; the merge of origin/main
+  `ba13a063`, whose G11 is B0-31's, moved this branch's G11 to G15 up by one, to G12 to G16.)
 - **Orb restart (2026-11-16, about 04:11 to 04:24Z).** The orb that drives the run restarted: the load's last minute
   row was 04:11:14Z at simulated day 22.712, and every service was down at 04:21Z. The tails of `b030-load.jsonl` and
   `b030-cross.jsonl` held NUL bytes from the cut (156 and 423), which I stripped; every line parses. The state file was
@@ -918,6 +919,52 @@ be a pass as written. Nothing hosted was changed after the stall.
     minute, and its catch-up then failed on `#9#f1: 409`. The containers keep coming back while that leader runs.
   - The install stays standing as asked, so stopping them for good needs a hosted change (retire the group, or a site
     script whose stalled leader does not promote).
+
+### Teardown: `repo:1048590` retired (operator option (a), 2026-11-16)
+
+- **Evidence saved first.**
+  - `tests/am1/b030split/final.mjs` wrote each live member's final `/status`, `/stats` and size to
+    `tests/am1/raw/b030r2-final.jsonl`. It also saved site c's last install report, from `/fold`.
+  - It wrote each parent voter's log from 208,150 to `tests/am1/raw/b030r2-log208160.jsonl`. Entry 208,160 is on sites
+    a and b with digest `7c6d197d…`, term 153, `committed: false`.
+  - `tests/am1/b030split/digest208160.py` re-derives the match: one of 196 candidates, `Degraded { lost: 1 }` over the
+    generation-5 placement.
+- **Site c's install ended after the cutoff without finishing.** At 11:05:19Z its job was abandoned: "3 batches began
+  without committing: the isolate died under them" (`BATCH_TRIES`). It had loaded 3.17 of 3.25 GB in 1,739 batches,
+  and the slowest batch took 26.2 s.
+  - The member dropped its scratch tables, back to 5.70 GB from 10.18 GB. It stayed at applied 199,808, and
+    `SQLITE_FULL` stayed 0.
+  - The leader would have started the install again on its next `InstallSnapshot`. So under this source the install
+    loops, and each pass reloads the whole tier.
+- **Retired.** At 11:14:15 to 11:14:19Z, `tests/am1/b030split/retire.mjs` ran the test route `/retire` (BF-11's
+  lost-member stub: storage deleted, object reset) on six members: parent `#1#f0`, `#5#f1` and `#1#f2`, and child
+  `#1#f0`, `#5#f1` and `#1#f2`.
+  - The log is `tests/am1/raw/b030-retire-1048590.log`. All six answer "not joined".
+  - Two generation-1 site-1 objects from before site b's replacement were still joined, with no work: `repo:1048590#1#f1`
+    (term 6, commit 1) and `repo-meta:1048590#1#f1` (term 2, commit 1). Both were retired at 11:16:50Z and answer "not
+    joined".
+- **Swept.** `shards.py --teardown` at 11:17:58Z tore down `git#0`, `git#1` and `git#2#net:1048590` (200 each).
+  - At 11:41:51Z, 24 minutes later, `shards.py` lists none running.
+  - Workers Logs on sites a to c show no `shard/` call and no `1048590` line from 11:18 to 11:41Z.
+- **Meter (run-only, DO and Workers plus containers, R2 not included):**
+
+  | Time | DO and Workers | Containers | Sum |
+  |---|---|---|---|
+  | 11:05:12Z | $124.00 | $20.02 | $144.02 |
+  | 11:13:21Z, before `/retire` | $125.60 | $20.07 | $145.67 |
+  | 11:43:35Z, final | $126.56 | $20.10 | $146.66 |
+
+  - With the monitor's R2 estimate ($0.86), that is about $147.5 in all.
+  - The rise after 11:13Z is the hour's analytics catching up on what the members had already used, plus the teardown.
+    No group object or shard ran after 11:18Z.
+  - The $145 hard stop was passed by $0.67 before `/retire` ran, while the operator's decision was being asked for.
+- **Still standing.** The owner's `Authz` and `Names` still name `m3org/b0-30-r2` (`repo:1048590`). No delete was
+  committed.
+  - The next lookup of it, such as a git call or an API read, finds no member joined. The edge's `ensure_group` then
+    runs `graftyard_lookup::create`, which bootstraps a new, empty group under the same generation-1 names, as
+    `tests/m3/wirefix/recreate.mjs` relies on [from the code; not run].
+  - Nothing runs against it now.
+  - The R2 archives and snapshots stay in `graft-m1-packs-a` and `-b`.
 
 ### Design proposals (not built)
 

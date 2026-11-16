@@ -179,6 +179,20 @@ fn only_a_clients_call_starts_a_shard_or_keeps_it_warm() {
     assert_eq!(renewal(Timestamp(25 * H), last), Renewal::Lapse);
 }
 
+/// The caller a shard call names with `warm`: promote-ahead's `/promote`, `/validate` and `/idx` carry `warm=1`, as a
+/// new leadership's `/catchup` does, so none starts a stopped shard; only `/catchup?warm=pool` is the pool warm, and a
+/// call without `warm` is a client's (`tests/am1/results/lm1-memory.md`, round 28).
+#[test]
+fn a_warm_query_on_any_route_is_a_warm_call_and_pool_only_on_catchup() {
+    for path in ["/catchup", "/promote", "/validate", "/idx"] {
+        assert_eq!(caller(path, Some("1")), Caller::Warm, "{path}");
+        assert_eq!(caller(path, None), Caller::Client, "{path}");
+        assert_eq!(serve(caller(path, Some("1")), false), Serve::Skip, "{path}");
+    }
+    assert_eq!(caller("/catchup", Some("pool")), Caller::PoolWarm);
+    assert_eq!(caller("/promote", Some("pool")), Caller::Warm);
+}
+
 #[test]
 fn container_day_covers_10_50_100_percent_in_rendezvous_order_and_rollback_wins() {
     let count = 25;

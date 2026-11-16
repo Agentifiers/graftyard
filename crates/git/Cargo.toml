@@ -8,7 +8,7 @@ publish.workspace = true
 [features]
 # The Workers host: R2 buckets and the git container behind a shard object, through worker-rs. Pure decisions and
 # their tests build without it.
-worker = ["dep:worker", "dep:js-sys", "dep:wasm-bindgen"]
+worker = ["dep:worker", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-streams"]
 
 [dependencies]
 arrayvec.workspace = true
@@ -27,6 +27,7 @@ thiserror.workspace = true
 worker = { workspace = true, optional = true }
 js-sys = { version = "0.3", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
+wasm-streams = { version = "0.7", optional = true }
 sha1 = "0.10"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 

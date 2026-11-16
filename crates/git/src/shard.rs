@@ -533,6 +533,18 @@ pub enum Serve {
     Run { touch: bool },
 }
 
+/// The caller a shard call's path and `warm` query name: `warm=pool` on `/catchup` is the network leader's pool warm,
+/// and any other `warm` is a warm call, a new leadership's `/catchup` or promote-ahead's `/promote` with its `/validate`
+/// and `/idx`. Promote-ahead as a client started every stopped shard of an old group that woke with a tail above the
+/// bound and held it a day: 19 containers on idle `graft-m2b` (`tests/am1/results/lm1-memory.md`, round 28).
+pub fn caller(path: &str, warm: Option<&str>) -> Caller {
+    match warm {
+        Some("pool") if path == "/catchup" => Caller::PoolWarm,
+        Some(_) => Caller::Warm,
+        None => Caller::Client,
+    }
+}
+
 pub fn serve(caller: Caller, running: bool) -> Serve {
     match caller {
         Caller::Client => Serve::Run { touch: true },

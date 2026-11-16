@@ -45,8 +45,8 @@ import (
 const foldEvery = 20
 
 // composeDiffMax: a wanted commit whose tree differs from the chain tip's in more entries than this is served by stock
-// upload-pack [guess]: it is far from the tip, so a composed pack would carry most of two trees.
-const composeDiffMax = 20000
+// upload-pack [guess]: it is far from the tip, so a composed pack would carry most of two trees. A var for the tests.
+var composeDiffMax = 20000
 
 type chainHead struct {
 	Base  string   `json:"base"`
@@ -472,15 +472,20 @@ func composeMiss(w http.ResponseWriter, out io.Writer, net, rp, want string, inc
 		return false, "no chain"
 	}
 	var m cpuMeter
-	// Only a chain at the repository's own tip: a chain behind it would make this miss pack the tip's moves itself,
-	// 9 to 19 CPU-s each on a big merge (M0-WP9, B0-34, third pass), and stock does no worse.
-	if head, err := m.git(rp, nil, nil, "rev-parse", "-q", "--verify", "HEAD^{commit}"); err != nil ||
-		strings.TrimSpace(string(head)) != h.tip() {
-		return false, "chain behind HEAD"
-	}
+	// The chain need not be at HEAD: a want past its tip, HEAD after moves whose parts are not built or not fetched yet,
+	// is the chain plus the want's diff from the chain tip, within composeDiffMax and packed with no delta search. Held
+	// to HEAD, every miss on a shard whose chain lagged the tip went to stock, at a time to first byte of 2 to 209 s
+	// (LM-1 round 26, 9 of 51 misses).
+	// A want is a ref's tip or behind HEAD, as stock upload-pack's allowReachableSHA1InWant serves it on main. A clone
+	// that read main's tip just before a move wants the old tip: 6 of round 26's misses went to stock for that.
 	refs, err := m.git(rp, nil, nil, "for-each-ref", "--points-at="+want, "--format=%(refname) %(objecttype)")
-	if err != nil || len(bytes.TrimSpace(refs)) == 0 {
+	if err != nil {
 		return false, "not a ref tip"
+	}
+	if len(bytes.TrimSpace(refs)) == 0 {
+		if _, err := m.git(rp, nil, nil, "merge-base", "--is-ancestor", want, "HEAD"); err != nil {
+			return false, "not a ref tip or behind HEAD"
+		}
 	}
 	if includeTag && annotatedTag.Match(refs) {
 		return false, "an annotated tag points at it"
@@ -520,8 +525,10 @@ func composeMiss(w http.ResponseWriter, out io.Writer, net, rp, want string, inc
 	if err != nil {
 		return false, err.Error()
 	}
+	// No delta search, as for the parts: a delta's base may only be in this pack, and a want behind a lagging chain
+	// can bring thousands of objects, which a delta search held to 9 to 19 CPU-s a miss (M0-WP9, B0-34, third pass).
 	inc, err := m.git(rp, env, strings.NewReader(strings.Join(objs, "\n")+"\n"), "pack-objects", "--stdout", "-q",
-		"--delta-base-offset", "--threads=1")
+		"--delta-base-offset", "--window=0", "--threads=1")
 	if err != nil || len(inc) < 32 {
 		return false, "pack of its own objects failed"
 	}
@@ -663,11 +670,12 @@ func wholeResponse(p string) bool {
 	return string(tail) == "0000" && string(head[4:8]) != "ERR "
 }
 
-// tee writes to the spool and to the client; once the client fails it writes only to the spool.
+// tee writes to the spool and to the client; once the client fails it writes only to the spool, and calls gone.
 type tee struct {
 	file      io.Writer
 	client    io.Writer
 	clientErr error
+	gone      func()
 }
 
 func (t *tee) Write(p []byte) (int, error) {
@@ -675,7 +683,9 @@ func (t *tee) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	if t.clientErr == nil {
-		_, t.clientErr = t.client.Write(p)
+		if _, t.clientErr = t.client.Write(p); t.clientErr != nil && t.gone != nil {
+			t.gone()
+		}
 	}
 	return len(p), nil
 }

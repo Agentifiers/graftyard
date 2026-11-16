@@ -2379,10 +2379,17 @@ func startRepack(net, rp string) bool {
 // "--window=0 disk growth"). The search holds no lock (startRepack), so it no longer queues validates. It leaves kept
 // packs (promotions) alone and writes a multi-pack-index over every pack, kept or not, so lookups stay one index
 // however many promotions a shard holds. It runs at nice 19 on two of the four vCPU with the delta window's memory
-// bounded per thread, so it takes what catch-ups, validates, and reads leave (LM-1 round 25).
+// bounded per thread, so it takes what catch-ups, validates, and reads leave (LM-1 round 25). Each kept pack is also
+// named with --keep-pack: the roll's `pack-objects --stdin-packs` walks history from the tail's commits for its
+// name-hash hints and stops only at packs kept in core, not at a `.keep` on disk, so without it the walk read every
+// promotion's trees, and 2.9 times their bytes stayed mapped (LM-1 round 27).
 var runRepack = func(rp string) error {
-	_, err := gitLow(rp, []string{derivedEnv}, "-c", "pack.threads=2", "-c", "pack.windowMemory=256m",
-		"repack", "-d", "-q", "--geometric=2", "--write-midx")
+	args := []string{"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "repack", "-d", "-q", "--geometric=2", "--write-midx"}
+	keeps, _ := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.keep"))
+	for _, k := range keeps {
+		args = append(args, "--keep-pack="+strings.TrimSuffix(filepath.Base(k), ".keep")+".pack")
+	}
+	_, err := gitLow(rp, []string{derivedEnv}, args...)
 	return err
 }
 
@@ -2605,32 +2612,52 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		body = b
 	}
 	l := lock(net)
-	l.RLock()
-	defer l.RUnlock()
 	// A clone-cache fill (`spool=<key>`, one at a time per key): the whole answer also goes to a file, written to its
 	// end after the client goes, which the shard object puts to the clone cache (compose.go, "the clone-cache fill").
+	// A stock answer holds the network's lock shared only while its client reads: a spooled one goes on to its end
+	// after a cancel (B0-34's probe cancels after one byte), and holding the lock that long, 60 to 200 s for round 26's
+	// stock misses, held every ingest behind it, and every reader behind the waiting writer. Unlocked, the rest of the
+	// spool risks only an evict, which fails it and leaves no entry.
+	release := sync.OnceFunc(func() {})
 	out := io.Writer(flushOnWrite{w})
 	var done func(bool)
 	if id := r.URL.Query().Get("spool"); !advertise && spoolRe.MatchString(id) {
 		var f *os.File
 		if f, done = startSpool(id); f != nil {
 			w.Header().Set("x-graft-spool", id)
-			out = &tee{file: f, client: out}
+			out = &tee{file: f, client: out, gone: func() { release() }}
 		}
 	}
 	ended := false
 	if done != nil {
 		defer func() { done(ended) }()
 	}
+	// A composed miss takes no network lock. A writer queued behind a stock upload-pack that streams for a minute
+	// holds every later reader too, and round 26's composed misses got their first byte in batches, seconds to a
+	// minute after they arrived (LM-1 round 26). It needs none: it reads objects and refs, which ingests and ref writes
+	// only add to or move, and it opens the chain's packs before it sends, so an evict or a fold that lands meanwhile
+	// sends it to stock in setup or leaves it reading files already open.
+	only := r.URL.Query().Get("compose") == "only"
 	if want, tag, ok := composable(body); !advertise && ok && strings.Contains(proto, "version=2") {
 		w.Header().Set("content-type", "application/x-git-upload-pack-result")
-		if answered, why := composeMiss(w, out, net, rp, want, tag); answered {
+		answered, why := composeMiss(w, out, net, rp, want, tag)
+		if answered {
 			ended = why == ""
 			return
-		} else {
-			w.Header().Set("x-graft-compose", "stock: "+why)
 		}
+		w.Header().Set("x-graft-compose", "stock: "+why)
+	} else if only {
+		w.Header().Set("x-graft-compose", "stock: not composable")
 	}
+	// compose=only: the shard object asks for the composed answer before it waits for a catch-up, and serves stock only
+	// after one (workers/site/src/shard.rs, "/upload-pack"), so a stock answer still reads a caught-up disk.
+	if only {
+		w.WriteHeader(409)
+		return
+	}
+	l.RLock()
+	release = sync.OnceFunc(l.RUnlock)
+	defer func() { release() }()
 	var sessions []string
 	if strings.Contains(proto, "version=2") {
 		sessions = sessionPrefixes(body)

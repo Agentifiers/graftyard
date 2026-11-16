@@ -58,6 +58,7 @@ import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
 import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
+import { r2list } from "../../fanout/r2list.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
@@ -463,7 +464,22 @@ async function push(tok, ref, from, path, bytes, extra = {}) {
   // and every row passes `scan`).
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
-  return [res, r.ms, res === "ok" ? commit : from, r.err];
+  notePushTiming(r.headers?.get?.("server-timing"), res);
+  return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null];
+}
+// push-reads: a test edge's `server-timing` on every push (resolve, auth, install, gate, context, validate, admission,
+// commit, stage, total), each stage's ms by name, plus how many commits ran the create probe (`probe`) and how many
+// pushes staged before their first commit (`stagefirst`).
+const pushStages = {}; const pushMarks = { timed: 0, probed: 0, stagedFirst: 0, commits: 0 };
+function notePushTiming(h, res) {
+  if (!h) return;
+  pushMarks.timed++;
+  const seen = {};
+  for (const m of h.matchAll(/([a-z_]+);dur=(\d+)/g)) {
+    (pushStages[m[1]] ??= []).push(Number(m[2]));
+    seen[m[1]] = (seen[m[1]] ?? 0) + 1;
+  }
+  pushMarks.probed += seen.probe ?? 0; pushMarks.stagedFirst += seen.stagefirst ? 1 : 0; pushMarks.commits += seen.commit ?? 0;
 }
 const size = () => plan.packFixed ?? (Math.random() < plan.bigShare ? plan.bigBytes : plan.packMin + Math.floor(Math.random() * (plan.packMax - plan.packMin)));
 
@@ -565,7 +581,10 @@ if (plan.openPrs) {
 // 73 MiB on graft-m3e (narrow-reads-3), falls in setup on every row. The wait and the leader's memory then are logged.
 {
   const st = await statuses(CHAIN);
-  const lead = st.find((s) => s.role === "leader");
+  const lead = st.find((s) => s.role === "leader") ?? await (async () => {
+    const site = await (await import("../hosted/lib.mjs")).leaderOf(CHAIN).catch(() => undefined);
+    return site === undefined ? undefined : (await statuses(CHAIN)).find((s) => s.site === site);
+  })();
   const ls = (st.find((s) => s.config)?.config?.config?.normal?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
   if (lead && ls.length) {
     const since = Date.now();
@@ -582,6 +601,9 @@ if (plan.openPrs) {
 }
 t0 = Date.now() + 5_000;
 end = t0 + seconds * 1000;
+// A SIGTERM (`tests/fanout/memguard.mjs`'s stop) ends the load window now, so the row is still written, as `stopped`.
+let stopped = null;
+process.on("SIGTERM", () => { stopped = new Date().toISOString(); end = Math.min(end, Date.now()); log(`SIGTERM: window ended at ${stopped}`); });
 
 // The scheduler: each kind at its rate, Poisson, with at most `cap` in flight per kind.
 const inflight = {};
@@ -610,8 +632,23 @@ const stages = (r) => {
 };
 let pushN = 0;
 let labelN = 0;
+// B0-34 round 26: every first-byte probe's clone-cache answer, and on a miss its `x-graft-compose` (composed, or stock
+// with its reason) and whether the shard's spool left `clone/<net>/<key>/0` in R2 within a minute of the cancel.
+const missRows = [];
+const fillChecks = [];
+/** The edge's CloneKey digest (crates/git/src/clone.rs `CloneKey::digest`) for the probe's fetch: one want, depth 1,
+ *  no filter, caps `no-progress` and `ofs-delta`, no `include-tag` (so no tags digest). */
+function cloneKeyHex(net, want) {
+  const wants = createHash("sha256").update(Buffer.from(want, "hex")).digest();
+  const be64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
+  const h = createHash("sha256").update("graftyard/clone/1\0").update(be64(net)).update(wants).update(be64(2))
+    .update("\0none").update("\0");
+  for (const c of ["no-progress", "ofs-delta"]) h.update(c).update("\0");
+  return h.update(Buffer.alloc(32)).digest("hex");
+}
 /** A v2 fetch of `want` from `repo`: time to its first byte as `kind`. `firstByte` (B0-34's 5 GB network) asks depth
- *  1 and cancels after the first byte; otherwise the whole answer is read. */
+ *  1 with `ofs-delta` (the composable shape a `git clone --depth 1` sends) and cancels after the first byte; otherwise
+ *  the whole answer is read. */
 async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
   const s = Date.now();
   const ctl = new AbortController();
@@ -619,11 +656,29 @@ async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
   try {
     const r = await fetch(`${EDGE}/${repo}.git/git-upload-pack`, { method: "POST", signal: ctl.signal,
       headers: { ...auth(tok), "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
-      body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), pkt(`want ${want}\n`),
-        ...(firstByte ? [pkt("deepen 1\n")] : []), pkt("done\n"), Buffer.from("0000")]) });
+      body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), ...(firstByte ? [pkt("ofs-delta\n")] : []),
+        pkt(`want ${want}\n`), ...(firstByte ? [pkt("deepen 1\n")] : []), pkt("done\n"), Buffer.from("0000")]) });
     const reader = r.body.getReader();
     await reader.read();
-    note(kind, Date.now() - s, String(r.status));
+    const ms = Date.now() - s;
+    note(kind, ms, String(r.status));
+    if (firstByte && b034) {
+      const cache = r.headers.get("x-graft-clone-cache"), compose = r.headers.get("x-graft-compose");
+      note(`${kind}:${cache ?? "nocache"}`, ms, compose ?? String(r.status));
+      if (cache === "miss") {
+        const row = { at: new Date(s).toISOString(), ms, status: r.status, compose, want, key: cloneKeyHex(Number(CHAIN.split(":")[1]), want), filled: null };
+        missRows.push(row);
+        fillChecks.push((async () => {
+          const by = Date.now() + 60_000;
+          while (Date.now() < by) {
+            await sleep(10_000);
+            const found = (await r2list(`clone/${CHAIN.split(":")[1]}/${row.key}/0`)).filter((x) => x.keys?.length).map((x) => x.site);
+            if (found.length) { row.filled = { sites: found, afterS: Math.round((Date.now() - s) / 1000) }; return; }
+          }
+          row.filled = false;
+        })());
+      }
+    }
     if (firstByte) await reader.cancel();
     else while (!(await reader.read()).done);
     return String(r.status);
@@ -758,13 +813,15 @@ if (plan.burst) jobs.push((async () => {
   const r = await Promise.all(Array.from({ length: plan.burst.pushes }, (_, k) => sleep((k * 1000) / plan.burst.pushes).then(async () => {
     const a = agents[k % agents.length];
     const at = Date.now();
-    const [res, ms, , err] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
+    const [res, ms, , err, timing] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
     note("push:burst", ms, res);
-    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), ...(err ? { err } : {}) });
+    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), timing, ...(err ? { err } : {}) });
     return [res, Date.now() - s];
   })));
   writeRow(OUT, { step: "burst", hot, warm, pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
     unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")) });
+  // Every burst push's stages, in send order, for where each one's time went.
+  writeRow(OUT, { step: "burst timing", pushes: sent.sort((x, y) => x.k - y.k).map(({ k, ms, res, timing }) => ({ k, ms, res: String(res).slice(0, 40), timing })) });
 })());
 // L0-12's overlap probe. Pair k's holder takes `a1p/<RUN>/<k>/**` Exclusive for PROBE_TTL_S and never renews it;
 // from 2 s before its end the other task asks for the same scope every PROBE_EVERY_MS until it gets a 201, which is
@@ -849,7 +906,10 @@ if (b034) {
   const { execFileSync: ex } = await import("node:child_process");
   // The tip: the next real first-parent commit, fast-forwarded onto main under the admin's PAT from the bare clone.
   const g = new (await import("../hosted/lib.mjs")).Git(R).as(admin);
-  let next = 0;
+  // From the commit after main's place in that history: the repository keeps main between rounds, so from index 0
+  // every move was a non-fast-forward (round 26: 60 of 60 refused in the j9 and kill phases).
+  let next = Math.max(0, b034.future.indexOf(main) + 1);
+  writeRow(OUT, { step: "b034 tip start", main, next, of: b034.future.length });
   jobs.push(every("tip:move", plan.tipMovesPerMin / 60, async () => {
     const c = b034.future[next];
     if (!c) return "no more history";
@@ -904,6 +964,7 @@ if (b034) {
 
 // The feed: pollers straight to followers and learners, as the edge sends them, each watching one agent group.
 const seen = []; // [poller, ref, ms after its push's ack, seen at]
+const feedAnswers = {}; // "site:role:member" -> { admit: count }, every member answer the pollers got
 // L0-12 judges feed p99 outside leader kills: each kill push's send time; an event seen within KILL_WINDOW_MS after one
 // is inside a kill (an election, ELECTION_AFTER plus a campaign, about 10 s [inference]).
 const kills = [];
@@ -964,6 +1025,9 @@ if (plan.pollers) {
       try { r = await member(CHAIN, m.site, "/feed", body({ learner_answers: learnerAnswered && !m.learner }), 40_000, m.name); } catch { continue; }
       const v = r.v ?? {};
       tried.push(v.admit ?? `status ${r.status}`);
+      // Each member's answers by kind, so a run shows which member sent polls back `gone` or `lagging`.
+      const by = (feedAnswers[`${m.site}:${m.learner ? "learner" : "voter"}:${m.name}`] ??= {});
+      by[v.admit ?? `status ${r.status}`] = (by[v.admit ?? `status ${r.status}`] ?? 0) + 1;
       if (r.status !== 200 || !v.admit) continue;
       if (v.admit === "hold") return { v, m, tried };
       if (v.admit === "gone" || v.admit === "tooMany") return { v, m, tried };
@@ -996,7 +1060,9 @@ if (plan.pollers) {
           const missed = misses;
           if (v.admit === "hold") misses = {};
           else for (const t of ["429", ...tried]) misses[t] = (misses[t] ?? 0) + 1;
+          // A 410 names the oldest cursor the member serves; a client follows it, as from `oldest_cursor`.
           if (v.cursor) cursor = v.cursor;
+          else if (v.admit === "gone" && v.oldest) cursor = v.oldest;
           for (const e of v.events ?? []) {
             const p = e[2]?.AgentPush;
             const head = p ? (typeof p.head === "string" ? p.head : Buffer.from(p.head).toString("hex")) : null;
@@ -1024,7 +1090,10 @@ function latestBudget(now, seen) {
   return now.map((b, s) => (!b || (seen[s] && b.since !== seen[s].since && b.computed < seen[s].computed)) ? seen[s] ?? b : b);
 }
 const leaderBefore = await statuses(CHAIN);
-const leader = leaderBefore.find((s) => s.role === "leader")?.site;
+// One `/status` round can miss the leader (m25cap500, 131326: "leader site undefined", and the row lost its leader
+// stats), so `leaderOf` asks again, up to 20 s.
+const leader = leaderBefore.find((s) => s.role === "leader")?.site
+  ?? await (await import("../hosted/lib.mjs")).leaderOf(CHAIN).catch(() => undefined);
 if (leader !== undefined) await member(CHAIN, leader, "/stats?reset=1", undefined, 15_000);
 // `--first-for`: round 5's concurrent re-sends, on purpose. Every member gets it, so a leader elected mid-run has it too.
 if (opt["first-for"]) for (const s of [0, 1, 2]) {
@@ -1050,6 +1119,16 @@ if (leader !== undefined) jobs.push((async () => {
   while (Date.now() < end - 20_000) await sleep(Math.min(5_000, end - 20_000 - Date.now()));
   lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
 })());
+// Round 14: the leader's admission every 10 s (capacity, queued, agent queue and bytes, pressure), from the summary.
+const admissionSeen = [];
+if (leader !== undefined) jobs.push((async () => {
+  await sleep(Math.max(0, t0 - Date.now()));
+  while (Date.now() < end) {
+    const v = (await member(CHAIN, leader, "/stats?summary=1", undefined, 10_000).catch(() => ({}))).v;
+    if (v?.admission) admissionSeen.push({ s: Math.round((Date.now() - t0) / 1000), ...v.admission, wasmMemMb: v.wasmMemMb });
+    await sleep(10_000);
+  }
+})());
 jobs.push((async () => {
   while (Date.now() < end) {
     await sleep(15_000);
@@ -1057,6 +1136,8 @@ jobs.push((async () => {
   }
 })());
 await Promise.all(jobs);
+// The last first-byte misses' R2 checks run up to a minute past the window.
+await Promise.all(fillChecks);
 const killLog = await Promise.all(killRows);
 if (opt["first-for"]) for (const s of [0, 1, 2]) await member(CHAIN, s, "/bench_seed", { prsyncFirstFor: 0 }, 15_000).catch(() => {});
 // Give the last pushes' first attempts time to reach the shard.
@@ -1081,12 +1162,14 @@ function driverMs() {
 const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
 // A sample array, or `/stats?summary=1`'s `{n, p50, p99}` of one.
 const ps = (x) => (Array.isArray(x) || x == null ? { n: x?.length, p50: pct(x, 0.5), p99: pct(x, 0.99) } : { n: x.n, p50: x.p50, p99: x.p99 });
-const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.length, perS: +(xs.length / seconds).toFixed(2), p50: pct(xs, 0.5), p99: pct(xs, 0.99), codes: codes[k] }]));
+// A stopped window's rates are over the seconds it ran.
+const ran = stopped ? Math.max(1, (end - t0) / 1000) : seconds;
+const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.length, perS: +(xs.length / ran).toFixed(2), p50: pct(xs, 0.5), p99: pct(xs, 0.99), codes: codes[k] }]));
 const feedLat = seen.map((x) => x[2]);
 const v = {
-  row, run: RUN, seconds, agents: plan.agents, offered: offered(plan), byKind: sum,
+  row, run: RUN, seconds, ...(stopped ? { stopped, ranSeconds: +ran.toFixed(1) } : {}), agents: plan.agents, offered: offered(plan), byKind: sum,
   ...(killLog.length ? { kills: killLog.map(({ sent, before, after, reset, killed, res }) => ({ sent, leader: before.leader, term: before.term, killed, reset, after: after.leader, termAfter: after.term, res })) } : {}),
-  feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null,
+  feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null, byMember: feedAnswers,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
       return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}),
     // The slowest 1% outside kills: which member served them and what the poller's misses were before the hold.
@@ -1109,14 +1192,21 @@ const v = {
       .map(([k, xs]) => [k, ps(xs)])),
     // Round 12's confirm split by transaction size: the gate wait, the turn queue, and storage (`sync - turn`).
     confirmSplit: lstats.confirmSplit ?? null,
+    // Round 14: admitted commands' priced bytes by class (what moves admission's `cmdBytes`), and the statement mix of
+    // the leader's newest transactions of 100 KB or more.
+    admittedBytes: lstats.admittedBytes ?? null, bigTx: lstats.bigTx ?? null,
     depFails: lstats.depFails,
     // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
     entries: lstats.entries, commands: lstats.commands,
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
-  ...(b034 ? { b034: { kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
+  ...(b034 ? { b034: { misses: missRows, missSummary: { n: missRows.length,
+      compose: missRows.reduce((m, x) => ((m[x.compose ?? "none"] = (m[x.compose ?? "none"] ?? 0) + 1), m), {}),
+      filled: missRows.filter((x) => x.filled).length, notFilled: missRows.filter((x) => x.filled === false).length }, kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
+  ...(admissionSeen.length ? { admission: admissionSeen } : {}),
+  ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {
     overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,

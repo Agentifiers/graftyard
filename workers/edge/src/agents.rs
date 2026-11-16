@@ -342,9 +342,14 @@ pub(crate) async fn push_context(
     if !agentish(c, &push.actor, install.as_ref(), &push.updates) {
         return None;
     }
-    let core = match crate::api::core_rows(c, repo, "agent").await {
-        Ok(Ok(store)) => store,
-        _ => graftyard_fold::MemStore::default(),
+    // The read gate's one read holds the agent rows unless the member answered access alone (an older release).
+    let held = c.push_rows.borrow().as_ref().filter(|(_, agent)| *agent).map(|(core, _)| core.clone());
+    let core = match held {
+        Some(core) => core,
+        None => match crate::api::core_rows(c, repo, "agent").await {
+            Ok(Ok(store)) => store,
+            _ => graftyard_fold::MemStore::default(),
+        },
     };
     Some(AgentPush { install, core })
 }

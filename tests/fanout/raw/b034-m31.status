@@ -1,0 +1,16 @@
+2026-11-15T00:27:31Z api.cloudflare.com in request paths: 0 files
+2026-11-15T00:27:31.549Z b034 networks: {"mono":{"repo":"m3org/b034-mono","chain":"repo:131296","who":"admin"},"second":{"repo":"m3-member/b034-second","chain":"repo:327700","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-1","chain":"repo:9043968","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-2","chain":"repo:9043969","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-3","chain":"repo:9043970","who":"hostile"}]}
+2026-11-15T00:27:31Z seed m3-member/b034-second exit 0
+2026-11-15T00:27:31Z seed m3r-b034-hostile/b034-hostile-1 exit 0
+2026-11-15T00:27:31Z seed m3r-b034-hostile/b034-hostile-2 exit 0
+2026-11-15T00:27:31Z seed m3r-b034-hostile/b034-hostile-3 exit 0
+2026-11-15T00:27:31Z seed m3org/b034-mono exit 0
+2026-11-15T00:27:32Z b0-34 drain start
+2026-11-15T00:58:01Z b0-34 drain exit 0 {"at":"2026-11-15T00:58:01.339Z","s":1829.2,"kind":"summary","drained":true,"firstS":1644.2,"drainS":0,"promotedFrom0":6,"promotedTo":17,"target":648}
+git#2#net:131296 200
+git#1#net:131296 200
+git#0#net:131296 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-15T00:58:35Z b0-34 shards torn down before the cold warm
+2026-11-15T00:58:35Z b0-34 warm start

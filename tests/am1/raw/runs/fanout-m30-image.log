@@ -1,0 +1,65 @@
+2026-11-14T22:10:54Z
+0f77352b
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+sha256:198f296ca42f8f0eb99d5f98a473674f7e9f049f559b700bf45f2f4cdc090155
+npm notice run npx
+npm notice run 'wrangler' containers push graft-m1-site-gitshard-git:am1runs
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0
+────────────────────
+
+WARNING! Your credentials are stored unencrypted in '/home/user/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+Login Succeeded
+The push refers to repository [registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git]
+652267fc5b16: Waiting
+5681c59cd025: Waiting
+710f3da1112f: Waiting
+20f00a6be639: Waiting
+20f00a6be639: Waiting
+652267fc5b16: Waiting
+5681c59cd025: Waiting
+710f3da1112f: Waiting
+20f00a6be639: Waiting
+652267fc5b16: Waiting
+5681c59cd025: Waiting
+710f3da1112f: Waiting
+20f00a6be639: Waiting
+652267fc5b16: Waiting
+5681c59cd025: Waiting
+710f3da1112f: Waiting
+20f00a6be639: Waiting
+652267fc5b16: Waiting
+5681c59cd025: Waiting
+710f3da1112f: Waiting
+20f00a6be639: Waiting
+652267fc5b16: Layer already exists
+5681c59cd025: Layer already exists
+710f3da1112f: Layer already exists
+0c5ffce58e94: Waiting
+0c5ffce58e94: Waiting
+20f00a6be639: Waiting
+20f00a6be639: Waiting
+0c5ffce58e94: Waiting
+20f00a6be639: Waiting
+0c5ffce58e94: Waiting
+0c5ffce58e94: Waiting
+0c5ffce58e94: Waiting
+0c5ffce58e94: Pushed
+20f00a6be639: Pushed
+am1runs: digest: sha256:198f296ca42f8f0eb99d5f98a473674f7e9f049f559b700bf45f2f4cdc090155 size: 1411
+Pushed image: registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git:am1runs
+exit 0
+graft-m1-site-gitshard-git@sha256:198f296ca42f8f0eb99d5f98a473674f7e9f049f559b700bf45f2f4cdc090155
+graft-shard-cancel@sha256:198f296ca42f8f0eb99d5f98a473674f7e9f049f559b700bf45f2f4cdc090155
+registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:198f296ca42f8f0eb99d5f98a473674f7e9f049f559b700bf45f2f4cdc090155
+2026-11-14T22:11:03Z
+DONE

@@ -12,7 +12,9 @@ const [name, secs] = process.argv.slice(2);
 const until = Date.now() + Number(secs) * 1000;
 const idOf = () => readFileSync(`${process.env.M3_STATE}/am1-runs-repos.txt`, "utf8").split("\n").map((l) => l.split(" ")).find(([n]) => n === name)?.[1];
 let id;
-while (!(id = idOf()) && Date.now() < until) await sleep(2_000);
+// A `repo:N` argument names the chain directly (B0-34's b034-mono is not in am1-runs-repos.txt).
+if (name.startsWith("repo:")) id = name.slice(5);
+while (!id && !(id = idOf()) && Date.now() < until) await sleep(2_000);
 if (!id) throw new Error(`${name}: no id`);
 const chain = `repo:${id}`;
 console.log(JSON.stringify({ at: new Date().toISOString(), chain }));

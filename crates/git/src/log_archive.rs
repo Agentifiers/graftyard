@@ -330,7 +330,16 @@ pub trait ArchiveHost {
     fn rows(&self, after: Index) -> Result<Rows<'_>, String>;
     /// The packs under these checksums as one complete pack, validated and placed with its `.idx`, which names the
     /// range `from..=to`: the home shard's `/promote` and `/validate`, then `PackStore::place`. Always `Stored`.
-    async fn promote(&self, sums: &[Digest], from: Index, to: Index, request: RequestId) -> Result<PackRef, String>;
+    /// `warm`: promote-ahead's, a warm call (`crate::Caller::Warm`) that starts no stopped shard; `None` when every
+    /// shard it would ask is stopped.
+    async fn promote(
+        &self,
+        sums: &[Digest],
+        from: Index,
+        to: Index,
+        request: RequestId,
+        warm: bool,
+    ) -> Result<Option<PackRef>, String>;
     /// The `Committed` marker of a stored pack at `index`.
     async fn mark(&self, pack: &PackRef, index: Index);
     /// Create-only puts of the archive object; how many buckets hold it.
@@ -455,6 +464,8 @@ async fn step_in<H: ArchiveHost>(
     // past the cap, and a run that promoted first between its trigger and the cap carried the log over the cap.
     let ahead = v.snapshotted && v.unpromoted > max_bytes / PROMOTE_AHEAD;
     let ahead_first = ahead && !run.draining;
+    // No range due: promote-ahead's warm call (`ArchiveHost::promote`).
+    let warm = d.is_none();
     match d {
         Some(d) if !ahead_first && matches!(next(v.promoted.as_ref(), d.from, d.to), Next::Archive { .. }) => {
             return archive(h, &v, d, target, range_max).await;
@@ -466,7 +477,11 @@ async fn step_in<H: ArchiveHost>(
     let Some(plan) = plan(h, done, v.commit, budget, promote_max).await? else { return Ok(Step::Idle) };
     let (from, to) = (Index(done.0 + 1), plan.to);
     let request = promote_request(v.chain, from, to);
-    let pack = h.promote(&plan.sums, from, to, request).await?;
+    // Promote-ahead is no client's work, so it runs only on a shard already running; a due range starts one, since
+    // the log cannot archive past it otherwise.
+    let Some(pack) = h.promote(&plan.sums, from, to, request, warm).await? else {
+        return Ok(Step::Idle);
+    };
     if !matches!(pack, PackRef::Stored { .. }) {
         return Err("a promoted pack is always stored".into());
     }

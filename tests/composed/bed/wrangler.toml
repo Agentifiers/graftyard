@@ -1,0 +1,6 @@
+name = "hitbed"
+main = "./build/index.js"
+compatibility_date = "2026-10-01"
+[[r2_buckets]]
+binding = "A"
+bucket_name = "bed-a-packs"

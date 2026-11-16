@@ -125,6 +125,15 @@ func TestLinuxComposedMissCost(t *testing.T) {
 			miss("composed "+w.name, w.want)
 		}
 	}
+	// Wants 10 and 30 moves behind the chain tip: the diff a miss composes when the chain and the want are that far
+	// apart, which is also its cost when the chain lags HEAD by as many moves.
+	for _, back := range []int{10, 30} {
+		w := chain[len(chain)-1-back]
+		got := miss(fmt.Sprintf("composed, want %d moves from the chain tip", back), w)
+		if back == 30 {
+			cloneInto(t, got, w, run(t, rp, "", "rev-parse", w+"^{tree}"))
+		}
+	}
 	b := miss("composed pull head (checked)", pr)
 	c0 = cpu()
 	cloneInto(t, b, pr, run(t, rp, "", "rev-parse", pr+"^{tree}"))

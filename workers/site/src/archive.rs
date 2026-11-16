@@ -268,10 +268,11 @@ impl ArchiveHost for SiteHost<'_> {
         from: Index,
         to: Index,
         request: RequestId,
-    ) -> std::result::Result<PackRef, String> {
+        warm: bool,
+    ) -> std::result::Result<Option<PackRef>, String> {
         let (chain, record) = self.chain()?;
-        in_band(&self.h.env, &Promote { chain, record, sums: sums.to_vec(), request, range: Some((from.0, to.0)) })
-            .await
+        let p = Promote { chain, record, sums: sums.to_vec(), request, range: Some((from.0, to.0)), warm };
+        in_band(&self.h.env, &p).await
     }
 
     /// One timer turn, so the member's inputs and its Raft tick run between pieces of a promotion's read.
@@ -340,6 +341,9 @@ struct Promote {
     /// The range, which the pack's stored `.idx` names (`git::Place::idx_range`).
     #[serde(default)]
     range: Option<(u64, u64)>,
+    /// Promote-ahead's: every shard call is a warm call (`git::caller`), so a stopped shard is skipped, not started.
+    #[serde(default)]
+    warm: bool,
 }
 
 /// Runs a promotion's shard calls and its placement in a new invocation of this site script, through its own `SITE`
@@ -347,7 +351,7 @@ struct Promote {
 /// and a cold shard's catch-up behind `/promote` read `/entries` back from this member one entry at a time, so each
 /// read went one hop deeper until one failed "Subrequest depth limit exceeded" (merge-budget-4's trace `8c049c94`,
 /// `tests/am1/results/hot-shards-3.md`), as `PrSync`'s first attempt did (`crate::prsync::in_band`).
-async fn in_band(env: &Env, p: &Promote) -> std::result::Result<PackRef, String> {
+async fn in_band(env: &Env, p: &Promote) -> std::result::Result<Option<PackRef>, String> {
     let body = serde_json::to_string(p).map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(Some(body.into()));
@@ -360,13 +364,31 @@ async fn in_band(env: &Env, p: &Promote) -> std::result::Result<PackRef, String>
     }
 }
 
-/// The site script's fetch handler for `in_band`: the promotion's pack, placed, or a 500 with the error. It runs under
+/// The site script's fetch handler for `in_band`: the promotion's pack, placed, `null` when a warm promotion found every
+/// shard stopped, or a 500 with the error. It runs under
 /// `wait_until`, so a leader whose step timed out does not cut it off between the shard and the buckets.
 pub async fn promote_handled(mut req: Request, env: Env, ctx: &Context) -> Result<Response> {
     let p: Promote = req.json().await?;
     let (tx, rx) = futures_channel::oneshot::channel();
     ctx.wait_until(async move {
-        let _ = tx.send(promote(&env, &p).await);
+        // LM-1 round 21: the promotion's size, time and this isolate's wasm memory around it, for G9's hosted rate and
+        // the streamed promotion's memory bound (`tests/am1/results/lm1-memory.md`).
+        let (t0, mem0) = (now_ms(), crate::load::wasm_mem_mb());
+        let r = promote(&env, &p).await;
+        let bytes = match &r {
+            Ok(Some(PackRef::Stored { bytes, .. })) => *bytes,
+            _ => 0,
+        };
+        console_log!(
+            "promotion {:?}{}: {} packs, {bytes} B in {} ms, wasm {mem0:.1} -> {:.1} MB{}",
+            p.range,
+            if matches!(r, Ok(None)) { " skipped, every shard stopped" } else { "" },
+            p.sums.len(),
+            now_ms() - t0,
+            crate::load::wasm_mem_mb(),
+            r.as_ref().err().map(|e| format!(", failed: {e}")).unwrap_or_default()
+        );
+        let _ = tx.send(r);
     });
     match rx.await {
         Ok(Ok(pack)) => Response::from_json(&pack),
@@ -375,7 +397,7 @@ pub async fn promote_handled(mut req: Request, env: Env, ctx: &Context) -> Resul
     }
 }
 
-async fn promote(env: &Env, p: &Promote) -> std::result::Result<PackRef, String> {
+async fn promote(env: &Env, p: &Promote) -> std::result::Result<Option<PackRef>, String> {
     let site = SiteEnv::read(env).map_err(|e| e.to_string())?;
     let ChainId::Repo(repo) = p.chain else { return Err("not a repository chain".into()) };
     let body = serde_json::to_vec(&p.sums.iter().map(|s| s.hex()).collect::<Vec<_>>()).map_err(|e| e.to_string())?;
@@ -391,7 +413,7 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<PackRef, String>
         .collect::<std::result::Result<_, String>>()?;
     let refs: Vec<(SiteId, &git::host::R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
     let store = git::PackStore { sites: &site.sites, buckets: &refs, copies: git::Copies::TwoRegions };
-    let mut last = String::new();
+    let (mut last, mut skipped) = (String::new(), 0);
     let sites = git::promote_sites(&p.record, site.id);
     for (i, at) in sites.iter().copied().enumerate() {
         // The id is fresh per attempt: an attempt whose `Promoted` never committed leaves an unmarked pack, which
@@ -406,12 +428,13 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<PackRef, String>
             part: git::PART_SIZE,
         };
         match promote_on(env, &site, p, at, &body, i + 1 < sites.len(), &store, s).await {
-            Ok(r) => return r,
+            Ok(r) => return r.map(Some),
+            Err((SKIPPED, _)) => skipped += 1,
             Err((status, e)) if git::promote_moves_on(status) => last = e,
             Err((_, e)) => return Err(e),
         }
     }
-    Err(last)
+    if skipped == sites.len() { Ok(None) } else { Err(last) }
 }
 
 /// `/promote` and the `/validate` of its pack on one site's shard, the validate on the shard that built the pack. The
@@ -473,8 +496,12 @@ async fn shard(
     shard_call(env, site, p, at, path, body).await?.bytes().await.map_err(|e| (0, e.to_string()))
 }
 
+/// The status `shard_call` gives a warm call's `skipped` answer (no HTTP status is 1): the shard's container is stopped.
+const SKIPPED: u16 = 1;
+
 /// Site `at`'s git cache shard of the network, whose catch-up reads the group through the record: its answer, body
-/// unread, or `Err((status, body))` for an answer other than 200, status 0 for a failed call.
+/// unread, or `Err((status, body))` for an answer other than 200, status 0 for a failed call and `SKIPPED` for a warm
+/// call (`Promote::warm`) to a stopped shard.
 async fn shard_call(
     env: &Env,
     site: &SiteEnv,
@@ -491,7 +518,8 @@ async fn shard_call(
         .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", at.0, repo.0.0), region.hint()))
         .map_err(|e| fail(e.to_string()))?;
     let rec = serde_json::to_string(&p.record).map_err(|e| fail(e.to_string()))?;
-    let url = format!("https://shard{path}repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
+    let warm = if p.warm { "warm=1&" } else { "" };
+    let url = format!("https://shard{path}{warm}repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(body);
     let req = Request::new_with_init(&url, &init).map_err(|e| fail(e.to_string()))?;
@@ -501,6 +529,9 @@ async fn shard_call(
             r.status_code(),
             format!("shard {path}: {} {}", r.status_code(), r.text().await.unwrap_or_default()),
         ));
+    }
+    if r.headers().has("x-graft-skipped").unwrap_or(false) {
+        return Err((SKIPPED, format!("shard {path}: stopped")));
     }
     Ok(r)
 }

@@ -197,6 +197,19 @@ impl TierRows {
         c
     }
 
+    /// The core rows `acquirejob` reads for a job's secrets and variables: `settings` for the visibility, and every
+    /// `actions_secret` and `actions_variable` row. The member answers them alone to `{"rows": {"actions": true}}`,
+    /// which a member built before it answers with every row. A voter shed the whole-tier read that stood in for it
+    /// within DUMP_EVERY_MS of its last rebuild, and 74 of 586 acquires failed (BF-54 run 2, F77).
+    pub fn actions_rows(core: &dyn Read) -> Vec<(String, Key, Vec<Val>)> {
+        let mut c: Vec<_> =
+            core.get("settings", &[]).map(|cols| ("settings".to_owned(), Vec::new(), cols)).into_iter().collect();
+        for t in ["actions_secret", "actions_variable"] {
+            c.extend(core.prefix(t, &[]).into_iter().map(|(k, cols)| (t.to_owned(), k, cols)));
+        }
+        c
+    }
+
     /// The answer to `{"rows": true, "packed": true}`: the rows as one JSON string. As a `serde_json::Value` tree,
     /// each `Val::Blob` byte is its own node, and a 740 KB answer was a 13 MB tree, peaking at 24 MB per read while it
     /// was built and serialized. At 250 agents the members of a repository ran out of memory on `/read`

@@ -1,0 +1,29 @@
+2026-11-14T14:58:51Z api.cloudflare.com in request paths: 0 files
+2026-11-14T14:58:51.989Z b034 networks: {"mono":{"repo":"m3org/b034-mono","chain":"repo:131296","who":"admin"},"second":{"repo":"m3-member/b034-second","chain":"repo:327700","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-1","chain":"repo:9043968","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-2","chain":"repo:9043969","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-3","chain":"repo:9043970","who":"hostile"}]}
+2026-11-14T14:58:52Z seed m3-member/b034-second exit 0
+2026-11-14T14:58:52Z seed m3r-b034-hostile/b034-hostile-1 exit 0
+2026-11-14T14:58:52Z seed m3r-b034-hostile/b034-hostile-2 exit 0
+2026-11-14T14:58:52Z seed m3r-b034-hostile/b034-hostile-3 exit 0
+2026-11-14T14:58:52Z seed m3org/b034-mono exit 0
+file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:99
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:131296
+    at leaderOf (file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:99:9)
+    at async file:///home/user/workspace/repo/tests/fanout/learners.mjs:16:18
+
+Node.js v26.12.0
+file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:99
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:131296
+    at leaderOf (file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:99:9)
+    at async file:///home/user/workspace/repo/tests/fanout/k.mjs:13:16
+
+Node.js v26.12.0
+2026-11-14T14:59:42Z b0-34 b034-mono repo:131296 start
+2026-11-14T15:01:55Z b0-34 done exit 1
+2026-11-14T15:01:55.727Z repo:131296 leader 0: k 1 at 292
+DONE

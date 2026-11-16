@@ -635,6 +635,85 @@ fn of_two_runners_matched_to_one_job_only_the_first_commits() {
     );
 }
 
+/// F76 (BF-54 hosted): a `Repo`-scope runner whose poll lost its match's answer gets that job on a later poll, within
+/// `RESEND_AFTER` plus one poll, and never a second job. Each poll is the shard leader's `match`: `repo_pick` over the
+/// leader's fold, then `Matched` committed for a match. The runner's first answer is dropped (its poll timed out), so
+/// it holds nothing and polls again every 5 s, as a listener whose poll failed does.
+#[test]
+fn a_repo_scope_runner_whose_match_answer_was_lost_gets_the_job_on_a_later_poll() {
+    use graftyard_actions::broker::{Pick, RESEND_AFTER, Taken};
+    let mut w = World::new();
+    w.register(1);
+    // Polled only here, not by the world's simulated runners.
+    let r = w.runners.pop().unwrap();
+    let labels = LabelSet::parse(["self-hosted", "linux", "x64"]).unwrap();
+    let run = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("build", &[]), spec("test", &[])]);
+    let jobs = w.fold().run(run).unwrap().jobs.clone();
+    let mut taken = Taken::default();
+    let mut answered: Vec<(Timestamp, Pick)> = Vec::new();
+    let matched_at = w.now;
+    for poll in 0.. {
+        let f = w.fold();
+        let p = f.repo_pick(3, &mut taken, r, &labels, false, w.now);
+        if let Pick::Match { job, version, .. } = p {
+            let m = ActionsCmd {
+                actor: ActionsActor::Runner(r),
+                op: ActionsOp::Job { job, version, event: JobEvent::Matched(r) },
+            };
+            assert!(matches!(w.shard_cmd(m), Some(Ok(_))), "the match commits");
+        }
+        // The first answer is lost; every later one reaches the runner.
+        if poll > 0 && !matches!(p, Pick::Busy | Pick::Idle) {
+            answered.push((w.now, p));
+            break;
+        }
+        w.run_for(5_000);
+        assert!(w.now.0 < matched_at.0 + 2 * 60_000, "no answer after 2 minutes: {p:?}");
+    }
+    let (at, p) = answered.pop().unwrap();
+    assert_eq!(p, Pick::Resend { shard: 3, job: jobs[0] }, "the lost match again, not the second job");
+    assert!(at.0 - matched_at.0 <= RESEND_AFTER.as_millis() as u64 + 5_000, "after {} ms", at.0 - matched_at.0);
+    // The second job was never matched to it while it held the first.
+    assert!(matches!(w.fold().job(jobs[1]).unwrap().state, JobState::Queued { .. }));
+}
+
+/// F77 (BF-54 run 2): a runner that lost its `acquirejob` answer asks again (actions/runner v2.338.2 retries
+/// `GetJobMessageAsync` on anything but 404, 409, and 422, and drops the job on those). Its second `Acquired` of the
+/// job it holds `InProgress` commits nothing and is answered, keeping the lease the first one set; another runner's is
+/// still refused, as is any acquire once the job completed.
+#[test]
+fn a_runners_repeated_acquire_of_its_own_job_is_answered_and_anothers_is_refused() {
+    let mut w = World::new();
+    w.register(2);
+    let (r1, r2) = (w.runners.pop().unwrap(), w.runners.pop().unwrap());
+    let run = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("build", &[])]);
+    let job = w.fold().run(run).unwrap().jobs[0];
+    let v = w.fold().job(job).unwrap().version;
+    let ev =
+        |r, version, event| ActionsCmd { actor: ActionsActor::Runner(r), op: ActionsOp::Job { job, version, event } };
+    assert!(matches!(w.shard_cmd(ev(r1, v, JobEvent::Matched(r1))), Some(Ok(_))));
+    assert!(matches!(w.shard_cmd(ev(r1, v + 1, JobEvent::Acquired)), Some(Ok(_))), "the first acquire");
+    assert!(matches!(w.fold().job(job).unwrap().state, JobState::InProgress { runner, .. } if runner == r1));
+    // The answer is lost; the runner asks again 5 to 15 s later, at the version the run service reads then.
+    w.run_for(10_000);
+    let first = w.fold().job(job).unwrap().clone();
+    let again = w.shard_cmd(ev(r1, first.version, JobEvent::Acquired));
+    assert_eq!(again, Some(Ok(ActionsOut::Job(first.state.clone()))), "answered with the same lease");
+    assert_eq!(w.fold().job(job).unwrap(), &first, "and nothing written");
+    assert_eq!(
+        w.shard_cmd(ev(r2, first.version, JobEvent::Acquired)),
+        Some(Err(ActionsErr::Forbidden)),
+        "another runner"
+    );
+    let done = ActionsCmd {
+        actor: ActionsActor::Job(job),
+        op: ActionsOp::Job { job, version: first.version, event: JobEvent::Finished(Conclusion::Success) },
+    };
+    assert!(matches!(w.shard_cmd(done), Some(Ok(_))));
+    let v = w.fold().job(job).unwrap().version;
+    assert!(matches!(w.shard_cmd(ev(r1, v, JobEvent::Acquired)), Some(Err(_))), "a completed job is not acquired");
+}
+
 // ---- the abort path ----
 
 /// The repository is deleted while a run is in progress: `RunChecksCmd` answers `Gone`, and `RunOwner` cancels the run

@@ -1,0 +1,29 @@
+2026-11-15T07:18:03Z api.cloudflare.com in request paths: 0 files
+2026-11-15T07:18:03.437Z b034 networks: {"mono":{"repo":"m3org/b034-mono","chain":"repo:131296","who":"admin"},"second":{"repo":"m3-member/b034-second","chain":"repo:327700","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-1","chain":"repo:9043968","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-2","chain":"repo:9043969","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-3","chain":"repo:9043970","who":"hostile"}]}
+2026-11-15T07:18:03Z seed m3-member/b034-second exit 0
+2026-11-15T07:18:03Z seed m3r-b034-hostile/b034-hostile-1 exit 0
+2026-11-15T07:18:03Z seed m3r-b034-hostile/b034-hostile-2 exit 0
+2026-11-15T07:18:03Z seed m3r-b034-hostile/b034-hostile-3 exit 0
+2026-11-15T07:18:03Z seed m3org/b034-mono exit 0
+2026-11-15T07:18:03Z b0-34 drain start
+2026-11-15T07:18:12Z b0-34 drain exit 0 {"at":"2026-11-15T07:18:12.372Z","s":8.4,"kind":"summary","drained":true,"stalled":false,"firstS":null,"drainS":null,"promotedFrom0":275,"promotedTo":275,"target":746,"unpromoted":63871110,"unpromotedPacks":45,"alarms":[]}
+git#2#net:131296 200
+git#1#net:131296 200
+git#0#net:131296 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-15T07:18:45Z b0-34 shards torn down before the cold warm
+{"net": "131296", "running": 0, "other_image": 0}
+2026-11-15T07:18:47Z b0-34 warm start
+2026-11-15T07:22:23Z b0-34 warm exit 0 {"at":"2026-11-15T07:22:23.604Z","s":215.7,"kind":"summary","mainS":163,"catchupS":{"0":215.7,"1":155.7,"2":186},"limitMin":45}
+{"name": "git#2#net:131296", "started": "2026-11-15T07:19:05.475Z", "image": "sha256:36c17feb394f20d8619365190f266c4d48b1a0aca493f4d5833d9ace950207c9"}
+{"name": "git#1#net:131296", "started": "2026-11-15T07:19:03.879Z", "image": "sha256:36c17feb394f20d8619365190f266c4d48b1a0aca493f4d5833d9ace950207c9"}
+{"name": "git#0#net:131296", "started": "2026-11-15T07:19:03.716Z", "image": "sha256:36c17feb394f20d8619365190f266c4d48b1a0aca493f4d5833d9ace950207c9"}
+{"net": "131296", "running": 3, "other_image": 0}
+2026-11-15T07:22:25Z b0-34 warm images exit 0
+2026-11-15T07:22:32.757Z repo:131296 leader 0: learners [{"addr":192,"doName":"repo:131296#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131296#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131296#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131296#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131296#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131296#3#l5","join":20 config 749
+2026-11-15T07:22:33.290Z repo:131296 leader 0: k 1 at 749
+2026-11-15T07:22:33Z b0-34 b034-mono repo:131296 start
+2026-11-15T07:47:21Z b0-34 done exit 0
+2026-11-15T07:47:21.699Z repo:131296 leader 0: k 1 at 815
+DONE

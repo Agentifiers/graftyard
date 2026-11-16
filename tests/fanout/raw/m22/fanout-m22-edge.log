@@ -1,0 +1,62 @@
+2026-11-13T13:39:13Z
+565bdb01
+?? .worktrees/
+?? tests/fanout/raw/.b034-seed1.started
+?? tests/fanout/raw/.b034-seed2.started
+?? tests/fanout/raw/.rows-m10.started
+?? tests/fanout/raw/.rows-m11.started
+FORMATS_ENABLED=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,32.18,18.3
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling graftyard-git v0.1.0 (/home/user/workspace/repo/crates/git)
+   Compiling graftyard-lookup v0.1.0 (/home/user/workspace/repo/crates/lookup)
+   Compiling graftyard-api v0.1.0 (/home/user/workspace/repo/crates/api)
+   Compiling graftyard-edge v0.1.0 (/home/user/workspace/repo/workers/edge)
+    Finished `release` profile [optimized] target(s) in 2m 01s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 2m 30s
+[INFO]: 📦   Your wasm pkg is ready to publish at /home/user/workspace/repo/workers/edge/build/.tmp.
+
+  index.js  29.6kb
+
+⚡ Done in 29ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m2b-edge.jsonc
+
+ ⛅️ wrangler 4.153.0 (update available 4.161.0)
+───────────────────────────────────────────────
+Total Upload: 3981.63 KiB / gzip: 1296.32 KiB
+Worker Startup Time: 6 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_0 (Member, defined in graft-m2b-site-a)                           Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m2b-site-a)                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m2b-site-a)                          Durable Object            
+env.MEMBER_1 (Member, defined in graft-m2b-site-b)                           Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m2b-site-b)                       Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m2b-site-b)                          Durable Object            
+env.MEMBER_2 (Member, defined in graft-m2b-site-c)                           Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m2b-site-c)                       Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m2b-site-c)                          Durable Object            
+env.BUCKET_0 (graft-m2b-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m2b-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m2b-site-c-packs)                                        R2 Bucket                 
+env.OPS (graft-m2b-ops)                                                      Worker                    
+env.PLAN ("pro")                                                             Environment Variable      
+env.SSH_OPTION ("off")                                                       Environment Variable      
+env.EDGE_CAP_BYTES ("80000000")                                              Environment Variable      
+env.FORMATS_ENABLED ("32.1,32.4,32.5,32.6,32.7,32.9,32.11,3...")             Environment Variable      
+env.PART_BYTES ("5242880")                                                   Environment Variable      
+env.HOST ("graft-m2b-edge.<workers-subdomain>.work...")                        Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m2b-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M6MNQWC88HGQ669NCJTJ4JA2")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("6eee12a413e75a3d171088417eb467d9724a2...")      Environment Variable      
+env.LOGINS ("{"7000001":"m2b","7000002":"m2b-write...")                      Environment Variable      
+
+Uploaded graft-m2b-edge (5.03 sec)
+Deployed graft-m2b-edge triggers (0.64 sec)
+  https://graft-m2b-edge.<workers-subdomain>.workers.dev
+Current Version ID: f9d34dec-b366-4894-ab5b-2898105b4e2e
+exit 0
+2026-11-13T13:41:54Z
+DONE

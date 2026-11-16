@@ -43,6 +43,13 @@ use worker::*;
 pub const BROKER_HELD_MAX: u32 = 2_000;
 /// A poll is held this long [inference: under the runner's 100 s HTTP timeout, measured].
 const POLL_HOLD: Duration = Duration::from_secs(50);
+/// Asks of a shard's leader one broker has in flight at once [guess]. On BF-54 the broker held 2,000 polls at 47 to
+/// 109 MiB while they asked 290 to 430 times a second, answered at p50 1 to 17 ms. Once jobs ran, answers took p50 0.1
+/// to 1.3 s, and every hint woke all 2,000 at once. The isolate reached 270 MiB and ended `exceededMemory` 21 times in
+/// 25 minutes, each time dropping every held poll and the matches they had committed [measured; that the asks in
+/// flight held the memory is an inference, F76]. 64 at a 10 ms answer is 6,400 asks a second, over the 430 that 2,000
+/// polls asking every `ASK_EVERY` need [inference].
+const ASKS_MAX: u32 = 64;
 /// A held poll asks the leader again this often without a hint [guess: SHARED's reload interval is 30 s; a short
 /// interval bounds a lost hint's delay].
 const ASK_EVERY: Duration = Duration::from_secs(5);
@@ -91,10 +98,45 @@ pub struct RunnerBroker {
     taken: RefCell<Taken>,
     /// M4-WP4: the object's storage, which keeps `Seen` under `SEEN_KEY`.
     state: State,
+    /// Asks of a shard's leader in flight, and the polls waiting for one to end (`ASKS_MAX`).
+    asking: Cell<u32>,
+    ask_queue: RefCell<std::collections::VecDeque<oneshot::Sender<()>>>,
+}
+
+/// One of `ASKS_MAX` ask slots: freed on drop, which wakes the oldest poll still waiting.
+struct AskSlot<'a>(&'a RunnerBroker);
+
+impl<'a> AskSlot<'a> {
+    fn take(b: &'a RunnerBroker) -> Self {
+        b.asking.set(b.asking.get() + 1);
+        AskSlot(b)
+    }
+}
+
+impl Drop for AskSlot<'_> {
+    fn drop(&mut self) {
+        self.0.asking.set(self.0.asking.get() - 1);
+        // A waiter whose poll was dropped refuses the wake: try the next.
+        loop {
+            let next = self.0.ask_queue.borrow_mut().pop_front();
+            match next.map(|tx| tx.send(())) {
+                Some(Err(())) => continue,
+                _ => break,
+            }
+        }
+    }
 }
 
 impl RunnerBroker {
+    /// One ask of a shard's leader, at most `ASKS_MAX` at once: a poll past them waits in line until an ask ends, and
+    /// looks again after a second without a wake. The slot is freed when the ask ends or its poll is dropped.
     async fn ask(&self, chain: ChainId, record: &PlacementRecord, body: &Value) -> std::result::Result<Value, String> {
+        while self.asking.get() >= ASKS_MAX {
+            let (tx, rx) = oneshot::channel();
+            self.ask_queue.borrow_mut().push_back(tx);
+            let _ = crate::host::within(Duration::from_secs(1), rx).await;
+        }
+        let _slot = AskSlot::take(self);
         // The lookup follows a member's `notLeader` to the leader.
         crate::lookup::call(&self.env, chain, record, "/runsvc", body).await.map(|(v, _)| v)
     }
@@ -364,6 +406,8 @@ impl DurableObject for RunnerBroker {
             waiters: RefCell::new(Vec::new()),
             summaries: RefCell::new(Default::default()),
             taken: RefCell::new(Default::default()),
+            asking: Cell::new(0),
+            ask_queue: RefCell::new(Default::default()),
         }
     }
 

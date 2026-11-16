@@ -1,0 +1,18 @@
+2026-11-14T14:13:29Z cost {"workers_requests": 6415644, "workers_cpu_ms": 80492533, "do_requests": 45234174, "do_rows_written": 57928812, "do_active_s": 2657936, "containers_cpu_s": 75739, "containers_gib_s": 17537191, "containers_gb_s": 30830716, "containers_usd": 47.52, "usd": 119.92}
+2026-11-14T14:14:30.595Z m3org/fm28r33-b033 = 131336
+2026-11-14T14:15:20.509Z repo:131336 leader 0: learners [{"addr":192,"doName":"repo:131336#9#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131336#9#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131336#9#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131336#9#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131336#9#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131336#9#l5","join":20 config 7
+2026-11-14T14:15:24.039Z repo:131336 leader 0: set k 4: {"grants":[[0,[5,2,3]],[2,[5,2,3]]],"k":4,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-14T14:15:24.134Z repo:131336 leader 0: k 4 at 8
+2026-11-14T14:15:24Z b0-33 fm28r33-b033 131336 start
+2026-11-14T14:25:31.283Z repo:131336 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":5},"stepped":true,"want":0}
+2026-11-14T14:25:31.406Z repo:131336 leader 0: k 1 at 239
+2026-11-14T14:25:31Z b0-33 fm28r33-b033 131336 done exit 0
+2026-11-14T14:25:37Z torn down 131336
+git#0#pool:3 200
+git#0#pool:4 200
+git#0#pool:6 200
+git#0#net:131336 200
+{"torn_down": 4, "codes": {"200": 4}}
+sweep: no shard container running
+2026-11-14T14:25:53Z sweep ok
+ALLDONE

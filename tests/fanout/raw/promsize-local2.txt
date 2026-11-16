@@ -1,0 +1,5 @@
+thinone 8..200 3614275343 187s
+complete-noreuse 24 217108345 43s
+complete-w50 24 205320773 78s
+thin-noreuse 24 107970478 39s
+DONE

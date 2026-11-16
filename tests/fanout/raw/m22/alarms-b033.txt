@@ -1,0 +1,3 @@
+14:40:05.097 a 646bdcb2 member alarm: StepDown { why: Confirm { p99_ms: 1245, slow: 6, of: 20 }, to: Some(SiteId(1)) }
+14:40:31.852 c 50808d55 member alarm: StepDown { why: Confirm { p99_ms: 2502, slow: 6, of: 10 }, to: None }
+14:42:44.660 c 50808d55 member alarm: StepDown { why: Confirm { p99_ms: 1000, slow: 6, of: 18 }, to: None }

@@ -1,0 +1,293 @@
+2026-11-13T13:24:54Z
+24dec508
+?? .worktrees/
+?? tests/fanout/raw/.b034-seed1.started
+?? tests/fanout/raw/.b034-seed2.started
+?? tests/fanout/raw/.rows-m10.started
+?? tests/fanout/raw/.rows-m11.started
+SHARD_INSTANCE=standard-4
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling graftyard-raft v0.1.0 (/home/user/workspace/repo/crates/raft)
+   Compiling graftyard-release v0.1.0 (/home/user/workspace/repo/crates/release)
+   Compiling graftyard-identity v0.1.0 (/home/user/workspace/repo/crates/identity)
+   Compiling graftyard-fold v0.1.0 (/home/user/workspace/repo/crates/fold)
+   Compiling graftyard-lookup v0.1.0 (/home/user/workspace/repo/crates/lookup)
+   Compiling graftyard-git v0.1.0 (/home/user/workspace/repo/crates/git)
+   Compiling graftyard-api v0.1.0 (/home/user/workspace/repo/crates/api)
+   Compiling graftyard-site v0.1.0 (/home/user/workspace/repo/workers/site)
+    Finished `release` profile [optimized] target(s) in 8m 41s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 13m 17s
+[INFO]: 📦   Your wasm pkg is ready to publish at /home/user/workspace/repo/workers/site/build/.tmp.
+
+  index.js  38.0kb
+
+⚡ Done in 22ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m2b-site-a.jsonc
+
+ ⛅️ wrangler 4.153.0
+────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 12530.97 KiB / gzip: 3506.04 KiB
+Worker Startup Time: 6 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_0 (Member)                                                        Durable Object            
+env.MEMBER_1 (Member, defined in graft-m2b-site-b)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m2b-site-c)                           Durable Object            
+env.REGISTRY_0 (Registry)                                                    Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m2b-site-b)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m2b-site-c)                       Durable Object            
+env.SHARD_0 (GitShard)                                                       Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m2b-site-b)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m2b-site-c)                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m2b-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m2b-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m2b-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m2b-site-a)                                                  Worker                    
+env.SITE_ID ("0")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m2b-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M6MNQWC88HGQ669NCJTJ4JA2")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("6eee12a413e75a3d171088417eb467d9724a2...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m2b-site-a (5.40 sec)
+Deployed graft-m2b-site-a triggers (1.40 sec)
+  schedule: */15 * * * *
+  Producer for graft-m2b-prsync-a
+  Consumer for graft-m2b-prsync-a
+Current Version ID: 2c489c61-bc2a-4d1b-9186-39900dd009b2
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m2b-site-b.jsonc
+
+ ⛅️ wrangler 4.153.0 (update available 4.161.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 12530.97 KiB / gzip: 3506.04 KiB
+Worker Startup Time: 6 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_1 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m2b-site-a)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m2b-site-c)                           Durable Object            
+env.REGISTRY_1 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m2b-site-a)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m2b-site-c)                       Durable Object            
+env.SHARD_1 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m2b-site-a)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m2b-site-c)                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m2b-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m2b-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m2b-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m2b-site-b)                                                  Worker                    
+env.SITE_ID ("1")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m2b-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M6MNQWC88HGQ669NCJTJ4JA2")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("6eee12a413e75a3d171088417eb467d9724a2...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m2b-site-b (3.88 sec)
+Deployed graft-m2b-site-b triggers (1.27 sec)
+  schedule: */15 * * * *
+  Producer for graft-m2b-prsync-b
+  Consumer for graft-m2b-prsync-b
+Current Version ID: 2a6854db-8fa1-4a86-ad0b-90709b36b635
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m2b-site-c.jsonc
+
+ ⛅️ wrangler 4.153.0 (update available 4.161.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 12530.97 KiB / gzip: 3506.04 KiB
+Worker Startup Time: 5 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_2 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m2b-site-a)                           Durable Object            
+env.MEMBER_1 (Member, defined in graft-m2b-site-b)                           Durable Object            
+env.REGISTRY_2 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m2b-site-a)                       Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m2b-site-b)                       Durable Object            
+env.SHARD_2 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m2b-site-a)                          Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m2b-site-b)                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m2b-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m2b-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m2b-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m2b-site-c)                                                  Worker                    
+env.SITE_ID ("2")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m2b-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M6MNQWC88HGQ669NCJTJ4JA2")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("6eee12a413e75a3d171088417eb467d9724a2...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m2b-site-c (3.74 sec)
+Deployed graft-m2b-site-c triggers (1.27 sec)
+  schedule: */15 * * * *
+  Producer for graft-m2b-prsync-c
+  Consumer for graft-m2b-prsync-c
+Current Version ID: a7ad2d0b-52e3-4fa7-aa57-6a50f463bf6e
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m2b-site-a.jsonc
+
+ ⛅️ wrangler 4.153.0 (update available 4.161.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 12530.97 KiB / gzip: 3506.04 KiB
+Worker Startup Time: 6 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_0 (Member)                                                        Durable Object            
+env.MEMBER_1 (Member, defined in graft-m2b-site-b)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m2b-site-c)                           Durable Object            
+env.REGISTRY_0 (Registry)                                                    Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m2b-site-b)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m2b-site-c)                       Durable Object            
+env.SHARD_0 (GitShard)                                                       Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m2b-site-b)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m2b-site-c)                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m2b-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m2b-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m2b-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m2b-site-a)                                                  Worker                    
+env.SITE_ID ("0")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m2b-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M6MNQWC88HGQ669NCJTJ4JA2")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("6eee12a413e75a3d171088417eb467d9724a2...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m2b-site-a (3.79 sec)
+Deployed graft-m2b-site-a triggers (1.25 sec)
+  schedule: */15 * * * *
+  Producer for graft-m2b-prsync-a
+  Consumer for graft-m2b-prsync-a
+Current Version ID: 9e2b7b32-a0c9-446f-946b-da894ca2368a
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m2b-site-b.jsonc
+
+ ⛅️ wrangler 4.153.0 (update available 4.161.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 12530.97 KiB / gzip: 3506.04 KiB
+Worker Startup Time: 6 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_1 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m2b-site-a)                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m2b-site-c)                           Durable Object            
+env.REGISTRY_1 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m2b-site-a)                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m2b-site-c)                       Durable Object            
+env.SHARD_1 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m2b-site-a)                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m2b-site-c)                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m2b-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m2b-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m2b-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m2b-site-b)                                                  Worker                    
+env.SITE_ID ("1")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m2b-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M6MNQWC88HGQ669NCJTJ4JA2")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("6eee12a413e75a3d171088417eb467d9724a2...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m2b-site-b (4.36 sec)
+Deployed graft-m2b-site-b triggers (1.25 sec)
+  schedule: */15 * * * *
+  Producer for graft-m2b-prsync-b
+  Consumer for graft-m2b-prsync-b
+Current Version ID: 2611f7ee-2422-4357-91b3-1db2032cb3be
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m2b-site-c.jsonc
+
+ ⛅️ wrangler 4.153.0 (update available 4.161.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+│
+Total Upload: 12530.97 KiB / gzip: 3506.04 KiB
+Worker Startup Time: 4 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                  
+env.MEMBER_2 (Member)                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m2b-site-a)                           Durable Object            
+env.MEMBER_1 (Member, defined in graft-m2b-site-b)                           Durable Object            
+env.REGISTRY_2 (Registry)                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m2b-site-a)                       Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m2b-site-b)                       Durable Object            
+env.SHARD_2 (GitShard)                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m2b-site-a)                          Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m2b-site-b)                          Durable Object            
+env.PRSYNC (inherited)                                                       Queue                     
+env.BUCKET_0 (graft-m2b-site-a-packs)                                        R2 Bucket                 
+env.BUCKET_1 (graft-m2b-site-b-packs)                                        R2 Bucket                 
+env.BUCKET_2 (graft-m2b-site-c-packs)                                        R2 Bucket                 
+env.SITE (graft-m2b-site-c)                                                  Worker                    
+env.SITE_ID ("2")                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m2b-site-a",...")             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M6MNQWC88HGQ669NCJTJ4JA2")                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("6eee12a413e75a3d171088417eb467d9724a2...")      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                            Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m2b-site-c (3.68 sec)
+Deployed graft-m2b-site-c triggers (1.15 sec)
+  schedule: */15 * * * *
+  Producer for graft-m2b-prsync-c
+  Consumer for graft-m2b-prsync-c
+Current Version ID: cd860099-ef27-4c53-8c74-fa90fe36f659
+exit 0
+2026-11-13T13:39:13Z
+DONE

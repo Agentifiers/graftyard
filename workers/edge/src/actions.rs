@@ -215,12 +215,13 @@ async fn job_config(
     {
         return Ok((Vec::new(), Vec::new()));
     }
-    let v = match crate::api::tier_rows(c, repo, None).await.map_err(|e| e.to_string())? {
-        Ok(v) => v,
-        Err(_) => return Err("the repository's rows did not answer".into()),
+    // The narrow `actions` rows, not the whole tiers: a voter sheds a whole-tier read whose tiers changed within
+    // DUMP_EVERY_MS of its last dump rebuild, and 74 of BF-54 run 2's 586 acquires failed on that read while the jobs'
+    // check runs committed to the repository (`decisions/OPEN-QUESTIONS.md`, F77). A failed read still fails the acquire.
+    let core = match crate::api::core_rows(c, repo, "actions").await.map_err(|e| e.to_string())? {
+        Ok(core) => core,
+        Err(e) => return Err(format!("the repository's rows did not answer: {e}")),
     };
-    let rows = graftyard_api::hosted::TierRows::from_value(&v["value"]).map_err(|e| e.to_string())?;
-    let core = graftyard_api::hosted::TierRows::store(&rows.core);
     let private = graftyard_git::tiers::get_rec::<graftyard_git::issues::RepoSettings>(&core, "settings", &[])
         .is_none_or(|s| s.visibility != graftyard_identity::Visibility::Public);
     let env = job.spec.environment.as_deref().map(|e| EnvName(e.into()));

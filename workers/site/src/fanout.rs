@@ -343,6 +343,46 @@ mod tests {
         assert!(Repo::reads().contains(&REPO_FORMAT_FANOUT));
     }
 
+    /// A push's one repository read (`{"access": true, "agent": true}`) answers the access rows and the agent rows,
+    /// with `"agent": true` beside them so the edge reuses them; `{"access": true}` alone answers as before, without
+    /// the agent rows or the flag, which is how an edge tells an older member's answer.
+    #[test]
+    fn a_push_reads_its_access_and_agent_rows_at_once() {
+        use graftyard_api::hosted::TierRows;
+        use graftyard_git::agent::AgentPolicy;
+        let mut fold = RepoFold::new(RepoId(DbId(9)), AccountId(DbId(1)));
+        let policy = AgentPolicy { extra_human_approvals: 2, ..AgentPolicy::default() };
+        fold.apply_entry(&LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(1),
+            prev: Digest([0; 32]),
+            format: graftyard_git::repo::REPO_FORMAT_AGENT,
+            tiers: TierSet::CORE,
+            at: Timestamp(1),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![
+                RepoEvent::Collaborator {
+                    who: AccountId(DbId(7)),
+                    permission: Some(graftyard_identity::RepoPermission::Write),
+                },
+                RepoEvent::AgentPolicy(policy.clone()),
+            ]),
+        });
+        let tables = |v: &serde_json::Value| {
+            let rows = TierRows::from_value(v).unwrap();
+            rows.core.iter().map(|(t, _, _)| t.clone()).collect::<Vec<_>>()
+        };
+        let both = Repo::read_json(&fold, &json!({ "rows": { "access": true, "agent": true }, "ranges": true }));
+        assert_eq!(both["agent"], true);
+        assert_eq!(tables(&both), ["collaborator", "agent_policy"]);
+        let store = TierRows::store(&TierRows::from_value(&both).unwrap().core);
+        assert_eq!(graftyard_git::tiers::agent_policy(&store), policy);
+        let access = Repo::read_json(&fold, &json!({ "rows": { "access": true }, "ranges": true }));
+        assert!(access.get("agent").is_none());
+        assert_eq!(tables(&access), ["collaborator"]);
+    }
+
     /// A `rows` read with `packed` answers the whole tiers as one JSON string the edge reads back as the same rows;
     /// without it, the object a member built before `packed` answered.
     #[test]
@@ -481,6 +521,68 @@ mod tests {
         // A whole-tier read is still spaced, and the merges took no rebuild slot: its rebuild is due where it was.
         assert_eq!(fold_answer::<Repo>(&a, &dump, 5, at + 10, DUMP_EVERY_MS), ReadBody::Shed(DUMP_EVERY_MS - 10, None));
         assert_eq!(dump_wait(&a, at + DUMP_EVERY_MS, DUMP_EVERY_MS), None);
+    }
+
+    /// F77 (BF-54 run 2): `acquirejob`'s secrets read, `{"rows": {"actions": true}}`, is answered at once by a voter
+    /// whose tiers changed right after a dump rebuild, where the whole-tier read that stood in for it is shed; it holds
+    /// the repository's secrets, variables, and settings, and no other row; and a follower serves it by read-index with
+    /// its metadata tier still loading, as it does the access rows.
+    #[test]
+    fn the_acquire_secrets_read_is_never_shed_for_a_dump_rebuild() {
+        use crate::family::{DUMP_EVERY_MS, follower_query};
+        use crate::host::{ReadBody, fold_answer};
+        use graftyard_api::hosted::TierRows;
+        use graftyard_git::secrets::{REPO_FORMAT_SECRETS, secrets, variables};
+        use graftyard_identity::sealed::{ActionsName, SecretRecord, SecretScope, VariableRecord};
+        let entry = |i: u64, prev: Digest, body: Vec<RepoEvent>| LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(i),
+            prev,
+            format: REPO_FORMAT_SECRETS,
+            tiers: TierSet::CORE,
+            at: Timestamp(i),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(body),
+        };
+        let n = |s: &str| ActionsName::parse(s).unwrap();
+        let secret = RepoEvent::ActionsSecret {
+            scope: SecretScope::Repo,
+            name: n("TOKEN"),
+            record: Some(SecretRecord { sealed: vec![7; 64].into(), key_id: "k1".into(), updated: Timestamp(1) }),
+            actor: None,
+        };
+        let var = RepoEvent::ActionsVariable {
+            scope: SecretScope::Repo,
+            name: n("REGION"),
+            record: Some(VariableRecord { value: "weur".into(), updated: Timestamp(1) }),
+            actor: None,
+        };
+        let first = entry(1, Digest([0; 32]), vec![secret, var, RepoEvent::Fanout { k: 2 }]);
+        let mut a = RepoFold::new(RepoId(DbId(77)), AccountId(DbId(1)));
+        a.apply_entry(&first);
+        let dump = json!({ "rows": true, "ranges": true, "packed": true });
+        let actions = json!({ "rows": { "actions": true }, "ranges": true });
+        let at = 70_000;
+        assert!(matches!(fold_answer::<Repo>(&a, &dump, 1, at, DUMP_EVERY_MS), ReadBody::Json(_)), "the rebuild");
+        // A job's check run commits to the repository: the tiers move on.
+        a.apply_entry(&entry(2, graftyard_raft::digest(&first), vec![RepoEvent::Fanout { k: 3 }]));
+        assert!(matches!(fold_answer::<Repo>(&a, &dump, 2, at + 10, DUMP_EVERY_MS), ReadBody::Shed(..)), "dump shed");
+        let ReadBody::Json(b) = fold_answer::<Repo>(&a, &actions, 2, at + 10, DUMP_EVERY_MS) else {
+            panic!("the secrets read waited for a dump rebuild")
+        };
+        let rows = TierRows::from_value(&serde_json::from_slice(&b).unwrap()).unwrap();
+        assert_eq!(rows.index, 2, "at the read's state");
+        let core = TierRows::store(&rows.core);
+        assert_eq!(
+            secrets(&core, &SecretScope::Repo).iter().map(|(n, r)| (n.as_str(), r.sealed.len())).collect::<Vec<_>>(),
+            [("TOKEN", 64)]
+        );
+        assert_eq!(variables(&core, &SecretScope::Repo)[0].1.value.as_ref(), "weur");
+        assert!(
+            rows.core.iter().all(|(t, _, _)| ["settings", "actions_secret", "actions_variable"].contains(&t.as_str()))
+        );
+        assert!(follower_query(&actions, false), "core rows only: served with the metadata tier loading");
     }
 
     /// A packed dump is built once per state of the tiers and every read at that state, from any input, shares the

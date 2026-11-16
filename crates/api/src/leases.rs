@@ -334,7 +334,7 @@ pub fn activity(
     }
     let after = match start {
         Start::Gone { oldest } => return gone(oldest),
-        Start::After(i) => i,
+        Start::After(i) | Start::Ahead(i) => i,
     };
     let filter: Vec<&str> = q.paths.iter().map(String::as_str).collect();
     let out: Vec<Value> = events
