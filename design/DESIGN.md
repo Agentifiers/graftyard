@@ -1269,13 +1269,9 @@ pub fn actions_shard(run: &WorkflowRun) -> u8;
 /// Site-script classes, derived only, on their shard's leader site per cached `ReplyMeta`: the registration shard for a
 /// broker, the job's shard at `acquirejob` for a relay, which `FeedStreamUrl` names. A leader move starts a fresh object.
 /// Past BROKER_HELD_MAX a broker answers 503 with `Retry-After: 15`, and the runner polls again after 15 s, up to 4
-/// tries, then after 0 to 15 s, session intact [measured, BF-54]. A relay hibernates its sockets and keeps 1,000 lines [guess].
+/// tries, then after 0 to 15 s, session intact [measured, BF-54]. A relay hibernates its sockets and keeps 1,000 lines [guess]. A broker has at most ASKS_MAX asks of its shard's leader in flight, and past them a poll waits its turn: a hint wakes every held poll, and on BF-54 a broker of 2,000 polls ended `exceededMemory` 21 times in 25 minutes, dropping them all [measured, F76; that its asks in flight held the memory is an inference].
 pub struct RunnerBroker { pub owner: AccountId, pub scope: RunnerScope }   pub struct LogRelay { pub job: JobId }
-pub const BROKER_HELD_MAX: u32 = 2_000;   // held long polls per broker object [guess]
-/// A broker's asks of its shard's leader in flight at once; past them a poll waits its turn. A hint wakes every held
-/// poll, and on BF-54 a broker of 2,000 polls ended `exceededMemory` 21 times in 25 minutes, dropping them all [measured,
-/// F76; that its asks in flight held the memory is an inference].
-pub const ASKS_MAX: u32 = 64;             // [guess]
+pub const BROKER_HELD_MAX: u32 = 2_000;   pub const ASKS_MAX: u32 = 64;   // held long polls, and asks in flight, per broker object [guess]
 /// Site-script class, one per hook owner on its `home` site: SHARED's delivery store (`HookDelivery` rows) and sequencer.
 /// Delivery Workers: keyless `hooklane:<wire>:<hook>` objects, each POSTing a queue's signed run in order [measured, `tests/m4/results/m4-wp1-hosted.md`]; one unreported for 30 s is re-sent under its GUID.
 pub struct HookSequencer { pub owner: AccountId }
