@@ -1066,19 +1066,20 @@ pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// first past LOG_MAX_BYTES / 32 above the last `Promoted` [guess] until a run passes its trigger, warm (no stopped
 /// shard starts, `lm1-memory` 28); a promotion takes 8 ranges, an `Archived` 8 objects [inference]. Streamed unlocked
 /// in parts to buckets and a validate that catches up first; PROMOTE_MAX batches, an entry over it alone [measured,
-/// `lm1-memory` 20]. `Compacted.consumed` names promoted packs; restore checks inline ones by digest chain.
+/// `lm1-memory` 20]. `Compacted.consumed` names promoted packs; restore checks inline ones by digest chain. Roll-up: a
+/// chain's oldest promoted packs roll into one, recorded as `Compacted` on that chain (Failure modes).
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
-/// A shard rehydrates a network from every marked stored pack no `Compacted` consumed, plus the packs each chain names
-/// after its last `Promoted`, a page at a time with the next read meanwhile (two held), saving its place per page with
-/// its disk id and loaded promotions, so a cut-off run resumes (B0-30, 9 to 11). `--fix-thin`, promotions first, a midx
-/// per 50 ingests [measured, `hot-shards-2`]; inline packs one `index-pack` per 4 MB run [measured, `rehydrate-batch`].
-/// A promoted or rolled pack's `.idx` (`R2Key::Idx`, create-only, before its entry) loads in place of `index-pack` if
-/// it checks against the trailer; the pack is kept. Pushed packs in a range a loaded one covers are skipped; then every
-/// ref's history and tip tree must be on disk, else they load; a disk failing both never serves [measured, `lm1-memory`
-/// 21]. Stored packs stream four at once [`fetchmem`]. Thin: G5. Repack rolls unkept packs at nice 19, kept ones
-/// `--keep-pack` [measured, `lm1-memory` 25, 27]. Roll-up (G9, proposed in `lm1-memory` 32): at ROLL_IN_MAX of a
-/// chain's oldest unrolled promoted packs, the home shard (warm) rolls them into one complete pack placed as a
-/// promotion's, then `Compacted { consumed, produced, from, to }`; a consumed pack goes once every shard is past it.
+/// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
+/// each chain names after its last `Promoted`, a page at a time with the next read meanwhile (two pages held), saving
+/// its place per page with its disk id and loaded promotions, so a cut-off run resumes (B0-30, 9 to 11). `--fix-thin`,
+/// promotions first, a midx per 50 ingests [measured, `hot-shards-2`]; inline packs one `index-pack` per 4 MB run
+/// [measured, `rehydrate-batch`]. A promoted or rolled pack has its `.idx` beside it (`R2Key::Idx`, create-only,
+/// before its entry), loaded in place of `index-pack` once it checks against the trailer and kept (`.keep`). Pushed
+/// packs in a range a committed `Promoted` or `Compacted` and its `.idx` both cover are not loaded;
+/// then every ref's history and tip tree must be on disk, checked before the repack [measured, `lm1-memory` 21], else
+/// the skipped packs load and it checks again; a disk failing both never serves. Stored packs and `.idx` stream four at
+/// once [`fetchmem`], in log order. Thin: G5. Repack rolls unkept packs at nice 19 on 2 threads, a midx over all; kept
+/// and named `--keep-pack` (its hint walk ignores a `.keep`): 104 CPU-s not 588, 1.7 GB not 2.2 [measured, `lm1-memory` 25, 27].
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or
@@ -1155,12 +1156,11 @@ pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cos
 /// ledger silent 3 s [guess] keeps k. `shards_for` serves each network its own leased slots, never shared (by
 /// rendezvous all shared the same k - 1). Unrenewed past LOAD_STALE, a lease lapses. No API call, no `decide` read.
 /// With no plan field, an owner's share is HOT_POOL - 1 [guess, B0-34's monorepo share]. Above `FANOUT_UP` a leader
-/// reserves a slot past its k - 1 (`pool_reserve`), pool-warms each held slot (`Caller::PoolWarm` starts a stopped
-/// shard) and steps only to warm slots (`warm_step`); cold, a step waited 290 s [measured, `tests/m0/results/m0-wp9.md`,
-/// B0-34, `b0-34-r8`]. A cold slot holds the high line. A ledger beat tears down given-up slots. `cost.py` prices it.
+/// reserves a slot past its k - 1, pool-warms each held slot (`Caller::PoolWarm`) and steps only to warm slots
+/// (`warm_step`); cold, a step waited 290 s [measured, `tests/m0/results/m0-wp9.md`, `b0-34-r8`]. `cost.py` prices it.
 pub const HOT_POOL: u16 = 7;
 /// Per (shard, network), in the shard's SQLite, derived: the index through which it applied each member chain's `Refs`,
-/// `Merged`, and `Promoted` entries and the network's `Compacted` ones, saved per log page at the page's last index,
+/// `Merged`, and `Promoted` entries and `Compacted` ones, saved per log page at the page's last index,
 /// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
 /// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the object instance, which reads its member by
@@ -1597,7 +1597,7 @@ Components are `chain groups` (voters and learners of every group), `pack bucket
 | pack buckets | provider-wide | All buckets (February and March 2025) | Inline packs up to 1 MiB keep most pushes committing. Warm shards serve fetches. Large pushes and cold clones return 503 |
 | pack buckets | provider-wide | Hot groups during an R2-wide outage | While placement fails or a bucket's readiness probe is red, a hot group inlines up to 1 MiB for Human and MergeQueue pushes, and `LOG_MAX_BYTES` archives the extra after recovery. Agent pushes over `INLINE_MAX_HOT` get the agent refusal at once and are never queued, because at one 1 MiB push per entry the group commits 1.3 to 2.0 MB/s from apac, under half of journey 9's 4.37 MB/s [measured, `tests/m0/results/m0-wp9.md`, B0-31] |
 | pack buckets | control-plane | None at runtime | Buckets, including spare buckets, are pre-created per site and their location checked at install |
-| pack buckets | bad-deploy | Bad packs from one site's release | `index-pack --strict` before placement; GC deletes only objects outside the fold refs and `ref_log` for 14 days, at a fixed rate |
+| pack buckets | bad-deploy | Bad packs from one site's release | `index-pack --strict` before placement; a rolled pack is validated and placed as a promotion's, with its `.idx`, before its `Compacted` commits, and a rehydrate that cannot read it loads the packs it consumed, which the sweeper deletes, then their markers, only past CONSUMED_KEEP (7 days [guess]) once every shard holding the network answers a warm `/status` past that `Compacted` or holds no disk for it; GC deletes only objects outside the fold refs and `ref_log` for 14 days, at a fixed rate |
 | pack buckets | bad-config | Writes to one site's bucket fail | A readiness probe writes and reads a canary object per bucket. Placement fails over to the other two. A misplaced bucket outside a jurisdiction is recreated under a new name as a site day; inside one the hint is ignored (R16) |
 | pack buckets | noisy-tenant | One network's prefix | Push bytes and concurrency caps per account and network |
 | git caches | instance | One shard's networks and in-flight streams; on the site's first pool shard, also its pool ledger | Clients retry. While the ledger's object restarts, leaders that ask it keep k, and the ledger's SQLite keeps its leases. The time it was down counts against none: its alarm runs it every 45 s while it holds a lease, so a longer gap is an outage, never a quiet ledger. A new instance rehydrates from R2, at most 118 s for a 5 GB network in Milestone 0 [measured], with prebuilt indexes. Real pushed packs are thin and re-index on ingest: 257 of them, 2.62 GB, took 1,694 to 2,496 s per shard on m29 [measured, G5]. A promoted network loads each promotion through its stored `.idx` and skips the pushed packs it covers, about 90 s for 5 GB at m29's one-stream R2 rate with four fetches at once [inference, `crates/git/tests/catchup.rs`; the multi-stream rate is unmeasured], with its connectivity check before its repack, which runs after it serves; pushes promotion has not caught up still re-index (G9). Clone-cache hits never touch a container. A new leadership's warm catch-up of its site's shard (BM-2) reaches only a running container and is not a request, so a group with no clients, which re-elects after its members idle out, starts and keeps no shard. A leader's pool warm of a slot its network holds does start a stopped pool shard, since a pool shard nobody started never becomes warm, and the ledger tears the slot down when the lease goes, so no idle group bills one; a rehydrate loads the marked packs a chain's tail names with the tail, in index order, because a stored pack thin against an earlier inline pack failed every rehydrate loaded first [measured, `tests/am1/results/idle-shards.md`] |
@@ -1608,7 +1608,7 @@ Components are `chain groups` (voters and learners of every group), `pack bucket
 | git caches | control-plane | New container instances may not start [unknown]; new images cannot be uploaded | Warm shards carry a day of load, their alarms renewing a 6 h inactivity timeout until 24 h after the last request, so no start is needed for a day [inference]. A `ContainerDay` and its rollback need no API call, because the image map shipped on the site day. `fanout` runs in band from `NetworkLoad` and draws on the hot pool, so a network that turns hot needs no API call. Running images keep serving. Milestone 0 tests starts and a newly hot network with the API unreachable |
 | git caches | bad-deploy | One site's git image | A new image reaches shards only on that site's `ContainerDay`, never with member code, because a new version restarts no running container [measured]. A conformance clone, fetch, and push gate each step, and a breach commits the pre-signed `Rollback { target: Containers(site) }`, which returns shards to `git_prev` with no API call |
 | git caches | bad-config | Shard count or start cap too low on one site, or a start check that lets a container run outside its site's regions | The other warm site absorbs. Working set and shard count are measured; a change is a site day; alarm at 70% of account vCPU |
-| git caches | noisy-tenant | One giant network's repack or clone storm | Per-network CPU caps, the clone cache, one repack per shard at a time, at nice 19 on 2 of 4 threads with a bounded delta window, which leaves kept promotions alone. Each site starts at most its cap of shard containers, enforced in the shard object rather than by the platform, and hosted runners run in a separate account, so Actions cannot take git cache vCPU |
+| git caches | noisy-tenant | One giant network's repack or clone storm | Per-network CPU caps, the clone cache, one repack per shard at a time, at nice 19 on 2 of 4 threads with a bounded delta window, which leaves kept promotions alone. A roll-up takes the repack's slot, at nice 19 on 2 threads, and reads at most ROLL_IN_MAX (2 GiB [guess]) of a chain's oldest consecutive promoted packs no `Compacted` consumed, so its RSS stays near 1.7 times that, 3.6 GB [measured, `roll-up`]; a rolled pack never rolls again. Each site starts at most its cap of shard containers, enforced in the shard object rather than by the platform, and hosted runners run in a separate account, so Actions cannot take git cache vCPU |
 | git caches | noisy-tenant | An agent fleet's git CPU on one network (journey 9), or one owner's several hot networks | `fanout` up to 8 shards per warm site from a hot pool budgeted per owner by each site's pool ledger, which grants every network distinct pool shards and keeps what a network holds before it grants another owner more, `AdmitClass` in each shard's queue so agent work sheds first, `TEST_MERGE_BUDGET`, and the agent layer's conflict predictor capped at 50% of the second site's shard vCPU and paused while that site leads |
 | front door | instance | Requests on one isolate; for SSH, the sessions on one SSH front container, by either ingress | Anycast and clients retry. An SSH front's object restarts its container, and the Tunnel sends new sessions to the other replicas at once, whether they came through Spectrum or `cloudflared access ssh`: 13 kills cost one in-flight session [measured, `tests/m0/results/m0-wp7.md`] |
 | front door | data-center | That colo's traffic, including the Tunnel edge connections of the SSH replica held there | Cloudflare routes to the next colo. Each cloudflared replica holds 3 or 4 edge connections in its own region's colos, so the Tunnel keeps reaching it [measured, `tests/m0/results/m0-wp7.md`] |
