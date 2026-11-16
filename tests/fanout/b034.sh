@@ -89,9 +89,9 @@ compose() { node tests/fanout/r2list.mjs "compose/${chain#repo:}/" | python3 -c 
 import json, sys
 for l in sys.stdin:
     d = json.loads(l); ks = d.get('keys') or []
-    print('b0-34 compose $1 site', d['site'], json.dumps({'n': len(ks), 'bytes': sum(k['size'] for k in ks),
+    print('b0-34 compose', sys.argv[1], 'site', d['site'], json.dumps({'n': len(ks), 'bytes': sum(k['size'] for k in ks),
           'files': [(k['key'].split('/')[-1][:24], k['size'], k['modified']) for k in ks][:8], **({'error': d['error']} if 'error' in d else {})}))
-" >> "$ST" 2>&1; }
+" "$1" >> "$ST" 2>&1; }
 compose "after the warm"
 [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "$chain" "$LEARNERS" >> "$ST" 2>&1
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1

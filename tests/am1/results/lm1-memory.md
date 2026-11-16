@@ -3389,3 +3389,167 @@ network's repository. The shard object's `/status` passes it on inside `procs`.
 
 **Smoke, read only.** `shardprocs.mjs 131296` at 14:56Z: all three sites answered 200 with `running: false`, and the
 sweep found no shard container running. So the probe starts nothing.
+### Round 26: m37 site day (main 1aed2cff), cold warm 150 to 158 s, then B0-34's row; B0-33 not run at the stop (2026-11-16)
+
+**Site day.** From a clean worktree at main `1aed2cff` (read-round-gap, composed-miss, promote-unlock, disk-validate,
+r22-sweep-fill, the m3f6 instruments).
+- New shard image `sha256:a6b6621a09579852953a90f949cedc4846c06ee1763c97c224e8067c4d78b269`, pushed at 23:24:33Z.
+- Sites exit 0, test-faults, `SHARD_INSTANCE=standard-4`, no roll.
+- Edge `b4968db8`. `edgever.py` exit 0: "graft-m2b-edge serves b4968db8 at 100% (rev 1aed2cff7)".
+
+**Before the warm.**
+- Sweep: "no shard container running". `netimages.py 131296 --none`: 0 running.
+- `closetasks.mjs m3org/b034-mono`: 0 open tasks, so 0 closed; probe create 201, cancel 200.
+- Fix 2 (`fetch-ahead`'s path-named promotions) does not shrink the existing promotions on repo:131296: all 61 predate
+  it (round 24c). So this warm measures fix 1 and `repack-keep`, not fix 2.
+
+**Cold warm: fail against DESIGN's 120 s line, at 150 to 158 s; under the 600 s fail value.**
+- Every shard ran `sha256:a6b6621a`: `netimages.py --image`: 3 running, 0 on another image.
+- ls-refs listed main at 152.4 s. Catch-ups ended at 152.4 s (site c), 158.2 s (site a) and 159.9 s (site b).
+
+| shard | total (`catch_up`) | up | marked phase | tail | `/connected` and follow | stored packs | `idx_used` | spool (summed) | per stream | in total over the marked phase | streams at once | `index-pack` (summed) | lock |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| site c `git#2` | 150.1 s | 36.0 s | 79.4 s | 20.4 s | 12.0 s | 82 (8.64 GB) | 61 | 225.5 s | 38.3 MB/s | 108.8 MB/s | 2.84 | 7.5 s | 30.5 s |
+| site a `git#0` | 156.6 s | 33.7 s | 82.8 s | 23.7 s | 14.5 s | 82 | 61 | 246.0 s | 35.1 MB/s | 104.4 MB/s | 2.97 | 9.6 s | 39.3 s |
+| site b `git#1` | 157.9 s | 35.7 s | 73.0 s | 31.1 s | 16.4 s | 82 | 61 | 178.2 s | 48.5 MB/s | 118.4 MB/s | 2.44 | 10.7 s | 52.8 s |
+
+How the columns are computed:
+- "per stream" is the stored bytes over the summed spool.
+- "in total" is the stored bytes over the marked phase.
+- "streams at once" is the summed spool over the marked phase.
+- Source: the three `shard rehydrate 131296` reports (`rehydrate-131296-m37.txt`).
+- Each shard skipped 256 pushed packs that promotions cover, with 0 `.idx` rejected and no backstop fault.
+
+Against round 24 (127 to 135 s) on the same 61 promotions:
+- The marked phase grew from 65–71 s to 73–83 s.
+- Totals in the R2 rate fell from 122–132 to 104–118 MB/s.
+- There are 82 stored packs instead of 70: 21 pushes past the last promotion.
+- The ingest path did change between the two days: `repack-keep` writes a `.keep` per stored `.idx`, and
+  `ingestSpooled` gained a step. Neither is a fetch step, and the summed `index-pack` (7.5 to 10.7 s) and lock times
+  are about round 24's, so the extra 8 to 18 s sits in the marked phase's R2 reads [inference: R2 at 104 to 118 MB/s
+  against 122 to 132, with nothing that isolates the R2 side from the shard's].
+
+**(b) Kept promotions.**
+- After the warm, every shard had `kept 61` of 100 packs (8.62 GB kept). That equals `idx_used` (61).
+- At the row's end:
+  - site a: 64 kept, after its own rehydrate at 23:54Z with three newer promotions;
+  - sites b and c: 61 kept.
+- **The promoted packs were never rolled up.** `kept_bytes` stayed 8.62 to 8.70 GB throughout. The geometric repack
+  rolled only the unkept tail; for example, site b went from 1,214 packs to 640 at 23:58:30Z.
+
+**Composed misses (point 2).** The builder is site a's first shard.
+- It ran `rev-list --objects` then `pack-objects --window=0 --threads=1` at nice 19 from 23:44:15Z. At 23:44:45Z it had
+  29.7 CPU-s and 3.3 GB RSS.
+- It put `compose/131296/base-88fac175….pack` (270,488,211 B) and its `.idx` (2,547,140 B) to site a's bucket at
+  23:45:20Z, and to site b's at 23:45:29Z. That was **3 min 51 s before the row's first miss** at 23:49:11Z.
+- Site c's bucket held no `compose/` object at any point. It is not one of the network's two warm sites, so that is
+  by design (`warm_sites`).
+- At the row's end each warm bucket held 25 chain objects (274,264,403 B): the base, the head, and parts.
+- A second base step ran on site a at 23:59:30 to 00:00:00Z (29.6 CPU-s at nice 19, 3.3 GB). The row went past the
+  `future` list's end and moved main to another commit.
+- Workers Logs had no `shard compose` error line on any site, 23:41 to 00:20Z.
+
+**Clone-cache misses in the first-byte probe (point 1).**
+- 51 misses: **36 composed and 15 stock**.
+- The stock reasons:
+  - "stock: chain behind HEAD": 9 (23:57:37 to 00:02:22Z, after main moved);
+  - "stock: not a ref tip": 6 (00:01:37 to 00:03:37Z, at the hostile phase; the want was a main the driver last saw
+    that a later move had replaced).
+- Time to first byte on a miss:
+  - composed: p50 8.5 s, p99 68.7 s, min 1.3 s;
+  - stock: p50 63.6 s, p99 209.7 s.
+  - The first 12 misses were all at the warm tip `88fac175` with 0 to 18 s between them. They were all composed, at
+    1.4 to 12.0 s.
+- **R2 entry within a minute of the cancel: 50 of 51.**
+  - Every entry was in site a's bucket, as `clone/131296/<key>/0`. `cloneKeyHex` matches
+    `CloneKey::digest`, checked against the Rust function on one want.
+  - The 12 first misses share one key, `98859749…`. It was in R2 by 23:49:39 to 23:49:53Z, 22 to 29 s after each
+    cancel.
+  - The one miss not found within 60 s was a stock "not a ref tip" at 00:03:37Z (key `4f433315…`). Its entry landed
+    at 00:06:21Z, 2 min 44 s after the cancel.
+- **New finding: every clone-cache hit answered 500.** 414 probes after the key was filled answered 500 with no
+  `x-graft-clone-cache` header: 249 at j9, 94 at the kill, 71 at the second phase.
+  - The edge's events for them read "level error, outcome ok, status 500, about 0.4 to 1 s wall, 5 to 11 ms CPU", with
+    no exception text.
+  - The first came at 23:49:50Z, 10 s after the entry landed. They stopped when main moved off the key, and came back
+    for each new key.
+  - The edge's hit path (`workers/edge/src/lib.rs`, the clone-cache branch, from `917667242`) reads the whole object
+    with `.bytes()` and returns `Response::from_bytes`. Each entry is 263 to 271 MB. So the cause is most likely the
+    edge isolate's 128 MB limit on a buffered 270 MB body [inference; the event has no message to confirm it].
+  - One check to settle it, not run on this budget: one hit with `wrangler tail` open on graft-m2b-edge.
+  - DESIGN's clone-cache rows assume hits stream ("Clone cache reads": 40 MB entries at 316 ms read p99). A
+    cached depth-1 answer of this network is 6.6 times that size.
+
+**(a) Repack memory.** The memory finding is container memory at the 12 GiB cap, not the repack:
+- Container memory reached 11.88 to 11.95 GiB on every shard in 2 to 3 minutes each (23:50 to 23:52Z, 23:58 to
+  00:01Z).
+- In those minutes `shardprocs` showed the repack at nice 19, plus up to 22 stock `--shallow-file pack-objects` at
+  nice 0. Site c at 00:00:00Z: 29.3 GB summed RSS over 22 processes, most of it shared pages counted per process.
+- The repack's own `pack-objects` peaked at 9.6 to 10.9 GB RSS (site a 23:58:45Z: 11.0 GB, 120 CPU-s; site b
+  23:53:15Z: 10.9 GB, 166 CPU-s).
+- So **`repack-keep`'s bound is not enough beside stock upload-packs**. The repack's `pack-objects` alone held
+  10.9 GB of the 12 GiB.
+  - Round 25's local gate measured 5.49 GB maxrss for the same repack.
+  - Two candidate explanations, neither checked: the tail here is 1,214 packs, not 12, or `pack.windowMemory` does not
+    bound `pack-objects`' object table [not measured which].
+- Site a's shard restarted at 23:54:32Z and rehydrated again. Sites a and b restarted again at 00:14:47 and 00:16:08Z,
+  after the row, while `shardprocs` was still polling `/status`.
+- Container vCPU peaked at 3.19 to 4.16 per shard (`instcpu-m37.jsonl`).
+
+**B0-34's row.** 500 agents, 900 s from 23:49:11Z, home shard killed at 304.6 s.
+- Learners: 8 of 8 caught up to 3,135 in 11.4 s. Leader wasm 25.8 MiB at the start.
+- **Memory and terms.**
+  - memguard: voter peaks 44.9 / 39.8 / 35.6 MiB, with no 120 MiB stop.
+  - `inFlight.admitted` peaked at 21 and `inFlight.admittedBytes` at 248,174 B.
+  - terms.mjs: term 2 throughout, leader site 0. One `StepDown { why: CommitErrors { calls: [(1, 14, 3), (2, 14, 3)] },
+    to: Some(1) }` was logged at 23:56:31Z on site a, but no term change followed.
+- **Commit path.** Leader commit p50 365 ms, p99 1,025 ms (n 7,812). `read:api` 71,770 of 71,920 ok (7 × 503), p99
+  12.7 s.
+- **Pushes.**
+  - human at j9: 68 ok, 77 skipped at the cap, 7 `stale:race`, p99 31.6 s;
+  - human at kill and second: p99 46.6 s and 25.6 s;
+  - agent at j9: 947 ok, 266 `full`, 4 × "Durable Object is overloaded" 503, p99 23.5 s.
+- **Tip moves: a driver bug.** All 60 tip moves at j9 and kill were refused as non-fast-forward. The repository keeps
+  main between rounds, and `a1.mjs` started `future` at index 0 every round, so it pushed history main already had
+  past.
+  - At the second phase 3 of 11 went through, when the index caught up. At the hostile phase all 11 went through, and
+    the builder's second base step and the "chain behind HEAD" misses followed.
+  - Fixed on this branch: the index starts after main's place in `future`, and the start is logged as a row.
+- **k.** repo:131296 stepped to **k 2** (`kMax` 2; "k 2 at 5789" after the row). The other networks stayed at 1.
+- **Hostile phase.** Clone TTFB p99 120 to 133 s on each hostile network, with half the probes aborted at 120 s.
+  Hostile pushes `skipped: cap` 24 to 32 of 39 to 47.
+
+**Verdict against B0-34's line.** Gate: k in band at most 8, hostile owner held to its pool budget, human push p99 at
+most 3 s beyond transfer, clone TTFB p99 at most 1 s. Fail values: k over 8, any Cloudflare API call, the monorepo's k
+reduced by another owner, or TTFB p99 over 5 s.
+- **Fail.**
+  - Clone TTFB p99 8.7 s at j9 (500s included; misses alone 12.0 s), 3.3 s at the kill, 14.7 s at the second phase
+    and 217.6 s at the hostile phase.
+  - Human push p99 31.6 s at j9.
+  - The hits that should carry the TTFB line answer 500.
+- **Holds.** No Cloudflare API call (0 files in request paths). k never over 8. The monorepo's k never reduced by
+  another owner: 1, then 2.
+- **Undecided.** The hostile budget: the hostile networks stayed at k 1, so no ledger refusal was tested.
+
+**B0-33: not run.** The meter read $139.48 at 00:01Z mid-row and $140.19 at 00:09Z after the teardown, past the
+$140.15 stop. So B0-02's hosted read-round check has no new trace yet.
+- `tests/f74/rounds.py` (new) computes that check from a tsave file. For each voter it counts F74's `CallSent`
+  fetches to each other voter per 20 ms bucket, both as fetches and as distinct stamps (turns). It also measures the
+  learner read grant, `IndexTaken` to `ResSent` on the leader's clock.
+- Round 24's B0-33 trace (`tsave-m36r33`, before read-round-gap) as the baseline:
+  - up to 427 to 562 fetches and 3 to 4 turns in one 20 ms bucket to one voter;
+  - 14 to 48% of buckets over one fetch;
+  - grant p99 3.1 to 4.9 s.
+
+**Raw.** All under `tests/fanout/raw/`:
+- the site day's status: `siteday-m37.status`;
+- B0-34's driver files: `b034-m37.status`, `b034warm-m37.jsonl`, `memguard-b034m37.jsonl`, `terms-b034m37.jsonl`,
+  `a1-b0-34-m37.jsonl` (with `b034.misses` and `b034.missSummary`);
+- the probes: `shardprocs-m37.jsonl.xz`, `instcpu-m37.jsonl`;
+- the rehydrate reports and R2 listings: `rehydrate-131296-m37.txt`, `compose-131296-m37.jsonl`,
+  `clone-131296-m37.jsonl` (the row's end).
+
+Sweeps after the row tore down 26 containers, including net 131304. Two later sweeps after site a's and site b's
+post-row restarts both read "sweep: no shard container running".
+
+**Cost.** $140.26 at 00:22Z, containers $54.74. The site day, warm and row cost $2.55, against the $3 cap.

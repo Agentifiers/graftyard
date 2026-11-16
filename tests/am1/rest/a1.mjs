@@ -889,7 +889,10 @@ if (b034) {
   const { execFileSync: ex } = await import("node:child_process");
   // The tip: the next real first-parent commit, fast-forwarded onto main under the admin's PAT from the bare clone.
   const g = new (await import("../hosted/lib.mjs")).Git(R).as(admin);
-  let next = 0;
+  // From the commit after main's place in that history: the repository keeps main between rounds, so from index 0
+  // every move was a non-fast-forward (round 26: 60 of 60 refused in the j9 and kill phases).
+  let next = Math.max(0, b034.future.indexOf(main) + 1);
+  writeRow(OUT, { step: "b034 tip start", main, next, of: b034.future.length });
   jobs.push(every("tip:move", plan.tipMovesPerMin / 60, async () => {
     const c = b034.future[next];
     if (!c) return "no more history";
