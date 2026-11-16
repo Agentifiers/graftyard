@@ -80,6 +80,34 @@ The unmeasured variable is R2's throughput with four streams into one container;
 
 This branch's catch-up change helps B0-32 and B0-31 the same way: stored packs fetched four at a time ahead of the in-order ingest, and a promoted range's pack not fetched again by a catch-up that already applied the range.
 
+## Re-judged at 90% (2026-11-16, no new spend)
+
+The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a daily spend limit"): a count or rate is met at 90% of its goal, a latency at most 10% over its bound, and an invariant never at 90%. Each row is judged on one run, every line of that run, from the results below.
+
+| Row | Line | Best run on it | 90% reading | Verdict |
+|---|---|---|---|---|
+| B0-31 | Commit p99 at most 1 s with buckets up | m3fr2 1,118 ms (split by the 300 s reset); m3fr4 1,333; m3fr8 2,138; m3fr9 9,600 | Bound 1.1 s. m3fr2 is 18 ms (1.6%) past it | **Short by 18 ms** on its best run |
+| B0-31 | Placement failing: Human and MergeQueue p99 at most 3 s, 0 refused | m3fr8 and m3fr9: leader p99 1,588 and 1,638 ms, 0 Human and 0 MergeQueue refused | Met outright | Pass (m3fr2 failed it: 29 of 29 merges `warming`) |
+| B0-31 | Agent pushes over INLINE_MAX_HOT refused at once in `ng` | m3fr9 1,258 of 1,258; m3fr8 1,245 of 1,262 (98.7%) | Met | Pass |
+| B0-31 | Row | No one run meets all three: m3fr2 misses the merge line and is 1.6% over on commit; m3fr8 and m3fr9 are 2,138 and 9,600 ms on commit | | **Fail** |
+| B0-32 | Every push acknowledged within 5 s or `ng … admission full` | 0 of 500 within 5 s on every run; best acknowledged p50 13.5 s (m3fr8), p99 22.2 s | 450 needed | **Short by 450 of 500** |
+| B0-32 | Queued agent bytes under AGENT_QUEUE_MAX | max 532 KB (m3fr9) | Met | Pass |
+| B0-32 | Merge in one of the next 2 entries | Not judged from entries on any run; m3fr4's slowest merge 2.4 s end to end against the 2 s fail line | | Not shown |
+| B0-32 | Zero leader changes, zero `suspect` | m3fr8: 0 changes, 47 `suspect`; m3fr4: 0 and 0; m3fr9: 17 elections, 8,564 `suspect` | A zero count has no 90% reading | Pass only on m3fr4, whose burst line is 0 of 500 |
+| B0-32 | Row | | | **Fail** |
+| L0-12 | Lease overlap at most DRIFT (500 ms) | m3fr6 and m3fr9: 0 over 0 ms | Invariant | Pass |
+| L0-12 | Member clock offsets under 500 ms | m3fr9: members 102 to 339 ms apart, 297 ms against Cloudflare's clock; m3fr6: 972 ms against Cloudflare (members 56 to 512 ms apart) | Bound 550 ms; m3fr6 is 422 ms over it. The overlap line above is the lease invariant; this line measures DRIFT's assumption (F3) | m3fr9 pass, m3fr6 **fail** |
+| L0-12 | Every lease live after the stall, `expires` moved | m3fr6: 20 of 20 | | Pass (m3fr6); not run on m3fr9 |
+| L0-12 | Late Exclusive acquire succeeds | m3fr6 and m3fr7: 201 | | Pass |
+| L0-12 | Feed p99 at most 3 s outside kills | m3fr6 2,954 ms; m3fr9 25,210 ms | Bound 3.3 s | Pass on m3fr6, **short by 21.9 s** on m3fr9 |
+| L0-12 | Refusals: 100 of 100 for each Agent kind, 0 for the other three | m3fr6 exact for all five kinds | Exact | Pass (m3fr6); not run on m3fr9 |
+| L0-12 | Row | m3fr6 passes every line but the clock (972 ms); m3fr9 passes the clock but not the feed, and ran no stall or refusals | | **Fail** |
+
+**What each row needs.**
+- **B0-31:** one run with buckets-up commit p99 at most 1.1 s, and the merge and refusal lines as m3fr8 and m3fr9 had them. m3fr9's 9.6 s tail is on the leader and is not split (`a1.mjs` now keeps `splitByHalf.up`).
+- **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
+- **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
+
 ## Rows m3fr9 (2026-11-16, TAG `m3fr9`, `ROWS="l0-12 b0-32 b0-31"`, `STOP_USD=77`)
 
 **Build and site day.**
