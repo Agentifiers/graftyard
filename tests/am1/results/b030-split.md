@@ -1174,6 +1174,35 @@ The operator stopped all hosted work: the account's bill for Oct 27 to Nov 16 is
   window (2026-11-14 09:46Z to 2026-11-16 11:44Z). So objects the logs did not name, such as smoke groups and earlier generations, were off the
   meter.
 
+## B0-30 re-judged at 90% (operator decision, 2026-11-16, `FRAME.md`, "90% gates and a daily spend limit")
+
+No spend. Read from the results above and `tests/am1/results/b0-30.md`. The row's targets are 30 simulated days of
+journey 9 with pushes on (1.6 a second), member SQLite under `CHILD_GROUP_AT` (8,589,934,592 B), zero `SQLITE_FULL`,
+and archived entries readable for `RestoredTo`; its fail line is any `SQLITE_FULL`, or SQLite over `CHILD_GROUP_AT`
+without a child group taking the tier. At 90%: 27 simulated days, a size bound of 1.1 × `CHILD_GROUP_AT`
+(9,448,928,051 B), and the push rate at 1.44 a second.
+
+**Still short, on every run. No row status changes.**
+
+| Run | Days (target 27) | Max member SQLite (bound 9.45 GB at 90%) | `SQLITE_FULL` | `RestoredTo` | Short by |
+|---|---|---|---|---|---|
+| First (`b0-30.md`, 2026-11-11) | 27.52 | 8,591,708,160 B, 1.0002 × the line | 0 | 81 of 81 ranges, 10 of 10 lookups | Pushes off from day 1.34: 7,853 pushes, 3.7% of journey 9's 1.6 a second. And no child group took the tier, so it hit the fail line as written. A size within 10% does not lift a fail line: the operator's rule relaxes targets, not the "without a child group" clause |
+| Second (`b030r2`, 2026-11-14 to 16) | 25.83 (86%) | 10,184,200,192 B on site c, 1.186 × the line | 0 | Not judged: the parent could not commit, so `verify.mjs` did not run | Day 25.83 of 27, about 1.2 simulated days short. Site c 735 MB over the 90% bound. And the parent stopped committing at entry 208,160 (`Degraded { lost: 1 }` waiting on an installing voter), so the group is not live: that is a quorum stall, not a target missed by a margin |
+| Third (`b030r3`, 2026-11-16) | 1.2 | 6.34 GB | 0 | — | Stopped by the operator at day 1.2, no verdict |
+
+- The second run's push rate also fell short of 90% (86.4 a minute) for long stretches: 96 a minute at the start,
+  66 by day 14.9 (G14), 60.5 before the stop at day 17.62, 79 to 80 after site day 9. It pushed 162,457 of the
+  191,737 due by day 25.83, 85%.
+- Not an invariant failure on either run: no acknowledged push was lost, and the quorum rule held (entry 208,160 did
+  not commit because the rule held).
+- **What it needs.** A run to day 27 with the parent live and every member under 9.45 GB, plus a `RestoredTo`
+  verify. b030-fixes (on main since `0e3d13cc`) targets both of the second run's causes; the expected site c peak
+  with them is under 2.9 GB [inference]. So B0-30 still needs a rerun under the operator's slot rule. At 90% the run
+  could end at simulated day 27 (36 h of load at 18x, against 40), which saves about 10% of its load cost.
+- **Cost of the second run on the account meter** (`tests/fanout/acctcost.py`, every `graft-m1-*` line, 2026-11-14
+  09:46Z to 2026-11-16 11:44Z): $190.43 (members $167.46, shards $22.78, edges $0.19), against the run meter's $139.70
+  for nearly the same window. The third run, 17:17 to 20:15Z: $16.83 for graft-m1 (account $20.44).
+
 ## Cost
 
 | Window | DO and Workers | Containers |
