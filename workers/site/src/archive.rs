@@ -222,6 +222,10 @@ impl SiteHost<'_> {
 }
 
 impl ArchiveHost for SiteHost<'_> {
+    fn rollup(&self) -> bool {
+        log_archive::rollup_enabled(self.h.env.var("GRAFTYARD_ROLLUP").ok().map(|v| v.to_string()).as_deref())
+    }
+
     fn view(&self) -> Option<View> {
         let core = self.h.core.borrow();
         let c = core.as_ref().filter(|c| c.m.role() == Role::Leader)?;

@@ -41,6 +41,13 @@ pub const ROLL_MIN_PACKS: usize = 8;
 /// `roll-up`, "What rolls").
 pub const ROLL_AGE_MS: u64 = 86_400_000;
 
+/// Whether a site day turned roll-up on: the site variable `GRAFTYARD_ROLLUP` is exactly `1`. A site day sets it only
+/// after `FormatsEnable` enabled 32.25, so no leader records a `Compacted` before every member can read one; unset, the
+/// alarm sends no `/roll` and records nothing (`decisions/DECISIONS.md`, `roll-up`, "Status").
+pub fn rollup_enabled(var: Option<&str>) -> bool {
+    var == Some("1")
+}
+
 /// A promotion takes up to this many archive ranges of log at once, and one archive step puts up to `ARCHIVE_PIECES`
 /// objects of `ARCHIVE_RANGE_MAX` each and records them in one entry [inference from B0-30's rerun]. Each step pays
 /// its entry's commit and twice that again in pacing (`workers/site/src/host.rs`, `paced`), about 1.35 s, so with 4
@@ -395,6 +402,8 @@ pub enum Step {
 pub trait ArchiveHost {
     /// `None` unless this member leads and may archive now.
     fn view(&self) -> Option<View>;
+    /// Whether this site may roll (`rollup_enabled`).
+    fn rollup(&self) -> bool;
     /// The stored rows above `after`, in index order, read lazily.
     fn rows(&self, after: Index) -> Result<Rows<'_>, String>;
     /// The packs under these checksums as one complete pack, validated and placed with its `.idx`, which names the
@@ -525,6 +534,9 @@ pub async fn step<H: ArchiveHost>(
 /// A roll only fills an otherwise idle step: archive ranges and promotions, including warm promote-ahead, always go
 /// first (`decisions/DECISIONS.md`, `roll-up`, "Who writes it").
 async fn roll<H: ArchiveHost>(h: &H, v: &View) -> Result<Step, String> {
+    if !h.rollup() {
+        return Ok(Step::Idle);
+    }
     let Some(ps) = roll_plan(&v.rollable, v.now) else { return Ok(Step::Idle) };
     let from = ps[0].from;
     let to = ps[ps.len() - 1].to;

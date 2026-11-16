@@ -39,6 +39,8 @@ struct Bed {
     promoted: RefCell<Vec<Vec<Digest>>>,
     /// Every `/roll` call, including one a stopped shard skips: checksums, combined range and request.
     rolled: RefCell<Vec<RollCall>>,
+    /// The site's `GRAFTYARD_ROLLUP`, as `log_archive::rollup_enabled` reads it.
+    rollup: Option<&'static str>,
     /// Every recorded entry's format and events, before the real members verify and commit them.
     records: RefCell<Vec<(Format, Vec<RepoEvent>)>>,
     /// Every `/promote` call's `warm`, and whether the shard's container runs: a warm call to a stopped shard is
@@ -76,6 +78,7 @@ impl Bed {
             held_from: RefCell::new([1; 3]),
             promoted: RefCell::new(Vec::new()),
             rolled: RefCell::new(Vec::new()),
+            rollup: Some("1"),
             records: RefCell::new(Vec::new()),
             warm: RefCell::new(Vec::new()),
             running: std::cell::Cell::new(true),
@@ -153,6 +156,10 @@ const PROMOTE_MS_PER_MB: f64 = 110.0;
 const TWICE_THE_ROW_MB_S: f64 = 2.0 * 2.48e3 / (86_400.0 / 18.0);
 
 impl ArchiveHost for Bed {
+    fn rollup(&self) -> bool {
+        log_archive::rollup_enabled(self.rollup)
+    }
+
     fn view(&self) -> Option<View> {
         let l = self.leader();
         let w = self.w.borrow();
@@ -651,6 +658,21 @@ fn an_idle_step_rolls_in_order_records_compacted_marks_it_and_advances_the_real_
     let fold = &w.repo.members[b.leader()].group_fold().fold;
     assert_eq!(fold.compactions(), vec![c.clone()]);
     assert_eq!(fold.rolled_to(), to);
+}
+
+/// Until a site day sets `GRAFTYARD_ROLLUP=1` (after `FormatsEnable` enabled 32.25), a run that would roll asks no
+/// shard and records nothing; any other value is unset too.
+#[test]
+fn an_unset_rollup_variable_rolls_nothing() {
+    for var in [None, Some(""), Some("0"), Some("true")] {
+        let mut b = Bed::new();
+        b.rollup = var;
+        seed_roll(&b, 8);
+        assert_eq!(b.step(CAP), Step::Idle, "{var:?}");
+        assert!(b.rolled.borrow().is_empty(), "{var:?}: no /roll is sent");
+        assert!(b.records.borrow().is_empty() && b.marked.borrow().is_empty(), "{var:?}");
+        assert_eq!(b.w.borrow().repo.members[b.leader()].group_fold().fold.rolled_to(), Index(0));
+    }
 }
 
 #[test]

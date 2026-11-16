@@ -548,7 +548,9 @@ impl Bed {
     /// recorded as `Compacted` at a new entry and listed by `ChainLog::compactions`. Its `Committed` marker is this
     /// caller's to write, as `mark_committed` writes a promotion's.
     fn roll(&self, from: u64, to: u64, consumed: &[PackId]) -> PackId {
-        let p = Pack { brings: (from..=to).collect(), needs: vec![], pad: 0 };
+        // Padded, so a roll of one promotion is not that promotion's bytes and checksum.
+        let needs = if from > 1 { vec![from - 1] } else { vec![] };
+        let p = Pack { brings: (from..=to).collect(), needs, pad: 1 };
         let b = bytes_of(&p);
         let id = PackId(Ulid(2_000_000 + to as u128));
         self.disk.bucket.borrow_mut().insert(id, b.clone());
@@ -1099,7 +1101,72 @@ fn a_roll_without_a_marker_for_its_produced_pack_consumes_nothing() {
     b.assert_serves_head();
 }
 
+/// The same roll, counted (marked, with its `.idx`), but its produced pack is in no bucket: the rehydrate drops the
+/// roll and loads the promotions it consumed, which nothing deletes yet, then serves the head. Without the fallback
+/// the produced pack's failed fetch ends the rehydrate, and every later one fails the same way
+/// (`decisions/DECISIONS.md`, `roll-up`, "Rehydrate prefers a rolled pack").
+#[test]
+fn a_roll_whose_produced_pack_does_not_load_falls_back_to_the_packs_it_consumed() {
+    let b = bed(40, 0, 0);
+    for i in [5, 15, 25] {
+        b.stored_at(i);
+    }
+    b.promote_range(1, 10);
+    b.promote_range(11, 20);
+    b.promote_range(21, 30);
+    let p1 = PackId(Ulid(1_000_010));
+    let p2 = PackId(Ulid(1_000_020));
+    let rolled = b.mark_roll(1, 20, &[p1, p2]);
+    // A promotion after the roll whose range reaches past the roll's entry puts the roll's marker below the tail
+    // start, in the marked phase, where only the drop keeps the missing pack out of the plan.
+    let at = b.log.head();
+    b.promote_range(31, at);
+    b.idx(10, true, Some((1, 10)));
+    b.idx(20, true, Some((11, 20)));
+    b.idx(30, true, Some((21, 30)));
+    b.disk.bucket.borrow_mut().remove(&rolled);
+    let r = b.run().unwrap_or_else(|e| panic!("the rehydrate failed on the dropped roll: {}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    assert_eq!(h.dropped_rolls.len(), 1, "{:?}", h.dropped_rolls);
+    // The consumed promotions load in R's place, in range order, through their `.idx`; the pushed packs they cover
+    // stay skipped, as before any roll.
+    assert_eq!(b.ingested_ids(), [1_000_010, 1_000_020, 1_000_030, 1_000_000 + at as u128]);
+    assert_eq!(h.skipped, 3);
+    assert!(h.fault.is_none(), "{:?}", h.fault);
+    b.assert_serves_head();
+}
+
+/// Two rolls, the later range's produced pack building on the earlier's: each loads, oldest range first, before
+/// the promotion after them, and neither is dropped.
+#[test]
+fn two_rolls_load_oldest_first_and_both_count() {
+    let b = bed(40, 0, 0);
+    for k in 1..=4 {
+        b.promote_range(10 * k - 9, 10 * k);
+    }
+    let p = |to: u128| PackId(Ulid(1_000_000 + to));
+    b.mark_roll(21, 30, &[p(30)]);
+    b.mark_roll(1, 20, &[p(10), p(20)]);
+    b.idx(40, true, Some((31, 40)));
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    assert!(r.rehydrated.expect("a rehydrate").dropped_rolls.is_empty());
+    assert_eq!(b.ingested_ids(), [2_000_020, 2_000_030, 1_000_040]);
+    b.assert_serves_head();
+}
+
 impl Bed {
+    /// `roll`, with the produced pack's `Committed` marker at the roll's entry and its stored `.idx`.
+    fn mark_roll(&self, from: u64, to: u64, consumed: &[PackId]) -> PackId {
+        let id = self.roll(from, to, consumed);
+        let b = self.disk.bucket.borrow()[&id].clone();
+        self.disk.markers.borrow_mut().push((
+            id,
+            Marker { chain: CHAIN, index: Index(self.log.head()), checksum: sum(&b), bytes: b.len() as u64 },
+        ));
+        self.rolled_idx(id, Some((from, to)));
+        id
+    }
+
     /// The produced pack's stored `.idx`, with the range its custom metadata names.
     fn rolled_idx(&self, id: PackId, range: Option<(u64, u64)>) {
         let b = self.disk.bucket.borrow().get(&id).cloned().expect("the produced pack");

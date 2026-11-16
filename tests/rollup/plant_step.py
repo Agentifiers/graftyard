@@ -12,7 +12,9 @@ M = [('cap boundary exclusive', '        if next > ROLL_IN_MAX {', '        if n
      ('recorded in the old format', 'h.record(request, REPO_FORMAT_ROLLUP, vec![RepoEvent::Compacted(c)])',
       'h.record(request, REPO_FORMAT_V1, vec![RepoEvent::Compacted(c)])'),
      ('produced not marked', '    let index = h.record(request, REPO_FORMAT_ROLLUP, vec![RepoEvent::Compacted(c)]).await?;\n    h.mark(&pack, index).await;',
-      '    let index = h.record(request, REPO_FORMAT_ROLLUP, vec![RepoEvent::Compacted(c)]).await?;')]
+      '    let index = h.record(request, REPO_FORMAT_ROLLUP, vec![RepoEvent::Compacted(c)]).await?;'),
+     ('gate ignored', '    if !h.rollup() {\n        return Ok(Step::Idle);\n    }\n', ''),
+     ('gate true for any value', '    var == Some("1")', '    var.is_some()')]
 for n, o, new in M:
     s = open(F).read(); assert s.count(o) == 1, n
     open(F, 'w').write(s.replace(o, new))
