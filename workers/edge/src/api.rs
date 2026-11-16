@@ -580,8 +580,8 @@ fn tier_rows_query(merge: Option<MergeOf>) -> Value {
 }
 
 /// The repository's narrow `{"rows": {which: true}}` core read, on a follower by read-index first and then the
-/// leader (`graftyard_lookup::read_spread`): `access` for `crate::read_gate`, or
-/// `agent` for an agent push. `Ok(Err(why))` when the leader cannot answer it now.
+/// leader (`graftyard_lookup::read_spread`): `access` for `crate::read_gate`, `agent` for an agent push, or `actions`
+/// for `acquirejob`'s secrets and variables. `Ok(Err(why))` when the leader cannot answer it now.
 pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<std::result::Result<MemStore, String>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();

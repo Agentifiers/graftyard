@@ -257,7 +257,7 @@ BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 
 
 ## Plants: `tests/m4/wp4/plant.py`
 
-21 of 21 caught after the rebase onto main 4833094d (plant 12 is BF-55's "never rematch an ephemeral runner" rule, which holds for hosted runners because they are ephemeral and `Owner`-scoped; plants 18 to 20 are `graftyard runners upgrade`'s). The first run missed two. "Start ignores the cap's room" got through because every test queued only one row; `hosted::tests::rows_share_the_caps_room` now queues two. "A runner whose job completed is not stale" got through because every runner that had held a job was also past `HOSTED_IDLE`; the demand test now queues jobs while those runners are stale. One planned plant was dropped: "the cap counts only the fold" cannot be written without reaching into the scratch's private fields.
+Plants 25 to 30 (F77, branch `f77-acquire`): 6 of 6 caught. 21 of 21 caught after the rebase onto main 4833094d (plant 12 is BF-55's "never rematch an ephemeral runner" rule, which holds for hosted runners because they are ephemeral and `Owner`-scoped; plants 18 to 20 are `graftyard runners upgrade`'s). The first run missed two. "Start ignores the cap's room" got through because every test queued only one row; `hosted::tests::rows_share_the_caps_room` now queues two. "A runner whose job completed is not stale" got through because every runner that had held a job was also past `HOSTED_IDLE`; the demand test now queues jobs while those runners are stale. One planned plant was dropped: "the cap counts only the fold" cannot be written without reaching into the scratch's private fields.
 
 | # | Plant | Caught by |
 | --- | --- | --- |
@@ -286,6 +286,12 @@ BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 
 | 22 | A `Repo`-scope poll never resends a lost match (main's rule, F76) | `a_repo_scope_runner_whose_match_answer_was_lost_gets_the_job_on_a_later_poll` |
 | 23 | A `Repo`-scope poll matches a runner that holds a job a second job | the same |
 | 24 | A summary forgets when a job was matched, so nothing is ever resent | the same, and `bf55` |
+| 25 | A holder's repeated `acquirejob` is refused again (main's rule, F77) | `a_runners_repeated_acquire_of_its_own_job_is_answered_and_anothers_is_refused` |
+| 26 | A repeated acquire re-arms the lease | the same |
+| 27 | Any runner may acquire an `InProgress` job | the same |
+| 28 | The `actions` rows are answered as a whole-tier dump (main's read, F77) | `the_acquire_secrets_read_is_never_shed_for_a_dump_rebuild` |
+| 29 | The `actions` rows leave out the variables | the same |
+| 30 | A follower sends the `actions` rows to the leader | the same |
 
 ## Cost estimate for the hosted runs
 

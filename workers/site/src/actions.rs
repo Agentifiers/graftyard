@@ -652,6 +652,8 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 return Ok(refused(404, "no job"));
             };
             let Some((row, _)) = fold_job(job) else { return Ok(refused(404, "no job")) };
+            // Its own runner's acquire again, whose answer it lost: the job message again, from no new entry (F77).
+            let again = matches!(row.state, JobState::InProgress { .. });
             let op = ActionsOp::Job { job, version: row.version, event: JobEvent::Acquired };
             match commit(h, fresh_rid(), ActionsActor::Runner(runner), op).await {
                 Ok(Ok(_)) => {}
@@ -671,7 +673,10 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 .ok()
                 .and_then(|v| v.as_array().map(Vec::len))
                 .unwrap_or(0);
-            if let Err(e) = relay(&h.env, site, job, &format!("/open/{}?steps={steps}", job.0.0), &json!({})).await {
+            // Opened once: a second open would reset a relay the runner may already stream to.
+            if !again
+                && let Err(e) = relay(&h.env, site, job, &format!("/open/{}?steps={steps}", job.0.0), &json!({})).await
+            {
                 worker::console_error!("{chain} logrelay open {}: {e}", job.0.0);
             }
             let names = b["repository"].as_str().unwrap_or("");
@@ -681,7 +686,10 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 relay_site: site,
                 github_token: b["github_token"].as_str().unwrap_or(""),
                 job_token: &job_token,
-                locked_until: Timestamp(now + graftyard_actions::JOB_LEASE.as_millis() as u64),
+                locked_until: row
+                    .state
+                    .deadline()
+                    .unwrap_or(Timestamp(now + graftyard_actions::JOB_LEASE.as_millis() as u64)),
                 // Opened by the edge through `graft-ops` for this job alone; never logged or stored here.
                 secrets: serde_json::from_value(b["secrets"].clone()).unwrap_or_default(),
                 variables: serde_json::from_value(b["variables"].clone()).unwrap_or_default(),
