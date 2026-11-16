@@ -27,7 +27,12 @@ const cf = (path, input = "") => JSON.parse(execFileSync("curl", ["-s", "-H", "@
   `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/${path}`],
   { input: `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}\n`, stdio: ["pipe", "pipe", "pipe", ...(input ? ["pipe"] : [])], maxBuffer: 64 << 20 }).toString());
 
+// A listing page that times out (curl exit 28, twice on 2026-11-15 and -16) is tried once more, then the bucket's row
+// reads as an error; it never ends the monitor, whose cost row the stop rule needs.
 function bucket(name) {
+  try { return bucketOnce(name); } catch { try { return bucketOnce(name); } catch (e) { return { error: String(e).slice(0, 120) }; } }
+}
+function bucketOnce(name) {
   let cursor = null, n = 0, bytes = 0, first = null, last = null;
   for (let page = 0; page < 1000; page++) {
     const r = cf(`r2/buckets/${name}/objects?prefix=archive/${CHAIN}/&per_page=1000${cursor ? `&cursor=${cursor}` : ""}`);
