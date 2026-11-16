@@ -1017,7 +1017,8 @@ if (plan.pollers) {
   writeRow(OUT, { step: "feed members", ...(await readMembers()) });
   // One poll as the edge's `activity` routes it: members in order (this poller's learner first, so 500 pollers
   // spread over the learners as the edge's isolates' members do), up to three that answer; the first `hold` is the
-  // answer; a full member answers 429; if every one tried refused as lagging and the least lagged is a learner, that
+  // answer; a full member answers 429; a `gone` sends the poll on, and is the answer only if every one tried answered
+  // it (`graftyard_git::feed::route`); if every other one refused as lagging and the least lagged is a learner, that
   // learner holds the poll with `lagging_ok`; otherwise 429. `learner_answers` is set on followers once a learner
   // answered `notServing`, as the edge sets it.
   const poll = async (k, cursor) => {
@@ -1026,7 +1027,7 @@ if (plan.pollers) {
     const order = [...ls.slice(k % Math.max(1, ls.length)), ...ls.slice(0, k % Math.max(1, ls.length)), ...vs];
     const body = (extra) => ({ cursor, wait_s: 25, paths: [`a1/${k % 50}/**`], token: `a1-${RUN}-${k}`, ip: `a1ip-${k}`, ...extra });
     const answers = [], tried = [];
-    let learnerAnswered = false;
+    let learnerAnswered = false, gone = null;
     for (const m of order) {
       if (answers.length >= 3) break;
       let r;
@@ -1038,16 +1039,19 @@ if (plan.pollers) {
       by[v.admit ?? `status ${r.status}`] = (by[v.admit ?? `status ${r.status}`] ?? 0) + 1;
       if (r.status !== 200 || !v.admit) continue;
       if (v.admit === "hold") return { v, m, tried };
-      if (v.admit === "gone" || v.admit === "tooMany") return { v, m, tried };
-      if (v.admit === "full") answers.push({ a: "full", m, lag: 0 });
+      if (v.admit === "tooMany") return { v, m, tried };
+      if (v.admit === "gone") { gone ??= { v, m }; answers.push({ a: "gone", m }); }
+      else if (v.admit === "full") answers.push({ a: "full", m, lag: 0 });
       else if (v.admit === "lagging") answers.push({ a: "lagging", m, lag: v.lagMs ?? Number.MAX_SAFE_INTEGER });
       else if (v.admit === "notServing" && m.learner) learnerAnswered = true;
       else if (v.admit === "notServing") membersAt = 0;
     }
     if (answers.some((x) => x.a === "full")) return { v: { admit: "429" }, tried };
-    const lag = answers.filter((x) => x.a === "lagging");
+    const others = answers.filter((x) => x.a !== "gone");
+    if (gone && answers.length > 0 && others.length === 0) return { v: gone.v, m: gone.m, tried };
+    const lag = others.filter((x) => x.a === "lagging");
     const least = lag.sort((a, b) => a.lag - b.lag)[0];
-    if (least && lag.length === answers.length && least.m.learner) {
+    if (least && lag.length === others.length && least.m.learner) {
       try {
         const r = await member(CHAIN, least.m.site, "/feed", body({ learner_answers: false, lagging_ok: true }), 40_000, least.m.name);
         if (r.v?.admit === "hold") return { v: r.v, m: least.m, tried: [...tried, "laggingOk"] };
@@ -1170,6 +1174,11 @@ function driverMs() {
 const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
 // A sample array, or `/stats?summary=1`'s `{n, p50, p99}` of one.
 const ps = (x) => (Array.isArray(x) || x == null ? { n: x?.length, p50: pct(x, 0.5), p99: pct(x, 0.99) } : { n: x.n, p50: x.p50, p99: x.p99 });
+const splitOf = (st) => Object.fromEntries([["queue", st.queueMs], ["queue:slot", st.queueSlotMs], ["queue:post", st.queuePostMs],
+  ["round", st.roundMs], ["confirm", st.confirmMs], ["apply", st.applyMs],
+  ...Object.entries(st.appendMs ?? {}).map(([k, xs]) => [`append:${k}`, xs]),
+  ...Object.entries(st.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
+  .map(([k, xs]) => [k, ps(xs)]));
 // A stopped window's rates are over the seconds it ran.
 const ran = stopped ? Math.max(1, (end - t0) / 1000) : seconds;
 const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.length, perS: +(xs.length / ran).toFixed(2), p50: pct(xs, 0.5), p99: pct(xs, 0.99), codes: codes[k] }]));
@@ -1193,11 +1202,9 @@ const v = {
     // Round 10 adds each follower's AppendEntries call time (`append:<site>`) and append to apply (`apply`), so the
     // round splits into the near follower's leg and the leader's own confirm.
     // `queue:slot` waits for the entries ahead; `queue:post` is the command's own entry's cut, dep reads and decide.
-    split: Object.fromEntries([["queue", lstats.queueMs], ["queue:slot", lstats.queueSlotMs], ["queue:post", lstats.queuePostMs],
-      ["round", lstats.roundMs], ["confirm", lstats.confirmMs], ["apply", lstats.applyMs],
-      ...Object.entries(lstats.appendMs ?? {}).map(([k, xs]) => [`append:${k}`, xs]),
-      ...Object.entries(lstats.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
-      .map(([k, xs]) => [k, ps(xs)])),
+    split: splitOf(lstats),
+    // B0-31: the same split for the buckets-up half, read at `placeFailAt` before the reset, to trace that half's tail.
+    ...(plan.placeFailAt !== undefined ? { splitByHalf: { up: splitOf(upStats ?? {}), fail: splitOf(lstats) } } : {}),
     // Round 12's confirm split by transaction size: the gate wait, the turn queue, and storage (`sync - turn`).
     confirmSplit: lstats.confirmSplit ?? null,
     // Round 14: admitted commands' priced bytes by class (what moves admission's `cmdBytes`), and the statement mix of

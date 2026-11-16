@@ -123,7 +123,7 @@ The group reached k 4 at 15:03:31Z. Creating the 540 tasks took until 15:22:00Z,
 - 154 of them carry `{"429": 1, "gone": 1}`: the poller was turned away with 429, then answered `gone` and reloaded from `oldest`. The other 44 carry no miss and took 25.8 to 37.7 s, which is a whole hold with no answer.
 - By minute from the replay's start: 53, 14, 40, 9, 37, 0, 0, 16, 13, 16. So it is not only the first minute.
 - `gone` answers totalled 869 over the row. 858 of them came from site 2's learners `l2` (626) and `l5` (232), against 4 or fewer on every other learner. The feed-ahead change (`lagging` for a cursor past `newest`) left those 858.
-- **Reading** [inference]: site 2's two learners fell behind further than `FEED_RING`, and their cursors aged out. The fix would be in learner catch-up or ring size, not in the cursor rule. The per-learner `lagging` counts (2,649 and 3,809 on `l5` and `l2`, against 127 to 928 elsewhere) agree.
+- **Reading** [inference]: site 2's two learners fell behind further than `FEED_RING`, and their cursors aged out. The fix would be in learner catch-up or ring size, not in the cursor rule. The per-learner `lagging` counts (2,649 and 3,809 on `l5` and `l2`, against 127 to 928 elsewhere) agree. Corrected after the run: the trace shows they did not fall behind. See "m3fr9 after the run" below.
 
 **Replay, other lines.** Leader commit p50 567 ms, p99 813 ms (n 37, the end read after the last kill). Agent pushes: 2,491 of 2,491 ok, p50 2,330 ms, p99 11,896 ms. B0-29's API read: p99 3,347 ms, with 3,108 × 503 and 2,847 skipped at the driver's cap, of 118,788.
 
@@ -141,6 +141,24 @@ The group reached k 4 at 15:03:31Z. Creating the 540 tasks took until 15:22:00Z,
 
 - Site 0's 746 lease fallbacks and 3.9 s lagMax are the leader's. Each kill reset it, so its clock restarts behind.
 - With no churn, the feed's tail moved to the learners' cursor ageing. m3fr6's pass came with constant elections that kept the feed answered by followers [inference].
+
+### m3fr9 after the run: why site 2's learners answered `gone`, and the read the stall's task was shed on (analysis from the raw files and Workers Logs, no hosted spend)
+
+**The learners did not fall behind on catch-up.** The reading above is wrong.
+- The trace rows (`tsave-m3fr9-l0-12.jsonl`, each learner's `Applied` and `AppendStepped` rows) put all 8 learners within about 20 entries of the leader at every minute of the replay. Learners reset only at 15:04:12Z and after the replay, so no ring restarted under it.
+- Site 2's learners (`l2` and `l5`, the same apac site as m3fr7's two learners, on a new repository) apply each entry later. Their apply delay behind the leader was p50 1,008 and 717 ms, p99 4,074 and 1,971 ms. Site 0's learners were at p50 181 to 316 ms. Of the entries applied in the replay, `l2` applied 426 of 844 more than FEED_BATCH after the leader, and `l5` 209 of 1,010. Site 0's learners applied about 32 to 36 that late.
+- **Mechanism** [the code path is read from the code; tying it to the counts is an inference]. `a1` and the edge route a poller across the learners in rotation, so a cursor one learner served goes next to another. `feed::start` answers `gone` to a cursor past the commit index the member knows (`feed-ahead`'s bound). The next learner's newest entry was past `l2`'s known commit 84.2% of the replay, and past `l5`'s 82.5%. For the other six learners the figure was 4.7 to 23.1%.
+- The edge, and `a1` mirroring it, returned the first member's `gone` at once. The poller reloaded from `oldest` and was sent events again that it had seen, which the driver timed as up to the whole replay. This also fits B0-32 (139 and 367 `gone`) and B0-31's 0.
+- **Fix** (branch `learner-lag`, `decisions/DECISIONS.md`, "`feed-gone-route`"): one member's `gone` sends the poll on, and the edge answers 410 only when every member it tried did. The restore bound is unchanged. `a1.mjs` routes the same way. FEED_RING is not touched.
+
+**The read the stall's task was shed on.**
+- At 15:53:30Z, `POST …/tasks` (wall 7.3 s) answered 503 "the repository's tier rows did not answer; retry (repo:65574: every member asked shed the read: overloaded)". The `PUT …/agents/policy` after it got the same.
+- The read is `api::tier_rows`: the whole-tier dump `{"rows": true, "ranges": true, "packed": true}`, sent through `spread_read` to the learners and then the followers [measured, Workers Logs].
+- `agents::serve` (`workers/edge/src/agents.rs`), which serves policy, tasks and leases, never sets `Ctx::write`. So `spread_read` runs these writes with a retry of 0, as a read-class request. DESIGN, "Follower read", says a REST call other than `GET` asks the same members again within LOOKUP_FOR (20 s). The REST and GraphQL paths set it (`rest_repo`, the GraphQL mutation); the agents routes do not [read from the code].
+- The group was idle: the leader had 0 reads in flight, and the learners had applied 3,564 to 3,613 against the leader's 3,613. The leader's appends to learners were sparse after the replay: it applied entry 3,613 at 15:53:08Z and 3,614 at 15:53:59Z.
+- Why every member asked shed this one dump is not settled [unverified]. Two causes fit the code: a voter that had not finished rebuilding its dump (`waits_for_rebuild`), or a learner that had not applied the read index within FOLLOWER_WAIT.
+- **Proposed, not built:** `agents::serve` sets `c.write` for a non-`GET`, as `rest_repo` does. A shed tier read then waits within LOOKUP_FOR instead of failing the write.
+- **Driver change, built:** `rows.sh` now waits up to 120 s, before the stall, for the replay's requests to drain (`tests/fanout/drain.mjs`: no held feed poll, no read in flight, nothing in admission, on every member). There is no retry: `stall.mjs` and `rows.mjs` record a refused task, policy or holder as a result and go on.
 
 ### B0-32 (repo 65575, run `mwjgfcsw`): fail, with leader churn
 

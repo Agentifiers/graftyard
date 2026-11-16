@@ -153,23 +153,26 @@ fn lf12_lf13_polls_go_to_following_members_and_never_the_leader() {
     for i in 0..5_000usize {
         // The edge asks up to three members, starting at a different one each time.
         let order: Vec<usize> = (0..3).map(|k| (i + k) % 3).collect();
-        let answers: Vec<_> =
-            order.iter().map(|&m| (members[m].admit(roles[m], false, ok), roles[m], ok.lag)).collect();
+        let answers: Vec<_> = order
+            .iter()
+            .map(|&m| feed::Answer::Admit(members[m].admit(roles[m], false, ok), roles[m], ok.lag))
+            .collect();
         match feed::route(&answers) {
             feed::Route::Held(k) => {
                 held[order[k]] += 1;
                 // The other members that held it too drop their copy.
-                for (j, (a, _, _)) in answers.iter().enumerate() {
-                    if j != k && *a == Admit::Hold {
+                for (j, a) in answers.iter().enumerate() {
+                    if j != k && matches!(a, feed::Answer::Admit(Admit::Hold, _, _)) {
                         members[order[j]].done();
                     }
                 }
             }
+            feed::Route::Gone(_) => unreachable!("no member answered gone"),
             feed::Route::TooMany { retry_after } => {
                 assert_eq!(retry_after, FEED_BATCH_ALL);
                 too_many += 1;
-                for (j, (a, _, _)) in answers.iter().enumerate() {
-                    if *a == Admit::Hold {
+                for (j, a) in answers.iter().enumerate() {
+                    if matches!(a, feed::Answer::Admit(Admit::Hold, _, _)) {
                         members[order[j]].done();
                     }
                 }
@@ -186,7 +189,10 @@ fn lf12_lf13_polls_go_to_following_members_and_never_the_leader() {
     let mut after = [0u32; 5];
     for i in 0..1_500usize {
         let order = [0, 1 + i % 2, 3 + i % 2];
-        let answers: Vec<_> = order.iter().map(|&m| (members[m].admit(roles[m], true, ok), roles[m], ok.lag)).collect();
+        let answers: Vec<_> = order
+            .iter()
+            .map(|&m| feed::Answer::Admit(members[m].admit(roles[m], true, ok), roles[m], ok.lag))
+            .collect();
         if let feed::Route::Held(k) = feed::route(&answers) {
             after[order[k]] += 1;
         }

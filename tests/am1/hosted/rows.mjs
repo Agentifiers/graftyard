@@ -85,8 +85,10 @@ if (which === "l012") {
   // requester. A pusher with no task is refused only by a lease "whose actor differs" (`LeaseEnforce`), so a lease
   // m3-ci held itself would bind none of m3-ci's pushes.
   const ht = await api("POST", `${V1}/tasks`, app, { kind: "external", session: `l012h-${tag}`, summary: "am1 l012 holder", requester: "m3-member" });
-  if (ht.status !== 201) throw new Error(`holder task: ${ht.status} ${JSON.stringify(ht.body).slice(0, 200)}`);
-  const holderTask = ht.body.id;
+  // A refused holder task or policy write is the row's result, recorded, and the kinds still run as written (m3fr9:
+  // both got 503 after the replay, and the run was stopped by hand).
+  row(OUT, { step: "holder task", status: ht.status, body: ht.status === 201 ? undefined : ht.body });
+  const holderTask = ht.body?.id;
   const held = await acquire(tokens.member, { paths: [`l012/${tag}/**`], mode: "exclusive", ttl_seconds: 3600, intent: "L0-12 holder" }, holderTask);
   row(OUT, { step: "holder exclusive", status: held.status, lease: held.body?.lease?.id });
   log(`holder: ${held.status} ${held.body?.lease?.id}`);
@@ -116,7 +118,8 @@ if (which === "l012") {
       ["Graftyard MCP", async () => (await agentToken("graftyard-mcp")).body.token, (k) => `refs/heads/l012-${tag}-m${k}`],
     ] : []),
   ];
-  const summary = {};
+  // The policy and holder answers lead the summary: a refusal kind under a policy that did not take measures nothing.
+  const summary = { policy: pol.status, holderTask: ht.status, holder: held.status };
   const only = process.env.ROWS_L012_ONLY;
   // ROWS_COST_CMD (rows.sh: tests/fanout/costok.sh) runs before each kind with the kind as its phase; a nonzero exit
   // is the cost stop, and the kinds not run are logged so the row's results can name them.

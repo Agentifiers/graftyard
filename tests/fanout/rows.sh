@@ -103,6 +103,10 @@ for row in $ROWS; do
   # take about 21 minutes each, so 7,200 s cut m3fr1's last kind.
   # L012_REPLAY_ONLY=1: the replay alone (the storm reproducer); the stall and refusals are left out.
   if [ "$row" = l0-12 ] && [ -z "${L012_REPLAY_ONLY:-}" ] && costok "l0-12 stall"; then
+    # The replay's own requests drain first, at most 120 s (held feed polls, member reads, admission queue); on m3fr9
+    # the stall's first task got 503 4 s after the replay. The stall runs either way and counts every 503 it sees.
+    node tests/fanout/drain.mjs "$rid" 120 > tests/fanout/raw/drain-$TAG-$row.jsonl 2>&1
+    echo "$(date -u +%FT%TZ) l0-12 drain exit $?: $(tail -1 tests/fanout/raw/drain-$TAG-$row.jsonl)" >> "$ST"
     STALL_REPO=$repo STALL_REPO_ID=$rid timeout 3600 node tests/am1/hosted/stall.mjs "${STALL_MIN:-30}" 20 \
       > tests/am1/raw/runs/l012-stall-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 stall exit $?" >> "$ST"
