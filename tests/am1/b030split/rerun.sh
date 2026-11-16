@@ -9,25 +9,30 @@
 #   amp orb service start b030-cross   --command 'bash tests/am1/b030split/rerun.sh cross'
 #   amp orb service start b030-watch   --command 'bash tests/am1/b030split/rerun.sh watch'
 #   amp orb service start b030-drain   --command 'bash tests/am1/b030split/rerun.sh drain'
-# STOP_USD (default 190) is the rerun's own spend, DO, Workers and containers, from the start time in
+# The short run (b030r4, operator 2026-11-16, option A; b030-split.md, "Proposal: a shorter B0-30 run from the split
+# onward") adds two services and seeds 5.5 GB: B030_RUN=b030r4 NAME=b0-30-r4 SEED_BYTES=5500000000.
+#   amp orb service start b030-force   --command 'bash tests/am1/b030split/rerun.sh force'
+#   amp orb service start b030-acct    --command 'bash tests/am1/b030split/rerun.sh acct'
+# STOP_USD (default 190) is the old per-install meter's line, for diagnosis only since 2026-11-16; the stop is acctstop.py's. It was the rerun's own spend, DO, Workers and containers, from the start time in
 # tests/am1/raw/$B030_RUN.start. To change it mid-run, write the new number to tests/am1/raw/b030-stop-usd.
 cd "$(dirname "$0")/../../.."
 export BED_TOKEN_FILE=$HOME/.graft-wp6/bed.token
 R=tests/am1/raw
-NAME=${NAME:-b0-30-r3}
-RUN=${B030_RUN:-b030r3}
+NAME=${NAME:-b0-30-r4}
+RUN=${B030_RUN:-b030r4}
+SEED_BYTES=${SEED_BYTES:-5500000000}
 export B030_RUN=$RUN
 # Seeded: the seed of the rerun's own repository is done (b030-repo.json names m3org/$NAME, and b030-seed.json names it).
 seeded() { grep -q "\"m3org/$NAME\"" $R/b030-repo.json 2>/dev/null && [ -s $R/b030-seed.json ] \
   && grep -q "\"repo:$(jq .repo $R/b030-repo.json)\"" $R/b030-seed.json; }
 case "$1" in
   seed)
-    # After the rerun's site day (tests/am1/b030split/siteday-r3.sh) has landed.
+    # After the run's site day (tests/am1/b030split/siteday-r4.sh) has landed.
     until grep -q '^DONE' $R/$RUN-siteday.log 2>/dev/null; do sleep 30; done
     grep -q '^exit 0' $R/$RUN-siteday.log || { echo "site day failed" >> $R/$RUN-seed.log; exec sleep infinity; }
     [ -s $R/$RUN.start ] || date -u +%FT%TZ > $R/$RUN.start
     { grep -q "\"m3org/$NAME\"" $R/b030-repo.json 2>/dev/null || node tests/am1/b030/mkrepo.mjs "$NAME" || exit 1
-      seeded || node tests/am1/b030/seed.mjs 4000000000
+      seeded || node tests/am1/b030/seed.mjs $SEED_BYTES
       echo "exit $?"; date -u +%FT%TZ; echo DONE; } >> $R/$RUN-seed.log 2>&1 ;;
   load)
     until seeded; do sleep 60; done
@@ -46,5 +51,12 @@ case "$1" in
   watch)
     until seeded; do sleep 60; done
     node tests/am1/b030split/watch.mjs >> $R/$RUN-watch.log 2>&1 ;;
+  force)
+    until seeded; do sleep 60; done
+    node tests/am1/b030split/force.mjs >> $R/$RUN-force.log 2>&1 ;;
+  acct)
+    # The stop rule on the account meter: $150 for the run from the site day, or $170 for the account's UTC day.
+    until [ -s $R/$RUN.start ]; do sleep 30; done
+    python3 tests/am1/b030split/acctstop.py >> $R/$RUN-acct.log 2>&1 ;;
 esac
 exec sleep infinity

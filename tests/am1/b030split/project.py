@@ -21,7 +21,9 @@ RUN = os.environ.get("B030_RUN", "b030r2")
 HOURS = float(os.environ.get("HOURS", 3))
 DRAIN_MAX_H = 24.0
 SLIM_EST_USD = round(20.04 * 3_241_503_104 / 3.56e9, 2)
-SPEED, PUSH_PER_S, DAYS = 18, 1.6, 30
+SPEED, PUSH_PER_S = 18, 1.6
+# The short run (option A) ends 8 simulated days after the split: tests/am1/raw/b030-days, else the row's 30.
+DAYS = float(open(f"{RAW}/b030-days").read().strip()) if os.path.exists(f"{RAW}/b030-days") else 30.0
 t = lambda s: D.datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 rows = [json.loads(l) for l in open(f"{RAW}/b030-load.jsonl") if '"kind": "minute"' in l or '"kind":"minute"' in l]
