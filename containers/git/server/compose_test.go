@@ -195,7 +195,7 @@ func TestComposedMiss(t *testing.T) {
 	for _, c := range []struct {
 		name, body, why string
 	}{
-		{"want no ref names", fetchBody(loose), "stock: not a ref tip"},
+		{"want no ref names, not behind HEAD", fetchBody(loose), "stock: not a ref tip or behind HEAD"},
 		{"filter", fetchBody(main, "filter blob:none"), ""},
 		{"have", fetchBody(main, "have "+tip), ""},
 		{"no ofs-delta", strings.Replace(fetchBody(main), pkt("ofs-delta\n"), "", 1), ""},
@@ -217,14 +217,59 @@ func TestComposedMiss(t *testing.T) {
 	} else {
 		cloneInto(t, b, main, run(t, wt, "", "rev-parse", "HEAD^{tree}"))
 	}
-	// A chain behind HEAD is not served.
-	commit(t, wt, map[string]string{"after": "x\n"})
+	// A chain behind HEAD still composes, from its own tip: two moves with no part, one a rename, and a want at HEAD
+	// and one at the move between. Round 26 sent every such miss to stock while the chain lagged the tip.
+	commit(t, wt, map[string]string{"after": "x\n", "d0/f0.txt": "lagging\n"})
+	mid := pushTip(t, wt)
+	run(t, wt, "", "mv", "new", "renamed")
+	run(t, wt, "", "commit", "-qm", "rename")
 	next := pushTip(t, wt)
-	if r, b := uploadV2(t, up, fetchBody(next)); r.Header.Get("x-graft-compose") != "stock: chain behind HEAD" {
-		t.Fatalf("a chain behind HEAD: %q", r.Header.Get("x-graft-compose"))
+	// `mid` is no ref's tip now, but behind HEAD: a clone that read main just before the move. Round 26 sent 6 of
+	// those to stock.
+	for _, w := range []string{next, mid} {
+		if r, b := uploadV2(t, up, fetchBody(w)); r.Header.Get("x-graft-compose") != "composed" {
+			t.Fatalf("a chain behind HEAD: %q", r.Header.Get("x-graft-compose"))
+		} else {
+			cloneInto(t, b, w, run(t, wt, "", "rev-parse", w+"^{tree}"))
+		}
+	}
+	// compose=only, as the shard object asks before a catch-up: composed when the chain answers, 409 and no answer when
+	// it would be stock, and the key's later stock fill still spools.
+	only := func(body, spool string) *http.Response {
+		req, _ := http.NewRequest("POST", up+"&compose=only&spool="+spool, strings.NewReader(body))
+		req.Header.Set("git-protocol", "version=2")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := only(fetchBody(next), strings.Repeat("a1", 32)); r.StatusCode != 200 || r.Header.Get("x-graft-compose") != "composed" {
+		t.Fatalf("compose=only on a composable miss: %d %q", r.StatusCode, r.Header.Get("x-graft-compose"))
+	} else {
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		cloneInto(t, b, next, run(t, wt, "", "rev-parse", "HEAD^{tree}"))
+	}
+	for _, body := range []string{fetchBody(loose), fetchBody(next, "filter blob:none")} {
+		r := only(body, strings.Repeat("a2", 32))
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != 409 || len(b) != 0 {
+			t.Fatalf("compose=only that would be stock: %d %q, %d bytes", r.StatusCode, r.Header.Get("x-graft-compose"), len(b))
+		}
+	}
+	if r, _ := uploadV2(t, up+"&spool="+strings.Repeat("a2", 32), fetchBody(loose)); r.Header.Get("x-graft-spool") == "" {
+		t.Fatal("after a compose=only 409 the key's stock fill was not spooled")
+	}
+	// Past the diff cap it is stock.
+	composeDiffMax = 2
+	if r, b := uploadV2(t, up, fetchBody(next)); r.Header.Get("x-graft-compose") != "stock: over the diff cap" {
+		t.Fatalf("over the cap: %q", r.Header.Get("x-graft-compose"))
 	} else {
 		cloneInto(t, b, next, run(t, wt, "", "rev-parse", "HEAD^{tree}"))
 	}
+	composeDiffMax = 20000
 
 	// The fold: at foldEvery moves the chain is one base again, and still composes.
 	for i := len(h["parts"].([]any)); i < foldEvery+1; i++ {
@@ -439,5 +484,90 @@ func TestChainBuildsRunAtNice19(t *testing.T) {
 		if strings.HasPrefix(l, "19 ") {
 			t.Fatalf("the composed miss ran git at nice 19: %q", l)
 		}
+	}
+}
+
+// A composed miss does not wait for the network's lock: behind a stock answer that streams to a slow reader and a
+// writer queued after it, it still answers at once. And a spooled stock answer whose client went lets go of the lock
+// while it spools the rest, so the writer does not wait for the spool to end. Round 26's composed misses got their
+// first byte in batches, 6 to 68 s after they arrived, whenever a stock answer ended (LM-1 round 26).
+func TestComposedMissesDoNotQueueBehindTheLock(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	big := make([]byte, 128<<20)
+	x := uint32(1)
+	for i := range big {
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		big[i] = byte(x)
+	}
+	tip := commit(t, wt, map[string]string{"big.bin": string(big)})
+	pushTip(t, wt)
+	compose(t, s.URL, "&start=1")
+	// A stock answer (a filter is never composed) whose reader reads one byte and stalls: it holds the lock shared.
+	stall := func(q string) (*http.Response, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		req, _ := http.NewRequestWithContext(ctx, "POST", s.URL+"/upload-pack?net=7"+q, strings.NewReader(fetchBody(tip, "filter blob:limit=1g")))
+		req.Header.Set("git-protocol", "version=2")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Read(make([]byte, 1))
+		t.Cleanup(func() { cancel(); resp.Body.Close() })
+		return resp, cancel
+	}
+	resp, cancel := stall("")
+	wrote := make(chan time.Duration, 1)
+	t0 := time.Now()
+	go func() {
+		http.Post(s.URL+"/refs?net=7", "", strings.NewReader(tip+" refs/heads/x\n"))
+		wrote <- time.Since(t0)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	t1 := time.Now()
+	r, b := uploadV2(t, s.URL+"/upload-pack?net=7", fetchBody(tip))
+	if d := time.Since(t1); r.Header.Get("x-graft-compose") != "composed" || d > 2*time.Second {
+		t.Fatalf("a composed miss behind a stalled stock answer and a queued writer: %q after %v", r.Header.Get("x-graft-compose"), d)
+	}
+	cloneInto(t, b, tip, run(t, wt, "", "rev-parse", "HEAD^{tree}"))
+	cancel()
+	resp.Body.Close()
+	<-wrote
+
+	// A spooled stock answer whose client goes: the writer gets the lock while the spool still runs.
+	resp, cancel = stall("&spool=" + strings.Repeat("ab", 32))
+	cancel()
+	resp.Body.Close()
+	time.Sleep(100 * time.Millisecond)
+	t0 = time.Now()
+	go func() {
+		http.Post(s.URL+"/refs?net=7", "", strings.NewReader(tip+" refs/heads/y\n"))
+		wrote <- time.Since(t0)
+	}()
+	var lockFree time.Duration
+	select {
+	case lockFree = <-wrote:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the writer never got the lock")
+	}
+	spooledAt := time.Now()
+	for {
+		if r, _ := http.Get(s.URL + "/spooled?id=" + strings.Repeat("ab", 32)); r.StatusCode == 200 {
+			r.Body.Close()
+			break
+		}
+		if time.Since(spooledAt) > 30*time.Second {
+			t.Fatal("no spooled answer")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The writer's wait is bounded by the stock answer's own setup, not the spool: held to the spool's end, it waited
+	// to within a millisecond of it.
+	if spoolEnd := time.Since(t0); spoolEnd-lockFree < spoolEnd/10 {
+		t.Fatalf("the writer waited %v, the spool ran %v: the lock was held to the spool's end", lockFree, spoolEnd)
 	}
 }

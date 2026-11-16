@@ -325,6 +325,16 @@ impl crate::bucket::Multipart for R2 {
     }
 }
 
+/// A clone-cache hit: the object under `key` in `b` as a response whose body is R2's stream, with `headers` and the
+/// object's length, so a 270 MB entry passes through the isolate without entering its memory. Read whole, every hit
+/// on B0-34's monorepo answered 500 (LM-1 round 26). `None` when there is no object.
+pub async fn cached_response(b: &R2, key: &str, headers: Headers) -> Result<Option<Response>, StoreError> {
+    let Some(o) = b.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+    headers.set("content-length", &o.size().to_string()).map_err(worker_err)?;
+    let body = o.body().ok_or_else(|| StoreError(format!("{key}: no body")))?.response_body().map_err(worker_err)?;
+    Ok(Some(Response::from_body(body).map_err(worker_err)?.with_headers(headers)))
+}
+
 /// A container response's body put to `b` under `key` through a `FixedLengthStream` of its `content-length`, so the
 /// bytes never enter wasm memory and R2 stores the object only if the whole length arrived. `false` when the
 /// response names no length or is not a stream.
@@ -862,20 +872,28 @@ impl ShardHost<'_> {
 
     /// A depth-1 fill of the clone cache (`spool=<key>`): the container answers the client as `upload_pack` does and
     /// writes the whole answer to its disk, to its end whoever reads it; `spooled` then reads it.
+    /// With `compose_only`, the container answers only from the composed-miss chain, and 409 when it would serve stock.
     pub async fn upload_pack_spooled(
         &self,
         network: NetworkId,
         body: Vec<u8>,
         git_protocol: &str,
         content_encoding: &str,
-        spool: Digest,
+        spool: Option<Digest>,
+        compose_only: bool,
     ) -> Result<Response, StoreError> {
         let mut h = vec![("git-protocol", git_protocol)];
         if !content_encoding.is_empty() {
             h.push(("content-encoding", content_encoding));
         }
-        self.call(Method::Post, &format!("/upload-pack?net={}&spool={}", network.0.0, spool.hex()), Some(body), &h)
-            .await
+        let mut path = format!("/upload-pack?net={}", network.0.0);
+        if let Some(s) = spool {
+            path.push_str(&format!("&spool={}", s.hex()));
+        }
+        if compose_only {
+            path.push_str("&compose=only");
+        }
+        self.call(Method::Post, &path, Some(body), &h).await
     }
 
     /// The whole answer a spooled upload-pack wrote, put to each of `to` under `key` without passing through the

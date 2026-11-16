@@ -59,3 +59,16 @@ These fall back to stock, each with its `x-graft-compose` reason:
 - a shard with no chain.
 
 `TestCancelledFillStillSpoolsTheWholeAnswer` covers a stock fill and a composed fill whose client cancels after one byte. Each still leaves the whole answer spooled with its length.
+
+## A want away from the chain tip (2026-11-16)
+
+After LM-1 round 26, a chain behind HEAD and a want behind HEAD compose: the chain plus the want's diff from the chain tip, packed with no delta search. Same fixture and test, the raw log in `tests/m0/results/raw-carried/composed-miss-linux-2.log`:
+
+| Miss | First byte | Wall | Bytes |
+|---|---|---|---|
+| Composed, tip | 0.010 to 0.011 s | 0.95 to 1.10 s | 302,040,346 |
+| Composed, want 10 moves from the chain tip | 0.255 s | 1.11 s | 304,118,315 |
+| Composed, want 30 moves from the chain tip | 0.836 s | 1.64 s | 311,257,919 |
+| Stock, tip | 0.005 s (first 64 KiB of pack 5.34 s) | 16.77 s | 301,048,251 |
+
+The 30-move answer passed the client's `index-pack --strict`, `fsck --strict` and a checkout with a tree equal to the want's. The first byte grows with the diff, because the want's own pack is built before the header that counts it.

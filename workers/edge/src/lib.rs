@@ -1718,14 +1718,14 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     };
     // The clone cache lives in the home site's bucket.
     let cache_binding = format!("BUCKET_{}", repo.record.home.0);
-    let cache = c.env.bucket(&cache_binding)?;
+    let cache = R2(c.env.bucket(&cache_binding)?);
     if let Some(k) = &key {
-        let r2 = k.r2_key(0).to_string();
-        if let Some(o) = cache.get(&r2).execute().await? {
-            let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
-            h.set("x-graft-clone-cache", "hit")?;
-            let b = o.body().ok_or("cache object has no body")?.bytes().await?;
-            return Ok(Response::from_bytes(b)?.with_headers(h));
+        let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
+        h.set("x-graft-clone-cache", "hit")?;
+        if let Some(r) =
+            graftyard_git::host::cached_response(&cache, &k.r2_key(0).to_string(), h).await.map_err(|e| e.0)?
+        {
+            return Ok(r);
         }
     }
     // A miss names its key (`fill=`): the shard spools the whole answer and puts it to the cache itself, so a client
