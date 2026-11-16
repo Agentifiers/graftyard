@@ -2139,6 +2139,7 @@ impl<F: Family> Host<F> {
         let was = (core.m.role(), core.m.term(), core.m.state().commit);
         // The read lease rests on this clock: while stamps showed it lagging, reads wait for a round (`crate::clock`).
         core.m.set_clock_suspect(self.clock.borrow().suspect());
+        core.m.set_own_clock(Timestamp(now_ms()));
         let ready = f(&mut core.m, Timestamp(t));
         self.note(core, &ready.writes, t);
         #[cfg(feature = "test-faults")]

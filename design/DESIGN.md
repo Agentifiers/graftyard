@@ -838,12 +838,12 @@ pub enum AgentRepoEvent {   // flattened into `RepoEvent`
 pub enum WorkspaceMode { Fork, InRepo }
 
 // ---- The read path ----
-/// A fold that includes every entry acknowledged before `arrived`. Only the leader builds one, once its term's `Noop`
-/// is applied: from its fold while `now < lease_end - DRIFT`, else after a read-index round to the voters (renewing the
-/// lease), at most one per READ_ROUND_GAP (20 ms [guess]) until answered, shared by every read that arrived first.
-/// Read-index answers wait for the same `Noop`. `Fresh` reads touch SQLite after the lease check and serve isolate-held
-/// state only under a key read there (F65's dump), so a replaced instance cannot answer. Followers batch read-index
-/// requests every 10 ms, learners every 50 ms resent once after HEDGE (500 ms [guess]); each answers once applied.
+/// A fold with every entry acknowledged before `arrived`, built only by a leader whose term's `Noop` is applied: from
+/// its fold while `now < lease_end - DRIFT`, else after a read-index round to the voters (renewing the lease), shared by
+/// every read that arrived first. The next leaves on its answer or READ_ROUND_GAP (20 ms [guess]) on, both on the
+/// isolate's own clock and at most one a turn, as the floored member clock jumps on stamps. Read-index answers wait for
+/// the same `Noop`. `Fresh` reads touch SQLite after the lease check and serve isolate-held state only under a key read
+/// there (F65's dump). Followers batch read-index requests every 10 ms, learners every 50 ms resent once after HEDGE.
 pub async fn fresh(&self, arrived: Instant) -> Result<Fresh<'_>, NotLeader>;
 /// Stale mode starts only by a customer-signed `StaleMode` flag, committed in the `Release` group or, when it cannot
 /// commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and fetches at
