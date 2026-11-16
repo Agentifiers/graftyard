@@ -289,7 +289,16 @@ pub trait ArchiveHost {
     fn rows(&self, after: Index) -> Result<Rows<'_>, String>;
     /// The packs under these checksums as one complete pack, validated and placed with its `.idx`, which names the
     /// range `from..=to`: the home shard's `/promote` and `/validate`, then `PackStore::place`. Always `Stored`.
-    async fn promote(&self, sums: &[Digest], from: Index, to: Index, request: RequestId) -> Result<PackRef, String>;
+    /// `warm`: promote-ahead's, a warm call (`crate::Caller::Warm`) that starts no stopped shard; `None` when every
+    /// shard it would ask is stopped.
+    async fn promote(
+        &self,
+        sums: &[Digest],
+        from: Index,
+        to: Index,
+        request: RequestId,
+        warm: bool,
+    ) -> Result<Option<PackRef>, String>;
     /// The `Committed` marker of a stored pack at `index`.
     async fn mark(&self, pack: &PackRef, index: Index);
     /// Create-only puts of the archive object; how many buckets hold it.
@@ -362,7 +371,11 @@ pub async fn step<H: ArchiveHost>(h: &H, max_bytes: u64, range_max: u64, promote
     let entries = within_promote_max(range, promote_max);
     let (from, to) = (Index(done.0 + 1), entries.last().expect("at least one").index);
     let request = promote_request(v.chain, from, to);
-    let pack = h.promote(&promotion_sums(&entries), from, to, request).await?;
+    // Promote-ahead is no client's work, so it runs only on a shard already running; a due range starts one, since
+    // the log cannot archive past it otherwise.
+    let Some(pack) = h.promote(&promotion_sums(&entries), from, to, request, d.is_none()).await? else {
+        return Ok(Step::Idle);
+    };
     if !matches!(pack, PackRef::Stored { .. }) {
         return Err("a promoted pack is always stored".into());
     }

@@ -35,6 +35,10 @@ struct Bed {
     held_from: RefCell<[u64; 3]>,
     /// Every `/promote` call: its checksums.
     promoted: RefCell<Vec<Vec<Digest>>>,
+    /// Every `/promote` call's `warm`, and whether the shard's container runs: a warm call to a stopped shard is
+    /// skipped, and any other call starts it.
+    warm: RefCell<Vec<bool>>,
+    running: std::cell::Cell<bool>,
     marks: RefCell<usize>,
     /// Planted faults: buckets an archive put reaches.
     put_to: usize,
@@ -56,6 +60,8 @@ impl Bed {
             buckets: Default::default(),
             held_from: RefCell::new([1; 3]),
             promoted: RefCell::new(Vec::new()),
+            warm: RefCell::new(Vec::new()),
+            running: std::cell::Cell::new(true),
             marks: RefCell::new(0),
             put_to: 2,
             clock: Default::default(),
@@ -124,7 +130,19 @@ impl ArchiveHost for Bed {
         Ok(Box::new(rows.into_iter()))
     }
 
-    async fn promote(&self, sums: &[Digest], _from: Index, _to: Index, _request: RequestId) -> Result<PackRef, String> {
+    async fn promote(
+        &self,
+        sums: &[Digest],
+        _from: Index,
+        _to: Index,
+        _request: RequestId,
+        warm: bool,
+    ) -> Result<Option<PackRef>, String> {
+        self.warm.borrow_mut().push(warm);
+        if warm && !self.running.get() {
+            return Ok(None);
+        }
+        self.running.set(true);
         self.promoted.borrow_mut().push(sums.to_vec());
         if self.rate.get() > 0.0 {
             let bytes: u64 = sums.iter().map(|s| self.sizes.borrow().get(s).copied().unwrap_or(0)).sum();
@@ -137,7 +155,12 @@ impl ArchiveHost for Bed {
         }
         let checksum = Digest(Sha256::digest(&bytes).into());
         let n = self.promoted.borrow().len() as u128;
-        Ok(PackRef::Stored { id: PackId(Ulid(n << 80)), checksum, bytes: bytes.len() as u64, sites: SiteSet(0b11) })
+        Ok(Some(PackRef::Stored {
+            id: PackId(Ulid(n << 80)),
+            checksum,
+            bytes: bytes.len() as u64,
+            sites: SiteSet(0b11),
+        }))
     }
 
     async fn mark(&self, _pack: &PackRef, _index: Index) {
@@ -571,6 +594,46 @@ fn stored_pushes_alone_promote_ahead_once_their_pack_bytes_pass_the_bound() {
     assert!(promotions.windows(2).all(|p| p[1].0 == p[0].1 + 1), "{promotions:?}");
     // Each promotion names the stored packs of its range.
     assert!(b.promoted.borrow().iter().all(|s| !s.is_empty()));
+}
+
+/// Promote-ahead is no client's work: its `/promote` is a warm call, so on a stopped shard it promotes nothing and the
+/// step is idle, and the next step on a running shard promotes the same range. A due range, which the log cannot
+/// archive past without, is a client's call and starts the shard. Promote-ahead as a client started every stopped
+/// shard of an old group that woke with a tail above the bound and kept it warm a day: 19 containers on idle
+/// `graft-m2b` (`tests/am1/results/lm1-memory.md`, round 28).
+#[test]
+fn promote_ahead_starts_no_stopped_shard_and_a_due_range_does() {
+    let b = Bed::new();
+    let cap = 1_000 * CAP;
+    let ahead = cap / log_archive::PROMOTE_AHEAD;
+    snapshot(&b);
+    for k in 0..8 {
+        push_stored(&b, k, ahead / 4);
+    }
+    assert!(b.view().unwrap().unpromoted > ahead, "promote-ahead has work");
+    b.running.set(false);
+    let step = || block_on(log_archive::step(&b, cap, CAP, log_archive::PROMOTE_MAX)).unwrap();
+    assert_eq!(step(), Step::Idle, "a stopped shard: promote-ahead skips");
+    assert_eq!(*b.warm.borrow(), [true], "promote-ahead asked as a warm call");
+    assert!(b.promoted.borrow().is_empty() && !b.running.get(), "and started nothing");
+    assert!(b.w.borrow().repo.members[b.leader()].group_fold().fold.promoted().is_none(), "no `Promoted` recorded");
+    // The shard runs again (a client's push, say): the same range promotes, from entry 1.
+    b.running.set(true);
+    let Step::Promoted { from, .. } = step() else { panic!("a running shard promotes ahead") };
+    assert_eq!(from.0, 1);
+    assert!(b.warm.borrow().iter().all(|w| *w));
+    // A due range is not promote-ahead: over a small cap its promotion is a client's call, which starts a stopped
+    // shard.
+    let d = Bed::new();
+    for k in 0..60 {
+        push(&d, k, 1_500);
+    }
+    snapshot(&d);
+    d.running.set(false);
+    let s = block_on(log_archive::step(&d, CAP, CAP / 5, log_archive::PROMOTE_MAX)).unwrap();
+    assert!(matches!(s, Step::Promoted { .. }), "{s:?}");
+    assert_eq!(*d.warm.borrow(), [false], "a due range's promotion is no warm call");
+    assert!(d.running.get(), "and starts the shard");
 }
 
 /// The promote-ahead trigger against push rates, on a virtual clock: stored pushes arrive at a rate, and each

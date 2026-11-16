@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 
 use graftyard_git::group::RefsPage;
 use graftyard_git::host::{R2, ShardHost};
-use graftyard_git::{Caller, ChainLog, Head, LogPacks, PackId, Promoted, Serve, StoreError};
+use graftyard_git::{ChainLog, Head, LogPacks, PackId, Promoted, Serve, StoreError};
 use graftyard_lookup::Bindings;
 use graftyard_types::{ChainId, DbId, Index, NetworkId, PlacementRecord, RepoId, SiteId, Timestamp};
 use serde_json::{Value, json};
@@ -835,18 +835,19 @@ impl DurableObject for GitShard {
         };
         let obj = self.run_key.clone();
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record };
-        // A new leadership's `warm` (`crate::prsync`) is the one caller no client asked for: it catches up a running
-        // shard and starts no stopped one, and it never counts as the shard's last request.
+        // A new leadership's `warm` (`crate::prsync`) and promote-ahead's calls (`crate::archive`) are the callers no
+        // client asked for: they run on a running shard, start no stopped one, and never count as its last request.
         // The network leader's warm of a pool slot its network holds (`warm=pool`, `crate::fanout`) starts a stopped
         // container: a pool shard nobody started never becomes warm.
-        let caller = match (path.as_str(), q(&url, "warm").as_deref()) {
-            ("/catchup", Some("pool")) => Caller::PoolWarm,
-            ("/catchup", Some(_)) => Caller::Warm,
-            _ => Caller::Client,
-        };
+        let caller = graftyard_git::caller(&path, q(&url, "warm").as_deref());
         let running = self.state.container().is_some_and(|c| c.running());
         match graftyard_git::serve(caller, running) {
-            Serve::Skip => return Response::from_json(&json!({ "skipped": "stopped" })),
+            // The header tells a skip from a route's own 200, such as `/promote`'s pack or `/idx`'s bytes.
+            Serve::Skip => {
+                let h = Headers::new();
+                h.set("x-graft-skipped", "stopped")?;
+                return Ok(Response::from_json(&json!({ "skipped": "stopped" }))?.with_headers(h));
+            }
             Serve::Run { touch: true } => {
                 host.touch(Timestamp(now_ms())).await.map_err(se)?;
                 // `touch` sets the renewal alarm an hour out, past a pool ledger's next heartbeat.
