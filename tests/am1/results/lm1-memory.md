@@ -4101,6 +4101,8 @@ Row, a1 `mwjex2b9` (500 agents, 900 s; kill at 300 s, second network at 420 s, h
 Cold warm against DESIGN's 120 s line: **fail at 250.9 to 332 s** on standard-2 (m37: 150 to 158 s on standard-4).
 Not comparable to m37 on the git side, because of the instance type.
 
+**Roll-up cold-warm estimate with this ceiling.** The ceiling is per container, so the roll-up's estimate keeps standard-4's 104 to 132 MB/s (rounds 24 and 26): 61 promotions (8.64 GB) rolled at 0.41 to 0.52 are 3.5 to 4.5 GB, a marked phase of 27 to 43 s, and a total of 93 to 126 s with m37's other phases (up 33.7 to 36.0 s, the rest 32 to 47 s) [inference]. Since m37, 171 more pushes sit above the last promotion (253 stored packs against 82), so promote-ahead's work comes first on this network.
+
 **B0-33 (ROW=b033, tsave EVERY=10000, LEARNERS=1), a1 run `mwjghnzg`, repo:131343, 16:06:40Z to 16:17:18Z.**
 - First try: rows.sh refused to start ("commit the driver changes first": my uncommitted `reaper.sh`), leaving
   b033.sh waiting. Stopped at 16:02Z, the drivers committed on the day branch (`7fbb4f64`), restarted 16:03:14Z.
@@ -4132,3 +4134,5 @@ row $1.00). The day cost $2.42 of the $185 stop; $3.78 of the approval is left. 
 `instcpu-m39.jsonl`, `shardprocs-m39.jsonl.xz`, `misses-m39.txt`, `misslines-m39.jsonl`, `a1-b0-34-m39.log`,
 `costrow-m39b33.status`, `rows-m39b33.status`, `memguard-m39b33.jsonl.xz`, `terms-m39b33.jsonl`,
 `tsave-m39b33.jsonl.xz`, `a1-b0-34-m39.jsonl` and `a1-b0-33-m39.jsonl` (copies of `tests/am1/raw/a1-b0-34-mwjex2b9.jsonl` and `a1-b0-33-mwjghnzg.jsonl`). Day branch `m39-day` (`6276c837`), with the drivers `costrow.sh` and `idlewatch.py`.
+
+**From graft-m3f (T-01a1d805, run m3fr9, row B0-32 on repo 65575, k 4, 8 learners; main a0bca583 plus a test-faults instrument).** Site 0 held term 2 through setup and the first 3 minutes of load, then 17 elections in 5 minutes (term 2 at 16:13:09Z to 19 at 16:18:29Z; wins 6 / 7 / 4 by site), with 10 "member alarm: StepDown" lines (7 CommitErrors, 3 Confirm) and 7 term changes after the leader went quiet or reset. The leader's peers ended at 1,085 and 1,289 deadline failures against about 5,700 ok each; queue p99 9.0 s, append p99 about 2 s, deps:authz p99 7.3 s. The same shape as m39's B0-33 (terms 2 to 9 once load arrived): the leader steps down on CommitErrors when its appends miss their deadlines under load, rather than losing a vote [inference; the m3f raw files are in that thread's orb, not pushed].
