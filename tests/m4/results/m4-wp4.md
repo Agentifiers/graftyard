@@ -10,7 +10,7 @@ Branch `m4-runners`, rebased onto main 4833094d. The choices are in `decisions/D
 | --- | --- | --- |
 | BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | **Pass**, run 1966182 on site day 43, sweep only, demand read at the sweep's cadence |
 | BM-4 | (M4-WP3's matrix with an unmodified runner) | **Pass**, run 1900546, site a down mid-run (site days 44 and 45) |
-| BF-54 | (M4-WP3's broker cap) | **Fail**, 2,500 listeners on 25 Sandboxes: 503s, re-polls, and sessions pass; job start fails (a lost `Repo`-scope match waits out its lease, F76) |
+| BF-54 | (M4-WP3's broker cap) | **Fail** in both runs. Run 1: a lost `Repo`-scope match waited out its lease (F76). Run 2, on site day 46 with F76's fix: no lost match and no broker death. But one job of 512 never ran its steps, one started 62 s after its run committed, and job start p99 is 39.0 s, against 35. All three are acquire-path problems (F77) |
 
 ## What is built
 
@@ -167,6 +167,78 @@ Branch `f76-repo-resend`. Measured from the BF-54 run's Workers Logs (the teleme
 - **Plants** 22 to 24 are caught.
 - The BF-54 rerun on this branch's site day decides whether `ASKS_MAX` is enough.
 
+## BF-54 run 2, on F76's fix (2026-11-16)
+
+Site day 46 put main `cab0b332` on all three m4a sites, with git image `m4a46` (`tests/am1/results/install-m4a.md`). Then the BF-54 driver ran unchanged, with the same shape as run 1: 2,500 ephemeral `Repo`-scope listeners of `m3org/wp4-bf54` on 25 `standard-4` Sandboxes, and 32 runs of 16 20-s jobs. Raw data is in `tests/m4/raw/wp4/bf54-run2/`:
+
+- `diag.tar.gz`, `jobs.jsonl.gz`, and `samples.jsonl.gz` are as in run 1.
+- `jobs-fast.jsonl.gz` is a second sampler of the run's own runs, every 60 to 90 s.
+- `rest-jobs.jsonl` holds each job's REST `started_at`, the runner's first step.
+- `dispatch-times.txt` holds each dispatch request's start time and wall time, from the edge's Workers Logs.
+- `run-created.txt` holds each run's `created_at`.
+
+| Phase | Time (UTC) | Measured |
+| --- | --- | --- |
+| Keys, then registration at 10 a second | 00:27:56 to 00:39:32 | 2,500 in 444 s, then 2,500 in 251 s, 0 failed |
+| 25 Sandboxes, listeners 2.5 s apart | 00:39:32 to 00:48:45 | all 2,500 listening, 0 exits |
+| Hold | to 00:53:52 | 503s once about 2,000 listened |
+| 32 runs, dispatched about every 20 s | 00:53:58 to 01:06:42 | 512 jobs: 511 `Success`, 1 `Failure` (below). At most 33 workers at once; busiest box 3,001 MiB |
+
+**Job start.** A job's start is its first step's `started_at`, the runner's own clock, and none is missing except job 1185331's. It is timed from the run's dispatch.
+
+- The jobs sampler never once saw a job `Queued`, because every job was matched within one round of samples. Each run's `created_at` came out later than its jobs' matches. So neither marks the queue time.
+- The edge's Workers Logs do. A dispatch request's event timestamp is when it answered 201, so `RunCreated` had committed by then.
+- It is the end, not the start: a probe request's event time was 01:51:16.273Z with wall 6,174 ms, and the response's `Date` header read 01:51:16. The orb's own clock ran about 3.5 s behind, so no orb time is used here.
+- The request's wall time was 2.1 to 6.8 s (p50 2.7 s), so the job was queued at most that long before the event time.
+
+| Measure | Result | Gate |
+| --- | --- | --- |
+| Start after the dispatch answered 201, so after `RunCreated` committed (511 jobs) | p50 12.0 s, p95 26.6 s, **p99 39.0 s**, max 62.0 s (job 1185242); 8 over 35 s, 1 over 60 s | p99 at most 35 s: **fails** |
+| Start after the dispatch request arrived (event time minus wall time) | p50 14.8 s, **p99 43.4 s**, max 66.2 s; 13 over 35 s, 1 over 60 s | — |
+| Runners that got a 503 | 2,485 of 2,500; 505 of the 512 jobs ran on one of them | — |
+| Re-poll within 30 s on the runner's own wait | **Pass**: 2,636 back-offs, max 14.999 s. Of 12,815 in-chain retries, one took 35 s from one failed attempt to the next (run 1: 777, max 114 s) | — |
+| Sessions | **Pass**: 0 `RunnerSessionInvalid`, 0 listener restarts, 0 runners exited without a job | — |
+| A job unstarted after 60 s | **Fails**: job 1185331 (below) | — |
+
+The fail line reads "a job unstarted after 60 s". Two jobs cross it. Job 1185242 started 62.0 s after its run committed, after 3 acquire retries (below). Job 1185331 never ran a step at all.
+
+**The three items the lead asked for:**
+
+1. **Matches `Assigned` 45 s or more: 0** in the samples (run 1: 277 of 310). **Jobs started more than 60 s after their match: 1, job 1185242** (and job 1185331, which never started). In run 1 it was 70.
+   - The samples caught 20 matches with their time (`lease_until` minus `JOB_LEASE`). The latest was sampled 15.6 s after its match.
+   - The samples also caught 159 acquires with their time. Their p99 is 37.1 s after the dispatch answered, and their max is job 1185242's 60.2 s.
+   - Every job that ran except 1185242 started within 60 s of its run's commit, so within 60 s of its match. Job 1185242's match is not sampled. Its run committed by 00:54:37.0Z, and it was matched to `bf54-2427`. That runner's `acquirejob` got 503 at 00:54:44Z, 00:55:00Z, and 00:55:16Z by its own clock, and the edge logged 503s at 00:55:01Z and 00:55:16Z. The fourth try was acquired 60.2 s after the commit.
+2. **Resends by scope: `Repo` 0 seen, `Owner` 0.** Every runner is `Repo`-scope. **No job got two runners.**
+   - No sample shows a job `Assigned` more than 30 s after its match, and no job shows a second runner or a second match.
+   - 511 runners ran one job each, and 1,989 ran none, as the driver's per-runner count shows.
+   - A resend is not logged, so the samples could miss one. Only 11 jobs started, or were acquired, more than 30 s after their run committed, which a resend needs. For job 1185242 those 30 s went to 503 retries of one acquire, not a lost match.
+3. **The broker. `exceededMemory`: 0** on sites a, b, and c, 00:39Z to 01:08Z (run 1: 14 on site a, 21 across the three).
+   - Peak memory per minute was 13 to 69 MiB (run 1: 256 to 270 MiB), by `durableObjectsPeriodicGroups` on `broker:actions:7100001.11`.
+   - All `broker/poll` calls ran on site a. No edge `broker/message` took 100 s or longer; its p99 was 52 to 61 s a minute.
+   - **Asks in flight against `ASKS_MAX` (64), and how long a poll waited for a slot: not measured.** The broker logs neither. The edge's `broker/message` p50 stayed at 50.3 to 51.5 s, the `POLL_HOLD` of 50 s plus about 1 s, every minute of the run. Before the fix, during run 1's job minutes, it was 1.3 to 96 s. So no poll waited long for a slot.
+   - **64 did not throttle the gate.** The time that decides it is the acquire, below, not the match.
+
+**What failed.**
+
+- **Job 1185331** (run 1185326, committed by 00:56:26.8Z) was matched to runner `bf54-1017` and acquired at 00:56:41.2Z, 14.4 s later: it went `InProgress`. No step ever started. The driver keeps only 503 and broker lines of each runner's log, so the log cannot show whether this runner's `acquirejob` got the 200 or a 409. Its diag log has nothing after 01:01:05Z but broker polls. At its lease end, 01:06:41.2Z, the job failed `Failure`: `LeaseExpired` on an `InProgress` job. This is run 1's job 1182509 again: an acquire that commits but whose answer the runner never gets. In the edge's logs:
+  - Between 00:56:35Z and 00:56:54Z, `run/acquirejob` answered 200 in 2.8 to 21.9 s.
+  - One call answered 409 after 24.0 s, at 00:56:52.8Z: the only 409 of the run. Its body is not logged. A 409 from `acquire` is a refused `Acquired` (`workers/site/src/actions.rs`), and a second acquire of a job already `InProgress` gets exactly that.
+  - The likeliest reading [inference]: the runner gave up on a slow first `acquirejob`, whose commit landed anyway, retried, and got the 409. The runner then drops the job, so it sits `InProgress` with nobody until its 10-minute lease.
+  - The REST jobs list shows job 1185331 with no steps, `started_at` equal to its `created_at`, and `completed_at` 01:06:41Z.
+- **74 `run/acquirejob` 503s.** The edge answered "acquirejob actions:7100001.11: secrets: the repository's rows did not answer" (`workers/edge/src/actions.rs`, `job_config`). It reads the repository's secret rows before the acquire, and on a failed read answers 503 without committing anything. The runner retries every 15 s, up to 4 times. `bf54-2427` retried 3 times, 3 others twice, and 69 runners logged at least one failed `acquirejob`. These retries, not the broker, put job 1185242 past 60 s and the p99 past 35 s: 15 s per retry on a job that otherwise starts at about 12 s (p50). The edge's `acquirejob` wall was p50 3.8 to 8.6 s and p99 9.6 to 28.9 s a minute.
+- **What this settles, and what it opens.** F76 is settled. Lost `Repo`-scope matches are gone, with 0 stuck and no 100 s polls, and the broker no longer dies, with 0 `exceededMemory` and 69 MiB peak. What is left is the acquire path: a slow secrets read before the acquire, and an acquire answer lost after its commit. That is `decisions/OPEN-QUESTIONS.md` F77.
+
+**Teardowns, BF-54 run 2.**
+
+- 01:12:07Z: services `bf54run2` and `bf54jobs2` stopped. `bf54jobsfast` had already stopped, at 01:07Z.
+- 01:12:31Z to 01:12:33Z: in each of the 25 boxes, every listener got SIGINT (0 left), then the box was destroyed, `{"ok":true}` for each.
+- 01:13:19Z: application `a032924c-…` listed 25 `inactive` and nothing else.
+- 01:13:31Z: the scratch Worker `graft-runners-bf54` was deleted.
+- 01:13:32Z: its container application `a032924c-…` was deleted (`success: true`).
+- Left in the runner account: the `graft-runners` script and its two Sandbox applications, with 0 running instances.
+- m4a git shards: site b's `git#1#net:65565` and site a's `git#0#net:65565` and `git#0#net:65536`, started by site day 46's verify clone and the run, were stopped at 01:14:24Z through GitShard `/teardown`, all 200 `torn_down`. The calls came from a scratch Worker `graft-m4a-shardkill`, deleted at 01:14:50Z. At 01:14:38Z the API listed 0 running on sites a, b, and c.
+- The symlink `tests/m0/.m0-token` was removed.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
@@ -175,9 +247,13 @@ Branch `f76-repo-resend`. Measured from the BF-54 run's Workers Logs (the teleme
 | Runner account, `graft-runners` | 15:00Z to 22:02Z | $0.83 (Sandboxes $0.76: smoke, BF-60 twice, BM-4) |
 | Runner account, BF-54 scratch | 20:30Z to 21:47Z | $2.72 (16,334 vCPU-s and 913,634 GiB-s on `standard-4`), from `containersUsageAdaptiveGroups` by application id. `APPS=graft-runners-` no longer finds the deleted application |
 | Workers Paid | one month | $5.00 |
-| **Total** | | **$12.68 of $25**, inside the approved $12.30 to $18.76 |
+| **Total, 2026-11-15** | | **$12.68 of $25**, inside the approved $12.30 to $18.76 |
+| graft-m4a | 22:02Z to 00:26Z (2026-11-16) | $0.29, building image `m4a46`, then site day 46 |
+| graft-m4a | 00:26Z to 01:30Z | $0.94, BF-54 run 2's polls and job commits (containers $0.27: the three git shards) |
+| Runner account, BF-54 run 2 scratch | 00:26Z to 01:40Z | $1.76 (13,744 vCPU-s and 568,468 GiB-s on `standard-4`), from `containersUsageAdaptiveGroups` for application `a032924c-…` |
+| **Total** | | **$15.67 of $25** |
 
-BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 boxes, not one at full price, because the boxes idled at low CPU.
+BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 boxes, not one at full price, because the boxes idled at low CPU. Run 2 cost $1.76 in the runner account and about $1.23 on m4a, $2.99 in all, inside its forecast of about $5.
 
 ## Plants: `tests/m4/wp4/plant.py`
 
