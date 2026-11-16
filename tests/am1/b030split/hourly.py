@@ -21,7 +21,8 @@ w0 = D.datetime.fromtimestamp(a, D.UTC)
 row = {"hour": h.strftime("%Y-%m-%dT%H:%MZ"), "sampled": f"{w0:%H:%M}-{w0 + D.timedelta(minutes=3):%H:%M}Z"}
 for s in "abc":
     # The shard object's log line is its own URL; `disk=1` is on its call to the container and is not logged.
-    v = [e["wall"] for e in logs(f"graft-m1-site-{s}", f"shard/validate?repo={REPO}&tipsn") if e.get("wall") is not None]
+    # Main's receipt rule puts `record=` before `tipsn` in a push validate's URL, so the push ones are told by `tipsn`.
+    v = [e["wall"] for e in logs(f"graft-m1-site-{s}", f"shard/validate?repo={REPO}&") if e.get("wall") is not None and "tipsn=" in e.get("msg", "")]
     m = [e["wall"] for e in logs(f"graft-m1-site-{s}", f"shard/merge?repo={REPO}") if e.get("wall") is not None]
     if v or m:
         row[s] = {"validate": [len(v), p50(v)], "merge": [len(m), p50(m)]}

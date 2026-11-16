@@ -1113,6 +1113,96 @@ Approved by the user (about $185, relayed by the operator 13:40Z). b030-fixes me
   in `tests/am1/raw/b030r2-generic/`.
 - **After the run:** `/retire` on the six members, a sweep, and the meter checked flat for 30 minutes.
 
+### Third run: site day, seed and the first hour
+
+- **Site day r3 done 17:17:28Z to 17:33:22Z, exit 0** (`tests/am1/raw/b030r3-siteday.log`): sites a to d in two
+  phases (sites exit 0 at 17:30:55Z), then the edge, version `83ec5e95`. No shard was running, so the roll had none
+  to kill.
+- **Seed.** `m3org/b0-30-r3` is `repo:1048591` (main `cd7fe7a`). 1,340,000 comment rows of 1,800 B on each member,
+  17:36:41Z to 18:12:34Z, SQLite 4,017,299,456 / 4,020,723,712 / 4,017,356,800 B, metadata digests equal
+  (`59c7b45d…`). Two `/bench_seed` calls failed on the client side (a reply without the digest) and were retried.
+  Spend at the end of the seed: $4.28.
+- **Load from 18:12:55Z.** First hour (to 19:19Z, simulated day 0.83): 95.3 to 95.9 pushes a minute, `batchFail` 0,
+  push p50 1.8 s at the start and 3.9 s by 19:19Z (max 9.4 s). Archiving began at about 19:00Z with the log at
+  1.93 GB (`LOG_MAX_BYTES` 2 GiB): at 19:10Z archivedTo 1,160, promotedTo 6,166, log 2.004 GB; at 19:13Z log
+  1.899 GB and 775 archive objects. Member SQLite 6.08 GB. `SQLITE_FULL` 0, bodies baseline 100.
+- **Site day checks.** `/status` shows `procs` on sites 0 and 1's shards (site 2's had not started). In 19:20 to
+  19:23Z, site a's push validates: 129, p50 290 ms; `/merge` 58, p50 789 ms. One leaderless gap of 11 s
+  (19:15:47Z to 19:15:58Z, leader to site 1), under GAP_MAX_S. No stall alert.
+- **hourly.py fix.** Main's receipt rule puts `record=` before `tipsn` in a push validate's URL, so the old
+  `validate?repo=N&tipsn` filter matched none (18:00Z's row reads 0). It now matches on `tipsn=` anywhere.
+
+### Third run stopped by the operator (2026-11-16 20:13Z, account over budget)
+
+The operator stopped all hosted work: the account's bill for Oct 27 to Nov 16 is $2,328 against an $800 budget
+($1,349 containers, $804 DO rows written). The third run ends at simulated day 1.2 with no verdict.
+
+- **Stopped at 20:13:23Z.** `b030-STOP` was written and the services stopped: load, drain, cross, watch, monitor,
+  seed and siteday. The watch schedule is paused. At the stop the run's meter read $5.55 (DO and Workers $4.4, plus
+  containers). The group was healthy: SQLite 6.30 / 6.30 / 6.34 GB, log 1.97 to 2.04 GB, archivedTo 7,880,
+  `SQLITE_FULL` 0 (`tests/am1/raw/b030r3-final.jsonl`).
+- **Containers.** `teardown.py --sweep` (`INSTALL=graft-m1`, pools included) tore down `git#0` and `git#1` of
+  net:1048591, both standard-4 (200 each). At 20:14:12Z the Containers API listed 0 running across all 8 graft-m1
+  apps (site-a to d, lin-a to c, wp6-bed), and 0 again at 20:15:40Z, 20:22:13Z and 20:26:09Z. graft-m1 has no
+  Sandbox or runner app.
+- **Retired with `/retire`** (`tests/am1/b030split/retire-r3.mjs`, log `tests/am1/raw/b030-retire-r3.log`), every
+  member answering "not joined" after:
+  - 20:16:48Z: `repo:1048591` (`#1#f0`, `#1#f1`, `#1#f2`). It had no child group yet.
+  - 20:25:53Z, B0-30's earlier test groups, still joined and idle: `repo:1048585` (3), and `repo:` and
+    `repo-meta:` for 1048587 (smoke 2), 1048588 (smoke 3's first try) and 1048589 (smoke 3), 18 more. That is 21
+    in all. 1048586 and 1048590 were already retired.
+- **Still joined, not retired.** Every other group on graft-m1 belongs to earlier AM1 work, not B0-30: site a homes
+  148 repository chains. The fold audit (`*/15`, 4 chains a run, `GRAFTYARD_AUDIT=1` since site day 9) reads one chain
+  a quarter-hour and fails with a 404 on its f2 member (repo:489004 to 489007). It writes about 10 rows a run.
+- **What was writing [measured, `durableObjectsPeriodicGroups` by namespace, every graft-m1 namespace].**
+
+  | Window | Rows written an hour | DO-hours an hour | What |
+  |---|---|---|---|
+  | 12:00 to 16:00Z | about 4,200 | 1.5 | idle: 669 objects, at most 152 rows each in 4 h |
+  | 17:00Z | 11.1 M | 2.5 | the seed's 1.34 M rows of 1,800 B on three members |
+  | 19:00 to 20:00Z | 1.55 M | 21.3 | the load: three members of repo:1048591 |
+  | 20:15 to 20:30Z | 37,600 (9,395 a quarter) | 2.0 | after the stop and the first retire |
+
+  - graft-m1 wrote 92.5 M rows ($92.54) and 318.4 DO-hours from 2026-11-15 20:00Z to 2026-11-16 20:00Z. Nearly all is
+    the B0-30 runs: the second run's load and split (2.4 to 2.7 M an hour, 22 DO-hours an hour, through 07:00Z), site
+    c's install (10.1 M at 08:00Z, 5.0 M at 10:00Z, 3.7 M at 11:00Z), the third run's seed and load. When no run was
+    going (12:00 to 16:00Z), it wrote about 4,200 rows and 1.5 DO-hours an hour.
+- **The run meters undercount.** graft-m1 wrote 419.7 M DO rows from Nov 1 to 16 ($419.71), and its containers
+  billed $852.62 from Oct 27 (the leak, Nov 6 to 13, $802). B0-30's meter counted only the run's own objects
+  (`objects.py` from Workers Logs) and its own network's containers. The second run's meter read $118.95 of DO and
+  Workers at 10:39Z, with 117.3 M rows counted, against 154.2 M rows for all graft-m1 namespaces in the same
+  window (2026-11-14 09:46Z to 2026-11-16 11:44Z). So objects the logs did not name, such as smoke groups and earlier generations, were off the
+  meter.
+
+## B0-30 re-judged at 90% (operator decision, 2026-11-16, `FRAME.md`, "90% gates and a daily spend limit")
+
+No spend. Read from the results above and `tests/am1/results/b0-30.md`. The row's targets are 30 simulated days of
+journey 9 with pushes on (1.6 a second), member SQLite under `CHILD_GROUP_AT` (8,589,934,592 B), zero `SQLITE_FULL`,
+and archived entries readable for `RestoredTo`; its fail line is any `SQLITE_FULL`, or SQLite over `CHILD_GROUP_AT`
+without a child group taking the tier. At 90%: 27 simulated days, a size bound of 1.1 × `CHILD_GROUP_AT`
+(9,448,928,051 B), and the push rate at 1.44 a second.
+
+**Still short, on every run. No row status changes.**
+
+| Run | Days (target 27) | Max member SQLite (bound 9.45 GB at 90%) | `SQLITE_FULL` | `RestoredTo` | Short by |
+|---|---|---|---|---|---|
+| First (`b0-30.md`, 2026-11-11) | 27.52 | 8,591,708,160 B, 1.0002 × the line | 0 | 81 of 81 ranges, 10 of 10 lookups | Pushes off from day 1.34: 7,853 pushes, 3.7% of journey 9's 1.6 a second. And no child group took the tier, so it hit the fail line as written. A size within 10% does not lift a fail line: the operator's rule relaxes targets, not the "without a child group" clause |
+| Second (`b030r2`, 2026-11-14 to 16) | 25.83 (86%) | 10,184,200,192 B on site c, 1.186 × the line | 0 | Not judged: the parent could not commit, so `verify.mjs` did not run | Day 25.83 of 27, about 1.2 simulated days short. Site c 735 MB over the 90% bound. And the parent stopped committing at entry 208,160 (`Degraded { lost: 1 }` waiting on an installing voter), so the group is not live: that is a quorum stall, not a target missed by a margin |
+| Third (`b030r3`, 2026-11-16) | 1.2 | 6.34 GB | 0 | — | Stopped by the operator at day 1.2, no verdict |
+
+- The second run's push rate also fell short of 90% (86.4 a minute) for long stretches: 96 a minute at the start,
+  66 by day 14.9 (G14), 60.5 before the stop at day 17.62, 79 to 80 after site day 9. It pushed 162,457 of the
+  191,737 due by day 25.83, 85%.
+- Not an invariant failure on either run: no acknowledged push was lost, and the quorum rule held (entry 208,160 did
+  not commit because the rule held).
+- **What it needs.** A run to day 27 with the parent live and every member under 9.45 GB, plus a `RestoredTo`
+  verify. b030-fixes (on main since `0e3d13cc`) targets both of the second run's causes; the expected site c peak
+  with them is under 2.9 GB [inference]. So B0-30 still needs a rerun under the operator's slot rule. At 90% the run
+  could end at simulated day 27 (36 h of load at 18x, against 40), which saves about 10% of its load cost.
+- **Cost of the second run on the account meter** (`tests/fanout/acctcost.py`, every `graft-m1-*` line, 2026-11-14
+  09:46Z to 2026-11-16 11:44Z): $190.43 (members $167.46, shards $22.78, edges $0.19), against the run meter's $139.70
+  for nearly the same window. The third run, 17:17 to 20:15Z: $16.83 for graft-m1 (account $20.44).
+
 ## Cost
 
 | Window | DO and Workers | Containers |
