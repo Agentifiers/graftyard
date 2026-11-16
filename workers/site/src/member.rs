@@ -1204,6 +1204,7 @@ impl<F: Family> Routes<F> {
                 self.host.trace(Trace::IndexTaken, from.0, *batch, 0, 0);
                 asked.push(*batch);
             }
+            self.host.heard(&e);
             self.host.trace_res(&e, false);
             let (_, out) = self.host.step(|m, t| m.step(t, e.from, e.msg))?;
             back.extend(self.host.dispatch(out, Some(from)));

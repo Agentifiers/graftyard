@@ -985,15 +985,15 @@ fn a_ring_fed_past_a_hole_refuses_cursors_from_before_it() {
     let (oldest, newest) = ring.bounds();
     let c = feed::FeedCursor { group: REPO, index: cursor }.encode();
     assert!(
-        matches!(feed::start(REPO, Some(&c), oldest, newest), feed::Start::Gone { .. }),
+        matches!(feed::start(REPO, Some(&c), oldest, newest, newest), feed::Start::Gone { .. }),
         "a cursor from before the hole is gone, not served past it: oldest {oldest:?}, cursor {cursor:?}"
     );
     // A cursor inside the hole, just before the first entry fed after it, would skip that entry's events too.
     let inside = feed::FeedCursor { group: REPO, index: Index(i2.0 - 1) }.encode();
-    assert!(matches!(feed::start(REPO, Some(&inside), oldest, newest), feed::Start::Gone { .. }), "{oldest:?}");
+    assert!(matches!(feed::start(REPO, Some(&inside), oldest, newest, newest), feed::Start::Gone { .. }), "{oldest:?}");
     assert!(ring.past(Index(0), &[]).is_empty(), "no event from before the hole, or of the baseline entry, is kept");
     let c2 = feed::FeedCursor { group: REPO, index: *i2 }.encode();
-    assert_eq!(feed::start(REPO, Some(&c2), oldest, newest), feed::Start::After(*i2), "the new floor serves");
+    assert_eq!(feed::start(REPO, Some(&c2), oldest, newest, newest), feed::Start::After(*i2), "the new floor serves");
 }
 
 /// LF-13 on graft-m3c: the install's own input moves the member's base past the ring with no entry to feed, and the
@@ -1027,7 +1027,7 @@ fn a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry() 
     ring.skip(REPO, &w.ident.owner, &snap.core, (through, at1));
     let (oldest, newest) = ring.bounds();
     assert!(
-        matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }),
+        matches!(feed::start(REPO, Some(&before), oldest, newest, newest), feed::Start::Gone { .. }),
         "a cursor from before the install is gone at once: oldest {oldest:?}, newest {newest:?}"
     );
     assert!(ring.past(Index(0), &[]).is_empty(), "no event from before the install is served");
@@ -1037,7 +1037,7 @@ fn a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry() 
     ring.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (i2, at2, &evs2));
     let (oldest, newest) = ring.bounds();
     let at_snapshot = feed::FeedCursor { group: REPO, index: through }.encode();
-    assert_eq!(feed::start(REPO, Some(&at_snapshot), oldest, newest), feed::Start::After(through));
+    assert_eq!(feed::start(REPO, Some(&at_snapshot), oldest, newest, newest), feed::Start::After(through));
     let served: Vec<(Index, LeaseId, LeaseChange)> = ring
         .past(through, &[])
         .into_iter()
@@ -1080,7 +1080,7 @@ fn a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_it
     assert!(ring.past(Index(0), &[]).is_empty(), "and serves no event from before it");
     let (oldest, newest) = ring.bounds();
     let before = feed::FeedCursor { group: REPO, index: Index(through.0 - 1) }.encode();
-    assert!(matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }), "{oldest:?}");
+    assert!(matches!(feed::start(REPO, Some(&before), oldest, newest, newest), feed::Start::Gone { .. }), "{oldest:?}");
     w.commit(issue(app(CLAUDE), IssueOp::ReleaseLease { id: ids[0] })).unwrap();
     let (i, at2, evs, f2) = last(&mut w);
     ring.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (i, at2, &evs));
@@ -1100,7 +1100,7 @@ fn a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_it
     assert_eq!(ring.through, i, "a serving ring is not moved");
     let (oldest, newest) = ring.bounds();
     let at_start = feed::FeedCursor { group: REPO, index: through }.encode();
-    assert_eq!(feed::start(REPO, Some(&at_start), oldest, newest), feed::Start::After(through));
+    assert_eq!(feed::start(REPO, Some(&at_start), oldest, newest, newest), feed::Start::After(through));
     assert_eq!(ring.past(through, &[]).len(), 1, "the release is still served");
 }
 
@@ -1139,7 +1139,9 @@ fn a_learner_behind_the_cursor_answers_lagging_not_gone() {
     let cursor = feed::FeedCursor { group: REPO, index: ahead.through }.encode();
     let (oldest, newest) = behind.bounds();
     assert!(ahead.through > newest, "the cursor is past the behind learner's last entry");
-    let start = feed::start(REPO, Some(&cursor), oldest, newest);
+    // The member heard from its leader that the group committed through the caught-up learner's last entry.
+    let committed = ahead.through;
+    let start = feed::start(REPO, Some(&cursor), oldest, newest, committed);
     assert!(!matches!(start, feed::Start::Gone { .. }), "a cursor ahead of the member is no 410: {start:?}");
     assert_eq!(start, feed::Start::Ahead(ahead.through));
     // Its own last entry is recent (lag 0), yet it lags the poll: `lagging`, and the edge routes on.
@@ -1152,8 +1154,27 @@ fn a_learner_behind_the_cursor_answers_lagging_not_gone() {
     assert_eq!(feed::route(&answers), feed::Route::Held(1), "the caught-up learner holds it");
     // A cursor inside the ring is served as before, and one below the ring's floor is still gone.
     let inside = feed::FeedCursor { group: REPO, index: newest }.encode();
-    assert_eq!(feed::start(REPO, Some(&inside), oldest, newest), feed::Start::After(newest));
+    assert_eq!(feed::start(REPO, Some(&inside), oldest, newest, newest), feed::Start::After(newest));
     assert!(oldest.0 > 0, "the ring has a floor to fall below");
     let below = feed::FeedCursor { group: REPO, index: Index(oldest.0 - 1) }.encode();
-    assert!(matches!(feed::start(REPO, Some(&below), oldest, newest), feed::Start::Gone { .. }));
+    assert!(matches!(feed::start(REPO, Some(&below), oldest, newest, newest), feed::Start::Gone { .. }));
+}
+
+/// The bound on `Ahead`: a cursor past every index the member knows the group committed is gone. After a
+/// whole-install restore the group keeps its `RepoId`, and its log can end below a cursor a client holds; every member
+/// is then behind that cursor with no committed entry there. Held as `Ahead` (and by the edge's `lagging_ok` last
+/// resort), the poll would serve only events after the cursor once the restored log grew past it, and skip every one
+/// between the restore point and the cursor. It must get 410 and reload, as before a restore.
+#[test]
+fn a_cursor_past_the_groups_commit_index_is_gone() {
+    let (oldest, newest) = (Index(3), Index(40));
+    let at = |i: u64| feed::FeedCursor { group: REPO, index: Index(i) }.encode();
+    let gone = feed::Start::Gone { oldest: feed::FeedCursor { group: REPO, index: oldest } };
+    // Restored: the log ends at 40, every member knows commit 40, and the client's cursor is 55.
+    assert_eq!(feed::start(REPO, Some(&at(55)), oldest, newest, newest), gone, "past the commit index: 410");
+    assert_eq!(feed::start(REPO, Some(&at(41)), oldest, newest, newest), gone, "one past it: 410");
+    // A member behind its leader, which committed through 50: up to 50 it lags, past 50 it is gone.
+    assert_eq!(feed::start(REPO, Some(&at(50)), oldest, newest, Index(50)), feed::Start::Ahead(Index(50)));
+    assert_eq!(feed::start(REPO, Some(&at(51)), oldest, newest, Index(50)), gone);
+    assert_eq!(feed::start(REPO, Some(&at(40)), oldest, newest, Index(50)), feed::Start::After(Index(40)));
 }

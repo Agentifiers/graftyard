@@ -1053,6 +1053,9 @@ pub struct Host<F: Family> {
     leasing: Cell<bool>,
     /// Messages for learners that are calling this member, held for their next call (`crate::callers`).
     pub callers: RefCell<crate::callers::Callers<Envelope<F>>>,
+    /// The highest commit index a peer told this member this boot (`heard`): a member behind its leader's appends
+    /// commits only what it holds, and the feed tells a cursor the group committed from one it never did by this.
+    heard_commit: Cell<u64>,
     /// Transfers to abandon: their `TimeoutNow` is dropped (`/transfer` with `abandon`).
     #[cfg(feature = "test-faults")]
     pub abandon: RefCell<BTreeSet<u64>>,
@@ -1743,6 +1746,7 @@ impl<F: Family> Host<F> {
             blocked: RefCell::new(Vec::new()),
             leasing: Cell::new(false),
             callers: RefCell::new(Default::default()),
+            heard_commit: Cell::new(0),
             #[cfg(feature = "test-faults")]
             abandon: RefCell::new(BTreeSet::new()),
             #[cfg(feature = "test-faults")]
@@ -1858,6 +1862,23 @@ impl<F: Family> Host<F> {
         }
         let t = now_ms();
         s.elections.push_back([t, Elect::Asked as u64, term, u64::from(about), 0, u64::from(started)]);
+    }
+
+    /// Raises `heard_commit` from a message a peer sent this member: an AppendEntries' `commit`, a read index, or an
+    /// install's `through`, each an index the group committed.
+    pub fn heard<E>(&self, e: &raft::Envelope<E>) {
+        let i = match &e.msg {
+            raft::Message::Append(a) => a.commit.0,
+            raft::Message::ReadIndexRes { index: Some((i, _)), .. } => i.0,
+            raft::Message::Install(s) => s.source.through.0,
+            _ => return,
+        };
+        self.heard_commit.set(self.heard_commit.get().max(i));
+    }
+
+    /// The highest index this member knows the group committed: its own commit, or one its leader sent it.
+    pub fn committed(&self, own: raft::Index) -> raft::Index {
+        raft::Index(self.heard_commit.get().max(own.0))
     }
 
     /// Test installs: traces a `ReadIndexRes` stepped here, `own` when it answered this member's own call.
@@ -2836,6 +2857,7 @@ impl<F: Family> Host<F> {
             h.ended(&call, if late { End::Late } else { End::Ok });
             for r in replies {
                 let from = r.from;
+                h.heard(&r);
                 h.trace_res(&r, true);
                 if h.input(|m, t| m.step(t, from, r.msg)).is_err() {
                     break;
@@ -3054,6 +3076,7 @@ impl<F: Family> Host<F> {
             h.trace(Trace::Hedge, to.0, 0, u64::from(r.is_ok()), now_ms().saturating_sub(at));
             for e in r.unwrap_or_default() {
                 let from = e.from;
+                h.heard(&e);
                 h.trace_res(&e, true);
                 if h.input(|m, t| m.step(t, from, e.msg)).is_err() {
                     break;

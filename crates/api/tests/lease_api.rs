@@ -105,7 +105,7 @@ fn lf3_foreign_cursor_long_wait_and_too_many_paths() {
     let other = FeedCursor { group: RepoId(DbId(8)), index: Index(5) }.encode();
     let q = leases::parse_feed(&format!("cursor={other}&wait=40")).expect("a valid query");
     assert_eq!(q.wait, Duration::from_secs(25), "wait clamped to 25");
-    let start = feed::start(REPO, q.cursor.as_deref(), Index(3), Index(40));
+    let start = feed::start(REPO, q.cursor.as_deref(), Index(3), Index(40), Index(40));
     let oldest = FeedCursor { group: REPO, index: Index(3) };
     assert_eq!(start, Start::Gone { oldest });
     let (h, d) = (host(), Dir);
@@ -116,7 +116,7 @@ fn lf3_foreign_cursor_long_wait_and_too_many_paths() {
     assert_eq!(json_of(&reply)["oldest_cursor"], json!(oldest.encode()));
     // A cursor older than the ring, and a malformed one, get the same 410; one of this group inside it is served.
     for c in [FeedCursor { group: REPO, index: Index(2) }.encode(), "garbage".into()] {
-        assert_eq!(feed::start(REPO, Some(&c), Index(3), Index(40)), Start::Gone { oldest });
+        assert_eq!(feed::start(REPO, Some(&c), Index(3), Index(40), Index(40)), Start::Gone { oldest });
     }
     // A cursor has one spelling: the same 17 bytes with nonzero padding bits in the last character are refused.
     let mine = FeedCursor { group: REPO, index: Index(10) }.encode();
@@ -124,8 +124,12 @@ fn lf3_foreign_cursor_long_wait_and_too_many_paths() {
     let last = alias.len() - 1;
     alias[last] += 1; // 'o' (0b101000) to 'p': the 2 padding bits change, the 17 bytes do not
     let alias = String::from_utf8(alias).unwrap();
-    assert_eq!(feed::start(REPO, Some(&alias), Index(3), Index(40)), Start::Gone { oldest }, "{mine} vs {alias}");
-    assert_eq!(feed::start(REPO, Some(&mine), Index(3), Index(40)), Start::After(Index(10)));
+    assert_eq!(
+        feed::start(REPO, Some(&alias), Index(3), Index(40), Index(40)),
+        Start::Gone { oldest },
+        "{mine} vs {alias}"
+    );
+    assert_eq!(feed::start(REPO, Some(&mine), Index(3), Index(40), Index(40)), Start::After(Index(10)));
     let many: String = (0..33).map(|i| format!("paths=p{i}/**&")).collect();
     let refused = leases::parse_feed(&many).unwrap_err();
     assert_eq!(refused.status, 422);

@@ -232,29 +232,34 @@ pub fn parse_query(query: &str) -> Result<FeedQuery, QueryErr> {
 }
 
 /// Where a poll starts reading, or why it cannot: a cursor of another group, one older than the ring (or from before
-/// a whole-install restore), or a malformed one all get 410 with the oldest cursor the member can serve; one past the
-/// member's last applied entry is `Ahead`.
+/// a whole-install restore), a malformed one, or one past every index the member knows committed all get 410 with the
+/// oldest cursor the member can serve; one past its last applied entry that the group committed is `Ahead`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Start {
     /// Read the entries after this index.
     After(Index),
-    /// A cursor of this group past the member's last applied entry: the member is behind it.
+    /// A cursor of this group past the member's last applied entry, at or below the commit index it knows: the member
+    /// is behind it.
     Ahead(Index),
     /// 410 `{message, oldest_cursor}`.
     Gone { oldest: FeedCursor },
 }
 
-/// `oldest` is the index before the first entry the member still holds within FEED_RING; `newest` its last applied.
-/// A cursor past `newest` came from a member that applied more, so this one is behind it: `Ahead`, which the member
-/// answers `lagging`, never 410 (`design/AGENT-LAYER.md`, "Activity feed"). As a 410 it sent every poll that met a
-/// learner behind its cursor straight back to the client (L0-12 m3fr7: 6,176 of site c's 20,670 polls answered in
-/// under 20 ms, `tests/am1/results/lm1-rows-m3f.md`).
-pub fn start(group: RepoId, cursor: Option<&str>, oldest: Index, newest: Index) -> Start {
+/// `oldest` is the index before the first entry the member still holds within FEED_RING; `newest` its last applied;
+/// `committed` the highest commit index it knows the group reached, its own or one its leader sent it (an
+/// AppendEntries' `commit`, a read index), never below `newest`. A cursor in `newest + 1..=committed` names an entry the
+/// group committed that this member has not applied: `Ahead`, which the member answers `lagging`, never 410
+/// (`design/AGENT-LAYER.md`, "Activity feed"). As a 410 it sent every poll that met a learner behind its cursor
+/// straight back to the client (L0-12 m3fr7: 6,176 of site c's 20,670 polls answered in under 20 ms,
+/// `tests/am1/results/lm1-rows-m3f.md`). A cursor past `committed` names no entry this member knows committed, such as
+/// one from before a whole-install restore whose log ends below it, and is gone: held as `Ahead`, a poll would serve
+/// only the events after it once the log grew past it, and skip those between the log's end and the cursor.
+pub fn start(group: RepoId, cursor: Option<&str>, oldest: Index, newest: Index, committed: Index) -> Start {
     let gone = Start::Gone { oldest: FeedCursor { group, index: oldest } };
     let Some(c) = cursor else { return Start::After(newest) };
     match FeedCursor::decode(c) {
-        Some(c) if c.group == group && c.index > newest => Start::Ahead(c.index),
-        Some(c) if c.group == group && c.index >= oldest => Start::After(c.index),
+        Some(c) if c.group == group && c.index > newest && c.index <= committed => Start::Ahead(c.index),
+        Some(c) if c.group == group && c.index >= oldest && c.index <= newest => Start::After(c.index),
         _ => gone,
     }
 }

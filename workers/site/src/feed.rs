@@ -227,7 +227,7 @@ impl Feed {
 /// `POST /feed` on a repository member: `{"admit": .., "cursor", "events": [[index, at, event]]}`, where `admit` is
 /// `hold` (answered with the events, possibly none when `wait` ended), `lagging`, `full`, `notServing`, `gone` (410
 /// with `oldest`), or `tooMany` (FEED_POLLS). Events are rendered by the edge from the JSON form here.
-pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll) -> Value {
+pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, committed: Index, p: Poll) -> Value {
     let q = match feed::parse_query(&format!(
         "wait={}{}",
         p.wait_s,
@@ -240,7 +240,7 @@ pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll
     let start = {
         let f = feed.borrow();
         let (oldest, newest) = f.ring.bounds();
-        feed::start(repo, p.cursor.as_deref(), oldest, newest)
+        feed::start(repo, p.cursor.as_deref(), oldest, newest, committed.max(newest))
     };
     let (after, ahead) = match start {
         Start::Gone { oldest } => return json!({ "admit": "gone", "oldest": oldest.encode() }),
@@ -339,7 +339,7 @@ pub fn event_json(e: &feed::ActivityEvent) -> Value {
 /// `dep`, then refreshed each minute so a lease whose holder lost access expires), then `poll`.
 pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Value) -> worker::Result<Value> {
     let p: Poll = serde_json::from_value(body).map_err(|e| crate::host::err(e.to_string()))?;
-    let (repo, role, owner, record) = {
+    let (repo, role, owner, record, committed) = {
         let core = host.core.borrow();
         let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
         let Some(repo) = c.m.group_fold().fold.repo else { return Ok(json!({ "admit": "notServing" })) };
@@ -363,7 +363,9 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
         }
         f.applied_at = f.applied_at.max(c.m.entry_at(applied).map_or(f.leader_at, |e| e.at));
         drop(f);
-        (repo, role, c.join.owner, c.join.record.clone())
+        // The highest index this member knows the group committed (`Host::committed`): a cursor past it is gone.
+        let committed = host.committed(c.m.state().commit);
+        (repo, role, c.join.owner, c.join.record.clone(), committed)
     };
     if matches!(role, FeedRole::Leader | FeedRole::Witness) {
         // Never a leader's or a witness's: answered before any read.
@@ -402,7 +404,7 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
     if feed.borrow().owner.is_none() {
         return Ok(json!({ "admit": "lagging", "lagMs": u64::MAX }));
     }
-    Ok(poll(feed, repo, role, p).await)
+    Ok(poll(feed, repo, role, committed, p).await)
 }
 
 #[cfg(test)]
@@ -436,6 +438,35 @@ mod tests {
         f.fed(3_000);
         let since = f.stops;
         assert!(f.wait(since).is_some());
+    }
+
+    /// A whole-install restore keeps the group's `RepoId` and can end its log below a cursor a client holds. Such a
+    /// cursor, past every index this member knows the group committed, answers `gone` at once, even on the edge's
+    /// last resort (`lagging_ok`), which holds a lagging poll on a learner: held there, it would skip the events
+    /// between the restored log's end and the cursor.
+    #[test]
+    fn a_cursor_past_the_groups_commit_index_is_gone_even_on_the_last_resort() {
+        use std::future::Future;
+        let feed = Rc::new(RefCell::new(Feed::default()));
+        let repo = graftyard_types::RepoId(graftyard_types::DbId(7));
+        let cursor = graftyard_git::feed::FeedCursor { group: repo, index: graftyard_types::Index(55) }.encode();
+        let p = super::Poll {
+            cursor: Some(cursor),
+            wait_s: 25,
+            paths: Vec::new(),
+            learner_answers: false,
+            token: "t".into(),
+            ip: "i".into(),
+            lagging_ok: true,
+        };
+        let fut = super::poll(feed.clone(), repo, FeedRole::Learner, graftyard_types::Index(40), p);
+        let mut fut = std::pin::pin!(fut);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(v) = fut.as_mut().poll(&mut cx) else {
+            panic!("held: the poll waits past a restore")
+        };
+        assert_eq!(v["admit"], "gone", "{v}");
+        assert_eq!(feed.borrow().serving.held, 0, "nothing held");
     }
 
     /// A burst of polls after the owner went stale sends one `Authz` read: the first poll reads, the rest wait for it

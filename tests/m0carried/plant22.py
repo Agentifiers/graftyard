@@ -13,18 +13,29 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 FEED = 'crates/git/src/feed.rs'
 RUST = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'lease_gates', 'cursor']
+SITE = ['cargo', 'test', '-q', '-p', 'graftyard-site', 'feed::tests']
+SITE_RS = 'workers/site/src/feed.rs'
 
 MUTANTS = [
     ('a cursor ahead is gone again', FEED,
-     '        Some(c) if c.group == group && c.index > newest => Start::Ahead(c.index),\n', '', RUST),
+     '        Some(c) if c.group == group && c.index > newest && c.index <= committed => Start::Ahead(c.index),\n', '',
+     RUST),
     ('a cursor ahead is served as inside the ring', FEED,
-     'c.index > newest => Start::Ahead(c.index)', 'c.index > newest => Start::After(c.index)', RUST),
+     'c.index <= committed => Start::Ahead(c.index)', 'c.index <= committed => Start::After(c.index)', RUST),
     ('a cursor at the newest entry is ahead', FEED,
-     'c.index > newest => Start::Ahead', 'c.index >= newest => Start::Ahead', RUST),
+     'c.index > newest && c.index <= committed', 'c.index >= newest && c.index <= committed', RUST),
     ('a cursor below the floor is served', FEED,
-     'c.group == group && c.index >= oldest => Start::After', 'c.group == group => Start::After', RUST),
+     'c.index >= oldest && c.index <= newest => Start::After', 'c.index <= newest => Start::After', RUST),
     ('a member behind the cursor still follows', FEED,
      'Following { lag: self.lag.max(FEED_BATCH + Duration::from_millis(1)), ..self }', 'self', RUST),
+    # The bound (feed-ahead review): a cursor past every index the member knows committed, as after a restore.
+    ('a cursor past the commit index is ahead (feed-ahead 41c93e72)', FEED,
+     'c.index > newest && c.index <= committed => Start::Ahead', 'c.index > newest => Start::Ahead', RUST),
+    ('the bound is one past the commit index', FEED,
+     'c.index > newest && c.index <= committed => Start::Ahead', 'c.index > newest && c.index <= Index(committed.0 + 1) => Start::Ahead', RUST),
+    ('the member bounds by its own applied entry alone', SITE_RS,
+     'feed::start(repo, p.cursor.as_deref(), oldest, newest, committed.max(newest))',
+     'feed::start(repo, p.cursor.as_deref(), oldest, newest, Index(u64::MAX))', SITE),
 ]
 
 

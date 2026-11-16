@@ -357,9 +357,11 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 /// member counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first
 /// entry with `at >= expires`; clients time it from `expires`. An install or a first poll (fed, a backlog cost 46 s, LM-1)
 /// restarts the ring with its live leases (`9d59283`). An older cursor gets 410; the client reloads leases and tasks.
-/// A cursor past the member's last applied entry, which a member further on handed out, is no 410: the member is
-/// behind it, answers `lagging`, and the edge tries the next member; as a 410 it sent 30% of an apac learner pair's
-/// polls back at once in L0-12 m3fr7 [measured, `tests/am1/results/lm1-rows-m3f.md`, "m3fr7 after the run"].
+/// A cursor past the member's last applied entry but at or below the highest commit index it knows (its own, or one
+/// its leader sent in an AppendEntries, a read index, or an install) names an entry the group committed that it has not
+/// applied, so it is no 410: the member answers `lagging` and the edge tries the next member; as a 410 it sent 30% of an
+/// apac learner pair's polls back at once in L0-12 m3fr7 [measured, `tests/am1/results/lm1-rows-m3f.md`, "m3fr7 after
+/// the run"]. A cursor past that commit index, such as one from before a whole-install restore, is 410.
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
                          AgentPush { refname: RefName, head: Oid, paths: SmallVec<[Box<str>; 8]> },
