@@ -18,6 +18,6 @@ echo "image $IMG" > tests/fanout/raw/siteday$T.status
 # (`workers/site/src/shard.rs`, `DEFAULT_INSTANCE`), as the m39 day did by mistake (lm1-memory round 34).
 SHARD_INSTANCE=${SHARD_INSTANCE:-standard-4} bash tests/am1/runs/siteday.sh fanout$T-siteday.log "$IMG"
 echo "siteday $(grep -E '^exit' tests/am1/raw/runs/fanout$T-siteday.log)" >> tests/fanout/raw/siteday$T.status
-OPS=graft-m2b-ops bash tests/am1/runs/deploy-edge.sh fanout$T-edge.log 32.8,32.12,32.14,32.18,18.3 >> tests/fanout/raw/siteday$T.status
+OPS=graft-m2b-ops bash tests/am1/runs/deploy-edge.sh fanout$T-edge.log 32.8,32.12,32.14,32.18,18.3${EDGE_EXTRA:+,$EDGE_EXTRA} >> tests/fanout/raw/siteday$T.status
 echo DONE >> tests/fanout/raw/siteday$T.status
 exec sleep infinity

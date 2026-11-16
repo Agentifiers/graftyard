@@ -10,9 +10,11 @@ cd "$(dirname "$0")/../../.."
   # NOROLL=1: no --roll-shards (shards are derived caches; a fresh repository's shards start on the image).
   ROLL=(--roll-shards https://graft-m2b-edge.<workers-subdomain>.workers.dev); [ -n "${NOROLL:-}" ] && ROLL=()
   # SHARD_INSTANCE=standard-4: the site var the shard container starts at (workers/site/src/shard.rs, `instance`).
-  VARS=(); if [ -n "${SHARD_INSTANCE:-}" ]; then
-    echo "{\"SHARD_INSTANCE\": \"$SHARD_INSTANCE\"}" > /tmp/siteday-vars.json; VARS=(--vars /tmp/siteday-vars.json); fi
-  echo "SHARD_INSTANCE=${SHARD_INSTANCE:-unset}"
+  # ROLLUP=1: the site var GRAFTYARD_ROLLUP (G9's roll-up gate, `log_archive::rollup_enabled`), with 32.25 enabled.
+  VARS=(); if [ -n "${SHARD_INSTANCE:-}${ROLLUP:-}" ]; then
+    python3 -c 'import json,os; v={k:os.environ[e] for k,e in (("SHARD_INSTANCE","SHARD_INSTANCE"),("GRAFTYARD_ROLLUP","ROLLUP")) if os.environ.get(e)}; print(json.dumps(v))' \
+      > /tmp/siteday-vars.json; VARS=(--vars /tmp/siteday-vars.json); cat /tmp/siteday-vars.json; fi
+  echo "SHARD_INSTANCE=${SHARD_INSTANCE:-unset} GRAFTYARD_ROLLUP=${ROLLUP:-unset}"
   node workers/site/deploy.mjs $HOME/.graft-m2b/sites.json --test-faults --anchor $HOME/.graft-m2b/install.toml \
     --image "$2" "${VARS[@]}" "${ROLL[@]}"
   echo "exit $?"; date -u +%FT%TZ; echo DONE; } > tests/am1/raw/runs/$1 2>&1

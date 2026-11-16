@@ -1,15 +1,19 @@
 #!/bin/bash
-# The rows' cost stop, between phases (rows.sh) and between L0-12's refusal kinds (rows.mjs, ROWS_COST_CMD): meters the
-# install since T0_FILE (tests/fanout/cost.sh), appends `cost {usd, install, account}` and the phase to the status
-# file, and exits 1 once usd plus NEXT_USD (the next phase's expected cost, default 0) reaches STOP_USD. m3fr7's stop was
-# checked only before each row, and its L0-12 alone cost $10.42 of the window (`tests/am1/results/lm1-rows-m3f.md`).
-#   ST=<status file> STOP_USD=66 [NEXT_USD=13] bash tests/fanout/costok.sh <phase>
+# The rows' cost stop, between phases (rows.sh) and between L0-12's refusal kinds (rows.mjs, ROWS_COST_CMD). Since the
+# operator's 2026-11-16 budget rule the meter is the whole account (tests/fanout/acctcost.py from ACCT_FROM), not one
+# install: per-install meters missed most of a $2,328 bill. Appends `cost {...}` and the phase to the status file, and
+# exits 1 once the account's spend since ACCT_FROM plus NEXT_USD (the next phase's expected cost, default 0) reaches
+# STOP_USD, or the run's own spend since RUN_FROM (default ACCT_FROM) plus NEXT_USD reaches RUN_STOP_USD.
+#   ST=<status file> ACCT_FROM=2026-11-16T20:30:00Z STOP_USD=120 [RUN_FROM=<iso> RUN_STOP_USD=25] [NEXT_USD=1]
+#     bash tests/fanout/costok.sh <phase>
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-c=$(bash tests/fanout/cost.sh 2>/dev/null | jq -c '{usd, install, account}' 2>/dev/null)
-usd=$(echo "${c:-}" | jq -r '.usd // 99' 2>/dev/null || echo 99)
-echo "$(date -u +%FT%TZ) cost ${c:-unread} at $1" >> "$ST"
-if python3 -c "import sys; sys.exit(0 if float('$usd') + float('${NEXT_USD:-0}') >= float('${STOP_USD:-12}') else 1)"; then
-  echo "$(date -u +%FT%TZ) STOP at \$$usd before $1 (next ${NEXT_USD:-0}, stop ${STOP_USD:-12})" >> "$ST"
+FROM=${ACCT_FROM:?ACCT_FROM is the account meter start, ISO}
+usd() { python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r '.usd // 999' 2>/dev/null || echo 999; }
+acct=$(usd "$FROM"); run=$(usd "${RUN_FROM:-$FROM}")
+echo "$(date -u +%FT%TZ) cost account $acct since $FROM, run $run since ${RUN_FROM:-$FROM}, at $1" >> "$ST"
+if python3 -c 'import sys; a, r, n, s, rs = map(float, sys.argv[1:]); sys.exit(0 if a + n >= s or r + n >= rs else 1)' \
+    "$acct" "$run" "${NEXT_USD:-0}" "${STOP_USD:-120}" "${RUN_STOP_USD:-1e9}"; then
+  echo "$(date -u +%FT%TZ) STOP before $1: account \$$acct of stop ${STOP_USD:-120}, run \$$run of stop ${RUN_STOP_USD:-none}, next ${NEXT_USD:-0}" >> "$ST"
   exit 1
 fi
