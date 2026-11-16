@@ -1,0 +1,291 @@
+{
+  "repo": "m3org/wp4-bf54",
+  "boxes": 25,
+  "per": 100,
+  "runners": 2500,
+  "runs": [
+    1188251,
+    1188268,
+    1188285,
+    1188302,
+    1188319,
+    1188336,
+    1188353,
+    1188370,
+    1188387,
+    1188404,
+    1188421,
+    1188438,
+    1188455,
+    1188472,
+    1188489,
+    1188506,
+    1188523,
+    1188540,
+    1188557,
+    1188574,
+    1188591,
+    1188608,
+    1188625,
+    1188642,
+    1188659,
+    1188676,
+    1188693,
+    1188710,
+    1188727,
+    1188744,
+    1188761,
+    1188778
+  ],
+  "events": [
+    {
+      "at": 1794803081846,
+      "what": "setup",
+      "repoId": 65565,
+      "chain": "actions:7100001.11",
+      "N": 2500
+    },
+    {
+      "at": 1794803530288,
+      "what": "keys",
+      "seconds": 448
+    },
+    {
+      "at": 1794803781765,
+      "what": "registered",
+      "registered": 2500,
+      "failed": 0,
+      "seconds": 251
+    },
+    {
+      "at": 1794803792214,
+      "what": "box started",
+      "box": "bf54-box-13",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803793506,
+      "what": "box started",
+      "box": "bf54-box-2",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803796297,
+      "what": "box started",
+      "box": "bf54-box-11",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803796662,
+      "what": "box started",
+      "box": "bf54-box-16",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803808712,
+      "what": "box started",
+      "box": "bf54-box-3",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803825859,
+      "what": "box started",
+      "box": "bf54-box-24",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803832470,
+      "what": "box started",
+      "box": "bf54-box-7",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803845909,
+      "what": "box started",
+      "box": "bf54-box-9",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803846775,
+      "what": "box started",
+      "box": "bf54-box-22",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803849537,
+      "what": "box started",
+      "box": "bf54-box-23",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803853752,
+      "what": "box started",
+      "box": "bf54-box-4",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803855277,
+      "what": "box started",
+      "box": "bf54-box-6",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803856228,
+      "what": "box started",
+      "box": "bf54-box-1",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803856459,
+      "what": "box started",
+      "box": "bf54-box-18",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803858413,
+      "what": "box started",
+      "box": "bf54-box-19",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803859538,
+      "what": "box started",
+      "box": "bf54-box-10",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803871327,
+      "what": "box started",
+      "box": "bf54-box-5",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803876863,
+      "what": "box started",
+      "box": "bf54-box-8",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803880277,
+      "what": "box started",
+      "box": "bf54-box-20",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803881268,
+      "what": "box started",
+      "box": "bf54-box-15",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803884425,
+      "what": "box started",
+      "box": "bf54-box-17",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803886150,
+      "what": "box started",
+      "box": "bf54-box-14",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803888751,
+      "what": "box started",
+      "box": "bf54-box-21",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803890106,
+      "what": "box started",
+      "box": "bf54-box-12",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794803891493,
+      "what": "box started",
+      "box": "bf54-box-0",
+      "runners": 100,
+      "ok": true
+    },
+    {
+      "at": 1794804228841,
+      "what": "every listener started",
+      "maxHeld": 0
+    },
+    {
+      "at": 1794804563284,
+      "what": "held",
+      "maxHeld": 0
+    },
+    {
+      "at": 1794805115629,
+      "what": "runs finished",
+      "runs": 32,
+      "jobs": 512
+    },
+    {
+      "at": 1794805396687,
+      "what": "observation done; tear down with tests/m4/wp4/bf54-teardown.mjs"
+    }
+  ],
+  "repoId": 65565,
+  "chain": "actions:7100001.11",
+  "boxesUpS": 110,
+  "registered": 2500,
+  "regFailed": 0,
+  "maxHeld": 0,
+  "maxBoxMiB": 2858,
+  "startedAll": 1794804228841,
+  "saw503": 2490,
+  "invalid": 0,
+  "exitedWithoutJob": [],
+  "jobStart": {
+    "n": 512,
+    "p50": 11.182,
+    "p99": 19.089,
+    "max": 19.089
+  },
+  "jobStartFor503Runners": {
+    "n": 511,
+    "p50": 11.182,
+    "p99": 19.089,
+    "max": 19.089
+  },
+  "unstarted60s": 0,
+  "jobsFailed": 0,
+  "jobsTotal": 512,
+  "checks": {
+    "polls503PastCap": true,
+    "noSessionInvalid": true,
+    "noRunnerExitedWithoutJob": true,
+    "noListenerRestart": true,
+    "jobStartP99Under35sFor503Runners": true,
+    "noJobUnstartedAfter60s": true,
+    "rePollWithin30s": "from diag-*.txt (tests/m4/wp4/bf54-repoll.mjs)"
+  }
+}

@@ -10,7 +10,7 @@ Branch `m4-runners`, rebased onto main 4833094d. The choices are in `decisions/D
 | --- | --- | --- |
 | BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | **Pass**, run 1966182 on site day 43, sweep only, demand read at the sweep's cadence |
 | BM-4 | (M4-WP3's matrix with an unmodified runner) | **Pass**, run 1900546, site a down mid-run (site days 44 and 45) |
-| BF-54 | (M4-WP3's broker cap) | **Fail** in both runs. Run 1: a lost `Repo`-scope match waited out its lease (F76). Run 2, on site day 46 with F76's fix: no lost match and no broker death. But one job of 512 never ran its steps, one started 62 s after its run committed, and job start p99 is 39.0 s, against 35. All three are acquire-path problems (F77) |
+| BF-54 | (M4-WP3's broker cap) | **Pass**, run 3 on site day 47 and edge day 21 (main `1d90863a`, F77's fix): all 512 jobs succeeded, job start p99 16.6 s after the run committed (gate 35 s), max 19.2 s, none unstarted after 60 s, 0 `RunnerSessionInvalid`, re-polls within 30 s. Runs 1 and 2 failed: a lost `Repo`-scope match waited out its lease (F76), then the acquire path (F77) |
 
 ## What is built
 
@@ -239,6 +239,35 @@ The fail line reads "a job unstarted after 60 s". Two jobs cross it. Job 1185242
 - m4a git shards: site b's `git#1#net:65565` and site a's `git#0#net:65565` and `git#0#net:65536`, started by site day 46's verify clone and the run, were stopped at 01:14:24Z through GitShard `/teardown`, all 200 `torn_down`. The calls came from a scratch Worker `graft-m4a-shardkill`, deleted at 01:14:50Z. At 01:14:38Z the API listed 0 running on sites a, b, and c.
 - The symlink `tests/m0/.m0-token` was removed.
 
+## BF-54 run 3, on F77's fix (2026-11-16)
+
+Site day 47 and edge day 21 put main `1d90863a` on m4a, with git image `m4a47` (`tests/am1/results/install-m4a.md`). The driver ran unchanged, with run 2's shape: 2,500 ephemeral `Repo`-scope listeners of `m3org/wp4-bf54` on 25 `standard-4` Sandboxes, and 32 runs of 16 20-s jobs. The orb restarted at 04:20Z, 9 minutes after the driver's first start, and took the driver and the box token with it before any key or registration; the box Worker got a new token and the driver started again at 04:24:32Z. Raw data is in `tests/m4/raw/wp4/bf54-run3/`, as in run 2; `acquires.txt` is the edge's acquire path (`tests/m4/raw/wp4/f77/acquires.mjs`), and the start times are from `tests/m4/raw/wp4/f77/start.py`, which reads run 2's files the same way.
+
+| Phase | Time (UTC) | Measured |
+| --- | --- | --- |
+| Keys, then registration at 10 a second | 04:24:41 to 04:36:21 | 2,500 in 448 s, then 2,500 in 251 s, 0 failed |
+| 25 Sandboxes, listeners 2.5 s apart | 04:36:21 to 04:44:18 | all 2,500 listening, 0 exits |
+| Hold | to 04:49:23 | 503s once about 2,000 listened; 2,490 runners saw one |
+| 32 runs, dispatched about every 17 s | 04:49:24 to 04:58:35 | 512 jobs, all `Success`. Busiest box 2,858 MiB |
+
+| Measure | Run 3 | Run 2 | Gate |
+| --- | --- | --- | --- |
+| Start after the dispatch answered 201 (`RunCreated` committed) | p50 8.7 s, p95 14.2 s, **p99 16.6 s**, max 19.2 s (job 1188709); 0 over 35 s, 0 over 60 s (512 jobs) | p50 12.0 s, p99 39.0 s, max 62.0 s; 8 over 35 s, 1 over 60 s (511) | p99 at most 35 s: **passes** |
+| Start after the dispatch request arrived | p50 11.3 s, p99 19.0 s, max 22.1 s | p50 14.8 s, p99 43.4 s, max 66.2 s | — |
+| The driver's own start (its job sampler) for the 511 jobs on runners that got a 503 | p50 11.2 s, p99 19.1 s | — | — |
+| A job unstarted after 60 s | **0** | 2 (1185242 at 62 s; 1185331 never ran) | fail line |
+| `acquirejob` answers (edge Workers Logs, 04:44Z to 05:03:30Z) | **512, all 200**; wall p50 3.7 s, p99 10.5 s, max 13.0 s | 586 tries: 74 503, one 409 | — |
+| `job_config` failures ("secrets: the repository's rows did not answer") | **0** | 74 | expected 0 |
+| Repeated acquires answered, and 409s | **0 repeated, 0 409**: 512 acquires for 512 jobs, so no runner asked twice and F77 (b) was not exercised | 1 409 (job 1185331) | — |
+| Jobs with two runners | 0 (job sampler); 512 runners ran one job each, 1,988 none | 0 | — |
+| Re-poll within 30 s on the runner's own wait | **Pass**: 2,294 back-offs, max 14.992 s; in-chain retries max 21 s, none over 30 s (`repoll.json`) | Pass | — |
+| Sessions | **Pass**: 0 `RunnerSessionInvalid`, 0 listener restarts, 0 runners exited without a job | Pass | — |
+| Broker `exceededMemory`, sites a to c, 04:36Z to 05:04Z | 0 | 0 | — |
+
+- **F77 (a) holds in production.** The narrow `actions` read answered every acquire: no `job_config` failure in 512, where run 2 had 74 in 586. The p99 fell from 39.0 to 16.6 s because no runner waited out a 15-s acquire retry.
+- **F77 (b) is not exercised by this run.** No acquire was lost, so no runner retried one. It is covered by `crates/actions/tests/gates.rs` and plants 25 to 27, not by a hosted measurement.
+- **Teardowns, BF-54 run 3.** 05:03:26Z: services `bf54run3` and `bf54jobs3` stopped. 05:03:41Z to 05:03:45Z: in each of the 25 boxes every listener got SIGINT (0 left), then the box was destroyed, `{\"ok\":true}` each (`teardown.log`). 05:04:21Z: application `a03fbdb5-…` listed 0 active. 05:04:37Z: the scratch Worker `graft-runners-bf54` deleted; 05:04:38Z: its application `a03fbdb5-…` deleted (`success: true`). Left in the runner account: `graft-runners` and its two Sandbox applications, 0 active. m4a git shards `git#0#net:65565`, `git#0#net:65536`, `git#1#net:65565`, and `git#1#net:65536`, started by the verify clone and the run, were stopped at 05:06:48Z to 05:06:50Z through GitShard `/teardown`, all 200 `torn_down`, from a scratch Worker `graft-m4a-shardkill`, deleted at 05:07:21Z; at 05:07:18Z the API listed 0 active on sites a, b, and c. The symlink `tests/m0/.m0-token` was removed.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
@@ -252,8 +281,11 @@ The fail line reads "a job unstarted after 60 s". Two jobs cross it. Job 1185242
 | graft-m4a | 00:26Z to 01:30Z | $0.94, BF-54 run 2's polls and job commits (containers $0.27: the three git shards) |
 | Runner account, BF-54 run 2 scratch | 00:26Z to 01:40Z | $1.76 (13,744 vCPU-s and 568,468 GiB-s on `standard-4`), from `containersUsageAdaptiveGroups` for application `a032924c-…` |
 | **Total** | | **$15.67 of $25** |
+| graft-m4a | 01:30Z to 05:20Z | $1.15: image `m4a47`, site day 47, edge day 21, and BF-54 run 3's polls and job commits (containers $0.43: the four git shards) |
+| Runner account, BF-54 run 3 scratch | 04:10Z to 05:05Z | $1.50 (13,130 vCPU-s, 471,337 GiB-s, 785,561 GB-s on `standard-4`), from `containersUsageAdaptiveGroups` for application `a03fbdb5-…` |
+| **Total** | | **$18.32 of $25** |
 
-BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 boxes, not one at full price, because the boxes idled at low CPU. Run 2 cost $1.76 in the runner account and about $1.23 on m4a, $2.99 in all, inside its forecast of about $5.
+BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 boxes, not one at full price, because the boxes idled at low CPU. Run 2 cost $1.76 in the runner account and about $1.23 on m4a, $2.99 in all, inside its forecast of about $5. Run 3, with its site and edge day, cost $2.65 ($1.50 and $1.15), inside its forecast of about $3.
 
 ## Plants: `tests/m4/wp4/plant.py`
 

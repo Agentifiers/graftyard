@@ -1,0 +1,26 @@
+{
+  "runnersWith503": 2490,
+  "retryInChainS": {
+    "n": 10933,
+    "p50": 15,
+    "p99": 18,
+    "max": 21
+  },
+  "backoffS": {
+    "n": 2294,
+    "p50": 9.884,
+    "p99": 14.862,
+    "max": 14.992
+  },
+  "firstFailedRetryAfterBackoffS": {
+    "n": 852,
+    "p50": 11,
+    "p99": 60,
+    "max": 60
+  },
+  "overCount": 0,
+  "over": [],
+  "slowAttempts": 0,
+  "slow": [],
+  "rePollWithin30s": true
+}
