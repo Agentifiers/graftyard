@@ -17,5 +17,5 @@ pub use placement::{
     PLACE_TRIES, Placement, PlacementChecks, PlacementError, PlacementName, PlacementRecord, Rtt, SystemChain,
     learner_addr, learner_slot, nearest_try, place_learners,
 };
-pub use registry::{MemberRegistry, REGISTRY_SHARDS, RegistryRow};
+pub use registry::{MemberRegistry, REGISTRY_SHARDS, RegistryRow, RowPut};
 pub use site::{Jurisdiction, Region, Site, SiteId, SiteLink, SiteSet, SiteTable};

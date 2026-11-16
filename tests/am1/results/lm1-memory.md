@@ -3895,3 +3895,34 @@ b79a2b26, fixes it at the caller, design first (DESIGN, Shape, `Promoted`; DECIS
 --workspace` 1,011 passed and 0 failed, `go test`, and the three `scripts/check_*.py` OK; DESIGN at 2,200 lines.
 
 **Not yet:** deployed. It ships with the next m2b site day; reapers a and b stay on until then.
+
+### Round 31 (local, no hosted spend): `registry-restore`, a re-placement's tries no longer leave the site's registry row (2026-11-16)
+
+B0-02's analysis of round 29: during `repo:131342`'s create placement, `replace_on` joined tries `#4#f1` to `#9#f1` on
+site b. Each `/join` wrote its registry row before the placement check, and `PUT /row` refused only a lower generation,
+so `#9#f1`, which never went in, stayed the row over the voter `#3#f1`. The edge's registry stage read the row about
+61,000 times per site in 303 s and got 63,387 `/read` 409s from `#9#f1`.
+
+Branch `registry-restore`, off main 112ee41e, design first (DESIGN, Shape, `MemberRegistry`; DECISIONS,
+"`registry-restore`").
+- `replace_on` records every try it joins. When it ends, by `Normal(p)` with the old member or `Normal(np)` with a
+  try, it sends `RowPut { row: kept, replacing: other tries }` to that site's registry (`restore_row`, best effort,
+  logged on failure).
+- `PUT /row` takes a bare `RegistryRow` (a member's own write, as before: never a lower generation) or a `RowPut`, which
+  replaces the stored row only when it names one of the tries (`RowPut::replaces`).
+- Compare-and-set by name, not a winning generation: the kept member keeps its own generation, which the readers that
+  rebuild records from a row (`registry_record`, `fold_audit`, `activity::rebuild`) rely on.
+- Edge: no change. A 409 at a registry-step name is already `Skip` (no `/suspect`, `classify`), and `tried` drops the
+  name for the rest of the pass.
+- Mixed versions: a site script before this change answers a `RowPut` with an error (its `PUT /row` reads a bare row),
+  which `restore_row` logs; the row stays as on main until both sites run it.
+
+**Test and plants.** `a_placement_that_kept_its_member_puts_its_row_back_over_every_try` (`crates/types/src/registry.rs`)
+fails on main. `tests/registryrestore/plant.py` 8 of 8 caught: a restore over any row, a restore under the generation
+rule (main's), an own write moving the row back, a restore creating a row, the kept member among those replaced, an
+empty restore sent, the sites lost, and the newest try's generation on the restored row.
+
+**Checks.** fmt, workspace clippy, wasm32 clippy for site and edge (with and without test-faults) and ops, `cargo test
+--workspace` 1,013 passed and 0 failed, `go test`, and the three `scripts/check_*.py` OK; DESIGN at 2,200 lines.
+
+**Not yet:** deployed. It ships with the next m2b site day.
