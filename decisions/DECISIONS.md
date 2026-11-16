@@ -4004,3 +4004,45 @@ A test install answers each push with its stages as `server-timing`: `resolve`, 
 - The time saved is [inference] until B0-32's rerun reads the new `server-timing`.
 
 **Flip.** A hosted B0-32 where `gate` plus `context` is still most of a push's wall, which would leave the follower read wait as the cost. Or one where pushes that stage first wait longer than a `Stage` round trip, which would mean the bucket place is slower than the leader's refusal.
+
+### An installing parent member drops its own metadata tier, and its install names the slimmed snapshot (2026-11-16)
+
+**Decision.** Three rules for a split parent member that falls past the leader's archive horizon (`design/DESIGN.md`, Shape, `CHILD_GROUP_AT`, Installs):
+- (i-1) The parent's metadata tier is due a snapshot the moment its slim pass ends (`graftyard_git::split::slim_snapshot_due`), so the newest metadata snapshot at or below an install's `through` is the slimmed tier, not the whole one from before `MetaDropped`.
+- (i-2) An install whose newer source names the same core and metadata snapshot keys, with archives that continue the running job's, extends that job to the new `through` and answers the newer round (`crate::load::next_job`). Any other source restarts it, and the restart is logged.
+- (i-3) A parent member past `MetaDropped` whose install job is stored and has started, and whose `applied` is below the source's `through`, drops its own metadata tables before it loads (`drop_due`), one table a batch, and records `meta_dropped` in the job's own transaction. While the mark stands its tier is unloaded on every restore (`family::meta_loaded`), so no metadata, merge-rows or narrow `api` read is served (a follower names the leader and the edge moves on), `crate::snap` replays nothing into it, and the fold audit gets no metadata digest from it (`snap::tiers_json`), so it is listed as loading. It does not campaign, `keep_led` skips it, and it refuses a leader's `TimeoutNow` with `TransferRefused` (`Family::may_lead`). `Write::Install` clears the mark with the table swap. An abandoned job (isolate death, `BATCH_TRIES`, a restart for another source) leaves the mark, so the member stays unloaded until the next install finishes. An install the core no longer needs (`NotNeeded`, the member caught up by AppendEntries) swaps the loaded metadata tier in at `through`, clears the mark, and leaves the tier unloaded for `crate::snap::load_meta` to replay the stored log above it.
+
+**Why.** On B0-30's rerun, site c's parent member fell past the leader's truncation at about 08:00Z on day 25.4. Its install named the pre-split metadata snapshot (3,249,617,556 B) and restarted at each of five truncations in 14 minutes. Once the group stalled, the one job left ran beside the member's own 5.70 GB and took it to 10,184,200,192 B, past `CHILD_GROUP_AT` (`tests/am1/results/b030-split.md`, "Cause 1"). With (i-1) and (i-2) alone, a member that falls behind during a slim pass, which ran over 7.5 h on that rerun, still loads the whole tier beside its own. A member past the horizon can serve nothing from its own tier that the group still needs: every read it would answer must wait for its install anyway.
+
+**Beat.**
+- An install source with no metadata snapshot (the first proposal in `b030-split.md`): the slimmed tier still holds every row and column `decide` reads (labels, pulls, check runs, issue rows without their bodies), so a member installed with an empty tier would decide wrongly once it led, and its metadata digest would differ from the other members'.
+- Loading the scratch tier into the member's own tables in place: an abandoned load would leave a partial tier with a loaded meta row.
+- A `crates/raft` lead bar: the site's `may_lead` gate covers the three ways a member leads (its own campaign by request or `keep_led`, and a transfer). A `led_term` resume needs an earlier lead in the current term, and a member sent an install had stepped down to follow that install's leader [inference from `Member::on_install`].
+
+**Evidence.**
+- (i-1): `the_slimmed_tier_is_snapshotted_once_its_pass_ends` and `a_snapshot_at_the_pass_end_satisfies_it` (`crates/git/tests/split.rs`); main has no such rule, so its newest snapshot after the pass stays the pre-split one.
+- (i-2): `a_later_source_with_the_same_snapshots_extends_the_running_install` fails on main, which restarts on every new source; `a_source_with_other_snapshots_or_a_gap_restarts_the_install` (`workers/site/src/load.rs`).
+- (i-3): `only_an_install_on_a_split_parent_past_the_horizon_drops_its_tier`, `a_member_with_its_tables_dropped_is_never_loaded`, `an_unloaded_tier_answers_no_digest_for_the_audit` (`workers/site/src/load.rs`), and `a_member_that_may_not_lead_refuses_a_transfer` (`workers/site/src/member.rs`). The read gate is `family::follower_query`'s existing rule on `loaded()`, already covered by `a_follower_serves_only_the_designs_reads`.
+- `tests/b030fixes/plant.py` catches every plant listed in `tests/am1/results/b030-split.md`, "b030-fixes".
+- **Disk peak [measured, local workerd].** `tests/b030fixes/dropbed.js` holds a 256 MiB log and a 512 MiB metadata table in one SQLite object (918,556,672 B by `databaseSize`), then loads a 512 MiB scratch tier. Kept, the peak is 1,531,289,600 B. Dropped first, it falls to 306,192,384 B after the drop and peaks at 918,921,216 B, its own size within 0.04%. So the peak is own − metadata + scratch, with the freed pages reused.
+- **Site c's case [inference from that rule and the rerun's readings].** Own 5,696,712,704 B (`b030r2-final.jsonl.xz`). Its metadata tier was the pre-slim tier the child also holds, about 3.84 GB (the child members' 3,836,465,152 B). With (i-1), the scratch tier is the slimmed snapshot. The slim cut smoke 1's parent from 8.31 to 3.04 GB, so the slimmed tier is well under 1 GB [inference]. Expected peak: 5.70 − 3.84 + under 1 ≈ under 2.9 GB, against 10.18 GB measured. Without (i-1), if a member falls behind before the slim snapshot commits (the scratch is the 3.25 GB pre-split snapshot loaded to its 3.84 GB tier), the peak is 5.70 − 3.84 + 3.84 ≈ 5.7 GB. Both are under `CHILD_GROUP_AT`. The next B0-30 run measures it hosted.
+
+**Flip.** A hosted install that ends with a metadata digest the other members do not share. Or a parent member under the mark that answers a metadata read or leads.
+
+### A re-placement waits for every voter its `Degraded` config needs, and a lookup places only a group it built (2026-11-16)
+
+**Decision.**
+- (ii)(a) `replace_on`, the one path `/place`, `/replace` and the daily near check share, reads `/status` from each voter `Degraded { lost: to }` would need, other than itself, before it proposes that config. It goes on only when each has applied to within `PLACE_LAG_MAX` (64, the leader's `CATCHUP_MAX`) of the leader's commit, and otherwise answers `{"error", "behind"}` and changes nothing. A voter whose status does not answer counts as behind. Only `Routes::degrade` proposes a `Degraded` config, and it takes the `Ready` value that the check alone builds.
+- `graftyard_lookup::create` starts `/place` only for a group its own `/join`s built in this call: a majority of the bootstrap members answered with `x-graft-joined-fresh`, which a member sets only on the join that built its core. A lookup that found no leader for a group that already exists campaigns as before, and places nothing.
+
+**Why.** On B0-30's rerun, a lookup in the parent's leaderless seconds at 08:14Z ran `create` on the 25-day-old group. Its background `/place` re-placed site b, whose 123 ms to the home was over `NEAR_RTT`, by committing `Degraded { lost: 1 }` at entry 208,160. That config's quorum is sites a and c, and site c was installing, so nothing committed again (`tests/am1/results/b030-split.md`, "Cause 2"). Either rule alone would have prevented that entry.
+
+**Beat.** (ii)(b), a leader that drops its own uncommitted `Degraded` entry after 20 s: Raft lets a leader's uncommitted config go only by a new leader overwriting it, so it is a `crates/raft` change with the long sweep and Porcupine. The operator held it unbuilt unless (a) is not enough. Checking in `Member::reconfigure` from the leader's `matched`: that is also a `crates/raft` change, and `matched` lags a follower that installs.
+
+**Evidence.**
+- `a_degraded_config_waits_for_every_voter_it_needs` (`workers/site/src/member.rs`) replays site c at 199,808 against commit 208,159.
+- `only_a_group_this_create_bootstrapped_is_placed` (`crates/lookup/src/lib.rs`) shows that B0-30's all-already-joined answers place nothing, and that main's rule (any majority of 200s) would place them.
+- Plants in `tests/b030fixes/plant.py`.
+- What `PLACE_LAG_MAX` leaves to chance: a voter that falls behind after the check and before `Degraded` commits. That window is one config round, against the hours of an install [inference].
+
+**Flip.** A hosted `Degraded` entry that does not commit within `change`'s 20 s with every needed voter caught up when it was proposed, which would make (ii)(b) worth its raft change.
