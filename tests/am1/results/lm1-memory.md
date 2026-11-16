@@ -3974,3 +3974,34 @@ per 2 GiB of new promotions.
 - DECISIONS: "`roll-up` (proposed, not built)", with the contradiction against SHARED's network-chain `Compacted`.
 - DECISIONS, "`registry-restore`", Flip: the late-join gap.
 - OPEN-QUESTIONS G19 (opened as G12, renumbered after b030-split): `move_step`'s `Swap` and the late join, with B0-30's `repo:1048590#9#f1`.
+
+### Budget change (2026-11-16, about 13:40Z)
+
+The user raised LM-1's stop from $155 to **$160** (about 13:40Z, relayed by the parent thread). Scope: one `graft-m2b`
+site day, then B0-34, then B0-33, with a $160 stop on the meter and costok-style checks before each phase and between
+rows. Nothing else.
+
+### Round 33 (no site day): the meter read $178.42 before the day; promote-ahead started 34 idle shards outside the reapers' ranges (2026-11-16)
+
+**Not run: the site day, B0-34 and B0-33.** Before any step, `cost.sh` (T0 `mem7-t0`) read **$178.42** at about
+14:05Z, against $151.09 at round 29's end (06:40Z) and the new $160 stop. Nothing hosted ran in between.
+
+**Where it went** (`m2bcost.py`, 06:40Z to 14:20Z): **$27.66**, of which containers **$19.36**
+(`containers.py`), 14,376 container CPU-s, 1,443 Worker requests and 871,899 DO requests. By window: 06:40–10:00Z
+$8.07 ($3.92 containers), 10:00–12:00Z $10.07 ($7.31), 12:00–14:10Z $9.20 ($7.82), so containers billed about
+$3.6 an hour from 10:00Z.
+
+**What ran.** At 14:15Z, 35 shard containers were running (site a 18, b 11, c 6), on networks 131226 to 131272, 131289
+and 131330, started from 07:21Z on. Reapers `reaper-a` (131290–131341) and `reaper-b` (65536) cover none of
+131226–131289, so nothing tore those down. 131330 was in reaper-a's range and was torn down again each minute
+(`reaper.log`, 13:59–14:09Z).
+
+**What started them [measured on 131258, mechanism as round 28's].** `shardtimeline.py 131258` at 09:20–09:24Z: each
+site's `/catchup` answers 200 (the warm, which starts nothing), then site a's `/promote` (503 at 09:22Z) and site b's
+(09:23Z). That is promote-ahead's `/promote` as a client call, which starts a stopped container and touches it for
+`WARM_FOR`. The fix (`promote-warm`, main 112ee41e) is merged but not deployed: the deployed sites are still m37's, and
+it ships on this site day.
+
+**Done.** `teardown.py --sweep` at about 14:16Z tore down 33 (all 200), then "sweep: no shard container running".
+`reaper-b` now covers 65536, 131072–131289 and 131342–131400 as well as before, so every older network is reaped
+until the site day deploys `promote-warm`. The next 60 s window billed $0.00.
