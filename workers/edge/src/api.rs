@@ -113,7 +113,7 @@ impl Timing {
         self.last.set(self.last.get().max(now));
     }
     /// A stage another party measured, such as the member's own split of a tier read (`member_stages`).
-    fn put(&self, name: &'static str, ms: f64) {
+    pub(crate) fn put(&self, name: &'static str, ms: f64) {
         self.phases.borrow_mut().push((name, ms));
     }
     /// Each stage and its ms, then `total`.

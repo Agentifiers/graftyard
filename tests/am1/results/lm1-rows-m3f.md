@@ -80,6 +80,73 @@ The unmeasured variable is R2's throughput with four streams into one container;
 
 This branch's catch-up change helps B0-32 and B0-31 the same way: stored packs fetched four at a time ahead of the in-order ingest, and a promoted range's pack not fetched again by a catch-up that already applied the range.
 
+## Rows m3fr8 (2026-11-16, TAG `m3fr8`, `ROWS="b0-32 b0-31"`, `STOP_USD=66`)
+
+**Build and site day.**
+- **Build:** branch `lm1-rows-m3f9` `0038ab2e` is main `09a945cd` plus two test-faults `server-timing` marks: `probe` when a commit ran `ensure_group`'s create probe, and `stagefirst` when a push staged before its first commit. `a1.mjs` records every push's `server-timing` (`pushTiming`, and `burst timing` per burst push).
+- **What changed since m3fr7's `1aed2cff`:** `repack-keep-pack`, `composed-hits`, `feed-ahead`, `registry-restore`, `promote-warm`, `push-reads`, and lm1-rows-m3f8's drivers. These include B0-31's wait for site c's shard to warm.
+- **Image:** new, built from `09a945cd`'s `containers/git`, `sha256:83e217ba…`.
+- **Site day:** 10:14:33Z to 10:27:43Z. Sites `18e3db57`, `e2bfd834` and `6929abd0`, edge `1b4d607d`, both exit 0.
+- **Checks:** `m3org/j4` answered 200 to admin and member. `repo:65536` is led by site 0 at term 4. Each voter's lagMax was 101, 0 and 0 ms, with 0 lease fallbacks.
+- **L0-12** waits for a cap decision.
+
+**Teardown.**
+- The start sweep found no shard container.
+- Each row's shards were torn down after it: 65572 at 10:39:40Z, 65573 at 10:59:54Z.
+- The end sweep and `SWEEP2` both reported "no shard container running", and a third sweep at 11:05Z found none.
+
+**Spend (graft-m3f, account Graftyard).**
+- $59.93 at B0-32's start, $60.61 at B0-31's start, and $62.23 at 11:05Z.
+- The site day was $0.01, B0-32 $0.68 and B0-31 $1.62; containers were $26.89 of the window.
+
+### B0-32 (repo 65572, run `mwj4jl6k`): fail
+
+| Gate line | Result |
+|---|---|
+| Every push acknowledged within 5 s, or answered `ng … agent admission full` | **Fail**: 498 ok, 0 within 5 s; `push:burst` p50 13,493 ms, p99 22,211 ms (m3fr7: 22,352 / 27,516). Two pushes got the client's `fetch failed` (`ERR_HTTP2_STREAM_ERROR`) at 3.26 s with no reply, so their acknowledgment is unknown |
+| Queued agent bytes under `AGENT_QUEUE_MAX` (64 MiB) | Pass: max 174,979 B |
+| Every merge in one of the next 2 entries | Not judged from entries. `merge:only` 18 × 200, 3 × 409, p50 896 ms, p99 11,079 ms; the edge's merge commit stage p99 1,181 ms |
+| Zero leader changes | Pass: term 2 throughout, leader site 0 |
+| Zero `suspect` reports | **Fail**: 47 inbound `/suspect` on the leader (m3fr7: 17) |
+
+- **Leader:** commit p50 427 ms, p99 2,718 ms (n 4,026). Failed calls: 346, all `deadline` (102 to site 1, 180 to site 2).
+- **B0-29's API read:** p99 3,776 ms, with 988 × 503.
+
+**Where a burst push's time went** [measured, `server-timing` of 498 burst pushes, ms; each push's stages summed over its commits]:
+
+| Stage | p50 | p99 |
+|---|---|---|
+| resolve | 1,487 | 1,799 |
+| auth | 473 | 567 |
+| install | 829 | 1,358 |
+| gate | 255 | 1,847 |
+| context | 0 | 1,811 |
+| validate | 2,967 | 4,513 |
+| admission | 0 | 0 |
+| probe (34 pushes) | 1,109 | 5,215 |
+| commit | 5,468 | 14,080 |
+| stage (258 pushes) | 549 | 812 |
+| edge total | 10,936 | 19,738 |
+
+- **Before validate:** about 2 s at p50, against m3fr7's traced 1.2 to 17.3 s. `resolve` (1.5 s) is now the largest read. It runs beside `auth` and `install`, so the three are not additive.
+- **Commit is the cost now:** 5.5 s at p50 for the edge's commit stage, against the leader's own commit p50 of 427 ms. Most of the edge's commit wait is outside the leader's measured commit [inference: the 47 `/suspect` and the 346 `deadline` failed calls point at receipts missing COMMIT_RECEIPT].
+- **The create probe:** 464 of 498 burst pushes skipped it, and 34 ran it. Over the whole row, 43 of 1,733 commits probed.
+- **Stage first:** 240 burst pushes staged before their first commit and committed once. 258 committed inline first, got `Stage`, and committed twice. Over the row, 253 pushes staged first.
+
+### B0-31 (repo 65573, rehomed on site 2, run `mwj4z7uv`): fail
+
+| Gate line | Result |
+|---|---|
+| Commit p99 at most 1 s with buckets up | **Fail**, between the lines: 2,138 ms (p50 998, max 3,938, n 5,421); m3fr7 1,767 ms |
+| Placement failing: Human and MergeQueue commit p99 at most 3 s, 0 of them refused | Pass: leader commit p99 1,588 ms; Human 160 ok, 13 stale, 0 refused; `merge:only@fail` 27 × 200, 5 × 409, 0 × 503 |
+| Agent pushes over INLINE_MAX_HOT refused at once in the `ng` shape | **Fail, by 17**: 1,245 `full` (`ng … agent admission full`, p50 1,051 ms); 17 of 1,262 committed |
+
+- **The apac leader held:** term 3 from the rehome to the end, with 14 failed calls.
+- **The shard was warm before the merges:** site c's shard answered warm 4.9 s after the rehome (`shardwarm.mjs`). There were 0 MergeQueue `warming` 503s: `merge:only@up` 31 × 200 and 9 × 409; `merge:only@fail` 27 × 200 and 5 × 409.
+- **B0-29's API read:** p99 1,263 ms buckets up, 1,104 ms placement failing.
+- **Agent push stages with buckets up:** resolve p50 518 ms, validate 1,682, commit 1,264. No commit probed and none staged first, because 1 MiB packs never go inline.
+- **The 17 agent commits counted under placement failing:** most likely pushes sent with buckets up that ended after the switch [inference]. `a1.mjs` labels a push `@fail` by its end time (`half()` runs after the push), and sends `x-graft-place-fail` only on pushes that start after `placeFailAt`. With pushes at p50 4.1 s, the agents in flight at the switch (about 4.17/s × 4 s, so 17) fit the count. The driver keeps no per-push send time, so the row cannot prove it. To make the line judgeable, label each push by its start phase. As run, the line fails by 17.
+
 ## Rows m3fr7 (2026-11-15/16, TAG `m3fr7`, `ROWS="b0-32 b0-31 l0-12"`, `STOP_USD=66`)
 
 **Build and site day.** Main `1aed2cff`, which ran with these merges since m3fr6's `a304d3fc`: lm1-rows-m3f6's drivers and test-faults instruments, `read-round-gap` (`0646faa2`), `composed-miss`, and `promote-unlock`. New shard image `sha256:29c3b917…`, built from that commit's `containers/git`. Site day 23:21:26Z to 23:35:02Z, logged in `install-m3f.md`. Rows started 23:41Z at $48.91 (graft-m3f, account Graftyard). From 02:23Z a cost watch metered every 15 minutes with `env-m3f.sh` and would have stopped L0-12's refusals after the current kind at $66. It never fired.

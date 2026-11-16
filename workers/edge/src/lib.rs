@@ -898,7 +898,10 @@ async fn commit(
     // A group whose leader this isolate holds exists: no create probe first. With none held (a first commit, or after
     // `NotLeader` or a reply from an older term), the probe runs as before (`graftyard_lookup::knows_leader`).
     if !graftyard_lookup::knows_leader(ChainId::Repo(repo.id)) {
+        let since = js_sys::Date::now();
         ensure_group(c, repo).await.map_err(Error::RustError)?;
+        // B0-32's count of commits that probed (`probe` in `server-timing`; a commit without one skipped it).
+        c.timing.add("probe", since);
     }
     let bytes = body.to_string().into_bytes();
     let first = first.map(|f| f.to_string().into_bytes());
@@ -1230,6 +1233,10 @@ async fn receive_pack(
             && !placement_failing(c)
             && admission(c, &push.actor, &[], true, 0).await.is_some();
         let inline = inline && !first;
+        if first {
+            // B0-32's count of pushes that staged before their first commit (`stagefirst` in `server-timing`).
+            c.timing.put("stagefirst", 0.0);
+        }
         // While placement fails a pack that cannot go inline cannot be placed: an agent's is refused at once in the
         // admission shape (B0-31's placement-failing half), any other's is a 503 (Failure modes, R2 outage).
         if placement_failing(c) && !inline {
