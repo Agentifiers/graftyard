@@ -344,14 +344,92 @@ pub async fn call_opt(
     path: &str,
     body: &[u8],
 ) -> std::result::Result<Option<(Value, Step, Target)>, String> {
-    let end = now_ms() + LOOKUP_FOR.as_millis() as u64;
+    let colo = COLO.with(|c| c.get());
+    lookup(
+        chain,
+        now_ms,
+        |k| candidates(b, chain, record, k),
+        move |s, name: String| async move { post(b, s, &name, path, body).await },
+        move |about: Target, term, all| async move { suspect(b, chain, &about, term, colo, all).await },
+        Delay::from,
+    )
+    .await
+}
+
+thread_local! {
+    /// Per isolate: the chains with a leader lookup in flight (`Turn`), and the requests waiting for it to end.
+    static LOOKING: RefCell<HashMap<ChainId, Vec<std::task::Waker>>> = RefCell::new(HashMap::new());
+}
+
+/// This isolate's one leader lookup for a chain (`design/DESIGN.md`, Shape, `ReplyMeta`): held by the request that is
+/// asking members other than the leader it has cached, until that request's lookup returns, which wakes the requests
+/// waiting for it. One `NotLeader` per request reached the voters as its own lookup: m41's B0-33 sent each voter 237
+/// to 295 edge `/read`s a second once its leader moved, against 82 to 87 a second on each learner, and their storage
+/// confirms ran 3 to 5.5 s (`tests/m0/results/m41-held.md`).
+struct Turn(ChainId);
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        for w in LOOKING.with(|l| l.borrow_mut().remove(&self.0)).unwrap_or_default() {
+            w.wake();
+        }
+    }
+}
+
+/// Resolves with `chain`'s `Turn` once no other request in this isolate holds it.
+fn take_turn(chain: ChainId) -> impl Future<Output = Turn> {
+    std::future::poll_fn(move |cx| {
+        LOOKING.with(|l| {
+            let mut l = l.borrow_mut();
+            match l.get_mut(&chain) {
+                Some(waiting) => {
+                    if !waiting.iter().any(|w| w.will_wake(cx.waker())) {
+                        waiting.push(cx.waker().clone());
+                    }
+                    std::task::Poll::Pending
+                }
+                None => {
+                    l.insert(chain, Vec::new());
+                    std::task::Poll::Ready(Turn(chain))
+                }
+            }
+        })
+    })
+}
+
+/// `call_opt`'s rule, with its clock, calls and sleeps passed in, so a test drives many at once. `candidates(k)` is
+/// stage `k`'s members, `post(site, name)` one call, `suspect(about, term, all)` one report, `delay(d)` a sleep. A post
+/// to the leader this isolate has cached needs nothing; any other post waits for the chain's `Turn`, and a request
+/// that waited and finds a leader cached now goes to it without the turn.
+async fn lookup<C, CF, P, PF, S, SF, D, DF>(
+    chain: ChainId,
+    now: impl Fn() -> u64,
+    candidates: C,
+    post: P,
+    suspect: S,
+    delay: D,
+) -> std::result::Result<Option<(Value, Step, Target)>, String>
+where
+    C: Fn(usize) -> CF,
+    CF: Future<Output = Option<Vec<(SiteId, String, Step)>>>,
+    P: Fn(SiteId, String) -> PF,
+    PF: Future<Output = Option<(u16, Value)>>,
+    S: Fn(Target, u64, bool) -> SF,
+    SF: Future<Output = Option<Target>>,
+    D: Fn(Duration) -> DF,
+    DF: Future<Output = ()>,
+{
+    let end = now() + LOOKUP_FOR.as_millis() as u64;
     let mut last = String::from("no member answered");
     let mut first_pass = true;
     let mut term = 0;
     let mut busy = 0;
-    while now_ms() < end {
+    // Held from this request's first post to a member other than its cached leader until it returns, across passes,
+    // so a lookup that finds no leader is not run again beside it by every request waiting.
+    let mut turn: Option<Turn> = None;
+    while now() < end {
         let mut k = 0;
-        let mut cands = candidates(b, chain, record, k).await.unwrap_or_default();
+        let mut cands = candidates(k).await.unwrap_or_default();
         let mut unjoined = 0;
         let mut others = 0;
         let mut tried = std::collections::BTreeSet::new();
@@ -366,7 +444,7 @@ pub async fn call_opt(
         loop {
             let Some((s, name, step)) = queue.pop_front() else {
                 k += 1;
-                match candidates(b, chain, record, k).await {
+                match candidates(k).await {
                     Some(next) => {
                         queue.extend(next);
                         continue;
@@ -374,10 +452,26 @@ pub async fn call_opt(
                     None => break,
                 }
             };
-            if !tried.insert(name.clone()) {
+            if tried.contains(&name) {
                 continue;
             }
-            let r = post(b, s, &name, path, body).await;
+            let cached = cached_leader(chain);
+            if turn.is_none() && cached.as_ref().is_none_or(|l| l.do_name != name) {
+                let wait = Box::pin(delay(Duration::from_millis(end.saturating_sub(now()))));
+                let Either::Left((t, _)) = select(Box::pin(take_turn(chain)), wait).await else {
+                    return Err(format!("{chain}: {last}"));
+                };
+                // Another request's lookup found the leader while this one waited: go to it, as a cached request does.
+                if let Some(l) = cached_leader(chain).filter(|l| !tried.contains(&l.do_name)) {
+                    drop(t);
+                    queue.push_front((s, name, step));
+                    queue.push_front((l.site, l.do_name, Step::Cached));
+                    continue;
+                }
+                turn = Some(t);
+            }
+            tried.insert(name.clone());
+            let r = post(s, name.clone()).await;
             let v = match classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. })) {
                 Answer::Missed(why) => {
                     last = format!("{name}: {why}");
@@ -403,7 +497,7 @@ pub async fn call_opt(
                     if busy > OVERLOAD_TRIES {
                         return Err(format!("{chain}: {name}: {OVERLOADED} {ms} ms"));
                     }
-                    Delay::from(Duration::from_millis(ms.clamp(50, 2_000))).await;
+                    delay(Duration::from_millis(ms.clamp(50, 2_000))).await;
                     tried.remove(&name);
                     queue.push_front((s, name, step));
                     continue;
@@ -445,14 +539,13 @@ pub async fn call_opt(
             return Ok(None);
         }
         first_pass = false;
-        let colo = COLO.with(|c| c.get());
-        let reports = missed.iter().map(|m| suspect(b, chain, m, term, colo, false));
+        let reports = missed.iter().map(|m| suspect(m.clone(), term, false));
         futures_util::future::join_all(reports).await;
         if let Some(t) = &leaderless {
-            suspect(b, chain, t, term, colo, true).await;
+            suspect(t.clone(), term, true).await;
         }
         forget_leader(chain);
-        Delay::from(Duration::from_millis(250)).await;
+        delay(Duration::from_millis(250)).await;
     }
     Err(format!("{chain}: {last}"))
 }
@@ -946,7 +1039,7 @@ pub async fn suspect(
     colo: u32,
     all: bool,
 ) -> Option<Target> {
-    if !report_due(chain, about.site, term, all, now_ms()) {
+    if !report_due(chain, about.site, term, now_ms()) {
         return None;
     }
     let body = json!({ "colo": colo, "about": about.site.0, "term": term }).to_string();
@@ -966,21 +1059,21 @@ pub async fn suspect(
 pub const SUSPECT_GAP: Duration = Duration::from_millis(500);
 
 thread_local! {
-    static REPORTED: RefCell<HashMap<(ChainId, SiteId, u64, bool), u64>> = RefCell::new(HashMap::new());
+    static REPORTED: RefCell<HashMap<(ChainId, SiteId, u64), u64>> = RefCell::new(HashMap::new());
 }
 
 /// Whether this isolate sends the report now (`SUSPECT_GAP`), recording it if so.
-fn report_due(chain: ChainId, about: SiteId, term: u64, all: bool, now: u64) -> bool {
+fn report_due(chain: ChainId, about: SiteId, term: u64, now: u64) -> bool {
     REPORTED.with(|r| {
         let mut r = r.borrow_mut();
         let gap = SUSPECT_GAP.as_millis() as u64;
         if r.len() > 4_096 {
             r.retain(|_, at| now < *at + gap);
         }
-        match r.get(&(chain, about, term, all)) {
+        match r.get(&(chain, about, term)) {
             Some(at) if now < *at + gap => false,
             _ => {
-                r.insert((chain, about, term, all), now);
+                r.insert((chain, about, term), now);
                 true
             }
         }
@@ -2312,14 +2405,154 @@ mod tests {
     fn suspect_reports_are_damped_per_member_and_term() {
         let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(11)));
         let gap = SUSPECT_GAP.as_millis() as u64;
-        assert!(report_due(chain, SiteId(0), 4, false, 1_000));
-        assert!(!report_due(chain, SiteId(0), 4, false, 1_000 + gap - 1));
-        assert!(report_due(chain, SiteId(1), 4, false, 1_001));
-        assert!(report_due(chain, SiteId(0), 5, false, 1_002));
-        assert!(report_due(chain, SiteId(0), 4, true, 1_003));
-        assert!(report_due(chain, SiteId(0), 4, false, 1_000 + gap));
+        assert!(report_due(chain, SiteId(0), 4, 1_000));
+        assert!(!report_due(chain, SiteId(0), 4, 1_000 + gap - 1));
+        assert!(report_due(chain, SiteId(1), 4, 1_001));
+        assert!(report_due(chain, SiteId(0), 5, 1_002));
+        assert!(report_due(chain, SiteId(0), 4, 1_000 + gap));
         let other = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(12)));
-        assert!(report_due(other, SiteId(0), 4, false, 1_000 + gap));
+        assert!(report_due(other, SiteId(0), 4, 1_000 + gap));
+    }
+
+    /// m41's storm, driven by hand: 60 requests in one isolate find the cached leader gone and every voter answering
+    /// `NotLeader` naming none for 2 s, until voter 1 leads. One request looks the leader up for all of them, and the
+    /// rest go to the leader it found: posts to the voters while none led stay within one lookup's passes, and
+    /// `suspect` reports within one per member and term per SUSPECT_GAP. On main each request ran its own lookup, and
+    /// every request was answered by the leader as before, here within one post of the leader's first answer.
+    #[test]
+    fn one_lookup_per_chain_serves_every_request_that_met_not_leader() {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(41)));
+        let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, 1);
+        let config = json!({ "index": 5, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        learn(chain, &json!({ "config": config }));
+        learn_leader(chain, &json!({ "meta": { "term": 2, "leader": 0 } }));
+        let names: Vec<(SiteId, String)> = KNOWN.with(|k| k.borrow()[&chain].voters.clone());
+        let leads_at = 2_000u64;
+        let post_ms = 50u64;
+        let clock = Rc::new(Cell::new(0u64));
+        struct At(Rc<Cell<u64>>, u64);
+        impl Future for At {
+            type Output = ();
+            fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0.get() >= self.1 { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+            }
+        }
+        // Posts per voter while no member led, and in all; `suspect` reports sent.
+        let posts = Rc::new(RefCell::new([[0u32; 2]; 3]));
+        let reports = Rc::new(Cell::new(0u32));
+        let n = 60;
+        let mut reqs: Vec<_> = (0..n)
+            .map(|_| {
+                let (c1, c2, c3, c4) = (clock.clone(), clock.clone(), clock.clone(), clock.clone());
+                let (posts, reports, names, chain_) = (posts.clone(), reports.clone(), names.clone(), chain);
+                let names2 = names.clone();
+                Box::pin(lookup(
+                    chain_,
+                    move || c1.get(),
+                    move |k| {
+                        let v = names2.iter().map(|(s, n)| (*s, n.clone(), Step::Cached)).collect::<Vec<_>>();
+                        async move { (k == 0).then_some(v) }
+                    },
+                    move |s, _name| {
+                        let (c, posts) = (c2.clone(), posts.clone());
+                        let sent = c.get();
+                        async move {
+                            posts.borrow_mut()[s.0 as usize][usize::from(sent >= leads_at)] += 1;
+                            At(c.clone(), sent + post_ms).await;
+                            if c.get() >= leads_at && s == SiteId(1) {
+                                return Some((200, json!({ "value": 1, "meta": { "term": 3, "leader": 1 } })));
+                            }
+                            let leader = if c.get() >= leads_at { json!(1) } else { Value::Null };
+                            let nl = json!({ "term": 3, "leader": leader, "config": config_of(chain_) });
+                            Some((200, json!({ "error": { "notLeader": nl }, "meta": { "term": 3 } })))
+                        }
+                    },
+                    move |about: Target, term, _all| {
+                        let (c, reports) = (c3.clone(), reports.clone());
+                        async move {
+                            if report_due(chain_, about.site, term, c.get()) {
+                                reports.set(reports.get() + 1);
+                            }
+                            None
+                        }
+                    },
+                    move |d: Duration| At(c4.clone(), c4.get() + d.as_millis() as u64),
+                ))
+            })
+            .collect();
+        fn config_of(chain: ChainId) -> Value {
+            let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, 1);
+            json!({ "index": 5, "config": { "normal": {
+                "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } })
+        }
+        let mut done: Vec<Option<u64>> = vec![None; n];
+        while done.iter().any(Option::is_none) && clock.get() < 30_000 {
+            // Several polls per ms, so a request woken by another's turn ending runs in the same ms.
+            for _ in 0..3 {
+                for (i, r) in reqs.iter_mut().enumerate() {
+                    if done[i].is_none()
+                        && let Some(out) = r.as_mut().now_or_never()
+                    {
+                        let (v, _, t) = out
+                            .unwrap_or_else(|e| panic!("request {i} at {} ms: {e}; {:?}", clock.get(), posts.borrow()))
+                            .expect("a group");
+                        assert_eq!((t.site, v["value"].clone()), (SiteId(1), json!(1)), "the leader's own answer");
+                        done[i] = Some(clock.get());
+                    }
+                }
+            }
+            clock.set(clock.get() + 1);
+        }
+        let posts = *posts.borrow();
+        let before: u32 = posts.iter().map(|p| p[0]).sum();
+        let latest = done.iter().map(|d| d.expect("every request answered")).max().unwrap();
+        // One lookup's passes while none led: at most three posts a pass, a pass at least 250 ms apart, plus each
+        // request's one post to its cached leader before it met `NotLeader`.
+        let passes = leads_at.div_ceil(250 + post_ms) + 1;
+        assert!(
+            before <= n as u32 + 3 * passes as u32,
+            "{before} posts to the voters while none led ({posts:?}), against {} for one lookup",
+            n as u64 + 3 * passes
+        );
+        assert!(
+            reports.get() <= 3 * (leads_at / SUSPECT_GAP.as_millis() as u64 + 1) as u32,
+            "{} reports",
+            reports.get()
+        );
+        // Every request is answered by the leader within one lookup pass and one post of its first answer.
+        assert!(latest <= leads_at + 250 + 4 * post_ms, "the last request was answered at {latest} ms");
+        assert_eq!(posts[1][1] as usize, n, "each request went to the leader once it led: {posts:?}");
+    }
+
+    /// A request waiting for the chain's turn is woken when the holder drops it, and then takes it; without the wake
+    /// it would sleep until its LOOKUP_FOR deadline on a Workers runtime, which polls only woken tasks.
+    #[test]
+    fn a_dropped_turn_wakes_the_request_waiting_for_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Poll, Wake};
+        struct Count(AtomicUsize);
+        impl Wake for Count {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(42)));
+        let woken = Arc::new(Count(AtomicUsize::new(0)));
+        let waker = std::task::Waker::from(woken.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut first = Box::pin(take_turn(chain));
+        let Poll::Ready(held) = first.as_mut().poll(&mut cx) else { panic!("a free turn is taken at once") };
+        let mut second = Box::pin(take_turn(chain));
+        assert!(second.as_mut().poll(&mut cx).is_pending(), "the turn is held");
+        assert_eq!(woken.0.load(Ordering::SeqCst), 0);
+        drop(held);
+        assert_eq!(woken.0.load(Ordering::SeqCst), 1, "dropping the turn wakes its waiter");
+        assert!(second.as_mut().poll(&mut cx).is_ready(), "and the waiter takes it");
     }
 
     #[test]

@@ -188,8 +188,8 @@ pub enum SystemChain { Release, Names, Tokens, Ids }
 /// chain's `MemberRegistry` row on each record site, then repeats both for `moving_from`. Any member holding a config,
 /// even a removed one, answers with its latest committed one. The edge finds the record by route: the owner's `Names`
 /// rows for `o/r` and owner routes, `NamesEvent::RepoOwner` for `/repositories/{id}` and a network's root repository,
-/// and the cached `Release` view (genesis, or a later `LeaveEvaluation`) for system chains. Every member reply carries
-/// it; a caller whose cache predates `config_index` takes the next `NotLeader`'s config or asks that member.
+/// and the cached `Release` view (genesis, or a later `LeaveEvaluation`) for system chains. Replies carry it; a stale
+/// cache takes the next `NotLeader`'s config. One lookup per chain runs per isolate; uncached requests wait on it.
 pub struct ReplyMeta { pub term: Term, pub leader: Option<SiteId>, pub config_index: Index }
 /// Bootstrap. A group's first entry is `Config(Normal(from_record(record)))` at term 1, index 1, with a zero `prev`, no
 /// requests, and the record's `at`, so every voter builds and may propose the same bytes. A member with no committed
@@ -402,10 +402,10 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 /// retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`]. Leases read the member clock (`DRIFT`).
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
-/// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
-/// member that missed or answered `NotLeader` naming no leader, and counts only if this follower promised and heard
-/// that leader in this term, even once forgotten; else late reports on a transfer's old leader withheld promises from
-/// the new one, and on an unheard target barred it (F67) [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 2].
+/// Edge to a follower on another site when a leader's receipt misses CALL_DEADLINE, once per chain, `about` and term
+/// per isolate per SUSPECT_GAP (500 ms). `about` missed or answered `NotLeader` naming none; a report counts only if
+/// this follower promised and heard it this term, even once forgotten: late reports on a transfer's old leader withheld
+/// promises from the new one, and barred an unheard target (F67) [measured, simulator, `m1-wp3.md`, bug 2].
 /// Two colos' reports in 10 s stop its promises to a renewing leader until 2 x SUSPECT's window or a higher term. For
 /// that window, not ended by a higher term, its pre-vote refuses that leader and it hands off to no such member (M0-WP2:
 /// 24 s without it; F67 rule 10), unless every report came during that leader's transfer, a bar that ends once another
