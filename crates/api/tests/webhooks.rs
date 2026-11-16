@@ -177,7 +177,44 @@ fn seeded() -> (Chain, usize) {
     c.commit(OWNER, IssueOp::Close { n: IssueNumber(2) }).unwrap();
     c.commit(OWNER, IssueOp::Change { n: IssueNumber(2), change: IssueChange::State { open: true, reason: None } })
         .unwrap();
+    // R24: one Actions job's three `workflow_job` steps, as `RunOwner` appends them.
+    for u in workflow_job_steps() {
+        c.entry(EntryBody::Events(vec![RepoEvent::WorkflowJob(u)]), TierSet::METADATA);
+    }
     (c, from)
+}
+
+fn workflow_job_steps() -> Vec<graftyard_git::workflow_job::WorkflowJobUpdate> {
+    use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
+    let queued = WorkflowJobUpdate {
+        job: DbId(4_101),
+        run: DbId(4_100),
+        attempt: 1,
+        action: JobAction::Queued,
+        name: "build".into(),
+        workflow: ".github/workflows/ci.yml".into(),
+        head_sha: oid(5),
+        head_ref: "refs/heads/f".into(),
+        labels: smallvec!["ubuntu-latest".into()],
+        runner: None,
+        conclusion: None,
+        created: Timestamp(1_700_000_000_000),
+        started: None,
+        completed: None,
+    };
+    let started = WorkflowJobUpdate {
+        action: JobAction::InProgress,
+        runner: Some(DbId(77)),
+        started: Some(Timestamp(1_700_000_004_000)),
+        ..queued.clone()
+    };
+    let done = WorkflowJobUpdate {
+        action: JobAction::Completed,
+        conclusion: Some(CheckConclusion::Success),
+        completed: Some(Timestamp(1_700_000_064_000)),
+        ..started.clone()
+    };
+    vec![queued, started, done]
 }
 
 fn check(id: i64, sha: u8, conclusion: Option<CheckConclusion>) -> CheckRunUpdate {
@@ -256,6 +293,9 @@ fn every_webhook_the_entries_carry_renders_against_its_schema_key() {
             "pull-request-synchronize",
             "push",
             "status",
+            "workflow-job-completed",
+            "workflow-job-in-progress",
+            "workflow-job-queued",
         ]
     );
     assert_eq!(counts["push"], 6, "main twice, f twice, tmp made and deleted, and never a queue ref");
@@ -495,4 +535,48 @@ fn a_committed_put_hook_renders_ghes_hook_with_location() {
     let refused = graftyard_api::hosted::render_err(&render, &graftyard_git::issue_ops::IssueErr::Exists).reply();
     assert_eq!(refused.status, 422);
     keep_rest("hook-create-taken", "POST", "/repos/{owner}/{repo}/hooks", &refused);
+}
+
+/// R24: an App's `workflow_job` body carries `installation`, and its request names the App, not a repository hook.
+#[test]
+fn an_apps_workflow_job_names_its_installation_and_the_app() {
+    use graftyard_api::webhooks::with_installation;
+    let all = rendered();
+    let q = &all.iter().find(|(k, _)| k == "workflow-job-queued").unwrap().1;
+    assert_eq!((q["workflow_job"]["status"].as_str(), q["workflow_job"]["runner_id"].as_i64()), (Some("queued"), None));
+    assert_eq!(q["workflow_job"]["labels"], json!(["ubuntu-latest"]));
+    assert_eq!(q["workflow_job"]["head_branch"], "f");
+    let p = &all.iter().find(|(k, _)| k == "workflow-job-in-progress").unwrap().1;
+    assert_eq!(
+        (p["workflow_job"]["runner_id"].as_i64(), p["workflow_job"]["runner_name"].as_str()),
+        (Some(77), Some("runner-77"))
+    );
+    let done = &all.iter().find(|(k, _)| k == "workflow-job-completed").unwrap().1;
+    assert_eq!(done["workflow_job"]["conclusion"], "success");
+    assert!(q.get("installation").is_none(), "a repository hook's body has no installation");
+    let body = with_installation(q.clone(), graftyard_identity::InstallationId(DbId(7_190_002)));
+    assert_eq!(body["installation"]["id"], 7_190_002);
+    if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+        let v = json!({ "key": "workflow-job-queued", "body": body });
+        std::fs::write(format!("{dir}/app-workflow-job-queued.webhook.json"), serde_json::to_vec_pretty(&v).unwrap())
+            .unwrap();
+    }
+    let app = graftyard_identity::AppId(DbId(7_100_009));
+    let d = HookDelivery {
+        guid: delivery_guid(1, ChainId::Repo(REPO), Index(9), 0, HookId::app(app)),
+        hook: HookId::app(app),
+        entry: Some((ChainId::Repo(REPO), Index(9), 0)),
+        event: "workflow_job".into(),
+        action: Some("queued".into()),
+        repo: Some(REPO),
+        body: serde_json::to_vec(&body).unwrap().into(),
+        attempts: smallvec::SmallVec::new(),
+        expires: Timestamp(0),
+        done: false,
+    };
+    let r = request("ghes.test", &d, &record("https://runners.example/", None), ("integration", app.0.0), None);
+    let header = |k: &str| r.headers.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str());
+    assert_eq!(header("x-github-hook-id"), Some("7100009"));
+    assert_eq!(header("x-github-hook-installation-target-type"), Some("integration"));
+    assert_eq!(header("x-github-event"), Some("workflow_job"));
 }

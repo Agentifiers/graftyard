@@ -21,6 +21,11 @@
 //!   hooks at most half. The next attempt a report starts keeps its queue's slot; it never takes another queue's.
 //! - **Secrets.** A hook secret is unwrapped by `graft-ops` (`/unwrap` over the `OPS` binding) and kept only in this
 //!   isolate's memory. A hook whose secret cannot be unwrapped gets a failed attempt, never an unsigned one.
+//! - **App deliveries** (R24). Where the site variable `GRAFTYARD_APP_HOOKS` is `1`, the consumer also delivers to each
+//!   App installed on the owner (`graftyard_git::sequencer::app_targets`): the owner's installations and each App's
+//!   record, read at most every `DIR_FOR_MS` per owner in this isolate. The App's webhook rides the owner's store as
+//!   hook `HookId::app`, signed with its own secret, with target type `integration`. A repository with no hook and no
+//!   cursor that an App reaches first commits a cursor at its applied entry, so the App gets no older history.
 //!
 //! No request path calls the Cloudflare API: every call here is a Durable Object or service binding.
 
@@ -105,8 +110,24 @@ struct Consumer {
     dir_refreshing: bool,
 }
 
+/// One owner's App rows, as `app_targets` reads them: its installations and the records of their Apps.
+#[derive(Clone, Default)]
+struct OwnerApps {
+    installations: BTreeMap<graftyard_identity::InstallationId, graftyard_identity::InstallationState>,
+    apps: BTreeMap<graftyard_identity::AppId, graftyard_identity::AppRecord>,
+}
+
+impl OwnerApps {
+    fn targets(&self, repo: RepoId) -> Vec<git::sequencer::AppTarget> {
+        git::sequencer::app_targets(&self.installations, repo, |a| self.apps.get(&a))
+    }
+}
+
 thread_local! {
     static CONSUMERS: RefCell<HashMap<String, Consumer>> = RefCell::default();
+    /// Each owner's App rows, with when they were read, and whether a refresh is running.
+    static OWNER_APPS: RefCell<HashMap<AccountId, (u64, OwnerApps)>> = RefCell::default();
+    static APPS_REFRESHING: RefCell<std::collections::HashSet<AccountId>> = RefCell::default();
     /// Unwrapped hook secrets, by their wrapped bytes.
     static SECRETS: RefCell<HashMap<Vec<u8>, HookSecret>> = RefCell::default();
 }
@@ -143,6 +164,95 @@ pub struct RecordRes {
     pub idle: bool,
 }
 
+/// Whether a site day enabled App deliveries and the 32.24 steps they carry (`GRAFTYARD_APP_HOOKS`).
+pub fn app_hooks(env: &Env) -> bool {
+    env.var("GRAFTYARD_APP_HOOKS").is_ok_and(|v| v.to_string() == "1")
+}
+
+/// The owner's installations from its `Authz` fold, and each live installation's App record from its App owner's.
+async fn read_owner_apps(
+    env: &Env,
+    owner: AccountId,
+    record: &PlacementRecord,
+) -> std::result::Result<OwnerApps, String> {
+    let authz = |chain: ChainId, record: PlacementRecord| async move {
+        let (v, _) = crate::lookup::call(env, chain, &record, "/read", &json!({ "q": { "dep": true } })).await?;
+        let bytes = v.get("value").and_then(Value::as_str).and_then(crate::host::unhex).ok_or("no Authz fold")?;
+        codec::from_bytes::<graftyard_identity::AuthzFold>(&bytes).map_err(|e| e.to_string())
+    };
+    let fold = authz(ChainId::Authz(owner), record.clone()).await?;
+    let installations = fold.more.installations.clone();
+    let mut apps = BTreeMap::new();
+    for app in installations.values().filter_map(|s| s.row.as_ref().map(|r| r.app)) {
+        if apps.contains_key(&app) {
+            continue;
+        }
+        let names = ChainId::Names(graftyard_identity::name_shard(&graftyard_identity::NameKey::App(app)));
+        let (v, _) = crate::lookup::call(
+            env,
+            names,
+            &crate::release::system_record(env, names).await?,
+            "/read",
+            &json!({ "q": { "app": app.0.0 } }),
+        )
+        .await?;
+        let Some(o) = v.pointer("/value/app").and_then(Value::as_i64).map(|o| AccountId(DbId(o))) else { continue };
+        use graftyard_identity::AuthzRead;
+        let f = authz(ChainId::Authz(o), crate::member::owner_record(env, o).await?).await?;
+        if let Some(r) = f.app(app) {
+            apps.insert(app, r.clone());
+        }
+    }
+    Ok(OwnerApps { installations, apps })
+}
+
+/// The App targets of `repo` for a round: the rows this isolate holds, refreshed beside the round when stale; with
+/// none held yet, the round waits for the first read, so it never records an entry without its App rows.
+async fn round_apps(
+    h: &Rc<Host<Repo>>,
+    owner: AccountId,
+    record: &PlacementRecord,
+    repo: RepoId,
+) -> std::result::Result<Vec<git::sequencer::AppTarget>, String> {
+    if let Some(a) = cached_apps(h, owner, record, repo) {
+        return Ok(a);
+    }
+    let a = crate::host::within(STORE_FOR, read_owner_apps(&h.env, owner, record))
+        .await
+        .ok_or_else(|| format!("the App read took over {} s", STORE_FOR.as_secs()))??;
+    let out = a.targets(repo);
+    OWNER_APPS.with(|m| m.borrow_mut().insert(owner, (now_ms(), a)));
+    Ok(out)
+}
+
+/// The App targets of `repo`, from the owner's rows this isolate holds: a stale or missing read starts a refresh
+/// beside the caller, and `None` means none has answered yet.
+fn cached_apps(
+    h: &Rc<Host<Repo>>,
+    owner: AccountId,
+    record: &PlacementRecord,
+    repo: RepoId,
+) -> Option<Vec<git::sequencer::AppTarget>> {
+    let now = now_ms();
+    let held = OWNER_APPS.with(|m| m.borrow().get(&owner).cloned());
+    if held.as_ref().is_none_or(|(at, _)| now >= at + DIR_FOR_MS)
+        && APPS_REFRESHING.with(|r| r.borrow_mut().insert(owner))
+    {
+        let (env, record) = (h.env.clone(), record.clone());
+        spawn_local(async move {
+            match crate::host::within(STORE_FOR, read_owner_apps(&env, owner, &record)).await {
+                Some(Ok(a)) => OWNER_APPS.with(|m| {
+                    m.borrow_mut().insert(owner, (now_ms(), a));
+                }),
+                Some(Err(e)) => console_error!("webhooks apps of {}: {e}", owner.0.0),
+                None => console_error!("webhooks apps of {}: no answer in {} s", owner.0.0, STORE_FOR.as_secs()),
+            }
+            APPS_REFRESHING.with(|r| r.borrow_mut().remove(&owner));
+        });
+    }
+    held.map(|(_, a)| a.targets(repo))
+}
+
 /// The leader's half, on the member's alarm.
 pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     let found = {
@@ -152,16 +262,34 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         let fold = &c.m.group_fold().fold;
         let cursor = hook_cursor(&fold.core);
         let hooks = hooks(&fold.core);
-        // A repository that never had a hook has nothing to deliver and no cursor to keep.
-        if hooks.is_empty() && cursor == HookCursor::default() {
-            return;
-        }
         let owner = fold.authz_owner().or(c.join.owner);
         let Some(owner) = owner else { return };
+        // A repository that never had a hook, and that no App reaches, has nothing to deliver and no cursor to keep.
+        // One that an App reaches first starts at its applied entry: it commits that cursor, and the next alarm reads.
+        let mut first = None;
+        if hooks.is_empty() && cursor == HookCursor::default() {
+            let applied = c.m.state().applied;
+            if !app_hooks(&h.env)
+                || applied == Index(0)
+                || cached_apps(h, owner, &c.join.record, repo).is_none_or(|a| a.is_empty())
+            {
+                return;
+            }
+            first = Some(HookCursor { read: applied, replay_from: Index(applied.0 + 1) });
+        }
         let leadership = (c.m.term().0, c.m.boot());
-        (c.join.me.do_name.to_string(), leadership, repo, owner, c.join.record.clone(), cursor, c.m.state().applied)
+        (
+            c.join.me.do_name.to_string(),
+            leadership,
+            repo,
+            owner,
+            c.join.record.clone(),
+            cursor,
+            c.m.state().applied,
+            first,
+        )
     };
-    let (key, leadership, repo, owner, record, cursor, applied) = found;
+    let (key, leadership, repo, owner, record, cursor, applied, first) = found;
     let go = CONSUMERS.with(|m| {
         let mut m = m.borrow_mut();
         let s = m.entry(key.clone()).or_default();
@@ -181,7 +309,11 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     let w = Rc::downgrade(h);
     spawn_local(async move {
         let Some(h) = w.upgrade() else { return };
-        let r = round(&h, &key, repo, owner, &record, cursor, applied, leadership).await;
+        // The first cursor commits under the busy flag, so a second alarm cannot commit a later one past entries.
+        let r = match first {
+            Some(start) => commit_cursor(&h, start).await.map(|()| Some(0)),
+            None => round(&h, &key, repo, owner, &record, cursor, applied, leadership).await,
+        };
         let again = match &r {
             Ok(again) => *again,
             Err(e) => {
@@ -274,7 +406,10 @@ async fn round(
     let start = consumer_start(committed, held);
     let replay = held.is_none_or(|h| h < start);
     let through = Index(applied.0.min(start.0 + BATCH_ENTRIES));
-    let (rows, hooks, through) = if through > start || replay {
+    // The Apps installed on the owner ride the store as hooks of their own.
+    let apps = if app_hooks(&h.env) { round_apps(h, owner, record, repo).await? } else { Vec::new() };
+    let app_hooks_now: Vec<(HookId, HookRecord)> = apps.iter().map(|a| (a.hook, a.record.clone())).collect();
+    let (rows, mut hooks, through) = if through > start || replay {
         let dir = match dir_cached {
             Some(d) => d,
             None => {
@@ -289,7 +424,7 @@ async fn round(
                 d
             }
         };
-        render(h, repo, &dir, start, through)?
+        render(h, repo, &dir, start, through, &apps)?
     } else {
         // Nothing new to render, but the store still takes the chain's hooks as they are: an empty list would read
         // as every hook deleted.
@@ -297,6 +432,7 @@ async fn round(
         let c = core.as_ref().ok_or("not joined")?;
         (Vec::new(), hooks(&c.m.group_fold().fold.core), start)
     };
+    hooks.extend(app_hooks_now);
     let recorded_rows = !rows.is_empty();
     let req = RecordReq { chain, from: start, through, replay, hooks, rows, drop: false };
     let (site, res) = send(h, key, record, owner, site, &req).await?;
@@ -493,6 +629,7 @@ fn render(
     dir: &HostedDir,
     from: Index,
     through: Index,
+    apps: &[git::sequencer::AppTarget],
 ) -> std::result::Result<(Vec<NewDelivery>, Vec<(HookId, HookRecord)>, Index), String> {
     let host = graftyard_api::wire::Host::new(&api_host(&h.env), false).map_err(|e| e.to_string())?;
     let core = h.core.borrow();
@@ -520,9 +657,13 @@ fn render(
             None => crate::host::stored_entry::<Repo>(&sql, Index(i))
                 .ok_or_else(|| format!("entry {i} is in neither the member nor the stored log"))?,
         };
-        let planned = plan(&fold.core, repo, GENERATION, &e, |w| {
+        let planned = plan(&fold.core, repo, GENERATION, &e, apps, |w, installation| {
             let row = w.target.and_then(|t| hook_row(&fold.core, t).map(|r| (t, r)));
             let v = payload(&view, w, row.as_ref().map(|(t, r)| (*t, r)), e.at)?;
+            let v = match installation {
+                Some(i) => graftyard_api::webhooks::with_installation(v, i),
+                None => v,
+            };
             serde_json::to_vec(&v).ok()
         });
         bytes += planned.iter().map(|r| r.body.len()).sum::<usize>();
@@ -1001,7 +1142,10 @@ impl HookSequencer {
             Ok(s) => s,
             Err(e) => return Ok(Err(format!("the hook secret could not be unwrapped: {e}"))),
         };
-        let target = ("repository", d.repo.map_or(0, |r| r.0.0));
+        let target = match hook.as_app() {
+            Some(app) => ("integration", app.0.0),
+            None => ("repository", d.repo.map_or(0, |r| r.0.0)),
+        };
         let r = request(&api_host(&self.env), &d, &t, target, secret.as_ref());
         Ok(Ok(Lane {
             url: r.url,

@@ -716,6 +716,7 @@ impl Family for Repo {
     /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook. 32.21 is
     /// M4-WP3's `RunChecksCmd`, which only `RunOwner` sends, from a release whose Actions leaders run it. 32.22 is a
     /// review comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
+    /// 32.24 is R24's `RunChecksCmd` with `workflow_job` steps, which `RunOwner` sends only where `GRAFTYARD_APP_HOOKS` is set.
     /// 32.25 is `RepoEvent::Compacted`, which only a leader of this release records itself.
     fn reads() -> Vec<Format> {
         vec![
@@ -741,6 +742,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_REVIEWS,
             git::run_checks::REPO_FORMAT_ACTIONS,
             git::secrets::REPO_FORMAT_SECRETS,
+            git::workflow_job::REPO_FORMAT_WORKFLOW_JOB,
             git::repo::REPO_FORMAT_ROLLUP,
         ]
     }

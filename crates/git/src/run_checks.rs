@@ -9,7 +9,8 @@
 //! crash commits nothing twice and a late one never moves a row back.
 //!
 //! **Format 32.21** (`REPO_FORMAT_ACTIONS`): `RunChecksCmd`. It writes no new event. A member reads it only after a
-//! site day onto a release that lists it. 32.20 is `REPO_FORMAT_SPLIT` on `b030-split`.
+//! site day onto a release that lists it. 32.20 is `REPO_FORMAT_SPLIT` on `b030-split`. A command that carries `jobs`,
+//! each job's `workflow_job` steps, is format 32.24 (`crate::workflow_job`).
 
 use graftyard_raft::{Format, Record, TierSet};
 use graftyard_types::{DbId, RequestId};
@@ -19,7 +20,8 @@ use smallvec::SmallVec;
 use crate::issue_ops::{RepoView, required};
 use crate::issues::{AppId, CheckRunUpdate, CheckSource, CheckStatus, CheckSuiteUpdate};
 use crate::repo::{RepoEvent, RepoScratch};
-use crate::tiers::{Timed, get_rec, int, sha_key};
+use crate::tiers::{Timed, get_rec, int, sha_key, workflow_job};
+use crate::workflow_job::WorkflowJobUpdate;
 
 pub const REPO_FORMAT_ACTIONS: Format = Format { family: 0x20, version: 21 };
 
@@ -34,6 +36,9 @@ pub struct RunChecksCmd {
     pub suite: Option<CheckSuiteUpdate>,
     pub runs: Vec<CheckRunUpdate>,
     pub request: RequestId,
+    /// R24's steps, in the order the shard committed them. Absent from a 32.21 command, whose bytes it keeps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<WorkflowJobUpdate>,
 }
 
 impl Record for RunChecksCmd {
@@ -84,8 +89,33 @@ impl RunChecksCmd {
                 });
             }
         }
+        // A step at or below the job's row is a replay, or a job queued again after a lease lost before `acquirejob`.
+        // A later step keeps what an earlier one knew: when the job was created and started, and its runner.
+        let mut last: Vec<WorkflowJobUpdate> = Vec::new();
+        for u in &self.jobs {
+            let held = last.iter().rev().find(|h| h.job == u.job).cloned().or_else(|| workflow_job(meta, u.job));
+            if held.as_ref().is_some_and(|h| h.action >= u.action) {
+                continue;
+            }
+            let u = match held {
+                Some(h) => WorkflowJobUpdate {
+                    created: h.created,
+                    started: u.started.or(h.started),
+                    runner: u.runner.or(h.runner),
+                    ..u.clone()
+                },
+                None => u.clone(),
+            };
+            last.push(u.clone());
+            evs.push(RepoEvent::WorkflowJob(u));
+        }
         let n = evs.iter().filter(|e| !matches!(e, RepoEvent::RequiredCheck { .. })).count() as u32;
         (evs, RunChecksOut::Applied(n))
+    }
+
+    /// 32.24 when it carries steps, else 32.21.
+    pub fn format(&self) -> Format {
+        if self.jobs.is_empty() { REPO_FORMAT_ACTIONS } else { crate::workflow_job::REPO_FORMAT_WORKFLOW_JOB }
     }
 
     pub fn replay(&self, events: &[RepoEvent]) -> RunChecksOut {

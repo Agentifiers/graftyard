@@ -326,6 +326,50 @@ mod gate {
     }
 }
 
+/// Test installs: one Workers Logs line per push, `{"push": rid, "isolate", "open", "status", "timing"}`. `isolate` is
+/// drawn once per isolate, so a run can group pushes by the isolate that served them, and `open` is how many pushes
+/// that isolate held when this one started, itself included. B0-32 m3fr8 left two readings unproven for want of them:
+/// that pushes decided stage-first before their own isolate's first `Stage` reply, and that the gaps between a push's
+/// reads were its isolate's event loop (`tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run").
+#[cfg(feature = "test-faults")]
+mod push_log {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ISOLATE: Cell<u64> = const { Cell::new(0) };
+        static OPEN: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// This isolate's token, drawn on its first push.
+    fn isolate() -> u64 {
+        ISOLATE.with(|i| {
+            if i.get() == 0 {
+                let r = super::rand10();
+                i.set(u64::from_le_bytes(r[..8].try_into().expect("8 bytes")) | 1);
+            }
+            i.get()
+        })
+    }
+
+    /// A push starts: the count of pushes this isolate holds, this one included.
+    pub(crate) fn opened() -> u32 {
+        OPEN.with(|o| {
+            o.set(o.get() + 1);
+            o.get()
+        })
+    }
+
+    pub(crate) fn closed() {
+        OPEN.with(|o| o.set(o.get().saturating_sub(1)));
+    }
+
+    pub(crate) fn line(rid: graftyard_types::RequestId, open: u32, status: u16, timing: &str) -> String {
+        let isolate = format!("{:016x}", isolate());
+        serde_json::json!({ "push": rid.to_string(), "isolate": isolate, "open": open, "status": status, "timing": timing })
+            .to_string()
+    }
+}
+
 /// Groups whose leader answered this isolate's push `Stage` (`AdmitError::Stage`, `design/DESIGN.md`, journey 1, step
 /// 1): for HOT_WINDOW after it, a push that would send an inline pack over INLINE_MAX_HOT stages it first, as the
 /// leader would ask, instead of a commit the leader refuses and a second one. A group with no `Stage` here in the last
@@ -894,6 +938,7 @@ async fn commit(
     body: &serde_json::Value,
     first: Option<&serde_json::Value>,
     trace: Option<&std::cell::RefCell<Vec<serde_json::Value>>>,
+    lookup: Option<&[u8]>,
 ) -> Result<std::result::Result<PushOutcome, CallErrorWire>> {
     // A group whose leader this isolate holds exists: no create probe first. With none held (a first commit, or after
     // `NotLeader` or a reply from an older term), the probe runs as before (`graftyard_lookup::knows_leader`).
@@ -912,7 +957,7 @@ async fn commit(
         &bytes,
         c.colo,
         60_000,
-        graftyard_lookup::Hooks { first: first.as_deref(), trace },
+        graftyard_lookup::Hooks { first: first.as_deref(), trace, lookup },
     )
     .await;
     Ok(match r {
@@ -923,6 +968,15 @@ async fn commit(
         Err(Ok(error)) => Err(serde_json::from_value::<CallErrorWire>(error).unwrap_or_else(|_| unreadable_reply())),
         Err(Err(e)) => return Err(Error::RustError(e)),
     })
+}
+
+/// The body a push's commit asks `/outcome_by_request` with while its send is open (`graftyard_lookup::Hooks`): the
+/// same request id and the push without its pack. The leader's replay of a push reads only its ref names
+/// (`Push::replay`) and the `request` row holds the events, not the command, so the answer is the same, without the up
+/// to INLINE_MAX bytes of an inline pack.
+fn lookup_body(rid: RequestId, push: &Push) -> Vec<u8> {
+    let cmd = Push { pack: None, ..push.clone() };
+    serde_json::to_vec(&CommitReq { rid: rid.to_string(), cmd }).unwrap_or_default()
 }
 
 fn unreadable_reply() -> CallErrorWire {
@@ -1353,7 +1407,8 @@ async fn receive_pack(
         f["down_ms"] = json!(c.down_ms);
         first = Some(f);
     }
-    let mut reply = api::timed(c, "commit", commit(c, repo, &body, first.as_ref(), None)).await?;
+    let lookup = lookup_body(c.rid, &push);
+    let mut reply = api::timed(c, "commit", commit(c, repo, &body, first.as_ref(), None, Some(&lookup))).await?;
     if let Err(CallErrorWire::Stage(_)) = &reply {
         hot::staged(repo.id, now());
     }
@@ -1383,7 +1438,7 @@ async fn receive_pack(
         a.inline = 0;
         body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push.clone() })?;
         body["admit"] = serde_json::to_value(a)?;
-        reply = api::timed(c, "commit", commit(c, repo, &body, None, None)).await?;
+        reply = api::timed(c, "commit", commit(c, repo, &body, None, None, Some(&lookup))).await?;
     }
     match reply {
         Ok(PushOutcome::Ok(ok)) => {
@@ -1434,9 +1489,14 @@ impl std::fmt::Display for ShardRefusal {
 }
 
 /// A validate's URL on the network's first shard: the body's `tipsn` and `detailn` lengths, `class=agent` for an
-/// agent's push, and the pack's trailer (its last 20 bytes), from which the shard picks the fan-out shard.
-fn validate_url(repo: RepoId, tipsn: usize, detailn: usize, agent: bool, pack: &[u8]) -> String {
-    let mut url = format!("https://shard/validate?repo={}&tipsn={tipsn}", repo.0.0);
+/// agent's push, the pack's trailer (its last 20 bytes), from which the shard picks the fan-out shard, and the owner's
+/// placement record, which saves the shard its two `Names` reads, as `/merge` and `/demand` do: on B0-32 m3fr8 the
+/// network shard took p50 3,038 ms to forward a burst push, most of it in those reads' gaps, against the pool shard's
+/// 370 ms (`tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run").
+fn validate_url(repo: &Repo, tipsn: usize, detailn: usize, agent: bool, pack: &[u8]) -> String {
+    let record = serde_json::to_string(&repo.record).unwrap_or_default();
+    let record: String = url::form_urlencoded::byte_serialize(record.as_bytes()).collect();
+    let mut url = format!("https://shard/validate?repo={}&record={record}&tipsn={tipsn}", repo.id.0.0);
     if detailn > 0 {
         url.push_str(&format!("&detailn={detailn}"));
     }
@@ -1552,7 +1612,7 @@ pub(crate) async fn validate(
     if !tips.is_empty() || detail.is_empty() {
         head.push(b'\n');
     }
-    let url = validate_url(repo.id, head.len(), detail.len(), agent, pack);
+    let url = validate_url(repo, head.len(), detail.len(), agent, pack);
     head.extend_from_slice(detail.as_bytes());
     head.extend_from_slice(pack);
     #[cfg(feature = "test-faults")]
@@ -1600,7 +1660,7 @@ async fn validate_streamed(
     if !tips.is_empty() || detail.is_empty() {
         head.push(b'\n');
     }
-    let url = validate_url(repo.id, head.len(), detail.len(), agent, &[]);
+    let url = validate_url(repo, head.len(), detail.len(), agent, &[]);
     head.extend_from_slice(detail.as_bytes());
     let chunks = futures_util::stream::once(std::future::ready(Ok(head)))
         .chain(pack)
@@ -1802,7 +1862,7 @@ pub(crate) async fn push_init(
         leases: false,
     };
     let body = serde_json::to_value(CommitReq { rid: rid.to_string(), cmd: push }).map_err(|e| e.to_string())?;
-    match commit(c, repo, &body, None, None).await.map_err(|e| e.to_string())? {
+    match commit(c, repo, &body, None, None, None).await.map_err(|e| e.to_string())? {
         Ok(PushOutcome::Ok(ok)) => Ok(ok.out.refs.iter().all(|r| *r == graftyard_git::repo::RefOutcome::Ok)),
         Ok(PushOutcome::Refused(_)) => Ok(false),
         Ok(other) => Err(format!("{other:?}")),
@@ -2285,7 +2345,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             &bytes,
             c.colo,
             60_000,
-            graftyard_lookup::Hooks { first: first.as_deref(), trace: Some(&trace) },
+            graftyard_lookup::Hooks { first: first.as_deref(), trace: Some(&trace), lookup: None },
         )
         .await;
         return Response::from_json(&json!({
@@ -2467,7 +2527,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 }
             }
             let trace = std::cell::RefCell::new(Vec::new());
-            let r = commit(c, &repo, &body, first.as_ref(), Some(&trace)).await;
+            let r = commit(c, &repo, &body, first.as_ref(), Some(&trace), None).await;
             Response::from_json(&json!({
                 "rid": c.rid.to_string(),
                 "ms": now().0 - t0,
@@ -2837,11 +2897,18 @@ async fn serve(
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
+            #[cfg(feature = "test-faults")]
+            let open = push_log::opened();
             let r = receive_pack(&c, req, repo, &format!("{owner}/{name}"), who).await;
             // A test install answers each push with its stages (`api::Timing`), as REST answers each request.
             #[cfg(feature = "test-faults")]
-            if let Ok(r) = &r {
-                r.headers().set("server-timing", &c.timing.header())?;
+            {
+                push_log::closed();
+                if let Ok(r) = &r {
+                    r.headers().set("server-timing", &c.timing.header())?;
+                }
+                let status = r.as_ref().map_or(500, |r| r.status_code());
+                worker::console_log!("{}", push_log::line(rid, open, status, &c.timing.header()));
             }
             r
         }
@@ -2878,14 +2945,69 @@ mod tests {
         assert_eq!(run(1050, 1199), [false, true, true, true]);
     }
     /// The shard picks the fan-out shard from the URL's trailer without reading the body, so the trailer must be
-    /// the pack's last 20 bytes, not its first; an agent's validate is marked so the container sheds it first.
+    /// the pack's last 20 bytes, not its first; an agent's validate is marked so the container sheds it first; and the
+    /// owner's record rides in the URL, which the shard reads instead of its two `Names` reads (`shard.rs`, `record`).
     #[test]
-    fn a_validate_url_names_the_packs_trailer_and_its_class() {
+    fn a_validate_url_names_the_packs_trailer_its_class_and_the_record() {
+        let rec = record(PlacementName::Tri, &[0, 1, 2], 1);
+        let repo = super::Repo { id: RepoId(DbId(7)), owner: graftyard_types::AccountId(DbId(3)), record: rec.clone() };
         let mut pack = vec![0xaa; 40];
         pack[20..].copy_from_slice(&[0x01; 20]);
-        let u = validate_url(RepoId(DbId(7)), 41, 0, true, &pack);
-        assert_eq!(u, format!("https://shard/validate?repo=7&tipsn=41&class=agent&trailer={}", "01".repeat(20)));
-        assert_eq!(validate_url(RepoId(DbId(7)), 1, 9, false, &[]), "https://shard/validate?repo=7&tipsn=1&detailn=9");
+        let q = |u: &str| {
+            let u = url::Url::parse(u).unwrap();
+            u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect::<Vec<_>>()
+        };
+        let pairs = q(&validate_url(&repo, 41, 0, true, &pack));
+        let get = |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!(get("trailer"), Some("01".repeat(20)));
+        assert_eq!(
+            (get("repo"), get("tipsn"), get("class")),
+            (Some("7".into()), Some("41".into()), Some("agent".into()))
+        );
+        let sent: PlacementRecord =
+            serde_json::from_str(&get("record").expect("the record rides on validate")).unwrap();
+        assert_eq!(sent, rec);
+        let pairs = q(&validate_url(&repo, 1, 9, false, &[]));
+        assert!(pairs.iter().any(|(k, v)| k == "detailn" && v == "9"));
+        assert!(!pairs.iter().any(|(k, _)| k == "class" || k == "trailer"));
+    }
+
+    /// The body a push's commit asks `/outcome_by_request` with while its send is open names the same request id and
+    /// the same push, ref updates, actor and format included, without its pack: a 256 KiB inline pack is not sent again
+    /// to a leader that is busy.
+    #[test]
+    fn a_push_asks_for_its_outcome_without_its_pack() {
+        use graftyard_git::group::CommitReq;
+        use graftyard_git::pack::PackRef;
+        use graftyard_git::refs::{Atomicity, ObjectId, RefName, RefUpdate};
+        let rid = graftyard_types::RequestId(graftyard_types::Ulid::new(Timestamp(5), [7; 10]));
+        let push = graftyard_git::repo::Push {
+            updates: vec![RefUpdate {
+                name: RefName::parse(b"refs/heads/main").unwrap(),
+                expect: None,
+                new: Some(ObjectId([1; 20])),
+            }],
+            atomicity: Atomicity::PerRef,
+            pack: Some(PackRef::Inline(vec![0x50; 256 << 10])),
+            actor: graftyard_identity::Principal {
+                actor: graftyard_identity::Actor::User(graftyard_identity::UserId(graftyard_types::AccountId(DbId(4)))),
+                scopes: graftyard_identity::ScopeSet(0),
+                credential: graftyard_identity::Credential::Stored([9; 32]),
+                sso_orgs: Default::default(),
+            },
+            options: Vec::new(),
+            request: rid,
+            agent: None,
+            provenance: Vec::new(),
+            protected: Vec::new(),
+            changed: Vec::new(),
+            leases: false,
+        };
+        let body = super::lookup_body(rid, &push);
+        assert!(body.len() < 4 << 10, "{} bytes: the pack went with it", body.len());
+        let got: CommitReq = serde_json::from_slice(&body).unwrap();
+        assert_eq!(got.rid, rid.to_string());
+        assert_eq!(got.cmd, graftyard_git::repo::Push { pack: None, ..push });
     }
 
     /// A busy git cache refuses an agent's push in B0-32's allowed shape, `agent admission full`, never as an

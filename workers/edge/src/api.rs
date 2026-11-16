@@ -1134,7 +1134,11 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     c.timing.mark("plan");
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let trace_steps = std::cell::RefCell::new(Vec::new());
-    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace_steps) };
+    let hooks = graftyard_lookup::Hooks {
+        first: None,
+        trace: cfg!(feature = "test-faults").then_some(&trace_steps),
+        lookup: None,
+    };
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -1189,7 +1193,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
     if let Some(a) = admit {
         body["admit"] = serde_json::to_value(a)?;
     }
-    Ok(match crate::commit(c, &rd.repo, &body, None, None).await? {
+    Ok(match crate::commit(c, &rd.repo, &body, None, None, None).await? {
         Ok(PushOutcome::Ok(ok)) if ok.out.refs.iter().all(|o| *o == graftyard_git::repo::RefOutcome::Ok) => {
             Reply::empty(204)
         }

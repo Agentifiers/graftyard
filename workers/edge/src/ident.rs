@@ -557,7 +557,7 @@ async fn commit_killable(
         first["down_ms"] = json!(c.down_ms);
         let (bytes, first) = (body.to_string().into_bytes(), first.to_string().into_bytes());
         let trace = std::cell::RefCell::new(Vec::new());
-        let hooks = graftyard_lookup::Hooks { first: Some(&first), trace: Some(&trace) };
+        let hooks = graftyard_lookup::Hooks { first: Some(&first), trace: Some(&trace), lookup: None };
         let r = graftyard_lookup::commit_hedged(&b, chain, &record, &bytes, c.colo, 60_000, hooks).await;
         // The hedge's sends and misses, in the reply's `x-graft-trace` (BF-33 shows the kill fired).
         let mut t = trace.into_inner();

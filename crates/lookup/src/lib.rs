@@ -873,6 +873,10 @@ pub async fn commit(
 
 /// The receipt deadline of a commit: COMMIT_HOLD plus CALL_DEADLINE.
 pub const COMMIT_RECEIPT: Duration = Duration::from_millis(2_000);
+/// How long one `/commit` send stays open while its member is `busy` (`receipt`) [guess]: past B0-32 m3fr8's longest
+/// leader handler, 3.8 s, plus both legs (`tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run"). Past it the
+/// command is sent again, so a send whose reply was lost costs this at most once.
+pub const RECEIPT_OPEN: Duration = Duration::from_millis(8_000);
 
 /// The member the caller last saw lead `chain`, if its config names it.
 pub fn cached_leader(chain: ChainId) -> Option<Target> {
@@ -963,14 +967,101 @@ fn report_due(chain: ChainId, about: SiteId, term: u64, all: bool, now: u64) -> 
     })
 }
 
-/// `commit_hedged`'s test hooks. `first`, when given, is the body of the first `/commit` send only (a test install's
+/// `commit_hedged`'s options. `first`, when given, is the body of the first `/commit` send only (a test install's
 /// kill rides on it, so a fault fires once); every later send is the command's body. `trace`, when given, collects one
 /// row per step: each `/commit` send with its target and why the edge chose it, each missed receipt, and each
-/// `suspect` answer (BF-14's count).
+/// `suspect` answer (BF-14's count). `lookup`, when given, is the body `/outcome_by_request` gets while a send is open
+/// (`receipt`): the same request id and a command whose `replay` answers the same, without bytes `replay` never reads,
+/// such as a push's inline pack. Without it the command's own body is sent.
 #[derive(Clone, Copy, Default)]
 pub struct Hooks<'a> {
     pub first: Option<&'a [u8]>,
     pub trace: Option<&'a RefCell<Vec<Value>>>,
+    pub lookup: Option<&'a [u8]>,
+}
+
+thread_local! {
+    /// Per isolate: when each member last answered a commit-path call from this isolate with a 200, and that answer's
+    /// term (`heard`, `busy`).
+    static HEARD: RefCell<HashMap<(ChainId, SiteId), (u64, u64)>> = RefCell::new(HashMap::new());
+}
+
+/// Records a member's 200 answer `v` on `chain`'s commit path at `now`, with the term its `meta` names.
+fn heard(chain: ChainId, site: SiteId, v: &Value, now: u64) {
+    let Some(term) = v.pointer("/meta/term").and_then(Value::as_u64) else { return };
+    HEARD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.len() > 4_096 {
+            h.clear();
+        }
+        h.insert((chain, site), (term, now));
+    });
+}
+
+/// Whether `site` answered this isolate a 200 on `chain`'s commit path within COMMIT_RECEIPT of `now`, in `term` or
+/// the highest term this isolate has seen from the group, whichever is higher: a member that misses a receipt then is
+/// busy, not gone, and is not reported (`receipt`, `design/DESIGN.md`, "Commit and read paths").
+fn busy(chain: ChainId, site: SiteId, term: u64, now: u64) -> bool {
+    let within = COMMIT_RECEIPT.as_millis() as u64;
+    let term = term.max(KNOWN.with(|k| k.borrow().get(&chain).map_or(0, |e| e.term)));
+    HEARD
+        .with(|h| h.borrow().get(&(chain, site)).is_some_and(|(t, at)| *t >= term && now.saturating_sub(*at) <= within))
+}
+
+/// What one `/commit` send came to.
+#[derive(Debug, PartialEq)]
+enum Receipt {
+    /// A 200 to take as the send's reply: the send's own, in time or late, or the leader's answer by request id while
+    /// the send was open, `done`, `error` with `notLeader`, or `pending` as `admitted`.
+    Reply(Value),
+    /// No usable answer: none within COMMIT_RECEIPT from a member that is not `busy`, an error status, or no answer by
+    /// RECEIPT_OPEN. The command is sent again; `report` says whether the member is also reported with `suspect`: always
+    /// for an error status, and otherwise only when it is not `busy`.
+    Missed { report: bool },
+}
+
+/// One `/commit` send's receipt (`design/DESIGN.md`, "Commit and read paths"). `send` is the call, open until its own
+/// deadline; `ask` is one `/outcome_by_request` to the same member; `busy` is `busy` for that member at the moment it
+/// is asked; `wait` sleeps. Each COMMIT_RECEIPT the send stays open, a member that is not `busy` is a missed receipt;
+/// a `busy` one is asked by request id and the send stays open. Only the send's own 200 or a by-request `done`,
+/// `NotLeader`, or `pending` is a reply: `unknown`, any other answer, or none leaves the send open, so nothing here
+/// makes a 2xx that the leader's `outcome` did not.
+async fn receipt<S, A, AF, W, WF>(send: S, mut ask: A, busy: impl Fn() -> bool, mut wait: W) -> Receipt
+where
+    S: Future<Output = Option<(u16, Value)>>,
+    A: FnMut() -> AF,
+    AF: Future<Output = Option<(u16, Value)>>,
+    W: FnMut(Duration) -> WF,
+    WF: Future<Output = ()>,
+{
+    // An error status is a sick member's answer, reported whatever came before (`STEP_DOWN`'s gray case); only a send
+    // with no answer, at RECEIPT_OPEN or a failed fetch, is spared while the member is `busy`.
+    let ended = |r: Option<(u16, Value)>, busy: bool| match r {
+        Some((200, v)) => Receipt::Reply(v),
+        Some(_) => Receipt::Missed { report: true },
+        None => Receipt::Missed { report: !busy },
+    };
+    let mut send = Box::pin(send);
+    loop {
+        if let Either::Left((r, _)) = select(send.as_mut(), Box::pin(wait(COMMIT_RECEIPT))).await {
+            return ended(r, busy());
+        }
+        if !busy() {
+            return Receipt::Missed { report: true };
+        }
+        match select(send.as_mut(), Box::pin(ask())).await {
+            Either::Left((r, _)) => return ended(r, busy()),
+            Either::Right((Some((200, v)), _)) => {
+                if let Some(p) = v.get("pending") {
+                    return Receipt::Reply(json!({ "admitted": p, "meta": v.get("meta") }));
+                }
+                if v.get("done").is_some() || v.pointer("/error/notLeader").is_some() {
+                    return Receipt::Reply(v);
+                }
+            }
+            Either::Right(_) => {}
+        }
+    }
 }
 
 /// A command's commit as the edge runs it (`design/DESIGN.md`, "Commit and read paths"): the leader is found with
@@ -991,7 +1082,8 @@ pub async fn commit_hedged(
     for_ms: u64,
     hooks: Hooks<'_>,
 ) -> std::result::Result<Value, std::result::Result<Value, String>> {
-    let Hooks { first, trace } = hooks;
+    let Hooks { first, trace, lookup } = hooks;
+    let lookup = lookup.unwrap_or(body);
     let start = now_ms();
     let note = |mut v: Value| {
         if let Some(t) = trace {
@@ -1018,8 +1110,9 @@ pub async fn commit_hedged(
     while now_ms() < end {
         let t = match &target {
             Some(t) => t.clone(),
-            None => match call_raw(b, chain, record, "/outcome_by_request", body).await {
+            None => match call_raw(b, chain, record, "/outcome_by_request", lookup).await {
                 Ok((v, _, t)) => {
+                    heard(chain, t.site, &v, now_ms());
                     if let Some(e) = v.get("error").filter(|e| e.get("notLeader").is_none()) {
                         return Err(Ok(e.clone()));
                     }
@@ -1044,24 +1137,46 @@ pub async fn commit_hedged(
         target = Some(t.clone());
         prev = Some(t.clone());
         note(json!({ "send": t.site.0, "name": t.do_name, "why": why }));
-        let r = post_within(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), COMMIT_RECEIPT).await;
-        let Some((200, v)) = r else {
-            last = format!("{}: {}", t.do_name, r.as_ref().map_or("missed".into(), |(s, _)| s.to_string()));
-            note(json!({ "missed": t.site.0, "status": r.map(|(s, _)| s) }));
-            match suspect(b, chain, &t, term, colo, false).await {
-                Some(led) => {
-                    note(json!({ "suspect": t.site.0, "all": false, "led": led.site.0 }));
-                    target = Some(led);
-                    why = "suspectLed";
+        let send = post_within(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), RECEIPT_OPEN);
+        let ask = || {
+            let t = &t;
+            async move {
+                let r = post_within(b, t.site, &t.do_name, "/outcome_by_request", lookup, COMMIT_RECEIPT).await;
+                if let Some((200, v)) = &r {
+                    heard(chain, t.site, v, now_ms());
                 }
-                None => {
-                    note(json!({ "suspect": t.site.0, "all": false, "led": null }));
-                    why = "same";
-                    Delay::from(Duration::from_millis(200)).await
-                }
+                r
             }
-            continue;
         };
+        let r = receipt(send, ask, || busy(chain, t.site, term, now_ms()), Delay::from).await;
+        let v = match r {
+            Receipt::Reply(v) => v,
+            Receipt::Missed { report: false } => {
+                last = format!("{}: missed", t.do_name);
+                note(json!({ "missed": t.site.0, "busy": true }));
+                why = "same";
+                Delay::from(Duration::from_millis(200)).await;
+                continue;
+            }
+            Receipt::Missed { report: true } => {
+                last = format!("{}: missed", t.do_name);
+                note(json!({ "missed": t.site.0 }));
+                match suspect(b, chain, &t, term, colo, false).await {
+                    Some(led) => {
+                        note(json!({ "suspect": t.site.0, "all": false, "led": led.site.0 }));
+                        target = Some(led);
+                        why = "suspectLed";
+                    }
+                    None => {
+                        note(json!({ "suspect": t.site.0, "all": false, "led": null }));
+                        why = "same";
+                        Delay::from(Duration::from_millis(200)).await
+                    }
+                }
+                continue;
+            }
+        };
+        heard(chain, t.site, &v, now_ms());
         let nl = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader"));
         let stale = nl.is_some_and(|nl| stale_answer(chain, &v, nl));
         if !stale {
@@ -1652,6 +1767,125 @@ mod tests {
         assert_eq!(cached_leader(chain), Some(Target { site: SiteId(0), do_name: "a".into() }));
         learn_leader(chain, &json!({ "meta": { "leader": 1 } }));
         assert_eq!(cached_leader(chain).map(|t| t.site), Some(SiteId(1)), "a reply with no term keeps the old rule");
+    }
+
+    /// `receipt` driven by hand: `send` answers at `send_at` ms (or never), each `/outcome_by_request` answers `asks` in
+    /// turn after `ask_ms`, and the clock moves only by the waits. Returns what the send came to, the asks made, and
+    /// the clock at the end.
+    fn run_receipt(
+        send_at: Option<(u64, Option<(u16, Value)>)>,
+        asks: Vec<Option<(u16, Value)>>,
+        ask_ms: u64,
+        busy: impl Fn(u64) -> bool,
+    ) -> (Receipt, usize, u64) {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let clock = Rc::new(Cell::new(0u64));
+        let asked = Cell::new(0usize);
+        let asks = RefCell::new(asks);
+        // A future that is ready once the clock reaches `at`: polled again after each wait moves the clock.
+        struct At(Rc<Cell<u64>>, u64);
+        impl Future for At {
+            type Output = ();
+            fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0.get() >= self.1 { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+            }
+        }
+        let c = clock.clone();
+        let send = async move {
+            match send_at {
+                Some((at, r)) => {
+                    At(c, at).await;
+                    r
+                }
+                None => std::future::pending().await,
+            }
+        };
+        let ask = || {
+            asked.set(asked.get() + 1);
+            let r = asks.borrow_mut().pop().flatten();
+            let (c, at) = (clock.clone(), clock.get() + ask_ms);
+            async move {
+                At(c.clone(), at).await;
+                r
+            }
+        };
+        let wait = |d: Duration| At(clock.clone(), clock.get() + d.as_millis() as u64);
+        let mut f = Box::pin(receipt(send, ask, || busy(clock.get()), wait));
+        // One poll per ms of clock, so whatever is due at a ms is seen before the clock moves on.
+        for _ in 0..20_000 {
+            if let Some(r) = (&mut f).now_or_never() {
+                return (r, asked.get(), clock.get());
+            }
+            clock.set(clock.get() + 1);
+        }
+        panic!("receipt never ended");
+    }
+
+    /// The receipt rule: a slow 200 from a member this isolate heard from in this term within COMMIT_RECEIPT is the
+    /// send's reply, with no resend and no `suspect`; meanwhile the edge asks by request id and takes only a `done`,
+    /// a `NotLeader`, or a `pending` from it, never `unknown`. Before the rule, the edge gave up at COMMIT_RECEIPT,
+    /// reported the leader and sent the command again (B0-32 m3fr8: 110 of 121 extra sends, 82 `suspect` waves).
+    #[test]
+    fn a_slow_200_from_a_busy_member_is_the_reply_with_no_resend_or_report() {
+        let ok = json!({ "done": { "ok": 1 }, "meta": { "term": 2 } });
+        // The send's 200 lands at 3.1 s; the by-request answers say `unknown`, so the send stays open.
+        let unknown = Some((200, json!({ "unknown": true, "meta": { "term": 2 } })));
+        let (r, asked, at) =
+            run_receipt(Some((3_100, Some((200, ok.clone())))), vec![unknown.clone(); 8], 300, |_| true);
+        assert_eq!(r, Receipt::Reply(ok.clone()), "the late 200 is the reply, not a missed receipt");
+        assert!(asked >= 1, "the edge asked by request id while the send was open");
+        assert_eq!(at, 3_100);
+        // A `done` by request id ends the send at once: it is the leader's committed outcome.
+        let done = Some((200, json!({ "done": { "ok": 2 }, "meta": { "term": 2 } })));
+        let (r, _, at) = run_receipt(None, vec![done], 300, |_| true);
+        assert_eq!(r, Receipt::Reply(json!({ "done": { "ok": 2 }, "meta": { "term": 2 } })));
+        assert_eq!(at, 2_300);
+        // `pending` is a ticket to wait on through `outcome`, as `admitted` is; never a success by itself.
+        let pending = Some((200, json!({ "pending": { "seq": 4 }, "meta": { "term": 2 } })));
+        let (r, _, _) = run_receipt(None, vec![pending], 300, |_| true);
+        assert_eq!(r, Receipt::Reply(json!({ "admitted": { "seq": 4 }, "meta": { "term": 2 } })));
+        // Nothing but `done`, `NotLeader`, or `pending` ends it: an `error` other than `NotLeader`, a 503, and no
+        // answer leave the send open, and its own late 200 is still the reply.
+        let odd = vec![Some((200, json!({ "error": { "busy": true } }))), Some((503, Value::Null)), None];
+        let (r, asked, _) = run_receipt(Some((7_000, Some((200, ok.clone())))), odd, 300, |_| true);
+        assert_eq!((r, asked), (Receipt::Reply(ok), 3));
+        // A send that ends with no answer (RECEIPT_OPEN) while the member is busy is sent again, but not reported.
+        let (r, _, at) = run_receipt(Some((8_000, None)), vec![unknown.clone(); 8], 300, |_| true);
+        assert_eq!((r, at), (Receipt::Missed { report: false }, 8_000));
+        // An error status is reported however busy the member was: a sick leader's 5xx is still the gray case.
+        let (r, _, _) = run_receipt(Some((2_500, Some((503, Value::Null)))), vec![unknown; 8], 300, |_| true);
+        assert_eq!(r, Receipt::Missed { report: true });
+    }
+
+    /// A member that never answered this isolate a 200 in this term within COMMIT_RECEIPT is gone as far as the edge
+    /// can tell: its missed receipt is reported with `suspect` at the deadline, as before, and it is never asked by
+    /// request id. So is one whose last 200 is older than COMMIT_RECEIPT by the time its receipt misses, or from an
+    /// older term.
+    #[test]
+    fn a_member_that_never_answered_is_still_reported() {
+        let ok = json!({ "done": { "ok": 1 }, "meta": { "term": 2 } });
+        let (r, asked, at) = run_receipt(Some((3_100, Some((200, ok.clone())))), vec![], 300, |_| false);
+        assert_eq!((r, asked, at), (Receipt::Missed { report: true }, 0, 2_000));
+        // Busy at the first deadline, then silent: asked at 2.0 s, answered at 2.3 s, and at the next deadline,
+        // COMMIT_RECEIPT after that answer (4.3 s), it is no longer busy and is reported.
+        let unknown = Some((200, json!({ "unknown": true })));
+        let (r, _, at) = run_receipt(None, vec![unknown; 8], 300, |now| now < 3_600);
+        assert_eq!((r, at), (Receipt::Missed { report: true }, 4_300));
+        // `busy` itself: a 200 in this term within COMMIT_RECEIPT, and nothing else.
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(91)));
+        assert!(!busy(chain, SiteId(0), 2, 10_000), "never heard");
+        heard(chain, SiteId(0), &json!({ "meta": { "term": 2 } }), 10_000);
+        assert!(busy(chain, SiteId(0), 2, 12_000));
+        assert!(!busy(chain, SiteId(0), 2, 12_001), "heard more than COMMIT_RECEIPT ago");
+        assert!(!busy(chain, SiteId(1), 2, 10_500), "heard from another member");
+        assert!(!busy(chain, SiteId(0), 3, 10_500), "heard in an older term than the send's");
+        heard(chain, SiteId(0), &json!({ "done": {} }), 30_000);
+        assert!(!busy(chain, SiteId(0), 2, 30_000), "an answer with no term counts for nothing");
+        KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().term = 4);
+        heard(chain, SiteId(0), &json!({ "meta": { "term": 3 } }), 40_000);
+        assert!(!busy(chain, SiteId(0), 0, 40_000), "older than the highest term this isolate saw from the group");
     }
 
     /// A capped read's answer is the leader saying "busy, retry": never a missed member, which `call_opt` reports

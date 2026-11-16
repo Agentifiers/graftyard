@@ -51,7 +51,6 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         | RepoEvent::Promoted(_)
         | RepoEvent::Archived(_)
         | RepoEvent::Compacted(_) => TierSet::CORE,
-        RepoEvent::Reserved46 => TierSet::CORE,
         RepoEvent::RequiredCheck { .. } => TierSet::CORE,
         RepoEvent::Rule(_) => TierSet::CORE,
         RepoEvent::IssueOpened { .. } | RepoEvent::PrOpened { .. } | RepoEvent::PrClosed { .. } => both,
@@ -93,6 +92,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Watchers(_) => TierSet::METADATA,
         RepoEvent::Split(x) => crate::split::tiers(x),
         RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => TierSet::CORE,
+        RepoEvent::WorkflowJob(_) => TierSet::METADATA,
     }
 }
 
@@ -176,6 +176,8 @@ pub const METADATA: Schema = Schema {
     tables: &[
         t("check_expiry", &["at", "kind", "key"]),
         t("check_run", &["sha", "run"]),
+        // R24, 32.24: each Actions job's last `workflow_job` step, by job id, pruned with the check rows.
+        t("workflow_job", &["job"]),
         t("check_suite", &["sha", "suite"]),
         t("comment", &["id"]),
         t("comment_by_issue", &["n", "id"]),
@@ -423,13 +425,20 @@ pub struct Timed<T> {
 const KIND_RUN: i64 = 0;
 const KIND_SUITE: i64 = 1;
 const KIND_STATUS: i64 = 2;
+const KIND_WORKFLOW_JOB: i64 = 3;
 
 fn check_table(kind: i64) -> &'static str {
     match kind {
         KIND_RUN => "check_run",
         KIND_SUITE => "check_suite",
+        KIND_WORKFLOW_JOB => "workflow_job",
         _ => "status",
     }
+}
+
+/// A job's last `workflow_job` step, while its row is kept.
+pub fn workflow_job(r: &(impl Read + ?Sized), job: DbId) -> Option<crate::workflow_job::WorkflowJobUpdate> {
+    get_rec::<Timed<crate::workflow_job::WorkflowJobUpdate>>(r, "workflow_job", &[int(job.0)]).map(|t| t.rec)
 }
 
 /// The `check_expiry` key of a row of `kind` written at `at`: its key columns ride in one blob.
@@ -674,7 +683,7 @@ impl RepoTiers {
                 }
                 crate::queue::write(w, q, at);
             }
-            RepoEvent::Refused { .. } | RepoEvent::Reserved46 => {}
+            RepoEvent::Refused { .. } => {}
             RepoEvent::Promoted(p) => {
                 put_rec(w, "promoted", Vec::new(), p);
                 put_rec(w, "promoted_log", vec![Val::Int(p.from.0 as i64)], p);
@@ -880,6 +889,7 @@ impl RepoTiers {
             RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
             RepoEvent::Split(x) => crate::split::write_core(w, x, at),
             RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => crate::secrets::write_core(w, ev),
+            RepoEvent::WorkflowJob(_) => {}
         }
     }
 
@@ -1193,6 +1203,14 @@ impl RepoTiers {
             }
             RepoEvent::PathSet(p) => put_rec(w, "path_set", vec![ref_key(&p.refname)], p),
             RepoEvent::Watchers(us) => us.iter().for_each(|u| crate::watch::write_meta(w, u)),
+            RepoEvent::WorkflowJob(u) => put_newer(
+                w,
+                KIND_WORKFLOW_JOB,
+                vec![int(u.job.0)],
+                at,
+                u,
+                |u: &crate::workflow_job::WorkflowJobUpdate| u.action as u64,
+            ),
             RepoEvent::Split(x) => crate::split::write_meta(w, x),
             _ => {}
         }

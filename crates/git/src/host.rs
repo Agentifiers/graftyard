@@ -658,14 +658,19 @@ impl ShardHost<'_> {
         Ok(())
     }
 
-    /// Records a request and arms the renewal alarm (`renewal`). The shard's `alarm` handler calls `on_alarm`.
-    pub async fn touch(&self, now: Timestamp) -> Result<(), StoreError> {
+    /// Records a request and arms the renewal alarm (`renewal`), at most once per TOUCH_EVERY (`touch_due`). Returns
+    /// whether it wrote. The shard's `alarm` handler calls `on_alarm`.
+    pub async fn touch(&self, now: Timestamp) -> Result<bool, StoreError> {
         let s = self.state.storage();
+        let last: Option<u64> = s.get("last_request").await.map_err(worker_err)?;
+        if !crate::shard::touch_due(now, last.map(Timestamp)) {
+            return Ok(false);
+        }
         s.put("last_request", now.0).await.map_err(worker_err)?;
         if let Renewal::Renew { next } = renewal(now, now) {
             s.set_alarm(alarm_at(now, next)).await.map_err(worker_err)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub async fn on_alarm(&self, now: Timestamp) -> Result<Renewal, StoreError> {

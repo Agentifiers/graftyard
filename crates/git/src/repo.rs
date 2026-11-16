@@ -391,9 +391,9 @@ pub enum RepoEvent {
         record: Option<graftyard_identity::sealed::VariableRecord>,
         actor: Option<AccountId>,
     },
-    /// Tag 46, held for M4-WP4's R24 `WorkflowJob` (format 32.24), so the tags after it match on every branch. Never
-    /// written or decided: a release that has `WorkflowJob` replaces this variant with it.
-    Reserved46,
+    // R24, format 32.24 (`crate::workflow_job::REPO_FORMAT_WORKFLOW_JOB`): tag 46.
+    /// Metadata. One Actions job's `workflow_job` step, which `RunOwner` appends (`crate::workflow_job`).
+    WorkflowJob(crate::workflow_job::WorkflowJobUpdate),
     // roll-up, format 32.25 (`REPO_FORMAT_ROLLUP`): tag 47.
     /// Core. A roll of the chain's oldest consecutive promoted packs (`crate::pack::Compacted`), committed by the
     /// leader in an entry of its own; `verify` checks it against the fold's `promoted_log`.
@@ -1909,7 +1909,8 @@ impl Record for RepoEvent {
             RepoEvent::ActionsVariable { scope, name, record, actor } => {
                 return tagged(out, 45, &(scope, name, record, actor));
             }
-            RepoEvent::Reserved46 => return tagged(out, 46, &()),
+            // R24, 32.24: tag 46.
+            RepoEvent::WorkflowJob(u) => return tagged(out, 46, u),
             RepoEvent::Compacted(c) => return tagged(out, 47, c),
         };
         e.u8(0);
@@ -2249,7 +2250,7 @@ impl Command for RepoCmd {
             RepoCmd::HookCursor(_) => crate::hooks::REPO_FORMAT_HOOKS,
             RepoCmd::Lifecycle(c) => c.format(),
             RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) => crate::watch::REPO_FORMAT_WATCH,
-            RepoCmd::RunChecks(_) => crate::run_checks::REPO_FORMAT_ACTIONS,
+            RepoCmd::RunChecks(c) => c.format(),
         }
     }
     fn tiers(&self) -> TierSet {

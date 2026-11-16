@@ -47,7 +47,7 @@ git::repo::RepoEvent 42 Watchers 2a00
 git::repo::RepoEvent 43 Split 2b00067265706f3a31
 git::repo::RepoEvent 44 ActionsSecret 2c0001610000
 git::repo::RepoEvent 45 ActionsVariable 2d0001610000
-git::repo::RepoEvent 46 Reserved46 2e
+git::repo::RepoEvent 46 WorkflowJob 2e020201000161016101010101010101010101010101010101010101010161000000010000
 git::repo::RepoEvent 47 Compacted 2f00000c726566732f68656164732f610101
 git::issue_ops::IssueOp<git::blob::BlobRef> 0 OpenIssue 00016101610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 1 OpenPr 01020000016101610001010101010101010101010101010101010101010101010101010101010101010101010101010101
@@ -798,3 +798,6 @@ id::sealed::SecretScope 2 Org 020000
 id::sealed::SecretVisibility 0 All 00
 id::sealed::SecretVisibility 1 Private 01
 id::sealed::SecretVisibility 2 Selected 02
+git::workflow_job::JobAction 0 Queued 00
+git::workflow_job::JobAction 1 InProgress 01
+git::workflow_job::JobAction 2 Completed 02

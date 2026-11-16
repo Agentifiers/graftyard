@@ -11,13 +11,16 @@
 //!   or is cancelled. Pass: every `RequiredCheck` on an open PR head has a conclusion within 60 s of its job's
 //!   `Completed`. Fail: any `RequiredCheck` with `conclusion: None` after its job completed.
 //! - One runner at a time (SHARED): two runners matched to one job at the same version; only the first commits.
+//! - R24: a run whose second job `needs` the first gets each job's `workflow_job` `queued`, `in_progress`, and
+//!   `completed`, once each and in order, to an App installed on the owner that subscribes, and nothing to an App
+//!   without `actions` read or whose installation does not reach the repository.
 
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::Group;
-use graftyard_actions::run_owner::{round, touched};
+use graftyard_actions::run_owner::{round, steps, touched};
 use graftyard_actions::shard::{
     ACTIONS_FORMAT, ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold, ActionsOp, ActionsOut, JobSpec,
     RunnerRecord, RunnerScope, WorkflowRun,
@@ -94,6 +97,8 @@ struct World {
     /// Kill `RunOwner` after its next round's repository writes, before its shard half.
     kill_owner_after_checks: bool,
     rounds: u32,
+    /// R24: `RunOwner` sends each job's `workflow_job` steps (the site's `GRAFTYARD_APP_HOOKS`).
+    app_hooks: bool,
     /// When each (head SHA, check name) first had a conclusion on the repository's leader.
     concluded_at: BTreeMap<(ObjectId, Box<str>), (Timestamp, CheckConclusion)>,
 }
@@ -108,6 +113,7 @@ impl World {
             graftyard_git::repo::REPO_FORMAT_REPOS,
             graftyard_git::issue_ops::call::REPO_FORMAT_CHECKS,
             REPO_FORMAT_ACTIONS,
+            graftyard_git::workflow_job::REPO_FORMAT_WORKFLOW_JOB,
         ];
         let repo = Group::new(ChainId::Repo(REPO), reads, RepoFold::new(REPO, OWNER), now);
         let mut w = World {
@@ -123,6 +129,7 @@ impl World {
             gone: BTreeSet::new(),
             kill_owner_after_checks: false,
             rounds: 0,
+            app_hooks: false,
             concluded_at: BTreeMap::new(),
         };
         w.seed_repo();
@@ -327,7 +334,24 @@ impl World {
         let Some((through, _)) = entries.last() else { return };
         let through = *through;
         let runs = touched(&f, entries.iter().flat_map(|(_, e)| e.iter()));
-        let r = round(self.shard.chain, &f, &runs, through, &self.gone);
+        let jobs = if self.app_hooks {
+            let l = self.shard.leader().unwrap();
+            let timed: Vec<(Timestamp, ActionsEvent)> = self
+                .shard
+                .m(l)
+                .log()
+                .iter()
+                .filter(|e| e.index > f.owner_cursor && e.index <= through)
+                .flat_map(|e| match &e.body {
+                    graftyard_raft::EntryBody::Events(v) => v.iter().map(|x| (e.at, x.clone())).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            steps(&f, timed.iter().map(|(at, e)| (*at, e)))
+        } else {
+            Vec::new()
+        };
+        let r = round(self.shard.chain, &f, &runs, through, &self.gone, &jobs);
         if r.checks.is_empty() && r.then.is_empty() {
             return;
         }
@@ -756,4 +780,131 @@ fn the_run_owner_cursor_never_moves_back() {
     assert_eq!(w.fold().owner_cursor, Index(9));
     let after = w.shard.committed_after(before);
     assert!(after.iter().all(|(_, e)| e.is_empty()), "{after:?}");
+}
+
+// ---- R24: `workflow_job` to an App ----
+
+fn app(id: i64, events: &[&str]) -> graftyard_identity::AppRecord {
+    use graftyard_identity::{AppId, AppRecord, ClientId, EventKind, PermissionSet, Slug, Url};
+    AppRecord {
+        id: AppId(DbId(id)),
+        slug: Slug::parse(&format!("app-{id}")).unwrap(),
+        name: "an App".into(),
+        client: ClientId::for_app(AppId(DbId(id))),
+        keys: SmallVec::new(),
+        permissions: PermissionSet::default(),
+        events: events.iter().map(|e| EventKind((*e).into())).collect(),
+        webhook: Some(Url(format!("https://app-{id}.example/hook").into())),
+        webhook_secret: None,
+        client_secrets: SmallVec::new(),
+        callbacks: SmallVec::new(),
+        public: false,
+    }
+}
+
+/// R24: `RunOwner` (killed once between its repository writes and its cursor) carries a run's `workflow_job` steps to
+/// the repository chain, and the `Webhooks` consumer's `plan` turns them into deliveries to the Apps installed on the
+/// owner. On main no `workflow_job` reaches any App, so `graft-runners` waits for its 5-minute sweep.
+#[test]
+fn an_installed_app_gets_each_jobs_workflow_job_steps_once_in_order() {
+    use graftyard_git::sequencer::{app_targets, plan};
+    use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
+    use graftyard_identity::{
+        Access, AppId, InstallationId, InstallationRow, InstallationState, PermissionSet, RepoScope,
+    };
+    let mut w = World::new();
+    w.app_hooks = true;
+    w.kill_owner_after_checks = true;
+    w.plans.insert("build".into(), Plan { ms: 20_000, ends: Conclusion::Success });
+    w.plans.insert("test".into(), Plan { ms: 10_000, ends: Conclusion::Failure });
+    w.register(1);
+    let run = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("build", &[]), spec("test", &[0])]);
+    w.run_for(3 * MIN);
+    let f = w.fold();
+    assert!(f.run_jobs(run).iter().all(|j| j.state.completed().is_some()), "{:?}", f.run_jobs(run));
+    let (build, test) = (f.run(run).unwrap().jobs[0], f.run(run).unwrap().jobs[1]);
+
+    // Three Apps on the owner: one subscribed with `actions` read on every repository; one subscribed without
+    // `actions`; one subscribed with `actions` read on another repository only.
+    let perms = |p: &[(&str, Access)]| PermissionSet(p.iter().map(|(k, a)| (Box::from(*k), *a)).collect());
+    let reads = perms(&[("actions", Access::Read), ("metadata", Access::Read)]);
+    let records = [app(51, &["workflow_job"]), app(52, &["workflow_job"]), app(53, &["*"])];
+    let installed = |n: i64, a: i64, repos, permissions| {
+        let row = InstallationRow { app: AppId(DbId(a)), repos, permissions };
+        (InstallationId(DbId(n)), InstallationState { row: Some(row), not_before: Timestamp(0) })
+    };
+    let installations = [
+        installed(901, 51, RepoScope::All, reads.clone()),
+        installed(902, 52, RepoScope::All, perms(&[("metadata", Access::Read), ("contents", Access::Write)])),
+        installed(903, 53, RepoScope::Selected(smallvec![RepoId(DbId(8))]), reads.clone()),
+    ]
+    .into_iter()
+    .collect();
+    let targets = app_targets(&installations, REPO, |a| records.iter().find(|r| r.id == a));
+
+    let l = w.repo.leader().unwrap();
+    let log = w.repo.m(l).log().to_vec();
+    let core = &w.repo.fold().core;
+    let render = |wh: &graftyard_git::hooks::Webhook, i: Option<InstallationId>| match &wh.subject {
+        graftyard_git::hooks::Subject::WorkflowJob(u) => serde_json::to_vec(&(u, i.map(|i| i.0.0))).ok(),
+        _ => None,
+    };
+    let mut got: Vec<(i64, WorkflowJobUpdate, Option<i64>, String)> = Vec::new();
+    for e in &log {
+        let rows = plan(core, REPO, 1, e, &targets, render);
+        // The same entry planned again derives the same GUIDs.
+        assert_eq!(rows, plan(core, REPO, 1, e, &targets, render));
+        for r in rows {
+            assert_eq!(r.event.as_ref(), "workflow_job");
+            let (u, i): (WorkflowJobUpdate, Option<i64>) = serde_json::from_slice(&r.body).unwrap();
+            assert_eq!(r.action.as_deref(), Some(u.action.name()));
+            got.push((r.hook.0.0, u, i, r.guid.to_string()));
+        }
+    }
+    assert!(got.iter().all(|(h, _, i, _)| *h == -51 && *i == Some(901)), "only App 51, as installation 901");
+    let seen: Vec<(JobId, JobAction)> = got.iter().map(|(_, u, _, _)| (JobId(u.job), u.action)).collect();
+    use JobAction::{Completed, InProgress, Queued};
+    assert_eq!(
+        seen,
+        [
+            (build, Queued),
+            (build, InProgress),
+            (build, Completed),
+            (test, Queued),
+            (test, InProgress),
+            (test, Completed)
+        ],
+        "each step once, in the order the shard committed them, `test` queued only when `build` released it"
+    );
+    let guids: BTreeSet<&str> = got.iter().map(|(_, _, _, g)| g.as_str()).collect();
+    assert_eq!(guids.len(), got.len());
+    // Each GUID is the App's own, from (generation, chain, index, slot, App): a hook on the chain never shares one.
+    for e in &log {
+        for r in plan(core, REPO, 1, e, &targets, render) {
+            let (_, _, slot) = r.entry.unwrap();
+            let app = graftyard_git::hooks::HookId::app(AppId(DbId(51)));
+            assert_eq!(r.guid, graftyard_git::hooks::delivery_guid(1, ChainId::Repo(REPO), e.index, slot, app));
+        }
+    }
+    for (_, u, _, _) in &got {
+        let j = f.job(JobId(u.job)).unwrap();
+        assert_eq!((u.run, u.attempt, &*u.name), (run.0, 1, &*j.spec.name));
+        assert_eq!(u.labels.iter().map(|l| &**l).collect::<Vec<_>>(), ["linux", "self-hosted"]);
+        match u.action {
+            Queued => assert!(u.runner.is_none() && u.started.is_none() && u.completed.is_none()),
+            InProgress => assert!(u.runner.is_some() && u.started.is_some_and(|s| s >= u.created)),
+            Completed => {
+                let JobState::Completed { conclusion, at } = j.state else { unreachable!() };
+                assert_eq!(u.conclusion, Some(graftyard_actions::run_owner::conclusion(conclusion)));
+                assert_eq!(u.completed, Some(at));
+                // What the in_progress step knew rides the completed one.
+                let started = got.iter().find(|(_, x, _, _)| x.job == u.job && x.action == InProgress).unwrap();
+                assert_eq!((u.runner, u.started, u.created), (started.1.runner, started.1.started, started.1.created));
+            }
+        }
+    }
+    assert_eq!(
+        got.iter().filter(|(_, u, _, _)| u.action == Completed).map(|(_, u, _, _)| u.conclusion).collect::<Vec<_>>(),
+        [Some(CheckConclusion::Success), Some(CheckConclusion::Failure)]
+    );
 }
