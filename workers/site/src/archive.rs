@@ -238,27 +238,21 @@ impl ArchiveHost for SiteHost<'_> {
         // Pack bytes, not row bytes, read only until past promote-ahead's bound, so the walk costs at most that much.
         let after = fold.promoted().map_or(0, |p| p.to.0);
         let ahead = self.ahead_bound();
-        let q = "SELECT length(row), CASE WHEN length(row) < ? THEN row END FROM log WHERE idx > ? ORDER BY idx";
-        let it = self
-            .sql
-            .exec(q, vec![crate::host::i(log_archive::SHORT_ROW), crate::host::i(after)])
-            .ok()?
-            .raw()
-            .map_while(|r| {
-                let r = r.ok()?;
-                Some((int(&r[0]).ok()? as u64, blob(&r[1]).ok().map(|b| b.to_vec())))
-            });
+        // In pages read to their end (`crate::logread`): this walk stops early every minute, and a cursor it left open
+        // failed the fold audit's `DROP TABLE` with SQLITE_LOCKED.
+        let cols = format!("length(row), CASE WHEN length(row) < {} THEN row END", log_archive::SHORT_ROW);
+        let it = crate::logread::log_after(&self.sql, &cols, after).map_while(|r| {
+            let r = r.ok()?;
+            Some((int(&r[1]).ok()? as u64, blob(&r[2]).ok().map(|b| b.to_vec())))
+        });
         let unpromoted = log_archive::pack_bytes_above(it, ahead);
         Some(View::of(c.join.chain, fold, c.m.state().commit, total, unpromoted))
     }
 
     fn rows(&self, after: Index) -> std::result::Result<log_archive::Rows<'_>, String> {
-        // Read lazily, so the walk stops one row past the range without loading the log.
-        let it = self
-            .sql
-            .exec("SELECT idx, row FROM log WHERE idx > ? ORDER BY idx", vec![crate::host::i(after.0)])
-            .map_err(|e| e.to_string())?
-            .raw();
+        // Read a page at a time, so the walk stops within a page of the range without loading the log or leaving a
+        // statement open (`crate::logread`).
+        let it = crate::logread::log_after(&self.sql, "row", after.0);
         Ok(Box::new(it.map_while(|r| {
             let r = r.ok()?;
             Some((Index(int(&r[0]).ok()? as u64), blob(&r[1]).ok()?.to_vec()))

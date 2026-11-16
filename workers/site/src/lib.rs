@@ -30,6 +30,7 @@ mod hookseq;
 mod host;
 mod inbox;
 mod load;
+mod logread;
 mod logrelay;
 mod lookup;
 mod member;

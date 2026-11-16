@@ -1160,6 +1160,31 @@ The operator stopped all hosted work: the account's bill for Oct 27 to Nov 16 is
   digests, 179 failed on a call (160 a 404 on a retired or never-placed member, mostly the f2 member of a removed
   test group), 141 carried a refold that ended `SQLITE_LOCKED`, and 3 had no report yet. Sites b and c home none.
   So it is not a loop on the same chains; its cost is about 10 rows a run on site a.
+- **The SQLITE_LOCKED refolds: cause and fix (branch `audit-locked`, 2026-11-16).** A SQLite cursor stopped
+  before its last row keeps its statement, and a lock on what it read, until the isolate collects it. Until then
+  every `DROP TABLE` in the object fails with SQLITE_LOCKED. That includes the fold audit's `reset_scratch` at its
+  first batch, which is where the refolds failed. The repeat offender is the archive alarm. Every minute, a leader's
+  `SiteHost::view` walks the log until it passes promote-ahead's bound, and `SiteHost::rows` walks it until one row
+  past the due range. Both are lazy cursors that stop early.
+
+  Local workerd (`tests/auditlock/bed/run.sh`, 200 log rows on a fresh object each time, measured):
+
+  | Read | Then | Main's reads | This branch |
+  |---|---|---|---|
+  | `view` + `rows` | audit `DROP TABLE`, next request | `SQLITE_LOCKED` | ok |
+  | `view` + `rows` | the same, one request later | `SQLITE_LOCKED` | ok |
+  | `each_row` stopped after 1 row | `DROP TABLE`, same request | `SQLITE_LOCKED` | ok |
+
+  The fix is `workers/site/src/logread.rs`:
+  - `log_after` reads the log in pages, each query read to its end. Pages start at 8 rows and grow while they hold
+    under 2 MB, up to 1,024 rows. The archive walks, `stored_range` (catch-up) and `entries_json` use it.
+  - `each_row` steps through the rest of a statement it stopped early, without keeping the rows.
+
+  Two plants fail the bed:
+  - `each_row` not draining: `each_row` drop `SQLITE_LOCKED`.
+  - `log_after` taking a page without reading its query to the end: audit drop `SQLITE_LOCKED`.
+
+  Ships on the B0-30 short run's site day.
 - **What was writing [measured, `durableObjectsPeriodicGroups` by namespace, every graft-m1 namespace].**
 
   | Window | Rows written an hour | DO-hours an hour | What |
