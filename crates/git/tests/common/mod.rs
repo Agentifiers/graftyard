@@ -318,6 +318,7 @@ pub fn repo_reads() -> Vec<Format> {
         graftyard_git::issue_ops::call::REPO_FORMAT_CHECKS,
         graftyard_git::watch::REPO_FORMAT_WATCH,
         graftyard_git::issue_ops::call::REPO_FORMAT_REVIEWS,
+        graftyard_git::repo::REPO_FORMAT_ROLLUP,
     ]
 }
 
