@@ -719,8 +719,27 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
     - The lag does not touch the gate. Site c's SQLite is 7.26 GB, log 2.00 GB, zero `SQLITE_FULL`.
   - About half the 503s fall within 3 s of a hold (near.py). That fits the cause: a hold stalls the leader's rounds,
     so both followers miss the grant. The other half are a follower's normal late tail [inference].
-  - Nothing fixed mid-run, as ruled.
-- **The fill path on slimmed rows (`tests/am1/b030split/fill.mjs`, 01:54:57 to 01:55:02Z,
+  - Nothing fixed mid-run, as ruled (operator, 2026-11-16): the load retries them and loses none, and main's edge
+    already retries a write's shed read within LOOKUP_FOR, so the fix ships with the next edge deploy. Site day 9
+    deployed the four site scripts and kept edge `19b495a1` from 2026-11-13, so this run's edge is older than its
+    members. Recorded as `decisions/OPEN-QUESTIONS.md` G15. Hourly 503s from the load's tally: 1 to 9 an hour from
+    14Z to 20Z, then 194, 370, 472 and 754 in the 21Z to 00Z hours.
+- **Site c's parent member, watched (operator, 2026-11-16).** Monitor rows, 15 minutes apart:
+
+  | Time | Behind the leader | Its apply rate | Leader's | Above the leader's truncation | InstallSnapshot |
+  |---|---|---|---|---|---|
+  | 23:18Z | 2 | 98.4 a min | 98.5 | 5,124 | 0 |
+  | 00:24Z | 582 | 66.3 | 76.5 | 4,428 | 0 |
+  | 01:24Z | 1,566 | 85.9 | 105.8 | 5,016 | 0 |
+  | 02:24Z | 2,326 | 85.3 | 101.0 | 4,721 | 0 |
+
+  - Its place in the log: it needs an `InstallSnapshot` once its next entry falls below the leader's truncation point,
+    which follows `archivedTo`. The log the leader keeps is about 7,000 entries (its 2 GiB cap), so the margin is about
+    7,000 less the lag.
+  - Over the last hour the lag grew 12.7 entries a minute. If that holds, the margin of 4,721 lasts about 6 h, before
+    day 30 (about 11.5 h of active time left) [inference from a 1 h trend].
+  - The member's own `/stats` at 02:30Z: installs 0, restores 1 (its boot).
+ (`tests/am1/b030split/fill.mjs`, 01:54:57 to 01:55:02Z,
   `tests/am1/raw/b030r2-fill.jsonl`).** The slim had moved into the comment table, cursor key 2^40 + 21,024. So two of
   the watcher's 100 sampled seeded comments (keys 2^40 and 2^40 + 13,400) were already slimmed on the parent. I read
   each through the parent's leader (site b) twice, and read two unslimmed sample rows as a control.
