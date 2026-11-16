@@ -147,6 +147,80 @@ This branch's catch-up change helps B0-32 and B0-31 the same way: stored packs f
 - **Agent push stages with buckets up:** resolve p50 518 ms, validate 1,682, commit 1,264. No commit probed and none staged first, because 1 MiB packs never go inline.
 - **The 17 agent commits counted under placement failing:** most likely pushes sent with buckets up that ended after the switch [inference]. `a1.mjs` labels a push `@fail` by its end time (`half()` runs after the push), and sends `x-graft-place-fail` only on pushes that start after `placeFailAt`. With pushes at p50 4.1 s, the agents in flight at the switch (about 4.17/s × 4 s, so 17) fit the count. The driver keeps no per-push send time, so the row cannot prove it. To make the line judgeable, label each push by its start phase. As run, the line fails by 17.
 
+### m3fr8 after the run: B0-32's commit wait (analysis from Workers Logs and the r8 raw files, nothing built, no hosted spend)
+
+**Sources.** 80 burst pushes sampled from the edge's 769 `git-receive-pack` events and traced end to end in Workers Logs by trace id (1,643 events). All came from colo LAX. Also the burst's `server-timing` for 498 pushes (`tests/am1/raw/a1-b0-32-mwj4jl6k.jsonl`, `burst timing`), the members' trace (`tests/fanout/raw/tsave-m3fr8-b0-32.jsonl`), and `tests/f74/inbound.py` over 10:36:49Z to 10:37:30Z. A Workers Logs `timestamp` is the event's end, so a handler's start is `timestamp - wallTimeMs`. A handler's wall is its time inside the callee, not the round trip.
+
+**Where the edge's 5.5 s commit stage goes, against the leader's 427 ms** [measured, 80 traces, from the first `/commit` handler's start to the edge's end]:
+
+| Part | Mean per push | p50 |
+|---|---|---|
+| The final send's leader handler | 786 ms | 648 ms |
+| Earlier sends' leader handlers, whose 200 the edge did not take | 2,091 ms | 1,959 ms |
+| Between sends, with no leader handler running: the 2 s receipt timer, `/suspect`, the 200 ms pause, and out legs | 2,286 ms | 2,138 ms |
+| After the final handler: the back leg and the edge's own finish | 785 ms | 911 ms |
+| Whole window | 5,949 ms | 6,013 ms |
+
+- **Sends.** There were 201 `/commit` sends for 80 pushes (2.5 a push). Every one reached the leader (DO `6864b3e1`) and answered 200. Of the 121 sends that were not a push's last:
+  - 39 had a leader handler of 2 s or more (p50 2,673 ms): the edge's COMMIT_RECEIPT expired while the leader still held the command.
+  - 71 had a handler under 2 s (p50 965 ms), but the edge sent again anyway. The 200 came back after the receipt deadline, so the out leg plus the back leg took the rest. Of the 45 sends followed by a `/suspect`, 31 had already ended in the leader's handler when the `/suspect` arrived.
+  - 11 were the Stage round trip: a quick handler (p50 169 ms) that answered `Stage`, then the bucket place, then the second commit.
+- **The leader was congested by the resends, not slow at committing.** In the burst's window the leader took 2,075 `/commit` requests. Requests open in its handler, all routes, peaked at 572 (10.0 to 12.0 s after the burst started), p50 84. A resend under the same request id joins the same ticket, but it is another request on the leader's input, and it carries the 256 KiB inline pack again. Leader commit p50 427 ms, the leader's own measure, never sees the out leg or the queue ahead of the handler.
+- **`/suspect` is the same mechanism as B0-02's** [verified match]. On a missed receipt, `commit_hedged` (`crates/lookup/src/lib.rs`) calls `suspect(all=false)`, which reports the leader to the other two voters. Over the first 31 s of the burst, `/suspect` was 842 of site 1's 2,643 inbound requests (31.9%) and 842 of site 2's 3,127 (26.9%), but only 47 of the leader's 6,945 (0.7%). There were none before or after the burst. 35 of the 80 pushes sent some. Every verdict left the leader in place: term 2 throughout, and zero leader changes. B0-02's 29 to 40% came from the same rule while a leader was healthy. Here it is the same rule with the leader healthy and congested.
+
+**Why 258 pushes committed twice instead of staging first** [measured from `server-timing`; the per-isolate part is an inference]:
+- **HOT_WINDOW did not lapse.** Each push's stage-first decision comes at the edge after resolve, auth, install, gate and context. Those decisions fell 2.0 s to 7.0 s after the first burst send, 486 of 498 of them between 3.5 s and 6.5 s, so the whole burst decided inside one HOT_WINDOW (5 s).
+- **The hot signal came too late.** Times are from the client's first burst send. The first `Stage` reply anywhere reached the edge at 3.1 s, 3 had arrived by 3.5 s, 9 by 4.5 s, and 33 by 5.5 s. The re-committed pushes decided at p50 4.7 s, and the stage-first ones at p50 5.4 s. Per 0.5 s of decision time:
+
+| Decision at | Committed twice | Staged first | `Stage` replies already back |
+|---|---|---|---|
+| before 3.5 s | 5 | 0 | 0 |
+| 3.5 s | 29 | 20 | 3 |
+| 4.0 s | 69 | 34 | 4 |
+| 4.5 s | 79 | 31 | 9 |
+| 5.0 s | 47 | 54 | 21 |
+| 5.5 s | 21 | 73 | 33 |
+| 6.0 s on | 8 | 28 | 46 to 56 |
+
+- **So these were pushes decided in an isolate before that isolate's own first `Stage` reply** [inference: `hot` is a per-isolate map, and Workers Logs do not name the isolate]. This is not a single first push per isolate: the reply is late because the first commit, which answers `Stage` at admission, takes p50 3,448 ms to come back over the same congested commit path.
+- **Staging first did not save much.** Stage-first pushes took 10.9 s at the edge (p50) and committed once in 5,278 ms. Re-committed pushes took 12.2 s: 3,448 ms commit, 549 ms stage, and 2,008 ms for the second commit. The commit path is the cost either way.
+
+**What resolve's 1.5 s is** [measured, the 12 traces matched one to one to their `server-timing` and the 80 traces' reads]:
+- **The reads, in order:**
+  1. The `Names` login row on site a, a handler of 1 ms.
+  2. The `Names` placement row on site a, 1 ms.
+  3. The owner's `Authz` read by `spread_read`, with `index: true`, to a learner on site b (handler p50 173 to 183 ms) or site c (370 to 406 ms). Each such handler is a read-index round to the `Authz` leader on site a.
+  4. Sometimes a second member, with a handler of 430 to 490 ms.
+- **The learners are picked at random.** The `Authz` reads split almost evenly: site b's `ef42c0db` 57 and `f1471310` 41, site c's `7d31a775` 57 and `10d8b866` 36. An isolate with no answer time for a learner counts it as near (`timed_spread_order`), so fresh isolates send as many reads to apac as to weur [inference].
+- **Reads were in flight for only 41% of resolve** (p50, p10 31%, p90 49%). The rest is the edge between reads, p50 140 ms per gap. Over the burst the colo's edge CPU summed 5.1 s per 2 s, with up to 529 pushes in flight. If few isolates held them, the gaps are their event loops queueing [hypothesis: Workers Logs do not name the isolate].
+- **Resolve is not on the critical path by much.** It runs beside auth plus install, p50 473 + 829 ms, so it adds about 0.2 s.
+
+**Whether validate's 3.0 s is the network shard or a pool forward** [measured, 80 traces]:
+- **The network shard on site a** (DO `af5b4f7a`) received all 80 validates. It forwarded 56 of them to a pool shard (`via=0&pool=1`) and validated 24 itself (wall p50 2,186 ms).
+- **The pool shard is cheap.** Its wall is p50 370 ms (p99 891 ms).
+- **The wait is in the network shard, before the forward.** For the 56 forwarded validates, the forward started p50 3,038 ms after the network shard's handler began, at CPU p50 0 ms. In that time the network shard read the repository's owner and then the owner's record, both from `Names` on site a (`500d9d51`, then `54fddaa8`), with handlers of 1 ms:
+
+| Step | p50 | p90 |
+|---|---|---|
+| Handler start to the first read | 294 ms | 613 ms |
+| First read end to second read start | 1,185 ms | 3,024 ms |
+| Second read end to the forward | 281 ms | 1,976 ms |
+
+- **The edge does not pass `record` on validate.** The shard's code already takes the caller's record to "save the two `Names` reads" (`workers/site/src/shard.rs`), and the edge's merge and demand calls pass it. `validate_url` (`workers/edge/src/lib.rs`) does not.
+- **The gaps are waiting in one Durable Object while about 434 pushes arrived in 1 s** [inference]. One candidate is the output gate holding each outgoing call behind the per-push `touch` storage writes (`last_request` and the alarm). The logs cannot tell the candidates apart.
+
+**Proposal** (design first, not built; each needs its design text before code):
+1. **Commit receipt (`commit_hedged`, DESIGN "Commit and read paths").** The operator decision, through B0-02, is that cutting `/suspect` needs a design of this rule. This is the design.
+   - On a missed receipt to a member this isolate heard a 200 from in the current term within the last COMMIT_RECEIPT, do not report it. That member is busy, not dead. Report only on a miss with no such reply.
+   - Do not resend the command, inline pack included. Keep the first send open, and from COMMIT_RECEIPT on ask `/outcome_by_request` for the request id, which joins the ticket without a second command on the leader's input.
+   - In this trace, that would remove the 110 missed-receipt resends of the 121 non-final sends and the 82 `/suspect` waves, since every isolate kept hearing 200s from the leader, and most of the 2.3 s between sends [inference]. The final handler and the back leg, about 1.6 s, remain.
+   - It changes no constant: COMMIT_RECEIPT and FOLLOWER_WAIT stay. It touches no `crates/raft` code, and `Acked` stays built only inside `outcome`.
+   - Open point for the design: `/outcome_by_request` takes the command for its replay. A body without the inline pack needs a decision on the replay check.
+2. **Validate:** pass `record` on the edge's `/validate`, as the merge and demand calls do. That removes both `Names` reads and their waits from every push, and validate should drop toward the pool shard's 370 ms [inference]. Separately, write `touch`'s `last_request` at most once a minute, since the renewal alarm is an hour out, so the burst writes once instead of 434 times. Each change is a small edge or site change with a regression test.
+3. **Stage-first:** rerun after 1 before changing it. The late hot signal is the slow first commit, and 1 shortens it. If it is still late, an isolate can stage when it already holds several pushes over INLINE_MAX_HOT in flight to one group. That is a local signal, with no raft flag, which the `push-reads` entry rejected. Expected gain at most about 1.3 s a push (10.9 s against 12.2 s).
+4. **Resolve:** treat a learner with no answer time as far, or seed its score from the site's measured round trip, so a fresh isolate reads `Authz` from weur (about 180 ms) before apac (about 380 ms). Expected gain about 0.2 s, because resolve runs beside auth and install. Lowest priority.
+5. **Instrument for the rerun:** a per-isolate token in one edge log line per push, to test the isolate-queueing hypothesis and the per-isolate reading of stage-first.
+
 ## Rows m3fr7 (2026-11-15/16, TAG `m3fr7`, `ROWS="b0-32 b0-31 l0-12"`, `STOP_USD=66`)
 
 **Build and site day.** Main `1aed2cff`, which ran with these merges since m3fr6's `a304d3fc`: lm1-rows-m3f6's drivers and test-faults instruments, `read-round-gap` (`0646faa2`), `composed-miss`, and `promote-unlock`. New shard image `sha256:29c3b917…`, built from that commit's `containers/git`. Site day 23:21:26Z to 23:35:02Z, logged in `install-m3f.md`. Rows started 23:41Z at $48.91 (graft-m3f, account Graftyard). From 02:23Z a cost watch metered every 15 minutes with `env-m3f.sh` and would have stopped L0-12's refusals after the current kind at $66. It never fired.
