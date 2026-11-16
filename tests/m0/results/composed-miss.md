@@ -72,3 +72,7 @@ After LM-1 round 26, a chain behind HEAD and a want behind HEAD compose: the cha
 | Stock, tip | 0.005 s (first 64 KiB of pack 5.34 s) | 16.77 s | 301,048,251 |
 
 The 30-move answer passed the client's `index-pack --strict`, `fsck --strict` and a checkout with a tree equal to the want's. The first byte grows with the diff, because the want's own pack is built before the header that counts it.
+
+## The per-miss line (2026-11-16)
+
+Each miss's shard object now logs `shard miss <net> <CloneKey digest>: {...}` (`graftyard_git::compose::MissLog`): its arrival in epoch ms, then in ms after it `ready_ms` (the chain wait), `only` (the `compose=only` answer's ms, status and `x-graft-compose`), `caught_up_ms` (stock only), `headers_ms` (the serving answer's headers, which the container sends with its first byte) and `first_ms` (its first chunk on to the edge), and `answer`. A probe finds its line by the key it already computes (`cloneKeyHex` in `tests/am1/rest/a1.mjs`). In `tests/composed/bed/run.sh` with `FWD=1`, a 300 MiB answer passed through the forward whole, the callback ran once, and the wasm memory stayed at 1 MiB.

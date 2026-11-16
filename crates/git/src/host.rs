@@ -335,6 +335,24 @@ pub async fn cached_response(b: &R2, key: &str, headers: Headers) -> Result<Opti
     Ok(Some(Response::from_body(body).map_err(worker_err)?.with_headers(headers)))
 }
 
+/// `r` with its body passed on chunk by chunk, calling `first` when the first chunk goes on, or dropping it unrun if
+/// the body ends or is cancelled before one. The chunks stay JavaScript values, so a 270 MB answer never enters wasm
+/// memory (`tests/composed/bed/run.sh`, `FWD=1`), and a cancel from the reader cancels `r`'s body. A body that is not
+/// a stream is returned as it is, with `first` dropped.
+pub fn on_first_chunk(r: Response, first: impl FnOnce() + 'static) -> Response {
+    let worker::ResponseBody::Stream(raw) = r.body().clone() else { return r };
+    let (status, headers) = (r.status_code(), r.headers().clone());
+    let mut first = Some(first);
+    let chunks = futures_util::StreamExt::map(wasm_streams::ReadableStream::from_raw(raw).into_stream(), move |c| {
+        if let Some(f) = first.take() {
+            f();
+        }
+        c
+    });
+    let body = wasm_streams::ReadableStream::from_stream(chunks).into_raw();
+    worker::ResponseBuilder::new().with_status(status).with_headers(headers).stream(body)
+}
+
 /// A container response's body put to `b` under `key` through a `FixedLengthStream` of its `content-length`, so the
 /// bytes never enter wasm memory and R2 stores the object only if the whole length arrived. `false` when the
 /// response names no length or is not a stream.
