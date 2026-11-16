@@ -1203,6 +1203,58 @@ without a child group taking the tier. At 90%: 27 simulated days, a size bound o
   09:46Z to 2026-11-16 11:44Z): $190.43 (members $167.46, shards $22.78, edges $0.19), against the run meter's $139.70
   for nearly the same window. The third run, 17:17 to 20:15Z: $16.83 for graft-m1 (account $20.44).
 
+## Proposal: a shorter B0-30 run from the split onward (2026-11-16, not run)
+
+The second run's two failures both come after the split: site c's post-split install (cause 1) and the
+`Degraded` re-placement while it installed (cause 2). The 19.5 simulated days before the split show only the parent
+growing to `SPLIT_AT` (0.0585 GB a day, measured on both runs), and they cost $110.18 of the second run's $190.43
+(`acctcost.py`, graft-m1 lines, 2026-11-14 09:46Z to 2026-11-15 23:45Z, the seed included).
+
+**Run (option A, recommended).**
+1. Site day from main (b030-fixes in), as the third run's.
+2. Seed a fresh group's metadata tier to about 5.5 GB (`seed.mjs 5500000000`), so that with the log at its 2 GiB cap
+   the parent passes the real `SPLIT_AT` (7 GiB) about 0.8 simulated days into the load. The third run's 4.02 GB
+   seed reached 6.08 GB at day 0.75. No product constant changes. The tier is bigger than the row's 4 GB, which makes
+   both the child and an unfixed install's scratch bigger, so it is no easier on the gate line.
+3. Journey 9 with pushes on, as written, until 8 simulated days after `MetaSplit`: the second run's post-split span
+   to day 27 was 7.5.
+4. Force the second run's lag instead of waiting for it: after `MetaDropped`, while the slim runs, `/sever` site c's
+   parent member (LF-13's test route) until the leader's `truncatedTo` passes its applied (about 7,000 entries, 75
+   minutes at 95 a minute), then lift it. That puts site c through an install from a pre-slim snapshot, the second
+   run's case, under load and through archive runs, which exercises (i-2) and (i-3); a full run lags only by chance.
+5. While site c installs, call `/place` on the parent's leader as the edge's `create` would: (ii)(a) must answer
+   "behind" and append no config entry.
+6. End: `fill.mjs` on 10 or more slimmed rows, `verify.mjs` for `RestoredTo`, then the close-out of rule 3.
+
+**What it judges.** The gate line as written (every member under `CHILD_GROUP_AT`, zero `SQLITE_FULL`, `RestoredTo`
+readable, a child group holding the tier), plus: site c's install peak against own − metadata + scratch, no
+`install restarted` across archive runs, no metadata read or lead from site c while marked, the 60 s stall alert
+silent, and no `Config` entry from step 5.
+
+**Cost on `acctcost.py`, graft-m1 lines, scaled from the second and third runs [estimate].**
+
+| Phase | Basis | Estimate |
+|---|---|---|
+| Site day | third run's 17:17 to 17:36Z: $0.00 | $0.5 |
+| Seed 5.5 GB | third run's 4.02 GB seed, 17:36 to 18:13Z: $12.75, × 1.37 | $17.5 |
+| Load to the split, about 1.2 h | third run's 18:13 to 20:13Z: $2.02 an hour | $2.5 |
+| Child restore | second run's 23:45Z to 00:45Z: $33.29, less $3 of load, × 1.37 | $41 |
+| Load after the split with the slim, about 10.7 h | second run's 00:45 to 08:00Z: $3.33 an hour | $36 |
+| Site c's install of the pre-slim tier | second run's 08:00 to 11:44Z: $22.81 with the load stopped, × 1.2 | $27 |
+| Verify, teardown, 30 min idle | | $1 |
+| **Total** | about 14 h of wall time | **about $125** |
+
+**Option B, about $100.** Keep the row's 4 GB seed and set the split threshold with the test-only `/bench_seed
+{"splitAt"}` to the parent's size once the log is full (about 6.1 GB); everything else as A. It still tells the fix
+from its absence: an unfixed install would peak about 6.1 + 4.5 = 10.6 GB, over the line, and a fixed one about 3.3
+GB. But it moves a product threshold, and `splitAt` lives in each isolate, so the driver must set it again until
+`MetaSplit` commits.
+
+**Why not the full 27 days.** Nothing in the row depends on the pre-split days beyond reaching `SPLIT_AT`. `LOG_KEEP`
+(30 days of real time) never applies at 18x. Archiving held the log at its cap for days 7 to 22 on the first run and to
+day 25.8 on the second. The post-split span is kept. A full run would also exercise the install only if a member
+happened to lag. Whether the shorter procedure counts as the row as written is the operator's decision.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
