@@ -1103,3 +1103,57 @@ fn a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_it
     assert_eq!(feed::start(REPO, Some(&at_start), oldest, newest), feed::Start::After(through));
     assert_eq!(ring.past(through, &[]).len(), 1, "the release is still served");
 }
+
+/// L0-12 m3fr7: a poller held on a caught-up learner carries that learner's cursor to the next member it asks. A
+/// learner behind that cursor must answer `lagging`, so the edge asks the next member, never 410: the cursor is not
+/// older than the ring, and a 410 sends the client to reload its leases and tasks. As a 410, 6,176 of an apac
+/// learner pair's 20,670 polls came back in under 20 ms (`tests/am1/results/lm1-rows-m3f.md`). It still serves a
+/// cursor inside its ring and refuses one below it.
+#[test]
+fn a_learner_behind_the_cursor_answers_lagging_not_gone() {
+    let mut w = lease_world();
+    create_ext(&mut w, CLAUDE, "ahead", Some(WRITER));
+    let mut entries = Vec::new();
+    for k in 0..3 {
+        w.commit(issue(app(CLAUDE), shared(&[&format!("ahead/{k}/**")], Some("ahead")))).unwrap();
+        let after = w.fold();
+        let l = w.repo.leader();
+        let e = w.repo.members[l.0 as usize]
+            .log()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
+            .unwrap()
+            .clone();
+        let graftyard_raft::EntryBody::Events(evs) = &e.body else { unreachable!() };
+        entries.push((e.index, e.at, evs.clone(), after));
+    }
+    // The caught-up learner applied all three; the one behind it applied only the first.
+    let (mut ahead, mut behind) = (feed::Ring::default(), feed::Ring::default());
+    for (n, (i, at, evs, f)) in entries.iter().enumerate() {
+        ahead.feed(REPO, &w.ident.owner, &f.core, &f.meta, (*i, *at, evs));
+        if n == 0 {
+            behind.feed(REPO, &w.ident.owner, &f.core, &f.meta, (*i, *at, evs));
+        }
+    }
+    let cursor = feed::FeedCursor { group: REPO, index: ahead.through }.encode();
+    let (oldest, newest) = behind.bounds();
+    assert!(ahead.through > newest, "the cursor is past the behind learner's last entry");
+    let start = feed::start(REPO, Some(&cursor), oldest, newest);
+    assert!(!matches!(start, feed::Start::Gone { .. }), "a cursor ahead of the member is no 410: {start:?}");
+    assert_eq!(start, feed::Start::Ahead(ahead.through));
+    // Its own last entry is recent (lag 0), yet it lags the poll: `lagging`, and the edge routes on.
+    let fresh = feed::Following { gap: false, installing: false, lag: std::time::Duration::ZERO };
+    let mut s = feed::Serving::default();
+    assert_eq!(s.admit(feed::FeedRole::Learner, false, fresh.behind_cursor()), feed::Admit::Lagging);
+    assert_eq!(s.held, 0, "nothing held on the member behind");
+    let lagged = |l: feed::Following| (feed::Admit::Lagging, feed::FeedRole::Learner, l.lag);
+    let answers = [lagged(fresh.behind_cursor()), (feed::Admit::Hold, feed::FeedRole::Learner, fresh.lag)];
+    assert_eq!(feed::route(&answers), feed::Route::Held(1), "the caught-up learner holds it");
+    // A cursor inside the ring is served as before, and one below the ring's floor is still gone.
+    let inside = feed::FeedCursor { group: REPO, index: newest }.encode();
+    assert_eq!(feed::start(REPO, Some(&inside), oldest, newest), feed::Start::After(newest));
+    assert!(oldest.0 > 0, "the ring has a floor to fall below");
+    let below = feed::FeedCursor { group: REPO, index: Index(oldest.0 - 1) }.encode();
+    assert!(matches!(feed::start(REPO, Some(&below), oldest, newest), feed::Start::Gone { .. }));
+}

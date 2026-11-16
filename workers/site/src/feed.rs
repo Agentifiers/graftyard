@@ -242,9 +242,10 @@ pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll
         let (oldest, newest) = f.ring.bounds();
         feed::start(repo, p.cursor.as_deref(), oldest, newest)
     };
-    let after = match start {
+    let (after, ahead) = match start {
         Start::Gone { oldest } => return json!({ "admit": "gone", "oldest": oldest.encode() }),
-        Start::After(i) => i,
+        Start::After(i) => (i, false),
+        Start::Ahead(i) => (i, true),
     };
     let since = {
         let mut f = feed.borrow_mut();
@@ -257,6 +258,9 @@ pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll
         let mut following = f.following();
         if p.lagging_ok && role == FeedRole::Learner {
             following = Following { gap: false, installing: false, lag: Duration::ZERO };
+        } else if ahead {
+            // The edge's last resort (`lagging_ok`) above still holds such a poll here.
+            following = following.behind_cursor();
         }
         match f.serving.admit(role, p.learner_answers, following) {
             Admit::Hold => {}
