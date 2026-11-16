@@ -1113,6 +1113,25 @@ Approved by the user (about $185, relayed by the operator 13:40Z). b030-fixes me
   in `tests/am1/raw/b030r2-generic/`.
 - **After the run:** `/retire` on the six members, a sweep, and the meter checked flat for 30 minutes.
 
+### Third run: site day, seed and the first hour
+
+- **Site day r3 done 17:17:28Z to 17:33:22Z, exit 0** (`tests/am1/raw/b030r3-siteday.log`): sites a to d in two
+  phases (sites exit 0 at 17:30:55Z), then the edge, version `83ec5e95`. No shard was running, so the roll had none
+  to kill.
+- **Seed.** `m3org/b0-30-r3` is `repo:1048591` (main `cd7fe7a`). 1,340,000 comment rows of 1,800 B on each member,
+  17:36:41Z to 18:12:34Z, SQLite 4,017,299,456 / 4,020,723,712 / 4,017,356,800 B, metadata digests equal
+  (`59c7b45d…`). Two `/bench_seed` calls failed on the client side (a reply without the digest) and were retried.
+  Spend at the end of the seed: $4.28.
+- **Load from 18:12:55Z.** First hour (to 19:19Z, simulated day 0.83): 95.3 to 95.9 pushes a minute, `batchFail` 0,
+  push p50 1.8 s at the start and 3.9 s by 19:19Z (max 9.4 s). Archiving began at about 19:00Z with the log at
+  1.93 GB (`LOG_MAX_BYTES` 2 GiB): at 19:10Z archivedTo 1,160, promotedTo 6,166, log 2.004 GB; at 19:13Z log
+  1.899 GB and 775 archive objects. Member SQLite 6.08 GB. `SQLITE_FULL` 0, bodies baseline 100.
+- **Site day checks.** `/status` shows `procs` on sites 0 and 1's shards (site 2's had not started). In 19:20 to
+  19:23Z, site a's push validates: 129, p50 290 ms; `/merge` 58, p50 789 ms. One leaderless gap of 11 s
+  (19:15:47Z to 19:15:58Z, leader to site 1), under GAP_MAX_S. No stall alert.
+- **hourly.py fix.** Main's receipt rule puts `record=` before `tipsn` in a push validate's URL, so the old
+  `validate?repo=N&tipsn` filter matched none (18:00Z's row reads 0). It now matches on `tipsn=` anywhere.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
