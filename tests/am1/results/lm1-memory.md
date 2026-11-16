@@ -3553,3 +3553,13 @@ Sweeps after the row tore down 26 containers, including net 131304. Two later sw
 post-row restarts both read "sweep: no shard container running".
 
 **Cost.** $140.26 at 00:22Z, containers $54.74. The site day, warm and row cost $2.55, against the $3 cap.
+
+### Budget change (2026-11-16, about 01:58Z)
+
+The user raised LM-1's stop from $145 to $155, relayed by the operator thread at about 01:58Z. The $155 is only for
+B0-33:
+- The next m2b site day is unchanged: B0-34 then B0-33, once the repack fix and the composed-miss fix are merged, with
+  a $4 cap and a stop at $144.50 on the meter.
+- If B0-33 does not run that day, or runs and fails with a cause that is named and fixed, one more site day for B0-33
+  alone may run up to $155, stopping at $154.50. The cause and the fix go to the operator before that day.
+- The $155 does not cover B0-34 reruns or other rows; those need the operator's approval first.
