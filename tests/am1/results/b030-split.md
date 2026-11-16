@@ -768,6 +768,15 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   advances simulated time only while it runs (at most 5 s a tick), so the outage cost no simulated time; the group ran
   on, archiving, with no pushes for 13 minutes. Nothing hosted changed. The watch readings moved from `/tmp` into
   `tests/am1/b030split/read.mjs`.
+- **Site c's margin, tracked (operator, 2026-11-16).** `tests/am1/b030split/margin.py` reads the monitor rows and
+  fits the margin's hourly trend by least squares, then projects when the leader's truncation crosses it.
+  - To 03:58Z the margin fell 463 an hour over the last 1.5 h (crossing in about 8.8 h), 372 over 2 h (10.9 h) and
+    284 over 3 h (14.3 h).
+  - The 13-minute orb outage gave it back: no pushes came, site c caught up, and the 04:24Z row reads 4,929. So the
+    projection restarts from there.
+  - If it crosses, site c's member should restore from the archive as designed, which also exercises `RestoredTo`
+    under load. I record its start, its duration, the member's lag after, and `SQLITE_FULL`, and report at once if
+    the restore fails or loops. Nothing is changed for it.
 
 ## Cost
 
