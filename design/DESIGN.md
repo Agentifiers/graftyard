@@ -1068,17 +1068,17 @@ pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// in parts to buckets and a validate that catches up first; PROMOTE_MAX batches, an entry over it alone [measured,
 /// `lm1-memory` 20]. `Compacted.consumed` names promoted packs; restore checks inline ones by digest chain.
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
-/// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
-/// each chain names after its last `Promoted`, a page at a time with the next read meanwhile (two pages held), saving
-/// its place per page with its disk id and loaded promotions, so a cut-off run resumes (B0-30, 9 to 11). `--fix-thin`,
-/// promotions first, a midx per 50 ingests [measured, `hot-shards-2`]; inline packs one `index-pack` per 4 MB run
-/// [measured, `rehydrate-batch`]. A promotion's complete pack has its `.idx` beside it (`R2Key::Idx`, create-only,
-/// before `Promoted`), loaded in place of `index-pack` once it checks against the trailer and kept (`.keep`). Pushed
-/// packs in a range a committed `Promoted` and its `.idx` both cover are not loaded (`Compacted.consumed`'s read side);
-/// then every ref's history and tip tree must be on disk, checked before the repack [measured, `lm1-memory` 21], else
-/// the skipped packs load and it checks again; a disk failing both never serves. Stored packs and `.idx` stream four at
-/// once [`fetchmem`], in log order. Thin: G5. Repack rolls unkept packs at nice 19 on 2 threads, a midx over all; kept
-/// and named `--keep-pack` (its hint walk ignores a `.keep`): 104 CPU-s not 588, 1.7 GB not 2.2 [measured, `lm1-memory` 25, 27].
+/// A shard rehydrates a network from every marked stored pack no `Compacted` consumed, plus the packs each chain names
+/// after its last `Promoted`, a page at a time with the next read meanwhile (two held), saving its place per page with
+/// its disk id and loaded promotions, so a cut-off run resumes (B0-30, 9 to 11). `--fix-thin`, promotions first, a midx
+/// per 50 ingests [measured, `hot-shards-2`]; inline packs one `index-pack` per 4 MB run [measured, `rehydrate-batch`].
+/// A promoted or rolled pack's `.idx` (`R2Key::Idx`, create-only, before its entry) loads in place of `index-pack` if
+/// it checks against the trailer; the pack is kept. Pushed packs in a range a loaded one covers are skipped; then every
+/// ref's history and tip tree must be on disk, else they load; a disk failing both never serves [measured, `lm1-memory`
+/// 21]. Stored packs stream four at once [`fetchmem`]. Thin: G5. Repack rolls unkept packs at nice 19, kept ones
+/// `--keep-pack` [measured, `lm1-memory` 25, 27]. Roll-up (G9, proposed in `lm1-memory` 32): at ROLL_IN_MAX of a
+/// chain's oldest unrolled promoted packs, the home shard (warm) rolls them into one complete pack placed as a
+/// promotion's, then `Compacted { consumed, produced, from, to }`; a consumed pack goes once every shard is past it.
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or

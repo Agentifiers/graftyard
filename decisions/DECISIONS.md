@@ -3961,7 +3961,7 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 
 **Evidence.** `a_placement_that_kept_its_member_puts_its_row_back_over_every_try` (`crates/types/src/registry.rs`) replays round 29's tries `#4` to `#9` over `#3#f1` and fails on main, which has no restore and refuses any lower generation. `tests/registryrestore/plant.py`: 8 of 8 caught.
 
-**Flip.** A registry row that must name a member not in the group's config, such as a joining member during a move's `Joint`, which a restore by name alone could replace; or a hosted lookup still reading a try's name after a placement under this change.
+**Flip.** A registry row that must name a member not in the group's config, such as a joining member during a move's `Joint`, which a restore by name alone could replace; or a hosted lookup still reading a try's name after a placement under this change. Known gap: a try's own `/join` write that lands after the restore, at its higher generation, still wins over the restored row, since a bare row is compared by generation only. A retired try (test installs) sends none, but a product-build try is not retired and could; a hosted lookup reading a try's name after a placement would show it (OPEN-QUESTIONS G19).
 
 ### `feed-ahead`: a feed cursor past the member's last entry answers `lagging`, not 410, 2026-11-16
 
@@ -4004,3 +4004,46 @@ A test install answers each push with its stages as `server-timing`: `resolve`, 
 - The time saved is [inference] until B0-32's rerun reads the new `server-timing`.
 
 **Flip.** A hosted B0-32 where `gate` plus `context` is still most of a push's wall, which would leave the follower read wait as the cost. Or one where pushes that stage first wait longer than a `Stage` round trip, which would mean the bucket place is slower than the leader's refusal.
+
+### `roll-up` (proposed, not built): a bounded roll of a chain's oldest promoted packs, recorded as `Compacted`, 2026-11-16
+
+**Status.** Design for the operator's review (LM-1 round 32, G9). No code. DESIGN, Shape, `rehydrate`, carries the short form.
+
+**Decision.**
+- **What rolls.** On one repository chain, the oldest run of promoted packs that no roll has consumed, in index order and consecutive (each `Promoted.from` is the last one's `to + 1`), stopping before the run's packs pass ROLL_IN_MAX bytes in, 2 GiB [guess, from the memory bound below]. A roll runs once that run reaches ROLL_IN_MAX, or once it holds ROLL_MIN_PACKS (8) packs and is older than a day [guess]. A rolled pack is never rolled again, so no roll's input grows past ROLL_IN_MAX and there is no second level. The roll is one complete pack of every object of its inputs.
+- **Who writes it.** The repository group's archive alarm (`log_archive::step`), after promotion and archiving have nothing due, as a fourth step: it asks the chain's home shard, as a warm call (`promote-warm`: it starts no stopped shard), for `/roll` with the input packs' ids and checksums. The shard runs `pack-objects --stdin-packs --delta-base-offset` over exactly those packs, at nice 19, `pack.threads=2`, `pack.windowMemory=256m`, holding the repack's slot so a roll and a repack never run together. It streams the pack and its `.idx` back through the same path as a promotion (`PackStore::place_promoted`, a `/validate` on the same shard), and the leader commits `RepoEvent::Compacted { consumed, produced, from, to }` (a new tag on the repository chain, format 32.x) in an entry of its own, with a request id from the inputs' digests, so a re-sent step after a lost answer records nothing twice. The payload is SHARED's `NetworkEvent::Compacted { consumed, produced }` plus the index range the rolled promotions cover.
+- **`decide`.** It accepts a `Compacted` only when every consumed pack is a committed `Promoted` pack of this chain not consumed before, the consumed ranges are consecutive and equal to `from..=to`, and `produced` is one stored pack. The fold keeps the list of (from, to, produced) rolls beside `promoted`.
+- **The memory bound.** A roll's RSS is about 1.7 times its input bytes and its private memory about 0.6 times (table below). At ROLL_IN_MAX 2 GiB that is about 3.6 GB RSS, 1.3 GB private, beside a container's 12 GiB with the repack's 1.7 GB (`repack-keep-pack`) and clones, and it never runs beside the repack. A whole-network roll of 6.8 GB failed on this orb at 10.4 GB maxrss (killed), as round 23b's 8.6 GB said it would.
+- **Rehydrate prefers a rolled pack.** `rehydrate_plan` drops every pack a committed `Compacted` consumed (its read side exists: `ChainLog::consumed`, `rehydrate_plan`'s `consumed`), loads `produced` by its stored `.idx` as a promotion is loaded, and `skippable` treats a roll's `from..=to` as a promotion's range, so the pushed packs below it stay skipped. If a produced pack or its `.idx` cannot be read, the shard loads the consumed packs instead, while they exist (below).
+- **Deleting consumed packs.** A consumed pack and its `.idx` are deleted, then its `Committed` marker, by the sweeper only once all of: the `Compacted` is CONSUMED_KEEP (7 days) old; every shard holding the network (each warm site's first shard and its held pool slots) answers a warm `/status` with a cursor at or past the `Compacted`'s index, or holds no disk for it; and the network is not in a restore window that reads below the roll. A shard that cannot answer holds the deletion. Until deleted, consumed packs keep their markers, so the orphan rule never removes them early, and the filler skips them.
+
+**Why.** On B0-34's network the cold warm reads 8.64 GB of stored packs at 104 to 132 MB/s, which with the platform's start (33 to 36 s) and the tail plus `/connected` (32 to 47 s) gives 150 to 158 s against DESIGN's 120 s (round 26). Under 120 s needs the stored packs read in about 39 to 54 s, so 4.1 to 7.1 GB at that rate (round 27b). Rolling promotions shrinks the bytes: 6-step promotions of B0-34's plan rolled 8 at a time come to 0.52 of their input, 16 at a time 0.42 (round 32). A re-promotion cannot shrink committed ranges (`check_promoted`), and more streams do not raise the total past the container's R2 rate (round 27b).
+
+**Measured on B0-34's plan** (`tests/fanout/rollup/`, round 27's fixture: 33 complete 6-step promotions and the base, 6.80 GB; `pack-objects --stdin-packs` at nice 19 on 2 threads, `windowMemory=256m`, on 4 CPUs):
+
+| promotions rolled | in | out | out/in | wall | CPU | maxrss | private |
+|---|---|---|---|---|---|---|---|
+| 2 | 0.42 GB | 0.31 GB | 0.73 | 24 s | 31 s | 0.84 GB | 0.40 GB |
+| 4 | 0.80 GB | 0.51 GB | 0.64 | 40 s | 58 s | 1.47 GB | 0.64 GB |
+| 8 | 1.68 GB | 0.87 GB | 0.52 | 84 s | 124 s | 2.82 GB | 1.09 GB |
+| 16 | 3.52 GB | 1.48 GB | 0.42 | 176 s | 263 s | 5.72 GB | 2.11 GB |
+| 34 (all) | 6.80 GB | killed | | 302 s | 481 s | 10.4 GB | 3.5 GB |
+| 8 + 8, then the two rolled again | 1.62 GB | 1.50 GB | 0.92 | 99 s | 117 s | 3.71 GB | |
+
+- The second-level row is why a rolled pack is never rolled again: rolling two 8-rolls gives 1.50 GB, about what one 16-roll gives (1.48 GB), for 99 s and 3.7 GB more.
+- A roll's validate (`index-pack --threads=2` at nice 19, the 0.87 GB 8-roll) took 93 s, 162 CPU-s, 1.37 GB maxrss. So one roll of 8 costs about 3 minutes and 290 CPU-s on the home shard, against about 75 promotions' input.
+- The roll kept every object: the 4-roll's index holds the same 1,540,334 objects as its inputs, and `index-pack --verify` passes.
+
+**B0-34's cold warm with roll-up [inference from the table and round 26's phases].** repo:131296's 61 promotions (8.64 GB) rolled at ROLL_IN_MAX 2 GiB are about 8 rolls of about 8 promotions each. The two 8-rolls measured came to 0.52 and 0.41 of their input, so about 3.5 to 4.5 GB. At 104 to 132 MB/s that reads in 27 to 43 s, inside the 39 to 54 s window. Total about 100 to 127 s at 0.52, 93 to 120 s at 0.41, against 120 s. At 16 per roll (0.42, about 3.6 GB, 28 to 35 s) it would be about 94 to 118 s, but a 16-roll's 5.7 GB RSS is past the bound above. So with ROLL_IN_MAX 2 GiB the warm reaches 120 s at the R2 rate's upper half, not reliably at its lower half. Round 23b's 1.04-times-pushes figure was a whole-network `repack -a -d`; bounded rolls do not reach it.
+
+**Beat.**
+- **A whole-network roll** (`repack -a -d`): 0.32 of the input, but 8.6 to 10.4 GB resident and 385 s or more, past a 12 GiB container beside clones.
+- **A geometric roll with rolled packs re-rolled:** the second level saved 8 % of its input for 99 s and 3.7 GB (table).
+- **SHARED's network-chain `Compacted`:** packs, promotions and markers live on repository chains (`Promoted`, `ChainLog::last_promoted`), and no network group exists in the code. GC's `Compacted` with its pack-set guard (SHARED, "Compaction never drops an object") drops objects; a roll drops none, so it needs no guard and can live on the chain that owns the promotions.
+- **Deleting consumed packs at once:** a shard mid-rehydrate, or one behind the `Compacted`, would lose packs it is about to load.
+
+**Evidence.** `tests/am1/results/lm1-memory.md`, round 32; `tests/fanout/rollup/{rollk,level2,validate}.sh`; `tests/fanout/raw/rollup-r32.txt`.
+
+**Flip.** A hosted roll whose RSS is past 2 times its input, which lowers ROLL_IN_MAX; a cold warm with rolls in that still misses 120 s at 130 MB/s, which makes streams or a second level the next lever; or GC built on the network chain, which would make one `Compacted` for both.
+
+**Design contradiction to settle before code.** SHARED defines `Compacted` as a `NetworkEvent` on the network chain, and DESIGN's rehydrate text reads "minus those a `Compacted` consumed" for the network. This proposal records it on the repository chain as a `RepoEvent`, beside `Promoted`. Either SHARED gains the repository-chain form, or the roll waits for a network chain.

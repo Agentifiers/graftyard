@@ -3926,3 +3926,51 @@ empty restore sent, the sites lost, and the newest try's generation on the resto
 --workspace` 1,013 passed and 0 failed, `go test`, and the three `scripts/check_*.py` OK; DESIGN at 2,200 lines.
 
 **Not yet:** deployed. It ships with the next m2b site day.
+
+### Round 32 (local, no hosted spend): G9's roll-up, design only, with its memory bound measured (2026-11-16)
+
+The operator asked for G9's roll-up as a design for review, with no code: a `Compacted` writer, the memory bound,
+rehydrate preferring a rolled pack, and deleting consumed packs only after every shard has moved past them. The
+design is in DECISIONS, "`roll-up` (proposed, not built)", and in short form in DESIGN, Shape, `rehydrate`.
+
+**Measured: bounded rolls of B0-34's promotions** (`tests/fanout/rollup/rollk.sh`, `level2.sh`, `validate.sh` on round
+27's fixture `~/geo-T`: the base pack plus 33 complete 6-step promotions of B0-34's plan, 6.80 GB, each kept). Each roll
+is `pack-objects --stdin-packs --delta-base-offset` of exactly the first K packs, at nice 19, `pack.threads=2`,
+`pack.windowMemory=256m`, on the orb's 4 CPUs. Raw output is in `tests/fanout/raw/rollup-r32.txt`.
+
+| K | in | out | out/in | wall | CPU | maxrss | peak RssAnon |
+|---|---|---|---|---|---|---|---|
+| 2 | 422 MB | 309 MB | 0.73 | 23.6 s | 31.0 s | 838 MB | 398 MB |
+| 4 | 801 MB | 514 MB | 0.64 | 39.8 s | 57.9 s | 1,467 MB | 637 MB |
+| 8 | 1,680 MB | 870 MB | 0.52 | 83.7 s | 123.5 s | 2,816 MB | 1,093 MB |
+| 16 | 3,516 MB | 1,482 MB | 0.42 | 175.9 s | 263.2 s | 5,721 MB | 2,111 MB |
+| 34 (all) | 6,802 MB | none, killed (rc 128) | | 301.6 s | 480.9 s | 10,450 MB | 3,535 MB |
+
+- **Memory scales with the input:** maxrss about 1.6 to 1.75 times the bytes rolled and private memory about 0.5 to 0.6
+  times. So the bound is a cap on input bytes per roll. ROLL_IN_MAX 2 GiB keeps a roll near 3.6 GB RSS.
+- **The whole-network roll does not fit.** All 34 reached 10.4 GB maxrss and was killed, on the 15 GB orb with its
+  work directory on a tmpfs. A rerun on disk was stopped after it stalled the orb's executor; no output was kept.
+- **Second level:** two 8-rolls (1,680 MB to 870 MB and 1,836 MB to 750 MB, 92 and 118 s, 2.8 and 4.2 GB maxrss), then
+  those two rolled together: 1,620 MB to 1,496 MB, 0.92, in 99 s, 117 CPU-s, 3.7 GB. A direct 16-roll gave 1,482 MB.
+  So re-rolling buys about 8 %, and the design never rolls a rolled pack.
+- **Validate of a roll:** `index-pack --threads=2` at nice 19 of the 870 MB 8-roll: 92.9 s, 162 CPU-s, 1.37 GB maxrss.
+- **Objects kept:** the 4-roll's `.idx` lists the same 1,540,334 objects as its four inputs (`comm` of `show-index`:
+  0 differ), and `index-pack --verify` passes.
+
+**B0-34's cold warm with roll-up [inference].** repo:131296's 61 promotions (8.64 GB) in rolls of about 2 GiB in (about
+8 promotions each) at 0.41 to 0.52 come to about 3.5 to 4.5 GB. At round 26's 104 to 132 MB/s that is 27 to 43 s of
+stored reads, inside round 27b's 39 to 54 s window. With up at 33.7 to 36.0 s, the tail at 20.4 to 31.1 s and
+`/connected` at 12.0 to 16.4 s, the total is about 100 to 127 s at 0.52, or 93 to 120 s at 0.41, against 120 s. So the
+roll-up reaches 120 s at the upper half of the R2 rate, not reliably at the lower. Round 23b's 1.04-times-pushes figure
+was a whole-network `repack -a -d`, which bounded rolls do not reach.
+
+**Cost of the rolls themselves:** about 8 rolls of about 3 minutes and 290 CPU-s each (roll plus validate) on the home
+shard, at nice 19 and in the repack's slot. That is about 40 CPU-minutes for the network's history once, then one roll
+per 2 GiB of new promotions.
+
+**Docs on this branch (`rollup-design`, off main 87c2cd23):**
+- DESIGN, Shape, `rehydrate`: rolled packs load by `.idx` like promotions, plus the roll-up's short form. DESIGN stays at
+  2,200 lines.
+- DECISIONS: "`roll-up` (proposed, not built)", with the contradiction against SHARED's network-chain `Compacted`.
+- DECISIONS, "`registry-restore`", Flip: the late-join gap.
+- OPEN-QUESTIONS G19 (opened as G12, renumbered after b030-split): `move_step`'s `Swap` and the late join, with B0-30's `repo:1048590#9#f1`.
