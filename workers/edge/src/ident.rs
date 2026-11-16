@@ -194,15 +194,65 @@ fn token_request(body: &Value) -> std::result::Result<AccessTokenRequest, Reply>
     Ok(req)
 }
 
-/// The App's record from its owner's `Authz` fold, reached through `NameKey::App` on `Names`.
-async fn app_record(c: &Ctx<'_>, app: AppId) -> std::result::Result<Option<AppRecord>, Reply> {
+/// The App's owner and record from the owner's `Authz` fold, reached through `NameKey::App` on `Names`.
+async fn app_record(c: &Ctx<'_>, app: AppId) -> std::result::Result<Option<(AccountId, AppRecord)>, Reply> {
     let unavailable = |e: String| crate::api::unavailable(&e);
     let v = system_read(c, ChainId::Names(name_shard(&NameKey::App(app))), json!({ "app": app.0.0 }))
         .await
         .map_err(unavailable)?;
     let Some(owner) = v["app"].as_i64().map(|o| AccountId(DbId(o))) else { return Ok(None) };
     let a = authz_of(c, owner).await.map_err(unavailable)?;
-    Ok(a.and_then(|a| a.app(app).cloned()))
+    Ok(a.and_then(|a| a.app(app).cloned()).map(|r| (owner, r)))
+}
+
+/// `GET` and `PATCH /app/hook/config` (`design/SHARED.md`, "Identity and tokens"): the App JWT verified against the
+/// record's keys, read fresh from the App owner's `Authz` fold; a new secret wrapped by `graft-ops` as a repository
+/// hook's is; then `AuthzOp::SetAppHook` on that chain under the operator's credential, since the JWT is the check.
+/// Before `FormatsEnable` enabled 0x12.13 both answer the 404 they did before.
+pub async fn app_hook_config(c: &Ctx<'_>, req: &mut Request, method: Method) -> Result<Reply> {
+    if !c.cfg.enabled.contains(&graftyard_identity::AUTHZ_FORMAT_V13) {
+        return Ok(Reply::not_found());
+    }
+    let doc = "rest/apps/webhooks#update-a-webhook-configuration-for-an-app";
+    let Some(jwt) = crate::token_of(req)? else { return Ok(Reply::error(401, "Requires authentication", doc)) };
+    let jwt_401 =
+        |e: &dyn std::fmt::Display| Reply::error(401, &format!("A JSON web token could not be decoded ({e})"), doc);
+    let Some(app) = graftyard_identity::appauth::claimed_app(&jwt) else { return Ok(jwt_401(&"no App in iss")) };
+    let (owner, rec) = match app_record(c, app).await {
+        Ok(Some(x)) => x,
+        Ok(None) => return Ok(jwt_401(&"no such App")),
+        Err(x) => return Ok(x),
+    };
+    if let Err(e) = graftyard_identity::appauth::verify_app_jwt(&jwt, &rec, now()) {
+        return Ok(jwt_401(&e));
+    }
+    if method == Method::Get {
+        return Ok(Reply::json(200, graftyard_api::webhooks::app_hook_config(&rec)));
+    }
+    let body: Value = serde_json::from_slice(&req.bytes().await?).unwrap_or(Value::Null);
+    let (webhook, secret) = match graftyard_api::webhooks::app_hook_body(&rec, &body) {
+        Ok(x) => x,
+        Err(r) => return Ok(r),
+    };
+    let secret = match secret {
+        Some(Some(s)) => match crate::hooks::wrap(c, &s).await {
+            Ok(w) => Some(graftyard_api::webhooks::app_secret_bytes(&w)),
+            Err(r) => return Ok(r),
+        },
+        Some(None) => None,
+        None => rec.webhook_secret.clone(),
+    };
+    let op = graftyard_identity::AuthzOp::SetAppHook { app, webhook: webhook.clone(), secret: secret.clone() };
+    let cmd = json!({ "cred": graftyard_types::CredentialShard::NONE, "op": op });
+    let done = match commit_owner(c, ChainId::Authz(owner), owner, cmd).await {
+        Ok(d) => d,
+        Err(x) => return Ok(x),
+    };
+    if done.get("ok").is_none() {
+        return Ok(crate::api::unavailable(&format!("the webhook configuration did not commit: {done}")));
+    }
+    let set = AppRecord { webhook, webhook_secret: secret, ..rec };
+    Ok(Reply::json(200, graftyard_api::webhooks::app_hook_config(&set)))
 }
 
 /// `POST /app/installations/{id}/access_tokens` (BF-32): the App JWT verified against `AppRecord.keys`, the
@@ -227,7 +277,7 @@ pub async fn access_tokens(c: &Ctx<'_>, req: &mut Request, id: &str) -> Result<R
     };
     let (rec, inst) = futures_util::future::join(app_record(c, app), authz_of(c, owner)).await;
     let rec = match rec {
-        Ok(Some(r)) => r,
+        Ok(Some((_, r))) => r,
         Ok(None) => return Ok(Reply::error(404, "Not Found", doc)),
         Err(x) => return Ok(x),
     };

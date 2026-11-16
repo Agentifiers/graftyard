@@ -106,6 +106,10 @@ pub const AUTHZ_FORMAT_V11: Format = Format { family: 0x12, version: 11 };
 /// `DeleteOrgVariable`, `AuthzEvent::SealKey`, `OrgSecret`, `OrgVariable`). Read and enabled on the same terms as
 /// version 2.
 pub const AUTHZ_FORMAT_V12: Format = Format { family: 0x12, version: 12 };
+/// `app-hook-config`: `AuthzOp::SetAppHook`, `PATCH /app/hook/config`'s patch of an App's webhook and secret. It writes
+/// only `AuthzEvent::App`, which members read since version 2, so the format guards the op alone. Read and enabled on
+/// the same terms as version 2.
+pub const AUTHZ_FORMAT_V13: Format = Format { family: 0x12, version: 13 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
