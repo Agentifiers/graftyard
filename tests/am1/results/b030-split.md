@@ -557,6 +557,26 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
     $1.03 (DO rows written 927,000 against about 400,000), and the others $0.50 to $0.51. `project.py` at 23:32Z:
     79.3 a minute, 29,867 owed at day 30, a 6.3 h drain, total $176.9 against $225.
 
+### The split begins (2026-11-15 23:51:41Z, simulated day 19.5)
+
+- **Start.** The watcher's first split row with a child came at 23:51:41Z, leader site a, parent SQLite 7,533,592,576 B
+  (over SPLIT_AT, 7,516,192,768 B). `MetaSplit` names `repo-meta:1048590`, and `MetaSeed` names the metadata snapshot
+  through entry 157,929 (`snapshot/repo:1048590/metadata/…-157929-f43e3247…`). That is days earlier than my day 23 to
+  24 estimate, which took the leader's net growth from too short a window.
+- **First numbers (00:10Z on 2026-11-16, `tests/am1/raw/b030r2-child.jsonl`).** The child group's three voters are at
+  commit 5, leader site a, log 674 B, `childLoaded` false: each is still restoring the seed. Child SQLite 1.979 GB on
+  site a, 1.840 GB on site b (`#5#f1`), 3.163 GB on site c. The parent has dropped nothing yet (`MetaDropped` waits for
+  the child leader's restore): 7.423 / 7.362 / 7.422 GB, log 1.90 to 1.96 GB. `SQLITE_FULL` 0 on all six members.
+- **The meter.** The child's site-a member (`8e88c6d9…`) wrote 2,121,798 rows in the 23:50Z five minutes and 525,175 in
+  23:55Z, against about 43,000 for each parent member. So the 23:33 to 23:54Z monitor row billed $2.77 (2,634,148 DO
+  rows written). That is the split's own cost, which `project.py` already adds as $58, and it now also lifts the
+  hourly rate it extrapolates ($3.13 an hour at 00:11Z), so the projection ($196.2) counts the restore twice while it
+  runs [inference].
+- **The earlier $1.03 interval (22:20 to 22:35Z).** Monitor row 22:33:50Z: cost +$1.03, DO +$0.93, rows written
+  +927,507 against about 395,000, requests +23,498. Five-minute rows by object put 580,755 of them on the parent's
+  site-a member (`6fd8c123…`) in 22:30Z, against about 43,000 every other five minutes; not traced further, since the
+  split's rows are a different object and a different cause.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
