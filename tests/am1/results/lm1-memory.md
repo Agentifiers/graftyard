@@ -4136,3 +4136,137 @@ row $1.00). The day cost $2.42 of the $185 stop; $3.78 of the approval is left. 
 `tsave-m39b33.jsonl.xz`, `a1-b0-34-m39.jsonl` and `a1-b0-33-m39.jsonl` (copies of `tests/am1/raw/a1-b0-34-mwjex2b9.jsonl` and `a1-b0-33-mwjghnzg.jsonl`). Day branch `m39-day` (`6276c837`), with the drivers `costrow.sh` and `idlewatch.py`.
 
 **From graft-m3f (T-01a1d805, run m3fr9, row B0-32 on repo 65575, k 4, 8 learners; main a0bca583 plus a test-faults instrument).** Site 0 held term 2 through setup and the first 3 minutes of load, then 17 elections in 5 minutes (term 2 at 16:13:09Z to 19 at 16:18:29Z; wins 6 / 7 / 4 by site), with 10 "member alarm: StepDown" lines (7 CommitErrors, 3 Confirm) and 7 term changes after the leader went quiet or reset. The leader's peers ended at 1,085 and 1,289 deadline failures against about 5,700 ok each; queue p99 9.0 s, append p99 about 2 s, deps:authz p99 7.3 s. The same shape as m39's B0-33 (terms 2 to 9 once load arrived): the leader steps down on CommitErrors when its appends miss their deadlines under load, rather than losing a vote [inference; the m3f raw files are in that thread's orb, not pushed].
+
+### Round 35: m40 site day (main 77c9fa23, standard-4), the idle check, B0-34; B0-33 stopped by the hosted stop (2026-11-16)
+
+**Site day m40.** From main `77c9fa23` with `SHARD_INSTANCE=standard-4` (`run-siteday.sh`'s new default). Image
+`sha256:a476cbbf…` (unchanged), sites deployed with exit 0 at 18:31Z (site c `dadfc447`), edge `23610374`. Idle check
+18:57:52 to 19:28Z with the reapers on: 0 starts (`idlewatch-m40.jsonl`). An orb drop had cut an earlier idle window
+(`try1-idlewatch-m40.jsonl`), which does not count.
+
+**B0-34, a1 `mwjnulqj`, 19:39:18 to 19:54:18Z.**
+- Cold warm 209.3 s to every shard ls-refs-capable (main at 110.6 s; catch-ups 110.3 / 135.8 / 209.3 s), 118 stored
+  packs, 8.95 GB, no fault and no dropped roll.
+- Per-container R2 ceiling (`spools.py`): site 0 51.7 MB/s, site 1 90.7, site 2 117.9, probe `pool:7` 109.8; both busy
+  238.6 MB/s, so the limit is per container [measured].
+- Clone TTFB p99 by phase (j9 / kill / second / hostile): 49.5 / 22.3 / 31.3 / 348 s. Human push p99 76.7 / 27.8 /
+  41.7 / 350 s. Leader commit p99 810 ms, term 2 throughout, k 2.
+- Misses: 334 of 340 probes joined to their line (`misses-m40.txt`); composed 313, container p99 5.0 s; to-shard p99
+  13.4 s.
+- Site c's git RSS peaked at 37 GB with 8 stock upload-packs at 19:52Z (`shardprocs-m40.jsonl`).
+- Verdict: fail on TTFB and human push; k ≤ 8, hostile owner and no-API hold. Row cost $1.69 (cost.sh).
+
+**B0-33 m40** started at 20:11Z (repo:131344) and was stopped about 3 minutes in by the operator's hosted stop
+(20:13Z, the account bill). Not judged. `teardown.py --sweep` tore down 8 shards; 0 running at 20:14:45Z.
+
+### Idle Durable Object rows on graft-m2b, and the retire (2026-11-16, no deploy, no spend)
+
+The operator's question: which m2b objects write rows while idle (about $0.61 in an hour). From
+`durableObjectsPeriodicGroups` by namespace and object (`tests/fanout/idlerows.py`):
+- m2b rows written per hour: 17Z 19,082 and 18Z 21,105 idle; 19Z 583,653 (B0-34's tail and B0-33's start, the $0.58
+  hour). Idle m2b is about $0.02 an hour [measured].
+- The account's idle rows were graft-m1, not m2b: 11.1 M rows at 17Z (acctcost $11.15 for that hour), 98% from one
+  group, repo:1048591 (`#1#f0` 4.14 M, `#1#f2` 4.02 M, `#1#f1` 2.95 M). Over 2026-10-30 to 11-16 m1 wrote 420 M rows and
+  m2b 174 M. Reported to the operator; m1 is not this thread's to touch.
+- m2b's idle writers, 16:45 to 18:30Z, 4.1 to 6.2 k rows per 15 minutes:
+  - `names:*` members, about 2.8 k per 15 minutes, woken by the `*/15` site cron: `sweep::run_at` reads
+    `repo_owner` and `owner_record` on Names chains for every network each run, and the fold audit wakes more. Each
+    woken member then re-arms a 2 s alarm for `DRAIN_IDLE_MS` (60 s) after each request it served
+    (`workers/site/src/host.rs`, `alarm` and `arm`; one row per `setAlarm`).
+  - The finished B0-33 groups 131322, 131323, 131329 and 131330, 1.3 to 3.2 k per 15 minutes: the cron's `/promote`
+    and `/catchup` with `warm=1` on each start new leaderships ("shard warm" lines from `prsync.rs`).
+- Retired at 20:27Z with the test route `/retire`, as the install's own teardown (`tests/fanout/idleretire.mjs`): every
+  member of the finished lm1 test networks 131322 to 131344 that wrote rows that day, 215 members (198 joined, 17 already
+  not), then `/status`: 215 of 215 "not joined" (`tests/fanout/raw/idle-retire-m2b.log`). Not retired: B0-34's
+  networks (131296 with its 5 GB seed, 327700, 9043968 to 9043970), `names:*` and the system chains.
+- Loop writers to fix (operator's rule 4, not built): the cron sweep's Names reads across every network every 15
+  minutes (cache each network's home in the sweeper); the 2 s member alarm re-arm after each served request; and the
+  cron's `warm=1` promote and catch-up on finished groups.
+
+### Budget change (2026-11-16, about 20:30Z)
+
+The operator replaced every per-thread cap: $200 a day for the whole Cloudflare account, per UTC day from 20:30Z,
+read with `tests/fanout/acctcost.py` (the only meter; per-install meters are for diagnosis). One hosted run at a time in
+a slot the operator grants, with an estimate and a stop sent first; every run ends with a sweep, `/retire` of every
+finished test group, and an acctcost reading 30 minutes later showing the install idle (under $0.10 an hour). A row is
+met at 90% of each target (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a daily spend limit"); zero targets
+stay exact. The m41 slot's stops: $120 of account spend since 20:30Z, or $25 of the run's own.
+
+**90% re-judge from results already in hand (no spend).** L0-12's A1 replay is met at 90% on m3fr6 (graft-m3f), its
+clock line judged on the spread between members (56 to 512 ms), by the operator's decision; the 972 ms offset from
+Cloudflare's clock is a finding under F3 (branch `lm1-90`). Still short: B0-29 (best gate run m27, commit p99 774 ms
+against 660), B0-31 (m3fr8, buckets-up commit p99 2,138 ms against 1,100), B0-32 (0 of 500 within 5.5 s), B0-33,
+B0-34, and B0-35 (dispatch unmeasured, not a long tail).
+
+### Round 36: the m41 slot, site day from main 617e2b0a with roll-up on, the idle check, B0-33, B0-34 (2026-11-16)
+
+The operator's slot, granted after the 20:30Z budget change. Account meter `acctcost.py` since 20:30Z: $0.10 before
+the site day, $0.20 after it, $0.34 after the idle check, $2.27 after B0-33 and its sweep, $4.51 after B0-34 and its
+sweep (22:30Z). The slot's own delta since 20:52Z: $4.41. The stops (account $120 since 20:30Z, run $25) were never near.
+
+**Site day m41.** From main `617e2b0a` (promote-lapse, rollup, fanout-dups, feed-gone-route), `SHARD_INSTANCE=standard-4`
+and, new, `GRAFTYARD_ROLLUP=1` on every site (`siteday.sh`'s `ROLLUP=1`), with 32.25 added to the edge's
+`FORMATS_ENABLED` (`run-siteday.sh`'s `EDGE_EXTRA`). Image `sha256:0f0c5ee1…` (containers changed since a476cbbf: the
+container's `/roll`). Sites, test-faults, exit 0: a `54c4fc8f`, b `a83bbd2b`, c `dfda5a3f`; edge `8c67d1ff`, served at
+100% (`edgever.py`). 20:52 to 21:07Z.
+
+**Idle check, 21:08:51 to 21:38:51Z, reapers a and b off: 0 shard starts on graft-m2b** (`idlewatch-m41.jsonl`). What
+it shows: nothing started a shard while idle. What it does not show: promote-lapse stopping a shard a promotion
+started, because no promotion came due in the window. That proof still needs a promotion-started shard on a quiet group
+to stop within about 10 minutes (`PROMOTE_LAPSE`, `crates/git/src/shard.rs`). Reapers back on at 21:41Z for every
+range except the row's networks.
+
+**B0-33, repo:131345, a1 `mwjshq3m`, 5,000 agents, k 4, 8 learners, inbound trace on (tsave EVERY=10000), load
+21:48:20 to 21:53:20Z: fail.**
+
+| B0-33 line | m41 | m39 (before fanout-dups) | verdict at 90% |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 14.5 s (p50 2.0 s, n 5,977); merges 2 of 42; human pushes 12 of 195 | 29.7 s | fail |
+| ≥ 140 agent commands/s admitted (≥ 126 at 90%; fail < 100) | 26.8 agent-class ok a second at the client | 9.3 | fail |
+| Zero leader changes and `suspect` | term 2 → 20 | 2 → 9 | fail |
+
+- Step-downs (Workers Logs `member alarm: StepDown`): 13, 11 `CommitErrors` and 2 `Confirm` (site a 21:48:47 p99
+  721 ms; site c 21:50:12 p99 844 ms). The leader logged 1,532 failed calls; to site 1, 427 deadline and 98 fetch of
+  2,029 sent, 394 late.
+- Leader split p99: queue 14.9 s, round 13.3 s, confirm 4.5 s, apply 11.7 s, deps:authz 9.3 s.
+- Read rounds per voter (`tests/f74/rounds.py`, voters only; appends and votes counted, so upper bounds): fetches per
+  voter per 20 ms max 21, p99 10, p50 1 over 5,215 windows (m39: max 57, p99 26 over 1,451); fetching turns per voter
+  per 20 ms max 3, p99 2 (m39 the same).
+- Read grant on the leader (IndexTaken to ResSent): site 0 p99 2,540 ms (n 1,533), site 1 4,078 ms (n 473), site 2
+  1,713 ms (n 868).
+- Voter peaks 60 / 73 / 81 MiB, 0 `exceededMemory`. No lost acknowledgment seen.
+- Reading: fanout-dups cut duplicate fetches about 2.5 times at p99, and the agent-class rate rose 2.9 times, but the
+  `CommitErrors` churn remains [measured]; the trace went to B0-02 (T-01a1ccdd).
+- Cost $1.94 (acctcost 21:39 to 21:56Z).
+
+**B0-34, repo:131296, a1 `mwjt5tks`, standard-4, pool probe 2:7, load 22:08:19 to 22:23:19Z: fail.**
+- Cold warm 197.2 s to every shard ls-refs-capable (main at 167 s; catch-ups 181.1 / 197.2 / 155.4 s). 203 stored packs,
+  9.09 GB, 75 through their `.idx`, 0 rejected, no fault, `dropped_rolls` [] (no roll has been recorded on this network
+  yet). Rehydrate phases: up 0.4 to 34 s, markers 12.7 to 45 s, marked phase 99 to 114 s, tail 134 to 172 s.
+- Per-container R2 ceiling (`spools-m41.txt`): site 0 63.3 MB/s, site 1 72.4, site 2 100.3, probe `pool:7` 107.8 MB/s
+  in total; peak 5 s bins 130 to 258 MB/s. In the 14 bins both were busy, site 2 119.7 plus the probe 129.7 = 249.4 MB/s
+  against site 2 alone 35.6: per container again [measured].
+- k: the monorepo stepped in band to `kMax` 3; the second network and the hostile three stayed at 1.
+- Clone-cache hits stream, no 500s: 55 hits, all 200 (j9 12, kill 14, second 4, hostile 25).
+- Misses: 432 probes, all composed; `misses.py` joined 425 to their line (7 probes without one, 13 lines without a
+  probe); answers 424 composed and 1 × 503. Composed first byte p50 2.5 s, p99 25.9 s; to the shard p99 11.1 s;
+  container p50 190 ms, p99 3.1 s; transit p99 20 ms; edge plus network p99 22.5 s (`misses-m41.txt`).
+- Stock upload-packs per shard: at most 2 at once (site b, 6 MB) and 1 (site a); git RSS peaked 10.0 / 8.9 / 5.6 GB on
+  sites a / b / c during the warm, not the row (`shardprocs-m41.jsonl`).
+- Leader commit p99 932 ms (p50 352, n 5,386), term 2 throughout.
+
+| B0-34 line | m41 (j9 / kill / second / hostile) | verdict at 90% |
+|---|---|---|
+| k in band, ≤ 8 per site | `kMax` 3 on the monorepo, 1 elsewhere | pass |
+| Hostile owner held to its pool budget; the monorepo's k not reduced | hostile 1; monorepo 2 to 3 | holds |
+| Human push p99 ≤ 3 s beyond transfer (≤ 3.3 s) | 48.5 / 34.9 / 48.9 / 32.9 s | fail |
+| Clone TTFB p99 ≤ 1 s (≤ 1.1 s; fail over 5 s) | 31.3 / 12.7 / 45.4 / 23.6 s | fail |
+| No Cloudflare API call from a request path | 0 files | pass |
+
+Cold warm against DESIGN's 120 s line: 197.2 s, fail (m40 209.3 s; m37 150 to 158 s). The roll-up has not rolled this
+network, so the warm read the consumed packs as before; the roll measurement waits for its own slot. Cost $2.17
+(acctcost 21:57 to 22:31Z).
+
+**Close-out.** Sweep after each row ("no shard container running"); B0-33's group retired at 22:32Z, all 20 members that
+wrote rows "not joined" after (`idle-retire-m41.log`); B0-34's networks kept, as its seeds are reused. Reapers back on
+for every range, B0-34's included.
