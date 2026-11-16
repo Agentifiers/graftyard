@@ -107,10 +107,75 @@ pub fn composable(req: &V2Request) -> bool {
     want.is_some() && depth1 && ofs && done
 }
 
+/// One clone-cache miss on a shard object, for its log line `shard miss <net>` (`workers/site/src/shard.rs`,
+/// "/upload-pack"). Each time is epoch ms: when the miss arrived, `Compose::ready` returned, the `compose=only` answer
+/// came (status and `x-graft-compose`), the catch-up before stock ended, the serving answer's headers came (the
+/// container sends them with its first byte), and its first chunk went on to the edge. Beside the client's own time
+/// to first byte, the line splits a miss into the wait for the chain, the container's work, and the transit.
+#[derive(Clone, Debug, Default)]
+pub struct MissLog {
+    pub arrived: u64,
+    pub ready: Option<u64>,
+    pub only: Option<(u64, u16, Option<String>)>,
+    pub caught_up: Option<u64>,
+    pub served: Option<(u64, u16, Option<String>)>,
+    pub first: Option<u64>,
+}
+
+impl MissLog {
+    /// The line's JSON: `arrived` as epoch ms, every later time in ms after it, and `answer`, the serving answer's
+    /// `x-graft-compose` (a 200 without one is stock upload-pack on a request the container found not composable).
+    pub fn line(&self) -> serde_json::Value {
+        let ms = |t: u64| t.saturating_sub(self.arrived);
+        let answer = match &self.served {
+            Some((_, 200, c)) => c.clone().unwrap_or_else(|| "stock: not composable".into()),
+            Some((_, s, _)) => format!("status {s}"),
+            None => "no answer".into(),
+        };
+        serde_json::json!({
+            "arrived": self.arrived,
+            "answer": answer,
+            "ready_ms": self.ready.map(ms),
+            "only": self.only.as_ref().map(|(t, s, c)| serde_json::json!({ "ms": ms(*t), "status": s, "compose": c })),
+            "caught_up_ms": self.caught_up.map(ms),
+            "headers_ms": self.served.as_ref().map(|(t, ..)| ms(*t)),
+            "first_ms": self.first.map(ms),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::smart::parse_v2;
+
+    /// Every time is from the miss's arrival, not from the step before it, and the answer names stock unless the
+    /// serving answer says composed: a 409 then a stock 200 after the catch-up is stock with the 409's reason kept.
+    #[test]
+    fn a_miss_line_times_each_step_from_arrival_and_names_its_answer() {
+        let stock = MissLog {
+            arrived: 1_000_000,
+            ready: Some(1_000_003),
+            only: Some((1_000_010, 409, Some("stock: no chain".into()))),
+            caught_up: Some(1_004_000),
+            served: Some((1_009_000, 200, Some("stock: no chain".into()))),
+            first: Some(1_009_250),
+        };
+        let l = stock.line();
+        assert_eq!(l["arrived"], 1_000_000);
+        assert_eq!(l["ready_ms"], 3);
+        assert_eq!(l["only"], serde_json::json!({ "ms": 10, "status": 409, "compose": "stock: no chain" }));
+        assert_eq!(l["caught_up_ms"], 4_000);
+        assert_eq!(l["headers_ms"], 9_000);
+        assert_eq!(l["first_ms"], 9_250);
+        assert_eq!(l["answer"], "stock: no chain");
+        let bare = MissLog { arrived: 5, served: Some((7, 200, None)), ..MissLog::default() };
+        assert_eq!(bare.line()["answer"], "stock: not composable");
+        assert_eq!(bare.line()["first_ms"], serde_json::Value::Null);
+        let warming = MissLog { arrived: 5, served: Some((9, 503, None)), ..MissLog::default() };
+        assert_eq!(warming.line()["answer"], "status 503");
+        assert_eq!(MissLog { arrived: 5, ..MissLog::default() }.line()["answer"], "no answer");
+    }
 
     fn pkt(s: &str) -> String {
         format!("{:04x}{s}", s.len() + 4)

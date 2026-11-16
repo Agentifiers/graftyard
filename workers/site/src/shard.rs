@@ -633,6 +633,44 @@ fn se(e: StoreError) -> Error {
     Error::RustError(e.0)
 }
 
+/// A clone-cache miss's log line, `shard miss <net> <CloneKey digest>: <graftyard_git::compose::MissLog::line>`, which
+/// the probe that sent it can find by its key. Written once: when its first chunk goes on to the edge, or when the miss
+/// ends without one. `None` for any other request.
+struct MissLine(String, Option<graftyard_git::compose::MissLog>);
+
+impl MissLine {
+    fn note(&mut self, f: impl FnOnce(&mut graftyard_git::compose::MissLog)) {
+        if let Some(m) = self.1.as_mut() {
+            f(m);
+        }
+    }
+
+    /// `r`, the miss's answer, noting when its headers came and, through `host::on_first_chunk`, when its first chunk
+    /// went on to the edge; the line is written then, or when the body ends without one.
+    fn forward(mut self, r: Response) -> Response {
+        self.note(|m| m.served = Some((now_ms(), r.status_code(), r.headers().get("x-graft-compose").ok().flatten())));
+        if self.1.is_none() {
+            return r;
+        }
+        graftyard_git::host::on_first_chunk(r, move || {
+            self.note(|m| m.first = Some(now_ms()));
+            self.write();
+        })
+    }
+
+    fn write(&mut self) {
+        if let Some(m) = self.1.take() {
+            console_log!("shard miss {}: {}", self.0, m.line());
+        }
+    }
+}
+
+impl Drop for MissLine {
+    fn drop(&mut self) {
+        self.write();
+    }
+}
+
 fn q(url: &Url, k: &str) -> Option<String> {
     url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned())
 }
@@ -672,6 +710,7 @@ impl DurableObject for GitShard {
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        let arrived = now_ms();
         if crate::site_down(&self.env) {
             return Response::error("site down", 503);
         }
@@ -1019,6 +1058,14 @@ impl DurableObject for GitShard {
                 // A clone-cache miss (`fill=<CloneKey digest>`): the container spools the whole answer whether or not
                 // the client reads it to the end, and this object puts it to the home bucket, where the edge reads.
                 let fill = q(&url, "fill").and_then(|h| graftyard_types::Digest::parse_hex(&h));
+                // Each miss logs one `shard miss <net> <key>` line: its wait for the chain, the `compose=only` answer,
+                // the catch-up before stock, the serving answer's headers (the container's first byte) and its first
+                // chunk on to the edge, so a run splits the client's time to first byte between the chain, the
+                // container and the transit (`graftyard_git::compose::MissLog`).
+                let mut line = MissLine(
+                    format!("{} {}", net.0.0, fill.map(|k| k.hex()).unwrap_or_default()),
+                    fill.map(|_| graftyard_git::compose::MissLog { arrived, ..Default::default() }),
+                );
                 let filled = |r: &Response| -> Result<()> {
                     let Some(spool) = fill.filter(|_| r.headers().get("x-graft-spool").ok().flatten().is_some()) else {
                         return Ok(());
@@ -1061,22 +1108,26 @@ impl DurableObject for GitShard {
                         record: log.record.clone(),
                     };
                     compose.ready().await;
+                    line.note(|m| m.ready = Some(now_ms()));
                     if running && let Some(b) = &body {
                         let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
                         let r = host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.map_err(se)?;
                         if r.status_code() == 200 {
                             filled(&r)?;
-                            return reply(r, at);
+                            return Ok(line.forward(reply(r, at)?));
                         }
+                        let why = r.headers().get("x-graft-compose")?;
                         // A container that restarted holds no chain: the next miss waits for the step again.
-                        if r.headers().get("x-graft-compose")?.as_deref() == Some("stock: no chain") {
+                        if why.as_deref() == Some("stock: no chain") {
                             COMPOSES.with(|m| m.borrow_mut().entry(compose.key()).or_default().synced = None);
                         }
+                        line.note(|m| m.only = Some((now_ms(), r.status_code(), why)));
                     }
                 }
                 if let Err(r) = caught_up().await {
-                    return r;
+                    return Ok(line.forward(r?));
                 }
+                line.note(|m| m.caught_up = Some(now_ms()));
                 let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
                 let r = match (fill, body) {
                     (Some(_), Some(b)) => {
@@ -1086,7 +1137,7 @@ impl DurableObject for GitShard {
                     }
                     (_, body) => host.upload_pack(net, path == "/info-refs", body, &proto, &enc).await.map_err(se)?,
                 };
-                reply(r, at)
+                Ok(line.forward(reply(r, at)?))
             }
             // A new leadership's `warm` (`crate::prsync`) comes here; a merge that arrives meanwhile waits for it.
             "/catchup" => match caught_up().await {

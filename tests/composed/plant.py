@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """composed-miss: planted bugs in this branch's new code (the container's composed miss, chain steps, chain install
 and clone-cache spool, a want or chain behind HEAD, compose=only and the network lock; the shard object's request rule
-and chain file layout). The edge's streamed hit is planted by tests/composed/bed/run.sh with WHOLE=1. Plants one mutant at a time, runs the
+and chain file layout). The edge's streamed hit is planted by tests/composed/bed/run.sh with WHOLE=1, and the miss line's
+first-chunk forward by running it with FWD=1 against a planted `on_first_chunk`. Plants one mutant at a time, runs the
 tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run
 from the worktree root:
 
@@ -102,6 +103,15 @@ MUTANTS = [
      '            out.push(format!("part-{p}-{p}"));', COMPOSE_RS),
     ('compose keys accept any file name', KEY, 'if *file == "head" || crate::compose::file_name_ok(file)',
      'if !file.is_empty()', KEY_RS),
+    # The shard object's `shard miss` line.
+    ('a miss line times each step from the one before, not from arrival', RS,
+     '        let ms = |t: u64| t.saturating_sub(self.arrived);',
+     '        let ms = |t: u64| t.saturating_sub(self.ready.unwrap_or(self.arrived));', COMPOSE_RS),
+    ('a stock 200 with a reason is logged as composed', RS,
+     '            Some((_, 200, c)) => c.clone().unwrap_or_else(|| "stock: not composable".into()),',
+     '            Some((_, 200, _)) => "composed".into(),', COMPOSE_RS),
+    ('a miss line drops the first chunk\'s time', RS, '            "first_ms": self.first.map(ms),',
+     '            "first_ms": self.served.as_ref().map(|(t, ..)| ms(*t)),', COMPOSE_RS),
 ]
 
 

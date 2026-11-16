@@ -3,9 +3,17 @@
 //! `/hit` answers it as the edge does, through `graftyard_git::host::cached_response`, or with `--features whole` as
 //! main 6c9610bf did, read whole with `.bytes()`. `/mem` answers the isolate's wasm memory in MiB, which never shrinks,
 //! so after a hit it shows whether the entry passed through wasm: local workerd does not enforce the 128 MB limit that
-//! made every hosted hit a 500.
+//! made every hosted hit a 500. `/hit?fwd=1` also passes the hit through `graftyard_git::host::on_first_chunk`, as the
+//! shard object forwards a miss's answer for its `shard miss` line, and `/first` answers how many times its callback
+//! ran: once per answer that sent a chunk.
+use std::cell::Cell;
+
 use graftyard_git::host::R2;
 use worker::*;
+
+thread_local! {
+    static FIRST: Cell<u32> = const { Cell::new(0) };
+}
 
 const KEY: &str = "clone/131296/98859749f82dcff16044d975cb63804a1de961a85723402a5fea4fa335914d1c/0";
 
@@ -30,9 +38,13 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         }
         #[cfg(not(feature = "whole"))]
         "/hit" => match graftyard_git::host::cached_response(&b, KEY, h).await.map_err(|e| Error::RustError(e.0))? {
+            Some(r) if url.query_pairs().any(|(k, _)| k == "fwd") => {
+                Ok(graftyard_git::host::on_first_chunk(r, || FIRST.with(|f| f.set(f.get() + 1))))
+            }
             Some(r) => Ok(r),
             None => Response::error("no entry", 404),
         },
+        "/first" => Response::ok(FIRST.with(|f| f.get()).to_string()),
         #[cfg(feature = "whole")]
         "/hit" => {
             let o = b.0.get(KEY).execute().await?.ok_or("no entry")?;
