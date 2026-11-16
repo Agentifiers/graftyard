@@ -484,9 +484,10 @@ func idxObjects(idx string, env []string) ([]string, error) {
 	return objs, nil
 }
 
-// record keeps, per ingested pack (by the SHA-256 of the bytes as sent), the objects it brought, for /promote.
-// index-pack --fix-thin appends bases after the sent pack's trailer: sent is the length as sent, so entries before
-// sent-20 are its own. Zero or less keeps the whole index, for an aside directory written by an older release.
+// record keeps, per ingested pack (by the SHA-256 of the bytes as sent), the objects it brought, for /promote, and
+// its name on disk, for /roll. index-pack --fix-thin appends bases after the sent pack's trailer: sent is the length
+// as sent, so entries before sent-20 are its own. Zero or less keeps the whole index, for an aside directory written
+// by an older release.
 func record(r, sum, packName string, objDir string, sent int64) error {
 	entries, err := idxEntries(filepath.Join(objDir, "pack", "pack-"+packName+".idx"), []string{derivedEnv})
 	if err != nil {
@@ -504,7 +505,14 @@ func record(r, sum, packName string, objDir string, sent int64) error {
 	if err := os.WriteFile(tmp, []byte(strings.Join(objs, "\n")+"\n"), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(r, "graft", sum+".objs"))
+	if err := os.Rename(tmp, filepath.Join(r, "graft", sum+".objs")); err != nil {
+		return err
+	}
+	tmp = filepath.Join(r, "graft", sum+".name.tmp")
+	if err := os.WriteFile(tmp, []byte(packName), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(r, "graft", sum+".name"))
 }
 
 func unresolved(err error) bool {
@@ -2460,6 +2468,87 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	w.Write(out)
 }
 
+// handleRoll answers one complete pack of exactly the requested ingested packs, for the archive's roll of a chain's
+// consumed promotions (decisions/DECISIONS.md, "`roll-up`"). It names every other pack as excluded, so pack-objects'
+// name-hash walk stops at them, and holds the repack's slot for the whole build. The network lock covers only the
+// pack listing: the repack holds no network lock, and readers keep files they already opened, so the build can run
+// without blocking the network.
+func handleRoll(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	seen := map[string]bool{}
+	var sums []string
+	sc := bufio.NewScanner(r.Body)
+	for sc.Scan() {
+		sum := strings.TrimSpace(sc.Text())
+		if !sumRe.MatchString(sum) {
+			fail(w, 400, "bad sha256 %q", sum)
+			return
+		}
+		if !seen[sum] {
+			seen[sum] = true
+			sums = append(sums, sum)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		fail(w, 400, "%v", err)
+		return
+	}
+	if len(sums) < 2 {
+		fail(w, 400, "a roll takes at least two packs")
+		return
+	}
+	names := make([]string, len(sums))
+	input := map[string]bool{}
+	for i, sum := range sums {
+		b, err := os.ReadFile(filepath.Join(rp, "graft", sum+".name"))
+		if err != nil {
+			fail(w, 409, "pack %s was not ingested here with its name", sum)
+			return
+		}
+		names[i] = strings.TrimSpace(string(b))
+		pack := "pack-" + names[i] + ".pack"
+		if _, err := os.Stat(filepath.Join(rp, "objects", "pack", pack)); err != nil {
+			fail(w, 409, "pack %s is not on disk here", sum)
+			return
+		}
+		input[pack] = true
+	}
+
+	repacking.Lock()
+	defer repacking.Unlock()
+	l := lock(net)
+	l.RLock()
+	packs, err := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.pack"))
+	var stdin bytes.Buffer
+	for _, name := range names {
+		fmt.Fprintf(&stdin, "pack-%s.pack\n", name)
+	}
+	for _, path := range packs {
+		if pack := filepath.Base(path); !input[pack] {
+			fmt.Fprintf(&stdin, "^%s\n", pack)
+		}
+	}
+	l.RUnlock()
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	args := []string{"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "pack-objects", "--stdin-packs",
+		"--stdout", "-q", "--delta-base-offset"}
+	// runGit buffers stdout: a roll is at most ROLL_IN_MAX (2 GiB) in and about 0.4-0.5 of that out (DECISIONS roll-up).
+	out, err := runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil, rp,
+		[]string{derivedEnv}, &stdin, args...)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	w.Header().Set("content-type", "application/octet-stream")
+	w.Write(out)
+}
+
 // objectNames names each id by the first tree entry that names it. Commits, tags, root trees, and blobs no tree in
 // the set names stay unnamed. Each tree is read from cat-file's stream separately, not the output as a whole.
 func objectNames(rp string, oids []string) (map[string]string, error) {
@@ -3021,6 +3110,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("POST /connected", handleConnected)
 	m.HandleFunc("/refs", handleRefs)
 	m.HandleFunc("/promote", handlePromote)
+	m.HandleFunc("POST /roll", handleRoll)
 	m.HandleFunc("/have", handleHave)
 	m.HandleFunc("/info-refs", func(w http.ResponseWriter, r *http.Request) { upload(w, r, true) })
 	m.HandleFunc("/upload-pack", func(w http.ResponseWriter, r *http.Request) { upload(w, r, false) })
