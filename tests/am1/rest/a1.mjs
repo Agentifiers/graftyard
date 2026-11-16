@@ -947,6 +947,7 @@ if (b034) {
 
 // The feed: pollers straight to followers and learners, as the edge sends them, each watching one agent group.
 const seen = []; // [poller, ref, ms after its push's ack, seen at]
+const feedAnswers = {}; // "site:role:member" -> { admit: count }, every member answer the pollers got
 // L0-12 judges feed p99 outside leader kills: each kill push's send time; an event seen within KILL_WINDOW_MS after one
 // is inside a kill (an election, ELECTION_AFTER plus a campaign, about 10 s [inference]).
 const kills = [];
@@ -1007,6 +1008,9 @@ if (plan.pollers) {
       try { r = await member(CHAIN, m.site, "/feed", body({ learner_answers: learnerAnswered && !m.learner }), 40_000, m.name); } catch { continue; }
       const v = r.v ?? {};
       tried.push(v.admit ?? `status ${r.status}`);
+      // Each member's answers by kind, so a run shows which member sent polls back `gone` or `lagging`.
+      const by = (feedAnswers[`${m.site}:${m.learner ? "learner" : "voter"}:${m.name}`] ??= {});
+      by[v.admit ?? `status ${r.status}`] = (by[v.admit ?? `status ${r.status}`] ?? 0) + 1;
       if (r.status !== 200 || !v.admit) continue;
       if (v.admit === "hold") return { v, m, tried };
       if (v.admit === "gone" || v.admit === "tooMany") return { v, m, tried };
@@ -1039,7 +1043,9 @@ if (plan.pollers) {
           const missed = misses;
           if (v.admit === "hold") misses = {};
           else for (const t of ["429", ...tried]) misses[t] = (misses[t] ?? 0) + 1;
+          // A 410 names the oldest cursor the member serves; a client follows it, as from `oldest_cursor`.
           if (v.cursor) cursor = v.cursor;
+          else if (v.admit === "gone" && v.oldest) cursor = v.oldest;
           for (const e of v.events ?? []) {
             const p = e[2]?.AgentPush;
             const head = p ? (typeof p.head === "string" ? p.head : Buffer.from(p.head).toString("hex")) : null;
@@ -1146,7 +1152,7 @@ const feedLat = seen.map((x) => x[2]);
 const v = {
   row, run: RUN, seconds, ...(stopped ? { stopped, ranSeconds: +ran.toFixed(1) } : {}), agents: plan.agents, offered: offered(plan), byKind: sum,
   ...(killLog.length ? { kills: killLog.map(({ sent, before, after, reset, killed, res }) => ({ sent, leader: before.leader, term: before.term, killed, reset, after: after.leader, termAfter: after.term, res })) } : {}),
-  feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null,
+  feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null, byMember: feedAnswers,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
       return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}),
     // The slowest 1% outside kills: which member served them and what the poller's misses were before the hold.
