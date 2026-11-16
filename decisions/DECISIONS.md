@@ -3920,3 +3920,31 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 **Evidence.** `a_learner_behind_the_cursor_answers_lagging_not_gone` (`crates/git/tests/lease_gates.rs`) fails on main (the cursor is `Gone`) and passes with the change; the ring's other cursor tests are unchanged. `a_cursor_past_the_groups_commit_index_is_gone` (same file) and `a_cursor_past_the_groups_commit_index_is_gone_even_on_the_last_resort` (`workers/site/src/feed.rs`, a `lagging_ok` poll on a learner) fail on `41c93e72` and pass with the bound. `tests/m0carried/plant22.py`, 8 of 8. The driver half (`tests/am1/rest/a1.mjs` follows `oldest` on `gone`, and reports each member's answers as `feed.byMember`) is checked by the next L0-12.
 
 **Flip.** A hosted L0-12 where `byMember` shows learners answering `lagging` to a cursor they hold, which would mean the cursor's index is not comparable across members; or one where the edge's routing on these `lagging` answers drives polls into 429 more than the 410s did.
+
+### `push-reads`: a push reads its repository rows once, starts its reads together, and skips the probe for a known leader, 2026-11-16
+
+**Decision.** Four changes to a push's path before and around its commit (`design/DESIGN.md`, journey 1, step 1):
+1. **One rows read.** The read gate asks the repository group for `{"rows": {"access": true, "agent": true}}` on a push under 32.8. The member answers both row sets with `"agent": true` beside them (`workers/site/src/family.rs`), and `agents::push_context` reuses them (`Ctx::push_rows`). A member built before it answers access alone without the flag, and the edge then reads the agent rows separately, as before.
+2. **Concurrent starts.** On git routes, `authenticate` runs beside `resolve`. On a push whose caller reads the install's `Authz` anyway (`needs_install`), that read starts once the token answers, still beside `resolve`. `install_authz` reads once per request (`Ctx::install`), so `admission` reuses `push_context`'s read.
+3. **No probe for a known leader.** `commit()` skips `ensure_group`'s probe `/read` while `graftyard_lookup::knows_leader` holds. Any `NotLeader` clears the leader (`commit_hedged` calls `forget_leader`). So does a reply whose `meta.term` is below the highest this isolate saw from the group (`learn_leader`). The next commit then probes and looks the leader up again.
+4. **Stage first on a group seen hot.** A group whose leader answered this isolate's push `Stage` within `HOT_WINDOW` (5 s) is hot here (`workers/edge/src/lib.rs`, `mod hot`). A push to it that has an admission class and an inline pack over `INLINE_MAX_HOT` places its pack before its first commit. Nothing else marks a group hot, and the mark lapses `HOT_WINDOW` after the last `Stage`. A cool group's push keeps its inline pack. The leader's own `hot_stage` rule is unchanged and still decides: a pack staged early is a `Stored` pack it takes as it does any other.
+
+A test install answers each push with its stages as `server-timing`: `resolve`, `auth`, `install`, `gate`, `context`, `validate`, `admission`, `commit`, and `stage`. `Acked` is still built only inside `outcome`: the edge's changes are reads and the choice of a pack's form before `commit`.
+
+**Why.** In B0-32 m3fr7, every burst push took 14.6 to 23.5 s.
+- Before validate, two of five traced pushes spent 17.3 and 10.9 s in reads that ran one after another, many at about `FOLLOWER_WAIT` on the group's 8 learners. Before validate was 34% of the five pushes' time, and first commit to end was 36%, with 1 to 4 commits and up to 10 `/suspect` each [measured, `tests/am1/results/lm1-rows-m3f.md`, "m3fr7 after the run"].
+- The path read the repository group twice (access, then agent rows) and the install's `Authz` twice (`push_context`, then `admission`). It ran the token after the resolve, and sent a create probe before every commit, the `Stage` re-commit included. The hot group answered `Stage` to every 256 KiB push after its first commit.
+
+**Beat.**
+- Sending a burst's reads to the leader: settled against, because the leader is the burst's bottleneck.
+- Raising `FOLLOWER_WAIT` or `COMMIT_RECEIPT`: settled against, because it moves the wait rather than removing a read.
+- A hot flag in the leader's replies: it needs a raft change and a reply field. The `Stage` answer already says it.
+
+**Evidence.**
+- `a_push_reads_its_access_and_agent_rows_at_once` (`workers/site/src/fanout.rs`) fails on main (`agent` is null) and passes with the change.
+- `a_commit_probes_again_after_not_leader_or_a_stale_term` (`crates/lookup/src/lib.rs`) shows the fallback: no probe skip before a leader is known, after `NotLeader`, or after an older term's reply.
+- `only_a_group_that_answered_stage_within_hot_window_stages_first` (`workers/edge/src/lib.rs`) shows that a cool group never stages first at 1 B to 1 MiB, and that the mark lapses 1 ms past `HOT_WINDOW`.
+- `tests/m0carried/plant23.py` catches 10 of 10.
+- The time saved is [inference] until B0-32's rerun reads the new `server-timing`.
+
+**Flip.** A hosted B0-32 where `gate` plus `context` is still most of a push's wall, which would leave the follower read wait as the cost. Or one where pushes that stage first wait longer than a `Stage` round trip, which would mean the bucket place is slower than the leader's refusal.

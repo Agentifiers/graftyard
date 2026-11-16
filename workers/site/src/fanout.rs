@@ -343,6 +343,46 @@ mod tests {
         assert!(Repo::reads().contains(&REPO_FORMAT_FANOUT));
     }
 
+    /// A push's one repository read (`{"access": true, "agent": true}`) answers the access rows and the agent rows,
+    /// with `"agent": true` beside them so the edge reuses them; `{"access": true}` alone answers as before, without
+    /// the agent rows or the flag, which is how an edge tells an older member's answer.
+    #[test]
+    fn a_push_reads_its_access_and_agent_rows_at_once() {
+        use graftyard_api::hosted::TierRows;
+        use graftyard_git::agent::AgentPolicy;
+        let mut fold = RepoFold::new(RepoId(DbId(9)), AccountId(DbId(1)));
+        let policy = AgentPolicy { extra_human_approvals: 2, ..AgentPolicy::default() };
+        fold.apply_entry(&LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(1),
+            prev: Digest([0; 32]),
+            format: graftyard_git::repo::REPO_FORMAT_AGENT,
+            tiers: TierSet::CORE,
+            at: Timestamp(1),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![
+                RepoEvent::Collaborator {
+                    who: AccountId(DbId(7)),
+                    permission: Some(graftyard_identity::RepoPermission::Write),
+                },
+                RepoEvent::AgentPolicy(policy.clone()),
+            ]),
+        });
+        let tables = |v: &serde_json::Value| {
+            let rows = TierRows::from_value(v).unwrap();
+            rows.core.iter().map(|(t, _, _)| t.clone()).collect::<Vec<_>>()
+        };
+        let both = Repo::read_json(&fold, &json!({ "rows": { "access": true, "agent": true }, "ranges": true }));
+        assert_eq!(both["agent"], true);
+        assert_eq!(tables(&both), ["collaborator", "agent_policy"]);
+        let store = TierRows::store(&TierRows::from_value(&both).unwrap().core);
+        assert_eq!(graftyard_git::tiers::agent_policy(&store), policy);
+        let access = Repo::read_json(&fold, &json!({ "rows": { "access": true }, "ranges": true }));
+        assert!(access.get("agent").is_none());
+        assert_eq!(tables(&access), ["collaborator"]);
+    }
+
     /// A `rows` read with `packed` answers the whole tiers as one JSON string the edge reads back as the same rows;
     /// without it, the object a member built before `packed` answered.
     #[test]

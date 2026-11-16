@@ -84,6 +84,8 @@ struct Known {
     learners: Vec<(SiteId, String)>,
     config_index: u64,
     leader: Option<SiteId>,
+    /// The highest term a reply from the group carried.
+    term: u64,
 }
 
 thread_local! {
@@ -143,9 +145,28 @@ fn stale_answer(chain: ChainId, v: &Value, nl: &Value) -> bool {
     KNOWN.with(|k| k.borrow().get(&chain).is_some_and(|e| index < e.config_index))
 }
 
+/// The leader a reply names. A reply whose term is below the highest this isolate has seen from the group comes from a
+/// member behind it, so its leader is not kept and the one held is dropped: the next commit looks the leader up
+/// (`knows_leader`). A reply with no term (a member built before `meta.term`) keeps the old rule.
 fn learn_leader(chain: ChainId, v: &Value) {
     let leader = v.pointer("/meta/leader").and_then(Value::as_u64).and_then(|s| u8::try_from(s).ok()).map(SiteId);
-    KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().leader = leader);
+    let term = v.pointer("/meta/term").and_then(Value::as_u64);
+    KNOWN.with(|k| {
+        let mut k = k.borrow_mut();
+        let e = k.entry(chain).or_default();
+        match term {
+            Some(t) if t < e.term => e.leader = None,
+            Some(t) => (e.term, e.leader) = (t, leader),
+            None => e.leader = leader,
+        }
+    });
+}
+
+/// Whether this isolate holds a leader for `chain` that its config names, so the group exists and a commit needs no
+/// create probe first (`design/DESIGN.md`, journey 1, step 1). False after any `NotLeader` (`commit_hedged` forgets
+/// the leader), after a reply from a term below the one held (`learn_leader`), and before any reply named one.
+pub fn knows_leader(chain: ChainId) -> bool {
+    cached_leader(chain).is_some()
 }
 
 pub fn forget_leader(chain: ChainId) {
@@ -1608,6 +1629,29 @@ mod tests {
         assert_eq!(cached_leader(chain), None);
         KNOWN.with(|k| k.borrow_mut().get_mut(&chain).unwrap().leader = Some(SiteId(1)));
         assert_eq!(cached_leader(chain), None, "a leader outside the config is not sent to");
+    }
+
+    /// A commit skips the create probe only while the isolate holds a leader: a reply naming one sets it, a
+    /// `NotLeader` (which `commit_hedged` answers with `forget_leader`) clears it, and so does a reply from a term below
+    /// the highest seen, whose leader may be gone; a later reply at the current term sets it again.
+    #[test]
+    fn a_commit_probes_again_after_not_leader_or_a_stale_term() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(81)));
+        let voters = vec![(SiteId(0), "a".to_string()), (SiteId(1), "b".to_string()), (SiteId(2), "c".to_string())];
+        KNOWN.with(|k| k.borrow_mut().insert(chain, Known { voters, config_index: 1, ..Default::default() }));
+        assert!(!knows_leader(chain), "no reply has named a leader");
+        learn_leader(chain, &json!({ "meta": { "term": 5, "leader": 2 } }));
+        assert!(knows_leader(chain));
+        forget_leader(chain);
+        assert!(!knows_leader(chain), "after NotLeader the next commit probes");
+        learn_leader(chain, &json!({ "meta": { "term": 5, "leader": 2 } }));
+        learn_leader(chain, &json!({ "meta": { "term": 4, "leader": 1 } }));
+        assert!(!knows_leader(chain), "a reply from term 4 after term 5 is stale: probe again");
+        assert_eq!(cached_leader(chain), None, "and its leader is not sent to");
+        learn_leader(chain, &json!({ "meta": { "term": 6, "leader": 0 } }));
+        assert_eq!(cached_leader(chain), Some(Target { site: SiteId(0), do_name: "a".into() }));
+        learn_leader(chain, &json!({ "meta": { "leader": 1 } }));
+        assert_eq!(cached_leader(chain).map(|t| t.site), Some(SiteId(1)), "a reply with no term keeps the old rule");
     }
 
     /// A capped read's answer is the leader saying "busy, retry": never a missed member, which `call_opt` reports
