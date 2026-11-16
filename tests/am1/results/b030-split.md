@@ -761,6 +761,13 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
     or more slimmed rows are read, not two.
 - **G14 added to `decisions/OPEN-QUESTIONS.md`** after a merge of origin/main (`a45a316f`), which took G10. The table
   now reads Git and storage 14, Total 146, recounted from the rows.
+- **Orb restart (2026-11-16, about 04:11 to 04:24Z).** The orb that drives the run restarted: the load's last minute
+  row was 04:11:14Z at simulated day 22.712, and every service was down at 04:21Z. The tails of `b030-load.jsonl` and
+  `b030-cross.jsonl` held NUL bytes from the cut (156 and 423), which I stripped; every line parses. The state file was
+  intact. All six services restarted at 04:24Z, and the load resumed at day 22.721 with 148,045 pushes. `load.mjs`
+  advances simulated time only while it runs (at most 5 s a tick), so the outage cost no simulated time; the group ran
+  on, archiving, with no pushes for 13 minutes. Nothing hosted changed. The watch readings moved from `/tmp` into
+  `tests/am1/b030split/read.mjs`.
 
 ## Cost
 
