@@ -1,0 +1,29 @@
+2026-11-15T23:41:36Z api.cloudflare.com in request paths: 0 files
+edge: graft-m2b-edge serves b4968db8 at 100% (rev 1aed2cff7), as /home/user/workspace/siteday/tests/am1/raw/runs/fanout-m37-edge.log deployed
+2026-11-15T23:41:37.109Z b034 networks: {"mono":{"repo":"m3org/b034-mono","chain":"repo:131296","who":"admin"},"second":{"repo":"m3-member/b034-second","chain":"repo:327700","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-1","chain":"repo:9043968","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-2","chain":"repo:9043969","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-3","chain":"repo:9043970","who":"hostile"}]}
+2026-11-15T23:41:37Z seed m3-member/b034-second exit 0
+2026-11-15T23:41:37Z seed m3r-b034-hostile/b034-hostile-1 exit 0
+2026-11-15T23:41:37Z seed m3r-b034-hostile/b034-hostile-2 exit 0
+2026-11-15T23:41:37Z seed m3r-b034-hostile/b034-hostile-3 exit 0
+2026-11-15T23:41:37Z seed m3org/b034-mono exit 0
+2026-11-15T23:41:37Z b0-34 warm start
+2026-11-15T23:44:17Z b0-34 warm exit 0 {"at":"2026-11-15T23:44:17.630Z","s":159.9,"kind":"summary","mainS":152.4,"catchupS":{"0":158.2,"1":159.9,"2":152.4},"limitMin":45}
+{"name": "git#2#net:131296", "started": "2026-11-15T23:41:59.609Z", "image": "sha256:a6b6621a09579852953a90f949cedc4846c06ee1763c97c224e8067c4d78b269"}
+{"name": "git#1#net:131296", "started": "2026-11-15T23:41:58.534Z", "image": "sha256:a6b6621a09579852953a90f949cedc4846c06ee1763c97c224e8067c4d78b269"}
+{"name": "git#0#net:131296", "started": "2026-11-15T23:41:57.915Z", "image": "sha256:a6b6621a09579852953a90f949cedc4846c06ee1763c97c224e8067c4d78b269"}
+{"net": "131296", "running": 3, "other_image": 0}
+2026-11-15T23:44:21Z b0-34 warm images exit 0
+b0-34 kept packs after the warm: {"0": {"kept": 61, "count": 100}, "1": {"kept": 61, "count": 100}, "2": {"kept": 61, "count": 100}}
+b0-34 compose after the warm site a {"n": 0, "bytes": 0, "files": []}
+b0-34 compose after the warm site b {"n": 0, "bytes": 0, "files": []}
+b0-34 compose after the warm site c {"n": 0, "bytes": 0, "files": []}
+2026-11-15T23:44:48.466Z repo:131296 leader 0: learners [{"addr":192,"doName":"repo:131296#5#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131296#5#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131296#5#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131296#5#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131296#5#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131296#5#l5","join":20 config 3034
+2026-11-15T23:44:49.054Z repo:131296 leader 0: k 1 at 3034
+2026-11-15T23:44:49Z b0-34 b034-mono repo:131296 start
+2026-11-16T00:05:54Z b0-34 done exit 0
+  File "<string>", line 5
+    print('b0-34 compose at the row's end site', d['site'], json.dumps({'n': len(ks), 'bytes': sum(k['size'] for k in ks),
+                                                                                                          ^
+SyntaxError: unterminated string literal (detected at line 5)
+2026-11-16T00:05:55.598Z repo:131296 leader 0: k 2 at 5789
+DONE

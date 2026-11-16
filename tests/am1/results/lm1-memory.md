@@ -1414,3 +1414,2142 @@ fails the other; this run's 3.10 s misses both.
 
 F67: no leaderless stretch over 30 s with requests waiting in any row (worst 21.1 s, B0-33).
 Cost through the rows: $47.90 of $150 (containers $10.59). Shards are torn down after each row.
+
+### Round 9: site day m20 on standard-4, smokes, and the entry-cap A/B (2026-11-13)
+
+**Deploy.** Tree `lm1-memory` `b50ec6d` (main 5293a6c: hot-shards-3, merge-p99, m0-carried-7's `ENTRY_SOFT`), sites
+`2f633c70`, `f52dce4e`, `0cb8c021`; edge `ea865919`; `SHARD_INSTANCE=standard-4` on every site (set by `--vars` in
+`tests/am1/runs/siteday.sh`); shard image hot-shards-4's `sha256:f6d2ef408c76…`. Learners enam 4,000, weur 2,000,
+apac 2,000 (8). Every run below is B0-29's shape for 180 s.
+
+**The L0-12 clock rule as built.** The operator's "reject samples whose round trip is over 200 ms" is read as over
+200 ms above that site's fastest sample, because apac's idle round trip from this orb through the tools edge is 240
+to 590 ms [measured on 131291], so a flat cap would reject every apac sample. The operator accepted this reading.
+
+| Run | Agents | Entry limit | Commit p50 / p99 (ms) | Queue to append p50 / p99 | Round p50 | Commands per entry | Agent / human push p99 (s) | merge:only p99 | API p99, served |
+|---|---|---|---|---|---|---|---|---|---|
+| m20s250 (131297) | 250 | 60 KB | 356 / 1,469 | 205 / 1,332 | 153 | 2.16 | 7.7 / 5.7 | 4,051 | 2,810, 99.1% |
+| m20s500 (131298) | 500 | 60 KB | 791 / 1,619 | 642 / 1,461 | 151 | 3.50 | 8.3 / 7.0 | 966 | 2,406, 100.0% |
+| A/B 1 (131300) | 500 | `ENTRY_MAX` | 453 / 702 | 247 / 507 | 202 | 4.67 | 7.2 / 6.3 | 1,424 | 2,474, 100.0% |
+| A/B 2 (131301) | 500 | 60 KB | 739 / 1,718 | 578 / 1,583 | 151 | 3.38 | 8.0 / 6.9 | 1,117 | 2,331, 100.0% |
+| m19 s500, for reference | 500 | `ENTRY_MAX` | 341 / 567 | 194 / 421 | 142 | 3.41 | 6.6 / 8.5 | | |
+
+The entry limit is set per member through test-faults `/stats?entry=max|<bytes>` (`tests/fanout/smoke.sh`'s fourth
+field); a plain `/stats` read confirms `entrySoft` 1,500,000 on the uncapped arm. No run changed leader (term 2
+throughout), no `STEP_DOWN`, and API reads were served at 99.1 to 100%.
+
+**Cause [measured, A/B on one deploy]: `ENTRY_SOFT` (60 KB) doubles B0-29's commit p99.** With the cap, commands wait
+p50 578 to 642 ms and p99 1,461 to 1,583 ms for an entry, against 247 / 507 ms uncapped; the quorum round itself is
+the same or faster (151 against 202 ms p50). The leader is not busy: its CPU is about 9% of one core in every 10 s bin
+of m20s500 and no turn reached 100 ms (`tests/fanout/raw/tools/m20.txt`), so this is not m19's heavy-turn shape.
+Why [inference from the code and the plan]: journey 9 inlines agent packs of 10 to 70 KB (`INLINE_MAX_HOT` 64 KiB), so
+a 60 KB entry carries about one push past its first command. One entry is in flight at a time, at about 5 entries a
+second (round about 150 ms plus deps about 55 ms), and the 4.17 pushes a second alone fill most of them, so commands
+queue behind entries. The cap's capacity term (`Admission::capacity`, `soft / cmd_bytes` commands per entry) shrinks
+with it, so admission does not shed the excess either. m0-carried-7 measured on B0-02, which pushes no inline packs.
+
+**B0-34's seed and the edge's push memory (design contradiction).** Every 60 MB push of the torvalds/linux seed ended
+`exceededMemory` or "the Worker's code had hung" on `graft-m2b-edge` (6 of 6 tries, 08:31 to 08:35Z). The edge reads
+a receive-pack body into one `Vec` (`read_capped`), so a push of tens of MB passes the 128 MB isolate. DESIGN,
+Milestone 0, says of a 2 GB push: "Enterprise completes with Worker memory under 100 MB", and its fail line is "needs
+buffering". The edge as built buffers. The seed now uses 30 MB steps (`tests/fanout/b034plan.py`), and linux's 53 MB
+root commit is carried by its tree's parts first.
+
+Cost after round 9's smokes and A/B: $54.80 of $150 (containers $14.78); every shard torn down with `--pools`.
+
+### Round 10: site day m21 and the ENTRY_SOFT A/B on the fixed cap (2026-11-13)
+
+**Deploy.** Tree `lm1-memory` `74f0e1a` (main a7d28e5: m0-entry-soft-packs `ff29c65`, hot-shards-4, M4-WP2's pure
+half, f67-wide), sites `78a8c8f8`, `955377dc`, `2aeae0cc`; edge `bc314b3a`; `SHARD_INSTANCE=standard-4`; shard image
+hot-shards-4's `sha256:f6d2ef408c76…`. A first attempt on 745c116 (main 59308e9) stopped after site a, on a wrangler
+"fetch failed" for site b, and was replaced by this one. Checks on 74f0e1a: fmt, both clippies, wasm32 clippy for
+site, edge and ops with and without `test-faults`, `cargo test --workspace`, `go test`, and the three design checks
+(`check_links` in a clean worktree, 3,168 citations) pass. Long sweep (2,000 seeds × 10,000 steps) ok in 1,275 s;
+Porcupine Ok on `hist.jsonl` (150,828 operations), `.gray` (2,044,734) and `.live` (5,253,576).
+
+**A/B (diagnosis, not a row).** B0-29's shape, 500 agents, 180 s, learners enam 4,000, weur 2,000, apac 2,000, k 4.
+The uncapped arm sets `ENTRY_MAX` on every member through test-faults `/stats?entry=max`.
+
+| Run | Entry limit | Commit p50 / p99 (ms) | Queue p50 / p99 | Round p50 / p99 | Confirm p99 | Far follower (site 2) append p50 / p99 | Agent push p99 | merge:only p99 | API p99, served |
+|---|---|---|---|---|---|---|---|---|---|
+| m21cap500 (131302) | `ENTRY_SOFT`, as shipped | 381 / 717 | 205 / 499 | 168 / 297 | 56 | 262 / 635 | 6.5 s | 1,157 | 2,639, 99.97% |
+| m21max500 (131303) | `ENTRY_MAX` | 394 / 761 | 213 / 508 | 169 / 331 | 90 | 226 / 577 | 6.9 s | 1,476 | 2,610, 99.96% |
+
+The fixed cap is no worse than uncapped (717 against 761 ms p99; round 9's 60 KB cap was 1,718), so the gate rows run
+capped, as shipped. Neither arm meets B0-29's 600 ms line. Leader held at term 2 in both, 0 feed polls on it, 7 and 0
+`/suspect`. In both arms the queue (admission to append, which holds the entry's dep reads, p99 205 to 331 ms) is
+about two thirds of the commit p99 and the round the rest; the round's p50 equals the near follower's (site 1)
+AppendEntries p50, so the quorum leg is the near follower's call, not the leader's confirm (p99 56 to 90 ms).
+
+**B0-34's seed.** m3org/b034-mono holds 5.02 GB of torvalds/linux (260 pushes of at most 30 MB, 6,075 s); push 4,
+linux's 52 MB root commit carried in parts, was cut off 4 times at the edge before it went. The repos are kept.
+
+**Rows m21 do not count: every row ran at k 1.** `k.mjs repo:N 4` answered `{"grants":[[0,[]],[2,[]]],"k":1,"want":3}`
+for every row (131304 to 131309), so the forced k was capped to 1 by pool-grants' ledgers. The cause: the smokes
+before them (131302, 131303) set k 4 for owner m3org, and `smoke.sh` and `rows.sh` read k after a run but never set it
+back, so those networks kept their leases (`PoolLedger::ask`) after their shards were torn down. Each owner is held to
+`HOT_POOL - 1` = 6 slots, and the two networks held all 6 (3 each) on every site. Asking k 1 on 131302 and 131303 freed
+them, and a k 4 ask on 131304 was then granted at once (`[[0,[2,1,6]],[2,[2,1,6]]]`). `rows.sh` and `smoke.sh` now set
+k 1 after each run, and `rows.sh` skips a row whose forced k was not granted.
+
+What the k 1 rows showed is still evidence of a single shard under the row's load, recorded as such:
+
+| Row (m21, k 1) | Leader | Commit p50 / p99 (ms) | Queue p99 | Notes |
+|---|---|---|---|---|
+| B0-29 (131304) | held, term 2 | 1,114 / 30,306 | 29,950 | 2,462 / 2,500 agent pushes ok, p99 37.7 s; merge:only p99 8.1 s; API p99 2.4 s, 99.4% served; leader CPU 31 to 37% of a core |
+| B0-32 (131305) | held | 391 / 871 | 712 | burst 225 / 500 ok, 274 `full`; burst p99 22.7 s |
+| B0-31 (131306) | apac held, term 3 | 22,151 / 30,549 | 30,354 | rehomed on apac; agent pushes p99 49 s; placement-failing half 1,265 `full` |
+| B0-33 (131307) | held | 30,017 / 30,674 | 30,515 | 864 of 12,432 agent pushes ok; 1,207 `/suspect` |
+| B0-35 (131308) | held | 428 / 934 | 690 | test-merge `computed` 10,191, waitMax 17.3 s on site 0 |
+
+At k 1 the queue waits reach `AGENT_WAIT` (30 s) and agent commands are refused `Full`: one shard's validates hold
+pushes back, the leader's admission fills, and every command class waits behind them. These are not the rows as
+written (k 4), so none is judged.
+
+**Design gap (pool-grants, for the parent).** A network whose shards are torn down at k > 1 keeps its pool lease
+until `LOAD_STALE` of later ledger calls, and `PoolLedger::settle` shifts every lease forward past a gap of
+`LEDGER_GAP`, so on a test install with a stream of short-lived networks of one owner the lease never lapses while
+other networks keep calling. DESIGN's lease text says leases "lapse past LOAD_STALE unless renewed"; here they were
+renewed by nobody and still held for over an hour (11:36Z to 13:11Z).
+
+### Round 10b: rows m22 at k 4 on main 84d29c2 (2026-11-13)
+
+**Deploy m22.** `lm1-memory` `24dec508` (main 84d29c2: F67 rules 10 to 13; not yet c0f521b). Sites `9e2b7b32`,
+`2611f7ee`, `cd860099`; edge `f9d34dec` (from `565bdb01`); `SHARD_INSTANCE=standard-4`; image
+`sha256:f6d2ef408c76…`. Every row got k 4 (`rows.sh` checks the grant), learners enam 4,000, weur 2,000, apac 2,000,
+one fresh repository per row, run in order 13:55Z to 15:58Z. Raw data: `tests/fanout/raw/m22/` (the a1 rows and logs,
+`rows-m22.status`, the site day's logs, and each churned row's `member alarm` step-downs from Workers Logs,
+`alarms-*.txt`).
+
+| Row (m22, k 4) | Repo | Leader: terms | Commit p50 / p99 (ms) | Agent pushes ok | Leader `/suspect` | Other |
+|---|---|---|---|---|---|---|
+| B0-29, 600 s | 131310 | held, term 2 | 512 / 1,158 | 2,497 / 2,500, p99 7.8 s | 36 | merge:only p99 2,503 ms; API p99 2,863 ms, 99.7% served |
+| B0-32, 180 s | 131311 | held, term 2 | 378 / 1,265 | 641 / 757 | 18 | burst 390 / 500 ok, p99 105 s |
+| B0-31, 600 s | 131312 | apac held, term 3 (rehome) | 30,044 / 30,899 | 879 / 2,500 (1,620 `full`) | 11 | round p99 401 ms; the queue sets the commit |
+| B0-33, 300 s, 5,000 agents | 131313 | term 2 to 10, site 2 last | 30,003 / 30,523 | 224 / 12,498 (8,595 `full`) | 28,868 | round p99 741 ms |
+| B0-35, 600 s | 131314 | term 2 to 23, site 0 last | 6,277 / 17,684 | 1,109 / 2,500 | 9,551 | 118 commit samples; API 45,485 of 117,223 served |
+| L0-12, 600 s | 131315 | term 2 to 7, site 2 last | 26,153 / 31,020 | 1,692 / 2,490 (634 `full`) | 857 | 10 leader kills; feed p99 outside them 2,444 ms |
+
+Every row fails its gate line; the commit line alone fails each (B0-29's 1,158 ms is past its 1 s fail value).
+
+**Step-downs (Workers Logs, `member alarm: StepDown`).** In B0-33, three, all `Confirm`: 14:40:05Z site a (p99
+1,245 ms, 6 slow of 20, to site 1), then site c twice (14:40:31Z p99 2,502 ms; 14:42:44Z p99 1,000 ms; to none). In
+B0-35, four, all `CommitErrors` (14:49:14Z site a, 3 of 6 calls failed to each follower; 15:02:02Z site a, 42 of 48 to
+site 1; 15:03:47Z site c; 15:04:20Z site b). In L0-12, seven: five `CommitErrors` and two `Confirm` on site a
+(15:49:57Z p99 911 ms; 15:55:19Z p99 1,622 ms). The terms climbed far past the step-downs (B0-35 reached term 23
+after four), so most terms were elections that did not seat a leader.
+
+**Reading (with the parent's churn reviewer, 2026-11-14).** Not F67 rules 10 to 13. The climb is load-driven and older
+than them: it reproduces in the simulator on both a7d28e5 and 84d29c2 when confirms are slow on every member. A
+STEP_DOWN hands leadership to a follower whose confirms are just as slow, which then holds; after that,
+`/suspect`-driven elections that cannot win still raise the term, because a voter adopts a candidate's term before
+it checks the candidate's log. The raft side is with B0-02's thread. This branch's lever is the leader's confirm time
+(`confirmSplit`, round 12). On dd046f2 (round 12) B0-33 moved its leader once, on the same `Confirm` step-down, and
+the term did not climb. `tests/fanout/terms.mjs` now also logs each member's promise (`promiseUntil` less its `now`),
+so a follower withholding its vote before an election shows up, and it reads each site's current voter by name: a
+call by site alone reached the first generation's object after fresh-repo's background placement replaced a voter.
+
+### Round 11: m23, the ENTRY_SOFT 100 KB A/B on m0-carried-8 (2026-11-13)
+
+**Deploy.** Worktree `e3ba3b58`: origin/m0-carried-8 `c8c7943` (base main 84d29c2: ENTRY_SOFT 100,000 bytes, Agent
+inline packs not counted; APPEND_BYTES_MAX 100 KB past an AppendEntries' first entry; AppendEntries pipelined 4 per
+voter, off on a lossy link; LOOP_LAG step-down) merged with `lm1-memory` `d2320985` (main e1fee025, the pool lease
+heartbeat, and this branch's queue split). Sites `172052f9`, `b0ff9cd5`, `22907958`; edge `a8257c11`;
+`SHARD_INSTANCE=standard-4`; image `sha256:f6d2ef408c76…`. Before it, fmt, wasm32 test-faults clippy for the site,
+`graftyard-site --lib` and `graftyard-raft` tests passed on the merged tree; m0-carried-8 ran the long sweep,
+Porcupine and full checks on `c8c7943`.
+
+**A/B (diagnosis, not a row).** B0-29's shape, 500 agents, 180 s, k 4 granted, learners enam 4,000, weur 2,000,
+apac 2,000. The 60 KB arm pins `/stats?entry=60000` on every member (test-faults `set_entry_soft`).
+
+| Arm | Commit p50 / p99 (ms) | Queue p99 | Slot p99 | Post p99 | Round p50 / p99 | Confirm p99 | Far follower append p50 / p99 | Commands per entry | Agent push p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| As built, 100 KB (131319) | 518 / 869 | 639 | 538 | 360 | 220 / 419 | 227 | 335 / 593 | 4.84 (3,163 / 654) | 7.5 s |
+| Pinned 60 KB (131321) | 437 / 912 | 708 | 687 | 260 | 178 / 332 | 77 | 232 / 447 | 3.97 (3,171 / 799) | 7.8 s |
+
+Both arms held their leader at term 2 (10 and 26 `/suspect`), 0 feed polls on the leader, 752 / 753 and 728 / 728
+agent pushes ok, merge:only p99 1,484 and 1,294 ms, API p99 2,566 and 2,760 ms at 99.99 and 99.8% served.
+
+**Reading [measured on one deploy, one run per arm].** The 100 KB cap packs 22% more commands into each entry (4.84
+against 3.97) and its p99 commit is 43 ms lower, within run-to-run spread; its p50 is 81 ms higher. Larger entries
+make the round longer (p50 220 against 178 ms, p99 419 against 332) and the leader's storage confirm much longer
+(p99 227 against 77 ms), and the slot wait shorter (p99 538 against 687). Neither arm meets B0-29's 600 ms line.
+In both, a command's queue is mostly the wait for the entry ahead of it to commit (`queue:slot`), not its own entry's
+cut and dependency reads (`queue:post`, p50 2 to 7 ms): with one entry in flight, commit p99 is about one round wait
+plus one round. So the lever for 600 ms is the round's tail (the near follower's AppendEntries and the leader's
+confirm), not the dependency reads.
+
+**Fresh repositories.** Two of four creates on m23 failed in setup: 131316's create answered 503 "0 of 3 joined"
+with "RepoId(DbId(131316)) has no RepoOwner row" from each member, and 131317's and 131320's `main` was missing from
+ls-refs for seconds after the 201 (`a1.mjs` stopped with "the repository has no main"). `a1.mjs` now waits up to
+120 s for `main` and logs the wait; 131321's appeared after 1,704 ms. Not yet traced.
+
+Cost after round 11: $86.98 of $150 (containers $29.23); every shard torn down.
+
+### Round 12: m24c, B0-33's leader churn traced, and the B0-29 entry A/B against ENTRY_MAX (2026-11-14)
+
+**Deploy m24c.** `lm1-memory` `6065130` (main dd046f2: m0-carried-8's ENTRY_SOFT 100 KB, APPEND_BYTES_MAX 100 KB,
+PIPELINE 4 and LOOP_LAG; F67 rules 10 to 13; the pool lease heartbeat c0f521b; the tier fold fix; fresh-repo). Sites
+`7a2a620c`, `f7bb90ce`, `27504d93`; edge `66d2d952`; `SHARD_INSTANCE=standard-4`; image `sha256:f6d2ef408c76…`. Full
+checks passed on `6065130`.
+
+**B0-33's churn (smoke, repo 131323, k 4, 8 learners, `tests/fanout/terms.mjs` once a second).** One leader move in
+the run, and it was the leader's own STEP_DOWN on its storage confirm: at 03:19:15Z a CommitErrors trip (3 of 5 calls
+to each follower failed) held; at 03:20:45Z site 1 led at term 3; the old leader's alarm log shows a Confirm
+step-down at 03:20:54Z with confirm p99 1,673 ms. 1,105 `/suspect` reports started no election, no LoopLag
+step-down fired, and no transfer or drain hand-off ran, so F67 rules 10 to 13 and LOOP_LAG are not implicated
+[measured]. m22's climb from term 2 to 10 on 84d29c2 does not reproduce on dd046f2. The same smoke without learners
+(131322) held term 2 with one CommitErrors trip that held, commit p99 5,163 ms. B0-33 still fails on load: commit
+p99 30.9 s, 1,454 of 12,441 agent pushes ok and 10,966 refused `full`, because admission sizes its capacity from the
+round, which includes the 1.7 s confirm.
+
+**B0-29 A/B (diagnosis, not a row).** 500 agents, 180 s, k 4 granted, learners enam 4,000, weur 2,000, apac 2,000,
+fresh repositories. The ENTRY_MAX arm sets `/stats?entry=1500000` on every member.
+
+| Arm | Commit p50 / p99 (ms) | Queue p99 | Slot p99 | Post p99 | Round p50 / p99 | Confirm p99 | Far follower append p50 / p99 | Commands per entry | Agent push p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| As built, 100 KB (131324) | 347 / 575 | 417 | 343 | 240 | 149 / 256 | 102 | 245 / 459 | 3.41 (3,180 / 932) | 7.2 s |
+| ENTRY_MAX (131325) | 349 / 614 | 433 | 336 | 208 | 154 / 276 | 100 | 332 / 635 | 3.41 (3,167 / 928) | 7.1 s |
+
+Both arms held their leader at term 2 with no `/suspect` on the leader and 0 feed polls on it. Agent pushes 759 /
+759 and 767 / 767 ok; merge:only p99 2,363 and 1,341 ms; API p99 2,707 and 3,188 ms (the ENTRY_MAX arm had 131
+read 503s).
+
+**Reading [measured on one deploy, one run per arm].** On a fresh repository the cap does not bind: both arms cut
+the same 3.41 commands per entry, so the 100 KB cap and ENTRY_MAX give the same entries, and the 39 ms gap in commit
+p99 is run-to-run spread. The as-built arm's 575 ms is the first B0-29-shaped run under the 600 ms line, against
+869 ms on m23 (`c8c7943`) with 4.84 commands per entry; this deploy's rounds are shorter (p99 256 against 419 ms) and
+its confirm too (p99 102 against 227). One run, so not a gate result. narrow-reads-3's graft-m3e runs (500 open PRs:
+60 KB cap 2.9 s against ENTRY_MAX 949 ms) differ from these in the repository, not the tree's cap: there the cap
+binds, here it does not. Whether a PR-heavy repository's non-agent commands fill ENTRY_SOFT is not yet measured
+[unverified].
+
+**Confirm split instrument (for m25).** `/stats?summary=1` now carries `confirmSplit`: for each leader confirm, the
+input's step to the start of its transaction (`gate`, the deferred flush's macrotask), that start to `sync()`'s
+continuation (`sync`), a zero-delay timer set beside it (`turn`, the isolate's turn queue), and `storage`
+(`sync - turn` per sample), grouped by the transaction's bytes (under 100 KB, under 1 MB, larger). `a1.mjs` reports
+it as `leader.confirmSplit`. Its tests fail on plants 89 to 91. Workers' clock advances only across I/O, so the
+synchronous `transactionSync` itself reads as 0 ms and shows up in later inputs' `gate` and `turn`.
+
+Cost after round 12: $106.76 of $150 (containers $45.53); `teardown.py --sweep` reported "sweep ok".
+
+**B0-29's repository shape (adopted by the operator for every B0-29 gate run, commit and API lines alike, 2026-11-14; narrow-reads-3's idle-PR, k 1 runs do not count toward the streak).** B0-29 is one row, so both
+threads gate it on one shape. The fresh-repository arms above (575 and 614 ms) and narrow-reads-3's 500-PR runs on
+graft-m3e (1.9 to 2.9 s) ran different repositories, and the row text names PrSync, test-merge records and check runs,
+which need open PRs:
+
+- a fresh repository per run (`tests/am1/runs/mkrepos.mjs`), `main` at its first commit, gated about 10 to 15 minutes
+  after create, once its PRs are open and learners and k are placed;
+- 500 draft PRs opened inside the run (`a1.mjs b0-29 --open-prs 500`), one per agent head branch, so every agent push
+  in the window is a head push with its PrSync and test merge; B0-35's mergeable pollers stay off;
+- about 520 refs at the start (500 PR heads, `main`, 20 shared human refs), plus about 10 a minute from merges;
+- journey 9's plan at 500 agents for 600 s, learners enam 4,000, weur 2,000, apac 2,000, k 4, standard-4 shards, no
+  test-faults override. `tests/fanout/rows.sh` runs B0-29 with `--open-prs 500`.
+
+narrow-reads-3's m3e runs opened their 500 PRs in a separate 1 s `b0-35` run, and the B0-29 agents then pushed their
+own `claude/a1-<run>-i` refs, not those heads, so the PRs were idle fold rows and no head-push PrSync or test merge
+ran; those runs also held k 1.
+
+**B0-29's window (agreed with narrow-reads-3, 2026-11-14).** The row's 600 s load window, and every line judged in
+it (commit, merge, `Stale`, leader load, API p99 and served share), starts only after setup has finished. In order: `mkrepos.mjs`; learners and k (`rows.sh` and `smoke.sh` place
+them before `a1.mjs` starts, so the learners join a near-empty log and follow the PR opens as they commit); the 500
+PR opens inside `a1.mjs` (their transient 503s, about 160 per setup on graft-m3e, are setup's and counted only in its
+"open PRs" row); then a wait of up to 120 s for every learner to apply the leader's commit index, logged with the
+leader's `wasmMemMb` ("learners caught up"). So no learner joins or catches up inside the window (28 to 73 MiB of
+leader high-water on graft-m3e).
+
+### Round 13: m25 on m0-adaptive-append, its B0-29 A/B, and B0-29 on the agreed 500-PR shape (2026-11-14)
+
+**Deploy m25.** Worktree `731bbb60`: `lm1-memory` `1d7a7805` (main dd046f2 plus this branch's `confirmSplit`) merged
+with origin/m0-adaptive-append `4ba495d` (main 82a0bf9: pipelining stops only on lost calls, a per-link call bound
+that halves on a lost call and grows back, a pipelined call that overtakes the one ahead waits behind it, and a behind
+voter gets calls until PIPELINE are out). The merge's `crates/raft` equals `4ba495d`'s, whose long sweep, Porcupine and
+B0-02 gate (16 of 16) its thread ran; fmt, site wasm32 clippy with and without `test-faults`, and the site and raft
+tests pass on the merge. Sites `8dbaa3fb`, `8e51a76d`, `366c1f53`; edge `3a9061ff`; `SHARD_INSTANCE=standard-4`; image
+`sha256:f6d2ef408c76…`. The first site day failed at once on the worktree's missing ignored `tests/am1/raw/runs`.
+
+All three arms: 500 agents, 180 s, k 4 granted, learners enam 4,000, weur 2,000, apac 2,000, each learner caught up
+before the window.
+
+| Arm | Commit p50 / p99 (ms) | Queue p99 (slot / post) | Round p50 / p99 | Confirm p99 | Near / far follower append p99 | Commands per entry | Agent push p99 | API p99, served |
+|---|---|---|---|---|---|---|---|---|
+| main dd046f2, fresh repo (m24c, 131324) | 347 / 575 | 417 (343 / 240) | 149 / 256 | 102 | 255 / 459 | 3.41 (3,180 / 932) | 7.2 s | 2,707, 99.9% |
+| adaptive-append, fresh repo (m25, 131328) | 350 / 682 | 489 (377 / 245) | 152 / 286 | 51 | 291 / 701 | 3.44 (3,164 / 920) | 8.9 s | 2,684, 99.9% |
+| adaptive-append, 500 open PRs (m25, 131327) | 429 / 865 | 575 (514 / 249) | 192 / 407 | 71 | 459 / 892 | 3.83 (2,875 / 750) | 13.6 s | 3,408, 99.0% |
+
+All three held term 2 with 0 feed polls on the leader; agent pushes 759 / 759, 749 / 749 and 741 / 743 ok; merge:only
+p99 2,363, 1,353 and 1,647 ms.
+
+**adaptive-append's A/B [measured, one run per arm, on two deploys an hour apart].** On a fresh repository the tree is
+not better on journey 9: commit p99 682 against 575 ms, with the same entries (3.44 against 3.41 commands per entry)
+and a lower leader confirm (51 against 102 ms). The difference is the far follower's AppendEntries (p99 701 against
+459 ms) and, behind it, the slot wait (377 against 343). The round's p99 still follows the near follower (286 against
+256), so the far leg reaches commit only through the wait for the entry ahead. One run each is inside run-to-run
+spread for p99 (round 11's two arms on one tree differed by 43 ms; rounds 10 and 12, 44 and 39); the far leg's 242 ms
+is the one large move, and the 500-PR arm on the same tree shows it again (892).
+
+**B0-29 on the agreed shape (500 open PRs) [measured, one smoke].** 500 of 500 PRs opened with no failure; the learners
+caught up in 2.6 s, leader `wasmMemMb` 20.6 MiB then. Against the same tree's fresh arm, PR-heavy commands fill entries
+somewhat more (3.83 against 3.44 commands per entry; 155 of 750 confirms, 21%, carried 100 KB to 1 MB, p50 143 KB,
+against 131 of 920), and they do not slow confirms: `confirmSplit` storage p99 is 71 ms under 100 KB and 76 ms from 100
+KB to 1 MB, against 51 and 52 on the fresh arm. The commit's extra 183 ms is the slot wait (514 against 377) behind a
+longer round (p99 407 against 286) whose near and far legs both slowed (459 and 892 against 291 and 701). So on this
+shape B0-29's commit line is the round's follower legs, not the leader's confirm and not entry fill.
+
+**Confirm split's turn queue reads 0 throughout** (`gate` and `turn` p99 0 in every group of every arm). Either the
+deferred flush and a zero-delay timer run in the same turn as the input on a lightly loaded leader, or Workers' clock,
+which advances only across I/O, hides the wait; at B0-29's load `sync` equals storage. B0-33's smoke, whose confirms
+reached p99 1.7 s, is where the split decides between the two levers.
+
+**Driver fixes.** `a1.mjs` read the leader from one `/status` round; the first fresh arm (131326, run `mwfx2jp3`) got
+none ("leader site undefined") and kept no commit split, so it was rerun as 131328. `a1.mjs` now falls back to
+`leaderOf` (up to 20 s). In that first arm the learner wait reported 0 of 8 caught up after 120 s while each learner,
+read by name later, stood at index 918 [unverified why].
+
+Cost after round 13: $109.01 of $150 at 05:35Z (containers $45.79); every sweep "sweep ok".
+
+### Round 14: B0-33's confirm split, and why the row fails (m25, 2026-11-14)
+
+**Run.** Deploy m25 (round 13). B0-33 smoke, repo 131329 (`fm25s33-b033`), 5,000 agents, 300 s, k 4 granted, learners
+enam 4,000, weur 2,000, apac 2,000, `tests/fanout/terms.mjs` once a second with each follower's promise (raw:
+`tests/fanout/raw/terms-m25s33.jsonl`).
+
+**Leader: held.** Term 2 from start to end on all three members; no `member alarm` StepDown in Workers Logs for
+05:36Z to 05:47Z; both followers held a promise to the leader the whole run (it lapsed and was renewed within a
+second at 05:39:10Z and in the idle tail after 05:46:51Z, never with an election). So on this tree the leader-change
+and `suspect` lines hold for one run, where m22 (84d29c2) climbed to term 10 and m24c (dd046f2) moved once on a
+`Confirm` step-down.
+
+**Confirm split [measured].** The leader's confirm is short and storage-bound: confirm p99 166 ms (m24c's B0-33: 1,673
+ms). Of 1,351 timed confirms, 1,348 carried under 100 KB (p50 3.6 KB, p99 46 KB): storage p99 149 ms, `gate` and
+`turn` p99 0. The other 3 carried 416 to 834 KB and up to 1,560 statements: storage p99 818 ms, `gate` 154 and `turn`
+28 ms. So the answer to the parent's question on this run is storage, not the turn queue, and it is driven by the few
+large transactions (many statements), not by entry bytes in general; with Workers' clock advancing only across I/O,
+synchronous CPU inside `transactionSync` would read as later inputs' `gate` and `turn`, and those read 0 for 99.8% of
+confirms, so the isolate was not busy enough to delay them [inference from the clock rule].
+
+**The 3 large confirms [partly measured].** They fell in the window (stats reset at 05:41:07Z), so they were not the
+archive alarm's `Promoted` (index 32) and `Archived` (index 34), which Workers Logs show at 05:37:07Z and 05:37:08Z,
+before it; no other archive, promote or install line appears for the group through 05:47Z, and the learners' "no
+install source" lines are from 05:37Z too. So they were not Promoted, Archived or an install. What is left is a fold
+write: a leader transaction of up to 1,560 statements is many entries' apply in one input (each applied request
+writes its `request` row, and `store_fold` seals each tier row it changed), together with the queued appends of the
+inputs a deferred flush holds, whose log rows carry up to `AGENT_INLINE_ENTRY` of Agent inline packs each. A learner
+catch-up writes nothing on the leader. Which of the two carried the bytes is not measured: `/stats?summary=1` now
+keeps the statement mix (verb and table, count and bytes) of a member's newest 20 transactions of 100 KB or more
+(`bigTx`), and `a1.mjs` records it, so m26's B0-33 names them [the split between apply and appends is unverified].
+
+**Why B0-33 still fails: admission capacity.** Commit p50 / p99 29,888 / 30,363 ms, all of it queue (`queue:slot`
+p99 30,096 ms: commands wait AGENT_WAIT for the entry ahead) while the round is short (p50 196, p99 364 ms) and
+`queue:post` p99 245 ms. The leader cut 1,351 entries of 9,844 commands in the 335 s window, 7.3 per entry and about
+29 commands/s, against 252 agent-class commands/s offered: 2,328 of 12,538 agent pushes ok (10,200 `full`), about 7.8
+agent pushes and 20.8 side commands/s admitted against the gate's 140. With entries of 3.6 KB at p50, ENTRY_SOFT does
+not bind them, so the cut is held to about 7 commands an entry by the token bucket, `AGENT_SHARE` times the measured
+capacity, where capacity is ENTRY_SOFT over the moving average of command bytes times entries per second at the
+moving average of the round (`crates/raft/src/member/leader.rs`, `Admission::capacity`). The average command bytes
+counts every class's soft bytes, so a few large human or bot commands lower the per-entry estimate for all
+[inference; not measured on this run]. `/stats?summary=1`'s `admission` now also returns `capacity`,
+`retryAfterS`, and the two moving averages the estimate uses, `cmdBytes` and `roundMs` (`AdmissionView`, a field
+addition in `crates/raft/src`, no behavior change), and `admittedBytes` gives each class's admitted commands' priced
+bytes (count, p50, p99, max, sum, and the sum of those of 10 KB or more). `a1.mjs` samples the leader's admission
+every 10 s into the row (field `admission`). Their tests fail on plants 92 and 93.
+
+The parent's arithmetic (2026-11-14): about 29 commands/s admitted at a 196 ms round means the bucket sized itself
+near 58/s, which at ENTRY_SOFT 100 KB needs `cmdBytes` near 9 KB, while entries carried 7.3 commands at a p50 of
+3.6 KB, so a mean raised by a few large commands may price every entry as byte-full [inference; m26's B0-33 runs
+first to measure it].
+
+Other lines: human pushes 109 of 189 ok, p99 29.7 s; merge:only p99 10.2 s; the fast user 470 of 495 ok (25 × 503);
+read:ref p99 9.0 s; leader 457 req/s with 0 feed polls.
+
+**Learner wait.** The pre-window wait again read 0 of 8 caught up after 120 s at commit 114 on a fresh repository, as
+in round 13's first fresh arm, while the 500-PR arms read 8 of 8 within 3 s [unverified why; a learner's `/status`
+before it has applied its first append may not report `applied`].
+
+Cost after round 14: $110.68 of $150 (containers $45.90); the run's sweep "sweep ok".
+
+**Gate-row tree.** The parent: gate rows build on main, not on m25's merge (adaptive-append is not merging yet).
+`lm1-memory` now merges origin/main `34a3316f`, which brings liveness-split-vote (a21ecdf0, a raft change whose long
+sweep and Porcupine its own record shows passing, `tests/m0/results/split-vote.md`). Full checks on the merge: fmt,
+workspace clippy, wasm32 clippy for site, edge and ops with and without `test-faults`, `cargo test --workspace`,
+`go test` and `check_design` pass; `check_names` and `check_links` fail only on `.worktrees/` and pass in a clean
+worktree (2,605 files; 3,235 citations).
+
+### Round 15: m26c on main 2456b8f, and what sets B0-33's admission capacity (2026-11-14)
+
+**Deploy m26c.** lm1-memory a3114e0a = main 2456b8f6 (liveness-slow-storage) plus the admission instruments of
+c5d38b11: sites a 75e5b130, b df53889e, c afe13337; edge 6bcce970; shards standard-4, image f6d2ef40; 06:50Z. Full
+checks pass on a3114e0a (checks29; `check_names` and `check_links` pass in a clean worktree, 2,608 files and 3,235
+citations). The raft tree's long sweep (sweep15) exits 0, longest healthy-quorum stall 15,735 / 25,169 / 24,655 ms;
+Porcupine is Ok on all three histories (156,325, 2,230,496 and 6,087,300 operations). Plants 92 (capacity sample) and
+93 (`admittedBytes` pricing) are caught.
+
+**Instruments.** `/stats?summary=1` admission reports `capacity`, `retryAfterS`, `cmdBytes` and `roundMs`
+(`AdmissionView`, no behaviour change); `admittedBytes` gives each class's count, p50, p99, max and sum of the bytes
+admission priced (encoded length less an Agent inline pack); `bigTx` keeps the verb and table mix of the newest 20
+transactions of 100 KB or more. `a1.mjs` samples the leader's admission every 10 s into the row's `admission`.
+
+**Run.** B0-33 smoke, repo 131330 (`fm26s33-b033`), run mwg1tdsf, 5,000 agents, 300 s from 06:57:54Z, k 4, learners
+enam 4,000, weur 2,000, apac 2,000 (0 of 8 caught up at the 120 s wait, as on m25; unexplained). Raw:
+`tests/am1/raw/a1-b0-33-mwg1tdsf.jsonl`, `tests/fanout/raw/terms-m26s33.jsonl`.
+
+| line | m26c |
+|---|---|
+| commit p50 / p99 | 30,012 / 30,975 ms (queue:slot p99 30,359; round p99 663; confirm p99 518) |
+| agent pushes | 897 ok of 12,480 (11,525 `full`) |
+| entries / commands | 504 / 3,843 (7.6 a entry) |
+| fast user | 479 of 497 200, 18 503, p99 5,454 ms |
+| side:human | 493 of 516 ok, 23 GraphQL 503, p99 6,280 ms |
+| merge:only | 16 of 18 200, 2 409, p99 7,560 ms |
+| `/suspect` on leader | 1,696; leader 280 req/s |
+| leader changes | 2 (0 → 1 at term 3, 1 → 2 at term 4), leaderless at most about 1 s and about 3 s (corrected in round 15c) |
+
+**Admission samples [measured].** Capacity fell from 78/s at start to 30–47/s and stayed there; `retryAfterS` rose to
+41–66 s; `agentQueued` sat at about 1,000 (AGENT_QUEUE_MAX); `roundMs` 198–322; `cmdBytes` 8,000–10,900.
+
+**The parent's inference is not confirmed [measured].** It was that a moving mean pushed up by a few large commands
+prices every entry as byte-full. `admittedBytes`: agent n 19,490, p50 10,842, p99 11,495, max 11,507 bytes; human n
+757, p50 10,772, p99 20,464. The admitted commands are uniformly about 10.8 KB, so `cmdBytes` ≈ 10 KB is the mean of
+uniform commands, not of a skewed mix, and capacity = ENTRY_SOFT 100 KB / 10 KB × 1000 / round 200–320 ms ≈ 30–50/s is
+what the formula gives for them. The same pricing fills each entry: `cut` stops at ENTRY_SOFT of command bytes, about
+9 commands, and entries carried 7.6.
+
+**What binds: priced bytes are not stored bytes [measured, with the cause of the 10.8 KB a hypothesis].** The leader's
+505 confirm transactions (one an entry) carried p50 1,910 bytes and p99 56 KB, p50 one statement: an entry of 7.6
+commands priced at about 82 KB stored about 1.9 KB. Admission prices a command by `Record::encoded_len` of the command
+(`crates/raft/src/member/leader.rs`, `cmd_bytes` and `Queued::soft_bytes`), but the log row holds the entry's events
+(`EntryBody::Events`), and the confirm is what storage writes. So both the entry fill and the capacity estimate are
+priced about 5× above what the entry costs to store. The likely source of the 10.8 KB is `IssueCall.render`
+(`crates/git/src/issue_ops/call.rs`), the opaque `Render` the leader renders the reply from: its `HostedDir`
+(`crates/api/src/hosted.rs`) carries the owner's whole `AuthzFold` as hex plus `logins`, which `RepoCmd::encode`
+serialises with the command (`out.extend(serde_json::to_vec(c))`) and no event stores. Most of B0-33's agent-class
+commands are side commands (comments, labels, task edits, leases, about 3:1 against pushes), which are IssueCalls; that
+they sit within 10.4–11.5 KB fits a constant render. Not measured: the render's share of each command, and an agent
+push's priced size by itself [unverified]. The fix would be in `crates/raft` admission (price by the entry's events,
+or let the command exclude bytes it does not store) or in what the edge puts in `render`; that is the B0-02 thread's
+(raft) call. No fix here.
+
+**Leader change [measured].** 07:01:14Z, Workers Logs `member alarm` from site a's leader: `StepDown { why: LoopLag {
+clamped: 2 }, to: Some(SiteId(1)) }`. Site 1 led term 3, then site 2 term 4 from 07:01:21Z; this run fails the
+zero-leader-change line. (The first version of this paragraph said term 3 never formed and the group was leaderless
+about 17 s; that read a dead object, see round 15c.)
+
+**The large confirms, round 14's question 2 [measured].** `bigTx` holds 3 transactions of 114–204 KB, 125–157
+statements: `INSERT request` 27–35 rows (36–45 KB), `INSERT m_path_set` 22–27 rows (32–40 KB), and one `INSERT log`
+row of 36–131 KB. So the large confirms are fold applies of many requests (their `request` rows and the metadata
+tier's `m_path_set` rows) together with one log row, not `Promoted`, `Archived`, an install, or a learner catch-up.
+
+**Verdict.** B0-33 fails on m26c: commit p99 30,975 ms, 897 of 12,480 agent pushes, two leader changes (round 15c). B0-33 stops here, as the parent ordered, until the admission pricing is settled.
+
+**Cost.** $112.17 at 07:25Z (containers $46.15).
+
+### Round 15b: what the 10.8 KB is, the hold, and the plan for the four rows (2026-11-14)
+
+**Hold.** The parent held B0-29 and B0-35 until the admission pricing fix merges. `rows-m26r` was stopped in setup
+(repo 131331 made, no a1 run, no learners). `teardown.py --sweep` at 07:38Z tore down 3 containers (131330 sites 1
+and 2, 131331 site 0), all 200, then "sweep: no shard container running".
+
+**Command bytes by kind [measured, local, real codec].** A scratch test (deleted) encoded each B0-33 / B0-29 side
+command as `RepoCmd::encoded_len`, what admission prices, with the `Render` the edge builds (`commit_issue_in`,
+`workers/edge/src/api.rs`) over the install's real owner fold: `authz:7100001` (m3org) read through
+`/_bed/identity` `{"dep": true}`, 4,987 codec bytes (`names` 209 repos 3,778, `members` 94 at 472, `more` 719),
+which `HostedDir`'s `authz_hex` sends as 9,974 bytes of hex. Actor: an installation token's claims (8 permissions).
+
+| kind | priced total | `render` | of it `dir.authz` hex | rest of the command |
+|---|---|---|---|---|
+| comment (GraphQL `addComment`) | 10,973 | 10,426 | 9,974 | 551 |
+| label add (REST) | 10,806 | 10,272 | 9,974 | 538 |
+| task edit / stand-in (REST) | 10,888 | 10,277 | 9,974 | 615 |
+| lease renew | 10,820 | 10,262 | 9,974 | 562 |
+| lease acquire | 10,892 | 10,261 | 9,974 | 635 |
+| agent push (40 KB inline pack) | 405 less the pack | none | none | 405 |
+
+With 20 logins instead of 2 each IssueCall grows by 370 bytes; with no `authz` each is 834 to 1,001 bytes. So
+**92% of every issue command's priced bytes is the owner's `Authz` fold in hex**, `render` is 94 to 95% of it, and the
+part that reaches the log is 538 to 635 bytes; an agent push prices at about 405 bytes. This matches m26c's
+`admittedBytes` (agent p50 10,842, p99 11,495: IssueCalls; the pushes are the low tail) and its confirms (p50 1,910
+bytes an entry of 7.6 commands). The fold grows with the owner: `names` is one entry a repository, so every repository
+m3org adds (209 now, mostly test repos) adds about 18 bytes of codec and 36 of hex to every issue command it prices.
+Merges carry the same `Render` (`MergeCall.render`, `commit_merge`). Two places a fix could go, for B0-02's call: price
+admission by the bytes the entry stores (`decide`'s events), or keep `render` out of `encoded_len` (it never reaches
+the log); sending `authz` once per entry, or only the parts a reply reads, is the edge-side alternative.
+
+**The four rows, priced [from measured row deltas].** Gate rows are one run each (BUILD-PLAN B0-29: "one 600 s run").
+On m22 at k 4 (standard-4): B0-29 $1.90 (600 s), B0-33 $1.17, B0-35 $2.46; m26c's B0-33 with learners $1.37; m19's
+B0-34 $1.98. B0-34's seeds are done and kept (`plan.txt.m3org_b034-mono.done`, the git/git networks' `.done`), so it
+needs no seed. Plan on the fixed main: one site day (about $1), smokes at 250 and 500 (about $2), B0-29 on the
+500-PR shape (about $3 with the opens), B0-33 (about $1.5), B0-35 (about $2.5), B0-34 last at 900 s on b034-mono
+(about $3 to $5 with the warm pool and the kill), plus idle drift (about $0.35 an hour). Total about $13 to $16 over
+$112.26 now (07:41Z, containers $46.21), so about $125 to $128 of the $150 cap, with room for one rerun.
+
+### Round 15c: correction, m26c's leader change (2026-11-14)
+
+The m3f rows thread found that `terms.mjs` can sample a dead voter object: `voterNames` takes the voter names from a
+leader's committed config, so with no member leading it answers `{}`, and the sample then calls the site by site
+alone, which reaches the first-generation object. That is what m26c's site-1 column shows from 07:01:04Z to 07:01:18Z:
+term 2, leader 0, its promise lapsed 598 to 612 s (the `#1#f1` fresh-repo placement replaced before the run). The
+live members say otherwise:
+
+| at (Z) | site 0 | site 2 |
+|---|---|---|
+| 07:01:04.7 | follower, term 3, no leader, voted 1, promise 2.8 s | same |
+| 07:01:05.7 | follower, term 3, leader 1, promise 9.1 s | same, 9.3 s |
+| 07:01:07.7 | term 3, leader 1, promise 9.9 s (renewed) | same, 10.0 s |
+| 07:01:18.7 | term 3, leader 1, promise lapsed 0.4 s | lapsed 0.03 s |
+| 07:01:21.8 | term 4, leader 2 | leader, term 4 |
+
+So the `LoopLag` transfer worked: site 1 won term 3 and renewed the followers' promises, so it led. Its promises then
+lapsed, and site 2 took term 4. That is two leader changes, with no member leading for at most about 1 s at 07:01:04Z
+and about 3 s from 07:01:18Z, not one change and about 17 s. Why site 1 lost term 3 is not measured (no `member
+alarm` StepDown from site b in Workers Logs for 07:01:00Z to 07:01:30Z, and site 1's live `/status` was never
+sampled). The only StepDown logged is site a's at 07:01:14.760Z, after the followers already followed site 1 at term
+3 from 07:01:05Z; that timestamp is not explained [unverified]. Round 15's B0-33 verdict (Fail) stands.
+
+The other traces in `tests/fanout/raw/terms-*.jsonl` (m24s33, m24s33b, m24s33c, m25s33) have no sample with a promise
+lapsed over 60 s, so this misread is only in m26s33. `terms.mjs` now keeps the last voter names it saw while no
+member leads.
+
+### Round 16: m27 on main 2b1938e (admission prices `stored_len`), smokes (2026-11-14)
+
+**Deploy m27.** lm1-memory 3dfc08d8 = main 2b1938e (B0-02's pricing fix, narrow-reads-3's READ_PIPELINE, m4-web-2)
+plus this branch's instruments, whose `admittedBytes` now prices `stored_len` as admission does. Image e4257d49
+(rebuilt: main's `ui.go` compare counts ship in the shard image); sites a 5b592602, b 775ad4a2, c a22f3454 (each
+site deployed twice by `siteday.sh`; these are the second); standard-4; NOROLL; 10:04Z. Full checks (checks30) pass;
+`check_names` and `check_links` pass in a clean worktree (2,695 files, 3,249 citations). Long sweep (sweep16/17) exit
+0, longest healthy-quorum stall 15,735 / 25,169 / 23,771 ms; Porcupine Ok on all three histories (156,325, 2,230,496
+and the third). Plants 92 and 93 caught.
+
+**Smokes**, B0-29's agreed shape (fresh repo, learners enam 4,000 / weur 2,000 / apac 2,000 then k 4, 500 PRs opened
+before the window), 180 s each:
+
+| line | s250 (131332) | s500 (131333) |
+|---|---|---|
+| commit p50 / p99 | 351 / 968 ms | 480 / 1,671 ms |
+| queue / queue:slot p99 | 625 / 596 | 1,193 / 1,151 |
+| round p99 (near / far append) | 443 (503 / 727) | 746 (687 / 867) |
+| confirm p99 (storage, <100 KB / 100 KB–1 MB) | 71 / 262 | 179 / 88 |
+| entries / commands | 836 / 1,829 | 658 / 3,027 (4.6 an entry) |
+| agent pushes | 385 / 385, p99 5.7 s | 745 / 746 (1 503 on access rows), p99 9.6 s |
+| merge:only p99 | 1,358 | 1,285 |
+| API reads | 34,373, 100% 200, p99 1.6 s | 34,757: 34,029 200, 66 503, 662 driver cap; p99 4.0 s |
+| leader | term 2 held, 108 req/s, 0 `/suspect` | term 2 held, 123 req/s, 0 `/suspect` |
+| admission capacity / retryAfterS | 218–1,078 /s, 1–2 s | 151–1,066 /s, 1–2 s |
+| cmdBytes (moving mean) / agentQueued max | 740–2,431 / 4 | 716–2,015 / 8 |
+| admittedBytes agent p50 / p99 | 509 / 906 | 509 / 905 |
+| leader wasm | 28 → 52 MiB | 28 → 67 MiB |
+
+The pricing fix holds: agent-class commands price at p50 509 bytes (m26c: 10,842), capacity sits at hundreds a second
+(m26c: 30–47), and the agent queue never passes 8. At 500 the commit p99 (1,671 ms) is past B0-29's fail line (1 s);
+it is the queue's slot wait (1,151) behind a round of 746 ms, whose far leg reads 867 ms, not admission (Retry-After
+1–2 s, queue under 10) and not the confirm (179). That is round 13's finding again on this shape: the line is the
+round's follower legs. B0-29 runs as the gate row (600 s) next, as the operator ordered.
+
+Cost $114.62 at 10:41Z (containers $46.80); the smokes' sweep "sweep ok" (6 torn down).
+
+### Round 16b: B0-29 gate row on m27 (repo 131334, run mwga2kd3, 2026-11-14)
+
+**Run.** `rows.sh m27r`, `ROWS="b0-29"`: fresh repo `fm27r-b029`, learners enam 4,000 / weur 2,000 / apac 2,000
+(8 of 8 caught up at commit 874 in 2.5 s), k 4 granted, 500 PRs opened before the window, 600 s from 10:50:43Z,
+standard-4, no redeploy mid-row. Raw: `tests/am1/raw/a1-b0-29-mwga2kd3.jsonl`, `tests/fanout/raw/terms-m27r29.jsonl`,
+`tests/fanout/raw/m27r29-legs.tar.xz` (`tests/fanout/legs.mjs`: every voter's and learner's raw `/stats` once a minute, the
+leader's every third minute).
+
+| B0-29 line (`build/BUILD-PLAN.md`) | m27 | verdict |
+|---|---|---|
+| Commit p99 at most 600 ms (fail over 1 s) | p50 360, **p99 774 ms** (n 10,825) | **miss** (between pass and fail) |
+| Merge p99 at most 2 s (fail: a queue merge over 10 s) | merge:only p99 1,608 ms (72 × 200, 8 × 409 base moved) | pass |
+| Zero `Stale` on distinct refs | 2,500 / 2,500 agent pushes ok (distinct refs), 0 `stale`; humans (20 shared refs) 38 `stale:race`, 1 `stale` | pass |
+| Leader under 600 req/s with zero feed polls | 120.8 req/s, 0 feed polls on the leader | pass |
+| API read p99 at most 2 s (fail over 5 s) | **p99 1,922 ms** (p50 471) | pass |
+| API reads at least 99% served | 115,772 of 115,834 = **99.95%** (62 × 503) | pass |
+| Leader changes | 0: term 2 on site 0 throughout; 0 `/suspect` | — |
+
+So B0-29 does not pass on m27: one line, commit p99, is 174 ms over; it does not fail (under 1 s). Every other line
+passes, including the API line on fixed main (round 16's s500 4.0 s was 180 s with no learner warm-up of reads;
+here 1.9 s over 600 s).
+
+**Commit split.** queue p99 484 (slot 462, post 208), round 336, confirm 58, apply 336. Near append (site 1) p99
+361, far (site 2) 457. 2,895 entries carried 10,005 commands, **3.46 per entry**. Entry bytes (the leader's
+confirm transactions): under 100 KB n 2,476, p50 5.8 KB, p99 96 KB; 100 KB to 1 MB n 419 (14%), p50 132 KB, p99 198
+KB; storage p99 60 and 52 ms, `gate` and `turn` 0. So the commit p99 is the slot wait (a command waits for the entry
+ahead, about one round) plus its own round, with the confirm small.
+
+**Admission over 600 s [measured, 60 samples].** Capacity 255 to 1,082/s (start 1,082, 377 at 596 s, as `cmdBytes`
+rose from 770 to 1,751 with human packs counting), `retryAfterS` 1 to 2 throughout, `agentQueued` at most 6, no
+`pressure`. `admittedBytes`: agent n 9,227, p50 509, p99 905 (no command over 10 KB); human n 1,598, p50 301, p99
+20,466 (packs). So admission does not drift into a bind over 600 s: narrow-reads-3's gate-12 queue p99 4,798 ms on
+82a0bf9 is gone on this shape (here 484). Leader wasm grew 28 → 92 MiB.
+
+**The near follower's AppendEntries leg, split [measured, `tests/fanout/legs.py`].** 1,601 matched calls to site 1
+and 1,774 to site 2 from the leader trace (AppendQueued, AppendIssued, AppendEnded) against each follower's `raftIn`
+rows (handler start, body ms, work ms) and trace (Stepped, Confirm):
+
+| leg (p50 / p99 ms) | near, site 1 | far, site 2 |
+|---|---|---|
+| whole call (issue → end, leader clock) | 166 / 406 | 223 / 483 |
+| in: issue → follower handler start (wire out + input queue; crosses clocks) | 58 / 293 | 87 / 339 |
+| body read | 11 / 112 | 19 / 199 |
+| step (decode, step, persist) | 0 / 0 | 0 / 0 |
+| output gate (work less step) | 0 / 0 | 0 / 0 |
+| follower storage confirm (`sync()`) | 0 / 0 | 0 / 0 |
+| back: reply wire (crosses clocks) | 95 / 282 | 114 / 326 |
+| in + back (skew cancels) | 151 / 374 | 200 / 457 |
+| bytes | 28.7 KB / 176 KB | 28.3 KB / 176 KB |
+| slowest 1% (mean): call, in, body, back | 489, 228, 23, 237 | 621, 226, 131, 264 |
+
+So the near leg is the wire, not the follower. The follower's step, output gate and storage confirm read 0 ms at p99
+(Workers' clock advances only across I/O, so a synchronous step reads 0: it is not long enough to delay the next I/O
+[inference from the clock rule]); body read is 112 ms at p99; the two wire legs are 374 ms together at p99. Which
+side of `in` is the follower's input queue is not separable without send timestamps on the follower's clock
+(narrow-reads-3's `x-graft-sent` / `x-graft-left`, trace kinds 20 and 21, branch 54a700a9) [unverified split]. Round
+16's s500 near p99 687 ms was 180 s with 4.6 commands an entry; here 361 ms (the whole-row `append:1`) over 600 s.
+
+**Reads by member [measured, `inbound /read` deltas over the window].** 102,440 member reads: learners 95.5%, voters
+4.5% (leader site 0 4.4%, followers 0.9% each).
+
+| member | site | reads | share |
+|---|---|---|---|
+| l7 | 0 (enam) | 42,309 | 41.3% |
+| l3 | 0 | 14,126 | 13.8% |
+| l0 | 0 | 12,720 | 12.4% |
+| l6 | 0 | 11,083 | 10.8% |
+| l5 | 2 (apac) | 7,346 | 7.2% |
+| f0 (leader) | 0 | 4,464 | 4.4% |
+| l4 | 1 (weur) | 3,485 | 3.4% |
+| l2 | 2 | 2,681 | 2.6% |
+| l1 | 1 | 2,410 | 2.4% |
+| f1 / f2 | 1 / 2 | 918 / 898 | 0.9% each |
+
+The four enam learners serve 78% (one of them 41%), so the spread is uneven inside a site; the API p99 held anyway.
+
+**Cost** $116.92 at 11:14Z (containers $47.04); the row cost about $2.29. Sweep "sweep ok" (5 torn down).
+
+### Round 16c: B0-29's leader load, an idle baseline, and leader memory (from round 16b's data, 2026-11-14)
+
+**Where the sites run [measured, `durableObjectsInvocationsAdaptiveGroups` `coloCode`].** repo:131334's voters:
+site a (enam) **ATL**, site b (weur) **LHR**, site c (apac) **NRT**. So the near follower is London from Atlanta, a
+transatlantic pair, not one region. The members' own `/rtt` rows (median of 20 sequential `/ping`s, taken at join):
+a↔b 90 / 100 ms, a↔c 164 / 159 ms, b↔c 221 / 222 ms (131335's: 92 / 96, 152 / 158, 222 / 230).
+
+**Idle baseline [measured, the leader's trace after the window].** AppendEntries the leader sent from 11:01:39 to
+11:09:45Z, with no load, of 143 to 1,412 bytes: to site 1 (LHR) 102 to 122 ms (12 calls), to site 2 (NRT) 159 to
+185 ms; one of 256 KB took 378 and 354 ms. Under load (the window, 2,809 calls to site 1), by entry bytes:
+
+| bytes | n | near (LHR) p50 / p99 | far (NRT) p50 / p99 |
+|---|---|---|---|
+| under 4 KB | 1,268 | 144 / 332 | 202 / 396 |
+| 4 to 16 KB | 60 | 160 / 316 | 203 / 428 |
+| 16 to 64 KB | 697 | 156 / 339 | 214 / 385 |
+| 64 to 128 KB | 560 | 178 / 412 | 239 / 553 |
+| 128 KB and up | 224 | 201 / 406 | 262 / 496 |
+
+So the near leg is about one ATL↔LHR round trip (idle 102 to 122 ms), plus about 30 to 40 ms at p50 under load
+whatever the size, plus about 60 ms more for entries over 128 KB; the p99 sits about 200 ms over idle even for
+entries under 4 KB. Round 16b's `in` p50 58 ms is about half the idle round trip (wire), and `back` p50 95 ms is
+about 45 ms over the other half: the excess is on the reply side. Whether that is the leader's input queue (its
+continuation waiting to run) or the reply's delivery is not separable without send stamps on the follower's clock
+[the parent's guess; unverified]. The leader's `AppendQueued → AppendIssued` is 0 ms at p99 (2,809 calls), so the
+leader does not delay the send.
+
+**The leader isolate's load [measured].** `durableObjectsPeriodicGroups` for the leader object (aa7bf08b), per
+minute in the window: CPU 11.4 to 13.0 s a minute = **19 to 22% of one core** (108 s over 10:50 to 11:01Z), active
+60 s of 60, about 700k to 880k rows read and 16k written a minute. Its inbound (its own `inbound` counts, 10:52:44 to
+11:01:44Z, 540 s): `/raft` 43,187 (80/s: learners' calls and their ReadIndex), `/commit` 8,926 (16.5/s), `/read`
+6,131 (11.4/s), `/entries` 2,306, `/status` 1,363; about 115 requests a second, so **about 1.7 ms of CPU a request**
+on average. By route (Workers Logs, which logged 17,579 of those invocations, 86 s of CPU, so a sample): `/raft`
+4.3 ms each and 48% of logged CPU, `/read` **12.3 ms each and 26%**, `/commit` 3.8 ms and 15%, `/entries` 3.0 ms
+and 7%. Scaled by the inbound counts, reads are about a quarter of the leader's CPU (more with the ReadIndex answers
+inside `/raft`, which the logs do not split), commits about an eighth. The followers ran 10 to 11% of a core (site
+b) and 8 to 10% (site c). So the leader is not CPU-saturated on average; a 20% busy isolate still queues inputs that
+arrive in a burst, which is consistent with, but does not prove, a reply-side wait. **LOOP_LAG:** no `StepDown`
+appears in Workers Logs for 10:50 to 11:02Z on any site, and the leader held term 2; the ticker's `Lag` trace (kind
+8) was not in `legs.mjs`'s filter for this row, so per-tick lag was not sampled here [not measured]; it is in B0-35's
+sampler.
+
+**Leader memory [partly measured].** a1.mjs's admission samples read the leader's wasm memory rising 28 → 41 (60 s)
+→ 67 (180 s) → 80 (300 s) → 88 (420 s) → 92 MiB (485 s, then flat to 596 s). Wasm linear memory only grows, so
+this is a high-water mark, not what is live. `memSplit` was not sampled during the row; read on the same object at
+11:25Z (a new isolate, `since` 11:25:28Z, wasm 16.8 MiB): log 6.1 MB (`LOG_BYTES` caps it at 8 MB), fold rows 0,
+caches 0, held 0, in flight 0. So the named buckets account for at most about 8 MB of the 92 MiB; what reached the
+high-water mark is not named by them [unverified: the candidates are transient read answers (12.3 ms of CPU and
+about 12k rows read a second suggest large ones) and allocator growth that is never returned]. B0-35's sampler now
+records `memSplit`, `logBytes` and wasm every minute, to tell a steady bucket from a transient peak.
+
+**A memory event at the row's end [measured].** Site a's stateless script (not a member) logged "Worker exceeded
+memory limit." 28 times at 11:00:53Z, all on `POST https://site/prsync/first`: the in-band first attempt of a
+`PrSync` batch, which the leader runs as a new stateless invocation through its own `SITE` binding
+(`workers/site/src/prsync.rs`, `in_band`). 28 at one timestamp is one isolate failing the invocations it held, ten
+seconds after the window ended. No member logged one, and no row line moved. Its cause is not traced [unverified];
+B0-35 (500 polled PRs, test merges each push) exercises that path harder, so its row is checked for the same event.
+
+### Round 16d: B0-35 gate row on m27, and the `/prsync/first` memory failures (2026-11-14)
+
+**Run.** `rows.sh m27r35`, `ROWS="b0-35"`: fresh repo `fm27r35-b035` (131335), learners enam 4,000 / weur 2,000 /
+apac 2,000, k 4, 500 open PRs and 500 PR pollers every 5 s, 600 s from 11:23:33Z, standard-4, no redeploy. Raw:
+`tests/am1/raw/a1-b0-35-mwgb90vc.jsonl`, `tests/fanout/raw/terms-m27r35.jsonl`, `tests/fanout/raw/m27r35b-legs.tar.xz`,
+`tests/fanout/raw/prsync-131335.txt` (Workers Logs `prsync 131335` lines).
+
+| B0-35 line (`build/BUILD-PLAN.md`) | m27 | verdict |
+|---|---|---|
+| Test-merge vCPU within `TEST_MERGE_BUDGET` (fail: over budget) | 0.603 vCPU used of a 1.0 vCPU budget (`TEST_MERGE_BUDGET` 0.25 of a standard-4 shard's 4 vCPU), no overrun, 0 shed | pass |
+| Zero computes from list fields | 0 list computes of 102,592 list asks; 5,339 computes from 55,795 single-PR GETs | pass |
+| Actions dispatch p99 at most 10 s (fail over 30 s) | not measured: the driver starts no workflow runs, and `prsync::demand` has no caller before Milestone 4 | open: waits for Milestone 4 Actions' dispatch |
+
+So B0-35 is open, not passed: its two measured lines pass, and its dispatch line stays unmeasured, as in rounds 8
+and 9, until Milestone 4 Actions' dispatch exists (parent decision, 2026-11-14). The test merges'
+own wait is what clients see: of 5,378 merges, the wait histogram's mass sits in its top buckets (3,143 over 120 s,
+1,411 at 60 to 120 s), max 265 s; `mergeable` answered `UNKNOWN` to 58,189 of 59,216 polls (98.3%) and `MERGEABLE`
+to 949. Commit p50 / p99 369 / 685 ms (queue p99 449, round 305, confirm 70), 3,137 entries carried 15,393 commands
+(4.91 an entry), term 2 throughout, 142.6 req/s, 0 feed polls on the leader, 82 `/suspect`. API reads 116,703 of
+117,250 200 (99.53% of all; 509 driver cap, 38 503), p99 1,872 ms. Agent pushes 2,495 / 2,500 ok (3 client fetch
+failures, 1 shard "Durable Object is overloaded"), merge:only p99 4,321 ms (3 shard-overloaded 503s). Admission:
+capacity 296 to 1,189/s, `retryAfterS` at most 2, `agentQueued` at most 7. Leader wasm 28 → 78 MiB.
+
+**Near AppendEntries split (same method as 16b).** Site 1 (LHR) n 1,465: call p50 / p99 174 / 323, in 81 / 214,
+body 12 / 97, step / gate / confirm 0, back 79 / 267, in + back 160 / 309. Far (NRT) n 1,623: 237 / 547. Same shape
+as B0-29: the follower adds nothing; the legs are wire plus a reply-side excess.
+
+**Leader memory, sampled each minute [measured, `memSplit`].** wasm 65.7 MiB at 11:27Z and 78.0 MiB from 11:30Z
+(flat after); log 7.9 to 8.1 MB (at `LOG_BYTES`); dump cache 1.42 → 1.73 MB; narrow cache 95 KB; held 0 to 29 KB;
+in-flight call bodies 0 to 264 KB, answers 0 to 29 KB. So the named buckets hold about 10 MB at most, steady, while
+the wasm high-water mark sits 68 MB above them: the peak is transient, not a bucket that grows [inference: wasm
+memory only grows, and every bucket sampled flat]. Loop lag: 0 `Lag` trace entries (ticks 20 ms or more late) in
+any sample of the leader's trace ring, so its 100 ms ticker was never 20 ms late in the sampled spans.
+
+**Reads by member.** Learners 94.3% (enam l7 25.1%, l3 21.3%, l0 20.7%, l6 12.2%; apac l2 6.8%, l5 2.7%; weur l4
+3.3%, l1 2.1%), leader 3.8%, followers 1.9% and 0.0%. The enam learners serve 79%, more evenly than B0-29 (top one
+25% against 41%).
+
+**The `POST /prsync/first` memory failures (the parent's item 3) [measured, cause traced].** In B0-29 (131334), the
+leader's `PrSync` first attempts ran in band 155 times, 0.6 to 5.1 s each, until 10:51:06Z. From 10:51:31Z every
+first attempt timed out at the leader's `FIRST_FOR` (25 s): 19 in a row, each over a larger batch (894..914, then
+894..1036, 914..1148, up to 1272..3683: 20 to 2,411 entries, the PRs every entry since the cursor touched), and the
+chain parked 3 times (`PARK_AFTER` 10). The queue's re-sends of the same batches were handled, slowly: 894..1035 in
+172.5 s (136 merges asked, 52,580 list asks on the shard's budget), 914..1147 in 333 s (225 merges asked).
+
+The 14 `exceededMemory` invocations (the 28 log lines are each invocation's message and its error) are those
+abandoned first attempts. Workers Logs give each one's wall time: 486, 460, 435, 390, 364, 339, 314, 289, 242, 216,
+191, 166, 141 and 36 s. Subtracted from 11:00:53.567Z, they started at 10:52:47, 10:53:12, 10:53:37, 10:54:23 … 10:58:32
+and 11:00:17Z, the leader's first-attempt sends 25 s apart, matching its "no answer in 25000 ms" lines. So: `in_band`
+(`workers/site/src/prsync.rs`) sends each batch to the site script's own `/prsync/first`, and `first_handled` runs
+`one()` under `ctx.wait_until`, which the leader's `within(first_for, …)` does not cancel (by design: "A first
+attempt past `first_for` is not cancelled"). After `FIRST_FOR` the leader's `Dispatcher` (`crates/git/src/prsync.rs`,
+`finished(false)` → `unsent()`) is due again, and `batch()` hands out a new First over the cursor's whole range, so a
+new attempt starts every 25 s while the old ones still run. Those stateless invocations landed in one isolate, which
+held 14 concurrent `one()` calls, each with its `SyncRead` of every PR the batch names (`views`, up to every open
+PR: 500) and the merge answers it collected (`MergeAnswer::Clean` carries the merge's pack, base64, up to
+`MERGE_BYTES_PER_COMMAND` a command), until the isolate passed 128 MB and all 14 failed together at 11:00:53Z. 4 more
+were `canceled` after 30, 174, 299 and 476 s. So it is not one PR or one large pack: it is overlapping attempts over
+the same growing batch, with no bound on how many run at once [the per-attempt bytes are not measured; the
+mechanism is measured from start times, wall times and the leader's log].
+
+Why the first attempts stopped finishing at 10:51Z: each one runs its merges one after another on the network's
+shard (`merge()` in a loop over `views`), and the shard's budget queue was by then long (`inFlightMax` 17 on that
+row's shard, and B0-35's 3,593 with waits to 265 s), so one attempt of 100 or more merges cannot finish in 25 s.
+In B0-35 the same pattern ran: 10 first attempts timed out from 11:24:18Z and one answered 500 "Durable Object is
+overloaded" (the shard), the chain parked twice, the queue handled 834..1069 after 606 s queued; there were 9
+`canceled` and no `exceededMemory`, so the overlap stayed under the limit there.
+
+This is a product bug, not a test artefact. Candidate fixes, for the owner of `prsync.rs` to choose: count a timed-out
+first attempt as still running (so `batch()` does not hand out another First while it runs), or cancel it at
+`FIRST_FOR`; and bound a batch's merges (or its PR count) so one attempt fits `FIRST_FOR`. Not fixed here.
+
+**Cost** $119.59 at 11:44Z (containers $47.29). Sweep "sweep ok".
+
+### Round 17: B0-33 on m28 (main 4438539), two runs; the voters reset under the 5,000-agent mix (2026-11-14)
+
+**Deploy m28.** lm1-memory 4f9380ad = main 4438539 (decode-once: no second decode of a `/raft` body; leader-clock-check)
+plus round 17's instruments. Sites a 36077144, b 3ff70714, c d2743d76, edge 6c620ce7, image `sha256:79bec25d`
+(built from d8c09451; `containers/` unchanged since), standard-4, test-faults. Checks: full checks33 pass (check_names
+and check_links only on `.worktrees/`, clean in a fresh worktree); the long sweep and Porcupine pass on a858bfb, and
+4438539 adds no `crates/raft` change. Plants 94 and 95 (`readsBy`'s kind) caught.
+
+**Instruments.** `tests/fanout/memguard.mjs` reads every voter's `/stats?summary=1` (`wasmMemMb`, `memSplit`) every 2 s
+and SIGTERMs `a1.mjs` once any voter passes 120 MiB; `a1.mjs` then ends its window and writes the row as `stopped`.
+`tests/nr3/tsave.mjs` saves each voter's trace each minute, so a reset loses none of it. `/stats` `readsBy` counts each
+member's `/read`s by kind, plain or read-index, and whether `Family::follower_serves` lets a follower answer it.
+`tests/fanout/legs.py` splits the reply leg with main's send stamps (trace kinds 20, 21).
+
+**Run 1, m28r33** (repo 131336, run `mwghmvck`, 14:20:24Z). Not a gate run: I stopped it at 79 s by hand after the
+first leader change, which is not the stop rule (memguard never fired). Learners caught up 0 of 8 in 120 s before the
+window. Leader site 0 peaked at 70.2 MiB, then its object lost its wasm instance at 14:21:02Z ("Cannot invoke closure
+from previous WASM instance" ×8, "Promise will never complete." ×738, then `exception` on 589 `/commit`, 80 `/outcome`,
+47 `/raft`), with no `exceeded its memory limit` event on any site; terms 2 → 5 in 36 s.
+
+**Run 2, m28r33b** (repo 131337, run `mwgikx95`, 300 s from 14:45:08.7Z, ran in full; memguard never fired). Learners
+caught up 8 of 8 in 15 s.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | m28r33b | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 2,674 ms (n 274, p50 674); queue p99 40.5 s; `merge:only` p99 15.4 s (3 of 7 ok); `push:human` 8 ok of 186 | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 269 commands in 63 entries at the end leader's `/stats` (term 12, so only its own term); 1,645 agent pushes ok in 300 s = 5.5/s at the client | fail |
+| Zero leader changes | term 2 → 12; leader site 0 183 s, site 1 25 s, site 2 9 s, none 82 s of 300 | fail |
+| Zero `suspect` reports | 2,774 on site 0, 4,928 on site 1, 605 on site 2 | fail |
+| Every refusal `ng` or 429 `retry-after` | 503s from the read gate ("every member asked shed the read: overloaded", "not leader", "no answer") and the git cache (`{"warming":true}`) | fail |
+
+Admission never bound: capacity 405–1,859/s, `cmdBytes` 489–988, `retryAfterS` 1–2, agent queue at most 54; admitted
+agent commands priced p50 498 B, max 898 B (the pricing fix holds). Reads: learners served 96.1% of the window's
+`/read`s (76,144 of 79,224).
+
+**Voter resets.** Seven resets in the window, every one below the 120 MiB stop line:
+
+| reset | site | role before | wasm MiB at the last sample | Workers Logs |
+|---|---|---|---|---|
+| 14:47:35–47 | 0 (a) | leader | 95.9 | "previous WASM instance" ×1,087, "Promise will never complete" ×309; one `storage write failed: … isolate exceeded its memory limit` at 14:48:03 |
+| 14:48:01–21 | 1 (b) | leader | 40.6 | "Durable Object's isolate exceeded its memory limit and was reset" ×805 at 14:48:30 (`POST /raft`) |
+| 14:48:55–49:11 | 2 (c) | follower | 31.1 | "previous WASM instance" ×504 at 14:49:19–21 |
+| 14:49:22–26 | 1 (b) | leader | 38.5 | "previous WASM instance" ×50, "exceeded its memory limit" ×597 at 14:49:44 |
+| 14:49:49–51 | 0 (a) | leader | 74.4 | "exceeded its memory limit" ×274 at 14:50:01 |
+| 14:49:46–51 | 1 (b) | leader | 47.3 | "exceeded" ×556 at 14:49:57 |
+| 14:50:04–28 | 2 (c) | follower | 31.2 | — |
+
+So the isolates are reset for memory while the wasm heap reads 31 to 96 MiB. `wasmMemMb` is the wasm linear memory
+only; the isolate's limit counts the JS heap as well, where request and response bodies, `fetch` streams and the
+promises of held requests live. What memSplit counted in the minute before each reset (bytes in Rust's own buffers):
+
+- the in-memory log at 6.4–8.1 MB on every voter, flat once it reached its window (14:46:05 onward);
+- the dump cache at 1.1–1.87 MB;
+- in-flight read answers peaking at 9.2 MB (site 0 before 14:47:35), then 26–30.5 MB (sites 0 and 1 before 14:49:26–51);
+- in-flight member-call bodies peaking at 5.0 MB (site 1), then 58.3 MB (site 0 before 14:49:49) and 16.9 MB (site 1);
+- bytes held for learners peaking at 1.0 MB, then 42.9 MB (site 0) and 11.5 MB (site 1);
+- queued statements at most 216 KB.
+
+Site 0's first reset (14:47:35) came with only about 10 MB of these buffers and the heap flat at 95.9 MiB since
+14:46:45, so the counted buffers do not explain it; the later resets came with 30 to 100 MB of answers, call bodies
+and held learner messages, all of which reach the JS side as `Response` bodies too. [inference: the JS-side copies of
+those bodies, which `wasmMemMb` does not see, take the isolate past its limit; not measured, since no instrument reads
+the JS heap.] The growth after the first leader change is the catch-up: each new leader resends the log tail to two
+voters and eight learners at once.
+
+**Reply-leg split** (main's send stamps, matched exactly: the follower's `CallArrived` carries the leader's issue time):
+
+| | site 1 (LHR) p50/p99 ms | site 2 (NRT) p50/p99 ms |
+|---|---|---|
+| idle (before the window), round trip on the wire | 93 / 119 (n 113) | 263 / 297 (n 113) |
+| idle, follower's send (handler return to reply out) | 0 / 0 | 0 / 2 |
+| idle, leader's input queue (reply arrival to stepped) | 0 / 1 | 0 / 3 |
+| load (window until site 0's reset), leg | 207 / 526 (n 364) | 374 / 1,359 (n 341) |
+| load, wire round trip (offset cancels) | 199 / 514 | 347 / 1,044 |
+| load, follower's send | 0 / 121 | 0 / 427 |
+| load, leader's input queue | 0 / 31 | 0 / 362 |
+| load, half the asymmetry ("skew") | 678 / 1,445 | 669 / 1,445 |
+
+The leader's input queue is 0 at p50 and at most 31 / 362 ms at p99, so the loaded excess is not the leader queueing
+replies behind `/read`. The wire round trip itself doubles and more, and the asymmetry says the delay sits in the
+outbound half: the follower stamps an arrival only when its own isolate runs the handler, so its input queue is in
+that half. The leader's ticker logged no Lag sample (no tick 20 ms late) in the window. [inference: the excess is the
+follower isolates' input queues under the 5,000-agent mix of `/suspect` (4,928 on site 1), `/entries` (3,162) and
+`/read`, not the network.] Run 1's 23 and 17 matched calls agree (idle 124/159 and 250/321; under load the skew rose
+to 2.7 s).
+
+**Leader reads that could go to learners** (`readsBy`, run 2's leaders at the end): site 0 5,286 `/read`s, 4,468 of
+them (84.5%) follower-servable, every one sent plain, none by read-index (`rows` dumps 2,965, `rows.access` 1,364,
+`rows.agent` 139); the rest are leader-only (`probe` 486, `ranges` 321, `prsync` 11). Site 1, leader for 25 s, 8,409
+`/read`s, 95.6% servable. Run 1's site 0: 11,807, 91.6% servable. The edge's read gate sends these to a voter as plain
+reads; learners already carry 96% of read-index reads.
+
+**Verdict.** B0-33 fails on m28 on every line. What binds is not admission (pricing fixed) but the voters' isolates
+resetting for memory under the mix, below 96 MiB of wasm heap, which then churns the leader (term 2 → 12) and turns
+commit p99 into seconds. This is the m3f thread's storm (8,465 voter resets on L0-12) reproduced on B0-33 with no
+double decode.
+
+**Raw.** `tests/am1/raw/a1-b0-33-mwghmvck.jsonl`, `a1-b0-33-mwgikx95.jsonl`; `tests/fanout/raw/memguard-m28r33{,b}.jsonl`,
+`terms-m28r33{,b}.jsonl`, `tsave-m28r33{,b}.jsonl.xz`, `m28r33{,b}-legs.tar.xz`.
+
+**Cost** $122.56 at 14:54Z (containers $47.72). Sweep "sweep ok" after both runs. B0-34 started at 14:55Z on the same
+deploy with memguard and terms on `repo:131296`.
+
+### Round 17b: B0-34 not run on m28; the 5 GB monorepo's git cache did not warm in 15 minutes (2026-11-14)
+
+`tests/fanout/b034.sh m28` on the m28 deploy (round 17), b034-mono = repo:131296 (5.02 GB of torvalds/linux, round 10's
+seed, kept). The seeds were already done (`seed … exit 0` for all five networks). `learners.mjs` and `k.mjs` hit "no
+leader" at 14:59Z (the group was idle; site 0 led term 2 from 14:59:57Z), and `a1.mjs b0-34` then exited 1 at
+15:01:55Z: "the repository has no main" after its 120 s wait for `refs/heads/main` in ls-refs. The group had `main`
+(the leader's `/read {"refs"}` at index 292 listed `refs/heads/main` and `refs/heads/b034-parts`); what failed was the
+edge's ls-refs, which the git cache answers.
+
+The cache was cold: every row since round 16 tears its shards down, so b034-mono's started fresh. The site's warm
+calls logged "shard warm 131296 site 0/1/2: no answer in 25 s" (5 of 8 warms) at 14:59–15:02Z. Then
+`tests/fanout/warmmono.mjs` polled ls-refs every 75 s from 15:12:24Z for 15 minutes: 12 of 12 answers were
+`503 git cache: 503 {"warming":true}`, each after 64.3–66.9 s (`tests/fanout/raw/warmmono-b034m28.jsonl`). So a shard
+rehydrating the 5 GB network did not finish in at least 28 minutes (14:59:42Z to 15:27:18Z). The row as written needs
+the monorepo's shards warm before its window: a warm step in `b034.sh` that waits on `/catchup` until it answers, with
+its own time limit, or shards that are not torn down between this row's tries. Not done here: the budget is held back
+for teardown, and B0-34 is git CPU, so it is better run on the next deploy with main a4ddca4f.
+
+The three shard containers the warm started were torn down (`teardown.py --sweep`: torn_down 3, then "no shard
+container running"). **Cost** $123.02 at 15:29Z (containers $48.07).
+
+**B0-33 holds** until the voter memory fix is on main, then reruns as written (round 17's run 1 does not count).
+**JS heap.** No instrument added: the site exposes only `wasmMemMb` (the wasm linear memory), and the Workers runtime's
+`process` documents no `memoryUsage()`; Cloudflare documents only DevTools snapshots and production heap profiles.
+m3f's run covers the JS side.
+
+### Round 18: B0-35 on m29 (main a4ddca4f's prsync-first-once) (2026-11-14)
+
+**Deploy m29.** lm1-memory 3e707c2d = main 04f8b3a6 (a4ddca4f's prsync-first-once: every `PrSync` attempt ends at
+FIRST_FOR, 25 s, with a 10 s commit reserve; a test merge whose turn comes past TURN_WAIT_MS, 10 s, is shed and counted
+in `late`) plus this branch's instruments and B0-34's warm step. Sites a fcfe84d5, b eae6468a, c aec148bf, edge
+f32e1fab; image `sha256:ca9da2c7` (new: main changed `containers/`); standard-4, test-faults. Full checks34 pass
+(check_names and check_links only on `.worktrees/`, clean in a fresh worktree); no `crates/raft` change since the last
+sweep.
+
+**Run** `rows.sh m29r35`, repo `fm29r35-b035` (131338), run `mwgm9uwu`, 600 s from 16:33:41Z, learners 8/8 caught
+up in 2.7 s, k 4, 500 open PRs and 500 pollers. Memguard never fired: voter peaks 64.3 / 37.5 / 25.6 MiB.
+
+| B0-35 line (`build/BUILD-PLAN.md`) | m29 | verdict |
+|---|---|---|
+| Test-merge vCPU within `TEST_MERGE_BUDGET` | 0.373 of 1.0 vCPU, no overrun | pass |
+| Zero computes from list fields | 0 of 101,146 list asks; 5,045 computes from 54,628 single-PR GETs | pass |
+| Actions dispatch p99 ≤ 10 s | not measured (no dispatch caller before Milestone 4) | open |
+
+**The parent's three checks.**
+
+- **"first handled" under 27 s: yes.** 44 `prsync 131338 … first handled` lines (all on site a, the leader's site),
+  p50 15,488 ms, p99 and max 16,524 ms, 0 over 27 s. All 41 `/prsync/first` invocations in the window ended `ok`.
+- **No `/prsync/first` exceededMemory: none.** No `exceeded` message on any site in the window (round 16d had 14
+  invocations that exceeded memory).
+- **`testMerges.late` and `mergeable`:** 3,440 merges shed `late` (all of `shed`), against 5,166 computed. The wait
+  histogram tops out at 15,902 ms (round 16d: max 265 s, 3,143 over 120 s): 4,338 merges in the 10–20 s bucket, 671
+  below it. `mergeable` answered `UNKNOWN` to 55,096 of 58,303 answered polls (94.5%) and `MERGEABLE` to 3,207 (5.5%);
+  round 16d: 98.3% `UNKNOWN`, 949 `MERGEABLE`. So shedding late merges moved `MERGEABLE` answers up 3.4 times, while
+  UNKNOWN stays the common answer: the line still has more merges than the 1.0 vCPU computes in time.
+
+**Other numbers.** Commit p50 / p99 446 / 1,195 ms (queue p99 815, round 532, confirm 124); 2,495 entries carried 14,544
+commands (5.8 an entry); term 2 throughout, site 0 leader, 139.3 req/s on it. Agent pushes 2,478 / 2,500 ok. API reads
+111,614 of 113,511 200 (98.3%; 1,184 driver cap, 713 503), p99 3,744 ms. `merge:only` p99 2,116 ms (51 of 58 ok).
+
+**Raw.** `tests/am1/raw/a1-b0-35-mwgm9uwu.jsonl`, `tests/fanout/raw/memguard-m29r35.jsonl`, `terms-m29r35.jsonl`,
+`rows-m29r35.status`. **Cost** $125.69 at 16:49Z (containers $48.25). Sweep "sweep ok".
+
+### Round 18b: B0-34 on m29, with the warm step; the cold 5 GB rehydrate fails DESIGN's 120 s line (2026-11-14)
+
+**Warm step** (`tests/fanout/b034warm.mjs`, inside `b034.sh` before learners and k; not the row's time). repo:131296
+(m3org/b034-mono), from 16:50:17Z, 45-minute limit. Raw `tests/fanout/raw/b034warm-m29.jsonl`.
+
+- ls-refs through the edge listed `main` at **1,936 s (32.3 min)**; 24 tries before it answered 503 `{"warming":true}`.
+- `/_bed/catchup?shard=S&wait=60`: every call timed out at the 120 s client limit (15 per site) until site 2's
+  answered 200 at 1,936 s and site 0's at 2,003 s; site 1's never did within the warm step's 5-minute tail.
+- Round 17b on m28 agrees: still warming 28 minutes after its start.
+
+**The shards' own rehydrate reports** (Workers Logs `shard rehydrate 131296`, raw
+`tests/fanout/raw/rehydrate-131296-m29.json`), for the fix's sizing (the m3f thread owns it):
+
+| shard | done at | catch-up total | stored packs | bytes | spool (bucket read) | `index-pack` | packs by bucket |
+|---|---|---|---|---|---|---|---|
+| site a (`git#0`) | 17:23:48Z | 1,994 s | 257 | 2,623,972,857 | 57 s (0.22 s/pack) | 1,872 s (7.3 s/pack, 1.40 MB/s) | site 0: 256, site 1: 1 |
+| site c (`git#2`) | 17:22:46Z | 1,932 s | 257 | 2,623,972,857 | 94 s (0.37 s/pack) | 1,694 s (6.6 s/pack, 1.55 MB/s) | site 2: 216, site 0: 41 |
+| site b (`git#1`) | 17:34:33Z | 2,639 s | 257 | 2,623,972,857 | 53 s (0.21 s/pack) | 2,496 s (9.7 s/pack, 1.05 MB/s) | site 1: 230, site 0: 27 |
+
+Each report: 288 entries, 257 markers, 4 inline packs (2.46 MB, held at most 2.46 MB at once); the phases before the
+stored packs (`up` 32–34 s, markers, the marked phase 36–43 s in all) are small. A pack averages 10.2 MB.
+`index-pack` is 90–96% of the stored-pack time; the bucket read is 2–5%.
+
+**DESIGN check.** `design/DESIGN.md`, Milestone 0's table: "Container rehydration of a 5 GB network from R2 | At most
+120 s | Over 600 s". Measured: 1,932 to 2,639 s per shard for this network (2.62 GB of stored packs, 5.02 GB pushed),
+3.2 to 4.4 times the fail line. **Fail**, a finding apart from B0-34's row. [inference: a bounded parallel fetch saves
+at most the spool, 53–94 s per shard; reaching 120 s needs `index-pack` in parallel or avoided, for example ingesting a
+stored pack with a prebuilt index.]
+
+**Row** (run `mwgoigqa`, 900 s from 17:31:15Z, learners 8/8 in 13.6 s, home shard killed at 300 s, the second network
+at 420 s, the hostile owner's three at 600 s). Site 0 led at term 2 throughout; voter peaks 31.1 / 23.1 / 23.1 MiB (memguard never
+fired); no `exceeded` message on any site. Commit p50/p99 338/1,144 ms (502 samples, 466 commands in 195 entries).
+
+| B0-34 line (`build/BUILD-PLAN.md`) | m29 | verdict |
+|---|---|---|
+| k set in band from `NetworkLoad` and the hot pool, ≤ 8 per site | k 1 throughout on all five networks (`kTimeline`, `kMax` 1) | fail (k never stepped) |
+| The hostile owner held to its per-owner pool budget; the monorepo's k not reduced by another owner | k 1 everywhere, so untested | not measured |
+| Human push p99 ≤ 3 s beyond transfer | 4 of 36 ok; p99 189–304 s by phase; the rest 503 `warming` or client timeouts | fail |
+| Clone TTFB p99 ≤ 1 s throughout (fail over 5 s) | 5 of 35 answered 200; p99 137.7–197.8 s by phase | fail |
+| No Cloudflare API call from a request path | 0 files (`b034.sh`'s check) | pass |
+
+Agent pushes 31 of 3,192 ok, most `503 git cache: no shard could check the pack ({"warming":true})`: the kill at
+300 s (17:36Z) sent the home site's traffic to site b's shard, which was still rehydrating (done 17:34:33Z) or was
+reached through a shard that answered `warming`. `tip:move` 3 of 11 ok. The second network's and the hostile owner's
+pushes went through (33 of 41 ok), their clones mostly did not (5 of 24).
+
+**Verdict.** B0-34 fails on m29. What binds is the git cache: every shard of this network needed 32 to 44 minutes to
+rehydrate, so after the kill no warm shard was left, and k never left 1, so `fanout` added none.
+
+**Cost** $127.06 at 17:52Z (containers $49.34). Sweep after the row: "no shard container running" (b034-mono's shards
+torn down at the end, as the run ends here).
+
+### Round 18c: B0-34 trace from m29's logs: why k stayed 1, why pushes got `warming`, and what came before the kill (2026-11-14)
+
+No hosted spend: Workers Logs (shard objects `git#<s>#net:131296`, ids 6c3553f3 / 8cdabda8 / 617c87d6), the container
+CPU dataset, two ledger reads (`/_bed/pool`), and `mwgoigqa`'s rows. Cost $127.09 at the end; sweep "no shard container
+running".
+
+**What actually happened.** From 17:31:48Z, 33 s into the window, the home shard (site 0) answered no validate 200 again.
+Site 2's last 200 was in 17:32, site 1's in 17:35. After that, every validate on each site waited out its `wait` and
+answered 503 `warming`: site 0's at 14.9–15.1 s (`wait=15`), site 2's at 59–61 s (`wait=60`), site 1's at 15–22 s.
+
+| minute | site 0 validate 200 / 503 | site 1 | site 2 | container CPU-s, sites 0 / 1 / 2 (cgroup, 240 = 4 vCPU) |
+|---|---|---|---|---|
+| 17:31 | 10 / 0 (36 × 429 slots full) | – | 0 / 0 | 193 / 69 / 203 |
+| 17:32 | 0 / 84 | 0 / 82 | 12 / 64 (29 × 429) | 240 / 81 / 228 |
+| 17:33 | 0 / 293 | 0 / 289 | 0 / 47 | 250 / 80 / 226 |
+| 17:34 | 0 / 23 | 6 / 57 | 0 / 254 | 198 / 104 / 202 |
+| 17:35 | 0 / 168 | 10 / 17 (37 × 429) | 0 / 19 | 188 / 227 / 200 |
+| 17:36 | 0 / 23 | 0 / 123 | 0 / 3 | 187 / 127 / 201 |
+| 17:37–17:46 | 0 / 2,000+ | 0 / 2,000+ | 0 / 2,000+ | site 0 torn down 17:37:29, then ~70 (rehydrating); 1 and 2 at 156–209 |
+
+The kill (`/_bed/kill`, sent at 300 s) reached site 0's shard at 17:37:22Z (`/teardown` 200 at 17:37:29, ≈374 s of the
+window; the driver logged 200 at 496 s). The catch-up that had run on site 0 since about 17:32 ended only then, with
+`shard catch-up 131296: Error: Network connection lost.`
+
+**Why the catch-ups stopped: a cancelled depth-1 clone leaves the network's lock held [inference: timing on all three
+sites, plus a local reproduction of the mechanism; no container stderr was captured].** B0-34's `cloneTtfb`
+(`tests/am1/rest/a1.mjs`) cancels its fetch after the first byte. The container's `handleUploadPack`
+(`containers/git/server/main.go`) holds the network's lock shared, copies upload-pack's stdout to the response, and then
+calls `cmd.Wait()`. When the client has gone, the copy fails and returns. Nothing reads the pipe or kills the child, so
+`git upload-pack` blocks on a full pipe, `Wait` never returns, and the shared lock is never released. The next catch-up's
+`/ingest` then waits for the lock alone. Go's `RWMutex` makes every later `RLock` (validate, ls-refs, upload-pack) wait
+behind that writer, so the catch-up never ends and every validate's `Jobs::wait` times out to `warming`. Locally, a Go
+program with the same copy and wait calls (`head -c 1G /dev/zero` as the child and a writer that fails after one chunk)
+stayed in `cmd.Wait` for over 10 s, with the waiting writer and a later reader both blocked. The timing on each site:
+
+| site | first cancelled clone (shard `/upload-pack`, outcome canceled) | last validate 200 |
+|---|---|---|
+| 0 | started ≈17:31:41 (ended 17:33:35, 114 s wall) | 17:31:48 |
+| 2 | started ≈17:32:06 (ended 17:33:37, 91.5 s) | 17:32 |
+| 1 | started ≈17:35:01 (ended 17:35:53, 53 s) | 17:35 |
+
+Round 18b's verdict line, "after the kill no warm shard was left", is wrong: no shard was serving well before the kill.
+
+**1. Why k stayed 1.**
+- **Reports.** `fanout`'s input comes only from inside a `/validate` that has caught up (`workers/site/src/shard.rs`,
+  the `due` block after `caught_up()`). From 17:32 no validate caught up, so the leader (site 0, `repo:131296#1#f0`) got
+  three `/fanout` calls in the whole window: 17:31:33, 17:32:06 and 17:34:34. `fanout` steps only when the larger warm
+  site's `cpu_p99` stays above `FANOUT_UP` 0.75 for `FANOUT_UP_FOR` 180 s, which three reports in 3 minutes cannot show.
+  The `cpu_p99` values in those reports were not logged (not measured).
+- **CPU.** The containers did burn CPU: about 3.2–4.2 vCPU on sites 0 and 2 from the warm's end, and on site 1 from its
+  rehydrate's end at 17:34:33. Each site's jump follows its own rehydrate's end, so it is the `/refs` → `startRepack`
+  geometric repack of 257 packs plus its commit-graph [inference]. That is derived work, which `/load` leaves out by
+  design (A31). So the network's `NetworkLoad` read near idle even if more reports had arrived.
+- **Hot pool.** No pool shard was warm for the monorepo. None of the 13 pool objects that exist (`git#0#pool:1–7`,
+  `git#1#pool:1,2,4–6`, `git#2#pool:1`) ran a container from 16:45 to 17:50. Both warm sites' ledgers hold no lease
+  (`/_bed/pool?site=0` and `site=1` give `{"leases":[]}`); this network's warm sites are 0 and 1 by `warm_sites`'
+  rendezvous. With k 1 and no step, `pool_ask(1, None)` is `None`, so the leader never asks a ledger. A pool shard
+  catches up only when a granted push is forwarded to it with `pool=1`, and with no cursor it answers `warming`
+  (`warming_now`'s `pool_cold`).
+- **DESIGN versus code.** DESIGN, Shape, `HOT_POOL`: "Idle pool shards keep hot networks warm, holding the parts up to
+  the tip, so a step needs no rehydrate". Costs: "Its idle shards keep hot networks warm, so a step up in k needs no
+  rehydrate". No code warms a pool shard for a network before a grant: `prsync::warm` catches up only each Full site's
+  first shard (`git#<s>#net:<repo>`, `promote_sites`). So a step up here would have meant a 32–44 minute rehydrate on
+  each granted pool shard (round 18b's figures).
+
+**2. Why pushes after the kill got 503 `warming`.**
+- **The path.** The edge's `validate` (`workers/edge/src/lib.rs`) tries `shard_order`: `validate_sites` lists the home,
+  then every other Full site in record order, and sites this isolate saw fail in the last `COLD_SHARD_MS` (30 s) go last.
+  `shard_url` gives the first try `wait=15` and later tries `wait=60`, and every try but the last carries `next=1`.
+  `validate_on` calls `shard_at(site)`, which is always that site's first shard `git#<site>#net:<repo>`, never a pool
+  shard. So it does use another site's warm shard: the 503s on sites 1 and 2 above are those fallbacks.
+- **Where the code departs.** `validate_streamed`, used for a pack over `INLINE_MAX` (1 MiB), sends the body to the
+  first site of `shard_order` only, with one try (`shard_url(&url, 1, 2)`). DESIGN, Shape, `IngestCursor`, says "Pushes,
+  fetches and the archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503". This
+  row's agent packs averaged 90 KB, so it bound only big human pushes.
+- **What bound this row.** There was no serving shard to fall back to. Every Full site's shard had the stuck catch-up
+  described above, so each answered `warming` after its full wait. After 17:37:29, site 0's new container was
+  rehydrating, and it answered `next=1` callers at once (189 answers in 0–1 s at 17:40). DESIGN's failure-modes row for
+  git caches at data-center scope says "Each network is warm on two sites, … so the other warm site already holds k
+  shards". That holds only while the other site's shard can catch up. The container bug above defeats it on every site
+  at once, because every site's shard serves the same cancelled clones.
+
+**3. How much of the miss came before the kill.** `note()` is called when a request ends, so a phase is the phase it
+finished in.
+- **Before the kill (`@j9`, 0–300 s).** Human pushes: 8, 3 ok, p50 45.8 s, p99 189.0 s. Clone time to first byte: 10, 4
+  answered 200, p50 118.3 s, p99 197.8 s (the row's highest). Agent pushes: 435, 22 ok, 210 of them `warming`.
+- **Kill phase (`@kill`, 300–420 s).** Human push p99 304.1 s and clone p99 142.5 s. These requests ended after 300 s,
+  but at those durations they started before it.
+- **So:** the human push and clone misses are already whole before the kill. The stall began at 33 s of the window, and
+  the kill was not the cause.
+
+**For the owner.** The fix is likely in `handleUploadPack`: kill the child, or drain its stdout, once the response write
+fails, and release the lock before `cmd.Wait`. It needs a test where a client cancels mid-stream and a later
+ingest-then-validate still completes. The pool-warming gap and `validate_streamed`'s single try are separate departures.
+
+### Round 19: B0-33 on m30b (main e8d69e4c, memory-budgets), stopped at 189 s by the 120 MiB guard (2026-11-14)
+
+**Deploy m30, then m30b.** lm1-memory 0f77352b = main e8d69e4c (memory-budgets: DONE_BYTES 8 MB, OUTCOME_KEEP 15 s,
+AppendEntries budgets 2 MB per peer, 4 MB learners, 8 MB total, ANSWER_BYTES_MAX 16 MB; M5-WP2; shard-cancel;
+pool-warm) plus this branch's instruments. New shard image `sha256:198f296c` (main's `containers/`), standard-4,
+NOROLL, test-faults. m30: sites a 5a970d51, b 6b2037c5, c a4d4c67d, edge 2e025e18. Full checks on the merge: 941
+tests, 0 failed (check_names and check_links only on `.worktrees/`).
+
+**The first try was skipped, a pool-warm bug.** Repo 131339's forced k 4 answered `stepped: false` with empty grants:
+`warm_step` correctly refused the cold step, then `Grant::ask` trimmed the grants to next − 1 = 0, so no slot stayed
+held, none was warmed, and the step could never commit (`fanout`'s own step up shared the path). Fix `pool_keep`
+(980daa4a here; branch `pool-keep` e017fbde, merged as main dc269249): a waiting step keeps the granted − 1 slots it
+would serve from. Test `a_waiting_step_keeps_its_cold_slots_until_they_warm` fails on main (k stays 1); three plants
+caught. m30b with it: sites a ba3f8469, b 3b78cae8, c 0953ce1d, edge 1ca30793, same image. Hosted, repo 131340's
+forced k 4 held grants [5,2,0] on sites 0 and 2, answered cold twice and stepped 1 → 4 at the third ask, 21 s after
+the first.
+
+**Run** `tests/fanout/b033.sh m30r33b`: repo `fm30r33b-b033` (131340), run `mwh1akmb`, 5,000 agents, 300 s from
+23:29:02Z, learners 8/8 caught up in 11.4 s, k 4. memguard (2 s, every voter) stopped the window at 23:32:11Z, 189 s
+in: site 1, leading, at 122.7 MiB.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | m30b (189 s) | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 4,126 ms (n 409, p50 3,179); `merge:only` p99 25.1 s (6 of 6 ok); `push:human` 14 ok of 121 (102 skipped at the cap), p99 172.6 s | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 416 commands at the end leader (term 7 only); 2,560 agent pushes ok in 189 s = 13.5/s at the client | fail |
+| Zero leader changes | term 2 → 7: site 0 to 23:30:19, site 1 23:30:23 to 23:32:11, then sites 2, 0, 1, 2 within a minute | fail |
+| Zero `suspect` reports | 13,625 at the end leader | fail |
+| Every refusal `ng` or 429 `retry-after` | 503s: read gate `overloaded` 757 and `not leader` 58; git cache `no shard could check the pack` 589; 271 client timeouts | fail |
+
+**What memSplit showed.** The counted buffers stayed small while the wasm heap rose. At the stop, site 1's memSplit
+summed about 14 MB (log 7.9 MB, dump cache 2.06 MB, read answers 4.1 MB, member calls 0, held 0, statements 0) against
+122.7 MiB of heap; in the minute before, answers peaked at 4.1 MB and outgoing calls at 0.8 MB, so the memory-budgets
+caps were never near binding. What tracked the heap was the leader's count of admitted tickets not yet resolved
+(`inFlight.admitted`, a count, not bytes):
+
+| leader | heap MiB | admitted (max so far) |
+|---|---|---|
+| site 0, 23:29:05 → 23:30:17 | 6.3 → 73.6 | 26 → 969 |
+| site 1, 23:30:23 → 23:30:36 | 25.3 → 69.4 | 153 → 1,071 |
+| site 1, 23:31:58 → 23:32:06 | 82 → 122.7 | 1,071 → 1,225 |
+| site 2, 23:32:16 → 23:32:30 | 33.1 → 71.5 | 52 → 627 |
+
+Each admitted ticket keeps its whole command in `Core::admitted` until it resolves (`workers/site/src/host.rs`,
+`admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>`, cloned at `member.rs` `let cmd = c.cmd.clone()`), so an
+agent push's inline pack (up to `INLINE_MAX_HOT`, 64 KB; offered mean pack 90 KB) is held there as well as in the log.
+1,225 tickets at up to 64 KB each is up to 78 MB, which with the counted 14 MB is the order of the heap. [inference:
+the admitted map's commands are the uncounted bytes; memSplit counts tickets, not their bytes, so this is not
+measured.] Commit p99 of 3 to 4 s at about 250 group commands/s offered keeps about 1,000 tickets open. This is not
+F71's admission lane (agent queue at most 493 commands, 3.97 MB, `admission` samples), and not the memory-budgets
+buffers. The wasm heap never shrinks: site 1 still read 124.7 MiB as a follower at 23:43Z.
+
+Site 0's instance reset at 23:30:19 to 23:30:30 (heap 73.6 → 12.4 MiB, status unanswered for 10 s) with no
+`exceeded its memory limit` event in Workers Logs (only canceled `/read`s and `/commit`s, and one `exception` each on
+`/raft` and `/commit` at 23:30:38); that reset is what started the leader churn.
+
+**Verdict.** B0-33 fails on m30b on every line. memory-budgets kept its own buffers small (answers at most 4.1 MB,
+calls at most 3.4 MB), but the leader's heap still climbs with open tickets, about 60 to 80 KB per admitted ticket by
+the table above. The next instrument is `inFlight.admittedBytes`, the sum of `stored_len` over `Core::admitted`;
+the fix candidates are dropping the command once the ticket is appended (keeping only what the id-block re-send
+needs) or capping admitted bytes with a fast `Full`.
+
+**Raw.** `tests/am1/raw/a1-b0-33-mwh1akmb.jsonl`; `tests/fanout/raw/memguard-m30r33b.{jsonl,err}`,
+`terms-m30r33b.jsonl`, `tsave-m30r33b.jsonl.xz`, `rows-m30r33b.status`; skipped try `rows-m30r33.status`. **Cost**
+$129.82 at 23:45Z (containers $49.63). Sweep "no shard container running".
+
+### Round 20: B0-34 on m31 (main dc269249, stored-fetch): the promotion drain stalls at entry 18's 53 MB pack; row not run (2026-11-15)
+
+**Deploy m31.** lm1-memory b94d0acc = main dc269249 (stored-fetch, pool-keep, m4-actions-2, narrow-builds) plus this
+branch's instruments. New shard image `sha256:b63da3e6` (main's `containers/`, with stored-fetch's `/spool`, `/idx`
+and `/connected`). Sites a 4dcf32e1, b c9cc88e0, c 6044ab64, edge 3ed63d67; standard-4, NOROLL, test-faults. Full
+checks on the merge: 961 tests, 0 failed, Go and every clippy pass (check_names and check_links only on `.worktrees/`;
+both pass on main in a clean worktree, round 19).
+
+**Run** `DRAIN=1 b034.sh m31` (b034drain.mjs, then a sweep, then the cold warm, then the row with memguard and terms),
+from 00:27:32Z. Raw `tests/fanout/raw/b034drain-m31.jsonl`, `b034warm-m31.jsonl`, `b034-m31.status`.
+
+repo:131296 as found: 648 entries, the last promotion `Promoted { 1..6 }` from the seed (a 257 B stored pack), 260
+stored packs above it, 2,628,169,642 bytes; by bucket, site b's shard read 234 from its own bucket and 27 from site 0,
+site c's 220 and 41.
+
+**The drain.**
+
+| step | time (from 00:27:32Z) | what |
+|---|---|---|
+| promote-ahead fires | 00:28:53 (81 s) | the archive asks site a's shard for `/promote`; `503 {"warming":true}` every 2 min after |
+| site a's shard cold rehydrate | about 00:28:22 → 00:54:40 | no `shard rehydrate` line in Workers Logs for site a (sites b and c below) |
+| first promotion | 00:54:42 (1,630 s) | `Promoted { 7..16 }` (entry 15's and 16's packs, 40.4 MB) |
+| second promotion | 00:54:52 (1,640 s) | `Promoted { 17..17 }` (12.7 MB) |
+| stall | 00:54:52 on | every run: `archive: entry 18 names 53125950 pack bytes, over the 50331648 a promotion holds` |
+
+**Drain verdict: stalled, not drained.** The time to the first promotion was 1,630 s (27.2 min), almost all of it the
+leader site's shard rehydrating the thin packs cold. Then the drain moved 2 of 648 entries in 10 s and stopped: entry
+18 carries one 53,125,950 B stored push, over `PROMOTE_MAX` (48 MiB, 50,331,648 B), and `within_promote_max` refuses a
+first entry alone over the cap, so every later run repeats the same refusal and nothing past index 17 can promote. Of
+260 stored packs it is the only one over 48 MiB (the seed's 30 MB plan steps produce packs of 10 to 53 MB). So under
+stored-fetch's trigger, repo:131296 cannot drain at all; the 2.62 MB/s figure was never reached, and the 45-minute
+stop did not decide it. The watcher read the stall as drained (its "no move for 180 s" rule); it now exits 3 for a
+stop short of the tail.
+
+[inference, the m3f thread's call: a single entry over `PROMOTE_MAX` needs a path, either promoting it alone past the
+cap, or storing a pushed pack above the cap as already self-contained, or a push-side cap at `PROMOTE_MAX`.]
+
+**Cold rehydrates in this round (no stored `.idx` existed yet, `idx_used` 0):**
+
+| shard | done | total | stored packs | bytes | spool | `index-pack` |
+|---|---|---|---|---|---|---|
+| site b (`git#1`) | 00:53:00Z | 1,507 s | 261 | 2,628,169,899 | 28.7 s | 1,458 s (5.6 s/pack, 1.80 MB/s) |
+| site c (`git#2`) | 00:57:15Z | 1,762 s | 261 | 2,628,169,899 | 29.4 s | 1,709 s (6.5 s/pack, 1.54 MB/s) |
+
+Against m29: the fetch ahead halved the spool (53 to 94 s → 29 s), but `index-pack --fix-thin` still holds the lock
+for 97% of the time (`lock_ms` = `index_ms`), and the totals (1,507 and 1,762 s) fail DESIGN's 120 s line (fail over
+600 s) as m29's did. stored-fetch's projected 83 s applies once the packs are promoted with stored indexes, which the
+stall prevents.
+
+**The cold warm and the row.** The warm started at 00:58:35Z on shards torn down after the stall; I stopped it at
+01:07:40Z, 9 minutes in (all catch-ups at the 120 s client limit, ls-refs 503 `warming`), because with no promotion
+past entry 17 it could only repeat the 25 to 30 minute cold rehydrate above, and the row as written could not start.
+Row: **not run**. Sweep after the stop: "no shard container running".
+
+**Cost** $130.32 at 01:10Z (containers $50.03).
+
+### Round 21: B0-34 on m33 (main fb4a1b66, promote-stream): the drain's 45-minute stop fires before the first promotion; row not run (2026-11-15)
+
+**Deploy m33.** lm1-memory 43cc5225 = main fb4a1b66 (promote-stream merged) plus this branch's instruments and one new
+log line: each promotion prints its range, pack count, bytes, ms and the site isolate's wasm memory before and after
+(`archive::promote_handled`); `tests/fanout/promomem.py` reads each site script's peak memory by minute. Shard image
+`sha256:b63da3e6`, the same digest as m31 (promote-stream changed no `containers/` code). Site versions a bc6e0ab6,
+b 38691f29, c 846992eb; edge 60b0334f; standard-4, NOROLL, test-faults.
+
+**Run** `DRAIN=1 DRAIN_MIN=45 b034.sh m33` from 03:34:25Z. Raw `tests/fanout/raw/b034drain-m33.jsonl`,
+`b034-m33.status`.
+
+**The drain: stopped at its limit, 0 promotions.** Promotions stayed at `Promoted { 17..17 }` (from m31) for the whole
+2,724 s. Promote-ahead picked the right next range, `Some((18, 18))`, the 53,125,950 B entry the old cap refused, so the
+cap fix works as far as `log_archive` goes: no `over the ... a promotion holds` alarm this round. But all 24 tries, every
+2 min from 03:35:21Z to 04:20:04Z, got `503 {"warming":true}` from site a's shard, then from b and c with `next=1`,
+each after its 60 s `wait`. Each try's line: `1 packs, 0 B in 60,37x ms, wasm 1.8 -> 1.8 MB`. The exit 2 summary reads
+`firstS: null, promotedTo: 17`.
+
+**Not measured:** the site's memory during the streamed promotion of entry 18, and the hosted promotion MB/s G9 needs.
+No promotion reached the stream. The site scripts' peak memory over the window was 27 to 36.5 MB, with wasm 1.8 MB
+except one site-a `scriptThrewException` at 04:00 (wasm 170.2 MB), the same pattern as m31 at 00:30 and 00:45 (167.5 and
+175.0 MB). It is not a promotion: none got past the shard. Traced (note only, not chased): each is the site
+script's `scheduled` handler, the `*/15 * * * *` cron (`sweep::run`, then `fold_audit::run`), ending `exception` with
+"Promise will never complete." after 234 to 255 s wall and 2.9 to 3.6 s CPU: m33 at 04:04:14Z (cron 04:00), m31 at
+00:33:56Z and 00:48:53Z (crons 00:30 and 00:45). Only site a shows it in these windows.
+
+**Why every shard stayed warming for 45 min (m31's took 25 to 29).** Container CPU by 5 minutes, each site:
+
+| window | a | b | c |
+|---|---|---|---|
+| m31 00:30–00:50 | 333–370 s | 331–362 s | 337–372 s |
+| m33 03:35–03:55 | 334–369 s | 332–369 s | 335–375 s |
+| m33 04:05–04:15 | 674–955 s | 1,019–1,026 s | 789–1,011 s |
+
+Through about 04:00 every shard ran exactly m31's profile: about 1.15 vCPU, the thin packs' `index-pack --fix-thin`.
+Only entries 7..17 have a stored `.idx` (2 of 396 objects under `pack/131296/` in site a's bucket, with `from`/`to` 7..16
+and 17..17), so 249 of the 260 pushed packs still re-indexed. Then all three jumped to about 3.3 to 3.4 vCPU and stayed
+there to the stop, and no `shard rehydrate` line appeared; m31's came at that point.
+
+The code explains the jump [inference from the code and the CPU; the container logs nothing for these phases]:
+`catchup::rehydrate` writes the refs pages, and the last page (`done=true`) makes the container's `/refs` call
+`startRepack`, a background `git repack -d --geometric=2` with the default delta window, here over about 265 packs and
+2.6 GB of linux. Then, because the marked phase skipped the pushed packs that promotions 7..16 and 17..17 cover
+(`state.skipped` non-empty, new since stored-fetch), it calls the backstop `io.connected()`. The container's
+`handleConnected` takes `repacking.Lock()` and waits for the whole repack. The rehydrate's place is dropped only
+after that check, so the shard answers `warming` until the repack ends. In m31 nothing was skipped (no `.idx` existed
+yet), so `connected` never ran and the shard served while the repack ran behind it.
+
+So two separate things held the drain:
+
+1. **Cold-start order (design).** The first promotion needs a warm shard, and a cold shard of an unpromoted network
+   re-indexes every thin push first: about 26 min here. A drain started on cold shards cannot reach its first
+   promotion inside DESIGN's 120 s, or inside the warm step's own wait, until the network is promoted. That was known
+   (round 20); this round confirms it again at the same rate.
+2. **A new wait (code).** stored-fetch's backstop `/connected` waits on `repacking`, and the rehydrate's own last
+   `/refs` starts that repack just before it. Every rehydrate that skipped a covered pack now adds a whole geometric
+   repack of the network to its time. Here that was at least 20 min, still running at the stop.
+
+**Cold warm and row: not run** (the drain exits 2, so b034.sh stops). Sweep after the stop: two passes, "sweep: no
+shard container running".
+
+**Cost** $131.15 at 04:25Z (containers $50.67); this round cost about $0.70.
+
+### Round 22: B0-34 on m34 (main 1552e999, promote-stream and connected-after): 51 streamed promotions drain entries 18 to 234 at 1.65 MB/s with the site at 18.7 MiB wasm; the 90-minute stop fires short of the tail; warm and row not run (2026-11-15)
+
+**Deploy m34.** lm1-memory 71bec610 = main 1552e999 (connected-after merged) plus this branch's instruments. Shard image
+`sha256:36c17feb` (connected-after's container). Sites a e7c34df8, b 5b91624b, c bc99d3f1; edge bfed05b9; standard-4,
+NOROLL, test-faults. Run `DRAIN=1 DRAIN_MIN=90 b034.sh m34` from 05:18:05Z (drain stop 90 minutes in all, no stall exit
+in the first 45). Raw `tests/fanout/raw/b034drain-m34.jsonl`, `b034-m34.status`, `keepled-m34.jsonl`.
+
+**The group idled out.** 3 minutes into the drain (05:21Z) all three members of repo:131296 were followers at term 2,
+and the drain read `no leader` for 11 samples: its watcher reads members only (`/status`, `/read`, `/stats`), which a
+group does not count as clients, and nothing else touched the group. The archive alarm runs only on a leader, so
+promotion stopped with it. At 05:32Z one edge read woke site 0 back to leader (the term stayed 2), and
+`tests/fanout/keepled.mjs` (one edge read a minute) kept it led to the end. `b034.sh` now starts keepled for the drain's length. The shard warm at the drain's start was also cut short: the
+container instances still running from round 21's m33 were the same disks (site a's `git#0#net:131296` ran from
+04:33:55Z on the old image `b63da3e6` until 06:55Z), so this round's first promotion went to an already rehydrated
+shard, not a cold one (below).
+
+**The drain: streamed promotion works and holds the site flat.**
+
+- First promotion at 05:31:55Z (845 s after the start; 10 of those minutes are the idle-out above): `Some((18, 18))`,
+  entry 18's 53,125,950 B push, now **promoted, 61,072,183 B in 29.9 s, wasm 1.9 → 3.5 MB**. The cap refusal of round
+  20 is gone.
+- **Entry 18's site memory:** the promotion runs in its own site-a invocation (`/archive/promote`). Its wasm went 1.9 to
+  3.5 MB in the promotion's own log line. Over the whole drain, every promotion's after-value is at most 18.7 MB, reached
+  by the fourth (21..22, 146 MB) and flat after it through a 207 MB promotion. The only site-a invocations over 18.7 MB
+  wasm in the window are the six `*/15` crons, 156.6 to 195.1 MB, `scriptThrewException` (round 21's note: `sweep::run`
+  and `fold_audit::run`), the same as before promote-stream and not a promotion.
+- **51 promotions, entries 18..234: 211 pushed packs, 2,217,077,014 pushed bytes (the stored packs those entries name),
+  7,404,855,988 promoted bytes in 4,489.6 s of promotion time: 1.65 MB/s of promoted bytes, 0.49 MB/s of pushed bytes
+  covered.** By phase: promotions 2 to 19 (05:33 to 06:06Z) 1.32 MB/s, the last 10 (06:37 to 06:49Z) 1.95 MB/s. A
+  promoted pack is 3.3 times the pushed bytes it covers on this history (7.40 / 2.22 GB), so the pushed-byte rate G9
+  compares against B0-31's pushes is **0.49 MB/s**, against the 2.62 MB/s measured locally (`lm1-rows-m3f.md`,
+  "Promotion rate"). [measured; promoted bytes and ms from each promotion's log line, pushed bytes from the log's
+  entries 18..234]
+- Stop: 06:48:07Z, exit 2 at the 90-minute limit, `promotedTo` 227 (234 by the last line at 06:49:03Z), against a
+  target of 678 (commit 730 at the stop). Left above the last promotion: 49 stored packs, 357,944,637 B (entries 235 to
+  the end). The drain did not finish; at the late rate it needs about 12 more minutes of promotion, but promote-ahead
+  also stops by design once less than `LOG_MAX_BYTES / 32` (64 MiB) of packs sit above the last promotion, so "drained"
+  for b034drain.mjs's rule (`to >= target - 8`) is not reachable as written either [inference from
+  `log_archive::step`].
+
+Promotion table:
+
+| at | range | pushed packs | promoted bytes | ms | MB/s | wasm before → after |
+|---|---|---|---|---|---|---|
+| 05:31:55 | 18..18 | 1 | 61,072,183 | 29,901 | 2.04 | 1.9 → 3.5 |
+| 05:33:05 | 19..20 | 2 | 114,260,865 | 68,134 | 1.68 | 3.5 → 13.6 |
+| 05:34:41 | 21..22 | 2 | 146,427,041 | 93,553 | 1.57 | 13.6 → 18.7 |
+| 05:36:24 | 23..24 | 2 | 145,385,404 | 100,470 | 1.45 | 18.7 → 18.7 |
+| 05:37:46 | 25..26 | 2 | 125,374,222 | 80,276 | 1.56 | 18.7 → 18.7 |
+| 05:39:40 | 27..28 | 2 | 156,846,812 | 111,074 | 1.41 | 18.7 → 18.7 |
+| 05:41:50 | 29..31 | 3 | 164,651,524 | 128,124 | 1.29 | 18.7 → 18.7 |
+| 05:43:31 | 32..33 | 2 | 118,368,840 | 96,970 | 1.22 | 18.7 → 18.7 |
+| 05:45:03 | 34..35 | 2 | 119,869,890 | 89,429 | 1.34 | 18.7 → 18.7 |
+| 05:47:01 | 36..37 | 2 | 150,739,008 | 115,482 | 1.31 | 18.7 → 18.7 |
+| 05:49:24 | 38..39 | 2 | 179,812,627 | 139,841 | 1.29 | 18.7 → 18.7 |
+| 05:52:13 | 40..42 | 3 | 207,310,890 | 166,943 | 1.24 | 18.7 → 18.7 |
+| 05:54:13 | 43..44 | 2 | 144,931,350 | 116,590 | 1.24 | 18.7 → 18.7 |
+| 05:56:46 | 45..47 | 3 | 169,168,555 | 150,044 | 1.13 | 18.7 → 18.7 |
+| 05:59:01 | 48..50 | 3 | 169,163,215 | 132,168 | 1.28 | 18.7 → 18.7 |
+| 06:01:34 | 51..54 | 4 | 148,915,235 | 149,675 | 0.99 | 18.7 → 18.7 |
+| 06:04:10 | 55..58 | 4 | 183,507,098 | 151,893 | 1.21 | 18.7 → 18.7 |
+| 06:06:06 | 59..60 | 2 | 173,507,412 | 112,902 | 1.54 | 18.7 → 18.7 |
+| 06:07:36 | 61..62 | 2 | 131,261,634 | 86,662 | 1.51 | 18.7 → 18.7 |
+| 06:08:59 | 63..65 | 3 | 206,394,995 | 80,703 | 2.56 | 18.7 → 18.7 |
+| 06:10:10 | 66..68 | 3 | 123,412,816 | 68,305 | 1.81 | 18.7 → 18.7 |
+| 06:11:25 | 69..70 | 2 | 131,756,177 | 72,392 | 1.82 | 18.7 → 18.7 |
+| 06:12:40 | 71..73 | 3 | 134,903,179 | 71,304 | 1.89 | 18.7 → 18.7 |
+| 06:13:59 | 74..76 | 3 | 129,021,949 | 76,217 | 1.69 | 18.7 → 18.7 |
+| 06:15:09 | 77..80 | 4 | 132,400,296 | 67,054 | 1.97 | 18.7 → 18.7 |
+| 06:16:23 | 81..84 | 4 | 126,245,557 | 70,848 | 1.78 | 18.7 → 18.7 |
+| 06:17:38 | 85..88 | 4 | 130,918,235 | 71,200 | 1.84 | 18.7 → 18.7 |
+| 06:18:48 | 89..92 | 4 | 134,861,742 | 67,074 | 2.01 | 18.7 → 18.7 |
+| 06:20:04 | 93..98 | 4 | 124,651,479 | 71,803 | 1.74 | 18.7 → 18.7 |
+| 06:21:10 | 99..102 | 4 | 117,557,062 | 62,400 | 1.88 | 18.7 → 18.7 |
+| 06:22:08 | 103..105 | 3 | 106,688,727 | 55,325 | 1.93 | 18.7 → 18.7 |
+| 06:23:20 | 106..109 | 4 | 140,104,970 | 69,003 | 2.03 | 18.7 → 18.7 |
+| 06:24:29 | 110..113 | 4 | 127,409,443 | 65,786 | 1.94 | 18.7 → 18.7 |
+| 06:25:59 | 114..119 | 6 | 147,945,855 | 86,027 | 1.72 | 18.7 → 18.7 |
+| 06:27:13 | 120..126 | 7 | 149,478,383 | 69,501 | 2.15 | 18.7 → 18.7 |
+| 06:28:21 | 127..130 | 4 | 121,493,527 | 63,846 | 1.90 | 18.7 → 18.7 |
+| 06:29:40 | 131..136 | 6 | 162,401,476 | 76,002 | 2.14 | 18.7 → 18.7 |
+| 06:31:05 | 137..140 | 4 | 144,031,465 | 80,507 | 1.79 | 18.7 → 18.7 |
+| 06:32:35 | 141..145 | 5 | 160,209,364 | 86,311 | 1.86 | 18.7 → 18.7 |
+| 06:34:15 | 146..150 | 5 | 201,093,617 | 96,270 | 2.09 | 18.7 → 18.7 |
+| 06:35:26 | 151..155 | 5 | 132,610,610 | 67,225 | 1.97 | 18.7 → 18.7 |
+| 06:36:48 | 156..161 | 6 | 150,785,279 | 78,029 | 1.93 | 18.7 → 18.7 |
+| 06:38:04 | 162..167 | 6 | 149,693,875 | 72,603 | 2.06 | 18.7 → 18.7 |
+| 06:39:22 | 168..173 | 6 | 143,249,407 | 74,005 | 1.94 | 18.7 → 18.7 |
+| 06:40:47 | 174..180 | 7 | 161,669,360 | 81,318 | 1.99 | 18.7 → 18.7 |
+| 06:42:08 | 181..185 | 5 | 154,673,848 | 77,268 | 2.00 | 18.7 → 18.7 |
+| 06:43:39 | 186..195 | 10 | 160,012,207 | 87,728 | 1.82 | 18.7 → 18.7 |
+| 06:45:00 | 196..208 | 9 | 153,484,202 | 75,007 | 2.05 | 18.7 → 18.7 |
+| 06:46:31 | 209..217 | 9 | 156,988,903 | 86,504 | 1.81 | 18.7 → 18.7 |
+| 06:47:46 | 218..227 | 10 | 142,278,306 | 70,289 | 2.02 | 18.7 → 18.7 |
+| 06:49:03 | 228..234 | 7 | 135,855,872 | 71,625 | 1.90 | 18.7 → 18.7 |
+
+**Cold rehydrate: not measured this round.** No `shard rehydrate 131296` report appeared, because no shard rehydrated:
+site a's container from round 21 (started 04:33:55Z, image `b63da3e6`) was still running when the drain began, with its
+cursor, and served every promotion; sites b and c ran at 1.0 vCPU until 05:40 to 05:45Z (round 21's leftover rehydrates)
+and then idled. Round 21's sweep tore the containers down at 04:23Z, but a new leadership's `warm=1` catch-ups at 04:33:55Z
+(`Member shard warm 131296 site 0..2`, after round 21's diagnostic edge read) restarted all three before this round. So whether
+`/connected` now runs before the repack is not yet shown hosted; the code and its tests are on main.
+
+**Cold warm and row: not run** (drain exit 2). Sweeps after the stop: "sweep: no shard container running" (06:55Z, and
+again at 06:59Z after the next shard object restarted one on its alarm).
+
+**Cost** $132.97 at 06:59Z (containers $52.29); this round cost about $1.61.
+
+### Round 23: B0-34 on m34 (main 1552e999), tag m35: drained to the promote-ahead threshold, cold warm 154 to 214 s on 36c17feb, row fails because its 8 new learners never caught up (2026-11-15)
+
+**Deploy.** Unchanged from round 22 (no site day): sites a e7c34df8, b 5b91624b, c bc99d3f1; edge bfed05b9; shard image
+`sha256:36c17feb`. Run `DRAIN=1 DRAIN_MIN=90 WARM_MIN=45 IMG=sha256:36c17feb b034.sh m35` from 07:18:03Z.
+
+**Tooling changes (this commit).**
+- `b034drain.mjs`: drained is the design's own rule, the pack bytes above the last `Promoted` at or under
+  `LOG_MAX_BYTES / PROMOTE_AHEAD` (64 MiB), summed from the log the way `log_archive::pack_bytes_above` does (a stored
+  pack's `bytes`, an inline pack's length, at least the row's). Round 22's `to >= target - 8` could not be met.
+- `netimages.py`: the running shard containers of one network with their image digests; `--none` exits 2 if any runs,
+  `--image` exits 3 on another digest. `b034.sh` runs it after the teardown (no shard may run before the cold warm) and
+  after the warm (every shard the warm started runs `IMG`).
+
+**The tail drained before m35 started.** After round 22's sweep (06:59Z), the group woke at 07:03:49Z (noop entries
+737 and 738; what woke it was not traced). The leadership's warm catch-ups restarted all three shards cold on 36c17feb,
+which rehydrated in 243.5 s (b), 351.4 s (a), and 381.3 s (c): 80 stored packs, 58 loaded by their stored `.idx`,
+239 pushed packs skipped. Promotion then resumed: `Some((263, 269))` at 07:10:25Z and `Some((270, 275))` at 07:11:48Z.
+The round 22 promotions after its stop, plus those two, made 8 promotions from 06:49:03Z to 07:11:48Z: 1,134,011,885 B
+in 562.4 s, 2.02 MB/s promoted. Entries 235..275 cover 39 pushed packs of 295,583,003 B. At m35's start the
+unpromoted pack bytes above entry 275 were 63,871,110 B (45 packs), under 67,108,864, so the watcher read drained in
+8.4 s (`b034drain-m35.jsonl`). **G9's rate from round 22 stands:** connected-after changed only the container's
+`/refs` and `/connected`, not `/promote`, and the streaming runs in the site from 1552e999, so the 1.65 MB/s promoted
+and 0.49 MB/s of pushed bytes measured promotion as it ships.
+
+**Cold warm: the first hosted test of connected-after.** Teardown at 07:18:45Z: 3 torn down, "sweep: no shard container
+running", `netimages.py 131296 --none`: 0 running. The warm started 07:18:47Z. Every shard it started ran
+`sha256:36c17feb394f20d8619365190f266c4d48b1a0aca493f4d5833d9ace950207c9` (`netimages.py --image`: 3 running,
+0 on another image).
+
+| shard | rehydrate done | total | marked phase | tail | `/connected` and follow (refs to end) | stored packs | `idx_used` | rejected | spool (summed) | `index-pack` (summed) | lock |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| site b `git#1` | 07:21:37Z | 153.9 s | 100.6 s | 39.4 s | 11.9 s | 71 (8.53 GB) | 60 | 0 | 79.5 s | 38.1 s | 54.9 s |
+| site c `git#2` | 07:22:07Z | 182.5 s | 122.3 s | 44.8 s | 13.1 s | 71 | 60 | 0 | 92.3 s | 43.2 s | 63.4 s |
+| site a `git#0` | 07:22:37Z | 214.1 s | 155.4 s | 43.3 s | 13.2 s | 71 | 60 | 0 | 126.6 s | 42.5 s | 61.9 s |
+
+Every shard skipped 250 pushed packs that promotions cover, and no backstop fault was found (`fault: null`). ls-refs
+listed main at 163 s; the warm's summary had catch-ups done at 155.7 / 186 / 215.7 s. **Against DESIGN's 120 s line:
+fail (154 to 214 s), under the 600 s fail value**, against 1,507 to 2,639 s on rounds 18b and 20.
+- `/connected` no longer waits on the repack. The span from the last refs page to the rehydrate's end, which holds the
+  backstop walk, was 11.9 to 13.2 s, not round 21's 20 minutes and more.
+- The repack starts when `/connected`'s walk ends, by construction (`handleConnected` calls `startRepack` after
+  `connectedWalk`). The container logs no repack start, so the order comes from the code. Site b's container CPU
+  rose to 108 s in the minute its rehydrate ended (07:22) [inference: the repack].
+- The time goes to the marked phase, 101 to 155 s. Its 71 stored packs (8.53 GB, each promotion's pack is 3.3 times
+  the pushes it covers) are fetched four at a time, and 11 packs without a stored `.idx` re-index. The spool now costs
+  more than `index-pack`.
+
+**Row: fail, for a reason outside the git path.** a1 run `mwhibsq2`, 07:31:38Z to 07:46:38Z, exit 0.
+- **Cause [verified in the code and on the live leader]:** `learners.mjs` placed 8 new learners at config 749, as
+  generation 3 (`repo:131296#3#l0..l7`) on the addresses generation 2 used (192 to 199). The leader had led term 2 since
+  before generation 2 was placed (config 295, 2026-11-14). `Member::reconfigure` resets `next`/`matched` only for the
+  sites its `names()` lists, and that lists voters only (`crates/raft/src/member/leader.rs`, `reconfigure`, "A site that
+  comes back names a new member: nothing the old member on that site answered may count for it"). So each new, empty
+  learner kept its predecessor's `matched`, about 748.
+  - `on_append_res` keeps `next >= matched.next()`, so every probe to it went out at prev 748 with entries 749 to 752.
+    Leader `/stats` showed all 32 recent appends to 192 as `first 749, last 752`, 1,776 sent, 144.9 MB.
+  - The learner refused each one with `last 0`. Learner `l0` showed applied 0, commit 0, config null, 16,187
+    `AppendStepped` of indexes 752 to 759 in its trace, 10,089 reads, and 10,057 answered late.
+  - `a1.mjs`'s wait read "learners caught up to 749: 0/8 in 121788 ms".
+  - Snapshot: `tests/fanout/raw/learners-m35.json.xz`.
+- **What it did to the row.** The read gate's access rows go to learners first. Each learner never applied the read
+  index and answered `overloaded`, and the edge answered 503 "every member asked shed the read: overloaded". Results:
+  - agent pushes ok: 23 of 1,223 (j9), 4 of 500 (kill), 2 of 365 (second), 23 of 1,501 (hostile);
+  - human pushes ok: 5 of 125 at j9;
+  - `read:api`: 1,299 × 200, 58,305 × 503;
+  - clone TTFB at j9: p50 4.05 s, p99 72.3 s, 12 of 192 ok;
+  - task creation: 0 of 100;
+  - k stayed 1 on all five networks;
+  - feed: 212,684 polls, all `lagging`.
+- **Same failure before.** Three earlier B0-33 tries show the same "0/8 in 120 s" (fm25s33, fm26s33, fm28r33). The tries
+  that caught up 8/8 (fm28r33b, fm30r33b) [inference: had a new leadership in between, which starts every peer's
+  `matched` at 0].
+- **Memory was not the cause.** memguard: 550 samples, voter peaks 37.8 / 19.6 / 17.6 MiB, no 120 MiB stop, no term
+  change (terms.mjs: term 2 throughout).
+
+**Verdict against B0-34's line.** Gate: k in band at most 8, hostile owner held to its pool budget, human push p99 at
+most 3 s beyond transfer, clone TTFB p99 at most 1 s. Fail values: k over 8, any Cloudflare API call, the monorepo's k
+reduced by another owner, or TTFB p99 over 5 s.
+- **Fail:** TTFB p99 72.3 s.
+- **Holds:** no Cloudflare API call (0 files in request paths); k never over 8; the monorepo's k never reduced by
+  another owner (it stayed 1).
+- **Undecided:** the hostile budget and k in band, because nothing stepped.
+
+The learner defect is a Raft-core bug in `crates/raft/src` [verified].
+- A scratch simulator test reproduced it, and was not committed: 2 learners placed under one leader caught up to 9. A
+  second generation on the same addresses, empty, stayed at 0 against commit 15.
+- The fix: reset `next`/`matched` for every peer whose member name changes, learners included. It needs a regression
+  test, plants, the long sweep and Porcupine, and a rerun of the row.
+
+**Raw.** `tests/fanout/raw/b034-m35.status`, `b034drain-m35.jsonl`, `b034warm-m35.jsonl`, `memguard-b034m35.jsonl`,
+`terms-b034m35.jsonl`, `keepled-m35.jsonl`, `learners-m35.json.xz`, `a1-b0-34-m35.jsonl` (a copy of
+`tests/am1/raw/a1-b0-34-mwhibsq2.jsonl`). Sweep after the row: 21 torn down, "sweep: no shard container running".
+
+**Cost** $134.38 at 07:49Z (containers $53.17); this round cost about $1.41.
+
+### Round 23b (local, no hosted spend): why promoted packs are 3.3 times the pushed bytes, and what a 120 s rehydrate of 5 GB needs (2026-11-15)
+
+**The method, so the hosted shape can be reproduced.** The method runs on B0-34's own seed: `~/b034/linux.git` and
+`~/b034/plan.txt`, the same pushes repo:131296 took, on the orb's 4 CPUs.
+- **Pushed bytes:** one thin pack per plan step, `pack-objects --revs --thin` of each step against the one before.
+- **Promoted bytes:** the shard's way, `pack-objects` of a range's object ids (`/promote` sends ids only, no path
+  names), complete, six steps a range. That matches m34's hosted promotions of 2 to 10 entries.
+- Scripts: `tests/fanout/promsize/{measure,m2,rollup}.sh`. Outputs: `tests/fanout/raw/promsize-*.txt`.
+
+**The local model reproduces the hosted ratio.**
+- Hosted (m34's 50 promotions after entry 18, against the pushed bytes their entries name,
+  `promsize-m34-ratio.txt`): 2.84 to 4.55 times, about 3.2 at the median.
+- Local (steps 8..200): 6,323,782,500 B promoted against 2,007,790,379 B pushed thin, **3.15 times**.
+
+**Why [measured locally].** Every promotion is self-contained, so no object is stored twice. But every file a range
+touches pays one whole base in that range, where a thin push stored it as a delta against an earlier range.
+The factor falls as the range grows (complete `--revs` packs against the sum of the steps' thin packs):
+
+| range | complete | thin pushes | ratio | `pack-objects` time |
+|---|---|---|---|---|
+| 6 steps (194..200) | 99.6 MB | 30.7 MB | 3.24 | 11 s |
+| 24 steps | 286.3 MB | 115.7 MB | 2.47 | 27 s |
+| 96 steps | 1,295.5 MB | 701.9 MB | 1.85 | 105 s |
+| 192 steps | 3,693.8 MB | 2,007.8 MB | 1.84 | 200 s |
+
+Three things in the shard's promotion add to it. Measured on step 96 (14.3 MB thin, 45.7 MB as a complete `--revs`
+pack):
+- **The id list has no path names:** 53.3 MB, plus 17%. `pack-objects` groups delta candidates by path, and an id
+  alone gives it none.
+- **The id list repeats the bases that `--fix-thin` appended:** 61.2 MB, plus 15%.
+  - `record` lists every object of the pushed pack's `.idx`. After `--fix-thin`, that index includes the 6,621
+    bases it appended from earlier pushes (14.9 MB on disk), so they go into this promotion too.
+  - The batched inline path (`ingestRun`) already drops them, by offset.
+  - So the operator's guess is half right: bases from earlier promotions are repeated, about 15%. Most of the rest
+    is that each range is complete.
+- **Delta reuse:** 24 steps rebuilt with `--no-reuse-delta` are 217.1 MB, not 286.3 MB, but take 43 s, not 27 s.
+
+**Roll-up.** I made the 6-step promotions of steps 8..200 as their own packs and ran one `git repack -a -d` over them:
+6.32 GB became **2,175,795,442 B, 1.04 times the pushed bytes**. It took 385 s of wall time on 4 threads, with
+8.6 GB resident.
+
+**Where round 23's rehydrate time went [verified in the code; the hosted numbers fit it].** The marked phase fetched
+**one stored pack at a time**, not four.
+- `Ahead::pump` starts another fetch only while the bytes fetched ahead stay within `AHEAD_BYTES` (64 MiB), or when
+  nothing is ahead. Every promoted pack is 106 to 207 MB, so the first fetch alone passes the cap.
+- The hosted numbers fit: each shard's summed spool time (79.5, 92.3, 126.6 s) is less than its marked phase (100.6,
+  122.3, 155.4 s). Four overlapping fetches would sum to more than the wall time.
+- So round 23 measured R2 at **one stream: 67 to 107 MB/s** (8.53 GB over the summed spool). The four-stream rate is
+  still unmeasured.
+- The remaining 38 to 43 s of `index-pack` is the 11 pushed packs below the first promotion, which have no `.idx`.
+  The 60 packs loaded by `.idx` cost about 0.28 s each under the lock.
+
+**What a 120 s rehydrate of 5 GB of pushes needs [inference from round 23's phases].** Fixed costs:
+- start, markers and refs: about 2 s;
+- `/connected` and the follow: about 13 s;
+- the tail under promote-ahead's 64 MiB threshold: 39 to 45 s, about 64 MB of thin re-index at 1.0 to 1.55 MB/s.
+
+That leaves the marked phase **about 60 s**.
+
+| promoted shape | bytes for 5 GB pushed | rate needed in 60 s | streams at 67 to 107 MB/s each |
+|---|---|---|---|
+| today, 6-step ranges (3.15x) | 15.8 GB | 263 MB/s | 3 to 4, if R2 holds per stream |
+| id list with paths and no `--fix-thin` bases (about 2.4x) | 12.0 GB | 200 MB/s | 2 to 3 |
+| rolled up (1.04x) | 5.2 GB | 87 MB/s | 1 to 2 |
+
+**Candidates, weighed against G9's hosted 0.49 MB/s of pushed bytes:**
+1. **Let `AHEAD_BYTES` admit four large packs.** The spool waits on the container's disk, not in memory. It is a site
+   constant and adds no CPU. It is the biggest lever for this network, but the four-stream R2 rate is unmeasured.
+2. **Promotion sends ids with path names and leaves out the bases `--fix-thin` appended** (`record` keeps them apart
+   by offset, as `ingestRun` does). This is container-only, about 25% fewer promoted bytes, and less `pack-objects`
+   work per promotion, so it helps G9 rather than costing it.
+3. **Roll up promoted packs as `Compacted { consumed, produced }`.** SHARED already defines that event, and the
+   rehydrate already skips what it consumes, but nothing writes it yet.
+   - It brings the bytes to about 1.04 times the pushed bytes and the pack count to a few.
+   - Its CPU competes with promotion on the same shard: 385 s on 4 threads for 2.2 GB.
+   - Its memory needs a bound (`--window-memory`, or a geometric roll-up of the newest packs only). One whole
+     repack took 8.6 GB resident.
+   - It needs a design entry: who triggers it, the network chain's entry, and how a rehydrate orders the packs.
+4. **Thin promotions against earlier ones: rejected.** A thin pack's stored `.idx` cannot be used (G5), so every
+   rehydrate would re-index at 1 to 1.5 MB/s, an hour for 5 GB.
+5. **Longer ranges per promotion** (raise `PROMOTE_MAX`, today 48 MiB of pushed bytes): 3.2 to 2.5 times at 24 steps,
+   and `pack-objects` per pushed byte 2.8 to 4.3 MB/s locally. Hosted, the split of a promotion's time is unmeasured.
+6. **A lower promote-ahead threshold** cuts the 40 s tail, but adds more small promotions, the slowest per pushed
+   byte. Not proposed.
+
+### Round 24: B0-34 on m36 (main cfd46001, fetch-ahead), cold warm 127 to 135 s, then the row (2026-11-15)
+
+**Deploy m36.** Main cfd46001: learner-reset, proof-voters, f74-trace, lease-clock, admitted-bytes and fetch-ahead.
+- New shard image `sha256:7e8ff9c4620c7b077504508ce25db54cbc93f9c93484aefa39d4501a6d1dcb65`, built from the merge's
+  `containers/`, standard-4, NOROLL, test-faults.
+- Sites a `17d8d623`, b `eefb3167`, c `fe25cdd2`; the edge redeployed with current formats.
+- The site day ran from a clean worktree at cfd46001. The drivers ran from this branch (b034.sh, memguard.mjs,
+  terms.mjs, b034warm.mjs and netimages.py are not on main), with main's `tsave.mjs` and `tests/f74/calls.py`.
+- Spend before: $134.83.
+
+**Fix 1 alone.** Fix 2, promotions that pack only their range's own objects by name, applies to new promotions only.
+repo:131296's existing promotions stay at about 3.2 times the pushes they cover, so this warm measures fix 1 alone:
+four stored packs of any size fetching at once, with the `.idx` streamed.
+
+**Cold warm.** Sequence:
+- 11:01Z: teardown and sweep, "sweep: no shard container running", and `netimages.py 131296 --none`: 0 running.
+- 11:02:09Z: the warm started (`b034warm-m36.jsonl`).
+- `netimages.py --image sha256:7e8ff9c4` afterwards: 3 running, 0 on another image.
+
+| shard | total | up | marked phase | tail | `/connected` and follow | stored packs | `idx_used` | spool (summed) | per stream | in total over the marked phase | streams at once (spool / marked) | `index-pack` (summed) | lock |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| site a `git#0` | 126.9 s | 32.9 s | 66.8 s | 11.5 s | 13.7 s | 70 (8.63 GB) | 61 | 188.2 s | 45.9 MB/s | 129.3 MB/s | 2.82 | 8.1 s | 35.3 s |
+| site c `git#2` | 134.3 s | 35.2 s | 70.6 s | 12.1 s | 14.0 s | 70 | 61 | 163.6 s | 52.8 MB/s | 122.3 MB/s | 2.32 | 8.5 s | 41.7 s |
+| site b `git#1` | 135.3 s | 35.3 s | 65.4 s | 14.6 s | 18.3 s | 70 | 61 | 140.1 s | 61.6 MB/s | 132.0 MB/s | 2.14 | 10.4 s | 56.4 s |
+
+Each shard skipped 256 pushed packs that promotions cover, with no backstop fault and 0 `.idx` rejected. ls-refs
+listed main at 137.8 s; the warm's catch-ups ended at 129.6, 137.7 and 136.9 s.
+
+**Against DESIGN's 120 s line: fail (127 to 135 s), under the 600 s fail value**, against 154 to 214 s in round 23 on
+the same packs.
+- The marked phase fell from 101 to 155 s to 65 to 71 s. The summed spool is now 2.1 to 2.8 times the marked phase,
+  so the fetches overlap, where in round 23 it was less than the phase.
+- R2 into one container: 46 to 62 MB/s per stream with about 2 to 3 streams at once, 122 to 132 MB/s in total. Round
+  23's one stream ran at 67 to 107 MB/s. So the sum is above the one-stream rate, and the `fetch-ahead` flip ("a summed
+  spool rate near the one-stream rate") does not fire. Per stream it falls [inference: a per-container cap near
+  130 MB/s, which more streams would not raise].
+- Container start (`up`), 33 to 35 s, is now the largest fixed cost. With it, the tail (11.5 to 14.6 s, down from 39 to
+  45 s: promote-ahead promoted more of it during round 23's row, 256 packs skipped against 250) and the backstop
+  (13.7 to 18.3 s), 120 s leaves the marked phase about 55 s. At 130 MB/s that is about 7.2 GB, and this network
+  holds 8.63 GB of promoted packs. Fix 2's 25% fewer promoted bytes on new promotions, or G9's roll-up, would bring it
+  under [inference from these phases].
+- Site memory during the warm: no member or shard object failed. memguard samples begin at the row, below.
+
+**Row: fail.** a1 run `mwhq9e0l`, 11:09:50Z to 11:24:50Z, 500 agents, exit 0. The home shard was killed at 300 s;
+the second network was hot from 420 s and the hostile owner's three from 600 s.
+- **The learner fix holds.** `learners.mjs` placed generation 4 (`repo:131296#4#l0..l7`) at config 828. By 11:08Z
+  every learner had applied 928 of the leader's commit 929, and at 11:13Z 1,330 to 1,334 against the voters' 1,330.
+  a1's wait read "0/8 in 120690 ms" only because it compares `applied < commit` on a moving commit: each learner stayed
+  within one entry, where round 23's learners stayed at 0.
+- **Memory and terms.** memguard: 550 samples, voter peaks 34.8 / 29.5 / 29.6 MiB, no 120 MiB stop. terms.mjs:
+  term 2 throughout, leader site 0. `inFlight.admitted` peaked at 8 tickets and `inFlight.admittedBytes` at 87,180 B,
+  both on the leader.
+- **Commit path.** Leader commit p50 257 ms, p99 529 ms (n 2,473). `read:api` 85,526 of 85,526 ok, p99 2,115 ms.
+- **The git path did not serve.** Every shard ran at 3.5 to 4 vCPU from 11:08Z, which is 210 to 520 CPU-s a minute
+  across the three, to the row's end. The shards answered most `upload-pack` and `validate` calls 503 after their full
+  15 s or 60 s wait, or the caller gave up at 43 s. For example, site a `upload-pack`: 204 × 200 at 11:10, then 503s
+  every minute to 11:24; site c `validate` 11:14: 76 × 503 and 80 cancelled.
+  - The catch-ups behind them were slow: site b caught up 1,139 entries in 19.7 s at 11:16:19Z. Site a's catch-up
+    ended "Network connection lost" at 11:15:06Z (the kill) and again at 11:20:50Z.
+  - The results:
+    - clone time to first byte at j9 (0 to 300 s): 40 of 40 aborted at 120 s;
+    - human pushes at j9: 8 ok of 172 (160 skipped at the cap), p99 121 s;
+    - agent pushes at j9: 132 ok of 859 (478 `full`, 245 timeouts);
+    - tasks 0 of 100 ("The requester has too many open tasks": earlier rows' tasks are still open);
+    - feed 14,770 polls, 2,649 `gone`.
+  - **k stayed 1** on every network, as in rounds 18 and 23.
+  - The cause of the shards' saturation is not isolated here [not measured]. Round 18c's inference was the geometric
+    repack after each rehydrate plus validates, and these numbers fit it but do not prove it.
+
+**Verdict against B0-34's line.** Gate: k in band at most 8, hostile owner held to its pool budget, human push p99 at
+most 3 s beyond transfer, clone TTFB p99 at most 1 s. Fail values: k over 8, any Cloudflare API call, the monorepo's k
+reduced by another owner, or TTFB p99 over 5 s.
+- **Fail:** clone TTFB p99 121.5 s at j9 and human push p99 121 s at j9.
+- **Holds:** no Cloudflare API call (0 files in request paths); k never over 8; the monorepo's k never reduced by
+  another owner (it stayed 1).
+- **Undecided:** the hostile budget and k in band, because nothing stepped.
+
+**Site memory.** `promomem.py` returned no rows for 11:02 to 11:06Z, so the warm's site memory is not measured. Its
+only row near the window is site a at 11:00Z, the site day's first invocation: `scriptThrewException`, wasm 177.5 MB,
+version `e7c34df8`, the version the deploy replaced.
+
+**Raw.** `tests/fanout/raw/b034-m36.status`, `b034warm-m36.jsonl`, `memguard-b034m36.jsonl`, `terms-b034m36.jsonl`,
+`a1-b0-34-m36.jsonl` (a copy of `tests/am1/raw/a1-b0-34-mwhq9e0l.jsonl`), `rehydrate-131296-m36.txt` (the three
+`shard rehydrate` reports). Sweep after the row: 17 torn down, then one more `git#1#net:131296` that started at
+11:28:20Z after it; "sweep: no shard container running".
+
+**Cost** $136.32 at 11:29Z (containers $53.91); site day, warm and row about $1.49.
+
+### Round 24b: B0-33 on m36 (main cfd46001) with the F74 trace: the full 300 s ran under the memory guard; terms 2 to 19, learners' read-index calls the bulk of member calls (2026-11-15)
+
+**Run** `tests/fanout/b033.sh m36r33` (rows.sh's b0-33 row as written: fresh repo, 8 learners, k 4, 300 s, 5,000
+agents), with `tsave.mjs` at `LEARNERS=1 EVERY=10000`.
+- Repo `fm36r33-b033` (131341), run `mwhr84r9`, 11:36:36Z to 11:41:36Z, exit 0.
+- k 4 granted at 11:31:38Z (grants [2,1,6] on sites 0 and 2). Tasks 100 of 100.
+- a1's learner wait read "0/8 in 122002 ms" against commit 114. It is the same moving-commit read as round 24's B0-34,
+  where every learner was within one entry [not checked for this repo before the window].
+
+**Memory: the guard never fired.** 313 samples, voter peaks 40.3 / 44.2 / 51.3 MiB against round 19's stop at
+122.7 MiB at 189 s. `inFlight` (memSplit), the most on any sample:
+
+| site | `admitted` | `admittedBytes` |
+|---|---|---|
+| 0 | 257 | 2,895,947 B |
+| 1 | 61 | 690,362 B |
+| 2 | 231 | 2,602,706 B |
+
+So admitted-bytes holds an open ticket's command to about 11 KB on average (2.9 MB over 257 tickets), and the
+memory storm of rounds 17 and 19 is gone.
+
+**Leaders: churn, term 2 to 19.** terms.mjs: term 2 at 11:31:09Z, then 5 at 11:37:38Z, 6 (site 1) 11:38:00, 8, 9 (site
+2), 10 (site 0), 11, 12, 13, 14 by 11:40:20Z, 15 to 17 by 11:41:30Z, and 19 at the row's end. 94 of the 939 member reads
+memguard made went unanswered.
+
+**The trace** (`calls.py tsave-m36r33.jsonl --from 11:36:36Z --to 11:41:36Z`, `calls-m36r33.{txt,tsv.xz}`):
+
+| calls | sent | reached the callee | answered |
+|---|---|---|---|
+| learner → voter (read-index) | 270,129 | 42,277 | 108,421 |
+| voter → voter (raft) | 12,778 | 6,542 | 5,152 |
+| voter → learner (append) | 3,146 | 3,110 | 2,422 |
+
+- **Learners' calls to the voters are 94% of all member calls:** 307 a second at p50 and up to 14,325 in one second.
+  Each learner sends about 15,000 calls to site 0 and 10,000 to each of sites 1 and 2 in 300 s.
+- **Voter → voter calls mostly never reached the callee** in the 10 s buckets where terms changed. For example
+  11:37:00 to 11:37:40Z: 240 sent, 0 reached, while learners sent 31,472 calls to the voters. When voter calls did
+  arrive (11:38:10, 2,702 sent, 1,222 reached), `work` was 0 to 2 ms at p99: the callee's handler was fast once entered.
+- **The time is in the legs, not in the handler.** Voter → voter `out` p50 up to 6.3 s (2→1) and p99 up to 40 s
+  (2→0), `back` up to 7.3 s, `work` p99 at most 2 ms. Learner → voter totals p50 6 to 10 s. All of this is on callers
+  whose loop lag at send was under 100 ms.
+- **Reading [inference from the trace, not proven]:** the learners' read-index calls queue ahead of the voters' raft
+  calls at each voter, behind the six connections a Workers invocation has waiting for headers, or in workerd's
+  per-object input queue. The heartbeats and votes then arrive seconds late or never, and elections follow. This is
+  F74's question (`decisions/OPEN-QUESTIONS.md`), and the trace is for B0-02, which owns raft and the member calls.
+
+**Row numbers.**
+- Offered: 252 agent-class group commands a second (41.7 agent pushes a second, mean pack 90 KB).
+- Agent pushes: 345 ok of 12,503. 6,668 got "every member asked shed the read: overloaded"; the rest were `not leader`,
+  `no answer` and timeouts.
+- Leader commit p50 2,058 ms, p99 4,622 ms (n 544, at the end leader only).
+- Merges: 0 ok of 57 (30 skipped at the cap).
+- Human pushes: 1 ok of 185 (153 skipped at the cap).
+- `side:comment` 112 ok of 5,576.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | m36 | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 4,622 ms; merges 0 of 27 attempted ok; human pushes 1 of 32 attempted ok | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 345 agent pushes ok in 300 s, 1.15/s at the client | fail |
+| Zero leader changes and `suspect` | term 2 → 19 | fail |
+
+**Raw.**
+- `tests/fanout/raw/rows-m36r33.status`, `memguard-m36r33.{jsonl,err}`, `terms-m36r33.jsonl`.
+- `tsave-m36r33.jsonl.xz` (58.8 MB raw), `calls-m36r33.txt`, `calls-m36r33.tsv.xz`.
+- `a1-b0-33-m36.jsonl` (a copy of `tests/am1/raw/a1-b0-33-mwhr84r9.jsonl`).
+- Sweep after the row: "sweep: no shard container running", twice.
+
+**Cost** $137.04 at 11:46Z (containers $54.09). Round 24 in all, the site day, cold warm, B0-34's row and B0-33, cost
+$2.21 from $134.83.
+
+### Round 24c (no hosted spend): what held B0-34's shard CPU, container start-up, promotions before fix 2, the task close, and site a's cron (2026-11-15)
+
+**Answer: the shard's own geometric repack after the cold rehydrate, which outgrew the container's 12 GiB.** It was not
+clients' upload-pack. Evidence, all from data already collected (`containersUsageAdaptiveGroups`,
+`containersMetricsAdaptiveGroups`, and the `GitShard` events in Workers Logs):
+- **CPU with no requests.** The rehydrates ended at 11:04:33 to 11:04:41Z. From 11:05 to 11:09Z the shards had no client
+  request at all, only the warm's `/catchup` polls of 0.1 to 0.6 s each. Even so each container's CPU climbed from 1.3 to
+  3.5 vCPU: 770, 662 and 760 CPU-s over those five minutes on sites a, b and c. The row's traffic began at 11:10. So
+  the work that held the CPU began before any upload-pack or validate.
+- **Memory at the cap.** Each container's peak memory reached 11.95 GiB of standard-4's 12 GiB at 11:05Z, and stayed
+  there to the row's end on sites b and c, and on site a until the kill at 11:15. Disk stayed at 9.6 GB, so nothing was
+  written: the repack was still searching deltas.
+- **One repack seen to its end.** Site a's new instance (after the 11:15 kill) rehydrated at 152 to 170 MB/s
+  (11:15 to 11:16), then sat at 11.95 GiB again. At 11:22 to 11:24 its disk grew from 9.6 to 12.4 GB, the repack
+  writing its pack. At 11:25 the disk fell to 7.6, then 3.2 GB, the rolled-up packs deleted, and memory fell to
+  4.5 GiB. That same minute site a served its first upload-packs since 11:12: 186 × 200. 8.6 GB of packs rolled into
+  about 3 GB is the ratio of the local repack below (6.48 to 2.18 GB).
+- **Local repack, same shape.** `tests/fanout/georepack.sh` built 33 promoted packs from B0-34's plan the way the
+  promotions made them (6-step complete ranges, 6.48 GB, against the 8.63 GB hosted). Then it ran the shard's own
+  `git repack -d -q --geometric=2` (`containers/git/server/main.go`, `runRepack`) on 4 threads: **325 s wall, 588 CPU-s
+  (1.81 vCPU), maxrss 9.8 GB**, giving 1 pack of 2.18 GB. `commit-graph write` added 15 s. Scaled to 8.63 GB that is
+  about 13 GB of memory [inference], over the container's 12 GiB. So hosted, the repack ran pinned at the memory cap:
+  8 minutes on site a's second instance, and more than 23 minutes, unfinished, on sites b and c.
+- **Why clients got `warming`.** Every upload-pack and validate first waits for the shard object's catch-up
+  (`workers/site/src/shard.rs`, `caught_up`). A catch-up `/ingest`s and puts `/refs` on a container at its memory cap
+  and 4 vCPU, so it ran slowly or not at all. For example, site b caught up 1,139 entries in 19.7 s at 11:16:19Z, and
+  then the next catch-up waited. Between catch-ups, everything queued behind them answered 503 `warming` after its
+  15 s or 60 s wait. The bursts of 200s in the table are the minutes a catch-up ended.
+- **Why k stayed 1.** `/load` leaves out derived work, and the repack is derived (A31), so `fanout` saw an idle network
+  while the CPU was saturated, as round 18c inferred.
+- Upload-pack is a lesser load but a real one. One depth-1 protocol-v2 upload-pack of the linux tip costs 24.8 CPU-s and
+  1.10 GB RSS, sending 301 MB in 14.6 s; four at once took 102 CPU-s in 52 s (`tests/fanout/d1upload.py`, local). Each
+  B0-34 clone misses, because the clone cache holds no `clone/131296/` entry in any bucket. The edge writes the tee to
+  R2 only when the body is whole (`workers/edge/src/lib.rs`, `upload_pack`), and B0-34's probe cancels after the first
+  byte, so the cache never fills [inference from the code]. DESIGN's composed depth-1 misses (0.2 to 0.5 CPU-s a miss)
+  are not in the code (below).
+
+**Timeline per shard** (vCPU from `containersUsageAdaptiveGroups`; peak memory and disk from
+`containersMetricsAdaptiveGroups`; `GitShard` upload-pack and validate starts by result, 200 against everything else,
+503, cancelled or error). Site a's instance changes at 11:15 (the kill); site b's last minute is a new instance.
+
+| minute | a: vCPU, mem GiB, disk GB | a: upload-pack ok/not, validate ok/not | b: vCPU, mem, disk | b: up, val | c: vCPU, mem, disk | c: up, val |
+|---|---|---|---|---|---|---|
+| 11:03 | 2.23, 8.48, 5.5 | 0/0, 0/0 | 2.44, 7.62, 5.4 | 0/0, 0/0 | 2.11, 6.57, 4.6 | 0/0, 0/0 |
+| 11:04 | 1.33, 11.74, 9.6 | 0/1, 0/0 | 1.3, 9.93, 8.5 | 1/1, 0/0 | 1.29, 10.25, 8.5 | 0/2, 0/0 |
+| 11:05 | 1.44, 11.95, 9.6 | 1/0, 0/0 | 1.45, 11.95, 9.6 | 0/0, 0/0 | 1.47, 11.95, 9.6 | 0/0, 0/0 |
+| 11:06 | 1.83, 11.95, 9.6 | 0/0, 0/0 | 1.84, 11.95, 9.6 | 0/0, 0/0 | 1.78, 11.95, 9.6 | 0/0, 0/0 |
+| 11:07 | 2.49, 11.95, 9.6 | 0/0, 0/0 | 1.82, 11.95, 9.6 | 0/0, 0/0 | 2.37, 11.95, 9.6 | 0/0, 0/0 |
+| 11:08 | 3.46, 11.95, 9.6 | 0/0, 0/0 | 2.37, 11.95, 9.6 | 0/0, 0/0 | 3.51, 11.95, 9.6 | 0/0, 0/0 |
+| 11:09 | 3.61, 11.95, 9.6 | 0/0, 0/0 | 3.55, 11.95, 9.6 | 0/0, 0/0 | 3.53, 11.95, 9.6 | 0/0, 0/0 |
+| 11:10 | 3.97, 11.94, 9.6 | 204/469, 9/122 | 3.75, 11.95, 9.6 | 126/60, 9/51 | 3.49, 11.95, 9.6 | 79/0, 0/18 |
+| 11:11 | 4.17, 11.95, 9.6 | 0/68, 0/120 | 4.17, 11.95, 9.6 | 0/392, 0/118 | 3.99, 11.93, 9.6 | 285/0, 105/88 |
+| 11:12 | 4.15, 11.95, 9.6 | 266/89, 11/188 | 4.14, 11.95, 9.6 | 0/148, 0/112 | 4.12, 11.95, 9.6 | 0/310, 0/158 |
+| 11:13 | 4.16, 11.96, 9.6 | 0/327, 0/140 | 4.14, 11.96, 9.6 | 0/103, 0/146 | 3.91, 11.95, 9.6 | 150/137, 8/267 |
+| 11:14 | 4.16, 11.96, 9.6 | 0/155, 0/143 | 4.16, 11.96, 9.6 | 0/246, 0/143 | 4.16, 11.95, 9.6 | 0/240, 0/156 |
+| 11:15 | 2.42, 4.59, 2.0 | 0/320, 0/253 | 4.16, 11.95, 9.6 | 0/183, 0/240 | 4.19, 11.95, 9.6 | 0/215, 0/181 |
+| 11:16 | 1.63, 9.46, 9.6 | 0/229, 0/215 | 3.99, 11.94, 9.8 | 125/293, 8/307 | 4.17, 11.95, 9.6 | 0/272, 0/324 |
+| 11:17 | 1.25, 11.94, 9.6 | 0/286, 0/173 | 4.18, 11.94, 9.8 | 0/500, 0/309 | 4.04, 11.95, 9.6 | 395/218, 11/233 |
+| 11:18 | 1.3, 11.95, 9.6 | 0/25, 0/112 | 4.18, 11.95, 9.8 | 0/253, 0/177 | 4.19, 11.95, 9.6 | 0/185, 0/149 |
+| 11:19 | 2.68, 11.95, 9.6 | 0/110, 0/59 | 4.16, 11.94, 9.8 | 0/35, 0/112 | 4.19, 11.95, 9.6 | 0/61, 0/151 |
+| 11:20 | 3.69, 11.95, 9.6 | 0/60, 0/165 | 4.17, 11.95, 9.8 | 0/4, 0/14 | 4.2, 11.95, 9.6 | 0/5, 0/34 |
+| 11:21 | 3.59, 11.95, 9.6 | 0/12, 0/131 | 4.14, 11.95, 9.8 | 43/112, 9/474 | 4.17, 11.95, 9.6 | 0/11, 0/56 |
+| 11:22 | 3.08, 11.95, 10.0 | 0/0, 0/0 | 4.18, 11.95, 9.9 | 0/2, 0/6 | 4.19, 11.95, 9.6 | 0/112, 0/390 |
+| 11:23 | 3.21, 11.95, 11.4 | 0/164, 0/390 | 4.2, 11.95, 9.9 | 0/4, 0/0 | 3.94, 11.94, 9.6 | 0/0, 0/2 |
+| 11:24 | 2.12, 11.95, 12.4 | 0/9, 0/12 | 3.58, 11.96, 9.9 | 0/435, 0/472 | 3.96, 11.96, 9.9 | 189/0, 12/406 |
+| 11:25 | 3.36, 4.5, 7.6 | 186/8, 0/0 | 3.35, 11.96, 9.9 | 0/8, 0/1 | 4.17, 11.96, 9.9 | 0/244, 0/68 |
+| 11:26 | 2.93, 4.59, 3.2 | 0/0, 3/0 | 3.34, 11.96, 9.9 | 0/0, 0/0 | 4.17, 11.96, 10.0 | 0/2, 0/0 |
+| 11:27 | 0.02, 3.75, 3.2 | 0/0, 0/0 | 3.35, 11.96, 9.9 | 0/0, 0/0 | 3.44, 11.95, 10.0 | 0/0, 0/0 |
+| 11:28 | 0.01, 3.72, 3.2 | 0/0, 0/0 | 1.95, 5.04, 0.2 | 0/0, 0/0 | –, 0.0, 0.0 | 0/0, 0/0 |
+
+How many ran at once (summed wall over 60 s, `tests/fanout/raw/shardtimeline-m36.jsonl`): upload-pack 20 to 311 and
+validate 20 to 334 per shard. Almost all of it was time spent waiting in the shard object for the catch-up, not git
+processes.
+
+**Missing measurement.** The container logs nothing per process, and Workers Logs holds no container stdout or stderr.
+So the repack is named from its signature: CPU with no requests, memory at the cap, the disk's write-then-delete, and
+the local run. It is not named from a process list. A cheap instrument for the next run: `/load` or `/status` lists
+the running git children (command, CPU-s, RSS), and the shard object logs it each minute while a repack runs.
+
+**Proposed fix (design first, not built).**
+1. **The repack after a rehydrate leaves promoted packs alone.** Promoted packs are already complete and
+   delta-searched. A rehydrate writes `.keep` beside each pack it loaded through a stored `.idx`. `git repack
+   --geometric=2` then rolls only the pushed tail (local check: geometric rolled no kept pack) and writes the
+   multi-pack index and commit-graph. Those cover the merge slowdown with many packs that `REPACK_AT` was set for.
+   DESIGN's git caches row and the rehydrate text change, plus a DECISIONS entry. Flip: merges or validates slow over
+   the kept packs as they did over 1,950 packs (`tests/m2/results/m2-wp6.md`).
+2. **Bound the repack that remains.** `pack.threads=2`, `pack.windowMemory` (for example 256 MiB), and the repack run
+   under `nice`, so derived work cannot take all 4 vCPU or the memory cap from serving. G9's roll-up, which is not
+   built, needs the same bound.
+3. **The clone cache fills from the shard, not from the edge's tee of a read the client may cut.** It could also be
+   filled after a push, as DESIGN says ("the edge asks the network's shard to fill the clone-cache entry"). This is
+   only for B0-34's TTFB row. It is a separate change, and the composed miss is the larger one.
+The measurement for 1 is cheap and local: georepack with the promoted packs kept, against the same 33 packs.
+
+**Container start-up (33 to 35 s): the platform's, not ours.**
+- The image is 74.8 MB (alpine, git 2.56, the Go server).
+- The entrypoint is `shard-server`: `raiseOpenFileLimit`, `sampleCPU` in a goroutine, then `ListenAndServe`. A local
+  `docker run` answered `/health` in 8 ms.
+- Hosted, the containers API's instance `started_at` came about 20 s after the warm's start (11:02:09 against 11:02:27
+  to 11:02:30Z); the rest is boot to the first `/health`.
+- So all of it is scheduling, image pull and boot on the platform's side [inference: `up` is measured from `start()` to
+  the first `/health` on 200 ms polls]. Nothing in the image or entrypoint is ours to cut.
+
+**Promotions that predate fix 2.** All 61 promoted packs with stored `.idx` on repo:131296 predate fix 2: 8,615,058,647
+B, dated 2026-11-15 00:54:40Z to 07:38:33Z (2 at 00h, 15 at 05h, 41 at 06h, 3 at 07h). fetch-ahead (main cfd46001)
+deployed at about 11:00Z. No promotion has run since. The list is in `tests/fanout/raw/promoted-131296-m36.json` (time,
+bytes, id).
+- **Estimate if they were re-promoted under fix 2** [inference]:
+  - Round 23b's local fixture gave about 25% fewer promoted bytes, so about 6.46 GB.
+  - At the warm's measured 122 to 132 MB/s, the marked phase is about 49 to 53 s instead of 65 to 71 s.
+  - With m36's other phases unchanged (up, tail, `/connected`), totals come to about 110 / 117 / 119 s for sites a, c
+    and b: just under 120 s, with no margin.
+- A re-promotion is still 6.5 GB of complete packs, so the repack above (9.8 GB maxrss at 6.48 GB locally) would still
+  saturate the shard. Fix 1 above is needed either way.
+
+**Tasks closed on b034-mono.** 100 queued tasks were cancelled through `POST .../tasks/{id}/cancel` with the test
+installation token (all 200), leaving 0 queued.
+- The list API returned the same page for every page number. So the 3,900 "tasks" it seemed to list were 100 unique
+  ones, the per-requester cap `TASKS_OPEN_PER_REQUESTER`.
+- A probe create then returned 201 (`196608.m36-probe-after-close`), and the probe was cancelled.
+
+**Corrections to round 24.**
+- The 11:00Z site-a `scriptThrewException` at wasm 177.5 MB (version `e7c34df8`) was the `*/15` cron, not the site
+  day's first invocation. It is now `decisions/OPEN-QUESTIONS.md` R22 (on branch `oq-r22`).
+- The m36 site day's edge deploy did not complete. `fanout-m36-edge.log` stops while compiling `graftyard-lookup`, and
+  `graft-m2b-edge` stayed on `bfed05b9` (deployed 05:18Z, m34). Round 24's rows ran with an edge from 1552e999, without
+  cfd46001's edge changes (lease-clock's edge half). The edge had 4 `exceededMemory` on b034-mono upload-pack at
+  11:24:37Z.
+
+**Design contradiction.** DESIGN, Shape, "Git cache shards (derived)": "A depth-1 fetch that misses the clone cache, for
+a commit whose tree is close to a cached tip's, is composed: the shard sends the tip's cached depth-1 pack plus a pack
+of the wanted commit's objects missing from it". Nothing in `containers/git/server`, `crates/git` or the workers
+composes a miss: a miss is a stock `git upload-pack`, 25 CPU-s on linux. BUILD-PLAN's B0-34 line, "with the
+composed-miss rules now in the design", is consistent with that. The design states it as built behavior, though, and
+B0-34's TTFB line depends on it.
+
+**Raw.** `tests/fanout/raw/instcpu-m36.jsonl` (vCPU, memory and disk per instance and minute),
+`shardtimeline-m36.jsonl`, `shardev-m36.jsonl.xz` (17,593 `GitShard` events), `promoted-131296-m36.json`. Tools:
+`tests/fanout/instcpu.py`, `shardtimeline.py`, `georepack.sh`, `d1upload.py`.
+
+**Cost** $137.15 at 13:15Z (containers $54.09); this round spent nothing hosted. $7.85 left before $145.
+
+### Round 25 (local, no hosted spend): repack-keep, fixes 1 and 2 for B0-34's shard saturation, and the drivers (2026-11-15)
+
+**Branch `repack-keep`** at 0c171e6d, off main 4833094d (code, tests, plants, DESIGN and DECISIONS). The drivers are on this
+branch. Not deployed; it runs on the next site day, once the composed-miss branch and B0-02's read-index fix merge too.
+
+**Fix 1: promotions a rehydrate loads are kept.** `ingestSpooled` writes `pack-<name>.keep` beside a pack it loads
+through its stored `.idx`. Only a promotion stores one. `startRepack` counts only unkept packs against `repackAt` (50).
+`runRepack` adds `--write-midx`, so a multi-pack index covers every pack, kept or not. Without it, 61 kept promotions
+plus the tail would be 62 lookups per object.
+
+**Fix 2: whatever repack remains runs low and bounded.** `runRepack` runs `nice -n 19 git -c pack.threads=2 -c
+pack.windowMemory=256m repack -d -q --geometric=2 --write-midx`. Its commit-graph also runs at nice 19 (`gitLow`).
+Alpine's busybox has `nice`, so the image needs nothing new.
+
+**Gate: the local georepack, with promoted packs kept** (`tests/fanout/georepack-keep.sh`). Its input is round 24c's
+33 promotions (6-step complete ranges of B0-34's plan, 6.48 GB) plus a 12-pack pushed tail, 6.76 GB in 45 packs.
+
+| run | repack wall | repack CPU | maxrss | midx | commit-graph | packs after | promotions untouched |
+|---|---|---|---|---|---|---|---|
+| round 24c: no keep, unbounded (33 packs, no tail) | 325 s | 588 CPU-s (1.81 vCPU) | 9.8 GB | n/a | 15 s | 1 (2.18 GB) | 0 of 33 |
+| **fix 1 + 2: kept, nice 19, 2 threads, 256m window** | **98 s** | **104 CPU-s (1.06 vCPU)** | **5.49 GB** | 3 s | 15 s | 34 (33 kept + 1) | **33 of 33**, midx verifies |
+| fix 2 alone (no keep: as a network whose promotions predate the keep) | 757 s | 620 CPU-s (0.82 vCPU) | **9.20 GB** | 3 s | 17 s | 1 (2.23 GB) | 0 of 33 |
+
+- Fix 1 cuts the repack's CPU 5.7× and its memory from 9.8 to 5.5 GB.
+- **Fix 2 bounds CPU, not memory.** Alone, it spread the same work (620 CPU-s) over 2.3 times the wall time and kept
+  9.20 GB of memory. `pack.windowMemory` bounds only the delta window, while a whole-network roll's memory is the
+  object list and the bases. So fix 1 is the fix for the 12 GiB cap, and fix 2 makes whatever repack remains yield
+  the CPU.
+- The 5.49 GB is the tail's roll: git maps the kept packs to resolve the tail's thin deltas against them, and their
+  pages count in its RSS [inference]. The container has 12 GiB, so it fits with room for clones.
+- The roll still costs about 1 vCPU for about 100 s. At nice 19, that CPU is taken only when nothing else wants it.
+
+**Can a catch-up or validate still wait behind the repack?**
+- **Not on its lock.** Catch-ups (`/ingest`, `/refs`), validates and upload-packs never take `repacking`. Only evict, a
+  fresh init, `/fsck` and `/connected` do, and that was already so (LM-1 round 7).
+- **On its CPU, much less.** It runs at nice 19 on 2 threads. Under CFS a nice-0 task gets about 1,000 times a nice-19
+  task's share of a contended CPU, so a catch-up or validate needing a vCPU takes it [inference: not measured hosted;
+  `TestRepackRunsLowAndProcsListsIt` shows only that the repack runs at nice 19].
+- **Still possible: memory.** A repack at about 5.5 GB plus four depth-1 linux upload-packs at 1.1 GB each fits in
+  12 GiB. Two shards' worth of clone storm on top could still reach the limit, and `nice` does not bound memory.
+- **Still possible: `/connected`.** A rehydrate's backstop, run a second time after a fault, waits for the repack, as
+  before. Only the fault path pays this (`crates/git/src/catchup.rs`).
+- **Not addressed: the cold warm's own CPU.** It is spool and ingest work, not the repack.
+
+**Instrument: the shard object's `/status?repo=` now lists `procs`.** The container's new `GET /procs` returns every
+running git process: pid, command (cut to 160 bytes), nice, CPU seconds including reaped children, and RSS in MB, most
+CPU first. `ShardHost::procs` reads it, and only from a running container. Test drivers already read `/status` through
+`/_bed/shard_status`, so `tests/am1/mb3/shardstatus.mjs` shows it with no change.
+
+**Tests, failing on main.**
+- `TestRehydratesRepackLeavesPromotedPacks` (`containers/git/server/repack_test.go`) loads 53 promotions through their
+  `.idx` (more than `repackAt`), then a 56-push tail, then `/refs`. It requires the following:
+  - the promotions alone start no repack;
+  - after the tail's repack, every promotion is still on disk byte for byte;
+  - the tail rolled;
+  - the multi-pack index names every pack and verifies;
+  - fsck is clean and main resolves.
+  On main it fails at the first check: "1 packs after /refs over 53 promotions alone".
+- `TestRepackRunsLowAndProcsListsIt`:
+  - `/procs` finds a nice-19 git process by its pid, with its command, nice and RSS, most CPU first;
+  - every git that `runRepack` starts runs at nice 19, seen by a `git` wrapper on PATH;
+  - `pack.threads=2` and `pack.windowmemory=256m` reach git, seen through `GIT_TRACE2` parameters.
+  On main it fails with "/procs: 404".
+- `TestConnectedRunsBeforeTheRehydratesRepack`'s last step now waits out the released repack's commit-graph before
+  it checks that a new one starts. Beside the new tests, that commit-graph held the lock long enough to make the check
+  flaky.
+
+**Plants, `tests/m0carried/plant17.py`: 10 of 10 caught.**
+- no `.keep`;
+- the threshold counting kept packs;
+- the count looking for the wrong suffix;
+- no `--write-midx`;
+- four threads;
+- no window bound;
+- `gitLow` at normal priority;
+- the repack through `git` and not `gitLow`;
+- `/procs` reading no nice value;
+- `/procs` matching `nice` and not `git`.
+
+`--pack-kept-objects` is not a plant: under `--geometric`, git leaves kept packs byte for byte with it too (checked
+locally), so it is the same program.
+
+**Design.**
+- DESIGN, Shape, `rehydrate`'s text: a promotion's pack loaded through its `.idx` is kept; the repack rolls unkept packs
+  only, at nice 19 on 2 threads, with a midx over all; the 24c and 25 measurements.
+- The git caches noisy-tenant row names the bound and the kept promotions.
+- DESIGN stays at 2,200 lines: the rehydrate paragraph was tightened to make room.
+- DECISIONS: "`repack-keep`: promotions a rehydrate loads are kept, and the repack runs low and bounded". It covers the
+  decision, why, what it beat (an idle-time repack, no repack, a cgroup cap, a bigger container), the evidence, and the
+  flip.
+
+**Drivers** (this branch).
+- **The task API pages with `per_page` and `after`.** `tests/fanout/closetasks.mjs OWNER/REPO [--dry]` replaces round
+  24c's one-off. It lists every task in a non-final state (queued, in_progress, idle, waiting_for_user), following
+  the `Link` header's `rel="next"` URL and its opaque `after` (AGENT-LAYER, "API reference"). A repeated id stops the run.
+  It then cancels each task, lists again, and creates and cancels one probe. Round 24c's loop passed `page=N`, which
+  the API ignores, so it read the first page every time.
+  - The "3,900 tasks" were that loop's misreading, not an API bug.
+  - Run `--dry` on b034-mono at 13:44Z: 0 open tasks.
+- **b034.sh checks the edge before the row.** It now requires `EDGE_LOG`, the site day's edge deploy log. `tests/fanout/
+  edgever.py` reads the log's last "Current Version ID" and checks that `graft-m2b-edge`'s live deployment is that
+  version at 100%. It exits 3 when the log names none, as m36's did, and 4 when another version or a split serves.
+  b034.sh stops before setup on either. Checked against the logs on hand:
+  - m36's log: exit 3, "names no deployed version";
+  - m33's log: exit 4, serving `bfed05b9`;
+  - m34's log: exit 0, `bfed05b9` at 100%.
+
+**Checks on `repack-keep` (0c171e6d):** fmt; workspace clippy; wasm32 clippy for site and edge, each with and without `test-faults`, and ops; `cargo test --workspace` 977 passed, 0 failed, 3 ignored; `go test` in `containers/git/server` ok; the three `scripts/check_*.py` OK. `crates/raft` is untouched, so no sweep or Porcupine run.
+
+**Cost.** $137.15, unchanged: no hosted spend. The next site day (B0-34, then B0-33) has a $3 cap and waits for the
+operator's go once the three branches merge.
+
+### Round 25b (no hosted spend): the next site day's probes for repack memory and kept promotions (2026-11-15)
+
+repack-keep is merged as main 8d79a32f. The site day waits for the composed-miss branch and B0-02's read-index fix,
+so one image tests all three. The cap is $3, for B0-34's row then B0-33's.
+
+**(a) Repack memory.** Locally, a kept repack peaked at 5.49 GB. A clone storm on top of it (1.1 GB per depth-1 linux
+upload-pack) could still reach standard-4's 12 GiB. Two sources show it:
+- `tests/fanout/shardprocs.mjs` (new). Every 15 s from the warm's start to the row's end, b034.sh starts it in the
+  background. For each site's shard it reads `/status?repo=` through `/_bed/shard_status`, which starts no container.
+  It writes `gitRssMb` (the RSS summed over every running git process), the top four processes (command, nice,
+  CPU-s, RSS) and the network's pack counts.
+  Output: `tests/fanout/raw/shardprocs-<tag>.jsonl`.
+- `tests/fanout/instcpu.py FROM TO net:131296` afterwards: each instance's peak container memory and disk per minute
+  (`containersMetricsAdaptiveGroups`), as round 24c read them.
+- **The rule on the day.** A shard whose container memory reaches about 11.9 GiB, the cap m36 sat at, is recorded as a
+  finding: the minute, the process holding the memory (from `top`) and its RSS, and whether the repack was among
+  them. It is not chased during the row. The row's verdict stays against its gate line.
+
+**(b) Every promotion kept.** `/procs?net=N` now also answers `packs: {count, bytes, kept, kept_bytes}` for the
+network's repository. The shard object's `/status` passes it on inside `procs`.
+- After the cold warm, b034.sh writes "b0-34 kept packs after the warm" with each site's `kept` and `count`.
+- Expected: `kept` equals that shard's rehydrate `idx_used`. That was 61 on m36: every promotion on repo:131296,
+  8.62 GB, all from before fix 2.
+- A later repack leaves `kept` unchanged, because it rolls only unkept packs. So `kept` read at the row's end must
+  still be 61.
+- This is recorded, not a stop. A shard with fewer kept packs than `idx_used` means a promotion went in through
+  `index-pack` (a stored `.idx` rejected), which the rehydrate report's `idx_rejected` also counts.
+
+**Code.** Branch `procs-packs` off main 8d79a32f:
+- `handleProcs` takes `net`. `ShardHost::procs` takes the network, and the shard object's `/status` passes it.
+- `TestRehydratesRepackLeavesPromotedPacks` now checks `/procs?net=7` reports every promotion as kept, out of the
+  repository's pack count.
+- `tests/m0carried/plant17.py` gains mutant 10, which counts every pack as kept. It is caught: 11 of 11 now.
+
+**Smoke, read only.** `shardprocs.mjs 131296` at 14:56Z: all three sites answered 200 with `running: false`, and the
+sweep found no shard container running. So the probe starts nothing.
+### Round 26: m37 site day (main 1aed2cff), cold warm 150 to 158 s, then B0-34's row; B0-33 not run at the stop (2026-11-16)
+
+**Site day.** From a clean worktree at main `1aed2cff` (read-round-gap, composed-miss, promote-unlock, disk-validate,
+r22-sweep-fill, the m3f6 instruments).
+- New shard image `sha256:a6b6621a09579852953a90f949cedc4846c06ee1763c97c224e8067c4d78b269`, pushed at 23:24:33Z.
+- Sites exit 0, test-faults, `SHARD_INSTANCE=standard-4`, no roll.
+- Edge `b4968db8`. `edgever.py` exit 0: "graft-m2b-edge serves b4968db8 at 100% (rev 1aed2cff7)".
+
+**Before the warm.**
+- Sweep: "no shard container running". `netimages.py 131296 --none`: 0 running.
+- `closetasks.mjs m3org/b034-mono`: 0 open tasks, so 0 closed; probe create 201, cancel 200.
+- Fix 2 (`fetch-ahead`'s path-named promotions) does not shrink the existing promotions on repo:131296: all 61 predate
+  it (round 24c). So this warm measures fix 1 and `repack-keep`, not fix 2.
+
+**Cold warm: fail against DESIGN's 120 s line, at 150 to 158 s; under the 600 s fail value.**
+- Every shard ran `sha256:a6b6621a`: `netimages.py --image`: 3 running, 0 on another image.
+- ls-refs listed main at 152.4 s. Catch-ups ended at 152.4 s (site c), 158.2 s (site a) and 159.9 s (site b).
+
+| shard | total (`catch_up`) | up | marked phase | tail | `/connected` and follow | stored packs | `idx_used` | spool (summed) | per stream | in total over the marked phase | streams at once | `index-pack` (summed) | lock |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| site c `git#2` | 150.1 s | 36.0 s | 79.4 s | 20.4 s | 12.0 s | 82 (8.64 GB) | 61 | 225.5 s | 38.3 MB/s | 108.8 MB/s | 2.84 | 7.5 s | 30.5 s |
+| site a `git#0` | 156.6 s | 33.7 s | 82.8 s | 23.7 s | 14.5 s | 82 | 61 | 246.0 s | 35.1 MB/s | 104.4 MB/s | 2.97 | 9.6 s | 39.3 s |
+| site b `git#1` | 157.9 s | 35.7 s | 73.0 s | 31.1 s | 16.4 s | 82 | 61 | 178.2 s | 48.5 MB/s | 118.4 MB/s | 2.44 | 10.7 s | 52.8 s |
+
+How the columns are computed:
+- "per stream" is the stored bytes over the summed spool.
+- "in total" is the stored bytes over the marked phase.
+- "streams at once" is the summed spool over the marked phase.
+- Source: the three `shard rehydrate 131296` reports (`rehydrate-131296-m37.txt`).
+- Each shard skipped 256 pushed packs that promotions cover, with 0 `.idx` rejected and no backstop fault.
+
+Against round 24 (127 to 135 s) on the same 61 promotions:
+- The marked phase grew from 65–71 s to 73–83 s.
+- Totals in the R2 rate fell from 122–132 to 104–118 MB/s.
+- There are 82 stored packs instead of 70: 21 pushes past the last promotion.
+- The ingest path did change between the two days: `repack-keep` writes a `.keep` per stored `.idx`, and
+  `ingestSpooled` gained a step. Neither is a fetch step, and the summed `index-pack` (7.5 to 10.7 s) and lock times
+  are about round 24's, so the extra 8 to 18 s sits in the marked phase's R2 reads [inference: R2 at 104 to 118 MB/s
+  against 122 to 132, with nothing that isolates the R2 side from the shard's].
+
+**(b) Kept promotions.**
+- After the warm, every shard had `kept 61` of 100 packs (8.62 GB kept). That equals `idx_used` (61).
+- At the row's end:
+  - site a: 64 kept, after its own rehydrate at 23:54Z with three newer promotions;
+  - sites b and c: 61 kept.
+- **The promoted packs were never rolled up.** `kept_bytes` stayed 8.62 to 8.70 GB throughout. The geometric repack
+  rolled only the unkept tail; for example, site b went from 1,214 packs to 640 at 23:58:30Z.
+
+**Composed misses (point 2).** The builder is site a's first shard.
+- It ran `rev-list --objects` then `pack-objects --window=0 --threads=1` at nice 19 from 23:44:15Z. At 23:44:45Z it had
+  29.7 CPU-s and 3.3 GB RSS.
+- It put `compose/131296/base-88fac175….pack` (270,488,211 B) and its `.idx` (2,547,140 B) to site a's bucket at
+  23:45:20Z, and to site b's at 23:45:29Z. That was **3 min 51 s before the row's first miss** at 23:49:11Z.
+- Site c's bucket held no `compose/` object at any point. It is not one of the network's two warm sites, so that is
+  by design (`warm_sites`).
+- At the row's end each warm bucket held 25 chain objects (274,264,403 B): the base, the head, and parts.
+- A second base step ran on site a at 23:59:30 to 00:00:00Z (29.6 CPU-s at nice 19, 3.3 GB). The row went past the
+  `future` list's end and moved main to another commit.
+- Workers Logs had no `shard compose` error line on any site, 23:41 to 00:20Z.
+
+**Clone-cache misses in the first-byte probe (point 1).**
+- 51 misses: **36 composed and 15 stock**.
+- The stock reasons:
+  - "stock: chain behind HEAD": 9 (23:57:37 to 00:02:22Z, after main moved);
+  - "stock: not a ref tip": 6 (00:01:37 to 00:03:37Z, at the hostile phase; the want was a main the driver last saw
+    that a later move had replaced).
+- Time to first byte on a miss:
+  - composed: p50 8.5 s, p99 68.7 s, min 1.3 s;
+  - stock: p50 63.6 s, p99 209.7 s.
+  - The first 12 misses were all at the warm tip `88fac175` with 0 to 18 s between them. They were all composed, at
+    1.4 to 12.0 s.
+- **R2 entry within a minute of the cancel: 50 of 51.**
+  - Every entry was in site a's bucket, as `clone/131296/<key>/0`. `cloneKeyHex` matches
+    `CloneKey::digest`, checked against the Rust function on one want.
+  - The 12 first misses share one key, `98859749…`. It was in R2 by 23:49:39 to 23:49:53Z, 22 to 29 s after each
+    cancel.
+  - The one miss not found within 60 s was a stock "not a ref tip" at 00:03:37Z (key `4f433315…`). Its entry landed
+    at 00:06:21Z, 2 min 44 s after the cancel.
+- **New finding: every clone-cache hit answered 500.** 414 probes after the key was filled answered 500 with no
+  `x-graft-clone-cache` header: 249 at j9, 94 at the kill, 71 at the second phase.
+  - The edge's events for them read "level error, outcome ok, status 500, about 0.4 to 1 s wall, 5 to 11 ms CPU", with
+    no exception text.
+  - The first came at 23:49:50Z, 10 s after the entry landed. They stopped when main moved off the key, and came back
+    for each new key.
+  - The edge's hit path (`workers/edge/src/lib.rs`, the clone-cache branch, from `917667242`) reads the whole object
+    with `.bytes()` and returns `Response::from_bytes`. Each entry is 263 to 271 MB. So the cause is most likely the
+    edge isolate's 128 MB limit on a buffered 270 MB body [inference; the event has no message to confirm it].
+  - One check to settle it, not run on this budget: one hit with `wrangler tail` open on graft-m2b-edge.
+  - DESIGN's clone-cache rows assume hits stream ("Clone cache reads": 40 MB entries at 316 ms read p99). A
+    cached depth-1 answer of this network is 6.6 times that size.
+
+**(a) Repack memory.** The memory finding is container memory at the 12 GiB cap, not the repack:
+- Container memory reached 11.88 to 11.95 GiB on every shard in 2 to 3 minutes each (23:50 to 23:52Z, 23:58 to
+  00:01Z).
+- In those minutes `shardprocs` showed the repack at nice 19, plus up to 22 stock `--shallow-file pack-objects` at
+  nice 0. Site c at 00:00:00Z: 29.3 GB summed RSS over 22 processes, most of it shared pages counted per process.
+- The repack's own `pack-objects` peaked at 9.6 to 10.9 GB RSS (site a 23:58:45Z: 11.0 GB, 120 CPU-s; site b
+  23:53:15Z: 10.9 GB, 166 CPU-s).
+- So **`repack-keep`'s bound is not enough beside stock upload-packs**. The repack's `pack-objects` alone held
+  10.9 GB of the 12 GiB.
+  - Round 25's local gate measured 5.49 GB maxrss for the same repack.
+  - Two candidate explanations, neither checked: the tail here is 1,214 packs, not 12, or `pack.windowMemory` does not
+    bound `pack-objects`' object table [not measured which].
+- Site a's shard restarted at 23:54:32Z and rehydrated again. Sites a and b restarted again at 00:14:47 and 00:16:08Z,
+  after the row, while `shardprocs` was still polling `/status`.
+- Container vCPU peaked at 3.19 to 4.16 per shard (`instcpu-m37.jsonl`).
+
+**B0-34's row.** 500 agents, 900 s from 23:49:11Z, home shard killed at 304.6 s.
+- Learners: 8 of 8 caught up to 3,135 in 11.4 s. Leader wasm 25.8 MiB at the start.
+- **Memory and terms.**
+  - memguard: voter peaks 44.9 / 39.8 / 35.6 MiB, with no 120 MiB stop.
+  - `inFlight.admitted` peaked at 21 and `inFlight.admittedBytes` at 248,174 B.
+  - terms.mjs: term 2 throughout, leader site 0. One `StepDown { why: CommitErrors { calls: [(1, 14, 3), (2, 14, 3)] },
+    to: Some(1) }` was logged at 23:56:31Z on site a, but no term change followed.
+- **Commit path.** Leader commit p50 365 ms, p99 1,025 ms (n 7,812). `read:api` 71,770 of 71,920 ok (7 × 503), p99
+  12.7 s.
+- **Pushes.**
+  - human at j9: 68 ok, 77 skipped at the cap, 7 `stale:race`, p99 31.6 s;
+  - human at kill and second: p99 46.6 s and 25.6 s;
+  - agent at j9: 947 ok, 266 `full`, 4 × "Durable Object is overloaded" 503, p99 23.5 s.
+- **Tip moves: a driver bug.** All 60 tip moves at j9 and kill were refused as non-fast-forward. The repository keeps
+  main between rounds, and `a1.mjs` started `future` at index 0 every round, so it pushed history main already had
+  past.
+  - At the second phase 3 of 11 went through, when the index caught up. At the hostile phase all 11 went through, and
+    the builder's second base step and the "chain behind HEAD" misses followed.
+  - Fixed on this branch: the index starts after main's place in `future`, and the start is logged as a row.
+- **k.** repo:131296 stepped to **k 2** (`kMax` 2; "k 2 at 5789" after the row). The other networks stayed at 1.
+- **Hostile phase.** Clone TTFB p99 120 to 133 s on each hostile network, with half the probes aborted at 120 s.
+  Hostile pushes `skipped: cap` 24 to 32 of 39 to 47.
+
+**Verdict against B0-34's line.** Gate: k in band at most 8, hostile owner held to its pool budget, human push p99 at
+most 3 s beyond transfer, clone TTFB p99 at most 1 s. Fail values: k over 8, any Cloudflare API call, the monorepo's k
+reduced by another owner, or TTFB p99 over 5 s.
+- **Fail.**
+  - Clone TTFB p99 8.7 s at j9 (500s included; misses alone 12.0 s), 3.3 s at the kill, 14.7 s at the second phase
+    and 217.6 s at the hostile phase.
+  - Human push p99 31.6 s at j9.
+  - The hits that should carry the TTFB line answer 500.
+- **Holds.** No Cloudflare API call (0 files in request paths). k never over 8. The monorepo's k never reduced by
+  another owner: 1, then 2.
+- **Undecided.** The hostile budget: the hostile networks stayed at k 1, so no ledger refusal was tested.
+
+**B0-33: not run.** The meter read $139.48 at 00:01Z mid-row and $140.19 at 00:09Z after the teardown, past the
+$140.15 stop. So B0-02's hosted read-round check has no new trace yet.
+- `tests/f74/rounds.py` (new) computes that check from a tsave file. For each voter it counts F74's `CallSent`
+  fetches to each other voter per 20 ms bucket, both as fetches and as distinct stamps (turns). It also measures the
+  learner read grant, `IndexTaken` to `ResSent` on the leader's clock.
+- Round 24's B0-33 trace (`tsave-m36r33`, before read-round-gap) as the baseline:
+  - up to 427 to 562 fetches and 3 to 4 turns in one 20 ms bucket to one voter;
+  - 14 to 48% of buckets over one fetch;
+  - grant p99 3.1 to 4.9 s.
+
+**Raw.** All under `tests/fanout/raw/`:
+- the site day's status: `siteday-m37.status`;
+- B0-34's driver files: `b034-m37.status`, `b034warm-m37.jsonl`, `memguard-b034m37.jsonl`, `terms-b034m37.jsonl`,
+  `a1-b0-34-m37.jsonl` (with `b034.misses` and `b034.missSummary`);
+- the probes: `shardprocs-m37.jsonl.xz`, `instcpu-m37.jsonl`;
+- the rehydrate reports and R2 listings: `rehydrate-131296-m37.txt`, `compose-131296-m37.jsonl`,
+  `clone-131296-m37.jsonl` (the row's end).
+
+Sweeps after the row tore down 26 containers, including net 131304. Two later sweeps after site a's and site b's
+post-row restarts both read "sweep: no shard container running".
+
+**Cost.** $140.26 at 00:22Z, containers $54.74. The site day, warm and row cost $2.55, against the $3 cap.

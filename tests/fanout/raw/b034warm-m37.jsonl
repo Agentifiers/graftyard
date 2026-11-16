@@ -1,0 +1,9 @@
+{"at":"2026-11-15T23:42:56.940Z","s":79.3,"kind":"ls-refs","status":503,"ms":79220,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-15T23:43:37.685Z","s":120,"kind":"catchup","site":0,"status":0,"ms":120005,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T23:43:37.718Z","s":120,"kind":"catchup","site":1,"status":0,"ms":120001,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T23:43:37.719Z","s":120,"kind":"catchup","site":2,"status":0,"ms":120001,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-15T23:44:10.030Z","s":152.3,"kind":"ls-refs","status":200,"ms":58077,"ok":true,"text":"main"}
+{"at":"2026-11-15T23:44:10.031Z","s":152.4,"kind":"catchup","site":2,"status":200,"ms":27311,"v":{"entries":0,"packs":0,"held_max":0,"ms":[["up",26],["cursor",26],["heads",304]],"rehydrated":null}}
+{"at":"2026-11-15T23:44:15.882Z","s":158.2,"kind":"catchup","site":0,"status":200,"ms":33191,"v":{"entries":0,"packs":0,"held_max":0,"ms":[["up",40],["cursor",40],["heads",59]],"rehydrated":null}}
+{"at":"2026-11-15T23:44:17.630Z","s":159.9,"kind":"catchup","site":1,"status":200,"ms":34911,"v":{"entries":0,"packs":0,"held_max":0,"ms":[["up",49],["cursor",49],["heads",175]],"rehydrated":null}}
+{"at":"2026-11-15T23:44:17.630Z","s":159.9,"kind":"summary","mainS":152.4,"catchupS":{"0":158.2,"1":159.9,"2":152.4},"limitMin":45}

@@ -25,6 +25,8 @@ EDGE_GATE = ['cargo', '-p', 'graftyard-edge', '--lib', 'a_shed_authz']
 FOLD = ['cargo', '-p', 'graftyard-fold', '--test', 'install', 'a_learner_behind']
 
 GO = 'containers/git/server/main.go'
+CLOCK = 'tests/am1/rest/clock.mjs'
+A1_SELF = ['node', 'tests/am1/rest/a1.mjs', '--selftest']
 EDGE_T = ['cargo', '-p', 'graftyard-edge', '--lib', 'tests::a_']
 SITE_SUM = ['cargo', '-p', 'graftyard-site', '--lib', 'a_summary_ranks']
 
@@ -245,6 +247,52 @@ MUTANTS = [
      '(Method::Put, ["pulls", n, "merge"]) => {\n            n.parse().ok().map(|n| MergeOf::Number',
      '(Method::Put, ["pulls", n, ..]) => {\n            n.parse().ok().map(|n| MergeOf::Number',
      ['cargo', '-p', 'graftyard-edge', '--lib', 'only_a_rest_merge']),
+    # L0-12's clock probe (tests/am1/rest/clock.mjs), gated by a1.mjs --selftest.
+    ('clock: a slow sample is widened, not rejected (rows-m19 read 3.2 s)', CLOCK,
+     'return xs.filter((c) => c.rtt <= best.get(c.site) + CLOCK_RTT_OVER);', 'return xs;', A1_SELF),
+    ('clock: a flat 200 ms cap, not one over each site\'s floor (rejects every apac sample)', CLOCK,
+     'c.rtt <= best.get(c.site) + CLOCK_RTT_OVER', 'c.rtt <= CLOCK_RTT_OVER', A1_SELF),
+    ('clock: the interval is the whole round trip, not half of it', CLOCK,
+     'const hi = (c) => c.offset + c.rtt / 2, lo = (c) => c.offset - c.rtt / 2;',
+     'const hi = (c) => c.offset + c.rtt, lo = (c) => c.offset - c.rtt;', A1_SELF),
+    ('clock: a member\'s own interval counts as spread', CLOCK,
+     'r.filter((b) => b.site !== a.site)', 'r.filter(() => true)', A1_SELF),
+    ('clock: a round with one member counts', CLOCK,
+     'new Set(r.map((c) => c.site)).size > 1', 'r.length > 0', A1_SELF),
+    # Round 10's queue split (`workers/site/src/host.rs`, `queue_split`).
+    ('queue split: the slot runs to the append, not to the apply that freed it', HOST,
+     '    let freed = last_apply.clamp(admitted, appended);', '    let freed = appended.max(admitted);',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_queue_splits']),
+    ('queue split: an apply before admission counts as slot wait', HOST,
+     '    let freed = last_apply.clamp(admitted, appended);', '    let freed = last_apply.min(appended).max(1_000);',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_queue_splits']),
+    # Round 12's confirm split (`workers/site/src/host.rs`, `confirm_split_summary`, `stmt_bytes`).
+    ('confirm split: a transaction at a group\'s bound stays in the group below', HOST,
+     'xs.iter().filter(|c| c.bytes >= lo && c.bytes < hi)', 'xs.iter().filter(|c| c.bytes > lo && c.bytes <= hi)',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_confirm_split']),
+    ('confirm split: storage is p99(sync) less p99(turn), not per sample', HOST,
+     '"storage": f(|c| c.sync.saturating_sub(c.turn)),',
+     '"storage": json!({ "p99": f(|c| c.sync)["p99"].as_u64().unwrap_or(0).saturating_sub(f(|c| c.turn)["p99"].as_u64().unwrap_or(0)) }),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_confirm_split']),
+    ('confirm split: integer arguments count no bytes', HOST,
+     '            _ => 8,\n        })', '            _ => 0,\n        })',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_transaction_counts']),
+    # Round 14's admission and large-transaction instruments (`workers/site/src/host.rs`).
+    ('admitted bytes: an Agent command is priced with its inline pack', HOST,
+     '            A::Agent => ("agent", len.saturating_sub(inline)),', '            A::Agent => ("agent", len),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'admitted_bytes_price']),
+    ('big transaction: the table is the word after the verb, not after INTO or FROM', HOST,
+     '''.position(|x| x.eq_ignore_ascii_case("INTO") || x.eq_ignore_ascii_case("FROM"))''',
+     '''.position(|_| true)''',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_big_transaction']),
+    ('readsBy: a rows read is named by the query\'s first key, so a narrow read after `packed` reads as `packed`', MEM,
+     '        Some(r) => first(r).map_or_else(|| "rows".into(), |sub| format!("rows.{sub}")),',
+     '        Some(_) => first(q).unwrap_or_else(|| "rows".into()),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'every_read_is_shed']),
+    ('readsBy: a rows read with a selector is counted as a whole-tier dump', MEM,
+     '        Some(r) => first(r).map_or_else(|| "rows".into(), |sub| format!("rows.{sub}")),',
+     '        Some(r) => first(r).map_or_else(|| "rows".into(), |_| "rows".into()),',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'every_read_is_shed']),
     # Round 18c: a clone the client cancels releases the network's lock (TestCancelledCloneReleasesTheLock).
     ('round 18c: upload-pack is not stopped when its response write fails (the lock stays held)', GO,
      '\t\tcmd.Process.Kill()\n', '\t\t_ = cmd.Process\n', ['go', 'TestCancelledCloneReleasesTheLock']),

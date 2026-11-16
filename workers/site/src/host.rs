@@ -109,6 +109,131 @@ const DRAIN_IDLE_MS: u64 = 60_000;
 const RESTORE_CHECK_MAX: u64 = 20_000;
 /// Latency samples kept for `/stats`.
 pub const SAMPLES_MAX: usize = 200_000;
+
+/// A command admitted at `admitted` and appended at `appended`, with the leader's last apply before the append at
+/// `last_apply`: (`slot`, `post`) ms, summing to its queue time. Admitted after that apply, it waited for no entry
+/// ahead of it, so its whole queue is `post`; admitted before it, `slot` runs to the apply and `post` from it.
+fn queue_split(admitted: u64, last_apply: u64, appended: u64) -> (u32, u32) {
+    let freed = last_apply.clamp(admitted, appended);
+    ((freed - admitted) as u32, (appended - freed) as u32)
+}
+/// One leader confirm split, LM-1 round 12's question of why B0-33's confirm p99 reached 1.7 s: `gate`, the input's
+/// step to the start of the transaction that carried its writes (the deferred flush's macrotask, so the isolate's turn
+/// queue); `sync`, that start to `sync()`'s continuation (storage, plus the continuation's own turn); `turn`, a
+/// zero-delay timer set at the same start to its firing, capped at `sync` (the turn queue then, so `sync - turn` is
+/// about storage alone); and the transaction's statements and argument bytes. Workers' clock advances only across
+/// I/O, so the synchronous `transactionSync` reads as 0 ms here and shows up as other inputs' turn wait.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConfirmSplit {
+    pub gate: u32,
+    pub sync: u32,
+    pub turn: u32,
+    pub stmts: u32,
+    pub bytes: u32,
+}
+
+/// The kinds of statement in a transaction of 100 KB or more (`CONFIRM_BIG`), each its count and argument bytes, keyed
+/// by the statement's verb and table (`stmt_kind`): which writes a large confirm carried (LM-1 round 14's 416 to 834
+/// KB confirms of up to 1,560 statements). The newest `BIG_KEPT` are kept.
+pub type BigTx = (u32, u32, Vec<(String, u32, u32)>);
+const CONFIRM_BIG: u32 = 100_000;
+const BIG_KEPT: usize = 20;
+
+/// A statement's verb and table: `INSERT log`, `DELETE request`, `INSERT "core_t3_pr"`.
+fn stmt_kind(q: &str) -> String {
+    let w: Vec<&str> = q.split_whitespace().collect();
+    let verb = w.first().copied().unwrap_or("?");
+    let table = w
+        .iter()
+        .position(|x| x.eq_ignore_ascii_case("INTO") || x.eq_ignore_ascii_case("FROM"))
+        .and_then(|i| w.get(i + 1))
+        .map(|t| t.split('(').next().unwrap_or(t).trim_matches('"'))
+        .unwrap_or("?");
+    format!("{verb} {table}")
+}
+
+/// Each statement kind's count and argument bytes in `stmts`, largest bytes first.
+fn stmt_mix(stmts: &[Stmt]) -> Vec<(String, u32, u32)> {
+    let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for st in stmts {
+        let e = by.entry(stmt_kind(st.0)).or_default();
+        e.0 += 1;
+        e.1 = e.1.saturating_add(stmt_bytes(std::slice::from_ref(st)).1);
+    }
+    let mut v: Vec<(String, u32, u32)> = by.into_iter().map(|(k, (n, b))| (k, n, b)).collect();
+    v.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
+/// Transaction sizes `confirm_split_summary` groups by: under 100 KB, under 1 MB, and the rest [guess for the bounds:
+/// ENTRY_SOFT is 100 KB, and a human pack is about 1 MiB].
+const CONFIRM_BYTES: [(&str, u32); 3] = [("lt100k", 100_000), ("lt1m", 1_000_000), ("ge1m", u32::MAX)];
+
+/// `/stats?summary=1`'s `confirmSplit`: for each transaction size group, the count and the p50 and p99 of `gate`,
+/// `sync`, `turn`, `sync - turn` (`storage`), the statements, and the bytes.
+pub fn confirm_split_summary(xs: &[ConfirmSplit]) -> Value {
+    let pct = |mut v: Vec<u32>| {
+        v.sort_unstable();
+        let at = |p: f64| v.get(((p * v.len() as f64) as usize).min(v.len().saturating_sub(1))).copied();
+        json!({ "p50": at(0.5), "p99": at(0.99) })
+    };
+    let mut out = serde_json::Map::new();
+    let mut lo = 0;
+    for (name, hi) in CONFIRM_BYTES {
+        let g: Vec<&ConfirmSplit> = xs.iter().filter(|c| c.bytes >= lo && c.bytes < hi).collect();
+        lo = hi;
+        if g.is_empty() {
+            continue;
+        }
+        let f = |k: fn(&ConfirmSplit) -> u32| pct(g.iter().map(|c| k(c)).collect());
+        out.insert(
+            name.to_string(),
+            json!({
+                "n": g.len(),
+                "gate": f(|c| c.gate),
+                "sync": f(|c| c.sync),
+                "turn": f(|c| c.turn),
+                "storage": f(|c| c.sync.saturating_sub(c.turn)),
+                "stmts": f(|c| c.stmts),
+                "bytes": f(|c| c.bytes),
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// `/stats?summary=1`'s `admittedBytes`: per class, the count, p50, p99 and max of the priced bytes, their sum, and the
+/// sum of those at or over 10 KB, so a reader sees which commands move `Admission::cmd_bytes`' mean.
+pub fn admitted_bytes_summary(by: &BTreeMap<&'static str, Vec<u32>>) -> Value {
+    let mut out = serde_json::Map::new();
+    for (k, xs) in by {
+        let mut s = xs.clone();
+        s.sort_unstable();
+        let at = |p: f64| s.get(((p * s.len() as f64) as usize).min(s.len().saturating_sub(1))).copied();
+        let sum: u64 = s.iter().map(|&x| u64::from(x)).sum();
+        let big: u64 = s.iter().filter(|&&x| x >= 10_000).map(|&x| u64::from(x)).sum();
+        out.insert(
+            k.to_string(),
+            json!({ "n": s.len(), "p50": at(0.5), "p99": at(0.99), "max": s.last(), "sum": sum, "sumOver10k": big }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// A transaction's statements and argument bytes, for `ConfirmSplit`.
+fn stmt_bytes(stmts: &[Stmt]) -> (u32, u32) {
+    let b: usize = stmts
+        .iter()
+        .flat_map(|(_, a)| a)
+        .map(|v| match v {
+            SqlStorageValue::Blob(b) => b.len(),
+            SqlStorageValue::String(s) => s.len(),
+            _ => 8,
+        })
+        .sum();
+    (stmts.len() as u32, b.min(u32::MAX as usize) as u32)
+}
+
 /// Storage confirms and truncations kept for `ack_json`'s `selfSyncedAt`: an `Acked` is answered within seconds of
 /// its commit, and a confirm row a minute old covers every index at or below it.
 const SYNCED_KEEP: usize = 256;
@@ -193,6 +318,10 @@ pub struct Stats {
     /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
     /// gate holds the entry's AppendEntries for this long.
     pub confirm_ms: Vec<u32>,
+    /// Leader: each timed confirm split (`ConfirmSplit`), for `confirm_split_summary`.
+    pub confirm_split: Vec<ConfirmSplit>,
+    /// Every member: the statement mix of its newest transactions of `CONFIRM_BIG` or more (`BigTx`).
+    pub big_tx: Vec<BigTx>,
     /// Leader: one AppendEntries call with entries, send to reply, per follower site, in ms.
     pub append_ms: BTreeMap<u8, Vec<u32>>,
     pub entries: u32,
@@ -203,6 +332,9 @@ pub struct Stats {
     /// Requests this member received, by route, since `inbound_since` (B0-18's leader load).
     pub inbound: BTreeMap<String, u32>,
     pub inbound_since: u64,
+    /// `/read`s this member received since `inbound_since`, by `kind:plain|index:f|l` (`crate::member`'s `read_kind`;
+    /// `f` when `Family::follower_serves` would let a follower answer it): which leader reads could go to learners.
+    pub reads_by: BTreeMap<String, u32>,
     pub failed_calls: u32,
     pub dep_reads: u32,
     /// Leader: each `DepsWanted` read, `DepsWanted` to `deps_read`, in ms, under `all`, and each chain's own read under
@@ -212,6 +344,13 @@ pub struct Stats {
     /// Leader: a command's admission to the append of the entry that carries it, in ms: the wait for the entry in
     /// flight, the cut, and the entry's dep reads. `commit_ms` less this is the entry's confirm and quorum round.
     pub queue_ms: Vec<u32>,
+    /// Leader: `queue_ms` split at the apply of the entry before the command's own (`queue_split`): `slot`, the wait
+    /// for the entries ahead of it, and `post`, that apply to its own entry's append (the cut, the dep reads that
+    /// outlast the entry in flight, and the decide). LM-1 round 10's plan for B0-29's commit line.
+    pub queue_slot_ms: Vec<u32>,
+    pub queue_post_ms: Vec<u32>,
+    /// Leader: when it last applied an entry, by this member's clock.
+    last_apply_at: u64,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
     /// Every stamp's lag (`crate::clock`), stamp minus this isolate's clock, by bucket: 0, then below 2^i ms for i
@@ -253,6 +392,9 @@ pub struct Stats {
     /// Commands this member received, by format (`recv:<family>.<version>`), and `recv:unsupported` for bodies whose
     /// command it could not decode.
     pub received: BTreeMap<String, u32>,
+    /// Leader: each admitted command's priced bytes (`stored_len`, less an Agent inline pack), by the class
+    /// it queued under (`admitted_bytes_summary`).
+    pub admitted_bytes: BTreeMap<&'static str, Vec<u32>>,
     pub alarms: Vec<String>,
     /// Object alarms that fired, and when the last one did.
     pub alarm_runs: u32,
@@ -310,6 +452,22 @@ impl Stats {
         self.test_merge_shed += v["shed"].as_u64().unwrap_or(0) as u32;
     }
 
+    /// Records one admitted command's priced bytes: `len` its `stored_len`, less `inline` when it queued as Agent, as
+    /// `Admission::cmd_bytes` counts it.
+    pub fn admitted_bytes(&mut self, class: raft::admit::AdmitClass, len: usize, inline: usize) {
+        use raft::admit::AdmitClass as A;
+        let (name, soft) = match class {
+            A::Human => ("human", len),
+            A::MergeQueue => ("mergeQueue", len),
+            A::Bot => ("bot", len),
+            A::Agent => ("agent", len.saturating_sub(inline)),
+        };
+        let v = self.admitted_bytes.entry(name).or_default();
+        if v.len() < SAMPLES_MAX {
+            v.push(soft.min(u32::MAX as usize) as u32);
+        }
+    }
+
     /// `/stats?reset=1`: drops the samples and counts a row reads back, and restarts the inbound clock.
     pub fn reset(&mut self) {
         self.commit_ms.clear();
@@ -317,11 +475,16 @@ impl Stats {
         self.apply_ms.clear();
         self.apply_steps.clear();
         self.confirm_ms.clear();
+        self.confirm_split.clear();
+        self.big_tx.clear();
         self.append_ms.clear();
         self.raft_in.clear();
         self.deps_ms.clear();
         self.dep_fails.clear();
         self.queue_ms.clear();
+        self.queue_slot_ms.clear();
+        self.queue_post_ms.clear();
+        self.admitted_bytes.clear();
         self.read_stages.clear();
         self.narrow_build_ms.clear();
         self.entries = 0;
@@ -334,6 +497,7 @@ impl Stats {
         self.trace.clear();
         self.hops.clear();
         self.inbound.clear();
+        self.reads_by.clear();
         self.clock_lag = [0; 16];
         self.clock_lag_max = 0;
         self.lease_fallbacks = 0;
@@ -1754,6 +1918,10 @@ impl<F: Family> Host<F> {
     fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], t: u64) {
         let mut s = self.stats.borrow_mut();
         let (leading, term) = (core.m.role() == Role::Leader, core.m.term());
+        // An apply in the same input as an append freed the slot that append took.
+        if leading && writes.iter().any(|w| matches!(w, Write::Apply(_))) {
+            s.last_apply_at = t;
+        }
         for w in writes {
             match w {
                 Write::Append(e) if leading && e.term == term && matches!(e.body, EntryBody::Events(_)) => {
@@ -1765,6 +1933,9 @@ impl<F: Family> Host<F> {
                             && s.queue_ms.len() < SAMPLES_MAX
                         {
                             s.queue_ms.push(t.saturating_sub(*at) as u32);
+                            let (slot, post) = queue_split(*at, s.last_apply_at, t);
+                            s.queue_slot_ms.push(slot);
+                            s.queue_post_ms.push(post);
                         }
                     }
                 }
@@ -2124,6 +2295,14 @@ impl<F: Family> Host<F> {
     /// writes in order, so one `sync()` covers every input queued so far.
     fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
         let stmts = std::mem::take(&mut *self.queue.borrow_mut());
+        let (n_stmts, n_bytes) = stmt_bytes(&stmts);
+        if n_bytes >= CONFIRM_BIG {
+            let mut s = self.stats.borrow_mut();
+            if s.big_tx.len() >= BIG_KEPT {
+                s.big_tx.remove(0);
+            }
+            s.big_tx.push((n_stmts, n_bytes, stmt_mix(&stmts)));
+        }
         commit_tx(&self.state.storage(), stmts)?;
         if let Some(r) = self.requests.borrow().as_ref() {
             r.flushed();
@@ -2147,10 +2326,22 @@ impl<F: Family> Host<F> {
         if !pending.is_empty() {
             let h = self.clone();
             let began = now_ms();
+            // `ConfirmSplit::turn`: a zero-delay timer set beside the `sync()`, whose firing time is the turn queue.
+            let turned = Rc::new(Cell::new(None));
+            if pending.iter().any(|p| p.1.is_some()) {
+                let turned = turned.clone();
+                spawn_local(async move {
+                    Delay::from(Duration::ZERO).await;
+                    turned.set(Some(now_ms()));
+                });
+            }
             spawn_local(async move {
                 if h.state.storage().sync().await.is_err() || h.dying.get() {
                     return;
                 }
+                let synced_at = now_ms();
+                let sync = synced_at.saturating_sub(began) as u32;
+                let turn = turned.get().map_or(sync, |t: u64| (t.saturating_sub(began) as u32).min(sync));
                 let applied = h.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.applied.0)).unwrap_or(0);
                 h.trace(Trace::Confirm, 0, 0, applied, now_ms().saturating_sub(began));
                 if let Some(l) = last {
@@ -2167,6 +2358,10 @@ impl<F: Family> Host<F> {
                         let mut s = h.stats.borrow_mut();
                         if s.confirm_ms.len() < SAMPLES_MAX {
                             s.confirm_ms.push(now_ms().saturating_sub(t0) as u32);
+                        }
+                        if s.confirm_split.len() < SAMPLES_MAX {
+                            let gate = began.saturating_sub(t0) as u32;
+                            s.confirm_split.push(ConfirmSplit { gate, sync, turn, stmts: n_stmts, bytes: n_bytes });
                         }
                     }
                     let _ = h.input(|m, t| m.confirm_end(t, id));
@@ -3694,6 +3889,78 @@ mod tests {
     use std::cell::Cell;
     use std::pin::pin;
     use std::task::{Context, Poll, Waker};
+
+    /// LM-1 round 10's queue split: the wait for the entries ahead of the command, then its own entry's cut, dep reads
+    /// and decide, summing to its queue time. A command admitted after the last apply waited for no slot.
+    #[test]
+    fn a_queue_splits_at_the_apply_that_freed_its_slot() {
+        use super::queue_split;
+        assert_eq!(queue_split(1_000, 1_300, 1_420), (300, 120), "waited 300 ms for the slot, then 120 ms of its own");
+        assert_eq!(queue_split(1_000, 900, 1_150), (0, 150), "admitted after the last apply: no slot wait");
+        assert_eq!(queue_split(1_000, 1_500, 1_150), (150, 0), "an apply later than the append clamps to it");
+        let (slot, post) = queue_split(7, 40, 100);
+        assert_eq!(slot + post, 93, "the split sums to the queue time");
+    }
+
+    /// LM-1 round 12's confirm split: each transaction lands in its size group by its bytes (a 100 KB one is not
+    /// under 100 KB), and `storage` is `sync` less the turn wait, per sample, not p99(sync) less p99(turn).
+    #[test]
+    fn a_confirm_split_groups_by_bytes_and_takes_the_turn_out_of_storage() {
+        use super::{ConfirmSplit, confirm_split_summary};
+        let c = |sync, turn, bytes| ConfirmSplit { gate: 3, sync, turn, stmts: 2, bytes };
+        let v = confirm_split_summary(&[c(40, 30, 99_999), c(900, 10, 100_000), c(50, 45, 2_000_000)]);
+        assert_eq!(v["lt100k"]["n"], 1);
+        assert_eq!(v["lt100k"]["storage"]["p99"], 10);
+        assert_eq!(v["lt1m"]["n"], 1, "100,000 bytes is the second group");
+        assert_eq!(v["lt1m"]["storage"]["p99"], 890, "a storage-bound confirm");
+        assert_eq!(v["lt1m"]["turn"]["p99"], 10);
+        assert_eq!(v["ge1m"]["storage"]["p99"], 5, "a turn-bound confirm");
+        let two = confirm_split_summary(&[c(100, 90, 1), c(80, 0, 2)]);
+        assert_eq!(two["lt100k"]["storage"]["p99"], 80, "per sample: max(10, 80), not 100 - 90");
+    }
+
+    /// LM-1 round 14: an Agent command is priced without its inline pack and a Human one with all its bytes, and the
+    /// summary's sums show which commands carry the mean.
+    #[test]
+    fn admitted_bytes_price_an_agent_command_without_its_pack() {
+        use graftyard_raft::admit::AdmitClass as A;
+        let mut s = super::Stats::default();
+        s.admitted_bytes(A::Agent, 41_000, 40_000);
+        s.admitted_bytes(A::Human, 41_000, 40_000);
+        s.admitted_bytes(A::Agent, 300, 0);
+        let v = super::admitted_bytes_summary(&s.admitted_bytes);
+        assert_eq!(v["agent"]["n"], 2);
+        assert_eq!(v["agent"]["sum"], 1_300);
+        assert_eq!(v["agent"]["sumOver10k"], 0);
+        assert_eq!(v["human"]["sum"], 41_000, "a human command's pack is priced");
+        assert_eq!(v["human"]["sumOver10k"], 41_000);
+    }
+
+    /// A large transaction's mix names each statement's verb and table, quoted or not, largest bytes first.
+    #[test]
+    fn a_big_transaction_names_its_tables() {
+        use worker::SqlStorageValue as V;
+        assert_eq!(super::stmt_kind("INSERT OR REPLACE INTO log (idx, term) VALUES (?, ?)"), "INSERT log");
+        assert_eq!(super::stmt_kind("DELETE FROM \"core_t3_pr\" WHERE k0 = ?"), "DELETE core_t3_pr");
+        assert_eq!(super::stmt_kind("INSERT INTO request (rid) VALUES (?)"), "INSERT request");
+        let stmts = vec![
+            ("INSERT INTO request (rid) VALUES (?)", vec![V::Blob(vec![0; 10])]),
+            ("INSERT OR REPLACE INTO log (idx) VALUES (?)", vec![V::Blob(vec![0; 500])]),
+            ("INSERT INTO request (rid) VALUES (?)", vec![V::Blob(vec![0; 20])]),
+        ];
+        assert_eq!(
+            super::stmt_mix(&stmts),
+            vec![("INSERT log".to_string(), 1, 500), ("INSERT request".to_string(), 2, 30)]
+        );
+    }
+
+    /// The bytes a transaction carries: blobs and text by length, other values 8 each.
+    #[test]
+    fn a_transaction_counts_its_argument_bytes() {
+        use worker::SqlStorageValue as V;
+        let stmts = vec![("a", vec![V::Blob(vec![0; 1_000]), V::Integer(7)]), ("b", vec![V::String("xyz".into())])];
+        assert_eq!(super::stmt_bytes(&stmts), (2, 1_011));
+    }
 
     /// `/stats`' `testMerges`: first attempts' asks and sheds add up, and the shard's latest counts are kept, not
     /// replaced by an attempt that asked for no merge.

@@ -1,0 +1,9 @@
+file:///home/user/workspace/repo/tests/am1/hosted/rows.mjs:87
+  if (ht.status !== 201) throw new Error(`holder task: ${ht.status} ${JSON.stringify(ht.body).slice(0, 200)}`);
+                               ^
+
+Error: holder task: 422 {"documentation_url":"https://docs.github.com/enterprise-server@3.22/graftyard/tasks","message":"The requester has too many open tasks","status":"422"}
+    at file:///home/user/workspace/repo/tests/am1/hosted/rows.mjs:87:32
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v26.12.0

@@ -1,0 +1,20 @@
+2026-11-15T11:02:08Z api.cloudflare.com in request paths: 0 files
+2026-11-15T11:02:08.791Z b034 networks: {"mono":{"repo":"m3org/b034-mono","chain":"repo:131296","who":"admin"},"second":{"repo":"m3-member/b034-second","chain":"repo:327700","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-1","chain":"repo:9043968","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-2","chain":"repo:9043969","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-3","chain":"repo:9043970","who":"hostile"}]}
+2026-11-15T11:02:08Z seed m3-member/b034-second exit 0
+2026-11-15T11:02:08Z seed m3r-b034-hostile/b034-hostile-1 exit 0
+2026-11-15T11:02:09Z seed m3r-b034-hostile/b034-hostile-2 exit 0
+2026-11-15T11:02:09Z seed m3r-b034-hostile/b034-hostile-3 exit 0
+2026-11-15T11:02:09Z seed m3org/b034-mono exit 0
+2026-11-15T11:02:09Z b0-34 warm start
+2026-11-15T11:04:27Z b0-34 warm exit 0 {"at":"2026-11-15T11:04:27.108Z","s":137.8,"kind":"summary","mainS":137.8,"catchupS":{"0":129.6,"1":137.7,"2":136.9},"limitMin":45}
+{"name": "git#2#net:131296", "started": "2026-11-15T11:02:30.486Z", "image": "sha256:7e8ff9c4620c7b077504508ce25db54cbc93f9c93484aefa39d4501a6d1dcb65"}
+{"name": "git#1#net:131296", "started": "2026-11-15T11:02:29.163Z", "image": "sha256:7e8ff9c4620c7b077504508ce25db54cbc93f9c93484aefa39d4501a6d1dcb65"}
+{"name": "git#0#net:131296", "started": "2026-11-15T11:02:27.898Z", "image": "sha256:7e8ff9c4620c7b077504508ce25db54cbc93f9c93484aefa39d4501a6d1dcb65"}
+{"net": "131296", "running": 3, "other_image": 0}
+2026-11-15T11:04:31Z b0-34 warm images exit 0
+2026-11-15T11:04:37.345Z repo:131296 leader 0: learners [{"addr":192,"doName":"repo:131296#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131296#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131296#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131296#4#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131296#4#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131296#4#l5","join":20 config 828
+2026-11-15T11:04:37.862Z repo:131296 leader 0: k 1 at 828
+2026-11-15T11:04:37Z b0-34 b034-mono repo:131296 start
+2026-11-15T11:26:43Z b0-34 done exit 0
+2026-11-15T11:26:44.327Z repo:131296 leader 0: k 1 at 2826
+DONE

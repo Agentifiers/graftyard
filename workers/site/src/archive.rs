@@ -313,7 +313,23 @@ pub async fn promote_handled(mut req: Request, env: Env, ctx: &Context) -> Resul
     let p: Promote = req.json().await?;
     let (tx, rx) = futures_channel::oneshot::channel();
     ctx.wait_until(async move {
-        let _ = tx.send(promote(&env, &p).await);
+        // LM-1 round 21: the promotion's size, time and this isolate's wasm memory around it, for G9's hosted rate and
+        // the streamed promotion's memory bound (`tests/am1/results/lm1-memory.md`).
+        let (t0, mem0) = (now_ms(), crate::load::wasm_mem_mb());
+        let r = promote(&env, &p).await;
+        let bytes = match &r {
+            Ok(PackRef::Stored { bytes, .. }) => *bytes,
+            _ => 0,
+        };
+        console_log!(
+            "promotion {:?}: {} packs, {bytes} B in {} ms, wasm {mem0:.1} -> {:.1} MB{}",
+            p.range,
+            p.sums.len(),
+            now_ms() - t0,
+            crate::load::wasm_mem_mb(),
+            r.as_ref().err().map(|e| format!(", failed: {e}")).unwrap_or_default()
+        );
+        let _ = tx.send(r);
     });
     match rx.await {
         Ok(Ok(pack)) => Response::from_json(&pack),
