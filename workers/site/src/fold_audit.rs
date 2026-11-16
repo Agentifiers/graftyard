@@ -15,7 +15,9 @@
 
 use graftyard_fold::fold_audit_compare;
 use graftyard_lookup::Bindings;
-use graftyard_types::{ChainId, Digest, Index, MemberRegistry, PlacementRecord, REGISTRY_SHARDS, RegistryRow, Tier};
+use graftyard_types::{
+    ChainId, DbId, Digest, Index, MemberRegistry, PlacementRecord, REGISTRY_SHARDS, RegistryRow, RepoId, Tier,
+};
 use serde_json::{Value, json};
 use worker::*;
 
@@ -31,7 +33,8 @@ fn digest(v: &Value) -> Option<Digest> {
     Some(Digest(b.try_into().ok()?))
 }
 
-/// Every repository chain whose registry row on this site names it first, the chain's home.
+/// Every repository chain whose registry row on this site names it first, the chain's home. `repo:0` is the CLI
+/// latency probe's chain (id 0 is never assigned): its members join, never campaign, and hold no repository.
 async fn homed(env: &Env, site: &SiteEnv) -> Result<Vec<RegistryRow>> {
     let mut out = Vec::new();
     for shard in 0..REGISTRY_SHARDS {
@@ -39,13 +42,18 @@ async fn homed(env: &Env, site: &SiteEnv) -> Result<Vec<RegistryRow>> {
         let stub = site.registry(env, site.id, &reg.do_name())?;
         let mut res = stub.fetch_with_str(&format!("https://registry/rows?site={}", site.id.0)).await?;
         let rows: Vec<RegistryRow> = res.json().await?;
-        out.extend(
-            rows.into_iter().filter(|r| matches!(r.chain, ChainId::Repo(_)) && r.sites.first() == Some(&site.id)),
-        );
+        out.extend(rows.into_iter().filter(|r| auditable(r.chain) && r.sites.first() == Some(&site.id)));
     }
     out.sort_by_key(|r| r.chain.to_string());
     Ok(out)
 }
+
+fn auditable(chain: ChainId) -> bool {
+    matches!(chain, ChainId::Repo(r) if r != PROBE)
+}
+
+/// The CLI latency probe's chain (`cli/src/sites.rs`, `PROBE_CHAIN`).
+const PROBE: RepoId = RepoId(DbId(0));
 
 async fn cursor(env: &Env, site: &SiteEnv, put: Option<(&str, &Value)>) -> Result<Option<String>> {
     let stub = site.registry(env, site.id, CURSOR)?;
@@ -74,6 +82,12 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) 
         moving_from: None,
         at: graftyard_types::Timestamp(0),
     };
+    // This site's own member first, once: a `repo:` member that hosts no repository fold (a test register) answers
+    // 404, which the lookup would ask again for LOOKUP_FOR on every run (graft-m1, 2026-11-16: 21 `/fold` calls per
+    // chain per run). It is skipped, not an error.
+    if let Some((404, _)) = graftyard_lookup::post(&b, site.id, &row.do_name, "/fold", br#"{"audit":{}}"#).await {
+        return json!({ "chain": row.chain.to_string(), "skipped": "not a repository group" });
+    }
     let body = json!({ "audit": { "start": true, "force": force } });
     let led = match graftyard_lookup::call(&b, row.chain, &record, "/fold", &body).await {
         Ok((v, _)) => v,
@@ -160,9 +174,24 @@ pub async fn run(env: &Env, only: Option<ChainId>, force: bool) -> Result<Value>
         "site": site.id.0,
         "homed": all.len(),
         "alarms": chains.iter().filter(|c| c["alarm"] == json!(true)).count(),
+        "skipped": chains.iter().filter(|c| c.get("skipped").is_some()).count(),
         "chains": chains,
         "at": crate::now_ms(),
     });
     cursor(env, &site, Some((&next, &report))).await?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use graftyard_types::{ChainId, DbId, RepoId};
+
+    /// The audit samples repository chains only, and never the CLI latency probe's `repo:0`, whose members hold no
+    /// repository (graft-m3f site c, 2026-11-16: its only homed chain, a 404 on every run).
+    #[test]
+    fn the_audit_skips_the_latency_probe_chain() {
+        assert!(super::auditable(ChainId::Repo(RepoId(DbId(1)))));
+        assert!(!super::auditable(ChainId::Repo(RepoId(DbId(0)))));
+        assert!(!super::auditable(ChainId::Ids));
+    }
 }

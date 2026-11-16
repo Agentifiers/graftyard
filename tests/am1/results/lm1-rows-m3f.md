@@ -108,6 +108,37 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## The daily near check re-placed healthy groups (2026-11-16, Workers Logs, no hosted spend; branch `near-check`)
+
+**What the logs show** [measured, Workers Logs, "daily near check re-placed" on every site of each install, 00:00Z to 23:59Z]:
+- The daily near check re-placed 117 groups on six installs: graft-m2b 72, graft-m1 12, graft-m3e 12, graft-m4a 9, graft-m3f 7, graft-m3c 5. That is 81 distinct repositories.
+- Every one was on site a, an enam home, re-placing its weur follower (site 1) against a 100 ms bound.
+- The readings were 101 to 148 ms: p50 112, p90 131, max 148. 26 were over 125 ms, 12 over 130, and none over 150.
+- 115 of the 117 ended 0 to 8 minutes after a 15-minute cron run (minute mod 15: 0 to 8).
+
+**One case, traced.** graft-m3f repo:65549 was re-placed at 19:04:37Z on a 109 ms reading (`configIndex` 3739, 9.3 s).
+- In 18:55 to 19:04Z, neither edge (`graft-m3f-edge`, `graft-m3f-tools-edge`) logged a single request.
+- In 19:00 to 19:04Z, site a's members took 59 `POST /fold` and 37 `POST /read` calls, the cron's fold audit and its lookups, plus the check's own `/ping`s.
+
+**Why** [code]:
+- `Host::served` is called on every leader `/read`, `/record` and `/commit`, and on a dozen family routes. The cron's calls are among them.
+- `served` keeps a leader's alarm running for DRAIN_IDLE_MS, and every alarm runs `recheck`.
+- `recheck` measures once its rows are a day old, and re-places on the second reading over `NEAR_RTT` a day after the first.
+- Placement aims for 100 ms on an install whose enam to weur pair sits around 105 to 136 ms (`tests/am1/results/fresh-repo.md`). So a group that has been served once is re-placed about every other day, by the cron alone.
+- Each re-placement joins up to 8 new members, and each replays the log. It keeps the leader alarm at 2 s for minutes. These DO rows are written on idle groups.
+
+**Built (branch `near-check`; `decisions/DECISIONS.md`, "`near-check`"):**
+- The check starts only within 60 s of a call an edge made for a client (`CLIENT_CALL`).
+- It moves a member only on two readings a day apart over `NEAR_RECHECK`: 150 ms for enam and weur, 297 ms for apac. That is half again over `NEAR_RTT`, past every reading above and past B0-12's p99 pairs (135 and 262 ms).
+- Under that rule, none of the 117 would have moved, since none read over 150 ms.
+
+**The fold audit's 404s, same day:**
+- graft-m3f site c's only homed chain is `repo:0`, the CLI latency probe's (`repo:0#1794539306#f0`). It answered 404 on every 15-minute run, as did site a once a cycle.
+- graft-m1 site a's 404s are test-register chains (repo:3229002 to 3229005 at 22:04Z). A register member has no `/fold` route.
+- Each 404 cost about 21 `/fold` calls, because the lookup asked again for LOOKUP_FOR.
+- The cursor does move on, as B0-30 corrected in `tests/am1/results/b030-split.md`.
+- The audit now drops `repo:0` and skips a member that answers 404 after one call. B0-30's thread was told and is not editing `fold_audit.rs`.
+
 ## Rows m3fr9 (2026-11-16, TAG `m3fr9`, `ROWS="l0-12 b0-32 b0-31"`, `STOP_USD=77`)
 
 **Build and site day.**

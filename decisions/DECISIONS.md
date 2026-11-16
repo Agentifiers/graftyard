@@ -2678,6 +2678,8 @@ The operator chose F68's option (a), with (b) investigated, and rejected reading
 
 **Amended by `m0-carried-4`, 2026-11-12: a create never fails on the near bound alone.** On `graft-m2b`, `repo:131277` (home enam) re-placed its weur follower 8 times at 114, 110, 108, 110, 110, 110, 111 and 111 ms, the last check read 123 ms, and the create failed; a create a minute later passed. That install's enam to weur pair sits over 100 ms, so failing would refuse creates in production. Now, after `PLACE_TRIES`, the leader keeps the nearest try (`graftyard_types::nearest_try`), or the member it started with when it was nearer than every try, stores that try's round trip in its `Rtt` rows, counts the group in the member's `placedOverNear` (`/stats`), and logs it; the daily check keeps trying on the same path and keeps a new member only if it is nearer. A bound relative to each install's measured baseline (its minimum for the pair plus a margin) was considered and not built: with the nearest kept, it would only save tries on an install like `graft-m2b`, where each create now spends all 8 (about 30 to 40 s), and it needs a per-install baseline that no component keeps yet. Evidence: `crates/types/src/placement.rs`, `nearest_try_keeps_the_best_when_every_try_is_over_the_bound`; `tests/m0/results/carried-4.md`.
 
+**Amended by `near-check`, 2026-11-16:** the daily check moves a member only past `NEAR_RECHECK` (half again over `NEAR_RTT`) and starts only after a client call. See that entry.
+
 #### The per-KB append cost is the request body's transfer
 
 **Decision.** Nothing changes for the about 1 ms per KB an AppendEntries call costs. It is recorded as the binding's transfer of the request body to the follower.
@@ -4015,6 +4017,27 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 **Evidence.** `a_learner_that_has_not_heard_the_cursor_committed_does_not_end_the_poll` (`crates/git/tests/lease_gates.rs`) fails on main, where the first `gone` is the poll's 410, and passes with the change. The restore case is unchanged: `a_cursor_past_the_groups_commit_index_is_gone` and the `lagging_ok` test still pass, and every member answering `gone` is still a 410. `tests/m0carried/plant26.py`: 4 of 4. `tests/am1/rest/a1.mjs` routes the same way, so the next L0-12 measures the rule as the edge runs it.
 
 **Flip.** A hosted L0-12 where `feed.byMember` shows the polls a `gone` sent on going to 429 more often than they are held, which would make returning the 410 at once the cheaper answer; or a restore test where a client's cursor past the restored log gets anything but 410.
+
+### `near-check`: the daily near check starts only after a client call, and moves a member only past `NEAR_RECHECK`, 2026-11-16
+
+**Decision.** Two changes to the daily near check (`Routes::recheck`, `workers/site/src/member.rs`; `design/DESIGN.md`, "Placement is checked by latency"):
+
+1. It runs only within DRAIN_IDLE_MS (60 s) of a call an edge made for a client. Each edge isolate marks its member calls with `CLIENT_CALL` (`graftyard_lookup::set_client`), and the member keeps the time of the last one (`Host::client_at`). A site script never marks its calls, so its cron, fold audit, sweep, and a peer's lookup keep the leader's alarm running as before but never start a check (`near_due`).
+2. It reads the fresh rows against `NEAR_RECHECK`, half again over `NEAR_RTT`: 150 ms for an enam or weur home, 297 ms for an apac home. A home over it on two measurements a day or more apart re-places its nearest voter (`near_next`). The re-placement itself still aims for `NEAR_RTT` and keeps a member only if it is nearer. A create's tries are unchanged.
+
+**Why.** On 2026-11-16 the daily check re-placed 117 groups on six installs (graft-m2b 72, graft-m1 12, graft-m3e 12, graft-m4a 9, graft-m3f 7, graft-m3c 5). Every one was an enam home's weur follower read at 101 to 148 ms (p50 112, p90 131) against 100 [measured, Workers Logs, `tests/am1/results/lm1-rows-m3f.md`, "The daily near check re-placed healthy groups"]. 115 of them ended 0 to 8 minutes after a 15-minute cron run. The site cron's `/fold` and `/read` calls count as served (`Host::served`), so they keep a leader's alarm running, and the alarm runs the check. On graft-m3f, repo:65549 had no edge call in that window and was re-placed at 19:04Z on a 109 ms reading. Each re-placement joins up to `PLACE_TRIES` new members, which each replay the log, and it keeps the 2 s leader alarm running for minutes, all on an idle group. A new generation lands in the same region and draws from the same spread (one create's 8 tries read 108 to 114 ms), so moving a member at 101 to 148 ms buys nothing. B0-12's enam to weur pairs ran to p99 135 ms and its enam to apac pairs to p99 262 ms [measured, `tests/m0/results/b0-12.json`]. 150 and 297 are past every reading of the day and past both p99s. A reading past them is not the pair's spread, so it may be a member worth moving [inference].
+
+**Beat.**
+- A margin of 25% (125 ms). It would still have re-placed the 26 groups read at 126 to 148 ms.
+- A fixed 30 ms over (130 ms). It would still have re-placed 12.
+- Counting every served call, as on main. That is the loop this entry removes.
+- Dropping the daily check. It would leave a member that a move's swap put far away until someone noticed.
+
+**Evidence.** `the_daily_near_check_moves_only_past_the_spread_and_only_after_a_client_call` (`workers/site/src/member.rs`) and `the_audit_skips_the_latency_probe_chain` (`workers/site/src/fold_audit.rs`) both fail on main. `tests/m0carried/plant28.py` plants 7 mutants and catches each.
+
+**Flip.** A home whose near follower reads under `NEAR_RECHECK` on both checks but whose B0-02 commit p99 fails on that round trip, which would argue for a lower margin. Or a client-served group that never runs the check because its traffic reaches the member only through site-script calls, such as `PrSync` or a queue consumer.
+
+**Also in this branch: the fold audit skips groups with no repository fold.** `fold_audit::homed` drops `repo:0`, the CLI latency probe's chain, whose members join and never campaign. On graft-m3f it was site c's only homed chain, and it answered 404 on every run (`repo:0#1794539306#f0`). `audit_chain` first asks this site's own member once. A 404, which comes from a test register on a `repo:` chain, is recorded as `skipped` with no lookup. Before this, the lookup asked again for LOOKUP_FOR, about 21 `/fold` calls per chain per run on graft-m1 (repo:3229002 to 3229005, 22:04Z). The cursor already moved past a failing chain.
 
 ### `agents-write`: the agent routes' writes retry a shed read within `LOOKUP_FOR`, 2026-11-16
 

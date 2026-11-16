@@ -21,6 +21,16 @@ pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);
 /// nearer voter than `Tri`'s.
 pub const NEAR_RTT: &[(Region, u16)] = &[(Region::Enam, 100), (Region::Weur, 100), (Region::Apac, 198)];
 
+/// The daily near check's bound, by the home's region: half again over `NEAR_RTT`, past the pair's own spread. All 117
+/// daily re-placements on six installs on 2026-11-16 measured the enam home's weur follower at 101 to 148 ms (p90 131)
+/// against 100 [measured, Workers Logs, `tests/am1/results/lm1-rows-m3f.md`, "The daily near check re-placed healthy
+/// groups"],
+/// and B0-12's enam to weur pairs ran to p99 135 ms and enam to apac to p99 262 ms [measured,
+/// `tests/m0/results/b0-12.json`]. A new generation lands in the same region and draws from the same spread (one
+/// create's 8 tries read 108 to 114 ms, `decisions/DECISIONS.md`, "A group's home must have a voter within
+/// `NEAR_RTT`"), so only a reading past every one of these is a member worth moving [inference].
+pub const NEAR_RECHECK: &[(Region, u16)] = &[(Region::Enam, 150), (Region::Weur, 150), (Region::Apac, 297)];
+
 /// New generations a group's leader tries for its nearer follower before it keeps the nearest it found (`/place`)
 /// [inference: 16 of 35 measured groups had a near follower within 100 ms on `graft-m3c`, so 8 tries leave about 1
 /// in 140 groups there over the bound; on an install whose pair sits over it, every create spends all 8].
