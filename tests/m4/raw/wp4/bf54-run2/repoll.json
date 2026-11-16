@@ -1,0 +1,33 @@
+{
+  "runnersWith503": 2485,
+  "retryInChainS": {
+    "n": 12815,
+    "p50": 16,
+    "p99": 21,
+    "max": 35
+  },
+  "backoffS": {
+    "n": 2636,
+    "p50": 10.083,
+    "p99": 14.89,
+    "max": 14.999
+  },
+  "firstFailedRetryAfterBackoffS": {
+    "n": 1068,
+    "p50": 11,
+    "p99": 60,
+    "max": 60
+  },
+  "overCount": 0,
+  "over": [],
+  "slowAttempts": 1,
+  "slow": [
+    {
+      "runner": "bf54-0119",
+      "at": "2026-11-16T00:58:28.000Z",
+      "attempt": 3,
+      "gapS": 35
+    }
+  ],
+  "rePollWithin30s": true
+}
