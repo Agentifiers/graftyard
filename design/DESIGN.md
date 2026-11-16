@@ -1077,8 +1077,8 @@ pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* alway
 /// packs in a range a committed `Promoted` and its `.idx` both cover are not loaded (`Compacted.consumed`'s read side);
 /// then every ref's history and tip tree must be on disk, checked before the repack [measured, `lm1-memory` 21], else
 /// the skipped packs load and it checks again; a disk failing both never serves. Stored packs and `.idx` stream four at
-/// once [`fetchmem`], in log order. Thin: G5. The repack rolls unkept packs, nice 19 on 2 threads, a midx over all:
-/// rolling 8.6 GB of promotions held 4 vCPU at 12 GiB; kept, 104 CPU-s, not 588 [measured, `lm1-memory` 24c, 25].
+/// once [`fetchmem`], in log order. Thin: G5. Repack rolls unkept packs at nice 19 on 2 threads, a midx over all; kept
+/// and named `--keep-pack` (its hint walk ignores a `.keep`): 104 CPU-s not 588, 1.7 GB not 2.2 [measured, `lm1-memory` 25, 27].
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or

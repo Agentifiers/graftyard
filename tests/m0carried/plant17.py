@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """repack-keep: planted bugs in the shard's post-rehydrate repack (`containers/git/server/main.go`: the `.keep` a
 promotion's stored-`.idx` ingest writes, `unkeptPacks`, `runRepack`'s bounds, `gitLow`, and `/procs`),
-`tests/am1/results/lm1-memory.md`, round 25. Plants one mutant at a time, runs the shard server's Go tests, and
+`tests/am1/results/lm1-memory.md`, rounds 25 and 27 (`--keep-pack`). Plants one mutant at a time, runs the shard server's Go tests, and
 restores the file byte for byte. Not planted: `--pack-kept-objects` on the geometric repack, which git ignores with
 `--geometric` (the kept packs stayed byte for byte under it), so it is the same program. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
 
@@ -29,20 +29,20 @@ MUTANTS = [
      '\t\tif _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".keep"); err != nil {',
      '\t\tif _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".kept"); err != nil {'),
     ('no multi-pack-index after the repack', MAIN,
-     '"repack", "-d", "-q", "--geometric=2", "--write-midx")',
-     '"repack", "-d", "-q", "--geometric=2")'),
+     '"repack", "-d", "-q", "--geometric=2", "--write-midx"}',
+     '"repack", "-d", "-q", "--geometric=2"}'),
     ('the repack on all four threads', MAIN,
-     '"-c", "pack.threads=2", "-c", "pack.windowMemory=256m",',
-     '"-c", "pack.threads=4", "-c", "pack.windowMemory=256m",'),
+     '"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "repack"',
+     '"-c", "pack.threads=4", "-c", "pack.windowMemory=256m", "repack"'),
     ('no bound on the delta window', MAIN,
-     '"-c", "pack.threads=2", "-c", "pack.windowMemory=256m",',
-     '"-c", "pack.threads=2",'),
+     '"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "repack"',
+     '"-c", "pack.threads=2", "repack"'),
     ('gitLow at normal priority', MAIN,
-     'exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...)',
-     'exec.Command("git", args...)'),
+     'args ...string) ([]byte, error) {\n\treturn runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil,',
+     'args ...string) ([]byte, error) {\n\treturn runGit(exec.Command("git", args...), nil,'),
     ('the repack through git, not gitLow', MAIN,
-     '\t_, err := gitLow(rp, []string{derivedEnv}, "-c", "pack.threads=2"',
-     '\t_, err := git(rp, []string{derivedEnv}, nil, "-c", "pack.threads=2"'),
+     '\t_, err := gitLow(rp, []string{derivedEnv}, args...)',
+     '\t_, err := git(rp, []string{derivedEnv}, nil, args...)'),
     ('/procs reads no nice value', MAIN,
      '\t\t\t\tfmt.Sscan(f[16], &p.Nice) // field 19', '\t\t\t\t_ = f[16]'),
     ('/procs misses git run through nice (matches the parent only)', MAIN,
@@ -51,6 +51,13 @@ MUTANTS = [
     ('/procs?net= counts every pack as kept', MAIN,
      '\t\t\t\tif _, err := os.Stat(strings.TrimSuffix(f, ".pack") + ".keep"); err == nil {\n\t\t\t\t\tkept++',
      '\t\t\t\t{\n\t\t\t\t\tkept++'),
+    # Round 27: the kept packs named in core, so the roll's hint walk stops at them.
+    ('no --keep-pack for the kept promotions', MAIN,
+     '\t\targs = append(args, "--keep-pack="+strings.TrimSuffix(filepath.Base(k), ".keep")+".pack")\n', '\t\t_ = k\n'),
+    ('--keep-pack names the .keep file, not the pack', MAIN,
+     '"--keep-pack="+strings.TrimSuffix(filepath.Base(k), ".keep")+".pack"', '"--keep-pack="+filepath.Base(k)'),
+    ('only the first kept pack named', MAIN,
+     '\tfor _, k := range keeps {\n', '\tfor _, k := range keeps[:min(1, len(keeps))] {\n'),
 ]
 
 

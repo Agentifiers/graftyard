@@ -234,6 +234,8 @@ func TestRehydratesRepackLeavesPromotedPacks(t *testing.T) {
 		prev = tip
 	}
 	before := packCount(repo("7"))
+	access := filepath.Join(t.TempDir(), "access")
+	t.Setenv("GIT_TRACE_PACK_ACCESS", access)
 	putRefs(t, s.URL, tip)
 	deadline := time.Now().Add(20 * time.Second)
 	for packCount(repo("7")) >= before && time.Now().Before(deadline) {
@@ -242,6 +244,30 @@ func TestRehydratesRepackLeavesPromotedPacks(t *testing.T) {
 	repacking.Lock() // the repack and its commit-graph have finished
 	repacking.Unlock()
 	pdir := filepath.Join(repo("7"), "objects", "pack")
+	// The roll reads no promotion's trees or blobs: its hint walk stops at the kept packs. Each promotion holds two
+	// trees, which a walk through it reads (LM-1 round 27: 2.9 times the promotions' bytes mapped). Commits are read
+	// by the commit-graph write, which covers every ref's history.
+	t.Setenv("GIT_TRACE_PACK_ACCESS", "")
+	types := map[string]string{} // "pack-<name>.pack offset" to type, for every promotion
+	for _, p := range promos {
+		for _, l := range strings.Split(run(t, repo("7"), "", "verify-pack", "-v", filepath.Join(pdir, "pack-"+p.name+".idx")), "\n") {
+			if f := strings.Fields(l); len(f) >= 5 {
+				types["pack-"+p.name+".pack "+f[4]] = f[1]
+			}
+		}
+	}
+	trace, _ := os.ReadFile(access)
+	read := 0
+	for _, l := range strings.Split(string(trace), "\n") {
+		if f := strings.Fields(l); len(f) >= 2 {
+			if ty, ok := types[filepath.Base(f[len(f)-2])+" "+f[len(f)-1]]; ok && ty != "commit" {
+				read++
+			}
+		}
+	}
+	if read >= len(promos) {
+		t.Fatalf("the repack read %d trees and blobs of %d kept promotions", read, len(promos))
+	}
 	for i, p := range promos {
 		b, err := os.ReadFile(filepath.Join(pdir, "pack-"+p.name+".pack"))
 		if err != nil {
