@@ -35,7 +35,8 @@ Each line names the section that states the rule. Code that breaks one of these 
 2. Start with Milestone 0. Its measurements run before any git code, and any fail value sends the design back (`design/DESIGN.md`, "Build order from zero").
 3. Take one work package at a time, in the order the plan gives.
 4. Treat the package's gate as the definition of done. Compiling code or passing unit tests does not finish a package.
-5. If a gate fails, keep the gate as written and follow "How to change the design" below.
+5. A hosted gate row is met at 90% of each target when the rest is a long tail; record the gap in `decisions/OPEN-QUESTIONS.md` and move on. An invariant above never counts at 90% (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a daily spend limit").
+6. If a gate fails, keep the gate as written and follow "How to change the design" below.
 
 ## How to change the design
 
