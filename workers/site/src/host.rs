@@ -3586,7 +3586,7 @@ impl<F: Family> Host<F> {
             let until = c.m.state().promise_until.0;
             (c.m.role() == Role::Leader || (named && now_ms() < until), named, until)
         };
-        if !F::needs_leader(self) {
+        if !F::needs_leader(self) || !F::may_lead(self) {
             return self.unheard.set((0, 0));
         }
         // The core's timers: an unanswered probe is failed, and its leader forgotten, only on a tick.

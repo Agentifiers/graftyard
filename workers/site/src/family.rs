@@ -228,6 +228,14 @@ pub trait Family: 'static {
     {
         false
     }
+    /// Whether this member may start a campaign or take a transfer now, beside the Raft core's own rules: a repository
+    /// parent member whose install dropped its metadata tables may not (`crate::load::meta_dropped`).
+    fn may_lead(_host: &std::rc::Rc<crate::host::Host<Self>>) -> bool
+    where
+        Self: Sized,
+    {
+        true
+    }
     /// `Write::Install`'s statements that make the loaded tables the member's fold.
     fn install_stmts(_stmts: &mut Vec<Stmt>) {}
     /// Family fields of a log entry on the harness's `/log` and the shard's `/entries`.
@@ -563,8 +571,10 @@ pub fn forget_dumps() {
 
 /// Whether a repository member's metadata tier serves reads and takes `apply`'s writes: once it stands where the
 /// core tier does, or on a metadata child once its seed's restore finished (`crate::split`).
-fn meta_loaded(fold: &git::repo::RepoFold, caught_up: bool) -> bool {
-    if fold.child { crate::split::child_loaded(fold) } else { caught_up }
+/// A parent member whose install dropped its metadata tables (`dropped`, `crate::load::meta_dropped`) is never loaded,
+/// whatever its tier's meta row says, until the install's `Write::Install` clears the mark.
+pub(crate) fn meta_loaded(fold: &git::repo::RepoFold, caught_up: bool, dropped: bool) -> bool {
+    !dropped && if fold.child { crate::split::child_loaded(fold) } else { caught_up }
 }
 
 /// `Repo::read_json` before a split parent's fills are checked (`crate::split`).
@@ -839,7 +849,7 @@ impl Family for Repo {
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<git::repo::RepoFold> {
         let fold = Self::new_fold(sql, join);
         let caught_up = graftyard_fold::meta(&*fold.meta).applied == graftyard_fold::meta(&*fold.core).applied;
-        crate::tier::handle(&*fold.meta).set_loaded(meta_loaded(&fold, caught_up));
+        crate::tier::handle(&*fold.meta).set_loaded(meta_loaded(&fold, caught_up, crate::load::meta_dropped(sql)));
         Ok(fold)
     }
     /// A member that applied entries before its chain had tier tables (an M1 group on an M2 build) has a core tier
@@ -886,7 +896,8 @@ impl Family for Repo {
             )));
         }
         let meta = graftyard_fold::meta(&*fold.meta).applied;
-        crate::tier::handle(&*fold.meta).set_loaded(meta_loaded(fold, meta == applied));
+        let dropped = crate::load::meta_dropped(&sql);
+        crate::tier::handle(&*fold.meta).set_loaded(meta_loaded(fold, meta == applied, dropped));
         Ok(())
     }
     fn tiered() -> bool {
@@ -1291,6 +1302,9 @@ impl Family for Repo {
     }
     async fn fetch_missed(host: &std::rc::Rc<crate::host::Host<Self>>, missed: &Value) -> Result<(), String> {
         crate::split::fetch(host, missed).await
+    }
+    fn may_lead(host: &std::rc::Rc<crate::host::Host<Self>>) -> bool {
+        !crate::load::meta_dropped(&host.state.storage().sql())
     }
     fn install_stmts(stmts: &mut Vec<Stmt>) {
         crate::load::install_stmts(stmts);

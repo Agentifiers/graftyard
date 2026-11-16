@@ -42,7 +42,7 @@ holds = sorted(e["timestamp"] for s in "abc" for e in events(f"graft-m1-site-{s}
                if e.get("$workers", {}).get("durableObjectId") in ids)
 hours = collections.defaultdict(lambda: {"ok": 0, "503": 0, "other": 0, "503near": 0, "503outside": 0})
 seen = set()
-for e in events("graft-m1-edge", "b0-30-r2.git/git-receive-pack", a, b, 20_000):
+for e in events("graft-m1-edge", json.load(open("tests/am1/raw/b030-repo.json"))["name"].split("/")[1] + ".git/git-receive-pack", a, b, 20_000):
     k = (e["timestamp"], e.get("$workers", {}).get("requestId"))
     if k in seen:
         continue

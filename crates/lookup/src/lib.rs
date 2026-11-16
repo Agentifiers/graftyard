@@ -221,6 +221,26 @@ pub async fn post_within(
     within(deadline, call).await.flatten()
 }
 
+/// `create`'s `/join` to one bootstrap member, within 60 s: its status, and its body with `JOINED_FRESH` set to whether
+/// the member's answer carried that header.
+async fn post_join(b: &Bindings<'_>, to: SiteId, do_name: &str, body: &[u8]) -> Option<(u16, Value)> {
+    let stub = b.member(to, do_name).ok()?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
+    let h = Headers::new();
+    h.set(MEMBER_CLOCK, &now_ms().to_string()).ok()?;
+    init.with_headers(h);
+    let req = Request::new_with_init("https://member/join", &init).ok()?;
+    let call = async move {
+        let mut res = stub.fetch_with_request(req).await.ok()?;
+        let (status, fresh) = (res.status_code(), res.headers().get(JOINED_FRESH).ok().flatten().is_some());
+        let v = res.json::<Value>().await.unwrap_or(Value::Null);
+        // A refusal's body stays as the member sent it, for `refused`'s `noRepoOwner` count.
+        Some((status, if status == 200 { json!({ JOINED_FRESH: fresh, "rows": v }) } else { v }))
+    };
+    within(Duration::from_secs(60), call).await.flatten()
+}
+
 async fn registry_row(b: &Bindings<'_>, at: SiteId, chain: ChainId) -> Option<RegistryRow> {
     let reg = MemberRegistry::for_chain(at, chain);
     let stub = b.registry(at, &reg.do_name()).ok()?;
@@ -1139,8 +1159,9 @@ pub async fn commit_hedged(
         note(json!({ "send": t.site.0, "name": t.do_name, "why": why }));
         let send = post_within(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), RECEIPT_OPEN);
         let ask = || {
-            let t = &t;
+            let (t, note) = (&t, &note);
             async move {
+                note(json!({ "ask": t.site.0 }));
                 let r = post_within(b, t.site, &t.do_name, "/outcome_by_request", lookup, COMMIT_RECEIPT).await;
                 if let Some((200, v)) = &r {
                     heard(chain, t.site, v, now_ms());
@@ -1304,16 +1325,13 @@ pub async fn create(
         return Ok(());
     }
     let members = record.bootstrap_members(chain);
-    let joins =
-        members.iter().map(|m| {
-            let mut j = join.clone();
-            j["chain"] = json!(chain);
-            j["me"] = json!(m);
-            j["record"] = json!(record);
-            async move {
-                post_within(b, m.site, &m.do_name, "/join", j.to_string().as_bytes(), Duration::from_secs(60)).await
-            }
-        });
+    let joins = members.iter().map(|m| {
+        let mut j = join.clone();
+        j["chain"] = json!(chain);
+        j["me"] = json!(m);
+        j["record"] = json!(record);
+        async move { post_join(b, m.site, &m.do_name, j.to_string().as_bytes()).await }
+    });
     let answers = futures_util::future::join_all(joins).await;
     let joined = answers.iter().filter(|a| matches!(a, Some((200, _)))).count();
     if joined * 2 <= members.len() {
@@ -1324,16 +1342,36 @@ pub async fn create(
             .map_err(|e| refused(chain, &answers, &e));
     }
     let home = members.iter().find(|m| m.site == record.home).unwrap_or(&members[0]);
+    let bootstrapped = bootstrapped_here(&answers);
     let end = now_ms() + LOOKUP_FOR.as_millis() as u64;
     while now_ms() < end {
         let _ = post(b, home.site, &home.do_name, "/campaign", b"{}").await;
         if let Ok(Some((_, _, leader))) = call_opt(b, chain, record, "/read", probe.as_bytes()).await {
-            return place(b, chain, record, leader).await;
+            return if bootstrapped { place(b, chain, record, leader).await } else { Ok(()) };
         }
         Delay::from(Duration::from_millis(200)).await;
     }
     Err(format!("{chain}: created, but no member leads"))
 }
+
+/// Whether `create`'s own `/join`s built the group in this call: a majority of the bootstrap members joined fresh.
+/// A member that was already joined answers its `Rtt` rows from before (`Routes::join` measures again only past a
+/// day), and one replaced since refuses as `superseded`, so a group that already exists (a lookup that found no leader
+/// in a leaderless gap) is never re-placed by a lookup: B0-30's rerun ran `create` on a 25-day-old group under load,
+/// whose background `/place` committed `Degraded { lost: 1 }` while site c installed, and the parent never committed
+/// again (`tests/am1/results/b030-split.md`, "Cause 2"). A member's answer carries `JOINED_FRESH` only on the join that
+/// built its core; `join_answer` puts it beside the answer's body.
+fn bootstrapped_here(answers: &[Option<(u16, Value)>]) -> bool {
+    let fresh = answers
+        .iter()
+        .filter(|a| matches!(a, Some((200, v)) if v.get(JOINED_FRESH) == Some(&Value::Bool(true))))
+        .count();
+    fresh * 2 > answers.len()
+}
+
+/// The `/join` response header a member sets on the join that built its core (`Routes::join`): the body stays the bare
+/// `Rtt` rows every other caller reads.
+pub const JOINED_FRESH: &str = "x-graft-joined-fresh";
 
 /// The word in `create`'s error when a majority of the bootstrap members refused to join because the chain's source
 /// holds no row for it yet: a repository whose create has not committed `RepoOwner`. The edge answers a read of it as
@@ -1578,6 +1616,30 @@ mod tests {
             let e = refused(chain, &answers, "repo:131316: no group");
             assert_eq!(is_not_created(&e), want, "{e}");
             assert!(e.starts_with("repo:131316: "), "{e}");
+        }
+    }
+
+    /// `create` starts `/place` only for a group its own joins built: a majority of fresh joins. B0-30's lookup in a
+    /// leaderless gap found every bootstrap member already joined, or replaced; a create racing another for a new
+    /// group sees fresh joins only where it was first; an answer from a member that predates `fresh` counts as not.
+    #[test]
+    fn only_a_group_this_create_bootstrapped_is_placed() {
+        let fresh = || Some((200, json!({ JOINED_FRESH: true, "rows": [] })));
+        let again = || Some((200, json!({ JOINED_FRESH: false, "rows": [] })));
+        let old = || Some((200, json!([])));
+        let superseded = || Some((409, json!({ "refused": { "superseded": {} } })));
+        let cases = [
+            (vec![fresh(), fresh(), fresh()], true),
+            (vec![fresh(), fresh(), None], true),
+            (vec![fresh(), fresh(), again()], true),
+            (vec![again(), again(), again()], false),
+            (vec![again(), superseded(), again()], false),
+            (vec![fresh(), again(), again()], false),
+            (vec![fresh(), again(), None], false),
+            (vec![old(), old(), old()], false),
+        ];
+        for (answers, want) in cases {
+            assert_eq!(bootstrapped_here(&answers), want, "{answers:?}");
         }
     }
 

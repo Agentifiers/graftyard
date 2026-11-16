@@ -14,7 +14,7 @@
 //!   and `MetaSeed`. Every table and column `decide` reads stays, so every command still decides and commits on the
 //!   parent. A read fills a slimmed field from the child's row (`Filled`); a row the parent deleted is never filled.
 
-use graftyard_fold::{Read, Rows, Val};
+use graftyard_fold::{Read, Rows, Store, Val};
 use graftyard_raft::{Format, TierSet};
 use graftyard_types::{ChainId, Index, Tier, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -121,6 +121,19 @@ pub(crate) fn write_meta(w: &mut dyn Rows, s: &SplitEntry) {
 /// The slim cursor, once `MetaDropped` applied to this metadata tier.
 pub fn slim_cursor(meta: &(impl Read + ?Sized)) -> Option<SlimCursor> {
     get_rec(meta, "split", &key("slim"))
+}
+
+/// Whether the parent's metadata tier is due a snapshot because its slim pass ended after its newest one: the entry
+/// that wrote the done cursor is newer than every committed metadata snapshot. A snapshot at or after it holds the
+/// slimmed tier, which an `InstallSnapshot` then names in place of the whole tier from before `MetaDropped`: site c's
+/// install on B0-30's rerun loaded that one, 3.25 GB, beside the member's own 5.7 GB
+/// (`tests/am1/results/b030-split.md`, "Cause 1").
+pub fn slim_snapshot_due(core: &(impl Read + ?Sized), meta: &(impl Store + ?Sized)) -> bool {
+    if !slim_cursor(meta).is_some_and(|c| c.done) {
+        return false;
+    }
+    let Some(ended) = Store::get(meta, "split", &key("slim")).map(|s| s.written) else { return false };
+    crate::tiers::snapshots(core, Tier::Metadata).last().is_none_or(|(to, _, _)| *to < ended)
 }
 
 /// `verify`'s rule for a split event over the group's core tier: each step once, in order, on the right group, and

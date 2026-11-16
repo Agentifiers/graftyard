@@ -563,3 +563,55 @@ fn the_seed_is_the_newest_snapshot() {
     assert_eq!(key, new);
     let _ = late;
 }
+
+/// (i-1): the slimmed tier is snapshotted once its pass ends, so a later install names it and not the whole tier from
+/// before `MetaDropped`. Not due before the split, mid-pass, or once a snapshot at or after the pass's end committed;
+/// due when the newest snapshot predates the end, even one taken after `MetaDropped`.
+#[test]
+fn the_slimmed_tier_is_snapshotted_once_its_pass_ends() {
+    use graftyard_git::split::slim_snapshot_due;
+    let mut p = Parent::new();
+    let n = p.open_issue("body");
+    for i in 0..(SLIM_ROWS * 2) {
+        p.comment(n, &format!("comment {i} {}", "z".repeat(300)));
+    }
+    let due = |p: &Parent| slim_snapshot_due(&p.fold.core, &*p.fold.meta);
+    assert!(!due(&p), "no split yet");
+    p.record(RepoEvent::Split(SplitEntry::MetaSplit { child: ChainId::RepoMeta(REPO) })).unwrap();
+    let (whole, _) = p.snapshot();
+    let SplitStep::Seed { at, key } = p.step(None) else { panic!() };
+    p.record(RepoEvent::Split(SplitEntry::MetaSeed { at, key })).unwrap();
+    p.record(RepoEvent::Split(SplitEntry::MetaDropped { seed: at })).unwrap();
+    p.record(RepoEvent::Split(SplitEntry::MetaSlim)).unwrap();
+    assert_eq!(p.step(Some(&ChildView { seeded: true, loaded: true })), SplitStep::Slim, "the pass runs on");
+    assert!(!due(&p), "mid-pass: the tier is still being slimmed");
+    while p.step(Some(&ChildView { seeded: true, loaded: true })) == SplitStep::Slim {
+        p.record(RepoEvent::Split(SplitEntry::MetaSlim)).unwrap();
+    }
+    assert!(due(&p), "the pass ended after the newest snapshot ({whole})");
+    // A write after the end does not make it any less due.
+    p.comment(n, "after the pass");
+    assert!(due(&p));
+    let (slim, frames) = p.snapshot();
+    assert!(!due(&p), "a snapshot after the end holds the slimmed tier");
+    // The new snapshot is what an install names (the newest at or below `through`), and it holds no seeded text.
+    let newest = graftyard_git::tiers::snapshots(&p.fold.core, Tier::Metadata).pop().unwrap().2.key;
+    assert_eq!(newest, slim);
+    let restored = restore(&frames, Index(p.log.len() as u64 - 1));
+    let texts = restored.prefix("comment", &[]).into_iter().filter(|(_, c)| !slimmed("comment", c)).count();
+    assert_eq!(texts, 1, "only the comment written after the pass keeps its text in the slim snapshot");
+}
+
+/// (i-1)'s boundary: a snapshot taken at exactly the entry that ended the pass holds the slimmed tier, so nothing is due
+/// after it, or the writer would snapshot the same tier again and again.
+#[test]
+fn a_snapshot_at_the_pass_end_satisfies_it() {
+    use graftyard_git::split::slim_snapshot_due;
+    let mut p = Parent::new();
+    let n = p.open_issue("body");
+    p.comment(n, "c");
+    split(&mut p);
+    assert!(slim_snapshot_due(&p.fold.core, &*p.fold.meta));
+    p.snapshot();
+    assert!(!slim_snapshot_due(&p.fold.core, &*p.fold.meta));
+}

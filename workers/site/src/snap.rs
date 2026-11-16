@@ -64,6 +64,9 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS load_report (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS load_want (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS install_source (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
+    // `crate::load`: set once an installing split parent dropped its own metadata tables, cleared by `Write::Install`.
+    // While it is set the member's metadata tier is unloaded and it does not lead (`crate::load::meta_dropped`).
+    "CREATE TABLE IF NOT EXISTS meta_dropped (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)",
     // `crate::split`: a metadata child member's restore of its seed.
     "CREATE TABLE IF NOT EXISTS split_job (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
 ];
@@ -222,6 +225,10 @@ fn load_meta(h: &Rc<Host<Repo>>, sql: &SqlStorage) -> Result<bool> {
     // paths' alone; release arms the alarm, which loads it here.
     #[cfg(feature = "test-faults")]
     if crate::tier::handle(&*fold.meta).reads_while_held().is_some() {
+        return Ok(false);
+    }
+    // A dropped tier waits for its install (`crate::load::meta_dropped`): the log no longer holds what it would replay.
+    if crate::load::meta_dropped(sql) {
         return Ok(false);
     }
     let target = meta(&*fold.core).applied;
@@ -428,7 +435,10 @@ fn begin(
         return Ok(false);
     }
     let due = || -> Result<bool> {
-        if snapshot_due(last, m.applied, m.at, 0) {
+        // A split parent's slim pass just ended: the slimmed tier is snapshotted at once (`slim_snapshot_due`).
+        if snapshot_due(last, m.applied, m.at, 0)
+            || (t == Tier::Metadata && git::split::slim_snapshot_due(core, &*store))
+        {
             return Ok(true);
         }
         let k = tier_int(t) as usize;
@@ -589,7 +599,8 @@ pub fn tiers_json(fold: &git::repo::RepoFold, at: Option<u64>) -> Value {
             "loaded": s.loaded(),
             "applied": m.applied.0,
             "digest": fold_digest(s, t).hex(),
-            "at": at.and_then(|a| digest_at(s, Index(a))).map(|d| d.hex()),
+            // An unloaded tier answers no digest, so the fold audit lists it as loading and compares nothing.
+            "at": at.filter(|_| s.loaded()).and_then(|a| digest_at(s, Index(a))).map(|d| d.hex()),
             "snapshots": git::tiers::snapshots(&*fold.core, t).iter().map(|(to, _, a)| json!({ "to": to.0, "key": a.key.to_string() })).collect::<Vec<_>>(),
             "running": m.snap.map(|s| s.to.0),
         })

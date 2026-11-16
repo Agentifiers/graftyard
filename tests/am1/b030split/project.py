@@ -17,6 +17,7 @@ reading and says so (`slimOverEstimate`)."""
 import datetime as D, json, os, re
 
 RAW = "tests/am1/raw"
+RUN = os.environ.get("B030_RUN", "b030r2")
 HOURS = float(os.environ.get("HOURS", 3))
 DRAIN_MAX_H = 24.0
 SLIM_EST_USD = round(20.04 * 3_241_503_104 / 3.56e9, 2)
@@ -44,7 +45,7 @@ drain_h = owed30 / (rate * 60) if rate else float("inf")
 
 # The run-only meter: the monitor's last cost, and its hourly rate over the same window of rows.
 mon = []
-for l in open(f"{RAW}/b030r2-monitor.log"):
+for l in open(f"{RAW}/{RUN}-monitor.log"):
     m = re.match(r"(\S+) monitor day \S+ .* cost \$([\d.]+)", l)
     if m:
         mon.append((t(m[1]), float(m[2])))
@@ -56,7 +57,7 @@ if (D.datetime.now(D.UTC) - t(last["at"])).total_seconds() >= 120:
     pauses.append((t(last["at"]), D.datetime.max.replace(tzinfo=D.UTC)))
 # The split's window, from the watcher's rows: start (a child), MetaDropped, and the slim pass's end.
 start = dropped = done = None
-for l in open(f"{RAW}/b030r2-watch.jsonl"):
+for l in open(f"{RAW}/{RUN}-watch.jsonl"):
     if '"kind":"split"' not in l:
         continue
     r = json.loads(l); sp = r["split"]

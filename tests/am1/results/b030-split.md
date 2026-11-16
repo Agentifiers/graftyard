@@ -1015,6 +1015,103 @@ be a pass as written. Nothing hosted was changed after the stall.
 - So about **$180 to $185**, plus one site day carrying proposals 1 and 2 (and main's registry-restore, edge
   read-gate retry and disk-validate).
 - About 40 h of load and 12 h of drain.
+- **Approved (user, relayed by the operator, about 13:40Z 2026-11-16), at about $185.** Hard stop $190 on graft-m1's
+  meter, counted from the rerun's first site day; the 24 h drain limit is unchanged. It runs only after:
+  1. `b030-fixes` is merged to main: (i-1) a slim snapshot when the slim ends, (i-2) an install extends instead of
+     restarting, (i-3) an installing parent member drops its own metadata tables, (ii)(a) no re-placement while a
+     voter is installing or behind, and `create` starts `/place` only for a group it bootstrapped;
+  2. one site day from main with those fixes and whatever else main holds then (m3f's receipt rule rides along if it
+     is merged; the rerun does not wait for it).
+  - The row is unchanged: 30 days of journey 9 with pushes on, the 4 GB tier, the split at `CHILD_GROUP_AT`. The
+    watcher stays, with one alert added: commit index unchanged for 60 s while a leader exists. Reports at the
+    split, on any stop, and every 4 h.
+
+### b030-fixes (built 2026-11-16, branch `b030-fixes` off main 2465047d)
+
+Design first: DESIGN Shape, `CHILD_GROUP_AT`, "Installs." states the three install rules and the drop condition.
+DECISIONS has "An installing parent member drops its own metadata tier…" and "A re-placement waits for every voter…".
+No `crates/raft` change; (ii)(b) stays unbuilt.
+
+- **(i-1) A slim snapshot when the slim ends.** `split::slim_snapshot_due`: the metadata tier is due a snapshot once
+  the slim cursor is done and the newest metadata snapshot's `to` is below the entry that wrote the done cursor.
+  `snap::begin` takes it. So an install's newest metadata snapshot at or below `through` is the slimmed tier.
+- **(i-2) An install extends instead of restarting.** `load::next_job(running, new)`: a source with the same core and
+  metadata snapshot keys, a `through` not earlier, and archives that continue the running job's extends it to the new
+  `through` and answers the newer round. Any other source restarts it and logs "install restarted".
+- **(i-3) An installing parent member drops its own metadata tables.** Condition (`drop_due`): the member is past
+  `MetaDropped`, its install job is stored and started, and its `applied` is below the source's `through`. The job
+  records the tables and a `meta_dropped` row in its own transaction, unloads the tier, then drops one table a batch
+  (`tier::drop_live`). While the mark stands:
+  - `family::meta_loaded` is false on every restore, so `follower_query` serves no metadata or narrow `api` read
+    (the edge moves on);
+  - `snap::load_meta` replays nothing, and `snap::tiers_json` answers `at: null`, so the fold audit lists it as
+    loading and flags nothing;
+  - `Family::may_lead` is false: `/campaign` and `/suspect` answer `mayNotLead`, `keep_led` skips it, and a
+    `TimeoutNow` is answered `TransferRefused`.
+  - `Write::Install` clears the mark with the table swap. An abandoned job leaves it, so the member stays unloaded
+    until the next install finishes. `NotNeeded` swaps the scratch tier in, clears the mark, and leaves the tier
+    unloaded for `load_meta` to replay above `through`.
+- **(ii)(a) No re-placement while a voter is behind or installing.** `replace_on` reads `/status` `applied` from each
+  voter `Degraded { lost: to }` would need (not itself, not `to`). `degraded_needs` builds `Ready` only if each is
+  within `PLACE_LAG_MAX` (64) of the leader's commit; an unanswered voter counts as behind. Otherwise it answers
+  `{"error": "behind"}` and changes nothing.
+- **create→/place.** A member's `/join` sets `x-graft-joined-fresh` only when that join built its core.
+  `graftyard_lookup::create` places only when a majority of its bootstrap joins were fresh
+  (`bootstrapped_here`). B0-30's 08:14Z case (every join "already joined") now places nothing.
+
+**Tests, and whether each fails on main.** Main was checked in a worktree at 23ce5dc4 with the tests ported and
+stand-ins giving main's behaviour (main has none of these functions).
+
+| Test | File | On main |
+|---|---|---|
+| `the_slimmed_tier_is_snapshotted_once_its_pass_ends` | `crates/git/tests/split.rs` | fails |
+| `a_snapshot_at_the_pass_end_satisfies_it` | `crates/git/tests/split.rs` | (companion) |
+| `a_later_source_with_the_same_snapshots_extends_the_running_install` | `workers/site/src/load.rs` | fails |
+| `a_source_with_other_snapshots_or_a_gap_restarts_the_install` | `workers/site/src/load.rs` | passes (main always restarts) |
+| `only_an_install_on_a_split_parent_past_the_horizon_drops_its_tier` | `workers/site/src/load.rs` | fails |
+| `a_member_with_its_tables_dropped_is_never_loaded` | `workers/site/src/load.rs` | fails |
+| `an_unloaded_tier_answers_no_digest_for_the_audit` | `workers/site/src/load.rs` | fails (main's real `tiers_json`) |
+| `a_member_that_may_not_lead_refuses_a_transfer` | `workers/site/src/member.rs` | fails |
+| `a_degraded_config_waits_for_every_voter_it_needs` | `workers/site/src/member.rs` | fails |
+| `only_a_group_this_create_bootstrapped_is_placed` | `crates/lookup/src/lib.rs` | fails |
+
+**Plants.** `tests/b030fixes/plant.py`: 20 mutants, 20 caught. (i-1) 3, (i-2) 5, (i-3) 7, (ii)(a) 3, create 2. One
+(an extended job keeping its old `through`) survived the first test and is caught after the test gained the
+"only the metadata snapshot differs" and later-`through` cases. `plant.py --residue` runs in the full checks.
+
+**Disk peak [measured, local workerd].** `tests/b030fixes/dropbed.js`: a 256 MiB log plus a 512 MiB metadata table
+(918,556,672 B), then a 512 MiB scratch tier. Kept: peak 1,531,289,600 B. Dropped first: 306,192,384 B after the
+drop, peak 918,921,216 B. So the peak is own − metadata + scratch. Site c's case [inference]: 5.70 − 3.84 + under
+1 ≈ under 2.9 GB with (i-1)'s slimmed snapshot, about 5.7 GB without it, against 10.18 GB measured on the rerun.
+
+## B0-30 third run (b030r3, from 2026-11-16 17:25Z)
+
+Approved by the user (about $185, relayed by the operator 13:40Z). b030-fixes merged to main as `0e3d13cc`
+(operator, full checks on the merged tree: 1,054 passed, 0 failed).
+
+- **Site day r3, announced 17:22Z, start 17:25Z** (`tests/am1/b030split/siteday-r3.sh`, log
+  `tests/am1/raw/b030r3-siteday.log`):
+  - Sites a to d from main `0e3d13cc`: b030-fixes, with main's receipt rule (`8473e0ea`), push-reads and the rest.
+  - New git shard image from the same commit's `containers/git`, tag `b030r3`, `sha256:c38059db…5668`
+    (`tests/am1/raw/b030split-image-r3.log`). Main's container changes since site day 9's image: repack-keep-pack,
+    composed-hits and composed-miss, promote-unlock.
+  - `SHARD_INSTANCE` standard-4. Other variables as site day 9 (`GRAFTYARD_AUDIT`, request retention 9,600 s).
+    `--roll-shards` (none are running).
+  - Then the edge `graft-m1-edge` from the same commit, with `tests/am1/hosted/deploy-edge.sh`'s flags. The edge
+    runs `graftyard_lookup::create`, where the create→/place rule lives, and has run `19b495a1` since 2026-11-13.
+  - Every member resets once per site. No new class, binding, migration, format or event tag.
+- **Row as written.** A fresh repository `m3org/b0-30-r3` seeded with the 4 GB metadata tier, then 30 simulated days
+  of journey 9 at 18x with pushes on (1.6 a second, 2.48 GB a simulated day), no keeper and no keepHome, the split at
+  `CHILD_GROUP_AT`, then the drain. Drivers `tests/am1/b030split/rerun.sh` with `B030_RUN=b030r3`.
+- **Stop rule.** $190 on graft-m1's run-only meter, counted from the site day's start (`tests/am1/raw/b030r3.start`).
+  Containers count install-wide, pool shards included, not only the run's network (`B030_ALL_CONTAINERS`). Drain
+  limit 24 h. The watcher adds a stall alert: the leader's commit index unchanged for 60 s (`STALL_S`), alert only.
+- **Reapers and sweeps.** graft-m1 runs no reaper (`tests/fanout/reaper.sh` and the LM-1 reapers act only on
+  `graft-m2b`). The end-of-run checks cover every graft-m1 shard by name, not by range: `shards.py` lists every
+  running `graft-m1-site-*` instance, network or pool, and `tests/fanout/teardown.py --sweep` (`INSTALL=graft-m1`)
+  takes every network and pool. At 17:05Z no graft-m1 shard was running. The second run's generic state files are
+  in `tests/am1/raw/b030r2-generic/`.
+- **After the run:** `/retire` on the six members, a sweep, and the meter checked flat for 30 minutes.
 
 ## Cost
 

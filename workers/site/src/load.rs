@@ -119,6 +119,9 @@ struct Job {
     rows: u64,
     entries: u64,
     mem_max_mb: f64,
+    /// The member's own metadata tables still to drop, one a batch, before the load starts (`drop_due`).
+    #[serde(default)]
+    drop: Vec<String>,
 }
 
 impl Job {
@@ -197,6 +200,7 @@ pub fn install_stmts(stmts: &mut Vec<Stmt>) {
         "DELETE FROM snap_buf",
         "DELETE FROM load_job",
         "DELETE FROM load_want",
+        "DELETE FROM meta_dropped",
     ] {
         stmts.push((q, vec![]));
     }
@@ -263,7 +267,8 @@ pub(crate) async fn read_whole(
 /// holding `through` and is answered at once (`Member::on_install`).
 pub fn want(h: &Rc<Host<Repo>>, w: InstallWanted) {
     let sql = h.state.storage().sql();
-    let same = load_job(&sql).ok().flatten().is_some_and(|j| match &j.kind {
+    let running = load_job(&sql).ok().flatten();
+    let same = running.as_ref().is_some_and(|j| match &j.kind {
         Kind::Install { install, .. } => install.source == w.install.source,
         Kind::Audit { .. } => false,
     });
@@ -273,8 +278,15 @@ pub fn want(h: &Rc<Host<Repo>>, w: InstallWanted) {
         sql.exec("INSERT OR REPLACE INTO load_want (id, row) VALUES (1, ?)", vec![row.into()])?;
         Ok(())
     };
-    let r =
-        if same { newest() } else { install_job(h, w.clone()).and_then(|j| save_job(h, &j)).and_then(|()| newest()) };
+    let start = || -> Result<()> {
+        let chain = h.core.borrow().as_ref().map(|c| c.join.chain).ok_or_else(|| err("not joined"))?;
+        let (job, restarted) = next_job(running.clone(), install_job(chain, &w)?);
+        if restarted && running.as_ref().is_some_and(Job::install) {
+            note(h, format!("install restarted: a source at {} names other snapshots", w.install.source.through.0));
+        }
+        save_job(h, &job)
+    };
+    let r = if same { newest() } else { start().and_then(|()| newest()) };
     match r {
         Ok(()) => h.arm_in(BUSY_MS),
         Err(e) => note(h, format!("install not started: {e}")),
@@ -293,8 +305,7 @@ fn tier_load(key: Option<String>) -> Result<TierLoad> {
     Ok(TierLoad { key, to, skip: false, site: None, size: 0, offset: 0, restore: None, restored: false })
 }
 
-fn install_job(h: &Rc<Host<Repo>>, w: InstallWanted) -> Result<Job> {
-    let chain = h.core.borrow().as_ref().map(|c| c.join.chain).ok_or_else(|| err("not joined"))?;
+fn install_job(chain: ChainId, w: &InstallWanted) -> Result<Job> {
     let s = &w.install.source;
     let archives = s
         .archives
@@ -316,6 +327,50 @@ fn install_job(h: &Rc<Host<Repo>>, w: InstallWanted) -> Result<Job> {
         archives,
         next,
     ))
+}
+
+/// The job a new install source runs: `running` carried on to `new`'s `through` when both load the same snapshot keys
+/// and `new`'s archives continue `running`'s, else `new` from the start. Whether it restarted. Each leader truncation
+/// names a new source with a later `through`; a restart on each one dropped the scratch tables, and on B0-30's rerun
+/// site c's install restarted five times in 14 minutes, so under load an install never finished
+/// (`tests/am1/results/b030-split.md`, "The install restarted on every archive run").
+fn next_job(running: Option<Job>, new: Job) -> (Job, bool) {
+    let Some(mut old) = running.filter(|j| j.install() && j.chain == new.chain) else { return (new, true) };
+    let keys = |j: &Job| [j.tiers[0].key.clone(), j.tiers[1].key.clone()];
+    if keys(&old) != keys(&new) || new.through < old.through {
+        return (new, true);
+    }
+    let end = old.archives.last().map_or(old.through, |a| a.to);
+    let more: Vec<Arch> = new.archives.iter().filter(|a| a.to > end).cloned().collect();
+    if more.first().is_some_and(|a| a.from != end + 1) || (more.is_empty() && new.through > end) {
+        return (new, true);
+    }
+    old.archives.extend(more);
+    old.through = new.through;
+    old.kind = new.kind;
+    (old, false)
+}
+
+/// Whether an install drops the member's own metadata tables before it loads (`design/DESIGN.md`, Shape,
+/// `CHILD_GROUP_AT`, Installs): only an install, only on a split parent after `MetaDropped`, and only on a member past
+/// the source's `through`, which its own tier cannot serve: it was sent the install because the leader no longer holds
+/// its next entry. Its tier then holds nothing the group needs from it, and keeping it beside the scratch load is what
+/// took site c past `CHILD_GROUP_AT` on B0-30's rerun (5.70 GB own plus 4.48 GB of scratch).
+fn drop_due(install: bool, split_dropped: bool, applied: u64, through: u64) -> bool {
+    install && split_dropped && applied < through
+}
+
+/// Whether this member dropped its metadata tables for an install that has not finished: its tier is unloaded, it
+/// serves no metadata read, it does not lead, and `crate::snap` replays nothing into it.
+pub fn meta_dropped(sql: &SqlStorage) -> bool {
+    rows(sql, "SELECT at FROM meta_dropped WHERE id = 1", vec![]).is_ok_and(|r| !r.is_empty())
+}
+
+fn unload_meta(h: &Rc<Host<Repo>>) {
+    if let Some(c) = h.core.borrow().as_ref() {
+        crate::tier::handle(&*c.m.group_fold().fold.meta).set_loaded(false);
+    }
+    crate::family::forget_dumps();
 }
 
 fn new_job(kind: Kind, chain: ChainId, through: u64, tiers: [TierLoad; 2], archives: Vec<Arch>, next: u64) -> Job {
@@ -340,6 +395,7 @@ fn new_job(kind: Kind, chain: ChainId, through: u64, tiers: [TierLoad; 2], archi
         rows: 0,
         entries: 0,
         mem_max_mb: wasm_mem_mb(),
+        drop: Vec::new(),
     }
 }
 
@@ -453,7 +509,33 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
     if !job.prepared {
         reset_scratch(sql, true)?;
         job.prepared = true;
-        save_job(h, &job)?;
+        let (dropped, applied) = h
+            .core
+            .borrow()
+            .as_ref()
+            .map_or((false, u64::MAX), |c| (crate::split::dropped(&c.m.group_fold().fold), c.m.state().applied.0));
+        let drop = drop_due(job.install(), dropped, applied, job.through);
+        let mut stmts = Vec::new();
+        if drop {
+            // Marked in the job's own transaction, and unloaded before anything awaits, so no input applies to, reads,
+            // or snapshots a tier whose tables then go.
+            job.drop = crate::tier::live_tables(&git::tiers::METADATA);
+            stmts.push(("INSERT OR REPLACE INTO meta_dropped (id, at) VALUES (1, ?)", vec![i(now_ms())]));
+        }
+        stmts.push(job_stmt(&job)?);
+        commit_tx(&h.state.storage(), stmts).map_err(err)?;
+        if drop {
+            unload_meta(h);
+            note(h, format!("install: dropping {} metadata tables before the load", job.drop.len()));
+        }
+        return Ok(true);
+    }
+    // One of the member's own metadata tables a batch, dropped and made again empty, so a read of it finds an empty
+    // table, never a missing one.
+    if let Some(t) = job.drop.pop() {
+        let mut stmts: Vec<Stmt> = crate::tier::drop_live(&t).into_iter().map(|q| (q, vec![])).collect();
+        stmts.push(job_stmt(&job)?);
+        commit_tx(&h.state.storage(), stmts).map_err(err)?;
         return Ok(true);
     }
     let (mut core, mut meta) = crate::tier::scratch_tiers(sql, job.install())?;
@@ -765,7 +847,16 @@ fn finish_install(
         }
         Err(raft::InstallError::NotNeeded) => {
             v["installed"] = json!("notNeeded");
-            sql.exec("DELETE FROM load_job", None)?;
+            let mut stmts: Vec<Stmt> = vec![("DELETE FROM load_job", vec![])];
+            // The member caught up by AppendEntries from a leader that still stored its next entries, after it dropped
+            // its own metadata tables: the loaded tier at `through` becomes its tier, still unloaded, and
+            // `crate::snap::load_meta` replays the stored log above `through` into it before it serves.
+            if meta_dropped(sql) {
+                stmts.extend(crate::tier::swap_in(&git::tiers::METADATA).into_iter().map(|q| (q, vec![])));
+                stmts.push(("DELETE FROM meta_dropped", vec![]));
+                v["metadataKept"] = json!(true);
+            }
+            commit_tx(&h.state.storage(), stmts).map_err(err)?;
             reset_scratch(sql, false)?;
         }
         Err(raft::InstallError::Mismatch { what }) => return Err(err(format!("install refused: {what}"))),
@@ -961,4 +1052,262 @@ pub fn requests_json(h: &Rc<Host<Repo>>, at: u64) -> Result<Value> {
         n += 1;
     }
     Ok(json!({ "at": at, "rows": n, "digest": Digest(sum.finalize().into()).hex() }))
+}
+
+#[cfg(test)]
+mod tests {
+    use graftyard_types::{ChainId, DbId, RepoId, SiteId};
+
+    use super::{Arch, Kind, TierLoad, next_job, tier_load};
+
+    const CHAIN: ChainId = ChainId::Repo(RepoId(DbId(1048590)));
+
+    fn arch(from: u64, to: u64) -> Arch {
+        Arch { from, to, key: format!("archive/{from}-{to}"), site: None, size: 0 }
+    }
+
+    /// An install job as `install_job` builds it from a source: the snapshot keys, `through`, and its archives.
+    fn job(core: &str, meta: Option<&str>, through: u64, archives: Vec<Arch>) -> super::Job {
+        let tiers: [TierLoad; 2] = [tier_load(Some(core.into())).unwrap(), tier_load(meta.map(Into::into)).unwrap()];
+        let next = archives.first().map_or(through + 1, |a| a.from);
+        super::Job {
+            kind: Kind::Install { from: SiteId(0), install: Box::new(fake_install(through)) },
+            chain: CHAIN,
+            through,
+            tiers,
+            archives,
+            arch: 0,
+            arch_off: 0,
+            next,
+            prepared: false,
+            through_at: None,
+            checks: Vec::new(),
+            segments: Vec::new(),
+            began_ms: 0,
+            tries: 0,
+            batches: 0,
+            batch_max_ms: 0,
+            bytes: 0,
+            rows: 0,
+            entries: 0,
+            mem_max_mb: 0.0,
+            drop: Vec::new(),
+        }
+    }
+
+    fn fake_install(through: u64) -> graftyard_raft::InstallSnapshot {
+        use graftyard_raft::{Digest, GroupConfig, Index, InstallSnapshot, InstallSource, Term};
+        use graftyard_types::Timestamp;
+        let p: graftyard_types::Placement =
+            serde_json::from_value(serde_json::json!({ "voters": [graftyard_types::Member::new(CHAIN, SiteId(0), graftyard_types::MemberKind::Full, 0, 1)], "learners": [], "home": 0, "generation": 1 }))
+                .unwrap();
+        InstallSnapshot {
+            term: Term(1),
+            boot: 0,
+            round: 0,
+            sent_at: Timestamp(0),
+            lead_seq: 0,
+            source: InstallSource {
+                core: "c".into(),
+                metadata: None,
+                archives: Default::default(),
+                through: Index(through),
+                through_term: Term(1),
+                through_digest: Digest([0; 32]),
+                config: (Index(1), GroupConfig::Normal(Box::new(p))),
+                id_block: None,
+            },
+        }
+    }
+
+    fn snap(tier: graftyard_types::Tier, to: u64, d: u8) -> String {
+        let (from, to, digest) =
+            (graftyard_types::Index(0), graftyard_types::Index(to), graftyard_types::Digest([d; 32]));
+        graftyard_git::R2Key::Snapshot { chain: CHAIN, tier, from, to, digest }.to_string()
+    }
+    fn core() -> String {
+        snap(graftyard_types::Tier::Core, 200_000, 1)
+    }
+    fn meta() -> String {
+        snap(graftyard_types::Tier::Metadata, 159_387, 2)
+    }
+    fn meta2() -> String {
+        snap(graftyard_types::Tier::Metadata, 201_500, 3)
+    }
+
+    /// (i-2): a running install whose newer source names the same snapshot keys and a later `through` keeps its
+    /// progress (scratch tables, cursor, offsets) and gains only the archives past its own; B0-30's site c restarted
+    /// on each of five truncations in 14 minutes.
+    #[test]
+    fn a_later_source_with_the_same_snapshots_extends_the_running_install() {
+        let mut running = job(&core(), Some(&meta()), 200_121, vec![arch(159_388, 199_900), arch(199_901, 200_121)]);
+        running.prepared = true;
+        running.tiers[1].offset = 2_740_000_000;
+        running.batches = 1_517;
+        let newer = job(
+            &core(),
+            Some(&meta()),
+            200_984,
+            vec![arch(199_901, 200_121), arch(200_122, 200_519), arch(200_520, 200_984)],
+        );
+        let (j, restarted) = next_job(Some(running), newer);
+        assert!(!restarted);
+        assert!(j.prepared, "the scratch tables stay");
+        assert_eq!((j.tiers[1].offset, j.batches), (2_740_000_000, 1_517), "the load's progress stays");
+        assert_eq!(j.through, 200_984);
+        let ranges: Vec<_> = j.archives.iter().map(|a| (a.from, a.to)).collect();
+        assert_eq!(ranges, [(159_388, 199_900), (199_901, 200_121), (200_122, 200_519), (200_520, 200_984)]);
+        match &j.kind {
+            Kind::Install { install, .. } => {
+                assert_eq!(install.source.through.0, 200_984, "it answers the newer round")
+            }
+            Kind::Audit { .. } => panic!(),
+        }
+    }
+
+    /// A source naming other snapshot keys (the slimmed tier's new snapshot after (i-1), or a newer core snapshot)
+    /// restarts; so does one whose archives leave a gap after the running job's, or one with an earlier `through`.
+    #[test]
+    fn a_source_with_other_snapshots_or_a_gap_restarts_the_install() {
+        let running = || {
+            let mut j = job(&core(), Some(&meta()), 200_121, vec![arch(159_388, 200_121)]);
+            j.prepared = true;
+            j
+        };
+        let cases = [
+            ("another metadata snapshot", job(&core(), Some(&meta2()), 201_600, vec![arch(201_501, 201_600)])),
+            // The same source in every other way, archives that continue the running job's included: the slimmed
+            // snapshot (i-1) commits while an install of the pre-split one runs, and that load must not carry on.
+            (
+                "only the metadata snapshot differs",
+                job(&core(), Some(&meta2()), 200_984, vec![arch(159_388, 200_121), arch(200_122, 200_984)]),
+            ),
+            ("no metadata snapshot", job(&core(), None, 201_600, vec![arch(1, 201_600)])),
+            (
+                "another core snapshot",
+                job(&snap(graftyard_types::Tier::Core, 201_000, 4), Some(&meta()), 201_600, vec![]),
+            ),
+            ("a gap after the running archives", job(&core(), Some(&meta()), 201_600, vec![arch(200_500, 201_600)])),
+            ("an earlier through", job(&core(), Some(&meta()), 200_000, vec![arch(159_388, 200_000)])),
+            (
+                "a later through with no archive to reach it",
+                job(&core(), Some(&meta()), 201_600, vec![arch(159_388, 200_121)]),
+            ),
+        ];
+        for (why, new) in cases {
+            let (j, restarted) = next_job(Some(running()), new);
+            assert!(restarted, "{why}");
+            assert!(!j.prepared, "{why}: a restart starts from fresh scratch tables");
+        }
+        let (_, restarted) = next_job(None, job(&core(), Some(&meta()), 1, vec![]));
+        assert!(restarted, "no running job");
+    }
+}
+
+/// (i-3)'s pure rules: which install drops the member's own metadata tables, that a member with them dropped is never
+/// loaded, and that the fold audit compares no digest of an unloaded tier.
+#[cfg(test)]
+mod drop_tests {
+    use graftyard_fold::{MemStore, Store, TierStore};
+    use graftyard_git::repo::RepoFold;
+    use graftyard_raft::{EntryBody, Fold as _, LogEntry, PREV_ZERO, Term, TierSet};
+    use graftyard_types::{AccountId, DbId, Index, RepoId, Timestamp};
+
+    use super::drop_due;
+
+    /// Only an install, only after `MetaDropped`, and only on a member below the source's `through`: an audit refolds
+    /// beside a tier it must keep, a member before the split still serves its tier, and one at or past `through` was
+    /// not sent the install for want of entries.
+    #[test]
+    fn only_an_install_on_a_split_parent_past_the_horizon_drops_its_tier() {
+        assert!(drop_due(true, true, 199_808, 200_984), "B0-30's site c");
+        assert!(!drop_due(false, true, 199_808, 200_984), "an audit");
+        assert!(!drop_due(true, false, 199_808, 200_984), "no split dropped yet: the tier is whole and needed");
+        assert!(!drop_due(true, true, 200_984, 200_984), "at through");
+        assert!(!drop_due(true, true, 201_000, 200_984), "past through");
+    }
+
+    /// A tier that is loaded, or not, whatever its rows.
+    #[derive(Clone, Debug, Default)]
+    struct Tier(MemStore, bool);
+    impl Store for Tier {
+        fn get(&self, t: &str, k: &[graftyard_fold::Val]) -> Option<graftyard_fold::Stored> {
+            self.0.get(t, k)
+        }
+        fn put(&mut self, t: &str, k: graftyard_fold::Key, r: graftyard_fold::Stored) {
+            self.0.put(t, k, r)
+        }
+        fn delete(&mut self, t: &str, k: &[graftyard_fold::Val]) {
+            self.0.delete(t, k)
+        }
+        fn scan(
+            &self,
+            t: &str,
+            f: &[graftyard_fold::Val],
+            n: usize,
+        ) -> Vec<(graftyard_fold::Key, graftyard_fold::Stored)> {
+            self.0.scan(t, f, n)
+        }
+    }
+    impl TierStore for Tier {
+        fn clone_box(&self) -> Box<dyn TierStore> {
+            Box::new(self.clone())
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn loaded(&self) -> bool {
+            self.1
+        }
+    }
+
+    fn fold_at_1(meta_loaded: bool) -> RepoFold {
+        let mut f = RepoFold::with_tiers(
+            Some(RepoId(DbId(9))),
+            Some(AccountId(DbId(1))),
+            Box::new(Tier(MemStore::default(), true)),
+            Box::new(Tier(MemStore::default(), true)),
+        );
+        f.apply_entry(&LogEntry {
+            term: Term(1),
+            index: Index(1),
+            prev: PREV_ZERO,
+            format: graftyard_git::repo::REPO_FORMAT_V1,
+            tiers: TierSet::CORE.union(TierSet::METADATA),
+            at: Timestamp(1),
+            requests: Default::default(),
+            extend: None,
+            body: EntryBody::Events(vec![]),
+        });
+        if !meta_loaded {
+            let m: &Tier = f.meta.as_any().downcast_ref().unwrap();
+            f.meta = Box::new(Tier(m.0.clone(), false));
+        }
+        f
+    }
+
+    /// A member with its tables dropped is unloaded on restore whatever its tier's meta row says (a parent's tier
+    /// whose meta row stands where the core's does, or a child's restored one).
+    #[test]
+    fn a_member_with_its_tables_dropped_is_never_loaded() {
+        let f = fold_at_1(true);
+        assert!(crate::family::meta_loaded(&f, true, false));
+        assert!(!crate::family::meta_loaded(&f, true, true));
+        let mut child = fold_at_1(true);
+        child.child = true;
+        assert!(crate::family::meta_loaded(&child, false, false), "a restored child");
+        assert!(!crate::family::meta_loaded(&child, false, true));
+    }
+
+    /// The fold audit reads `at` per tier and compares only digests a member answers: an unloaded tier answers none,
+    /// though its digest ring may still hold one (an install dropping it, or a tier still loading).
+    #[test]
+    fn an_unloaded_tier_answers_no_digest_for_the_audit() {
+        let loaded = crate::snap::tiers_json(&fold_at_1(true), Some(1));
+        assert!(loaded["core"]["at"].is_string() && loaded["metadata"]["at"].is_string());
+        let v = crate::snap::tiers_json(&fold_at_1(false), Some(1));
+        assert!(v["core"]["at"].is_string(), "{v}");
+        assert!(v["metadata"]["at"].is_null(), "{v}");
+        assert_eq!(v["metadata"]["loaded"], false);
+    }
 }

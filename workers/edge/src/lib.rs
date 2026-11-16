@@ -950,6 +950,12 @@ async fn commit(
     }
     let bytes = body.to_string().into_bytes();
     let first = first.map(|f| f.to_string().into_bytes());
+    // B0-32's receipt-rule counts on a test install: each `/commit` send, missed receipt (`busy` when the send stayed
+    // unreported), `/outcome_by_request` ask while a send was open, and `suspect`, one `server-timing` entry each.
+    #[cfg(feature = "test-faults")]
+    let own = std::cell::RefCell::new(Vec::new());
+    #[cfg(feature = "test-faults")]
+    let trace = trace.or(Some(&own));
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(repo.id),
@@ -960,6 +966,18 @@ async fn commit(
         graftyard_lookup::Hooks { first: first.as_deref(), trace, lookup },
     )
     .await;
+    #[cfg(feature = "test-faults")]
+    for n in trace.into_iter().flat_map(|t| t.borrow().clone()) {
+        let name = match () {
+            _ if n.get("send").is_some() => "send",
+            _ if n.get("ask").is_some() => "ask",
+            _ if n.get("suspect").is_some() => "suspect",
+            _ if n.get("missed").is_some() && n.get("busy").is_some() => "busy",
+            _ if n.get("missed").is_some() => "missed",
+            _ => continue,
+        };
+        c.timing.put(name, 0.0);
+    }
     Ok(match r {
         Ok(done) => match serde_json::from_value::<PushOutcome>(done) {
             Ok(o) => Ok(o),
