@@ -736,8 +736,10 @@ From Workers Logs only, with no hosted change. Each hour's median is from a 3-mi
   - Its place in the log: it needs an `InstallSnapshot` once its next entry falls below the leader's truncation point,
     which follows `archivedTo`. The log the leader keeps is about 7,000 entries (its 2 GiB cap), so the margin is about
     7,000 less the lag.
-  - Over the last hour the lag grew 12.7 entries a minute. If that holds, the margin of 4,721 lasts about 6 h, before
-    day 30 (about 11.5 h of active time left) [inference from a 1 h trend].
+  - The lag grew 12.7 entries a minute over the last hour, but the margin fell only about 5 a minute (5,016 to 4,721),
+    and about 2 a minute since 23:18Z (5,124), because the kept log moves with the archive runs. At 5 a minute the
+    margin lasts about 16 h, past day 30 (about 11.5 h of active time and an 11 h drain left) only if the drain does
+    not speed it up [inference from a 1 h and a 3 h trend].
   - The member's own `/stats` at 02:30Z: installs 0, restores 1 (its boot).
  (`tests/am1/b030split/fill.mjs`, 01:54:57 to 01:55:02Z,
   `tests/am1/raw/b030r2-fill.jsonl`).** The slim had moved into the comment table, cursor key 2^40 + 21,024. So two of
