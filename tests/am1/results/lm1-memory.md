@@ -4270,3 +4270,10 @@ network, so the warm read the consumed packs as before; the roll measurement wai
 **Close-out.** Sweep after each row ("no shard container running"); B0-33's group retired at 22:32Z, all 20 members that
 wrote rows "not joined" after (`idle-retire-m41.log`); B0-34's networks kept, as its seeds are reused. Reapers back on
 for every range, B0-34's included.
+
+**Idle after the slot (30 minutes).** acctcost 22:31 to 23:02Z: $0.21 for the whole account, of which graft-m2b $0.04
+(sites a $0.02, c $0.01, b $0.01), about $0.08 an hour for m2b and under the $0.10 line; graft-m3f $0.11 is another
+thread's. m2b rows written: 5,674 in 22:00 to 23:00Z (the slot's tail included), 703 in 23:00 to 23:02Z, mostly
+`names:*` (names:708 and names:824 members 211 to 283 rows each, the cron's loop writers above). `idlewatch.py` 22:32:31
+to 23:04:31Z: 0 shard starts. No range came due on B0-34's network, so promote-lapse was not exercised; its proof
+still waits for a promotion-started shard on a quiet group. Account since 20:30Z: $4.77 at 23:02Z. Slot closed.
