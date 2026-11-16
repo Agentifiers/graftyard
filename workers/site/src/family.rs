@@ -514,14 +514,14 @@ pub fn dump_wait(fold: &git::repo::RepoFold, now: u64, every: u64) -> Option<u64
 }
 
 /// The repository reads a follower serves by read-index (`design/DESIGN.md`, "Follower read"): whole-tier and merge
-/// rows once its metadata tier is loaded, and the core-only access and agent rows. Refs, `ranges`, `dep`, `prsync`,
-/// `mergequeue`, `tiers`, and `settings` reads stay on the leader.
+/// rows once its metadata tier is loaded, and the core-only access, agent, and actions rows. Refs, `ranges`, `dep`,
+/// `prsync`, `mergequeue`, `tiers`, and `settings` reads stay on the leader.
 pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
     match q.get("rows") {
         Some(Value::Bool(true)) => meta_loaded,
         Some(r) if graftyard_api::hosted::MergeOf::of_query(r).is_some() => meta_loaded,
         Some(r) if r.get("api").is_some() => meta_loaded,
-        Some(r) => r.get("access").is_some() || r.get("agent").is_some(),
+        Some(r) => r.get("access").is_some() || r.get("agent").is_some() || r.get("actions").is_some(),
         None => false,
     }
 }
@@ -978,7 +978,8 @@ impl Family for Repo {
     /// true` (`TierRows::packed`); with `{"q": {"rows": {"api": spec}}}`, only the rows one API reply reads
     /// (`graftyard_api::narrow::answer`); with `{"q": {"rows": {"access":
     /// true}}}`, only the core rows the edge's read gate reads (`TierRows::access_rows`); with `{"q": {"rows":
-    /// {"agent": true}}}`, only the core rows an agent push reads (`TierRows::agent_rows`); with `{"q":
+    /// {"agent": true}}}`, only the core rows an agent push reads (`TierRows::agent_rows`); with `{"q": {"rows":
+    /// {"actions": true}}}`, only the core rows `acquirejob` reads (`TierRows::actions_rows`); with `{"q":
     /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
@@ -1041,8 +1042,12 @@ impl Family for Repo {
             })
             .unwrap_or(Value::Null);
         }
-        if q.get("rows").and_then(|r| r.get("agent")).is_some() {
-            let core = graftyard_api::hosted::TierRows::agent_rows(&fold.core);
+        let core_only = match q.get("rows") {
+            Some(r) if r.get("agent").is_some() => Some(graftyard_api::hosted::TierRows::agent_rows(&fold.core)),
+            Some(r) if r.get("actions").is_some() => Some(graftyard_api::hosted::TierRows::actions_rows(&fold.core)),
+            _ => None,
+        };
+        if let Some(core) = core_only {
             let index = graftyard_fold::meta(&*fold.core).applied.0;
             return serde_json::to_value(graftyard_api::hosted::TierRows {
                 index,

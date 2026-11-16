@@ -122,6 +122,7 @@ fn event_name(e: &JobEvent) -> &'static str {
 ///   fails it, as GitHub's infrastructure failure does. It is refused before the lease ends, so a late or early
 ///   alarm cannot fail a live job.
 /// - `Renewed` returns the state unchanged while more than `LEASE_REWRITE_UNDER` remains: the caller writes nothing.
+///   So does `Acquired` on a job already `InProgress`, which only its own runner may send.
 /// - `Cancel` completes any unfinished job `Cancelled`; a completed job refuses every event.
 pub fn transition(
     s: &JobState,
@@ -143,6 +144,10 @@ pub fn transition(
             Some(done(Conclusion::Failure))
         }
         (S::Assigned { runner, .. }, E::Acquired) => Some(S::InProgress { runner: *runner, lease_until: lease }),
+        // A repeated acquire by the runner that holds the job (the shard checks who): it writes nothing, and the run
+        // service answers the job message again. The runner retries an acquire whose answer it lost and drops the job
+        // on a 409 (`decisions/OPEN-QUESTIONS.md`, F77).
+        (S::InProgress { .. }, E::Acquired) => Some(s.clone()),
         (S::Assigned { lease_until, .. }, E::LeaseExpired) if now >= *lease_until => {
             Some(S::Queued { labels: labels.clone(), since: now })
         }

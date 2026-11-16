@@ -18,6 +18,10 @@ R = 'cli/src/runners.rs'
 T = ['-p', 'graftyard-actions', '-p', 'graftyard-runners', '--lib', '--test', 'bf60']
 CLI = ['-p', 'graftyard', 'runners::']
 G = ['-p', 'graftyard-actions', '--lib', '--test', 'gates']
+J = 'crates/actions/src/job.rs'
+F = 'workers/site/src/family.rs'
+A = 'crates/api/src/hosted.rs'
+SITE = ['-p', 'graftyard-site', '--lib', 'fanout::']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -92,6 +96,21 @@ MUTANTS = [
     ('a summary forgets when a job was matched', B,
      '                    Some((*runner, *id, Some(Timestamp(lease_until.0.saturating_sub(JOB_LEASE.as_millis() as u64)))))',
      '                    Some((*runner, *id, None))', G + ['--test', 'bf55']),
+    # ---- F77: the acquire path ----
+    ('a holder\'s repeated acquire is refused again (main\'s rule)', J,
+     '        (S::InProgress { .. }, E::Acquired) => Some(s.clone()),\n', '', G),
+    ('a repeated acquire re-arms the lease', J,
+     '        (S::InProgress { .. }, E::Acquired) => Some(s.clone()),',
+     '        (S::InProgress { runner, .. }, E::Acquired) => Some(S::InProgress { runner: *runner, lease_until: lease }),', G),
+    ('any runner may acquire an InProgress job', S,
+     '            (ActionsActor::Runner(r), JobEvent::Acquired) => j.state.runner() == Some(*r),',
+     '            (ActionsActor::Runner(_), JobEvent::Acquired) => true,', G),
+    ('the actions rows are a whole-tier dump', F,
+     '            Some(r) if r.get("actions").is_some() => Some(graftyard_api::hosted::TierRows::actions_rows(&fold.core)),\n', '', SITE),
+    ('the actions rows leave out the variables', A,
+     '        for t in ["actions_secret", "actions_variable"] {', '        for t in ["actions_secret"] {', SITE),
+    ('a follower sends the actions rows to the leader', F,
+     ' || r.get("actions").is_some(),', ',', SITE),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
