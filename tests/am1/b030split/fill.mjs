@@ -7,9 +7,11 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { statuses, voter } from "../hosted/lib.mjs";
 
-const C = "repo:1048590", CHILD = "repo-meta:1048590", OUT = "tests/am1/raw/b030r2-fill.jsonl";
+const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8")).repo;
+const RUN = process.env.B030_RUN ?? "b030r2";
+const C = `repo:${REPO}`, CHILD = `repo-meta:${REPO}`, OUT = `tests/am1/raw/${RUN}-fill.jsonl`;
 const N = Number(process.argv[2] ?? 10);
-const base = JSON.parse(readFileSync("tests/am1/raw/b030r2-bodies.json", "utf8"));
+const base = JSON.parse(readFileSync(`tests/am1/raw/${RUN}-bodies.json`, "utf8"));
 const row = (r) => { appendFileSync(OUT, JSON.stringify(r) + "\n"); console.log(JSON.stringify(r).slice(0, 400)); };
 const child = async (when) => row({ kind: "child", when, at: new Date().toISOString(),
   members: (await statuses(CHILD)).map((s) => ({ site: s.site, role: s.role, term: s.term, leader: s.leader, commit: s.commit, error: s.error })) });

@@ -1084,6 +1084,35 @@ stand-ins giving main's behaviour (main has none of these functions).
 drop, peak 918,921,216 B. So the peak is own − metadata + scratch. Site c's case [inference]: 5.70 − 3.84 + under
 1 ≈ under 2.9 GB with (i-1)'s slimmed snapshot, about 5.7 GB without it, against 10.18 GB measured on the rerun.
 
+## B0-30 third run (b030r3, from 2026-11-16 17:25Z)
+
+Approved by the user (about $185, relayed by the operator 13:40Z). b030-fixes merged to main as `0e3d13cc`
+(operator, full checks on the merged tree: 1,054 passed, 0 failed).
+
+- **Site day r3, announced 17:22Z, start 17:25Z** (`tests/am1/b030split/siteday-r3.sh`, log
+  `tests/am1/raw/b030r3-siteday.log`):
+  - Sites a to d from main `0e3d13cc`: b030-fixes, with main's receipt rule (`8473e0ea`), push-reads and the rest.
+  - New git shard image from the same commit's `containers/git`, tag `b030r3`, `sha256:c38059db…5668`
+    (`tests/am1/raw/b030split-image-r3.log`). Main's container changes since site day 9's image: repack-keep-pack,
+    composed-hits and composed-miss, promote-unlock.
+  - `SHARD_INSTANCE` standard-4. Other variables as site day 9 (`GRAFTYARD_AUDIT`, request retention 9,600 s).
+    `--roll-shards` (none are running).
+  - Then the edge `graft-m1-edge` from the same commit, with `tests/am1/hosted/deploy-edge.sh`'s flags. The edge
+    runs `graftyard_lookup::create`, where the create→/place rule lives, and has run `19b495a1` since 2026-11-13.
+  - Every member resets once per site. No new class, binding, migration, format or event tag.
+- **Row as written.** A fresh repository `m3org/b0-30-r3` seeded with the 4 GB metadata tier, then 30 simulated days
+  of journey 9 at 18x with pushes on (1.6 a second, 2.48 GB a simulated day), no keeper and no keepHome, the split at
+  `CHILD_GROUP_AT`, then the drain. Drivers `tests/am1/b030split/rerun.sh` with `B030_RUN=b030r3`.
+- **Stop rule.** $190 on graft-m1's run-only meter, counted from the site day's start (`tests/am1/raw/b030r3.start`).
+  Containers count install-wide, pool shards included, not only the run's network (`B030_ALL_CONTAINERS`). Drain
+  limit 24 h. The watcher adds a stall alert: the leader's commit index unchanged for 60 s (`STALL_S`), alert only.
+- **Reapers and sweeps.** graft-m1 runs no reaper (`tests/fanout/reaper.sh` and the LM-1 reapers act only on
+  `graft-m2b`). The end-of-run checks cover every graft-m1 shard by name, not by range: `shards.py` lists every
+  running `graft-m1-site-*` instance, network or pool, and `tests/fanout/teardown.py --sweep` (`INSTALL=graft-m1`)
+  takes every network and pool. At 17:05Z no graft-m1 shard was running. The second run's generic state files are
+  in `tests/am1/raw/b030r2-generic/`.
+- **After the run:** `/retire` on the six members, a sweep, and the meter checked flat for 30 minutes.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
