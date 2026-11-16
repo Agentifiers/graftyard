@@ -2,7 +2,7 @@
 //! first entry and rewrites it on each config change. `ReplaceMember` and the owner-placement move enumerate groups
 //! from the rows whose `sites` include a site (`design/DESIGN.md`, Shape, the registry paragraph).
 
-use graftyard_types::{ChainId, RegistryRow, SiteId};
+use graftyard_types::{ChainId, RegistryRow, RowPut, SiteId};
 use serde::Deserialize;
 use worker::*;
 
@@ -39,21 +39,33 @@ impl DurableObject for Registry {
         let sql = self.state.storage().sql();
         let url = req.url()?;
         match (req.method(), url.path()) {
-            // A row with a lower generation than the stored one is stale (a removed member's late write) and changes
-            // nothing, so a row never moves backwards.
+            // A member's own write (a bare `RegistryRow`) never moves the row to a lower generation, so a removed
+            // member's late write changes nothing. A re-placement's restore (`RowPut` with `replacing`) puts back the
+            // kept member's row over a try's, and only a try's (`RowPut::replaces`). One object serves one request at
+            // a time and nothing awaits between the read and the write, so the check and the write are one step.
             (Method::Put, "/row") => {
-                let row: RegistryRow = req.json().await?;
-                sql.exec(
-                    "INSERT INTO registry (chain, generation, row) VALUES (?, ?, ?)
-                     ON CONFLICT (chain) DO UPDATE SET generation = excluded.generation, row = excluded.row
-                     WHERE excluded.generation >= registry.generation",
-                    vec![
-                        row.chain.to_string().into(),
-                        i64::from(row.generation).into(),
-                        serde_json::to_string(&row)?.into(),
-                    ],
-                )?;
-                Response::empty()
+                let body: serde_json::Value = req.json().await?;
+                let put: RowPut = if body.get("row").is_some() {
+                    serde_json::from_value(body)?
+                } else {
+                    RowPut { row: serde_json::from_value(body)?, replacing: Vec::new() }
+                };
+                let chain = put.row.chain.to_string();
+                let rows: Vec<Row> =
+                    sql.exec("SELECT row FROM registry WHERE chain = ?", vec![chain.clone().into()])?.to_array()?;
+                let current = rows.first().map(|r| serde_json::from_str::<RegistryRow>(&r.row)).transpose()?;
+                let replaced = put.replaces(current.as_ref());
+                if replaced {
+                    sql.exec(
+                        "INSERT OR REPLACE INTO registry (chain, generation, row) VALUES (?, ?, ?)",
+                        vec![
+                            chain.into(),
+                            i64::from(put.row.generation).into(),
+                            serde_json::to_string(&put.row)?.into(),
+                        ],
+                    )?;
+                }
+                Response::from_json(&serde_json::json!({ "replaced": replaced }))
             }
             (Method::Get, "/row") => {
                 let chain: ChainId = query(&url, "chain")?.parse().map_err(|e| Error::RustError(format!("{e}")))?;

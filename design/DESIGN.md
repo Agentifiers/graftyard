@@ -1009,11 +1009,11 @@ pub const STALE_MAX: Duration = Duration::from_secs(24 * 3_600);  // compiled [g
 /// genesis's digest, so a retried install after a lost 201 sees its own, and the signer re-signs. 422 returns
 /// `{"message": "...", "refusal": "<variant>"}` when `decide` refuses. Signed entries land hours apart, so offline
 /// signers rarely meet a 409 [inference]. Reads are `GET` on the same path (`design/AGENT-LAYER.md`, "API reference").
-/// One per (site, shard) on each site script, 64 shards by chain hash [guess]. A voter writes its row before it stores
-/// its first entry, and rewrites it on each config change. `ReplaceMember { lost }` and the owner-placement move find
-/// their groups by reading the surviving or old sites' registries and keeping rows whose `sites` include the site.
-/// Every group except `Solo` has a voter off a lost site, so the survivors' union is complete. The edge may look up a
-/// member's `do_name` here when the names it computes do not answer (Shape, "Sites and placement").
+/// One per (site, shard) on each site script, 64 shards by chain hash [guess]. A voter writes its row before its first
+/// entry and on each config change. A placement try that does not go in is put back to the kept member, by a put that
+/// replaces only a row naming a try. `ReplaceMember { lost }` and the owner-placement move read the surviving or old
+/// sites' registries for rows whose `sites` include the site; all but `Solo` have a voter off a lost site. The edge
+/// reads a `do_name` here when the names it computes miss (Shape, "Sites and placement").
 pub struct MemberRegistry { pub site: SiteId, pub shard: u8 }
 pub struct RegistryRow { pub chain: ChainId, pub do_name: Box<str>, pub generation: u32,
                          pub sites: SmallVec<[SiteId; 3]> }

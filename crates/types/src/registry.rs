@@ -38,6 +38,48 @@ pub struct RegistryRow {
     pub sites: SmallVec<[SiteId; 3]>,
 }
 
+/// A `PUT /row` to a site's registry: `row`, with `replacing` empty for a member's own write, or naming the placement
+/// tries whose rows a restore may replace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowPut {
+    pub row: RegistryRow,
+    #[serde(default)]
+    pub replacing: Vec<Box<str>>,
+}
+
+impl RowPut {
+    /// The restore a re-placement on one site sends once its tries are done: `kept`'s row (the member the group
+    /// kept on that site, the old one or the try that went in), replacing every other try's. `None` when no other try
+    /// ran, so nothing on the site can name one.
+    pub fn restore(chain: ChainId, sites: &[SiteId], kept: &crate::Member, tried: &[crate::Member]) -> Option<RowPut> {
+        let replacing: Vec<Box<str>> =
+            tried.iter().filter(|t| t.do_name != kept.do_name).map(|t| t.do_name.clone()).collect();
+        (!replacing.is_empty()).then(|| RowPut {
+            row: RegistryRow {
+                chain,
+                do_name: kept.do_name.clone(),
+                generation: kept.generation,
+                sites: sites.iter().copied().collect(),
+            },
+            replacing,
+        })
+    }
+
+    /// Whether the put replaces `current`, the site's stored row for the chain. A member's own write never moves the
+    /// row to a lower generation, so a removed member's late write changes nothing. A restore (`replacing` named)
+    /// replaces only a row naming one of those tries, at any generation: every try's `/join` wrote its row at a
+    /// generation above the member the group kept, and a row left naming a try that never went in sent the edge's
+    /// registry lookups to a member outside the group, 63,387 `/read` 409s from `repo:131342#9#f1` in round 29
+    /// (`tests/am1/results/lm1-memory.md`, round 31). A row that names anyone else, a newer placement's member say, stays.
+    pub fn replaces(&self, current: Option<&RegistryRow>) -> bool {
+        match current {
+            _ if self.replacing.is_empty() => current.is_none_or(|c| self.row.generation >= c.generation),
+            Some(c) => self.replacing.contains(&c.do_name),
+            None => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +96,68 @@ mod tests {
             seen[MemberRegistry::for_chain(SiteId(0), ChainId::Repo(RepoId(DbId(i)))).shard as usize] += 1;
         }
         assert!(seen.iter().all(|&n| (50..=160).contains(&n)), "{seen:?}");
+    }
+
+    /// The site's registry as `PUT /row` keeps it: one row per chain, each put applied when `replaces` allows.
+    fn apply(stored: &mut Option<RegistryRow>, put: &RowPut) -> bool {
+        let ok = put.replaces(stored.as_ref());
+        if ok {
+            *stored = Some(put.row.clone());
+        }
+        ok
+    }
+
+    fn own(chain: ChainId, m: &crate::Member) -> RowPut {
+        RowPut {
+            row: RegistryRow { chain, do_name: m.do_name.clone(), generation: m.generation, sites: SmallVec::new() },
+            replacing: Vec::new(),
+        }
+    }
+
+    /// Round 29's create placement on site b of `repo:131342`: the group's voter is `#3#f1`, and tries `#4` to `#9`
+    /// each join, writing their rows, and none goes in. On main the row stayed `#9#f1`, a member outside the group,
+    /// and the edge's registry stage read it about 61,000 times per site and got 63,387 `/read` 409s
+    /// (`tests/am1/results/lm1-memory.md`, round 31). The restore puts `#3#f1` back below the tries' generations, a
+    /// member's own write still never moves the row back, and a row naming a member the restore does not know, a newer
+    /// placement's, stays.
+    #[test]
+    fn a_placement_that_kept_its_member_puts_its_row_back_over_every_try() {
+        use crate::{Member, MemberKind};
+        let chain = ChainId::Repo(RepoId(DbId(131_342)));
+        let b = SiteId(1);
+        let m = |g| Member::new(chain, b, MemberKind::Full, 1, g);
+        let kept = m(3);
+        let mut stored = None;
+        assert!(apply(&mut stored, &own(chain, &kept)));
+        let tries: Vec<Member> = (4..=9).map(m).collect();
+        for t in &tries {
+            assert!(apply(&mut stored, &own(chain, t)), "each try's /join writes its row");
+        }
+        assert_eq!(stored.as_ref().unwrap().do_name, m(9).do_name);
+        // A member's own write still never moves the row back: the old member re-writing its row at 3 is refused.
+        assert!(!apply(&mut stored, &own(chain, &kept)));
+        let restore = RowPut::restore(chain, &[SiteId(0), b, SiteId(2)], &kept, &tries).expect("tries ran");
+        assert!(apply(&mut stored, &restore), "the restore replaces a try's row at a higher generation");
+        let row = stored.clone().unwrap();
+        assert_eq!((&*row.do_name, row.generation), (&*kept.do_name, 3));
+        assert_eq!(&row.sites[..], &[SiteId(0), b, SiteId(2)]);
+        // A try that went in is the kept member, and the rows of the others are replaced by it.
+        let mut stored2 = None;
+        for t in &tries[..3] {
+            apply(&mut stored2, &own(chain, t));
+        }
+        let won = &tries[1];
+        let r2 = RowPut::restore(chain, &[b], won, &tries[..3]).unwrap();
+        assert!(!r2.replacing.contains(&won.do_name));
+        assert!(apply(&mut stored2, &r2));
+        assert_eq!(stored2.unwrap().do_name, won.do_name);
+        // A later placement's member (generation 12, not one of these tries) is never overwritten by this restore.
+        let mut newer = Some(own(chain, &m(12)).row);
+        assert!(!apply(&mut newer, &restore));
+        assert_eq!(newer.unwrap().generation, 12);
+        // No row at all (the registry lost it): a restore writes nothing, so it never creates a row by itself.
+        assert!(!apply(&mut None, &restore));
+        // A single try that was itself kept leaves nothing to restore.
+        assert_eq!(RowPut::restore(chain, &[b], &tries[0], &tries[..1]), None);
     }
 }

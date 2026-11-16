@@ -2213,6 +2213,8 @@ impl<F: Family> Routes<F> {
         let others: Vec<MemberRef> = p.voters().iter().filter(|m| m.site != to).cloned().collect();
         let mut generation = p.next_generation();
         let mut tried = Vec::new();
+        // Every try's member: each one's `/join` wrote its row on `to`'s registry, which `restore_row` puts back.
+        let mut joined: Vec<MemberRef> = Vec::new();
         // Tries that passed every check but the near bound, kept until the loop ends: with `keep_below`, the nearest
         // goes in when none passed (`graftyard_types::nearest_try`).
         let mut over: Vec<(MemberRef, graftyard_types::Placement, u16, Option<Rtt>)> = Vec::new();
@@ -2228,6 +2230,7 @@ impl<F: Family> Routes<F> {
                 #[cfg(feature = "test-faults")]
                 no_claim: false,
             };
+            joined.push(new.clone());
             let (status, rows) = self.post_member(&new, "/join", &serde_json::to_value(&join)?).await?;
             let theirs: Vec<(SiteId, Rtt)> = serde_json::from_value(rows.clone()).unwrap_or_default();
             let voters: arrayvec::ArrayVec<MemberRef, 3> =
@@ -2269,7 +2272,7 @@ impl<F: Family> Routes<F> {
                     for (_, r) in &fresh {
                         self.store_rtt(r.peer, r.median_ms, r.at.0)?;
                     }
-                    break Some((np, None));
+                    break Some((np, None, new));
                 }
                 Err(_) => {
                     // A refused try is cleared at once, unless it is kept as a candidate for the nearest.
@@ -2291,15 +2294,16 @@ impl<F: Family> Routes<F> {
                         if let Some((_, _, _, Some(r))) = &best {
                             self.store_rtt(r.peer, r.median_ms, r.at.0)?;
                         }
-                        break best.map(|(_, np, ms, _)| (np, Some(ms)));
+                        break best.map(|(m, np, ms, _)| (np, Some(ms), m));
                     }
                     generation += 1;
                 }
             }
         };
-        let Some((np, near_ms)) = placed else {
+        let Some((np, near_ms, kept)) = placed else {
             // The old member comes back: it kept its log, and the leader backs its next index up from its answers.
             let back = self.change(raft::GroupConfig::Normal(p.clone())).await;
+            self.restore_row(chain, &record, &old, &joined).await;
             if keep_below.is_some() {
                 // The bound is a goal: the member already placed stays, nearer than every try.
                 self.host.stats.borrow_mut().placed_over_near += 1;
@@ -2322,11 +2326,37 @@ impl<F: Family> Routes<F> {
             Ok(i) => i,
             Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
         };
+        self.restore_row(chain, &record, &kept, &joined).await;
         let mut v = json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 });
         if let Some(ms) = near_ms {
             v["nearOver"] = json!(ms);
         }
         Ok(Ok(v))
+    }
+
+    /// Puts `kept`'s registry row back on its site once a re-placement's tries are done, over any row that still names
+    /// another try (`RowPut::restore`): each try's `/join` wrote its row at a generation above `kept`'s, and a try that
+    /// never went in left the edge's registry lookups calling a member outside the group (round 29's
+    /// `repo:131342#9#f1`, `tests/am1/results/lm1-memory.md`, round 31). Best effort: a failed put is logged, and the
+    /// lookup still finds the group through the cached config and the bootstrap names first.
+    async fn restore_row(&self, chain: ChainId, record: &PlacementRecord, kept: &MemberRef, joined: &[MemberRef]) {
+        let Some(put) = graftyard_types::RowPut::restore(chain, &record.sites, kept, joined) else { return };
+        let r = async {
+            let site = SiteEnv::read(&self.host.env)?;
+            let reg = MemberRegistry::for_chain(kept.site, chain);
+            let mut init = RequestInit::new();
+            init.with_method(Method::Put).with_body(Some(serde_json::to_string(&put)?.into()));
+            let mut res = site
+                .registry(&self.host.env, kept.site, &reg.do_name())?
+                .fetch_with_request(Request::new_with_init("https://registry/row", &init)?)
+                .await?;
+            Ok::<_, Error>((res.status_code(), res.text().await.unwrap_or_default()))
+        };
+        match r.await {
+            Ok((200, _)) => {}
+            Ok((s, t)) => console_error!("registry restore of {chain} on site {}: {s} {t}", kept.site.0),
+            Err(e) => console_error!("registry restore of {chain} on site {}: {e}", kept.site.0),
+        }
     }
 
     /// The near check on the leader (`design/DESIGN.md`, Shape, `Placement` and `NEAR_RTT`): reads the home's round
