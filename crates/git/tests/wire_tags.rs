@@ -349,6 +349,8 @@ fn current() -> (Vec<String>, Vec<String>) {
         actions::JobEvent, actions::RunStatus, git::run_checks::RunChecksOut,
         // M4-WP3: inside `RepoEvent::ActionsSecret` and `ActionsVariable`.
         id::sealed::SecretScope, id::sealed::SecretVisibility,
+        // R24: inside `RepoEvent::WorkflowJob`.
+        git::workflow_job::JobAction,
     }
 }
 

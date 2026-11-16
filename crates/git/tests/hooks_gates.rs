@@ -359,7 +359,7 @@ impl World {
             let mut rows = Vec::new();
             for i in start.0 + 1..=applied.0 {
                 let e = m.entry_at(Index(i)).expect("the entry is in the member's window");
-                rows.extend(plan(core, g.repo, GEN, e, |w| {
+                rows.extend(plan(core, g.repo, GEN, e, &[], |w, _| {
                     Some(format!("{{\"event\":\"{}\",\"index\":{i}}}", w.event).into_bytes())
                 }));
             }

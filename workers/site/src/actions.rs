@@ -261,6 +261,7 @@ async fn run_owner(h: &Rc<Host<Actions>>) {
     // The committed entries after the cursor, up to OWNER_ROUND_BYTES of them.
     let sql = h.state.storage().sql();
     let (mut events, mut through, mut bytes) = (Vec::new(), from, 0usize);
+    let mut timed = Vec::new();
     while through < commit {
         let next = raft::Index(through.0 + 1);
         let Some((e, n)) = crate::host::stored_entry_sized::<Actions>(&sql, next) else { break };
@@ -269,6 +270,7 @@ async fn run_owner(h: &Rc<Host<Actions>>) {
         }
         bytes += n;
         if let raft::EntryBody::Events(evs) = e.body {
+            timed.extend(evs.iter().map(|ev| (e.at, ev.clone())));
             events.extend(evs);
         }
         through = next;
@@ -287,9 +289,15 @@ async fn run_owner(h: &Rc<Host<Actions>>) {
         h.arm_in(OWNER_RETRY_MS.min(CHECK_AFTER_MS));
         return;
     }
+    // R24's `workflow_job` steps ride the checks only once a site day set `GRAFTYARD_APP_HOOKS` (32.24 enabled).
+    let jobs = if crate::hookseq::app_hooks(&h.env) {
+        graftyard_actions::run_owner::steps(&fold, timed.iter().map(|(at, ev)| (*at, ev)))
+    } else {
+        Vec::new()
+    };
     let mut gone = std::collections::BTreeSet::new();
     let done = loop {
-        let r = graftyard_actions::run_owner::round(chain, &fold, &runs, through, &gone);
+        let r = graftyard_actions::run_owner::round(chain, &fold, &runs, through, &gone, &jobs);
         if r.checks.is_empty() && r.then.is_empty() {
             return;
         }

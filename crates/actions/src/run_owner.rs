@@ -8,16 +8,20 @@
 //! `gone`, and the host builds the round again, which sends that repository nothing and commits `CancelRun` for its
 //! unfinished runs. So the cursor passes a `Completed` job only once the repository took or refused its conclusion.
 //! Dispatch never waits on the repository: a job's `needs` are released by the shard's own commands (`crate::shard`).
+//!
+//! R24: `steps` reads each job's `workflow_job` steps from the entries themselves, not the fold, so a job queued and
+//! taken between two rounds still gets both. The round puts them in its `RunChecksCmd` (format 32.24).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_git::issues::{CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CheckSuiteUpdate};
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::run_checks::{ACTIONS_APP, RunChecksCmd};
-use graftyard_types::{ChainId, Index, RepoId};
+use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
+use graftyard_types::{ChainId, DbId, Index, RepoId, Timestamp};
 
 use crate::ids::RunId;
-use crate::job::{Conclusion, JobState, RunStatus};
+use crate::job::{Conclusion, JobEvent, JobState, RunStatus};
 use crate::shard::{ActionsEvent, ActionsFold, ActionsOp, RunRow, consumer_request};
 
 /// One round's writes. `checks` go first; `then` only after every one of them is acknowledged or refused `Gone`.
@@ -47,8 +51,79 @@ pub fn touched<'a>(fold: &ActionsFold, entries: impl IntoIterator<Item = &'a Act
     out
 }
 
+/// Each job's `workflow_job` steps in the committed `entries` after the cursor, each with its entry's time, in order.
+/// An event at a job's version v made the job's version v+1, so when the fold is at v+1 the fold's state is what the
+/// event did, which tells a lease lost after `acquirejob` (completed) from one lost before (queued again). An event
+/// the fold has moved past did not complete the job, since a completed job takes no later event.
+pub fn steps<'a>(
+    fold: &ActionsFold,
+    entries: impl IntoIterator<Item = (Timestamp, &'a ActionsEvent)>,
+) -> Vec<WorkflowJobUpdate> {
+    let mut out = Vec::new();
+    let mut matched: BTreeMap<crate::JobId, crate::RunnerId> = BTreeMap::new();
+    let step = |run: &RunRow, spec: &crate::shard::JobSpec, action, at: Timestamp| WorkflowJobUpdate {
+        job: spec.id.0,
+        run: run.run.id.0,
+        attempt: run.run.attempt,
+        action,
+        name: spec.name.clone(),
+        workflow: run.run.workflow.clone(),
+        head_sha: ObjectId(run.run.head_sha),
+        head_ref: run.run.head_ref.clone(),
+        labels: spec.labels.iter().map(Into::into).collect(),
+        runner: None,
+        conclusion: None,
+        created: at,
+        started: None,
+        completed: None,
+    };
+    for (at, ev) in entries {
+        match ev {
+            ActionsEvent::RunCreated { run, jobs } => {
+                let Some(row) = fold.run(run.id) else { continue };
+                for spec in jobs.iter().filter(|s| s.needs.is_empty()) {
+                    out.push(step(row, spec, JobAction::Queued, at));
+                }
+            }
+            ActionsEvent::Job { job, version, event } => {
+                let (Some(j), Some(row)) = (fold.job(*job), fold.job(*job).and_then(|j| fold.run(j.run))) else {
+                    continue;
+                };
+                let now = (j.version == version + 1).then_some(&j.state);
+                if let JobEvent::Matched(r) = event {
+                    matched.insert(*job, *r);
+                }
+                let action = match (now, event) {
+                    (Some(JobState::Completed { .. }), _) => JobAction::Completed,
+                    (_, JobEvent::NeedsMet | JobEvent::LeaseExpired) => JobAction::Queued,
+                    (_, JobEvent::Acquired) => JobAction::InProgress,
+                    _ => continue,
+                };
+                let mut s = step(row, &j.spec, action, at);
+                match action {
+                    JobAction::InProgress => {
+                        s.started = Some(at);
+                        s.runner = matched.get(job).copied().or(j.state.runner()).map(|r| r.0);
+                    }
+                    JobAction::Completed => {
+                        if let Some(JobState::Completed { conclusion: c, at: t }) = now {
+                            s.conclusion = Some(conclusion(*c));
+                            s.completed = Some(*t);
+                        }
+                    }
+                    JobAction::Queued => {}
+                }
+                out.push(s);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The round for `runs` on shard `chain`, through entry `through`. `gone` names repositories that refused an earlier
-/// round's checks: their unfinished runs are cancelled, and their checks are not sent again.
+/// round's checks: their unfinished runs are cancelled, and their checks are not sent again. `jobs` are the entries'
+/// `steps`, sent with their run's checks; none when the install has not enabled 32.24.
 /// With no run touched the round is empty and the cursor stays: it lags over idle entries, and the next round with
 /// work moves it, so `RunOwner`'s own cursor entries never start another round.
 pub fn round(
@@ -57,6 +132,7 @@ pub fn round(
     runs: &BTreeSet<RunId>,
     through: Index,
     gone: &BTreeSet<RepoId>,
+    jobs: &[WorkflowJobUpdate],
 ) -> Round {
     if runs.is_empty() {
         return Round { checks: Vec::new(), then: Vec::new() };
@@ -83,10 +159,15 @@ pub fn round(
     for (repo, (suites, checks)) in by_repo {
         for s in suites {
             let runs: Vec<CheckRunUpdate> = checks.iter().filter(|c| c.suite == s.suite).cloned().collect();
+            let steps: Vec<WorkflowJobUpdate> = jobs.iter().filter(|j| j.run == DbId(s.suite.0.0)).cloned().collect();
             let mut key = Vec::new();
-            graftyard_fold::canon::write(&mut key, &(repo, &s, &runs));
+            if steps.is_empty() {
+                graftyard_fold::canon::write(&mut key, &(repo, &s, &runs));
+            } else {
+                graftyard_fold::canon::write(&mut key, &(repo, &s, &runs, &steps));
+            }
             let request = consumer_request(chain, &key);
-            out.push((repo, RunChecksCmd { suite: Some(s), runs, request }));
+            out.push((repo, RunChecksCmd { suite: Some(s), runs, request, jobs: steps }));
         }
     }
     Round { checks: out, then }
