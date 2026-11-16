@@ -1440,20 +1440,9 @@ pub fn commit_tx(storage: &worker::Storage, stmts: Vec<Stmt>) -> std::result::Re
 }
 
 /// Rows one at a time: `rows` copies every row of a result into wasm memory first, and a log of 1 MB inline packs read
-/// that way ran the isolate out of memory in `load` (F45, `tests/m1/results/m1-f43.md`).
-fn each_row(
-    sql: &SqlStorage,
-    q: &str,
-    args: Vec<SqlStorageValue>,
-    mut f: impl FnMut(Vec<SqlStorageValue>) -> Result<bool>,
-) -> Result<()> {
-    for r in sql.exec(q, args)?.raw() {
-        if !f(r?)? {
-            break;
-        }
-    }
-    Ok(())
-}
+/// that way ran the isolate out of memory in `load` (F45, `tests/m1/results/m1-f43.md`). A read stopped early still
+/// ends its statement (`crate::logread`).
+use crate::logread::each_row;
 
 /// The `request` table, read where it lives: in the member's SQLite, one row per point lookup. `GroupFold::apply`
 /// writes a row here before `SqlStore` turns it into the input's `INSERT`, and drops rows past retention before the
@@ -1740,9 +1729,13 @@ fn stored_range<F: Family>(sql: &SqlStorage, from: Index, through: Index) -> Opt
     let lo = from.0.max(1);
     let mut entries: Vec<Entry<F>> = Vec::new();
     let (mut bytes, mut whole) = (0usize, true);
-    let q = "SELECT idx, length(row), row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx";
-    each_row(sql, q, vec![i(lo), i(through.0)], |r| {
+    // In pages read to their end (`crate::logread::log_after`): the read stops at `APPEND_BYTES_MAX`, and stepping
+    // through up to `CATCHUP_MAX` rows of up to `ENTRY_MAX` only to end the statement would cost more than the read.
+    let mut each = |r: Vec<SqlStorageValue>| -> Result<bool> {
         let idx = int(&r[0])? as u64;
+        if idx > through.0 {
+            return Ok(false);
+        }
         if idx != lo + entries.len() as u64 {
             whole = false;
             return Ok(false);
@@ -1758,8 +1751,12 @@ fn stored_range<F: Family>(sql: &SqlStorage, from: Index, through: Index) -> Opt
             Err(_) => whole = false,
         }
         Ok(whole)
-    })
-    .ok()?;
+    };
+    for r in crate::logread::log_after(sql, "length(row), row", lo - 1) {
+        if !each(r.ok()?).ok()? {
+            break;
+        }
+    }
     let reached = (lo + entries.len() as u64).saturating_sub(1);
     (whole && !entries.is_empty() && (reached == through.0 || bytes > raft::APPEND_BYTES_MAX)).then_some(entries)
 }
@@ -3706,26 +3703,23 @@ impl<F: Family> Host<F> {
         // Rows are read one at a time and the read stops at the page's end: collecting all 2,000 first held up to
         // 2,000 rows (about 47 MB of repo:65536's 23.5 KB entries) per call and cost its leader about 160 ms of CPU a
         // page through a rehydrate's 420 pages (`tests/m3/results/wire-fix.md`).
-        each_row(
-            &sql,
-            "SELECT row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx LIMIT 2000",
-            vec![i(from.max(1)), i(to)],
-            |r| {
-                // A page stops past `page_bytes` (and always holds one entry), so a log of inline packs answers
-                // well within the lookup's CALL; the shard asks again from the next index.
-                let row = blob(&r[0])?;
-                bytes += row.len();
-                if !out.is_empty() && bytes > page_bytes {
-                    return Ok(false);
-                }
-                let e: Entry<F> = codec::from_bytes(row).map_err(|e| err(e.to_string()))?;
-                let mut m = F::entry_json(&e);
-                m.insert("index".into(), json!(e.index.0));
-                m.insert("at".into(), json!(e.at.0));
-                out.push(Value::Object(m));
-                Ok(true)
-            },
-        )?;
+        // Read in pages read to their end (`crate::logread::log_after`), so stopping at the page's end leaves no
+        // statement open.
+        for r in crate::logread::log_after(&sql, "row", from.max(1) - 1) {
+            let r = r?;
+            // A page stops past `page_bytes` (and always holds one entry), so a log of inline packs answers well
+            // within the lookup's CALL; the shard asks again from the next index.
+            let row = blob(&r[1])?;
+            bytes += row.len();
+            if int(&r[0])? as u64 > to || out.len() == 2000 || (!out.is_empty() && bytes > page_bytes) {
+                break;
+            }
+            let e: Entry<F> = codec::from_bytes(row).map_err(|e| err(e.to_string()))?;
+            let mut m = F::entry_json(&e);
+            m.insert("index".into(), json!(e.index.0));
+            m.insert("at".into(), json!(e.at.0));
+            out.push(Value::Object(m));
+        }
         Ok(json!(out))
     }
 
