@@ -9,7 +9,7 @@ dev() { "$W" dev --port 8790 --persist-to /tmp/fetchmem-state >/tmp/fetchmem-dev
   until curl -s http://127.0.0.1:8790/nope 2>/dev/null | grep -q "not found"; do sleep 1; done; }
 trap 'kill $SINK $DEV 2>/dev/null || true' EXIT
 # Seeding grows workerd's heap, so measure in a fresh workerd over the persisted bucket.
-dev; curl -s "http://127.0.0.1:8790/seed?n=4&size=$SIZE"; kill $DEV; wait $DEV 2>/dev/null || true; sleep 2; dev
+dev; curl -s "http://127.0.0.1:8790/seed?n=${SEED:-4}&size=$SIZE"; kill $DEV; wait $DEV 2>/dev/null || true; sleep 2; dev
 wd() { # the workerd process with the most memory: the one running the isolate
   for p in $(pgrep -x workerd); do echo "$(awk '/VmRSS/{print $2}' /proc/$p/status) $p"; done | sort -n | tail -1 | cut -d' ' -f2; }
 peak() { # peak RSS in MB of workerd over the call
@@ -19,4 +19,5 @@ peak() { # peak RSS in MB of workerd over the call
   echo "$(cat /tmp/fetchmem-out.json) rss_peak_mb=$((max / 1024)) rss_now_mb=$(( $(awk '/VmRSS/{print $2}' /proc/$pid/status) / 1024 ))"
 }
 echo "idle rss_mb=$(( $(awk '/VmRSS/{print $2}' /proc/$(wd)/status) / 1024 ))"
-for q in k=1 k=4 k=1 k=4 "k=1&mode=buffer" "k=4&mode=buffer"; do peak curl -s "http://127.0.0.1:8790/fetch?$q&size=$SIZE"; done
+# QS: the queries, space-separated (default: 1 and 4 streamed, twice, then the buffered control); SEED: packs seeded.
+for q in ${QS:-k=1 k=4 k=1 k=4 k=1&mode=buffer k=4&mode=buffer}; do peak curl -s "http://127.0.0.1:8790/fetch?$q&size=$SIZE"; done

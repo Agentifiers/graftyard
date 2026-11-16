@@ -3640,6 +3640,81 @@ since the tail's count did not move the peak.
 - **Proposal, not built:** re-promote 131296 under fix 2, and raise AHEAD from 4 to 8 streams with a local site-memory
   check at 8 × 207 MB as fix 1's test did at 4. Together about 95 to 110 s. The roll-up stays G9's next lever.
 
+### Round 27b (local, no hosted spend): point 4's site-memory check at 8 × 207 MB, and why neither lever is built (2026-11-16)
+
+The operator's go (after merging `repack-mem` as main 1d90863a): re-promote repo:131296 under fix 2 and raise AHEAD
+from 4 to 8, once a local site-memory check at 8 × 207 MB passes as fix 1's did at 4. The check passes. Three other
+findings stop both levers short of building, and correct round 27's projection.
+
+**Site memory at 8 × 207 MB: bounded.** `tests/fanout/fetchmem/run.sh` with `SEED=8` (README, "Eight at once"):
+
+| Fetch | Packs at once | Peak workerd RSS | Wall |
+|---|---|---|---|
+| idle after restart | | 113 MB | |
+| streamed | 1 / 4 / 8 × 207 MB | 115 / 118 / 122 MB | 3.46 / 3.48 / 3.46 s |
+| streamed, again | 1 / 4 / 8 | 122 / 122 / 123 MB | 3.50 / 3.46 / 3.46 s |
+| buffered (control) | 1 / 8 × 207 MB | 537 / 3,961 MB | 3.80 / 6.57 s |
+
+Eight streamed packs hold about what four do (122 against 118 MB), so memory does not stop eight.
+
+**1. Eight `/spool`s at once break the six-connection limit.**
+- A Workers invocation has at most six connections waiting for response headers. A seventh is queued until one of
+  them gets its headers [doc, https://developers.cloudflare.com/workers/platform/limits/, "Simultaneous open
+  connections"].
+- The container's `/spool` writes its headers only after the whole body has landed: `handleSpool` calls `jsonOut`
+  after `spool` (`containers/git/server/main.go`). So each fetch counts toward the six for its whole length.
+- `FETCH_AT_ONCE` is 4 so that the in-order ingest and the next log page keep a connection each. The bed asserts
+  `FETCH_AT_ONCE + 2 <= 6` at compile time, and raising it to 8 fails that assertion (`crates/git/tests/catchup.rs`).
+  At 8, the ingest and the page would queue behind fetches, and the ingest order is what the marked phase waits on.
+- Local workerd does not enforce the six: eight such calls ran at once here (sink peak 8, headers at 1,008 to
+  1,010 ms each, scratch check). So the memory table above shows nothing about connections.
+- A fix exists but changes the protocol: `/spool` answers 200 at once and writes its JSON at the end of the body. Then
+  a fetch no longer counts toward the six. Locally, headers came at 2 to 33 ms instead of 1,003 to 1,010 ms, with the
+  bodies unchanged (scratch check). A checksum mismatch would then be read from the body, not the status, so this is
+  a container and site change, design first, and a site day.
+
+**2. More streams would likely not raise the total.** Round 27's "8 streams ≈ 230 MB/s" assumed each stream keeps its
+rate [guess]. The three warms say the total is close to a ceiling, not to the stream count:
+- round 23 (m35), one stream at a time on large packs: 67 to 107 MB/s;
+- round 24 (m36), 2.1 to 2.8 streams at once: 122 to 132 MB/s in total, 46 to 62 MB/s each;
+- round 26 (m37), 2.4 to 3.0 at once: 104 to 118 MB/s in total, 35 to 49 MB/s each.
+- Round 24 already read this as a per-container cap near 130 MB/s [inference]. A Cloudflare engineer on the docs
+  issue (cloudflare/cloudflare-docs#23626, October 2025) gave 1 Mbit per milli-vCPU, which is 4 Gbps for standard-4,
+  "but I'm not positive" about a lower per-instance cap [unverified]. About 130 MB/s is about 1 Gbps.
+- The bed with repo:131296's 61 promoted sizes at 45 MB/s a stream keeps 3.6 to 3.8 fetches in flight on average at
+  `FETCH_AT_ONCE` 4 (scratch run of `catchup.rs`'s bed). Hosted it was 2.4 to 3.0, so the four slots are not full now.
+  The streams are waiting on the link, not on the cap of four [inference].
+- So round 27's 95 to 110 s for "re-promote plus 8 streams" is withdrawn. At about 130 MB/s the marked phase is set by
+  the stored bytes alone.
+
+**3. Re-promotion of repo:131296 cannot be done as a data job.**
+- A committed `Promoted` range is fixed. `verify` accepts a new `Promoted` only from the last range's `to + 1`
+  (`crates/git/src/repo.rs`, `check_promoted`), so entries 1 to 234 cannot be promoted again.
+- A rehydrate loads every stored pack with a marker except those a `Compacted` consumed, and nothing writes
+  `Compacted` yet (`crates/git/src/catchup.rs`, `skippable`: "the read side of `Compacted.consumed`, which nothing
+  writes yet"). So a second, smaller pack for a covered range would load beside the old one and add bytes.
+- Deleting the 61 old promoted packs or their markers would not help: pushed packs are skipped only when the promotion
+  covering them is loaded (`skippable`). So the warm would load the 256 covered pushed packs instead, thin, through
+  `index-pack`, as rounds 18b and 20 did (1,507 to 2,639 s).
+- What does work: a writer for `Compacted { consumed, produced }`, which is G9's roll-up mechanism, not a one-off. Or
+  a fresh network seeded and drained under main. That costs the seed plus a drain of about 2.2 GB at 0.49 MB/s of
+  pushed bytes (round 22: 75 minutes, about $1.6), so about $2 to $3 before the row, over the $4 day with B0-34 and
+  B0-33 [inference from round 22's cost].
+
+**What would bring the cold warm under 120 s.** With up at 33 to 36 s (the platform's) and the tail plus
+`/connected` at 32 to 47 s, the stored packs must be read in about 39 to 54 s. At 104 to 132 MB/s that is about 4.1
+to 7.1 GB of stored packs. repo:131296 holds 8.64 GB.
+- Roll-up (G9): about 2.2 GB, about 17 to 21 s at that rate. Total about 85 to 105 s [inference]. It needs the
+  `Compacted` writer and the memory bound G9 names (385 s on 4 threads, 8.6 GB resident, round 23b).
+- Re-promote under fix 2, if it could be done: about 6.46 GB, 49 to 62 s. Total about 115 to 145 s. Not reliably under.
+- Eight streams with the early-headers `/spool`: little or nothing if the link is the cap; unmeasured.
+
+**Decision needed (operator).** Nothing built, AHEAD unchanged, so DESIGN and DECISIONS are unchanged. Options:
+(a) build G9's roll-up with the `Compacted` writer, design first, as the one lever that reaches 120 s on this
+network; (b) measure the per-container R2 ceiling first on the next site day (one cold warm with `FETCH_AT_ONCE` 4,
+reading each stream's bytes and times, already in the rehydrate report), and decide after; (c) accept 150 to 158 s
+on this network as a G9 finding and run the site day without warm work.
+
 ### Budget change (2026-11-16, about 01:58Z)
 
 The user raised LM-1's stop from $145 to $155, relayed by the operator thread at about 01:58Z. The $155 is only for
