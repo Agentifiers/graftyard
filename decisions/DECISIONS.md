@@ -3951,6 +3951,21 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 
 **Flip.** A git release whose `--stdin-packs` walk honours on-disk `.keep`s (the flag becomes a no-op), or a hosted repack whose `pack-objects` private memory grows with the promotions again.
 
+### `promote-lapse`: a due range's promotion starts a shard but does not keep a quiet one warm, 2026-11-16
+
+**Decision.** A due range's promotion sends its shard calls (`/promote`, its `/validate`, `/idx`) with `warm=start`, read as `graftyard_git::Caller::Start`. It starts a stopped shard, as before, since the log cannot archive past the range otherwise, but records no request. When the shard's `last_request` is `WARM_FOR` old or older, or absent, each such call sets the container's inactivity timeout to `PROMOTE_LAPSE` (10 minutes [guess]) instead of the 6 h a start sets (`graftyard_git::promote_lapse`), so the container stops 10 minutes after the drain run's last promotion. A shard a client used within `WARM_FOR` keeps its 6 h timeout and renewal, and a client's later request sets 6 h again (`ShardHost::touch`, `on_alarm`).
+
+**Why.** On `graft-m2b`'s idle check after the m39 site day (LM-1 round 34), repo:131330's due range started its shard five times on three sites. The archive alarm's due-range `/promote` had no `warm`, so it was `Caller::Client`: `serve` touched the shard, `last_request` moved to the call, and the renewal alarm then held the container `WARM_FOR`, 24 h, renewing the 6 h inactivity timeout each hour [from the code: `crates/git/src/shard.rs`, `serve` and `renewal`; `crates/git/src/host.rs`, `touch` and `on_alarm`]. Only the reaper's teardowns stopped them. A quiet group whose log reaches its archive band would bill a container for a day per promotion run.
+
+**Beat.**
+- Making a due range's promotion warm (skip a stopped shard): a stopped group with a range due would never archive, and its log would grow past the cap (`promote-warm`, Beat).
+- Stopping the container when the promotion returns: the drain run's next promotion, minutes later, would start it again from nothing, a cold rehydrate per step.
+- A `PROMOTE_LAPSE` on every start, client or not: a client's start must keep `WARM_FOR`.
+
+**Evidence.** `a_due_range_promotion_starts_a_shard_and_lets_a_quiet_one_lapse` (`crates/git/tests/shard.rs`) has no `Caller::Start` or `promote_lapse` on main. `tests/promotelapse/plant.py` catches 6 of 6: `start` read as warm, `Start` touching, a lapse despite a recent client, a lapse for every caller, a never-used shard counted as recent, and a lapse as long as the inactivity timeout. The 10 minutes is [guess] until a hosted idle check shows a quiet range's shard stopping within it.
+
+**Flip.** A hosted drain run whose promotions are more than `PROMOTE_LAPSE` apart, so each one starts and rehydrates its shard again, which would lengthen the lapse.
+
 ### `promote-warm`: promote-ahead's `/promote` is a warm call, 2026-11-16
 
 **Decision.** The archive alarm's promote-ahead (a promotion with no range due to archive) sends its shard calls (`/promote`, the `/validate` of its pack, and `/idx`) with `warm=1`. The shard reads `warm` on any route as a warm caller (`graftyard_git::caller`; `warm=pool` still means the pool warm, on `/catchup` only), so a stopped shard answers `skipped` with `x-graft-skipped: stopped`, starts nothing, and records no request. A running shard promotes as before, but promote-ahead never keeps it warm. When every site's shard skipped, the step is idle, and a later alarm on a running shard promotes the same range. A due range's promotion, which archiving and the log cap wait on, is still a client's call and starts a shard. DESIGN states it in Shape, `Promoted`.

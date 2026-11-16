@@ -231,6 +231,26 @@ fn a_warm_query_on_any_route_is_a_warm_call_and_pool_only_on_catchup() {
     assert_eq!(caller("/promote", Some("pool")), Caller::Warm);
 }
 
+/// A due range's promotion (`warm=start`) starts a stopped shard but records no request, and on a shard no client used
+/// in `WARM_FOR` it sets `PROMOTE_LAPSE`, not the 6 h a client's start sets: as a client it held each of 131330's five
+/// starts on idle `graft-m2b` a day (`tests/am1/results/lm1-memory.md`, round 34). A client within `WARM_FOR` keeps it.
+#[test]
+fn a_due_range_promotion_starts_a_shard_and_lets_a_quiet_one_lapse() {
+    for path in ["/promote", "/validate", "/idx"] {
+        assert_eq!(caller(path, Some("start")), Caller::Start, "{path}");
+        assert_eq!(serve(Caller::Start, false), Serve::Run { touch: false }, "it starts a stopped shard");
+        assert_eq!(serve(Caller::Start, true), Serve::Run { touch: false });
+    }
+    let now = Timestamp(100 * H);
+    assert_eq!(promote_lapse(Caller::Start, now, None), Some(PROMOTE_LAPSE), "never a client");
+    assert_eq!(promote_lapse(Caller::Start, now, Some(Timestamp(now.0 - 24 * H))), Some(PROMOTE_LAPSE));
+    assert_eq!(promote_lapse(Caller::Start, now, Some(Timestamp(now.0 - 23 * H))), None, "a client 23 h ago");
+    for c in [Caller::Client, Caller::Warm, Caller::PoolWarm] {
+        assert_eq!(promote_lapse(c, now, None), None, "{c:?}");
+    }
+    assert!(PROMOTE_LAPSE < RENEW_EVERY && PROMOTE_LAPSE < INACTIVITY);
+}
+
 #[test]
 fn container_day_covers_10_50_100_percent_in_rendezvous_order_and_rollback_wins() {
     let count = 25;
