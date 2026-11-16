@@ -1,6 +1,7 @@
 # fanout-dups: B0-33 m39's inbound trace, and duplicate forced appends in one turn
 
-Branch `fanout-dups`, built off `main` adc86c42. It reads the first hosted run of `inbound-trace`
+Branch `fanout-dups`, built off `main` adc86c42. Sections 1 to 3 are the hosted analysis; 4 and 5 the simulator
+count and the fix. It reads the first hosted run of `inbound-trace`
 (`tests/m0/results/inbound-trace.md`): LM-1's B0-33 on site day m39 (main a0bca583, with promote-warm,
 registry-restore, push-reads, feed-ahead, receipt-rule and the test-faults inbound trace), repo:131343, a1 run
 mwjghnzg, 16:06:40Z to 16:17:18Z, k 4, 8 learners, 5,000 agents. Terms 2 to 9, leader commit p50 5.8 s and p99 29.7 s.
@@ -63,7 +64,59 @@ each newer peer stamp, so a floor jump of 20 ms or more inside a turn frees the 
 frees it too, and heartbeats, retries and catch-up can repeat a queued last index as well. The simulator check below
 names the source.
 
+## 4. The simulator names the source: `read_round`
+
+A scratch count (not committed) tagged every AppendEntries the leader sent with the path that sent it: read round
+(split by what freed the slot: first, answered, gap), tick heartbeat, tick catch-up, retry, refusal probe, answer
+follow-up, or unforced. The scenario: a leader on a suspect clock, two voters and 8 learners, 200 turns of 30 inputs
+each (reads, two answer deliveries of calls held from earlier turns, one commit, and a tick every third turn). The
+member clock jumps by `JUMP` at every fifth input, and calls are answered only in a later turn (a slow out leg).
+
+| floor jump | answers per delivery | most appends to one voter in a turn | read rounds by what freed the slot | repeating a last index already sent that turn |
+|---|---|---|---|---|
+| 0 ms | 4 | 2 | answered 398 | none |
+| 5 ms | 4 | 3 | answered 398, gap 400 | 798, all read rounds |
+| 19 ms | 4 | 5 | 1,400 (run before the split) | 1,200, all read rounds |
+| 20 ms | 4 | 8 | gap 2,400 | 2,264, all read rounds |
+| 25 ms | 0 | 7 | gap 798 | 666, all read rounds |
+| 60 ms | 4 | 8 | gap 2,400 | 2,264, all read rounds |
+
+Every repeat came from `read_round`. Heartbeats, retries, probes, catch-up and follow-ups sent none in a turn, and
+unforced appends never repeated an index. Floor jumps of 20 ms or more expire the gap at each jump, and below that the
+answers that land in the turn free the slot. Whether the hosted floor jumps that far is [inference]: the trace
+records the raw clock only. The count reproduces the m39 shape (8 rounds per voter per turn, 94% repeating a queued
+last index, against 92% for site 0), so this is step 3, the fix, not step 4's instrument.
+
+## 5. The fix: the slot is timed on the isolate's own clock
+
+`Member::set_own_clock` takes the isolate's `Date.now()`, which the site host passes at every input
+(`Host::step`). `read_round` frees its slot only when the own clock has moved since the last round, and then on an
+answer or `READ_ROUND_GAP` on that clock. One Workers turn shares one own-clock reading, so a voter gets at most one
+read round per turn. Read sharing and grants stay on the member clock: a read still shares only a round that left at
+or after it arrived, and is granted only by a voter quorum's ack at or after its arrival. In the simulator the own
+clock is unset and reads the member clock, so the only change there is that an answer no longer frees a second round
+at the same member-clock reading.
+
+Cost [inference]: a read that misses its turn's round waits for the next turn's, which on a busy isolate is the next
+answer or `TICK` (100 ms), as `read-gap-wording` already records. Hosted read-grant p99 in LM-1's next B0-33 checks it.
+
+- Regression: `reads_send_at_most_one_round_per_voter_per_turn_while_the_floor_jumps` fails on main
+  (`turn 0: {SiteId(1): 7, SiteId(2): 7} read rounds per voter in one turn, against one`) and passes with the fix.
+  It also asserts every read is granted by a round that left after it arrived.
+- Plants: `tests/m0carried/plant25.py`, 6 of 6 caught: the slot timed on the member clock as on main; an answer
+  freeing the slot within the same turn; an answer not freeing it on a later turn; the own clock ignored; a read
+  granted by a round older than it; and sharing keyed so a read that arrived after the round shares it.
+- Long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, 1,124 s): passed. Longest healthy-quorum stall harsh 15,739 ms
+  (seed 10,160), gray 27,508 ms (seed 10,698), live 26,186 ms (seed 11,208), the same seeds and values as
+  `read-round-gap` and main (`tests/m0/results/read-round-gap.md`). So the gray half holds the 30 s bound.
+- Porcupine (`tests/m0/porcupine`, `-seg 2000`): h Ok, 153,246 operations; h.gray Ok, 2,246,286; h.live Ok,
+  5,965,959.
+- Full checks: fmt, workspace clippy, wasm32 clippy for site, edge and ops (site and edge with and without
+  `test-faults`), `cargo test --workspace` 1,045 passed and 0 failed, `go test` in `containers/git/server` ok, and
+  the three `scripts/check_*.py` OK.
+
 ## Records
 
+- `design/DESIGN.md`, Shape, "The read path"; `decisions/DECISIONS.md`, "`fanout-dups`".
 - `decisions/OPEN-QUESTIONS.md`, F74: client load ahead at the callee refuted, and the caller's six-slot fan-out per
   invocation holds the legs [measured]; the clock-floor cause of the duplicates [inference].

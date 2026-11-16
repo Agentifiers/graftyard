@@ -62,9 +62,9 @@ pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> u
 /// live-sweep group 50 s (seed 11497). One miss does not stop it: a far voter that missed once and lost its pipeline
 /// for the window caught up one backlog call at a time, and each missed again (r330-6).
 pub const PIPELINE: usize = 4;
-/// The least time between two read-index rounds while the earlier one is unanswered (`Member::read_round`) [guess]:
-/// beside a follower's 10 ms read batching, it caps read rounds at 50 a second per voter, whatever the member clock
-/// does.
+/// The least time between two read-index rounds while the earlier one is unanswered (`Member::read_round`) [guess],
+/// on the isolate's own clock (`Member::set_own_clock`): beside a follower's 10 ms read batching, it caps read rounds at
+/// 50 a second per voter, whatever the floored member clock does.
 pub const READ_ROUND_GAP: Duration = Duration::from_millis(20);
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
@@ -295,8 +295,9 @@ pub(super) struct Lead<C: Command> {
     record_pending: Option<(Index, RequestId)>,
     /// Waiting reads: when each arrived, and whether the lease had lapsed then, so it needs a round.
     reads: Vec<(ReadId, Timestamp, bool)>,
-    /// When the latest read round left (`read_round`): a read that arrived at or before then shares it.
-    read_round: Option<Timestamp>,
+    /// When the latest read round left (`read_round`), on the member clock, which a read's arrival is read against:
+    /// a read that arrived at or before then shares it. And on the isolate's own clock, which the gap is read against.
+    read_round: Option<(Timestamp, Timestamp)>,
     /// The latest commit proof this leadership counted.
     proof: Option<QuorumProof>,
     /// Resolved tickets for a late `outcome`, by seq: when each resolved, its priced bytes, and its result.
@@ -725,6 +726,15 @@ impl<C: Command> Member<C> {
     /// lease and a trusted clock is linearized at its arrival, so a later grant on that lease is still safe.
     pub fn set_clock_suspect(&mut self, suspect: bool) {
         self.clock_suspect = suspect;
+    }
+
+    /// The isolate's own clock at this input, before any floor (`design/DESIGN.md`, "The read path"). A Workers
+    /// isolate's clock moves only between I/O turns, so inputs in one turn share it, while the member clock, floored
+    /// at each newer peer stamp, can jump many times in that turn. `read_round` times its gap on this clock and sends
+    /// at most one round a reading. Unset, as in the simulator, it is the member clock.
+    /// Never below a reading it gave before, so a clock stepped back reads as one that did not move.
+    pub fn set_own_clock(&mut self, own: Timestamp) {
+        self.own_clock = Some(self.own_clock.map_or(own, |o| o.max(own)));
     }
 
     /// What admission sees now, as leader: capacity, queued agent commands and bytes, whether the group is hot and
@@ -1948,14 +1958,16 @@ impl<C: Command> Member<C> {
     fn read_round(&mut self) {
         let answered = self.quorum_since(|l| &l.acked_at);
         let now = self.now;
+        let own = self.own_clock.unwrap_or(now);
         let Some(lead) = self.lead.as_ref() else { return };
         let last = lead.read_round;
-        let waiting = lead.reads.iter().any(|(_, arrived, needs)| *needs && last.is_none_or(|t| *arrived > t));
-        let free = last.is_none_or(|t| now >= after(t, READ_ROUND_GAP) || answered.is_some_and(|a| a >= t));
+        let waiting = lead.reads.iter().any(|(_, arrived, needs)| *needs && last.is_none_or(|(t, _)| *arrived > t));
+        let free =
+            last.is_none_or(|(t, o)| own > o && (own >= after(o, READ_ROUND_GAP) || answered.is_some_and(|a| a >= t)));
         if !waiting || !free {
             return;
         }
-        self.lead.as_mut().expect("leading").read_round = Some(now);
+        self.lead.as_mut().expect("leading").read_round = Some((now, own));
         for p in self.peers() {
             self.send_append(p, true);
         }
