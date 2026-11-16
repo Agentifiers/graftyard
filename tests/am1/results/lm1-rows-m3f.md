@@ -80,6 +80,140 @@ The unmeasured variable is R2's throughput with four streams into one container;
 
 This branch's catch-up change helps B0-32 and B0-31 the same way: stored packs fetched four at a time ahead of the in-order ingest, and a promoted range's pack not fetched again by a catch-up that already applied the range.
 
+## Rows m3fr7 (2026-11-15/16, TAG `m3fr7`, `ROWS="b0-32 b0-31 l0-12"`, `STOP_USD=66`)
+
+**Build and site day.** Main `1aed2cff`, which ran with these merges since m3fr6's `a304d3fc`: lm1-rows-m3f6's drivers and test-faults instruments, `read-round-gap` (`0646faa2`), `composed-miss`, and `promote-unlock`. New shard image `sha256:29c3b917…`, built from that commit's `containers/git`. Site day 23:21:26Z to 23:35:02Z, logged in `install-m3f.md`. Rows started 23:41Z at $48.91 (graft-m3f, account Graftyard). From 02:23Z a cost watch metered every 15 minutes with `env-m3f.sh` and would have stopped L0-12's refusals after the current kind at $66. It never fired.
+
+**What was lost.** The orb restarted at about 04:20Z, in L0-12's last refusal kind, and cleared `/tmp`. That took the run worktree, its raw files (`a1-*.jsonl`, `terms`/`admit`/`vmem`/`tsave-m3fr7-*`, the status file, the stall and refusals logs) and the uncommitted driver changes (`rows.sh` `ROW_USD`, `tests/fanout/rounds.py`). The figures below were read from those files before the restart (they are quoted from this thread), or from Workers Logs, the repository's refs and the meter after it. A line marked *lost* could not be judged.
+
+**Teardown.** The row's own teardown and `rows.sh`'s final sweep never ran. At 04:26Z `teardown.py --sweep` found 7 shard containers running: `net:65571` on all three sites (L0-12's), `net:65568` on all three (an earlier row's), and `net:65570` on site c (B0-31's, restarted after its row's teardown). It tore down all 7 and reported none left, and a second sweep also found none [measured].
+
+**Spend (graft-m3f, account Graftyard):** $48.91 at the start, $51.01 after B0-32, $52.74 after B0-31, $56.43 after L0-12's replay, $57.09 at the start of the refusals, $59.33 at 04:26Z. The rows cost $10.42.
+
+### B0-32 (repo 65569, run `mwihdvym`): fail
+
+| Gate line | Result |
+|---|---|
+| Every push acknowledged within 5 s, or answered `ng … agent admission full` | **Fail**: 500 of 500 ok, 0 within 5 s; `push:burst` p50 22,352 ms, p99 27,516 ms |
+| Queued agent bytes under `AGENT_QUEUE_MAX` (64 MiB) | Pass: max 155,696 B |
+| Every merge in one of the next 2 entries | *Lost* (not evaluated before the restart). Merges: 62 × 200, 12 × 409, 1 × 503 `warming` |
+| Zero leader changes | Pass: every voter at term 2 before and after |
+| Zero `suspect` reports | **Fail**: 17 inbound `/suspect` on the leader |
+
+Leader commit p99 3,942 ms, queue p99 4,393 ms, 96.7 req/s. B0-29's API read p99 (`read:api`): 3,038 ms, with 1,149 × 503.
+
+**Where the 22 s goes** (five burst pushes traced end to end by Workers Logs `traceId`) [measured]:
+
+1. **Reads before validate, 1.2 to 17.3 s.** The read gate's and identity reads go one member at a time, and many take about 1.0 s each. That matches a follower waiting out FOLLOWER_WAIT for its read index, answering `overloaded`, and the edge asking the next member. This is the largest share in four of the five.
+2. **Validate, 0.4 to 7.0 s.** On the network shard (site a) it took p50 2.6 s, max 4.5 s; on a site b pool shard, up to 7.0 s.
+3. **The first `/commit`, 0.2 to 0.9 s.**
+4. **Then, in every push after the group turned hot:**
+   - a gap of 1.5 to 2.5 s with no member call;
+   - a `{"probe": true}` `/read` on the leader;
+   - a second `/commit`.
+5. **When a commit's wall passes COMMIT_RECEIPT (2 s):** `/suspect` to both followers, then the same commit again.
+
+**The "stage, then re-commit" reading is confirmed** from the code path and the trace shape. Workers Logs carry no reply bodies, so the reply itself is not seen [inference]:
+- **Only Stage makes a second commit.** The edge's `commit()` runs `ensure_group` (one probe `/read`) before `commit_hedged`. It runs a second time only after `CallErrorWire::Stage` (`workers/edge/src/lib.rs`, `receive_pack`). A receipt resend inside `commit_hedged` sends `/suspect` and no probe.
+- **The traces show that shape.** The traces have the probe `/read` between `/commit` 1 and 2 with no `/suspect`, and the gap fits the R2 place.
+- **The group was hot when the gap appeared.** The admission sampler shows `hot` false until 23:55:03.9Z and true for the whole burst. 256 KiB is over INLINE_MAX_HOT (64 KiB), so the leader's `hot_stage` answers `Stage` (`crates/raft/src/member/leader.rs`). A push before the burst (23:54:52Z, not hot) has one `/commit`.
+- **The row expects staging** ("the row tests `INLINE_MAX_HOT`, which stages each 256 KiB pack"). Its cost here is one leader round trip, the R2 place, a probe read, and a second commit.
+- **One trace is unexplained:** a second network-shard validate (3,184 ms) sits between its two commits. The Stage path places the index it already has (`place_teed` with `Ok(ix)`), so check this before building on the reading.
+
+**The 17 `/suspect` are missed receipts, not a failing leader.**
+- **Commit walls:** sampled leader `/commit` walls in 23:55:00 to 23:55:40Z were n 519, p50 570, p90 2,020, p99 3,094 ms, with 54 over 2 s.
+- **Pushes affected:** 43 of 596 burst pushes had a commit over 2 s.
+- **Who reported:** each missed receipt drew one `suspect` round, gapped per isolate by SUSPECT_GAP.
+- **The leader held:** it kept term 2 throughout.
+
+**What a fix has to move, in order:**
+1. The reads before validate under a burst.
+2. Validate on the network shard.
+3. The Stage round trip. A hot group could answer Stage in the first commit's place, so the edge stages before its first send.
+4. The receipt deadline against a commit p99 of 3.1 s.
+
+Nothing is built.
+
+### B0-31 (repo 65570, rehomed on site 2, run `mwiidjbq`): fail
+
+| Gate line | Result |
+|---|---|
+| Commit p99 at most 1 s with buckets up | **Fail**: 1,767 ms (max 2,567, p50 998, n 5,426); m3fr6 2,895 ms |
+| Placement failing: Human and MergeQueue commit p99 at most 3 s, 0 of them refused | Pass: leader commit p99 1,824 ms; Human 136 ok, 15 stale, 0 refused; `merge:only@fail` 29 × 200, 4 × 409, 0 × 503 |
+| Agent pushes over INLINE_MAX_HOT refused at once in the `ng` shape | *Lost* (`push:agent@fail` codes not read before the restart) |
+
+The apac leader held at term 3, with 1 failed call. B0-29's API read p99: 1,423 ms (buckets up), 1,549 ms (placement failing).
+
+**The parent's checks:**
+- **MergeQueue `warming` 503s: 5, not 0.** All were in `merge:only@up`.
+- **No 60 s stall after a `/promote`.** 12 promotes took 195 to 4,668 ms, and their `derived=1` validates 5.3 to 11.7 s. The one 61.9 s `site/archive/promote` (00:29:32Z) came after the row ended (00:27:47Z) [measured, Workers Logs].
+
+**The 5 `warming` 503s came from a cold home shard** [measured, Workers Logs on site c's GitShard]:
+- **When they ended:** 00:17:18Z to 00:17:56Z, each at 15.0 s (MERGE_WAIT). That is 28 to 66 s into the 600 s run, which started at 00:16:50Z, about 30 s after `transfer.mjs` rehomed the group.
+- **What the shard was doing:** the apac shard was rehydrating from cold the whole time. Its log at 00:18:13Z shows up 34,182 ms, tail 59,732 ms, catch_up 69,047 ms, 268 MB in 257 packs, index 6.2 s.
+- **Catch-ups in the window:** 74.0, 58.5, 43.2 and 28.1 s, and "shard warm 65570 site 2: no answer in 25 s" four times.
+- **After it warmed:** catch-ups took 0.3 to 5.7 s, with 0 `warming` in the remaining ~510 s of buckets up and 0 with placement failing.
+
+**Proposal: warm the shard in the row setup; this is not a product bug.**
+- **Why not a product bug.** DESIGN's `IngestCursor` text makes `warming` the retryable answer a caller gets while a shard catches up, and MERGE_WAIT bounds it. Raising MERGE_WAIT, or having merges wait out the catch-up, were both rejected.
+- **Why the row should wait.** B0-31 measures a steady apac leader, and the rehome's cold start is not what it gates. `rows.sh` should wait after `transfer.mjs` until site c's shard `/status` shows the rehydrate done, with its cursor at the leader's commit. That adds about 70 s of setup.
+- **What stays open** [inference]: a planned rehome of a repository this size gives about 70 s of merge 503s on the new home. Warming the target site's shard before a transfer would remove that. This is a candidate OPEN-QUESTIONS row.
+
+### L0-12 (repo 65571, run `mwij41ij`): fail
+
+| Gate line | Result |
+|---|---|
+| No overlapping Exclusive leases over DRIFT; member clock offsets under 500 ms | *Lost* |
+| Every lease live before the stall live after it, `expires` moved by the stall | *Lost*; the stall ran its 30 minutes (exit 0, 02:03:59Z), with the leader on site 0 at term 6 and no member `stalledSince` through minute 21 |
+| The late Exclusive acquire succeeds | Pass: 201, 0 conflicts (02:03:59Z) |
+| 500 long-pollers see each event within 3 s at p99 outside leader kills | **Fail**: feed p99 25,235 ms (p50 3,876; 42,090 `hold`, 6,574 `gone`). This is the driver's figure for the whole run, not split by kill window |
+| 100 of 100 refused for each of the two `ActorKind::Agent` kinds, 0 of 100 for the other three | 5 kinds complete, all as the gate wants. The Graftyard MCP kind stopped at 55 of 100 when the orb restarted |
+
+Refusals by kind. The counts come from the edge's `POST …/git/refs` statuses in Workers Logs, in kind order, and from the refs that exist on the repository afterwards (`git ls-remote`) [measured]:
+
+| Kind | REST ref writes | Pushes |
+|---|---|---|
+| confined vendor App | 100 × 422 (02:04 to 02:31Z), "leased Exclusive by user 7100002" | 100 of 100 refused, naming the lease (driver summary) |
+| flagged App without `confine` | 100 × 201 | 100 refs exist, so 0 refused |
+| unflagged App | 100 × 201 | 100 accepted (driver summary) |
+| human PAT | 100 × 201 | 100 refs exist |
+| Graftyard-run App (`graftyard-workspace`) | 100 × 422 (03:33 to 04:00Z) | no refs, so 100 of 100 refused |
+| Graftyard MCP | 55 × 201, then stopped | 55 refs exist, so 0 of 55 refused; **45 not run** |
+
+`am1-runs` saw `graftyard-workspace` refused by `NoLiveTask`, not by the lease. Workers Logs carry no bodies, so which refusal it was here is not known.
+
+**Replay** (600 s from 01:07:16Z, leader site 0 at term 2, 10 kills, one every 60 s):
+- **Leader commit:** p50 1,543, p99 6,918 ms; 1,192 failed calls.
+- **B0-29's API read p99:** 3,637 ms (7,155 × 503 of 116,793).
+- **Agent pushes:** 2,491 of 2,491 ok, p99 25,783 ms.
+
+**Against m3fr6:**
+
+| | m3fr6 | m3fr7 |
+|---|---|---|
+| Term range | 2 to 32 | 2 to 6 |
+| Leader changes across the 10 kills | (m3fr6 section) | 3 (by kills 5, 9, 10) |
+| StepDowns 01:05 to 01:25Z | (m3fr6's record in its section) | site a 6 (Confirm 5, CommitErrors 1, all one member `ef19dfa6`); site b 0; site c 2 (CommitErrors, member `d4897b3f`) |
+| lagMax and lease fallbacks per member | 4.3 to 5.7 s on sites 0 and 1, 163 ms on site 2 | *lost* (`vmem` raw); live `/stats` at 04:30Z read 0 everywhere, so the members had restarted |
+| Read rounds per voter per 20 ms (max / p99 / windows over 5) | 99/61/84, 55/42/18, 213/45/270 | *lost* (`tsave` raw) |
+
+Kill log (the leader seen before and after each kill, and the sites reset):
+
+| Kill | Before | After | Reset |
+|---|---|---|---|
+| 1 | 0, term 2 | 0, term 2 | none |
+| 2 | 0, term 2 | 0, term 2 | 0 |
+| 3 | 0, term 2 | 0, term 2 | 0 |
+| 4 | 0, term 2 | 0, term 2 | 0 |
+| 5 | 1, term 3 | 1, term 3 | 1 |
+| 6 | 1, term 3 | 1, term 3 | 1 |
+| 7 | 1, term 3 | 1, term 3 | 1 |
+| 8 | 1, term 3 | 1, term 3 | 1 |
+| 9 | 0, term 4 | 0, term 4 | none |
+| 10 | none answered | 2, term 5 | none |
+
+The terms rose with the read-round gap in place, by 4 over the run against 30 on m3fr6. Most kills that reset a member did not move the leader.
+
 ## Rows m3fr6 (2026-11-15, TAG `m3fr6`, `ROWS="l0-12 b0-31 b0-32"`, `STOP_USD=46`)
 
 **Build and site day.** `lm1-rows-m3f6` `520020fe`: main `a304d3fc` with this branch's drivers and test-faults instruments, including two read-only raft `AdmissionView` fields (`round_ms`, `cmd_bytes`) and `vmem.mjs`'s per-voter `/stats` `clock`. The build ran with these main merges: `read-rounds` (`def9d6c1`), `repack-keep` (`8d79a32f`), `r22-sweep-fill` (`450bcae4`), `disk-validate` (`e7139c2e`) and `lease-clock` (`04577c42`). New shard image `sha256:b78eacca…`, built from main's `containers/git` at `a304d3fc` (`/validate?disk=1`, `held=`), on standard-4. Site day 17:17:57Z to 17:32:27Z: sites `0f1ce3ee` / `116b517b` / `f603b1b4` (phase 1 `0375142b` / `f4e758b6` / `d5d1056f`), edge `65a6583a`. Each step exited 0. After it, `j4` answered 200, `repo:65536` was led on site 0 at term 4, and every voter's `/stats` `clock` read lag 0 and `leaseFallbacks` 0. R22 second look: site a's `*/15` cron logged `sweep {` at 17:33:42Z and `fold audit {` at 17:35:01Z, with no "never complete".
