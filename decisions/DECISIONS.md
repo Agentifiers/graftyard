@@ -3948,3 +3948,41 @@ A test install answers each push with its stages as `server-timing`: `resolve`, 
 - The time saved is [inference] until B0-32's rerun reads the new `server-timing`.
 
 **Flip.** A hosted B0-32 where `gate` plus `context` is still most of a push's wall, which would leave the follower read wait as the cost. Or one where pushes that stage first wait longer than a `Stage` round trip, which would mean the bucket place is slower than the leader's refusal.
+
+### `receipt-rule`: a busy leader's slow receipt is waited on, not reported or re-sent, 2026-11-16
+
+**Decision.** Three changes to a push's commit and validate (`design/DESIGN.md`, "Commit and read paths" and journey 1, step 2):
+1. **The receipt rule** (`crates/lookup/src/lib.rs`, `receipt`). Each edge isolate records, per group and member, when that member last answered it a 200 on the commit path (`/commit` or `/outcome_by_request`) and in which term (`heard`). A `/commit` send that has no answer at `COMMIT_RECEIPT` (2 s) from a member that answered within the last `COMMIT_RECEIPT`, in the highest term the isolate has seen from the group, is busy, not gone (`busy`):
+   - The send stays open up to `RECEIPT_OPEN` (8 s [guess]). Nothing is reported and nothing is sent again.
+   - Each `COMMIT_RECEIPT` the edge asks the same member `/outcome_by_request` with the request id. It takes a `done`, a `NotLeader`, or a `pending` (a ticket it then waits on with `outcome`). `unknown`, any other answer, or none leaves the send open.
+   - A member with no such 200, or one that answers an error status, is reported with `suspect` and sent the command again, as before.
+2. **Outcome lookup without the pack** (`workers/edge/src/lib.rs`, `lookup_body`). The `/outcome_by_request` body is the same request id and the push with `pack: None`. A push's `replay` reads only its ref names, against the events its `request` row stores, so the leader answers the same without the up to 1 MiB inline pack. `crates/raft` is unchanged, and so is the member's `/outcome_by_request` route.
+3. **Validate's record and `touch`.** The edge's `/validate` names the owner's placement record, as `/merge` and `/demand` do, so the network shard skips its two `Names` reads. A shard records a client's request (`last_request` and the renewal alarm) at most once per `TOUCH_EVERY` (1 min, `graftyard_git::touch_due`).
+
+A test install also logs one line per push with an isolate token and the pushes that isolate held (`push_log`).
+
+`Acked` is still built only inside `outcome`. Every reply the edge takes is the member's: the send's own 200, or a `done` the leader built from its `request` row through `outcome`'s `replay`. A `pending` is a ticket, not a success.
+
+**Why.** On B0-32 m3fr8 the edge's commit stage was 5.5 s at p50 against the leader's own 427 ms [measured, `tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run"]:
+- 110 of 121 extra `/commit` sends followed a missed receipt from a leader that answered 200 to all 201 sends. 71 of those sends had handlers under 2 s, and each resend carried the 256 KiB pack again.
+- The leader held up to 572 open requests.
+- The misses sent 82 `suspect` waves, 27 to 32% of each follower's inbound, with no leader change. B0-02 found the same rule behind 29 to 40% of voter inbound on graft-m2b.
+- Validate's 3.0 s p50 was the network shard waiting before its forward, in two `Names` reads that the record makes unneeded.
+
+**Beat.**
+- Raising `COMMIT_RECEIPT`: settled against (`push-reads`). It also delays the report on a leader that really is gone.
+- Dropping `suspect` on missed receipts: the receipt is the edge's only hedge against a lost leader (BF-14, the data-center row). The rule keeps it for a member this isolate has not heard from.
+- Matching a digest of the command at the leader: the replay check needs no command bytes beyond the ref names, so a digest adds a raft change for nothing.
+- A hot flag in leader replies: needs a raft change (`push-reads`).
+
+**Evidence.**
+- `a_slow_200_from_a_busy_member_is_the_reply_with_no_resend_or_report` and `a_member_that_never_answered_is_still_reported` (`crates/lookup/src/lib.rs`) both fail with main's rule in the same harness, where every miss at `COMMIT_RECEIPT` is reported.
+- `a_resent_request_is_answered_from_its_row_and_applied_once` (`crates/git/tests/push.rs`) shows that `outcome_by_request` answers the same refs and report-status with the pack removed.
+- `a_push_asks_for_its_outcome_without_its_pack` and `a_validate_url_names_the_packs_trailer_its_class_and_the_record` (`workers/edge/src/lib.rs`) cover the edge. The second fails on main, whose URL has no record.
+- `a_shard_records_its_last_request_at_most_once_a_minute` (`crates/git/tests/shard.rs`): no `touch_due` on main.
+- `tests/m0carried/plant24.py` catches 14 of 14.
+- The time saved is [inference] until B0-32's rerun.
+
+**Flip.**
+- A run where a leader that answered 200s stops answering and its group waits `RECEIPT_OPEN` without a campaign. That would mean the busy window lets a gray leader keep its lease.
+- A rerun of B0-32 where the commit stage stays far above the leader's own commit time with no resends. That would put the wait in the legs, not the resends.
