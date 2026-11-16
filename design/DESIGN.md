@@ -1064,9 +1064,9 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// Before archiving a range, the home shard packs the objects its packs brought (no `--fix-thin` bases), named by tree
 /// entry, into one self-contained `DurablePack` [measured, `lm1-memory` 23b]; the leader commits `Promoted`, then
-/// `Archived`; ahead too, past LOG_MAX_BYTES / 32 above the last `Promoted` [guess, B0-30]. The site streams it to the
-/// buckets and its validate in parts, with no network lock held, as that validate catches up first; PROMOTE_MAX only
-/// batches: an entry over it promotes alone [measured, `lm1-memory` 20]. Restore checks inline packs by digest chain.
+/// `Archived`; ahead too, past LOG_MAX_BYTES / 32 above the last `Promoted` [guess, B0-30], warm (no stopped shard
+/// starts, `lm1-memory` 28). Streamed unlocked in parts to buckets and a validate that catches up first; PROMOTE_MAX
+/// batches, an entry over it alone [measured, `lm1-memory` 20]. Restore checks inline packs by digest chain.
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
 /// each chain names after its last `Promoted`, a page at a time with the next read meanwhile (two pages held), saving

@@ -3866,3 +3866,32 @@ followers' elections without a step-down made the rest.
 
 **Cost.** $151.09 at 06:40Z after the sweep, from $149.69 before: the row cost $1.40, against $1.5 expected and the
 $155 stop. $3.91 of the $155 approval is left.
+
+### Round 30 (local, no hosted spend): `promote-warm`, promote-ahead starts no stopped shard (2026-11-16)
+
+Round 28's cause: the archive alarm's promote-ahead sent `/promote` as `Caller::Client`. Each old group woken with an
+unpromoted tail above the bound started its stopped shard and kept it warm 24 h. Branch `promote-warm`, off main
+b79a2b26, fixes it at the caller, design first (DESIGN, Shape, `Promoted`; DECISIONS, "`promote-warm`").
+- `log_archive::step` passes `warm` to `ArchiveHost::promote` for promote-ahead (no range due), and treats a promotion
+  that every shard skipped as `Step::Idle`, so the same range promotes on a later alarm once a shard runs. A due
+  range's promotion is still a client's call and starts a shard, since archiving waits on it.
+- The site's promotion (`workers/site/src/archive.rs`) adds `warm=1` to every shard call of a warm promotion: `/promote`,
+  its `/validate` and `/idx`. A shard's `skipped` answer now carries `x-graft-skipped: stopped`, which `shard_call` reads
+  as `SKIPPED`, so the skip is not mistaken for `/promote`'s 200 pack.
+- The shard reads `warm` on any route as a warm caller (`graftyard_git::caller`): `serve(Warm, false)` is `Skip`, and
+  `serve(Warm, true)` runs without a touch. `warm=pool` stays the pool warm, on `/catchup` only.
+
+**Tests and plants.**
+- `promote_ahead_starts_no_stopped_shard_and_a_due_range_does` (`crates/git/tests/log_archive.rs`): on a stopped shard,
+  promote-ahead asks warm, records nothing and starts nothing; once the shard runs, the same range promotes from entry
+  1. A due range over a small cap asks as a client and starts the shard. It fails on main, where `promote` takes no
+  `warm`.
+- `a_warm_query_on_any_route_is_a_warm_call_and_pool_only_on_catchup` (`crates/git/tests/shard.rs`) fails on main, where
+  only `/catchup` read `warm`.
+- `tests/promotewarm/plant.py`: 6 of 6 caught (promote-ahead as a client, every promotion warm, a skip as an error,
+  `warm` only on `/catchup`, the pool warm on every route, a call without `warm` as warm).
+
+**Checks.** fmt, workspace clippy, wasm32 clippy for site and edge (with and without test-faults) and ops, `cargo test
+--workspace` 1,011 passed and 0 failed, `go test`, and the three `scripts/check_*.py` OK; DESIGN at 2,200 lines.
+
+**Not yet:** deployed. It ships with the next m2b site day; reapers a and b stay on until then.
