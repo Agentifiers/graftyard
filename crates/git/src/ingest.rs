@@ -6,12 +6,12 @@
 
 use std::collections::BTreeSet;
 
-use graftyard_types::{ChainId, Index, NetworkId};
+use graftyard_types::{ChainId, Index};
 use serde::{Deserialize, Serialize};
 
 use crate::bucket::StoreError;
 use crate::group::RefsPage;
-use crate::pack::{Marker, PackId, PackRef, Promoted};
+use crate::pack::{Compacted, Marker, PackId, PackRef, Promoted};
 use crate::shard::IngestCursor;
 
 /// A git object id in hex (SHA-1 or SHA-256).
@@ -31,7 +31,10 @@ pub struct LogPacks {
     /// Packs of its `Refs` and `Merged` events, inline or stored.
     pub packs: Vec<PackRef>,
     pub promoted: Option<Promoted>,
-    /// Stored packs a `Compacted` on the network chain consumed.
+    /// The roll committed by this entry. Its produced pack is loaded in the marked phase, never by the tail.
+    #[serde(default)]
+    pub compacted: Option<Compacted>,
+    /// Stored packs this entry's roll consumed; `rehydrate_plan`'s `consumed` drops them wherever they appear.
     pub consumed: Vec<PackId>,
     /// Every ref the entry sets (`Some`) or deletes (`None`), in order (`RepoEvent::ref_changes`). `None` from a member
     /// whose release does not send them, so a catch-up over such an entry rehydrates instead.
@@ -52,8 +55,8 @@ pub trait ChainLog {
     async fn entries(&self, chain: ChainId, from: Index, to: Index) -> Result<Vec<LogPacks>, StoreError>;
     /// The chain's last committed `Promoted`, with the index of its entry.
     async fn last_promoted(&self, chain: ChainId) -> Result<Option<(Index, Promoted)>, StoreError>;
-    /// Every stored pack the network chain's `Compacted` entries consumed.
-    async fn consumed(&self, network: NetworkId) -> Result<BTreeSet<PackId>, StoreError>;
+    /// Every committed roll of the chain, oldest first (`decisions/DECISIONS.md`, `roll-up`).
+    async fn compactions(&self, chain: ChainId) -> Result<Vec<Compacted>, StoreError>;
 }
 
 /// Requires one entry at every index of `from..=to`, in order, before any of the range is applied.
@@ -196,7 +199,7 @@ pub fn promotion_inputs(entries: &[LogPacks], from: Index, to: Index) -> (Vec<(I
 
 #[cfg(test)]
 mod tests {
-    use graftyard_types::{DbId, Digest, RepoId, SiteSet, Ulid};
+    use graftyard_types::{DbId, Digest, NetworkId, RepoId, SiteSet, Ulid};
 
     use super::*;
 
@@ -214,7 +217,7 @@ mod tests {
     }
 
     fn entry(index: u64, packs: Vec<PackRef>) -> LogPacks {
-        LogPacks { index: Index(index), packs, promoted: None, consumed: vec![], refs: None }
+        LogPacks { index: Index(index), packs, promoted: None, compacted: None, consumed: vec![], refs: None }
     }
 
     /// A log whose reads end only once every read of one `heads` call has started.
@@ -247,7 +250,7 @@ mod tests {
         async fn last_promoted(&self, _: ChainId) -> Result<Option<(Index, Promoted)>, StoreError> {
             unreachable!()
         }
-        async fn consumed(&self, _: NetworkId) -> Result<BTreeSet<PackId>, StoreError> {
+        async fn compactions(&self, _: ChainId) -> Result<Vec<Compacted>, StoreError> {
             unreachable!()
         }
     }
@@ -345,7 +348,14 @@ mod tests {
         let tail = [
             entry(11, vec![PackRef::Inline(vec![2])]),
             entry(12, vec![stored(8)]),
-            LogPacks { index: Index(14), packs: vec![], promoted: Some(p.clone()), consumed: vec![], refs: None },
+            LogPacks {
+                index: Index(14),
+                packs: vec![],
+                promoted: Some(p.clone()),
+                compacted: None,
+                consumed: vec![],
+                refs: None,
+            },
         ];
         assert_eq!(order(&[marker(8, 12), marker(4, 5), marker(50, 14)], Some(p), &tail), ["s4", "s50", "i11", "s8"]);
     }
@@ -357,7 +367,14 @@ mod tests {
         assert_eq!(tail_start(None), Index(1));
         // The promoted entry itself (at 14) names the promoted pack, which a rehydrate must load even if its marker
         // never landed.
-        let tail = [LogPacks { index: Index(14), packs: vec![], promoted: Some(p), consumed: vec![], refs: None }];
+        let tail = [LogPacks {
+            index: Index(14),
+            packs: vec![],
+            promoted: Some(p),
+            compacted: None,
+            consumed: vec![],
+            refs: None,
+        }];
         let plan = rehydrate_plan(&[], &BTreeSet::new(), &[], &tail);
         assert_eq!(plan.iter().filter_map(Load::stored_id).map(|p| p.0.0).collect::<Vec<_>>(), vec![50]);
     }

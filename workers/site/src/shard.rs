@@ -18,11 +18,9 @@
 //! here, and so does a pool shard asked to validate a push while it has no cursor; the first shard validates the push
 //! itself.
 
-use std::collections::BTreeSet;
-
 use graftyard_git::group::RefsPage;
 use graftyard_git::host::{R2, ShardHost};
-use graftyard_git::{ChainLog, Head, LogPacks, PackId, Promoted, Serve, StoreError};
+use graftyard_git::{ChainLog, Compacted, Head, LogPacks, Promoted, Serve, StoreError};
 use graftyard_lookup::Bindings;
 use graftyard_types::{ChainId, DbId, Index, NetworkId, PlacementRecord, RepoId, SiteId, Timestamp};
 use serde_json::{Value, json};
@@ -345,10 +343,14 @@ impl ChainLog for GroupLog<'_> {
                 serde_json::from_value(v["entries"].clone()).map_err(|e| StoreError(e.to_string()))?;
             for e in page {
                 let promoted = e.get("promoted").cloned().unwrap_or(Value::Null);
+                // `LogPacks.compacted`: the produced pack loads in the marked phase from its own marker, never by the
+                // tail, and no member's `entry_json` names it today.
+                let compacted = e.get("compacted").cloned().unwrap_or(Value::Null);
                 out.push(LogPacks {
                     index: Index(e["index"].as_u64().unwrap_or(0)),
                     packs: serde_json::from_value(e["packs"].clone()).map_err(|e| StoreError(e.to_string()))?,
                     promoted: serde_json::from_value(promoted).map_err(|e| StoreError(e.to_string()))?,
+                    compacted: serde_json::from_value(compacted).map_err(|e| StoreError(e.to_string()))?,
                     consumed: Vec::new(),
                     refs: serde_json::from_value(e.get("refs").cloned().unwrap_or(Value::Null))
                         .map_err(|e| StoreError(e.to_string()))?,
@@ -368,8 +370,14 @@ impl ChainLog for GroupLog<'_> {
             serde_json::from_value(v["promoted"].clone()).map_err(|e| StoreError(e.to_string()))?;
         Ok(p.map(|p| (Index(v["index"].as_u64().unwrap_or(0)), p)))
     }
-    async fn consumed(&self, _n: NetworkId) -> std::result::Result<BTreeSet<PackId>, StoreError> {
-        Ok(BTreeSet::new())
+    /// The chain's rolls, oldest first, from the `ranges` read (`repo_read`). An older member's answer has no
+    /// `compactions`, read as none, so its consumed packs load as before (`crate::host` catch-up list).
+    async fn compactions(&self, _c: ChainId) -> std::result::Result<Vec<Compacted>, StoreError> {
+        let v = self.ranges().await?;
+        let cs: Vec<Compacted> =
+            serde_json::from_value(v.get("compactions").cloned().unwrap_or_else(|| Value::Array(Vec::new())))
+                .map_err(|e| StoreError(e.to_string()))?;
+        Ok(cs)
     }
 }
 
@@ -1169,6 +1177,20 @@ impl DurableObject for GitShard {
                 // The container's pack streams through to the archive's promotion, which tees it to the buckets
                 // in parts: buffered here, a promotion held the whole pack in this isolate.
                 host.promote(net, &sums).await.map_err(se)
+            }
+            // A roll of stored promoted packs (`decisions/DECISIONS.md`, `roll-up`): one hex checksum per line,
+            // oldest first. No catch-up: its inputs are promotions the shard already loaded, and the container
+            // answers 409 for one it does not hold, so the archive tries the next site.
+            "/roll" => {
+                let body = req.text().await?;
+                let sums: Vec<graftyard_types::Digest> = body
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(|h| {
+                        graftyard_types::Digest::parse_hex(h.trim()).ok_or_else(|| Error::RustError(format!("sum {h}")))
+                    })
+                    .collect::<Result<_>>()?;
+                host.roll(net, &sums).await.map_err(se)
             }
             "/fsck" => Response::from_json(&host.fsck(net).await.map_err(se)?),
             // The `.idx` of a pack this shard's `/validate` kept aside, for the archive's promotion to store with it.

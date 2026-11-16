@@ -61,8 +61,8 @@ pub use ingest::{
 };
 pub use key::{ParseKeyError, R2Key};
 pub use pack::{
-    Archived, DurablePack, INLINE_MAX, INLINE_MAX_HOT, Marker, ORPHAN_AFTER, ObjectMeta, PACK_COMMIT_WINDOW, PackId,
-    PackIndex, PackRef, Promoted, REQUEST_RETENTION,
+    Archived, Compacted, DurablePack, INLINE_MAX, INLINE_MAX_HOT, Marker, ORPHAN_AFTER, ObjectMeta, PACK_COMMIT_WINDOW,
+    PackId, PackIndex, PackRef, Promoted, REQUEST_RETENTION,
 };
 pub use shard::{
     Caller, CatchUpStep, CatchUps, DISK_USE_PCT, DiskRepo, FANOUT_DOWN, FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP,
@@ -80,6 +80,6 @@ pub use store::{
     durable_sites, mark_committed, put_marker,
 };
 pub use sweep::{
-    Action, Alarm, BucketView, CronBudget, Lookup, Plan, RequestRow, RequestSource, SweepAll, SweepReport, decide,
-    networks, sweep, sweep_all,
+    Action, Alarm, BucketView, CONSUMED_KEEP, CronBudget, Lookup, Plan, RequestRow, RequestSource, SweepAll,
+    SweepReport, consumed_deletable, decide, networks, sweep, sweep_all,
 };

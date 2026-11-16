@@ -232,6 +232,8 @@ pub struct Rehydrated {
     pub skipped: usize,
     /// Why the check after a skip failed, before the skipped packs were loaded and it passed: a fault to report.
     pub fault: Option<String>,
+    /// Counted rolls whose produced pack did not load, each with why: their consumed packs loaded instead.
+    pub dropped_rolls: Vec<String>,
 }
 
 /// What a catch-up did.
@@ -444,7 +446,8 @@ async fn ingest_all<I: ShardIo>(
 /// them: a pack is skipped only when its entry lies in a `Promoted` record read from the log (`records`, by promoted
 /// pack) and in the range that pack's stored `.idx` names (`idx`), and that promoted pack is itself loaded. The idx
 /// metadata alone is never enough: an object's custom metadata is not committed state, and a range wider than the
-/// record would skip packs no promotion holds. This is the read side of `Compacted.consumed`, which nothing writes yet.
+/// record would skip packs no promotion holds. This is the read side of `Compacted.consumed`: a roll's produced pack
+/// covers its consumed range as a `Promoted` record, so `rehydrate` loads it in place of everything in the range.
 pub fn skippable(
     marks: &[(PackId, Marker)],
     records: &BTreeMap<PackId, (ChainId, Promoted)>,
@@ -733,9 +736,18 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     for (id, m) in io.markers().await? {
         marks.entry(id).or_insert(m);
     }
-    let marks: Vec<(PackId, Marker)> = marks.into_iter().collect();
     r.markers = marks.len();
-    let consumed = log.consumed(network).await?;
+    // Each chain's rolls, oldest first (`ChainLog::compactions`). A roll counts only once its produced pack is
+    // stored and marked: a markerless produced pack loads nowhere, so the roll's consumed packs load as before, while
+    // they exist (`decisions/DECISIONS.md`, `roll-up`, "Rehydrate prefers a rolled pack").
+    let mut rolls: Vec<(ChainId, PackId, Promoted, Vec<PackId>)> = Vec::new();
+    for chain in chains {
+        for c in log.compactions(*chain).await? {
+            let Some(id) = c.produced.stored_id() else { continue };
+            rolls.push((*chain, id, Promoted { from: c.from, to: c.to, pack: c.produced.clone() }, c.consumed));
+        }
+    }
+    let marks: Vec<(PackId, Marker)> = marks.into_iter().collect();
     let mut last: Vec<(ChainId, Option<Promoted>)> = Vec::with_capacity(chains.len());
     for chain in chains {
         last.push((*chain, log.last_promoted(*chain).await?.map(|(_, p)| p)));
@@ -753,9 +765,44 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     if state.marked && gap {
         state.marked = false;
     }
-    let marked = rehydrate_plan(&marks, &consumed, &last, &[]);
-    let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).collect();
     let mut evicted = io.make_room(marks.iter().map(|(_, m)| m.bytes).sum()).await?;
+    let idx = if state.marked { BTreeMap::new() } else { io.idx_ranges().await? };
+    // Each counted roll's produced pack loads first, alone, oldest range first. One that does not load (no bucket
+    // copy matches its checksum, the container refuses it, or its bases are not on the disk) is dropped for this run:
+    // it loads nowhere, and the packs it consumed, which nothing deletes yet, load in its place as before the roll
+    // (`decisions/DECISIONS.md`, `roll-up`, "Rehydrate prefers a rolled pack"). A run past its marked phase loaded them.
+    let mut rolled: BTreeSet<PackId> = BTreeSet::new();
+    let mut dropped: BTreeSet<PackId> = BTreeSet::new();
+    if !state.marked {
+        rolls.sort_by_key(|(c, _, p, _)| (*c, p.from));
+        let mut kept = Vec::with_capacity(rolls.len());
+        for roll in rolls {
+            let id = roll.1;
+            // A markerless produced pack: the roll does not count, and its consumed packs load as before.
+            let Some((_, m)) = marks.iter().find(|(x, _)| *x == id) else { continue };
+            let load = [Load::Stored { id, bytes: m.bytes, checksum: m.checksum }];
+            let with: BTreeSet<PackId> = idx.contains_key(&id).then_some(id).into_iter().collect();
+            let why = match ingest_all(io, &load, &with, &mut r.calls).await {
+                Ok(Ok(n)) => {
+                    r.stored += n;
+                    rolled.insert(id);
+                    kept.push(roll);
+                    continue;
+                }
+                Ok(Err(_)) => "its bases are not on the disk".to_string(),
+                Err(e) => e.0,
+            };
+            r.dropped_rolls.push(format!("{}..={} ({id}): {why}", roll.2.from.0, roll.2.to.0));
+            dropped.insert(id);
+        }
+        rolls = kept;
+    }
+    // Every kept roll's consumed packs are dropped wherever they appear, and its produced pack joins the promotions
+    // below; a dropped roll's produced pack is left out the same way.
+    let consumed: BTreeSet<PackId> =
+        rolls.iter().flat_map(|(_, _, _, c)| c.iter().copied()).chain(dropped.iter().copied()).collect();
+    let marked = rehydrate_plan(&marks, &consumed, &last, &[]);
+    let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).chain(rolled.iter().copied()).collect();
     lap(&mut ms, "markers");
     if !state.marked {
         // Every promoted pack first, oldest first: each is complete, but its objects name objects of the promotions
@@ -769,7 +816,6 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         // A pack whose stored `.idx` names a promoted range is read the same way wherever its entry lies, so its
         // `Promoted` record, not the metadata, says what it covers (`skippable`). An entry already archived cannot be
         // read; its range's pushed packs load as before.
-        let idx = io.idx_ranges().await?;
         let mut firsts: BTreeMap<ChainId, Index> = BTreeMap::new();
         for chain in chains {
             firsts.insert(*chain, log.head(*chain).await?.first);
@@ -781,6 +827,13 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             {
                 records.insert(id, (*c, p.clone()));
             }
+        }
+        // Each counted roll's produced pack is read like the promotion whose range it replaced: its record makes
+        // `skippable` skip the pushed packs of `from..=to`, it loads first from the markers with its stored `.idx`
+        // (`with_idx`), and no probe reads its entry.
+        for (chain, id, p, _) in &rolls {
+            records.insert(*id, (*chain, p.clone()));
+            promoted.insert(*id);
         }
         let probe: Vec<&(PackId, Marker)> = marks
             .iter()
@@ -805,8 +858,10 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let at: BTreeMap<PackId, Index> = marks.iter().map(|(id, m)| (*id, m.index)).collect();
         let skip = skippable(&marks, &records, &idx);
-        let mut todo: Vec<Load> =
-            marked.into_iter().filter(|l| l.stored_id().is_none_or(|id| !skip.contains(&id))).collect();
+        let mut todo: Vec<Load> = marked
+            .into_iter()
+            .filter(|l| l.stored_id().is_none_or(|id| !skip.contains(&id) && !rolled.contains(&id)))
+            .collect();
         for (id, m) in &marks {
             if promoted.contains(id) && seen.insert(*id) {
                 todo.push(Load::Stored { id: *id, bytes: m.bytes, checksum: m.checksum });
@@ -814,7 +869,13 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         todo.sort_by_key(|l| {
             let id = l.stored_id();
-            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))
+            // The promoted and produced group first, oldest by the range its record covers: a roll's produced pack is
+            // marked at an entry far above the promotions it replaced, far above later promotions' markers, and by
+            // marker index it would load after packs whose objects name its. Pushed packs follow, by marker index.
+            (
+                !id.is_some_and(|id| promoted.contains(&id)),
+                id.and_then(|id| records.get(&id).map(|(_, p)| p.from).or_else(|| at.get(&id).copied())),
+            )
         });
         let with_idx: BTreeSet<PackId> = promoted.iter().filter(|id| idx.contains_key(id)).copied().collect();
         match ingest_all(io, &todo, &with_idx, &mut r.calls).await? {

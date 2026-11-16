@@ -1,0 +1,13 @@
+10:00:16 K=4 from=0 in=801233068 out=513605707 ratio=0.641 wall=39.8 rc=0 cpuS/maxrssKB=57.9 1466588 peakRssAnonKB/RssFileKB=637056 6648
+10:01:41 K=8 from=0 in=1680257695 out=870264241 ratio=0.518 wall=83.7 rc=0 cpuS/maxrssKB=123.5 2816164 peakRssAnonKB/RssFileKB=1092684 6540
+10:04:39 K=16 from=0 in=3516113725 out=1481779957 ratio=0.421 wall=175.9 rc=0 cpuS/maxrssKB=263.2 5720540 peakRssAnonKB/RssFileKB=2111492 6620
+10:09:46 K=34 from=0 in=6802368189 out=0 ratio=0.0 wall=301.6 rc=128 cpuS/maxrssKB=480.9 10449792 peakRssAnonKB/RssFileKB=3535420 6636
+10:09:47 DONE
+level1 from=0 in=1680257695 out=869889343 cpuS=133.5 maxrssKB=2816996 wall=91.7
+level1 from=8 in=1835856030 out=749793099 cpuS=164.0 maxrssKB=4203356 wall=117.9
+level2 in=1619682442 out=1495962750 cpuS=117.2 maxrssKB=3709236 wall=99.4 (direct K=16: 1481779957)
+DONE
+92b266541cded4a20a9205c96b50f999c7244240
+rc=0 cpuS=162.1 maxrssKB=1368992
+pack=869971203 wall=92.9
+DONE

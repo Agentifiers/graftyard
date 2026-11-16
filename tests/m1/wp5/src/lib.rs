@@ -16,13 +16,11 @@
 //! `POST /teardown?objects=<object name>@<site>,...` (container and alarm, after a run),
 //! `POST /shard/<name>/{catchup,fsck,status}`, smart HTTP at `/git/<name>/info/refs` and `/git/<name>/git-upload-pack`.
 
-use std::collections::BTreeSet;
-
 use graftyard_git::group::RefsPage;
 use graftyard_git::host::{R2, ShardHost};
 use graftyard_git::{
-    Bucket, ChainLog, Copies, Head, INLINE_MAX, LogPacks, ObjectMeta, PackId, PackIndex, PackRef, PackStore, Place,
-    Promoted, R2Key, StoreError, mark_committed, promotion_inputs,
+    Bucket, ChainLog, Compacted, Copies, Head, INLINE_MAX, LogPacks, ObjectMeta, PackId, PackIndex, PackRef, PackStore,
+    Place, Promoted, R2Key, StoreError, mark_committed, promotion_inputs,
 };
 use graftyard_types::{
     ChainId, DbId, Digest, Index, NetworkId, Region, RepoId, RequestId, Site, SiteId, SiteLink, SiteTable, Timestamp,
@@ -197,6 +195,7 @@ impl DurableObject for Chain {
                     index: Index(index),
                     packs: a.packs,
                     promoted: a.promoted.clone(),
+                    compacted: None,
                     consumed: vec![],
                     refs: Some(changes),
                 };
@@ -289,8 +288,8 @@ impl ChainLog for StubChain {
             ok_json(call(&self.stub, Method::Get, "/promoted", None).await.map_err(ws)?).await.map_err(ws)?;
         Ok(p.map(|(i, p)| (Index(i), p)))
     }
-    async fn consumed(&self, _network: NetworkId) -> std::result::Result<BTreeSet<PackId>, StoreError> {
-        Ok(BTreeSet::new())
+    async fn compactions(&self, _chain: ChainId) -> std::result::Result<Vec<Compacted>, StoreError> {
+        Ok(Vec::new())
     }
 }
 

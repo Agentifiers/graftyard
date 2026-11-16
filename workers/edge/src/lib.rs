@@ -2061,6 +2061,7 @@ async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<ser
                 index: graftyard_types::Index(e["index"].as_u64().unwrap_or(0)),
                 packs: serde_json::from_value(e["packs"].clone())?,
                 promoted: None,
+                compacted: None,
                 consumed: Vec::new(),
                 refs: None,
             })
