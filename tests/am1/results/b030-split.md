@@ -1174,6 +1174,11 @@ The operator stopped all hosted work: the account's bill for Oct 27 to Nov 16 is
   window (2026-11-14 09:46Z to 2026-11-16 11:44Z). So objects the logs did not name, such as smoke groups and earlier generations, were off the
   meter.
 
+- **Idle reading, 30 minutes after teardown (rule 3, `acctcost.py`).** 20:30 to 21:00Z: the whole account $0.11,
+  graft-m1's lines $0.01 (site a $0.01, sites b to d under $0.01), so about $0.02 an hour for graft-m1. Its
+  namespaces wrote 1,886 rows in 20:30Z and 1,090 in 20:45Z, about 6,000 an hour, with 0.83 DO-hours in the 30
+  minutes. 0 containers running at 21:11Z. The third run's close-out is done.
+
 ## B0-30 re-judged at 90% (operator decision, 2026-11-16, `FRAME.md`, "90% gates and a daily spend limit")
 
 No spend. Read from the results above and `tests/am1/results/b0-30.md`. The row's targets are 30 simulated days of
