@@ -1,0 +1,87 @@
+{
+ "gapMs": 20,
+ "from": "2026-11-16T06:30:42Z",
+ "to": "2026-11-16T06:35:45Z",
+ "bySite": {
+  "0": {
+   "1": {
+    "calls": 2229,
+    "buckets": 583,
+    "max": 84,
+    "over1": 258,
+    "share_over1": 0.4425,
+    "turns_max": 3,
+    "turns_over1": 22
+   },
+   "2": {
+    "calls": 2502,
+    "buckets": 510,
+    "max": 92,
+    "over1": 281,
+    "share_over1": 0.551,
+    "turns_max": 2,
+    "turns_over1": 28
+   }
+  },
+  "1": {
+   "0": {
+    "calls": 1855,
+    "buckets": 471,
+    "max": 50,
+    "over1": 213,
+    "share_over1": 0.4522,
+    "turns_max": 3,
+    "turns_over1": 30
+   },
+   "2": {
+    "calls": 1971,
+    "buckets": 467,
+    "max": 76,
+    "over1": 223,
+    "share_over1": 0.4775,
+    "turns_max": 3,
+    "turns_over1": 23
+   }
+  },
+  "2": {
+   "0": {
+    "calls": 1285,
+    "buckets": 518,
+    "max": 40,
+    "over1": 166,
+    "share_over1": 0.3205,
+    "turns_max": 2,
+    "turns_over1": 26
+   },
+   "1": {
+    "calls": 1145,
+    "buckets": 422,
+    "max": 39,
+    "over1": 143,
+    "share_over1": 0.3389,
+    "turns_max": 3,
+    "turns_over1": 11
+   }
+  }
+ },
+ "grantMs": {
+  "0": {
+   "n": 1040,
+   "p50": 0,
+   "p99": 2313,
+   "max": 4742
+  },
+  "1": {
+   "n": 674,
+   "p50": 0,
+   "p99": 2853,
+   "max": 3728
+  },
+  "2": {
+   "n": 230,
+   "p50": 25,
+   "p99": 2413,
+   "max": 2634
+  }
+ }
+}
