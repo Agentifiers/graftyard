@@ -2197,6 +2197,27 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             .fetch_with_request(Request::new_with_init("https://shard/teardown", &init)?)
             .await;
     }
+    // A cold catch-up of `repo` on a hot-pool shard (`/catchup?warm=pool`, which starts its container), so two
+    // containers on one site rehydrate the same packs at once: their spool rates tell a per-container R2 ceiling from
+    // a per-site or per-bucket one (LM-1 round 27b). Torn down with `/_bed/kill_pool`.
+    if path == "/_bed/catchup_pool" {
+        let site = qp("site").and_then(|v| v.parse::<u8>().ok()).map(SiteId).ok_or("site")?;
+        let pool = qp("pool").and_then(|v| v.parse::<u32>().ok()).ok_or("pool")?;
+        let repo = qp("repo").and_then(|v| v.parse::<i64>().ok()).ok_or("repo")?;
+        let wait = qp("wait").and_then(|v| v.parse::<u64>().ok()).unwrap_or(60);
+        let region = c.sites.get(site).ok_or("unknown site")?.region;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post);
+        return c
+            .env
+            .durable_object(&format!("SHARD_{}", site.0))?
+            .get_by_name_with_location_hint(&format!("git#{}#pool:{pool}", site.0), region.hint())?
+            .fetch_with_request(Request::new_with_init(
+                &format!("https://shard/catchup?warm=pool&repo={repo}&wait={wait}"),
+                &init,
+            )?)
+            .await;
+    }
     let id = qp("repo").and_then(|v| v.parse::<i64>().ok()).map(|r| RepoId(DbId(r))).ok_or("repo")?;
     let repo = repo_by_id(c, id).await.map_err(Error::RustError)?;
     let chain = ChainId::Repo(repo.id);

@@ -21,6 +21,10 @@ while (Date.now() < until) {
     console.log(JSON.stringify({
       at: new Date(t).toISOString(), site: s, status: r.status, running: v?.running ?? null,
       gitRssMb: procs.reduce((a, p) => a + (p.rss_mb ?? 0), 0), gitProcs: procs.length,
+      // Stock upload-packs at once (a stock depth-1 miss is one `upload-pack` and its `pack-objects --shallow-file`,
+      // about 0.4 GB private between them, round 27) and their summed RSS, against instcpu.py's container memory.
+      uploads: procs.filter((p) => / upload-pack/.test(p.cmd)).length,
+      uploadRssMb: procs.filter((p) => / upload-pack|--shallow-file/.test(p.cmd)).reduce((a, p) => a + (p.rss_mb ?? 0), 0),
       top: procs.slice(0, 4).map((p) => ({ cmd: p.cmd.slice(0, 80), nice: p.nice, cpu_s: p.cpu_s, rss_mb: p.rss_mb })),
       packs: v?.procs?.packs ?? null, ...(v ? {} : { error: r.body.slice(0, 120) }),
     }));
