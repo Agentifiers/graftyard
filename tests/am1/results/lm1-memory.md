@@ -4005,3 +4005,11 @@ it ships on this site day.
 **Done.** `teardown.py --sweep` at about 14:16Z tore down 33 (all 200), then "sweep: no shard container running".
 `reaper-b` now covers 65536, 131072–131289 and 131342–131400 as well as before, so every older network is reaped
 until the site day deploys `promote-warm`. The next 60 s window billed $0.00.
+
+### Budget change (2026-11-16, about 14:30Z)
+
+The user raised LM-1's stop from $160 to **$185** (about 14:30Z, relayed by the parent thread), after round 33's
+meter read $178.77 at 14:16Z with nothing running. Same scope as the $160 approval: one `graft-m2b` site day from main
+a0bca583 or later, then the 30-minute idle-start check with the reapers on, then B0-34, then B0-33 with the inbound
+trace, with a $185 stop on the meter and costok-style checks before each phase and between rows. B0-33 is skipped if
+the meter is near $185 before it starts. Nothing else.
