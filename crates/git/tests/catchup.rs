@@ -1074,3 +1074,37 @@ fn a_cold_rehydrate_of_5_gb_projects_under_120_s_and_the_serial_fetch_does_not()
     }
     println!("cold rehydrate, site c rates: (case, s with the fetch ahead, s one at a time) {out:?}");
 }
+
+/// Repo:131296's promoted packs were 106 to 207 MB each, every one past `AHEAD_BYTES`, so main's cap fetched them one
+/// at a time: the marked phase took 101 to 155 s of m35's cold warm (`tests/am1/results/lm1-memory.md`, round 23). The
+/// first `FETCH_AT_ONCE` packs ahead start whatever their size, and the disk, not the object, holds them.
+#[test]
+fn large_promoted_packs_fetch_four_at_once_and_still_ingest_in_log_order() {
+    use graftyard_git::catchup::{AHEAD_BYTES, FETCH_AT_ONCE};
+    const BIG: u64 = 207_000_000;
+    const { assert!(BIG > AHEAD_BYTES) };
+    let n = 12;
+    let b = bed(n, 0, 1);
+    for k in 1..=n {
+        b.promote_range(k, k);
+        b.idx(k, true, Some((k, k)));
+    }
+    // The markers the rehydrate plans from name each promoted pack at 207 MB.
+    for (id, m) in b.disk.markers.borrow_mut().iter_mut() {
+        if id.0.0 >= 1_000_000 {
+            m.bytes = BIG;
+        }
+    }
+    b.disk.fetch_ms.set(2_000);
+    let r = b.run_timed().unwrap_or_else(|e| panic!("{}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    assert_eq!((h.skipped as u64, b.disk.idx_used.get() as u64), (n, n));
+    assert_eq!(b.disk.in_flight_max.get(), FETCH_AT_ONCE, "large packs fetched {} at once", b.disk.in_flight_max.get());
+    let promoted: Vec<Digest> =
+        (1..=n).map(|k| sum(&b.disk.bucket.borrow()[&PackId(Ulid(1_000_000 + k as u128))])).collect();
+    assert_eq!(*b.disk.order.borrow(), promoted, "ingested out of log order");
+    // Twelve 2 s fetches four at a time: 6 s, against 24 s one at a time.
+    let took = b.disk.clock.now.get();
+    assert!(took <= 3 * 2_000 + 1_000, "{took} ms for {n} large packs");
+    b.assert_serves_head();
+}

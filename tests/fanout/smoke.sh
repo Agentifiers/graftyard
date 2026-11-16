@@ -5,7 +5,7 @@
 # lm1-rerun's diagnostic B0-29. The row's own shard containers are torn down after it.
 #   SMOKES="s250:250:0 s500:500:row:max p500:500:row::500" [ENTRY=max] [OPEN_PRS=500] TAG=x bash tests/fanout/smoke.sh   -> tests/fanout/raw/smoke-$TAG.status
 cd "$(dirname "$0")/../.."
-source tests/m3/rows/env.sh
+source ${ROWS_ENV:-tests/m3/rows/env.sh}
 export BED_TOKEN_FILE=${BED_TOKEN_FILE:-$HOME/.graft-m2b/bed.token}
 ST=tests/fanout/raw/smoke-$TAG.status
 [ -e tests/fanout/raw/.smoke-$TAG.started ] && exec sleep infinity

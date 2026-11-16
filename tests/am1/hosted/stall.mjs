@@ -50,6 +50,8 @@ const leases = [];
 for (let i = 0; i < N; i++) {
   const ex = i % 2 === 0;
   const t = await api("POST", `${V1}/tasks`, app, { kind: "external", session: `stall-${tag}-${i}`, summary: "L0-12 stall" });
+  // A refused create left no task id, and the acquire then read as "An App token must name its session" (rows m22).
+  if (t.status !== 201) throw new Error(`stall task ${i}: ${t.status} ${JSON.stringify(t.body).slice(0, 200)}`);
   const l = await api("POST", `${V1}/leases`, app, { paths: [`stall/${tag}/${i}/**`], mode: ex ? "exclusive" : "shared", ttl_seconds: 3600, intent: "L0-12" },
     { "x-graftyard-agent-session": t.body?.id ?? "" });
   if (l.status === 201) leases.push({ id: l.body.lease.id, expires: l.body.lease.expires_at, mode: l.body.lease.mode, task: t.body.id });

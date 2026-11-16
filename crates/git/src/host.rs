@@ -101,6 +101,45 @@ impl Bucket for R2 {
         }
     }
 
+    /// The source's body goes into the put through a `FixedLengthStream` of the expected length, so the runtime moves
+    /// the bytes and none enter wasm memory; R2 checks the length as the stream ends and the SHA-256 before it stores.
+    /// The pipe runs on its own: a put refused by its precondition may never read the stream.
+    async fn copy_new(
+        &self,
+        from: &Self,
+        key: &str,
+        expect: Option<(u64, Digest)>,
+    ) -> Result<Option<PutNew>, StoreError> {
+        let Some(o) = from.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+        let meta: Vec<(String, String)> = o.custom_metadata().unwrap_or_default().into_iter().collect();
+        let len = expect.map_or(o.size(), |(n, _)| n);
+        let Some(body) = o.body() else { return Ok(None) };
+        let worker::ResponseBody::Stream(src) = body.response_body().map_err(worker_err)? else {
+            return Err(StoreError(format!("{key}: the source's body is not a stream")));
+        };
+        let fixed = match u32::try_from(len) {
+            Ok(n) => worker::worker_sys::FixedLengthStream::new(n),
+            Err(_) => worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len)),
+        }
+        .map_err(|e| err(worker::Error::from(e)))?;
+        let piped = src.pipe_to(&fixed.writable());
+        worker::wasm_bindgen_futures::spawn_local(async move {
+            let _ = worker::wasm_bindgen_futures::JsFuture::from(piped).await;
+        });
+        let mut opts: Vec<(&str, wasm_bindgen::JsValue)> = vec![
+            ("onlyIf", object(&[("etagDoesNotMatch", "*".into())]).into()),
+            ("customMetadata", meta_object(&meta)),
+        ];
+        if let Some((_, sum)) = expect {
+            opts.push(("sha256", js_sys::Uint8Array::from(&sum.0[..]).buffer().into()));
+        }
+        let v = js(self.raw().put(key.to_owned(), fixed.readable().into(), object(&opts).into())).await?;
+        if v.is_null() {
+            return Ok(Some(PutNew::Exists(self.head(key).await?.and_then(|o| o.sha256))));
+        }
+        Ok(Some(PutNew::Created))
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
@@ -286,6 +325,27 @@ impl crate::bucket::Multipart for R2 {
     }
 }
 
+/// A container response's body put to `b` under `key` through a `FixedLengthStream` of its `content-length`, so the
+/// bytes never enter wasm memory and R2 stores the object only if the whole length arrived. `false` when the
+/// response names no length or is not a stream.
+async fn put_body(b: &R2, key: &str, r: Response) -> Result<bool, StoreError> {
+    let Some(len) = r.headers().get("content-length").map_err(worker_err)?.and_then(|v| v.parse::<u64>().ok()) else {
+        return Ok(false);
+    };
+    let worker::ResponseBody::Stream(src) = r.body().clone() else { return Ok(false) };
+    let fixed = match u32::try_from(len) {
+        Ok(n) => worker::worker_sys::FixedLengthStream::new(n),
+        Err(_) => worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len)),
+    }
+    .map_err(|e| err(worker::Error::from(e)))?;
+    let piped = src.pipe_to(&fixed.writable());
+    worker::wasm_bindgen_futures::spawn_local(async move {
+        let _ = worker::wasm_bindgen_futures::JsFuture::from(piped).await;
+    });
+    js(b.raw().put(key.to_owned(), fixed.readable().into(), js_sys::Object::new().into())).await?;
+    Ok(true)
+}
+
 /// Starts a multipart upload of a pack and journals its upload id in the same bucket first, so the sweeper can abort
 /// it if the uploader dies. The Workers binding cannot list multipart uploads.
 pub async fn start_upload(
@@ -357,11 +417,24 @@ pub struct Room {
 }
 
 /// `ShardHost::validate`'s answer: the pack's index (none for a detail-only call) and each update's detail, or the
-/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`.
+/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`, or, checked
+/// on the disk as it stands, a base or ref the disk does not hold yet: the container kept the request as `held`, to
+/// be checked again once the shard caught up (`OnDisk::Held`).
 #[derive(Debug)]
 pub enum Validated {
     Done(Option<PackIndex>, Vec<crate::agent::RefDetail>),
     Busy { retry_after_s: u32 },
+    MissingBase { held: String },
+}
+
+/// Which disk a validate checks against: one the shard just caught up, the disk as it stands (`disk=1`), whose
+/// missing base is `Validated::MissingBase`, or a request the container kept on one, checked again after a
+/// catch-up with no body (`held=`). Every failure but a missing base on `AsItStands` is the pack's.
+#[derive(Clone, Copy, Debug)]
+pub enum OnDisk<'a> {
+    CaughtUp,
+    AsItStands,
+    Held(&'a str),
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,6 +506,18 @@ impl ShardHost<'_> {
         self.port()?.fetch_request(req).await.map_err(worker_err)
     }
 
+    /// Bucket object `key`'s body streamed to the container's `path`, never in the isolate's memory: the container's
+    /// answer, or `None` when the bucket has no such object.
+    async fn put_stream(&self, b: &R2, key: &str, method: Method, path: &str) -> Result<Option<Response>, StoreError> {
+        let Some(o) = b.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+        let Some(body) = o.body() else { return Ok(None) };
+        let worker::ResponseBody::Stream(st) = body.response_body().map_err(worker_err)? else { return Ok(None) };
+        let mut init = RequestInit::new();
+        init.with_method(method).with_body(Some(st.into()));
+        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
+        Ok(Some(self.port()?.fetch_request(req).await.map_err(worker_err)?))
+    }
+
     async fn ok(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Result<Response, StoreError> {
         let mut r = self.call(method, path, body, &[]).await?;
         if r.status_code() >= 300 {
@@ -449,6 +534,17 @@ impl ShardHost<'_> {
             return Ok(crate::shard::NetworkLoad::default());
         }
         let mut r = self.ok(Method::Get, "/load", None).await?;
+        r.json().await.map_err(worker_err)
+    }
+
+    /// The container's running git processes (`GET /procs`: command, nice, CPU seconds, RSS), most CPU first, and the
+    /// network's pack counts (all and kept), as JSON for `/status`. A container that is not running lists none and is
+    /// not started for it.
+    pub async fn procs(&self, network: NetworkId) -> Result<serde_json::Value, StoreError> {
+        if !self.container()?.running() {
+            return Ok(serde_json::Value::Null);
+        }
+        let mut r = self.ok(Method::Get, &format!("/procs?net={}", network.0.0), None).await?;
         r.json().await.map_err(worker_err)
     }
 
@@ -565,7 +661,9 @@ impl ShardHost<'_> {
     /// round 6). An agent's validate (`agent`) may wait for one of the container's slots at most 2 s, and is then
     /// `Validated::Busy`; a human's waits. `derived` marks the shard's own archive promotion, whose CPU the container
     /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
-    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`.
+    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`, and a
+    /// 409 `missingBase` on `OnDisk::AsItStands` is `MissingBase`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn validate(
         &self,
         network: NetworkId,
@@ -573,10 +671,16 @@ impl ShardHost<'_> {
         detailn: usize,
         agent: bool,
         derived: bool,
+        disk: OnDisk<'_>,
         body: Option<wasm_bindgen::JsValue>,
     ) -> Result<Validated, (Option<u16>, StoreError)> {
         let none = |e: StoreError| (None, e);
         let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
+        match disk {
+            OnDisk::CaughtUp => {}
+            OnDisk::AsItStands => path.push_str("&disk=1"),
+            OnDisk::Held(id) => path.push_str(&format!("&held={id}")),
+        }
         if detailn > 0 {
             path.push_str(&format!("&detailn={detailn}"));
         }
@@ -594,6 +698,19 @@ impl ShardHost<'_> {
         if r.status_code() == 429 {
             let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
             return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
+        }
+        if r.status_code() == 409 && matches!(disk, OnDisk::AsItStands) {
+            #[derive(Deserialize)]
+            struct Held {
+                #[serde(rename = "missingBase")]
+                missing_base: bool,
+                held: String,
+            }
+            let t = r.text().await.unwrap_or_default();
+            return match serde_json::from_str::<Held>(&t) {
+                Ok(h) if h.missing_base => Ok(Validated::MissingBase { held: h.held }),
+                _ => Err((Some(409), StoreError(format!("validate: 409 {t}")))),
+            };
         }
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();
@@ -741,6 +858,164 @@ impl ShardHost<'_> {
         }
         let method = if info_refs { Method::Get } else { Method::Post };
         self.call(method, &path, body, &h).await
+    }
+
+    /// A depth-1 fill of the clone cache (`spool=<key>`): the container answers the client as `upload_pack` does and
+    /// writes the whole answer to its disk, to its end whoever reads it; `spooled` then reads it.
+    pub async fn upload_pack_spooled(
+        &self,
+        network: NetworkId,
+        body: Vec<u8>,
+        git_protocol: &str,
+        content_encoding: &str,
+        spool: Digest,
+    ) -> Result<Response, StoreError> {
+        let mut h = vec![("git-protocol", git_protocol)];
+        if !content_encoding.is_empty() {
+            h.push(("content-encoding", content_encoding));
+        }
+        self.call(Method::Post, &format!("/upload-pack?net={}&spool={}", network.0.0, spool.hex()), Some(body), &h)
+            .await
+    }
+
+    /// The whole answer a spooled upload-pack wrote, put to each of `to` under `key` without passing through the
+    /// isolate's memory, then deleted from the container. `Ok(false)` when the container holds no whole answer: the
+    /// upload-pack failed, or another fill of the key spooled it.
+    pub async fn put_spooled(&self, spool: Digest, to: &[&R2], key: &str) -> Result<bool, StoreError> {
+        let path = format!("/spooled?id={}", spool.hex());
+        let mut put = false;
+        for b in to {
+            let r = self.call(Method::Get, &path, None, &[]).await?;
+            if r.status_code() != 200 {
+                break;
+            }
+            put |= put_body(b, key, r).await?;
+        }
+        let _ = self.call(Method::Delete, &path, None, &[]).await;
+        Ok(put)
+    }
+
+    /// The container's composed-miss chain (`/compose-head`), `None` when it holds none.
+    pub async fn chain(&self, network: NetworkId) -> Result<Option<crate::compose::ChainHead>, StoreError> {
+        let mut r = self.ok(Method::Get, &format!("/compose-head?net={}", network.0.0), None).await?;
+        let h: Option<crate::compose::ChainHead> = r.json().await.map_err(worker_err)?;
+        Ok(h.and_then(crate::compose::ChainHead::checked))
+    }
+
+    /// The chain's next step on the container, to the repository's HEAD (`/compose?start=1`): a base when there is no
+    /// chain, a part, or a fold. Answers the head after it and the files it built.
+    pub async fn compose_step(
+        &self,
+        network: NetworkId,
+    ) -> Result<(Option<crate::compose::ChainHead>, Vec<String>), StoreError> {
+        #[derive(Deserialize)]
+        struct Out {
+            head: Option<crate::compose::ChainHead>,
+            #[serde(default)]
+            built: Vec<String>,
+        }
+        let path = format!("/compose?net={}&start=1", network.0.0);
+        let mut r = self.ok(Method::Post, &path, None).await?;
+        let o: Out = r.json().await.map_err(worker_err)?;
+        Ok((o.head, o.built))
+    }
+
+    /// One chain file from the container to `b` under its `R2Key::Compose`.
+    pub async fn store_chain_file(&self, network: NetworkId, b: &R2, file: &str) -> Result<(), StoreError> {
+        let r = self.ok(Method::Get, &format!("/compose-file?net={}&name={file}", network.0.0), None).await?;
+        put_body(b, &R2Key::Compose { network, file: file.to_owned() }.to_string(), r).await.map(|_| ())
+    }
+
+    /// One chain file from the first of `buckets` that holds it, streamed to the container's staging; `false` when
+    /// none does.
+    pub async fn fetch_chain_file(&self, network: NetworkId, buckets: &[&R2], file: &str) -> Result<bool, StoreError> {
+        let key = R2Key::Compose { network, file: file.to_owned() }.to_string();
+        let path = format!("/compose-file?net={}&name={file}", network.0.0);
+        for b in buckets {
+            if let Some(r) = self.put_stream(b, &key, Method::Put, &path).await?
+                && r.status_code() == 200
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Readies the network's composed-miss chain (`crate::compose`). The builder, the home site's first shard, takes
+    /// the container's next step to HEAD (a base when it holds no chain, at nice 19 in the container), then brings each of `buckets`, the warm sites',
+    /// up to its chain: the files that bucket's head lacks, then the head, and after a fold it deletes the files the
+    /// new head does not name; `synced`, the head it last put to the buckets, skips that when nothing moved. Any other
+    /// shard installs the chain the first of `buckets` names, fetching only the files its container lacks; one missing
+    /// file leaves its chain as it was, so its misses go to stock upload-pack. Answers the chain the container holds.
+    pub async fn ready_chain(
+        &self,
+        network: NetworkId,
+        buckets: &[&R2],
+        builder: bool,
+        synced: Option<&crate::compose::ChainHead>,
+    ) -> Result<Option<crate::compose::ChainHead>, StoreError> {
+        use crate::compose::ChainHead;
+        let head_key = R2Key::Compose { network, file: "head".into() }.to_string();
+        let read_head = async |b: &R2| -> Result<Option<ChainHead>, StoreError> {
+            let v = Bucket::get(b, &head_key).await?;
+            Ok(v.and_then(|v| serde_json::from_slice::<ChainHead>(&v).ok()).and_then(ChainHead::checked))
+        };
+        if builder {
+            let (Some(head), _) = self.compose_step(network).await? else { return Ok(None) };
+            if synced == Some(&head) {
+                return Ok(Some(head));
+            }
+            for b in buckets {
+                let old = read_head(b).await?;
+                if old.as_ref() == Some(&head) {
+                    continue;
+                }
+                for f in head.to_fetch(old.as_ref()) {
+                    self.store_chain_file(network, b, &f).await?;
+                }
+                b.0.put(&head_key, serde_json::to_vec(&head).map_err(err)?).execute().await.map_err(err)?;
+                if old.is_some_and(|o| o.base != head.base) {
+                    let keep = head.files();
+                    let stale: Vec<String> = Bucket::list(*b, &format!("compose/{}/", network.0.0))
+                        .await?
+                        .into_iter()
+                        .map(|o| o.key)
+                        .filter(|k| k != &head_key && !keep.iter().any(|f| k.ends_with(&format!("/{f}"))))
+                        .collect();
+                    Bucket::delete(*b, &stale).await?;
+                }
+            }
+            return Ok(Some(head));
+        }
+        let mut head = None;
+        for b in buckets {
+            if let Some(h) = read_head(b).await? {
+                head = Some(h);
+                break;
+            }
+        }
+        let Some(head) = head else { return Ok(None) };
+        let had = self.chain(network).await?;
+        if had.as_ref() == Some(&head) {
+            return Ok(had);
+        }
+        for f in head.to_fetch(had.as_ref()) {
+            if !self.fetch_chain_file(network, buckets, &f).await? {
+                return Ok(had);
+            }
+        }
+        Ok(if self.install_chain(network, &head).await? { Some(head) } else { had })
+    }
+
+    /// Installs `head` on the container once its files are staged; `false` when the container still lacks one.
+    pub async fn install_chain(
+        &self,
+        network: NetworkId,
+        head: &crate::compose::ChainHead,
+    ) -> Result<bool, StoreError> {
+        let body = serde_json::to_vec(head).map_err(err)?;
+        let r = self.call(Method::Put, &format!("/compose-head?net={}", network.0.0), Some(body), &[]).await?;
+        Ok(r.status_code() == 200)
     }
 
     /// `git archive` of one commit of `network` (`codeload-archives`).
@@ -976,16 +1251,8 @@ impl ShardIo for Io<'_, '_> {
         let got = crate::catchup::first_copy(self.buckets, |b: &&R2| {
             let (b, key, idx_key): (&R2, String, String) = (b, key.clone(), idx_key.clone());
             async move {
-                let Some(o) = b.0.get(&key).execute().await.map_err(err)? else { return Ok(None) };
-                let Some(body) = o.body() else { return Ok(None) };
-                let worker::ResponseBody::Stream(st) = body.response_body().map_err(worker_err)? else {
-                    return Ok(None);
-                };
                 let path = format!("/spool?net={net}&sha256={}", checksum.hex());
-                let mut init = RequestInit::new();
-                init.with_method(Method::Post).with_body(Some(st.into()));
-                let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
-                let mut r = self.host.port()?.fetch_request(req).await.map_err(worker_err)?;
+                let Some(mut r) = self.host.put_stream(b, &key, Method::Post, &path).await? else { return Ok(None) };
                 let s: Spool = match r.status_code() {
                     200 => r.json().await.map_err(worker_err)?,
                     // The previous release's image: the pack is read from the bucket again at its turn.
@@ -997,19 +1264,15 @@ impl ShardIo for Io<'_, '_> {
                     c => return Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
                 };
                 if idx && !s.have {
-                    // The index is a few percent of its pack: read whole, then put, from this bucket or, when its
-                    // pack put finished after the placement returned, from the first other that holds one. Derived:
-                    // without it the container runs `index-pack`, so a failed read or put is not an error.
-                    let mut got = b.get(&idx_key).await.ok().flatten();
-                    for (_, o) in self.buckets {
-                        if got.is_some() {
+                    // Streamed as the pack is, so `FETCH_AT_ONCE` fetches hold none of their bytes in the isolate:
+                    // from this bucket or, when its pack put finished after the placement returned, from the first
+                    // other that holds one. Derived: without it the container runs `index-pack`, so a failed read or
+                    // put is not an error.
+                    let path = format!("/spool-idx?net={net}&sha256={}", checksum.hex());
+                    for o in std::iter::once(b).chain(self.buckets.iter().map(|(_, o)| *o)) {
+                        if self.host.put_stream(o, &idx_key, Method::Put, &path).await.unwrap_or(None).is_some() {
                             break;
                         }
-                        got = o.get(&idx_key).await.ok().flatten();
-                    }
-                    if let Some(i) = got {
-                        let path = format!("/spool-idx?net={net}&sha256={}", checksum.hex());
-                        let _ = self.host.ok(Method::Put, &path, Some(i)).await;
                     }
                 }
                 Ok(Some(s))

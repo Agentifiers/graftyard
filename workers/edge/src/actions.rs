@@ -26,7 +26,7 @@
 use graftyard_actions::runsvc::{self, Grant, RunnerAt};
 use graftyard_actions::shard::{JobRow, RunnerRecord, RunnerScope, WorkflowRun};
 use graftyard_actions::{JobId, JobState, LabelSet, RunId, actions_shard};
-use graftyard_identity::{Actor, Principal, RepoPermission};
+use graftyard_identity::{Actor, AuthzRead, Principal, RepoPermission};
 use graftyard_types::{AccountId, ChainId, DbId, Index, PlacementRecord, SiteId};
 use graftyard_wire::Reply;
 use serde_json::{Value, json};
@@ -60,7 +60,7 @@ fn service_error(status: u16) -> Result<Response> {
 
 /// The owner's `Placement` record, which places its Actions shards (DESIGN Shape, `PlacementRecord`), with the shard's
 /// group created on first use.
-async fn shard_record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<PlacementRecord, String> {
+pub async fn shard_record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<PlacementRecord, String> {
     let ChainId::Actions(owner, _) = chain else { return Err("not an Actions shard".into()) };
     let record = crate::placement(c, owner).await?.ok_or("the owner has no Placement row")?;
     graftyard_lookup::create(&c.bindings(), chain, &record, &json!({})).await?;
@@ -68,7 +68,7 @@ async fn shard_record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<Placem
 }
 
 /// One `/runsvc` call on the shard's leader: its `(status, body)` and the whole answer.
-async fn runsvc_call(c: &Ctx<'_>, chain: ChainId, body: &Value) -> std::result::Result<(u16, Value), String> {
+pub async fn runsvc_call(c: &Ctx<'_>, chain: ChainId, body: &Value) -> std::result::Result<(u16, Value), String> {
     let record = shard_record(c, chain).await?;
     let (v, _) = graftyard_lookup::call(&c.bindings(), chain, &record, "/runsvc", body).await?;
     Ok((v["status"].as_u64().unwrap_or(500) as u16, v))
@@ -135,6 +135,11 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
         (Method::Post, "broker/acknowledge", Some(_)) => json_reply(200, &json!({})),
         (Method::Get, "broker/message", Some((chain, g @ Grant::Runner { .. }))) => poll(c, chain, g).await,
         (Method::Post, "run/acquirejob", Some((chain, g @ Grant::Runner { .. }))) => {
+            // An `Owner`-scope runner's request names the job's shard, which is not the one its token names (BF-55).
+            let chain = match (chain, b["jobMessageId"].as_str().and_then(runsvc::owner_job_of_guid)) {
+                (ChainId::Actions(owner, _), Some((shard, _))) => ChainId::Actions(owner, shard),
+                _ => chain,
+            };
             let (repository, secrets, variables) = match repository_of(c, chain, &b).await {
                 Some((name, run, job, repo, authz)) => match job_config(c, &run, &job, &repo, &authz).await {
                     Ok((s, v)) => (name, s, v),
@@ -179,7 +184,8 @@ async fn repository_of(
     chain: ChainId,
     b: &Value,
 ) -> Option<(String, WorkflowRun, JobRow, crate::Repo, graftyard_identity::AuthzFold)> {
-    let job = b["jobMessageId"].as_str().and_then(runsvc::job_of_guid)?;
+    let id = b["jobMessageId"].as_str()?;
+    let job = runsvc::job_of_guid(id).or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j))?;
     let row = job_row(c, chain, job).await?;
     let v = shard_read(c, chain, json!({ "run": row.run.0.0 })).await.ok()?;
     let run: WorkflowRun = serde_json::from_value(v["run"]["run"].clone()).ok()?;
@@ -270,16 +276,40 @@ async fn job_config(
     Ok((o.secrets, vars))
 }
 
-/// `GET broker/message`, held by the shard's broker on the leader's site.
+/// `GET broker/message`, held by the shard's broker on the leader's site. A broker that finds its site no longer
+/// leads (`moved`), or that does not answer (its site is gone), makes the edge forget the leader and ask the broker on
+/// the site a fresh lookup finds, within the same poll (BF-55).
 async fn poll(c: &Ctx<'_>, chain: ChainId, g: Grant) -> Result<Response> {
     let Ok(record) = shard_record(c, chain).await else { return service_error(503) };
-    let site = leader_site(c, chain, &record).await;
-    let stub = c.bindings().object("BROKER", site, &format!("broker:{chain}"), None)?;
-    let mut init = RequestInit::new();
-    let body = json!({ "chain": chain.to_string(), "record": record, "grant": g });
-    init.with_method(Method::Post).with_body(Some(body.to_string().into()));
-    let mut r = stub.fetch_with_request(Request::new_with_init("https://broker/poll", &init)?).await?;
-    let v: Value = r.json().await.unwrap_or(Value::Null);
+    let mut v = Value::Null;
+    for _ in 0..3 {
+        let site = leader_site(c, chain, &record).await;
+        let stub = c.bindings().object("BROKER", site, &format!("broker:{chain}"), None)?;
+        let mut init = RequestInit::new();
+        let body = json!({ "chain": chain.to_string(), "record": record, "grant": g });
+        init.with_method(Method::Post).with_body(Some(body.to_string().into()));
+        let answered = match stub.fetch_with_request(Request::new_with_init("https://broker/poll", &init)?).await {
+            Ok(mut r) if r.status_code() == 200 => r.json::<Value>().await.ok(),
+            _ => None,
+        };
+        match answered {
+            Some(a) if a.get("moved").is_none() => {
+                v = a;
+                break;
+            }
+            // A moved broker's answer is an empty poll: kept, so a last moved answer reaches the runner as one.
+            Some(a) => {
+                v = a;
+                graftyard_lookup::forget_leader(chain);
+            }
+            None => graftyard_lookup::forget_leader(chain),
+        }
+    }
+    // No broker answered (its site is gone and no new leader is elected yet): an empty poll, which the runner repeats
+    // at once [measured], not a 503, whose 15 to 30 s back-off would hold it past a new leader (BF-55).
+    if v.is_null() {
+        return json_reply(200, &Value::Null);
+    }
     let status = v["status"].as_u64().unwrap_or(503) as u16;
     if status == 503 {
         let r = json_reply(503, &json!({ "source": "actions-broker-listener", "statusCode": 503 }))?;
@@ -291,7 +321,7 @@ async fn poll(c: &Ctx<'_>, chain: ChainId, g: Grant) -> Result<Response> {
 
 /// The site the shard's leader is on: the lookup's cached leader, else the one a probe read finds, else the record's
 /// home.
-async fn leader_site(c: &Ctx<'_>, chain: ChainId, record: &PlacementRecord) -> SiteId {
+pub async fn leader_site(c: &Ctx<'_>, chain: ChainId, record: &PlacementRecord) -> SiteId {
     if let Some(t) = graftyard_lookup::cached_leader(chain) {
         return t.site;
     }
@@ -492,8 +522,19 @@ pub async fn admin_route(c: &Ctx<'_>, req: &mut Request, rd: &Read, who: &Princi
             let (Ok(labels), Some(key)) = (LabelSet::parse(labels), key) else {
                 return Ok(Reply::error(422, "labels and key are required", "rest"));
             };
+            // `"scope": "owner"` registers an `Owner`-scope runner on the owner's shard 0, for an admin of the owner
+            // (BF-55); it takes jobs from every repository of the owner.
+            let owner_scope = b["scope"].as_str() == Some("owner");
+            if owner_scope && !rd.dir.authz.iter().any(|a| a.owner == Some(rd.repo.owner) && a.is_admin(admin)) {
+                return Ok(Reply::not_found());
+            }
+            let (scope, chain) = if owner_scope {
+                (RunnerScope::Owner, ChainId::Actions(rd.repo.owner, graftyard_actions::OWNER_SCOPE_SHARD))
+            } else {
+                (RunnerScope::Repo(rd.repo.id), chain)
+            };
             let rec = RunnerRecord {
-                scope: RunnerScope::Repo(rd.repo.id),
+                scope,
                 name: b["name"].as_str().unwrap_or("graftyard-runner").into(),
                 labels,
                 key: key.into(),
@@ -514,7 +555,11 @@ pub async fn admin_route(c: &Ctx<'_>, req: &mut Request, rd: &Read, who: &Princi
                             "client_id": runsvc::client_id(at),
                             "server_url_v2": urls.broker(),
                             "authorization_url": urls.token(),
-                            "github_url": format!("https://{}/{}/{}", c.cfg.host, rd.at.owner, rd.at.name),
+                            "github_url": if owner_scope {
+                                format!("https://{}/{}", c.cfg.host, rd.at.owner)
+                            } else {
+                                format!("https://{}/{}/{}", c.cfg.host, rd.at.owner, rd.at.name)
+                            },
                         }),
                     )
                 }

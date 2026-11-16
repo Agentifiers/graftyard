@@ -75,11 +75,27 @@ export async function bedGet(path) {
 }
 
 /** Every member's `/status` of a chain (sites 0..n-1). */
+// A voter replaced since the group was made has a later generation's object; a call by site alone reaches the first
+// generation's, which answers forever at its old term (L0-12 m3fr1: site 1's voter was `#6#f1`, and every probe of site 1
+// read the dead `#1#f1` at term 2). The current voters' names, per chain, from any member's committed config.
+const voterName = new Map();
 export async function statuses(chain, n = 3) {
-  return Promise.all([...Array(n).keys()].map(async (s) => {
-    try { return { site: s, ...(await member(chain, s, "/status", undefined, 15_000)).v }; } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
-  }));
+  const one = async (s) => {
+    try { return { site: s, ...(await member(chain, s, "/status", undefined, 15_000, voterName.get(chain)?.[s])).v }; } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
+  };
+  let st = await Promise.all([...Array(n).keys()].map(one));
+  const vs = st.filter((x) => x.config?.config?.normal?.voters).sort((a, b) => (b.term ?? 0) - (a.term ?? 0))[0]?.config.config.normal.voters;
+  if (vs) {
+    const names = Object.fromEntries(vs.map((v) => [v.site, v.do_name]));
+    const was = voterName.get(chain) ?? {};
+    voterName.set(chain, names);
+    const stale = st.filter((x) => names[x.site] && names[x.site] !== (was[x.site] ?? `${chain}#1#f${x.site}`)).map((x) => x.site);
+    if (stale.length) st = await Promise.all(st.map((x) => (stale.includes(x.site) ? one(x.site) : x)));
+  }
+  return st;
 }
+/** The current voter object's name at `site`, as `statuses` last saw it (undefined: the first generation's). */
+export const voterAt = (chain, site) => voterName.get(chain)?.[site];
 /** Each site's current voter object of a chain, from a member's committed config: a voter replaced since the group
  * was made has a later generation's name, and a call by site alone reaches the first generation's object. */
 export async function voterNames(chain) {

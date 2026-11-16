@@ -60,9 +60,13 @@ pub const INGEST_BATCH_BYTES: usize = 4_000_000;
 /// `research/cloudflare.md`, Workers limits]: four spools leave one for the in-order ingest and one for the next log
 /// page, so neither queues behind the fetches.
 pub const FETCH_AT_ONCE: usize = 4;
-/// Stored packs fetched and not yet ingested, at most: they wait on the container's disk, not in the object's memory.
+/// Stored packs fetched and not yet ingested, at most: they wait on the container's disk, not in the object's memory,
+/// which holds none of their bytes (`ShardIo::fetch_stored`).
 pub const AHEAD_PACKS: usize = 8;
-/// And their bytes, at most, unless the next pack alone is larger.
+/// The bytes fetched ahead, at most, before a pack past the first `FETCH_AT_ONCE` starts. Those four start whatever
+/// their size: every promoted pack of repo:131296 was 106 to 207 MB, so a cap on them all fetched one at a time, 101 to
+/// 155 s of the cold warm on m35 (`tests/am1/results/lm1-memory.md`, round 23). So the disk holds four packs of any
+/// size ahead, or up to `AHEAD_PACKS` within this.
 pub const AHEAD_BYTES: u64 = 64 << 20;
 
 /// The container's answer to one ingest.
@@ -302,7 +306,7 @@ impl<'a> Ahead<'a> {
             while self.started < self.list.len()
                 && self.running.len() < FETCH_AT_ONCE
                 && self.started - self.taken < AHEAD_PACKS
-                && (self.started == self.taken || self.held + self.list[self.started].2 <= AHEAD_BYTES)
+                && (self.started - self.taken < FETCH_AT_ONCE || self.held + self.list[self.started].2 <= AHEAD_BYTES)
             {
                 self.held += self.list[self.started].2;
                 self.running.push((self.start)(self.started));

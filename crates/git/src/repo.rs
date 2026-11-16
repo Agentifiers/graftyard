@@ -2125,6 +2125,27 @@ impl Record for RepoCmd {
     }
 }
 
+impl RepoCmd {
+    /// What the committing leader's marker puts read after an `Acked` (`workers/site`, `Family::after_ok`), or `None`
+    /// when they put nothing: a push's stored pack ref, without any inline bytes, and the blob an issue command's
+    /// member confirmed, without its reply render. A leader host keeps this with each open ticket in place of the
+    /// whole command, which held each render and inline pack a second time beside the core's copy
+    /// (`tests/m0/results/admitted-bytes.md`).
+    pub fn marked(&self) -> Option<RepoCmd> {
+        match self {
+            RepoCmd::Push(p) if matches!(p.pack, Some(PackRef::Stored { .. })) => Some(RepoCmd::Push(p.clone())),
+            RepoCmd::Issue(c) if c.confirmed.is_some() => {
+                let op = c.op.clone();
+                let mut slim =
+                    crate::issue_ops::call::IssueCall::new(op, c.actor.clone(), c.request, serde_json::Value::Null);
+                slim.confirmed = c.confirmed;
+                Some(RepoCmd::Issue(Box::new(slim)))
+            }
+            _ => None,
+        }
+    }
+}
+
 impl Command for RepoCmd {
     type Fold = RepoFold;
     type Dep = IdentityDep;

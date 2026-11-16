@@ -78,6 +78,20 @@ pub fn job_guid(kind: u8, id: i64) -> String {
     format!("00000000-0000-4{kind:03x}-8{}-{}", &h[..3], &h[3..])
 }
 
+/// An `Owner`-scope runner's job request id: kind `0x10 | shard`, so its `acquirejob` names the job's shard, which
+/// differs from the runner's registration shard (BF-55).
+pub fn owner_job_guid(shard: u8, job: JobId) -> String {
+    job_guid(0x10 | (shard & 0x0f), job.0.0)
+}
+
+/// The shard and job an `owner_job_guid` names.
+pub fn owner_job_of_guid(g: &str) -> Option<(u8, JobId)> {
+    let rest = g.strip_prefix("00000000-0000-401")?;
+    let shard = u8::from_str_radix(rest.get(..1)?, 16).ok()?;
+    let job = job_of_guid(&format!("00000000-0000-4001{}", rest.get(1..)?))?;
+    Some((shard, job))
+}
+
 pub fn job_of_guid(g: &str) -> Option<JobId> {
     let rest = g.strip_prefix("00000000-0000-4001-8")?;
     let (a, b) = rest.split_once('-')?;
@@ -295,7 +309,16 @@ pub fn verify_token(token: &str, public: &[u8; 32], now: Timestamp) -> Option<(C
 /// The broker's `RunnerJobRequest` message for job `job`: `runner_request_id` is the job's GUID, which `acquirejob`
 /// sends back as `jobMessageId` [measured].
 pub fn job_request(urls: &Urls, message_id: u64, job: JobId) -> Value {
-    let body = json!({"id": job_guid(1, job.0.0), "runner_request_id": job_guid(1, job.0.0), "should_acknowledge": true,
+    request_with(urls, message_id, &job_guid(1, job.0.0))
+}
+
+/// `job_request` for an `Owner`-scope runner's job on `shard` (`owner_job_guid`).
+pub fn owner_job_request(urls: &Urls, message_id: u64, shard: u8, job: JobId) -> Value {
+    request_with(urls, message_id, &owner_job_guid(shard, job))
+}
+
+fn request_with(urls: &Urls, message_id: u64, id: &str) -> Value {
+    let body = json!({"id": id, "runner_request_id": id, "should_acknowledge": true,
                       "run_service_url": urls.run(), "billing_owner_id": ""});
     json!({"messageId": message_id, "messageType": "RunnerJobRequest", "body": body.to_string()})
 }
@@ -638,6 +661,12 @@ mod tests {
         assert_eq!(job_of_guid(&job_guid(1, j.0.0)), Some(j));
         assert_eq!(job_of_guid(&job_guid(1, 589_826)), Some(JobId(DbId(589_826))));
         assert_eq!(job_of_guid(&job_guid(2, j.0.0)), None, "a plan GUID is not a job's");
+        // An Owner-scope request names its shard, and is never read as a shard-less job id, or the reverse.
+        for s in [0, 9, 15] {
+            assert_eq!(owner_job_of_guid(&owner_job_guid(s, j)), Some((s, j)));
+            assert_eq!(job_of_guid(&owner_job_guid(s, j)), None);
+        }
+        assert_eq!(owner_job_of_guid(&job_guid(1, j.0.0)), None);
         assert_eq!(conclusion("succeededWithIssues"), Some(Conclusion::Success));
         assert_eq!(conclusion("abandoned"), Some(Conclusion::Failure));
         assert_eq!(conclusion("canceled"), Some(Conclusion::Cancelled));

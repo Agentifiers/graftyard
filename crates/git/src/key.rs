@@ -47,6 +47,12 @@ pub enum R2Key {
         key: Digest,
         replica: u8,
     },
+    /// A composed-miss chain's file in a warm bucket, derived: `head`, or `base-<tip>` and `part-<from>-<to>`, each
+    /// `.pack` or `.idx` (`crate::compose`).
+    Compose {
+        network: NetworkId,
+        file: String,
+    },
     /// SHA-256 of the bytes: LFS objects and release assets.
     Blob {
         repo: RepoId,
@@ -114,6 +120,7 @@ impl fmt::Display for R2Key {
                 write!(f, "archive/{chain}/{}-{}-{}", pad(*from), pad(*to), digest.hex())
             }
             R2Key::CloneCache { network, key, replica } => write!(f, "clone/{}/{}/{replica}", network.0.0, key.hex()),
+            R2Key::Compose { network, file } => write!(f, "compose/{}/{file}", network.0.0),
             R2Key::Blob { repo, oid } => write!(f, "blob/{}/{}", repo.0.0, oid.hex()),
             R2Key::ArchiveCache { network, commit, prefix, format } => {
                 write!(f, "archive-cache/{}/{}-{}.{}", network.0.0, commit.hex(), prefix.hex(), format.ext())
@@ -179,6 +186,9 @@ impl FromStr for R2Key {
                 key: digest(k)?,
                 replica: r.parse().ok().filter(|v: &u8| *r == v.to_string()).ok_or_else(bad)?,
             },
+            ["compose", n, file] if *file == "head" || crate::compose::file_name_ok(file) => {
+                R2Key::Compose { network: net(n)?, file: (*file).to_owned() }
+            }
             ["blob", r, o] => R2Key::Blob { repo: RepoId(id(r)?), oid: digest(o)? },
             ["archive-cache", n, file] => {
                 let (name, ext) = file.split_once('.').ok_or_else(bad)?;
@@ -237,6 +247,8 @@ mod tests {
                 digest,
             },
             R2Key::CloneCache { network, key: digest, replica: 7 },
+            R2Key::Compose { network, file: "head".into() },
+            R2Key::Compose { network, file: format!("part-{}-{}.idx", "a".repeat(40), "b".repeat(40)) },
             R2Key::Blob { repo: RepoId(DbId(5)), oid: digest },
             R2Key::ArchiveCache {
                 network,
@@ -311,6 +323,8 @@ mod tests {
             format!("committed/pack/77/{}", id.to_lowercase()),
             "snapshot/repo:1/cold/".to_owned(),
             "archive-cache/77/abc.tar".to_owned(),
+            "compose/77/heads".to_owned(),
+            format!("compose/77/base-{}.rev", "a".repeat(40)),
             "archive-cache/77/ABC.zip".to_owned(),
             "archive-cache/77/.zip".to_owned(),
             format!("archive-cache/77/{}.zip", "a".repeat(40)),

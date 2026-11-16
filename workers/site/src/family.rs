@@ -173,8 +173,13 @@ pub trait Family: 'static {
     fn unreadable(_body: &[u8]) -> Option<Value> {
         None
     }
+    /// What `after_ok` needs of an admitted command, kept with its ticket until it resolves, or `None` when it does
+    /// nothing for this command. Never the whole command: that held every inline pack and reply render a second time.
+    fn marked(_cmd: &Self::C) -> Option<Self::C> {
+        None
+    }
     /// After an `ok` outcome, on the leader: the work a command's commit owes outside the log, such as the
-    /// repository's `Committed` pack markers. Returns how many puts failed.
+    /// repository's `Committed` pack markers. `cmd` is what `marked` kept. Returns how many puts failed.
     async fn after_ok(_env: worker::Env, _chain: ChainId, _cmd: Self::C, _acked: raft::Acked<Out<Self>>) -> usize {
         0
     }
@@ -1098,6 +1103,9 @@ impl Family for Repo {
         }
         let e = git::group::decode_commit(body, crate::host::RELEASE.id).err()?;
         serde_json::to_value(e).ok()
+    }
+    fn marked(cmd: &Self::C) -> Option<Self::C> {
+        cmd.marked()
     }
     /// The committing leader marks the stored pack an ok push names, in each bucket its `sites` names, as
     /// `graftyard_git::mark_committed`, and the blob an ok asset upload or LFS `verify` names, as

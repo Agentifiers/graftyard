@@ -15,7 +15,10 @@ console.log("before", JSON.stringify(await roles()));
 // `next_step` reads only the target's sites and home; the other fields are the record's shape.
 const target = { name: "Tri", sites: [0, 1, 2], home: to, generation: 1, moving_from: null, at: 0 };
 let done = false;
-for (let i = 0; i < 12 && !done; i++) {
+// Until Done or 300 s: a new group's placement may still be swapping a voter over NEAR_RTT, and each swap holds a
+// `Degraded` config that `next_step` answers `Degraded` (m3fr5b's B0-31: 84 s of swaps; 12 tries of 3 s gave up).
+const until = Date.now() + 300_000;
+for (let i = 0; Date.now() < until && !done; i++) {
   const l = await leaderOf(chain);
   const r = await member(chain, l, "/move", { to: target }, 60_000);
   console.log("move on", l, JSON.stringify(r.v ?? r.status).slice(0, 240));

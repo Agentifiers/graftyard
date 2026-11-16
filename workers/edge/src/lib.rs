@@ -21,7 +21,7 @@
 //! on pushes, and the `GRAFTYARD_GENESIS` stand-in for the `Release` view.
 
 use futures_util::StreamExt;
-use graftyard_git::clone::{CloneKey, cacheable_response, tags_digest};
+use graftyard_git::clone::{CloneKey, tags_digest};
 use graftyard_git::group::{CallErrorWire, CommitReq, PushOutcome, RefsPage, RefsReply};
 use graftyard_git::host::R2;
 use graftyard_git::refs::{Atomicity, ObjectId, RefName};
@@ -54,6 +54,7 @@ mod api;
 mod bed_rows;
 mod collab;
 mod hooks;
+mod hosted;
 mod ident;
 mod keys;
 mod oidc;
@@ -489,8 +490,22 @@ async fn authz_get(
     if c.leader_reads.get() {
         graftyard_lookup::call_opt(b, chain, record, "/read", q.to_string().as_bytes()).await
     } else {
-        graftyard_lookup::read_spread(b, chain, record, q).await
+        spread_read(c, b, chain, record, q).await
     }
+}
+
+/// `graftyard_lookup::read_spread` for this request: a write asks again while the members shed the read, for up to
+/// LOOKUP_FOR, so a shed `Authz` or access read does not fail a push or a REST write; any other request answers 503
+/// at once.
+pub(crate) async fn spread_read(
+    c: &Ctx<'_>,
+    b: &graftyard_lookup::Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    q: &serde_json::Value,
+) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
+    let retry = if c.write.get() { graftyard_lookup::LOOKUP_FOR } else { std::time::Duration::ZERO };
+    graftyard_lookup::read_spread_for(b, chain, record, q, retry).await
 }
 
 /// `authz_read`, `None` when it cannot be read.
@@ -944,6 +959,9 @@ struct Ctx<'a> {
     /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
     /// as before.
     read_class: std::cell::Cell<bool>,
+    /// A write (a push, a REST call other than `GET`, a GraphQL mutation): a read its members shed is asked again
+    /// after the wait they named, within LOOKUP_FOR, rather than failing the write 503 (`spread_read`).
+    write: std::cell::Cell<bool>,
     /// A REST merge (`api::rest_merge`): its owner's `Authz` reads, the name lookup and the fold, go to the `Authz`
     /// group's leader by `call_opt`, as its rows go to the repository's (`merge-p99`). False for every other request.
     leader_reads: std::cell::Cell<bool>,
@@ -1669,13 +1687,13 @@ pub(crate) async fn push_init(
 
 // ---- upload-pack ----
 
-async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context) -> Result<Response> {
+async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Response> {
     let proto = req.headers().get("git-protocol")?.unwrap_or_default();
     let enc = req.headers().get("content-encoding")?.unwrap_or_default();
     let raw = req.bytes().await?;
     let body = if enc == "gzip" { gunzip(&raw, c.cfg.cap)? } else { raw };
-    // The clone cache: a v2 fetch with no haves, read from R2 by its `CloneKey`, else upload-pack on the shard with
-    // its output teed to the client and to R2.
+    // The clone cache: a v2 fetch with no haves, read from R2 by its `CloneKey`, else upload-pack on the shard, which
+    // fills the cache.
     // BF-18 clones from a chosen shard (`x-graft-shard`) bypass the clone cache, so the shard serves every one.
     #[cfg(feature = "test-faults")]
     let cache_ok = c.shard.is_none();
@@ -1710,41 +1728,25 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
             return Ok(Response::from_bytes(b)?.with_headers(h));
         }
     }
-    let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
+    // A miss names its key (`fill=`): the shard spools the whole answer and puts it to the cache itself, so a client
+    // that stops reading still leaves an entry. The edge's own tee stored only answers a client read to the end, and
+    // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard").
+    let fill = key.as_ref().map_or(String::new(), |k| format!("&fill={}", k.digest().hex()));
+    let url = format!("https://shard/upload-pack?repo={}{fill}", repo.id.0.0);
     let mut r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
     let hh = git_headers(c.rid, &Service::UploadPack.result_type())?;
     if r.status_code() != 200 {
         return text(c.rid, 503, &format!("git cache: {} {}\n", r.status_code(), r.text().await.unwrap_or_default()));
     }
-    if let Some(cursor) = r.headers().get("x-graft-cursor")? {
-        hh.set("x-graft-cursor", &cursor)?;
+    for k in ["x-graft-cursor", "x-graft-compose"] {
+        if let Some(v) = r.headers().get(k)? {
+            hh.set(k, &v)?;
+        }
     }
-    let Some(k) = key else {
-        return Ok(Response::from_body(r.body().clone())?.with_headers(hh));
-    };
-    // Tee: the client's copy streams as the shard sends; the other is written to R2 after it ends, if whole.
-    hh.set("x-graft-clone-cache", "miss")?;
-    let ResponseBody::Stream(s) = r.body().clone() else {
-        return Ok(Response::from_body(r.body().clone())?.with_headers(hh));
-    };
-    let parts = s.tee();
-    let (client, store): (web_sys::ReadableStream, web_sys::ReadableStream) =
-        (parts.get(0).into(), parts.get(1).into());
-    let r2 = k.r2_key(0).to_string();
-    let env = c.env.clone();
-    ctx.wait_until(async move {
-        let mut st = ByteStream::from(store);
-        let mut buf = Vec::new();
-        while let Some(Ok(c)) = st.next().await {
-            buf.extend_from_slice(&c);
-        }
-        if cacheable_response(&buf)
-            && let Ok(b) = env.bucket(&cache_binding)
-        {
-            let _ = b.put(&r2, buf).execute().await;
-        }
-    });
-    Ok(Response::from_body(ResponseBody::Stream(client))?.with_headers(hh))
+    if key.is_some() {
+        hh.set("x-graft-clone-cache", "miss")?;
+    }
+    Ok(Response::from_body(r.body().clone())?.with_headers(hh))
 }
 
 // ---- advertisements ----
@@ -2495,6 +2497,7 @@ async fn serve(
         token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
         read_class: std::cell::Cell::new(false),
+        write: std::cell::Cell::new(false),
         leader_reads: std::cell::Cell::new(false),
         timing: api::Timing::default(),
         #[cfg(feature = "test-faults")]
@@ -2540,6 +2543,12 @@ async fn serve(
     }
     if let Some(rest) = path.strip_prefix(actions::VIEWER) {
         return actions::viewer(&c, req, rest).await;
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX) {
+        let segs: Vec<&str> = rest.trim_start_matches('/').split('/').collect();
+        if let Some(r) = hosted::route(&c, &mut req, &segs).await? {
+            return agents::respond(&c, r.with("content-type", "application/json; charset=utf-8"));
+        }
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
         && let Some(r) = actions::graftyard_route(&c, &mut req, rest).await?
@@ -2607,6 +2616,10 @@ async fn serve(
             (owner.clone(), repo.clone())
         }
     };
+    c.write.set(matches!(
+        route,
+        Route::InfoRefs { service: Some(Service::ReceivePack), .. } | Route::Rpc { service: Service::ReceivePack, .. }
+    ));
     let repo = match resolve(&c, &owner, &name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return text(rid, 404, "Repository not found.\n"),
@@ -2651,7 +2664,7 @@ async fn serve(
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
-            upload_pack(&c, &mut req, repo, ctx).await
+            upload_pack(&c, &mut req, repo).await
         }
         Route::Rpc { service: Service::ReceivePack, .. } => {
             if req.method() != Method::Post {

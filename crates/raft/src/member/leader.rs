@@ -16,7 +16,7 @@ use crate::quorum::{self, DurableAck, QuorumProof};
 use crate::read::{Fresh, ReadGrant};
 use crate::types::{
     Admitted, CallError, CommitError, EntryBody, ExtendLeases, Format, GroupConfig, Index, LogEntry, Next, NotLeader,
-    RequestId, Ticket, TierSet,
+    RequestId, Term, Ticket, TierSet,
 };
 use crate::{CALL_DEADLINE, COMMAND_MAX, DRIFT, ENTRY_MAX, LEASE, after};
 
@@ -62,6 +62,10 @@ pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> u
 /// live-sweep group 50 s (seed 11497). One miss does not stop it: a far voter that missed once and lost its pipeline
 /// for the window caught up one backlog call at a time, and each missed again (r330-6).
 pub const PIPELINE: usize = 4;
+/// The least time between two read-index rounds while the earlier one is unanswered (`Member::read_round`) [guess]:
+/// beside a follower's 10 ms read batching, it caps read rounds at 50 a second per voter, whatever the member clock
+/// does.
+pub const READ_ROUND_GAP: Duration = Duration::from_millis(20);
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
 /// Resolved tickets kept for a late `outcome` call: at most DONE_KEEP of them, DONE_BYTES of the bytes their commands
@@ -252,6 +256,8 @@ type Outcome<C> = Result<Acked<<C as Command>::Out>, CommitError<<C as Command>:
 
 pub(super) struct Lead<C: Command> {
     started: Timestamp,
+    /// The term this leadership issued its tickets in, which `step_down` may have raised before the leadership ends.
+    term: Term,
     /// The leader serves once `commit` reaches this and a quorum answered a round sent at or after `started`: the
     /// term's `Noop`, or for a resumed `led_term` the last entry it held when it restarted.
     ready_at: Index,
@@ -289,6 +295,8 @@ pub(super) struct Lead<C: Command> {
     record_pending: Option<(Index, RequestId)>,
     /// Waiting reads: when each arrived, and whether the lease had lapsed then, so it needs a round.
     reads: Vec<(ReadId, Timestamp, bool)>,
+    /// When the latest read round left (`read_round`): a read that arrived at or before then shares it.
+    read_round: Option<Timestamp>,
     /// The latest commit proof this leadership counted.
     proof: Option<QuorumProof>,
     /// Resolved tickets for a late `outcome`, by seq: when each resolved, its priced bytes, and its result.
@@ -297,6 +305,9 @@ pub(super) struct Lead<C: Command> {
     /// Replies to rounds below this are ignored: the leader truncated its uncommitted tail after they were sent, so
     /// their `matched` may name entries it no longer holds.
     pub(super) min_round: u64,
+    /// Per address whose member changed in this leadership (`take_config`), the first round sent to the new member:
+    /// a reply to an earlier round came from the old member there and moves nothing for the new one.
+    member_from: BTreeMap<SiteId, u64>,
     /// The transfer in progress.
     pub(super) transfer: Option<super::transfer::Transfer>,
     /// `STEP_DOWN`'s inputs and state.
@@ -371,6 +382,7 @@ impl<C: Command> Member<C> {
         self.early_from = Index(0);
         self.lead = Some(Lead {
             started: self.now,
+            term: self.state.term,
             ready_at: Index(0),
             ready: false,
             next: peers.iter().map(|p| (*p, next)).collect(),
@@ -384,7 +396,8 @@ impl<C: Command> Member<C> {
             // Rounds never repeat within a boot, so `calls_out` keys an earlier leadership's calls apart.
             round: self.lead.as_ref().map_or(self.rounds, |l| l.round).max(self.rounds),
             admission: Admission::new(self.now),
-            seq: 0,
+            // Seqs never repeat within a boot either: a ticket names (term, boot, seq), and a resumed term keeps both.
+            seq: self.lead.as_ref().map_or(self.seqs, |l| l.seq).max(self.seqs),
             commit_floor: Index(0),
             by_request: BTreeMap::new(),
             deciding: None,
@@ -394,10 +407,12 @@ impl<C: Command> Member<C> {
             records: VecDeque::new(),
             record_pending: None,
             reads: Vec::new(),
+            read_round: None,
             proof: None,
             done: BTreeMap::new(),
             done_bytes: 0,
             min_round: 0,
+            member_from: BTreeMap::new(),
             transfer: None,
             health: super::health::LeaderHealth::default(),
             refusals: BTreeMap::new(),
@@ -451,6 +466,7 @@ impl<C: Command> Member<C> {
     pub(super) fn end_leadership(&mut self) {
         let Some(lead) = self.lead.take() else { return };
         self.rounds = lead.round;
+        self.seqs = lead.seq;
         // A leadership that ends while its `STEP_DOWN` transfer runs ended by STEP_DOWN.
         if lead.transfer.as_ref().is_some_and(|t| t.step_down) {
             self.state.stepped_down_at = Some(self.now);
@@ -467,7 +483,10 @@ impl<C: Command> Member<C> {
             .map(|q| q.seq)
             .chain(lead.deciding.iter().flat_map(|d| d.batch.iter().map(|q| q.seq)))
             .chain(lead.pending.iter().flat_map(|(_, d)| d.iter().map(|(s, _, _)| *s)));
-        let tickets: Vec<Ticket> = seqs.map(|s| self.ticket(s)).collect();
+        // Each ticket as it was issued: `step_down` raised the term first, and a host keys its waiters and admitted
+        // commands by the issued ticket (LM-1 round 19, `tests/m0/results/admitted-bytes.md`).
+        let (term, boot) = (lead.term, self.boot);
+        let tickets: Vec<Ticket> = seqs.map(|seq| Ticket { term, boot, seq }).collect();
         for ticket in tickets {
             self.out.resolutions.push(Resolution::Ticket { ticket, result: Err(CommitError::NotLeader(nl.clone())) });
         }
@@ -568,7 +587,22 @@ impl<C: Command> Member<C> {
                 .map(|m| (m.site, m.do_name.clone()))
                 .collect()
         };
+        // Each member's `do_name` by address (`Member::addr`): every voter, and every learner, by its slot's address.
+        let members = |c: &GroupConfig| -> BTreeMap<SiteId, Box<str>> {
+            let voters = quorum::voters(c);
+            let ps: Vec<&graftyard_types::Placement> = match c {
+                GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => vec![p],
+                GroupConfig::Joint { old, new } => vec![old, new],
+            };
+            ps.iter()
+                .flat_map(|p| p.voters().iter().filter(|m| voters.contains(&m.site)).chain(p.learners()))
+                .map(|m| (m.addr(), m.do_name.clone()))
+                .collect()
+        };
         let (a, b) = (names(cur), names(&next));
+        // Every address, voter or learner, whose member is new: absent before, or named differently.
+        let (was, now) = (members(cur), members(&next));
+        let added: Vec<SiteId> = now.iter().filter(|(s, n)| was.get(*s) != Some(*n)).map(|(s, _)| *s).collect();
         let changed = a.keys().filter(|s| !b.contains_key(s)).count() + b.keys().filter(|s| !a.contains_key(s)).count();
         if changed > 1 || a.iter().any(|(s, n)| b.get(s).is_some_and(|m| m != n)) {
             return Err(ReconfigError::NotOneChange);
@@ -589,14 +623,15 @@ impl<C: Command> Member<C> {
             body: EntryBody::Config(next),
         };
         let index = e.index;
-        let added: Vec<SiteId> = b.keys().filter(|s| !a.contains_key(s)).copied().collect();
         self.push_entry(e);
-        // A site that comes back names a new member: nothing the old member on that site answered may count for it,
-        // or its old `matched` would count toward a quorum the new member is not in. It starts from the leader's
-        // next index and backs up from its answers.
+        // A new member at an address keeps nothing the old member there answered: its old `matched` would count toward
+        // a quorum the new member is not in, and a new, empty learner whose slot kept `matched` was probed at that
+        // index forever and never caught up (B0-33, LM-1 round 23: 1,776 calls, 144.9 MB, all refused). It starts
+        // from the leader's next index and backs up from its answers.
         let next_index = self.last();
         let lead = self.lead.as_mut().expect("leading");
         for p in added {
+            lead.member_from.insert(p, lead.round + 1);
             lead.next.insert(p, next_index);
             lead.matched.insert(p, Index(0));
             lead.matched_at.remove(&p);
@@ -683,6 +718,15 @@ impl<C: Command> Member<C> {
         self.entry_soft = bytes.min(ENTRY_MAX);
     }
 
+    /// Whether the host's clock may read DRIFT / 2 or more behind real time (`design/DESIGN.md`, Shape, `DRIFT`): a
+    /// busy isolate's clock can read up to seconds before the event it handles, so a lease check on it could serve past
+    /// the lease. While set when a read arrives, `fresh` grants it only after a round sent after its arrival, which
+    /// rests on the quorum's acks, not on this clock. The flag is read at arrival only: a read that arrived on a live
+    /// lease and a trusted clock is linearized at its arrival, so a later grant on that lease is still safe.
+    pub fn set_clock_suspect(&mut self, suspect: bool) {
+        self.clock_suspect = suspect;
+    }
+
     /// What admission sees now, as leader: capacity, queued agent commands and bytes, whether the group is hot and
     /// under pressure. `None` on a follower.
     pub fn admission(&self) -> Option<AdmissionView> {
@@ -697,9 +741,20 @@ impl<C: Command> Member<C> {
             hot: self.hot(),
             pressure: self.pressure(cap),
             retry_after_s: retry_after_s(ad.agent().len(), cap),
-            cmd_bytes: ad.cmd_bytes,
             round_ms: ad.round_ms,
+            cmd_bytes: ad.cmd_bytes,
         })
+    }
+
+    /// The bytes of the commands this leader holds for tickets it has not resolved: each queued or frozen command's
+    /// encoded length, and for the entry in flight what each decided outcome keeps that no event stores (its reply
+    /// render). For the host's memory split (`inFlight.admittedBytes`).
+    pub fn admitted_bytes(&self) -> usize {
+        let Some(lead) = &self.lead else { return 0 };
+        let queued: usize = lead.admission.lanes.iter().flat_map(Lane::iter).map(|q| q.bytes).sum();
+        let frozen: usize = lead.deciding.iter().flat_map(|d| &d.batch).map(|q| q.bytes).sum();
+        let decided: usize = lead.pending.iter().flat_map(|(_, d)| d).map(|(_, unstored, _)| unstored).sum();
+        queued + frozen + decided
     }
 
     /// Pushes a second over the last HOT_WINDOW of committed entries, above HOT_PUSHES.
@@ -1170,7 +1225,7 @@ impl<C: Command> Member<C> {
             if let Some(x) = extend {
                 s.extend(x);
             }
-            for q in &batch {
+            for q in batch {
                 tiers = tiers.union(q.cmd.tiers());
                 format = format.max(q.cmd.format());
                 match q.cmd.decide(&s, deps) {
@@ -1184,8 +1239,8 @@ impl<C: Command> Member<C> {
                         decided.push((q.seq, q.unstored(), Ok(out)));
                     }
                     Err(err) => {
-                        self.out.refused.push((self.last().next(), q.id));
                         decided.push((q.seq, q.unstored(), Err(err)));
+                        self.out.refused.push((self.last().next(), q.id, q.cmd));
                     }
                 }
             }
@@ -1550,8 +1605,9 @@ impl<C: Command> Member<C> {
                 lead.pipe.remove(&from);
             }
         }
-        if res.round < lead.min_round {
-            // Sent before the leader truncated its uncommitted tail: `matched` may name entries it no longer holds.
+        if res.round < lead.min_round || lead.member_from.get(&from).is_some_and(|r| res.round < *r) {
+            // Sent before the leader truncated its uncommitted tail, so `matched` may name entries it no longer holds;
+            // or sent to the member this address named before, whose log is not the new member's.
             return;
         }
         let matched = lead.matched.entry(from).or_insert(Index(0));
@@ -1808,12 +1864,15 @@ impl<C: Command> Member<C> {
         }
     }
 
-    /// The evidence for a commit at `n` by `acked`: each site's durable index as this leader counted it and when it
-    /// learned it, with the entry's `at` and the time now.
+    /// The evidence for a commit at `n` by `acked`: each voter's durable index as this leader counted it and when it
+    /// learned it, with the entry's `at` and the time now. Only the voters of the config the commit counted are named:
+    /// a learner never makes a write durable, and the edge shows these sites to callers as the write's quorum.
     fn proof_for(&self, n: Index, acked: &BTreeSet<SiteId>) -> QuorumProof {
         let lead = self.lead.as_ref().expect("leading");
+        let voters = quorum::voters(self.log_config());
         let acks: Vec<DurableAck> = acked
             .iter()
+            .filter(|s| voters.contains(s))
             .map(|s| {
                 if *s == self.cfg.me {
                     DurableAck { site: *s, durable: self.own_durable, at: self.own_durable_at }
@@ -1870,13 +1929,36 @@ impl<C: Command> Member<C> {
         let lead = self.lead.as_mut().expect("leading");
         let lease = lead.ready
             && lead.transfer.is_none()
+            && !self.clock_suspect
             && now < Timestamp(lead.lease_end.0.saturating_sub(DRIFT.as_millis() as u64));
         lead.reads.push((id, now, !lease));
         if !lease {
-            self.broadcast(true);
+            self.read_round();
         }
         self.check_reads();
         Ok(id)
+    }
+
+    /// A read-index round, to the voters only (a learner's answer counts toward no quorum), for the reads that need
+    /// one and arrived after the latest round left. Every grant still comes from a round sent at or after the read
+    /// arrived. The next round leaves once the latest is answered, or READ_ROUND_GAP after it left if it is not, so
+    /// rounds per voter stay at most one per answer or per gap. Shared per clock reading instead (read-rounds), a
+    /// lease-clock floor raised by each newer peer stamp gave reads in one turn new readings, and L0-12 m3fr6's leader
+    /// still sent up to 99 rounds to each voter in one millisecond (`tests/m0/results/read-round-gap.md`).
+    fn read_round(&mut self) {
+        let answered = self.quorum_since(|l| &l.acked_at);
+        let now = self.now;
+        let Some(lead) = self.lead.as_ref() else { return };
+        let last = lead.read_round;
+        let waiting = lead.reads.iter().any(|(_, arrived, needs)| *needs && last.is_none_or(|t| *arrived > t));
+        let free = last.is_none_or(|t| now >= after(t, READ_ROUND_GAP) || answered.is_some_and(|a| a >= t));
+        if !waiting || !free {
+            return;
+        }
+        self.lead.as_mut().expect("leading").read_round = Some(now);
+        for p in self.peers() {
+            self.send_append(p, true);
+        }
     }
 
     fn check_reads(&mut self) {
@@ -1912,6 +1994,7 @@ impl<C: Command> Member<C> {
             self.read_resolved(id, result);
         }
         self.lead.as_mut().expect("leading").reads = keep;
+        self.read_round();
     }
 
     /// `stale()`: this member's fold at `applied`, on any role, with no grant. The caller holds the flag that allows it.

@@ -58,7 +58,7 @@ impl Family for Actions {
     type C = ActionsCmd;
 
     fn reads() -> Vec<Format> {
-        vec![act::ACTIONS_FORMAT, act::ACTIONS_FORMAT_MERGE_GROUP]
+        vec![act::ACTIONS_FORMAT, act::ACTIONS_FORMAT_MERGE_GROUP, act::ACTIONS_FORMAT_OWNER_MATCH]
     }
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
         leading.then_some(CHECK_AFTER_MS)
@@ -140,9 +140,18 @@ impl Family for Actions {
                 .collect();
             return json!({ "runs": runs });
         }
+        // M4-WP4: what the owner's broker reads from each shard for hosted demand (`graftyard_actions::hosted`).
+        if q.get("hosted").and_then(Value::as_bool) == Some(true) {
+            return serde_json::to_value(graftyard_actions::hosted::summary(f)).unwrap_or(Value::Null);
+        }
         if let Some(r) = id_of(q, "runner") {
             let r = RunnerId(r);
             return json!({ "runner": f.runners.get(&r), "session": f.sessions.get(&r) });
+        }
+        // `{"summary": true}`: the queued jobs and the runners holding a job, which an `Owner`-scope broker reads from
+        // each of the owner's shards (`graftyard_actions::broker`, BF-55).
+        if q.get("summary").and_then(Value::as_bool) == Some(true) {
+            return serde_json::to_value(f.summary()).unwrap_or(Value::Null);
         }
         if q.get("queued").and_then(Value::as_bool) == Some(true) {
             let queued: Vec<Value> = f
@@ -401,14 +410,18 @@ async fn commit(
 ) -> Result<Result<ActionsOut, ActionsErr>, String> {
     let cmd = ActionsCmd { actor, op };
     let at = crate::now_ms();
-    let admitted = h.input(|m, t| m.commit(t, rid, cmd.clone())).map_err(|e| e.to_string())?;
-    let a = admitted.map_err(|e| crate::host::call_error_json(&e).to_string())?;
+    let (admitted, out) = h.step(|m, t| m.commit(t, rid, cmd)).map_err(|e| e.to_string())?;
+    // Registered as admitted before the input's output is released, so a `NeedIdBlock` refusal is parked for the lease
+    // loop with the core's copy of the command (`Out::refused`), which records a block and re-sends it, as `/commit`
+    // does.
+    let a = admitted.map_err(|e| crate::host::call_error_json(&e).to_string());
+    let rx = a.as_ref().ok().map(|a| h.wait_ticket(a.ticket, Some((rid, at, None))));
+    h.dispatch(out, None);
+    let a = a?;
     h.served();
     let t = a.ticket;
     let end = crate::now_ms() + 10_000;
-    // The command goes with the ticket, so a `NeedIdBlock` refusal is parked for the lease loop, which records a block
-    // and re-sends it, as `/commit` does.
-    let mut rx = h.wait_ticket(t, Some((rid, at, Some(cmd))));
+    let mut rx = rx.expect("admitted");
     loop {
         let left = std::time::Duration::from_millis(end.saturating_sub(crate::now_ms()).max(1));
         match crate::host::within(left, &mut rx).await {
@@ -487,6 +500,37 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 Err(e) => refused(503, e),
             }
         }
+        // M4-WP4: a hosted registration from the edge, which verified the `graftyard-hosted-runners` App's installation
+        // token on this owner; `decide` checks the record and the owner's cap (`graftyard_actions::hosted::admit`).
+        ("register_hosted", None) => {
+            let rec: act::RunnerRecord =
+                serde_json::from_value(b["record"].clone()).map_err(|e| worker::Error::RustError(e.to_string()))?;
+            if !rec.hosted {
+                return Ok(refused(422, "not a hosted runner"));
+            }
+            match commit(h, fresh_rid(), ActionsActor::Operator, ActionsOp::PutRunner(rec)).await {
+                Ok(Ok(ActionsOut::Runner(id))) => {
+                    json!({ "status": 201, "body": { "runner": RunnerAt { owner, shard, runner: id } } })
+                }
+                Ok(Err(ActionsErr::TooMany)) => refused(409, "the owner runs its cap of hosted runners"),
+                Ok(r) => refused(422, r),
+                Err(e) => refused(503, e),
+            }
+        }
+        // M4-WP4: the hosted-runner service deletes a stale hosted runner, refused while it holds a job.
+        ("delete_hosted", None) => {
+            let Some(id) = b["runner"].as_i64().map(|r| RunnerId(DbId(r))) else { return Ok(refused(400, "runner")) };
+            let hosted =
+                h.core.borrow().as_ref().and_then(|c| c.m.group_fold().fold.runners.get(&id).map(|r| r.hosted));
+            if hosted == Some(false) {
+                return Ok(refused(404, "not a hosted runner"));
+            }
+            match commit(h, fresh_rid(), ActionsActor::Operator, ActionsOp::DeleteRunner(id)).await {
+                Ok(Ok(_)) => json!({ "status": 204, "body": null }),
+                Ok(Err(e)) => refused(422, e),
+                Err(e) => refused(503, e),
+            }
+        }
         // The OAuth exchange: the assertion checked against the runner's record, then a runner token.
         ("token", None) => {
             let a = b["assertion"].as_str().unwrap_or("");
@@ -540,6 +584,12 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                         json!({ "status": 400, "body": { "source": "actions-broker-listener", "errorKind": "RunnerSessionInvalid" } }),
                     );
                 };
+                // An `Owner`-scope runner takes jobs from every shard of the owner: the broker matches it from their
+                // summaries (`match_owner`), so this shard only answers what it may take.
+                if rec.scope == act::RunnerScope::Owner {
+                    return Ok(json!({ "status": 200, "body": null,
+                                      "owner": { "labels": rec.labels, "ephemeral": rec.ephemeral } }));
+                }
                 let held = f.jobs.iter().find(|(_, j)| j.state.runner() == Some(runner)).map(|(id, _)| *id);
                 let pick = f.queued().into_iter().find(|(_, l, _, _)| l.fits(&rec.labels)).map(|(j, _, _, v)| (j, v));
                 (pick, held, rec.ephemeral)
@@ -560,6 +610,25 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 Err(e) => refused(503, e),
             }
         }
+        // An `Owner`-scope runner's match on this shard, chosen by its broker from the owner's summaries; the broker
+        // read the runner's labels on its registration shard, which holds the record (BF-55).
+        ("match_owner", Some(Grant::Runner { runner })) => {
+            let (Ok(job), Some(version), Ok(labels)) = (
+                serde_json::from_value::<JobId>(b["job"].clone()),
+                b["version"].as_u64(),
+                serde_json::from_value::<graftyard_actions::LabelSet>(b["labels"].clone()),
+            ) else {
+                return Ok(refused(400, "job, version, and labels"));
+            };
+            let op = ActionsOp::MatchOwner { job, version, runner, labels };
+            match commit(h, fresh_rid(), ActionsActor::Operator, op).await {
+                Ok(Ok(_)) => {
+                    json!({ "status": 200, "body": runsvc::owner_job_request(&urls, now, shard, job), "job": job })
+                }
+                Ok(Err(e)) => json!({ "status": 200, "body": null, "refused": format!("{e:?}") }),
+                Err(e) => refused(503, e),
+            }
+        }
         ("cancelled", Some(Grant::Runner { runner })) => {
             // A job this runner was matched to and that ended `Cancelled` while it ran: the broker sends it once.
             let job: Option<JobId> = serde_json::from_value(b["job"].clone()).ok();
@@ -569,7 +638,9 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             json!({ "status": 200, "body": c.then(|| runsvc::job_cancellation(now, job.expect("job"))) , "runner": runner })
         }
         ("acquire", Some(Grant::Runner { runner })) => {
-            let Some(job) = b["jobMessageId"].as_str().and_then(runsvc::job_of_guid) else {
+            // A `Repo`-scope runner's request names the job; an `Owner`-scope runner's also names this shard.
+            let id = b["jobMessageId"].as_str().unwrap_or("");
+            let Some(job) = runsvc::job_of_guid(id).or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j)) else {
                 return Ok(refused(404, "no job"));
             };
             let Some((row, _)) = fold_job(job) else { return Ok(refused(404, "no job")) };

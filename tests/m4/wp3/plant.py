@@ -19,6 +19,7 @@ WT = 'crates/actions/src/workflow/template.rs'
 WE = 'crates/actions/src/workflow/expr.rs'
 WM = 'crates/actions/src/workflow/matrix.rs'
 WF = 'crates/actions/src/workflow/filter.rs'
+B = 'crates/actions/src/broker.rs'
 ACT = ['-p', 'graftyard-actions', '--test', 'gates', '--lib']
 WFT = ['-p', 'graftyard-actions', '--test', 'workflows', '--lib']
 
@@ -137,6 +138,30 @@ MUTANTS = [
      ['-p', 'graftyard-actions', '--lib']),
     ('a pull request runs on every activity type', WF,
      '        None => defaults.contains(&action),', '        None => true,', ['-p', 'graftyard-actions', '--lib']),
+    # ---- BF-55: Owner-scope matching and the broker ----
+    ('a match whose answer was lost is never resent', B,
+     '            let stuck = at.is_some_and(|a| now.0 >= a.0 + RESEND_AFTER.as_millis() as u64);',
+     '            let stuck = false;', ['-p', 'graftyard-actions', '--test', 'bf55', '--lib']),
+    ('a held job is resent before RESEND_AFTER', B,
+     '            let stuck = at.is_some_and(|a| now.0 >= a.0 + RESEND_AFTER.as_millis() as u64);',
+     '            let stuck = at.is_some();', ['-p', 'graftyard-actions', '--test', 'bf55', '--lib']),
+    ('MatchOwner skips the job version check', S,
+     '                if j.version != *version {\n                    return Err(ActionsErr::Stale(j.version));\n                }\n                let event = JobEvent::Matched(*runner);',
+     '                let event = JobEvent::Matched(*runner);', ['-p', 'graftyard-actions', '--test', 'bf55']),
+    ('MatchOwner skips the label check', S,
+     "                if !j.spec.labels.fits(labels) {\n                    return Err(ActionsErr::Illegal(\"the runner does not take this job's labels\".into()));\n                }\n                if j.version",
+     '                if j.version', ['-p', 'graftyard-actions', '--test', 'bf55']),
+    ('the broker picks the newest fitting job', B,
+     '        .min_by_key(|(s, (job, _, since, _))| (*since, *s, *job))',
+     '        .max_by_key(|(s, (job, _, since, _))| (*since, *s, *job))', ['-p', 'graftyard-actions', '--lib']),
+    # BF-55 run 1's defects (`tests/m4/results/m4-wp3.md`).
+    ('a broker forgets the ephemeral runners it saw holding a job', B,
+     '            p @ (Pick::Busy | Pick::Resend { .. }) if ephemeral => {\n                self.0.insert(runner);\n                p\n            }\n',
+     '', ['-p', 'graftyard-actions', '--test', 'bf55', '--lib']),
+    ('a broker matches with a shard unread', B,
+     '            Pick::Match { .. } if !complete || ephemeral && self.0.contains(&runner) => Pick::Idle,',
+     '            Pick::Match { .. } if ephemeral && self.0.contains(&runner) => Pick::Idle,',
+     ['-p', 'graftyard-actions', '--test', 'bf55', '--lib']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

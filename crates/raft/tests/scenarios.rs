@@ -507,6 +507,40 @@ fn reads_need_the_lease_or_a_round() {
     assert!(c.m(A).fresh(&g).is_err(), "a grant outlived the next input");
 }
 
+/// A host whose clock may lag (`set_clock_suspect`): inside a lease the read waits for a round sent after it
+/// arrived, and only that round grants it. Cleared, the lease grants at once again.
+#[test]
+fn a_suspect_clock_grants_reads_only_by_a_round() {
+    let mut c = Cluster::new(13);
+    c.elect(A);
+    let read = |c: &mut Cluster| -> (graftyard_raft::ReadId, Option<bool>) {
+        c.resolutions.clear();
+        let id = c.on(A, |m, now| m.read(now)).expect("leading");
+        let r = c.resolutions.iter().find_map(|(_, r)| match r {
+            Resolution::Read { id: i, result: Ok(g) } if *i == id => Some(g.via_round()),
+            _ => None,
+        });
+        (id, r)
+    };
+    assert_eq!(read(&mut c).1, Some(false), "inside the lease, granted at once");
+    c.m_mut(A).set_clock_suspect(true);
+    // Past the election's round, whose acks were sent in the same millisecond as a read now would arrive.
+    c.advance(1);
+    c.inbox.clear();
+    let (id, at_once) = read(&mut c);
+    assert_eq!(at_once, None, "a suspect clock granted a read on the lease");
+    // Rounds sent before the read arrived do not count: only the broadcast the read started grants it.
+    assert!(c.inbox.iter().any(|e| e.from == A), "the read sent no round");
+    c.deliver_all();
+    let granted = c.resolutions.iter().find_map(|(_, r)| match r {
+        Resolution::Read { id: i, result: Ok(g) } if *i == id => Some(g.via_round()),
+        _ => None,
+    });
+    assert_eq!(granted, Some(true), "the read's own round grants it");
+    c.m_mut(A).set_clock_suspect(false);
+    assert_eq!(read(&mut c).1, Some(false), "cleared, the lease grants at once");
+}
+
 /// The output gate: a member that crashes before its writes are durable sent nothing, so a vote it would have
 /// granted is not counted and its term is not lost.
 #[test]
@@ -2180,4 +2214,246 @@ fn a_new_leader_catching_up_silent_learners_stays_within_out_max() {
     assert!(h.total <= graftyard_raft::OUT_MAX, "{} bytes alive in all", h.total);
     assert!(h.peer <= graftyard_raft::PEER_OUT_MAX, "{} bytes alive to one learner", h.peer);
     assert!(h.learners >= 2_000_000, "the learners were sent catch-up calls: {}", h.learners);
+}
+
+/// A leadership that ends on a higher term answers each ticket it held under the ticket it issued. Answered under the
+/// new term, a host keyed by the issued ticket matched none: B0-33's deposed leaders kept 581 to 1,172 open tickets,
+/// each with its command and waiters, for minutes (LM-1 round 19, `tests/m0/results/admitted-bytes.md`).
+#[test]
+fn a_leadership_deposed_by_a_higher_term_answers_its_tickets_as_issued() {
+    let mut c = Cluster::new(92);
+    c.elect(A);
+    c.sync(A);
+    let t = admit(&mut c, A, 700, put("k", "v"));
+    c.inbox.clear();
+    // B and C elect B without A; B's first append then deposes A.
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1);
+    c.inbox.clear();
+    c.on(B, |m, now| m.campaign(now));
+    c.deliver(|e| e.to != A);
+    assert_eq!(c.m(B).role(), Role::Leader);
+    for _ in 0..20 {
+        c.advance(200);
+        c.deliver_all();
+    }
+    assert!(c.m(A).term() > t.term, "A was deposed by a higher term");
+    let r = c.ticket_results(t);
+    assert!(
+        matches!(r.as_slice(), [Resolution::Ticket { result: Err(CommitError::NotLeader(_)), .. }]),
+        "the issued ticket resolves NotLeader once: {r:?}"
+    );
+}
+
+/// A leader whose term's `Noop` reached no quorum gives up and keeps `led_term`; resuming that term in the same boot
+/// issues new seqs, so an old ticket never answers with a newer command's outcome (B0-11's class, within one boot).
+#[test]
+fn a_term_resumed_in_the_same_boot_never_reissues_a_ticket() {
+    let mut c = Cluster::new(93);
+    c.elect(A);
+    c.sync(A);
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1);
+    c.deliver(|_| false);
+    // B wins, but no AppendEntries reaches anyone: its `Noop` reaches no quorum.
+    c.on(B, |m, now| m.campaign(now));
+    c.deliver(|e| !matches!(e.msg, Message::Append(_)));
+    assert_eq!(c.m(B).role(), Role::Leader);
+    let first = admit(&mut c, B, 701, put("k", "first"));
+    for _ in 0..40 {
+        c.advance(100);
+        c.deliver(|e| !matches!(e.msg, Message::Append(_)));
+    }
+    assert_eq!(c.m(B).role(), Role::Follower);
+    assert_eq!(c.m(B).state().led_term, Some(first.term), "kept led_term to resume");
+    let second = admit(&mut c, B, 702, put("k", "second"));
+    assert_eq!((second.term, second.boot), (first.term, first.boot), "resumed in the same term and boot");
+    assert_ne!(second, first, "a resumed leadership issued a ticket its last one issued");
+}
+
+/// A second learner generation on the same slots catches up. `/learners` places each new generation at the same
+/// addresses (`learner_addr(slot)`) under new names; the leader reset its per-peer state only for voters, so each new,
+/// empty learner kept the old one's `matched`, was probed at that index forever, refused every probe, and applied
+/// nothing (B0-33, LM-1 round 23: 1,776 calls and 144.9 MB to eight learners, all refused, for the whole row). The
+/// same holds for a learner removed and placed again under a new name.
+#[test]
+fn a_second_learner_generation_on_the_same_slots_catches_up() {
+    let mut c = Cluster::new(97);
+    c.elect(A);
+    c.sync(A);
+    let learners = with_learners(&mut c, A, 2);
+    let mut h = Silent::new(learners.clone(), Some(10));
+    let fill = |c: &mut Cluster, h: &mut Silent, from: u128| {
+        for i in 0..5u128 {
+            admit(c, A, from + i, put(&format!("k{}", from + i), "v"));
+            h.pump(c);
+            h.advance(c, 200);
+        }
+        for _ in 0..20 {
+            h.advance(c, 200);
+        }
+    };
+    fill(&mut c, &mut h, 9_000);
+    let first = c.m(A).state().commit;
+    assert!(learners.iter().all(|l| h.held[l] >= first), "the first generation caught up: {:?}", h.held);
+    // The next generation, on the same sites and slots, with new names: new members that hold nothing. Calls to the
+    // old generation are still out, and the old members answer them after the change, with everything they hold.
+    admit(&mut c, A, 9_050, put("k9050", "v"));
+    h.pump(&mut c);
+    let out = std::mem::take(&mut h.calls);
+    assert!(!out.is_empty(), "calls to the old generation are out");
+    assert_eq!(with_learners(&mut c, A, 2), learners);
+    let mut old = Silent::new(learners.clone(), Some(10));
+    old.held = std::mem::take(&mut h.held);
+    for (_, leader, e, _, _) in out {
+        let res = old.answer(&e).expect("an append");
+        let (to, round) = (e.to, res.round);
+        c.on(leader, |m, t| m.step(t, to, Message::AppendRes(res)));
+        c.on(leader, |m, t| m.call_ended(t, to, round));
+    }
+    fill(&mut c, &mut h, 9_100);
+    let last = c.m(A).state().commit;
+    assert!(last > first);
+    assert!(
+        learners.iter().all(|l| h.held.get(l) == Some(&last)),
+        "the second generation caught up: {:?} of {last:?}",
+        h.held
+    );
+    // Removed, then placed again under a third generation's names.
+    assert!(with_learners(&mut c, A, 0).is_empty());
+    for _ in 0..5 {
+        h.advance(&mut c, 200);
+    }
+    assert_eq!(with_learners(&mut c, A, 2), learners);
+    h.held.clear();
+    fill(&mut c, &mut h, 9_200);
+    let last = c.m(A).state().commit;
+    assert!(
+        learners.iter().all(|l| h.held.get(l) == Some(&last)),
+        "the third generation caught up: {:?} of {last:?}",
+        h.held
+    );
+}
+
+/// A commit's proof names the voters that made it durable and no learner, even when learners hold the entry: the edge
+/// shows `QuorumProof::sites` to callers as the write's quorum (`graftyard_git::group`, `outcome_wire`), and every
+/// address with a matched index used to be listed, so a caught-up learner showed as a site the write was durable on.
+#[test]
+fn a_commit_with_learners_caught_up_names_only_voters_in_its_proof() {
+    let mut c = Cluster::new(98);
+    c.elect(A);
+    c.sync(A);
+    let learners = with_learners(&mut c, A, 2);
+    let mut h = Silent::new(learners.clone(), Some(10));
+    for i in 0..3u128 {
+        admit(&mut c, A, 9_300 + i, put(&format!("w{i}"), "v"));
+        h.pump(&mut c);
+        h.advance(&mut c, 200);
+    }
+    for _ in 0..10 {
+        h.advance(&mut c, 200);
+    }
+    // The learners answer first, so they hold the entry by the time the voters' answers commit it.
+    let t = admit(&mut c, A, 9_400, put("p", "v"));
+    let mut voters = Vec::new();
+    for _ in 0..5 {
+        for e in std::mem::take(&mut c.inbox) {
+            if graftyard_types::learner_slot(e.to).is_some() { c.inbox.push(e) } else { voters.push(e) }
+        }
+        h.pump(&mut c);
+        h.advance(&mut c, 20);
+    }
+    let entry = c.m(A).log().last().expect("an entry").index;
+    assert!(c.m(A).state().commit < entry, "not committed before the voters answer");
+    assert!(learners.iter().all(|l| h.held[l] >= entry), "the learners hold the entry: {:?} of {entry:?}", h.held);
+    for graftyard_raft::Envelope { from, to, msg } in voters {
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    for _ in 0..5 {
+        c.deliver_all();
+        h.advance(&mut c, 50);
+    }
+    let r = c.ticket_results(t);
+    let [Resolution::Ticket { result: Ok(a), .. }] = r.as_slice() else { panic!("committed: {r:?}") };
+    let named: Vec<SiteId> = a.quorum().acks().iter().map(|d| d.site).collect();
+    assert_eq!(a.quorum().sites(), named.as_slice());
+    assert!(named.iter().all(|s| SITES.contains(s)), "the proof names only voters: {named:?}");
+    assert!(named.len() >= 2 && named.contains(&A), "a voter quorum: {named:?}");
+}
+
+/// L0-12 m3fr6 (`tests/m0/results/read-round-gap.md`): reads that need a round send at most one round per voter per
+/// READ_ROUND_GAP while it is unanswered, and none to a learner, whose answer counts toward no quorum, however the clock
+/// moves within a turn. A lease-clock floor raised by each newer peer stamp gave every read in a turn its own reading,
+/// and with a round per reading the leader sent up to 99 rounds to each voter in one millisecond. Each read is still
+/// granted only by a round that left after it arrived.
+#[test]
+fn reads_send_at_most_one_round_per_gap_while_the_clock_climbs_and_no_learner_gets_it() {
+    let mut c = Cluster::new(43);
+    c.elect(A);
+    c.sync(A);
+    let learners = with_learners(&mut c, A, 8);
+    let voters = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| e.to.0 < 192;
+    c.deliver(voters);
+    c.inbox.clear();
+    // Every read needs a round, as on a suspect clock.
+    c.m_mut(A).set_clock_suspect(true);
+    c.advance(1);
+    c.inbox.clear();
+    c.resolutions.clear();
+    // DESIGN's cap: at most one unanswered read round per 20 ms, 50 a second per voter.
+    let cap: u64 = 50;
+    let granted = |c: &Cluster, id| {
+        c.resolutions
+            .iter()
+            .any(|(_, r)| matches!(r, Resolution::Read { id: i, result: Ok(g) } if *i == id && g.via_round()))
+    };
+    // One second of a busy turn's shape: 200 reads, the floored clock one ms higher at each, while no round is
+    // answered. Each read arrives at a new clock reading.
+    let mut held = Vec::new();
+    let mut asked = Vec::new();
+    let mut to_learners = 0;
+    for _ in 0..1_000u64 {
+        c.now = Timestamp(c.now.0 + 1);
+        if asked.len() < 200 {
+            asked.push((c.now, c.on(A, |m, now| m.read(now)).expect("leading")));
+            // Only reads step here, so an AppendEntries to a learner now is a read round, not a heartbeat.
+            to_learners += c.inbox.iter().filter(|e| !voters(e) && matches!(e.msg, Message::Append(_))).count();
+        } else {
+            c.on(A, |m, now| m.tick(now));
+        }
+        held.extend(std::mem::take(&mut c.inbox).into_iter().filter(voters));
+    }
+    let per_voter =
+        |to: SiteId| held.iter().filter(|e| e.from == A && e.to == to && matches!(e.msg, Message::Append(_))).count();
+    for s in [B, C] {
+        assert!(
+            per_voter(s) as u64 <= cap + 2,
+            "{} rounds to {s:?} in 1 s for 200 reads on a climbing clock, against a cap of {cap}",
+            per_voter(s)
+        );
+    }
+    assert_eq!(to_learners, 0, "{to_learners} read rounds went to the {} learners", learners.len());
+    // Answered in order, every read is granted, each by a round that left at or after it arrived.
+    c.inbox = held;
+    c.deliver(voters);
+    for (at, id) in &asked {
+        assert!(granted(&c, *id), "the read asked at {at:?} was never granted");
+    }
+    // A read 1 ms after an answered round, well inside the gap, sends its own round at once, and only that round
+    // grants it.
+    c.advance(1);
+    c.inbox.retain(voters);
+    c.deliver(voters);
+    let first = c.on(A, |m, now| m.read(now)).expect("leading");
+    c.deliver(voters);
+    assert!(granted(&c, first), "a read on a free slot was never granted");
+    c.advance(1);
+    c.inbox.clear();
+    c.resolutions.clear();
+    let late = c.on(A, |m, now| m.read(now)).expect("leading");
+    assert!(!granted(&c, late), "a read was granted by a round that left before it arrived");
+    for s in [B, C] {
+        let sent = c.inbox.iter().filter(|e| e.to == s && matches!(e.msg, Message::Append(_))).count();
+        assert_eq!(sent, 1, "a read after an answered round sent {sent} rounds to {s:?} instead of one at once");
+    }
+    c.deliver(voters);
+    assert!(granted(&c, late), "the read's own round did not grant it");
 }

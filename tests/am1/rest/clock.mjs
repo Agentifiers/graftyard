@@ -29,3 +29,30 @@ export const clockSpread = (xs) => {
   return { upperMs: Math.round(Math.max(...upper)), lowerMs: Math.round(Math.max(...lower)), rounds: rounds.length,
     kept: kept.length, rejected: xs.length - kept.length };
 };
+
+// The driver's own clock against Cloudflare's (parent, after m3fr3: every member read 1.5 to 1.7 s ahead of this orb,
+// whose clock read 1.5 to 2.0 s behind the edge's `Date` header). Each request to the edge bounds Cloudflare's clock
+// minus this orb's: the response's `Date` second D was read at some instant in [s, e] of this orb's clock, so the
+// offset lies in [D - e, D + 1000 - s]. Intersecting many samples, spread over the second's phases, narrows it to
+// about one round trip. `dateBounds` is that intersection, `{ lo, hi, offsetMs, n }` with `offsetMs` its midpoint, or
+// null when the samples disagree (an empty intersection: a clock step mid-measurement).
+export const dateBounds = (xs) => {
+  let lo = -Infinity, hi = Infinity;
+  for (const { s, e, date } of xs) { lo = Math.max(lo, date - e); hi = Math.min(hi, date + 1000 - s); }
+  return xs.length && lo <= hi ? { lo: Math.round(lo), hi: Math.round(hi), offsetMs: Math.round((lo + hi) / 2), n: xs.length } : null;
+};
+/** `n` timed requests to `url`, each `Date` header against its send and receive on this orb's clock. */
+export async function driverOffset(url, n = 40) {
+  const xs = [];
+  for (let k = 0; k < n; k++) {
+    const s = Date.now();
+    try {
+      const r = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(5_000) });
+      const e = Date.now();
+      const date = Date.parse(r.headers.get("date") ?? "");
+      if (Number.isFinite(date)) xs.push({ s, e, date });
+    } catch { /* one lost probe */ }
+    await new Promise((r) => setTimeout(r, 37 + Math.floor(Math.random() * 100)));
+  }
+  return dateBounds(xs);
+}

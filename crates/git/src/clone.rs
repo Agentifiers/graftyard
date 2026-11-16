@@ -40,33 +40,6 @@ pub fn tags_digest<'a>(refs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Di
     Digest(h.finalize().into())
 }
 
-/// Whether a protocol v2 fetch response is whole and error-free, so it may be stored: pkt-lines, a `packfile`
-/// section whose side-band packets carry no channel-3 error, and a final flush.
-pub fn cacheable_response(b: &[u8]) -> bool {
-    let mut r = crate::pkt::Reader::new(b);
-    let mut in_pack = false;
-    let mut last_flush = false;
-    loop {
-        match r.next_pkt() {
-            Err(_) => return false,
-            Ok(None) => return in_pack && last_flush,
-            Ok(Some(p)) => {
-                last_flush = p == crate::pkt::Pkt::Flush;
-                match p {
-                    crate::pkt::Pkt::Data(d) if in_pack => {
-                        if d.first() == Some(&3) {
-                            return false;
-                        }
-                    }
-                    crate::pkt::Pkt::Data(_) if p.text() == Some(b"packfile") => in_pack = true,
-                    crate::pkt::Pkt::Data(d) if d.starts_with(b"ERR ") => return false,
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
 /// The arguments a cacheable fetch may carry besides `want`, `deepen`, `filter`, and `done`. Anything else (`have`,
 /// `shallow`, `deepen-since`, `deepen-not`, `deepen-relative`, `want-ref`, `packfile-uris`) makes the answer depend on
 /// the client's state or on refs, so the fetch goes to the shard uncached.
@@ -242,30 +215,5 @@ mod tests {
         let plain = [w.as_str(), "done"];
         let k = |t| CloneKey::of(NET, &fetch(&plain), t).unwrap().digest();
         assert_eq!(k(t1), k(t3), "without include-tag the tags do not matter");
-    }
-
-    #[test]
-    fn only_whole_error_free_pack_responses_are_cacheable() {
-        let mut ok = Vec::new();
-        pkt::line(&mut ok, "packfile");
-        pkt::sideband(&mut ok, pkt::Band::Large, 1, b"PACK....");
-        pkt::sideband(&mut ok, pkt::Band::Large, 2, b"Total 3");
-        pkt::flush(&mut ok);
-        assert!(cacheable_response(&ok));
-        assert!(!cacheable_response(&ok[..ok.len() - 4]), "cut before the flush");
-        assert!(!cacheable_response(&ok[..ok.len() - 6]), "cut inside a packet");
-        let mut err = ok[..ok.len() - 4].to_vec();
-        pkt::sideband(&mut err, pkt::Band::Large, 3, b"upload-pack: aborting");
-        pkt::flush(&mut err);
-        assert!(!cacheable_response(&err));
-        let mut e = Vec::new();
-        pkt::line(&mut e, "ERR upload-pack: not our ref");
-        pkt::flush(&mut e);
-        assert!(!cacheable_response(&e));
-        let mut nopack = Vec::new();
-        pkt::line(&mut nopack, "acknowledgments");
-        pkt::line(&mut nopack, "NAK");
-        pkt::flush(&mut nopack);
-        assert!(!cacheable_response(&nopack));
     }
 }

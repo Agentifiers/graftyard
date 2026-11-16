@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""m2bcost.py FROM_ISO TO_ISO -> graft-m2b's own usage and cost in the window, as one JSON line: Workers requests and
-CPU of the graft-m2b-* scripts, Durable Object requests, rows written and active time of the graft-m2b-* namespaces
-only (durableObjectsPeriodicGroups by namespace; the account's other installs, such as graft-m1 running B0-30, are
-left out), and the graft-m2b-site-*-gitshard containers (containers.py). Priced at research/prices.json's overage
-rates, included allowances ignored. Account and token from the environment, the token only as a header."""
+"""m2bcost.py FROM_ISO TO_ISO -> one install's own usage and cost in the window, as one JSON line: Workers requests and
+CPU of its scripts, Durable Object requests, rows written and active time of its namespaces only
+(durableObjectsPeriodicGroups by namespace; the account's other installs are left out), and its site gitshard
+containers (containers.py). The install is graft-m2b unless INSTALL names another (`env-m3f.sh` sets graft-m3f); the
+line ends with `install` and the account's name. Priced at research/prices.json's overage rates, included allowances
+ignored. Account and token from the environment, the token only as a header."""
 import json, os, subprocess, sys, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
@@ -40,4 +41,9 @@ c = json.loads(subprocess.run([sys.executable, os.path.join(os.path.dirname(__fi
                               capture_output=True, text=True, check=True).stdout)
 u.update(c)
 u["usd"] = round(usd + c["containers_usd"], 2)
+# Which install and which account the reading is for, printed beside it: run without `env-m3f.sh` sourced, this meter
+# priced graft-m2b while the readings were taken as graft-m3f's (`tests/am1/results/lm1-rows-m3f.md`, Cost).
+name = json.load(urllib.request.urlopen(urllib.request.Request(
+    f"https://api.cloudflare.com/client/v4/accounts/{acct}", headers=H), timeout=60))["result"]["name"]
+u["install"], u["account"] = P, name
 print(json.dumps(u))

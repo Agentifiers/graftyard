@@ -2,6 +2,7 @@
 // Every page's frame: the head (the taste-skill kit, the fonts, the palette), the bar, the footer and the
 // scripts. Dark is the default; the bar's theme button switches to light and the choice is kept.
 import Logo from '../components/Logo.astro';
+import AgentifiersLogo from '../components/AgentifiersLogo.astro';
 
 interface Props {
   title: string;
@@ -91,6 +92,12 @@ html[data-ground][data-theme="dark"] { --ground-bg: #1b3d2c; --ground-surface: #
 .gy-logo, .nav__logo .gy-logo { display: block; height: 36px; width: auto; color: var(--ink); }
 @media (max-width: 639px) { .nav__logo .gy-logo { height: 32px; } }
 .footer .nav__logo .gy-logo { height: 52px; }
+/* the maker's credit under the footer's lede: "Built by" and the Agentifiers wordmark, its dots in their teal */
+.agf-logo .agf-dot { fill: #37d8c9; }
+html[data-theme="light"] .agf-logo .agf-dot { fill: #12a597; }
+.footer__maker { display: inline-flex; align-items: center; gap: var(--s-3); min-height: 44px; color: var(--muted); text-decoration: none; font-size: var(--t-small); }
+.footer__maker .agf-logo { height: 22px; width: auto; color: var(--ink); }
+.footer__maker:hover span { color: var(--ink); }
 /* the logo's two branches are deep green, which a dark page swallows: there they take the ink, as in the films */
 html[data-theme="dark"] .gy-logo .gy-br { fill: var(--ink); }
 /* the theme button: the menu button's look, kept in the bar at every width */
@@ -229,12 +236,13 @@ html[data-theme="light"] .frame--film > .loop-pause { right: 8px; }
         <div class="span-4 stack-4">
           <a class="nav__logo" href="/" aria-label="Graftyard home"><Logo /></a>
           <p class="footer__lede">Git hosting for GitHub clients, on Cloudflare.</p>
+          <a class="footer__maker" href="https://agentifiers.com"><span>Built by</span><AgentifiersLogo /></a>
         </div>
         <div class="span-2 start-9 footer__col"><h4>Graftyard</h4><ul><li><a href="/#ghes">GHES 3.22</a></li><li><a href="/#durability">Durability</a></li><li><a href="/#questions">Questions</a></li></ul></div>
         <div class="span-2 footer__col"><h4>Read more</h4><ul>{pages.map((p) => <li><a href={p.href}>{p.label}</a></li>)}</ul></div>
       </div>
       <div class="footer__legal">
-        <span>&copy; 2026 Graftyard</span>
+        <span>&copy; 2026 Graftyard, built by <a href="https://agentifiers.com">Agentifiers</a></span>
         <span class="credits">Product names and logos are trademarks of their owners. GitHub Enterprise Server is a GitHub product, and Cloudflare Artifacts a Cloudflare product; Graftyard is affiliated with neither.</span>
       </div>
     </div>

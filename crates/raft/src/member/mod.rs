@@ -35,6 +35,7 @@ mod transfer;
 pub use install::{LEARNER_READ_EVERY, READ_PIPELINE};
 pub use leader::{
     APPEND_BYTES_MAX, DONE_BYTES, LEARNERS_OUT_MAX, OUT_KEEP, OUT_MAX, OUTCOME_KEEP, PEER_OUT_MAX, PIPELINE,
+    READ_ROUND_GAP,
 };
 pub use log::{FoldView, verify};
 
@@ -367,10 +368,10 @@ pub struct AdmissionView {
     pub hot: bool,
     pub pressure: bool,
     pub retry_after_s: u32,
-    /// The moving averages `capacity` is computed from when it is measured: an admitted command's encoded bytes without
-    /// its Agent inline pack, and an `Events` entry's commit round in ms (LM-1 round 14's question of what prices B0-33).
-    pub cmd_bytes: f32,
+    /// The moving averages `capacity` is sized from: the commit round in ms and a command's bytes as ENTRY_SOFT
+    /// counts them. Read only by test hosts tracing admission (LM-1's B0-31).
     pub round_ms: f32,
+    pub cmd_bytes: f32,
 }
 
 /// A read the host started with `Member::read`; its `Resolution::Read` carries the same id.
@@ -569,9 +570,11 @@ pub struct Out<C: Command> {
     pub deps: Vec<DepsWanted>,
     pub deps_used: Vec<DepsUsed>,
     pub alarms: Vec<Alarm>,
-    /// Per entry this input decided, the admitted requests whose command `decide` refused. Each refusal's ticket
-    /// resolves `Refused` only if that entry commits; if it is lost, the re-sent command is decided again.
-    pub refused: Vec<(Index, RequestId)>,
+    /// Per entry this input decided, the admitted requests whose command `decide` refused, each with the core's own
+    /// copy of the command, moved out of the batch. Each refusal's ticket resolves `Refused` only if that entry
+    /// commits; if it is lost, the re-sent command is decided again. A host that re-sends a refusal itself (the
+    /// `NeedIdBlock` lease loop) takes the command from here instead of keeping a copy of every admitted command.
+    pub refused: Vec<(Index, RequestId, C)>,
     /// Present when these writes append to this leader's log.
     pub self_ack: Option<SelfAck>,
     /// Followers behind this leader's in-memory window: read the entries from storage and pass them to
@@ -734,6 +737,9 @@ pub struct Member<C: Command> {
     admit_capacity: Option<f32>,
     /// Where `cut` stops filling an entry past its first command (`set_entry_soft`).
     entry_soft: usize,
+    /// The host's clock may lag real time by DRIFT / 2 or more (`set_clock_suspect`): a leader then grants no read on
+    /// its lease, only after a round sent after the read arrived.
+    clock_suspect: bool,
     /// The last `DepsWanted` id. Never reset by a new leadership, so a late answer to an earlier leadership's read
     /// cannot decide a later batch; it starts from the boot value, so neither can one from before a restart.
     next_deps: u64,
@@ -743,6 +749,9 @@ pub struct Member<C: Command> {
     calls_out: BTreeMap<(SiteId, u64), (Timestamp, usize)>,
     /// The last round any leadership of this boot sent, so rounds never repeat and `calls_out` keys stay distinct.
     rounds: u64,
+    /// The last ticket seq any leadership of this boot issued, so a leadership that resumes the same term in the same
+    /// boot (after a `Noop` that reached no quorum) never reissues a ticket an edge may still ask `outcome` for.
+    seqs: u64,
 }
 
 impl<C: Command> Member<C> {
@@ -866,10 +875,12 @@ impl<C: Command> Member<C> {
             remote: install::RemoteReads::starting_at(boot),
             admit_capacity: None,
             entry_soft: crate::ENTRY_SOFT,
+            clock_suspect: false,
             // The top bit clear leaves 2^63 ids before a wrap.
             next_deps: boot >> 1,
             calls_out: BTreeMap::new(),
             rounds: 0,
+            seqs: 0,
         })
     }
 

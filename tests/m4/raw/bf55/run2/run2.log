@@ -1,0 +1,12 @@
+2026-11-15T11:30:06.797Z repo m3org/wp3-bf55b (repo:65560), jobs on actions:7100001.4, runners on actions:7100001.0; Cloudflare 7524 ms ahead
+2026-11-15T11:30:10.775Z registration shard leader {"regLeader":{"site":0,"term":4}}
+2026-11-15T11:30:16.028Z run created {"run":1769986}
+2026-11-15T11:41:11.685Z kill {"regLeader":{"site":0,"term":4},"done":64,"cmd":"bash tests/m4/wp3/bf55-kill.sh down"}
+2026-11-15T11:41:21.513Z kill command done {"code":0}
+2026-11-15T11:46:19.722Z old leader dead {"site":0,"status":null}
+2026-11-15T11:46:36.041Z first poll on a new site {"site":1,"at":1794743198763,"polls":1,"newLeader":{"site":1,"term":5}}
+2026-11-15T11:49:19.723Z restore {"cmd":"bash tests/m4/wp3/bf55-kill.sh up"}
+2026-11-15T11:49:29.393Z restore command done {"code":0}
+2026-11-15T12:16:55.646Z BF-55: PASS {"jobs256":true,"killed":true,"everyJobSucceeded":true,"firstPollOnNewSiteWithin15s":true,"everyJobMatchedAndAcquiredOnce":true,"noStallOver60s":true}
+2026-11-15T12:16:55.647Z   first new-site poll 11517.5 ms after the old leader went dead; longest stall 36424 ms; 256 runners; {"Success":256}; versions {"3":256}
+DRIVER_EXIT 0

@@ -60,6 +60,16 @@ pub trait Bucket {
     }
     async fn head(&self, key: &str) -> Result<Option<ObjectInfo>, StoreError>;
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError>;
+    /// A create-only copy of `from`'s `key` with its custom metadata, streamed from store to store so the caller holds
+    /// none of its bytes: a cron run that read 16 committed packs whole to fill a bucket ran out of memory on every run
+    /// (`decisions/OPEN-QUESTIONS.md`, R22). With `expect`, the store refuses bytes of another size or SHA-256 as they
+    /// go in. `None` when `from` has no `key`.
+    async fn copy_new(
+        &self,
+        from: &Self,
+        key: &str,
+        expect: Option<(u64, Digest)>,
+    ) -> Result<Option<PutNew>, StoreError>;
     /// Every object under `prefix`, all pages, with custom metadata.
     async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError>;
     /// The distinct next path segments under `prefix` (`pack/` gives each network id), as R2's delimited listing

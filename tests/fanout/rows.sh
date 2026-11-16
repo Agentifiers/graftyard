@@ -8,7 +8,7 @@
 # Output: tests/am1/raw/runs/a1-<row>-<repo>.log, tests/fanout/raw/rows-<tag>.status.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-source tests/m3/rows/env.sh
+source ${ROWS_ENV:-tests/m3/rows/env.sh}
 TAG=$1
 ST=tests/fanout/raw/rows-$TAG.status
 [ -e tests/fanout/raw/.rows-$TAG.started ] && exec sleep infinity
@@ -16,13 +16,27 @@ touch tests/fanout/raw/.rows-$TAG.started
 K=${K:-4}
 ROWS=${ROWS:-"b0-29 b0-32 b0-34 b0-31 b0-33 l0-12 b0-35"}
 id() { awk -v n="$1" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt"; }
+tracers=()
+# TRACE=1: vmem.mjs writes MEMSTOP once a voter's counted high-water passes MEM_STOP_MIB (120 MiB); the row in
+# progress is stopped and no later row runs.
+MEMSTOP=tests/fanout/raw/.memstop-$TAG
 for row in $ROWS; do
+  [ -e "$MEMSTOP" ] && { echo "$(date -u +%FT%TZ) MEMSTOP: $(cat $MEMSTOP)" >> "$ST"; break; }
   # The $15 stop: no new row once the window has cost STOP_USD (default $12). With T0_FILE the window starts there
   # and counts the m2b shard containers too (tests/fanout/cost.sh).
   c=$(bash tests/fanout/cost.sh 2>/dev/null); echo "$(date -u +%FT%TZ) cost $c" >> "$ST"
   usd=$(echo "$c" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("usd", 99))' 2>/dev/null || echo 99)
   if python3 -c "import sys; sys.exit(0 if float('$usd') >= float('${STOP_USD:-12}') else 1)"; then echo "STOP at \$$usd" >> "$ST"; break; fi
   repo="f$TAG-${row//-/}"
+  # TRACE=1: the group's per-second leader trace (terms.mjs) and the leader's admission (admit.mjs) beside the row,
+  # each waiting for the repository's id; stopped when the row ends.
+  [ ${#tracers[@]} -gt 0 ] && kill "${tracers[@]}" 2>/dev/null; tracers=()
+  if [ -n "${TRACE:-}" ]; then
+    node tests/fanout/terms.mjs "$repo" 10800 > tests/fanout/raw/terms-$TAG-$row.jsonl 2>&1 & tracers+=($!)
+    node tests/fanout/admit.mjs "$repo" 10800 > tests/fanout/raw/admit-$TAG-$row.jsonl 2>&1 & tracers+=($!)
+    # Every voter's memory split every 2 s (vmem.mjs), for L0-12's memory resets.
+    MEM_STOP_FILE=$MEMSTOP node tests/fanout/vmem.mjs "$repo" 10800 > tests/fanout/raw/vmem-$TAG-$row.jsonl 2>&1 & tracers+=($!)
+  fi
   node tests/am1/runs/mkrepos.mjs "$repo" >> "$ST" 2>&1
   rid=$(id "$repo")
   [ -n "$rid" ] || { echo "$row: no repo" >> "$ST"; continue; }
@@ -48,7 +62,18 @@ for row in $ROWS; do
     l0-12) flags="--seconds 600 --kill-every 60" ;;
   esac
   echo "$(date -u +%FT%TZ) $row $repo $rid start" >> "$ST"
+  # TRACE=1: every voter's trace rows each minute (tests/nr3/tsave.mjs), kept across its isolate's resets.
+  if [ -n "${TRACE:-}" ]; then
+    rm -f tests/fanout/raw/.tsave-$TAG-$row.done
+    DONE_FILE=tests/fanout/raw/.tsave-$TAG-$row.done node tests/nr3/tsave.mjs "repo:$rid" \
+      > tests/fanout/raw/tsave-$TAG-$row.jsonl 2>&1 & tracers+=($!)
+  fi
+  if [ -n "${TRACE:-}" ]; then
+    ( while [ ! -e "$MEMSTOP" ]; do sleep 5; done; pkill -f "a1.mjs $row --repo $repo " ) & tracers+=($!)
+  fi
   bash tests/am1/runs/a1.sh "$row" "$repo" "$rid" $flags
+  [ -e "$MEMSTOP" ] && echo "$(date -u +%FT%TZ) $row stopped: MEMSTOP $(cat $MEMSTOP)" >> "$ST"
+  [ -n "${TRACE:-}" ] && touch tests/fanout/raw/.tsave-$TAG-$row.done
   # Back to k = 1, which releases the network's pool leases: a lease is only renewed or released by its own network,
   # and the ledger shifts every lease past a call gap of LEDGER_GAP, so a network torn down at k > 1 kept its owner's
   # pool share and every later row of the same owner was granted no slot (rows m21: k 1 on every row).
@@ -56,18 +81,24 @@ for row in $ROWS; do
   echo "$(date -u +%FT%TZ) $row $repo $rid done $(grep -E '^exit' tests/am1/raw/runs/a1-$row-$repo.log)" >> "$ST"
   # L0-12's other parts on the same repository: the 30-minute stall with every member call blackholed, then the idle
   # 60 s lease and the overlapping Exclusive acquire 10 minutes later (stall.mjs), then 100 conflicting pushes and 100
-  # REST ref writes per actor kind under AgentsExclusive, the install's two Apps included (rows.mjs l012).
-  if [ "$row" = l0-12 ]; then
+  # REST ref writes per actor kind under AgentsExclusive, the install's two Apps included (rows.mjs l012). Six kinds
+  # take about 21 minutes each, so 7,200 s cut m3fr1's last kind.
+  # L012_REPLAY_ONLY=1: the replay alone (the storm reproducer); the stall and refusals are left out.
+  if [ "$row" = l0-12 ] && [ -z "${L012_REPLAY_ONLY:-}" ]; then
     STALL_REPO=$repo STALL_REPO_ID=$rid timeout 3600 node tests/am1/hosted/stall.mjs "${STALL_MIN:-30}" 20 \
       > tests/am1/raw/runs/l012-stall-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 stall exit $?" >> "$ST"
-    ROWS_REPO=$repo ROWS_INSTALL_APPS=1 timeout 7200 node tests/am1/hosted/rows.mjs l012 100 \
+    ROWS_REPO=$repo ROWS_INSTALL_APPS=1 timeout 10800 node tests/am1/hosted/rows.mjs l012 100 \
       > tests/am1/raw/runs/l012-refusals-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 refusals exit $?" >> "$ST"
   fi
   # A durable_object shard container never sleeps on its own: the row's own shards are torn down after it.
   [ -n "${TEARDOWN:-}" ] && python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
+  # tsave's last save runs after the done file; give it its minute before the tracers stop.
+  [ -n "${TRACE:-}" ] && sleep 70
+  [ ${#tracers[@]} -gt 0 ] && kill "${tracers[@]}" 2>/dev/null
 done
+[ ${#tracers[@]} -gt 0 ] && kill "${tracers[@]}" 2>/dev/null
 # LF-13, both modes, 3 runs each (tests/am1/rest/lf13.mjs): gap on lf13-g, install on lf13-i, which has both tiers'
 # snapshots for the archive alarm. Each run's last row goes to tests/am1/raw/lf13-<mode>.jsonl.
 if [ -z "${NO_LF13:-}" ]; then

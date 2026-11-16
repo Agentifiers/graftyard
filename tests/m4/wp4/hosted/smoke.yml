@@ -1,0 +1,9 @@
+on: workflow_dispatch
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: One hosted job
+        run: |
+          echo "hosted smoke on $(nproc) vCPU, $(free -m | awk '/Mem/{print $2}') MiB, runner $RUNNER_NAME"
+          sleep 20

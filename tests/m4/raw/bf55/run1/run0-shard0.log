@@ -1,0 +1,10 @@
+START=08:10:29Z
+file:///home/user/workspace/repo/tests/m4/wp3/bf55.mjs:79
+if (shard === 0) throw new Error("the repository hashes to shard 0; pick another name so the jobs' shard is not the registration shard");
+                       ^
+
+Error: the repository hashes to shard 0; pick another name so the jobs' shard is not the registration shard
+    at file:///home/user/workspace/repo/tests/m4/wp3/bf55.mjs:79:24
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v26.12.0
