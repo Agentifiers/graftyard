@@ -42,6 +42,7 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Respons
     let Some(route) = agents::route(rest) else { return respond(c, Reply::not_found()) };
     let who = crate::authenticate(c, req).await?;
     let method = req.method();
+    c.write.set(writes(&method));
     let body = match method {
         Method::Put | Method::Patch | Method::Post => {
             serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null)
@@ -66,6 +67,14 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Respons
         }
     };
     respond(c, r)
+}
+
+/// Whether a request to these routes is a write (`Ctx::write`): any method but `GET`, as `api::rest_repo` decides, so a
+/// task, lease, or policy write whose tier read every member asked shed asks again within LOOKUP_FOR instead of
+/// answering 503 (`spread_read`). Never set before, these writes failed at once (L0-12 m3fr9: the stall's first task
+/// create and the refusals' policy `PUT`, `tests/am1/results/lm1-rows-m3f.md`).
+fn writes(method: &Method) -> bool {
+    *method != Method::Get
 }
 
 /// `/agents/apps[/{id}]` on the install's chain, and `/orgs/{org}/agents` on the org's.
@@ -644,6 +653,32 @@ mod tests {
     };
     use graftyard_raft::Fold as _;
     use graftyard_types::{AccountId, DbId, RepoId, Timestamp, Ulid};
+
+    /// L0-12 m3fr9: a task create and a policy `PUT` failed 503 at once on a tier read every member shed, because these
+    /// routes never set `Ctx::write`. Every write they serve (task, lease and policy writes, a lease's release and
+    /// renew, an App's flag) is now a write, so `spread_read` asks again within LOOKUP_FOR; a `GET`, the activity feed's
+    /// long poll included, still answers 503 at once.
+    #[test]
+    fn the_agent_routes_writes_retry_a_shed_read_and_their_gets_do_not() {
+        let r = "/repos/o/r";
+        let cases = [
+            (Method::Put, format!("{r}/agents/policy"), true),
+            (Method::Post, format!("{r}/tasks"), true),
+            (Method::Patch, format!("{r}/tasks/01HV0000000000000000000000"), true),
+            (Method::Post, format!("{r}/leases"), true),
+            (Method::Delete, format!("{r}/leases/01HV0000000000000000000000"), true),
+            (Method::Post, format!("{r}/leases/01HV0000000000000000000000/renew"), true),
+            (Method::Put, "/agents/apps/1114112".to_owned(), true),
+            (Method::Delete, "/agents/apps/1114112".to_owned(), true),
+            (Method::Get, format!("{r}/agents/policy"), false),
+            (Method::Get, format!("{r}/tasks"), false),
+            (Method::Get, format!("{r}/activity"), false),
+        ];
+        for (m, path, write) in cases {
+            assert!(agents::route(&path).is_some(), "{path} is an agent route");
+            assert_eq!(writes(&m), write, "{m:?} {path}");
+        }
+    }
 
     /// L0-16: a lease command's read is served while the metadata tier loads, with no metadata rows; every other
     /// read waits for the tier.

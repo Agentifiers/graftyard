@@ -4016,6 +4016,18 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 
 **Flip.** A hosted L0-12 where `feed.byMember` shows the polls a `gone` sent on going to 429 more often than they are held, which would make returning the 410 at once the cheaper answer; or a restore test where a client's cursor past the restored log gets anything but 410.
 
+### `agents-write`: the agent routes' writes retry a shed read within `LOOKUP_FOR`, 2026-11-16
+
+**Decision.** `agents::serve` (`workers/edge/src/agents.rs`), which serves the agent policy, tasks, leases, the activity feed and the install's App rows, sets `Ctx::write` for every method but `GET`, as `api::rest_repo` does. A task, lease or policy write whose tier or `Authz` read every member asked shed now asks again within LOOKUP_FOR (`spread_read`, `lease-clock` (2)). A `GET`, the feed's long poll included, still answers 503 at once.
+
+**Why.** DESIGN, "Follower read", says a REST call other than `GET` asks the same members again within LOOKUP_FOR, but these routes never set the flag. On L0-12 m3fr9, the stall's first task create and the refusals' policy `PUT` each failed 503 at once on one shed tier read, on an idle group, and the row's stall and refusals did not run [measured, Workers Logs, `tests/am1/results/lm1-rows-m3f.md`, "m3fr9 after the run"].
+
+**Beat.** A retry in the drivers: it would hide the same 503 from a real client, which GitHub's clients do not retry on a write.
+
+**Evidence.** `the_agent_routes_writes_retry_a_shed_read_and_their_gets_do_not` (`workers/edge/src/agents.rs`) fails on main, where no agent route is a write. `tests/m0carried/plant27.py`: 3 of 3.
+
+**Flip.** As for `lease-clock` (2): a hosted row where agent writes wait out LOOKUP_FOR on shed reads often enough to move their p99.
+
 ### `push-reads`: a push reads its repository rows once, starts its reads together, and skips the probe for a known leader, 2026-11-16
 
 **Decision.** Four changes to a push's path before and around its commit (`design/DESIGN.md`, journey 1, step 1):
