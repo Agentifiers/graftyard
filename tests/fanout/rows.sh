@@ -12,7 +12,23 @@ source ${ROWS_ENV:-tests/m3/rows/env.sh}
 TAG=$1
 ST=tests/fanout/raw/rows-$TAG.status
 [ -e tests/fanout/raw/.rows-$TAG.started ] && exec sleep infinity
+# A run's state lives in its worktree: m3fr7 ran from /tmp, and an orb restart cleared it mid-row with the raw traces and
+# uncommitted driver changes (`tests/am1/results/lm1-rows-m3f.md`, Rows m3fr7). So: no /tmp, and no uncommitted change
+# to a tracked file, so the run's drivers are a commit.
+case "$PWD" in /tmp/*) echo "rows.sh: run from a worktree under /home/user/workspace, not $PWD" >&2; exit 1 ;; esac
+[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "rows.sh: commit the driver changes first" >&2; exit 1; }
 touch tests/fanout/raw/.rows-$TAG.started
+echo "$(date -u +%FT%TZ) start $(git rev-parse --short HEAD) $PWD" >> "$ST"
+# A restart's leftovers: an earlier run cut off before its teardown leaves shard containers billing (m3fr7: 7 found at
+# 04:26Z). The sweep tears down every running shard and is a no-op on an install with none.
+if python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; then echo "$(date -u +%FT%TZ) start sweep ok" >> "$ST"
+else echo "$(date -u +%FT%TZ) START SWEEP FAILED: shard containers still running, see above" >> "$ST"; exit 1; fi
+# The cost stop between phases, within a row as well as before it (tests/fanout/costok.sh). ROW_USD="row:usd ..." is
+# each row's expected cost: a row starts only if the spend plus it stays under STOP_USD, so no row is started that the
+# stop would cut (m3fr6: L0-12 with its stall and refusals cost $12.19, B0-31 $2.24).
+export ST STOP_USD=${STOP_USD:-12}
+row_usd() { for p in ${ROW_USD:-}; do [ "${p%%:*}" = "$1" ] && { echo "${p#*:}"; return; }; done; echo 0; }
+costok() { NEXT_USD=${2:-0} bash tests/fanout/costok.sh "$1"; }
 K=${K:-4}
 ROWS=${ROWS:-"b0-29 b0-32 b0-34 b0-31 b0-33 l0-12 b0-35"}
 id() { awk -v n="$1" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt"; }
@@ -22,11 +38,8 @@ tracers=()
 MEMSTOP=tests/fanout/raw/.memstop-$TAG
 for row in $ROWS; do
   [ -e "$MEMSTOP" ] && { echo "$(date -u +%FT%TZ) MEMSTOP: $(cat $MEMSTOP)" >> "$ST"; break; }
-  # The $15 stop: no new row once the window has cost STOP_USD (default $12). With T0_FILE the window starts there
-  # and counts the m2b shard containers too (tests/fanout/cost.sh).
-  c=$(bash tests/fanout/cost.sh 2>/dev/null); echo "$(date -u +%FT%TZ) cost $c" >> "$ST"
-  usd=$(echo "$c" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("usd", 99))' 2>/dev/null || echo 99)
-  if python3 -c "import sys; sys.exit(0 if float('$usd') >= float('${STOP_USD:-12}') else 1)"; then echo "STOP at \$$usd" >> "$ST"; break; fi
+  # No new row once the window (T0_FILE, tests/fanout/cost.sh) plus the row's ROW_USD reaches STOP_USD.
+  costok "$row" "$(row_usd "$row")" || break
   repo="f$TAG-${row//-/}"
   # TRACE=1: the group's per-second leader trace (terms.mjs) and the leader's admission (admit.mjs) beside the row,
   # each waiting for the repository's id; stopped when the row ends.
@@ -44,6 +57,11 @@ for row in $ROWS; do
   if [ "$row" = b0-31 ]; then
     node tests/am1/runs/transfer.mjs "repo:$rid" 2 "$repo" >> "$ST" 2>&1
     tail -1 "$ST" | grep -q "^rehomed on 2" || { echo "$(date -u +%FT%TZ) b0-31: not rehomed on apac, row skipped" >> "$ST"; continue; }
+    # The new home's shard catches up before the merges start: on m3fr7 it was cold, its rehydrate ran 69 s under the
+    # row's load, and all 5 MergeQueue merges in that window answered `warming` (`tests/fanout/shardwarm.mjs`).
+    node tests/fanout/shardwarm.mjs "$rid" 2 "${WARM_MIN:-15}" > tests/fanout/raw/shardwarm-$TAG-$row.jsonl 2>&1
+    w=$?; echo "$(date -u +%FT%TZ) b0-31 warm exit $w: $(tail -1 tests/fanout/raw/shardwarm-$TAG-$row.jsonl)" >> "$ST"
+    [ $w -eq 0 ] || { echo "$(date -u +%FT%TZ) b0-31: apac shard not warm, row skipped" >> "$ST"; continue; }
   fi
   # Learners for reads (design/DESIGN.md, "Follower read"), before k.mjs, whose commit tells them the leader.
   [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1
@@ -84,16 +102,20 @@ for row in $ROWS; do
   # REST ref writes per actor kind under AgentsExclusive, the install's two Apps included (rows.mjs l012). Six kinds
   # take about 21 minutes each, so 7,200 s cut m3fr1's last kind.
   # L012_REPLAY_ONLY=1: the replay alone (the storm reproducer); the stall and refusals are left out.
-  if [ "$row" = l0-12 ] && [ -z "${L012_REPLAY_ONLY:-}" ]; then
+  if [ "$row" = l0-12 ] && [ -z "${L012_REPLAY_ONLY:-}" ] && costok "l0-12 stall"; then
     STALL_REPO=$repo STALL_REPO_ID=$rid timeout 3600 node tests/am1/hosted/stall.mjs "${STALL_MIN:-30}" 20 \
       > tests/am1/raw/runs/l012-stall-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 stall exit $?" >> "$ST"
-    ROWS_REPO=$repo ROWS_INSTALL_APPS=1 timeout 10800 node tests/am1/hosted/rows.mjs l012 100 \
+    # rows.mjs runs costok.sh before each refusal kind and stops before one past the stop, naming the kinds not run.
+    ROWS_COST_CMD="bash tests/fanout/costok.sh" ROWS_REPO=$repo ROWS_INSTALL_APPS=1 timeout 10800 node tests/am1/hosted/rows.mjs l012 100 \
       > tests/am1/raw/runs/l012-refusals-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 refusals exit $?" >> "$ST"
   fi
   # A durable_object shard container never sleeps on its own: the row's own shards are torn down after it.
-  [ -n "${TEARDOWN:-}" ] && python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
+  if [ -n "${TEARDOWN:-}" ]; then
+    if python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1; then echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
+    else echo "$(date -u +%FT%TZ) TEARDOWN FAILED for $rid; the end sweep retries" >> "$ST"; fi
+  fi
   # tsave's last save runs after the done file; give it its minute before the tracers stop.
   [ -n "${TRACE:-}" ] && sleep 70
   [ ${#tracers[@]} -gt 0 ] && kill "${tracers[@]}" 2>/dev/null
