@@ -849,9 +849,10 @@ impl DurableObject for GitShard {
                 return Ok(Response::from_json(&json!({ "skipped": "stopped" }))?.with_headers(h));
             }
             Serve::Run { touch: true } => {
-                host.touch(Timestamp(now_ms())).await.map_err(se)?;
                 // `touch` sets the renewal alarm an hour out, past a pool ledger's next heartbeat.
-                self.rearm_beat().await?;
+                if host.touch(Timestamp(now_ms())).await.map_err(se)? {
+                    self.rearm_beat().await?;
+                }
             }
             Serve::Run { touch: false } => {}
         }

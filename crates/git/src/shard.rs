@@ -499,6 +499,18 @@ pub enum Renewal {
     Lapse,
 }
 
+/// How often a client's request writes the shard's `last_request` and its alarm (`touch_due`): at most once a minute,
+/// against WARM_FOR's day, so the container stops at most this much earlier. Written on every request, a 434-push
+/// burst made 434 pairs of storage writes on one network shard, whose forwards each waited p50 3,038 ms
+/// (`tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run"; that the writes set the wait is an inference).
+pub const TOUCH_EVERY: Duration = Duration::from_secs(60);
+
+/// Whether a client's request at `now` writes `last_request` and the alarm, given the stored `last_request`: when
+/// none is stored, or it is TOUCH_EVERY old or older.
+pub fn touch_due(now: Timestamp, last_request: Option<Timestamp>) -> bool {
+    last_request.is_none_or(|l| now.0.saturating_sub(l.0) >= TOUCH_EVERY.as_millis() as u64)
+}
+
 /// The shard's alarm at `now`, given its last request. Every request also calls this, so the first request after a
 /// lapse arms the alarm again.
 pub fn renewal(now: Timestamp, last_request: Timestamp) -> Renewal {

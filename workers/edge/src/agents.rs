@@ -448,7 +448,7 @@ pub(crate) async fn write_ref(
     }
     let created = u.expect.is_none();
     let new = u.new.expect("a write names a new tip");
-    Ok(match crate::commit(c, &rd.repo, &body, None, None).await? {
+    Ok(match crate::commit(c, &rd.repo, &body, None, None, None).await? {
         Ok(PushOutcome::Ok(ok)) => match ok.out.refs.first() {
             Some(graftyard_git::repo::RefOutcome::Ok) => {
                 Reply::json(if created { 201 } else { 200 }, graftyard_api::rest::ref_json(r, &u.name, &new))

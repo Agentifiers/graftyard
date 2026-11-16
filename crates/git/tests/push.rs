@@ -502,13 +502,16 @@ fn a_replay_reports_each_refused_refs_own_reason() {
         assert_eq!(refs_of(&first), want);
         let mut again = p;
         again.request = r;
-        // The edge's commit timed out: it asks by request id, then re-sends under the same id.
-        match g.outcome_by_request(r, &again) {
-            OutcomeReply::Done(o) => {
-                assert_eq!(refs_of(&o), want, "outcome_by_request");
-                assert_eq!(status_lines(&o), status_lines(&first), "outcome_by_request's report-status");
+        // The edge's commit timed out: it asks by request id, then re-sends under the same id. It asks without the
+        // pack (`lookup_body` in `workers/edge`), and the replay reads only the ref names, so the answer is the same.
+        for ask in [again.clone(), Push { pack: None, ..again.clone() }] {
+            match g.outcome_by_request(r, &ask) {
+                OutcomeReply::Done(o) => {
+                    assert_eq!(refs_of(&o), want, "outcome_by_request");
+                    assert_eq!(status_lines(&o), status_lines(&first), "outcome_by_request's report-status");
+                }
+                other => panic!("{other:?}"),
             }
-            other => panic!("{other:?}"),
         }
         let CommitReply::Done(o) = g.commit(r, again) else { panic!() };
         assert_eq!(refs_of(&o), want, "re-send");
