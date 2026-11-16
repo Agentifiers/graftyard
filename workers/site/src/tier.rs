@@ -140,6 +140,26 @@ pub fn ddl(schema: &Schema, pre: &str) -> Vec<String> {
     out
 }
 
+/// The member's own tables of a tier, and for the metadata tier its FTS5 tables: what an installing split parent drops
+/// (`crate::load`).
+pub fn live_tables(schema: &Schema) -> Vec<String> {
+    let mut out: Vec<String> = tables(schema).into_iter().map(|(name, _)| sql_name(schema.tier, &name)).collect();
+    if schema.tier == Tier::Metadata {
+        let (issue, comment) = fts_names("");
+        out.extend([issue, comment]);
+    }
+    out
+}
+
+/// One of `live_tables`, dropped and made again empty in the metadata tier's shape.
+pub fn drop_live(table: &str) -> Vec<&'static str> {
+    let schema = graftyard_git::tiers::METADATA;
+    let make = ddl(&schema, "")
+        .into_iter()
+        .find(|q| q.contains(&format!("\"{table}\" ")) || q.contains(&format!(" {table} ")));
+    std::iter::once(leak(format!("DROP TABLE IF EXISTS \"{table}\""))).chain(make.map(leak)).collect()
+}
+
 /// Drops a load's scratch tables of a tier, one statement each.
 pub fn drop_scratch(schema: &Schema) -> Vec<String> {
     let mut out: Vec<String> = tables(schema)
