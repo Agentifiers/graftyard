@@ -3724,3 +3724,57 @@ B0-33:
 - If B0-33 does not run that day, or runs and fails with a cause that is named and fixed, one more site day for B0-33
   alone may run up to $155, stopping at $154.50. The cause and the fix go to the operator before that day.
 - The $155 does not cover B0-34 reruns or other rows; those need the operator's approval first.
+
+### Round 28 (no site day): the meter passed the stop while idle; promote-ahead kept old repositories' shards running (2026-11-16)
+
+The operator's go for the m2b day on main 5e1227d9 (B0-34 then B0-33, $4 cap, stop at $144.50) did not run. Before
+the site day the meter read **$149.42** (`cost.sh` at about 06:00Z), against $140.26 at round 26's end (00:22Z), with
+nothing hosted run since. Containers billed **$7.62** of that, by `containers.py` from 00:22Z.
+
+**What ran.** `instcpu.py` from 00:22Z: 19 shard containers running at about 06:00Z, every one on a repository no run
+had touched since November 15:
+
+| started | network | shards |
+|---|---|---|
+| 00:18–00:21Z | 131304 (`fm21-b029`) | 3 |
+| 00:35–00:36Z | 65536 (m4a's) | 3 |
+| 00:49–00:52Z | 131306 (`fm21-b031`) | 3 |
+| 01:19Z | 131307 (`fm21-b033`) | 1 |
+| 02:19–02:20Z | 131312 (`fm22-b031`) | 2 |
+| 02:51Z | 131315 (`fm22-l012`) | 1 |
+| 05:04–05:05Z | 131323 (`fm24s33c-b033`) | 3 |
+| 05:50–05:52Z | 131329 (`fm25s33-b033`) | 3 |
+
+**What started them [measured in Workers Logs, mechanism read from the code].** Every one starts the same way. On
+131329: at 05:50:15Z a member of the group (woken by a read) logs `shard warm 131329 site 0/1/2`. Each warm's
+`/catchup?warm=1` answers in 11 to 22 ms, so it started nothing (`Caller::Warm` on a stopped shard is `Skip`). Then the
+leader's archive alarm sends promote-ahead's `/promote?wait=60&next=1` to site a's shard at 05:50:16Z. `/promote` is
+`Caller::Client` (`workers/site/src/shard.rs`: only `/catchup` with `warm` is a warm caller), so it starts the
+container and records a request (`Serve::Run { touch: true }`), which keeps it warm `WARM_FOR`, 24 h. The shard
+rehydrated (`shard rehydrate 131329` at 05:51:48Z), and later warms then found it running. 131304, 131306, 131323 and
+65536 show the same `/promote` 503 after 30 to 60 s, then the rehydrate. These repositories hold an unpromoted tail
+above `LOG_MAX_BYTES / PROMOTE_AHEAD`, so each wake of their group runs promote-ahead and starts a shard for a day.
+The idle-shards fixes (`tests/am1/results/idle-shards.md`) made `warm` start nothing, but promote-ahead's `/promote`
+came later (stored-fetch, round 20) and was never put under that rule [inference: no idle-hours check ran after it].
+
+**Done.** `teardown.py --sweep` at about 06:03Z tore down all 19 (`no shard container running` after). Reapers
+(`tests/fanout/reaper.sh`, orb services `reaper-a` over 131290–131345 and `reaper-b` over 65536) tear down every 60 s;
+none had to by 06:10Z.
+
+**Not run:** the site day, B0-34, B0-33. The instruments for them are on branch `r2-ceiling` (below), not merged.
+
+**Instruments ready (branch `r2-ceiling`, off main 5e1227d9).**
+- `StoredMs.spools`: each stored pack's `[start, end, bytes, site]` in the rehydrate report, at most 512, so the
+  per-container R2 ceiling comes from the report: streams busy over time, MB/s per stream and in total
+  (`crates/git/src/catchup.rs`, `crates/git/src/host.rs`). `tests/fanout/spools.py` reads it from `b034warm`.
+- The second-container probe: `/_bed/catchup_pool?site=&pool=&repo=` on the test edge (`/catchup?warm=pool` on a hot
+  pool shard, which starts its container), run by `b034warm.mjs` with `POOL_PROBE=2:7` beside the cold warm and torn
+  down by `b034.sh` after. About $0.04 (one standard-4 for about 5 minutes).
+- Per miss: `tests/fanout/misses.py` joins each a1 probe row to the miss-log branch's `shard miss <net> <key>` line by
+  the CloneKey digest and splits its first byte into container, shard transit, and edge plus network; `b034.sh` runs it
+  after the row.
+- `shardprocs.mjs` records `uploads` (stock upload-packs at once) and `uploadRssMb` per shard, for comparison with
+  `instcpu.py`'s container memory at about 0.4 GB each.
+- G9's row records the `/spool` early-headers option, to build only if the ceiling allows more streams.
+- Full checks: fmt, workspace clippy, wasm32 clippy for site and edge (with and without test-faults) and ops,
+  `cargo test --workspace` 1,009 passed and 0 failed, `go test`, `check_design`.

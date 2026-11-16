@@ -175,7 +175,14 @@ pub struct StoredMs {
     pub idx_rejected: u32,
     /// The network lock's hold time over the stored packs' ingests.
     pub lock_ms: u64,
+    /// Each stored pack's spool as `[start, end, bytes, site]`, start and end in the shard object's ms since the
+    /// epoch, at most `SPOOLS_MAX`: the streams busy at once and the total bucket rate over time, which say whether
+    /// a container's R2 reads stop at a per-container ceiling (`tests/am1/results/lm1-memory.md`, round 27b).
+    pub spools: Vec<[u64; 4]>,
 }
+
+/// The most spools `StoredMs::spools` keeps: a cold rehydrate of repo:131296 spooled 82.
+pub const SPOOLS_MAX: usize = 512;
 
 /// A rehydrate in progress on one disk: whether its marked phase finished, how far its tail got, and per chain the
 /// tail start its marked phase loaded through (every promotion up to there is on the disk).

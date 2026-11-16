@@ -1284,6 +1284,7 @@ impl ShardIo for Io<'_, '_> {
         let key = R2Key::Pack { network: self.network, id }.to_string();
         let idx_key = R2Key::Idx { network: self.network, id }.to_string();
         let net = self.network.0.0;
+        let start = js_sys::Date::now() as u64;
         let got = crate::catchup::first_copy(self.buckets, |b: &&R2| {
             let (b, key, idx_key): (&R2, String, String) = (b, key.clone(), idx_key.clone());
             async move {
@@ -1322,6 +1323,9 @@ impl ShardIo for Io<'_, '_> {
         *st.from_site.entry(site.0).or_default() += 1;
         st.spool_ms += s.spool_ms;
         st.bytes += s.bytes;
+        if !s.have && st.spools.len() < crate::catchup::SPOOLS_MAX {
+            st.spools.push([start, js_sys::Date::now() as u64, s.bytes, u64::from(site.0)]);
+        }
         Ok(if s.have { Fetched::Have } else { Fetched::Spooled })
     }
     /// `/ingest&spooled=1`: the container's answer, with its times and whether it used the stored `.idx`.
