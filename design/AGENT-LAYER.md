@@ -357,11 +357,6 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 /// member counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first
 /// entry with `at >= expires`; clients time it from `expires`. An install or a first poll (fed, a backlog cost 46 s, LM-1)
 /// restarts the ring with its live leases (`9d59283`). An older cursor gets 410; the client reloads leases and tasks.
-/// A cursor past the member's last applied entry but at or below the highest commit index it knows (its own, or one
-/// its leader sent in an AppendEntries, a read index, or an install) names an entry the group committed that it has not
-/// applied, so it is no 410: the member answers `lagging` and the edge tries the next member; as a 410 it sent 30% of an
-/// apac learner pair's polls back at once in L0-12 m3fr7 [measured, `tests/am1/results/lm1-rows-m3f.md`, "m3fr7 after
-/// the run"]. A cursor past that commit index, such as one from before a whole-install restore, is 410.
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
                          AgentPush { refname: RefName, head: Oid, paths: SmallVec<[Box<str>; 8]> },
@@ -370,9 +365,10 @@ pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lea
 pub enum PrAction { Opened, Readied, Closed, Merged }
 pub enum LeaseChange { Acquired, Released, Expired }
 /// `?cursor=` is base64url without padding of 17 bytes: a version byte (1), the group's 8-byte `RepoId`, and the 8-byte
-/// big-endian index. Clients treat it as opaque. A cursor for another group, or one from before a whole-install restore,
-/// gets the same 410 as an expired one. A move of the metadata tier to a child group changes no cursor, because the
-/// parent keeps its log and indexes (`design/DESIGN.md`, Shape, "Chains"). `wait` is whole seconds, 0 by default, and
+/// big-endian index. Clients treat it as opaque. A cursor for another group, or past the commit index its member knows
+/// (its own or its leader's), as from before a whole-install restore, gets the same 410 as an expired one; one past only
+/// the member's applied index answers `lagging`. A move of the metadata tier to a child group changes no cursor, because
+/// the parent keeps its log and indexes (`design/DESIGN.md`, Shape, "Chains"). `wait` is whole seconds, 0 by default, and
 /// clamped to FEED_WAIT_MAX. `paths` is a repeated `PathGlob` parameter, at most 32 (`?paths=pkg/auth/**&paths=docs/*`).
 pub struct FeedCursor { pub group: RepoId /* the 8 bytes above */, pub index: Index }
 pub const FEED_WAIT_MAX: Duration = Duration::from_secs(25);
@@ -430,9 +426,8 @@ pub struct McpRefresh { pub sub: UserId, pub aud: Url, pub client: Url, pub gran
 /// a live `graftyard_grant` of that user and a `graftyard_write` within the grant gets 422.
 pub struct McpGrant { pub id: GrantId, pub client: Url, pub redirect_hosts: SmallVec<[Hostname; 2]>, pub generation: u32 }
 /// The host enforces it from the scoped token's `Tokens` row, and `graft-mcp` also hides approve and merge tools without it.
-/// Without `WriteApproveMerge` the deny-list refuses APPROVE reviews, PR merges, `POST /merges`, auto-merge, and ref
-/// updates that would merge an agent PR; `codemode.request()` takes repository REST paths only [measured, `tests/m0/results/m0-wp13.md`,
-/// L0-15].
+/// Without `WriteApproveMerge` the deny-list refuses APPROVE reviews, PR merges, `POST /merges`, auto-merge, and ref updates that
+/// would merge an agent PR; `codemode.request()` takes repository REST paths only [measured, `tests/m0/results/m0-wp13.md`, L0-15].
 pub enum WriteScope { Read, Write, WriteApproveMerge }
 pub enum Toolset { Context, Repos, Issues, PullRequests, Checks, Coordination, Provenance }
 /// Every tool is one to three REST calls through the edge with `upstream`, so rulesets, `decide`, and Authz rule.
