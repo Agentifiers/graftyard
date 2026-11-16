@@ -77,8 +77,11 @@ Every answered get's latency, from request to answer, over the same seeds:
 | live | gap 20 ms | 4,280,328 | 192 | 842 | 1,257 |
 
 Within 6 ms at every percentile, on every half. The simulator's leaders rarely meet a burst of reads inside one
-gap, so this says the gap costs nothing measurable where it does not bind, not what it costs a read that does wait:
-at most one gap, 20 ms, before its round leaves. The hosted number is LM-1's B0-33 rerun.
+gap, so this says the gap costs nothing measurable where it does not bind, not what it costs a read that does wait.
+That read has no timer of its own: `read_round` runs only from `start_read` and `check_reads`, and `check_reads` only
+from `after_ack`, `start_read` and `tick_leader`. With no answer and no later read, its round leaves on the next leader
+tick, so on the site host (TICK 100 ms, `workers/site/src/host.rs`) the worst added wait is about 100 ms, not 20 ms
+[inference]. LM-1's B0-33 rerun checks it against the hosted read-grant p99.
 
 ## Gate 4: why sites 0 and 1's stamps lagged by seconds
 

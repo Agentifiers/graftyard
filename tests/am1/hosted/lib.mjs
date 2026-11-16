@@ -74,25 +74,36 @@ export async function bedGet(path) {
   return { status: r.status, body: await r.text() };
 }
 
-/** Every member's `/status` of a chain (sites 0..n-1). */
-// A voter replaced since the group was made has a later generation's object; a call by site alone reaches the first
-// generation's, which answers forever at its old term (L0-12 m3fr1: site 1's voter was `#6#f1`, and every probe of site 1
-// read the dead `#1#f1` at term 2). The current voters' names, per chain, from any member's committed config.
+/** One raw call to a site's current voter of a chain: `member` with the voter's object name from the committed
+ * config, so a voter replaced since the group was made (a later generation's `#<g>#f<site>`) is reached, not the
+ * first generation's object, which no longer takes writes (B0-30's rerun seed: site 1 replaced at index 4). Names
+ * are read again every 60 s and after a call that fails. */
+const VOTERS = new Map();
+export async function voter(chain, site, path, body, deadline = 30_000) {
+  let c = VOTERS.get(chain);
+  if (!c || Date.now() - c.at > 60_000) {
+    for (const st of await statuses(chain)) {
+      const vs = st.config?.config?.normal?.voters;
+      if (vs && (!c || (st.config.index ?? 0) >= c.index)) c = { at: Date.now(), index: st.config.index ?? 0, names: Object.fromEntries(vs.map((v) => [v.site, v.do_name])) };
+    }
+    if (c) VOTERS.set(chain, c);
+  }
+  try { return await member(chain, site, path, body, deadline, c?.names?.[site]); }
+  catch (e) { VOTERS.delete(chain); throw e; }
+}
+
+/** Every member's `/status` of a chain (sites 0..n-1), from each site's current voter: a site whose first
+ * generation's object answers with an older config than another member's is read again by the newer config's name. */
+// The current voters' names, per chain, as `statuses` last read them (main's `voterAt`, L0-12 m3fr1).
 const voterName = new Map();
 export async function statuses(chain, n = 3) {
-  const one = async (s) => {
-    try { return { site: s, ...(await member(chain, s, "/status", undefined, 15_000, voterName.get(chain)?.[s])).v }; } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
-  };
-  let st = await Promise.all([...Array(n).keys()].map(one));
-  const vs = st.filter((x) => x.config?.config?.normal?.voters).sort((a, b) => (b.term ?? 0) - (a.term ?? 0))[0]?.config.config.normal.voters;
-  if (vs) {
-    const names = Object.fromEntries(vs.map((v) => [v.site, v.do_name]));
-    const was = voterName.get(chain) ?? {};
-    voterName.set(chain, names);
-    const stale = st.filter((x) => names[x.site] && names[x.site] !== (was[x.site] ?? `${chain}#1#f${x.site}`)).map((x) => x.site);
-    if (stale.length) st = await Promise.all(st.map((x) => (stale.includes(x.site) ? one(x.site) : x)));
-  }
-  return st;
+  const one = (s, name) => member(chain, s, "/status", undefined, 15_000, name).then((r) => ({ site: s, ...r.v }), (e) => ({ site: s, error: String(e).slice(0, 100) }));
+  const sts = await Promise.all([...Array(n).keys()].map((s) => one(s)));
+  const newest = sts.filter((st) => st.config?.config?.normal?.voters).sort((a, b) => (b.config.index ?? 0) - (a.config.index ?? 0))[0];
+  if (!newest) return sts;
+  const names = Object.fromEntries(newest.config.config.normal.voters.map((v) => [v.site, v.do_name]));
+  voterName.set(chain, names);
+  return Promise.all(sts.map((st) => (st.doName && names[st.site] && st.doName !== names[st.site] ? one(st.site, names[st.site]) : st)));
 }
 /** The current voter object's name at `site`, as `statuses` last saw it (undefined: the first generation's). */
 export const voterAt = (chain, site) => voterName.get(chain)?.[site];

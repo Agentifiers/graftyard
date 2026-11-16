@@ -19,7 +19,7 @@ use std::cell::RefCell;
 
 use futures_executor::block_on;
 use graftyard_fold::{ARCHIVE_HEADER, check_archive_header, decode_archive_some};
-use graftyard_git::log_archive::{self, ArchiveHost, Next, Step, View};
+use graftyard_git::log_archive::{self, ArchiveHost, Next, Run, Step, View};
 use graftyard_git::mem::MemBucket;
 use graftyard_git::{Bucket, PackId, Promoted, PutNew, R2Key};
 use graftyard_raft::{LogEntry, codec};
@@ -35,12 +35,24 @@ struct Bed {
     held_from: RefCell<[u64; 3]>,
     /// Every `/promote` call: its checksums.
     promoted: RefCell<Vec<Vec<Digest>>>,
+    /// Every `/promote` call's `warm`, and whether the shard's container runs: a warm call to a stopped shard is
+    /// skipped, and any other call starts it.
+    warm: RefCell<Vec<bool>>,
+    running: std::cell::Cell<bool>,
     marks: RefCell<usize>,
     /// Planted faults: buckets an archive put reaches.
     put_to: usize,
-    /// A virtual clock in ms, and the shard's promotion rate in bytes/s (0: free): each `/promote` advances the clock
-    /// by the pack bytes it names over the rate, as the shard's pack-objects and validate of them take.
+    /// The drain's modeled time in ms at B0-30's sizes, once `scale` (hosted bytes per bed byte) is set.
     clock: std::cell::Cell<f64>,
+    scale: Option<f64>,
+    /// How often a promotion's read paused (`ArchiveHost::pause`).
+    pauses: std::cell::Cell<usize>,
+    /// Each stored entry's row length, by index and `prev`, so summing the log does not re-encode it.
+    lens: RefCell<std::collections::HashMap<(u64, [u8; 32]), u64>>,
+    /// The drain run the steps belong to, as the site keeps it (`log_archive::Run`).
+    run: RefCell<Run>,
+    /// The shard's promotion rate in bytes/s (0: free): each `/promote` advances `clock` by the pack bytes it names
+    /// over the rate, as the shard's pack-objects and validate of them take.
     rate: std::cell::Cell<f64>,
     sizes: RefCell<std::collections::HashMap<Digest, u64>>,
 }
@@ -56,9 +68,15 @@ impl Bed {
             buckets: Default::default(),
             held_from: RefCell::new([1; 3]),
             promoted: RefCell::new(Vec::new()),
+            warm: RefCell::new(Vec::new()),
+            running: std::cell::Cell::new(true),
             marks: RefCell::new(0),
             put_to: 2,
-            clock: Default::default(),
+            clock: std::cell::Cell::new(0.0),
+            scale: None,
+            pauses: std::cell::Cell::new(0),
+            lens: RefCell::new(std::collections::HashMap::new()),
+            run: RefCell::new(Run::default()),
             rate: Default::default(),
             sizes: Default::default(),
         }
@@ -89,15 +107,40 @@ impl Bed {
     }
 
     fn bytes(&self, m: usize) -> u64 {
-        self.stored(m).iter().map(|e| row(e).len() as u64).sum()
+        self.sum_after(m, 0)
+    }
+
+    /// The bytes of member `m`'s stored rows above `after`.
+    fn sum_after(&self, m: usize, after: u64) -> u64 {
+        let (w, from, mut lens) = (self.w.borrow(), self.held_from.borrow()[m], self.lens.borrow_mut());
+        let held = w.repo.disks[m].log.iter().filter(|e| e.index.0 >= from && e.index.0 > after);
+        held.map(|e| *lens.entry((e.index.0, e.prev.0)).or_insert_with(|| row(e).len() as u64)).sum()
     }
 
     fn step(&self, range_max: u64) -> Step {
-        let s = block_on(log_archive::step(self, CAP, range_max, log_archive::PROMOTE_MAX)).expect("an archive step");
+        let s = block_on(log_archive::step(self, &mut self.run.borrow_mut(), CAP, range_max, log_archive::PROMOTE_MAX))
+            .expect("an archive step");
         self.truncate();
         s
     }
 }
+
+impl Bed {
+    fn charge(&self, ms: f64) {
+        self.clock.set(self.clock.get() + ms);
+    }
+}
+
+// B0-30's rerun step costs [Workers Logs, 12:30Z to 12:49Z, `tests/am1/results/b030-split.md`, "B0-30 rerun"]: a
+// promotion of about 25 entries (8 MB) answered `/archive/promote` in 1.7 to 2.5 s; an archive step of one 2 MiB
+// object, its two puts one after the other, its entry and its pacing, every 2.2 s. The split is an inference: 450 ms
+// a commit, paced twice that again, leaves 850 ms for two puts, so 430 ms an object with both puts at once.
+const COMMIT_MS: f64 = 450.0;
+const PUT_MS: f64 = 430.0;
+const PROMOTE_MS: f64 = 1_000.0;
+const PROMOTE_MS_PER_MB: f64 = 110.0;
+/// Twice B0-30's pushes: 2.48 GB a simulated day at 18 simulated days a real day, in MB a second.
+const TWICE_THE_ROW_MB_S: f64 = 2.0 * 2.48e3 / (86_400.0 / 18.0);
 
 impl ArchiveHost for Bed {
     fn view(&self) -> Option<View> {
@@ -105,8 +148,7 @@ impl ArchiveHost for Bed {
         let w = self.w.borrow();
         let m = &w.repo.members[l];
         let fold = &m.group_fold().fold;
-        let sum = |after: u64| self.stored(l).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum();
-        let total = sum(fold.archived().map_or(0, |a| a.to.0));
+        let total = self.sum_after(l, fold.archived().map_or(0, |a| a.to.0));
         // As the site reads it: each row's length, and its bytes when it is short.
         let after = fold.promoted().map_or(0, |p| p.to.0);
         let rows = self.stored(l).into_iter().filter(|e| e.index.0 > after).map(|e| {
@@ -124,7 +166,19 @@ impl ArchiveHost for Bed {
         Ok(Box::new(rows.into_iter()))
     }
 
-    async fn promote(&self, sums: &[Digest], _from: Index, _to: Index, _request: RequestId) -> Result<PackRef, String> {
+    async fn promote(
+        &self,
+        sums: &[Digest],
+        _from: Index,
+        _to: Index,
+        _request: RequestId,
+        warm: bool,
+    ) -> Result<Option<PackRef>, String> {
+        self.warm.borrow_mut().push(warm);
+        if warm && !self.running.get() {
+            return Ok(None);
+        }
+        self.running.set(true);
         self.promoted.borrow_mut().push(sums.to_vec());
         if self.rate.get() > 0.0 {
             let bytes: u64 = sums.iter().map(|s| self.sizes.borrow().get(s).copied().unwrap_or(0)).sum();
@@ -137,7 +191,26 @@ impl ArchiveHost for Bed {
         }
         let checksum = Digest(Sha256::digest(&bytes).into());
         let n = self.promoted.borrow().len() as u128;
-        Ok(PackRef::Stored { id: PackId(Ulid(n << 80)), checksum, bytes: bytes.len() as u64, sites: SiteSet(0b11) })
+        Ok(Some(PackRef::Stored {
+            id: PackId(Ulid(n << 80)),
+            checksum,
+            bytes: bytes.len() as u64,
+            sites: SiteSet(0b11),
+        }))
+    }
+
+    /// A write lands between pieces of the read, as the member's inputs do while it pauses.
+    async fn pause(&self) {
+        self.pauses.set(self.pauses.get() + 1);
+        let k = 900 + self.pauses.get() as u32;
+        drop(self.w.try_borrow_mut().map(|mut w| {
+            w.record(vec![RepoEvent::Refs {
+                push: RequestId(Ulid(u128::from(k) << 32 | 9)),
+                actor: None,
+                updates: vec![up(&format!("refs/heads/b{k}"), None, Some(oid(k)))],
+                pack: Some(PackRef::Inline(vec![1; 10])),
+            }])
+        }));
     }
 
     async fn mark(&self, _pack: &PackRef, _index: Index) {
@@ -145,6 +218,9 @@ impl ArchiveHost for Bed {
     }
 
     async fn put(&self, key: &str, bytes: &[u8], digest: Digest) -> Result<usize, String> {
+        if self.scale.is_some() {
+            self.charge(PUT_MS);
+        }
         let mut held = 0;
         for b in self.buckets.iter().take(self.put_to) {
             match b.put_new(key, bytes, digest, &[]).await.map_err(|e| e.0)? {
@@ -157,6 +233,19 @@ impl ArchiveHost for Bed {
     }
 
     async fn record(&self, request: RequestId, events: Vec<RepoEvent>) -> Result<Index, String> {
+        if let Some(k) = self.scale {
+            // A promotion's shard time, by the hosted bytes of its range's log, then the entry's commit and pacing.
+            if let Some(RepoEvent::Promoted(p)) = events.first() {
+                let bytes: u64 = self
+                    .stored(self.leader())
+                    .iter()
+                    .filter(|e| e.index >= p.from && e.index <= p.to)
+                    .map(|e| row(e).len() as u64)
+                    .sum();
+                self.charge(PROMOTE_MS + PROMOTE_MS_PER_MB * bytes as f64 * k / 1e6);
+            }
+            self.charge(COMMIT_MS * 3.0);
+        }
         let mut w = self.w.borrow_mut();
         let l = w.repo.leader();
         let now = w.now;
@@ -187,6 +276,16 @@ fn push(b: &Bed, k: u32, n: usize) {
         }),
         _ => Some(PackRef::Inline(vec![k as u8; n])),
     };
+    push_pack(b, k, pack);
+}
+
+/// A push of B0-30's load: an inline pack of `n` bytes, as every push of journey 9's replay is
+/// (`tests/am1/b030/load.mjs`), so its pack bytes are its row bytes, as promote-ahead counts them hosted.
+fn push_inline(b: &Bed, k: u32, n: usize) {
+    push_pack(b, k, Some(PackRef::Inline(vec![k as u8; n])));
+}
+
+fn push_pack(b: &Bed, k: u32, pack: Option<PackRef>) {
     let ev = RepoEvent::Refs {
         push: RequestId(Ulid(u128::from(k) << 32 | 9)),
         actor: None,
@@ -257,7 +356,7 @@ fn the_archive_alarm_promotes_then_archives_to_two_buckets_and_holds_every_membe
             match b.step(range_max) {
                 Step::Idle => break,
                 Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
-                Step::Archived { from, to, key, .. } => archives.push((from.0, to.0, key)),
+                Step::Archived { from, to, keys, .. } => archives.push((from.0, to.0, keys)),
             }
         }
         for m in 0..3 {
@@ -302,7 +401,7 @@ fn the_archive_alarm_promotes_then_archives_to_two_buckets_and_holds_every_membe
     }
     assert!(b.promoted.borrow().iter().any(|s| s.iter().any(|d| d.0 == [1; 32])), "a stored pack was promoted");
     // Every archived entry reads back from the second bucket, byte for byte with the leader's log, digests chained.
-    let keys: Vec<String> = archives.iter().map(|a| a.2.clone()).collect();
+    let keys: Vec<String> = archives.iter().flat_map(|a| a.2.clone()).collect();
     let back = read_back(&b, &keys);
     assert_eq!(back.len() as u64, archives.last().unwrap().1);
     for (r, e) in &back {
@@ -325,7 +424,7 @@ fn the_archive_alarm_promotes_then_archives_to_two_buckets_and_holds_every_membe
     let before = b.w.borrow().repo.members[0].last_index();
     let req = log_archive::promote_request(ChainId::Repo(REPO), p.from, p.to);
     let again = block_on(b.record(req, vec![RepoEvent::Promoted(p)])).unwrap();
-    let again2 = block_on(b.record(log_archive::archive_request(a.digest), vec![RepoEvent::Archived(a)])).unwrap();
+    let again2 = block_on(b.record(log_archive::archive_request(&[a.digest]), vec![RepoEvent::Archived(a)])).unwrap();
     assert!(again <= before && again2 <= before);
     assert_eq!(b.w.borrow().repo.members[0].last_index(), before);
 }
@@ -340,7 +439,7 @@ fn an_archive_held_in_one_bucket_is_never_recorded() {
     }
     snapshot(&b);
     assert!(matches!(b.step(CAP), Step::Promoted { .. }));
-    let e = block_on(log_archive::step(&b, CAP, CAP, log_archive::PROMOTE_MAX)).unwrap_err();
+    let e = block_on(log_archive::step(&b, &mut b.run.borrow_mut(), CAP, CAP, log_archive::PROMOTE_MAX)).unwrap_err();
     assert!(e.contains("in 1 buckets"), "{e}");
     let w = b.w.borrow();
     assert!(w.repo.members.iter().all(|m| m.group_fold().fold.archived().is_none()));
@@ -359,7 +458,7 @@ fn promotions_fit_the_cap_and_an_entry_over_it_promotes_alone() {
     snapshot(&b);
     let mut steps = Vec::new();
     loop {
-        match block_on(log_archive::step(&b, CAP, CAP, 5_000)).expect("no entry is refused") {
+        match block_on(log_archive::step(&b, &mut b.run.borrow_mut(), CAP, CAP, 5_000)).expect("no entry is refused") {
             Step::Idle => break,
             s => steps.push(s),
         }
@@ -436,8 +535,8 @@ fn due_refuses_a_gap_and_a_row_of_another_entry() {
     assert_eq!((d.from, d.to, d.rows.len()), (Index(1), Index(3), 3));
 }
 
-/// `ARCHIVE_SLACK`: a log one byte over the cap is cut to `cap - cap/16`, not to the cap, so one alarm archives a
-/// range of entries rather than one entry each time a write crosses the cap.
+/// `due` cuts the log to the target it is given: a run that passed the trigger asks for the floor, the cap less
+/// `cap / ARCHIVE_SLACK`, so one alarm archives a range of entries rather than one entry each time a write crosses it.
 #[test]
 fn a_log_over_the_cap_is_cut_below_it_by_the_slack() {
     let b = Bed::new();
@@ -448,9 +547,10 @@ fn a_log_over_the_cap_is_cut_below_it_by_the_slack() {
     let total: u64 = rows.iter().map(|(_, r)| r.len() as u64).sum();
     let now = Timestamp(0);
     let cap = total - 1;
-    let d = log_archive::due(total, rows.clone(), now, true, Index(u64::MAX), cap, u64::MAX).unwrap().unwrap();
+    let d = log_archive::due(total, rows.clone(), now, true, Index(u64::MAX), log_archive::floor(cap), u64::MAX);
+    let d = d.unwrap().unwrap();
     let cut: u64 = d.rows.iter().map(|(_, _, r)| r.len() as u64).sum();
-    assert!(total - cut <= cap - cap / log_archive::ARCHIVE_SLACK, "left {} over {}", total - cut, cap);
+    assert!(total - cut <= log_archive::floor(cap), "left {} over {}", total - cut, cap);
     assert!(d.rows.len() > 1, "one alarm archives more than the entry that crossed the cap");
     // Under the cap and inside LOG_KEEP, nothing is due.
     assert_eq!(log_archive::due(total, rows, now, true, Index(u64::MAX), total, u64::MAX).unwrap(), None);
@@ -491,14 +591,16 @@ fn promotion_runs_ahead_of_archiving_and_bounds_the_tail_a_rehydrate_reads() {
         push(&b, k, 1_500);
     }
     assert!(unpromoted(&b) > ahead);
-    let s = block_on(log_archive::step(&b, cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
+    let s = block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
     assert_eq!(s, Step::Idle, "no snapshot yet");
     snapshot(&b);
     let (mut promotions, mut worst, mut largest) = (Vec::new(), 0u64, 0u64);
     for k in 30..400 {
         push(&b, k, 300 + (k as usize * 37) % 2_000);
         for _ in 0..20 {
-            match block_on(log_archive::step(&b, cap, range_max, log_archive::PROMOTE_MAX)).unwrap() {
+            match block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, range_max, log_archive::PROMOTE_MAX))
+                .unwrap()
+            {
                 Step::Idle => break,
                 Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
                 Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
@@ -522,6 +624,295 @@ fn promotion_runs_ahead_of_archiving_and_bounds_the_tail_a_rehydrate_reads() {
         .sum();
     assert!(first > range_max, "the first promotion took {first} bytes of log, one range is {range_max}");
     assert!(first <= range_max * log_archive::PROMOTE_RANGES + largest);
+}
+
+/// The drain keeps up with B0-30's pushes from half to twice the row's rate at the rerun's measured step costs, both
+/// archiving and promoting, and with margin. The bed is B0-30 scaled down with its ratios kept: an archive range of six
+/// entries of about 1.6 KB, as hosted six of 323 KB fill 2 MiB, and a cap of 64 ranges; each bed byte stands for `k`
+/// hosted bytes in the cost model. At each rate, from a log at its cap and fully promoted, pushes arrive on the drain's
+/// modeled clock for 2.5 modeled minutes and the drain steps whenever anything is due:
+///
+/// - the log never passes its cap by more than the slack;
+/// - promotion keeps pace: the tail above the last promotion stays inside `cap / PROMOTE_AHEAD` and one promotion, and
+///   `promotedTo` advances as far as the log does, less that tail;
+/// - the drain is idle at least 0.8 of `1 - r/2` of the time at `r` times the row's rate: about what a drain with
+///   twice the row's rate in hand would be. The resume's bug (one object a step at the row's own rate) idled 16% at 1x
+///   here against 48%.
+///
+/// The rates straddle the point where one archive range builds up between steps, where the resume at day 1.82 found
+/// steps of one object each (125 entries a minute archived and 77 promoted against 129 applied). Then, at twice the
+/// row, a backlog of 32 ranges lands at once, as after a leader change: the first step archives before it promotes,
+/// and the drain's rate through the backlog is at least 1.5 times the input's. The rerun's constants (4 ranges a
+/// promotion, one object an archive step) fail it (plants 27 and 28 in `tests/am1/b030split/plant.py`).
+#[test]
+fn the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs() {
+    let rates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+    let failures: Vec<String> = std::thread::scope(|sc| {
+        let runs: Vec<_> = rates.iter().map(|&r| sc.spawn(move || drain_at(r, r == 2.0))).collect();
+        runs.into_iter().filter_map(|t| t.join().expect("no panic").err()).collect()
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// One rate of `the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs`, as `r` times the row's pushes.
+fn drain_at(r: f64, backlog: bool) -> Result<(), String> {
+    let mut b = Bed::new();
+    let range_max = 6 * 1_700;
+    let k = (log_archive::ARCHIVE_RANGE_MAX as f64) / range_max as f64;
+    b.scale = Some(k);
+    let cap = 64 * range_max;
+    let promote_max = (log_archive::PROMOTE_MAX as f64 / k) as u64;
+    let step = |b: &Bed| {
+        let s =
+            block_on(log_archive::step(b, &mut b.run.borrow_mut(), cap, range_max, promote_max)).expect("a drain step");
+        b.truncate();
+        s
+    };
+    let mut n = 0u32;
+    while b.bytes(b.leader()) < cap {
+        push_inline(&b, n, 1_400);
+        n += 1;
+    }
+    snapshot(&b);
+    // The drain catches up before the clock starts, as it had hosted before the rerun's load.
+    while step(&b) != Step::Idle {}
+    let fold = |b: &Bed| {
+        let w = b.w.borrow();
+        let m = &w.repo.members[b.leader()];
+        let f = &m.group_fold().fold;
+        (m.last_index().0, f.promoted().map_or(0, |p| p.to.0), f.archived().map_or(0, |a| a.to.0))
+    };
+    let tail = |b: &Bed| {
+        let after = fold(b).1;
+        b.stored(b.leader()).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum::<u64>()
+    };
+    let rate = r * TWICE_THE_ROW_MB_S / 2.0;
+    // The modeled time between pushes: each one's hosted bytes over the input rate.
+    let gap = |b: &Bed| {
+        let e = b.stored(b.leader()).last().map_or(0, |e| row(e).len()) as f64;
+        e * k / 1e6 / rate * 1_000.0
+    };
+    let (end, mut next, mut idle, mut peak, mut worst) = (150_000.0, 0.0, 0.0, 0u64, 0u64);
+    let (last0, promoted0, _) = fold(&b);
+    b.clock.set(0.0);
+    while b.clock.get() < end {
+        while next <= b.clock.get() {
+            push_inline(&b, n, 1_400);
+            n += 1;
+            next += gap(&b);
+        }
+        // The drain's entries are charged by the bed; the step's own CPU is not modeled.
+        if step(&b) == Step::Idle {
+            idle += next - b.clock.get();
+            b.clock.set(next);
+        }
+        peak = peak.max(b.bytes(b.leader()));
+        worst = worst.max(tail(&b));
+    }
+    let (last1, promoted1, _) = fold(&b);
+    let ahead = cap / log_archive::PROMOTE_AHEAD;
+    let bound = ahead + range_max * log_archive::PROMOTE_RANGES;
+    let entry = row(b.stored(b.leader()).last().unwrap()).len() as u64;
+    let idle_share = idle / end;
+    let mut out = format!(
+        "{r}x the row ({rate:.2} MB/s): {} entries applied, {} promoted; idle {:.0}%; peak log {peak} of a cap of \
+         {cap}, worst unpromoted tail {worst} of {bound}",
+        last1 - last0,
+        promoted1 - promoted0,
+        100.0 * idle_share
+    );
+    let mut bad = Vec::new();
+    if peak > cap {
+        bad.push("the log passed its cap");
+    }
+    if worst > bound || promoted1 - promoted0 + bound / entry < last1 - last0 {
+        bad.push("promotion fell behind the log");
+    }
+    // At r times the row a drain with twice the row in hand idles 1 - r/2 of the time; a fifth of that is the
+    // model's slack for the time a step's entries wait on one another.
+    if idle_share < 0.8 * (1.0 - r / 2.0) {
+        bad.push("the drain has less than about twice the row's rate in hand");
+    }
+    if backlog {
+        let (from, t0) = (fold(&b).2, b.clock.get());
+        for _ in 0..192 {
+            push_inline(&b, n, 1_400);
+            n += 1;
+        }
+        // A log far over its cap archives before it promotes ahead, however long the tail: only an archive truncates.
+        let first = step(&b);
+        if !matches!(first, Step::Archived { .. }) {
+            bad.push("a log over its cap promoted before it archived");
+        }
+        while step(&b) != Step::Idle {}
+        let all = b.w.borrow().repo.disks[0].log.clone();
+        let to = fold(&b).2;
+        let bytes: u64 = all.iter().filter(|e| e.index.0 > from && e.index.0 <= to).map(|e| row(e).len() as u64).sum();
+        let through = bytes as f64 * k / 1e6 / ((b.clock.get() - t0) / 1_000.0);
+        out += &format!("; a 32-range backlog drained at {through:.2} MB/s");
+        if through < 1.5 * TWICE_THE_ROW_MB_S {
+            bad.push("the backlog drained under 1.5 times twice the row");
+        }
+    }
+    println!("drain at {out}");
+    if bad.is_empty() { Ok(()) } else { Err(format!("{out}: {}", bad.join(", "))) }
+}
+
+/// A promotion of many megabytes reads its range in pieces of `PAUSE_EVERY` bytes and lets the member run between
+/// them (`ArchiveHost::pause`), so a range of 8 archive ranges never holds the leader's loop for its whole decode and
+/// hash. Entries written during a pause do not join the range out of order or twice: the promotion names exactly the
+/// packs of the entries it covers, and starts right after the last one.
+#[test]
+fn a_large_promotion_reads_its_range_in_pieces_and_names_every_pack_once() {
+    let b = Bed::new();
+    for k in 0..24 {
+        push(&b, k, 380_000);
+    }
+    snapshot(&b);
+    let range_max = 1 << 20;
+    // A tail of about 9 MB is over `cap / PROMOTE_AHEAD` and nothing is due to archive.
+    let cap = 64 << 20;
+    let s = block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
+    let Step::Promoted { from, to, .. } = s else { panic!("{s:?}") };
+    assert!(b.pauses.get() >= 2, "{} pauses for {} entries", b.pauses.get(), to.0 - from.0 + 1);
+    let all = b.w.borrow().repo.disks[0].log.clone();
+    let range: Vec<_> = all.iter().filter(|e| e.index >= from && e.index <= to).cloned().collect();
+    let bytes: u64 = range.iter().map(|e| row(e).len() as u64).sum();
+    assert!(bytes > range_max * 4 && bytes <= range_max * log_archive::PROMOTE_RANGES + 400_000, "{bytes}");
+    assert_eq!(from, Index(1));
+    assert_eq!(b.promoted.borrow().last().unwrap(), &log_archive::promotion_sums(&range));
+}
+
+/// The second resume's stall, at 0.5 to 2 times the row's rate: a drain run starts once the log passes the trigger,
+/// archives down to the floor before it goes `Idle`, and the log never passes the cap, though an idle leader sums its
+/// log only once a `SUM_EVERY_MS` and input goes on arriving through the wait. The bed models the site's cadence
+/// (`workers/site/src/archive.rs`): steps one after another, each charged its entry and pacing as in
+/// `the_drain_outruns_twice_the_rerun_s_log_rate_at_its_step_costs`; a run continued at once after `DRAIN_FOR_MS`
+/// with its `Run`; and after `Idle` the next run a sum wait later. Its cap is 64 archive ranges, `LOG_MAX_BYTES / 16`
+/// at hosted sizes, and its sum wait is `SUM_EVERY_MS / 16`, so a wait's input is the same share of the band as hosted.
+/// It starts just under the trigger. On e9418153's rule (a run starts only over the cap and cuts below it per step)
+/// the log passes the cap in every wait (plant 38), and with the trigger but without the run's hold (plant 39) a run
+/// goes `Idle` above the floor.
+#[test]
+fn the_log_stays_under_its_cap_through_the_sum_wait() {
+    let rates: Vec<f64> = match std::env::var("SUM_WAIT_RATE") {
+        Ok(r) => vec![r.parse().expect("a rate")],
+        Err(_) => vec![0.5, 1.0, 1.5, 2.0],
+    };
+    let failures: Vec<String> = std::thread::scope(|sc| {
+        let runs: Vec<_> = rates.iter().map(|&r| sc.spawn(move || sum_wait_at(r))).collect();
+        runs.into_iter().filter_map(|t| t.join().expect("no panic").err()).collect()
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The site's sum wait and run length (`workers/site/src/archive.rs`, `SUM_EVERY_MS`, `DRAIN_FOR_MS`).
+const SUM_EVERY_MS: f64 = 60_000.0;
+const DRAIN_FOR_MS: f64 = 90_000.0;
+
+fn sum_wait_at(r: f64) -> Result<(), String> {
+    let mut b = Bed::new();
+    let range_max = 6 * 1_700;
+    let k = (log_archive::ARCHIVE_RANGE_MAX as f64) / range_max as f64;
+    b.scale = Some(k);
+    let scale: f64 = std::env::var("SUM_WAIT_SCALE").map_or(4.0, |v| v.parse().unwrap());
+    let cap = (graftyard_fold::LOG_MAX_BYTES as f64 / k / scale) as u64;
+    let wait = SUM_EVERY_MS / scale;
+    let promote_max = (log_archive::PROMOTE_MAX as f64 / k) as u64;
+    let step = |b: &Bed| {
+        let s = block_on(log_archive::step(b, &mut b.run.borrow_mut(), cap, range_max, promote_max)).expect("a step");
+        b.truncate();
+        s
+    };
+    let total = |b: &Bed| {
+        let m = b.leader();
+        let after = b.w.borrow().repo.members[m].group_fold().fold.archived().map_or(0, |a| a.to.0);
+        b.sum_after(m, after)
+    };
+    let mut n = 0u32;
+    while b.bytes(b.leader()) < log_archive::trigger(cap) {
+        push_inline(&b, n, 1_400);
+        n += 1;
+    }
+    snapshot(&b);
+    // Promoted up to the log's head, as the rerun was; then pushes take the log over the trigger during the wait.
+    let mut promoting = 0;
+    while block_on(log_archive::step(&b, &mut Run::default(), cap, range_max, promote_max)).unwrap() != Step::Idle {
+        promoting += 1;
+        assert!(promoting < 100, "the seed's promotions do not end");
+    }
+    let rate = r * TWICE_THE_ROW_MB_S / 2.0;
+    let gap = |b: &Bed| {
+        let e = b.stored(b.leader()).last().map_or(0, |e| row(e).len()) as f64;
+        e * k / 1e6 / rate * 1_000.0
+    };
+    let (end, mut next, mut peak, mut runs, mut bad) = (300_000.0, 0.0f64, 0u64, 0u32, Vec::new());
+    let (mut idle_short, mut short) = (0u32, 0u64);
+    b.clock.set(0.0);
+    let mut sum_at = wait;
+    let feed = |b: &Bed, n: &mut u32, next: &mut f64, peak: &mut u64| {
+        while *next <= b.clock.get() {
+            push_inline(b, *n, 1_400);
+            *n += 1;
+            *next += gap(b);
+        }
+        // Only pushes in between, so the log is at its largest after the last.
+        *peak = (*peak).max(total(b));
+    };
+    while b.clock.get() < end {
+        // Idle until the next sum, input arriving all along.
+        while b.clock.get() < sum_at {
+            b.clock.set(next.min(sum_at));
+            feed(&b, &mut n, &mut next, &mut peak);
+        }
+        // One run: steps until `Idle`, each run continued at once after `DRAIN_FOR_MS` with its `Run` kept. A run
+        // that saw the log over the trigger must archive down to the floor (`reached`) before it goes `Idle`.
+        let began = b.clock.get();
+        let (mut over, mut low) = (false, u64::MAX);
+        loop {
+            over |= total(&b) > log_archive::trigger(cap);
+            let s = step(&b);
+            // The log right after an archive step, before the input that arrived while it ran.
+            if matches!(s, Step::Archived { .. }) {
+                low = low.min(total(&b));
+            }
+            feed(&b, &mut n, &mut next, &mut peak);
+            if s == Step::Idle {
+                break;
+            }
+            if b.clock.get() > end + DRAIN_FOR_MS {
+                return Err(format!("{r}x the row: a run that never goes Idle"));
+            }
+            if b.clock.get() >= began + DRAIN_FOR_MS {
+                b.charge(200.0);
+            }
+        }
+        runs += 1;
+        // Within the bytes of the run's own last entries.
+        if over && low > log_archive::floor(cap) + range_max / 2 {
+            idle_short += 1;
+            short = short.max(low - log_archive::floor(cap));
+        }
+        sum_at = b.clock.get() + wait;
+    }
+    let out = format!(
+        "{r}x the row: {runs} runs in {:.0} modeled s; peak log {peak} against a cap of {cap} (trigger {}, floor {}); \
+         {idle_short} runs over the trigger went Idle short of the floor, by up to {short}",
+        end / 1_000.0,
+        log_archive::trigger(cap),
+        log_archive::floor(cap)
+    );
+    println!("sum wait at {out}");
+    if peak > cap {
+        bad.push("the log passed its cap");
+    }
+    if idle_short > 0 {
+        bad.push("a run over the trigger went Idle before it reached the floor");
+    }
+    if runs < 2 {
+        bad.push("fewer than two runs: the wait was never crossed");
+    }
+    if bad.is_empty() { Ok(()) } else { Err(format!("{out}: {}", bad.join(", "))) }
 }
 
 /// A pushed pack of `bytes` stored in the buckets: its entry's row is a pointer of about a hundred bytes.
@@ -557,7 +948,8 @@ fn stored_pushes_alone_promote_ahead_once_their_pack_bytes_pass_the_bound() {
     for k in 0..40 {
         push_stored(&b, k, pack);
         for _ in 0..20 {
-            match block_on(log_archive::step(&b, cap, CAP, log_archive::PROMOTE_MAX)).unwrap() {
+            match block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, CAP, log_archive::PROMOTE_MAX)).unwrap()
+            {
                 Step::Idle => break,
                 Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
                 Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
@@ -571,6 +963,46 @@ fn stored_pushes_alone_promote_ahead_once_their_pack_bytes_pass_the_bound() {
     assert!(promotions.windows(2).all(|p| p[1].0 == p[0].1 + 1), "{promotions:?}");
     // Each promotion names the stored packs of its range.
     assert!(b.promoted.borrow().iter().all(|s| !s.is_empty()));
+}
+
+/// Promote-ahead is no client's work: its `/promote` is a warm call, so on a stopped shard it promotes nothing and the
+/// step is idle, and the next step on a running shard promotes the same range. A due range, which the log cannot
+/// archive past without, is a client's call and starts the shard. Promote-ahead as a client started every stopped
+/// shard of an old group that woke with a tail above the bound and kept it warm a day: 19 containers on idle
+/// `graft-m2b` (`tests/am1/results/lm1-memory.md`, round 28).
+#[test]
+fn promote_ahead_starts_no_stopped_shard_and_a_due_range_does() {
+    let b = Bed::new();
+    let cap = 1_000 * CAP;
+    let ahead = cap / log_archive::PROMOTE_AHEAD;
+    snapshot(&b);
+    for k in 0..8 {
+        push_stored(&b, k, ahead / 4);
+    }
+    assert!(b.view().unwrap().unpromoted > ahead, "promote-ahead has work");
+    b.running.set(false);
+    let step = || block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, CAP, log_archive::PROMOTE_MAX)).unwrap();
+    assert_eq!(step(), Step::Idle, "a stopped shard: promote-ahead skips");
+    assert_eq!(*b.warm.borrow(), [true], "promote-ahead asked as a warm call");
+    assert!(b.promoted.borrow().is_empty() && !b.running.get(), "and started nothing");
+    assert!(b.w.borrow().repo.members[b.leader()].group_fold().fold.promoted().is_none(), "no `Promoted` recorded");
+    // The shard runs again (a client's push, say): the same range promotes, from entry 1.
+    b.running.set(true);
+    let Step::Promoted { from, .. } = step() else { panic!("a running shard promotes ahead") };
+    assert_eq!(from.0, 1);
+    assert!(b.warm.borrow().iter().all(|w| *w));
+    // A due range is not promote-ahead: over a small cap its promotion is a client's call, which starts a stopped
+    // shard.
+    let d = Bed::new();
+    for k in 0..60 {
+        push(&d, k, 1_500);
+    }
+    snapshot(&d);
+    d.running.set(false);
+    let s = block_on(log_archive::step(&d, &mut d.run.borrow_mut(), CAP, CAP / 5, log_archive::PROMOTE_MAX)).unwrap();
+    assert!(matches!(s, Step::Promoted { .. }), "{s:?}");
+    assert_eq!(*d.warm.borrow(), [false], "a due range's promotion is no warm call");
+    assert!(d.running.get(), "and starts the shard");
 }
 
 /// The promote-ahead trigger against push rates, on a virtual clock: stored pushes arrive at a rate, and each
@@ -606,7 +1038,8 @@ fn promotion_keeps_up_below_its_rate_and_stays_bounded_above_it() {
                 next_push += gap_ms;
             }
             let t0 = b.clock.get();
-            match block_on(log_archive::step(&b, cap, CAP, log_archive::PROMOTE_MAX)).unwrap() {
+            match block_on(log_archive::step(&b, &mut b.run.borrow_mut(), cap, CAP, log_archive::PROMOTE_MAX)).unwrap()
+            {
                 Step::Idle => b.clock.set(next_push),
                 Step::Promoted { .. } => worst_step_ms = worst_step_ms.max(b.clock.get() - t0),
                 Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),

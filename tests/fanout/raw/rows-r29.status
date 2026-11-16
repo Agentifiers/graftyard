@@ -1,0 +1,24 @@
+2026-11-16T06:22:48Z cost {"workers_requests": 7488935, "workers_cpu_ms": 93949116, "do_requests": 56210214, "do_rows_written": 68797973, "do_active_s": 3719319, "containers_cpu_s": 231981, "containers_gib_s": 22078014, "containers_gb_s": 38398753, "containers_usd": 62.52, "usd": 149.69, "install": "graft-m2b", "account": "Graftyard"}
+2026-11-16T06:23:27.072Z m3org/fr29-b033 = 131342
+2026-11-16T06:24:57.809Z repo:131342 leader 0: learners [{"addr":192,"doName":"repo:131342#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131342#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131342#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131342#4#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131342#4#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131342#4#l5","join":20 config 11
+2026-11-16T06:25:03.363Z repo:131342 leader 0: set k 4: {"grants":[[0,[6,5,0]],[2,[6,5,0]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-16T06:25:13.726Z repo:131342 leader 0: set k 4: {"grants":[[0,[6,5,0]],[2,[6,5,0]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-16T06:25:24.307Z repo:131342 leader 0: set k 4: {"grants":[[0,[6,5,0]],[2,[6,5,0]]],"k":4,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-16T06:25:24.415Z repo:131342 leader 0: k 4 at 12
+2026-11-16T06:25:24Z b0-33 fr29-b033 131342 start
+2026-11-16T06:37:55.680Z repo:131342 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":255,"leader":0,"term":15},"stepped":true,"want":0}
+2026-11-16T06:37:55.908Z repo:131342 leader 0: k 1 at 256
+2026-11-16T06:37:55Z b0-33 fr29-b033 131342 done exit 0
+2026-11-16T06:38:02Z torn down 131342
+site fault off: 200
+git#2#pool:7 200
+git#2#pool:6 200
+git#2#pool:1 200
+git#0#pool:7 200
+git#0#pool:6 200
+git#0#pool:1 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-16T06:38:23Z sweep ok
+ALLDONE
+B033DONE

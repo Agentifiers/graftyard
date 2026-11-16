@@ -1,9 +1,10 @@
 // Watches member SQLite on all three B0-30 members every 30 s and stops the load (its STOP file) at the first reading
 // over CHILD_GROUP_AT, the row's fail line. Each reading goes to tests/am1/raw/b030-cross.jsonl.
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
-import { member } from "../hosted/lib.mjs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { member, voter } from "../hosted/lib.mjs";
 
 const CHILD_GROUP_AT = 8 * 2 ** 30; // 8,589,934,592 B
+const C = `repo:${JSON.parse(readFileSync(new URL("../raw/b030-repo.json", import.meta.url), "utf8")).repo}`;
 const OUT = new URL("../raw/b030-cross.jsonl", import.meta.url);
 const STOP = new URL("../raw/b030-STOP", import.meta.url);
 
@@ -11,7 +12,7 @@ for (;;) {
   const at = new Date().toISOString();
   const ms = await Promise.all([0, 1, 2].map(async (s) => {
     try {
-      const v = (await member("repo:1048586", s, "/bench_seed", { b030: { size: true } }, 30_000)).v ?? {};
+      const v = (await voter(C, s, "/bench_seed", { b030: { size: true } }, 30_000)).v ?? {};
       return { site: s, role: v.role, commit: v.commit, dbBytes: v.dbBytes, logBytes: v.logBytes, archivedTo: v.archivedTo, sqliteFull: v.sqliteFull };
     } catch (e) {
       return { site: s, error: String(e).slice(0, 120) };

@@ -4,7 +4,12 @@
 From Cloudflare's GraphQL Analytics (the same query as am1-runs' usage.py, filtered to graft-m1's sites a to d and
 its edge): Workers requests and CPU, Durable Object requests, and Durable Object rows written and active time on the
 four sites' namespaces. R2 Class A puts and storage are estimated by the caller from the archive counts, and
-Containers are not reported here. Prices from research/prices.json's overage rates, as am1-runs priced. The token
+Containers are not reported here.
+
+With B030_OBJECTS (a file of Durable Object ids, one a line; tests/am1/b030/objects.py writes it), Durable Object
+requests, rows written and active time count only those objects, so a run is not charged for another group on the
+same install (B0-30 rerun: smoke 1's `repo:1048586` reinstalling on site b, 19.5 M rows). Workers requests and CPU
+have no object dimension and stay install-wide; `workersInstallWide` says so. Prices from research/prices.json's overage rates, as am1-runs priced. The token
 goes in a header only."""
 import json, os, sys, urllib.request
 
@@ -20,11 +25,13 @@ NS = {
 }
 q = """query($a: String!, $s: Time!, $e: Time!) { viewer { accounts(filter: {accountTag: $a}) {
   w: workersInvocationsAdaptive(limit: 100, filter: {datetime_geq: $s, datetime_lt: $e, scriptName_like: "graft-m1-%"}) { sum { requests cpuTimeUs } dimensions { scriptName } }
-  d: durableObjectsInvocationsAdaptiveGroups(limit: 100, filter: {datetime_geq: $s, datetime_lt: $e}) { sum { requests } dimensions { scriptName } }
-  p: durableObjectsPeriodicGroups(limit: 1000, filter: {datetime_geq: $s, datetime_lt: $e}) { sum { rowsWritten rowsRead activeTime } dimensions { namespaceId } }
+  d: durableObjectsInvocationsAdaptiveGroups(limit: 100, filter: {datetime_geq: $s, datetime_lt: $e@OBJ@}) { sum { requests } dimensions { scriptName } }
+  p: durableObjectsPeriodicGroups(limit: 1000, filter: {datetime_geq: $s, datetime_lt: $e@OBJ@}) { sum { rowsWritten rowsRead activeTime } dimensions { namespaceId } }
 } } }"""
+objects = [l.strip() for l in open(os.environ["B030_OBJECTS"]) if l.strip()] if os.environ.get("B030_OBJECTS") else None
+q = q.replace("$e: Time!", "$e: Time!, $o: [String!]" if objects else "$e: Time!").replace("@OBJ@", ", objectId_in: $o" if objects else "")
 r = urllib.request.Request("https://api.cloudflare.com/client/v4/graphql",
-    data=json.dumps({"query": q, "variables": {"a": acct, "s": a, "e": b}}).encode(),
+    data=json.dumps({"query": q, "variables": {"a": acct, "s": a, "e": b, **({"o": objects} if objects else {})}}).encode(),
     headers={"authorization": f"Bearer {tok}", "content-type": "application/json"})
 v = json.load(urllib.request.urlopen(r, timeout=60))
 if v.get("errors"):
@@ -40,4 +47,5 @@ rows = sum(x["sum"]["rowsWritten"] for x in p)
 act_s = sum(x["sum"]["activeTime"] for x in p) / 1e6
 cost = wreq * 0.30e-6 + cpu_ms * 0.02e-6 + dreq * 0.15e-6 + rows * 1.0e-6 + act_s * 0.128 * 12.5e-6
 print(json.dumps({"from": a, "to": b, "workersRequests": wreq, "workersCpuMs": round(cpu_ms), "doRequests": dreq,
-    "doRowsWritten": rows, "doActiveS": round(act_s), "cost": round(cost, 2)}))
+    "doRowsWritten": rows, "doActiveS": round(act_s), "cost": round(cost, 2),
+    **({"objects": len(objects), "workersInstallWide": True} if objects else {})}))

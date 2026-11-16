@@ -154,6 +154,44 @@ fn alarm_renews_hourly_until_a_day_after_the_last_request() {
     assert_eq!(renewal(Timestamp(last.0 + 23 * H + H / 2), last), Renewal::Renew { next: Timestamp(last.0 + 24 * H) });
 }
 
+/// A client's request writes `last_request` and the alarm only when none is stored or the stored one is TOUCH_EVERY
+/// old, so a burst of requests writes once a minute, not once each (`touch_due`; B0-32 m3fr8's network shard took 434
+/// in about 1 s). The day of warmth then runs from at most a minute before the last request.
+#[test]
+fn a_shard_records_its_last_request_at_most_once_a_minute() {
+    const M: u64 = 60_000;
+    assert_eq!(TOUCH_EVERY.as_millis() as u64, M);
+    assert!(touch_due(Timestamp(5 * H), None), "a shard with no request stored records the first");
+    // A burst: 434 requests across one second after a write record nothing more.
+    let mut last = Timestamp(5 * H);
+    let mut writes = 0;
+    for k in 0..434u64 {
+        let now = Timestamp(5 * H + k * 1_000 / 434);
+        if touch_due(now, Some(last)) {
+            last = now;
+            writes += 1;
+        }
+    }
+    assert_eq!(writes, 0, "every request of the burst came within a minute of the stored one");
+    assert!(!touch_due(Timestamp(5 * H + M - 1), Some(Timestamp(5 * H))), "1 ms short of a minute");
+    assert!(touch_due(Timestamp(5 * H + M), Some(Timestamp(5 * H))), "a minute on, the next request records");
+    // A clock behind the stored stamp records nothing and does not wrap.
+    assert!(!touch_due(Timestamp(5 * H - 1), Some(Timestamp(5 * H))));
+    // Requests every 30 s for an hour then none: the stored stamp is within a minute of the last request, so the
+    // shard lapses at most a minute before a day after it.
+    let mut stored = None;
+    for k in 0..=120u64 {
+        let now = Timestamp(k * 30_000);
+        if touch_due(now, stored) {
+            stored = Some(now);
+        }
+    }
+    let (end, stored) = (Timestamp(H), stored.unwrap());
+    assert!(end.0 - stored.0 < M);
+    assert_eq!(renewal(Timestamp(stored.0 + 24 * H), stored), Renewal::Lapse);
+    assert!(matches!(renewal(Timestamp(end.0 + 23 * H), stored), Renewal::Renew { .. }));
+}
+
 /// A new leadership's warm catch-up starts no container and keeps none warm: on `graft-m2b`, groups with no client
 /// re-elected every hour or so, and each `warm` started its network's shard, which `WARM_FOR` then held for a day
 /// (`tests/am1/results/idle-shards.md`). A client's call still starts a stopped shard and keeps it warm.
@@ -177,6 +215,20 @@ fn only_a_clients_call_starts_a_shard_or_keeps_it_warm() {
         }
     }
     assert_eq!(renewal(Timestamp(25 * H), last), Renewal::Lapse);
+}
+
+/// The caller a shard call names with `warm`: promote-ahead's `/promote`, `/validate` and `/idx` carry `warm=1`, as a
+/// new leadership's `/catchup` does, so none starts a stopped shard; only `/catchup?warm=pool` is the pool warm, and a
+/// call without `warm` is a client's (`tests/am1/results/lm1-memory.md`, round 28).
+#[test]
+fn a_warm_query_on_any_route_is_a_warm_call_and_pool_only_on_catchup() {
+    for path in ["/catchup", "/promote", "/validate", "/idx"] {
+        assert_eq!(caller(path, Some("1")), Caller::Warm, "{path}");
+        assert_eq!(caller(path, None), Caller::Client, "{path}");
+        assert_eq!(serve(caller(path, Some("1")), false), Serve::Skip, "{path}");
+    }
+    assert_eq!(caller("/catchup", Some("pool")), Caller::PoolWarm);
+    assert_eq!(caller("/promote", Some("pool")), Caller::Warm);
 }
 
 #[test]
@@ -289,6 +341,10 @@ fn a_shard_answers_warming_at_once_only_to_a_caller_with_somewhere_else_to_go() 
     assert!(!warming_now(true, false, false), "a catch-up, not a rehydrate, is short");
     assert!(warming_now(false, false, true) && warming_now(true, false, true));
     assert!(!warming_now(false, false, false));
+    // A promotion waits briefly on a shard with another after it, so one behind costs one short wait: a new leader's
+    // first promotion waited the full 60 s on a shard still catching up (B0-30's rerun). The last try waits longest.
+    assert!(promote_wait_s(true) <= 10 && promote_wait_s(false) == PROMOTE_WAIT_S);
+    assert!(promote_wait_s(true) < promote_wait_s(false));
 }
 
 /// A pool shard that answered `warming` gets no push for `POOL_COLD_SKIP_MS`, then is tried again, so a carried-over

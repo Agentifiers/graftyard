@@ -24,7 +24,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { deflateSync } from "node:zlib";
-import { EDGE, leaderOf, log, member, row, sleep, state as m3, statuses, tokens } from "../hosted/lib.mjs";
+import { EDGE, leaderOf, log, member, row, sleep, state as m3, statuses, tokens, voter } from "../hosted/lib.mjs";
 
 const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8"));
 const CHAIN = `repo:${REPO.repo}`;
@@ -158,7 +158,7 @@ async function record(events) {
   for (let i = 0; i < 4; i++) {
     try {
       leader ??= await leaderOf(CHAIN);
-      const v = (await member(CHAIN, leader, "/bench_seed", { record: events }, 25_000)).v;
+      const v = (await voter(CHAIN, leader, "/bench_seed", { record: events }, 25_000)).v;
       if (v?.recorded) return v.recorded;
       if (v?.refused) throw new Error(`refused ${v.refused}`);
       leader = null;
@@ -243,7 +243,7 @@ async function keepHome() {
     const l = sts.filter((s) => s.role === "leader").sort((a, b) => b.term - a.term)[0];
     const home = sts.find((s) => s.site === HOME_SITE);
     if (!l || l.site === HOME_SITE || !home || home.applied < l.applied - 2) return;
-    const t = await member(CHAIN, l.site, "/transfer", { to: HOME_SITE }, 15_000);
+    const t = await voter(CHAIN, l.site, "/transfer", { to: HOME_SITE }, 15_000);
     leader = null;
     note(`home ${l.site}->${HOME_SITE} ${JSON.stringify(t.v?.transfer ?? t.v).slice(0, 40)}`);
   } catch (e) { note(`home error ${String(e).slice(0, 40)}`); }

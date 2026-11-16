@@ -3724,3 +3724,205 @@ B0-33:
 - If B0-33 does not run that day, or runs and fails with a cause that is named and fixed, one more site day for B0-33
   alone may run up to $155, stopping at $154.50. The cause and the fix go to the operator before that day.
 - The $155 does not cover B0-34 reruns or other rows; those need the operator's approval first.
+
+### Round 28 (no site day): the meter passed the stop while idle; promote-ahead kept old repositories' shards running (2026-11-16)
+
+The operator's go for the m2b day on main 5e1227d9 (B0-34 then B0-33, $4 cap, stop at $144.50) did not run. Before
+the site day the meter read **$149.42** (`cost.sh` at about 06:00Z), against $140.26 at round 26's end (00:22Z), with
+nothing hosted run since. Containers billed **$7.62** of that, by `containers.py` from 00:22Z.
+
+**What ran.** `instcpu.py` from 00:22Z: 19 shard containers running at about 06:00Z, every one on a repository no run
+had touched since November 15:
+
+| started | network | shards |
+|---|---|---|
+| 00:18–00:21Z | 131304 (`fm21-b029`) | 3 |
+| 00:35–00:36Z | 65536 (m4a's) | 3 |
+| 00:49–00:52Z | 131306 (`fm21-b031`) | 3 |
+| 01:19Z | 131307 (`fm21-b033`) | 1 |
+| 02:19–02:20Z | 131312 (`fm22-b031`) | 2 |
+| 02:51Z | 131315 (`fm22-l012`) | 1 |
+| 05:04–05:05Z | 131323 (`fm24s33c-b033`) | 3 |
+| 05:50–05:52Z | 131329 (`fm25s33-b033`) | 3 |
+
+**What started them [measured in Workers Logs, mechanism read from the code].** Every one starts the same way. On
+131329: at 05:50:15Z a member of the group (woken by a read) logs `shard warm 131329 site 0/1/2`. Each warm's
+`/catchup?warm=1` answers in 11 to 22 ms, so it started nothing (`Caller::Warm` on a stopped shard is `Skip`). Then the
+leader's archive alarm sends promote-ahead's `/promote?wait=60&next=1` to site a's shard at 05:50:16Z. `/promote` is
+`Caller::Client` (`workers/site/src/shard.rs`: only `/catchup` with `warm` is a warm caller), so it starts the
+container and records a request (`Serve::Run { touch: true }`), which keeps it warm `WARM_FOR`, 24 h. The shard
+rehydrated (`shard rehydrate 131329` at 05:51:48Z), and later warms then found it running. 131304, 131306, 131323 and
+65536 show the same `/promote` 503 after 30 to 60 s, then the rehydrate. These repositories hold an unpromoted tail
+above `LOG_MAX_BYTES / PROMOTE_AHEAD`, so each wake of their group runs promote-ahead and starts a shard for a day.
+The idle-shards fixes (`tests/am1/results/idle-shards.md`) made `warm` start nothing, but promote-ahead's `/promote`
+came later (stored-fetch, round 20) and was never put under that rule [inference: no idle-hours check ran after it].
+
+**Done.** `teardown.py --sweep` at about 06:03Z tore down all 19 (`no shard container running` after). Reapers
+(`tests/fanout/reaper.sh`, orb services `reaper-a` over 131290–131345 and `reaper-b` over 65536) tear down every 60 s;
+none had to by 06:10Z.
+
+**Not run:** the site day, B0-34, B0-33. The instruments for them are on branch `r2-ceiling` (below), not merged.
+
+**Instruments ready (branch `r2-ceiling`, off main 5e1227d9).**
+- `StoredMs.spools`: each stored pack's `[start, end, bytes, site]` in the rehydrate report, at most 512, so the
+  per-container R2 ceiling comes from the report: streams busy over time, MB/s per stream and in total
+  (`crates/git/src/catchup.rs`, `crates/git/src/host.rs`). `tests/fanout/spools.py` reads it from `b034warm`.
+- The second-container probe: `/_bed/catchup_pool?site=&pool=&repo=` on the test edge (`/catchup?warm=pool` on a hot
+  pool shard, which starts its container), run by `b034warm.mjs` with `POOL_PROBE=2:7` beside the cold warm and torn
+  down by `b034.sh` after. About $0.04 (one standard-4 for about 5 minutes).
+- Per miss: `tests/fanout/misses.py` joins each a1 probe row to the miss-log branch's `shard miss <net> <key>` line by
+  the CloneKey digest and splits its first byte into container, shard transit, and edge plus network; `b034.sh` runs it
+  after the row.
+- `shardprocs.mjs` records `uploads` (stock upload-packs at once) and `uploadRssMb` per shard, for comparison with
+  `instcpu.py`'s container memory at about 0.4 GB each.
+- G9's row records the `/spool` early-headers option, to build only if the ceiling allows more streams.
+- Full checks: fmt, workspace clippy, wasm32 clippy for site and edge (with and without test-faults) and ops,
+  `cargo test --workspace` 1,009 passed and 0 failed, `go test`, `check_design`.
+
+### Round 29: B0-33 alone on the deployed m37 sites and edge (no site day), under the $155 approval: fail, terms 2 to 15 (2026-11-16)
+
+**Run** `tests/fanout/b033-r29.sh r29` as one orb service, reapers a and b running throughout.
+- Edge check before the row: graft-m2b-edge serves b4968db8, m37's (deployments API). Sites a 2cf0b9f7, b 25a747eb,
+  c 9c45528d, so read-round-gap (B0-02) is deployed.
+- Meter $149.69 before the row, expected +$1.5 against the $155 stop; read every 60 s, never near $154.50.
+- Repo `fr29-b033` (131342), run `mwivq5ms`, 8 learners, k 4 granted at 06:25:24Z, tasks 100 of 100.
+- Load 06:30:42Z to about 06:35:45Z (300 s, 5,000 agents), a1 exit 0. a1's learner wait read "0/8 in 122402 ms"
+  against commit 116, the same moving-commit read as rounds 24 and 24b.
+- Teardown: the row's 6 shards torn down (200 each), then "sweep: no shard container running".
+
+**Memory: held.** 469 memguard samples (42 member reads unanswered), voter peaks 50.0 / 48.9 / 53.4 MiB.
+`inFlight` at most `admitted` 681 / 623 / 479 and `admittedBytes` 3.38 / 4.23 / 3.37 MB.
+
+**Leaders: churn, term 2 to 15.** terms.mjs: term 2 until 06:31:05Z, then 3 (site 2) 06:31:15, 4 (site 1), 5 (site 0)
+06:31:49, and so on to 15 (site 0) at 06:35:39Z, which held to the end. Step-downs in Workers Logs (`member alarm:
+StepDown`, `stepdowns-r29.txt`), 12 in all:
+
+| reason | site a | site b | site c |
+|---|---|---|---|
+| `CommitErrors` | 2 | 7 | 1 |
+| `Confirm` (p99 1,633 and 1,314 ms) | 2 (06:36:42, 06:36:54Z, after the load) | 0 | 0 |
+
+The `CommitErrors` windows name one follower with most calls failed, for example site a at 06:33:35Z
+`(SiteId(1), 137, 119)` and site b at 06:34:38Z `(SiteId(2), 61, 58)`. Terms rose about three per step-down, so
+followers' elections without a step-down made the rest.
+
+**B0-02's hosted check (`tests/f74/rounds.py`, 06:30:42Z to 06:35:45Z, `rounds-r29.json`).**
+
+| voter → voter | fetches | max per 20 ms | turns max | buckets over 1 |
+|---|---|---|---|---|
+| 0 → 1 / 0 → 2 | 2,229 / 2,502 | 84 / 92 | 3 / 2 | 44% / 55% |
+| 1 → 0 / 1 → 2 | 1,855 / 1,971 | 50 / 76 | 3 / 3 | 45% / 48% |
+| 2 → 0 / 2 → 1 | 1,285 / 1,145 | 40 / 39 | 2 / 3 | 32% / 34% |
+
+- Read grant (learner `IndexTaken` to `ResSent`, on the serving leader): p99 2,313 / 2,853 / 2,413 ms on sites 0 / 1 /
+  2, max 4,742 ms; p50 0 to 25 ms.
+- Against round 24b's baseline (before read-round-gap): max per bucket 427 to 562 down to 39 to 92, turns 3 to 4
+  down to 2 to 3, grant p99 3.1 to 4.9 s down to 2.3 to 2.9 s. Buckets over one fetch went from 14 to 48% to 32 to
+  55%. `rounds.py` counts every `/raft` fetch, appends and votes included, so a bucket over 1 is a candidate breach,
+  not a proven one; turns over 1 per bucket stayed at 11 to 30 per pair in the window.
+
+**The trace (`calls.py`, same window, `calls-r29.{txt,tsv.xz}`).**
+
+| calls | sent | reached the callee | answered |
+|---|---|---|---|
+| learner → voter (read-index) | 17,642 | 15,145 | 14,820 |
+| voter → voter (raft) | 10,987 | 9,604 | 9,476 |
+| voter → learner (append) | 3,038 | 3,026 | 2,894 |
+
+- Learners' calls are down from 270,129 (round 24b) to 17,642, 15 times fewer, and are 56% of member calls, not 94%.
+  At most 349 member calls in one second (p50 94), against up to 14,325.
+- The voter legs are still slow. Voter → voter `out` p50 1.7 to 3.2 s and p99 8.9 to 23.7 s; `work` p50 0 ms and p99
+  at most 2.2 s. 24,537 calls missed the 1,000 ms deadline or went unanswered; 3,868 never reached the callee. Callers'
+  loop lag at send was under 100 ms for 27,401 of 31,667 calls.
+- The leader at the end (term 15, site 0) counted 503 requests a second inbound: `/read` 114,236, `/suspect` 46,384,
+  `/commit` 26,332, `/raft` 12,914, `/outcome_by_request` 5,294, `/campaign` 3,558 [measured, `leader.inbound`; the
+  counts are since that member's start, not the window alone].
+- **Reading [inference, not proven]:** read-round-gap removed the learner fetch storm, but the voters' raft calls
+  still spend seconds in the legs, not the handler, so heartbeats miss the deadline and `CommitErrors` steps leaders
+  down. What is left ahead of them is the client load on the voters (edge `/read`s, `/commit`s, and `/suspect`
+  reports from the elections themselves). This is F74's question and B0-02's, and the trace went to B0-02.
+
+**Row numbers.**
+- Offered: 252.2 agent-class group commands a second with host-made (41.7 agent pushes a second, mean pack 90 KB).
+- Agent-class requests ok over 300 s: 3,679, 12.3 a second at the client (pushes 2,265 of 12,316; stand-ins 420;
+  comments 325; lease renews 236; task edits 249; leases 118; draft PRs 66; labels 0).
+- Agent pushes' refusals: 4,799 "access rows did not answer", 2,578 "created, but no member leads", 904 `full` (the
+  `ng` shape), 517 git cache 503s, 387 `no outcome ... missed`.
+- Leader commit p50 4,274 ms, p99 15,106 ms (n 6,688). Merges 0 ok of 49 (30 skipped at the cap). Human pushes 8 ok
+  of 193 (163 skipped at the cap); GraphQL human writes 62 of 470; the fast user 36 of 476 × 200.
+- Entries 84, commands 2,801 on the end leader.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | r29 (m37) | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 15,106 ms; merges 0 of 19 attempted; human pushes 8 of 30 attempted | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 12.3 agent-class ok a second at the client | fail |
+| User token admitted as `Agent` | 36 of 476 fast-user requests 200, 440 × 503 | not shown |
+| Every refusal in the `ng` or 429 shape | 503s and 500s dominate | fail |
+| Zero leader changes and `suspect` | term 2 → 15; 12 step-downs; `/suspect` 46,384 on the end leader | fail |
+
+**Raw.** Under `tests/fanout/raw/`: `rows-r29.status`, `r29-r29.status`, `memguard-r29.jsonl`, `terms-r29.jsonl`,
+`tsave-r29.jsonl.xz` (12.4 MB raw), `calls-r29.txt`, `calls-r29.tsv.xz`, `rounds-r29.json`, `stepdowns-r29.txt`, and
+`a1-b0-33-r29.jsonl` (a copy of `tests/am1/raw/a1-b0-33-mwivq5ms.jsonl`). The driver is `tests/fanout/b033-r29.sh`.
+
+**Cost.** $151.09 at 06:40Z after the sweep, from $149.69 before: the row cost $1.40, against $1.5 expected and the
+$155 stop. $3.91 of the $155 approval is left.
+
+### Round 30 (local, no hosted spend): `promote-warm`, promote-ahead starts no stopped shard (2026-11-16)
+
+Round 28's cause: the archive alarm's promote-ahead sent `/promote` as `Caller::Client`. Each old group woken with an
+unpromoted tail above the bound started its stopped shard and kept it warm 24 h. Branch `promote-warm`, off main
+b79a2b26, fixes it at the caller, design first (DESIGN, Shape, `Promoted`; DECISIONS, "`promote-warm`").
+- `log_archive::step` passes `warm` to `ArchiveHost::promote` for promote-ahead (no range due), and treats a promotion
+  that every shard skipped as `Step::Idle`, so the same range promotes on a later alarm once a shard runs. A due
+  range's promotion is still a client's call and starts a shard, since archiving waits on it.
+- The site's promotion (`workers/site/src/archive.rs`) adds `warm=1` to every shard call of a warm promotion: `/promote`,
+  its `/validate` and `/idx`. A shard's `skipped` answer now carries `x-graft-skipped: stopped`, which `shard_call` reads
+  as `SKIPPED`, so the skip is not mistaken for `/promote`'s 200 pack.
+- The shard reads `warm` on any route as a warm caller (`graftyard_git::caller`): `serve(Warm, false)` is `Skip`, and
+  `serve(Warm, true)` runs without a touch. `warm=pool` stays the pool warm, on `/catchup` only.
+
+**Tests and plants.**
+- `promote_ahead_starts_no_stopped_shard_and_a_due_range_does` (`crates/git/tests/log_archive.rs`): on a stopped shard,
+  promote-ahead asks warm, records nothing and starts nothing; once the shard runs, the same range promotes from entry
+  1. A due range over a small cap asks as a client and starts the shard. It fails on main, where `promote` takes no
+  `warm`.
+- `a_warm_query_on_any_route_is_a_warm_call_and_pool_only_on_catchup` (`crates/git/tests/shard.rs`) fails on main, where
+  only `/catchup` read `warm`.
+- `tests/promotewarm/plant.py`: 6 of 6 caught (promote-ahead as a client, every promotion warm, a skip as an error,
+  `warm` only on `/catchup`, the pool warm on every route, a call without `warm` as warm).
+
+**Checks.** fmt, workspace clippy, wasm32 clippy for site and edge (with and without test-faults) and ops, `cargo test
+--workspace` 1,011 passed and 0 failed, `go test`, and the three `scripts/check_*.py` OK; DESIGN at 2,200 lines.
+
+**Not yet:** deployed. It ships with the next m2b site day; reapers a and b stay on until then.
+
+### Round 31 (local, no hosted spend): `registry-restore`, a re-placement's tries no longer leave the site's registry row (2026-11-16)
+
+B0-02's analysis of round 29: during `repo:131342`'s create placement, `replace_on` joined tries `#4#f1` to `#9#f1` on
+site b. Each `/join` wrote its registry row before the placement check, and `PUT /row` refused only a lower generation,
+so `#9#f1`, which never went in, stayed the row over the voter `#3#f1`. The edge's registry stage read the row about
+61,000 times per site in 303 s and got 63,387 `/read` 409s from `#9#f1`.
+
+Branch `registry-restore`, off main 112ee41e, design first (DESIGN, Shape, `MemberRegistry`; DECISIONS,
+"`registry-restore`").
+- `replace_on` records every try it joins. When it ends, by `Normal(p)` with the old member or `Normal(np)` with a
+  try, it sends `RowPut { row: kept, replacing: other tries }` to that site's registry (`restore_row`, best effort,
+  logged on failure).
+- `PUT /row` takes a bare `RegistryRow` (a member's own write, as before: never a lower generation) or a `RowPut`, which
+  replaces the stored row only when it names one of the tries (`RowPut::replaces`).
+- Compare-and-set by name, not a winning generation: the kept member keeps its own generation, which the readers that
+  rebuild records from a row (`registry_record`, `fold_audit`, `activity::rebuild`) rely on.
+- Edge: no change. A 409 at a registry-step name is already `Skip` (no `/suspect`, `classify`), and `tried` drops the
+  name for the rest of the pass.
+- Mixed versions: a site script before this change answers a `RowPut` with an error (its `PUT /row` reads a bare row),
+  which `restore_row` logs; the row stays as on main until both sites run it.
+
+**Test and plants.** `a_placement_that_kept_its_member_puts_its_row_back_over_every_try` (`crates/types/src/registry.rs`)
+fails on main. `tests/registryrestore/plant.py` 8 of 8 caught: a restore over any row, a restore under the generation
+rule (main's), an own write moving the row back, a restore creating a row, the kept member among those replaced, an
+empty restore sent, the sites lost, and the newest try's generation on the restored row.
+
+**Checks.** fmt, workspace clippy, wasm32 clippy for site and edge (with and without test-faults) and ops, `cargo test
+--workspace` 1,013 passed and 0 failed, `go test`, and the three `scripts/check_*.py` OK; DESIGN at 2,200 lines.
+
+**Not yet:** deployed. It ships with the next m2b site day.

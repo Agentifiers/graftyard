@@ -1,0 +1,12 @@
+06:31:45.009 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 70, 4), (SiteId(2), 49, 4)] }, to: None }
+06:32:42.509 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 75, 26), (SiteId(2), 44, 4)] }, to: None }
+06:32:57.331 c member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 5, 3), (SiteId(1), 22, 6)] }, to: None }
+06:33:16.736 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 175, 71), (SiteId(2), 86, 5)] }, to: None }
+06:33:35.177 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 137, 119), (SiteId(2), 53, 3)] }, to: None }
+06:33:56.531 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 34, 7), (SiteId(2), 105, 6)] }, to: None }
+06:34:38.737 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 72, 4), (SiteId(2), 61, 58)] }, to: None }
+06:35:17.000 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 83, 5), (SiteId(2), 85, 51)] }, to: None }
+06:35:29.810 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 53, 3), (SiteId(2), 52, 4)] }, to: None }
+06:35:56.165 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 73, 4), (SiteId(2), 50, 7)] }, to: None }
+06:36:42.493 a member alarm: StepDown { why: Confirm { p99_ms: 1633, slow: 6, of: 11 }, to: None }
+06:36:54.519 a member alarm: StepDown { why: Confirm { p99_ms: 1314, slow: 9, of: 13 }, to: None }

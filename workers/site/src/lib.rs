@@ -42,6 +42,7 @@ mod release;
 mod search;
 mod shard;
 mod snap;
+mod split;
 mod sweep;
 mod tier;
 

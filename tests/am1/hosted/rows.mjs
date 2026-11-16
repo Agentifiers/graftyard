@@ -15,6 +15,7 @@
 //   node tests/am1/hosted/rows.mjs <row> [n]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { OP, api, ghs, Git, log, member, must, pat, row, sleep, state, tokens } from "./lib.mjs";
 import { agentToken } from "../rest/apps.mjs";
 
@@ -117,8 +118,18 @@ if (which === "l012") {
   ];
   const summary = {};
   const only = process.env.ROWS_L012_ONLY;
+  // ROWS_COST_CMD (rows.sh: tests/fanout/costok.sh) runs before each kind with the kind as its phase; a nonzero exit
+  // is the cost stop, and the kinds not run are logged so the row's results can name them.
+  const costOk = (kind) => !process.env.ROWS_COST_CMD
+    || spawnSync("bash", ["-c", `${process.env.ROWS_COST_CMD} "$1"`, "costok", `l0-12 refusals: ${kind}`], { stdio: "inherit" }).status === 0;
   for (const [ki, [kind, tokenOf, ref]] of kinds.entries()) {
     if (only && kind !== only) continue;
+    if (!costOk(kind)) {
+      const left = kinds.slice(ki).map(([k]) => k).filter((k) => !only || k === only);
+      row(OUT, { step: "cost stop", notRun: left });
+      log(`cost stop: kinds not run: ${JSON.stringify(left)}`);
+      break;
+    }
     const tok = await tokenOf();
     await sleep(2000);
     const pushes = [], writes = [];

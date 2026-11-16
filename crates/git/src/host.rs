@@ -658,14 +658,19 @@ impl ShardHost<'_> {
         Ok(())
     }
 
-    /// Records a request and arms the renewal alarm (`renewal`). The shard's `alarm` handler calls `on_alarm`.
-    pub async fn touch(&self, now: Timestamp) -> Result<(), StoreError> {
+    /// Records a request and arms the renewal alarm (`renewal`), at most once per TOUCH_EVERY (`touch_due`). Returns
+    /// whether it wrote. The shard's `alarm` handler calls `on_alarm`.
+    pub async fn touch(&self, now: Timestamp) -> Result<bool, StoreError> {
         let s = self.state.storage();
+        let last: Option<u64> = s.get("last_request").await.map_err(worker_err)?;
+        if !crate::shard::touch_due(now, last.map(Timestamp)) {
+            return Ok(false);
+        }
         s.put("last_request", now.0).await.map_err(worker_err)?;
         if let Renewal::Renew { next } = renewal(now, now) {
             s.set_alarm(alarm_at(now, next)).await.map_err(worker_err)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub async fn on_alarm(&self, now: Timestamp) -> Result<Renewal, StoreError> {
@@ -1284,6 +1289,7 @@ impl ShardIo for Io<'_, '_> {
         let key = R2Key::Pack { network: self.network, id }.to_string();
         let idx_key = R2Key::Idx { network: self.network, id }.to_string();
         let net = self.network.0.0;
+        let start = js_sys::Date::now() as u64;
         let got = crate::catchup::first_copy(self.buckets, |b: &&R2| {
             let (b, key, idx_key): (&R2, String, String) = (b, key.clone(), idx_key.clone());
             async move {
@@ -1322,6 +1328,9 @@ impl ShardIo for Io<'_, '_> {
         *st.from_site.entry(site.0).or_default() += 1;
         st.spool_ms += s.spool_ms;
         st.bytes += s.bytes;
+        if !s.have && st.spools.len() < crate::catchup::SPOOLS_MAX {
+            st.spools.push([start, js_sys::Date::now() as u64, s.bytes, u64::from(site.0)]);
+        }
         Ok(if s.have { Fetched::Have } else { Fetched::Spooled })
     }
     /// `/ingest&spooled=1`: the container's answer, with its times and whether it used the stored `.idx`.

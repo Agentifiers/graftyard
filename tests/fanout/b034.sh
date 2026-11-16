@@ -3,7 +3,7 @@
 # resumable; the monorepo is 5 GB of torvalds/linux, the others git/git), then a1.mjs b0-34 --b034 with the home shard
 # killed at 300 s, the second network hot from 420 s and the hostile owner's three from 600 s, over 900 s. The repos
 # are kept between rounds. Before the run, a static check that no request path can call the Cloudflare API.
-#   EDGE_LOG=tests/am1/raw/runs/fanout-mNN-edge.log [SEED_ONLY=1] [LEARNERS=...] [PROCS_S=3600] B034_DIR=$HOME/b034 \
+#   EDGE_LOG=tests/am1/raw/runs/fanout-mNN-edge.log [SEED_ONLY=1] [LEARNERS=...] [PROCS_S=3600] [POOL_PROBE=2:7] B034_DIR=$HOME/b034 \
 #     bash tests/fanout/b034.sh <tag>
 # Needs $B034_DIR/linux.git and $B034_DIR/git.git (bare clones). Output: tests/fanout/raw/b034-<tag>.status.
 set -uo pipefail
@@ -70,6 +70,14 @@ s "b0-34 warm start"
 node tests/fanout/shardprocs.mjs "${chain#repo:}" "${PROCS_S:-3600}" 15 > tests/fanout/raw/shardprocs-$TAG.jsonl 2>&1 &
 node tests/fanout/b034warm.mjs "${chain#repo:}" "$(q "d['mono']['repo']")" "${WARM_MIN:-45}" > tests/fanout/raw/b034warm-$TAG.jsonl 2>&1
 w=$?; s "b0-34 warm exit $w $(tail -1 tests/fanout/raw/b034warm-$TAG.jsonl)"
+# Round 27b: the per-container R2 ceiling from each rehydrate's spools (streams busy, MB/s per stream and in total,
+# over time). With POOL_PROBE=<site>:<pool>, a second container on that site rehydrated the same packs at once, and
+# that site's warm time is not the row's (it shares the bucket and the link by design of the probe).
+python3 tests/fanout/spools.py tests/fanout/raw/b034warm-$TAG.jsonl >> "$ST" 2>&1
+# The probe's pool shard is torn down before the row, so it holds no lease and bills no further.
+[ -n "${POOL_PROBE:-}" ] && node --input-type=module -e '
+const { bedGet } = await import("./tests/am1/hosted/lib.mjs"); const [s, p] = process.argv[1].split(":");
+console.log("b0-34 pool probe torn down", JSON.stringify(await bedGet(`/_bed/kill_pool?site=${s}&pool=${p}`)));' "$POOL_PROBE" >> "$ST" 2>&1
 # Round 23: every shard the warm started runs the expected image (IMG, a sha256: prefix), recorded beside the rehydrates.
 [ -n "${IMG:-}" ] && { python3 tests/fanout/netimages.py "${chain#repo:}" --image "$IMG" >> "$ST" 2>&1; s "b0-34 warm images exit $?"; }
 [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
@@ -101,6 +109,11 @@ node tests/fanout/memguard.mjs "$chain" 1100 2 120 > tests/fanout/raw/memguard-b
 node tests/fanout/terms.mjs "$chain" 1100 > tests/fanout/raw/terms-b034$TAG.jsonl 2>&1 &
 bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
 s "b0-34 done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-34-$mono.log)"
+# The miss-log branch's line per clone-cache miss (`shard miss <net> <key>`), joined to each probe row: container,
+# shard transit, and edge plus network, by compose answer. Workers Logs lag a few minutes, so it runs after a wait.
+rows=$(ls -t tests/am1/raw/a1-b0-34-*.jsonl | head -1)
+sleep 180; RAW=tests/fanout/raw/misslines-$TAG.jsonl python3 tests/fanout/misses.py "$rows" "$(date -u -d '-35 min' +%FT%TZ)" "$(date -u +%FT%TZ)" "${chain#repo:}" > tests/fanout/raw/misses-$TAG.txt 2>&1
+s "b0-34 misses: $(head -2 tests/fanout/raw/misses-$TAG.txt | tr '\n' ' ')"
 compose "at the row's end"
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
 echo DONE >> "$ST"

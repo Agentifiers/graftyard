@@ -79,6 +79,9 @@ fn heavy_read(q: &Value) -> bool {
     q.get("rows").is_some_and(Value::is_boolean)
 }
 
+/// The start of an answer that missed a metadata child's rows (`crate::split::since`).
+const MISSED_CHILD: &[u8] = br#"{"missedChild""#;
+
 /// How long a follower waits to apply the leader's read index before it answers `overloaded` [guess]: one that is
 /// behind or installing a snapshot never answers from an older fold, and the edge asks the next member
 /// (`design/DESIGN.md`, "Follower read"; `graftyard_lookup::read_spread`).
@@ -554,6 +557,15 @@ impl<F: Family> Routes<F> {
         // F74's call trace: the handler's entry, before any injected fault awaits, and the loop lag there.
         #[cfg(feature = "test-faults")]
         let (entered, entry_lag) = (now_ms(), self.host.loop_lag());
+        // F74's inbound trace: every request, numbered as it reaches the handler, held open until the handler ends.
+        #[cfg(feature = "test-faults")]
+        let _open = {
+            let header = |k: &str| req.headers().get(k).ok().flatten().and_then(|v| v.parse::<u64>().ok());
+            let from = header("x-graft-from").and_then(|v| u8::try_from(v).ok()).unwrap_or(255);
+            let (index, open, guard) = self.host.inbound_log.enter(url.path());
+            self.host.trace_at(entered, Trace::Entered, from, header("x-graft-call").unwrap_or(0), index, open);
+            guard
+        };
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
         // A peer's `/raft` call or an edge's request carries its sender's clock (`crate::clock`).
@@ -691,7 +703,7 @@ impl<F: Family> Routes<F> {
                     Ok(b) => b,
                     Err(r) => return r,
                 };
-                self.ready_or(|| async { self.outcome_by_request(body) }).await
+                self.ready_or(|| self.outcome_by_request(body)).await
             }
             (Method::Post, "/read") => {
                 let body: Value = req.json().await?;
@@ -1195,6 +1207,7 @@ impl<F: Family> Routes<F> {
                 self.host.trace(Trace::IndexTaken, from.0, *batch, 0, 0);
                 asked.push(*batch);
             }
+            self.host.heard(&e);
             self.host.trace_res(&e, false);
             let (_, out) = self.host.step(|m, t| m.step(t, e.from, e.msg))?;
             back.extend(self.host.dispatch(out, Some(from)));
@@ -1313,7 +1326,7 @@ impl<F: Family> Routes<F> {
                         within(left, rx).await
                     };
                     match r {
-                        Some(Ok(o)) => json!({ "done": self.host.reply_json(&o) }),
+                        Some(Ok(o)) => json!({ "done": self.done(&o).await }),
                         Some(Err(_)) => return Err(err("member reset")),
                         None => json!({ "admitted": host::ticket_json(&self.host.current(ticket)) }),
                     }
@@ -1331,29 +1344,46 @@ impl<F: Family> Routes<F> {
         let now =
             self.host.core.borrow().as_ref().and_then(|c| c.m.outcome(ticket)).filter(|o| !host::needs_block::<F>(o));
         if let Some(o) = now {
-            return self.reply(json!({ "done": self.host.reply_json(&o) }));
+            return self.reply(json!({ "done": self.done(&o).await }));
         }
         let rx = self.host.wait_ticket(ticket, None);
         self.host.kick();
         match within(Duration::from_millis(wait), rx).await {
-            Some(Ok(o)) => self.reply(json!({ "done": self.host.reply_json(&o) })),
+            Some(Ok(o)) => self.reply(json!({ "done": self.done(&o).await })),
             Some(Err(_)) => Response::error("member reset", 503),
             None => self.reply(json!({ "pending": host::ticket_json(&ticket) })),
         }
     }
 
-    fn outcome_by_request(&self, body: CommitReq<F>) -> Result<Response> {
+    async fn outcome_by_request(&self, body: CommitReq<F>) -> Result<Response> {
         let rid = host::rid_from(&body.rid)?;
-        let core = self.host.core.borrow();
-        let m = &core.as_ref().ok_or_else(|| err("member not joined"))?.m;
-        let v = match m.outcome_by_request(rid, &body.cmd) {
-            Ok(ByRequest::Done(a)) => json!({ "done": self.host.reply_json(&Ok(a)) }),
+        let r = {
+            let core = self.host.core.borrow();
+            let m = &core.as_ref().ok_or_else(|| err("member not joined"))?.m;
+            m.outcome_by_request(rid, &body.cmd)
+        };
+        let v = match r {
+            Ok(ByRequest::Done(a)) => json!({ "done": self.done(&Ok(a)).await }),
             Ok(ByRequest::Pending(t)) => json!({ "pending": host::ticket_json(&t) }),
             Ok(ByRequest::Unknown) => json!({ "unknown": true }),
             Err(nl) => json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }),
         };
-        drop(core);
         self.reply(v)
+    }
+
+    /// `Host::reply_json`, rendered again after reading the metadata child's rows a reply missed (`crate::split`):
+    /// the fold it renders over is at or after the output's index either way.
+    async fn done(&self, o: &host::Outcome<F>) -> Value {
+        let mut v = self.host.reply_json(o);
+        for _ in 0..3 {
+            let Some(missed) = v.pointer("/ok/out/missedChild").filter(|m| !m.is_null()).cloned() else { break };
+            if let Err(e) = F::fetch_missed(&self.host, &json!({ "missedChild": missed })).await {
+                console_error!("a reply's metadata child rows: {e}");
+                break;
+            }
+            v = self.host.reply_json(o);
+        }
+        v
     }
 
     /// A `fresh` read: `{"key": k}` for the register, `{"q": {...}}` for a family's query (`Family::read_json`), or
@@ -1423,62 +1453,75 @@ impl<F: Family> Routes<F> {
         }
         let held = (InFlight::new(&self.host.reads_in_flight), heavy.then(|| InFlight::new(&self.host.heavy_reads)));
         let (wait, late) = read_wait(index);
-        let t0 = now_ms();
-        let until = t0 + wait.as_millis() as u64;
-        let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
-        if leading && r.is_ok() && self.host.clock.borrow().suspect() {
-            self.host.stats.borrow_mut().lease_fallbacks += 1;
-        }
-        let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
-        self.host.dispatch(out, None);
-        let rx = match (r, rx) {
-            (Ok(_), Some(rx)) => rx,
-            (Err(nl), _) => {
-                return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
+        // One deadline for the read and each child refetch after it.
+        let until = now_ms() + wait.as_millis() as u64;
+        let mut fetched = 0;
+        loop {
+            let t0 = now_ms();
+            let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
+            if leading && r.is_ok() && self.host.clock.borrow().suspect() {
+                self.host.stats.borrow_mut().lease_fallbacks += 1;
             }
-            (Ok(_), None) => unreachable!("a started read has a waiter"),
-        };
-        self.host.served();
-        let left = Duration::from_millis(until.saturating_sub(t0));
-        let mut answer = within(left, rx).await;
-        let granted = now_ms();
-        // An answer whose rebuild is not yet due (`family::dump_wait`, `family::narrow_wait`). A read-index read that
-        // may wait sleeps until the build is due, then is answered at the member's state then, which is at or above
-        // the leader's read index for this read (`raft::Member::fresh_after`): no second read-index round. A voter's
-        // dump read and a leader's plain read are shed.
-        while let Some(Ok(Ok((host::ReadBody::Shed(ms, g), _)))) = &answer {
-            let (ms, g) = (*ms, g.clone());
-            let Some(g) = g.filter(|_| waits_for_rebuild(learner, narrow, index, now_ms(), ms, until)) else {
-                self.host.stats.borrow_mut().shed_reads += 1;
-                return self.reply(graftyard_lookup::overloaded_reply(ms));
-            };
-            self.host.stats.borrow_mut().waited_reads += 1;
-            worker::Delay::from(Duration::from_millis(ms.max(1))).await;
-            answer = match self.host.answer_after(&g, &q) {
-                Some(r) => Some(Ok(r)),
-                None => return Response::error("member reset: fold storage lost", 503),
-            };
-        }
-        let done = now_ms();
-        let d = |a: u64, b: u64| b.saturating_sub(a) as u32;
-        let stages = [d(t0, granted), d(granted, done)];
-        if index && matches!(answer, Some(Ok(Ok(_)))) {
-            let mut s = self.host.stats.borrow_mut();
-            if s.read_stages.len() < host::SAMPLES_MAX {
-                s.read_stages.push([stages[0], stages[1], d(t0, done)]);
-            }
-        }
-        match answer {
-            Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held, stages),
-            Some(Ok(Ok((host::ReadBody::Shed(..), _)))) => unreachable!("a shed answer is waited out above"),
-            Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
-            Some(Err(_)) => Response::error("member reset", 503),
-            None => {
-                if index {
-                    self.host.stats.borrow_mut().follower_late += 1;
+            let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
+            self.host.dispatch(out, None);
+            let rx = match (r, rx) {
+                (Ok(_), Some(rx)) => rx,
+                (Err(nl), _) => {
+                    return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
                 }
-                self.reply(late)
+                (Ok(_), None) => unreachable!("a started read has a waiter"),
+            };
+            self.host.served();
+            let left = Duration::from_millis(until.saturating_sub(t0));
+            let mut answer = within(left, rx).await;
+            let granted = now_ms();
+            // An answer whose rebuild is not yet due (`family::dump_wait`, `family::narrow_wait`). A read-index read that
+            // may wait sleeps until the build is due, then is answered at the member's state then, which is at or above
+            // the leader's read index for this read (`raft::Member::fresh_after`): no second read-index round. A voter's
+            // dump read and a leader's plain read are shed.
+            while let Some(Ok(Ok((host::ReadBody::Shed(ms, g), _)))) = &answer {
+                let (ms, g) = (*ms, g.clone());
+                let Some(g) = g.filter(|_| waits_for_rebuild(learner, narrow, index, now_ms(), ms, until)) else {
+                    self.host.stats.borrow_mut().shed_reads += 1;
+                    return self.reply(graftyard_lookup::overloaded_reply(ms));
+                };
+                self.host.stats.borrow_mut().waited_reads += 1;
+                worker::Delay::from(Duration::from_millis(ms.max(1))).await;
+                answer = match self.host.answer_after(&g, &q) {
+                    Some(r) => Some(Ok(r)),
+                    None => return Response::error("member reset: fold storage lost", 503),
+                };
             }
+            let done = now_ms();
+            let d = |a: u64, b: u64| b.saturating_sub(a) as u32;
+            let stages = [d(t0, granted), d(granted, done)];
+            if index && matches!(answer, Some(Ok(Ok(_)))) {
+                let mut s = self.host.stats.borrow_mut();
+                if s.read_stages.len() < host::SAMPLES_MAX {
+                    s.read_stages.push([stages[0], stages[1], d(t0, done)]);
+                }
+            }
+            return match answer {
+                // An answer that missed a metadata child's rows (`crate::split`): read them, and read again.
+                Some(Ok(Ok((host::ReadBody::Json(value), _)))) if value.starts_with(MISSED_CHILD) && fetched < 3 => {
+                    fetched += 1;
+                    let missed: Value = serde_json::from_slice(&value)?;
+                    if let Err(e) = F::fetch_missed(&self.host, &missed).await {
+                        return Response::error(format!("the metadata child did not answer: {e}"), 503);
+                    }
+                    continue;
+                }
+                Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held, stages),
+                Some(Ok(Ok((host::ReadBody::Shed(..), _)))) => unreachable!("a shed answer is waited out above"),
+                Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
+                Some(Err(_)) => Response::error("member reset", 503),
+                None => {
+                    if index {
+                        self.host.stats.borrow_mut().follower_late += 1;
+                    }
+                    self.reply(late)
+                }
+            };
         }
     }
 
@@ -2204,6 +2247,8 @@ impl<F: Family> Routes<F> {
         let others: Vec<MemberRef> = p.voters().iter().filter(|m| m.site != to).cloned().collect();
         let mut generation = p.next_generation();
         let mut tried = Vec::new();
+        // Every try's member: each one's `/join` wrote its row on `to`'s registry, which `restore_row` puts back.
+        let mut joined: Vec<MemberRef> = Vec::new();
         // Tries that passed every check but the near bound, kept until the loop ends: with `keep_below`, the nearest
         // goes in when none passed (`graftyard_types::nearest_try`).
         let mut over: Vec<(MemberRef, graftyard_types::Placement, u16, Option<Rtt>)> = Vec::new();
@@ -2219,6 +2264,7 @@ impl<F: Family> Routes<F> {
                 #[cfg(feature = "test-faults")]
                 no_claim: false,
             };
+            joined.push(new.clone());
             let (status, rows) = self.post_member(&new, "/join", &serde_json::to_value(&join)?).await?;
             let theirs: Vec<(SiteId, Rtt)> = serde_json::from_value(rows.clone()).unwrap_or_default();
             let voters: arrayvec::ArrayVec<MemberRef, 3> =
@@ -2260,7 +2306,7 @@ impl<F: Family> Routes<F> {
                     for (_, r) in &fresh {
                         self.store_rtt(r.peer, r.median_ms, r.at.0)?;
                     }
-                    break Some((np, None));
+                    break Some((np, None, new));
                 }
                 Err(_) => {
                     // A refused try is cleared at once, unless it is kept as a candidate for the nearest.
@@ -2282,15 +2328,16 @@ impl<F: Family> Routes<F> {
                         if let Some((_, _, _, Some(r))) = &best {
                             self.store_rtt(r.peer, r.median_ms, r.at.0)?;
                         }
-                        break best.map(|(_, np, ms, _)| (np, Some(ms)));
+                        break best.map(|(m, np, ms, _)| (np, Some(ms), m));
                     }
                     generation += 1;
                 }
             }
         };
-        let Some((np, near_ms)) = placed else {
+        let Some((np, near_ms, kept)) = placed else {
             // The old member comes back: it kept its log, and the leader backs its next index up from its answers.
             let back = self.change(raft::GroupConfig::Normal(p.clone())).await;
+            self.restore_row(chain, &record, &old, &joined).await;
             if keep_below.is_some() {
                 // The bound is a goal: the member already placed stays, nearer than every try.
                 self.host.stats.borrow_mut().placed_over_near += 1;
@@ -2313,11 +2360,37 @@ impl<F: Family> Routes<F> {
             Ok(i) => i,
             Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
         };
+        self.restore_row(chain, &record, &kept, &joined).await;
         let mut v = json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 });
         if let Some(ms) = near_ms {
             v["nearOver"] = json!(ms);
         }
         Ok(Ok(v))
+    }
+
+    /// Puts `kept`'s registry row back on its site once a re-placement's tries are done, over any row that still names
+    /// another try (`RowPut::restore`): each try's `/join` wrote its row at a generation above `kept`'s, and a try that
+    /// never went in left the edge's registry lookups calling a member outside the group (round 29's
+    /// `repo:131342#9#f1`, `tests/am1/results/lm1-memory.md`, round 31). Best effort: a failed put is logged, and the
+    /// lookup still finds the group through the cached config and the bootstrap names first.
+    async fn restore_row(&self, chain: ChainId, record: &PlacementRecord, kept: &MemberRef, joined: &[MemberRef]) {
+        let Some(put) = graftyard_types::RowPut::restore(chain, &record.sites, kept, joined) else { return };
+        let r = async {
+            let site = SiteEnv::read(&self.host.env)?;
+            let reg = MemberRegistry::for_chain(kept.site, chain);
+            let mut init = RequestInit::new();
+            init.with_method(Method::Put).with_body(Some(serde_json::to_string(&put)?.into()));
+            let mut res = site
+                .registry(&self.host.env, kept.site, &reg.do_name())?
+                .fetch_with_request(Request::new_with_init("https://registry/row", &init)?)
+                .await?;
+            Ok::<_, Error>((res.status_code(), res.text().await.unwrap_or_default()))
+        };
+        match r.await {
+            Ok((200, _)) => {}
+            Ok((s, t)) => console_error!("registry restore of {chain} on site {}: {s} {t}", kept.site.0),
+            Err(e) => console_error!("registry restore of {chain} on site {}: {e}", kept.site.0),
+        }
     }
 
     /// The near check on the leader (`design/DESIGN.md`, Shape, `Placement` and `NEAR_RTT`): reads the home's round

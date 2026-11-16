@@ -342,6 +342,8 @@ fn current() -> (Vec<String>, Vec<String>) {
         // M4-WP2: inside `IdentityEvent::Record` and `RepoEvent::Watchers`, an `Inbox`'s stored rows and snapshots,
         // and a `SearchShard`'s name.
         id::UserRecord, git::watch::WatcherUpdate, git::inbox::Reason, git::search::Domain,
+        // B0-30's metadata split: inside `RepoEvent::Split`.
+        git::split::SplitEntry,
         // M4-WP3: the Actions family's stored events and commands (format 0x15.1), and the repository's
         // `RunChecksCmd` reply.
         actions::shard::ActionsEvent, actions::shard::ActionsOp, actions::shard::ActionsActor, actions::shard::ActionsOut,

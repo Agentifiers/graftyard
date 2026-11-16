@@ -91,7 +91,7 @@ pub(crate) struct Timing {
 }
 
 impl Timing {
-    fn start(&self) {
+    pub(crate) fn start(&self) {
         let now = js_sys::Date::now();
         self.start.set(now);
         self.last.set(now);
@@ -107,13 +107,13 @@ impl Timing {
     }
     /// A stage that ran from `since` to now, whatever ran beside it; the next `mark` measures from the later of the
     /// last mark and now.
-    fn add(&self, name: &'static str, since: f64) {
+    pub(crate) fn add(&self, name: &'static str, since: f64) {
         let now = js_sys::Date::now();
         self.phases.borrow_mut().push((name, now - since));
         self.last.set(self.last.get().max(now));
     }
     /// A stage another party measured, such as the member's own split of a tier read (`member_stages`).
-    fn put(&self, name: &'static str, ms: f64) {
+    pub(crate) fn put(&self, name: &'static str, ms: f64) {
         self.phases.borrow_mut().push((name, ms));
     }
     /// Each stage and its ms, then `total`.
@@ -123,7 +123,7 @@ impl Timing {
         out
     }
     #[cfg(feature = "test-faults")]
-    fn header(&self) -> String {
+    pub(crate) fn header(&self) -> String {
         self.phases().iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", ")
     }
 }
@@ -583,9 +583,20 @@ fn tier_rows_query(merge: Option<MergeOf>) -> Value {
 /// leader (`graftyard_lookup::read_spread`): `access` for `crate::read_gate`, `agent` for an agent push, or `actions`
 /// for `acquirejob`'s secrets and variables. `Ok(Err(why))` when the leader cannot answer it now.
 pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<std::result::Result<MemStore, String>> {
+    Ok(core_rows_q(c, repo, json!({ which: true })).await?.map(|(store, _)| store))
+}
+
+/// A push's read gate rows and its agent rows in one read (`{"rows": {"access": true, "agent": true}}`, `design/DESIGN.md`,
+/// journey 1, step 1): the store, and whether the member answered the agent rows too (`"agent": true` beside them; a
+/// member built before it answers the access rows alone, and `agents::push_context` then reads them on their own).
+pub(crate) async fn push_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<(MemStore, bool), String>> {
+    core_rows_q(c, repo, json!({ "access": true, "agent": true })).await
+}
+
+async fn core_rows_q(c: &Ctx<'_>, repo: &Repo, rows: Value) -> Result<std::result::Result<(MemStore, bool), String>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
-    let q = json!({ "q": { "rows": { which: true }, "ranges": true } });
+    let q = json!({ "q": { "rows": rows, "ranges": true } });
     let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
     if let Ok(None) = v {
         if let Err(e) = ensure_group(c, repo).await {
@@ -596,7 +607,7 @@ pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<s
     }
     Ok(match v {
         Ok(Some((v, _, _))) => match TierRows::from_value(&v["value"]) {
-            Ok(rows) => Ok(TierRows::store(&rows.core)),
+            Ok(rows) => Ok((TierRows::store(&rows.core), v["value"]["agent"] == json!(true))),
             Err(_) => Err("the repository's members do not serve tier rows yet (site release)".into()),
         },
         Ok(None) => Err("the repository's group has no leader".into()),
@@ -1123,7 +1134,11 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     c.timing.mark("plan");
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let trace_steps = std::cell::RefCell::new(Vec::new());
-    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace_steps) };
+    let hooks = graftyard_lookup::Hooks {
+        first: None,
+        trace: cfg!(feature = "test-faults").then_some(&trace_steps),
+        lookup: None,
+    };
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -1178,7 +1193,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
     if let Some(a) = admit {
         body["admit"] = serde_json::to_value(a)?;
     }
-    Ok(match crate::commit(c, &rd.repo, &body, None, None).await? {
+    Ok(match crate::commit(c, &rd.repo, &body, None, None, None).await? {
         Ok(PushOutcome::Ok(ok)) if ok.out.refs.iter().all(|o| *o == graftyard_git::repo::RefOutcome::Ok) => {
             Reply::empty(204)
         }

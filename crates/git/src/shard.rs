@@ -499,6 +499,18 @@ pub enum Renewal {
     Lapse,
 }
 
+/// How often a client's request writes the shard's `last_request` and its alarm (`touch_due`): at most once a minute,
+/// against WARM_FOR's day, so the container stops at most this much earlier. Written on every request, a 434-push
+/// burst made 434 pairs of storage writes on one network shard, whose forwards each waited p50 3,038 ms
+/// (`tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run"; that the writes set the wait is an inference).
+pub const TOUCH_EVERY: Duration = Duration::from_secs(60);
+
+/// Whether a client's request at `now` writes `last_request` and the alarm, given the stored `last_request`: when
+/// none is stored, or it is TOUCH_EVERY old or older.
+pub fn touch_due(now: Timestamp, last_request: Option<Timestamp>) -> bool {
+    last_request.is_none_or(|l| now.0.saturating_sub(l.0) >= TOUCH_EVERY.as_millis() as u64)
+}
+
 /// The shard's alarm at `now`, given its last request. Every request also calls this, so the first request after a
 /// lapse arms the alarm again.
 pub fn renewal(now: Timestamp, last_request: Timestamp) -> Renewal {
@@ -531,6 +543,18 @@ pub enum Serve {
     /// Serve, starting the container if needed. `touch` records the call as the shard's last request, which keeps it
     /// warm `WARM_FOR` longer; a warm call does not, so leaderships on an idle group never keep its shard running.
     Run { touch: bool },
+}
+
+/// The caller a shard call's path and `warm` query name: `warm=pool` on `/catchup` is the network leader's pool warm,
+/// and any other `warm` is a warm call, a new leadership's `/catchup` or promote-ahead's `/promote` with its `/validate`
+/// and `/idx`. Promote-ahead as a client started every stopped shard of an old group that woke with a tail above the
+/// bound and held it a day: 19 containers on idle `graft-m2b` (`tests/am1/results/lm1-memory.md`, round 28).
+pub fn caller(path: &str, warm: Option<&str>) -> Caller {
+    match warm {
+        Some("pool") if path == "/catchup" => Caller::PoolWarm,
+        Some(_) => Caller::Warm,
+        None => Caller::Client,
+    }
 }
 
 pub fn serve(caller: Caller, running: bool) -> Serve {
@@ -648,6 +672,17 @@ pub fn evict_plan(repos: &[DiskRepo], disk_bytes: u64, incoming: u64, keep: Netw
 /// How long the archive's promotion waits on one site's shard before it tries the next: a shard still catching up
 /// answers 503 `warming` past it and goes on in the background.
 pub const PROMOTE_WAIT_S: u32 = 60;
+/// The wait on a shard that is not the promotion's last try [guess]. A warm shard's catch-up took 0.1 to 3.0 s in
+/// B0-30's rerun, and a new leader's first promotion waited out the full `PROMOTE_WAIT_S` on its first site's shard,
+/// whose catch-up had not finished, before it tried the next, which promoted and validated in 0.8 s: 61.7 s in all
+/// (`tests/am1/results/b030-split.md`, "B0-30 rerun").
+pub const PROMOTE_NEXT_WAIT_S: u32 = 10;
+
+/// How long a promotion waits on one site's shard: `PROMOTE_NEXT_WAIT_S` when another site's shard follows, so a
+/// shard behind costs one short wait, and `PROMOTE_WAIT_S` on the last try, which waits for any catch-up to end.
+pub fn promote_wait_s(next: bool) -> u32 {
+    if next { PROMOTE_NEXT_WAIT_S } else { PROMOTE_WAIT_S }
+}
 
 /// The sites whose shards a promotion tries, in order: `me` (the leader's site, whose shard the alarm calls) first,
 /// then the record's other Full sites in record order. A Witness holds no content, so it has no git cache. A shard
