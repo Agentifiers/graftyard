@@ -924,7 +924,8 @@ be a pass as written. Nothing hosted was changed after the stall.
 
 - **Evidence saved first.**
   - `tests/am1/b030split/final.mjs` wrote each live member's final `/status`, `/stats` and size to
-    `tests/am1/raw/b030r2-final.jsonl`. It also saved site c's last install report, from `/fold`.
+    `tests/am1/raw/b030r2-final.jsonl` (committed as `b030r2-final.jsonl.xz`). It also saved site c's last install
+    report, from `/fold`.
   - It wrote each parent voter's log from 208,150 to `tests/am1/raw/b030r2-log208160.jsonl`. Entry 208,160 is on sites
     a and b with digest `7c6d197d…`, term 153, `committed: false`.
   - `tests/am1/b030split/digest208160.py` re-derives the match: one of 196 candidates, `Degraded { lost: 1 }` over the
@@ -939,7 +940,8 @@ be a pass as written. Nothing hosted was changed after the stall.
 - **Retired.** At 11:14:15 to 11:14:19Z, `tests/am1/b030split/retire.mjs` ran the test route `/retire` (BF-11's
   lost-member stub: storage deleted, object reset) on six members: parent `#1#f0`, `#5#f1` and `#1#f2`, and child
   `#1#f0`, `#5#f1` and `#1#f2`.
-  - The log is `tests/am1/raw/b030-retire-1048590.log`. All six answer "not joined".
+  - The log is `tests/am1/raw/b030-retire-1048590.log` (committed, as is `b030r2-log208160.jsonl`, despite `raw/`
+    being ignored). All six answer "not joined".
   - Two generation-1 site-1 objects from before site b's replacement were still joined, with no work: `repo:1048590#1#f1`
     (term 6, commit 1) and `repo-meta:1048590#1#f1` (term 2, commit 1). Both were retired at 11:16:50Z and answer "not
     joined".
