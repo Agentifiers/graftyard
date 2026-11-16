@@ -183,6 +183,9 @@ impl Rows for Writer<'_> {
             self.store.delete(table, key);
         }
     }
+    fn written(&self, table: &str, key: &[Val]) -> Option<Index> {
+        self.store.get(table, key).map(|s| s.written)
+    }
 }
 
 /// Reads a store's committed rows, for `decide`'s overlay and for tests.

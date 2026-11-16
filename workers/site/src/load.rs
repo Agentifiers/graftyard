@@ -209,7 +209,7 @@ fn bucket(env: &Env, s: u8) -> Result<Bucket> {
 }
 
 /// The site whose bucket holds `key`, this site's first, and the object's size.
-async fn find(env: &Env, key: &str) -> Result<(u8, u64)> {
+pub(crate) async fn find(env: &Env, key: &str) -> Result<(u8, u64)> {
     let site = SiteEnv::read(env)?;
     let mut order: Vec<u8> = vec![site.id.0];
     order.extend(site.sites.0.iter().map(|s| s.id.0).filter(|s| *s != site.id.0));
@@ -233,7 +233,14 @@ async fn get_range(env: &Env, site: u8, key: &str, offset: u64, length: u64) -> 
 
 /// `length` bytes at `offset` of an object of `size`, read again longer while the first frame or row past `start`
 /// is not complete in it: its 4-byte length says how much it needs.
-async fn read_whole(env: &Env, site: u8, key: &str, offset: u64, size: u64, start: usize) -> Result<Vec<u8>> {
+pub(crate) async fn read_whole(
+    env: &Env,
+    site: u8,
+    key: &str,
+    offset: u64,
+    size: u64,
+    start: usize,
+) -> Result<Vec<u8>> {
     let mut len = CHUNK.min(size - offset);
     loop {
         let b = get_range(env, site, key, offset, len).await?;

@@ -44,7 +44,7 @@ git::repo::RepoEvent 39 Fanout 2701
 git::repo::RepoEvent 40 Hook 2802000000
 git::repo::RepoEvent 41 HookCursor 290101
 git::repo::RepoEvent 42 Watchers 2a00
-git::repo::RepoEvent 43 Reserved43 2b
+git::repo::RepoEvent 43 Split 2b00067265706f3a31
 git::repo::RepoEvent 44 ActionsSecret 2c0001610000
 git::repo::RepoEvent 45 ActionsVariable 2d0001610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 0 OpenIssue 00016101610000
@@ -723,6 +723,10 @@ git::search::Domain 0 Default 00
 git::search::Domain 1 Us 01
 git::search::Domain 2 Eu 02
 git::search::Domain 3 Apac 03
+git::split::SplitEntry 0 MetaSplit 00067265706f3a31
+git::split::SplitEntry 1 MetaSeed 0101267061636b2f312f30303030303030303030303030303030303030303030303030312e7061636b
+git::split::SplitEntry 2 MetaDropped 0201
+git::split::SplitEntry 3 MetaSlim 03
 # M4-WP3: the Actions family (0x15.1) and RunChecksCmd's reply (32.21).
 actions::shard::ActionsEvent 0 RunCreated 0002020161016101010101010101010101010101010101010101010161067265706f3a310101000000
 actions::shard::ActionsEvent 1 RunStatus 010200

@@ -88,8 +88,8 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Fanout { .. } => TierSet::CORE,
         RepoEvent::Hook { .. } | RepoEvent::HookCursor(_) => TierSet::CORE,
         RepoEvent::Watchers(_) => TierSet::METADATA,
+        RepoEvent::Split(x) => crate::split::tiers(x),
         RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => TierSet::CORE,
-        RepoEvent::Reserved43 => TierSet::METADATA,
     }
 }
 
@@ -157,6 +157,8 @@ pub const CORE: Schema = Schema {
         // M4-WP1, 32.16: repository webhooks by id, and the `Webhooks` consumer's `HookCursor`.
         t("hook", &["id"]),
         t("hook_cursor", &[]),
+        // Format 32.20: a metadata split's state (`crate::split::SplitState`).
+        t("split", &["k"]),
         // M4-WP3, 32.23: Actions secrets and variables by scope (`""` or `env:<name>`) and name.
         t("actions_secret", &["scope", "name"]),
         t("actions_variable", &["scope", "name"]),
@@ -206,6 +208,8 @@ pub const METADATA: Schema = Schema {
         t("subscriber", &["account"]),
         t("thread_sub", &["n", "account"]),
         t("watch_count", &[]),
+        // Format 32.20: the parent's slim cursor and a child member's restamp (`crate::split`).
+        t("split", &["k"]),
     ],
 };
 
@@ -864,8 +868,8 @@ impl RepoTiers {
             }
             RepoEvent::PathSet(_) => {}
             RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
+            RepoEvent::Split(x) => crate::split::write_core(w, x, at),
             RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => crate::secrets::write_core(w, ev),
-            RepoEvent::Reserved43 => {}
         }
     }
 
@@ -1179,6 +1183,7 @@ impl RepoTiers {
             }
             RepoEvent::PathSet(p) => put_rec(w, "path_set", vec![ref_key(&p.refname)], p),
             RepoEvent::Watchers(us) => us.iter().for_each(|u| crate::watch::write_meta(w, u)),
+            RepoEvent::Split(x) => crate::split::write_meta(w, x),
             _ => {}
         }
     }

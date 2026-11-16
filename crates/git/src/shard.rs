@@ -660,6 +660,17 @@ pub fn evict_plan(repos: &[DiskRepo], disk_bytes: u64, incoming: u64, keep: Netw
 /// How long the archive's promotion waits on one site's shard before it tries the next: a shard still catching up
 /// answers 503 `warming` past it and goes on in the background.
 pub const PROMOTE_WAIT_S: u32 = 60;
+/// The wait on a shard that is not the promotion's last try [guess]. A warm shard's catch-up took 0.1 to 3.0 s in
+/// B0-30's rerun, and a new leader's first promotion waited out the full `PROMOTE_WAIT_S` on its first site's shard,
+/// whose catch-up had not finished, before it tried the next, which promoted and validated in 0.8 s: 61.7 s in all
+/// (`tests/am1/results/b030-split.md`, "B0-30 rerun").
+pub const PROMOTE_NEXT_WAIT_S: u32 = 10;
+
+/// How long a promotion waits on one site's shard: `PROMOTE_NEXT_WAIT_S` when another site's shard follows, so a
+/// shard behind costs one short wait, and `PROMOTE_WAIT_S` on the last try, which waits for any catch-up to end.
+pub fn promote_wait_s(next: bool) -> u32 {
+    if next { PROMOTE_NEXT_WAIT_S } else { PROMOTE_WAIT_S }
+}
 
 /// The sites whose shards a promotion tries, in order: `me` (the leader's site, whose shard the alarm calls) first,
 /// then the record's other Full sites in record order. A Witness holds no content, so it has no git cache. A shard

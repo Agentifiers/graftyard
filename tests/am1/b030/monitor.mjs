@@ -8,14 +8,16 @@
 //   node tests/am1/b030/monitor.mjs
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { log, member, sleep } from "../hosted/lib.mjs";
+import { log, member, sleep, voter } from "../hosted/lib.mjs";
 
 const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8"));
 const CHAIN = `repo:${REPO.repo}`;
 const OUT = "tests/am1/raw/b030-monitor.jsonl";
 const STOP = "tests/am1/raw/b030-STOP";
 const EVERY = Number(process.env.MONITOR_S ?? 900) * 1000;
-const STOP_USD = Number(process.env.STOP_USD ?? 88);
+const STOP_USD0 = Number(process.env.STOP_USD ?? 88);
+// A new cap mid-run: tests/am1/raw/b030-stop-usd holds a number that replaces STOP_USD on the next row.
+const stopUsd = () => { try { return Number(readFileSync("tests/am1/raw/b030-stop-usd", "utf8").trim()) || STOP_USD0; } catch { return STOP_USD0; } };
 // Spent before the load started (the seed and setup, 06:30Z to the load's start), from usage.py; added to cost.
 const SINCE = process.env.B030_SINCE ?? "2026-11-10T06:30:00Z";
 const CHILD_GROUP_AT = 8 * 2 ** 30;
@@ -25,7 +27,12 @@ const cf = (path, input = "") => JSON.parse(execFileSync("curl", ["-s", "-H", "@
   `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/${path}`],
   { input: `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}\n`, stdio: ["pipe", "pipe", "pipe", ...(input ? ["pipe"] : [])], maxBuffer: 64 << 20 }).toString());
 
+// A listing page that times out (curl exit 28, twice on 2026-11-15 and -16) is tried once more, then the bucket's row
+// reads as an error; it never ends the monitor, whose cost row the stop rule needs.
 function bucket(name) {
+  try { return bucketOnce(name); } catch { try { return bucketOnce(name); } catch (e) { return { error: String(e).slice(0, 120) }; } }
+}
+function bucketOnce(name) {
   let cursor = null, n = 0, bytes = 0, first = null, last = null;
   for (let page = 0; page < 1000; page++) {
     const r = cf(`r2/buckets/${name}/objects?prefix=archive/${CHAIN}/&per_page=1000${cursor ? `&cursor=${cursor}` : ""}`);
@@ -42,16 +49,39 @@ function logsHits(from, to) {
     out[s] = 0;
     for (const needle of ["SQLITE_FULL", "database or disk is full"]) {
       try {
-        const v = execFileSync("python3", ["/home/user/workspace/repo/.worktrees/b0-30/tests/am1/b030/logs.py", s, String(from / 1000), String(to / 1000), needle], { maxBuffer: 16 << 20 }).toString();
+        const v = execFileSync("python3", ["tests/am1/b030/logs.py", s, String(from / 1000), String(to / 1000), needle], { maxBuffer: 16 << 20 }).toString();
         out[s] += v.split("\n").filter(Boolean).length;
       } catch (e) { out[s] = `error ${String(e).slice(0, 60)}`; }
     }
   }
   return out;
 }
+// Only this run's group: its Member and GitShard objects (tests/am1/b030/objects.py, refreshed each row so the child
+// group's join), and its own network's shard containers. Another group on graft-m1 is not this run's cost (B0-30
+// rerun: smoke 1's repo:1048586 reinstalled on site b while the load was stopped, 19.5 M rows).
+const OBJECTS = "tests/am1/raw/b030-objects.txt";
 function usage(from) {
-  try { return JSON.parse(execFileSync("python3", ["tests/am1/b030/usage.py", from, new Date().toISOString()]).toString()); }
+  try {
+    writeFileSync(OBJECTS, execFileSync("python3", ["tests/am1/b030/objects.py", String(REPO.repo), from, new Date().toISOString()]).toString());
+  } catch (e) { log(`objects: ${String(e).slice(0, 120)}; keeping the last list`); }
+  try { return JSON.parse(execFileSync("python3", ["tests/am1/b030/usage.py", from, new Date().toISOString()], { env: { ...process.env, B030_OBJECTS: OBJECTS } }).toString()); }
   catch (e) { return { error: String(e).slice(0, 120) }; }
+}
+// graft-m1's shard containers over the same window (tests/fanout/containers.py), which usage.py leaves out; a run on
+// standard-4 shards counts them toward STOP_USD.
+// A failed reading (an API timeout) retries twice, then carries the last good one forward, so a cost line never
+// counts $0 for a source it could not read (04:23Z on 2026-11-15: a TLS timeout read containers as $0).
+let lastU = null, lastK = null;
+function retried(f) {
+  for (let i = 0; ; i++) {
+    const v = f();
+    if (!v.error || i >= 2) return v;
+  }
+}
+function containers(from) {
+  try {
+    return JSON.parse(execFileSync("python3", ["tests/fanout/containers.py", from, new Date().toISOString()], { env: { ...process.env, INSTALL: "graft-m1", NETS: String(REPO.repo) } }).toString());
+  } catch (e) { return { error: String(e).slice(0, 120) }; }
 }
 
 let lastAt = existsSync(OUT) ? Date.parse(readFileSync(OUT, "utf8").trim().split("\n").at(-1) ? JSON.parse(readFileSync(OUT, "utf8").trim().split("\n").at(-1)).at : 0) : Date.now() - EVERY;
@@ -59,27 +89,31 @@ for (;;) {
   const at = Date.now();
   const members = [];
   for (const s of [0, 1, 2]) {
-    try { members.push({ site: s, ...(await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000)).v }); }
+    try { members.push({ site: s, ...(await voter(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000)).v }); }
     catch (e) { members.push({ site: s, error: String(e).slice(0, 120) }); }
   }
   for (const m of members) delete m.meta;
   const buckets = Object.fromEntries(BUCKETS.map((b) => [b, bucket(b)]));
   const full = logsHits(lastAt, at);
-  const u = usage(SINCE);
+  let u = retried(() => usage(SINCE));
+  let k = retried(() => containers(SINCE));
+  if (u.error || u.cost == null) u = { ...(lastU ?? {}), stale: u.error ?? "no cost" }; else lastU = u;
+  if (k.error || k.containers_usd == null) k = { ...(lastK ?? {}), stale: k.error ?? "no cost" }; else lastK = k;
   // R2: two Class A puts per archive object and two per promoted pack, plus storage pro rata; small next to DO.
   const objs = Object.values(buckets).reduce((a, b) => a + (b.objects ?? 0), 0);
   const r2 = objs * 2 * 4.5e-6 + (Object.values(buckets).reduce((a, b) => a + (b.bytes ?? 0), 0) / 1e9) * 0.015 * ((at - Date.parse(SINCE)) / (30 * 86_400_000));
-  const cost = (u.cost ?? NaN) + r2;
+  const cost = (u.cost ?? NaN) + r2 + (k.containers_usd ?? 0);
   const state = existsSync("tests/am1/raw/b030-state.json") ? JSON.parse(readFileSync("tests/am1/raw/b030-state.json", "utf8")) : {};
   const day = state.active ? state.active / (86_400 / Number(process.env.B030_SPEED ?? 18)) : 0;
   const maxDb = Math.max(...members.map((m) => m.dbBytes ?? 0));
   const v = { at: new Date(at).toISOString(), day: +day.toFixed(3), members, buckets, sqliteFullLogs: full,
     sqliteFullCount: members.reduce((a, m) => a + (m.sqliteFull ?? 0), 0) + Object.values(full).reduce((a, n) => a + (typeof n === "number" ? n : 0), 0),
-    childGroupAtReached: maxDb >= CHILD_GROUP_AT, maxDbBytes: maxDb, usage: u, r2Estimate: +r2.toFixed(2), costToDate: +cost.toFixed(2),
+    childGroupAtReached: maxDb >= CHILD_GROUP_AT, maxDbBytes: maxDb, usage: u, containers: k, r2Estimate: +r2.toFixed(2), costToDate: +cost.toFixed(2),
     load: { pushes: state.pushes, pushBytes: state.pushBytes, tasks: state.tasks, checks: state.checks, provenance: state.provenance, batches: state.batches, batchFail: state.batchFail } };
   appendFileSync(OUT, JSON.stringify(v) + "\n");
   log(`monitor day ${v.day} db ${members.map((m) => ((m.dbBytes ?? 0) / 1e9).toFixed(3)).join("/")} GB log ${members.map((m) => ((m.logBytes ?? 0) / 1e9).toFixed(3)).join("/")} GB archived ${objs} full ${v.sqliteFullCount} cost $${v.costToDate}`);
-  if (cost > STOP_USD && !existsSync(STOP)) { writeFileSync(STOP, `cost ${cost} past ${STOP_USD} at ${v.at}\n`); log(`STOP: cost ${cost}`); }
+  const cap = stopUsd();
+  if (cost > cap && !existsSync(STOP)) { writeFileSync(STOP, `cost ${cost} past ${cap} at ${v.at}\n`); log(`STOP: cost ${cost}`); }
   lastAt = at;
   if (existsSync("tests/am1/raw/b030-load.done") && existsSync(STOP + ".monitor")) break;
   await sleep(Math.max(10_000, EVERY - (Date.now() - at)));

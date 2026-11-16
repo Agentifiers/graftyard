@@ -26,7 +26,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use graftyard_git::log_archive::{self, ARCHIVE_RANGE_MAX, ArchiveHost, PROMOTE_MAX, Step, View};
+use graftyard_git::log_archive::{self, ARCHIVE_RANGE_MAX, ARCHIVE_SLACK, ArchiveHost, PROMOTE_MAX, Run, Step, View};
 use graftyard_git::{self as git, Bucket as _, PackIndex, PackRef, PutNew};
 use graftyard_raft::{Index, RequestId, Role};
 use graftyard_types::{ChainId, Digest, NetworkId, SiteId, Timestamp, Ulid};
@@ -39,6 +39,12 @@ use crate::{SiteEnv, now_ms};
 
 /// How often a leader sums its stored log's bytes to ask whether an archive is due [guess].
 const SUM_EVERY_MS: u64 = 60_000;
+// A log that passes the archive's trigger just after a sum grows one `SUM_EVERY_MS` more before a run starts: the
+// trigger sits below the cap by more than that at the rate the band is sized for (`log_archive::ARCHIVE_SLACK`).
+const _: () = assert!(
+    graftyard_fold::LOG_MAX_BYTES / ARCHIVE_SLACK / 2
+        > log_archive::DESIGN_LOG_BYTES_PER_S * (SUM_EVERY_MS + BUSY_MS as u64) / 1_000
+);
 /// After a run that did work, the next alarm comes this soon, so a due range drains piece by piece.
 const BUSY_MS: i64 = 200;
 /// A run starts no new step after this long [guess], so a member's isolate is not held by one drain for ever.
@@ -55,8 +61,13 @@ thread_local! {
     static CAP: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
     /// Members of this isolate with a run in flight, by object name.
     static RUNNING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Members of this isolate whose last run stopped with work left, by object name, and when (`leader_due`).
+    static LEFT: RefCell<std::collections::HashMap<String, u64>> = RefCell::new(Default::default());
     /// When each member last summed its log, by object name.
     static SUMMED: RefCell<std::collections::HashMap<String, u64>> = RefCell::new(Default::default());
+    /// Each member's drain run, by object name, kept across the runs that continue it after `DRAIN_FOR_MS`, so a run
+    /// that passed the trigger archives down to the floor (`log_archive::Run`).
+    static RUN: RefCell<std::collections::HashMap<String, Run>> = RefCell::new(Default::default());
 }
 
 /// Starts one run on a leading repository member, unless one is in flight or the log was summed under a minute ago
@@ -80,11 +91,17 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
     RUNNING.with(|r| r.borrow_mut().insert(key.clone()));
     let w = Rc::downgrade(h);
     spawn_local(async move {
+        let mut run = RUN.with(|r| r.borrow().get(&key).copied().unwrap_or_default());
         let r = match w.upgrade() {
-            Some(h) => drain(&h).await,
+            Some(h) => drain(&h, &mut run).await,
             None => Ok(Step::Idle),
         };
+        RUN.with(|r| r.borrow_mut().insert(key.clone(), run));
         RUNNING.with(|r| r.borrow_mut().remove(&key));
+        LEFT.with(|l| match &r {
+            Ok(Step::Idle) => l.borrow_mut().remove(&key),
+            _ => l.borrow_mut().insert(key.clone(), now_ms()),
+        });
         let Some(h) = w.upgrade() else { return };
         match r {
             // Nothing due: the next sum waits a minute.
@@ -93,27 +110,47 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
             }
             // The drain stopped at its budget with work left: the next run starts at once.
             Ok(_) => h.arm_in(BUSY_MS),
+            // A failed run is retried on its own a minute on: an idle leader arms no other alarm.
             Err(e) => {
                 SUMMED.with(|s| s.borrow_mut().insert(key, now_ms()));
                 note(&h, format!("archive: {e}"));
+                h.arm_in(SUM_EVERY_MS as i64);
             }
         }
     });
 }
 
+/// Whether this member's last archive run as leader, within `LEFT_FOR`, stopped with a range still due or failed:
+/// the next leader's work, so a member that has heard no leader since acts for it (`crate::host::keep_led`). From
+/// this isolate's memory, so it costs no log sum; a reset member forgets it until it leads again, and a new leader's
+/// own runs take it over.
+pub fn leader_due(h: &Rc<Host<Repo>>) -> bool {
+    let Some(key) = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()) else { return false };
+    LEFT.with(|l| l.borrow().get(&key).is_some_and(|at| now_ms() < at + LEFT_FOR_MS))
+}
+
+/// How long a run that left work counts for `leader_due` [guess]: well past one election, and short enough that a
+/// former leader whose work a quiet new leader finished stops probing it.
+const LEFT_FOR_MS: u64 = 600_000;
+
 /// Steps until nothing is due, a step fails, or `DRAIN_FOR_MS` has passed: the last step's result.
-async fn drain(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
+async fn drain(h: &Rc<Host<Repo>>, r: &mut Run) -> std::result::Result<Step, String> {
     let began = now_ms();
     loop {
-        let s = crate::host::within(STEP_FOR, run(h)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
+        let t0 = now_ms();
+        let (s, took) =
+            crate::host::within(STEP_FOR, run(h, r)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
         if s == Step::Idle {
             return Ok(s);
         }
-        console_log!("archive {s:?}");
+        // The step's wall time and its entry's commit, which the drain's throughput bound is built from.
+        console_log!("archive {s:?} in {} ms, commit {took} ms", now_ms() - t0);
         h.stats.borrow_mut().archive_steps += 1;
         if now_ms() >= began + DRAIN_FOR_MS {
             return Ok(s);
         }
+        // Paced by the step's own entry, not its shard or bucket time (`crate::host::PACE`).
+        Delay::from(crate::host::paced(took)).await;
     }
 }
 
@@ -125,12 +162,14 @@ fn note(h: &Rc<Host<Repo>>, m: String) {
     }
 }
 
-async fn run(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
+/// One step of the run, and how long its entry took to commit.
+async fn run(h: &Rc<Host<Repo>>, r: &mut Run) -> std::result::Result<(Step, u64), String> {
     h.settled().await;
     let sql = h.state.storage().sql();
-    let s = SiteHost { h, sql };
+    let s = SiteHost { h, sql, recorded_ms: std::cell::Cell::new(0) };
     let (max, range) = cap();
-    log_archive::step(&s, max, range, PROMOTE_MAX).await
+    let step = log_archive::step(&s, r, max, range, PROMOTE_MAX).await?;
+    Ok((step, s.recorded_ms.get()))
 }
 
 /// `LOG_MAX_BYTES` and `ARCHIVE_RANGE_MAX`, or a test install's override.
@@ -155,6 +194,8 @@ pub fn set_cap(v: &serde_json::Value) -> serde_json::Value {
 struct SiteHost<'a> {
     h: &'a Rc<Host<Repo>>,
     sql: SqlStorage,
+    /// How long the step's `record` waited for its entry.
+    recorded_ms: std::cell::Cell<u64>,
 }
 
 impl SiteHost<'_> {
@@ -234,6 +275,11 @@ impl ArchiveHost for SiteHost<'_> {
         in_band(&self.h.env, &p).await
     }
 
+    /// One timer turn, so the member's inputs and its Raft tick run between pieces of a promotion's read.
+    async fn pause(&self) {
+        Delay::from(std::time::Duration::from_millis(1)).await;
+    }
+
     async fn mark(&self, pack: &PackRef, index: Index) {
         let (Ok((chain, _)), Ok(raw)) = (self.chain(), self.buckets()) else { return };
         let ChainId::Repo(repo) = chain else { return };
@@ -244,10 +290,14 @@ impl ArchiveHost for SiteHost<'_> {
 
     /// The first two of the record's sites, as the bed's archive route put them; `Host::truncate` HEADs every
     /// site's bucket, so any two count.
+    /// Both puts at once, from the same bytes: an archive step puts up to `ARCHIVE_PIECES` objects, and their puts are
+    /// most of its time (`log_archive::PROMOTE_RANGES`).
     async fn put(&self, key: &str, bytes: &[u8], digest: Digest) -> std::result::Result<usize, String> {
+        let buckets = self.buckets()?;
+        let puts = buckets.iter().take(2).map(|(_, b)| b.put_new(key, bytes, digest, &[]));
         let mut held = 0;
-        for (_, b) in self.buckets()?.iter().take(2) {
-            match b.put_new(key, bytes, digest, &[]).await.map_err(|e| e.0)? {
+        for r in futures_util::future::join_all(puts).await {
+            match r.map_err(|e| e.0)? {
                 PutNew::Created => held += 1,
                 PutNew::Exists(Some(d)) if d == digest => held += 1,
                 PutNew::Exists(_) => {}
@@ -262,11 +312,14 @@ impl ArchiveHost for SiteHost<'_> {
         events: Vec<git::repo::RepoEvent>,
     ) -> std::result::Result<Index, String> {
         let rx = self.h.wait_recorded(request);
+        let t0 = now_ms();
         let r =
             self.h.input(|m, t| m.record(t, request, git::repo::REPO_FORMAT_V1, events)).map_err(|e| e.to_string())?;
         r.map_err(|e| crate::host::call_error_json(&e).to_string())?;
         self.h.served();
-        match crate::host::within(std::time::Duration::from_secs(10), rx).await {
+        let r = crate::host::within(std::time::Duration::from_secs(10), rx).await;
+        self.recorded_ms.set(self.recorded_ms.get() + (now_ms() - t0));
+        match r {
             Some(Ok(Ok(index))) => Ok(index),
             Some(Ok(Err(nl))) => Err(format!("not leader: {}", crate::host::nl_json(&nl))),
             Some(Err(_)) => Err("member reset".into()),
@@ -402,8 +455,8 @@ async fn promote_on(
     s: git::Streamed,
 ) -> std::result::Result<std::result::Result<PackRef, String>, (u16, String)> {
     // `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
-    // (`git::promote_sites`).
-    let path = format!("/promote?wait={}&{}", git::PROMOTE_WAIT_S, if next { "next=1&" } else { "" });
+    // (`git::promote_sites`), shorter when another site's shard follows (`git::promote_wait_s`).
+    let path = format!("/promote?wait={}&{}", git::promote_wait_s(next), if next { "next=1&" } else { "" });
     let body = js_sys::Uint8Array::from(body).into();
     let pack = shard_call(env, site, p, at, &path, Some(body)).await?.stream().map_err(|e| (0, e.to_string()))?;
     let pack = futures_util::StreamExt::map(pack, |c| c.map_err(|e| e.to_string()));
@@ -508,10 +561,10 @@ mod tests {
         }
     }
 
-    /// The `Archived` the alarm records is one `Host::truncate` acts on: `Family::archived` reads its key and range,
-    /// and the key names the object the alarm put, so a member HEADs the same key in the buckets.
+    /// The `Archived` events the alarm records are the ones `Host::truncate` acts on: `Family::archived` reads each
+    /// key and range, and each key names the object the alarm put, so a member HEADs the same key in the buckets.
     #[test]
-    fn the_alarm_s_archived_is_the_range_members_truncate_through() {
+    fn the_alarm_s_archived_events_are_the_ranges_members_truncate_through() {
         let rows: Vec<_> =
             (3..=5).map(|i| (Index(i), Timestamp(1_000 * i), codec::to_bytes(&entry(i, vec![])))).collect();
         let chain = ChainId::Repo(RepoId(DbId(9)));
@@ -519,8 +572,14 @@ mod tests {
         assert!(bytes.len() > 3 * rows[0].2.len());
         let key = a.key.to_string();
         assert!(key.starts_with("archive/repo:9/"), "{key}");
-        let r = Repo::archived(&entry(6, vec![RepoEvent::Archived(a)])).expect("an archive range");
-        assert_eq!((r.key, r.from, r.to, r.to_at), (key, 3, 5, 5_000));
+        let rows2: Vec<_> =
+            (6..=7).map(|i| (Index(i), Timestamp(1_000 * i), codec::to_bytes(&entry(i, vec![])))).collect();
+        let (_, a2) = log_archive::archive_object(chain, &rows2).unwrap();
+        let key2 = a2.key.to_string();
+        // An entry that records several objects names each, in order, so a member truncates through each in turn.
+        let r = Repo::archived(&entry(8, vec![RepoEvent::Archived(a), RepoEvent::Archived(a2)]));
+        let got: Vec<_> = r.into_iter().map(|r| (r.key, r.from, r.to, r.to_at)).collect();
+        assert_eq!(got, [(key, 3, 5, 5_000), (key2, 6, 7, 7_000)]);
     }
 
     /// The sweeper's `request` row for a `Promoted` names its stored pack, so a marker the alarm failed to put is

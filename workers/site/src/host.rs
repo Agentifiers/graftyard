@@ -17,7 +17,8 @@
 //!   Every call's outcome, and the cause of each failure, is kept per peer for `/stats` (`PeerCalls`).
 //! - Time. `tick` runs every TICK while an input arrived in the last ACTIVE_FOR_MS or a call is held, and from the
 //!   one alarm the design allows: a leader's, every 2 s while it served a request in the last 60 s (`design/DESIGN.md`,
-//!   Shape, the drain check). `tick` starts no campaign; campaigns start only from `/campaign` and `/suspect`.
+//!   Shape, the drain check). `tick` starts no campaign; campaigns start from `/campaign` and `/suspect`, and from a
+//!   voter's own alarm when it knows no leader while its group has leader-only work due (`keep_led`).
 //! - Faults. With the `test-faults` feature only, `crate::faults` adds BF-12's and BF-13's kills, the call faults of
 //!   the 24-hour run, and the harness's tables (`fault`, `dup`, `deps_log`). A product build has none of them.
 
@@ -387,6 +388,8 @@ pub struct Stats {
     pub truncated_to: u64,
     /// Leader: archive alarm runs that promoted or archived a range (`crate::archive`).
     pub archive_steps: u32,
+    /// Campaigns this member started with no request, for leader-only work due (`Host::keep_led`).
+    pub keep_led: u32,
     /// Storage writes SQLite refused as full (`Host::full`), in this isolate.
     pub sqlite_full: u32,
     /// Commands this member received, by format (`recv:<family>.<version>`), and `recv:unsupported` for bodies whose
@@ -1012,6 +1015,9 @@ pub struct Host<F: Family> {
     active_until: Cell<u64>,
     alarm_at: Cell<u64>,
     served_at: Cell<u64>,
+    /// While this voter has leader-only work and hears no leader: when it first found so, and when it last acted
+    /// (`keep_led`); (0, 0) otherwise.
+    unheard: Cell<(u64, u64)>,
     /// Whole-tier reads in flight on this member (`crate::member::HEAVY_READS`).
     pub heavy_reads: Rc<Cell<u32>>,
     /// Reads of any kind in flight on this member, until their answer is sent (`crate::member::READS_MAX`).
@@ -1179,6 +1185,65 @@ pub fn err(m: impl Into<String>) -> Error {
     Error::RustError(m.into())
 }
 
+/// Background writes of a leader's own (the split's `MetaSlim`, the archive's `Promoted` and `Archived`) wait `PACE`
+/// times as long as each entry took to commit before the next, at most `PACE_MAX`, so followers and the leader spend
+/// at most about a third of their time applying them. Back to back, one `MetaSlim` every 0.45 s held each follower's
+/// `/raft` at 400 to 550 ms with 100 to 200 ms of CPU, its other calls queued behind them to about 3 s, and a leader's
+/// 20 s slim run took up to 7.5 s of CPU: about 110 `STEP_DOWN` trips on `CommitErrors` and `LoopLag` in 2.5 h
+/// [measured, `tests/am1/results/b030-split.md`, "Smoke 1"; the third is an inference].
+pub const PACE: u32 = 2;
+pub const PACE_MAX: Duration = Duration::from_secs(10);
+
+/// The wait after a paced write whose entry took `took_ms` to commit (`PACE`).
+pub fn paced(took_ms: u64) -> Duration {
+    (Duration::from_millis(took_ms) * PACE).min(PACE_MAX)
+}
+
+/// A voter whose group has leader-only background work (`Family::needs_leader`) acts as one edge `suspect` report
+/// would make it once it has seen no leader for 2 x ELECTION_AFTER, the design's bound for waiving the reset rule
+/// (`design/DESIGN.md`, Shape, `suspect`, and "Downtime", Gray region): its promise, given for ELECTION_AFTER from the
+/// leader's last append, lapsed ELECTION_AFTER ago. It acts again at most every ELECTION_AFTER. Campaigns are
+/// otherwise request-driven, and a split's slim pass that no client called left its group leaderless for 39 minutes
+/// once its leader stopped leading (`tests/am1/results/b030-split.md`, "Smoke 1").
+pub const LEADERLESS_FOR: Duration = raft::ELECTION_AFTER;
+/// How often a member with leader-only work due checks, and how soon after a probe.
+const KEEP_LED_EVERY: i64 = 5_000;
+const PROBED_CHECK: i64 = 1_000;
+
+/// What `Host::keep_led` does on one alarm.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeepLed {
+    /// It leads or its promise to a leader runs, or no leader-only work is due.
+    Off,
+    /// Unheard, not yet for the bound.
+    Wait,
+    /// Unheard for the bound, and it still names a leader: ask that leader for a read index. A leader that leads
+    /// answers, and nothing else happens (an idle leader sends no append, so a lapsed promise alone is no evidence).
+    /// One that does not lead answers none and is forgotten, and one that does not answer in CAMPAIGN_DEADLINE is
+    /// forgotten and the member campaigns (F67's read-index rule).
+    Probe,
+    /// Unheard for the bound and naming no leader: campaign.
+    Campaign,
+}
+
+/// `keep_led`'s rule. `heard`: it leads, or its promise to a leader runs. `named`: it names a leader other than
+/// itself. `needs`: its group has leader-only work due. `lapsed`: when its last promise lapsed (`promise_until`, in
+/// its stored state, so a reset keeps it), 0 for none. `found`: when it was first found unheard, for a member that
+/// never promised. `acted`: when it last probed or campaigned, 0 for not since it last heard a leader.
+pub fn keep_led(heard: bool, named: bool, needs: bool, lapsed: u64, found: u64, acted: u64, now: u64) -> KeepLed {
+    if heard || !needs {
+        return KeepLed::Off;
+    }
+    let base = if lapsed > 0 { lapsed } else { found }.max(acted);
+    if now < base + LEADERLESS_FOR.as_millis() as u64 {
+        KeepLed::Wait
+    } else if named {
+        KeepLed::Probe
+    } else {
+        KeepLed::Campaign
+    }
+}
+
 pub async fn within<T>(d: Duration, f: impl Future<Output = T>) -> Option<T> {
     match select(Box::pin(f), Box::pin(Delay::from(d))).await {
         Either::Left((v, _)) => Some(v),
@@ -1316,7 +1381,7 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
                             vec![codec::to_bytes(b).into()],
                         ));
                     }
-                    if let Some(a) = F::archived(e) {
+                    for a in F::archived(e) {
                         self.stmts.push((
                             "INSERT OR REPLACE INTO archive_keys (from_idx, to_idx, to_at, key) VALUES (?, ?, ?, ?)",
                             vec![i(a.from), i(a.to), i(a.to_at), a.key.clone().into()],
@@ -1725,6 +1790,7 @@ impl<F: Family> Host<F> {
             active_until: Cell::new(0),
             alarm_at: Cell::new(0),
             served_at: Cell::new(0),
+            unheard: Cell::new((0, 0)),
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
             clock: RefCell::new(crate::clock::Clock::default()),
@@ -1965,6 +2031,9 @@ impl<F: Family> Host<F> {
         });
         self.stats.borrow_mut().restores += 1;
         F::restored(self);
+        if F::needs_leader(self) {
+            self.arm_in(KEEP_LED_EVERY);
+        }
         Ok(())
     }
 
@@ -2199,9 +2268,17 @@ impl<F: Family> Host<F> {
             self.fail();
             return Err(err(format!("storage write failed: {e}")));
         }
-        for (key, to) in archived {
+        // In order, one task for all: an entry records up to `ARCHIVE_PIECES` ranges, and each truncates only once its
+        // own key is in two buckets.
+        if !archived.is_empty() {
             let h = self.clone();
-            spawn_local(async move { h.truncate(&key, to).await });
+            spawn_local(async move {
+                for (key, to) in archived {
+                    if !h.truncate(&key, to).await {
+                        break;
+                    }
+                }
+            });
         }
         Ok((r, out))
     }
@@ -2211,9 +2288,10 @@ impl<F: Family> Host<F> {
     /// can HEAD in two buckets"). The row at `to` stays as the stored log's base: its term and digest anchor the next
     /// entry, and restore starts above it. Entries through `to` are archived either way (`RepoFold::first_index`).
     /// A key in fewer than two buckets truncates nothing and raises an alarm; re-putting the copy is not built.
-    async fn truncate(self: &Rc<Self>, key: &str, to: u64) {
+    /// Whether the log was truncated.
+    async fn truncate(self: &Rc<Self>, key: &str, to: u64) -> bool {
         self.settled().await;
-        let Ok(site) = SiteEnv::read(&self.env) else { return };
+        let Ok(site) = SiteEnv::read(&self.env) else { return false };
         let mut held = 0;
         for s in &site.sites.0 {
             if let Ok(b) = self.env.bucket(&format!("BUCKET_{}", s.id.0))
@@ -2225,13 +2303,17 @@ impl<F: Family> Host<F> {
         if held < 2 {
             console_error!("archive {key} is in {held} buckets; the log is not truncated");
             self.stats.borrow_mut().alarms.push(format!("{} archive {key} in {held} buckets", now_ms()));
-            return;
+            return false;
         }
         match self.state.storage().sql().exec("DELETE FROM log WHERE idx < ?", vec![i(to)]) {
             Ok(_) => self.stats.borrow_mut().truncated_to = to,
-            Err(e) => return console_error!("truncate below {to}: {e}"),
+            Err(e) => {
+                console_error!("truncate below {to}: {e}");
+                return false;
+            }
         }
         F::truncated(self, Index(to)).await;
+        true
     }
 
     /// A command marked `before_commit*` whose entry this input appends.
@@ -3472,6 +3554,9 @@ impl<F: Family> Host<F> {
         if leading && recent {
             self.arm();
         }
+        if !leading {
+            self.keep_led();
+        }
         // The alarm this invocation armed is set again, awaited, before it returns. One armed only from the task
         // `arm_in` spawns can be lost as the invocation ends [inference]: in BF-57 run 10 (graft-m4a) a leader's alarm
         // armed `arm` 2 s out at 90 s, none ran after it, and five committed entries waited 137 s for an unrelated
@@ -3486,6 +3571,49 @@ impl<F: Family> Host<F> {
                 s.alarms.push(format!("{} set alarm at end: {e}", now_ms()));
             }
         }
+    }
+
+    /// A voter whose group has leader-only background work (`Family::needs_leader`) checks every KEEP_LED_EVERY,
+    /// and once it has seen no leader for 2 x ELECTION_AFTER probes the leader it names or campaigns (`keep_led`).
+    fn keep_led(self: &Rc<Self>) {
+        let (heard, named, lapsed) = {
+            let core = self.core.borrow();
+            let Some(c) = core.as_ref() else { return };
+            if graftyard_types::learner_slot(c.m.me()).is_some() {
+                return;
+            }
+            let named = c.m.leader().is_some_and(|l| l != c.m.me());
+            let until = c.m.state().promise_until.0;
+            (c.m.role() == Role::Leader || (named && now_ms() < until), named, until)
+        };
+        if !F::needs_leader(self) {
+            return self.unheard.set((0, 0));
+        }
+        // The core's timers: an unanswered probe is failed, and its leader forgotten, only on a tick.
+        let _ = self.tick_once();
+        let now = now_ms();
+        let (found, acted) = match self.unheard.get() {
+            _ if heard => (0, 0),
+            (0, a) => (now, a),
+            u => u,
+        };
+        let mut next = KEEP_LED_EVERY;
+        match keep_led(heard, named, true, lapsed, found, acted, now) {
+            KeepLed::Off | KeepLed::Wait => self.unheard.set((found, acted)),
+            KeepLed::Probe => {
+                self.unheard.set((found, now));
+                let r = self.input(|m, t| m.read_index(t));
+                console_log!("keep led: no leader seen for 2 x ELECTION_AFTER with work due: probe {r:?}");
+                next = PROBED_CHECK;
+            }
+            KeepLed::Campaign => {
+                self.unheard.set((found, now));
+                let v = self.input(|m, t| m.campaign(t));
+                console_log!("keep led: no leader seen for 2 x ELECTION_AFTER with work due: campaign {v:?}");
+                self.stats.borrow_mut().keep_led += 1;
+            }
+        }
+        self.arm_in(next);
     }
 
     /// Counts a failed write that SQLite refused for space (B0-30's `SQLITE_FULL`), and logs it, so a reader of
@@ -3868,6 +3996,42 @@ pub fn rid_from(s: &str) -> Result<RequestId> {
 
 #[cfg(test)]
 mod tests {
+    /// A voter with leader-only work acts once it has seen no leader for 2 x ELECTION_AFTER: ELECTION_AFTER after its
+    /// promise lapsed, even when its first check came later, or after it was first found so if it never promised; then
+    /// at most every ELECTION_AFTER. It probes a leader it still names and campaigns when it names none. One that leads
+    /// or still holds its promise, or has no such work, does nothing.
+    #[test]
+    fn a_leaderless_voter_with_work_due_acts_after_the_bound_only() {
+        use super::KeepLed::*;
+        use super::keep_led as k;
+        let e = graftyard_raft::ELECTION_AFTER.as_millis() as u64;
+        assert_eq!(super::LEADERLESS_FOR.as_millis() as u64, e);
+        let lapsed = 1_000_000;
+        // Its first check came 5 s after the lapse: the bound still runs from the lapse.
+        let found = lapsed + 5_000;
+        assert_eq!(k(false, false, true, lapsed, found, 0, lapsed + e - 1), Wait);
+        assert_eq!(k(false, false, true, lapsed, found, 0, lapsed + e), Campaign);
+        assert_eq!(k(false, true, true, lapsed, found, 0, lapsed + e), Probe, "it still names a leader");
+        // Never promised: from when it was found.
+        assert_eq!(k(false, false, true, 0, found, 0, found + e - 1), Wait);
+        assert_eq!(k(false, false, true, 0, found, 0, found + e), Campaign);
+        // After acting, the next waits ELECTION_AFTER from then.
+        let acted = lapsed + e;
+        assert_eq!(k(false, false, true, lapsed, found, acted, acted + e - 1), Wait);
+        assert_eq!(k(false, false, true, lapsed, found, acted, acted + e), Campaign);
+        assert_eq!(k(true, true, true, lapsed, found, 0, lapsed + 10 * e), Off, "its promise runs");
+        assert_eq!(k(false, false, false, lapsed, found, 0, lapsed + 10 * e), Off, "no leader-only work");
+    }
+
+    /// A paced write waits twice its own entry's commit, nothing after an instant one, and never over PACE_MAX.
+    #[test]
+    fn paced_writes_wait_twice_their_commit_up_to_the_cap() {
+        use std::time::Duration;
+        assert_eq!(super::paced(450), Duration::from_millis(900));
+        assert_eq!(super::paced(0), Duration::ZERO);
+        assert_eq!(super::paced(60_000), super::PACE_MAX);
+    }
+
     /// The election rows split a leaderless span: a pre-vote's requests leave as candidate-to-be (no role change), the
     /// vote's step moves Follower to Candidate, the win moves Candidate to Leader, and only the leader's first commit
     /// move in its term is a `FirstCommit` row; a later commit, or a follower's, is not.

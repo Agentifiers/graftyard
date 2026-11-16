@@ -189,6 +189,11 @@ pub trait Read {
 pub trait Rows: Read {
     fn put(&mut self, table: &str, key: Key, cols: Vec<Val>);
     fn delete(&mut self, table: &str, key: &[Val]);
+    /// The index of the entry that last wrote the row, where the store keeps it: `apply`'s writer does, a `decide`
+    /// scratch view does not.
+    fn written(&self, _table: &str, _key: &[Val]) -> Option<graftyard_types::Index> {
+        None
+    }
 }
 
 /// A tier with uncommitted writes on top: the scratch view `decide` and `verify` run on, then drop.
