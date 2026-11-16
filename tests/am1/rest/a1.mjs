@@ -464,7 +464,22 @@ async function push(tok, ref, from, path, bytes, extra = {}) {
   // and every row passes `scan`).
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
-  return [res, r.ms, res === "ok" ? commit : from, r.err];
+  notePushTiming(r.headers?.get?.("server-timing"), res);
+  return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null];
+}
+// push-reads: a test edge's `server-timing` on every push (resolve, auth, install, gate, context, validate, admission,
+// commit, stage, total), each stage's ms by name, plus how many commits ran the create probe (`probe`) and how many
+// pushes staged before their first commit (`stagefirst`).
+const pushStages = {}; const pushMarks = { timed: 0, probed: 0, stagedFirst: 0, commits: 0 };
+function notePushTiming(h, res) {
+  if (!h) return;
+  pushMarks.timed++;
+  const seen = {};
+  for (const m of h.matchAll(/([a-z_]+);dur=(\d+)/g)) {
+    (pushStages[m[1]] ??= []).push(Number(m[2]));
+    seen[m[1]] = (seen[m[1]] ?? 0) + 1;
+  }
+  pushMarks.probed += seen.probe ?? 0; pushMarks.stagedFirst += seen.stagefirst ? 1 : 0; pushMarks.commits += seen.commit ?? 0;
 }
 const size = () => plan.packFixed ?? (Math.random() < plan.bigShare ? plan.bigBytes : plan.packMin + Math.floor(Math.random() * (plan.packMax - plan.packMin)));
 
@@ -798,13 +813,15 @@ if (plan.burst) jobs.push((async () => {
   const r = await Promise.all(Array.from({ length: plan.burst.pushes }, (_, k) => sleep((k * 1000) / plan.burst.pushes).then(async () => {
     const a = agents[k % agents.length];
     const at = Date.now();
-    const [res, ms, , err] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
+    const [res, ms, , err, timing] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
     note("push:burst", ms, res);
-    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), ...(err ? { err } : {}) });
+    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), timing, ...(err ? { err } : {}) });
     return [res, Date.now() - s];
   })));
   writeRow(OUT, { step: "burst", hot, warm, pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
     unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")) });
+  // Every burst push's stages, in send order, for where each one's time went.
+  writeRow(OUT, { step: "burst timing", pushes: sent.sort((x, y) => x.k - y.k).map(({ k, ms, res, timing }) => ({ k, ms, res: String(res).slice(0, 40), timing })) });
 })());
 // L0-12's overlap probe. Pair k's holder takes `a1p/<RUN>/<k>/**` Exclusive for PROBE_TTL_S and never renews it;
 // from 2 s before its end the other task asks for the same scope every PROBE_EVERY_MS until it gets a 201, which is
@@ -1189,6 +1206,7 @@ const v = {
       filled: missRows.filter((x) => x.filled).length, notFilled: missRows.filter((x) => x.filled === false).length }, kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
+  ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {
     overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,
