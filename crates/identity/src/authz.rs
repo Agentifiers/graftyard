@@ -30,7 +30,10 @@ use crate::org::{
 use crate::overlay::{Overlay, SetOverlay, Table};
 use crate::sealed::{ActionsName, SealKey, SecretRecord, SecretScope, VariableRecord};
 use crate::tokens::RepoScope;
-use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AUTHZ_FORMAT_V12};
+use crate::{
+    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AUTHZ_FORMAT_V12,
+    AUTHZ_FORMAT_V13,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AccountKind {
@@ -1279,6 +1282,15 @@ pub enum AuthzOp {
     DeleteOrgVariable {
         name: ActionsName,
     },
+    // ---- `app-hook-config`, format 13 ----
+    /// `PATCH /app/hook/config`: the App's `webhook` and its wrapped `webhook_secret` (the raft-codec bytes of a
+    /// `Wrapped`) as the request leaves them. `decide` sets these two fields on the record the fold holds, so a hook
+    /// change never undoes a key or permission change. An owner admin, or the edge after the App's JWT verified.
+    SetAppHook {
+        app: AppId,
+        webhook: Option<crate::apps::Url>,
+        secret: Option<Box<[u8]>>,
+    },
 }
 
 /// The largest `init` a `CreateRepoWith` carries [guess: a `RepoSettings` with a description and twenty topics is
@@ -1506,6 +1518,10 @@ impl Record for AuthzCmd {
             AuthzOp::DeleteOrgVariable { name } => {
                 e.u8(37);
                 graftyard_fold::canon::write(e.0, name);
+            }
+            AuthzOp::SetAppHook { app, webhook, secret } => {
+                e.u8(38);
+                graftyard_fold::canon::write(e.0, &(app, webhook, secret));
             }
         }
     }
@@ -1955,6 +1971,14 @@ impl AuthzCmd {
             | AuthzOp::DeleteOrgSecret { .. }
             | AuthzOp::PutOrgVariable { .. }
             | AuthzOp::DeleteOrgVariable { .. } => self.decide_actions(s),
+            AuthzOp::SetAppHook { app, webhook, secret } => {
+                let Some(have) = s.app(*app) else { return Err(AuthzErr::NoApp) };
+                let record = AppRecord { webhook: webhook.clone(), webhook_secret: secret.clone(), ..have.clone() };
+                if record == *have {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                Ok((smallvec![AuthzEvent::App { app: *app, record: Some(Box::new(record)) }], AuthzOut::Done))
+            }
         }
     }
 
@@ -2059,6 +2083,7 @@ impl Command for AuthzCmd {
             | AuthzOp::DeleteOrgSecret { .. }
             | AuthzOp::PutOrgVariable { .. }
             | AuthzOp::DeleteOrgVariable { .. } => AUTHZ_FORMAT_V12,
+            AuthzOp::SetAppHook { .. } => AUTHZ_FORMAT_V13,
             AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }
             | AuthzOp::CloseApp { .. }

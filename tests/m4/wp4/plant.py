@@ -28,6 +28,10 @@ K = 'crates/git/src/run_checks.rs'
 W = 'crates/api/src/webhooks.rs'
 HK = 'crates/git/src/hooks.rs'
 R24 = G + ['-p', 'graftyard-api', '--test', 'webhooks']
+AZ = 'crates/identity/src/authz.rs'
+AA = 'crates/identity/src/appauth.rs'
+HC = ['-p', 'graftyard-identity', '--test', 'wp4', '-p', 'graftyard-api', '--test', 'webhooks', '-p', 'graftyard-git',
+      '--test', 'wire_tags']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -141,6 +145,25 @@ MUTANTS = [
     ('workflow_job renders as queued for every step', HK,
      'out.push(w("workflow_job", Some(u.action.name()), Subject::WorkflowJob(u.clone())))',
      'out.push(w("workflow_job", Some("queued"), Subject::WorkflowJob(u.clone())))', R24),
+    # ---- `app-hook-config`: `PATCH /app/hook/config` ----
+    ('SetAppHook writes the record the edge read, not the fold\'s', AZ,
+     '                let record = AppRecord { webhook: webhook.clone(), webhook_secret: secret.clone(), ..have.clone() };',
+     '                let mut record = have.clone();\n                record.keys.truncate(1);\n                record.webhook = webhook.clone();\n                record.webhook_secret = secret.clone();', HC),
+    ('SetAppHook drops the secret', AZ,
+     'webhook_secret: secret.clone(), ..have.clone() };', 'webhook_secret: None, ..have.clone() };', HC),
+    ('a repeated SetAppHook writes an event', AZ,
+     '                if record == *have {\n                    return Ok((SmallVec::new(), AuthzOut::Done));\n                }\n                Ok((smallvec![AuthzEvent::App { app: *app',
+     '                Ok((smallvec![AuthzEvent::App { app: *app', HC),
+    ('SetAppHook rides an older Authz format', AZ,
+     '            AuthzOp::SetAppHook { .. } => AUTHZ_FORMAT_V13,', '            AuthzOp::SetAppHook { .. } => AUTHZ_FORMAT_V12,', HC),
+    ('the hook config shows the secret', W, '        v["secret"] = json!("********");', '        v["secret"] = json!(format!("{:?}", rec.webhook_secret));', HC),
+    ('a PATCH without url clears the webhook', W, '        None => cur.webhook.clone(),', '        None => None,', HC),
+    ('a PATCH accepts insecure_ssl 1', W, '        Some(Value::String(s)) if s == "0" => {}', '        Some(Value::String(_)) => {}', HC),
+    ('an empty secret is kept, not cleared', W,
+     '        Some(Value::String(s)) if s.is_empty() => Some(None),\n        Some(Value::String(s)) => Some(Some(s.clone())),\n        Some(Value::Null) => Some(None),\n        Some(_) => return Err(bad("secret")),',
+     '        Some(Value::String(s)) if s.is_empty() => None,\n        Some(Value::String(s)) => Some(Some(s.clone())),\n        Some(Value::Null) => Some(None),\n        Some(_) => return Err(bad("secret")),', HC),
+    ('the client-id iss names no App', AA, "            Err(_) => i64::from_str_radix(t.strip_prefix(\"Iv1.\").filter(|h| h.len() == 16)?, 16).ok()?,",
+     '            Err(_) => return None,', HC),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

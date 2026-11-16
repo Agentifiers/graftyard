@@ -68,6 +68,25 @@ struct Claims {
     exp: u64,
 }
 
+/// The App an App JWT names in `iss`, before anything is verified: its id, as a number or a numeric string, or
+/// `ClientId::for_app`'s client id. The edge finds the record to verify against with it.
+pub fn claimed_app(jwt: &str) -> Option<AppId> {
+    let p = jwt.split('.').nth(1)?;
+    #[derive(Deserialize)]
+    struct Issuer {
+        iss: Iss,
+    }
+    let claims: Issuer = serde_json::from_slice(&B64.decode(p).ok()?).ok()?;
+    let id = match claims.iss {
+        Iss::Num(n) => n,
+        Iss::Text(t) => match t.parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => i64::from_str_radix(t.strip_prefix("Iv1.").filter(|h| h.len() == 16)?, 16).ok()?,
+        },
+    };
+    Some(AppId(graftyard_types::DbId(id)))
+}
+
 /// Verifies an App JWT for `record` at `now`: RS256 under one of the record's keys, `iss` the App's id or client
 /// id, and a window of at most 10 minutes that contains `now`. Returns the App's id.
 pub fn verify_app_jwt(jwt: &str, record: &AppRecord, now: Timestamp) -> Result<AppId, AppJwtError> {
