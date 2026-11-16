@@ -430,6 +430,8 @@ const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toStrin
 // B0-31's placement-failing half: from `placeFailAt` s into the load, every push and merge carries the bed token's
 // `x-graft-place-fail`, so the edge sees placement failing as a red bucket probe would.
 const placeFailing = () => plan.placeFailAt !== undefined && Date.now() >= t0 + plan.placeFailAt * 1000;
+// A sample's half is the one its request was sent in, as `failHeaders` decides at send: call `half` before the request.
+// m3fr8 labelled agent pushes when they ended, and 17 sent with buckets up landed in `push:agent@fail` as commits.
 const half = (k) => (plan.placeFailAt === undefined ? k : `${k}${placeFailing() ? "@fail" : "@up"}`);
 const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-token": BED } : {});
 // Past the edge's own worst case, so every push ends in the edge's answer and none in the driver's timeout: three
@@ -694,10 +696,11 @@ const jobs = [
       const kill = plan.killEvery && ++pushN % Math.max(1, Math.round(plan.killEvery * plan.agents / plan.pushEvery)) === 0;
       // The leader as the kill push leaves, read beside it so the push is not delayed.
       const seenAt = kill ? leaderSeen() : null;
+      const k = half(kill ? "push:killed" : "push:agent");
       const [res, ms, nu] = await push(app, a.ref, a.tip, `a1/${a.group}/${a.i}/f.txt`, randomBytes(size()), kill ? { "x-graft-kill": "after_quorum" } : {});
       a.tip = nu;
       if (kill) { kills.push(s); killRows.push(killRow(s, ms, res, seenAt)); }
-      note(half(kill ? "push:killed" : "push:agent"), ms, res);
+      note(k, ms, res);
       if (!kill) { recentAgent.push([res === "ok", ms]); if (recentAgent.length > 200) recentAgent.splice(0, 100); }
       await sleep(Math.max(0, Math.min(end - Date.now(), plan.pushEvery * 1000 - (Date.now() - s))));
     }
@@ -756,8 +759,9 @@ const jobs = [
     const [, pr] = await openPr(admin, ref.slice(11), false);
     if (!pr) return "no pr";
     const s = Date.now();
+    const k = half("merge:only");
     const m = await api("PUT", `/api/v3/repos/${R}/pulls/${pr.number}/merge`, admin, { merge_method: "merge" });
-    note(half("merge:only"), Date.now() - s, m.status === 200 ? "200" : `${m.status} ${String(m.body?.message ?? "").replace(/\d+/g, "N").slice(0, 70)}`);
+    note(k, Date.now() - s, m.status === 200 ? "200" : `${m.status} ${String(m.body?.message ?? "").replace(/\d+/g, "N").slice(0, 70)}`);
     // Where the merge's time went: the edge's phases (`server-timing`) and the shard's own (`x-graft-shard-timing`).
     mergeSteps.push({ ms: Date.now() - s, status: m.status, timing: m.headers["server-timing"] ?? null, shard: m.headers["x-graft-shard-timing"] ?? null });
     if (m.status === 200) main = (await tip("refs/heads/main")) ?? main;
