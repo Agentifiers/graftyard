@@ -1152,8 +1152,14 @@ The operator stopped all hosted work: the account's bill for Oct 27 to Nov 16 is
     `repo-meta:` for 1048587 (smoke 2), 1048588 (smoke 3's first try) and 1048589 (smoke 3), 18 more. That is 21
     in all. 1048586 and 1048590 were already retired.
 - **Still joined, not retired.** Every other group on graft-m1 belongs to earlier AM1 work, not B0-30: site a homes
-  148 repository chains. The fold audit (`*/15`, 4 chains a run, `GRAFTYARD_AUDIT=1` since site day 9) reads one chain
-  a quarter-hour and fails with a 404 on its f2 member (repo:489004 to 489007). It writes about 10 rows a run.
+  148 repository chains. The fold audit (`*/15`, 4 chains a run, `GRAFTYARD_AUDIT=1` since site day 9) audits them.
+  **Corrected 2026-11-16 21:40Z:** I reported that it failed on repo:489004 to 489007 every run and started over on
+  them. That was wrong; I had read one 20-minute window. Workers Logs for site a, 00:00 to 21:30Z, 86 runs: each run
+  took the next four chains after the stored cursor, all 148 in turn, a full pass about every 9 h 15 min (repo:196619
+  at 00:03, 09:18 and 18:37Z), and a chain that failed did not hold the cursor. Of 348 chain reports, 25 compared
+  digests, 179 failed on a call (160 a 404 on a retired or never-placed member, mostly the f2 member of a removed
+  test group), 141 carried a refold that ended `SQLITE_LOCKED`, and 3 had no report yet. Sites b and c home none.
+  So it is not a loop on the same chains; its cost is about 10 rows a run on site a.
 - **What was writing [measured, `durableObjectsPeriodicGroups` by namespace, every graft-m1 namespace].**
 
   | Window | Rows written an hour | DO-hours an hour | What |

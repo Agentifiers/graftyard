@@ -32,7 +32,10 @@ const R = REPO.name;
 const STATE = "tests/am1/raw/b030-state.json";
 const STOP = "tests/am1/raw/b030-STOP";
 const OUT = "tests/am1/raw/b030-load.jsonl";
-const DAYS = 30;
+// The row's 30 days, or the end the short run sets once the split starts (tests/am1/raw/b030-days, written by
+// tests/am1/b030split/force.mjs: the split's day plus 8; operator, 2026-11-16, option A), read each tick.
+const DAYS_FILE = "tests/am1/raw/b030-days";
+const days = () => { try { return Number(readFileSync(DAYS_FILE, "utf8").trim()) || 30; } catch { return 30; } };
 const SPEED = Number(process.env.B030_SPEED ?? 18);
 const DAY_S = 86_400 / SPEED; // wall seconds per simulated day
 const PUSH_PER_S = Number(process.env.B030_PUSHES ?? 1.6);
@@ -250,7 +253,7 @@ async function keepHome() {
 }
 let batching = false, inflight = 0;
 let last = Date.now(), lastRow = Date.now(), lastBatch = 0, lastSave = Date.now();
-const done = () => simDay() >= DAYS || existsSync(STOP);
+const done = () => simDay() >= days() || existsSync(STOP);
 while (!done()) {
   const now = Date.now();
   // Active time advances with the wall clock, at most 5 s a tick, so a pause (an orb restart) is not caught up.
