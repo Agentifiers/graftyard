@@ -28,7 +28,7 @@ use std::rc::Rc;
 
 use graftyard_git::log_archive::{self, ARCHIVE_RANGE_MAX, ARCHIVE_SLACK, ArchiveHost, PROMOTE_MAX, Run, Step, View};
 use graftyard_git::{self as git, Bucket as _, PackIndex, PackRef, PutNew};
-use graftyard_raft::{Index, RequestId, Role};
+use graftyard_raft::{Format, Index, RequestId, Role};
 use graftyard_types::{ChainId, Digest, NetworkId, SiteId, Timestamp, Ulid};
 use worker::wasm_bindgen_futures::spawn_local;
 use worker::*;
@@ -222,6 +222,10 @@ impl SiteHost<'_> {
 }
 
 impl ArchiveHost for SiteHost<'_> {
+    fn rollup(&self) -> bool {
+        log_archive::rollup_enabled(self.h.env.var("GRAFTYARD_ROLLUP").ok().map(|v| v.to_string()).as_deref())
+    }
+
     fn view(&self) -> Option<View> {
         let core = self.h.core.borrow();
         let c = core.as_ref().filter(|c| c.m.role() == Role::Leader)?;
@@ -271,7 +275,29 @@ impl ArchiveHost for SiteHost<'_> {
         warm: bool,
     ) -> std::result::Result<Option<PackRef>, String> {
         let (chain, record) = self.chain()?;
-        let p = Promote { chain, record, sums: sums.to_vec(), request, range: Some((from.0, to.0)), warm };
+        let p = Promote { chain, record, sums: sums.to_vec(), request, range: Some((from.0, to.0)), warm, roll: false };
+        in_band(&self.h.env, &p).await
+    }
+
+    /// In a new invocation of this site script (`in_band`), through the same placement path as a promotion. A roll is
+    /// always warm, so it never starts a stopped shard (`decisions/DECISIONS.md`, `roll-up`, "Who writes it").
+    async fn roll(
+        &self,
+        sums: &[Digest],
+        from: Index,
+        to: Index,
+        request: RequestId,
+    ) -> std::result::Result<Option<PackRef>, String> {
+        let (chain, record) = self.chain()?;
+        let p = Promote {
+            chain,
+            record,
+            sums: sums.to_vec(),
+            request,
+            range: Some((from.0, to.0)),
+            warm: true,
+            roll: true,
+        };
         in_band(&self.h.env, &p).await
     }
 
@@ -309,12 +335,12 @@ impl ArchiveHost for SiteHost<'_> {
     async fn record(
         &self,
         request: RequestId,
+        format: Format,
         events: Vec<git::repo::RepoEvent>,
     ) -> std::result::Result<Index, String> {
         let rx = self.h.wait_recorded(request);
         let t0 = now_ms();
-        let r =
-            self.h.input(|m, t| m.record(t, request, git::repo::REPO_FORMAT_V1, events)).map_err(|e| e.to_string())?;
+        let r = self.h.input(|m, t| m.record(t, request, format, events)).map_err(|e| e.to_string())?;
         r.map_err(|e| crate::host::call_error_json(&e).to_string())?;
         self.h.served();
         let r = crate::host::within(std::time::Duration::from_secs(10), rx).await;
@@ -341,9 +367,13 @@ struct Promote {
     /// The range, which the pack's stored `.idx` names (`git::Place::idx_range`).
     #[serde(default)]
     range: Option<(u64, u64)>,
-    /// Promote-ahead's: every shard call is a warm call (`git::caller`), so a stopped shard is skipped, not started.
+    /// Promote-ahead's, and every roll's: every shard call is a warm call (`git::caller`), so a stopped shard is
+    /// skipped, not started.
     #[serde(default)]
     warm: bool,
+    /// Ask the shard to roll these stored packs rather than promote a log range's packs.
+    #[serde(default)]
+    roll: bool,
 }
 
 /// Runs a promotion's shard calls and its placement in a new invocation of this site script, through its own `SITE`
@@ -380,7 +410,8 @@ pub async fn promote_handled(mut req: Request, env: Env, ctx: &Context) -> Resul
             _ => 0,
         };
         console_log!(
-            "promotion {:?}{}: {} packs, {bytes} B in {} ms, wasm {mem0:.1} -> {:.1} MB{}",
+            "{} {:?}{}: {} packs, {bytes} B in {} ms, wasm {mem0:.1} -> {:.1} MB{}",
+            if p.roll { "roll" } else { "promotion" },
             p.range,
             if matches!(r, Ok(None)) { " skipped, every shard stopped" } else { "" },
             p.sums.len(),
@@ -400,7 +431,10 @@ pub async fn promote_handled(mut req: Request, env: Env, ctx: &Context) -> Resul
 async fn promote(env: &Env, p: &Promote) -> std::result::Result<Option<PackRef>, String> {
     let site = SiteEnv::read(env).map_err(|e| e.to_string())?;
     let ChainId::Repo(repo) = p.chain else { return Err("not a repository chain".into()) };
-    let body = serde_json::to_vec(&p.sums.iter().map(|s| s.hex()).collect::<Vec<_>>()).map_err(|e| e.to_string())?;
+    let sums = p.sums.iter().map(|s| s.hex()).collect::<Vec<_>>();
+    // `/promote` takes its JSON list; `/roll` takes the same oldest-first checksums one hex string per line.
+    let body =
+        if p.roll { sums.join("\n").into_bytes() } else { serde_json::to_vec(&sums).map_err(|e| e.to_string())? };
     // This site's shard first, then each other Full site's of the record while the one before answers anything
     // but a 200 or the pack's 422 (`git::promote_sites`, `git::promote_moves_on`): after a reset this site's shard
     // rehydrates the tail for half an hour, and every promotion meanwhile answered 503 warming, so archiving
@@ -454,9 +488,14 @@ async fn promote_on(
     store: &git::PackStore<'_, git::host::R2>,
     s: git::Streamed,
 ) -> std::result::Result<std::result::Result<PackRef, String>, (u16, String)> {
-    // `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
-    // (`git::promote_sites`), shorter when another site's shard follows (`git::promote_wait_s`).
-    let path = format!("/promote?wait={}&{}", git::promote_wait_s(next), if next { "next=1&" } else { "" });
+    // A promotion's `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
+    // (`git::promote_sites`), shorter when another site's shard follows (`git::promote_wait_s`). A roll takes no wait
+    // or `next`: it is already warm, and its path otherwise follows the same calls.
+    let path = if p.roll {
+        "/roll?".to_string()
+    } else {
+        format!("/promote?wait={}&{}", git::promote_wait_s(next), if next { "next=1&" } else { "" })
+    };
     let body = js_sys::Uint8Array::from(body).into();
     let pack = shard_call(env, site, p, at, &path, Some(body)).await?.stream().map_err(|e| (0, e.to_string()))?;
     let pack = futures_util::StreamExt::map(pack, |c| c.map_err(|e| e.to_string()));
@@ -518,7 +557,8 @@ async fn shard_call(
         .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", at.0, repo.0.0), region.hint()))
         .map_err(|e| fail(e.to_string()))?;
     let rec = serde_json::to_string(&p.record).map_err(|e| fail(e.to_string()))?;
-    let warm = if p.warm { "warm=1&" } else { "" };
+    // A due range's promotion starts a stopped shard but is no client's request (`git::Caller::Start`).
+    let warm = if p.warm { "warm=1&" } else { "warm=start&" };
     let url = format!("https://shard{path}{warm}repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(body);

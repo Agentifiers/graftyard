@@ -80,6 +80,181 @@ The unmeasured variable is R2's throughput with four streams into one container;
 
 This branch's catch-up change helps B0-32 and B0-31 the same way: stored packs fetched four at a time ahead of the in-order ingest, and a promoted range's pack not fetched again by a catch-up that already applied the range.
 
+## Rows m3fr9 (2026-11-16, TAG `m3fr9`, `ROWS="l0-12 b0-32 b0-31"`, `STOP_USD=77`)
+
+**Build and site day.**
+- **Build:** branch `lm1-rows-m3f10` `48c67a34`. It is main `a0bca583` (`receipt-rule`, `a1-phase-sent`, `m3fr8-commit-trace`) plus one test-faults instrument. The instrument adds one `server-timing` entry per `/commit` send (`send`), per receipt missed while the member was `busy` (`busy`), per `/outcome_by_request` ask while a send was open (`ask`), per other missed receipt (`missed`), and per `suspect` report (`suspect`). `a1.mjs` sums them (`pushTiming`).
+- **Image:** `sha256:83e217ba…`, reused. `containers/git` is unchanged since `09a945cd`.
+- **Site day:** 14:45:16Z to 14:57:25Z, site and edge both exit 0. Sites `f72bbf56` / `e58afba4` / `0b752f19`, edge `87f2a7df`. An earlier 14:35Z start from main was stopped while it compiled, to add the instrument. Nothing was deployed by it.
+- **Checks:** `m3org/j4` answered 200 to admin and member. `repo:65536` is led by site 0 at term 4. Each voter's lagMax was 142 / 0 / 0 ms, with 0 lease fallbacks.
+
+**Teardown.**
+- The start sweep found no shard container.
+- Each row's shards were torn down after it: 65574 at 16:02:05Z, 65575 at 16:29:54Z, 65576 at 16:51:02Z.
+- The end sweep, `SWEEP2`, and a third sweep at 16:55Z all reported "no shard container running".
+
+**Spend (graft-m3f, account Graftyard, `env-m3f.sh`).** $62.76 at the start. $65.35 at B0-32's start, $66.66 at B0-31's start, and **$68.31** at the end. The stop was 77.
+- L0-12 cost $2.59 (it stopped early).
+- B0-32 cost $1.31.
+- B0-31 cost $1.65.
+
+### L0-12 (repo 65574, run `mwje8g89`): fail; stall and refusals did not run
+
+The group reached k 4 at 15:03:31Z. Creating the 540 tasks took until 15:22:00Z, and the learners caught up (8 of 8) at 15:38:36Z. The replay ran 600 s from 15:38:41Z: 500 agents with a lease each, 500 feed long-pollers, and a leader kill every 60 s.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| No two holders overlap Exclusive leases for longer than `DRIFT` (500 ms) | 172 samples, 0 over 0 ms, max −1,112 ms; the bound with the clock spread is −773 ms | Pass (replay part) |
+| Measured member clock offsets under 500 ms | 117 kept samples of 120: the members' clocks were 102 to 339 ms apart (`lowerMs` / `upperMs`) | Pass on the replay. The rest-state samples before and after the stall were not taken, because the stall did not run |
+| Every lease live before the stall live after it, `expires` moved by the stall | Not run | **Not run** |
+| The late Exclusive acquire succeeds | Not run | **Not run** |
+| 500 long-pollers see each event within 3 s at p99 outside leader kills | `feed.outsideKills`: 19,760 events, 10 kills, p50 1,106 ms, **p99 25,210 ms** | **Fail** |
+| 100 of 100 refused for each Agent kind, 0 of 100 for the other three | Not run | **Not run** |
+
+**Why the stall and refusals did not run.**
+- `costok` passed both phases, at $65.23 and $65.28.
+- Right after the replay, the edge answered 503 for the stall's first task (15:53:30Z): "the repository's tier rows did not answer; retry (every member asked shed the read: overloaded)". `stall.mjs` exits on a refused task create, as fixed in rows m22.
+- `rows.mjs` then got the same 503 on `PUT …/agents/policy` `agents_exclusive`, so the policy stayed `advisory` (read back 200 at 16:01Z). With an advisory policy, no refusal kind measures anything, so I stopped `rows.mjs` at 16:01:59Z after its holder lease (201).
+- At 16:01Z the leader's `/stats` showed 5 busy pages and site 2 showed 46. Its counted memory high-water was 48.9 MB wasm on site 0, with 6.7 MB of log.
+- Under the parent's ruling (no partial L0-12 rerun), the stall and refusals wait for the next whole run.
+
+**Feed: where the slow 1% came from.**
+- The 198 slowest events outside kills came from site 2's learners (130) and site 0's (68).
+- 154 of them carry `{"429": 1, "gone": 1}`: the poller was turned away with 429, then answered `gone` and reloaded from `oldest`. The other 44 carry no miss and took 25.8 to 37.7 s, which is a whole hold with no answer.
+- By minute from the replay's start: 53, 14, 40, 9, 37, 0, 0, 16, 13, 16. So it is not only the first minute.
+- `gone` answers totalled 869 over the row. 858 of them came from site 2's learners `l2` (626) and `l5` (232), against 4 or fewer on every other learner. The feed-ahead change (`lagging` for a cursor past `newest`) left those 858.
+- **Reading** [inference]: site 2's two learners fell behind further than `FEED_RING`, and their cursors aged out. The fix would be in learner catch-up or ring size, not in the cursor rule. The per-learner `lagging` counts (2,649 and 3,809 on `l5` and `l2`, against 127 to 928 elsewhere) agree. Corrected after the run: the trace shows they did not fall behind. See "m3fr9 after the run" below.
+
+**Replay, other lines.** Leader commit p50 567 ms, p99 813 ms (n 37, the end read after the last kill). Agent pushes: 2,491 of 2,491 ok, p50 2,330 ms, p99 11,896 ms. B0-29's API read: p99 3,347 ms, with 3,108 × 503 and 2,847 skipped at the driver's cap, of 118,788.
+
+**Comparison with m3fr6's L0-12** (the replay windows, 600 s each):
+
+| | m3fr6 (18:17:14Z to 18:27:14Z) | m3fr9 (15:38:41Z to 15:48:41Z) |
+|---|---|---|
+| Term range | 2 to 32, churn from the learners' catch-up on | **2 to 2**: site 0 led throughout, with no election |
+| Step-downs (Workers Logs `member alarm: StepDown`) | 16: 13 CommitErrors (site a 6, b 6, c 1), 3 Confirm (site a) | **0** on any site, 15:03Z to 15:54Z |
+| lagMax / lease fallbacks per voter | 5,687 ms / 11,543; 4,300 / 10,296; 163 / 0 | **3,899 ms / 746**; 190 / 0; 384 / 0 (max over the window, `vmem` `clock`) |
+| Read rounds per voter per 20 ms (`tests/fanout/rounds.py`, `--gap 20`) | max 99 / 61 / 84 (the first `rounds.py`, uncommitted) | site 0 (the only leader): 9,905 windows, max 18, p99 7, 200 windows over 5. Sites 1 and 2 never led |
+| Kills | 10 kill pushes, 9 ok and 1 × 503; times not kept | 10 of 10 ok (round trip 2.9 to 4.7 s). Each reset site 0, which came back as leader at term 2 within the kill window. Sent 15:39:39Z, 15:40:40Z, 15:41:39Z, 15:42:40Z, 15:43:39Z, 15:44:40Z, 15:45:39Z, 15:46:40Z, 15:47:39Z, 15:48:40Z. The 9th recorded no reset |
+| Feed `outsideKills` p99 | 2,954 ms (pass) | 25,210 ms (fail) |
+| Leader commit p50 / p99 | 2,258 / 17,312 ms | 567 / 813 ms (end read) |
+
+- Site 0's 746 lease fallbacks and 3.9 s lagMax are the leader's. Each kill reset it, so its clock restarts behind.
+- With no churn, the feed's tail moved to the learners' cursor ageing. m3fr6's pass came with constant elections that kept the feed answered by followers [inference].
+
+### m3fr9 after the run: why site 2's learners answered `gone`, and the read the stall's task was shed on (analysis from the raw files and Workers Logs, no hosted spend)
+
+**The learners did not fall behind on catch-up.** The reading above is wrong.
+- The trace rows (`tsave-m3fr9-l0-12.jsonl`, each learner's `Applied` and `AppendStepped` rows) put all 8 learners within about 20 entries of the leader at every minute of the replay. Learners reset only at 15:04:12Z and after the replay, so no ring restarted under it.
+- Site 2's learners (`l2` and `l5`, the same apac site as m3fr7's two learners, on a new repository) apply each entry later. Their apply delay behind the leader was p50 1,008 and 717 ms, p99 4,074 and 1,971 ms. Site 0's learners were at p50 181 to 316 ms. Of the entries applied in the replay, `l2` applied 426 of 844 more than FEED_BATCH after the leader, and `l5` 209 of 1,010. Site 0's learners applied about 32 to 36 that late.
+- **Mechanism** [the code path is read from the code; tying it to the counts is an inference]. `a1` and the edge route a poller across the learners in rotation, so a cursor one learner served goes next to another. `feed::start` answers `gone` to a cursor past the commit index the member knows (`feed-ahead`'s bound). The next learner's newest entry was past `l2`'s known commit 84.2% of the replay, and past `l5`'s 82.5%. For the other six learners the figure was 4.7 to 23.1%.
+- The edge, and `a1` mirroring it, returned the first member's `gone` at once. The poller reloaded from `oldest` and was sent events again that it had seen, which the driver timed as up to the whole replay. This also fits B0-32 (139 and 367 `gone`) and B0-31's 0.
+- **Fix** (branch `learner-lag`, `decisions/DECISIONS.md`, "`feed-gone-route`"): one member's `gone` sends the poll on, and the edge answers 410 only when every member it tried did. The restore bound is unchanged. `a1.mjs` routes the same way. FEED_RING is not touched.
+
+**The read the stall's task was shed on.**
+- At 15:53:30Z, `POST …/tasks` (wall 7.3 s) answered 503 "the repository's tier rows did not answer; retry (repo:65574: every member asked shed the read: overloaded)". The `PUT …/agents/policy` after it got the same.
+- The read is `api::tier_rows`: the whole-tier dump `{"rows": true, "ranges": true, "packed": true}`, sent through `spread_read` to the learners and then the followers [measured, Workers Logs].
+- `agents::serve` (`workers/edge/src/agents.rs`), which serves policy, tasks and leases, never sets `Ctx::write`. So `spread_read` runs these writes with a retry of 0, as a read-class request. DESIGN, "Follower read", says a REST call other than `GET` asks the same members again within LOOKUP_FOR (20 s). The REST and GraphQL paths set it (`rest_repo`, the GraphQL mutation); the agents routes do not [read from the code].
+- The group was idle: the leader had 0 reads in flight, and the learners had applied 3,564 to 3,613 against the leader's 3,613. The leader's appends to learners were sparse after the replay: it applied entry 3,613 at 15:53:08Z and 3,614 at 15:53:59Z.
+- Why every member asked shed this one dump is not settled [unverified]. Two causes fit the code: a voter that had not finished rebuilding its dump (`waits_for_rebuild`), or a learner that had not applied the read index within FOLLOWER_WAIT.
+- **Proposed, not built:** `agents::serve` sets `c.write` for a non-`GET`, as `rest_repo` does. A shed tier read then waits within LOOKUP_FOR instead of failing the write.
+- **Driver change, built:** `rows.sh` now waits up to 120 s, before the stall, for the replay's requests to drain (`tests/fanout/drain.mjs`: no held feed poll, no read in flight, nothing in admission, on every member). There is no retry: `stall.mjs` and `rows.mjs` record a refused task, policy or holder as a result and go on.
+
+### B0-32 (repo 65575, run `mwjgfcsw`): fail, with leader churn
+
+The group reached k 4 at 16:04:52Z, with the learners caught up 0 of 8 after 122 s. The load started at 16:10:20Z. The burst warm-up saw `hot` and warm after 347 s, and the burst fired at 16:16:08Z.
+
+| Gate line | Result |
+|---|---|
+| Every push acknowledged within 5 s, or answered `ng … agent admission full` | **Fail**. 391 ok, **0 within 5 s**: p50 46.3 s, p99 91.3 s, min 8.4 s. The other 109: 73 × 503 "access rows did not answer (not leader)", 28 × 502 (Cloudflare HTML), 4 × client `fetch failed` (`ERR_HTTP2_STREAM_ERROR`, about 4.6 s, acknowledgment unknown), 3 × 500 "no outcome: missed", 1 × 500 "no outcome: not leader" |
+| Queued agent bytes under `AGENT_QUEUE_MAX` (64 MiB) | Pass: max 532,391 B (the `admit.mjs` trace) |
+| Every merge in one of the next 2 entries | Not judged from entries. `merge:only`: 23 × 200, 3 × 409, **4 × 503 `warming`** (the git cache), 1 × 503 tier rows; p50 4.3 s, p99 28.9 s |
+| Zero leader changes | **Fail**: 17 elections, term 2 to 19, 16:13:09Z to 16:18:29Z |
+| Zero `suspect` reports | **Fail**: 7,135 inbound `/suspect` on the final leader; the edge reported 8,564 over the row |
+
+**The churn.**
+- Site 0 held term 2 until 16:13:09Z, three minutes into the warm-up.
+- Then 17 elections in 5 minutes 20 s, won by site 0 six times, site 1 seven, and site 2 four. A new leader often answered `?` (reset or unreachable) for 1 to 6 s.
+- Site 0 held term 19 from 16:18:29Z to the end.
+- Workers Logs have 10 `StepDown`s: 7 `CommitErrors` (site a 2, b 4, c 1) and 3 `Confirm` (site a: 16:12:35, 16:13:54, 16:16:31Z). The other 7 term changes followed a leader reset or silence, not a step-down.
+- Final leader peers: 1,085 and 1,289 `deadline` failures to sites 1 and 2, against about 5,700 ok each.
+- Leader split: queue p50 3.1 s, p99 9.0 s; append p99 about 2 s; confirm p99 1.7 s; `deps:authz` p99 7.3 s.
+- The trace went to LM-1 ([thread](https://ampcode.com/threads/T-01a1c694-6112-72b4-83ca-dc9337a9646e)). `crates/raft` is not touched here.
+
+**The receipt rule, counted** [measured, `server-timing` of all 2,409 timed pushes, and the edge's per-push log, 1,727 pushes in Workers Logs]:
+
+| Count | Row total |
+|---|---|
+| `/commit` sends | 15,584 over 3,668 commits |
+| Missed receipts kept open as `busy` (no resend at once, no report) | 2,488 |
+| `/outcome_by_request` asks while a send was open | 1,156 |
+| Other missed receipts (reported) | 8,561 |
+| `suspect` reports | 8,564 |
+
+By minute, from the edge log:
+
+| Minute | Pushes | Sends | Busy | Asks | Missed | Suspect |
+|---|---|---|---|---|---|---|
+| 16:10 | 178 | 196 | 0 | 0 | 0 | 0 |
+| 16:11 | 272 | 368 | 0 | 22 | 29 | 29 |
+| 16:12 | 237 | 380 | 0 | 32 | 54 | 54 |
+| 16:13 | 263 | 522 | 0 | 37 | 125 | 125 |
+| 16:14 | 252 | 571 | 0 | 94 | 149 | 149 |
+| 16:15 | 338 | 1,029 | 29 | 15 | 478 | 478 |
+| 16:16 | 325 | 3,863 | 1,126 | 396 | 2,003 | 2,005 |
+| 16:17 | 345 | 7,569 | 1,224 | 466 | 5,283 | 5,285 |
+| 16:18 | 215 | 1,281 | 189 | 93 | 525 | 525 |
+
+- **What it shows:**
+  - Before the churn (16:10 to 16:12Z, term 2), the rule worked as designed. 0 receipts were missed in the first minute. In the next two minutes, 83 were missed and reported, with 54 asks.
+  - 0 `busy` keep-opens came before 16:15Z. Every early miss came from a member that this isolate had not heard from within COMMIT_RECEIPT. That case is still reported by design.
+  - From 16:13Z the leader changed every 3 to 30 s. A member that is no longer the current term's leader is not `busy`, so its miss is reported. Each report is a `suspect` wave plus a resend, and the burst's 8,000 suspects came in the churn's two worst minutes.
+- **Reading** [inference]: in this run the suspects follow the churn, and they don't cause it. The first `Confirm` step-down (16:12:35Z) came when the edge had sent only 54 suspects in that minute. But each suspect wave to the voters adds to their inbound, and the 7,135 inbound `/suspect` on the final leader exceeds every other route except `/raft` and `/read`. So the rule's effect is not isolated here. It needs a B0-32 that holds its leader, or a churn fix first.
+
+**Per-push stages** (`server-timing`, all 2,409 timed pushes, ms):
+
+| Stage | n | p50 | p99 |
+|---|---|---|---|
+| auth | 2,409 | 83 | 952 |
+| resolve | 2,409 | 524 | 2,204 |
+| install | 2,409 | 371 | 990 |
+| gate | 2,409 | 990 | 24,376 |
+| context | 2,409 | 0 | 24,681 |
+| validate | 2,409 | 270 | 15,697 |
+| admission | 2,409 | 0 | 0 |
+| probe | 463 | 10,935 | 53,341 |
+| commit | 3,668 | 2,553 | 56,257 |
+| stage | 1,259 | 536 | 853 |
+| edge total | 2,409 | 11,241 | 86,627 |
+
+- **Create probe:** 463 of 3,668 commits probed, and 1,946 of 2,409 pushes skipped it. The probes are the slow ones (p50 10.9 s): a probe runs after `NotLeader` or a stale term drops the isolate's leader, which the churn did every few seconds.
+- **Stage first:** 63 pushes staged before their first commit, against m3fr8's 253. 1,259 commits staged after a `Stage` reply.
+- **`gate` and `context` at p99 24 s** are the read gate's member reads during elections: "access rows did not answer (not leader)".
+
+**The per-isolate push log** (842 pushes from the burst on, from Workers Logs; the edge's `{push, isolate, open, status, timing}` line):
+- **Isolates:** 99 served the burst, with 6 pushes each at p50 and 39 at most.
+- **`open`** (pushes the isolate held when one started, itself included): p50 3, p90 11, max 26.
+- **Edge total by `open`:** 33.8 s at open 1, 36.4 s at 2, 33.9 s at 3, 44.2 s at 4, and 37.7 s at 8 or more. Load per isolate adds little against the churn's commit wait. So the reading that the gaps between a push's reads were its isolate's event loop is **not supported** here [measured, on a churning row].
+- **Stage first and the isolate's own `Stage`:** of the 54 stage-first pushes in the log, 9 came before their isolate had logged any staged push, and 45 after. This mostly confirms the m3fr8 inference: an isolate stages first only after its own first `Stage` reply. The 9 exceptions are isolates whose first `Stage` reply came on a push that ended after them [inference: the log line is written at the end of a push].
+
+### B0-31 (repo 65576, rehomed on site 2, run `mwjhg50v`): fail on the buckets-up line
+
+The rehome was on site 2 (`transfer.mjs`). Site c's shard answered warm 3.5 s later, before the merges (`shardwarm.mjs`). The group reached k 4 at 16:33:28Z, and the learners caught up 0 of 8 after 121 s. The load ran 600 s from 16:40:05Z, with placement failing from 300 s.
+
+| Gate line | Result |
+|---|---|
+| Commit p99 at most 1 s with buckets up | **Fail**: 9,600 ms (p50 1,054, max 11,401, n 5,366). m3fr8: 2,138 ms |
+| Placement failing: Human and MergeQueue commit p99 at most 3 s, 0 of them refused | Pass: leader commit p99 1,638 ms (n 4,267). `push:human@fail` 161 ok, 9 stale, 0 refused. `merge:only@fail` 29 × 200, 2 × 409, 0 × 503 |
+| Agent pushes over INLINE_MAX_HOT refused at once in the `ng` shape | **Pass**: 1,258 of 1,258 `full` (p50 1,125 ms, p99 3,258 ms), 0 committed. a1-phase-sent labels each push by the phase it was sent in, and m3fr8's 17 are gone |
+
+- **The apac leader held:** term 3 from the rehome (16:32:26Z) to the end, with 24 failed calls and 0 `StepDown`s in Workers Logs.
+- **MergeQueue `warming`:** 0 × 503 on either half. `merge:only@up` 28 × 200, 11 × 409; `merge:only@fail` 29 × 200, 2 × 409. The two `warming` lines in Workers Logs (16:40:15Z) are pool shards `git#0#pool:4` and `:7` before the first pushes, which validated on the home shard.
+- **The buckets-up p99 tail:** `push:agent@up` p99 15.3 s, `push:human@up` p99 14.4 s, and `merge@up` p99 36.9 s. The leader's buckets-up commit tail (9.6 s) is new against m3fr8's 2.1 s with the same build of `crates/raft`.
+  - The receipt rule shows nothing here: over the row, 1,664 sends for 1,641 commits, 0 `busy`, 4 asks, 23 missed and 23 `suspect`.
+  - The tail is on the leader. The `upStats` split was not kept for the buckets-up half, because the reset read holds the commit percentiles only. So its stage, queue or confirm, is not known from this run.
+- **Agent push stages with buckets up:** resolve p50 504 ms, validate 1,518, commit 1,383.
+- **B0-29's API read:** p99 5,420 ms buckets up (500 × 503), 1,434 ms placement failing.
+
 ## Rows m3fr8 (2026-11-16, TAG `m3fr8`, `ROWS="b0-32 b0-31"`, `STOP_USD=66`)
 
 **Build and site day.**
@@ -959,6 +1134,8 @@ All 10 kill pushes answered ok. The trace went to LM-1. This build is before mai
 **Next:** rerun L0-12 on main `5c0f06f` with these instruments. The churn may be gone on the liveness build; if the clock spread or the feed p99 still fails, the raw data names the member.
 
 ## Cost
+
+**$68.31** at 16:55Z on 2026-11-16, graft-m3f only, after the 14:45Z site day and rows m3fr9 (L0-12 $2.59, stopped after the replay; B0-32 $1.31; B0-31 $1.65), with no shard container running. Started at $62.76, stop at 77.
 
 **Cap raised to $80** (2026-11-16, about 13:40Z, approved by the user through the parent thread), with `STOP_USD=77` for rows.sh: graft-m3f was at $62.23 after m3fr8, and a whole L0-12 (about $12) plus a site day did not fit under 66. The rows that follow the `receipt-rule` merge are L0-12 whole, then B0-32, then B0-31 if `costok` leaves room.
 

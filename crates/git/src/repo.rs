@@ -5,7 +5,7 @@
 //! The fold holds what M1 needs of the repository's core tier: its refs, and the `RepoSettings` owner that names the
 //! owner's `Authz` chain in `deps`. `Genesis` and `Settings` are later work, so a fold is built with its owner.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_fold::{MemStore, Overlay, Read, TierStore, Tiered, Val, fold_digest, has};
 use graftyard_identity::stateless::InstallationClaims;
@@ -33,7 +33,7 @@ use crate::issues::{
 };
 use crate::key::R2Key;
 use crate::merge::{EngineVersion, TreeDiffDigest};
-use crate::pack::{Archived, PackId, PackRef, Promoted};
+use crate::pack::{Archived, Compacted, PackId, PackRef, Promoted};
 use crate::queue::QueueEvent;
 use crate::refs::{Atomicity, ObjectId, RefName, RefUpdate};
 use crate::tiers::{RepoTiers, get_rec, ref_key, tier_of};
@@ -71,6 +71,9 @@ pub const REPO_FORMAT_LEASES: Format = Format { family: 0x20, version: 14 };
 /// `fanout` (`design/DESIGN.md`, Shape, `NetworkLoad` and `fanout`): `RepoEvent::Fanout`, tag 39, which a network
 /// group's leader records itself when k changes. No client command carries it, so every earlier form keeps its bytes.
 pub const REPO_FORMAT_FANOUT: Format = Format { family: 0x20, version: 15 };
+/// `roll-up`: `RepoEvent::Compacted`, tag 47, which only a leader of this release records itself
+/// (`crate::log_archive`).
+pub const REPO_FORMAT_ROLLUP: Format = Format { family: 0x20, version: 25 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -391,6 +394,10 @@ pub enum RepoEvent {
     // R24, format 32.24 (`crate::workflow_job::REPO_FORMAT_WORKFLOW_JOB`): tag 46.
     /// Metadata. One Actions job's `workflow_job` step, which `RunOwner` appends (`crate::workflow_job`).
     WorkflowJob(crate::workflow_job::WorkflowJobUpdate),
+    // roll-up, format 32.25 (`REPO_FORMAT_ROLLUP`): tag 47.
+    /// Core. A roll of the chain's oldest consecutive promoted packs (`crate::pack::Compacted`), committed by the
+    /// leader in an entry of its own; `verify` checks it against the fold's `promoted_log`.
+    Compacted(crate::pack::Compacted),
 }
 
 impl RepoEvent {
@@ -545,6 +552,25 @@ impl RepoFold {
         get_rec(&*self.core, "promoted", &[])
     }
 
+    pub fn promoted_from(&self, from: Index) -> Option<Promoted> {
+        get_rec(&*self.core, "promoted_log", &[Val::Int(from.0 as i64)])
+    }
+
+    /// Every committed roll, in the order of the promotion ranges it consumed.
+    pub fn compactions(&self) -> Vec<Compacted> {
+        compactions(&*self.core)
+    }
+
+    /// Every promoted pack a committed roll consumed.
+    pub fn consumed(&self) -> BTreeSet<PackId> {
+        self.compactions().into_iter().flat_map(|c| c.consumed).collect()
+    }
+
+    /// The end of the newest committed roll's range, or 0 before any roll.
+    pub fn rolled_to(&self) -> Index {
+        Index(self.compactions().into_iter().map(|c| c.to.0).max().unwrap_or(0))
+    }
+
     pub fn archived(&self) -> Option<Archived> {
         get_rec(&*self.core, "archived", &[])
     }
@@ -585,6 +611,50 @@ impl RepoFold {
                 .expect("metadata tier applies the next entry");
         }
     }
+}
+
+/// Every roll in `core`, including any written earlier in the entry when `core` is a scratch overlay.
+fn compactions(core: &(impl Read + ?Sized)) -> Vec<Compacted> {
+    core.scan("compacted", &[], usize::MAX)
+        .into_iter()
+        .map(|(_, row)| match row.first() {
+            Some(Val::Blob(b)) => postcard::from_bytes(b).expect("a fold row this release wrote"),
+            _ => panic!("row compacted has no record"),
+        })
+        .collect()
+}
+
+/// `verify`'s rule for a roll: it consumes at least the two oldest unconsumed promotions, in order, and replaces
+/// exactly their combined range with one stored pack.
+fn check_compacted(core: &(impl Read + ?Sized), c: &Compacted) -> Result<(), Box<str>> {
+    if !matches!(c.produced, PackRef::Stored { .. }) {
+        return Err("a rolled pack is always stored".into());
+    }
+    if c.consumed.len() < 2 {
+        return Err("a roll consumes at least two promotions".into());
+    }
+    let rolled_to = compactions(core).into_iter().map(|q| q.to.0).max().unwrap_or(0);
+    let from = Index(rolled_to + 1);
+    if c.from != from {
+        return Err(format!("a roll starts right after the last roll, at {from:?}").into());
+    }
+    let mut at = c.from;
+    let mut last_to = Index(0);
+    for id in &c.consumed {
+        let Some(p) = get_rec::<Promoted>(core, "promoted_log", &[Val::Int(at.0 as i64)]) else {
+            return Err(format!("no committed promotion starts at {at:?}").into());
+        };
+        if p.pack.stored_id() != Some(*id) {
+            return Err(format!("pack {id} is not the promotion at {at:?}").into());
+        }
+        last_to = p.to;
+        at = Index(p.to.0 + 1);
+    }
+    if last_to != c.to {
+        return Err(format!("the roll's range ends at {last_to:?}, not {:?}; it must be {last_to:?}", c.to).into());
+    }
+    // Starting after the last roll and walking consecutive promotions means no consumed pack can be consumed twice.
+    Ok(())
 }
 
 /// `verify`'s rule for a `Promoted` after `prev`: the range starts right after the previous one (at 1 for the first),
@@ -772,6 +842,7 @@ impl Scratch for RepoScratch<'_> {
         let updates = match ev {
             RepoEvent::Refs { .. } | RepoEvent::Merged { .. } | RepoEvent::Queue(_) => ev.updates(),
             RepoEvent::Promoted(p) => return check_promoted(promoted.as_ref(), p),
+            RepoEvent::Compacted(c) => return check_compacted(&self.core, c),
             RepoEvent::Archived(a) => {
                 let prev: Option<Archived> = get_rec(&self.core, "archived", &[]);
                 return check_archived(self.base.repo, prev.as_ref(), promoted.as_ref(), a);
@@ -1840,6 +1911,7 @@ impl Record for RepoEvent {
             }
             // R24, 32.24: tag 46.
             RepoEvent::WorkflowJob(u) => return tagged(out, 46, u),
+            RepoEvent::Compacted(c) => return tagged(out, 47, c),
         };
         e.u8(0);
         e.u128(push.0.0);

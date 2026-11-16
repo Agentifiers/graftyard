@@ -188,6 +188,14 @@ The operator, Ben Kraus, chose to reword BM-2's latency clause rather than chase
 
 The operator also asked to start the web app (M4-WP5) now against a mocked API. This replaces Primer React. The web app is React 19 on TanStack Start, Router, Query, and DB, with TanStack Form, Table, and Virtual where a page needs them. Its components are shadcn/ui on Base UI plus ReUI's free primitives and examples, installed from the `@reui` registry with no license key. Its icons are the free HugeIcons set. Start runs in SPA mode, so the build is static assets and an HTML shell, and the design's rule of no Node server-side rendering tier holds [inference: SPA mode prerenders only the shell at build time]. Until the edge serves a page's routes, the app reads a mock that answers the pinned GHES 3.22 REST description (`decisions/DECISIONS.md`, "The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)").
 
+### Operator decision, 2026-11-16, 90% gates and a daily spend limit
+
+> "the goal is to get within 90% of the goals for the runs. if we get to 90% of the way there, and it's a long tail of effort and testing to get the last 10% done, we note it and move on"
+
+> "I still want to keep going and prove this out though. you are approved at $200/day spend for the entire account, starting now."
+
+A hosted gate row is met when its measured result reaches 90% of each target: a rate or count at 90% of its goal (such as 45 of 50 jobs finishing), or a latency within 10% over its bound (such as a 1 s p99 met at 1.1 s) [inference: the operator gave the rule in words, so "within 90%" is read the same way for limits and for goals]. When a row reaches that and what is left is a long tail of work and reruns, the row is recorded as met at 90%, with its gap in `decisions/OPEN-QUESTIONS.md`, and work moves on. The rule does not relax correctness: a lost acknowledged push, a broken quorum rule, a GHES response change for a client that did not opt in, or any other invariant in `AGENTS.md` still fails its row outright. Spend is at most $200 a day across the whole Cloudflare account, counted per UTC day from 2026-11-16 20:30Z and read with `tests/fanout/acctcost.py`, after per-install meters missed most of a $2,328 bill for 2026-10-27 to 2026-11-16 (graft-m1's runs and idle containers were on no meter).
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.

@@ -114,6 +114,17 @@ pub struct Promoted {
     pub pack: PackRef,
 }
 
+/// A roll of a chain's oldest consecutive promoted packs into one stored pack (`decisions/DECISIONS.md`, `roll-up`):
+/// `consumed` are those promotions' packs, oldest first, and `from..=to` the log range they covered together.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Compacted {
+    pub consumed: Vec<PackId>,
+    /// Always `Stored`.
+    pub produced: PackRef,
+    pub from: Index,
+    pub to: Index,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Archived {
     pub key: R2Key,

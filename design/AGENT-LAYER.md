@@ -350,12 +350,12 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 /// FEED_BATCH_ALL [measured, L0-12 `t6`: p99 1,925 to 2,551 ms; the value [inference]: 5,000 pollers re-send at most 500
 /// polls/s at 10 s, not 2,500/s at 2 s as in LF-12 `r27`'s 243,147 such 429s]. A full member gets that 429 at once (feed
 /// calls fell 45 to 55%). Members report peak held, refusals, and reads, and `place_learners` adds learners until held
-/// plus refused fit in half of FEED_HELD_MAX each, up to MAX_LEARNERS [measured, LF-12]. A serving member answers from
-/// its applied log with no read-index call and holds a poll until an event past `cursor` overlaps `paths` or `wait` ends,
-/// then waits FEED_BATCH; one with no `paths` returns on any event and batches for FEED_BATCH_ALL. Polls need `contents:
-/// read`, take at most FEED_POLLS per token and client IP at once, and count toward LEARNER_AT's read rate; the serving
-/// member counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first
-/// entry with `at >= expires`; clients time it from `expires`. An install or a first poll (fed, a backlog cost 46 s, LM-1)
+/// plus refused fit in half of FEED_HELD_MAX each, up to MAX_LEARNERS [measured, LF-12]. A serving member answers from its
+/// applied log with no read-index call and holds a poll until an event past `cursor` overlaps `paths` or `wait` ends, then
+/// waits FEED_BATCH; one with no `paths` returns on any event and batches for FEED_BATCH_ALL. Polls need `contents: read`,
+/// take at most FEED_POLLS per token and client IP at once, and count toward LEARNER_AT's read rate; the serving member
+/// counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first entry
+/// with `at >= expires`; clients time it from `expires`. An install or a first poll (fed, a backlog cost 46 s, LM-1)
 /// restarts the ring with its live leases (`9d59283`). An older cursor gets 410; the client reloads leases and tasks.
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
@@ -365,9 +365,9 @@ pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lea
 pub enum PrAction { Opened, Readied, Closed, Merged }
 pub enum LeaseChange { Acquired, Released, Expired }
 /// `?cursor=` is base64url without padding of 17 bytes: a version byte (1), the group's 8-byte `RepoId`, and the 8-byte
-/// big-endian index. Clients treat it as opaque. A cursor for another group, or past the commit index its member knows
-/// (its own or its leader's), as from before a whole-install restore, gets the same 410 as an expired one; one past only
-/// the member's applied index answers `lagging`. A move of the metadata tier to a child group changes no cursor, because
+/// big-endian index. Clients treat it as opaque. A cursor of another group, or past the commit index its member knows (its
+/// own or its leader's, as after a whole-install restore), gets 410; past only its applied index, `lagging`. The edge
+/// answers 410 only if every member it tried did. A move of the metadata tier to a child group changes no cursor, because
 /// the parent keeps its log and indexes (`design/DESIGN.md`, Shape, "Chains"). `wait` is whole seconds, 0 by default, and
 /// clamped to FEED_WAIT_MAX. `paths` is a repeated `PathGlob` parameter, at most 32 (`?paths=pkg/auth/**&paths=docs/*`).
 pub struct FeedCursor { pub group: RepoId /* the 8 bytes above */, pub index: Index }

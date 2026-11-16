@@ -663,6 +663,9 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (Method::Post, ["app", "installations", id, "access_tokens"]) => {
                 crate::ident::access_tokens(c, req, id).await
             }
+            (m @ (Method::Get | Method::Patch), ["app", "hook", "config"]) => {
+                crate::ident::app_hook_config(c, req, m.clone()).await
+            }
             (Method::Delete, ["installation", "token"]) => crate::ident::delete_installation_token(c, req).await,
             (Method::Delete, ["applications", client, "token"]) => crate::ident::revoke_app_token(c, req, client).await,
             (Method::Get, ["user"]) => crate::ident::get_user(c, req).await,

@@ -1149,8 +1149,9 @@ fn a_learner_behind_the_cursor_answers_lagging_not_gone() {
     let mut s = feed::Serving::default();
     assert_eq!(s.admit(feed::FeedRole::Learner, false, fresh.behind_cursor()), feed::Admit::Lagging);
     assert_eq!(s.held, 0, "nothing held on the member behind");
-    let lagged = |l: feed::Following| (feed::Admit::Lagging, feed::FeedRole::Learner, l.lag);
-    let answers = [lagged(fresh.behind_cursor()), (feed::Admit::Hold, feed::FeedRole::Learner, fresh.lag)];
+    let lagged = |l: feed::Following| feed::Answer::Admit(feed::Admit::Lagging, feed::FeedRole::Learner, l.lag);
+    let answers =
+        [lagged(fresh.behind_cursor()), feed::Answer::Admit(feed::Admit::Hold, feed::FeedRole::Learner, fresh.lag)];
     assert_eq!(feed::route(&answers), feed::Route::Held(1), "the caught-up learner holds it");
     // A cursor inside the ring is served as before, and one below the ring's floor is still gone.
     let inside = feed::FeedCursor { group: REPO, index: newest }.encode();
@@ -1177,4 +1178,37 @@ fn a_cursor_past_the_groups_commit_index_is_gone() {
     assert_eq!(feed::start(REPO, Some(&at(50)), oldest, newest, Index(50)), feed::Start::Ahead(Index(50)));
     assert_eq!(feed::start(REPO, Some(&at(51)), oldest, newest, Index(50)), gone);
     assert_eq!(feed::start(REPO, Some(&at(40)), oldest, newest, Index(50)), feed::Start::After(Index(40)));
+}
+
+/// One member's 410 is not the poll's (`design/AGENT-LAYER.md`, "Activity feed", the `FeedCursor` paragraph). A poller
+/// held on a caught-up learner carries a cursor to an apac learner that has applied less and has not yet heard its
+/// leader commit that index, so `start` answers it `gone` there, rightly for that member. The edge used to return that
+/// 410 at once, and the poller reloaded from `oldest`: L0-12 m3fr9's two apac learners answered 858 of 869 `gone`
+/// while every learner was within 15 entries of the leader (`tests/am1/results/lm1-rows-m3f.md`). The edge now asks
+/// the next member, which holds it; the 410 is the poll's only when every member asked answered it.
+#[test]
+fn a_learner_that_has_not_heard_the_cursor_committed_does_not_end_the_poll() {
+    let (oldest, behind, committed_here, cursor) = (Index(3), Index(3_560), Index(3_562), Index(3_565));
+    let c = feed::FeedCursor { group: REPO, index: cursor }.encode();
+    // The apac learner: applied through 3,560, heard commit 3,562, so a cursor at 3,565 names no entry it knows.
+    let here = feed::start(REPO, Some(&c), oldest, behind, committed_here);
+    assert!(matches!(here, feed::Start::Gone { .. }), "{here:?}");
+    // The next learner applied through the cursor: it holds the poll.
+    let caught_up = Index(3_566);
+    assert_eq!(feed::start(REPO, Some(&c), oldest, caught_up, caught_up), feed::Start::After(cursor));
+    let ok = std::time::Duration::from_millis(200);
+    let held = feed::Answer::Admit(feed::Admit::Hold, feed::FeedRole::Learner, ok);
+    let lagging = feed::Answer::Admit(feed::Admit::Lagging, feed::FeedRole::Learner, ok);
+    assert_eq!(feed::route(&[feed::Answer::Gone, held]), feed::Route::Held(1), "the next learner holds it");
+    assert_eq!(feed::route(&[feed::Answer::Gone, lagging]), feed::Route::Held(1), "a lagging learner holds it last");
+    // Only when every member asked answered `gone` is the 410 the poll's: a cursor older than every ring, or past every
+    // member's commit index, as after a whole-install restore.
+    let all = [feed::Answer::Gone, feed::Answer::Gone, feed::Answer::Gone];
+    assert_eq!(feed::route(&all), feed::Route::Gone(0));
+    // A full member still answers 429 at once, and `gone` beside a lagging follower is a 429, not a 410.
+    let full = feed::Answer::Admit(feed::Admit::Full, feed::FeedRole::Learner, std::time::Duration::ZERO);
+    let too_many = feed::Route::TooMany { retry_after: feed::FEED_BATCH_ALL };
+    assert_eq!(feed::route(&[feed::Answer::Gone, full]), too_many);
+    let follower = feed::Answer::Admit(feed::Admit::Lagging, feed::FeedRole::Follower, ok);
+    assert_eq!(feed::route(&[feed::Answer::Gone, follower]), too_many);
 }

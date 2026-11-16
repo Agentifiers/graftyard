@@ -637,34 +637,50 @@ impl Serving {
     }
 }
 
-/// The edge's choice for one poll after asking members in order (at most three): the first that holds it; else, if
-/// every one tried refused as lagging and the least lagged is a learner, that learner; else 429 with `Retry-After` of
-/// FEED_BATCH_ALL. A full member gets the 429 at once.
+/// One member's answer to a poll, in the order the edge asked: an admission, or `gone` (410 with its `oldest`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Admit(Admit, FeedRole, Duration),
+    Gone,
+}
+
+/// The edge's choice for one poll after asking members in order (at most three, a `gone` among them): the first that
+/// holds it; a full member's 429 with `Retry-After` of FEED_BATCH_ALL; else, if every one that did not answer `gone`
+/// refused as lagging and the least lagged is a learner, that learner; else, if every one tried answered `gone`, the
+/// first one's 410; else 429. One member's 410 is not the poll's: a learner that has not yet heard its leader commit a
+/// cursor another learner served answers it 410 (`start`), and returned at once it sent pollers back to `oldest` (L0-12
+/// m3fr9: 858 of 869 `gone` came from the two apac learners, `tests/am1/results/lm1-rows-m3f.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route {
     Held(usize),
+    Gone(usize),
     TooMany { retry_after: Duration },
 }
 
-pub fn route(answers: &[(Admit, FeedRole, Duration)]) -> Route {
+pub fn route(answers: &[Answer]) -> Route {
     let retry = Route::TooMany { retry_after: FEED_BATCH_ALL };
-    for (i, (a, _, _)) in answers.iter().enumerate().take(3) {
+    let answers = &answers[..answers.len().min(3)];
+    for (i, a) in answers.iter().enumerate() {
         match a {
-            Admit::Hold => return Route::Held(i),
-            Admit::Full => return retry,
-            Admit::Lagging | Admit::NotServing => {}
+            Answer::Admit(Admit::Hold, _, _) => return Route::Held(i),
+            Answer::Admit(Admit::Full, _, _) => return retry,
+            _ => {}
         }
     }
-    let lagging: Vec<(usize, FeedRole, Duration)> = answers
+    let admitted: Vec<(usize, Admit, FeedRole, Duration)> = answers
         .iter()
         .enumerate()
-        .take(3)
-        .filter(|(_, (a, _, _))| *a == Admit::Lagging)
-        .map(|(i, (_, r, l))| (i, *r, *l))
+        .filter_map(|(i, a)| match a {
+            Answer::Admit(a, r, l) => Some((i, *a, *r, *l)),
+            Answer::Gone => None,
+        })
         .collect();
-    let all_lagging = !lagging.is_empty() && lagging.len() == answers.len().min(3);
-    match lagging.iter().min_by_key(|(_, _, l)| *l) {
-        Some((i, FeedRole::Learner, _)) if all_lagging => Route::Held(*i),
+    if admitted.is_empty() {
+        return if answers.is_empty() { retry } else { Route::Gone(0) };
+    }
+    let all_lagging = admitted.iter().all(|(_, a, _, _)| *a == Admit::Lagging);
+    match admitted.iter().filter(|(_, a, _, _)| *a == Admit::Lagging).min_by_key(|(_, _, _, l)| *l) {
+        Some((i, _, FeedRole::Learner, _)) if all_lagging => Route::Held(*i),
         _ => retry,
     }
 }
@@ -711,10 +727,10 @@ mod tests {
         }
         assert_eq!(s.admit(FeedRole::Learner, false, ok), Admit::Full);
         assert_eq!((s.peak, s.drop_all(), s.held), (FEED_HELD_MAX, FEED_HELD_MAX, 0));
-        let lag = |r, ms| (Admit::Lagging, r, Duration::from_millis(ms));
+        let lag = |r, ms| Answer::Admit(Admit::Lagging, r, Duration::from_millis(ms));
         assert_eq!(route(&[lag(FeedRole::Follower, 3_000), lag(FeedRole::Learner, 1_500)]), Route::Held(1));
         let full = Route::TooMany { retry_after: FEED_BATCH_ALL };
         assert_eq!(route(&[lag(FeedRole::Learner, 3_000), lag(FeedRole::Follower, 1_500)]), full);
-        assert_eq!(route(&[(Admit::Full, FeedRole::Learner, Duration::ZERO)]), full);
+        assert_eq!(route(&[Answer::Admit(Admit::Full, FeedRole::Learner, Duration::ZERO)]), full);
     }
 }

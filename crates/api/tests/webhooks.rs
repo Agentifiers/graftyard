@@ -580,3 +580,68 @@ fn an_apps_workflow_job_names_its_installation_and_the_app() {
     assert_eq!(header("x-github-hook-installation-target-type"), Some("integration"));
     assert_eq!(header("x-github-event"), Some("workflow_job"));
 }
+
+/// `app-hook-config`: GHES's `webhook-config` for an App, the secret masked; a `PATCH` body keeps what it omits,
+/// clears the secret with `""`, and refuses `form`, `insecure_ssl` 1, and a URL with no host, since App deliveries are
+/// JSON over verified TLS. The record's secret is the raft-codec bytes of a `Wrapped`, which `app_targets` reads back.
+#[test]
+fn an_apps_hook_config_renders_ghes_webhook_config_and_a_patch_keeps_what_it_omits() {
+    use graftyard_api::webhooks::{app_hook_body, app_hook_config, app_secret_bytes};
+    use graftyard_identity::{AppId, AppRecord, ClientId, PermissionSet, Slug, Url};
+    let app = AppId(DbId(1_835_008));
+    let w = Ops.wrap(b"runner-hook", [4; 12]).unwrap();
+    let rec = AppRecord {
+        id: app,
+        slug: Slug::parse("graftyard-hosted-runners").unwrap(),
+        name: "Graftyard hosted runners".into(),
+        client: ClientId::for_app(app),
+        keys: smallvec::SmallVec::new(),
+        permissions: PermissionSet::default(),
+        events: smallvec![EventKind("workflow_job".into())],
+        webhook: Some(Url("https://graft-runners.example.workers.dev".into())),
+        webhook_secret: Some(app_secret_bytes(&w)),
+        client_secrets: smallvec::SmallVec::new(),
+        callbacks: smallvec::SmallVec::new(),
+        public: false,
+    };
+    let got: Wrapped = graftyard_raft::codec::from_bytes(rec.webhook_secret.as_deref().unwrap()).unwrap();
+    assert_eq!(&*Ops.unwrap(&got).unwrap().0, b"runner-hook", "the record's bytes decode to the wrapped secret");
+    let v = app_hook_config(&rec);
+    assert_eq!(
+        v,
+        json!({ "content_type": "json", "insecure_ssl": "0", "secret": "********",
+                "url": "https://graft-runners.example.workers.dev" })
+    );
+    assert!(!v.to_string().contains("runner-hook"));
+    let none = AppRecord { webhook: None, webhook_secret: None, ..rec.clone() };
+    assert_eq!(app_hook_config(&none), json!({ "content_type": "json", "insecure_ssl": "0" }));
+    // A body that names only the secret keeps the URL; `""` clears the secret; a new URL replaces the old one.
+    let (url, secret) = app_hook_body(&rec, &json!({ "secret": "s3" })).unwrap();
+    assert_eq!((url, secret), (rec.webhook.clone(), Some(Some("s3".to_owned()))));
+    assert_eq!(app_hook_body(&rec, &json!({ "secret": "" })).unwrap().1, Some(None));
+    assert_eq!(app_hook_body(&rec, &json!({})).unwrap(), (rec.webhook.clone(), None));
+    let (url, _) = app_hook_body(
+        &none,
+        &json!({ "url": "https://x.example/h", "content_type": "json",
+        "insecure_ssl": "0" }),
+    )
+    .unwrap();
+    assert_eq!(url, Some(Url("https://x.example/h".into())));
+    for bad in [
+        json!({ "content_type": "form" }),
+        json!({ "insecure_ssl": "1" }),
+        json!({ "insecure_ssl": 1 }),
+        json!({ "url": "ftp://x" }),
+        json!({ "url": "https:///x" }),
+        json!({ "secret": 5 }),
+    ] {
+        assert_eq!(app_hook_body(&rec, &bad).unwrap_err().status, 422, "{bad}");
+    }
+    assert_eq!(app_hook_body(&rec, &Value::Null).unwrap_err().status, 400);
+    if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+        for (case, method) in [("app-hook-config-get", "GET"), ("app-hook-config-patch", "PATCH")] {
+            let k = json!({ "method": method, "path": "/app/hook/config", "status": 200, "body": v });
+            std::fs::write(format!("{dir}/{case}.rest.json"), serde_json::to_vec_pretty(&k).unwrap()).unwrap();
+        }
+    }
+}

@@ -529,10 +529,11 @@ async fn feed_members(c: &Ctx<'_>, repo: &crate::Repo) -> Vec<(graftyard_types::
 }
 
 /// `GET /activity` (`design/AGENT-LAYER.md`, "Activity feed"): sent to the group's learners first, then followers
-/// with `learner_answers` set when a learner answered; a member that refuses as lagging sends the poll on, up to three
-/// tried. If every one tried refused as lagging and the least lagged is a learner, that learner holds it; otherwise,
-/// or at once from a full member, 429 with `Retry-After` of FEED_BATCH_ALL (`graftyard_git::feed::route`). Never the
-/// leader: the member route refuses it before reading anything.
+/// with `learner_answers` set when a learner answered; a member that refuses as lagging or answers `gone` sends the poll
+/// on, up to three tried. If every one tried that did not answer `gone` refused as lagging and the least lagged is a
+/// learner, that learner holds it; if every one tried answered `gone`, the first one's 410; otherwise, or at once from a
+/// full member, 429 with `Retry-After` of FEED_BATCH_ALL (`graftyard_git::feed::route`). Never the leader: the member
+/// route refuses it before reading anything.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn activity(
     c: &Ctx<'_>,
@@ -543,7 +544,7 @@ pub(crate) async fn activity(
     token: &str,
     ip: &str,
 ) -> Result<Reply> {
-    use graftyard_git::feed::{Admit, FeedRole};
+    use graftyard_git::feed::{Admit, Answer, FeedCursor, FeedRole};
     if !contents {
         return Ok(Reply::not_found());
     }
@@ -553,7 +554,8 @@ pub(crate) async fn activity(
                 "token": token, "ip": ip })
         .to_string()
     };
-    let mut answers: Vec<(Admit, FeedRole, std::time::Duration, usize)> = Vec::new();
+    // Each answer the routing weighs, with the member it came from; a `gone` keeps its `oldest`.
+    let mut answers: Vec<(Answer, usize, Option<FeedCursor>)> = Vec::new();
     let mut learner_answered = false;
     for (i, (site, name, learner)) in members.iter().enumerate() {
         if answers.len() >= 3 {
@@ -569,16 +571,18 @@ pub(crate) async fn activity(
         let role = if *learner { FeedRole::Learner } else { FeedRole::Follower };
         match v["admit"].as_str() {
             Some("hold") => return Ok(render_feed(view, &v)),
+            // One member's 410 is not the poll's: a learner that has not heard its leader commit a cursor another
+            // learner served answers it `gone` (L0-12 m3fr9), so the poll goes on to the next member.
             Some("gone") => {
-                let Some(o) = v["oldest"].as_str().and_then(graftyard_git::feed::FeedCursor::decode) else { continue };
-                return Ok(graftyard_api::leases::gone(o));
+                let Some(o) = v["oldest"].as_str().and_then(FeedCursor::decode) else { continue };
+                answers.push((Answer::Gone, i, Some(o)));
             }
             Some("tooMany") => return Ok(graftyard_api::leases::too_many()),
-            Some("full") => answers.push((Admit::Full, role, std::time::Duration::ZERO, i)),
+            Some("full") => answers.push((Answer::Admit(Admit::Full, role, std::time::Duration::ZERO), i, None)),
             Some("lagging") => {
                 // A lagging learner does not answer for the feed: followers may still serve.
                 let lag = std::time::Duration::from_millis(v["lagMs"].as_u64().unwrap_or(u64::MAX / 2));
-                answers.push((Admit::Lagging, role, lag, i));
+                answers.push((Answer::Admit(Admit::Lagging, role, lag), i, None));
             }
             Some("notServing") if *learner => learner_answered = true,
             // A voter that leads now: the cached members are stale.
@@ -588,11 +592,15 @@ pub(crate) async fn activity(
             _ => {}
         }
     }
-    let routed: Vec<(Admit, FeedRole, std::time::Duration)> = answers.iter().map(|(a, r, l, _)| (*a, *r, *l)).collect();
+    let routed: Vec<Answer> = answers.iter().map(|(a, _, _)| *a).collect();
     match graftyard_git::feed::route(&routed) {
+        graftyard_git::feed::Route::Gone(k) => match answers[k].2 {
+            Some(o) => Ok(graftyard_api::leases::gone(o)),
+            None => Ok(graftyard_api::leases::too_many()),
+        },
         graftyard_git::feed::Route::Held(k) => {
             // Every tried member lagged and the least lagged is a learner: it holds the poll under FEED_HELD_MAX.
-            let (site, name, _) = &members[answers[k].3];
+            let (site, name, _) = &members[answers[k].1];
             let b = json!({ "cursor": q.cursor, "wait_s": q.wait.as_secs(), "paths": q.paths, "learner_answers": false,
                             "token": token, "ip": ip, "lagging_ok": true });
             let deadline = std::time::Duration::from_secs(q.wait.as_secs() + 5);

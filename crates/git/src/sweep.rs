@@ -122,6 +122,27 @@ fn ms(d: std::time::Duration) -> u64 {
     d.as_millis() as u64
 }
 
+/// A pack a roll consumed and its `.idx` are kept this long after the roll, before the sweeper may delete them
+/// (`decisions/DECISIONS.md`, `roll-up`, "Deleting consumed packs": a shard mid-rehydrate is still loading them)
+/// [guess].
+pub const CONSUMED_KEEP: u64 = 7 * 86_400_000;
+
+/// Whether the sweeper may delete the packs one roll consumed (`Compacted.consumed`), whose entry committed at
+/// `compacted_index` and whose time is `rolled_at`: only once the roll is `CONSUMED_KEEP` old, every shard that could
+/// answer is on the list (`shard_cursors`, `Some(Index(u64::MAX))` for a shard with no disk for the network), and every
+/// answer holds a cursor at or past the roll's entry, so no shard still serves from the consumed packs. Not called yet:
+/// the sweeper's deletion of consumed packs is G9's remainder.
+pub fn consumed_deletable(
+    rolled_at: Timestamp,
+    now: Timestamp,
+    shard_cursors: &[Option<Index>],
+    compacted_index: Index,
+) -> bool {
+    now.0.saturating_sub(rolled_at.0) >= CONSUMED_KEEP
+        && !shard_cursors.is_empty()
+        && shard_cursors.iter().all(|c| c.is_some_and(|i| i >= compacted_index))
+}
+
 /// One pack id's objects in one bucket.
 #[derive(Default)]
 struct Held<'a> {
@@ -595,6 +616,26 @@ mod tests {
 
     fn mark_key(id: PackId) -> R2Key {
         R2Key::committed(pack_key(id)).unwrap()
+    }
+
+    /// G9's remainder, not called yet: the sweeper's deletion of consumed packs waits for the keep and for every
+    /// shard of the network to have the roll's entry, and neither a shard that could not answer (`None`) nor a missing
+    /// list holds it open (`consumed_deletable`).
+    #[test]
+    fn consumed_packs_wait_out_the_keep_and_every_shard_past_the_roll() {
+        let (rolled, at) = (Timestamp(T0), Index(90));
+        // 7 days minus 1 ms: kept whatever the shards answer.
+        assert!(!consumed_deletable(rolled, Timestamp(T0 + CONSUMED_KEEP - 1), &[Some(at)], at));
+        // Exactly the keep, every shard at or past the roll's entry.
+        assert!(consumed_deletable(rolled, Timestamp(T0 + CONSUMED_KEEP), &[Some(at), Some(Index(89 + 10))], at));
+        // One shard still behind the roll's entry.
+        assert!(!consumed_deletable(rolled, Timestamp(T0 + CONSUMED_KEEP), &[Some(at), Some(Index(89))], at));
+        // A shard that could not answer holds the deletion.
+        assert!(!consumed_deletable(rolled, Timestamp(T0 + CONSUMED_KEEP), &[Some(at), None], at));
+        // No shard was asked at all.
+        assert!(!consumed_deletable(rolled, Timestamp(T0 + CONSUMED_KEEP), &[], at));
+        // A shard with no disk for the network is past every roll, as the caller passes it.
+        assert!(consumed_deletable(rolled, Timestamp(T0 + CONSUMED_KEEP), &[Some(Index(u64::MAX))], at));
     }
 
     #[test]

@@ -268,6 +268,30 @@ Site day 47 and edge day 21 put main `1d90863a` on m4a, with git image `m4a47` (
 - **F77 (b) is not exercised by this run.** No acquire was lost, so no runner retried one. It is covered by `crates/actions/tests/gates.rs` and plants 25 to 27, not by a hosted measurement.
 - **Teardowns, BF-54 run 3.** 05:03:26Z: services `bf54run3` and `bf54jobs3` stopped. 05:03:41Z to 05:03:45Z: in each of the 25 boxes every listener got SIGINT (0 left), then the box was destroyed, `{\"ok\":true}` each (`teardown.log`). 05:04:21Z: application `a03fbdb5-…` listed 0 active. 05:04:37Z: the scratch Worker `graft-runners-bf54` deleted; 05:04:38Z: its application `a03fbdb5-…` deleted (`success: true`). Left in the runner account: `graft-runners` and its two Sandbox applications, 0 active. m4a git shards `git#0#net:65565`, `git#0#net:65536`, `git#1#net:65565`, and `git#1#net:65536`, started by the verify clone and the run, were stopped at 05:06:48Z to 05:06:50Z through GitShard `/teardown`, all 200 `torn_down`, from a scratch Worker `graft-m4a-shardkill`, deleted at 05:07:21Z; at 05:07:18Z the API listed 0 active on sites a, b, and c. The symlink `tests/m0/.m0-token` was removed.
 
+## R24 hosted: `graft-runners` prompted by the App's `workflow_job` delivery (2026-11-16)
+
+Site day 48 and edge day 22 put main `77c9fa23` on m4a, with 32.24 and 18.13 enabled and `GRAFTYARD_APP_HOOKS=1` (`tests/am1/results/install-m4a.md`). A new `WEBHOOK_SECRET` was generated in the orb with `secrets.token_hex(32)`. `graftyard runners init` set it on `graft-runners` and `app.mjs` sent it to `PATCH /app/hook/config` (200), from the same file, which was then deleted. The hosted-runners App now has `actions: read`, `events: [workflow_job]`, and its webhook at `graft-runners`. `GET /app/hook/config` shows `secret` as `********`. Run 1966233 ran `bf60.mjs` unchanged, with `DEMAND_EVERY_S=300` (raw data in `tests/m4/raw/wp4/r24-bf60/`; `prompted.jsonl` is `tests/m4/wp4/prompted.py` over the runner account's Workers Logs).
+
+| | Run 1966233 (deliveries and sweep) | Run 1966182 (sweep alone) |
+| --- | --- | --- |
+| Passes that started runners | 24 `fetch` (App delivery) passes started 24 runners. 6 `scheduled` sweeps started 0 | sweeps only: 20, 12, 13, 5 |
+| First runners running | 5 jobs started 46 s after the dispatch, before any sweep | at the first sweep, 3 to 8 min |
+| Queue to start, p50 / p90 / max | **261 / 594 / 767 s** | 588 / 1,170 / 1,179 s |
+| Last job after dispatch | 1,262 s | 1,680 s |
+| Hosted registrations / running Sandboxes at once, max | 20 / 19 | 16 / 18 |
+| 10 minutes after the last job | 0 running Sandboxes (182 `inactive`), no hosted registration | 0, none |
+| Every job `Success` | **49 of 50**: job 1966235 `Failure` (below) | 50 of 50 |
+
+**R24's proof holds:** every runner of the run was started by a `workflow_job` delivery, and none by the sweep [measured, `prompted.jsonl`]. **The run fails BF-60's "every job finishes" check** on one job, through a bug in the delete guard that this run found (F78).
+
+- **Job 1966235 ("build (0, 1)").** Runner 1704433 acquired it at 18:52:41Z (`acquirejob` 200, `renewjob` 200, live log opened). At 18:52:43.988Z and 18:52:44.136Z, two delivery passes deleted the runner's registration (`DELETE .../hosted/runners/1704433`, both 204). At 18:52:44 to 18:52:45Z they destroyed its Sandbox (`sandbox.destroy success`). The job got no further renew and failed at its `JOB_LEASE` end, 19:02:41Z, 600 s after its acquire (a renew within `LEASE_REWRITE_UNDER` writes no new lease). It had no steps and no runner [measured, edge and runner-account Workers Logs, REST].
+- **Why the delete was not refused.** `DELETE .../hosted/runners/{id}` commits `DeleteRunner` on `OWNER_SCOPE_SHARD` (shard 0), and `hosted::may_delete` checks only that shard's jobs. `m3org/wp4-bf60` (`repo:65562`) hashes to shard 5, so the guard could not see the job [measured: `actions_shard(65562)` is 5; code: `workers/edge/src/hosted.rs`, `crates/actions/src/hosted.rs`]. The in-memory BF-60 test puts its repository on shard 0, so it never exercised this.
+- **Why the runner was listed `stale`: not settled.** It held a job, so a demand read that included shard 5's summary after the match should have kept it. One candidate is two overlapping `/demand` calls in one broker. A read whose shard reads began before the match would then load the `Seen` that a later read stored, with the runner marked as having held a job, and list it stale as "its job completed". Twenty deliveries reached the broker in under 30 s. This is an inference: no log line names the read that listed it.
+- **Demand 503s.** The first 20 deliveries (18:52:14Z to 18:52:43Z) got 503 from `Broker::demand`: 15 on site b, then 5 on site a, all with outcome `ok`. That is the every-shard rule refusing a partial view. Which shard did not answer is not logged, so the cause is open; a broker cold after the site day is a guess.
+- **Sandbox placement.** About 1,921 "no container instance that can be provided", 17 "too many containers per second", and 2 "Container failed to become ready" (163 s and 180 s). The pass that hit them registered a runner whose Sandbox did not start, and the cap answered `full` 24 times. So the 20 slots were seldom all running (17 to 19), which accounts for most of the p90.
+- **One `access_tokens` 503**, "authz:7100003: every member asked shed the read: overloaded". The next delivery's pass got a token.
+- **Teardowns.** Driver service `r24bf60` stopped after the run. The runner account listed 0 running Sandboxes (182 `inactive`) and the demand listed no hosted registration. m4a git shards `git#0#net:65562` and `git#1#net:65562`, started by the run's clones, were stopped at 19:48:11Z through GitShard `/teardown` (both 200 `torn_down`) from a scratch Worker `graft-m4a-shardkill`, deleted at 19:48:20Z. At 19:48:43Z the Containers API listed 0 running on sites a, b, and c.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
@@ -284,6 +308,11 @@ Site day 47 and edge day 21 put main `1d90863a` on m4a, with git image `m4a47` (
 | graft-m4a | 01:30Z to 05:20Z | $1.15: image `m4a47`, site day 47, edge day 21, and BF-54 run 3's polls and job commits (containers $0.43: the four git shards) |
 | Runner account, BF-54 run 3 scratch | 04:10Z to 05:05Z | $1.50 (13,130 vCPU-s, 471,337 GiB-s, 785,561 GB-s on `standard-4`), from `containersUsageAdaptiveGroups` for application `a03fbdb5-…` |
 | **Total** | | **$18.32 of $25** |
+| graft-m4a | 05:20Z to 18:50Z | $0.41: idle, then site day 48 and edge day 22 |
+| Runner account, `graft-runners` | 05:05Z to 18:50Z | $0.00 |
+| graft-m4a | 18:50Z to 19:50Z | $0.42: run 1966233's commits and its git shards (containers $0.22) |
+| Runner account, `graft-runners` | 18:50Z to 19:50Z | $0.34: run 1966233's Sandboxes (containers $0.31) |
+| **Total** | | **$19.49 of $25** |
 
 BF-54 cost $2.72, under its $4.63 to $10.03 estimate. It needed 1.3 hours of 25 boxes, not one at full price, because the boxes idled at low CPU. Run 2 cost $1.76 in the runner account and about $1.23 on m4a, $2.99 in all, inside its forecast of about $5. Run 3, with its site and edge day, cost $2.65 ($1.50 and $1.15), inside its forecast of about $3.
 

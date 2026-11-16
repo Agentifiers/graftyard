@@ -22,11 +22,13 @@ use graftyard_fold::{ARCHIVE_HEADER, check_archive_header, decode_archive_some};
 use graftyard_git::log_archive::{self, ArchiveHost, Next, Run, Step, View};
 use graftyard_git::mem::MemBucket;
 use graftyard_git::{Bucket, PackId, Promoted, PutNew, R2Key};
-use graftyard_raft::{LogEntry, codec};
+use graftyard_raft::{Format, LogEntry, codec};
 use graftyard_types::{Index, SiteSet, Tier};
 use sha2::{Digest as _, Sha256};
 
 const CAP: u64 = 40_000;
+
+type RollCall = (Vec<Digest>, Index, Index, RequestId);
 
 struct Bed {
     w: RefCell<World>,
@@ -35,11 +37,18 @@ struct Bed {
     held_from: RefCell<[u64; 3]>,
     /// Every `/promote` call: its checksums.
     promoted: RefCell<Vec<Vec<Digest>>>,
+    /// Every `/roll` call, including one a stopped shard skips: checksums, combined range and request.
+    rolled: RefCell<Vec<RollCall>>,
+    /// The site's `GRAFTYARD_ROLLUP`, as `log_archive::rollup_enabled` reads it.
+    rollup: Option<&'static str>,
+    /// Every recorded entry's format and events, before the real members verify and commit them.
+    records: RefCell<Vec<(Format, Vec<RepoEvent>)>>,
     /// Every `/promote` call's `warm`, and whether the shard's container runs: a warm call to a stopped shard is
     /// skipped, and any other call starts it.
     warm: RefCell<Vec<bool>>,
     running: std::cell::Cell<bool>,
     marks: RefCell<usize>,
+    marked: RefCell<Vec<(PackRef, Index)>>,
     /// Planted faults: buckets an archive put reaches.
     put_to: usize,
     /// The drain's modeled time in ms at B0-30's sizes, once `scale` (hosted bytes per bed byte) is set.
@@ -68,9 +77,13 @@ impl Bed {
             buckets: Default::default(),
             held_from: RefCell::new([1; 3]),
             promoted: RefCell::new(Vec::new()),
+            rolled: RefCell::new(Vec::new()),
+            rollup: Some("1"),
+            records: RefCell::new(Vec::new()),
             warm: RefCell::new(Vec::new()),
             running: std::cell::Cell::new(true),
             marks: RefCell::new(0),
+            marked: RefCell::new(Vec::new()),
             put_to: 2,
             clock: std::cell::Cell::new(0.0),
             scale: None,
@@ -143,6 +156,10 @@ const PROMOTE_MS_PER_MB: f64 = 110.0;
 const TWICE_THE_ROW_MB_S: f64 = 2.0 * 2.48e3 / (86_400.0 / 18.0);
 
 impl ArchiveHost for Bed {
+    fn rollup(&self) -> bool {
+        log_archive::rollup_enabled(self.rollup)
+    }
+
     fn view(&self) -> Option<View> {
         let l = self.leader();
         let w = self.w.borrow();
@@ -199,6 +216,31 @@ impl ArchiveHost for Bed {
         }))
     }
 
+    async fn roll(
+        &self,
+        sums: &[Digest],
+        from: Index,
+        to: Index,
+        request: RequestId,
+    ) -> Result<Option<PackRef>, String> {
+        self.rolled.borrow_mut().push((sums.to_vec(), from, to, request));
+        if !self.running.get() {
+            return Ok(None);
+        }
+        let mut bytes = b"PACK".to_vec();
+        for s in sums {
+            bytes.extend_from_slice(&s.0);
+        }
+        let checksum = Digest(Sha256::digest(&bytes).into());
+        let n = 100 + self.rolled.borrow().len() as u128;
+        Ok(Some(PackRef::Stored {
+            id: PackId(Ulid(n << 80)),
+            checksum,
+            bytes: bytes.len() as u64,
+            sites: SiteSet(0b11),
+        }))
+    }
+
     /// A write lands between pieces of the read, as the member's inputs do while it pauses.
     async fn pause(&self) {
         self.pauses.set(self.pauses.get() + 1);
@@ -213,8 +255,9 @@ impl ArchiveHost for Bed {
         }));
     }
 
-    async fn mark(&self, _pack: &PackRef, _index: Index) {
+    async fn mark(&self, pack: &PackRef, index: Index) {
         *self.marks.borrow_mut() += 1;
+        self.marked.borrow_mut().push((pack.clone(), index));
     }
 
     async fn put(&self, key: &str, bytes: &[u8], digest: Digest) -> Result<usize, String> {
@@ -232,7 +275,8 @@ impl ArchiveHost for Bed {
         Ok(held)
     }
 
-    async fn record(&self, request: RequestId, events: Vec<RepoEvent>) -> Result<Index, String> {
+    async fn record(&self, request: RequestId, format: Format, events: Vec<RepoEvent>) -> Result<Index, String> {
+        self.records.borrow_mut().push((format, events.clone()));
         if let Some(k) = self.scale {
             // A promotion's shard time, by the hosted bytes of its range's log, then the entry's commit and pacing.
             if let Some(RepoEvent::Promoted(p)) = events.first() {
@@ -249,7 +293,7 @@ impl ArchiveHost for Bed {
         let mut w = self.w.borrow_mut();
         let l = w.repo.leader();
         let now = w.now;
-        w.repo.on(l, now, |m, t| m.record(t, request, REPO_FORMAT_V1, events)).map_err(|e| format!("{e:?}"))?;
+        w.repo.on(l, now, |m, t| m.record(t, request, format, events)).map_err(|e| format!("{e:?}"))?;
         w.settle();
         w.repo
             .resolutions
@@ -357,6 +401,7 @@ fn the_archive_alarm_promotes_then_archives_to_two_buckets_and_holds_every_membe
                 Step::Idle => break,
                 Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
                 Step::Archived { from, to, keys, .. } => archives.push((from.0, to.0, keys)),
+                Step::Rolled { .. } => panic!("this bed's promoted packs are young"),
             }
         }
         for m in 0..3 {
@@ -423,8 +468,10 @@ fn the_archive_alarm_promotes_then_archives_to_two_buckets_and_holds_every_membe
     };
     let before = b.w.borrow().repo.members[0].last_index();
     let req = log_archive::promote_request(ChainId::Repo(REPO), p.from, p.to);
-    let again = block_on(b.record(req, vec![RepoEvent::Promoted(p)])).unwrap();
-    let again2 = block_on(b.record(log_archive::archive_request(&[a.digest]), vec![RepoEvent::Archived(a)])).unwrap();
+    let again = block_on(b.record(req, REPO_FORMAT_V1, vec![RepoEvent::Promoted(p)])).unwrap();
+    let again2 =
+        block_on(b.record(log_archive::archive_request(&[a.digest]), REPO_FORMAT_V1, vec![RepoEvent::Archived(a)]))
+            .unwrap();
     assert!(again <= before && again2 <= before);
     assert_eq!(b.w.borrow().repo.members[0].last_index(), before);
 }
@@ -516,6 +563,143 @@ fn next_archives_what_the_last_promotion_covers_and_promotes_otherwise() {
     assert_eq!(log_archive::next(Some(&p(5)), Index(6), Index(9)), Next::Promote { from: Index(6), to: Index(9) });
 }
 
+fn roll_input(n: u64, bytes: u64, at: u64) -> Promoted {
+    Promoted {
+        from: Index(n),
+        to: Index(n),
+        pack: PackRef::Stored {
+            id: PackId(Ulid((u128::from(at) << 80) | u128::from(n))),
+            checksum: Digest([n as u8; 32]),
+            bytes,
+            sites: SiteSet(0b111),
+        },
+    }
+}
+
+fn roll_inputs(count: u64, bytes: u64, at: u64) -> Vec<Promoted> {
+    (1..=count).map(|n| roll_input(n, bytes, at)).collect()
+}
+
+/// The byte bound takes a prefix, with the first promotion past it left for the next roll; only enough small packs
+/// that have waited a day roll before the run reaches it (`decisions/DECISIONS.md`, `roll-up`).
+#[test]
+fn roll_plan_is_the_bounded_prefix_when_reached_or_the_aged_batch_otherwise() {
+    let now = Timestamp(log_archive::ROLL_AGE_MS + 10_000);
+    let gib = 1 << 30;
+    let reached = roll_inputs(3, gib, now.0);
+    assert_eq!(log_archive::roll_plan(&reached, now).unwrap(), reached[..2].to_vec(), "three GiB rolls two");
+
+    let young_two = roll_inputs(2, gib / 2, now.0);
+    assert_eq!(log_archive::roll_plan(&young_two, now), None, "two young half-GiB packs do not roll");
+    let young_eight = roll_inputs(8, 1, now.0);
+    assert_eq!(log_archive::roll_plan(&young_eight, now), None, "eight young small packs wait");
+    let old_eight = roll_inputs(8, 1, 0);
+    assert_eq!(log_archive::roll_plan(&old_eight, now).unwrap(), old_eight);
+    let old_nine = roll_inputs(9, 1, 0);
+    assert_eq!(log_archive::roll_plan(&old_nine, now).unwrap(), old_nine, "the whole prefix, not just eight");
+    assert_eq!(log_archive::roll_plan(&roll_inputs(1, log_archive::ROLL_IN_MAX + 1, 0), now), None);
+    assert_eq!(log_archive::roll_plan(&roll_inputs(1, 1, 0), now), None);
+
+    // A first pack that alone fills most of the cap, with the next past it: the run reached the cap, but a roll of one
+    // pack buys nothing, so it waits.
+    let mut alone = roll_inputs(1, log_archive::ROLL_IN_MAX - 1, 0);
+    alone.push(roll_input(2, 2, 0));
+    assert_eq!(log_archive::roll_plan(&alone, now), None, "one pack never rolls, even at the cap");
+
+    // Two packs exactly at the cap are accepted: only the following pack is excluded.
+    let mut boundary = roll_inputs(2, log_archive::ROLL_IN_MAX / 2, now.0);
+    boundary.push(roll_input(3, 1, now.0));
+    assert_eq!(log_archive::roll_plan(&boundary, now).unwrap(), boundary[..2].to_vec());
+}
+
+/// Commit old promotions directly, before clearing the instrumentation the roll assertions read.
+fn seed_roll(b: &Bed, count: u64) -> Vec<Promoted> {
+    b.w.borrow_mut().now = Timestamp(log_archive::ROLL_AGE_MS + 20_000);
+    let ps = roll_inputs(count, 100, 0);
+    for (n, p) in ps.iter().enumerate() {
+        block_on(b.record(RequestId(Ulid(1_000 + n as u128)), REPO_FORMAT_V1, vec![RepoEvent::Promoted(p.clone())]))
+            .expect("an input promotion commits");
+    }
+    b.records.borrow_mut().clear();
+    ps
+}
+
+#[test]
+fn an_idle_step_rolls_in_order_records_compacted_marks_it_and_advances_the_real_fold() {
+    let b = Bed::new();
+    let ps = seed_roll(&b, 8);
+    let Step::Rolled { from, to, index } = b.step(CAP) else { panic!("the old run did not roll") };
+    assert_eq!((from, to), (ps[0].from, ps[7].to));
+    let calls = b.rolled.borrow();
+    assert_eq!(calls.len(), 1);
+    let (sums, call_from, call_to, request) = &calls[0];
+    assert_eq!(
+        *sums,
+        ps.iter()
+            .map(|p| match p.pack {
+                PackRef::Stored { checksum, .. } => checksum,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!((*call_from, *call_to), (from, to));
+    assert_eq!(*request, log_archive::roll_request(ChainId::Repo(REPO), from, to));
+    drop(calls);
+
+    let records = b.records.borrow();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, graftyard_git::repo::REPO_FORMAT_ROLLUP);
+    let [RepoEvent::Compacted(c)] = records[0].1.as_slice() else { panic!("not one Compacted: {records:?}") };
+    assert_eq!(c.consumed, ps.iter().map(|p| p.pack.stored_id().unwrap()).collect::<Vec<_>>());
+    assert_eq!((c.from, c.to), (from, to));
+    assert!(matches!(c.produced, PackRef::Stored { .. }));
+    assert_eq!(*b.marked.borrow(), vec![(c.produced.clone(), index)]);
+    let w = b.w.borrow();
+    let fold = &w.repo.members[b.leader()].group_fold().fold;
+    assert_eq!(fold.compactions(), vec![c.clone()]);
+    assert_eq!(fold.rolled_to(), to);
+}
+
+/// Until a site day sets `GRAFTYARD_ROLLUP=1` (after `FormatsEnable` enabled 32.25), a run that would roll asks no
+/// shard and records nothing; any other value is unset too.
+#[test]
+fn an_unset_rollup_variable_rolls_nothing() {
+    for var in [None, Some(""), Some("0"), Some("true")] {
+        let mut b = Bed::new();
+        b.rollup = var;
+        seed_roll(&b, 8);
+        assert_eq!(b.step(CAP), Step::Idle, "{var:?}");
+        assert!(b.rolled.borrow().is_empty(), "{var:?}: no /roll is sent");
+        assert!(b.records.borrow().is_empty() && b.marked.borrow().is_empty(), "{var:?}");
+        assert_eq!(b.w.borrow().repo.members[b.leader()].group_fold().fold.rolled_to(), Index(0));
+    }
+}
+
+#[test]
+fn a_stopped_shard_leaves_a_roll_unrecorded() {
+    let b = Bed::new();
+    seed_roll(&b, 8);
+    b.running.set(false);
+    assert_eq!(b.step(CAP), Step::Idle);
+    assert_eq!(b.rolled.borrow().len(), 1, "the warm shard was asked");
+    assert!(b.records.borrow().is_empty() && b.marked.borrow().is_empty());
+    assert_eq!(b.w.borrow().repo.members[b.leader()].group_fold().fold.rolled_to(), Index(0));
+    assert!(!b.running.get(), "a roll starts no stopped shard");
+}
+
+#[test]
+fn a_due_range_goes_before_a_qualified_roll() {
+    let b = Bed::new();
+    seed_roll(&b, 8);
+    for k in 0..80 {
+        push(&b, k, 1_500);
+    }
+    snapshot(&b);
+    assert!(matches!(b.step(CAP / 5), Step::Archived { .. }));
+    assert!(b.rolled.borrow().is_empty(), "the roll waits for archive work");
+    assert_eq!(b.w.borrow().repo.members[b.leader()].group_fold().fold.rolled_to(), Index(0));
+}
+
 /// `due` refuses a stored log with a gap or a row that is not the entry its index names.
 #[test]
 fn due_refuses_a_gap_and_a_row_of_another_entry() {
@@ -604,6 +788,7 @@ fn promotion_runs_ahead_of_archiving_and_bounds_the_tail_a_rehydrate_reads() {
                 Step::Idle => break,
                 Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
                 Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
+                Step::Rolled { .. } => panic!("this bed's promoted packs are young"),
             }
         }
         worst = worst.max(unpromoted(&b));
@@ -953,6 +1138,7 @@ fn stored_pushes_alone_promote_ahead_once_their_pack_bytes_pass_the_bound() {
                 Step::Idle => break,
                 Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
                 Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
+                Step::Rolled { .. } => panic!("this bed's promoted packs are young"),
             }
         }
         let unpromoted = b.view().unwrap().unpromoted;
@@ -1043,6 +1229,7 @@ fn promotion_keeps_up_below_its_rate_and_stays_bounded_above_it() {
                 Step::Idle => b.clock.set(next_push),
                 Step::Promoted { .. } => worst_step_ms = worst_step_ms.max(b.clock.get() - t0),
                 Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
+                Step::Rolled { .. } => panic!("this bed's promoted packs are young"),
             }
             tail_end = b.view().unwrap().unpromoted;
         }

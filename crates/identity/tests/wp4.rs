@@ -548,3 +548,63 @@ fn an_installation_is_bounded_by_its_app_and_uninstall_fails_its_tokens_at_once(
     let mine = g.m(A).group_fold().fold.more.installations.clone();
     assert_eq!(g.m(B).group_fold().fold.more.installations, mine);
 }
+
+/// `app-hook-config`: `PATCH /app/hook/config`'s `SetAppHook` on the App owner's chain sets the App's webhook and
+/// wrapped secret and leaves the rest of the record as the fold holds it, so a key added after the edge read the
+/// record survives the hook change. Every member's record agrees; an unknown App is `NoApp`; a repeat writes nothing.
+#[test]
+fn set_app_hook_patches_the_current_record_on_every_member() {
+    let f = fixture();
+    let Installed { mut w, .. } = installed();
+    let dev = acct(0, 3, 1);
+    // The edge finds the record to verify against from `iss`: the App id, or its client id.
+    use graftyard_identity::appauth::claimed_app;
+    assert_eq!(claimed_app(&f.jwt), Some(f.app));
+    let unsigned = |iss: serde_json::Value| {
+        use base64::Engine as _;
+        let b = |v: serde_json::Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
+        format!("{}.{}.x", b(serde_json::json!({ "alg": "RS256" })), b(serde_json::json!({ "iss": iss })))
+    };
+    let client = ClientId::for_app(f.app);
+    assert_eq!(claimed_app(&unsigned(client.as_str().into())), Some(f.app));
+    assert_eq!(claimed_app(&unsigned(f.app.0.0.to_string().into())), Some(f.app));
+    assert_eq!(claimed_app(&unsigned("Iv1.zz".into())), None);
+    let read = w.authz(dev).fresh_leader().app(f.app).expect("registered").clone();
+    // A key rotation commits after the edge read `read`.
+    let mut rotated = read.clone();
+    rotated.keys.push(AppKey { id: DbId(2), public: RsaPublic(vec![7; 8].into()), created: Timestamp(9) });
+    w.authz_cmd(dev, AuthzCmd { cred: OPS, op: AuthzOp::PutApp { record: Box::new(rotated.clone()) } }).unwrap();
+    let url = graftyard_identity::Url("https://graft-runners.example.workers.dev".into());
+    let secret: Box<[u8]> = vec![1, 2, 3].into();
+    let set = |webhook: Option<graftyard_identity::Url>, secret: Option<Box<[u8]>>| AuthzCmd {
+        cred: OPS,
+        op: AuthzOp::SetAppHook { app: f.app, webhook, secret },
+    };
+    assert_eq!(graftyard_raft::Command::format(&set(None, None)), graftyard_identity::AUTHZ_FORMAT_V13);
+    let applied = |w: &mut World| {
+        let g = w.authz(dev);
+        g.committed_events(g.leader().unwrap()).len()
+    };
+    w.authz_cmd(dev, set(Some(url.clone()), Some(secret.clone()))).unwrap();
+    let want = AppRecord { webhook: Some(url.clone()), webhook_secret: Some(secret.clone()), ..rotated.clone() };
+    // The same hook again commits an entry with no event, and its append carries the first one's commit to the
+    // followers.
+    let before = applied(&mut w);
+    w.authz_cmd(dev, set(Some(url.clone()), Some(secret.clone()))).unwrap();
+    assert_eq!(applied(&mut w), before, "a repeat writes no event");
+    let g = w.authz(dev);
+    g.settle(&mut |c| panic!("{c}"));
+    for m in [A, B, common::C] {
+        assert_eq!(g.m(m).group_fold().fold.app(f.app), Some(&want), "{m:?}");
+    }
+    assert_eq!(want.keys.len(), 2, "the rotation's key is kept");
+    // Clearing both leaves an App with no webhook, which `app_targets` skips.
+    w.authz_cmd(dev, set(None, None)).unwrap();
+    assert_eq!(w.authz(dev).fresh_leader().app(f.app), Some(&rotated));
+    let ghost = AuthzCmd { cred: OPS, op: AuthzOp::SetAppHook { app: AppId(DbId(1)), webhook: None, secret: None } };
+    assert_eq!(refused(w.authz_cmd(dev, ghost)), AuthzErr::NoApp);
+    // A non-admin user of the App's owner is refused.
+    let stranger = CredentialShard { account: Some(acct(0, 3, 9)), key: None };
+    let theirs = AuthzCmd { cred: stranger, op: AuthzOp::SetAppHook { app: f.app, webhook: Some(url), secret: None } };
+    assert!(matches!(refused(w.authz_cmd(dev, theirs)), AuthzErr::Unauthorized(_) | AuthzErr::Forbidden));
+}

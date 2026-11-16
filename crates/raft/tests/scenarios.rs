@@ -2457,3 +2457,87 @@ fn reads_send_at_most_one_round_per_gap_while_the_clock_climbs_and_no_learner_ge
     c.deliver(voters);
     assert!(granted(&c, late), "the read's own round did not grant it");
 }
+
+/// A leader on a suspect clock sends at most one read round per voter in an I/O turn, however far the floored member
+/// clock jumps within it. Every input of a turn shares one own-clock reading, and the member clock jumps 25 ms on a
+/// newer peer stamp at every fifth input while answers come back, late in the turn some to its own round. Timed on the member
+/// clock, the gap and those answers freed the slot again and again: up to 8 rounds to one voter in one turn, 2,264 of
+/// 2,402 repeating a last index the turn already sent (m39's leader: 1,146 of 1,245, `tests/m0/results/fanout-dups.md`).
+/// Every read is still granted only by a round that left after it arrived.
+#[test]
+fn reads_send_at_most_one_round_per_voter_per_turn_while_the_floor_jumps() {
+    let mut c = Cluster::new(44);
+    c.elect(A);
+    c.sync(A);
+    c.inbox.clear();
+    c.m_mut(A).set_clock_suspect(true);
+    c.advance(1);
+    c.inbox.clear();
+    c.resolutions.clear();
+    let mut held = Vec::new();
+    let mut asked = Vec::new();
+    let mut worst = 0;
+    for turn in 0..40u64 {
+        // The isolate's clock reads one value for the whole turn, 1 ms on from the last turn's floored clock.
+        let own = Timestamp(c.now.0 + 1);
+        c.now = own;
+        let mut older = std::mem::take(&mut held);
+        let mut sent = std::collections::BTreeMap::<SiteId, usize>::new();
+        for i in 0..30u64 {
+            if i % 5 == 4 {
+                c.now = Timestamp(c.now.0 + 25);
+            }
+            if i % 5 == 2 {
+                // Two answers to rounds from earlier turns, and from the 15th input on the answers to this turn's own
+                // calls: a frozen reading can span seconds of queued events. The follower steps each, its reply
+                // reaches A.
+                let mut back: Vec<_> = older.drain(..older.len().min(2)).collect();
+                if i > 15 {
+                    back.append(&mut held);
+                }
+                for e in back {
+                    let graftyard_raft::Envelope { from, to, msg } = e;
+                    c.on(to, |m, now| m.step(now, from, msg));
+                }
+                for e in std::mem::take(&mut c.inbox) {
+                    let graftyard_raft::Envelope { from, to, msg } = e;
+                    c.on(to, |m, now| {
+                        m.set_own_clock(own);
+                        m.step(now, from, msg)
+                    });
+                }
+            } else {
+                let id = c.on(A, |m, now| {
+                    m.set_own_clock(own);
+                    m.read(now)
+                });
+                asked.push((c.now, id.expect("leading")));
+            }
+            for e in std::mem::take(&mut c.inbox) {
+                if matches!(e.msg, Message::Append(_)) {
+                    *sent.entry(e.to).or_default() += 1;
+                }
+                held.push(e);
+            }
+        }
+        worst = worst.max(sent.values().copied().max().unwrap_or(0));
+        assert!(sent.values().all(|n| *n <= 1), "turn {turn}: {sent:?} read rounds per voter in one turn, against one");
+        held.extend(older);
+    }
+    assert_eq!(worst, 1, "no read round left at all");
+    // Answered in order, every read is granted, each by a round that left at or after it arrived.
+    // A later turn, at a new own-clock reading, sends the round the last turn's reads still need.
+    c.inbox = held;
+    c.advance(1);
+    let now = c.now;
+    c.m_mut(A).set_own_clock(now);
+    c.deliver_all();
+    let granted = |id| {
+        c.resolutions
+            .iter()
+            .any(|(_, r)| matches!(r, Resolution::Read { id: i, result: Ok(g) } if *i == id && g.via_round()))
+    };
+    for (at, id) in &asked {
+        assert!(granted(*id), "the read asked at {at:?} was never granted");
+    }
+}

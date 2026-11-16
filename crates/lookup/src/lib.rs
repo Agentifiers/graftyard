@@ -1159,8 +1159,9 @@ pub async fn commit_hedged(
         note(json!({ "send": t.site.0, "name": t.do_name, "why": why }));
         let send = post_within(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), RECEIPT_OPEN);
         let ask = || {
-            let t = &t;
+            let (t, note) = (&t, &note);
             async move {
+                note(json!({ "ask": t.site.0 }));
                 let r = post_within(b, t.site, &t.do_name, "/outcome_by_request", lookup, COMMIT_RECEIPT).await;
                 if let Some((200, v)) = &r {
                     heard(chain, t.site, v, now_ms());

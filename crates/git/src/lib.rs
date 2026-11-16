@@ -61,24 +61,25 @@ pub use ingest::{
 };
 pub use key::{ParseKeyError, R2Key};
 pub use pack::{
-    Archived, DurablePack, INLINE_MAX, INLINE_MAX_HOT, Marker, ORPHAN_AFTER, ObjectMeta, PACK_COMMIT_WINDOW, PackId,
-    PackIndex, PackRef, Promoted, REQUEST_RETENTION,
+    Archived, Compacted, DurablePack, INLINE_MAX, INLINE_MAX_HOT, Marker, ORPHAN_AFTER, ObjectMeta, PACK_COMMIT_WINDOW,
+    PackId, PackIndex, PackRef, Promoted, REQUEST_RETENTION,
 };
 pub use shard::{
     Caller, CatchUpStep, CatchUps, DISK_USE_PCT, DiskRepo, FANOUT_DOWN, FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP,
     FANOUT_UP_FOR, Fanout, GitCacheShard, HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, KEEP_WARM_MS, LEDGER_BEAT,
-    LEDGER_GAP, LOAD_STALE, LoadReports, NetworkLoad, POOL_COLD_SKIP_MS, PROMOTE_NEXT_WAIT_S, PROMOTE_WAIT_S,
-    PoolLease, PoolLedger, REGION_RETRIES, RENEW_EVERY, RegionCheck, Renewal, SHARDS, Serve, TOUCH_EVERY, ValidateOn,
-    WARM_FOR, caller, clone_cache_buckets, combine, container_regions, evict_plan, fanout, granted_k, image_for,
-    keep_warm_due, may_start, object_name, owner_share, pool_ask, pool_forward, pool_grants, pool_keep, pool_reserve,
-    promote_moves_on, promote_sites, promote_wait_s, push_validator, region_check, renewal, serve, shards_for,
-    touch_due, validate_on, validate_status, validator, warm_sites, warm_step, warming_now,
+    LEDGER_GAP, LOAD_STALE, LoadReports, NetworkLoad, POOL_COLD_SKIP_MS, PROMOTE_LAPSE, PROMOTE_NEXT_WAIT_S,
+    PROMOTE_WAIT_S, PoolLease, PoolLedger, REGION_RETRIES, RENEW_EVERY, RegionCheck, Renewal, SHARDS, Serve,
+    TOUCH_EVERY, ValidateOn, WARM_FOR, caller, clone_cache_buckets, combine, container_regions, evict_plan, fanout,
+    granted_k, image_for, keep_warm_due, may_start, object_name, owner_share, pool_ask, pool_forward, pool_grants,
+    pool_keep, pool_reserve, promote_lapse, promote_moves_on, promote_sites, promote_wait_s, push_validator,
+    region_check, renewal, serve, shards_for, touch_due, validate_on, validate_status, validator, warm_sites,
+    warm_step, warming_now,
 };
 pub use store::{
     Copies, PART_SIZE, PackStore, Pipe, PipeReader, Place, PlaceError, PutOutcome, Stage, Streamed, TeeError,
     durable_sites, mark_committed, put_marker,
 };
 pub use sweep::{
-    Action, Alarm, BucketView, CronBudget, Lookup, Plan, RequestRow, RequestSource, SweepAll, SweepReport, decide,
-    networks, sweep, sweep_all,
+    Action, Alarm, BucketView, CONSUMED_KEEP, CronBudget, Lookup, Plan, RequestRow, RequestSource, SweepAll,
+    SweepReport, consumed_deletable, decide, networks, sweep, sweep_all,
 };

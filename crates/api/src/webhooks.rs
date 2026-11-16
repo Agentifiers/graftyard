@@ -554,8 +554,7 @@ pub fn hook_body(cur: Option<&HookRecord>, body: &Value) -> Result<(HookRecord, 
         (None, Some(c)) => c.url.0.to_string(),
         (None, None) => return Err(bad("url", "missing_field")),
     };
-    let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
-    if !host.is_some_and(|h| !h.is_empty() && !h.starts_with('/')) || url.len() > 2_048 {
+    if !url_ok(&url) {
         return Err(bad("url", "invalid"));
     }
     let content_type = match config.and_then(|c| c.get("content_type")).and_then(Value::as_str) {
@@ -614,6 +613,70 @@ pub fn hook_body(cur: Option<&HookRecord>, body: &Value) -> Result<(HookRecord, 
         retry,
     };
     Ok((record, secret))
+}
+
+/// A webhook URL GHES takes: `http` or `https` with a host, at most 2,048 bytes.
+fn url_ok(url: &str) -> bool {
+    let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    host.is_some_and(|h| !h.is_empty() && !h.starts_with('/')) && url.len() <= 2_048
+}
+
+/// The bytes `AppRecord.webhook_secret` holds for a wrapped secret: the raft-codec bytes of the `Wrapped`, which the
+/// `Webhooks` consumer decodes for an App target (`graftyard_git::sequencer::app_targets`).
+pub fn app_secret_bytes(w: &graftyard_identity::sealed::Wrapped) -> Box<[u8]> {
+    graftyard_raft::codec::to_bytes(w).into()
+}
+
+/// GHES's `webhook-config` for an App (`GET` and `PATCH /app/hook/config`): always JSON and TLS-verified, as
+/// `AppRecord` holds neither choice, and the secret masked when one is set.
+pub fn app_hook_config(rec: &graftyard_identity::AppRecord) -> Value {
+    let mut v = json!({ "content_type": "json", "insecure_ssl": "0" });
+    if let Some(u) = &rec.webhook {
+        v["url"] = json!(&*u.0);
+    }
+    if rec.webhook_secret.is_some() {
+        v["secret"] = json!("********");
+    }
+    v
+}
+
+/// What a `PATCH /app/hook/config` body leaves: the App's webhook URL, and the secret the edge asks `graft-ops` to
+/// wrap (`Some(None)` clears it; `None` keeps the record's). `form` and `insecure_ssl` 1 are 422, because App
+/// deliveries are JSON and verify TLS (`design/SHARED.md`, "Identity and tokens").
+pub fn app_hook_body(
+    cur: &graftyard_identity::AppRecord,
+    body: &Value,
+) -> Result<(Option<graftyard_identity::Url>, Option<Option<String>>), Reply> {
+    let doc = "rest/apps/webhooks#update-a-webhook-configuration-for-an-app";
+    let bad = |field: &'static str| {
+        let e = crate::wire::FieldError { resource: "Hook", field, code: "invalid" };
+        Reply::json(422, crate::wire::validation_error("Validation Failed", doc, &[e]))
+    };
+    if !body.is_object() {
+        return Err(Reply::error(400, "Problems parsing JSON", doc));
+    }
+    let url = match body.get("url") {
+        None => cur.webhook.clone(),
+        Some(Value::String(u)) if url_ok(u) => Some(graftyard_identity::Url(u.as_str().into())),
+        Some(_) => return Err(bad("url")),
+    };
+    if body.get("content_type").is_some_and(|c| c != "json") {
+        return Err(bad("content_type"));
+    }
+    match body.get("insecure_ssl") {
+        None => {}
+        Some(Value::String(s)) if s == "0" => {}
+        Some(Value::Number(n)) if n.as_i64() == Some(0) => {}
+        Some(_) => return Err(bad("insecure_ssl")),
+    }
+    let secret = match body.get("secret") {
+        None => None,
+        Some(Value::String(s)) if s.is_empty() => Some(None),
+        Some(Value::String(s)) => Some(Some(s.clone())),
+        Some(Value::Null) => Some(None),
+        Some(_) => return Err(bad("secret")),
+    };
+    Ok((url, secret))
 }
 
 /// A committed `PutHook`'s reply, from its `&Acked`: 201 with `Location` for a create, else 200.

@@ -3926,3 +3926,213 @@ empty restore sent, the sites lost, and the newest try's generation on the resto
 --workspace` 1,013 passed and 0 failed, `go test`, and the three `scripts/check_*.py` OK; DESIGN at 2,200 lines.
 
 **Not yet:** deployed. It ships with the next m2b site day.
+
+### Round 32 (local, no hosted spend): G9's roll-up, design only, with its memory bound measured (2026-11-16)
+
+The operator asked for G9's roll-up as a design for review, with no code: a `Compacted` writer, the memory bound,
+rehydrate preferring a rolled pack, and deleting consumed packs only after every shard has moved past them. The
+design is in DECISIONS, "`roll-up` (proposed, not built)", and in short form in DESIGN, Shape, `rehydrate`.
+
+**Measured: bounded rolls of B0-34's promotions** (`tests/fanout/rollup/rollk.sh`, `level2.sh`, `validate.sh` on round
+27's fixture `~/geo-T`: the base pack plus 33 complete 6-step promotions of B0-34's plan, 6.80 GB, each kept). Each roll
+is `pack-objects --stdin-packs --delta-base-offset` of exactly the first K packs, at nice 19, `pack.threads=2`,
+`pack.windowMemory=256m`, on the orb's 4 CPUs. Raw output is in `tests/fanout/raw/rollup-r32.txt`.
+
+| K | in | out | out/in | wall | CPU | maxrss | peak RssAnon |
+|---|---|---|---|---|---|---|---|
+| 2 | 422 MB | 309 MB | 0.73 | 23.6 s | 31.0 s | 838 MB | 398 MB |
+| 4 | 801 MB | 514 MB | 0.64 | 39.8 s | 57.9 s | 1,467 MB | 637 MB |
+| 8 | 1,680 MB | 870 MB | 0.52 | 83.7 s | 123.5 s | 2,816 MB | 1,093 MB |
+| 16 | 3,516 MB | 1,482 MB | 0.42 | 175.9 s | 263.2 s | 5,721 MB | 2,111 MB |
+| 34 (all) | 6,802 MB | none, killed (rc 128) | | 301.6 s | 480.9 s | 10,450 MB | 3,535 MB |
+
+- **Memory scales with the input:** maxrss about 1.6 to 1.75 times the bytes rolled and private memory about 0.5 to 0.6
+  times. So the bound is a cap on input bytes per roll. ROLL_IN_MAX 2 GiB keeps a roll near 3.6 GB RSS.
+- **The whole-network roll does not fit.** All 34 reached 10.4 GB maxrss and was killed, on the 15 GB orb with its
+  work directory on a tmpfs. A rerun on disk was stopped after it stalled the orb's executor; no output was kept.
+- **Second level:** two 8-rolls (1,680 MB to 870 MB and 1,836 MB to 750 MB, 92 and 118 s, 2.8 and 4.2 GB maxrss), then
+  those two rolled together: 1,620 MB to 1,496 MB, 0.92, in 99 s, 117 CPU-s, 3.7 GB. A direct 16-roll gave 1,482 MB.
+  So re-rolling buys about 8 %, and the design never rolls a rolled pack.
+- **Validate of a roll:** `index-pack --threads=2` at nice 19 of the 870 MB 8-roll: 92.9 s, 162 CPU-s, 1.37 GB maxrss.
+- **Objects kept:** the 4-roll's `.idx` lists the same 1,540,334 objects as its four inputs (`comm` of `show-index`:
+  0 differ), and `index-pack --verify` passes.
+
+**B0-34's cold warm with roll-up [inference].** repo:131296's 61 promotions (8.64 GB) in rolls of about 2 GiB in (about
+8 promotions each) at 0.41 to 0.52 come to about 3.5 to 4.5 GB. At round 26's 104 to 132 MB/s that is 27 to 43 s of
+stored reads, inside round 27b's 39 to 54 s window. With up at 33.7 to 36.0 s, the tail at 20.4 to 31.1 s and
+`/connected` at 12.0 to 16.4 s, the total is about 100 to 127 s at 0.52, or 93 to 120 s at 0.41, against 120 s. So the
+roll-up reaches 120 s at the upper half of the R2 rate, not reliably at the lower. Round 23b's 1.04-times-pushes figure
+was a whole-network `repack -a -d`, which bounded rolls do not reach.
+
+**Cost of the rolls themselves:** about 8 rolls of about 3 minutes and 290 CPU-s each (roll plus validate) on the home
+shard, at nice 19 and in the repack's slot. That is about 40 CPU-minutes for the network's history once, then one roll
+per 2 GiB of new promotions.
+
+**Docs on this branch (`rollup-design`, off main 87c2cd23):**
+- DESIGN, Shape, `rehydrate`: rolled packs load by `.idx` like promotions, plus the roll-up's short form. DESIGN stays at
+  2,200 lines.
+- DECISIONS: "`roll-up` (proposed, not built)", with the contradiction against SHARED's network-chain `Compacted`.
+- DECISIONS, "`registry-restore`", Flip: the late-join gap.
+- OPEN-QUESTIONS G19 (opened as G12, renumbered after b030-split): `move_step`'s `Swap` and the late join, with B0-30's `repo:1048590#9#f1`.
+
+### Budget change (2026-11-16, about 13:40Z)
+
+The user raised LM-1's stop from $155 to **$160** (about 13:40Z, relayed by the parent thread). Scope: one `graft-m2b`
+site day, then B0-34, then B0-33, with a $160 stop on the meter and costok-style checks before each phase and between
+rows. Nothing else.
+
+### Round 33 (no site day): the meter read $178.42 before the day; promote-ahead started 34 idle shards outside the reapers' ranges (2026-11-16)
+
+**Not run: the site day, B0-34 and B0-33.** Before any step, `cost.sh` (T0 `mem7-t0`) read **$178.42** at about
+14:05Z, against $151.09 at round 29's end (06:40Z) and the new $160 stop. Nothing hosted ran in between.
+
+**Where it went** (`m2bcost.py`, 06:40Z to 14:20Z): **$27.66**, of which containers **$19.36**
+(`containers.py`), 14,376 container CPU-s, 1,443 Worker requests and 871,899 DO requests. By window: 06:40–10:00Z
+$8.07 ($3.92 containers), 10:00–12:00Z $10.07 ($7.31), 12:00–14:10Z $9.20 ($7.82), so containers billed about
+$3.6 an hour from 10:00Z.
+
+**What ran.** At 14:15Z, 35 shard containers were running (site a 18, b 11, c 6), on networks 131226 to 131272, 131289
+and 131330, started from 07:21Z on. Reapers `reaper-a` (131290–131341) and `reaper-b` (65536) cover none of
+131226–131289, so nothing tore those down. 131330 was in reaper-a's range and was torn down again each minute
+(`reaper.log`, 13:59–14:09Z).
+
+**What started them [measured on 131258, mechanism as round 28's].** `shardtimeline.py 131258` at 09:20–09:24Z: each
+site's `/catchup` answers 200 (the warm, which starts nothing), then site a's `/promote` (503 at 09:22Z) and site b's
+(09:23Z). That is promote-ahead's `/promote` as a client call, which starts a stopped container and touches it for
+`WARM_FOR`. The fix (`promote-warm`, main 112ee41e) is merged but not deployed: the deployed sites are still m37's, and
+it ships on this site day.
+
+**Done.** `teardown.py --sweep` at about 14:16Z tore down 33 (all 200), then "sweep: no shard container running".
+`reaper-b` now covers 65536, 131072–131289 and 131342–131400 as well as before, so every older network is reaped
+until the site day deploys `promote-warm`. The next 60 s window billed $0.00.
+
+### Budget change (2026-11-16, about 14:30Z)
+
+The user raised LM-1's stop from $160 to **$185** (about 14:30Z, relayed by the parent thread), after round 33's
+meter read $178.77 at 14:16Z with nothing running. Same scope as the $160 approval: one `graft-m2b` site day from main
+a0bca583 or later, then the 30-minute idle-start check with the reapers on, then B0-34, then B0-33 with the inbound
+trace, with a $185 stop on the meter and costok-style checks before each phase and between rows. B0-33 is skipped if
+the meter is near $185 before it starts. Nothing else.
+
+### Round 34: m39 site day, the idle-start check, B0-34, B0-33 with the inbound trace (2026-11-16)
+
+**Site day.** From a clean worktree at main `a0bca583`: promote-warm, registry-restore, push-reads, feed-ahead,
+receipt-rule, the test-faults inbound trace, and b030-split's site code.
+- Shard image `sha256:a476cbbf63971df7c0dae756c65dfc0bd5f35b55c18f6353cc3263d38a2352a7`, pushed 14:31:55Z.
+- Sites, test-faults, exit 0 at 14:43:05Z: a `167fa92e`, b `96c1850e`, c `65016766`. `--roll-shards` with no shard
+  running.
+- Edge `f14188bc` (formats as m37's: none changed since). `edgever.py`: "graft-m2b-edge serves f14188bc at 100% (rev
+  a0bca583a)".
+- **`SHARD_INSTANCE` was not set** (`fanout-m39-siteday.log`: "SHARD_INSTANCE=unset"). `run-siteday.sh` never sets
+  it, while m37's day ran with `SHARD_INSTANCE=standard-4` by hand. So every shard on m39 is `standard-2` (the
+  50-developer default, `workers/site/src/shard.rs`, `DEFAULT_INSTANCE`): about 1 vCPU and 6 GiB. That is my
+  mistake. It changes B0-34's cold warm and stock-pack numbers below, and it is why the git CPU sat at 1.05 vCPU.
+  `run-siteday.sh` now defaults `SHARD_INSTANCE=standard-4`.
+
+**Idle-start check (30 minutes, reapers on), `idlewatch.py`: 5 starts, all repo:131330, none after 14:47Z.**
+- 14:44:07 to 14:46:27Z, `git#{0,1,2}#net:131330` started; the reapers tore each down within a minute.
+- Workers Logs: site a's leader of repo:131330 ran an archive step at 14:43 and 14:45Z: "promotion Some((8, 406)):
+  283 packs" over `/promote?wait=10&next=1` and `/promote?wait=60` **without `warm=1`**: a due range (`Next::Promote`),
+  which starts a shard by design ("a due range starts one, since the log cannot archive past it otherwise",
+  `crate::log_archive::step_in`). Both failed (503 `warming`, then "Network connection lost" at the reaper's
+  teardown). At 14:53 and 14:54Z the same leader's promote-ahead calls carried `warm=1` and answered 200 skipped
+  in 0 to 16 ms, starting nothing.
+- So promote-warm holds: promote-ahead started no shard. What started 131330 is a range due to archive on an old
+  repository, which only a reaper hides: each reaper teardown cut the promotion, so the range stays due and the next
+  alarm starts the shards again. No start after 14:47Z: its leader's `SUM_EVERY_MS` retry found the shards gone and
+  the reaper-cut steps back off a minute each.
+- **Reapers stopped at 15:15Z** after the check: reaper-b, and reaper-a's 131290–131341 range. reaper-a now covers
+  only 131330 (`tests/fanout/reaper.sh 131330 131330`), until that repository's due range has promoted once without a
+  teardown, or is decided otherwise.
+
+**B0-34 (driver `tests/fanout/costrow.sh`, ROW=b034, POOL_PROBE=2:7), a1 run `mwjex2b9`, 15:28:39Z to 15:43:39Z.**
+- First try stopped at setup at 15:15:59Z (the day38 worktree lacked the untracked `tests/m0/.m0-token`, linked
+  then); no spend.
+
+Cold warm (all three shards rehydrated, standard-2): **250.9 to 332 s** to ls-refs-capable, main at 292.3 s.
+- From the three `shard rehydrate 131296` reports (`rehydrate-131296-m39.txt`): 253 stored packs (8.87 GB, 70 through
+  their `.idx`), 471 pushed packs skipped, 0 `.idx` rejected, no backstop fault. Phases: up 31.9 to 34.1 s, marked
+  phase 110 to 167 s, tail 56 to 70 s, catch-up 46 to 56 s.
+- 253 stored packs where m37 had 82: 171 more pushes past the last promotion since m37, none promoted yet.
+
+Per-container R2 ceiling (`spools.py` over the reports, `spools-m39.txt`):
+
+| container | bytes | span | total | streams busy mean / most | peak 5 s bin | per stream, bytes-weighted |
+|---|---|---|---|---|---|---|
+| site a `git#0` | 8.87 GB | 230.1 s | 38.6 MB/s | 2.15 / 4 | 101.3 MB/s | 17.9 MB/s |
+| site b `git#1` | 8.87 GB | 157.7 s | 56.3 MB/s | 1.25 / 4 | 163.7 MB/s | 45.1 MB/s |
+| site c `git#2` | 8.87 GB | 186.0 s | 47.7 MB/s | 1.45 / 4 | 144.4 MB/s | 32.8 MB/s |
+| site c `pool:7` (probe) | 8.87 GB | 246.8 s | 35.9 MB/s | 1.63 / 4 | 106.7 MB/s | 22.0 MB/s |
+
+- **Second-container probe** (site c, pool slot 7, same packs at once): in the 22 bins both were busy, `git#2` 74.8
+  plus `pool:7` 52.5 = **127.3 MB/s, against `git#2` alone 31.2 MB/s** in those bins. The sum is well above either
+  alone, so the ceiling here is per container (its link or its CPU), not per site or per bucket [measured, one
+  probe]. Probe cost: one standard-2 for about 5 minutes, under $0.02.
+- The peak bins (101 to 164 MB/s) match m37's 104 to 118 MB/s summed, but on standard-2 the bins fall to 30 to 60
+  MB/s once ingest starts, with the container at 1.0 to 1.05 vCPU every minute (`instcpu-m39.jsonl`): the per-container
+  limit on m39 is CPU, not R2 [inference: vCPU pinned at the instance's 1 while the rate fell].
+- Container memory 5.9 to 6.0 GiB from the first minute (the standard-2 cap); all three later ended `failed` exit 137.
+
+Row, a1 `mwjex2b9` (500 agents, 900 s; kill at 300 s, second network at 420 s, hostile at 600 s):
+- Site 0 led at term 2 throughout; leader commit p50 273 ms, p99 633 ms (n 2,721).
+- k: repo:131296 2 throughout (`kMax` 2); the second network and the hostile three 1. k never over 8.
+- **Clone-cache hits stream, no 500s**: 34 hits, all 200 (kill 4, second 17, hostile 13), p50 0.7 to 4.2 s, p99 4.4
+  to 9.1 s.
+- Misses: 461 probes, every one joined to its `shard miss` line (`misses.py`: 461 joined, 0 without a line, 2 lines
+  without a probe). Answers: 458 composed, 1 "stock: no chain", 2 cancelled with no answer. Composed misses' first
+  byte p50 4.4 s, p99 91.5 s. Split: to the shard p50 2.2 s, p99 9.7 s; container (`headers_ms` less the step before)
+  p50 1.3 s, p99 86.1 s; shard transit p50 0 ms, p99 26 ms; edge plus network p99 21.5 s. The p99 sits in the
+  container on standard-2 (`misses-m39.txt`, raw `misslines-m39.jsonl`).
+- **Stock upload-packs per shard against memory** (`shardprocs-m39.jsonl`): site a 74 at once at 15:29:28Z (159 MB
+  summed RSS, 4.69 GB of git RSS with the commit-graph write's 2.9 GB); site b 54 at 15:36:58Z (114 MB); site c at
+  most 1 (a 1.3 to 2.9 GB `pack-objects` at 15:43 to 15:45Z). The burst counts are `upload-pack --stateless-rpc`
+  processes of the row's clones and ref reads, about 2 MB each, with their `pack-objects` not yet started; the row
+  made one stock miss ("stock: no chain"), so the 0.4 GB each measured for stock depth-1 misses did not come up.
+  Container memory sat at the standard-2 cap (5.9 to 6.0 GiB) throughout.
+
+| B0-34 line (`build/BUILD-PLAN.md`) | m39 | verdict |
+|---|---|---|
+| k set in band from `NetworkLoad` and the hot pool, ≤ 8 per site | monorepo k 2; others 1; `kMax` 2 | pass on ≤ 8; k stepped once |
+| The hostile owner held to its pool budget; the monorepo's k not reduced by another owner | hostile k 1; monorepo 2 throughout | holds |
+| Human push p99 ≤ 3 s beyond transfer | p99 75.8 s (j9), 32.2 s (kill), 22.2 s (second), 92.1 s (hostile) | fail |
+| Clone TTFB p99 ≤ 1 s throughout (fail over 5 s) | p99 30.0 s (j9), 6.4 s (kill), 16.9 s (second), 93.8 s (hostile) | fail |
+| No Cloudflare API call from a request path | 0 files | pass |
+
+Cold warm against DESIGN's 120 s line: **fail at 250.9 to 332 s** on standard-2 (m37: 150 to 158 s on standard-4).
+Not comparable to m37 on the git side, because of the instance type.
+
+**Roll-up cold-warm estimate with this ceiling.** The ceiling is per container, so the roll-up's estimate keeps standard-4's 104 to 132 MB/s (rounds 24 and 26): 61 promotions (8.64 GB) rolled at 0.41 to 0.52 are 3.5 to 4.5 GB, a marked phase of 27 to 43 s, and a total of 93 to 126 s with m37's other phases (up 33.7 to 36.0 s, the rest 32 to 47 s) [inference]. Since m37, 171 more pushes sit above the last promotion (253 stored packs against 82), so promote-ahead's work comes first on this network.
+
+**B0-33 (ROW=b033, tsave EVERY=10000, LEARNERS=1), a1 run `mwjghnzg`, repo:131343, 16:06:40Z to 16:17:18Z.**
+- First try: rows.sh refused to start ("commit the driver changes first": my uncommitted `reaper.sh`), leaving
+  b033.sh waiting. Stopped at 16:02Z, the drivers committed on the day branch (`7fbb4f64`), restarted 16:03:14Z.
+  No spend in the failed try.
+- Terms 2 to 9: site 0 at 2, then 2 at 3, 0 at 4, 1 at 5, 0 at 7, 1 at 8, 0 at 9 from 16:13:02Z, with leaderless
+  gaps of 2 to 5 s (`terms-m39b33.jsonl`).
+- Leader commit p50 5.8 s, p99 29.7 s (n 5,349); queue:slot p99 26.0 s; deps:all p99 13.9 s.
+- Agent-class ok 2,784 in 300 s (9.3 a second). Agent pushes 1,368 of 12,469: `full` 3,102; "access rows did not
+  answer (not leader)" 2,889; "(no config)" 2,679; "created, but no member leads" 1,179; "no outcome ... missed" 302.
+- Voter peaks 64 / 28 / 42 MiB.
+- The trace `tsave-m39b33.jsonl` (32 MB, 406 lines; `.xz` 2.4 MB) went to B0-02
+  (T-01a1ccdd-804f-769d-b81a-5f937e3309df) for `inbound.py`.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | m39 | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 29.7 s; merges 2 of 58 ok; human pushes 9 of 194 | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 9.3 agent-class ok a second | fail |
+| User token admitted as `Agent` | fast user 61 of 517 × 200, 456 × 503 | not shown |
+| Every refusal in the `ng` or 429 shape | 503s and 500s dominate | fail |
+| Zero leader changes and `suspect` | term 2 → 9 | fail |
+
+**Cost.** The meter (`cost.sh`, T0 `mem7-t0`): $178.80 before the site day (14:31Z); $178.88 before B0-34
+(15:16Z); $180.22 after B0-34 and its sweep (15:54Z, the row $1.34); $181.22 after B0-33 and its sweep (16:19Z, the
+row $1.00). The day cost $2.42 of the $185 stop; $3.78 of the approval is left. Every row ended with
+"sweep: no shard container running".
+
+**Raw.** Under `tests/fanout/raw/` on the day branch: `siteday-m39.status`, `idlewatch-m39.jsonl`,
+`costrow-m39.status`, `b034-m39.status`, `b034warm-m39.jsonl`, `rehydrate-131296-m39.txt`, `spools-m39.txt`,
+`instcpu-m39.jsonl`, `shardprocs-m39.jsonl.xz`, `misses-m39.txt`, `misslines-m39.jsonl`, `a1-b0-34-m39.log`,
+`costrow-m39b33.status`, `rows-m39b33.status`, `memguard-m39b33.jsonl.xz`, `terms-m39b33.jsonl`,
+`tsave-m39b33.jsonl.xz`, `a1-b0-34-m39.jsonl` and `a1-b0-33-m39.jsonl` (copies of `tests/am1/raw/a1-b0-34-mwjex2b9.jsonl` and `a1-b0-33-mwjghnzg.jsonl`). Day branch `m39-day` (`6276c837`), with the drivers `costrow.sh` and `idlewatch.py`.
+
+**From graft-m3f (T-01a1d805, run m3fr9, row B0-32 on repo 65575, k 4, 8 learners; main a0bca583 plus a test-faults instrument).** Site 0 held term 2 through setup and the first 3 minutes of load, then 17 elections in 5 minutes (term 2 at 16:13:09Z to 19 at 16:18:29Z; wins 6 / 7 / 4 by site), with 10 "member alarm: StepDown" lines (7 CommitErrors, 3 Confirm) and 7 term changes after the leader went quiet or reset. The leader's peers ended at 1,085 and 1,289 deadline failures against about 5,700 ok each; queue p99 9.0 s, append p99 about 2 s, deps:authz p99 7.3 s. The same shape as m39's B0-33 (terms 2 to 9 once load arrived): the leader steps down on CommitErrors when its appends miss their deadlines under load, rather than losing a vote [inference; the m3f raw files are in that thread's orb, not pushed].

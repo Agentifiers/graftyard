@@ -9,13 +9,13 @@
 //! promoted first, even one whose entries name no pack: its promotion is an empty pack.
 
 use graftyard_fold::{archive_due_walk, archive_header, encode_archive_row};
-use graftyard_raft::{LogEntry, codec};
+use graftyard_raft::{Format, LogEntry, codec};
 use graftyard_types::{ChainId, Digest, Index, RequestId, Timestamp, Ulid};
 use sha2::{Digest as _, Sha256};
 
 use crate::key::R2Key;
-use crate::pack::{Archived, PackRef, Promoted};
-use crate::repo::{RepoEvent, packs_of};
+use crate::pack::{Archived, Compacted, PackRef, Promoted};
+use crate::repo::{REPO_FORMAT_ROLLUP, REPO_FORMAT_V1, RepoEvent, packs_of};
 
 /// The most stored log bytes one archive object takes [guess]. The site builds the object in memory beside the
 /// member's state, and a 4 MB batch of a large member's log took its isolate past 128 MB (`workers/site/src/load.rs`,
@@ -28,6 +28,25 @@ pub const ARCHIVE_RANGE_MAX: u64 = 2 << 20;
 /// first entry over it promotes alone, never refused. Refused, B0-34's drain stalled for good at a 53 MB push
 /// (`tests/am1/results/lm1-memory.md`, round 20).
 pub const PROMOTE_MAX: u64 = 48 << 20;
+
+/// The most stored pack bytes one roll takes [guess]: 2 GiB, whose measured `pack-objects` resident set is about
+/// 3.6 GB beside the container's other work (`decisions/DECISIONS.md`, `roll-up`, "The memory bound"). The walk keeps
+/// the first promotion past the cap so `roll_plan` can tell that the run reached it, but never includes it in a roll.
+pub const ROLL_IN_MAX: u64 = 2 << 30;
+/// A roll below `ROLL_IN_MAX` waits for this many promoted packs [guess], the batch measured at half its input bytes
+/// (`decisions/DECISIONS.md`, `roll-up`, "Measured on B0-34's plan").
+pub const ROLL_MIN_PACKS: usize = 8;
+/// A run of at least `ROLL_MIN_PACKS` below `ROLL_IN_MAX` rolls once its oldest pack is this old [guess], so a quiet
+/// chain eventually gets the smaller read set without rolling every few promotions (`decisions/DECISIONS.md`,
+/// `roll-up`, "What rolls").
+pub const ROLL_AGE_MS: u64 = 86_400_000;
+
+/// Whether a site day turned roll-up on: the site variable `GRAFTYARD_ROLLUP` is exactly `1`. A site day sets it only
+/// after `FormatsEnable` enabled 32.25, so no leader records a `Compacted` before every member can read one; unset, the
+/// alarm sends no `/roll` and records nothing (`decisions/DECISIONS.md`, `roll-up`, "Status").
+pub fn rollup_enabled(var: Option<&str>) -> bool {
+    var == Some("1")
+}
 
 /// A promotion takes up to this many archive ranges of log at once, and one archive step puts up to `ARCHIVE_PIECES`
 /// objects of `ARCHIVE_RANGE_MAX` each and records them in one entry [inference from B0-30's rerun]. Each step pays
@@ -225,6 +244,12 @@ pub fn promote_request(chain: ChainId, from: Index, to: Index) -> RequestId {
     request(&[b"graftyard-log-promote", chain.to_string().as_bytes(), &from.0.to_be_bytes(), &to.0.to_be_bytes()])
 }
 
+/// The request id of the `Compacted` for `from..=to`: the same for every attempt, so a leader whose earlier attempt
+/// committed is answered from its `request` row and records nothing twice (`decisions/DECISIONS.md`, `roll-up`).
+pub fn roll_request(chain: ChainId, from: Index, to: Index) -> RequestId {
+    request(&[b"graftyard-log-roll", chain.to_string().as_bytes(), &from.0.to_be_bytes(), &to.0.to_be_bytes()])
+}
+
 /// The request id of the entry that records these archive objects, from their digests in order: one object's is the
 /// same as before `ARCHIVE_PIECES`.
 pub fn archive_request(digests: &[Digest]) -> RequestId {
@@ -246,6 +271,9 @@ pub struct View {
     /// Both tiers have a committed snapshot.
     pub snapshotted: bool,
     pub promoted: Option<Promoted>,
+    /// The committed promotions no roll has consumed, consecutive from `rolled_to + 1` and oldest first. The walk
+    /// stops at the first gap, or after the first stored pack that takes the run past `ROLL_IN_MAX`.
+    pub rollable: Vec<Promoted>,
     /// The last archived range's `to`, 0 before any.
     pub archived_to: Index,
     /// The stored log's bytes above `archived_to`.
@@ -288,12 +316,24 @@ impl View {
         let snapshotted = [graftyard_types::Tier::Core, graftyard_types::Tier::Metadata]
             .into_iter()
             .all(|t| !crate::tiers::snapshots(&*fold.core, t).is_empty());
+        let mut rollable = Vec::new();
+        let mut at = fold.rolled_to().0 + 1;
+        let mut bytes = 0u64;
+        while let Some(p) = fold.promoted_from(Index(at)) {
+            at = p.to.0 + 1;
+            bytes = bytes.saturating_add(stored_bytes(&p.pack));
+            rollable.push(p);
+            if bytes > ROLL_IN_MAX {
+                break;
+            }
+        }
         View {
             chain,
             commit,
             now: graftyard_fold::try_meta(&*fold.core).map_or(Timestamp(0), |m| m.at),
             snapshotted,
             promoted: fold.promoted(),
+            rollable,
             archived_to: fold.archived().map_or(Index(0), |a| a.to),
             total,
             unpromoted,
@@ -301,11 +341,47 @@ impl View {
     }
 }
 
+fn stored_bytes(pack: &PackRef) -> u64 {
+    match pack {
+        PackRef::Stored { bytes, .. } => *bytes,
+        PackRef::Inline(_) => 0,
+    }
+}
+
+/// The longest prefix of the oldest unconsumed promotions whose stored bytes fit `ROLL_IN_MAX`, when it is due to
+/// roll. A following promotion means the run reached the byte cap; otherwise the prefix needs `ROLL_MIN_PACKS` and an
+/// oldest pack at least `ROLL_AGE_MS` old (`decisions/DECISIONS.md`, `roll-up`, "What rolls"). Verify admits only
+/// stored promotions, but an inline one contributes no bytes here.
+pub fn roll_plan(rollable: &[Promoted], now: Timestamp) -> Option<Vec<Promoted>> {
+    let mut bytes = 0u64;
+    let mut prefix = 0;
+    for p in rollable {
+        let next = bytes.saturating_add(stored_bytes(&p.pack));
+        if next > ROLL_IN_MAX {
+            break;
+        }
+        bytes = next;
+        prefix += 1;
+    }
+    if prefix < 2 {
+        return None;
+    }
+    let reached = prefix < rollable.len();
+    let old = rollable[0].pack.stored_id().is_some_and(|id| now.0.saturating_sub(id.time().0) >= ROLL_AGE_MS);
+    (reached || (prefix >= ROLL_MIN_PACKS && old)).then(|| rollable[..prefix].to_vec())
+}
+
 /// One alarm's work.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Idle,
     Promoted {
+        from: Index,
+        to: Index,
+        index: Index,
+    },
+    /// One roll of the oldest consecutive promotions' combined range, recorded at `index`.
+    Rolled {
         from: Index,
         to: Index,
         index: Index,
@@ -326,6 +402,8 @@ pub enum Step {
 pub trait ArchiveHost {
     /// `None` unless this member leads and may archive now.
     fn view(&self) -> Option<View>;
+    /// Whether this site may roll (`rollup_enabled`).
+    fn rollup(&self) -> bool;
     /// The stored rows above `after`, in index order, read lazily.
     fn rows(&self, after: Index) -> Result<Rows<'_>, String>;
     /// The packs under these checksums as one complete pack, validated and placed with its `.idx`, which names the
@@ -340,12 +418,23 @@ pub trait ArchiveHost {
         request: RequestId,
         warm: bool,
     ) -> Result<Option<PackRef>, String>;
+    /// The packs under these checksums, oldest first, as one complete pack of every object they hold, validated and
+    /// placed with its `.idx`, which names the combined range `from..=to`: the home shard's `/roll` and `/validate`,
+    /// then `PackStore::place_promoted`. Always `Stored`. Always a warm call (`crate::Caller::Warm`) that starts no
+    /// stopped shard; `None` when every shard it would ask is stopped.
+    async fn roll(
+        &self,
+        sums: &[Digest],
+        from: Index,
+        to: Index,
+        request: RequestId,
+    ) -> Result<Option<PackRef>, String>;
     /// The `Committed` marker of a stored pack at `index`.
     async fn mark(&self, pack: &PackRef, index: Index);
     /// Create-only puts of the archive object; how many buckets hold it.
     async fn put(&self, key: &str, bytes: &[u8], digest: Digest) -> Result<usize, String>;
-    /// Records the events under `request` and waits for the entry: its index.
-    async fn record(&self, request: RequestId, events: Vec<RepoEvent>) -> Result<Index, String>;
+    /// Records the events under `request` in `format` and waits for the entry: its index.
+    async fn record(&self, request: RequestId, format: Format, events: Vec<RepoEvent>) -> Result<Index, String>;
     /// Lets the member's other work run: a promotion decodes and hashes its range on the leader, about 4 ms a MiB
     /// in wasm, and pauses every `PAUSE_EVERY` bytes of rows so its loop never falls behind by a whole range.
     async fn pause(&self) {}
@@ -418,8 +507,9 @@ async fn plan<H: ArchiveHost>(
     Ok((p.to != after).then_some(p))
 }
 
-/// One step of `run`: nothing; a promotion; or up to `ARCHIVE_PIECES` archive objects of the next due ranges, as far
-/// as the last promotion covers them, recorded in one entry. What is due follows the run's band (`Run`), and a step
+/// One step of `run`: nothing; a promotion; up to `ARCHIVE_PIECES` archive objects of the next due ranges, as far as
+/// the last promotion covers them, recorded in one entry; or, when none of those has work, one roll. What is due
+/// follows the run's band (`Run`), and a step
 /// that finds nothing to do ends the run. A promotion goes first once the log above the last promotion passes
 /// `max_bytes / PROMOTE_AHEAD`, even with a range due, unless the run has passed its trigger: in the rerun, archiving first
 /// left each promotion just ahead of the archive, and the log above it stood at 2.07 GB, the whole tail a cold
@@ -439,6 +529,35 @@ pub async fn step<H: ArchiveHost>(
         _ => {}
     }
     s
+}
+
+/// A roll only fills an otherwise idle step: archive ranges and promotions, including warm promote-ahead, always go
+/// first (`decisions/DECISIONS.md`, `roll-up`, "Who writes it").
+async fn roll<H: ArchiveHost>(h: &H, v: &View) -> Result<Step, String> {
+    if !h.rollup() {
+        return Ok(Step::Idle);
+    }
+    let Some(ps) = roll_plan(&v.rollable, v.now) else { return Ok(Step::Idle) };
+    let from = ps[0].from;
+    let to = ps[ps.len() - 1].to;
+    let mut sums = Vec::with_capacity(ps.len());
+    let mut consumed = Vec::with_capacity(ps.len());
+    for p in &ps {
+        let PackRef::Stored { id, checksum, .. } = &p.pack else {
+            return Err("a promoted pack is always stored".into());
+        };
+        sums.push(*checksum);
+        consumed.push(*id);
+    }
+    let request = roll_request(v.chain, from, to);
+    let Some(pack) = h.roll(&sums, from, to, request).await? else { return Ok(Step::Idle) };
+    if !matches!(pack, PackRef::Stored { .. }) {
+        return Err("a rolled pack is always stored".into());
+    }
+    let c = Compacted { consumed, produced: pack.clone(), from, to };
+    let index = h.record(request, REPO_FORMAT_ROLLUP, vec![RepoEvent::Compacted(c)]).await?;
+    h.mark(&pack, index).await;
+    Ok(Step::Rolled { from, to, index })
 }
 
 async fn step_in<H: ArchiveHost>(
@@ -470,11 +589,13 @@ async fn step_in<H: ArchiveHost>(
         Some(d) if !ahead_first && matches!(next(v.promoted.as_ref(), d.from, d.to), Next::Archive { .. }) => {
             return archive(h, &v, d, target, range_max).await;
         }
-        None if !ahead => return Ok(Step::Idle),
+        None if !ahead => return roll(h, &v).await,
         _ => {}
     }
     let budget = range_max.saturating_mul(PROMOTE_RANGES);
-    let Some(plan) = plan(h, done, v.commit, budget, promote_max).await? else { return Ok(Step::Idle) };
+    let Some(plan) = plan(h, done, v.commit, budget, promote_max).await? else {
+        return if warm { roll(h, &v).await } else { Ok(Step::Idle) };
+    };
     let (from, to) = (Index(done.0 + 1), plan.to);
     let request = promote_request(v.chain, from, to);
     // Promote-ahead is no client's work, so it runs only on a shard already running; a due range starts one, since
@@ -490,7 +611,7 @@ async fn step_in<H: ArchiveHost>(
         h.mark(p, *index).await;
     }
     let p = Promoted { from, to, pack: pack.clone() };
-    let index = h.record(request, vec![RepoEvent::Promoted(p)]).await?;
+    let index = h.record(request, REPO_FORMAT_V1, vec![RepoEvent::Promoted(p)]).await?;
     h.mark(&pack, index).await;
     Ok(Step::Promoted { from, to, index })
 }
@@ -526,6 +647,6 @@ async fn archive<H: ArchiveHost>(h: &H, v: &View, first: Due, target: u64, range
     let (from, to) = (done[0].0.from, done[done.len() - 1].0.to);
     let request = archive_request(&done.iter().map(|(a, _)| a.digest).collect::<Vec<_>>());
     let (events, keys): (Vec<_>, Vec<_>) = done.into_iter().map(|(a, k)| (RepoEvent::Archived(a), k)).unzip();
-    let index = h.record(request, events).await?;
+    let index = h.record(request, REPO_FORMAT_V1, events).await?;
     Ok(Step::Archived { from, to, index, keys, reached })
 }
