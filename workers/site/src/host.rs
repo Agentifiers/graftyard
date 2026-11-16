@@ -576,6 +576,56 @@ pub enum Trace {
     /// fault awaits; `CallArrived` comes after them and the body), and `ms` this member's event-loop lag there.
     #[cfg(feature = "test-faults")]
     CallLeft = 24,
+    /// F74's inbound trace (`tests/f74/inbound.py`): a request reached this member's handler, at its top. `at` the
+    /// entry stamp (`CallLeft`'s `index` for a `/raft` call), `peer` the sender's address (`x-graft-from`, 255 for an
+    /// edge or harness request), `batch` the call id for a `/raft` call (`x-graft-call`, else 0), `index` the arrival
+    /// number on this host times 64 plus the route's code (`ROUTES`), and `ms` the requests open in this host's
+    /// handler then, this one included.
+    #[cfg(feature = "test-faults")]
+    Entered = 25,
+}
+
+/// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.
+/// Append-only, as trace kinds are; `tests/f74/inbound.py` keeps the same list.
+#[cfg(any(test, feature = "test-faults"))]
+pub const ROUTES: &[&str] = &[
+    "/raft",
+    "/read",
+    "/commit",
+    "/commit_many",
+    "/outcome",
+    "/outcome_by_request",
+    "/suspect",
+    "/campaign",
+    "/status",
+    "/stats",
+    "/trace",
+    "/ping",
+    "/rtt",
+    "/place",
+    "/learners",
+    "/record",
+];
+
+/// F74: every request this host's handler takes, numbered in arrival order, and how many are open in it.
+#[cfg(any(test, feature = "test-faults"))]
+#[derive(Default)]
+pub struct Inbound {
+    seq: Cell<u64>,
+    open: Rc<Cell<usize>>,
+}
+
+#[cfg(any(test, feature = "test-faults"))]
+impl Inbound {
+    /// A request to `path` arrived: its `Entered` row's `index` (arrival number times 64 plus the route's code) and
+    /// `ms` (the requests open, this one included), and a guard that counts it open until the handler drops it.
+    pub fn enter(&self, path: &str) -> (u64, u64, Counted) {
+        let seq = self.seq.get() + 1;
+        self.seq.set(seq);
+        let code = ROUTES.iter().position(|r| *r == path).map_or(0, |i| i as u64 + 1);
+        let open = Counted::new(&self.open, 1);
+        (seq * 64 + code, self.open.get() as u64, open)
+    }
 }
 
 /// F74: how far behind this isolate's event loop reads at `now`, from the member's 100 ms ticker: the lateness of its
@@ -1049,6 +1099,9 @@ pub struct Host<F: Family> {
     /// F74: the ticker's last wake lateness and its pending tick's due time, 0 when stopped (`loop_lag`).
     #[cfg(feature = "test-faults")]
     tick_lag: Rc<Cell<(u64, u64)>>,
+    /// F74: the inbound trace's arrival numbers and open requests (`Trace::Entered`).
+    #[cfg(feature = "test-faults")]
+    pub inbound_log: Inbound,
 }
 
 /// `n` bytes counted in a gauge for as long as this lives.
@@ -1712,6 +1765,8 @@ impl<F: Family> Host<F> {
             awaiting: Rc::new(Cell::new(0)),
             #[cfg(feature = "test-faults")]
             tick_lag: Rc::new(Cell::new((0, 0))),
+            #[cfg(feature = "test-faults")]
+            inbound_log: Inbound::default(),
         });
         #[cfg(feature = "test-faults")]
         for q in crate::faults::SCHEMA {
@@ -3857,6 +3912,30 @@ mod tests {
         assert_eq!(loop_lag(1_050, 0, 1_100), 0, "pending tick not due");
         assert_eq!(loop_lag(1_050, 40, 1_100), 40, "last wake was 40 ms late");
         assert_eq!(loop_lag(3_100, 40, 1_100), 2_000, "pending tick 2 s overdue");
+    }
+
+    /// F74's inbound trace: arrivals are numbered 1, 2, 3, ... with none skipped, whatever order handlers end in; each
+    /// carries its route's code; and `open` counts the handlers not yet ended, this one included.
+    #[test]
+    fn inbound_rows_number_every_arrival_in_order_and_count_the_open_handlers() {
+        use super::{Inbound, ROUTES};
+        let log = Inbound::default();
+        let (a, open_a, ga) = log.enter("/raft");
+        let (b, open_b, gb) = log.enter("/suspect");
+        drop(ga);
+        let (c, open_c, gc) = log.enter("/nope");
+        drop(gb);
+        drop(gc);
+        let (d, open_d, _gd) = log.enter("/read");
+        let seq = |i: u64| i / 64;
+        let code = |i: u64| (i % 64) as usize;
+        assert_eq!([a, b, c, d].map(seq), [1, 2, 3, 4], "arrival numbers, contiguous and in order");
+        assert_eq!(ROUTES[code(a) - 1], "/raft");
+        assert_eq!(ROUTES[code(b) - 1], "/suspect");
+        assert_eq!(code(c), 0, "an unlisted path is 0");
+        assert_eq!(ROUTES[code(d) - 1], "/read");
+        assert_eq!([open_a, open_b, open_c, open_d], [1, 2, 2, 1], "handlers open at each entry, itself included");
+        assert!(ROUTES.len() < 64, "a code fits under the arrival number's factor");
     }
 
     #[test]

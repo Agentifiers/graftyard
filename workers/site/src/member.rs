@@ -554,6 +554,15 @@ impl<F: Family> Routes<F> {
         // F74's call trace: the handler's entry, before any injected fault awaits, and the loop lag there.
         #[cfg(feature = "test-faults")]
         let (entered, entry_lag) = (now_ms(), self.host.loop_lag());
+        // F74's inbound trace: every request, numbered as it reaches the handler, held open until the handler ends.
+        #[cfg(feature = "test-faults")]
+        let _open = {
+            let header = |k: &str| req.headers().get(k).ok().flatten().and_then(|v| v.parse::<u64>().ok());
+            let from = header("x-graft-from").and_then(|v| u8::try_from(v).ok()).unwrap_or(255);
+            let (index, open, guard) = self.host.inbound_log.enter(url.path());
+            self.host.trace_at(entered, Trace::Entered, from, header("x-graft-call").unwrap_or(0), index, open);
+            guard
+        };
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
         // A peer's `/raft` call or an edge's request carries its sender's clock (`crate::clock`).
