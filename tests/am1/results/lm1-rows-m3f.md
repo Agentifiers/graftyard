@@ -160,10 +160,34 @@ The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22
 | 4 to 7 | 190 | 10,672 / 25,318 | 5,976 | 1,042 |
 | 8 or more | 165 | 13,258 / 25,735 | 6,579 | 2,729 |
 
-- **Reading** [measured, no churn this time]: per-isolate load now tracks the time. A push alone on its isolate takes 2.8 s at p50; one sharing it with four or more takes 10.7 to 13.3 s, and the growth is in `context` and `auth`, the edge's own reads before the leader. m3fr8's inference that the gaps between a push's reads are its isolate's event loop is **supported** on this non-churning row (m3fr9's churning row did not support it).
+- **Reading** (withdrawn: the row ran with no learners, and the correlation is with start time, not `open`; see "m3fr12 after the run" below) [measured, no churn this time]: per-isolate load now tracks the time. A push alone on its isolate takes 2.8 s at p50; one sharing it with four or more takes 10.7 to 13.3 s, and the growth is in `context` and `auth`, the edge's own reads before the leader. m3fr8's inference that the gaps between a push's reads are its isolate's event loop is **supported** on this non-churning row (m3fr9's churning row did not support it).
 - **Stage first:** 241 stage-first pushes in the log; 237 came after their isolate had logged a staged push and 4 before. The per-isolate stage-first inference holds.
 
-**Verdict:** the receipt rule and the pool send-back did what they were built for: no `/suspect`, and validate's 15.8 s tail is gone. The within-5 s line is no closer, because the time moved to `context` and `gate` on isolates holding many pushes at once.
+**Verdict:** the receipt rule and the pool send-back did what they were built for: no `/suspect`, and validate's 15.8 s tail is gone. The within-5 s line is no closer, but this run is not comparable: it ran with no learners, so its `context` and `gate` tail is the two followers overloaded (see "m3fr12 after the run" below).
+
+### m3fr12 after the run: B0-32 ran with no learners, so its reads overloaded the two followers (raw files and Workers Logs, no hosted spend; branch `b032-isolate`)
+
+**The cause** [measured]:
+- **No learners.** a1's own `feed members` step reads **0 learners, 2 followers** for B0-32 (`tests/am1/raw/a1-b0-32-mwkvwnmp.jsonl`). m3fr8 to m3fr11's B0-32 and every B0-31 read 8.
+- **The race.** The rows' status line for `learners.mjs` ends `config undefined`. Its `/learners` call ran from 16:05:32.7 to 16:05:39.6Z (site a's Workers Logs, wall 6,899 ms). It joined 8 learners, but its config change came from the config it read first. Meanwhile, at 16:05:37.9Z, the create's background placement committed a new f1 (`placement of repo:65581: {"configIndex":6, … "over":{"boundMs":100,"ms":110,"site":1}}`). The change committed nothing, and `learners.mjs` exits 0 on any answer without `error`, so `rows.sh` ran the row anyway. The error text was not logged.
+- **So every spread read went to f1 (site b) and f2 (site c).** Their client `/read` rate (10 s bins) was 125 to 145 a second each before the burst, 260 to 345 a second during it, and back to 125 to 140 after. During the burst, 18 to 35% of site c's answers came back in 15 ms or less (gate sheds past READS_MAX 256), against 0 to 3% before and after. Site b let 276 reads run out the edge's FOLLOWER_CALL (cancelled at about 2.08 s).
+
+**How that sets the edge stages** [measured for the stages, inference for the pass count]:
+- Each push makes exactly one read of the repository's core rows: in `gate` when its isolate's gate cache misses (168 of the 542 pushes started in the burst's 10 s), else in `context` (374). No push did both.
+- Total equals max(auth + install, resolve) plus the later stages, to within 32 ms at p99. Edge CPU per receive-pack was 41 ms at p50 and 154 ms at p99.
+- A push's read is write-class (`read_spread_for` with LOOKUP_FOR). Each pass asks f1 and f2. A pass that both shed or time out waits the named retry (250 ms) and runs again, so a read of 6 to 16 s is two to five passes. Reads finishing in the same 100 ms across isolates (74 reads on 38 isolates at 25.6 s, 40 on 29 at 21.2 s) are those passes ending together.
+- **Not per-isolate queueing.** Grouped by when the read started, pushes alone on their isolate waited as long as crowded ones: 1.6 s against 6.7 s in second 18, 8.6 s against 7.1 s in second 19, and 11.3 s against 10.3 s in second 21. The by-`open` table above reflects start time, because crowded isolates are the burst's first second. No lock, cap or single lookup in flight orders a push's reads by its isolate; `read_spread` holds no per-chain mark. The m3fr12 reading that per-isolate load is "supported" is withdrawn.
+
+**What this means for the row:**
+- m3fr12's B0-32 is **not comparable** with m3fr8 to m3fr11, because it ran without the learners those runs had. Its `context` and `gate` tail (p99 20.7 and 17.5 s) is this run's missing learners, not a product regression.
+- Its receipt result stands: 0 `/suspect`, 0 missed, 22 outcome asks. It only got easier with followers this slow, so the next run should confirm it.
+- m3fr11, with learners, had `context` p99 1.2 s and `gate` p99 0.9 s. Its within-5 s gap was commit (p50 3.5 s) plus auth, install and resolve (about 2.9 s together).
+
+**Driver fix (branch `b032-isolate`, test scripts only):**
+- `learners.mjs` asks again on any error, or on an answer with no `configIndex`, within its 120 s, logs the outcome first, and exits 1 unless a config committed.
+- `rows.sh` skips a row whose learners did not place (`LEARNERS NOT PLACED, row skipped`), as it skips one without k 4.
+
+**A product note, no fix proposed:** with learners gone, a 500-push burst roughly doubled the followers' read rate, and the write-class retry turned each shed into a full extra pass on the same two members. The design sends these reads to learners first ("Follower read"), so this is the configuration the row is meant to avoid, not the one it measures.
 
 ### B0-31 (repo 65582, rehomed on site 2, warm in 2.2 s, run `mwkwap5z`): fail on the buckets-up line
 
@@ -194,12 +218,26 @@ The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22
 
 **Verdict:** B0-31 fails on the buckets-up line alone. read-ahead shortened the cycle as designed, but the p99 is set by the opening backlog, not the cycle.
 
+**After the run: the per-second check of the backlog inference** (no hosted spend; push log `lm1-rows-m3f-data/pushlog-m3fr12-b0-31.json`, 1,230 buckets-up pushes with a commit stage; admission trace `tests/fanout/raw/admit-m3fr12-b0-31.jsonl`):
+
+| Buckets-up pushes started | Edge `commit` p99 |
+|---|---|
+| all 300 s | 2,151 ms |
+| from 20 s on | 1,446 ms |
+| from 30 s on | 1,444 ms |
+
+- **The opening seconds carry the spike.** The slowest 1% (2,151 ms or more) all started 7 to 19 s into the load. Every later 20 s bin had p99 1.1 to 1.8 s.
+- **It was a commit stall, not admission sizing** [measured]. From 16:21:32.7 to 16:21:36.7Z the leader's round average held at exactly 236 ms (it moves only when an entry applies) while its queue grew 12 → 31 → 46 → 53 → 72. At 16:21:37.7Z the queue was 1. So the leader applied no entry for about 4 s, then everything queued committed together. Capacity stayed 650 to 780 commands a second, far above the load, and `pressure` stayed false. Admission did not refuse or hold anything back.
+- **What stalled it is not known.** In the same seconds, all three sites' shards for 65582 were rehydrating or catching up, site c's shard warmed in 4.9 s, and `prsync` logged its first run handled in 6,616 ms (Workers Logs) [inference that these are related; not checked]. The terms trace shows no leader change.
+- **Without the stall, the line still fails, and the floor is the dependency read** [inference from the split]. From 20 s on, the edge commit p99 is 1,446 ms, about m3fr11's 1,439. A command's commit includes its batch's `deps:all` read (p99 800 ms) and a round (p99 360 ms), 1,160 ms together, already over the 1.1 s bound before any queueing. read-ahead raised the leader's throughput (cycle 413 → 246 ms) but not a command's latency, which still pays read plus round plus the wait for its batch.
+- So **an admission-sizing fix would not move this line**. The levers are the opening stall (cause first) and the cross-continent `deps:authz` read (p99 725 ms, about 2 per entry). The `Authz` read was deferred until fold size is measured, and its placement is a product question (OPEN-QUESTIONS F81).
+
 **Close-out:**
 - SWEEP2 OK at 16:34:22Z, and the sweep at 16:55Z found no shard container running.
 - Both groups retired: 23 of 23 members "not joined" (`lm1-rows-m3f-data/idle-retire-m3fr12.log`).
 - Purge: 10,587 objects deleted in the first pass, which left 88 in site c's bucket for 65582. A second pass deleted 504 more (objects were still landing after the first listing), and a third found 0 in every bucket for both networks.
 - graft-m3f was handed to B0-02 as free at 16:56Z; B0-02 ran B0-29 on graft-m2b instead and does not hold graft-m3f.
-- Idle reading 16:56 to 17:26Z: pending.
+- Idle reading 16:56 to 17:26Z (`PREFIX=graft-m3f acctcost`): graft-m3f **$0.00**, idle; still $0.00 through 17:47Z, and the sweep at 17:47:36Z found no shard container running. (The scheduled reading at 17:27Z did not run; it was taken at 17:47Z over the same window.)
 
 ## Rows m3fr10 and m3fr11 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, run stop $10 on graft-m3f, account stop $170)
 

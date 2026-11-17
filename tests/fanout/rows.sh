@@ -64,7 +64,10 @@ for row in $ROWS; do
     [ $w -eq 0 ] || { echo "$(date -u +%FT%TZ) b0-31: apac shard not warm, row skipped" >> "$ST"; continue; }
   fi
   # Learners for reads (design/DESIGN.md, "Follower read"), before k.mjs, whose commit tells them the leader.
-  [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1
+  # A row whose learners did not place is not the row as run before (m3fr12's B0-32 ran on its two followers alone).
+  if [ -n "${LEARNERS:-}" ] && ! node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1; then
+    echo "$(date -u +%FT%TZ) $row: LEARNERS NOT PLACED, row skipped" >> "$ST"; continue
+  fi
   # B0-34 leaves k to `fanout` itself (in band, from NetworkLoad); the others start at K.
   if [ "$row" = b0-34 ]; then node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1; else node tests/fanout/k.mjs "repo:$rid" "$K" >> "$ST" 2>&1
     # The ledgers cap a forced k: a row that did not get K is not the row as written, so it is skipped.
