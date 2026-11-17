@@ -1,0 +1,74 @@
+2026-11-17T03:46:40Z start 8b9a961e /home/user/workspace/rows-m3f11
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T03:46:57Z start sweep ok
+2026-11-17T03:47:02Z cost account 44.57 since 2026-11-17T00:00:00Z, run 0.01 since 2026-11-17T03:25:24Z, at b0-32
+2026-11-17T03:47:38.986Z m3org/fm3fr10-b032 = 65577
+2026-11-17T03:47:45.897Z repo:65577 leader 0: learners [{"addr":192,"doName":"repo:65577#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65577#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65577#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65577#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65577#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65577#2#l5","join":200,"sit config 6
+2026-11-17T03:47:48.473Z repo:65577 leader 0: set k 4: {"grants":[[0,[2,3,4]],[2,[2,3,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T03:47:58.983Z repo:65577 leader 0: set k 4: {"grants":[[0,[2,3,4]],[2,[2,3,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T03:48:09.470Z repo:65577 leader 0: set k 4: {"grants":[[0,[2,3,4]],[2,[2,3,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T03:48:19.993Z repo:65577 leader 0: set k 4: {"grants":[[0,[2,3,4]],[2,[2,3,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T03:48:30.516Z repo:65577 leader 0: set k 4: {"grants":[[0,[2,3,4]],[2,[2,3,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T03:48:41.246Z repo:65577 leader 0: set k 4: {"grants":[[0,[2,3,4]],[2,[2,3,4]]],"k":4,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-17T03:48:41.364Z repo:65577 leader 0: k 4 at 10
+2026-11-17T03:48:41Z b0-32 fm3fr10-b032 65577 start
+2026-11-17T03:57:36.006Z repo:65577 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-17T03:57:36.180Z repo:65577 leader 0: k 1 at 1031
+2026-11-17T03:57:36Z b0-32 fm3fr10-b032 65577 done exit 1
+2026-11-17T03:57:40Z torn down 65577
+2026-11-17T03:58:53Z cost account 46.33 since 2026-11-17T00:00:00Z, run 0.52 since 2026-11-17T03:25:24Z, at b0-31
+2026-11-17T03:59:25.861Z m3org/fm3fr10-b031 = 65578
+before [[0,"leader",2,null],[1,"follower",2,null],[2,"follower",2,null]]
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[3,{"degraded":{"lost":1,"placement":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#1#f1","generation":1,"kind":"full","site":1,
+move on 0 {"config":[11,{"normal":{"generation":2,"home":2,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#2#f1","generation":2,"kind":"full","site":1,"slot":1},{"do_name":"r
+move on 0 {"config":[11,{"normal":{"generation":2,"home":2,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#2#f1","generation":2,"kind":"full","site":1,"slot":1},{"do_name":"r
+move on 2 {"config":[11,{"normal":{"generation":2,"home":2,"learners":[],"voters":[{"do_name":"repo:65578#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65578#2#f1","generation":2,"kind":"full","site":1,"slot":1},{"do_name":"r
+after [[0,"follower",3,2],[1,"follower",3,2],[2,"leader",3,2]]
+rehomed on 2
+2026-11-17T04:01:24Z b0-31 warm exit 0: warm site 2 after 4.9 s
+2026-11-17T04:01:33.306Z repo:65578 leader 2: learners [{"addr":192,"doName":"repo:65578#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65578#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65578#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65578#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65578#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65578#3#l5","join":200,"sit config 13
+2026-11-17T04:01:36.399Z repo:65578 leader 2: set k 4: {"grants":[[0,[2,4,3]],[2,[2,4,3]]],"k":1,"meta":{"configIndex":13,"leader":2,"term":3},"stepped":false,"want":3}
+2026-11-17T04:01:46.967Z repo:65578 leader 2: set k 4: {"grants":[[0,[2,4,3]],[2,[2,4,3]]],"k":1,"meta":{"configIndex":13,"leader":2,"term":3},"stepped":false,"want":3}
+2026-11-17T04:01:57.797Z repo:65578 leader 2: set k 4: {"grants":[[0,[2,4,3]],[2,[2,4,3]]],"k":4,"meta":{"configIndex":13,"leader":2,"term":3},"stepped":true,"want":3}
+2026-11-17T04:01:58.031Z repo:65578 leader 2: k 4 at 14
+2026-11-17T04:01:58Z b0-31 fm3fr10-b031 65578 start
+2026-11-17T04:17:44.182Z repo:65578 leader 2: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":13,"leader":2,"term":3},"stepped":true,"want":0}
+2026-11-17T04:17:44.375Z repo:65578 leader 2: k 1 at 1317
+2026-11-17T04:17:44Z b0-31 fm3fr10-b031 65578 done exit 0
+2026-11-17T04:17:49Z torn down 65578
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T04:19:16Z sweep ok
+ALLDONE
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T04:19:35Z SWEEP2 OK
+2026-11-17T04:19:35Z cost {"from": "2026-11-17T03:25:24Z", "to": "2026-11-17T04:19:35Z", "prefix": "graft-m3f", "usd": 1.98, "account": 7.71, "graft-m3f-site-a": 0.72, "graft-m3f-site-c": 0.42, "graft-m3f-site-b": 0.39, "graft-m3f-site-a-gitshard": 0.21, "graft-m3f-site-c-gitshard": 0.18, "graft-m3f-edge": 0.04, "graft-m3f-tools-edge": 0.02, "graft-m3f-ops": 0.0}
+FINISHED
