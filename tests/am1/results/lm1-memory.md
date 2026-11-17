@@ -4302,3 +4302,10 @@ run. Two tests in `workers/site/src/sweep.rs`; `tests/sweepquiet/plant.py` catch
 main's read-every-run. Expected after a site day [inference]: one run reads every home once (64 a run, so about three
 runs on m2b's 180 networks), then about 180 home reads a day per site instead of about 34,000, and the `names:*` rows
 fall from about 2.6 k a run to near zero outside a client request. Not deployed: it ships with the next site day.
+
+sweep-quiet also fixes a broken sweeper, not only idle cost: site a's cron sweep has failed on every run since 20:43Z on
+2026-11-16 at the subrequest limit, so no network homed on site a has been swept since (orphan packs, missing
+third-bucket copies and markers, and multipart aborts). With 64 home reads a run at most (128 `Names` calls) it should
+stay inside the limit [inference]; the site day checks it. Merged to main at `68d39927`; it ships with the B0-33 slot's
+site day, which checks it hosted: `names:*` rows per cron run once the cache fills, against about 2.6 k, and site a's
+`sweep {` lines with no subrequest failure.
