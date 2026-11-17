@@ -1,0 +1,2 @@
+{"at":"2026-11-17T04:36:43.864Z","site":2,"status":200,"ms":3379,"v":{"entries":0,"ms":[["up",347],["cursor",347],["heads",656],["markers",1787],["marked",1978],["tail",2035],["refs",2078],["catch_up",2078]]}}
+warm site 2 after 3.4 s
