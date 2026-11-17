@@ -15,6 +15,8 @@ class RunnerSandbox extends Sandbox {
     await this.setKeepAlive(true);
     return launch.arm(this, cmd, opts);
   }
+  // Run by the base class's `alarm()` for a due `schedule` row, which it deletes even when the callback throws, so
+  // `launch` never throws.
   async launchRunner() {
     return launch.launch(this);
   }

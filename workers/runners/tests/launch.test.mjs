@@ -1,6 +1,6 @@
 // F80 (`decisions/DECISIONS.md`, `f80-alarm-start`): a hosted runner's Sandbox starts its own process from its alarm,
 // so a delivery pass cut at `waitUntil`'s 30 s never leaves a registered runner with no process. Run with
-// `node --test workers/runners/tests/`. A fake Sandbox on virtual time: a call that needs the container waits for
+// `node --test 'workers/runners/tests/*.test.mjs'`. A fake Sandbox on virtual time: a call that needs the container waits for
 // placement up to the SDK's transport budget, then throws "no container instance"; every call belongs to an
 // invocation, a delivery pass's (30 s) or an alarm's (15 min), and a call past its invocation's end cuts it, after
 // which it does nothing more. An alarm whose invocation is cut runs again (at-least-once). Placement waits are BF-60's
@@ -56,8 +56,8 @@ class Box {
   proc = null;
   starts = 0;
   errors = [];
-  constructor(sim, placeS, { crashAfterStart = 0 } = {}) {
-    Object.assign(this, { sim, placeAt: placeS * S, crashAfterStart });
+  constructor(sim, placeS, { crashAfterStart = 0, storageFailures = 0 } = {}) {
+    Object.assign(this, { sim, placeAt: placeS * S, crashAfterStart, storageFailures });
     this.loop();
   }
   view(inv) {
@@ -81,7 +81,11 @@ class Box {
     return {
       ctx: {
         storage: {
-          get: async (k) => (live(), structuredClone(b.store.get(k))),
+          get: async (k) => {
+            live();
+            if (inv.alarm && b.storageFailures-- > 0) throw new Error("Durable Object storage operation exceeded timeout");
+            return structuredClone(b.store.get(k));
+          },
           put: async (k, v) => (live(), void b.store.set(k, structuredClone(v))),
         },
       },
@@ -104,14 +108,18 @@ class Box {
     (async () => {
       for (;;) {
         await this.sim.sleep(S);
+        // As @cloudflare/containers 0.3.x's `alarm()`: a due row's callback runs, and its row is deleted whether it
+        // returned or threw (the throw is only logged). A cut invocation deletes nothing, and the platform runs the
+        // alarm again.
         for (const row of this.rows.filter((r) => r.at <= this.sim.now)) {
+          const inv = { end: this.sim.now + ALARM_MS, alarm: true };
           try {
-            await launch(this.view({ end: this.sim.now + ALARM_MS }));
-            this.rows.splice(this.rows.indexOf(row), 1);
+            await launch(this.view(inv));
           } catch (e) {
-            if (e instanceof Cut) row.at = this.sim.now + 2 * S;
-            else this.rows.splice(this.rows.indexOf(row), 1), this.errors.push(e);
+            if (!(e instanceof Cut)) this.errors.push(e);
           }
+          if (inv.cut) row.at = this.sim.now + 2 * S;
+          else this.rows.splice(this.rows.indexOf(row), 1);
         }
       }
     })();
@@ -167,6 +175,16 @@ test("a retried alarm and a second delivery for the same runner start no second 
   assert.equal(await b.deliver(), false);
   await sim.until(5 * 60 * S);
   assert.equal(b.starts, 1, "the single-use JIT config was never started twice");
+});
+
+test("a start whose storage read fails is tried again, not dropped with its row", { timeout: 20_000 }, async () => {
+  const sim = new Sim();
+  const b = new Box(sim, 0, { storageFailures: 3 });
+  assert.equal(await b.deliver(), true);
+  await sim.until(2 * 60 * S);
+  assert.deepEqual(b.errors, [], "launchRunner never threw, so the base class never dropped its row");
+  assert.equal(b.starts, 1, "the start ran once storage answered");
+  assert.deepEqual(b.state(), { state: "launched" });
 });
 
 test("a destroy while the start waits on placement, or before it, leaves no process", { timeout: 20_000 }, async () => {

@@ -6,6 +6,8 @@
 // GIVE_UP_MS. One try waits at most the SDK's transport budget (150 s), so the last start lands before the install's
 // HOSTED_IDLE (600 s): a runner whose process never starts goes stale and is deleted, and never starts after that. The
 // stored start, which carries the runner's JIT config, is dropped once it launches or closes.
+// `launch` never throws: the base class logs a scheduled callback's throw and deletes its row, so a throw would lose
+// the start. Every error, a storage one included, schedules the next try; past GIVE_UP_MS a try only closes the start.
 // `sb` is the Sandbox object (`entry.mjs`): `ctx.storage`, `schedule`, `getProcess`, `startProcess`, `destroy`.
 
 export const RETRY_S = 10; // [guess]
@@ -21,19 +23,32 @@ export async function arm(sb, cmd, opts) {
 }
 
 export async function launch(sb) {
+  try {
+    await step(sb);
+  } catch (e) {
+    console.error(`graft-runners: start: ${e?.message ?? e}; again in ${RETRY_S} s`);
+    try {
+      // Past GIVE_UP_MS the next try only closes the start, dropping the JIT config; if storage still fails then,
+      // it schedules again, so the config is never left stored once the start is over.
+      await sb.schedule(RETRY_S, "launchRunner");
+    } catch (e2) {
+      console.error(`graft-runners: start: cannot schedule the next try: ${e2?.message ?? e2}`);
+    }
+  }
+}
+
+async function step(sb) {
   const st = await sb.ctx.storage.get(KEY);
   if (st?.state !== "pending") return;
   if (Date.now() - st.armedAt > GIVE_UP_MS) {
     console.error(`graft-runners: ${st.opts.processId} not started in ${GIVE_UP_MS / 1000} s; left to go stale`);
     return close(sb);
   }
-  try {
-    // A retried alarm, or one after a crash between the start and the write below, finds the process and starts none.
-    if (!(await sb.getProcess(st.opts.processId))) await sb.startProcess(st.cmd, st.opts);
-  } catch (e) {
-    console.error(`graft-runners: start ${st.opts.processId}: ${e?.message ?? e}; again in ${RETRY_S} s`);
-    await sb.schedule(RETRY_S, "launchRunner");
-    return;
+  // A retried alarm, or one after a crash between the start and the write below, finds the process and starts none.
+  if (!(await sb.getProcess(st.opts.processId))) {
+    await sb.startProcess(st.cmd, st.opts);
+    // One line per process started: the hosted check counts them per Sandbox (`tests/m4/wp4/sandboxstarts.py`).
+    console.log(`graft-runners: launched ${st.opts.processId} ${Math.round((Date.now() - st.armedAt) / 1000)} s after arm`);
   }
   // A destroy that came while the start waited wins: the runner was deleted, so its process goes too.
   if ((await sb.ctx.storage.get(KEY))?.state === "closed") return sb.destroy();
