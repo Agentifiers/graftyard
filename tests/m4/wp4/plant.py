@@ -230,8 +230,7 @@ MUTANTS = [
     ('a conflicting merge still starts a run', TR,
      '            MergeabilityResult::Conflict { .. } => PrTarget::Conflict,', '            MergeabilityResult::Conflict { .. } => PrTarget::Merge(ObjectId::ZERO),', PR),
     ('a merge of an older head counts as current', TR,
-     '        Some(m) if Some(m.base) == v.base_tip && m.head == v.head => match m.result {',
-     '        Some(m) if Some(m.base) == v.base_tip => match m.result {', PR),
+     '        Some(m) if m.head == v.head => match m.result {', '        Some(m) => match m.result {', PR),
     ('a pull_request run is on the head, not the merge ref', TR,
      '        head_ref: graftyard_git::tiers::merge_ref(n).display().into(),',
      '        head_ref: graftyard_git::tiers::head_ref(n).display().into(),', PR),
@@ -239,6 +238,11 @@ MUTANTS = [
      '    if now.saturating_sub(e.at.0) > PR_REPLAY_MS {', '    if false {', PR),
     ('synchronize starts no run', TR,
      '(Some(a @ ("opened" | "synchronize" | "reopened")), Subject::Pull', '(Some(a @ ("opened" | "reopened")), Subject::Pull', PR),
+    ('a merge at an older base tip is stale (the merged rule, which livelocks under B0-35)', TR,
+     '        Some(m) if m.head == v.head => match m.result {',
+     '        Some(m) if m.head == v.head && Some(m.base) == v.base_tip => match m.result {', PR),
+    ('a closed pull request with no merge waits for one', TR, '        _ if v.open => PrTarget::Pending,',
+     '        _ if true => PrTarget::Pending,', PR),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
