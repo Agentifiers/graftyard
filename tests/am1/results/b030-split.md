@@ -1608,6 +1608,118 @@ under load) $10.49, 07:42 to 08:46Z (read-only) $11.15. The account's day was $1
   newly built group". The child group did the same at 06:00:01Z.
 - The retire list must include members a re-placement left behind (two here).
 
+## B0-30 third short run (b030r6, 2026-11-17 15:48Z to 20:56Z)
+
+- **Granted:** operator, 2026-11-17, moved to the same day. Site day from main `fec1d01d` (G21's install pin, G22's
+  tries-first re-placement) with drivers on branch `b030-r6` (test files only). r5's procedure: sever c at `MetaSplit`,
+  c's install with `/place` during it, judge c's peak through the install's end against 9.45 GB, an install cap of 120
+  minutes after the sever lifts (extended by the operator to 22:00Z with the load on, to measure the install finishing
+  under load). Stops: $60 for graft-m1 from the site day, or the account's UTC day past $170 (raised to $280 at 15:50Z).
+- **Site day:** 15:48:37 to 16:03:07Z, exit 0. `repo:1048594`. acctcost before: account $111.01, graft-m1 $97.36 for
+  the day.
+
+### Phases (b030r6)
+
+1. 16:03:58Z: the create's `/place` re-placed site 1 (113 ms against 100): `Degraded { lost: 1 }` at entry 4 once its
+   one try (`#2#f1`, 11.3 s) was chosen, `Normal` generation 2 at entry 6, 0.5 s later. A push landed at 5 between
+   them (`raw/b030r6-configs-repo.txt`).
+2. 16:40:34Z: seed done, 1.84M rows, 5.52 GB on each member, digests equal. 16:40:47Z: load started.
+3. 17:25:05Z, day 0.554: `MetaSplit` (child `repo-meta:1048594`, seed at 739); the leader at 7.53 GB. 17:25:14Z:
+   force severed c (`#1#f2`) at applied 4,892. 17:25:30Z: the child's create re-placed its site 1: `Degraded` at 4,
+   `Normal` at 5, 0.23 s apart (`raw/b030r6-configs-meta.txt`).
+4. **17:36 to 17:42Z, harness-caused.** My reads of the leader's `/log`, 100 to 400 entries a call with about 320 KB
+   of inline pack each, took `#1#f0`'s isolate past its memory limit (131 resets in Workers Logs, 17:37 to 17:38Z, one
+   "member reset: fold storage lost"). The group had no leader for 46 s (17:36:56 to 17:37:42Z); watch wrote STOP at
+   35 s, the load ended at day 0.707 and force exited, which lifted c's sever; c caught up to 5,446. watch's 17:39Z
+   stall ALERT (commit 6,207 for 63 s) is the stopped load. None of this is the system's; the STOP file is kept as
+   `raw/b030r6-STOP-1737Z`. 17:41:55Z: force restarted and **re-severed c at applied 5,446; c's install is judged
+   from this second sever.** 17:42:50Z: load restarted. `GET /log` is now byte-capped (G24).
+5. About 17:47Z: `MetaDropped` committed; c held at 5,446, below it. The child loaded on all three members (3.83 GB).
+6. 18:27:10Z: the sever lifted (leader `truncatedTo` 5,684 > 5,446 + 200). **18:27:16Z: c logged "install: dropping 74
+   metadata tables before the load"**, 6 s after the lift, 45 min 15 s after the second sever began, about 40 min
+   after `MetaDropped`, at applied 5,446.
+7. About 18:38Z: `/place {near_ms: 1}` on the leader (site 0): "a voter the degraded config needs is behind" (site 2
+   at 5,446 against commit 13,969), no tries, no config entry in the 78 entries after it. 18:38:53Z: one more leader
+   isolate reset, 33 s after force's own `/log?from=13968&n=500` read [inference: the same pattern]; no leaderless gap
+   over 6 s.
+8. 18:38 to 19:09:30Z: c restored its core snapshot (to 5,387) and its 3.38 GB metadata snapshot (to 3,500) at about
+   105 MB a minute; its SQLite rose from 2.26 GB.
+9. 19:09:59 to 20:27:04Z, **replay under load** (`raw/b030r6-job.jsonl`, `tests/am1/b030split/jobwatch.mjs`, a sample a
+   minute): c replayed 231.6 entries a minute; the leader added 101 a minute (commit and `through` alike); the gap went
+   10,145 → 70. It grew at most 3 samples in a row, after each extension; `growing30` never set. 45 extensions, 0
+   restarts. At 19:3xZ the operator extended the cap to 22:00Z with the load on.
+10. **20:27:25Z: c's install ended** ("install … installed: true": 3,166 archives, 18,104 entries, 9.08 GB read,
+    5,461 batches), 2 h 0 min after the lift. 20:29:26Z: force wrote END_AT=install (day 2.787); 20:29:32Z: the load
+    ended (16,864 pushes). c was at 5.28 GB and a normal follower.
+11. 20:29:37 to 20:29:50Z: c logged "no install source at Index(…): no stored entry and no installed base at
+    through" 21 times, then none (G23).
+
+### Close-out (b030r6)
+
+- 20:31:52Z, verify: 41 of 41 sampled archived ranges read back and verified from both buckets (71.7 MB, 230
+  entries), 3,215 ranges, archivedTo 18,430; `RestoredTo` 10 of 10 (`raw/b030r6-verify.log`).
+- 20:50 to 20:55Z, `tests/am1/b030split/retire-run.mjs`: final stats for, then `/retire` on, all 8 joined members
+  (both chains' `#1#f0`, `#1#f1`, `#1#f2`, `#2#f1`, the `#1#f1` pair stranded by the creates' re-placements). A scan
+  of generations 1 to 10 on three sites then found 0 joined, and `purge.py` (R25) deleted network 1048594's objects:
+  a 4,644, b 4,661, c 999 (10,304), each to 0.
+- 20:55Z, teardown sweep: `git#0#net:1048594` and `git#1#net:1048594` torn down; no shard container left. Every orb
+  service stopped at 20:55:42Z.
+- Idle reading, acctcost 20:55:42 to 21:25:42Z: graft-m1 **$0.00** (prefix_usd), 0 containers. The account's $2.69 in
+  that window was other installs'.
+
+### Verdict (b030r6): met at 90%
+
+| Line | Target | At 90% | Measured | |
+|---|---|---|---|---|
+| Member SQLite under `CHILD_GROUP_AT` | 8.59 GB | 9.45 GB | site c's peak through the install's end 7,743,791,104 B at 19:43:37Z; sites a and b at most 7.66 GB (17:55Z) | passes |
+| Zero `SQLITE_FULL` | 0 | no 90% | 0 in every sample; 0 "Exceeded the maximum database size" on sites a, b, c, 15:48 to 20:35Z | passes |
+| Archived entries readable, `RestoredTo` | all | 90% | 41 of 41 ranges, 10 of 10 `RestoredTo` | passes |
+| A child group holds the tier | `MetaSplit`, `MetaDropped` | | both committed; the child loaded on three members | passes |
+| c drops below `MetaDropped` | before the load | | 18:27:16Z at applied 5,446 | passes |
+| `/place` refused while c installs | no config entry | invariant | "behind", no config entry | passes |
+| No install restart on a new snapshot (G21) | 0 | | 0 restarts, 45 extensions; the install ended under load | passes |
+| No `Degraded` held before a try is chosen at the create (G22) | none | | parent 0.5 s, child 0.23 s | passes |
+| No metadata read or lead from c while dropped | 0 | invariant | follower in all 107 samples | passes on leading; reads not measured |
+| 60 s stall alert | none | | one at 17:39Z, harness-caused (phase 4) | not counted |
+
+`configs.mjs` judges a create's `Degraded` by its next config entry being `Normal` within 5 s, not the next index: a
+push can commit between the two (entry 5 on the parent). It still fails b030r5's entries (535 s).
+
+**Convergence.** Replay 231.6 entries a minute against the leader's 101 (2.29 to 1), so the install closed a gap of
+10,145 in 77 minutes under the run's 1.6 pushes a second and agent rows. **R2 retries:** 3 batch failures, each passed
+on its first retry (`retry_batch`): two `10058` "Reduce your rate of simultaneous reads on the same object" (19:24:42Z,
+19:27:39Z) and one "get: Unspecified error (0)" (20:03:30Z).
+
+### Pushes with no HTTP answer (b030r6)
+
+107 of the run's 16,956 push attempts in the minute tallies got no HTTP answer ("http 0"); b030r5 had 0. From
+17:30:46Z `load.mjs` logs each one's error and commit, then reads its ref (`raw/b030r6-fetchfail.jsonl`):
+- Every one is `TypeError: fetch failed` caused by `read ECONNRESET` (errno -104), before any response header, in
+  bursts where the 7 or 8 pushes on one HTTP/2 connection reset in the same millisecond (e.g. 17:58:24.440Z,
+  18:03:41.696Z, 18:11:39.876Z). The edge logged each burst window's receive-pack invocations as ok and 200 (46 to
+  47 in 30 s) and no error; the orb's TCP counters show its own RSTs right after each burst; DNS 4 to 30 ms.
+- **Landed** (git ancestry, a fresh fetch of each ref through the edge, `raw/b030r6-landed-anc.jsonl`,
+  `tests/am1/b030split/landedanc.mjs`): of the 66 logged with their commit, **63 landed** (reset 0.24 to 6.5 s after the
+  request started, median 3.1 s; committed 5.6 to 9.4 s after the reset where the log still held them) and **3 did not**
+  (`b030/279` and `/280` at 19:16:59Z, `b030/64` at 19:25:58Z, reset 298, 31 and 57 ms in: before a 323 KB body could
+  reach the edge; their branches went on from the old tip). None was acknowledged and lost.
+- The 41 before the logging (17:01 to 17:28Z) are not checkable per commit: the committed log has 2,658 branch moves
+  against 2,625 acknowledged pushes in the driver's minute windows, 33 unacknowledged moves for 41 failures (±8 at the
+  window edges), and 29 "stale" answers followed about 5 minutes later, as landed-but-unanswered pushes cause.
+- Finding: transport resets between the orb and Cloudflare's LAX colo, outside the system under test (G25). The
+  per-commit log check (`landedpush.mjs`) could not run at close-out: the followers had truncated their stored log
+  to 18,640 by then, so it was replaced by the git check.
+
+### Findings (b030r6)
+
+- G20, G21 and G22 hold on a hosted run (OPEN-QUESTIONS, answered).
+- G23: an install source is missing right after a member's install (phase 11).
+- G24: `GET /log` had no byte bound; a harness read reset a leader twice. Fixed on `b030-r6-result`.
+- G25: orb-to-colo connection resets; 3 pushes never reached the edge.
+
+**Spend** (acctcost, graft-m1 scripts, from the site day to 20:55:42Z): **$49.63**; the account's spend in that
+window $61.15; the account's UTC day $172.33 at 20:55Z.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
