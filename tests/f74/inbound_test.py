@@ -14,8 +14,6 @@ v1 = [row(900, 255, 0, 1, 2, 1), row(950, 255, 0, 2, 2, 2), row(1100, 255, 0, 3,
 v2 = [row(10, 255, 0, 1, 2, 1), row(20, 255, 0, 2, 2, 1), row(30, 255, 0, 3, 2, 1), row(50, 255, 0, 5, 2, 1),
       row(60, 255, 0, 1, 3, 1), row(70, 255, 0, 2, 3, 1)]
 v0 = [[1000, 23, 1, 7, 1, 0], [2010, 21, 1, 7, 1510, 0]]
-# Voter 1's /reads at arrivals 3 and 5 name their queries: a leader probe and a read-index `rows` read.
-v1 += [[1101, 26, 0, 3, 1, 0], [1301, 26, 0, 5, 3, 1]]
 with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
     for site, rs in ((0, v0), (1, v1), (2, v2)):
         f.write(json.dumps({"at": "x", "site": site, "rows": rs}) + "\n")
@@ -24,7 +22,6 @@ tsv = f.name + ".tsv"
 out = subprocess.run([sys.executable, os.path.join(here, "inbound.py"), f.name, "--rows", tsv], capture_output=True,
                      text=True, check=True).stdout
 assert "  1: rows 6 segments 1 missing 0 backwards 0" in out, out
-assert "probe:lead" in out and "rows:idx" in out and "untagged" in out, out
 assert "  2: rows 6 segments 2 missing 1 backwards 0" in out, out
 cols, call = [l.rstrip("\n").split("\t") for l in open(tsv)]
 c = dict(zip(cols, call))

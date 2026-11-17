@@ -326,7 +326,7 @@ Plants 25 to 30 (F77, branch `f77-acquire`): 6 of 6 caught. 21 of 21 caught afte
 | 1 | No cap | bf60, the cap test |
 | 2 | The cap lets one more through | bf60, the cap test |
 | 3 | A hosted runner may be repository-scoped | the cap test |
-| 4 | A busy hosted runner may be deleted | the stale-runner test |
+| 4 | A busy hosted runner may be deleted | `decide_refuses_to_delete_a_runner_holding_a_job_on_its_shard` (since F78, the edge's reads catch it first in the stale-runner test) |
 | 5 | Idle runners are not counted against the queue | the stale-runner test, two `hosted` tests |
 | 6 | Start ignores the cap's room | `rows_share_the_caps_room` |
 | 7 | Start ignores runners already registered | the demand test |
@@ -353,6 +353,12 @@ Plants 25 to 30 (F77, branch `f77-acquire`): 6 of 6 caught. 21 of 21 caught afte
 | 28 | The `actions` rows are answered as a whole-tier dump (main's read, F77) | `the_acquire_secrets_read_is_never_shed_for_a_dump_rebuild` |
 | 29 | The `actions` rows leave out the variables | the same |
 | 30 | A follower sends the `actions` rows to the leader | the same |
+| 49 | The delete reads no shard first (F78) | `a_stale_delete_reads_before_and_after_it_commits`, the F78 bf60 test |
+| 50 | The delete never reads after it commits | `a_stale_delete_reads_before_and_after_it_commits`, the stale-runner test |
+| 51 | The delete reads the registration shard only (main's rule) | `a_delete_reads_every_shard_its_owners_jobs_can_be_on`, the F78 bf60 test |
+| 52 | `Seen` counts a mark a later read left (main's rule) | `a_mark_from_an_overlapping_later_read_never_makes_a_runner_stale`, the F78 bf60 test |
+| 53 | `Seen` moves a mark to the newest read | `a_job_mark_keeps_its_first_sighting` |
+| 54 | The owner's deleted repositories are not read | `a_delete_reads_every_shard_its_owners_jobs_can_be_on` |
 
 ## Cost estimate for the hosted runs
 
