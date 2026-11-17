@@ -94,3 +94,8 @@
 2026-11-17T16:34:26Z {"dry": true, "purged": 1, "objects": 165, "refused": []}
 2026-11-17T16:38:42Z 131349 purged: a 0 -> 0, b 165 -> 0, c 0 -> 0
 2026-11-17T16:38:42Z {"dry": false, "purged": 1, "objects": 165, "refused": []}
+2026-11-17T19:04:47Z 65583 purged: a 1347 -> 0, b 1349 -> 0, c 1315 -> 0
+2026-11-17T19:04:47Z {"dry": false, "purged": 1, "objects": 4011, "refused": []}
+2026-11-17T21:14:35Z 65584 purged: a 329 -> 0, b 330 -> 0, c 296 -> 0
+2026-11-17T21:14:35Z 65584 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-17T21:14:35Z {"dry": false, "purged": 1, "objects": 955, "refused": [], "second": 0}

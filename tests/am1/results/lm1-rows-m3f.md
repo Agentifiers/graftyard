@@ -108,6 +108,64 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fr14 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr14`, main `0105297a`)
+
+**Slot.** B0-32 rerun on `learners-kept`, after a site day from main `0105297a`. The orchestrator granted it at about $2. Stops: graft-m3f past $5 by `PREFIX`, or the account past $280.
+- **Site day.** It took three attempts (`tests/am1/results/install-m3f.md`, m3fr14 row):
+  - The first deployed site a, then site b's PUT got a 504.
+  - The second failed on a transient `r2/buckets` API error before it deployed anything.
+  - The third deployed all three sites, 20:51:42 to 20:51:58Z: `3ea01a61`, `aaf974e0` and `836e2ba9`.
+  - The edge `58f2b859` (first attempt) served at 100% by edgever.
+- **Cost:** graft-m3f **$1.15** from 20:23:10Z to 21:15Z: site day, row, sweeps, retire and purge. The account's UTC day was $165.61 at 20:22Z and $174.66 at 21:15Z.
+- **Edge errors** (`graft-m3f-edge`, 20:55 to 21:04Z): "Cannot perform I/O on behalf" 0, "closure invoked recursively" 0, "code had hung" 0.
+- **Close-out:**
+  - The sweeps at 20:53, 21:06 and 21:15Z found nothing running.
+  - At 21:13Z, 14 of 14 members of 65584 were retired: `#1#f0` to `#1#f2`, `#2#f1` to `#4#f1`, and `#5#l0` to `#5#l7` (`lm1-rows-m3f-data/m3fr14-retire.json`).
+  - 955 objects were purged (a 329, b 330, c 296, all to 0). The second pass found 0.
+
+### `learners-kept` on the hosted install: the learners stayed
+
+From `tests/fanout/raw/rows-m3fr14.status` and `terms-m3fr14-b0-32.jsonl` [measured]. The terms trace now records each member's committed config index and its learner count:
+- **The placement finished before `/learners`.** The create's background `/place` committed config 5 (`Degraded`) at 20:54:42Z and config 7 (`Normal`) at 20:54:43Z. Meanwhile `learners.mjs` logged "placing since …: waiting" 10 times (the driver belt). Then it committed config **9** with 8 learners at 20:54:52Z.
+- **No config change after `/learners`.** Every member read `9/8` from 20:55:01Z through the trace's last sample at 21:04:49Z, past the row's end at 21:04:34Z.
+- **a1 confirms it.** a1's `feed members` read **8 learners, 2 followers**, and "learners caught up to 116: 8/8 in 11.9 s".
+- **What this shows and doesn't.** The belt did its job, so the race the product fix closes didn't occur on this run. The product fix itself is shown by its tests and `plant33.py`, not by this run.
+
+### B0-32 (repo 65584, run `mwl68qny`, leader site 0): not measured. The orb's connections to the edge failed for the whole burst
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | **500 of 500 ended in the client with no HTTP answer**: 230 `ERR_HTTP2_STREAM_ERROR`, 156 `ECONNRESET`, 114 `UND_ERR_SOCKET` | **Not measured** (see below) |
+| Queued agent bytes under AGENT_QUEUE_MAX | peak 169,453 B, 16 queued | Pass |
+| Merges in one of the next 2 entries | not judged from entries; `merge:only` 22 of 24 ok, p50 1.9 s, p99 23.6 s | Not shown |
+| Zero leader changes and zero `suspect` | term 2 throughout, leader site 0; **2 `/suspect` about `repo:65584`** at 21:03:29 to 34Z, from two receipts a1 counted `missed` (`pushTiming`: ask 2, missed 2, suspect 2), each sent to both followers | **Fail** (the line's target is 0) |
+
+**Why the burst line isn't a reading** [measured]:
+- **The client sent the burst on time.** a1 sent the 500 burst pushes (256 KiB each, 128 MiB in all) from 21:01:11.357Z to 21:01:15.832Z.
+- **Every one failed in the client, below HTTP.** The failures came in waves: 114 sockets closed at 21:01:15, 70 connections reset at 21:01:16, 86 more at 21:01:22, and 225 HTTP/2 streams reset from 21:01:44 to 49Z.
+- **Almost none reached the Worker.** Over 21:01:10 to 21:02:00Z the edge's Workers Logs hold 231 `git-receive-pack` requests, all answered 200 with no exception. Only 13 were over 200 KB, and only 7 were the burst's size (262,746 to 262,751 bytes, at 21:01:20 to 30Z). Each of those 7 was served in 2.2 to 4.0 s, yet the client recorded them as failed too.
+- **The orb's other traffic failed at the same time.** Over the run, agent pushes ended `fetch failed` or `terminated` 88 times (m3fr13: 8), and ref reads ended with status 0 1,503 times (m3fr13: 119).
+- **The cause is unknown** [inference]. The fault is in the transport between the orb's Node client (undici, HTTP/2 to the edge) and Cloudflare's front end: almost none of the requests reached the Worker. The driver's burst path hasn't changed since m3fr13 (`git diff 1d3c897b 0105297a -- tests/am1/rest/a1.mjs` touches only B0-35's `--workflow`).
+
+**The product side, from the 1,042 non-burst pushes the edge timed** [measured, `pushTiming`], p50 / p99 in ms (m3fr13 in brackets):
+
+| Stage | p50 / p99 |
+|---|---|
+| auth | 80 / 825 (158 / 2,706) |
+| resolve | 521 / 1,302 (615 / 3,710) |
+| gate | 288 / 1,124 (0 / 5,979) |
+| context | 0 / 971 (324 / 7,443) |
+| validate | 237 / 3,345 (384 / 1,656) |
+| commit | 733 / 1,286 (750 / 2,709) |
+| total | 2,159 / 5,477 (3,126 / 12,321) |
+
+- **Leader:** commit p50 558 ms and p99 1,106 ms over 4,663 commands. The cycle was p50 238 ms and p99 589 ms, and `held` was p99 1.
+- **Receipts:** 1,147 commits on 1,149 sends, 0 busy, 2 asks, 2 missed, 2 `suspect`.
+- **Context:** with 8 learners serving the feed, `context` p99 fell from 7.4 s to 1.0 s, and the timed total p99 from 12.3 s to 5.5 s.
+- **Other `/suspect`** in the window, not about this repository [measured, the sites' Workers Logs]:
+  - one per voter of `authz:1` at 20:55:29Z, during setup;
+  - one per voter of the retired `repo:65562` to `65565` at 21:02:30 to 44Z, from one edge isolate.
+
 ## Rows m3fr13 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr13`, main `1d3c897b`)
 
 **Slot.** B0-32 was rerun alone, with no site day, because main's `crates`, `workers` and `containers` are unchanged since `fec1d01d` (`git diff --quiet fec1d01d 1d3c897b`). edgever showed `graft-m3f-edge` serving `2c42bfcc` at 100%. The stops were graft-m3f past $5 by `PREFIX`, or the account past $280.
@@ -168,6 +226,21 @@ The receipt counters were 1,668 commits on 1,668 sends, 0 busy, 9 asks, 0 missed
 - Only 4 apply gaps in the half exceed 600 ms (the two stalls, then 779 and 625 ms). So the steady p99 is the floor itself, not more stalls.
 - The floor is a batch's `deps:all` (p99 795 ms, driven by `deps:authz` p99 672 ms to the enam identity groups) plus a round (p99 360 ms), plus the wait for the batch. That is already over 1.1 s before any queueing.
 - Removing the stall gives about 1,444 ms. Getting to ≤ 1.1 s needs the `Authz` read off the cross-continent path (F81), or the read hedged and shortened as well.
+
+## F83: the 4.6 s wait at `authz:7100001#1#f0` (m3fr12, Workers Logs, no hosted spend)
+
+**Question** (`decisions/OPEN-QUESTIONS.md`, F83). B0-31's opening stall was one held `Authz` dependency read. Did `authz:7100001#1#f0` (site a, Durable Object `df792e6a`) delay its inbound calls because of its own 1.8 s alarm, or because of a call backlog?
+
+**Neither** [measured; the Workers Logs of all three sites for 16:21:28 to 16:21:46Z, Cloudflare time]:
+- **No backlog.** In the 4.6 s the held read waited (sent 36.473, started 41.084), the same object started **215 other calls**. Their wait from send to start was p50 95 ms, p99 457 ms and max 468 ms. No handler ran over 148 ms.
+- **No long alarm.** The object's alarms in that window ran 69 ms (37.684) and 57 ms (39.677). The 1,827 ms alarm ended at 31.449, five seconds earlier. It did hold the 34 calls queued behind it (walls up to 1.75 s), and that explains the earlier 1.7 s gap at entries 131 and 132, not this one.
+- **Exactly two calls waited.** They were the held read (4,603 ms before start) and site b's `/raft` call 309 (sent 35.641, started 41.075, 5,433 ms). They came from two different isolates: the repository leader on site c, and `authz:7100001`'s follower on site b. They were released 9 ms apart.
+- **The sender was not slow.** Site b's next calls 310 to 315, sent 73 to 282 ms after 309, started 75 to 91 ms after they were sent. 135 of site b's later calls started at the object before 309 did.
+- **No other site was affected.** In 16:21:36 to 42.5Z, sites b and c held none of their 2,276 member calls past 1.5 s. Site a held only these two of its 2,428.
+
+**What it is** [inference]. The object kept serving every other call within half a second. Two single requests from two senders were held about 5 s each and released together. Their headers carry nothing unusual (`x-graft-hop` 3, as their neighbours). So the delay is below the handler: in delivery of those two requests to the object, not in the object's work. No request-level runtime trace is available to settle it. The two other cases in the kept logs fit the same shape: 1.5 to 5 s holds on single requests while their objects served the rest (16:11:14 to 16:11:21Z, `8b099d95`, `5741543e`, `39d622bc` and `d970720c`).
+
+**What it means for the lever.** The held request is still pending in the runtime while the caller waits, so the faster re-ask the orchestrator set aside would not have queued behind a busy object. It would have opened a second request: the lookup's own retry after `CALL` at 39.973 went to `#1#f1` on site b and was answered in 1 ms. So a dependency read re-asked at about 1 s (against `deps:authz` p99 672 ms) would have cut this stall from 5.2 s to about 1 s. The re-ask stays the orchestrator's call; this only removes the reason it was deferred.
 
 ## Rows m3fr12 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, branch `m3fr12`)
 
