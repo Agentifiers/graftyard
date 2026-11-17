@@ -4705,3 +4705,23 @@ Two findings went to `decisions/OPEN-QUESTIONS.md`:
 
 The cheaper path the operator named, retiring 65536 so its next audit never runs, would break those fixtures. Re-seeding
 65536 smaller, or leaving its daily refold in place, is for the operator.
+
+The operator kept 65536 and its daily refold (about $1.15 a day; K10's only measurement), and asked for F82 to be
+settled from a later free reading.
+
+### F82 settled: the SQLITE_LOCKED reports were stale
+
+A reading from Workers Logs and DO analytics at 10:41Z on 2026-11-17, with no hosted action:
+
+- From the m42 site day (03:20Z) to 10:41Z, all three `graft-m2b` sites log 0 `SQLITE_LOCKED` lines.
+- Site a logged 43 "fold audit refold" completions, all without error. The DO analytics name 41 of them. 37 are on
+  chains whose stale reports said `SQLITE_LOCKED`: 18 of `repo:327680` to `327700`, 65538, 65539, 9043968 to 9043970,
+  131072, 131107, and 131111 to 131122. The other 4 are fresh groups: 131331 to 131333 and 131339.
+- Site a's 10:32Z audit report still shows `SQLITE_LOCKED` on 131119 to 131122. Those error rows carry `at` 2026-11-16
+  01:52 to 02:07Z, and the same four chains refolded cleanly at 10:02 and 10:17Z. The report keeps the old row until
+  its new one lands.
+- The only "fold audit failed" lines after the site day are three in site a's cron at 03:28 and 03:43Z, all "Too
+  many API requests by single Worker invocation". That is the sweeper's subrequest limit that sweep-quiet and
+  sweep-wall address, not the refold.
+
+So `audit-locked` holds, and F82 is marked settled in `decisions/OPEN-QUESTIONS.md`.
