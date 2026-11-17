@@ -114,27 +114,33 @@ pub fn pr_events(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>, now: u6
 /// Where a pull request's runs go now, from its view on the leader (`graftyard_git::prsync::views`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrTarget {
-    /// The current test merge, at the base's and the head's tips now: its commit is the runs' `head_sha`.
+    /// The latest test merge of the current head, at whichever base tip it was computed on: what `refs/pull/N/merge`
+    /// holds, GitHub's `GITHUB_SHA`. Its commit is the runs' `head_sha`.
     Merge(ObjectId),
-    /// The current test merge conflicts, and GitHub starts no run.
+    /// That merge conflicts, and GitHub starts no run.
     Conflict,
-    /// No test merge for the current tips yet: the host asks for one (`demand`, `MergeCause::Dispatch`).
+    /// An open pull request with no test merge of its current head: the host asks for one (`demand`,
+    /// `MergeCause::Dispatch`).
     Pending,
-    /// Closed, or from a fork, whose head this chain does not hold: no run [inference: no route opens a fork's pull
-    /// request yet].
+    /// A fork's, whose head this chain does not hold [inference: no route opens a fork's pull request yet], or one
+    /// closed before any merge of its head was computed: no run.
     None,
 }
 
+/// A merge at an older base tip still counts: requiring the base tip now left B0-35's dispatch, whose base moves every
+/// 6 s, waiting on a merge that is stale by the time it commits, round after round (`decisions/DECISIONS.md`,
+/// "`pr-trigger`").
 pub fn pr_target(v: &PrView) -> PrTarget {
-    if !v.open || !v.same_repo {
+    if !v.same_repo {
         return PrTarget::None;
     }
     match &v.merge {
-        Some(m) if Some(m.base) == v.base_tip && m.head == v.head => match m.result {
+        Some(m) if m.head == v.head => match m.result {
             MergeabilityResult::Clean { merge } => PrTarget::Merge(merge),
             MergeabilityResult::Conflict { .. } => PrTarget::Conflict,
         },
-        _ => PrTarget::Pending,
+        _ if v.open => PrTarget::Pending,
+        _ => PrTarget::None,
     }
 }
 

@@ -2,7 +2,8 @@
 //! entries `ActionsTrigger` reads with `graftyard_actions::trigger`, and an Actions shard that takes each run's
 //! `CreateRun`. Each test fails on one plausible bug: a run key that lets one entry start only one pull request's run,
 //! a conflicting merge that still starts a run, a superseded event dropped or run at its own head instead of the
-//! current merge, a first scan that replays old entries, and a `CreateRun` sent to a member that cannot read it.
+//! current merge, a merge counted stale once the base moves, a first scan that replays old entries, and a `CreateRun`
+//! sent to a member that cannot read it.
 
 mod common;
 
@@ -216,6 +217,32 @@ fn a_superseded_event_runs_at_the_current_merge() {
     let later = w.run_for(second.index, &w.events(&second)[0]).unwrap();
     assert!(matches!(w.create(run.clone()), Some(Ok(_))));
     assert!(matches!(w.create(later), Some(Ok(_))), "the later event's run is its own");
+}
+
+/// The base moves after the head's merge was computed (B0-35 moves it every 6 s): the merge still holds
+/// `refs/pull/N/merge` and the run goes there, instead of waiting on a merge at a base tip that keeps moving. A pull
+/// request closed before its head had a merge starts no run and asks for none.
+#[test]
+fn a_merge_at_an_older_base_still_counts() {
+    let mut w = World::new(vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST]);
+    let e = w.push_both(oid(81), oid(82));
+    w.test_merge(1, clean(1));
+    let core = &w.repo.fold().core;
+    let main =
+        graftyard_git::tiers::get_rec(&**core, "ref", &[graftyard_git::tiers::ref_key(&name("refs/heads/main"))]);
+    w.record(vec![RepoEvent::Refs {
+        push: graftyard_raft::RequestId(graftyard_raft::Ulid(991)),
+        actor: None,
+        updates: vec![RefUpdate { name: name("refs/heads/main"), expect: main, new: Some(oid(2)) }],
+        pack: None,
+    }]);
+    assert_eq!(w.view(1).base_tip, Some(oid(2)), "the base moved");
+    assert_eq!(pr_target(&w.view(1)), PrTarget::Merge(oid(901)));
+    let run = w.run_for(e.index, &w.events(&e)[0]).unwrap();
+    assert_eq!(run.head_sha, oid(901).0);
+    let mut closed = w.view(2);
+    closed.open = false;
+    assert_eq!(pr_target(&closed), PrTarget::None);
 }
 
 /// The first-scan guard: an entry more than PR_REPLAY_MS old starts nothing; one just inside still does.
