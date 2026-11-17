@@ -108,10 +108,22 @@ if (!done("place")) {
   }
 }
 
-// 4. Site c's install, to its end.
+// 4. Site c's install, to its end, or to INSTALL_CAP_MIN after the sever lifted (b030r6, operator 2026-11-17: 120 min;
+// past it G21 is recorded as not holding and the run closes out). The cap ends the load as END_AT=install does.
+const CAP_MIN = Number(process.env.INSTALL_CAP_MIN ?? 0);
+const lifted = existsSync(OUT) && readFileSync(OUT, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+  .find((r) => r.phase === "sever" && r.done && !r.skipped)?.at;
+const capAt = CAP_MIN && lifted ? Date.parse(lifted) + CAP_MIN * 60_000 : Infinity;
 let peak = 0, own = null, through = null;
 for (;;) {
   if (existsSync(STOP) && !existsSync("tests/am1/raw/b030-load.done")) break;
+  if (Date.now() > capAt) {
+    const d = day();
+    writeFileSync("tests/am1/raw/b030-days", String(+d.toFixed(3)) + "\n");
+    row({ phase: "install", done: true, capped: true, capMin: CAP_MIN, lifted, own, peak, through });
+    row({ phase: "end", done: true, day: +d.toFixed(3), why: `install cap ${CAP_MIN} min` });
+    break;
+  }
   // A member reply with no body (07:17Z and 08:06Z on b030r5) left a sample undefined and killed the driver.
   const v = (await size(LAGGER)) ?? {};
   const f = (await member(C, LAGGER, "/fold", { audit: {} }, 30_000).catch(() => ({ v: {} }))).v ?? {};

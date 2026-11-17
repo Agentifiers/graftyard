@@ -16,6 +16,9 @@ import datetime, hashlib, json, os, sys, urllib.request
 
 INSTALL = os.environ.get("INSTALL", "graft-m2b")
 SITES = "abc"
+# Each site's pack bucket: graft-m2b's are `graft-m2b-site-a-packs`; graft-m1's are `graft-m1-packs-a`
+# (tests/m3/finish/sites4.json), so B0-30 runs it with BUCKET='{install}-packs-{site}'.
+BUCKET = os.environ.get("BUCKET", "{install}-site-{site}-packs")
 
 
 def prefixes(net):
@@ -105,7 +108,7 @@ def main():
             log(f"{net} REFUSED: not retired ({', '.join(live)[:160]})")
             totals["refused"].append(net)
             continue
-        counts = {site: purge(s3, f"{INSTALL}-site-{site}-packs", net, dry) for site in SITES}
+        counts = {site: purge(s3, BUCKET.format(install=INSTALL, site=site), net, dry) for site in SITES}
         log(f"{net} {'would delete' if dry else 'purged'}: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in counts.items()))
         totals["purged"].append([net, {s: b for s, (b, _) in counts.items()}])
     log(json.dumps({"dry": dry, "purged": len(totals["purged"]), "objects": sum(sum(c.values()) for _, c in totals["purged"]),
