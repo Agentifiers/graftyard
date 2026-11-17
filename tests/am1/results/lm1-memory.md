@@ -5008,3 +5008,54 @@ quorum, requests waiting and none completing:
 
 All are under the 30 s bound (`LIVE_BOUND_MS`). Porcupine Ok on all three histories (157,336, 2,333,008 and 5,988,768
 operations). The short sim suite gave 12.1 s harsh, 20.7 s gray and 16.6 s live.
+
+### Round 40: the m45 slot, site day from branch late-suspect aa3bf360, B0-33 (2026-11-17)
+
+**Site day.** Built from `late-suspect` at aa3bf360 (main 7232e22c plus late-suspect); the m43 image was reused
+(`containers/` unchanged). Sites a c1bab4d8, b 843c7094, c a0b18de5; edge 09f3f6cc at 100%; GRAFTYARD_PR_TRIGGER unset;
+`siteday exit 0` (`raw/siteday-m45.status`).
+
+**B0-33**: repo:131353, a1 `mwl97nya`, 5,000 agents, 300 s of load from 22:24:20Z, leader site 0, k 4.
+
+| B0-33 line | m45 (late-suspect) | m44 (colo-unknown) | verdict at 90% |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 57,018 ms (p50 3,663, n 11,676; queue p99 62.1 s, round 5.3 s, confirm 7.1 s, deps:all 27.0 s); merges 1 of 57 (32 skipped at the cap); human pushes 6 of 184 (160 skipped) | 19,753 ms; 1 of 56; 4 of 196 | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 7.6 agent-class ok a second (agent pushes 1,312 ok of 12,397; 6,171 × 503 "access rows … not leader") | 13.2 | fail |
+| Zero leader changes and `suspect` | **term 2 throughout, 0 leader changes**; 8 step-downs (6 `CommitErrors`, 2 `Confirm`), all holds (`to: None`); 24,676 `suspect` reports | term 2 → 20 | leader changes pass; `suspect` fail |
+
+**Why the term held (`Trace::Reported` against `AppendStepped`, `raw/reported-m45b33.txt`, `raw/latesuspect-m45b33.txt`).**
+- All 24,461 follower reports were answered `promised`; voter 0, the leader, answered 215 with `leader`.
+- The reports came from **one** real colo: LAX 24,077, UNKNOWN 599. No NRT this run (m44: LAX 18,238 and NRT 12,144).
+- Replaying the term-2 reports about leader 0 against each follower's last append: voter 1 had 2,415 timely and 946 late; voter 2 had 8,462 timely and 1,797 late. So the late spells were real: follower append gaps p99 1.9 to 2.6 s, max 16 to 20 s, 51 to 77 gaps of 1 s or more; the leader ticker lag p99 was 10.2 s.
+- Neither rule withheld even once in the replay (0 episodes under main's rule and under late-suspect), because a single colo cannot make two.
+- **So this run does not discriminate late-suspect from colo-unknown.** With one edge colo, colo-unknown alone would also have kept term 2. The flip line's check holds trivially: no follower withheld from a leader whose appends were timely. The two-colo case that m44 showed, and that late-suspect's simulator tests cover, has not yet been seen hosted with the fix.
+
+**The edge-walk queueing at the voters, which is what fails now** (`raw/inbound-m45b33.txt`, 22:24:20 to 22:29:20Z).
+
+| voter | requests entered | `/read` | `/suspect` | `/raft` | walks | sent by |
+|---|---|---|---|---|---|---|
+| 0 (leader) | 406 a second | 195 | 16 | 41 | 148 a second | 325 isolates |
+| 1 (follower) | 427 a second | 227 | 177 | 8 | 237 a second | 326 isolates |
+| 2 (follower) | 442 a second | 230 | 186 | 8 | 240 a second | 326 isolates |
+
+- At the followers, `/read` is almost all leader-bound (`packed:lead` 138 to 140, `core:lead` 82 to 84 a second): reads meant for the leader that arrive at a follower on a walk.
+- Of 4,300 voter-to-voter `/raft` calls joined to their callee, 2,121 missed 1 s or went unanswered, with p50 716 requests entered ahead. Of the requests ahead of a slow call, `/read` was 52 to 54% and `/suspect` 37 to 39%.
+- The loop as it stands: the leader's overload makes a read to it miss. The isolate then reports `suspect` to both followers, forgets the leader (`call_opt`'s pass ends in `forget_leader`), and its next request walks the followers. Followers answer `NotLeader` naming site 0, but every walk and report sits in their input queue ahead of the leader's `/raft`. Rounds stretch, the commit queue grows (queue p99 62 s), and more reads miss.
+- Memguard peaks: 77.8 / 37.6 / 29.6 MiB, nowhere near 128 MB.
+
+**Next fix, proposed (design first, not built).**
+1. **A miss to the cached leader starts no walk** [hypothesis, to check in the code first]. `call_opt` ends every pass that found no leader with `forget_leader` and a 250 ms delay, so one missed call to the cached leader sends this isolate's next request walking the followers. The candidate rule: walk and forget only on a `NotLeader` that names another member or none, and retry a missed call to the cached leader there after a backoff. Expected effect: the followers' 220 to 225 leader-bound reads and the walks behind them go away. Not yet verified: whether a lone miss forgets the leader, or only a pass in which every member missed.
+2. **Fewer `/suspect` reports per isolate.** Since late-suspect, a report changes nothing at a follower whose appends are timely, and withholding needs only one report per colo inside SUSPECT's 10 s window. So SUSPECT_GAP per (isolate, chain, about, term) goes from 500 ms to 5 s [guess]. That is about a tenth of today's 177 to 186 a second at each follower, still several per colo per window.
+3. A sim or lookup test for each: (1) a missed leader read starts no walk and no `forget_leader`; (2) a gray leader still moves within 20 s with reports at the new gap.
+
+**Close-out.**
+- Shards swept by costrow: 6 pool shards torn down, "no shard container running".
+- `retirenets.mjs 131353`: 11 names, all "not joined" (22:37:45Z).
+- Two-pass purge (gate unchanged): a 5,523, b 4,285, c 4,763 (14,571 objects); second pass 0 on every site.
+- The idle reading runs 22:41 to 23:11Z into `raw/idle-m45.txt`.
+
+**Cost.** graft-m2b by prefix from 22:01Z to 22:40Z: $1.08 of the $10 stop. The account day was $177.66 at 22:40Z.
+
+Raw files in `tests/fanout/raw/`: `siteday-m45.status`, `costrow-m45b33.status`, `rows-m45b33.status`, `a1-b0-33-m45.jsonl`,
+`terms-m45b33.jsonl`, `memguard-m45b33.jsonl.xz`, `tsave-m45b33.jsonl.xz`, `inbound-m45b33.txt`, `reported-m45b33.txt`,
+`latesuspect-m45b33.txt`, `stepdowns-m45b33.txt`, `retire-m45.log`, `retirenets-m45.out`, `purge-m45.log`.

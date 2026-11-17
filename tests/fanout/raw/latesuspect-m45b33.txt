@@ -1,0 +1,32 @@
+voter 0 rule main: 0 episodes, 0 s withheld
+voter 0 rule (i)>=1000ms: 0 episodes, 0 s withheld
+voter 0 rule (i)>=2000ms: 0 episodes, 0 s withheld
+voter 0 rule (i)>=3000ms: 0 episodes, 0 s withheld
+voter 0 rule (i)>=5000ms: 0 episodes, 0 s withheld
+voter 1 rule main: 0 episodes, 0 s withheld
+voter 1 rule (i)>=1000ms: 0 episodes, 0 s withheld
+voter 1 rule (i)>=2000ms: 0 episodes, 0 s withheld
+voter 1 rule (i)>=3000ms: 0 episodes, 0 s withheld
+voter 1 rule (i)>=5000ms: 0 episodes, 0 s withheld
+voter 2 rule main: 0 episodes, 0 s withheld
+voter 2 rule (i)>=1000ms: 0 episodes, 0 s withheld
+voter 2 rule (i)>=2000ms: 0 episodes, 0 s withheld
+voter 2 rule (i)>=3000ms: 0 episodes, 0 s withheld
+voter 2 rule (i)>=5000ms: 0 episodes, 0 s withheld
+rule main: two or more voters withholding at once 0 s
+rule (i)>=1000ms: two or more voters withholding at once 0 s
+rule (i)>=2000ms: two or more voters withholding at once 0 s
+rule (i)>=3000ms: two or more voters withholding at once 0 s
+rule (i)>=5000ms: two or more voters withholding at once 0 s
+rule main: first two-voter withholding None s after the first report
+rule (i)>=1000ms: first two-voter withholding None s after the first report
+rule (i)>=2000ms: first two-voter withholding None s after the first report
+rule (i)>=3000ms: first two-voter withholding None s after the first report
+rule (i)>=5000ms: first two-voter withholding None s after the first report
+rule main: terms whose followers would both lapse inside the term 0 of 1: []
+rule (i)>=1000ms: terms whose followers would both lapse inside the term 0 of 1: []
+rule (i)>=2000ms: terms whose followers would both lapse inside the term 0 of 1: []
+rule (i)>=3000ms: terms whose followers would both lapse inside the term 0 of 1: []
+rule (i)>=5000ms: terms whose followers would both lapse inside the term 0 of 1: []
+rule main per term (length / first two-voter withholding after start): t2:60s/-
+rule (i)>=1000ms per term (length / first two-voter withholding after start): t2:60s/-

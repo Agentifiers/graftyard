@@ -1,0 +1,8 @@
+22:24:40.564 a member alarm: StepDown { why: Confirm { p99_ms: 998, slow: 6, of: 12 }, to: None }
+22:25:17.058 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 76, 4), (SiteId(2), 77, 4)] }, to: None }
+22:25:36.700 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 47, 5), (SiteId(2), 55, 3)] }, to: None }
+22:26:04.826 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 10, 3), (SiteId(2), 9, 3)] }, to: None }
+22:26:30.185 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 13, 3), (SiteId(2), 18, 3)] }, to: None }
+22:27:47.863 a member alarm: StepDown { why: Confirm { p99_ms: 2709, slow: 6, of: 7 }, to: None }
+22:29:05.042 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 18, 4), (SiteId(2), 18, 4)] }, to: None }
+22:29:51.057 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 58, 3), (SiteId(2), 43, 4)] }, to: None }
