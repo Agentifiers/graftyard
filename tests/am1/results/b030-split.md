@@ -1444,6 +1444,68 @@ That is about $40 and 3 h. `force.mjs` gets two options: `SEVER_AT=split`, and a
 **Idle after the close-out [measured].** acctcost 03:45 to 04:15Z: graft-m1's scripts $0.02 (`PREFIX=graft-m1`,
 `prefix_usd`), about $0.04 an hour; the account $3.31, the other installs' slots. 0 shard containers on graft-m1.
 
+## B0-30 second short run (b030r5, from 2026-11-17 04:37Z)
+
+- **Granted:** operator, 2026-11-17 04:36Z. Site day from main `61000db3` (drop-below-through, b030-r4-result, and the
+  lookup-share revert), sever c at `MetaSplit` (`SEVER_AT=split`), end at c's install (`END_AT=install`). c's peak is
+  judged against 9.45 GB, plus `/place`. Stops: $60 for graft-m1's scripts (acctstop `PREFIX=graft-m1`), or $170 for
+  the account's day ($51.21 at the start).
+- **Site day:** 04:37:33 to 04:50:16Z, exit 0. acctcost for the day: $51.21 before, $52.49 after.
+- **A `/place` on the newly built group committed `Degraded { lost: 1 }` with no fault injected.** The operator
+  classed this as a bug candidate on 2026-11-17: a just-created group should re-place its near follower without losing
+  a voter. The cause is open (see the end of this run's section). The evidence, recorded at 05:20 to 05:30Z:
+  - **Entries 1 to 5 on the leader `#1#f0`** (`/log?from=1`), all committed. Configs were identified by rebuilding
+    the canonical bytes and matching the stored digest, as `digest208160.py` does; one candidate matched each entry.
+
+    | Index | Term | At (Z) | Kind | Body |
+    |---|---|---|---|---|
+    | 1 | 1 | bootstrap | config | `Normal` generation 1: `#1#f0`, `#1#f1`, `#1#f2`, home 0 |
+    | 2 | 2 | 04:51:13.161 | noop | the term-2 leader's first entry |
+    | 3 | 2 | 04:51:14.302 | config | `Degraded { lost: 1 }` over the generation-1 placement (digest `95827dbd…`) |
+    | 4 | 2 | 04:51:26.997 | events | the edge's push of `main` (`3e4ef9e6`) |
+    | 5 | 2 | 05:00:08.528 | config | `Normal` generation 2: `#1#f0`, `#2#f1`, `#1#f2`, home 0 (digest `65a76556…`) |
+
+  - **The request.** At 04:51:14Z, 1.1 s after entry 2, the create's lookup (`graftyard_lookup::create`,
+    `crates/lookup/src/lib.rs`) sent `POST /place {"background": true}` to `#1#f0` (site a's Workers Logs, the
+    leader's isolate `085ff494`). That answer, `{"placing": true}`, goes unlogged. `place_inner` read site 1 at 143 ms
+    from the home, over enam's 100 ms `NEAR_RTT`, and `replace_on` began. `voters_ready` checks only the voters other
+    than the leader and the site being replaced, here `#1#f2`, which was caught up. So `Routes::degrade` proposed
+    entry 3, which `#1#f0` and `#1#f2` committed together.
+  - **The answer**, logged when the background run ended at 05:00:09Z: `{"configIndex": 5, "ms": 535232,
+    "nearOver": 104, "old": "repo:1048593#1#f1", "over": {"boundMs": 100, "ms": 143, "site": 1}}`, with 8 tries
+    (`#2#f1` to `#9#f1`). None passed. The nearest, `#2#f1` at 104 ms, went in by entry 5 ("no try within NEAR_RTT;
+    kept the nearest, 104 ms"). Each try's round trips to sites 0 and 2, in ms:
+
+    | Try | Joined (site b's log, Z) | To 0 | To 2 |
+    |---|---|---|---|
+    | `#2#f1` | 04:51:22 | 110 | 201 |
+    | `#3#f1` | 04:51:38 | 122 | 210 |
+    | `#4#f1` | 04:54:08 | 3,998 | 1,143 |
+    | `#5#f1` | 04:56:39 | 3,699 | 2,323 |
+    | `#6#f1` | 04:58:36 | 4,018 | 3,395 |
+    | `#7#f1` | 04:59:45 | 108 | 207 |
+    | `#8#f1` | 04:59:55 | 125 | 198 |
+    | `#9#f1` | 05:00:04 | 118 | 196 |
+
+  - **Why 535 s.** Tries 4 to 6 measured 1 to 4 s round trips and took about 2.5 minutes each, where the others took
+    10 to 16 s. Their joins overlap the seed's first batches on sites 0 and 2 (10,000 rows of 1,800 bytes per
+    `/bench_seed` call, which began at 04:51:59Z). The seed's batches holding the members' `/ping` answers is an
+    [inference]. Workers Logs show no error or reset in that window. The refused tries were retired at 05:00:07Z.
+  - **Why `#1#f1` stuck at applied 1.** At 05:24Z its `/status` reads commit 1, applied 1, last 2, config index 1
+    (generation 1), leader null. It had stored entry 2 but had not yet learned that entry 2 committed when entry 3
+    took it out of the voter set 1.1 s later. A `Degraded { lost: 1 }` leader replicates only to voters, so nothing
+    sent `#1#f1` a commit index again. Entry 5 named `#2#f1` in its place, so it stays at 1.
+  - **What it cost the run.** For the 535 s between entries 3 and 5, the group committed only with both sites 0 and
+    2 (Degraded's rule), and site 1 had no member in the config. The seed's site-1 writer targeted `#1#f1`, which
+    refused every batch ("written is past applied, or a snapshot is running") 14 times, from 04:51:28 to 04:59:03Z.
+  - **The group then lost its leader.** From about 05:00:30Z no member led. `#1#f0` was at commit 5 with config 5;
+    `#2#f1` and `#1#f2` were at commit 4 with last 5 and config 3. Campaigns start only on a request, and the seed
+    writes each member through `/bench_seed`, so no request asked any member to lead until the load started. `#1#f0`
+    resumed term 2 at 05:15:21Z (its election trace: a role row, then its first commit at 7), and by 05:17:40Z all
+    three were at commit 256 with config 5. The operator recorded this gap as a finding, not a fault.
+- **What I did, 05:05 to 05:06Z:** stopped the seed, load, cross, watch and force at 05:02Z, read the configs and
+  Workers Logs, then started them again. `voter()` now names `#2#f1` for site 1, and its seed began at 05:06:35Z.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
