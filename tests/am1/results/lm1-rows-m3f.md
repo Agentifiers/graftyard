@@ -237,7 +237,7 @@ The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22
 - Both groups retired: 23 of 23 members "not joined" (`lm1-rows-m3f-data/idle-retire-m3fr12.log`).
 - Purge: 10,587 objects deleted in the first pass, which left 88 in site c's bucket for 65582. A second pass deleted 504 more (objects were still landing after the first listing), and a third found 0 in every bucket for both networks.
 - graft-m3f was handed to B0-02 as free at 16:56Z; B0-02 ran B0-29 on graft-m2b instead and does not hold graft-m3f.
-- Idle reading 16:56 to 17:26Z: pending.
+- Idle reading 16:56 to 17:26Z (`PREFIX=graft-m3f acctcost`): graft-m3f **$0.00**, idle; still $0.00 through 17:47Z, and the sweep at 17:47:36Z found no shard container running. (The scheduled reading at 17:27Z did not run; it was taken at 17:47Z over the same window.)
 
 ## Rows m3fr10 and m3fr11 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, run stop $10 on graft-m3f, account stop $170)
 
