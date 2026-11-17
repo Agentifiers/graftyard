@@ -4677,3 +4677,31 @@ With the first pass, 131297–131348 are retired and purged: 52 networks, 295,20
   87 s** (09:45 and 10:00 runs, 20 networks swept, 0 planned). Before the purges its 06:00 and 06:15 runs were
   cancelled at 900 s. Removing the retired groups' packs alone unwedged it.
 - `names:*` rows: 0 in both slots. Sites b and c took 28 to 33 s.
+
+### 65536–65540 and 131072–131073 left in place: every one is a fixture (2026-11-17, no spend)
+
+The operator granted retiring and purging these seven networks on graft-m2b, on one condition: first check that no
+row script reads any of them as a fixture. **Every one is a fixture, so I retired and purged none of them.**
+
+| Network | Name | Read by |
+|---|---|---|
+| 131072 | `m3org/j4` | `$M3_STATE/m3.json` `.repo`, loaded by `tests/am1/hosted/lib.mjs` as `state.repo`. Used in `tests/am1/hosted/feed.mjs` (L0-15 and LF-3; the foreign cursor is `state.repo + 1`, which is 131073), `stall.mjs`, `smoke.mjs`, and `tests/m3/rows/bf2.mjs` and `bf31.mjs` |
+| 131073 | `m3org/j4b` | `tests/m3/rows/bf31.mjs` (`state.repo2`, the repository outside the token's scope), and the cursor above |
+| 65536 | `m2b/bf20` | `~/.graft-m2b/repos.json`. Read by `tests/m2/wp3/hosted.py`, `wp6/p99.py`, `tests/m1/wp8/bf14.ts`, `f43-*.sh`, `tests/m1/integ/bf12.ts`, and `tests/m3/wirefix/*-bf20.sh` |
+| 65537 | `m2b/smoke` | the same `repos.json`; `tests/m3/wp5/b0-18.ts` (`--repo 65537`); `tests/m2/sitedays/shards.sh` (`smoke:65537`) |
+| 65538 | `m2b/bf24` | the same `repos.json`; `tests/m2/bf24/bf24.py` (default `BF24_REPO=bf24`) |
+| 65539 | `m2b/bf29` | the same `repos.json`; `tests/m3/wp5/bf29.sh`; `b0-18.ts --repo 65539` (the B0-18 rerun in BUILD-PLAN M3-WP5) |
+| 65540 | `m2b/bf29r` | the same `repos.json`; BF-29 on a fresh repository (`tests/m3/results/m3-wp5.md`) |
+
+All seven still have a joined group: followers at term 2 to 5 on every site, read by current registry name.
+
+Two findings went to `decisions/OPEN-QUESTIONS.md`:
+- **K10**, the daily refold's cost. The 09:06Z refold of 65536 wrote 1,144,665 rows, about 2 rows per row of the
+  core tier's 571,889. The audit's own caps (4 chains per site per run, once a day per chain) bound it at 1,152
+  refolds a day.
+- **F82**. Site a's refolds keep reporting `SQLITE_LOCKED` after `audit-locked`: 39 chains in a row from 04:47 to
+  10:17Z. The three reports read in full carry `at` times from 2026-11-16 00:20–00:35Z, before the site day, so
+  these may be stale reports of jobs that will not run again until each is a day old. That is not yet confirmed.
+
+The cheaper path the operator named, retiring 65536 so its next audit never runs, would break those fixtures. Re-seeding
+65536 smaller, or leaving its daily refold in place, is for the operator.
