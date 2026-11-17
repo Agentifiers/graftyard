@@ -570,6 +570,262 @@ fn degraded_needs(commit: u64, applied: &[(SiteId, Option<u64>)]) -> std::result
     if behind.is_empty() { Ok(Ready(())) } else { Err(json!(behind)) }
 }
 
+/// `Degraded { lost }`, whose quorum is every voter but `lost`: built only from `Ready`, which only `degraded_needs`
+/// builds, so a re-placement proposes it only once every voter it needs was found caught up.
+fn degraded(_ready: Ready, placement: Box<graftyard_types::Placement>, lost: SiteId) -> raft::GroupConfig {
+    raft::GroupConfig::Degraded { placement, lost }
+}
+
+/// One try of a re-placement (`Steps::try_member`): the placement it passed; else, when only the near bound refused
+/// it, that placement and the near round trip; the leader's fresh round trip to it; and its row for the answer.
+struct TryOut {
+    passed: Option<graftyard_types::Placement>,
+    over: Option<(graftyard_types::Placement, u16)>,
+    fresh: Option<Rtt>,
+    row: Value,
+}
+
+/// What a re-placement does outside its own order (`replace_steps`): the leader's calls and storage, which a test
+/// replaces with a recorder.
+trait Steps {
+    /// `voters_ready`: every voter `Degraded` would need is caught up.
+    async fn ready(&self) -> Result<std::result::Result<Ready, Value>>;
+    /// Joins `new`, measures it, and checks the placement it would make; `first` for the first try.
+    async fn try_member(&self, new: &MemberRef, first: bool) -> Result<TryOut>;
+    /// Appends `cfg` and waits for it to commit (`Routes::change`).
+    async fn change(&self, cfg: raft::GroupConfig) -> std::result::Result<u64, String>;
+    /// Clears a try the group never took (test installs).
+    async fn clear(&self, m: &MemberRef);
+    fn store_rtt(&self, r: Rtt) -> Result<()>;
+    /// Puts `kept`'s registry row back over the tries' rows (`Routes::restore_row`).
+    async fn restore_row(&self, kept: &MemberRef, joined: &[MemberRef]);
+    fn placed_over_near(&self);
+    fn now(&self) -> u64;
+    /// A log line; `error` for `console_error!`.
+    fn note(&self, error: bool, m: String);
+}
+
+/// A re-placement's order (G22, `decisions/DECISIONS.md`, "A re-placement runs its tries before it degrades the
+/// group"): `ready`, every try under the committed `Normal` config, then, once a member is chosen, `ready` again and
+/// `Degraded { lost }` and `Normal` back to back. A search in which no try was nearer, or a voter behind at the second
+/// `ready`, changes no config. On b030r5 `Degraded` came before the first try and held a just-built group for 535 s.
+async fn replace_steps<S: Steps>(
+    s: &S,
+    chain: ChainId,
+    p: Box<graftyard_types::Placement>,
+    old: MemberRef,
+    tries: usize,
+    keep_below: Option<u16>,
+) -> Result<std::result::Result<Value, Value>> {
+    let behind = |b: Value, tried: &[Value]| {
+        s.note(false, format!("placement of {chain} waits: {b}"));
+        Ok(Err(json!({ "error": "a voter the degraded config needs is behind", "behind": b, "tried": tried })))
+    };
+    if let Err(b) = s.ready().await? {
+        return behind(b, &[]);
+    }
+    let t0 = s.now();
+    let to = old.site;
+    let mut generation = p.next_generation();
+    let mut tried: Vec<Value> = Vec::new();
+    // Every try's member: each one's `/join` wrote its row on `to`'s registry, which `restore_row` puts back.
+    let mut joined: Vec<MemberRef> = Vec::new();
+    // Tries that passed every check but the near bound, kept until the loop ends: with `keep_below`, the nearest goes
+    // in when none passed (`graftyard_types::nearest_try`).
+    let mut over: Vec<(MemberRef, graftyard_types::Placement, u16, Option<Rtt>)> = Vec::new();
+    let placed = loop {
+        let new = MemberRef::new(chain, to, old.kind, old.slot, generation);
+        joined.push(new.clone());
+        let t = s.try_member(&new, tried.is_empty()).await?;
+        tried.push(t.row);
+        if let Some(np) = t.passed {
+            if let Some(r) = t.fresh {
+                s.store_rtt(r)?;
+            }
+            break Some((np, None, new));
+        }
+        match t.over.filter(|_| keep_below.is_some()) {
+            Some((np, ms)) => over.push((new.clone(), np, ms, t.fresh)),
+            None => s.clear(&new).await,
+        }
+        if tried.len() >= tries {
+            // No try met the bound: the nearest goes in if it beats the member it replaces, so a create never fails
+            // on the bound alone (`design/DESIGN.md`, "Placement is checked by latency").
+            let ms: Vec<u16> = over.iter().map(|o| o.2).collect();
+            let best = keep_below.and_then(|c| graftyard_types::nearest_try(c, &ms)).map(|i| over.swap_remove(i));
+            for (m, ..) in &over {
+                s.clear(m).await;
+            }
+            if let Some((_, _, _, Some(r))) = &best {
+                s.store_rtt(*r)?;
+            }
+            break best.map(|(m, np, ms, _)| (np, Some(ms), m));
+        }
+        generation += 1;
+    };
+    let Some((np, near_ms, kept)) = placed else {
+        s.restore_row(&old, &joined).await;
+        if keep_below.is_some() {
+            // The bound is a goal: the member already placed stays, nearer than every try, and no config changed.
+            s.placed_over_near();
+            let kept = json!({ "kept": old.do_name, "tried": tried });
+            s.note(false, format!("placement of {chain}: no try nearer than the current member: {kept}"));
+            return Ok(Ok(kept));
+        }
+        let e = json!({ "error": "no placement passed", "tried": tried });
+        s.note(true, format!("placement of {chain} failed: {e}"));
+        return Ok(Err(e));
+    };
+    // The voters `Degraded` needs may have fallen behind during the tries: asked again, and a voter behind changes no
+    // config (operator, 2026-11-17).
+    let ready = match s.ready().await? {
+        Ok(r) => r,
+        Err(b) => {
+            s.clear(&kept).await;
+            s.restore_row(&old, &joined).await;
+            return behind(b, &tried);
+        }
+    };
+    if let Err(e) = s.change(degraded(ready, p, to)).await {
+        s.restore_row(&old, &joined).await;
+        return Ok(Err(json!({ "error": format!("degraded: {e}"), "tried": tried })));
+    }
+    if let Some(ms) = near_ms {
+        s.placed_over_near();
+        s.note(false, format!("placement of {chain}: no try within NEAR_RTT; kept the nearest, {ms} ms"));
+    }
+    let index = match s.change(raft::GroupConfig::Normal(Box::new(np))).await {
+        Ok(i) => i,
+        Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
+    };
+    s.restore_row(&kept, &joined).await;
+    let mut v = json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": s.now() - t0 });
+    if let Some(ms) = near_ms {
+        v["nearOver"] = json!(ms);
+    }
+    Ok(Ok(v))
+}
+
+/// The leader's side of `Steps`.
+struct RouteSteps<'a, F: Family> {
+    r: &'a Routes<F>,
+    chain: ChainId,
+    record: PlacementRecord,
+    me: SiteId,
+    p: Box<graftyard_types::Placement>,
+    to: SiteId,
+    others: Vec<MemberRef>,
+    site: SiteEnv,
+    mine: Vec<(SiteId, Rtt)>,
+    near: &'a [(graftyard_types::Region, u16)],
+    fail_first: bool,
+    keep_below: Option<u16>,
+    owner: Option<AccountId>,
+    genesis: Option<String>,
+}
+
+impl<F: Family> Steps for RouteSteps<'_, F> {
+    async fn ready(&self) -> Result<std::result::Result<Ready, Value>> {
+        self.r.voters_ready(&self.p, self.me, self.to).await
+    }
+
+    async fn try_member(&self, new: &MemberRef, first: bool) -> Result<TryOut> {
+        let join = Join {
+            chain: self.chain,
+            me: new.clone(),
+            record: self.record.clone(),
+            peers: self.others.clone(),
+            owner: self.owner,
+            genesis: self.genesis.clone(),
+            #[cfg(feature = "test-faults")]
+            no_claim: false,
+        };
+        let (status, rows) = self.r.post_member(new, "/join", &serde_json::to_value(&join)?).await?;
+        let theirs: Vec<(SiteId, Rtt)> = serde_json::from_value(rows.clone()).unwrap_or_default();
+        let voters: arrayvec::ArrayVec<MemberRef, 3> =
+            self.p.voters().iter().map(|m| if m.site == self.to { new.clone() } else { m.clone() }).collect();
+        // This member's row for `to` measured the member being replaced: measure the new one instead, so the check,
+        // and the daily recheck after it, read the pair as it now is.
+        let fresh = if status == 200 {
+            let ms = self.r.measure(&self.site, new).await?;
+            Some(Rtt { peer: self.to, median_ms: ms, at: Timestamp(now_ms()) })
+        } else {
+            None
+        };
+        let all: Vec<(SiteId, Rtt)> = self
+            .mine
+            .iter()
+            .filter(|(_, r)| r.peer != self.to)
+            .copied()
+            .chain(fresh.map(|r| (self.me, r)))
+            .chain(theirs.iter().copied())
+            .collect();
+        let checks = graftyard_types::PlacementChecks {
+            sites: &self.site.sites,
+            separate_accounts: false,
+            rtt: &all,
+            near: self.near,
+        };
+        let mut over = None;
+        let r = if self.fail_first && first {
+            Err("injected: latency check failed".to_owned())
+        } else if status == 200 {
+            match graftyard_types::Placement::new(voters.clone(), arrayvec::ArrayVec::new(), self.p.home(), &checks) {
+                Err(e @ graftyard_types::PlacementError::NoNearFollower { ms, .. }) if self.keep_below.is_some() => {
+                    let unbounded = graftyard_types::PlacementChecks { near: &[], ..checks };
+                    if let Ok(np) =
+                        graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), self.p.home(), &unbounded)
+                    {
+                        over = Some((np, ms));
+                    }
+                    Err(e.to_string())
+                }
+                r => r.map_err(|e| e.to_string()),
+            }
+        } else {
+            Err(format!("join answered {status}: {rows}"))
+        };
+        let ms: Vec<(u8, u16)> = theirs.iter().map(|(_, r)| (r.peer.0, r.median_ms)).collect();
+        let row = json!({ "member": new.do_name, "rtt": ms, "result": r.as_ref().err() });
+        Ok(TryOut { passed: r.ok(), over, fresh, row })
+    }
+
+    async fn change(&self, cfg: raft::GroupConfig) -> std::result::Result<u64, String> {
+        self.r.change(cfg).await
+    }
+
+    async fn clear(&self, m: &MemberRef) {
+        #[cfg(feature = "test-faults")]
+        let _ = self.r.post_member(m, "/retire", &json!({})).await;
+        #[cfg(not(feature = "test-faults"))]
+        let _ = m;
+    }
+
+    fn store_rtt(&self, r: Rtt) -> Result<()> {
+        self.r.store_rtt(r.peer, r.median_ms, r.at.0)
+    }
+
+    async fn restore_row(&self, kept: &MemberRef, joined: &[MemberRef]) {
+        self.r.restore_row(self.chain, &self.record, kept, joined).await
+    }
+
+    fn placed_over_near(&self) {
+        self.r.host.stats.borrow_mut().placed_over_near += 1;
+    }
+
+    fn now(&self) -> u64 {
+        now_ms()
+    }
+
+    fn note(&self, error: bool, m: String) {
+        if error {
+            console_error!("{m}");
+        } else {
+            console_log!("{m}");
+        }
+    }
+}
+
 /// A leader's transfer to a member that may not lead (`Family::may_lead`): refused at once, so the leader picks another
 /// target instead of waiting out its LEASE; the member never steps it. `None` for every other message, or a member
 /// that may lead.
@@ -2311,14 +2567,13 @@ impl<F: Family> Routes<F> {
         }
     }
 
-    /// The re-placement loop `/replace` and `/place` share: `Degraded { lost: to }`, then new members on `to` at
-    /// successive generations, each joined and checked by `Placement::new` with the near bound `near`, up to `tries`;
-    /// the first that passes goes in by `Normal`. `Err` when none passed: the config goes back to `Normal` with the
-    /// old member, so a group that could not be placed keeps serving where it was, and the answer lists every try with
-    /// its round trips. A refused member never joins the group; with `test-faults` it is also cleared. With
-    /// `keep_below` (the near round trip of the member being replaced, from `/place`), a try refused only by the near
-    /// bound is a candidate: when none passed, the nearest goes in if it is nearer than `keep_below`, and otherwise the
-    /// old member stays with an `Ok` answer, so the bound alone never fails a create.
+    /// The re-placement `/replace` and `/place` share (`design/DESIGN.md`, "Install operations", Placement failures):
+    /// new members on `to` at successive generations, each joined and checked by `Placement::new` with the near bound
+    /// `near`, up to `tries`, while the committed config stays `Normal`; then, for the member chosen, `Degraded { lost:
+    /// to }` and `Normal` back to back (`replace_steps`). `Err` when none passed, with every try and its round trips,
+    /// and no config changed. With `keep_below` (the near round trip of the member being replaced, from `/place`), a
+    /// try refused only by the near bound is a candidate: when none passed, the nearest goes in if it is nearer than
+    /// `keep_below`, and otherwise the old member stays with an `Ok` answer, so the bound alone never fails a create.
     async fn replace_on(
         &self,
         to: SiteId,
@@ -2327,7 +2582,7 @@ impl<F: Family> Routes<F> {
         fail_first: bool,
         keep_below: Option<u16>,
     ) -> Result<std::result::Result<Value, Value>> {
-        let (chain, record, me, cfg, c_owner, c_genesis) = {
+        let (chain, record, me, cfg, owner, genesis) = {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
             if c.m.role() != Role::Leader {
@@ -2349,152 +2604,23 @@ impl<F: Family> Routes<F> {
             return Ok(Err(json!({ "error": "transfer first: the leader's own site" })));
         }
         let old = p.voters().iter().find(|m| m.site == to).cloned().ok_or_else(|| err("no member on that site"))?;
-        let t0 = now_ms();
-        let ready = match self.voters_ready(&p, me, to).await? {
-            Ok(r) => r,
-            Err(behind) => {
-                console_log!("placement of {chain} waits: {behind}");
-                return Ok(Err(json!({ "error": "a voter the degraded config needs is behind", "behind": behind })));
-            }
+        let steps = RouteSteps {
+            r: self,
+            chain,
+            record,
+            me,
+            p: p.clone(),
+            to,
+            others: p.voters().iter().filter(|m| m.site != to).cloned().collect(),
+            site: SiteEnv::read(&self.host.env)?,
+            mine: rtt_rows(&self.host.state, &self.host.env)?,
+            near,
+            fail_first,
+            keep_below,
+            owner,
+            genesis,
         };
-        if let Err(e) = self.degrade(ready, p.clone(), to).await {
-            return Ok(Err(json!({ "error": format!("degraded: {e}") })));
-        }
-        let site = SiteEnv::read(&self.host.env)?;
-        let mine = rtt_rows(&self.host.state, &self.host.env)?;
-        let others: Vec<MemberRef> = p.voters().iter().filter(|m| m.site != to).cloned().collect();
-        let mut generation = p.next_generation();
-        let mut tried = Vec::new();
-        // Every try's member: each one's `/join` wrote its row on `to`'s registry, which `restore_row` puts back.
-        let mut joined: Vec<MemberRef> = Vec::new();
-        // Tries that passed every check but the near bound, kept until the loop ends: with `keep_below`, the nearest
-        // goes in when none passed (`graftyard_types::nearest_try`).
-        let mut over: Vec<(MemberRef, graftyard_types::Placement, u16, Option<Rtt>)> = Vec::new();
-        let placed = loop {
-            let new = MemberRef::new(chain, to, old.kind, old.slot, generation);
-            let join = Join {
-                chain,
-                me: new.clone(),
-                record: record.clone(),
-                peers: others.clone(),
-                owner: c_owner,
-                genesis: c_genesis.clone(),
-                #[cfg(feature = "test-faults")]
-                no_claim: false,
-            };
-            joined.push(new.clone());
-            let (status, rows) = self.post_member(&new, "/join", &serde_json::to_value(&join)?).await?;
-            let theirs: Vec<(SiteId, Rtt)> = serde_json::from_value(rows.clone()).unwrap_or_default();
-            let voters: arrayvec::ArrayVec<MemberRef, 3> =
-                p.voters().iter().map(|m| if m.site == to { new.clone() } else { m.clone() }).collect();
-            // This member's row for `to` measured the member being replaced: measure the new one instead, so the
-            // check, and the daily recheck after it, read the pair as it now is.
-            let fresh = if status == 200 {
-                let ms = self.measure(&site, &new).await?;
-                vec![(me, Rtt { peer: to, median_ms: ms, at: Timestamp(now_ms()) })]
-            } else {
-                Vec::new()
-            };
-            let all: Vec<(SiteId, Rtt)> =
-                mine.iter().filter(|(_, r)| r.peer != to).chain(&fresh).chain(&theirs).copied().collect();
-            let checks =
-                graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &all, near };
-            let r = if fail_first && tried.is_empty() {
-                Err("injected: latency check failed".to_owned())
-            } else if status == 200 {
-                match graftyard_types::Placement::new(voters.clone(), arrayvec::ArrayVec::new(), p.home(), &checks) {
-                    Err(e @ graftyard_types::PlacementError::NoNearFollower { ms, .. }) if keep_below.is_some() => {
-                        let unbounded = graftyard_types::PlacementChecks { near: &[], ..checks };
-                        if let Ok(np) =
-                            graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), p.home(), &unbounded)
-                        {
-                            over.push((new.clone(), np, ms, fresh.first().map(|f| f.1)));
-                        }
-                        Err(e.to_string())
-                    }
-                    r => r.map_err(|e| e.to_string()),
-                }
-            } else {
-                Err(format!("join answered {status}: {rows}"))
-            };
-            let ms: Vec<(u8, u16)> = theirs.iter().map(|(_, r)| (r.peer.0, r.median_ms)).collect();
-            tried.push(json!({ "member": new.do_name, "rtt": ms, "result": r.as_ref().err() }));
-            match r {
-                Ok(np) => {
-                    for (_, r) in &fresh {
-                        self.store_rtt(r.peer, r.median_ms, r.at.0)?;
-                    }
-                    break Some((np, None, new));
-                }
-                Err(_) => {
-                    // A refused try is cleared at once, unless it is kept as a candidate for the nearest.
-                    #[cfg(feature = "test-faults")]
-                    if !over.last().is_some_and(|o| o.0 == new) {
-                        let _ = self.post_member(&new, "/retire", &json!({})).await;
-                    }
-                    if tried.len() >= tries {
-                        // No try met the bound: the nearest goes in if it beats the member it replaces, so a create
-                        // never fails on the bound alone (`design/DESIGN.md`, "Placement is checked by latency").
-                        let pick = keep_below.and_then(|c| {
-                            graftyard_types::nearest_try(c, &over.iter().map(|o| o.2).collect::<Vec<_>>())
-                        });
-                        let best = pick.map(|i| over.swap_remove(i));
-                        #[cfg(feature = "test-faults")]
-                        for (m, ..) in &over {
-                            let _ = self.post_member(m, "/retire", &json!({})).await;
-                        }
-                        if let Some((_, _, _, Some(r))) = &best {
-                            self.store_rtt(r.peer, r.median_ms, r.at.0)?;
-                        }
-                        break best.map(|(m, np, ms, _)| (np, Some(ms), m));
-                    }
-                    generation += 1;
-                }
-            }
-        };
-        let Some((np, near_ms, kept)) = placed else {
-            // The old member comes back: it kept its log, and the leader backs its next index up from its answers.
-            let back = self.change(raft::GroupConfig::Normal(p.clone())).await;
-            self.restore_row(chain, &record, &old, &joined).await;
-            if keep_below.is_some() {
-                // The bound is a goal: the member already placed stays, nearer than every try.
-                self.host.stats.borrow_mut().placed_over_near += 1;
-                let kept = json!({ "kept": old.do_name, "tried": tried, "restored": back.as_ref().err() });
-                console_log!("placement of {chain}: no try nearer than the current member: {kept}");
-                return Ok(match back {
-                    Ok(_) => Ok(kept),
-                    Err(e) => Err(json!({ "error": format!("restore: {e}"), "tried": tried })),
-                });
-            }
-            let e = json!({ "error": "no placement passed", "tried": tried, "restored": back.as_ref().err() });
-            console_error!("placement of {chain} failed: {e}");
-            return Ok(Err(e));
-        };
-        if let Some(ms) = near_ms {
-            self.host.stats.borrow_mut().placed_over_near += 1;
-            console_log!("placement of {chain}: no try within NEAR_RTT; kept the nearest, {ms} ms");
-        }
-        let index = match self.change(raft::GroupConfig::Normal(Box::new(np))).await {
-            Ok(i) => i,
-            Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
-        };
-        self.restore_row(chain, &record, &kept, &joined).await;
-        let mut v = json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 });
-        if let Some(ms) = near_ms {
-            v["nearOver"] = json!(ms);
-        }
-        Ok(Ok(v))
-    }
-
-    /// `Degraded { lost: to }`, whose quorum is every voter but `to`, so only once `voters_ready` found each of those
-    /// caught up (`Ready`).
-    async fn degrade(
-        &self,
-        _ready: Ready,
-        p: Box<graftyard_types::Placement>,
-        to: SiteId,
-    ) -> std::result::Result<u64, String> {
-        self.change(raft::GroupConfig::Degraded { placement: p, lost: to }).await
+        replace_steps(&steps, chain, p, old, tries, keep_below).await
     }
 
     /// Each voter `Degraded { lost: to }` would need, other than this leader, by its `/status`: `Ready` when every one
@@ -3075,6 +3201,193 @@ mod tests {
         assert!(!removed(Some(&degraded), &m(2, 1)));
         assert!(!removed(Some(&joint), &m(1, 1)) && !removed(Some(&joint), &m(1, 2)), "both halves of a Joint");
         assert!(!removed(None, &m(1, 1)), "no config yet");
+    }
+
+    /// G22's fake leader: records every config change and try, in order, and answers each try from `results` and the
+    /// two `ready` asks from `ready`.
+    mod place {
+        use std::cell::RefCell;
+
+        use graftyard_raft::GroupConfig;
+        use graftyard_types::{ChainId, DbId, Member, MemberKind, Placement, RepoId, Rtt, SiteId, Timestamp};
+        use serde_json::{Value, json};
+
+        use super::super::{Ready, Steps, TryOut, degraded_needs, replace_steps};
+
+        pub const CHAIN: ChainId = ChainId::Repo(RepoId(DbId(1048593)));
+
+        /// How a try answers: it passes, only the near bound refused it at `ms`, or it fails outright.
+        #[derive(Clone, Copy)]
+        pub enum Try {
+            Pass,
+            Over(u16),
+            Fail,
+        }
+
+        pub fn m(site: u8, generation: u32) -> Member {
+            Member::new(CHAIN, SiteId(site), MemberKind::Full, site, generation)
+        }
+
+        pub fn placement(f1: u32) -> Placement {
+            serde_json::from_value(
+                json!({ "voters": [m(0, 1), m(1, f1), m(2, 1)], "learners": [], "home": 0, "generation": f1 }),
+            )
+            .unwrap()
+        }
+
+        #[derive(Default)]
+        pub struct Fake {
+            pub results: Vec<Try>,
+            /// Each `ready` ask in turn: `true` when every voter is caught up.
+            pub ready: Vec<bool>,
+            pub log: RefCell<Vec<String>>,
+            pub asked: RefCell<usize>,
+            pub tried: RefCell<usize>,
+        }
+
+        impl Fake {
+            pub fn log(&self) -> Vec<String> {
+                self.log.borrow().clone()
+            }
+        }
+
+        impl Steps for Fake {
+            async fn ready(&self) -> worker::Result<std::result::Result<Ready, Value>> {
+                let n = *self.asked.borrow();
+                *self.asked.borrow_mut() += 1;
+                self.log.borrow_mut().push("ready".into());
+                let applied = if self.ready.get(n).copied().unwrap_or(true) { 1_000 } else { 10 };
+                Ok(degraded_needs(1_000, &[(SiteId(2), Some(applied))]))
+            }
+            async fn try_member(&self, new: &Member, _first: bool) -> worker::Result<TryOut> {
+                let n = *self.tried.borrow();
+                *self.tried.borrow_mut() += 1;
+                self.log.borrow_mut().push(format!("try {}", new.do_name));
+                let p = placement(new.generation);
+                let fresh = Some(Rtt { peer: SiteId(1), median_ms: 100, at: Timestamp(0) });
+                let (passed, over) = match self.results[n] {
+                    Try::Pass => (Some(p), None),
+                    Try::Over(ms) => (None, Some((p, ms))),
+                    Try::Fail => (None, None),
+                };
+                Ok(TryOut { passed, over, fresh, row: json!({ "member": new.do_name }) })
+            }
+            async fn change(&self, cfg: GroupConfig) -> std::result::Result<u64, String> {
+                let s = match &cfg {
+                    GroupConfig::Normal(p) => format!("normal {}", p.voters()[1].do_name),
+                    GroupConfig::Degraded { lost, .. } => format!("degraded {}", lost.0),
+                    GroupConfig::Joint { .. } => "joint".into(),
+                };
+                self.log.borrow_mut().push(s);
+                Ok(self.log.borrow().len() as u64)
+            }
+            async fn clear(&self, m: &Member) {
+                self.log.borrow_mut().push(format!("clear {}", m.do_name));
+            }
+            fn store_rtt(&self, _r: Rtt) -> worker::Result<()> {
+                Ok(())
+            }
+            async fn restore_row(&self, kept: &Member, _joined: &[Member]) {
+                self.log.borrow_mut().push(format!("row {}", kept.do_name));
+            }
+            fn placed_over_near(&self) {}
+            fn now(&self) -> u64 {
+                0
+            }
+            fn note(&self, _error: bool, _m: String) {}
+        }
+
+        /// Runs `replace_steps` on the fake to its end: site 1's `#1#f1` replaced, up to `tries`, with `keep_below`.
+        pub fn run(f: &Fake, tries: usize, keep_below: Option<u16>) -> std::result::Result<Value, Value> {
+            let fut = replace_steps(f, CHAIN, Box::new(placement(1)), m(1, 1), tries, keep_below);
+            let mut fut = std::pin::pin!(fut);
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            match fut.as_mut().poll(&mut cx) {
+                std::task::Poll::Ready(r) => r.unwrap(),
+                std::task::Poll::Pending => panic!("the fake never waits"),
+            }
+        }
+
+        use std::future::Future as _;
+    }
+
+    fn names(log: &[String]) -> Vec<&str> {
+        log.iter().map(String::as_str).collect()
+    }
+
+    /// G22: b030r5's create placement committed `Degraded { lost: 1 }` before its first try and held a just-built group
+    /// there for 535 s and 8 tries. Every try now runs under `Normal`, and `Degraded` then `Normal` commit back to back
+    /// for the member chosen, with `ready` asked before the first try and again before `Degraded`.
+    #[test]
+    fn a_re_placement_commits_no_config_until_a_try_is_chosen() {
+        use place::{Fake, Try};
+        let f = Fake { results: vec![Try::Fail, Try::Fail, Try::Pass], ..Fake::default() };
+        let v = place::run(&f, 8, None).unwrap();
+        assert_eq!(
+            names(&f.log()),
+            [
+                "ready",
+                "try repo:1048593#2#f1",
+                "clear repo:1048593#2#f1",
+                "try repo:1048593#3#f1",
+                "clear repo:1048593#3#f1",
+                "try repo:1048593#4#f1",
+                "ready",
+                "degraded 1",
+                "normal repo:1048593#4#f1",
+                "row repo:1048593#4#f1",
+            ]
+        );
+        assert_eq!(v["old"], "repo:1048593#1#f1", "the answer names the member it replaced");
+    }
+
+    /// No try nearer than the member it would replace: the old member stays and no config is appended at all, and the
+    /// site's registry row goes back to it.
+    #[test]
+    fn no_nearer_try_changes_no_config() {
+        use place::{Fake, Try};
+        let f = Fake { results: vec![Try::Over(120), Try::Over(110), Try::Fail], ..Fake::default() };
+        let v = place::run(&f, 3, Some(104)).unwrap();
+        let log = f.log();
+        assert!(!log.iter().any(|l| l.starts_with("degraded") || l.starts_with("normal")), "{log:?}");
+        assert_eq!(log.last().map(String::as_str), Some("row repo:1048593#1#f1"));
+        assert_eq!(v["kept"], "repo:1048593#1#f1");
+        let f = Fake { results: vec![Try::Fail, Try::Fail], ..Fake::default() };
+        assert!(place::run(&f, 2, None).is_err(), "no try passed and no bound to keep under");
+        assert!(!f.log().iter().any(|l| l.starts_with("degraded")));
+    }
+
+    /// The operator's condition: a voter that falls behind during the tries is caught by the second `ready`, and the
+    /// re-placement ends with no config change and the chosen try cleared; one behind at the first ask tries nothing.
+    #[test]
+    fn a_voter_behind_at_the_commit_ends_it_with_no_config() {
+        use place::{Fake, Try};
+        let f = Fake { results: vec![Try::Pass], ready: vec![true, false], ..Fake::default() };
+        let e = place::run(&f, 8, None).unwrap_err();
+        assert_eq!(e["error"], "a voter the degraded config needs is behind");
+        assert_eq!(
+            names(&f.log()),
+            ["ready", "try repo:1048593#2#f1", "ready", "clear repo:1048593#2#f1", "row repo:1048593#1#f1"]
+        );
+        let f = Fake { results: vec![Try::Pass], ready: vec![false], ..Fake::default() };
+        assert!(place::run(&f, 8, None).is_err());
+        assert_eq!(names(&f.log()), ["ready"], "behind before the first try: nothing tried");
+    }
+
+    /// With every try over the bound, the nearest that beats the current member goes in (b030r5: `#2#f1` at 104 ms
+    /// against 143), the others are cleared, and only then do `Degraded` and `Normal` commit.
+    #[test]
+    fn the_nearest_try_goes_in_when_none_passes() {
+        use place::{Fake, Try};
+        let f = Fake { results: vec![Try::Over(110), Try::Over(104), Try::Over(122)], ..Fake::default() };
+        let v = place::run(&f, 3, Some(143)).unwrap();
+        let log = f.log();
+        let at = |s: &str| log.iter().position(|l| l == s).unwrap_or_else(|| panic!("{s} in {log:?}"));
+        assert!(at("try repo:1048593#4#f1") < at("degraded 1"), "every try before Degraded");
+        assert_eq!(at("normal repo:1048593#3#f1"), at("degraded 1") + 1, "back to back, the nearest");
+        assert!(at("clear repo:1048593#2#f1") < at("degraded 1") && at("clear repo:1048593#4#f1") < at("degraded 1"));
+        assert!(!log.contains(&"clear repo:1048593#3#f1".to_owned()));
+        assert_eq!(v["nearOver"], 104);
     }
 
     /// (ii)(a): a re-placement starts only when every voter its `Degraded` config needs is within PLACE_LAG_MAX of the

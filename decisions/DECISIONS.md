@@ -4456,3 +4456,20 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted install under load that still restarts or does not finish, or an installed member whose fold digest differs from the leader's at the same index.
 
+### A re-placement runs its tries before it degrades the group (G22, 2026-11-17)
+
+**Decision.** `replace_on`, the path `/place`, `/replace` and the daily near check share (`workers/site/src/member.rs`, `replace_steps`), runs every try while the committed config stays `Normal`: join, measure, `Placement::new`, and the nearest kept under the near bound. Only once a member is chosen does it commit `Degraded { lost }` and then `Normal` with that member, back to back. (ii)(a)'s `voters_ready` runs before the first try, as before, and again right before the `Degraded` commit; a voter behind at that point ends the re-placement with no config change, `{"error", "behind"}`. A search in which no try is nearer than the member it replaces changes no config at all. A try refused or not chosen is cleared on test installs, as before. The site's registry row goes back to the member the group keeps (`restore_row`), as before.
+
+**The removed member.** The member a re-placement replaces is not retired by the leader. It keeps answering with its last committed config, as "Sites and placement" requires, and every reply's `meta` says `removed`, so a caller takes the config instead of reading it as leaderless. The answer and the log line name it as `old`. A test install's teardown finds it with a generation scan of each chain, as b030r5's close-out did (`tests/am1/results/b030-split.md`, "Close-out (b030r5)"), because a list of current voters misses it.
+
+**Why.** G22. On b030r5 a create's background `/place` committed `Degraded { lost: 1 }` 1.1 s after the new group's first term-2 entry, then held it for 535 s and 8 tries, until `Normal` named the nearest try; the group committed only with both other sites in that time, and the removed member stayed at applied 1. The child group did the same at its split (`tests/am1/results/b030-split.md`, "A `/place` on the newly built group") [measured]. Nothing in a try needs the `Degraded` config: a try's join measures the peers and the leader measures the try, with no config. The two-change rule itself stays, because `Member::reconfigure` counts votes by site and refuses to rename a site's member in one change.
+
+**Beat.**
+- One config change that renames the member (`Normal` to `Normal`): a `crates/raft` change to `reconfigure`'s one-change rule and to quorum counting by site, with the long sweep and Porcupine, for a window this decision already cuts to one config round.
+- Keeping `Degraded` through the tries but capping them by time: the group still loses a voter for the cap, and a try under load took 2.5 minutes on b030r5.
+- Retiring the removed member from the leader: a removed member must keep answering with its config so cached lookups find the group (BF-11), and on a product install `/retire` is a test route.
+
+**Evidence.** `a_re_placement_commits_no_config_until_a_try_is_chosen`, `no_nearer_try_changes_no_config`, `a_voter_behind_at_the_commit_ends_it_with_no_config`, and `the_nearest_try_goes_in_when_none_passes` (`workers/site/src/member.rs`) drive `replace_steps` with a fake that records every config change and try. Main had no such function; its order (`Degraded` before the first try) is the first plant in `tests/b030fixes/plant.py`'s G22 rows and fails the first test.
+
+**Flip.** A hosted re-placement that leaves a group `Degraded` for longer than one config round, or one that commits `Degraded` while a voter it needs is behind.
+
