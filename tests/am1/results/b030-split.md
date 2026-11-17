@@ -1560,11 +1560,18 @@ at 07:17Z and at 07:58Z).
   joined member of either chain.
 - 08:46Z, teardown sweep: `git#0#net:1048593` and `git#1#net:1048593` torn down; `shards.py` shows none left.
   Every orb service stopped at 08:46:37Z.
+- Idle reading, acctcost 08:46:37 to 09:16:37Z: graft-m1 **$0.00** (prefix_usd; 307 DO rows written, 0.01 DO-h, all
+  three sites' member namespaces about 100 rows each), so well under $0.10/h. 0 containers (`shards.py`). The
+  account's $1.19 in that window was graft-m2b's.
+- **Operator decision, 2026-11-17 09:1xZ: B0-30 stays open, not met.** The row judges c's peak through the end of its
+  install, which never ended, so 7.60 GB at the cap is a lower bound, not the peak. An install that cannot finish is
+  not a long tail: G21 is a correctness gap the 90% rule does not cover. r6 runs on a later day, after the G21 fix
+  merges, in its own slot.
 
 ### Verdict (b030r5)
 
-Judged at 90% (`FRAME.md`, 2026-11-16). **The gate line as written passes; the row is not marked met**, for two
-reasons the operator decides:
+Judged at 90% (`FRAME.md`, 2026-11-16). **The row stays open, not met** (operator, 2026-11-17). The gate line's
+measured values pass, for two reasons that does not settle:
 - c's install did not end inside the cap, so the peak is judged through 08:42:10Z, not through the install's end.
   Both tiers were loaded and c's SQLite was flat for the last 2 minutes, so the rest of the job, the archive replay
   and the swap, is not expected to raise it much [inference].
