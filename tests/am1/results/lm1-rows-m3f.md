@@ -218,6 +218,20 @@ The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22
 
 **Verdict:** B0-31 fails on the buckets-up line alone. read-ahead shortened the cycle as designed, but the p99 is set by the opening backlog, not the cycle.
 
+**After the run: the per-second check of the backlog inference** (no hosted spend; push log `lm1-rows-m3f-data/pushlog-m3fr12-b0-31.json`, 1,230 buckets-up pushes with a commit stage; admission trace `tests/fanout/raw/admit-m3fr12-b0-31.jsonl`):
+
+| Buckets-up pushes started | Edge `commit` p99 |
+|---|---|
+| all 300 s | 2,151 ms |
+| from 20 s on | 1,446 ms |
+| from 30 s on | 1,444 ms |
+
+- **The opening seconds carry the spike.** The slowest 1% (2,151 ms or more) all started 7 to 19 s into the load. Every later 20 s bin had p99 1.1 to 1.8 s.
+- **It was a commit stall, not admission sizing** [measured]. From 16:21:32.7 to 16:21:36.7Z the leader's round average held at exactly 236 ms (it moves only when an entry applies) while its queue grew 12 → 31 → 46 → 53 → 72. At 16:21:37.7Z the queue was 1. So the leader applied no entry for about 4 s, then everything queued committed together. Capacity stayed 650 to 780 commands a second, far above the load, and `pressure` stayed false. Admission did not refuse or hold anything back.
+- **What stalled it is not known.** In the same seconds, all three sites' shards for 65582 were rehydrating or catching up, site c's shard warmed in 4.9 s, and `prsync` logged its first run handled in 6,616 ms (Workers Logs) [inference that these are related; not checked]. The terms trace shows no leader change.
+- **Without the stall, the line still fails, and the floor is the dependency read** [inference from the split]. From 20 s on, the edge commit p99 is 1,446 ms, about m3fr11's 1,439. A command's commit includes its batch's `deps:all` read (p99 800 ms) and a round (p99 360 ms), 1,160 ms together, already over the 1.1 s bound before any queueing. read-ahead raised the leader's throughput (cycle 413 → 246 ms) but not a command's latency, which still pays read plus round plus the wait for its batch.
+- So **an admission-sizing fix would not move this line**. The levers are the opening stall (cause first) and the cross-continent `deps:authz` read (p99 725 ms, about 2 per entry). The `Authz` read was deferred until fold size is measured, and its placement is a product question (OPEN-QUESTIONS F81).
+
 **Close-out:**
 - SWEEP2 OK at 16:34:22Z, and the sweep at 16:55Z found no shard container running.
 - Both groups retired: 23 of 23 members "not joined" (`lm1-rows-m3f-data/idle-retire-m3fr12.log`).
