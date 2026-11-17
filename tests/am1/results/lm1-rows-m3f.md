@@ -108,20 +108,98 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
-## Planned m3fr12 (granted for the combined slot on or after 00:00Z 2026-11-18, `ROWS="b0-32 b0-31"`; branch `b031-held`)
+## Rows m3fr12 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, branch `m3fr12`)
 
-**Rows.** A site day from main, with `read-ahead` (0a816c18) and `burst-receipts` on it, then B0-32, then B0-31.
-- **B0-31's line:** commit p99 at buckets-up (`leader.commitMsByHalf.up`) against 1 s, met at 90% at 1.1 s.
-- **read-ahead's flip:** the run also reads `leader.splitByHalf.up.cycle` (the leader's append-to-append ms) and `.held` (frozen batches held at each append), new on this branch. The flip holds if the cycle stays read-bound (about `deps:all` p50 plus decide, not `round` plus decide) while `held` p50 is 2.
+**Slot.** The orchestrator moved the slot from 00:00Z Nov 18 to 15:47Z Nov 17. The operator then raised the day's limit to $300 (FRAME.md at `19b5ae77`). Stops: graft-m3f past $10 by `PREFIX`, or the account's UTC day past $280. The earlier $170 line and the $125 check before B0-31 were dropped. LM-1's B0-33 and M4-WP4 ran at the same time on other installs, so only the `PREFIX` figure is this run's.
+- **Estimate:** about $5. **Actual:** graft-m3f **$2.19** from 15:47:50Z to 16:55:31Z, covering the site day, both rows and the close-out. The account's UTC day was $111.01 at 15:47Z and $132.47 at 16:55Z.
 
-**Estimate** [inference, from acctcost on m3fr10 and m3fr11]: about $5 on graft-m3f. That window was $4.42 for a site day, two rows each run twice, and an edge-only day. This run is one site day and two rows. It goes up to $5 because the site day ships both sites and the edge.
+**Site day:**
+- From main `fec1d01d`, 15:47:50Z to 16:02:34Z, image `sha256:0f0c5ee1…` reused (`containers/` unchanged since `68d39927`), standard-4, test-faults.
+- Sites exit 0 (versions `65cfbee4`, `ec32e344`, `f7624166`). Edge exit 0: `graft-m3f-edge` serves `2c42bfcc` at 100%, rev `fec1d01d` (`edgever.py`).
+- The rows' first start refused ("rows.sh: commit the driver changes first") because `install-m3f.md` was uncommitted; it was committed and the service restarted at 16:04Z.
 
-**Stops:**
-- graft-m3f's own figure (`PREFIX=graft-m3f`, acctcost) passes $10.
-- The account's UTC day passes $170.
-- `costok` runs before each phase.
+**Edge errors** (Workers Logs, `graft-m3f-edge`, `/tmp/wlcount.py` in 120 s bins, none capped): "Cannot perform I/O on behalf of a different request", "closure invoked recursively" and "code had hung" were **0, 0 and 0** in B0-32's window (16:06 to 16:14Z) and in B0-31's (16:16:30 to 16:32:30Z). An unfiltered query in the same minutes returns events, so the zeros are real.
 
-**Close-out:** sweep the containers, `/retire` both groups, and take an acctcost reading 30 minutes later showing graft-m3f idle (well under $0.10 an hour).
+### B0-32 (repo 65581, run `mwkvwnmp`, leader site 0): fail on the within-5 s line
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | 494 of 500 ok, 5 HTTP/2 stream errors, 1 × 503 "every member asked shed the read: overloaded"; **0 within 5 s** (fastest 5.1 s, 144 within 10 s); client p50 14.0 s, p99 28.9 s | 450 needed: **short by 450** |
+| Queued agent bytes under AGENT_QUEUE_MAX | peak 136,810 B, 18 queued | Pass |
+| Merges in one of the next 2 entries | not judged from entries; `merge_plan` p99 8.4 s (n 16) | Not shown |
+| Zero leader changes and zero `suspect` | term 2 throughout, leader site 0; **0 `/suspect`** | **Pass** |
+
+**The receipt rule** (the row's counters over every push): 1,714 commits on 1,714 sends; **0 sends kept open as busy, 22 outcome asks ran, 0 receipts missed, 0 `/suspect`** (m3fr11: 0, 441, 103 and 103). 244 pushes staged first and 0 ran the create probe.
+
+**Server-timing on the 494 acknowledged burst pushes** (ms, p50 / p99; m3fr11 in brackets):
+
+| Stage | p50 / p99 |
+|---|---|
+| auth | 1,147 / 5,747 (635 / 766) |
+| resolve | 1,256 / 3,546 (1,335 / 1,693) |
+| install | 389 / 694 |
+| gate | 0 / 17,517 (0 / 878) |
+| context | 1,841 / 20,719 (374 / 1,208) |
+| validate | 596 / 1,281 (802 / **15,759**) |
+| commit | 2,683 / 4,027 (3,481 / 8,384) |
+| stage | 626 / 1,028 (n 261) |
+| total | 11,527 / 25,735 (8,427 / 18,968) |
+
+The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22 burst pushes finished within 5 s even at the server.
+
+**The per-isolate push log** (1,093 pushes from the burst on, 16:10:55 to 16:13:45Z, all status 200; `lm1-rows-m3f-data/pushlog-m3fr12-b0-32.json`). The edge logs the line as structured fields, so the query filters on the `isolate` key, not on the message text.
+- **Isolates:** 124, with 4 pushes each at p50 and 42 at most.
+- **`open`:** p50 2, p90 10, max 24.
+- **By `open`** (edge total p50 / p99, context p50, auth p50, in ms):
+
+| `open` | n | total | context p50 | auth p50 |
+|---|---|---|---|---|
+| 1 | 474 | 2,763 / 17,553 | 0 | 92 |
+| 2 | 190 | 3,908 / 25,954 | 501 | 136 |
+| 3 | 74 | 5,925 / 74,932 | 593 | 446 |
+| 4 to 7 | 190 | 10,672 / 25,318 | 5,976 | 1,042 |
+| 8 or more | 165 | 13,258 / 25,735 | 6,579 | 2,729 |
+
+- **Reading** [measured, no churn this time]: per-isolate load now tracks the time. A push alone on its isolate takes 2.8 s at p50; one sharing it with four or more takes 10.7 to 13.3 s, and the growth is in `context` and `auth`, the edge's own reads before the leader. m3fr8's inference that the gaps between a push's reads are its isolate's event loop is **supported** on this non-churning row (m3fr9's churning row did not support it).
+- **Stage first:** 241 stage-first pushes in the log; 237 came after their isolate had logged a staged push and 4 before. The per-isolate stage-first inference holds.
+
+**Verdict:** the receipt rule and the pool send-back did what they were built for: no `/suspect`, and validate's 15.8 s tail is gone. The within-5 s line is no closer, because the time moved to `context` and `gate` on isolates holding many pushes at once.
+
+### B0-31 (repo 65582, rehomed on site 2, warm in 2.2 s, run `mwkwap5z`): fail on the buckets-up line
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Commit p99 at most 1 s with buckets up | leader **2,673 ms** (n 5,345, p50 790) | Bound 1.1 s: **short by 1,573 ms** |
+| Placement failing: Human and MergeQueue p99 at most 3 s, 0 refused | leader commit p99 1,390 ms (n 4,237); `push:human@fail` 86 ok, 1 `stale:race`, 0 refused; `merge:only@fail` 23 × 200, 8 × 409, 0 × 503 | Pass |
+| Agent pushes over INLINE_MAX_HOT refused at once in `ng` | `push:agent@fail` 1,252 of 1,252 `full`, p50 1.1 s | Pass |
+
+**read-ahead's flip** (`splitByHalf.up`, ms, p50 / p99; m3fr11 in brackets):
+
+| | m3fr12 | m3fr11 |
+|---|---|---|
+| cycle (append to append) | **246 / 562** (n 1,114) | 413 per entry (726 entries in 300 s) |
+| held at each append | 1 / 2 | (not recorded) |
+| round | 230 / 360 | 198 / 373 |
+| deps:all | 373 / 800 | 368 / 685 |
+| queue:slot | 636 / 2,486 | 531 / 1,701 |
+| queue:post | 0 / 297 | |
+| entries in the up half | 1,132 (3,888 commands, 3.4 each) | 726 (7.2 each) |
+
+- **The flip does not hold.** The cycle is about one round plus decide (246 against a 230 ms round), not one read plus decide (373 + 45). `read-ahead` did what it was built for [measured].
+- **`held` reads 1 at p50, not 2.** The count is taken at each append, after the front batch has left the held queue, so 1 there means two batches were in the pipeline (one in flight, one held). It reached 2 at p99. The planned "held p50 2" was the wrong reading of this instrument.
+- **The commit tail got worse anyway.** p99 rose from 1,439 to 2,673 ms while p50 stayed about 790 ms. `queue:slot` p99 rose from 1.7 to 2.5 s, and the shorter cycle carries half the commands per entry.
+- **Where the tail sits** [inference, from the per-second admission trace, `tests/fanout/raw/admit-m3fr12-b0-31.jsonl`]: at the load's start (16:21:30Z) the leader held 72 queued commands, 66 of them agent. At 3.4 commands per 246 ms entry that is about 5 s to drain. After that the queue stayed at 2 to 14. The p99 falls within the first 20 s's backlog, about 1% of the half's 5,345 commits. Not checked: the commit times by second, which a1 does not keep per sample.
+- `push:agent@up` was 1,208 of 1,249 ok, 5 `full`, and **36 × 503 "no shard could check the pack (site N's shard: Durable Object is overloaded)"**, p50 4.4 s, p99 10.5 s.
+- The leader held on site 2 at term 3 before and after; the learners caught up 8 of 8 in 9.7 s.
+
+**Verdict:** B0-31 fails on the buckets-up line alone. read-ahead shortened the cycle as designed, but the p99 is set by the opening backlog, not the cycle.
+
+**Close-out:**
+- SWEEP2 OK at 16:34:22Z, and the sweep at 16:55Z found no shard container running.
+- Both groups retired: 23 of 23 members "not joined" (`lm1-rows-m3f-data/idle-retire-m3fr12.log`).
+- Purge: 10,587 objects deleted in the first pass, which left 88 in site c's bucket for 65582. A second pass deleted 504 more (objects were still landing after the first listing), and a third found 0 in every bucket for both networks.
+- graft-m3f was handed to B0-02 as free at 16:56Z; B0-02 ran B0-29 on graft-m2b instead and does not hold graft-m3f.
+- Idle reading 16:56 to 17:26Z: pending.
 
 ## Rows m3fr10 and m3fr11 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, run stop $10 on graft-m3f, account stop $170)
 

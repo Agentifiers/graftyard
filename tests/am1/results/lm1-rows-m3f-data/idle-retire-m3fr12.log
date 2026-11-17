@@ -1,0 +1,27 @@
+2026-11-17T16:45:29.919Z repo:65582#2#l2 site 2 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:29.930Z repo:65582#1#f2 site 2 before: follower t3 c2365; /retire: null
+2026-11-17T16:45:29.931Z repo:65582#2#l5 site 2 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:30.084Z repo:65582#2#l6 site 0 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:30.092Z repo:65582#2#l3 site 0 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:30.251Z repo:65582#2#l0 site 0 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:30.539Z repo:65582#1#f0 site 0 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:30.936Z repo:65582#1#f1 site 1 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:31.036Z repo:65582#2#l1 site 1 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:31.149Z repo:65581#1#f0 site 0 before: follower t2 c596; /retire: null
+2026-11-17T16:45:31.221Z repo:65581#1#f2 site 2 before: follower t2 c594; /retire: null
+2026-11-17T16:45:31.427Z repo:65582#2#l7 site 0 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:31.433Z repo:65581#2#f1 site 1 before: follower t2 c594; /retire: null
+2026-11-17T16:45:31.699Z repo:65582#2#l4 site 1 before: follower t3 c2364; /retire: null
+2026-11-17T16:45:31.925Z repo:65581#2#l6 site 0 before: follower t1 c0; /retire: null
+2026-11-17T16:45:32.008Z repo:65581#1#f1 site 1 before: follower t2 c3; /retire: null
+2026-11-17T16:45:32.026Z repo:65581#2#l1 site 1 before: follower t1 c0; /retire: null
+2026-11-17T16:45:32.043Z repo:65581#2#l5 site 2 before: follower t1 c0; /retire: null
+2026-11-17T16:45:32.105Z repo:65581#2#l3 site 0 before: follower t1 c0; /retire: null
+2026-11-17T16:45:32.137Z repo:65581#2#l2 site 2 before: follower t1 c0; /retire: null
+2026-11-17T16:45:32.477Z repo:65581#2#l0 site 0 before: follower t1 c0; /retire: null
+2026-11-17T16:45:33.012Z repo:65581#2#l4 site 1 before: follower t1 c0; /retire: null
+2026-11-17T16:45:33.280Z repo:65581#2#l7 site 0 before: follower t1 c0; /retire: null
+2026-11-17T16:45:49.619Z retired 23/23 not joined
+2026-11-17T16:48:18.479Z purge: 65582 purged: a 2466 -> 0, b 1810 -> 0, c 2058 -> 88
+2026-11-17T16:48:18.480Z purge: 65581 purged: a 1428 -> 0, b 1430 -> 0, c 1395 -> 0
+2026-11-17T16:48:18.480Z purge: {"dry": false, "purged": 2, "objects": 10587, "refused": []}
