@@ -808,6 +808,26 @@ pub fn validate_on(derived: bool, running: bool, cursor: bool) -> ValidateOn {
     if derived || !running || !cursor { ValidateOn::CaughtUp } else { ValidateOn::Disk }
 }
 
+/// What a shard does with a push that needs a catch-up first: one it does not validate on the disk as it stands
+/// (`validate_on`), or one whose base or ref the container found missing there (`crate::host::Validated::MissingBase`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnCatchUp {
+    /// Wait for a catch-up that started after the push arrived, then check it (again).
+    Wait,
+    /// Answer 409 at once: the network's first shard, which forwarded the push, validates it itself.
+    Back,
+}
+
+/// A pool shard (`pool`, a push the network's first shard forwarded) never waits for a catch-up: it sends the push
+/// back. The first shard, or a pool shard asked directly, waits. A pool shard's catch-up runs behind the first
+/// shard's, both ingesting the burst's own packs: on B0-32 m3fr11 two pool shards held 10 burst pushes 15 s for the
+/// catch-up after the running one (each ingesting 37 to 495 packs, 4.4 to 21 s), answered `warming`, and the first
+/// shard then validated each in 131 to 244 ms. Those 10 were the burst's whole validate tail: p99 15.8 s, against
+/// 1.3 s for the rest (`tests/am1/results/lm1-rows-m3f.md`, "m3fr11 after the run").
+pub fn on_catch_up(pool: bool) -> OnCatchUp {
+    if pool { OnCatchUp::Back } else { OnCatchUp::Wait }
+}
+
 /// How often a leading member catches up every Full site's first shard of its network while it applies entries
 /// [guess]. A shard that serves nothing falls behind by every push the home validated: at j9g's home-shard kill, site b's
 /// was 1,100 entries behind and site c's 1,900, so each push's fallback catch-up outlasted the edge's waits (15 s, then

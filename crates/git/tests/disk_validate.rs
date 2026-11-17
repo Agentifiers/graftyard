@@ -9,7 +9,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use graftyard_git::{CatchUpStep, CatchUps, ValidateOn, validate_on};
+use graftyard_git::{CatchUpStep, CatchUps, OnCatchUp, ValidateOn, on_catch_up, validate_on};
 
 const RUN0: u64 = 412;
 const PER_PACK: u64 = 37;
@@ -227,6 +227,15 @@ fn only_a_caught_up_running_container_validates_on_its_disk() {
     assert_eq!(validate_on(true, true, true), ValidateOn::CaughtUp);
     assert_eq!(validate_on(false, false, true), ValidateOn::CaughtUp);
     assert_eq!(validate_on(false, true, false), ValidateOn::CaughtUp);
+}
+
+/// A push the network's first shard forwarded to a pool shard never waits there for a catch-up: it comes back and the
+/// first shard validates it. B0-32 m3fr11's 10 slowest burst validates each waited 15 s on a pool shard's catch-up
+/// and then took 131 to 244 ms on the first shard. The first shard, and a pool shard asked with no forward, still wait.
+#[test]
+fn a_pool_shard_sends_a_push_that_needs_a_catch_up_back() {
+    assert_eq!(on_catch_up(true), OnCatchUp::Back);
+    assert_eq!(on_catch_up(false), OnCatchUp::Wait);
 }
 
 /// A caller's catch-up is the first to start after it: one running when it arrives may have read the head before
