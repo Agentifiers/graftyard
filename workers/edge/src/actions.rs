@@ -145,7 +145,11 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
             // until the broker resends it or its lease returns it to the queue (SHARED, "Who decrypts"; F79).
             let (repository, secrets, variables) = match acquire_config(&Acquire { c, chain }, &b).await {
                 Ok(x) => x,
-                Err(e) => {
+                Err(Refused::Gone(e)) => {
+                    console_error!("acquirejob {chain}: {e}");
+                    return service_error(404);
+                }
+                Err(Refused::Failed(e)) => {
                     console_error!("acquirejob {chain}: {e}");
                     return service_error(503);
                 }
@@ -181,8 +185,9 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
 #[allow(async_fn_in_trait)]
 trait AcquireReads {
     type Repo;
-    async fn job(&self, job: JobId) -> std::result::Result<JobRow, String>;
-    async fn run(&self, run: RunId) -> std::result::Result<WorkflowRun, String>;
+    /// `None` when the shard holds no such job, or no such run.
+    async fn job(&self, job: JobId) -> std::result::Result<Option<JobRow>, String>;
+    async fn run(&self, run: RunId) -> std::result::Result<Option<WorkflowRun>, String>;
     async fn repo(&self, run: &WorkflowRun) -> std::result::Result<Self::Repo, String>;
     async fn named(&self, repo: Self::Repo) -> std::result::Result<(String, Self::Repo, AuthzFold), String>;
     async fn config(
@@ -194,16 +199,31 @@ trait AcquireReads {
     ) -> std::result::Result<(Pairs, Pairs), String>;
 }
 
-/// The job's `github.repository` (`o/r`), secrets, and variables, or the read that failed. Never an empty name: a
-/// job that ran without one failed at "Prepare workflow directory" (F79, run 1966284).
-async fn acquire_config<R: AcquireReads>(r: &R, b: &Value) -> std::result::Result<(String, Pairs, Pairs), String> {
-    let id = b["jobMessageId"].as_str().ok_or("no jobMessageId")?;
-    let job = runsvc::job_of_guid(id).or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j)).ok_or("no job")?;
-    let row = r.job(job).await.map_err(|e| format!("job {}: {e}", job.0.0))?;
-    let run = r.run(row.run).await.map_err(|e| format!("run {}: {e}", row.run.0.0))?;
-    let repo = r.repo(&run).await.map_err(|e| format!("repository {}: owner: {e}", run.repo.0.0))?;
-    let (name, repo, authz) = r.named(repo).await.map_err(|e| format!("repository {}: {e}", run.repo.0.0))?;
-    let (secrets, variables) = r.config(&run, &row, &repo, &authz).await.map_err(|e| format!("secrets: {e}"))?;
+/// Why an acquire is not sent to the shard: the job or its run is not there (404, which the runner drops, as the
+/// shard answers it), or a read failed (503, which the runner retries), naming the read.
+#[derive(Debug, PartialEq, Eq)]
+enum Refused {
+    Gone(String),
+    Failed(String),
+}
+
+/// The job's `github.repository` (`o/r`), secrets, and variables, or why not. Never an empty name: a job that ran
+/// without one failed at "Prepare workflow directory" (F79, run 1966284).
+async fn acquire_config<R: AcquireReads>(r: &R, b: &Value) -> std::result::Result<(String, Pairs, Pairs), Refused> {
+    let gone = |e: String| Refused::Gone(e);
+    let failed = |e: String| Refused::Failed(e);
+    let id = b["jobMessageId"].as_str().ok_or_else(|| gone("no jobMessageId".into()))?;
+    let job = runsvc::job_of_guid(id)
+        .or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j))
+        .ok_or_else(|| gone("no job".into()))?;
+    let row = r.job(job).await.map_err(|e| failed(format!("job {}: {e}", job.0.0)))?;
+    let row = row.ok_or_else(|| gone(format!("job {}: no such job", job.0.0)))?;
+    let run = r.run(row.run).await.map_err(|e| failed(format!("run {}: {e}", row.run.0.0)))?;
+    let run = run.ok_or_else(|| gone(format!("run {}: no such run", row.run.0.0)))?;
+    let repo = r.repo(&run).await.map_err(|e| failed(format!("repository {}: owner: {e}", run.repo.0.0)))?;
+    let (name, repo, authz) = r.named(repo).await.map_err(|e| failed(format!("repository {}: {e}", run.repo.0.0)))?;
+    let (secrets, variables) =
+        r.config(&run, &row, &repo, &authz).await.map_err(|e| failed(format!("secrets: {e}")))?;
     Ok((name, secrets, variables))
 }
 
@@ -214,15 +234,13 @@ struct Acquire<'a, 'b> {
 
 impl AcquireReads for Acquire<'_, '_> {
     type Repo = crate::Repo;
-    async fn job(&self, job: JobId) -> std::result::Result<JobRow, String> {
+    async fn job(&self, job: JobId) -> std::result::Result<Option<JobRow>, String> {
         let v = shard_read(self.c, self.chain, json!({ "job": job.0.0 })).await?;
-        serde_json::from_value::<Option<JobRow>>(v).map_err(|e| e.to_string())?.ok_or_else(|| "no such job".into())
+        serde_json::from_value(v).map_err(|e| e.to_string())
     }
-    async fn run(&self, run: RunId) -> std::result::Result<WorkflowRun, String> {
+    async fn run(&self, run: RunId) -> std::result::Result<Option<WorkflowRun>, String> {
         let v = shard_read(self.c, self.chain, json!({ "run": run.0.0 })).await?;
-        serde_json::from_value::<Option<WorkflowRun>>(v["run"]["run"].clone())
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "no such run".into())
+        serde_json::from_value(v["run"]["run"].clone()).map_err(|e| e.to_string())
     }
     async fn repo(&self, run: &WorkflowRun) -> std::result::Result<crate::Repo, String> {
         crate::repo_by_id(self.c, run.repo).await
@@ -837,11 +855,12 @@ mod tests {
     use graftyard_types::{AccountId, ChainId, DbId, Index, RepoId, Timestamp};
     use serde_json::json;
 
-    use super::{AcquireReads, JobId, JobRow, Pairs, RunId, WorkflowRun, acquire_config, runsvc};
+    use super::{AcquireReads, JobId, JobRow, Pairs, Refused, RunId, WorkflowRun, acquire_config, runsvc};
 
-    /// Which read fails, if any; every read the acquire made, in order.
+    /// Which read fails, if any; whether the shard holds the job; every read the acquire made, in order.
     struct Fake {
         fail: Option<&'static str>,
+        gone: bool,
         made: Cell<u8>,
     }
 
@@ -856,8 +875,11 @@ mod tests {
 
     impl AcquireReads for Fake {
         type Repo = RepoId;
-        async fn job(&self, job: JobId) -> Result<JobRow, String> {
+        async fn job(&self, job: JobId) -> Result<Option<JobRow>, String> {
             self.read("job")?;
+            if self.gone {
+                return Ok(None);
+            }
             let spec = JobSpec {
                 id: job,
                 name: "build".into(),
@@ -868,11 +890,11 @@ mod tests {
                 steps: "[]".into(),
             };
             let state = JobState::Assigned { runner: graftyard_actions::RunnerId(DbId(9)), lease_until: Timestamp(1) };
-            Ok(JobRow { run: RunId(DbId(7)), spec, state, version: 1 })
+            Ok(Some(JobRow { run: RunId(DbId(7)), spec, state, version: 1 }))
         }
-        async fn run(&self, run: RunId) -> Result<WorkflowRun, String> {
+        async fn run(&self, run: RunId) -> Result<Option<WorkflowRun>, String> {
             self.read("run")?;
-            Ok(WorkflowRun {
+            Ok(Some(WorkflowRun {
                 id: run,
                 repo: REPO,
                 workflow: ".github/workflows/bf60.yml".into(),
@@ -883,7 +905,7 @@ mod tests {
                 attempt: 1,
                 concurrency: None,
                 fork: false,
-            })
+            }))
         }
         async fn repo(&self, run: &WorkflowRun) -> Result<RepoId, String> {
             self.read("owner")?;
@@ -909,30 +931,36 @@ mod tests {
         }
     }
 
-    fn acquire(fail: Option<&'static str>) -> (Result<(String, Pairs, Pairs), String>, u8) {
+    fn acquire(fail: Option<&'static str>, gone: bool) -> (Result<(String, Pairs, Pairs), Refused>, u8) {
         use futures_util::FutureExt;
-        let f = Fake { fail, made: Cell::new(0) };
+        let f = Fake { fail, gone, made: Cell::new(0) };
         let b = json!({ "jobMessageId": runsvc::owner_job_guid(5, JobId(DbId(1966290))) });
         let out = acquire_config(&f, &b).now_or_never().expect("ready");
         (out, f.made.get())
     }
 
     /// F79 (run 1966284): a failed read before `acquirejob` commits gave the runner a job message with an empty
-    /// `github.repository` and no secrets, and the runner failed the job. Each read that fails now fails the acquire,
-    /// naming the read, and the reads after it are not made; only when all answer is there a name and the secrets.
+    /// `github.repository` and no secrets, and the runner failed the job. Each read that fails now refuses the acquire
+    /// as `Failed` (503, retried), naming the read, and the reads after it are not made; only when all answer is there
+    /// a name and the secrets. A job the shard does not hold is `Gone` (404, which the runner drops), as the shard
+    /// itself answers.
     #[test]
     fn an_acquire_whose_repository_read_fails_is_refused_never_sent_without_a_name_or_secrets() {
-        let (ok, made) = acquire(None);
+        let (ok, made) = acquire(None, false);
         assert_eq!(ok, Ok(("m3org/wp4-bf60".into(), vec![("TOKEN".into(), "s".into())], vec![])));
         assert_eq!(made, 5);
         for (i, read) in ["job", "run", "owner", "authz", "secrets"].into_iter().enumerate() {
-            let (out, made) = acquire(Some(read));
-            let e = out.expect_err(read);
+            let (out, made) = acquire(Some(read), false);
+            let Err(Refused::Failed(e)) = out else { panic!("{read}: {out:?}") };
             assert!(e.contains(&format!("{read} did not answer")), "{read}: {e}");
             assert_eq!(usize::from(made), i + 1, "{read}: no read after the one that failed");
         }
+        let (out, made) = acquire(None, true);
+        assert!(matches!(out, Err(Refused::Gone(_))), "{out:?}");
+        assert_eq!(made, 1);
         use futures_util::FutureExt;
-        let none = acquire_config(&Fake { fail: None, made: Cell::new(0) }, &json!({})).now_or_never().expect("ready");
-        assert!(none.is_err(), "a request naming no job");
+        let f = Fake { fail: None, gone: false, made: Cell::new(0) };
+        let none = acquire_config(&f, &json!({})).now_or_never().expect("ready");
+        assert!(matches!(none, Err(Refused::Gone(_))), "a request naming no job");
     }
 }
