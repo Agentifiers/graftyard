@@ -1,0 +1,90 @@
+{
+ "window": [
+  "2026-11-17T15:49:00Z",
+  "2026-11-17T16:20:00Z"
+ ],
+ "first_start": "15:50:35",
+ "burst": {
+  "sandboxes": 20,
+  "spread_s": 5.0,
+  "no_instance": 1054,
+  "too_many_per_second": 18,
+  "with_rate_error": 11,
+  "placement_wait_s": {
+   "p50": 75.5,
+   "max": 155,
+   "over_30": 15,
+   "all": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    38,
+    67,
+    70,
+    71,
+    73,
+    78,
+    79,
+    85,
+    89,
+    99,
+    120,
+    121,
+    125,
+    138,
+    155
+   ]
+  }
+ },
+ "later": {
+  "sandboxes": 30,
+  "spread_s": 489.6,
+  "no_instance": 123,
+  "too_many_per_second": 0,
+  "with_rate_error": 0,
+  "placement_wait_s": {
+   "p50": 8.5,
+   "max": 27,
+   "over_30": 0,
+   "all": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+    3,
+    4,
+    6,
+    7,
+    10,
+    10,
+    10,
+    10,
+    12,
+    12,
+    12,
+    13,
+    13,
+    13,
+    16,
+    17,
+    18,
+    18,
+    27
+   ]
+  }
+ },
+ "destroyed": 2,
+ "delivery_passes_cancelled_at_30s": 0,
+ "launched": 50,
+ "launched_twice": 0,
+ "sandbox_alarm_invocations": 264
+}

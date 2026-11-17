@@ -38,16 +38,19 @@ def query(lo, hi):
     return json.load(urllib.request.urlopen(r, timeout=60))["result"]["events"]["events"]
 
 
-# The events view answers at most 100 a query, newest first: walk back through the window in slices.
-events, seen, hi, lo = [], set(), ms(b), ms(a)
-while hi > lo:
-    got = query(lo, hi)
-    new = [e for e in got if e["$metadata"]["id"] not in seen]
-    seen.update(e["$metadata"]["id"] for e in new)
-    events += new
-    if len(got) < 100 or not new:
-        break
-    hi = min(e["timestamp"] for e in got) + 1
+# The events view answers at most 100 a query, newest first, and one walk back through a busy window can end early
+# (the F80 burst: 990 of its events, 14 of 50 `launched` lines). Walk back through each 30 s slice on its own.
+events, seen = [], set()
+for lo in range(ms(a), ms(b), 30_000):
+    hi = min(lo + 30_000, ms(b))
+    while hi > lo:
+        got = query(lo, hi)
+        new = [e for e in got if e["$metadata"]["id"] not in seen]
+        seen.update(e["$metadata"]["id"] for e in new)
+        events += new
+        if len(got) < 100 or not new:
+            break
+        hi = min(e["timestamp"] for e in got) + 1
 
 addressed, errors, destroyed, alarms, cancelled, launched = {}, {}, set(), 0, 0, {}
 for e in sorted(events, key=lambda e: e["timestamp"]):

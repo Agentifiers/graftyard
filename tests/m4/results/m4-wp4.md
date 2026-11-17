@@ -8,7 +8,7 @@ Branch `m4-runners`, rebased onto main 4833094d. The choices are in `decisions/D
 
 | Row | In memory | Hosted |
 | --- | --- | --- |
-| BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | **Met at 90%**, run 1966284 on site day 49 and edge day 23 (main `0de37416`, F78's fix): 49 of 50 jobs `Success`, no runner deleted while holding a job, at most 20 at once, nothing left after 10 minutes; the one failure is F79's empty-repository acquire. Run 1966182 passed on the sweep alone; run 1966233 broke the delete invariant (F78) |
+| BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | **Pass**, run 1966335 on F80's alarm start (`graft-runners` from main `a73871ce`, a cold burst after 8 idle hours): 50 of 50 jobs `Success`, at most 20 at once, nothing left after 10 minutes, no runner deleted while holding a job, no delivery pass cut. Run 1966284 was met at 90% (49 of 50, F79); run 1966182 passed on the sweep alone; run 1966233 broke the delete invariant (F78) |
 | BM-4 | (M4-WP3's matrix with an unmodified runner) | **Pass**, run 1900546, site a down mid-run (site days 44 and 45) |
 | BF-54 | (M4-WP3's broker cap) | **Pass**, run 3 on site day 47 and edge day 21 (main `1d90863a`, F77's fix): all 512 jobs succeeded, job start p99 16.6 s after the run committed (gate 35 s), max 19.2 s, none unstarted after 60 s, 0 `RunnerSessionInvalid`, re-polls within 30 s. Runs 1 and 2 failed: a lost `Repo`-scope match waited out its lease (F76), then the acquire path (F77) |
 
@@ -351,7 +351,31 @@ Branch `f80-alarm-start` (`decisions/DECISIONS.md`, `f80-alarm-start`). A pass r
 - **The cap-slot hold, settled.** Runner 1704490 (Sandbox `55e4e998`, run 1966284) never opened a session or made an install request. It was deleted stale at 04:46:38Z, about 610 s after its Sandbox was first called, and its Sandbox was destroyed 0.3 s later. Runs 1966284 and 1966233 opened 50 sessions each for 51 and 52 registrations [measured, the edge's Workers Logs], so in each run one runner never started.
 - **Tests.** `workers/runners/tests/launch.test.mjs` (`node --test 'workers/runners/tests/*.test.mjs'`, now a CI job), 4 tests on a fake Sandbox using the burst's measured waits. Plants 60 to 67 in `tests/m4/wp4/plant.py`: 8 of 8 caught. Plant 60 is main's rule, where the pass starts the process itself; under it the burst test's delivery passes are cut at 30 s.
 - **`launchRunner` never throws** (`f80-launch-nothrow`). The base class's `alarm()` deletes a scheduled row even when its callback throws, so the start catches every error, a storage read included, and schedules the next try. On a29a57d2 a failed storage read escaped and dropped the start. `a start whose storage read fails is tried again, not dropped with its row` fails on that code, and plant 68 restores it. 5 tests, plants 60 to 68: 9 of 9 caught. `launch.mjs` now logs `graft-runners: launched` once for each process it starts, and `sandboxstarts.py` counts these per Sandbox (`launched_twice`).
-- **Not yet hosted.** The cold-burst check (one BF-60-style burst after the class sits idle) is for the next combined slot, Nov 18 or later. It passes when no delivery pass logs a `waitUntil` cancellation, every registered runner opens a session, and no Sandbox starts two processes.
+- **Hosted cold-burst check: passed** (run 1966335, next section). It passes when no delivery pass logs a `waitUntil` cancellation, every registered runner opens a session, and no Sandbox starts two processes.
+
+## F80 cold-burst check on the alarm start (2026-11-17)
+
+The lead moved the slot from Nov 18 00:00Z to now. `graft-runners` was redeployed from main `a73871ce` at 15:48:07Z (`tests/m4/raw/wp4/runners-init.log`, exit 0; main `fec1d01d` had no change under `workers/runners` or `tests/m4/wp4` since then). Its webhook secret was new, the App's hook config was patched to match, and an unsigned POST answered 401. The image did not change, and the install was not redeployed. No Sandbox had started in the runner account since 07:45Z, so the class had been idle for 8 hours, not the 30 minutes required. Run 1966335 ran `tests/m4/wp4/bf60.mjs` with `DEMAND_EVERY_S=300` from 15:50:19Z (`tests/m4/raw/wp4/f80-burst/`). The stops were $2.50 for graft-m4a plus the runner account, the account's UTC day line ($170, raised to $280 mid-run by the operator), a hosted job failing or sitting past its lease, or any process launched twice. `watch.log` read `tests/fanout/acctcost.py` every 5 minutes; no stop fired.
+
+| | Run 1966335 (F80's fix) | Run 1966284 (before) |
+| --- | --- | --- |
+| Delivery passes cut at the 30 s `waitUntil` limit | **0** | 16 |
+| Registrations (edge `POST hosted/runners` 201) / sessions opened (`POST broker/session`) | **50 / 50** | 51 / 50 |
+| `graft-runners: launched` lines / Sandboxes / Sandboxes launched twice | **50 / 50 / 0** | (not logged) |
+| Burst of 20: placement wait p50 / max, waits over 30 s | 75.5 / 155 s, 15 | 77.5 / 155 s, 15 |
+| Later 30: placement wait p50 / max | 8.5 / 27 s | 1 / 46 s |
+| Queue to start, p50 / p90 / max | **186 / 491 / 603 s** | 216 / 525 / 625 s |
+| Last job after dispatch | 1,093 s | 1,118 s |
+| Registrations / Sandboxes at once, max | 20 / 20 | 20 / 19 |
+| Every job `Success` | **50 of 50** | 49 of 50 (F79) |
+| 10 minutes after the last job | 0 running Sandboxes (293 `inactive`), no registration | 0, none |
+
+- **All three pass lines hold.** The burst waited on a cold pool for as long as before (15 of 20 Sandboxes over 30 s). But the wait now runs in each Sandbox's alarm, not in the delivery pass, and no pass was cut. Every runner that registered opened a session, and each Sandbox launched exactly one process. The 38 delivery passes that started runners started all 50; the 6 sweeps started 0 (`prompted.jsonl`). The launch lines show the alarm path at work: one Sandbox retried every 10 s after "no container instance" from 15:53:12Z, then launched.
+- **BF-60 passes outright** on this run: 50 of 50 jobs succeeded, at most 20 at once, and nothing was left after 10 minutes. No runner was deleted while it held a job. The 3 stale deletes (runner 1704542 twice, 1704543 once, at 15:52:04Z to 15:52:13Z) each came after that runner's `completejob` and session close (edge Workers Logs).
+- **Recurring findings.** These are Sandbox SDK log lines from the runner account's Workers Logs, 15:49Z to 16:20Z: 1,177 "no container instance" (run 1966284: about 1,066), 54 "too many containers per second" (26), and 1 "Container failed to become ready" (1). They are retry ticks while placement waits ("Sandbox placement errors" above), and none failed a start. There were no demand 503 lines and no `access_tokens` error lines.
+- **`sandboxstarts.py` undercounted busy windows.** One walk back through a window's events ended early after 990 events, and the walk found 14 of the 50 `launched` lines. The script now walks each 30 s slice on its own, and the counts above come from that version. Run 1966284's counts in "Sandbox placement errors" came from the old walk, so they may be low [inference].
+- **Teardown.** The driver stopped on its own, and services `f80bf60` and `f80watch` were stopped. The runner account listed 0 running Sandboxes (293 `inactive`). m4a's one running shard, `git#0#net:65562` (site a), was stopped at 16:21:58Z through GitShard `/teardown` (200 `torn_down`) from a scratch Worker `graft-m4a-shardkill`, which was deleted at 16:21:59Z. At 16:22:37Z the Containers API listed 0 running on sites a, b, and c. There was no `/retire`: m4a's sites are product builds.
+- **Cost** (`tests/fanout/acctcost.py`, by `PREFIX`; m3fr12 ran on graft-m3f at the same time). Before, from 00:00Z to 15:47:25Z: the account $111.01 for the UTC day, graft-m4a $1.39, and the runner account $0.35. After, from 15:47:25Z to 16:28:46Z: graft-m4a $0.25 and the runner account $0.34, so **$0.59** against the $1.00 budget and the $2.50 stop. The account was at $129.27 for the day, under the $280 line. Idle after the teardown, from 16:22:37Z to 16:52:49Z: graft-m4a $0.03 (about $0.06 an hour) and the runner account $0.00; the account was at $132.29 for the day at 16:52:49Z.
 
 ## Spend against the $25 stop
 

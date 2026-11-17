@@ -13,3 +13,8 @@
   container application graft-runners-sandboxstd3: exists
   container application graft-runners-sandboxstd4: exists
 exit 0
+== F80 slot redeploy 2026-11-17T15:48:07Z from a73871ce
+  HostedRunnersAppKey: written to Secrets Store graft-runners (2b564b906c40496ea9544799904bc93b)
+  graft-runners: deployed, sweep */5 * * * *, webhook at https://graft-runners.<runner-workers-subdomain>.workers.dev
+  container application graft-runners-sandboxstd3: exists
+  container application graft-runners-sandboxstd4: exists
