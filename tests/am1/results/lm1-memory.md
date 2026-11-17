@@ -4363,3 +4363,34 @@ are gone, and the waiters sit out the whole `LOOKUP_FOR`. Sent to B0-02 (lookup-
 
 **Not measured this slot.** promote-lapse: no range came due on a quiet group. The roll: 131296 has no rollable run
 (8 promoted packs or a day-old run), so no `Compacted`.
+
+**B0-33 rerun on the revert (operator, about 04:15Z): edge-only redeploy from main `0de37416`** (lookup-share
+reverted; sites stay on m42's day, the edge is not a site script). Edge `2004a578`, served at 100% (`edgever.py`,
+rev `f18eecd8`, the day branch with `0de37416` merged), same formats. A baseline row plus sweep-quiet, not a lookup
+check. Repo:131347, a1 `mwk6t1a9`, 5,000 agents, k 4, 8 learners, inbound trace on, load 04:26:53 to 04:31:53Z: fail.
+
+| B0-33 line | m42 rerun (revert) | m42 (lookup-share, void) | m41 | verdict at 90% |
+|---|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 11,859 ms (p50 2,985, n 2,875); merges 1 of 54; human pushes 7 of 200 | 2,515 ms | 14,521 ms | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 22.0 agent-class ok a second | 29.2 | 26.8 | fail |
+| Zero leader changes and `suspect` | term 2 → 19, 14 step-downs (13 `CommitErrors`, 1 `LoopLag`); first at 04:27:18Z, 25 s into load | term 2, 0 | term 2 → 20, 13 | fail |
+
+- Voter routes over the load (`Trace::Entered`): /read 368, 463, 348 a second and /suspect 157, 111, 128 a second on
+  sites 0, 1, 2 (m41 after its first change: 321, 258, 306 and 155, 149, 156). The m41 storm is back with lookup-share
+  gone, so the m42 day's calm voters were lookup-share's doing, and the edge failure was its cost.
+- Read grant on the leader p99 2,486 / 1,980 / 3,117 ms by leading site (m41 2,540 / 4,078 / 1,713); fetches per voter
+  per 20 ms max 19, p99 9, p50 1 over 3,948 windows (m41 21, 10, 1).
+- Leader split p99: queue 13.6 s, round 7.9 s, confirm 4.3 s, apply 8.5 s.
+- Agent pushes p50 33.8 s, p99 123.9 s; `503 the repository's access rows did not answer` 1,052, `created, but no member
+  leads` 912.
+- **Edge errors** (`$metadata.level` error, request lines left out; `edgeerr-*.txt`): none of the lookup-share kinds in
+  the rerun's load window, as in m41's; 27 of 30 ten-second windows were at the query's 100-event cap with request
+  lines only. In m42's lookup-share window: `tokens:N: no member answered` 636, "closure invoked recursively or after
+  being dropped" 329, "Cannot perform I/O on behalf of a different request" 219, the runtime's hung cancel 121, "failed
+  to read array buffer from request" 98, "Cannot invoke closure from previous WASM instance" 21, "Promise will never
+  complete." 20. Every count is a lower bound: the query returns at most 100 events a window. Read alone,
+  `no member answered` gave 3,098 events (2,414 for tokens:0, 684 for tokens:932, 3 for names:708).
+
+**sweep-quiet, settled.** 04:30 slot: a, b, c each `homesRead 1` (the one new network, 131347), walls 78, 42 and 40 s;
+site a swept 20 networks. `names:*` rows 499 from 17 objects in that slot, which held B0-33's load; before the day
+2,565 to 2,847 from 484 to 485. The idle reading below gives the steady state.
