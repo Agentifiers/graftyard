@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""dispatchlog.py REPO_ID FROM_ISO TO_ISO -> B0-35's site-side dispatch line from the sites' Workers Logs: every
+`actions dispatch <repo> #N <action> at <index>: <n> runs in <ms>ms, <k> asks[, superseded][, conflict|, unmerged]`
+line `ActionsTrigger` logs (`workers/site/src/actions_trigger.rs`, `decisions/DECISIONS.md`, "`pr-trigger`"), and
+its `actions trigger <repo>: ...` round errors. Prints one JSON summary: events by outcome (run, conflict, unmerged,
+no run), superseded, asks per outcome, the entry-to-run ms percentiles of events that ran, the same event logged twice
+(a round rerun), and the error lines by kind.
+
+The events view answers at most 100 lines a query, newest first, so the window is walked back in slices per site
+script ($INSTALL-site-{a,b,c}, INSTALL default graft-m4a). Account and token from the environment, the token only as a
+header."""
+import collections, json, os, re, sys, urllib.request
+from datetime import datetime
+
+acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+repo, a, b = sys.argv[1], sys.argv[2], sys.argv[3]
+P = os.environ.get("INSTALL", "graft-m4a")
+ms = lambda s: int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
+LINE = re.compile(r"actions dispatch (\d+) #(\d+) (\w+) at (\d+): (\d+) runs in (\d+)ms, (\d+) asks(.*)")
+
+
+def query(script, needle, lo, hi):
+    body = {"queryId": "q", "timeframe": {"from": lo, "to": hi}, "view": "events", "limit": 100, "parameters": {
+        "filters": [{"key": "$metadata.service", "operation": "eq", "type": "string", "value": script},
+                    {"key": "$metadata.message", "operation": "includes", "type": "string", "value": needle}]}}
+    r = urllib.request.Request(
+        f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
+        data=json.dumps(body).encode(), method="POST",
+        headers={"authorization": f"Bearer {tok}", "content-type": "application/json"})
+    return json.load(urllib.request.urlopen(r, timeout=90))["result"]["events"]["events"]
+
+
+def walk(script, needle):
+    out, seen, hi, lo = [], set(), ms(b), ms(a)
+    while hi > lo:
+        got = query(script, needle, lo, hi)
+        new = [e for e in got if e["$metadata"]["id"] not in seen]
+        for e in new:
+            seen.add(e["$metadata"]["id"])
+        out += new
+        if len(got) < 100 or not new:
+            break
+        # Lines that share the oldest millisecond are re-read on the next slice and dropped by id.
+        hi = min(e["timestamp"] for e in got) + 1
+    return out
+
+
+def pct(xs, q):
+    s = sorted(xs)
+    return s[min(len(s) - 1, int(q * len(s)))] if s else None
+
+
+events, errors = [], collections.Counter()
+for site in "abc":
+    script = f"{P}-site-{site}"
+    for e in walk(script, f"actions dispatch {repo} "):
+        m = LINE.search(e["$metadata"].get("message") or "")
+        if m:
+            events.append({"site": site, "t": e["timestamp"], "n": int(m[2]), "action": m[3], "index": int(m[4]),
+                           "runs": int(m[5]), "ms": int(m[6]), "asks": int(m[7]), "tail": m[8]})
+    for e in walk(script, f"actions trigger {repo}"):
+        msg = re.sub(r"\d{3,}", "N", e["$metadata"].get("message") or "")
+        errors[msg[:120]] += 1
+    for e in walk(script, f"actions dispatch {repo} #"):
+        msg = e["$metadata"].get("message") or ""
+        if " demand " in msg:
+            errors[re.sub(r"\d{3,}", "N", msg)[:120]] += 1
+
+# One event is (index, n, action); a rerun round logs it again.
+by = collections.defaultdict(list)
+for x in events:
+    by[(x["index"], x["n"], x["action"])].append(x)
+outcome = collections.Counter()
+asks = collections.defaultdict(collections.Counter)
+ran_ms, superseded = [], 0
+for k, xs in by.items():
+    x = max(xs, key=lambda y: y["t"])  # the last time it was logged is what stood
+    o = "conflict" if "conflict" in x["tail"] else "unmerged" if "unmerged" in x["tail"] else \
+        "run" if x["runs"] > 0 else "no run"
+    outcome[o] += 1
+    asks[o][x["asks"]] += 1
+    superseded += "superseded" in x["tail"]
+    if o == "run":
+        ran_ms.append(x["ms"])
+n = len(by)
+print(json.dumps({
+    "repo": repo, "window": [a, b], "lines": len(events), "events": n, "loggedTwice": sum(len(v) > 1 for v in by.values()),
+    "byAction": dict(collections.Counter(k[2] for k in by)), "outcome": dict(outcome),
+    "unmergedPct": round(100 * outcome["unmerged"] / n, 2) if n else None,
+    "superseded": superseded, "asks": {o: dict(sorted(c.items())) for o, c in asks.items()},
+    "entryToRunMs": {"n": len(ran_ms), "p50": pct(ran_ms, 0.5), "p99": pct(ran_ms, 0.99), "max": max(ran_ms) if ran_ms else None},
+    "errors": dict(errors.most_common(20)),
+}))
