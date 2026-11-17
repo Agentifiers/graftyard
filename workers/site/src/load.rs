@@ -51,6 +51,8 @@ const BATCH_ROWS: u64 = 20_000;
 /// A batch that began this many times without its transaction committing is abandoned: its isolate died under it,
 /// and resuming it again would reset every member in the isolate again (F47).
 const BATCH_TRIES: u32 = 3;
+/// How long an install waits before it tries a failed batch again (`retry_batch`) [guess: past a transient R2 error].
+const RETRY_MS: i64 = 5_000;
 const BUSY_MS: i64 = 20;
 /// The largest snapshot object an audit restores into scratch tables [guess]. A larger tier is reported, not refolded:
 /// its scratch copy would double the member's storage (the BF-20 metadata tier's snapshot is 2.4 GB, of a 4 GB tier).
@@ -261,7 +263,7 @@ pub(crate) async fn read_whole(
 
 // ---- jobs ----
 
-/// The leader sent `InstallSnapshot`: start loading it, or keep loading the same one.
+/// The leader sent `InstallSnapshot`: start loading it, keep loading the running job (`next_job`), or ignore a late one.
 /// The leader re-sends it every CALL_DEADLINE while the load runs; a repeat of the running one only wakes it. The
 /// job answers the round it started for: if the leader has moved on, its next `InstallSnapshot` finds the member
 /// holding `through` and is answered at once (`Member::on_install`).
@@ -278,15 +280,23 @@ pub fn want(h: &Rc<Host<Repo>>, w: InstallWanted) {
         sql.exec("INSERT OR REPLACE INTO load_want (id, row) VALUES (1, ?)", vec![row.into()])?;
         Ok(())
     };
-    let start = || -> Result<()> {
+    // Whether the job takes this request's round (`newest`): not when it is a late delivery the job ignores.
+    let start = || -> Result<bool> {
         let chain = h.core.borrow().as_ref().map(|c| c.join.chain).ok_or_else(|| err("not joined"))?;
-        let (job, restarted) = next_job(running.clone(), install_job(chain, &w)?);
-        if restarted && running.as_ref().is_some_and(Job::install) {
-            note(h, format!("install restarted: a source at {} names other snapshots", w.install.source.through.0));
-        }
-        save_job(h, &job)
+        let job = match next_job(running.clone(), install_job(chain, &w)?) {
+            Next::Ignore => return Ok(false),
+            Next::Extend(j) => j,
+            Next::Restart(j, why) => {
+                if running.as_ref().is_some_and(Job::install) {
+                    note(h, format!("install restarted: a source at {}: {why}", w.install.source.through.0));
+                }
+                j
+            }
+        };
+        save_job(h, &job)?;
+        Ok(true)
     };
-    let r = if same { newest() } else { start().and_then(|()| newest()) };
+    let r = if same { newest() } else { start().and_then(|take| if take { newest() } else { Ok(()) }) };
     match r {
         Ok(()) => h.arm_in(BUSY_MS),
         Err(e) => note(h, format!("install not started: {e}")),
@@ -329,26 +339,54 @@ fn install_job(chain: ChainId, w: &InstallWanted) -> Result<Job> {
     ))
 }
 
-/// The job a new install source runs: `running` carried on to `new`'s `through` when both load the same snapshot keys
-/// and `new`'s archives continue `running`'s, else `new` from the start. Whether it restarted. Each leader truncation
-/// names a new source with a later `through`; a restart on each one dropped the scratch tables, and on B0-30's rerun
-/// site c's install restarted five times in 14 minutes, so under load an install never finished
-/// (`tests/am1/results/b030-split.md`, "The install restarted on every archive run").
-fn next_job(running: Option<Job>, new: Job) -> (Job, bool) {
-    let Some(mut old) = running.filter(|j| j.install() && j.chain == new.chain) else { return (new, true) };
-    let keys = |j: &Job| [j.tiers[0].key.clone(), j.tiers[1].key.clone()];
-    if keys(&old) != keys(&new) || new.through < old.through {
-        return (new, true);
+/// What a new install source does to the running job (`next_job`).
+enum Next {
+    /// A late delivery from the job's own leader: the job, and the round it answers, stay as they are.
+    Ignore,
+    /// The running job, carried on to the new source's `through` and round.
+    Extend(Job),
+    /// The new source's job from the start, and why.
+    Restart(Job, &'static str),
+}
+
+/// The job a new install source runs (`design/DESIGN.md`, Shape, `CHILD_GROUP_AT`, Installs). A running install keeps
+/// the snapshots it started from: its snapshots plus the archives after them reach any later `through` with the same
+/// fold a newer snapshot would give. On B0-30's short runs a restart at each new leader snapshot meant an install
+/// under load never finished (G21, `tests/am1/results/b030-split.md`, "Phases (b030r5)").
+fn next_job(running: Option<Job>, new: Job) -> Next {
+    let Some(mut old) = running.filter(|j| j.install() && j.chain == new.chain) else {
+        return Next::Restart(new, "no install runs");
+    };
+    if new.through < old.through {
+        // The same leader in the same term and boot sends sources in `through` order, so an earlier one was queued
+        // behind the job's (b030r5: 39 such at 06:54:48Z). Another leader's earlier `through` is a round the job
+        // cannot answer.
+        let round = |j: &Job| match &j.kind {
+            Kind::Install { from, install } => Some((*from, install.term, install.boot)),
+            Kind::Audit { .. } => None,
+        };
+        return if round(&old) == round(&new) {
+            Next::Ignore
+        } else {
+            Next::Restart(new, "another leader names an earlier through")
+        };
     }
     let end = old.archives.last().map_or(old.through, |a| a.to);
     let more: Vec<Arch> = new.archives.iter().filter(|a| a.to > end).cloned().collect();
     if more.first().is_some_and(|a| a.from != end + 1) || (more.is_empty() && new.through > end) {
-        return (new, true);
+        return Next::Restart(new, "its archives do not continue the job's");
     }
     old.archives.extend(more);
     old.through = new.through;
     old.kind = new.kind;
-    (old, false)
+    Next::Extend(old)
+}
+
+/// Whether a failed batch of a job tried `tries` times, this one counted, is tried again: an install's, until
+/// `BATCH_TRIES`. A failed read of R2 threw away a 9-minute install on b030r5 (07:57:38Z, "Network connection lost").
+/// An audit ends at its first failure, as it did before.
+fn retry_batch(install: bool, tries: u32) -> bool {
+    install && tries < BATCH_TRIES
 }
 
 /// Whether an install drops the member's own metadata tables before it loads (`design/DESIGN.md`, Shape,
@@ -485,6 +523,11 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         Ok(true) if loaded => h.arm_in(raft::CALL_DEADLINE.as_millis() as i64),
         Ok(true) => h.arm_in(BUSY_MS),
         Ok(false) => {}
+        Err(e) if retry_batch(install, marked.tries) => {
+            h.full(&e.to_string());
+            note(h, format!("install batch failed ({} of {BATCH_TRIES}), retrying: {e}", marked.tries));
+            h.arm_in(RETRY_MS);
+        }
         Err(e) => {
             h.full(&e.to_string());
             note(h, format!("{} failed: {e}", if install { "install" } else { "fold audit" }));
@@ -1056,7 +1099,7 @@ pub fn requests_json(h: &Rc<Host<Repo>>, at: u64) -> Result<Value> {
 mod tests {
     use graftyard_types::{ChainId, DbId, RepoId, SiteId};
 
-    use super::{Arch, Kind, TierLoad, next_job, tier_load};
+    use super::{Arch, Kind, Next, TierLoad, next_job, tier_load};
 
     const CHAIN: ChainId = ChainId::Repo(RepoId(DbId(1048590)));
 
@@ -1138,72 +1181,115 @@ mod tests {
         snap(graftyard_types::Tier::Metadata, 201_500, 3)
     }
 
-    /// (i-2): a running install whose newer source names the same snapshot keys and a later `through` keeps its
-    /// progress (scratch tables, cursor, offsets) and gains only the archives past its own; B0-30's site c restarted
-    /// on each of five truncations in 14 minutes.
+    /// The job a source from leader `from` in `term` builds.
+    fn from(mut j: super::Job, from: u8, term: u64) -> super::Job {
+        if let Kind::Install { from: f, install } = &mut j.kind {
+            *f = SiteId(from);
+            install.term = graftyard_raft::Term(term);
+        }
+        j
+    }
+
+    fn extended(n: Next) -> super::Job {
+        match n {
+            Next::Extend(j) => j,
+            Next::Ignore => panic!("ignored"),
+            Next::Restart(_, why) => panic!("restarted: {why}"),
+        }
+    }
+
+    fn restarted(n: Next) -> (super::Job, &'static str) {
+        match n {
+            Next::Restart(j, why) => (j, why),
+            _ => panic!("not restarted"),
+        }
+    }
+
+    /// G21: b030r5's site c restarted at each new leader snapshot and never finished under load. A newer source that
+    /// names other core and metadata snapshots, from another leader, extends the running job: its scratch tables,
+    /// offsets and pinned snapshot keys stay, it gains only the archives past its own, and it answers the newer round.
     #[test]
-    fn a_later_source_with_the_same_snapshots_extends_the_running_install() {
+    fn a_newer_snapshot_mid_install_extends_the_pinned_job() {
         let mut running = job(&core(), Some(&meta()), 200_121, vec![arch(159_388, 199_900), arch(199_901, 200_121)]);
         running.prepared = true;
         running.tiers[1].offset = 2_740_000_000;
         running.batches = 1_517;
-        let newer = job(
-            &core(),
-            Some(&meta()),
-            200_984,
-            vec![arch(199_901, 200_121), arch(200_122, 200_519), arch(200_520, 200_984)],
+        let newer = from(
+            job(
+                &snap(graftyard_types::Tier::Core, 200_900, 4),
+                Some(&meta2()),
+                200_984,
+                vec![arch(199_901, 200_121), arch(200_122, 200_519), arch(200_520, 200_984)],
+            ),
+            1,
+            2,
         );
-        let (j, restarted) = next_job(Some(running), newer);
-        assert!(!restarted);
+        let j = extended(next_job(Some(running), newer));
         assert!(j.prepared, "the scratch tables stay");
         assert_eq!((j.tiers[1].offset, j.batches), (2_740_000_000, 1_517), "the load's progress stays");
+        assert_eq!([j.tiers[0].key.clone(), j.tiers[1].key.clone()], [Some(core()), Some(meta())], "pinned");
         assert_eq!(j.through, 200_984);
         let ranges: Vec<_> = j.archives.iter().map(|a| (a.from, a.to)).collect();
         assert_eq!(ranges, [(159_388, 199_900), (199_901, 200_121), (200_122, 200_519), (200_520, 200_984)]);
         match &j.kind {
-            Kind::Install { install, .. } => {
-                assert_eq!(install.source.through.0, 200_984, "it answers the newer round")
+            Kind::Install { from, install } => {
+                assert_eq!((from.0, install.term.0, install.source.through.0), (1, 2, 200_984), "the newer round")
             }
             Kind::Audit { .. } => panic!(),
         }
     }
 
-    /// A source naming other snapshot keys (the slimmed tier's new snapshot after (i-1), or a newer core snapshot)
-    /// restarts; so does one whose archives leave a gap after the running job's, or one with an earlier `through`.
+    /// G21: b030r5's 39 restarts at 06:54:48Z were deliveries from the job's own leader queued behind it, `through`
+    /// 5,607 then 5,623 then 5,603. An earlier `through` from the same leader, term and boot changes nothing.
     #[test]
-    fn a_source_with_other_snapshots_or_a_gap_restarts_the_install() {
+    fn a_late_source_from_the_same_leader_changes_nothing() {
+        let running = || {
+            let mut j = job(&core(), Some(&meta()), 200_121, vec![arch(159_388, 200_121)]);
+            j.prepared = true;
+            j
+        };
+        let late = job(&core(), Some(&meta()), 200_000, vec![arch(159_388, 200_000)]);
+        assert!(matches!(next_job(Some(running()), late), Next::Ignore));
+        let older_snapshots = job(&snap(graftyard_types::Tier::Core, 150_000, 5), None, 199_999, vec![]);
+        assert!(matches!(next_job(Some(running()), older_snapshots), Next::Ignore), "whatever it names");
+    }
+
+    /// The restarts left: no install runs, the newer archives leave a gap after the job's or none reaches `through`, or
+    /// another leader or term names an earlier `through`, a round the job cannot answer. Each starts the new source's
+    /// job from fresh scratch tables.
+    #[test]
+    fn only_a_gap_or_another_leaders_earlier_source_restarts() {
         let running = || {
             let mut j = job(&core(), Some(&meta()), 200_121, vec![arch(159_388, 200_121)]);
             j.prepared = true;
             j
         };
         let cases = [
-            ("another metadata snapshot", job(&core(), Some(&meta2()), 201_600, vec![arch(201_501, 201_600)])),
-            // The same source in every other way, archives that continue the running job's included: the slimmed
-            // snapshot (i-1) commits while an install of the pre-split one runs, and that load must not carry on.
+            ("a gap", job(&core(), Some(&meta()), 201_600, vec![arch(200_500, 201_600)]), "do not continue"),
             (
-                "only the metadata snapshot differs",
-                job(&core(), Some(&meta2()), 200_984, vec![arch(159_388, 200_121), arch(200_122, 200_984)]),
-            ),
-            ("no metadata snapshot", job(&core(), None, 201_600, vec![arch(1, 201_600)])),
-            (
-                "another core snapshot",
-                job(&snap(graftyard_types::Tier::Core, 201_000, 4), Some(&meta()), 201_600, vec![]),
-            ),
-            ("a gap after the running archives", job(&core(), Some(&meta()), 201_600, vec![arch(200_500, 201_600)])),
-            ("an earlier through", job(&core(), Some(&meta()), 200_000, vec![arch(159_388, 200_000)])),
-            (
-                "a later through with no archive to reach it",
+                "no archive to through",
                 job(&core(), Some(&meta()), 201_600, vec![arch(159_388, 200_121)]),
+                "do not continue",
             ),
+            ("another leader", from(job(&core(), Some(&meta()), 200_000, vec![]), 2, 1), "earlier through"),
+            ("another term", from(job(&core(), Some(&meta()), 200_000, vec![]), 0, 3), "earlier through"),
         ];
-        for (why, new) in cases {
-            let (j, restarted) = next_job(Some(running()), new);
-            assert!(restarted, "{why}");
-            assert!(!j.prepared, "{why}: a restart starts from fresh scratch tables");
+        for (case, new, why) in cases {
+            let (j, said) = restarted(next_job(Some(running()), new));
+            assert!(said.contains(why), "{case}: {said}");
+            assert!(!j.prepared, "{case}: a restart starts from fresh scratch tables");
         }
-        let (_, restarted) = next_job(None, job(&core(), Some(&meta()), 1, vec![]));
-        assert!(restarted, "no running job");
+        let (_, said) = restarted(next_job(None, job(&core(), Some(&meta()), 1, vec![])));
+        assert_eq!(said, "no install runs");
+    }
+
+    /// G21: one "Network connection lost" at 07:57:38Z threw away b030r5's 9-minute install. A failed install batch is
+    /// tried again until its `BATCH_TRIES`th failure in a row; an audit's first failure ends it.
+    #[test]
+    fn a_failed_install_batch_is_retried_before_it_is_abandoned() {
+        assert!(super::retry_batch(true, 1) && super::retry_batch(true, super::BATCH_TRIES - 1));
+        assert!(!super::retry_batch(true, super::BATCH_TRIES), "abandoned on the last try");
+        assert!(!super::retry_batch(false, 1), "an audit");
     }
 }
 
@@ -1253,8 +1339,8 @@ mod drop_tests {
         assert!(follower_query(&serde_json::json!({ "rows": { "access": {} } }), false), "core reads still served");
         // The next install starts from fresh scratch tables and drops again.
         let next = super::tests::job_for(9_120);
-        let (j, restarted) = super::next_job(None, next);
-        assert!(restarted && !j.prepared);
+        let super::Next::Restart(j, _) = super::next_job(None, next) else { panic!("a new job") };
+        assert!(!j.prepared);
         assert!(drop_due(j.install(), 6_890, j.through));
         for t in crate::tier::live_tables(&graftyard_git::tiers::METADATA) {
             let q = crate::tier::drop_live(&t);
