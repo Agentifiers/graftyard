@@ -4394,3 +4394,9 @@ check. Repo:131347, a1 `mwk6t1a9`, 5,000 agents, k 4, 8 learners, inbound trace 
 **sweep-quiet, settled.** 04:30 slot: a, b, c each `homesRead 1` (the one new network, 131347), walls 78, 42 and 40 s;
 site a swept 20 networks. `names:*` rows 499 from 17 objects in that slot, which held B0-33's load; before the day
 2,565 to 2,847 from 484 to 485. The idle reading below gives the steady state.
+
+**Idle after the rerun (04:41:15 to 05:11:15Z).** graft-m2b by prefix $0.02 for the 30 minutes (about $0.04 an hour,
+under the $0.10 line); the account's $15.20 in the window is graft-m1's B0-30 close-out. `idlewatch.py` 04:41 to 05:12Z:
+0 shard starts. **sweep-quiet's steady state: 0 `names:*` rows in the 04:45 and 05:00 slots** (0 objects), against
+2,565 to 2,847 a slot before the day; every site's run read 0 homes, walls 36 to 39 s on b and c and 119 to 209 s on
+site a, which sweeps 20 networks a run, all `ok`.
