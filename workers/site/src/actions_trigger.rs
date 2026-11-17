@@ -11,6 +11,11 @@
 //!   `ConsumerCursorCmd { ActionsTrigger }` through its own member, so a new leader rescans at most that much.
 //! - **Off by default**, as `crate::activity` is: only where `GRAFTYARD_ACTIVITY` is `1`, since its cursor is 32.19.
 //!   Its 0x15.2 `CreateRun` goes only to a shard whose members read it, which one site day gives all three sites.
+//! - **`pull_request`** (B0-35; `decisions/DECISIONS.md`, "`pr-trigger`"), only where a later site day set
+//!   `GRAFTYARD_PR_TRIGGER` to `1`: each `opened`, `synchronize`, and `reopened` in an entry under an hour old asks for
+//!   the pull request's test merge (`crate::prsync::demand`) and commits each matching workflow's `CreateRun` (format
+//!   0x15.4) at the merge commit, on `refs/pull/N/merge`. A conflicting merge starts no run; a shed one fails the round,
+//!   which runs again.
 //!
 //! No request path calls the Cloudflare API: every call is a Durable Object binding.
 
@@ -18,7 +23,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use graftyard_actions::trigger::{Built, built, merge_group_run};
+use graftyard_actions::shard::{JobSpec, WorkflowRun};
+use graftyard_actions::trigger::{
+    Built, PrEvent, PrTarget, built, merge_group_run, pr_events, pr_target, pull_request_run,
+};
 use graftyard_git as git;
 use graftyard_git::issues::Consumer;
 use graftyard_git::watch::ConsumerCursorCmd;
@@ -72,7 +80,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             git::tiers::get_rec::<git::issues::BranchRule>(core, "rule", &k)
                 .is_some_and(|r| r.protection.is_some_and(|p| p.merge_queue.is_some()))
         });
-        if !queued && git::queue::queue_bases(core).is_empty() {
+        if !queued && git::queue::queue_bases(core).is_empty() && !pr_trigger(&h.env) {
             return;
         }
         let cursor = git::tiers::consumer_cursor(&*fold.core, Consumer::ActionsTrigger);
@@ -118,7 +126,13 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     });
 }
 
-/// Entries `from + 1 ..= through`: every queue ref they built gets its runs, then the cursor.
+/// Whether a site day set `GRAFTYARD_PR_TRIGGER`, after the day that shipped format 0x15.4's reader.
+fn pr_trigger(env: &Env) -> bool {
+    env.var("GRAFTYARD_PR_TRIGGER").is_ok_and(|v| v.to_string() == "1")
+}
+
+/// Entries `from + 1 ..= through`: every queue ref they built and every pull request event gets its runs, then the
+/// cursor.
 async fn round(
     h: &Rc<Host<Repo>>,
     repo: RepoId,
@@ -129,6 +143,8 @@ async fn round(
     through: Index,
 ) -> std::result::Result<(), String> {
     let mut work: Vec<(Index, Built)> = Vec::new();
+    let mut prs: Vec<(Index, u64, PrEvent)> = Vec::new();
+    let with_prs = pr_trigger(&h.env);
     {
         let core = h.core.borrow();
         let c = core.as_ref().ok_or("not joined")?;
@@ -141,13 +157,18 @@ async fn round(
                     .ok_or_else(|| format!("entry {i} is in neither the member nor the stored log"))?,
             };
             work.extend(built(&e).into_iter().map(|b| (e.index, b)));
+            if with_prs {
+                let core = &c.m.group_fold().fold.core;
+                prs.extend(pr_events(core, repo, &e, crate::now_ms()).into_iter().map(|p| (e.index, e.at.0, p)));
+            }
         }
     }
     let site = SiteEnv::read(&h.env).map_err(|e| e.to_string())?;
     let b = Bindings { env: &h.env, sites: &site.sites };
     for (index, q) in &work {
         let t0 = crate::now_ms();
-        let n = runs_on(&h.env, &site, &b, repo, owner, record, *index, q).await?;
+        let make = |path: &str, src: &str| merge_group_run(repo, *index, path, src, q);
+        let n = runs_on(&h.env, &site, &b, repo, owner, record, q.tip, make).await?;
         console_log!(
             "actions trigger {} {} at {}: {n} runs in {}ms",
             repo.0.0,
@@ -156,7 +177,14 @@ async fn round(
             crate::now_ms() - t0
         );
     }
-    if work.is_empty() && through.0 < committed.0 + CURSOR_STRIDE {
+    let dispatched = futures_util::future::join_all(
+        prs.iter().map(|(index, at, p)| pull_request_runs(h, &site, &b, repo, owner, record, *index, *at, p)),
+    )
+    .await;
+    for r in dispatched {
+        r?;
+    }
+    if work.is_empty() && prs.is_empty() && through.0 < committed.0 + CURSOR_STRIDE {
         return Ok(());
     }
     let request = rid(repo, through);
@@ -164,7 +192,55 @@ async fn round(
     crate::activity::commit_here(h, request, git::repo::RepoCmd::ConsumerCursor(cmd)).await.map_err(|e| e.to_string())
 }
 
-/// Every matching workflow's run on queue ref `q`; the count created or found created.
+/// Pull request event `p` of entry `index` (stamped `at`): its test merge, asked for when missing, then every matching
+/// workflow's run at it. Logs each event's dispatch time from `at`, and whether the head had moved on (`superseded`).
+#[allow(clippy::too_many_arguments)]
+async fn pull_request_runs(
+    h: &Rc<Host<Repo>>,
+    site: &SiteEnv,
+    b: &Bindings<'_>,
+    repo: RepoId,
+    owner: AccountId,
+    record: &PlacementRecord,
+    index: Index,
+    at: u64,
+    p: &PrEvent,
+) -> std::result::Result<(), String> {
+    let view = || -> std::result::Result<git::prsync::PrView, String> {
+        let core = h.core.borrow();
+        let c = core.as_ref().ok_or("not joined")?;
+        let (_, mut v) = git::prsync::views(&c.m.group_fold().fold.core, repo, &[p.n]);
+        v.pop().ok_or_else(|| format!("pull request {} is not in the fold", p.n.0))
+    };
+    let mut v = view()?;
+    if pr_target(&v) == PrTarget::Pending {
+        crate::prsync::demand(&h.env, repo, p.n, git::prsync::MergeCause::Dispatch).await?;
+        v = view()?;
+    }
+    let superseded = p.after.is_some_and(|a| a != v.head);
+    let n = match pr_target(&v) {
+        PrTarget::Merge(merge) => {
+            let make = |path: &str, src: &str| pull_request_run(repo, index, path, src, p.n, p.action, &v.base, merge);
+            runs_on(&h.env, site, b, repo, owner, record, merge, make).await?
+        }
+        PrTarget::Pending => return Err(format!("test merge of #{} shed", p.n.0)),
+        PrTarget::Conflict | PrTarget::None => 0,
+    };
+    console_log!(
+        "actions dispatch {} #{} {} at {}: {n} runs in {}ms{}{}",
+        repo.0.0,
+        p.n.0,
+        p.action,
+        index.0,
+        crate::now_ms().saturating_sub(at),
+        if superseded { ", superseded" } else { "" },
+        if pr_target(&v) == PrTarget::Conflict { ", conflict" } else { "" }
+    );
+    Ok(())
+}
+
+/// Every matching workflow's run at `tip`, each built by `make` from its path and source; the count created or found
+/// created.
 #[allow(clippy::too_many_arguments)]
 async fn runs_on(
     env: &Env,
@@ -173,10 +249,10 @@ async fn runs_on(
     repo: RepoId,
     owner: AccountId,
     record: &PlacementRecord,
-    index: Index,
-    q: &Built,
+    tip: git::refs::ObjectId,
+    make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>)>, String>,
 ) -> std::result::Result<usize, String> {
-    let commit = q.tip.hex();
+    let commit = tip.hex();
     let tree = match ui(env, site, repo, record, "tree", &[("commit", &commit), ("path", WORKFLOWS)]).await? {
         Some(t) => t,
         None => return Ok(0),
@@ -196,7 +272,7 @@ async fn runs_on(
             continue;
         };
         let src = blob["text"].as_str().unwrap_or_default();
-        let (run, jobs) = match merge_group_run(repo, index, &path, src, q) {
+        let (run, jobs) = match make(&path, src) {
             Ok(Some(x)) => x,
             Ok(None) => continue,
             Err(e) => {

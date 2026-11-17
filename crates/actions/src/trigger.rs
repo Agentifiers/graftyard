@@ -1,9 +1,14 @@
 //! `ActionsTrigger`'s pure half for `on: merge_group` (`design/SHARED.md`, "Actions runs and jobs" and "Event fan-out";
-//! `build/BUILD-PLAN.md`, M4-WP3, BF-37): which queue refs a committed repository entry built, and the run a workflow
-//! file starts on one of them. The host reads `.github/workflows/*` at each ref's tip from the git cache, commits each
-//! run's `CreateRun` on the repository's Actions shard, and then the `ActionsTrigger` cursor (`crate::shard`'s run key
-//! makes a replay create nothing twice).
+//! `build/BUILD-PLAN.md`, M4-WP3, BF-37) and `on: pull_request` (B0-35; `decisions/DECISIONS.md`, "`pr-trigger`"):
+//! which queue refs and pull request events a committed repository entry holds, and the run a workflow file starts on
+//! each. The host reads `.github/workflows/*` at each ref's tip, or at the pull request's current test merge, from the
+//! git cache, commits each run's `CreateRun` on the repository's Actions shard, and then the `ActionsTrigger` cursor
+//! (`crate::shard`'s run key makes a replay create nothing twice).
 
+use graftyard_fold::Read;
+use graftyard_git::hooks::{Subject, webhooks};
+use graftyard_git::issues::{IssueNumber, MergeabilityResult};
+use graftyard_git::prsync::PrView;
 use graftyard_git::queue::{QueueEvent, queue_ref};
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::repo::RepoEvent;
@@ -66,6 +71,106 @@ pub fn merge_group_run(
         event: "merge_group".into(),
         head_sha: b.tip.0,
         head_ref: b.queue_ref.display().into(),
+        trigger: (ChainId::Repo(repo), index),
+        attempt: 1,
+        concurrency: None,
+        fork: false,
+    };
+    Ok(Some((run, jobs)))
+}
+
+/// An entry older than this starts no `pull_request` run: a first scan of a repository's log, where a site day just set
+/// `GRAFTYARD_PR_TRIGGER`, would otherwise start a run for every push it ever took. Install-side only; GitHub's
+/// trigger never replays (`decisions/DECISIONS.md`, "`pr-trigger`").
+pub const PR_REPLAY_MS: u64 = 3_600_000;
+
+/// One `pull_request` event that starts runs: GitHub's default activity types (`opened`, `synchronize`, `reopened`).
+/// `after` is a `synchronize`'s new head, which the instrument compares with the head when the run is created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrEvent {
+    pub n: IssueNumber,
+    pub action: &'static str,
+    pub after: Option<ObjectId>,
+}
+
+/// The `pull_request` events of entry `e` that start runs, read as `Webhooks` reads them (`graftyard_git::hooks`),
+/// or none when `e` is more than PR_REPLAY_MS older than `now`.
+pub fn pr_events(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>, now: u64) -> Vec<PrEvent> {
+    if now.saturating_sub(e.at.0) > PR_REPLAY_MS {
+        return Vec::new();
+    }
+    webhooks(core, repo, e)
+        .into_iter()
+        .filter(|w| w.event == "pull_request")
+        .filter_map(|w| match (w.action, w.subject) {
+            (Some(a @ ("opened" | "synchronize" | "reopened")), Subject::Pull { n, after, .. }) => {
+                Some(PrEvent { n, action: a, after })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Where a pull request's runs go now, from its view on the leader (`graftyard_git::prsync::views`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrTarget {
+    /// The current test merge, at the base's and the head's tips now: its commit is the runs' `head_sha`.
+    Merge(ObjectId),
+    /// The current test merge conflicts, and GitHub starts no run.
+    Conflict,
+    /// No test merge for the current tips yet: the host asks for one (`demand`, `MergeCause::Dispatch`).
+    Pending,
+    /// Closed, or from a fork, whose head this chain does not hold: no run [inference: no route opens a fork's pull
+    /// request yet].
+    None,
+}
+
+pub fn pr_target(v: &PrView) -> PrTarget {
+    if !v.open || !v.same_repo {
+        return PrTarget::None;
+    }
+    match &v.merge {
+        Some(m) if Some(m.base) == v.base_tip && m.head == v.head => match m.result {
+            MergeabilityResult::Clean { merge } => PrTarget::Merge(merge),
+            MergeabilityResult::Conflict { .. } => PrTarget::Conflict,
+        },
+        _ => PrTarget::Pending,
+    }
+}
+
+/// The run workflow file `path` (source `src`) starts for pull request `n`'s event `action`, from entry `index` of
+/// `repo`'s chain, at the pull request's current test merge `merge` into `base`: `Ok(None)` when its `on:` takes no
+/// such `pull_request`, `Err` when it does not parse or its jobs cannot run. The run's ref is `refs/pull/N/merge` and
+/// its commit the merge [doc: GitHub's "Events that trigger workflows", `pull_request`: `GITHUB_SHA` is the "Last merge
+/// commit on the `GITHUB_REF` branch"], so an event whose head moved on still runs, at the merge current now.
+#[allow(clippy::too_many_arguments)]
+pub fn pull_request_run(
+    repo: RepoId,
+    index: Index,
+    path: &str,
+    src: &str,
+    n: IssueNumber,
+    action: &str,
+    base: &RefName,
+    merge: ObjectId,
+) -> Result<Option<(WorkflowRun, Vec<JobSpec>)>, String> {
+    let parsed = crate::workflow::parse(path, src);
+    if !parsed.ok() {
+        return Err(parsed.errors.join("; "));
+    }
+    let base = base.display();
+    let t = Trigger::PullRequest { action, base: &base, paths: None };
+    if !parsed.workflow.events.as_ref().is_some_and(|ev| triggers(ev, &t)) {
+        return Ok(None);
+    }
+    let jobs = crate::specs::job_specs(&parsed.workflow)?;
+    let run = WorkflowRun {
+        id: RunId(DbId(0)),
+        repo,
+        workflow: path.into(),
+        event: "pull_request".into(),
+        head_sha: merge.0,
+        head_ref: graftyard_git::tiers::merge_ref(n).display().into(),
         trigger: (ChainId::Repo(repo), index),
         attempt: 1,
         concurrency: None,

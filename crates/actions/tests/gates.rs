@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use common::Group;
 use graftyard_actions::run_owner::{round, steps, touched};
 use graftyard_actions::shard::{
-    ACTIONS_FORMAT, ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold, ActionsOp, ActionsOut, JobSpec,
-    RunnerRecord, RunnerScope, WorkflowRun,
+    ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold,
+    ActionsOp, ActionsOut, JobSpec, RunnerRecord, RunnerScope, WorkflowRun,
 };
 use graftyard_actions::{Conclusion, JobEvent, JobId, JobState, LabelSet, RunId, RunStatus, RunnerId};
 use graftyard_git::issues::{
@@ -106,7 +106,12 @@ struct World {
 impl World {
     fn new() -> World {
         let now = Timestamp(1_000_000);
-        let mut shard = Group::new(ChainId::Actions(OWNER, 3), vec![ACTIONS_FORMAT], ActionsFold::default(), now);
+        let mut shard = Group::new(
+            ChainId::Actions(OWNER, 3),
+            vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST],
+            ActionsFold::default(),
+            now,
+        );
         shard.id_block(now, IdBlock::whole(0, 9).unwrap());
         let reads = vec![
             REPO_FORMAT_V1,

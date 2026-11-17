@@ -59,7 +59,12 @@ impl Family for Actions {
     type C = ActionsCmd;
 
     fn reads() -> Vec<Format> {
-        vec![act::ACTIONS_FORMAT, act::ACTIONS_FORMAT_MERGE_GROUP, act::ACTIONS_FORMAT_OWNER_MATCH]
+        vec![
+            act::ACTIONS_FORMAT,
+            act::ACTIONS_FORMAT_MERGE_GROUP,
+            act::ACTIONS_FORMAT_OWNER_MATCH,
+            act::ACTIONS_FORMAT_PULL_REQUEST,
+        ]
     }
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
         leading.then_some(CHECK_AFTER_MS)

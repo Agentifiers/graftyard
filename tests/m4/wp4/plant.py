@@ -36,6 +36,8 @@ EA = 'workers/edge/src/actions.rs'
 EDGE = ['-p', 'graftyard-edge', '--lib', 'actions::']
 L = 'workers/runners/launch.mjs'
 NODE = ['node']  # `node --test workers/runners/tests/`, not cargo
+TR = 'crates/actions/src/trigger.rs'
+PR = ['-p', 'graftyard-actions', '--lib', '--test', 'pr_trigger', '--test', 'gates']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -220,6 +222,23 @@ MUTANTS = [
      '  await sb.ctx.storage.put(KEY, { state: "launched" });', '  await sb.ctx.storage.put(KEY, { ...st, state: "launched" });', NODE),
     ('launchRunner lets a storage error throw (main\'s rule)', L,
      '  try {\n    await step(sb);\n  } catch (e) {', '  {\n    await step(sb);\n  } if (0) {', NODE),
+    # B0-35's `pull_request` trigger (`pr-trigger`).
+    ('a pull_request run is keyed by entry and file alone (main\'s rule)', S,
+     'if self.is_merge_group() || self.is_pull_request() {', 'if self.is_merge_group() {', PR),
+    ('a pull_request CreateRun is sent as format 0x15.1', S,
+     '            ActionsOp::CreateRun { run, .. } if run.is_pull_request() => ACTIONS_FORMAT_PULL_REQUEST,\n', '', PR),
+    ('a conflicting merge still starts a run', TR,
+     '            MergeabilityResult::Conflict { .. } => PrTarget::Conflict,', '            MergeabilityResult::Conflict { .. } => PrTarget::Merge(ObjectId::ZERO),', PR),
+    ('a merge of an older head counts as current', TR,
+     '        Some(m) if Some(m.base) == v.base_tip && m.head == v.head => match m.result {',
+     '        Some(m) if Some(m.base) == v.base_tip => match m.result {', PR),
+    ('a pull_request run is on the head, not the merge ref', TR,
+     '        head_ref: graftyard_git::tiers::merge_ref(n).display().into(),',
+     '        head_ref: graftyard_git::tiers::head_ref(n).display().into(),', PR),
+    ('the first scan replays every old entry', TR,
+     '    if now.saturating_sub(e.at.0) > PR_REPLAY_MS {', '    if false {', PR),
+    ('synchronize starts no run', TR,
+     '(Some(a @ ("opened" | "synchronize" | "reopened")), Subject::Pull', '(Some(a @ ("opened" | "reopened")), Subject::Pull', PR),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
