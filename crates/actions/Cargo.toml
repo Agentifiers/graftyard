@@ -10,6 +10,8 @@ base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 ed25519-dalek = { version = "2.2", default-features = false }
 graftyard-fold = { path = "../fold" }
 graftyard-git = { path = "../git" }
+# F78: the repositories an owner's `Authz` names, whose shards a stale delete reads.
+graftyard-identity = { path = "../identity" }
 graftyard-raft = { path = "../raft" }
 graftyard-types.workspace = true
 graftyard-wire = { path = "../wire" }
@@ -23,8 +25,6 @@ thiserror.workspace = true
 yaml-rust2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
-# R24's test builds App records and installations for `graftyard_git::sequencer::app_targets`.
-graftyard-identity = { path = "../identity" }
 rand = "0.8"
 tiny_http = "0.12"
 tungstenite = "0.24"
