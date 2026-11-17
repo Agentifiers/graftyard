@@ -1441,6 +1441,9 @@ G20 is settled by the code and a run.
 
 That is about $40 and 3 h. `force.mjs` gets two options: `SEVER_AT=split`, and an end once the install is done.
 
+**Idle after the close-out [measured].** acctcost 03:45 to 04:15Z: graft-m1's scripts $0.02 (`PREFIX=graft-m1`,
+`prefix_usd`), about $0.04 an hour; the account $3.31, the other installs' slots. 0 shard containers on graft-m1.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
