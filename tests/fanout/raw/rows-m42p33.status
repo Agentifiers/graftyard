@@ -1,0 +1,29 @@
+2026-11-17T05:16:24Z start 143d1ad48 /home/user/workspace/squiet
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T05:16:41Z start sweep ok
+2026-11-17T05:16:44Z cost account 69.92 since 2026-11-17T00:00:00Z, run 3.12 since 2026-11-17T03:20:06Z, at b0-33
+2026-11-17T05:17:21.840Z m3org/fm42p33-b033 = 131348
+2026-11-17T05:17:28.011Z repo:131348 leader 0: learners [{"addr":192,"doName":"repo:131348#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131348#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131348#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131348#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131348#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131348#2#l5","join":20 config 5
+2026-11-17T05:17:31.472Z repo:131348 leader 0: set k 4: {"grants":[[0,[2,3,6]],[2,[2,3,6]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T05:17:41.864Z repo:131348 leader 0: set k 4: {"grants":[[0,[2,3,6]],[2,[2,3,6]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T05:17:52.435Z repo:131348 leader 0: set k 4: {"grants":[[0,[2,3,6]],[2,[2,3,6]]],"k":4,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-17T05:17:52.601Z repo:131348 leader 0: k 4 at 8
+2026-11-17T05:17:52Z b0-33 fm42p33-b033 131348 start
+2026-11-17T05:28:11.320Z repo:131348 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":22},"stepped":true,"want":0}
+2026-11-17T05:28:11.458Z repo:131348 leader 0: k 1 at 247
+2026-11-17T05:28:11Z b0-33 fm42p33-b033 131348 done exit 0
+2026-11-17T05:28:18Z torn down 131348
+site fault off: 200
+git#2#pool:4 200
+git#2#pool:3 200
+git#2#pool:7 200
+git#0#pool:7 200
+git#0#pool:3 200
+git#0#pool:4 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-17T05:28:38Z sweep ok
+ALLDONE
+B033DONE

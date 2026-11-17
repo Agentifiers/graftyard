@@ -15,7 +15,9 @@ s() { echo "$(date -u +%FT%TZ) $*" >> "$ST"; }
 # The account meter since ACCT_FROM (operator's 2026-11-16 rule: tests/fanout/acctcost.py is the only meter), and the
 # run's own delta since RUN_FROM; STOP is on the account and RUN_STOP on the run.
 acct() { python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r '.usd // 999' 2>/dev/null || echo 999; }
-meter() { echo "$(acct "${ACCT_FROM:?}") $(acct "${RUN_FROM:-$ACCT_FROM}")"; }
+# With RUN_PREFIX (graft-m2b) the run's delta counts only that install's scripts, for a slot that shares the account.
+runusd() { PREFIX=${RUN_PREFIX:-} python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r "${RUN_PREFIX:+.prefix_usd // }.usd // 999" 2>/dev/null || echo 999; }
+meter() { echo "$(acct "${ACCT_FROM:?}") $(runusd "${RUN_FROM:-$ACCT_FROM}")"; }
 over() { python3 -c 'import sys; a, r = map(float, sys.argv[1].split()); n, s, rs = map(float, sys.argv[2:]); sys.exit(0 if a + n >= s or r + n >= rs else 1)' \
   "$1" "${2:-0}" "$STOP" "${RUN_STOP:-1e9}"; }
 python3 tests/fanout/edgever.py "$EDGE_LOG" >> "$ST" 2>&1 || { s "stopped: the edge is not the site day's"; echo DONE >> "$ST"; exec sleep infinity; }

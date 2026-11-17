@@ -1,0 +1,47 @@
+{
+ "gapMs": 20,
+ "from": "2026-11-17T03:43:57Z",
+ "to": "2026-11-17T03:48:57Z",
+ "bySite": {
+  "0": {
+   "1": {
+    "calls": 8135,
+    "buckets": 7167,
+    "max": 5,
+    "over1": 922,
+    "share_over1": 0.1286,
+    "turns_max": 3,
+    "turns_over1": 408
+   },
+   "2": {
+    "calls": 9072,
+    "buckets": 7412,
+    "max": 6,
+    "over1": 1366,
+    "share_over1": 0.1843,
+    "turns_max": 3,
+    "turns_over1": 722
+   }
+  },
+  "1": {},
+  "2": {
+   "0": {
+    "calls": 387,
+    "buckets": 356,
+    "max": 4,
+    "over1": 29,
+    "share_over1": 0.0815,
+    "turns_max": 2,
+    "turns_over1": 23
+   }
+  }
+ },
+ "grantMs": {
+  "0": {
+   "n": 10391,
+   "p50": 31,
+   "p99": 228,
+   "max": 1994
+  }
+ }
+}

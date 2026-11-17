@@ -1,0 +1,33 @@
+completeness (per member: rows, segments, arrival numbers missing inside segments, clock going backwards)
+  0: rows 175510 segments 1 missing 2575 backwards 0
+  1: rows 259550 segments 1 missing 2355 backwards 0
+  192: rows 34843 segments 5 missing 1 backwards 0
+  193: rows 33093 segments 5 missing 3 backwards 0
+  194: rows 36540 segments 5 missing 4 backwards 0
+  195: rows 35268 segments 5 missing 6 backwards 0
+  196: rows 34988 segments 5 missing 2 backwards 0
+  197: rows 36746 segments 5 missing 3 backwards 0
+  198: rows 35217 segments 5 missing 2 backwards 0
+  199: rows 35719 segments 5 missing 1 backwards 0
+  2: rows 129195 segments 1 missing 657 backwards 0
+
+voter-to-voter /raft calls joined to the callee's Entered row: 3410 (pair skew estimates: {(0, 1): 819, (0, 2): -140, (1, 0): -1613, (1, 2): -723, (2, 0): -315, (2, 1): 377})
+out leg (ms)   n      ahead p50/p90   edge-sent p50   open at entry p50/p90   ahead by route, p50 share
+[0, 200)       629    136/1357 127             107/1122                /raft 0.03 /read 0.57 /commit 0.03 /suspect 0.02 /outcome_by_request 0.01
+[200, 1000)    338    357/1241 343             3/292                   /raft 0.02 /read 0.53 /suspect 0.32 /outcome_by_request 0.02
+[1000, 3000)   1477   687/1975 660             2/12                    /raft 0.02 /read 0.48 /suspect 0.44 /outcome_by_request 0.01
+[3000, inf)    966    1633/44431607            2/29                    /raft 0.01 /read 0.51 /suspect 0.41 /outcome_by_request 0.02
+missed 1000 ms or unanswered: 1834; requests entered ahead p50 1244
+
+/read by query per member (per s; idx = read-index from a follower or learner pass, lead = sent to the leader)
+  0: /read 293.3/s, untagged 0.0/s | other:lead 153.1 ranges:lead 78.7 probe:lead 58.0 other:idx 1.7 ranges:idx 1.6 prsync:lead 0.1
+  1: /read 462.6/s, untagged 0.0/s | other:lead 256.2 ranges:lead 118.4 probe:lead 83.5 ranges:idx 2.2 other:idx 2.1 prsync:lead 0.1
+  192: /read 115.8/s, untagged 0.0/s | other:idx 75.2 ranges:idx 40.6
+  193: /read 109.6/s, untagged 0.0/s | other:idx 70.8 ranges:idx 38.8
+  194: /read 121.0/s, untagged 0.0/s | other:idx 79.2 ranges:idx 41.8
+  195: /read 117.6/s, untagged 0.0/s | other:idx 76.9 ranges:idx 40.7
+  196: /read 116.2/s, untagged 0.0/s | other:idx 75.7 ranges:idx 40.5
+  197: /read 121.6/s, untagged 0.0/s | other:idx 79.5 ranges:idx 42.1
+  198: /read 117.5/s, untagged 0.0/s | other:idx 76.4 ranges:idx 41.1
+  199: /read 119.7/s, untagged 0.0/s | other:idx 78.1 ranges:idx 41.6
+  2: /read 213.2/s, untagged 0.0/s | other:lead 107.6 ranges:lead 60.0 probe:lead 42.4 other:idx 1.6 ranges:idx 1.5 prsync:lead 0.1

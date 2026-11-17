@@ -4302,3 +4302,180 @@ run. Two tests in `workers/site/src/sweep.rs`; `tests/sweepquiet/plant.py` catch
 main's read-every-run. Expected after a site day [inference]: one run reads every home once (64 a run, so about three
 runs on m2b's 180 networks), then about 180 home reads a day per site instead of about 34,000, and the `names:*` rows
 fall from about 2.6 k a run to near zero outside a client request. Not deployed: it ships with the next site day.
+
+sweep-quiet also fixes a broken sweeper, not only idle cost: site a's cron sweep has failed on every run since 20:43Z on
+2026-11-16 at the subrequest limit, so no network homed on site a has been swept since (orphan packs, missing
+third-bucket copies and markers, and multipart aborts). With 64 home reads a run at most (128 `Names` calls) it should
+stay inside the limit [inference]; the site day checks it. Merged to main at `68d39927`; it ships with the B0-33 slot's
+site day, which checks it hosted: `names:*` rows per cron run once the cache fills, against about 2.6 k, and site a's
+`sweep {` lines with no subrequest failure.
+
+### Round 37: the m42 slot, site day from main 68d39927 (lookup-share, sweep-quiet, near-check, audit-locked), B0-33 (2026-11-17)
+
+The operator granted the slot at about 03:15Z while B0-30's close-out ran on graft-m1, so the run's stop counted only
+graft-m2b's scripts: `acctcost.py`'s new `PREFIX` and `costok.sh`/`costrow.sh`'s `RUN_PREFIX`. Stops: $25 on m2b from
+03:20:06Z, or $170 for the account's UTC day. Estimate sent before the day: about $3.5 (m41's slot $4.15 by prefix).
+
+**Site day m42.** From `20b87b14` (main `68d39927` plus this file's note), m41's image `sha256:0f0c5ee1` (containers
+unchanged since `617e2b0a`), standard-4, `GRAFTYARD_ROLLUP=1`, 32.25 in the edge's `FORMATS_ENABLED`. Sites, test-faults,
+exit 0: a `002c035d`, b `389742cf`, c `705e3523`; edge `e2efd770` served at 100% (`edgever.py`). 03:20 to 03:33Z.
+
+**B0-33, repo:131346, a1 `mwk57m2z`, 5,000 agents, k 4, 8 learners, inbound trace on, load 03:43:57 to 03:48:57Z:
+void for the lookup check (operator, about 04:10Z).** lookup-share broke the edge under load, as m3f found on its own
+install: the errors below. The operator is reverting lookup-share on main; the lookup comparison waits for B0-02's
+redesign. The numbers stay as a record of what the group did while the edge failed, not as a verdict.
+
+| B0-33 line | m42 (void) | m41 | verdict at 90% (not judged: void) |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 2,515 ms (p50 486, n 12,580); merges 6 of 54; human pushes 41 of 192 | 14,521 ms; 2 of 42; 12 of 195 | fail |
+| ≥ 140 agent commands/s admitted (≥ 126 at 90%; fail < 100) | 29.2 agent-class ok a second at the client | 26.8 | fail |
+| Zero leader changes and `suspect` | term 2 throughout, 0 step-downs (Workers Logs); /suspect 0 to 0.2 a second on the voters | term 2 → 20, 13 step-downs | leader changes met; `suspect` not zero |
+
+- Voter routes during load (`Trace::Entered`, tsave): /read 5.3, 1.5, 3.4 a second and /suspect 0, 0.2, 0.2 a second
+  on sites 0, 1, 2; m41 after its first change 321, 258, 306 and 155, 149, 156. No leader change came, so the
+  "after the first change" comparison has no window; these are the whole load.
+- `inbound.py`'s `/read` source: on the voters `ranges:lead` (leader 3.9 a second) and `other:idx`; on learners 6 to
+  12 a second, `other:idx` and `ranges:idx`. Voter-to-voter /raft calls 17,591, 16,921 of them out under 200 ms with
+  nothing entered ahead; 102 missed 1,000 ms.
+- Read grant on the leader p99 228 ms (n 10,391; m41 2,540); fetches per voter per 20 ms max 6, p99 3, p50 1 over
+  14,935 windows (m41 21, 10, 1); fetching turns max 3, p99 2.
+- Leader split p99: queue 4,351 ms (slot 4,102), round 535, confirm 263, apply 535.
+- 0 exceededMemory; leader wasm 4 to 16 MB.
+
+**Where the clients' time went: the edge.** Agent-class requests answered at p50 20,028 ms, `LOOKUP_FOR` exactly
+(m41's p50s were 4.4 to 25 s), and the edge logged in every 10 s window of the load: `tokens:N: no member answered`
+(2,414 for tokens:0, 684 for tokens:932), "closure invoked recursively or after being dropped" 329, "Cannot perform
+I/O on behalf of a different request" 219, the runtime's "hung" cancel 121, "Cannot invoke closure from previous WASM
+instance" 21, "Promise will never complete." 20. m41's load window holds none of them, and neither does m42's setup
+before load. The tokens leaders answered their reads in tens of ms in the same minutes (`durableObjectsInvocations`).
+Hypothesis [inference, not traced]: lookup-share's per-isolate `Turn` (`crates/lookup/src/lib.rs`, `take_turn`) parks
+requests on another request's lookup; a holder the runtime cancels or drops wakes wakers of requests whose contexts
+are gone, and the waiters sit out the whole `LOOKUP_FOR`. Sent to B0-02 (lookup-share's thread) with the trace.
+
+**sweep-quiet, hosted (`tests/fanout/sweepquiet.py`).** Before the day, six slots 02:00 to 03:30Z: 2,565 to 2,847
+`names:*` rows a slot from 484 to 485 objects, and site a's run failed "Too many API requests" every time. After it:
+- 03:30 slot (b on the new script, a and c not yet): b `homesRead 64`, 96 s; a failed once more on the old script.
+- 03:45 slot: a, b, c `ok`, each `homesRead 64`, 72 to 110 s. **Site a's sweep completed**, its first since 20:43Z on
+  11-16.
+- 04:00 slot: a `homesRead 64`, swept 20 networks, 135 s; b 55 (its cache full); c 64.
+- `names:*` rows: 3,319, 2,910 and 1,671 in those slots, with the cache still filling and the B0-33 load's own name
+  reads in the 03:45 slot. The steady state is in the idle reading below.
+
+**Not measured this slot.** promote-lapse: no range came due on a quiet group. The roll: 131296 has no rollable run
+(8 promoted packs or a day-old run), so no `Compacted`.
+
+**B0-33 rerun on the revert (operator, about 04:15Z): edge-only redeploy from main `0de37416`** (lookup-share
+reverted; sites stay on m42's day, the edge is not a site script). Edge `2004a578`, served at 100% (`edgever.py`,
+rev `f18eecd8`, the day branch with `0de37416` merged), same formats. A baseline row plus sweep-quiet, not a lookup
+check. Repo:131347, a1 `mwk6t1a9`, 5,000 agents, k 4, 8 learners, inbound trace on, load 04:26:53 to 04:31:53Z: fail.
+
+| B0-33 line | m42 rerun (revert) | m42 (lookup-share, void) | m41 | verdict at 90% |
+|---|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 11,859 ms (p50 2,985, n 2,875); merges 1 of 54; human pushes 7 of 200 | 2,515 ms | 14,521 ms | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 22.0 agent-class ok a second | 29.2 | 26.8 | fail |
+| Zero leader changes and `suspect` | term 2 → 19, 14 step-downs (13 `CommitErrors`, 1 `LoopLag`); first at 04:27:18Z, 25 s into load | term 2, 0 | term 2 → 20, 13 | fail |
+
+- Voter routes over the load (`Trace::Entered`): /read 368, 463, 348 a second and /suspect 157, 111, 128 a second on
+  sites 0, 1, 2 (m41 after its first change: 321, 258, 306 and 155, 149, 156). The m41 storm is back with lookup-share
+  gone. Corrected by B0-02's trace reading (below): lookup-share did not calm the group; its 20 s hung requests cut the
+  offered load, and the group stayed quiet only because little load reached it.
+- Read grant on the leader p99 2,486 / 1,980 / 3,117 ms by leading site (m41 2,540 / 4,078 / 1,713); fetches per voter
+  per 20 ms max 19, p99 9, p50 1 over 3,948 windows (m41 21, 10, 1).
+- Leader split p99: queue 13.6 s, round 7.9 s, confirm 4.3 s, apply 8.5 s.
+- Agent pushes p50 33.8 s, p99 123.9 s; `503 the repository's access rows did not answer` 1,052, `created, but no member
+  leads` 912.
+- **Edge errors** (`$metadata.level` error, request lines left out; `edgeerr-*.txt`): none of the lookup-share kinds in
+  the rerun's load window, as in m41's; 27 of 30 ten-second windows were at the query's 100-event cap with request
+  lines only. In m42's lookup-share window: `tokens:N: no member answered` 636, "closure invoked recursively or after
+  being dropped" 329, "Cannot perform I/O on behalf of a different request" 219, the runtime's hung cancel 121, "failed
+  to read array buffer from request" 98, "Cannot invoke closure from previous WASM instance" 21, "Promise will never
+  complete." 20. Every count is a lower bound: the query returns at most 100 events a window. Read alone,
+  `no member answered` gave 3,098 events (2,414 for tokens:0, 684 for tokens:932, 3 for names:708).
+
+**sweep-quiet, settled.** 04:30 slot: a, b, c each `homesRead 1` (the one new network, 131347), walls 78, 42 and 40 s;
+site a swept 20 networks. `names:*` rows 499 from 17 objects in that slot, which held B0-33's load; before the day
+2,565 to 2,847 from 484 to 485. The idle reading below gives the steady state.
+
+**Idle after the rerun (04:41:15 to 05:11:15Z).** graft-m2b by prefix $0.02 for the 30 minutes (about $0.04 an hour,
+under the $0.10 line); the account's $15.20 in the window is graft-m1's B0-30 close-out. `idlewatch.py` 04:41 to 05:12Z:
+0 shard starts. **sweep-quiet's steady state: 0 `names:*` rows in the 04:45 and 05:00 slots** (0 objects), against
+2,565 to 2,847 a slot before the day; every site's run read 0 homes, walls 36 to 39 s on b and c and 119 to 209 s on
+site a, which sweeps 20 networks a run, all `ok`.
+
+**B0-33 on lookup-poll (operator, about 05:05Z; slot stop raised to $40 by graft-m2b script from 03:20:06Z).** Edge-only
+deploy from main `67ba9343` (B0-02's lookup-poll: one plain-data mark per chain that waiters poll on their own timers),
+edge `1b03108d`, served at 100% (`edgever.py`, rev `6a59ce12`, the day branch with `67ba9343` merged). Sites stay on
+m42's day. `tests/fanout/edgeguard.sh` watched the edge every 30 s for lookup-share's lines, to stop the row and put
+back `0de37416`'s edge. Repo:131348, a1 `mwk8r5wk`, 5,000 agents, k 4, 8 learners, inbound trace on, load 05:21:07 to
+05:26:07Z: fail.
+
+| | lookup-poll | baseline (revert) | lookup-share (void) | m41 |
+|---|---|---|---|---|
+| Agent-class ok a second | 18.6 | 22.0 | 29.2 | 26.8 |
+| Agent p50 near 20 s from the lookup | no (503s after retries) | no | yes, 20,028 ms | no |
+| lookup-share error lines (cross-request I/O, dropped closure, previous instance) | 0 (guard read 0 every 30 s; load-window census none) | 0 | 569 and more | 0 |
+| Terms; step-downs | 2 → 22; 9 (all `CommitErrors`) | 2 → 19; 14 | 2; 0 | 2 → 20; 13 |
+| First leader change | 05:21:33Z, 26 s in | 04:27:18Z, 25 s in | none | 27 s in |
+| Voter /read a second after it | 293, 463, 213 | 392, 501, 375 | (no change) | 321, 258, 306 |
+| Voter /suspect a second after it | 140, 243, 125 | 172, 121, 139 | (no change) | 155, 149, 156 |
+| Read grant p99 by leading site | 2,699 / 1,800 / 3,338 ms | 2,486 / 1,980 / 3,117 | 228 | 2,540 / 4,078 / 1,713 |
+| Leader commit p99 | 17,701 ms | 11,859 | 2,515 | 14,521 |
+| Fetches per voter per 20 ms max / p99 | 20 / 7 | 19 / 9 | 6 / 3 | 21 / 10 |
+
+- The edge is correct on lookup-poll: no lookup-share line in setup or load. The agent routes' p50 of 17.6 to 22.7 s are
+  503s after member retries (`access rows did not answer` 2,091, `created, but no member leads` 1,661), as on the
+  baseline, not the `LOOKUP_FOR` wait.
+- The group's storm is as on the baseline: after the first leader change each voter takes 213 to 463 `/read` and 125
+  to 243 `/suspect` a second. `inbound.py` names the voters' reads as lead reads: on voters 0 and 1, `other:lead` 153 and
+  256 a second, `ranges:lead` 79 and 118, `probe:lead` 58 and 84; learners take 110 to 121 idx reads a second each.
+  lookup-poll's mark is per isolate, so this is consistent with many edge isolates each running a lookup once their
+  cached leader is wrong [inference, not traced]; sent to B0-02 with the trace. The tag names are wrong; see B0-02's
+  reading below.
+
+**B0-02's reading of the lookup-poll trace (`tsave-m42p33`, analysis only).**
+1. **The `ReadQuery` tag names the wrong reads.** `read_query_code` takes the query's first key, but this build's
+   serde_json has no `preserve_order`, so the keys come back sorted. `ranges` is `core_rows_q`'s
+   `{"ranges", "rows": {access/agent/actions}}`, the push gate's and agents' rows. `other` holds `tier_rows`'
+   `{"packed", "ranges", "rows"}` (sorted, it starts with `packed`), refs pages and `{"q": {}}`. `probe` is right: the
+   probe of `lookup::create` (`ensure_group`, and `leader_site` in actions). So every `ranges` and `other` label in m42
+   and m42p means core rows and packed or refs reads, not range reads.
+2. **Why lead reads jump after the first change.** `read_spread` sends core and tier reads to the leader only when all
+   three members it asks answer NotLeader. A learner answers that once its read-index call to the leader fails, because
+   the failure makes it forget the leader. Learner `IndexEnded` before 05:21:33Z: 320 ok, 469 late, 495 failed; after:
+   867 ok, 4,957 late, 6,101 failed; even under a leader stable for 3 s or more, 661 ok, 1,450 late, 1,739 failed.
+   Voter idx reads fell from about 100 to 190 a second to about 0 after 05:22:27Z, and lead reads took their place. That
+   is a loop: learners lose the leader, reads fall to the leader, the leader slows, more learner calls fail. Its
+   trigger is the leader's load, the same load that trips `CommitErrors`.
+3. **Lead reads by leadership state**, a second across the voters: 974 while the leader changes (164 s; other 533,
+   ranges 269, probe 172); 673 with no leader (30 s); with a leader stable 5 s or more (68 s), 508 at the leader plus 230
+   at non-leaders. The 230 are edge requests still walking voters, from many isolates or from caches cleared again by
+   `commit_hedged`'s `forget_leader` after NotLeader or a missed receipt; members stamp every edge request `from=255`, so
+   this trace cannot count isolates or split the two.
+4. **`probe:lead` runs 100 to 390 a second after the change.** The edge's `commit()` calls `ensure_group`, which probes,
+   whenever the isolate holds no leader, as it does after every NotLeader; while no leader is found, `create` also posts
+   `/campaign` to the home voter in its loop, up to 370 in 20 s to site 0 while sites 1 and 2 led. That is the agents'
+   "created, but no member leads" 503.
+5. **The m42 contradiction.** m42's quiet group (term 2, /read 1.5 to 5.3 a second) was not lookup-share fixing the
+   storm: its hung requests (p50 20 s) throttled the offered load. The revert (2 → 19, 14 step-downs) and lookup-poll
+   (2 → 22, 9) churn alike; lookup-poll restores the edge and leaves the group side as it was.
+
+Fix candidates (not designed; the operator decides): (a) a learner whose read-index call failed sheds a spread read
+(retry) instead of answering NotLeader, so a lost leader does not move the whole read class onto the leader; (b) skip
+`ensure_group`'s probe and campaign loop when the chain's config is known (the group exists); (c) fix the query tag
+(append `packed` and `refs` to `READ_QUERIES`, or tag the sorted key set); (d) count edge isolates (an isolate id on
+test-faults requests) before redesigning the mark.
+- Close-out: sweep "no shard container running"; 131348's 11 members retired (11 of 11 not joined).
+
+**Final idle reading and slot close.**
+- Idle window 05:34:19–06:04:19Z after the lookup-poll row, reapers on except the retired row network: graft-m2b
+  $0.02 by script (about $0.04 an hour; account $4.82 in the window, all graft-m1's B0-30 close-out). idlewatch-m42p
+  saw 0 shard starts in 31 minutes (`raw/idlewatch-m42p.jsonl`).
+- sweep-quiet after the third row (`sweepquiet.py`, 05:15–06:05Z): names:* rows 55 (05:30), 169 (05:45) and 24
+  (06:00) a slot, up from the 0 of the 04:45 and 05:00 slots, and all sites ok. Site a's sweep wall grew to 352 s
+  (05:30, swept 12, planned 708) and 620 s (05:45, swept 20, planned 156); its 06:00 run had not reported by
+  06:06Z. Open finding [measured, cause not traced]: the rows likely come from the row's new and retired group refilling
+  the cache, but a 620 s wall is two thirds of the 15-minute cron period, so site a's sweep can overlap the next run.
+  Check at the next slot whether the wall falls back to 119–209 s.
+- Promote-lapse and the roll measurement were not exercised (no promotion came due; 131296 has no rollable run).
+- Slot closed at 06:06Z. Meter (`acctcost.py`): graft-m2b $4.43 since the site day at 03:20:06Z (stop $40); account
+  $77.78 for the UTC day at 06:06Z (stop $170).

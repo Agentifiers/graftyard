@@ -10,8 +10,8 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 FROM=${ACCT_FROM:?ACCT_FROM is the account meter start, ISO}
 usd() { python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r '.usd // 999' 2>/dev/null || echo 999; }
-# RUN_PREFIX=graft-m3f: the run's figure is that install's scripts and applications alone (acctcost.py PREFIX, its prefix_usd), since
-# other installs run in the same window.
+# With RUN_PREFIX (graft-m2b, graft-m3f) the run's delta counts only that install's scripts and applications
+# (acctcost.py PREFIX, its prefix_usd), for a slot that shares the account with other installs.
 runusd() { PREFIX=${RUN_PREFIX:-} python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r "${RUN_PREFIX:+.prefix_usd // }.usd // 999" 2>/dev/null || echo 999; }
 acct=$(usd "$FROM"); run=$(runusd "${RUN_FROM:-$FROM}")
 echo "$(date -u +%FT%TZ) cost account $acct since $FROM, run $run since ${RUN_FROM:-$FROM}, at $1" >> "$ST"
