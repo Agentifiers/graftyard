@@ -4400,3 +4400,33 @@ under the $0.10 line); the account's $15.20 in the window is graft-m1's B0-30 cl
 0 shard starts. **sweep-quiet's steady state: 0 `names:*` rows in the 04:45 and 05:00 slots** (0 objects), against
 2,565 to 2,847 a slot before the day; every site's run read 0 homes, walls 36 to 39 s on b and c and 119 to 209 s on
 site a, which sweeps 20 networks a run, all `ok`.
+
+**B0-33 on lookup-poll (operator, about 05:05Z; slot stop raised to $40 by graft-m2b script from 03:20:06Z).** Edge-only
+deploy from main `67ba9343` (B0-02's lookup-poll: one plain-data mark per chain that waiters poll on their own timers),
+edge `1b03108d`, served at 100% (`edgever.py`, rev `6a59ce12`, the day branch with `67ba9343` merged). Sites stay on
+m42's day. `tests/fanout/edgeguard.sh` watched the edge every 30 s for lookup-share's lines, to stop the row and put
+back `0de37416`'s edge. Repo:131348, a1 `mwk8r5wk`, 5,000 agents, k 4, 8 learners, inbound trace on, load 05:21:07 to
+05:26:07Z: fail.
+
+| | lookup-poll | baseline (revert) | lookup-share (void) | m41 |
+|---|---|---|---|---|
+| Agent-class ok a second | 18.6 | 22.0 | 29.2 | 26.8 |
+| Agent p50 near 20 s from the lookup | no (503s after retries) | no | yes, 20,028 ms | no |
+| lookup-share error lines (cross-request I/O, dropped closure, previous instance) | 0 (guard read 0 every 30 s; load-window census none) | 0 | 569 and more | 0 |
+| Terms; step-downs | 2 → 22; 9 (all `CommitErrors`) | 2 → 19; 14 | 2; 0 | 2 → 20; 13 |
+| First leader change | 05:21:33Z, 26 s in | 04:27:18Z, 25 s in | none | 27 s in |
+| Voter /read a second after it | 293, 463, 213 | 392, 501, 375 | (no change) | 321, 258, 306 |
+| Voter /suspect a second after it | 140, 243, 125 | 172, 121, 139 | (no change) | 155, 149, 156 |
+| Read grant p99 by leading site | 2,699 / 1,800 / 3,338 ms | 2,486 / 1,980 / 3,117 | 228 | 2,540 / 4,078 / 1,713 |
+| Leader commit p99 | 17,701 ms | 11,859 | 2,515 | 14,521 |
+| Fetches per voter per 20 ms max / p99 | 20 / 7 | 19 / 9 | 6 / 3 | 21 / 10 |
+
+- The edge is correct on lookup-poll: no lookup-share line in setup or load. The agent routes' p50 of 17.6 to 22.7 s are
+  503s after member retries (`access rows did not answer` 2,091, `created, but no member leads` 1,661), as on the
+  baseline, not the `LOOKUP_FOR` wait.
+- The group's storm is as on the baseline: after the first leader change each voter takes 213 to 463 `/read` and 125
+  to 243 `/suspect` a second. `inbound.py` names the voters' reads as lead reads: on voters 0 and 1, `other:lead` 153 and
+  256 a second, `ranges:lead` 79 and 118, `probe:lead` 58 and 84; learners take 110 to 121 idx reads a second each.
+  lookup-poll's mark is per isolate, so this is consistent with many edge isolates each running a lookup once their
+  cached leader is wrong [inference, not traced]; sent to B0-02 with the trace.
+- Close-out: sweep "no shard container running"; 131348's 11 members retired (11 of 11 not joined).
