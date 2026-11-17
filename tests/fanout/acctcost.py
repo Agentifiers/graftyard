@@ -6,7 +6,8 @@ Unlike m2bcost.py, which prices one install from its own start, this reads every
 application in the account, because per-install meters missed most of a $2,328 bill (2026-11-16): graft-m1's 30-day
 runs and the other installs were on no meter. Priced at the bill's own overage rates (container memory, vCPU, and
 disk; Durable Object rows written and read, duration, and requests; Workers requests and CPU), allowances ignored, so
-it reads slightly high. Account and token from the environment, the token only as a header."""
+it reads slightly high. Account and token from the environment, the token only as a header. PREFIX=<install> prices
+that install's scripts and applications alone on the first line."""
 import collections, datetime, json, os, sys, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
@@ -54,11 +55,18 @@ for x in r["p"]:
     who[ns.get(x["dimensions"]["namespaceId"], "?")] += rows + dur
 for x in r["d"]:
     usd["do_requests"] += x["sum"]["requests"] * 0.15 / 1e6
+    who[x["dimensions"]["scriptName"]] += x["sum"]["requests"] * 0.15 / 1e6
 for x in r["w"]:
     c = x["sum"]["requests"] * 0.30 / 1e6 + x["sum"]["cpuTimeUs"] / 1000 * 0.02 / 1e6
     usd["workers"] += c
     who[x["dimensions"]["scriptName"]] += c
 out = {"from": a, "to": b, **{k: round(x, 2) for k, x in usd.items()}, "usd": round(sum(usd.values()), 2)}
+# PREFIX=graft-m3f: the first line is only the scripts and container applications named with it (installs run at once),
+# with the whole account's figure kept as `account`. Durable Object requests count under their script.
+if os.environ.get("PREFIX"):
+    mine = {k: x for k, x in who.items() if str(k).startswith(os.environ["PREFIX"])}
+    out = {"from": a, "to": b, "prefix": os.environ["PREFIX"], "usd": round(sum(mine.values()), 2),
+           "account": out["usd"], **{k: round(x, 2) for k, x in sorted(mine.items(), key=lambda kv: -kv[1])}}
 print(json.dumps(out))
 for k, x in who.most_common(5):
     print(f"  {k:40} ${x:.2f}")

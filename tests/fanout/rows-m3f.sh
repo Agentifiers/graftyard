@@ -19,6 +19,6 @@ bash tests/fanout/rows.sh "$TAG" &
 until grep -q '^ALLDONE' "$ST" 2>/dev/null; do sleep 20; done
 if python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; then echo "$(date -u +%FT%TZ) SWEEP2 OK" >> "$ST"
 else echo "$(date -u +%FT%TZ) SWEEP2 FAILED" >> "$ST"; fi
-echo "$(date -u +%FT%TZ) cost $(bash tests/fanout/cost.sh 2>/dev/null)" >> "$ST"
+echo "$(date -u +%FT%TZ) cost $(PREFIX=graft-m3f python3 tests/fanout/acctcost.py "${RUN_FROM:-$ACCT_FROM}" 2>/dev/null | head -1)" >> "$ST"
 echo FINISHED >> "$ST"
 exec sleep infinity
