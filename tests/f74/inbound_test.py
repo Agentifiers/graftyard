@@ -16,6 +16,9 @@ v2 = [row(10, 255, 0, 1, 2, 1), row(20, 255, 0, 2, 2, 1), row(30, 255, 0, 3, 2, 
 v0 = [[1000, 23, 1, 7, 1, 0], [2010, 21, 1, 7, 1510, 0]]
 # Voter 1's /reads at arrivals 3 and 5 name their queries: a leader probe and a read-index `rows` read.
 v1 += [[1101, 26, 0, 3, 1, 0], [1301, 26, 0, 5, 3, 1]]
+# probe-known: arrivals 3 and 5 came from two isolates, 3 a walk (step 2) from isolate 9 and 5 a spread read (step 3)
+# from isolate 4; arrival 4 (a /suspect) from isolate 9 as well, step other.
+v1 += [[1100, 27, 255, 3, 9, 2], [1200, 27, 255, 4, 9, 0], [1300, 27, 255, 5, 4, 3]]
 with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
     for site, rs in ((0, v0), (1, v1), (2, v2)):
         f.write(json.dumps({"at": "x", "site": site, "rows": rs}) + "\n")
@@ -26,6 +29,7 @@ out = subprocess.run([sys.executable, os.path.join(here, "inbound.py"), f.name, 
 assert "  1: rows 6 segments 1 missing 0 backwards 0" in out, out
 assert "probe:lead" in out and "rows:idx" in out and "untagged" in out, out
 assert "  2: rows 6 segments 2 missing 1 backwards 0" in out, out
+assert "  1: walk " in out and "spread " in out and "isolates 2, top 67%, walks from 1 isolates (top 100%)" in out, out
 cols, call = [l.rstrip("\n").split("\t") for l in open(tsv)]
 c = dict(zip(cols, call))
 assert (c["out"], c["arrival"], c["ahead"], c["ahead_edge"]) == ("500", "6", "3", "3"), c

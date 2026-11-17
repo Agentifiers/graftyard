@@ -5,6 +5,7 @@
 # posts the members took before the leader change, and the count of workerd's cross-request errors. Exits 1 also if a
 # round's posts before the change pass MAX_POSTS (one lookup's passes plus each request's first post). Exits 1 if any cross-request error appears
 # or any request that was not cancelled failed or waited more than LEADS_IN + MAX_EXTRA ms.
+# probe-known's check runs after the three rounds (see below).
 # Needs worker-build and tests/m0's wrangler (`npm ci` in tests/m0).
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
@@ -39,6 +40,18 @@ for round in 1 2 3; do
   { [ "$bad" = 0 ] && [ "${max:-99999}" -le $((LEADS_IN + MAX_EXTRA)) ] && [ "${posts:-99999}" -le "$MAX_POSTS" ]; } || fails=1
   sleep 3
 done
+# probe-known: once this isolate holds the group's config at the record's generation, `create` (`ensure_group` before
+# a commit) posts nothing. A record of the next generation (a move) is not known: `create` probes, as on main, and the
+# old group's leader answers it (a move's new members are joined by the move's own steps, not by `create`).
+curl -s "$u/arm?leads_in=0&chain=4" >/dev/null
+curl -s "$u/read?chain=4" >/dev/null
+c0=$(curl -s "$u/counts?chain=4&gen=1")
+known=$(curl -s "$u/create?chain=4&gen=1")
+c1=$(curl -s "$u/counts?chain=4&gen=1")
+moved=$(curl -s "$u/create?chain=4&gen=2")
+c2=$(curl -s "$u/counts?chain=4&gen=1")
+echo "known config (gen 1): create $known, member posts $((c1 - c0)) | moved record (gen 2): create $moved, posts $((c2 - c1))"
+{ [ "$((c1 - c0))" = 0 ] && [ "$((c2 - c1))" -gt 0 ]; } || fails=1
 x=$(grep -c -e 'Cannot perform I/O on behalf of a different request' -e 'after being dropped' -e 'previous WASM instance' \
   -e 'Promise will never complete' "$B/dev.log")
 echo "cross-request errors in workerd's log: $x"

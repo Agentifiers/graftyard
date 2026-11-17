@@ -7,6 +7,10 @@ publish.workspace = true
 
 # The group lookup rule over Durable Object bindings, for every Worker that calls a group: site members (dependency
 # reads, id-block leases, bootstrap checks), the git edge, and the release endpoint.
+[features]
+# Test installs: `SENT_BY` on member calls. The edge's and site's `test-faults` turn it on.
+test-faults = []
+
 [dependencies]
 futures-util = { version = "0.3", default-features = false }
 graftyard-raft = { path = "../raft" }

@@ -22,11 +22,15 @@ fn chain(n: u64) -> ChainId {
 }
 
 fn record() -> PlacementRecord {
+    record_at(1)
+}
+
+fn record_at(generation: u32) -> PlacementRecord {
     PlacementRecord {
         name: PlacementName::Tri,
         home: SiteId(0),
         sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
-        generation: 1,
+        generation,
         moving_from: None,
         at: Timestamp(0),
     }
@@ -80,6 +84,25 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             }
             Response::ok(n.to_string())
         }
+        // probe-known: every post the three members of generation `gen` took, for this round's chain.
+        "/counts" => {
+            let (c, g) = (q("chain").unwrap_or(1), q("gen").unwrap_or(1) as u32);
+            let mut n = 0;
+            for s in 0..3u8 {
+                let name = MemberRef::new(chain(c), SiteId(s), MemberKind::Full, s, g).do_name.to_string();
+                let stub = env.durable_object(&format!("MEMBER_{s}"))?.get_by_name(&name)?;
+                n += stub.fetch_with_str("https://m/counts").await?.text().await?.parse::<u64>().unwrap_or(0);
+            }
+            Response::ok(n.to_string())
+        }
+        // probe-known: `create` under a record of generation `gen`, as `ensure_group` calls it before a commit.
+        "/create" => {
+            let c = chain(q("chain").unwrap_or(1));
+            let sites = sites();
+            let b = Bindings { env: &env, sites: &sites };
+            let r = graftyard_lookup::create(&b, c, &record_at(q("gen").unwrap_or(1) as u32), &json!({})).await;
+            Response::ok(format!("{r:?}"))
+        }
         "/read" => {
             let c = chain(q("chain").unwrap_or(1));
             let sites = sites();
@@ -117,6 +140,12 @@ impl DurableObject for Member {
             st.put("chain", q("chain").unwrap_or(1)).await?;
             return Response::ok("armed");
         }
+        if url.path() == "/counts" {
+            let n: u64 = st.get("all").await.ok().flatten().unwrap_or(0);
+            return Response::ok(n.to_string());
+        }
+        let all: u64 = st.get("all").await.ok().flatten().unwrap_or(0);
+        st.put("all", all + 1).await?;
         if url.path() == "/posts" {
             let n: u64 = st.get("posts").await.ok().flatten().unwrap_or(0);
             return Response::ok(n.to_string());

@@ -651,6 +651,9 @@ impl<F: Family> Routes<F> {
             let from = header("x-graft-from").and_then(|v| u8::try_from(v).ok()).unwrap_or(255);
             let (index, open, guard) = self.host.inbound_log.enter(url.path());
             self.host.trace_at(entered, Trace::Entered, from, header("x-graft-call").unwrap_or(0), index, open);
+            if let Some(by) = header(graftyard_lookup::SENT_BY) {
+                self.host.trace_at(entered, Trace::SentBy, from, index / 64, by / 16, by % 16);
+            }
             (guard, index / 64)
         };
         // Every request this object takes, by route: B0-18's leader load.

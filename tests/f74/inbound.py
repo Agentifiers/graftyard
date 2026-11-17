@@ -152,6 +152,27 @@ for addr in sorted(rows, key=str):
     top = " ".join(f"{q}:{k} {n / span:.1f}" for (q, k), n in c.most_common(6))
     print(f"  {addr}: /read {reads / span:.1f}/s, untagged {(reads - len(tagged)) / span:.1f}/s | {top}")
 
+# probe-known's walk split: `SentBy` (27) rows, [at, 27, from, arrival, isolate, step], one per request that carried
+# `graftyard_lookup::SENT_BY`, with steps from `graftyard_lookup::SentBy` (append-only). Per member: requests a second
+# by step, the distinct sending isolates, and the busiest isolate's share, so walks from many isolates and repeated
+# walks from a few tell apart.
+STEPS = ["other", "leader", "walk", "spread", "send", "ask"]
+step = lambda code: STEPS[code] if 0 <= code < len(STEPS) else "other"
+shown = False
+for addr in sorted(rows, key=str):
+    by = [r for r in rows[addr] if r[1] == 27 and T0 <= r[0] <= T1]
+    if not by:
+        continue
+    if not shown:
+        print("\nrequests by lookup step per member (per s; isolates = distinct senders, top = busiest isolate's share)")
+        shown = True
+    c = collections.Counter(step(r[5]) for r in by)
+    iso = collections.Counter(r[4] for r in by)
+    walks = collections.Counter(r[4] for r in by if step(r[5]) == "walk")
+    top = " ".join(f"{k} {n / span:.1f}" for k, n in c.most_common(6))
+    wtop = f", walks from {len(walks)} isolates (top {max(walks.values()) / sum(walks.values()):.0%})" if walks else ""
+    print(f"  {addr}: {top} | isolates {len(iso)}, top {max(iso.values()) / len(by):.0%}{wtop}")
+
 if "--rows" in opt:
     with open(opt["--rows"], "w") as f:
         cols = ["from", "to", "id", "sent", "entered", "out", "total", "arrival", "open", "ahead", "ahead_edge"] + names

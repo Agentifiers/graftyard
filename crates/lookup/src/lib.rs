@@ -90,6 +90,8 @@ struct Known {
     leader: Option<SiteId>,
     /// The highest term a reply from the group carried.
     term: u64,
+    /// The member generation of the config held: the highest any member in it carries (`Placement::generation`).
+    generation: u32,
 }
 
 thread_local! {
@@ -122,6 +124,63 @@ fn call_headers() -> Option<Headers> {
     Some(h)
 }
 
+/// Test installs: which isolate sent a member call and which step of the lookup rule sent it (`SENT_BY`), so a
+/// member's trace splits its `/read`s by isolate and by walk (m42p, `tests/am1/results/lm1-memory.md`, round 37).
+#[cfg(feature = "test-faults")]
+pub const SENT_BY: &str = "x-graft-sent-by";
+
+/// What sent a member call, in `SENT_BY` as `isolate * 16 + step`. Append-only, as trace kinds are;
+/// `tests/f74/inbound.py` keeps the same list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SentBy {
+    Other = 0,
+    /// `call_opt`'s post to the leader this isolate held.
+    Leader = 1,
+    /// `call_opt`'s post to any other member: a walk for the leader.
+    Walk = 2,
+    /// `read_spread`'s read-index read to a learner or follower.
+    Spread = 3,
+    /// `commit_hedged`'s `/commit` send.
+    Send = 4,
+    /// `commit_hedged`'s `/outcome_by_request` ask.
+    Ask = 5,
+}
+
+#[cfg(feature = "test-faults")]
+thread_local! {
+    /// This isolate's id for `SENT_BY`, drawn once.
+    static ISOLATE: u64 = (js_sys::Math::random() * 4_294_967_296.0) as u64;
+}
+
+/// `post_within` with `SENT_BY` on a test install; a product build sends what `post_within` sends.
+pub async fn post_by(
+    b: &Bindings<'_>,
+    to: SiteId,
+    do_name: &str,
+    path: &str,
+    body: &[u8],
+    deadline: Duration,
+    by: SentBy,
+) -> Option<(u16, Value)> {
+    let stub = b.member(to, do_name).ok()?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
+    let h = call_headers()?;
+    #[cfg(feature = "test-faults")]
+    h.set(SENT_BY, &ISOLATE.with(|i| *i * 16 + by as u64).to_string()).ok()?;
+    #[cfg(not(feature = "test-faults"))]
+    let _ = by;
+    init.with_headers(h);
+    let req = Request::new_with_init(&format!("https://member{path}"), &init).ok()?;
+    let call = async move {
+        let mut res = stub.fetch_with_request(req).await.ok()?;
+        let status = res.status_code();
+        let v = res.json::<Value>().await.unwrap_or(Value::Null);
+        Some((status, v))
+    };
+    within(deadline, call).await.flatten()
+}
+
 /// Which step of the rule found the group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -143,6 +202,7 @@ fn learn(chain: ChainId, nl: &Value) {
     // or reported to.
     let voters = p.voters().iter().filter(|m| Some(m.site) != lost).map(|m| (m.site, m.do_name.to_string())).collect();
     let learners = p.learners().iter().map(|m| (m.site, m.do_name.to_string())).collect();
+    let generation = p.generation();
     KNOWN.with(|k| {
         let mut k = k.borrow_mut();
         let e = k.entry(chain).or_default();
@@ -150,8 +210,18 @@ fn learn(chain: ChainId, nl: &Value) {
             e.voters = voters;
             e.learners = learners;
             e.config_index = index;
+            e.generation = generation;
         }
     });
+}
+
+/// Whether this isolate holds a config of `chain`'s group at `record`'s generation or later, learned from a member's
+/// reply: the group exists with members the record names, so `create` has nothing to build or elect, and a group whose
+/// leader is gone is found and elected by the caller's own lookup and `suspect` reports (`design/DESIGN.md`, journey
+/// 1, step 1). A config of an older generation does not count: after a move the record names members the held config
+/// does not, and only `create`'s joins bootstrap them.
+pub fn config_known(chain: ChainId, record: &PlacementRecord) -> bool {
+    KNOWN.with(|k| k.borrow().get(&chain).is_some_and(|e| !e.voters.is_empty() && e.generation >= record.generation))
 }
 
 /// Whether a member's `NotLeader` naming no leader says nothing about the group: the member says it was removed
@@ -165,6 +235,20 @@ fn stale_answer(chain: ChainId, v: &Value, nl: &Value) -> bool {
     }
     let index = nl.pointer("/config/index").and_then(Value::as_u64).unwrap_or(0);
     KNOWN.with(|k| k.borrow().get(&chain).is_some_and(|e| index < e.config_index))
+}
+
+/// The leader a follower's or learner's read answer names (`read_spread`), only from a term at or above the highest
+/// this isolate has seen: a member behind the group says nothing about its leader. Through `learn_leader` such an
+/// answer dropped the leader held, and the next request walked the voters to find it again (m42p's trace,
+/// `tests/am1/results/lm1-memory.md`, round 37 [inference]).
+fn learn_leader_from_follower(chain: ChainId, v: &Value) {
+    let behind = v
+        .pointer("/meta/term")
+        .and_then(Value::as_u64)
+        .is_some_and(|t| KNOWN.with(|k| k.borrow().get(&chain).is_some_and(|e| t < e.term)));
+    if !behind {
+        learn_leader(chain, v);
+    }
 }
 
 /// The leader a reply names. A reply whose term is below the highest this isolate has seen from the group comes from a
@@ -225,18 +309,7 @@ pub async fn post_within(
     body: &[u8],
     deadline: Duration,
 ) -> Option<(u16, Value)> {
-    let stub = b.member(to, do_name).ok()?;
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
-    init.with_headers(call_headers()?);
-    let req = Request::new_with_init(&format!("https://member{path}"), &init).ok()?;
-    let call = async move {
-        let mut res = stub.fetch_with_request(req).await.ok()?;
-        let status = res.status_code();
-        let v = res.json::<Value>().await.unwrap_or(Value::Null);
-        Some((status, v))
-    };
-    within(deadline, call).await.flatten()
+    post_by(b, to, do_name, path, body, deadline, SentBy::Other).await
 }
 
 /// `create`'s `/join` to one bootstrap member, within 60 s: its status, and its body with `JOINED_FRESH` set to whether
@@ -365,7 +438,7 @@ pub async fn call_opt(
         chain,
         now_ms,
         |k| candidates(b, chain, record, k),
-        move |s, name: String| async move { post(b, s, &name, path, body).await },
+        move |s, name: String, by| async move { post_by(b, s, &name, path, body, CALL, by).await },
         move |about: Target, term, all| async move { suspect(b, chain, &about, term, colo, all).await },
         Delay::from,
     )
@@ -440,7 +513,7 @@ async fn lookup<C, CF, P, PF, S, SF, D, DF>(
 where
     C: Fn(usize) -> CF,
     CF: Future<Output = Option<Vec<(SiteId, String, Step)>>>,
-    P: Fn(SiteId, String) -> PF,
+    P: Fn(SiteId, String, SentBy) -> PF,
     PF: Future<Output = Option<(u16, Value)>>,
     S: Fn(Target, u64, bool) -> SF,
     SF: Future<Output = Option<Target>>,
@@ -511,7 +584,9 @@ where
                 held = Some(Marked(chain, token));
             }
             tried.insert(name.clone());
-            let r = post(s, name.clone()).await;
+            let by =
+                if cached_leader(chain).is_some_and(|l| l.do_name == name) { SentBy::Leader } else { SentBy::Walk };
+            let r = post(s, name.clone(), by).await;
             let v = match classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. })) {
                 Answer::Missed(why) => {
                     last = format!("{name}: {why}");
@@ -826,7 +901,7 @@ async fn spread_once(
     // The learners come first in the order, so the first `n_learners` asked are learners, and only they are timed.
     for (i, t) in timed_spread_order(learners, voters, known.leader, pick).into_iter().enumerate() {
         let start = now_ms();
-        let r = post_within(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL).await;
+        let r = post_by(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL, SentBy::Spread).await;
         let seen = r.as_ref().map(|(s, v)| (*s, v));
         if i < n_learners {
             let sample = answer_sample(seen, now_ms().saturating_sub(start) as f64);
@@ -844,7 +919,7 @@ async fn spread_once(
         answers.push(r);
         if usable {
             let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
-            learn_leader(chain, &v);
+            learn_leader_from_follower(chain, &v);
             refresh_config(b, chain, &t, &v).await;
             return Ok(Ok(Some((v, Step::Cached, t))));
         }
@@ -1290,12 +1365,13 @@ pub async fn commit_hedged(
         target = Some(t.clone());
         prev = Some(t.clone());
         note(json!({ "send": t.site.0, "name": t.do_name, "why": why }));
-        let send = post_within(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), RECEIPT_OPEN);
+        let send = post_by(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), RECEIPT_OPEN, SentBy::Send);
         let ask = || {
             let (t, note) = (&t, &note);
             async move {
                 note(json!({ "ask": t.site.0 }));
-                let r = post_within(b, t.site, &t.do_name, "/outcome_by_request", lookup, COMMIT_RECEIPT).await;
+                let r =
+                    post_by(b, t.site, &t.do_name, "/outcome_by_request", lookup, COMMIT_RECEIPT, SentBy::Ask).await;
                 if let Some((200, v)) = &r {
                     heard(chain, t.site, v, now_ms());
                 }
@@ -1450,6 +1526,12 @@ pub async fn create(
     record: &PlacementRecord,
     join: &Value,
 ) -> std::result::Result<(), String> {
+    // The group exists at this record's generation: no probe, joins, or `/campaign`. A probe that the leader shed or a
+    // leaderless gap failed sent the joins and a `/campaign` to the home member every 200 ms, while another site led:
+    // up to 370 in 20 s, and p50 13.7 s of each B0-33 push (m42p, `tests/am1/results/lm1-memory.md`, round 37).
+    if config_known(chain, record) {
+        return Ok(());
+    }
     // A read that answers nothing of the fold: a repository's `{"q": {}}` is every ref, and at 303,144 refs it ran
     // the leader and the edge out of memory on every commit (`tests/m2/results/m2-wp1.md`, "2026-11-04"). A member
     // built before `probe` answers it as `{"q": {}}`.
@@ -2497,7 +2579,7 @@ mod tests {
                         let v = names2.iter().map(|(s, n)| (*s, n.clone(), Step::Cached)).collect::<Vec<_>>();
                         async move { (k == 0).then_some(v) }
                     },
-                    move |s, _name| {
+                    move |s, _name, _by| {
                         let (c, posts) = (c2.clone(), posts.clone());
                         let sent = c.get();
                         async move {
@@ -2566,6 +2648,112 @@ mod tests {
         // Every request is answered by the leader within one lookup pass and one post of its first answer.
         assert!(latest <= leads_at + 250 + 4 * post_ms, "the last request was answered at {latest} ms");
         assert_eq!(posts[1][1] as usize, n, "each request went to the leader once it led: {posts:?}");
+    }
+
+    /// probe-known: a config learned from a member's reply at the record's generation makes the group known, so
+    /// `create` sends no probe, join, or `/campaign`; one of an older generation, held across a move to a record of the
+    /// next, does not, or the moved group's new members would never be joined.
+    #[test]
+    fn a_config_is_known_only_at_the_records_generation_or_later() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(43)));
+        let rec = |g: u32| PlacementRecord {
+            name: graftyard_types::PlacementName::Tri,
+            home: SiteId(0),
+            sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
+            generation: g,
+            moving_from: None,
+            at: Timestamp(0),
+        };
+        let config = |index: u64, g: u32| {
+            let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, g);
+            json!({ "config": { "index": index, "config": { "normal": {
+                "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": g } } } })
+        };
+        assert!(!config_known(chain, &rec(1)), "nothing learned");
+        learn(chain, &config(5, 1));
+        assert!(config_known(chain, &rec(1)));
+        assert!(!config_known(chain, &rec(2)), "a move's record names members the held config does not");
+        learn(chain, &config(9, 2));
+        assert!(config_known(chain, &rec(2)), "the moved group's config, once a member of it answered");
+        assert!(config_known(chain, &rec(1)), "an edge still on the old record");
+        forget_leader(chain);
+        assert!(config_known(chain, &rec(2)), "a lost leader is not a lost config");
+    }
+
+    /// A group whose leader is truly gone is still elected without `create`: every voter answers `NotLeader` naming
+    /// none, and each pass of the lookup reports the group with `suspect` to every voter (`all`), which makes a voter
+    /// whose promise lapsed campaign. Once one leads, the lookup returns its answer.
+    #[test]
+    fn a_leaderless_group_is_reported_to_every_voter() {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(44)));
+        let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, 1);
+        let config = json!({ "index": 5, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        learn(chain, &json!({ "config": config.clone() }));
+        let names: Vec<(SiteId, String)> = KNOWN.with(|k| k.borrow()[&chain].voters.clone());
+        let clock = Rc::new(Cell::new(0u64));
+        let all_reports = Rc::new(Cell::new(0u32));
+        let led = Rc::new(Cell::new(false));
+        let (c1, c2, r, l1, l2) = (clock.clone(), clock.clone(), all_reports.clone(), led.clone(), led.clone());
+        let mut req = Box::pin(lookup(
+            chain,
+            move || c1.get(),
+            move |k| {
+                let v = names.iter().map(|(s, n)| (*s, n.clone(), Step::Cached)).collect::<Vec<_>>();
+                async move { (k == 0).then_some(v) }
+            },
+            move |s, _name, _by| {
+                let (config, led) = (config.clone(), l1.get());
+                async move {
+                    if led && s == SiteId(2) {
+                        return Some((200, json!({ "value": 1, "meta": { "term": 3, "leader": 2 } })));
+                    }
+                    let leader = if led { json!(2) } else { Value::Null };
+                    let nl = json!({ "term": 3, "leader": leader, "config": config });
+                    Some((200, json!({ "error": { "notLeader": nl }, "meta": { "term": 3 } })))
+                }
+            },
+            move |_about: Target, _term, all| {
+                // A report to every voter makes voter 2 campaign and win.
+                if all {
+                    r.set(r.get() + 1);
+                    l2.set(true);
+                }
+                async move { None }
+            },
+            move |d: Duration| {
+                c2.set(c2.get() + d.as_millis() as u64);
+                async {}
+            },
+        ));
+        let out = loop {
+            if let Some(out) = req.as_mut().now_or_never() {
+                break out;
+            }
+            assert!(clock.get() < 30_000, "no answer");
+        };
+        let (v, _, t) = out.expect("answered").expect("a group");
+        assert_eq!((t.site, v["value"].clone()), (SiteId(2), json!(1)));
+        assert_eq!(all_reports.get(), 1, "one pass that found no leader, reported to every voter");
+    }
+
+    /// A follower's or learner's answer from a term below the highest this isolate saw keeps the leader held; one at
+    /// or above it names the leader as any reply does.
+    #[test]
+    fn a_followers_answer_from_an_older_term_keeps_the_leader() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(45)));
+        let voters = vec![(SiteId(0), "a".to_string()), (SiteId(1), "b".to_string()), (SiteId(2), "c".to_string())];
+        KNOWN.with(|k| k.borrow_mut().insert(chain, Known { voters, config_index: 1, ..Default::default() }));
+        learn_leader(chain, &json!({ "meta": { "term": 5, "leader": 2 } }));
+        learn_leader_from_follower(chain, &json!({ "value": 1, "meta": { "term": 4, "leader": 1 } }));
+        assert_eq!(cached_leader(chain).map(|t| t.site), Some(SiteId(2)), "a learner behind the term says nothing");
+        learn_leader_from_follower(chain, &json!({ "value": 1, "meta": { "term": 6, "leader": 0 } }));
+        assert_eq!(cached_leader(chain).map(|t| t.site), Some(SiteId(0)), "a newer term names the new leader");
+        learn_leader_from_follower(chain, &json!({ "value": 1, "meta": { "term": 6, "leader": null } }));
+        assert_eq!(cached_leader(chain), None, "the same term naming none: the follower lost it, as before");
     }
 
     /// The lookup mark is plain data with no future in it: the holder keeps it while it touches it within
