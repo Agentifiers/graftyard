@@ -169,9 +169,12 @@ async function pushOn(i, k) {
   // A push with no HTTP answer: whether its ref landed at the pushed commit, read at once through the edge's ls-refs
   // while this branch still has no other push in flight (operator, 2026-11-17: landed means the edge committed and
   // answered and the answer was lost in transit). Logged only; the next push's stale answer re-reads the tip as before.
+  // Read at 2, 10 and 30 s: the edge commits such a push up to about 9 s after the connection reset (b030r6, 17:58Z:
+  // five read at once were not yet at the pushed commit, and all five were in the log 7 to 9 s after the reset).
   if (r.status === 0) {
-    const now = await tip(ref);
-    appendFileSync(FETCH_FAILS, JSON.stringify({ at: new Date().toISOString(), check: "landed", ref, commit, tip: now, landed: now === commit }) + "\n");
+    let now = null, waited = 0;
+    for (const ms of [2_000, 8_000, 20_000]) { await sleep(ms); waited += ms; now = await tip(ref); if (now === commit) break; }
+    appendFileSync(FETCH_FAILS, JSON.stringify({ at: new Date().toISOString(), check: "landed", ref, commit, tip: now, landed: now === commit, waitedMs: waited }) + "\n");
   }
   if (res === "ok") { st.tips[i] = commit; st.pushes++; st.pushBytes += pack.length; }
   else if (res === "stale") st.tips[i] = await tip(ref);
