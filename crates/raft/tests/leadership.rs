@@ -398,6 +398,37 @@ fn two_colos_within_the_window_stop_promises_to_a_renewing_leader() {
     assert!(c.m(C).state().promise_until > c_promise);
 }
 
+/// A report from `Colo::UNKNOWN` (a site script's lookup, which runs in no edge) is no second colo: with one edge colo
+/// and site-script reports beside it, B0-33 m43's followers withheld from a leader still committing and the group went
+/// through 19 terms in 6 minutes. It still starts a campaign once the promise has lapsed.
+#[test]
+fn an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign() {
+    let lax = u32::from_be_bytes(*b"\0LAX");
+    // What a site script's report carries: its lookup never sets a colo, and the member reads a missing one as 0.
+    let site_script = 0;
+    let mut c = Cluster::new(44);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    for unknown_first in [true, false] {
+        let (one, two) = if unknown_first { (site_script, lax) } else { (lax, site_script) };
+        assert_eq!(report(&mut c, B, one, A), Verdict::Promised);
+        assert_eq!(report(&mut c, B, two, A), Verdict::Promised);
+        assert_eq!(report(&mut c, B, site_script, A), Verdict::Promised);
+        let before = c.m(B).state().promise_until;
+        drive(&mut c, 500, true, &mut id, |_| false);
+        assert!(c.m(B).state().promise_until > before, "B withheld on one colo plus unknown-colo reports");
+    }
+    // A second real colo inside the window still withholds.
+    assert_eq!(report(&mut c, B, 7, A), Verdict::Promised);
+    let stopped = c.m(B).state().promise_until;
+    drive(&mut c, 500, true, &mut id, |_| false);
+    assert_eq!(c.m(B).state().promise_until, stopped, "two colos no longer withhold");
+    // Idle until C's promise lapses: one unknown-colo report then starts its campaign.
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + 200, 200, |_| true);
+    assert_eq!(report(&mut c, C, site_script, A), Verdict::Started);
+}
+
 /// With both followers withholding, the leader loses its lease, and promises come back after 2 x the window.
 #[test]
 fn promises_return_after_twice_the_window() {

@@ -86,7 +86,12 @@ impl<C: Command> Member<C> {
                 let (colos, window) = SUSPECT;
                 let since = Timestamp(self.now.0.saturating_sub(window.as_millis() as u64));
                 self.reports.retain(|_, t| *t >= since);
-                self.reports.insert(from, self.now);
+                // `Colo::UNKNOWN` names no data center, so it is no second witness: on B0-33 m43 every edge request came
+                // from LAX, and site-script lookups' reports (colo 0) made LAX the second colo, so both followers
+                // withheld from a leader still committing, 19 terms in 6 minutes (`tests/am1/results/lm1-memory.md`).
+                if from != Colo::UNKNOWN {
+                    self.reports.insert(from, self.now);
+                }
                 if self.reports.len() >= colos {
                     let until = after(self.now, window * 2);
                     self.withhold_until = self.withhold_until.max(until);

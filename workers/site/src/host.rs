@@ -604,6 +604,11 @@ pub enum Trace {
     /// arrival number, `index` the sending isolate's id and `ms` the lookup step (`graftyard_lookup::SentBy`).
     #[cfg(feature = "test-faults")]
     SentBy = 27,
+    /// colo-unknown's check: a `/suspect` report stepped here. `peer` is the member it is about, `batch` its term,
+    /// `index` its colo (`raft::Colo::UNKNOWN` for a site script's lookup), and `ms` the verdict's code in
+    /// `VERDICTS` (`crate::member`), so a trace splits reports by colo and sees which ones a promise answered.
+    #[cfg(feature = "test-faults")]
+    Reported = 28,
 }
 
 /// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.

@@ -4408,6 +4408,25 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted run in which site a's sweep still passes SWEEP_WALL plus the in-flight network's actions, or in which a chain answered after a failed lookup in the same run held a pack the run should have marked (a committed pack left without its marker for more than one full pass).
 
+### `colo-unknown`: a `suspect` report from no data center counts toward no colo, 2026-11-17
+
+**Status.** Asked for by the operator (root-cause m43's 11 `CommitErrors` step-downs); built on branch `commit-errors`, not deployed. A `crates/raft` change, so the next site day ships it.
+
+**Decision.** `Colo(0)` is `Colo::UNKNOWN`. A follower counting `suspect` reports toward `SUSPECT`'s two colos skips a report from `Colo::UNKNOWN`; the report still answers its verdict, marks a stall, and starts a campaign once the promise has lapsed. Every edge request sets its colo from `cf.colo`; a site script never calls `set_colo`, so its lookups (shard, audit, prsync, broker, merge queue) report with colo 0.
+
+**Why.** On B0-33 m43 every edge request came from LAX (2,961 of 2,961 edge log events sampled in the load carried `cf.colo` LAX). The 11 `CommitErrors` step-downs were holds (`to: None`): none moved a leader. The 19 term changes came from elections, each after both followers stopped renewing their promises while the leader kept appending and committing (in the 10 s before each lapse, 2 to 43 appends reached each follower and its commit rose by 1 to 17), and once the promises lapsed the next report started a campaign. A follower stops renewing for one of three reasons: an append carrying a transfer, `sent_at < transfer_at`, or `suspect` withholding. A transfer lasts at most LEASE (9 s): it completes in a new term or is abandoned, and the next append renews. Yet in 21 of 28 lapses an append of the same term reached the follower more than 9 s after its last renewal and still renewed nothing, and no StepDown alarm named a target. That leaves withholding, which needs two distinct colos inside 10 s, and with one edge colo the only second colo is 0: 15 site-script isolates sent 667 `/suspect` reports and 49 read-only isolates 1,321, beside 143,954 from 315 edge commit isolates. Replaying the `SUSPECT` rule on each follower's own trace with colo 0 for the site-script and read-only isolates (the trace cannot tell a read-only edge isolate from a site script's) puts the last renewal inside the window the promise samples bound in 8 of 28 lapses, and with one colo for everything in 0 of 28: without colo 0 no follower would have withheld at all. The match is partial because members do not log a report's colo; `Trace::Reported` (28) now does [measured, `tests/am1/results/lm1-memory.md`, "m43's CommitErrors step-downs"].
+
+**The CommitErrors trips themselves.** Legitimate by the rule as written, and harmless: every miss was a deadline miss to a live follower whose handler ran in p50 0 ms but whose input queue held 900 to 3,800 requests ahead of the call, nearly all edge `/read` and `/suspect`; a hold changes no leader. They are the load's symptom, the same class as F74, and stay out of this change.
+
+**What it beat.**
+- **Site scripts set their site's colo:** a site is not an edge data center, and three site ids would let site scripts on two sites withhold from a healthy leader by themselves.
+- **Excusing queue-delayed misses in `health.rs`:** the trips were holds that moved nothing, so it would not have removed one term change.
+- **Per-member `/suspect` damping:** fewer reports from the same two colos still withhold.
+
+**Evidence.** `an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign` (`crates/raft/tests/leadership.rs`) fails on main (B withheld on LAX plus colo-0 reports) and passes; `tests/colounknown/plant.py` plants main's rule, a skip that clears the window, an `UNKNOWN` other than the 0 a site script sends, and an early return that drops the campaign: 4 of 4 caught. The simulator's colos now start at 1 so its clients are edges. Long sweep (2,000 seeds, live half 4,000) passed, longest stretches 16.3, 27.9 and 25.4 s; Porcupine Ok on all three histories.
+
+**Flip.** A gray leader that only site-script reports could have moved, or a hosted run where both followers still withhold with one edge colo (read `Trace::Reported`).
+
 ### `read-ahead`: a leader holds up to READ_AHEAD frozen batches when a dependency read outlasts a round, 2026-11-17
 
 **Status.** Asked for by the orchestrator after B0-31's buckets-up trace. Built on branch `read-ahead`, not deployed. A `crates/raft` change, so it reaches every member release on a site day.

@@ -838,6 +838,11 @@ fn refuse_lead<E>(may_lead: bool, e: &raft::Envelope<E>) -> Option<raft::Envelop
     }
 }
 
+/// `Trace::Reported`'s verdict codes, in `verdict_str`'s names. Append-only, as trace kinds are.
+#[cfg(feature = "test-faults")]
+const VERDICTS: &[&str] =
+    &["leader", "resumed", "started", "bootstrapping", "promised", "busy", "won", "lost", "mayNotLead"];
+
 fn verdict_str(v: Verdict) -> &'static str {
     match v {
         Verdict::Leader => "leader",
@@ -1925,7 +1930,11 @@ impl<F: Family> Routes<F> {
                 let about = site_field(&b, "about", "suspect")?;
                 let v = self.host.input(|m, t| m.suspect(t, colo, about, term))?;
                 #[cfg(feature = "test-faults")]
-                self.host.elect_asked(about.0, term.0, v == Verdict::Started);
+                {
+                    self.host.elect_asked(about.0, term.0, v == Verdict::Started);
+                    let code = VERDICTS.iter().position(|s| *s == verdict_str(v)).unwrap_or(0) as u64;
+                    self.host.trace(Trace::Reported, about.0, term.0, u64::from(colo.0), code);
+                }
                 v
             }
         };
