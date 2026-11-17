@@ -160,44 +160,34 @@ The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22
 | 4 to 7 | 190 | 10,672 / 25,318 | 5,976 | 1,042 |
 | 8 or more | 165 | 13,258 / 25,735 | 6,579 | 2,729 |
 
-- **Reading** (withdrawn after the run: see "m3fr12 after the run" below; the correlation is with start time, not `open`) [measured, no churn this time]: per-isolate load now tracks the time. A push alone on its isolate takes 2.8 s at p50; one sharing it with four or more takes 10.7 to 13.3 s, and the growth is in `context` and `auth`, the edge's own reads before the leader. m3fr8's inference that the gaps between a push's reads are its isolate's event loop is **supported** on this non-churning row (m3fr9's churning row did not support it).
+- **Reading** (withdrawn: the row ran with no learners, and the correlation is with start time, not `open`; see "m3fr12 after the run" below) [measured, no churn this time]: per-isolate load now tracks the time. A push alone on its isolate takes 2.8 s at p50; one sharing it with four or more takes 10.7 to 13.3 s, and the growth is in `context` and `auth`, the edge's own reads before the leader. m3fr8's inference that the gaps between a push's reads are its isolate's event loop is **supported** on this non-churning row (m3fr9's churning row did not support it).
 - **Stage first:** 241 stage-first pushes in the log; 237 came after their isolate had logged a staged push and 4 before. The per-isolate stage-first inference holds.
 
-**Verdict:** the receipt rule and the pool send-back did what they were built for: no `/suspect`, and validate's 15.8 s tail is gone. The within-5 s line is no closer, because the time moved to `context` and `gate` on isolates holding many pushes at once.
+**Verdict:** the receipt rule and the pool send-back did what they were built for: no `/suspect`, and validate's 15.8 s tail is gone. The within-5 s line is no closer, but this run is not comparable: it ran with no learners, so its `context` and `gate` tail is the two followers overloaded (see "m3fr12 after the run" below).
 
-### m3fr12 after the run: B0-32's edge tail is the repository-rows follower read, not per-isolate queueing (raw files and Workers Logs, no hosted spend; branch `b032-isolate`)
+### m3fr12 after the run: B0-32 ran with no learners, so its reads overloaded the two followers (raw files and Workers Logs, no hosted spend; branch `b032-isolate`)
 
-**One read per push carries the tail** [measured, `lm1-rows-m3f-data/pushlog-m3fr12-b0-32.json`]:
-- Each push makes exactly one read-index read of the repository's core rows (`{"rows": {"access", "agent"}}`): in `gate` when the isolate's gate cache misses (168 of the 542 pushes started in the burst's 10 s), else in `context`, which reads the agent rows alone (374). No push did both.
-- For each push, total equals max(auth + install, resolve) plus gate, context, validate, commit and stage, to within 32 ms at p99. So the stages run serially as written, and no time is hidden between them.
-- The edge's CPU is not the limit: receive-pack invocations used 41 ms of CPU at p50 and 154 ms at p99, against 8.2 s of wall time at p50 (Workers Logs, 16:10:58 to 16:11:45Z).
+**The cause** [measured]:
+- **No learners.** a1's own `feed members` step reads **0 learners, 2 followers** for B0-32 (`tests/am1/raw/a1-b0-32-mwkvwnmp.jsonl`). m3fr8 to m3fr11's B0-32 and every B0-31 read 8.
+- **The race.** The rows' status line for `learners.mjs` ends `config undefined`. Its `/learners` call ran from 16:05:32.7 to 16:05:39.6Z (site a's Workers Logs, wall 6,899 ms). It joined 8 learners, but its config change came from the config it read first. Meanwhile, at 16:05:37.9Z, the create's background placement committed a new f1 (`placement of repo:65581: {"configIndex":6, … "over":{"boundMs":100,"ms":110,"site":1}}`). The change committed nothing, and `learners.mjs` exits 0 on any answer without `error`, so `rows.sh` ran the row anyway. The error text was not logged.
+- **So every spread read went to f1 (site b) and f2 (site c).** Their client `/read` rate (10 s bins) was 125 to 145 a second each before the burst, 260 to 345 a second during it, and back to 125 to 140 after. During the burst, 18 to 35% of site c's answers came back in 15 ms or less (gate sheds past READS_MAX 256), against 0 to 3% before and after. Site b let 276 reads run out the edge's FOLLOWER_CALL (cancelled at about 2.08 s).
 
-**It is not per-isolate queueing.** Grouped by when the read started (500 ms bins), pushes alone on their isolate waited as long as crowded ones:
+**How that sets the edge stages** [measured for the stages, inference for the pass count]:
+- Each push makes exactly one read of the repository's core rows: in `gate` when its isolate's gate cache misses (168 of the 542 pushes started in the burst's 10 s), else in `context` (374). No push did both.
+- Total equals max(auth + install, resolve) plus the later stages, to within 32 ms at p99. Edge CPU per receive-pack was 41 ms at p50 and 154 ms at p99.
+- A push's read is write-class (`read_spread_for` with LOOKUP_FOR). Each pass asks f1 and f2. A pass that both shed or time out waits the named retry (250 ms) and runs again, so a read of 6 to 16 s is two to five passes. Reads finishing in the same 100 ms across isolates (74 reads on 38 isolates at 25.6 s, 40 on 29 at 21.2 s) are those passes ending together.
+- **Not per-isolate queueing.** Grouped by when the read started, pushes alone on their isolate waited as long as crowded ones: 1.6 s against 6.7 s in second 18, 8.6 s against 7.1 s in second 19, and 11.3 s against 10.3 s in second 21. The by-`open` table above reflects start time, because crowded isolates are the burst's first second. No lock, cap or single lookup in flight orders a push's reads by its isolate; `read_spread` holds no per-chain mark. The m3fr12 reading that per-isolate load is "supported" is withdrawn.
 
-| Read start (s after the first push) | `open` ≤ 2: n, read p50 | `open` ≥ 4: n, read p50 |
-|---|---|---|
-| 17 | 81, 578 ms | 10, 577 ms |
-| 18 | 50, 1,595 ms | 87, 6,723 ms |
-| 19 | 24, 8,589 ms | 114, 7,067 ms |
-| 21 | 2, 11,300 ms | 34, 10,256 ms |
+**What this means for the row:**
+- m3fr12's B0-32 is **not comparable** with m3fr8 to m3fr11, because it ran without the learners those runs had. Its `context` and `gate` tail (p99 20.7 and 17.5 s) is this run's missing learners, not a product regression.
+- Its receipt result stands: 0 `/suspect`, 0 missed, 22 outcome asks. It only got easier with followers this slow, so the next run should confirm it.
+- m3fr11, with learners, had `context` p99 1.2 s and `gate` p99 0.9 s. Its within-5 s gap was commit (p50 3.5 s) plus auth, install and resolve (about 2.9 s together).
 
-The by-`open` table above comes from timing: the crowded pushes are the ones that started in the burst's first second. Reads also finished together across isolates: 74 reads on 38 isolates ended in the same 100 ms (25.6 s), and 40 on 29 at 21.2 s. That points at the members, not at the edge [inference]. So the m3fr12 note that per-isolate load is "supported" is withdrawn.
+**Driver fix (branch `b032-isolate`, test scripts only):**
+- `learners.mjs` asks again on any error, or on an answer with no `configIndex`, within its 120 s, logs the outcome first, and exits 1 unless a config committed.
+- `rows.sh` skips a row whose learners did not place (`LEARNERS NOT PLACED, row skipped`), as it skips one without k 4.
 
-**The followers during the burst** (Workers Logs, client `/read`s, 16:11:15 to 16:11:45Z; B0-32 has no learners, so every spread read went to the two followers):
-- Site b, `repo:65581#2#f1`: 5,831 reads. 260 were cancelled at about 2 s (the edge's FOLLOWER_CALL ran out), and 390 more answered after more than 2 s. Wall time was 169 ms at p50 and 1,630 ms at p90.
-- Site c, `repo:65581#1#f2`: 9,896 reads, wall 350 ms at p50 and 1,000 ms at p90.
-- The leader (site a) answered its own reads in 20 ms at p50.
-- A push's read is a write-class `read_spread_for` with LOOKUP_FOR (20 s). A follower that sheds it (`overloaded`) or runs past FOLLOWER_CALL sends the read to the next member, and then the whole read waits the named retry and starts again. A read of 6 to 16 s is several such passes [inference: the member answers' bodies, and so the shed count, are not in the logs].
-
-**The pass loop** [measured on the followers, inference for the edge's side]:
-- Per second, the burst's reads on the two followers ran about 300 a second. Site c's follower answered 0.7 to 0.9 s at p50, so about 230 to 270 reads were in flight against READS_MAX 256. In many seconds 20 to 45% of its answers came back in 15 ms or less: gate sheds (`overloaded`, retry 250 ms).
-- Site b's follower let 260 reads run out FOLLOWER_CALL (cancelled at about 2.08 s).
-- So one pass of a push's read can cost up to 2 s at b, then a shed at c, then OVERLOAD_RETRY_MS, and every isolate retries on the same 250 ms. Reads of 6 to 16 s are two to five such passes. The completions that cluster across isolates (21.2, 25.6 and 31.5 s) are those synchronized passes.
-- The steady API read load (about 170 reads a second, `read:api`) is on the same followers. Pushes before and after the burst read in about 0.6 s, so the burst's own 542 reads in about 2 s push the followers over READS_MAX.
-
-**Not yet known:** the followers' shed counts and their read-index grant waits (`readStages`, `shedReads`) during the burst. `a1.mjs` reads `/stats` from the leader only. That decides between two fixes:
-- **Fewer reads:** 542 pushes made 542 identical core-row reads in 10 s, from 124 isolates. One shared read per isolate would make about 124. This is a read share, the same shape as `lookup-share` that B0-02 is redesigning.
-- **Cheaper reads at the members:** batch the read-index grants, or let the shed retry use its wait instead of a fixed pass.
+**A product note, no fix proposed:** with learners gone, a 500-push burst roughly doubled the followers' read rate, and the write-class retry turned each shed into a full extra pass on the same two members. The design sends these reads to learners first ("Follower read"), so this is the configuration the row is meant to avoid, not the one it measures.
 
 ### B0-31 (repo 65582, rehomed on site 2, warm in 2.2 s, run `mwkwap5z`): fail on the buckets-up line
 
