@@ -260,3 +260,245 @@ fn leadership_end_answers_the_held_batch_and_the_entry_in_flight() {
         assert!(matches!(result(&c, t), Some(Err(CommitError::NotLeader(_)))), "{t:?}: {:?}", result(&c, t));
     }
 }
+
+/// B0-31's apac leader: a round of about 200 ms and dependency reads of about 370 ms, with commands arriving all the
+/// time. Each message takes 100 ms one way and each read answers 370 ms after it is asked. Fails on a leader that
+/// holds one frozen batch at a time: its cycle is a read plus `decide`, one entry per 370 ms or more; holding a
+/// second batch whose read started a round later, the cycle falls to about a round. Also fails if more than one
+/// entry is ever in flight.
+#[test]
+fn reads_longer_than_a_round_overlap_two_batches_so_the_cycle_is_about_a_round() {
+    const ONE_WAY: u64 = 100;
+    const READ: u64 = 370;
+    const STEP: u64 = 10;
+    let mut c = Cluster::new(88);
+    c.elect(A);
+    c.sync(A);
+    let term0 = c.m(A).state().term;
+    let mut wire: Vec<(u64, graftyard_raft::Envelope<common::kv::KvEvent>)> = Vec::new();
+    let mut answered = c.deps.len();
+    let mut next_id = 1_000u128;
+    let mut commits: Vec<(u64, u64)> = Vec::new();
+    let start = c.now.0;
+    while c.now.0 < start + 20_000 {
+        if (c.now.0 - start).is_multiple_of(20) {
+            next_id += 1;
+            admit(&mut c, A, next_id, put_dep(&format!("k{next_id}"), "1"));
+        }
+        c.advance(STEP);
+        let now = c.now.0;
+        wire.extend(std::mem::take(&mut c.inbox).into_iter().map(|e| (now + ONE_WAY, e)));
+        let (due, later): (Vec<_>, Vec<_>) = wire.drain(..).partition(|(at, _)| *at <= now);
+        wire = later;
+        for (_, graftyard_raft::Envelope { from, to, msg }) in due {
+            c.on(to, |m, t| m.step(t, from, msg));
+        }
+        while answered < c.deps.len() && c.deps[answered].1.0 + READ <= now {
+            let (s, _, w) = c.deps[answered].clone();
+            answer(&mut c, s, &w, |_| Kv::default());
+            answered += 1;
+        }
+        wire.extend(std::mem::take(&mut c.inbox).into_iter().map(|e| (now + ONE_WAY, e)));
+        assert!(in_flight(&c, A) <= 1, "more than one entry in flight");
+        let commit = c.m(A).state().commit.0;
+        if commits.last().is_none_or(|(_, k)| *k < commit) {
+            commits.push((now, commit));
+        }
+    }
+    // The second half, once the round and read averages settled.
+    let half: Vec<_> = commits.iter().filter(|(t, _)| *t >= start + 10_000).collect();
+    let (t0, k0) = *half[0];
+    let (t1, k1) = *half[half.len() - 1];
+    let cycle = (t1 - t0) / (k1 - k0);
+    assert_eq!(c.m(A).state().term, term0, "the leader changed");
+    assert!(cycle <= 250, "one entry per {cycle} ms: the cycle is a read, not a round (round about 200, read {READ})");
+    assert!(cycle >= 190, "one entry per {cycle} ms is under one round: more than one entry in flight?");
+}
+
+/// A leader whose dependency read (400 ms) outlasts its round, so it holds two batches behind the entry in flight.
+fn warm_slow(seed: u64) -> Cluster {
+    let mut c = Cluster::new(seed);
+    c.elect(A);
+    c.sync(A);
+    let from = c.deps.len();
+    let t = admit(&mut c, A, 1, put_dep("w", "0"));
+    let w = asked(&c, A, from).pop().expect("a read for the first entry");
+    c.advance(400);
+    answer(&mut c, A, &w, |_| Kv::default());
+    c.deliver_all();
+    assert_eq!(result(&c, t), Some(Ok(true)));
+    c
+}
+
+/// Two batches frozen behind entry k: k+1's reads, then k+2's. Fails if a read of k+2 that never answers, answers
+/// without a chain the host could not read, or was asked before entry k+1 moved its dependency, touches k+1: k+1
+/// decides and commits as it would alone. And k+2 never decides on the read entry k+1 made stale: it reads the chain
+/// the fold names after k+1 applied, so the stale read's revocation binds nothing.
+#[test]
+fn a_failed_or_stale_read_for_a_later_batch_leaves_the_earlier_batch_alone() {
+    // A read for k+2 that never answers, then answers empty (the host could not read the chain).
+    let mut c = warm_slow(89);
+    let k = entry_in_flight(&mut c, 90, put("x", "1"));
+    let from = c.deps.len();
+    let t1 = admit(&mut c, A, 91, put_dep("y", "1"));
+    let r1 = early_ask(&mut c, from);
+    let t2 = admit(&mut c, A, 92, put_dep("z", "1"));
+    let r2 = early_ask(&mut c, from + 1);
+    assert_ne!(r1.id, r2.id);
+    assert_eq!(c.m(A).last_index().0, k, "a held batch was decided while entry k was in flight");
+    answer(&mut c, A, &r1, |_| Kv::default());
+    flush(&mut c);
+    assert_eq!(result(&c, t1), Some(Ok(true)), "k+1 waited on k+2's read");
+    assert_eq!(ids(&c, k + 1), [91]);
+    assert!(result(&c, t2).is_none(), "k+2 decided before its read answered");
+    c.on(A, |m, now| m.deps_read(now, r2.id, Vec::new()));
+    flush(&mut c);
+    assert_eq!(
+        result(&c, t2),
+        Some(Err(CommitError::Refused { index: graftyard_raft::Index(k + 2), err: KvErr::NoDep }))
+    );
+    assert_eq!(result(&c, t1), Some(Ok(true)));
+
+    // Entry k+1 moves the dependency (`OWNER_KEY`) that k+2's early read was asked for; that read carries a revocation.
+    // A batch is cut once a command with a dependency is queued, so k+1 is the owner move and `y`, and k+2 is `z`.
+    let mut c = warm_slow(90);
+    let k = entry_in_flight(&mut c, 100, put("x", "1"));
+    let from = c.deps.len();
+    let t1 = admit(&mut c, A, 101, put(OWNER_KEY, "2"));
+    let t1y = admit(&mut c, A, 102, put_dep("y", "1"));
+    let t2 = admit(&mut c, A, 103, put_dep("z", "1"));
+    let mut early = Vec::new();
+    for _ in 0..20 {
+        early = asked(&c, A, from);
+        if early.len() == 2 {
+            break;
+        }
+        c.advance(100);
+        hold(&mut c);
+    }
+    assert_eq!(early.len(), 2, "both batches' reads are asked while entry k is in flight");
+    let at: Vec<u64> = c.deps[from..].iter().map(|d| d.1.0).collect();
+    assert!(at[1] >= at[0] + 50, "k+2's read was asked with k+1's ({at:?}), not a round after it");
+    assert!(early.iter().all(|w| w.chains.as_slice() == [authz(0)]), "asked on the fold before k+1 applied");
+    assert_eq!(c.m(A).last_index().0, k);
+    answer(&mut c, A, &early[1], |_| revoked());
+    answer(&mut c, A, &early[0], |_| Kv::default());
+    let from = c.deps.len();
+    flush(&mut c);
+    assert_eq!((result(&c, t1), result(&c, t1y)), (Some(Ok(true)), Some(Ok(true))), "k+1 was touched by k+2's read");
+    assert_eq!(ids(&c, k + 1), [101, 102]);
+    let again = asked(&c, A, from);
+    assert_eq!(again.len(), 1, "no re-read after k+1 moved k+2's dependency");
+    assert_eq!(again[0].chains.as_slice(), [authz(2)]);
+    assert!(result(&c, t2).is_none(), "k+2 decided on the read k+1 made stale");
+    answer(&mut c, A, &again[0], |_| Kv::default());
+    flush(&mut c);
+    assert_eq!(result(&c, t2), Some(Ok(true)), "k+2 decided on the read k+1 made stale");
+}
+
+/// Two batches frozen behind entry k: k+1 holds the owner move and is cut first, k+2 reads the old owner's chain
+/// early. Then a third batch is cut behind them once k+1 is decided. Fails if the re-read k+2 needs once k+1 applied
+/// is asked for the batch cut last: k+2 then never decides.
+#[test]
+fn the_re_read_goes_to_the_batch_being_decided() {
+    let mut c = warm_slow(91);
+    let k = entry_in_flight(&mut c, 110, put("x", "1"));
+    let from = c.deps.len();
+    let early = |c: &mut Cluster, n: usize| {
+        for _ in 0..30 {
+            if asked(c, A, from).len() >= n {
+                break;
+            }
+            c.advance(100);
+            hold(c);
+        }
+        asked(c, A, from)
+    };
+    let t1 = admit(&mut c, A, 111, put(OWNER_KEY, "2"));
+    admit(&mut c, A, 112, put_dep("y", "1"));
+    early(&mut c, 1);
+    let t2 = admit(&mut c, A, 113, put_dep("z", "1"));
+    let reads = early(&mut c, 2);
+    assert_eq!(reads.len(), 2, "two batches held behind entry k");
+    assert_eq!(c.m(A).last_index().0, k);
+    answer(&mut c, A, &reads[0], |_| Kv::default());
+    // k+1 commits with k+2's read still out; a third batch arrives and is cut behind k+2 while k+1 is in flight.
+    c.deliver_all();
+    let t3 = admit(&mut c, A, 114, put_dep("w", "1"));
+    for _ in 0..10 {
+        c.advance(100);
+        hold(&mut c);
+    }
+    // Every read still out is answered as it is asked: those asked on the fold before k+1 applied name its old
+    // owner, and any asked after name the new one.
+    let mut done = 1;
+    for _ in 0..8 {
+        let out = asked(&c, A, from);
+        for w in &out[done..] {
+            answer(&mut c, A, w, |_| Kv::default());
+        }
+        done = out.len();
+        flush(&mut c);
+    }
+    let after: Vec<_> =
+        c.deps[from..].iter().filter(|d| d.1.0 > c.deps[from].1.0 + 1_000).map(|d| d.2.clone()).collect();
+    assert!(after.iter().any(|w| w.chains.as_slice() == [authz(2)]), "no re-read of the chain k+1 named");
+    assert_eq!(result(&c, t1), Some(Ok(true)));
+    assert_eq!(result(&c, t2), Some(Ok(true)), "k+2 never decided: its re-read went to another batch");
+    assert_eq!(result(&c, t3), Some(Ok(true)));
+}
+
+/// A transfer with two batches held. Fails if it drops only the front batch's reads: the second would then decide on a
+/// read from before the transfer, though a revocation was acknowledged during it.
+#[test]
+fn a_transfer_drops_every_held_batchs_deps() {
+    let mut c = warm_slow(92);
+    entry_in_flight(&mut c, 120, put("x", "1"));
+    let from = c.deps.len();
+    let t1 = admit(&mut c, A, 121, put_dep("y", "1"));
+    for _ in 0..20 {
+        if !asked(&c, A, from).is_empty() {
+            break;
+        }
+        c.advance(100);
+        hold(&mut c);
+    }
+    let t2 = admit(&mut c, A, 122, put_dep("z", "1"));
+    for _ in 0..20 {
+        if asked(&c, A, from).len() >= 2 {
+            break;
+        }
+        c.advance(100);
+        hold(&mut c);
+    }
+    let early = asked(&c, A, from);
+    assert_eq!(early.len(), 2, "two batches held behind the entry in flight");
+    for w in &early {
+        answer(&mut c, A, w, |_| Kv::default());
+    }
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    let from = c.deps.len();
+    let lease = graftyard_raft::LEASE.as_millis() as u64;
+    c.run(lease + 1_000, 100, |e| !matches!(e.msg, Message::TimeoutNow { .. }));
+    assert!(c.m(A).transferring().is_none(), "the transfer was not abandoned");
+    for _ in 0..6 {
+        for w in asked(&c, A, from) {
+            answer(&mut c, A, &w, |_| revoked());
+        }
+        let from2 = c.deps.len();
+        flush(&mut c);
+        for w in asked(&c, A, from2) {
+            answer(&mut c, A, &w, |_| revoked());
+        }
+        if result(&c, t1).is_some() && result(&c, t2).is_some() {
+            break;
+        }
+    }
+    for t in [t1, t2] {
+        assert!(
+            matches!(result(&c, t), Some(Err(CommitError::Refused { err: KvErr::Revoked, .. }))),
+            "{t:?} decided on a read from before the transfer: {:?}",
+            result(&c, t)
+        );
+    }
+}

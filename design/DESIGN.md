@@ -432,10 +432,10 @@ pub struct SiteHealth { pub observer: SiteId, pub target: SiteId, pub calls: u64
 // ---- The write path ----
 /// The only write path for chained state. It runs in the leader member, one entry in flight per group. A command joins
 /// the next entry, up to ENTRY_SOFT (Scale), frozen when the entry in flight commits, or once it has been in flight its mean round
-/// less one mean dependency read (B0-29). The leader reads each distinct dependency and `CredentialShard` once through
-/// `fresh`, in parallel, and decides the entry only once the one in flight applied, with exactly the chains `deps()`
-/// names then, reading any missing, so a revocation or suspension binds every command whose entry's read arrived after
-/// it, however long it queued. Each command's `decide` sees an `EntryView`: the fold at `applied` plus the events of the
+/// less one mean dependency read (B0-29). When one mean read outlasts one mean round, the leader holds up to ceil(read / round) frozen batches (at most READ_AHEAD), freezing each and asking its reads one mean round after the one before, so each batch's reads land about when the entry before it commits and the cycle is a round plus `decide`, not a read plus `decide`: B0-31's apac leader, reading enam's identity groups, held one entry per 413 ms on a 198 ms round and a 368 ms read [measured, `tests/am1/results/lm1-rows-m3f.md`, "B0-31's buckets-up commit tail"].
+/// The leader reads each distinct dependency and `CredentialShard` once through `fresh`, in parallel, after the batch's commands were admitted, and decides batches in the order they were frozen, each only once the entry before it applied, with exactly the chains `deps()` names on that fold, reading any missing and dropping any it no longer names, so a read asked before an earlier entry moved a command's dependency is never used, and a revocation or suspension binds every command whose entry's read arrived after it, however long it queued.
+/// Holding more batches changes neither rule: still one entry in flight, `decide` still sees the fold at `applied`, the entry's earlier commands, and reads asked after its own commands were admitted, and a follower still verifies k+1 only after it applies k, since nothing reaches a follower before its entry is appended.
+/// Each command's `decide` sees an `EntryView`: the fold at `applied` plus the events of the
 /// entry's earlier commands, on a scratch transaction the leader rolls back once the entry is decided, so a refusal can
 /// rest on an earlier command; a BF-13 simulator run had a compare-and-set refused `Stale` only by such a command, its
 /// leader lost before commit, and the refusal never returned [measured, simulator, `tests/m1/results/m1-wp2.md`, BF-13].

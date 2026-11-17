@@ -4379,3 +4379,45 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 **Evidence.** `crates/git/src/sweep.rs`, `a_chain_whose_lookup_failed_is_asked_once_a_run` and `a_run_stops_starting_networks_at_its_wall`; `tests/sweepwall/plant.py` (8 of 8 caught, the first is main's ask-every-pack with no wall).
 
 **Flip.** A hosted run in which site a's sweep still passes SWEEP_WALL plus the in-flight network's actions, or in which a chain answered after a failed lookup in the same run held a pack the run should have marked (a committed pack left without its marker for more than one full pass).
+
+### `read-ahead`: a leader holds up to READ_AHEAD frozen batches when a dependency read outlasts a round, 2026-11-17
+
+**Status.** Asked for by the orchestrator after B0-31's buckets-up trace. Built on branch `read-ahead`, not deployed. A `crates/raft` change, so it reaches every member release on a site day.
+
+**Decision.**
+- **Batches.** The leader holds up to `read_ahead(round, read)` = ceil(mean read / mean round) frozen batches behind the entry in flight, at least 1 and at most READ_AHEAD (3 [guess]). The old single held batch is `read_ahead` 1, which is still the case while a read fits in a round (`crates/raft/src/member/leader.rs`, `cut_early`, `Lead::deciding` as a queue).
+- **Timing.** With `held` batches frozen, the next is cut, and its reads are asked, `held + 1` mean rounds after the entry in flight was appended, less one mean read. So each batch's read lands about when the entry before it commits.
+- **Deciding.** Batches are decided oldest first, each only once the entry before it committed and applied, on the fold then, with exactly the chains `deps()` names on that fold. A chain the earlier entry newly named is read again for that batch alone. A read it no longer names is dropped.
+- **Unchanged.** A read's answer goes to the batch whose `DepsWanted` id it carries. A transfer drops every held batch's reads, a leadership end answers every held batch `NotLeader`, and a reconfiguration waits until none is held.
+
+**Why.** B0-31's apac leader read its owner's identity groups on enam at `deps:all` p50 368 ms (Authz 293 ms), against a round of p50 198 ms. With one batch held, the cycle is the read plus `decide`, not the round: 726 entries in 300 s, one per 413 ms. `queue:slot` was p50 531 ms and p99 1,701 ms, and commit p99 1,439 ms against the 1 s line. Across six B0-31 runs that held their leader, commit p99 followed `deps:all` (1,118 ms at 356 ms up to 2,138 ms at 485 ms), and rounds stayed between 194 and 254 ms [measured, `tests/am1/results/lm1-rows-m3f.md`, "B0-31's buckets-up commit tail"].
+
+**The invariants, against AGENTS.md:**
+1. **`decide` is pure on the fold, the entry's earlier commands, and reads asked after its commands were admitted.**
+   - Each batch's commands are cut from admission before its own `DepsWanted` is asked, as before. A later batch only holds commands admitted after the earlier cut.
+   - A batch is decided only by `decide_held` on the front of the queue. That runs only with no entry in flight, so `applied` is the log's end.
+   - It decides with exactly the chains `deps()` names on that fold.
+2. **A follower verifies k+1 only after it applies k.** Nothing about a held batch reaches a follower: the leader appends one entry at a time, only after the one in flight committed. The followers see the same log as before, one entry after another.
+3. **No read made for batch k+2 is used after entry k+1 changed what it depends on.**
+   - A read is keyed to one chain. `decide_held` keeps only the reads of the chains the fold names after k+1 applied.
+   - If k+1 moved a command's dependency (a transfer's new owner, a settings change), the early read of the old chain is dropped, and the new chain is read then, for that batch only.
+   - If k+1 changed the dependency's own content instead, such as an Authz revocation committed on the Authz chain, that is not this group's entry. The read binds as it always did: a revocation acknowledged before the read binds it, and one acknowledged after binds the next entry's. This is the same rule as one held batch, since the read was still asked after the batch's commands were admitted.
+
+**What it beat.**
+- **Reading dependency folds once and caching them across entries:** "read once per entry through `fresh`" forbids it. It would break BF-2, BF-15 and BF-27.
+- **Deciding a held batch on the fold before the entry ahead of it applied:** this breaks "one entry in flight". Planted (`plant32.py` 6), it fails 9 of the 11 `deps.rs` tests.
+- **Moving the identity groups' leaders with the repository:** the orchestrator ruled no placement change. Identity groups follow the owner's record by design (OPEN-QUESTIONS F81).
+
+**Evidence.**
+- `crates/raft/tests/deps.rs`:
+  - `reads_longer_than_a_round_overlap_two_batches_so_the_cycle_is_about_a_round`: with a 200 ms round and 370 ms reads, one entry per 380 ms on main and per 200 ms here, never two in flight.
+  - `a_failed_or_stale_read_for_a_later_batch_leaves_the_earlier_batch_alone`: a missing, failed or stale read for k+2 leaves k+1 deciding as it would alone. k+2 re-reads the chain k+1 named, so a revocation in the stale read binds nothing.
+  - `the_re_read_goes_to_the_batch_being_decided`.
+  - `a_transfer_drops_every_held_batchs_deps`.
+- `tests/m0carried/plant32.py`: 7 of 7 caught. The first plant is main's single batch.
+- The 2,000-seed simulator sweep, whose dependency reads answer 0 to 400 ms late, checks one entry in flight per leader and that every command an entry decided was admitted before its reads were asked. It passed: 2,000 seeds in each half, 6,694 early asks and 585 re-reads in the harsh half, and Porcupine found the histories linearizable (153,324 harsh, 2,246,911 gray and 5,971,926 live operations). The full checks passed with 1,099 tests and 0 failed.
+- The latency gain on Cloudflare is unmeasured. The next B0-31 decides it.
+
+**Flip.**
+- A hosted B0-31 where the cycle stays read-bound with two batches held.
+- Or a simulator or hosted case where a held batch's command was decided on a read asked before it was admitted.
