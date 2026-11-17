@@ -169,6 +169,21 @@ The receipt counters were 1,668 commits on 1,668 sends, 0 busy, 9 asks, 0 missed
 - The floor is a batch's `deps:all` (p99 795 ms, driven by `deps:authz` p99 672 ms to the enam identity groups) plus a round (p99 360 ms), plus the wait for the batch. That is already over 1.1 s before any queueing.
 - Removing the stall gives about 1,444 ms. Getting to ≤ 1.1 s needs the `Authz` read off the cross-continent path (F81), or the read hedged and shortened as well.
 
+## F83: the 4.6 s wait at `authz:7100001#1#f0` (m3fr12, Workers Logs, no hosted spend)
+
+**Question** (`decisions/OPEN-QUESTIONS.md`, F83). B0-31's opening stall was one held `Authz` dependency read. Did `authz:7100001#1#f0` (site a, Durable Object `df792e6a`) delay its inbound calls because of its own 1.8 s alarm, or because of a call backlog?
+
+**Neither** [measured; the Workers Logs of all three sites for 16:21:28 to 16:21:46Z, Cloudflare time]:
+- **No backlog.** In the 4.6 s the held read waited (sent 36.473, started 41.084), the same object started **215 other calls**. Their wait from send to start was p50 95 ms, p99 457 ms and max 468 ms. No handler ran over 148 ms.
+- **No long alarm.** The object's alarms in that window ran 69 ms (37.684) and 57 ms (39.677). The 1,827 ms alarm ended at 31.449, five seconds earlier. It did hold the 34 calls queued behind it (walls up to 1.75 s), and that explains the earlier 1.7 s gap at entries 131 and 132, not this one.
+- **Exactly two calls waited.** They were the held read (4,603 ms before start) and site b's `/raft` call 309 (sent 35.641, started 41.075, 5,433 ms). They came from two different isolates: the repository leader on site c, and `authz:7100001`'s follower on site b. They were released 9 ms apart.
+- **The sender was not slow.** Site b's next calls 310 to 315, sent 73 to 282 ms after 309, started 75 to 91 ms after they were sent. 135 of site b's later calls started at the object before 309 did.
+- **No other site was affected.** In 16:21:36 to 42.5Z, sites b and c held none of their 2,276 member calls past 1.5 s. Site a held only these two of its 2,428.
+
+**What it is** [inference]. The object kept serving every other call within half a second. Two single requests from two senders were held about 5 s each and released together. Their headers carry nothing unusual (`x-graft-hop` 3, as their neighbours). So the delay is below the handler: in delivery of those two requests to the object, not in the object's work. No request-level runtime trace is available to settle it. The two other cases in the kept logs fit the same shape: 1.5 to 5 s holds on single requests while their objects served the rest (16:11:14 to 16:11:21Z, `8b099d95`, `5741543e`, `39d622bc` and `d970720c`).
+
+**What it means for the lever.** The held request is still pending in the runtime while the caller waits, so the faster re-ask the orchestrator set aside would not have queued behind a busy object. It would have opened a second request: the lookup's own retry after `CALL` at 39.973 went to `#1#f1` on site b and was answered in 1 ms. So a dependency read re-asked at about 1 s (against `deps:authz` p99 672 ms) would have cut this stall from 5.2 s to about 1 s. The re-ask stays the orchestrator's call; this only removes the reason it was deferred.
+
 ## Rows m3fr12 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, branch `m3fr12`)
 
 **Slot.** The orchestrator moved the slot from 00:00Z Nov 18 to 15:47Z Nov 17. The operator then raised the day's limit to $300 (FRAME.md at `19b5ae77`). Stops: graft-m3f past $10 by `PREFIX`, or the account's UTC day past $280. The earlier $170 line and the $125 check before B0-31 were dropped. LM-1's B0-33 and M4-WP4 ran at the same time on other installs, so only the `PREFIX` figure is this run's.
