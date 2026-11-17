@@ -113,7 +113,7 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 **Slot.** B0-32 was rerun alone, with no site day, because main's `crates`, `workers` and `containers` are unchanged since `fec1d01d` (`git diff --quiet fec1d01d 1d3c897b`). edgever showed `graft-m3f-edge` serving `2c42bfcc` at 100%. The stops were graft-m3f past $5 by `PREFIX`, or the account past $280.
 - **Cost:** graft-m3f **$0.34** from 17:50:44Z to 18:02:02Z (row and sweeps), and **$0.40** through the retire and purge at 19:05Z. The account's UTC day read $149.14 at 17:50Z and $158.16 at 19:05Z.
 - **Edge errors** (`graft-m3f-edge`, 17:52 to 18:01Z): "Cannot perform I/O on behalf", "closure invoked recursively" and "code had hung" were **0, 0 and 0**.
-- **Close-out:** both sweeps found nothing running (17:51Z, 18:01Z and 18:02Z). At 19:03Z, 13 of 13 members of 65583 were retired, and 4,011 objects were purged (a 1,347, b 1,349, c 1,315, all to 0). The final sweep at 19:05Z found nothing running.
+- **Close-out:** both sweeps found nothing running (17:51Z, 18:01Z and 18:02Z). At 19:03Z, 13 of 13 members of 65583 were retired, and 4,011 objects were purged (a 1,347, b 1,349, c 1,315, all to 0). The final sweep at 19:05Z found nothing running. Idle reading 19:05 to 19:35Z (`PREFIX=graft-m3f acctcost`): graft-m3f **$0.00**, idle. The scheduled reading at 19:38Z did not run; it was taken at 19:58Z over the same window, and the sweep at 19:58Z found no shard container running. The account's UTC day read $162.23 at 19:58Z.
 
 ### B0-32 (repo 65583, run `mwkzph1o`, leader site 0): fail, and again not the row as written (no learners)
 

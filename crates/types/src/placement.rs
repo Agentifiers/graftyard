@@ -450,6 +450,18 @@ impl Placement {
         Ok(Placement { voters, learners, home, generation })
     }
 
+    /// This placement with `learners` in place of its own, under the same shape checks a decoded placement gets.
+    /// Learners are per site and slot, not per voter, so a config change that replaces, swaps, or rehomes a voter
+    /// keeps the committed learners through this.
+    pub fn with_learners(&self, learners: &[Member]) -> Result<Placement, PlacementError> {
+        Placement::try_from(PlacementRaw {
+            voters: self.voters.clone(),
+            learners: learners.iter().cloned().collect(),
+            home: self.home,
+            generation: self.generation,
+        })
+    }
+
     pub fn voters(&self) -> &[Member] {
         &self.voters
     }
