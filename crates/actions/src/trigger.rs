@@ -185,6 +185,50 @@ pub fn pull_request_run(
     Ok(Some((run, jobs)))
 }
 
+/// One unit of `ActionsTrigger`'s work from entry `index` (stamped `at`, ms) whose runs have not committed yet: a
+/// queue ref the entry built, or one of its pull request events. A round tries each item once; one not done is carried
+/// to the next round instead of failing the round, so the rest of its batch is not run again (F84;
+/// `decisions/DECISIONS.md`, "`pr-trigger`").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Carried {
+    pub index: Index,
+    pub at: u64,
+    pub item: Item,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Item {
+    Queue(Built),
+    Pr(PrEvent),
+}
+
+/// How a round's try of one item ended. `Done`: its runs committed (or the shard already held them), or it starts
+/// none (a conflict, a closed pull request, no matching workflow). `Again`: its test merge is still shed, or a read
+/// or a `CreateRun` failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tried {
+    Done,
+    Again,
+}
+
+/// What a round leaves: the items carried to the next round, the pull request events given up (`unmerged`: still not
+/// done more than PR_REPLAY_MS after their entry, the age at which the first-scan guard starts none), and the index the
+/// cursor may commit. That is just below the oldest carried item's entry, so a new leader rescans it, or `through`,
+/// the last entry the round read, when none is carried. A queue ref is never given up, as a failed round never gave it
+/// up before.
+pub fn settle(tried: Vec<(Carried, Tried)>, through: Index, now: u64) -> (Vec<Carried>, Vec<Carried>, Index) {
+    let (mut carried, mut dropped) = (Vec::new(), Vec::new());
+    for (c, t) in tried {
+        match (t, &c.item) {
+            (Tried::Done, _) => {}
+            (Tried::Again, Item::Pr(_)) if now.saturating_sub(c.at) > PR_REPLAY_MS => dropped.push(c),
+            (Tried::Again, _) => carried.push(c),
+        }
+    }
+    let cursor = carried.iter().map(|c| Index(c.index.0.saturating_sub(1))).min().unwrap_or(through).min(through);
+    (carried, dropped, cursor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """dispatchlog.py REPO_ID FROM_ISO TO_ISO -> B0-35's site-side dispatch line from the sites' Workers Logs: every
-`actions dispatch <repo> #N <action> at <index>: <n> runs in <ms>ms, <k> asks[, superseded][, conflict|, unmerged]`
+`actions dispatch <repo> #N <action> at <index>: <n> runs in <ms>ms, <k> asks[, superseded][, conflict|, pending|, unmerged]`
 line `ActionsTrigger` logs (`workers/site/src/actions_trigger.rs`, `decisions/DECISIONS.md`, "`pr-trigger`"), and
 its `actions trigger <repo>: ...` round errors. Prints one JSON summary: events by outcome (run, conflict, unmerged,
 no run) as last logged and on the first try (a failed round or a new leader runs a batch again), superseded, asks per outcome, the entry-to-run ms percentiles of events that ran, the same event logged twice
@@ -80,7 +80,8 @@ outcome, first = collections.Counter(), collections.Counter()
 
 
 def outcome_of(x):
-    return "conflict" if "conflict" in x["tail"] else "unmerged" if "unmerged" in x["tail"] else \
+    # `pending`: shed this round and carried to the next (F84); `unmerged`: given up, or main's rule before F84.
+    return "conflict" if "conflict" in x["tail"] else "unmerged" if "unmerged" in x["tail"] or "pending" in x["tail"] else \
         "run" if x["runs"] > 0 else "no run"
 
 
@@ -98,7 +99,7 @@ for k, xs in by.items():
         ran_ms.append(x["ms"])
 n = len(by)
 print(json.dumps({
-    "repo": repo, "window": [a, b], "lines": len(events), "events": n, "loggedTwice": sum(len(v) > 1 for v in by.values()),
+    "repo": repo, "window": [a, b], "lines": len(events), "events": n, "loggedTwice": sum(sum("pending" not in y["tail"] for y in v) > 1 for v in by.values()),
     "byAction": dict(collections.Counter(k[2] for k in by)), "outcome": dict(outcome), "firstOutcome": dict(first),
     "unmergedFirstPct": round(100 * first["unmerged"] / n, 2) if n else None,
     "unmergedPct": round(100 * outcome["unmerged"] / n, 2) if n else None,
