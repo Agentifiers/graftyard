@@ -4952,3 +4952,59 @@ Raw files in `tests/fanout/raw/`: `siteday-m44.status`, `costrow-m44b33.status`,
 `a1-b0-33-m44.jsonl` (a copy of a1 `mwl4mlhx`), `terms-m44b33.jsonl`, `memguard-m44b33.jsonl.xz`,
 `tsave-m44b33.jsonl.xz`, `inbound-m44b33.txt`, `rounds-m44b33.json`, `reported-m44b33.txt`, `campaigns-m44b33.txt`,
 `stepdowns-m44b33.txt`, `retire-m44.log`, `retirenets-m44.out`, `purge-m44.log`.
+
+### late-suspect: a follower counts a `suspect` report only while its own appends are late (2026-11-17, code only, no spend)
+
+The operator chose (i) after round 39: withholding needs the edge's reports and the follower's own evidence. Branch
+`late-suspect` from main 7232e22c; design first (DESIGN "Gray region" and the `suspect` doc in "Shape", Leadership;
+DECISIONS `late-suspect`). The agent block is untouched.
+
+**The rule.** `on_suspect` counts a report about the follower's leader toward `SUSPECT`'s two colos only when the
+follower has accepted no AppendEntries for CALL_DEADLINE (1 s, `appended_at`). A report that does not count still
+answers its verdict and marks a stall, and a follower whose promise has lapsed still campaigns on one report.
+
+**Replayed on m44's trace** (`tests/fanout/latesuspect.py tsave-m44b33 terms-m44b33`, `raw/latesuspect-m44b33.txt`).
+A report counts as the code counts it: verdict `promised`, `about` the member the voter last took an append from, colo
+not UNKNOWN; a higher term clears the window and the bar. Lateness is judged only where the voter's trace has no hole
+over 300 ms across the gap (the ring lost about 26k rows per voter), so (i)'s numbers are lower bounds.
+
+| rule | two followers withholding at once | first two-follower withholding after the first report |
+|---|---|---|
+| main (any report) | 293 s | 2.2 s |
+| (i), late ≥ 1 s | 179 s | 18.8 s |
+| (i), late ≥ 2 s | 80 s | 19.5 s |
+| (i), late ≥ 3 s | 40 s | 20.6 s |
+
+- In m44 the first change of term came 35 s into load. Under main both followers withheld 2.2 s after the first report.
+  Under (i) the first withholding at 18.8 s follows a real stall: the leader issued no `/raft` call for 12.9 s
+  (`CallSent` gap, its ticker lagged 1.6 s), and follower appends stopped for 2.2 to 3.3 s. Withholding there is the
+  rule working.
+- The later terms in the replay start from a loop (i) would not have entered, because the real elections came from
+  main's rule. So the 179 s overstates what (i) would have withheld. Only a hosted run can say how many terms change.
+- Follower append gaps during load, where the trace is dense: p50 58 to 123 ms, p90 658 to 730 ms, p99 2.8 to 3.2 s,
+  and 20 to 33 gaps of 1 s or more per voter. Those are leader stalls. (i) still withholds on them when two colos report
+  inside the same late spell.
+
+**Tests** (`crates/raft/tests/leadership.rs`).
+- `an_overloaded_leader_still_appending_keeps_its_promises` fails on main: LAX and NRT report to both followers every
+  100 ms for 15 s while A appends, and A loses its term. With (i) it keeps its term, one late moment's report from one
+  colo withholds nothing, a real late spell at B alone withholds there, and B's bar ends after 2 x the window once
+  appends are timely.
+- `a_gray_leader_whose_appends_come_late_still_loses_its_lease`: A's appends arrive in bursts every 1.5 s, still
+  renewing, while two colos report. Another member leads 9.0 s after the first report (target 20 s).
+- `two_colos_within_the_window_stop_promises_to_a_renewing_leader` and the unknown-colo test send their reports after
+  a CALL_DEADLINE with nothing delivered.
+- Plants (`tests/latesuspect/plant.py`), 5 of 5 caught: main's rule, lateness against LEASE, lateness from
+  `last_leader_seen`, a timely report that clears the window, and reports that never count.
+
+**Simulator.** The long sweep (2,000 seeds, 10,000 steps; live half 4,000) passed. Longest stretches with a healthy
+quorum, requests waiting and none completing:
+
+| sweep | colo-unknown | late-suspect |
+|---|---|---|
+| harsh | 16.3 s | 17.0 s |
+| gray | 27.9 s | 24.7 s |
+| live | 25.4 s | 27.8 s |
+
+All are under the 30 s bound (`LIVE_BOUND_MS`). Porcupine Ok on all three histories (157,336, 2,333,008 and 5,988,768
+operations). The short sim suite gave 12.1 s harsh, 20.7 s gray and 16.6 s live.

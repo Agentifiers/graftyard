@@ -368,9 +368,21 @@ fn report(c: &mut Cluster, to: SiteId, colo: u32, about: SiteId) -> Verdict {
     c.on(to, |m, now| m.suspect(now, Colo(colo), about, term))
 }
 
-/// Reports from two colos within SUSPECT's window stop promises to a still-renewing leader, so a leader that cannot
-/// measure its own sickness still loses its lease; two colos a window apart do not, nor do reports about a member that
-/// is not the follower's leader.
+/// A report that reaches `to` while its appends from its leader are late: CALL_DEADLINE passes with nothing delivered,
+/// and what queued meanwhile goes out after the report. Only such a report counts toward SUSPECT (`late-suspect`).
+fn late_report(c: &mut Cluster, to: SiteId, colo: u32, about: SiteId) -> Verdict {
+    c.advance(ms(graftyard_raft::CALL_DEADLINE));
+    let v = report(c, to, colo, about);
+    c.deliver_all();
+    v
+}
+
+const LAX: u32 = u32::from_be_bytes(*b"\0LAX");
+const NRT: u32 = u32::from_be_bytes(*b"\0NRT");
+
+/// Reports from two colos within SUSPECT's window, each while the follower's appends are late, stop promises to a
+/// leader that still renews, so a leader that cannot measure its own sickness still loses its lease; two colos a window
+/// apart do not, nor do reports about a member that is not the follower's leader.
 #[test]
 fn two_colos_within_the_window_stop_promises_to_a_renewing_leader() {
     let (colos, window) = graftyard_raft::SUSPECT;
@@ -379,23 +391,119 @@ fn two_colos_within_the_window_stop_promises_to_a_renewing_leader() {
     let mut id = 0;
     c.elect(A);
     c.sync(A);
-    assert_eq!(report(&mut c, B, 1, A), Verdict::Promised);
+    assert_eq!(late_report(&mut c, B, 1, A), Verdict::Promised);
     drive(&mut c, ms(window) + 200, true, &mut id, |_| false);
-    assert_eq!(report(&mut c, B, 2, A), Verdict::Promised);
+    assert_eq!(late_report(&mut c, B, 2, A), Verdict::Promised);
     let before = c.m(B).state().promise_until;
     drive(&mut c, 500, true, &mut id, |_| false);
     assert!(c.m(B).state().promise_until > before, "B stopped promising on reports a window apart");
     // A third colo inside the window of the second: B stops promising, though A keeps renewing.
-    assert_eq!(report(&mut c, B, 3, A), Verdict::Promised);
+    assert_eq!(late_report(&mut c, B, 3, A), Verdict::Promised);
     let stopped = c.m(B).state().promise_until;
     drive(&mut c, 3_000, true, &mut id, |_| false);
     assert_eq!(c.m(B).state().promise_until, stopped, "B promised again inside 2 x SUSPECT");
     // Reports about B, which is not C's leader, count for nothing at C.
-    report(&mut c, C, 1, B);
-    report(&mut c, C, 2, B);
+    late_report(&mut c, C, 1, B);
+    late_report(&mut c, C, 2, B);
     let c_promise = c.m(C).state().promise_until;
     drive(&mut c, 500, true, &mut id, |_| false);
     assert!(c.m(C).state().promise_until > c_promise);
+}
+
+/// A follower counts a report only while its own appends from the reported leader are late (`late-suspect`). On
+/// B0-33 m44 the edge's reports came from LAX and NRT while both followers took the leader's appends every few hundred
+/// ms; both withheld, and the group went through 18 terms in 5 minutes. A leader that is overloaded but still
+/// appending keeps its promises and its term, even with one late moment's report from one colo in the window.
+#[test]
+fn an_overloaded_leader_still_appending_keeps_its_promises() {
+    let mut c = Cluster::new(46);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    drive(&mut c, 1_000, true, &mut id, |_| false);
+    let term = c.m(A).term();
+    // 15 s of reports from two colos every 100 ms, past ELECTION_AFTER and SUSPECT's window.
+    for i in 0..150 {
+        for s in [B, C] {
+            for colo in [LAX, NRT] {
+                assert_eq!(report(&mut c, s, colo, A), Verdict::Promised, "{s:?} campaigned at {i}");
+            }
+        }
+        // One late moment: that report counts, but alone it is one colo, and the timely ones after it add none.
+        if i == 50 {
+            for s in [B, C] {
+                assert_eq!(late_report(&mut c, s, LAX, A), Verdict::Promised);
+            }
+        }
+        drive(&mut c, 100, true, &mut id, |_| false);
+    }
+    assert_eq!(c.m(A).role(), Role::Leader);
+    assert_eq!(c.m(A).term(), term, "an overloaded leader that still appends lost its term");
+    for s in [B, C] {
+        assert!(c.m(s).state().promise_until > c.now, "{s:?} stopped promising to a leader that still appends");
+    }
+    // A real late spell at B alone: two colos inside the window, so B withholds. C still promises, so A keeps leading,
+    // and once A's appends are timely again B's bar ends after 2 x the window though both colos keep reporting.
+    late_report(&mut c, B, LAX, A);
+    late_report(&mut c, B, NRT, A);
+    let stopped = c.m(B).state().promise_until;
+    let (_, window) = graftyard_raft::SUSPECT;
+    for _ in 0..(ms(window) * 2 / 100 + 10) {
+        for colo in [LAX, NRT] {
+            report(&mut c, B, colo, A);
+        }
+        drive(&mut c, 100, true, &mut id, |_| false);
+    }
+    assert_eq!(c.m(A).role(), Role::Leader);
+    assert!(c.m(B).state().promise_until > stopped, "timely appends' reports kept B withholding past 2 x SUSPECT");
+}
+
+/// The gray leader `late-suspect` must still move: A's appends reach its followers only in bursts every 1.5 s, so it
+/// keeps renewing their promises, while two colos report it. Reports in the late part of each gap count, both
+/// followers withhold, and another member leads within the Gray region's 20 s target.
+#[test]
+fn a_gray_leader_whose_appends_come_late_still_loses_its_lease() {
+    let mut c = Cluster::new(47);
+    let mut id = 0u128;
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(A).term();
+    let start = c.now.0;
+    let mut held: Vec<Envelope<KvEvent>> = Vec::new();
+    let mut moved = None;
+    for step in 0..300 {
+        c.advance(100);
+        if let Some(l) = c.leader() {
+            id += 1;
+            let rid = RequestId(graftyard_raft::Ulid(id));
+            let _ = c.on(l, |m, now| m.commit(now, rid, put("load", &id.to_string())));
+        }
+        if c.m(A).role() == Role::Leader {
+            for s in [B, C] {
+                for colo in [LAX, NRT] {
+                    report(&mut c, s, colo, A);
+                }
+            }
+        }
+        c.deliver(|e| {
+            let gray = e.from == A && matches!(e.msg, Message::Append(_));
+            if gray {
+                held.push(e.clone());
+            }
+            !gray
+        });
+        if step % 15 == 14 {
+            c.inbox.append(&mut held);
+            c.deliver_all();
+        }
+        if let Some(l) = c.leader().filter(|l| *l != A) {
+            moved = Some((l, c.now.0 - start));
+            break;
+        }
+    }
+    let (l, after_ms) = moved.expect("the gray leader kept its lease for 30 s");
+    assert!(c.m(l).term() > term);
+    assert!(after_ms <= 20_000, "moved after {after_ms} ms, past the Gray region's 20 s");
 }
 
 /// A report from `Colo::UNKNOWN` (a site script's lookup, which runs in no edge) is no second colo: with one edge colo
@@ -403,7 +511,6 @@ fn two_colos_within_the_window_stop_promises_to_a_renewing_leader() {
 /// through 19 terms in 6 minutes. It still starts a campaign once the promise has lapsed.
 #[test]
 fn an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign() {
-    let lax = u32::from_be_bytes(*b"\0LAX");
     // What a site script's report carries: its lookup never sets a colo, and the member reads a missing one as 0.
     let site_script = 0;
     let mut c = Cluster::new(44);
@@ -411,16 +518,16 @@ fn an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign() {
     c.elect(A);
     c.sync(A);
     for unknown_first in [true, false] {
-        let (one, two) = if unknown_first { (site_script, lax) } else { (lax, site_script) };
-        assert_eq!(report(&mut c, B, one, A), Verdict::Promised);
-        assert_eq!(report(&mut c, B, two, A), Verdict::Promised);
-        assert_eq!(report(&mut c, B, site_script, A), Verdict::Promised);
+        let (one, two) = if unknown_first { (site_script, LAX) } else { (LAX, site_script) };
+        assert_eq!(late_report(&mut c, B, one, A), Verdict::Promised);
+        assert_eq!(late_report(&mut c, B, two, A), Verdict::Promised);
+        assert_eq!(late_report(&mut c, B, site_script, A), Verdict::Promised);
         let before = c.m(B).state().promise_until;
         drive(&mut c, 500, true, &mut id, |_| false);
         assert!(c.m(B).state().promise_until > before, "B withheld on one colo plus unknown-colo reports");
     }
     // A second real colo inside the window still withholds.
-    assert_eq!(report(&mut c, B, 7, A), Verdict::Promised);
+    assert_eq!(late_report(&mut c, B, 7, A), Verdict::Promised);
     let stopped = c.m(B).state().promise_until;
     drive(&mut c, 500, true, &mut id, |_| false);
     assert_eq!(c.m(B).state().promise_until, stopped, "two colos no longer withhold");
