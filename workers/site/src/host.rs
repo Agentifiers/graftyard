@@ -3809,20 +3809,18 @@ impl<F: Family> Host<F> {
         Ok(json!(out))
     }
 
-    /// The member's stored log, with each entry's request ids, from `from` (at most `n` entries).
+    /// The member's stored log, with each entry's request ids, from `from`: at most `n` entries and about
+    /// `LOG_JSON_BYTES` of JSON (`log_take`). The rows are read a page at a time (`crate::logread::log_after`), so the
+    /// read holds one page and the answer, not `n` whole entries: on b030r6 a harness read of 100 to 400 entries, each
+    /// with its ~320 KB inline pack, took the leader's isolate past its memory limit (2026-11-17 17:36Z and 18:38Z).
     #[cfg(feature = "test-faults")]
     pub fn log_json(&self, from: u64, n: usize) -> Result<Value> {
         let core = self.core.borrow();
         let Some(core) = core.as_ref() else { return Ok(json!([])) };
         let commit = core.m.state().commit.0;
         let sql = self.state.storage().sql();
-        let r = rows(
-            &sql,
-            "SELECT idx, digest, row FROM log WHERE idx >= ? ORDER BY idx LIMIT ?",
-            vec![i(from.max(1)), i(n as u64)],
-        )?;
-        let mut out = Vec::with_capacity(r.len());
-        for r in r {
+        let rows = crate::logread::log_after(&sql, "digest, row", from.max(1) - 1).map(|r| -> Result<(Value, usize)> {
+            let r = r?;
             let e: Entry<F> = codec::from_bytes(blob(&r[2])?).map_err(|e| err(e.to_string()))?;
             let mut row = json!({
                 "index": e.index.0,
@@ -3842,9 +3840,10 @@ impl<F: Family> Host<F> {
             for (k, v) in F::entry_json(&e).into_iter().chain(F::log_fields(&e)) {
                 row[k] = v;
             }
-            out.push(row);
-        }
-        Ok(json!(out))
+            let len = serde_json::to_string(&row).map_or(usize::MAX, |s| s.len());
+            Ok((row, len))
+        });
+        Ok(json!(log_take(rows, n, LOG_JSON_BYTES)?))
     }
 
     /// BF-12's audit over the committed log on storage: request ids at more than one index, `dup` rows written by
@@ -4075,8 +4074,57 @@ pub fn rid_from(s: &str) -> Result<RequestId> {
     s.parse().map_err(|_| err(format!("bad request id {s:?}")))
 }
 
+/// The JSON `GET /log` answers at most (`Host::log_json`), about.
+#[cfg(any(test, feature = "test-faults"))]
+const LOG_JSON_BYTES: usize = 4 << 20;
+
+/// `GET /log`'s rows, each with its JSON length, taken while they fit: at most `n`, and the walk stops at the first
+/// row that would take the answer past `cap` bytes, which is left out, so a caller asking again from the last index
+/// plus one gets it next. The first row is always taken, so one entry over `cap` still reads. Stops on an error.
+#[cfg(any(test, feature = "test-faults"))]
+fn log_take(rows: impl Iterator<Item = Result<(Value, usize)>>, n: usize, cap: usize) -> Result<Vec<Value>> {
+    let (mut out, mut bytes) = (Vec::new(), 0usize);
+    for r in rows.take(n) {
+        let (row, len) = r?;
+        if !out.is_empty() && bytes.saturating_add(len) > cap {
+            break;
+        }
+        bytes = bytes.saturating_add(len);
+        out.push(row);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
+    /// `GET /log` stops before the row that would cross its byte cap, still takes a first row over it, and holds `n`:
+    /// a harness read of 400 entries with ~320 KB packs answered ~128 MB and reset b030r6's leader.
+    #[test]
+    fn the_log_read_stops_at_its_byte_cap() {
+        use serde_json::json;
+        let read = std::cell::Cell::new(0usize);
+        let big = |k: usize| {
+            let read = &read;
+            (1..=k).map(move |i| {
+                read.set(read.get() + 1);
+                Ok((json!({ "index": i }), 330_000))
+            })
+        };
+        let cap = super::LOG_JSON_BYTES;
+        let got = super::log_take(big(400), 400, cap).unwrap();
+        // 12 rows of 330,000 B are 3,960,000 B; the 13th would make 4,290,000 > 4,194,304.
+        assert_eq!(got.len(), 12);
+        assert_eq!(got.last().unwrap()["index"], 12);
+        assert_eq!(read.get(), 13, "the walk stops at the row that crosses the cap, not at n");
+        // Under the cap, `n` holds; a row exactly at the cap is taken.
+        assert_eq!(super::log_take(big(400), 5, cap).unwrap().len(), 5);
+        let exact = vec![Ok((json!(1), cap - 10)), Ok((json!(2), 10)), Ok((json!(3), 1))];
+        assert_eq!(super::log_take(exact.into_iter(), 10, cap).unwrap().len(), 2);
+        // One entry over the cap still reads, alone.
+        let huge = vec![Ok((json!(1), cap + 1)), Ok((json!(2), 1))];
+        assert_eq!(super::log_take(huge.into_iter(), 10, cap).unwrap().len(), 1);
+    }
+
     /// A voter with leader-only work acts once it has seen no leader for 2 x ELECTION_AFTER: ELECTION_AFTER after its
     /// promise lapsed, even when its first check came later, or after it was first found so if it never promised; then
     /// at most every ELECTION_AFTER. It probes a leader it still names and campaigns when it names none. One that leads
