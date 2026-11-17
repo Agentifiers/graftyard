@@ -28,6 +28,19 @@ jobs:
       - run: python3 scripts/check_names.py
       - run: python3 scripts/check_links.py
 
+  runners-js:
+    name: graft-runners' Sandbox start (node --test)
+    runs-on: [self-hosted, srv]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test workers/runners/tests/
+
   web:
     name: Web format, typecheck, build
     runs-on: [self-hosted, srv]

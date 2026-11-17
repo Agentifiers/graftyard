@@ -1277,7 +1277,7 @@ pub const BROKER_HELD_MAX: u32 = 2_000;   pub const ASKS_MAX: u32 = 64;   // hel
 pub struct HookSequencer { pub owner: AccountId }
 /// `graft-runners`, a Worker in the runner account, is SHARED's hosted-runner service. It holds `HostedRunnersAppKey`,
 /// reaches the install only through the front, sweeps on a Cron Trigger, and runs each runner in one Sandbox named by
-/// the runner id, `standard-3` or, for a 4-core label, `standard-4`. It starts none past this share of account vCPU.
+/// the runner id, `standard-3` or, for a 4-core label, `standard-4`. A pass only registers the runner and arms its Sandbox: the Sandbox stores the JIT config and its own alarm (15 min wall, at least once) starts the process at most once, gives up before HOSTED_IDLE, and drops the config, so no Worker invocation waits on placement [doc; F80]. It starts none past this share of account vCPU.
 pub const RUNNER_VCPU_STOP_PCT: u8 = 70;   // [guess]
 /// SHARED's `IdentityEvent` gains `Record(UserRecord)` on the actor's group. These gate nothing. The `Counts` consumer
 /// reads every `Record` and writes the derived watcher index, in the Bot class and at most one entry a second, to each

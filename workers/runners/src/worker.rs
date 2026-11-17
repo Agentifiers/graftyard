@@ -10,8 +10,9 @@
 //!   leaves the runner account except inside its own Sandbox.
 //! - **Sandboxes.** One per runner, named `runner-<id>`, on `SANDBOX_STD3` or `SANDBOX_STD4` (the Sandbox SDK's class,
 //!   one container class per instance type, `entry.mjs`), called over Durable Object RPC the way `getSandbox` does.
-//!   The process runs `run.sh --jitconfig` with `keepAlive`, then signals the Sandbox's PID 1, so a runner's exit stops
-//!   its container [inference: unverified on Sandboxes until the first hosted run].
+//!   A pass only arms the Sandbox (`arm`); the Sandbox's own alarm starts the process (`launch.mjs`), which runs
+//!   `run.sh --jitconfig` with `keepAlive`, then signals the Sandbox's PID 1, so a runner's exit stops its container
+//!   [measured: BF-60's hosted runs].
 //! - **Triggers.** `fetch` takes the App's `workflow_job` webhook (`X-Hub-Signature-256` under `WEBHOOK_SECRET`) and
 //!   runs a pass for that owner after answering 202; `scheduled` runs one over every owner on the 5-minute cron.
 
@@ -263,12 +264,12 @@ impl Host for Live {
         jit: String,
     ) -> std::result::Result<(), String> {
         let (stub, name) = self.sandbox(instance, runner)?;
-        call_js(&stub, "setSandboxName", &[name.into()]).await?;
-        call_js(&stub, "setKeepAlive", &[true.into()]).await?;
         let cmd = format!("{RUNNER_DIR}/run.sh --jitconfig \"$JIT\"; kill -TERM 1");
         let opts =
             obj(&[("env", obj(&[("JIT", jit.into())])), ("cwd", RUNNER_DIR.into()), ("processId", "runner".into())]);
-        call_js(&stub, "startProcess", &[cmd.into(), opts]).await.map(|_| ())
+        // Stores the start in the Sandbox, whose own alarm starts the process (`launch.mjs`): this call returns before
+        // placement, so a delivery pass is never cut at `waitUntil`'s 30 s mid-start (F80).
+        call_js(&stub, "arm", &[name.into(), cmd.into(), opts]).await.map(|_| ())
     }
 
     async fn destroy(&self, runner: RunnerId, instance: Instance) -> std::result::Result<(), String> {

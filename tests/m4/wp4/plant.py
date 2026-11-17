@@ -34,6 +34,8 @@ HC = ['-p', 'graftyard-identity', '--test', 'wp4', '-p', 'graftyard-api', '--tes
       '--test', 'wire_tags']
 EA = 'workers/edge/src/actions.rs'
 EDGE = ['-p', 'graftyard-edge', '--lib', 'actions::']
+L = 'workers/runners/launch.mjs'
+NODE = ['node']  # `node --test workers/runners/tests/`, not cargo
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -201,6 +203,22 @@ MUTANTS = [
     ('a job the shard does not hold is retried as a failed read', EA,
      '    let row = row.ok_or_else(|| gone(format!("job {}: no such job", job.0.0)))?;',
      '    let row = row.ok_or_else(|| failed(format!("job {}: no such job", job.0.0)))?;', EDGE),
+    # ---- F80: the Sandbox's alarm starts the runner (launch.mjs) ----
+    ('the delivery pass starts the process itself (main\'s rule, F80)', L,
+     '  await sb.schedule(0, "launchRunner");\n  return true;', '  await sb.startProcess(cmd, opts);\n  return true;', NODE),
+    ('a retried alarm starts without asking for the process', L,
+     '    if (!(await sb.getProcess(st.opts.processId))) await sb.startProcess(st.cmd, st.opts);',
+     '    await sb.startProcess(st.cmd, st.opts);', NODE),
+    ('a second arm stores the start again', L, '  if (await sb.ctx.storage.get(KEY)) return false;\n', '', NODE),
+    ('a start waiting on placement never gives up', L,
+     '  if (Date.now() - st.armedAt > GIVE_UP_MS) {', '  if (false) {', NODE),
+    ('a start that lands after a destroy is kept', L,
+     '  if ((await sb.ctx.storage.get(KEY))?.state === "closed") return sb.destroy();\n', '', NODE),
+    ('a destroy leaves the stored start pending', L,
+     '  await sb.ctx.storage.put(KEY, { state: "closed" });', '', NODE),
+    ('a failed placement is not tried again', L, '    await sb.schedule(RETRY_S, "launchRunner");\n', '', NODE),
+    ('the JIT config stays stored after the launch', L,
+     '  await sb.ctx.storage.put(KEY, { state: "launched" });', '  await sb.ctx.storage.put(KEY, { ...st, state: "launched" });', NODE),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
@@ -216,10 +234,12 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
     open(f, 'w').write(src.replace(old, new, 1))
     try:
-        r = subprocess.run(['cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
-                           capture_output=True, text=True)
+        cmd = ['node', '--test', 'workers/runners/tests/'] if args is NODE else \
+            ['cargo', 'test', '-j', '3', *args, '--no-fail-fast']
+        r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
         out = r.stdout + r.stderr
-        failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
+        failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')} |
+                        {l[2:].strip() for l in out.splitlines() if l.startswith('✖ ') and 'failing' not in l})
         if ('error[' in out or out.lstrip().startswith('error:') or '\nerror: ' in out) and not failed:
             verdict = 'DID NOT COMPILE'
         else:
