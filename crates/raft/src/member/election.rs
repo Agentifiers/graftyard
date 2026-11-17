@@ -80,8 +80,14 @@ impl<C: Command> Member<C> {
             let leader = self.state.promised_to.filter(|l| {
                 *l != self.cfg.me && (self.leader == Some(*l) || (self.leader.is_none() && self.forgot == Some(*l)))
             });
+            // The follower's own evidence: a report counts only while this member's appends from its leader are late,
+            // none accepted for CALL_DEADLINE. A leader that is overloaded but still appending keeps its promises; on
+            // B0-33 m44 the edge's reports came from LAX and NRT while both followers took appends every few hundred
+            // ms, and withholding moved a committing leader 18 times in 5 minutes (`tests/am1/results/lm1-memory.md`).
+            let late = self.now >= after(self.appended_at, CALL_DEADLINE);
             if let Some(l) = leader.filter(|l| *l == about)
                 && term == self.state.term
+                && late
             {
                 let (colos, window) = SUSPECT;
                 let since = Timestamp(self.now.0.saturating_sub(window.as_millis() as u64));

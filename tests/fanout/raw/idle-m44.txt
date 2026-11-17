@@ -1,0 +1,25 @@
+{"from": "2026-11-17T20:44:00Z", "to": "2026-11-17T21:15:11Z", "containers": 0.3, "do_rows": 3.69, "do_duration": 0.16, "do_requests": 0.26, "workers": 0.13, "usd": 4.55, "prefix": "graft-m2b", "prefix_usd": 0.0}
+  graft-m1-site-c                          $1.84
+  graft-m4a-site-a                         $0.64
+  graft-m3f-site-a                         $0.45
+  graft-m4a-site-b                         $0.38
+  graft-m4a-site-c                         $0.36
+{"from": "2026-11-17T20:44:00Z", "to": "2026-11-17T21:15:12Z", "containers": 0.3, "do_rows": 3.69, "do_duration": 0.16, "do_requests": 0.26, "workers": 0.13, "usd": 4.55}
+  graft-m1-site-c                          $1.84
+  graft-m4a-site-a                         $0.64
+  graft-m3f-site-a                         $0.45
+  graft-m4a-site-b                         $0.38
+  graft-m4a-site-c                         $0.36
+slot 20:30:00: names:* rows 32 from 6 objects
+  a 20:32:11 ok homesRead 0 swept 1 planned 2730 unresolved 0 wall 129 s
+  b 20:31:05 ok homesRead 0 swept 0 planned 0 unresolved 0 wall 33 s
+  c 20:31:03 ok homesRead 0 swept 0 planned 0 unresolved 0 wall 27 s
+slot 20:45:00: names:* rows 28 from 6 objects
+  a 20:45:43 ok homesRead 0 swept 4 planned 0 unresolved 0 wall 41 s
+  b 20:45:57 ok homesRead 0 swept 0 planned 0 unresolved 0 wall 26 s
+  c 20:46:01 ok homesRead 0 swept 0 planned 0 unresolved 0 wall 24 s
+slot 21:00:00: names:* rows 0 from 0 objects
+  a 21:00:57 ok homesRead 0 swept 20 planned 0 unresolved 0 wall 56 s
+  b 21:00:57 ok homesRead 0 swept 0 planned 0 unresolved 0 wall 25 s
+  c 21:01:02 ok homesRead 0 swept 0 planned 0 unresolved 0 wall 25 s
+DONE
