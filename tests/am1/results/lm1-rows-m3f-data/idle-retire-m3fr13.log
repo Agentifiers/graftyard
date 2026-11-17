@@ -1,0 +1,16 @@
+2026-11-17T19:03:33.663Z repo:65583#2#l0 site 0 before: follower t2 c4; /retire: null
+2026-11-17T19:03:33.673Z repo:65583#1#f0 site 0 before: follower t2 c738; /retire: null
+2026-11-17T19:03:33.875Z repo:65583#2#l2 site 2 before: follower t2 c5; /retire: null
+2026-11-17T19:03:33.890Z repo:65583#1#f2 site 2 before: follower t2 c736; /retire: null
+2026-11-17T19:03:34.044Z repo:65583#3#f1 site 1 before: follower t2 c736; /retire: null
+2026-11-17T19:03:34.054Z repo:65583#2#f1 site 1 before: follower t1 c0; /retire: null
+2026-11-17T19:03:34.086Z repo:65583#2#l1 site 1 before: follower t2 c5; /retire: null
+2026-11-17T19:03:34.160Z repo:65583#1#f1 site 1 before: follower t2 c5; /retire: null
+2026-11-17T19:03:34.643Z repo:65583#2#l6 site 0 before: follower t2 c5; /retire: null
+2026-11-17T19:03:34.721Z repo:65583#2#l3 site 0 before: follower t2 c5; /retire: null
+2026-11-17T19:03:34.741Z repo:65583#2#l7 site 0 before: follower t2 c5; /retire: null
+2026-11-17T19:03:34.839Z repo:65583#2#l5 site 2 before: follower t2 c5; /retire: null
+2026-11-17T19:03:35.099Z repo:65583#2#l4 site 1 before: follower t2 c5; /retire: null
+2026-11-17T19:03:50.950Z retired 13/13 not joined
+2026-11-17T19:04:47.985Z purge: 65583 purged: a 1347 -> 0, b 1349 -> 0, c 1315 -> 0
+2026-11-17T19:04:47.986Z purge: {"dry": false, "purged": 1, "objects": 4011, "refused": []}

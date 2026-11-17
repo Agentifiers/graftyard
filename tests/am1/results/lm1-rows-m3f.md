@@ -108,6 +108,67 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fr13 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr13`, main `1d3c897b`)
+
+**Slot.** B0-32 was rerun alone, with no site day, because main's `crates`, `workers` and `containers` are unchanged since `fec1d01d` (`git diff --quiet fec1d01d 1d3c897b`). edgever showed `graft-m3f-edge` serving `2c42bfcc` at 100%. The stops were graft-m3f past $5 by `PREFIX`, or the account past $280.
+- **Cost:** graft-m3f **$0.34** from 17:50:44Z to 18:02:02Z (row and sweeps), and **$0.40** through the retire and purge at 19:05Z. The account's UTC day read $149.14 at 17:50Z and $158.16 at 19:05Z.
+- **Edge errors** (`graft-m3f-edge`, 17:52 to 18:01Z): "Cannot perform I/O on behalf", "closure invoked recursively" and "code had hung" were **0, 0 and 0**.
+- **Close-out:** both sweeps found nothing running (17:51Z, 18:01Z and 18:02Z). At 19:03Z, 13 of 13 members of 65583 were retired, and 4,011 objects were purged (a 1,347, b 1,349, c 1,315, all to 0). The final sweep at 19:05Z found nothing running.
+
+### B0-32 (repo 65583, run `mwkzph1o`, leader site 0): fail, and again not the row as written (no learners)
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | 498 of 500 ok, 1 HTTP/2 stream error, 1 refused "unpacker error: validate: bad update line"; **0 within 5 s**; client p50 9.6 s, p99 17.0 s | 450 needed: **short by 450** |
+| Queued agent bytes under AGENT_QUEUE_MAX | peak 40,175 B, 7 queued | Pass |
+| Merges in one of the next 2 entries | not judged from entries; `merge:only` p99 7.65 s (n 15) | Not shown |
+| Zero leader changes and zero `suspect` | term 2 throughout, leader site 0; **2 `/suspect` about `repo:65583`** at 17:57:27Z, about 15 s into the burst, each from a different edge isolate (step `Other`), sent to all three voters | **Fail** (the line's target is 0) |
+
+**Server-timing** on the 1,305 timed pushes, in ms, p50 / p99 (m3fr12 in brackets):
+
+| Stage | p50 / p99 |
+|---|---|
+| auth | 158 / 2,706 (1,147 / 5,747) |
+| resolve | 615 / 3,710 |
+| gate | 0 / 5,979 (0 / 17,517) |
+| context | 324 / 7,443 (1,841 / 20,719) |
+| validate | 384 / 1,656 (596 / 1,281) |
+| commit | 750 / 2,709 (2,683 / 4,027) |
+| total | 3,126 / 12,321 |
+
+The receipt counters were 1,668 commits on 1,668 sends, 0 busy, 9 asks, 0 missed, and 0 receipt `suspect`. The leader's `deps:all` p99 was 479 ms.
+
+**The learners were dropped again, after `learners.mjs` succeeded** [measured, `tests/fanout/raw/rows-m3fr13.status` and site a's Workers Logs]:
+- 17:51:59Z: `/learners` committed config 5 with 8 learners. The fixed driver logged it and went on.
+- About 17:51:49.6Z to 17:52:10.956Z: the create's background `/place` ran 21,329 ms ("placement of repo:65583", `old` `repo:65583#1#f1`, over 146 ms against the 100 ms bound). It committed `Degraded` at 6 and `Normal` at 7 with a new f1.
+- a1's `feed members` step read **0 learners, 2 followers**. The followers ended at 1,456 and 705 feed events, with "lagging" and "gone" answers.
+
+**Why: any voter re-placement drops every learner** [measured from the code, `workers/site/src/member.rs`]. `replace_steps` builds `Degraded { placement: p, .. }` from the placement it read when it started. `try_member` builds the new `Normal` with `Placement::new(voters, ArrayVec::new(), ..)`, so it has no learners. Raft's one-change check (`NotOneChange`) counts voters only, so a change that removes all learners passes. The driver fix on `b032-isolate` cannot cover this order, because the placement starts before `/learners` and commits after it. In production, the daily near check would likely drop a hot group's learners the same way, until the next daily `place_learners` [inference]. Proposed fix (not built): a re-placement carries the learners of the config committed when it changes config, or the change refuses when the committed config index moved since its read.
+
+## B0-31's opening stall (m3fr12, from the raw files and Workers Logs, no hosted spend)
+
+**Clock note.** The orb's clock is not synced. It reads about 4.9 s behind Cloudflare (three `/cdn-cgi/trace` reads at 18:51Z: −5.08, −4.89 and −4.71 s). The admission trace and a1's `buckets-up` cut use the orb's clock. Member traces and Workers Logs use Cloudflare's. So the stall the admission trace put at 16:21:32.7 to 36.7Z is **16:21:36.87 to 42.10Z** in member time.
+
+**What the leader waited on: one dependency read of the actor's `Authz` group** [measured for the times; inference for the link between them]. The trace is the leader `repo:65582#1#f2`'s own rows (`lm1-rows-m3f-data/stall-m3fr12-b0-31.json`).
+- At 36.871 the leader applied entry 153, and both followers' appends ended at 36.871 and 36.944. No entry was in flight.
+- From 36.871 to 42.099 it queued no AppendEntries and stepped no input that wrote. Edge `/commit`s kept arriving, and the handler's open count rose from 9 to 93. Nothing else held it:
+  - `ready` held, and there was no transfer and no term change.
+  - Admission's capacity was 650 to 780 a second.
+  - No entry was in flight, so `pump` reached `decide_held`, which returns while the held batch's `DepsWanted` is unanswered.
+- The leader's isolate read its dependencies about every 230 ms through 37.69. Those were `authz:7100001`, `authz:1`, `tokens:11`, `tokens:482`, `names:24` and `names:369` (object names from `durableObjectsPeriodicGroups`).
+- Its read to `authz:7100001#1#f0` (site a, enam), stamped 36.473, did not start at that object until **41.084, 4.6 s later**. That object served it in 8 ms.
+- A `/raft` call from the same group's site-b member, stamped 35.641, started there at 41.075, 5.4 s later. Calls from its site-c member arrived on time.
+- The lookup's `CALL` (3.5 s) gave up at about 39.97. At 39.973 the read went to `#1#f1` on site b, which answered in 1 ms. At 41.923 it went to f0 again, which answered in 9 ms. Entry 154 was appended at **42.099**, 16 ms after that answer arrived.
+- The earlier 1.7 s gap (entry 131 at 30.012 to 132 at 31.708) matches f0 being held then too. f0's alarm ran 1,827 ms, ending at 31.449, and the 34 calls queued behind it all ended at 31.480, with walls of up to 1.75 s.
+
+**What it is.** It is a liveness cost, not a broken rule. `decide` must have the batch's dependency folds read through `fresh`, and read-ahead keeps it so. While the held batch's read is unanswered, nothing behind it can be decided. So one dependency read that waits 4 to 5 s stalls the whole group, as at 16:21:37 to 42. Why calls to `authz:7100001#1#f0` waited 4.6 to 5.4 s before starting is **not known**. The object's own handlers were fast, and calls from its site-c member were not delayed. A narrower lever, not built: ask the dependency read again sooner than `CALL` (for example at about 1 s, against `deps:authz` p99 672 ms). That would cut a stall like this to about 1 s, but it would not lower the floor.
+
+**B0-31 at 90% is not reachable without F81** [measured for the split; inference for the floor]:
+- With the stall cut out (edge push log from 16:21:44Z, Cloudflare time, to the half's end), the edge commit p99 is **1,444 ms** (n 1,172). The 90% line is 1.1 s.
+- Only 4 apply gaps in the half exceed 600 ms (the two stalls, then 779 and 625 ms). So the steady p99 is the floor itself, not more stalls.
+- The floor is a batch's `deps:all` (p99 795 ms, driven by `deps:authz` p99 672 ms to the enam identity groups) plus a round (p99 360 ms), plus the wait for the batch. That is already over 1.1 s before any queueing.
+- Removing the stall gives about 1,444 ms. Getting to ≤ 1.1 s needs the `Authz` read off the cross-continent path (F81), or the read hedged and shortened as well.
+
 ## Rows m3fr12 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, branch `m3fr12`)
 
 **Slot.** The orchestrator moved the slot from 00:00Z Nov 18 to 15:47Z Nov 17. The operator then raised the day's limit to $300 (FRAME.md at `19b5ae77`). Stops: graft-m3f past $10 by `PREFIX`, or the account's UTC day past $280. The earlier $170 line and the $125 check before B0-31 were dropped. LM-1's B0-33 and M4-WP4 ran at the same time on other installs, so only the `PREFIX` figure is this run's.
