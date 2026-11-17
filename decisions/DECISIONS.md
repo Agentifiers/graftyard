@@ -4245,3 +4245,20 @@ A test install also logs one line per push with an isolate token and the pushes 
 What stays open is GC itself, which will drop objects. GC must not drop an object a consumed pack held until the produced pack is loaded on every shard of the network, because a shard still behind the `Compacted` serves from the consumed packs. The sweeper's deletion rule above already waits for every shard, but GC is not built, and the rule that ties its `Compacted` to that wait is open as G9's remainder. No roll in this entry deletes an object.
 
 **Gate risk.** B0-34's 120 s cold warm is reached only at the upper half of the R2 rate: 93 to 127 s by the inference above, against 120 s. This entry does not claim the gate. The flip below is a hosted cold warm over 120 s after the roll has run, and the next lever then is AHEAD (`FETCH_AT_ONCE`, four stored packs at once, `fetch-ahead`) or the `/spool` early headers (G9's row, `lm1-memory` round 31).
+
+### `sweep-quiet`: the sweeper keeps each network's home for a day, so an idle install's cron wakes no `Names` member, 2026-11-17
+
+**Status.** Asked for by the operator (rule 4, loop writers of Durable Object rows); built on branch `sweep-quiet`, not deployed. A site-script change, so it ships only through a site day.
+
+**Decision.** The site's `*/15` sweeper keeps each network's home site in its cursor object (`Registry` object `sweep`, table `sweep_home`), and a run reads a network's home from `Names` (`RepoOwner`, then the owner's `Placement`) only when it has none cached or the cached one is HOME_FOR_MS (24 h [guess]) old, at most HOMES_PER_RUN (64 [guess]) a run, new networks first. A failed read keeps the cached home. The homes a run read are stored before it sweeps; homes of networks no bucket holds any more are dropped; a run that read none writes no home row.
+
+**Why.** Each run read both rows for every network in the three buckets, about 180 networks and 350 `Names` member reads per site per run. On an idle `graft-m2b` that woke the `names:*` members four times an hour, and each wrote rows for the request and the 2 s drain alarms after it: 2,614 rows in 23:05 to 23:30Z on 2026-11-16, idle, every row from `names:*` members, 487 objects, in the minutes right after the 23:15 and 23:30 runs (23:15 to 23:19 and 23:30 to 23:34). Site a's run has also ended "Too many API requests by single Worker invocation" since 20:43Z on 2026-11-16, at 255 subrequests a run on every site [measured, `durableObjectsPeriodicGroups`, Workers Logs, `workersInvocationsAdaptive`; `tests/am1/results/lm1-memory.md`, "sweep-quiet"].
+
+**What it beat.**
+- **Not waking an idle member at all:** the home is needed to pick which site sweeps a network, and the leader's answer is the only source; skipping the read means a network never swept.
+- **Fixing the member's 2 s drain alarm instead:** it would cut rows per wake, but every run would still wake about 350 members and spend its subrequests on them.
+- **Reading the home from the registry row's first site:** the registry row lists voters in record order, not the owner's `home`, and does not follow a `Home` move.
+
+**Evidence.** `workers/site/src/sweep.rs`, `a_run_reads_homes_only_for_new_or_day_old_networks` and `a_failed_read_keeps_the_cached_home_and_a_run_reads_at_most_its_cap`; `tests/sweepquiet/plant.py` (7 of 7 caught, the first is main's read-every-run).
+
+**Flip.** A hosted idle hour after the site day in which `names:*` members still write rows after a cron run with no new network; or a network swept by no site for over a day after its owner's home moved.

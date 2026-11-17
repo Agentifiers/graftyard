@@ -4277,3 +4277,28 @@ thread's. m2b rows written: 5,674 in 22:00 to 23:00Z (the slot's tail included),
 `names:*` (names:708 and names:824 members 211 to 283 rows each, the cron's loop writers above). `idlewatch.py` 22:32:31
 to 23:04:31Z: 0 shard starts. No range came due on B0-34's network, so promote-lapse was not exercised; its proof
 still waits for a promotion-started shard on a quiet group. Account since 20:30Z: $4.77 at 23:02Z. Slot closed.
+
+### `sweep-quiet`: the cron sweep's `Names` reads (2026-11-17, code only, no spend)
+
+The operator's rule 4 named the `names:*` rows the `*/15` sweep writes as a loop writer. Measured on idle `graft-m2b`
+before any change, with no deploy (`tests/fanout/idlerows.py` and a per-minute query of `durableObjectsPeriodicGroups`):
+- 23:05 to 23:30Z: 2,614 rows written, all by `Member` objects named `names:*` (487 objects), apart from 3 `Registry`
+  rows (the sweep and fold audit cursors) and 1 `GitShard` row. Per minute, the member rows land only in 23:15 to 23:19
+  and 23:30 to 23:34 (513 to 814 a minute, then 25 to 27), the four minutes after each cron run.
+- One member, `names:391#1#f0`: 5 rows written and about 3,780 read at 23:16 and at 23:18, then at 23:31 and 23:33,
+  two wakes after each cron run. `names:708`'s leader stays active 60 s a minute for 4 minutes after each run, the
+  drain alarm's `DRAIN_IDLE_MS`.
+- Every site's cron run spends 255 subrequests (`workersInvocationsAdaptive`, 12:00 to 23:00Z on 11-16), and site a's
+  has ended "Too many API requests by single Worker invocation" on every run since 20:43Z (Workers Logs), so its
+  sweep has not run since. Sites b and c log `sweep {` with 0 networks swept and 0 unresolved, 198 to 243 s a run,
+  nearly all of it the home reads.
+
+Cause [read from the code, matched to the timing above]: `sweep::run_at` reads `repo_owner` and `owner_record` through
+the `Names` leader for every network in the buckets, every run, on every site, before it sweeps any.
+
+Fix, branch `sweep-quiet` (DESIGN, the sweeper paragraph; DECISIONS, `sweep-quiet`): each site keeps every network's
+home in its `sweep` cursor object for HOME_FOR_MS (24 h) and reads at most HOMES_PER_RUN (64) new or day-old homes a
+run. Two tests in `workers/site/src/sweep.rs`; `tests/sweepquiet/plant.py` catches 7 of 7 plants, the first of them
+main's read-every-run. Expected after a site day [inference]: one run reads every home once (64 a run, so about three
+runs on m2b's 180 networks), then about 180 home reads a day per site instead of about 34,000, and the `names:*` rows
+fall from about 2.6 k a run to near zero outside a client request. Not deployed: it ships with the next site day.
