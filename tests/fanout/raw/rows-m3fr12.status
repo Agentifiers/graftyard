@@ -1,0 +1,47 @@
+2026-11-17T16:04:24Z start d8a85beb /home/user/workspace/b032-trace
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T16:04:42Z start sweep ok
+2026-11-17T16:04:45Z cost account 111.4 since 2026-11-17T00:00:00Z, run 0.0 since 2026-11-17T15:47:50Z, at b0-32
+2026-11-17T16:05:27.172Z m3org/fm3fr12-b032 = 65581
+2026-11-17T16:05:35.146Z repo:65581 leader 0: learners [{"addr":192,"doName":"repo:65581#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65581#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65581#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65581#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65581#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65581#2#l5","join":200,"sit config undefined
+2026-11-17T16:05:38.809Z repo:65581 leader 0: set k 4: {"grants":[[0,[6,3,4]],[1,[6,3,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T16:05:49.116Z repo:65581 leader 0: set k 4: {"grants":[[0,[6,3,4]],[1,[6,3,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T16:05:59.806Z repo:65581 leader 0: set k 4: {"grants":[[0,[6,3,4]],[1,[6,3,4]]],"k":4,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-17T16:06:00.024Z repo:65581 leader 0: k 4 at 9
+2026-11-17T16:06:00Z b0-32 fm3fr12-b032 65581 start
+2026-11-17T16:13:45.635Z repo:65581 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-17T16:13:45.773Z repo:65581 leader 0: k 1 at 592
+2026-11-17T16:13:45Z b0-32 fm3fr12-b032 65581 done exit 0
+2026-11-17T16:13:52Z torn down 65581
+2026-11-17T16:15:07Z cost account 121.97 since 2026-11-17T00:00:00Z, run 0.33 since 2026-11-17T15:47:50Z, at b0-31
+2026-11-17T16:15:48.712Z m3org/fm3fr12-b031 = 65582
+before [[0,"leader",2,0],[1,"follower",2,0],[2,"follower",2,0]]
+move on 0 {"config":[6,{"normal":{"generation":1,"home":2,"learners":[],"voters":[{"do_name":"repo:65582#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65582#1#f1","generation":1,"kind":"full","site":1,"slot":1},{"do_name":"re
+move on 0 {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":2,"learners":[],"voters":[{"do_name":"repo:65582#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65582#1#f1","generation":1,"kind":"full","sit
+move on 2 {"config":[6,{"normal":{"generation":1,"home":2,"learners":[],"voters":[{"do_name":"repo:65582#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65582#1#f1","generation":1,"kind":"full","site":1,"slot":1},{"do_name":"re
+after [[0,"follower",3,2],[1,"follower",3,2],[2,"leader",3,2]]
+rehomed on 2
+2026-11-17T16:16:21Z b0-31 warm exit 0: warm site 2 after 2.2 s
+2026-11-17T16:16:30.275Z repo:65582 leader 2: learners [{"addr":192,"doName":"repo:65582#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65582#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65582#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65582#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65582#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65582#2#l5","join":200,"sit config 11
+2026-11-17T16:16:33.759Z repo:65582 leader 2: set k 4: {"grants":[[0,[6,4,1]],[1,[6,4,1]]],"k":1,"meta":{"configIndex":11,"leader":2,"term":3},"stepped":false,"want":3}
+2026-11-17T16:16:44.275Z repo:65582 leader 2: set k 4: {"grants":[[0,[6,4,1]],[1,[6,4,1]]],"k":1,"meta":{"configIndex":11,"leader":2,"term":3},"stepped":false,"want":3}
+2026-11-17T16:16:55.032Z repo:65582 leader 2: set k 4: {"grants":[[0,[6,4,1]],[1,[6,4,1]]],"k":4,"meta":{"configIndex":11,"leader":2,"term":3},"stepped":true,"want":3}
+2026-11-17T16:16:55.197Z repo:65582 leader 2: k 4 at 12
+2026-11-17T16:16:55Z b0-31 fm3fr12-b031 65582 start
+2026-11-17T16:32:08.793Z repo:65582 leader 2: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":11,"leader":2,"term":3},"stepped":true,"want":0}
+2026-11-17T16:32:08.964Z repo:65582 leader 2: k 1 at 2364
+2026-11-17T16:32:08Z b0-31 fm3fr12-b031 65582 done exit 0
+2026-11-17T16:32:18Z torn down 65582
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T16:33:45Z sweep ok
+ALLDONE
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T16:34:22Z SWEEP2 OK
+2026-11-17T16:34:22Z cost {"from": "2026-11-17T15:47:50Z", "to": "2026-11-17T16:34:22Z", "containers": 0.83, "do_rows": 18.02, "do_duration": 0.21, "do_requests": 0.36, "workers": 0.19, "usd": 19.62, "prefix": "graft-m3f", "prefix_usd": 2.15}
+FINISHED
