@@ -4377,7 +4377,8 @@ check. Repo:131347, a1 `mwk6t1a9`, 5,000 agents, k 4, 8 learners, inbound trace 
 
 - Voter routes over the load (`Trace::Entered`): /read 368, 463, 348 a second and /suspect 157, 111, 128 a second on
   sites 0, 1, 2 (m41 after its first change: 321, 258, 306 and 155, 149, 156). The m41 storm is back with lookup-share
-  gone, so the m42 day's calm voters were lookup-share's doing, and the edge failure was its cost.
+  gone. Corrected by B0-02's trace reading (below): lookup-share did not calm the group; its 20 s hung requests cut the
+  offered load, and the group stayed quiet only because little load reached it.
 - Read grant on the leader p99 2,486 / 1,980 / 3,117 ms by leading site (m41 2,540 / 4,078 / 1,713); fetches per voter
   per 20 ms max 19, p99 9, p50 1 over 3,948 windows (m41 21, 10, 1).
 - Leader split p99: queue 13.6 s, round 7.9 s, confirm 4.3 s, apply 8.5 s.
@@ -4428,5 +4429,39 @@ back `0de37416`'s edge. Repo:131348, a1 `mwk8r5wk`, 5,000 agents, k 4, 8 learner
   to 243 `/suspect` a second. `inbound.py` names the voters' reads as lead reads: on voters 0 and 1, `other:lead` 153 and
   256 a second, `ranges:lead` 79 and 118, `probe:lead` 58 and 84; learners take 110 to 121 idx reads a second each.
   lookup-poll's mark is per isolate, so this is consistent with many edge isolates each running a lookup once their
-  cached leader is wrong [inference, not traced]; sent to B0-02 with the trace.
+  cached leader is wrong [inference, not traced]; sent to B0-02 with the trace. The tag names are wrong; see B0-02's
+  reading below.
+
+**B0-02's reading of the lookup-poll trace (`tsave-m42p33`, analysis only).**
+1. **The `ReadQuery` tag names the wrong reads.** `read_query_code` takes the query's first key, but this build's
+   serde_json has no `preserve_order`, so the keys come back sorted. `ranges` is `core_rows_q`'s
+   `{"ranges", "rows": {access/agent/actions}}`, the push gate's and agents' rows. `other` holds `tier_rows`'
+   `{"packed", "ranges", "rows"}` (sorted, it starts with `packed`), refs pages and `{"q": {}}`. `probe` is right: the
+   probe of `lookup::create` (`ensure_group`, and `leader_site` in actions). So every `ranges` and `other` label in m42
+   and m42p means core rows and packed or refs reads, not range reads.
+2. **Why lead reads jump after the first change.** `read_spread` sends core and tier reads to the leader only when all
+   three members it asks answer NotLeader. A learner answers that once its read-index call to the leader fails, because
+   the failure makes it forget the leader. Learner `IndexEnded` before 05:21:33Z: 320 ok, 469 late, 495 failed; after:
+   867 ok, 4,957 late, 6,101 failed; even under a leader stable for 3 s or more, 661 ok, 1,450 late, 1,739 failed.
+   Voter idx reads fell from about 100 to 190 a second to about 0 after 05:22:27Z, and lead reads took their place. That
+   is a loop: learners lose the leader, reads fall to the leader, the leader slows, more learner calls fail. Its
+   trigger is the leader's load, the same load that trips `CommitErrors`.
+3. **Lead reads by leadership state**, a second across the voters: 974 while the leader changes (164 s; other 533,
+   ranges 269, probe 172); 673 with no leader (30 s); with a leader stable 5 s or more (68 s), 508 at the leader plus 230
+   at non-leaders. The 230 are edge requests still walking voters, from many isolates or from caches cleared again by
+   `commit_hedged`'s `forget_leader` after NotLeader or a missed receipt; members stamp every edge request `from=255`, so
+   this trace cannot count isolates or split the two.
+4. **`probe:lead` runs 100 to 390 a second after the change.** The edge's `commit()` calls `ensure_group`, which probes,
+   whenever the isolate holds no leader, as it does after every NotLeader; while no leader is found, `create` also posts
+   `/campaign` to the home voter in its loop, up to 370 in 20 s to site 0 while sites 1 and 2 led. That is the agents'
+   "created, but no member leads" 503.
+5. **The m42 contradiction.** m42's quiet group (term 2, /read 1.5 to 5.3 a second) was not lookup-share fixing the
+   storm: its hung requests (p50 20 s) throttled the offered load. The revert (2 → 19, 14 step-downs) and lookup-poll
+   (2 → 22, 9) churn alike; lookup-poll restores the edge and leaves the group side as it was.
+
+Fix candidates (not designed; the operator decides): (a) a learner whose read-index call failed sheds a spread read
+(retry) instead of answering NotLeader, so a lost leader does not move the whole read class onto the leader; (b) skip
+`ensure_group`'s probe and campaign loop when the chain's config is known (the group exists); (c) fix the query tag
+(append `packed` and `refs` to `READ_QUERIES`, or tag the sorted key set); (d) count edge isolates (an isolate id on
+test-faults requests) before redesigning the mark.
 - Close-out: sweep "no shard container running"; 131348's 11 members retired (11 of 11 not joined).
