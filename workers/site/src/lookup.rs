@@ -21,6 +21,22 @@ pub async fn call(
     graftyard_lookup::call(&Bindings { env, sites: &site.sites }, chain, record, path, body).await
 }
 
+/// A dependency read, hedged after `graftyard_lookup::DEP_HEDGE` (`graftyard_lookup::call_hedged`).
+pub async fn call_hedged(
+    env: &Env,
+    chain: ChainId,
+    record: &PlacementRecord,
+    path: &str,
+    body: &Value,
+) -> (Result<(Value, Step), String>, graftyard_lookup::Hedged) {
+    match SiteEnv::read(env) {
+        Ok(site) => {
+            graftyard_lookup::call_hedged(&Bindings { env, sites: &site.sites }, chain, record, path, body).await
+        }
+        Err(e) => (Err(e.to_string()), graftyard_lookup::Hedged::First),
+    }
+}
+
 pub async fn commit(env: &Env, chain: ChainId, record: &PlacementRecord, cmd: Value) -> Result<Value, String> {
     let site = SiteEnv::read(env).map_err(|e| e.to_string())?;
     graftyard_lookup::commit(&Bindings { env, sites: &site.sites }, chain, record, cmd).await

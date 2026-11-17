@@ -342,6 +342,9 @@ pub struct Stats {
     /// its kind (`authz`, `identity`, `tokens`, ...); `depFails` counts the chain reads that gave no fold.
     pub deps_ms: BTreeMap<String, Vec<u32>>,
     pub dep_fails: BTreeMap<String, u32>,
+    /// Leader: dependency reads that sent a second request after DEP_HEDGE, and those the second answered
+    /// (`graftyard_lookup::call_hedged`).
+    pub dep_hedges: [u32; 2],
     /// Leader: a command's admission to the append of the entry that carries it, in ms: the wait for the entry in
     /// flight, the cut, and the entry's dep reads. `commit_ms` less this is the entry's confirm and quorum round.
     pub queue_ms: Vec<u32>,
@@ -490,6 +493,7 @@ impl Stats {
         self.raft_in.clear();
         self.deps_ms.clear();
         self.dep_fails.clear();
+        self.dep_hedges = [0; 2];
         self.queue_ms.clear();
         self.queue_slot_ms.clear();
         self.queue_post_ms.clear();
@@ -3364,13 +3368,20 @@ impl<F: Family> Host<F> {
             let began = now_ms();
             let joined = h.core.borrow().as_ref().map(|c| c.join.clone());
             let one = |chain: graftyard_types::ChainId| {
-                let env = &h.env;
+                let (env, hedges) = (&h.env, &h.stats);
                 let known = joined.as_ref().and_then(|j| owner_chain_record(j, chain));
                 async move {
                     let t0 = now_ms();
                     let q = &json!({ "q": { "dep": true } });
+                    // `dep-hedge`: a read with no answer within DEP_HEDGE sends a second request beside it.
                     let read = |record: graftyard_types::PlacementRecord| async move {
-                        crate::lookup::call(env, chain, &record, "/read", q).await
+                        let (r, how) = crate::lookup::call_hedged(env, chain, &record, "/read", q).await;
+                        if how != graftyard_lookup::Hedged::First {
+                            let mut s = hedges.borrow_mut();
+                            s.dep_hedges[0] += 1;
+                            s.dep_hedges[1] += u32::from(how == graftyard_lookup::Hedged::Won);
+                        }
+                        r
                     };
                     // The joined record finds the group with no `Names` read first; a record the owner has since
                     // moved from may not, and then the owner's current record is read and tried.
