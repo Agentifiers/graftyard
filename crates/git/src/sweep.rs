@@ -446,17 +446,55 @@ pub async fn sweep<B: Bucket, R: RequestSource>(
 }
 
 /// One Cron Trigger run's limits. A Worker invocation has a subrequest cap, so a run sweeps at most `networks`
-/// networks and runs at most `actions` actions across them; the next run continues after `SweepAll::next`.
+/// networks and runs at most `actions` actions across them; the next run continues after `SweepAll::next`. Past
+/// `wall_ms` of the run's own clock it starts no network and asks no `request` row, so it returns, and its caller
+/// stores the cursor, inside the Cron Trigger's 15 minutes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CronBudget {
     pub networks: usize,
     pub actions: usize,
+    pub wall_ms: u64,
 }
 
 impl CronBudget {
     /// A network costs three listings per bucket plus its lookups and actions, so 20 networks over 3 buckets (180
-    /// listings) and 600 actions stay under 1,000 subrequests with room for the lookups [guess, unmeasured].
-    pub const SITE_CRON: CronBudget = CronBudget { networks: 20, actions: 600 };
+    /// listings) and 600 actions stay under 1,000 subrequests with room for the lookups [guess, unmeasured]. SWEEP_WALL
+    /// is 8 of the Cron Trigger's 15 minutes [guess]: the network in flight at the wall still runs its actions (site a's
+    /// fills of 131296 took about 270 s), and the fold audit runs after the sweep in the same invocation. A run cancelled
+    /// at 15 minutes stored no cursor, so every later run died at the same network (`tests/am1/results/lm1-memory.md`,
+    /// "Site a's sweep wall").
+    pub const SITE_CRON: CronBudget = CronBudget { networks: 20, actions: 600, wall_ms: SWEEP_WALL };
+}
+
+/// See `CronBudget::SITE_CRON`.
+pub const SWEEP_WALL: u64 = 8 * 60_000;
+
+/// The `RequestSource` one `sweep_all` run asks through: a chain whose lookup failed is not asked again this run, and
+/// past the run's wall no chain is asked, each answered as a failed lookup, which keeps the pack and alarms. A group no
+/// member answers (on `graft-m2b`, a retired test group whose packs stay in the buckets) cost LOOKUP_FOR (20 s) per
+/// pack, 16 at once, so its thousands of packs outlasted the cron; now the asks already in flight when the first fails,
+/// at most `CONCURRENCY`, are its whole cost.
+struct RunRows<'a, R, C> {
+    inner: &'a R,
+    clock: C,
+    deadline: u64,
+    dead: std::cell::RefCell<BTreeSet<ChainId>>,
+}
+
+impl<R: RequestSource, C: Fn() -> u64> RequestSource for RunRows<'_, R, C> {
+    async fn request(&self, chain: ChainId, id: RequestId) -> Result<Option<RequestRow>, StoreError> {
+        if self.dead.borrow().contains(&chain) {
+            return Err(StoreError(format!("{chain}: a lookup failed earlier this run")));
+        }
+        if (self.clock)() >= self.deadline {
+            return Err(StoreError("the run's wall has passed".into()));
+        }
+        let r = self.inner.request(chain, id).await;
+        if r.is_err() {
+            self.dead.borrow_mut().insert(chain);
+        }
+        r
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -467,6 +505,10 @@ pub struct SweepAll {
     /// The network the next run starts at, or `None` when this run reached the end of the list, so the next run
     /// starts again from the first.
     pub next: Option<NetworkId>,
+    /// The chains whose lookup failed this run and were not asked again.
+    pub dead: Vec<ChainId>,
+    /// The run stopped at `CronBudget::wall_ms`.
+    pub walled: bool,
 }
 
 /// The networks with anything under `pack/`, `committed/pack/`, or `upload/` in any of `buckets`, ascending.
@@ -487,10 +529,27 @@ pub async fn networks<B: Bucket>(buckets: &[(SiteId, &B)]) -> Result<Vec<Network
 /// The site script's sweeper cron (`design/DESIGN.md`, Stack, Cron Triggers: "pack sweeper (including orphan
 /// multipart aborts)"): every network `mine` accepts, in id order from `from`, swept with `sweep` until `budget`
 /// runs out. `mine` lets each site sweep only the networks it is home for, so three sites do not repeat one another;
-/// the sweep is idempotent either way. The caller stores `next` and passes it as `from` on the next run.
+/// the sweep is idempotent either way. The caller stores `next` and passes it as `from` on the next run. `clock` is the
+/// run's real time in ms, for `budget.wall_ms`; `now` is the sweeper's clock for ages, which BF-19 advances.
 pub async fn sweep_all<B: Bucket, R: RequestSource>(
     buckets: &[(SiteId, &B)],
     requests: &R,
+    now: Timestamp,
+    budget: CronBudget,
+    from: Option<NetworkId>,
+    mine: impl Fn(NetworkId) -> bool,
+    clock: impl Fn() -> u64,
+) -> Result<SweepAll, StoreError> {
+    let deadline = clock().saturating_add(budget.wall_ms);
+    let rows = RunRows { inner: requests, clock, deadline, dead: Default::default() };
+    let mut out = sweep_networks(buckets, &rows, now, budget, from, mine).await?;
+    out.dead = rows.dead.into_inner().into_iter().collect();
+    Ok(out)
+}
+
+async fn sweep_networks<B: Bucket, R: RequestSource, C: Fn() -> u64>(
+    buckets: &[(SiteId, &B)],
+    rows: &RunRows<'_, R, C>,
     now: Timestamp,
     budget: CronBudget,
     from: Option<NetworkId>,
@@ -505,7 +564,12 @@ pub async fn sweep_all<B: Bucket, R: RequestSource>(
             out.next = Some(*n);
             return Ok(out);
         }
-        match sweep(*n, buckets, requests, now, actions).await {
+        if (rows.clock)() >= rows.deadline {
+            out.next = Some(*n);
+            out.walled = true;
+            return Ok(out);
+        }
+        match sweep(*n, buckets, rows, now, actions).await {
             Ok(r) => {
                 let ran = r.done + r.failed.len();
                 // Cut by the budget, with planned actions left: the next run continues at this network. Failed
@@ -840,7 +904,81 @@ mod tests {
     }
 
     fn all(bed: &Bed, rows: &Rows, budget: CronBudget, from: Option<NetworkId>) -> SweepAll {
-        block_on(sweep_all(&bed.buckets(), rows, Timestamp(T0), budget, from, |_| true)).unwrap()
+        block_on(sweep_all(&bed.buckets(), rows, Timestamp(T0), budget, from, |_| true, || T0)).unwrap()
+    }
+
+    /// A `request` table whose chains in `down` never answer, each ask costing `cost` ms of a shared clock, as a
+    /// lookup of a group no member answers costs LOOKUP_FOR.
+    struct Slow {
+        down: BTreeSet<ChainId>,
+        cost: u64,
+        clock: std::cell::Cell<u64>,
+        asked: std::cell::RefCell<Vec<ChainId>>,
+    }
+
+    impl RequestSource for Slow {
+        async fn request(&self, chain: ChainId, _id: RequestId) -> Result<Option<RequestRow>, StoreError> {
+            self.clock.set(self.clock.get() + self.cost);
+            self.asked.borrow_mut().push(chain);
+            if self.down.contains(&chain) { Err(StoreError("no member answered".into())) } else { Ok(None) }
+        }
+    }
+
+    fn slow_all(bed: &Bed, rows: &Slow, budget: CronBudget, from: Option<NetworkId>) -> SweepAll {
+        block_on(sweep_all(&bed.buckets(), rows, Timestamp(T0), budget, from, |_| true, || rows.clock.get())).unwrap()
+    }
+
+    /// Site a's wedged cron: network 8's group no member answers, and each of its 30 orphans asked its lookup for
+    /// LOOKUP_FOR, so the run passed the Cron Trigger's 15 minutes, was cancelled before it stored its cursor, and
+    /// the next run started at network 8 again. A failed chain is asked once a run, its packs kept and alarmed, and the
+    /// run goes on to network 9, whose orphan is deleted.
+    #[test]
+    fn a_chain_whose_lookup_failed_is_asked_once_a_run() {
+        let bed = Bed::new();
+        for k in 1..=30 {
+            orphan(&bed, 8, k);
+        }
+        orphan(&bed, 9, 31);
+        let dead = ChainId::Repo(RepoId(DbId(8)));
+        let rows = Slow { down: [dead].into(), cost: 20_000, clock: T0.into(), asked: Default::default() };
+        let r = slow_all(&bed, &rows, CronBudget::SITE_CRON, None);
+        assert_eq!(rows.asked.borrow().iter().filter(|c| **c == dead).count(), 1);
+        assert_eq!(r.dead, vec![dead]);
+        assert_eq!(r.swept.iter().map(|(n, s)| (n.0.0, s.done)).collect::<Vec<_>>(), [(8, 0), (9, 3)]);
+        assert_eq!(r.swept[0].1.plan.alarms.len(), 30, "every pack of the dead chain is kept and alarmed");
+        assert!(bed.b.iter().all(|b| b.keys().iter().filter(|k| k.starts_with("pack/8/")).count() == 30));
+        assert!(!r.walled && r.next.is_none());
+    }
+
+    /// Past `wall_ms` a run starts no network and asks no row, so it returns with the next network as its cursor; one
+    /// that started inside the wall runs what it was answered. Each lookup here costs 3 minutes: network 1 is asked at
+    /// 0, network 2 at 3, network 3's first orphan at 6 and its second not at all (9, past the 8-minute wall), so that
+    /// orphan is kept and network 4 waits for the next run.
+    #[test]
+    fn a_run_stops_starting_networks_at_its_wall() {
+        let bed = Bed::new();
+        for (n, k) in [(1, 1), (2, 2), (3, 3), (3, 4), (4, 5)] {
+            orphan(&bed, n, k);
+        }
+        let rows = Slow { down: BTreeSet::new(), cost: 3 * 60_000, clock: T0.into(), asked: Default::default() };
+        let r = slow_all(&bed, &rows, CronBudget::SITE_CRON, None);
+        assert_eq!(r.swept.iter().map(|(n, s)| (n.0.0, s.done)).collect::<Vec<_>>(), [(1, 3), (2, 3), (3, 3)]);
+        assert!(r.walled);
+        assert_eq!(r.next, Some(net(4)));
+        assert_eq!(rows.asked.borrow().len(), 3);
+        // The next run continues from the stored cursor.
+        let rows = Slow { down: BTreeSet::new(), cost: 0, clock: T0.into(), asked: Default::default() };
+        let r2 = slow_all(&bed, &rows, CronBudget::SITE_CRON, r.next);
+        assert_eq!(r2.swept.iter().map(|(n, s)| (n.0.0, s.done)).collect::<Vec<_>>(), [(4, 3)]);
+        // At the wall exactly, a network's lookups are not asked: its orphan is kept for the next run.
+        let bed = Bed::new();
+        orphan(&bed, 1, 1);
+        orphan(&bed, 1, 2);
+        let rows = Slow { down: BTreeSet::new(), cost: SWEEP_WALL, clock: T0.into(), asked: Default::default() };
+        let r = slow_all(&bed, &rows, CronBudget::SITE_CRON, None);
+        assert_eq!(rows.asked.borrow().len(), 1, "the second lookup is past the wall");
+        assert_eq!(r.swept[0].1.done, 3, "the answered orphan is deleted");
+        assert!(bed.b.iter().all(|b| b.keys().iter().filter(|k| k.starts_with("pack/1/")).count() == 1));
     }
 
     #[test]
@@ -854,7 +992,7 @@ mod tests {
         assert_eq!(block_on(networks(&bed.buckets())).unwrap(), [3, 7, 8, 11, 42, 100].map(net));
         let rows = Rows::default();
         // Two networks per run, each exactly once, consecutive ids included: 3 7, 8 11, 42 100, then the end.
-        let b = CronBudget { networks: 2, actions: 100 };
+        let b = CronBudget { networks: 2, actions: 100, wall_ms: SWEEP_WALL };
         let r1 = all(&bed, &rows, b, None);
         assert_eq!(r1.swept.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [net(3), net(7)]);
         assert_eq!(r1.next, Some(net(8)));
@@ -878,11 +1016,11 @@ mod tests {
         orphan(&bed, 9, 6);
         let rows = Rows::default();
         // 15 deletes in network 8; 10 actions per run.
-        let r1 = all(&bed, &rows, CronBudget { networks: 10, actions: 10 }, None);
+        let r1 = all(&bed, &rows, CronBudget { networks: 10, actions: 10, wall_ms: SWEEP_WALL }, None);
         assert_eq!(r1.swept.len(), 1);
         assert_eq!(r1.swept[0].1.done, 10);
         assert_eq!(r1.next, Some(net(8)), "network 8 again next run");
-        let r2 = all(&bed, &rows, CronBudget { networks: 10, actions: 10 }, r1.next);
+        let r2 = all(&bed, &rows, CronBudget { networks: 10, actions: 10, wall_ms: SWEEP_WALL }, r1.next);
         assert_eq!(r2.swept.iter().map(|(n, s)| (*n, s.done)).collect::<Vec<_>>(), [(net(8), 5), (net(9), 3)]);
         assert_eq!(r2.next, None);
     }
@@ -902,7 +1040,8 @@ mod tests {
         block_on(put_marker(&bed.b[0], net(20), id, &marker(3, 9))).unwrap();
         let rows = Rows::default();
         let even = |n: NetworkId| n.0.0 % 2 == 0;
-        let r = block_on(sweep_all(&bed.buckets(), &rows, Timestamp(T0), CronBudget::SITE_CRON, None, even)).unwrap();
+        let r = block_on(sweep_all(&bed.buckets(), &rows, Timestamp(T0), CronBudget::SITE_CRON, None, even, || T0))
+            .unwrap();
         assert_eq!(r.swept.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [net(20)]);
         let pk = R2Key::Pack { network: net(20), id }.to_string();
         let mk = R2Key::committed(R2Key::Pack { network: net(20), id }).unwrap().to_string();

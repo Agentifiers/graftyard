@@ -4479,3 +4479,56 @@ test-faults requests) before redesigning the mark.
 - Promote-lapse and the roll measurement were not exercised (no promotion came due; 131296 has no rollable run).
 - Slot closed at 06:06Z. Meter (`acctcost.py`): graft-m2b $4.43 since the site day at 03:20:06Z (stop $40); account
   $77.78 for the UTC day at 06:06Z (stop $170).
+
+### Site a's sweep wall (2026-11-17, code only, no spend)
+
+Asked for by the operator: site a's `*/15` sweep took 620 s at 05:45Z. Read from logs already in Workers Logs and R2
+analytics, with no new hosted work. The raw pulls are by trace id of each cron invocation.
+
+**What dominates.**
+- Site a's runs are serial over its networks (`graftyard_git::sweep_all`), and each unmarked pack's `request` row is
+  asked through `lookup::call`, which spends LOOKUP_FOR (20 s) on a chain no member answers.
+- The 05:45 run (trace 16e21fac, 647.8 s wall, 13.9 s CPU, ended `ok`):
+  - 05:45:22 cursor read; 05:45:58–05:46:09 network 131296's lookups (372 member reads, 10 s).
+  - 05:46–05:49: network 131296's 64 fills from site a's bucket, 979 MB of GETs (r2OperationsAdaptiveGroups:
+    308, 288, 202 and 65 MB a minute), no member reads for 267 s; 56 of them failed "Network connection lost".
+  - 05:50:30–05:55:22: networks 131297–131315, lookup bursts per group of 1 to 119 s, 28 member objects. The longest
+    were two member objects with 2,843 reads over 119 s and 2,399 over 22 s; by their order in the run they are
+    131307 and 131313, the finished B0-33 groups whose 8,494 and 8,395 packs alarmed on 11-16 [inference: the trace
+    names objects, not networks]. 7,013 member reads in all, all 200, wall p50 16 ms.
+- The 05:30 run (352 s) was the same shape: 407 reads, a 68 s gap for 131296's fills, the 547 markers.
+- **The 06:00 and 06:15 runs were cancelled at 899.5 s and 899.6 s**, the Cron Trigger's 15 minutes, with no `sweep {`
+  report. Trace 4719b3f9 (06:00): 3,980 member `/read`s answered **409 "member not joined"** and 3,384
+  `registry/row` reads for `repo:131322` (1,782) and `repo:131323` (1,602), at a steady 270 to 370 a minute for the
+  whole 14 minutes. Those are the B0-33 groups retired on 11-16 (`/retire` deletes the members' storage); their packs
+  stay in the buckets, so each pack's lookup walks bootstrap members (409), the registry rows and back until LOOKUP_FOR.
+  At 16 lookups at a time and 20 s each, about 48 packs a minute; 131322 alarmed 1,236 packs and 131323 9,216 on 11-16,
+  so no run gets past them [inference from those counts; the 06:00 trace shows the steady rate, not a pack count].
+- A cancelled run stores no cursor (`workers/site/src/sweep.rs` writes it at the end), so every later run starts at
+  the same network and dies there. Site b's and c's runs stayed at 65 to 99 s; they home none of these networks.
+- Before the retirements, 11-16 00:00–11:45Z, every site-a run took 266 to 455 s: one or two networks a run, cut by
+  the 600-action budget, with the B0-33 groups' 1 to 10 k alarms each. The wall was already half the period.
+
+So the 620 s was not the sweep's normal cost: it was one 4.5-minute fill burst plus serial lookups on large finished
+groups, and the next two runs show the failure it was heading for, a dead chain that wedges the cron.
+
+**Bound, on branch `sweep-wall`** (design first: `design/DESIGN.md`, Shape, the sweeper paragraph;
+`decisions/DECISIONS.md`, `sweep-wall`; `decisions/OPEN-QUESTIONS.md` R25):
+- Once a chain's lookup fails, the run asks it no more: later packs of that chain are answered as failed lookups,
+  kept and alarmed `LookupFailed`. The asks already in flight (at most 16) still run, so a dead chain costs about one
+  LOOKUP_FOR of wall time.
+- SWEEP_WALL, 8 minutes [guess] of the run's own clock: past it the run asks no chain and starts no network, and
+  returns with the next network as its cursor, so the caller stores it and the fold audit runs. A network in flight
+  at the wall still runs the actions it was answered (131296's fills took about 270 s, inside the 7 minutes left).
+- The report gains `dead` and `walled`.
+- Tests: `a_chain_whose_lookup_failed_is_asked_once_a_run` (30 orphans on a dead chain at 20 s each: one ask, 30
+  alarms, the next network still swept) and `a_run_stops_starting_networks_at_its_wall` (3-minute lookups: networks
+  1–3 swept, the second lookup of 3 refused at 9 minutes, cursor 4, the next run sweeps 4; and a lookup at exactly the
+  wall refused). Both fail on main.
+- Plants (`tests/sweepwall/plant.py`), 8 of 8 caught: main's ask-every-pack with no wall; a failed chain asked again;
+  a failure not remembered; rows asked past the wall; networks started past the wall; `>` for `>=`; the walled run
+  dropping its cursor; the deadline from 0 rather than the run's start.
+
+Open (R25): a retired test group's packs stay in the buckets, so each run still asks each retired chain once and
+alarms its packs. Whether the teardown should delete the network's prefixes, or the sweeper treat a chain whose
+every member answers "not joined" as having no group, is for the operator.
