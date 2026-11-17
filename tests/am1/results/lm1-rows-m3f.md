@@ -108,6 +108,99 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fr10 and m3fr11 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, run stop $10 on graft-m3f, account stop $170)
+
+**Slot.** The operator gave graft-m3f a slot on 2026-11-17, with the 90% rule (`FRAME.md`) and the account-wide meter. The run's own figure is acctcost with `PREFIX=graft-m3f` (this branch), because other installs ran in the same window.
+- **Estimate:** about $3.10, priced on m3fr9's windows: site day $0.01, B0-32 $1.34, B0-31 $1.68.
+- **Actual:** $4.42 on graft-m3f from 03:25:24Z to 05:03:48Z. That covers the site day, m3fr10's two rows, the edge-only day and m3fr11's two rows. The account's UTC day was $60.42 at 05:03Z.
+
+**Site day m3fr10:**
+- From main 68d39927 (plus the meter change), with image `sha256:0f0c5ee1…` reused, standard-4 and test-faults.
+- Sites deployed with exit 0. The edge `0a4d5f30` served at 100% (`edgever.py`), 03:25:24Z to 03:38:44Z.
+
+### m3fr10: B0-32 void, B0-31 affected, both by `lookup-share`
+
+The edge built from 68d39927 carries `lookup-share` (0a89bdb2). Under each row's load it logged three errors, counted in 20 s steps [measured, Workers Logs, graft-m3f-edge `0a4d5f30`]:
+
+| Window | "Cannot perform I/O on behalf of a different request" | "closure invoked recursively or after being dropped" | canceled as hung (20 s wall, 503) |
+|---|---|---|---|
+| B0-32, 03:54 to 03:58Z | 1,062 | 730 | 455 |
+| B0-31, 04:01 to 04:18Z | 2,740 | 1,278 | 856 |
+| before 03:54Z, and m3fr9's whole window | 0 | 0 | 0 |
+
+graft-m2b's edge shows the same errors during LM-1's slot, 03:40 to 03:50Z.
+
+**Likely mechanism** [inference, sent to B0-02]: `Turn::drop` wakes the wakers in the isolate-wide `LOOKING` map. Those wakers belong to other concurrent requests, which may already have ended.
+
+**What it did to the rows:**
+- **B0-32** (repo:65577) is void. The driver stopped at 03:54Z, before the burst, when the App token mint (`ghs`) answered 503.
+- **B0-31** (repo:65578) is affected, and not judged. Buckets-up leader commit p99 read 1,548 ms (n 4,556).
+
+**Fix:** the operator reverted `lookup-share` on main (0de37416). graft-m3f's edge was redeployed from it alone, edge-only day m3fr11e, no site day: edge `349951e4` at 100%, 04:21:51Z. Both m3fr10 groups were retired (30 of 30 members "not joined" after), and SWEEP2 OK.
+
+### m3fr11 (edge `349951e4`, sites from m3fr10): 0 edge errors in either window
+
+| Window | I/O | closure | hung |
+|---|---|---|---|
+| B0-32, 04:23:30 to 04:35Z | 0 | 0 | 0 |
+| B0-31, 04:35 to 04:56Z | 0 | 0 | 0 |
+
+### B0-32 (repo 65579, run `mwk6v6np`): fail
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | 499 of 500 ok, 1 HTTP/2 stream error; **1 within 5 s**; client p50 11.6 s, p99 21.5 s | 450 needed: **short by 449** |
+| Queued agent bytes under AGENT_QUEUE_MAX | peak 123,353 B, 7 queued | Pass |
+| Merges in one of the next 2 entries | not judged from entries; `merge_plan` p99 6.1 s, `shard:waited` p99 5.2 s (n 25) | Not shown |
+| Zero leader changes and zero `suspect` | term 2 throughout, leader site 0; **103 `/suspect`** from missed receipts | **Fail** (invariant-shaped zero) |
+
+**Server-timing on the 499 acknowledged burst pushes** (ms, p50 / p99):
+
+| Stage | p50 / p99 (ms) |
+|---|---|
+| auth | 635 / 766 |
+| install | 971 / 1,200 |
+| resolve | 1,335 / 1,693 |
+| gate | 0 / 878 |
+| context | 374 / 1,208 |
+| validate | 802 / 15,759 |
+| admission | 0 / 0 |
+| commit | 3,481 / 8,384 |
+| stage | 544 / 823 (n 247) |
+| total | 8,427 / 18,968 |
+
+**The row's counters over every push:**
+- 1,697 commits on 1,800 sends.
+- 0 sends were held open as busy, and 441 outcome asks ran.
+- 103 receipts were missed, and each was reported with `/suspect`.
+- 258 pushes staged first, and 2 ran the create probe (1,350 timed).
+
+**Reading:**
+- The tail is validate (p99 15.8 s) and commit (p50 3.5 s).
+- The receipt rule never saw a busy answer. Its outcome asks ran, but 103 receipts still missed and were each reported. So the `/suspect` line fails on the receipt timer, not on a dead member.
+- Leader commit p50 393 ms and p99 4,335 ms; queue p99 6.8 s.
+- Agent pushes outside the burst: 734 of 749 ok, p50 1.9 s.
+
+### B0-31 (repo 65580, rehomed on site 2, warm in 3.4 s, run `mwk7aypv`): fail on the buckets-up line
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Commit p99 at most 1 s with buckets up | leader 1,439 ms (n 5,556, p50 792) | Bound 1.1 s: **short by 339 ms** |
+| Placement failing: Human and MergeQueue p99 at most 3 s, 0 refused | leader commit p99 1,274 ms (n 4,433); `push:human@fail` 146 ok, 11 stale, 0 refused; `merge:only@fail` 36 × 200, 9 × 409, 0 × 503 | Pass |
+| Agent pushes over INLINE_MAX_HOT refused at once in `ng` | `push:agent@fail` 1,248 of 1,248 `full`, p50 1.1 s | Pass |
+
+**Leader and timing:**
+- The leader held on site 2 at term 3, before and after.
+- With buckets up, `push:agent@up` was 1,249 of 1,252 ok, at p50 3.6 s and p99 5.9 s.
+- The leader's queue p99 was 2.0 s, and `queue:slot` p99 1.7 s.
+
+**Verdict:** B0-31 fails on the buckets-up line alone, 30% over its 1.1 s bound. Its best run is still m3fr2 at 1,118 ms.
+
+**Close-out:**
+- Both m3fr11 groups were retired: 22 of 22 members "not joined" after (`tests/fanout/raw/idle-retire-m3fr11.log`).
+- The sweep at 05:03:48Z found no shard container running.
+- The idle reading follows 30 minutes later.
+
 ## The daily near check re-placed healthy groups (2026-11-16, Workers Logs, no hosted spend; branch `near-check`)
 
 **What the logs show** [measured, Workers Logs, "daily near check re-placed" on every site of each install, 00:00Z to 23:59Z]:

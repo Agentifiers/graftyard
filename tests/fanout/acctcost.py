@@ -53,14 +53,16 @@ for x in r["p"]:
     usd["do_duration"] += dur
     who[ns.get(x["dimensions"]["namespaceId"], "?")] += rows + dur
 for x in r["d"]:
-    usd["do_requests"] += x["sum"]["requests"] * 0.15 / 1e6
+    c = x["sum"]["requests"] * 0.15 / 1e6
+    usd["do_requests"] += c
+    who[x["dimensions"]["scriptName"]] += c
 for x in r["w"]:
     c = x["sum"]["requests"] * 0.30 / 1e6 + x["sum"]["cpuTimeUs"] / 1000 * 0.02 / 1e6
     usd["workers"] += c
     who[x["dimensions"]["scriptName"]] += c
 out = {"from": a, "to": b, **{k: round(x, 2) for k, x in usd.items()}, "usd": round(sum(usd.values()), 2)}
-# PREFIX=graft-m1: also the cost of the scripts and container applications whose names start with it (DO requests are
-# not split by script, so this reads a little low), for a run stop counted on one install's scripts.
+# PREFIX=graft-m1: also the cost of the scripts and container applications whose names start with it, Durable Object
+# requests counted under their script, for a run stop counted on one install's scripts while other installs run.
 if os.environ.get("PREFIX"):
     out["prefix"] = os.environ["PREFIX"]
     out["prefix_usd"] = round(sum(x for k, x in who.items() if k.startswith(os.environ["PREFIX"])), 2)
