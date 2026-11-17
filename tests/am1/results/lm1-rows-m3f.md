@@ -160,10 +160,38 @@ The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22
 | 4 to 7 | 190 | 10,672 / 25,318 | 5,976 | 1,042 |
 | 8 or more | 165 | 13,258 / 25,735 | 6,579 | 2,729 |
 
-- **Reading** [measured, no churn this time]: per-isolate load now tracks the time. A push alone on its isolate takes 2.8 s at p50; one sharing it with four or more takes 10.7 to 13.3 s, and the growth is in `context` and `auth`, the edge's own reads before the leader. m3fr8's inference that the gaps between a push's reads are its isolate's event loop is **supported** on this non-churning row (m3fr9's churning row did not support it).
+- **Reading** (withdrawn after the run: see "m3fr12 after the run" below; the correlation is with start time, not `open`) [measured, no churn this time]: per-isolate load now tracks the time. A push alone on its isolate takes 2.8 s at p50; one sharing it with four or more takes 10.7 to 13.3 s, and the growth is in `context` and `auth`, the edge's own reads before the leader. m3fr8's inference that the gaps between a push's reads are its isolate's event loop is **supported** on this non-churning row (m3fr9's churning row did not support it).
 - **Stage first:** 241 stage-first pushes in the log; 237 came after their isolate had logged a staged push and 4 before. The per-isolate stage-first inference holds.
 
 **Verdict:** the receipt rule and the pool send-back did what they were built for: no `/suspect`, and validate's 15.8 s tail is gone. The within-5 s line is no closer, because the time moved to `context` and `gate` on isolates holding many pushes at once.
+
+### m3fr12 after the run: B0-32's edge tail is the repository-rows follower read, not per-isolate queueing (raw files and Workers Logs, no hosted spend; branch `b032-isolate`)
+
+**One read per push carries the tail** [measured, `lm1-rows-m3f-data/pushlog-m3fr12-b0-32.json`]:
+- Each push makes exactly one read-index read of the repository's core rows (`{"rows": {"access", "agent"}}`): in `gate` when the isolate's gate cache misses (168 of the 542 pushes started in the burst's 10 s), else in `context`, which reads the agent rows alone (374). No push did both.
+- For each push, total equals max(auth + install, resolve) plus gate, context, validate, commit and stage, to within 32 ms at p99. So the stages run serially as written, and no time is hidden between them.
+- The edge's CPU is not the limit: receive-pack invocations used 41 ms of CPU at p50 and 154 ms at p99, against 8.2 s of wall time at p50 (Workers Logs, 16:10:58 to 16:11:45Z).
+
+**It is not per-isolate queueing.** Grouped by when the read started (500 ms bins), pushes alone on their isolate waited as long as crowded ones:
+
+| Read start (s after the first push) | `open` ≤ 2: n, read p50 | `open` ≥ 4: n, read p50 |
+|---|---|---|
+| 17 | 81, 578 ms | 10, 577 ms |
+| 18 | 50, 1,595 ms | 87, 6,723 ms |
+| 19 | 24, 8,589 ms | 114, 7,067 ms |
+| 21 | 2, 11,300 ms | 34, 10,256 ms |
+
+The by-`open` table above comes from timing: the crowded pushes are the ones that started in the burst's first second. Reads also finished together across isolates: 74 reads on 38 isolates ended in the same 100 ms (25.6 s), and 40 on 29 at 21.2 s. That points at the members, not at the edge [inference]. So the m3fr12 note that per-isolate load is "supported" is withdrawn.
+
+**The followers during the burst** (Workers Logs, client `/read`s, 16:11:15 to 16:11:45Z; B0-32 has no learners, so every spread read went to the two followers):
+- Site b, `repo:65581#2#f1`: 5,831 reads. 260 were cancelled at about 2 s (the edge's FOLLOWER_CALL ran out), and 390 more answered after more than 2 s. Wall time was 169 ms at p50 and 1,630 ms at p90.
+- Site c, `repo:65581#1#f2`: 9,896 reads, wall 350 ms at p50 and 1,000 ms at p90.
+- The leader (site a) answered its own reads in 20 ms at p50.
+- A push's read is a write-class `read_spread_for` with LOOKUP_FOR (20 s). A follower that sheds it (`overloaded`) or runs past FOLLOWER_CALL sends the read to the next member, and then the whole read waits the named retry and starts again. A read of 6 to 16 s is several such passes [inference: the member answers' bodies, and so the shed count, are not in the logs].
+
+**Not yet known:** the followers' shed counts and their read-index grant waits (`readStages`, `shedReads`) during the burst. `a1.mjs` reads `/stats` from the leader only. That decides between two fixes:
+- **Fewer reads:** 542 pushes made 542 identical core-row reads in 10 s, from 124 isolates. One shared read per isolate would make about 124. This is a read share, the same shape as `lookup-share` that B0-02 is redesigning.
+- **Cheaper reads at the members:** batch the read-index grants, or let the shed retry use its wait instead of a fixed pass.
 
 ### B0-31 (repo 65582, rehomed on site 2, warm in 2.2 s, run `mwkwap5z`): fail on the buckets-up line
 
