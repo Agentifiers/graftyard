@@ -646,12 +646,12 @@ impl<F: Family> Routes<F> {
         let (entered, entry_lag) = (now_ms(), self.host.loop_lag());
         // F74's inbound trace: every request, numbered as it reaches the handler, held open until the handler ends.
         #[cfg(feature = "test-faults")]
-        let (_open, arrival) = {
+        let _open = {
             let header = |k: &str| req.headers().get(k).ok().flatten().and_then(|v| v.parse::<u64>().ok());
             let from = header("x-graft-from").and_then(|v| u8::try_from(v).ok()).unwrap_or(255);
             let (index, open, guard) = self.host.inbound_log.enter(url.path());
             self.host.trace_at(entered, Trace::Entered, from, header("x-graft-call").unwrap_or(0), index, open);
-            (guard, index / 64)
+            guard
         };
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
@@ -798,13 +798,6 @@ impl<F: Family> Routes<F> {
             }
             (Method::Post, "/read") => {
                 let body: Value = req.json().await?;
-                // m41-held: which query this `/read` is, joined to its `Entered` row by arrival number.
-                #[cfg(feature = "test-faults")]
-                {
-                    let index = body.get("index").and_then(Value::as_bool) == Some(true);
-                    let code = crate::host::read_query_code(&body);
-                    self.host.trace(Trace::ReadQuery, 0, arrival, code, u64::from(index));
-                }
                 self.ready_or(|| self.read(body)).await
             }
             (Method::Post, "/campaign") => self.ready_or(|| async { self.verdict(None) }).await,
