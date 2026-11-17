@@ -1463,13 +1463,28 @@ async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzF
 
 /// `repo_name` of a repository already found by id.
 pub(crate) async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, AuthzFold)> {
+    repo_named_why(c, repo).await.ok()
+}
+
+/// `repo_named`, naming the read that failed: `acquirejob` logs it (F79).
+pub(crate) async fn repo_named_why(
+    c: &Ctx<'_>,
+    repo: Repo,
+) -> std::result::Result<(String, String, Repo, AuthzFold), String> {
     // The owner's login and `Authz` at once: each needs only the owner and its record.
     let owner = std::iter::once(repo.owner).collect();
-    let (mut known, a) = futures_util::future::join(account_logins(c, &owner, LOGIN_SHARDS_MAX), authz(c, &repo)).await;
-    let login = known.remove(&repo.owner.0.0).or_else(|| logins(c).remove(&repo.owner.0.0))?;
-    let a = a?;
-    let name = a.id_name(repo.id)?.as_str().to_owned();
-    Some((login, name, repo, a))
+    let (mut known, a) = futures_util::future::join(
+        account_logins(c, &owner, LOGIN_SHARDS_MAX),
+        crate::authz_read(c, repo.owner, &repo.record),
+    )
+    .await;
+    let login = known
+        .remove(&repo.owner.0.0)
+        .or_else(|| logins(c).remove(&repo.owner.0.0))
+        .ok_or("the owner's login did not answer")?;
+    let a = a.map_err(|e| format!("the owner's Authz: {e}"))?.ok_or("the owner has no Authz")?;
+    let name = a.id_name(repo.id).ok_or("the owner's Authz names no such repository")?.as_str().to_owned();
+    Ok((login, name, repo, a))
 }
 
 /// The most `account_shard` groups one request reads for logins [guess]. An account past it renders as `ghost`, as an
