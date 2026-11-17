@@ -2,8 +2,8 @@
 //! entries `ActionsTrigger` reads with `graftyard_actions::trigger`, and an Actions shard that takes each run's
 //! `CreateRun`. Each test fails on one plausible bug: a run key that lets one entry start only one pull request's run,
 //! a conflicting merge that still starts a run, a superseded event dropped or run at its own head instead of the
-//! current merge, a merge counted stale once the base moves, a first scan that replays old entries, and a `CreateRun`
-//! sent to a member that cannot read it.
+//! current merge, a merge counted stale once the base moves, a first scan that replays old entries, a `CreateRun`
+//! sent to a member that cannot read it, and a shed merge that reruns its batch or lets the cursor pass it (F84).
 
 mod common;
 
@@ -12,7 +12,9 @@ use graftyard_actions::shard::{
     ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, ActionsActor, ActionsCmd, ActionsErr, ActionsFold, ActionsOp,
     ActionsOut, WorkflowRun,
 };
-use graftyard_actions::trigger::{PR_REPLAY_MS, PrEvent, PrTarget, pr_events, pr_target, pull_request_run};
+use graftyard_actions::trigger::{
+    Carried, Item, PR_REPLAY_MS, PrEvent, PrTarget, Tried, pr_events, pr_target, pull_request_run, settle,
+};
 use graftyard_git::issues::{HeadSpec, IssueCapture, IssueNumber, MergeabilityResult, PrCapture, PrState};
 use graftyard_git::prsync::{REPO_FORMAT_V3, views};
 use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
@@ -270,4 +272,82 @@ fn a_pull_request_run_needs_a_shard_that_reads_its_format() {
     assert_eq!(graftyard_raft::Command::format(&cmd), ACTIONS_FORMAT_PULL_REQUEST);
     assert!(w.create(run).is_none(), "refused unread");
     assert!(w.shard.fold().runs.is_empty());
+}
+
+/// One round of `ActionsTrigger` (`workers/site/src/actions_trigger.rs`) over `items`: each event is tried once, its
+/// run created when its merge is clean, and carried when the merge is still missing (shed). Returns what `settle`
+/// leaves and how many `CreateRun`s the round sent.
+fn round(w: &mut World, items: Vec<Carried>, through: Index) -> (Vec<Carried>, Vec<Carried>, Index, usize) {
+    let mut sent = 0;
+    let mut tried = Vec::new();
+    for c in items {
+        let Item::Pr(p) = &c.item else { unreachable!("this world builds no queue refs") };
+        let t = match w.run_for(c.index, p) {
+            Some(run) => {
+                sent += 1;
+                assert!(matches!(w.create(run), Some(Ok(ActionsOut::Run(_)))), "each run is created once");
+                Tried::Done
+            }
+            None if pr_target(&w.view(p.n.0)) == PrTarget::Pending => Tried::Again,
+            None => Tried::Done,
+        };
+        tried.push((c, t));
+    }
+    let (left, dropped, cursor) = settle(tried, through, w.now.0);
+    (left, dropped, cursor, sent)
+}
+
+fn items(w: &World, e: &LogEntry<graftyard_raft::Ev<RepoCmd>>) -> Vec<Carried> {
+    w.events(e).into_iter().map(|p| Carried { index: e.index, at: e.at.0, item: Item::Pr(p) }).collect()
+}
+
+/// F84: an event whose merge is shed is carried to the next round on its own, while the rest of its batch counts as
+/// done. The other event's run is sent once, not again with every rerun of the batch; the shed event gets its run
+/// once its merge commits, at that merge; and until then the cursor stays just below its entry, so a new leader
+/// rescans it rather than skipping it. An event shed the whole hour of the replay guard is given up, `unmerged`.
+#[test]
+fn a_shed_merge_is_carried_alone_and_the_cursor_waits_below_it() {
+    let mut w = World::new(vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST]);
+    let e = w.push_both(oid(101), oid(102));
+    w.test_merge(2, clean(2));
+    let todo = items(&w, &e);
+    let first = round(&mut w, todo, e.index);
+    assert_eq!(first.3, 1, "pull request 2's run is sent");
+    assert_eq!(first.0.len(), 1, "only the shed event is carried");
+    assert!(first.1.is_empty());
+    assert_eq!(first.2, Index(e.index.0 - 1), "the cursor waits below the carried event's entry");
+
+    // A later entry with no pull request event: the next round reads it and tries the carried event again.
+    let later = w.record(vec![RepoEvent::Refs {
+        push: graftyard_raft::RequestId(graftyard_raft::Ulid(993)),
+        actor: None,
+        updates: vec![RefUpdate { name: name("refs/heads/c"), expect: None, new: Some(oid(103)) }],
+        pack: None,
+    }]);
+    assert!(w.events(&later).is_empty());
+    let second = round(&mut w, first.0, later.index);
+    assert_eq!((second.3, second.0.len(), second.2), (0, 1, Index(e.index.0 - 1)), "still shed: nothing sent twice");
+
+    w.test_merge(1, clean(1));
+    let third = round(&mut w, second.0, later.index);
+    assert_eq!(third.3, 1);
+    assert!(third.0.is_empty() && third.1.is_empty());
+    assert_eq!(third.2, later.index, "with nothing carried the cursor passes every entry read");
+    let shas: Vec<_> = w.shard.fold().runs.values().map(|r| r.run.head_sha).collect();
+    assert_eq!(shas.len(), 2, "one run per event, none twice");
+    assert!(shas.contains(&oid(901).0) && shas.contains(&oid(902).0));
+
+    // Shed for the whole hour: given up, and the cursor moves past it.
+    let gone = w.push_both(oid(111), oid(112));
+    let mut left = items(&w, &gone);
+    for _ in 0..3 {
+        let r = round(&mut w, left, gone.index);
+        assert_eq!(r.2, Index(gone.index.0 - 1));
+        left = r.0;
+        w.now = Timestamp(w.now.0 + PR_REPLAY_MS / 2);
+    }
+    let last = round(&mut w, left, gone.index);
+    assert!(last.0.is_empty());
+    assert_eq!(last.1.len(), 2, "both events given up, unmerged");
+    assert_eq!(last.2, gone.index);
 }

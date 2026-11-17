@@ -14,8 +14,11 @@
 //! - **`pull_request`** (B0-35; `decisions/DECISIONS.md`, "`pr-trigger`"), only where a later site day set
 //!   `GRAFTYARD_PR_TRIGGER` to `1`: each `opened`, `synchronize`, and `reopened` in an entry under an hour old asks for
 //!   the pull request's test merge (`crate::prsync::demand`) and commits each matching workflow's `CreateRun` (format
-//!   0x15.4) at the merge commit, on `refs/pull/N/merge`. A conflicting merge starts no run; one shed DEMAND_TRIES
-//!   times starts none either and is logged `unmerged`.
+//!   0x15.4) at the merge commit, on `refs/pull/N/merge`. A conflicting merge starts no run.
+//! - **Carried items** (F84): a queue ref or event a round could not finish (its merge still shed, a read or a
+//!   `CreateRun` failed) is kept in this leadership's scan and tried again by the next round, `RETRY_MS` later, while
+//!   the rest of its batch counts as done. The cursor commits just below the oldest carried entry
+//!   (`graftyard_actions::trigger::settle`). An event still not done an hour after its entry is given up, `unmerged`.
 //!
 //! No request path calls the Cloudflare API: every call is a Durable Object binding.
 
@@ -25,7 +28,7 @@ use std::rc::Rc;
 
 use graftyard_actions::shard::{JobSpec, WorkflowRun};
 use graftyard_actions::trigger::{
-    Built, PrEvent, PrTarget, built, merge_group_run, pr_events, pr_target, pull_request_run,
+    Carried, Item, PrEvent, PrTarget, Tried, built, merge_group_run, pr_events, pr_target, pull_request_run, settle,
 };
 use graftyard_git as git;
 use graftyard_git::issues::Consumer;
@@ -45,17 +48,29 @@ use crate::host::Host;
 const BATCH: u64 = 200;
 /// With no queue ref built, the cursor is committed only this many entries apart, so it costs no entry per batch.
 const CURSOR_STRIDE: u64 = 1_000;
-/// After a failed round, the alarm comes back in this long.
+/// After a failed round, or one that carried items, the alarm comes back in this long.
 const RETRY_MS: i64 = 5_000;
-/// A pull request event asks for its test merge at most this many times, DEMAND_WAIT_MS apart, and then starts no run
-/// (`unmerged`): failing the round instead would run its whole batch again, and under B0-35's load some merge of
-/// nearly every batch is shed, so the cursor would never pass it [guess: the counts].
+/// A pull request event asks for its test merge at most this many times a round, DEMAND_WAIT_MS apart, and is then
+/// carried to the next round [guess: the counts].
 const DEMAND_TRIES: u32 = 4;
 const DEMAND_WAIT_MS: u64 = 2_000;
 const WORKFLOWS: &str = ".github/workflows";
 
-/// A leadership's (term, boot), how far its scan reached, and whether a round runs.
-type Scan = ((u64, u64), Index, bool);
+/// A leadership's scan: its (term, boot), how far it read, whether a round runs, the items carried to the next round,
+/// and whether a cursor commit is owed (the last one failed).
+struct Scan {
+    leadership: (u64, u64),
+    reached: Index,
+    running: bool,
+    carried: Vec<Carried>,
+    owed: bool,
+}
+
+impl Scan {
+    fn new(leadership: (u64, u64), reached: Index) -> Scan {
+        Scan { leadership, reached, running: false, carried: Vec::new(), owed: false }
+    }
+}
 
 thread_local! {
     /// Per member object.
@@ -94,35 +109,44 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         (key, (c.m.term().0, c.m.boot()), repo, info.owner, cursor, c.m.state().applied, c.join.record.clone())
     };
     let (key, leadership, repo, owner, cursor, applied, record) = found;
-    let from = SCAN.with(|s| {
+    let start = SCAN.with(|s| {
         let mut s = s.borrow_mut();
-        let e = s.entry(key.clone()).or_insert((leadership, cursor, false));
-        if e.0 != leadership {
-            *e = (leadership, cursor, false);
+        let e = s.entry(key.clone()).or_insert_with(|| Scan::new(leadership, cursor));
+        if e.leadership != leadership {
+            *e = Scan::new(leadership, cursor);
         }
-        if e.2 || e.1.max(cursor) >= applied {
+        let from = e.reached.max(cursor);
+        if e.running || (from >= applied && e.carried.is_empty() && !e.owed) {
             return None;
         }
-        e.2 = true;
-        Some(e.1.max(cursor))
+        e.running = true;
+        Some((from, std::mem::take(&mut e.carried), e.owed))
     });
-    let Some(from) = from else { return };
-    let through = Index(applied.0.min(from.0 + BATCH));
+    let Some((from, carried, owed)) = start else { return };
+    let through = Index(applied.0.min(from.0 + BATCH).max(from.0));
     let w = Rc::downgrade(h);
     spawn_local(async move {
         let Some(h) = w.upgrade() else { return };
-        let r = round(&h, repo, owner, &record, cursor, from, through).await;
-        SCAN.with(|s| {
-            if let Some(e) = s.borrow_mut().get_mut(&key).filter(|e| e.0 == leadership) {
-                e.2 = false;
-                if r.is_ok() {
-                    e.1 = through;
+        let r = round(&h, repo, owner, &record, cursor, from, through, carried.clone(), owed).await;
+        let again = SCAN.with(|s| {
+            let mut s = s.borrow_mut();
+            let Some(e) = s.get_mut(&key).filter(|e| e.leadership == leadership) else { return false };
+            e.running = false;
+            match &r {
+                Ok((left, committed)) => {
+                    e.reached = through;
+                    e.carried = left.clone();
+                    e.owed = !committed;
                 }
+                // Read nothing new: try the same items again.
+                Err(_) => e.carried = carried,
             }
+            !e.carried.is_empty() || e.owed
         });
         match r {
-            Ok(()) if through < applied => h.arm_in(0),
-            Ok(()) => {}
+            Ok(_) if through < applied => h.arm_in(0),
+            Ok(_) if again => h.arm_in(RETRY_MS),
+            Ok(_) => {}
             Err(e) => {
                 console_error!("actions trigger {}: {e}", repo.0.0);
                 h.arm_in(RETRY_MS);
@@ -136,8 +160,10 @@ fn pr_trigger(env: &Env) -> bool {
     env.var("GRAFTYARD_PR_TRIGGER").is_ok_and(|v| v.to_string() == "1")
 }
 
-/// Entries `from + 1 ..= through`: every queue ref they built and every pull request event gets its runs, then the
-/// cursor.
+/// The items `carried` from the last round, then every queue ref entries `from + 1 ..= through` built and every pull
+/// request event they hold: each is tried once, then the cursor. `Err` only when the entries could not be read;
+/// otherwise the items left for the next round and whether the cursor commit, when one was due, went through.
+#[allow(clippy::too_many_arguments)]
 async fn round(
     h: &Rc<Host<Repo>>,
     repo: RepoId,
@@ -146,9 +172,10 @@ async fn round(
     committed: Index,
     from: Index,
     through: Index,
-) -> std::result::Result<(), String> {
-    let mut work: Vec<(Index, Built)> = Vec::new();
-    let mut prs: Vec<(Index, u64, PrEvent)> = Vec::new();
+    carried: Vec<Carried>,
+    owed: bool,
+) -> std::result::Result<(Vec<Carried>, bool), String> {
+    let mut items = carried;
     let with_prs = pr_trigger(&h.env);
     {
         let core = h.core.borrow();
@@ -161,44 +188,81 @@ async fn round(
                 None => crate::host::stored_entry::<Repo>(&sql, Index(i))
                     .ok_or_else(|| format!("entry {i} is in neither the member nor the stored log"))?,
             };
-            work.extend(built(&e).into_iter().map(|b| (e.index, b)));
+            let item = |item| Carried { index: e.index, at: e.at.0, item };
+            items.extend(built(&e).into_iter().map(|b| item(Item::Queue(b))));
             if with_prs {
                 let core = &c.m.group_fold().fold.core;
-                prs.extend(pr_events(core, repo, &e, crate::now_ms()).into_iter().map(|p| (e.index, e.at.0, p)));
+                items.extend(pr_events(core, repo, &e, crate::now_ms()).into_iter().map(|p| item(Item::Pr(p))));
             }
         }
     }
     let site = SiteEnv::read(&h.env).map_err(|e| e.to_string())?;
     let b = Bindings { env: &h.env, sites: &site.sites };
-    for (index, q) in &work {
+    let mut tried = Vec::with_capacity(items.len());
+    for (c, q) in items.iter().filter_map(|c| match &c.item {
+        Item::Queue(q) => Some((c, q)),
+        Item::Pr(_) => None,
+    }) {
         let t0 = crate::now_ms();
-        let make = |path: &str, src: &str| merge_group_run(repo, *index, path, src, q);
-        let n = runs_on(&h.env, &site, &b, repo, owner, record, q.tip, make).await?;
-        console_log!(
-            "actions trigger {} {} at {}: {n} runs in {}ms",
-            repo.0.0,
-            q.queue_ref.display(),
-            index.0,
-            crate::now_ms() - t0
-        );
+        let make = |path: &str, src: &str| merge_group_run(repo, c.index, path, src, q);
+        let t = match runs_on(&h.env, &site, &b, repo, owner, record, q.tip, make).await {
+            Ok(n) => {
+                let ms = crate::now_ms() - t0;
+                console_log!(
+                    "actions trigger {} {} at {}: {n} runs in {ms}ms",
+                    repo.0.0,
+                    q.queue_ref.display(),
+                    c.index.0
+                );
+                Tried::Done
+            }
+            Err(e) => {
+                console_error!("actions trigger {} {} at {}: {e}", repo.0.0, q.queue_ref.display(), c.index.0);
+                Tried::Again
+            }
+        };
+        tried.push((c.clone(), t));
     }
+    let prs: Vec<(&Carried, &PrEvent)> = items
+        .iter()
+        .filter_map(|c| match &c.item {
+            Item::Pr(p) => Some((c, p)),
+            Item::Queue(_) => None,
+        })
+        .collect();
     let dispatched = futures_util::future::join_all(
-        prs.iter().map(|(index, at, p)| pull_request_runs(h, &site, &b, repo, owner, record, *index, *at, p)),
+        prs.iter().map(|(c, p)| pull_request_runs(h, &site, &b, repo, owner, record, c.index, c.at, p)),
     )
     .await;
-    for r in dispatched {
-        r?;
+    tried.extend(prs.into_iter().map(|(c, _)| c.clone()).zip(dispatched));
+    let any = !tried.is_empty();
+    let (left, dropped, cursor) = settle(tried, through, crate::now_ms());
+    for c in &dropped {
+        let Item::Pr(p) = &c.item else { continue };
+        let ms = crate::now_ms().saturating_sub(c.at);
+        console_log!(
+            "actions dispatch {} #{} {} at {}: 0 runs in {ms}ms, 0 asks, unmerged",
+            repo.0.0,
+            p.n.0,
+            p.action,
+            c.index.0
+        );
     }
-    if work.is_empty() && prs.is_empty() && through.0 < committed.0 + CURSOR_STRIDE {
-        return Ok(());
+    if cursor <= committed || !(any || owed || cursor.0 >= committed.0 + CURSOR_STRIDE) {
+        return Ok((left, true));
     }
-    let request = rid(repo, through);
-    let cmd = ConsumerCursorCmd { consumer: Consumer::ActionsTrigger, through, request };
-    crate::activity::commit_here(h, request, git::repo::RepoCmd::ConsumerCursor(cmd)).await.map_err(|e| e.to_string())
+    let request = rid(repo, cursor);
+    let cmd = ConsumerCursorCmd { consumer: Consumer::ActionsTrigger, through: cursor, request };
+    let r = crate::activity::commit_here(h, request, git::repo::RepoCmd::ConsumerCursor(cmd)).await;
+    if let Err(e) = &r {
+        console_error!("actions trigger {} cursor {}: {e}", repo.0.0, cursor.0);
+    }
+    Ok((left, r.is_ok()))
 }
 
 /// Pull request event `p` of entry `index` (stamped `at`): its test merge, asked for when missing, then every matching
 /// workflow's run at it. Logs each event's dispatch time from `at`, and whether the head had moved on (`superseded`).
+/// `Again` while its merge is still shed (logged `pending`) or a read or `CreateRun` failed.
 #[allow(clippy::too_many_arguments)]
 async fn pull_request_runs(
     h: &Rc<Host<Repo>>,
@@ -210,7 +274,28 @@ async fn pull_request_runs(
     index: Index,
     at: u64,
     p: &PrEvent,
-) -> std::result::Result<(), String> {
+) -> Tried {
+    match pull_request_try(h, site, b, repo, owner, record, index, at, p).await {
+        Ok(t) => t,
+        Err(e) => {
+            console_error!("actions dispatch {} #{} at {}: {e}", repo.0.0, p.n.0, index.0);
+            Tried::Again
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pull_request_try(
+    h: &Rc<Host<Repo>>,
+    site: &SiteEnv,
+    b: &Bindings<'_>,
+    repo: RepoId,
+    owner: AccountId,
+    record: &PlacementRecord,
+    index: Index,
+    at: u64,
+    p: &PrEvent,
+) -> std::result::Result<Tried, String> {
     let view = || -> std::result::Result<git::prsync::PrView, String> {
         let core = h.core.borrow();
         let c = core.as_ref().ok_or("not joined")?;
@@ -247,11 +332,11 @@ async fn pull_request_runs(
         if superseded { ", superseded" } else { "" },
         match pr_target(&v) {
             PrTarget::Conflict => ", conflict",
-            PrTarget::Pending => ", unmerged",
+            PrTarget::Pending => ", pending",
             _ => "",
         }
     );
-    Ok(())
+    Ok(if pr_target(&v) == PrTarget::Pending { Tried::Again } else { Tried::Done })
 }
 
 /// Every matching workflow's run at `tip`, each built by `make` from its path and source; the count created or found
