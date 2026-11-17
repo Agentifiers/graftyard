@@ -26,7 +26,7 @@
 use graftyard_actions::runsvc::{self, Grant, RunnerAt};
 use graftyard_actions::shard::{JobRow, RunnerRecord, RunnerScope, WorkflowRun};
 use graftyard_actions::{JobId, JobState, LabelSet, RunId, actions_shard};
-use graftyard_identity::{Actor, AuthzRead, Principal, RepoPermission};
+use graftyard_identity::{Actor, AuthzFold, AuthzRead, Principal, RepoPermission};
 use graftyard_types::{AccountId, ChainId, DbId, Index, PlacementRecord, SiteId};
 use graftyard_wire::Reply;
 use serde_json::{Value, json};
@@ -140,17 +140,15 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
                 (ChainId::Actions(owner, _), Some((shard, _))) => ChainId::Actions(owner, shard),
                 _ => chain,
             };
-            let (repository, secrets, variables) = match repository_of(c, chain, &b).await {
-                Some((name, run, job, repo, authz)) => match job_config(c, &run, &job, &repo, &authz).await {
-                    Ok((s, v)) => (name, s, v),
-                    Err(e) => {
-                        // A job that would run without the secrets it names is not started: the runner retries the
-                        // acquire, and the job stays `Assigned` until its lease returns it to the queue.
-                        console_error!("acquirejob {chain}: secrets: {e}");
-                        return service_error(503);
-                    }
-                },
-                None => (String::new(), Vec::new(), Vec::new()),
+            // A job that would run without its repository's name or the secrets it names is not started: any read
+            // before the commit that fails answers 503, which the runner retries, and the job stays `Assigned`
+            // until the broker resends it or its lease returns it to the queue (SHARED, "Who decrypts"; F79).
+            let (repository, secrets, variables) = match acquire_config(&Acquire { c, chain }, &b).await {
+                Ok(x) => x,
+                Err(e) => {
+                    console_error!("acquirejob {chain}: {e}");
+                    return service_error(503);
+                }
             };
             // Until `GITHUB_TOKEN` minting lands the job's token is empty: the runner masks and passes it, and the
             // gates' workflows call no API with it.
@@ -177,21 +175,71 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     }
 }
 
-/// The job's repository as `o/r`, for `github.repository`, with its run, row, repository, and owner `Authz`, read
-/// before `acquirejob` commits.
-async fn repository_of(
-    c: &Ctx<'_>,
+/// The reads `acquirejob` makes before it commits, in order: the job row and its run on the job's shard, the
+/// repository's owner, then the owner's login and `Authz` (which name the repository), then the job's secrets and
+/// variables. The edge's `Acquire` and the test's fake.
+#[allow(async_fn_in_trait)]
+trait AcquireReads {
+    type Repo;
+    async fn job(&self, job: JobId) -> std::result::Result<JobRow, String>;
+    async fn run(&self, run: RunId) -> std::result::Result<WorkflowRun, String>;
+    async fn repo(&self, run: &WorkflowRun) -> std::result::Result<Self::Repo, String>;
+    async fn named(&self, repo: Self::Repo) -> std::result::Result<(String, Self::Repo, AuthzFold), String>;
+    async fn config(
+        &self,
+        run: &WorkflowRun,
+        job: &JobRow,
+        repo: &Self::Repo,
+        authz: &AuthzFold,
+    ) -> std::result::Result<(Pairs, Pairs), String>;
+}
+
+/// The job's `github.repository` (`o/r`), secrets, and variables, or the read that failed. Never an empty name: a
+/// job that ran without one failed at "Prepare workflow directory" (F79, run 1966284).
+async fn acquire_config<R: AcquireReads>(r: &R, b: &Value) -> std::result::Result<(String, Pairs, Pairs), String> {
+    let id = b["jobMessageId"].as_str().ok_or("no jobMessageId")?;
+    let job = runsvc::job_of_guid(id).or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j)).ok_or("no job")?;
+    let row = r.job(job).await.map_err(|e| format!("job {}: {e}", job.0.0))?;
+    let run = r.run(row.run).await.map_err(|e| format!("run {}: {e}", row.run.0.0))?;
+    let repo = r.repo(&run).await.map_err(|e| format!("repository {}: owner: {e}", run.repo.0.0))?;
+    let (name, repo, authz) = r.named(repo).await.map_err(|e| format!("repository {}: {e}", run.repo.0.0))?;
+    let (secrets, variables) = r.config(&run, &row, &repo, &authz).await.map_err(|e| format!("secrets: {e}"))?;
+    Ok((name, secrets, variables))
+}
+
+struct Acquire<'a, 'b> {
+    c: &'a Ctx<'b>,
     chain: ChainId,
-    b: &Value,
-) -> Option<(String, WorkflowRun, JobRow, crate::Repo, graftyard_identity::AuthzFold)> {
-    let id = b["jobMessageId"].as_str()?;
-    let job = runsvc::job_of_guid(id).or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j))?;
-    let row = job_row(c, chain, job).await?;
-    let v = shard_read(c, chain, json!({ "run": row.run.0.0 })).await.ok()?;
-    let run: WorkflowRun = serde_json::from_value(v["run"]["run"].clone()).ok()?;
-    let repo = crate::repo_by_id(c, run.repo).await.ok()?;
-    let (owner, name, repo, authz) = crate::api::repo_named(c, repo).await?;
-    Some((format!("{owner}/{name}"), run, row, repo, authz))
+}
+
+impl AcquireReads for Acquire<'_, '_> {
+    type Repo = crate::Repo;
+    async fn job(&self, job: JobId) -> std::result::Result<JobRow, String> {
+        let v = shard_read(self.c, self.chain, json!({ "job": job.0.0 })).await?;
+        serde_json::from_value::<Option<JobRow>>(v).map_err(|e| e.to_string())?.ok_or_else(|| "no such job".into())
+    }
+    async fn run(&self, run: RunId) -> std::result::Result<WorkflowRun, String> {
+        let v = shard_read(self.c, self.chain, json!({ "run": run.0.0 })).await?;
+        serde_json::from_value::<Option<WorkflowRun>>(v["run"]["run"].clone())
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no such run".into())
+    }
+    async fn repo(&self, run: &WorkflowRun) -> std::result::Result<crate::Repo, String> {
+        crate::repo_by_id(self.c, run.repo).await
+    }
+    async fn named(&self, repo: crate::Repo) -> std::result::Result<(String, crate::Repo, AuthzFold), String> {
+        let (owner, name, repo, authz) = crate::api::repo_named_why(self.c, repo).await?;
+        Ok((format!("{owner}/{name}"), repo, authz))
+    }
+    async fn config(
+        &self,
+        run: &WorkflowRun,
+        job: &JobRow,
+        repo: &crate::Repo,
+        authz: &AuthzFold,
+    ) -> std::result::Result<(Pairs, Pairs), String> {
+        job_config(self.c, run, job, repo, authz).await
+    }
 }
 
 type Pairs = Vec<(String, String)>;
@@ -207,7 +255,7 @@ async fn job_config(
     run: &WorkflowRun,
     job: &JobRow,
     repo: &crate::Repo,
-    authz: &graftyard_identity::AuthzFold,
+    authz: &AuthzFold,
 ) -> std::result::Result<(Pairs, Pairs), String> {
     use graftyard_identity::sealed::{EnvName, SecretScope};
     if !c.cfg.enabled.contains(&graftyard_git::secrets::REPO_FORMAT_SECRETS)
@@ -777,4 +825,114 @@ async fn keep_steps(c: &Ctx<'_>, chain: ChainId, job: JobId, update: &Value) -> 
     graftyard_actions::rest::merge_steps(&mut kept, update);
     bucket.put(&key, serde_json::to_vec(&kept)?).execute().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use graftyard_actions::JobState;
+    use graftyard_actions::shard::JobSpec;
+    use graftyard_identity::{AuthzFold, NameEpoch, RepoEntry};
+    use graftyard_types::{AccountId, ChainId, DbId, Index, RepoId, Timestamp};
+    use serde_json::json;
+
+    use super::{AcquireReads, JobId, JobRow, Pairs, RunId, WorkflowRun, acquire_config, runsvc};
+
+    /// Which read fails, if any; every read the acquire made, in order.
+    struct Fake {
+        fail: Option<&'static str>,
+        made: Cell<u8>,
+    }
+
+    impl Fake {
+        fn read(&self, what: &'static str) -> Result<(), String> {
+            self.made.set(self.made.get() + 1);
+            if self.fail == Some(what) { Err(format!("{what} did not answer")) } else { Ok(()) }
+        }
+    }
+
+    const REPO: RepoId = RepoId(DbId(65562));
+
+    impl AcquireReads for Fake {
+        type Repo = RepoId;
+        async fn job(&self, job: JobId) -> Result<JobRow, String> {
+            self.read("job")?;
+            let spec = JobSpec {
+                id: job,
+                name: "build".into(),
+                labels: Default::default(),
+                needs: Default::default(),
+                matrix: Default::default(),
+                environment: None,
+                steps: "[]".into(),
+            };
+            let state = JobState::Assigned { runner: graftyard_actions::RunnerId(DbId(9)), lease_until: Timestamp(1) };
+            Ok(JobRow { run: RunId(DbId(7)), spec, state, version: 1 })
+        }
+        async fn run(&self, run: RunId) -> Result<WorkflowRun, String> {
+            self.read("run")?;
+            Ok(WorkflowRun {
+                id: run,
+                repo: REPO,
+                workflow: ".github/workflows/bf60.yml".into(),
+                event: "workflow_dispatch".into(),
+                head_sha: [0; 20],
+                head_ref: "refs/heads/main".into(),
+                trigger: (ChainId::Repo(REPO), Index(1)),
+                attempt: 1,
+                concurrency: None,
+                fork: false,
+            })
+        }
+        async fn repo(&self, run: &WorkflowRun) -> Result<RepoId, String> {
+            self.read("owner")?;
+            Ok(run.repo)
+        }
+        async fn named(&self, repo: RepoId) -> Result<(String, RepoId, AuthzFold), String> {
+            self.read("authz")?;
+            let mut a = AuthzFold::new(AccountId(DbId(3)));
+            let key = graftyard_identity::RepoName::parse("wp4-bf60").unwrap().key();
+            a.names.insert(key, RepoEntry::Live { repo, epoch: NameEpoch(1) });
+            let name = a.id_name(repo).ok_or("no name")?.as_str().to_owned();
+            Ok((format!("m3org/{name}"), repo, a))
+        }
+        async fn config(
+            &self,
+            _: &WorkflowRun,
+            _: &JobRow,
+            _: &RepoId,
+            _: &AuthzFold,
+        ) -> Result<(Pairs, Pairs), String> {
+            self.read("secrets")?;
+            Ok((vec![("TOKEN".into(), "s".into())], vec![]))
+        }
+    }
+
+    fn acquire(fail: Option<&'static str>) -> (Result<(String, Pairs, Pairs), String>, u8) {
+        use futures_util::FutureExt;
+        let f = Fake { fail, made: Cell::new(0) };
+        let b = json!({ "jobMessageId": runsvc::owner_job_guid(5, JobId(DbId(1966290))) });
+        let out = acquire_config(&f, &b).now_or_never().expect("ready");
+        (out, f.made.get())
+    }
+
+    /// F79 (run 1966284): a failed read before `acquirejob` commits gave the runner a job message with an empty
+    /// `github.repository` and no secrets, and the runner failed the job. Each read that fails now fails the acquire,
+    /// naming the read, and the reads after it are not made; only when all answer is there a name and the secrets.
+    #[test]
+    fn an_acquire_whose_repository_read_fails_is_refused_never_sent_without_a_name_or_secrets() {
+        let (ok, made) = acquire(None);
+        assert_eq!(ok, Ok(("m3org/wp4-bf60".into(), vec![("TOKEN".into(), "s".into())], vec![])));
+        assert_eq!(made, 5);
+        for (i, read) in ["job", "run", "owner", "authz", "secrets"].into_iter().enumerate() {
+            let (out, made) = acquire(Some(read));
+            let e = out.expect_err(read);
+            assert!(e.contains(&format!("{read} did not answer")), "{read}: {e}");
+            assert_eq!(usize::from(made), i + 1, "{read}: no read after the one that failed");
+        }
+        use futures_util::FutureExt;
+        let none = acquire_config(&Fake { fail: None, made: Cell::new(0) }, &json!({})).now_or_never().expect("ready");
+        assert!(none.is_err(), "a request naming no job");
+    }
 }

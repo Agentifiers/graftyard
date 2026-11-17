@@ -380,6 +380,10 @@ Plants 25 to 30 (F77, branch `f77-acquire`): 6 of 6 caught. 21 of 21 caught afte
 | 52 | `Seen` counts a mark a later read left (main's rule) | `a_mark_from_an_overlapping_later_read_never_makes_a_runner_stale`, the F78 bf60 test |
 | 53 | `Seen` moves a mark to the newest read | `a_job_mark_keeps_its_first_sighting` |
 | 54 | The owner's deleted repositories are not read | `a_delete_reads_every_shard_its_owners_jobs_can_be_on` |
+| 55 | A failed repository-name read acquires with an empty name (main's rule, F79) | `an_acquire_whose_repository_read_fails_is_refused_never_sent_without_a_name_or_secrets` |
+| 56 | A failed owner read acquires with an empty name (main's rule) | the same |
+| 57 | A failed job or run read acquires with an empty name (main's rule) | the same |
+| 58 | A failed secrets read acquires without the secrets | the same |
 
 ## Cost estimate for the hosted runs
 

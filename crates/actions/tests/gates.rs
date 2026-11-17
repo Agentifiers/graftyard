@@ -701,6 +701,35 @@ fn a_repo_scope_runner_whose_match_answer_was_lost_gets_the_job_on_a_later_poll(
     assert!(matches!(w.fold().job(jobs[1]).unwrap().state, JobState::Queued { .. }));
 }
 
+/// F79: an `acquirejob` the edge answers 503, because a read it makes before the commit failed, commits nothing, so the
+/// job stays `Assigned`. The runner retries the acquire and then polls on (actions/runner v2.338.2 drops a job only on
+/// 404, 409, or 422): its next poll after `RESEND_AFTER` hands it the same job, and a runner that never comes back
+/// leaves the job to its lease, which puts it back in the queue, not `Completed { Failure }`.
+#[test]
+fn an_acquire_answered_503_leaves_the_job_assigned_for_a_resend_and_its_lease_requeues_it() {
+    use graftyard_actions::broker::{Pick, RESEND_AFTER, Taken};
+    let mut w = World::new();
+    w.register(1);
+    let r = w.runners.pop().unwrap();
+    let labels = LabelSet::parse(["self-hosted", "linux", "x64"]).unwrap();
+    let run = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("build", &[])]);
+    let job = w.fold().run(run).unwrap().jobs[0];
+    let p = w.fold().repo_pick(3, &mut Taken::default(), r, &labels, false, w.now);
+    let Pick::Match { job: j, version, .. } = p else { panic!("{p:?}") };
+    assert_eq!(j, job);
+    let m =
+        ActionsCmd { actor: ActionsActor::Runner(r), op: ActionsOp::Job { job, version, event: JobEvent::Matched(r) } };
+    assert!(matches!(w.shard_cmd(m), Some(Ok(_))));
+    // Every acquire is answered 503: nothing commits. The runner polls again after its retries.
+    w.run_for(RESEND_AFTER.as_millis() as u64 + 5_000);
+    assert!(matches!(w.fold().job(job).unwrap().state, JobState::Assigned { runner, .. } if runner == r));
+    let p = w.fold().repo_pick(3, &mut Taken::default(), r, &labels, false, w.now);
+    assert_eq!(p, Pick::Resend { shard: 3, job }, "the same job again, for another acquire");
+    // The runner never acquires: at the lease end the job is queued again, not failed.
+    w.run_for(graftyard_actions::JOB_LEASE.as_millis() as u64);
+    assert!(matches!(w.fold().job(job).unwrap().state, JobState::Queued { .. }), "{:?}", w.fold().job(job));
+}
+
 /// F77 (BF-54 run 2): a runner that lost its `acquirejob` answer asks again (actions/runner v2.338.2 retries
 /// `GetJobMessageAsync` on anything but 404, 409, and 422, and drops the job on those). Its second `Acquired` of the
 /// job it holds `InProgress` commits nothing and is answered, keeping the lease the first one set; another runner's is

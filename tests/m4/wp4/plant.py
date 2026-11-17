@@ -32,6 +32,8 @@ AZ = 'crates/identity/src/authz.rs'
 AA = 'crates/identity/src/appauth.rs'
 HC = ['-p', 'graftyard-identity', '--test', 'wp4', '-p', 'graftyard-api', '--test', 'webhooks', '-p', 'graftyard-git',
       '--test', 'wire_tags']
+EA = 'workers/edge/src/actions.rs'
+EDGE = ['-p', 'graftyard-edge', '--lib', 'actions::']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -182,6 +184,20 @@ MUTANTS = [
     ('the owner\'s deleted repositories are not read', H,
      '            E::Reserved { repo, .. } | E::Live { repo, .. } | E::Alias { repo, .. } | E::Deleted { repo, .. } => *repo,',
      '            E::Reserved { repo, .. } | E::Live { repo, .. } | E::Alias { repo, .. } => *repo,\n            E::Deleted { .. } => RepoId(graftyard_types::DbId(0)),', T),
+    # ---- F79: acquirejob never sends a job without its repository's name or secrets ----
+    ('a failed repository read acquires with an empty name (main\'s rule)', EA,
+     '    let (name, repo, authz) = r.named(repo).await.map_err(|e| format!("repository {}: {e}", run.repo.0.0))?;',
+     '    let Ok((name, repo, authz)) = r.named(repo).await else { return Ok((String::new(), Vec::new(), Vec::new())) };',
+     EDGE),
+    ('a failed owner read acquires with an empty name (main\'s rule)', EA,
+     '    let repo = r.repo(&run).await.map_err(|e| format!("repository {}: owner: {e}", run.repo.0.0))?;',
+     '    let Ok(repo) = r.repo(&run).await else { return Ok((String::new(), Vec::new(), Vec::new())) };', EDGE),
+    ('a failed job or run read acquires with an empty name (main\'s rule)', EA,
+     '    let run = r.run(row.run).await.map_err(|e| format!("run {}: {e}", row.run.0.0))?;',
+     '    let Ok(run) = r.run(row.run).await else { return Ok((String::new(), Vec::new(), Vec::new())) };', EDGE),
+    ('a failed secrets read acquires without the secrets', EA,
+     '    let (secrets, variables) = r.config(&run, &row, &repo, &authz).await.map_err(|e| format!("secrets: {e}"))?;',
+     '    let (secrets, variables) = r.config(&run, &row, &repo, &authz).await.unwrap_or_default();', EDGE),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
