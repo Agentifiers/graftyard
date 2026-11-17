@@ -4,7 +4,7 @@
 // `Degraded { lost }` candidate over the group's three voters, one site at generation 1 to GEN and the others at 1, and
 // names the one whose SHA-256 is the stored digest, as `digest208160.py` did for b030r2 and the b030r5 evidence did by
 // hand. Prints one line per config entry, then a verdict: a `Degraded` entry must be followed by the `Normal` naming
-// its new member at the next index (G22's back-to-back pair), so a Degraded held across other entries fails.
+// its new member as the next config entry within HELD_MS (G22), so a Degraded held across the tries fails.
 //   node tests/am1/b030split/configs.mjs CHAIN [SITE N]   (reads the leader's log through SITE's current voter)
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -41,8 +41,12 @@ for (let i = 1; i < log.length; i++) {
   out.push({ index: e.index, term: e.term, at: new Date(e.at).toISOString(), committed: e.committed, body: hit[0] ?? "unmatched", matches: hit.length });
 }
 for (const o of out) console.log(JSON.stringify(o));
-// Pass: every Degraded entry is followed at the next index by a Normal entry.
-const bad = out.filter((o, k) => o.body.startsWith("Degraded") && !(out[k + 1]?.index === o.index + 1 && out[k + 1].body.startsWith("Normal")));
+// Pass: every Degraded entry's next config entry is a Normal one within HELD_MS. Writes proposed between the pair can
+// interleave (b030r6: an events entry at 5 between Degraded at 4 and Normal at 6, 0.5 s apart), so the pair is
+// judged by config order and time held, not adjacent indices; b030r5's Degraded held 535 s across the tries.
+const HELD_MS = Number(process.env.HELD_MS ?? 5_000);
+for (const [k, o] of out.entries()) if (o.body.startsWith("Degraded") && out[k + 1]) o.heldMs = Date.parse(out[k + 1].at) - Date.parse(o.at);
+const bad = out.filter((o, k) => o.body.startsWith("Degraded") && !(out[k + 1]?.body.startsWith("Normal") && o.heldMs <= HELD_MS));
 const unmatched = out.filter((o) => o.body === "unmatched");
 console.log(JSON.stringify({ chain, configs: out.length, degradedHeld: bad.map((o) => o.index), unmatched: unmatched.map((o) => o.index),
   pass: bad.length === 0 && unmatched.length === 0 }));
