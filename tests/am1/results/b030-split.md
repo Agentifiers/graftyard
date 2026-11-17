@@ -1291,6 +1291,24 @@ GB. But it moves a product threshold, and `splitAt` lives in each isolate, so th
 day 25.8 on the second. The post-split span is kept. A full run would also exercise the install only if a member
 happened to lag. Whether the shorter procedure counts as the row as written is the operator's decision.
 
+## B0-30 short run (b030r4, from 2026-11-17 00:02Z)
+
+- **Site day:** from main `d870e2cc` (with `audit-locked`, `near-check`, `lookup-share`), 00:02:21Z to 00:16:46Z,
+  sites and edge exit 0. acctcost for the day: $0.01 before, $0.06 after.
+- **Tools edge redeployed (operator, 2026-11-17 00:4xZ).**
+  - The seed failed at once in `mkrepo.mjs`: every call to `graft-m1-wp7-edge` answered a 404 page. The
+    account's audit log shows `script_delete` of `graft-m1-wp7-edge` and `graft-m1-wp7-edge-b` at
+    2026-11-16T20:28:53Z, in the cost teardown.
+  - The run's drivers need it: `mkrepo` (the names-shard commit), `force` (`/sever`, `/place`) and retire.
+  - Redeployed `graft-m1-wp7-edge` only, with `SITES=tests/m3/finish/sites4.json EDGES=graft-m1-wp7-edge node
+    tests/m1/wp7/deploy-edge.mjs` and one `wrangler secret put TOKEN` from the token file, not printed.
+    `graft-m1-wp7-edge-b` stays deleted; no driver calls it.
+  - Upload version `bbe289d8-3962-4321-99d5-a34438b9589a`; deployed version after the secret
+    `c2f03106-b84e-4517-835f-edc5f680d0ea` (2026-11-17T00:36:21Z).
+  - Checked through it before the seed restarted: `/status` on all three members of `authz:7100001`, each joined,
+    commit 312, 311 and 311.
+  - Kept after the run: retire needs it.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
