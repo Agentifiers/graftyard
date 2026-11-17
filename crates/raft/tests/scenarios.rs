@@ -2541,3 +2541,115 @@ fn reads_send_at_most_one_round_per_voter_per_turn_while_the_floor_jumps() {
         assert!(granted(*id), "the read asked at {at:?} was never granted");
     }
 }
+
+/// read-beat (`tests/m0/results/read-beat.md`): a read round to a voter whose AppendEntries for the entry in flight is
+/// still out carries no entries and leaves that call alone. B0-29 mwkyk9zg's leader, on a suspect clock, sent a round
+/// every 20 to 30 ms while each entry took about 200 ms to commit, and each forced round re-sent the entry in flight:
+/// 6.4 to 7.8 sends of every entry to each voter and 640 to 940 MB a run, against one send on m27. Each read is still
+/// granted only by a round that left after it arrived, and an ack of an empty round grants it.
+#[test]
+fn a_read_round_behind_an_entry_in_flight_resends_no_entries() {
+    let mut c = Cluster::new(45);
+    c.elect(A);
+    c.sync(A);
+    c.inbox.clear();
+    c.m_mut(A).set_clock_suspect(true);
+    // One entry in flight, its AppendEntries to both voters held unanswered.
+    let t =
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(7)), put("k", "v"))).expect("admitted").ticket;
+    let carries = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| matches!(&e.msg, Message::Append(a) if !a.entries.is_empty() && e.from == A && e.to != A);
+    let first: Vec<_> = std::mem::take(&mut c.inbox);
+    assert_eq!(first.iter().filter(|e| carries(e)).count(), 2, "the entry did not leave to both voters");
+    // Ten reads, each past READ_ROUND_GAP, each needing its own round.
+    let mut rounds = Vec::new();
+    let mut asked = Vec::new();
+    for _ in 0..10 {
+        c.now = Timestamp(c.now.0 + 25);
+        asked.push(c.on(A, |m, now| m.read(now)).expect("leading"));
+        rounds.extend(std::mem::take(&mut c.inbox));
+    }
+    let to_voters = rounds.iter().filter(|e| matches!(e.msg, Message::Append(_)) && [B, C].contains(&e.to)).count();
+    assert!(to_voters >= 18, "only {to_voters} read rounds left for 10 reads");
+    let resent = rounds.iter().filter(|e| carries(e)).count();
+    assert_eq!(resent, 0, "{resent} of {to_voters} read rounds re-sent the entry in flight");
+    // The empty rounds alone, answered: every read is granted by its round, and the entry is still in flight.
+    c.inbox = rounds;
+    c.deliver(|e| !carries(e));
+    let granted = |c: &Cluster, id| {
+        c.resolutions
+            .iter()
+            .any(|(_, r)| matches!(r, Resolution::Read { id: i, result: Ok(g) } if *i == id && g.via_round()))
+    };
+    for id in &asked {
+        assert!(granted(&c, *id), "a read was not granted by the ack of an empty round");
+    }
+    assert!(c.inbox.iter().all(|e| !carries(e)), "an empty round's answer started a re-send of the entry");
+    // The held entry's calls then land and commit it on every voter.
+    assert!(c.ticket_results(t).is_empty(), "the entry committed before its calls were answered");
+    c.inbox.extend(first);
+    c.deliver_all();
+    let r = c.ticket_results(t);
+    assert!(
+        matches!(r.as_slice(), [Resolution::Ticket { result: Ok(_), .. }]),
+        "the entry in flight never committed: {r:?}"
+    );
+    assert_eq!(c.m(B).last_index(), c.m(A).last_index());
+    assert_eq!(c.m(C).last_index(), c.m(A).last_index());
+}
+
+/// read-beat's other half: a voter whose calls all failed has no pipeline, and a read round to it still carries the
+/// entries it lacks, as before, rather than an empty round it would ack without them.
+#[test]
+fn a_read_round_to_a_voter_with_no_calls_out_still_carries_the_entry() {
+    let mut c = Cluster::new(46);
+    c.elect(A);
+    c.sync(A);
+    c.inbox.clear();
+    c.m_mut(A).set_clock_suspect(true);
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(9)), put("k", "v"))).expect("admitted");
+    let to_c = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| e.from == A && e.to == C;
+    let carries = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| matches!(&e.msg, Message::Append(a) if !a.entries.is_empty());
+    // C's call and both retries fail with an error: the pipeline is empty and the next resend waits for the tick.
+    for _ in 0..=graftyard_raft::COMMIT_RETRIES {
+        let calls: Vec<_> = c.inbox.drain(..).filter(|e| to_c(e) && carries(e)).collect();
+        assert_eq!(calls.len(), 1, "one call to C carried the entry");
+        let f = calls[0].failure(false).expect("an append");
+        c.on(A, |m, now| m.call_failed(now, f));
+    }
+    assert!(!c.inbox.iter().any(|e| to_c(e) && carries(e)), "a retry past COMMIT_RETRIES left at once");
+    c.now = Timestamp(c.now.0 + 25);
+    c.on(A, |m, now| m.read(now)).expect("leading");
+    let round: Vec<_> = c.inbox.iter().filter(|e| to_c(e) && matches!(e.msg, Message::Append(_))).collect();
+    assert_eq!(round.len(), 1, "no read round to C");
+    assert!(carries(round[0]), "the read round to a voter with nothing out carried no entries");
+}
+
+/// read-beat's resend: a voter's call that has gone unanswered READ_RESEND or longer, as one whose answer was lost, is
+/// re-sent by the next read round, not left to CALL_DEADLINE's tick. Without it the live sweep's seed 13441 lost a
+/// near follower's calls and stalled 31 s, past the 30 s bound, where main's re-sending rounds stalled 5 s.
+#[test]
+fn a_read_round_resends_a_call_outstanding_past_read_resend() {
+    let mut c = Cluster::new(47);
+    c.elect(A);
+    c.sync(A);
+    c.inbox.clear();
+    c.m_mut(A).set_clock_suspect(true);
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(11)), put("k", "v"))).expect("admitted");
+    let carries = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| {
+        e.from == A && [B, C].contains(&e.to) && matches!(&e.msg, Message::Append(a) if !a.entries.is_empty())
+    };
+    // The entry's calls are lost.
+    assert_eq!(c.inbox.drain(..).filter(|e| carries(e)).count(), 2);
+    let gap = graftyard_raft::READ_RESEND.as_millis() as u64;
+    // A read inside READ_RESEND sends empty rounds.
+    c.now = Timestamp(c.now.0 + gap - 5);
+    c.on(A, |m, now| m.read(now)).expect("leading");
+    assert_eq!(c.inbox.iter().filter(|e| carries(e)).count(), 0, "a round inside READ_RESEND re-sent the entry");
+    c.inbox.clear();
+    // The next round, past READ_RESEND and READ_ROUND_GAP, re-sends it to both voters, still before CALL_DEADLINE.
+    c.now = Timestamp(c.now.0 + 25);
+    assert!(gap < graftyard_raft::CALL_DEADLINE.as_millis() as u64);
+    c.on(A, |m, now| m.read(now)).expect("leading");
+    let resent = c.inbox.iter().filter(|e| carries(e)).count();
+    assert_eq!(resent, 2, "a round past READ_RESEND re-sent the entry to {resent} of 2 voters");
+}

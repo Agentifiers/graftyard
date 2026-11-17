@@ -35,7 +35,7 @@ mod transfer;
 pub use install::{LEARNER_READ_EVERY, READ_PIPELINE};
 pub use leader::{
     APPEND_BYTES_MAX, DONE_BYTES, LEARNERS_OUT_MAX, OUT_KEEP, OUT_MAX, OUTCOME_KEEP, PEER_OUT_MAX, PIPELINE,
-    READ_ROUND_GAP,
+    READ_RESEND, READ_ROUND_GAP,
 };
 pub use log::{FoldView, verify};
 

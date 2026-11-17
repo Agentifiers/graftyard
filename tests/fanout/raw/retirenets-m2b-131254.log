@@ -1,0 +1,17 @@
+2026-11-17T18:16:41.441Z repo:131254: 4 names, 4 were joined, all not joined
+2026-11-17T18:17:05.581Z repo:131255: 11 names, 11 were joined, all not joined
+2026-11-17T18:17:26.966Z repo:131256: 11 names, 11 were joined, all not joined
+2026-11-17T18:17:40.188Z repo:131257: 5 names, 4 were joined, all not joined
+2026-11-17T18:17:58.435Z repo:131258: 4 names, 4 were joined, all not joined
+2026-11-17T18:18:11.722Z repo:131259: 4 names, 4 were joined, all not joined
+2026-11-17T18:18:30.451Z repo:131260: 4 names, 4 were joined, all not joined
+2026-11-17T18:18:54.904Z repo:131261: 4 names, 4 were joined, all not joined
+2026-11-17T18:25:43.275Z purge: 131254 purged: a 765 -> 0, b 767 -> 0, c 766 -> 0
+2026-11-17T18:25:43.276Z purge: 131255 purged: a 1106 -> 0, b 1107 -> 0, c 1107 -> 0
+2026-11-17T18:25:43.276Z purge: 131256 purged: a 593 -> 0, b 595 -> 0, c 594 -> 0
+2026-11-17T18:25:43.276Z purge: 131257 purged: a 2020 -> 0, b 2022 -> 0, c 2016 -> 0
+2026-11-17T18:25:43.276Z purge: 131258 purged: a 1763 -> 0, b 1764 -> 0, c 1764 -> 0
+2026-11-17T18:25:43.276Z purge: 131259 purged: a 800 -> 0, b 790 -> 0, c 785 -> 0
+2026-11-17T18:25:43.276Z purge: 131260 purged: a 1246 -> 0, b 1250 -> 0, c 1245 -> 0
+2026-11-17T18:25:43.276Z purge: 131261 purged: a 1202 -> 0, b 1201 -> 0, c 1201 -> 0
+2026-11-17T18:25:43.276Z purge: {"dry": false, "purged": 8, "objects": 28469, "refused": []}
