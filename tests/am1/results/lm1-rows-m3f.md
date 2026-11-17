@@ -189,6 +189,12 @@ The by-`open` table above comes from timing: the crowded pushes are the ones tha
 - The leader (site a) answered its own reads in 20 ms at p50.
 - A push's read is a write-class `read_spread_for` with LOOKUP_FOR (20 s). A follower that sheds it (`overloaded`) or runs past FOLLOWER_CALL sends the read to the next member, and then the whole read waits the named retry and starts again. A read of 6 to 16 s is several such passes [inference: the member answers' bodies, and so the shed count, are not in the logs].
 
+**The pass loop** [measured on the followers, inference for the edge's side]:
+- Per second, the burst's reads on the two followers ran about 300 a second. Site c's follower answered 0.7 to 0.9 s at p50, so about 230 to 270 reads were in flight against READS_MAX 256. In many seconds 20 to 45% of its answers came back in 15 ms or less: gate sheds (`overloaded`, retry 250 ms).
+- Site b's follower let 260 reads run out FOLLOWER_CALL (cancelled at about 2.08 s).
+- So one pass of a push's read can cost up to 2 s at b, then a shed at c, then OVERLOAD_RETRY_MS, and every isolate retries on the same 250 ms. Reads of 6 to 16 s are two to five such passes. The completions that cluster across isolates (21.2, 25.6 and 31.5 s) are those synchronized passes.
+- The steady API read load (about 170 reads a second, `read:api`) is on the same followers. Pushes before and after the burst read in about 0.6 s, so the burst's own 542 reads in about 2 s push the followers over READS_MAX.
+
 **Not yet known:** the followers' shed counts and their read-index grant waits (`readStages`, `shedReads`) during the burst. `a1.mjs` reads `/stats` from the leader only. That decides between two fixes:
 - **Fewer reads:** 542 pushes made 542 identical core-row reads in 10 s, from 124 isolates. One shared read per isolate would make about 124. This is a read share, the same shape as `lookup-share` that B0-02 is redesigning.
 - **Cheaper reads at the members:** batch the read-index grants, or let the shed retry use its wait instead of a fixed pass.
