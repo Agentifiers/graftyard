@@ -199,7 +199,41 @@ graft-m2b's edge shows the same errors during LM-1's slot, 03:40 to 03:50Z.
 **Close-out:**
 - Both m3fr11 groups were retired: 22 of 22 members "not joined" after (`tests/fanout/raw/idle-retire-m3fr11.log`).
 - The sweep at 05:03:48Z found no shard container running.
-- The idle reading follows 30 minutes later.
+- Idle reading, 05:04 to 05:34Z (`PREFIX=graft-m3f acctcost`): graft-m3f **$0.00**, idle. The sweep at 05:41Z again found no shard container running. The account's top writers in that window were graft-m1's sites ($10.0 of $11.62).
+
+### m3fr11 after the run: B0-32's validate tail and its 103 `/suspect` (Workers Logs and the r11 raw files, no hosted spend; branch `b032-trace`)
+
+**The validate p99 is ten pushes on two pool shards** [measured, site a's `GitShard` events 04:31:20 to 04:32:10Z]:
+- 489 of 499 acknowledged burst pushes validated in at most 1,317 ms. The other 10 took 15,636 to 16,028 ms, and nothing lies between.
+- **Where the 10 waited.**
+  - 9 were forwarded to `git#0#pool:4` (`d442dd98`) and 1 to `pool:2` (`91056c0f`). They arrived at 04:31:43.5 to :44.5, the burst's peak second, when the network shard took 273 validates in 0.5 s.
+  - Each pool shard was then in a catch-up of the burst's own packs: `pool:4` from 04:31:43.2, 141 packs, 11.2 s; `pool:2` from :43.1, then 282 packs, 13.2 s.
+  - A push that needs a catch-up waits for the run after the running one (`wait_from`). So these waited out the edge's `wait=15` and answered 503 `warming` at 15.2 to 15.7 s. The 503 was not `pool_cold`: no 503 came at once.
+- **The first shard then validated each** with `via=0` in 131 to 244 ms, and logged "pool:4 is warming" 9 times and "pool:2" once.
+- **The network shard's own burst validates** ended within 1.1 s, except one at 6.4 s. The pool shards' others ended at p50 0.4 to 0.9 s.
+- **Not settled from the logs:** whether each of the 10 was a 409 `missingBase` on the disk as it stands, or a push that caught up first. The container logs no 409s. Either path waits in `wait_from`, and the fix covers both.
+
+**The 103 `/suspect` were deadlines on a slow leader, not a gone one** [measured, the edge's per-push log line (1,063 pushes, 95 isolates) and the leader's `Member` events]:
+- **When and where.** All 71 pushes with a miss started at 04:31:41.4 to :45.7, the burst's first 5 s, from 13 isolates. 103 misses in all; 11 of the pushes missed three times. Term 2 held throughout, with leader site 0 (`dbde0f0f`).
+- **Why `busy` was false.** At each missed deadline, the isolate's last 200 from the leader, from a push of its own that had ended, was 2,083 ms old at p10, 2,524 at p50 and 3,941 at most. It was never within `COMMIT_RECEIPT`. Asks that did run (`busy` true) had a last 200 at p50 1,608 ms. Sends answered in time had one at 1,391 ms.
+- **Why no 200 came in time.**
+  - Leader `/commit` handlers that started at 04:31:43 to :45 ran p50 3,114 ms and up to 4,645 ms: 353 of 521 over 2 s, against a 1 s `COMMIT_HOLD`.
+  - `/outcome_by_request` on the same leader in the same 10 s: p50 164 ms, p90 608, at most 625.
+  - The leader's `queue:slot` p99 was 4.5 s. Its CPU was 0.2 to 0.7 s a second, so the queue is entries waiting their turn, not a busy isolate.
+- **What the misses cost.** Pushes with a miss committed in p50 5,066 ms, against 5,097 ms without. The resends did not slow commits. They cost one more 256 KiB send each and 103 `suspect` waves to the followers, which is what fails the row's zero-`suspect` line.
+- **The staged first commit** (the small command after a `Stage`) took p50 4,872 ms. The inline 256 KiB first commit that drew `Stage` took 853 ms. The slow part is the queue the staged commands join, not the pack's bytes.
+
+**B0-31's buckets-up tail and B0-32's commit tail share their place, not shown their cause** [measured, `leader.split`]:
+- Both are in the leader's queue slot, with the round about flat:
+  - B0-31 buckets-up: commit p99 1,439 ms, `queue:slot` p99 1,701, round p99 373.
+  - B0-32: leader commit p99 4,335, `queue:slot` p99 4,486, round p99 280.
+- B0-32's slot wait comes from 500 pushes in one second, each two commands. B0-31's comes from 1 MiB agent packs at a steady rate, with `queue:post` p99 470 ms against B0-32's 2,265.
+- **Same place, not shown to be the same cause.** Neither fix here shortens the slot. The receipt fix removes B0-32's resends and suspects, and the pool send-back removes its validate tail. B0-31's 339 ms over its 1.1 s bound is left as it was.
+
+**Proposal, built on `b032-trace`** (`decisions/DECISIONS.md`, "`burst-receipts`"):
+1. **Ask before reporting.** At each `COMMIT_RECEIPT`, the edge asks `/outcome_by_request` within `CALL_DEADLINE` whether or not the member is `busy`, and reports only a member that did not answer it with a 200 and is not `busy` either. In m3fr11's trace that keeps all 103 sends open: no `suspect`, no resend.
+2. **Pool shards send back.** A pool shard sends back, with 409, a forwarded push that needs a catch-up, and the first shard validates it. In the trace that is the 10 pushes at about 0.2 s instead of 15.6 s, so validate p99 about 1.3 s.
+3. **Expected B0-32 effect** [inference]. The zero-`suspect` line should pass if the leader holds. The within-5 s line still fails: commit p50 3.5 s and auth, install and resolve about 2.9 s together already total over 5 s. That needs the leader's queue (LM-1 and B0-02's work) and the edge's read stages.
 
 ## The daily near check re-placed healthy groups (2026-11-16, Workers Logs, no hosted spend; branch `near-check`)
 

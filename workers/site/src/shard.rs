@@ -920,6 +920,13 @@ impl DurableObject for GitShard {
                 let cursor = CURSORS.with(|m| m.borrow().contains_key(&(obj.clone(), net.0.0)));
                 let on_disk = graftyard_git::validate_on(derived, running, cursor) == graftyard_git::ValidateOn::Disk;
                 let from = jobs.start_from();
+                // A pool shard never waits for a catch-up on a push the first shard forwarded: it answers 409 and the
+                // first shard validates it (`graftyard_git::on_catch_up`).
+                let back = graftyard_git::on_catch_up(q(&url, "pool").is_some()) == graftyard_git::OnCatchUp::Back;
+                let sent_back = || Response::error("validate: this pool shard needs a catch-up first", 409);
+                if !on_disk && back {
+                    return sent_back();
+                }
                 if !on_disk && let Err(r) = jobs.wait_from(from, wait).await {
                     return r;
                 }
@@ -1028,6 +1035,9 @@ impl DurableObject for GitShard {
                                     "fanout: {name} is warming; pushes validate on the first shard for a while"
                                 );
                             }
+                            // It needs a catch-up for this push (`graftyard_git::on_catch_up`): this push only comes
+                            // back, and the pool shard keeps getting the others.
+                            Ok(r) if r.status_code() == 409 => {}
                             Ok(mut r) => console_error!(
                                 "fanout: {name} answered {} {}; the caller validates on the first shard",
                                 r.status_code(),
@@ -1047,6 +1057,8 @@ impl DurableObject for GitShard {
                 use graftyard_git::host::{OnDisk, Validated};
                 let disk = if on_disk { OnDisk::AsItStands } else { OnDisk::CaughtUp };
                 let r = match host.validate(net, tipsn, detailn, agent, derived, disk, body()).await {
+                    // The container sweeps the request it kept within the hour.
+                    Ok(Validated::MissingBase { .. }) if back => return sent_back(),
                     // The container kept the request: once a catch-up that started after it ran, the same request is
                     // checked again, and every failure then is the pack's, as on a shard caught up first.
                     Ok(Validated::MissingBase { held }) => {

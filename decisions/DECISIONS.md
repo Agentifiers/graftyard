@@ -4300,3 +4300,32 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 **Evidence.** `workers/site/src/sweep.rs`, `a_run_reads_homes_only_for_new_or_day_old_networks` and `a_failed_read_keeps_the_cached_home_and_a_run_reads_at_most_its_cap`; `tests/sweepquiet/plant.py` (7 of 7 caught, the first is main's read-every-run).
 
 **Flip.** A hosted idle hour after the site day in which `names:*` members still write rows after a cron run with no new network; or a network swept by no site for over a day after its owner's home moved.
+
+### `burst-receipts`: the receipt asks before it reports, and a pool shard sends back a push that needs a catch-up, 2026-11-17
+
+**Status.** Asked for by the orchestrator after B0-32 m3fr11. Built on branch `b032-trace`, not deployed. The edge part ships on an edge deploy. The shard part is a site-script change, so it ships only through a site day.
+
+**Decision.** Two changes:
+1. **Ask before report** (`crates/lookup/src/lib.rs`, `receipt`). At each `COMMIT_RECEIPT` a `/commit` send is still open, the edge asks the same member `/outcome_by_request` (the request id, the command without its pack) within `CALL_DEADLINE`, whether or not the member is `busy`. Any 200 to the ask keeps the send open. `done`, `NotLeader` or `pending` ends it, as before. Only a member that did not answer the ask with a 200 and is not `busy` either is reported with `suspect`, and the command is sent again, about 3 s after the send instead of 2 s. `receipt-rule`'s keep-open, its `RECEIPT_OPEN` and the error-status report are unchanged.
+2. **A pool shard sends back a push that needs a catch-up** (`graftyard_git::on_catch_up`, `workers/site/src/shard.rs`, `"/validate"`). A push the network's first shard forwarded (`pool=1`) never waits on the pool shard for a catch-up. That covers a pool shard holding no cursor for its disk, and a 409 `missingBase` from its container. It answers 409, and the first shard sends that one push back to the caller with `x-graft-fanout-failed`, which re-sends it with `via`, as for any failed forward. Unlike a `warming` 503, it does not mark the pool shard cold. The first shard, and a pool shard asked directly, still wait as `disk-validate` says.
+
+**Why.** On B0-32 m3fr11 (term 2 held, 0 edge errors) [measured, `tests/am1/results/lm1-rows-m3f.md`, "m3fr11 after the run"]:
+- **103 suspects.** Every one of the 103 `/suspect` reports and resends fell in the burst's first 5 s, from 13 of 95 edge isolates. At each missed deadline, the isolate's last 200 from the leader was 2.1 s old at p10, 2.5 s at p50 and 3.9 s at most, never within `COMMIT_RECEIPT`. So `busy` was false, and the rule reported without asking. Leader `/commit` handlers that started at 04:31:43 to :45 ran p50 3.1 s and up to 4.6 s (353 of 521 over 2 s), against a 1 s `COMMIT_HOLD`. Meanwhile the leader's `/outcome_by_request` answered at p90 608 ms and at most 625 ms. The leader was slow to answer held commits, not gone.
+- **What the misses cost.** Pushes with a miss committed in p50 5.1 s, the same as those without (5.1 s). The resends did not make commits slower. They added a 256 KiB re-send each and 103 `suspect` waves to the followers.
+- **The validate p99 is ten pushes.** 489 of 499 acknowledged burst pushes validated in under 1.4 s, and the next value above 1.32 s is 15.6 s. On site a, 9 burst pushes forwarded to `pool:4` and 1 to `pool:2` waited out the edge's 15 s (`wait=15`) on their pool shard. Each pool shard was then in a catch-up of the burst's own packs, of 37 to 495 packs and 4.4 to 21 s. The wait is for the run after that one (`wait_from`). Each answered 503 `warming` at 15.2 to 15.7 s, and the first shard then validated each with `via=0` in 131 to 244 ms. The first shard's own burst validates ended within 1.1 s, except one at 6.4 s.
+
+**What it beat.**
+- **Treating any 200 in the term as `busy`:** under the burst an isolate's last 200 was up to 3.9 s old, so this needs a longer window. A longer window also spares a member that answered once and then died, until the window runs out. The ask checks the member at the moment of the miss.
+- **A longer `COMMIT_RECEIPT`:** it delays the report for a member that is really gone, on every commit.
+- **Shortening the leader's held `/commit`:** the 2 to 4.6 s handler is the leader's queue at the burst (`queue:slot` p99 4.5 s), which is LM-1's and B0-02's leader-side work, not the receipt's.
+- **A pool shard waiting only for the entry that carries its base:** it needs the base's index, which the container does not report, and the first shard already validates these in under 250 ms.
+- **Marking a pool shard cold on a missing base:** it would send every push to the first shard for 30 s over one push's base.
+
+**Evidence.**
+- `crates/lookup/src/lib.rs`, `a_slow_200_from_a_busy_member_is_the_reply_with_no_resend_or_report`: the m3fr11 case, not `busy` and answering the ask, which fails on main. Also `a_member_that_never_answered_is_still_reported`: no 200 to the ask, or a 503 to it, is reported at 2.3 s.
+- `crates/git/tests/disk_validate.rs`, `a_pool_shard_sends_a_push_that_needs_a_catch_up_back`.
+- `tests/m0carried/plant30.py`: 6 of 6 caught. The first is main's report-without-asking, and the fifth is main's pool-shard wait.
+
+**Flip.**
+- For the ask: a hosted run where a dead member's report comes 1 s later and that delay moves a gate line.
+- For the send-back: one where pushes sent back from a pool shard put the first shard's validate p99 over the pool shard's wait.

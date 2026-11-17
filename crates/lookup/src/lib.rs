@@ -1167,18 +1167,22 @@ enum Receipt {
     /// A 200 to take as the send's reply: the send's own, in time or late, or the leader's answer by request id while
     /// the send was open, `done`, `error` with `notLeader`, or `pending` as `admitted`.
     Reply(Value),
-    /// No usable answer: none within COMMIT_RECEIPT from a member that is not `busy`, an error status, or no answer by
-    /// RECEIPT_OPEN. The command is sent again; `report` says whether the member is also reported with `suspect`: always
-    /// for an error status, and otherwise only when it is not `busy`.
+    /// No usable answer: no 200 within COMMIT_RECEIPT from a member that is not `busy`, not even to the ask, an error
+    /// status, or no answer by RECEIPT_OPEN. The command is sent again; `report` says whether the member is also
+    /// reported with `suspect`: always for an error status, and otherwise only when it is not `busy`.
     Missed { report: bool },
 }
 
 /// One `/commit` send's receipt (`design/DESIGN.md`, "Commit and read paths"). `send` is the call, open until its own
-/// deadline; `ask` is one `/outcome_by_request` to the same member; `busy` is `busy` for that member at the moment it
-/// is asked; `wait` sleeps. Each COMMIT_RECEIPT the send stays open, a member that is not `busy` is a missed receipt;
-/// a `busy` one is asked by request id and the send stays open. Only the send's own 200 or a by-request `done`,
+/// deadline; `ask` is one `/outcome_by_request` to the same member, whose 200 the caller records (`heard`); `busy` is
+/// `busy` for that member at the moment it is asked; `wait` sleeps. Each COMMIT_RECEIPT the send stays open, the
+/// member is asked by request id. Any 200 to the ask means it answers, so the send stays open; a member with no 200
+/// to the ask that is not `busy` either is a missed receipt. Only the send's own 200 or a by-request `done`,
 /// `NotLeader`, or `pending` is a reply: `unknown`, any other answer, or none leaves the send open, so nothing here
-/// makes a 2xx that the leader's `outcome` did not.
+/// makes a 2xx that the leader's `outcome` did not. Asked only when already `busy`, a leader whose held `/commit`
+/// answers all came back past 2 s was never `busy` at the tick, though its `/outcome_by_request` answered within
+/// 0.7 s: B0-32 m3fr11's 103 `suspect` reports and resends, every one in the burst's first 5 s with term 2 held
+/// (`tests/am1/results/lm1-rows-m3f.md`, "m3fr11 after the run").
 async fn receipt<S, A, AF, W, WF>(send: S, mut ask: A, busy: impl Fn() -> bool, mut wait: W) -> Receipt
 where
     S: Future<Output = Option<(u16, Value)>>,
@@ -1199,9 +1203,6 @@ where
         if let Either::Left((r, _)) = select(send.as_mut(), Box::pin(wait(COMMIT_RECEIPT))).await {
             return ended(r, busy());
         }
-        if !busy() {
-            return Receipt::Missed { report: true };
-        }
         match select(send.as_mut(), Box::pin(ask())).await {
             Either::Left((r, _)) => return ended(r, busy()),
             Either::Right((Some((200, v)), _)) => {
@@ -1212,6 +1213,7 @@ where
                     return Receipt::Reply(v);
                 }
             }
+            Either::Right(_) if !busy() => return Receipt::Missed { report: true },
             Either::Right(_) => {}
         }
     }
@@ -1295,7 +1297,11 @@ pub async fn commit_hedged(
             let (t, note) = (&t, &note);
             async move {
                 note(json!({ "ask": t.site.0 }));
-                let r = post_within(b, t.site, &t.do_name, "/outcome_by_request", lookup, COMMIT_RECEIPT).await;
+                // CALL_DEADLINE, not COMMIT_RECEIPT: a member with no 200 to it is reported 3 s after the send, not
+                // 4 s. B0-32 m3fr11's leader answered these within 625 ms while its held `/commit`s took up to 4.6 s.
+                let r =
+                    post_within(b, t.site, &t.do_name, "/outcome_by_request", lookup, graftyard_raft::CALL_DEADLINE)
+                        .await;
                 if let Some((200, v)) = &r {
                     heard(chain, t.site, v, now_ms());
                 }
@@ -2045,7 +2051,13 @@ mod tests {
         // answer leave the send open, and its own late 200 is still the reply.
         let odd = vec![Some((200, json!({ "error": { "busy": true } }))), Some((503, Value::Null)), None];
         let (r, asked, _) = run_receipt(Some((7_000, Some((200, ok.clone())))), odd, 300, |_| true);
-        assert_eq!((r, asked), (Receipt::Reply(ok), 3));
+        assert_eq!((r, asked), (Receipt::Reply(ok.clone()), 3));
+        // B0-32 m3fr11: the isolate's last 200 from the leader is older than COMMIT_RECEIPT at the deadline (no `busy`),
+        // because every held `/commit` there took 2 to 4.6 s, but the leader answers the ask by request id in 300 ms.
+        // It answers, so the send stays open and its late 200 is the reply: no `suspect` and no resend.
+        let (r, asked, at) =
+            run_receipt(Some((3_100, Some((200, ok.clone())))), vec![unknown.clone(); 8], 300, |_| false);
+        assert_eq!((r, asked, at), (Receipt::Reply(ok.clone()), 1, 3_100));
         // A send that ends with no answer (RECEIPT_OPEN) while the member is busy is sent again, but not reported.
         let (r, _, at) = run_receipt(Some((8_000, None)), vec![unknown.clone(); 8], 300, |_| true);
         assert_eq!((r, at), (Receipt::Missed { report: false }, 8_000));
@@ -2061,13 +2073,19 @@ mod tests {
     #[test]
     fn a_member_that_never_answered_is_still_reported() {
         let ok = json!({ "done": { "ok": 1 }, "meta": { "term": 2 } });
+        // No 200 before the deadline and none to the ask by request id: reported when the ask ends.
         let (r, asked, at) = run_receipt(Some((3_100, Some((200, ok.clone())))), vec![], 300, |_| false);
-        assert_eq!((r, asked, at), (Receipt::Missed { report: true }, 0, 2_000));
-        // Busy at the first deadline, then silent: asked at 2.0 s, answered at 2.3 s, and at the next deadline,
-        // COMMIT_RECEIPT after that answer (4.3 s), it is no longer busy and is reported.
+        assert_eq!((r, asked, at), (Receipt::Missed { report: true }, 1, 2_300));
+        // An error status to the ask is no answer either.
+        let (r, _, at) = run_receipt(None, vec![Some((503, Value::Null))], 300, |_| false);
+        assert_eq!((r, at), (Receipt::Missed { report: true }, 2_300));
+        // Answering at the first deadline, then silent: asked at 2.0 s, answered at 2.3 s; asked again at 4.3 s, no
+        // answer by 4.6 s, and no longer busy then, so it is reported.
         let unknown = Some((200, json!({ "unknown": true })));
-        let (r, _, at) = run_receipt(None, vec![unknown; 8], 300, |now| now < 3_600);
-        assert_eq!((r, at), (Receipt::Missed { report: true }, 4_300));
+        let mut asks = vec![None; 7];
+        asks.push(unknown);
+        let (r, _, at) = run_receipt(None, asks, 300, |now| now < 3_600);
+        assert_eq!((r, at), (Receipt::Missed { report: true }, 4_600));
         // `busy` itself: a 200 in this term within COMMIT_RECEIPT, and nothing else.
         let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(91)));
         assert!(!busy(chain, SiteId(0), 2, 10_000), "never heard");
