@@ -4940,7 +4940,10 @@ lookup-share error kind was seen; the count is not exhaustive.
 - `retirenets.mjs 131352`: 11 names, 11 were joined, all now "not joined" (20:40:04Z).
 - Two-pass purge (purge.py, gate unchanged): first pass a 7,371, b 5,734, c 7,014 objects (20,119), second pass 0 on
   every site. The 20:30Z sweep run started before the first pass and re-put nothing this time.
-- Idle reading: see below.
+- Idle reading, 20:44:00 to 21:15:11Z (`raw/idle-m44.txt`): graft-m2b $0.00 by prefix; the account's $4.55 in the
+  window is other installs (graft-m1-site-c $1.84, graft-m4a $1.38, graft-m3f-site-a $0.45). The */15 sweep ran clean
+  in all three slots on every site: site a walls 129, 41 and 56 s (swept 1, 4 and 20; planned 2,730 at 20:30Z, 0 after),
+  sites b and c 24 to 33 s, 0 unresolved everywhere.
 
 **Cost.** graft-m2b by prefix from 19:50:40Z to 20:44Z: $1.77 of the $10 stop, site day included. Account day
 $169.84 at 20:44Z.
