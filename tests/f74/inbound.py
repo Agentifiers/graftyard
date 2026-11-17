@@ -22,10 +22,11 @@ ROUTES = ["/raft", "/read", "/commit", "/commit_many", "/outcome", "/outcome_by_
           "/status", "/stats", "/trace", "/ping", "/rtt", "/place", "/learners", "/record"]
 route = lambda code: ROUTES[code - 1] if 0 < code <= len(ROUTES) else "other"
 # m41-held's read source: `ReadQuery` (26) rows, [at, 26, 0, arrival, query code, 1 for a read-index read], with codes
-# from host.rs `READ_QUERIES`, kept the same here (append-only).
+# from host.rs `READ_QUERIES`, kept the same here (append-only). Before `query-tag` the code was the query's first key in
+# sorted order, so a trace from before it names core rows `ranges` and whole-tier dumps `other` (lm1-memory round 37).
 READ_QUERIES = ["probe", "dep", "rows", "prsync", "accountLogins", "user", "summary", "split", "settings", "request",
                 "repoOwner", "repo", "ranges", "placement", "mergequeue", "login", "jti", "hosted", "genesis", "app",
-                "key"]
+                "key", "packed", "refs", "core"]
 query = lambda code: READ_QUERIES[code - 1] if 0 < code <= len(READ_QUERIES) else "other"
 
 args = sys.argv[1:]
