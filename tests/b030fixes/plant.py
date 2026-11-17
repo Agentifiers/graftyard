@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""b030-fixes: planted bugs in B0-30's three install fixes (with G21's pin in place of (i-2)), the re-placement gate, and the create rule. Plants one
+"""b030-fixes: planted bugs in B0-30's three install fixes (with G21's pin in place of (i-2)), G22's try order, the re-placement gate, and the create rule. Plants one
 mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT with the
 failing tests, MISSED, or DID NOT COMPILE. Run from the worktree root:
 
@@ -90,6 +90,30 @@ MUTANTS = [
     ('(ii)(a) the lag bound is exclusive', MEMBER,
      '        .filter(|(_, a)| a.is_none_or(|a| commit.saturating_sub(a) > PLACE_LAG_MAX))',
      '        .filter(|(_, a)| a.is_none_or(|a| commit.saturating_sub(a) >= PLACE_LAG_MAX))', S),
+    # G22: a re-placement runs its tries before it degrades the group
+    ('G22 main\'s order: Degraded before the first try', MEMBER,
+     '    let t0 = s.now();\n    let to = old.site;',
+     '    let t0 = s.now();\n    let to = old.site;\n    let _ = s.change(degraded(Ready(()), p.clone(), to)).await;', S),
+    ('G22 no second ready before Degraded', MEMBER,
+     '    let ready = match s.ready().await? {\n        Ok(r) => r,',
+     '    let ready = match Ok::<Ready, Value>(Ready(())) {\n        Ok(r) => r,', S),
+    ('G22 a voter behind at the commit still commits', MEMBER,
+     '            s.clear(&kept).await;\n            s.restore_row(&old, &joined).await;\n            return behind(b, &tried);',
+     '            let _ = b;\n            Ready(())', S),
+    ('G22 a voter behind at the commit leaves the chosen try', MEMBER,
+     '            s.clear(&kept).await;\n            s.restore_row(&old, &joined).await;\n            return behind(b, &tried);',
+     '            s.restore_row(&old, &joined).await;\n            return behind(b, &tried);', S),
+    ('G22 no nearer try still goes back to Normal, as main did', MEMBER,
+     '        s.restore_row(&old, &joined).await;\n        if keep_below.is_some() {',
+     '        let _ = s.change(graftyard_raft::GroupConfig::Normal(p.clone())).await;\n        s.restore_row(&old, &joined).await;\n        if keep_below.is_some() {', S),
+    ('G22 the first ready is skipped', MEMBER,
+     '    if let Err(b) = s.ready().await? {\n        return behind(b, &[]);\n    }',
+     '', S),
+    ('G22 an over-the-bound try is cleared at once', MEMBER,
+     '            Some((np, ms)) => over.push((new.clone(), np, ms, t.fresh)),',
+     '            Some((np, ms)) => {\n                s.clear(&new).await;\n                over.push((new.clone(), np, ms, t.fresh))\n            }', S),
+    ('G22 the registry row goes back to the old member after a placement', MEMBER,
+     '    s.restore_row(&kept, &joined).await;\n    let mut v', '    s.restore_row(&old, &joined).await;\n    let mut v', S),
     # create -> /place only for a group it bootstrapped
     ('create places any group whose members answered its joins, as main did', LOOKUP,
      '    fresh * 2 > answers.len()', '    answers.iter().filter(|a| matches!(a, Some((200, _)))).count() * 2 > answers.len()', L),
