@@ -1,0 +1,2 @@
+2026-11-17T21:16:23Z 65567 REFUSED: not retired (0:leader, 1:follower, 1:follower, 2:follower)
+2026-11-17T21:16:23Z {"dry": false, "purged": 0, "objects": 0, "refused": [65567], "second": 0}

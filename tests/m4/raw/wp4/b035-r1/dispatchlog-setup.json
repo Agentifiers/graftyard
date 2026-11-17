@@ -1,0 +1,1 @@
+{"repo": "65567", "window": ["2026-11-17T20:51:42Z", "2026-11-17T20:58:30Z"], "lines": 446, "events": 446, "loggedTwice": 0, "byAction": {"opened": 446}, "outcome": {"run": 446}, "unmergedPct": 0.0, "superseded": 0, "asks": {"run": {"0": 27, "1": 419}}, "entryToRunMs": {"n": 446, "p50": 21839, "p99": 39111, "max": 40610}, "errors": {}}
