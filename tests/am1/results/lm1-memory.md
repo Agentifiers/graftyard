@@ -4309,3 +4309,57 @@ third-bucket copies and markers, and multipart aborts). With 64 home reads a run
 stay inside the limit [inference]; the site day checks it. Merged to main at `68d39927`; it ships with the B0-33 slot's
 site day, which checks it hosted: `names:*` rows per cron run once the cache fills, against about 2.6 k, and site a's
 `sweep {` lines with no subrequest failure.
+
+### Round 37: the m42 slot, site day from main 68d39927 (lookup-share, sweep-quiet, near-check, audit-locked), B0-33 (2026-11-17)
+
+The operator granted the slot at about 03:15Z while B0-30's close-out ran on graft-m1, so the run's stop counted only
+graft-m2b's scripts: `acctcost.py`'s new `PREFIX` and `costok.sh`/`costrow.sh`'s `RUN_PREFIX`. Stops: $25 on m2b from
+03:20:06Z, or $170 for the account's UTC day. Estimate sent before the day: about $3.5 (m41's slot $4.15 by prefix).
+
+**Site day m42.** From `20b87b14` (main `68d39927` plus this file's note), m41's image `sha256:0f0c5ee1` (containers
+unchanged since `617e2b0a`), standard-4, `GRAFTYARD_ROLLUP=1`, 32.25 in the edge's `FORMATS_ENABLED`. Sites, test-faults,
+exit 0: a `002c035d`, b `389742cf`, c `705e3523`; edge `e2efd770` served at 100% (`edgever.py`). 03:20 to 03:33Z.
+
+**B0-33, repo:131346, a1 `mwk57m2z`, 5,000 agents, k 4, 8 learners, inbound trace on, load 03:43:57 to 03:48:57Z:
+void for the lookup check (operator, about 04:10Z).** lookup-share broke the edge under load, as m3f found on its own
+install: the errors below. The operator is reverting lookup-share on main; the lookup comparison waits for B0-02's
+redesign. The numbers stay as a record of what the group did while the edge failed, not as a verdict.
+
+| B0-33 line | m42 (void) | m41 | verdict at 90% (not judged: void) |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 2,515 ms (p50 486, n 12,580); merges 6 of 54; human pushes 41 of 192 | 14,521 ms; 2 of 42; 12 of 195 | fail |
+| ≥ 140 agent commands/s admitted (≥ 126 at 90%; fail < 100) | 29.2 agent-class ok a second at the client | 26.8 | fail |
+| Zero leader changes and `suspect` | term 2 throughout, 0 step-downs (Workers Logs); /suspect 0 to 0.2 a second on the voters | term 2 → 20, 13 step-downs | leader changes met; `suspect` not zero |
+
+- Voter routes during load (`Trace::Entered`, tsave): /read 5.3, 1.5, 3.4 a second and /suspect 0, 0.2, 0.2 a second
+  on sites 0, 1, 2; m41 after its first change 321, 258, 306 and 155, 149, 156. No leader change came, so the
+  "after the first change" comparison has no window; these are the whole load.
+- `inbound.py`'s `/read` source: on the voters `ranges:lead` (leader 3.9 a second) and `other:idx`; on learners 6 to
+  12 a second, `other:idx` and `ranges:idx`. Voter-to-voter /raft calls 17,591, 16,921 of them out under 200 ms with
+  nothing entered ahead; 102 missed 1,000 ms.
+- Read grant on the leader p99 228 ms (n 10,391; m41 2,540); fetches per voter per 20 ms max 6, p99 3, p50 1 over
+  14,935 windows (m41 21, 10, 1); fetching turns max 3, p99 2.
+- Leader split p99: queue 4,351 ms (slot 4,102), round 535, confirm 263, apply 535.
+- 0 exceededMemory; leader wasm 4 to 16 MB.
+
+**Where the clients' time went: the edge.** Agent-class requests answered at p50 20,028 ms, `LOOKUP_FOR` exactly
+(m41's p50s were 4.4 to 25 s), and the edge logged in every 10 s window of the load: `tokens:N: no member answered`
+(2,414 for tokens:0, 684 for tokens:932), "closure invoked recursively or after being dropped" 329, "Cannot perform
+I/O on behalf of a different request" 219, the runtime's "hung" cancel 121, "Cannot invoke closure from previous WASM
+instance" 21, "Promise will never complete." 20. m41's load window holds none of them, and neither does m42's setup
+before load. The tokens leaders answered their reads in tens of ms in the same minutes (`durableObjectsInvocations`).
+Hypothesis [inference, not traced]: lookup-share's per-isolate `Turn` (`crates/lookup/src/lib.rs`, `take_turn`) parks
+requests on another request's lookup; a holder the runtime cancels or drops wakes wakers of requests whose contexts
+are gone, and the waiters sit out the whole `LOOKUP_FOR`. Sent to B0-02 (lookup-share's thread) with the trace.
+
+**sweep-quiet, hosted (`tests/fanout/sweepquiet.py`).** Before the day, six slots 02:00 to 03:30Z: 2,565 to 2,847
+`names:*` rows a slot from 484 to 485 objects, and site a's run failed "Too many API requests" every time. After it:
+- 03:30 slot (b on the new script, a and c not yet): b `homesRead 64`, 96 s; a failed once more on the old script.
+- 03:45 slot: a, b, c `ok`, each `homesRead 64`, 72 to 110 s. **Site a's sweep completed**, its first since 20:43Z on
+  11-16.
+- 04:00 slot: a `homesRead 64`, swept 20 networks, 135 s; b 55 (its cache full); c 64.
+- `names:*` rows: 3,319, 2,910 and 1,671 in those slots, with the cache still filling and the B0-33 load's own name
+  reads in the 03:45 slot. The steady state is in the idle reading below.
+
+**Not measured this slot.** promote-lapse: no range came due on a quiet group. The roll: 131296 has no rollable run
+(8 promoted packs or a day-old run), so no `Compacted`.
