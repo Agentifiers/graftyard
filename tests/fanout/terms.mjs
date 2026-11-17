@@ -32,9 +32,12 @@ while (Date.now() < until) {
     try { return { site: s, ...(await member(chain, s, "/status", undefined, 15_000, names[s])).v }; } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
   }));
   const promise = (s) => (s.promiseUntil && s.now ? s.promiseUntil - s.now : null);
-  const now = st.map((s) => [s.site, s.role ?? "?", s.term ?? null, s.leader ?? null, s.votedFor ?? null, promise(s)]);
+  // The seventh field is the member's committed config index and its learner count, `index/learners`, so a config
+  // change during a row shows as a line (learners-kept: no config may commit after `/learners` on B0-32).
+  const cfg = (s) => (s.config ? `${s.config.index}/${Object.values(s.config.config ?? {})[0]?.learners?.length ?? Object.values(s.config.config ?? {})[0]?.placement?.learners?.length ?? "?"}` : null);
+  const now = st.map((s) => [s.site, s.role ?? "?", s.term ?? null, s.leader ?? null, s.votedFor ?? null, promise(s), cfg(s)]);
   // The promise's ms change every sample: the key holds only whether one stands.
-  const key = JSON.stringify(now.map((m) => [...m.slice(0, 5), (m[5] ?? 0) > 0]));
+  const key = JSON.stringify(now.map((m) => [...m.slice(0, 5), (m[5] ?? 0) > 0, m[6]]));
   if (key !== last) console.log(JSON.stringify({ at: new Date(t).toISOString(), ms: Date.now() - t, members: now }));
   last = key;
   await sleep(Math.max(0, 1_000 - (Date.now() - t)));
