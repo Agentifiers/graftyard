@@ -586,6 +586,11 @@ pub enum Trace {
     /// handler then, this one included.
     #[cfg(feature = "test-faults")]
     Entered = 25,
+    /// m41-held's read source: a `/read` request's query, logged once its body is read. `batch` is its `Entered` row's
+    /// arrival number (that row's `index` / 64), `index` the code of the query's first key in `READ_QUERIES`, and `ms` 1
+    /// for a read-index read (`"index": true`, from a follower or learner pass) and 0 for one sent to the leader.
+    #[cfg(feature = "test-faults")]
+    ReadQuery = 26,
 }
 
 /// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.
@@ -609,6 +614,43 @@ pub const ROUTES: &[&str] = &[
     "/learners",
     "/record",
 ];
+
+/// m41-held: query codes in `Trace::ReadQuery`, code `i + 1` for a query whose first key is `READ_QUERIES[i]`, 0 for
+/// any other. Append-only, as `ROUTES` is; `tests/f74/inbound.py` keeps the same list.
+#[cfg(any(test, feature = "test-faults"))]
+pub const READ_QUERIES: &[&str] = &[
+    "probe",
+    "dep",
+    "rows",
+    "prsync",
+    "accountLogins",
+    "user",
+    "summary",
+    "split",
+    "settings",
+    "request",
+    "repoOwner",
+    "repo",
+    "ranges",
+    "placement",
+    "mergequeue",
+    "login",
+    "jti",
+    "hosted",
+    "genesis",
+    "app",
+    "key",
+];
+
+/// A `/read` body's query code (`READ_QUERIES`): its `q`'s first key, or `key` for the old `{"key": ..}` shape.
+#[cfg(any(test, feature = "test-faults"))]
+pub fn read_query_code(body: &serde_json::Value) -> u64 {
+    let first = match body.get("q") {
+        Some(q) => q.as_object().and_then(|o| o.keys().next().cloned()),
+        None => body.get("key").map(|_| "key".to_owned()),
+    };
+    first.and_then(|k| READ_QUERIES.iter().position(|q| *q == k)).map_or(0, |i| i as u64 + 1)
+}
 
 /// F74: every request this host's handler takes, numbered in arrival order, and how many are open in it.
 #[cfg(any(test, feature = "test-faults"))]
@@ -1299,6 +1341,13 @@ pub fn text(v: &SqlStorageValue) -> Result<&str> {
         SqlStorageValue::String(s) => Ok(s),
         other => Err(err(format!("expected text, got {other:?}"))),
     }
+}
+
+/// Whether a storage error is the object out of space: SQLite's own `SQLITE_FULL`, or the platform's database size
+/// limit, which is what a member hit on B0-30's short run ("Exceeded the maximum database size", site c at 10.70 GB)
+/// while its stats still read 0.
+pub fn out_of_space(e: &str) -> bool {
+    ["SQLITE_FULL", "database or disk is full", "Exceeded the maximum database size"].iter().any(|m| e.contains(m))
 }
 
 pub fn rows(sql: &SqlStorage, q: &str, args: Vec<SqlStorageValue>) -> Result<Vec<Vec<SqlStorageValue>>> {
@@ -3621,8 +3670,8 @@ impl<F: Family> Host<F> {
 
     /// Counts a failed write that SQLite refused for space (B0-30's `SQLITE_FULL`), and logs it, so a reader of
     /// Workers Logs finds it after the reset this write causes.
-    fn full(&self, e: &str) {
-        if e.contains("SQLITE_FULL") || e.contains("database or disk is full") {
+    pub fn full(&self, e: &str) {
+        if out_of_space(e) {
             self.stats.borrow_mut().sqlite_full += 1;
             console_error!("SQLITE_FULL: {e}");
         }
@@ -4000,6 +4049,18 @@ mod tests {
     /// promise lapsed, even when its first check came later, or after it was first found so if it never promised; then
     /// at most every ELECTION_AFTER. It probes a leader it still names and campaigns when it names none. One that leads
     /// or still holds its promise, or has no such work, does nothing.
+    /// The platform's database size limit counts as out of space, as SQLite's own refusals do: b030r4's site c hit it
+    /// at 10.70 GB while its stats read `sqliteFull: 0`. Other storage errors do not count.
+    #[test]
+    fn the_platform_s_size_limit_counts_as_sqlite_full() {
+        assert!(super::out_of_space("Error: Exceeded the maximum database size."));
+        assert!(super::out_of_space("SQLITE_FULL: database or disk is full"));
+        assert!(!super::out_of_space("Error: database table is locked: SQLITE_LOCKED"));
+        assert!(!super::out_of_space(
+            "Durable Object storage operation exceeded timeout which caused object to be reset."
+        ));
+    }
+
     #[test]
     fn a_leaderless_voter_with_work_due_acts_after_the_bound_only() {
         use super::KeepLed::*;
@@ -4123,6 +4184,23 @@ mod tests {
         assert_eq!(ROUTES[code(d) - 1], "/read");
         assert_eq!([open_a, open_b, open_c, open_d], [1, 2, 2, 1], "handlers open at each entry, itself included");
         assert!(ROUTES.len() < 64, "a code fits under the arrival number's factor");
+    }
+
+    /// m41-held's read source: a `/read` body names its query by `q`'s first key, the old shape by `key`, and anything
+    /// else is 0.
+    #[test]
+    fn a_read_names_its_query_by_its_first_key() {
+        use super::{READ_QUERIES, read_query_code};
+        let name = |v: serde_json::Value| match read_query_code(&v) {
+            0 => "other",
+            c => READ_QUERIES[c as usize - 1],
+        };
+        assert_eq!(name(serde_json::json!({ "q": { "probe": true } })), "probe");
+        assert_eq!(name(serde_json::json!({ "q": { "rows": { "api": 1 } }, "index": true })), "rows");
+        assert_eq!(name(serde_json::json!({ "q": { "dep": true } })), "dep");
+        assert_eq!(name(serde_json::json!({ "key": "k" })), "key");
+        assert_eq!(name(serde_json::json!({ "q": {} })), "other");
+        assert_eq!(name(serde_json::json!({ "q": { "nope": 1 } })), "other");
     }
 
     #[test]

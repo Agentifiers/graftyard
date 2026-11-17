@@ -1,5 +1,5 @@
 #!/bin/bash
-# B0-30's short run (b030r4, operator 2026-11-16, option A): the site day on graft-m1 from the main checked out here,
+# B0-30's short runs (b030r4, operator 2026-11-16, option A; b030r5 with RUN=b030r5, 2026-11-17): the site day on graft-m1 from the main checked out here,
 # with a git shard image built from the same commit's containers/git (tests/am1/hotshards/image.sh, tag b030r4),
 # SHARD_INSTANCE standard-4 and site day 9's variables, then the edge from the same commit with
 # tests/am1/hosted/deploy-edge.sh's flags. Writes tests/am1/raw/b030r4.start first: the $150 run stop counts from here.
@@ -10,14 +10,15 @@ cd "$(dirname "$0")/../../.."
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/home/user/workspace/repo/.worktrees/target-am1
 export BED_TOKEN_FILE=$HOME/.graft-wp6/bed.token CARGO_PROFILE_RELEASE_DEBUG=0
 EDGE=https://graft-m1-edge.<workers-subdomain>.workers.dev
-L=tests/am1/raw/b030r4-siteday.log
+RUN=${RUN:-b030r4}
+L=tests/am1/raw/$RUN-siteday.log
 if ! grep -q '^DONE' "$L" 2>/dev/null; then
-  [ -s tests/am1/raw/b030r4.start ] || date -u +%FT%TZ > tests/am1/raw/b030r4.start
+  [ -s tests/am1/raw/$RUN.start ] || date -u +%FT%TZ > tests/am1/raw/$RUN.start
   { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5
     echo "acctcost before: $(python3 tests/fanout/acctcost.py | head -1)"
-    TAG=b030r4 bash tests/am1/hotshards/image.sh b030split-image-r4.log
-    IMG=$(grep '^registry.cloudflare.com/.*@sha256:' tests/am1/raw/b030split-image-r4.log | head -1)
-    grep -q '^exit 0' tests/am1/raw/b030split-image-r4.log && [ -n "$IMG" ] || { echo "image failed"; IMG=; }
+    TAG=$RUN bash tests/am1/hotshards/image.sh b030split-image-$RUN.log
+    IMG=$(grep '^registry.cloudflare.com/.*@sha256:' tests/am1/raw/b030split-image-$RUN.log | head -1)
+    grep -q '^exit 0' tests/am1/raw/b030split-image-$RUN.log && [ -n "$IMG" ] || { echo "image failed"; IMG=; }
     echo "image $IMG"
     s=1
     if [ -n "$IMG" ]; then

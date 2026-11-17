@@ -1,0 +1,24 @@
+name = "lookupbed"
+main = "./build/index.js"
+compatibility_date = "2026-10-01"
+[[durable_objects.bindings]]
+name = "MEMBER_0"
+class_name = "Member"
+[[durable_objects.bindings]]
+name = "MEMBER_1"
+class_name = "Member"
+[[durable_objects.bindings]]
+name = "MEMBER_2"
+class_name = "Member"
+[[durable_objects.bindings]]
+name = "REGISTRY_0"
+class_name = "Member"
+[[durable_objects.bindings]]
+name = "REGISTRY_1"
+class_name = "Member"
+[[durable_objects.bindings]]
+name = "REGISTRY_2"
+class_name = "Member"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Member"]
