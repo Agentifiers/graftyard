@@ -4,10 +4,12 @@
 Reads the runner account's Workers Logs for `graft-runners` (events view, every event in the window) and, per Sandbox
 (one Durable Object per runner, `SandboxStd3` or `SandboxStd4`):
 
-- when the pass first addressed it (its `setSandboxName` RPC), so the Sandboxes are ordered by start;
+- when the pass first addressed it (its `setSandboxName` RPC, or since F80 its `arm`), so the Sandboxes are ordered by
+  start;
 - its Sandbox SDK placement errors, "There is no container instance that can be provided" and "You are requesting too
   many containers per second", and how long after the address the last one came (the placement wait);
-- whether `graft-runners` destroyed it.
+- whether `graft-runners` destroyed it, and, since F80, how many processes its alarm launched (`launch.mjs` logs one
+  `graft-runners: launched` line per process it starts).
 
 It also counts the delivery passes whose `waitUntil` the runtime cancelled at its 30 s limit, and the Sandbox objects'
 alarm invocations (each `setAlarm` is one row written). Prints one JSON summary. The first `BURST` Sandboxes (default
@@ -47,18 +49,20 @@ while hi > lo:
         break
     hi = min(e["timestamp"] for e in got) + 1
 
-addressed, errors, destroyed, alarms, cancelled = {}, {}, set(), 0, 0
+addressed, errors, destroyed, alarms, cancelled, launched = {}, {}, set(), 0, 0, {}
 for e in sorted(events, key=lambda e: e["timestamp"]):
     m, w = e["$metadata"], e.get("$workers") or {}
     msg, obj = (m.get("message") or "").lower(), w.get("durableObjectId")
     if m.get("type") == "cf-worker-event":
         rpc = (w.get("event") or {}).get("rpcMethods") or []
-        if obj and "setSandboxName" in rpc:
+        if obj and ("setSandboxName" in rpc or "arm" in rpc):
             addressed.setdefault(obj, e["timestamp"])
         if obj and "destroy" in rpc:
             destroyed.add(obj)
         alarms += obj is not None and w.get("eventType") == "alarm"
         continue
+    if obj and msg.startswith("graft-runners: launched"):
+        launched[obj] = launched.get(obj, 0) + 1
     if "waituntil() tasks did not complete" in msg:
         cancelled += 1
     for kind in (NO_INSTANCE, RATE):
@@ -88,5 +92,7 @@ print(json.dumps({
     "later": group(order[burst_n:]),
     "destroyed": len(destroyed),
     "delivery_passes_cancelled_at_30s": cancelled,
+    "launched": len(launched),
+    "launched_twice": sum(1 for n in launched.values() if n > 1),
     "sandbox_alarm_invocations": alarms,
 }, indent=1))

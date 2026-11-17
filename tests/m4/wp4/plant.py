@@ -207,8 +207,7 @@ MUTANTS = [
     ('the delivery pass starts the process itself (main\'s rule, F80)', L,
      '  await sb.schedule(0, "launchRunner");\n  return true;', '  await sb.startProcess(cmd, opts);\n  return true;', NODE),
     ('a retried alarm starts without asking for the process', L,
-     '    if (!(await sb.getProcess(st.opts.processId))) await sb.startProcess(st.cmd, st.opts);',
-     '    await sb.startProcess(st.cmd, st.opts);', NODE),
+     '  if (!(await sb.getProcess(st.opts.processId))) {', '  if (true) {', NODE),
     ('a second arm stores the start again', L, '  if (await sb.ctx.storage.get(KEY)) return false;\n', '', NODE),
     ('a start waiting on placement never gives up', L,
      '  if (Date.now() - st.armedAt > GIVE_UP_MS) {', '  if (false) {', NODE),
@@ -216,9 +215,11 @@ MUTANTS = [
      '  if ((await sb.ctx.storage.get(KEY))?.state === "closed") return sb.destroy();\n', '', NODE),
     ('a destroy leaves the stored start pending', L,
      '  await sb.ctx.storage.put(KEY, { state: "closed" });', '', NODE),
-    ('a failed placement is not tried again', L, '    await sb.schedule(RETRY_S, "launchRunner");\n', '', NODE),
+    ('a failed placement is not tried again', L, '      await sb.schedule(RETRY_S, "launchRunner");\n', '', NODE),
     ('the JIT config stays stored after the launch', L,
      '  await sb.ctx.storage.put(KEY, { state: "launched" });', '  await sb.ctx.storage.put(KEY, { ...st, state: "launched" });', NODE),
+    ('launchRunner lets a storage error throw (main\'s rule)', L,
+     '  try {\n    await step(sb);\n  } catch (e) {', '  {\n    await step(sb);\n  } if (0) {', NODE),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
@@ -234,7 +235,7 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
     open(f, 'w').write(src.replace(old, new, 1))
     try:
-        cmd = ['node', '--test', 'workers/runners/tests/'] if args is NODE else \
+        cmd = ['node', '--test', 'workers/runners/tests/*.test.mjs'] if args is NODE else \
             ['cargo', 'test', '-j', '3', *args, '--no-fail-fast']
         r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
         out = r.stdout + r.stderr
