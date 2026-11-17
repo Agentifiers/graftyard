@@ -119,6 +119,7 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
   - At 21:50Z, 19 of 19 members of 65585 were retired (`lm1-rows-m3f-data/m3fr15-retire.json`): `#1#f0` to `#1#f2`, the re-placement voters `#2#f1` to `#9#f1`, and `#7#l0` to `#7#l7`.
   - idleretire's own purge was cut off by a 300 s `timeout` I wrapped around it. I reran purge.py alone at 21:57Z. It found 0 objects on both passes, a 0, b 0, c 0, so the run left no packs in the buckets.
   - The sweep at 21:58Z found nothing running.
+- **Idle reading** 21:57 to 22:27Z, after the purge: graft-m3f **$0.00** by `PREFIX`. The sweep at 23:05Z found nothing running. The account's UTC day was $177.77 at 23:05Z. The scheduled reading did not run during a long turn, so it was taken at 23:05Z over the same window.
 - **m3fr14's idle reading** was cut short at 21:26Z by this slot: $0.05 for 21:15 to 21:26Z, and the sweep found nothing running.
 
 ### Setup: learners held, a1's catch-up check was stale
@@ -190,6 +191,23 @@ Both came from one push (isolate `6aec1d13…`, push `01M7NN4NQTMWHSSNNAHEN7QCA0
 - **Not the transport.** m3fr14's transport event was 21:01:11 to 49Z, which does not overlap.
 
 So both runs' `/suspect` come from leader stalls: an 8.5 s storage confirm on m3fr14, and 1 to 3 s apply gaps on m3fr15.
+
+## B0-32 after m3fr15: why nothing was refused, and what stalled the leader (code-only)
+
+From m3fr15's raw files (`admit-`, `tsave-`, `vmem-m3fr15-b0-32.jsonl`, a1's `burst timing`) and site a's Workers Logs for the leader `repo:65585#1#f0` [measured, except where tagged].
+
+**Admission never had a reason to refuse.**
+- **Every limit it checks was far off.** `admission_check` (`crates/raft/src/member/leader.rs`) refuses an agent command only at `AGENT_QUEUE_MAX` (1,000 commands or 64 MiB queued), while placement fails, or after `AGENT_WAIT` (30 s, `expire_agents`). Through the burst the leader's agent queue peaked at 136 commands and 342 KB (21:36:33 and 41Z), and `pressure` stayed false.
+- **The 128 MiB never reached the leader.** The group was hot, so each 256 KiB pack was over `INLINE_MAX_HOT` (64 KiB), and the edge staged it in the buckets before its first commit (`hot::stage_first`, `stage` p50 523 ms). The leader queued `PackRef::Stored` commands of a few KB each. So staging does come before the admission check, and no byte limit counts the burst.
+- **Most of each push's time came before admission.** The server time before `commit` was p50 8.3 s and p90 18.3 s (auth p90 4.1 s, resolve 4.0, gate 10.0, context 13.4). Then `commit` was p50 4.6 s, and the leader's `queue:slot` p99 5.7 s. Only 6 of the 500 had a server total of 5 s or less. So a bound on the leader's queue alone can't turn these into `ng` within 5 s.
+
+**What stalled the leader: not CPU, memory or storage alone.**
+- **CPU:** at most 605 ms a second in 21:36:20 to 37:04Z.
+- **Memory:** wasm 23 to 32 MB, in-flight held at most 622 KB.
+- **Storage:** confirms mostly under 500 ms. One reached 1,502 ms, at 21:36:44.
+- **Inbound load:** the leader took 807 requests at 21:36:30, and 675 and 708 a second at 36:36 and 36:37, with up to 680 open in its handler at once. Their walls ran long at about 0 ms CPU.
+- **Reads sent to the leader:** many of these were `/read`s sent to the leader, not as read-index reads. That was the push gate's `core` rows at 86 to 149 a second, and whole-tier `packed` dumps at 39 to 56 a second, with `/outcome_by_request` at up to 130 a second. The edge is meant to send those to learners and followers (`design/DESIGN.md`, "Follower read").
+- **Inference:** the burst's own edge reads fell back to the leader, and hundreds of open requests held its handlers waiting, not computing. Why they reached the leader (no learners known to fresh edge isolates, or every member asked declining) is not yet traced.
 
 ## Rows m3fr14 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr14`, main `0105297a`)
 
