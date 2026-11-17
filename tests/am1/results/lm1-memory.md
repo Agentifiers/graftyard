@@ -4591,3 +4591,82 @@ teardown the operator can grant; it is not done.
 
 Meter (`acctcost.py`): graft-m2b $0.01 for 08:23:39–08:57:12Z; the account $1.86 in that window, and $108.34 for the
 UTC day at 08:57Z (graft-m1's B0-30 close-out is the rest). R2 deletes are free operations; the lists are class A.
+
+### The 32 live finished groups retired and purged (2026-11-17, operator-granted teardown)
+
+The operator granted retiring and purging the 32 groups the first pass refused: 131297–131321, 131331–131334, 131336,
+131339 and 131346.
+
+**Reuse check.** None is reused. Every one is a finished run's repository in `$M3_STATE/am1-runs-repos.txt`
+(`fm20s250` = 131297 through `fm42b33-b033` = 131346). 131316 is the m23 create that failed in setup. Rows name
+fresh repositories `f$TAG-<row>`, created by `tests/am1/runs/mkrepos.mjs` (`POST /orgs/m3org/repos`) under new ids, so
+the next B0-33 creates its own. No script names any of these ids.
+
+**Retire by current names** (`tests/fanout/retirenets.mjs`, new). The old retire lists named the members a run had when
+it was listed. 131336 and 131346 kept a later-generation voter joined (`repo:131336#8#f1` on the list, a newer one
+on site 1). Per network the script:
+1. collects each site's registry-row voter, each site's first-generation voter, and every voter and learner of the
+   newest committed config any of them answers;
+2. sends `/retire` to each one still joined;
+3. checks `/status` again.
+
+All 32 ended with "all not joined", from 4 to 13 names each (`tests/fanout/raw/retirenets-m2b.log`). On 131346 one
+member was still joined, and it was retired.
+
+**Purge**, `purge.py` with its gate unchanged (`tests/fanout/raw/purge-m2b.log`), 09:03–09:45Z:
+**32 networks purged, 93,107 objects deleted, every bucket 0 after.** One transient refusal: 131303 at 09:37:48Z,
+when a registry read timed out in the TLS handshake. The gate treats a failed read as not retired. It passed on the
+retry at 09:45Z. 131316–131318 held no objects. The retire run's first service was stopped at 09:08Z (see the meter
+below) after retiring 131298–131309; those 12 were purged in a separate pass.
+
+| Network | a before → after | b before → after | c before → after |
+|---|---|---|---|
+| 131297 | 125 → 0 | 127 → 0 | 126 → 0 |
+| 131298 | 661 → 0 | 663 → 0 | 662 → 0 |
+| 131299 | 3 → 0 | 5 → 0 | 4 → 0 |
+| 131300 | 195 → 0 | 197 → 0 | 196 → 0 |
+| 131301 | 627 → 0 | 629 → 0 | 628 → 0 |
+| 131302 | 185 → 0 | 187 → 0 | 186 → 0 |
+| 131303 | 201 → 0 | 203 → 0 | 202 → 0 |
+| 131304 | 3,295 → 0 | 3,296 → 0 | 3,296 → 0 |
+| 131305 | 680 → 0 | 682 → 0 | 681 → 0 |
+| 131306 | 2,540 → 0 | 2,542 → 0 | 2,534 → 0 |
+| 131307 | 4,580 → 0 | 4,583 → 0 | 4,554 → 0 |
+| 131308 | 707 → 0 | 711 → 0 | 709 → 0 |
+| 131309 | 3 → 0 | 7 → 0 | 6 → 0 |
+| 131310 | 811 → 0 | 813 → 0 | 810 → 0 |
+| 131311 | 1,109 → 0 | 1,111 → 0 | 1,110 → 0 |
+| 131312 | 2,191 → 0 | 2,190 → 0 | 2,181 → 0 |
+| 131313 | 3,291 → 0 | 3,291 → 0 | 3,287 → 0 |
+| 131314 | 1,014 → 0 | 1,016 → 0 | 1,015 → 0 |
+| 131315 | 4,216 → 0 | 4,220 → 0 | 4,216 → 0 |
+| 131316 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 131317 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 131318 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 131319 | 221 → 0 | 223 → 0 | 222 → 0 |
+| 131320 | 3 → 0 | 5 → 0 | 4 → 0 |
+| 131321 | 225 → 0 | 227 → 0 | 226 → 0 |
+| 131331 | 3 → 0 | 5 → 0 | 4 → 0 |
+| 131332 | 103 → 0 | 105 → 0 | 104 → 0 |
+| 131333 | 323 → 0 | 325 → 0 | 324 → 0 |
+| 131334 | 833 → 0 | 835 → 0 | 834 → 0 |
+| 131336 | 841 → 0 | 843 → 0 | 842 → 0 |
+| 131339 | 3 → 0 | 5 → 0 | 4 → 0 |
+| 131346 | 2,038 → 0 | 2,042 → 0 | 2,025 → 0 |
+| **32 networks** | **31,027 → 0** | **31,088 → 0** | **30,992 → 0** |
+
+With the first pass, 131297–131348 are retired and purged: 52 networks, 295,208 objects.
+
+**The meter, and a finding.**
+- graft-m2b cost $1.22 for 09:02–09:46Z. $1.15 of it is one object: `repo:65536#1#f1` on site b wrote 1,144,665
+  rows in the minute 09:06Z. The retire work itself wrote a few hundred rows a minute.
+- That minute is site a's `*/15` fold audit (trace 06fae83a). Its sample reached `repo:65536`, an old 31.6 MB network
+  that no test touches. The leader refolded the chain into scratch tables from its 31,608,994-byte core snapshot
+  (`fold audit refold`, 16 batches, 31.6 MB, index 7,335), and site b's voter wrote 1.14M rows for it.
+- The audit is daily per chain by design (`AUDIT_EVERY_MS`, 24 h, `workers/site/src/load.rs`), so this is not a loop.
+  But one refold of that chain costs about $1.15 a day, and the same audit hit `SQLITE_LOCKED` on 327699, 327700 and
+  65537. I stopped the retire run at $1.16 to find the source before going on, because it was not the retire work.
+- Open finding for the operator: a refold's scratch tables write one row per fold row of the chain's snapshot, so
+  the audit's cost grows with the chain. Options: cap the audited chain's snapshot size, sample hot chains only, or
+  retire old test networks like 65536 to 65540 as well.
+
