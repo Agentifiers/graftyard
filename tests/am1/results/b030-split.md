@@ -1322,6 +1322,124 @@ happened to lag. Whether the shorter procedure counts as the row as written is t
      below it. So c did not pass the horizon on its own before `MetaDropped`. The operator's unforced-lag case
      (2026-11-17 02:10Z: let the install run, skip the sever, and run `/place` during it) did not arise, and force's
      sever of site c began at 02:05:21Z as designed.
+  7. 02:52:21Z: the sever lifted (leader truncatedTo 7,450, c at 6,890). c's install started, source through 7,564.
+  8. 02:53:55Z: `/place {near_ms: 1}` on the leader. **Pass:** "a voter the degraded config needs is behind", site 2
+     at applied 6,890 against commit 15,515, and no config entry in the 103 entries after the call.
+  9. 02:56 to 02:59Z: c's install restarted 5 times ("a source at N names other snapshots", N = 7,985 to 8,573),
+     each when the leader's newest snapshot moved. The last job's through was 9,120.
+  10. 03:02:28Z: c crossed `CHILD_GROUP_AT`; the watch wrote b030-STOP. The load ended at 03:02:31Z, day 1.536, with
+      11,732 pushes. No install restart after it.
+  11. 03:23:40Z: c's SQLite reached the platform limit at 10,695,888,896 B (force's last sample, 03:22:50Z). Workers
+      Logs, object ae75f1fe (`raw/b030r4-c-abandon.log`): "Exceeded the maximum database size" three times; at
+      03:23:46Z "install abandoned: 3 batches began without committing: the isolate died under them"; at 03:24:14 to
+      03:24:16Z "Durable Object storage operation exceeded timeout which caused object to be reset". The member
+      never reported `SQLITE_FULL` in its stats: the write failed inside the platform, and three batches died
+      with it. After the reset, c campaigned (`keep_led`) without winning, stayed a follower at applied 6,890, and
+      started a new install job from the top. Its SQLite went back to 9.81 GB and was rising again at 03:39Z.
+  12. 03:39 to 03:44Z: the operator's close-out. force, cross and watch stopped. `verify.mjs` (N=40): 41 archived
+      ranges read back from both buckets, all verified (70.9 MB, 198 entries), 1,826 ranges, archivedTo 9,120;
+      `RestoredTo` 10 of 10 right. Final `/stats` of the six members saved (`raw/b030r4-final.jsonl`), then `/retire`
+      on each; all six answer `joined: false`. Teardown sweep: 3 shard objects of net:1048592 torn down, no
+      container running. Every service stopped.
+
+### Verdict (b030r4)
+
+**The row fails** at 90% (`FRAME.md`, 2026-11-16) on site c's SQLite:
+
+| Line | Target | At 90% | Measured | |
+|---|---|---|---|---|
+| Member SQLite under `CHILD_GROUP_AT` | 8.59 GB | 9.45 GB | site c 10.70 GB (the platform limit; its install died there) | **fails** |
+| | | | sites a and b at most 7.67 GB | passes |
+| Zero `SQLITE_FULL` | 0 | (invariant-like; no 90%) | 0 reported, but c hit "Exceeded the maximum database size" | **fails** in substance |
+| Archived entries readable, `RestoredTo` | all | 90% | 41 of 41 ranges, 10 of 10 `RestoredTo` | passes |
+| Extra: `/place` refused while c installs (ii)(a) | no config entry | invariant | refused, "behind", no config | passes |
+| Extra: install peak about own − metadata + scratch | under `CHILD_GROUP_AT` | 9.45 GB | own + scratch, past 10.7 GB | **fails** |
+| Extra: no install restart with the load stopped | 0 | | 0 after 03:02:31Z; 5 before it, each a new snapshot | passes |
+
+Spend, acctcost by graft-m1 script, 00:02:21Z to 03:45:40Z: site c $16.87, site a $12.46, site b $12.21, the three
+git cache shards $1.15, edge and tools edge $0.02; **$44.17** in all ($42.05 DO rows). The day, account-wide, was
+$44.05 at 03:44:35Z.
+
+### The gap: a member severed below `MetaDropped` keeps its own metadata tier
+
+- Site c was severed at applied 6,889. The leader committed `MetaDropped` at about 7,356, so c's own fold never
+  applied it: its split state read `dropped: false` at 03:04Z.
+- (i-3)'s `drop_due` takes `crate::split::dropped` of the member's **own** fold. So c's install kept its 5.5 GB of
+  metadata tables and loaded the scratch tiers beside them: the core snapshot at 8,148 (1.7 MB), then the metadata
+  snapshot at 5,358 (3.39 GB of frames). That snapshot was cut before the slim pass ended, so it is the whole tier.
+- The peak is own + scratch, about 7.57 + 3.4 GB of frames, which took 2.4 GB of disk per 1.45 GB loaded. (i-3)'s
+  DECISIONS figure (under 2.9 GB) covers only a member that applied `MetaDropped` before it fell behind.
+- A member falls behind in this window whenever its lag starts during the split's few hundred entries between
+  `MetaSplit` and `MetaDropped`. Site c on this run was already 467 behind when `MetaDropped` committed.
+- The member's failure at the limit is not clean either: its stats showed `sqliteFull: 0`, the platform reset the
+  object, and the abandoned install left nothing for the next job but the same path to the same limit.
+
+### Proposal: drop on any install past the horizon (2026-11-17, not built)
+
+**Rule.** `drop_due` stops reading `MetaDropped`. Any install whose job has started, on a member whose `applied` is
+below the source's `through`, drops the member's own metadata tables before it loads, with (i-3)'s mark, unload and
+lead bar unchanged. The condition becomes `install && applied < through`.
+
+**Why it is safe.** (i-3)'s own reason holds whatever the split state is. A member below the source's `through` was
+sent the install because the leader no longer stores its next entry, so its tier can serve nothing the group still
+needs:
+- every read it would answer waits for its install anyway;
+- it cannot lead with a tier that stale (and the mark bars it);
+- the child seeds from an R2 snapshot, never from a member's tables.
+
+The DECISIONS line that kept a pre-`MetaDropped` member's tier ("no split dropped yet: the tier is whole and
+needed") names no reader that needs it [inference].
+
+**Peak [inference].** Own − metadata + scratch on every install.
+- Site c's own SQLite was 7.57 GB, of which its metadata tables were about 5.5 GB: the seed alone took a member to
+  5.52 GB.
+- The scratch is the pre-slim snapshot at 5,358, 3.39 GB of frames. On this run, 1.45 GB of frames took 2.4 GB of
+  disk, so the whole snapshot is about 5.6 GB loaded.
+- Expected peak: 7.57 − 5.5 + 5.6 ≈ 7.7 GB, under `CHILD_GROUP_AT` (8.59 GB) by about 0.9 GB.
+- A member before any split loads a scratch tier about its own size, so its peak is about its own size.
+
+**Weighed against.**
+- *The operator's direction: drop once the source's fold shows `dropped`.*
+  - The job restores the core snapshot before the metadata one, so it can read `SplitState` from the scratch core
+    tier before the metadata load starts. On this run that works: the core snapshot at 8,148 is past `MetaDropped`.
+  - It misses a source whose core snapshot predates `MetaDropped`. That source's metadata snapshot is the whole
+    pre-slim tier, so the member would again hold own + whole tier.
+  - It adds a second place that reads the split state, and an ordering rule (core restored first) the job does not
+    state today.
+- *Make the install's metadata snapshot the slimmed one only.* That is (i-1), already built, but a member can fall
+  behind before the slim pass ends (7.5 h on the second run), and the source then names the pre-slim snapshot.
+- *Refuse the install until the member's fold reaches `MetaDropped` by catch-up.* A member past the horizon cannot
+  catch up by AppendEntries; that is why it was sent the install.
+
+**Second, smaller defect.** `Host`'s `SQLITE_FULL` counter (`workers/site/src/host.rs`, "Counts a failed write")
+matches "SQLITE_FULL" and "database or disk is full", but the platform's message at the limit was "Exceeded the
+maximum database size". Count that too, so the gate line reads it. Also note the failure in the abandoned install's
+report.
+
+**Tests that fail on main.**
+- In `load.rs`'s `drop_tests`: `drop_due(true, false, 6_889, 9_120)` is true (site c's case); an audit and a member
+  at or past `through` still never drop.
+- In `host.rs`: a write refused with "Exceeded the maximum database size" counts as `SQLITE_FULL`.
+- Plants in `tests/b030fixes/plant.py`: the old condition (`&& split_dropped`) as a mutant; drop the mutant that
+  is now the fix.
+
+**Design and records.** `design/DESIGN.md`, Shape, `CHILD_GROUP_AT`, Installs: "A parent member, after
+`MetaDropped`, whose install job …" becomes "A member whose install job is stored and has started …". DECISIONS:
+amend (i-3)'s entry with this run's evidence and the reversal of its pre-`MetaDropped` exclusion. OPEN-QUESTIONS
+G20 is settled by the code and a run.
+
+**Second short run (estimate, needs a slot).** The cheapest run that still covers the case:
+- site day from main with the fix ($0.5);
+- 5.5 GB seed ($17.5);
+- load to the split (about 45 min, $2.5);
+- child restore ($10);
+- `force.mjs` severs site c at `MetaSplit`, before `MetaDropped`, and holds it until the leader's truncatedTo
+  passes c by 200 (about 50 min, $3);
+- c's install with `/place` during it, judged on c's peak against 9.45 GB (about 30 min, $5);
+- then the load stops: no waiting for day 8.55;
+- verify, retire, sweep, idle ($1).
+
+That is about $40 and 3 h. `force.mjs` gets two options: `SEVER_AT=split`, and an end once the install is done.
 
 ## Cost
 
