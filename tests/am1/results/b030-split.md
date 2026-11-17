@@ -1506,6 +1506,101 @@ That is about $40 and 3 h. `force.mjs` gets two options: `SEVER_AT=split`, and a
 - **What I did, 05:05 to 05:06Z:** stopped the seed, load, cross, watch and force at 05:02Z, read the configs and
   Workers Logs, then started them again. `voter()` now names `#2#f1` for site 1, and its seed began at 05:06:35Z.
 
+### Phases (b030r5)
+
+Order of events, from force (`raw/b030r5-force.jsonl`), watch (`raw/b030r5-watch.jsonl`) and site c's Workers Logs:
+
+1. 05:14:52Z: seed done, 1.84M rows, about 5.52 GB on each member. 05:15:19Z: load started.
+2. 06:00:04Z, day 0.557: `MetaSplit` (child `repo-meta:1048593`, seed at 1,966); the leader was at 7.57 GB.
+   06:00:05Z: force severed site c (`#1#f2`) at applied 4,966 (`SEVER_AT=split`). c held at 4,968 from then on.
+3. About 06:16:57Z: `MetaDropped` on the leader (watch's split state: dropped, slim at table 0; the leader past
+   6,700). c was still at 4,968, below it.
+4. 06:48:18Z: the sever lifted (leader `truncatedTo` 5,308 > 4,968 + 200). c's install started (through 6,378).
+5. **06:48:23Z: c logged "install: dropping 74 metadata tables before the load"**, 5 s after the lift, 48 min 18 s
+   after the sever started, about 31 min after `MetaDropped`, at applied 4,968. c had not applied `MetaDropped`, so
+   this is `drop_due = install && applied < through` firing where r4's old condition kept the tier. c's SQLite went
+   from about 7.5 GB to 2.16 GB by 06:59:53Z.
+6. 06:54:48 to 06:54:50Z: 39 restarts, "a source at N names other snapshots", N = 5,603 to 5,677, every one below
+   the running job's through (6,378). These are late `InstallSnapshot` rounds for older sources; `next_job`
+   restarts on any `new.through < old.through`. Each logged the drop again (13 lines) and re-dropped the 74 tables,
+   since `drop_due` still held. c's member wrote 8,926 rows from 06:54 to 06:56Z and none in the two minutes either
+   side, so a restart costs at most about 230 rows; the cost is the lost load, not the rows.
+7. About 06:59:20Z: `/place {near_ms: 1}` on the leader (site 0). **Pass:** "a voter the degraded config needs is
+   behind", site 2 at applied 4,968 against commit 13,953; no config entry in the 84 entries after the call.
+8. 07:06 to 07:41Z, load on: the install restarted at each new leader snapshot (07:06, 07:13, 07:17, then 19 from
+   07:17 to 07:36Z, runs of 2 to 8 within seconds at 07:36Z). Through moved 6,859 → 12,639 and c's SQLite fell back
+   at each restart (2.89 → 2.08 GB at 07:07Z). Its applied never left 4,968. c's member wrote 4.03M rows from 07:20
+   to 07:38Z; the run ran about $13.5/h. **The install cannot finish while the leader keeps cutting snapshots**:
+   the second run where this happened, after r4's step 9.
+9. 07:41:21Z: load stopped at day 1.824, 13,788 pushes, 0 failures (operator, 07:4xZ). Read-only window from
+   07:42:10Z, capped at 60 min or $60 for graft-m1.
+10. 07:42:07 to 07:42:28Z: 5 more restarts (4 with a through below the running job's), the last snapshots after the
+    load stopped. None after that from a new source; through held at 13,319.
+11. 07:57:38Z: "install failed: Error: Network connection lost." with no load running. The job started over and
+    dropped again at 07:58:20Z (same through, 13,319). A finding: one network error costs the whole load so far.
+12. 08:26 to 08:40Z: both tiers loaded (core snapshot to 13,030; metadata snapshot to 4,016, 3.38 GB of frames). The
+    parent's leader moved (terms 10 to 12) with no load; watch saw gaps of 5 to 6 s at 07:56, 08:01 and 08:12Z.
+13. **08:42:10Z, the cap: c's install had not ended.** It was replaying archives (entry 2,135 of the job), applied
+    still 4,968, SQLite 7,598,465,024 B and flat since 08:40Z (7,592 to 7,598 MB) (`raw/b030r5-c-at-cap.txt`).
+
+force.mjs died twice on a member reply with no body (07:17Z on `/bench_seed`, 08:06Z on `/status`). Guards added;
+it was restarted at 07:39Z and 08:13Z, so it has no samples for 07:17 to 07:39Z and 08:06 to 08:13Z. Its other 72
+samples, and the monitor's, bound the peak; c's SQLite in the gaps was below the samples either side (it restarted
+at 07:17Z and at 07:58Z).
+
+### Close-out (b030r5)
+
+- 08:43:26Z, verify (`raw/b030r5-verify.log`): 41 of 41 sampled archived ranges read back and verified from both
+  buckets (72.5 MB, 232 entries), 2,412 ranges, archivedTo 13,319; `RestoredTo` 10 of 10.
+- 08:43 to 08:48Z, `/retire` with final `/stats` (`raw/b030r5-final.jsonl`, `raw/b030-retire-r5.log`): the parent's
+  `#1#f0`, `#2#f1`, `#1#f2`, the child's `#1#f0`, `#1#f1`, `#1#f2`, and two members the six-name list missed:
+  the parent's `#1#f1` (stranded at commit 1 by the 04:51Z re-placement) and the child's `#2#f1`. The child group
+  re-placed its site-1 member too, at 06:00:01Z ("over": 102 ms against 100; one try, `#2#f1` at 76 ms, 9.5 s),
+  leaving `repo-meta:1048593#1#f1` at commit 2. A scan of generations 1 to 10 on all three sites then found no
+  joined member of either chain.
+- 08:46Z, teardown sweep: `git#0#net:1048593` and `git#1#net:1048593` torn down; `shards.py` shows none left.
+  Every orb service stopped at 08:46:37Z.
+
+### Verdict (b030r5)
+
+Judged at 90% (`FRAME.md`, 2026-11-16). **The gate line as written passes; the row is not marked met**, for two
+reasons the operator decides:
+- c's install did not end inside the cap, so the peak is judged through 08:42:10Z, not through the install's end.
+  Both tiers were loaded and c's SQLite was flat for the last 2 minutes, so the rest of the job, the archive replay
+  and the swap, is not expected to raise it much [inference].
+- The extra fail line "an install restart on a new source with the same snapshots" is undetermined, and probably
+  hit [inference]. At 06:58Z the running job's core snapshot ended at 5,619. Of the 39 restarts at 06:54Z, those
+  naming a through from 5,623 to 5,677 could carry that same core snapshot and the same metadata one (to 4,016)
+  with an older through, which `next_job` restarts. The log line says "names other snapshots" for every restart,
+  so it cannot tell.
+
+| Line | Target | At 90% | Measured | |
+|---|---|---|---|---|
+| Member SQLite under `CHILD_GROUP_AT` | 8.59 GB | 9.45 GB | site c 7.60 GB at the cap; sites a and b at most 7.59 GB (06:15Z) | passes |
+| Zero `SQLITE_FULL` | 0 | no 90% | 0 in every member's stats; 0 "Exceeded the maximum database size" in Workers Logs of sites a, b, c from 05:15 to 08:47Z | passes |
+| Archived entries readable, `RestoredTo` | all | 90% | 41 of 41 ranges, 10 of 10 `RestoredTo` | passes |
+| A child group holds the tier | `MetaSplit`, `MetaDropped` | | both committed; 100 of 100 sampled bodies equal after the drop (08:15Z) | passes |
+| Extra: c drops below `MetaDropped` | drop before the load | | 06:48:23Z at applied 4,968, `MetaDropped` unapplied | passes |
+| Extra: install peak about own − metadata + scratch | about 7.7 GB [inference] | 9.45 GB | 7.60 GB with both tiers loaded | passes |
+| Extra: `/place` refused while c installs | no config entry | invariant | refused, "behind", no config | passes |
+| Extra: no metadata read or lead from c while marked | 0 | invariant | follower in all 72 samples; metadata reads not counted by force | passes on leading; reads not measured |
+| Extra: no restart on a new source with the same snapshots | 0 | | 44 restarts named a through below the running job's; the log does not say whether their keys matched (G21) | undetermined, probably fails |
+| Extra: 60 s stall alert silent | none | | no ALERT; longest leaderless gap 6 s | passes |
+
+Spend, acctcost by graft-m1 script, 04:37:33Z to 08:46:38Z: **$53.06** (account $57.07): site day and seed to
+05:15Z about $16.7, 05:15 to 06:00Z $1.57, 06:00 to 06:48Z (split, child load) $13.14, 06:48 to 07:42Z (c's install
+under load) $10.49, 07:42 to 08:46Z (read-only) $11.15. The account's day was $108.33 at 08:47Z.
+
+### Findings (b030r5)
+
+- **G21: a lagging member's install has no bound on restarts.** Under load it never finishes (r4 step 9, r5 step 8):
+  each leader snapshot is a new source, and each restart throws away the load. Late rounds for older sources
+  restart it too (step 6), and so does one network error (step 11). While it fails, the run wrote about $13/h of
+  rows. Proposal to follow, design first.
+- **G22: `/place` on a group its create just built commits `Degraded { lost }`.** Above, under "A `/place` on the
+  newly built group". The child group did the same at 06:00:01Z.
+- The retire list must include members a re-placement left behind (two here).
+
 ## Cost
 
 | Window | DO and Workers | Containers |
