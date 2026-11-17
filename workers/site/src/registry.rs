@@ -331,11 +331,47 @@ impl DurableObject for Registry {
                 let last = rows.first().map_or(serde_json::Value::Null, |r| {
                     serde_json::from_str(&r.last).unwrap_or(serde_json::Value::Null)
                 });
-                Response::from_json(&serde_json::json!({ "next": rows.first().and_then(|r| r.next), "last": last }))
+                #[derive(Deserialize)]
+                struct H {
+                    network: i64,
+                    site: i64,
+                    at: i64,
+                }
+                sweep_homes(&sql)?;
+                let homes: Vec<H> = sql.exec("SELECT network, site, at FROM sweep_home", None)?.to_array()?;
+                let homes: Vec<[i64; 3]> = homes.iter().map(|h| [h.network, h.site, h.at]).collect();
+                Response::from_json(
+                    &serde_json::json!({ "next": rows.first().and_then(|r| r.next), "last": last, "homes": homes }),
+                )
+            }
+            // The sweeper's cached network homes (`crate::sweep::homes`): `[network, site, at]` rows to store, and
+            // networks no bucket holds any more to drop.
+            (Method::Put, "/sweep_homes") => {
+                let v: serde_json::Value = req.json().await?;
+                sweep_homes(&sql)?;
+                for h in v["homes"].as_array().into_iter().flatten() {
+                    sql.exec(
+                        "INSERT OR REPLACE INTO sweep_home (network, site, at) VALUES (?, ?, ?)",
+                        vec![h[0].as_i64().into(), h[1].as_i64().into(), h[2].as_i64().into()],
+                    )?;
+                }
+                for n in v["gone"].as_array().into_iter().flatten() {
+                    sql.exec("DELETE FROM sweep_home WHERE network = ?", vec![n.as_i64().into()])?;
+                }
+                Response::from_json(&serde_json::json!({ "ok": true }))
             }
             _ => Response::error("not found", 404),
         }
     }
+}
+
+/// The sweeper's home cache table, created on first use.
+fn sweep_homes(sql: &SqlStorage) -> Result<()> {
+    sql.exec(
+        "CREATE TABLE IF NOT EXISTS sweep_home (network INTEGER PRIMARY KEY, site INTEGER NOT NULL, at INTEGER NOT NULL)",
+        None,
+    )?;
+    Ok(())
 }
 
 pub(crate) fn query(url: &Url, key: &str) -> Result<String> {

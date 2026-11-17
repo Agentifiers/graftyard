@@ -1057,7 +1057,7 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 /// The sweeper deletes a pack or blob older than 24 h only when it has no marker and the chain named in its custom
 /// metadata has no `request` row for its `RequestId` naming its `PackId` (a retry's row names the retry's pack, not the
 /// first placement's orphan). When one exists, it writes the missing marker. An object older than REQUEST_RETENTION
-/// with neither is kept and alarmed [measured, `tests/m1/results/m1-wp4.md`, BF-19, `request` table stubbed].
+/// with neither is kept and alarmed [measured, `tests/m1/results/m1-wp4.md`, BF-19, `request` table stubbed]. Each site sweeps the networks it homes, and keeps each network's home (`RepoOwner`, then `Placement`, on `Names`) in its cursor object for HOME_FOR_MS (24 h [guess]), reading at most HOMES_PER_RUN (64 [guess]) new or day-old homes a run: read every 15-minute run, the two `Names` reads per network woke idle `Names` members, which wrote about 2.6 k rows a run, four runs an hour, on an idle `graft-m2b` [measured, `tests/am1/results/lm1-memory.md`, "Idle Durable Object rows" and `sweep-quiet`].
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// Before archiving a range, the home shard packs the objects its packs brought (no `--fix-thin` bases), named by tree
 /// entry, into one self-contained `DurablePack` [measured, `lm1-memory` 23b]; the leader commits `Promoted`, then
