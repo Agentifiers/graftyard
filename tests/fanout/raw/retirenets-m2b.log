@@ -64,3 +64,4 @@
 2026-11-17T09:33:01.784Z purge: 131339 purged: a 3 -> 0, b 5 -> 0, c 4 -> 0
 2026-11-17T09:33:01.784Z purge: 131346 purged: a 2038 -> 0, b 2042 -> 0, c 2025 -> 0
 2026-11-17T09:33:01.784Z purge: {"dry": false, "purged": 19, "objects": 51689, "refused": []}
+2026-11-17T16:29:41.061Z repo:131349: 11 names, 11 were joined, all not joined

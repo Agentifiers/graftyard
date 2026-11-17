@@ -1,0 +1,3 @@
+2026-11-17T16:38:42Z 131349 purged: a 0 -> 0, b 165 -> 0, c 0 -> 0
+2026-11-17T16:38:42Z {"dry": false, "purged": 1, "objects": 165, "refused": []}
+EXIT 0

@@ -1,0 +1,46 @@
+completeness (per member: rows, segments, arrival numbers missing inside segments, clock going backwards)
+  0: rows 185413 segments 1 missing 8588 backwards 0
+  1: rows 170024 segments 1 missing 11023 backwards 0
+  192: rows 29465 segments 4 missing 6 backwards 0
+  193: rows 30139 segments 5 missing 2 backwards 0
+  194: rows 30586 segments 5 missing 1 backwards 0
+  195: rows 29328 segments 5 missing 4 backwards 0
+  196: rows 29514 segments 5 missing 3 backwards 0
+  197: rows 30655 segments 5 missing 5 backwards 0
+  198: rows 29903 segments 5 missing 32 backwards 0
+  199: rows 29331 segments 5 missing 2 backwards 0
+  2: rows 153727 segments 1 missing 24532 backwards 0
+
+voter-to-voter /raft calls joined to the callee's Entered row: 2798 (pair skew estimates: {(0, 1): -606, (0, 2): 384, (1, 0): -803, (1, 2): 95, (2, 0): -750, (2, 1): -513})
+out leg (ms)   n      ahead p50/p90   edge-sent p50   open at entry p50/p90   ahead by route, p50 share
+[0, 200)       548    363/1399 343             210/842                 /raft 0.04 /read 0.52 /commit 0.05 /suspect 0.06 /outcome_by_request 0.07
+[200, 1000)    461    396/1336 372             2/283                   /raft 0.03 /read 0.51 /suspect 0.33 /outcome_by_request 0.04
+[1000, 3000)   868    901/2222 884             2/40                    /raft 0.02 /read 0.47 /suspect 0.44 /outcome_by_request 0.04
+[3000, inf)    921    1976/44191944            2/13                    /raft 0.01 /read 0.45 /suspect 0.45 /outcome_by_request 0.05
+missed 1000 ms or unanswered: 1785; requests entered ahead p50 1397
+
+/read by query per member (per s; idx = read-index from a follower or learner pass, lead = sent to the leader)
+  0: /read 258.4/s, untagged 0.0/s | packed:lead 169.3 core:lead 86.6 ranges:lead 0.8 core:idx 0.8 packed:idx 0.8 prsync:lead 0.1
+  1: /read 284.4/s, untagged -0.0/s | packed:lead 183.5 core:lead 97.9 packed:idx 1.0 core:idx 1.0 ranges:lead 0.9 prsync:lead 0.1
+  192: /read 97.1/s, untagged 0.0/s | packed:idx 60.9 core:idx 36.2
+  193: /read 97.8/s, untagged 0.0/s | packed:idx 61.7 core:idx 36.1
+  194: /read 96.8/s, untagged 0.0/s | packed:idx 60.9 core:idx 35.8
+  195: /read 97.1/s, untagged 0.0/s | packed:idx 61.1 core:idx 36.0
+  196: /read 95.8/s, untagged 0.0/s | packed:idx 60.0 core:idx 35.8
+  197: /read 97.9/s, untagged 0.0/s | packed:idx 61.1 core:idx 36.8
+  198: /read 97.9/s, untagged 0.0/s | packed:idx 61.3 core:idx 36.6
+  199: /read 96.8/s, untagged 0.0/s | packed:idx 60.6 core:idx 36.2
+  2: /read 244.6/s, untagged 0.0/s | packed:lead 159.8 core:lead 82.5 core:idx 0.8 packed:idx 0.7 ranges:lead 0.6 prsync:lead 0.1
+
+requests by lookup step per member (per s; isolates = distinct senders, top = busiest isolate's share)
+  0: walk 263.5 other 143.8 send 52.5 ask 39.6 leader 29.4 spread 1.6 | isolates 361, top 1%, walks from 360 isolates (top 1%)
+  1: walk 296.8 other 182.3 send 24.2 ask 16.1 leader 13.1 spread 2.0 | isolates 361, top 1%, walks from 360 isolates (top 1%)
+  192: spread 97.1 | isolates 325, top 1%
+  193: spread 97.8 | isolates 327, top 1%
+  194: spread 96.8 | isolates 328, top 1%
+  195: spread 97.1 | isolates 328, top 1%
+  196: spread 95.8 | isolates 327, top 1%
+  197: spread 97.9 | isolates 326, top 1%
+  198: spread 97.9 | isolates 326, top 1%
+  199: spread 96.8 | isolates 326, top 1%
+  2: walk 236.5 other 169.2 leader 30.8 send 20.8 ask 8.3 spread 1.6 | isolates 360, top 1%, walks from 358 isolates (top 1%)
