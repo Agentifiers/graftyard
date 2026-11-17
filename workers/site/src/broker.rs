@@ -25,7 +25,8 @@
 //! - **Hosted demand** (M4-WP4, `/demand` `{owner, record}`, on the owner's registration-shard broker): each of the
 //!   owner's 16 shards' hosted summaries read at once (`/read {"hosted": true}`, cut at `SUMMARY_WAIT`), then
 //!   `graftyard_actions::hosted::demand` with the object's `Seen`, kept in its storage, of when it first saw each
-//!   hosted runner: an object idle between reads leaves memory, and an in-memory `Seen` never aged a runner. A
+//!   hosted runner: an object idle between reads leaves memory, and an in-memory `Seen` never aged a runner. Reads
+//!   overlap, so a read counts only the job marks stored before its shard reads began (F78). A
 //!   hosted runner is ephemeral and `Owner`-scoped, so `Taken` keeps it from a second job as it does any such runner.
 
 use std::cell::{Cell, RefCell};
@@ -351,6 +352,8 @@ impl RunnerBroker {
         let site = crate::SiteEnv::read(&self.env)?;
         let bind = graftyard_lookup::Bindings { env: &self.env, sites: &site.sites };
         let q = json!({ "q": { "hosted": true } }).to_string();
+        // `Seen` marks are judged against when this read's shard reads began (F78).
+        let began = Timestamp(crate::now_ms());
         let reads = (0..ACTIONS_SHARDS).map(|shard| {
             let (bind, q, record) = (&bind, &q, &record);
             async move {
@@ -388,7 +391,7 @@ impl RunnerBroker {
         let storage = self.state.storage();
         let stored: Option<String> = storage.get(SEEN_KEY).await?;
         let mut seen: hosted::Seen = stored.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
-        let d = hosted::demand(&shards, hosted::HOSTED_CAP, Timestamp(crate::now_ms()), &mut seen);
+        let d = hosted::demand(&shards, hosted::HOSTED_CAP, began, Timestamp(crate::now_ms()), &mut seen);
         storage.put(SEEN_KEY, serde_json::to_string(&seen)?).await?;
         Response::from_json(&d)
     }
