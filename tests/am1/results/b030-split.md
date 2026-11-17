@@ -1308,6 +1308,20 @@ happened to lag. Whether the shorter procedure counts as the row as written is t
   - Checked through it before the seed restarted: `/status` on all three members of `authz:7100001`, each joined,
     commit 312, 311 and 311.
   - Kept after the run: retire needs it.
+- **Order of events** (`raw/b030r4-force.jsonl`, `-watch.log`, `-seed.log`, `-load.log`):
+  1. 00:38 to 00:58:54Z: seed of repo:1048592 (m3org/b0-30-r4). 1,840,000 rows of 1,800 B; each member at
+     5,516,148,736 B with equal digests.
+  2. 00:59:34Z: load starts, journey 9 at 18x, pushes on.
+  3. 01:43:47Z, day 0.551: `MetaSplit` committed, child `repo-meta:1048592` seeded from the metadata snapshot at
+     2,638. The leader (site 0) was at 7.53 GB. The run ends at day 8.551 (`b030-days`).
+  4. 01:45 to about 02:10Z: the child's three members restore the snapshot, about 9.2 M rows written, $9.6 for
+     01:45 to 02:00Z on acctcost.
+  5. 01:58:59Z: one leaderless gap of 5 s, under the 30 s stop.
+  6. 02:05:21Z: `MetaDropped` on the leader, with the slim pass started (table 0). Site c (site 2) was at applied
+     6,889, 467 behind the leader's 7,356, with its own lag growing, but the leader's truncatedTo (2,411) was far
+     below it. So c did not pass the horizon on its own before `MetaDropped`. The operator's unforced-lag case
+     (2026-11-17 02:10Z: let the install run, skip the sever, and run `/place` during it) did not arise, and force's
+     sever of site c began at 02:05:21Z as designed.
 
 ## Cost
 
