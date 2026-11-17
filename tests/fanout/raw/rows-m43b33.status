@@ -1,0 +1,31 @@
+2026-11-17T16:07:18Z start 19b5ae776 /home/user/workspace/swall
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T16:07:38Z start sweep ok
+2026-11-17T16:07:40Z cost account 114.2 since 2026-11-17T00:00:00Z, run 0.06 since 2026-11-17T15:52:32Z, at b0-33
+2026-11-17T16:08:11.250Z m3org/fm43b33-b033 = 131349
+2026-11-17T16:08:19.064Z repo:131349 leader 0: learners [{"addr":192,"doName":"repo:131349#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131349#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131349#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131349#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131349#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131349#2#l5","join":20 config 5
+2026-11-17T16:08:22.867Z repo:131349 leader 0: set k 4: {"grants":[[0,[3,5,1]],[1,[3,5,1]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T16:08:33.220Z repo:131349 leader 0: set k 4: {"grants":[[0,[3,5,1]],[1,[3,5,1]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T16:08:43.731Z repo:131349 leader 0: set k 4: {"grants":[[0,[3,5,1]],[1,[3,5,1]]],"k":4,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-17T16:08:43.842Z repo:131349 leader 0: k 4 at 8
+2026-11-17T16:08:43Z b0-33 fm43b33-b033 131349 start
+2026-11-17T16:22:01.577Z repo:131349 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":21},"stepped":true,"want":0}
+2026-11-17T16:22:01.698Z repo:131349 leader 0: k 1 at 252
+2026-11-17T16:22:01Z b0-33 fm43b33-b033 131349 done exit 0
+2026-11-17T16:22:07Z torn down 131349
+site fault off: 200
+git#2#net:131349 200
+git#1#net:131349 200
+git#1#pool:2 200
+git#1#pool:6 200
+git#1#pool:4 200
+git#0#pool:6 200
+git#0#pool:4 200
+git#0#pool:2 200
+{"torn_down": 8, "codes": {"200": 8}}
+sweep: no shard container running
+2026-11-17T16:22:30Z sweep ok
+ALLDONE
+B033DONE

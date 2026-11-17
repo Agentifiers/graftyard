@@ -4725,3 +4725,92 @@ A reading from Workers Logs and DO analytics at 10:41Z on 2026-11-17, with no ho
   sweep-wall address, not the refold.
 
 So `audit-locked` holds, and F82 is marked settled in `decisions/OPEN-QUESTIONS.md`.
+
+### Round 38: the m43 slot, site day from main 19b5ae77 (probe-known, query-tag, read-ahead, sweep-wall, G21, G22), B0-33 (2026-11-17)
+
+The operator granted the slot at about 15:50Z, under a $300 account limit for the day (`FRAME.md` at 19b5ae77). It
+is a row of what is on main, with B0-02's fix (a) (learners shed instead of answering NotLeader) refuted and not
+built. Stops: $10 on graft-m2b by `PREFIX` from 15:52:32Z, or the account day past $280. Estimate sent: $3–5.
+
+**Site day m43.** From `19b5ae77`, which carries `fec1d01d`. m42's image `sha256:0f0c5ee1` (no `containers/` change
+since 20b87b14), standard-4, `GRAFTYARD_ROLLUP=1`, 32.25 in the edge's `FORMATS_ENABLED`. Sites with test-faults, exit
+0, from 15:52 to 16:06Z. Edge version `a2d00397-44ae-47ee-9433-4171f6ef17b0`, served at 100% (`edgever.py`, rev
+19b5ae77).
+
+**B0-33.** repo:131349, a1 `mwkw0613`, 5,000 agents, k 4, 8 learners, inbound trace on, load 16:14:19 to 16:19:19Z:
+fail. Setup's learner catch-up waited the full 120 s and found 0 of 8 at 114. All 8 were at 149 to 150 when read by
+name after it, so the wait ran out before the learners caught up.
+
+| B0-33 line | m43 | m42 baseline (revert) | m42 lookup-poll | verdict at 90% |
+|---|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 24,132 ms (p50 5,510, n 3,354); merges 0 of 60; human pushes 7 of 202 | 11,859 ms; 1 of 54; 7 of 200 | 17,701 ms; 2 of 58; 9 of 186 | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 11.1 agent-class ok a second | 22.0 | 18.6 | fail |
+| Zero leader changes and `suspect` | term 2 → 21; 13 step-downs (11 `CommitErrors`, 2 `Confirm`), first at 16:14:35Z; first leader change 16:14:52Z, 33 s in | 2 → 19; 14 | 2 → 22; 9 | fail |
+
+- Voter routes after the first change (16:14:52 to 16:19:19Z, `Trace::Entered`): `/read` 258, 284 and 245 a second,
+  and `/suspect` 138, 180 and 165 a second, on sites 0, 1 and 2. m42 baseline: 392, 501, 375 and 172, 121, 139.
+  lookup-poll: 293, 463, 213 and 140, 243, 125. Before the change (33 s): `/read` 166, 66 and 65, and `/suspect` 10,
+  44 and 44.
+- Read grant p99 by leading site: 2,616, 2,826 and 2,498 ms (m42 baseline: 2,486, 1,980 and 3,117). Fetches per
+  voter per 20 ms: max 16, p99 9, p50 1 over 3,246 windows. Fetching turns: max 3, p99 2.
+- Leader split p99: queue 25.6 s, round 16.1 s, confirm 5.7 s, apply 9.5 s. deps p99: all 25.9 s, authz 17.0 s,
+  tokens 14.5 s.
+- Agent pushes: p50 29.2 s, p99 139.2 s.
+- The leader's wasm in a1's admission samples peaked at 53 MB.
+
+**Where the storm comes from, now that the tag and the sender are named** (`inbound-m43b33.txt`, the corrected
+`ReadQuery` tag and `SentBy`):
+- Voter `/read` is `packed:lead` 169, 184 and 160 a second, and `core:lead` 87, 98 and 83. Range reads (`ranges`)
+  are under 1 a second. Each learner takes about 97 a second, all read-index: `packed:idx` 61 and `core:idx` 36.
+- By sender step, at voters 0, 1 and 2 (`/read` joined to `SentBy` by arrival):
+  - `/read` by a `call_opt` **walk**: 231, 271 and 215 a second;
+  - `/suspect`: 138, 180 and 164 a second;
+  - `/read` to the leader the isolate held: 25, 11 and 28;
+  - `/read` by `read_spread`: about 2 each;
+  - `/commit` send: 53, 24 and 21;
+  - `/outcome_by_request` ask and walk: about 30 to 70 a second each.
+- Walks came from 358 to 360 distinct edge isolates per voter, and the busiest isolate sent 1% of them. **The
+  voters' read storm is hundreds of edge isolates, each walking the voters to find the leader for the push gate's
+  packed and core reads.** It is not a few isolates walking again and again, not learner fallback (spread reads reach
+  voters at 2 a second), and not probes (probe-known removed `probe:lead`, which ran 100 to 390 a second on m42p).
+- So the per-isolate mark (lookup-poll) cannot dedupe across isolates. Each isolate's cached leader is cleared by a
+  term change, and its next read walks. With 16 terms in the 267 s after the first change (one about every 17 s), about
+  360 isolates re-learn the leader each time.
+
+**Edge:** 0 lines of lookup-share's kinds from 16:08 to 16:23Z: cross-request I/O, dropped closure, previous
+instance, never complete, hung, and "no member answered". 27 of the load's 30 ten-second windows were at the query's
+100-event cap with request lines only, as on m42.
+
+**sweep-quiet and site a's sweep wall (`sweepquiet.py`, 15:30 to 16:40Z).**
+- Before the day, the 15:30 and 15:45 slots had 0 `names:*` rows from 0 objects, on the m42 script.
+- After it: 2,260 from 24 objects at 16:00, while the row created its network; 1,370 from 18 at 16:15, during the
+  load; 26 from 6 at 16:30. Site a's walls were 134, 159, 102, 396 and 118 s, all `ok`, none `walled`. The 16:15
+  run (396 s) planned 2,839 actions for the row's live network.
+- **A finding for R25:** site a's 16:30 run listed `repo:131349` as `dead` (retired at 16:29:41Z) but still swept
+  network 131349: 2,233 markers and 1,679 fills planned, 600 done. `decide` only needs the chain's rows for packs
+  without markers. A pack that already has a marker on one site is "committed", and its missing markers and copies
+  are repaired with no question to the chain. So the purge at 16:31 to 16:33Z left 165 `committed/pack/131349/`
+  objects in bucket b, all put at 16:31:17 to 16:31:58Z by that run. A second purge at 16:38:42Z removed them (b 165
+  → 0). The teardown order (retire, purge) races a sweep run that already listed the network. purge.py's "after"
+  count catches it; rerunning the purge once the next sweep run has ended clears it. Not fixed: for the operator.
+
+**Not measured this slot.** promote-lapse: no promotion came due on a quiet group. The roll: 131296 still has no
+rollable run.
+
+**Close-out.**
+- Teardown swept 8 shard containers at 16:22:30Z, and a later sweep found none running.
+- 131349 retired by current names (`retirenets.mjs`): 11 names, 11 were joined, all now "not joined".
+- Purged: 13,836 objects (a 3,209, b 5,665, c 4,962), then b's 165 re-put markers.
+- The idle reading was skipped: B0-02's B0-29 run on graft-m2b starts inside the 30 minutes (operator's
+  instruction during the slot). graft-m2b was declared free to B0-02 at 16:39Z.
+
+**Cost.** graft-m2b by prefix from 15:52:32Z to 16:39Z: $1.29, of the $10 stop. The account day was $111.19 at
+15:52Z, and the account window over the slot was $20.25, most of it graft-m1's and graft-m3f's runs.
+
+Raw files in `tests/fanout/raw/`:
+- `siteday-m43.status`, `costrow-m43b33.status`, `rows-m43b33.status`;
+- `a1-b0-33-m43.jsonl` (a copy of a1 `mwkw0613`);
+- `terms-m43b33.jsonl`, `memguard-m43b33.jsonl`;
+- `tsave-m43b33.jsonl.xz`, `inbound-m43b33.txt`, `rounds-m43b33.json`;
+- `stepdowns-m43b33.txt`, `edgeerr-m43b33.txt`;
+- `retire-m43.log`, `purge-m43.log`, `purge-m43b.log`.
