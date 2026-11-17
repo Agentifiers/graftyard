@@ -46,11 +46,16 @@ MUTANTS = [
      '    old.kind = new.kind;\n', '', S),
     # (i-3) an installing parent drops its own metadata tables
     ('(i-3) an audit drops the tier it refolds beside', LOAD,
-     '    install && split_dropped && applied < through', '    split_dropped && applied < through', S),
-    ('(i-3) a member before the split drops its whole tier', LOAD,
-     '    install && split_dropped && applied < through', '    install && applied < through', S),
+     '    install && applied < through', '    applied < through', S),
     ('(i-3) a member at through drops its tier', LOAD,
-     '    install && split_dropped && applied < through', '    install && split_dropped && applied <= through', S),
+     '    install && applied < through', '    install && applied <= through', S),
+    # b030r4: the old condition, which waited for the member's own `MetaDropped`. It reads the member's fold in
+    # `batch`, which no in-memory test reaches, so this plant is expected MISSED here; the hosted short run checks it.
+    ('(i-3) the old condition: an install waits for its own MetaDropped', LOAD,
+     '        let drop = drop_due(job.install(), applied, job.through);',
+     '        let drop = drop_due(job.install(), applied, job.through)\n            && h.core.borrow().as_ref().is_some_and(|c| crate::split::dropped(&c.m.group_fold().fold));', S),
+    ('b030r4: the platform size limit is not counted as SQLITE_FULL', 'workers/site/src/host.rs',
+     '"database or disk is full", "Exceeded the maximum database size"]', '"database or disk is full"]', S),
     ('(i-3) a member with its tables dropped loads on restore', FAMILY,
      "    !dropped && if fold.child { crate::split::child_loaded(fold) } else { caught_up }",
      "    if fold.child { crate::split::child_loaded(fold) } else { caught_up }", S),

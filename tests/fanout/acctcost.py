@@ -59,6 +59,11 @@ for x in r["w"]:
     usd["workers"] += c
     who[x["dimensions"]["scriptName"]] += c
 out = {"from": a, "to": b, **{k: round(x, 2) for k, x in usd.items()}, "usd": round(sum(usd.values()), 2)}
+# PREFIX=graft-m1: also the cost of the scripts and container applications whose names start with it (DO requests are
+# not split by script, so this reads a little low), for a run stop counted on one install's scripts.
+if os.environ.get("PREFIX"):
+    out["prefix"] = os.environ["PREFIX"]
+    out["prefix_usd"] = round(sum(x for k, x in who.items() if k.startswith(os.environ["PREFIX"])), 2)
 print(json.dumps(out))
 for k, x in who.most_common(5):
     print(f"  {k:40} ${x:.2f}")

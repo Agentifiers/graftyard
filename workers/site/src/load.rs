@@ -352,12 +352,13 @@ fn next_job(running: Option<Job>, new: Job) -> (Job, bool) {
 }
 
 /// Whether an install drops the member's own metadata tables before it loads (`design/DESIGN.md`, Shape,
-/// `CHILD_GROUP_AT`, Installs): only an install, only on a split parent after `MetaDropped`, and only on a member past
-/// the source's `through`, which its own tier cannot serve: it was sent the install because the leader no longer holds
-/// its next entry. Its tier then holds nothing the group needs from it, and keeping it beside the scratch load is what
-/// took site c past `CHILD_GROUP_AT` on B0-30's rerun (5.70 GB own plus 4.48 GB of scratch).
-fn drop_due(install: bool, split_dropped: bool, applied: u64, through: u64) -> bool {
-    install && split_dropped && applied < through
+/// `CHILD_GROUP_AT`, Installs): only an install, and only on a member below the source's `through`, which its own tier
+/// cannot serve: it was sent the install because the leader no longer holds its next entry. Its tier then holds nothing
+/// the group needs from it, whether or not it applied `MetaDropped`, and keeping it beside the scratch load is what took
+/// site c past `CHILD_GROUP_AT` on B0-30's rerun (5.70 GB own plus 4.48 GB of scratch) and to the platform's limit on
+/// the short run, severed below `MetaDropped` (10.70 GB).
+fn drop_due(install: bool, applied: u64, through: u64) -> bool {
+    install && applied < through
 }
 
 /// Whether this member dropped its metadata tables for an install that has not finished: its tier is unloaded, it
@@ -485,6 +486,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         Ok(true) => h.arm_in(BUSY_MS),
         Ok(false) => {}
         Err(e) => {
+            h.full(&e.to_string());
             note(h, format!("{} failed: {e}", if install { "install" } else { "fold audit" }));
             if !install {
                 let _ = report(h, &json!({ "error": e.to_string(), "at": now_ms() }));
@@ -509,12 +511,8 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
     if !job.prepared {
         reset_scratch(sql, true)?;
         job.prepared = true;
-        let (dropped, applied) = h
-            .core
-            .borrow()
-            .as_ref()
-            .map_or((false, u64::MAX), |c| (crate::split::dropped(&c.m.group_fold().fold), c.m.state().applied.0));
-        let drop = drop_due(job.install(), dropped, applied, job.through);
+        let applied = h.core.borrow().as_ref().map_or(u64::MAX, |c| c.m.state().applied.0);
+        let drop = drop_due(job.install(), applied, job.through);
         let mut stmts = Vec::new();
         if drop {
             // Marked in the job's own transaction, and unloaded before anything awaits, so no input applies to, reads,
@@ -1095,6 +1093,11 @@ mod tests {
         }
     }
 
+    /// An install job whose source runs through `through`, with no archives.
+    pub(super) fn job_for(through: u64) -> super::Job {
+        job(&core(), Some(&meta()), through, vec![])
+    }
+
     fn fake_install(through: u64) -> graftyard_raft::InstallSnapshot {
         use graftyard_raft::{Digest, GroupConfig, Index, InstallSnapshot, InstallSource, Term};
         use graftyard_types::Timestamp;
@@ -1215,16 +1218,54 @@ mod drop_tests {
 
     use super::drop_due;
 
-    /// Only an install, only after `MetaDropped`, and only on a member below the source's `through`: an audit refolds
-    /// beside a tier it must keep, a member before the split still serves its tier, and one at or past `through` was
-    /// not sent the install for want of entries.
+    /// Every install on a member below the source's `through` drops its tier, whether or not the member applied
+    /// `MetaDropped`: an audit refolds beside a tier it must keep, and a member at or past `through` was not sent the
+    /// install for want of entries.
     #[test]
-    fn only_an_install_on_a_split_parent_past_the_horizon_drops_its_tier() {
-        assert!(drop_due(true, true, 199_808, 200_984), "B0-30's site c");
-        assert!(!drop_due(false, true, 199_808, 200_984), "an audit");
-        assert!(!drop_due(true, false, 199_808, 200_984), "no split dropped yet: the tier is whole and needed");
-        assert!(!drop_due(true, true, 200_984, 200_984), "at through");
-        assert!(!drop_due(true, true, 201_000, 200_984), "past through");
+    fn every_install_below_through_drops_its_tier() {
+        assert!(drop_due(true, 199_808, 200_984), "B0-30's second-run site c, past MetaDropped");
+        assert!(drop_due(true, 6_889, 9_120), "b030r4's site c, severed below MetaDropped");
+        assert!(!drop_due(false, 199_808, 200_984), "an audit");
+        assert!(!drop_due(true, 200_984, 200_984), "at through");
+        assert!(!drop_due(true, 201_000, 200_984), "past through");
+    }
+
+    /// An install abandoned after the drop (b030r4's site c: the platform's size limit killed three batches, the
+    /// object reset) leaves the member marked: unloaded on restore, serving no metadata or narrow `api` read, barred
+    /// from leading. The next source starts a fresh job, which drops again (the drop is idempotent) and whose
+    /// `Write::Install` swaps the loaded tier in and clears the mark.
+    #[test]
+    fn an_install_abandoned_after_the_drop_stays_unloaded_and_the_next_one_finishes() {
+        use crate::family::{follower_query, meta_loaded};
+        let f = fold_at_1(true);
+        // The abandon deletes the job and drops only scratch tables (`reset_scratch`), so the mark, which bars a
+        // campaign, `keep_led`, and a transfer (`Family::may_lead`), stays, and so do the emptied live tables.
+        for schema in [graftyard_git::tiers::CORE, graftyard_git::tiers::METADATA] {
+            for q in crate::tier::drop_scratch(&schema) {
+                assert!(q.starts_with("DROP TABLE IF EXISTS \"i") || q.starts_with("DROP TABLE IF EXISTS i"), "{q}");
+                assert!(!q.contains("meta_dropped"), "{q}");
+            }
+        }
+        assert!(!meta_loaded(&f, true, true), "unloaded on restore, though its meta row stands where the core's does");
+        for q in [serde_json::json!({ "rows": true }), serde_json::json!({ "rows": { "api": { "issues": {} } } })] {
+            assert!(!follower_query(&q, false), "{q}: no metadata read from the half-empty tier");
+        }
+        assert!(follower_query(&serde_json::json!({ "rows": { "access": {} } }), false), "core reads still served");
+        // The next install starts from fresh scratch tables and drops again.
+        let next = super::tests::job_for(9_120);
+        let (j, restarted) = super::next_job(None, next);
+        assert!(restarted && !j.prepared);
+        assert!(drop_due(j.install(), 6_890, j.through));
+        for t in crate::tier::live_tables(&graftyard_git::tiers::METADATA) {
+            let q = crate::tier::drop_live(&t);
+            assert!(q[0].starts_with("DROP TABLE IF EXISTS"), "{t}: a second drop of a dropped table succeeds");
+        }
+        // It finishes: `Write::Install` swaps the scratch tier in and lifts the mark in the same transaction.
+        let mut stmts = Vec::new();
+        super::install_stmts(&mut stmts);
+        let qs: Vec<&str> = stmts.iter().map(|(q, _)| *q).collect();
+        assert!(qs.contains(&"DELETE FROM meta_dropped"));
+        assert!(qs.iter().any(|q| q.starts_with("ALTER TABLE \"im_")), "the scratch metadata tier is swapped in");
     }
 
     /// A tier that is loaded, or not, whatever its rows.
