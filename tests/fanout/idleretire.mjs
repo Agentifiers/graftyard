@@ -1,7 +1,7 @@
 // Idle DO rows teardown (operator, 2026-11-16 after the hosted stop): clears every member of the finished lm1 test
 // networks with the test route `/retire` (storage deleted, object reset), as tests/am1/b030split/retire.mjs did.
 // Input: a JSON list of [site, do_name] (from durableObjectsPeriodicGroups, the members that wrote rows), argv[2].
-// Each member's `/status` before and after; "not joined" after is done. R2 archives and snapshots stay.
+// Each member's `/status` before and after; "not joined" after is done. Then purge.py deletes the networks' bucket objects.
 import { appendFileSync, readFileSync } from "node:fs";
 import { member } from "../am1/hosted/lib.mjs";
 
@@ -20,3 +20,12 @@ await new Promise((r) => setTimeout(r, 15_000));
 let done = 0;
 await each(async (c, s, n) => { const b = brief(await status(c, s, n)); if (b === "not joined") done++; else log(`${n} site ${s} after: ${b}`); });
 log(`retired ${done}/${MEMBERS.length} not joined`);
+// R25 (operator, 2026-11-17): a retired test group's packs are test-harness state, so the harness deletes them. Once
+// every member of this run's list is "not joined", purge.py deletes each of its repository networks' objects from every
+// site bucket, after checking the group's members itself; NO_PURGE=1 skips it. The sweeper never does this on a guess.
+const NETS = [...new Set(MEMBERS.map(([c]) => c.match(/^repo:(\d+)$/)?.[1]).filter(Boolean))];
+if (done === MEMBERS.length && NETS.length && !process.env.NO_PURGE) {
+  const { execFileSync } = await import("node:child_process");
+  const out = execFileSync("uv", ["run", "-q", "--with", "boto3", "python3", "tests/fanout/purge.py", ...NETS], { encoding: "utf8" });
+  for (const l of out.trim().split("\n")) log(`purge: ${l.slice(21)}`);
+} else if (NETS.length) log(`purge skipped: ${done === MEMBERS.length ? "NO_PURGE" : "not every member retired"}`);
