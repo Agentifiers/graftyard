@@ -1,0 +1,90 @@
+{
+ "window": [
+  "2026-11-16T18:50:00Z",
+  "2026-11-16T19:25:00Z"
+ ],
+ "first_start": "18:52:21",
+ "burst": {
+  "sandboxes": 20,
+  "spread_s": 25.3,
+  "no_instance": 1042,
+  "too_many_per_second": 15,
+  "with_rate_error": 8,
+  "placement_wait_s": {
+   "p50": 70.5,
+   "max": 179,
+   "over_30": 14,
+   "all": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    4,
+    39,
+    54,
+    61,
+    69,
+    72,
+    77,
+    81,
+    83,
+    89,
+    96,
+    109,
+    116,
+    133,
+    179
+   ]
+  }
+ },
+ "later": {
+  "sandboxes": 32,
+  "spread_s": 715.9,
+  "no_instance": 877,
+  "too_many_per_second": 2,
+  "with_rate_error": 2,
+  "placement_wait_s": {
+   "p50": 10.0,
+   "max": 163,
+   "over_30": 7,
+   "all": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    3,
+    7,
+    9,
+    10,
+    10,
+    10,
+    11,
+    12,
+    13,
+    14,
+    14,
+    19,
+    23,
+    30,
+    38,
+    43,
+    65,
+    77,
+    79,
+    100,
+    163
+   ]
+  }
+ },
+ "destroyed": 6,
+ "delivery_passes_cancelled_at_30s": 23,
+ "sandbox_alarm_invocations": 1196
+}
