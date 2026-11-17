@@ -108,6 +108,89 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fr15 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `b032-h1`, main `368498ad`)
+
+**Slot.** B0-32's burst rerun with a1's burst client on HTTP/1.1, granted at about $1 with no site day. The sites and edge stay on m3fr14's build from main `0105297a`. Stops: graft-m3f past $5 by `PREFIX`, or the account past $280.
+- **Client.** The 500 burst pushes go over `node:https` with their own Agent (keepAlive, `maxSockets` = 500). The rest of a1 keeps `fetch` (undici, HTTP/2), so its other numbers compare with m3fr13 and m3fr14. The burst row records `protocol: "http/1.1 (node:https Agent, keepAlive, maxSockets = burst pushes)"`.
+- **Cost:** graft-m3f **$0.66** by `PREFIX` from 21:26:09Z to 21:58Z, covering the row, sweeps, retire and purge (`rows-m3fr15.status` cost line: $0.99 for the account over the row). The account's UTC day was $175.14 at 21:25Z and $176.38 at 21:58Z.
+- **Edge errors** (`graft-m3f-edge`, 21:30 to 21:39:10Z): "Cannot perform I/O on behalf" 0, "closure invoked recursively" 0, "code had hung" 0.
+- **Close-out:**
+  - SWEEP2 OK at 21:40:58Z.
+  - At 21:50Z, 19 of 19 members of 65585 were retired (`lm1-rows-m3f-data/m3fr15-retire.json`): `#1#f0` to `#1#f2`, the re-placement voters `#2#f1` to `#9#f1`, and `#7#l0` to `#7#l7`.
+  - idleretire's own purge was cut off by a 300 s `timeout` I wrapped around it. I reran purge.py alone at 21:57Z. It found 0 objects on both passes, a 0, b 0, c 0, so the run left no packs in the buckets.
+  - The sweep at 21:58Z found nothing running.
+- **m3fr14's idle reading** was cut short at 21:26Z by this slot: $0.05 for 21:15 to 21:26Z, and the sweep found nothing running.
+
+### Setup: learners held, a1's catch-up check was stale
+
+- Config **11** with 8 learners committed at 21:29:07Z. Every member read `11/8` from then through 21:39:14Z, so no config change committed after `/learners` (`terms-m3fr15-b0-32.jsonl`).
+- a1's `feed members` read **8 learners, 2 followers**.
+- a1 logged "learners caught up to 116: 0/8 in 122 s". A later `/status` read showed all 8 learners at the leader's commit (156 to 161), so a1's check, not the learners, was stale [measured]. It cost 122 s of the warm-up and did not change the row.
+
+### B0-32 (repo 65585, run `mwl7grmz`): fail. The burst is now a product reading, and the leader changed twice
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | **500 of 500 ok, 0 within 5 s.** Client p50 18,944 ms, p90 27,055, p99 28,952, max 29,212 | **Fail** (needs 450) |
+| Queued agent bytes under AGENT_QUEUE_MAX | peak 68,757 B, 11 queued | Pass |
+| Merges in one of the next 2 entries | not judged from entries; `merge:only` 16 of 19 ok (3 × 409 "Base branch was modified"), p50 2.7 s, p99 10.9 s | Not shown |
+| Zero leader changes and zero `suspect` | **terms 2 → 3 → 4**; `pushTiming` 1,274 `suspect` | **Fail** |
+
+**The transport is fixed.** All 500 burst pushes reached the edge and were answered (m3fr14: 0 of 500). Each ended `ok`, which shows the burst was accepted.
+
+**Where the burst's time went** [measured, the burst pushes' own `Server-Timing`], p50 / p90 / p99 ms:
+
+| Stage | p50 / p90 / p99 |
+|---|---|
+| auth | 453 / 4,089 / 5,734 |
+| install | 486 / 1,182 / 2,399 |
+| resolve | 985 / 4,037 / 6,564 |
+| gate | 0 / 9,990 / 16,066 |
+| context | 832 / 13,386 / 15,505 |
+| validate | 484 / 708 / 1,041 |
+| commit | 4,573 / 9,917 / 10,770 |
+| total (server) | 13,638 / 21,758 / 22,672 |
+| client less server total | 5,154 / 6,215 / 6,564 |
+
+- **The commit wait alone is 4.6 s at p50**, so the 5 s line can't hold before anything else is added. 146 of the 500 pushes got at least one `busy` answer, up to 17 each.
+- **About 5 s of every push is outside the Worker's timed total.** That is upload and queueing before the handler's first stamp, or after its last. It is the same for every push (p50 5.2 s, p99 6.6 s), so it looks like the 128 MiB of 256 KiB bodies arriving over 500 sockets in under 5 s [inference]. It is not measured per hop.
+- **The row's other pushes** (`pushTiming`, all 1,305 timed): auth 90 / 5,287; resolve 562 / 5,513; gate 0 / 15,058; context 321 / 14,816; validate 328 / 15,600; commit 1,114 / 8,988; total 4,855 / 22,545. Receipts: commits 1,818, send 4,542, busy 1,323, ask 287, missed 1,274, suspect 1,274.
+- **Leader** (site 0 at the end, term 4): commitMs p50 684, p99 4,936; queue:slot p99 5,666; round p50 270, p99 767; confirm p50 89, p99 422; cycle p50 311, p99 1,284.
+- **Other traffic:** agent pushes 747 ok, 16 `fetch failed`; read:ref had 244 × 503 and 58 × 500.
+
+### The two leader changes (repo 65585)
+
+From `terms-m3fr15-b0-32.jsonl`, plus `vmem-m3fr15-b0-32.jsonl` (`/elections`) and `tsave-m3fr15-b0-32.jsonl` (the `Reported`, `Confirm`, `Applied` and `AppendEnded` traces; 23 MB, kept on the LM-1 rows orb, not committed, as on earlier rounds), and the sites' Workers Logs [measured]:
+
+1. **The leader stalled under the burst.** The burst fired at 21:36:16.7Z.
+   - On site 0 (`#1#f0`), the applied index stood still for 1.0 to 3.2 s at a time: 21:36:36.3 (1.0 s), 37.3 (1.2 s), 38.4 (**3.2 s**), 42.5 (2.4 s) and 44.9 (3.2 s).
+   - Its ticker woke up to 659 ms late (21:36:38.96).
+   - The AppendEntries to the followers ended in 2.5 to 4.1 s at 21:36:41.6.
+   - Storage confirms for entry 309 took 1.0 to 1.5 s at 21:36:44.0 (run p50 89 ms).
+   - Its alarm ran 1.2 to 1.6 s wall at 0 ms CPU (21:36:37.4, 39.6 and 45.6), and a burst of `/raft` calls was held for 0.4 to 2.2 s.
+   - An `/entries` page logged "capped at 1000000 B: 192 reads in flight" at 21:36:37.1.
+2. **The edge reported the leader.**
+   - From 21:36:32.9Z, each follower took 957 `/suspect` reports about site 0: 412 at term 0, 400 at term 2 and 99 about site 2.
+   - Each follower answered `promised` while its promise to the leader stood.
+3. **Term 3.** At 21:36:44.62Z both followers' promises had lapsed, and the next report started a pre-vote on each (`Reported` verdict `started`; `Elect::Asked` with started 1).
+   - Site 1 (`#6#f1`) won term 3 at 21:36:45.0 and committed its first entry (310) at 45.18.
+   - Leaderless: none; the old leader kept serving until 45.1.
+4. **Term 4.** At 21:37:04.18Z site 0 became a candidate without a pre-vote and won at 04.37, first commit 365 at 04.58. That is the leader's hand-off back to the group's `home`, the transfer `crates/raft` starts in `health.rs` once home answers `HOME_CALLS` calls with none failed [inference from the vote shape: a direct vote, not a pre-vote, from home]. It is by design, but the row's zero-change line counts it.
+
+This is the k 4 churn LM-1 and its reviewer are diagnosing. The trace was sent to LM-1, as the brief asks. I did not change `crates/raft`.
+
+### m3fr14's two `/suspect` (21:03:29 to 34Z): product latency, not the transport
+
+Both came from one push (isolate `6aec1d13…`, push `01M7NN4NQTMWHSSNNAHEN7QCA0`), whose commit took 8,902 ms [measured]:
+- **The receipts.** Its 2 missed receipts went to the followers `repo:65584#4#f1` and `#1#f2`, so it sent 2 `suspect`.
+- **The leader stalled.** `repo:65584#1#f0` (`c7bf3474`) logged no event from 21:03:26.4 to 34.35Z.
+  - Its alarm ran 8,048 ms wall at 20 ms CPU, then every held request completed at 34.368.
+  - The storage confirm (`sync()`) for entry 1075 took **8,509 ms**. The run's 1,456 confirms were p50 57 ms and p99 202 ms, and the next highest was 354 ms.
+- **The learners agree.** `#5#l3` and `#5#l7` show `/raft` walls of about 9.3 s ending at 35.07.
+- **Not the transport.** m3fr14's transport event was 21:01:11 to 49Z, which does not overlap.
+
+So both runs' `/suspect` come from leader stalls: an 8.5 s storage confirm on m3fr14, and 1 to 3 s apply gaps on m3fr15.
+
 ## Rows m3fr14 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr14`, main `0105297a`)
 
 **Slot.** B0-32 rerun on `learners-kept`, after a site day from main `0105297a`. The orchestrator granted it at about $2. Stops: graft-m3f past $5 by `PREFIX`, or the account past $280.
