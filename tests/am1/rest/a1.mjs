@@ -65,7 +65,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
-  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" } } });
+  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" } } });
 
 // ---- the plan, from the rows ----
 
@@ -163,6 +163,30 @@ export function budgetWindow(before, after, seconds) {
     listAsked: sum("listAsked"), listComputes: sum("listComputes"), cpuToWall: sum("wallMs") ? +(sum("spentMs") / sum("wallMs")).toFixed(3) : null };
 }
 
+/** B0-35's dispatch line: each PR's head-push acks in the window paired in order with that PR's runs first seen after
+ *  them; a run with no ack before it (setup's `opened`, or a PR opened in the window) is `unpaired`, and an ack with no
+ *  run after it is `missing` (a conflict, or a run not created). Times are from the ack to the poll that first listed
+ *  the run, so each is late by up to one poll. Nearest-rank percentiles, as the row's others. */
+export function dispatchLine(acks, runs, t0, pollMs, polls = {}) {
+  const at = (xs, q) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(q * s.length))] : null; };
+  const by = (xs) => xs.reduce((m, x) => ((m[x.n] ??= []).push(x), m), {});
+  const A = by(acks.filter((a) => a.at >= t0)), Rn = by(runs.filter((r) => r.seenAt >= t0 && Number.isFinite(r.n)));
+  const ms = [];
+  let missing = 0, unpaired = 0;
+  for (const n of new Set([...Object.keys(A), ...Object.keys(Rn)])) {
+    const as = (A[n] ?? []).sort((x, y) => x.at - y.at), rs = (Rn[n] ?? []).sort((x, y) => x.seenAt - y.seenAt);
+    let j = 0;
+    for (const a of as) {
+      while (j < rs.length && rs[j].seenAt < a.at) { unpaired++; j++; }
+      if (j < rs.length) ms.push(rs[j++].seenAt - a.at); else missing++;
+    }
+    unpaired += rs.length - j;
+  }
+  return { pushes: acks.filter((a) => a.at >= t0).length, paired: ms.length, missing, unpaired,
+    setupRuns: runs.filter((r) => r.seenAt < t0).length, runsSeen: runs.length,
+    p50: at(ms, 0.5), p99: at(ms, 0.99), max: ms.length ? Math.max(...ms) : null, pollMs, polls };
+}
+
 // ---- L0-12's lease overlap ----
 
 /** Probe pairs: each pair hands one Exclusive lease (`a1p/<pair>/**`, PROBE_TTL_S, never renewed) back and forth. */
@@ -191,6 +215,11 @@ export function overlapMs(heldId, ttlS, grantedId) {
 
 // ---- packs: one blob, its tree, and a commit, as git writes them ----
 
+/** B0-35's workflow (`--workflow`): one job per `pull_request` event, on a label no runner has, so no runner, hosted or
+ *  self-hosted, ever takes it and `graft-runners` starts no Sandbox; the driver cancels every run after the window. */
+export const WF_PATH = ".github/workflows/b035.yml";
+export const WF_SRC = Buffer.from("on: pull_request\njobs:\n  t:\n    runs-on: [self-hosted, b035-dispatch]\n    steps:\n      - run: \"true\"\n");
+
 const sha1 = (b) => createHash("sha1").update(b).digest();
 const obj = (type, body) => sha1(Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body]));
 const TYPE = { commit: 1, tree: 2, blob: 3 };
@@ -218,26 +247,29 @@ function entryHeader(type, size) {
   out.push(b);
   return Buffer.from(out);
 }
-/** A tree of nested directories down to one file at `path`. */
-function treeFor(path, blob) {
-  const parts = path.split("/");
-  const objects = [];
-  let child = { mode: "100644", name: parts.pop(), id: blob };
-  for (const dir of [...parts.reverse(), null]) {
-    const body = Buffer.concat([Buffer.from(`${child.mode} ${child.name}\0`), child.id]);
-    const id = obj("tree", body);
-    objects.push(["tree", body]);
-    if (dir === null) return { root: id, objects };
-    child = { mode: "40000", name: dir, id };
-  }
+/** The tree of `files` ([path parts, blob id]), its subtrees pushed to `objects`; entries sorted as git sorts them
+ *  (a directory's name compares as if it ended in "/"). */
+function treeOf(files, objects) {
+  const groups = new Map();
+  for (const [[h, ...rest], id] of files) (groups.get(h) ?? groups.set(h, []).get(h)).push([rest, id]);
+  const entries = [...groups].map(([name, xs]) => (xs.length === 1 && xs[0][0].length === 0
+    ? { mode: "100644", name, id: xs[0][1] } : { mode: "40000", name, id: treeOf(xs, objects) }));
+  const key = (e) => Buffer.from(e.mode === "40000" ? `${e.name}/` : e.name);
+  entries.sort((a, b) => Buffer.compare(key(a), key(b)));
+  const body = Buffer.concat(entries.map((e) => Buffer.concat([Buffer.from(`${e.mode} ${e.name}\0`), e.id])));
+  objects.push(["tree", body]);
+  return obj("tree", body);
 }
-/** The pack and the commit id of one commit on `parent` (hex, or null) holding `bytes` at `path`. */
-export function onePack(path, bytes, parent, message, at = 1_700_000_000) {
-  const blobId = obj("blob", bytes);
-  const { root, objects } = treeFor(path, blobId);
+/** The pack and the commit id of one commit on `parent` (hex, or null) holding `bytes` at `path`, and each `extra`
+ *  [path, bytes] beside it (B0-35's workflow file, so every commit and every test merge keeps it). */
+export function onePack(path, bytes, parent, message, at = 1_700_000_000, extra = []) {
+  const files = [[path, bytes], ...extra];
+  const blobs = files.map(([, b]) => ["blob", b]);
+  const objects = [];
+  const root = treeOf(files.map(([p, b]) => [p.split("/"), obj("blob", b)]), objects);
   const who = `a1 <a1@graftyard.invalid> ${at} +0000`;
   const commit = Buffer.from(`tree ${root.toString("hex")}\n${parent ? `parent ${parent}\n` : ""}author ${who}\ncommitter ${who}\n\n${message}\n`);
-  const all = [["blob", bytes], ...objects, ["commit", commit]];
+  const all = [...blobs, ...objects, ["commit", commit]];
   const head = Buffer.alloc(12);
   head.write("PACK"); head.writeUInt32BE(2, 4); head.writeUInt32BE(all.length, 8);
   const body = Buffer.concat([head, ...all.flatMap(([t, b]) => [entryHeader(t, b.length), deflateSync(b, { level: 1 })])]);
@@ -285,7 +317,12 @@ if (opt.selftest) {
     const b = onePack("a1/3/7/f.txt", Buffer.from("second\n"), a.commit, "second");
     execFileSync("git", ["index-pack", "--stdin", "--strict"], { cwd: dir, input: b.pack });
     const log = execFileSync("git", ["log", "--format=%s", b.commit], { cwd: dir }).toString().trim();
-    const ok = log === "second\nfirst" && execFileSync("git", ["cat-file", "-p", `${b.commit}:a1/3/7/f.txt`], { cwd: dir }).toString() === "second\n";
+    const wf = onePack("a1/3/7/f.txt", Buffer.from("third\n"), b.commit, "third", 1_700_000_000, [[WF_PATH, WF_SRC]]);
+    execFileSync("git", ["index-pack", "--stdin", "--strict"], { cwd: dir, input: wf.pack });
+    execFileSync("git", ["fsck", "--strict", "--no-dangling", wf.commit], { cwd: dir });
+    const cat = (spec) => execFileSync("git", ["cat-file", "-p", spec], { cwd: dir }).toString();
+    const ok = log === "second\nfirst" && cat(`${b.commit}:a1/3/7/f.txt`) === "second\n"
+      && cat(`${wf.commit}:${WF_PATH}`) === WF_SRC.toString() && cat(`${wf.commit}:a1/3/7/f.txt`) === "third\n";
     const s = (...ls) => Buffer.concat([...ls.map(pkt), Buffer.from("0000")]).toString("latin1");
     const r = pushResult(s("unpack ok\n", "ok refs/heads/claude/a1-x-1\n"));
     // A length ending in a hex letter: `002cok refs/...` (am1-runs' and fanout's B0-35 setup read these as errors).
@@ -346,8 +383,14 @@ if (opt.selftest) {
       { timing: "auth;dur=40, authz;dur=600, tier;dur=100, merge_plan;dur=100, commit;dur=400, total;dur=1140", shard: "" },
     ]);
     const split = sp.gap.n === 2 && sp.gap.max === 300 && sp.tier.max === 900 && sp["shard:merge"].n === 1 && sp.total.p99 === 1900;
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split, clock }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split || !clock
+    // B0-35's dispatch pairing: PR 1's two acks pair with its next runs (50 and 60 ms); its setup run (before t0) is
+    // not counted; PR 2's ack has no run (missing); PR 3's run has no ack (unpaired); a run seen between two acks pairs
+    // with the earlier.
+    const dl = dispatchLine([{ n: 1, at: 100 }, { n: 1, at: 200 }, { n: 2, at: 300 }],
+      [{ n: 1, seenAt: 40 }, { n: 1, seenAt: 150 }, { n: 1, seenAt: 260 }, { n: 3, seenAt: 120 }], 90, 1000);
+    const disp = dl.paired === 2 && dl.p50 === 60 && dl.max === 60 && dl.missing === 1 && dl.unpaired === 1 && dl.setupRuns === 1;
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split, clock, dispatch: disp }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split || !clock || !disp
       || why !== "refused pack N bytes over INLINE_MAX_HOT N" || unp !== "refused unpacker error: validate: shard N after N ms") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
@@ -460,7 +503,8 @@ if (Date.now() - mainSince > 1_000) log(`main appeared in ls-refs after ${Date.n
 const pushed = new Map(); // commit id -> ack time, for feed latency
 const recentAgent = []; // [ok, ms] of the latest agent pushes, for B0-32's warm-up
 async function push(tok, ref, from, path, bytes, extra = {}) {
-  const { pack, commit } = onePack(path, bytes, from ?? main, `a1 ${ref}`, Math.floor(Date.now() / 1000));
+  const files = opt.workflow ? [[WF_PATH, WF_SRC]] : [];
+  const { pack, commit } = onePack(path, bytes, from ?? main, `a1 ${ref}`, Math.floor(Date.now() / 1000), files);
   const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra });
   // A refusal keeps the first words of its body, so a 503's cause is counted (no secret is in a server's reply,
   // and every row passes `scan`).
@@ -551,6 +595,13 @@ const openPr = async (tok, branch, draft) => {
     variables: { i: { repositoryId: repoId, baseRefName: "main", headRefName: branch, title: branch, body: "a1", draft } } });
   return [r, r.body?.data?.createPullRequest?.pullRequest];
 };
+// `--workflow` (B0-35's dispatch line): `main` takes the workflow first, so every branch and PR opened below has it.
+if (opt.workflow) {
+  const [res, , nu] = await push(admin, "refs/heads/main", main, "a1w/seed.txt", Buffer.from(`${RUN}\n`));
+  if (res !== "ok") throw new Error(`workflow seed push: ${res}`);
+  main = nu;
+  writeRow(OUT, { step: "workflow seeded", main });
+}
 if (plan.openPrs) {
   // Ten at a time: about 500 x 2 s / 10, under 3 minutes. A push or open that fails is retried up to 4 times, 2 s
   // apart, so a 503 under the setup's own load does not drop the PR; each failure's answer is counted.
@@ -579,7 +630,7 @@ if (plan.openPrs) {
   writeRow(OUT, { step: "open PRs", opened: openPrs.length, failures: why });
   log(`open PRs ${openPrs.length}/${plan.openPrs} ${JSON.stringify(why).slice(0, 400)}`);
   // Each of the first agents pushes its PR's head branch, so every push is a head push that asks for a test merge.
-  for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; }
+  for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; agents[k].prN = pr.number; }
 }
 
 // No learner catches up inside the window: before it starts, every learner has applied the leader's commit index as
@@ -691,7 +742,29 @@ async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
   } catch (e) { note(kind, Date.now() - s, `error ${String(e).slice(0, 30)}`); return "error"; }
   finally { clearTimeout(timer); }
 }
+// B0-35's dispatch line (`--workflow`; `decisions/DECISIONS.md`, "`pr-trigger`"): each PR head push's ack, and each
+// `pull_request` run the admin runs route lists (newest 200, read every DISPATCH_POLL_MS from setup to DISPATCH_TAIL_MS
+// past the window), first seen when. A run seen before the window is setup's (the PRs' `opened`).
+const DISPATCH_POLL_MS = 1_000, DISPATCH_TAIL_MS = 90_000;
+const dispatchAcks = [];
+const dispatchRuns = new Map(); // run id -> { n, seenAt, trigger }
+const dispatchPolls = {};
+const pollRuns = async () => {
+  const r = await api("GET", `/api/graftyard/v1/repos/${R}/actions/runs`, admin);
+  dispatchPolls[r.status] = (dispatchPolls[r.status] ?? 0) + 1;
+  for (const x of r.body?.runs ?? []) {
+    const n = x.event === "pull_request" ? Number(String(x.head_ref).match(/^refs\/pull\/(\d+)\/merge$/)?.[1]) : NaN;
+    if (!dispatchRuns.has(x.id)) dispatchRuns.set(x.id, { n, seenAt: Date.now(), trigger: x.trigger, status: x.status });
+  }
+};
 const jobs = [
+  ...(opt.workflow ? [(async () => {
+    while (Date.now() < end + DISPATCH_TAIL_MS) {
+      const s = Date.now();
+      await pollRuns().catch(() => { dispatchPolls.error = (dispatchPolls.error ?? 0) + 1; });
+      await sleep(Math.max(0, DISPATCH_POLL_MS - (Date.now() - s)));
+    }
+  })()] : []),
   // Each agent pushes every pushEvery s, its start spread over the first interval.
   ...agents.map((a) => (async () => {
     await sleep(Math.max(0, t0 - Date.now()) + Math.random() * plan.pushEvery * 1000);
@@ -702,6 +775,7 @@ const jobs = [
       const seenAt = kill ? leaderSeen() : null;
       const k = half(kill ? "push:killed" : "push:agent");
       const [res, ms, nu] = await push(app, a.ref, a.tip, `a1/${a.group}/${a.i}/f.txt`, randomBytes(size()), kill ? { "x-graft-kill": "after_quorum" } : {});
+      if (opt.workflow && res === "ok" && a.prN) dispatchAcks.push({ n: a.prN, at: Date.now() });
       a.tip = nu;
       if (kill) { kills.push(s); killRows.push(killRow(s, ms, res, seenAt)); }
       note(k, ms, res);
@@ -1243,6 +1317,7 @@ const v = {
       maxAbsOffsetRawMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
   // Every plan, not only `openPrs`: B0-31's agents' test merges go through the same budget (m3fr4 wrote none).
+  ...(opt.workflow ? { dispatch: dispatchLine(dispatchAcks, [...dispatchRuns.values()], t0, DISPATCH_POLL_MS, dispatchPolls) } : {}),
   testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
     pollAnswers: codes["read:mergeable"] ?? {}, restPollAnswers: codes["read:mergeableRest"] ?? {},
     firstFor: opt["first-for"] ? Number(opt["first-for"]) : null },
@@ -1264,6 +1339,20 @@ if (plan.leases) {
   }
   writeRow(OUT, { step: "tasks cancelled", n: open.length, answers });
   log(`tasks cancelled ${open.length}: ${JSON.stringify(answers)}`);
+}
+// `--workflow`: no runner takes the runs' label, so each would sit queued for QUEUE_LIMIT; cancel every run seen.
+if (opt.workflow) {
+  await pollRuns().catch(() => {});
+  const ids = [...dispatchRuns.keys()];
+  const answers = {};
+  for (let b = 0; b < ids.length; b += 10) {
+    await Promise.all(ids.slice(b, b + 10).map(async (id) => {
+      const r = await api("POST", `/api/v3/repos/${R}/actions/runs/${id}/cancel`, admin, {});
+      answers[r.status] = (answers[r.status] ?? 0) + 1;
+    }));
+  }
+  writeRow(OUT, { step: "runs cancelled", n: ids.length, answers });
+  log(`runs cancelled ${ids.length}: ${JSON.stringify(answers)}`);
 }
 // Pushes and polls cut off at the row's end can hold sockets open for minutes, which stalled `rows.sh` on B0-29 and
 // B0-31 (`tests/am1/results/lm1-memory.md`, section 10): the row is written, so end here.

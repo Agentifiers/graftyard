@@ -34,6 +34,11 @@ pub const ACTIONS_FORMAT: Format = Format { family: 0x15, version: 1 };
 pub const ACTIONS_FORMAT_MERGE_GROUP: Format = Format { family: 0x15, version: 2 };
 /// BF-55's `MatchOwner`, which only a broker of a release that reads it sends; its event is the 0x15.1 `Job` event.
 pub const ACTIONS_FORMAT_OWNER_MATCH: Format = Format { family: 0x15, version: 3 };
+/// B0-35's `CreateRun` of a `pull_request` run, whose run key names its pull request's merge ref
+/// (`WorkflowRun::key`), so one entry that moves several pull requests' heads starts a run for each. Only
+/// `ActionsTrigger` sends one, and only where a later site day set `GRAFTYARD_PR_TRIGGER`, after the day that shipped
+/// this reader to every member (`decisions/DECISIONS.md`, "`pr-trigger`").
+pub const ACTIONS_FORMAT_PULL_REQUEST: Format = Format { family: 0x15, version: 4 };
 
 #[cfg(test)]
 const JOB_LEASE_MS: u64 = crate::job::JOB_LEASE.as_millis() as u64;
@@ -72,9 +77,11 @@ pub struct WorkflowRun {
 impl WorkflowRun {
     /// SHARED's `(chain, index, workflow path)`. One `GroupBuilt` entry builds several queue refs, each its own
     /// `merge_group` event, so a `merge_group` run's key also names its queue ref (after a newline, which no path
-    /// holds). Only format 0x15.2 carries such a run, so a member that keys runs the old way never decides one.
+    /// holds). Only format 0x15.2 carries such a run, so a member that keys runs the old way never decides one. One
+    /// entry also moves several pull requests' heads, so a `pull_request` run's key names its `refs/pull/N/merge`
+    /// the same way, in format 0x15.4.
     pub fn key(&self) -> RunKey {
-        let workflow = if self.is_merge_group() {
+        let workflow = if self.is_merge_group() || self.is_pull_request() {
             format!("{}\n{}", self.workflow, self.head_ref).into()
         } else {
             self.workflow.clone()
@@ -84,6 +91,10 @@ impl WorkflowRun {
 
     pub fn is_merge_group(&self) -> bool {
         &*self.event == "merge_group"
+    }
+
+    pub fn is_pull_request(&self) -> bool {
+        &*self.event == "pull_request"
     }
 }
 
@@ -775,6 +786,7 @@ impl Command for ActionsCmd {
     fn format(&self) -> Format {
         match &self.op {
             ActionsOp::CreateRun { run, .. } if run.is_merge_group() => ACTIONS_FORMAT_MERGE_GROUP,
+            ActionsOp::CreateRun { run, .. } if run.is_pull_request() => ACTIONS_FORMAT_PULL_REQUEST,
             ActionsOp::MatchOwner { .. } => ACTIONS_FORMAT_OWNER_MATCH,
             _ => ACTIONS_FORMAT,
         }

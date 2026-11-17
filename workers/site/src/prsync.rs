@@ -566,12 +566,11 @@ async fn merge(
     Ok((a, budget))
 }
 
-/// The test merge Actions dispatch asks for (`design/DESIGN.md`, Shape, `demand`): M4's `ActionsTrigger` calls it for a
-/// `pull_request`-family event before it dispatches, with `MergeCause::Dispatch`. It reads the pull request fresh from
+/// The test merge Actions dispatch asks for (`design/DESIGN.md`, Shape, `demand`): `ActionsTrigger` calls it for a
+/// `pull_request` event before it dispatches, with `MergeCause::Dispatch` (`crate::actions_trigger`). It reads the pull request fresh from
 /// the group's leader, and if it lacks a current test merge has this site's shard of the network compute it under the
 /// budget and commit it (`/demand`, as a single-PR GET does from the edge). `Ok(false)` when there was nothing to
 /// compute, or the shard shed it, so `mergeable` stays null; `Ok(true)` once the merge is recorded.
-#[allow(dead_code)] // M4's `ActionsTrigger` is its caller; nothing dispatches before Milestone 4.
 pub async fn demand(
     env: &Env,
     repo: RepoId,
