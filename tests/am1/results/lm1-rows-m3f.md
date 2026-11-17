@@ -108,6 +108,21 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Planned m3fr12 (granted for the combined slot on or after 00:00Z 2026-11-18, `ROWS="b0-32 b0-31"`; branch `b031-held`)
+
+**Rows.** A site day from main, with `read-ahead` (0a816c18) and `burst-receipts` on it, then B0-32, then B0-31.
+- **B0-31's line:** commit p99 at buckets-up (`leader.commitMsByHalf.up`) against 1 s, met at 90% at 1.1 s.
+- **read-ahead's flip:** the run also reads `leader.splitByHalf.up.cycle` (the leader's append-to-append ms) and `.held` (frozen batches held at each append), new on this branch. The flip holds if the cycle stays read-bound (about `deps:all` p50 plus decide, not `round` plus decide) while `held` p50 is 2.
+
+**Estimate** [inference, from acctcost on m3fr10 and m3fr11]: about $5 on graft-m3f. That window was $4.42 for a site day, two rows each run twice, and an edge-only day. This run is one site day and two rows. It goes up to $5 because the site day ships both sites and the edge.
+
+**Stops:**
+- graft-m3f's own figure (`PREFIX=graft-m3f`, acctcost) passes $10.
+- The account's UTC day passes $170.
+- `costok` runs before each phase.
+
+**Close-out:** sweep the containers, `/retire` both groups, and take an acctcost reading 30 minutes later showing graft-m3f idle (well under $0.10 an hour).
+
 ## Rows m3fr10 and m3fr11 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, run stop $10 on graft-m3f, account stop $170)
 
 **Slot.** The operator gave graft-m3f a slot on 2026-11-17, with the 90% rule (`FRAME.md`) and the account-wide meter. The run's own figure is acctcost with `PREFIX=graft-m3f` (this branch), because other installs ran in the same window.
