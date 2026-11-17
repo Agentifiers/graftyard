@@ -4670,3 +4670,10 @@ With the first pass, 131297–131348 are retired and purged: 52 networks, 295,20
   the audit's cost grows with the chain. Options: cap the audited chain's snapshot size, sample hot chains only, or
   retire old test networks like 65536 to 65540 as well.
 
+**Idle reading**, 09:45:57–10:15:57Z, 30 minutes after the last purge (`PREFIX=graft-m2b acctcost.py`):
+- graft-m2b cost **$0.01** (about $0.02 an hour). The account cost $0.04 in the window, mostly graft-m4a. The UTC day
+  stood at $109.74 at 10:16Z.
+- Site a's sweep, on the site script still deployed (from 68d39927, without sweep-wall), now **completes in 70 s and
+  87 s** (09:45 and 10:00 runs, 20 networks swept, 0 planned). Before the purges its 06:00 and 06:15 runs were
+  cancelled at 900 s. Removing the retired groups' packs alone unwedged it.
+- `names:*` rows: 0 in both slots. Sites b and c took 28 to 33 s.
