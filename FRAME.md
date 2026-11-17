@@ -196,6 +196,14 @@ The operator also asked to start the web app (M4-WP5) now against a mocked API. 
 
 A hosted gate row is met when its measured result reaches 90% of each target: a rate or count at 90% of its goal (such as 45 of 50 jobs finishing), or a latency within 10% over its bound (such as a 1 s p99 met at 1.1 s) [inference: the operator gave the rule in words, so "within 90%" is read the same way for limits and for goals]. When a row reaches that and what is left is a long tail of work and reruns, the row is recorded as met at 90%, with its gap in `decisions/OPEN-QUESTIONS.md`, and work moves on. The rule does not relax correctness: a lost acknowledged push, a broken quorum rule, a GHES response change for a client that did not opt in, or any other invariant in `AGENTS.md` still fails its row outright. Spend is at most $200 a day across the whole Cloudflare account, counted per UTC day from 2026-11-16 20:30Z and read with `tests/fanout/acctcost.py`, after per-install meters missed most of a $2,328 bill for 2026-10-27 to 2026-11-16 (graft-m1's runs and idle containers were on no meter).
 
+### Operator decision, 2026-11-17, $300 for 2026-11-17
+
+> "raise to $300 total spend today"
+
+> "GET. THIS. BUILT. I want results."
+
+For the UTC day 2026-11-17 the account-wide spend limit is $300 instead of $200, read with `tests/fanout/acctcost.py` as before. Hosted rows run in parallel, one install each, attributed by script prefix. The 90% rule and the invariants above are unchanged. Later days return to $200 unless the operator says otherwise.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
