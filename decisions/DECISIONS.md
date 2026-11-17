@@ -4430,6 +4430,23 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted B0-29 on this change in which the leader still sends a voter more than about 1.5 AppendEntries carrying entries per entry, or one in which a read was granted without a voter quorum's ack of a round sent after it arrived.
 
+### `learner-hold`: a learner's held call ends once its answer has left in any response (F85), 2026-11-17
+
+**Status.** Asked for by the operator after `read-beat`. Built on branch `f85-hold`, not deployed. A site-script change, so it ships only through a site day.
+
+**Decision.** A leader remembers, per learner, the newest LEFT_KEPT (64 [guess]) read-index batches whose `ReadIndexRes` left in a response to that learner, recorded when a call's response takes what was held and from each call's own reply. A learner's call held for its batch (`READ_INDEX_HOLD`) ends once that batch is answered in its own reply, held for the learner, or remembered as sent, and each record wakes the learner's waiting calls (`workers/site/src/callers.rs`, `Callers::left` and `Callers::answered`).
+
+**Why.** Before this, a held call ended only for an answer in its own reply or still held. On B0-29 `mwkyk9zg`, 29,660 of 92,092 learner calls into the leader left 499 ms or more after entry, and in 29,547 of them the batch had been answered before the call arrived: HEDGE copies and re-asks of answered batches, each sitting the full hold, beside 18,619 learner hedges [measured, `tests/m0/results/learner-hold.md`].
+
+**What it beat.**
+- **A shorter READ_INDEX_HOLD:** the copies would still wait, and a far learner's real round could miss it.
+- **No hold:** answers would trail a learner's reads by a call again, as before B0-18's fix.
+- **A longer HEDGE:** fewer copies, but each still waits 500 ms.
+
+**Evidence.** `callers::tests::a_held_call_ends_when_its_answer_leaves_in_another_call` fails on main and passes; `tests/m0carried/plant35.py` 5 of 5 caught; B0-18's depth test passes unchanged.
+
+**Flip.** A hosted run on this change in which learner calls held 500 ms stay above about 1% of learner calls, or learner hedges do not fall, or a learner read waits for an answer this rule let its call drop.
+
 ### `colo-unknown`: a `suspect` report from no data center counts toward no colo, 2026-11-17
 
 **Status.** Asked for by the operator (root-cause m43's 11 `CommitErrors` step-downs); built on branch `commit-errors`, not deployed. A `crates/raft` change, so the next site day ships it.

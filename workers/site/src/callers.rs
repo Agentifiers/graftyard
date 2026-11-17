@@ -12,7 +12,7 @@
 //! is called again once `QUIET` has passed (`due`). An idle learner, such as one that serves only feed polls, is
 //! called as before.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use futures_channel::oneshot;
 
@@ -22,6 +22,10 @@ use graftyard_types::{SiteId, learner_slot};
 /// read-index batch at most every 50 ms, plus its round trip, so a busy learner calls well within this
 /// (`raft::CALL_DEADLINE`, [guess]).
 pub const QUIET: u64 = 1_000;
+
+/// Read-index batches per learner whose answers this member remembers having sent (`Callers::left`): more than a
+/// learner keeps in flight (`raft::READ_PIPELINE`) times the calls it has open at once [guess].
+const LEFT_KEPT: usize = 64;
 
 /// Per learner that called this member: its calls in progress, when the last began or ended, and the messages held
 /// for it, oldest first.
@@ -36,8 +40,10 @@ struct Caller<E> {
     /// The encoded bytes of `held`, and the most it held at once since `/stats` was read (narrow-reads-3).
     held_bytes: usize,
     held_peak: usize,
-    /// A call waiting for a message to be held for it (`wake`).
+    /// A call waiting for a message to be held for it, or for an answer to leave (`wake`).
     wake: Vec<oneshot::Sender<()>>,
+    /// The read-index batches whose answers left in a response to this learner, newest last (`Callers::left`).
+    left: VecDeque<u64>,
 }
 
 impl<E> Default for Callers<E> {
@@ -58,6 +64,7 @@ impl<E> Callers<E> {
                 held_bytes: 0,
                 held_peak: 0,
                 wake: Vec::new(),
+                left: VecDeque::new(),
             });
             c.open += 1;
             c.last = now;
@@ -88,15 +95,20 @@ impl<E> Callers<E> {
         }
     }
 
-    /// The messages held for `from`, for the response to its call.
-    pub fn take(&mut self, from: SiteId) -> Vec<E> {
-        self.by
+    /// The messages held for `from`, for the response to its call. The read-index batches they answer (`batch_of`)
+    /// count as left (`left`), so a call of `from` held for one of them ends now.
+    pub fn take(&mut self, from: SiteId, batch_of: impl Fn(&E) -> Option<u64>) -> Vec<E> {
+        let held = self
+            .by
             .get_mut(&from)
             .map(|c| {
                 c.held_bytes = 0;
                 std::mem::take(&mut c.held)
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let answers: Vec<u64> = held.iter().filter_map(batch_of).collect();
+        self.left(from, &answers);
+        held
     }
 
     /// Per learner: messages and bytes held now, the most bytes held at once since the last call with `reset`, and
@@ -119,12 +131,28 @@ impl<E> Callers<E> {
         idle.into_iter().flat_map(|s| self.by.remove(&s).map(|c| c.held).unwrap_or_default()).collect()
     }
 
-    /// Whether a message held for `from` matches `f`.
-    pub fn holds(&self, from: SiteId, f: impl Fn(&E) -> bool) -> bool {
-        self.by.get(&from).is_some_and(|c| c.held.iter().any(f))
+    /// The read-index answers to `batches` left in a response to `from`, its own call's or ones `take` released: a call
+    /// of `from` still held for one of them is woken, and `answered` now says so. A learner keeps several batches and calls open at once, and any call's
+    /// response takes everything held for it, so a call's own batch is often answered in another call's response.
+    pub fn left(&mut self, from: SiteId, batches: &[u64]) {
+        let Some(c) = self.by.get_mut(&from).filter(|_| !batches.is_empty()) else { return };
+        c.left.extend(batches);
+        while c.left.len() > LEFT_KEPT {
+            c.left.pop_front();
+        }
+        for w in c.wake.drain(..) {
+            let _ = w.send(());
+        }
     }
 
-    /// Resolves when the next message is held for `from`, a learner whose call is open.
+    /// Whether `from`'s batch `batch` is answered for a call held on it: the answer is held for `from` (`is_answer`),
+    /// so this call's response takes it, or it already left in a response to `from`.
+    pub fn answered(&self, from: SiteId, batch: u64, is_answer: impl Fn(&E) -> bool) -> bool {
+        self.by.get(&from).is_some_and(|c| c.held.iter().any(is_answer) || c.left.contains(&batch))
+    }
+
+    /// Resolves when the next message is held for `from`, a learner whose call is open, or an answer leaves in a
+    /// response to it.
     pub fn wake(&mut self, from: SiteId) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
         if let Some(c) = self.by.get_mut(&from) {
@@ -173,7 +201,7 @@ mod tests {
                 if let Some(c) = callers.as_deref_mut() {
                     c.began(l, ms);
                     // The held AppendEntries ride in this call's response, and the learner steps them there.
-                    let _ = c.take(l);
+                    let _ = c.take(l, |_| None);
                     c.ended(l, ms + 30);
                 }
             }
@@ -202,6 +230,41 @@ mod tests {
         assert_eq!(d, 3, "held for its calls, every call is one hop from an outside request");
     }
 
+    /// F85 (`tests/m0/results/learner-hold.md`): a learner's call held for its batch's answer ends once that answer
+    /// left in another call's response. On B0-29 `mwkyk9zg` a learner had 3 to 5 calls open, any call's response took
+    /// everything held, and in 26,877 of 27,723 calls held the whole READ_INDEX_HOLD the answer had already left.
+    #[test]
+    fn a_held_call_ends_when_its_answer_leaves_in_another_call() {
+        let l = learner_addr(1);
+        let mut c: Callers<u64> = Callers::default();
+        let is = |b: u64| move |e: &u64| *e == b;
+        // Call A asks batch 7, call B is open beside it; the answer to 7 is held while both are open.
+        c.began(l, 0);
+        c.began(l, 1);
+        let mut woken = c.wake(l);
+        assert!(!c.answered(l, 7, is(7)), "answered before any answer");
+        assert_eq!(c.route(l, 7, 0, 5), None, "held while calls are open");
+        assert!(c.answered(l, 7, is(7)), "an answer held for the learner ends the hold");
+        // B's response takes it before A looks again: the hold must still end, and A must be woken for it.
+        let mut woken_again = c.wake(l);
+        assert_eq!(c.take(l, |e| Some(*e)), vec![7]);
+        assert!(woken.try_recv().is_ok_and(|w| w.is_some()), "the held answer did not wake the waiting call");
+        assert!(c.answered(l, 7, is(7)), "an answer another call's response took left the call held");
+        assert!(woken_again.try_recv().is_ok_and(|w| w.is_some()), "the answer leaving did not wake the waiting call");
+        // Another batch is not answered by it, and another learner's answers do not count.
+        assert!(!c.answered(l, 8, is(8)));
+        let other = learner_addr(2);
+        c.began(other, 2);
+        assert!(!c.answered(other, 7, is(7)), "one learner's answer ended another's hold");
+        // Only the newest LEFT_KEPT batches are remembered.
+        let many: Vec<u64> = (100..100 + super::LEFT_KEPT as u64).collect();
+        for b in &many {
+            c.route(l, *b, 0, 3);
+        }
+        c.take(l, |e| Some(*e));
+        assert!(!c.answered(l, 7, is(7)) && c.answered(l, 100, is(100)));
+    }
+
     #[test]
     fn a_learner_that_stops_calling_is_called_again_after_quiet() {
         let l = learner_addr(3);
@@ -218,6 +281,6 @@ mod tests {
         assert_eq!(c.route(l, 5, 0, 40 + QUIET), Some(5), "then called as before");
         c.began(l, 2_000);
         c.route(l, 6, 0, 2_001);
-        assert_eq!(c.take(l), vec![6], "its next call takes what was held");
+        assert_eq!(c.take(l, |_| None), vec![6], "its next call takes what was held");
     }
 }
