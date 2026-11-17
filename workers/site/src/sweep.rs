@@ -200,7 +200,7 @@ pub async fn run_at(env: &Env, now: Timestamp) -> Result<Value> {
     store_homes(env, &site, &fresh, &gone).await?;
     let me = site.id;
     let rows = Rows { env, records: Default::default() };
-    let r = sweep_all(&buckets, &rows, now, CronBudget::SITE_CRON, from, |n| home.get(&n) == Some(&me))
+    let r = sweep_all(&buckets, &rows, now, CronBudget::SITE_CRON, from, |n| home.get(&n) == Some(&me), now_ms)
         .await
         .map_err(|e| Error::RustError(e.0))?;
     let report = json!({
@@ -229,6 +229,8 @@ pub async fn run_at(env: &Env, now: Timestamp) -> Result<Value> {
             })
         }).collect::<Vec<_>>(),
         "failed": r.failed.iter().map(|(n, e)| json!({ "network": n.0.0, "error": e })).collect::<Vec<_>>(),
+        "dead": r.dead.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+        "walled": r.walled,
         "unresolved": unresolved.iter().map(|(n, e)| json!({ "network": n, "error": e })).collect::<Vec<_>>(),
         "homesRead": fresh.len() + unresolved.len(),
         "at": now_ms(),

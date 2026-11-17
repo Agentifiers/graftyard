@@ -4361,3 +4361,21 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 **Flip.**
 - For the ask: a hosted run where a dead member's report comes 1 s later and that delay moves a gate line.
 - For the send-back: one where pushes sent back from a pool shard put the first shard's validate p99 over the pool shard's wait.
+
+### `sweep-wall`: a sweep run asks a failed chain once and stops starting work at 8 minutes, 2026-11-17
+
+**Status.** Asked for by the operator (site a's 620 s sweep wall); built on branch `sweep-wall`, not deployed. A site-script change, so it ships only through a site day.
+
+**Decision.** One `sweep_all` run asks each chain's `request` table through a run-scoped source: once a chain's lookup fails, the run answers its other packs as failed lookups without asking (kept and alarmed, `LookupFailed`), and once SWEEP_WALL (8 minutes [guess]) of the run's own clock has passed, the run asks no chain and starts no network, returns with the next network as its cursor, and its caller stores the cursor and runs the fold audit. The report gains `dead` (the chains asked once) and `walled`.
+
+**Why.** Site a's run is serial over its networks, and `lookup::call` spends LOOKUP_FOR (20 s) on a chain no member answers. The retired B0-33 groups `repo:131322` and `repo:131323` keep their packs in the buckets after `/retire`, and every member answers 409 "member not joined": the 06:00Z run on 2026-11-17 made 3,980 member reads that answered 409 and 3,384 registry-row reads for those two chains, at a steady 270 to 370 a minute, and was cancelled at 899.5 s, the Cron Trigger's 15 minutes, as was the 06:15Z run. A cancelled run stores no cursor, so every later run starts at the same network and dies there: the 05:30 (352 s) and 05:45 (620 s) walls were the same sweep reaching those groups. The 620 s run itself spent about 270 s on network 131296's fills (979 MB of GETs) and the rest on lookup bursts of 1 to 119 s per group, 28 member objects in all [measured, Workers Logs by trace id, `r2OperationsAdaptiveGroups`; `tests/am1/results/lm1-memory.md`, "Site a's sweep wall"].
+
+**What it beat.**
+- **Concurrent networks:** cuts the wall when every group answers but not when one does not: the dead chain's thousands of lookups would still each wait LOOKUP_FOR, 16 at a time.
+- **A shorter lookup for the sweeper:** a 2 s bound would cut each lookup tenfold, still minutes for a chain of 9,216 packs (131323's alarm count on 11-16), and would mark a slow live leader unavailable.
+- **Storing the cursor after each network:** makes progress past the wedge, but a run still burns its whole 15 minutes on a dead chain, and the fold audit after it never runs.
+- **Skipping networks whose chain has no group:** needs a probe the sweep does not have, and a retired group's packs are exactly what the sweeper must keep and alarm, not decide on.
+
+**Evidence.** `crates/git/src/sweep.rs`, `a_chain_whose_lookup_failed_is_asked_once_a_run` and `a_run_stops_starting_networks_at_its_wall`; `tests/sweepwall/plant.py` (8 of 8 caught, the first is main's ask-every-pack with no wall).
+
+**Flip.** A hosted run in which site a's sweep still passes SWEEP_WALL plus the in-flight network's actions, or in which a chain answered after a failed lookup in the same run held a pack the run should have marked (a committed pack left without its marker for more than one full pass).
