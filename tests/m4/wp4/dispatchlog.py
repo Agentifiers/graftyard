@@ -3,13 +3,13 @@
 `actions dispatch <repo> #N <action> at <index>: <n> runs in <ms>ms, <k> asks[, superseded][, conflict|, unmerged]`
 line `ActionsTrigger` logs (`workers/site/src/actions_trigger.rs`, `decisions/DECISIONS.md`, "`pr-trigger`"), and
 its `actions trigger <repo>: ...` round errors. Prints one JSON summary: events by outcome (run, conflict, unmerged,
-no run), superseded, asks per outcome, the entry-to-run ms percentiles of events that ran, the same event logged twice
+no run) as last logged and on the first try (a failed round or a new leader runs a batch again), superseded, asks per outcome, the entry-to-run ms percentiles of events that ran, the same event logged twice
 (a round rerun), and the error lines by kind.
 
 The events view answers at most 100 lines a query, newest first, so the window is walked back in slices per site
 script ($INSTALL-site-{a,b,c}, INSTALL default graft-m4a). Account and token from the environment, the token only as a
 header."""
-import collections, json, os, re, sys, urllib.request
+import collections, json, os, re, sys, time, urllib.error, urllib.request
 from datetime import datetime
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
@@ -27,7 +27,13 @@ def query(script, needle, lo, hi):
         f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
         data=json.dumps(body).encode(), method="POST",
         headers={"authorization": f"Bearer {tok}", "content-type": "application/json"})
-    return json.load(urllib.request.urlopen(r, timeout=90))["result"]["events"]["events"]
+    for t in range(6):
+        try:
+            return json.load(urllib.request.urlopen(r, timeout=90))["result"]["events"]["events"]
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+            if t == 5 or (isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429):
+                raise
+            time.sleep(5 * (t + 1))
 
 
 def walk(script, needle):
@@ -70,13 +76,21 @@ for site in "abc":
 by = collections.defaultdict(list)
 for x in events:
     by[(x["index"], x["n"], x["action"])].append(x)
-outcome = collections.Counter()
+outcome, first = collections.Counter(), collections.Counter()
+
+
+def outcome_of(x):
+    return "conflict" if "conflict" in x["tail"] else "unmerged" if "unmerged" in x["tail"] else \
+        "run" if x["runs"] > 0 else "no run"
+
+
 asks = collections.defaultdict(collections.Counter)
 ran_ms, superseded = [], 0
 for k, xs in by.items():
     x = max(xs, key=lambda y: y["t"])  # the last time it was logged is what stood
-    o = "conflict" if "conflict" in x["tail"] else "unmerged" if "unmerged" in x["tail"] else \
-        "run" if x["runs"] > 0 else "no run"
+    f = min(xs, key=lambda y: y["t"])  # the first try, before any rerun of its round
+    first[outcome_of(f)] += 1
+    o = outcome_of(x)
     outcome[o] += 1
     asks[o][x["asks"]] += 1
     superseded += "superseded" in x["tail"]
@@ -85,7 +99,8 @@ for k, xs in by.items():
 n = len(by)
 print(json.dumps({
     "repo": repo, "window": [a, b], "lines": len(events), "events": n, "loggedTwice": sum(len(v) > 1 for v in by.values()),
-    "byAction": dict(collections.Counter(k[2] for k in by)), "outcome": dict(outcome),
+    "byAction": dict(collections.Counter(k[2] for k in by)), "outcome": dict(outcome), "firstOutcome": dict(first),
+    "unmergedFirstPct": round(100 * first["unmerged"] / n, 2) if n else None,
     "unmergedPct": round(100 * outcome["unmerged"] / n, 2) if n else None,
     "superseded": superseded, "asks": {o: dict(sorted(c.items())) for o, c in asks.items()},
     "entryToRunMs": {"n": len(ran_ms), "p50": pct(ran_ms, 0.5), "p99": pct(ran_ms, 0.99), "max": max(ran_ms) if ran_ms else None},
