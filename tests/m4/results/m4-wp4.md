@@ -8,7 +8,7 @@ Branch `m4-runners`, rebased onto main 4833094d. The choices are in `decisions/D
 
 | Row | In memory | Hosted |
 | --- | --- | --- |
-| BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | **Pass**, run 1966182 on site day 43, sweep only, demand read at the sweep's cadence |
+| BF-60 | **Pass** (`workers/runners/tests/bf60.rs`) | **Met at 90%**, run 1966284 on site day 49 and edge day 23 (main `0de37416`, F78's fix): 49 of 50 jobs `Success`, no runner deleted while holding a job, at most 20 at once, nothing left after 10 minutes; the one failure is F79's empty-repository acquire. Run 1966182 passed on the sweep alone; run 1966233 broke the delete invariant (F78) |
 | BM-4 | (M4-WP3's matrix with an unmodified runner) | **Pass**, run 1900546, site a down mid-run (site days 44 and 45) |
 | BF-54 | (M4-WP3's broker cap) | **Pass**, run 3 on site day 47 and edge day 21 (main `1d90863a`, F77's fix): all 512 jobs succeeded, job start p99 16.6 s after the run committed (gate 35 s), max 19.2 s, none unstarted after 60 s, 0 `RunnerSessionInvalid`, re-polls within 30 s. Runs 1 and 2 failed: a lost `Repo`-scope match waited out its lease (F76), then the acquire path (F77) |
 
@@ -291,6 +291,27 @@ Site day 48 and edge day 22 put main `77c9fa23` on m4a, with 32.24 and 18.13 ena
 - **Sandbox placement.** About 1,921 "no container instance that can be provided", 17 "too many containers per second", and 2 "Container failed to become ready" (163 s and 180 s). The pass that hit them registered a runner whose Sandbox did not start, and the cap answered `full` 24 times. So the 20 slots were seldom all running (17 to 19), which accounts for most of the p90.
 - **One `access_tokens` 503**, "authz:7100003: every member asked shed the read: overloaded". The next delivery's pass got a token.
 - **Teardowns.** Driver service `r24bf60` stopped after the run. The runner account listed 0 running Sandboxes (182 `inactive`) and the demand listed no hosted registration. m4a git shards `git#0#net:65562` and `git#1#net:65562`, started by the run's clones, were stopped at 19:48:11Z through GitShard `/teardown` (both 200 `torn_down`) from a scratch Worker `graft-m4a-shardkill`, deleted at 19:48:20Z. At 19:48:43Z the Containers API listed 0 running on sites a, b, and c.
+
+## BF-60 rerun after F78 (2026-11-17)
+
+Site day 49 and edge day 23 put main `0de37416` on m4a (F78's fix; lookup-share reverted), with day 48's flags, `GRAFTYARD_APP_HOOKS=1`, and edge day 22's `FORMATS_ENABLED` (`tests/am1/results/install-m4a.md`). The git shard image stays `m4a47`; `graft-runners` was not redeployed (no change under `workers/runners/src`). Run 1966284 ran `tests/m4/wp4/bf60.mjs` with `DEMAND_EVERY_S=300` from 04:36:15Z (`tests/m4/raw/wp4/f78-bf60/`). The lead granted the slot with a $2.50 budget and stops of $5 for graft-m4a plus the runner account, $170 for the account's UTC day, or a hosted job failing or past its lease; `watch.log` read `tests/fanout/acctcost.py` every 5 minutes.
+
+| | Run 1966284 (F78's fix) | Run 1966233 (R24, before F78) |
+| --- | --- | --- |
+| Passes that started runners | 30 `fetch` (App delivery) passes started 30 runners; 5 `scheduled` sweeps started 0 | 24 `fetch`, 0 `scheduled` |
+| Queue to start, p50 / p90 / max | **216 / 525 / 625 s** | 261 / 594 / 767 s |
+| Last job after dispatch | 1,118 s | 1,262 s |
+| Hosted registrations / running Sandboxes at once, max | 20 / 19 | 20 / 19 |
+| Stale deletes / refused (`kept_busy`) | 3 (04:40:51Z, 04:42:06Z, 04:46:38Z, each 204, each after its runner's job completed) / 0 | 2 passes deleted a runner holding a job |
+| 10 minutes after the last job | 0 running Sandboxes (233 `inactive`), no hosted registration | 0, none |
+| Every job `Success` | **49 of 50**: job 1966290 `Failure` (below), not through a delete | 49 of 50, through the delete |
+
+**BF-60 is met at 90%** (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a daily spend limit"). At most 20 at once, every job finished, no Sandbox or registration was left, and no runner was deleted while it held a job, so the invariant holds. 49 of 50 jobs succeeded (98%). The one failure is a separate acquire bug, recorded as F79 in `decisions/OPEN-QUESTIONS.md`.
+
+- **Job 1966290 ("build (1, 0)").** Runner `graftyard-hosted-9b3270ab` opened its session at 04:37:13Z and acquired the job at 04:37:17.505Z (`acquirejob` 200, 3,251 ms). The runner logged `##[error]Value cannot be null. (Parameter 'repoFullName')` at "Prepare workflow directory" and completed the job `Failure` at 04:37:20Z (job log via `GET /api/v3/repos/m3org/wp4-bf60/actions/jobs/1966290/logs`). The acquire answer's `github.repository` was empty. On the edge's `run/acquirejob`, `repository_of` reads the job row, the run, the repository's owner, and the owner's login and `Authz`; when any of them fails it returns `None`, and the edge goes on with an empty name and no secrets or variables instead of answering 503 (`workers/edge/src/actions.rs`, since 72a3753b). Which read failed is not logged [measured: no `console_error` on that path].
+- **Recurring findings from run 1966233**, from the runner account's Workers Logs events view over 04:35Z to 05:05Z: 1 demand 503 (04:36:46Z; run 1966233: 20). About 1,066 "no container instance that can be provided" (about 1,921), 26 "too many containers per second" (17), and 1 "Container failed to become ready" (2), all from the Sandbox SDK. `access_tokens` answered 201 157 times and never 503 (run 1966233: 1).
+- **Teardown.** The driver stopped on its own; service `f78bf60` and the `f78watch` stop watcher were stopped. The runner account listed 0 running Sandboxes (233 `inactive`). m4a's one running shard, `git#0#net:65562` (site a), was stopped at 05:07:27Z through GitShard `/teardown` (200 `torn_down`) from a scratch Worker `graft-m4a-shardkill`, deleted at 05:07:39Z; at 05:08:04Z the Containers API listed 0 running on sites a, b, and c. `/retire` is a `test-faults` member route and m4a's sites are product builds, so there is no test group to retire; the run's groups are m3org's Actions shards and `repo:65562`, which hold the install's own state.
+- **Cost** (`tests/fanout/acctcost.py`). Before, at 04:35:27Z: the account $51.18 for the UTC day, graft-m4a $0.34, the runner account $0.00. After, at 05:08:39Z: from 04:30Z, graft-m4a $0.24 (site scripts $0.18, git shard $0.06) and the runner account $0.34 (Sandboxes $0.30): **$0.58** against the $2.50 estimate and the $5 stop; the account $61.83 for the day, under $170. Idle after the teardown, 05:08Z to 05:38Z: graft-m4a $0.04 (about $0.08 an hour, all site scripts) and the runner account $0.00; the account $72.16 for the day at 05:38Z.
 
 ## Spend against the $25 stop
 
