@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 [features]
 # Test installs only: the `/_bed/` driver routes, BF-16's `FORCE_FORMAT`, BF-12's kills on pushes, and the
 # `GRAFTYARD_GENESIS` stand-in for the `Release` view. Product builds leave it off.
-test-faults = []
+test-faults = ["graftyard-lookup/test-faults"]
 
 [dependencies]
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }

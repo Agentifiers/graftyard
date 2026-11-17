@@ -591,6 +591,10 @@ pub enum Trace {
     /// for a read-index read (`"index": true`, from a follower or learner pass) and 0 for one sent to the leader.
     #[cfg(feature = "test-faults")]
     ReadQuery = 26,
+    /// probe-known's walk split: a request that carried `graftyard_lookup::SENT_BY`. `batch` is its `Entered` row's
+    /// arrival number, `index` the sending isolate's id and `ms` the lookup step (`graftyard_lookup::SentBy`).
+    #[cfg(feature = "test-faults")]
+    SentBy = 27,
 }
 
 /// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.

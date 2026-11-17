@@ -3891,6 +3891,26 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 
 **Flip.** A hosted B0-33 whose voters still send more than one read round per voter per 20 ms; a hosted row whose reads wait measurably longer for their grant than on main; or a gray seed past the 30 s bound that traces to a read waiting out the gap.
 
+### `probe-known`: no create probe or `/campaign` for a group whose config the isolate holds, 2026-11-17
+
+**Decision.** Three changes in `graftyard_lookup`:
+1. **No create for a known group.** `create` (which the edge's `ensure_group` calls before a commit whose isolate holds no leader) returns at once while `config_known` holds: the isolate learned the group's config from a member's reply, at the record's generation or later. It then sends no probe `/read`, no `/join`s, and no `/campaign` loop. A config of an older generation does not count, so after a move `create` runs as before. The commit's own lookup finds the leader.
+2. **A behind follower keeps the leader.** `read_spread` takes a follower's or learner's answer as naming the leader only when its term is at or above the highest the isolate has seen (`learn_leader_from_follower`). Before, such an answer cleared the leader held, and the next request walked the voters.
+3. **Who sent it (test installs).** Every lookup post carries `x-graft-sent-by` (`SENT_BY`): the sending isolate's id and the step (`SentBy`: leader, walk, spread, send, ask). A member traces it as `Trace::SentBy` (27, append-only), and `tests/f74/inbound.py` splits each member's requests by step and isolate. Product builds send no header.
+
+`Acked` is untouched: these are the edge's lookups before `commit`.
+
+**Why.** In m42p's B0-33 (lookup-poll, `tests/am1/results/lm1-memory.md`, round 37), the push `probe` stage was p50 13.7 s and p99 58.8 s over 4,107 of 4,269 timed pushes. `create`'s loop posted `/campaign` to the home member every 200 ms while another site led, up to 370 in 20 s, and `probe` was 19% of the voters' leader reads (184 a second). Every probe ran after a `NotLeader` cleared the isolate's leader, though the isolate still held the group's config [measured, the trace; that the config was held is read from the code]. A group that loses its leader is elected without `create`: the lookup reports a pass that found no leader to every voter (`suspect`, `all`), a missed commit receipt reports the target, voters run `keep_led` after `LEADERLESS_FOR`, and a follower whose read-index call fails campaigns (F67). The home member's `/campaign` only bootstraps a new group. That 230 leader reads a second still reached non-leaders 5 s or more into a stable term is unexplained; a learner behind the term clearing the leader is one candidate [inference], and `SENT_BY` names the walks' isolates on the next run.
+
+**Beat.** Keeping the probe and skipping only `/campaign`: the probe is the stage's time. Skipping `create` on any cached config: a moved group's new members would never be joined. Sharing the leader across isolates (a Durable Object per chain): a call hop on every lookup and a new failure domain.
+
+**Evidence.**
+- `tests/lookupbed/run.sh`: with the group's config learned from one read, `create` under the same record posted 0 times to the members, against 1 (the probe) with the check removed, which fails the bed; under the next generation's record it posted 1, as on main. The three lookup rounds still pass (40 of 40, 0 cross-request errors, 24 posts before the change).
+- `a_config_is_known_only_at_the_records_generation_or_later`, `a_leaderless_group_is_reported_to_every_voter`, `a_followers_answer_from_an_older_term_keeps_the_leader` (`crates/lookup/src/lib.rs`); `tests/f74/inbound_test.py`.
+- `tests/m0carried/plant31.py` (5 of 5 caught).
+
+**Flip.** A hosted run where a group whose leader is gone stays leaderless past `LEADERLESS_FOR` while edges hold its config, which would mean the `suspect` path does not elect it; or one where a moved group's new members never join.
+
 ### `lookup-poll`: the shared leader lookup is a plain-data mark that waiters poll, 2026-11-17
 
 **Decision.** `lookup-share`'s `Turn` is replaced. Each chain's lookup is a mark in isolate-wide state: `(token, last touched)`, plain data with no waker, future or I/O object in it. A request whose next post is not to its cached leader takes the mark if it is free, stale (untouched for `LOOKUP_MARK`, 1 s [guess]) or already its own. Otherwise it polls the cache on its own `Delay` every `LOOKUP_POLL` (50 ms [guess]) and goes to a leader once one is cached. The holder touches the mark before each post and frees it when its lookup returns. A request the runtime cancels never runs its drop, so its mark goes stale in 1 s. `suspect`'s shared key from `lookup-share` stays. A unit test reads `graftyard_lookup`'s source and fails on any isolate-wide state that holds a waker, future, promise, stream, closure, request, response or stub.
