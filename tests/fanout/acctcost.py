@@ -6,7 +6,9 @@ Unlike m2bcost.py, which prices one install from its own start, this reads every
 application in the account, because per-install meters missed most of a $2,328 bill (2026-11-16): graft-m1's 30-day
 runs and the other installs were on no meter. Priced at the bill's own overage rates (container memory, vCPU, and
 disk; Durable Object rows written and read, duration, and requests; Workers requests and CPU), allowances ignored, so
-it reads slightly high. Account and token from the environment, the token only as a header."""
+it reads slightly high. With PREFIX set (graft-m2b), the line also carries "prefix_usd": the scripts and container
+applications whose names start with it, for a run that shares the account with another install's run. Account and token
+from the environment, the token only as a header."""
 import collections, datetime, json, os, sys, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
@@ -53,12 +55,17 @@ for x in r["p"]:
     usd["do_duration"] += dur
     who[ns.get(x["dimensions"]["namespaceId"], "?")] += rows + dur
 for x in r["d"]:
-    usd["do_requests"] += x["sum"]["requests"] * 0.15 / 1e6
+    c = x["sum"]["requests"] * 0.15 / 1e6
+    usd["do_requests"] += c
+    who[x["dimensions"]["scriptName"]] += c
 for x in r["w"]:
     c = x["sum"]["requests"] * 0.30 / 1e6 + x["sum"]["cpuTimeUs"] / 1000 * 0.02 / 1e6
     usd["workers"] += c
     who[x["dimensions"]["scriptName"]] += c
 out = {"from": a, "to": b, **{k: round(x, 2) for k, x in usd.items()}, "usd": round(sum(usd.values()), 2)}
+if os.environ.get("PREFIX"):
+    out["prefix"] = os.environ["PREFIX"]
+    out["prefix_usd"] = round(sum(x for k, x in who.items() if k.startswith(os.environ["PREFIX"])), 2)
 print(json.dumps(out))
 for k, x in who.most_common(5):
     print(f"  {k:40} ${x:.2f}")
