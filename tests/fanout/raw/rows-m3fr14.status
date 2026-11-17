@@ -1,0 +1,38 @@
+2026-11-17T20:53:13Z start 789dadd8 /home/user/workspace/b032-trace
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T20:53:30Z start sweep ok
+2026-11-17T20:53:32Z cost account 172.28 since 2026-11-17T00:00:00Z, run 0.31 since 2026-11-17T20:23:10Z, at b0-32
+2026-11-17T20:54:13.350Z m3org/fm3fr14-b032 = 65584
+2026-11-17T20:54:13.859Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:17.095Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:20.308Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:23.512Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:26.741Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:29.960Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:33.222Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:36.467Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:39.678Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:42.883Z repo:65584 leader 0 placing since 1794948854742: waiting
+2026-11-17T20:54:53.523Z repo:65584 leader 0: config 9 learners [{"addr":192,"doName":"repo:65584#5#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65584#5#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65584#5#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65584#5#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65584#5#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65584#5#l5","join":200,"sit
+2026-11-17T20:54:58.794Z repo:65584 leader 0: set k 4: {"grants":[[0,[5,0,2]],[2,[5,0,2]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T20:55:09.223Z repo:65584 leader 0: set k 4: {"grants":[[0,[5,0,2]],[2,[5,0,2]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T20:55:19.824Z repo:65584 leader 0: set k 4: {"grants":[[0,[5,0,2]],[2,[5,0,2]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-17T20:55:19.992Z repo:65584 leader 0: k 4 at 12
+2026-11-17T20:55:20Z b0-32 fm3fr14-b032 65584 start
+2026-11-17T21:04:40.722Z repo:65584 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-17T21:04:41.013Z repo:65584 leader 0: k 1 at 1077
+2026-11-17T21:04:41Z b0-32 fm3fr14-b032 65584 done exit 0
+2026-11-17T21:04:48Z torn down 65584
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T21:06:17Z sweep ok
+ALLDONE
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T21:06:49Z SWEEP2 OK
+2026-11-17T21:06:49Z cost {"from": "2026-11-17T20:23:10Z", "to": "2026-11-17T21:06:49Z", "containers": 0.34, "do_rows": 7.5, "do_duration": 0.15, "do_requests": 0.22, "workers": 0.11, "usd": 8.32, "prefix": "graft-m3f", "prefix_usd": 1.15}
+FINISHED

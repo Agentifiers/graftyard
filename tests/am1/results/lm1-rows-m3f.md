@@ -108,6 +108,64 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fr14 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr14`, main `0105297a`)
+
+**Slot.** B0-32 rerun on `learners-kept`, after a site day from main `0105297a`. The orchestrator granted it at about $2. Stops: graft-m3f past $5 by `PREFIX`, or the account past $280.
+- **Site day.** It took three attempts (`tests/am1/results/install-m3f.md`, m3fr14 row):
+  - The first deployed site a, then site b's PUT got a 504.
+  - The second failed on a transient `r2/buckets` API error before it deployed anything.
+  - The third deployed all three sites, 20:51:42 to 20:51:58Z: `3ea01a61`, `aaf974e0` and `836e2ba9`.
+  - The edge `58f2b859` (first attempt) served at 100% by edgever.
+- **Cost:** graft-m3f **$1.15** from 20:23:10Z to 21:15Z: site day, row, sweeps, retire and purge. The account's UTC day was $165.61 at 20:22Z and $174.66 at 21:15Z.
+- **Edge errors** (`graft-m3f-edge`, 20:55 to 21:04Z): "Cannot perform I/O on behalf" 0, "closure invoked recursively" 0, "code had hung" 0.
+- **Close-out:**
+  - The sweeps at 20:53, 21:06 and 21:15Z found nothing running.
+  - At 21:13Z, 14 of 14 members of 65584 were retired: `#1#f0` to `#1#f2`, `#2#f1` to `#4#f1`, and `#5#l0` to `#5#l7` (`lm1-rows-m3f-data/m3fr14-retire.json`).
+  - 955 objects were purged (a 329, b 330, c 296, all to 0). The second pass found 0.
+
+### `learners-kept` on the hosted install: the learners stayed
+
+From `tests/fanout/raw/rows-m3fr14.status` and `terms-m3fr14-b0-32.jsonl` [measured]. The terms trace now records each member's committed config index and its learner count:
+- **The placement finished before `/learners`.** The create's background `/place` committed config 5 (`Degraded`) at 20:54:42Z and config 7 (`Normal`) at 20:54:43Z. Meanwhile `learners.mjs` logged "placing since …: waiting" 10 times (the driver belt). Then it committed config **9** with 8 learners at 20:54:52Z.
+- **No config change after `/learners`.** Every member read `9/8` from 20:55:01Z through the trace's last sample at 21:04:49Z, past the row's end at 21:04:34Z.
+- **a1 confirms it.** a1's `feed members` read **8 learners, 2 followers**, and "learners caught up to 116: 8/8 in 11.9 s".
+- **What this shows and doesn't.** The belt did its job, so the race the product fix closes didn't occur on this run. The product fix itself is shown by its tests and `plant33.py`, not by this run.
+
+### B0-32 (repo 65584, run `mwl68qny`, leader site 0): not measured. The orb's connections to the edge failed for the whole burst
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | **500 of 500 ended in the client with no HTTP answer**: 230 `ERR_HTTP2_STREAM_ERROR`, 156 `ECONNRESET`, 114 `UND_ERR_SOCKET` | **Not measured** (see below) |
+| Queued agent bytes under AGENT_QUEUE_MAX | peak 169,453 B, 16 queued | Pass |
+| Merges in one of the next 2 entries | not judged from entries; `merge:only` 22 of 24 ok, p50 1.9 s, p99 23.6 s | Not shown |
+| Zero leader changes and zero `suspect` | term 2 throughout, leader site 0; **2 `/suspect` about `repo:65584`** at 21:03:29 to 34Z, from two receipts a1 counted `missed` (`pushTiming`: ask 2, missed 2, suspect 2), each sent to both followers | **Fail** (the line's target is 0) |
+
+**Why the burst line isn't a reading** [measured]:
+- **The client sent the burst on time.** a1 sent the 500 burst pushes (256 KiB each, 128 MiB in all) from 21:01:11.357Z to 21:01:15.832Z.
+- **Every one failed in the client, below HTTP.** The failures came in waves: 114 sockets closed at 21:01:15, 70 connections reset at 21:01:16, 86 more at 21:01:22, and 225 HTTP/2 streams reset from 21:01:44 to 49Z.
+- **Almost none reached the Worker.** Over 21:01:10 to 21:02:00Z the edge's Workers Logs hold 231 `git-receive-pack` requests, all answered 200 with no exception. Only 13 were over 200 KB, and only 7 were the burst's size (262,746 to 262,751 bytes, at 21:01:20 to 30Z). Each of those 7 was served in 2.2 to 4.0 s, yet the client recorded them as failed too.
+- **The orb's other traffic failed at the same time.** Over the run, agent pushes ended `fetch failed` or `terminated` 88 times (m3fr13: 8), and ref reads ended with status 0 1,503 times (m3fr13: 119).
+- **The cause is unknown** [inference]. The fault is in the transport between the orb's Node client (undici, HTTP/2 to the edge) and Cloudflare's front end: almost none of the requests reached the Worker. The driver's burst path hasn't changed since m3fr13 (`git diff 1d3c897b 0105297a -- tests/am1/rest/a1.mjs` touches only B0-35's `--workflow`).
+
+**The product side, from the 1,042 non-burst pushes the edge timed** [measured, `pushTiming`], p50 / p99 in ms (m3fr13 in brackets):
+
+| Stage | p50 / p99 |
+|---|---|
+| auth | 80 / 825 (158 / 2,706) |
+| resolve | 521 / 1,302 (615 / 3,710) |
+| gate | 288 / 1,124 (0 / 5,979) |
+| context | 0 / 971 (324 / 7,443) |
+| validate | 237 / 3,345 (384 / 1,656) |
+| commit | 733 / 1,286 (750 / 2,709) |
+| total | 2,159 / 5,477 (3,126 / 12,321) |
+
+- **Leader:** commit p50 558 ms and p99 1,106 ms over 4,663 commands. The cycle was p50 238 ms and p99 589 ms, and `held` was p99 1.
+- **Receipts:** 1,147 commits on 1,149 sends, 0 busy, 2 asks, 2 missed, 2 `suspect`.
+- **Context:** with 8 learners serving the feed, `context` p99 fell from 7.4 s to 1.0 s, and the timed total p99 from 12.3 s to 5.5 s.
+- **Other `/suspect`** in the window, not about this repository [measured, the sites' Workers Logs]:
+  - one per voter of `authz:1` at 20:55:29Z, during setup;
+  - one per voter of the retired `repo:65562` to `65565` at 21:02:30 to 44Z, from one edge isolate.
+
 ## Rows m3fr13 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr13`, main `1d3c897b`)
 
 **Slot.** B0-32 was rerun alone, with no site day, because main's `crates`, `workers` and `containers` are unchanged since `fec1d01d` (`git diff --quiet fec1d01d 1d3c897b`). edgever showed `graft-m3f-edge` serving `2c42bfcc` at 100%. The stops were graft-m3f past $5 by `PREFIX`, or the account past $280.
