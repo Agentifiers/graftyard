@@ -839,15 +839,11 @@ pub enum WorkspaceMode { Fork, InRepo }
 
 // ---- The read path ----
 /// A fold with every entry acknowledged before `arrived`, built only by a leader whose term's `Noop` is applied: from
-/// its fold while `now < lease_end - DRIFT`, else after a read-index round to the voters (renewing the lease), shared
-/// by every read that arrived first; the next waits for the isolate's own clock to move (one a turn), then for an answer
-/// or READ_ROUND_GAP (20 ms [guess]) on it. A round to a voter with AppendEntries out for under READ_RESEND (500 ms
-/// [guess]) carries no entries, at the voter's acknowledged index, and leaves those calls alone; past it the round
-/// re-sends them. Re-sending the entry in flight every time, rounds sent each entry 6.4 to 7.8 times to each voter on
-/// B0-29 [measured, `tests/m0/results/read-beat.md`]. Read-index answers wait for the
-/// `Noop`. `Fresh` reads touch SQLite after the lease check, isolate-held state only under a key read there (F65's
-/// dump), so a replaced instance cannot answer.
-/// Followers batch read-index requests every 10 ms, learners every 50 ms resent once after HEDGE (500 ms [guess]).
+/// its fold while `now < lease_end - DRIFT`, else after a read-index round to the voters (renewing the lease), shared by
+/// every read that arrived first; the next waits for the isolate's own clock, then an answer or READ_ROUND_GAP (20 ms
+/// [guess]), empty to a voter with calls out under READ_RESEND (500 ms [guess]). Read-index answers wait for `Noop`.
+/// `Fresh` reads touch SQLite after the lease check, isolate state only under a key read there (F65's dump), so a
+/// replaced instance cannot answer. Followers batch read-indexes per 10 ms, learners per 50 ms resent after HEDGE 500 ms.
 pub async fn fresh(&self, arrived: Instant) -> Result<Fresh<'_>, NotLeader>;
 /// Stale mode starts only by a customer-signed `StaleMode` flag, committed in the `Release` group or, when it cannot
 /// commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and fetches at
