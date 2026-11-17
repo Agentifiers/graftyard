@@ -587,7 +587,7 @@ pub enum Trace {
     #[cfg(feature = "test-faults")]
     Entered = 25,
     /// m41-held's read source: a `/read` request's query, logged once its body is read. `batch` is its `Entered` row's
-    /// arrival number (that row's `index` / 64), `index` the code of the query's first key in `READ_QUERIES`, and `ms` 1
+    /// arrival number (that row's `index` / 64), `index` the query's code in `READ_QUERIES` (`read_query_code`), and `ms` 1
     /// for a read-index read (`"index": true`, from a follower or learner pass) and 0 for one sent to the leader.
     #[cfg(feature = "test-faults")]
     ReadQuery = 26,
@@ -615,7 +615,7 @@ pub const ROUTES: &[&str] = &[
     "/record",
 ];
 
-/// m41-held: query codes in `Trace::ReadQuery`, code `i + 1` for a query whose first key is `READ_QUERIES[i]`, 0 for
+/// m41-held: query codes in `Trace::ReadQuery`, code `i + 1` for a query `read_query_code` names `READ_QUERIES[i]`, 0 for
 /// any other. Append-only, as `ROUTES` is; `tests/f74/inbound.py` keeps the same list.
 #[cfg(any(test, feature = "test-faults"))]
 pub const READ_QUERIES: &[&str] = &[
@@ -640,16 +640,28 @@ pub const READ_QUERIES: &[&str] = &[
     "genesis",
     "app",
     "key",
+    "packed",
+    "refs",
+    "core",
 ];
 
-/// A `/read` body's query code (`READ_QUERIES`): its `q`'s first key, or `key` for the old `{"key": ..}` shape.
+/// A `/read` body's query code (`READ_QUERIES`): what it selects, not its first key, because `serde_json` sorts a
+/// query's keys and m42p's trace named the edge's core rows `ranges` and its whole-tier dumps `packed` or `other`
+/// (`tests/am1/results/lm1-memory.md`, round 37). A `rows` read is `packed` for a whole-tier dump (`{"rows": true}`),
+/// `core` for the read gate's access, agent, or actions rows, and `rows` for any other selection; `ranges` and
+/// `packed` beside `rows` only shape its answer. Otherwise the query's first key, or `key` for the old shape.
 #[cfg(any(test, feature = "test-faults"))]
 pub fn read_query_code(body: &serde_json::Value) -> u64 {
-    let first = match body.get("q") {
-        Some(q) => q.as_object().and_then(|o| o.keys().next().cloned()),
+    let name = match body.get("q") {
+        Some(q) => match q.get("rows") {
+            Some(serde_json::Value::Bool(_)) => Some("packed".to_owned()),
+            Some(r) if ["access", "agent", "actions"].iter().any(|k| r.get(k).is_some()) => Some("core".to_owned()),
+            Some(_) => Some("rows".to_owned()),
+            None => q.as_object().and_then(|o| o.keys().next().cloned()),
+        },
         None => body.get("key").map(|_| "key".to_owned()),
     };
-    first.and_then(|k| READ_QUERIES.iter().position(|q| *q == k)).map_or(0, |i| i as u64 + 1)
+    name.and_then(|k| READ_QUERIES.iter().position(|q| *q == k)).map_or(0, |i| i as u64 + 1)
 }
 
 /// F74: every request this host's handler takes, numbered in arrival order, and how many are open in it.
@@ -4186,10 +4198,10 @@ mod tests {
         assert!(ROUTES.len() < 64, "a code fits under the arrival number's factor");
     }
 
-    /// m41-held's read source: a `/read` body names its query by `q`'s first key, the old shape by `key`, and anything
+    /// m41-held's read source: a `/read` body names its query by what it selects, the old shape by `key`, and anything
     /// else is 0.
     #[test]
-    fn a_read_names_its_query_by_its_first_key() {
+    fn a_read_names_its_query_by_what_it_selects() {
         use super::{READ_QUERIES, read_query_code};
         let name = |v: serde_json::Value| match read_query_code(&v) {
             0 => "other",
@@ -4201,6 +4213,15 @@ mod tests {
         assert_eq!(name(serde_json::json!({ "key": "k" })), "key");
         assert_eq!(name(serde_json::json!({ "q": {} })), "other");
         assert_eq!(name(serde_json::json!({ "q": { "nope": 1 } })), "other");
+        // The edge's reads as it sends them, whose keys sort before `rows` (round 37).
+        let tier = serde_json::json!({ "q": { "rows": true, "ranges": true, "packed": true } });
+        assert_eq!(name(tier), "packed", "a whole-tier dump");
+        let gate = serde_json::json!({ "q": { "rows": { "access": true, "agent": true }, "ranges": true } });
+        assert_eq!(name(gate), "core", "the read gate's rows");
+        let merge = serde_json::json!({ "q": { "rows": { "merge": 7 }, "ranges": true, "packed": true } });
+        assert_eq!(name(merge), "rows", "a merge's rows");
+        assert_eq!(name(serde_json::json!({ "q": { "ranges": true } })), "ranges", "the shard's ranges read");
+        assert_eq!(name(serde_json::json!({ "q": { "refs": { "limit": 10 } } })), "refs");
     }
 
     #[test]
