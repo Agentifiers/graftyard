@@ -343,6 +343,15 @@ Code-only, no hosted spend. `tests/m4/wp4/sandboxstarts.py` reads the runner acc
 
 **Not fixed here: recorded as F80** (`decisions/OPEN-QUESTIONS.md`). Pacing is not the fix. The small change, awaiting the start before the 202, would hold webhook deliveries open for up to 2.5 minutes. The real fix moves the start out of the delivery pass's `waitUntil`, either into the Sandbox object (store the JIT config and let its own alarm start the process) or onto a path with a longer limit. That is a design change to `graft-runners`' Shape entry and needs a hosted check of a cold burst, so it waits for a decision.
 
+## F80's fix: the Sandbox's alarm starts the runner (2026-11-17, code only)
+
+Branch `f80-alarm-start` (`decisions/DECISIONS.md`, `f80-alarm-start`). A pass registers the runner and calls the Sandbox's `arm`, which stores the start and schedules it on the Sandbox's own alarm, then returns. `launch.mjs` starts the process from that alarm at most once, retries every 10 s while placement fails, gives up 6 minutes after the arm, and drops the JIT config once the process starts or the runner is destroyed.
+
+- **The alarm covers the wait.** An alarm handler has 15 minutes of wall time and retries a thrown handler up to 6 times [doc: Workers limits, "Durable Object alarm handlers"; Durable Objects alarms]. One start try waits at most the SDK's 150 s transport budget, so the slowest burst placement measured, 179 s, takes two tries.
+- **The cap-slot hold, settled.** Runner 1704490 (Sandbox `55e4e998`, run 1966284) never opened a session or made an install request. It was deleted stale at 04:46:38Z, about 610 s after its Sandbox was first called, and its Sandbox was destroyed 0.3 s later. Runs 1966284 and 1966233 opened 50 sessions each for 51 and 52 registrations [measured, the edge's Workers Logs], so in each run one runner never started.
+- **Tests.** `workers/runners/tests/launch.test.mjs` (`node --test workers/runners/tests/`, now a CI job), 4 tests on a fake Sandbox using the burst's measured waits. Plants 60 to 67 in `tests/m4/wp4/plant.py`: 8 of 8 caught. Plant 60 is main's rule, where the pass starts the process itself; under it the burst test's delivery passes are cut at 30 s.
+- **Not yet hosted.** The cold-burst check (one BF-60-style burst after the class sits idle) is for the next combined slot, Nov 18 or later. It passes when no delivery pass logs a `waitUntil` cancellation, every registered runner opens a session, and no Sandbox starts two processes.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |

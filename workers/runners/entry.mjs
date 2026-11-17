@@ -2,9 +2,26 @@
 // and the Sandbox SDK's Durable Object class, once per instance type, because a container class has one instance type.
 // `worker-build` exports only Rust classes, so the SDK's JS class is exported here and wrangler bundles both.
 import { Sandbox } from "@cloudflare/sandbox";
+import * as launch from "./launch.mjs";
 
 export { default } from "./build/index.js";
 // The SDK asks the entry to export this too (its type declarations, `ContainerProxy`).
 export { ContainerProxy } from "@cloudflare/sandbox";
-export class SandboxStd3 extends Sandbox {}
-export class SandboxStd4 extends Sandbox {}
+
+// A runner's Sandbox starts its own process from its alarm (`launch.mjs`).
+class RunnerSandbox extends Sandbox {
+  async arm(name, cmd, opts) {
+    await this.setSandboxName(name);
+    await this.setKeepAlive(true);
+    return launch.arm(this, cmd, opts);
+  }
+  async launchRunner() {
+    return launch.launch(this);
+  }
+  async destroy() {
+    await launch.close(this);
+    return super.destroy();
+  }
+}
+export class SandboxStd3 extends RunnerSandbox {}
+export class SandboxStd4 extends RunnerSandbox {}
