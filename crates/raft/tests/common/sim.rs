@@ -1092,9 +1092,9 @@ impl Sim {
         if clients_active {
             self.clients();
             if self.rng.chance(self.faults.hedge) {
-                // A stray report about whoever the reporter last saw lead, from a random colo.
+                // A stray report about whoever the reporter last saw lead, from a random colo (never `Colo::UNKNOWN`).
                 let s = SITES[self.rng.below(3) as usize];
-                let colo = Colo(self.rng.below(8) as u32);
+                let colo = Colo(self.rng.below(8) as u32 + 1);
                 let term = self.member(s).map_or(Term(0), |m| m.term());
                 let about = self.member(s).and_then(|m| m.leader()).unwrap_or(s);
                 self.stats.hedges += 1;
@@ -1286,7 +1286,7 @@ impl Sim {
         self.next_id += 1;
         let target = SITES[self.rng.below(3) as usize];
         let id = RequestId(graftyard_raft::Ulid(self.next_id));
-        let colo = Colo(client as u32);
+        let colo = Colo(client as u32 + 1);
         let receipt = command(&op).map(|cmd| Receipt::new(id, cmd, target, colo));
         self.ops[client] = Some(Op {
             client,
@@ -1533,7 +1533,7 @@ impl Sim {
             None => graftyard_raft::quorums::voters(&config)
                 .into_iter()
                 .filter(|s| *s != target)
-                .map(|s| graftyard_raft::Suspect { to: s, from: Colo(client as u32), about: target, term })
+                .map(|s| graftyard_raft::Suspect { to: s, from: Colo(client as u32 + 1), about: target, term })
                 .collect(),
         };
         self.send_suspects(c, reports);
@@ -1604,7 +1604,12 @@ impl Sim {
                         op.target = SITES[(old.0 as usize + 1) % 3];
                         SITES
                             .iter()
-                            .map(|s| graftyard_raft::Suspect { to: *s, from: Colo(client as u32), about: old, term })
+                            .map(|s| graftyard_raft::Suspect {
+                                to: *s,
+                                from: Colo(client as u32 + 1),
+                                about: old,
+                                term,
+                            })
                             .collect()
                     }
                 }

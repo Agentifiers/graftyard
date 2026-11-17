@@ -63,6 +63,12 @@ pub struct TransferId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Colo(pub u32);
 
+impl Colo {
+    /// A report from no known data center: a site script's or a member's own lookup, which runs in no edge, or an
+    /// edge request without `cf.colo`. It still starts a campaign once the promise lapsed, but counts toward no colo.
+    pub const UNKNOWN: Colo = Colo(0);
+}
+
 /// Why `Member::transfer` did not start a transfer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TransferError {

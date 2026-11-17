@@ -4814,3 +4814,65 @@ Raw files in `tests/fanout/raw/`:
 - `tsave-m43b33.jsonl.xz`, `inbound-m43b33.txt`, `rounds-m43b33.json`;
 - `stepdowns-m43b33.txt`, `edgeerr-m43b33.txt`;
 - `retire-m43.log`, `purge-m43.log`, `purge-m43b.log`.
+
+### m43's CommitErrors step-downs (2026-11-17, code only, no spend)
+
+The operator asked, from m43's raw files: for each of the 11 `CommitErrors` step-downs, which calls failed, to which
+voter, with what error, and how loaded the voter was; whether the trip is legitimate or health.rs counts overload from
+a live voter as a dead path; and the first point where it goes wrong.
+
+**The step-downs moved no leader.** All 13 StepDown alarms (`stepdowns-m43b33.txt`) were holds, `to: None`: 11
+`CommitErrors` and 2 `Confirm`. A hold keeps the leader leading for one window. The 19 term changes came from
+elections, not from step-downs.
+
+**The trips' failed calls.** Every failure was a deadline miss, never a shed or a 503: the leader's peers ended at
+peer 1 {deadline 420, fetch 24} and peer 2 {deadline 424, fetch 132} (`a1-b0-33-m43.jsonl`). In the 10 s before each
+`CommitErrors` trip, 540 calls missed, 482 of them with an out leg (send to callee handler entry) of 1 s or more. At
+the callee the handler ran p50 0 ms with 1 to 4 requests open, but 900 to 3,800 requests had entered ahead of the call
+(p50 per trip), about 97% of them edge `/read` and `/suspect`. Over the load, missed calls had out leg p50 2,535 ms
+(n 2,928) and answered ones 744 ms (n 2,038); the leader's own loop lag at send was p50 0. So the followers were live
+and the calls waited in their input queues. By the rule as written the trips are legitimate (calls over 5% failed to
+both followers), and they count overload as failure, the F74 class; but since every one was a hold, they cost no term.
+
+**Where it goes wrong: both followers stop promising a leader that still commits.** Each of the 28 lapses pinned by
+`terms-m43b33.jsonl` (both followers, terms 2 to 20) has the same shape: the follower's last promise renewal, then
+appends from the same leader for the next 10 s that renew nothing (2 to 43 appends, commit up 1 to 17), then the
+promise lapses and the next `/suspect` report starts a campaign (`tests/fanout/withhold.py`). A follower skips the
+renewal only for an append carrying a transfer, `sent_at < transfer_at`, or `suspect` withholding (follower.rs
+`on_append`).
+- A transfer: no alarm named a target, and a transfer ends within LEASE (9 s), yet in 21 of 28 lapses an append of
+  the same term arrived more than 9 s after the last renewal and still renewed nothing. Not a transfer.
+- Withholding needs reports from two distinct colos within 10 s. Every edge request came from LAX (2,961 of 2,961 edge
+  log events sampled in the load carried `cf.colo` LAX; 430 invocation records carried none). The other colo was 0:
+  a site script never calls `graftyard_lookup::set_colo`, so shard, audit, prsync, broker and merge-queue lookups
+  report with colo 0. The trace's senders: 315 edge commit isolates sent 143,954 `/suspect`, 15 site-script isolates
+  667, and 49 read-only isolates 1,321.
+- Replaying election.rs's rule on each follower's own appends and reports: with every report from one colo, no
+  follower withholds (0 of 28 last renewals inside the sampled bound); with site-script and read-only isolates at colo
+  0, 8 of 28 land inside it, and every other replay withholds earlier than measured. Members log neither a report's
+  colo nor whether it counted (a stale `about` or term counts for nothing), so the replay is an upper bound and the
+  match is partial [inference, from the code and the replay; the colo itself unmeasured].
+
+So the first wrong point: a report from no data center (colo 0) counts as a second colo, and with one edge colo it
+makes both followers withhold from a healthy leader. The commit-call misses and the trips are the load's symptom.
+
+**Fix `colo-unknown`** (`decisions/DECISIONS.md`): `Colo(0)` is `Colo::UNKNOWN`, and a follower counting toward
+SUSPECT's two colos skips it; the report still starts a campaign once the promise lapsed. A new test-faults trace
+kind, `Trace::Reported` (28, appended), logs each stepped report's `about`, term, colo and verdict, so the next run
+reads the colo instead of inferring it.
+- Test: `an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign` (`crates/raft/tests/leadership.rs`) fails
+  on main's rule ("B withheld on one colo plus unknown-colo reports") and passes with the fix; it also checks two real
+  colos still withhold and an unknown-colo report still elects. `tests/colounknown/plant.py`: 4 of 4 plants caught
+  (main's rule, a skip that clears the window, `UNKNOWN` other than the 0 a site script sends, an early return).
+- The simulator's colos start at 1, so its clients are edges as before.
+- Long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) and Porcupine `-seg 2000` on `hist.jsonl` and `hist.jsonl.gray`:
+  results below.
+
+**What this does not fix.** Edge isolates walking the voters after each term change, and the input-queue delay
+behind them, stay; with no withholding the term changes that start the walks should stop, which the next B0-33 tests.
+
+**R25 race, harness fix.** `tests/fanout/purge.py` now purges twice: after the first pass it waits until
+`second_pass_at` the first listing (that slot's */15 boundary plus SWEEP_WALL, 8 minutes, plus 2 minutes to finish),
+purges again, and logs both passes' per-bucket counts and the second pass's total. Tests in
+`tests/fanout/test_purge.py` (a sweep that re-puts a marker during the wait is cleared; no wait once past it; both
+sides of a slot boundary), and five new plants in `tests/fanout/plant_purge.py`; 13 of 13 caught.

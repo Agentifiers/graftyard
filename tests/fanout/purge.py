@@ -6,16 +6,43 @@ harness cleans their packs up; the sweeper never treats a silent group as gone).
 Gate, per network: the repository chain `repo:NET` must answer "not joined" on every voter its registry rows name on
 each site and on each site's first-generation voter; a network with any member joined, or any status that failed, is
 refused and nothing of it is deleted. Then every key under the network's prefixes (`prefixes`) is listed and deleted
-in batches of 1,000 through R2's S3 API, and listed again: the log line names each bucket's count before and after.
+in batches of 1,000 through R2's S3 API, and listed again. A live purge runs twice, waiting for sweep runs that started
+before the first pass to finish; the log names both passes' per-bucket counts before and after. A dry run makes one pass.
 
 Run with `uv run -q --with boto3 python3 tests/fanout/purge.py ...`. Needs CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN
 (R2 write; its S3 credentials are the token's id and the SHA-256 of its value), GRAFT_TOOLS_EDGE, and the tools token
 file (TOOLS_TOKEN_FILE, default tests/m0/.m0-token in the main checkout); tokens go in headers only, never on argv or
 in a log. Log: $PURGE_LOG (default tests/fanout/raw/purge-m2b.log)."""
-import datetime, hashlib, json, os, sys, urllib.request
+import datetime, hashlib, json, os, sys, time, urllib.request
 
 INSTALL = os.environ.get("INSTALL", "graft-m2b")
 SITES = "abc"
+
+SWEEP_SLOT_S = 900  # Site sweeps start at */15-minute cron boundaries.
+SWEEP_WALL_S = 480  # crates/git/src/sweep.rs SWEEP_WALL stops new work after 8 minutes.
+SETTLE_S = 120  # Two minutes for work already in flight when SWEEP_WALL expires.
+
+
+def second_pass_at(t):
+    """When every sweep run that started at or before `t` has ended: the latest such run started at `t`'s */15
+    boundary, stops starting work SWEEP_WALL later, and finishes what it started within SETTLE_S."""
+    return t // SWEEP_SLOT_S * SWEEP_SLOT_S + SWEEP_WALL_S + SETTLE_S
+
+
+def purge_twice(purge_one, nets, now, sleep):
+    """Purges every network, waits until `second_pass_at` the first listing, and purges again: a sweep run that started
+    before the first pass re-put 165 `committed/pack/131349/` markers after it on m43 (R25). Returns (net, first
+    counts, second counts) per network."""
+    t0 = now()
+    first = [(net, purge_one(net)) for net in nets]
+    if not first:
+        return []
+    deadline = second_pass_at(t0)
+    if deadline > now():
+        sleep(deadline - now())
+    second = [(net, purge_one(net)) for net in nets]
+    return [(net, first_counts, second_counts)
+            for (net, first_counts), (_, second_counts) in zip(first, second)]
 
 
 def prefixes(net):
@@ -88,6 +115,7 @@ def main():
     s3 = boto3.client("s3", endpoint_url=f"https://{acct}.r2.cloudflarestorage.com", region_name="auto",
                       aws_access_key_id=v["result"]["id"], aws_secret_access_key=hashlib.sha256(tok.encode()).hexdigest())
     totals = {"purged": [], "refused": []}
+    gated = []
     for net in nets:
         chain = f"repo:{net}"
         answers = []
@@ -105,11 +133,30 @@ def main():
             log(f"{net} REFUSED: not retired ({', '.join(live)[:160]})")
             totals["refused"].append(net)
             continue
-        counts = {site: purge(s3, f"{INSTALL}-site-{site}-packs", net, dry) for site in SITES}
-        log(f"{net} {'would delete' if dry else 'purged'}: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in counts.items()))
-        totals["purged"].append([net, {s: b for s, (b, _) in counts.items()}])
+        gated.append(net)
+
+    second = 0
+    if dry:
+        for net in gated:
+            counts = {site: purge(s3, f"{INSTALL}-site-{site}-packs", net, True) for site in SITES}
+            log(f"{net} would delete: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in counts.items()))
+            totals["purged"].append([net, {s: b for s, (b, _) in counts.items()}])
+    else:
+        def logged_sleep(s):
+            until = datetime.datetime.fromtimestamp(time.time() + s, datetime.UTC).isoformat()
+            log(f"waiting {int(s)} s for sweep runs started before the first pass (until {until})")
+            time.sleep(s)
+
+        results = purge_twice(
+            lambda net: {site: purge(s3, f"{INSTALL}-site-{site}-packs", net, False) for site in SITES},
+            gated, now=time.time, sleep=logged_sleep)
+        for net, first_counts, second_counts in results:
+            log(f"{net} purged: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in first_counts.items()))
+            log(f"{net} second pass: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in second_counts.items()))
+            totals["purged"].append([net, {s: b for s, (b, _) in first_counts.items()}])
+            second += sum(b for b, _ in second_counts.values())
     log(json.dumps({"dry": dry, "purged": len(totals["purged"]), "objects": sum(sum(c.values()) for _, c in totals["purged"]),
-                    "refused": totals["refused"]}))
+                    "refused": totals["refused"], "second": second}))
 
 
 if __name__ == "__main__":

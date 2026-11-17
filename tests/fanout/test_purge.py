@@ -2,7 +2,7 @@
 import os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from purge import prefixes, purge, retired  # noqa: E402
+from purge import prefixes, purge, purge_twice, retired, second_pass_at  # noqa: E402
 
 NJ = {"joined": False}
 
@@ -56,6 +56,55 @@ class PurgeTest(unittest.TestCase):
 
     def test_prefixes_end_in_a_slash(self):
         self.assertTrue(all(p.endswith(("/131322/", ":131322/")) for p in prefixes(131322)))
+
+    def test_second_pass_at_on_both_sides_of_a_slot_boundary(self):
+        self.assertEqual(second_pass_at(1794933000), 1794933000 + 600)  # Exactly a boundary.
+        self.assertEqual(second_pass_at(1794932999), 1794932100 + 600)  # One second before it.
+        self.assertEqual(second_pass_at(1794932400), 1794932100 + 600)  # Mid-slot.
+
+    def test_second_pass_waits_for_a_sweep_and_removes_its_late_marker(self):
+        mine = ["pack/131349/a.pack", "committed/pack/131349/original", "upload/131349/u"]
+        others = ["pack/131350/a.pack", "committed/pack/13132/x", "archive/repo:131350/r"]
+        b = Bucket(mine + others)
+        clock = [1794932400]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            b.keys.add("committed/pack/131349/x")
+            clock[0] += seconds
+
+        def purge_one(net):
+            return {"a": purge(b, "x", net, False)}
+
+        result = purge_twice(purge_one, [131349], lambda: clock[0], sleep)
+
+        self.assertEqual(sleeps, [1794932100 + 600 - 1794932400])
+        self.assertEqual(sleeps, [300])
+        self.assertEqual(result, [(131349, {"a": (len(mine), 0)}, {"a": (1, 0)})])
+        self.assertEqual(b.keys, set(others))
+
+    def test_second_pass_does_not_wait_when_first_pass_has_outlasted_the_settle(self):
+        clock = [1794933000]
+        calls = []
+
+        def purge_one(net):
+            calls.append(net)
+            if len(calls) == 1:
+                clock[0] = 1794934000  # In the next slot, beyond the first slot's settle time.
+            return {"a": (0, 0)}
+
+        def sleep(seconds):
+            self.fail(f"unexpected sleep({seconds})")
+
+        result = purge_twice(purge_one, [131349], lambda: clock[0], sleep)
+        self.assertEqual(calls, [131349, 131349])
+        self.assertEqual(result, [(131349, {"a": (0, 0)}, {"a": (0, 0)})])
+
+    def test_second_pass_with_no_networks_never_purges_or_sleeps(self):
+        result = purge_twice(lambda net: self.fail("unexpected purge"), [], lambda: 1794932400,
+                             lambda seconds: self.fail("unexpected sleep"))
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":
