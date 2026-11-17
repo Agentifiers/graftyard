@@ -4410,6 +4410,26 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted run in which site a's sweep still passes SWEEP_WALL plus the in-flight network's actions, or in which a chain answered after a failed lookup in the same run held a pack the run should have marked (a committed pack left without its marker for more than one full pass).
 
+### `read-beat`: a read round to a voter with AppendEntries out carries no entries, 2026-11-17
+
+**Status.** Asked for by the operator (trace B0-29's commit regression, code-only). Built on branch `read-beat`, not deployed. A `crates/raft` change, so it reaches every member release on a site day.
+
+**Decision.** `Member::read_round` sends each voter that has AppendEntries out (a non-empty pipeline and an outstanding call sent under READ_RESEND, 500 ms [guess], ago), and whose acknowledged index is in the in-memory window, an AppendEntries with no entries at that acknowledged index (`read_beat`). It leaves the pipeline and the outstanding call alone. Every other voter gets the round as before, a forced send from `next`, so a call outstanding READ_RESEND or longer is re-sent by the next round, not left to CALL_DEADLINE's tick.
+
+**Why.** B0-29's commit p99 went from 774 ms (m27, main `2b1938e`) to 1,682 ms (`mwkyk9zg`, main `19b5ae77`), because the leader cut 3.8 entries a second against 4.8 and every command waited longer for the one entry in flight (`queue:slot` p99 462 to 4,308 ms). The leader's trace shows each entry sent 6.35 times to one voter and 7.81 times to the other. 84 to 87% of its AppendEntries to voters were repeats of the entry in flight, 639 and 936 MB against 111 and 113 MB of first sends, at the 20 to 30 ms cadence of read rounds. The followers took 29 to 31 calls a second against m27's 3 [measured, `tests/m0/results/read-beat.md`]. A forced send drops the pipeline and sends from `next`, which moves only on an ack, so every round carried the entry again. Rounds became that frequent with `lease-clock`: a leader whose stamp lag window is 250 ms or more grants no lease read, and the replayed rule had this leader suspect for 86.7% of arrivals [inference: the run saved no `/stats.clock`].
+
+**Why READ_RESEND.** The forced rounds also re-sent a lost call within one round. With empty rounds only, the long sweep's live half failed on seed 13441: a half-hung site lost the leader's calls, nothing re-sent them until CALL_DEADLINE, the leader handed off, and a quorum with requests waiting stalled 31,166 ms against the 30 s bound; main stalls 5,273 ms on that seed. Across 12,000 live seeds the two rules' stall distributions otherwise match (p99 16.0 s both) [measured, `tests/m0/results/read-beat.md`, "The long sweep"]. With READ_RESEND the seed stalls 3,025 ms. On `mwkyk9zg` 1% and 4% of entries waited 500 ms or more for a voter's first ack, so the resend costs about one extra send for those [measured, the same trace].
+
+**What it beat.**
+- **Lease reads while the clock is suspect:** reopens the stale-read window `lease-clock` closed.
+- **A longer READ_ROUND_GAP:** every read waits longer, and each round still re-sends the entry.
+- **Rounds only to voters with nothing out:** a read arriving while an entry is in flight would wait for that entry's ack.
+- **Empty rounds with no resend:** failed the live bound once in the long sweep, as above.
+
+**Evidence.** `a_read_round_behind_an_entry_in_flight_resends_no_entries` (`crates/raft/tests/scenarios.rs`) fails on main `fbe49d59` ("20 of 20 read rounds re-sent the entry in flight") and passes. `a_read_round_to_a_voter_with_no_calls_out_still_carries_the_entry` and `a_read_round_resends_a_call_outstanding_past_read_resend` cover the fallbacks. `tests/m0carried/plant34.py`: 6 of 6 caught. The long sweep and Porcupine results are in `tests/m0/results/read-beat.md`.
+
+**Flip.** A hosted B0-29 on this change in which the leader still sends a voter more than about 1.5 AppendEntries carrying entries per entry, or one in which a read was granted without a voter quorum's ack of a round sent after it arrived.
+
 ### `colo-unknown`: a `suspect` report from no data center counts toward no colo, 2026-11-17
 
 **Status.** Asked for by the operator (root-cause m43's 11 `CommitErrors` step-downs); built on branch `commit-errors`, not deployed. A `crates/raft` change, so the next site day ships it.

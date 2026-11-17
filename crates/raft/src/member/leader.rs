@@ -66,6 +66,11 @@ pub const PIPELINE: usize = 4;
 /// on the isolate's own clock (`Member::set_own_clock`): beside a follower's 10 ms read batching, it caps read rounds at
 /// 50 a second per voter, whatever the floored member clock does.
 pub const READ_ROUND_GAP: Duration = Duration::from_millis(20);
+/// How old a voter's outstanding AppendEntries may be before a read round re-sends its entries rather than an empty
+/// round (`Member::read_beat`) [guess]: half of CALL_DEADLINE, as a learner's HEDGE. Before read-beat every round
+/// re-sent the entry in flight, which also re-sent a lost call within one round; past this a lost call is re-sent by
+/// the next round, not CALL_DEADLINE's tick, and a call answered sooner is never sent twice.
+pub const READ_RESEND: Duration = Duration::from_millis(500);
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
 /// Resolved tickets kept for a late `outcome` call: at most DONE_KEEP of them, DONE_BYTES of the bytes their commands
@@ -1992,8 +1997,51 @@ impl<C: Command> Member<C> {
         }
         self.lead.as_mut().expect("leading").read_round = Some((now, own));
         for p in self.peers() {
-            self.send_append(p, true);
+            if !self.read_beat(p) {
+                self.send_append(p, true);
+            }
         }
+    }
+
+    /// A read round to a voter that already has pipelined AppendEntries out: an AppendEntries with no entries at the
+    /// voter's acknowledged index, which it accepts whatever its calls in flight carry, and whose ack counts in
+    /// `acked_at` like any other. It leaves the pipeline and the outstanding call (`sent`) alone, so its answer starts
+    /// no re-send, and its failure resets nothing. A forced send instead reset the pipeline and carried the entry in
+    /// flight again, at each round: on B0-29 (mwkyk9zg) each entry went 6.4 to 7.8 times to each voter, 84 to 87% of
+    /// the leader's AppendEntries and 640 to 940 MB a run (`tests/m0/results/read-beat.md`). False, and the round
+    /// sends as before, to a voter with no pipeline (none out, a lossy link, a catch-up, or an install), whose
+    /// outstanding call left READ_RESEND ago or more, or whose acknowledged entry is below the in-memory window.
+    fn read_beat(&mut self, peer: SiteId) -> bool {
+        let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
+        let base = self.base.index;
+        let Some(lead) = self.lead.as_mut() else { return false };
+        let matched = lead.matched(peer);
+        let fresh = lead.sent.get(&peer).is_some_and(|(_, at)| now < after(*at, READ_RESEND));
+        if lead.pipe.get(&peer).is_none_or(Vec::is_empty) || !fresh || matched < base {
+            return false;
+        }
+        let (Some(prev_term), Some(prev_digest)) = (self.term_at(matched), self.digest_at(matched)) else {
+            return false;
+        };
+        let lead = self.lead.as_mut().expect("leading");
+        let transfer = lead.transfer.as_ref().map(|t| (t.to, t.id));
+        lead.round += 1;
+        let req = AppendReq {
+            term,
+            leader: me,
+            boot,
+            round: lead.round,
+            sent_at: now,
+            prev_index: matched,
+            prev_term,
+            prev_digest,
+            entries: Vec::new(),
+            commit,
+            transfer,
+            lead_seq: self.state.lead_seq,
+        };
+        self.send(peer, Message::Append(req));
+        true
     }
 
     fn check_reads(&mut self) {

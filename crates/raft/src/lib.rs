@@ -34,9 +34,9 @@ pub use member::{
     APPEND_BYTES_MAX, AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId,
     DONE_BYTES, Deny, DepsUsed, DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError,
     InstallSnapshot, InstallSource, InstallWanted, LEARNER_READ_EVERY, LEARNERS_OUT_MAX, LogBase, Member, MemberConfig,
-    Message, OUT_KEEP, OUT_MAX, OUTCOME_KEEP, Out, PEER_OUT_MAX, PIPELINE, READ_PIPELINE, READ_ROUND_GAP, ReadId,
-    ReadStart, Ready, ReconfigError, Refusal, Resolution, RestoreError, Role, SelfAck, StepDownWhy, Storage, Stored,
-    Verdict, VoteReq, VoteRes, Write, verify,
+    Message, OUT_KEEP, OUT_MAX, OUTCOME_KEEP, Out, PEER_OUT_MAX, PIPELINE, READ_PIPELINE, READ_RESEND, READ_ROUND_GAP,
+    ReadId, ReadStart, Ready, ReconfigError, Refusal, Resolution, RestoreError, Role, SelfAck, StepDownWhy, Storage,
+    Stored, Verdict, VoteReq, VoteRes, Write, verify,
 };
 pub use outcome::Acked;
 pub use quorum::{DurableAck, QuorumProof};
