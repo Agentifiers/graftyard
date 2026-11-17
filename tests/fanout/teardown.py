@@ -9,8 +9,13 @@ every running pool shard is torn down too, through `/_bed/kill_pool?site=&pool=`
 BED_TOKEN_FILE and sent on curl's stdin, never on argv.
 
 `--sweep` (no ranges): every network and pool shard, then a recheck of the install's running containers; exits 2 and
-names each one still running after a minute. rows.sh and smoke.sh end every run with it."""
-import json, os, re, subprocess, sys, urllib.request
+names each one still running after a minute. rows.sh and smoke.sh end every run with it.
+
+`--shardkill`: for a product install, whose edge has no `/_bed/kill` and no bed token (graft-m4a). The teardowns go
+through a scratch Worker `$INSTALL-shardkill` (tests/fanout/shardkill), bound to each site script's `GitShard` class,
+to the shard's own `/teardown`, as M4's graft-m4a-shardkill did. It is deployed with a one-time token (a secrets file,
+never argv) and deleted at the end; WRANGLER names the wrangler binary."""
+import atexit, json, os, re, secrets, shutil, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 
 sweep = "--sweep" in sys.argv[1:]
 pools = "--pools" in sys.argv[1:] or sweep
@@ -20,19 +25,53 @@ if len(nums) % 2 or (not nums and "--all-nets" not in sys.argv[1:] and not sweep
 ranges = [(0, 2**63)] if "--all-nets" in sys.argv[1:] or sweep else list(zip(nums[::2], nums[1::2]))
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
 edge = os.environ["GRAFT_EDGE"]
-bed = open(os.environ["BED_TOKEN_FILE"]).read().strip()
+install = os.environ.get("INSTALL", "graft-m2b")
+kill = None
+if "--shardkill" in sys.argv[1:]:
+    wrangler = os.environ.get("WRANGLER", os.path.abspath("tests/m0/node_modules/.bin/wrangler"))
+    name, tok_k = f"{install}-shardkill", secrets.token_hex(24)
+    work = tempfile.mkdtemp()
+    with open(f"{work}/wrangler.json", "w") as f:
+        json.dump({"name": name, "main": os.path.abspath("tests/fanout/shardkill/index.js"),
+                   "compatibility_date": "2025-09-01", "workers_dev": True,
+                   "durable_objects": {"bindings": [{"name": f"SHARD_{i}", "class_name": "GitShard",
+                                                     "script_name": f"{install}-site-{c}"} for i, c in enumerate("abc")]}}, f)
+    fd = os.open(f"{work}/secrets.json", os.O_WRONLY | os.O_CREAT, 0o600)
+    os.write(fd, json.dumps({"TOKEN": tok_k}).encode()); os.close(fd)
+    r = subprocess.run([wrangler, "deploy", "-c", f"{work}/wrangler.json", "--secrets-file", f"{work}/secrets.json"],
+                       capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(f"shardkill deploy failed: {r.stderr[-400:]}")
+    base = f"https://{name}." + edge.split("://")[1].split(".", 1)[1]
+    print(f"shardkill deployed: {base}", flush=True)
+
+    def kill(site, inst):
+        # A new workers.dev route takes a few seconds to answer: retry a 404 or a failed call for a minute.
+        for _ in range(12):
+            r = subprocess.run(["curl", "-s", "-m", "60", "-X", "POST", "-H", "@-", "-o", "/dev/null", "-w", "%{http_code}",
+                                f"{base}/?site={site}&name={urllib.parse.quote(inst)}"],
+                               input=f"x-t: {tok_k}\n", capture_output=True, text=True)
+            if r.stdout not in ("404", "000", ""):
+                return r.stdout
+            time.sleep(5)
+        return r.stdout or f"fail({r.returncode})"
+
+    atexit.register(lambda: (shutil.rmtree(work), print("shardkill deleted:", subprocess.run(
+        [wrangler, "delete", name, "--force"], capture_output=True, text=True).returncode == 0, flush=True)))
+else:
+    bed = open(os.environ["BED_TOKEN_FILE"]).read().strip()
 H = {"authorization": f"Bearer {tok}"}
 api = lambda p: json.load(urllib.request.urlopen(urllib.request.Request(
     f"https://api.cloudflare.com/client/v4/accounts/{acct}/containers/{p}", headers=H), timeout=60))["result"]
 done = {}
-if sweep:
+if sweep and not kill:
     # A site fault left armed (L0-12's stall killed mid-run, m3fr2: `site=255` for 30 minutes) fails every member
     # call, so `/_bed/kill` cannot read the repository's record and every teardown answers 500. Clear it first.
     r = subprocess.run(["curl", "-s", "-m", "60", "-H", "@-", "-o", "/dev/null", "-w", "%{http_code}",
                         f"{edge}/_bed/fault?off=1"], input=f"x-bed-token: {bed}\n", capture_output=True, text=True)
     print(f"site fault off: {r.stdout or f'fail({r.returncode})'}", flush=True)
 for app in api("applications"):
-    if not app["name"].startswith(os.environ.get("INSTALL", "graft-m2b") + "-site-"):
+    if not app["name"].startswith(install + "-site-"):
         continue
     for i in api(f"applications/{app['id']}/instances?per_page=1000")["instances"]:
         if i["status"].get("state") != "running":
@@ -48,6 +87,10 @@ for app in api("applications"):
             print(f"running, not a network or pool shard: {i.get('name')}", flush=True)
             continue
         else:
+            continue
+        if kill:
+            done[i["name"]] = kill((m or p)[1], i["name"])
+            print(i["name"], done[i["name"]], flush=True)
             continue
         r = subprocess.run(["curl", "-s", "-m", "60", "-X", "POST", "-H", "@-", "-o", "/dev/null", "-w", "%{http_code}",
                             url], input=f"x-bed-token: {bed}\n",
@@ -67,7 +110,7 @@ if "--sweep" in sys.argv[1:]:
     for attempt in range(6):
         time.sleep(10)
         left = [(app["name"], i.get("name")) for app in api("applications")
-                if app["name"].startswith(os.environ.get("INSTALL", "graft-m2b") + "-site-")
+                if app["name"].startswith(install + "-site-")
                 for i in api(f"applications/{app['id']}/instances?per_page=1000")["instances"]
                 if i["status"].get("state") == "running"]
         if not left:

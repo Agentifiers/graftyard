@@ -1,0 +1,13 @@
+2026-11-17T17:10:32.657Z repo:131350: 4 names, 4 were joined, all not joined
+2026-11-17T17:11:36.305Z purge: 131350 purged: a 1328 -> 0, b 1104 -> 0, c 1000 -> 0
+2026-11-17T17:11:36.306Z purge: {"dry": false, "purged": 1, "objects": 3432, "refused": []}
+2026-11-17T17:12:54.705Z repo:131350#2#l4 site 1 before: follower t1 c0; /retire: null
+2026-11-17T17:12:54.743Z repo:131350#2#l1 site 1 before: follower t1 c0; /retire: null
+2026-11-17T17:12:54.770Z repo:131350#2#l6 site 0 before: follower t1 c0; /retire: null
+2026-11-17T17:12:54.794Z repo:131350#2#l3 site 0 before: follower t1 c0; /retire: null
+2026-11-17T17:12:54.804Z repo:131350#2#l0 site 0 before: follower t1 c0; /retire: null
+2026-11-17T17:12:54.806Z repo:131350#2#l7 site 0 before: follower t1 c0; /retire: null
+2026-11-17T17:12:54.935Z repo:131350#2#l5 site 2 before: follower t1 c0; /retire: null
+2026-11-17T17:12:54.935Z repo:131350#2#l2 site 2 before: follower t1 c0; /retire: null
+2026-11-17T17:13:10.912Z retired 8/8 not joined
+2026-11-17T17:13:10.913Z purge skipped: NO_PURGE
