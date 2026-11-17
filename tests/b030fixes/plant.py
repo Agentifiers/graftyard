@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""b030-fixes: planted bugs in B0-30's three install fixes, the re-placement gate, and the create rule. Plants one
+"""b030-fixes: planted bugs in B0-30's three install fixes (with G21's pin in place of (i-2)), the re-placement gate, and the create rule. Plants one
 mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT with the
 failing tests, MISSED, or DID NOT COMPILE. Run from the worktree root:
 
@@ -30,20 +30,32 @@ MUTANTS = [
     ('(i-1) any snapshot after MetaDropped satisfies it', SPLIT,
      '    let Some(ended) = Store::get(meta, "split", &key("slim")).map(|s| s.written) else { return false };',
      '    let Some(ended) = Some(graftyard_types::Index(0)) else { return false };', T),
-    # (i-2) an install extends instead of restarting
-    ('(i-2) every new source restarts the install, as main did', LOAD,
-     '    if keys(&old) != keys(&new) || new.through < old.through {',
-     '    if true {', S),
-    ('(i-2) a source naming other snapshot keys extends the old job', LOAD,
-     '    if keys(&old) != keys(&new) || new.through < old.through {',
-     '    if new.through < old.through {', S),
-    ('(i-2) an archive gap is extended over', LOAD,
+    # G21 (replaces (i-2)): a running install keeps its snapshots for its life
+    ('G21 main\'s rule: a source naming other snapshots restarts the install', LOAD,
+     '    if new.through < old.through {\n        // The same leader',
+     '    if [old.tiers[0].key.clone(), old.tiers[1].key.clone()] != [new.tiers[0].key.clone(), new.tiers[1].key.clone()] {\n        return Next::Restart(new, "other snapshots");\n    }\n    if new.through < old.through {\n        // The same leader', S),
+    ('G21 main\'s rule: every earlier through restarts, a late delivery included', LOAD,
+     '        return if round(&old) == round(&new) {', '        return if false && round(&old) == round(&new) {', S),
+    ('G21 another leader\'s earlier through is ignored too', LOAD,
+     '        return if round(&old) == round(&new) {', '        return if true {', S),
+    ('G21 the round ignores the term', LOAD,
+     '            Kind::Install { from, install } => Some((*from, install.term, install.boot)),',
+     '            Kind::Install { from, install } => Some((*from, install.boot)),', S),
+    ('G21 an extended job takes the newer snapshot keys', LOAD,
+     '    old.archives.extend(more);\n', '    old.archives.extend(more);\n    old.tiers[0].key = new.tiers[0].key.clone();\n', S),
+    ('G21 an archive gap is extended over', LOAD,
      '    if more.first().is_some_and(|a| a.from != end + 1) || (more.is_empty() && new.through > end) {',
      '    if more.is_empty() && new.through > end {', S),
-    ('(i-2) an extended job keeps its old through', LOAD,
+    ('G21 an extended job keeps its old through', LOAD,
      '    old.through = new.through;\n', '', S),
-    ('(i-2) an extended job answers the old round', LOAD,
+    ('G21 an extended job answers the old round', LOAD,
      '    old.kind = new.kind;\n', '', S),
+    ('G21 main\'s rule: a failed install batch abandons the job', LOAD,
+     '    install && tries < BATCH_TRIES', '    false && install && tries < BATCH_TRIES', S),
+    ('G21 an install retries without end', LOAD,
+     '    install && tries < BATCH_TRIES', '    install', S),
+    ('G21 an audit is retried', LOAD,
+     '    install && tries < BATCH_TRIES', '    tries < BATCH_TRIES', S),
     # (i-3) an installing parent drops its own metadata tables
     ('(i-3) an audit drops the tier it refolds beside', LOAD,
      '    install && applied < through', '    applied < through', S),
