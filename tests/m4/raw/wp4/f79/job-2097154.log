@@ -1,0 +1,17 @@
+2026-11-17T07:45:09.2455802Z Current runner version: '2.338.2'
+2026-11-17T07:45:09.2464380Z Runner name: 'graftyard-hosted-55610d86'
+2026-11-17T07:45:09.2465164Z Machine name: 'cloudchamber'
+2026-11-17T07:45:09.2469028Z Prepare workflow directory
+2026-11-17T07:45:09.2926217Z Prepare all required actions
+2026-11-17T07:45:09.3053463Z Complete job name: check (1)
+2026-11-17T07:45:09.3805099Z ##[group]Run printf 'repo %s\n' "$GITHUB_REPOSITORY"
+2026-11-17T07:45:09.3805391Z [36;1mprintf 'repo %s\n' "$GITHUB_REPOSITORY"[0m
+2026-11-17T07:45:09.3805469Z [36;1mprintf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"[0m
+2026-11-17T07:45:09.3805495Z [36;1msleep 30[0m
+2026-11-17T07:45:09.3854125Z shell: /usr/bin/bash -e {0}
+2026-11-17T07:45:09.3854557Z env:
+2026-11-17T07:45:09.3855404Z   S: ***
+2026-11-17T07:45:09.3855447Z ##[endgroup]
+2026-11-17T07:45:09.4100846Z repo m3org/wp4-f79
+2026-11-17T07:45:09.4117252Z secret 5a5b4886dcaf548c 28
+2026-11-17T07:45:39.4300061Z Cleaning up orphan processes

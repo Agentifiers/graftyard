@@ -313,6 +313,17 @@ Site day 49 and edge day 23 put main `0de37416` on m4a (F78's fix; lookup-share 
 - **Teardown.** The driver stopped on its own; service `f78bf60` and the `f78watch` stop watcher were stopped. The runner account listed 0 running Sandboxes (233 `inactive`). m4a's one running shard, `git#0#net:65562` (site a), was stopped at 05:07:27Z through GitShard `/teardown` (200 `torn_down`) from a scratch Worker `graft-m4a-shardkill`, deleted at 05:07:39Z; at 05:08:04Z the Containers API listed 0 running on sites a, b, and c. `/retire` is a `test-faults` member route and m4a's sites are product builds, so there is no test group to retire; the run's groups are m3org's Actions shards and `repo:65562`, which hold the install's own state.
 - **Cost** (`tests/fanout/acctcost.py`). Before, at 04:35:27Z: the account $51.18 for the UTC day, graft-m4a $0.34, the runner account $0.00. After, at 05:08:39Z: from 04:30Z, graft-m4a $0.24 (site scripts $0.18, git shard $0.06) and the runner account $0.34 (Sandboxes $0.30): **$0.58** against the $2.50 estimate and the $5 stop; the account $61.83 for the day, under $170. Idle after the teardown, 05:08Z to 05:38Z: graft-m4a $0.04 (about $0.08 an hour, all site scripts) and the runner account $0.00; the account $72.16 for the day at 05:38Z.
 
+## F79 hosted check after edge day 24 (2026-11-17)
+
+Edge day 24 put main `c1d29fc0` (F79's fix) on `graft-m4a-edge` alone, with edge day 23's `FORMATS_ENABLED`, `RUN_SERVICE_PUBLIC`, and `OPS` binding (`tests/m4/raw/wp4/edgeday24.log`, version `5c5d21df`, 07:42:28Z, exit 0). No site script changed, so there was no site day. Smoke reads after: `/user`, wp4-bf60, j4 `/hooks`, `/meta`, and job 1966290's log 200; `/app/hook/config` and `run/acquirejob` 401 without auth.
+
+`tests/m4/wp4/f79.mjs` set a repository secret on a new repository `m3org/wp4-f79` with `gh secret set` (the value lived only in a mode-600 file, deleted after) and dispatched `hosted/f79.yml`: 5 `ubuntu-latest` legs that print `$GITHUB_REPOSITORY` and the secret's SHA-256 prefix and length (`tests/m4/raw/wp4/f79/`). Run 2097152, from 07:44:49Z:
+
+- **Pass, 5 of 5 legs.** Each job log reads `repo m3org/wp4-f79` and the secret's expected hash and length (28), and each job ended `Success`; the last finished 92 s after the dispatch. The edge answered `run/acquirejob` 200 five times and logged no `acquirejob` error. No log holds the value.
+- The driver's first verdict was FAIL: its pattern matched the step's echoed script (`printf 'repo %s'`) before the output line. The saved logs were judged again with the output-line pattern now in `f79.mjs`; `result.json` records both.
+- **Teardown.** The runner account listed 0 running Sandboxes (243 `inactive`). The check's git shard `git#0#net:65566` (site a) was stopped at 07:49:40Z through GitShard `/teardown` (200) from a scratch Worker `graft-m4a-shardkill`, deleted the same second; at 07:50:18Z the Containers API listed 0 running on sites a, b, and c. No `/retire`: m4a's sites are product builds.
+- **Cost** (`tests/fanout/acctcost.py`). Before, at 07:31:16Z: the account $93.77 for the UTC day, graft-m4a $0.72, the runner account $0.34. After, 07:30Z to 07:50:20Z: graft-m4a $0.05 and the runner account $0.01, **$0.06** against the $3 stop; the account $98.94 for the day, under $170. Idle after the teardown, 07:50Z to 08:20Z: graft-m4a $0.03 (about $0.06 an hour, all site scripts) and the runner account $0.00; the account $105.42 for the day at 08:20Z.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
