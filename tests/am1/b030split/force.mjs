@@ -112,9 +112,10 @@ if (!done("place")) {
 let peak = 0, own = null, through = null;
 for (;;) {
   if (existsSync(STOP) && !existsSync("tests/am1/raw/b030-load.done")) break;
-  const v = await size(LAGGER);
-  const f = (await member(C, LAGGER, "/fold", { audit: {} }, 30_000).catch(() => ({ v: {} }))).v;
-  const st = (await member(C, LAGGER, "/status", undefined, 15_000).catch(() => ({ v: {} }))).v;
+  // A member reply with no body (07:17Z and 08:06Z on b030r5) left a sample undefined and killed the driver.
+  const v = (await size(LAGGER)) ?? {};
+  const f = (await member(C, LAGGER, "/fold", { audit: {} }, 30_000).catch(() => ({ v: {} }))).v ?? {};
+  const st = (await member(C, LAGGER, "/status", undefined, 15_000).catch(() => ({ v: {} }))).v ?? {};
   own ??= v.dbBytes;
   peak = Math.max(peak, v.dbBytes ?? 0);
   const restarts = (v.alarms ?? []).filter((a) => a.includes("install restarted")).length;
