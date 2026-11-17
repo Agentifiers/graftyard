@@ -1808,6 +1808,8 @@ impl<F: Family> Routes<F> {
                 "queueMs": percentiles(&s.queue_ms),
                 "queueSlotMs": percentiles(&s.queue_slot_ms),
                 "queuePostMs": percentiles(&s.queue_post_ms),
+                "heldAtAppend": percentiles(&s.held_at_append),
+                "cycleMs": percentiles(&s.cycle_ms),
                 "roundMs": percentiles(&s.round_ms),
                 "confirmMs": percentiles(&s.confirm_ms),
                 "confirmSplit": host::confirm_split_summary(&s.confirm_split),

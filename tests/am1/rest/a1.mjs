@@ -1176,6 +1176,8 @@ const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
 const ps = (x) => (Array.isArray(x) || x == null ? { n: x?.length, p50: pct(x, 0.5), p99: pct(x, 0.99) } : { n: x.n, p50: x.p50, p99: x.p99 });
 const splitOf = (st) => Object.fromEntries([["queue", st.queueMs], ["queue:slot", st.queueSlotMs], ["queue:post", st.queuePostMs],
   ["round", st.roundMs], ["confirm", st.confirmMs], ["apply", st.applyMs],
+  // read-ahead's flip (B0-31): the leader's cycle, append to append, and the frozen batches held at each append.
+  ["cycle", st.cycleMs], ["held", st.heldAtAppend],
   ...Object.entries(st.appendMs ?? {}).map(([k, xs]) => [`append:${k}`, xs]),
   ...Object.entries(st.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
   .map(([k, xs]) => [k, ps(xs)]));

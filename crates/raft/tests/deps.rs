@@ -279,6 +279,7 @@ fn reads_longer_than_a_round_overlap_two_batches_so_the_cycle_is_about_a_round()
     let mut answered = c.deps.len();
     let mut next_id = 1_000u128;
     let mut commits: Vec<(u64, u64)> = Vec::new();
+    let mut held_max = 0;
     let start = c.now.0;
     while c.now.0 < start + 20_000 {
         if (c.now.0 - start).is_multiple_of(20) {
@@ -304,6 +305,9 @@ fn reads_longer_than_a_round_overlap_two_batches_so_the_cycle_is_about_a_round()
         if commits.last().is_none_or(|(_, k)| *k < commit) {
             commits.push((now, commit));
         }
+        if now >= start + 10_000 {
+            held_max = held_max.max(c.m(A).admission().expect("leading").held);
+        }
     }
     // The second half, once the round and read averages settled.
     let half: Vec<_> = commits.iter().filter(|(t, _)| *t >= start + 10_000).collect();
@@ -313,6 +317,7 @@ fn reads_longer_than_a_round_overlap_two_batches_so_the_cycle_is_about_a_round()
     assert_eq!(c.m(A).state().term, term0, "the leader changed");
     assert!(cycle <= 250, "one entry per {cycle} ms: the cycle is a read, not a round (round about 200, read {READ})");
     assert!(cycle >= 190, "one entry per {cycle} ms is under one round: more than one entry in flight?");
+    assert_eq!(held_max, 2, "ceil(370 / 200) batches held behind the entry in flight");
 }
 
 /// A leader whose dependency read (400 ms) outlasts its round, so it holds two batches behind the entry in flight.

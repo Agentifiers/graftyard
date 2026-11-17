@@ -372,6 +372,8 @@ pub struct AdmissionView {
     /// counts them. Read only by test hosts tracing admission (LM-1's B0-31).
     pub round_ms: f32,
     pub cmd_bytes: f32,
+    /// Frozen batches waiting for the entry in flight to apply, at most READ_AHEAD (`read-ahead`'s flip, B0-31).
+    pub held: usize,
 }
 
 /// A read the host started with `Member::read`; its `Resolution::Read` carries the same id.

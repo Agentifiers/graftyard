@@ -350,6 +350,12 @@ pub struct Stats {
     /// outlast the entry in flight, and the decide). LM-1 round 10's plan for B0-29's commit line.
     pub queue_slot_ms: Vec<u32>,
     pub queue_post_ms: Vec<u32>,
+    /// Leader: at each `Events` append of its term, the frozen batches still held behind it (`held_at_append`), and
+    /// the time since its previous such append (`cycle_ms`): `read-ahead`'s flip is a cycle that stays read-bound with
+    /// two batches held (B0-31).
+    pub held_at_append: Vec<u32>,
+    pub cycle_ms: Vec<u32>,
+    last_append_at: Option<(u64, u64)>,
     /// Leader: when it last applied an entry, by this member's clock.
     last_apply_at: u64,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
@@ -487,6 +493,9 @@ impl Stats {
         self.queue_ms.clear();
         self.queue_slot_ms.clear();
         self.queue_post_ms.clear();
+        self.held_at_append.clear();
+        self.cycle_ms.clear();
+        self.last_append_at = None;
         self.admitted_bytes.clear();
         self.read_stages.clear();
         self.narrow_build_ms.clear();
@@ -2139,6 +2148,13 @@ impl<F: Family> Host<F> {
                 Write::Append(e) if leading && e.term == term && matches!(e.body, EntryBody::Events(_)) => {
                     s.entries += 1;
                     s.commands += e.requests.len() as u32;
+                    if s.cycle_ms.len() < SAMPLES_MAX {
+                        if let Some((_, at)) = s.last_append_at.filter(|(tm, _)| *tm == term.0) {
+                            s.cycle_ms.push(t.saturating_sub(at) as u32);
+                        }
+                        s.held_at_append.push(core.m.admission().map_or(0, |a| a.held) as u32);
+                    }
+                    s.last_append_at = Some((term.0, t));
                     s.appended.push((e.index.0, t));
                     for (rid, _) in &e.requests {
                         if let Some((_, at, _)) = core.admitted.values().find(|(r, _, _)| r == rid)

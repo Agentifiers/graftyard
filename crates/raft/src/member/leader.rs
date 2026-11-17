@@ -766,6 +766,7 @@ impl<C: Command> Member<C> {
             retry_after_s: retry_after_s(ad.agent().len(), cap),
             round_ms: ad.round_ms,
             cmd_bytes: ad.cmd_bytes,
+            held: lead.deciding.len(),
         })
     }
 
