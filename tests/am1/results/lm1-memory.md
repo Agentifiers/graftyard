@@ -4465,3 +4465,17 @@ Fix candidates (not designed; the operator decides): (a) a learner whose read-in
 (append `packed` and `refs` to `READ_QUERIES`, or tag the sorted key set); (d) count edge isolates (an isolate id on
 test-faults requests) before redesigning the mark.
 - Close-out: sweep "no shard container running"; 131348's 11 members retired (11 of 11 not joined).
+
+**Final idle reading and slot close.**
+- Idle window 05:34:19–06:04:19Z after the lookup-poll row, reapers on except the retired row network: graft-m2b
+  $0.02 by script (about $0.04 an hour; account $4.82 in the window, all graft-m1's B0-30 close-out). idlewatch-m42p
+  saw 0 shard starts in 31 minutes (`raw/idlewatch-m42p.jsonl`).
+- sweep-quiet after the third row (`sweepquiet.py`, 05:15–06:05Z): names:* rows 55 (05:30), 169 (05:45) and 24
+  (06:00) a slot, up from the 0 of the 04:45 and 05:00 slots, and all sites ok. Site a's sweep wall grew to 352 s
+  (05:30, swept 12, planned 708) and 620 s (05:45, swept 20, planned 156); its 06:00 run had not reported by
+  06:06Z. Open finding [measured, cause not traced]: the rows likely come from the row's new and retired group refilling
+  the cache, but a 620 s wall is two thirds of the 15-minute cron period, so site a's sweep can overlap the next run.
+  Check at the next slot whether the wall falls back to 119–209 s.
+- Promote-lapse and the roll measurement were not exercised (no promotion came due; 131296 has no rollable run).
+- Slot closed at 06:06Z. Meter (`acctcost.py`): graft-m2b $4.43 since the site day at 03:20:06Z (stop $40); account
+  $77.78 for the UTC day at 06:06Z (stop $170).
