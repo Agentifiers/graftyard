@@ -53,6 +53,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
@@ -481,8 +482,34 @@ const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-
 // shards' validate waits (15 + 60 + 60 s) then the commit. At 120 s, B0-32's burst pushes still in their third
 // shard's wait were cut and counted as lost (lm1-rows-m3f.md, B0-32).
 const GIT_TIMEOUT_MS = 200_000;
-async function git(path, tok, body, headers = {}, repo = R) {
+// B0-32's burst client: HTTP/1.1 on its own keep-alive pool, sized to the burst, as git itself pushes. On m3fr14 every
+// burst push on the shared HTTP/2 client ended in a stream or socket reset with no answer, as B0-30 saw this orb's
+// HTTP/2 connections to LAX reset under all their streams at once; the rest of the driver keeps `fetch` (HTTP/2), so
+// its numbers stay comparable with earlier runs.
+const BURST_PROTOCOL = "http/1.1 (node:https Agent, keepAlive, maxSockets = burst pushes)";
+let burstAgent = null;
+function postH1(url, body, headers, agent) {
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(url, { method: "POST", headers: { ...headers, "content-length": body.length }, agent, timeout: GIT_TIMEOUT_MS }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({ status: res.statusCode, buf: Buffer.concat(chunks),
+        headers: new Headers(Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])) }));
+      res.on("error", reject);
+    });
+    req.on("timeout", () => req.destroy(Object.assign(new Error("timeout"), { code: "TIMEOUT" })));
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+async function git(path, tok, body, headers = {}, repo = R, agent = null) {
   const t = Date.now();
+  if (agent) {
+    try {
+      const r = await postH1(`${EDGE}/${repo}.git/${path}`, body, { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, agent);
+      return { status: r.status, text: r.buf.toString("latin1"), ms: Date.now() - t, headers: r.headers };
+    } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
+  }
   try {
     const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
@@ -502,10 +529,10 @@ if (Date.now() - mainSince > 1_000) log(`main appeared in ls-refs after ${Date.n
 /** One push of `bytes` to `ref` from `from` (old tip or null); returns [result, ms, new tip]. */
 const pushed = new Map(); // commit id -> ack time, for feed latency
 const recentAgent = []; // [ok, ms] of the latest agent pushes, for B0-32's warm-up
-async function push(tok, ref, from, path, bytes, extra = {}) {
+async function push(tok, ref, from, path, bytes, extra = {}, agent = null) {
   const files = opt.workflow ? [[WF_PATH, WF_SRC]] : [];
   const { pack, commit } = onePack(path, bytes, from ?? main, `a1 ${ref}`, Math.floor(Date.now() / 1000), files);
-  const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra });
+  const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra }, R, agent);
   // A refusal keeps the first words of its body, so a 503's cause is counted (no secret is in a server's reply,
   // and every row passes `scan`).
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
@@ -889,18 +916,20 @@ if (plan.burst) jobs.push((async () => {
     lastAgentMs: recentAgent.slice(-WARM_PUSHES).map(([, ms]) => ms) });
   log(`burst warm-up: hot ${hot}, warm ${warm} after ${Math.round((Date.now() - w0) / 1000) + plan.burst.at} s`);
   end = Date.now() + (seconds - plan.burst.at) * 1000;
+  burstAgent = new HttpsAgent({ keepAlive: true, maxSockets: plan.burst.pushes });
   const s = Date.now();
   // Client-side record of every burst push, so one with no edge event still shows when it was sent and how it ended.
   const sent = [];
   const r = await Promise.all(Array.from({ length: plan.burst.pushes }, (_, k) => sleep((k * 1000) / plan.burst.pushes).then(async () => {
     const a = agents[k % agents.length];
     const at = Date.now();
-    const [res, ms, , err, timing] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
+    const [res, ms, , err, timing] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes), {}, burstAgent);
     note("push:burst", ms, res);
     sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), timing, ...(err ? { err } : {}) });
     return [res, Date.now() - s];
   })));
-  writeRow(OUT, { step: "burst", hot, warm, pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
+  burstAgent.destroy();
+  writeRow(OUT, { step: "burst", protocol: BURST_PROTOCOL, hot, warm, pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
     unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")) });
   // Every burst push's stages, in send order, for where each one's time went.
   writeRow(OUT, { step: "burst timing", pushes: sent.sort((x, y) => x.k - y.k).map(({ k, ms, res, timing }) => ({ k, ms, res: String(res).slice(0, 40), timing })) });
