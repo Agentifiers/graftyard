@@ -549,6 +549,28 @@ fn joined(r: Result<Response>, fresh: bool) -> Result<Response> {
     Ok(r)
 }
 
+/// A `/move` step's new placement: `voters` and `home` checked by `Placement::new`, with the learners of `cfg`, the
+/// committed config the step was planned from (a `Joint`'s new half). A move changes voters and the home; learners
+/// are per site and slot, not per voter, so they stay as they are (`learners-kept`).
+fn move_placement(
+    cfg: &raft::GroupConfig,
+    voters: arrayvec::ArrayVec<MemberRef, 3>,
+    home: SiteId,
+    checks: &graftyard_types::PlacementChecks,
+) -> std::result::Result<graftyard_types::Placement, String> {
+    let learners = match cfg {
+        raft::GroupConfig::Normal(p) | raft::GroupConfig::Degraded { placement: p, .. } => p.learners(),
+        raft::GroupConfig::Joint { new, .. } => new.learners(),
+    };
+    graftyard_types::Placement::new(voters, learners.iter().cloned().collect(), home, checks).map_err(|e| e.to_string())
+}
+
+/// `Ok` while the committed config is still the one at `based_on`, the config a change was built from: a change
+/// built from an older read would undo every change committed since (`learners-kept`).
+fn unchanged_since(at: Option<u64>, based_on: u64) -> std::result::Result<(), String> {
+    if at == Some(based_on) { Ok(()) } else { Err(format!("the committed config moved from {based_on} to {at:?}")) }
+}
+
 /// How far a voter that a `Degraded` config needs may stand behind the leader's commit when the config is proposed
 /// [guess: the leader's `CATCHUP_MAX`, one AppendEntries' worth]. A voter further behind may be installing a snapshot,
 /// and acks nothing until its install ends: B0-30's rerun committed `Degraded { lost: 1 }` with site c 8,351 entries
@@ -592,8 +614,11 @@ trait Steps {
     async fn ready(&self) -> Result<std::result::Result<Ready, Value>>;
     /// Joins `new`, measures it, and checks the placement it would make; `first` for the first try.
     async fn try_member(&self, new: &MemberRef, first: bool) -> Result<TryOut>;
-    /// Appends `cfg` and waits for it to commit (`Routes::change`).
-    async fn change(&self, cfg: raft::GroupConfig) -> std::result::Result<u64, String>;
+    /// The committed config and its index, read now.
+    fn committed(&self) -> Option<(u64, raft::GroupConfig)>;
+    /// Appends `cfg` and waits for it to commit, only while the committed config is still the one at `based_on`
+    /// (`Routes::change`).
+    async fn change(&self, cfg: raft::GroupConfig, based_on: u64) -> std::result::Result<u64, String>;
     /// Clears a try the group never took (test installs).
     async fn clear(&self, m: &MemberRef);
     fn store_rtt(&self, r: Rtt) -> Result<()>;
@@ -609,6 +634,10 @@ trait Steps {
 /// group"): `ready`, every try under the committed `Normal` config, then, once a member is chosen, `ready` again and
 /// `Degraded { lost }` and `Normal` back to back. A search in which no try was nearer, or a voter behind at the second
 /// `ready`, changes no config. On b030r5 `Degraded` came before the first try and held a just-built group for 535 s.
+/// Both changes are built from the config committed when they are proposed, not the one the search started from:
+/// its learners go into both, and voters or a home that moved meanwhile end the re-placement with no config change
+/// (`learners-kept`, `decisions/DECISIONS.md`). B0-32 m3fr13's create placement started before `/learners`, committed
+/// after it from its first read, and dropped all 8 learners.
 async fn replace_steps<S: Steps>(
     s: &S,
     chain: ChainId,
@@ -686,15 +715,34 @@ async fn replace_steps<S: Steps>(
             return behind(b, &tried);
         }
     };
-    if let Err(e) = s.change(degraded(ready, p, to)).await {
+    // The config committed now, not the one the tries started from: a `/learners` change may have committed during
+    // them. Its learners go into both changes; voters or a home that moved end it with no config change.
+    let fresh = match s.committed() {
+        Some((i, raft::GroupConfig::Normal(c))) if c.voters() == p.voters() && c.home() == p.home() => {
+            np.with_learners(c.learners()).ok().map(|np| (i, *c, np))
+        }
+        _ => None,
+    };
+    let Some((based_on, p, np)) = fresh else {
+        s.clear(&kept).await;
         s.restore_row(&old, &joined).await;
-        return Ok(Err(json!({ "error": format!("degraded: {e}"), "tried": tried })));
-    }
+        let at = s.committed().map(|c| c.0);
+        s.note(false, format!("placement of {chain}: the committed config moved to {at:?} during the tries"));
+        return Ok(Err(json!({ "error": "the committed config changed during the re-placement", "configIndex": at,
+            "tried": tried })));
+    };
+    let degraded_at = match s.change(degraded(ready, Box::new(p), to), based_on).await {
+        Ok(i) => i,
+        Err(e) => {
+            s.restore_row(&old, &joined).await;
+            return Ok(Err(json!({ "error": format!("degraded: {e}"), "tried": tried })));
+        }
+    };
     if let Some(ms) = near_ms {
         s.placed_over_near();
         s.note(false, format!("placement of {chain}: no try within NEAR_RTT; kept the nearest, {ms} ms"));
     }
-    let index = match s.change(raft::GroupConfig::Normal(Box::new(np))).await {
+    let index = match s.change(raft::GroupConfig::Normal(Box::new(np)), degraded_at).await {
         Ok(i) => i,
         Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
     };
@@ -770,12 +818,11 @@ impl<F: Family> Steps for RouteSteps<'_, F> {
         let r = if self.fail_first && first {
             Err("injected: latency check failed".to_owned())
         } else if status == 200 {
-            match graftyard_types::Placement::new(voters.clone(), arrayvec::ArrayVec::new(), self.p.home(), &checks) {
+            let learners: arrayvec::ArrayVec<MemberRef, 16> = self.p.learners().iter().cloned().collect();
+            match graftyard_types::Placement::new(voters.clone(), learners.clone(), self.p.home(), &checks) {
                 Err(e @ graftyard_types::PlacementError::NoNearFollower { ms, .. }) if self.keep_below.is_some() => {
                     let unbounded = graftyard_types::PlacementChecks { near: &[], ..checks };
-                    if let Ok(np) =
-                        graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), self.p.home(), &unbounded)
-                    {
+                    if let Ok(np) = graftyard_types::Placement::new(voters, learners, self.p.home(), &unbounded) {
                         over = Some((np, ms));
                     }
                     Err(e.to_string())
@@ -790,8 +837,12 @@ impl<F: Family> Steps for RouteSteps<'_, F> {
         Ok(TryOut { passed: r.ok(), over, fresh, row })
     }
 
-    async fn change(&self, cfg: raft::GroupConfig) -> std::result::Result<u64, String> {
-        self.r.change(cfg).await
+    fn committed(&self) -> Option<(u64, raft::GroupConfig)> {
+        self.r.host.core.borrow().as_ref().and_then(|c| c.m.committed_config().map(|(i, c)| (i.0, c.clone())))
+    }
+
+    async fn change(&self, cfg: raft::GroupConfig, based_on: u64) -> std::result::Result<u64, String> {
+        self.r.change(cfg, based_on).await
     }
 
     async fn clear(&self, m: &MemberRef) {
@@ -1977,6 +2028,12 @@ impl<F: Family> Routes<F> {
             // L0-12's drain wait (`tests/fanout/drain.mjs`): the reads this member still serves, here as well as in
             // `/stats`, whose full form serialized megabytes on a loaded leader.
             "readsInFlight": self.host.reads_in_flight.get(),
+            // A placement running on this member (`place_background`'s and the daily check's marker), for drivers that
+            // must not change the config under it (`tests/fanout/learners.mjs`).
+            "placingSince": host::rows(&self.host.state.storage().sql(), "SELECT v FROM me WHERE k = 'near_check'", vec![])
+                .ok()
+                .and_then(|r| r.first().and_then(|r| host::text(&r[0]).ok()).and_then(|t| t.parse::<u64>().ok()))
+                .filter(|t| now_ms().saturating_sub(*t) < NEAR_CHECK_FOR),
             "now": self.host.now(),
         })
     }
@@ -2514,10 +2571,17 @@ impl<F: Family> Routes<F> {
         self.reply(json!({ "pending": index.0 }))
     }
 
-    /// A config change committed by this leader, retried while it is busy: `Ok` with the commit index.
-    async fn change(&self, cfg: raft::GroupConfig) -> std::result::Result<u64, String> {
+    /// A config change committed by this leader, retried while it is busy: `Ok` with the commit index. Appended only
+    /// while the committed config is still the one at `based_on`, the config the caller built `cfg` from: a change
+    /// built from an older read would undo the changes committed since, as a re-placement undid `/learners` on
+    /// B0-32 m3fr13. The check and the append run in one turn, so no other change commits between them.
+    async fn change(&self, cfg: raft::GroupConfig, based_on: u64) -> std::result::Result<u64, String> {
         let end = now_ms() + 20_000;
         let index = loop {
+            unchanged_since(
+                self.host.core.borrow().as_ref().and_then(|c| c.m.committed_config().map(|c| c.0.0)),
+                based_on,
+            )?;
             match self.host.input(|m, t| m.reconfigure(t, cfg.clone())).map_err(|e| e.to_string())? {
                 Ok(i) => break i,
                 Err(raft::ReconfigError::Busy) if now_ms() < end => Delay::from(Duration::from_millis(100)).await,
@@ -2777,12 +2841,13 @@ impl<F: Family> Routes<F> {
                 c.join.chain,
                 c.join.record.clone(),
                 c.m.me(),
-                c.m.committed_config().map(|c| c.1.clone()),
+                c.m.committed_config().cloned(),
                 c.join.owner,
                 c.join.genesis.clone(),
             )
         };
-        let Some(cfg) = cfg else { return self.reply(json!({ "error": "no committed config" })) };
+        let Some((based_on, cfg)) = cfg else { return self.reply(json!({ "error": "no committed config" })) };
+        let based_on = based_on.0;
         let step = next_step(&cfg, me, &to);
         let label = format!("{step:?}");
         let t0 = now_ms();
@@ -2790,7 +2855,7 @@ impl<F: Family> Routes<F> {
         let checked = |voters: arrayvec::ArrayVec<MemberRef, 3>, home: SiteId, rtt: &[(SiteId, Rtt)]| {
             let checks =
                 graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt, near: &[] };
-            graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), home, &checks).map_err(|e| e.to_string())
+            move_placement(&cfg, voters, home, &checks)
         };
         let mut rtt = rtt_rows(&self.host.state, &self.host.env)?;
         let voters_of =
@@ -2841,19 +2906,20 @@ impl<F: Family> Routes<F> {
                 };
                 match checked(voters, home, &rtt) {
                     Ok(np) => self
-                        .change(raft::GroupConfig::Joint { old: p.clone(), new: Box::new(np) })
+                        .change(raft::GroupConfig::Joint { old: p.clone(), new: Box::new(np) }, based_on)
                         .await
                         .map(|i| json!({ "configIndex": i, "joined": new.do_name })),
                     Err(e) => Err(e),
                 }
             }
             (MoveStep::Leave, raft::GroupConfig::Joint { new, .. }) => {
-                self.change(raft::GroupConfig::Normal(new.clone())).await.map(|i| json!({ "configIndex": i }))
+                self.change(raft::GroupConfig::Normal(new.clone()), based_on).await.map(|i| json!({ "configIndex": i }))
             }
             (MoveStep::Home { home }, raft::GroupConfig::Normal(p)) => match checked(voters_of(p), home, &rtt) {
-                Ok(np) => {
-                    self.change(raft::GroupConfig::Normal(Box::new(np))).await.map(|i| json!({ "configIndex": i }))
-                }
+                Ok(np) => self
+                    .change(raft::GroupConfig::Normal(Box::new(np)), based_on)
+                    .await
+                    .map(|i| json!({ "configIndex": i })),
                 // A pair the leader never measured (a member joined from another leader): the rows are each voter's
                 // own, so read them.
                 Err(_) => {
@@ -2865,7 +2931,7 @@ impl<F: Family> Routes<F> {
                     }
                     match checked(voters_of(p), home, &rtt) {
                         Ok(np) => self
-                            .change(raft::GroupConfig::Normal(Box::new(np)))
+                            .change(raft::GroupConfig::Normal(Box::new(np)), based_on)
                             .await
                             .map(|i| json!({ "configIndex": i })),
                         Err(e) => Err(e),
@@ -2933,17 +2999,12 @@ impl<F: Family> Routes<F> {
             if c.m.role() != Role::Leader {
                 return self.reply(json!({ "error": { "notLeader": host::nl_json(&c.m.not_leader()) } }));
             }
-            (
-                c.join.chain,
-                c.join.record.clone(),
-                c.m.committed_config().map(|c| c.1.clone()),
-                c.join.owner,
-                c.join.genesis.clone(),
-            )
+            (c.join.chain, c.join.record.clone(), c.m.committed_config().cloned(), c.join.owner, c.join.genesis.clone())
         };
-        let Some(raft::GroupConfig::Normal(p)) = cfg else {
+        let Some((based_on, raft::GroupConfig::Normal(p))) = cfg else {
             return self.reply(json!({ "error": "the committed config is not Normal" }));
         };
+        let based_on = based_on.0;
         let site = SiteEnv::read(&self.host.env)?;
         let generation = p.next_generation();
         let mut learners = arrayvec::ArrayVec::<MemberRef, 16>::new();
@@ -2984,7 +3045,9 @@ impl<F: Family> Routes<F> {
             Ok(np) => np,
             Err(e) => return self.reply(json!({ "error": e.to_string(), "joined": joined })),
         };
-        match self.change(raft::GroupConfig::Normal(Box::new(np))).await {
+        // A voter re-placement that commits while the learners join makes this change stale: it would undo the
+        // re-placement. Refused, and the caller asks again.
+        match self.change(raft::GroupConfig::Normal(Box::new(np)), based_on).await {
             Ok(i) => self.reply(json!({ "regions": regions, "learners": joined, "configIndex": i, "feed": feed })),
             Err(e) => self.reply(json!({ "error": e, "learners": joined })),
         }
@@ -3229,8 +3292,18 @@ mod tests {
         }
 
         pub fn placement(f1: u32) -> Placement {
+            with(f1, &[])
+        }
+
+        /// `n` learners, one per slot, spread over the three sites as B0-32's 8 are.
+        pub fn learners(n: u8) -> Vec<Member> {
+            (0..n).map(|k| Member::new(CHAIN, SiteId(k % 3), MemberKind::Learner, k, 1)).collect()
+        }
+
+        /// Site 1's voter at generation `f1`, with `learners`.
+        pub fn with(f1: u32, learners: &[Member]) -> Placement {
             serde_json::from_value(
-                json!({ "voters": [m(0, 1), m(1, f1), m(2, 1)], "learners": [], "home": 0, "generation": f1 }),
+                json!({ "voters": [m(0, 1), m(1, f1), m(2, 1)], "learners": learners, "home": 0, "generation": f1 }),
             )
             .unwrap()
         }
@@ -3243,6 +3316,13 @@ mod tests {
             pub log: RefCell<Vec<String>>,
             pub asked: RefCell<usize>,
             pub tried: RefCell<usize>,
+            /// The committed config and its index; `run` starts it at index 5 with the placement it replaces from.
+            pub committed: RefCell<Option<(u64, GroupConfig)>>,
+            /// A change another route commits during the tries, at the next index, as the second `ready` is asked:
+            /// B0-32 m3fr13's `/learners`.
+            pub then: Option<GroupConfig>,
+            /// The learners each committed `Degraded` and `Normal` named, in order.
+            pub kept: RefCell<Vec<usize>>,
         }
 
         impl Fake {
@@ -3256,6 +3336,11 @@ mod tests {
                 let n = *self.asked.borrow();
                 *self.asked.borrow_mut() += 1;
                 self.log.borrow_mut().push("ready".into());
+                if let (1, Some(c)) = (n, &self.then) {
+                    let mut at = self.committed.borrow_mut();
+                    let i = at.as_ref().map_or(0, |a| a.0) + 1;
+                    *at = Some((i, c.clone()));
+                }
                 let applied = if self.ready.get(n).copied().unwrap_or(true) { 1_000 } else { 10 };
                 Ok(degraded_needs(1_000, &[(SiteId(2), Some(applied))]))
             }
@@ -3272,14 +3357,23 @@ mod tests {
                 };
                 Ok(TryOut { passed, over, fresh, row: json!({ "member": new.do_name }) })
             }
-            async fn change(&self, cfg: GroupConfig) -> std::result::Result<u64, String> {
-                let s = match &cfg {
-                    GroupConfig::Normal(p) => format!("normal {}", p.voters()[1].do_name),
-                    GroupConfig::Degraded { lost, .. } => format!("degraded {}", lost.0),
-                    GroupConfig::Joint { .. } => "joint".into(),
+            fn committed(&self) -> Option<(u64, GroupConfig)> {
+                self.committed.borrow().clone()
+            }
+            /// Refuses a change built from a config older than the committed one, as `Routes::change` does.
+            async fn change(&self, cfg: GroupConfig, based_on: u64) -> std::result::Result<u64, String> {
+                let at = self.committed.borrow().as_ref().map(|c| c.0);
+                super::super::unchanged_since(at, based_on)?;
+                let (s, p) = match &cfg {
+                    GroupConfig::Normal(p) => (format!("normal {}", p.voters()[1].do_name), p),
+                    GroupConfig::Degraded { lost, placement } => (format!("degraded {}", lost.0), placement),
+                    GroupConfig::Joint { new, .. } => ("joint".into(), new),
                 };
+                self.kept.borrow_mut().push(p.learners().len());
                 self.log.borrow_mut().push(s);
-                Ok(self.log.borrow().len() as u64)
+                let i = at.unwrap_or(0) + 1;
+                *self.committed.borrow_mut() = Some((i, cfg));
+                Ok(i)
             }
             async fn clear(&self, m: &Member) {
                 self.log.borrow_mut().push(format!("clear {}", m.do_name));
@@ -3299,7 +3393,13 @@ mod tests {
 
         /// Runs `replace_steps` on the fake to its end: site 1's `#1#f1` replaced, up to `tries`, with `keep_below`.
         pub fn run(f: &Fake, tries: usize, keep_below: Option<u16>) -> std::result::Result<Value, Value> {
-            let fut = replace_steps(f, CHAIN, Box::new(placement(1)), m(1, 1), tries, keep_below);
+            let start = f
+                .committed
+                .borrow_mut()
+                .get_or_insert_with(|| (5, GroupConfig::Normal(Box::new(placement(1)))))
+                .clone();
+            let GroupConfig::Normal(p) = start.1 else { panic!("a re-placement starts from Normal") };
+            let fut = replace_steps(f, CHAIN, p, m(1, 1), tries, keep_below);
             let mut fut = std::pin::pin!(fut);
             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
             match fut.as_mut().poll(&mut cx) {
@@ -3388,6 +3488,78 @@ mod tests {
         assert!(at("clear repo:1048593#2#f1") < at("degraded 1") && at("clear repo:1048593#4#f1") < at("degraded 1"));
         assert!(!log.contains(&"clear repo:1048593#3#f1".to_owned()));
         assert_eq!(v["nearOver"], 104);
+    }
+
+    /// `learners-kept`, B0-32 m3fr13: a re-placement of a group with 8 learners commits `Degraded` and `Normal` with
+    /// all 8, though its tries' placements name none; a `/learners` change committed during the tries (2 more, same
+    /// voters) goes into both; voters that moved during them end it with no config change and the try cleared.
+    #[test]
+    fn a_re_placement_keeps_the_committed_learners() {
+        use graftyard_raft::GroupConfig;
+        use place::{Fake, Try, learners, with};
+        let normal = |n: u8| Some((5, GroupConfig::Normal(Box::new(with(1, &learners(n))))));
+        let f = Fake { results: vec![Try::Pass], committed: normal(8).into(), ..Fake::default() };
+        place::run(&f, 8, None).unwrap();
+        assert_eq!(*f.kept.borrow(), [8, 8], "{:?}", f.log());
+
+        let f = Fake {
+            results: vec![Try::Fail, Try::Pass],
+            committed: normal(8).into(),
+            then: Some(GroupConfig::Normal(Box::new(with(1, &learners(10))))),
+            ..Fake::default()
+        };
+        let v = place::run(&f, 8, None).unwrap();
+        assert_eq!(*f.kept.borrow(), [10, 10], "the /learners commit is not lost: {:?}", f.log());
+        assert_eq!(v["configIndex"], 8, "Degraded at 7 on the /learners commit at 6, then Normal");
+
+        let f = Fake {
+            results: vec![Try::Pass],
+            committed: normal(8).into(),
+            then: Some(GroupConfig::Normal(Box::new(with(9, &learners(8))))),
+            ..Fake::default()
+        };
+        let e = place::run(&f, 8, None).unwrap_err();
+        assert_eq!(e["error"], "the committed config changed during the re-placement");
+        assert_eq!(e["configIndex"], 6);
+        assert_eq!(
+            names(&f.log()),
+            ["ready", "try repo:1048593#2#f1", "ready", "clear repo:1048593#2#f1", "row repo:1048593#1#f1"]
+        );
+    }
+
+    /// `learners-kept`: a `/move` step's placement keeps the learners of the config it was planned from (a `Joint`'s
+    /// new half), and a change is refused once the committed config has moved past the one it was built from.
+    #[test]
+    fn a_move_keeps_the_committed_learners() {
+        use arrayvec::ArrayVec;
+        use graftyard_raft::GroupConfig;
+        use graftyard_types::{Region, Rtt, Site, SiteLink, SiteTable, Timestamp};
+        use place::{learners, m, with};
+        let site = |id: u8, region| Site {
+            id: SiteId(id),
+            script: String::new(),
+            account: String::new(),
+            region,
+            jurisdiction: None,
+            bucket: String::new(),
+            release: None,
+            link: SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        let sites = SiteTable(vec![site(0, Region::Enam), site(1, Region::Weur), site(2, Region::Apac)]);
+        let rtt: Vec<(SiteId, Rtt)> = [(0, 1, 80), (0, 2, 180), (1, 2, 200)]
+            .map(|(a, b, ms)| (SiteId(a), Rtt { peer: SiteId(b), median_ms: ms, at: Timestamp(0) }))
+            .to_vec();
+        let checks = graftyard_types::PlacementChecks { sites: &sites, separate_accounts: false, rtt: &rtt, near: &[] };
+        let voters: ArrayVec<_, 3> = [m(0, 1), m(1, 2), m(2, 1)].into_iter().collect();
+        let normal = GroupConfig::Normal(Box::new(with(1, &learners(8))));
+        let np = super::move_placement(&normal, voters.clone(), SiteId(2), &checks).unwrap();
+        assert_eq!((np.learners(), np.home()), (&learners(8)[..], SiteId(2)), "a rehome keeps all 8");
+        let joint = GroupConfig::Joint { old: Box::new(with(1, &[])), new: Box::new(with(2, &learners(3))) };
+        assert_eq!(super::move_placement(&joint, voters, SiteId(0), &checks).unwrap().learners(), &learners(3)[..]);
+        assert!(super::unchanged_since(Some(5), 5).is_ok());
+        assert!(super::unchanged_since(Some(6), 5).is_err(), "a /learners commit since the read");
+        assert!(super::unchanged_since(None, 5).is_err());
     }
 
     /// (ii)(a): a re-placement starts only when every voter its `Degraded` config needs is within PLACE_LAG_MAX of the

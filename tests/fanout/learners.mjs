@@ -4,7 +4,7 @@
 //   node tests/fanout/learners.mjs repo:ID enam:1500[,weur:600]
 // LOAD is the group's read rate per region, journey 9's whole-tier reads weighted by 50 (design/DESIGN.md, Scale, learners).
 // Environment as tests/am1/hosted/lib.mjs. No token reaches argv or a log.
-import { leaderOf, log, member } from "../am1/hosted/lib.mjs";
+import { leaderOf, log, member, statuses } from "../am1/hosted/lib.mjs";
 
 const [chain, load] = process.argv.slice(2);
 if (!/^(repo|authz):/.test(chain ?? "") || !load) throw new Error("usage: learners.mjs repo:ID|authz:ID region:rate[,region:rate]");
@@ -14,6 +14,14 @@ const reads = load.split(",").map((x) => { const [r, n] = x.split(":"); return [
 // other error is asked again within the same 120 s: on m3fr12's B0-32 the create's background re-placement of f1
 // committed (16:05:37.9Z) while `/learners` was joining its 8 learners (16:05:32.7 to 39.6Z), so its change from the
 // config it read first committed nothing, and the row ran on its two followers alone. The error text was not logged.
+// The product keeps the committed learners through a re-placement (learners-kept); as a belt, `/learners` waits until
+// the leader runs no placement (`placingSince` in /status, the create's background `/place`), up to 120 s.
+for (const t0 = Date.now(); Date.now() - t0 < 120_000; ) {
+  const st = (await statuses(chain)).filter((s) => s.role === "leader").sort((a, b) => b.term - a.term)[0];
+  if (st && st.placingSince == null) break;
+  log(`${chain} leader ${st?.site} placing since ${st?.placingSince}: waiting`);
+  await new Promise((r) => setTimeout(r, 3_000));
+}
 let p, v;
 for (const t0 = Date.now(); ; ) {
   const leader = await leaderOf(chain);

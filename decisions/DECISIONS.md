@@ -4473,3 +4473,23 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted re-placement that leaves a group `Degraded` for longer than one config round, or one that commits `Degraded` while a voter it needs is behind.
 
+### `learners-kept`: every config change carries the committed learners and is appended only from the committed config, 2026-11-17
+
+**Status.** Asked for by the orchestrator after B0-32 m3fr13. Built on branch `learners-kept`, not deployed. A site-script change, so it ships on a site day.
+
+**Decision.**
+- **Learners carried.** A re-placement's `Degraded` and `Normal`, and every `/move` step (`move_placement`), take their learners from the committed config, a `Joint`'s new half for a move. A try's placement names the committed learners too. Learners belong to sites and slots, not to the voter being replaced, so a change of voters or home keeps them as they are. `Placement::with_learners` rebuilds a placement under the same shape checks a decoded one gets.
+- **No change from a stale read.** `Routes::change(cfg, based_on)` appends `cfg` only while the committed config's index is still `based_on`, the index the caller built `cfg` from (`unchanged_since`). The check and the append run in one turn, so no other change commits between them. A re-placement passes the index it re-read before `Degraded`, then `Degraded`'s own index for `Normal`; `/move` and `/learners` pass the index they read.
+- **The re-read.** Right before `Degraded`, after the second `voters_ready`, `replace_steps` reads the committed config again. With the same voters and home, both changes take its learners and its index; a `/learners` commit during the tries is kept. With voters or a home that moved, the re-placement ends with no config change, the chosen try cleared and the site's registry row restored, `{"error": "the committed config changed during the re-placement"}`.
+- **Driver belt.** `tests/fanout/learners.mjs` waits up to 120 s until the leader's `/status` shows no `placingSince` (the placement marker `place_background` and the daily check hold) before it asks `/learners`, and asks again on any error, the new refusal included.
+
+**Why.** B0-32 m3fr13. `/learners` committed config 5 with 8 learners at 17:51:59Z. The create's background `/place`, started about 9 s earlier, committed `Degraded` at 6 from the placement it read first and `Normal` at 7 from a try built with no learners, so a1 read 0 learners and the row ran on two followers [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fr13"]. Raft's one-change check counts voters only, so a change that drops every learner passes it. The same holds for `/move`, which built every placement with no learners, and in production for the daily near check on any group with learners. The reverse order is stale too: a `/learners` change built before a re-placement commits would put the replaced voter back.
+
+**Beat.**
+- Only a driver wait for the create's `/place` before `/learners`: it fixes the row, not the product, and the daily near check would still drop a hot group's learners.
+- Merging learners into a stale change instead of refusing it: a change built from an older read can still undo a voter change, and merging needs a rule for each pair of changes. Refusing needs one comparison, and every caller already retries or reports.
+- A check in `crates/raft`'s `reconfigure` that refuses a change that drops learners: `/learners` itself must be able to drop them, and the stale-read case is a voter question too.
+
+**Evidence.** `a_re_placement_keeps_the_committed_learners` and `a_move_keeps_the_committed_learners` (`workers/site/src/member.rs`): a re-placement of a group with 8 learners commits both changes with 8; a `/learners` commit (10 learners) during the tries is in both; voters that moved end it with no config; a move keeps the learners of a `Normal` and of a `Joint`'s new half; and a change is refused once the committed index moved. The tests need the new `Steps` methods, so they do not compile on main; main's order is `tests/m0carried/plant33.py`'s mutant 0 (`Degraded` from the first read, `Normal` from the try), and it fails the first test. The script plants seven mutants, and the tests catch all seven.
+
+**Flip.** A hosted group whose committed learners drop without a `/learners` change, or a re-placement or `/learners` that is refused as stale on a group no other change touched.
