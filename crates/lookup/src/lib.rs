@@ -1028,6 +1028,74 @@ pub async fn call_raw(
     call_opt(b, chain, record, path, body).await?.ok_or_else(|| format!("{chain}: no group"))
 }
 
+/// How long a dependency read waits for its first request before it sends a second one (`call_hedged`) [guess]: past
+/// `deps:authz` p99 (672 to 725 ms on B0-31 m3fr12, an apac leader reading enam), so under 1 read in 100 is hedged.
+pub const DEP_HEDGE: Duration = Duration::from_millis(1_000);
+
+/// How a hedged call ended: answered by its first request with no second sent, by the first after a second was sent,
+/// or by the second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hedged {
+    First,
+    Asked,
+    Won,
+}
+
+/// `first`, and if it has not ended when `after` does, `second()` beside it; the first `Ok` of the two, else the
+/// first's error. Neither is cancelled by the other's error, and the loser of a race is dropped unread.
+pub async fn hedge<T, E, A, D, B, BF>(first: A, after: D, second: B) -> (Result<T, E>, Hedged)
+where
+    A: Future<Output = Result<T, E>>,
+    D: Future<Output = ()>,
+    B: FnOnce() -> BF,
+    BF: Future<Output = Result<T, E>>,
+{
+    let first = Box::pin(first);
+    let first = match select(first, Box::pin(after)).await {
+        Either::Left((r, _)) => return (r, Hedged::First),
+        Either::Right((_, first)) => first,
+    };
+    match select(first, Box::pin(second())).await {
+        Either::Left((Ok(v), _)) => (Ok(v), Hedged::Asked),
+        Either::Right((Ok(v), _)) => (Ok(v), Hedged::Won),
+        Either::Left((Err(e), second)) => match second.await {
+            Ok(v) => (Ok(v), Hedged::Won),
+            Err(_) => (Err(e), Hedged::Asked),
+        },
+        Either::Right((Err(_), first)) => (first.await, Hedged::Asked),
+    }
+}
+
+/// A leader's dependency read (`design/DESIGN.md`, Shape, \"The write path\", `dep-hedge`): `call` of `body` on
+/// `chain`, and if it has not answered within DEP_HEDGE, a second `call` beside it, a new request to the leader the
+/// isolate then holds (a dependency read is the leader's own `fresh`, so no follower may answer it), and the first
+/// answer of the two. Both start after the read was asked, and each is answered
+/// only by a leader through `fresh`, so the read the caller keeps is one `fresh` read made after the batch's commands
+/// were admitted, whichever it is. F83: single requests to an identity leader were held 4.6 to 5.4 s before its
+/// handler while it served a later request from the same isolate in 186 ms.
+pub async fn call_hedged(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    path: &str,
+    body: &Value,
+) -> (std::result::Result<(Value, Step), String>, Hedged) {
+    let bytes = body.to_string();
+    let one = || async { call_raw(b, chain, record, path, bytes.as_bytes()).await.map(|(v, s, _)| (v, s)) };
+    dep_read(one, Delay::from).await
+}
+
+/// `call_hedged`'s rule over any read and sleep: `read()` now, and `read()` again beside it after DEP_HEDGE.
+async fn dep_read<T, E, R, RF, D, DF>(read: R, delay: D) -> (Result<T, E>, Hedged)
+where
+    R: Fn() -> RF,
+    RF: Future<Output = Result<T, E>>,
+    D: Fn(Duration) -> DF,
+    DF: Future<Output = ()>,
+{
+    hedge(read(), delay(DEP_HEDGE), &read).await
+}
+
 /// `call_raw` with a JSON body.
 pub async fn call(
     b: &Bindings<'_>,
@@ -2845,5 +2913,87 @@ mod tests {
         assert!(matches!(stage(&known, &record, chain, 3), Some(Stage::Registry { depth: 1, .. })));
         assert!(stage(&known, &record, chain, 4).is_none());
         assert!(matches!(stage(&Known::default(), &record, chain, 0), Some(Stage::Names(v)) if v.len() == 3));
+    }
+
+    /// `dep_read` driven by hand: request `i` (in the order sent) is sent at the clock's time and ends `ends[i]` ms
+    /// later with its result, or never. Returns the answer, how the hedge ended, the requests sent, and the clock then.
+    fn run_dep_read(
+        ends: Vec<Option<(u64, Result<u32, &'static str>)>>,
+    ) -> (Result<u32, &'static str>, Hedged, usize, u64) {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct At(Rc<Cell<u64>>, u64);
+        impl Future for At {
+            type Output = ();
+            fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0.get() >= self.1 { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+            }
+        }
+        let clock = Rc::new(Cell::new(0u64));
+        let sent = Cell::new(0usize);
+        let read = || {
+            let i = sent.get();
+            sent.set(i + 1);
+            let (c, end) = (clock.clone(), ends.get(i).cloned().flatten());
+            async move {
+                match end {
+                    Some((ms, r)) => {
+                        let at = c.get() + ms;
+                        At(c, at).await;
+                        r
+                    }
+                    None => std::future::pending().await,
+                }
+            }
+        };
+        let delay = |d: Duration| At(clock.clone(), clock.get() + d.as_millis() as u64);
+        let mut f = Box::pin(dep_read(read, delay));
+        for _ in 0..20_000 {
+            if let Some((r, how)) = (&mut f).now_or_never() {
+                return (r, how, sent.get(), clock.get());
+            }
+            clock.set(clock.get() + 1);
+        }
+        panic!("the read never ended");
+    }
+
+    /// `dep-hedge`: B0-31 m3fr12's opening stall had one `Authz` dependency read held 4.6 s before the leader's
+    /// handler, while a later request from the same isolate was served in 186 ms (F83). A read with no answer by
+    /// DEP_HEDGE sends a second and takes the first answer of the two; one answered in time sends nothing more; a
+    /// request that fails does not end the read while the other may still answer. On main the read waited the held
+    /// request out (`tests/m0carried/plant35.py`, mutant 0).
+    #[test]
+    fn a_dependency_read_with_no_answer_by_dep_hedge_asks_again_and_takes_the_first_answer() {
+        let h = DEP_HEDGE.as_millis() as u64;
+        // m3fr12: the first request held 4.6 s, the second answered in 9 ms.
+        assert_eq!(run_dep_read(vec![Some((4_611, Ok(1))), Some((9, Ok(2)))]), (Ok(2), Hedged::Won, 2, h + 9));
+        // The typical read: answered at 301 ms (deps:authz p50), no second request.
+        assert_eq!(run_dep_read(vec![Some((301, Ok(1))), Some((9, Ok(2)))]), (Ok(1), Hedged::First, 1, 301));
+        // A slow first that still beats the second.
+        assert_eq!(run_dep_read(vec![Some((h + 50, Ok(1))), Some((400, Ok(2)))]), (Ok(1), Hedged::Asked, 2, h + 50));
+        // The second never answers: the first's answer, whenever it comes.
+        assert_eq!(run_dep_read(vec![Some((3_000, Ok(1))), None]), (Ok(1), Hedged::Asked, 2, 3_000));
+        // The first fails after the second was sent: the read waits for the second, not the error.
+        assert_eq!(
+            run_dep_read(vec![Some((h + 100, Err("no member answered"))), Some((500, Ok(2)))]),
+            (Ok(2), Hedged::Won, 2, h + 500)
+        );
+        // The second fails first: the first's answer.
+        assert_eq!(
+            run_dep_read(vec![Some((h + 900, Ok(1))), Some((10, Err("busy")))]),
+            (Ok(1), Hedged::Asked, 2, h + 900)
+        );
+        // Both fail: the first's error, once both have ended.
+        assert_eq!(
+            run_dep_read(vec![Some((h + 100, Err("first"))), Some((300, Err("second")))]),
+            (Err("first"), Hedged::Asked, 2, h + 300)
+        );
+        // A first that fails before DEP_HEDGE ends the read with its error, as before (the caller tries the
+        // owner's current record next).
+        assert_eq!(
+            run_dep_read(vec![Some((40, Err("first"))), Some((10, Ok(2)))]),
+            (Err("first"), Hedged::First, 1, 40)
+        );
     }
 }

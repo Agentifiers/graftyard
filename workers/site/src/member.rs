@@ -2139,6 +2139,7 @@ impl<F: Family> Routes<F> {
                 "appendMs": append,
                 "applyMs": percentiles(&s.apply_ms),
                 "depFails": s.dep_fails,
+                "depHedges": { "asked": s.dep_hedges[0], "won": s.dep_hedges[1] },
                 "entries": s.entries,
                 "commands": s.commands,
                 "inbound": s.inbound,
@@ -2237,6 +2238,7 @@ impl<F: Family> Routes<F> {
         v["readsBy"] = json!(s.reads_by);
         v["depsMs"] = json!(s.deps_ms);
         v["depFails"] = json!(s.dep_fails);
+        v["depHedges"] = json!({ "asked": s.dep_hedges[0], "won": s.dep_hedges[1] });
         v["queueMs"] = json!(s.queue_ms);
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.

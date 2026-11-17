@@ -1315,7 +1315,7 @@ const v = {
     // Round 14: admitted commands' priced bytes by class (what moves admission's `cmdBytes`), and the statement mix of
     // the leader's newest transactions of 100 KB or more.
     admittedBytes: lstats.admittedBytes ?? null, bigTx: lstats.bigTx ?? null,
-    depFails: lstats.depFails,
+    depFails: lstats.depFails, depHedges: lstats.depHedges ?? null,
     // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
     entries: lstats.entries, commands: lstats.commands,
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
