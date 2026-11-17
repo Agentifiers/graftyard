@@ -127,7 +127,7 @@ const causes = (e) => {
   }
   return out;
 };
-async function git(path, body, headers, tok = tokens.admin) {
+async function git(path, body, headers, tok = tokens.admin, ctx = {}) {
   const url = `${EDGE}/${R}.git/${path}`, t0 = Date.now();
   let phase = "request";
   try {
@@ -136,7 +136,7 @@ async function git(path, body, headers, tok = tokens.admin) {
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1") };
   } catch (e) {
     appendFileSync(FETCH_FAILS, JSON.stringify({ at: new Date(t0).toISOString(), ms: Date.now() - t0, host: new URL(url).host, path,
-      bytes: body?.length ?? 0, phase, error: causes(e) }) + "\n");
+      bytes: body?.length ?? 0, phase, ...ctx, error: causes(e) }) + "\n");
     return { status: 0, text: String(e).slice(0, 80) };
   }
 }
@@ -162,9 +162,17 @@ async function pushOn(i, k) {
   const parent = st.tips[i] ?? main;
   const { pack, commit } = onePack(`b030/${i}/f.bin`, blob, parent, `b030 ${k}`, Math.floor(simMs() / 1000));
   const t0 = Date.now();
-  const r = await git("git-receive-pack", receiveBody(ref, st.tips[i] ?? null, commit, pack), { "content-type": "application/x-git-receive-pack-request" });
+  const r = await git("git-receive-pack", receiveBody(ref, st.tips[i] ?? null, commit, pack), { "content-type": "application/x-git-receive-pack-request" },
+    undefined, { ref, old: st.tips[i] ?? null, commit });
   pushMs.push(Date.now() - t0);
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status}`;
+  // A push with no HTTP answer: whether its ref landed at the pushed commit, read at once through the edge's ls-refs
+  // while this branch still has no other push in flight (operator, 2026-11-17: landed means the edge committed and
+  // answered and the answer was lost in transit). Logged only; the next push's stale answer re-reads the tip as before.
+  if (r.status === 0) {
+    const now = await tip(ref);
+    appendFileSync(FETCH_FAILS, JSON.stringify({ at: new Date().toISOString(), check: "landed", ref, commit, tip: now, landed: now === commit }) + "\n");
+  }
   if (res === "ok") { st.tips[i] = commit; st.pushes++; st.pushBytes += pack.length; }
   else if (res === "stale") st.tips[i] = await tip(ref);
   return res;
