@@ -1,0 +1,53 @@
+2026-11-17T08:23:46Z 131297 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:23:50Z 131298 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:23:55Z 131299 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:00Z 131300 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:24:07Z 131301 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:13Z 131302 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:18Z 131303 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:24:24Z 131304 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:29Z 131305 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:35Z 131306 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:40Z 131307 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:46Z 131308 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:24:51Z 131309 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:24:57Z 131310 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:25:03Z 131311 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:25:08Z 131312 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:25:13Z 131313 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:25:19Z 131314 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:25:24Z 131315 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:25:28Z 131316 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:25:32Z 131317 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:25:36Z 131318 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:25:42Z 131319 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:25:46Z 131320 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:25:56Z 131321 REFUSED: not retired (0:follower, 1:follower, 1:follower, 2:follower)
+2026-11-17T08:28:54Z 131322 purged: a 6549 -> 0, b 6555 -> 0, c 6554 -> 0
+2026-11-17T08:31:28Z 131323 purged: a 5988 -> 0, b 5984 -> 0, c 5963 -> 0
+2026-11-17T08:32:00Z 131324 purged: a 153 -> 0, b 155 -> 0, c 154 -> 0
+2026-11-17T08:32:32Z 131325 purged: a 157 -> 0, b 159 -> 0, c 158 -> 0
+2026-11-17T08:33:03Z 131326 purged: a 169 -> 0, b 173 -> 0, c 172 -> 0
+2026-11-17T08:33:37Z 131327 purged: a 183 -> 0, b 185 -> 0, c 184 -> 0
+2026-11-17T08:34:10Z 131328 purged: a 187 -> 0, b 189 -> 0, c 188 -> 0
+2026-11-17T08:37:10Z 131329 purged: a 8025 -> 0, b 8009 -> 0, c 7969 -> 0
+2026-11-17T08:39:39Z 131330 purged: a 5258 -> 0, b 5258 -> 0, c 5232 -> 0
+2026-11-17T08:39:43Z 131331 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:39:49Z 131332 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:39:54Z 131333 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:39:58Z 131334 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:40:45Z 131335 purged: a 962 -> 0, b 961 -> 0, c 961 -> 0
+2026-11-17T08:40:48Z 131336 REFUSED: not retired (1:follower)
+2026-11-17T08:41:56Z 131337 purged: a 2247 -> 0, b 2251 -> 0, c 2250 -> 0
+2026-11-17T08:42:45Z 131338 purged: a 1270 -> 0, b 1274 -> 0, c 1270 -> 0
+2026-11-17T08:42:50Z 131339 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-17T08:44:34Z 131340 purged: a 4405 -> 0, b 4407 -> 0, c 4406 -> 0
+2026-11-17T08:45:11Z 131341 purged: a 710 -> 0, b 712 -> 0, c 710 -> 0
+2026-11-17T08:47:21Z 131342 purged: a 6325 -> 0, b 6324 -> 0, c 6325 -> 0
+2026-11-17T08:48:41Z 131343 purged: a 3685 -> 0, b 3453 -> 0, c 2509 -> 0
+2026-11-17T08:49:06Z 131344 purged: a 7 -> 0, b 9 -> 0, c 3 -> 0
+2026-11-17T08:51:29Z 131345 purged: a 8515 -> 0, b 7454 -> 0, c 6153 -> 0
+2026-11-17T08:51:32Z 131346 REFUSED: not retired (1:follower)
+2026-11-17T08:53:54Z 131347 purged: a 8719 -> 0, b 7972 -> 0, c 5508 -> 0
+2026-11-17T08:56:34Z 131348 purged: a 7915 -> 0, b 7241 -> 0, c 5278 -> 0
+2026-11-17T08:56:34Z {"dry": false, "purged": 20, "objects": 202101, "refused": [131297, 131298, 131299, 131300, 131301, 131302, 131303, 131304, 131305, 131306, 131307, 131308, 131309, 131310, 131311, 131312, 131313, 131314, 131315, 131316, 131317, 131318, 131319, 131320, 131321, 131331, 131332, 131333, 131334, 131336, 131339, 131346]}
