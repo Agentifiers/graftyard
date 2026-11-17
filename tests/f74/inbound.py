@@ -21,12 +21,6 @@ import bisect, collections, datetime, json, sys
 ROUTES = ["/raft", "/read", "/commit", "/commit_many", "/outcome", "/outcome_by_request", "/suspect", "/campaign",
           "/status", "/stats", "/trace", "/ping", "/rtt", "/place", "/learners", "/record"]
 route = lambda code: ROUTES[code - 1] if 0 < code <= len(ROUTES) else "other"
-# m41-held's read source: `ReadQuery` (26) rows, [at, 26, 0, arrival, query code, 1 for a read-index read], with codes
-# from host.rs `READ_QUERIES`, kept the same here (append-only).
-READ_QUERIES = ["probe", "dep", "rows", "prsync", "accountLogins", "user", "summary", "split", "settings", "request",
-                "repoOwner", "repo", "ranges", "placement", "mergequeue", "login", "jti", "hosted", "genesis", "app",
-                "key"]
-query = lambda code: READ_QUERIES[code - 1] if 0 < code <= len(READ_QUERIES) else "other"
 
 args = sys.argv[1:]
 path = args[0]
@@ -135,21 +129,6 @@ for lo, hi in [(0, 200), (200, 1000), (1000, 3000), (3000, 1 << 62)]:
           + f"{pct([c['open'] for c in g], .5)}/{pct([c['open'] for c in g], .9)}".ljust(24) + mix)
 missed = [c for c in calls if c.get("total", DEADLINE) >= DEADLINE]
 print(f"missed {DEADLINE} ms or unanswered: {len(missed)}; requests entered ahead p50 {pct([c['ahead'] for c in missed], .5)}")
-
-# Each member's `/read`s by query and kind (leader read or read-index), per second over the window, from the
-# `ReadQuery` rows; a member's `/read` Entered rows with no `ReadQuery` row are counted as "untagged".
-print("\n/read by query per member (per s; idx = read-index from a follower or learner pass, lead = sent to the leader)")
-span = max(1, (min(T1, max((r[0] for rs in rows.values() for r in rs), default=0)) - max(T0, 0)) / 1000) if T1 < 1 << 62 \
-    else max(1, (max((r[0] for rs in rows.values() for r in rs), default=0) - min((r[0] for rs in rows.values()
-                                                                                    for r in rs), default=0)) / 1000)
-for addr in sorted(rows, key=str):
-    tagged = [r for r in rows[addr] if r[1] == 26 and T0 <= r[0] <= T1]
-    reads = sum(1 for r in rows[addr] if r[1] == 25 and r[4] % 64 == 2 and T0 <= r[0] <= T1)
-    if not tagged and not reads:
-        continue
-    c = collections.Counter((query(r[4]), "idx" if r[5] else "lead") for r in tagged)
-    top = " ".join(f"{q}:{k} {n / span:.1f}" for (q, k), n in c.most_common(6))
-    print(f"  {addr}: /read {reads / span:.1f}/s, untagged {(reads - len(tagged)) / span:.1f}/s | {top}")
 
 if "--rows" in opt:
     with open(opt["--rows"], "w") as f:

@@ -9,16 +9,20 @@
 //!   `POST /orgs/{org}/actions/runners/generate-jitconfig` and answers `encoded_jit_config` built from a key the server
 //!   holds; this route keeps the private key in the runner account [inference: `runsvc::jit_config` needs the private
 //!   key, and the install never holds a runner's].
-//! - `DELETE .../hosted/runners/{id}`: a stale runner's registration, refused (422) while it holds a job.
+//! - `DELETE .../hosted/runners/{id}`: a stale runner's registration, refused (422) while it holds a job on any shard
+//!   the owner's jobs can be on (`hosted::delete_stale`, F78): each repository the owner's `Authz` names gives its
+//!   `actions_shard`, read before the delete and after it commits.
 //!
 //! The installation needs `organization_self_hosted_runners` write (SHARED: "self-hosted-runner write permission").
 //! Nothing here calls the Cloudflare API, and no GHES reply changes.
 
-use graftyard_actions::OWNER_SCOPE_SHARD;
-use graftyard_actions::hosted::{self, HostedDemand, HostedLabel};
+use std::collections::BTreeSet;
+
+use graftyard_actions::hosted::{self, DeleteHost, Deleted, HostedDemand, HostedLabel, ShardSummary};
 use graftyard_actions::runsvc::{self, RunnerAt};
+use graftyard_actions::{OWNER_SCOPE_SHARD, RunnerId};
 use graftyard_identity::{Access, Actor, AuthzRead as _, Credential, Principal};
-use graftyard_types::{AccountId, ChainId};
+use graftyard_types::{AccountId, ChainId, PlacementRecord};
 use graftyard_wire::Reply;
 use serde_json::{Value, json};
 use worker::*;
@@ -56,14 +60,7 @@ pub async fn route(c: &Ctx<'_>, req: &mut Request, segs: &[&str]) -> Result<Opti
             register(c, login, owner, &b).await
         }
         (Method::Delete, ["runners", id]) => match id.parse::<i64>() {
-            Ok(id) => {
-                let chain = ChainId::Actions(owner, OWNER_SCOPE_SHARD);
-                match crate::actions::runsvc_call(c, chain, &json!({ "op": "delete_hosted", "runner": id })).await {
-                    Ok((204, _)) => Reply::empty(204),
-                    Ok((s, v)) => Reply::json(s, v["body"].clone()),
-                    Err(e) => unavailable(&e),
-                }
-            }
+            Ok(id) => delete(c, owner, id).await,
             Err(_) => Reply::not_found(),
         },
         _ => Reply::not_found(),
@@ -99,6 +96,71 @@ async fn demand(c: &Ctx<'_>, owner: AccountId) -> std::result::Result<HostedDema
         return Err(format!("broker demand: {}", r.status_code()));
     }
     r.json().await.map_err(|e| e.to_string())
+}
+
+/// The install's side of a stale delete: shard reads through `fresh`, and `delete_hosted` on the registration shard.
+struct Delete<'a, 'b> {
+    c: &'a Ctx<'b>,
+    owner: AccountId,
+    record: PlacementRecord,
+    runner: i64,
+}
+
+impl DeleteHost for Delete<'_, '_> {
+    type Err = Reply;
+    async fn read(&self, shards: &BTreeSet<u8>) -> std::result::Result<Vec<(u8, ShardSummary)>, Reply> {
+        let reads = shards.iter().map(|s| {
+            let (chain, record) = (ChainId::Actions(self.owner, *s), &self.record);
+            async move {
+                let q = json!({ "q": { "hosted": true } }).to_string();
+                match graftyard_lookup::call_opt(&self.c.bindings(), chain, record, "/read", q.as_bytes()).await {
+                    Ok(Some((v, _, _))) => serde_json::from_value(v["value"].clone()).map_err(|e| e.to_string()),
+                    Ok(None) => Ok(ShardSummary::default()),
+                    Err(e) => Err(format!("{chain}: {e}")),
+                }
+                .map(|sum| (*s, sum))
+            }
+        });
+        futures_util::future::join_all(reads).await.into_iter().collect::<std::result::Result<_, _>>().map_err(|e| {
+            console_error!("hosted delete {}: {e}", self.runner);
+            unavailable(&e)
+        })
+    }
+    async fn delete(&self) -> std::result::Result<bool, Reply> {
+        let chain = ChainId::Actions(self.owner, OWNER_SCOPE_SHARD);
+        match crate::actions::runsvc_call(self.c, chain, &json!({ "op": "delete_hosted", "runner": self.runner })).await
+        {
+            Ok((204, _)) => Ok(true),
+            Ok((422, _)) => Ok(false),
+            Ok((s, v)) => Err(Reply::json(s, v["body"].clone())),
+            Err(e) => Err(unavailable(&e)),
+        }
+    }
+}
+
+/// `DELETE .../hosted/runners/{id}`: `hosted::delete_stale` over every shard the owner's jobs can be on, from its
+/// `Authz` names read fresh (a repository created since a cached read could hold the runner's job).
+async fn delete(c: &Ctx<'_>, owner: AccountId, runner: i64) -> Reply {
+    let Some(record) = (match crate::placement(c, owner).await {
+        Ok(r) => r,
+        Err(e) => return unavailable(&e),
+    }) else {
+        return Reply::not_found();
+    };
+    let authz = match crate::authz_read_as(c, owner, &record, false).await {
+        Ok(Some(f)) => f,
+        Ok(None) => return Reply::not_found(),
+        Err(e) => return unavailable(&e),
+    };
+    let shards = hosted::job_shards(hosted::owner_repos(&authz.names));
+    let h = Delete { c, owner, record, runner };
+    match hosted::delete_stale(&h, &shards, RunnerId(graftyard_types::DbId(runner))).await {
+        Ok(Deleted::Gone) => Reply::empty(204),
+        Ok(Deleted::Busy { shard }) => {
+            Reply::error(422, &format!("the hosted runner holds a job on shard {shard}"), "rest")
+        }
+        Err(r) => r,
+    }
 }
 
 /// `POST .../hosted/runners`: one hosted registration and its JIT config pieces.
