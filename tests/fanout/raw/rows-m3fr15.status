@@ -1,0 +1,51 @@
+2026-11-17T21:26:40Z start c586dfe4 /home/user/workspace/b032-trace
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T21:26:56Z start sweep ok
+2026-11-17T21:26:58Z cost account 175.17 since 2026-11-17T00:00:00Z, run 0.0 since 2026-11-17T21:26:09Z, at b0-32
+2026-11-17T21:27:43.959Z m3org/fm3fr15-b032 = 65585
+2026-11-17T21:27:44.482Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:27:47.715Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:27:50.976Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:27:54.197Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:27:57.408Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:00.623Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:03.838Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:07.049Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:10.263Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:13.505Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:16.717Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:19.981Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:23.186Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:26.402Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:29.626Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:32.909Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:36.145Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:39.362Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:42.578Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:45.806Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:49.010Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:52.221Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:28:55.427Z repo:65585 leader 0 placing since 1794950864740: waiting
+2026-11-17T21:29:07.201Z repo:65585 leader 0: config 11 learners [{"addr":192,"doName":"repo:65585#7#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65585#7#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65585#7#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65585#7#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65585#7#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65585#7#l5","join":200,"sit
+2026-11-17T21:29:12.843Z repo:65585 leader 0: set k 4: {"grants":[[0,[3,0,5]],[2,[3,0,5]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T21:29:23.300Z repo:65585 leader 0: set k 4: {"grants":[[0,[3,0,5]],[2,[3,0,5]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-17T21:29:33.990Z repo:65585 leader 0: set k 4: {"grants":[[0,[3,0,5]],[2,[3,0,5]]],"k":4,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-17T21:29:34.112Z repo:65585 leader 0: k 4 at 12
+2026-11-17T21:29:34Z b0-32 fm3fr15-b032 65585 start
+2026-11-17T21:39:04.110Z repo:65585 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":4},"stepped":true,"want":0}
+2026-11-17T21:39:04.270Z repo:65585 leader 0: k 1 at 617
+2026-11-17T21:39:04Z b0-32 fm3fr15-b032 65585 done exit 0
+2026-11-17T21:39:09Z torn down 65585
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T21:40:36Z sweep ok
+ALLDONE
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-17T21:40:58Z SWEEP2 OK
+2026-11-17T21:40:58Z cost {"from": "2026-11-17T21:26:09Z", "to": "2026-11-17T21:40:58Z", "containers": 0.15, "do_rows": 0.66, "do_duration": 0.08, "do_requests": 0.06, "workers": 0.04, "usd": 0.99, "prefix": "graft-m3f", "prefix_usd": 0.66}
+FINISHED
