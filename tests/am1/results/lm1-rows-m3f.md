@@ -235,6 +235,37 @@ graft-m2b's edge shows the same errors during LM-1's slot, 03:40 to 03:50Z.
 2. **Pool shards send back.** A pool shard sends back, with 409, a forwarded push that needs a catch-up, and the first shard validates it. In the trace that is the 10 pushes at about 0.2 s instead of 15.6 s, so validate p99 about 1.3 s.
 3. **Expected B0-32 effect** [inference]. The zero-`suspect` line should pass if the leader holds. The within-5 s line still fails: commit p50 3.5 s and auth, install and resolve about 2.9 s together already total over 5 s. That needs the leader's queue (LM-1 and B0-02's work) and the edge's read stages.
 
+### B0-31's buckets-up commit tail: the apac leader's cycle is its dependency reads, not its round (raw files of 8 B0-31 runs, no hosted spend; branch `b031-slot`)
+
+**The cycle** [measured, `leader.splitByHalf.up` of `a1-b0-31-mwk7aypv`, m3fr11]:
+- 726 entries in the 300 s half is one entry per 413 ms, carrying 7.2 commands each.
+- Round p50 198 ms (p99 373). The entry's dependency reads (`deps:all`, every chain at once) p50 368 ms (p99 685).
+- `cut_early` asks the next batch's reads once the entry in flight has been out its mean round less one mean read. That wait is 0 here, since the read is longer than the round. The batch is then decided when its reads land, about 368 ms after the append. That plus about 45 ms to decide and append is the 413 ms cycle.
+- So the round is hidden and the read is not. `queue:slot` p50 531 ms is about 1.3 cycles, and p99 1,701 about 4 cycles.
+
+**Why the reads are long** [inference, from the record and the read split]:
+- The repository group is rehomed onto apac (site 2) for the row. The owner's identity groups (Authz, Tokens, Names) follow the owner's record, `Tri`, home site 0 (enam), so each read crosses the Pacific.
+- `deps:tokens` and `deps:names` p50 174 ms, about one round trip. `deps:authz` p50 293 ms, with about 2 Authz reads per entry (1,437 for 721 entries), so `deps:all` takes the slower of two.
+- B0-32's leader on enam reads the same groups at `deps:all` p50 101 ms.
+- Not checked: which site led each identity group during the row. The terms trace records only the repository group.
+
+**Across the B0-31 runs that held their leader**, commit p99 follows the read (each `deps:all` p50, commit p99):
+- `mwg9hh9a`: 356 ms, 1,118 ms
+- `mwfyd102`: 357 ms, 1,165 ms
+- `mwk7aypv`: 368 ms, 1,439 ms
+- `mwglf3oa`: 461 ms, 1,333 ms
+- `mwk61jkm`: 488 ms, 1,548 ms
+- `mwj4z7uv`: 485 ms, 2,138 ms
+
+Rounds stayed between 194 and 254 ms p50 in all of them.
+
+**So B0-31 and B0-32 do not share a cause.** B0-32's slot wait is queue depth behind a one-second burst. B0-31's is a cycle held to the dependency read.
+
+**Where a fix would go** (not built):
+1. **Overlap more than one batch's reads** (`crates/raft/src/member/leader.rs`, `cut_early` and the one held batch). Cut and ask the next batch's reads while one batch is held, so the cycle tends to the round plus decide (about 245 ms) instead of the read plus decide (413 ms). Each read is still asked after its commands were admitted, and one entry stays in flight. This is `crates/raft`, which this thread does not edit.
+2. **A cheaper Authz read** on the identity leader (`workers/site/src/host.rs`, `{"q": {"dep": true}}` returns the whole fold, hex-encoded). It removes at most the roughly 120 ms Authz takes over Tokens, and only if fold size is the reason, which is unmeasured.
+3. **Placement:** the row rehomes only the repository on purpose, so this is a product question: should a group whose leader moves read its dependencies from groups led on another continent?
+
 ## The daily near check re-placed healthy groups (2026-11-16, Workers Logs, no hosted spend; branch `near-check`)
 
 **What the logs show** [measured, Workers Logs, "daily near check re-placed" on every site of each install, 00:00Z to 23:59Z]:
