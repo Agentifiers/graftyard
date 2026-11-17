@@ -1301,6 +1301,13 @@ pub fn text(v: &SqlStorageValue) -> Result<&str> {
     }
 }
 
+/// Whether a storage error is the object out of space: SQLite's own `SQLITE_FULL`, or the platform's database size
+/// limit, which is what a member hit on B0-30's short run ("Exceeded the maximum database size", site c at 10.70 GB)
+/// while its stats still read 0.
+pub fn out_of_space(e: &str) -> bool {
+    ["SQLITE_FULL", "database or disk is full", "Exceeded the maximum database size"].iter().any(|m| e.contains(m))
+}
+
 pub fn rows(sql: &SqlStorage, q: &str, args: Vec<SqlStorageValue>) -> Result<Vec<Vec<SqlStorageValue>>> {
     sql.exec(q, args)?.raw().collect()
 }
@@ -3621,8 +3628,8 @@ impl<F: Family> Host<F> {
 
     /// Counts a failed write that SQLite refused for space (B0-30's `SQLITE_FULL`), and logs it, so a reader of
     /// Workers Logs finds it after the reset this write causes.
-    fn full(&self, e: &str) {
-        if e.contains("SQLITE_FULL") || e.contains("database or disk is full") {
+    pub fn full(&self, e: &str) {
+        if out_of_space(e) {
             self.stats.borrow_mut().sqlite_full += 1;
             console_error!("SQLITE_FULL: {e}");
         }
@@ -4000,6 +4007,18 @@ mod tests {
     /// promise lapsed, even when its first check came later, or after it was first found so if it never promised; then
     /// at most every ELECTION_AFTER. It probes a leader it still names and campaigns when it names none. One that leads
     /// or still holds its promise, or has no such work, does nothing.
+    /// The platform's database size limit counts as out of space, as SQLite's own refusals do: b030r4's site c hit it
+    /// at 10.70 GB while its stats read `sqliteFull: 0`. Other storage errors do not count.
+    #[test]
+    fn the_platform_s_size_limit_counts_as_sqlite_full() {
+        assert!(super::out_of_space("Error: Exceeded the maximum database size."));
+        assert!(super::out_of_space("SQLITE_FULL: database or disk is full"));
+        assert!(!super::out_of_space("Error: database table is locked: SQLITE_LOCKED"));
+        assert!(!super::out_of_space(
+            "Durable Object storage operation exceeded timeout which caused object to be reset."
+        ));
+    }
+
     #[test]
     fn a_leaderless_voter_with_work_due_acts_after_the_bound_only() {
         use super::KeepLed::*;

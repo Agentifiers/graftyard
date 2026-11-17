@@ -15,7 +15,11 @@
 //      its SQLite (the peak is judged against own − metadata + scratch), its `meta_dropped` mark, any
 //      "install restarted" in its alarms, and whether it answered a metadata read or led while marked.
 // Read-only apart from `/sever` and `/place`. Fails nothing on its own; every row carries what the result file judges.
+// The second short run (b030r5, operator 2026-11-17): SEVER_AT=split severs site c as soon as `MetaSplit` commits,
+// before `MetaDropped`, so it installs from a fold that never applied it (b030-split.md, "The gap"); END_AT=install
+// sets the run's end (tests/am1/raw/b030-days) to the current day once c's install is done, so load.mjs stops there.
 //   B030_RUN=b030r4 node tests/am1/b030split/force.mjs
+//   B030_RUN=b030r5 SEVER_AT=split END_AT=install node tests/am1/b030split/force.mjs
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { log, member, sleep, statuses, voter } from "../hosted/lib.mjs";
 
@@ -27,6 +31,8 @@ const SPEED = 18, DAY_S = 86_400 / SPEED;
 const AFTER_DAYS = Number(process.env.AFTER_DAYS ?? 8);
 const LAG_MARGIN = Number(process.env.LAG_MARGIN ?? 200);
 const LAGGER = Number(process.env.LAGGER ?? 2);
+const SEVER_AT = process.env.SEVER_AT ?? "dropped";
+const END_AT = process.env.END_AT ?? "days";
 const STOP = "tests/am1/raw/b030-STOP";
 const row = (r) => { const v = { at: new Date().toISOString(), ...r }; appendFileSync(OUT, JSON.stringify(v) + "\n"); log(JSON.stringify(v).slice(0, 300)); };
 const done = (phase) => existsSync(OUT) && readFileSync(OUT, "utf8").split("\n").some((l) => l.includes(`"phase":"${phase}"`) && l.includes(`"done":true`));
@@ -54,6 +60,7 @@ if (!done("sever")) {
     if (existsSync(STOP)) process.exit(0);
     const l = await leader().catch(() => null);
     const v = l ? await size(l.site) : null;
+    if (SEVER_AT === "split") { row({ phase: "dropped", skipped: "SEVER_AT=split", leader: l?.site, dropped: v?.split?.state?.dropped ?? null }); break; }
     if (v?.split?.state?.dropped) { row({ phase: "dropped", leader: l.site, dbBytes: v.dbBytes, slim: v.split.slim }); break; }
     await sleep(30_000);
   }
@@ -118,6 +125,11 @@ for (;;) {
   // Done once no job runs and the member applied past the last install's `through`.
   if (running === null && through !== null && typeof v.applied === "number" && v.applied >= through) {
     row({ phase: "install", done: true, own, peak, applied: v.applied });
+    if (END_AT === "install") {
+      const d = day();
+      writeFileSync("tests/am1/raw/b030-days", String(+d.toFixed(3)) + "\n");
+      row({ phase: "end", done: true, day: +d.toFixed(3), why: "END_AT=install" });
+    }
     break;
   }
   await sleep(60_000);

@@ -13,6 +13,11 @@
 # onward") adds two services and seeds 5.5 GB: B030_RUN=b030r4 NAME=b0-30-r4 SEED_BYTES=5500000000.
 #   amp orb service start b030-force   --command 'bash tests/am1/b030split/rerun.sh force'
 #   amp orb service start b030-acct    --command 'bash tests/am1/b030split/rerun.sh acct'
+# The second short run (b030r5, operator 2026-11-17): B030_RUN=b030r5 NAME=b0-30-r5, and force and acct take
+# SEVER_AT=split END_AT=install and PREFIX=graft-m1 RUN_USD=60 from the environment:
+#   amp orb service start b030r5-siteday --command 'RUN=b030r5 bash tests/am1/b030split/siteday-r4.sh'
+#   amp orb service start b030-force --command 'B030_RUN=b030r5 NAME=b0-30-r5 SEVER_AT=split END_AT=install bash tests/am1/b030split/rerun.sh force'
+#   amp orb service start b030-acct  --command 'B030_RUN=b030r5 PREFIX=graft-m1 RUN_USD=60 bash tests/am1/b030split/rerun.sh acct'
 # STOP_USD (default 190) is the old per-install meter's line, for diagnosis only since 2026-11-16; the stop is acctstop.py's. It was the rerun's own spend, DO, Workers and containers, from the start time in
 # tests/am1/raw/$B030_RUN.start. To change it mid-run, write the new number to tests/am1/raw/b030-stop-usd.
 cd "$(dirname "$0")/../../.."
@@ -53,10 +58,12 @@ case "$1" in
     node tests/am1/b030split/watch.mjs >> $R/$RUN-watch.log 2>&1 ;;
   force)
     until seeded; do sleep 60; done
+    # b030r5: SEVER_AT=split END_AT=install (operator, 2026-11-17).
     node tests/am1/b030split/force.mjs >> $R/$RUN-force.log 2>&1 ;;
   acct)
     # The stop rule on the account meter: $150 for the run from the site day, or $170 for the account's UTC day.
     until [ -s $R/$RUN.start ]; do sleep 30; done
+    # b030r5: PREFIX=graft-m1 RUN_USD=60 (operator, 2026-11-17).
     python3 tests/am1/b030split/acctstop.py >> $R/$RUN-acct.log 2>&1 ;;
 esac
 exec sleep infinity
