@@ -18,6 +18,14 @@
 #   amp orb service start b030r5-siteday --command 'RUN=b030r5 bash tests/am1/b030split/siteday-r4.sh'
 #   amp orb service start b030-force --command 'B030_RUN=b030r5 NAME=b0-30-r5 SEVER_AT=split END_AT=install bash tests/am1/b030split/rerun.sh force'
 #   amp orb service start b030-acct  --command 'B030_RUN=b030r5 PREFIX=graft-m1 RUN_USD=60 bash tests/am1/b030split/rerun.sh acct'
+# The third short run (b030r6, operator 2026-11-17, from main with G21 and G22): as b030r5, with force's install cap of
+# 120 min after the sever lifts (INSTALL_CAP_MIN), and the teardown by generation scan plus purge (retire-run.mjs).
+# Generic state files of the run before go to tests/am1/raw/r5-generic/ first.
+#   amp orb service start b030r6-siteday --command 'RUN=b030r6 bash tests/am1/b030split/siteday-r4.sh'
+#   E='B030_RUN=b030r6 NAME=b0-30-r6'; seed, load, cross, watch as above with $E;
+#   amp orb service start b030-force --command "$E SEVER_AT=split END_AT=install INSTALL_CAP_MIN=120 bash tests/am1/b030split/rerun.sh force"
+#   amp orb service start b030-acct  --command "$E PREFIX=graft-m1 RUN_USD=60 DAY_USD=280 bash tests/am1/b030split/rerun.sh acct"  (account day stop $280 from 15:50Z, FRAME.md at 19b5ae77)
+#   then node tests/am1/b030split/configs.mjs repo:<id> (and repo-meta:<id>) for the create-time config line.
 # STOP_USD (default 190) is the old per-install meter's line, for diagnosis only since 2026-11-16; the stop is acctstop.py's. It was the rerun's own spend, DO, Workers and containers, from the start time in
 # tests/am1/raw/$B030_RUN.start. To change it mid-run, write the new number to tests/am1/raw/b030-stop-usd.
 cd "$(dirname "$0")/../../.."

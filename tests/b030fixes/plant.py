@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""b030-fixes: planted bugs in B0-30's three install fixes (with G21's pin in place of (i-2)), G22's try order, the re-placement gate, and the create rule. Plants one
+"""b030-fixes: planted bugs in B0-30's three install fixes (with G21's pin in place of (i-2)), G22's try order, the re-placement gate, the create rule, and GET /log's byte cap. Plants one
 mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT with the
 failing tests, MISSED, or DID NOT COMPILE. Run from the worktree root:
 
@@ -16,6 +16,7 @@ FAMILY = 'workers/site/src/family.rs'
 SNAP = 'workers/site/src/snap.rs'
 MEMBER = 'workers/site/src/member.rs'
 LOOKUP = 'crates/lookup/src/lib.rs'
+HOST = 'workers/site/src/host.rs'
 T = ['-p', 'graftyard-git', '--test', 'split']
 S = ['-p', 'graftyard-site', '--features', 'test-faults', '--lib']
 L = ['-p', 'graftyard-lookup', '--lib']
@@ -66,7 +67,7 @@ MUTANTS = [
     ('(i-3) the old condition: an install waits for its own MetaDropped', LOAD,
      '        let drop = drop_due(job.install(), applied, job.through);',
      '        let drop = drop_due(job.install(), applied, job.through)\n            && h.core.borrow().as_ref().is_some_and(|c| crate::split::dropped(&c.m.group_fold().fold));', S),
-    ('b030r4: the platform size limit is not counted as SQLITE_FULL', 'workers/site/src/host.rs',
+    ('b030r4: the platform size limit is not counted as SQLITE_FULL', HOST,
      '"database or disk is full", "Exceeded the maximum database size"]', '"database or disk is full"]', S),
     ('(i-3) a member with its tables dropped loads on restore', FAMILY,
      "    !dropped && if fold.child { crate::split::child_loaded(fold) } else { caught_up }",
@@ -118,6 +119,13 @@ MUTANTS = [
     ('create places any group whose members answered its joins, as main did', LOOKUP,
      '    fresh * 2 > answers.len()', '    answers.iter().filter(|a| matches!(a, Some((200, _)))).count() * 2 > answers.len()', L),
     ('create places on one fresh join', LOOKUP, '    fresh * 2 > answers.len()', '    fresh > 0', L),
+    # b030r6: GET /log bounded by bytes (a harness read of 100-400 entries reset the leader's isolate)
+    ('/log unbounded by bytes, as main', HOST, '        if !out.is_empty() && bytes.saturating_add(len) > cap {',
+     '        if false && !out.is_empty() && bytes.saturating_add(len) > cap {', S),
+    ('/log keeps the row that crosses the cap', HOST, '        if !out.is_empty() && bytes.saturating_add(len) > cap {\n            break;\n        }\n        bytes = bytes.saturating_add(len);\n        out.push(row);',
+     '        bytes = bytes.saturating_add(len);\n        out.push(row);\n        if bytes > cap {\n            break;\n        }', S),
+    ('/log refuses a first entry over the cap', HOST, '        if !out.is_empty() && bytes.saturating_add(len) > cap {',
+     '        if bytes.saturating_add(len) > cap {', S),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')

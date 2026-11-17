@@ -1,0 +1,7 @@
+b030r6 "http 0" push failures against graft-m1-edge's Workers Logs (2026-11-17, read 17:33Z)
+Driver (b030-load.jsonl minute rows, receive-pack attempts) vs edge invocations whose message includes git-receive-pack
+(observability calculations, grouped by outcome and response status):
+  17:00:50-17:09:51  driver 866 attempts: 815 ok, 15 stale, 36 http 0 (830 answered)  | edge 857, all outcome ok, all 200
+  17:12:52-17:26:54  driver 1352 attempts: 1346 ok, 6 stale, 0 http 0 (1352 answered) | edge 1345, all ok
+  17:26:54-17:27:54  driver 99 attempts: 94 ok, 5 http 0 (94 answered)                | edge 100, all ok
+Window edges are the driver's minute rows, so each count is +-7 or so (pushes take ~2 s).

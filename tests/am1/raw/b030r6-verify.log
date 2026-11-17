@@ -1,0 +1,2 @@
+2026-11-17T20:31:52.492Z b030 verify: {"ranges":3215,"archivedTo":18430,"sampled":41,"verified":41,"bytes":71689852,"entries":230,"bad":[],"restoredTo":{"ok":10,"bad":[]}}
+exit 0

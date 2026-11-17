@@ -1,0 +1,67 @@
+refs/heads/b030/242 5610e30f LANDED (ancestor of tip) 5921 ms
+refs/heads/b030/243 64eeaa46 LANDED (ancestor of tip) 8197 ms
+refs/heads/b030/244 ac92cb59 LANDED (ancestor of tip) 9823 ms
+refs/heads/b030/245 524c2c67 LANDED (ancestor of tip) 14061 ms
+refs/heads/b030/246 4f9086bb LANDED (ancestor of tip) 12502 ms
+refs/heads/b030/247 db6e208c LANDED (ancestor of tip) 9956 ms
+refs/heads/b030/248 3d93a2e1 LANDED (ancestor of tip) 7072 ms
+refs/heads/b030/249 90a80451 LANDED (ancestor of tip) 17152 ms
+refs/heads/b030/212 368048ef LANDED (ancestor of tip) 7218 ms
+refs/heads/b030/215 d8cd695a LANDED (ancestor of tip) 5606 ms
+refs/heads/b030/216 17242ee5 LANDED (ancestor of tip) 10313 ms
+refs/heads/b030/217 83cd0cf6 LANDED (ancestor of tip) 8947 ms
+refs/heads/b030/218 b34e0bbd LANDED (ancestor of tip) 8920 ms
+refs/heads/b030/219 f80c892b LANDED (ancestor of tip) 6852 ms
+refs/heads/b030/220 aa9c8f21 LANDED (ancestor of tip) 9839 ms
+refs/heads/b030/448 938dfc84 LANDED (ancestor of tip) 5412 ms
+refs/heads/b030/449 319b3da0 LANDED (ancestor of tip) 9324 ms
+refs/heads/b030/450 3c06a988 LANDED (ancestor of tip) 10507 ms
+refs/heads/b030/451 af05008d LANDED (ancestor of tip) 8920 ms
+refs/heads/b030/452 fd829d28 LANDED (ancestor of tip) 8867 ms
+refs/heads/b030/453 a8f8bb45 LANDED (ancestor of tip) 11716 ms
+refs/heads/b030/454 633a47f2 LANDED (ancestor of tip) 8052 ms
+refs/heads/b030/300 95dc8c82 LANDED (ancestor of tip) 7900 ms
+refs/heads/b030/301 839d20c9 LANDED (ancestor of tip) 7342 ms
+refs/heads/b030/302 ef31edaf LANDED (ancestor of tip) 8151 ms
+refs/heads/b030/303 a9b1bc0d LANDED (ancestor of tip) 12571 ms
+refs/heads/b030/304 f54e617d LANDED (ancestor of tip) 9734 ms
+refs/heads/b030/305 e0f236d7 LANDED (ancestor of tip) 10193 ms
+refs/heads/b030/306 c9adbd5e LANDED (ancestor of tip) 10329 ms
+refs/heads/b030/283 2055a142 LANDED (ancestor of tip) 10252 ms
+refs/heads/b030/287 34a9b7c1 LANDED (ancestor of tip) 7669 ms
+refs/heads/b030/288 64a4efde LANDED (ancestor of tip) 12341 ms
+refs/heads/b030/289 7a934f61 LANDED (ancestor of tip) 8475 ms
+refs/heads/b030/290 98ef83d1 LANDED (ancestor of tip) 9702 ms
+refs/heads/b030/291 082769ee LANDED (ancestor of tip) 10078 ms
+refs/heads/b030/292 720ffd2f fetch failed 2219 ms
+refs/heads/b030/17 2db5b1bb LANDED (ancestor of tip) 11531 ms
+refs/heads/b030/18 91a0b816 fetch failed 2805 ms
+refs/heads/b030/19 b59ecb12 LANDED (ancestor of tip) 14312 ms
+refs/heads/b030/20 98c5135d LANDED (ancestor of tip) 8705 ms
+refs/heads/b030/21 399f3c86 LANDED (ancestor of tip) 11301 ms
+refs/heads/b030/22 38fe86a3 LANDED (ancestor of tip) 7420 ms
+refs/heads/b030/23 e7fa889c fetch failed 4936 ms
+refs/heads/b030/271 915e1b21 LANDED (ancestor of tip) 8366 ms
+refs/heads/b030/274 e47f70be LANDED (ancestor of tip) 6961 ms
+refs/heads/b030/275 ef098eca fetch failed 3691 ms
+refs/heads/b030/276 849c0dd8 LANDED (ancestor of tip) 6368 ms
+refs/heads/b030/277 ab811ae8 fetch failed 6129 ms
+refs/heads/b030/278 ba9f457d LANDED (ancestor of tip) 8391 ms
+refs/heads/b030/279 c67b5b8b fetch failed 5401 ms
+refs/heads/b030/280 119ff5e2 NOT an ancestor 11759 ms
+refs/heads/b030/361 5b0c0255 LANDED (ancestor of tip) 9673 ms
+refs/heads/b030/362 d8ae584e LANDED (ancestor of tip) 6301 ms
+refs/heads/b030/364 1c4c7665 LANDED (ancestor of tip) 5490 ms
+refs/heads/b030/365 f5b1b590 LANDED (ancestor of tip) 8100 ms
+refs/heads/b030/366 da589967 LANDED (ancestor of tip) 8310 ms
+refs/heads/b030/367 cf50a877 fetch failed 4269 ms
+refs/heads/b030/368 faaf37d7 LANDED (ancestor of tip) 8830 ms
+refs/heads/b030/57 bd2c96f7 LANDED (ancestor of tip) 9159 ms
+refs/heads/b030/58 fa66e427 LANDED (ancestor of tip) 9688 ms
+refs/heads/b030/59 3b08b33b fetch failed 2835 ms
+refs/heads/b030/60 a8586038 fetch failed 4521 ms
+refs/heads/b030/61 3fc46907 LANDED (ancestor of tip) 11704 ms
+refs/heads/b030/62 cb0c326e LANDED (ancestor of tip) 8996 ms
+refs/heads/b030/63 9b033ec0 fetch failed 2866 ms
+refs/heads/b030/64 71e11b27 fetch failed 2373 ms
+{"checked":66,"landed":54}

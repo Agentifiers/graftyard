@@ -1,0 +1,68 @@
+2026-11-17T16:04:01.838Z m3org/b0-30-r6 = repo:1048594, main 901b5d9310bf6c89d7bbce734bb9db6d0946ec6e
+2026-11-17T16:04:02.695Z hold 0: {"held":true,"meta":{"configIndex":6,"leader":0,"term":2}}
+2026-11-17T16:04:03.034Z hold 1: {"held":true,"meta":{"configIndex":6,"leader":0,"term":2}}
+2026-11-17T16:04:03.231Z hold 2: {"held":true,"meta":{"configIndex":6,"leader":0,"term":2}}
+2026-11-17T16:04:32.535Z site 2 100000 rows, db 0.301 GB
+2026-11-17T16:04:51.684Z site 0 100000 rows, db 0.301 GB
+2026-11-17T16:05:00.505Z site 2 200000 rows, db 0.601 GB
+2026-11-17T16:05:33.616Z site 1 100000 rows, db 0.301 GB
+2026-11-17T16:05:40.884Z site 2 300000 rows, db 0.901 GB
+2026-11-17T16:05:51.439Z site 0 200000 rows, db 0.601 GB
+2026-11-17T16:06:11.208Z site 2 400000 rows, db 1.201 GB
+2026-11-17T16:06:49.390Z site 2 500000 rows, db 1.501 GB
+2026-11-17T16:06:59.157Z site 0 300000 rows, db 0.901 GB
+2026-11-17T16:07:08.739Z site 1 200000 rows, db 0.601 GB
+2026-11-17T16:07:20.264Z site 2 600000 rows, db 1.800 GB
+2026-11-17T16:07:54.200Z site 2 700000 rows, db 2.100 GB
+2026-11-17T16:07:57.764Z site 0 400000 rows, db 1.201 GB
+2026-11-17T16:08:25.881Z site 2 800000 rows, db 2.400 GB
+2026-11-17T16:08:51.317Z site 1 300000 rows, db 0.901 GB
+2026-11-17T16:08:53.845Z site 0 500000 rows, db 1.501 GB
+2026-11-17T16:09:00.472Z site 2 900000 rows, db 2.700 GB
+2026-11-17T16:09:39.227Z site 2 1000000 rows, db 3.000 GB
+2026-11-17T16:10:03.418Z site 0 600000 rows, db 1.800 GB
+2026-11-17T16:10:17.893Z site 2 1100000 rows, db 3.300 GB
+2026-11-17T16:10:38.574Z site 1 400000 rows, db 1.201 GB
+2026-11-17T16:11:01.162Z site 2 1200000 rows, db 3.599 GB
+2026-11-17T16:11:06.544Z site 0 700000 rows, db 2.100 GB
+2026-11-17T16:11:34.848Z site 2 1300000 rows, db 3.897 GB
+2026-11-17T16:12:01.633Z site 0 800000 rows, db 2.400 GB
+2026-11-17T16:12:21.263Z site 2 1400000 rows, db 4.197 GB
+2026-11-17T16:12:47.934Z site 2 1500000 rows, db 4.497 GB
+2026-11-17T16:12:53.597Z site 1 500000 rows, db 1.501 GB
+2026-11-17T16:13:19.296Z site 2 1600000 rows, db 4.797 GB
+2026-11-17T16:13:22.436Z site 0 900000 rows, db 2.700 GB
+2026-11-17T16:13:53.146Z site 2 1700000 rows, db 5.096 GB
+2026-11-17T16:14:29.935Z site 1 600000 rows, db 1.800 GB
+2026-11-17T16:14:33.739Z site 2 1800000 rows, db 5.396 GB
+2026-11-17T16:14:38.708Z site 0 1000000 rows, db 3.000 GB
+2026-11-17T16:15:59.414Z site 0 1100000 rows, db 3.300 GB
+2026-11-17T16:16:11.708Z site 1 700000 rows, db 2.100 GB
+2026-11-17T16:17:15.957Z site 0 1200000 rows, db 3.599 GB
+2026-11-17T16:17:49.686Z site 1 800000 rows, db 2.400 GB
+2026-11-17T16:18:27.298Z site 0 1300000 rows, db 3.897 GB
+2026-11-17T16:19:31.765Z site 0 1400000 rows, db 4.197 GB
+2026-11-17T16:19:31.912Z site 1 900000 rows, db 2.700 GB
+2026-11-17T16:20:31.929Z site 0 1500000 rows, db 4.497 GB
+2026-11-17T16:21:32.942Z site 1 1000000 rows, db 3.000 GB
+2026-11-17T16:21:48.087Z site 0 1600000 rows, db 4.797 GB
+2026-11-17T16:22:49.247Z site 0 1700000 rows, db 5.096 GB
+2026-11-17T16:23:43.534Z site 1 1100000 rows, db 3.300 GB
+2026-11-17T16:24:00.290Z site 0 1800000 rows, db 5.396 GB
+2026-11-17T16:25:54.469Z site 1 1200000 rows, db 3.599 GB
+2026-11-17T16:27:50.293Z site 1 1300000 rows, db 3.897 GB
+2026-11-17T16:29:55.773Z site 1 1400000 rows, db 4.197 GB
+2026-11-17T16:31:43.429Z site 1 1500000 rows, db 4.497 GB
+2026-11-17T16:33:44.374Z site 1 1600000 rows, db 4.797 GB
+2026-11-17T16:34:40.720Z site 1 start 1610000 failed (1): TypeError: Cannot read properties of undefined (reading 'slice')
+2026-11-17T16:35:34.533Z site 1 start 1610000 failed (2): TypeError: Cannot read properties of undefined (reading 'slice')
+2026-11-17T16:37:50.893Z site 1 1700000 rows, db 5.096 GB
+2026-11-17T16:39:39.519Z site 1 1800000 rows, db 5.396 GB
+2026-11-17T16:40:33.226Z folds [{"core":{"applied":9,"at":null,"digest":"54b7eef1ac42e97fa766367f54fa23624fc5ab70969030f82b8ceee89bc95e60","loaded":true,"running":null,"snapshots":[{"key":"snapshot/repo:1048594/core/00000000000000000000-00000000000000000002-94ad814158f60728003ad7e9e1d63188c56a9781788d2ce51993b4f5c7089c94","to":2}]},"meta":{"configIndex":6,"leader":null,"term":2},"metadata":{"applied":9,"at":null,"digest":"2a348a9bc7d52f50686fe7c56527b3c61f274fc5dc01b1546a45e919b80b5672","loaded":true,"running":null,"snapshots":[{"key":"snapshot/repo:1048594/metadata/00000000000000000000-00000000000000000002-84e0d423901ed2e5f54b377751e23e800d265da4d2fc4ea5151c98ffaa751496","to":2}]}},{"core":{"applied":9,"at":null,"digest":"54b7eef1ac42e97fa766367f54fa23624fc5ab70969030f82b8ceee89bc95e60","loaded":true,"running":null,"snapshots":[{"key":"snapshot/repo:1048594/core/00000000000000000000-00000000000000000002-94ad814158f60728003ad7e9e1d63188c56a9781788d2ce51993b4f5c7089c94","to":2}]},"meta":{"configIndex":6,"leader":null,"term":2},"metadata":{"applied":9,"at":null,"digest":"2a348a9bc7d52f50686fe7c56527b3c61f274fc5dc01b1546a45e919b80b5672","loaded":true,"running":null,"snapshots":[{"key":"snapshot/repo:1048594/metadata/00000000000000000000-00000000000000000002-84e0d423901ed2e5f54b377751e23e800d265da4d2fc4ea5151c98ffaa751496","to":2}]}},{"core":{"applied":9,"at":null,"digest":"54b7eef1ac42e97fa766367f54fa23624fc5ab70969030f82b8ceee89bc95e60","loaded":true,"running":null,"snapshots":[{"key":"snapshot/repo:1048594/
+2026-11-17T16:40:33.497Z release 0: {"held":false,"meta":{"configIndex":6,"leader":null,"term":2}}
+2026-11-17T16:40:33.892Z release 1: {"held":false,"meta":{"configIndex":6,"leader":null,"term":2}}
+2026-11-17T16:40:34.070Z release 2: {"held":false,"meta":{"configIndex":6,"leader":null,"term":2}}
+2026-11-17T16:40:34.071Z seeded {"chain":"repo:1048594","rows":1840000,"bytesPerRow":1800,"written":2,"dbBytes":[5516148736,5515706368,5516148736],"digests":["2a348a9bc7d52f50686fe7c56527b3c61f274fc5dc01b1546a45e919b80b5672","2a348a9bc7d52f50686fe7c56527b3c61f274fc5dc01b1546a45e919b80b5672","2a348a9bc7d52f50686fe7c56527b3c61f274fc5dc01b1546a45e919b80b5672"],"equal":true,"at":"2026-11-17T16:40:34.070Z"}
+exit 0
+2026-11-17T16:40:34Z
+DONE

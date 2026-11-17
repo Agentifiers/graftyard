@@ -22,7 +22,7 @@
 // Rows go to tests/am1/raw/b030-load.jsonl: each batch, and a summary a minute.
 //   node tests/am1/b030/load.mjs
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 import { EDGE, leaderOf, log, member, row, sleep, state as m3, statuses, tokens, voter } from "../hosted/lib.mjs";
 
@@ -115,11 +115,30 @@ function pushResult(text) {
   return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";
 }
 const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toString("base64")}` });
-async function git(path, body, headers, tok = tokens.admin) {
+// Each fetch that gets no HTTP answer ("http 0") is logged with its error, the error's cause chain (undici puts the
+// socket error there: code, errno, syscall, address), the host, the phase it failed in, and the elapsed ms
+// (b030r6, operator 2026-11-17: 70 such from 17:01Z with no edge error logged).
+const FETCH_FAILS = `tests/am1/raw/${process.env.B030_RUN ?? "b030"}-fetchfail.jsonl`;
+const causes = (e) => {
+  const out = [];
+  for (let c = e, i = 0; c && i < 4; c = c.cause, i++) {
+    out.push(Object.fromEntries(Object.entries({ name: c.name, message: String(c.message ?? c).slice(0, 160), code: c.code, errno: c.errno,
+      syscall: c.syscall, hostname: c.hostname, address: c.address, port: c.port }).filter(([, v]) => v !== undefined)));
+  }
+  return out;
+};
+async function git(path, body, headers, tok = tokens.admin, ctx = {}) {
+  const url = `${EDGE}/${R}.git/${path}`, t0 = Date.now();
+  let phase = "request";
   try {
-    const r = await fetch(`${EDGE}/${R}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...headers }, signal: AbortSignal.timeout(180_000) });
+    const r = await fetch(url, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...headers }, signal: AbortSignal.timeout(180_000) });
+    phase = `body after ${r.status} (cf-ray ${r.headers.get("cf-ray") ?? "none"})`;
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1") };
-  } catch (e) { return { status: 0, text: String(e).slice(0, 80) }; }
+  } catch (e) {
+    appendFileSync(FETCH_FAILS, JSON.stringify({ at: new Date(t0).toISOString(), ms: Date.now() - t0, host: new URL(url).host, path,
+      bytes: body?.length ?? 0, phase, ...ctx, error: causes(e) }) + "\n");
+    return { status: 0, text: String(e).slice(0, 80) };
+  }
 }
 async function tip(ref) {
   const r = await git("git-upload-pack", Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt(`ref-prefix ${ref}\n`), Buffer.from("0000")]),
@@ -143,9 +162,20 @@ async function pushOn(i, k) {
   const parent = st.tips[i] ?? main;
   const { pack, commit } = onePack(`b030/${i}/f.bin`, blob, parent, `b030 ${k}`, Math.floor(simMs() / 1000));
   const t0 = Date.now();
-  const r = await git("git-receive-pack", receiveBody(ref, st.tips[i] ?? null, commit, pack), { "content-type": "application/x-git-receive-pack-request" });
+  const r = await git("git-receive-pack", receiveBody(ref, st.tips[i] ?? null, commit, pack), { "content-type": "application/x-git-receive-pack-request" },
+    undefined, { ref, old: st.tips[i] ?? null, commit });
   pushMs.push(Date.now() - t0);
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status}`;
+  // A push with no HTTP answer: whether its ref landed at the pushed commit, read at once through the edge's ls-refs
+  // while this branch still has no other push in flight (operator, 2026-11-17: landed means the edge committed and
+  // answered and the answer was lost in transit). Logged only; the next push's stale answer re-reads the tip as before.
+  // Read at 2, 10 and 30 s: the edge commits such a push up to about 9 s after the connection reset (b030r6, 17:58Z:
+  // five read at once were not yet at the pushed commit, and all five were in the log 7 to 9 s after the reset).
+  if (r.status === 0) {
+    let now = null, waited = 0;
+    for (const ms of [2_000, 8_000, 20_000]) { await sleep(ms); waited += ms; now = await tip(ref); if (now === commit) break; }
+    appendFileSync(FETCH_FAILS, JSON.stringify({ at: new Date().toISOString(), check: "landed", ref, commit, tip: now, landed: now === commit, waitedMs: waited }) + "\n");
+  }
   if (res === "ok") { st.tips[i] = commit; st.pushes++; st.pushBytes += pack.length; }
   else if (res === "stale") st.tips[i] = await tip(ref);
   return res;

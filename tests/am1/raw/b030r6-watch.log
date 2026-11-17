@@ -1,0 +1,17 @@
+2026-11-17T16:40:46.369Z split {"child":false,"seed":null,"dropped":false,"slim":null} on 0, db 5516386304
+2026-11-17T16:40:46.872Z bodies baseline: 100
+2026-11-17T16:47:22.244Z leader again on 0 after 6 s
+2026-11-17T17:25:05.735Z split {"child":true,"seed":739,"dropped":false,"slim":null} on 0, db 7529525248
+2026-11-17T17:36:42.477Z leader again on 0 after 6 s
+2026-11-17T17:37:31.267Z ALERT leaderless 35 s since 2026-11-17T17:36:56.057Z
+2026-11-17T17:37:42.301Z leader again on 0 after 46 s
+2026-11-17T17:38:21.939Z leader again on 0 after 11 s
+2026-11-17T17:39:30.969Z ALERT stall: commit 6207 unchanged for 63 s with site 0 leading at term 2
+2026-11-17T17:47:27.596Z split {"child":true,"seed":739,"dropped":true,"slim":{"done":false,"table":0}} on 0, db 7575564288
+2026-11-17T17:48:58.292Z split {"child":true,"seed":739,"dropped":true,"slim":{"done":false,"table":1}} on 0, db 7644209152
+2026-11-17T19:58:20.857Z leader again on 0 after 6 s
+2026-11-17T20:10:09.653Z leader again on 0 after 9 s
+2026-11-17T20:12:40.484Z leader again on 0 after 6 s
+2026-11-17T20:16:40.034Z leader again on 0 after 6 s
+2026-11-17T20:29:32.385Z leader again on 0 after 6 s
+2026-11-17T20:34:19.396Z leader again on 0 after 11 s

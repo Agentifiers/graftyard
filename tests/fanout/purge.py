@@ -17,6 +17,9 @@ import datetime, hashlib, json, os, sys, time, urllib.request
 
 INSTALL = os.environ.get("INSTALL", "graft-m2b")
 SITES = "abc"
+# Each site's pack bucket: graft-m2b's are `graft-m2b-site-a-packs`; graft-m1's are `graft-m1-packs-a`
+# (tests/m3/finish/sites4.json), so B0-30 runs it with BUCKET='{install}-packs-{site}'.
+BUCKET = os.environ.get("BUCKET", "{install}-site-{site}-packs")
 
 SWEEP_SLOT_S = 900  # Site sweeps start at */15-minute cron boundaries.
 SWEEP_WALL_S = 480  # crates/git/src/sweep.rs SWEEP_WALL stops new work after 8 minutes.
@@ -138,7 +141,7 @@ def main():
     second = 0
     if dry:
         for net in gated:
-            counts = {site: purge(s3, f"{INSTALL}-site-{site}-packs", net, True) for site in SITES}
+            counts = {site: purge(s3, BUCKET.format(install=INSTALL, site=site), net, True) for site in SITES}
             log(f"{net} would delete: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in counts.items()))
             totals["purged"].append([net, {s: b for s, (b, _) in counts.items()}])
     else:
@@ -148,7 +151,7 @@ def main():
             time.sleep(s)
 
         results = purge_twice(
-            lambda net: {site: purge(s3, f"{INSTALL}-site-{site}-packs", net, False) for site in SITES},
+            lambda net: {site: purge(s3, BUCKET.format(install=INSTALL, site=site), net, False) for site in SITES},
             gated, now=time.time, sleep=logged_sleep)
         for net, first_counts, second_counts in results:
             log(f"{net} purged: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in first_counts.items()))

@@ -1,0 +1,13 @@
+2026-11-17T20:50:55.484Z repo:1048594#1#f0 before: leader t6 c26547; /retire: null
+2026-11-17T20:50:55.989Z repo:1048594#1#f1 before: follower t2 c2; /retire: null
+2026-11-17T20:50:56.343Z repo:1048594#1#f2 before: follower t6 c18272; /retire: null
+2026-11-17T20:50:56.858Z repo:1048594#2#f1 before: follower t6 c26548; /retire: null
+2026-11-17T20:50:57.304Z repo-meta:1048594#1#f0 before: follower t2 c17; /retire: null
+2026-11-17T20:50:57.744Z repo-meta:1048594#1#f1 before: follower t2 c2; /retire: null
+2026-11-17T20:50:58.189Z repo-meta:1048594#1#f2 before: follower t2 c15; /retire: null
+2026-11-17T20:50:58.637Z repo-meta:1048594#2#f1 before: follower t2 c15; /retire: null
+2026-11-17T20:51:53.869Z repo:1048594#1#f0 after: undefined tundefined cundefined
+2026-11-17T20:51:53.869Z scan of generations 1 to 10, both chains, three sites: 1 joined
+2026-11-17T20:52:51.235Z scan of generations 1 to 10, both chains, three sites: 0 joined
+2026-11-17T20:55:07.605Z purge: 1048594 purged: a 4644 -> 0, b 4661 -> 0, c 999 -> 0
+2026-11-17T20:55:07.606Z purge: {"dry": false, "purged": 1, "objects": 10304, "refused": []}
