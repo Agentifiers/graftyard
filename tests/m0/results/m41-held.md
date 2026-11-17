@@ -122,6 +122,44 @@ Test that must fail on main: a `crates/lookup` test where N concurrent requests 
 counts `/read` probes and `/suspect` posts per voter and asserts at most one lookup, and one report per
 `SUSPECT_GAP`, per isolate. On main each request runs its own lookup.
 
+## 6. The lookup fix, built (`lookup-share`)
+
+Built as proposed, design first. DESIGN, Shape, `ReplyMeta` and `suspect`, and DECISIONS "`lookup-share`":
+
+- **One lookup per chain per isolate.** A request that must ask any member but its cached leader takes the chain's
+  turn. One that waited and finds a leader cached goes to it. The holder keeps the turn until its lookup returns.
+- **One `suspect` per chain, `about` and term per isolate per `SUSPECT_GAP`.** The `all` flag no longer splits the
+  key.
+- **`ReadQuery` (trace kind 26, test-faults, append-only).** Each `/read` logs its query (`q`'s first key, codes in
+  `READ_QUERIES`), whether it is a read-index read, and its `Entered` arrival number. `inbound.py` prints `/read` by
+  query per member, so LM-1's next B0-33 names the source.
+
+Regression: `one_lookup_per_chain_serves_every_request_that_met_not_leader` sends 60 requests through 2 s of
+`NotLeader` naming none. With the turn off, as on main, 900 posts reached the voters while none led, against 84. With
+it every request got the leader's own answer within one pass. Plants: `tests/m0carried/plant29.py`, 5 of 5.
+
+Held for after that run, not changed: STEP_DOWN's own-stall exclusion covers only a confirm begun before the send, so
+the 1,148 misses held by the caller's later confirm still count. Excusing them could hide a slow member. The leader's
+transaction size is the second candidate.
+
+## 7. lookup-share broke the edge; `lookup-poll` replaces its turn
+
+On graft-m3f (03:54 to 03:58Z) and in m42's B0-33, the edge logged "Cannot perform I/O on behalf of a different request",
+"closure invoked recursively or after being dropped" and hung requests at 20 s. m42's agent requests waited p50
+20,028 ms (`LOOKUP_FOR`), though its group held term 2 and voter `/read` fell to 1.5 to 5.3 a second. The cause, now
+reproduced in workerd: `Turn` kept each waiting request's `Waker` in isolate-wide state, and the holder's drop woke them,
+running their futures from another request; and a cancelled holder never dropped it. The unit test drove every future
+on one executor and could not see that.
+
+`lookup-poll` (DECISIONS) keeps the one lookup per chain as a plain-data mark that waiters poll on their own timers.
+`tests/lookupbed/run.sh`, 60 concurrent requests in local workerd, every third cancelled at 300 ms, three rounds:
+
+| build | cross-request errors | kept requests answered | wait p50 / max | posts before the leader change |
+|---|---|---|---|---|
+| lookup-share (`Turn`) | 348 | 1 a round, then 20 s errors | 2.2 s, then 20 s | — |
+| lookup-poll (mark) | 0 | 40 of 40 | 2,133–2,251 / 2,361 ms | 21–24 |
+| mark disabled (before lookup-share) | 0 | 40 of 40 | 1,988–2,103 / 2,390 ms | 558–577 |
+
 ## B0-33 against the 90% rule
 
 126 agent ok/s is not reached. `push:agent` was ok 2,850 of 12,460 (9.5/s), and `side:comment` 1,513 of 5,567. The

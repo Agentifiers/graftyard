@@ -1,0 +1,20 @@
+[package]
+name = "lookupbed"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+graftyard-lookup = { path = "../../crates/lookup" }
+graftyard-types = { path = "../../crates/types" }
+serde_json = "1"
+worker = "0.8.7"
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1
