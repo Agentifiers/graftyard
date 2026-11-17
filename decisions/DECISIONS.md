@@ -4530,3 +4530,26 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 **Evidence.** `a_re_placement_keeps_the_committed_learners` and `a_move_keeps_the_committed_learners` (`workers/site/src/member.rs`): a re-placement of a group with 8 learners commits both changes with 8; a `/learners` commit (10 learners) during the tries is in both; voters that moved end it with no config; a move keeps the learners of a `Normal` and of a `Joint`'s new half; and a change is refused once the committed index moved. The tests need the new `Steps` methods, so they do not compile on main; main's order is `tests/m0carried/plant33.py`'s mutant 0 (`Degraded` from the first read, `Normal` from the try), and it fails the first test. The script plants seven mutants, and the tests catch all seven.
 
 **Flip.** A hosted group whose committed learners drop without a `/learners` change, or a re-placement or `/learners` that is refused as stale on a group no other change touched.
+
+### F81: a rehomed group keeps reading its owner's identity groups where they lead, 2026-11-17
+
+**Status.** Orchestrator decision, answering `decisions/OPEN-QUESTIONS.md` F81. No code changes with it; the work it orders is `dep-hedge` on the m3f thread.
+
+**Decision.**
+- **No placement change.** A repository group whose leader is rehomed onto another continent reads `Authz`, `Tokens`, and `Names` from the identity groups where they lead, on the owner's home continent, once per entry through `fresh`, as `design/DESIGN.md`, Shape, "The write path" says. The identity groups keep following the owner's record.
+- **B0-31's buckets-up line is pursued through the read's tail, not its median.** On m3fr12 the steady p99 without the opening stall was 1,444 ms against the 1.1 s line at 90%. Its parts are `deps:all` p99 795 ms (`deps:authz` p50 293 ms, p99 672 ms) plus a round p99 360 ms [measured, `tests/am1/results/lm1-rows-m3f.md`, "B0-31's opening stall"]. The cross-continent median is fixed by distance, but the gap from 293 to 672 ms is tail, and F83 found single requests held below the handler while the same object answered other calls at once. So the next lever is a hedged dependency read (`dep-hedge`: a second request to another member when the first has not answered by a bound, the first answer taken through `fresh`).
+- **If the hedged B0-31 run still misses 1.1 s with buckets up,** the remaining gap is the price of rehoming, and the orchestrator asks the operator to choose: a separate bound for a group rehomed off its owner's continent, or a dependency-lease design (below). Until then the B0-31 gate stays as written.
+
+**Why.** Every placement change costs more than it saves:
+- An owner's identity groups serve every repository the owner has. Moving their leaders to follow one rehomed repository moves every other repository's reads across the ocean instead, and two rehomed repositories on different continents would pull them back and forth.
+- The rehomed case is the exception the design chose to pay for: a group is rehomed toward its writers, and its owner's settings, tokens, and names change far less often than its refs.
+
+**What it beat.**
+- **Moving the identity groups' leaders with the repository:** above. It also breaks for an organisation with repositories on two continents.
+- **Reading the dependency from a follower or learner on the repository's continent:** a follower read is fresh only after a read-index round to its leader, which is the same ocean crossing.
+- **Caching the dependency folds across entries:** forbidden by "read once per entry through `fresh`" (`decisions/DECISIONS.md`, "`read-ahead`", What it beat), and it would break BF-2, BF-15, and BF-27.
+- **A dependency lease** (the identity group's leader grants the repository leader a lease and holds any change to that fold until the lease is returned or expires): it would remove the read entirely, but it changes the `decide` invariant's wording and puts a remote holder on every `Authz` write's path. It is a design of its own, kept as the fallback above, not built on the strength of one row.
+
+**Evidence.** `tests/am1/results/lm1-rows-m3f.md`, "B0-31's buckets-up commit tail" and "B0-31's opening stall"; `decisions/OPEN-QUESTIONS.md` F83 (the hold is per request, not a busy object).
+
+**Flip.** A hosted B0-31 run with `dep-hedge` whose buckets-up commit p99 is still over 1.1 s, which goes to the operator as above; or a measured workload where an owner's identity groups are read mostly from one other continent, which would make moving their home (not following each repository) worth a design.
