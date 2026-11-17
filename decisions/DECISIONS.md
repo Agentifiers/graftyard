@@ -4407,7 +4407,7 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 - **Excusing queue-delayed misses in `health.rs`:** the trips were holds that moved nothing, so it would not have removed one term change.
 - **Per-member `/suspect` damping:** fewer reports from the same two colos still withhold.
 
-**Evidence.** `an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign` (`crates/raft/tests/leadership.rs`) fails on main (B withheld on LAX plus colo-0 reports) and passes; `tests/colounknown/plant.py` plants main's rule, a skip that clears the window, an `UNKNOWN` other than the 0 a site script sends, and an early return that drops the campaign: 4 of 4 caught. The simulator's colos now start at 1 so its clients are edges. Long sweep and Porcupine as in the results file.
+**Evidence.** `an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign` (`crates/raft/tests/leadership.rs`) fails on main (B withheld on LAX plus colo-0 reports) and passes; `tests/colounknown/plant.py` plants main's rule, a skip that clears the window, an `UNKNOWN` other than the 0 a site script sends, and an early return that drops the campaign: 4 of 4 caught. The simulator's colos now start at 1 so its clients are edges. Long sweep (2,000 seeds, live half 4,000) passed, longest stretches 16.3, 27.9 and 25.4 s; Porcupine Ok on all three histories.
 
 **Flip.** A gray leader that only site-script reports could have moved, or a hosted run where both followers still withhold with one edge colo (read `Trace::Reported`).
 

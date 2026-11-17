@@ -4865,8 +4865,12 @@ reads the colo instead of inferring it.
   colos still withhold and an unknown-colo report still elects. `tests/colounknown/plant.py`: 4 of 4 plants caught
   (main's rule, a skip that clears the window, `UNKNOWN` other than the 0 a site script sends, an early return).
 - The simulator's colos start at 1, so its clients are edges as before.
-- Long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) and Porcupine `-seg 2000` on `hist.jsonl` and `hist.jsonl.gray`:
-  results below.
+- Long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, release, live half 4,000 seeds): passed in 1,142 s, longest
+  stretches with a healthy quorum and requests waiting 16.3 s (harsh, seed 10567), 27.9 s (gray, 11176) and 25.4 s
+  (live, 11267), under the 30 s bound. Porcupine `-seg 2000`: Ok on `hist.jsonl` (6,000 segments), `hist.jsonl.gray`
+  (6,000) and `hist.jsonl.live` (12,000).
+- Full checks: fmt, workspace clippy, wasm32 clippy for site and edge with and without test-faults and for ops,
+  `cargo test --workspace` (1,108 passed, 0 failed), `go test` in `containers/git/server`, the three design checks.
 
 **What this does not fix.** Edge isolates walking the voters after each term change, and the input-queue delay
 behind them, stay; with no withholding the term changes that start the walks should stop, which the next B0-33 tests.
