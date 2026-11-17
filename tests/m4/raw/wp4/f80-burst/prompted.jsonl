@@ -1,0 +1,473 @@
+{"at": "15:50:35", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:35", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:36", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:36", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:36", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:36", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:37", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:37", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:37", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:37", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:38", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:38", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:38", "trigger": "alarm", "lines": ["graft-runners: launched runner 80 s after arm"], "started": 0}
+{"at": "15:50:38", "trigger": "alarm", "lines": ["graft-runners: launched runner 91 s after arm"], "started": 0}
+{"at": "15:50:38", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:38", "trigger": "alarm", "lines": ["graft-runners: launched runner 2 s after arm"], "started": 0}
+{"at": "15:50:38", "trigger": "alarm", "lines": ["graft-runners: launched runner 75 s after arm"], "started": 0}
+{"at": "15:50:38", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:38", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:38", "trigger": "alarm", "lines": ["graft-runners: launched runner 142 s after arm"], "started": 0}
+{"at": "15:50:38", "trigger": "alarm", "lines": ["graft-runners: launched runner 3 s after arm"], "started": 0}
+{"at": "15:50:38", "trigger": "alarm", "lines": ["graft-runners: launched runner 4 s after arm"], "started": 0}
+{"at": "15:50:39", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:39", "trigger": "alarm", "lines": ["graft-runners: start: there is no container instance that can be provided to this durable object; again in 10 s"], "started": 0}
+{"at": "15:50:39", "trigger": "alarm", "lines": ["graft-runners: launched runner 122 s after arm"], "started": 0}
+{"at": "15:50:39", "trigger": "alarm", "lines": ["graft-runners: launched runner 69 s after arm"], "started": 0}
+{"at": "15:50:39", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:39", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:39", "trigger": "alarm", "lines": ["graft-runners: launched runner 123 s after arm"], "started": 0}
+{"at": "15:50:39", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:39", "trigger": "fetch", "lines": ["graft-runners pass: started 3 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 3}
+{"at": "15:50:39", "trigger": "alarm", "lines": ["graft-runners: launched runner 88 s after arm"], "started": 0}
+{"at": "15:50:39", "trigger": "fetch", "lines": ["graft-runners pass: started 3 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 3}
+{"at": "15:50:40", "trigger": "alarm", "lines": ["graft-runners: launched runner 129 s after arm"], "started": 0}
+{"at": "15:50:40", "trigger": "alarm", "lines": ["graft-runners: launched runner 41 s after arm"], "started": 0}
+{"at": "15:50:40", "trigger": "alarm", "lines": ["graft-runners: launched runner 3 s after arm"], "started": 0}
+{"at": "15:50:40", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:50:40", "trigger": "fetch", "lines": ["graft-runners pass: started 2 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 2}
+{"at": "15:50:40", "trigger": "fetch", "lines": ["graft-runners pass: started 2 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 2}
+{"at": "15:50:40", "trigger": "alarm", "lines": ["graft-runners: launched runner 81 s after arm"], "started": 0}
+{"at": "15:50:40", "trigger": "alarm", "lines": ["graft-runners: launched runner 102 s after arm"], "started": 0}
+{"at": "15:50:40", "trigger": "alarm", "lines": ["graft-runners: launched runner 73 s after arm"], "started": 0}
+{"at": "15:50:40", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:50:41", "trigger": "fetch", "lines": ["graft-runners pass: started 3 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 3}
+{"at": "15:50:41", "trigger": "fetch", "lines": ["graft-runners pass: started 2 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 2}
+{"at": "15:50:41", "trigger": "alarm", "lines": ["graft-runners: launched runner 72 s after arm"], "started": 0}
+{"at": "15:50:41", "trigger": "fetch", "lines": ["graft-runners pass: started 4 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 4}
+{"at": "15:50:42", "trigger": "scheduled", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "started": 0}
+{"at": "15:50:42", "trigger": "alarm", "lines": ["graft-runners: launched runner 6 s after arm"], "started": 0}
+{"at": "15:50:43", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:43", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:44", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:44", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:45", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:45", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:45", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:45", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:46", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:46", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:46", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:47", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:47", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:47", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:47", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:48", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:48", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:49", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:50", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:52", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:54", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:54", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:54", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:54", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:56", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:56", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:56", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:56", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:56", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:58", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:58", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:58", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:59", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:59", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:50:59", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:00", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:00", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:00", "trigger": "fetch", "lines": [], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:01", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:02", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:29", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:51", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:51:51", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:51:51", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:51:55", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:51:56", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:51:56", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:51:59", "trigger": "alarm", "lines": ["graft-runners: launched runner 3 s after arm"], "started": 0}
+{"at": "15:52:00", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:00", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:00", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:03", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:52:03", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:52:04", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:04", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:52:04", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 1 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:04", "trigger": "alarm", "lines": ["graft-runners: launched runner 15 s after arm"], "started": 0}
+{"at": "15:52:04", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:52:04", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 1 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:05", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:08", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:10", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:10", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:10", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:13", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:52:13", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 1 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:14", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:52:14", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:52:15", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:16", "trigger": "alarm", "lines": ["graft-runners: launched runner 19 s after arm"], "started": 0}
+{"at": "15:52:23", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:23", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:23", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:26", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:52:26", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:26", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:52:27", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:28", "trigger": "alarm", "lines": ["graft-runners: launched runner 7 s after arm"], "started": 0}
+{"at": "15:52:31", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:52:41", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:52:41", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:52:42", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:42", "trigger": "alarm", "lines": ["graft-runners: launched runner 5 s after arm"], "started": 0}
+{"at": "15:52:48", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:52:56", "trigger": "fetch", "lines": [], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:53:00", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:53:10", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:53:12", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:53:12", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:53:13", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:53:17", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:53:17", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:53:20", "trigger": "alarm", "lines": ["graft-runners: launched runner 2 s after arm"], "started": 0}
+{"at": "15:53:22", "trigger": "alarm", "lines": ["graft-runners: launched runner 176 s after arm"], "started": 0}
+{"at": "15:53:30", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:53:42", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:53:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:53:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:53:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:53:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:53:53", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:53:53", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:54:02", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:02", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:02", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:03", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:05", "trigger": "alarm", "lines": ["graft-runners: launched runner 12 s after arm"], "started": 0}
+{"at": "15:54:07", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:54:07", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:54:10", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:11", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:11", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:11", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:14", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:54:14", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:54:15", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:54:15", "trigger": "alarm", "lines": ["graft-runners: launched runner 59 s after arm"], "started": 0}
+{"at": "15:54:17", "trigger": "alarm", "lines": ["graft-runners: launched runner 14 s after arm"], "started": 0}
+{"at": "15:54:20", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:20", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:20", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:21", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:25", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:54:25", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:54:27", "trigger": "alarm", "lines": ["graft-runners: launched runner 2 s after arm"], "started": 0}
+{"at": "15:54:29", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:54:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:37", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:54:37", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:54:37", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:54:41", "trigger": "alarm", "lines": ["graft-runners: launched runner 3 s after arm"], "started": 0}
+{"at": "15:54:43", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:43", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:44", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:49", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:54:49", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:54:50", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:54:51", "trigger": "alarm", "lines": ["graft-runners: launched runner 2 s after arm"], "started": 0}
+{"at": "15:54:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:54:59", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:54:59", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:55:00", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:55:01", "trigger": "alarm", "lines": ["graft-runners: launched runner 2 s after arm"], "started": 0}
+{"at": "15:55:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:12", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:55:12", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:55:12", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:55:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:22", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:55:22", "trigger": "alarm", "lines": ["graft-runners: launched runner 13 s after arm"], "started": 0}
+{"at": "15:55:23", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:55:23", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:55:33", "trigger": "alarm", "lines": ["graft-runners: launched runner 13 s after arm"], "started": 0}
+{"at": "15:55:34", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:55:36", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:36", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:42", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:55:42", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:55:42", "trigger": "scheduled", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "started": 0}
+{"at": "15:55:45", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:55:51", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:51", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:51", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:51", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:55:52", "trigger": "alarm", "lines": ["graft-runners: launched runner 12 s after arm"], "started": 0}
+{"at": "15:55:56", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:55:56", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:56:02", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:56:07", "trigger": "alarm", "lines": ["graft-runners: launched runner 16 s after arm"], "started": 0}
+{"at": "15:56:11", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:11", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:11", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:11", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:16", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:56:16", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:56:20", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:20", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:20", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:20", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:25", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:56:25", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:56:25", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:56:26", "trigger": "alarm", "lines": ["graft-runners: launched runner 31 s after arm"], "started": 0}
+{"at": "15:56:26", "trigger": "alarm", "lines": ["graft-runners: launched runner 19 s after arm"], "started": 0}
+{"at": "15:56:35", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:35", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:35", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:35", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:38", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:39", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:56:39", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:56:39", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:40", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:40", "trigger": "alarm", "lines": ["graft-runners: launched runner 12 s after arm"], "started": 0}
+{"at": "15:56:44", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:44", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:44", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:44", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:46", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:56:46", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:56:47", "trigger": "alarm", "lines": ["graft-runners: launched runner 29 s after arm"], "started": 0}
+{"at": "15:56:47", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:56:56", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:56", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:56", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:56:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:02", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:57:02", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:57:02", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:57:03", "trigger": "alarm", "lines": ["graft-runners: launched runner 2 s after arm"], "started": 0}
+{"at": "15:57:04", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:57:12", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:57:12", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:12", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:12", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:13", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:15", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:57:16", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:57:24", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:57:26", "trigger": "alarm", "lines": ["graft-runners: launched runner 23 s after arm"], "started": 0}
+{"at": "15:57:33", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:33", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:33", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:33", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:36", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:57:36", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:57:47", "trigger": "alarm", "lines": ["graft-runners: launched runner 21 s after arm"], "started": 0}
+{"at": "15:57:50", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:57:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:57:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:02", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:58:02", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:58:12", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:58:13", "trigger": "alarm", "lines": ["graft-runners: launched runner 15 s after arm"], "started": 0}
+{"at": "15:58:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:22", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:58:22", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:58:28", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:58:33", "trigger": "alarm", "lines": ["graft-runners: launched runner 12 s after arm"], "started": 0}
+{"at": "15:58:43", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:58:56", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:56", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:56", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:58:56", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:02", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:59:02", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:59:14", "trigger": "alarm", "lines": ["graft-runners: launched runner 12 s after arm"], "started": 0}
+{"at": "15:59:21", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:21", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:21", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:21", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:24", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:59:24", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:59:25", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:59:34", "trigger": "alarm", "lines": ["graft-runners: launched runner 15 s after arm"], "started": 0}
+{"at": "15:59:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "15:59:42", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "15:59:42", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "15:59:46", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "15:59:54", "trigger": "alarm", "lines": ["graft-runners: launched runner 12 s after arm"], "started": 0}
+{"at": "16:00:00", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:00", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:00", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:00", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:05", "trigger": "jsrpc", "lines": [], "started": 0}
+{"at": "16:00:05", "trigger": "fetch", "lines": ["graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 1}
+{"at": "16:00:06", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 1 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:00:15", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:16", "trigger": "alarm", "lines": ["graft-runners: launched runner 15 s after arm"], "started": 0}
+{"at": "16:00:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:22", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:00:29", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:00:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:41", "trigger": "scheduled", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "started": 0}
+{"at": "16:00:41", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:00:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:00:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:02", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:01:13", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:18", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:22", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:01:24", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:36", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:40", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:01:43", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:01:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:05", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:05", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:05", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:05", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:08", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:02:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:26", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:40", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:02:41", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:02:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:03", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:07", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:10", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:03:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:35", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:03:37", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:42", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:42", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:42", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:42", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:46", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:03:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:03:59", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:04:03", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:16", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:16", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:16", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:17", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:20", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:04:23", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:54", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:55", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:04:59", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:05:03", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:25", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:25", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:25", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:25", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:25", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:29", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:05:40", "trigger": "scheduled", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "started": 0}
+{"at": "16:05:43", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:46", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:47", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:05:51", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:06:06", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:09", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:09", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:09", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:09", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:13", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:06:58", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:58", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:58", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:06:58", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:02", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:07:30", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:30", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:30", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:30", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:34", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:07:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:07:57", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:08:00", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:08:31", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:08:31", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:08:31", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:08:32", "trigger": "alarm", "lines": [], "started": 0}
+{"at": "16:08:36", "trigger": "fetch", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "status": 202, "path": "https://graft-runners.<runner-workers-subdomain>.workers.dev/", "started": 0}
+{"at": "16:10:46", "trigger": "scheduled", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "started": 0}
+{"at": "16:15:45", "trigger": "scheduled", "lines": ["graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"], "started": 0}
+{"summary": {"jsrpc": {"invocations": 53, "passes_that_started": 0, "runners_started": 0}, "alarm": {"invocations": 264, "passes_that_started": 0, "runners_started": 0}, "fetch": {"invocations": 149, "passes_that_started": 38, "runners_started": 50}, "scheduled": {"invocations": 6, "passes_that_started": 0, "runners_started": 0}}}

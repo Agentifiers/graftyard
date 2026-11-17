@@ -1,0 +1,23 @@
+{
+ "registrations": {
+  "DELETE hosted/runners/{id} 204": 3,
+  "POST hosted/runners 201": 50,
+  "POST hosted/runners 409": 18
+ },
+ "sessions": {
+  "DELETE broker/session 200": 50,
+  "POST broker/session 200": 50
+ },
+ "launched_lines": 50,
+ "launched_objects": 50,
+ "window": [
+  "2026-11-17T15:49:00Z",
+  "2026-11-17T16:20:00Z"
+ ],
+ "sdk_errors": {
+  "no container instance": 1177,
+  "too many containers per second": 54,
+  "failed to become ready": 1,
+  "waitUntil() tasks did not complete": 0
+ }
+}
