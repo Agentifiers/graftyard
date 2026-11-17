@@ -14,8 +14,8 @@
 //! - **`pull_request`** (B0-35; `decisions/DECISIONS.md`, "`pr-trigger`"), only where a later site day set
 //!   `GRAFTYARD_PR_TRIGGER` to `1`: each `opened`, `synchronize`, and `reopened` in an entry under an hour old asks for
 //!   the pull request's test merge (`crate::prsync::demand`) and commits each matching workflow's `CreateRun` (format
-//!   0x15.4) at the merge commit, on `refs/pull/N/merge`. A conflicting merge starts no run; a shed one fails the round,
-//!   which runs again.
+//!   0x15.4) at the merge commit, on `refs/pull/N/merge`. A conflicting merge starts no run; one shed DEMAND_TRIES
+//!   times starts none either and is logged `unmerged`.
 //!
 //! No request path calls the Cloudflare API: every call is a Durable Object binding.
 
@@ -47,6 +47,11 @@ const BATCH: u64 = 200;
 const CURSOR_STRIDE: u64 = 1_000;
 /// After a failed round, the alarm comes back in this long.
 const RETRY_MS: i64 = 5_000;
+/// A pull request event asks for its test merge at most this many times, DEMAND_WAIT_MS apart, and then starts no run
+/// (`unmerged`): failing the round instead would run its whole batch again, and under B0-35's load some merge of
+/// nearly every batch is shed, so the cursor would never pass it [guess: the counts].
+const DEMAND_TRIES: u32 = 4;
+const DEMAND_WAIT_MS: u64 = 2_000;
 const WORKFLOWS: &str = ".github/workflows";
 
 /// A leadership's (term, boot), how far its scan reached, and whether a round runs.
@@ -213,8 +218,15 @@ async fn pull_request_runs(
         v.pop().ok_or_else(|| format!("pull request {} is not in the fold", p.n.0))
     };
     let mut v = view()?;
-    if pr_target(&v) == PrTarget::Pending {
-        crate::prsync::demand(&h.env, repo, p.n, git::prsync::MergeCause::Dispatch).await?;
+    let mut tries = 0;
+    while pr_target(&v) == PrTarget::Pending && tries < DEMAND_TRIES {
+        if tries > 0 {
+            worker::Delay::from(std::time::Duration::from_millis(DEMAND_WAIT_MS)).await;
+        }
+        tries += 1;
+        if let Err(e) = crate::prsync::demand(&h.env, repo, p.n, git::prsync::MergeCause::Dispatch).await {
+            console_error!("actions dispatch {} #{} demand {tries}: {e}", repo.0.0, p.n.0);
+        }
         v = view()?;
     }
     let superseded = p.after.is_some_and(|a| a != v.head);
@@ -223,18 +235,21 @@ async fn pull_request_runs(
             let make = |path: &str, src: &str| pull_request_run(repo, index, path, src, p.n, p.action, &v.base, merge);
             runs_on(&h.env, site, b, repo, owner, record, merge, make).await?
         }
-        PrTarget::Pending => return Err(format!("test merge of #{} shed", p.n.0)),
-        PrTarget::Conflict | PrTarget::None => 0,
+        PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
     console_log!(
-        "actions dispatch {} #{} {} at {}: {n} runs in {}ms{}{}",
+        "actions dispatch {} #{} {} at {}: {n} runs in {}ms, {tries} asks{}{}",
         repo.0.0,
         p.n.0,
         p.action,
         index.0,
         crate::now_ms().saturating_sub(at),
         if superseded { ", superseded" } else { "" },
-        if pr_target(&v) == PrTarget::Conflict { ", conflict" } else { "" }
+        match pr_target(&v) {
+            PrTarget::Conflict => ", conflict",
+            PrTarget::Pending => ", unmerged",
+            _ => "",
+        }
     );
     Ok(())
 }
