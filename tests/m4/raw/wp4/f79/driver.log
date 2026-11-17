@@ -1,0 +1,18 @@
+2026-11-17T07:44:12.756Z repository m3org/wp4-f79: 201
+2026-11-17T07:44:21.993Z gh secret set F79_SECRET -> 0 
+2026-11-17T07:44:49.856Z run 2097152 dispatched
+2026-11-17T07:44:51.959Z +2s 0/5 done
+2026-11-17T07:45:04.130Z +14s 0/5 done
+2026-11-17T07:45:15.708Z +26s 0/5 done
+2026-11-17T07:45:29.683Z +40s 0/5 done
+2026-11-17T07:45:42.964Z +53s 4/5 done
+2026-11-17T07:45:57.474Z +68s 4/5 done
+2026-11-17T07:46:09.885Z +80s 4/5 done
+2026-11-17T07:46:21.931Z +92s 5/5 done
+2026-11-17T07:46:22.790Z job 2097153 check (0): FAIL Success repo %s\n' secret ["5a5b4886dcaf548c",28]
+2026-11-17T07:46:24.127Z job 2097154 check (1): FAIL Success repo %s\n' secret ["5a5b4886dcaf548c",28]
+2026-11-17T07:46:25.226Z job 2097155 check (2): FAIL Success repo %s\n' secret ["5a5b4886dcaf548c",28]
+2026-11-17T07:46:26.307Z job 2097156 check (3): FAIL Success repo %s\n' secret ["5a5b4886dcaf548c",28]
+2026-11-17T07:46:27.169Z job 2097157 check (4): FAIL Success repo %s\n' secret ["5a5b4886dcaf548c",28]
+2026-11-17T07:46:27.170Z F79 check: FAIL (0 of 5 legs)
+EXIT 1

@@ -1,0 +1,15 @@
+on: workflow_dispatch
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        leg: [0, 1, 2, 3, 4]
+    steps:
+      # The secret is printed only as a SHA-256 prefix and its length; the runner masks a value it is given.
+      - name: Repository and secret
+        run: |
+          printf 'repo %s\n' "$GITHUB_REPOSITORY"
+          printf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+          sleep 30
+        env: { S: "${{ secrets.F79_SECRET }}" }

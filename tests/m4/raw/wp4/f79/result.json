@@ -1,0 +1,68 @@
+{
+  "repo": "m3org/wp4-f79",
+  "run": 2097152,
+  "want": [
+    "5a5b4886dcaf548c",
+    28
+  ],
+  "legs": [
+    {
+      "job": 2097153,
+      "name": "check (0)",
+      "conclusion": "Success",
+      "repo": "m3org/wp4-f79",
+      "seen": [
+        "5a5b4886dcaf548c",
+        28
+      ],
+      "ok": true
+    },
+    {
+      "job": 2097154,
+      "name": "check (1)",
+      "conclusion": "Success",
+      "repo": "m3org/wp4-f79",
+      "seen": [
+        "5a5b4886dcaf548c",
+        28
+      ],
+      "ok": true
+    },
+    {
+      "job": 2097155,
+      "name": "check (2)",
+      "conclusion": "Success",
+      "repo": "m3org/wp4-f79",
+      "seen": [
+        "5a5b4886dcaf548c",
+        28
+      ],
+      "ok": true
+    },
+    {
+      "job": 2097156,
+      "name": "check (3)",
+      "conclusion": "Success",
+      "repo": "m3org/wp4-f79",
+      "seen": [
+        "5a5b4886dcaf548c",
+        28
+      ],
+      "ok": true
+    },
+    {
+      "job": 2097157,
+      "name": "check (4)",
+      "conclusion": "Success",
+      "repo": "m3org/wp4-f79",
+      "seen": [
+        "5a5b4886dcaf548c",
+        28
+      ],
+      "ok": true
+    }
+  ],
+  "pass": true,
+  "seconds": 97,
+  "rejudged": "The driver's first parse matched the echoed script line (`printf 'repo %s'`); judged again from the saved job logs with the output-line regex now in f79.mjs."
+}
