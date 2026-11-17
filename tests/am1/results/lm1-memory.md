@@ -4532,3 +4532,62 @@ groups, and the next two runs show the failure it was heading for, a dead chain 
 Open (R25): a retired test group's packs stay in the buckets, so each run still asks each retired chain once and
 alarms its packs. Whether the teardown should delete the network's prefixes, or the sweeper treat a chain whose
 every member answers "not joined" as having no group, is for the operator.
+
+### Retired test networks purged (2026-11-17, R25 settled; the operator's one granted hosted action)
+
+The operator settled R25: the test teardown deletes a retired network's bucket objects, and the sweeper does not treat
+an all-"not joined" chain as having no group, because a live group mid-placement or briefly unreachable can look the
+same. Built on branch `retire-purge`:
+- `tests/fanout/purge.py NET...`: per network, it asks `/status` of `repo:NET`'s voter on each site, under the registry
+  row's name and the first generation's, and refuses the network unless every answer is "not joined" (a failed status
+  refuses too). It then lists and deletes every key under the network's prefixes (`pack/`, `committed/pack/`,
+  `upload/`, `compose/`, `clone/`, `archive-cache/`, `blob/`, `committed/blob/` by network; `archive/`, `snapshot/`,
+  `inline-idx/` by `repo:` and `repo-meta:` chain) in each site bucket through R2's S3 API, 1,000 per call, and lists
+  them again for the after count.
+- `tests/fanout/idleretire.mjs` runs it once every member it retired answers "not joined" (`NO_PURGE=1` skips).
+- `tests/fanout/test_purge.py`: 3 tests (the gate; every kind of the network deleted and none of 13132, 1313220,
+  131323's; a dry run deletes nothing). `tests/fanout/plant_purge.py`: 8 of 8 caught.
+- The slot rules in `tests/fanout/README.md` gain the purge as close-out step 3.
+
+**The cleanup pass**, 08:23:41–08:56:34Z on graft-m2b, over 131297–131348 (`tests/fanout/raw/purge-m2b.log`):
+**20 networks purged, 202,101 objects deleted, every bucket 0 after; 32 refused, nothing of them deleted.**
+
+| Network | a before → after | b before → after | c before → after |
+|---|---|---|---|
+| 131322 | 6,549 → 0 | 6,555 → 0 | 6,554 → 0 |
+| 131323 | 5,988 → 0 | 5,984 → 0 | 5,963 → 0 |
+| 131324 | 153 → 0 | 155 → 0 | 154 → 0 |
+| 131325 | 157 → 0 | 159 → 0 | 158 → 0 |
+| 131326 | 169 → 0 | 173 → 0 | 172 → 0 |
+| 131327 | 183 → 0 | 185 → 0 | 184 → 0 |
+| 131328 | 187 → 0 | 189 → 0 | 188 → 0 |
+| 131329 | 8,025 → 0 | 8,009 → 0 | 7,969 → 0 |
+| 131330 | 5,258 → 0 | 5,258 → 0 | 5,232 → 0 |
+| 131335 | 962 → 0 | 961 → 0 | 961 → 0 |
+| 131337 | 2,247 → 0 | 2,251 → 0 | 2,250 → 0 |
+| 131338 | 1,270 → 0 | 1,274 → 0 | 1,270 → 0 |
+| 131340 | 4,405 → 0 | 4,407 → 0 | 4,406 → 0 |
+| 131341 | 710 → 0 | 712 → 0 | 710 → 0 |
+| 131342 | 6,325 → 0 | 6,324 → 0 | 6,325 → 0 |
+| 131343 | 3,685 → 0 | 3,453 → 0 | 2,509 → 0 |
+| 131344 | 7 → 0 | 9 → 0 | 3 → 0 |
+| 131345 | 8,515 → 0 | 7,454 → 0 | 6,153 → 0 |
+| 131347 | 8,719 → 0 | 7,972 → 0 | 5,508 → 0 |
+| 131348 | 7,915 → 0 | 7,241 → 0 | 5,278 → 0 |
+| **20 networks** | **71,429 → 0** | **68,725 → 0** | **61,947 → 0** |
+
+Refused (some member joined, so not retired; nothing deleted):
+- 131297–131321 and 131331–131334, 131339: never retired. They are earlier LM-1 rows' groups (B0-32 131305, B0-33
+  131307 and 131313, B0-31 131306 and 131312, and so on) whose members are still followers at term 2 to 5. The
+  operator's list said "already-retired B0-33 networks 131297–131348"; only 131322 to 131348 were retired, and of those,
+  not every one.
+- 131336 and 131346: retired on 11-16 and at m42 with "11 of 11 not joined", but site 1's current voter (a later
+  generation than the retire list named) still answers follower. The gate found the partial retirement that the old
+  log's count missed.
+
+So the sweeper still meets 32 live finished groups' packs in 131297 to 131346. They answer, so each costs normal
+lookups, not LOOKUP_FOR; 131307 and 131313 alarm about 8.4 k packs each a run. Retiring and purging them is a
+teardown the operator can grant; it is not done.
+
+Meter (`acctcost.py`): graft-m2b $0.01 for 08:23:39–08:57:12Z; the account $1.86 in that window, and $108.34 for the
+UTC day at 08:57Z (graft-m1's B0-30 close-out is the rest). R2 deletes are free operations; the lists are class A.
