@@ -1,0 +1,63 @@
+voter 0: 6996 reports; by colo {'UNKNOWN': 187, 'LAX': 3977, 'NRT': 2639, 'VIE': 193}; by verdict {'leader': 415, 'promised': 4003, 'mayNotLead': 1139, 'started': 20, 'busy': 1419}
+  term 0: 1373; about {1: 767, 2: 606}; colos {'LAX': 831, 'NRT': 514, 'VIE': 28}; verdicts {'promised': 879, 'mayNotLead': 227, 'busy': 226, 'leader': 39, 'started': 2}
+  term 2: 288; about {2: 30, 1: 258}; colos {'UNKNOWN': 7, 'LAX': 185, 'NRT': 96}; verdicts {'leader': 29, 'promised': 116, 'mayNotLead': 52, 'busy': 91}
+  term 3: 674; about {1: 438, 2: 148, 0: 88}; colos {'LAX': 378, 'NRT': 273, 'UNKNOWN': 23}; verdicts {'promised': 231, 'mayNotLead': 179, 'started': 1, 'busy': 261, 'leader': 2}
+  term 4: 113; about {0: 26, 1: 57, 2: 30}; colos {'LAX': 68, 'NRT': 42, 'UNKNOWN': 3}; verdicts {'promised': 100, 'busy': 7, 'leader': 5, 'mayNotLead': 1}
+  term 5: 88; about {1: 56, 2: 26, 0: 6}; colos {'LAX': 64, 'NRT': 22, 'UNKNOWN': 2}; verdicts {'leader': 39, 'promised': 47, 'mayNotLead': 2}
+  term 6: 280; about {2: 83, 1: 176, 0: 21}; colos {'NRT': 126, 'LAX': 149, 'UNKNOWN': 5}; verdicts {'promised': 264, 'mayNotLead': 8, 'leader': 5, 'busy': 3}
+  term 7: 446; about {0: 23, 1: 254, 2: 169}; colos {'NRT': 175, 'LAX': 265, 'UNKNOWN': 6}; verdicts {'promised': 400, 'leader': 26, 'busy': 20}
+  term 8: 108; about {0: 14, 1: 66, 2: 28}; colos {'LAX': 61, 'NRT': 44, 'UNKNOWN': 3}; verdicts {'leader': 40, 'promised': 44, 'started': 1, 'busy': 23}
+  term 9: 446; about {2: 86, 0: 73, 1: 287}; colos {'LAX': 271, 'NRT': 160, 'UNKNOWN': 15}; verdicts {'promised': 279, 'busy': 162, 'started': 2, 'leader': 3}
+  term 10: 298; about {1: 54, 2: 222, 0: 22}; colos {'LAX': 159, 'NRT': 132, 'UNKNOWN': 7}; verdicts {'busy': 33, 'promised': 246, 'started': 1, 'leader': 15, 'mayNotLead': 3}
+  term 11: 86; about {2: 58, 0: 3, 1: 25}; colos {'LAX': 47, 'NRT': 36, 'UNKNOWN': 3}; verdicts {'leader': 44, 'promised': 32, 'busy': 10}
+  term 12: 48; about {1: 18, 2: 30}; colos {'LAX': 18, 'NRT': 29, 'UNKNOWN': 1}; verdicts {'busy': 8, 'promised': 40}
+  term 13: 550; about {1: 251, 2: 243, 0: 56}; colos {'LAX': 317, 'NRT': 218, 'UNKNOWN': 15}; verdicts {'promised': 191, 'mayNotLead': 107, 'busy': 238, 'started': 4, 'leader': 10}
+  term 14: 491; about {2: 122, 1: 321, 0: 48}; colos {'LAX': 271, 'UNKNOWN': 34, 'NRT': 186}; verdicts {'busy': 58, 'promised': 330, 'mayNotLead': 64, 'started': 1, 'leader': 38}
+  term 15: 163; about {1: 68, 0: 10, 2: 85}; colos {'LAX': 81, 'NRT': 72, 'UNKNOWN': 10}; verdicts {'busy': 14, 'leader': 58, 'promised': 41, 'mayNotLead': 50}
+  term 16: 260; about {1: 120, 2: 125, 0: 15}; colos {'LAX': 149, 'NRT': 103, 'UNKNOWN': 8}; verdicts {'promised': 151, 'mayNotLead': 87, 'busy': 22}
+  term 17: 755; about {1: 178, 2: 363, 0: 214}; colos {'LAX': 420, 'UNKNOWN': 29, 'NRT': 263, 'VIE': 43}; verdicts {'mayNotLead': 359, 'promised': 245, 'started': 4, 'busy': 147}
+  term 18: 108; about {1: 17, 2: 49, 0: 42}; colos {'LAX': 56, 'NRT': 13, 'VIE': 38, 'UNKNOWN': 1}; verdicts {'busy': 52, 'started': 3, 'promised': 49, 'leader': 4}
+  term 19: 388; about {0: 47, 2: 333, 1: 8}; colos {'LAX': 171, 'NRT': 124, 'UNKNOWN': 12, 'VIE': 81}; verdicts {'busy': 44, 'promised': 318, 'started': 1, 'leader': 25}
+  term 20: 33; about {0: 4, 1: 3, 2: 26}; colos {'LAX': 16, 'UNKNOWN': 3, 'NRT': 11, 'VIE': 3}; verdicts {'leader': 33}
+voter 1: 10720 reports; by colo {'LAX': 6058, 'NRT': 4202, 'UNKNOWN': 249, 'VIE': 211}; by verdict {'promised': 7075, 'busy': 2243, 'started': 21, 'leader': 553, 'mayNotLead': 828}
+  term 0: 2308; about {0: 1535, 2: 773}; colos {'LAX': 1472, 'NRT': 812, 'VIE': 24}; verdicts {'promised': 1620, 'busy': 423, 'leader': 61, 'mayNotLead': 203, 'started': 1}
+  term 2: 1178; about {2: 204, 1: 277, 0: 697}; colos {'UNKNOWN': 23, 'LAX': 649, 'NRT': 506}; verdicts {'promised': 1066, 'busy': 50, 'started': 1, 'leader': 60, 'mayNotLead': 1}
+  term 3: 277; about {0: 123, 1: 14, 2: 140}; colos {'LAX': 138, 'NRT': 129, 'UNKNOWN': 10}; verdicts {'leader': 84, 'promised': 165, 'started': 1, 'busy': 22, 'mayNotLead': 5}
+  term 4: 710; about {0: 255, 2: 343, 1: 112}; colos {'LAX': 400, 'NRT': 291, 'UNKNOWN': 19}; verdicts {'leader': 4, 'promised': 570, 'busy': 64, 'mayNotLead': 72}
+  term 5: 553; about {2: 88, 0: 395, 1: 70}; colos {'UNKNOWN': 28, 'NRT': 215, 'LAX': 310}; verdicts {'busy': 19, 'promised': 372, 'mayNotLead': 142, 'started': 1, 'leader': 19}
+  term 6: 327; about {0: 108, 2: 192, 1: 27}; colos {'LAX': 164, 'NRT': 159, 'UNKNOWN': 4}; verdicts {'leader': 67, 'started': 1, 'busy': 128, 'promised': 131}
+  term 7: 1164; about {0: 296, 1: 203, 2: 665}; colos {'LAX': 686, 'NRT': 456, 'UNKNOWN': 22}; verdicts {'busy': 578, 'started': 4, 'promised': 574, 'leader': 8}
+  term 8: 471; about {2: 134, 1: 12, 0: 325}; colos {'UNKNOWN': 17, 'LAX': 255, 'NRT': 199}; verdicts {'promised': 326, 'started': 1, 'busy': 129, 'leader': 15}
+  term 9: 97; about {0: 60, 1: 10, 2: 27}; colos {'LAX': 45, 'NRT': 45, 'UNKNOWN': 7}; verdicts {'leader': 89, 'mayNotLead': 4, 'busy': 2, 'promised': 2}
+  term 10: 178; about {2: 27, 0: 144, 1: 7}; colos {'LAX': 96, 'NRT': 82}; verdicts {'leader': 1, 'mayNotLead': 77, 'busy': 28, 'started': 1, 'promised': 71}
+  term 11: 367; about {0: 282, 1: 14, 2: 71}; colos {'UNKNOWN': 9, 'LAX': 215, 'NRT': 143}; verdicts {'mayNotLead': 133, 'busy': 87, 'started': 3, 'promised': 144}
+  term 12: 120; about {0: 41, 2: 61, 1: 18}; colos {'LAX': 63, 'UNKNOWN': 5, 'NRT': 52}; verdicts {'busy': 43, 'promised': 77}
+  term 13: 194; about {0: 87, 1: 15, 2: 92}; colos {'LAX': 66, 'NRT': 118, 'UNKNOWN': 10}; verdicts {'promised': 176, 'leader': 8, 'busy': 8, 'mayNotLead': 2}
+  term 14: 134; about {0: 62, 2: 70, 1: 2}; colos {'LAX': 74, 'NRT': 58, 'UNKNOWN': 2}; verdicts {'leader': 44, 'busy': 12, 'promised': 74, 'started': 1, 'mayNotLead': 3}
+  term 15: 376; about {0: 161, 2: 179, 1: 36}; colos {'LAX': 204, 'NRT': 156, 'UNKNOWN': 16}; verdicts {'promised': 258, 'busy': 75, 'started': 2, 'leader': 35, 'mayNotLead': 6}
+  term 16: 205; about {0: 55, 1: 16, 2: 134}; colos {'NRT': 82, 'UNKNOWN': 6, 'LAX': 117}; verdicts {'leader': 58, 'started': 2, 'busy': 82, 'promised': 58, 'mayNotLead': 5}
+  term 17: 1004; about {2: 587, 0: 259, 1: 158}; colos {'UNKNOWN': 28, 'LAX': 587, 'NRT': 340, 'VIE': 49}; verdicts {'busy': 463, 'promised': 417, 'mayNotLead': 124}
+  term 18: 121; about {1: 10, 2: 67, 0: 44}; colos {'LAX': 60, 'VIE': 50, 'NRT': 10, 'UNKNOWN': 1}; verdicts {'mayNotLead': 43, 'started': 2, 'busy': 13, 'promised': 63}
+  term 19: 523; about {0: 153, 2: 366, 1: 4}; colos {'UNKNOWN': 15, 'LAX': 249, 'NRT': 185, 'VIE': 74}; verdicts {'busy': 17, 'promised': 498, 'mayNotLead': 8}
+  term 20: 413; about {0: 250, 1: 3, 2: 160}; colos {'LAX': 208, 'UNKNOWN': 27, 'NRT': 164, 'VIE': 14}; verdicts {'promised': 413}
+voter 2: 13793 reports; by colo {'LAX': 8203, 'NRT': 5303, 'UNKNOWN': 269, 'VIE': 18}; by verdict {'promised': 8301, 'started': 20, 'busy': 3152, 'mayNotLead': 1141, 'leader': 1179}
+  term 0: 3194; about {0: 2152, 1: 1042}; colos {'LAX': 2183, 'NRT': 1011}; verdicts {'promised': 2287, 'busy': 502, 'mayNotLead': 195, 'leader': 209, 'started': 1}
+  term 2: 2046; about {2: 230, 1: 586, 0: 1230}; colos {'UNKNOWN': 23, 'NRT': 793, 'LAX': 1230}; verdicts {'promised': 1684, 'started': 2, 'busy': 140, 'mayNotLead': 212, 'leader': 8}
+  term 3: 1172; about {0: 359, 1: 622, 2: 191}; colos {'NRT': 539, 'LAX': 602, 'UNKNOWN': 31}; verdicts {'promised': 331, 'mayNotLead': 687, 'busy': 111, 'leader': 41, 'started': 2}
+  term 4: 453; about {1: 76, 0: 360, 2: 17}; colos {'UNKNOWN': 5, 'LAX': 312, 'NRT': 136}; verdicts {'busy': 128, 'leader': 70, 'promised': 254, 'started': 1}
+  term 5: 852; about {0: 640, 1: 155, 2: 57}; colos {'NRT': 375, 'LAX': 448, 'UNKNOWN': 29}; verdicts {'busy': 357, 'promised': 492, 'leader': 3}
+  term 6: 355; about {0: 140, 2: 6, 1: 209}; colos {'LAX': 174, 'NRT': 173, 'UNKNOWN': 8}; verdicts {'promised': 293, 'started': 1, 'busy': 16, 'leader': 45}
+  term 7: 416; about {0: 258, 1: 153, 2: 5}; colos {'LAX': 247, 'NRT': 165, 'UNKNOWN': 4}; verdicts {'leader': 101, 'started': 1, 'busy': 79, 'promised': 235}
+  term 8: 747; about {0: 526, 1: 131, 2: 90}; colos {'NRT': 335, 'LAX': 395, 'UNKNOWN': 17}; verdicts {'busy': 126, 'started': 3, 'promised': 616, 'leader': 2}
+  term 9: 937; about {0: 295, 1: 586, 2: 56}; colos {'LAX': 585, 'NRT': 327, 'UNKNOWN': 25}; verdicts {'promised': 401, 'busy': 506, 'started': 3, 'leader': 27}
+  term 10: 129; about {1: 11, 2: 18, 0: 100}; colos {'LAX': 64, 'NRT': 65}; verdicts {'busy': 80, 'leader': 49}
+  term 11: 253; about {0: 178, 1: 17, 2: 58}; colos {'LAX': 146, 'NRT': 105, 'UNKNOWN': 2}; verdicts {'busy': 200, 'leader': 53}
+  term 12: 204; about {0: 76, 1: 74, 2: 54}; colos {'LAX': 95, 'NRT': 91, 'UNKNOWN': 18}; verdicts {'busy': 135, 'started': 1, 'leader': 68}
+  term 13: 338; about {0: 109, 1: 197, 2: 32}; colos {'LAX': 190, 'NRT': 146, 'UNKNOWN': 2}; verdicts {'leader': 144, 'promised': 141, 'busy': 53}
+  term 14: 1059; about {1: 836, 0: 138, 2: 85}; colos {'LAX': 639, 'NRT': 389, 'UNKNOWN': 31}; verdicts {'promised': 573, 'started': 1, 'busy': 425, 'mayNotLead': 47, 'leader': 13}
+  term 15: 721; about {1: 194, 0: 398, 2: 129}; colos {'LAX': 379, 'NRT': 319, 'UNKNOWN': 23}; verdicts {'busy': 177, 'promised': 506, 'started': 2, 'leader': 36}
+  term 16: 226; about {0: 89, 1: 102, 2: 35}; colos {'NRT': 91, 'UNKNOWN': 14, 'LAX': 121}; verdicts {'promised': 160, 'busy': 30, 'leader': 36}
+  term 17: 225; about {0: 102, 1: 90, 2: 33}; colos {'LAX': 113, 'NRT': 89, 'UNKNOWN': 12, 'VIE': 11}; verdicts {'busy': 10, 'leader': 215}
+  term 18: 43; about {1: 4, 0: 25, 2: 14}; colos {'LAX': 24, 'NRT': 14, 'VIE': 4, 'UNKNOWN': 1}; verdicts {'leader': 21, 'started': 1, 'busy': 19, 'promised': 2}
+  term 19: 127; about {0: 101, 2: 24, 1: 2}; colos {'LAX': 73, 'NRT': 52, 'UNKNOWN': 2}; verdicts {'busy': 13, 'leader': 36, 'started': 1, 'promised': 77}
+  term 20: 296; about {0: 238, 1: 4, 2: 54}; colos {'LAX': 183, 'NRT': 88, 'UNKNOWN': 22, 'VIE': 3}; verdicts {'leader': 2, 'busy': 45, 'promised': 249}

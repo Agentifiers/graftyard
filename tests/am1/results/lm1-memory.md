@@ -4880,3 +4880,72 @@ behind them, stay; with no withholding the term changes that start the walks sho
 purges again, and logs both passes' per-bucket counts and the second pass's total. Tests in
 `tests/fanout/test_purge.py` (a sweep that re-puts a marker during the wait is cleared; no wait once past it; both
 sides of a slot boundary), and five new plants in `tests/fanout/plant_purge.py`; 13 of 13 caught.
+
+### Round 39: the m44 slot, site day from main fbe49d59 (colo-unknown, the 0x15.4 reader), B0-33 (2026-11-17)
+
+Granted by the operator at about 19:45Z. Stops: $10 on graft-m2b by `PREFIX` from 19:50:40Z, or the account past $280
+(it was $160.90 at the grant).
+
+**Site day m44.** From `fbe49d59`, m43's image `sha256:0f0c5ee1` (no `containers/` change since), standard-4,
+`GRAFTYARD_ROLLUP=1`, 32.25 in the edge's `FORMATS_ENABLED`, `GRAFTYARD_PR_TRIGGER` unset (ships the 0x15.4 reader, sends
+nothing in it). Sites with test-faults, exit 0, 19:50 to 20:02:48Z: a `d2325f08`, b `297c41d0`, c `52f9c449`. Edge
+`a44cfd49`, served at 100% (`edgever.py`, rev fbe49d59).
+
+**B0-33.** repo:131352, a1 `mwl4mlhx`, 5,000 agents, k 4, 8 learners, inbound trace with `Trace::Reported`, load
+20:15:20 to 20:20:20Z: fail. The first try at 20:06Z lost `mkrepos.mjs`'s create reply to a TLS reset; the repository
+was created (131352, `main`), so its line went into `am1-runs-repos.txt` by hand and the row ran on it from 20:09Z.
+Learners 0 of 8 caught up in the 120 s wait, as on m43.
+
+| B0-33 line | m44 | m43 | verdict at 90% |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 19,753 ms (p50 5,585, n 3,478); merges 1 of 56 (40 skipped at the cap); human pushes 4 of 196 (173 skipped) | 24,132 ms; 0 of 60; 7 of 202 | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 13.2 agent-class ok a second | 11.1 | fail |
+| Zero leader changes and `suspect` | term 2 → 20; 11 step-downs (10 `CommitErrors`, 1 `Confirm`), all holds (`to: None`); first leader change 20:15:55Z, 35 s in | 2 → 21; 13 | fail |
+
+- Voter routes after the first change (20:15:55 to 20:20:20Z): `/read` 217, 228 and 280 a second, `/suspect` 152, 175
+  and 214, on sites 0, 1 and 2. Before it (35 s): `/read` 17, 23, 28; `/suspect` 0.1, 5.2, 5.4.
+- Read grant p99 by leading site: 12,942, 4,638 and 2,884 ms (`rounds-m44b33.json`).
+- Leader split p99: queue 19.6 s, round 12.8 s, confirm 6.1 s, apply 14.2 s; deps p99 all 29.6 s, authz 14.1 s,
+  tokens 11.3 s. Agent pushes p50 29.4 s, p99 132.4 s; 4,341 of 12,499 answered 503 "access rows ... not leader".
+- Memory: memguard peaks 73, 51.8 and 63 MiB; a1's admission samples peaked at 76.5 MB. No 120 MiB stop.
+
+**Why the terms still changed (`Trace::Reported`, `reported-m44b33.txt`, `campaigns-m44b33.txt`).**
+- Reports by colo: LAX 18,238, NRT 12,144, VIE 422, UNKNOWN 705 (2.2%). On m43 every edge request came from LAX; on
+  m44 the edge served the same driver from LAX and NRT (edge log events in the load: LAX 367, NRT 194), so the edge
+  itself supplied two colos.
+- `tests/fanout/campaigns.py` takes each `started` verdict (a `/suspect` that began a campaign, which needs a lapsed
+  promise) and looks back at that member: 61 campaigns; 46 had countable reports from two known colos (LAX and NRT, in
+  the member's term, about its leader, UNKNOWN skipped) in the 30 s before, so withholding stopped the promise; 10 came
+  10 s or more after the member's last append (its leader went quiet or it fell out of the leader's sends); 5 neither.
+  No withholding needed UNKNOWN: colo-unknown held as built, and the cause it removed is not what keeps the loop going.
+  The trace ring lost rows under load (`Entered` arrival numbers missing: 30,660, 25,157 and 26,590 on voters 0, 1, 2;
+  site 1 had no rows 20:18:07 to 20:18:33 and 20:19:02 to 20:19:16), so some of the 5 unexplained campaigns may be
+  rows it lost.
+- So the loop m43 showed stands with real colos: the leader's load delays the edge's calls, the edge reports every
+  missed call with `suspect`, two colos' reports withhold both followers' promises from a leader that still commits,
+  and the next report elects. The 2-colo rule cannot tell an overloaded leader from a gray one when the load itself
+  comes from more than one colo, as 500 agents' would.
+
+**The edge walks and the queueing behind them** (`inbound-m44b33.txt`, 20:15:20 to 20:20:20Z): voters 0, 1 and 2 took
+walks at 205, 194 and 245 a second from 419, 411 and 408 distinct isolates (busiest 1%), and `/read` mostly
+`packed:lead` 123 to 167 and `core:lead` 67 to 76 a second. Of 3,367 voter-to-voter `/raft` calls joined to their
+callee, 1,909 missed 1 s or went unanswered, with p50 1,440 requests entered ahead at the callee, of which `/suspect`
+44 to 48% and `/read` 41 to 43%. Calls under 200 ms had p50 187 ahead.
+
+**Edge errors.** The query hit its 100-event cap in all 30 windows with request lines only, as on m42 and m43, so no
+lookup-share error kind was seen; the count is not exhaustive.
+
+**Close-out.**
+- `costrow.sh` swept the shards (3 torn down) at 20:22:51Z; a later sweep found none running.
+- `retirenets.mjs 131352`: 11 names, 11 were joined, all now "not joined" (20:40:04Z).
+- Two-pass purge (purge.py, gate unchanged): first pass a 7,371, b 5,734, c 7,014 objects (20,119), second pass 0 on
+  every site. The 20:30Z sweep run started before the first pass and re-put nothing this time.
+- Idle reading: see below.
+
+**Cost.** graft-m2b by prefix from 19:50:40Z to 20:44Z: $1.77 of the $10 stop, site day included. Account day
+$169.84 at 20:44Z.
+
+Raw files in `tests/fanout/raw/`: `siteday-m44.status`, `costrow-m44b33.status`, `rows-m44b33.status`,
+`a1-b0-33-m44.jsonl` (a copy of a1 `mwl4mlhx`), `terms-m44b33.jsonl`, `memguard-m44b33.jsonl.xz`,
+`tsave-m44b33.jsonl.xz`, `inbound-m44b33.txt`, `rounds-m44b33.json`, `reported-m44b33.txt`, `campaigns-m44b33.txt`,
+`stepdowns-m44b33.txt`, `retire-m44.log`, `retirenets-m44.out`, `purge-m44.log`.

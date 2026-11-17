@@ -1,0 +1,13 @@
+/tmp/stepdowns.py:26: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  print(datetime.datetime.utcfromtimestamp(t / 1000).strftime("%H:%M:%S.%f")[:-3], s, m)
+20:15:36.977 a member alarm: StepDown { why: Confirm { p99_ms: 1273, slow: 6, of: 21 }, to: None }
+20:16:01.211 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 10, 3), (SiteId(2), 10, 3)] }, to: None }
+20:16:10.476 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 6, 3), (SiteId(2), 5, 3)] }, to: None }
+20:17:05.786 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 18, 3), (SiteId(2), 19, 3)] }, to: None }
+20:17:19.238 c member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 17, 4), (SiteId(1), 16, 3)] }, to: None }
+20:17:57.794 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 16, 6), (SiteId(2), 12, 3)] }, to: None }
+20:19:03.745 c member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 8, 8), (SiteId(1), 39, 3)] }, to: None }
+20:19:21.875 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 14, 3), (SiteId(2), 16, 14)] }, to: None }
+20:19:53.208 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 5, 3), (SiteId(2), 30, 3)] }, to: None }
+20:20:20.674 c member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 30, 6), (SiteId(1), 50, 3)] }, to: None }
+20:20:51.906 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 22, 4), (SiteId(2), 15, 3)] }, to: None }

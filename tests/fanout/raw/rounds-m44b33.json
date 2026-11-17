@@ -1,0 +1,87 @@
+{
+ "gapMs": 20,
+ "from": "2026-11-17T20:15:20Z",
+ "to": "2026-11-17T20:20:20Z",
+ "bySite": {
+  "0": {
+   "1": {
+    "calls": 740,
+    "buckets": 538,
+    "max": 17,
+    "over1": 80,
+    "share_over1": 0.1487,
+    "turns_max": 2,
+    "turns_over1": 14
+   },
+   "2": {
+    "calls": 793,
+    "buckets": 544,
+    "max": 14,
+    "over1": 90,
+    "share_over1": 0.1654,
+    "turns_max": 3,
+    "turns_over1": 10
+   }
+  },
+  "1": {
+   "0": {
+    "calls": 704,
+    "buckets": 552,
+    "max": 8,
+    "over1": 85,
+    "share_over1": 0.154,
+    "turns_max": 2,
+    "turns_over1": 18
+   },
+   "2": {
+    "calls": 592,
+    "buckets": 450,
+    "max": 13,
+    "over1": 64,
+    "share_over1": 0.1422,
+    "turns_max": 2,
+    "turns_over1": 6
+   }
+  },
+  "2": {
+   "0": {
+    "calls": 836,
+    "buckets": 632,
+    "max": 15,
+    "over1": 94,
+    "share_over1": 0.1487,
+    "turns_max": 2,
+    "turns_over1": 19
+   },
+   "1": {
+    "calls": 748,
+    "buckets": 537,
+    "max": 16,
+    "over1": 78,
+    "share_over1": 0.1453,
+    "turns_max": 3,
+    "turns_over1": 12
+   }
+  }
+ },
+ "grantMs": {
+  "0": {
+   "n": 753,
+   "p50": 0,
+   "p99": 12942,
+   "max": 12942
+  },
+  "1": {
+   "n": 274,
+   "p50": 0,
+   "p99": 4638,
+   "max": 71051
+  },
+  "2": {
+   "n": 329,
+   "p50": 43,
+   "p99": 2884,
+   "max": 3944
+  }
+ }
+}
