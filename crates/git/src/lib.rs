@@ -32,6 +32,7 @@ pub mod merge_call;
 pub mod pack;
 pub mod pkt;
 pub mod prsync;
+pub mod purge;
 pub mod queue;
 pub mod queue_consumer;
 pub mod refs;

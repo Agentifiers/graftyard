@@ -1259,6 +1259,31 @@ impl<F: Family> Routes<F> {
                 host::abort(&self.host.state, "graftyard member abort");
                 Response::from_json(&json!({ "aborted": true, "at": now_ms() }))
             }
+            // A deleted repository's purge (`graftyard_git::purge`; `decisions/DECISIONS.md`, "`repo-purge`"): this
+            // member's storage is deleted and the object resets, so it answers as never joined. Only a repository
+            // member whose fold holds the tombstone, or its metadata child, and only outside a group change; 409
+            // otherwise. Only the edge's admin route sends it: the edge forwards no path a client names to a member.
+            (Method::Post, "/purge_retire") => {
+                let refused = {
+                    let core = self.host.core.borrow();
+                    let c = core.as_ref().ok_or_else(|| err("not joined"))?;
+                    if !F::purgeable(&c.m.group_fold().fold) {
+                        Some("notDeleted")
+                    } else if self.changing(&c.m) {
+                        Some("changing")
+                    } else {
+                        None
+                    }
+                };
+                if let Some(why) = refused {
+                    return Response::from_json(&json!({ "refused": why })).map(|r| r.with_status(409));
+                }
+                self.host.dying.set(true);
+                self.host.state.storage().delete_alarm().await?;
+                self.host.state.storage().delete_all().await?;
+                host::abort(&self.host.state, "graftyard member purged");
+                Response::from_json(&json!({ "retired": true }))
+            }
             #[cfg(feature = "test-faults")]
             _ => self.test_route(req, url).await,
             #[cfg(not(feature = "test-faults"))]
@@ -1364,6 +1389,23 @@ impl<F: Family> Routes<F> {
             }
             _ => Response::error("not found", 404),
         }
+    }
+
+    /// When a placement started on this member (`place_background`'s and the daily check's marker), while it runs.
+    fn placing_since(&self) -> Option<u64> {
+        host::rows(&self.host.state.storage().sql(), "SELECT v FROM me WHERE k = 'near_check'", vec![])
+            .ok()
+            .and_then(|r| r.first().and_then(|r| host::text(&r[0]).ok()).and_then(|t| t.parse::<u64>().ok()))
+            .filter(|t| now_ms().saturating_sub(*t) < NEAR_CHECK_FOR)
+    }
+
+    /// Whether this member is in a group change (`graftyard_git::purge::changing`).
+    fn changing(&self, m: &raft::Member<F::C>) -> bool {
+        graftyard_git::purge::changing(
+            m.committed_config().map(|(_, c)| c),
+            m.latest_config(),
+            self.placing_since().is_some(),
+        )
     }
 
     fn meta(&self) -> Value {
@@ -2046,10 +2088,10 @@ impl<F: Family> Routes<F> {
             "readsInFlight": self.host.reads_in_flight.get(),
             // A placement running on this member (`place_background`'s and the daily check's marker), for drivers that
             // must not change the config under it (`tests/fanout/learners.mjs`).
-            "placingSince": host::rows(&self.host.state.storage().sql(), "SELECT v FROM me WHERE k = 'near_check'", vec![])
-                .ok()
-                .and_then(|r| r.first().and_then(|r| host::text(&r[0]).ok()).and_then(|t| t.parse::<u64>().ok()))
-                .filter(|t| now_ms().saturating_sub(*t) < NEAR_CHECK_FOR),
+            "placingSince": self.placing_since(),
+            // A deleted repository's purge reads both (`graftyard_git::purge`).
+            "purgeable": F::purgeable(&c.m.group_fold().fold),
+            "changing": self.changing(&c.m),
             "now": self.host.now(),
         })
     }

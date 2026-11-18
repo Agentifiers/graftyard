@@ -38,6 +38,8 @@ L = 'workers/runners/launch.mjs'
 NODE = ['node']  # `node --test workers/runners/tests/`, not cargo
 TR = 'crates/actions/src/trigger.rs'
 PR = ['-p', 'graftyard-actions', '--lib', '--test', 'pr_trigger', '--test', 'gates']
+PU = 'crates/git/src/purge.rs'
+PG = ['-p', 'graftyard-git', '--lib', 'purge::']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -256,6 +258,30 @@ MUTANTS = [
      'carried.iter().map(|c| Index(c.index.0.saturating_sub(1)))', 'carried.iter().map(|c| Index(c.index.0))', PR),
     ('F84: a done event is carried too (the batch reruns)', TR,
      '            (Tried::Done, _) => {}', '            (Tried::Done, _) => carried.push(c),', PR),
+    # ---- repo-purge: a deleted repository's purge (crates/git/src/purge.rs)
+    ('repo-purge: a member that has not applied the tombstone is purged', PU,
+     '            Status::NotJoined | Status::Joined { purgeable: true, changing: false } => {}',
+     '            Status::NotJoined | Status::Joined { changing: false, .. } => {}', PG),
+    ('repo-purge: an unanswered member counts as retired', PU,
+     '            Status::NotJoined | Status::Joined { purgeable: true, changing: false } => {}',
+     '            Status::NotJoined | Status::Unanswered | Status::Joined { purgeable: true, changing: false } => {}', PG),
+    ('repo-purge: early is not needed inside the retention', PU,
+     '    if f.now < until && !f.early {', '    if f.now < until && f.early {', PG),
+    ('repo-purge: an appended, uncommitted config is not a change', PU,
+     '    placing || matches!(committed, Some(GroupConfig::Joint { .. })) || committed != Some(latest)',
+     '    placing || matches!(committed, Some(GroupConfig::Joint { .. }))', PG),
+    ('repo-purge: a placement running is not a change', PU,
+     '    placing || matches!(committed, Some(GroupConfig::Joint { .. })) || committed != Some(latest)',
+     '    matches!(committed, Some(GroupConfig::Joint { .. })) || committed != Some(latest)', PG),
+    ('repo-purge: the plan keeps only the first source (the registry rows\' later generation is missed)', PU,
+     '    for (s, n) in bootstrap.iter().chain(rows).chain(config).cloned() {',
+     '    for (s, n) in bootstrap.iter().cloned() {', PG),
+    ('repo-purge: a prefix without its trailing slash also takes network 655671', PU,
+     '    let mut out: Vec<String> = by_net.iter().map(|p| format!("{p}/{n}/")).collect();',
+     '    let mut out: Vec<String> = by_net.iter().map(|p| format!("{p}/{n}")).collect();', PG),
+    ('repo-purge: a member behind the tombstone answers purgeable', PU,
+     '    fold.child || crate::tiers::deleted(&*fold.core).is_some()', '    let _ = fold;\n    true',
+     ['-p', 'graftyard-git', '--test', 'lifecycle']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

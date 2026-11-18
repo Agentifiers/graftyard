@@ -59,6 +59,7 @@ mod ident;
 mod keys;
 mod oidc;
 mod precreate;
+mod purge;
 mod rcache;
 mod release;
 mod repos;
@@ -2753,6 +2754,9 @@ async fn serve(
     }
     if path == oidc::INSTANCE_AUTH_PATH {
         return oidc::instance_auth(&c, &mut req).await;
+    }
+    if let Some(r) = purge::route(&c, &mut req, &path).await? {
+        return agents::respond(&c, r);
     }
     if path == usertok::TOKENS_PATH {
         let r = usertok::create_fine_grained(&c, &mut req).await?;

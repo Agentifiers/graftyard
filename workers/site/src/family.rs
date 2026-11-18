@@ -94,6 +94,11 @@ pub trait Family: 'static {
     fn route_paths() -> &'static [&'static str] {
         &[]
     }
+    /// Whether a purge may retire this member (`graftyard_git::purge`): only a repository chain whose fold holds the
+    /// `Deleted` tombstone, or its metadata child, which holds no core tier and is purged on its parent's.
+    fn purgeable(_fold: &Self::Fold) -> bool {
+        false
+    }
     /// The family's own member routes: `None` for a path it does not serve.
     async fn route(
         _host: &std::rc::Rc<crate::host::Host<Self>>,
@@ -920,6 +925,9 @@ impl Family for Repo {
     /// A leader's alarm runs the `PrSync` dispatcher at once; every member's checks for a due snapshot.
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
         Some(if leading { crate::prsync::LEADER_ALARM_MS } else { crate::snap::IDLE_MS })
+    }
+    fn purgeable(fold: &git::repo::RepoFold) -> bool {
+        git::purge::purgeable(fold)
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
