@@ -1,0 +1,49 @@
+1. leader deferred transactions (Flushed), by statements
+  member 0: 222 transactions, statements p50 205 p99 1378 max 1448, total 54346; 9 of 1000+ hold 11372 (21%)
+  member 1: 38 transactions, statements p50 311 p99 1786 max 1786, total 27125; 16 of 1000+ hold 24973 (92%)
+
+2. bigTx mix (the leader's newest 20 transactions of 100 KB or more), per transaction
+  with ExtendLeases: 8 transactions, 1471 to 1786 statements
+    lease rows                                1365.2 per transaction   81.6%
+    request rows                                75.8 per transaction    4.5%
+    dup (test-faults)                           75.8 per transaction    4.5%
+    comment rows (with fts, by_issue)           69.5 per transaction    4.2%
+    agent task rows                             56.2 per transaction    3.4%
+    issue and PR rows (with fts)                10.9 per transaction    0.7%
+    ref rows                                     6.4 per transaction    0.4%
+    tier bookkeeping (_fold, _digest, ids)       5.8 per transaction    0.3%
+    path_set rows                                3.4 per transaction    0.2%
+    raft log and state                           1.8 per transaction    0.1%
+    request retention DELETE                     1.0 per transaction    0.1%
+    other                                        1.0 per transaction    0.1%
+  without: 8 transactions, 22 to 421 statements
+    request rows                                50.6 per transaction   20.0%
+    dup (test-faults)                           50.6 per transaction   20.0%
+    comment rows (with fts, by_issue)           48.5 per transaction   19.1%
+    lease rows                                  41.6 per transaction   16.4%
+    agent task rows                             37.8 per transaction   14.9%
+    issue and PR rows (with fts)                 9.2 per transaction    3.6%
+    tier bookkeeping (_fold, _digest, ids)       5.6 per transaction    2.2%
+    ref rows                                     3.4 per transaction    1.3%
+    path_set rows                                2.8 per transaction    1.1%
+    raft log and state                           2.0 per transaction    0.8%
+    request retention DELETE                     1.0 per transaction    0.4%
+    other                                        0.6 per transaction    0.2%
+
+3. estimated share of all the leader's deferred statements
+  lease rows                                  37068   45.5%
+  request rows                                10649   13.1%
+  dup (test-faults)                           10649   13.1%
+  comment rows (with fts, by_issue)           10135   12.4%
+  agent task rows                              7936    9.7%
+  issue and PR rows (with fts)                 1881    2.3%
+  tier bookkeeping (_fold, _digest, ids)       1125    1.4%
+  ref rows                                      739    0.9%
+  path_set rows                                 562    0.7%
+  raft log and state                            394    0.5%
+  request retention DELETE                      200    0.2%
+  other                                         133    0.2%
+
+4. leader sync after a deferred transaction, against the followers' sync after applying the same index
+  big   (1000+ statements: True): leader n 24 p50 545 p90 2183 max 2825 at 1 s or more 10; followers n 48 p50 24 p90 50 max 85 at 1 s or more 0
+  small (1000+ statements: False): leader n 233 p50 135 p90 930 max 2784 at 1 s or more 19; followers n 466 p50 18 p90 30 max 138 at 1 s or more 0
