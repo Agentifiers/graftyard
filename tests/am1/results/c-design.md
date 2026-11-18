@@ -441,8 +441,11 @@ call rate.
   kept fixtures (65536–65540, 131072, 131073, 131296, 327700, 9043968–9043970); 131358 not joined
   (`raw/joined-m50.txt`).
 - `costrow` swept shards after the row: "no shard container running".
-- **Cost.** graft-m2b by prefix from 10:09:51Z to 10:28:16Z: $3.71 of the $10 stop. The account day was $15.40 at
-  10:28Z.
+- **Idle reading** 10:33:35 to 11:05:35Z, spanning the 10:45 and 11:00 crons: graft-m2b $0.00 by PREFIX, and
+  `idlewatch.py` saw 0 shard containers start in 32 minutes (`raw/idlewatch-m50.jsonl`). The account spent $1.46 in
+  that window, all on other installs.
+- **Cost.** graft-m2b by prefix from 10:09:51Z to 11:06Z: $3.71 of the $10 stop, all of it by 10:28Z. The account
+  day was $15.40 at 10:28Z.
 
 Raw files in `tests/fanout/raw/`: `costrow-m50b33.status`, `rows-m50b33.status`, `a1-b0-33-m50.jsonl`,
 `terms-m50b33.jsonl`, `memguard-m50b33.jsonl.xz`, `tsave-m50b33.jsonl.xz`, `bystep-m50b33.txt`, `bylag-m50b33.txt`,
