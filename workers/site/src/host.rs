@@ -363,8 +363,8 @@ pub struct Stats {
     last_apply_at: u64,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
-    /// Every stamp's lag (`crate::clock`), stamp minus this isolate's clock, by bucket: 0, then below 2^i ms for i
-    /// from 1, the last bucket open; and the largest seen.
+    /// Every stamp's lag (`crate::clock`), stamp minus the member clock at its arrival, by bucket: 0, then below 2^i
+    /// ms for i from 1, the last bucket open; and the largest seen.
     pub clock_lag: [u32; 16],
     pub clock_lag_max: u64,
     /// Leader: reads that started while the clock was suspect, so waited for a round instead of the lease.
