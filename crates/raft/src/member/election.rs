@@ -80,11 +80,14 @@ impl<C: Command> Member<C> {
             let leader = self.state.promised_to.filter(|l| {
                 *l != self.cfg.me && (self.leader == Some(*l) || (self.leader.is_none() && self.forgot == Some(*l)))
             });
-            // The follower's own evidence: a report counts only while this member's appends from its leader are late,
-            // none accepted for CALL_DEADLINE. A leader that is overloaded but still appending keeps its promises; on
-            // B0-33 m44 the edge's reports came from LAX and NRT while both followers took appends every few hundred
-            // ms, and withholding moved a committing leader 18 times in 5 minutes (`tests/am1/results/lm1-memory.md`).
-            let late = self.now >= after(self.appended_at, CALL_DEADLINE);
+            // The follower's own evidence: a report counts only while this member's leader makes no progress for it, no
+            // accepted append that stored an entry or moved its commit for CALL_DEADLINE. A leader that is overloaded
+            // but still committing keeps its promises; on B0-33 m44 the edge's reports came from LAX and NRT while both
+            // followers took appends every few hundred ms, and withholding moved a committing leader 18 times in 5
+            // minutes (`tests/am1/results/lm1-memory.md`). Any accepted append was the first rule (`late-suspect`), and
+            // read-beat's empty rounds from a half-hung leader kept it fresh while nothing committed: live seed 10353
+            // stalled 31.8 s (`progress-suspect`).
+            let late = self.now >= after(self.progressed_at, CALL_DEADLINE);
             if let Some(l) = leader.filter(|l| *l == about)
                 && term == self.state.term
                 && late

@@ -4614,9 +4614,62 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 - `a_gray_leader_whose_appends_come_late_still_loses_its_lease`: A's appends reach the followers only in bursts every 1.5 s while two colos report. Another member leads 9.0 s after the first report, within the Gray region's 20 s.
 - `two_colos_within_the_window_stop_promises_to_a_renewing_leader` and `an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign` now send their reports after a CALL_DEADLINE with nothing delivered.
 - `tests/latesuspect/plant.py` plants five bugs and catches 5 of 5: main's rule, lateness judged against LEASE, lateness judged from `last_leader_seen` (which withholding stops), a timely report that clears the window, and reports that never count.
+- Hosted, B0-33 m45 (2026-11-17): term 2 throughout, 0 leader changes. Every report came from one real colo (LAX 24,077, UNKNOWN 599), so no rule could withhold, and the run does not separate late-suspect from colo-unknown. The two-colo case stays covered by the simulator only [measured, `tests/am1/results/lm1-memory.md`, round 40].
 - Simulator: the long sweep (2,000 seeds, 10,000 steps) passed. Longest stretches with a healthy quorum, requests waiting and none completing: harsh 17.0 s (colo-unknown's 16.3 s), gray 24.7 s (27.9 s), live 27.8 s (25.4 s), all under the liveness bound of 30 s. Porcupine Ok on all three histories (157,336, 2,333,008 and 5,988,768 operations).
 
 **Flip.** A hosted run in which a leader that two colos reported and that stopped reaching both followers for CALL_DEADLINE or longer kept its lease past the Gray region's 20 s target, or in which both followers still withhold from a leader whose appends reach them within CALL_DEADLINE (read `Trace::Reported` against `AppendStepped`).
+
+**Amended by `progress-suspect` (2026-11-18).** "Reaching" became "making progress for": the first case of the flip line met in the simulator. With read-beat (empty rounds behind an entry in flight) merged beside this rule, main 56918444 failed the long sweep's live half on seed 10353: a half-hung leader's empty rounds reached both followers about every 2 s for 23 s while 34 of its calls failed and nothing committed, `appended_at` stayed fresh, no report counted, and a healthy quorum had requests waiting for 31.8 s against the 30 s bound (3.9 s on this branch alone, 10.5 s on read-beat alone). The rule now reads `progressed_at`, set only by an accepted append that stored an entry or raised the commit index. See `progress-suspect`.
+
+### `lookup-retry`: a cached leader's first miss is retried there, and SUSPECT_GAP is 1 s, 2026-11-18
+
+**Status.** Asked for by the orchestrator after B0-33 m45, with SUSPECT_GAP at 5 s; built at 1 s because 5 s broke the long sweep's live bound (below). Built on branch `lookup-retry`, not deployed. A `crates/lookup` change, so it ships on the next site day, and on the edge with it.
+
+**Decision.**
+- **Retry.** In `lookup` (`call_opt`), a request's first post to its cached leader that misses (no answer in CALL, a 5xx) or answers `busy` is not followed by a walk. The miss is reported with `suspect` at the term the isolate holds (a `busy` is not), the request waits LEADER_RETRY (250 ms [guess]) and posts the leader again. Only a second miss, or a `NotLeader` from the leader, walks the voters as before.
+- **Gap.** `SUSPECT_GAP` goes from 500 ms to 1 s [measured, the sweep below]: one isolate sends the same report at most once a second.
+
+**Why.** On B0-33 m45 each follower took 427 to 442 requests a second, and 2,121 of 4,300 voter `/raft` calls missed 1 s with p50 716 requests ahead, 52 to 54% of them `/read` and 37 to 39% `/suspect`. The followers' `/read`s were walks: 222 to 224 a second sent with `SentBy::Walk` from 324 to 325 isolates. In `call_opt` a missed post to the cached leader goes to `missed`, and the same pass posts every follower, whose `NotLeader` names the leader already tried. The pass then ends with `suspect` to both, `forget_leader`, 250 ms, and a new pass that walks again. So each missed leader read cost two follower `/read`s that could only name the same leader [measured, `tests/am1/results/lm1-memory.md`, round 40; code read].
+
+**Replayed on m45's trace** (`tests/fanout/walkreplay.py`, 22:24:20 to 22:29:20Z, followers 1 and 2):
+- Walk `/read`s 221.6 and 224.4 a second. A second walk by the same isolate one leader post later (3.0 to 4.5 s), the case that still walks under the retry, is 8.4 and 9.7 a second, an upper bound. So about 212 to 215 a second go.
+- `/suspect` 176.5 and 186.3 a second. Kept per isolate: 106.7 and 127.0 at 500 ms (the replay keys by isolate only, so this is what main's gap would have let through), 87.6 and 94.6 at 1 s, 54.2 and 55.3 at 2.5 s, 33.4 and 33.6 at 5 s.
+- Together, at 1 s, about 300 to 305 of each follower's 427 to 442 a second go, leaving about 125 to 135 a second. [inference: the replay assumes the leader answers the retry as often as it answered its next post in the trace.]
+
+**What it beat.**
+- **SUSPECT_GAP 5 s** (the orchestrator's ask): on the long sweep's 4,000 live seeds (10,000 to 13,999), 7 seeds passed the 30 s bound, worst 42.5 s (seed 11504, 10.0 s at 500 ms): a half-hung leader's followers each took one report per client per 5 s, so their `late` windows rarely held two colos inside SUSPECT's window. 2.5 s failed one seed (11777, 30.9 s). 1 s fails only seed 10353, which main fails too (31.8 s at 500 ms, read-beat's `READ_RESEND` path: the leader's appends left and every call failed for 23 s with promises renewed by the first send's arrival; 3.9 s on late-suspect alone, 10.5 s on read-beat alone). 
+- **Walk to one follower, not all:** still a `/read` that can only name the leader, and still a forgotten leader.
+- **Never walk on a miss:** a leader that is gone would be asked until LOOKUP_FOR. Two misses bound it.
+- **Damp per (chain, term) across isolates:** an isolate cannot see another's reports. Per isolate per gap is what the edge can count.
+
+**Evidence.**
+- `a_leader_that_misses_once_is_asked_again_and_no_follower_is_walked` (`crates/lookup/src/lib.rs`) fails on main: a miss, a `busy`, or a 503 from the cached leader posted both followers. With the change, 2 posts to the leader and 0 to followers; a miss is reported once and a `busy` not at all; the leader stays cached.
+- `a_leader_that_is_gone_is_walked_away_from_after_its_second_miss`: the dead leader is posted twice at CALL each, then the new leader answers, within 2 x CALL + LEADER_RETRY + two follower posts, inside LOOKUP_FOR.
+- `a_gray_leader_moves_within_the_target_at_the_suspect_gap` (`crates/raft/tests/liveness.rs`), two clients as two colos at 1 s, seeds 100 to 111: calls failing 30% moved in 6.6 to 19.0 s, the same as at 500 ms; half-hung in 12.8 to 21.3 s (500 ms: 12.7 to 24.2 s), inside the 30 s liveness bound. A 15 s gap fails it. Seeds 300 to 311 move calls-30% in up to 21.2 s at both 500 ms and 1 s, so the 20 s Gray target is missed on one seed by main's gap too.
+- `tests/lookupretry/plant.py`: 6 of 6 caught (exit 101 each; the endless retry trips the test's post cap).
+- Live sweep at 1 s, 4,000 seeds with histories: longest stretch 31.1 s on seed 10353 (main 31.8 s), otherwise 24.0 s; Porcupine Ok on both 2,000-seed halves (2,974,283 and 2,983,372 operations). The documented long sweep (`RAFT_SEEDS=2000`): harsh 15.4 s, gray 25.9 s, and the live half stops at seed 10353 (31.1 s), the seed main 56918444 fails by itself (31.8 s); Porcupine Ok on the harsh (152,313 operations) and gray (2,339,068) histories.
+
+**Flip.** A hosted run in which a leader that is gone keeps requests waiting past 2 x CALL + LEADER_RETRY before they walk, or in which a gray leader with two reporting colos is not moved within the Gray region's target where it was at 500 ms. A follower `/suspect` rate that still queues ahead of `/raft` at 1 s reopens a longer gap only with a live-sweep pass at that gap.
+
+### `progress-suspect`: a `suspect` report counts once the leader makes no progress for the follower, 2026-11-18
+
+**Status.** Decided by the orchestrator after `lookup-retry` found main's sweep failing (late-suspect's rule moves, not read-beat's). Built on branch `progress-suspect`, on `lookup-retry`, not deployed. A `crates/raft` change, so it ships on the next site day.
+
+**Decision.** `on_suspect`'s own-evidence check reads `progressed_at` instead of `appended_at`: a report about the follower's leader counts toward SUSPECT only while the follower has accepted no AppendEntries that stored an entry or raised its commit index for CALL_DEADLINE. `appended_at` keeps its meaning (any accepted append) for its other reader, the storage-slow campaign check, which asks whether the leader is heard, not whether it commits.
+
+**Why.** Late-suspect asked whether the leader still reaches the follower; a lease needs to know whether the leader still makes progress for it. Read-beat sends a voter with an entry in flight an empty round every few hundred ms, and READ_RESEND resends it every 500 ms. A half-hung leader, whose calls land and whose answers are lost, keeps sending both and commits nothing. On live seed 10353 (main 56918444 and 9ecd8314) leader 0's AppendEntries reached both followers 39 times from 149 s to 172 s, 34 of its calls failed and 6 answers came back, and nothing committed; no report counted, the followers kept promising, and nobody else could win until leader 0 stepped down at 172 s; a new leader committed at 180.9 s. A healthy quorum had requests waiting and none completing for 31.8 s [measured, simulator, `tests/am1/results/lm1-memory.md`, "progress-suspect"]. An overloaded leader that still commits, as on B0-33 m44, raises the commit index on every round that carries one, so it keeps its promises.
+
+**What it beat.**
+- **Read-beat's rule moves (no empty rounds to a member with a call out):** read-beat fixed B0-29's 84 to 87% resends, and the empty round is what the lease question should ignore, not what it should stop.
+- **Count only appends that carry entries:** an idle group's leader sends none, and an entry-less round that raises the commit index is progress.
+
+**Evidence.**
+- `a_half_hung_leader_s_empty_rounds_do_not_hold_its_followers` (`crates/raft/tests/sim.rs`, live seed 10353) fails on main 9ecd8314 (31,780 ms) and on late-suspect's rule over this branch (31,148 ms); it passes at 5,333 ms.
+- `an_overloaded_leader_still_appending_keeps_its_promises`, `a_gray_leader_whose_appends_come_late_still_loses_its_lease`, `two_colos_within_the_window_stop_promises_to_a_renewing_leader` and the rest of `leadership.rs` pass unchanged.
+- `tests/latesuspect/plant.py` now plants eight bugs: late-suspect's five, plus `appended_at` back in the check, an empty append counted as progress, and commit-index moves not counted: 8 of 8 caught. `a_commit_index_move_is_progress` (`leadership.rs`) fails when only stored entries count.
+- The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half at 4,000, 1,333 s) passed. Longest stretches with a healthy quorum, requests waiting and none completing: harsh 16.8 s (seed 10356), gray 24.2 s (11076), live 25.8 s (12840), under the 30 s bound; main 56918444 stopped its live half at seed 10353 (31.8 s), and late-suspect alone passed with 17.0, 24.7 and 27.8 s. Porcupine Ok on all three histories (147,412, 2,331,603 and 5,965,204 operations).
+
+**Flip.** A hosted or simulated run in which a leader that commits (its followers' commit index moves at least once per CALL_DEADLINE) loses its promises to two colos' reports, or in which a group whose leader commits nothing keeps its lease past the Gray region's 20 s target with two colos reporting.
 
 ### `dep-hedge`: a dependency read with no answer within DEP_HEDGE sends a second request, 2026-11-17
 

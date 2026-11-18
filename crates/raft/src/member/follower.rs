@@ -96,6 +96,7 @@ impl<C: Command> Member<C> {
         // sent before its own write was durable, and send a different entry at the same (term, index). That entry
         // never committed, because a commit is revealed only after the leader's own write is durable.
         // Entries at or below `base` are committed here, so they match the leader's: skip them.
+        let commit0 = self.state.commit;
         let mut req = req;
         if req.prev_index < self.base.index {
             let base = self.base.index;
@@ -103,6 +104,7 @@ impl<C: Command> Member<C> {
             let top = below.last().map_or(req.prev_index, |e| e.index);
             if above.is_empty() {
                 self.set_commit(req.commit.min(top));
+                self.mark_progress(false, commit0);
                 res.ok = true;
                 res.matched = top;
                 res.last = self.last();
@@ -129,6 +131,7 @@ impl<C: Command> Member<C> {
             return;
         }
         let mut matched = req.prev_index;
+        let mut stored = false;
         for e in req.entries {
             if e.index <= self.last() {
                 if self.digest_at(e.index) == Some(crate::digest(&e)) {
@@ -148,9 +151,11 @@ impl<C: Command> Member<C> {
                 break;
             }
             self.push_entry(e);
+            stored = true;
             matched = self.last();
         }
         self.set_commit(req.commit.min(matched));
+        self.mark_progress(stored, commit0);
         // A stall marker: the leader's own entry that no quorum acknowledged within CALL_DEADLINE, which the leader
         // marks too (`tick_leader`), learned from its re-send. Otherwise only the leader knows when a stall began, and
         // a follower that wins the next term would stamp no `extend` for it (L0-12 hosted: a 30-minute stall ended by
@@ -170,5 +175,14 @@ impl<C: Command> Member<C> {
         res.last = self.last();
         res.term = self.state.term;
         self.send(from, Message::AppendRes(res));
+    }
+
+    /// `progressed_at`: an append that stored an entry or moved the commit index. An empty round that changes nothing,
+    /// such as read-beat's behind an entry in flight, is no progress: a half-hung leader whose calls land and whose
+    /// answers are lost sends those and commits nothing (long sweep live seed 10353, 31.8 s on main 56918444).
+    fn mark_progress(&mut self, stored: bool, commit0: Index) {
+        if stored || self.state.commit > commit0 {
+            self.progressed_at = self.now;
+        }
     }
 }

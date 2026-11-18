@@ -671,6 +671,8 @@ pub struct Member<C: Command> {
     last_leader_seen: Timestamp,
     /// The last AppendEntries this member accepted from a leader, withheld or not.
     appended_at: Timestamp,
+    /// The last accepted AppendEntries that advanced this member's log or commit index (`suspect`'s own evidence).
+    progressed_at: Timestamp,
     campaign: Option<election::Campaign>,
     /// The voters that stored the bootstrap entry this member proposed, while it waits for a quorum.
     /// And when it started and last sent the proposal.
@@ -844,6 +846,7 @@ impl<C: Command> Member<C> {
             leader: None,
             last_leader_seen,
             appended_at: Timestamp(0),
+            progressed_at: Timestamp(0),
             campaign: None,
             boot_acks: None,
             backoff_until: Timestamp(0),

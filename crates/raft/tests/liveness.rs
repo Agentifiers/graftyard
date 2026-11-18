@@ -39,7 +39,13 @@ struct Run {
 
 fn run(seed: u64, kind: FaultKind) -> Run {
     let clients = std::env::var("RAFT_LIVE_CLIENTS").ok().and_then(|v| v.parse().ok()).unwrap_or(CLIENTS);
+    run_with(seed, kind, clients, Edge::default())
+}
+
+/// `run` with `clients` clients, each its own colo, and the hosted edge's lookup as `edge`.
+fn run_with(seed: u64, kind: FaultKind, clients: usize, edge: Edge) -> Run {
     let mut sim = Sim::new(seed, Faults::WAN, clients, 3);
+    sim.edge = edge;
     sim.record_confirms = true;
     let warm = Timestamp(sim.now.0 + WARM_MS);
     while sim.now < warm {
@@ -158,6 +164,38 @@ fn leaders_leave_a_site_whose_calls_fail() {
     check("calls", &runs, true);
 }
 
+/// `SUSPECT_GAP` in `crates/lookup` (lookup-retry: 1 s, was 500 ms).
+const GAP_MS: u64 = 1_000;
+
+/// lookup-retry: with each client damped to one report per GAP_MS, two colos still move a gray leader. Two clients
+/// are two colos, so a follower whose appends are late counts a report from each inside SUSPECT's 10 s window only if
+/// neither client's gap outlasts it. A leader whose calls fail 30% moves within the 20 s target. A half-hung one, whose
+/// appends still arrive and renew promises, moves within the liveness bound (30 s), as
+/// `a_read_only_group_elects_off_a_half_hung_leader` holds it. On seeds 100 to 111 at 500 ms and at 1 s the moves are
+/// the same: calls 6.6 to 19.0 s, half-hung 12.8 to 21.3 s at 1 s; seeds 300 to 311 move calls in up to 21.2 s at both. A 5 s gap moved
+/// half-hung leaders in 20.6 to 21.4 s here, but broke the long sweep's live bound (`tests/am1/results/lm1-memory.md`).
+#[test]
+fn a_gray_leader_moves_within_the_target_at_the_suspect_gap() {
+    let edge = Edge { follower_reads: false, suspect_gap_ms: GAP_MS, reads_only: false };
+    let only = std::env::var("RAFT_GAP_KIND").ok();
+    for (name, kind, bound) in
+        [("calls 30%", FaultKind::Calls(300), TARGET_MS), ("half-hung", FaultKind::HalfHung(1000), 30_000)]
+    {
+        if only.as_deref().is_some_and(|o| !name.starts_with(o)) {
+            continue;
+        }
+        let runs: Vec<Run> = (100..100 + SEEDS).map(|s| run_with(s, kind, 2, edge)).collect();
+        let mut moved: Vec<u64> = runs.iter().map(|r| r.moved_ms.unwrap_or(u64::MAX)).collect();
+        moved.sort_unstable();
+        eprintln!("{name} at a {GAP_MS} ms gap, 2 colos: moved {moved:?}");
+        for (i, r) in runs.iter().enumerate() {
+            assert!(r.linearizable, "{name} seed {}: history is not linearizable", 100 + i);
+            assert!(r.moved_ms.is_some_and(|ms| ms <= bound), "{name} seed {}: moved {:?} ms", 100 + i, r.moved_ms);
+            assert!(r.changes <= 2, "{name} seed {}: {} leader changes", 100 + i, r.changes);
+        }
+    }
+}
+
 #[test]
 fn leaders_leave_slow_storage() {
     let runs = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_050), 200..200 + SEEDS);
@@ -213,7 +251,7 @@ fn a_healthy_group_keeps_its_leader() {
 fn a_read_only_group_elects_off_a_half_hung_leader() {
     for seed in (0..SEEDS).chain([21, 31, 92]) {
         let mut sim = Sim::new(seed, Faults::WAN, 8, 3);
-        sim.edge = Edge { follower_reads: true, suspect_gap_ms: 500, reads_only: false };
+        sim.edge = Edge { follower_reads: true, suspect_gap_ms: GAP_MS, reads_only: false };
         sim.run(1_500);
         let sick = leader_now(&sim).expect("leader after warm-up");
         sim.edge.reads_only = true;
