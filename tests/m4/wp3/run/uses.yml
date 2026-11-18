@@ -1,0 +1,12 @@
+name: uses
+on: push
+jobs:
+  uses:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: echo "before the action"
+      - name: A repository action by tag
+        uses: Mirror/Hello@v1
+        with:
+          who: tag
+      - run: echo "after the action"
