@@ -9,7 +9,7 @@
 #   tests/m3/hosted/gh-login.sh <state dir> <out dir> [runs]
 set -uo pipefail
 state=${1:?state}; out=${2:?out}; runs=${3:-1}
-host=${GRAFT_HOST:-graft-m1-edge.<workers-subdomain>.workers.dev}
+host=${GRAFT_HOST:-graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 mkdir -p "$out/gh-login"; umask 077
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 awk '$1=="member"{print $2}' "$state/m3-tokens.txt" > "$work/member.tok"

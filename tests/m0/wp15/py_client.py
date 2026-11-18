@@ -5,6 +5,7 @@ The SDK's OAuthClientProvider does discovery, CIMD (`client_metadata_url`), PKCE
 The redirect handler hands the authorization URL to run/wp15-browser.ts, the scripted browser. Prints one JSON line.
 """
 
+import os
 import asyncio
 import json
 import subprocess
@@ -19,8 +20,8 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 
 ROOT = "/home/user/workspace/repo/tests/m0"
-MCP = "https://graft-wp15-mcp.<workers-subdomain>.workers.dev"
-CIMD = "https://graft-wp15-aux.<workers-subdomain>.workers.dev/cimd/py-v2.json"
+MCP = f"https://graft-wp15-mcp.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev"
+CIMD = f"https://graft-wp15-aux.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev/cimd/py-v2.json"
 REDIRECT = "http://127.0.0.1:4711/callback"
 CALLS = int(sys.argv[1]) if len(sys.argv) > 1 else 30
 

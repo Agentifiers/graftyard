@@ -20,7 +20,7 @@ PUSHES=${5:-6}
 KB=${6:-700}
 [ -f "$OUT/done" ] && exec sleep infinity
 HERE=$(cd "$(dirname "$0")" && pwd)
-HOST=graft-m1-edge.<workers-subdomain>.workers.dev
+HOST=graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 ID=$(jq -r ".\"$NAME\"" ~/.graft-integ/repos.json)
 CHAIN=repo:$ID
 TOK=$(sed -n 2p ~/.graft-integ/tokens.txt | cut -d' ' -f1)

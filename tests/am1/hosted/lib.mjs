@@ -7,9 +7,9 @@ import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+export const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 export const HOST = EDGE.split("//")[1];
-export const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
+export const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const MAIN = process.env.GRAFT_MAIN_CHECKOUT ?? "/home/user/workspace/repo";
 const M3H = process.env.M3_STATE ?? `${process.env.HOME}/.graft-m3h`;
 const TOOLS_TOKEN = readFileSync(process.env.TOOLS_TOKEN_FILE ?? `${MAIN}/tests/m0/.m0-token`, "utf8").trim();

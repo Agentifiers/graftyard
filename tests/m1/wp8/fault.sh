@@ -11,7 +11,7 @@
 # FAULT_RATE=<r> below 1 (the gray fault), each call fails with chance r instead of every call. With
 # FAULT_STATS=<file>, `on` also saves the members' stats so far to <file> and resets them.
 set -u
-HOST=${EDGE_HOST:-https://graft-m1-edge.<workers-subdomain>.workers.dev}
+HOST=${EDGE_HOST:-https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 B=$(cat ~/.graft-wp6/bed.token)
 case "${1:?on <site> | off}" in
 on) q="site=${2:?site}${FAULT_RATE:+&rate=$FAULT_RATE}" ;;

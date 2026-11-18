@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 
 const BOXES = Number(process.env.BOXES ?? 25);
-const BOX = process.env.BOX_URL ?? "https://graft-runners-bf54.<runner-workers-subdomain>.workers.dev";
+const BOX = process.env.BOX_URL ?? `https://graft-runners-bf54.${process.env.CF_RUNNER_WORKERS_SUBDOMAIN}.workers.dev`;
 const T = readFileSync(process.env.BOX_TOKEN_FILE ?? "/tmp/bf54-box.token", "utf8").trim();
 const call = async (path, name, body = "") => {
   try {

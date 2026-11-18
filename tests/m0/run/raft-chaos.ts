@@ -25,7 +25,7 @@ import type { Op, Out } from "../src/raft/types.ts";
 
 const ROOT = new URL("../", import.meta.url).pathname;
 const { values: opt } = parseArgs({ options: {
-  url: { type: "string", default: "https://graft-raft-edge.<workers-subdomain>.workers.dev" },
+  url: { type: "string", default: `https://graft-raft-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev` },
   token: { type: "string" }, seconds: { type: "string", default: "120" }, clients: { type: "string", default: "8" },
   keys: { type: "string", default: "6" }, drop: { type: "string", default: "0.05" }, fail: { type: "string", default: "0.05" },
   resets: { type: "string", default: "1" }, every: { type: "string", default: "8" }, transfers: { type: "string", default: "1" }, site: { type: "string" }, remote: { type: "boolean", default: false }, resume: { type: "boolean", default: false },
@@ -169,7 +169,7 @@ async function chaos(): Promise<void> {
   await harvest();
 }
 
-const TOOLS = "https://graft-m0-tools.<workers-subdomain>.workers.dev";
+const TOOLS = `https://graft-m0-tools.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 async function tools<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(TOOLS + path, { method: "POST", body: JSON.stringify(body), headers: { authorization: `Bearer ${TOKEN}` } });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
@@ -178,7 +178,7 @@ async function tools<T>(path: string, body: unknown): Promise<T> {
 // --remote-chaos: the chaos loop runs as an alarm in graft-m0-chaos (src/chaos.ts), so resets and transfers go on
 // while this orb is asleep. This driver starts it once, then only copies its events into the events file. The fault
 // plan (dropped and failed member calls) lives in graft-m0-tools and is set once, so it persists either way.
-const CHAOS = "https://graft-m0-chaos.<workers-subdomain>.workers.dev";
+const CHAOS = `https://graft-m0-chaos.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 async function remoteChaos(): Promise<void> {
   const call = async <T>(path: string, body: object) => {
     const res = await fetch(CHAOS + path, { method: "POST", body: JSON.stringify({ run: opt.run, ...body }), headers: { authorization: `Bearer ${TOKEN}` },

@@ -8,7 +8,7 @@
 set -uo pipefail
 state=${1:?state}; out=${2:?out}
 here=$(cd "$(dirname "$0")" && pwd)
-EDGE=${GRAFT_EDGE:-https://graft-m1-edge.<workers-subdomain>.workers.dev}
+EDGE=${GRAFT_EDGE:-https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 mkdir -p "$out/identity"; umask 077
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 awk '$1=="admin"{print $2}' "$state/m3-tokens.txt" > "$work/admin"

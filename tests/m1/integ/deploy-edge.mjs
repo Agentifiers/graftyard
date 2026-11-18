@@ -71,7 +71,7 @@ const cfg = {
   version_metadata: { binding: "VERSION" },
   vars: {
     PLAN: "pro", SSH_OPTION: "off", EDGE_CAP_BYTES: "80000000", FORMATS_ENABLED: "32.1", PART_BYTES: "5242880",
-    HOST: `${name}.<workers-subdomain>.workers.dev`,
+    HOST: `${name}.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`,
     GRAFTYARD_SITES: JSON.stringify(sites),
     ...(genesis ? { GRAFTYARD_GENESIS: JSON.stringify(genesis) } : {}),
     ...(anchor ? { GRAFTYARD_INSTALL: anchor.install, GRAFTYARD_CUSTOMER_KEY: anchor.customer_key } : {}),

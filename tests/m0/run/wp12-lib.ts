@@ -10,7 +10,7 @@ import type { XCmd, XEv, XOut } from "../src/wp12/lease.ts";
 export const ROOT = new URL("../", import.meta.url).pathname;
 export const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
 export const PREFIX = "graft-wp12";
-export const URL_ = `https://${PREFIX}-load.<workers-subdomain>.workers.dev`;
+export const URL_ = `https://${PREFIX}-load.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 export const BUCKET = "graft-wp12-stage";
 const COMPAT = "2026-10-01";
 export const SITES = ["a", "b", "c"] as const;

@@ -16,11 +16,11 @@ P=graft-m5-bf41
 EDGE=$P-edge
 EDGE2=$P-edge2
 # m4a's git image (product), already in the account's registry.
-IMAGE=${IMAGE:-registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:099a022c23a31d2ca50ccb745a1b002cbe8af1f4c571fff713bc1a8b698a1440}
+IMAGE=${IMAGE:-registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:099a022c23a31d2ca50ccb745a1b002cbe8af1f4c571fff713bc1a8b698a1440}
 CF=https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$@"; }
 step() { echo; echo "=== $* ($(date -u +%T))"; }
-post() { "$CLI" --config "$W/install.toml" release post "$1" --edge "https://${2:-$EDGE}.<workers-subdomain>.workers.dev"; }
+post() { "$CLI" --config "$W/install.toml" release post "$1" --edge "https://${2:-$EDGE}.${CF_WORKERS_SUBDOMAIN:?}.workers.dev"; }
 
 run() {
   mkdir -p "$W" "$OUT" && cd "$W" || exit 2

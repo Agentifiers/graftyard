@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
 const TOKEN = readFileSync(new URL("../.m0-token", import.meta.url), "utf8").trim();
-const URL_ = "https://graft-m0-probe.<workers-subdomain>.workers.dev";
+const URL_ = `https://graft-m0-probe.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const PAIRS = [["enam", "wnam"], ["weur", "eeur"]] as const;
 const PROBES_PER_HINT = 16;
 const PER = 20;

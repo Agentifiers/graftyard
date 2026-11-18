@@ -2,7 +2,7 @@
 // and the bytes per table. The tools token is read from ~/.graft-m3c and never printed.
 import { readFileSync } from "node:fs";
 const TOK = readFileSync(`${process.env.HOME}/.graft-m3c/tools.token`, "utf8").trim();
-const TOOLS = "https://graft-m3c-tools-edge.<workers-subdomain>.workers.dev";
+const TOOLS = `https://graft-m3c-tools-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const [chain, site] = [process.argv[2], Number(process.argv[3] ?? 0)];
 const t = Date.now();
 const r = await fetch(`${TOOLS}/member`, { method: "POST", headers: { authorization: `Bearer ${TOK}`, "content-type": "application/json" },

@@ -4,8 +4,8 @@
 # per minute to stdout. The token reaches git through its environment, never argv.
 #   bash tests/m3/wirefix/watch-bf20.sh >> <log>
 set -u
-E=https://graft-m2b-edge.<workers-subdomain>.workers.dev
-TOOLS=https://graft-m2b-tools-edge.<workers-subdomain>.workers.dev
+E=https://graft-m2b-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
+TOOLS=https://graft-m2b-tools-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 TOK=$(sed -n 2p "$HOME/.graft-m2b/tokens.txt" | cut -d" " -f1)
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x:%s' "$TOK" | base64 -w0)"
 unset TOK

@@ -7,7 +7,7 @@
 set -u
 SITE=${1:?site}
 CHAINS=${2:-repo:196608,repo:196610,names:174,names:987,names:938,names:806,authz:7000001,tokens:1563,tokens:1153}
-EDGE=https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev
+EDGE=https://graft-m1-wp7-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 T=$(cat "${GRAFT_REPO:-$(cd "$(dirname "$0")/../../.." && pwd)}/tests/m0/.m0-token")
 # A call with no body ("") is a GET on the member; one with a body a POST.
 m() {

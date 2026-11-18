@@ -9,8 +9,8 @@
 cd "$(dirname "$0")/../../.."
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/home/user/workspace/repo/.worktrees/target-am1
 export BED_TOKEN_FILE=$HOME/.graft-wp6/bed.token CARGO_PROFILE_RELEASE_DEBUG=0
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:c38059dbc4f5df1b384040ff123f19c9e8a3c7d95d812b2808ffce89b64e5668
-EDGE=https://graft-m1-edge.<workers-subdomain>.workers.dev
+IMG=registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:c38059dbc4f5df1b384040ff123f19c9e8a3c7d95d812b2808ffce89b64e5668
+EDGE=https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 L=tests/am1/raw/b030r3-siteday.log
 if ! grep -q '^DONE' "$L" 2>/dev/null; then
   [ -s tests/am1/raw/b030r3.start ] || date -u +%FT%TZ > tests/am1/raw/b030r3.start

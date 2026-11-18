@@ -21,7 +21,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, options
   read: { type: "string", default: "1048576" }, replicas: { type: "string", default: "8" },
   hints: { type: "string", default: "enam,wnam,weur" }, partial: { type: "boolean", default: false } } });
 const ROOT = new URL("../", import.meta.url).pathname;
-const URL_ = "https://graft-m0-rehydrate.<workers-subdomain>.workers.dev/";
+const URL_ = `https://graft-m0-rehydrate.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev/`;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
 const MONO = `${ROOT}.gen/b0-23-mono.json`;
 const call = async (body: object) => {

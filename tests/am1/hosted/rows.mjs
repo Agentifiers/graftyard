@@ -447,7 +447,7 @@ if (which === "b037") {
   await sleep(2000);
   const app = (await ghs({})).body.token;
   const t = await api("POST", `${W1}/tasks`, app, { kind: "external", session: `b037-${tag}`, summary: "am1 b037" });
-  const origin = `https://${process.env.GRAFT_HOST ?? "graft-m1-edge.<workers-subdomain>.workers.dev"}/${RR}`;
+  const origin = `https://${process.env.GRAFT_HOST ?? `graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`}/${RR}`;
   const g = new Git(RR).as(admin);
   g.clone();
   let main = g.run(["rev-parse", "HEAD"]).out.trim();
@@ -466,7 +466,7 @@ if (which === "b037") {
     "malformed: no blank line": (k) => `b037 ${k}\nGraftyard-Session: ${origin}/_graftyard/sessions/${t.body?.id}`,
     "forged: another App's task": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/999.b037-${k}\n`,
     "forged: unknown task": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${state.app}.nope-${tag}-${k}\n`,
-    "forged: another repository": (k) => `b037 ${k}\n\nGraftyard-Session: https://${process.env.GRAFT_HOST ?? "graft-m1-edge.<workers-subdomain>.workers.dev"}/${R}/_graftyard/sessions/${t.body?.id}\n`,
+    "forged: another repository": (k) => `b037 ${k}\n\nGraftyard-Session: https://${process.env.GRAFT_HOST ?? `graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`}/${R}/_graftyard/sessions/${t.body?.id}\n`,
     "linked (control)": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${t.body?.id}\n`,
   };
   const out = {};

@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: false, options: { run: { type: "string" }, wait: { type: "string" } } });
 const ROOT = new URL("../", import.meta.url).pathname;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-const URL_ = "https://graft-wp9-load.<workers-subdomain>.workers.dev";
+const URL_ = `https://graft-wp9-load.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function call<T>(path: string, body: unknown, timeoutMs = 120_000): Promise<T> {
   const res = await fetch(URL_ + path, { method: "POST", body: JSON.stringify(body), headers: { authorization: `Bearer ${TOKEN}` }, signal: AbortSignal.timeout(timeoutMs) });

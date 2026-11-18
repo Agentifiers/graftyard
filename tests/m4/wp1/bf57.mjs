@@ -22,7 +22,7 @@
 import { createHash } from "node:crypto";
 import { api, log, row, sleep, tokens } from "../../am1/hosted/lib.mjs";
 
-const SINK = process.env.HOOKSINK ?? "https://graft-m4-hooksink.<workers-subdomain>.workers.dev";
+const SINK = process.env.HOOKSINK ?? `https://graft-m4-hooksink.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const [out, secs = "60"] = process.argv.slice(2);
 if (!out) throw new Error("usage: bf57.mjs <out.jsonl> [seconds]");
 const T = tokens.admin;

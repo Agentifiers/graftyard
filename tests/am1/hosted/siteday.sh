@@ -10,10 +10,10 @@ cd "$(dirname "$0")/../../.."
 mkdir -p tests/am1/raw
 echo '{"GRAFTYARD_AUDIT":"1"}' > /tmp/am1-site-vars.json
 [ "${3:-}" = noroll ] && ROLL= || ROLL=1
-IMAGE=${2:-registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:8fa9abd46a0a848bc5d819fdc8eb09b3eaabda4aaf7ec90ae84c57f7e90c0891}
+IMAGE=${2:-registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:8fa9abd46a0a848bc5d819fdc8eb09b3eaabda4aaf7ec90ae84c57f7e90c0891}
 { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5
   node workers/site/deploy.mjs tests/m3/finish/sites4.json --genesis tests/m1/wp7/genesis.json --test-faults \
     --vars /tmp/am1-site-vars.json \
     --image "$IMAGE" \
-    ${ROLL:+--roll-shards https://graft-m1-edge.<workers-subdomain>.workers.dev}
+    ${ROLL:+--roll-shards https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
   echo "exit $?"; date -u +%FT%TZ; echo DONE; } > tests/am1/raw/$1 2>&1

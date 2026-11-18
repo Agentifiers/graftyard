@@ -19,7 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { api, log, row, sleep, tokens } from "../../am1/hosted/lib.mjs";
 
-const SINK = process.env.HOOKSINK ?? "https://graft-m4-hooksink.<workers-subdomain>.workers.dev";
+const SINK = process.env.HOOKSINK ?? `https://graft-m4-hooksink.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const [out] = process.argv.slice(2);
 if (!out) throw new Error("usage: bf58.mjs <out.jsonl>");
 const T = tokens.admin;

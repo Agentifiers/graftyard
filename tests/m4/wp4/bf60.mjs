@@ -30,7 +30,7 @@ const repoRoot = new URL("../../..", import.meta.url).pathname;
 const H = `${process.env.HOME}/.graft-m4a/hosted`;
 const app = JSON.parse(readFileSync(`${H}/app.json`, "utf8"));
 const PEM = readFileSync(`${H}/app.pem`, "utf8");
-const ACCT = process.env.RUNNER_ACCOUNT ?? "<cf-runner-account-id>";
+const ACCT = process.env.RUNNER_ACCOUNT ?? `${process.env.CLOUDFLARE_RUNNER_ACCOUNT_ID}`;
 const CF = process.env.CLOUDFLARE_RUNNER_API_TOKEN;
 if (!CF) throw new Error("CLOUDFLARE_RUNNER_API_TOKEN is not set");
 secret(CF);

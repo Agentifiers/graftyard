@@ -9,8 +9,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
 const FILE = `${process.env.HOME}/.graft-m2b/tokens.txt`;
-const EDGE = "https://graft-m2b-edge.<workers-subdomain>.workers.dev";
-const TOOLS = "https://graft-m2b-tools-edge.<workers-subdomain>.workers.dev";
+const EDGE = `https://graft-m2b-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
+const TOOLS = `https://graft-m2b-tools-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const OPTOK = readFileSync(`${process.env.GRAFT_MAIN_CHECKOUT ?? "/home/user/workspace/repo"}/tests/m0/.m0-token`, "utf8").trim();
 const GH = "178c6fc778ccc68e1d6a";
 const ACCTS = [7000001, 7000002, 7000003];

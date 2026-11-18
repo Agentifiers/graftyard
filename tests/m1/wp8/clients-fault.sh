@@ -11,7 +11,7 @@ set -u
 OUT=${1:?out dir} IMG=${2:?image or host} SITE=${3:-0} AFTER=${4:-60}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=${GRAFT_REPO:-$(cd "$HERE/../../.." && pwd)}
-HOST=graft-m1-edge.<workers-subdomain>.workers.dev
+HOST=graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 tok() { sed -n "${1}p" ~/.graft-integ/tokens.txt | cut -d' ' -f1; }
 mkdir -p "$OUT"
 node "$HERE/observe.ts" --stats "$OUT/stats-before.jsonl" --reset >/dev/null

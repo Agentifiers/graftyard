@@ -7,7 +7,7 @@
 #   tests/m3/hosted/retire-push.sh <state dir> <n> <token file>...
 set -uo pipefail
 state=${1:?state}; n=${2:?n}; shift 2
-EDGE=${GRAFT_EDGE:-https://graft-m1-edge.<workers-subdomain>.workers.dev}
+EDGE=${GRAFT_EDGE:-https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 umask 077
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 cat > "$work/cred.sh" <<'EOF'

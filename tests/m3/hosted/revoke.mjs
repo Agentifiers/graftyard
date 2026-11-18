@@ -3,7 +3,7 @@
 //   node tests/m3/hosted/revoke.mjs <token file> <client id>
 import { readFileSync } from "node:fs";
 const [file, client] = process.argv.slice(2);
-const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const r = await fetch(`${EDGE}/api/v3/applications/${client}/token`, {
   method: "DELETE",
   headers: { authorization: `Basic ${Buffer.from(`${client}:x`).toString("base64")}`, "content-type": "application/json" },

@@ -11,9 +11,9 @@ what=${1:?down or up}
 site=${2:?site id}
 tree=${DEPLOY_TREE:-/tmp/m4a-deploy}
 # IMG: the git shard image the install runs (default site day 39's; M4-WP4 from site day 43 passes its own).
-IMG=${IMG:-registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:5c921511196cddc5103eeec9dea2a7e13584e32c555465946a89833fdc7d270c}
+IMG=${IMG:-registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:5c921511196cddc5103eeec9dea2a7e13584e32c555465946a89833fdc7d270c}
 args=(~/.graft-m4a/sites.json --anchor ~/.graft-m4a/install.toml --image "$IMG" --vars ~/.graft-m4a/site-vars.json
-  --skip-build --ops graft-m4a-ops --var GRAFTYARD_HOST=graft-m4a-edge.<workers-subdomain>.workers.dev
+  --skip-build --ops graft-m4a-ops --var GRAFTYARD_HOST=graft-m4a-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
   --var GRAFTYARD_ACTIVITY=1 --var GRAFTYARD_AUDIT=1 --audit-stream 2a0357004afd44d9a74cf410dd2c715a
   --run-key bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key --only "$site")
 cd "$tree"

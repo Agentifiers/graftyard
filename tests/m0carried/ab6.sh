@@ -8,7 +8,7 @@
 #   PREFIX=m0c6g GATE=1 ARRIVAL=mem bash tests/m0carried/ab6.sh
 set -u
 cd "$(dirname "$0")/../.."
-export EDGE_URL=${EDGE_URL:-https://graft-m3c-wp2-edge.<workers-subdomain>.workers.dev} BENCH_RAW=1
+export EDGE_URL=${EDGE_URL:-https://graft-m3c-wp2-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev} BENCH_RAW=1
 P=${PREFIX:-m0c6}
 RAW=tests/m1/wp2/raw
 mkdir -p tests/m0carried/raw
@@ -16,7 +16,7 @@ T=$(tr -d '\n' < tests/m0/.m0-token)
 probe() {
   ( n=0; while [ ! -f /tmp/$P.done ]; do n=$((n+1))
       curl -s -m 120 -H "authorization: Bearer $T" \
-        "https://graft-m4-gateprobe.<workers-subdomain>.workers.dev/?modes=nogate,nowrite&seconds=50&bytes=60000&everyMs=150&leader=${P}l&peer=${P}p&fill=x" \
+        "https://graft-m4-gateprobe.${CF_WORKERS_SUBDOMAIN:?}.workers.dev/?modes=nogate,nowrite&seconds=50&bytes=60000&everyMs=150&leader=${P}l&peer=${P}p&fill=x" \
         > tests/m0carried/raw/$P-probe-$(date -u +%H%M%S).json
     done ) &
 }

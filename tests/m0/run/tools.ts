@@ -25,7 +25,7 @@ const [cmd, arg] = positionals;
 const ROOT = new URL("../", import.meta.url).pathname;
 const RAW = `${ROOT}results/raw/`;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-const URL_ = "https://graft-m0-tools.<workers-subdomain>.workers.dev";
+const URL_ = `https://graft-m0-tools.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const CLIENTS = `${RAW}tools-clients.json`;
 mkdirSync(RAW, { recursive: true });
 

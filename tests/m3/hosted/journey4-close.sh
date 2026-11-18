@@ -19,7 +19,7 @@
 set -uo pipefail
 state=${1:?state}; out=${2:?out}; rounds=${3:-100}; remove_at=${4:-50}
 here=$(cd "$(dirname "$0")" && pwd)
-EDGE=${GRAFT_EDGE:-https://graft-m1-edge.<workers-subdomain>.workers.dev}
+EDGE=${GRAFT_EDGE:-https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 GH_CLIENT=178c6fc778ccc68e1d6a
 mkdir -p "$out"; out=$(cd "$out" && pwd); umask 077
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT

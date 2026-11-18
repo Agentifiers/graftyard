@@ -11,7 +11,7 @@ source tests/am1/lf13/env-m4a.sh >/dev/null 2>&1
 FROM=${FROM:?} TAG=${TAG:?}
 OUT=tests/m4/raw/wp4/b035-$TAG.watch
 STOP=tests/m4/raw/wp4/b035-$TAG.STOP
-RUNNER=(env CLOUDFLARE_ACCOUNT_ID=<cf-runner-account-id> CLOUDFLARE_API_TOKEN="$CLOUDFLARE_RUNNER_API_TOKEN")
+RUNNER=(env CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_RUNNER_ACCOUNT_ID:?} CLOUDFLARE_API_TOKEN="$CLOUDFLARE_RUNNER_API_TOKEN")
 usd() { python3 -c "import json,sys;print(json.loads(sys.stdin.readline()).get('$1',0))"; }
 while true; do
   N=$(date -u +%FT%TZ)

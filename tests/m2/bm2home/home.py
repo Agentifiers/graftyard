@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../wp6"))
 import hosted as h  # noqa: E402
 import p99  # noqa: E402
 
-CLIENT = os.environ.get("BM2_CLIENT", "https://graft-m1-bm2client.<workers-subdomain>.workers.dev")
+CLIENT = os.environ.get("BM2_CLIENT", f"https://graft-m1-bm2client.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev")
 CLIENT_TOK = open(os.path.expanduser("~/.graft-bm2home/client.token")).read().strip()
 h.SECRETS.append(CLIENT_TOK)
 HOME_SITE = 0

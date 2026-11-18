@@ -14,8 +14,8 @@ W=${W:-$HOME/.graft-m3c}
 CLI=${CLI:-$ROOT/target/release/graftyard}
 OUT=${OUT:-$ROOT/tests/m5/results/raw/wp2}
 K=$W/m5wp2   # this run's keys and entries, 0700
-FRONT=${FRONT:-https://graft-m3c-front.<workers-subdomain>.workers.dev}
-EDGE_URL=${EDGE_URL:-https://graft-m3c-m5-edge.<workers-subdomain>.workers.dev}
+FRONT=${FRONT:-https://graft-m3c-front.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
+EDGE_URL=${EDGE_URL:-https://graft-m3c-m5-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 SCRIPT=graft-m3c-m5-edge
 export RUN
 V_N=${V_N:-52f05950-b49c-42b9-a4d2-7d0aafb6c894}

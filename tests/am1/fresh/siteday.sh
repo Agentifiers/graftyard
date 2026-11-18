@@ -7,7 +7,7 @@ set -uo pipefail
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/fresh/target
 export BED_TOKEN_FILE=$HOME/.graft-m3c/bed.token
 cd "$(dirname "$0")/../../.."
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+IMG=registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
 FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18
 L=tests/am1/raw/fresh/$1
 mkdir -p tests/am1/raw/fresh

@@ -6,7 +6,7 @@
 #   PREFIX=m0c5 bash tests/m0carried/ab5.sh
 set -u
 cd "$(dirname "$0")/../.."
-export EDGE_URL=https://graft-m3c-wp2-edge.<workers-subdomain>.workers.dev BENCH_RAW=1
+export EDGE_URL=https://graft-m3c-wp2-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev BENCH_RAW=1
 P=${PREFIX:-m0c5}
 RAW=tests/m1/wp2/raw
 mkdir -p tests/m0carried/raw
@@ -20,7 +20,7 @@ echo "group $CHAIN"
 T=$(tr -d '\n' < tests/m0/.m0-token)
 ( n=0; while [ ! -f /tmp/$P-ab.done ]; do n=$((n+1))
     curl -s -m 120 -H "authorization: Bearer $T" \
-      "https://graft-m4-gateprobe.<workers-subdomain>.workers.dev/?modes=nogate,stream,nowrite&seconds=50&bytes=60000&everyMs=150&leader=c5l&peer=c5p&fill=x" \
+      "https://graft-m4-gateprobe.${CF_WORKERS_SUBDOMAIN:?}.workers.dev/?modes=nogate,stream,nowrite&seconds=50&bytes=60000&everyMs=150&leader=c5l&peer=c5p&fill=x" \
       > tests/m0carried/raw/$P-probe-$(date -u +%H%M%S).json
   done ) &
 for i in $(seq 2 16); do

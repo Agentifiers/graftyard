@@ -5,7 +5,7 @@
 set -euo pipefail
 export PYTHONWARNINGS=ignore SUPPRESS_LABEL_WARNING=True
 NAME=graft-ssh-proxy
-ZONE=<cf-zone-id>
+ZONE=${CF_ZONE_ID:?}
 RECORD=ssh.graftyard.dev
 T=$(awk -F= '$1 == "tenancy" { print $2 }' ~/.oci/config)
 C=${COMPARTMENT:-$T}

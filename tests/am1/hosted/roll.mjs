@@ -5,7 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 const [image, flag] = process.argv.slice(2);
-const EDGE = "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const EDGE = `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const bed = readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 const cf = (path) => JSON.parse(execFileSync("curl", ["-sf", "-H", "@-",
   `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/containers/${path}`],

@@ -11,7 +11,7 @@ import { App } from "@octokit/app";
 import { Octokit } from "@octokit/core";
 
 const [dir, out, n = "10"] = process.argv.slice(2);
-const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const s = JSON.parse(readFileSync(`${dir}/m3.json`, "utf8"));
 const privateKey = readFileSync(`${dir}/app.pem`, "utf8");
 const OctokitGhes = Octokit.defaults({ baseUrl: `${EDGE}/api/v3` });

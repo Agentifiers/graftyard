@@ -34,7 +34,7 @@ import base64, json, os, subprocess, sys, threading, time, urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 RAW = os.environ.get("BF24_RAW", f"{ROOT}/tests/m2/results/raw/wp5")
-EDGE = os.environ.get("GRAFT_EDGE", "https://graft-m1-edge.<workers-subdomain>.workers.dev")
+EDGE = os.environ.get("GRAFT_EDGE", f"https://graft-m1-edge.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev")
 HOME = os.path.expanduser(os.environ.get("BF20_HOME", "~/.graft-integ"))
 PREFIX = os.environ.get("BF24_PREFIX", "graft-m1")
 REPO_ID = json.load(open(f"{HOME}/repos.json"))[os.environ.get("BF24_REPO", "bf24")]
@@ -45,7 +45,7 @@ AUTH = "Authorization: Basic " + base64.b64encode(f"x:{WRITER}".encode()).decode
 # In git's environment, never its command line, which shows in `ps` and in a `TimeoutExpired` traceback.
 GIT_AUTH_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": AUTH}
 M0 = open(f"{ROOT}/tests/m0/.m0-token").read().strip()
-WP7 = os.environ.get("GRAFT_TOOLS_EDGE", "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev")
+WP7 = os.environ.get("GRAFT_TOOLS_EDGE", f"https://graft-m1-wp7-edge.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev")
 CHAIN = f"repo:{REPO_ID}"
 N = 1
 DEADLINE = float(os.environ.get("BF24_DEADLINE", "30"))

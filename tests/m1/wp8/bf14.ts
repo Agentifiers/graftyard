@@ -32,7 +32,7 @@ if (!opt.run) throw new Error("usage: bf14.ts --run NAME [--push N] [--identity 
 const ROOT = new URL("./", import.meta.url).pathname;
 const RAW = `${ROOT}raw/`;
 mkdirSync(RAW, { recursive: true });
-const HOST = "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const HOST = `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const DIR = `${homedir()}/.graft-integ`;
 const BED = readFileSync(`${homedir()}/.graft-wp6/bed.token`, "utf8").trim();
 const WRITER = readFileSync(`${DIR}/tokens.txt`, "utf8").split("\n")[1].split(" ")[0];

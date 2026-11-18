@@ -19,7 +19,7 @@ print('running', x['metadata']['running'], [(r.get('to'), r.get('status'), r.get
 # request-driven, so each run first campaigns site 0 (`LEADER=0` skips load.sh's probe push through graft-m1-edge).
 export LEADER=0
 up() {
-  until [ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 ${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev}/)" = 401 ]; do sleep 10; done
+  until [ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 ${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}/)" = 401 ]; do sleep 10; done
 }
 lead() { for t in 1 2 3 4 5; do $B/m.sh 0 /campaign '{}' | grep -q '"verdict":"\(leader\|resumed\|won\)"' && return; sleep 3; done; }
 run() {

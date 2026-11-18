@@ -3,7 +3,7 @@
 # `graftyard` CLI built from this branch. Needs ~/.graft-m4a (install.toml, customer.key, release.key,
 # genesis.signed) and EDGE, the edge's base URL. Writes every answer to $OUT (default tests/m5/results/raw).
 #
-#   EDGE=https://graft-m4a-m5-edge.<workers-subdomain>.workers.dev bash tests/m5/hosted.sh
+#   EDGE=https://graft-m4a-m5-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev bash tests/m5/hosted.sh
 #
 # BF-41 runs on an empty Release group of its own: `bf41` starts one on a throwaway install id (BF41_EDGE, an edge
 # whose anchor names that install), so the m4a group, which holds its genesis, is not the empty group.

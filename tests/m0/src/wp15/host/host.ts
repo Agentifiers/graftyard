@@ -17,7 +17,7 @@ import { FINAL_STATES, TASK_IDLE, actorKey } from "./model.ts";
 import { decideMint, issueAt, snake } from "./tasks.ts";
 import { APP } from "./fixture.ts";
 /** M0-WP15: the callback graft-mcp registers with the host for the `Graftyard MCP` App. */
-export const MCP_CALLBACK = "https://graft-wp15-mcp.<workers-subdomain>.workers.dev/callback";
+export const MCP_CALLBACK = `https://graft-wp15-mcp.${globalThis.process?.env?.CF_WORKERS_SUBDOMAIN}.workers.dev/callback`;
 import { ghesRoutes } from "./ghes.ts";
 import { graphqlQuery } from "./gql.ts";
 import { freshOAuth, oauthRoutes, tokenLive, type OAuthState } from "./oauth.ts";

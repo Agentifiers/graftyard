@@ -10,7 +10,7 @@ import { CREDS } from "../src/agent/fixture.ts";
 
 export const ROOT = new URL("../", import.meta.url).pathname;
 export const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-export const SUBDOMAIN = "<workers-subdomain>";
+export const SUBDOMAIN = `${process.env.CF_WORKERS_SUBDOMAIN}`;
 export const REMOTE = `https://graft-m0-agent.${SUBDOMAIN}.workers.dev`;
 
 export interface Run { code: number; out: string; err: string; ms: number }

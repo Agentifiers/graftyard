@@ -14,7 +14,7 @@
 # Usage: bf18.sh <workdir> <owner/repo> <repo id>   (tokens from ~/.graft-integ/tokens.txt, bed token ~/.graft-wp6)
 set -uo pipefail
 W=${1:?workdir} REPO=${2:?owner/repo} ID=${3:?repo id}
-HOST=graft-m1-edge.<workers-subdomain>.workers.dev
+HOST=graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 TOK=$(sed -n 2p ~/.graft-integ/tokens.txt | cut -d' ' -f1)
 BED=$(cat ~/.graft-wp6/bed.token)
 U="https://x:$TOK@$HOST/$REPO.git"

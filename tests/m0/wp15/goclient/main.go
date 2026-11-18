@@ -20,9 +20,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+var (
+	mcpURL = "https://graft-wp15-mcp." + os.Getenv("CF_WORKERS_SUBDOMAIN") + ".workers.dev/"
+	cimd   = "https://graft-wp15-aux." + os.Getenv("CF_WORKERS_SUBDOMAIN") + ".workers.dev/cimd/go-v18.json"
+)
+
 const (
-	mcpURL   = "https://graft-wp15-mcp.<workers-subdomain>.workers.dev/"
-	cimd     = "https://graft-wp15-aux.<workers-subdomain>.workers.dev/cimd/go-v18.json"
 	redirect = "http://127.0.0.1:4712/callback"
 	root     = "/home/user/workspace/repo/tests/m0"
 )

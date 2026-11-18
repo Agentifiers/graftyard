@@ -11,7 +11,7 @@ import { CREDS } from "../src/wp15/host/fixture.ts";
 
 export const ROOT = new URL("../", import.meta.url).pathname;
 export const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-export const SUB = "<workers-subdomain>";
+export const SUB = `${process.env.CF_WORKERS_SUBDOMAIN}`;
 export const URLS = { host: `https://graft-wp15-host.${SUB}.workers.dev`, base: `https://graft-wp15-base.${SUB}.workers.dev`,
   mcp: `https://graft-wp15-mcp.${SUB}.workers.dev`, aux: `https://graft-wp15-aux.${SUB}.workers.dev` };
 const wrangler = (args: string[], input?: string) =>

@@ -24,7 +24,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, options
 const ROOT = new URL("./", import.meta.url).pathname;
 const RAW = `${ROOT}raw/`;
 mkdirSync(RAW, { recursive: true });
-const URL_ = process.env.B07_URL ?? "https://graft-m3c-b07-edge.<workers-subdomain>.workers.dev";
+const URL_ = process.env.B07_URL ?? `https://graft-m3c-b07-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const TOKEN = readFileSync(`${process.env.HOME}/.m0carried.token`, "utf8").trim();
 const run = opt.run!;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

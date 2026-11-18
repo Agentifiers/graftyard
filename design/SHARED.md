@@ -1013,19 +1013,19 @@ Graftyard ships one signed release in every mode. `design/DESIGN.md`, "Deploymen
 
 **Keys.** The vendor's release key signs only releases, action packs, and pin maps. Each install's own keys sign that install's intents and config. `design/DESIGN.md` names them ("Install operations", Keys).
 
-**The registry.** The vendor's existing release registry and signing machinery transfer unchanged (`research/byoc-grounding.md`, item 1). Its facts:
+**The registry.** The vendor's existing release registry and signing machinery transfer unchanged. Its facts:
 
-- A release is keyed by the SHA-256 of `release.json` (`research/byoc-grounding.md`, finding 12).
-- The release record holds `builtAt`, `ciRunId`, `compatibility { comparedWith, reasons, rollbackBarrier }`, an optional digest-pinned deployer image, per-file SHA-256 and size, `label`, `publishedAt`, `releaseManifestSha256`, and `sourceCommit`. The signature is ECDSA P-256 (`ECDSA_SHA_256`) over the raw record bytes (finding 13).
-- Every registry write is create-only, and nobody may overwrite or delete. Only the publisher may write or sign (finding 14).
-- Retention is by tag. Development bundles expire after 180 days. `release retain` retags a release `retention=customer`, which never expires. Records and signatures never expire (finding 15).
-- Rollback is a deploy to an older release that was verified on that install, is not expired, and has no barrier on its `comparedWith` chain. A gap in the chain blocks it. `rollback-check` runs the same rule (finding 34).
+- A release is keyed by the SHA-256 of `release.json`.
+- The release record holds `builtAt`, `ciRunId`, `compatibility { comparedWith, reasons, rollbackBarrier }`, an optional digest-pinned deployer image, per-file SHA-256 and size, `label`, `publishedAt`, `releaseManifestSha256`, and `sourceCommit`. The signature is ECDSA P-256 (`ECDSA_SHA_256`) over the raw record bytes.
+- Every registry write is create-only, and nobody may overwrite or delete. Only the publisher may write or sign.
+- Retention is by tag. Development bundles expire after 180 days. `release retain` retags a release `retention=customer`, which never expires. Records and signatures never expire.
+- Rollback is a deploy to an older release that was verified on that install, is not expired, and has no barrier on its `comparedWith` chain. A gap in the chain blocks it. `rollback-check` runs the same rule.
 
 **What Graftyard adds to the registry.**
 
-- Graftyard publishes under its own key, or its own product prefix, so one product's publisher cannot sign for another (`research/byoc-grounding.md`, implication 1).
-- The release record gains `product` and `phase` fields (implication 12). The phase (enable, retire, or none) feeds the compatibility check, so only a retire phase sets `compatibility.rollbackBarrier` (implication 9). Recovery after a barrier is roll-forward only.
-- `comparedWith` is computed per release line, so a customer pinned at N-2 keeps its rollback (finding 34).
+- Graftyard publishes under its own key, or its own product prefix, so one product's publisher cannot sign for another.
+- The release record gains `product` and `phase` fields. The phase (enable, retire, or none) feeds the compatibility check, so only a retire phase sets `compatibility.rollbackBarrier`. Recovery after a barrier is roll-forward only.
+- `comparedWith` is computed per release line, so a customer pinned at N-2 keeps its rollback.
 - Every retire-phase release is retagged `retention=customer` (finding 15).
 
 **Release timing per mode.**

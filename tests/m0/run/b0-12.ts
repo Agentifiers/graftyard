@@ -13,7 +13,7 @@ const { values: opt } = parseArgs({ options: {
   groups: { type: "string", default: "1000" }, intra: { type: "string", default: "50" },
   run: { type: "string", default: new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15) },
   batch: { type: "string", default: "20" },
-  edge: { type: "string", default: "https://graft-m0-edge.<workers-subdomain>.workers.dev" },
+  edge: { type: "string", default: `https://graft-m0-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev` },
 } });
 const GROUPS = Number(opt.groups), INTRA = Number(opt.intra), BATCH = Number(opt.batch), RUN = opt.run!;
 const TOKEN = readFileSync(new URL("../.m0-token", import.meta.url), "utf8").trim();

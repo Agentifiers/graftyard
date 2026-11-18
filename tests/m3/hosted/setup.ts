@@ -22,7 +22,7 @@ const { values: opt } = parseArgs({ options: { out: { type: "string" } } });
 if (!opt.out) throw new Error("usage: setup.ts --out DIR");
 mkdirSync(opt.out, { recursive: true, mode: 0o700 });
 const ROOT = new URL("./", import.meta.url).pathname;
-const EDGE = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_TOOLS_EDGE ?? `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const OP = { account: null, key: null };
 const TRI = { name: "Tri", sites: [0, 1, 2], home: 0, generation: 1, moving_from: null, at: 5 };
@@ -54,7 +54,7 @@ function rid(): string {
 
 // `identity:` chains, which the tools edge has no record source for, go through the graft-m1 edge's bed-token
 // `/_bed/identity` route, which finds an owner chain under its owner's `Placement` row.
-const BED = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const BED = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const BED_TOKEN = readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 async function bed(chain: string, cmd: unknown): Promise<any> {
   const r = await fetch(`${BED}/_bed/identity`, { method: "POST", body: JSON.stringify({ chain, cmd }), headers: { "x-bed-token": BED_TOKEN }, signal: AbortSignal.timeout(120_000) });

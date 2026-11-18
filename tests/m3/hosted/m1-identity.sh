@@ -8,8 +8,8 @@
 #   tests/m3/hosted/m1-identity.sh
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-TOOLS=${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev}
-EDGE=${GRAFT_EDGE:-https://graft-m1-edge.<workers-subdomain>.workers.dev}
+TOOLS=${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
+EDGE=${GRAFT_EDGE:-https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 tools() { curl -s -m 300 -X POST -H @- --data "$2" "$TOOLS$1" <<<"authorization: Bearer $(cat "$here/../../m0/.m0-token")"; }
 bed() { curl -s -m 300 -X POST -H @- --data "$1" "$EDGE/_bed/identity" <<<"x-bed-token: $(cat "$HOME/.graft-wp6/bed.token")"; }
 rid() { python3 -c 'import os,time; v=(int(time.time()*1000)<<80)|int.from_bytes(os.urandom(10),"big"); A="0123456789ABCDEFGHJKMNPQRSTVWXYZ"; print("".join(A[(v>>(5*i))&31] for i in range(25,-1,-1)))'; }

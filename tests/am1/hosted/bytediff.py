@@ -12,7 +12,7 @@ The tokens come from ~/.graft-integ/tokens.txt (the wp6 owner and writer) and ne
 """
 import base64, glob, json, os, re, sys, time, urllib.error, urllib.request
 
-EDGE = os.environ.get("GRAFT_EDGE", "https://graft-m1-edge.<workers-subdomain>.workers.dev")
+EDGE = os.environ.get("GRAFT_EDGE", f"https://graft-m1-edge.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev")
 HOME = os.path.expanduser("~/.graft-integ")
 TOKENS = [l.split()[0] for l in open(f"{HOME}/tokens.txt").read().split("\n") if l.strip()]
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))

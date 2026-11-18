@@ -26,8 +26,8 @@ const { values: opt } = parseArgs({ options: { out: { type: "string" }, tag: { t
 if (!opt.out || !opt.tag || !opt.raw) throw new Error("usage: bf30.ts --out DIR --tag X --raw DIR");
 mkdirSync(opt.raw, { recursive: true });
 const ROOT = new URL("./", import.meta.url).pathname;
-const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
-const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
+const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const TOKEN = readFileSync(process.env.M0_TOKEN_FILE ?? `${ROOT}../../m0/.m0-token`, "utf8").trim();
 const BED = readFileSync(`${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 const OP = { account: null, key: null };

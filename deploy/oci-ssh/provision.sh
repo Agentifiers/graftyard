@@ -13,7 +13,7 @@ NAME=graft-ssh-proxy
 SHAPE=VM.Standard.E2.1.Micro
 BOOT_GB=50
 ADMIN_PORT=2222
-ZONE=<cf-zone-id>
+ZONE=${CF_ZONE_ID:?}
 RECORD=ssh.graftyard.dev
 TAGS='{"project":"graftyard","purpose":"ssh-proxy"}'
 

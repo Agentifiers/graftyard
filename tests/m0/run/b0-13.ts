@@ -16,7 +16,7 @@ const PER = Number(opt.per);
 const { CLOUDFLARE_API_TOKEN: CF_TOKEN, CLOUDFLARE_ACCOUNT_ID: ACCOUNT } = process.env;
 const TOKEN = readFileSync(new URL("../.m0-token", import.meta.url), "utf8").trim();
 const SCRIPT = "graft-m0-probe";
-const subdomain = "<workers-subdomain>";
+const subdomain = `${process.env.CF_WORKERS_SUBDOMAIN}`;
 
 async function cf<T>(path: string, init?: RequestInit): Promise<T> {
   for (let attempt = 1; ; attempt++) {

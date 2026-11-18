@@ -88,7 +88,7 @@ This answered an AWS-design question: the namespace's global tier lived only in 
 
 The run reads "byoc self installs" as both BYOC installs and self-hosted installs, because either reading needs the same install machinery. A design passes only if every stateful component states its form in each mode, and a self-hoster and a vendor SRE can walk install, upgrade, recovery, and exit against the text. `design/DESIGN.md`, "Deployment modes", has a row per stateful component for each mode, and `scripts/check_design.py` checks that every component has one. The Cloudflare design was walked as a BYOC install, a managed cell, and a self-hosted install (`history/review/cloudflare-byoc-walk.md`, `history/review/cloudflare-selfhost-walk.md`, `history/review/cloudflare-rewalk.md`).
 
-The vendor already runs a BYOC platform for another product. `research/byoc-grounding.md` describes its install model, release signing, and fleet rollouts. Graftyard reuses its release registry and signing unchanged, and `graft-ops` is the in-account executor that applies them (`design/SHARED.md`, "Release registry and signing", and `design/DESIGN.md`, "Deployment modes").
+The vendor already runs a BYOC platform for another product, with its own install model, release signing, and fleet rollouts. Graftyard reuses its release registry and signing unchanged, and `graft-ops` is the in-account executor that applies them (`design/SHARED.md`, "Release registry and signing", and `design/DESIGN.md`, "Deployment modes").
 
 ### Operator decision, 2026-10-24, on the store
 

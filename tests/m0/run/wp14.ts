@@ -17,7 +17,7 @@ import { resolve4, resolve6 } from "node:dns/promises";
 
 const ROOT = new URL("../", import.meta.url).pathname;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-const SUB = "<workers-subdomain>.workers.dev";
+const SUB = `${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const url = (n: string) => `https://graft-wp14-${n}.${SUB}`;
 const SCRIPTS = ["canary", "model", "registry", "host", "controller"] as const;
 const SECRETS = `${ROOT}.gen/wp14-secrets.json`;

@@ -19,7 +19,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, options
   chunk: { type: "string", default: "3600" } } });
 const ROOT = new URL("../", import.meta.url).pathname;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-const URL_ = "https://graft-wp9-store.<workers-subdomain>.workers.dev";
+const URL_ = `https://graft-wp9-store.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function wrangler(args: string[], input?: string): string {

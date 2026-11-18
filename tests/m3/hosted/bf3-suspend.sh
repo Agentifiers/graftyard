@@ -10,8 +10,8 @@
 set -uo pipefail
 out=${1:?out}; n=${2:-100}; login=${3:-m3-suspend}
 here=$(cd "$(dirname "$0")" && pwd)
-EDGE=${GRAFT_EDGE:-https://graft-m1-edge.<workers-subdomain>.workers.dev}
-TOOLS=${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev}
+EDGE=${GRAFT_EDGE:-https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
+TOOLS=${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 acct=${BF3_ACCOUNT:-7290001}
 mkdir -p "$out"; out=$(cd "$out" && pwd); umask 077
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT

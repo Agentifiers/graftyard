@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 const ROOT = new URL("../", import.meta.url).pathname;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-const PROV = "https://graft-wp16-prov.<workers-subdomain>.workers.dev", VAULT = "https://graft-wp16-vault.<workers-subdomain>.workers.dev";
+const PROV = `https://graft-wp16-prov.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`, VAULT = `https://graft-wp16-vault.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 
 async function post<T = any>(base: string, path: string, body: unknown): Promise<T> {

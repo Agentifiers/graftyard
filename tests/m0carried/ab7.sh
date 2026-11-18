@@ -10,7 +10,7 @@
 #   PREFIX=m0c7g GATE=1 bash tests/m0carried/ab7.sh
 set -u
 cd "$(dirname "$0")/../.."
-export EDGE_URL=${EDGE_URL:-https://graft-m3d-wp2-edge.<workers-subdomain>.workers.dev} BENCH_RAW=1
+export EDGE_URL=${EDGE_URL:-https://graft-m3d-wp2-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev} BENCH_RAW=1
 P=${PREFIX:-m0c7}
 RAW=tests/m1/wp2/raw
 line() { echo "$1 $2 $(jq -c '[.throughputPerS,.commitMs.p99,.leaderConfirmMs.p99,.commandsPerEntry,.entries,.leader,.failed,.verdict]' $RAW/$1.bench.json 2>/dev/null)"; }

@@ -27,7 +27,7 @@ export GRAFT_REPO=$REPO
 mkdir -p "$HERE/conformance"
 cp "$SRC"/*.sh "$SRC"/observe.ts "$HERE/"
 cp -r "$REPO/tests/m1/wp6/conformance/." "$HERE/conformance/"
-H=https://graft-m1-edge.<workers-subdomain>.workers.dev
+H=https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 B=$(cat ~/.graft-wp6/bed.token)
 log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$ROOT/bm1.log"; }
 

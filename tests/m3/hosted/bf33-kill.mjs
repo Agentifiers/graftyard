@@ -14,7 +14,7 @@ const runs = Number(runsArg ?? 20);
 // The kill modes, in turn: `after_quorum` and `before_commit_sent` keep the entry, so the code is spent;
 // `before_commit_early` loses it, so the exchange spends the code and gets a token. `BF33_KILLS` overrides.
 const KILLS = (process.env.BF33_KILLS ?? "after_quorum,before_commit_sent").split(",");
-const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const BED = readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 const GH = "178c6fc778ccc68e1d6a";
 const member = readFileSync(`${dir}/m3-tokens.txt`, "utf8").split("\n").find((l) => l.startsWith("member "))?.split(" ")[1];

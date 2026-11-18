@@ -9,7 +9,7 @@ TOK=$(sed -n "${LINE}p" ${TOKENS:-$HOME/.graft-integ/tokens.txt} | cut -d" " -f1
 # fault (the `final3` run in tests/m2/results/m2-edge.md).
 [ -n "$TOK" ] || { echo "no token on line $LINE of ${TOKENS:-$HOME/.graft-integ/tokens.txt}" >&2; exit 2; }
 W=$(mktemp -d)
-export HOME=$W/home GH_CONFIG_DIR=$W/gh GH_HOST=graft-m1-edge.<workers-subdomain>.workers.dev GH_ENTERPRISE_TOKEN=$TOK
+export HOME=$W/home GH_CONFIG_DIR=$W/gh GH_HOST=graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev GH_ENTERPRISE_TOKEN=$TOK
 export GIT_TERMINAL_PROMPT=0 GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GH_DEBUG=api
 mkdir -p $HOME $OUT
 git config --global user.name a; git config --global user.email a@b; git config --global init.defaultBranch main

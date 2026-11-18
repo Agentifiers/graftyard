@@ -16,7 +16,7 @@ npm run build        # static assets and dist/client/_shell.html
 npm run preview      # serves dist/client on $PORT (default 4173), unknown paths get _shell.html
 ```
 
-The formatter and typechecker match the `deployments` repository's apps: oxfmt 0.56.0 and tsrs 0.18.0-ts7.1.0-dev.20260929, pinned exactly. `typescript` 5.9 stays only because `openapi-typescript` needs it to generate `src/api/ghes.d.ts`. oxfmt skips the generated files listed in `.oxfmtrc.json`.
+The formatter and typechecker are oxfmt 0.56.0 and tsrs 0.18.0-ts7.1.0-dev.20260929, pinned exactly. `typescript` 5.9 stays only because `openapi-typescript` needs it to generate `src/api/ghes.d.ts`. oxfmt skips the generated files listed in `.oxfmtrc.json`.
 
 The build has no server tier. Start prerenders only the root route into `_shell.html`. Every route renders in the browser. Do not add `createServerFn` or server routes.
 

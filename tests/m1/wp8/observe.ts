@@ -22,7 +22,7 @@ const { values: opt } = parseArgs({ options: {
   every: { type: "string", default: "2000" }, reset: { type: "boolean", default: false },
 } });
 // GRAFT_TOOLS_EDGE points it at another install's test edge (tests/m2/results/install-m2b.md).
-const EDGE = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_TOOLS_EDGE ?? `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const REPO = process.env.GRAFT_REPO ?? new URL("../../..", import.meta.url).pathname;
 const TOKEN = readFileSync(`${REPO}/tests/m0/.m0-token`, "utf8").trim();
 const chains = opt.chains!.split(",");

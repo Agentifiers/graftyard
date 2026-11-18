@@ -12,7 +12,7 @@ W=$HOME/.graft-gen
 CLI=$ROOT/target/release/graftyard
 EDGE=graft-m1-gen-edge
 # The git cache shard's image, which `sites add` deploys as each site's `GitShard` container (the test install's).
-IMAGE=${IMAGE:-registry.cloudflare.com/<cf-account-id>/graft-m1-wp6-bed-gitshard-git@sha256:b7bbc1f6644c428a7f27495fe676fa3d6772b02c73030ffcab3039b56e46b43e}
+IMAGE=${IMAGE:-registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-wp6-bed-gitshard-git@sha256:b7bbc1f6644c428a7f27495fe676fa3d6772b02c73030ffcab3039b56e46b43e}
 CF=https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$@"; }
 step() { echo; echo "=== $* ($(date -u +%T))"; }
@@ -40,7 +40,7 @@ print(next(x["text"] for x in b if x["name"]=="GRAFTYARD_SITES"))' > sites.json 
   (cd "$ROOT" && node tests/m1/integ/deploy-edge.mjs "$W/sites.json" "$EDGE" --anchor "$W/install.toml") 2>&1 |
     grep -E "Uploaded|Version ID|ERROR|anchor" || return 1
   sleep 10
-  URL=https://$EDGE.<workers-subdomain>.workers.dev
+  URL=https://$EDGE.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
   step "install (tampered: refused locally)"
   python3 -c 'import sys; b=bytearray(open("genesis.signed","rb").read()); b[100]^=1; open("tampered.signed","wb").write(b)'
   "$CLI" install --genesis tampered.signed --edge "$URL"

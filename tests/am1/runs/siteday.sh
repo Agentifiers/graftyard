@@ -8,7 +8,7 @@ export BED_TOKEN_FILE=$HOME/.graft-m2b/bed.token
 cd "$(dirname "$0")/../../.."
 { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5
   # NOROLL=1: no --roll-shards (shards are derived caches; a fresh repository's shards start on the image).
-  ROLL=(--roll-shards https://graft-m2b-edge.<workers-subdomain>.workers.dev); [ -n "${NOROLL:-}" ] && ROLL=()
+  ROLL=(--roll-shards https://graft-m2b-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev); [ -n "${NOROLL:-}" ] && ROLL=()
   # SHARD_INSTANCE=standard-4: the site var the shard container starts at (workers/site/src/shard.rs, `instance`).
   # ROLLUP=1: the site var GRAFTYARD_ROLLUP (G9's roll-up gate, `log_archive::rollup_enabled`), with 32.25 enabled.
   VARS=(); if [ -n "${SHARD_INSTANCE:-}${ROLLUP:-}" ]; then

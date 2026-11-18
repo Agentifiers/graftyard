@@ -8,7 +8,7 @@ const [dir, who] = process.argv.slice(2);
 const s = JSON.parse(readFileSync(`${dir}/m3.json`, "utf8"));
 const acct = who === "admin" ? s.admin : s.member;
 const ROOT = new URL("./", import.meta.url).pathname;
-const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
+const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const A = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const rid = () => { const C = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; let v = BigInt(Date.now()) & 0xffff_ffff_ffffn; for (const b of randomBytes(10)) v = (v << 8n) | BigInt(b); let o = ""; for (let i = 25; i >= 0; i--) o += C[Number((v >> BigInt(5 * i)) & 31n)]; return o; };

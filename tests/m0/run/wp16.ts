@@ -16,7 +16,7 @@ import { openSync, readFileSync, readSync, statSync, writeFileSync, mkdirSync } 
 
 const ROOT = new URL("../", import.meta.url).pathname;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-const URL_ = "https://graft-wp16-shard.<workers-subdomain>.workers.dev";
+const URL_ = `https://graft-wp16-shard.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const PREDICT_PAIRS = 8, PREDICT_CPU = 0.5, VCPU = 4;
 const auth = { authorization: `Bearer ${TOKEN}` };
 

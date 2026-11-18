@@ -15,7 +15,7 @@ import { bucketName, DAY, HINT, scriptName, SITES, type SiteKey } from "../src/w
 
 const ROOT = new URL("../", import.meta.url).pathname;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
-const URL_ = `https://${scriptName("edge")}.<workers-subdomain>.workers.dev`;
+const URL_ = `https://${scriptName("edge")}.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const COMPAT = "2026-10-01";
 
 export function wrangler(args: string[], input?: string): string {

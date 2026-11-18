@@ -288,7 +288,7 @@ const CLAIM_STALE = 15_000;
 const pkt = (s: string) => (s.length + 4).toString(16).padStart(4, "0") + s;
 const hex = async (s: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))]
   .map((b) => b.toString(16).padStart(2, "0")).join("");
-const SELF = "https://graft-m0-rehydrate.<workers-subdomain>.workers.dev";
+const SELF = `https://graft-m0-rehydrate.${globalThis.process?.env?.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 type CloneSpec = { net: string; tip: string; run: string; replicas: number; depth?: number; read?: number; claim?: boolean };
 
 /** The edge side of a CI clone: `CloneKey` from (network, wants, depth, capabilities), here salted with the run so

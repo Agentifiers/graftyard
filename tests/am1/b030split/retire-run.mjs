@@ -38,6 +38,6 @@ for (const [, , n, st] of left) log(`${n} after: ${brief(st)}`);
 log(`scan of generations 1 to ${GENS}, both chains, three sites: ${left.length} joined`);
 if (!left.length && !process.env.NO_PURGE) {
   const out = execFileSync("uv", ["run", "-q", "--with", "boto3", "python3", "tests/fanout/purge.py", String(REPO)], {
-    encoding: "utf8", env: { GRAFT_TOOLS_EDGE: "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev", ...process.env, INSTALL: "graft-m1", BUCKET: "{install}-packs-{site}", PURGE_LOG: `tests/am1/raw/${RUN}-purge.log` } });
+    encoding: "utf8", env: { GRAFT_TOOLS_EDGE: `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`, ...process.env, INSTALL: "graft-m1", BUCKET: "{install}-packs-{site}", PURGE_LOG: `tests/am1/raw/${RUN}-purge.log` } });
   for (const l of out.trim().split("\n")) log(`purge: ${l.slice(21)}`);
 }

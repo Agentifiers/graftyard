@@ -4,7 +4,7 @@
 # one HTTPS round trip to the edge (connect and total ms, curl's exit code), and the kernel's TCP counters (nstat
 # deltas: resets, retransmits, timeouts, aborts). One JSON line a sample to tests/am1/raw/$B030_RUN-net.jsonl.
 cd "$(dirname "$0")/../../.."
-H=graft-m1-edge.<workers-subdomain>.workers.dev
+H=graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 OUT=tests/am1/raw/${B030_RUN:-b030}-net.jsonl
 nstat -n >/dev/null
 while [ ! -e tests/am1/raw/b030-run.done ]; do

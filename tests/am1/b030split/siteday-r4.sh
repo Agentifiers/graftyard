@@ -9,7 +9,7 @@
 cd "$(dirname "$0")/../../.."
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/home/user/workspace/repo/.worktrees/target-am1
 export BED_TOKEN_FILE=$HOME/.graft-wp6/bed.token CARGO_PROFILE_RELEASE_DEBUG=0
-EDGE=https://graft-m1-edge.<workers-subdomain>.workers.dev
+EDGE=https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 RUN=${RUN:-b030r4}
 L=tests/am1/raw/$RUN-siteday.log
 if ! grep -q '^DONE' "$L" 2>/dev/null; then

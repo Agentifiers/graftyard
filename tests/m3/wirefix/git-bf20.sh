@@ -5,7 +5,7 @@
 #   bash tests/m3/wirefix/git-bf20.sh [repo]   (default bf20)
 set -u
 R=${1:-bf20}
-E=https://graft-m2b-edge.<workers-subdomain>.workers.dev
+E=https://graft-m2b-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 TOK=$(sed -n 2p "$HOME/.graft-m2b/tokens.txt" | cut -d" " -f1)
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x:%s' "$TOK" | base64 -w0)"
 unset TOK

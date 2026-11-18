@@ -9,7 +9,7 @@
 # old shards were left on their image. Idempotent across restarts: a step whose log ends in DONE is not run again.
 #   amp orb service start b030-siteday --command 'bash tests/am1/b030/siteday.sh'
 cd "$(dirname "$0")/../../.."
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:172216ad0cbdf8779b0c20a698a0b5040a3de4295581408698ea3b157a8df3e9
+IMG=registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:172216ad0cbdf8779b0c20a698a0b5040a3de4295581408698ea3b157a8df3e9
 S=tests/am1/raw/b030-siteday1.log
 E=tests/am1/raw/b030-edge.log
 grep -q '^DONE' "$S" 2>/dev/null || grep -q 'Current Version ID: 125026fd' "$S" || bash tests/am1/hosted/siteday.sh b030-siteday1.log "$IMG"

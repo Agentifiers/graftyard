@@ -15,7 +15,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, options
   run: { type: "string", default: new Date().toISOString().replace(/[-:.]/g, "").slice(0, 13) } } });
 const ROOT = new URL("../", import.meta.url).pathname;
 const SITES = ["a", "b", "c"] as const;
-const SUBDOMAIN = "<workers-subdomain>";
+const SUBDOMAIN = `${process.env.CF_WORKERS_SUBDOMAIN}`;
 const TOKEN = readFileSync(`${ROOT}.m0-token`, "utf8").trim();
 const name = (k: string) => `graft-m0-link-${k}`;
 const wrangler = (args: string[], input?: string) =>

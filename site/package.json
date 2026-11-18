@@ -7,7 +7,7 @@
     "build": "astro build",
     "preview": "astro preview",
     "deploy": "node scripts/github-status.mjs && astro build && wrangler deploy",
-    "views": "wrangler basin sql query <cf-account-id>_graftyard-site-analytics \"SELECT path, COUNT(*) AS views FROM default.site_pageviews GROUP BY path ORDER BY views DESC\""
+    "views": "wrangler basin sql query ${CLOUDFLARE_ACCOUNT_ID}_graftyard-site-analytics \"SELECT path, COUNT(*) AS views FROM default.site_pageviews GROUP BY path ORDER BY views DESC\""
   },
   "dependencies": {
     "astro": "^7.4.7"

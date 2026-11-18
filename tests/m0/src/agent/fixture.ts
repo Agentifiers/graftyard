@@ -3,7 +3,7 @@
 
 import type { AgentTask, Authz, Credential, Fold, Lease, OrgPolicy } from "./model.ts";
 
-export const HOST = "graft-m0-agent.<workers-subdomain>.workers.dev";
+export const HOST = `graft-m0-agent.${globalThis.process?.env?.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 export const BASE = "acme/mono";
 export const FORK = "acme-agents/mono";
 
@@ -12,7 +12,7 @@ export const INST = { agent: 101, workspace: 102, claude: 103, cursor: 104, mcp:
 /** M0-WP13: a repository inside graftyard-agent's installation that is no task's repository. */
 export const OTHER = "acme/other";
 /** M0-WP13: the hooks Worker (run/agent.ts deploys it as graft-wp13-hooks); each App's webhook URL is a path on it. */
-export const HOOKS_HOST = "graft-wp13-hooks.<workers-subdomain>.workers.dev";
+export const HOOKS_HOST = `graft-wp13-hooks.${globalThis.process?.env?.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 export const MCP_CLIENT = { id: "Iv1.graftyardmcp", secretLabel: "mcp-client-secret" } as const;
 const ALL = { contents: "write", pull_requests: "write", issues: "write", statuses: "write", checks: "write", actions: "write", administration: "write" } as const;
 export const USER = { alice: 10, bob: 11, carol: 12, mallory: 13, dave: 14 } as const;

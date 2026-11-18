@@ -20,7 +20,7 @@ const rows: { hint: string; name: string; colo: string; syncMedianMs: number; ga
 await Promise.all(HINTS.map(async (hint) => {
   for (let i = 0; i < Number(opt.per); i += 5) {
     const names = Array.from({ length: Math.min(5, Number(opt.per) - i) }, (_, k) => `wp11-${opt.run}-${hint}-${i + k}`);
-    const res = await fetch("https://graft-m0-tools.<workers-subdomain>.workers.dev/quorum", { method: "POST",
+    const res = await fetch(`https://graft-m0-tools.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev/quorum`, { method: "POST",
       headers: { authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ hint, names, samples: Number(opt.samples) }) });
     const out = await res.json() as Probe[];
     out.forEach((p, k) => {

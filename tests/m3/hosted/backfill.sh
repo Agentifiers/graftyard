@@ -11,7 +11,7 @@ out=${1:?out dir}
 mkdir -p "$out"
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
-EDGE=${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev}
+EDGE=${GRAFT_TOOLS_EDGE:-https://graft-m1-wp7-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 tools() { curl -s -m 120 -X POST -H @- -d "$2" "$EDGE$1" <<<"authorization: Bearer $(cat "$root/tests/m0/.m0-token")"; }
 shard() { node -e '
 const {createHash}=require("crypto"); const [k,v]=process.argv.slice(1);

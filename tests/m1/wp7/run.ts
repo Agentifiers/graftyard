@@ -26,7 +26,7 @@ if (!opt.run || !row) throw new Error("usage: node tests/m1/wp7/run.ts setup|bf1
 const ROOT = new URL("./", import.meta.url).pathname;
 const RAW = `${ROOT}raw/`;
 mkdirSync(RAW, { recursive: true });
-const EDGES = ["https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev", "https://graft-m1-wp7-edge-b.<workers-subdomain>.workers.dev"];
+const EDGES = [`https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`, `https://graft-m1-wp7-edge-b.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`];
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

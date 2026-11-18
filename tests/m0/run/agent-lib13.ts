@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { ROOT, api, harness, tok } from "./agent-lib.ts";
 
 export const RAW = `${ROOT}results/raw`;
-export const HOOKS = "https://graft-wp13-hooks.<workers-subdomain>.workers.dev";
+export const HOOKS = `https://graft-wp13-hooks.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 export const V1 = "/api/graftyard/v1/repos/acme/mono";
 export const V3 = "/api/v3/repos/acme/mono";
 

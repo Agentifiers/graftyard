@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 const [dir, runsArg] = process.argv.slice(2);
 const runs = Number(runsArg ?? 10);
-const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const GH = "178c6fc778ccc68e1d6a";
 const member = readFileSync(`${dir}/m3-tokens.txt`, "utf8").split("\n").find((l) => l.startsWith("member "))?.split(" ")[1];
 const form = (o) => new URLSearchParams(o).toString();

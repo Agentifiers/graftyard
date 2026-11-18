@@ -24,8 +24,8 @@ const { values: opt } = parseArgs({ options: { out: { type: "string" }, tag: { t
 if (!opt.out || !opt.tag) throw new Error("usage: rows.ts --out DIR --tag X [--n N]");
 const N = Number(opt.n ?? 100);
 const ROOT = new URL("./", import.meta.url).pathname;
-const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
-const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const TOOLS = process.env.GRAFT_TOOLS_EDGE ?? `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
+const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const BED = readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 const OP = { account: null, key: null };

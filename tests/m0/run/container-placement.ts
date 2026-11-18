@@ -12,7 +12,7 @@ import { parseArgs } from "node:util";
 const { values: opt } = parseArgs({ allowNegative: true, options: { summary: { type: "boolean", default: true }, per: { type: "string", default: "30" }, hints: { type: "string", default: "enam,weur,apac" },
   run: { type: "string", default: new Date().toISOString().replace(/[-:.]/g, "").slice(0, 13) } } });
 const TOKEN = readFileSync(new URL("../.m0-token", import.meta.url), "utf8").trim();
-const URL_ = "https://graft-m0-container.<workers-subdomain>.workers.dev";
+const URL_ = `https://graft-m0-container.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const PER = Number(opt.per), HINTS = opt.hints!.split(",");
 
 type Landing = { doColo: string; started: boolean; startMs: number; region?: string; location?: string; error?: string };

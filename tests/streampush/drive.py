@@ -10,7 +10,7 @@ read. No token reaches argv or the output.
 import base64, datetime, json, os, subprocess, sys, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DRIVER = "https://graft-m3f-sp-driver.<workers-subdomain>.workers.dev/push"
+DRIVER = f"https://graft-m3f-sp-driver.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev/push"
 EDGE = os.environ["GRAFT_EDGE"]
 ADMIN = dict(l.split(" ", 1) for l in open(os.path.join(os.environ["M3_STATE"], "m3-tokens.txt")).read().split("\n")
              if l)["admin"].strip()

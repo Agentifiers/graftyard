@@ -23,7 +23,7 @@ import base64, json, os, random, subprocess, sys, tempfile, threading, time, url
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 MAIN_ROOT = os.environ.get("GRAFT_MAIN_CHECKOUT", "/home/user/workspace/repo")
 RAW = os.environ.get("WP3_RAW", f"{ROOT}/tests/m2/results/raw/m2-wp3")
-EDGE = os.environ.get("GRAFT_EDGE", "https://graft-m1-edge.<workers-subdomain>.workers.dev")
+EDGE = os.environ.get("GRAFT_EDGE", f"https://graft-m1-edge.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev")
 HOST = EDGE.split("//")[1]
 HOME = os.path.expanduser(os.environ.get("BF20_HOME", "~/.graft-integ"))
 REPOS = json.load(open(f"{HOME}/repos.json"))
@@ -35,7 +35,7 @@ AUTH = "Authorization: Basic " + base64.b64encode(f"x:{WRITER}".encode()).decode
 # shows in `ps` and in a `TimeoutExpired` traceback, which once wrote the writer's token into a run log.
 GIT_AUTH_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": AUTH}
 M0 = open(f"{MAIN_ROOT}/tests/m0/.m0-token").read().strip()
-WP7 = os.environ.get("GRAFT_TOOLS_EDGE", "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev")
+WP7 = os.environ.get("GRAFT_TOOLS_EDGE", f"https://graft-m1-wp7-edge.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev")
 BED = open(os.path.expanduser("~/.graft-wp6/bed.token")).read().strip()
 GH = "/usr/bin/gh"
 os.makedirs(RAW, exist_ok=True)

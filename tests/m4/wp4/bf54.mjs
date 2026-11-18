@@ -4,8 +4,8 @@
 // Fail: any `RunnerSessionInvalid`, a runner that exits without its job, or a job unstarted after 60 s.
 //
 //   source tests/am1/lf13/env-m4a.sh
-//   BOX_URL=https://graft-runners-bf54.<runner-workers-subdomain>.workers.dev BOX_TOKEN_FILE=... \
-//   BROKER_URL=https://graft-m4a-memberkill.<workers-subdomain>.workers.dev BROKER_TOKEN_FILE=... \
+//   BOX_URL=https://graft-runners-bf54.$CF_RUNNER_WORKERS_SUBDOMAIN.workers.dev BOX_TOKEN_FILE=... \
+//   BROKER_URL=https://graft-m4a-memberkill.$CF_WORKERS_SUBDOMAIN.workers.dev BROKER_TOKEN_FILE=... \
 //   node tests/m4/wp4/bf54.mjs <out dir>
 //
 // Shape (tests/m4/results/m4-wp4.md, "BF-54"): `BOXES` (25) `standard-4` Sandboxes of the runner image from the scratch
@@ -35,7 +35,7 @@ const REG_PER_S = Number(env("REG_PER_S", 10)), GAP_S = Number(env("GAP_S", 2.5)
 const NAME = env("BF54_REPO", "wp4-bf54"), R = `m3org/${NAME}`, ORG = 7100001;
 const WORKFLOW = env("WORKFLOW", "tests/m4/wp4/hosted/bf54.yml");
 const KEYS = env("KEYS", "/tmp/bf54-keys");
-const BOX = env("BOX_URL", "https://graft-runners-bf54.<runner-workers-subdomain>.workers.dev");
+const BOX = env("BOX_URL", `https://graft-runners-bf54.${process.env.CF_RUNNER_WORKERS_SUBDOMAIN}.workers.dev`);
 const BOX_T = secret(readFileSync(env("BOX_TOKEN_FILE", "/tmp/bf54-box.token"), "utf8").trim());
 // Optional: the broker's `/stats` through a scratch Worker bound to the install's `BROKER_<n>` classes. Without it the
 // cap shows only in the listeners' own 503s.

@@ -8,7 +8,7 @@
 set -uo pipefail
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0
 cd "$(dirname "$0")/../.."
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
+IMG=registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
 L=tests/m5/results/raw/$1
 mkdir -p tests/m5/results/raw
 VARS=$(mktemp)

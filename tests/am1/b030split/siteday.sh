@@ -11,14 +11,14 @@
 cd "$(dirname "$0")/../../.."
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/home/user/workspace/repo/.worktrees/target-am1
 export BED_TOKEN_FILE=$HOME/.graft-wp6/bed.token CARGO_PROFILE_RELEASE_DEBUG=0
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:8c972c8bad4a78adcb2e0258031ad456860fbca12e4f84232f9acc5e0b1494a8
+IMG=registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID:?}/graft-m1-site-gitshard-git@sha256:8c972c8bad4a78adcb2e0258031ad456860fbca12e4f84232f9acc5e0b1494a8
 L=tests/am1/raw/b030split-siteday-9.log
 if ! grep -q '^DONE' "$L" 2>/dev/null; then
   echo '{"GRAFTYARD_AUDIT":"1","GRAFTYARD_REPO_REQUEST_RETENTION_S":"9600","SHARD_INSTANCE":"standard-4"}' > /tmp/b030-site-vars.json
   { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5
     node workers/site/deploy.mjs tests/m3/finish/sites4.json --genesis tests/m1/wp7/genesis.json --test-faults \
       --vars /tmp/b030-site-vars.json --image "$IMG" \
-      --roll-shards https://graft-m1-edge.<workers-subdomain>.workers.dev
+      --roll-shards https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
     echo "exit $?"; date -u +%FT%TZ; echo DONE; } > "$L" 2>&1
 fi
 exec sleep infinity

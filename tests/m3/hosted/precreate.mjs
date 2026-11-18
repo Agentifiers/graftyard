@@ -11,7 +11,7 @@
 // `POST /api/graftyard/v1/release/tokens`, with the signed genesis as the body, as `graftyard install` does.
 import { appendFileSync, readFileSync } from "node:fs";
 
-const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_EDGE ?? `https://graft-m1-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const GENESIS = process.env.R20_GENESIS ? readFileSync(process.env.R20_GENESIS) : null;
 const TOKEN = GENESIS ? "" : readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 const [out, atOnce = "8"] = process.argv.slice(2);

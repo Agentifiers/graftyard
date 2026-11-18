@@ -19,7 +19,7 @@ const ROOT = new URL("../", import.meta.url).pathname;
 const TOKEN = process.env.RAFT_TOKEN ?? readFileSync(`${ROOT}.m0-token`, "utf8").trim();
 export const PREFIX = process.env.RAFT_PREFIX ?? "graft-raft";
 const WP4 = PREFIX !== "graft-raft";
-export const RAFT_URL = process.env.RAFT_URL ?? `https://${scriptName(PREFIX, "edge")}.<workers-subdomain>.workers.dev`;
+export const RAFT_URL = process.env.RAFT_URL ?? `https://${scriptName(PREFIX, "edge")}.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const COMPAT = "2026-10-01";
 
 const bindings = (sites: SiteKey[], from: SiteKey | "edge") => sites.map((k) => ({

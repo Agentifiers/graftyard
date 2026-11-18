@@ -12,7 +12,7 @@ import { parseArgs } from "node:util";
 const { values: opt } = parseArgs({ options: { out: { type: "string" } } });
 if (!opt.out) throw new Error("usage: triage.ts --out DIR");
 const ROOT = new URL("./", import.meta.url).pathname;
-const EDGE = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
+const EDGE = process.env.GRAFT_TOOLS_EDGE ?? `https://graft-m1-wp7-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const OP = { account: null, key: null };
 const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);

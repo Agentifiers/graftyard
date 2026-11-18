@@ -28,7 +28,7 @@ if (!opt.run || !cmd) throw new Error("usage: node tests/m1/lin/run.ts start|wat
 const ROOT = new URL("./", import.meta.url).pathname;
 const RAW = `${ROOT}raw/`;
 mkdirSync(RAW, { recursive: true });
-const URL_ = "https://graft-m1-lin-tools.<workers-subdomain>.workers.dev";
+const URL_ = `https://graft-m1-lin-tools.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev`;
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const statePath = `${RAW}${opt.run}.state.json`;
 const reportPath = `${RAW}${opt.run}.report.json`;

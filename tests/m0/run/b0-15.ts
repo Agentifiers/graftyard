@@ -15,7 +15,7 @@ import { SITE_KEYS, SITES, type MemberClass, type MemberRef, type MemberReport }
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, options: {
   groups: { type: "string", default: "100000" }, controls: { type: "string", default: "1000" },
   batch: { type: "string", default: "100" }, parallel: { type: "string", default: "32" },
-  run: { type: "string" }, edge: { type: "string", default: "https://graft-m0-edge.<workers-subdomain>.workers.dev" },
+  run: { type: "string" }, edge: { type: "string", default: `https://graft-m0-edge.${process.env.CF_WORKERS_SUBDOMAIN}.workers.dev` },
   force: { type: "boolean", default: false },
 } });
 const BATCH = Number(opt.batch), PARALLEL = Number(opt.parallel);
