@@ -5311,3 +5311,83 @@ measured from the callee side, now shown to drive the append gaps that let two c
   closer to the leader's header arrivals than random moments do (p50 272 against 222 ms), and B0-29 shows no step at
   six.
 - The out leg does rise with the leader's own open requests at send: p50 65 ms at 0 to 50, 4.8 s at 1,000+.
+
+### voter-shed design, unfinished: replaying the shed bound on m47's trace (2026-11-18, code only, no spend; paused for the history rewrite)
+
+The orchestrator asked for a design of (b), a shed at a voter's handler top for edge requests past an open-request
+bound. This section is the evidence gathered before the pause. There is no design text and no code yet. Scripts:
+`tests/fanout/votershed/` (`prep.py`, then `a1.py` to `b7.py`), on `raw/tsave-m47b33.jsonl.xz`, load window 01:00:18
+to 01:05:18Z.
+
+**Open requests per member** (the `Entered` row's `open` field):
+
+| member | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| 0 (leader most of the run) | 190 | 1,454 | 4,700 | 5,698 |
+| 1 | 4 | 667 | 1,663 | 2,680 |
+| 2 | 7 | 810 | 1,686 | 2,504 |
+
+Edge requests are 94.6 to 98.0% of every member's inbound. On member 0 they are `/read` 217/s, `/suspect` 119/s,
+`/outcome_by_request` 81/s and `/commit` 63/s, against 28/s of peer `/raft`.
+
+**The out leg climbs with the leader's own open count, and it climbs early.** Leader-to-follower `/raft` out legs,
+corrected for the pair skew, by the leader's open requests when it sent the call:
+
+| leader open at send | 0–25 | 25–50 | 50–75 | 100–125 | 200–250 | 300–400 | 500–750 | 1,000+ |
+|---|---|---|---|---|---|---|---|---|
+| out leg p50 (ms) | 38 | 237 | 734 | 1,023 | 1,881 | 2,849 | 3,799 | 4,956 |
+| leader confirm p50 (ms) | 18 | 17 | 57 | 227 | 145 | 546 | 409 | 494 |
+
+The Spearman correlation of the out leg is 0.67 with the leader's open count and 0.25 with the leader's arrival rate
+over the last second. The out leg passes CALL_DEADLINE (1 s) at about 100 open, not in the 300 to 1,000 band that the
+append-stall section suggested.
+
+**This revises the append-stall split: the follower's input queue is not where the out leg waits.**
+- When the leader sends to both followers within 20 ms, the two out legs move together (Spearman 0.93, 684 pairs). In
+  445 of the 507 pairs where either leg was 1 s or more, both legs were.
+- When the two legs differ by 300 ms or more, the longer one goes to the follower with more arrivals in the prior 2 s
+  in only 124 of 479 cases.
+- With the follower quiet (under 100 arrivals a second over the prior 2 s), the out leg still climbs with the leader's
+  open count: p50 712 ms at 0 to 100 open, 3.0 to 6.1 s at 400 open and more.
+- The requests that entered a follower ahead of a slow `/raft` call had open p50 3 and p90 20 at their entry, about
+  2 ms apart. The follower's handler moved them along; it did not hold a queue of a thousand.
+
+So the "wire plus follower input queue" share (0.31 to 0.51 in the append-stall section) is leader-side time after the
+`CallSent` stamp. Two readings fit, and this trace does not separate them [inference]:
+1. the leader's outbound fetches wait in its own isolate while thousands of its requests are open;
+2. the leader's raw `CallSent` stamp reads early under load, as B0-02 warned.
+A run that stamps `CallSent` with the member clock (its floor) as well as `Date.now()` would separate them.
+
+**The leader is not CPU-bound.** Member 0 used 0.28 to 0.40 CPU s per s at 357 to 666 requests a second, about 0.5 to
+1.1 ms each (durableObjectsPeriodicGroups by minute; peak memory 130 to 144 MiB). Its open count is requests waiting,
+mostly on the output gate (`ready_or` awaits `settled()`) and on read rounds, not on CPU. B0-02's clock-guard
+measurement on B0-29 agrees.
+
+**What a shed bound would cost.** These are the edge `/read`, `/suspect` and `/outcome_by_request` requests that would
+have arrived with the member already at or past bound B. On followers almost none of them were ahead of a slow
+`/raft` call: 3% at B = 32, 0% at B = 64 and above.
+
+| B | member 0 as leader | member 1 as leader | member 2 as leader |
+|---|---|---|---|
+| 64 | 0.78 | 0.48 | 0.62 |
+| 128 | 0.76 | 0.45 | 0.60 |
+| 256 | 0.68 | 0.39 | 0.59 |
+| 512 | 0.39 | 0.17 | 0.48 |
+
+A bound placed where the out leg starts to climb (about 64 open [guess]) sheds most of the leader's edge traffic. That
+traffic is mainly the leader reads (`packed:lead` 143/s and `core:lead` 64/s on member 0), and these replays do not
+show whether those reads would retry or move to learners.
+
+**`/suspect`.**
+- Each member saw reports from only 4 colos, `Colo::UNKNOWN` included, at 1.1 to 1.8% of them.
+- 63 to 75% of reports were a `promised` repeat of the same (colo, about, term) within 1 s. Answering those at once
+  leaves 29 to 42% of reports for the raft step.
+- Only 26 to 37% of the `/suspect` requests that entered reached `verdict`. The rest never stepped, whether dropped by
+  their callers or lost to `ready_or`.
+
+**Open for the design.**
+1. Where the bound counts. The evidence says the leader's open count, not a follower's.
+2. Whether the leader's own open requests are gate waiters that a shed does not touch: an answered read still waits on
+   `settled()`.
+3. The (1)/(2) split above, before choosing between a handler-top shed and keeping the leader's AppendEntries off its
+   gate, which is option (c).
