@@ -48,7 +48,15 @@ thread_local! {
     /// the depth-1 upload-packs waiting for it, and the chain its container last held: the head the builder last put
     /// to the buckets, or the one another shard installed.
     static COMPOSES: std::cell::RefCell<std::collections::HashMap<(String, i64), ComposeRun>> = Default::default();
+    /// Per shard object, the stock upload-packs waiting for one of its container's `STOCK_MAX` slots, across every
+    /// network, which share the container's memory (`graftyard_git::compose::StockLine`).
+    static STOCK: std::cell::RefCell<std::collections::HashMap<String, std::rc::Rc<std::cell::RefCell<graftyard_git::compose::StockLine>>>> = Default::default();
 }
+
+/// An upload-pack's deadline when its caller names no `wait` [guess: the edge's `VALIDATE_WAIT_OTHER_S`]. Every wait of
+/// one upload-pack (the chain, the running catch-up, a later one, a stock slot) draws on one deadline, so none waits
+/// unbounded: m1b34's misses waited out a stuck catch-up 29 to 99 s before their 15 s started (`b034-attr.md`).
+const UPLOAD_PACK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Default)]
 struct ComposeRun {
@@ -119,20 +127,22 @@ impl Compose {
             self.start(true);
             return;
         }
+        crate::host::within(COMPOSE_WAIT, self.next_step()).await;
+    }
+
+    /// Ends when a step that starts after this call ends: the running one first, then this call's own.
+    async fn next_step(&self) {
         let ended = || {
             let (tx, rx) = futures_channel::oneshot::channel();
             COMPOSES.with(|m| m.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
             rx
         };
-        let next = async {
-            if COMPOSES.with(|m| m.borrow().get(&self.key()).is_some_and(|r| r.running)) {
-                let _ = ended().await;
-            }
-            let rx = ended();
-            self.start(true);
-            let _ = rx.await;
-        };
-        crate::host::within(COMPOSE_WAIT, next).await;
+        if COMPOSES.with(|m| m.borrow().get(&self.key()).is_some_and(|r| r.running)) {
+            let _ = ended().await;
+        }
+        let rx = ended();
+        self.start(true);
+        let _ = rx.await;
     }
 
     async fn run(
@@ -1090,6 +1100,9 @@ impl DurableObject for GitShard {
                 }
             }
             "/info-refs" | "/upload-pack" => {
+                // The one deadline of this upload-pack: every wait below draws on what is left of it.
+                let until = arrived + wait.unwrap_or(UPLOAD_PACK_WAIT).as_millis() as u64;
+                let left = || std::time::Duration::from_millis(until.saturating_sub(now_ms()));
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
@@ -1145,7 +1158,9 @@ impl DurableObject for GitShard {
                         net,
                         record: log.record.clone(),
                     };
-                    compose.ready().await;
+                    if crate::host::within(left(), compose.ready()).await.is_none() {
+                        return Ok(line.forward(warming()?));
+                    }
                     line.note(|m| m.ready = Some(now_ms()));
                     if running && let Some(b) = &body {
                         let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
@@ -1160,14 +1175,17 @@ impl DurableObject for GitShard {
                             COMPOSES.with(|m| m.borrow_mut().entry(compose.key()).or_default().synced = None);
                         }
                         line.note(|m| m.only = Some((now_ms(), r.status_code(), why.clone())));
-                        // A tip that just moved: compose again once the catch-up already running ends, and wait for a
-                        // later one only if that one did not bring the want (`graftyard_git::compose::compose_then_catch_up`).
+                        // A tip that just moved: compose again once the catch-up already running ends; a chain far
+                        // from the want, once the chain's next step ends too. Then a later catch-up only if that did
+                        // not bring it (`graftyard_git::compose::compose_then_catch_up`), all within the deadline.
                         let running_now =
                             RUNS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).is_some_and(|run| run.runs.running));
                         let again = graftyard_git::compose::compose_then_catch_up(
+                            worker::Delay::from(left()),
                             why.as_deref(),
                             running_now,
                             || jobs.idle(),
+                            || compose.next_step(),
                             || async {
                                 let r =
                                     host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.ok()?;
@@ -1175,27 +1193,57 @@ impl DurableObject for GitShard {
                             },
                         )
                         .await;
-                        if let graftyard_git::compose::AfterCompose::Composed(r) = again {
-                            line.note(|m| m.caught_up = Some(now_ms()));
-                            let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
-                            filled(&r)?;
-                            return Ok(line.forward(reply(r, at)?));
+                        match again {
+                            graftyard_git::compose::AfterCompose::Composed(r) => {
+                                line.note(|m| m.caught_up = Some(now_ms()));
+                                let at =
+                                    CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
+                                filled(&r)?;
+                                return Ok(line.forward(reply(r, at)?));
+                            }
+                            graftyard_git::compose::AfterCompose::Late => return Ok(line.forward(warming()?)),
+                            graftyard_git::compose::AfterCompose::CatchUp => {}
                         }
                     }
                 }
-                if let Err(r) = caught_up().await {
+                if let Err(r) = jobs.wait(Some(left())).await {
                     return Ok(line.forward(r?));
                 }
                 line.note(|m| m.caught_up = Some(now_ms()));
                 let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
-                let r = match (fill, body) {
-                    (Some(_), Some(b)) => {
-                        let r = host.upload_pack_spooled(net, b, &proto, &enc, fill, false).await.map_err(se)?;
-                        filled(&r)?;
-                        r
-                    }
-                    (_, body) => host.upload_pack(net, path == "/info-refs", body, &proto, &enc).await.map_err(se)?,
+                // A stock fetch past the container's `STOCK_MAX` is answered 429 there and waits here, in arrival
+                // order, within the deadline (`graftyard_git::compose::stock_in_line`).
+                let stock_line = STOCK.with(|m| m.borrow_mut().entry(self.state.id().to_string()).or_default().clone());
+                let full = |r: &Response| {
+                    r.status_code() == 429 && r.headers().get("x-graft-stock").ok().flatten().as_deref() == Some("full")
                 };
+                let info = path == "/info-refs";
+                let host = &host;
+                let r = graftyard_git::compose::stock_in_line(
+                    &stock_line,
+                    worker::Delay::from(left()),
+                    || {
+                        let b = body.clone();
+                        let (proto, enc) = (proto.clone(), enc.clone());
+                        async move {
+                            let r = match (fill, b) {
+                                (Some(_), Some(b)) => host.upload_pack_spooled(net, b, &proto, &enc, fill, false).await,
+                                (_, b) => host.upload_pack(net, info, b, &proto, &enc).await,
+                            };
+                            match r {
+                                Ok(r) if full(&r) => None,
+                                r => Some(r),
+                            }
+                        }
+                    },
+                    || worker::Delay::from(graftyard_git::compose::STOCK_POLL),
+                )
+                .await;
+                let Some(r) = r else { return Ok(line.forward(warming()?)) };
+                let r = r.map_err(se)?;
+                if fill.is_some() {
+                    filled(&r)?;
+                }
                 Ok(line.forward(reply(r, at)?))
             }
             // The network leader's pool warm (`crate::fanout`, `warm_slot`) asks whether this slot may be stepped to,
