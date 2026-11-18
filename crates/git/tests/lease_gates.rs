@@ -1212,3 +1212,47 @@ fn a_learner_that_has_not_heard_the_cursor_committed_does_not_end_the_poll() {
     let follower = feed::Answer::Admit(feed::Admit::Lagging, feed::FeedRole::Follower, ok);
     assert_eq!(feed::route(&[feed::Answer::Gone, follower]), too_many);
 }
+
+/// write-cuts cut (2): stalls under EXTEND_MIN move no lease, so a lease its holder does not renew lapses at its
+/// wall-clock `expires` however many of them came before; a stall of EXTEND_MIN or more still moves it by that stall
+/// alone. On a build with no floor, three 1.5 s stalls moved it 4.5 s.
+#[test]
+fn repeated_stalls_under_extend_min_leave_an_unrenewed_lease_at_its_wall_clock_expires() {
+    let mut w = lease_world();
+    let id = lease_id(&w.commit(issue(claimed(RUN, Some(&run(0))), shared(&["floor/**"], None))));
+    let expires = |w: &mut World| lease::lease_row(&*w.fold().core, id).unwrap().lease.expires;
+    let granted = expires(&mut w);
+    // One stall of `ms`: the leader's entry and its first AppendEntries are lost, its tick `ms` later re-sends it, and
+    // the next entry is appended as the stall ends. Returns that entry's `extend`.
+    let stall = |w: &mut World, ms: u64| {
+        let l = w.repo.leader();
+        let (now, rid) = (w.now, w.rid());
+        w.repo.on(l, now, |m, t| m.record(t, rid, REPO_FORMAT_V1, vec![RepoEvent::Settings(settings())])).unwrap();
+        w.repo.inbox.clear();
+        w.now = Timestamp(w.now.0 + ms);
+        let now = w.now;
+        w.repo.on(l, now, |m, t| m.tick(t));
+        assert!(w.repo.members[l.0 as usize].state().stalled_since.is_some(), "the leader marked the stall");
+        w.repo.deliver(now);
+        let rid = w.rid();
+        w.repo.on(l, now, |m, t| m.record(t, rid, REPO_FORMAT_V1, vec![RepoEvent::Settings(settings())])).unwrap();
+        w.repo.deliver(now);
+        let x = w.repo.members[l.0 as usize].log().last().unwrap().extend;
+        w.settle();
+        x
+    };
+    for _ in 0..3 {
+        let x = stall(&mut w, 1_500);
+        assert_eq!(expires(&mut w), granted, "a sub-floor stall moved the lease");
+        assert_eq!(x, None, "a 1.5 s stall stamps no extend");
+    }
+    let x = stall(&mut w, 3_000).expect("a 3 s stall stamps an extend");
+    assert_eq!(x.by.as_millis(), 3_000, "{x:?}");
+    let moved = expires(&mut w);
+    assert_eq!(moved, Timestamp(granted.0 + 3_000), "moved by the 3 s stall alone, not the 4.5 s before it");
+    // Unrenewed, it lapses at its wall-clock expiry plus the one stall that counted.
+    w.now = Timestamp(moved.0 - 1);
+    assert!(live(&mut w).iter().any(|r| r.lease.id == id), "live until its moved expiry");
+    w.now = moved;
+    assert!(!live(&mut w).iter().any(|r| r.lease.id == id), "lapsed at its moved expiry");
+}

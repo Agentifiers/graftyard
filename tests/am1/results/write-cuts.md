@@ -95,3 +95,59 @@ Such a lease then lapses at its wall-clock `expires`, as on an idle group. A hol
 
 **Design edits.** DESIGN, Shape (`ExtendLeases`). AGENT-LAYER, "Leases" (the cumulative-slack sentence, [inference]).
 A DECISIONS entry with the operator's flip. A note in SHARED's Actions leases line that the floor applies.
+
+### Cut 2 at 2 s (operator, 2026-11-18)
+
+The operator set `EXTEND_MIN` = 2 s [guess]: four `DRIFT`s, above run 7's healthy round and cycle p99s (325 and
+413 ms). Measured on the same `Stepped` rows as above (`raw/tsave-m5{0,1,2}b33.jsonl.xz`, leader seconds from
+`raw/terms-m5{0,1,2}b33.jsonl`; an extend is the append gap before each `Flushed` of 900 or more statements):
+
+| Run, leader | Leading | Extends | Removed at 2 s | Their sum | Slack per 600 s TTL at 2 s | At 5 s |
+|---|---|---|---|---|---|---|
+| m52 site a | 229 s | 11 | 7 (64%) | 7.7 s | about 20 s | 11 (100%), 56 s |
+| m52 site b | 71 s | 16 | 11 (69%) | 9.3 s | about 78 s | 16 (100%), 202 s |
+| m50 site b | 188 s | 12 | 8 (67%) | 6.6 s | about 21 s | 12 (100%), 70 s |
+| m51 site b | 233 s | 2 | 0 | 0 | 0 | 2 (100%), 12 s |
+
+(The 5 s column here counts by leader seconds from terms; the earlier figures used the leading span from the
+`Stepped` rows, so they differ a little.)
+
+- **2 s removes about two thirds** of the `ExtendLeases` on the three leaders that fired them often (64 to 69%),
+  above the half bar, so the build goes ahead. m51 fired only two, both above 2 s.
+- **The slack at 2 s** is about 20 s per 600 s TTL at the rates of m52 site a and m50 site b, and about 78 s at m52
+  site b's (its 71 s of leading had 11 sub-floor stalls). That is how much earlier than today an unrenewed lease
+  lapses, and it then lapses at its wall-clock `expires`. A holder that renews is unaffected.
+- The removed stalls are each under 2 s, so the leader's rewrite of every live lease (about 1,365 statements on m52)
+  goes from 11 to 16 times per run to 4 to 5.
+
+### Cut 2 built (branch `extend-floor`)
+
+- **Rule.** `take_extend` stamps no `extend` while `by < EXTEND_MIN` (`crates/raft/src/lib.rs`, 2 s). `by` still
+  runs from `since`, the later of the marker and the last entry's `at`. A dropped stamp leaves the entry without
+  `extend`, and its commit clears the marker (`set_commit`: `e.at > m`), so neither the stall nor idle time after it
+  reaches a later entry. Both fold rules are unchanged, so F88 holds: no committed entry folds differently.
+- **Design.** DESIGN Shape (`ExtendLeases` and `EXTEND_MIN`), AGENT-LAYER "Leases" (cumulative slack, [inference]),
+  SHARED Actions "Leases" (same rule), DECISIONS `extend-floor`.
+- **Tests, each failing on main** (main moves the lease 1.5 s on the first sub-floor stall):
+  - `a_stall_under_extend_min_stamps_no_extend_and_clears_its_marker` (raft): a 1.5 s stall stamps nothing and every
+    member's marker clears; 30 s of idle after it stamps nothing; a stall of exactly 2 s stamps `by` 2 s.
+  - `a_quick_campaign_after_idle_time_stamps_no_extend` (raft): a 500 ms campaign 30 s after the last entry stamps
+    nothing on the new leader's entries.
+  - `repeated_stalls_under_extend_min_leave_an_unrenewed_lease_at_its_wall_clock_expires` (path lease): three 1.5 s
+    stalls leave `expires` where it was granted; a 3 s stall then moves it by 3 s, not 7.5 s; it lapses at that time.
+  - `a_job_lease_moves_only_for_a_stall_of_extend_min` (Actions): the same for a job lease.
+- **Plants** (`tests/writecuts/plant2.py`), 4 of 4 caught: `>` for `>=`; the floor on the gap since the last entry
+  instead of the stall from `since`; the marker kept after a dropped stamp; no floor.
+- **Long sweep** (`RAFT_HISTORY=/tmp/sw/hist.jsonl RAFT_SEEDS=2000 RAFT_STEPS=10000 cargo test -q -p graftyard-raft
+  --release --test sim -- --ignored --nocapture`): ok in 1,007 s.
+  - HARSH: 20,101,607 steps, 151,620 ops (44,445 acked), 226,832 crashes (98,219 mid-input), 3,928 leaders.
+  - GRAY: 20,072,851 steps, 2,331,603 ops (990,403 acked), 2,117 step-downs.
+  - Live: 4,000 seeds, 40,141,839 steps, 6,678,712 ops (1,292,726 acked), 35,289 leaders.
+- **Porcupine** (`tests/m0/porcupine -seg 2000`):
+  - `hist.jsonl`: `{"droppedFailedReads":4208,"noReplyWrites":29006,"operations":147412,"result":"Ok","segments":6000}`
+  - `hist.jsonl.gray`: `{"droppedFailedReads":0,"noReplyWrites":123,"operations":2331603,"result":"Ok","segments":6000}`
+  - `hist.jsonl.live`: `{"droppedFailedReads":1360825,"noReplyWrites":283,"operations":5317887,"result":"Ok","segments":12000}`
+- **Changed test.** `a_follower_marks_a_stall_only_from_a_late_resend_of_an_uncommitted_entry` relied on the 1 s
+  stall's `extend` to clear B's marker. With the floor, B's marker clears once B learns that a later-stamped entry
+  committed, one append later, so the test syncs once more and asserts the marker clear before the delayed re-send.
+  What it pins, that a delayed append past the commit marks nothing, is unchanged.
