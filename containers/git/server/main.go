@@ -1437,16 +1437,25 @@ func adopt(rp, sum string) (name string, sent int64, ok bool, err error) {
 	if b, err := os.ReadFile(filepath.Join(src, "bytes")); err == nil {
 		sent, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
 	}
-	for _, ext := range []string{".pack", ".rev", ".idx"} {
-		from := filepath.Join(src, "pack", "pack-"+name+ext)
-		if _, err := os.Stat(from); err == nil {
-			if err := os.Rename(from, filepath.Join(rp, "objects", "pack", "pack-"+name+ext)); err != nil {
-				return "", sent, true, err
-			}
-		}
+	if err := moveIn(src, rp, name); err != nil {
+		return "", sent, true, err
 	}
 	os.RemoveAll(src)
 	return name, sent, true, nil
+}
+
+// moveIn moves pack name from quarantine q into the repository: pack, then rev, then index, as receive-pack migrates
+// a quarantine, because git finds a pack by its index. The caller holds the network's lock alone.
+func moveIn(q, rp, name string) error {
+	for _, ext := range []string{".pack", ".rev", ".idx"} {
+		from := filepath.Join(q, "pack", "pack-"+name+ext)
+		if _, err := os.Stat(from); err == nil {
+			if err := os.Rename(from, filepath.Join(rp, "objects", "pack", "pack-"+name+ext)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -1513,34 +1522,64 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": indexMs})
 }
 
-// indexIngest is /ingest's tail: under the network's lock alone, index-pack --strict --fix-thin of file into the
-// repository, its objects recorded under sum, and the multi-pack-index's count. It answers index-pack's time (to the
-// end of the midx step, as /ingest always reported it) and how long it held the lock, or the status to answer and the
-// error: 409 when a thin pack's bases or a named object are not here yet, 422 for another index-pack failure.
+// indexIngest is /ingest's tail: index-pack --strict --fix-thin of file into a quarantine with the repository's objects
+// as its alternate, under the network's lock shared, as /validate indexes; then, under the lock alone, the pack moved
+// in, its objects recorded under sum, and the multi-pack-index's count. Readers and validates of the network run
+// through the index step: with all of it under the lock alone, B0-34 m41's catch-ups held the lock 5.5 to 13.5 s for
+// packs of 0.1 to 2.3 MB, and every ls-refs, upload-pack and validate queued behind them (`TestIngestIndexesOutsideTheLock`).
+// It answers index-pack's time (to the end of the midx step, as /ingest always reported it) and how long it held the
+// lock alone, or the status to answer and the error: 409 when a thin pack's bases or a named object are not here yet,
+// 422 for another index-pack failure. A failed index leaves no quarantine.
 func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, err error) {
-	l := lock(net)
-	l.Lock()
-	t1 := time.Now()
-	defer func() {
-		lockMs = time.Since(t1).Milliseconds()
-		l.Unlock()
-	}()
+	t0 := time.Now()
 	st, err := os.Stat(file)
 	if err != nil {
 		return 0, 0, 500, err
 	}
-	name, err := indexPack(rp, []string{derivedEnv}, file)
+	l := lock(net)
+	l.RLock()
+	q, name, err := indexQuarantined(rp, file)
+	l.RUnlock()
 	if err != nil {
 		if unresolved(err) {
 			return 0, 0, 409, err
 		}
 		return 0, 0, 422, err
 	}
+	defer os.RemoveAll(q)
+	l.Lock()
+	t1 := time.Now()
+	defer func() {
+		lockMs = time.Since(t1).Milliseconds()
+		l.Unlock()
+	}()
+	if err := moveIn(q, rp, name); err != nil {
+		return 0, 0, 500, err
+	}
 	if err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
 		return 0, 0, 500, err
 	}
 	midxAfterIngest(net, rp)
-	return time.Since(t1).Milliseconds(), 0, 0, nil
+	return time.Since(t0).Milliseconds(), 0, 0, nil
+}
+
+// indexQuarantined indexes file into a new quarantine under the repository's graft directory (`incoming-*`, which
+// sweepValidated clears after an hour), with the repository's objects as its alternate, and answers the quarantine and
+// the pack's name. The caller holds the network's lock, shared is enough: it writes only the quarantine.
+func indexQuarantined(rp, file string) (string, string, error) {
+	os.MkdirAll(filepath.Join(rp, "graft"), 0o755)
+	q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "incoming-")
+	if err != nil {
+		return "", "", err
+	}
+	os.MkdirAll(filepath.Join(q, "pack"), 0o755)
+	env := []string{"GIT_OBJECT_DIRECTORY=" + q, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(rp, "objects"), derivedEnv}
+	name, err := indexPack(rp, env, file)
+	if err != nil {
+		os.RemoveAll(q)
+		return "", "", err
+	}
+	return q, name, nil
 }
 
 // storedPath is where /spool and /spool-idx stage stored pack sum of network net (ext ".pack" or ".idx") for
