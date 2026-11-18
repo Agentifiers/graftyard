@@ -5403,3 +5403,10 @@ show whether those reads would retry or move to learners.
    `settled()`.
 3. The (1)/(2) split above, before choosing between a handler-top shed and keeping the leader's AppendEntries off its
    gate, which is option (c).
+
+**A comparison on B0-29 (m2bb29d, B0-02's run on main 9ffb285d, load 02:17:10 to 02:27:10Z; `votershed/outleg.py`).**
+The leader's open requests never built up: p50 9, p99 34, max 145. 4,954 of 5,136 sends left at under 25 open. The
+out leg stays flat, and only 18 sends left at 50 or more open, so B0-29 neither confirms nor refutes the climb. It does
+show the corollary: with no edge backlog on the leader there is no out-leg growth to explain. B0-02 also measured no
+read rounds to the followers on this run. This pair's skew estimates (1.4 s) leave raw out legs negative, so only
+differences between bins mean anything here.
