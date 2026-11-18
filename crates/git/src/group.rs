@@ -37,6 +37,10 @@ pub struct AdmitWire {
     pub push: bool,
     pub inline: usize,
     pub placement_ok: bool,
+    /// What is left of AGENT_PUSH_BOUND at this send, in ms (`Admit::budget`): relative, so the edge's clock and the
+    /// member's never meet. Absent for a command with no bound, and from an edge built before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,7 +66,7 @@ impl AdmitWire {
             graftyard_identity::Actor::App { app, .. } => Some(1 << 63 | app.0.0 as u64),
             graftyard_identity::Actor::Anonymous => None,
         };
-        Some(AdmitWire { class, actor, push, inline, placement_ok: true })
+        Some(AdmitWire { class, actor, push, inline, placement_ok: true, budget_ms: None })
     }
 
     pub fn admit(self) -> Admit {
@@ -78,6 +82,7 @@ impl AdmitWire {
             push: self.push,
             inline: self.inline,
             placement_ok: self.placement_ok,
+            budget: self.budget_ms.map(std::time::Duration::from_millis),
         }
     }
 }

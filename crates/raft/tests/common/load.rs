@@ -48,6 +48,8 @@ pub struct Op {
     pub expect: Option<String>,
     /// Bytes the command carries that no event stores (`KvCmd::Write::render`).
     pub render: usize,
+    /// AGENT_PUSH_BOUND in ms from the op's first send, which each send carries as what is left (`Admit::budget`).
+    pub bound: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -327,6 +329,8 @@ impl Load {
             push: op.kind != Kind::Side,
             inline: l.pack,
             placement_ok: self.placement_ok,
+            // What is left of the op's bound at this send, as the edge computes it from the push's arrival.
+            budget: op.bound.map(|b| std::time::Duration::from_millis((l.first + b).saturating_sub(self.now))),
         };
         let rid = l.rid;
         let last = self.members[to.0 as usize].last_index().0;

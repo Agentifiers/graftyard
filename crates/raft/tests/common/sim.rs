@@ -193,8 +193,9 @@ pub enum FaultKind {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Edge {
     /// A get goes first to a follower by read-index (`read_spread`). A follower that has not answered within
-    /// FOLLOWER_WAIT (1 s) answers `overloaded`, and the read fails as a 503 with no `suspect` report; only a
-    /// follower's `NotLeader` sends it on to the leader's path, which reports.
+    /// FOLLOWER_WAIT (1 s) answers `overloaded`, and the read fails as a 503 with no `suspect` report. A follower that
+    /// forgot its leader (F67 rule 12) sheds it too, and the edge reports that leader once (`b032-shed`); only another
+    /// `NotLeader` sends it on to the leader's path, which reports.
     pub follower_reads: bool,
     /// One client sends the same report (about, term, scope) at most once per this many ms (`SUSPECT_GAP`).
     pub suspect_gap_ms: u64,
@@ -1503,6 +1504,7 @@ impl Sim {
         let Some((r, res)) = self.call(to, |m, now| m.read_index(now)) else { return };
         match r {
             Ok(rid) => self.ops[c].as_mut().expect("op").wait = Some(Wait::Spread(to, rid)),
+            Err(nl) if self.shed_forgot(c, to, &nl) => {}
             Err(_) => {
                 // Declined: the leader's path, at once.
                 let o = self.ops[c].as_mut().expect("op");
@@ -1511,6 +1513,27 @@ impl Sim {
             }
         }
         self.handle(to, res);
+    }
+
+    /// `b032-shed` A: a follower's read-index read that failed `NotLeader` naming none while the follower forgot its
+    /// leader (F67 rule 12) is shed, a 503, and the edge reports the forgotten leader once to the other voters, damped
+    /// as every report is; the read never goes to the leader's path. False for any other decline.
+    fn shed_forgot(&mut self, c: usize, from: SiteId, nl: &graftyard_raft::NotLeader) -> bool {
+        let Some(about) = self.member(from).and_then(|m| m.forgot()).filter(|_| nl.leader.is_none()) else {
+            return false;
+        };
+        let client = self.ops[c].as_ref().map_or(c, |o| o.client);
+        let reports: Vec<graftyard_raft::Suspect> = graftyard_raft::quorums::voters(&self.config_of())
+            .into_iter()
+            .filter(|s| *s != about)
+            .map(|s| graftyard_raft::Suspect { to: s, from: Colo(client as u32 + 1), about, term: nl.term })
+            .collect();
+        self.send_suspects(c, reports);
+        if let Some(op) = self.ops[c].take() {
+            self.stats.shed += 1;
+            self.finish(op, None);
+        }
+        true
     }
 
     fn config_of(&self) -> graftyard_raft::GroupConfig {
@@ -1790,6 +1813,7 @@ impl Sim {
                     self.finish(op, Some(HOut::Value(v)));
                     self.progressed();
                 }
+                Err(nl) if self.shed_forgot(c, s, &nl) => {}
                 Err(_) => {
                     // Declined: the leader's path.
                     let o = self.ops[c].as_mut().expect("op");

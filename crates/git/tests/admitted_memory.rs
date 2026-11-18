@@ -60,6 +60,7 @@ fn a_thousand_open_agent_commands_hold_one_copy_and_none_after_a_higher_term() {
         push: true,
         inline,
         placement_ok: true,
+        budget: None,
     };
     // The host's map: each ticket to what it keeps for the ticket's resolution.
     let mut host: HashMap<Ticket, Option<RepoCmd>> = HashMap::new();

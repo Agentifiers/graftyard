@@ -105,7 +105,8 @@ struct Queued<C> {
     agent_inline: usize,
     /// Its `stored_len` without its Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: what ENTRY_SOFT counts.
     soft_bytes: usize,
-    at: Timestamp,
+    /// AGENT_WAIT after its admission, or sooner by an Agent command's `Admit::budget`: still queued then, it is answered `Full`.
+    until: Timestamp,
 }
 
 impl<C> Queued<C> {
@@ -155,6 +156,13 @@ pub const READ_AHEAD: usize = 3;
 /// How many frozen batches the leader holds behind the entry in flight: enough that each batch's read, asked a round
 /// after the one before, lands about when the entry before it commits, so the cycle is a round plus `decide` and not
 /// a read plus `decide`. One while a read fits in a round, which is cutting early as before; at most READ_AHEAD.
+/// How long an agent command admitted now should wait to enter an entry: the agent commands queued ahead of it at the
+/// agent rate (AGENT_SHARE of capacity), plus one round for its own entry to commit.
+fn expected_wait(agent_queued: usize, capacity: f32, round_ms: f32) -> Duration {
+    let rate = (AGENT_SHARE * capacity).max(1.0);
+    Duration::from_millis((agent_queued as f32 / rate * 1000.0 + round_ms.max(ROUND_MIN_MS)) as u64)
+}
+
 pub fn read_ahead(round_ms: f32, deps_ms: f32) -> usize {
     ((deps_ms / round_ms.max(ROUND_MIN_MS)).ceil() as usize).clamp(1, READ_AHEAD)
 }
@@ -822,6 +830,11 @@ impl<C: Command> Member<C> {
         if agent && !a.placement_ok && a.inline > INLINE_MAX_HOT {
             return Err(full());
         }
+        // AGENT_PUSH_BOUND: an agent command whose queue ahead, at the agent rate, plus one round is longer than what
+        // is left of its bound is refused now, not queued to be refused later.
+        if agent && a.budget.is_some_and(|b| expected_wait(ad.agent().len(), cap, ad.round_ms) > b) {
+            return Err(full());
+        }
         let hot_stage = a.push && a.placement_ok && a.inline > INLINE_MAX_HOT && self.hot();
         let agent_stage =
             agent && a.inline > 0 && (self.pressure(cap) || ad.agent_inline + a.inline > AGENT_INLINE_ENTRY);
@@ -887,7 +900,12 @@ impl<C: Command> Member<C> {
                     *ad.pending_by.entry(actor).or_insert(0) += 1;
                     ad.seq_actor.insert(seq, actor);
                 }
-                let q = Queued { seq, id, cmd, bytes: len, agent_inline, soft_bytes, at: now };
+                let wait = match a.budget {
+                    Some(b) if class == AdmitClass::Agent => b.min(AGENT_WAIT),
+                    _ => AGENT_WAIT,
+                };
+                let until = Timestamp(now.0 + wait.as_millis() as u64);
+                let q = Queued { seq, id, cmd, bytes: len, agent_inline, soft_bytes, until };
                 ad.lanes[class.lane()].push(a.actor, q);
                 seq
             }
@@ -1200,12 +1218,14 @@ impl<C: Command> Member<C> {
         batch
     }
 
-    /// AGENT_WAIT: an agent command still queued that long is answered `Full` and never enters an entry.
+    /// AGENT_WAIT, or an agent command's own `Admit::budget`: one still queued past its `until` is answered `Full` and
+    /// never enters an entry. Only the lanes are searched, so a command already cut into a batch or an entry is never
+    /// answered `Full`; it waits for its outcome.
     fn expire_agents(&mut self) {
         let Some(lead) = self.lead.as_mut() else { return };
-        let cut = Timestamp(self.now.0.saturating_sub(AGENT_WAIT.as_millis() as u64));
+        let now = self.now;
         let ad = &mut lead.admission;
-        let old = ad.lanes[AdmitClass::Agent.lane()].take_old(|q| q.at < cut);
+        let old = ad.lanes[AdmitClass::Agent.lane()].take_old(|q| q.until < now);
         if old.is_empty() {
             return;
         }
@@ -1214,7 +1234,6 @@ impl<C: Command> Member<C> {
             ad.agent_inline -= q.agent_inline;
         }
         let retry_after_s = retry_after_s(ad.agent().len(), ad.capacity(self.admit_capacity, self.entry_soft));
-        let now = self.now;
         for q in &old {
             if let Some(a) = ad.seq_actor.get(&q.seq).copied() {
                 ad.refused(Some(a), now);

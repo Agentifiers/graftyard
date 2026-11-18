@@ -1648,6 +1648,42 @@ fn every_unanswered_read_index_batch_is_a_failed_call() {
     }
 }
 
+/// `b032-shed` A: a follower whose read-index batch its leader never answered for CAMPAIGN_DEADLINE names that leader
+/// in `forgot()`, and a new read fails `NotLeader` naming none, which its host answers shed with the report rather
+/// than as a read for the leader. The control: a follower told "not leader" by a `ReadIndexRes` with no index drops
+/// its leader too, but forgot none, so its host answers `NotLeader` as before. An append from a leader ends it.
+#[test]
+fn a_follower_whose_read_index_timed_out_names_the_leader_it_forgot() {
+    let mut c = Cluster::new(78);
+    c.elect(A);
+    c.sync(A);
+    assert_eq!((c.m(B).leader(), c.m(B).forgot()), (Some(A), None));
+    let lost = |e: &Envelope<KvEvent>| !(e.to == B && matches!(e.msg, Message::ReadIndexRes { .. }));
+    c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+    c.run(4_000, 100, lost);
+    assert_eq!(c.m(B).forgot(), Some(A), "B forgot A after its batch went unanswered");
+    let r = c.on(B, |m, now| m.read_index(now));
+    assert!(matches!(r, Err(ref nl) if nl.leader.is_none()), "a new read fails NotLeader naming none: {r:?}");
+    // A heard again: the mark ends with the first append.
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(9)), put("k", "v"))).expect("A leads");
+    c.run(1_000, 100, |_| true);
+    assert_eq!((c.m(B).leader(), c.m(B).forgot()), (Some(A), None), "an append from A ends forgot");
+
+    // The control: "not leader" in a `ReadIndexRes` from C, which B took for its leader, forgets none.
+    let mut c = Cluster::new(79);
+    c.elect(A);
+    c.sync(A);
+    c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+    let batch = c.inbox.iter().find_map(|e| match e.msg {
+        Message::ReadIndex { batch } if e.from == B => Some(batch),
+        _ => None,
+    });
+    c.inbox.clear();
+    let batch = batch.expect("B sent a batch");
+    c.on(B, |m, now| m.step(now, A, Message::ReadIndexRes { batch, index: None }));
+    assert_eq!((c.m(B).leader(), c.m(B).forgot()), (None, None), "told not leader: no leader, none forgotten");
+}
+
 /// A member this one refuses in pre-vote as `Suspected` is no transfer target either. B led, two colos reported it,
 /// so C suspects it; C then leads, and its site is drained. Before the fix C handed leadership straight back to B, the
 /// gray leader its own pre-vote refuses, and on a half-hung B that hand-off repeated until check quorum moved B each

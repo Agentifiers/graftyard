@@ -16,6 +16,9 @@ pub const AGENT_FLOOR: f32 = 0.2;
 /// Write commands per actor per minute on one group before its commands take the Agent class.
 pub const DEMOTE_PER_MIN: u32 = 60;
 pub const AGENT_WAIT: Duration = Duration::from_secs(30);
+/// An agent push is answered within this of its arrival at the edge: committed, or refused `Full` (B0-32's pass line,
+/// `build/BUILD-PLAN.md`). The edge sends what is left of it as `Admit::budget`.
+pub const AGENT_PUSH_BOUND: Duration = Duration::from_secs(5);
 /// Queued agent commands and bytes per group.
 pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);
 /// A hot group inlines only up to this while placement succeeds; `INLINE_MAX` stays 1 MiB.
@@ -56,7 +59,9 @@ pub struct ActorKey(pub u64);
 /// causation, a classing trailer, or `X-Graftyard-Agent-Session`. The leader may demote Human or Bot to Agent.
 /// `actor` is `None` for commands that do not count toward DEMOTE_PER_MIN (task API commands, host work). `inline` is
 /// the pack bytes the command carries inline, 0 for a stored pack or none. `placement_ok` is the edge's view that
-/// `PackStore::place` succeeds and every bucket's probe is green.
+/// `PackStore::place` succeeds and every bucket's probe is green. `budget` is what is left of AGENT_PUSH_BOUND when the
+/// edge sent it: a command the leader admits as Agent is refused `Full` at once when its expected wait is longer, and
+/// once it has waited that long while still queued (`expire_agents`). `None` waits up to AGENT_WAIT, as before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Admit {
     pub class: AdmitClass,
@@ -64,12 +69,13 @@ pub struct Admit {
     pub push: bool,
     pub inline: usize,
     pub placement_ok: bool,
+    pub budget: Option<Duration>,
 }
 
 impl Admit {
     /// What `Member::commit` sends: Human, no actor, no inline pack. It is never demoted, staged, or refused.
     pub fn human() -> Admit {
-        Admit { class: AdmitClass::Human, actor: None, push: false, inline: 0, placement_ok: true }
+        Admit { class: AdmitClass::Human, actor: None, push: false, inline: 0, placement_ok: true, budget: None }
     }
 }
 
@@ -203,13 +209,13 @@ impl<T> Lane<T> {
         self.len == 0
     }
 
-    /// Removes and returns, from the front of every actor's queue, the items `old` holds for.
+    /// Removes and returns every item `old` holds for, from any place in its actor's queue: deadlines differ by item.
     pub(crate) fn take_old(&mut self, old: impl Fn(&T) -> bool) -> Vec<T> {
         let mut out = Vec::new();
         for q in self.queues.values_mut() {
-            while q.front().is_some_and(&old) {
-                out.push(q.pop_front().expect("front"));
-            }
+            let (gone, kept): (VecDeque<T>, VecDeque<T>) = std::mem::take(q).into_iter().partition(|t| old(t));
+            *q = kept;
+            out.extend(gone);
         }
         if !out.is_empty() {
             self.len -= out.len();

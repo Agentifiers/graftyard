@@ -99,6 +99,10 @@ impl Timing {
         self.trace.borrow_mut().clear();
         self.shard.borrow_mut().clear();
     }
+    /// Sets `bound` to AGENT_PUSH_BOUND after this request's start, its arrival at the edge.
+    pub(crate) fn bound_from_start(&self, bound: &std::cell::Cell<Option<f64>>) {
+        bound.set(Some(self.start.get() + graftyard_raft::admit::AGENT_PUSH_BOUND.as_millis() as f64));
+    }
     /// Closes the phase that ends now.
     pub(crate) fn mark(&self, name: &'static str) {
         let now = js_sys::Date::now();
