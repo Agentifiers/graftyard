@@ -1580,7 +1580,14 @@ impl<F: Family> Routes<F> {
         self.host.settled().await;
         let r = match r {
             Ok(mut back) => {
-                let mut out = self.host.callers.borrow_mut().take(from);
+                let batch_of = |e: &raft::Envelope<F::Ev>| match e.msg {
+                    raft::Message::ReadIndexRes { batch, .. } => Some(batch),
+                    _ => None,
+                };
+                let mut out = self.host.callers.borrow_mut().take(from, batch_of);
+                // This call's own answers count as sent too: a sibling call held on one of them ends.
+                let own: Vec<u64> = back.iter().filter_map(batch_of).collect();
+                self.host.callers.borrow_mut().left(from, &own);
                 out.append(&mut back);
                 // AppendEntries held for this caller, or built for it while stepping its call, leave in this response,
                 // not as calls: their bytes stop counting now (`raft::Member::call_ended`).
@@ -1640,7 +1647,7 @@ impl<F: Family> Routes<F> {
         let end = now_ms() + READ_INDEX_HOLD.as_millis() as u64;
         for batch in asked {
             while !answered(&back, batch)
-                && !self.host.callers.borrow().holds(from, |e| answered(std::slice::from_ref(e), batch))
+                && !self.host.callers.borrow().answered(from, batch, |e| answered(std::slice::from_ref(e), batch))
             {
                 let left = end.saturating_sub(now_ms());
                 if left == 0 {
