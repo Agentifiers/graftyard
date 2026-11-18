@@ -335,3 +335,116 @@ Each has a design owner already:
 
 The next step is a measurement, not code: on the next B0-33 run, read the leader's req/s by `SentBy` step beside the
 out leg. That needs no site day, since the rows exist. Then pick the stream to cut.
+
+## The B0-33 measurement, m50 (2026-11-18)
+
+Granted by the orchestrator after (c1b) was dropped: B0-33's 5,000-agent row on graft-m2b from its current deploy (site
+day m49, main 94fdfb48; edge 10a49946 at 100%), with no site day and no code change. The task was to read the leader's
+req/s by lookup step beside the out leg and its stall share, and to name the inbound stream to cut first.
+
+**Run.** `costrow.sh` row b033, tag m50b33: repo `fm50b33-b033` (131358), a1 `mwlyot52`, 5,000 agents, 300 s of load
+from 10:17:37.7Z, leader site 0 at term 2, k 4, 8 learners. Memguard peaks 67.2, 90.3 and 46.1 MiB, with no 120 MiB
+stop.
+
+| B0-33 line | m50 | m47 | verdict at 90% |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 7,264 ms (p50 2,981, n 5,164); merges 19 ok of 28 attempted, p99 20.1 s; human pushes 82 ok of 90 attempted (95 skipped at the cap), p99 30.8 s | 22,536 ms; merges 1 of 20; human pushes 10 of 24 | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%; fail < 100) | **90.7 agent-class ok a second** (27,209 over 300 s: stand-ins 9,120, comments 5,428, task edits 4,732, lease renews 4,095, leases 1,949, agent pushes 1,290, draft PRs 595) | 17.2 | fail |
+| User token admitted as `Agent` | fast user 513 of 513 × 200 | 37 of 482 | pass |
+| Every refusal in the `ng` or 429 shape | agent pushes: 11,216 `full` (the `ng` shape) and 0 other refusals; other requests 943 × 5xx of 47,574 (2.0%) | 503s and 500s dominate | fail on the other requests (2.0%) |
+| Zero leader changes and zero `suspect` | **1 change** (term 2 → 3 at 10:18:24Z, 46 s into load); 1,631 `suspect` reports stepped at the voters (one colo, 1,618; all `promised` or `leader`) | 19 changes; 41,356 | fail |
+
+**Better than m47 on every line, and on the same code.** This deploy is main 94fdfb48. It has progress-suspect, lookup-retry
+and clock-guard, which m47 (branch lookup-retry 4e5c2afe) did not have. Agent pushes were refused cleanly at admission
+(`full`) instead of failing on 503s. With one term change in place of 19, the walk's `/read` and `/suspect` almost
+disappeared from the leader.
+
+**The one term change.** In the 10 s before it, leader 0's storage confirms ran 593 to 1,193 ms (11 of 17 over
+100 ms). Its ticker stalled up to 1,341 ms (10:18:25Z), and the followers saw append gaps of 1.0 to 2.0 s
+(10:18:04 to 10:18:24Z). Reports came from one colo, and every verdict stepped was `promised` or `leader`: no report
+started a campaign. So the change came from a lapsed promise after appends stopped. That matches the `STEP_DOWN` loop-lag or
+progress rules, not edge reports [inference: the trace has no `Elect` rows for this change].
+
+### The leader's inbound by stream (`votershed/bystep.py`, `raw/bystep-m50b33.txt`)
+
+283 leader-seconds in the load window (member 0 for 40 s, then member 1 for 243 s), 496 to 510 req/s while leading.
+
+| stream (route:step) | req/s | share | share in the 103 seconds with 30%+ stall |
+|---|---|---|---|
+| `/commit` send | 169.9 | 34.1% | 27.5% |
+| `/raft` from learners | 134.7 to 148.6 | 28.2% (all `/raft`) | 29.0% |
+| `/outcome` (after `admitted`) | 116.2 | 23.3% | 22.6% |
+| `/outcome_by_request` ask | 59.1 | 11.9% | **19.3%** |
+| `/read`: walk, leader, spread | 6.9 | 1.4% | 0.9% |
+| `/suspect` | 0.6 | 0.1% | 0.0% |
+| voter `/raft` | 2.4 to 12.1 | (in `/raft`) | |
+
+**Stall share against req/s** (the share of each leader-second the ticker sat 100 ms or more late):
+
+| requests entered that second | seconds | stall share | out leg p50 / p90 |
+|---|---|---|---|
+| < 300 | 70 | 13% | 1,444 / 2,892 ms |
+| 300 to 599 | 129 | 31% | 1,241 / 2,847 ms |
+| 600 to 899 | 61 | 45% | 1,948 / 3,144 ms |
+| 900 to 1,199 | 8 | 48% | 1,857 / 2,543 ms |
+
+Total leader stall time was 87.6 s of 283 (31%), against m47's 34.0 s of 219 (16%), and at lower req/s. The out leg
+(`raw/outleg-m50b33.txt`) was p50 1,291 ms at 500 to 999 open and 1,507 ms at 1,000+. The skew-free round trip at 300+
+open was p50 421 ms, p90 1,308 ms (m47: 990 / 6,586 ms). Of its excess over 300 ms, the output gate left at send took
+25%, loop lag at send 20%, and the rest 56% (`p2p.py`).
+
+**Which stream leads the stalls** (`votershed/bylag.py`, `raw/bylag-m50b33.txt`). Spearman of a stream's count in a
+second against stall ms k seconds later. A stream that causes stalls should correlate at k = 0 or k > 0; one the
+stalls cause should correlate at k < 0.
+
+| stream | member 0 (40 s): k −1 / 0 / +1 | member 1 (243 s): k −1 / 0 / +1 |
+|---|---|---|
+| `/outcome_by_request` ask | 0.47 / **0.81** / 0.50 | 0.50 / **0.73** / 0.69 |
+| `/raft` from learners | −0.14 / 0.34 / **0.60** | 0.02 / 0.29 / **0.46** |
+| `/commit` send | −0.29 / 0.15 / **0.56** | −0.28 / −0.05 / 0.19 |
+| `/outcome` | 0.18 / 0.36 / 0.38 | −0.02 / 0.12 / 0.17 |
+
+- **The receipt's ask is a symptom, not a cause.** The edge asks `/outcome_by_request` only when a `/commit` send has
+  had no reply for COMMIT_RECEIPT (2 s). Its count peaks with the stall (0.73 to 0.81 at k = 0), and it is already
+  high a second before (0.47 to 0.50). That is what a stall-driven retry looks like. Cutting it would cut a
+  consequence.
+- **Learner `/raft` and `/commit` sends lead the stalls by a second** (0.46 to 0.60 at k = +1). The release-after-apply
+  share is also up: 23% of stall time falls in the gap after an `Applied` row (`p4g.py`; m47 9%), and 61% of stalls
+  contain one (m47 44%).
+- **Learner `/raft`.** Each of the 8 learners called the leader 15.5 to 20.2 times a second (134.7 to 148.6/s in all;
+  `raw/learners-m50b33.txt`). Over all learners these carried 34.5 to 40.7 read-index requests/s, and 10.7 to 12.4
+  held appends taken a second.
+
+### Which stream to cut first
+
+**Learner `/raft` on the leader, 135 to 149 req/s (28%).**
+- It is the largest stream that is not client work, and it leads stalls by a second (0.46 to 0.60).
+- It is the one stream the design can cut without touching the commit path. Two candidate ways: fewer learner calls
+  per append (each held call returns on the next append), or fewer read-index calls per learner. DESIGN "Hot group
+  reads, learners" budgets "at most 20 read-index calls/s" per learner (50 ms floor, `READ_PIPELINE` 8 [guess]), and
+  m50's learners ran at 15.5 to 20.2 calls/s each. Which one to cut needs a design, not this run.
+- Cutting the walk's `/read` (m47's largest at 201 to 336/s) or `/suspect` (66 to 131/s) is no longer first. With one
+  term change they ran 6.9 and 0.6 req/s here, so progress-suspect and lookup-retry already removed them.
+- `/outcome` (116/s, after a `/commit` past COMMIT_HOLD answers `admitted`) and the receipt's ask (59/s) are the
+  commit path's own retries: 1.0 `/outcome` and 0.35 ask per `/commit`. They are the next candidate. They follow the
+  stalls, but they add to the next one. This is (c1b)'s territory, which the poll-load table already closed for a cap.
+
+[inference] The m50 evidence for learners is a correlation in time, not a cut. A run with 4 learners in place of 8
+(same load, a test-faults config, no code change) would show whether the leader's stall share falls with the learner
+call rate.
+
+### Close-out
+
+- `retirenets.mjs 131358`: 12 names, all "not joined" (10:29:14Z). Two-pass purge: a 5,228, b 4,862, c 4,364
+  (14,454 objects); second pass 0 on every site (`raw/purge-m50.log`).
+- `joined.mjs` over 65536–65545, 131072–131360, 327680–327710 and 9043968–9043975: 12 still joined, exactly the
+  kept fixtures (65536–65540, 131072, 131073, 131296, 327700, 9043968–9043970); 131358 not joined
+  (`raw/joined-m50.txt`).
+- `costrow` swept shards after the row: "no shard container running".
+- **Cost.** graft-m2b by prefix from 10:09:51Z to 10:28:16Z: $3.71 of the $10 stop. The account day was $15.40 at
+  10:28Z.
+
+Raw files in `tests/fanout/raw/`: `costrow-m50b33.status`, `rows-m50b33.status`, `a1-b0-33-m50.jsonl`,
+`terms-m50b33.jsonl`, `memguard-m50b33.jsonl.xz`, `tsave-m50b33.jsonl.xz`, `bystep-m50b33.txt`, `bylag-m50b33.txt`,
+`outleg-m50b33.txt`, `learners-m50b33.txt`, `retirenets-m50.out`, `purge-m50.log`, `joined-m50.txt`,
+`idlewatch-m50.jsonl`.
