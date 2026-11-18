@@ -1,0 +1,6 @@
+edge: graft-m2b-edge serves f14188bc at 100% (rev a0bca583a), as tests/am1/raw/runs/fanout-m39-edge.log deployed
+2026-11-16T15:57:22Z meter $180.22 before b033, expected +$1.6, stop $185
+2026-11-16T15:58:25Z meter $180.22
+2026-11-16T15:59:27Z meter $180.22
+2026-11-16T16:00:30Z meter $180.22
+2026-11-16T16:01:33Z meter $180.22

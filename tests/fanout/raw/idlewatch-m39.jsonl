@@ -1,0 +1,7 @@
+{"seen": "2026-11-16T14:45:21Z", "app": "graft-m2b-site-c-gitshard", "name": "git#2#net:131330", "started": "2026-11-16T14:44:19.179Z"}
+{"seen": "2026-11-16T14:45:22Z", "app": "graft-m2b-site-b-gitshard", "name": "git#1#net:131330", "started": "2026-11-16T14:44:07.754Z"}
+{"seen": "2026-11-16T14:46:28Z", "app": "graft-m2b-site-b-gitshard", "name": "git#1#net:131330", "started": "2026-11-16T14:46:16.966Z"}
+{"seen": "2026-11-16T14:46:29Z", "app": "graft-m2b-site-a-gitshard", "name": "git#0#net:131330", "started": "2026-11-16T14:46:16.839Z"}
+{"seen": "2026-11-16T14:47:00Z", "app": "graft-m2b-site-c-gitshard", "name": "git#2#net:131330", "started": "2026-11-16T14:46:27.234Z"}
+{"minutes": 30.0, "started": 5}
+exit 1

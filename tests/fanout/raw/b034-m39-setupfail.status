@@ -1,0 +1,20 @@
+2026-11-16T15:15:59Z api.cloudflare.com in request paths: 0 files
+edge: graft-m2b-edge serves f14188bc at 100% (rev a0bca583a), as tests/am1/raw/runs/fanout-m39-edge.log deployed
+node:fs:624
+    return binding.readFileUtf8(path, stringToFlags(options.flag));
+                   ^
+
+Error: ENOENT: no such file or directory, open '/home/user/workspace/repo/day38/tests/m3/rows/../../m0/.m0-token'
+    at readFileSync (node:fs:624:20)
+    at file:///home/user/workspace/repo/day38/tests/m3/rows/lib.mjs:11:21
+    at ModuleJobSync.run (node:internal/modules/esm/module_job:679:46)
+    at node:internal/modules/run_main:199:19
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:105:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/user/workspace/repo/day38/tests/m3/rows/../../m0/.m0-token'
+}
+
+Node.js v26.12.0
+2026-11-16T15:15:59Z setup failed

@@ -1,0 +1,24 @@
+edge: graft-m2b-edge serves f14188bc at 100% (rev a0bca583a), as tests/am1/raw/runs/fanout-m39-edge.log deployed
+2026-11-16T16:03:14Z meter $180.22 before b033, expected +$1.6, stop $185
+2026-11-16T16:04:17Z meter $180.23
+2026-11-16T16:05:19Z meter $180.23
+2026-11-16T16:06:22Z meter $180.24
+2026-11-16T16:07:24Z meter $180.26
+2026-11-16T16:08:26Z meter $180.26
+2026-11-16T16:09:30Z meter $180.28
+2026-11-16T16:10:34Z meter $180.31
+2026-11-16T16:11:36Z meter $180.41
+2026-11-16T16:12:38Z meter $180.58
+2026-11-16T16:13:40Z meter $180.73
+2026-11-16T16:14:43Z meter $180.86
+2026-11-16T16:15:46Z meter $181.03
+2026-11-16T16:16:48Z meter $181.18
+2026-11-16T16:17:50Z meter $181.2
+2026-11-16T16:18:52Z meter $181.22
+2026-11-16T16:19:05Z b033 ended: ALLDONE
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-16T16:19:21Z sweep exit 0
+2026-11-16T16:19:26Z meter $181.22 after b033 and the sweep
+DONE

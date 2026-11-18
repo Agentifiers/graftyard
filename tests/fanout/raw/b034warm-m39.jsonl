@@ -1,0 +1,19 @@
+{"at":"2026-11-16T15:17:39.116Z","s":62,"kind":"pool","site":2,"pool":7,"status":503,"ms":61991,"v":{"warming":true}}
+{"at":"2026-11-16T15:17:43.946Z","s":66.9,"kind":"ls-refs","status":503,"ms":66819,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-16T15:18:37.095Z","s":120,"kind":"catchup","site":0,"status":0,"ms":120005,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-16T15:18:37.125Z","s":120,"kind":"catchup","site":1,"status":0,"ms":120001,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-16T15:18:37.125Z","s":120,"kind":"catchup","site":2,"status":0,"ms":120000,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-16T15:18:44.834Z","s":127.7,"kind":"pool","site":2,"pool":7,"status":503,"ms":60711,"v":{"warming":true}}
+{"at":"2026-11-16T15:19:04.045Z","s":147,"kind":"ls-refs","status":503,"ms":65098,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-16T15:19:50.544Z","s":193.5,"kind":"pool","site":2,"pool":7,"status":503,"ms":60705,"v":{"warming":true}}
+{"at":"2026-11-16T15:20:24.706Z","s":227.6,"kind":"ls-refs","status":503,"ms":65657,"ok":false,"text":"git cache: 503 {\"warming\":true}\n"}
+{"at":"2026-11-16T15:20:42.106Z","s":245,"kind":"catchup","site":0,"status":0,"ms":120005,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-16T15:20:42.127Z","s":245,"kind":"catchup","site":1,"status":0,"ms":120001,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-16T15:20:42.127Z","s":245,"kind":"catchup","site":2,"status":0,"ms":120000,"v":"TimeoutError: The operation was aborted due to timeout"}
+{"at":"2026-11-16T15:20:48.028Z","s":250.9,"kind":"catchup","site":1,"status":200,"ms":901,"v":{"entries":0,"packs":0,"held_max":0,"ms":[["up",28],["cursor",28],["heads",150]],"rehydrated":null,"stored":{"bytes":0,"from_site":{},"idx_rejected":0,"idx_used":0,"index_ms":0,"lock_ms":0,"packs":0,"spool_ms":0,"spools":[],"total_ms":0}}}
+{"at":"2026-11-16T15:20:56.518Z","s":259.4,"kind":"pool","site":2,"pool":7,"status":503,"ms":60968,"v":{"warming":true}}
+{"at":"2026-11-16T15:21:29.390Z","s":292.3,"kind":"catchup","site":2,"status":200,"ms":42262,"v":{"entries":0,"packs":0,"held_max":0,"ms":[["up",26],["cursor",26],["heads",626]],"rehydrated":null,"stored":{"bytes":0,"from_site":{},"idx_rejected":0,"idx_used":0,"index_ms":0,"lock_ms":0,"packs":0,"spool_ms":0,"spools":[],"total_ms":0}}}
+{"at":"2026-11-16T15:21:29.406Z","s":292.3,"kind":"ls-refs","status":200,"ms":49698,"ok":true,"text":"main"}
+{"at":"2026-11-16T15:21:59.274Z","s":322.2,"kind":"pool","site":2,"pool":7,"status":200,"ms":57751,"v":{"ms":[["up",11],["cursor",11],["heads",696]],"rehydrated":null,"stored":{"bytes":0,"from_site":{},"idx_rejected":0,"idx_used":0,"index_ms":0,"lock_ms":0,"packs":0,"spool_ms":0,"spools":[],"total_ms":0}}}
+{"at":"2026-11-16T15:22:09.100Z","s":332,"kind":"catchup","site":0,"status":200,"ms":81992,"v":{"entries":0,"packs":0,"held_max":0,"ms":[["up",79],["cursor",79],["heads",214]],"rehydrated":null,"stored":{"bytes":0,"from_site":{},"idx_rejected":0,"idx_used":0,"index_ms":0,"lock_ms":0,"packs":0,"spool_ms":0,"spools":[],"total_ms":0}}}
+{"at":"2026-11-16T15:22:09.101Z","s":332,"kind":"summary","mainS":292.3,"catchupS":{"0":332,"1":250.9,"2":292.3},"limitMin":45}

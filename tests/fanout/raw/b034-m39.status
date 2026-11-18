@@ -1,0 +1,37 @@
+2026-11-16T15:16:36Z api.cloudflare.com in request paths: 0 files
+edge: graft-m2b-edge serves f14188bc at 100% (rev a0bca583a), as tests/am1/raw/runs/fanout-m39-edge.log deployed
+2026-11-16T15:16:36.557Z b034 networks: {"mono":{"repo":"m3org/b034-mono","chain":"repo:131296","who":"admin"},"second":{"repo":"m3-member/b034-second","chain":"repo:327700","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-1","chain":"repo:9043968","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-2","chain":"repo:9043969","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-3","chain":"repo:9043970","who":"hostile"}]}
+2026-11-16T15:16:36Z seed m3-member/b034-second exit 0
+2026-11-16T15:16:36Z seed m3r-b034-hostile/b034-hostile-1 exit 0
+2026-11-16T15:16:36Z seed m3r-b034-hostile/b034-hostile-2 exit 0
+2026-11-16T15:16:36Z seed m3r-b034-hostile/b034-hostile-3 exit 0
+2026-11-16T15:16:36Z seed m3org/b034-mono exit 0
+2026-11-16T15:16:37Z b0-34 warm start
+2026-11-16T15:22:09Z b0-34 warm exit 0 {"at":"2026-11-16T15:22:09.101Z","s":332,"kind":"summary","mainS":292.3,"catchupS":{"0":332,"1":250.9,"2":292.3},"limitMin":45}
+b0-34 pool probe torn down {"status":200,"body":"{\"torn_down\":true}"}
+{"name": "git#2#net:131296", "started": "2026-11-16T15:16:43.569Z", "image": "sha256:a476cbbf63971df7c0dae756c65dfc0bd5f35b55c18f6353cc3263d38a2352a7"}
+{"name": "git#1#net:131296", "started": "2026-11-16T15:16:41.304Z", "image": "sha256:a476cbbf63971df7c0dae756c65dfc0bd5f35b55c18f6353cc3263d38a2352a7"}
+{"name": "git#0#net:131296", "started": "2026-11-16T15:16:41.162Z", "image": "sha256:a476cbbf63971df7c0dae756c65dfc0bd5f35b55c18f6353cc3263d38a2352a7"}
+{"net": "131296", "running": 3, "other_image": 0}
+2026-11-16T15:22:17Z b0-34 warm images exit 0
+b0-34 kept packs after the warm: {"0": {"kept": 70, "count": 378}, "1": {"kept": 70, "count": 378}, "2": {"kept": 70, "count": 378}}
+b0-34 compose after the warm site a {"n": 25, "bytes": 274264403, "files": [["base-88fac17500f4ea49c7b", 2547140, "2026-11-15T23:45:20.759Z"], ["base-88fac17500f4ea49c7b", 270488211, "2026-11-15T23:45:20.412Z"], ["head", 584, "2026-11-16T00:05:32.182Z"], ["part-120434e5b305defa1fb", 1324, "2026-11-16T00:04:05.886Z"], ["part-120434e5b305defa1fb", 14993, "2026-11-16T00:04:04.592Z"], ["part-1263a7bf8a0e77c6cda", 1212, "2026-11-16T00:02:26.644Z"], ["part-1263a7bf8a0e77c6cda", 28125, "2026-11-16T00:02:26.445Z"], ["part-14a244a9095e9034339", 1324, "2026-11-16T00:02:32.147Z"]]}
+b0-34 compose after the warm site b {"n": 25, "bytes": 274264403, "files": [["base-88fac17500f4ea49c7b", 2547140, "2026-11-15T23:45:29.730Z"], ["base-88fac17500f4ea49c7b", 270488211, "2026-11-15T23:45:28.989Z"], ["head", 584, "2026-11-16T00:05:33.589Z"], ["part-120434e5b305defa1fb", 1324, "2026-11-16T00:04:07.079Z"], ["part-120434e5b305defa1fb", 14993, "2026-11-16T00:04:06.681Z"], ["part-1263a7bf8a0e77c6cda", 1212, "2026-11-16T00:02:27.730Z"], ["part-1263a7bf8a0e77c6cda", 28125, "2026-11-16T00:02:27.381Z"], ["part-14a244a9095e9034339", 1324, "2026-11-16T00:02:34.021Z"]]}
+b0-34 compose after the warm site c {"n": 0, "bytes": 0, "files": []}
+2026-11-16T15:22:39.397Z repo:131296 leader 0: k 2 at 5799
+2026-11-16T15:22:39Z b0-34 b034-mono repo:131296 start
+2026-11-16T15:45:22Z b0-34 done exit 0
+2026-11-16T15:51:36Z b0-34 misses: {"probes": 461, "lines": 463, "joined": 461, "probes_without_line": 0, "lines_without_probe": 2} {"answers": {"composed": 458, "no answer": 2, "stock: no chain": 1}} 
+b0-34 compose at the row's end site a {"n": 3, "bytes": 21403, "files": [["base-49dc32e13b9a88b44ff", 1156, "2026-11-16T15:44:44.147Z"], ["base-49dc32e13b9a88b44ff", 20135, "2026-11-16T15:44:43.944Z"], ["head", 112, "2026-11-16T15:44:44.334Z"]]}
+b0-34 compose at the row's end site b {"n": 3, "bytes": 21403, "files": [["base-49dc32e13b9a88b44ff", 1156, "2026-11-16T15:44:45.602Z"], ["base-49dc32e13b9a88b44ff", 20135, "2026-11-16T15:44:45.152Z"], ["head", 112, "2026-11-16T15:44:46.031Z"]]}
+b0-34 compose at the row's end site c {"n": 0, "bytes": 0, "files": []}
+file:///home/user/workspace/repo/day38/tests/am1/hosted/lib.mjs:126
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:131296
+    at leaderOf (file:///home/user/workspace/repo/day38/tests/am1/hosted/lib.mjs:126:9)
+    at async file:///home/user/workspace/repo/day38/tests/fanout/k.mjs:13:16
+
+Node.js v26.12.0
+DONE
