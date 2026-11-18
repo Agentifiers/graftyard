@@ -575,3 +575,7 @@ edge-answered. None is a member answering 5xx to the edge, except where noted.
   fixtures; 131359 not joined (`raw/joined-m51.txt`).
 - `costrow` swept shards after the row: "no shard container running".
 - **Cost.** graft-m2b by PREFIX from 11:10:00Z: $1.89 at 11:27Z, of the $6 stop. The account day was $19.19 at 11:27Z.
+- **Idle reading** 11:44:13 to 12:16:13Z, spanning the 11:45, 12:00 and 12:15 crons: graft-m2b $0.00 by PREFIX, and
+  `idlewatch.py` saw 0 shard containers start in 32 minutes (`raw/idlewatch-m51.jsonl`). The account spent $0.02 in
+  that window, all on other installs.
+- graft-m2b by PREFIX from 11:10:00Z to 12:17:42Z: $1.89 in all. The account day was $19.22 at 12:17Z.
