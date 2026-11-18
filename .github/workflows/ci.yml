@@ -1,16 +1,16 @@
 name: CI
 
+# Push to main only: no pull_request trigger, so a fork's pull request never runs on the self-hosted runner.
 on:
   push:
     branches: [main]
-  pull_request:
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
