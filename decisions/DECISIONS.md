@@ -4999,3 +4999,34 @@ Branch `c-design` (`tests/am1/results/c-design.md`), B0-33's option (c) after th
 **Evidence.** `crates/git/tests/encoding.rs`, `a_committed_promoted_entry_folds_to_the_digest_it_had_when_it_committed`: core digest `4ceb4070…77cc`, as on `0d212879`; it fails on main (`d5c31b8e…d51f`). `crates/git/tests/rollup.rs`, `a_promotion_committed_before_roll_up_is_not_rollable`; `crates/git/tests/log_archive.rs`, `a_promotion_takes_the_roll_up_format_only_when_roll_up_is_on`. `fold_corpus` on `e2bddc92` differs from `0d212879` in exactly `Promoted` 1 to 24, and on this branch matches both. `tests/m0carried/plant40.py`: 4 of 4 caught, including roll-up's unconditional write (`Promoted 1` to `24` named).
 
 **Flip.** A kind whose fold must change for an existing format, which then needs the dual-read release and a cited edit of its corpus rows; or a corpus that misses a planted fold change, which means the fixtures need more setup state.
+
+### `merge-tail`: a leader that answered is cached without a config, and the edge's shard reads carry the record, 2026-11-18
+
+Branch `merge-tail` (`tests/m0/results/merge-tail.md`), from B0-29 run 5's merge p99 (12,516 ms) and push resolve p99
+(6,039 ms). Built in this thread (T-01a1ccdd) on the orchestrator's ask (T-01a17bda).
+
+**Decision.** `graftyard_lookup`'s cache keeps the member that last answered as leader (`Known::answered`), and
+`cached_leader` returns it when the config held names no leader on that site, or no config is held. A reply naming a
+leader on another site drops it. The edge's `shard_read` sends the owner's placement record (`record=`), as
+`/validate` and `/merge` already did.
+
+**Why.** An isolate learned a chain's voters only from a `NotLeader`, and `cached_leader` needed the leader among them.
+A system chain whose leader always answers (`names:708`, `names:152` on graft-m2b) never sends one, so every read of
+it went through the lookup's mark (`lookup-poll`), one request per isolate at a time: in a 6 s sample of site a, 2,718
+of 4,203 member `/read`s were walk posts, one isolate's 120 posts to the same leader never overlapped, and slow merges
+spent 76% of their wall with no Durable Object call running [measured]. Separately, every upload-pack on the shard
+read `RepoOwner` and `Placement` because `shard_read` sent no record, and 1,869 of them threw after LOOKUP_FOR on
+`names:708` [measured]; the shard's 32 lost answers fell next to those exceptions [measured] (how one invocation's
+exception loses another's answer is [unverified]).
+
+**What it beat.** Learning the config by a `/status` read on the first answer (`learn_voters`): a second call per
+chain per isolate, and the config is not needed to post the member that just answered. Sharing the lookup on system
+chains without a mark: `lookup-poll`'s evidence (558 to 577 posts without it in `tests/lookupbed`) still holds for a
+chain with no leader. Caching `resolve` for writes: a write's fresh read is the design's rule (`rcache`).
+
+**Evidence.** `tests/m0/results/merge-tail.md`, section 1. Test `a_leader_found_by_its_bootstrap_name_is_cached`
+(`crates/lookup`); `tests/m0carried/plant41.py` 6 of 6.
+
+**Flip.** A hosted run in which the walk posts stay a large share of member `/read`s with this build, or in which a
+cached answered member serves a read after its group moved its leader (the next post would miss once and walk, as a
+cached voter does today).
