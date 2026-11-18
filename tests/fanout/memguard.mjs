@@ -3,11 +3,14 @@
 // STOP to stderr, with every sample of the minute before, and SIGTERMs every `a1.mjs` on this orb, which ends its
 // window and writes the row as `stopped`, so a row's numbers never come from a memory storm (the parent's 120 MiB
 // stop line; narrow-reads-3's gate 16 rose from 77 to 258 MiB in one minute). Read only.
-//   node tests/fanout/memguard.mjs <repo name> <seconds> [every 2] [limit 120]
+//   node tests/fanout/memguard.mjs <repo name> <seconds> [every 2] [limit 120] [arrival]
+// ARRIVAL (`mem` or `sql`) is sent with every sample (test-faults `/stats?arrival=`), so a voter that reset mid-row is
+// back on it within one sample, and each sample records what the voter ran with (`arrival`).
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { member, voterNames, sleep } from "../am1/hosted/lib.mjs";
-const [name, secs, every = "2", limit = "120"] = process.argv.slice(2);
+const [name, secs, every = "2", limit = "120", arrival] = process.argv.slice(2);
+const q = `/stats?summary=1${arrival ? `&arrival=${arrival}` : ""}`;
 const until = Date.now() + Number(secs) * 1000;
 const idOf = () => readFileSync(`${process.env.M3_STATE}/am1-runs-repos.txt`, "utf8").split("\n").map((l) => l.split(" ")).find(([n]) => n === name)?.[1];
 let id;
@@ -26,9 +29,9 @@ for (let k = 0; Date.now() < until; k++) {
     if (Object.keys(got).length) names = got;
   }
   const st = await Promise.all([0, 1, 2].map(async (s) => {
-    const v = (await member(chain, s, "/stats?summary=1", undefined, 5_000, names[s]).catch(() => ({}))).v ?? {};
+    const v = (await member(chain, s, q, undefined, 5_000, names[s]).catch(() => ({}))).v ?? {};
     return { site: s, role: v.role ?? null, mib: v.wasmMemMb == null ? null : +(v.wasmMemMb * 1e6 / 1048576).toFixed(1),
-      memSplit: v.memSplit ?? null };
+      memSplit: v.memSplit ?? null, arrival: v.arrival ?? null };
   }));
   const row = { at: new Date(t).toISOString(), members: st };
   console.log(JSON.stringify(row));

@@ -1,0 +1,9 @@
+name = "writecuts"
+main = "./build/index.js"
+compatibility_date = "2026-10-01"
+[[durable_objects.bindings]]
+name = "M"
+class_name = "M"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["M"]

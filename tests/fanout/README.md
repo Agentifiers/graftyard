@@ -22,6 +22,15 @@ Stamp every harness time on Cloudflare's clock, never the orb's. The orb's clock
 - Files written before 2026-11-18's fix are on the orb's clock. Shift them by the offset measured for that run (m50
   +7,310 ms, m51 +7,440 ms), or by the newest trace row's lead over `at` in the run's tsave file.
 
+## B0-33 runs with `arrival=mem` (from 2026-11-18, write-cuts)
+
+`rows.sh` sets test-faults `/stats?arrival=mem` on every voter before B0-33's load (`arrival.mjs`), and skips the
+row if any voter does not confirm it. `b033.sh` passes `mem` to `memguard.mjs`, which sends it with every sample, so a
+voter that reset is back on it within one sample, and each sample records `arrival`. With `sql`, every `/commit` was a
+bare `exec` of its own, outside the entry's transaction, 31 to 44 per leader confirm on m52
+(`tests/am1/results/tx-mix.md`, cut 1). B0-33 rows m50 to m52 ran with `sql`, so their confirm times are not
+comparable with later rows. Every B0-33 results file states which mode it ran.
+
 ## When the orb cannot reach a workers.dev host
 
 Seen on 2026-11-18 from about 13:20Z (B0-02) and at 14:33Z (B0-33 m52): the orb's resolver answered SERVFAIL for
