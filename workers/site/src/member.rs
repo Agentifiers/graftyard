@@ -573,11 +573,11 @@ fn move_placement(
     home: SiteId,
     checks: &graftyard_types::PlacementChecks,
 ) -> std::result::Result<graftyard_types::Placement, String> {
-    let learners = match cfg {
-        raft::GroupConfig::Normal(p) | raft::GroupConfig::Degraded { placement: p, .. } => p.learners(),
-        raft::GroupConfig::Joint { new, .. } => new.learners(),
+    let p = match cfg {
+        raft::GroupConfig::Normal(p) | raft::GroupConfig::Degraded { placement: p, .. } => p,
+        raft::GroupConfig::Joint { new, .. } => new,
     };
-    graftyard_types::Placement::new(voters, learners.iter().cloned().collect(), home, checks).map_err(|e| e.to_string())
+    p.next(voters, p.learners().iter().cloned().collect(), home, checks).map_err(|e| e.to_string())
 }
 
 /// `Ok` while the committed config is still the one at `based_on`, the config a change was built from: a change
@@ -834,10 +834,10 @@ impl<F: Family> Steps for RouteSteps<'_, F> {
             Err("injected: latency check failed".to_owned())
         } else if status == 200 {
             let learners: arrayvec::ArrayVec<MemberRef, 16> = self.p.learners().iter().cloned().collect();
-            match graftyard_types::Placement::new(voters.clone(), learners.clone(), self.p.home(), &checks) {
+            match self.p.next(voters.clone(), learners.clone(), self.p.home(), &checks) {
                 Err(e @ graftyard_types::PlacementError::NoNearFollower { ms, .. }) if self.keep_below.is_some() => {
                     let unbounded = graftyard_types::PlacementChecks { near: &[], ..checks };
-                    if let Ok(np) = graftyard_types::Placement::new(voters, learners, self.p.home(), &unbounded) {
+                    if let Ok(np) = self.p.next(voters, learners, self.p.home(), &unbounded) {
                         over = Some((np, ms));
                     }
                     Err(e.to_string())
@@ -3121,7 +3121,7 @@ impl<F: Family> Routes<F> {
         let checks =
             graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &rtt, near: &[] };
         let voters: arrayvec::ArrayVec<MemberRef, 3> = p.voters().iter().cloned().collect();
-        let np = match graftyard_types::Placement::new(voters, learners, p.home(), &checks) {
+        let np = match p.next(voters, learners, p.home(), &checks) {
             Ok(np) => np,
             Err(e) => return self.reply(json!({ "error": e.to_string(), "joined": joined })),
         };
