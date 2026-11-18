@@ -241,18 +241,19 @@ pub enum EntryBody { Events(Vec<Event>) /* <= ENTRY_SOFT 100 KB past the first c
                      IdBlock { base: DbId, len: u32 } /* <= 2^16 */, Archived(Archived), Promoted(Promoted) /* Packs */,
                      Split(SplitEntry) /* CHILD_GROUP_AT */, Imported(ImportBatch) /* SHARED `rest:migrations` */ }
 /// The recorded stall. A member marks `stalled_since` at the earliest of a follower's first `suspect` report, a
-/// candidate's campaign start, the leader's first entry that no quorum acknowledged within CALL_DEADLINE, or a
-/// follower's store of that entry's re-send, sent CALL_DEADLINE or more after its `at`, which carries it to the next
-/// leader [measured, AM1 fix]. It rides the next state write (a campaign writes at once) [measured, AM1-WP4]; a crash
-/// before then, or an old leader that never reaches the winner, loses it, and leases lapse by the stall. The group's
-/// next entry carries `ExtendLeases { since, by: at - since }`, and every path lease (`Lease`) and Actions job lease
-/// with `expires > since` moves `expires` by `by`. An idle group, a prompt append, or admission queueing marks nothing.
-/// A leader adds no `extend` while an unapplied entry carries one with `since` at or before its marker, so one stall
-/// moves a lease once, and `since` is at least the `at` of the last entry it holds, so no lease that entry judged
-/// expired revives over a newer holder. Without the first rule a 30-minute stall moved 501 leases twice [measured,
-/// M0-WP12]. The leader applies an entry's `extend` before its commands decide, so `decide` sees moved leases and
-/// compares `expires` with the entry's `at`; reads use the leader's leased clock, and expiry needs no command.
+/// candidate's campaign start, the leader's first entry no quorum acknowledged within CALL_DEADLINE, or a follower's
+/// store of that entry's re-send sent CALL_DEADLINE or more after its `at`, which carries it to the next leader
+/// [measured, AM1 fix]. It rides the next state write [measured, AM1-WP4]; a crash first, or an old leader that never
+/// reaches the winner, loses it. The next entry carries `ExtendLeases { since, by: at - since }`, and every path lease
+/// (`Lease`) and Actions job lease with `expires > since` moves by `by`; idle time, a prompt append, or queueing marks
+/// nothing. No `extend` is added while an unapplied entry carries one (else a 30-minute stall moved 501 leases twice
+/// [measured, M0-WP12]); `since` is at least the last entry's `at`, so no lease it judged expired revives; and none
+/// with `by` under EXTEND_MIN, whose entry's commit clears the marker, so an unrenewed lease lapses earlier by the sum
+/// of sub-floor stalls since its renewal (20 to 78 s per 600 s TTL on B0-33 [inference]), then at its wall-clock
+/// `expires` (`decisions/DECISIONS.md`, `extend-floor`). The leader applies `extend` before the entry's commands
+/// decide, so `decide` compares moved `expires` with the entry's `at`; reads use the leader's leased clock.
 pub struct ExtendLeases { pub since: Timestamp, pub by: Duration }
+pub const EXTEND_MIN: Duration = Duration::from_secs(2);        // four DRIFTs, above healthy round p99s [guess]
 /// Membership is in the log. Under `Joint`, a lease and a read-index round need promises from a majority of both
 /// configs. Pre-vote runs before every campaign, and votes are refused to non-members of the latest committed config.
 pub enum GroupConfig { Normal(Placement), Degraded { placement: Placement, lost: SiteId },
