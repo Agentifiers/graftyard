@@ -12,7 +12,7 @@ runner=$1 wf=$2 out=$3 port=${4:-8790} kill_after=${5:-}
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 cargo build -q --release -p graftyard-actions --example runsvc_host --manifest-path "$repo/Cargo.toml"
 rm -rf "$out" && mkdir -p "$out"
-"$repo/target/release/examples/runsvc_host" "$port" "$wf" "$out" > "$out/host.out" 2>&1 &
+"${CARGO_TARGET_DIR:-$repo/target}/release/examples/runsvc_host" "$port" "$wf" "$out" > "$out/host.out" 2>&1 &
 host=$!
 n=0
 while kill -0 $host 2>/dev/null; do

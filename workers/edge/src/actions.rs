@@ -179,6 +179,32 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     }
 }
 
+/// The job a request is the launch service's call for (`graftyard_actions::launch::job_of_path`): a `POST` to
+/// `/actions/build/{plan}/jobs/{job}/runnerresolve/actions` carrying that job's token. `None` for every other request,
+/// which then routes as it did before the launch service existed.
+pub fn launch_job(c: &Ctx<'_>, req: &Request, path: &str) -> Option<JobId> {
+    if req.method() != Method::Post || !path.starts_with("/actions/build/") {
+        return None;
+    }
+    let grant = bearer(req).and_then(|t| runsvc::verify_token(&t, &public_key(c)?, crate::now())).map(|(_, g)| g);
+    graftyard_actions::launch::job_of_path(path, grant)
+}
+
+/// The launch service (`design/SHARED.md`, "Actions", Runner protocol): each `uses:` the runner names, resolved in
+/// the install's own repositories as an anonymous reader would see them (`crate::api::launch_resolve`), all at once.
+pub async fn launch(c: &Ctx<'_>, mut req: Request) -> Result<Response> {
+    use graftyard_actions::launch;
+    let b: Value = serde_json::from_str(&req.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+    let Some(asked) = launch::requested(&b) else { return service_error(400) };
+    let Ok(host) = graftyard_wire::Host::new(&c.cfg.host, false) else { return service_error(503) };
+    let found = futures_util::future::join_all(asked.iter().map(|a| crate::api::launch_resolve(c, &host, a))).await;
+    let (status, v) = launch::reply(&asked.into_iter().zip(found).collect::<Vec<_>>());
+    if status != 200 {
+        console_error!("launch {status}: {v}");
+    }
+    json_reply(status, &v)
+}
+
 /// The reads `acquirejob` makes before it commits, in order: the job row and its run on the job's shard, the
 /// repository's owner, then the owner's login and `Authz` (which name the repository), then the job's secrets and
 /// variables. The edge's `Acquire` and the test's fake.

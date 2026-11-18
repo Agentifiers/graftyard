@@ -642,8 +642,9 @@ pub enum Trace {
     Reported = 28,
     /// cut-trace: the leader cut a batch for an entry (`raft::CutNote`, packed by `cut_row`). `peer` is the end code
     /// (`raft::CutEnd`) plus 16 × the frozen batches held before it plus 64 if an entry was in flight; `batch` the
-    /// commands taken per class, 12 bits each in `AdmitClass::ALL` order, and the agent tokens left above bit 48;
-    /// `index` the commands left queued per class, 16 bits each; `ms` the soft bytes plus all bytes × 2^24.
+    /// commands taken per class, 12 bits each in `AdmitClass::ALL` order; `index` the commands left queued per class,
+    /// 13 bits each; `ms` the soft bytes, all bytes × 2^21 and the agent tokens left × 2^42. Each column stays under
+    /// 2^53, so the JS number the trace passes through holds it exactly.
     #[cfg(feature = "test-faults")]
     Cut = 29,
 }
@@ -654,10 +655,10 @@ fn cut_row(n: &raft::CutNote) -> (u8, u64, u64, u64) {
     let clamp = |v: u32, bits: u32| u64::from(v).min((1 << bits) - 1);
     let peer = n.end as u8 + 16 * n.held.min(3) as u8 + if n.in_flight { 64 } else { 0 };
     let taken = (0..4).fold(0, |a, i| a | clamp(n.taken[i], 12) << (12 * i));
-    let batch = taken | (n.tokens.max(0.0) as u64).min(0xffff) << 48;
-    let left = (0..4).fold(0, |a, i| a | clamp(n.left[i], 16) << (16 * i));
-    let ms = (n.soft_bytes as u64).min((1 << 24) - 1) | (n.bytes as u64) << 24;
-    (peer, batch, left, ms)
+    let left = (0..4).fold(0, |a, i| a | clamp(n.left[i], 13) << (13 * i));
+    let bytes = |v: usize| (v as u64).min((1 << 21) - 1);
+    let ms = bytes(n.soft_bytes) | bytes(n.bytes) << 21 | (n.tokens.max(0.0) as u64).min((1 << 11) - 1) << 42;
+    (peer, taken, left, ms)
 }
 
 /// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.
@@ -3419,7 +3420,7 @@ impl<F: Family> Host<F> {
                 async move {
                     let t0 = now_ms();
                     let q = &json!({ "q": { "dep": true } });
-                    // `dep-hedge`: a read with no answer within DEP_HEDGE sends a second request beside it.
+                    // `dep-hedge`: a read with no answer within its chain's delay (its p90 here, up to DEP_HEDGE) sends a second.
                     let read = |record: graftyard_types::PlacementRecord| async move {
                         let (r, how) = crate::lookup::call_hedged(env, chain, &record, "/read", q).await;
                         if how != graftyard_lookup::Hedged::First {
@@ -4430,9 +4431,26 @@ mod tests {
         };
         let (peer, batch, index, ms) = super::cut_row(&n);
         assert_eq!(peer, 3 + 32 + 64);
-        assert_eq!(batch, 1 | 2 << 12 | 3 << 24 | 4_095 << 36 | 41 << 48, "taken saturates at 12 bits");
-        assert_eq!(index, 5 | 7 << 32 | 65_535 << 48, "left saturates at 16 bits");
-        assert_eq!((ms & 0xff_ffff, ms >> 24), (99_000, 230_000));
+        assert_eq!(batch, 1 | 2 << 12 | 3 << 24 | 4_095 << 36, "taken saturates at 12 bits");
+        assert_eq!(index, 5 | 7 << 26 | 8_191 << 39, "left saturates at 13 bits");
+        assert_eq!((ms & 0x1f_ffff, (ms >> 21) & 0x1f_ffff, ms >> 42), (99_000, 230_000, 41));
+        // A cut with one Human command, ENTRY_MAX soft bytes, and bytes and tokens past what a row holds (they
+        // saturate): each column passes through a JS number (f64) and reads back exactly, the Human count too (B0-29
+        // run 5's rows rounded it away).
+        let full = graftyard_raft::CutNote {
+            taken: [1, 0, 0, 9],
+            soft_bytes: graftyard_raft::ENTRY_MAX,
+            bytes: 3 * graftyard_raft::ENTRY_MAX,
+            tokens: 1e9,
+            ..n
+        };
+        let (_, batch, index, ms) = super::cut_row(&full);
+        for v in [batch, index, ms] {
+            assert_eq!(v as f64 as u64, v, "{v} does not survive a JS number");
+        }
+        assert_eq!((batch & 0xfff, batch >> 36), (1, 9), "one Human command and nine Agent ones");
+        let back = |sh: u32| (ms >> sh) & 0x1f_ffff;
+        assert_eq!((back(0), back(21), ms >> 42), (graftyard_raft::ENTRY_MAX as u64, (1 << 21) - 1, 2_047));
     }
 
     /// LM-1 round 12's confirm split: each transaction lands in its size group by its bytes (a 100 KB one is not

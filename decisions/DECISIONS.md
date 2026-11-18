@@ -4642,6 +4642,23 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted run where `depHedges.won` is near zero while `deps:*` p99 stays over `DEP_HEDGE` (the second request is held as the first was, so the hold is per object, not per request, and F83's reading is wrong); or one where hedged reads exceed about 5% of dependency reads, which makes the extra load worth a closer bound.
 
+### `dep-hedge-adaptive`: each chain's dependency read is hedged at its own p90 in the isolate, 2026-11-18
+
+**Status.** Built on branch `dep-hedge-adaptive`, code-only. Not yet run hosted. Refines `dep-hedge` above.
+
+**Decision.** `dep_read` (`crates/lookup/src/lib.rs`) waits `dep_hedge_after(chain)` before the second request: the p90 of the chain's last 64 dependency read times in this isolate, clamped to `DEP_HEDGE_FLOOR` (100 ms) and `DEP_HEDGE` (1 s), and `DEP_HEDGE` until the chain has 16 [guess for the window, the floor and the quantile]. Each read that answered adds its time; a failed read adds nothing.
+
+**Why.** `merge-tail` found that a hedge near run 5's read p90 (about 150 ms) brings B0-29's replayed commit p99 from 675 to 589 ms (`tests/m0/results/merge-tail.md`). A constant cannot serve both leaders: on B0-31's apac leader, reading enam's identity groups at `deps:authz` p50 about 300 ms, a fixed 150 ms would hedge 79% of reads (m3fr12; 83% on m3fr16) and add 11.5 reads a second, 7.0 of them on `authz:7100001`, while 200 ms still hedges 61% [inference, lognormal fits to the recorded percentiles, `tests/m0/results/dep-hedge-adaptive.md`]. The per-chain p90 hedges about 10% on every run, adds 1.3 to 1.9 reads a second, and keeps run 5's replayed commit p99 at 593 against 589 for the fixed 150 ms.
+
+**What it beat.**
+- **A fixed 150 or 200 ms.** The far-leader rates above.
+- **Mean plus k deviations (`Timed`).** The read times are skewed (run 5 authz p50 53, p99 230), so a mean-based delay hedges a share that moves with the skew; a window's p90 hedges one in ten by construction.
+- **One window for every chain.** A near chain's short reads would set the far chain's delay, and the reverse.
+
+**Evidence.** `a_dependency_reads_hedge_waits_its_chains_own_p90` (`crates/lookup/src/lib.rs`) fails on main; `tests/m0carried/plant42.py` plants nine mutants (main's fixed DEP_HEDGE, a fixed 150 ms, one window for all chains, no recording, no floor, no cap, an unbounded window, the median, no minimum count), 9 of 9 caught. The replay is `tests/m0/cuttrace/hedgerate.py`.
+
+**Flip.** A hosted run where `depHedges.asked` is well past one read in ten (the window lags a leader that slowed), or the far leader's `depHedges.won` is near zero while it hedges one read in ten (its tail is distance, and the hedge only adds load there): raise the quantile or skip chains whose p90 passes a round.
+
 ### `b034-trace`: a pool warm is answered from the slot's own state, and a miss on a just-moved tip composes after the running catch-up, 2026-11-18
 
 **Status.** Built on branch `b034-trace` from main `7430a479`, granted by the orchestrator (T-01a17bda) as T-01a1ccdd's half of B0-34. Site-script and test-driver changes only; `crates/raft` and the container are unchanged. Ships on the next site day.
@@ -4999,6 +5016,59 @@ Branch `c-design` (`tests/am1/results/c-design.md`), B0-33's option (c) after th
 **Evidence.** `crates/git/tests/encoding.rs`, `a_committed_promoted_entry_folds_to_the_digest_it_had_when_it_committed`: core digest `4ceb4070…77cc`, as on `0d212879`; it fails on main (`d5c31b8e…d51f`). `crates/git/tests/rollup.rs`, `a_promotion_committed_before_roll_up_is_not_rollable`; `crates/git/tests/log_archive.rs`, `a_promotion_takes_the_roll_up_format_only_when_roll_up_is_on`. `fold_corpus` on `e2bddc92` differs from `0d212879` in exactly `Promoted` 1 to 24, and on this branch matches both. `tests/m0carried/plant40.py`: 4 of 4 caught, including roll-up's unconditional write (`Promoted 1` to `24` named).
 
 **Flip.** A kind whose fold must change for an existing format, which then needs the dual-read release and a cited edit of its corpus rows; or a corpus that misses a planted fold change, which means the fixtures need more setup state.
+
+### `merge-tail`: a leader that answered is cached without a config, and the edge's shard reads carry the record, 2026-11-18
+
+Branch `merge-tail` (`tests/m0/results/merge-tail.md`), from B0-29 run 5's merge p99 (12,516 ms) and push resolve p99
+(6,039 ms). Built in this thread (T-01a1ccdd) on the orchestrator's ask (T-01a17bda).
+
+**Decision.** `graftyard_lookup`'s cache keeps the member that last answered as leader (`Known::answered`), and
+`cached_leader` returns it when the config held names no leader on that site, or no config is held. A reply naming a
+leader on another site drops it. The edge's `shard_read` sends the owner's placement record (`record=`), as
+`/validate` and `/merge` already did.
+
+**Why.** An isolate learned a chain's voters only from a `NotLeader`, and `cached_leader` needed the leader among them.
+A system chain whose leader always answers (`names:708`, `names:152` on graft-m2b) never sends one, so every read of
+it went through the lookup's mark (`lookup-poll`), one request per isolate at a time: in a 6 s sample of site a, 2,718
+of 4,203 member `/read`s were walk posts, one isolate's 120 posts to the same leader never overlapped, and slow merges
+spent 76% of their wall with no Durable Object call running [measured]. Separately, every upload-pack on the shard
+read `RepoOwner` and `Placement` because `shard_read` sent no record, and 1,869 of them threw after LOOKUP_FOR on
+`names:708` [measured]; the shard's 32 lost answers fell next to those exceptions [measured] (how one invocation's
+exception loses another's answer is [unverified]).
+
+**What it beat.** Learning the config by a `/status` read on the first answer (`learn_voters`): a second call per
+chain per isolate, and the config is not needed to post the member that just answered. Sharing the lookup on system
+chains without a mark: `lookup-poll`'s evidence (558 to 577 posts without it in `tests/lookupbed`) still holds for a
+chain with no leader. Caching `resolve` for writes: a write's fresh read is the design's rule (`rcache`).
+
+**Evidence.** `tests/m0/results/merge-tail.md`, section 1. Test `a_leader_found_by_its_bootstrap_name_is_cached`
+(`crates/lookup`); `tests/m0carried/plant41.py` 6 of 6.
+
+**Flip.** A hosted run in which the walk posts stay a large share of member `/read`s with this build, or in which a
+cached answered member serves a read after its group moved its leader (the next post would miss once and walk, as a
+cached voter does today).
+
+### M4-WP3 slice A: the launch service, 2026-11-18
+
+**Status.** Approved by the lead (T-01a17bda) as slice A of the rest of M4-WP3, code-only. Built on branch `launch-svc` from main `dcef0f59`. It changes the job message (a site day, since `acquirejob` builds it on the shard leader) and adds an edge route (an edge day). Neither is run for it alone.
+
+**Decision.**
+- **The endpoint.** `runsvc::job_message` sets `system.github.launch_endpoint` to the install's root (`Urls::launch`). The runner creates its launch client only when that variable is set and `SystemVssConnection` has an access token (`Runner.Worker/JobRunner.cs:72-82`). It posts to `new Uri(endpoint, "/actions/build/{plan}/jobs/{job}/runnerresolve/actions")`, an absolute path, so any path in the endpoint is dropped (`Sdk/WebApi/WebApi/LaunchHttpClient.cs:42`).
+- **The route.** The edge takes that path only for a `POST` whose bearer token is the run service's job token for the job the path names (`launch::job_of_path`), before any other route. Every other request routes as before, so no existing reply changes: the path is not under `/api/v3`, `/_services/` or a GHES route, and without the job's token it falls through to whatever answered it before. That includes a repository named `actions/build`, whose git and web paths a runner's job token never reaches.
+- **Resolution, on the install only.** Each `{"action": "owner/repo", "version"}` (`LaunchContracts.cs:8-27`) resolves `owner/repo` through the edge's own lookup (`api::read_as`, case-insensitive as every repository route, renames followed) as an anonymous caller. Its version resolves as a full 40-hex SHA in either case, which must be a commit the network's git cache holds (`commit_object`, as REST's `commits/{sha}`), else as a full ref, a tag, then a branch, git's order (`launch::resolve`). The refs come from the narrow `tarball` read, whose rows `graftyard_api::release::resolve` records in the same order. There is no fallback to github.com or any other host, and no Cloudflare API call.
+- **The reply.** 200 `{"actions": {"<action>@<version>": {name, resolved_name, resolved_sha, tar_url, zip_url, version}}}`, keyed by the request's own text, because the runner looks each action up by `"{Name}@{Ref}"` with an ordinal comparer (`ActionManager.cs:1589-1617`). If any action fails to resolve, the whole call is 422 `{"errors": {"<key>": {"message"}}}`, the shape `ActionDownloadResolutionErrorCollection` reads and joins with ". " (`LaunchHttpClient.cs:52-66`, `LaunchContracts.cs:89-106`). The messages follow GitHub's: "repository not found", "unable to find version", and the abbreviated-SHA refusal. A read that failed is a 503 instead, which the runner retries.
+- **Abbreviated SHAs.** 4 to 39 hex characters that name no ref are refused with a 422, as GitHub does [doc: "Using pre-written building blocks in your workflow", full-length commit SHA]. A tag whose name is hex still resolves as that tag.
+- **The 422 flag.** The job message also sets `actions_display_helpful_actions_download_errors` to `true`. Only under it does the runner read a 422's messages and not retry (`Runner.Common/Constants.cs:172`, `ActionManager.cs:1067`, `Runner.Common/LaunchServer.cs:49-54`). Without it, runner 2.338.2 parsed the 422 body as a reply and failed the job with "Value cannot be null. (Parameter 'Actions')" [measured].
+- **The archive.** `tar_url` and `zip_url` are the install's codeload URLs for the resolved SHA, `{codeload}/legacy.tar.gz/{sha}`, which the edge serves itself with no redirect (`api::codeload`). Its archive has one top directory, which the runner unwraps (`ActionManager.cs:1366-1374`). The reply carries no `authentication`, so the runner sends the job's `github.token` (`ActionManager.cs:1117-1128`). That token is empty until slice B, so an anonymous read is the only one that works, which is why resolution reads anonymously too.
+
+**What it beat.**
+- **`tar_url` at the API's `/repos/{o}/{r}/tarball/{sha}`.** That answers a 302 to codeload, which the runner's `HttpClient` follows, but it adds a round trip and a second route that must keep the job's credential.
+- **Reading the action repository as the job's repository.** That would let a job reach any private repository its owner's members can read before there is an access setting that says which. It waits for F90.
+- **Resolving through the run service on the shard leader.** That adds a hop through the lookup to a member that holds none of the action repository's rows.
+
+**Evidence.** Runner 2.338.2, unmodified, under `crates/actions/examples/runsvc_host.rs`, which serves the same `launch` module over two local mirror repositories (`tests/m4/results/m4-wp3-launch.md`). On main `c2b7eac4` `tests/m4/wp3/run/uses.yml` failed with "Launch client is not initialized" after 3 attempts. On this branch it succeeded: `Mirror/Hello@v1`, `mirror/hello@main` and the full SHA each downloaded and ran. `tests/m4/wp3/run/uses-refused.yml`'s five jobs each failed at once, with one 422 and no retry: an abbreviated SHA, a private repository, `actions/checkout@v4` (not on the install), a full SHA the repository lacks, and a missing tag. Kept tests: `runsvc::tests::a_job_message_names_the_launch_endpoint_and_asks_for_its_errors` fails on main; `launch::tests` cover resolution order, the reply keys and shapes, and the job-token check. Plants 48 to 57 in `tests/m4/wp3/plant.py`.
+
+**Flip.** A runner release that resolves actions some other way, or that needs fields in the reply that this one leaves out (`package_details` for immutable actions); or a GHES reply shape this one fails to match, found against a real GHES.
 
 ### A 32.20 `MetaSlim` keeps `SLIM_BYTES`; the alarms on slims folded before it are test-install residue, 2026-11-18
 

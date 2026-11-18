@@ -86,6 +86,7 @@ struct Host {
     out: String,
     log: Arc<Mutex<std::fs::File>>,
     t0: Instant,
+    mirror: Mirror,
 }
 
 impl Host {
@@ -120,11 +121,141 @@ fn form(body: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The install's repositories a `uses:` can name, as the edge's lookup holds them: by `owner/repo` lowercased, each a
+/// bare git repository under `<out>/mirror/` and whether it is public. `Mirror/Hello` is public, `Mirror/Private`
+/// private; both have tag `v1` and branch `main`.
+struct Mirror(BTreeMap<String, (std::path::PathBuf, bool)>);
+
+impl Mirror {
+    fn build(out: &str) -> Mirror {
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_DATE", "2026-11-18T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2026-11-18T00:00:00Z")
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8(o.stdout).unwrap()
+        };
+        let mut m = BTreeMap::new();
+        for (name, public) in [("Mirror/Hello", true), ("Mirror/Private", false)] {
+            let dir = std::path::PathBuf::from(format!("{out}/mirror/{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let action = format!(
+                "name: {name}\ninputs:\n  who:\n    default: world\nruns:\n  using: composite\n  steps:\n    - run: echo \"hello ${{{{ inputs.who }}}} from {name}\"\n      shell: bash\n"
+            );
+            std::fs::write(dir.join("action.yml"), action).unwrap();
+            // `commit-tree`, so no hook or config changes the commit: `Mirror/Hello`'s is always
+            // 24829c76e1163366bf63cb7415a07b99f433a4ff, which `tests/m4/wp3/run/uses.yml` pins.
+            git(&dir, &["init", "-q", "-b", "main"]);
+            git(&dir, &["add", "action.yml"]);
+            let tree = git(&dir, &["write-tree"]);
+            let id = ["-c", "user.name=m", "-c", "user.email=m@m"];
+            let commit = git(&dir, &[&id[..], &["commit-tree", tree.trim(), "-m", "v1"]].concat());
+            git(&dir, &["update-ref", "refs/heads/main", commit.trim()]);
+            git(&dir, &["tag", "v1", commit.trim()]);
+            m.insert(name.to_ascii_lowercase(), (dir, public));
+        }
+        Mirror(m)
+    }
+
+    /// The repository a job may read under `owner/repo`, matched case-insensitively; a private one is not found, as
+    /// the edge reads every action repository anonymously.
+    fn readable(&self, owner: &str, repo: &str) -> Option<&std::path::Path> {
+        let (dir, public) = self.0.get(&format!("{owner}/{repo}").to_ascii_lowercase())?;
+        public.then_some(dir.as_path())
+    }
+
+    fn ref_value(dir: &std::path::Path, name: &graftyard_git::refs::RefName) -> Option<graftyard_git::refs::ObjectId> {
+        // Only a full ref that exists counts, as in the group's rows: `git rev-parse` alone would take a short name.
+        let n = String::from_utf8_lossy(name.as_bytes()).into_owned();
+        let run = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(dir).output().ok();
+        if !run(&["show-ref", "--verify", "-q", &n])?.status.success() {
+            return None;
+        }
+        let o = run(&["rev-parse", "--verify", "-q", &format!("{n}^{{commit}}")])?;
+        graftyard_git::refs::ObjectId::parse_hex(String::from_utf8_lossy(&o.stdout).trim().as_bytes())
+    }
+
+    fn has_commit(dir: &std::path::Path, sha: graftyard_git::refs::ObjectId) -> bool {
+        let t = std::process::Command::new("git").args(["cat-file", "-t", &sha.hex()]).current_dir(dir).output();
+        t.is_ok_and(|o| o.stdout == b"commit\n")
+    }
+}
+
+/// The launch service, as the edge's `actions::launch`: each action resolved in the mirror (`launch::resolve`), with
+/// archive URLs this host serves itself at `/_codeload/`.
+fn launch(h: &Host, b: &Value) -> (u16, Value) {
+    use graftyard_actions::launch::{self, Found, Resolved};
+    let Some(asked) = launch::requested(b) else { return (400, Value::Null) };
+    let found: Vec<_> = asked
+        .into_iter()
+        .map(|a| {
+            let f = match h.mirror.readable(&a.owner, &a.repo) {
+                None => Found::NoRepo,
+                Some(dir) => match launch::resolve(&a.version, |n| Mirror::ref_value(dir, n)) {
+                    // A full SHA must be a commit in the repository, as the edge reads it from the git cache.
+                    Ok(Resolved::Sha(sha)) if !Mirror::has_commit(dir, sha) => Found::NoVersion,
+                    Ok(Resolved::Ref(sha) | Resolved::Sha(sha)) => {
+                        let base = format!("{}/_codeload/{}/{}", h.urls.server, a.owner, a.repo);
+                        let (tar_url, zip_url) = launch::archive_urls(&base, sha);
+                        Found::Commit { sha, tar_url, zip_url }
+                    }
+                    Err(f) => f,
+                },
+            };
+            (a, f)
+        })
+        .collect();
+    launch::reply(&found)
+}
+
+/// `GET /_codeload/{owner}/{repo}/legacy.tar.gz/{sha}`: `git archive` with one top directory, read-gated as codeload is.
+fn codeload(h: &Host, req: tiny_http::Request, rest: &str) {
+    let parts: Vec<&str> = rest.splitn(4, '/').collect();
+    let (dir, sha) = match parts.as_slice() {
+        [o, r, "legacy.tar.gz", sha] => match h.mirror.readable(o, r) {
+            Some(d) if graftyard_git::refs::ObjectId::parse_hex(sha.as_bytes()).is_some() => (d, *sha),
+            _ => return respond(req, 404, json!({"message": "Not Found"})),
+        },
+        _ => return respond(req, 404, json!({"message": "Not Found"})),
+    };
+    let prefix = format!("{}-{}/", parts[1], sha);
+    let out = std::process::Command::new("git")
+        .args(["archive", "--format=tar.gz", &format!("--prefix={prefix}"), sha])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        return respond(req, 404, json!({"message": "Not Found"}));
+    }
+    let r = tiny_http::Response::from_data(out.stdout)
+        .with_header(tiny_http::Header::from_bytes("Content-Type", "application/x-gzip").unwrap());
+    let _ = req.respond(r);
+}
+
 fn handle(h: &Host, mut req: tiny_http::Request) {
     let method = req.method().to_string();
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
     let grant = bearer(&req).and_then(|t| runsvc::verify_token(&t, &h.key.public(), now())).map(|(_, g)| g);
+    if method == "GET"
+        && let Some(rest) = path.strip_prefix("/_codeload/")
+    {
+        h.log(json!({"method": method, "path": path, "note": "codeload"}));
+        return codeload(h, req, rest);
+    }
+    if method == "POST" && graftyard_actions::launch::job_of_path(&path, grant).is_some() {
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let jbody: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let (status, reply) = launch(h, &jbody);
+        h.log(json!({"method": method, "path": path, "grant": grant, "body": jbody, "status": status, "reply": reply}));
+        return respond(req, status, reply);
+    }
     // The live-log socket first: an upgrade request has no body, and reading one would wait for the client to hang up.
     if method == "GET" && path.starts_with("/_services/logrelay/") {
         h.log(json!({"method": method, "path": path, "note": "live log socket", "grant": grant}));
@@ -442,6 +573,7 @@ fn main() {
         out: out.clone(),
         log: log.clone(),
         t0: Instant::now(),
+        mirror: Mirror::build(&out),
     });
     let h0 = host.clone();
     std::thread::spawn(move || {

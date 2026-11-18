@@ -287,6 +287,53 @@ async fn read_found(
     read_repo(c, repo, owner, name, viewer, None, rows, Gate::Readers).await
 }
 
+/// One `uses:` action for the launch service (`crate::actions::launch`): its repository resolved by name on this
+/// install (case-insensitive, renames followed, as every repository route), read as an anonymous caller, so only a
+/// repository anyone may read resolves (`decisions/OPEN-QUESTIONS.md`, F90), and its version resolved in the refs the
+/// narrow `tarball` read records; a full SHA must be a commit the network's git cache holds, as REST's
+/// `commits/{sha}` reads it. Nothing is looked up outside the install.
+pub(crate) async fn launch_resolve(
+    c: &Ctx<'_>,
+    host: &Host,
+    a: &graftyard_actions::launch::ActionRef,
+) -> graftyard_actions::launch::Found {
+    use graftyard_actions::launch::{self, Found, Resolved};
+    if a.owner.is_empty() {
+        return Found::NoRepo;
+    }
+    let route = graftyard_api::narrow::Route::Rest {
+        tail: vec!["tarball".into(), a.version.clone()],
+        query: String::new(),
+        path: format!("/repos/{}/{}/tarball/{}", a.owner, a.repo, a.version),
+        agent: false,
+    };
+    let rd = match read_as(c, &a.owner, &a.repo, None, Rows::Api(route)).await {
+        Ok(Ok(rd)) => rd,
+        Ok(Err(r)) if r.status == 404 => return Found::NoRepo,
+        Ok(Err(r)) => return Found::Failed(format!("{} {}: {}", a.name, r.status, wire_body(&r))),
+        Err(e) => return Found::Failed(format!("{}: {e}", a.name)),
+    };
+    let view = rd.view(host);
+    let sha = match launch::resolve(&a.version, |n| view.ref_value(n)) {
+        Ok(Resolved::Ref(sha)) => sha,
+        Ok(Resolved::Sha(sha)) => match commit_object(c, &rd.repo, sha).await {
+            Ok(Some(_)) => sha,
+            Ok(None) => return Found::NoVersion,
+            Err(e) => return Found::Failed(format!("{}: the git cache: {e}", a.name)),
+        },
+        Err(f) => return f,
+    };
+    let (tar_url, zip_url) = launch::archive_urls(&host.codeload(&a.owner, &a.repo), sha);
+    Found::Commit { sha, tar_url, zip_url }
+}
+
+fn wire_body(r: &Reply) -> String {
+    match &r.body {
+        Body::Json(v) => v.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// `read` for a command that decides on the core tier alone (a lease command, L0-16): served while the metadata
 /// tier loads, with an empty metadata view, behind the same read gate as `read`.
 pub(crate) async fn read_core(

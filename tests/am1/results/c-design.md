@@ -451,3 +451,131 @@ Raw files in `tests/fanout/raw/`: `costrow-m50b33.status`, `rows-m50b33.status`,
 `terms-m50b33.jsonl`, `memguard-m50b33.jsonl.xz`, `tsave-m50b33.jsonl.xz`, `bystep-m50b33.txt`, `bylag-m50b33.txt`,
 `outleg-m50b33.txt`, `learners-m50b33.txt`, `retirenets-m50.out`, `purge-m50.log`, `joined-m50.txt`,
 `idlewatch-m50.jsonl`.
+
+## B0-33 with 4 learners, m51 (2026-11-18), and m50's 5xx
+
+Granted by the orchestrator: the same B0-33 row, deploy and mix as m50 (site day m49, main 94fdfb48; edge 10a49946),
+with 4 learners in place of 8. The learner count is an argument to the leader's `/learners` route
+(`tests/fanout/learners.mjs`, `ceil(rate / LEARNER_READS)` per region), so `LEARNERS=enam:2000,weur:1000,apac:1000`
+placed 4 with no site-script or variable change. The confirmation rule was set before the run: learner `/raft` should
+fall to about 70/s. The learner cause holds if the stall share at a matched req/s band falls and the out leg and the
+leader's confirms improve. If learner `/raft` halves and the stalls at matched load do not move, the cause is wrong.
+
+**Run.** `costrow.sh` row b033, tag m51b33: repo `fm51b33-b033` (131359), a1 `mwm0u21s`, 5,000 agents, 300 s of load
+from 11:16:36.7Z, k 4. 4 learners placed (`l0` to `l3` on sites 0, 1, 2, 0). Leader site 0 at term 2 until 11:17:35Z,
+then site 1 at term 3 to the end.
+
+### The learner test: confirmed
+
+| measure (leader, load window) | m50, 8 learners | m51, 4 learners |
+|---|---|---|
+| learner `/raft` on the leader | 134.7 to 148.6/s | **64.5/s** (12.5 to 18.3 per learner) |
+| leader req/s while leading | 496 to 510 | 214 to 292 |
+| stall share, < 300 req/s band | 13% (70 s) | **1%** (210 s) |
+| stall share, 300 to 599 req/s band | 31% (129 s) | **16%** (64 s) |
+| stall share, 600 to 899 req/s band | 45% (61 s) | **19%** (7 s) |
+| total stall | 87.6 of 283 leader-s (31%) | **14.4 of 282 (5%)** |
+| out leg at 300 to 499 open, p50 / p90 | 1,281 / 2,728 ms | 1,176 / 2,732 ms (n 51) |
+| out leg at 100 to 199 open, p50 / p90 | 1,087 / 2,788 ms (n 20) | **−47 / 1,355 ms** (n 405) |
+| leader open at entry, p50 / p99 | 703 / 1,289 | **122 / 533** |
+| leader storage confirm, p50 / p90 / p99 | 68 / 485 / 2,164 ms | **43 / 136 / 1,576 ms** |
+| confirm p90, 300 to 599 band | 437 ms | **210 ms** |
+| leader commit p99 (a1) | 7,264 ms | **3,098 ms** |
+
+- Learner `/raft` halved as predicted (`raw/learners-m51b33.txt`). At every matched req/s band the stall share fell by
+  about half, and the confirms fell at the matched band too. The out leg improved where most m51 seconds sat (100 to
+  299 open). At 300+ open it is about unchanged, but m51 has only 63 sends there.
+- The halving cut more than its own 70 req/s. `/commit` sends fell from 170 to 92/s and `/outcome` from 116 to 38/s,
+  because with fewer stalls fewer commits hit COMMIT_HOLD and the receipt. Open requests at entry fell from p50 703 to
+  122. This is the loop m50 suggested: learner calls lead stalls, and stalls multiply the commit path's retries.
+- `/outcome_by_request` ask still peaks with the stall (`raw/bylag-m51b33.txt`, 0.69 to 1.00 at k = 0): a symptom, as
+  in m50. `/commit` send and learner `/raft` still lead by a second, at 0.15 to 0.31.
+
+So the learner-load cause holds by the rule set in advance. [inference] It is one run each way, and m51's leader
+handled half the commit sends, so part of the drop is less load in total. The matched-band comparison controls for
+that only as far as the bands go.
+
+### The row: worse, for a reason the learner count does not explain
+
+| B0-33 line | m50, 8 learners | m51, 4 learners | verdict at 90% |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 7,264 ms; merges 19 ok, p99 75 s; human pushes 82 ok, p99 30.8 s | commit p99 3,098 ms (p50 838); merges 8 ok of 15, p99 48 s; human pushes 44 ok, p99 92.5 s | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 90.7 ok/s | **63.6 ok/s** (19,076: agent pushes 4,484, stand-ins 4,186, comments 3,165, lease renews 2,742, task edits 2,682, leases 1,187, draft PRs 630) | fail |
+| User token admitted as `Agent` | 513 of 513 | 286 of 524 (238 × 503) | fail |
+| Every refusal in `ng` or 429 shape | 943 × 5xx (2.0%) | **18,294 × 5xx** (34% of 54,498) | fail |
+| Zero leader changes, zero `suspect` | 1 change (term 2 → 3), 1,631 reports | 1 change (term 2 → 3 at 11:17:35Z); 906 edge `suspect` calls | fail |
+
+Agent pushes did better: 4,484 ok against 1,290, with 7,917 `full` (the `ng` shape). Everything that reads the group
+through the edge's read gate did worse, after the leader change.
+
+**The leader change.** At 11:17:42Z site a's leader logged `StepDown { why: Confirm { p99_ms: 1093, slow: 6, of: 21 },
+to: Some(SiteId(1)) }` (Workers Logs), a transfer to site 1. Member 1 was a candidate at term 3 by 11:17:35.5Z. In
+its last 10 s as leader, member 0's trace shows 31 confirms, none over 500 ms (max 273 ms), and no ticker lag of 200 ms
+or more. So the rule tripped on confirms the trace does not show as slow. [inference] The site-a log line comes 7 s
+after the term change, and `Health` keeps its own confirm window. It may count confirm times the trace does not (the
+trace's `Confirm` rows are per transaction). m50's term change had the same cause: site a at 10:18:04 and 10:18:27Z,
+`Confirm { p99_ms: 1096 | 827, slow: 6 }`. Both changes in both runs are the confirm health rule, not `suspect`
+reports. After the change, member 1 (site b) logged `StepDown { why: CommitErrors .. }` three times (11:18:20,
+11:18:40 and 11:19:00Z) but stayed leader. In m50 the new leader logged 13 such alarms.
+
+**The 5xx after it.** The edge's 5xx by 30 s (`fivexx.py`): 17 before 11:17:30Z, then 550 to 3,300 every 30 s to the
+end. 18,284 at the edge: task 503 4,991, GraphQL 503 3,419, upload-pack 503 3,339, renew 503 2,734, label 503 2,339,
+lease 503 1,072, upload-pack 500 230, receive-pack 503 109, renew 500 44, merge 503 7. The REST and GraphQL 503s ran
+p50 22.0 s wall at the edge (n 4,200, every one ≥ 19 s), so they are writes whose read gate retried shed reads for all
+of LOOKUP_FOR (20 s) and then answered 503 (`spread_read`, `c.write`). The learners show why: after the change their
+inbound `/read` rose from 15 to 54/s each to **476, 486, 514 and 136/s**. 85 to 90% were `packed` whole-tier reads
+(`READ_QUERIES` code 22) and the rest `core` (24). Reads entered with 250+ open in up to 12% of cases (READS_MAX 256).
+Their read-index calls to the leader ran p50 925 to 1,000 ms in the 50 s after the change (p50 47 to 335 ms before),
+so they shed reads at FOLLOWER_WAIT. The edge then retried every 250 ms. [inference] That is a retry storm on the
+learners: the read gate's own retries, not new client reads, multiplied the read rate by about 10. m50's learners took
+32 to 49 reads/s each before and after its change, and never entered this state. The difference is a hypothesis: with
+4 learners, each takes twice the reads at the change, and one that sheds feeds the retry loop. Not shown.
+
+### m50's 943 5xx, attributed
+
+Edge request events (Workers Logs, `raw/fivexx-m50.json`), each joined to its sub-requests by trace id. All 943 are
+edge-answered. None is a member answering 5xx to the edge, except where noted.
+
+| route, status | n | where it comes from | side |
+|---|---|---|---|
+| REST and GraphQL writes 503 in two bursts (10:18:40 to 10:19:00Z, 114; 10:20:10 to 10:20:35Z, 304), plus 15 outside | 433 | Tasks 180, GraphQL 100, renew 98, labels 39, leases 37. Wall p50 2.5 s. The sub-requests are `/read`s that all answered 200 or were cancelled at FOLLOWER_CALL; no member returned 5xx. Both bursts sit exactly on leader member 1's ticker stalls (436 to 1,000 ms of each second from 10:18:40 to 10:18:50Z, and 227 to 942 ms from 10:20:10 to 10:20:15Z, `Lag` rows). The learners' read-index calls waited past FOLLOWER_WAIT, so they shed and the edge answered 503 | member stall, edge answer (`read_failed`) |
+| upload-pack 503 | 327 | 324 are the driver's ls-refs (`read:ref`: 503 × 324). The edge answers a v2 ls-refs from the group (`ls_refs`: ref pages from the leader, core rows by spread) before any shard. Traced samples show only those group `/read`s under the edge request, follower reads cut at about 1 s (shed), no member 5xx, and the edge's 503 after 3.2 to 3.7 s. Separately, site a's shard Durable Object threw `names:708: no member answered` on 341 `/upload-pack` calls (wall p50 20.3 s), on the `Names` reads it makes when the caller sends no owner record (`repo_owner`, `owner_record`; the edge's `upload_pack` sends no `record=`). The counts match, but the 3.5 s against 20 s timing does not, so which one produced the client's 503 is **not settled** | edge answer; group read or shard, unproven |
+| lease renew 500 | 157 | Every one is a renew whose lease had a release (`DELETE` → 204) in flight at the same time (157 of 157). The member renders the reply after the entry applied: `leases::render_ok` answers 500 `no lease row` when the renew committed but the release committed in the same or an earlier entry, so the row is gone by render time | member render bug |
+| merge 503 | 4 | `the git cache: N {"warming": true}` | shard warming |
+| other write 503 | 21 | the same read-shed shape, outside the bursts | edge answer |
+
+- **Edge-side or member-side.** Every 5xx reached the client from the edge. The causes are: a leader stall that made
+  the read gate shed (433), ls-refs failing either on the group read or on a shard's `Names` lookup (327, which of the
+  two is unproven), and a lease render that contradicts its own committed state (157).
+- **Shape.** "Every refusal in the ng or 429 shape" fails on all three regardless of learners. The 433 come from the
+  stall: a write whose gate read is shed answers 503 after LOOKUP_FOR. Only Agent pushes get the `ng` shape
+  (`gate_ng`). The 157 are a bug: a renew racing a release should answer 404 (the lease is gone), as 2,881 other renews
+  did. The 327 need one more trace, edge to shard, to tell the two candidates apart.
+
+### Recommendation
+
+1. **Learner load: design for it.** By the rule set in advance the cause holds: half the learners cut the leader's
+   stall share by half at matched load and improved confirms and commit p99. The design should take fewer learner
+   calls per second to the leader as its target. DESIGN "Hot group reads, learners" budgets up to 20 read-index
+   calls/s per learner, and each m51 learner ran 12.5 to 18.3. Batch read-index across a learner's reads, or let a
+   learner's held append answer reads without a separate read-index round.
+2. **But not by placing fewer learners.** With 4, the reads per learner doubled, and after the leader change the
+   learners entered a shed-retry loop that cost 18,294 × 503. That has to be fixed in the same design: it is the read
+   gate's retry (every 250 ms for 20 s), not client load.
+3. **5xx causes outside the learner question**: the lease render 500 (a bug, 157), the read gate's 503 for non-Agent
+   writes during a stall (433), and the ls-refs 503 (327), whose source needs one more trace.
+4. **The confirm health rule moved the leader in both runs** while the trace shows no slow confirms. That needs its
+   own look before any learner change is measured, because B0-33 counts every leader change.
+
+### Close-out
+
+- `retirenets.mjs 131359`: 4 names, all "not joined" (11:30:51Z and again 11:42:09Z). Two-pass purge: a 6,603,
+  b 5,793, c 4,566 (16,962 objects); second pass 0 on every site (`raw/purge-m51.log`).
+- `joined.mjs` over 65536–65545, 131072–131360, 327680–327710 and 9043968–9043975: 12 still joined, exactly the kept
+  fixtures; 131359 not joined (`raw/joined-m51.txt`).
+- `costrow` swept shards after the row: "no shard container running".
+- **Cost.** graft-m2b by PREFIX from 11:10:00Z: $1.89 at 11:27Z, of the $6 stop. The account day was $19.19 at 11:27Z.
+- **Idle reading** 11:44:13 to 12:16:13Z, spanning the 11:45, 12:00 and 12:15 crons: graft-m2b $0.00 by PREFIX, and
+  `idlewatch.py` saw 0 shard containers start in 32 minutes (`raw/idlewatch-m51.jsonl`). The account spent $0.02 in
+  that window, all on other installs.
+- graft-m2b by PREFIX from 11:10:00Z to 12:17:42Z: $1.89 in all. The account day was $19.22 at 12:17Z.

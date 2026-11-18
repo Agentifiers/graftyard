@@ -7,7 +7,7 @@
 #   [POOL_PROBE=2:7] bash tests/fanout/costrow.sh   -> tests/fanout/raw/costrow-<tag>.status
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-source tests/m3/rows/env.sh
+source ${ROWS_ENV:-tests/m3/rows/env.sh}
 R=tests/fanout/raw ST=tests/fanout/raw/costrow-$TAG.status
 [ -e $R/.costrow-$TAG.started ] && exec sleep infinity
 touch $R/.costrow-$TAG.started
@@ -20,7 +20,7 @@ runusd() { PREFIX=${RUN_PREFIX:-} python3 tests/fanout/acctcost.py "$1" 2>/dev/n
 meter() { echo "$(acct "${ACCT_FROM:?}") $(runusd "${RUN_FROM:-$ACCT_FROM}")"; }
 over() { python3 -c 'import sys; a, r = map(float, sys.argv[1].split()); n, s, rs = map(float, sys.argv[2:]); sys.exit(0 if a + n >= s or r + n >= rs else 1)' \
   "$1" "${2:-0}" "$STOP" "${RUN_STOP:-1e9}"; }
-python3 tests/fanout/edgever.py "$EDGE_LOG" >> "$ST" 2>&1 || { s "stopped: the edge is not the site day's"; echo DONE >> "$ST"; exec sleep infinity; }
+python3 tests/fanout/edgever.py "$EDGE_LOG" ${EDGE_SCRIPT:-} >> "$ST" 2>&1 || { s "stopped: the edge is not the site day's"; echo DONE >> "$ST"; exec sleep infinity; }
 u=$(meter); s "meter (account, run) $u before $ROW, expected +\$$EXPECT, stop \$$STOP account, \$${RUN_STOP:-none} run"
 over "$u" "$EXPECT" && { s "stopped: $u + \$$EXPECT would reach a stop"; echo DONE >> "$ST"; exec sleep infinity; }
 case $ROW in
@@ -33,7 +33,9 @@ esac
 ( while ! grep -q "^$done_mark\$\|$done_mark\$" "$done_file" 2>/dev/null; do
     sleep 60; u=$(meter); s "meter (account, run) $u"
     if over "$u" 0.5; then
-      s "STOP: meter $u within \$0.5 of a stop, a1.mjs stopped"; pkill -f "a1.mjs b0-3[34] "; break; fi
+      # The seeds, the drain and the warm bill too (graft-m1's B0-34 seeds its own networks): every step stops.
+      s "STOP: meter $u within \$0.5 of a stop, a1.mjs and the b034 steps stopped"; pkill -f "a1.mjs b0-3[34] "
+      pkill -f "tests/fanout/b034(seed|drain|warm)\.mjs"; pkill -f "tests/fanout/b034\.sh"; echo "$done_mark" >> "$done_file"; break; fi
   done ) &
 w=$!
 until grep -q "$done_mark\$" "$done_file" 2>/dev/null; do sleep 10; done

@@ -1,0 +1,9 @@
+﻿2026-11-18T11:15:47.0936779Z Current runner version: '2.338.2'
+2026-11-18T11:15:47.0941002Z Runner name: 'graftyard-host-runner-5'
+2026-11-18T11:15:47.0941428Z Machine name: '172'
+2026-11-18T11:15:47.0943632Z Runner is running behind proxy server 'http://172.28.0.53:3128' for all HTTP requests.
+2026-11-18T11:15:47.0943695Z Runner is running behind proxy server 'http://172.28.0.53:3128' for all HTTPS requests.
+2026-11-18T11:15:47.0943740Z Prepare workflow directory
+2026-11-18T11:15:47.1287699Z Prepare all required actions
+2026-11-18T11:15:47.1330359Z Getting action download info
+2026-11-18T11:15:47.2017278Z ##[error]Unable to resolve action 'Mirror/Hello@v9', unable to find version 'v9'

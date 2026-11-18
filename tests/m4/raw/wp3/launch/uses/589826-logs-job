@@ -1,0 +1,50 @@
+﻿2026-11-18T11:15:22.5576230Z Current runner version: '2.338.2'
+2026-11-18T11:15:22.5580621Z Runner name: 'graftyard-host-runner-1'
+2026-11-18T11:15:22.5581037Z Machine name: '172'
+2026-11-18T11:15:22.5583546Z Runner is running behind proxy server 'http://172.28.0.53:3128' for all HTTP requests.
+2026-11-18T11:15:22.5583626Z Runner is running behind proxy server 'http://172.28.0.53:3128' for all HTTPS requests.
+2026-11-18T11:15:22.5583738Z Prepare workflow directory
+2026-11-18T11:15:22.5928977Z Prepare all required actions
+2026-11-18T11:15:22.5972490Z Getting action download info
+2026-11-18T11:15:22.6621832Z Download action repository 'Mirror/Hello@v1' (SHA:24829c76e1163366bf63cb7415a07b99f433a4ff)
+2026-11-18T11:15:22.6865487Z Download action repository 'mirror/hello@main' (SHA:24829c76e1163366bf63cb7415a07b99f433a4ff)
+2026-11-18T11:15:22.6928334Z Download action repository 'Mirror/Hello@24829c76e1163366bf63cb7415a07b99f433a4ff' (SHA:24829c76e1163366bf63cb7415a07b99f433a4ff)
+2026-11-18T11:15:22.7691217Z Complete job name: uses
+2026-11-18T11:15:22.8172537Z ##[group]Run echo "before the action"
+2026-11-18T11:15:22.8172928Z [36;1mecho "before the action"[0m
+2026-11-18T11:15:22.8201891Z shell: /usr/sbin/bash -e {0}
+2026-11-18T11:15:22.8202527Z ##[endgroup]
+2026-11-18T11:15:22.8371058Z before the action
+2026-11-18T11:15:22.8468745Z ##[group]Run Mirror/Hello@v1
+2026-11-18T11:15:22.8468828Z with:
+2026-11-18T11:15:22.8468872Z   who: tag
+2026-11-18T11:15:22.8469006Z ##[endgroup]
+2026-11-18T11:15:22.8571825Z ##[group]Run echo "hello tag from Mirror/Hello"
+2026-11-18T11:15:22.8571907Z [36;1mecho "hello tag from Mirror/Hello"[0m
+2026-11-18T11:15:22.8584168Z shell: /usr/sbin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-18T11:15:22.8584224Z ##[endgroup]
+2026-11-18T11:15:22.8612393Z hello tag from Mirror/Hello
+2026-11-18T11:15:22.8651563Z ##[group]Run mirror/hello@main
+2026-11-18T11:15:22.8651645Z with:
+2026-11-18T11:15:22.8651703Z   who: branch
+2026-11-18T11:15:22.8651801Z ##[endgroup]
+2026-11-18T11:15:22.8661016Z ##[group]Run echo "hello branch from Mirror/Hello"
+2026-11-18T11:15:22.8661119Z [36;1mecho "hello branch from Mirror/Hello"[0m
+2026-11-18T11:15:22.8673651Z shell: /usr/sbin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-18T11:15:22.8673715Z ##[endgroup]
+2026-11-18T11:15:22.8701693Z hello branch from Mirror/Hello
+2026-11-18T11:15:22.8719319Z ##[group]Run Mirror/Hello@24829c76e1163366bf63cb7415a07b99f433a4ff
+2026-11-18T11:15:22.8719384Z with:
+2026-11-18T11:15:22.8719421Z   who: sha
+2026-11-18T11:15:22.8719493Z ##[endgroup]
+2026-11-18T11:15:22.8726456Z ##[group]Run echo "hello sha from Mirror/Hello"
+2026-11-18T11:15:22.8726514Z [36;1mecho "hello sha from Mirror/Hello"[0m
+2026-11-18T11:15:22.8735586Z shell: /usr/sbin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-18T11:15:22.8735635Z ##[endgroup]
+2026-11-18T11:15:22.8758679Z hello sha from Mirror/Hello
+2026-11-18T11:15:22.8774206Z ##[group]Run echo "after the action"
+2026-11-18T11:15:22.8774554Z [36;1mecho "after the action"[0m
+2026-11-18T11:15:22.8788570Z shell: /usr/sbin/bash -e {0}
+2026-11-18T11:15:22.8788663Z ##[endgroup]
+2026-11-18T11:15:22.8813941Z after the action
+2026-11-18T11:15:22.8885666Z Cleaning up orphan processes

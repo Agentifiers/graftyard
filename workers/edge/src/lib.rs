@@ -1830,6 +1830,12 @@ pub(crate) async fn shard_read(
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
     let sites = shard_order(repo, pinned);
+    // The owner's record, as `/validate` and `/merge` carry it, so the shard reads no `Names` rows first: without it
+    // every upload-pack on an isolate that had not cached the owner read `RepoOwner` and `Placement`, and on B0-29 run
+    // 5 1,869 of them failed after LOOKUP_FOR on `names:708`, the owner's `Placement` shard
+    // (`tests/m0/results/merge-tail.md`).
+    let record = serde_json::to_string(&repo.record).map(|r| String::from(js_sys::encode_uri_component(&r)))?;
+    let url = format!("{url}&record={record}");
     for (i, site) in sites.iter().enumerate() {
         let h = Headers::new();
         h.set("git-protocol", proto)?;
@@ -1838,7 +1844,7 @@ pub(crate) async fn shard_read(
         if let Some(b) = body {
             init.with_body(Some(js_sys::Uint8Array::from(b).into()));
         }
-        let req = Request::new_with_init(&shard_url(url, i, sites.len()), &init)?;
+        let req = Request::new_with_init(&shard_url(&url, i, sites.len()), &init)?;
         let r = shard_at(c, repo, Some(*site))?.fetch_with_request(req).await;
         mark_shard(repo, *site, !r.as_ref().is_ok_and(|r| r.status_code() == 200));
         if i + 1 == sites.len() || r.as_ref().is_ok_and(|r| r.status_code() == 200) {
@@ -2874,7 +2880,10 @@ async fn serve(
     if path.starts_with(bed_rows::PREFIX) {
         return bed_rows::serve(&c, &mut req, &path).await;
     }
-    // The Actions run service and the live-log viewer (`actions`).
+    // The Actions run service, its launch service, and the live-log viewer (`actions`).
+    if actions::launch_job(&c, &req, &path).is_some() {
+        return actions::launch(&c, req).await;
+    }
     if let Some(rest) = path.strip_prefix(actions::SERVICES) {
         return actions::serve(&c, req, rest).await;
     }

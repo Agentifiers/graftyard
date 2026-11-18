@@ -16,9 +16,11 @@ TEST = ['cargo', 'test', '-q', '-p', 'graftyard-lookup', '--', 'a_dependency_rea
 
 MUTANTS = [
     ('as on main: no second request', LOOKUP,
-     '    hedge(read(), delay(DEP_HEDGE), &read).await', '    (read().await, Hedged::First)', TEST),
+     '    let got = hedge(read(), delay(dep_hedge_after(chain)), &read).await;',
+     '    let got = (read().await, Hedged::First);', TEST),
     ('the second request is sent at once', LOOKUP,
-     '    hedge(read(), delay(DEP_HEDGE), &read).await', '    hedge(read(), delay(Duration::ZERO), &read).await', TEST),
+     '    let got = hedge(read(), delay(dep_hedge_after(chain)), &read).await;',
+     '    let got = hedge(read(), delay(Duration::ZERO), &read).await;', TEST),
     ('the first\'s error ends the read while the second may answer', LOOKUP,
      '        Either::Left((Err(e), second)) => match second.await {\n            Ok(v) => (Ok(v), Hedged::Won),\n            Err(_) => (Err(e), Hedged::Asked),\n        },',
      '        Either::Left((Err(e), _)) => (Err(e), Hedged::Asked),', TEST),

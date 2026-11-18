@@ -1,0 +1,9 @@
+﻿2026-11-18T11:15:32.7577427Z Current runner version: '2.338.2'
+2026-11-18T11:15:32.7582323Z Runner name: 'graftyard-host-runner-1'
+2026-11-18T11:15:32.7582764Z Machine name: '172'
+2026-11-18T11:15:32.7584931Z Runner is running behind proxy server 'http://172.28.0.53:3128' for all HTTP requests.
+2026-11-18T11:15:32.7585064Z Runner is running behind proxy server 'http://172.28.0.53:3128' for all HTTPS requests.
+2026-11-18T11:15:32.7585113Z Prepare workflow directory
+2026-11-18T11:15:32.7949556Z Prepare all required actions
+2026-11-18T11:15:32.7994311Z Getting action download info
+2026-11-18T11:15:32.8673370Z ##[error]Unable to resolve action 'Mirror/Hello@24829c7', the provided ref '24829c7' is the shortened version of a commit SHA, which is not supported. Please use the full commit SHA instead
