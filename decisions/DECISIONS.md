@@ -5154,3 +5154,27 @@ cached voter does today).
 **Evidence.** `a_renew_whose_lease_a_release_in_its_entry_removed_answers_404` (`crates/api/tests/lease_api.rs`) fails on main with 500. `tests/m0carried/plant43.py`.
 
 **Flip.** A client that needs the renewed expiry of a lease another request released in the same entry.
+
+### `stale-log`: each push of a load run is logged on both sides, and a `Stale` is judged against its ref's previous push, 2026-11-18
+
+**Decision.** `tests/am1/rest/a1.mjs` writes one row per push to `tests/am1/raw/a1-pushes-<row>-<run>.jsonl`: a client push id, the kind, the ref, the old and new tips, the reply's `x-github-request-id`, the result or error, and start and end on Cloudflare's clock (`tests/fanout/srvclock.mjs`). It sends the id as `x-graft-client-push`. A test edge writes the id, if it is at most 64 of `[A-Za-z0-9._-]`, into its push line, beside `end`, the leader's answer: the index and each ref's outcome, or the refusal, `full`, `notLeader`, or the call error (`workers/edge/src/lib.rs`, `push_log`, `client_push_id`). A product edge reads neither. `tests/fanout/stalecheck.mjs` judges each `stale` against the ref's previous push. It fails the run when that push was acked `ok` at the tip the `stale` named, or refused while leaving the ref at that tip. It passes a lost reply that the edge shows committed `Ok`, and an overlap with another push to the ref (a race). It reports the rest as UNKNOWN.
+
+**Why.** B0-29's "zero `Stale` on distinct refs" is an invariant line: a `Stale` with no cause would be the group moving a ref nobody was told about. Run 6 had 1 agent `stale` in 2,500 pushes, and its records could not say which push moved the ref. The edge's lines then held no ref and no per-ref outcome, and the driver kept only counts. The counts did rule out the obvious cause: 2,816 push lines at the edge, all 200, against 2,865 pushes sent, so the 49 client `fetch failed` never reached the edge [measured, `tests/am1/results/b029-m2b.md`, "Run 6"].
+
+**Beat.** Logging the ref in the edge line alone: a lost reply has no client row to join it to. Asking the leader's `request` rows after the run: the network is retired and purged by close-out, and the rows hold events, not the client's view.
+
+**Evidence.** `tests/fanout/stalecheck.test.mjs` (3 tests); `ls_refs_go_to_the_shard_only_when_a_bed_request_asks` (`workers/edge/src/lib.rs`) for the id filter; `tests/m0carried/plant44.py`, 8 of 8 caught.
+
+**Flip.** A run whose per-push log and edge lines disagree on a push's outcome (the edge line `Ok` with the client row `ok` for another commit), which would mean the join is wrong.
+
+### F91's A/B switch: `x-graft-ls-refs: shard` with the bed token, test installs only, 2026-11-18
+
+**Decision.** A test-faults edge answers a v2 `ls-refs` from the group's refs (`b034-reads`) unless the request carries `x-graft-ls-refs: shard` with the bed token. Then the request goes to the shard, as before `b034-reads` (`ls_refs_at_edge`, `Ctx::ls_refs_edge`). The switch is on by default, and a product edge has no switch. a1.mjs's `--ls-refs-shard` adds the header to every upload-pack. So F91's A/B is one edge build from one main: run 7 with the flag against run 6 without it.
+
+**Why.** F91 asks whether the leader's refs pages set run 6's commit p99. Run 6 differed from run 5 in 17 merges, so only an arm that turns off only the edge's `ls_refs` answers it (operator, 2026-11-18).
+
+**Beat.** An edge variable: it changes only by deploying the edge again, and the A/B would need two edge deploys. A header that any client could send: it would let a product request choose the leader's work.
+
+**Evidence.** `ls_refs_go_to_the_shard_only_when_a_bed_request_asks` (`workers/edge/src/lib.rs`); `tests/m0carried/plant44.py` mutants 5 and 6.
+
+**Flip.** F91 answered either way: then the switch goes with whichever path wins.

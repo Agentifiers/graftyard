@@ -364,10 +364,20 @@ mod push_log {
         OPEN.with(|o| o.set(o.get().saturating_sub(1)));
     }
 
-    pub(crate) fn line(rid: graftyard_types::RequestId, open: u32, status: u16, timing: &str) -> String {
+    /// `client` is the driver's push id and `end` the leader's answer (`Ctx::push_end`), `null` for a push the edge
+    /// answered itself before its commit (a `bound` refusal, a 4xx, a 503 before the send).
+    pub(crate) fn line(
+        rid: graftyard_types::RequestId,
+        open: u32,
+        status: u16,
+        timing: &str,
+        client: Option<&str>,
+        end: Option<serde_json::Value>,
+    ) -> String {
         let isolate = format!("{:016x}", isolate());
-        serde_json::json!({ "push": rid.to_string(), "isolate": isolate, "open": open, "status": status, "timing": timing })
-            .to_string()
+        serde_json::json!({ "push": rid.to_string(), "isolate": isolate, "open": open, "status": status, "timing": timing,
+            "client": client, "end": end })
+        .to_string()
     }
 }
 
@@ -509,6 +519,22 @@ mod gate_tests {
 /// The `Retry-After` of an agent push refused while placement fails [guess]: R2's outages ran tens of minutes, so a
 /// retry sooner only adds load.
 const OUTAGE_RETRY_S: u32 = 60;
+
+/// F91's A/B switch on a test install: the edge answers a v2 `ls-refs` from the group's refs (`b034-reads`) unless the
+/// request says `x-graft-ls-refs: shard` with the bed token, when the shard answers it as before. On by default, so
+/// one edge build serves both arms of the A/B and a product edge never reads the header.
+#[cfg_attr(not(feature = "test-faults"), allow(dead_code))]
+fn ls_refs_at_edge(header: Option<&str>, token: Option<&str>, secret: Option<&str>) -> bool {
+    !matches!((header, token, secret), (Some("shard"), Some(t), Some(s)) if t == s)
+}
+
+/// The driver's push id from `x-graft-client-push` as the push's log line carries it: at most 64 of
+/// `[A-Za-z0-9._-]`, else none, so a header cannot write anything else into the line.
+#[cfg_attr(not(feature = "test-faults"), allow(dead_code))]
+fn client_push_id(h: Option<&str>) -> Option<String> {
+    h.filter(|v| !v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+        .map(str::to_owned)
+}
 
 /// Whether this request sees placement failing. Only test installs can (`Ctx::place_fail`); a production edge has
 /// no bucket probe yet, so it learns of an outage only from a failed `place_teed`.
@@ -1163,6 +1189,16 @@ struct Ctx<'a> {
     /// the leader is told `placement_ok: false`.
     #[cfg(feature = "test-faults")]
     place_fail: bool,
+    /// F91's A/B (`ls_refs_at_edge`): false when the request carries `x-graft-ls-refs: shard` with the bed token, so a
+    /// v2 `ls-refs` goes to the shard as before `b034-reads`. True for every other request.
+    #[cfg(feature = "test-faults")]
+    ls_refs_edge: bool,
+    /// stale-log: the client's push id (`x-graft-client-push`, `client_push_id`) and the leader's answer to the push,
+    /// for its `push_log` line, so a driver's per-push log joins the edge's answer to each push it sent.
+    #[cfg(feature = "test-faults")]
+    client_push: Option<String>,
+    #[cfg(feature = "test-faults")]
+    push_end: std::cell::RefCell<Option<serde_json::Value>>,
     /// `authenticate`'s token's App, when it is a user-to-server token.
     token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
     /// `authenticate`'s token's optional fields: a `github_pat_`'s scope, which REST reads check (`usertok::reaches`).
@@ -1521,6 +1557,14 @@ async fn receive_pack(
         body["admit"] = serde_json::to_value(a)?;
         reply = api::timed(c, "commit", commit(c, repo, &body, None, None, Some(&lookup))).await?;
     }
+    #[cfg(feature = "test-faults")]
+    c.push_end.replace(Some(match &reply {
+        Ok(PushOutcome::Ok(ok)) => json!({ "index": ok.index, "refs": ok.out.refs }),
+        Ok(PushOutcome::Refused(r)) => json!({ "refused": r.status }),
+        Ok(PushOutcome::Full(f)) => json!({ "full": f.retry_after_s }),
+        Ok(PushOutcome::NotLeader(_)) => json!({ "notLeader": true }),
+        Err(e) => json!({ "error": e }),
+    }));
     match reply {
         Ok(PushOutcome::Ok(ok)) => {
             // The member rendered these bytes from its `&Acked`; the edge only frames them.
@@ -1972,10 +2016,15 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     #[cfg(not(feature = "test-faults"))]
     let cache_ok = true;
     let v2 = if wants_v2(Some(&proto)) { parse_v2(&body).ok() } else { None };
+    #[cfg(feature = "test-faults")]
+    let edge_ls = c.ls_refs_edge;
+    #[cfg(not(feature = "test-faults"))]
+    let edge_ls = true;
     // A v2 ls-refs from the group's refs, with no shard: none of its rehydrate or catch-up stands in front of a clone's
     // first round trip or a fetch's tip read (B0-34, `graftyard_git::ls_refs`). Any request it does not serve, and
     // any read that fails or comes back partial, goes on to the shard below.
-    if let Some(ls) = v2.as_ref().and_then(graftyard_git::ls_refs::LsRefs::parse)
+    if edge_ls
+        && let Some(ls) = v2.as_ref().and_then(graftyard_git::ls_refs::LsRefs::parse)
         && let Some(answer) = ls_refs(c, repo, &ls).await
     {
         let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
@@ -2858,6 +2907,16 @@ async fn serve(
         #[cfg(feature = "test-faults")]
         place_fail: req.headers().has("x-graft-place-fail")?
             && matches!((req.headers().get("x-bed-token")?, env.secret("BED_TOKEN")), (Some(t), Ok(s)) if t == s.to_string()),
+        #[cfg(feature = "test-faults")]
+        ls_refs_edge: ls_refs_at_edge(
+            req.headers().get("x-graft-ls-refs")?.as_deref(),
+            req.headers().get("x-bed-token")?.as_deref(),
+            env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
+        ),
+        #[cfg(feature = "test-faults")]
+        client_push: client_push_id(req.headers().get("x-graft-client-push")?.as_deref()),
+        #[cfg(feature = "test-faults")]
+        push_end: std::cell::RefCell::new(None),
     };
     if path == release::ENTRIES_PATH {
         return release::entries(&c, &mut req).await;
@@ -3070,7 +3129,11 @@ async fn serve(
                     r.headers().set("server-timing", &c.timing.header())?;
                 }
                 let status = r.as_ref().map_or(500, |r| r.status_code());
-                worker::console_log!("{}", push_log::line(rid, open, status, &c.timing.header()));
+                let end = c.push_end.borrow().clone();
+                worker::console_log!(
+                    "{}",
+                    push_log::line(rid, open, status, &c.timing.header(), c.client_push.as_deref(), end)
+                );
             }
             r
         }
@@ -3088,9 +3151,27 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        Cut, ShardRefusal, bound_at_send, capped, gate_ng, gunzip, shard_refusal, shard_url, streamed_site,
-        validate_failed, validate_sites, validate_url, warm_first,
+        Cut, ShardRefusal, bound_at_send, capped, client_push_id, gate_ng, gunzip, ls_refs_at_edge, shard_refusal,
+        shard_url, streamed_site, validate_failed, validate_sites, validate_url, warm_first,
     };
+
+    /// F91's A/B switch: the edge answers `ls-refs` unless a request names the shard with the bed token; a wrong or
+    /// missing token, another value, or an install with no bed token leaves the edge's answer on. And the push id a
+    /// driver sends reaches the log line only as a short plain token.
+    #[test]
+    fn ls_refs_go_to_the_shard_only_when_a_bed_request_asks() {
+        assert!(ls_refs_at_edge(None, None, Some("bed")), "on by default");
+        assert!(ls_refs_at_edge(None, Some("bed"), Some("bed")), "the token alone switches nothing");
+        assert!(!ls_refs_at_edge(Some("shard"), Some("bed"), Some("bed")), "the A/B's off arm");
+        assert!(ls_refs_at_edge(Some("shard"), Some("guess"), Some("bed")), "a wrong token");
+        assert!(ls_refs_at_edge(Some("shard"), None, Some("bed")), "no token");
+        assert!(ls_refs_at_edge(Some("shard"), Some("bed"), None), "an install with no bed token");
+        assert!(ls_refs_at_edge(Some("edge"), Some("bed"), Some("bed")), "only `shard` turns it off");
+        assert_eq!(client_push_id(Some("mwm4d2ho-a17-3")).as_deref(), Some("mwm4d2ho-a17-3"));
+        assert_eq!(client_push_id(Some("x\", \"end\": 1")), None);
+        assert_eq!(client_push_id(Some(&"a".repeat(65))), None);
+        assert_eq!(client_push_id(Some("")), None);
+    }
 
     /// B0-33 m51: a write whose read the members kept shedding held 19 to 24 s, LOOKUP_FOR, before its 503. A write
     /// now asks again for SHED_RETRY_FOR, well under LOOKUP_FOR, a bounded push no longer than its bound, and a

@@ -28,6 +28,8 @@
 //     [--as-admin]       # every request under the admin's PAT, for installs that cannot mint App tokens
 //     [--rest-polls F]   # B0-35: this share of the `mergeable` polls is REST `GET pulls/{n}` (default 0, all GraphQL)
 //     [--first-for MS]   # B0-35, test installs: the leader gives each `PrSync` first attempt MS before the queue re-sends it
+//     [--ls-refs-shard]  # F91's A/B off arm: every upload-pack carries `x-graft-ls-refs: shard` with the bed token, so a
+//                        # test edge sends v2 ls-refs to the shard, as before b034-reads (`ls_refs_at_edge`)
 //     [--b034 FILE]      # B0-34 as written, on the seeded 5 GB monorepo (tests/fanout/b034.sh). FILE is JSON:
 //                        # `bare` (the local torvalds/linux clone) and `future` (the first-parent commits after the
 //                        # seeded main), which replace the PR merges: 10 a minute push the next one to main, so the
@@ -61,13 +63,15 @@ import { parseArgs } from "node:util";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
 import { r2list } from "../../fanout/r2list.mjs";
+import { serverClock } from "../../fanout/srvclock.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
-  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" } } });
+  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" },
+  "ls-refs-shard": { type: "boolean" } } });
 
 // ---- the plan, from the rows ----
 
@@ -441,6 +445,13 @@ const EDGE = process.env.GRAFT_EDGE;
 const RAW = new URL("../raw/", import.meta.url).pathname;
 mkdirSync(RAW, { recursive: true });
 const OUT = `${RAW}a1-${row}-${RUN}.jsonl`;
+// stale-log: one row per push, so a `Stale` is decided from the run itself (`tests/fanout/stalecheck.mjs`): the
+// client's push id, sent as `x-graft-client-push` and logged by a test edge beside its answer, the ref, old and new
+// tips, the reply's request id, the result or error, and start and end on Cloudflare's clock.
+const PUSHES = `${RAW}a1-pushes-${row}-${RUN}.jsonl`;
+const cfClock = serverClock();
+await cfClock.ready;
+let pushSeq = 0;
 // Set again once setup (tasks, leases, open PRs) is done, so setup never eats the load window.
 let t0 = Date.now() + 15_000;
 let end = t0 + seconds * 1000;
@@ -479,6 +490,8 @@ const placeFailing = () => plan.placeFailAt !== undefined && Date.now() >= t0 + 
 // m3fr8 labelled agent pushes when they ended, and 17 sent with buckets up landed in `push:agent@fail` as commits.
 const half = (k) => (plan.placeFailAt === undefined ? k : `${k}${placeFailing() ? "@fail" : "@up"}`);
 const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-token": BED } : {});
+// F91's A/B off arm (`--ls-refs-shard`): every upload-pack asks a test edge to send its ls-refs to the shard.
+const lsHeaders = (path) => (opt["ls-refs-shard"] && path === "git-upload-pack" ? { "x-graft-ls-refs": "shard", "x-bed-token": BED } : {});
 // Past the edge's own worst case, so every push ends in the edge's answer and none in the driver's timeout: three
 // shards' validate waits (15 + 60 + 60 s) then the commit. At 120 s, B0-32's burst pushes still in their third
 // shard's wait were cut and counted as lost (lm1-rows-m3f.md, B0-32).
@@ -520,12 +533,12 @@ async function gitOnce(path, tok, body, headers = {}, repo = R, agent = null) {
   const t = Date.now();
   if (agent) {
     try {
-      const r = await postH1(`${EDGE}/${repo}.git/${path}`, body, { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, agent);
+      const r = await postH1(`${EDGE}/${repo}.git/${path}`, body, { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...lsHeaders(path), ...headers }, agent);
       return { status: r.status, text: r.buf.toString("latin1"), ms: Date.now() - t, headers: r.headers };
     } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
   }
   try {
-    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
+    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...lsHeaders(path), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
   } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.cause?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
 }
@@ -546,11 +559,15 @@ const recentAgent = []; // [ok, ms] of the latest agent pushes, for B0-32's warm
 async function push(tok, ref, from, path, bytes, extra = {}, agent = null) {
   const files = opt.workflow ? [[WF_PATH, WF_SRC]] : [];
   const { pack, commit } = onePack(path, bytes, from ?? main, `a1 ${ref}`, Math.floor(Date.now() / 1000), files);
-  const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra }, R, agent);
+  const client = `${RUN}-${++pushSeq}`;
+  const start = cfClock.now();
+  const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", "x-graft-client-push": client, ...extra }, R, agent);
   // A refusal keeps the first words of its body, so a 503's cause is counted (no secret is in a server's reply,
   // and every row passes `scan`).
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
+  writeRow(PUSHES, { client, kind: ref.includes("/claude/") ? "agent" : ref.includes("/a1m-") ? "merge" : "human", ref, old: from ?? null, new: commit,
+    start, end: cfClock.now(), status: r.status, result: res, rid: r.headers?.get?.("x-github-request-id") ?? null, err: r.err ?? null });
   notePushTiming(r.headers?.get?.("server-timing"), res);
   return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null];
 }
