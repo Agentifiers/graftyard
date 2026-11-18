@@ -108,6 +108,47 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fr16 (2026-11-17/18, graft-m3f, `ROWS="b0-31"`, branch `m3fr16`, main `7430a479`)
+
+**Slot.** B0-31 rerun on `dep-hedge` (main `7430a479`, with M4-WP4's F84), granted at about $3. Stops: graft-m3f past $6 by `PREFIX`, or the account past $280 (on 2026-11-18, past $180).
+- **Site day** 23:35 to 23:48Z (`siteday-m3f-m3fr16.log`), image `sha256:0f0c5ee1…` reused. Sites `ab8fd5a9` / `51f0273b` / `c1969c00` (phase 1 `4a15c906` / `6a53b48b` / `6f52f304`). Edge `23813b68` served at 100% by edgever.
+- **Setup:** repo 65586 rehomed on site 2 (term 2 → 3 by the transfer, before the load), apac shard warm in 4.4 s, config 10 with 8 learners, k 4. a1's `feed members` read 8 learners and 2 followers. Its catch-up check read "0/8 in 120 s" (commit 117), but the learners stood at 1,249 to 1,254 applied at 00:00Z and served 1,000 to 2,000 read-index reads a minute each through the load (`tsave-m3fr16-b0-31.jsonl`), so the check's `/status` reads failed rather than the learners lagging [inference; not traced].
+- **Cost:** graft-m3f **$1.81** by `PREFIX` from 23:35 to 00:13:34Z (site day, row, sweeps, retire and purge); account $3.92 over the same window. The account's UTC day 2026-11-17 closed at $180.94; 2026-11-18 was $1.27 at 00:13Z.
+
+### B0-31 (repo 65586, rehomed on site 2, run `mwlcj6zb`): fail on the buckets-up line, by 734 ms
+
+| Line | Measured | At 90% |
+|---|---|---|
+| Commit p99 at most 1 s with buckets up | leader **1,834 ms** (n 5,364, p50 773, max 3,055) | Bound 1.1 s: **short by 734 ms** |
+| Placement failing: Human and MergeQueue p99 at most 3 s, 0 refused | leader commit p99 2,559 ms (n 4,318); `push:human@fail` 89 ok, 0 refused; `merge:only@fail` 30 × 200 | Pass |
+| Agent pushes over INLINE_MAX_HOT refused at once in `ng` | `push:agent@fail` 1,262 of 1,262 `full`, p50 1.1 s | Pass |
+
+`splitByHalf.up`, ms, p50 / p99 (m3fr12 in brackets):
+
+| | m3fr16 | m3fr12 |
+|---|---|---|
+| cycle (append to append) | 253 / 619 (n 1,091) | 246 / 562 |
+| held at each append | 1 / 1 (n 1,092) | 1 / 2 |
+| round | 233 / 510 | 230 / 360 |
+| deps:all | 358 / **820** | 373 / 800 |
+| deps:authz | 317 / **745** (n 2,152) | 725 p99 |
+| deps:tokens | 187 / 524 | |
+| deps:names | 166 / 470 | |
+| queue:slot | 654 / **2,233** | 636 / 2,486 |
+| entries in the up half | 1,091, 5,036 queued commands (4.6 each) | 1,132 (3.4 each) |
+
+- **`dep-hedge` asked 14 times and won 2** in the whole row (`leader.depHedges`), against about 3,700 dependency reads in the up half. Its threshold is 1 s, and `deps:authz` p99 was 745 ms: the tail is reads of 0.5 to 0.9 s, not reads held past 1 s. So the hedge did what it is built for, and the line did not move.
+- **No opening stall.** The admission trace (`admit-m3fr16-b0-31.jsonl`, per second) held the queue at 0 to 16 through the up half, with its largest value 16 at 23:59:42Z and 14 at 23:57:53Z, and `roundMs` 201 to 303. Nothing like m3fr12's 4 s freeze recurred, so this run's p99 is the steady tail.
+- **Leader held:** site 2 at term 3 from before the load to after it, `failedCalls` 126 (deadline, to the two followers), no `/suspect` in `pushTiming`.
+- **What sets the 1.8 s** [inference from the split]: a command waits for the next entry (`queue:slot` p50 654, p99 2,233 ms), and that entry pays its batch's dependency reads (p99 820) and a round (p99 510). 820 + 510 = 1,330 ms before any queueing, already over 1.1 s, so no admission or hedge change gets the p99 under the bound while each entry reads its owner's `Authz` across the continent. That is F81's case: the remaining gap is the `deps:authz` distance plus a round, not held requests.
+- Other rows' numbers: `push:agent@up` 1,238 of 1,238 ok (p50 4.0 s, p99 6.7 s), `push:human@up` p99 51.8 s (94 ok, 4 stale), `merge:only@up` 32 × 200 and 4 × 409. Push stages: validate p99 4.4 s, commit p99 2.4 s.
+
+**Close-out:**
+- SWEEP2 OK at 00:10:18Z. The sweep at 00:13:34Z found no shard container running.
+- At 00:11:38Z, 14 of 14 members of 65586 were "not joined" (`lm1-rows-m3f-data/m3fr16-retire.json`; `#2#l7` was listed on sites 1 and 2 as well as site 0, and those two were already not joined).
+- Purge at 00:13:12Z: 6,334 objects (a 2,427, b 1,725, c 2,182, all to 0); the second pass found 0.
+- Idle reading from 00:13:30Z, scheduled for 00:45Z.
+
 ## Rows m3fr15 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `b032-h1`, main `368498ad`)
 
 **Slot.** B0-32's burst rerun with a1's burst client on HTTP/1.1, granted at about $1 with no site day. The sites and edge stay on m3fr14's build from main `0105297a`. Stops: graft-m3f past $5 by `PREFIX`, or the account past $280.
@@ -208,6 +249,29 @@ From m3fr15's raw files (`admit-`, `tsave-`, `vmem-m3fr15-b0-32.jsonl`, a1's `bu
 - **Inbound load:** the leader took 807 requests at 21:36:30, and 675 and 708 a second at 36:36 and 36:37, with up to 680 open in its handler at once. Their walls ran long at about 0 ms CPU.
 - **Reads sent to the leader:** many of these were `/read`s sent to the leader, not as read-index reads. That was the push gate's `core` rows at 86 to 149 a second, and whole-tier `packed` dumps at 39 to 56 a second, with `/outcome_by_request` at up to 130 a second. The edge is meant to send those to learners and followers (`design/DESIGN.md`, "Follower read").
 - **Inference:** the burst's own edge reads fell back to the leader, and hundreds of open requests held its handlers waiting, not computing. Why they reached the leader (no learners known to fresh edge isolates, or every member asked declining) is not yet traced.
+
+### Why the burst's reads reached the leader (code-only, m3fr15's `tsave-m3fr15-b0-32.jsonl`)
+
+Decoded from the members' inbound trace: `Entered` (25) for the route, `ReadQuery` (26) for the query and its `index` flag, `SentBy` (27) for the edge's lookup step, and the learners' read-index rows (1 `IndexSent`, 2 `IndexEnded`, 5 `IndexTaken` on the leader) [measured unless tagged].
+
+| Second (21:36:xx) | Learners' `/read`s in | Their read-index calls ended ok / late / failed | Leader (site 0) `IndexTaken` | Plain `/read`s at the voters | `/suspect` at sites 1 + 2 |
+|---|---|---|---|---|---|
+| 28 | 29 | 25 / 0 / 0 | 27 | 16 | 0 |
+| 30 | 324 | 65 / 0 / 2 | 126 | 24 | 0 |
+| 31 | 305 | 35 / 16 / 35 | 1 | 3 | 0 |
+| 32 | 386 | 5 / 16 / 82 | 2 | 2 | 8 |
+| 33 | 620 | 0 / 79 / 92 | 0 | 4 | 66 |
+| 34 | 730 | 4 / 40 / 80 | 2 | 33 | 130 |
+| 35 | 1,331 | 1 / 0 / 2 | 2 | 213 | 144 |
+| 36 | 1,523 | 2 / 0 / 17 | 19 | 484 | 409 |
+| 37 | 699 | 0 / 0 / 8 | 30 | 459 | 454 |
+
+- **The learners took the burst's reads first, as designed.** Through 21:36:34 almost every push-gate `core` read went to a learner by read-index (`SentBy` Spread, `index` 1), and the voters saw at most 33 plain reads a second.
+- **Then the leader stopped answering the learners' read-index calls.** At 21:36:30 the leader had 446 requests open (423 `/raft`, 246 `/commit`), and from 21:36:31 its `IndexTaken` fell from 126 a second to 0 to 2. Its AppendEntries calls ran up to 1.66 s (21:36:32). The learners' calls ended late or failed.
+- **A learner whose batch went unanswered for `CAMPAIGN_DEADLINE` (3 s) forgets the leader** (`check_remote`, `crates/raft/src/member/install.rs`, F67 rule 12). Its reads then answer `notLeader` naming no leader, at once. That is why the learners' inbound rate doubled at 21:36:35 to 36 (1,331 and 1,523 a second) while they served almost nothing.
+- **The edge sends a read that every member declined with `notLeader` to the leader** (`spread_verdict`, `crates/lookup`: `Spread::Leader`, then `call_opt`, which walks for the leader and reports `suspect`). So from 21:36:35 the push gate's `core` rows, the `rows` and `packed` reads went plain to the voters: 213, 484 and 459 a second, `SentBy` Leader or Walk, 141 to 149 edge isolates each. The `/suspect` reports rose with them, 409 to 454 a second at sites 1 and 2.
+- **So the reads did not miss the learners.** The edge knew all 8 (`SentBy` Spread through 21:36:34). They reached the leader because a learner that cannot get a read index answers `notLeader`, and the edge reads that as "not mine to serve", not as "shed". That turns the leader's stall into more load on the leader, and the reports into the term changes at 21:36:45Z.
+- **What started the stall** is the burst itself on the leader: 246 `/commit` and 423 `/raft` open at 21:36:30, then AppendEntries of 1.0 to 1.7 s. The learners' read-index traffic (up to 126 a second) added to it. Not separated: how much of the leader's wait was its own storage and how much its input queue [inference].
 
 ## Rows m3fr14 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `m3fr14`, main `0105297a`)
 
