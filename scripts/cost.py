@@ -45,7 +45,11 @@ CPU_MS = dict(api=4, git=8, push=40, ring=2, queue=3, front=1)
 ENTRY_PER_PUSH = 1.3               # pushes plus PrSync bot entries
 ENTRY_PER_JOB_REPO = 0.2           # RequiredCheck entries on repository chains
 ENTRY_PER_JOB_ACTIONS = 7          # job transitions and lease rewrites on the org's Actions chain
-FOLD_ROWS = 6                      # fold rows written per entry per member, plus 1 log row
+FOLD_PUTS = 6                      # fold rows an entry puts per member: a `DefineLabel` puts 6 [measured, K12]
+ENTRY_ROWS = 17                    # rows written per entry per member: each fold put 2 (a tier table's rowid table and
+                                   # its key's automatic index), `log` 1, `request` 2, `raft_state` 1 or 2. The leader
+                                   # wrote 19 for one `DefineLabel`, 2 of them test-only [measured, graft-m3f site day
+                                   # m3frs, 2026-11-18, K12; the split is inference, `tests/am1/results/lm1-rows-m3f.md`]
 LEASE_MISS = 0.25                  # share of reads that find the leader lease expired and pay one read-index RPC
 WALL_S = dict(read=0.005, commit=0.12, append=0.005, lease=0.07)
 CI_HIT = 0.7                       # clone-cache hit rate: about 3.75 CI checkouts per pushed SHA, the first one misses
@@ -153,6 +157,9 @@ AUDIT_PAGE_KB = 256                # staged page bytes (`graftyard_fold::PAGE_BY
 AUDIT_MB_S = 269.5 / 57.7          # snapshot MB a refold reads a second: m3-wp5's deep refold of repo:65536, scratch
                                    # writes included [measured, tests/m3/results/m3-wp5.md]
 AUDIT_BATCH_S = 0.02               # member time per batch besides the read [guess]
+AUDIT_FIXED_ROWS = 26              # rows an audit writes besides its pages, saved changes and a job row per batch: the
+                                   # job's start and prepare writes and delete, the report, the cron's `audit_seen` mark,
+                                   # 12 and 26 on two refolds [measured upper bound, graft-m3f site day m3frs, 2026-11-18]
 INCLUDED = dict(workers_req=10e6, workers_cpu=30e6, do_req=1e6, do_gbs=400_000, do_rows_w=50e6, do_storage=5,
 	r2_storage=10, r2_a=1e6, r2_b=10e6, queues=1e6, email=3000, ae=10e6, obs_gb=50,
 	c_mem_gibs=25 * 3600, c_vcpu_s=375 * 60, c_disk_gbs=200 * 3600, steps=0)
@@ -256,7 +263,7 @@ def model(tier, variant="design", split=None):
 	do_reqs = w["reads"] * 1.5 + w["entries"] * members + lease_rpcs
 	gbs = DO_GB * (w["reads"] * WALL_S["read"] + w["entries"] * WALL_S["commit"]
 		+ append_rpcs * WALL_S["append"] + lease_rpcs * WALL_S["lease"])
-	rows_w = w["entries"] * members * (1 + FOLD_ROWS)
+	rows_w = w["entries"] * members * ENTRY_ROWS
 	inline_gb = w["pushes"] * ACTIVITY["inline_push_kb"] / 1024 / 1024 * 0.25   # inline packs live about a week
 	do_gb = (t["core_gb"] + t["aux_gb"] + inline_gb) * members
 	site_inc = 3 if variant == "separate" else 1
@@ -285,8 +292,8 @@ def model(tier, variant="design", split=None):
 	tail = w["repo_entries"] / DAYS / chains / visits
 	batches = snap_mb + tail / 8 + 1
 	pages = snap_mb * 1024 / AUDIT_PAGE_KB
-	audit_w = refolds * (2 * pages + 2 * FOLD_ROWS * tail + batches + 1)
-	audit_r = refolds * (tail + 2 * FOLD_ROWS * tail + batches)
+	audit_w = refolds * (2 * pages + 2 * FOLD_PUTS * tail + batches + AUDIT_FIXED_ROWS)
+	audit_r = refolds * (tail + 2 * FOLD_PUTS * tail + batches)
 	audit_gbs = refolds * (snap_mb / AUDIT_MB_S + batches * AUDIT_BATCH_S) * DO_GB
 	lines["Fold audit refolds (repository chains that moved since their last match)"] = (
 		added(rows_w + inbox_writes * INBOX_ROWS, audit_w, INCLUDED["do_rows_w"] * site_inc) / 1e6 * price("cf.do.sqlite.rows_written")

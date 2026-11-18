@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Marginal Cloudflare cost of each am1-rest hosted run on a test install, from `scripts/cost.py`'s prices
-(`research/prices.json` through `cost_model.price`) and its per-operation figures (`FOLD_ROWS`, `CPU_MS`, `DO_GB`,
+(`research/prices.json` through `cost_model.price`) and its per-operation figures (`ENTRY_ROWS`, `CPU_MS`, `DO_GB`,
 `PUSH_VCPU_S`). Overage prices only: the install's included allowances are assumed already spent by earlier runs, so
 each figure is an upper bound. The workload of each run is its row's rates, as `tests/am1/rest/a1.mjs --dry` prints
 them. Run from the worktree root:
@@ -17,7 +17,6 @@ spec.loader.exec_module(cf)
 price = cf.price
 
 MEMBERS = 3
-LOG_ROW = 1                  # the stored log row, beside FOLD_ROWS fold rows, per entry per member
 EDGE_REQS_PER_CMD = 1        # one edge request per command or read the driver sends
 MEMBER_REQS_PER_CMD = 4      # commit, outcome, and two AppendEntries a command, as B0-18's leader counts show [guess]
 FEED_HELD_S = 25             # a held poll's wall time on a member (FEED_WAIT_MAX)
@@ -25,7 +24,7 @@ FEED_HELD_S = 25             # a held poll's wall time on a member (FEED_WAIT_MA
 
 def run(name, seconds, cmds_per_s, reads_per_s, polls, pushes_per_s, pack_kb, r2_puts=0.0):
     entries = cmds_per_s * seconds
-    rows = entries * MEMBERS * (cf.FOLD_ROWS + LOG_ROW)
+    rows = entries * MEMBERS * cf.ENTRY_ROWS
     edge_reqs = (cmds_per_s + reads_per_s) * seconds * EDGE_REQS_PER_CMD + polls * seconds / FEED_HELD_S
     do_reqs = cmds_per_s * seconds * MEMBER_REQS_PER_CMD + reads_per_s * seconds + polls * seconds / FEED_HELD_S
     cpu_ms = cmds_per_s * seconds * cf.CPU_MS["push"] + reads_per_s * seconds * cf.CPU_MS["api"]
