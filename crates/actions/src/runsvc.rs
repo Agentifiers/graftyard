@@ -127,6 +127,11 @@ impl Urls {
     pub fn token(&self) -> String {
         format!("{}oauth/token", self.services)
     }
+    /// `system.github.launch_endpoint`: the install's root, since the runner joins an absolute path onto it
+    /// (`crate::launch`).
+    pub fn launch(&self) -> String {
+        format!("{}/", self.server)
+    }
     /// The job's live-log socket on the relay of `site`, the site whose shard leader took `acquirejob` (DESIGN Shape,
     /// "Identity": the relay lives there and `FeedStreamUrl` names it).
     pub fn feed(&self, site: u8, job: JobId) -> String {
@@ -385,6 +390,13 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     vars.insert("system.github.token".into(), json!({"value": m.github_token, "isSecret": true}));
     vars.insert("system.github.job".into(), json!({"value": m.job_name}));
     vars.insert("system.github.results_endpoint".into(), json!({"value": urls.results()}));
+    // Without it the runner never creates its launch client, and every job with a `uses:` step fails with "Launch
+    // client is not initialized" (`Runner.Worker/JobRunner.cs:72-82`; `tests/m4/results/m4-wp3-launch.md`).
+    vars.insert("system.github.launch_endpoint".into(), json!({"value": urls.launch()}));
+    // The runner reads a launch 422's messages only under this flag. Without it the 422 body is parsed as a reply, and
+    // the job fails with "Value cannot be null. (Parameter 'Actions')" instead of the reason [measured, 2.338.2]
+    // (`Runner.Common/Constants.cs:172`, `Runner.Worker/ActionManager.cs:1067`, `LaunchServer.cs:49-54`).
+    vars.insert("actions_display_helpful_actions_download_errors".into(), json!({"value": "true"}));
     vars.insert("system.orchestrationId".into(), json!({"value": orch_id(m.run_id, m.job, m.attempt)}));
     for (k, v) in &m.secrets {
         vars.insert(k.clone(), json!({"value": v, "isSecret": true}));
@@ -646,6 +658,37 @@ mod tests {
         let mut parts: Vec<&str> = t.split('.').collect();
         parts[1] = other.split('.').nth(1).unwrap();
         assert_eq!(verify_token(&parts.join("."), &k.public(), Timestamp(0)), None);
+    }
+
+    /// The runner creates its launch client only from `system.github.launch_endpoint` and joins the resolve path onto
+    /// it as an absolute path, so the endpoint is the install's root; main set none, and every `uses:` job failed
+    /// "Launch client is not initialized" (`tests/m4/results/m4-wp3-launch.md`).
+    #[test]
+    fn a_job_message_names_the_launch_endpoint_and_asks_for_its_errors() {
+        let urls = Urls::new("https://graft.example/");
+        let m = JobMessage {
+            relay_site: 0,
+            job: JobId(DbId(9)),
+            attempt: 1,
+            run_id: 3,
+            job_name: "j",
+            display_name: "j",
+            github: ctx_dict([]),
+            matrix: Value::Null,
+            strategy: Value::Null,
+            steps: json!([]),
+            secrets: Vec::new(),
+            variables: Vec::new(),
+            github_token: "",
+            job_token: "t",
+            locked_until: "2026-11-18T00:00:00Z",
+        };
+        let v = job_message(&urls, &m);
+        assert_eq!(v["variables"]["system.github.launch_endpoint"]["value"], json!("https://graft.example/"));
+        assert_eq!(v["variables"]["actions_display_helpful_actions_download_errors"]["value"], json!("true"));
+        // The path the runner posts to names this message's plan and job, which `launch::job_of_path` takes.
+        let p = crate::launch::path_for(3, m.job);
+        assert!(p.contains(v["plan"]["planId"].as_str().unwrap()) && p.contains(v["jobId"].as_str().unwrap()));
     }
 
     #[test]

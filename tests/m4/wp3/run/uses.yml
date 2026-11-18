@@ -9,4 +9,12 @@ jobs:
         uses: Mirror/Hello@v1
         with:
           who: tag
+      - name: The same repository in other case, by branch
+        uses: mirror/hello@main
+        with:
+          who: branch
+      - name: By full commit SHA
+        uses: Mirror/Hello@24829c76e1163366bf63cb7415a07b99f433a4ff
+        with:
+          who: sha
       - run: echo "after the action"

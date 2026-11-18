@@ -1,0 +1,2 @@
+runner 589824 registered; jit config in /tmp/launch-main2/jitconfig.txt; listening on http://127.0.0.1:8791
+all jobs completed: [{"job":589826,"name":"uses","state":"Completed { conclusion: Failure, at: Timestamp(1794997194869) }","version":3}]
