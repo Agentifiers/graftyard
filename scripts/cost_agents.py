@@ -4,6 +4,8 @@
 Usage, from the repository root:
 	python3 scripts/cost_agents.py          # line items at 50, 300, and 2,000 developers, hot-network sizing, Code Mode
 	python3 scripts/cost_agents.py --a1     # also the journey A1 per-object rates
+	python3 scripts/cost_agents.py --levers # each cost lever alone and the combined scenarios, base plus agents
+	python3 scripts/cost_agents.py --lever shard-mem,edge-compose   # the tables with levers on (`scripts/cost.py`, LEVERS)
 
 Method. The base cost model (`scripts/cost.py`, default `design` variant) runs twice per tier, once as is and once
 with the agent workload added to its ACTIVITY. The difference is what agents add to the base's own lines. New pieces
@@ -54,6 +56,7 @@ TASKS = 3                  # agent tasks per developer per day
 PUSHES, REST, CLONES, PRS, CI_JOBS = 5, 60, 2, 1, 3
 MCP_CALLS, MCP_SHARE = 30, 0.5
 TASK_MIN = 20
+CLONE_SHALLOW = 0.5        # share of agent clones that are depth-1 and so composable; the rest are blobless (a filter)
 
 # ---- per-operation guesses ----
 REST_WRITES = 9            # of the 60 REST calls, writes that become chain commands (comments, edits, labels) [guess]
@@ -165,7 +168,6 @@ API_READ_WEIGHT = 1        # narrow reads each counts in `GroupLoad`: since narr
                            # other narrow read does [inference, tests/am1/results/narrow-reads.md]
 LEARNER_HOURS = 9          # hours a day the hot group's reads keep its learners active: the 8-hour working day plus the
                            # hour, as the hot pool; a learner with no reads is evicted and bills no duration [guess]
-LEARNER_ROWS_PER_ENTRY = cf.ENTRY_ROWS   # a learner applies every entry as a member does
 LEARNER_AT, LEARNER_READS = 500, 1000   # `graftyard_types::placement`
 A1_ENTRIES_S = 10          # entries a second on the A1 group at peak (about 10 entries/s, AGENT-LAYER's Scale)
 
@@ -229,7 +231,7 @@ def agent_activity(tier, with_mcp):
 		+ checks + rows + leases)
 	a["emails"] += TASKS * EMAILS_PER_TASK
 	clones = TASKS * CLONES
-	clone_mb_out = t["checkout_mb"] * (1 - CLONE_HIT)
+	clone_mb_out = t["checkout_mb"] * (1 - CLONE_HIT) * cf.miss_out(cf.COMPOSED_SHARE * CLONE_SHALLOW)
 	a["dev_fetch_mb"] = (a0["dev_fetches"] * a0["dev_fetch_mb"] + clones * clone_mb_out) / (a0["dev_fetches"] + clones)
 	a["dev_fetches"] += clones
 	if with_mcp:
@@ -319,7 +321,7 @@ def learner_cost(tier):
 	duration = n * active_s * cf.DO_GB / 1e6 * price("cf.do.duration")
 	# Entries a month on the hot group: its agent pushes at A1's entries per push (10 entries/s for 500 pushes/120 s).
 	entries = hot_storage(tier)["pushes"] * A1_ENTRIES_S / (500 / PUSH_EVERY_S)
-	rows = n * entries * LEARNER_ROWS_PER_ENTRY / 1e6 * price("cf.do.sqlite.rows_written")
+	rows = n * entries * cf.entry_rows() / 1e6 * price("cf.do.sqlite.rows_written")
 	# One append per entry per learner, and the API reads they take from the voters while active.
 	reqs = (n * entries + (reads * active_s if n else 0.0)) / 1e6 * price("cf.do.requests")
 	return dict(n=n, reads=reads, load=load, gb=member_gb, storage=storage, duration=duration, rows=rows, reqs=reqs,
@@ -369,7 +371,7 @@ def lines(tier):
 
 	# graft-mcp: MCP requests and the REST behind them, plus session auth requests and grant and scoped-token entries.
 	sessions = per_month(devs, TASKS * MCP_SHARE)
-	auth_rows = sessions * 2 * MEMBERS * cf.ENTRY_ROWS   # a scoped-token hash on Tokens, a grant generation on Identity
+	auth_rows = sessions * 2 * MEMBERS * cf.entry_rows()   # a scoped-token hash on Tokens, a grant generation on Identity
 	out["graft-mcp: tool calls and REST behind them (base lines)"] = sum(l2.values()) - sum(l1.values())
 	out["graft-mcp: CPU, consent and session auth, grant and scoped-token entries"] = (
 		per_month(devs, TASKS * MCP_SHARE * MCP_CALLS) * MCP_CPU_MS / 1e6 * price("cf.workers.cpu")
@@ -381,12 +383,14 @@ def lines(tier):
 	# the group's reads and appends as DO requests. Scaled by the tier's peak agents against A1's 500.
 	lc = learner_cost(tier)
 	out["Learners on the largest network's group (storage, duration, applied rows, requests; K9)"] = lc["cost"]
-	out["Folds: PathSet and provenance rows"] = (agent_pushes * FOLD_ROWS_PER_PUSH * MEMBERS / 1e6
+	fold_rows = FOLD_ROWS_PER_PUSH // 2 if "without-rowid" in cf.LEVERS else FOLD_ROWS_PER_PUSH
+	out["Folds: PathSet and provenance rows"] = (agent_pushes * fold_rows * MEMBERS / 1e6
 		* price("cf.do.sqlite.rows_written"))
 	# Each working agent keeps one feed poll held on a member. Priced as the base prices DO wall time, per request with
 	# no sharing, so an upper bound: on a group that commits every second the member is active anyway.
+	share = cf.FEED_SHARE if "feed-shared" in cf.LEVERS else 1
 	out["Activity feed: long-poll hold time on members (upper bound)"] = (tasks * TASK_MIN * 60 * cf.DO_GB / 1e6
-		* price("cf.do.duration"))
+		* price("cf.do.duration") / share)
 	hs = hot_storage(tier)
 	out["R2: hot-group log archive and stored .idx of inline packs (two buckets)"] = (
 		hs["archive_gb"] * ARCHIVE_BUCKETS * ARCHIVE_DAYS / DAYS * r2_gb
@@ -628,5 +632,66 @@ def main():
 		a1_rates()
 
 
+def totals(tier):
+	"""Base (`cost.py`, design) and agent layer totals with the levers now on."""
+	return sum(cf.model(tier).values()), sum(lines(tier)[0].values())
+
+
+def with_levers(names, f):
+	saved = set(cf.LEVERS)
+	cf.LEVERS.clear()
+	cf.LEVERS.update(names)
+	try:
+		return f()
+	finally:
+		cf.LEVERS.clear()
+		cf.LEVERS.update(saved)
+
+
+LOW_RISK = ("edge-compose", "upload-once", "without-rowid", "logs-sample", "r2-ia", "feed-shared")
+SCENARIOS = {
+	"S1: accepted or low risk": LOW_RISK,
+	"S2: S1 + shard-class (recommended)": LOW_RISK + ("shard-class",),
+	"S3: S2 + pool-2 (deferred to a B0-34 pass)": LOW_RISK + ("shard-class", "pool-2"),
+	"S4: S3 + pro-plan (operator's call, not recommended here)": LOW_RISK + ("shard-class", "pool-2", "pro-plan"),
+	"S2 with shard-class-lean (1 vCPU ordinary shards)": LOW_RISK + ("shard-class-lean",),
+	"S2 + ws-half (if the working set measures at half)": LOW_RISK + ("shard-class", "ws-half"),
+	"Correction: as built today (fill-as-built)": ("fill-as-built",),
+	"S2 against as built": LOW_RISK + ("shard-class", "fill-as-built"),
+}
+
+
+def lever_report():
+	"""Each lever alone, then the combined scenarios, at 300 and 2,000 developers, base plus agents."""
+	tiers = ("medium", "large")
+	base = {t: with_levers((), lambda t=t: totals(t)) for t in tiers}
+	print("| Lever | 300 devs total | Saved | 2,000 devs total | Saved | Of which base | Of which agents |")
+	print("| --- | --- | --- | --- | --- | --- | --- |")
+	b0 = {t: sum(base[t]) for t in tiers}
+	print(f"| Default (design, with agents) | ${b0['medium']:,.0f} | | ${b0['large']:,.0f} | | ${base['large'][0]:,.0f} "
+		f"| ${base['large'][1]:,.0f} |")
+	rows = []
+	for name in cf.LEVER_NAMES:
+		got = {t: with_levers((name,), lambda t=t: totals(t)) for t in tiers}
+		rows.append((b0["large"] - sum(got["large"]), name, got))
+	for saved, name, got in sorted(rows, reverse=True):
+		m, l = sum(got["medium"]), sum(got["large"])
+		print(f"| {name} | ${m:,.0f} | ${b0['medium'] - m:,.0f} ({(b0['medium'] - m) / b0['medium']:.0%}) | ${l:,.0f} "
+			f"| ${saved:,.0f} ({saved / b0['large']:.0%}) | ${base['large'][0] - got['large'][0]:,.0f} "
+			f"| ${base['large'][1] - got['large'][1]:,.0f} |")
+	print()
+	print("| Scenario | Levers | 300 devs | Saved | 2,000 devs (base + agents) | Saved |")
+	print("| --- | --- | --- | --- | --- | --- |")
+	for name, levers in SCENARIOS.items():
+		got = {t: with_levers(levers, lambda t=t: totals(t)) for t in tiers}
+		m, l = sum(got["medium"]), sum(got["large"])
+		print(f"| {name} | {', '.join(levers)} | ${m:,.0f} | {(b0['medium'] - m) / b0['medium']:.0%} "
+			f"| ${l:,.0f} (${got['large'][0]:,.0f} + ${got['large'][1]:,.0f}) | {(b0['large'] - l) / b0['large']:.0%} |")
+
+
 if __name__ == "__main__":
-	main()
+	sys.argv[1:] = cf.set_levers(sys.argv[1:])
+	if "--levers" in sys.argv[1:]:
+		lever_report()
+	else:
+		main()
