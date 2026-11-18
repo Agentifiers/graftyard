@@ -1,0 +1,5 @@
+2026-11-18T10:29:14.877Z repo:131358: 12 names, 12 were joined, all not joined
+2026-11-18T10:31:32.176Z purge: 131358 purged: a 5228 -> 0, b 4862 -> 0, c 4364 -> 0
+2026-11-18T10:31:32.177Z purge: 131358 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T10:31:32.177Z purge: {"dry": false, "purged": 1, "objects": 14454, "refused": [], "second": 0}
+RETIREDONE

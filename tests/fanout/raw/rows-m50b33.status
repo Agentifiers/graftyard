@@ -1,0 +1,43 @@
+2026-11-18T10:09:58Z start 95ed1ade4 /home/user/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T10:10:16Z start sweep ok
+2026-11-18T10:10:19Z cost account 11.38 since 2026-11-18T00:00:00Z, run 0 since 2026-11-18T10:09:51Z, at b0-33
+2026-11-18T10:10:58.238Z m3org/fm50b33-b033 = 131358
+2026-11-18T10:10:58.649Z repo:131358 leader 0 placing since 1794996661109: waiting
+2026-11-18T10:11:01.893Z repo:131358 leader 0 placing since 1794996661109: waiting
+2026-11-18T10:11:12.916Z repo:131358 leader 0: config 7 learners [{"addr":192,"doName":"repo:131358#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131358#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131358#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131358#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131358#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131358#3#l5","join":20
+2026-11-18T10:11:17.997Z repo:131358 leader 0: set k 4: {"grants":[[0,[0,6,2]],[2,[0,6,2]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T10:11:28.335Z repo:131358 leader 0: set k 4: {"grants":[[0,[0,6,2]],[2,[0,6,2]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T10:11:38.826Z repo:131358 leader 0: set k 4: {"grants":[[0,[0,6,2]],[2,[0,6,2]]],"k":4,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-18T10:11:38.927Z repo:131358 leader 0: k 4 at 11
+2026-11-18T10:11:38Z b0-33 fm50b33-b033 131358 start
+2026-11-18T10:23:06.814Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:23:17.085Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:23:27.376Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:23:37.616Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:23:47.876Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:23:58.113Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:24:08.407Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:24:18.656Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:24:28.904Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:24:39.135Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:25:01.377Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:25:11.628Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:25:21.885Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:25:32.128Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:25:42.359Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:25:52.610Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:26:02.900Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:26:13.148Z repo:131358 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-18T10:26:13.353Z repo:131358 leader 1: k {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131358#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313 at undefined
+2026-11-18T10:26:13Z b0-33 fm50b33-b033 131358 done exit 0
+2026-11-18T10:26:20Z torn down 131358
+site fault off: 200
+git#0#net:131358 200
+{"torn_down": 1, "codes": {"200": 1}}
+sweep: no shard container running
+2026-11-18T10:26:36Z sweep ok
+ALLDONE
+B033DONE
