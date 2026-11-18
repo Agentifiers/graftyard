@@ -80,7 +80,8 @@ SESSION_PUSHES = 1         # one push of the session log blob under refs/graftya
 SESSION_KB = 200           # compressed, redacted session log per task (candidate C) [guess]
 SESSION_MONTHS = 12        # retention; the default is the org's audit-log retention, priced at 12 months [guess]
 PACK_COPIES = 3 + 1        # three site buckets plus the vault's locked copy
-FOLD_ROWS_PER_PUSH = 2     # one PathSet row and one provenance row per agent push, per member [guess]
+FOLD_ROWS_PER_PUSH = 2 * 2  # one PathSet row and one provenance row per agent push, per member [guess], each put
+                            # written to its table and its key index [measured, K12]
 MEMBERS = 3
 PUSH_GC_DAYS = 14          # agent branch bytes kept until GC drops them after merge or close
 PREDICT_MEAN_PAIRS = 1.80  # path-overlapping pairs per head push on a real fleet's pushes: 5,637 pairs for 3,134 pushes
@@ -164,7 +165,7 @@ API_READ_WEIGHT = 1        # narrow reads each counts in `GroupLoad`: since narr
                            # other narrow read does [inference, tests/am1/results/narrow-reads.md]
 LEARNER_HOURS = 9          # hours a day the hot group's reads keep its learners active: the 8-hour working day plus the
                            # hour, as the hot pool; a learner with no reads is evicted and bills no duration [guess]
-LEARNER_ROWS_PER_ENTRY = 1 + cf.FOLD_ROWS   # a learner applies every entry: its log row and the fold rows
+LEARNER_ROWS_PER_ENTRY = cf.ENTRY_ROWS   # a learner applies every entry as a member does
 LEARNER_AT, LEARNER_READS = 500, 1000   # `graftyard_types::placement`
 A1_ENTRIES_S = 10          # entries a second on the A1 group at peak (about 10 entries/s, AGENT-LAYER's Scale)
 
@@ -368,7 +369,7 @@ def lines(tier):
 
 	# graft-mcp: MCP requests and the REST behind them, plus session auth requests and grant and scoped-token entries.
 	sessions = per_month(devs, TASKS * MCP_SHARE)
-	auth_rows = sessions * 2 * MEMBERS * (1 + cf.FOLD_ROWS)   # a scoped-token hash on Tokens, a grant generation on Identity
+	auth_rows = sessions * 2 * MEMBERS * cf.ENTRY_ROWS   # a scoped-token hash on Tokens, a grant generation on Identity
 	out["graft-mcp: tool calls and REST behind them (base lines)"] = sum(l2.values()) - sum(l1.values())
 	out["graft-mcp: CPU, consent and session auth, grant and scoped-token entries"] = (
 		per_month(devs, TASKS * MCP_SHARE * MCP_CALLS) * MCP_CPU_MS / 1e6 * price("cf.workers.cpu")

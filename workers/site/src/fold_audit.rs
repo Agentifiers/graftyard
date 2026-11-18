@@ -1,6 +1,8 @@
 //! The site script's fold audit on its Cron Trigger (`design/SHARED.md`, "Folds", `fold_audit`; `design/DESIGN.md`,
-//! Stack, Cron Triggers; `decisions/DECISIONS.md`, "F48"). Each run takes `SAMPLE` repository chains this site homes,
-//! from this site's `MemberRegistry` shards, starting after the last run's cursor. For each chain:
+//! Stack, Cron Triggers; `decisions/DECISIONS.md`, "F48"). Each run audits `SAMPLE` repository chains this site homes,
+//! from this site's `MemberRegistry` shards, starting after the last run's cursor. A row whose chain no member joins
+//! (`retired`), a tombstoned one, or a probe costs a look and no sample, up to `LOOK_MAX` looks a run
+//! (`decisions/DECISIONS.md`, "`audit-cover`"). For each chain:
 //!
 //! - its leader refolds the chain from each tier's newest committed snapshot plus the log tail (`crate::load`), in
 //!   alarm-driven batches, so the refold holds one batch in memory whatever the log's size. It writes no tier table:
@@ -30,6 +32,10 @@ use crate::SiteEnv;
 
 /// Chains audited per run [guess]: each costs one call to its leader and one per voter; the refold runs on the leader.
 const SAMPLE: usize = 4;
+/// Rows one run looks at, at most [guess]. A row that is retired, deleted, or not a repository group costs a look and
+/// no sample (one call to this site's member, and for a retired one a registry read and a call per other site), so a
+/// site whose rows are mostly those still audits `SAMPLE` live chains a run, and a run's calls stay bounded.
+const LOOK_MAX: usize = 64;
 /// The `Registry` object that holds this site's audit cursor.
 const CURSOR: &str = "fold_audit";
 
@@ -93,6 +99,14 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) 
     let own = match graftyard_lookup::post(&b, site.id, &row.do_name, "/fold", br#"{"audit":{}}"#).await {
         Some((404, _)) => return json!({ "chain": row.chain.to_string(), "skipped": "not a repository group" }),
         Some((200, v)) => v,
+        // Not joined here: a retired member whose registry row stayed, or a live group's lost home slot. Only the other
+        // sites' members are asked, directly, so a group none of them holds starts no lookup and no election.
+        Some((409, _)) => {
+            if !joined_elsewhere(env, site, row).await {
+                return json!({ "chain": row.chain.to_string(), "retired": true });
+            }
+            Value::Null
+        }
         _ => Value::Null,
     };
     // A tombstoned repository is not refolded or compared until its purge (`decisions/DECISIONS.md`, "audit-moved").
@@ -231,6 +245,40 @@ fn idle(seen: &Value, answers: &[(graftyard_types::SiteId, Value)], voters: usiz
     if tiers.is_empty() { Idle::Matched } else { Idle::Mismatch(tiers) }
 }
 
+/// The rows from `start`, wrapping, each at most once, until `SAMPLE` were audited or `LOOK_MAX` looked at
+/// (`decisions/DECISIONS.md`, "`audit-cover`"). Answers each row's report and the index of the last row looked at,
+/// the next run's cursor.
+async fn walk<'a, R, F>(rows: &'a [R], start: usize, mut visit: impl FnMut(&'a R) -> F) -> (Vec<Value>, Option<usize>)
+where
+    F: std::future::Future<Output = Value>,
+{
+    let (mut out, mut last, mut audited) = (Vec::new(), None, 0);
+    for k in 0..rows.len().min(LOOK_MAX) {
+        if audited == SAMPLE {
+            break;
+        }
+        let i = (start + k) % rows.len();
+        let v = visit(&rows[i]).await;
+        audited +=
+            usize::from(!(v["retired"] == json!(true) || v["deleted"] == json!(true) || v.get("skipped").is_some()));
+        out.push(v);
+        last = Some(i);
+    }
+    (out, last)
+}
+
+/// Whether a member of `row`'s chain on another of its sites answers as joined.
+async fn joined_elsewhere(env: &Env, site: &SiteEnv, row: &RegistryRow) -> bool {
+    let b = Bindings { env, sites: &site.sites };
+    for s in row.sites.iter().filter(|s| **s != site.id) {
+        let Some(name) = member_name(env, site, *s, row.chain).await else { continue };
+        if !matches!(graftyard_lookup::post(&b, *s, &name, "/fold", br#"{"audit":{}}"#).await, Some((409, _))) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The name of `chain`'s member on site `at`, from that site's registry row.
 async fn member_name(env: &Env, site: &SiteEnv, at: graftyard_types::SiteId, chain: ChainId) -> Option<String> {
     let stub = site.registry(env, at, &MemberRegistry::for_chain(at, chain).do_name()).ok()?;
@@ -251,12 +299,8 @@ pub async fn run(env: &Env, only: Option<ChainId>, force: bool) -> Result<Value>
     }
     let from = cursor(env, &site, None).await?;
     let start = from.as_ref().map_or(0, |f| all.iter().position(|r| r.chain.to_string() > *f).unwrap_or(0));
-    let picked: Vec<&RegistryRow> = all.iter().cycle().skip(start).take(SAMPLE.min(all.len())).collect();
-    let mut chains = Vec::new();
-    for r in &picked {
-        chains.push(audit_chain(env, &site, r, force).await);
-    }
-    let next = picked.last().map(|r| r.chain.to_string()).unwrap_or_default();
+    let (chains, last) = walk(&all, start, |r| audit_chain(env, &site, r, force)).await;
+    let next = last.map(|i| all[i].chain.to_string()).unwrap_or_default();
     let report = json!({
         "site": site.id.0,
         "homed": all.len(),
@@ -264,6 +308,7 @@ pub async fn run(env: &Env, only: Option<ChainId>, force: bool) -> Result<Value>
         "skipped": chains.iter().filter(|c| c.get("skipped").is_some()).count(),
         "idle": chains.iter().filter(|c| c["idle"] == json!(true)).count(),
         "deleted": chains.iter().filter(|c| c["deleted"] == json!(true)).count(),
+        "retired": chains.iter().filter(|c| c["retired"] == json!(true)).count(),
         "chains": chains,
         "at": crate::now_ms(),
     });
@@ -282,6 +327,53 @@ mod tests {
         assert!(super::auditable(ChainId::Repo(RepoId(DbId(1)))));
         assert!(!super::auditable(ChainId::Repo(RepoId(DbId(0)))));
         assert!(!super::auditable(ChainId::Ids));
+    }
+
+    fn walk(rows: &[&str], start: usize) -> (Vec<String>, Option<usize>) {
+        let visit = |r: &&str| {
+            let v = match r.split_once(':').map_or(*r, |(k, _)| k) {
+                "retired" => serde_json::json!({ "chain": r, "retired": true }),
+                "deleted" => serde_json::json!({ "chain": r, "deleted": true }),
+                "probe" => serde_json::json!({ "chain": r, "skipped": "not a repository group" }),
+                _ => serde_json::json!({ "chain": r, "idle": true }),
+            };
+            std::future::ready(v)
+        };
+        let mut f = std::pin::pin!(super::walk(rows, start, visit));
+        let std::task::Poll::Ready((out, last)) =
+            f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        else {
+            panic!("walk awaits only its visits")
+        };
+        (out.iter().map(|v| v["chain"].as_str().unwrap_or_default().to_owned()).collect(), last)
+    }
+
+    /// `decisions/DECISIONS.md`, "`audit-cover`": graft-m3f's six crons on 2026-11-18 spent every sample on retired
+    /// test chains whose registry rows stayed. A run over mostly retired, deleted and probe rows still reaches the live
+    /// chains past them, audits `SAMPLE` of them, and leaves its cursor on the last row it looked at.
+    #[test]
+    fn a_run_over_mostly_retired_rows_still_audits_the_live_ones() {
+        let mut rows: Vec<String> = (0..30).map(|i| format!("retired:{i}")).collect();
+        rows[3] = "deleted:3".into();
+        rows[5] = "probe:5".into();
+        for i in [12, 25, 26, 27, 29] {
+            rows[i] = format!("live:{i}");
+        }
+        let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let (seen, last) = walk(&rows, 2);
+        let live: Vec<&String> = seen.iter().filter(|c| c.starts_with("live")).collect();
+        assert_eq!(live, ["live:12", "live:25", "live:26", "live:27"], "the first SAMPLE live rows from the cursor");
+        assert_eq!((seen.first().map(String::as_str), last), (Some("retired:2"), Some(27)));
+        // From the next cursor it wraps past the end: live:29, then live:12, live:25 and live:26 again.
+        let (seen, last) = walk(&rows, 28);
+        assert_eq!(seen.iter().filter(|c| c.starts_with("live")).count(), 4);
+        assert_eq!(last, Some(26));
+        // With no live row at all, a run looks at each row once, never past LOOK_MAX.
+        let dead: Vec<&str> = vec!["retired:x"; 200];
+        let (seen, last) = walk(&dead, 0);
+        assert_eq!((seen.len(), last), (super::LOOK_MAX, Some(super::LOOK_MAX - 1)));
+        let (seen, _) = walk(&dead[..7], 3);
+        assert_eq!(seen.len(), 7, "a short site's rows once each, not cycled");
     }
 }
 
