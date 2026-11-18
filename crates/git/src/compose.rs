@@ -108,47 +108,173 @@ pub fn composable(req: &V2Request) -> bool {
 }
 
 /// The container's reason when a composable want is not on the disk yet: the tip moved and this shard has not caught
-/// up to it (`compose.go`, `composeMiss`). Only this reason is retried after the running catch-up; any other (no chain,
-/// an annotated tag, the diff cap) would answer the same on a later disk.
+/// up to it (`compose.go`, `composeMiss`). Retried after the running catch-up.
 pub const NOT_YET: &str = "stock: not a ref tip or behind HEAD";
+
+/// The container's reason when the want's tree is past `composeDiffMax` entries from the chain's: the chain is on a
+/// tip far from HEAD. Retried after the chain's next step, which builds a new base in that case (`compose.go`,
+/// `handleCompose`). On B0-34 m1b34 it was a chain built on the wrong tip, never a far want: over the row's 600 real
+/// tip moves a want was at most 2,969 entries from the tip 20 moves back (`tests/am1/results/b034-attr.md`).
+pub const OVER_CAP: &str = "stock: over the diff cap";
 
 /// What a composable miss that the container answered 409 got in the end (`compose_then_catch_up`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AfterCompose<R> {
-    /// Composed after the catch-up that was already running when the 409 came.
+    /// Composed after the running catch-up, or after the chain's next step.
     Composed(R),
     /// Catch up as before, through a catch-up that starts after now, then serve (composed if the disk then allows it,
-    /// else stock): the reason was not `NOT_YET`, no catch-up was running, or the running one did not bring the want.
+    /// else stock): the reason is neither `NOT_YET` nor `OVER_CAP`, `NOT_YET` with no catch-up running, or the retry
+    /// still missed.
     CatchUp,
+    /// The caller's deadline passed first: the shard answers 503 `warming` and the edge asks the next site.
+    Late,
 }
 
-/// A composable miss after the container's first `compose=only` answer was 409 with `why`: when `why` is `NOT_YET`
-/// and a catch-up is running (`running`), wait for it to end (`in_flight`) and ask composed again (`compose`), which
-/// answers `Some` on a 200. Only if that also misses, or no catch-up was running, or `why` is another reason, does the
-/// caller wait for a catch-up that starts after now (`AfterCompose::CatchUp`), as it always did. m41's B0-34 had 143 misses
-/// on a just-moved tip, each waiting for the running catch-up and then the next one, first byte p50 3.1 s and p99 13.1 s
-/// after the 409, every one of them composed in the end; 80 had a catch-up end before theirs (T-01a1ccdd's trace,
-/// `tests/fanout/raw/misses-m41.txt`). The same order as `merge_cache::merge_then_catch_up`, which waits for the catch-up
-/// in flight after a miss and tries again before catching up itself.
-pub async fn compose_then_catch_up<R, W, Fw, C, Fc>(
+/// A composable miss after the container's first `compose=only` answer was 409 with `why`, all of it within
+/// `deadline`, the one deadline of the whole upload-pack (the caller's `wait`).
+/// - `NOT_YET` with a catch-up running (`running`): wait for it to end (`in_flight`) and ask composed again
+///   (`compose`, `Some` on a 200). m41's B0-34 had 143 misses on a just-moved tip, all composed in the end.
+/// - `OVER_CAP`: wait for any running catch-up, then for a chain step that starts after now (`step`), then ask
+///   composed again.
+/// - Anything else, or a retry that missed: `AfterCompose::CatchUp`, as it always did.
+///
+/// Past `deadline`, `AfterCompose::Late`. Unbounded, a miss waited out a whole stuck catch-up before its 15 s even
+/// started: 25 of m1b34's 50 shard 503s, 29 to 99 s each (`tests/am1/results/b034-attr.md`).
+pub async fn compose_then_catch_up<R, D, W, Fw, S, Fs, C, Fc>(
+    deadline: D,
     why: Option<&str>,
     running: bool,
     in_flight: W,
+    step: S,
     compose: C,
 ) -> AfterCompose<R>
 where
+    D: std::future::Future<Output = ()>,
     W: FnOnce() -> Fw,
     Fw: std::future::Future<Output = ()>,
+    S: FnOnce() -> Fs,
+    Fs: std::future::Future<Output = ()>,
     C: FnOnce() -> Fc,
     Fc: std::future::Future<Output = Option<R>>,
 {
-    if why != Some(NOT_YET) || !running {
+    let over = why == Some(OVER_CAP);
+    if !(over || why == Some(NOT_YET) && running) {
         return AfterCompose::CatchUp;
     }
-    in_flight().await;
-    match compose().await {
-        Some(r) => AfterCompose::Composed(r),
-        None => AfterCompose::CatchUp,
+    let work = async {
+        if running {
+            in_flight().await;
+        }
+        if over {
+            step().await;
+        }
+        match compose().await {
+            Some(r) => AfterCompose::Composed(r),
+            None => AfterCompose::CatchUp,
+        }
+    };
+    match futures_util::future::select(std::pin::pin!(work), std::pin::pin!(deadline)).await {
+        futures_util::future::Either::Left((a, _)) => a,
+        futures_util::future::Either::Right(_) => AfterCompose::Late,
+    }
+}
+
+/// Stock upload-packs one shard container runs at once [guess], as the container's `stockMax`: linux's took 2.6 GB of
+/// RSS each, and m1b34's monorepo container ran 15 to 21 of them in 12 GiB, holding the network's lock shared 20 to
+/// 99 s each, while catch-ups and every validate queued behind them (`tests/am1/results/b034-attr.md`). The next B0-34
+/// row's stock-process count per sample (`shardprocs`) measures it. Past it the container answers 429 and the object
+/// holds the request in its `StockLine`.
+pub const STOCK_MAX: u32 = 2;
+
+/// How often the head of a `StockLine` asks the container again [guess].
+pub const STOCK_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The stock upload-packs one shard object holds while its container's `STOCK_MAX` slots are full, in arrival order:
+/// only the head asks the container again, so a later request never takes a slot ahead of an earlier one. A wait, not
+/// a 429 to the client: git retries neither 429 nor 503 unless `http.maxRetries` is set, and then only 429 [doc,
+/// git-config, `http.maxRetries`]. Each waits within its upload-pack's deadline and leaves the line past it.
+#[derive(Debug, Default)]
+pub struct StockLine {
+    next: u64,
+    waiting: std::collections::VecDeque<u64>,
+}
+
+impl StockLine {
+    /// Whether a new stock request must queue: someone is already waiting.
+    pub fn busy(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+
+    /// A place at the back of the line.
+    pub fn join(&mut self) -> u64 {
+        self.next += 1;
+        self.waiting.push_back(self.next);
+        self.next
+    }
+
+    /// Whether `t` is at the front, the one place that asks the container.
+    pub fn is_head(&self, t: u64) -> bool {
+        self.waiting.front() == Some(&t)
+    }
+
+    /// Leaves the line: admitted, or past its deadline. The next place becomes the head.
+    pub fn leave(&mut self, t: u64) {
+        self.waiting.retain(|w| *w != t);
+    }
+
+    pub fn len(&self) -> usize {
+        self.waiting.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.waiting.is_empty()
+    }
+}
+
+/// One stock upload-pack through `line` within `deadline`. `call` asks the container, `None` when its slots are full
+/// (429); `pause` waits `STOCK_POLL`. A request that finds nobody waiting asks at once; otherwise, or once refused, it
+/// joins the line, and only the head asks again. `None` past `deadline`, having left the line.
+pub async fn stock_in_line<R, D, C, Fc, P, Fp>(
+    line: &std::cell::RefCell<StockLine>,
+    deadline: D,
+    mut call: C,
+    mut pause: P,
+) -> Option<R>
+where
+    D: std::future::Future<Output = ()>,
+    C: FnMut() -> Fc,
+    Fc: std::future::Future<Output = Option<R>>,
+    P: FnMut() -> Fp,
+    Fp: std::future::Future<Output = ()>,
+{
+    struct Place<'a>(&'a std::cell::RefCell<StockLine>, Option<u64>);
+    impl Drop for Place<'_> {
+        fn drop(&mut self) {
+            if let Some(t) = self.1 {
+                self.0.borrow_mut().leave(t);
+            }
+        }
+    }
+    let work = async {
+        if !line.borrow().busy()
+            && let Some(r) = call().await
+        {
+            return r;
+        }
+        let place = Place(line, Some(line.borrow_mut().join()));
+        let t = place.1.expect("joined");
+        loop {
+            pause().await;
+            if line.borrow().is_head(t)
+                && let Some(r) = call().await
+            {
+                return r;
+            }
+        }
+    };
+    match futures_util::future::select(std::pin::pin!(work), std::pin::pin!(deadline)).await {
+        futures_util::future::Either::Left((r, _)) => Some(r),
+        futures_util::future::Either::Right(_) => None,
     }
 }
 

@@ -1358,6 +1358,8 @@ impl ShardIo for Io<'_, '_> {
             #[serde(default)]
             lock_ms: u64,
             #[serde(default)]
+            midx_ms: u64,
+            #[serde(default)]
             idx: String,
         }
         let t0 = js_sys::Date::now() as u64;
@@ -1398,6 +1400,7 @@ impl ShardIo for Io<'_, '_> {
         st.total_ms += js_sys::Date::now() as u64 - t0;
         st.index_ms += o.index_ms;
         st.lock_ms += o.lock_ms;
+        st.midx_ms += o.midx_ms;
         match o.idx.as_str() {
             "used" => st.idx_used += 1,
             "rejected" => st.idx_rejected += 1,
