@@ -4,3 +4,4 @@ __pycache__/
 /target/
 .wrangler/
 .env
+!.env.example
