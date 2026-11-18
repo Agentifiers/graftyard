@@ -117,7 +117,12 @@ SITE_LOSS_PER_YEAR = 1             # `ReplaceMember` runs (signed SiteLost or 24
 GROUPS_PER_DEV = 8                 # repository, network, owner, and Actions groups per developer [guess]
 TOKEN_GROUPS = 3 * 1024            # token shards, three home families
 REPLACE_STEPS = 6                  # Workflow steps per group replaced, and the same again for RestorePlacement
-ROW_KB = 4                         # average SQLite row written when a new member copies a snapshot [guess]
+ROW_KB = 0.62                      # member SQLite bytes per fold row, in KB: (dbBytes - logBytes) / rows on graft-m4a's
+                                   # repo:65536, 619 to 622 B on two voters and 740 B on its lost one, 6,171 metadata rows
+                                   # and 32 core rows; an upper bound on bytes (request rows, FTS5, and snap_log are in
+                                   # dbBytes), so a lower bound on rows per GB. Snapshot frames hold 65 B per metadata row
+                                   # and 129 B per core row; m2-wp1's seeded comments 2,997 B [measured, 2026-11-18,
+                                   # decisions/OPEN-QUESTIONS.md K10]. One figure for both tiers: the core tier is unmeasured
 REMOVED_DAYS = 35                  # removed members run deleteAll() after 35 days
 AVG_PACK_MB = 50                   # average stored pack, for per-object pack copies [guess]
 VAULT_LOCK_DAYS = 35               # bucket lock retention in the vault account

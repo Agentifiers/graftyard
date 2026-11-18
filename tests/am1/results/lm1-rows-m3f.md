@@ -156,6 +156,7 @@ Built as designed in "Design: the audit refolds only a chain that moved" below, 
 - **Cost.** `scripts/cost.py` "Fold audit refolds": $30, $390 and $482 a month at 50, 300 and 2,000 developers; base totals now $261, $1,579 and $9,669 (were $231, $1,189 and $9,187, the audit unpriced). Copied into `design/DESIGN.md` Cost, `design/AGENT-LAYER.md` Cost and `alternatives/AWS.md`; `research/costs.md` regenerated.
 - **Tests.** `only_an_entry_that_writes_the_fold_moves_a_chain` (load.rs) and `an_unmoved_chain_is_compared_at_its_last_match_and_not_refolded` (fold_audit.rs). Both rules are new, so both fail to compile on main. Not run hosted: the first site day carrying it should show `idle` chains in the cron's report and a $0.00 PREFIX meter on an idle install.
 - **Follow-up.** K11 (weekly live-row check) opened in OPEN-QUESTIONS.
+- **Row size (2026-11-18 14:01Z).** M4-WP3 read `graft-m4a`'s j4 (`repo:65536`), read-only, $0.00 by PREFIX: (dbBytes - logBytes) / rows is 619 to 622 B on `#1#f0` and `#1#f2` and 740 B on the lost voter `#2#f1` (6,171 metadata rows, 32 core rows; refold equal to the kept digest on all three); snapshot frames 65 B per metadata row, 129 B per core row. `ROW_KB` 0.62: the refold line is $421, $2,517 and $3,110, totals $656, $3,726 and $12,463 (K10).
 
 ## F88 fixed: a committed entry folds by its own format (2026-11-18, code-only, branch `f88-format-fold`)
 
