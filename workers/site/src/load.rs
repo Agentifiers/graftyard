@@ -1041,13 +1041,36 @@ pub async fn archive_put(h: &Rc<Host<Repo>>, from: u64, to: u64) -> Result<Value
     )
 }
 
+/// Whether an entry above `ok` may have written a tier beyond its meta row: one with events or an id block, or one
+/// that extends leases after a stall. A no-op or a config entry runs only `on_entry`'s time-based pruning. With `ok`
+/// below the entries held in memory (`base`), the member cannot tell, and answers that the chain moved.
+pub fn moved<E>(ok: Index, base: Index, log: &[raft::LogEntry<E>]) -> bool {
+    ok < base
+        || log.iter().any(|e| {
+            e.index > ok && (e.extend.is_some() || matches!(e.body, EntryBody::Events(_) | EntryBody::IdBlock(_)))
+        })
+}
+
 // ---- routes ----
 
 /// `/fold {"audit": {..}}`: the last report and the running job. With `start`, a job starts when none runs and the
 /// last report is older than `AUDIT_EVERY_MS`, or at once with `force`; `deep` refolds the core tier from its oldest
 /// snapshot.
+///
+/// Any member also answers, for the cron's skip (`crate::fold_audit`, `decisions/DECISIONS.md`, "audit-moved"),
+/// `deleted`, whether its fold holds the repository's tombstone, and `seen`, what the cron last marked on it with
+/// `{"seen": {..}}`; `{"seen": null}` clears it. A tombstoned chain starts no refold without `force`.
 pub fn audit_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let sql = h.state.storage().sql();
+    match body.get("seen") {
+        Some(Value::Null) => {
+            sql.exec("DELETE FROM audit_seen", None)?;
+        }
+        Some(v) => {
+            sql.exec("INSERT OR REPLACE INTO audit_seen (id, row) VALUES (1, ?)", vec![v.to_string().into()])?;
+        }
+        None => {}
+    }
     let job = load_job(&sql)?;
     let last = rows(&sql, "SELECT at, row FROM load_report WHERE id = 1", vec![])?;
     let last = last.first().map(|r| Ok::<_, Error>((int(&r[0])? as u64, serde_json::from_str::<Value>(text(&r[1])?)?)));
@@ -1067,13 +1090,19 @@ pub fn audit_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     {
         return Ok(json!({ "error": { "notLeader": crate::host::nl_json(&nl) } }));
     }
-    if start && job.is_none() && (due || force) {
+    // A tombstoned repository keeps its rows only until its purge, and nothing writes them: no refold until then.
+    let deleted = h.core.borrow().as_ref().is_some_and(|c| git::purge::purgeable(&c.m.group_fold().fold));
+    if start && job.is_none() && ((due && !deleted) || force) {
         let j = audit_job(h, body["deep"].as_bool().unwrap_or(false))?;
         save_job(h, &j)?;
         h.arm_in(BUSY_MS);
         started = true;
     }
+    let seen = rows(&sql, "SELECT row FROM audit_seen WHERE id = 1", vec![])?;
+    let seen = seen.first().map(|r| serde_json::from_str::<Value>(text(&r[0])?).map_err(Error::from)).transpose()?;
     Ok(json!({
+        "deleted": deleted,
+        "seen": seen,
         "last": last.map(|(_, v)| v),
         "running": load_job(&sql)?.map(|j| { let mut v = job_json(&j); v["kind"] = json!(if j.install() { "install" } else { "audit" }); v }),
         "started": started,
@@ -1436,5 +1465,61 @@ mod drop_tests {
         assert!(v["core"]["at"].is_string(), "{v}");
         assert!(v["metadata"]["at"].is_null(), "{v}");
         assert_eq!(v["metadata"]["loaded"], false);
+    }
+}
+
+/// `decisions/DECISIONS.md`, "audit-moved": which entries send an idle chain back to a refold.
+#[cfg(test)]
+mod moved_tests {
+    use graftyard_raft::{EntryBody, ExtendLeases, Format, GroupConfig, LogEntry, PREV_ZERO, Term, TierSet};
+    use graftyard_types::{DbId, IdBlock, Index, Timestamp};
+
+    use super::moved;
+
+    fn entry(index: u64, body: EntryBody<u8>) -> LogEntry<u8> {
+        LogEntry {
+            term: Term(1),
+            index: Index(index),
+            prev: PREV_ZERO,
+            format: Format { family: 0x20, version: 1 },
+            tiers: TierSet::CORE,
+            at: Timestamp(index),
+            requests: Default::default(),
+            extend: None,
+            body,
+        }
+    }
+
+    /// graft-m3f, 2026-11-18: an idle chain's log grows only by the no-ops of the terms the audit's own lookups
+    /// started (`repo:65548`, 2,922 to 2,942 with no write). Those, and a config entry, leave the fold as it was; an
+    /// entry with events, an id block, or a stall's lease extension does not, and neither does a match older than the
+    /// entries the member holds, since it cannot see what came between.
+    #[test]
+    fn only_an_entry_that_writes_the_fold_moves_a_chain() {
+        let chain = graftyard_types::ChainId::Repo(graftyard_types::RepoId(DbId(1)));
+        let voter =
+            graftyard_types::Member::new(chain, graftyard_types::SiteId(0), graftyard_types::MemberKind::Full, 0, 1);
+        let p = serde_json::json!({ "voters": [voter], "learners": [], "home": 0, "generation": 1 });
+        let config = || EntryBody::Config(GroupConfig::Normal(Box::new(serde_json::from_value(p.clone()).unwrap())));
+        let log = vec![
+            entry(5, EntryBody::Events(vec![1])),
+            entry(6, EntryBody::Noop),
+            entry(7, config()),
+            entry(8, EntryBody::Noop),
+        ];
+        let base = Index(4);
+        assert!(!moved(Index(5), base, &log), "no-ops and a config since the match");
+        assert!(!moved(Index(8), base, &log), "nothing since");
+        assert!(moved(Index(4), base, &log), "an events entry since");
+        assert!(moved(Index(3), base, &log), "a match below the entries in memory");
+        let mut stalled = log.clone();
+        stalled.push(LogEntry {
+            extend: Some(ExtendLeases { since: Timestamp(1), by: std::time::Duration::from_secs(9) }),
+            ..entry(9, EntryBody::Noop)
+        });
+        assert!(moved(Index(8), base, &stalled), "a no-op that extends leases moves them");
+        let mut ids = log;
+        ids.push(entry(9, EntryBody::IdBlock(IdBlock::new(DbId(1 << 20), 4).unwrap())));
+        assert!(moved(Index(8), base, &ids), "an id block moves the tiers' cursors");
     }
 }

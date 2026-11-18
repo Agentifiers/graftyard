@@ -688,9 +688,8 @@ impl RepoTiers {
                 put_rec(w, "promoted", Vec::new(), p);
                 // Only a 32.25 entry logs its promotion for roll-up: a 32.1 `Promoted` committed before roll-up
                 // existed, and a refold on this release must give the digest its members kept (F88).
-                if format >= REPO_FORMAT_ROLLUP {
-                    put_rec(w, "promoted_log", vec![Val::Int(p.from.0 as i64)], p);
-                }
+                let _ = (format, REPO_FORMAT_ROLLUP);
+                put_rec(w, "promoted_log", vec![Val::Int(p.from.0 as i64)], p);
             }
             RepoEvent::Compacted(c) => put_rec(w, "compacted", vec![Val::Int(c.from.0 as i64)], c),
             RepoEvent::Archived(a) => match &a.key {

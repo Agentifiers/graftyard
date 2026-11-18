@@ -5019,3 +5019,25 @@ Branch `c-design` (`tests/am1/results/c-design.md`), B0-33's option (c) after th
 **Evidence.** The two `split.rs` tests above; `plant40.py` 5 of 5; graft-m1 site a Workers Logs, `fold audit mismatch` on `repo:1048587` (from 11-14 18:33Z, at 294 and 300, metadata only) and `repo:196628` (11-16 09:47Z to 11-17 13:47Z, at 2030 and 2036, metadata only).
 
 **Flip.** A product install that splits a chain before `SLIM_BYTES` shipped, which needs a dual-read release; or a split chain on a release with `SLIM_BYTES` throughout whose metadata refold alarms.
+
+### `audit-moved`: the fold audit refolds only a chain that wrote its fold since its last match, 2026-11-18
+
+**Decision.** The fold audit's cron (`workers/site/src/fold_audit.rs`) marks what it found for each chain on its own site's member (`audit_seen`: the refold's index and digests, and whether every voter answered and matched). On a later visit:
+1. **Idle.** If the last refold matched and no voter holds an entry since its index that writes the fold (events, an id block, or a stall's lease extension; `crate::load::moved`), each voter's digests at that index are compared with the refold's again, with no refold and no lookup. A chain the audit finds idle starts no election.
+2. **Refold until it matches.** If the last refold alarmed, a voter could not answer, a voter moved, or a voter's ring no longer holds the index, the chain goes to its leader as before, which refolds it when its report is a day old. An idle comparison that mismatches alarms and clears the match, so the chain refolds again.
+3. **Deleted.** A tombstoned repository (`git::purge::purgeable`) is neither refolded nor compared until its purge; `audit_route` starts no refold for it without `force`.
+
+`scripts/cost.py` prices the refolds of chains that moved ("Fold audit refolds", `AUDIT_ROWS_PER_ROW` 2 [measured], `AUDIT_MOVED_SHARE` 0.3 [guess]): $30, $390, and $482 a month at 50, 300, and 2,000 developers, which moves the default totals to $261, $1,579, and $9,669. The audit was unpriced before.
+
+**Why.** F48's refold replays a chain's entries from its newest snapshot with the current `apply` and compares the result with the digest each voter's `apply` kept. On a chain with no new entry since a matching refold, a new refold replays the same entries from the same snapshot, so it can only repeat the match, at 14 to 27 rows written per entry refolded and up to 118,523 rows a chain (`decisions/OPEN-QUESTIONS.md`, K10). On `graft-m3f` (2026-11-18), 40 finished test repositories cost $0.50 in 50 minutes this way, and the audit's own lookups campaigned their leaderless groups, so every visit added a term's no-op on every member. A tombstoned repository is refolded daily for its whole 90-day retention, for rows nothing reads.
+
+**What it gives up.** A refold reads no member's live tier rows, so storage corruption in a member's rows after `apply` was not caught before either: the digest ring holds what `apply` computed, not a rehash of the rows (`crates/fold/src/tier.rs`, `digest_at`; `refold_digest` is the live-row check, run only on demand by `refold_page`). That gap is K11, not this change. What an idle chain does lose is a re-refold on a new release: a release that changes what an already committed entry folds to (F88, and `MetaSlim`'s `SLIM_BYTES`) was found by refolding chains that had matched on the release before. On an idle chain that is now caught only by the golden-digest corpus in CI (`crates/git/tests/fold_corpus.rs`, F88), and on a moved chain by its next refold.
+
+**What it beat.**
+- **A refold every day per chain (F48's cadence).** It costs rows in proportion to the chain's size every day whether or not anything changed.
+- **The leader's report kept and reused by the leader alone.** The leader is found by a lookup that campaigns a leaderless group, which is the election the idle path avoids; and the leader can change between visits, so the match is kept on the cron's own member, which every visit reads first.
+- **Sampling rows instead of refolding.** It checks less than a refold when a chain moved, and nothing that the voters' digests miss when it did not.
+
+**Evidence.** `workers/site/src/load.rs`, `only_an_entry_that_writes_the_fold_moves_a_chain`, and `workers/site/src/fold_audit.rs`, `an_unmoved_chain_is_compared_at_its_last_match_and_not_refolded`; per-object rows written on `graft-m3f` and `graft-m2b` (K10).
+
+**Flip.** A storage-corruption case found on an idle chain by K11's live-row check that a daily refold would have found first; a refold of an unmoved chain that disagrees with its last matching report; or a release-time fold change on an idle chain that the corpus missed and a refold would have caught.

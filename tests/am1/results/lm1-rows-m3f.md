@@ -145,6 +145,18 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 
 **Decision record.** A DECISIONS entry "`audit-moved`" with decision / why / beat (a refold every day per chain, F48's cadence; sampling rows instead) / evidence (this section and K10) / flip: a storage-corruption case found on an idle chain by the follow-up live-row check that a daily refold would have found first, or a refold of an unmoved chain that disagrees with its last report.
 
+## `audit-moved` built (2026-11-18, code-only, branch `audit-moved`)
+
+Built as designed in "Design: the audit refolds only a chain that moved" below, with the orchestrator's gate: only a refold that every voter answered and matched opens the idle path, and a chain whose last refold alarmed refolds until one matches (`decisions/DECISIONS.md`, "`audit-moved`").
+
+- **Where the match lives.** On the cron's own site member, not the leader: `audit_seen` (index, core and metadata digests, `matched`), written by `fold_audit` through `/fold {"audit": {"seen": ..}}` after each refold comparison. The leader is reached only through a lookup, which campaigns a leaderless group; the own member is read first on every visit anyway.
+- **Moved.** Each voter answers `/fold {"at": n, "since": n}` with `moved` from its in-memory log (`crate::load::moved`): an entry above `n` with events, an id block, or a lease extension; or `n` below its log base, which it cannot see past. A no-op or config entry does not move a chain, so the audit's own past elections do not refold it.
+- **Idle.** All voters answered, none moved, and each holds both digests at `n`: compared with the match; equal is `idle`, unequal alarms (`console_error`, "idle") and clears `matched`. Anything else falls through to the leader path, unchanged.
+- **Deleted.** A tombstoned chain (`git::purge::purgeable`, answered by the own member) is listed `deleted`; `audit_route` starts no refold for it without `force`.
+- **Cost.** `scripts/cost.py` "Fold audit refolds": $30, $390 and $482 a month at 50, 300 and 2,000 developers; base totals now $261, $1,579 and $9,669 (were $231, $1,189 and $9,187, the audit unpriced). Copied into `design/DESIGN.md` Cost, `design/AGENT-LAYER.md` Cost and `alternatives/AWS.md`; `research/costs.md` regenerated.
+- **Tests.** `only_an_entry_that_writes_the_fold_moves_a_chain` (load.rs) and `an_unmoved_chain_is_compared_at_its_last_match_and_not_refolded` (fold_audit.rs). Both rules are new, so both fail to compile on main. Not run hosted: the first site day carrying it should show `idle` chains in the cron's report and a $0.00 PREFIX meter on an idle install.
+- **Follow-up.** K11 (weekly live-row check) opened in OPEN-QUESTIONS.
+
 ## F88 fixed: a committed entry folds by its own format (2026-11-18, code-only, branch `f88-format-fold`)
 
 - **Fix.** `Tiered::write` takes the entry's format. `Promoted` writes `promoted_log` only in a 32.25 entry, and the archive step records a promotion in 32.25 only with `GRAFTYARD_ROLLUP` on (`decisions/DECISIONS.md`, "F88: a committed entry folds by its own format"). The reproduction test passes; it failed on main.

@@ -63,6 +63,9 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS load_job (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS load_report (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS load_want (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
+    // `crate::fold_audit`: what this site's cron last found for the chain, marked on its own member: the refold's index
+    // and digests, whether every voter matched them, and the report's time (`decisions/DECISIONS.md`, "audit-moved").
+    "CREATE TABLE IF NOT EXISTS audit_seen (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS install_source (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     // `crate::load`: set once an installing split parent dropped its own metadata tables, cleared by `Write::Install`.
     // While it is set the member's metadata tier is unloaded and it does not lead (`crate::load::meta_dropped`).
