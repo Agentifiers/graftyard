@@ -299,6 +299,9 @@ MUTANTS = [
      '        Some((at, c)) => at < i || !in_config(c, me),', '        Some((_, c)) => !in_config(c, me),', PGL),
     ('purge-outside: C is the oldest config, not the newest', PU,
      '            .max_by_key(|(x, _)| *x);', '            .min_by_key(|(x, _)| *x);', PGL),
+    ('R28: a later placement drops the current generation (main\'s rule)', 'crates/types/src/placement.rs',
+     '        Ok(Placement { generation: p.generation.max(self.generation), ..p })\n    }\n\n    /// The one-voter',
+     '        Ok(p)\n    }\n\n    /// The one-voter', ['-p', 'graftyard-types', '--lib', 'placement::']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

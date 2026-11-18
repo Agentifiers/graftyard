@@ -4953,6 +4953,34 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Options (a) and
 
 **Flip.** A hosted run in which `/ingest` `lock_ms` stays near `index_ms`, meaning the move, the record, or the midx write is the slow part, or in which a reader sees a pack half moved in (an idx before its pack), which `moveIn`'s order is meant to prevent.
 
+### Not adopted: a voter's handler-top shed of edge requests, 2026-11-18
+
+Branch `voter-shed` (`tests/am1/results/voter-shed-design.md`), B0-33's option (b) after the append-stall trace. The orchestrator's decision (T-01a17bda), after point 2 of the design review.
+
+**Decision.** No member sheds edge `/read` or `/outcome_by_request` at the top of its handler by an open-request bound, and there is no member-side `/suspect` verdict cache. The design stays in the results file.
+
+**Why.** The shed rested on the premise that edge reads queued ahead of `/raft` lengthen the leader's AppendEntries out leg. On m47 (B0-33, 5,000 agents) they do not. With the leader at 64 or more open requests, edge reads held at most 3.5% and 8.7% of its open count on the two leaders where a bound could be computed, and reads stayed p50 7 to 37 ms; the commit family (`/commit`, `/outcome`, `/outcome_by_request`) held 80 to 100% of the open count that was not `/raft`. The out leg followed the leader's open count (Spearman 0.80) and not the edge read rate (0.14): at 400 or more open it was p50 4,110 ms at 0 to 50 reads/s and 3,565 ms at 200 or more [measured, `tests/am1/results/voter-shed-design.md`, "Point 2"; `tests/fanout/votershed/p2*.py`]. A bound would be code with no measured benefit, and B0-29 (m2bb29d, leader open p50 9) would never reach it.
+
+**Beat.** The shed as a safety bound on read floods (1,794 to 2,203 reads/s in some leader seconds on m47), which moved no measured out leg.
+
+**Evidence.** `tests/am1/results/voter-shed-design.md`, "Point 2" [measured].
+
+**Flip.** A run where edge reads are a measured share of the leader's open requests and the out leg tracks them.
+
+### Not adopted: (c2) the leader's sends clear of the output gate, 2026-11-18
+
+Branch `c-design` (`tests/am1/results/c-design.md`), B0-33's option (c) after the voter shed was not adopted. The orchestrator's decision (T-01a17bda).
+
+**Decision.** A member keeps writing its log, Raft state, and tier rows through SQL, so every outgoing message, AppendEntries included, still waits at the output gate for earlier writes to confirm. There is no KV write path with `allowUnconfirmed` and an explicit `sync()`.
+
+**Why.** A send can clear the gate only if every write before it is a KV `put` with `allowUnconfirmed`: in workerd `8f9bacf`, `ActorSqlite::onWrite` locks the output gate for any write without that flag, and the SQL API never passes it [inference, `io/actor-sqlite.c++`, `api/sql.c++`]; KV `put` on a SQLite-backed object accepts it [doc, https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/]. That is the storage rewrite "`m0-carried-4`" beat (a second `Store`, restore path, and migration), and every reply path would have to await `sync()` itself or ack an unconfirmed write, which `proof_for`'s `lead.matched` cannot tolerate ("Not adopted: a learner's writes clear of its own output gate"). The gain is capped by the gate's share: on m47 the gate time left at send covered 14 to 37% of the leader's round-trip excess over 300 ms, and storage confirms ran p50 36 to 41 ms, while ticker stalls filled with inbound requests covered 54% at 300 or more open [measured, `tests/am1/results/c-design.md`]. `m0-carried-4`'s flip, stall windows that line up with a write during a body, is not met. This leaves C20's send question open.
+
+**Beat.** The KV path with `allowUnconfirmed` and an explicit `sync()` before every reply.
+
+**Evidence.** `tests/am1/results/c-design.md`, "What holds the leader's sends" and "(c1b) under review" [measured]; `tests/fanout/votershed/p3*.py`, `p4*.py`.
+
+**Flip.** A run where the leader's open requests are held under a bound, by a cap on held commit waiters or any other means, and the output gate's share of the round-trip excess is still over 30%.
+
 ### F88: a committed entry folds by its own format, and a golden-digest corpus pins every kind, 2026-11-18
 
 **Status.** Built on branch `f88-format-fold`, the operator's option (a) through the orchestrator (T-01a17bda), from this thread's trace (T-01a1d805, `decisions/OPEN-QUESTIONS.md`, F88). Lands before the next site day on any install.

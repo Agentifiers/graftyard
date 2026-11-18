@@ -407,6 +407,21 @@ impl Placement {
         Ok(p)
     }
 
+    /// A later placement of this group: `Placement::new`'s checks, keeping this placement's `generation` when the new
+    /// members' highest is lower, as a decoded placement keeps its stored one. A config that drops every learner would
+    /// otherwise fall back to the voters' generation, and the next `/learners` would name a dropped learner's object
+    /// again (`decisions/OPEN-QUESTIONS.md`, R28), against `next_generation`'s promise.
+    pub fn next(
+        &self,
+        voters: ArrayVec<Member, 3>,
+        learners: ArrayVec<Member, 16>,
+        home: SiteId,
+        checks: &PlacementChecks,
+    ) -> Result<Placement, PlacementError> {
+        let p = Placement::new(voters, learners, home, checks)?;
+        Ok(Placement { generation: p.generation.max(self.generation), ..p })
+    }
+
     /// The one-voter `Solo` placement: one Full member on a known site. It needs the install's signed `evaluation`
     /// flag (`Genesis.evaluation`), which the caller reads from the `Release` view and passes here.
     pub fn solo(voter: Member, evaluation: bool, checks: &PlacementChecks) -> Result<Placement, PlacementError> {
@@ -687,6 +702,26 @@ mod tests {
             Placement::new(v, learners(&[(1, MAX_LEARNERS as u8)]), SiteId(0), &checks),
             Err(PlacementError::SameSlot(MAX_LEARNERS as u8))
         );
+    }
+
+    /// R28: a config that drops every learner keeps the group's generation, so a learner added after it takes a name
+    /// above every dropped learner's, never a dropped learner's object again.
+    #[test]
+    fn a_learner_added_after_every_learner_was_dropped_takes_a_new_generation() {
+        let t = table();
+        let r = rtt(&[(0, 1, 80), (0, 2, 180), (1, 2, 200)]);
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r, near: &[] };
+        let v = voters(&[(0, Full), (1, Full), (2, Full)]);
+        let p0 = Placement::new(v.clone(), ArrayVec::new(), SiteId(0), &checks).unwrap();
+        let first = Member::new(REPO, SiteId(1), MemberKind::Learner, 0, p0.next_generation());
+        let with = p0.next(v.clone(), [first.clone()].into_iter().collect(), SiteId(0), &checks).unwrap();
+        let dropped = with.next(v.clone(), ArrayVec::new(), SiteId(0), &checks).unwrap();
+        assert_eq!(dropped.generation(), first.generation, "the dropped learner's generation is kept");
+        let again = Member::new(REPO, SiteId(1), MemberKind::Learner, 0, dropped.next_generation());
+        assert!(again.generation > first.generation);
+        assert_ne!(again.do_name, first.do_name, "{} names the dropped learner's object", again.do_name);
+        // `new` alone still takes its members' highest: the floor is the caller's current placement.
+        assert_eq!(Placement::new(v, ArrayVec::new(), SiteId(0), &checks).unwrap().generation(), 1);
     }
 
     /// A placement decodes to itself from the same bytes as before, and a raw one `new` would refuse does not decode.

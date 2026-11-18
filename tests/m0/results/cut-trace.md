@@ -98,6 +98,79 @@ Those return before `cut` runs, so no row means no cut was made.
   and the last apply; five plant wrong end codes, swapped byte limits, a Human queue ignored, `left` read as `taken`,
   and Human commands left uncounted.
 
+## Run 5: the per-cut rows on graft-m2b (2026-11-18)
+
+B0-29 run 5 (`tests/am1/results/b029-m2b.md`, "Run 5"; a1 `mwlu6gge`, repository 131357, site day m49 from main
+`94fdfb48`, load from 1794990053053 ms, 08:20:53Z; `tests/fanout/raw/tsave-m2bb29e.jsonl.xz`). Commit p99 669 ms
+(p50 355, n 10,696), against 1,122 in run 4. The build also carries `b032-shed` and other merges since run 4, so the
+fall is not cut-trace's: cut-trace changes no behaviour.
+
+### What ended each cut [measured]
+
+`tests/m0/cuttrace/cuts.py` over the leader's kind 29 rows in the load window:
+
+| | |
+| --- | --- |
+| cuts | 3,057 (2,553 early, with an entry in flight; 13 with one batch held) |
+| end codes | **`Empty` 3,057**; `Soft` 0, `EntryMax` 0, `AgentTokens` 0 |
+| commands a cut, p50 / p99 / max | 3 / 9 / 14, all agent class |
+| commands left queued after a cut | 0 on every cut |
+| agent tokens left after a cut, p1 / p50 | 211 / 398 |
+| soft bytes a cut, p50 / p99 / max | 1,527 / 23,525 / 44,731, against ENTRY_SOFT 100,000 |
+
+So no admission limit ends a cut: every cut takes the whole queue, with tokens and bytes to spare. This settles
+the [inference] above. A cap would move nothing on B0-29.
+
+One reader fix: a row's `batch` passes through a JS number, and with the tokens above bit 48 it is past 2^53, so its
+lowest bits round to the double's step (8 to 32 at these values). `cuts.py` now reads the double the site wrote. The
+rounding reaches only the Human count (bits 0 to 11), marked `human~`; the agent, merge-queue and bot counts, the
+tokens, `left` (in `index`, under 2^53) and the bytes are exact. Every row's Human count reads 0, which matches B0-29's
+mix, but a later run with Human commands needs the tokens moved out of `batch` (a follow-up, not done here).
+
+### The queue split on one clock, against commitMs [measured]
+
+| `/stats`, leader | p50 | p99 |
+| --- | --- | --- |
+| commitMs | 355 | 669 |
+| queue | 202 | 518 |
+| queue:slot | 162 | 403 |
+| queue:post | 12 | 273 |
+| round | 147 | 272 |
+| confirm | 42 | 105 |
+| cycle | 182 | 430 |
+
+Queue p50 202 plus round p50 147 is 349, against commitMs p50 355: the two now add up on one clock, as (a) intended.
+At p99 the parts do not sum (518 + 272 = 790 against 669), as quantiles do not. The trace's own one-clock replay
+(`skew.py`) gives queue p50 / p99 286 / 611 under its second-append model; the member clock lead at `/commit`
+arrivals fell to p50 75, p99 417 (run 4: 261, 1,495), so the old mixed figure would have read 354 / 795.
+
+### Does the two-round floor hold?
+
+Per entry (`entries.py`): round p50 / p99 151 / 255, cycle 175 / 438, the gap from an apply to the next append p50 7,
+p99 280. The shares model (`shares.py`, W 80 ms) gives commit p50 / p99 355 / 652, against the measured 355 / 669:
+
+| part of a command's commit (W 80 ms) | share of the mean | share of the tail | p99 |
+| --- | --- | --- | --- |
+| its own entry's round | 41% | 20% | 255 |
+| frozen behind the entry in flight | 18% | 7% | 175 |
+| waiting for the freeze | 29% | 47% | 349 |
+| apply to the next append (deps, decide) | 12% | 25% | 268 |
+
+- **The floor's arithmetic holds:** 2 × round p99 is 510 ms. A command arriving just after a cut waits for the
+  entry in flight and then rides the next one; the two rounds it spans sum to p50 294, p99 463 ms (`floor.py`
+  replay, `tests/m0/cuttrace/floor.py`). The commit those arrivals see under that model is p50 / p99 439 / 743, a
+  model that rides the second append; the measured commitMs is 355 / 669.
+- **The tail is no longer the rounds.** Round p99 is 255 ms, at the floor's "near 250 ms", and commit p99 is still
+  669. What sits above the two rounds is the wait for the next freeze (47% of the tail, p99 349) and the apply to
+  next append gap (25%, p99 268, the dependency read and `decide`). Commit minus the two rounds it spans is p50 135,
+  p99 478 ms.
+- So the floor is necessary, not sufficient [inference]: a round p99 near 250 ms was reached and 600 ms was not. The
+  remaining 69 ms over the line, and 9 ms over the 90% line, sit in the freeze timing (`cut_early`'s wait of a mean
+  round less a mean read) and the dependency read after the apply, not in a cap or the round. Change (c), on rounds,
+  would not close it; the operator's question about the target now reads: does B0-29 need the freeze or the
+  post-apply gap moved, or is 669 ms a long tail under the 90% rule's spirit (it is 9 ms past its letter).
+- The far voter made 2 of 3,080 quorums and none of the 42 tail commands' own (`shares.py`).
+
 ## Full checks, the long sweep and Porcupine
 
 - Full checks on `cut-trace`: fmt, workspace clippy, wasm32 clippy for site, edge and ops (site and edge with and
