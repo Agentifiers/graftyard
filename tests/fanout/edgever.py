@@ -5,7 +5,7 @@ log has no version (the deploy did not finish, as m36's stopped while compiling,
 deployment is another version or a split. Account and token from the environment, the token only as a header."""
 import json, os, re, sys, urllib.request
 
-log, script = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "graft-m2b-edge")
+log, script = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("EDGE_SCRIPT", "graft-m2b-edge"))
 text = open(log).read() if os.path.exists(log) else ""
 m = re.findall(r"Current Version ID: ([0-9a-f-]{36})", text)
 rev = text.splitlines()[1].strip() if len(text.splitlines()) > 1 else "?"

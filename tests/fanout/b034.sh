@@ -8,7 +8,7 @@
 # Needs $B034_DIR/linux.git and $B034_DIR/git.git (bare clones). Output: tests/fanout/raw/b034-<tag>.status.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-source tests/m3/rows/env.sh
+source ${ROWS_ENV:-tests/m3/rows/env.sh}
 TAG=$1 D=${B034_DIR:-$HOME/b034}
 ST=tests/fanout/raw/b034-$TAG.status
 [ -e tests/fanout/raw/.b034-$TAG.started ] && exec sleep infinity
@@ -20,7 +20,7 @@ n=$(rg -l "api\.cloudflare\.com" workers/edge/src workers/site/src crates --type
 # Round 24c: the m36 site day's edge deploy stopped while compiling, and the rows ran on the previous edge. EDGE_LOG
 # names the site day's edge log (tests/am1/raw/runs/fanout<TAG>-edge.log); the row stops unless that version serves.
 if [ -n "${EDGE_LOG:-}" ]; then
-  python3 tests/fanout/edgever.py "$EDGE_LOG" >> "$ST" 2>&1 || { s "b0-34 stopped: the edge is not the site day's"; echo DONE >> "$ST"; exec sleep infinity; }
+  python3 tests/fanout/edgever.py "$EDGE_LOG" ${EDGE_SCRIPT:-} >> "$ST" 2>&1 || { s "b0-34 stopped: the edge is not the site day's"; echo DONE >> "$ST"; exec sleep infinity; }
 else
   s "b0-34 stopped: EDGE_LOG (the site day's edge deploy log) is not set"; echo DONE >> "$ST"; exec sleep infinity
 fi

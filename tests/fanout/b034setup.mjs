@@ -8,7 +8,7 @@
 // Environment as tests/m3/rows/lib.mjs. No token reaches argv or a log.
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { user, pat } from "../m3/rows/lib.mjs";
-import { api, log, tokens } from "../am1/hosted/lib.mjs";
+import { OP, api, bed, commit, log, must, repoShard, state, tokens } from "../am1/hosted/lib.mjs";
 
 const S = process.env.M3_STATE;
 const out = `${S}/b034.json`;
@@ -25,7 +25,20 @@ const toks = readFileSync(`${S}/m3-tokens.txt`, "utf8");
 if (!toks.split("\n").some((l) => l.startsWith("hostile "))) appendFileSync(`${S}/m3-tokens.txt`, `hostile ${readFileSync(tokFile, "utf8").trim()}\n`);
 const hostileTok = readFileSync(tokFile, "utf8").trim();
 
+// B034_CREATE=owner (graft-m1, whose edge does not enable 32.13 for REST create): `CreateRepo` on the owner's Authz
+// chain, then `RepoOwner` on the name shard, as tests/am1/b030/mkrepo.mjs makes m3org/b0-30. The repository starts
+// with no `main` and no settings row; b034seed.mjs force-pushes the first line, so nothing needs auto_init.
+const OWNERS = { m3org: state.org, "m3-member": state.member, [HLOGIN]: HOSTILE };
+async function ownerRepo(owner, name) {
+  const a = OWNERS[owner];
+  const o = await commit(`authz:${a}`, { cred: OP, op: { CreateRepo: { name } } });
+  const id = o?.ok?.out?.Repo?.repo ?? (await bed({ chain: `authz:${a}`, read: { repo: name } })).value?.repo?.repo;
+  if (!id) throw new Error(`${owner}/${name}: ${JSON.stringify(o).slice(0, 200)}`);
+  await must(`names:${repoShard(id)}`, { cred: OP, op: { RepoOwner: { repo: id, owner: a } } });
+  return { repo: `${owner}/${name}`, chain: `repo:${id}` };
+}
 async function repo(owner, name, tok) {
+  if (process.env.B034_CREATE === "owner") return ownerRepo(owner, name);
   const path = owner === "m3org" ? "/api/v3/orgs/m3org/repos" : "/api/v3/user/repos";
   let r = await api("POST", path, tok, { name, private: false, auto_init: true });
   if (r.status === 422) r = await api("GET", `/api/v3/repos/${owner}/${name}`, tok);

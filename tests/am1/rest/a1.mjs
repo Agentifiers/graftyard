@@ -503,7 +503,20 @@ function postH1(url, body, headers, agent) {
     req.end(body);
   });
 }
+// B0-34 (a): which v2 ls-refs the edge answered from the group's refs (a test edge's `x-graft-ls-refs: edge`) and
+// which went on to the shard, by status, over every ls-refs this driver sends (`lsRefsBy` in the row).
+const lsRefsBy = {};
+const tallyLsRefs = (body, r) => {
+  if (!Buffer.isBuffer(body) || !body.includes("command=ls-refs")) return;
+  const k = `${r.headers?.get?.("x-graft-ls-refs") ?? "shard"} ${r.status}`;
+  lsRefsBy[k] = (lsRefsBy[k] ?? 0) + 1;
+};
 async function git(path, tok, body, headers = {}, repo = R, agent = null) {
+  const r = await gitOnce(path, tok, body, headers, repo, agent);
+  tallyLsRefs(body, r);
+  return r;
+}
+async function gitOnce(path, tok, body, headers = {}, repo = R, agent = null) {
   const t = Date.now();
   if (agent) {
     try {
@@ -1334,6 +1347,7 @@ const v = {
       compose: missRows.reduce((m, x) => ((m[x.compose ?? "none"] = (m[x.compose ?? "none"] ?? 0) + 1), m), {}),
       filled: missRows.filter((x) => x.filled).length, notFilled: missRows.filter((x) => x.filled === false).length }, kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
+  lsRefsBy,
   loopDelay: { p50: Math.round(loopDelay.percentile(50) / 1e6), p99: Math.round(loopDelay.percentile(99) / 1e6),
     max: Math.round(loopDelay.max / 1e6) },
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
