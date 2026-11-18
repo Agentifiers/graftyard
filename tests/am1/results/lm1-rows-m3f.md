@@ -114,6 +114,69 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Site day m3frs: the audit's hosted checks and K12 (2026-11-18, graft-m3f, main `7b576074`)
+
+Site day and edge day from main `7b576074` (`refold-stream`, `audit-moved`, `b034-tails`), 17:54:52Z to 18:08:53Z, `site exit 0`, `edge exit 0` (`tests/am1/raw/runs/siteday-m3f-m3frs.log`). New shard image `sha256:1e6cc1d0…`, standard-4. Sites `ef2045c3` / `1cc81f49` / `53fd05b7` (phase 1 `aa15cfd8` / `b88c2482` / `f3850881`), edge `18a707d8`. One seeded repository, `m3org/k12-g1wc3` = `repo:65588` (leader on site 0, voters `#1#f0..2`), made by REST create plus 4 labels, then one `POST /labels` (a `DefineLabel` entry) at the start of each quiet minute. Per-object rows come from `durableObjectsPeriodicGroups` by object name and minute.
+
+The orb's proxy answered 502 for every `*.workers.dev` host this session, and its resolver often failed on them. The drivers ran with the edge's address pinned (172.67.202.67, from public DNS) in Node, Python and curl. That was local plumbing; nothing on the install changed.
+
+### 1. audit-moved: idle and deleted counts
+
+- **Scheduled crons, site a (site 0).** 18:18, 18:32, 18:48, 19:03, 19:18 and 19:33Z each read `homed 53, idle 0, deleted 0, alarms 0`. Every chain sampled was a retired test chain answering 409 or `no group` (`repo:65536` to `65547`), as the idle cleanup left them. Sites b and c home no chain. So the scheduled crons could not show `idle` or `deleted`: the cursor walks 53 rows 4 at a time and did not reach 65588 in this window.
+- **The same pass, run on demand for one chain** (`/bench_seed {"audit": "repo:65588"}`, the cron's own `fold_audit::run` from site 0, test-faults), [measured]:
+  - 18:25:15Z, forced: starts the refold (through 18).
+  - 18:25:35Z: `alarm false`, core and metadata each `compared 3, mismatches []`, `missing []`, so the chain is marked matched at 18.
+  - 18:25:38Z: `{"chain": "repo:65588", "idle": true, "index": 18}`, report `idle 1`, no refold started, no lookup.
+  - After `DELETE /repos/m3org/k12-g1wc3` (204) at 18:49:55Z: 18:50:02Z and 18:50:04Z each `{"deleted": true}`, report `deleted 1`, no refold.
+- **The PREFIX meter over two crons.** 19:05 to 19:35Z (crons 19:18 and 19:33Z), after the close-out: graft-m3f **$0.00** by `PREFIX`; 139 rows written in total, all `Registry` and cron bookkeeping (`rowsmin.py`: 69 and 70 per 15 minutes, none on any `repo:` object).
+
+### 2. One streamed refold's `rowsWritten` against `pages` + `saved`
+
+Two forced refolds of `repo:65588`, each alone in its minute on the leader `#1#f0` [measured]:
+
+| Refold | Index | Report: pages, saved, batches, entries, ms | Leader rows written in the minute | Pages + saved |
+| --- | --- | --- | --- | --- |
+| 18:25:12Z | 18 | 6, 11, 2, 10, 1,230 | 60 | 17 |
+| 18:43:15Z | 27 | 6, 14, 2, 19, 881 | 52 | 20 |
+
+So `rowsWritten` is 3.5 and 2.6 times `pages + saved`, which is over `refold-stream`'s flip line (twice). What the extra rows are, from the code path (`workers/site/src/load.rs`) [inference]:
+- Each staged page and saved change is written once and deleted once at the end (`finish_stmts`, `AUDIT_CLEAR`): 2 × 17 = 34 and 2 × 20 = 40. `cost.py` already prices that (`2 * pages + 2 * FOLD_ROWS * tail`).
+- The rest is fixed per audit: `load_job` written at start, after the prepare, and once per batch, then deleted (about 5); `load_report` (1); and the cron's `audit_seen` mark (1). `audit_page` and `audit_overlay` are `WITHOUT ROWID`, so each of their puts is one row. That leaves 60 − 34 = 26 and 52 − 40 = 12 rows. The 18:25 minute also held that run's `noop` entries 19 and 20, a new term's, each with its `log` and `raft_state` rows.
+
+The flip line compared rows with `pages + saved`, but each of those is billed twice by design. Against `2 × (pages + saved)` the two refolds wrote 1.76 and 1.30 times as much, with the excess a fixed 12 to 26 rows per audit. That changes no cost line: at 1,824 to 10,506 refolds a month, 26 more rows each is $0.02 to $0.27. Recorded in `decisions/DECISIONS.md`, "`refold-stream`".
+
+### 3. K12: one `apply`'s `rowsWritten`
+
+Four `DefineLabel` entries, each alone in its minute (18:23, 18:24, 18:28, 18:42Z: entries 17, 18, 23, 27):
+
+| Member | Rows written per entry | Statements in its transaction |
+| --- | --- | --- |
+| Leader `#1#f0` | 19, 19, 19, 19 | 1 confirm of 1 statement, 143 B, plus the apply's |
+| Followers `#1#f1`, `#1#f2` | 13 to 15 when the commit arrives in the same minute (18:24: 15 and 15) | |
+
+What one entry writes, counted two ways:
+- **Fold rows.** In memory, a `DefineLabel` entry puts 6 fold rows: core `_digest` and `_fold`, metadata `_digest`, `_fold`, `ids` and `label` (a counting store over `RepoFold`, scratch test, deleted). That matches `FOLD_ROWS` 6.
+- **Other rows per entry**, from `SqlStore::write` and the host (`workers/site/src/host.rs`): the `log` row, `raft_state`, the `request` row, `DELETE FROM request WHERE at < cut` (0 rows here), and the test-faults `dup` probe and `arrival` row (test installs only). So 3 product rows per entry, plus 2 test-only ones.
+
+How the platform counts them [doc]: workerd's row counter (`patches/sqlite/0001-row-counts-plain.patch` in cloudflare/workerd) adds one row written for each `OP_Insert` and each `OP_IdxInsert` on a non-ephemeral cursor, and for each `OP_Delete` that carries the change-count flag. Cloudflare's D1 pricing says the same of indexes: "two rows written: one to the table itself, and one to the index". Every fold tier table, `_fold` and `_digest` included, has a `PRIMARY KEY` over untyped `k0..` columns and no `WITHOUT ROWID` (`workers/site/src/tier.rs`, `create`). Such a key is not a rowid alias, so SQLite keeps an automatic index beside the rowid table, and each put inserts into both.
+
+Accounting for the leader's 19 [inference, from the patch and the schemas; it fits every clean minute]:
+- 6 fold puts × 2 = 12.
+- `log` (`idx INTEGER PRIMARY KEY`, a rowid alias) 1, and `request` (`rid TEXT PRIMARY KEY`, with an index) 2.
+- `raft_state` 1 or 2: the append and the commit are separate inputs on the leader.
+- The test-faults `arrival` row, whose `AUTOINCREMENT` also writes `sqlite_sequence`: 2 on the leader only, and test installs only.
+
+So a product member writes about 17 rows for this entry, 16 on a follower whose `raft_state` write lands once. I did not settle whether `INSERT OR REPLACE`'s implicit delete of a replaced row counts. The patch counts `OP_Delete` only with the change-count flag, and the measured 19 fits it not counting.
+
+**Answer:** yes. A tier row put costs 2 rows written, and one `apply` of this 6-fold-row entry wrote about 17 product rows, against `cost.py`'s 1 + `FOLD_ROWS` = 7 [measured: 19 on the leader with 2 test-only rows; inference: the split]. The "Durable Objects SQLite rows written" line is therefore about 2.4 times what `cost.py` prices. At 17 rows an entry (`FOLD_ROWS` 16), the line is $0, $66 and $726 a month at 50, 300 and 2,000 developers, against $0, $0 and $270, and the totals are $235, $1,282 and $9,832. Those figures come from `scripts/cost.py --detail` with `FOLD_ROWS` set by hand and not committed. `cost.py` is not changed here: K12 asked for the measurement, and the orchestrator decides the pricing and whether the tier tables move to `WITHOUT ROWID` as a new table set and refold (`decisions/OPEN-QUESTIONS.md`, K12).
+
+### Close-out
+
+- `retirenets.mjs 65588` (18:58Z): 3 names, 3 joined, all not joined. `purge.py 65588`: purged 1 network, 14 objects, second pass 0, none refused (18:59:47Z; the first try through `retirenets.mjs` refused on the orb's proxy 502, and the rerun had the address pinned).
+- `node tests/fanout/joined.mjs 65536-65588`: none joined of 53. `joined.mjs 0` reads `repo:0 ---` for the latency probe's chain, which this session did not touch.
+- `INSTALL=graft-m3f teardown.py --sweep`: the first sweep tore down `git#0#net:65588` (code `000` through the proxy, so `SWEEP FAILED`, exit 2), and the pinned rerun answered 200 and `sweep: no shard container running`, exit 0, and again at 19:03Z.
+- Cost: graft-m3f $0.09 by `PREFIX` from 17:52Z to 19:03Z ($0.08 of it site a's shard container), $2.83 for the day; the account $28.26 for the day at 19:39Z.
+
 ## Idle cleanup and the fold audit's cost (2026-11-18, graft-m3f, no deploy)
 
 **What billed.** With no container running, graft-m3f billed $0.15 from 03:30 to 04:00Z and $0.37 from 04:00 to 04:33Z, nearly all Durable Object rows written, led by `graft-m3f-site-a`. The writer was site a's `*/15` fold audit (`workers/site/src/fold_audit.rs`): it homes 52 repository chains (sites b and c home none), samples 4 a run after its `fold_audit` cursor, and the leader of each starts a refold when its last report is a day old (`AUDIT_EVERY_MS`). Workers Logs' `fold audit` reports name the chains of each burst: 03:32Z `repo:65561` to `65564`, 03:48Z `65565` to `65568`, 04:03Z `65569` to `65572`, 04:17Z `65573` to `65576`. From 03:30 to 04:20Z those 16 chains wrote 501,211 rows, about $0.50 [measured, `durableObjectsPeriodicGroups` by object].
