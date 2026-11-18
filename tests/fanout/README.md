@@ -22,6 +22,30 @@ Stamp every harness time on Cloudflare's clock, never the orb's. The orb's clock
 - Files written before 2026-11-18's fix are on the orb's clock. Shift them by the offset measured for that run (m50
   +7,310 ms, m51 +7,440 ms), or by the newest trace row's lead over `at` in the run's tsave file.
 
+## When the orb cannot reach a workers.dev host
+
+Seen on 2026-11-18 from about 13:20Z (B0-02) and at 14:33Z (B0-33 m52): the orb's resolver answered SERVFAIL for
+`graft-m2b-edge.<sub>.workers.dev` ("No Reachable Authority at delegation workers.dev"), and the egress proxy answered
+`CONNECT` with 502. Node's `fetch` then fails with `fetch failed` / `ENETUNREACH` (it tries the IPv6 address), and a
+driver such as `mkrepos.mjs` creates nothing: `rows.sh` logs "no repo". Check with
+`curl -sv -o /dev/null "$GRAFT_EDGE/" 2>&1 | grep -E 'CONNECT|HTTP/'` and `resolvectl query -4 <host>`.
+
+1. Bypass the proxy for workers.dev, in the shell and in every orb service that runs a driver:
+   `export NO_PROXY="$NO_PROXY,.workers.dev" no_proxy="$NO_PROXY,.workers.dev"` after sourcing the env file.
+   `api.cloudflare.com` and R2 still go through the proxy and keep working.
+2. If the resolver still fails, pin the hosts to an address Cloudflare's DNS-over-HTTPS returns, in the orb's own
+   `/etc/hosts` only:
+   ```
+   sudo cp /etc/hosts /tmp/hosts.orig
+   ip=$(curl -s -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$(echo $GRAFT_EDGE | cut -d/ -f3)&type=A" | jq -r '.Answer[0].data')
+   printf '%s %s\n%s %s\n' "$ip" "$(echo $GRAFT_EDGE | cut -d/ -f3)" "$ip" "$(echo $GRAFT_TOOLS_EDGE | cut -d/ -f3)" | sudo tee -a /etc/hosts
+   ```
+   DoH itself answered SERVFAIL about one time in three; retry until it gives an address. Restore `/etc/hosts` from
+   `/tmp/hosts.orig` when the run's close-out is done.
+3. Never commit the pin or the address, and never put either in a driver: the address is Cloudflare's and can change,
+   and the pin hides a real resolution failure from the next run. Note in the run's results that the workaround was
+   used, as `tests/am1/results/b033-m52.md` does.
+
 ## Hosted slot rules (operator, 2026-11-16 and 2026-11-17)
 
 - The only meter is `acctcost.py`, account-wide; read it before and after every hosted step.
