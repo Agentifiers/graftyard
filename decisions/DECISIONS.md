@@ -4815,3 +4815,17 @@ Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"
 - A hosted B0-32 run whose over-5 s pushes are mostly ones already in an entry when their bound passed: a command in an entry during a leader stall is not bounded by this rule. Its entry's rounds of 2.5 to 4.1 s on m3fr15 can carry it past 5 s, and only a faster round or a smaller burst per entry would bound it.
 - A live seed past 30 s that main with `progress-suspect` passes.
 - A group whose followers shed with `forgot` while its leader still commits, which would mean the report replaced reads the leader could have served.
+
+### Not adopted: a learner's writes clear of its own output gate, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Options (a) and (b) after the A/B"; F65). The operator's pick after the gate 16 A/B: (b), the learner CPU split, not (a).
+
+**Decision.** A learner keeps writing its log, Raft state, and tier rows through SQL `transactionSync`, so its read-index calls still wait at its output gate for its earlier writes' confirm. The safety argument for lifting that gate stays in the results file, with one finding it depends on: `proof_for` builds a `QuorumProof` from `lead.matched`, learners included. That is true only while a learner's ack waits at its gate for its write, so the code is unchanged, and any change that lets a learner ack unconfirmed must first make the proof list voters only.
+
+**Why.** The output gate is per object, so no invocation of a learner with an unconfirmed write sends clear of it, and its only opt-out is `allowUnconfirmed` on the KV API; SQL has none (https://developers.cloudflare.com/durable-objects/api/storage-api/) [doc]. So lifting it means a second `Store` and install path in KV for learners, the storage rewrite "`m0-carried-4`" already rejected. Removing the learner's gate from arm "with"'s traced round trips moves them from p99 1,681 to 1,564 ms, about 120 ms, against an API p99 of 2,304 ms and a 2 s line [inference, `tests/nr3/gates.py abwith`], so it cannot close the gap on its own.
+
+**Beat.** Sending the read-index call from an invocation whose gate is clear, which the platform does not allow.
+
+**Evidence.** `tests/am1/results/narrow-reads-3.md`, "Where the round trip's tail goes" and "Options (a) and (b) after the A/B".
+
+**Flip.** After (b), a measured learner-gate share above 30% of the gap between the API p99 and 2 s.

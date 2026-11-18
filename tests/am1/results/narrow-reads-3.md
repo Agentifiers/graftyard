@@ -668,6 +668,263 @@ covers only 12:07 to 12:09, after the storm.
 Rows: `tests/nr3/rows/a1-b0-29-gate16.jsonl`, `run-gate16.status`, `lmem-gate16.jsonl`, `mem-gate16.json`,
 `egress-gate16.txt`, `fresh-gate16.jsonl`, `trace-gate16.json.gz`.
 
+### The gate 16 A/B, arm "without": main a858bfb again, the storm reproduces
+
+The operator's A/B after gate 16: gate 16's tree (main a858bfb, site day 13, the double decode in) against main a5a85d9
+(decode-once: `x-graft-from`, no second decode). Same shape, run.sh with `memSplit` every 2 s. Locally, one decode of
+an append carrying a 1 MB inline pack peaks at 2.33 MB of heap and holds 1.0 MB, natively, and the throwaway decode
+was dropped before `raft`'s, so the per-call peak was the same either way [measured, native allocation].
+
+Arm "without", repo 65562, window 12:50:16 to 13:00:16Z, torn down [measured]:
+
+| Line | Arm "without" | Gate 16 |
+| --- | --- | --- |
+| API p50 / p99, served | 266 / 22,977 ms, 41.03% (14,904 answered 503, 54,188 skipped at the cap) | 348 / 21,789 ms, 65.96% |
+| Commit p50 / p99 | 24,534 / 30,609 ms (497 commits) | 18,002 / 22,760 ms |
+| Leader | site 0, term 2 to 21 | term 2 to 15 |
+| Analytics peak: f0 / f1 (gen 2) / f2 | 285 / 310 / 341 MiB | 258 / 278 / 298 MiB |
+| exceededMemory a / b / c | 2,342 / 4,235 / 3,572 | 1,930 / 3,431 / 3,923 |
+| Read-your-write | 150 of 150, 0 stale | same |
+
+Per minute (max MiB; f0 the leader, f1 gen 2 and f2 the followers): 12:50 to 12:51 at 64 / 26 to 30 / 53 to 60;
+**12:52 at 70 / 264 / 260**; 12:53 at 227 / 310 / 341; to the end 119 to 285 on every voter. So the **followers**
+jumped first, a minute before the leader. The leader's `memSplit` at 2 s up to 12:52:38 is flat: wasm 33.3 MiB, log
+8.0 MB, held under 84 KB, call bodies under 0.34 MB. It then stopped answering `/stats`. The first sample after
+(12:54:00) shows 118.8 MiB, held 9.9 MB for two learners, and `inFlight.calls` 30.6 MB. The first exceededMemory
+outcomes are f1 (gen 2) at 12:53:52 on `/commit` and f2 at 12:54:41.
+
+**A lead, not a cause.** Both followers took a `/snapshot_commit` call at 12:52:40 to 12:52:50, in the minute they
+jumped. The leader's `/snapshot_commit` calls in the window number 56 (30 on gate 16, 8 on gates 14 and 15, 0 on gate
+13), first at 12:50:26. On gate 16 the first came at 12:03:23, four seconds after the leader's first reset. A member
+writes a tier snapshot (`crate::snap`, `PART_BYTES` 8 MiB part buffers and a frame batch, uploaded to two buckets)
+when `snapshot_due` holds, which on a fresh repo is from its first applied entry, so every fresh gate repo writes a
+first snapshot in its first minutes. The repeated calls are likely the writer asking again until the snapshot's row
+applies. This fold is about 1.6 MB, so the snapshot's own buffers should be small. Whether the snapshot path is what
+fills the followers is not measured, and the follower side has no `memSplit` [inference]. The m3f thread's L0-12 replay, on main without narrow-reads-3 or the timestamps, logged
+8,465 and 4,722 resets on two voters, which also rules the double decode out as the whole cause.
+
+Rows: `tests/nr3/rows/a1-b0-29-abwithout.jsonl`, `run-abwithout.status`, `lmem-abwithout.jsonl`,
+`mem-abwithout.json`, `egress-abwithout.txt`, `fresh-abwithout.jsonl`, `trace-abwithout.json.gz`.
+
+### The gate 16 A/B, arm "with": main a5a85d9, no storm, API p99 2,304 ms
+
+Site day 14 from main a5a85d9 (decode-once merged): site exit 0, edge exit 0. Repo 65563, 500 of 500 PRs opened,
+learners caught up in 2.6 s, window 13:44:47 to 13:54:47Z, torn down. `lmem.mjs` now samples every voter every 2 s,
+and `tsave.mjs` saved every voter's trace each minute (54 saves) [measured]:
+
+| Line | Arm "with" (a5a85d9) | Arm "without" (a858bfb) | Gate 15 (31d19c9) |
+| --- | --- | --- | --- |
+| API p50 / p99, served | 525 / 2,304 ms, 99.92% (116,666 reads, 89 answered 503) | 266 / 22,977 ms, 41.03% | 365 / 2,019 ms, 99.89% |
+| Commit p50 / p99 | 538 / 2,225 ms (6,474 commits; queue p99 1,919, confirm 129) | 24,534 / 30,609 ms | 409 / 2,249 ms |
+| Agent pushes ok | 2,500 of 2,500, p99 5,762 ms | 1,048 of 2,500 | 2,498 of 2,500 |
+| Leader | site 0, term 2 throughout | term 2 to 21 | term 2 throughout |
+| Analytics peak: f0 / f1 / f2 | **81 / 62 / 63 MiB** | 285 / 310 / 341 MiB | 84 MiB on f0 |
+| exceededMemory a / b / c | 0 / 0 / 0 | 2,342 / 4,235 / 3,572 | 13 / 0 / 0 |
+| `/snapshot_commit` calls | 4, first at 13:38:48 (setup) | 56, through the window | 8 |
+| Read-your-write | 150 of 150, 0 stale | same | same |
+
+`/stats` agrees: wasm high-water 48.6 MiB on the leader and 24.8 and 25.4 MiB on the followers. Per minute the
+leader's analytics peak rose from 59 to 81 MiB, and the followers' from 34 to 62 MiB.
+
+**The A/B's answer.** Without the second decode, no member stormed. With it, every voter stormed on both runs of the
+same tree (gate 16 and arm "without"). That makes the double decode the trigger, though the local measurement says
+it held no second copy at once, and the m3f thread saw voter resets on a tree without it. The snapshot path differs
+too: 4 `/snapshot_commit` calls here against 56 and 30. Whether the storm feeds the snapshot retries or the retries
+feed the storm is not measured [inference]. The m3f thread is reproducing its own resets with these instruments.
+
+**The API line misses.** 2,304 ms at 99.92% served is over the 2 s line, on the tree the streak would resume on.
+Read shares under the herding guard: l6 28.7%, l7 16.5%, l0 14.1%, l1 14.0%, l2 11.1%, l4 6.7%, l3 6.0%, l5 2.9%, so
+the busiest learner took 28.7% against gate 15's 50.2%. Grant p99 was 707 to 1,000 ms on every learner, with 524 to
+3,863 late each. The edge tier read p99 was 2,252 ms.
+
+**Wire split** (send timestamps, leader trace from `tsave.mjs`). On every learner the leader's handler, from
+`CallArrived` to `x-graft-left`, is p50 0 and p99 98 to 296 ms. The rest of the round trip (both wires, the leader's
+input queue, and its output gate) is p50 95 to 302, p90 337 to 1,207, and p99 914 to 2,219 ms. So the slow read-index
+round trips are spent outside the leader's handler. Splitting that rest into wire and input queue needs the two
+clocks' skew. An estimate from each learner's fastest 2% of trips gives negative leg times on some learners, so it is
+not reliable and I report no split [measured for handler versus rest; the wire versus queue split is unresolved].
+Commit path, leader to voter: out p99 494 and 607 ms, back p99 673 and 245 ms, both carrying the same skew.
+
+Rows: `tests/nr3/rows/a1-b0-29-abwith.jsonl`, `run-abwith.status`, `lmem-abwith.jsonl.gz`, `mem-abwith.json`,
+`egress-abwith.txt`, `fresh-abwith.jsonl`, `trace-abwith.json.gz`, `tsave-abwith.jsonl.gz`.
+
+### Where the round trip's tail goes, from arm "with"'s traces (no new run)
+
+The operator asked, after the A/B, whether the part of a learner's read-index round trip that lies outside the
+leader's handler is the Durable Object output gate or the leader's input queue. Arm "with" has every call's four
+times: send S and answer R on the learner's clock, handler start A and return L on the leader's. `rest` =
+(R − S) − (L − A) needs no skew. `tests/nr3/gates.py abwith` takes each answer's output gates from the confirm
+intervals, Confirm (10) as [at − ms, at]: the leader's gate is L to the end of the leader confirm running at L, and
+the learner's is S to the end of its own confirm running at S, since its outgoing call waits for its earlier writes
+too [measured]:
+
+| Learner | rest p50 / p90 / p99 ms | Leader gate, share of rest ≥ p90 / ≥ p99 | Learner gate, share of rest ≥ p90 / ≥ p99 | Learner confirm p50 / p99 |
+| --- | --- | --- | --- | --- |
+| l0 | 112 / 691 / 1,738 | 3% / 1% | 17% / 15% | 31 / 268 |
+| l1 | 175 / 337 / 914 | 8% / 2% | 12% / 36% | 31 / 189 |
+| l2 | 202 / 402 / 1,383 | 4% / 0% | 4% / 9% | 18 / 122 |
+| l3 | 188 / 1,207 / 1,722 | 1% / 0% | 49% / 35% | 51 / 1,447 |
+| l4 | 212 / 561 / 1,688 | 3% / 0% | 9% / 14% | 41 / 249 |
+| l5 | 302 / 1,197 / 2,219 | 1% / 1% | 22% / 39% | 54 / 996 |
+| l6 | 97 / 349 / 1,205 | 7% / 3% | 9% / 12% | 33 / 189 |
+| l7 | 95 / 796 / 1,609 | 2% / 0% | 20% / 14% | 43 / 669 |
+
+**The leader's output gate does not explain the tail.** It holds 0 to 8% of the slowest tenth and 0 to 3% of the
+slowest hundredth on every learner. Leader confirms are p50 50 ms and p99 158 ms, and most answers leave with none
+running. **The learner's own output gate** explains 4 to 49% at p90 and 9 to 39% at p99. That is most on l3 and l5,
+whose confirms reach p99 1,447 and 996 ms.
+
+**The leader's input queue: some signs, not a measure.** The leader's clock moves only across I/O and the trace has
+no "input finished" row, so the gap from the previous input's end to CallArrived cannot be read exactly. The nearest
+measure, A minus the leader's last row before it, is p50 6 to 12 ms on both slow and fast trips, because the leader
+is always busy. What does tell slow from fast: 43 to 79% of the slow tenth's calls arrive in a millisecond shared
+with 3 or more other arrivals, against 7 to 19% of fast trips, and their answers leave bunched the same way. Inputs
+released together after waiting is what an input queue looks like [inference]. Answers are also taken on the
+learner in heavier turns: 10 to 28 trace rows at R's millisecond on slow trips against 5 to 9 on fast ones. The
+learners ran at 41 to 66% of a core (243 to 396 CPU s in 600 s), against 21% on the leader.
+
+So half or more of most learners' tail (everywhere except l3) is left as both wires, the leader's input queue and
+the learner's turn. The one-way split stays unresolved, because Workers' frozen clock makes S and L lower bounds and
+the per-leg minima drift past the median.
+
+### Options (a) and (b) after the A/B (no new run, no build)
+
+The operator asked for two write-ups before picking. (a) is taking the learner's own output gate off its read-index
+calls, with a safety argument. (b) is the learner's CPU split, to see whether read answers are the cheaper lever.
+
+**(a) What the platform allows.**
+- The output gate holds every outgoing message, `fetch()` included, "until all previous writes have been confirmed
+  flushed to disk" (https://developers.cloudflare.com/durable-objects/api/storage-api/, `put` options) [doc].
+- The gate is per object, not per invocation, so no invocation of a learner with an unconfirmed write has a clear
+  gate. Sending the ReadIndex call "from an invocation whose gate is clear" is not possible.
+- The only opt-out is `allowUnconfirmed`. It exists for the async KV API's `put`, `delete`, and `deleteAll`, which a
+  SQLite-backed object also has (stored in the hidden `__cf_kv` table), plus `sync()` to wait for durability [doc].
+  SQL `exec` and `transactionSync` have no such option, and the host writes everything through `transactionSync`
+  (`workers/site/src/host.rs`, `commit_tx`).
+- So the one way out is the first: **a learner writes its log, Raft state, and tier rows through KV with
+  `allowUnconfirmed`**, and keeps `sync()` only for its own bookkeeping. The code does not support that today:
+  - the tier rows are SQL tables with real columns that the list queries index (`crates/fold/src/store.rs`,
+    `workers/site/src/tier.rs` `TierSql`);
+  - DECISIONS "`m0-carried-4`" already rejected moving voters' writes to KV as a storage-layer rewrite ("Beat").
+- A learner-only KV store is narrower than that, but it is still a second `Store` implementation and a second
+  snapshot install path.
+
+**(a) What it would buy [inference].** Removing the learner's own gate from each traced round trip (`gates.py`
+`abwith`, `rest − gateS`) moves `rest` over all learners from p90 625 and p99 1,681 ms to p90 512 and p99 1,564 ms:
+
+| Learner | p90 / p99 now (ms) | p90 / p99 without the gate (ms) |
+| --- | --- | --- |
+| l3 | 1,207 / 1,722 | 900 / 1,609 |
+| l5 | 1,197 / 2,219 | 905 / 2,111 |
+| l1, l2, l6 | — | 2 to 15% lower |
+
+That is about 120 ms off a round trip's p99, against arm "with"'s API p99 of 2,304 ms and a 2 s line. On its own, (a)
+does not close the gap. Learners were mid-confirm 7 to 18% of the run, and l3 26%.
+
+**(a) The safety argument.** It holds only if every one of these rules holds:
+1. **A learner never counts toward a quorum.**
+   - `quorum::commit` and `quorum::election` count voters only, and `transfer` and `health` hand off only to voters.
+   - So a learner ack that leaves before its write is durable cannot commit an entry, elect a leader, or confirm a
+     lease or read index.
+   - Gap found: `advance_commit` builds `acked` from `lead.matched`, learners included, and `proof_for` writes all of
+     them into the `QuorumProof`. Today a learner's AppendRes waits at its gate for its write, so the proof is true.
+     Under `allowUnconfirmed` it would name a learner copy that is not durable. **The proof must list voters only.**
+     The simulator's `ack_check` asserts that every site the proof counts holds the entry on disk. This matters only
+     under `allowUnconfirmed`, so the code is left as it is (operator, with (a) not adopted).
+2. **A learner applies only committed entries.** It sets `commit` from `req.commit.min(matched)`
+   (`member/follower.rs`), and a leader's `commit`, even a deposed one's, covers only committed entries (log
+   matching). So what a learner holds in memory and has not confirmed is committed. Serving it serves no uncommitted
+   write, and losing it loses nothing the group needs.
+3. **A learner grants a read only at applied ≥ the leader's read index** (`check_remote`, `i <= applied`). The read
+   index is a commit index the leader confirmed after the read arrived, by lease or round. So any answer holds every
+   write acknowledged before the read, whether or not the learner's copy is durable yet.
+4. **Grants and answers die with the boot.**
+   - `fresh_after` refuses a grant from another boot, and read-index batch numbers start from the boot's high bits.
+   - After a reset that lost applied entries, a new read gets a new read index of at least the commit, which is at
+     least every index the learner answered at before. It waits to re-apply up to there or answers `overloaded`.
+   - So a client never sees a learner go back in time.
+   - The narrow answer cache and the dump cache are `thread_local`, keyed by repository and stamped with the applied
+     index they were built at, and they serve only at or above the read's floor. Every cached answer is at a
+     committed index, so even a cache that outlives the object's reset in the same isolate serves no stale read.
+5. **A lost learner ack costs liveness, not safety.** The leader's `matched` for that learner is now ahead of its
+   log. A read-ahead append (`append_for_read`) is skipped because `matched` already covers the index, so the learner
+   waits out `FOLLOWER_WAIT` (late answers) until a refusal makes the leader back off. To bound that, a learner's
+   first AppendRes of a new boot should reset its `matched` on the leader, keyed by boot as `SelfAck` is.
+6. **Term and vote.** A learner that loses its stored term rejoins at an older term. It may take AppendEntries from a
+   deposed leader, but by rule 2 those carry only committed entries up to their `commit`. Their uncommitted tail is
+   truncated by the next current leader before it can be applied. Learners never vote, so a lost vote does not matter.
+
+**(a) What DESIGN, F65, and F67 would need.**
+- DESIGN "Follower read": a learner's log, state, and tier writes do not hold its output gate (KV with
+  `allowUnconfirmed`). Its grant stands on its applied index in memory. Its acks count in no quorum and no
+  `QuorumProof`. A new boot resets its `matched` on the leader. Stack would need its own line for the KV API on
+  SQLite-backed objects.
+- F65: the learner's gate becomes a recorded cause of the tail, with its measured share (above).
+- F67: no rule changes, since learners take no part in elections. Its liveness bound would need learner resets added
+  to the simulator's fault set.
+- DECISIONS: a learner-only amendment to "`m0-carried-4`", with its Flip met by this measurement.
+
+**(a) How a plant would catch a stale read.** The raft simulator has no learners today (`crates/raft/tests/sim.rs`,
+`common/sim.rs`), so the first step is adding learners. They would serve spread reads and crash with `crash_unconfirmed`
+losing their unconfirmed writes, and the run would be checked by the live sweep and Porcupine. Each plant must then
+fail:
+- `fresh_after` without its boot check: a restarted learner answers a grant from before its reset.
+  `leadership.rs` `a_read_index_answer_from_a_previous_boot_grants_nothing` already fails this for followers.
+- `check_remote` granting at applied < read index: Porcupine reports a read that misses an acknowledged write.
+- `quorum::commit` counting learners: a write acknowledged by the leader plus one learner, then both crash.
+  Porcupine reports the write lost.
+- `proof_for` listing learners: `ack_check` reports a counted copy that is not on disk.
+- The narrow cache serving below its floor: a learner read with no read-index wait; Porcupine reports it stale.
+
+**(b) Learner CPU, arm "with" (600 s, Workers Logs `cpuTimeMs` per invocation) [measured].**
+
+| Learner | CPU s | Cores | `/read` | `/feed` | `/raft` | `/read` invocations ≥ 150 ms: n, CPU s | 50–150 ms: n, CPU s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| l0 | 330 | 0.55 | 98.8% | 1.2% | 0.1% | 837, 169 | 1,291, 135 |
+| l1 | 280 | 0.47 | 98.5% | 1.5% | 0.0% | 540, 103 | 1,480, 146 |
+| l2 | 279 | 0.46 | 98.2% | 1.6% | 0.2% | 611, 125 | 1,240, 126 |
+| l3 | 395 | 0.66 | 98.5% | 0.9% | 0.6% | 1,164, 351 | 295, 29 |
+| l4 | 295 | 0.49 | 97.1% | 2.8% | 0.1% | 946, 219 | 548, 54 |
+| l5 | 236 | 0.39 | 93.3% | 5.9% | 0.8% | 488, 182 | 246, 23 |
+| l6 | 303 | 0.51 | 99.3% | 0.7% | 0.0% | 423, 77 | 1,897, 190 |
+| l7 | 349 | 0.58 | 99.2% | 0.7% | 0.2% | 864, 176 | 1,395, 145 |
+
+`/read` invocations under 5 ms are 1,400 to 4,100 per learner and carry 2 to 7 s.
+
+**The split into apply, read answers, and catch-up cannot be read from this data.** A learner's apply, its
+read-index calls, and the appends that ride their responses all run inside the invocation that made the call,
+mostly a `/read`. So per-invocation CPU puts all three under `/read` [inference from the code, `crate::callers`].
+What bounds the read-answer share [measured natively; the wasm factor is a guess]:
+- Builds on a 500-PR repository, natively in release: a whole-tier dump 5.9 ms (784 KB), REST `issues?per_page=30`
+  2.7 ms (32 KB), GraphQL `pullRequests(last: 10)` 1.9 ms (11 KB).
+- Arm "with" built 23,041 narrow answers and 3,218 dumps over 8 learners (`/stats`). That is about 55 s and 19 s
+  natively, 3% of the learners' 2,466 CPU s. At a guessed 3 to 5 times slower in wasm it is 9 to 15%.
+- Cached answers (`shared`, 2,017 to 23,072 per learner) cost a lookup and a copy.
+- The learner's CPU does not follow its reads served (correlation 0.07 over the 8 learners). l6 served 35,569 reads
+  on 303 s and l3 served 8,504 on 395 s.
+- Answers by kind: `read:api` is half REST `issues?per_page=30` and half GraphQL `pullRequests(last: 10)`, each
+  about 97 a second (`tests/am1/rest/a1.mjs`). `/stats` counts builds, not builds by kind. At the native costs above,
+  REST would be about 60% of build CPU and GraphQL about 40% [inference].
+
+So read answers are not where most learner CPU goes. The handoff's regression (38 ms per narrow build, 182 ms per
+dump) came from collinear counts and does not survive these native timings.
+- The dumps (about one per write that reads `Rows::All`: GraphQL mutations, REST label writes, merges) cost about
+  19 s natively. Their cost is memory, about 784 KB each, more than CPU.
+- **93% of `/read` CPU is in the invocations of 50 ms or more**, which are 32% of them (89 to 98% per learner). On
+  l3, 1,164 invocations of 150 ms or more carry 351 of its 395 s. Those are most likely the inputs that applied
+  appends riding a call's response: decode, fold apply, and the SQL transaction [inference]. Apply is a learner's
+  floor: it runs at the group's write rate, whatever share of reads the learner takes.
+- l3, the learner with the most heavy invocations, also had the slowest confirms (p99 1,447 ms) and was mid-confirm
+  26% of the run. Busy isolates confirming late fits that pattern, but it is not shown [inference].
+
+**What (b) needs to be settled:** one counter per `/read` invocation, under test-faults, logged with its CPU:
+entries applied, append bytes decoded, rows written, and answers built by kind. Regressing over thousands of
+invocations, not 32 learner totals, splits apply from answers. That is one gate-shaped run.
+
+**The operator's pick: (b).** (a) is recorded as not adopted (`decisions/DECISIONS.md`, "Not adopted: a learner's
+writes clear of its own output gate"). It flips if, after (b), the learner's gate is measured at more than 30% of the
+gap between the API p99 and 2 s.
+
 ### Instrument run (b) on 55a9b58: heavy learner CPU is fold point reads inside narrow builds
 
 One 300 s run in the arm "with" shape, from f6a99fc1, whose product code is 55a9b58's: main 8f76a54e plus the
