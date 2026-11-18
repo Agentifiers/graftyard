@@ -5059,3 +5059,86 @@ operations). The short sim suite gave 12.1 s harsh, 20.7 s gray and 16.6 s live.
 Raw files in `tests/fanout/raw/`: `siteday-m45.status`, `costrow-m45b33.status`, `rows-m45b33.status`, `a1-b0-33-m45.jsonl`,
 `terms-m45b33.jsonl`, `memguard-m45b33.jsonl.xz`, `tsave-m45b33.jsonl.xz`, `inbound-m45b33.txt`, `reported-m45b33.txt`,
 `latesuspect-m45b33.txt`, `stepdowns-m45b33.txt`, `retire-m45.log`, `retirenets-m45.out`, `purge-m45.log`.
+
+### lookup-retry: a cached leader's first miss is retried there; SUSPECT_GAP 1 s (2026-11-18, code only, no spend)
+
+Branch `lookup-retry` from main 56918444 (late-suspect, m45-day, read-beat). The DECISIONS entry `lookup-retry` holds
+the decision and flip.
+
+**What changed.** In `lookup` (`crates/lookup/src/lib.rs`), the first post to the cached leader that misses or answers
+`busy` no longer starts a walk. A miss is reported once at the isolate's known term (`known_term`), the request waits
+LEADER_RETRY (250 ms), and the leader is posted again. A second miss, or the leader's `NotLeader`, walks as before.
+SUSPECT_GAP is 1 s, up from 500 ms.
+
+**Why 1 s, not the 5 s asked for.** The long sweep's live half, run per seed without stopping at the first failure,
+over its 4,000 seeds (10,000 to 13,999):
+
+| SUSPECT_GAP | seeds past 30 s | worst |
+|---|---|---|
+| 500 ms (main 56918444) | 1 | 31.8 s, seed 10353 |
+| 1 s | 1 | 31.1 s, seed 10353 |
+| 2.5 s | 1 | 30.9 s, seed 11777 |
+| 5 s | 7 | 42.5 s, seed 11504 (10.0 s at 500 ms) |
+
+At 5 s, seed 11504 shows the mechanism: a half-hung leader's followers each got one report per client per 5 s. Each
+report landed in a `late` window, but two colos rarely fell inside SUSPECT's 10 s window together, so promises kept
+renewing for 42 s.
+
+**Main fails the documented long sweep by itself.** Seed 10353 stalls 31.8 s on main 56918444 at its own gap. It
+stalls 3.9 s at late-suspect aa3bf360 and 10.5 s at read-beat f1bd7d51. Those two branches each passed alone and were
+merged separately. In the trace, leader 0 keeps sending AppendEntries every 2 s (`READ_RESEND`'s rounds) from 149 s to
+172 s, but every call fails. The followers' `appended_at` stays fresh from the occasional arrival, so late-suspect counts
+no report and the promise holds until the leader itself steps down at 172 s. Nobody leads until 180.8 s. That is a
+read-beat × late-suspect interaction in `crates/raft`, outside this change. It needs its own decision: whose rule moves,
+and whether seed 10353 joins the regression set.
+
+**Replay on m45's trace** (`tests/fanout/walkreplay.py`, 22:24:20 to 22:29:20Z):
+
+| follower | entered | walk `/read` | still walks | `/suspect` | kept at 500 ms | 1 s | 2.5 s | 5 s |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 427/s | 221.6/s | ≤ 8.4/s | 176.5/s | 106.7 | 87.6 | 54.2 | 33.4 |
+| 2 | 442/s | 224.4/s | ≤ 9.7/s | 186.3/s | 127.0 | 94.6 | 55.3 | 33.6 |
+
+At 1 s, about 212 to 215 walk `/read`s and 89 to 92 `/suspect` a second go per follower, about 300 to 305 of 427 to
+442 [inference: the leader is assumed to answer the retry as often as it answered its next post in the trace]. Against
+the replay's own 500 ms baseline, the gap saves 19 to 32 a second. Most of the saving is the retry.
+
+**Tests and plants.**
+- `a_leader_that_misses_once_is_asked_again_and_no_follower_is_walked` fails on main: a miss, a `busy` and a 503 each
+  posted both followers.
+- `a_leader_that_is_gone_is_walked_away_from_after_its_second_miss` checks two posts at CALL, then the walk, within
+  2 × CALL + LEADER_RETRY + two follower posts.
+- `a_gray_leader_moves_within_the_target_at_the_suspect_gap` (liveness, seeds 100 to 111, two colos at 1 s): calls 30%
+  moved in 6.6 to 19.0 s, the same as at 500 ms. Half-hung moved in 12.8 to 21.3 s (500 ms: 12.7 to 24.2 s), against
+  the 30 s liveness bound. A 15 s gap fails it. On seeds 300 to 311, calls 30% moves in up to 21.2 s at both 500 ms and
+  1 s, so main's gap misses the 20 s Gray target on one seed too.
+- `tests/lookupretry/plant.py`: 6 of 6 caught. The plants are main's walk, an endless retry (caught by the test's post
+  cap), an unreported miss, a reported `busy`, the 500 ms gap, and a 15 s gap in the sim.
+- Live sweep at 1 s with histories, 4,000 seeds: Porcupine Ok on both halves (2,974,283 and 2,983,372 operations).
+- The documented long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`): harsh 15.4 s (seed 11453), gray 25.9 s (seed 10939),
+  then the live half stops at seed 10353 (31.1 s). Porcupine Ok on harsh (152,313) and gray (2,339,068). Against
+  colo-unknown's 16.3 s harsh and 27.9 s gray, and late-suspect's 17.0 and 24.7 s.
+
+**Why m45's commit p99 went from 19.8 s to 57.0 s.** The cause is more work queueing behind one leader that kept its
+term, not slower rounds. m44 (a1 `mwl4mlhx`) went from term 2 to term 20 during the load, 18 changes in 5 minutes, so
+each leader led for about 15 s. When a term ended, its queue failed as `not leader` instead of waiting. The commit
+latencies that m44 recorded were capped near one term's length. m45 (`mwl97nya`) stayed at term 2 throughout, so its
+queue kept growing for the whole window:
+
+| | m44 | m45 |
+|---|---|---|
+| terms during load | 2 → 20 | 2 |
+| commands / entries at the leader | 2,747 / 63 | 3,828 / 189 |
+| commit n, p50, p99 | 3,478, 5.6 s, 19.8 s | 11,676, 3.7 s, 57.0 s |
+| `queue:slot` p50 / p99 | 5.3 / 19.3 s | 9.9 / 57.9 s |
+| round p50 / p99 | 0.67 / 12.8 s | 0.71 / 5.3 s |
+| cycle p99 | 14.2 s | 22.2 s |
+| a1 admission queued, median / max; pressure | 333 / 1,041; 43% | 272 / 1,004; 59% |
+| agent pushes ok (offered 168.8/s agent class in both) | 2,521 | 1,312 |
+
+Rounds were no slower: round p50 is about the same and round p99 fell. The leader took 39% more commands in 3 times as
+many entries and recorded 3.4 times as many commit samples. The p99 rose because the queue was never reset. It is the
+same overload, measured over 300 s instead of in 15 s pieces. Agent pushes ok fell because most of them died earlier,
+as 503 "access rows … not leader" from the edge walks (6,171), before reaching the leader. So the extra commits are not
+extra agent load admitted. They are commands that stayed in the queue for the whole window instead of failing at a term
+change. Shrinking the commit line now needs cheaper rounds or fewer commands per entry, behind voters freed from walks.

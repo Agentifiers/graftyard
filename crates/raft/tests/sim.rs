@@ -29,7 +29,7 @@ fn live_faults(seed: u64) -> (Faults, Edge) {
         2 => Faults { crash: 2, down_max_ms: 200, ..base },
         _ => Faults { drain: 1, crash: 2, down_max_ms: 500, drop: 20, partition: 1, crash_mid: 1, ..base },
     };
-    (faults, Edge { follower_reads: true, suspect_gap_ms: 500, reads_only: seed % 8 >= 4 })
+    (faults, Edge { follower_reads: true, suspect_gap_ms: 1_000, reads_only: seed % 8 >= 4 })
 }
 
 fn env(name: &str, default: u64) -> u64 {

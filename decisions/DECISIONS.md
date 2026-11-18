@@ -4592,6 +4592,37 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 - `a_gray_leader_whose_appends_come_late_still_loses_its_lease`: A's appends reach the followers only in bursts every 1.5 s while two colos report. Another member leads 9.0 s after the first report, within the Gray region's 20 s.
 - `two_colos_within_the_window_stop_promises_to_a_renewing_leader` and `an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign` now send their reports after a CALL_DEADLINE with nothing delivered.
 - `tests/latesuspect/plant.py` plants five bugs and catches 5 of 5: main's rule, lateness judged against LEASE, lateness judged from `last_leader_seen` (which withholding stops), a timely report that clears the window, and reports that never count.
+- Hosted, B0-33 m45 (2026-11-17): term 2 throughout, 0 leader changes. Every report came from one real colo (LAX 24,077, UNKNOWN 599), so no rule could withhold, and the run does not separate late-suspect from colo-unknown. The two-colo case stays covered by the simulator only [measured, `tests/am1/results/lm1-memory.md`, round 40].
 - Simulator: the long sweep (2,000 seeds, 10,000 steps) passed. Longest stretches with a healthy quorum, requests waiting and none completing: harsh 17.0 s (colo-unknown's 16.3 s), gray 24.7 s (27.9 s), live 27.8 s (25.4 s), all under the liveness bound of 30 s. Porcupine Ok on all three histories (157,336, 2,333,008 and 5,988,768 operations).
 
 **Flip.** A hosted run in which a leader that two colos reported and that stopped reaching both followers for CALL_DEADLINE or longer kept its lease past the Gray region's 20 s target, or in which both followers still withhold from a leader whose appends reach them within CALL_DEADLINE (read `Trace::Reported` against `AppendStepped`).
+
+### `lookup-retry`: a cached leader's first miss is retried there, and SUSPECT_GAP is 1 s, 2026-11-18
+
+**Status.** Asked for by the orchestrator after B0-33 m45, with SUSPECT_GAP at 5 s; built at 1 s because 5 s broke the long sweep's live bound (below). Built on branch `lookup-retry`, not deployed. A `crates/lookup` change, so it ships on the next site day, and on the edge with it.
+
+**Decision.**
+- **Retry.** In `lookup` (`call_opt`), a request's first post to its cached leader that misses (no answer in CALL, a 5xx) or answers `busy` is not followed by a walk. The miss is reported with `suspect` at the term the isolate holds (a `busy` is not), the request waits LEADER_RETRY (250 ms [guess]) and posts the leader again. Only a second miss, or a `NotLeader` from the leader, walks the voters as before.
+- **Gap.** `SUSPECT_GAP` goes from 500 ms to 1 s [measured, the sweep below]: one isolate sends the same report at most once a second.
+
+**Why.** On B0-33 m45 each follower took 427 to 442 requests a second, and 2,121 of 4,300 voter `/raft` calls missed 1 s with p50 716 requests ahead, 52 to 54% of them `/read` and 37 to 39% `/suspect`. The followers' `/read`s were walks: 222 to 224 a second sent with `SentBy::Walk` from 324 to 325 isolates. In `call_opt` a missed post to the cached leader goes to `missed`, and the same pass posts every follower, whose `NotLeader` names the leader already tried. The pass then ends with `suspect` to both, `forget_leader`, 250 ms, and a new pass that walks again. So each missed leader read cost two follower `/read`s that could only name the same leader [measured, `tests/am1/results/lm1-memory.md`, round 40; code read].
+
+**Replayed on m45's trace** (`tests/fanout/walkreplay.py`, 22:24:20 to 22:29:20Z, followers 1 and 2):
+- Walk `/read`s 221.6 and 224.4 a second. A second walk by the same isolate one leader post later (3.0 to 4.5 s), the case that still walks under the retry, is 8.4 and 9.7 a second, an upper bound. So about 212 to 215 a second go.
+- `/suspect` 176.5 and 186.3 a second. Kept per isolate: 106.7 and 127.0 at 500 ms (the replay keys by isolate only, so this is what main's gap would have let through), 87.6 and 94.6 at 1 s, 54.2 and 55.3 at 2.5 s, 33.4 and 33.6 at 5 s.
+- Together, at 1 s, about 300 to 305 of each follower's 427 to 442 a second go, leaving about 125 to 135 a second. [inference: the replay assumes the leader answers the retry as often as it answered its next post in the trace.]
+
+**What it beat.**
+- **SUSPECT_GAP 5 s** (the orchestrator's ask): on the long sweep's 4,000 live seeds (10,000 to 13,999), 7 seeds passed the 30 s bound, worst 42.5 s (seed 11504, 10.0 s at 500 ms): a half-hung leader's followers each took one report per client per 5 s, so their `late` windows rarely held two colos inside SUSPECT's window. 2.5 s failed one seed (11777, 30.9 s). 1 s fails only seed 10353, which main fails too (31.8 s at 500 ms, read-beat's `READ_RESEND` path: the leader's appends left and every call failed for 23 s with promises renewed by the first send's arrival; 3.9 s on late-suspect alone, 10.5 s on read-beat alone). 
+- **Walk to one follower, not all:** still a `/read` that can only name the leader, and still a forgotten leader.
+- **Never walk on a miss:** a leader that is gone would be asked until LOOKUP_FOR. Two misses bound it.
+- **Damp per (chain, term) across isolates:** an isolate cannot see another's reports. Per isolate per gap is what the edge can count.
+
+**Evidence.**
+- `a_leader_that_misses_once_is_asked_again_and_no_follower_is_walked` (`crates/lookup/src/lib.rs`) fails on main: a miss, a `busy`, or a 503 from the cached leader posted both followers. With the change, 2 posts to the leader and 0 to followers; a miss is reported once and a `busy` not at all; the leader stays cached.
+- `a_leader_that_is_gone_is_walked_away_from_after_its_second_miss`: the dead leader is posted twice at CALL each, then the new leader answers, within 2 x CALL + LEADER_RETRY + two follower posts, inside LOOKUP_FOR.
+- `a_gray_leader_moves_within_the_target_at_the_suspect_gap` (`crates/raft/tests/liveness.rs`), two clients as two colos at 1 s, seeds 100 to 111: calls failing 30% moved in 6.6 to 19.0 s, the same as at 500 ms; half-hung in 12.8 to 21.3 s (500 ms: 12.7 to 24.2 s), inside the 30 s liveness bound. A 15 s gap fails it. Seeds 300 to 311 move calls-30% in up to 21.2 s at both 500 ms and 1 s, so the 20 s Gray target is missed on one seed by main's gap too.
+- `tests/lookupretry/plant.py`: 6 of 6 caught (exit 101 each; the endless retry trips the test's post cap).
+- Live sweep at 1 s, 4,000 seeds with histories: longest stretch 31.1 s on seed 10353 (main 31.8 s), otherwise 24.0 s; Porcupine Ok on both 2,000-seed halves (2,974,283 and 2,983,372 operations). The documented long sweep (`RAFT_SEEDS=2000`): harsh 15.4 s, gray 25.9 s, and the live half stops at seed 10353 (31.1 s), the seed main 56918444 fails by itself (31.8 s); Porcupine Ok on the harsh (152,313 operations) and gray (2,339,068) histories.
+
+**Flip.** A hosted run in which a leader that is gone keeps requests waiting past 2 x CALL + LEADER_RETRY before they walk, or in which a gray leader with two reporting colos is not moved within the Gray region's target where it was at 500 ms. A follower `/suspect` rate that still queues ahead of `/raft` at 1 s reopens a longer gap only with a live-sweep pass at that gap.

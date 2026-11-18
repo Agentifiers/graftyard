@@ -184,12 +184,12 @@ pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteI
                              pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
 pub enum SystemChain { Release, Names, Tokens, Ids }
 /// How a caller finds a group: by the `GroupConfig` cached from its last `NotLeader` or `ReplyMeta`. Without one, it
-/// calls the bootstrap voters named by the chain's record, in record order. If none answers with a config, it reads the
-/// chain's `MemberRegistry` row on each record site, then repeats both for `moving_from`. Any member holding a config,
-/// even a removed one, answers with its latest committed one. The edge finds the record by route: the owner's `Names`
-/// rows for `o/r` and owner routes, `NamesEvent::RepoOwner` for `/repositories/{id}` and a network's root repository,
-/// and the cached `Release` view (genesis, or a later `LeaveEvaluation`) for system chains. Replies carry it. An isolate
-/// runs one lookup per chain under a plain-data mark; others poll the cache on own timers, never another's future.
+/// calls the record's bootstrap voters, in record order. If none answers with a config, it reads the chain's
+/// `MemberRegistry` row on each record site, then repeats both for `moving_from`. Any member holding a config, even a
+/// removed one, answers with its latest committed one. The edge finds the record by route: the owner's `Names` rows for
+/// `o/r` and owner routes, `NamesEvent::RepoOwner` for `/repositories/{id}` and a network's root, and the cached
+/// `Release` view for system chains. Replies carry it. An isolate runs one lookup per chain under a plain-data mark;
+/// others poll the cache on own timers. A cached leader's first miss or `busy` is retried there; a second walks.
 pub struct ReplyMeta { pub term: Term, pub leader: Option<SiteId>, pub config_index: Index }
 /// Bootstrap. A group's first entry is `Config(Normal(from_record(record)))` at term 1, index 1, with a zero `prev`, no
 /// requests, and the record's `at`, so every voter builds and may propose the same bytes. A member with no committed
@@ -403,14 +403,14 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
 /// Edge to a follower on another site when a leader's receipt misses CALL_DEADLINE, once per chain, `about` and term
-/// per isolate per SUSPECT_GAP (500 ms). `about` missed or answered `NotLeader` naming none; a report counts only if
-/// this follower promised and heard it this term, even once forgotten (else a transfer's old leader barred the new;
-/// F67, `m1-wp3.md` bug 2), and only with its appends from it late by CALL_DEADLINE (`late-suspect`). Two colos'
-/// reports in 10 s stop its promises to a renewing leader until 2 x SUSPECT's window or a higher term. For that window,
-/// not ended by a higher term, its pre-vote refuses that leader and it hands off to no such member (M0-WP2: 24 s
-/// without; F67 rule 10), unless every report came in that leader's transfer, a bar that ends once another leader is
-/// heard (rule 11). A follower whose promise lapsed campaigns on one report, or once its read-index batch is unanswered
-/// for 3 s (then dropped, rule 12), naming no leader; a withheld leader's appends count as no leader seen.
+/// per isolate per SUSPECT_GAP (1 s). `about` missed or answered `NotLeader` naming none; a report counts only if this
+/// follower promised and heard it this term, even once forgotten (else a transfer's old leader barred the new; F67,
+/// `m1-wp3.md` bug 2), and only with its appends from it late by CALL_DEADLINE (`late-suspect`). Two colos' reports in
+/// 10 s stop its promises to a renewing leader until 2 x SUSPECT's window or a higher term. For that window, not ended
+/// by a higher term, its pre-vote refuses that leader and it hands off to no such member (M0-WP2: 24 s without; F67
+/// rule 10), unless every report came in that leader's transfer, a bar that ends once another leader is heard (rule
+/// 11). A follower whose promise lapsed campaigns on one report, or once its read-index batch is unanswered for 3 s
+/// (then dropped, rule 12), naming no leader; a withheld leader's appends are no leader seen.
 /// A group with a request waiting and two voters up and linked completes one within 30 s on 4,000 live seeds [measured,
 /// simulator, `tests/m0/results/f67.md`]: a leader whose entry, read, or transfer no quorum answered for ELECTION_AFTER
 /// stops leading (F67). Only `home` gets `/campaign`; pre-vote denies a higher site id with an equal log [inference,
