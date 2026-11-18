@@ -3843,6 +3843,8 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 
 **Flip.** A hosted row where writes wait out `LOOKUP_FOR` on shed reads often enough to move their p99, which would put the members' capacity, not the retry, in question.
 
+**Amended** by `shed-backoff` (2026-11-18): B0-33 m51 met this flip, and a write now backs off and asks for `SHED_RETRY_FOR` (4 s), not LOOKUP_FOR.
+
 ### `learner-reset`: a new member at an address, learner or voter, starts with nothing the leader held for that address, 2026-11-15
 
 **Decision.** When a config change names a new member at an address (a voter's site, or a learner's slot address `learner_addr(slot)`), absent before or under a different `do_name`, the leader resets its per-peer state for that address (`next` to its last index, `matched` to 0, and `matched_at`, `sent`, `pipe`, `promised_at`, `acked_at`, `retries` and `refusals` cleared), and ignores answers to rounds it sent before the change to that address (`Lead::member_from`). The one-voter-change rule still compares voters by site.
@@ -5128,3 +5130,27 @@ cached voter does today).
 **Evidence.** `workers/site/src/load.rs`, `only_an_entry_that_writes_the_fold_moves_a_chain`, and `workers/site/src/fold_audit.rs`, `an_unmoved_chain_is_compared_at_its_last_match_and_not_refolded`; per-object rows written on `graft-m3f` and `graft-m2b` (K10).
 
 **Flip.** A storage-corruption case found on an idle chain by K11's live-row check that a daily refold would have found first; a refold of an unmoved chain that disagrees with its last matching report; or a release-time fold change on an idle chain that the corpus missed and a refold would have caught.
+
+### `shed-backoff`: a write's shed read backs off and gives up after `SHED_RETRY_FOR`, 2026-11-18
+
+**Decision.** `graftyard_lookup::retry_shed` waits after the nth shed pass in a row `OVERLOAD_RETRY_MS` (250 ms) doubled per pass up to `SHED_BACKOFF_MAX_MS` (2 s), with a random part of up to half taken off, and never under the `retryAfterMs` the members named. The edge gives a write `SHED_RETRY_FOR` (4 s [guess]) in place of LOOKUP_FOR (20 s), and a bounded push the smaller of that and what is left of its AGENT_PUSH_BOUND (`workers/edge/src/lib.rs`, `shed_retry_for`). Past it the write answers 503 with `Retry-After: 1`, or `ng` for an Agent push, as before. Read-class requests still answer at once. This amends `lease-clock` (2), whose flip it meets.
+
+**Why.** `lease-clock` (2)'s flip: "A hosted row where writes wait out `LOOKUP_FOR` on shed reads often enough to move their p99". B0-33 m51 did. After its leader change, 4,200 REST and GraphQL writes answered 503 after 19 to 24 s (p50 22.0 s, every one at least 19 s), each asking the learners again every 250 ms. The 4 learners' reads rose from 15 to 54 a second each to 136, 476, 486 and 514, 85 to 90% whole-tier reads, and the row ended with 18,294 × 5xx [measured, Workers Logs and trace, `tests/am1/results/c-design.md`, "B0-33 with 4 learners, m51"]. With every pass shed, a held write now makes 2 to 5 passes, not 7 to 80, and has its answer by about 4 s plus one pass.
+
+**Beat.** Keeping LOOKUP_FOR with backoff alone: 12 tries a write in 20 s, still a multiplier, and the 503 still at 20 s. A fixed shorter deadline without backoff: still a pass every 250 ms while it lasts, and every write shed together comes back together. Sending a write's shed read to the leader after its deadline: the overflow that stepped leaders down on every 500-agent row ("Follower read").
+
+**Evidence.** `a_read_the_members_keep_shedding_backs_off_and_gives_up` and `a_shed_read_is_retried_inside_its_deadline_only` (`crates/lookup/src/lib.rs`), and `a_write_asks_a_shed_read_again_for_seconds_not_lookup_for` (`workers/edge/src/lib.rs`), which fail on main. `tests/m0carried/plant43.py`. `tests/am1/results/health-gate-lease.md`, item 2.
+
+**Flip.** A hosted row where writes behind the read gate answer 503 after SHED_RETRY_FOR during a stall that ended within LOOKUP_FOR often enough to fail a gate line on 5xx share, with the learners' read rate not over twice the clients' while it lasts: then the retry budget, not the multiplier, is the cost.
+
+### `lease-gone`: a renew whose lease a release in its entry removed answers 404, 2026-11-18
+
+**Decision.** `leases::render_ok` (`crates/api/src/leases.rs`) answers 404 for a committed lease command whose row is gone by render time, as `refused` does for `LeaseErr::NotFound`, in place of 500 `no lease row`.
+
+**Why.** The reply renders over tiers that have applied the whole entry, so a renew followed by a release of the same lease in that entry finds no row. On B0-33 m50 all 157 lease-renew 500s were renews with a release (204) of the same lease in flight, while 2,881 renews of an already-released lease answered 404 [measured, Workers Logs, `tests/am1/results/c-design.md`, "m50's 943 5xx, attributed"]. The renew did commit; to the client the lease is gone either way.
+
+**Beat.** Rendering the renew from the row as `decide` saw it: the reply would describe a lease that no longer exists, and `render_ok` reads only the applied tiers.
+
+**Evidence.** `a_renew_whose_lease_a_release_in_its_entry_removed_answers_404` (`crates/api/tests/lease_api.rs`) fails on main with 500. `tests/m0carried/plant43.py`.
+
+**Flip.** A client that needs the renewed expiry of a lease another request released in the same entry.

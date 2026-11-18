@@ -662,9 +662,9 @@ async fn authz_get(
     }
 }
 
-/// `graftyard_lookup::read_spread` for this request: a write asks again while the members shed the read, for up to
-/// LOOKUP_FOR, so a shed `Authz` or access read does not fail a push or a REST write; any other request answers 503
-/// at once.
+/// `graftyard_lookup::read_spread` for this request: a write asks again, backing off, while the members shed the read,
+/// for up to `shed_retry_for`, so a short stall does not fail a push or a REST write; any other request answers 503 at
+/// once.
 pub(crate) async fn spread_read(
     c: &Ctx<'_>,
     b: &graftyard_lookup::Bindings<'_>,
@@ -672,13 +672,19 @@ pub(crate) async fn spread_read(
     record: &PlacementRecord,
     q: &serde_json::Value,
 ) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
-    // A bounded push retries only within what is left of its AGENT_PUSH_BOUND.
-    let retry = match (c.write.get(), budget_left(c)) {
+    graftyard_lookup::read_spread_for(b, chain, record, q, shed_retry_for(c.write.get(), budget_left(c))).await
+}
+
+/// How long `spread_read` asks again for a shed read: not at all for a read-class request; SHED_RETRY_FOR for a write,
+/// and no longer than what is left of a bounded push's AGENT_PUSH_BOUND. Past it the write answers 503 with
+/// `Retry-After: 1` (`api::read_failed`), or `ng` for an Agent push (`gate_ng`): LOOKUP_FOR's 20 s held B0-33 m51's
+/// writes 19 to 24 s each while their retries made the learners' reads ten times the clients'.
+fn shed_retry_for(write: bool, left: Option<std::time::Duration>) -> std::time::Duration {
+    match (write, left) {
         (false, _) => std::time::Duration::ZERO,
-        (true, Some(left)) => left.min(graftyard_lookup::LOOKUP_FOR),
-        (true, None) => graftyard_lookup::LOOKUP_FOR,
-    };
-    graftyard_lookup::read_spread_for(b, chain, record, q, retry).await
+        (true, Some(left)) => left.min(graftyard_lookup::SHED_RETRY_FOR),
+        (true, None) => graftyard_lookup::SHED_RETRY_FOR,
+    }
 }
 
 /// `authz_read`, `None` when it cannot be read.
@@ -1167,8 +1173,8 @@ struct Ctx<'a> {
     /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
     /// as before.
     read_class: std::cell::Cell<bool>,
-    /// A write (a push, a REST call other than `GET`, a GraphQL mutation): a read its members shed is asked again
-    /// after the wait they named, within LOOKUP_FOR, rather than failing the write 503 (`spread_read`).
+    /// A write (a push, a REST call other than `GET`, a GraphQL mutation): a read its members shed is asked again,
+    /// backing off, within SHED_RETRY_FOR, before the write fails 503 (`spread_read`).
     write: std::cell::Cell<bool>,
     /// A REST merge (`api::rest_merge`): its owner's `Authz` reads, the name lookup and the fold, go to the `Authz`
     /// group's leader by `call_opt`, as its rows go to the repository's (`merge-p99`). False for every other request.
@@ -3085,6 +3091,20 @@ mod tests {
         Cut, ShardRefusal, bound_at_send, capped, gate_ng, gunzip, shard_refusal, shard_url, streamed_site,
         validate_failed, validate_sites, validate_url, warm_first,
     };
+
+    /// B0-33 m51: a write whose read the members kept shedding held 19 to 24 s, LOOKUP_FOR, before its 503. A write
+    /// now asks again for SHED_RETRY_FOR, well under LOOKUP_FOR, a bounded push no longer than its bound, and a
+    /// read-class request not at all.
+    #[test]
+    fn a_write_asks_a_shed_read_again_for_seconds_not_lookup_for() {
+        use std::time::Duration;
+        let w = super::shed_retry_for(true, None);
+        assert_eq!(w, graftyard_lookup::SHED_RETRY_FOR);
+        assert!(w * 4 <= graftyard_lookup::LOOKUP_FOR, "{w:?}");
+        assert_eq!(super::shed_retry_for(true, Some(Duration::from_secs(60))), w);
+        assert_eq!(super::shed_retry_for(true, Some(Duration::from_millis(900))), Duration::from_millis(900));
+        assert_eq!(super::shed_retry_for(false, None), Duration::ZERO);
+    }
 
     /// `b032-shed` B: an Agent push past its AGENT_PUSH_BOUND at the commit send is refused in B0-32's `ng` shape and
     /// sends nothing; one within it sends what is left; a Human push, or one with no bound, is never refused for it.

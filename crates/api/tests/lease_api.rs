@@ -315,3 +315,37 @@ fn the_lease_endpoints_serve_the_reference_shape() {
     assert!(leases::event_json(&r, &e, w.now, true).get("paths").is_some());
     assert!(leases::event_json(&r, &e, w.now, false).get("paths").is_none());
 }
+
+/// A release after a renew in one entry must not turn the committed renew's reply into a 500.
+#[test]
+fn a_renew_whose_lease_a_release_in_its_entry_removed_answers_404() {
+    let mut w = World::new();
+    w.flag(claude_row());
+    task(&mut w, "a");
+    let acquired = w
+        .commit_all_acked(vec![issue(app(CLAUDE), acquire(&["pkg/auth/**"], LeaseMode::Exclusive, "a"))])
+        .pop()
+        .unwrap()
+        .expect("an Exclusive acquire");
+    let id = match &acquired.out {
+        RepoOut::Issue(c) => match c.out {
+            IssueOut::Lease(id) => id,
+            ref x => panic!("{x:?}"),
+        },
+        x => panic!("{x:?}"),
+    };
+    let renew = leases::parse_renew(&id.text(), &json!({ "ttl_seconds": 1200 })).unwrap();
+    let mut acks =
+        w.commit_all_acked(vec![issue(app(CLAUDE), renew), issue(app(CLAUDE), IssueOp::ReleaseLease { id })]);
+    let release_ack = acks.pop().unwrap().expect("the release commits");
+    let renew_ack = acks.pop().unwrap().expect("the renew commits");
+    let f = w.fold();
+    let (h, d) = (host(), Dir);
+    let r = Repo { host: &h, at: here(), core: &f.core, meta: &f.meta, dir: &d };
+    let out = |a: &graftyard_raft::Acked<RepoOut>| match &a.out {
+        RepoOut::Issue(c) => a.map(|_| c.out.clone()),
+        x => panic!("{x:?}"),
+    };
+    assert_eq!(leases::render_ok(&r, &w.ident.owner, w.now, &out(&renew_ack), false).status, 404);
+    assert_eq!(leases::render_ok(&r, &w.ident.owner, w.now, &out(&release_ack), false).status, 204);
+}
