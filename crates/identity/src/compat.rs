@@ -11,7 +11,9 @@
 /// Implements `Serialize` and `Deserialize` for a fold as its base fields in order, which is the byte form a derived
 /// struct had, then, only when `more` is not its default, a `1` and `more`. Decoding reads the base fields and then
 /// `more` if a marker follows. Postcard fails a `u8` read only at the end of its input, so the one error ignored is
-/// the end of a blob an older release wrote; an error inside `more` is returned.
+/// the end of a blob an older release wrote; an error inside `more` is returned. Exported for the Actions fold
+/// (`graftyard_actions::shard::ActionsFold`), whose blobs cross releases the same way.
+#[macro_export]
 macro_rules! tail_serde {
     ($fold:ident { $($f:ident: $t:ty),* $(,)? } more: $more:ty) => {
         impl serde::Serialize for $fold {
@@ -65,4 +67,4 @@ macro_rules! tail_serde {
     };
 }
 
-pub(crate) use tail_serde;
+pub(crate) use crate::tail_serde;

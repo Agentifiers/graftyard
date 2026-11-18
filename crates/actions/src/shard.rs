@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 
+use graftyard_identity::PermissionSet;
 use graftyard_raft::{Command, EntryBody, ExtendLeases, Fold, Format, LogEntry, Record, Scratch, TierSet};
 use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, RequestId, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,11 @@ pub const ACTIONS_FORMAT_OWNER_MATCH: Format = Format { family: 0x15, version: 3
 /// `ActionsTrigger` sends one, and only where a later site day set `GRAFTYARD_PR_TRIGGER`, after the day that shipped
 /// this reader to every member (`decisions/DECISIONS.md`, "`pr-trigger`").
 pub const ACTIONS_FORMAT_PULL_REQUEST: Format = Format { family: 0x15, version: 4 };
+/// `gh-token`'s `CreateRunWith`, whose entry also records the jobs' declared `permissions:` (`ActionsEvent::JobTokens`),
+/// and `AcquireToken`, whose entry also marks the job's `GITHUB_TOKEN` issued (`ActionsEvent::TokenIssued`). Only a site
+/// whose site day set `GRAFTYARD_JOB_TOKENS` sends either, after `FormatsEnable` enabled 0x15.5 and 0x12.14, and that
+/// day follows the one that shipped this reader to every member (`decisions/DECISIONS.md`, "`gh-token`").
+pub const ACTIONS_FORMAT_TOKENS: Format = Format { family: 0x15, version: 5 };
 
 #[cfg(test)]
 const JOB_LEASE_MS: u64 = crate::job::JOB_LEASE.as_millis() as u64;
@@ -163,6 +169,16 @@ pub enum ActionsEvent {
     OwnerCursor {
         through: Index,
     },
+    /// `gh-token`: the `permissions:` the run's jobs declared, by the workflow or the job, in the same entry as their
+    /// `RunCreated` (format 0x15.5). A job with none gets the repository's default at `acquirejob`.
+    JobTokens {
+        jobs: Vec<(JobId, PermissionSet)>,
+    },
+    /// `gh-token`: the job's runner was given a `GITHUB_TOKEN`, in the entry of its `Acquired` (format 0x15.5).
+    /// `RunOwner` denies the token of a job so marked when the job ends (`crate::token::denies`).
+    TokenIssued {
+        job: JobId,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -192,8 +208,10 @@ pub struct RunRow {
     pub status: RunStatus,
 }
 
-/// The shard's fold.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The shard's fold. It is stored and sent whole (`codec::to_bytes`), so rows added after M4-WP3 sit in the trailing
+/// `more` part, written only once it holds a row, which only an event of a format `FormatsEnable` enabled writes
+/// (`graftyard_identity::tail_serde`): until then a fold's bytes are the release before's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActionsFold {
     pub runs: BTreeMap<RunId, RunRow>,
     /// The run each trigger created, which `CreateRun` refuses a second of.
@@ -206,6 +224,26 @@ pub struct ActionsFold {
     /// The last shard entry `RunOwner` finished: its repository writes acknowledged or refused.
     pub owner_cursor: Index,
     pub ids: IdCursor,
+    pub more: ActionsMore,
+}
+
+graftyard_identity::tail_serde!(ActionsFold {
+    runs: BTreeMap<RunId, RunRow>,
+    keys: BTreeMap<RunKey, RunId>,
+    jobs: BTreeMap<JobId, JobRow>,
+    runners: BTreeMap<RunnerId, RunnerRecord>,
+    sessions: BTreeMap<RunnerId, RunnerSessionId>,
+    queue_moves: u64,
+    owner_cursor: Index,
+    ids: IdCursor,
+} more: ActionsMore);
+
+/// The fold's rows after M4-WP3: each job's declared token permissions (`ActionsEvent::JobTokens`), and the jobs whose
+/// runner was given a token (`ActionsEvent::TokenIssued`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionsMore {
+    pub tokens: BTreeMap<JobId, PermissionSet>,
+    pub issued: std::collections::BTreeSet<JobId>,
 }
 
 /// The group's leased id block and its next free position, as `graftyard_identity::IdCursor`.
@@ -246,6 +284,10 @@ trait Tables {
     fn ids(&mut self) -> &mut IdCursor;
     fn queue_moved(&mut self);
     fn set_owner_cursor(&mut self, through: Index);
+    /// The jobs' declared token permissions, and an issued token's mark. `decide` reads the fold's marks only, so the
+    /// scratch drops both.
+    fn put_tokens(&mut self, _jobs: &[(JobId, PermissionSet)]) {}
+    fn put_issued(&mut self, _job: JobId) {}
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -297,6 +339,8 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
         }
         ActionsEvent::Session { runner, session } => t.set_session(*runner, *session),
         ActionsEvent::OwnerCursor { through } => t.set_owner_cursor(*through),
+        ActionsEvent::JobTokens { jobs } => t.put_tokens(jobs),
+        ActionsEvent::TokenIssued { job } => t.put_issued(*job),
     }
 }
 
@@ -353,6 +397,12 @@ impl Tables for ActionsFold {
     }
     fn set_owner_cursor(&mut self, through: Index) {
         self.owner_cursor = through;
+    }
+    fn put_tokens(&mut self, jobs: &[(JobId, PermissionSet)]) {
+        self.more.tokens.extend(jobs.iter().cloned());
+    }
+    fn put_issued(&mut self, job: JobId) {
+        self.more.issued.insert(job);
     }
 }
 
@@ -524,6 +574,14 @@ impl Scratch for ActionsScratch<'_> {
             ActionsEvent::RunCreated { run, .. } if self.has_key(&run.key()) => {
                 Err("a second run for one trigger".into())
             }
+            ActionsEvent::JobTokens { jobs } if jobs.iter().any(|(j, _)| self.job(*j).is_none()) => {
+                Err("permissions for a job the entry did not create".into())
+            }
+            ActionsEvent::TokenIssued { job }
+                if !matches!(self.job(*job).map(|j| &j.state), Some(JobState::InProgress { .. })) =>
+            {
+                Err("a token for a job no runner took".into())
+            }
             _ => Ok(()),
         }
     }
@@ -625,6 +683,18 @@ pub enum ActionsOp {
         version: u64,
         runner: RunnerId,
         labels: LabelSet,
+    },
+    /// `gh-token`: `CreateRun` whose jobs declared `permissions:`, each by its position in `jobs` (format 0x15.5).
+    CreateRunWith {
+        run: WorkflowRun,
+        jobs: Vec<JobSpec>,
+        permissions: Vec<(u16, PermissionSet)>,
+    },
+    /// `gh-token`: a runner's `acquirejob` whose answer carries a `GITHUB_TOKEN`: the `Acquired` a `Job` op commits, and
+    /// the token's mark when the job has none, so a repeated acquire after a lost answer marks it too (format 0x15.5).
+    AcquireToken {
+        job: JobId,
+        version: u64,
     },
 }
 
@@ -751,7 +821,13 @@ impl ActionsCmd {
         Ok((evs, ActionsOut::Job(next)))
     }
 
-    fn create_run(&self, s: &ActionsScratch<'_>, run: &WorkflowRun, jobs: &[JobSpec]) -> Result<Decided, ActionsErr> {
+    fn create_run(
+        &self,
+        s: &ActionsScratch<'_>,
+        run: &WorkflowRun,
+        jobs: &[JobSpec],
+        permissions: &[(u16, PermissionSet)],
+    ) -> Result<Decided, ActionsErr> {
         if jobs.len() > RUN_JOBS_MAX {
             return Err(ActionsErr::TooMany);
         }
@@ -772,8 +848,17 @@ impl ActionsCmd {
             }
             specs.push(JobSpec { id: ids[i], needs, ..j.clone() });
         }
+        let mut tokens = Vec::with_capacity(permissions.len());
+        for (p, set) in permissions {
+            let id = ids.get(usize::from(*p)).ok_or(ActionsErr::BadNeeds)?;
+            tokens.push((*id, set.clone()));
+        }
         let id = run.id;
-        Ok((smallvec![ActionsEvent::RunCreated { run, jobs: specs }], ActionsOut::Run(id)))
+        let mut evs = smallvec![ActionsEvent::RunCreated { run, jobs: specs }];
+        if !tokens.is_empty() {
+            evs.push(ActionsEvent::JobTokens { jobs: tokens });
+        }
+        Ok((evs, ActionsOut::Run(id)))
     }
 }
 
@@ -788,6 +873,7 @@ impl Command for ActionsCmd {
             ActionsOp::CreateRun { run, .. } if run.is_merge_group() => ACTIONS_FORMAT_MERGE_GROUP,
             ActionsOp::CreateRun { run, .. } if run.is_pull_request() => ACTIONS_FORMAT_PULL_REQUEST,
             ActionsOp::MatchOwner { .. } => ACTIONS_FORMAT_OWNER_MATCH,
+            ActionsOp::CreateRunWith { .. } | ActionsOp::AcquireToken { .. } => ACTIONS_FORMAT_TOKENS,
             _ => ACTIONS_FORMAT,
         }
     }
@@ -805,9 +891,20 @@ impl Command for ActionsCmd {
         match &self.op {
             ActionsOp::CreateRun { run, jobs } => {
                 only(operator)?;
-                self.create_run(s, run, jobs)
+                self.create_run(s, run, jobs, &[])
+            }
+            ActionsOp::CreateRunWith { run, jobs, permissions } => {
+                only(operator)?;
+                self.create_run(s, run, jobs, permissions)
             }
             ActionsOp::Job { job, version, event } => self.job_event(s, *job, *version, event),
+            ActionsOp::AcquireToken { job, version } => {
+                let (mut evs, out) = self.job_event(s, *job, *version, &JobEvent::Acquired)?;
+                if !s.base.more.issued.contains(job) {
+                    evs.push(ActionsEvent::TokenIssued { job: *job });
+                }
+                Ok((evs, out))
+            }
             ActionsOp::ExpireLeases => {
                 only(operator)?;
                 let mut evs = SmallVec::new();
@@ -958,6 +1055,51 @@ mod tests {
             environment: None,
             steps: "[]".into(),
         }
+    }
+
+    /// Main's derived `ActionsFold` writes the same bytes as this one with no 0x15.5 row, and reads back into it with
+    /// `more` empty; a fold with a row reads back whole. So a site day that ships this reader changes no stored fold
+    /// until `FormatsEnable` lets a leader write 0x15.5 (`graftyard_identity::tail_serde`).
+    #[test]
+    fn an_old_fold_keeps_its_bytes_until_a_token_row() {
+        #[derive(Serialize, Deserialize)]
+        struct Main {
+            runs: BTreeMap<RunId, RunRow>,
+            keys: BTreeMap<RunKey, RunId>,
+            jobs: BTreeMap<JobId, JobRow>,
+            runners: BTreeMap<RunnerId, RunnerRecord>,
+            sessions: BTreeMap<RunnerId, RunnerSessionId>,
+            queue_moves: u64,
+            owner_cursor: Index,
+            ids: IdCursor,
+        }
+        let l = LabelSet::parse(["linux"]).unwrap();
+        let row = JobRow {
+            run: RunId(DbId(1)),
+            spec: job(2, &l),
+            state: JobState::Queued { labels: l.clone(), since: Timestamp(5) },
+            version: 3,
+        };
+        let jobs: BTreeMap<_, _> = [(JobId(DbId(2)), row)].into();
+        let old = Main {
+            runs: BTreeMap::new(),
+            keys: BTreeMap::new(),
+            jobs: jobs.clone(),
+            runners: BTreeMap::new(),
+            sessions: BTreeMap::new(),
+            queue_moves: 7,
+            owner_cursor: Index(4),
+            ids: IdCursor::default(),
+        };
+        let old_bytes = postcard::to_allocvec(&old).unwrap();
+        let mut f = ActionsFold { jobs, queue_moves: 7, owner_cursor: Index(4), ..ActionsFold::default() };
+        assert_eq!(postcard::to_allocvec(&f).unwrap(), old_bytes, "an empty `more` writes main's bytes");
+        assert_eq!(postcard::from_bytes::<ActionsFold>(&old_bytes).unwrap(), f, "main's blob reads with no rows");
+        f.more.issued.insert(JobId(DbId(2)));
+        f.more.tokens.insert(JobId(DbId(2)), graftyard_identity::PermissionSet::default());
+        let new = postcard::to_allocvec(&f).unwrap();
+        assert!(new.len() > old_bytes.len() && new.starts_with(&old_bytes));
+        assert_eq!(postcard::from_bytes::<ActionsFold>(&new).unwrap(), f);
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and

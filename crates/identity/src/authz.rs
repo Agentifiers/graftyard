@@ -32,7 +32,7 @@ use crate::sealed::{ActionsName, SealKey, SecretRecord, SecretScope, VariableRec
 use crate::tokens::RepoScope;
 use crate::{
     AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AUTHZ_FORMAT_V12,
-    AUTHZ_FORMAT_V13,
+    AUTHZ_FORMAT_V13, AUTHZ_FORMAT_V14,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -189,6 +189,17 @@ pub struct InstallationRow {
     pub app: AppId,
     pub repos: RepoScope,
     pub permissions: PermissionSet,
+}
+
+/// The Actions App's installation row on every owner it is installed on: every repository, and each `GITHUB_TOKEN`
+/// scope GHES 3.22 names at write plus `metadata` read, the cap a workflow's `permissions:` reaches with `write-all`
+/// [doc: GHES 3.22, "Workflow syntax for GitHub Actions", `permissions`]. A job's token narrows it to one repository
+/// and the job's permissions (`graftyard_actions::token`).
+pub fn actions_row() -> InstallationRow {
+    let mut p: BTreeMap<Box<str>, apps::Access> =
+        crate::stateless::ACTIONS_SCOPES.iter().map(|s| (Box::from(*s), apps::Access::Write)).collect();
+    p.insert("metadata".into(), apps::Access::Read);
+    InstallationRow { app: crate::stateless::ACTIONS_APP, repos: RepoScope::All, permissions: PermissionSet(p) }
 }
 
 /// An installation's current state on its owner's chain, as `authorize` reads it.
@@ -1568,6 +1579,8 @@ impl AuthzCmd {
                 }
             }
             AuthzOp::ReserveTransfer { from, .. } if self.cred.account.is_some() => d.push(ChainId::Authz(*from)),
+            // The Actions App's installation follows no route and reads no record (`check_install`).
+            AuthzOp::Install { row, .. } if row.app == crate::stateless::ACTIONS_APP => {}
             AuthzOp::Install { id, app_owner, .. } => {
                 d.push(ChainId::Names(name_shard(&NameKey::Installation(*id))));
                 if fold.owner != Some(*app_owner) {
@@ -1584,6 +1597,13 @@ impl AuthzCmd {
     fn check_install(&self, s: &AuthzScratch<'_>, deps: &[(ChainId, IdentityDep)]) -> Result<(), AuthzErr> {
         let AuthzOp::Install { id, row, app_owner } = &self.op else { return Ok(()) };
         let owner = s.owner().ok_or(AuthzErr::NotOpened)?;
+        // The Actions App: only its own installation on this owner, with its one row. It has no route on `Names`, so
+        // no token request reaches it, and no record, so its permissions are `actions_row`'s. Every other App's
+        // installation id is one `Ids` assigned, which is positive, so neither can take the other's.
+        if row.app == crate::stateless::ACTIONS_APP || crate::stateless::is_actions_installation(*id) {
+            let ok = *id == crate::stateless::actions_installation(owner) && *row == actions_row();
+            return if ok { Ok(()) } else { Err(AuthzErr::BadRecord) };
+        }
         let read = |chain: ChainId| {
             deps.iter()
                 .find(|(c, _)| *c == chain)
@@ -1957,6 +1977,8 @@ impl AuthzCmd {
                 let ev = AuthzEvent::OrgAgents { enabled: p.agents_enabled, workspace: p.agents_workspace };
                 Ok((smallvec![ev], AuthzOut::Done))
             }
+            // Uninstalling the Actions App would fail every job's token on the owner; GHES offers no such uninstall.
+            AuthzOp::Uninstall { id } if crate::stateless::is_actions_installation(*id) => Err(AuthzErr::Forbidden),
             AuthzOp::Uninstall { id } => match s.installation(*id) {
                 None => Err(AuthzErr::NoInstallation),
                 Some(InstallationState { row: None, .. }) => Ok((SmallVec::new(), AuthzOut::Done)),
@@ -2084,6 +2106,7 @@ impl Command for AuthzCmd {
             | AuthzOp::PutOrgVariable { .. }
             | AuthzOp::DeleteOrgVariable { .. } => AUTHZ_FORMAT_V12,
             AuthzOp::SetAppHook { .. } => AUTHZ_FORMAT_V13,
+            AuthzOp::Install { ref row, .. } if row.app == crate::stateless::ACTIONS_APP => AUTHZ_FORMAT_V14,
             AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }
             | AuthzOp::CloseApp { .. }

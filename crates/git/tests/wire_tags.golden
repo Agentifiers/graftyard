@@ -737,6 +737,8 @@ actions::shard::ActionsEvent 2 Job 02020100
 actions::shard::ActionsEvent 3 Runner 030200
 actions::shard::ActionsEvent 4 Session 040200
 actions::shard::ActionsEvent 5 OwnerCursor 0501
+actions::shard::ActionsEvent 6 JobTokens 0600
+actions::shard::ActionsEvent 7 TokenIssued 0702
 actions::shard::ActionsOp 0 CreateRun 0002020161016101010101010101010101010101010101010101010161067265706f3a310101000000
 actions::shard::ActionsOp 1 Job 01020100
 actions::shard::ActionsOp 2 ExpireLeases 02
@@ -748,6 +750,8 @@ actions::shard::ActionsOp 7 SetRunStatus 0702
 actions::shard::ActionsOp 8 CancelRun 0802
 actions::shard::ActionsOp 9 OwnerCursor 0901
 actions::shard::ActionsOp 10 MatchOwner 0a02010200
+actions::shard::ActionsOp 11 CreateRunWith 0b02020161016101010101010101010101010101010101010101010161067265706f3a31010100000000
+actions::shard::ActionsOp 12 AcquireToken 0c0201
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202

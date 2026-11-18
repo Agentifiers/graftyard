@@ -47,7 +47,7 @@ pub use apps::{
 pub use authz::{
     AccountKind, ActionsRows, AgentRows, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut,
     AuthzRead, AuthzScratch, CREATE_INIT_MAX, CursorRows, InstallationRow, InstallationState, NameEpoch, OrgRole,
-    OrgRows, RepoEntry, RepoPermission,
+    OrgRows, RepoEntry, RepoPermission, actions_row,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
@@ -110,6 +110,11 @@ pub const AUTHZ_FORMAT_V12: Format = Format { family: 0x12, version: 12 };
 /// only `AuthzEvent::App`, which members read since version 2, so the format guards the op alone. Read and enabled on
 /// the same terms as version 2.
 pub const AUTHZ_FORMAT_V13: Format = Format { family: 0x12, version: 13 };
+/// `gh-token`: `AuthzOp::Install` of the Actions App on an owner (`crate::authz::actions_row`), which `acquirejob`
+/// commits before it mints the owner's first job token. It writes only `AuthzEvent::Installation`, which members read
+/// since version 2; the format guards `decide`'s rule for it, which needs no `Names` route and no App record. Read and
+/// enabled on the same terms as version 2.
+pub const AUTHZ_FORMAT_V14: Format = Format { family: 0x12, version: 14 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
