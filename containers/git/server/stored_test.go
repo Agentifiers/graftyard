@@ -265,7 +265,9 @@ func TestSpooledThinPackWaitsForBase(t *testing.T) {
 	}
 }
 
-// The stored idx's point: the network's lock is held for two renames and the record instead of index-pack.
+// Neither path holds the network's lock alone across index-pack: the stored idx's path holds it for two renames and the
+// record, and the index-pack path (B0-34, `indexIngest`) indexes under the lock shared and holds it alone only to move
+// the pack in and record it, so its lock_ms is far below its index_ms.
 func TestSpooledIdxHoldsLockShorter(t *testing.T) {
 	s := serve(t)
 	wt := t.TempDir()
@@ -311,8 +313,8 @@ func TestSpooledIdxHoldsLockShorter(t *testing.T) {
 	}
 	t.Logf("%d-byte pack: lock_ms %v with the stored idx, %v with index-pack (index_ms %v)", len(pack), used.LockMs,
 		indexed.LockMs, indexed.IndexMs)
-	if used.LockMs >= indexed.LockMs {
-		t.Fatalf("lock held %v ms with the stored idx, %v with index-pack", used.LockMs, indexed.LockMs)
+	if 4*indexed.LockMs >= indexed.IndexMs {
+		t.Fatalf("index-pack path held the lock alone %v ms of its %v ms", indexed.LockMs, indexed.IndexMs)
 	}
 	for _, net := range []string{"7", "8"} {
 		run(t, repo(net), "", "rev-list", "--objects", tip)

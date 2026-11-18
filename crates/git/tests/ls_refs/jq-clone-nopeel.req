@@ -1,0 +1,5 @@
+symrefs
+unborn
+ref-prefix refs/heads/
+ref-prefix refs/tags/
+ref-prefix HEAD

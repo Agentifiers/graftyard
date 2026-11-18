@@ -1959,8 +1959,20 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     let cache_ok = c.shard.is_none();
     #[cfg(not(feature = "test-faults"))]
     let cache_ok = true;
+    let v2 = if wants_v2(Some(&proto)) { parse_v2(&body).ok() } else { None };
+    // A v2 ls-refs from the group's refs, with no shard: none of its rehydrate or catch-up stands in front of a clone's
+    // first round trip or a fetch's tip read (B0-34, `graftyard_git::ls_refs`). Any request it does not serve, and
+    // any read that fails or comes back partial, goes on to the shard below.
+    if let Some(ls) = v2.as_ref().and_then(graftyard_git::ls_refs::LsRefs::parse)
+        && let Some(answer) = ls_refs(c, repo, &ls).await
+    {
+        let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
+        #[cfg(feature = "test-faults")]
+        h.set("x-graft-ls-refs", "edge")?;
+        return Ok(Response::from_bytes(answer)?.with_headers(h));
+    }
     let key = if cache_ok && wants_v2(Some(&proto)) {
-        match parse_v2(&body) {
+        match v2.ok_or(()) {
             // The tags are read only for a key that holds them (`CloneKey::needs_tags`): an ls-refs read them from the
             // leader and threw them away.
             Ok(v) if CloneKey::needs_tags(NetworkId(repo.id.0), &v) => {
@@ -2007,6 +2019,42 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         hh.set("x-graft-clone-cache", "miss")?;
     }
     Ok(Response::from_body(r.body().clone())?.with_headers(hh))
+}
+
+/// The bytes of a v2 ls-refs from the group: each of the request's reads as one page from the leader, and, when the
+/// answer lists HEAD, the default branch from the `settings` row and its tip, read beside them. `None` on any failed
+/// or partial read, a missing `settings` row, or a default branch that does not exist yet, so the shard answers.
+async fn ls_refs(c: &Ctx<'_>, repo: &Repo, ls: &graftyard_git::ls_refs::LsRefs) -> Option<Vec<u8>> {
+    use graftyard_git::ls_refs::Head;
+    let reads = ls.reads();
+    let pages = futures_util::future::join_all(reads.iter().map(|p| refs_page(c, repo, p, None)));
+    let target = async {
+        if !ls.wants_head() {
+            return Some(None);
+        }
+        let core = api::core_rows(c, repo, "access").await.ok()?.ok()?;
+        let s: graftyard_git::issues::RepoSettings = graftyard_git::tiers::get_rec(&core, "settings", &[])?;
+        Some(Some(s.default_branch))
+    };
+    let (pages, target) = futures_util::future::join(pages, target).await;
+    let pages: Vec<RefsPage> = pages.into_iter().map(|p| p.ok()?.ok().map(|(_, p)| p)).collect::<Option<_>>()?;
+    let head = match target? {
+        None => None,
+        Some(branch) => {
+            let name = branch.display();
+            // The tip from the pages already read when one holds the branch, so HEAD and its branch's line agree.
+            let found = pages.iter().flat_map(|p| &p.refs).find(|(n, _)| *n == name).map(|(_, o)| o.clone());
+            let oid = match found {
+                Some(o) => o,
+                None => {
+                    let (_, p) = refs_page(c, repo, branch.as_bytes(), None).await.ok()?.ok()?;
+                    p.refs.into_iter().find(|(n, _)| *n == name)?.1
+                }
+            };
+            Some(Head { target: branch.as_bytes().to_vec(), oid: ObjectId::parse_hex(oid.as_bytes()) })
+        }
+    };
+    ls.answer(head.as_ref(), &pages)
 }
 
 // ---- advertisements ----

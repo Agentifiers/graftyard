@@ -1,0 +1,14 @@
+00509f0f4ddfe72b4c06afafe1a658e6ee53d35b5760 HEAD symref-target:refs/heads/v1.x
+004f33d415f785b1c8a8bd66703b8549bb1f8b05c803 refs/heads/chore/v2-pnpm-monorepo
+005558e86344b44e2119e50696b7b3bea857446a609f refs/heads/ci/v0x-release-setup-firefox
+0063c40367f798cbe515591c93a0ad5c34233cc18a93 refs/heads/copilot/update-documentation-fetch-adapter
+0057b91f1e7759678cabf8f0f2574726e19da0793416 refs/heads/fix/v0-combine-urls-slash-base
+0055fe62aef709e6c24e7f653bd5b7ae148370349ba3 refs/heads/fix/v0-http-proxy-env-lookup
+0055014af94afd91fff9d50689c9fab8eaa112185dc1 refs/heads/fix/v0-http-redirect-options
+0050c4307183c9d380231e3916b597198fb90588a4a8 refs/heads/fix/v0-http-socket-path
+00533232b360accd965d4b23538a6e6478075a0e52e6 refs/heads/fix/v0-interceptor-options
+003daf4f6d960f7478604841cfff2eb5c2491565c518 refs/heads/main
+003d9e0bac894bc1c34d860ccee13affc9f2df13c91c refs/heads/v0.x
+003d9f0f4ddfe72b4c06afafe1a658e6ee53d35b5760 refs/heads/v1.x
+003d1328feadf84b93e235d79870cc2306f7ad83e116 refs/heads/v2.x
+0000
