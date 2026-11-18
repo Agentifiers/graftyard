@@ -2,6 +2,12 @@
 
 Three Milestone 0 gate rows, split off from LM-1 ([thread](https://ampcode.com/threads/T-01a1c694-6112-72b4-83ca-dc9337a9646e), `tests/am1/results/lm1-memory.md`) to run hosted on a second install, `graft-m3f` (`tests/am1/results/install-m3f.md`). Each row is judged exactly as `build/BUILD-PLAN.md` writes it, on one run, with no substitution. LM-1 keeps B0-29, B0-33, B0-35 and B0-34 on `graft-m2b`. This thread: [LM-1 rows on graft-m3f](https://ampcode.com/threads/T-01a1d805-b0ec-7624-a63c-99341738c925). Branch `lm1-rows-m3f`.
 
+> **Annotation, 2026-11-18 (cut-trace).** Queue figures from builds with lease-clock (`0b5769b7`, 2026-11-15) and
+> without cut-trace mix two clocks and overstate the wait. Checked with `git merge-base --is-ancestor` on each run's
+> site-day build (rewritten SHAs): m3fr6 to m3fr17 carry it and are annotated; m3fr1 to m3fr5c (`31636ec1`,
+> `dc269249` and earlier) predate it, so their queue figures are on one clock. The m3fr11 analysis of B0-31's
+> buckets-up tail below quotes m3fr11's figures and carries the same caveat.
+
 ## Build
 
 `lm1-rows-m3f` is main `7c989fb` plus these changes:
@@ -193,6 +199,10 @@ Two changes, one row. Part A stops a stalled leader's read-index timeouts from t
 
 ## Rows m3fr17 (2026-11-18, graft-m3f, `ROWS="b0-32"`, main `6dcf061a`, `b032-shed`)
 
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (main `6dcf061a`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
+
 **Slot.** B0-32 rerun on `b032-shed`, granted at about $2. Stops: graft-m3f past $5 by `PREFIX` from the site day's start, or the account past $180. Raw files: `tests/am1/raw/a1-b0-32-mwljfpch.jsonl`, `tests/am1/raw/runs/{siteday-m3f-m3fr17,a1-b0-32-fm3fr17-b032}.log`, `tests/fanout/raw/rows-m3fr17.status`, `tests/fanout/raw/{terms,admit}-m3fr17-b0-32.jsonl`, `tests/fanout/raw/tsave-m3fr17-b0-32.jsonl.xz`, `idle-retire-m3fr17.log`.
 
 - **Site day** 02:41 to 02:54Z, image `sha256:0f0c5ee1…` reused. Edge `f6acd65d` at 100% (edgever, rev `11cb53c0`).
@@ -223,6 +233,10 @@ Two changes, one row. Part A stops a stalled leader's read-index timeouts from t
 - **Cost:** graft-m3f **$0.73** by `PREFIX` from 02:41:29 to 03:25:51Z (site day, row, sweeps, retire and purge). The account's UTC day was $6.53 at 03:25Z. The idle reading was not taken: the repository-wide pause came first.
 
 ## Rows m3fr16 (2026-11-17/18, graft-m3f, `ROWS="b0-31"`, branch `m3fr16`, main `7430a479`)
+
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (main `7430a479`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
 
 **Slot.** B0-31 rerun on `dep-hedge` (main `7430a479`, with M4-WP4's F84), granted at about $3. Stops: graft-m3f past $6 by `PREFIX`, or the account past $280 (on 2026-11-18, past $180).
 - **Site day** 23:35 to 23:48Z (`siteday-m3f-m3fr16.log`), image `sha256:0f0c5ee1…` reused. Sites `ab8fd5a9` / `51f0273b` / `c1969c00` (phase 1 `4a15c906` / `6a53b48b` / `6f52f304`). Edge `23813b68` served at 100% by edgever.
@@ -264,6 +278,10 @@ Two changes, one row. Part A stops a stalled leader's read-index timeouts from t
 - Idle reading from 00:13:30Z, scheduled for 00:45Z.
 
 ## Rows m3fr15 (2026-11-17, graft-m3f, `ROWS="b0-32"`, branch `b032-h1`, main `368498ad`)
+
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (sites from main `0105297a`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
 
 **Slot.** B0-32's burst rerun with a1's burst client on HTTP/1.1, granted at about $1 with no site day. The sites and edge stay on m3fr14's build from main `0105297a`. Stops: graft-m3f past $5 by `PREFIX`, or the account past $280.
 - **Client.** The 500 burst pushes go over `node:https` with their own Agent (keepAlive, `maxSockets` = 500). The rest of a1 keeps `fetch` (undici, HTTP/2), so its other numbers compare with m3fr13 and m3fr14. The burst row records `protocol: "http/1.1 (node:https Agent, keepAlive, maxSockets = burst pushes)"`.
@@ -523,6 +541,10 @@ The receipt counters were 1,668 commits on 1,668 sends, 0 busy, 9 asks, 0 missed
 
 ## Rows m3fr12 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, branch `m3fr12`)
 
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (main `fec1d01d`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
+
 **Slot.** The orchestrator moved the slot from 00:00Z Nov 18 to 15:47Z Nov 17. The operator then raised the day's limit to $300 (FRAME.md at `19b5ae77`). Stops: graft-m3f past $10 by `PREFIX`, or the account's UTC day past $280. The earlier $170 line and the $125 check before B0-31 were dropped. LM-1's B0-33 and M4-WP4 ran at the same time on other installs, so only the `PREFIX` figure is this run's.
 - **Estimate:** about $5. **Actual:** graft-m3f **$2.19** from 15:47:50Z to 16:55:31Z, covering the site day, both rows and the close-out. The account's UTC day was $111.01 at 15:47Z and $132.47 at 16:55Z.
 
@@ -653,6 +675,10 @@ The client saw 3.1 s more than the server's total at p50 (5.1 s at p99). Only 22
 - Idle reading 16:56 to 17:26Z (`PREFIX=graft-m3f acctcost`): graft-m3f **$0.00**, idle; still $0.00 through 17:47Z, and the sweep at 17:47:36Z found no shard container running. (The scheduled reading at 17:27Z did not run; it was taken at 17:47Z over the same window.)
 
 ## Rows m3fr10 and m3fr11 (2026-11-17, graft-m3f slot, `ROWS="b0-32 b0-31"`, run stop $10 on graft-m3f, account stop $170)
+
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (main `68d39927`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
 
 **Slot.** The operator gave graft-m3f a slot on 2026-11-17, with the 90% rule (`FRAME.md`) and the account-wide meter. The run's own figure is acctcost with `PREFIX=graft-m3f` (this branch), because other installs ran in the same window.
 - **Estimate:** about $3.10, priced on m3fr9's windows: site day $0.01, B0-32 $1.34, B0-31 $1.68.
@@ -842,6 +868,10 @@ Rounds stayed between 194 and 254 ms p50 in all of them.
 - The audit now drops `repo:0` and skips a member that answers 404 after one call. B0-30's thread was told and is not editing `fold_audit.rs`.
 
 ## Rows m3fr9 (2026-11-16, TAG `m3fr9`, `ROWS="l0-12 b0-32 b0-31"`, `STOP_USD=77`)
+
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (`lm1-rows-m3f10` on main `a0bca583`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
 
 **Build and site day.**
 - **Build:** branch `lm1-rows-m3f10` `48c67a34`. It is main `a0bca583` (`receipt-rule`, `a1-phase-sent`, `m3fr8-commit-trace`) plus one test-faults instrument. The instrument adds one `server-timing` entry per `/commit` send (`send`), per receipt missed while the member was `busy` (`busy`), per `/outcome_by_request` ask while a send was open (`ask`), per other missed receipt (`missed`), and per `suspect` report (`suspect`). `a1.mjs` sums them (`pushTiming`).
@@ -1168,6 +1198,10 @@ The rehome was on site 2 (`transfer.mjs`). Site c's shard answered warm 3.5 s la
 
 ## Rows m3fr7 (2026-11-15/16, TAG `m3fr7`, `ROWS="b0-32 b0-31 l0-12"`, `STOP_USD=66`)
 
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (main `1aed2cff`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
+
 **Build and site day.** Main `1aed2cff`, which ran with these merges since m3fr6's `a304d3fc`: lm1-rows-m3f6's drivers and test-faults instruments, `read-round-gap` (`0646faa2`), `composed-miss`, and `promote-unlock`. New shard image `sha256:29c3b917…`, built from that commit's `containers/git`. Site day 23:21:26Z to 23:35:02Z, logged in `install-m3f.md`. Rows started 23:41Z at $48.91 (graft-m3f, account Graftyard). From 02:23Z a cost watch metered every 15 minutes with `env-m3f.sh` and would have stopped L0-12's refusals after the current kind at $66. It never fired.
 
 **What was lost.** The orb restarted at about 04:20Z, in L0-12's last refusal kind, and cleared `/tmp`. That took the run worktree, its raw files (`a1-*.jsonl`, `terms`/`admit`/`vmem`/`tsave-m3fr7-*`, the status file, the stall and refusals logs) and the uncommitted driver changes (`rows.sh` `ROW_USD`, `tests/fanout/rounds.py`). The figures below were read from those files before the restart (they are quoted from this thread), or from Workers Logs, the repository's refs and the meter after it. A line marked *lost* could not be judged.
@@ -1372,6 +1406,10 @@ The terms rose with the read-round gap in place, by 4 over the run against 30 on
 - **The test** replays the five traced pushes' read and commit spans through the new order and must cut the p50 on main. The real check is B0-32's gate on the next site day.
 
 ## Rows m3fr6 (2026-11-15, TAG `m3fr6`, `ROWS="l0-12 b0-31 b0-32"`, `STOP_USD=46`)
+
+> **Annotation, 2026-11-18 (cut-trace).** This run's build (`lm1-rows-m3f6` `520020fe` on main `a304d3fc`) carries lease-clock (`0b5769b7`), so its
+> `/stats` `queue`, `queue:slot` and `queue:post` figures mix two clocks and overstate the wait. Commit p99 and the
+> verdicts were on one clock and stand (`tests/m0/results/cut-trace.md`).
 
 **Build and site day.** `lm1-rows-m3f6` `520020fe`: main `a304d3fc` with this branch's drivers and test-faults instruments, including two read-only raft `AdmissionView` fields (`round_ms`, `cmd_bytes`) and `vmem.mjs`'s per-voter `/stats` `clock`. The build ran with these main merges: `read-rounds` (`def9d6c1`), `repack-keep` (`8d79a32f`), `r22-sweep-fill` (`450bcae4`), `disk-validate` (`e7139c2e`) and `lease-clock` (`04577c42`). New shard image `sha256:b78eacca…`, built from main's `containers/git` at `a304d3fc` (`/validate?disk=1`, `held=`), on standard-4. Site day 17:17:57Z to 17:32:27Z: sites `0f1ce3ee` / `116b517b` / `f603b1b4` (phase 1 `0375142b` / `f4e758b6` / `d5d1056f`), edge `65a6583a`. Each step exited 0. After it, `j4` answered 200, `repo:65536` was led on site 0 at term 4, and every voter's `/stats` `clock` read lag 0 and `leaseFallbacks` 0. R22 second look: site a's `*/15` cron logged `sweep {` at 17:33:42Z and `fold audit {` at 17:35:01Z, with no "never complete".
 
