@@ -337,6 +337,71 @@ impl SnapshotJob {
     }
 }
 
+/// The live-row check (K11; `decisions/DECISIONS.md`, "`live-check`"): a snapshot job whose frames go nowhere. Its
+/// trailer's digest is a rehash of every row the tier holds as of `to`, and `want` is the sum `apply` kept, so a row
+/// changed in storage after `apply` wrote it makes the two differ, which neither a refold nor the digest ring sees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LiveStep {
+    /// Rows read; more to come.
+    More,
+    /// The trailer was reached: the rows' digest as of `to` against the sum `apply` kept.
+    Done(LiveVerdict),
+    /// The tier's running snapshot is no longer this check's: an install replaced the tier, or it was ended.
+    Gone,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveVerdict {
+    pub tier: Tier,
+    pub to: Index,
+    /// The tier's `fold_digest` at `to` from the sum `apply` kept.
+    pub want: Digest,
+    /// The same digest from every row read.
+    pub got: Digest,
+    pub rows: u64,
+}
+
+impl LiveVerdict {
+    pub fn matched(&self) -> bool {
+        self.want == self.got
+    }
+}
+
+/// `snap_undo` copies past which a live check gives up and is tried at its next due visit [guess]: about 31 MB at
+/// 620 B a row. `apply` keeps at most one copy per row the tier held at `to`, so the copies never pass the tier's row
+/// count, but on a busy chain they could reach it before the scan ends.
+pub const LIVE_UNDO_MAX: u64 = 50_000;
+
+/// Whether a live check holding `undo` copies gives up.
+pub fn live_abandons(undo: u64) -> bool {
+    undo > LIVE_UNDO_MAX
+}
+
+impl SnapshotJob {
+    /// Whether the tier's running snapshot is still this job's.
+    pub fn holds(&self, store: &dyn Store) -> bool {
+        try_meta(store).is_ok_and(|m| m.snap == Some(self.cursor.at))
+    }
+
+    /// One read of a live-row check, at most `max_rows` rows.
+    pub fn live_step(&mut self, store: &dyn Store, max_rows: usize) -> LiveStep {
+        if !self.holds(store) {
+            return LiveStep::Gone;
+        }
+        match self.next(store, max_rows) {
+            Some(SnapshotFrame::Rows { .. }) => LiveStep::More,
+            Some(SnapshotFrame::End(tr)) => LiveStep::Done(LiveVerdict {
+                tier: tr.tier,
+                to: tr.to,
+                want: self.want(store),
+                got: tr.fold_digest,
+                rows: tr.rows,
+            }),
+            None => LiveStep::Gone,
+        }
+    }
+}
+
 /// Drops every undo copy and the running snapshot's mark. The writer calls it once the leader has committed
 /// `Archived` for the snapshot, or when it abandons one.
 pub fn end_snapshot(store: &mut dyn Store, schema: &Schema) {

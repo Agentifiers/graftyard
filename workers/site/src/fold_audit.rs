@@ -122,15 +122,18 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) 
         let mut answers = Vec::new();
         for s in &row.sites {
             let Some(name) = member_name(env, site, *s, row.chain).await else { break };
-            let body = serde_json::to_vec(&json!({ "at": index, "since": index })).unwrap_or_default();
+            let body = serde_json::to_vec(&json!({ "at": index, "since": index, "live": true })).unwrap_or_default();
             match graftyard_lookup::post(&b, *s, &name, "/fold", &body).await {
                 Some((200, v)) => answers.push((*s, v)),
                 _ => break,
             }
         }
+        let live = live_report(row.chain, &answers);
         match idle(seen, &answers, row.sites.len()) {
             Idle::Moved => {}
-            Idle::Matched => return json!({ "chain": row.chain.to_string(), "idle": true, "index": index }),
+            Idle::Matched => {
+                return json!({ "chain": row.chain.to_string(), "idle": true, "index": index, "live": live });
+            }
             Idle::Mismatch(tiers) => {
                 console_error!("fold audit mismatch on {} at {index}, idle: {tiers:?}", row.chain);
                 let mut v = seen.clone();
@@ -154,17 +157,19 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) 
     }
     let mut members: [Vec<(graftyard_types::SiteId, Digest)>; 2] = [Vec::new(), Vec::new()];
     let mut missing = Vec::new();
+    let mut answers = Vec::new();
     for s in &row.sites {
         // Each site's member has its own name, which that site's registry row holds.
         let Some(name) = member_name(env, site, *s, row.chain).await else {
             missing.push(json!({ "site": s.0, "error": "no registry row" }));
             continue;
         };
-        let body = serde_json::to_vec(&json!({ "at": index.0 })).unwrap_or_default();
+        let body = serde_json::to_vec(&json!({ "at": index.0, "live": true })).unwrap_or_default();
         let Some((200, v)) = graftyard_lookup::post(&b, *s, &name, "/fold", &body).await else {
             missing.push(json!({ "site": s.0, "error": "no answer" }));
             continue;
         };
+        answers.push((*s, v.clone()));
         for (k, t) in ["core", "metadata"].iter().enumerate() {
             match digest(&v[t]["at"]) {
                 Some(d) => members[k].push((*s, d)),
@@ -201,7 +206,26 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) 
                     "ms": replay["ms"], "memMaxMb": replay["memMaxMb"], "from": replay["tiers"], "segments": replay["segments"],
                     "pages": replay["pages"], "saved": replay["saved"] },
         "running": running,
+        "live": live_report(row.chain, &answers),
     })
+}
+
+/// Each voter's last live-row check (`crate::live`), from its `/fold {"live": true}` answer: whether this visit
+/// started one, and the tiers whose rows did not match the sum `apply` kept, which alarm. A mismatch is the
+/// operator's to repair; it does not clear the refold's match, which reads no live row.
+fn live_report(chain: ChainId, answers: &[(graftyard_types::SiteId, Value)]) -> Value {
+    let mut alarms = Vec::new();
+    let mut started = 0;
+    for (s, v) in answers {
+        started += usize::from(v["live"]["started"] == json!(true));
+        for t in crate::live::mismatches(&v["live"]) {
+            alarms.push(json!({ "site": s.0, "tier": t["tier"], "to": t["to"], "want": t["want"], "got": t["got"] }));
+        }
+    }
+    if !alarms.is_empty() {
+        console_error!("fold live-row mismatch on {chain}: {alarms:?}");
+    }
+    json!({ "started": started, "alarms": alarms })
 }
 
 /// What the idle path found from each voter's `/fold {"at": n, "since": n}` answer, against the refold marked at `n`.
@@ -309,6 +333,8 @@ pub async fn run(env: &Env, only: Option<ChainId>, force: bool) -> Result<Value>
         "idle": chains.iter().filter(|c| c["idle"] == json!(true)).count(),
         "deleted": chains.iter().filter(|c| c["deleted"] == json!(true)).count(),
         "retired": chains.iter().filter(|c| c["retired"] == json!(true)).count(),
+        "liveStarted": chains.iter().filter_map(|c| c["live"]["started"].as_u64()).sum::<u64>(),
+        "liveAlarms": chains.iter().filter_map(|c| c["live"]["alarms"].as_array().map(Vec::len)).sum::<usize>(),
         "chains": chains,
         "at": crate::now_ms(),
     });

@@ -478,3 +478,63 @@ fn archive_due_walk_matches_archive_due_and_cuts_a_due_range_into_pieces() {
     let big = [(Index(1), Timestamp(1), 900), (Index(2), Timestamp(2), 900)];
     assert_eq!(archive_due_walk(1_800, big, Timestamp(day), true, Index(2), 1_000, 100), Some((Index(1), Index(1))));
 }
+
+/// K11, `decisions/DECISIONS.md`, "`live-check`": a row overwritten in storage after `apply` wrote it, which the
+/// fold audit cannot see. `fold_digest`, the digest ring (`digest_at`), and a refold of the log all still give the
+/// digest `apply` kept; only a rehash of the live rows differs, and the live check names the tier. A clean tier, and
+/// rows that `apply` changes while the check reads (kept as of `to` through `snap_undo`), match.
+#[test]
+fn a_row_changed_in_storage_after_apply_is_caught_by_the_live_check_alone() {
+    let mut bodies: Vec<Vec<Ev>> = (0..6).map(|b| vec![Ev::Meta(b, Some(b)), Ev::Core(b, Some(b * 10))]).collect();
+    // While the check reads: rows it has not reached change and go, and a new row comes, all after `to`.
+    bodies.push(vec![Ev::Core(5, Some(500)), Ev::Core(4, None), Ev::Meta(5, Some(50)), Ev::Core(9, Some(9))]);
+    bodies.push(vec![Ev::Meta(4, None), Ev::Core(5, Some(501))]);
+    let entries = log(bodies);
+    let mut store = [MemStore::default(), MemStore::default()];
+    for (s, t) in store.iter_mut().zip([Tier::Core, Tier::Metadata]) {
+        apply_all(s, t, &entries[..6]);
+    }
+    let kept = [fold_digest(&store[0], Tier::Core), fold_digest(&store[1], Tier::Metadata)];
+    // Storage corruption on the metadata tier: one row's value changes with no entry, `written` and the sum untouched.
+    let row = store[1].0.get_mut("m").unwrap().get_mut(&vec![Val::Int(3)]).unwrap();
+    row.cols = vec![Val::Int(-3)];
+    let mut refolded = MemStore::default();
+    apply_all(&mut refolded, Tier::Metadata, &entries[..6]);
+    assert_eq!(fold_digest(&store[1], Tier::Metadata), kept[1], "the kept sum still names the row as apply wrote it");
+    assert_eq!(graftyard_fold::digest_at(&store[1], Index(6)), Some(kept[1]), "the digest ring agrees");
+    assert_eq!(fold_digest(&refolded, Tier::Metadata), kept[1], "a refold of the log agrees");
+    assert_ne!(refold_digest(&store[1], &META), kept[1], "only the live rows differ");
+    let mut verdicts = Vec::new();
+    for (s, t) in store.iter_mut().zip([Tier::Core, Tier::Metadata]) {
+        let mut job = SnapshotJob::begin(s, Toy::schema(t), CHAIN, ReleaseId([4; 32]), FMT).unwrap();
+        let mut next = 6;
+        let v = loop {
+            match job.live_step(s, 2) {
+                graftyard_fold::LiveStep::More => {}
+                graftyard_fold::LiveStep::Done(v) => break v,
+                graftyard_fold::LiveStep::Gone => panic!("the check's snapshot is the tier's"),
+            }
+            // `apply` goes on while the check reads: a row the check has not reached yet changes after `to`.
+            if next < entries.len() {
+                apply(&Toy, s, t, &entries[next]).unwrap();
+                next += 1;
+            }
+        };
+        assert_eq!(next, entries.len(), "every later entry applied while the check read");
+        end_snapshot(s, &Toy::schema(t));
+        verdicts.push(v);
+    }
+    assert!(verdicts[0].matched(), "{:?}", verdicts[0]);
+    assert_eq!((verdicts[0].tier, verdicts[0].to, verdicts[0].rows), (Tier::Core, Index(6), 6));
+    let bad = &verdicts[1];
+    assert_eq!((bad.tier, bad.to, bad.want, bad.matched()), (Tier::Metadata, Index(6), kept[1], false));
+    // An install that replaced the tier mid-check ends it as gone, never as a verdict on rows it did not read.
+    let mut s = MemStore::default();
+    apply_all(&mut s, Tier::Core, &entries[..6]);
+    let mut job = SnapshotJob::begin(&mut s, CORE, CHAIN, ReleaseId([4; 32]), FMT).unwrap();
+    assert_eq!(job.live_step(&s, 2), graftyard_fold::LiveStep::More);
+    end_snapshot(&mut s, &CORE);
+    assert_eq!(job.live_step(&s, 2), graftyard_fold::LiveStep::Gone);
+    assert!(!graftyard_fold::live_abandons(graftyard_fold::LIVE_UNDO_MAX));
+    assert!(graftyard_fold::live_abandons(graftyard_fold::LIVE_UNDO_MAX + 1));
+}
