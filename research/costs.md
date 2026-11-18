@@ -137,11 +137,11 @@ The first cost model found three costs that the DSQL design hid.
 
 | Developers | Cloudflare default (one account, three sites) | Cloudflare, account-separated sites | Cloudflare `Solo` (evaluation, no SLO) | AWS design, one Region | AWS design, Paired |
 | --- | --- | --- | --- | --- | --- |
-| 50 | $656 | $568 | $548 | $1,287 | $2,292 |
-| 300 | $3,726 | $3,563 | $1,629 | $2,573 | $4,466 |
-| 2,000 | $12,463 | $12,360 | $6,587 | $12,432 | $20,636 |
+| 50 | $235 | $247 | $132 | $1,287 | $2,292 |
+| 300 | $1,211 | $1,147 | $822 | $2,573 | $4,466 |
+| 2,000 | $9,362 | $9,259 | $5,558 | $12,432 | $20,636 |
 
-At 50 developers the cheapest reliable setups are the Cloudflare default at $656 (RPO zero across three continents, on the Pro plan with a 100 MB HTTPS push cap and an unpriced Spectrum add-on), AWS `scrappy` at $226 (one Region with a cold recovery Region, so a Region loss is not RPO zero), and AWS `scrappy-paired` at $388 (RPO zero across two Regions).
+At 50 developers the cheapest reliable setups are the Cloudflare default at $235 (RPO zero across three continents, on the Pro plan with a 100 MB HTTPS push cap and an unpriced Spectrum add-on), AWS `scrappy` at $226 (one Region with a cold recovery Region, so a Region loss is not RPO zero), and AWS `scrappy-paired` at $388 (RPO zero across two Regions).
 
 ## Where a 50-developer Cloudflare bill goes
 
@@ -149,22 +149,22 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 
 | Line item | Per month | Share |
 | --- | --- | --- |
-| Fold audit refolds (repository chains that moved since their last match) | $421 | 64% |
-| Containers memory (provisioned) | $157 | 24% |
-| Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced) | $25 | 4% |
-| Containers disk (provisioned) | $9 | 1% |
-| R2 storage (pack copies, clone cache, Actions) | $9 | 1% |
-| Durable Objects SQLite storage | $8 | 1% |
-| Vault account (plan, locked R2 copy, writes) | $6 | 1% |
-| Workers Paid subscriptions (install) | $5 | 1% |
-| Runner account (Workers Paid; runner compute excluded) | $5 | 1% |
-| ReplaceMember and RestorePlacement (one site loss a year, amortized) | $5 | 1% |
-| Email Sending | $4 | 1% |
+| Containers memory (provisioned) | $157 | 67% |
+| Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced) | $25 | 11% |
+| Containers disk (provisioned) | $9 | 4% |
+| R2 storage (pack copies, clone cache, Actions) | $9 | 4% |
+| Durable Objects SQLite storage | $8 | 3% |
+| Vault account (plan, locked R2 copy, writes) | $6 | 3% |
+| Workers Paid subscriptions (install) | $5 | 2% |
+| Runner account (Workers Paid; runner compute excluded) | $5 | 2% |
+| ReplaceMember and RestorePlacement (one site loss a year, amortized) | $5 | 2% |
+| Email Sending | $4 | 2% |
 | Durable Objects requests | $1 | 0% |
 | Inbox Durable Objects (notifications, feeds, cross-repository lists) | $1 | 0% |
 | Spare sites (eeur, wnam, oc; scripts and empty buckets) | $0 | 0% |
 | Containers vCPU (active) | $0 | 0% |
 | Basin Pipelines (audit and SLO history) | $0 | 0% |
+| Fold audit refolds (repository chains that moved since their last match) | $0 | 0% |
 | Workers requests | $0 | 0% |
 | Workers CPU (graft-front, edge, sites) | $0 | 0% |
 | Durable Objects duration | $0 | 0% |
@@ -178,7 +178,7 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | Queues (webhooks, notifications, indexing) | $0 | 0% |
 | Analytics Engine (per-repo counters, SLO points) | $0 | 0% |
 | Workers Logs ingest and storage | $0 | 0% |
-| Total | $656 | 100% |
+| Total | $235 | 100% |
 
 ## The Cloudflare agent layer
 
@@ -186,6 +186,6 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 
 | Developers | Cloudflare default | Agent layer added | Default with agents | Added share |
 | --- | --- | --- | --- | --- |
-| 50 | $656 | $28 | $684 | 4% |
-| 300 | $3,726 | $274 | $4,000 | 7% |
-| 2,000 | $12,463 | $2,572 | $15,035 | 21% |
+| 50 | $235 | $21 | $256 | 9% |
+| 300 | $1,211 | $278 | $1,489 | 23% |
+| 2,000 | $9,362 | $2,599 | $11,961 | 28% |

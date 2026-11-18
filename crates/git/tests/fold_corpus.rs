@@ -74,8 +74,27 @@ fn entry(index: u64, prev: graftyard_types::Digest, version: u16, events: Vec<Re
     }
 }
 
-/// The current tree's rows, and the kinds whose fixture this release does not decode.
-fn rows() -> (Vec<String>, Vec<String>) {
+/// One tier's snapshot at `applied` as the snapshot writer writes it.
+fn snapshot(
+    store: &mut dyn graftyard_fold::Store,
+    schema: graftyard_fold::Schema,
+) -> Vec<graftyard_fold::SnapshotFrame> {
+    let v1 = Format { family: 0x20, version: 1 };
+    let chain = graftyard_types::ChainId::Repo(RepoId(DbId(7)));
+    let mut job = graftyard_fold::SnapshotJob::begin(store, schema, chain, graftyard_types::ReleaseId([0; 32]), v1)
+        .expect("no snapshot runs");
+    let mut frames = Vec::new();
+    while let Some(f) = job.next(store, 2) {
+        frames.push(f);
+    }
+    graftyard_fold::end_snapshot(store, &schema);
+    frames
+}
+
+/// The current tree's rows, and the kinds whose fixture this release does not decode. With `streamed`, each fixture
+/// entry is folded as the fold audit refolds it (`decisions/DECISIONS.md`, "`refold-stream`"): each tier's snapshot
+/// after the setup entry staged as pages of a few rows, and the entry applied through a `SnapView`.
+fn rows(streamed: bool) -> (Vec<String>, Vec<String>) {
     let corpus: Value = serde_json::from_str(include_str!("fold_corpus.json")).expect("the corpus is JSON");
     let decode = |v: &Value| serde_json::from_value::<RepoEvent>(expand(v.clone()));
     let setup: Vec<RepoEvent> =
@@ -91,9 +110,23 @@ fn rows() -> (Vec<String>, Vec<String>) {
             let mut fold = RepoFold::new(RepoId(DbId(7)), AccountId(DbId(1)));
             let first = entry(1, PREV_ZERO, 1, setup.clone());
             fold.apply_entry(&first);
-            fold.apply_entry(&entry(2, digest(&first), version, vec![ev.clone()]));
-            let core = graftyard_fold::fold_digest(&*fold.core, Tier::Core).hex();
-            let meta = graftyard_fold::fold_digest(&*fold.meta, Tier::Metadata).hex();
+            let second = entry(2, digest(&first), version, vec![ev.clone()]);
+            let (core, meta) = if streamed {
+                let chain = graftyard_types::ChainId::Repo(RepoId(DbId(7)));
+                let t = fold.tiers();
+                let refold = |store: &mut dyn graftyard_fold::Store, schema: graftyard_fold::Schema| {
+                    let frames = snapshot(store, schema);
+                    graftyard_fold::refold_segment(&t, schema, (chain, Index(1)), frames, [second.clone()])
+                        .expect("the fixture refolds")
+                        .hex()
+                };
+                let core = refold(&mut *fold.core, graftyard_git::tiers::CORE);
+                (core, refold(&mut *fold.meta, graftyard_git::tiers::METADATA))
+            } else {
+                fold.apply_entry(&second);
+                let core = graftyard_fold::fold_digest(&*fold.core, Tier::Core).hex();
+                (core, graftyard_fold::fold_digest(&*fold.meta, Tier::Metadata).hex())
+            };
             out.push(format!("{kind} {version} {core} {meta}"));
         }
     }
@@ -102,8 +135,19 @@ fn rows() -> (Vec<String>, Vec<String>) {
 
 #[test]
 fn every_committed_event_folds_to_the_digests_its_release_gave() {
-    let (got, skipped) = rows();
-    if std::env::var("GRAFTYARD_PIN").is_ok() {
+    check(false);
+}
+
+/// The fold audit's streamed refold gives the same digests as a live member for every fixture: the snapshot staged
+/// as pages, the entry applied through `SnapView` (`decisions/DECISIONS.md`, "`refold-stream`").
+#[test]
+fn every_committed_event_refolds_through_staged_pages_to_the_same_digests() {
+    check(true);
+}
+
+fn check(streamed: bool) {
+    let (got, skipped) = rows(streamed);
+    if std::env::var("GRAFTYARD_PIN").is_ok() && !streamed {
         for l in &got {
             println!("{l}");
         }

@@ -50,8 +50,8 @@ Monthly list prices in US dollars for one install. Both designs are priced on th
 
 | Setup | 50 developers | 300 developers | 2,000 developers |
 | --- | --- | --- | --- |
-| Cloudflare default, one account and three sites (the base) | $656 | $3,726 | $12,463 |
-| Cloudflare default with the agent layer | $684 | $4,000 | $15,035 |
+| Cloudflare default, one account and three sites (the base) | $235 | $1,211 | $9,362 |
+| Cloudflare default with the agent layer | $256 | $1,489 | $11,961 |
 | AWS, one Region | $1,287 | $2,573 | $12,432 |
 | AWS, Paired (two Regions plus a witness) | $2,292 | $4,466 | $20,636 |
 | AWS `scrappy`: small-install profile, one Region with a cold recovery Region | $226 | not priced | not priced |
@@ -69,7 +69,7 @@ Read the table with these limits, all from `research/costs.md`:
 - The AWS figures include no agent layer. The AWS design was never priced with agents, so compare the AWS rows with the Cloudflare base row.
 - `scrappy` is not RPO zero for a Region loss, because its recovery Region is cold. `scrappy-paired` is RPO zero across two Regions. The Cloudflare base is RPO zero for the loss of any one of its three sites, which sit on three continents.
 
-At 50 developers, AWS `scrappy` costs less than the Cloudflare base, but a Region loss is not RPO zero for it. Since the fold audit's refolds were priced at a measured row size (`decisions/OPEN-QUESTIONS.md`, K10), the Cloudflare base costs more than AWS one Region at 300 developers ($3,726 against $2,573) and about the same at 2,000 ($12,463 against $12,432), and less than AWS Paired at both; that line is the largest at 50 and 300 developers, and K10 asks whether the refold can stop writing scratch rows. With the agent layer added, the Cloudflare default at 2,000 developers ($15,035) costs more than AWS one Region without agents ($12,432), though the two are not priced on the same workload there.
+At 50 developers, AWS `scrappy` costs less than the Cloudflare base, but a Region loss is not RPO zero for it. At 300 and 2,000 developers the Cloudflare base costs less than either AWS setup ($1,211 against $2,573 and $9,362 against $12,432 for one Region). The fold audit's refolds, priced at a measured row size, briefly made the base the costlier one at 300 developers ($3,726); since they stage snapshots as pages instead of restoring them into scratch tables, the line is $1.48 and $9.03 a month there (`decisions/DECISIONS.md`, "`refold-stream`"; `decisions/OPEN-QUESTIONS.md`, K10). With the agent layer added, the Cloudflare default at 2,000 developers ($11,961) still costs less than AWS one Region without agents ($12,432), though the two are not priced on the same workload there.
 
 ## The differences that decide between them
 
@@ -104,7 +104,7 @@ Each condition below would favor the AWS design. Only condition 5 holds today, f
 4. **Pushes above 200 MB are needed without an Enterprise contract.** Pro caps HTTPS pushes at 100 MB and Business at 200 MB, and Enterprise raises the cap to 5 GB (`design/DESIGN.md`, "Compared with the AWS design"). Enterprise has no list price (`research/costs.md`). The AWS front does not bound push size.
 5. **SSH fails Cloudflare Milestone 0 on the customer's plan.** If Spectrum cannot reach a Tunnel origin on Pro or Business, SSH is dropped or needs Enterprise there (`design/DESIGN.md`, "Tradeoffs accepted"). On Pro this has happened for native SSH: the Spectrum API refuses a Tunnel origin, so native SSH needs Enterprise (`tests/m0/results/m0-wp7.md`); Business is not run. Pro and Business installs may turn on SSH through `cloudflared access ssh`, which needs `cloudflared` on every client and its own Milestone 0 row (B0-24a). The AWS design serves SSH from an NLB to its nodes with no client helper.
 6. **A repository is larger than a Cloudflare shard can hold.** A git cache shard has a 20 GB disk, which holds about 15 GB of packs. The AWS design keeps packs in S3 and caches them on node NVMe.
-7. **A 50-developer install accepts that a Region loss is not RPO zero.** AWS `scrappy` costs $226 a month against the Cloudflare base's $656, with a cold recovery Region instead of RPO zero.
+7. **A 50-developer install accepts that a Region loss is not RPO zero.** AWS `scrappy` costs $226 a month against the Cloudflare base's $235, with a cold recovery Region instead of RPO zero.
 
 The AWS design has its own gate. If one chain on MRSC fails the append gate (p99 above 150 ms, or under 200 entries a second), the AWS base flips to the earlier Aurora DSQL design (`history/DESIGN.md`, Milestone 0 flip conditions). Anyone who revives the AWS design starts with that measurement.
 

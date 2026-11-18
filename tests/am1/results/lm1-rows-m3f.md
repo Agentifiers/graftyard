@@ -145,6 +145,98 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 
 **Decision record.** A DECISIONS entry "`audit-moved`" with decision / why / beat (a refold every day per chain, F48's cadence; sampling rows instead) / evidence (this section and K10) / flip: a storage-corruption case found on an idle chain by the follow-up live-row check that a daily refold would have found first, or a refold of an unmoved chain that disagrees with its last report.
 
+## `refold-stream` built as A′ (2026-11-18, code-only, branch `refold-stream`)
+
+Built as amended after review: (A) is dropped and A′ was approved (`decisions/DECISIONS.md`, "`refold-stream`").
+- **Why not (A).** (A) answered a page not yet in memory as "absent" and re-applied the entry once the page arrived. Fold code may assert on a row it is entitled to expect: `CommentEvent::Resolved` reads its thread (present) and then the unresolved count (absent on a miss), and `count_unresolved` panics. On wasm a panic resets every member in the isolate.
+- **A′.**
+  - The snapshot is checked against its trailer by `Restore` and staged by `Pager` into 256 KB pages, one row each in `audit_page ... WITHOUT ROWID`.
+  - Entries apply through `SnapView`: the batch's changes, then `audit_overlay` (earlier batches' changes), then the page, through 8 cached pages. Every read is synchronous.
+  - Changes are saved with the batch's cursor. The audit's end deletes both tables in its report's transaction. A restore with no audit running deletes them, and so do a failed or abandoned audit.
+  - Staging is refused past half the member's room below `SPLIT_AT`; that replaces `AUDIT_SNAPSHOT_MAX`.
+  - Install is unchanged. The audit's scratch path is deleted, and so are `TierLoad.skip`, `AUDIT_SNAPSHOT_MAX` and `AUDIT_ROWS_PER_ROW`.
+- **What A′ replaces in (A)'s conditions.** Condition 1 (miss and re-apply): there are no misses. A batch's changes reach `audit_overlay` only in the batch transaction, after every entry in it applied. Condition 2 (128-frame cap): nothing to cap, so no `incomplete` count. At 256 KB pages the most pages one entry of the fixtures read is 4 per tier (73 at 300 B pages). Conditions 3 to 5 stand.
+- **Proof.**
+  - The corpus folds all 902 rows through staged pages to the golden digests.
+  - At every index, the staged refold and a restore give the same `fold_digest`, `refold_digest` and rows: on `repo:65536`'s shape scaled down, the split parent from four snapshots, and the 552-comment slim, with a cache of one page.
+  - `key_bytes` order is property-tested against `Key` order over integers across the sign boundary, empty and prefix strings and blobs, the escape byte, and composite keys. The same SQL is tested in SQLite (`crates/fold/tests/stream_sqlite.rs`).
+  - The staged-row clean-up is tested at the end and on restore.
+  - `tests/m0carried/plant44.py`: 9 of 9 caught.
+- **Cost** (`scripts/cost.py`, rows written and read, R2 Class B, duration): the line is $0.01, $1.48 and $9.03 a month (was $421, $2,517 and $3,110), and $0.10, $8.02 and $17.10 at the 65 B floor. Default totals are $235, $1,211 and $9,362; `Solo` $132, $822 and $5,558; agents add $21, $278 and $2,599. Cadence stays daily.
+- **K12 opened.** Do the live tier tables (composite key, no `WITHOUT ROWID`) write 2 rows per put? To be settled by measurement.
+- **Hosted, at the next m3f site day from a main with this merged.**
+  - Read the cron report's `idle` and `deleted` counts and the m3f PREFIX meter over two crons (audit-moved).
+  - Read one refold's `rowsWritten` against its report's `pages` and `saved` (refold-stream).
+  - Read `rowsWritten` for one `apply` on a seeded repository (K12).
+
+## Design: the fold audit's refold writes no scratch rows (2026-11-18, code-only, for review before any build)
+
+**Why.** At `ROW_KB` 0.62 the refold line is $421, $2,517 and $3,110 a month, 64% and 68% of the bill at 50 and 300 developers (K10). The writes come from restoring each tier's snapshot into scratch tables: 2 rows written per tier row. That is likely because each table has a composite `PRIMARY KEY` without `WITHOUT ROWID`, so SQLite writes the row and its autoindex [inference, from `tier.rs` `create` and Lumenize's DO write-cost measurements (https://lumenize.com/blog/do-sqlite-write-costs) [doc, secondary]].
+
+**The crux: `apply` reads.** Every write reads the old row first (`Writer::before_change`, to keep the row-hash sum and the `snap_undo` copy). Every entry also scans an expiry head: `lease_expiry` on core, `check_expiry` on metadata (`on_entry`). Some events read other rows (`ref`, `review_verdict`, `queue`, `split`, ...). So a refold has to answer `get`, `scan` and `written` over the tier as of each entry.
+
+**Three options, priced.**
+- **(A) Read-through over a frame index, plus an overlay of the tail's changes.** Recommended; detailed below. Priced per month (cost.py's workload, `AUDIT_MOVED_SHARE` 0.3, the overlay persisted): $0.27, $1.58 and $9.68 at 50, 300 and 2,000 developers, against $421, $2,517 and $3,110 today. At the 65 B floor: $0.48, $2.74 and $11.11, against $4,372, $24,010 and $29,660. The line falls to 0.10 to 0.19% of the total.
+- **(B) Stream only the tiers or kinds that never read during apply.** None qualify. Every entry runs `on_entry`'s expiry scan in both tiers, and every write reads its old row for the sum. (B) would cover 0% of entries, so I rejected it. Priced: no change from today.
+- **(C) Keep scratch tables but avoid billed writes.** Not available. workerd's authorizer refuses `CREATE TEMP TABLE` ("TODO(someday): Allow temporary tables", `src/workerd/util/sqlite.c++`, `SQLITE_CREATE_TEMP_TABLE`) [doc, source]. `ATTACH` is refused too. Cloudflare's docs bill every row written, including index rows and virtual tables (SQLite-backed Durable Object Storage, SQL API) [doc]. The only unbilled writes are SQLite's own ephemeral tables inside a `SELECT` (workerd commit 42265416, "don't count rows written to temporary (ephemeral) tables") [doc]. What remains is making the scratch tables `WITHOUT ROWID`, about half the rows: $210, $1,258 and $1,555, which is 47%, 51% and 14% of the total. Still far above 10%, so I rejected it as the fix.
+
+### (A) in detail
+
+1. **Verify the snapshot as a stream.**
+   - Read each tier's snapshot object in 1 MiB range reads (as today), check frames and trailer with `FrameCheck` (as `Restore` does), and write no row.
+   - While reading, build a **frame index**: for each `Rows` frame, its `(table, first key, last key)` and its byte range in the object.
+   - A frame holds at most `ROWS_PER_READ` (500) rows, so 88 MiB of frames is about 2,800 index entries of about 100 B: 280 KB, kept in the job row.
+2. **Apply the tail through a new `Store`: `SnapView`.** It lives in `crates/fold` beside `MemStore`; `crates/raft` is untouched.
+   - `get(t, k)`: the overlay first, then the one frame whose range holds `k`. That frame comes from a bounded in-memory cache of decoded frames, or from the snapshot object on a miss.
+   - `scan(t, from, n)`: a merge of the overlay's keys and frame rows from `from`, overlay winning and overlay deletes hiding frame rows.
+   - `put`/`delete`: into the overlay.
+   - `apply` itself is unchanged: the same `Writer`, `before_change`, sum and `snap_undo` rules. So the digest is today's by construction: the snapshot's sum (checked against its trailer) plus each entry's subtract-old/add-new, which is exactly what scratch tables give.
+3. **Reads are synchronous; R2 is not.** `Store` cannot await, so `SnapView` answers a miss on an unloaded frame by recording it and returning nothing.
+   - The job applies each entry to a copy of the overlay. If any miss was recorded, it drops the copy, fetches those frames, and applies the entry again.
+   - Each retry loads at least one new frame and an entry touches a bounded set of keys, so this ends.
+   - A miss is never mistaken for a real absence, because only a run with no misses is kept.
+   - The frames an entry needs are pinned in the cache until the entry applies, so eviction cannot undo a fetch and loop. An entry whose pinned frames would pass the cache cap (more than about 128 frames of 32 KB) fails the audit with its index and frame count. It is reported and retried at the next due run, not looped. Today's events touch a handful of keys per entry, and an expiry scan reads 64 or 256 rows, so this is a guard, not a path [inference].
+4. **Overlay and memory bound.**
+   - The overlay is the tail's changed rows only. It is persisted at each batch boundary to one member table, `audit_overlay(tier, tab, key, written, v) WITHOUT ROWID`, so a reset object resumes, as the job's cursor does today. It is read back on a cache miss.
+   - Memory holds: the frame cache, capped at 4 MiB [guess]; one batch's entries, at most `BATCH_BYTES` 1 MiB as today; the frame index, ≤ 0.3 MB; and the in-memory overlay pages, capped at 4 MiB, beyond which they spill to the table.
+   - About 10 MiB in all, against today's measured refold peak of 64.9 MB with the isolate at 56.6 MB before it (`tests/m3/results/m3-wp5.md`, F48). It also stays below memguard's 120 MiB stop line and the 31 to 96 MiB of wasm memory at which LM-1 saw isolates reset (`tests/am1/results/lm1-memory.md`, round 17).
+   - So the bound is structural: a tail that rewrites a million rows writes about a million overlay rows (priced), never a million rows in memory.
+5. **What it writes.** Only overlay rows (≤ the tail's changed rows, about `FOLD_ROWS` 6 per entry), one job row per batch, and the report. For `repo:65571`'s 4,696-entry refold, that is about 28k overlay rows instead of 118,523. For a chain with a short tail (the common case, about 9 to 63 entries a visit in cost.py's workload), it is tens of rows instead of 2 per snapshot row.
+6. **`deep` and `AUDIT_SNAPSHOT_MAX`.**
+   - A deep audit streams the oldest snapshot and checks each later trailer the same way: at the later snapshot's index, `fold_digest` of `SnapView` must equal that trailer's.
+   - `AUDIT_SNAPSHOT_MAX` exists because a scratch copy would double member storage. With no copy, it goes, and BF-20's 3.99 GB tier (2.4 GB snapshot) becomes auditable: about 2,400 range reads ($0.0009) and about 9 minutes of batches at m3-wp5's 4.7 MB/s.
+
+**Deletion.** The audit's use of scratch tables goes: `Kind::Audit`'s branch in `batch`, `finish_audit`'s scratch digest, the audit side of `reset_scratch`, the `skip` field and `AUDIT_SNAPSHOT_MAX`.
+- The install path keeps `Restore` into scratch tables, because an install's rows become the member's real tiers (`Write::Install` swaps them in). Only the audit stops writing them.
+- So the old refold path is deleted, not kept beside the new one. The shared code that stays (archive reads, entry decode, the job cursor) is the install's.
+
+**Proof it gives today's digest.**
+1. **Golden corpus** (`crates/git/tests/fold_corpus.rs`, 48 kinds, 902 rows): each fixture also folds through `SnapView` over a snapshot of the empty or seeded tier, and must give the recorded digest.
+2. **Refold-vs-stream equality** in `crates/git/tests`. At every index of each fixture's tail, `fold_digest` and `refold_digest` agree between the two paths (`Restore` into a `MemStore` plus `apply`, against `SnapView` plus `apply`), and so do the rows a full scan returns:
+   - **`repo:65536`'s shape:** a core tier of about 570k ref, lease and check rows at a scaled-down count, with a tail that renews and expires leases, moves refs and promotes.
+   - **A split parent:** `split.rs`'s `Parent` through seed, mid-pass and end.
+   - **A slimmed chain:** the 552-comment `SLIM_BYTES` pass.
+3. **The retry rule:** a frame cache of size 1 forces a miss on every read, and the digest must not change.
+4. **Plants** (`tests/m0carried/plant41.py`), each to be caught:
+   - The overlay's delete not hiding a frame row.
+   - A frame lookup off by one frame.
+   - `scan` returning frame rows past the overlay's.
+   - A miss kept as an absence.
+5. **Hosted, at the next site day:** an m3f site day with this build refolds a moved chain, and its report matches all three voters, as today's does. `rowsWritten` per refold is read from Workers Logs.
+
+**Re-price.** `scripts/cost.py`'s "Fold audit refolds" line is recomputed from rows written (overlay plus job rows), rows read, R2 Class B range reads, and member duration at m3-wp5's 4.7 MB/s:
+
+| | 50 | 300 | 2,000 |
+| --- | --- | --- | --- |
+| Line today (620 B rows) | $421 | $2,517 | $3,110 |
+| Line streamed (620 B) | $0.27 | $1.58 | $9.68 |
+| Line streamed (65 B floor) | $0.48 | $2.74 | $11.11 |
+| Default total streamed (620 B) | $235 | $1,211 | $9,363 |
+
+**Cadence.** Weekly instead of daily for moved chains would save cents ($0.24, $1.45 and $9.51 weekly, against the daily figures above), and the streamed line is at most 0.19% of the total. That is far below the 10% trigger, so the cadence stays daily.
+
+**Side finding, not in this change.** The member's own tier tables have the same shape (composite key, no `WITHOUT ROWID`), so `apply`'s live writes may also cost 2 rows per row [inference]. A `rowsWritten` reading on one hosted `apply` would settle it. A schema change is a new table set and a refold (SHARED, "Schema change is a refold, never a migration"), so it gets its own OPEN-QUESTIONS row, not this change.
+
 ## `audit-moved` built (2026-11-18, code-only, branch `audit-moved`)
 
 Built as designed in "Design: the audit refolds only a chain that moved" below, with the orchestrator's gate: only a refold that every voter answered and matched opens the idle path, and a chain whose last refold alarmed refolds until one matches (`decisions/DECISIONS.md`, "`audit-moved`").

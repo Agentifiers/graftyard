@@ -4,6 +4,9 @@
 
 use std::cell::RefCell;
 
+#[path = "stream_eq/mod.rs"]
+mod stream_eq;
+
 use graftyard_fold::{
     MemStore, Read, Restore, SnapshotFrame, SnapshotJob, Val, fold_digest, refold_digest, undo_table,
 };
@@ -669,10 +672,12 @@ fn a_refold_of_a_split_parent_s_metadata_tier_matches_its_members() {
     p.commit(IssueOp::Change { n, change: IssueChange::Title("later".into()) }).unwrap();
     let live = fold_digest(&*p.fold.meta, Tier::Metadata);
     for (name, from, frames) in snaps {
-        let mut s = MemStore::default();
         let entries = p.log[from.0 as usize..].iter().cloned();
-        let got = refold_segment(&tiers(), &mut s, METADATA, (ChainId::Repo(REPO), from), frames, entries).unwrap();
+        let got = refold_segment(&tiers(), METADATA, (ChainId::Repo(REPO), from), frames.clone(), entries).unwrap();
         assert_eq!(got, live, "a refold from the snapshot {name} at {from:?}");
+        // `refold-stream`: the staged refold equals a restore into a store at every index, pages of a few rows.
+        let tail = &p.log[from.0 as usize..];
+        stream_eq::equal_at_every_index(&tiers(), METADATA, ChainId::Repo(REPO), from, &frames, tail, 600);
     }
 }
 
@@ -700,4 +705,37 @@ fn a_slim_pass_folds_to_the_digest_its_release_gave() {
         fold_digest(&*p.fold.meta, Tier::Metadata).hex(),
         "dd06e4b5ab5a9c0fca91a8fc693cc61b250de93657504fcb86d5fc30a9902bc7"
     );
+}
+
+/// `refold-stream` on the slimmed chain above: from a snapshot of the 552 comments taken before the split, through the
+/// split, the seed, the drop and every `MetaSlim` entry, the staged refold equals a restore into a store at every
+/// index, with pages of a few rows read through a cache of one page.
+#[test]
+fn a_staged_refold_through_a_slim_pass_equals_a_restore_at_every_index() {
+    let mut p = Parent::new();
+    let n = p.open_issue("body");
+    for i in 0..(SLIM_ROWS + 40) {
+        p.comment(n, &format!("comment {i} {}", "s".repeat(1_800)));
+    }
+    // Frames read as a snapshot writer reads them, with no `Archived` committed, so the split's own seed is the
+    // tier's first snapshot.
+    let from = Index(p.log.len() as u64);
+    let mut job = SnapshotJob::begin(
+        &mut *p.fold.meta,
+        METADATA,
+        ChainId::Repo(REPO),
+        ReleaseId([0; 32]),
+        Format { family: 0x20, version: 1 },
+    )
+    .unwrap();
+    let mut frames = Vec::new();
+    while let Some(f) = job.next(&p.fold.meta, 50) {
+        frames.push(f);
+    }
+    graftyard_fold::end_snapshot(&mut *p.fold.meta, &METADATA);
+    split(&mut p);
+    p.comment(n, "after the pass");
+    let tail = &p.log[from.0 as usize..];
+    let most = stream_eq::equal_at_every_index(&tiers(), METADATA, ChainId::Repo(REPO), from, &frames, tail, 20_000);
+    println!("most pages one entry read: {most}");
 }

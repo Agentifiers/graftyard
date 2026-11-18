@@ -9,7 +9,7 @@ Agents are clients of the GHES 3.22 surface Graftyard must serve anyway (`resear
 - **New surfaces.** (1) A remote MCP server at `mcp.<host>` on spec 2026-07-28, with a consent page per client, per-client grants, narrowed refreshes, static toolsets by default, and Code Mode as a priced opt-in per org. (2) An opt-in media type that returns hidden-content-stripped text, author trust, overlaps, and provenance beside the untouched `body`. (3) Chain-resident provenance, with trailers and `refs/notes/ai` parsed during `validate`, sessions linked only when authenticated, and session logs as stored blobs under a host-owned ref, readable as JSON. (4) Neutral `graftyard/overlap` and `graftyard/provenance` check runs posted before a PR exists, ordinary `agent:` and `overlap:` labels, an agents page per repository, and an advisory conflict predictor. (5) Leases on paths and refs, kept as chain state on the repository's group, a long-polled activity feed, and a task API with GitHub's agent task states, all under `/api/graftyard/v1`, where leases are advisory unless a repository makes them refuse agent pushes.
 - **Artifacts plays no role.** The 1 GB cap rules out the A1 monorepo, a repository is one logical instance in a beta with no SLA, prediction needs branches in the network's shard, and same-network forks already share packs, so best-of-N attempts fit in a workspace fork (`research/artifacts-recheck.md` sections 1 and 3).
 - **A1 on the base.** 500 agents put 27.6 commands/s on the monorepo's group, 25.2/s of it agent class with lease renewals and task updates, 11 times under the base's 300 commands/s Milestone 0 gate, and about 305 req/s on its leader against 1,000. Feed polls, 45/s, go to learners, or to followers while a group has none, and never to the leader (`cost_agents.py --a1`) [inference]. With git CPU measured on torvalds/linux and composed clone-cache misses, the network's git cache needs 2.68 vCPU and k = 1 shard per warm site (`cost_agents.py --a1`; `tests/m0/results/m0-wp9.md`, B0-34) [measured constants]. Recomputing every open PR's test merge on each base move would need 4 vCPU, and test merges stay lazy, coalesced, and budgeted. `LOG_MAX_BYTES` caps each member's log at 2 GB, and Milestone 0 measured a member seeded with a 3.93 GB metadata tier at 8.45 GB after 30 days, reaching `CHILD_GROUP_AT` (8 GiB) in about 32 days (B0-30) [measured].
-- **Cost.** The layer adds $28, $274, and $2,572 a month at 50, 300, and 2,000 developers, 4% to 21% of the base, with the largest network's fan-out shards (none, at measured git CPU), its learners (none at 2,000 developers, since API reads are narrow; K9), and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
+- **Cost.** The layer adds $21, $278, and $2,599 a month at 50, 300, and 2,000 developers, 9% to 28% of the base, with the largest network's fan-out shards (none, at measured git CPU), its learners (none at 2,000 developers, since API reads are narrow; K9), and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
 
 ## Artifacts' role
 
@@ -854,7 +854,7 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 
 | Added line item | 50 devs | 300 devs | 2,000 devs |
 | --- | --- | --- | --- |
-| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $12 | $195 | $2,036 |
+| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $5 | $199 | $2,063 |
 | Containers: test merges on agent head pushes (active vCPU) | $0 | $0 | $1 |
 | Hot-network fan-out: extra warm shards for the largest network | $0 | $0 | $0 |
 | Clone cache: agent-tip entries in the first warm bucket | $0 | $2 | $25 |
@@ -872,10 +872,10 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 | Agents account: front, outbound router, webhooks, Workflow requests and CPU | $0 | $0 | $4 |
 | Install: `Release` reads by the agents account (edge and member requests) | $0 | $0 | $1 |
 | Agents account: Workflow steps | $0 | $0 | $7 |
-| **Added total** | **$28** | **$274** | **$2,572** |
-| Base total (`scripts/cost.py`, design) | $656 | $3,726 | $12,463 |
-| Added share of base | 4% | 7% | 21% |
-| Added cost per agent task | $0.0062 | $0.0100 | $0.0141 |
+| **Added total** | **$21** | **$278** | **$2,599** |
+| Base total (`scripts/cost.py`, design) | $235 | $1,211 | $9,362 |
+| Added share of base | 9% | 23% | 28% |
+| Added cost per agent task | $0.0046 | $0.0102 | $0.0142 |
 | MCP cost per session (30 calls) | $0.00007 | $0.00027 | $0.00027 |
 
 | Base line grown by agents | 50 devs | 300 devs | 2,000 devs |
@@ -887,13 +887,14 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 | Email Sending | $2 | $10 | $64 |
 | Inbox Durable Objects (notifications, feeds, cross-repository lists) | $0 | $8 | $46 |
 | Containers vCPU (active) | $1 | $4 | $28 |
+| Fold audit refolds (repository chains that moved since their last match) | $0 | $5 | $27 |
 | Durable Objects requests | $0 | $2 | $14 |
 | Workers requests | $0 | $2 | $13 |
 | Analytics Engine (per-repo counters, SLO points) | $0 | $2 | $12 |
 | Vault account (plan, locked R2 copy, writes) | $0 | $0 | $9 |
 | Durable Objects SQLite storage | $0 | $1 | $6 |
 | Queues (webhooks, notifications, indexing) | $0 | $1 | $6 |
-| Other base lines | $7 | $1 | $14 |
+| Other base lines | $0 | $1 | $14 |
 
 | Largest network, 5 pushes a task | Peak agents on it | Shard vCPU | Instance | k per warm site | Extra warm shards | Per month |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -914,9 +915,7 @@ Sandbox compute and model tokens for Graftyard-run agents are what a platform en
 | --- | --- | --- | --- |
 | Every MCP call as a new Dynamic Worker (per MCP session $0.059, $0.060, $0.060) | $135 | $819 | $5,470 |
 
-The script assumes every peak agent of an install works on its largest network, so at 2,000 developers that network is A1's 500-agent monorepo [guess]. The learner line places `ceil(GroupLoad / LEARNER_READS)` learners on that network's group, `GroupLoad` counting each API read once, now that each is a narrow read of its page or object (`tests/am1/results/narrow-reads.md`), where a whole-tier read of A1's 1 MB dump counted 50 times (one learner served about 20 a second [measured, `tests/am1/results/learner-dumps.md`]): A1's 322 reads/s stay under `LEARNER_AT`, so no tier places learners on cost grounds and the line is $0 at every size. A learner is each about 8.3 GB of SQLite and active 9 hours a day [guess] when placed. The predictor line prices every head push at the full 8-pair budget, at the measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), with no CPU cap. The feed line prices each working agent's held poll as one member's 128 MB for its whole 20-minute task, the way the base prices Durable Object wall time per request with no sharing. It is an upper bound, because concurrent polls on one member share its duration, and a group as busy as A1's is active anyway. Lease commands, task rows, and feed requests sit in the base lines, $2,036 at 2,000 developers, with half the pollers sending no `paths` and polling once per `FEED_BATCH_ALL` [guess]. Those lines include the base's Inbox line, which grows with agent activity. The largest base line is container egress, now with every agent CI checkout a clone-cache miss, so Graftyard-run agents clone shallow at the tip, which the cache keys by depth (`design/DESIGN.md`, Shape, `CloneKey`). The hot-group archive and stored `.idx` line prices `LOG_MAX_BYTES` overflow in two buckets for 35 days and one `.idx` per inline pack on a fanned-out network. At 50 developers the base's free allowances absorb most agent traffic. Code Mode's Dynamic Workers are in the first table of `research/cloudflare.md` as "GA [inference]", so Code Mode needs no product outside the catalog. It stays out of the default build for its cost and its SDK v1 handler (Tradeoffs).
-
-Every controller webhook runs `graft-agents-front` before `graft-controller`, so the agents account counts it twice. The `Release` read line prices one `GET /api/graftyard/v1/release/entries` per webhook, an edge request plus a member request with no allowance. That is an upper bound, because a front isolate refreshes at most once per `POINTER_TTL` and only on a request (`RELEASE_READS_PER_WEBHOOK` [guess]).
+The script assumes every peak agent of an install works on its largest network, so at 2,000 developers that network is A1's 500-agent monorepo [guess]. The learner line places `ceil(GroupLoad / LEARNER_READS)` learners on that network's group, `GroupLoad` counting each API read once, now that each is a narrow read of its page or object (`tests/am1/results/narrow-reads.md`), where a whole-tier read of A1's 1 MB dump counted 50 times (one learner served about 20 a second [measured, `tests/am1/results/learner-dumps.md`]): A1's 322 reads/s stay under `LEARNER_AT`, so no tier places learners on cost grounds and the line is $0 at every size. A learner is each about 8.3 GB of SQLite and active 9 hours a day [guess] when placed. The predictor line prices every head push at the full 8-pair budget, at the measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), with no CPU cap. The feed line prices each working agent's held poll as one member's 128 MB for its whole 20-minute task, the way the base prices Durable Object wall time per request with no sharing. It is an upper bound, because concurrent polls on one member share its duration, and a group as busy as A1's is active anyway. Lease commands, task rows, and feed requests sit in the base lines, $2,036 at 2,000 developers, with half the pollers sending no `paths` and polling once per `FEED_BATCH_ALL` [guess]. Those lines include the base's Inbox line, which grows with agent activity. The largest base line is container egress, now with every agent CI checkout a clone-cache miss, so Graftyard-run agents clone shallow at the tip, which the cache keys by depth (`design/DESIGN.md`, Shape, `CloneKey`). The hot-group archive and stored `.idx` line prices `LOG_MAX_BYTES` overflow in two buckets for 35 days and one `.idx` per inline pack on a fanned-out network. At 50 developers the base's free allowances absorb most agent traffic. Code Mode's Dynamic Workers are in the first table of `research/cloudflare.md` as "GA [inference]", so Code Mode needs no product outside the catalog. It stays out of the default build for its cost and its SDK v1 handler (Tradeoffs). Every controller webhook runs `graft-agents-front` before `graft-controller`, so the agents account counts it twice. The `Release` read line prices one `GET /api/graftyard/v1/release/entries` per webhook, an edge request plus a member request with no allowance. That is an upper bound, because a front isolate refreshes at most once per `POINTER_TTL` and only on a request (`RELEASE_READS_PER_WEBHOOK` [guess]).
 
 ## Build order
 

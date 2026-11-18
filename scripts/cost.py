@@ -138,17 +138,21 @@ INBOX_READ_SHARE = 0.05            # share of API requests that read an Inbox [g
 INBOX_ROWS = 2                     # SQLite rows written per Inbox delivery [guess]
 INBOX_MB = 50                      # stored per account, pruned as GitHub prunes notifications [guess]
 
-# ---- the daily fold audit's refold (K10; `decisions/DECISIONS.md`, "audit-moved") ----
-# A refold restores each tier's newest snapshot into scratch tables and applies the log tail, on the chain's leader.
-# Each site's cron visits SAMPLE chains per run, 96 runs a day, and a chain at most once a day. Only a chain that wrote
-# its fold since its last matching audit is refolded; an unmoved one is compared from the voters' digest rings, with no
-# write. The member storage priced below is taken as all repository tiers under AUDIT_SNAPSHOT_MAX, an upper bound.
-AUDIT_ROWS_PER_ROW = 2.0           # rows written per tier row refolded: repo:65536, 571,889 core rows, 1,144,665 rows
-                                   # [measured, graft-m2b, 2026-11-17, decisions/OPEN-QUESTIONS.md K10]
+# ---- the daily fold audit's refold (K10; `decisions/DECISIONS.md`, "audit-moved" and "`refold-stream`") ----
+# A refold stages each tier's newest snapshot as pages (`audit_page`, one row per page) and applies the log tail
+# through a view over them, saving each batch's changed rows (`audit_overlay`); its end deletes both. It writes no tier
+# table. Each site's cron visits SAMPLE chains per run, 96 runs a day, and a chain at most once a day. Only a chain that
+# wrote its fold since its last matching audit is refolded; an unmoved one is compared from the voters' digest rings,
+# with no write. The member storage priced below is taken as all repository tiers, an upper bound.
 AUDIT_VISITS_PER_SITE = 96 * 4     # cron runs a day x SAMPLE, per site homing chains (`workers/site/src/fold_audit.rs`)
 REPO_CHAINS_PER_DEV = 4            # repository chains per developer, of GROUPS_PER_DEV [guess]
 AUDIT_MOVED_SHARE = 0.3            # share of tier rows in chains that wrote since their last audit [guess]
-
+SNAP_ROW_B = 406_726 / 6_203       # snapshot frame bytes per fold row: j4's metadata snapshot [measured, graft-m4a,
+                                   # 2026-11-18, K10]
+AUDIT_PAGE_KB = 256                # staged page bytes (`graftyard_fold::PAGE_BYTES`)
+AUDIT_MB_S = 269.5 / 57.7          # snapshot MB a refold reads a second: m3-wp5's deep refold of repo:65536, scratch
+                                   # writes included [measured, tests/m3/results/m3-wp5.md]
+AUDIT_BATCH_S = 0.02               # member time per batch besides the read [guess]
 INCLUDED = dict(workers_req=10e6, workers_cpu=30e6, do_req=1e6, do_gbs=400_000, do_rows_w=50e6, do_storage=5,
 	r2_storage=10, r2_a=1e6, r2_b=10e6, queues=1e6, email=3000, ae=10e6, obs_gb=50,
 	c_mem_gibs=25 * 3600, c_vcpu_s=375 * 60, c_disk_gbs=200 * 3600, steps=0)
@@ -271,12 +275,24 @@ def model(tier, variant="design", split=None):
 		+ added(rows_w, inbox_writes * INBOX_ROWS, INCLUDED["do_rows_w"] * site_inc) / 1e6 * price("cf.do.sqlite.rows_written")
 		+ added(do_gb, w["devs"] * INBOX_MB / 1024, INCLUDED["do_storage"] * site_inc) * price("cf.do.sqlite.storage"))
 
-	# The fold audit: each visit to a chain that moved refolds its tiers, AUDIT_ROWS_PER_ROW rows per tier row.
-	tier_rows = (t["core_gb"] + t["aux_gb"]) * 1024 * 1024 / ROW_KB
-	visits = min(1.0, AUDIT_VISITS_PER_SITE * len(SITES if members == 3 else "A") / (t["devs"] * REPO_CHAINS_PER_DEV))
-	audit_rows = tier_rows * AUDIT_ROWS_PER_ROW * visits * DAYS * AUDIT_MOVED_SHARE
-	lines["Fold audit refolds (repository chains that moved since their last match)"] = added(
-		rows_w + inbox_writes * INBOX_ROWS, audit_rows, INCLUDED["do_rows_w"] * site_inc) / 1e6 * price("cf.do.sqlite.rows_written")
+	# The fold audit: each visit to a chain that moved refolds its tiers. Rows written: each staged page put and deleted,
+	# each changed row saved and deleted, a job row per batch, and the report. Rows read: the tail's log rows, each
+	# changed row's page and saved-change reads, and a job row per batch. R2: one Class B range read per MiB of snapshot.
+	chains = t["devs"] * REPO_CHAINS_PER_DEV
+	visits = min(1.0, AUDIT_VISITS_PER_SITE * len(SITES if members == 3 else "A") / chains)
+	refolds = chains * visits * AUDIT_MOVED_SHARE * DAYS
+	snap_mb = (t["core_gb"] + t["aux_gb"]) * 1024 * 1024 / ROW_KB * SNAP_ROW_B / 2**20 / chains
+	tail = w["repo_entries"] / DAYS / chains / visits
+	batches = snap_mb + tail / 8 + 1
+	pages = snap_mb * 1024 / AUDIT_PAGE_KB
+	audit_w = refolds * (2 * pages + 2 * FOLD_ROWS * tail + batches + 1)
+	audit_r = refolds * (tail + 2 * FOLD_ROWS * tail + batches)
+	audit_gbs = refolds * (snap_mb / AUDIT_MB_S + batches * AUDIT_BATCH_S) * DO_GB
+	lines["Fold audit refolds (repository chains that moved since their last match)"] = (
+		added(rows_w + inbox_writes * INBOX_ROWS, audit_w, INCLUDED["do_rows_w"] * site_inc) / 1e6 * price("cf.do.sqlite.rows_written")
+		+ audit_r / 1e6 * price("cf.do.sqlite.rows_read")
+		+ refolds * snap_mb / 1e6 * price("cf.r2.standard.class_b")
+		+ audit_gbs / 1e6 * price("cf.do.duration"))
 
 	# Git bytes: R2 packs (or Artifacts), clone cache, Actions blobs.
 	churn = 1 + ACTIVITY["large_repo_share"] * 14 / 7          # cruft kept 14 days, weekly full repack above 1 GiB

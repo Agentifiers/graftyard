@@ -788,8 +788,8 @@ fn learner_read_index_keeps_one_in_flight_and_a_50_ms_floor() {
     }
 }
 
-/// F48: a fold audit's refold that holds one frame and one entry at a time: the snapshot at `from` restored into an
-/// empty store, then the log tail applied, compared with each member's `digest_at` of the same index; and refolding
+/// F48: a fold audit's refold that holds one page and one entry at a time: the snapshot at `from` staged as pages
+/// (`refold-stream`), then the log tail applied through a `SnapView`, compared with each member's `digest_at` of the same index; and refolding
 /// from one snapshot to the next reaches the next trailer's digest. A skipped or changed entry is caught.
 #[test]
 fn f48_a_refold_from_a_snapshot_plus_the_log_tail_matches_every_member() {
@@ -806,8 +806,7 @@ fn f48_a_refold_from_a_snapshot_plus_the_log_tail_matches_every_member() {
         n.nodes[&A].disk.log.iter().filter(|e| e.index > s1 && e.index <= to).cloned().collect();
     for (schema, tier) in [(CORE, Tier::Core), (META, Tier::Metadata)] {
         let frames = decode_frames(&n.r2[&format!("snap/{tier:?}/{}", s1.0)]).unwrap();
-        let mut scratch = MemStore::default();
-        let got = refold_segment(&Toy, &mut scratch, schema, (CHAIN, s1), frames.clone(), tail.clone()).unwrap();
+        let got = refold_segment(&Toy, schema, (CHAIN, s1), frames.clone(), tail.clone()).unwrap();
         for s in VOTERS {
             let f = &n.m(s).group_fold().fold;
             let store = if tier == Tier::Core { &f.core } else { &f.meta };
@@ -817,20 +816,19 @@ fn f48_a_refold_from_a_snapshot_plus_the_log_tail_matches_every_member() {
         let next = decode_frames(&n.r2[&format!("snap/{tier:?}/{}", s2.0)]).unwrap();
         let Some(SnapshotFrame::End(tr)) = next.last() else { panic!() };
         let seg: Vec<_> = tail.iter().filter(|e| e.index <= s2).cloned().collect();
-        let mut scratch = MemStore::default();
-        let got = refold_segment(&Toy, &mut scratch, schema, (CHAIN, s1), frames.clone(), seg.clone()).unwrap();
+        let got = refold_segment(&Toy, schema, (CHAIN, s1), frames.clone(), seg.clone()).unwrap();
         assert_eq!(got, tr.fold_digest, "{tier:?} refolds from {s1:?} to the snapshot at {s2:?}");
         // A dropped entry is refused, and a changed one digests differently.
         let mut gap = seg.clone();
         gap.remove(3);
-        assert!(refold_segment(&Toy, &mut MemStore::default(), schema, (CHAIN, s1), frames.clone(), gap).is_err());
+        assert!(refold_segment(&Toy, schema, (CHAIN, s1), frames.clone(), gap).is_err());
         let mut changed = seg.clone();
         let last = changed.len() - 1;
         if let EntryBody::Events(evs) = &mut changed[last].body {
             evs[0] = Ev::Core(1, -1);
             evs[1] = Ev::Meta(1, -1);
         }
-        let bad = refold_segment(&Toy, &mut MemStore::default(), schema, (CHAIN, s1), frames, changed).unwrap();
+        let bad = refold_segment(&Toy, schema, (CHAIN, s1), frames, changed).unwrap();
         assert_ne!(bad, tr.fold_digest, "{tier:?}: a changed entry is caught");
     }
     let _ = learner_addr(0);

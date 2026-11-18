@@ -9,6 +9,7 @@ mod archive;
 pub mod canon;
 mod snapshot;
 pub mod store;
+mod stream;
 mod tier;
 
 pub use archive::{
@@ -17,11 +18,15 @@ pub use archive::{
 pub use snapshot::{
     FrameCheck, LOG_KEEP, LOG_MAX_BYTES, RESTORE_WINDOW, RefoldError, Restore, RestoreCursor, Row, SNAPSHOT_BYTES,
     SNAPSHOT_EVERY, SnapshotCursor, SnapshotError, SnapshotFrame, SnapshotJob, SnapshotTrailer, archive_due,
-    archive_due_walk, decode_frames, decode_some, encode_frame, encode_frames, end_snapshot, frames_header,
-    refold_segment, restore, snapshot_due, snapshot_writer, snapshots_to_keep,
+    archive_due_walk, decode_frames, decode_some, encode_frame, encode_frames, end_snapshot, frames_header, restore,
+    snapshot_due, snapshot_writer, snapshots_to_keep,
 };
 pub use store::{
     Key, META, MemStore, Overlay, Read, Rows, Schema, Store, Stored, TableDef, TierStore, Val, undo_table,
+};
+pub use stream::{
+    AUDIT_CLEAR, CACHE_PAGES, Changes, MemStaged, OVERLAY_DDL, PAGE_BYTES, PAGE_DDL, PAGE_FIND, PAGE_PUT, PAGE_ROWS,
+    Page, PageAt, Pager, SAVED_GET, SAVED_PUT, SAVED_SCAN, SnapView, Staged, key_bytes, refold_segment, stage,
 };
 pub use tier::{
     AuditReport, DIGESTS, DIGESTS_KEEP, FoldError, Meta, Mismatch, SnapAt, TierDigest, Tiered, add_row, apply,

@@ -441,7 +441,7 @@ pub fn set_split_at(chain: ChainId, v: &Value) -> Value {
     json!({ "splitAt": at })
 }
 
-fn split_at(chain: ChainId) -> u64 {
+pub(crate) fn split_at(chain: ChainId) -> u64 {
     #[cfg(feature = "test-faults")]
     if let Some(n) = SPLIT_AT_FOR.with(|m| m.borrow().get(&chain).copied()) {
         return n;

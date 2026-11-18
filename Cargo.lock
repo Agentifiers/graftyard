@@ -782,6 +782,7 @@ dependencies = [
  "graftyard-raft",
  "graftyard-types",
  "postcard",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

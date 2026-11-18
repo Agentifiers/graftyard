@@ -66,6 +66,10 @@ pub const SCHEMA: &[&str] = &[
     // `crate::fold_audit`: what this site's cron last found for the chain, marked on its own member: the refold's index
     // and digests, whether every voter matched them, and the report's time (`decisions/DECISIONS.md`, "audit-moved").
     "CREATE TABLE IF NOT EXISTS audit_seen (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
+    // `crate::load`: a running audit's staged snapshot pages and the changes its batches saved
+    // (`decisions/DECISIONS.md`, "`refold-stream`"), deleted at its end.
+    graftyard_fold::PAGE_DDL,
+    graftyard_fold::OVERLAY_DDL,
     "CREATE TABLE IF NOT EXISTS install_source (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     // `crate::load`: set once an installing split parent dropped its own metadata tables, cleared by `Write::Install`.
     // While it is set the member's metadata tier is unloaded and it does not lead (`crate::load::meta_dropped`).
