@@ -442,7 +442,31 @@ The lead granted a purge of the 8 live repositories that hold no such member, th
 - **Verify.** Every member that `plan` reads answers `{"joined": false}` for all 8 (`/status` of each first-generation voter and registry row). `tests/fanout/purge.py --dry-run` on the 8 networks lists 0 objects on sites a, b, and c [measured].
 - **Cost.** 05:53Z to 06:13Z: $0.02 on m4a. Site day 52 to here (05:19Z to 06:13Z): $0.05.
 
-The other 27 wait for R27's fix and the next site day and edge day.
+### The other 27, purged under `purge-outside` (2026-11-18, 07:48Z to 08:51Z)
+
+Site day 53 (07:48:21Z to 07:49:13Z, exit 0) and edge day 26 (to 07:51:33Z, exit 0) shipped main `94fdfb48`, which added `purge-outside` (`decisions/DECISIONS.md`; R27). Same driver and log.
+
+**Result: all 27 purged, with no refusal that was not a lost reply or timing.**
+- **Delete.** 20 repositories answered `DELETE` 204. The other 7 (65543 to 65545, 589824 to 589827) were already deleted.
+- **First pass.** Every repository answered 200. The passes retired 71 members, the outside ones first, and deleted 832 objects (65567: 464).
+- **Second pass.** Each ran after its own `secondPassAt` (08:35Z to 08:40Z), and all 27 found 0 objects.
+- **Verify.**
+  - Only `repo:0` and `repo:65536` (j4) are still joined, in a scan of 65535 to 65568 and 589823 to 589828. That scan read each site's registry row and each first-generation voter.
+  - The 35 purged repositories' `repo-meta` members all answer not joined.
+  - `purge.py --dry-run` on the 27 networks lists 0 objects on sites a, b, and c [measured].
+
+What each call answered, besides the 200s, all asked again by the driver:
+
+| Answer | Count | Cause |
+| --- | --- | --- |
+| 503 "purge_retire answered None; retry" | 22 | The lost reply the design expects: the member aborts as it answers |
+| 409 `NoTombstone` on an in-config member | 15 | Timing: the follower had not yet learned the delete's commit. 65540 and 65547 caught up within 1 min. 65567's group had no leader (term 26, every member a follower, leader lease long past), so its followers stayed one entry behind. One `/campaign` to `#1#f0` resumed it (`verdict: resumed`), its next append carried the commit, and the purge passed |
+| 409 `Unanswered` on a `repo-meta` member | 2 | Timing: 65558 and 65565, both answered on the next try |
+| 409 "A member refused its purge", `changing` | 1 | 65546's `#1#f0` was in its daily near check (`near_check` marker) when `/purge_retire` re-checked it. That is the member's own refusal, which the design keeps. The rerun 2 min later passed. The driver counted this as non-timing and stopped once; it now asks again on `changing` too |
+
+- **The orb's disk filled at 08:18Z** during a build of the R28 branch. The driver stopped mid-call on 65565 and left a partial log line, which was dropped. The rerun found 65565 with nothing joined and 0 objects: the cut call had finished both.
+- **Cost** (`tests/fanout/acctcost.py`, `PREFIX=graft-m4a`): from site day 53's start to the end of the idle reading (07:48:21Z to 09:30Z), **$0.11** on graft-m4a, against the $3 stop. The account's UTC day was $10.81 at 09:30Z. **Idle**, 09:00Z to 09:30Z across the 09:15 and 09:30 crons: **$0.02** on graft-m4a (site a $0.01, no container). That matches the true idle the lead accepted before ($0.01 in 25.5 min). The leak was a daily refold per chain, so a half-hour window cannot show it stop. A 24-hour reading would: before the purge, m4a ran about $1.50 a day
+
 
 ## Spend against the $25 stop
 

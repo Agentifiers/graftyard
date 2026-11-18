@@ -15,7 +15,10 @@ const ids = args.flatMap((a) => {
 if (!["first", "second"].includes(pass) || !ids.length) throw new Error("usage: purge35.mjs first|second ID|FIRST-LAST ...");
 if (ids.some((id) => id === 0 || id === 65536)) throw new Error("repo:0 and repo:65536 are kept");
 const admin = tokens.admin;
-const TIMING = new Set(["A member has not applied the repository's tombstone", "A member did not answer"]);
+const TIMING = new Set(["A member has not applied the repository's tombstone", "A member did not answer", "A member is in a group change"]);
+// A member's own re-check answering `changing` (a placement check it started after the gate read, as 65546's did
+// at 08:02Z on 2026-11-18) is a change in progress, asked again like the gate's.
+const changing = (p) => p.body?.message === "A member refused its purge" && p.body?.refused === "changing";
 
 for (const id of ids) {
   if (pass === "first") {
@@ -32,7 +35,7 @@ for (const id of ids) {
     row(OUT, { at: new Date().toISOString(), id, step: pass, attempt: i, status: p.status, ms: p.ms, body: p.body });
     log(`${id} ${pass} #${i} ${p.status} ${JSON.stringify(p.body).slice(0, 240)}`);
     if (p.status === 200) break;
-    const timing = p.status === 409 ? TIMING.has(p.body?.message) : p.status === 503 || p.status === 0;
+    const timing = p.status === 409 ? TIMING.has(p.body?.message) || changing(p) : p.status === 503 || p.status === 0;
     if (!timing) throw new Error(`${id}: ${pass} refused (${p.status}), not timing; stopping`);
     if (i >= 9) throw new Error(`${id}: ${pass} still refused after ${i + 1} tries`);
     await sleep(20_000);

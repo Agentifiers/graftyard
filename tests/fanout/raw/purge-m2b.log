@@ -108,3 +108,31 @@
 2026-11-18T06:13:13Z 65561 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-18T06:13:26Z 65563 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-18T06:13:26Z {"dry": true, "purged": 8, "objects": 0, "refused": [], "second": 0}
+2026-11-18T08:54:42Z 65538 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:54:54Z 65539 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:55:06Z 65540 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:55:17Z 65541 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:55:29Z 65542 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:55:41Z 65543 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:55:52Z 65544 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:56:04Z 65545 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:56:16Z 65546 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:56:28Z 65547 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:56:40Z 65549 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:56:52Z 65550 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:57:03Z 65551 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:57:15Z 65553 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:57:26Z 65555 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:57:38Z 65557 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:57:50Z 65558 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:58:01Z 65560 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:58:13Z 65562 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:58:25Z 65564 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:58:36Z 65565 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:58:48Z 65566 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:59:00Z 65567 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:59:11Z 589824 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:59:22Z 589825 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:59:33Z 589826 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:59:44Z 589827 would delete: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:59:44Z {"dry": true, "purged": 27, "objects": 0, "refused": [], "second": 0}
