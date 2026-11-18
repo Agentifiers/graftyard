@@ -5449,3 +5449,12 @@ The earlier fixture check is "65536–65540 and 131072–131073 left in place".
 **Purge** (`raw/purge-leak.log`). Its gate passed 208 of 209 networks. 131260 was refused on a TLS handshake timeout
 during its status read, and is purged on its own (`raw/purge-leak-131260.log`). The two delete passes were still running
 at 07:42Z.
+
+**Purge, finished** (09:24Z). The 208-network `purge.py` started 06:01Z ran its first delete pass through 131289 by
+09:23Z; its process was gone at 09:25Z without writing its summary (the `retire-leak` service was stopped at 09:23Z).
+Its first-pass counts in memory read 0 or 1 objects per network on site a and 0 on b and c for every network seen.
+A full listing of all three buckets at 09:24Z (`votershed/leftcount.py`, 9,076 keys) finds **0 objects under any of
+the 209 retired networks**, 131107–131295 and 327680–327699, on every site. 131260's own purge found 0 on both passes
+(07:43Z). The only objects left in those families belong to the kept fixtures: 131296 (8,142), 65536 (253), 327700
+(127) and 131072 (12). graft-m2b was B0-02's for B0-29 run 5 from 07:43 to 09:15Z, and that thread retired and purged
+its own network 131357.

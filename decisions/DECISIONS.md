@@ -4952,3 +4952,17 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Options (a) and
 **Evidence.** `TestIngestIndexesOutsideTheLock` (`containers/git/server/ingestlock_test.go`) holds the first ingest's `index-pack` open through a git wrapper on PATH: an ls-refs answers meanwhile, a second ingest of another pack (a concurrent catch-up's) finishes once released, both packs are in and recorded, no quarantine is left, the multi-pack-index covers at least `midxEvery` packs and verifies, and `fsck --strict` is clean. On main the ls-refs waits for the held `index-pack` and the test fails. `TestSpooledIdxHoldsLockShorter` now asserts that the index-pack path holds the lock alone for under a quarter of its `index_ms` (1 of 85 ms here); main fails it. `tests/b034reads/plant.py` plants six mutants (0 is main's rule), all caught.
 
 **Flip.** A hosted run in which `/ingest` `lock_ms` stays near `index_ms`, meaning the move, the record, or the midx write is the slow part, or in which a reader sees a pack half moved in (an idx before its pack), which `moveIn`'s order is meant to prevent.
+
+### Not adopted: a voter's handler-top shed of edge requests, 2026-11-18
+
+Branch `voter-shed` (`tests/am1/results/voter-shed-design.md`), B0-33's option (b) after the append-stall trace. The orchestrator's decision (T-01a17bda), after point 2 of the design review.
+
+**Decision.** No member sheds edge `/read` or `/outcome_by_request` at the top of its handler by an open-request bound, and there is no member-side `/suspect` verdict cache. The design stays in the results file.
+
+**Why.** The shed rested on the premise that edge reads queued ahead of `/raft` lengthen the leader's AppendEntries out leg. On m47 (B0-33, 5,000 agents) they do not. With the leader at 64 or more open requests, edge reads held at most 3.5% and 8.7% of its open count on the two leaders where a bound could be computed, and reads stayed p50 7 to 37 ms; the commit family (`/commit`, `/outcome`, `/outcome_by_request`) held 80 to 100% of the open count that was not `/raft`. The out leg followed the leader's open count (Spearman 0.80) and not the edge read rate (0.14): at 400 or more open it was p50 4,110 ms at 0 to 50 reads/s and 3,565 ms at 200 or more [measured, `tests/am1/results/voter-shed-design.md`, "Point 2"; `tests/fanout/votershed/p2*.py`]. A bound would be code with no measured benefit, and B0-29 (m2bb29d, leader open p50 9) would never reach it.
+
+**Beat.** The shed as a safety bound on read floods (1,794 to 2,203 reads/s in some leader seconds on m47), which moved no measured out leg.
+
+**Evidence.** `tests/am1/results/voter-shed-design.md`, "Point 2" [measured].
+
+**Flip.** A run where edge reads are a measured share of the leader's open requests and the out leg tracks them.
