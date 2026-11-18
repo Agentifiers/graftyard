@@ -1,0 +1,5 @@
+2026-11-18T18:58:51Z 65588 REFUSED: not retired (0:registry: <urlopen error Tunnel connection failed: 502 Bad Gateway>, 0:<urlopen error Tunnel connection failed: 502 Bad Gateway>, 1:registry: <urlopen error T)
+2026-11-18T18:58:51Z {"dry": false, "purged": 0, "objects": 0, "refused": [65588], "second": 0}
+2026-11-18T18:59:47Z 65588 purged: a 4 -> 0, b 6 -> 0, c 4 -> 0
+2026-11-18T18:59:47Z 65588 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T18:59:47Z {"dry": false, "purged": 1, "objects": 14, "refused": [], "second": 0}

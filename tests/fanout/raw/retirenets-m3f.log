@@ -1,0 +1,3 @@
+2026-11-18T18:58:46.422Z repo:65588: 3 names, 3 were joined, all not joined
+2026-11-18T18:58:51.125Z purge: 65588 REFUSED: not retired (0:registry: <urlopen error Tunnel connection failed: 502 Bad Gateway>, 0:<urlopen error Tunnel connection failed: 502 Bad Gateway>, 1:registry: <urlopen error T)
+2026-11-18T18:58:51.125Z purge: {"dry": false, "purged": 0, "objects": 0, "refused": [65588], "second": 0}
