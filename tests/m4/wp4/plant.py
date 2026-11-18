@@ -279,6 +279,9 @@ MUTANTS = [
     ('repo-purge: a prefix without its trailing slash also takes network 655671', PU,
      '    let mut out: Vec<String> = by_net.iter().map(|p| format!("{p}/{n}/")).collect();',
      '    let mut out: Vec<String> = by_net.iter().map(|p| format!("{p}/{n}")).collect();', PG),
+    ('repo-purge: a member behind the tombstone answers purgeable', PU,
+     '    fold.child || crate::tiers::deleted(&*fold.core).is_some()', '    let _ = fold;\n    true',
+     ['-p', 'graftyard-git', '--test', 'lifecycle']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

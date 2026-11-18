@@ -927,7 +927,7 @@ impl Family for Repo {
         Some(if leading { crate::prsync::LEADER_ALARM_MS } else { crate::snap::IDLE_MS })
     }
     fn purgeable(fold: &git::repo::RepoFold) -> bool {
-        fold.child || git::tiers::deleted(&*fold.core).is_some()
+        git::purge::purgeable(fold)
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]

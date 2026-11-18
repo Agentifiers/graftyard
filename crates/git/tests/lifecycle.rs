@@ -487,3 +487,37 @@ fn edge_init_repo_after_abort_is_refused() {
         assert_eq!(g.settings(site), None);
     }
 }
+
+/// `repo-purge`'s gate on real members: a voter that was away while the tombstone committed is joined but behind it,
+/// so its own fold answers `purgeable = false`, and the purge refuses though the other two hold the tombstone. Once it
+/// catches up, the gate passes.
+#[test]
+fn a_voter_behind_the_tombstone_is_not_purgeable_and_the_purge_refuses() {
+    use graftyard_git::purge::{Facts, Refused, Status, gate, purgeable};
+    let mut g = G::new();
+    assert_eq!(init(&mut g, settings("created")), Ok(LifecycleOut { changed: true }));
+    let retain_until = Timestamp(g.now.0 + 90 * DAY);
+    g.deps.name(Some(RepoEntry::Deleted { repo: REPO, retain_until }));
+    let away = g.members[2].take();
+    assert_eq!(delete(&mut g, retain_until), Ok(LifecycleOut { changed: true }));
+    // Site 1 learns that commit from the leader's next append: the same delete again, which changes nothing.
+    assert_eq!(delete(&mut g, retain_until), Ok(LifecycleOut { changed: false }));
+    g.members[2] = away;
+    let check = |g: &G| {
+        let members: Vec<(ChainId, SiteId, Box<str>, Status)> = SITES
+            .iter()
+            .map(|s| {
+                let st = Status::Joined { purgeable: purgeable(&g.m(*s).group_fold().fold), changing: false };
+                (ChainId::Repo(REPO), *s, format!("repo:7#1#f{}", s.0).into_boxed_str(), st)
+            })
+            .collect();
+        gate(&Facts { deleted: Some(retain_until), now: g.now, early: true, members: &members })
+    };
+    assert!(g.deleted(SITES[0]).is_some() && g.deleted(SITES[1]).is_some());
+    assert_eq!(g.deleted(SITES[2]), None, "the voter that was away is joined but behind the tombstone");
+    assert!(!purgeable(&g.m(SITES[2]).group_fold().fold));
+    assert_eq!(check(&g), Err(Refused::NoTombstone { chain: ChainId::Repo(REPO), member: "repo:7#1#f2".into() }));
+    g.pass(4_000);
+    assert!(g.deleted(SITES[2]).is_some(), "caught up");
+    assert_eq!(check(&g), Ok(()));
+}

@@ -77,6 +77,13 @@ pub fn gate(f: &Facts<'_>) -> Result<(), Refused> {
     Ok(())
 }
 
+/// Whether a purge may retire a member holding `fold`, its `/status` field `purgeable`: its own fold holds the
+/// repository's `Deleted` tombstone, so a member behind that entry answers `false` and the gate refuses; or it is a
+/// metadata child (`repo-meta:N`), which holds no core tier and is purged on its parent's.
+pub fn purgeable(fold: &crate::repo::RepoFold) -> bool {
+    fold.child || crate::tiers::deleted(&*fold.core).is_some()
+}
+
 /// Whether a member is in a group change, so a purge must not retire it: its committed config is `Joint`, its log
 /// holds a config past the committed one (a change appended and not yet committed, or a bootstrap not yet committed),
 /// or a placement runs on it (`placing`, the daily check's and `place_background`'s marker).
