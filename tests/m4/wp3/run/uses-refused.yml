@@ -1,0 +1,23 @@
+name: uses-refused
+on: push
+jobs:
+  short-sha:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: Mirror/Hello@24829c7
+  private:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: Mirror/Private@v1
+  outside:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+  absent-sha:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: Mirror/Hello@0000000000000000000000000000000000000001
+  absent-tag:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: Mirror/Hello@v9

@@ -20,6 +20,9 @@ WE = 'crates/actions/src/workflow/expr.rs'
 WM = 'crates/actions/src/workflow/matrix.rs'
 WF = 'crates/actions/src/workflow/filter.rs'
 B = 'crates/actions/src/broker.rs'
+R = 'crates/actions/src/runsvc.rs'
+L = 'crates/actions/src/launch.rs'
+LIB = ['-p', 'graftyard-actions', '--lib']
 ACT = ['-p', 'graftyard-actions', '--test', 'gates', '--lib']
 WFT = ['-p', 'graftyard-actions', '--test', 'workflows', '--lib']
 
@@ -162,6 +165,31 @@ MUTANTS = [
      '            Pick::Match { .. } if !complete || ephemeral && self.0.contains(&runner) => Pick::Idle,',
      '            Pick::Match { .. } if ephemeral && self.0.contains(&runner) => Pick::Idle,',
      ['-p', 'graftyard-actions', '--test', 'bf55', '--lib']),
+    # ---- slice A: the launch service (`tests/m4/results/m4-wp3-launch.md`) ----
+    ('the job message names no launch endpoint, as on main', R,
+     '    vars.insert("system.github.launch_endpoint".into(), json!({"value": urls.launch()}));', '', LIB),
+    ('the runner is not asked to read launch 422s', R,
+     '    vars.insert("actions_display_helpful_actions_download_errors".into(), json!({"value": "true"}));', '', LIB),
+    ('the launch endpoint is the run service, not the install root', R,
+     '        format!("{}/", self.server)', '        self.run()', LIB),
+    ('a branch wins over a tag of the same name', L,
+     '    let named = ["", "refs/tags/", "refs/heads/"]', '    let named = ["", "refs/heads/", "refs/tags/"]', LIB),
+    ('an abbreviated SHA is answered as a missing version', L,
+     '    Err(if short { Found::Short } else { Found::NoVersion })', '    Err(if short && false { Found::Short } else { Found::NoVersion })', LIB),
+    ('an upper-case full SHA is not a SHA', L,
+     '    if let Some(sha) = ObjectId::parse_hex(version.to_ascii_lowercase().as_bytes()) {',
+     '    if let Some(sha) = ObjectId::parse_hex(version.as_bytes()) {', LIB),
+    ('the reply keys an action by its lower-cased name', L,
+     '                actions.insert(a.key.clone(), info);', '                actions.insert(a.key.to_ascii_lowercase(), info);', LIB),
+    ('any job token is taken for any job', L,
+     '        Some(Grant::Job { job: j, .. }) if guid && j == job => Some(job),',
+     '        Some(Grant::Job { .. }) if guid => Some(job),', LIB),
+    ('a read that failed is refused, not retried', L,
+     '    if let Some(e) = found.iter().find_map(|(_, f)| if let Found::Failed(e) = f { Some(e) } else { None }) {',
+     '    if let Some(e) = found.iter().find_map(|(_, f)| if let Found::Failed(e) = f { Some(e) } else { None }).filter(|_| false) {', LIB),
+    ("tar_url is the API's tarball redirect", L,
+     '    (format!("{codeload}/legacy.tar.gz/{h}"), format!("{codeload}/legacy.zip/{h}"))',
+     '    (format!("{codeload}/tarball/{h}"), format!("{codeload}/legacy.zip/{h}"))', LIB),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

@@ -2880,7 +2880,10 @@ async fn serve(
     if path.starts_with(bed_rows::PREFIX) {
         return bed_rows::serve(&c, &mut req, &path).await;
     }
-    // The Actions run service and the live-log viewer (`actions`).
+    // The Actions run service, its launch service, and the live-log viewer (`actions`).
+    if actions::launch_job(&c, &req, &path).is_some() {
+        return actions::launch(&c, req).await;
+    }
     if let Some(rest) = path.strip_prefix(actions::SERVICES) {
         return actions::serve(&c, req, rest).await;
     }
