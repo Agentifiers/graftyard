@@ -693,12 +693,16 @@ fn repo_read(fold: &git::repo::RepoFold, q: &Value) -> Value {
         // `fanout`: the committed k, which the network's first shard reads on every catch-up (`crate::fanout`).
         // `compactions`: every committed roll, which the shard's `ChainLog::compactions` reads the produced packs of
         // in place of their consumed promotions (`decisions/DECISIONS.md`, `roll-up`).
+        // `default_branch`: the shard's HEAD, as the edge's ls-refs names it (G26); null before the first `Settings`.
+        let default_branch = git::tiers::get_rec::<git::issues::RepoSettings>(&*fold.core, "settings", &[])
+            .map(|s| s.default_branch.display());
         return json!({
             "promoted": fold.promoted(),
             "compactions": fold.compactions(),
             "archived": fold.archived(),
             "first": fold.first_index().0,
             "fanout": fold.fanout_k(),
+            "default_branch": default_branch,
         });
     }
     if q.get("tiers").is_some() {

@@ -343,6 +343,46 @@ mod tests {
         assert!(Repo::reads().contains(&REPO_FORMAT_FANOUT));
     }
 
+    /// G26: the same read answers the `settings` row's default branch, which the shard points HEAD at, and null before
+    /// the first `Settings` entry, when the container keeps its own rule.
+    #[test]
+    fn the_ranges_read_answers_the_default_branch() {
+        use graftyard_git::issues::{MergeMethod, RepoSettings, Visibility};
+        let mut fold = RepoFold::new(RepoId(DbId(9)), AccountId(DbId(1)));
+        let q = json!({ "ranges": true });
+        assert_eq!(Repo::read_json(&fold, &q)["default_branch"], serde_json::Value::Null);
+        let settings = RepoSettings {
+            owner: AccountId(DbId(1)),
+            enterprise: None,
+            visibility: Visibility::Private,
+            default_branch: graftyard_git::refs::RefName::parse(b"refs/heads/v1.x").unwrap(),
+            archived: false,
+            description: None,
+            homepage: None,
+            topics: SmallVec::new(),
+            has_issues: true,
+            has_wiki: false,
+            has_projects: false,
+            merge_methods: smallvec::smallvec![MergeMethod::Merge],
+            delete_branch_on_merge: false,
+            allow_auto_merge: false,
+            allow_update_branch: false,
+            check_retention_days: 90,
+        };
+        fold.apply_entry(&LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(1),
+            prev: Digest([0; 32]),
+            format: graftyard_git::repo::REPO_FORMAT_V1,
+            tiers: TierSet::CORE.union(TierSet::METADATA),
+            at: Timestamp(1),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Settings(settings)]),
+        });
+        assert_eq!(Repo::read_json(&fold, &q)["default_branch"], "refs/heads/v1.x");
+    }
+
     /// A push's one repository read (`{"access": true, "agent": true}`) answers the access rows and the agent rows,
     /// with `"agent": true` beside them so the edge reuses them; `{"access": true}` alone answers as before, without
     /// the agent rows or the flag, which is how an edge tells an older member's answer.

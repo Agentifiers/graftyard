@@ -17,11 +17,15 @@ use crate::shard::IngestCursor;
 /// A git object id in hex (SHA-1 or SHA-256).
 pub type Oid = String;
 
-/// A chain's first log index and its leader's applied index, from one read (`ChainLog::head`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A chain's first log index and its leader's applied index, from one read (`ChainLog::head`), and the repository's
+/// default branch from the same read, which the shard points HEAD at (G26). `None` from a member release that does not
+/// answer it, and the container keeps its old HEAD rule.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Head {
     pub first: Index,
     pub applied: Index,
+    #[serde(default)]
+    pub default_branch: Option<String>,
 }
 
 /// What one committed entry of a member chain says about packs and refs.
@@ -239,7 +243,7 @@ mod tests {
     impl ChainLog for Gate {
         async fn head(&self, _: ChainId) -> Result<Head, StoreError> {
             self.wait().await;
-            Ok(Head { first: Index(1), applied: Index(7) })
+            Ok(Head { first: Index(1), applied: Index(7), default_branch: None })
         }
         async fn refs_page(&self, _: ChainId, _: Option<String>) -> Result<(RefsPage, Index), StoreError> {
             unreachable!()
@@ -272,7 +276,10 @@ mod tests {
             }
         }
         let out = out.expect("both reads were in flight together");
-        assert!(out.iter().all(|h| *h.as_ref().unwrap() == Head { first: Index(1), applied: Index(7) }));
+        assert!(
+            out.iter()
+                .all(|h| *h.as_ref().unwrap() == Head { first: Index(1), applied: Index(7), default_branch: None })
+        );
     }
 
     #[test]
