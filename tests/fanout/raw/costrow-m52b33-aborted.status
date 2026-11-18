@@ -1,0 +1,2 @@
+edge: graft-m2b-edge serves 5d5f8f85 at 100% (rev 254fd6d52), as tests/am1/raw/runs/fanout-m52-edge.log deployed
+2026-11-18T14:33:52Z meter (account, run) 21.53 0.0 before b033, expected +$2.5, stop $180 account, $10 run

@@ -1,0 +1,40 @@
+member 0: led 213 s, 441 req/s, open p50 661 p90 1108, stall 34%
+member 1: led 68 s, 302 req/s, open p50 264 p90 574, stall 18%
+
+commit path in all: 279.2/s 68.5%
+
+leader inbound by stream over 281 leader-seconds: req/s, share, open at entry p50/p90
+  commit-path:commit       133.0/s  32.6%  open 622/1098
+  commit-path:outcome       84.7/s  20.8%  open 610/1064
+  raft:learner              72.4/s  17.8%  open 523/1080
+  commit-path:outcome_by_request    61.5/s  15.1%  open 590/1117
+  read:refs                 36.9/s   9.1%  open 514/1066
+  raft:voter                 4.1/s   1.0%  open 355/778
+  read:packed                3.5/s   0.8%  open 315/674
+  read:ranges                2.8/s   0.7%  open 468/1048
+  unlisted                   2.6/s   0.6%  open 282/972
+  status                     2.1/s   0.5%  open 437/1034
+  read:core                  1.8/s   0.4%  open 311/717
+  suspect                    0.7/s   0.2%  open 5/153
+  stats                      0.6/s   0.1%  open 506/1079
+  read:request               0.5/s   0.1%  open 939/1075
+  read:rows                  0.1/s   0.0%  open 500/1003
+  read:prsync                0.1/s   0.0%  open 580/1127
+  read:probe                 0.1/s   0.0%  open 374/786
+  trace                      0.1/s   0.0%  open 459/1048
+
+stall share by leader req/s band, and each stream's req/s in the band
+         band    s  stall  commit-path: commit-path: raft:learner commit-path:    read:refs   raft:voter
+      0-150     59    15%          14.4          7.0         13.6         11.7          5.6          2.1
+    150-300     60    33%          55.7         60.1         49.1         27.9         24.6          2.9
+    300-450     62    26%         114.0         91.7         70.4         33.9         35.8          4.5
+    450-600     37    37%         162.6        123.1         88.9         78.1         44.9          6.1
+    600-900     41    43%         279.9        132.2        119.9        117.6         65.5          4.8
+    900-1000000000   22    34%         391.7        187.4        182.5        231.6         90.8          7.2
+
+Spearman with the stall ms: same second, and the stream one second before the stall
+  commit-path     0.26   0.43
+  raft:learner    0.21   0.41
+  read:refs       0.01   0.22
+  raft:voter      0.12   0.10
+  all             0.22   0.40
