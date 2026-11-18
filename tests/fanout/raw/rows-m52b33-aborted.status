@@ -1,0 +1,54 @@
+2026-11-18T14:33:52Z start 254fd6d52 /home/user/workspace/repo
+site fault off: 000
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T14:34:12Z start sweep ok
+2026-11-18T14:34:06Z cost account 21.53 since 2026-11-18T00:00:00Z, run 0.0 since 2026-11-18T14:17:00Z, at b0-33
+node:internal/modules/run_main:111
+    triggerUncaughtException(
+    ^
+
+[TypeError: fetch failed] {
+  [cause]: AggregateError [ENETUNREACH]: 
+      at internalConnectMultiple (node:net:1492:18)
+      at internalConnectMultiple (node:net:1568:5)
+      at internalConnectMultiple (node:net:1568:5)
+      at defaultTriggerAsyncIdScope (node:internal/async_hooks:474:12)
+      at GetAddrInfoReqWrap.emitLookup [as callback] (node:net:1987:7)
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:134:8) {
+    code: 'ENETUNREACH',
+    [errors]: [
+      Error: connect ENETUNREACH 2606:4700:3033::ac43:ca43:443 - Local (:::0)
+          at internalConnectMultiple (node:net:1564:16)
+          at defaultTriggerAsyncIdScope (node:internal/async_hooks:474:12)
+          at GetAddrInfoReqWrap.emitLookup [as callback] (node:net:1987:7)
+          at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:134:8) {
+        errno: -101,
+        code: 'ENETUNREACH',
+        syscall: 'connect',
+        address: '2606:4700:3033::ac43:ca43',
+        port: 443
+      },
+      Error: connect ENETUNREACH 2606:4700:3032::6815:5d0b:443 - Local (:::0)
+          at internalConnectMultiple (node:net:1564:16)
+          at internalConnectMultiple (node:net:1568:5)
+          at defaultTriggerAsyncIdScope (node:internal/async_hooks:474:12)
+          at GetAddrInfoReqWrap.emitLookup [as callback] (node:net:1987:7)
+          at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:134:8) {
+        errno: -101,
+        code: 'ENETUNREACH',
+        syscall: 'connect',
+        address: '2606:4700:3032::6815:5d0b',
+        port: 443
+      }
+    ]
+  }
+}
+
+Node.js v26.12.0
+b0-33: no repo
+site fault off: 000
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T14:34:33Z sweep ok
+ALLDONE

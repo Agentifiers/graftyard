@@ -65,3 +65,8 @@
 2026-11-17T09:33:01.784Z purge: 131346 purged: a 2038 -> 0, b 2042 -> 0, c 2025 -> 0
 2026-11-17T09:33:01.784Z purge: {"dry": false, "purged": 19, "objects": 51689, "refused": []}
 2026-11-17T16:29:41.061Z repo:131349: 11 names, 11 were joined, all not joined
+2026-11-18T15:00:00.297Z repo:131361: 7 names, 7 were joined, all not joined
+2026-11-18T15:10:27.335Z purge: waiting 510 s for sweep runs started before the first pass (until 2026-11-18T15:10:00.000005+00:00)
+2026-11-18T15:10:27.335Z purge: 131361 purged: a 2687 -> 0, b 2639 -> 0, c 2529 -> 0
+2026-11-18T15:10:27.335Z purge: 131361 second pass: a 12 -> 0, b 12 -> 0, c 0 -> 0
+2026-11-18T15:10:27.335Z purge: {"dry": false, "purged": 1, "objects": 7855, "refused": [], "second": 24}
