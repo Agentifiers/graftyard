@@ -174,3 +174,64 @@ does not cover, the cache moves into `on_suspect` instead, and that design comes
 - The edge needs no change: `overloaded` and `busy` are handled today.
 - T-01a1d805 owns `spread_once` and `spread_verdict`. A shed `/read` is a `Spread::Shed` answer it already handles,
   and this design adds no new answer shape.
+
+## Point 2: what the leader's open requests are (m47, before any code)
+
+The orchestrator approved the design on condition that the trace first shows whether the leader's open requests that
+track the out leg sit before the handler body (sheddable) or wait past it (not sheddable). They wait past it, so the
+shed as designed does not move the out leg. Scripts: `votershed/p2*.py` on `/tmp/shed/rows.pkl` (`prep.py`), load
+window 01:00:18 to 01:05:18Z, each member only while it led (terms-m47b33.jsonl).
+
+**Entries vs open.** With the leader at 64 or more open, its entries were `/read` 44%, `/outcome_by_request` 18%,
+`/commit` 17%, `/suspect` 9%, `/raft` 8%, `/outcome` 3% (104,698 entries, all three members). Entries are not the open
+count, which weighs each request by how long it stays:
+
+| leader member | `/raft` share of open at ≥ 64 (exact, Entered → CallLeft) | read residence, low-commit bins (open ÷ read rate) | edge reads' share of open at ≥ 64, upper bound |
+|---|---|---|---|
+| 0 | 16% | p50 37 ms (1 bin only) | not bounded this way; NNLS fit 0% |
+| 1 | 19% | p50 8 ms, p90 20 ms (20 bins) | ≤ 3.5% |
+| 2 | 7% | p50 7 ms, p90 131 ms (10 bins) | ≤ 8.7% |
+
+A non-negative fit of the open count to 6 s trailing arrival rates by class (`p2o2.py`, R² 0.45 to 0.69) puts reads'
+residence at 0.00 s on all three leaders, and the commit family (`/commit`, `/outcome`, `/outcome_by_request`) at 1.0
+to 3.3 s, 80 to 100% of the non-`/raft` open. The fit cannot separate `/outcome_by_request` from `/commit` (their
+rates correlate 0.64 to 0.83), so the 1.0 to 3.3 s is the family's [measured, as a fit].
+
+**The open count follows commits, not reads** (`p2i.py`, 1 s bins while leading):
+
+| commit-family arrivals in the prior 3 s | leader median open (members 0 / 1 / 2) | edge reads/s p50 (max) |
+|---|---|---|
+| 30 to 149 | 3 / 1 / 1 | 195 to 264 (456 to 1,336) |
+| 150 or more | 376 / 3 / 700 | 199 to 358 (1,581 to 2,182) |
+
+Up to 1,336 edge reads a second passed through a leader with a median of one request open. The reads are answered
+in milliseconds (lease reads); what stays open is `/commit` held up to `COMMIT_HOLD` (1 s) and `/outcome` up to its
+`wait_ms` (10 s), each then held by `ready_or`'s `settled()`. Point 1 forbids shedding `/commit`, and `/outcome` is
+the same admitted ticket's wait.
+
+**The out leg does not depend on the read rate** (`p2e.py`, gate-open sends only, 956): Spearman of the out leg with
+the leader's open 0.80, with commit-family arrivals 0.66, with loop lag 0.67, with edge reads/s 0.14, with `/suspect`/s
+−0.05. Within an open band the read rate does not move it: at 400+ open, p50 4,110 ms at 0 to 50 reads/s and 3,565 ms
+at 200+.
+
+**The round trip, skew-free** (`p2p.py`: CallSent → AnswerArrived on the leader's clock, less the follower's
+Entered → CallLeft; 1,748 answered calls). Its excess over 300 ms splits:
+
+| leader open at send | n | p50 / p90 | output gate still closed at send | then loop lag at send | rest: wire, and the answer waiting for the leader's turn |
+|---|---|---|---|---|---|
+| < 64 | 220 | 285 / 2,791 ms | 14% | 0% | 86% |
+| 64 to 299 | 567 | 390 / 4,378 ms | 32% | 3% | 65% |
+| 300+ | 961 | 990 / 6,586 ms | 37% | 20% | 43% |
+
+The follower spends 0 ms at p50 on these calls. The leader's output gate and turn queue, filled by commit waiters
+being released, hold the rest [inference: the trace does not stamp when a held send or a returned answer gets its
+turn].
+
+**Verdict.**
+- The handler-top shed of edge `/read` and `/outcome_by_request` would take at most about 4 to 9% of the leader's open
+  count where it is measurable, and the out leg does not move with the read rate. It would not shorten the out leg.
+- What holds the leader is its commit waiters and its output gate. That is (c)'s territory: AppendEntries that do not
+  wait behind the gate and the waiters' release, or fewer commit waiters held open at once.
+- The shed still has value as the smaller safety bound the orchestrator named: it caps a read flood (1,794 to 2,203
+  reads/s in some leader seconds), and its follower side and `/suspect` cache are unaffected by this finding.
+- Not built. Waiting on the orchestrator's choice.
