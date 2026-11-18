@@ -1002,6 +1002,12 @@ impl Family for Repo {
                 if let Some(since) = body["since"].as_u64() {
                     v["moved"] = json!(crate::load::moved(raft::Index(since), c.m.log_base().index, c.m.log()));
                 }
+                // The fold audit's live-row check (`crate::live`): the last result, and a new check when one is due.
+                if body["live"] == json!(true) {
+                    drop(core);
+                    v["live"] = crate::live::route(host)?;
+                    return Ok(v);
+                }
                 if body.get("log").is_some() {
                     v["log"] = crate::snap::log_json(&host.state.storage().sql())?;
                     v["dbBytes"] = json!(host.state.storage().sql().database_size());

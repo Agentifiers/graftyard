@@ -391,6 +391,30 @@ impl TierSql {
         })
     }
 
+    /// The stored `snap_undo` copies of every table of the tier, in one statement (`crate::snap`'s live check bound).
+    /// A refused read is lost storage, as any other.
+    pub fn undo_rows(&self, schema: &Schema) -> u64 {
+        let inner = self.0.borrow();
+        let parts: Vec<String> = schema
+            .tables
+            .iter()
+            .map(|t| format!("(SELECT COUNT(*) FROM \"{}\")", inner.name(&undo_table(t.name))))
+            .collect();
+        let q = format!("SELECT {}", if parts.is_empty() { "0".into() } else { parts.join(" + ") });
+        let n = inner.sql.exec(&inner.query(q), None).and_then(|c| c.raw().next().transpose());
+        match n {
+            Ok(Some(r)) => match r.first() {
+                Some(SqlStorageValue::Integer(n)) => *n as u64,
+                _ => 0,
+            },
+            Ok(None) => 0,
+            Err(e) => {
+                inner.refused("counting snap_undo", schema.tables.first().map_or("", |t| t.name), e);
+                0
+            }
+        }
+    }
+
     /// Every sealed batch's transaction has run.
     pub fn flushed(&self) {
         self.0.borrow_mut().sealed.clear();
