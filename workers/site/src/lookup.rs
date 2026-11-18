@@ -21,7 +21,7 @@ pub async fn call(
     graftyard_lookup::call(&Bindings { env, sites: &site.sites }, chain, record, path, body).await
 }
 
-/// A dependency read, hedged after `graftyard_lookup::DEP_HEDGE` (`graftyard_lookup::call_hedged`).
+/// A dependency read, hedged after its chain's delay (`graftyard_lookup::call_hedged`, `dep-hedge-adaptive`).
 pub async fn call_hedged(
     env: &Env,
     chain: ChainId,

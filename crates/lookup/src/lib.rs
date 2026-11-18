@@ -103,6 +103,8 @@ thread_local! {
     static CLIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Per isolate: each learner's answer times to `read_spread` as this isolate saw them (`Timed`).
     static ANSWER_MS: RefCell<HashMap<(SiteId, String), Timed>> = RefCell::new(HashMap::new());
+    /// Per isolate: each chain's last DEP_HEDGE_SAMPLES dependency read times in ms, oldest first (`dep_hedge_after`).
+    static DEP_MS: RefCell<HashMap<ChainId, Vec<u32>>> = RefCell::new(HashMap::new());
 }
 
 /// The colo this isolate's `suspect` reports from `call_opt` carry; an edge sets it per request.
@@ -1086,9 +1088,43 @@ pub async fn call_raw(
     call_opt(b, chain, record, path, body).await?.ok_or_else(|| format!("{chain}: no group"))
 }
 
-/// How long a dependency read waits for its first request before it sends a second one (`call_hedged`) [guess]: past
-/// `deps:authz` p99 (672 to 725 ms on B0-31 m3fr12, an apac leader reading enam), so under 1 read in 100 is hedged.
+/// The longest a dependency read waits for its first request before it sends a second one, and the wait before
+/// the chain has DEP_HEDGE_MIN read times in this isolate (`dep_hedge_after`) [guess]: past `deps:authz` p99 (672 to
+/// 725 ms on B0-31 m3fr12, an apac leader reading enam).
 pub const DEP_HEDGE: Duration = Duration::from_millis(1_000);
+/// The shortest wait before a dependency read's second request [guess]: run 5's `deps:names` p90 is about 76 ms, and
+/// a hedge sooner than this would mostly race a first request that is already on its way back.
+pub const DEP_HEDGE_FLOOR: Duration = Duration::from_millis(100);
+/// How many of a chain's latest read times `dep_hedge_after` takes its p90 over, and how many it needs first.
+const DEP_HEDGE_SAMPLES: usize = 64;
+const DEP_HEDGE_MIN: usize = 16;
+
+/// How long `chain`'s next dependency read waits before a second request (`dep-hedge-adaptive`): the p90 of its last
+/// DEP_HEDGE_SAMPLES read times in this isolate, within DEP_HEDGE_FLOOR and DEP_HEDGE, or DEP_HEDGE before it has
+/// DEP_HEDGE_MIN. So about one read in ten is hedged whether the chain's leader is near or a continent away: a fixed
+/// 150 ms would hedge about 80% of B0-31 m3fr12's reads of enam from apac and 5% of B0-29 run 5's
+/// (`tests/m0/results/dep-hedge-adaptive.md`).
+fn dep_hedge_after(chain: ChainId) -> Duration {
+    DEP_MS.with(|m| {
+        let m = m.borrow();
+        let Some(times) = m.get(&chain).filter(|t| t.len() >= DEP_HEDGE_MIN) else { return DEP_HEDGE };
+        let mut sorted = times.clone();
+        sorted.sort_unstable();
+        Duration::from_millis(u64::from(sorted[sorted.len() * 9 / 10])).clamp(DEP_HEDGE_FLOOR, DEP_HEDGE)
+    })
+}
+
+/// One more of `chain`'s dependency read times, the answer kept, hedged or not; the oldest past DEP_HEDGE_SAMPLES goes.
+fn dep_read_took(chain: ChainId, ms: u64) {
+    DEP_MS.with(|m| {
+        let mut m = m.borrow_mut();
+        let times = m.entry(chain).or_default();
+        if times.len() >= DEP_HEDGE_SAMPLES {
+            times.remove(0);
+        }
+        times.push(ms.min(u64::from(u32::MAX)) as u32);
+    })
+}
 
 /// How a hedged call ended: answered by its first request with no second sent, by the first after a second was sent,
 /// or by the second.
@@ -1125,7 +1161,7 @@ where
 }
 
 /// A leader's dependency read (`design/DESIGN.md`, Shape, \"The write path\", `dep-hedge`): `call` of `body` on
-/// `chain`, and if it has not answered within DEP_HEDGE, a second `call` beside it, a new request to the leader the
+/// `chain`, and if it has not answered within the chain's delay (`dep_hedge_after`), a second `call` beside it, a new request to the leader the
 /// isolate then holds (a dependency read is the leader's own `fresh`, so no follower may answer it), and the first
 /// answer of the two. Both start after the read was asked, and each is answered
 /// only by a leader through `fresh`, so the read the caller keeps is one `fresh` read made after the batch's commands
@@ -1140,18 +1176,29 @@ pub async fn call_hedged(
 ) -> (std::result::Result<(Value, Step), String>, Hedged) {
     let bytes = body.to_string();
     let one = || async { call_raw(b, chain, record, path, bytes.as_bytes()).await.map(|(v, s, _)| (v, s)) };
-    dep_read(one, Delay::from).await
+    dep_read(chain, one, Delay::from, now_ms).await
 }
 
-/// `call_hedged`'s rule over any read and sleep: `read()` now, and `read()` again beside it after DEP_HEDGE.
-async fn dep_read<T, E, R, RF, D, DF>(read: R, delay: D) -> (Result<T, E>, Hedged)
+/// `call_hedged`'s rule over any read, sleep and clock: `read()` now, and `read()` again beside it after
+/// `dep_hedge_after(chain)`; an answer's time joins the chain's window.
+async fn dep_read<T, E, R, RF, D, DF>(
+    chain: ChainId,
+    read: R,
+    delay: D,
+    now: impl Fn() -> u64,
+) -> (Result<T, E>, Hedged)
 where
     R: Fn() -> RF,
     RF: Future<Output = Result<T, E>>,
     D: Fn(Duration) -> DF,
     DF: Future<Output = ()>,
 {
-    hedge(read(), delay(DEP_HEDGE), &read).await
+    let began = now();
+    let got = hedge(read(), delay(dep_hedge_after(chain)), &read).await;
+    if got.0.is_ok() {
+        dep_read_took(chain, now().saturating_sub(began));
+    }
+    got
 }
 
 /// `call_raw` with a JSON body.
@@ -3170,6 +3217,7 @@ mod tests {
     /// `dep_read` driven by hand: request `i` (in the order sent) is sent at the clock's time and ends `ends[i]` ms
     /// later with its result, or never. Returns the answer, how the hedge ended, the requests sent, and the clock then.
     fn run_dep_read(
+        chain: ChainId,
         ends: Vec<Option<(u64, Result<u32, &'static str>)>>,
     ) -> (Result<u32, &'static str>, Hedged, usize, u64) {
         use futures_util::FutureExt;
@@ -3200,7 +3248,8 @@ mod tests {
             }
         };
         let delay = |d: Duration| At(clock.clone(), clock.get() + d.as_millis() as u64);
-        let mut f = Box::pin(dep_read(read, delay));
+        let now = || clock.get();
+        let mut f = Box::pin(dep_read(chain, read, delay, now));
         for _ in 0..20_000 {
             if let Some((r, how)) = (&mut f).now_or_never() {
                 return (r, how, sent.get(), clock.get());
@@ -3218,6 +3267,8 @@ mod tests {
     #[test]
     fn a_dependency_read_with_no_answer_by_dep_hedge_asks_again_and_takes_the_first_answer() {
         let h = DEP_HEDGE.as_millis() as u64;
+        // An untimed chain: every read here waits DEP_HEDGE, since it has fewer than DEP_HEDGE_MIN read times.
+        let run_dep_read = |ends| run_dep_read(ChainId::Ids, ends);
         // m3fr12: the first request held 4.6 s, the second answered in 9 ms.
         assert_eq!(run_dep_read(vec![Some((4_611, Ok(1))), Some((9, Ok(2)))]), (Ok(2), Hedged::Won, 2, h + 9));
         // The typical read: answered at 301 ms (deps:authz p50), no second request.
@@ -3247,5 +3298,51 @@ mod tests {
             run_dep_read(vec![Some((40, Err("first"))), Some((10, Ok(2)))]),
             (Err("first"), Hedged::First, 1, 40)
         );
+    }
+
+    /// `dep-hedge-adaptive`: each chain's hedge waits the p90 of its own last 64 read times in this isolate, within
+    /// DEP_HEDGE_FLOOR and DEP_HEDGE. A near chain (B0-29 run 5, reads 40 to 170 ms) hedges a held read at its p90,
+    /// where main waited 1 s; a far chain (B0-31 m3fr12, apac reading enam, 250 to 700 ms) keeps its own longer wait,
+    /// so its typical read sends no second request; a chain read under the floor waits the floor. On main every read
+    /// below waited DEP_HEDGE (`tests/m0carried/plant42.py`, mutant 0).
+    #[test]
+    fn a_dependency_reads_hedge_waits_its_chains_own_p90() {
+        let near = ChainId::Tokens(graftyard_types::TokenShard(901));
+        let far = ChainId::Authz(graftyard_types::AccountId(graftyard_types::DbId(7_100_901)));
+        let fast = ChainId::Names(graftyard_types::NameShard(901));
+        let h = DEP_HEDGE.as_millis() as u64;
+        // 15 read times: still untimed, so a 400 ms read sends nothing more.
+        for t in 0..15 {
+            dep_read_took(near, 40 + t);
+        }
+        assert_eq!(run_dep_read(near, vec![Some((400, Ok(1))), Some((9, Ok(2)))]), (Ok(1), Hedged::First, 1, 400));
+        // The window now holds 40..=54 and that 400. 64 more at 40, 42, ..., 166 ms push all of them out: the p90
+        // (index 57 of 64) is 154 ms. A first request held 300 ms is hedged then, and the second, answering in 60,
+        // wins; its 214 ms joins the window in place of the 40, so the p90 moves to 156.
+        for t in 0..64 {
+            dep_read_took(near, 40 + 2 * t);
+        }
+        assert_eq!(run_dep_read(near, vec![Some((300, Ok(1))), Some((60, Ok(2)))]), (Ok(2), Hedged::Won, 2, 214));
+        // The far chain, timed apart: 64 reads at 250, 257, ..., 691 ms, p90 649 ms. Its 600 ms read sends nothing
+        // more; a held one is hedged at 649. The near chain's wait is unchanged by them: 156, from its own window.
+        for t in 0..64 {
+            dep_read_took(far, 250 + 7 * t);
+        }
+        assert_eq!(run_dep_read(far, vec![Some((600, Ok(1))), Some((9, Ok(2)))]), (Ok(1), Hedged::First, 1, 600));
+        assert_eq!(run_dep_read(far, vec![Some((4_000, Ok(1))), Some((9, Ok(2)))]), (Ok(2), Hedged::Won, 2, 658));
+        assert_eq!(run_dep_read(near, vec![Some((300, Ok(1))), Some((60, Ok(2)))]), (Ok(2), Hedged::Won, 2, 216));
+        // 64 reads answered at 4 s, each timed through `dep_read` (a second sent after 649 ms or more answers later
+        // still): the wait stops at DEP_HEDGE.
+        for _ in 0..64 {
+            assert_eq!(run_dep_read(far, vec![Some((4_000, Ok(1))), Some((3_500, Ok(2)))]).0, Ok(1));
+        }
+        assert_eq!(run_dep_read(far, vec![Some((4_000, Ok(1))), Some((9, Ok(2)))]), (Ok(2), Hedged::Won, 2, h + 9));
+        // A chain read in 20 ms waits the floor, not 20: a 90 ms read sends nothing more, a 300 ms one is hedged at 100.
+        for _ in 0..64 {
+            dep_read_took(fast, 20);
+        }
+        assert_eq!(run_dep_read(fast, vec![Some((90, Ok(1))), Some((9, Ok(2)))]), (Ok(1), Hedged::First, 1, 90));
+        let floor = DEP_HEDGE_FLOOR.as_millis() as u64;
+        assert_eq!(run_dep_read(fast, vec![Some((300, Ok(1))), Some((9, Ok(2)))]), (Ok(2), Hedged::Won, 2, floor + 9));
     }
 }
