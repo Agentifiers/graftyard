@@ -391,6 +391,37 @@ pub struct DepsWanted {
     pub chains: SmallVec<[ChainId; 3]>,
 }
 
+/// What ended a cut (`CutNote`). Append-only: test hosts trace it by its number (cut-trace).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CutEnd {
+    /// Every queued command was taken.
+    Empty = 0,
+    /// The next command would take the batch past its soft bytes (ENTRY_SOFT unless the host set it).
+    Soft = 1,
+    /// The next command would take the batch past ENTRY_MAX, counting agent inline packs.
+    EntryMax = 2,
+    /// Only agent commands were left, and the AGENT_SHARE bucket held no token.
+    AgentTokens = 3,
+}
+
+/// One batch the leader cut for an entry, and why the cut stopped, for test hosts' traces (cut-trace: what ends each
+/// of B0-29's cuts). Only a cut that took a command has one. Hosts may ignore it; nothing reads it back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CutNote {
+    /// Commands taken, and left queued after the cut, per class in `AdmitClass::ALL` order.
+    pub taken: [u32; 4],
+    pub left: [u32; 4],
+    /// The batch's bytes as ENTRY_SOFT counts them, and all of them.
+    pub soft_bytes: usize,
+    pub bytes: usize,
+    /// The agent bucket after the cut.
+    pub tokens: f32,
+    /// Frozen batches held before this one, and whether an entry was in flight (an early cut).
+    pub held: usize,
+    pub in_flight: bool,
+    pub end: CutEnd,
+}
+
 /// The entry at `index` was decided on the reads of these `DepsWanted` ids. A batch's reads may start while the
 /// previous entry is in flight, and an id block or recorded entry may go first, so only this names the entry a read
 /// decided. Hosts may ignore it.
@@ -584,6 +615,8 @@ pub struct Out<C: Command> {
     pub catchup: Vec<Catchup>,
     /// Snapshots this member must install before it can follow (`Member::install`).
     pub install: Vec<InstallWanted>,
+    /// The batches this input cut. Only for test hosts' traces.
+    pub cuts: Vec<CutNote>,
 }
 
 impl<C: Command> Default for Out<C> {
@@ -599,6 +632,7 @@ impl<C: Command> Default for Out<C> {
             self_ack: None,
             catchup: Vec::new(),
             install: Vec::new(),
+            cuts: Vec::new(),
         }
     }
 }

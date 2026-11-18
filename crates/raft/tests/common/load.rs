@@ -12,7 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_raft::admit::{ActorKey, Admit, AdmitClass, AdmitError};
 use graftyard_raft::{
-    CommitError, EntryBody, Envelope, Index, Member, Message, Ready, RequestId, Resolution, Role, Stored, Ticket, Ulid,
+    CommitError, CutNote, EntryBody, Envelope, Index, Member, Message, Ready, RequestId, Resolution, Role, Stored,
+    Ticket, Ulid,
 };
 use graftyard_types::{SiteId, Timestamp};
 
@@ -121,6 +122,8 @@ pub struct Load {
     /// Per entry the leader appended: when, until its commit, in ms once it committed (`rounds`).
     appended: BTreeMap<u64, u64>,
     pub rounds: Vec<u64>,
+    /// Every batch a leader cut (`Out::cuts`), in order.
+    pub cuts: Vec<CutNote>,
 }
 
 fn event_bytes(e: &KvEvent) -> usize {
@@ -179,6 +182,7 @@ impl Load {
             slow_ms: 0,
             appended: BTreeMap::new(),
             rounds: Vec::new(),
+            cuts: Vec::new(),
         };
         l.on(leader, |m, now| m.campaign(now));
         for _ in 0..400 {
@@ -237,6 +241,7 @@ impl Load {
                 }
                 self.alarms.push((self.now, s, format!("{a:?}")));
             }
+            self.cuts.append(&mut out.cuts);
             for r in out.resolutions.drain(..) {
                 self.resolved(s, r);
             }

@@ -10,6 +10,7 @@ mod common;
 
 use common::load::{Done, End, Kind, Load, Op, acked_ms, pct};
 use graftyard_raft::admit::{AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_WAIT, AdmitClass, INLINE_MAX_HOT};
+use graftyard_raft::{CutEnd, ENTRY_SOFT};
 use graftyard_types::SiteId;
 
 const ENAM: SiteId = SiteId(0);
@@ -690,4 +691,50 @@ fn a_command_appended_before_its_budget_lapses_commits_after_it_and_is_acked() {
         l.done.iter().all(|d| matches!(d.end, End::Acked { .. }) && d.ms > 1_000),
         "each was appended in time, committed past its budget, and was acknowledged"
     );
+}
+
+/// cut-trace: each cut records what ended it. Commands arriving a second apart are each cut alone with nothing left
+/// (`Empty`); twenty 10 KiB Human pushes queued behind one entry fill the next to ENTRY_SOFT, 9 of them, since a
+/// tenth would make 102,400 bytes (`Soft`); and at a capacity of 2 commands/s the agent bucket holds one token, so
+/// each cut of a queue of agent commands takes one and stops with the rest queued (`AgentTokens`).
+#[test]
+fn each_cut_records_what_ended_it() {
+    let human =
+        |at: u64, k: u64, pack: usize| op(at, AdmitClass::Human, None, Kind::Push, format!("refs/heads/h{k}"), pack);
+    let mut l = Load::new(1, ENAM);
+    l.cuts.clear();
+    let t0 = l.now + 100;
+    l.offer((0..3).map(|k| human(t0 + k * 1_000, k, 0)));
+    l.drain(10_000);
+    assert_eq!(l.cuts.len(), 3);
+    for c in &l.cuts {
+        assert_eq!((c.end, c.taken, c.left, c.in_flight), (CutEnd::Empty, [1, 0, 0, 0], [0; 4], false));
+    }
+
+    let mut l = Load::new(1, ENAM);
+    l.cuts.clear();
+    let t0 = l.now + 100;
+    l.offer((0..21).map(|k| human(t0, k, 10 * KIB)));
+    l.drain(10_000);
+    // The first push is cut alone as it arrives; the other twenty queue behind its entry.
+    let c = l.cuts[1];
+    assert_eq!((c.end, c.taken, c.left), (CutEnd::Soft, [9, 0, 0, 0], [11, 0, 0, 0]), "{:?}", l.cuts);
+    assert!(c.soft_bytes <= ENTRY_SOFT && c.soft_bytes + 10 * KIB > ENTRY_SOFT, "{c:?}");
+
+    let mut l = Load::new(1, ENAM);
+    l.set_capacity(Some(2.0));
+    l.cuts.clear();
+    let t0 = l.now + 100;
+    let side = |k: u64| op(t0, AdmitClass::Agent, Some(1_000 + k), Kind::Side, format!("side/{k}"), 0);
+    l.offer((0..6).map(side));
+    l.drain(20_000);
+    assert_eq!(l.done.iter().filter(|d| matches!(d.end, End::Acked { .. })).count(), 6);
+    // The first is cut alone as it arrives; each later cut takes the one token a second brings.
+    let (last, mid) = l.cuts[1..].split_last().expect("cuts");
+    assert_eq!(mid.len(), 4, "{:?}", l.cuts);
+    for (i, c) in mid.iter().enumerate() {
+        assert_eq!((c.end, c.taken, c.left[3]), (CutEnd::AgentTokens, [0, 0, 0, 1], 4 - i as u32), "{c:?}");
+        assert!(c.tokens < 1.0, "{c:?}");
+    }
+    assert_eq!((last.end, last.taken), (CutEnd::Empty, [0, 0, 0, 1]));
 }

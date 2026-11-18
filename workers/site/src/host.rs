@@ -118,6 +118,14 @@ fn queue_split(admitted: u64, last_apply: u64, appended: u64) -> (u32, u32) {
     let freed = last_apply.clamp(admitted, appended);
     ((freed - admitted) as u32, (appended - freed) as u32)
 }
+
+/// An input's two clocks: the member clock it stepped at (`Host::now`, floored by peer stamps) and this isolate's own
+/// (`now_ms()`), which a busy isolate reads up to seconds behind the member clock (`crate::clock`).
+#[derive(Clone, Copy, Debug)]
+struct Clocks {
+    member: u64,
+    raw: u64,
+}
 /// One leader confirm split, LM-1 round 12's question of why B0-33's confirm p99 reached 1.7 s: `gate`, the input's
 /// step to the start of the transaction that carried its writes (the deferred flush's macrotask, so the isolate's turn
 /// queue); `sync`, that start to `sync()`'s continuation (storage, plus the continuation's own turn); `turn`, a
@@ -359,7 +367,7 @@ pub struct Stats {
     pub held_at_append: Vec<u32>,
     pub cycle_ms: Vec<u32>,
     last_append_at: Option<(u64, u64)>,
-    /// Leader: when it last applied an entry, by this member's clock.
+    /// Leader: when it last applied an entry, by this isolate's own clock (`Host::note`).
     last_apply_at: u64,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
@@ -445,6 +453,25 @@ pub struct Stats {
 const RAFT_IN: usize = 512;
 
 impl Stats {
+    /// A leader's apply, which frees the slot the next append takes.
+    fn applied_at(&mut self, c: Clocks) {
+        self.last_apply_at = c.raw;
+    }
+
+    /// A command admitted at `admitted` rode the entry appended at `c`: its queue time, split at the last apply. On
+    /// this isolate's own clock, the one its admission time and `commitMs` read, so queue plus the entry's round adds
+    /// up to commitMs. cut-trace: split on the member clock, which leads the isolate's own by up to seconds under
+    /// load, B0-29 run 4's `queue:slot` p99 read 2,476 ms against 934 on one clock (`tests/m0/results/cut-trace.md`).
+    fn queued(&mut self, admitted: u64, c: Clocks) {
+        if self.queue_ms.len() >= SAMPLES_MAX {
+            return;
+        }
+        self.queue_ms.push(c.raw.saturating_sub(admitted) as u32);
+        let (slot, post) = queue_split(admitted, self.last_apply_at, c.raw);
+        self.queue_slot_ms.push(slot);
+        self.queue_post_ms.push(post);
+    }
+
     pub fn raft_in(&mut self, at: u64, bytes: usize, body_ms: u64, work_ms: u64) {
         if bytes < 1024 {
             return;
@@ -613,6 +640,24 @@ pub enum Trace {
     /// `VERDICTS` (`crate::member`), so a trace splits reports by colo and sees which ones a promise answered.
     #[cfg(feature = "test-faults")]
     Reported = 28,
+    /// cut-trace: the leader cut a batch for an entry (`raft::CutNote`, packed by `cut_row`). `peer` is the end code
+    /// (`raft::CutEnd`) plus 16 × the frozen batches held before it plus 64 if an entry was in flight; `batch` the
+    /// commands taken per class, 12 bits each in `AdmitClass::ALL` order, and the agent tokens left above bit 48;
+    /// `index` the commands left queued per class, 16 bits each; `ms` the soft bytes plus all bytes × 2^24.
+    #[cfg(feature = "test-faults")]
+    Cut = 29,
+}
+
+/// `Trace::Cut`'s columns (`peer`, `batch`, `index`, `ms`) for one cut; `tests/m0/cuttrace/cuts.py` unpacks them.
+#[cfg(any(test, feature = "test-faults"))]
+fn cut_row(n: &raft::CutNote) -> (u8, u64, u64, u64) {
+    let clamp = |v: u32, bits: u32| u64::from(v).min((1 << bits) - 1);
+    let peer = n.end as u8 + 16 * n.held.min(3) as u8 + if n.in_flight { 64 } else { 0 };
+    let taken = (0..4).fold(0, |a, i| a | clamp(n.taken[i], 12) << (12 * i));
+    let batch = taken | (n.tokens.max(0.0) as u64).min(0xffff) << 48;
+    let left = (0..4).fold(0, |a, i| a | clamp(n.left[i], 16) << (16 * i));
+    let ms = (n.soft_bytes as u64).min((1 << 24) - 1) | (n.bytes as u64) << 24;
+    (peer, batch, left, ms)
 }
 
 /// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.
@@ -2145,12 +2190,13 @@ impl<F: Family> Host<F> {
         self.core.try_borrow().ok()?.as_ref().map(|c| c.join.chain)
     }
 
-    fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], t: u64) {
+    fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], c: Clocks) {
+        let t = c.member;
         let mut s = self.stats.borrow_mut();
         let (leading, term) = (core.m.role() == Role::Leader, core.m.term());
         // An apply in the same input as an append freed the slot that append took.
         if leading && writes.iter().any(|w| matches!(w, Write::Apply(_))) {
-            s.last_apply_at = t;
+            s.applied_at(c);
         }
         for w in writes {
             match w {
@@ -2166,13 +2212,8 @@ impl<F: Family> Host<F> {
                     s.last_append_at = Some((term.0, t));
                     s.appended.push((e.index.0, t));
                     for (rid, _) in &e.requests {
-                        if let Some((_, at, _)) = core.admitted.values().find(|(r, _, _)| r == rid)
-                            && s.queue_ms.len() < SAMPLES_MAX
-                        {
-                            s.queue_ms.push(t.saturating_sub(*at) as u32);
-                            let (slot, post) = queue_split(*at, s.last_apply_at, t);
-                            s.queue_slot_ms.push(slot);
-                            s.queue_post_ms.push(post);
+                        if let Some((_, at, _)) = core.admitted.values().find(|(r, _, _)| r == rid) {
+                            s.queued(*at, c);
                         }
                     }
                 }
@@ -2233,7 +2274,7 @@ impl<F: Family> Host<F> {
         core.m.set_clock_suspect(self.clock.borrow().suspect());
         core.m.set_own_clock(Timestamp(now_ms()));
         let ready = f(&mut core.m, Timestamp(t));
-        self.note(core, &ready.writes, t);
+        self.note(core, &ready.writes, Clocks { member: t, raw: now_ms() });
         #[cfg(feature = "test-faults")]
         let appended = self.appended_kill(core, &ready.writes);
         let wrote = !ready.writes.is_empty();
@@ -2270,6 +2311,11 @@ impl<F: Family> Host<F> {
         let (r, mut out) = ready.persist(&mut store);
         #[cfg(feature = "test-faults")]
         self.note_elect(&core.m, was, &out, t);
+        #[cfg(feature = "test-faults")]
+        for n in &out.cuts {
+            let (peer, batch, index, ms) = cut_row(n);
+            self.trace(Trace::Cut, peer, batch, index, ms);
+        }
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
         if let Some(b) = store.installed {
             self.queued_last.set(Some(b.index.0));
@@ -4349,6 +4395,44 @@ mod tests {
         assert_eq!(queue_split(1_000, 1_500, 1_150), (150, 0), "an apply later than the append clamps to it");
         let (slot, post) = queue_split(7, 40, 100);
         assert_eq!(slot + post, 93, "the split sums to the queue time");
+    }
+
+    /// cut-trace: a busy leader's member clock leads its own by up to seconds, and a command's admission time is its
+    /// own. The queue and its split take both ends from that clock, so a member clock 1,000 ms ahead changes nothing.
+    #[test]
+    fn the_queue_split_reads_the_clock_its_admission_read() {
+        use super::{Clocks, Stats};
+        let mut s = Stats::default();
+        // Admitted at 1,000 on the isolate's clock; the slot freed at 1,300 and the entry left at 1,420, while the
+        // member clock read 1,000 ms ahead of it at both.
+        s.applied_at(Clocks { member: 2_300, raw: 1_300 });
+        s.queued(1_000, Clocks { member: 2_420, raw: 1_420 });
+        assert_eq!(s.queue_ms, [420], "the queue mixed the member clock into a time taken on the isolate's");
+        assert_eq!((s.queue_slot_ms[0], s.queue_post_ms[0]), (300, 120), "the split mixed the two clocks");
+        // Admitted after the last apply on the isolate's clock, though the member clock had read later: no slot wait.
+        s.applied_at(Clocks { member: 3_000, raw: 1_900 });
+        s.queued(2_000, Clocks { member: 3_150, raw: 2_150 });
+        assert_eq!((s.queue_ms[1], s.queue_slot_ms[1], s.queue_post_ms[1]), (150, 0, 150));
+    }
+
+    /// cut-trace: `tests/m0/cuttrace/cuts.py` unpacks kind 29's columns by these bit positions.
+    #[test]
+    fn a_cut_row_packs_its_note_where_the_trace_reader_looks() {
+        let n = graftyard_raft::CutNote {
+            taken: [1, 2, 3, 4_097],
+            left: [5, 0, 7, 70_000],
+            soft_bytes: 99_000,
+            bytes: 230_000,
+            tokens: 41.7,
+            held: 2,
+            in_flight: true,
+            end: graftyard_raft::CutEnd::AgentTokens,
+        };
+        let (peer, batch, index, ms) = super::cut_row(&n);
+        assert_eq!(peer, 3 + 32 + 64);
+        assert_eq!(batch, 1 | 2 << 12 | 3 << 24 | 4_095 << 36 | 41 << 48, "taken saturates at 12 bits");
+        assert_eq!(index, 5 | 7 << 32 | 65_535 << 48, "left saturates at 16 bits");
+        assert_eq!((ms & 0xff_ffff, ms >> 24), (99_000, 230_000));
     }
 
     /// LM-1 round 12's confirm split: each transaction lands in its size group by its bytes (a 100 KB one is not
