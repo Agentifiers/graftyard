@@ -191,6 +191,37 @@ Two changes, one row. Part A stops a stalled leader's read-index timeouts from t
 - The count of pushes over 5 s whose command was already in an entry (Part B, item 4).
 - About $2 with a site day, which the site-script change needs.
 
+## Rows m3fr17 (2026-11-18, graft-m3f, `ROWS="b0-32"`, main `6dcf061a`, `b032-shed`)
+
+**Slot.** B0-32 rerun on `b032-shed`, granted at about $2. Stops: graft-m3f past $5 by `PREFIX` from the site day's start, or the account past $180. Raw files: `tests/am1/raw/a1-b0-32-mwljfpch.jsonl`, `tests/am1/raw/runs/{siteday-m3f-m3fr17,a1-b0-32-fm3fr17-b032}.log`, `tests/fanout/raw/rows-m3fr17.status`, `tests/fanout/raw/{terms,admit}-m3fr17-b0-32.jsonl`, `tests/fanout/raw/tsave-m3fr17-b0-32.jsonl.xz`, `idle-retire-m3fr17.log`.
+
+- **Site day** 02:41 to 02:54Z, image `sha256:0f0c5ee1…` reused. Edge `f6acd65d` at 100% (edgever, rev `11cb53c0`).
+- **Setup:** repo 65587, config 5 with 8 learners, k 4. a1's `feed members` read **8 learners, 2 followers**, and the learners caught up 8/8 in 15.9 s. Every member read `5/8` from 03:04:21Z to the trace's end: **no config change after `/learners`**.
+- **Client protocol:** the burst ran on HTTP/1.1 (node:https Agent, keepAlive, maxSockets = burst pushes). The rest of the driver ran on HTTP/2.
+
+### Result: fail, 0 of 500 within 5 s by the client [measured]
+
+| Line | m3fr17 |
+| --- | --- |
+| Burst outcome | 474 `ok`, 20 `full` (`ng … agent admission full, retry after`), 4 connect `ETIMEDOUT` and 2 client timeouts, none of which reached the edge |
+| Within 5 s, client clock | **0** of 500. `ok` p50 9.7 s, p99 13.2 s, minimum 5.6 s; `full` answered at 8.3 to 12.7 s |
+| Within 5 s, edge clock (server-timing `total`) | 167 of 474 `ok`. Server total p50 5.5 s, p99 7.4 s. The client spends about 4 s more than the edge, all before the edge's clock starts (500 new HTTP/1.1 connections from the orb) [inference] |
+| `ng` by shape | 20 `full`. 5 are the edge's bound (`bound;dur=0` after validate, before any send). 15 got the leader's answer after a commit send: 9 on a resend past 5 s, 4 in an entry before 5 s, 2 with the first send past 5 s. No gate `ng` |
+| 503s | 0 on burst pushes. Other traffic: 41 on `read:api`, 4 on ref reads, and 1 merge `503 the git cache … warming` |
+| Pushes past 5 s (edge clock) already in an entry | 327 pushes ran past 5 s. In 295 of them (291 `ok`, 4 `full`), the last commit send began before 5 s, which is the case the bound leaves open. 12 `ok` first sent past 5 s, so the bound did not refuse them (see below) |
+| `/suspect` and leader changes | 5 `/suspect` from the edge (`pushTiming`), 18 each at sites 1 and 2 by `tsave`. One leader change, term 2 → 3, site 0 → 1, at 03:10:32 to 03:10:33Z. Admission was not stalled then (queued 0 to 9, capacity 308 to 1,253) |
+| Plain `/read`s at the voters | Spread reads (`rows`, `core`, `packed`) went to the learners. The voters' plain `/read`s were the leader's own `ranges` (about 10 to 18 a second, leader-only by design). No `notLeader` fall-through to voter reads like m3fr15's 213 to 484 a second |
+| Leader | Commit p50 459 ms, p99 3,514 ms; queue p99 3,765 ms; round p99 485 ms; confirm p99 183 ms; apply p99 657 ms; `deps:all` p99 787 ms. Admission queue at most 9 |
+
+### What it shows
+
+- **The shed works.** The learners kept the spread reads, and no voter took the reads that m3fr15 sent there. The leader did not stall: apply p99 657 ms against m3fr15's 3.2 s gaps, and confirm p99 183 ms against 1.0 to 1.5 s.
+- **The time now goes before admission.** On the edge clock, a push spends about 3 to 4 s in `auth`, `resolve`, `install`, `context` and `validate` (each p99 1.6 to 1.9 s) before it reaches the leader. The leader then commits it in about 1 s. Admission saw at most 9 queued commands and refused only 15.
+- **The bound refused only 5.** `bound_at_send` refuses a push only when nothing is left of its 5 s. A push that reaches send at 4.5 s still goes, and its commit takes about 1 s. So 291 `ok` pushes ran past 5 s with their command already in an entry, which the DECISIONS flip line names. 12 `ok` pushes had their first send past 5 s. Why the bound let those through is not traced: the edge's bound may start later than the server-timing `total`.
+- **Not traced:** why the leader changed at 03:10:32Z without a queue, and why the 12 sends past 5 s went out.
+- **Close-out:** SWEEP2 OK at 03:18:25Z. 65587 retired 11 of 11 at 03:20:34Z; the purge removed 3,132 objects at 03:25:23Z, and the second pass found 0. The sweep at 03:25:49Z found no shard container running.
+- **Cost:** graft-m3f **$0.73** by `PREFIX` from 02:41:29 to 03:25:51Z (site day, row, sweeps, retire and purge). The account's UTC day was $6.53 at 03:25Z. The idle reading was not taken: the repository-wide pause came first.
+
 ## Rows m3fr16 (2026-11-17/18, graft-m3f, `ROWS="b0-31"`, branch `m3fr16`, main `7430a479`)
 
 **Slot.** B0-31 rerun on `dep-hedge` (main `7430a479`, with M4-WP4's F84), granted at about $3. Stops: graft-m3f past $6 by `PREFIX`, or the account past $280 (on 2026-11-18, past $180).

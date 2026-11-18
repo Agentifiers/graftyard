@@ -1,0 +1,28 @@
+2026-11-18T03:03:07Z start 11cb53c0 /home/user/workspace/b032-trace
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T03:03:23Z start sweep ok
+2026-11-18T03:03:25Z cost account 5.79 since 2026-11-18T00:00:00Z, run 0.0 since 2026-11-18T02:41:29Z, at b0-32
+2026-11-18T03:04:04.652Z m3org/fm3fr17-b032 = 65587
+2026-11-18T03:04:13.523Z repo:65587 leader 0: config 5 learners [{"addr":192,"doName":"repo:65587#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65587#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65587#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65587#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65587#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65587#2#l5","join":200,"sit
+2026-11-18T03:04:18.011Z repo:65587 leader 0: set k 4: {"grants":[[0,[2,3,1]],[2,[2,3,1]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T03:04:28.749Z repo:65587 leader 0: set k 4: {"grants":[[0,[2,3,1]],[2,[2,3,1]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T03:04:39.670Z repo:65587 leader 0: set k 4: {"grants":[[0,[2,3,1]],[2,[2,3,1]]],"k":4,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-18T03:04:39.878Z repo:65587 leader 0: k 4 at 8
+2026-11-18T03:04:39Z b0-32 fm3fr17-b032 65587 start
+2026-11-18T03:16:31.442Z repo:65587 leader 1: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":5,"leader":1,"term":3},"stepped":true,"want":0}
+2026-11-18T03:16:31.612Z repo:65587 leader 1: k 1 at 942
+2026-11-18T03:16:31Z b0-32 fm3fr17-b032 65587 done exit 0
+2026-11-18T03:16:37Z torn down 65587
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T03:18:05Z sweep ok
+ALLDONE
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T03:18:25Z SWEEP2 OK
+2026-11-18T03:18:25Z cost {"from": "2026-11-18T02:41:29Z", "to": "2026-11-18T03:18:25Z", "containers": 0.18, "do_rows": 0.47, "do_duration": 0.04, "do_requests": 0.04, "workers": 0.03, "usd": 0.76, "prefix": "graft-m3f", "prefix_usd": 0.72}
+FINISHED

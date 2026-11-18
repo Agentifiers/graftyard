@@ -1,0 +1,16 @@
+2026-11-18T03:19:49.003Z repo:65587#1#f1 site 1 before: follower t3 c942; /retire: null
+2026-11-18T03:19:49.045Z repo:65587#2#l0 site 0 before: follower t3 c941; /retire: null
+2026-11-18T03:19:49.273Z repo:65587#2#l1 site 1 before: follower t3 c941; /retire: null
+2026-11-18T03:19:49.279Z repo:65587#1#f0 site 0 before: follower t3 c941; /retire: null
+2026-11-18T03:19:49.292Z repo:65587#2#l4 site 1 before: follower t3 c941; /retire: null
+2026-11-18T03:19:51.158Z repo:65587#1#f2 site 2 before: follower t3 c941; /retire: null
+2026-11-18T03:19:51.445Z repo:65587#2#l3 site 0 before: follower t3 c941; /retire: null
+2026-11-18T03:19:51.774Z repo:65587#2#l5 site 2 before: follower t3 c941; /retire: null
+2026-11-18T03:19:52.634Z repo:65587#2#l7 site 0 before: follower t3 c941; /retire: null
+2026-11-18T03:19:54.201Z repo:65587#2#l2 site 2 before: follower t3 c941; /retire: null
+2026-11-18T03:20:18.833Z repo:65587#2#l6 site 0 before: follower t3 c941; /retire: null
+2026-11-18T03:20:34.788Z retired 11/11 not joined
+2026-11-18T03:25:23.491Z purge: waiting 213 s for sweep runs started before the first pass (until 2026-11-18T03:25:00.000006+00:00)
+2026-11-18T03:25:23.492Z purge: 65587 purged: a 1257 -> 0, b 1111 -> 0, c 764 -> 0
+2026-11-18T03:25:23.492Z purge: 65587 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T03:25:23.492Z purge: {"dry": false, "purged": 1, "objects": 3132, "refused": [], "second": 0}
