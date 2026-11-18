@@ -804,8 +804,8 @@ mod tests {
     }
 
     /// A follower serves by read-index only the reads the design names: whole-tier and merge rows once its metadata
-    /// tier is loaded, and the core-only access and agent rows; refs, `ranges`, deps, and the alarm reads stay on the
-    /// leader.
+    /// tier is loaded, and the core-only access and agent rows and the edge's `ls-refs` read; paged refs, `ranges`,
+    /// deps, and the alarm reads stay on the leader.
     #[test]
     fn a_follower_serves_only_the_designs_reads() {
         use crate::family::follower_query;
@@ -819,6 +819,7 @@ mod tests {
         for q in [
             json!({ "rows": { "access": true }, "ranges": true }),
             json!({ "rows": { "agent": true }, "ranges": true }),
+            json!({ "lsRefs": { "reads": [""], "head": true } }),
         ] {
             assert!(follower_query(&q, false), "{q} reads the core tier only");
         }

@@ -316,10 +316,15 @@ pub fn refs_read(fold: &crate::repo::RepoFold, q: &serde_json::Value) -> serde_j
         .get("limit")
         .and_then(serde_json::Value::as_u64)
         .map_or(REFS_PAGE_MAX, |l| (l as usize).clamp(1, REFS_PAGE_MAX));
-    let (page, more) = fold.refs_page(&prefix, after.as_deref(), limit);
+    serde_json::to_value(refs_page(fold, &prefix, after.as_deref(), limit)).unwrap_or(serde_json::Value::Null)
+}
+
+/// One page of the fold's refs whose names start with `prefix`, after `after`, at most `limit` (`RepoFold::refs_page`).
+pub fn refs_page(fold: &crate::repo::RepoFold, prefix: &[u8], after: Option<&[u8]>, limit: usize) -> RefsPage {
+    let (page, more) = fold.refs_page(prefix, after, limit);
     let next = more.then(|| page.last().map(|(n, _)| b64::encode(n.as_bytes()))).flatten();
     let refs = page.iter().map(|(n, o)| (n.display(), o.hex())).collect();
-    serde_json::to_value(RefsPage { refs, next }).unwrap_or(serde_json::Value::Null)
+    RefsPage { refs, next }
 }
 
 /// The member host's half of `POST /commit`: the bytes that do not decode under a format this release reads answer

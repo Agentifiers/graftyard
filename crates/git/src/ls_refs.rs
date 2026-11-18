@@ -15,11 +15,19 @@
 //!
 //! `answer` builds the bytes only from whole reads: one complete page per read and HEAD's branch found, else `None`,
 //! and the edge sends the request to the shard, so no answer is ever cut from a partial read.
+//!
+//! The edge asks one member for HEAD and every page at once (`LsRefs::query`, answered by `read`), by read-index on the
+//! group's learners and followers (`design/DESIGN.md`, "Follower read"), so every line of an answer comes from one
+//! fold at one applied index at or above the read's floor, which holds every push acknowledged before the read arrived.
+
+use serde::{Deserialize, Serialize};
 
 use crate::agent::{HOST_REFS, SESSION_REFS};
 use crate::group::RefsPage;
+use crate::pack::b64;
 use crate::pkt;
 use crate::refs::ObjectId;
+use crate::repo::{REFS_PAGE_MAX, RepoFold};
 use crate::smart::V2Request;
 
 /// git's `TOO_MANY_PREFIXES`: at this many `ref-prefix` lines or more, git ignores them all and lists every ref.
@@ -41,6 +49,41 @@ pub struct LsRefs {
 pub struct Head {
     pub target: Vec<u8>,
     pub oid: Option<ObjectId>,
+}
+
+/// A member's answer to `LsRefs::query`, all from one fold: HEAD's branch and tip when asked and the `settings` row
+/// exists, and one page per read, in the query's order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LsRefsRead {
+    pub head: Option<HeadRead>,
+    pub pages: Vec<RefsPage>,
+}
+
+/// `Head` on the wire: the branch's name as base64 of its bytes, and its tip as hex.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadRead {
+    #[serde(with = "b64")]
+    pub target: Vec<u8>,
+    pub oid: Option<String>,
+}
+
+/// The member's half of `LsRefs::query` (`{"lsRefs": {"reads": [b64], "head": bool}}`): HEAD and each read's first
+/// page of at most `REFS_PAGE_MAX` refs, from `fold` alone. `Null` for a query it cannot parse.
+pub fn read(fold: &RepoFold, q: &serde_json::Value) -> serde_json::Value {
+    let parse = || -> Option<(Vec<Vec<u8>>, bool)> {
+        let reads = q.get("reads")?.as_array()?.iter().map(|r| b64::decode(r.as_str()?)).collect::<Option<_>>()?;
+        Some((reads, q.get("head")?.as_bool()?))
+    };
+    let Some((reads, head)) = parse() else { return serde_json::Value::Null };
+    let head = head
+        .then(|| crate::tiers::get_rec::<crate::issues::RepoSettings>(&*fold.core, "settings", &[]))
+        .flatten()
+        .map(|s| HeadRead {
+            oid: fold.get(&s.default_branch).map(|o| o.hex()),
+            target: s.default_branch.as_bytes().to_vec(),
+        });
+    let pages = reads.iter().map(|p| crate::group::refs_page(fold, p, None, REFS_PAGE_MAX)).collect();
+    serde_json::to_value(LsRefsRead { head, pages }).unwrap_or(serde_json::Value::Null)
 }
 
 impl LsRefs {
@@ -86,6 +129,32 @@ impl LsRefs {
             }
         }
         out
+    }
+
+    /// The one read that answers this request (`read`): every read's page and, when the answer lists HEAD, HEAD.
+    pub fn query(&self) -> serde_json::Value {
+        let reads: Vec<String> = self.reads().iter().map(|p| b64::encode(p)).collect();
+        serde_json::json!({ "q": { "lsRefs": { "reads": reads, "head": self.wants_head() } } })
+    }
+
+    /// The answer from a member's `LsRefsRead`, as `answer` builds it. `None` as well when HEAD's tip and its branch's
+    /// line in a page differ: one fold gives both the same oid, so they come from two states, and the shard answers.
+    pub fn answer_read(&self, r: &LsRefsRead) -> Option<Vec<u8>> {
+        let head = match &r.head {
+            Some(h) => {
+                let name = String::from_utf8_lossy(&h.target);
+                let line = r.pages.iter().flat_map(|p| &p.refs).find(|(n, _)| **n == *name).map(|(_, o)| o);
+                if line.is_some_and(|o| Some(o) != h.oid.as_ref()) {
+                    return None;
+                }
+                Some(Head {
+                    target: h.target.clone(),
+                    oid: h.oid.as_deref().and_then(|o| ObjectId::parse_hex(o.as_bytes())),
+                })
+            }
+            None => None,
+        };
+        self.answer(head.as_ref(), &r.pages)
     }
 
     /// Whether the answer starts with a HEAD line, so the caller needs `Head`.

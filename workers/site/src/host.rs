@@ -711,6 +711,7 @@ pub const READ_QUERIES: &[&str] = &[
     "packed",
     "refs",
     "core",
+    "lsRefs",
 ];
 
 /// A `/read` body's query code (`READ_QUERIES`): what it selects, not its first key, because `serde_json` sorts a
@@ -4353,6 +4354,7 @@ mod tests {
         assert_eq!(name(merge), "rows", "a merge's rows");
         assert_eq!(name(serde_json::json!({ "q": { "ranges": true } })), "ranges", "the shard's ranges read");
         assert_eq!(name(serde_json::json!({ "q": { "refs": { "limit": 10 } } })), "refs");
+        assert_eq!(name(serde_json::json!({ "q": { "lsRefs": { "reads": [], "head": true } } })), "lsRefs");
     }
 
     #[test]

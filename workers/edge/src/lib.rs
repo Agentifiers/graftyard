@@ -2082,40 +2082,19 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     Ok(Response::from_body(r.body().clone())?.with_headers(hh))
 }
 
-/// The bytes of a v2 ls-refs from the group: each of the request's reads as one page from the leader, and, when the
-/// answer lists HEAD, the default branch from the `settings` row and its tip, read beside them. `None` on any failed
-/// or partial read, a missing `settings` row, or a default branch that does not exist yet, so the shard answers.
+/// The bytes of a v2 ls-refs from the group: HEAD and each of the request's reads as one page, all in one read
+/// (`LsRefs::query`) that the group's learners and followers serve by read-index, never the leader
+/// (`graftyard_lookup::read_off_leader`), so every line is from one fold at or above the read's floor and a push
+/// acknowledged before the request shows. On run 6 the leader's 36 refs pages a second beside its commit path took
+/// its commit p99 to 7,720 ms, and to 817 ms with them off (F91, `tests/am1/results/b029-m2b.md`). `None` on a shed,
+/// declined, or failed read, a partial page, a missing `settings` row, or a default branch that does not exist yet, so
+/// the shard answers.
 async fn ls_refs(c: &Ctx<'_>, repo: &Repo, ls: &graftyard_git::ls_refs::LsRefs) -> Option<Vec<u8>> {
-    use graftyard_git::ls_refs::Head;
-    let reads = ls.reads();
-    let pages = futures_util::future::join_all(reads.iter().map(|p| refs_page(c, repo, p, None)));
-    let target = async {
-        if !ls.wants_head() {
-            return Some(None);
-        }
-        let core = api::core_rows(c, repo, "access").await.ok()?.ok()?;
-        let s: graftyard_git::issues::RepoSettings = graftyard_git::tiers::get_rec(&core, "settings", &[])?;
-        Some(Some(s.default_branch))
-    };
-    let (pages, target) = futures_util::future::join(pages, target).await;
-    let pages: Vec<RefsPage> = pages.into_iter().map(|p| p.ok()?.ok().map(|(_, p)| p)).collect::<Option<_>>()?;
-    let head = match target? {
-        None => None,
-        Some(branch) => {
-            let name = branch.display();
-            // The tip from the pages already read when one holds the branch, so HEAD and its branch's line agree.
-            let found = pages.iter().flat_map(|p| &p.refs).find(|(n, _)| *n == name).map(|(_, o)| o.clone());
-            let oid = match found {
-                Some(o) => o,
-                None => {
-                    let (_, p) = refs_page(c, repo, branch.as_bytes(), None).await.ok()?.ok()?;
-                    p.refs.into_iter().find(|(n, _)| *n == name)?.1
-                }
-            };
-            Some(Head { target: branch.as_bytes().to_vec(), oid: ObjectId::parse_hex(oid.as_bytes()) })
-        }
-    };
-    ls.answer(head.as_ref(), &pages)
+    let b = c.bindings();
+    let (v, _, _) =
+        graftyard_lookup::read_off_leader(&b, ChainId::Repo(repo.id), &repo.record, &ls.query()).await.ok()??;
+    let r: graftyard_git::ls_refs::LsRefsRead = serde_json::from_value(v.get("value")?.clone()).ok()?;
+    ls.answer_read(&r)
 }
 
 // ---- advertisements ----

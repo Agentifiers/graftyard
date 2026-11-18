@@ -554,9 +554,13 @@ pub fn dump_wait(fold: &git::repo::RepoFold, now: u64, every: u64) -> Option<u64
 }
 
 /// The repository reads a follower serves by read-index (`design/DESIGN.md`, "Follower read"): whole-tier and merge
-/// rows once its metadata tier is loaded, and the core-only access, agent, and actions rows. Refs, `ranges`, `dep`,
+/// rows once its metadata tier is loaded, the core-only access, agent, and actions rows, and the edge's `ls-refs`
+/// read (`graftyard_git::ls_refs::read`, HEAD and its pages from the core tier). Paged `refs`, `ranges`, `dep`,
 /// `prsync`, `mergequeue`, `tiers`, and `settings` reads stay on the leader.
 pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
+    if q.get("lsRefs").is_some() {
+        return true;
+    }
     match q.get("rows") {
         Some(Value::Bool(true)) => meta_loaded,
         Some(r) if graftyard_api::hosted::MergeOf::of_query(r).is_some() => meta_loaded,
@@ -707,6 +711,10 @@ fn repo_read(fold: &git::repo::RepoFold, q: &Value) -> Value {
     }
     if q.get("tiers").is_some() {
         return crate::snap::tiers_json(fold, q.get("at").and_then(Value::as_u64));
+    }
+    // The edge's v2 `ls-refs`: HEAD and every page from this one fold (`graftyard_git::ls_refs::read`).
+    if let Some(l) = q.get("lsRefs") {
+        return git::ls_refs::read(fold, l);
     }
     // The refs: `{"refs": {..}}` one page of them, `{}` all of them only while they fit one page
     // (`graftyard_git::group::refs_read`), so no reply grows with the ref count.
