@@ -67,6 +67,23 @@ impl DurableObject for Registry {
                 }
                 Response::from_json(&serde_json::json!({ "replaced": replaced }))
             }
+            // A deleted repository's purge (`graftyard_git::purge`), after it retired the member: the row goes only if it
+            // still names `do_name`, so a later generation's row, written after the purge read it, stays.
+            (Method::Delete, "/row") => {
+                let chain = query(&url, "chain")?;
+                let name = query(&url, "do_name")?;
+                let rows: Vec<Row> =
+                    sql.exec("SELECT row FROM registry WHERE chain = ?", vec![chain.clone().into()])?.to_array()?;
+                let named = rows
+                    .first()
+                    .map(|r| serde_json::from_str::<RegistryRow>(&r.row))
+                    .transpose()?
+                    .is_some_and(|r| *r.do_name == *name);
+                if named {
+                    sql.exec("DELETE FROM registry WHERE chain = ?", vec![chain.into()])?;
+                }
+                Response::from_json(&serde_json::json!({ "deleted": named }))
+            }
             (Method::Get, "/row") => {
                 let chain: ChainId = query(&url, "chain")?.parse().map_err(|e| Error::RustError(format!("{e}")))?;
                 let rows: Vec<Row> =
