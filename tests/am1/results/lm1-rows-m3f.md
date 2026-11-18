@@ -145,6 +145,15 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 
 **Decision record.** A DECISIONS entry "`audit-moved`" with decision / why / beat (a refold every day per chain, F48's cadence; sampling rows instead) / evidence (this section and K10) / flip: a storage-corruption case found on an idle chain by the follow-up live-row check that a daily refold would have found first, or a refold of an unmoved chain that disagrees with its last report.
 
+## F88 traced: roll-up changed the `Promoted` fold in place (2026-11-18, code-only, no spend)
+
+- **Cause.** Roll-up (merge `e2bddc92`, 2026-11-16 18:29Z) made `RepoEvent::Promoted` also write a `promoted_log` core row (`crates/git/src/tiers.rs`, `write_core`). Members applied their promotions on the older release; the audit's refold replays them on the new one and adds the row, so the core digests split.
+- **Bound.** All `graft-m3f` audits matched before 11-17 09:47Z. The first alarm was `repo:65568` at 1343. All 26 distinct alarming audits after m3fr11's site day (11-17 03:30Z) had a `Promoted` entry in the refolded tail (Workers Logs `archive Promoted`, mapped to objects by id).
+- **Which side.** Neither apply is wrong for its own release. Live state is what the older release wrote; the refold is what the newer one writes. This breaks `design/SHARED.md`'s dedicated-release rule for core-tier schema changes, not `decide`'s purity.
+- **Reproduction.** `crates/git/tests/encoding.rs`, `a_committed_promoted_entry_folds_to_the_digest_it_had_when_it_committed`: one `Promoted{from 1, to 17}` entry folds to `4ceb4070…77cc` on `0d212879` and `d5c31b8e…d51f` on main. It passes on the old release and fails on main; it lands with the fix.
+- **Risk.** Chains that promoted before the upgrade hold no `promoted_log` rows for those promotions, so roll-up's `rollable` and `check_compacted` miss them. Roll-up is off on m3f and m4a; `graft-m2b` has `GRAFTYARD_ROLLUP=1` from m43 [inference].
+- **Not traced.** `graft-m1`'s alarms began 11-14, before roll-up.
+
 ## B0-32 design proposal: `b032-shed` (approved 2026-11-18 and built on branch `b032-shed`; DECISIONS "`b032-shed`")
 
 Two changes, one row. Part A stops a stalled leader's read-index timeouts from turning into leader reads. Part B bounds an agent push at 5 s from its arrival at the edge, so a push that cannot commit in time answers B0-32's `ng` shape.
