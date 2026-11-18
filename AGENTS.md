@@ -1,6 +1,6 @@
 # Instructions for agents implementing Graftyard
 
-You are building Graftyard from the design in this folder. Nothing is built yet. This file tells you which document wins, which invariants you must never break, how to pick work, how to change the design when the code proves it wrong, and what not to do. Start with `README.md` for the reading order and the glossary.
+You are building Graftyard from the design in this folder. Nothing is built yet. This file tells you which document wins, which invariants you must never break, how to pick work, how to change the design when the code proves it wrong, and what not to do. Start with `README.md` for the reading order and `design/GLOSSARY.md` for the glossary.
 
 ## Source of truth
 
