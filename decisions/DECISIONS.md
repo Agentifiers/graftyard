@@ -4678,3 +4678,38 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 **Decision.** a1.mjs's `tip:move` pushes through `Git.runAsync` (`execFile`), and each row records `loopDelay` (p50, p99, max) over the window.
 
 **Why.** `execFileSync` held node's loop about 6 s per tip move, 73 moves in m41's 900 s, so every client-side time a1 took meanwhile ended late: m41's probe ends grouped 172 to a uniform 22, with the shard's first bytes in a group 1.9 s apart at the median, and 43 of the 44 slowest probes overlapped a stall (`tests/fanout/loopstall.py`). Locally a 3 s git call held the loop 3,018 ms sync and 32 ms async. Every B0-34 client latency before this branch carries that stall.
+
+### `b032-shed`: a member that forgot its leader sheds read-index reads, and an agent push is answered within AGENT_PUSH_BOUND, 2026-11-18
+
+Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"). Orchestrator-approved, including both `crates/raft` changes.
+
+**Decision.** (A) A follower or learner whose read-index batch went unanswered for CAMPAIGN_DEADLINE and that forgot its leader (F67 rule 12, `raft::Member::forgot`) answers a read-index read that fails `NotLeader` naming none as `overloaded`, with `"forgot": {site, term}`. The edge's `spread_once` treats it as shed, never reads on the leader, and sends one `suspect` report about the forgotten member at that term, damped by SUSPECT_GAP. Every other `NotLeader` answers and routes as before, and `check_remote`'s timers and campaign are unchanged. (B) `AGENT_PUSH_BOUND` is 5 s from a push's arrival at the edge, for a push the edge may class Agent without a read (an App, a user token with an App, or `X-Graftyard-Agent-Session`):
+- The edge's shed-read retries end at the bound instead of LOOKUP_FOR.
+- An Agent push still unsent at the bound answers `ng <ref> agent admission full, retry after 1s`, and nothing reaches the group.
+- A sent one carries what is left as `AdmitWire::budget_ms` (`Admit::budget`). The leader refuses it `Full` at once when its expected wait (agent commands queued ahead at AGENT_SHARE × capacity, plus one round) is longer. `expire_agents` answers `Full` to any agent command still in its lane at its own deadline, the earlier of AGENT_WAIT and its budget.
+- A command cut into a batch or an entry is never answered `Full`, so no acknowledgment is lost.
+
+**Why.**
+- On B0-32 m3fr15 the leader stalled under the burst and stopped answering its learners' read-index (`IndexTaken` from 126 a second to 0 to 2). After 3 s each learner forgot it and answered `notLeader` naming none, and `spread_verdict` took that for "not mine" and sent the read gate's rows and the whole-tier dumps to the voters: 213 to 484 plain reads a second, with `/suspect` at 409 to 454 a second, and then two leader changes [measured, "Why the burst's reads reached the leader"].
+- Nothing bounded a push: admission refuses only at AGENT_QUEUE_MAX or AGENT_WAIT (30 s), so 0 of 500 burst pushes finished within 5 s and none answered `ng` (client p50 18.9 s) [measured, m3fr15].
+
+**Beat.**
+- Answering `notLeader` and letting the walk report, as on main: that is the leader load above.
+- Shedding without the report: a read-only group behind a half-hung leader would then lose the reports that elect off it (F67), which `a_read_only_group_elects_off_a_half_hung_leader` guards.
+- An absolute deadline on the wire: the edge's and the leader's clocks never meet, so the budget is relative to each send.
+- Bounding a command already in an entry: that breaks "acknowledge only after the quorum rule", since its entry may still commit.
+
+**Evidence.**
+- `leadership.rs` `a_follower_whose_read_index_timed_out_names_the_leader_it_forgot`, with the `ReadIndexRes { index: None }` control.
+- `admission.rs`:
+  - `an_agent_command_is_answered_within_its_budget_and_never_acked_after_full`: 20 of 20 refused at once behind 600 queued, Human all acked, no `Full` command in the fold.
+  - `a_queued_agent_command_expires_at_its_budget_not_at_agent_wait`: expired at 2,005 ms.
+  - `a_command_appended_before_its_budget_lapses_commits_after_it_and_is_acked`: a 1.4 s round, a 1 s budget, 5 of 5 acked at about 1.3 s.
+- The site's `a_read_index_read_on_a_member_that_forgot_its_leader_is_shed_with_the_report`, lookup's `a_shed_that_names_a_forgotten_leader_is_reported_and_never_read_on_the_leader`, and the edge's `an_agent_push_past_its_bound_is_refused_in_the_ng_shape_before_its_commit`.
+- `tests/m0carried/plant37.py`: every mutant caught.
+- The simulator's `spread_read` follows (A). The long sweep, Porcupine and `long_liveness` are judged seed by seed against main with LM-1's `progress-suspect`, in the results file.
+
+**Flip.**
+- A hosted B0-32 run whose over-5 s pushes are mostly ones already in an entry when their bound passed: a command in an entry during a leader stall is not bounded by this rule. Its entry's rounds of 2.5 to 4.1 s on m3fr15 can carry it past 5 s, and only a faster round or a smaller burst per entry would bound it.
+- A live seed past 30 s that main with `progress-suspect` passes.
+- A group whose followers shed with `forgot` while its leader still commits, which would mean the report replaced reads the leader could have served.

@@ -941,6 +941,12 @@ impl<C: Command> Member<C> {
     pub fn leader(&self) -> Option<SiteId> {
         self.leader
     }
+    /// The leader this member dropped because its read-index batch went unanswered for CAMPAIGN_DEADLINE (F67 rule 12),
+    /// until it hears a leader again. A host answers a read-index read that then fails `NotLeader` naming none as shed,
+    /// with this member named for `suspect`, rather than as not its to serve (`decisions/DECISIONS.md`, "`b032-shed`").
+    pub fn forgot(&self) -> Option<SiteId> {
+        self.forgot.filter(|_| self.leader.is_none())
+    }
     /// The entries in memory: those above `log_base()`.
     pub fn log(&self) -> &[LogEntry<Ev<C>>] {
         &self.log

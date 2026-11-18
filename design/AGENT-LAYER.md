@@ -51,7 +51,7 @@ pub enum AdmitClass { Human, MergeQueue, Bot, Agent }
 pub const AGENT_SHARE: f32 = 0.5;                                // [guess]
 pub const AGENT_FLOOR: f32 = 0.2;                                // of capacity, which Bot cannot take [guess]
 pub const DEMOTE_PER_MIN: u32 = 60;                              // GitHub's content limit is 80 a minute
-pub const AGENT_WAIT: Duration = Duration::from_secs(30);
+pub const AGENT_WAIT: Duration = Duration::from_secs(30);  // AGENT_PUSH_BOUND (5 s from edge arrival; B0-32) holds an agent push: past it before its commit is sent, `ng`; sent, it carries what is left (`Admit::budget`), refused at once if its queue wait is longer and expired if still queued then, never once in an entry [measured, m3fr15: 0 of 500 within 5 s without it]
 pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);     // queued agent commands and bytes per group [guess]
 /// A group above HOT_PUSHES pushes/s over its last 5 s of committed entries, read from the log so a new leader agrees,
 /// inlines any class's push only up to INLINE_MAX_HOT while `PackStore::place` succeeds. Every group also caps each

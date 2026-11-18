@@ -129,6 +129,21 @@ fn gate(
     Gate::Serve
 }
 
+/// A read's `NotLeader` answer. On a follower or learner's read-index read that failed naming no leader while it forgot
+/// one (`raft::Member::forgot`, F67 rule 12), the read is shed, `overloaded` as a behind member's is, with `forgot`
+/// naming that member and its term, so the edge reports it with `suspect` and never sends the read to the leader
+/// (`decisions/DECISIONS.md`, "`b032-shed`"). Any other is `notLeader`, as before.
+fn not_leader_reply(index: bool, nl: &raft::NotLeader, forgot: Option<SiteId>) -> Value {
+    match forgot {
+        Some(f) if index && nl.leader.is_none() => {
+            let mut v = graftyard_lookup::overloaded_reply(OVERLOAD_RETRY_MS);
+            v["forgot"] = json!({ "site": f.0, "term": nl.term.0 });
+            v
+        }
+        _ => json!({ "error": host::call_error_json(&CallError::NotLeader(nl.clone())) }),
+    }
+}
+
 /// `/stats?summary=1`'s form of a sample array: its count and nearest-rank p50, p99, and max, in the samples' order of
 /// size, not arrival.
 fn percentiles(xs: &[u32]) -> Value {
@@ -1889,11 +1904,10 @@ impl<F: Family> Routes<F> {
             }
             let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
             self.host.dispatch(out, None);
+            let forgot = || self.host.core.borrow().as_ref().and_then(|c| c.m.forgot());
             let rx = match (r, rx) {
                 (Ok(_), Some(rx)) => rx,
-                (Err(nl), _) => {
-                    return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
-                }
+                (Err(nl), _) => return self.reply(not_leader_reply(index, &nl, forgot())),
                 (Ok(_), None) => unreachable!("a started read has a waiter"),
             };
             self.host.served();
@@ -1938,7 +1952,7 @@ impl<F: Family> Routes<F> {
                 }
                 Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held, stages),
                 Some(Ok(Ok((host::ReadBody::Shed(..), _)))) => unreachable!("a shed answer is waited out above"),
-                Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
+                Some(Ok(Err(nl))) => self.reply(not_leader_reply(index, &nl, forgot())),
                 Some(Err(_)) => Response::error("member reset", 503),
                 None => {
                     if index {
@@ -3189,6 +3203,22 @@ async fn repo_owner_row(env: &Env, repo: graftyard_types::RepoId) -> std::result
 
 #[cfg(test)]
 mod tests {
+    /// `b032-shed` A: only a read-index read failing `NotLeader` naming none, on a member that forgot its leader, is
+    /// shed with the report; one naming a leader, one on a member that forgot none, and a plain read stay `notLeader`.
+    #[test]
+    fn a_read_index_read_on_a_member_that_forgot_its_leader_is_shed_with_the_report() {
+        use graftyard_types::SiteId;
+        let none = graftyard_raft::NotLeader { term: graftyard_raft::Term(4), leader: None, config: None };
+        let named = graftyard_raft::NotLeader { leader: Some(SiteId(2)), ..none.clone() };
+        let shed = super::not_leader_reply(true, &none, Some(SiteId(0)));
+        assert!(shed.pointer("/overloaded/retryAfterMs").is_some(), "{shed}");
+        assert_eq!(shed["forgot"], serde_json::json!({ "site": 0, "term": 4 }));
+        for (index, nl, forgot) in [(true, &named, Some(SiteId(0))), (true, &none, None), (false, &none, Some(SiteId(0)))] {
+            let v = super::not_leader_reply(index, nl, forgot);
+            assert!(v.pointer("/error/notLeader").is_some() && v.get("overloaded").is_none(), "{v}");
+        }
+    }
+
     use graftyard_types::SiteId;
     use serde_json::json;
 

@@ -927,9 +927,32 @@ async fn spread_once(
     let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
     match spread_verdict(&seen) {
         Spread::Use(_) => unreachable!("a usable answer returned above"),
-        Spread::Shed(ms) => Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms)),
+        Spread::Shed(ms) => {
+            // A member that shed it because its read-index call to the leader went unanswered (F67 rule 12) names
+            // that leader: one `suspect` report about it, damped by SUSPECT_GAP, stands in for the leader walk a
+            // `notLeader` answer used to start, so a half-hung leader is still voted off (`b032-shed`).
+            if let Some((site, term)) = forgot_of(&seen)
+                && let Some(about) = known_voters(chain).into_iter().find(|v| v.site == site)
+            {
+                let colo = COLO.with(|c| c.get());
+                suspect(b, chain, &about, term, colo, false).await;
+            }
+            Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms))
+        }
         Spread::Leader => Ok(call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await),
     }
+}
+
+/// The leader a shed answer says its member forgot (`"forgot": {"site", "term"}`, a site's read-index read that failed
+/// naming no leader after F67 rule 12), with the highest term among the answers.
+fn forgot_of(answers: &[Option<(u16, &Value)>]) -> Option<(SiteId, u64)> {
+    answers
+        .iter()
+        .filter_map(|r| {
+            let f = r.as_ref()?.1.get("forgot")?;
+            Some((SiteId(u8::try_from(f.get("site")?.as_u64()?).ok()?), f.get("term")?.as_u64()?))
+        })
+        .max_by_key(|(_, t)| *t)
 }
 
 /// Learns the config a member's `notLeader` answer carries.
@@ -2492,6 +2515,26 @@ mod tests {
         ] {
             assert_eq!(spread_verdict(&answers), Spread::Leader, "{answers:?}");
         }
+    }
+
+    /// `b032-shed` A: a member that forgot its leader sheds the read and names it. Every such answer is `Shed`, never a
+    /// read for the leader, and `forgot_of` names the member to report, at the highest term named. A plain `notLeader`
+    /// from every member still goes to the leader, and a shed with no `forgot` reports none.
+    #[test]
+    fn a_shed_that_names_a_forgotten_leader_is_reported_and_never_read_on_the_leader() {
+        let forgot = |site: u8, term: u64| {
+            let mut v = overloaded_reply(250);
+            v["forgot"] = json!({ "site": site, "term": term });
+            v
+        };
+        let (f3, f4) = (forgot(0, 3), forgot(0, 4));
+        let named = json!({ "error": { "notLeader": { "term": 3, "leader": 0 } } });
+        let shed = overloaded_reply(250);
+        let all = [Some((200, &f3)), Some((200, &f4)), Some((200, &f3))];
+        assert!(matches!(spread_verdict(&all), Spread::Shed(_)));
+        assert_eq!(forgot_of(&all), Some((SiteId(0), 4)));
+        assert_eq!(forgot_of(&[Some((200, &shed)), None]), None);
+        assert_eq!(spread_verdict(&[Some((200, &named)), Some((200, &named))]), Spread::Leader);
     }
 
     /// A shed spread read waits the longest `retryAfterMs` its members named, else OVERLOAD_RETRY_MS (one timed out or

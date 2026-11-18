@@ -108,7 +108,7 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
-## B0-32 design proposal: `b032-shed` (design only, no code yet; branch `b032-shed` from main `9ecd8314`)
+## B0-32 design proposal: `b032-shed` (approved 2026-11-18 and built on branch `b032-shed`; DECISIONS "`b032-shed`")
 
 Two changes, one row. Part A stops a stalled leader's read-index timeouts from turning into leader reads. Part B bounds an agent push at 5 s from its arrival at the edge, so a push that cannot commit in time answers B0-32's `ng` shape.
 

@@ -22,7 +22,7 @@ fn secs(default: u64) -> u64 {
 }
 
 fn op(at: u64, class: AdmitClass, actor: Option<u64>, kind: Kind, key: String, pack: usize) -> Op {
-    Op { at, class, actor, kind, key, pack, expect: None, render: 0 }
+    Op { at, class, actor, kind, key, pack, expect: None, render: 0, bound: None }
 }
 
 /// Journey 9's mix from `t0` for `secs`: 500 agents push distinct refs every 2 min (4.17/s; 40 KB, 5% at 1 MiB),
@@ -600,4 +600,83 @@ fn hot_is_read_from_the_log_so_a_new_leader_stages_at_once() {
     let hot = l.done.iter().find(|d| d.op.key == "refs/heads/hot").expect("done");
     println!("hot from the log: new leader after {waited} ms; 200 KiB push staged {}", hot.staged);
     assert!(hot.staged, "the new leader read hot from the log");
+}
+
+/// `b032-shed` B: an agent command carries what is left of AGENT_PUSH_BOUND (`Admit::budget`). With the agent lane
+/// backed up, one whose expected wait is past its budget is refused `Full` at once; one admitted with 2 s left is
+/// answered `Full` at 2 s while still queued, not at AGENT_WAIT; Human commands beside them are never refused. And no
+/// refused or expired command was acknowledged, nor committed after its answer.
+#[test]
+fn an_agent_command_is_answered_within_its_budget_and_never_acked_after_full() {
+    let mut l = Load::new(11, ENAM);
+    // 10 agent commands a second admitted: 600 offered at once fill the lane for about a minute.
+    l.set_capacity(Some(20.0));
+    let t0 = l.now + 100;
+    let bound = |b: u64| move |o: Op| Op { bound: Some(b), ..o };
+    l.offer((0..600).map(|i| op(t0, AdmitClass::Agent, Some(i % 30), Kind::Side, format!("w/{i}"), 0)));
+    l.offer((0..20).map(|i| bound(2_000)(op(t0 + 50, AdmitClass::Agent, Some(900), Kind::Side, format!("b/{i}"), 0))));
+    l.offer((0..20).map(|i| op(t0 + 60, AdmitClass::Human, None, Kind::Side, format!("h/{i}"), 0)));
+    l.drain(90_000);
+    let of = |p: &str| l.done.iter().filter(|d| d.op.key.starts_with(p)).collect::<Vec<_>>();
+    let (bounded, humans) = (of("b/"), of("h/"));
+    assert_eq!(bounded.len(), 20);
+    // The lane held about 600 commands at 10/s: the expected wait (about 60 s) is past 2 s for every one.
+    let at_once = bounded.iter().filter(|d| matches!(d.end, End::Full { waited: false, .. })).count();
+    println!("budget 2 s behind 600 agent commands: {at_once} of 20 refused at once, {:?}", bounded.iter().map(|d| d.ms).max());
+    assert_eq!(at_once, 20, "an agent command whose expected wait passes its budget is refused at admission");
+    assert!(bounded.iter().all(|d| d.ms <= 2_000), "every bounded command answered within its bound");
+    assert!(humans.iter().all(|d| matches!(d.end, End::Acked { .. })), "Human is never refused: {humans:?}");
+    // The invariant: a command answered Full is never in the committed log.
+    let leader = l.leader().expect("leader");
+    let fold = &l.members[leader.0 as usize].group_fold().fold;
+    for d in l.done.iter().filter(|d| matches!(d.end, End::Full { .. })) {
+        assert!(fold.0.get(&d.op.key).is_none(), "{} was answered Full and committed", d.op.key);
+    }
+}
+
+/// `b032-shed` B: a bounded agent command queued behind others, whose expected wait at admission fits its budget, is
+/// answered `Full` once its budget passes while it is still queued (capacity fell after it was admitted), never later,
+/// and never as an ack.
+#[test]
+fn a_queued_agent_command_expires_at_its_budget_not_at_agent_wait() {
+    let mut l = Load::new(12, ENAM);
+    l.set_capacity(Some(400.0));
+    let t0 = l.now + 100;
+    l.offer((0..30).map(|i| Op { bound: Some(2_000), ..op(t0, AdmitClass::Agent, Some(i), Kind::Side, format!("q/{i}"), 0) }));
+    // Admitted at 200 agent commands a second; then the agent rate drops to 1 a second, so the queue stalls.
+    l.run_for(105);
+    l.set_capacity(Some(2.0));
+    l.drain(60_000);
+    let waited: Vec<_> = l.done.iter().filter(|d| matches!(d.end, End::Full { waited: true, .. })).collect();
+    let acked: Vec<_> = l.done.iter().filter(|d| matches!(d.end, End::Acked { .. })).collect();
+    println!("{} acked, {} expired at {:?} ms", acked.len(), waited.len(), waited.iter().map(|d| d.ms).collect::<Vec<_>>());
+    assert!(!waited.is_empty(), "some queued command expired");
+    assert!(waited.iter().all(|d| d.ms >= 2_000 && d.ms <= 2_100), "expired at its 2 s budget, not at AGENT_WAIT");
+    let leader = l.leader().expect("leader");
+    let fold = &l.members[leader.0 as usize].group_fold().fold;
+    for d in &waited {
+        assert!(fold.0.get(&d.op.key).is_none(), "{} expired and committed", d.op.key);
+    }
+}
+
+/// `b032-shed` B, the acknowledgment rule: a command appended to an entry before its budget lapses is never answered
+/// `Full`. Rounds slowed to about 1.4 s, past a 1 s budget; each command arrives at an idle leader, so it is appended at
+/// once, commits after its budget, and still gets its ack. A command still queued at its budget is the only kind that
+/// expires (`a_queued_agent_command_expires_at_its_budget_not_at_agent_wait`).
+#[test]
+fn a_command_appended_before_its_budget_lapses_commits_after_it_and_is_acked() {
+    let mut l = Load::new(13, ENAM);
+    l.slow_ms = 600;
+    let t0 = l.now + 100;
+    l.offer((0..5u64).map(|i| Op {
+        bound: Some(1_000),
+        ..op(t0 + i * 4_000, AdmitClass::Agent, Some(i), Kind::Side, format!("a/{i}"), 0)
+    }));
+    l.drain(40_000);
+    println!("bounded 1 s on a 1.4 s round: {:?}", l.done.iter().map(|d| (&d.end, d.ms)).collect::<Vec<_>>());
+    assert_eq!(l.done.len(), 5);
+    assert!(
+        l.done.iter().all(|d| matches!(d.end, End::Acked { .. }) && d.ms > 1_000),
+        "each was appended in time, committed past its budget, and was acknowledged"
+    );
 }

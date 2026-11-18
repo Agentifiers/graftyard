@@ -959,6 +959,7 @@ fn an_actor_past_demote_per_min_is_demoted() {
             push: false,
             inline: 0,
             placement_ok: true,
+            budget: None,
         };
         let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
         let c = open_issue(WRITER, &format!("probe{i}"));
@@ -975,6 +976,7 @@ fn an_actor_past_demote_per_min_is_demoted() {
         push: false,
         inline: 0,
         placement_ok: true,
+        budget: None,
     };
     let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
     let c = open_issue(WRITER2, "other");
