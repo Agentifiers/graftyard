@@ -1,0 +1,243 @@
+2026-11-18T18:52:13.755Z 40/254 refs/heads/main est 15.3 MB: ok 24232 ms
+2026-11-18T18:52:36.918Z 41/254 refs/heads/main est 25.2 MB: ok 23154 ms
+2026-11-18T18:52:43.722Z 42/254 refs/heads/main est 2.6 MB: ok 6803 ms
+2026-11-18T18:53:05.306Z 43/254 refs/heads/main est 27.6 MB: ok 21584 ms
+2026-11-18T18:53:20.480Z 44/254 refs/heads/main est 26.5 MB: ok 15173 ms
+2026-11-18T18:53:30.222Z 45/254 refs/heads/main est 12.7 MB: ok 9742 ms
+2026-11-18T18:54:01.622Z 46/254 refs/heads/main est 28.1 MB: ok 31399 ms
+2026-11-18T18:54:36.937Z 47/254 refs/heads/main est 29.1 MB: ok 35312 ms
+2026-11-18T18:55:09.799Z 48/254 refs/heads/main est 23.7 MB: ok 32861 ms
+2026-11-18T18:55:36.682Z 49/254 refs/heads/main est 10.8 MB: ok 26882 ms
+2026-11-18T18:56:12.226Z 50/254 refs/heads/main est 27.6 MB: ok 35543 ms
+2026-11-18T18:56:25.026Z 51/254 refs/heads/main est 9.0 MB: ok 12798 ms
+2026-11-18T18:56:56.967Z 52/254 refs/heads/main est 28.0 MB: ok 31941 ms
+2026-11-18T18:57:21.338Z 53/254 refs/heads/main est 20.6 MB: ok 24370 ms
+2026-11-18T18:57:50.501Z 54/254 refs/heads/main est 17.8 MB: ok 29161 ms
+2026-11-18T18:58:19.412Z 55/254 refs/heads/main est 24.2 MB: ok 28911 ms
+2026-11-18T18:58:55.774Z 56/254 refs/heads/main est 29.6 MB: ok 36361 ms
+2026-11-18T18:59:28.193Z 57/254 refs/heads/main est 26.9 MB: ok 32418 ms
+2026-11-18T19:00:06.325Z 58/254 refs/heads/main est 26.3 MB: ok 38131 ms
+2026-11-18T19:00:25.364Z 59/254 refs/heads/main est 11.9 MB: ok 19039 ms
+2026-11-18T19:00:49.361Z 60/254 refs/heads/main est 19.6 MB: ok 23996 ms
+2026-11-18T19:01:11.498Z 61/254 refs/heads/main est 18.1 MB: ok 22137 ms
+2026-11-18T19:01:35.612Z 62/254 refs/heads/main est 15.1 MB: ok 24113 ms
+2026-11-18T19:02:07.715Z 63/254 refs/heads/main est 29.5 MB: ok 32102 ms
+2026-11-18T19:02:37.224Z 64/254 refs/heads/main est 28.1 MB: ok 29509 ms
+2026-11-18T19:02:50.315Z 65/254 refs/heads/main est 11.6 MB: ok 13088 ms
+2026-11-18T19:03:39.126Z 66/254 refs/heads/main est 27.5 MB: ok 48810 ms
+2026-11-18T19:03:51.242Z 67/254 refs/heads/main est 10.2 MB: ok 12115 ms
+2026-11-18T19:04:16.679Z 68/254 refs/heads/main est 26.2 MB: ok 25437 ms
+2026-11-18T19:04:29.488Z 69/254 refs/heads/main est 11.2 MB: ok 12807 ms
+2026-11-18T19:05:04.144Z 70/254 refs/heads/main est 24.8 MB: ok 34656 ms
+2026-11-18T19:05:18.498Z 71/254 refs/heads/main est 12.2 MB: ok 14354 ms
+2026-11-18T19:05:55.917Z 72/254 refs/heads/main est 29.6 MB: ok 37417 ms
+2026-11-18T19:06:11.035Z 73/254 refs/heads/main est 7.4 MB: ok 15117 ms
+2026-11-18T19:06:24.224Z 74/254 refs/heads/main est 10.4 MB: ok 13189 ms
+2026-11-18T19:07:00.891Z 75/254 refs/heads/main est 25.7 MB: ok 36665 ms
+2026-11-18T19:07:29.450Z 76/254 refs/heads/main est 26.3 MB: ok 28559 ms
+2026-11-18T19:07:59.563Z 77/254 refs/heads/main est 22.7 MB: ok 30111 ms
+2026-11-18T19:08:19.195Z 78/254 refs/heads/main est 18.1 MB: ok 19632 ms
+2026-11-18T19:08:45.219Z 79/254 refs/heads/main est 21.8 MB: ok 26023 ms
+2026-11-18T19:08:58.731Z 80/254 refs/heads/main est 12.1 MB: ok 13512 ms
+2026-11-18T19:09:35.291Z 81/254 refs/heads/main est 26.4 MB: ok 36559 ms
+2026-11-18T19:09:57.102Z 82/254 refs/heads/main est 11.0 MB: ok 21809 ms
+2026-11-18T19:10:15.361Z 83/254 refs/heads/main est 18.2 MB: ok 18259 ms
+2026-11-18T19:10:36.807Z 84/254 refs/heads/main est 21.1 MB: ok 21445 ms
+2026-11-18T19:11:15.961Z 85/254 refs/heads/main est 20.2 MB: send-pack: unexpected disconnect while reading sideband packet | fatal: the remote end hung up unexpectedly 39154 ms
+2026-11-18T19:11:30.994Z 85/254 refs/heads/main est 20.2 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 22 ms
+2026-11-18T19:12:26.571Z 85/254 refs/heads/main est 20.2 MB: ok 25570 ms
+2026-11-18T19:12:50.343Z 86/254 refs/heads/main est 23.0 MB: ok 23771 ms
+2026-11-18T19:12:57.636Z 87/254 refs/heads/main est 3.5 MB: ok 7292 ms
+2026-11-18T19:13:25.029Z 88/254 refs/heads/main est 25.0 MB: ok 27393 ms
+2026-11-18T19:13:49.573Z 89/254 refs/heads/main est 24.7 MB: ok 24544 ms
+2026-11-18T19:14:04.489Z 90/254 refs/heads/main est 17.6 MB: ok 14915 ms
+2026-11-18T19:14:31.278Z 91/254 refs/heads/main est 29.4 MB: ok 26789 ms
+2026-11-18T19:14:48.266Z 92/254 refs/heads/main est 13.9 MB: ok 16987 ms
+2026-11-18T19:15:22.128Z 93/254 refs/heads/main est 27.6 MB: ok 33862 ms
+2026-11-18T19:15:53.466Z 94/254 refs/heads/main est 27.8 MB: ok 31338 ms
+2026-11-18T19:16:08.486Z 95/254 refs/heads/main est 20.0 MB: ok 15020 ms
+2026-11-18T19:16:36.106Z 96/254 refs/heads/main est 28.9 MB: ok 27619 ms
+2026-11-18T19:16:59.643Z 97/254 refs/heads/main est 28.0 MB: ok 23536 ms
+2026-11-18T19:17:17.931Z 98/254 refs/heads/main est 14.3 MB: ok 18288 ms
+2026-11-18T19:17:17.962Z 99/254 refs/heads/main est 22.1 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 17 ms: Could not connec 30 ms
+2026-11-18T19:17:33.000Z 99/254 refs/heads/main est 22.1 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 2 ms: Could not connect 28 ms
+2026-11-18T19:18:20.628Z 99/254 refs/heads/main est 22.1 MB: ok 17623 ms
+2026-11-18T19:18:20.648Z 100/254 refs/heads/main est 26.6 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 19 ms
+2026-11-18T19:18:35.682Z 100/254 refs/heads/main est 26.6 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 2 ms: Could not connect 23 ms
+2026-11-18T19:19:26.414Z 100/254 refs/heads/main est 26.6 MB: ok 20727 ms
+2026-11-18T19:19:38.312Z 101/254 refs/heads/main est 13.2 MB: ok 11898 ms
+2026-11-18T19:19:52.463Z 102/254 refs/heads/main est 17.8 MB: ok 14151 ms
+2026-11-18T19:20:10.598Z 103/254 refs/heads/main est 20.9 MB: ok 18135 ms
+2026-11-18T19:20:12.188Z 104/254 refs/heads/main est 27.4 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1575 ms: Could not conn 1590 ms
+2026-11-18T19:20:46.341Z 104/254 refs/heads/main est 27.4 MB: ok 19145 ms
+2026-11-18T19:21:04.911Z 105/254 refs/heads/main est 29.7 MB: ok 18569 ms
+2026-11-18T19:21:29.665Z 106/254 refs/heads/main est 6.3 MB: ok 24753 ms
+2026-11-18T19:21:29.683Z 107/254 refs/heads/main est 11.5 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Could not resolve host: graft-m1-edge.<workers-subdomain>.workers.dev 18 ms
+2026-11-18T19:21:58.531Z 107/254 refs/heads/main est 11.5 MB: ok 13840 ms
+2026-11-18T19:22:21.256Z 108/254 refs/heads/main est 21.8 MB: ok 22723 ms
+2026-11-18T19:22:21.274Z 109/254 refs/heads/main est 27.2 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 18 ms
+2026-11-18T19:22:58.434Z 109/254 refs/heads/main est 27.2 MB: ok 22153 ms
+2026-11-18T19:23:06.395Z 110/254 refs/heads/main est 4.9 MB: ok 7959 ms
+2026-11-18T19:23:17.762Z 111/254 refs/heads/main est 11.8 MB: ok 11366 ms
+2026-11-18T19:23:47.367Z 112/254 refs/heads/main est 22.7 MB: ok 29604 ms
+2026-11-18T19:24:08.798Z 113/254 refs/heads/main est 28.5 MB: ok 21428 ms
+2026-11-18T19:24:18.299Z 114/254 refs/heads/main est 8.9 MB: ok 9501 ms
+2026-11-18T19:24:40.977Z 115/254 refs/heads/main est 25.1 MB: ok 22678 ms
+2026-11-18T19:25:05.247Z 116/254 refs/heads/main est 24.0 MB: ok 24270 ms
+2026-11-18T19:25:19.383Z 117/254 refs/heads/main est 6.8 MB: ok 14134 ms
+2026-11-18T19:30:19.443Z 118/254 refs/heads/main est 22.9 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Connection timed out after 300040 milliseconds 300058 ms
+2026-11-18T19:31:05.299Z 118/254 refs/heads/main est 22.9 MB: ok 30848 ms
+2026-11-18T19:31:24.630Z 119/254 refs/heads/main est 17.8 MB: ok 19330 ms
+2026-11-18T19:31:32.590Z 120/254 refs/heads/main est 4.0 MB: ok 7960 ms
+2026-11-18T19:31:36.639Z 121/254 refs/heads/main est 18.4 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 4031 ms: Could not conn 4049 ms
+2026-11-18T19:31:51.677Z 121/254 refs/heads/main est 18.4 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 2 ms: Could not connect 29 ms
+2026-11-18T19:32:37.298Z 121/254 refs/heads/main est 18.4 MB: ok 15616 ms
+2026-11-18T19:32:59.356Z 122/254 refs/heads/main est 27.3 MB: ok 22057 ms
+2026-11-18T19:33:11.777Z 123/254 refs/heads/main est 10.5 MB: ok 12419 ms
+2026-11-18T19:33:38.794Z 124/254 refs/heads/main est 27.1 MB: ok 27017 ms
+2026-11-18T19:34:00.609Z 125/254 refs/heads/main est 22.0 MB: ok 21815 ms
+2026-11-18T19:34:02.654Z 126/254 refs/heads/main est 17.9 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 2021 ms: Could not conn 2045 ms
+2026-11-18T19:34:17.687Z 126/254 refs/heads/main est 17.9 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 26 ms
+2026-11-18T19:34:50.737Z 126/254 refs/heads/main est 17.9 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 3023 ms: Could not conn 3046 ms
+2026-11-18T19:35:54.828Z 126/254 refs/heads/main est 17.9 MB: ok 19086 ms
+2026-11-18T19:36:19.348Z 127/254 refs/heads/main est 28.8 MB: ok 24518 ms
+2026-11-18T19:36:30.207Z 128/254 refs/heads/main est 7.6 MB: ok 10859 ms
+2026-11-18T19:36:50.500Z 129/254 refs/heads/main est 20.4 MB: ok 20293 ms
+2026-11-18T19:37:14.636Z 130/254 refs/heads/main est 24.6 MB: ok 24135 ms
+2026-11-18T19:37:28.178Z 131/254 refs/heads/main est 4.0 MB: ok 13542 ms
+2026-11-18T19:37:58.449Z 132/254 refs/heads/main est 28.6 MB: ok 30270 ms
+2026-11-18T19:38:29.637Z 133/254 refs/heads/main est 29.7 MB: ok 31188 ms
+2026-11-18T19:38:49.743Z 134/254 refs/heads/main est 19.9 MB: ok 20105 ms
+2026-11-18T19:39:18.560Z 135/254 refs/heads/main est 28.6 MB: ok 28817 ms
+2026-11-18T19:39:39.455Z 136/254 refs/heads/main est 9.8 MB: ok 20894 ms
+2026-11-18T19:39:49.402Z 137/254 refs/heads/main est 7.5 MB: ok 9947 ms
+2026-11-18T19:40:00.422Z 138/254 refs/heads/main est 9.7 MB: ok 11020 ms
+2026-11-18T19:40:36.594Z 139/254 refs/heads/main est 25.4 MB: ok 36171 ms
+2026-11-18T19:40:36.630Z 140/254 refs/heads/main est 16.7 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 17 ms: Could not connec 36 ms
+2026-11-18T19:40:52.297Z 140/254 refs/heads/main est 16.7 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 640 ms: Could not conne 660 ms
+2026-11-18T19:41:40.724Z 140/254 refs/heads/main est 16.7 MB: ok 18419 ms
+2026-11-18T19:41:40.996Z 141/254 refs/heads/main est 12.6 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Could not resolve host: graft-m1-edge.<workers-subdomain>.workers.dev 271 ms
+2026-11-18T19:41:56.024Z 141/254 refs/heads/main est 12.6 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 20 ms
+2026-11-18T19:42:38.212Z 141/254 refs/heads/main est 12.6 MB: ok 12183 ms
+2026-11-18T19:42:53.925Z 142/254 refs/heads/main est 18.9 MB: ok 15712 ms
+2026-11-18T19:43:11.286Z 143/254 refs/heads/main est 23.3 MB: ok 17360 ms
+2026-11-18T19:43:30.185Z 144/254 refs/heads/main est 20.2 MB: ok 18896 ms
+2026-11-18T19:43:49.963Z 145/254 refs/heads/main est 20.1 MB: ok 19777 ms
+2026-11-18T19:44:17.850Z 146/254 refs/heads/main est 28.0 MB: ok 27886 ms
+2026-11-18T19:44:44.920Z 147/254 refs/heads/main est 11.1 MB: ok 27069 ms
+2026-11-18T19:45:09.878Z 148/254 refs/heads/main est 29.3 MB: ok 24958 ms
+2026-11-18T19:45:28.010Z 149/254 refs/heads/main est 15.3 MB: ok 18132 ms
+2026-11-18T19:45:38.166Z 150/254 refs/heads/main est 7.1 MB: ok 10156 ms
+2026-11-18T19:45:40.212Z 151/254 refs/heads/main est 12.4 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Could not resolve host: graft-m1-edge.<workers-subdomain>.workers.dev 2046 ms
+2026-11-18T19:45:55.243Z 151/254 refs/heads/main est 12.4 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 23 ms
+2026-11-18T19:46:38.081Z 151/254 refs/heads/main est 12.4 MB: ok 12832 ms
+2026-11-18T19:46:38.128Z 152/254 refs/heads/main est 29.9 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 28 ms: Could not connec 46 ms
+2026-11-18T19:47:19.050Z 152/254 refs/heads/main est 29.9 MB: ok 25914 ms
+2026-11-18T19:47:47.513Z 153/254 refs/heads/main est 25.9 MB: ok 28462 ms
+2026-11-18T19:47:47.527Z 154/254 refs/heads/main est 5.6 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Could not resolve host: graft-m1-edge.<workers-subdomain>.workers.dev 14 ms
+2026-11-18T19:48:11.079Z 154/254 refs/heads/main est 5.6 MB: ok 8544 ms
+2026-11-18T19:48:23.069Z 155/254 refs/heads/main est 11.3 MB: ok 11990 ms
+2026-11-18T19:48:43.219Z 156/254 refs/heads/main est 6.4 MB: ok 20149 ms
+2026-11-18T19:48:43.233Z 157/254 refs/heads/main est 24.2 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 13 ms
+2026-11-18T19:48:58.259Z 157/254 refs/heads/main est 24.2 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 2 ms: Could not connect 19 ms
+2026-11-18T19:49:45.739Z 157/254 refs/heads/main est 24.2 MB: ok 17474 ms
+2026-11-18T19:50:05.035Z 158/254 refs/heads/main est 25.3 MB: ok 19295 ms
+2026-11-18T19:50:20.215Z 159/254 refs/heads/main est 19.7 MB: ok 15179 ms
+2026-11-18T19:50:36.270Z 160/254 refs/heads/main est 22.7 MB: ok 16055 ms
+2026-11-18T19:51:03.305Z 161/254 refs/heads/main est 19.5 MB: ok 27035 ms
+2026-11-18T19:51:22.447Z 162/254 refs/heads/main est 29.2 MB: ok 19141 ms
+2026-11-18T19:51:37.525Z 163/254 refs/heads/main est 21.4 MB: ok 15077 ms
+2026-11-18T19:51:45.736Z 164/254 refs/heads/main est 5.4 MB: ok 8210 ms
+2026-11-18T19:51:58.779Z 165/254 refs/heads/main est 15.1 MB: ok 13042 ms
+2026-11-18T19:52:20.113Z 166/254 refs/heads/main est 22.0 MB: ok 21334 ms
+2026-11-18T19:52:46.871Z 167/254 refs/heads/main est 23.9 MB: ok 26756 ms
+2026-11-18T19:53:00.475Z 168/254 refs/heads/main est 15.6 MB: ok 13604 ms
+2026-11-18T19:53:37.234Z 169/254 refs/heads/main est 28.0 MB: ok 36758 ms
+2026-11-18T19:54:06.217Z 170/254 refs/heads/main est 16.5 MB: ok 28983 ms
+2026-11-18T19:54:24.164Z 171/254 refs/heads/main est 21.8 MB: ok 17946 ms
+2026-11-18T19:54:37.547Z 172/254 refs/heads/main est 16.3 MB: ok 13382 ms
+2026-11-18T19:54:54.580Z 173/254 refs/heads/main est 27.0 MB: ok 17033 ms
+2026-11-18T19:55:10.994Z 174/254 refs/heads/main est 26.9 MB: ok 16413 ms
+2026-11-18T19:55:18.280Z 175/254 refs/heads/main est 6.0 MB: ok 7286 ms
+2026-11-18T19:55:27.541Z 176/254 refs/heads/main est 9.7 MB: ok 9261 ms
+2026-11-18T19:55:35.333Z 177/254 refs/heads/main est 3.8 MB: ok 7792 ms
+2026-11-18T19:55:41.556Z 178/254 refs/heads/main est 1.5 MB: ok 6223 ms
+2026-11-18T19:56:07.972Z 179/254 refs/heads/main est 17.8 MB: ok 26415 ms
+2026-11-18T19:56:22.882Z 180/254 refs/heads/main est 24.5 MB: ok 14910 ms
+2026-11-18T19:56:54.136Z 181/254 refs/heads/main est 25.5 MB: ok 31254 ms
+2026-11-18T19:57:07.758Z 182/254 refs/heads/main est 19.2 MB: ok 13622 ms
+2026-11-18T19:57:16.805Z 183/254 refs/heads/main est 10.5 MB: ok 9047 ms
+2026-11-18T19:57:28.850Z 184/254 refs/heads/main est 26.4 MB: ok 12045 ms
+2026-11-18T19:57:42.671Z 185/254 refs/heads/main est 24.8 MB: ok 13820 ms
+2026-11-18T19:57:58.223Z 186/254 refs/heads/main est 27.3 MB: ok 15551 ms
+2026-11-18T19:58:09.034Z 187/254 refs/heads/main est 22.5 MB: ok 10811 ms
+2026-11-18T19:58:30.602Z 188/254 refs/heads/main est 13.2 MB: ok 21567 ms
+2026-11-18T19:58:30.624Z 189/254 refs/heads/main est 23.0 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 2 ms: Could not connect 21 ms
+2026-11-18T19:58:45.653Z 189/254 refs/heads/main est 23.0 MB: fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/b034-mono-t.git/': Failed to connect to graft-m1-edge.<workers-subdomain>.workers.dev:443 after 1 ms: Could not connect 22 ms
+2026-11-18T19:59:29.182Z 189/254 refs/heads/main est 23.0 MB: ok 13523 ms
+2026-11-18T19:59:44.365Z 190/254 refs/heads/main est 26.5 MB: ok 15183 ms
+2026-11-18T20:00:04.876Z 191/254 refs/heads/main est 20.1 MB: ok 20511 ms
+2026-11-18T20:00:15.872Z 192/254 refs/heads/main est 18.9 MB: ok 10995 ms
+2026-11-18T20:00:23.263Z 193/254 refs/heads/main est 5.4 MB: ok 7390 ms
+2026-11-18T20:00:47.749Z 194/254 refs/heads/main est 10.9 MB: ok 24486 ms
+2026-11-18T20:01:03.448Z 195/254 refs/heads/main est 27.1 MB: ok 15698 ms
+2026-11-18T20:01:18.982Z 196/254 refs/heads/main est 22.3 MB: ok 15534 ms
+2026-11-18T20:01:50.326Z 197/254 refs/heads/main est 22.0 MB: ok 31344 ms
+2026-11-18T20:02:05.074Z 198/254 refs/heads/main est 7.1 MB: ok 14748 ms
+2026-11-18T20:02:17.847Z 199/254 refs/heads/main est 13.7 MB: ok 12773 ms
+2026-11-18T20:02:28.514Z 200/254 refs/heads/main est 11.8 MB: ok 10666 ms
+2026-11-18T20:02:41.091Z 201/254 refs/heads/main est 19.3 MB: ok 12577 ms
+2026-11-18T20:02:55.998Z 202/254 refs/heads/main est 25.9 MB: ok 14906 ms
+2026-11-18T20:03:13.627Z 203/254 refs/heads/main est 27.6 MB: ok 17629 ms
+2026-11-18T20:03:23.423Z 204/254 refs/heads/main est 9.0 MB: ok 9795 ms
+2026-11-18T20:03:30.269Z 205/254 refs/heads/main est 6.7 MB: ok 6846 ms
+2026-11-18T20:03:37.220Z 206/254 refs/heads/main est 6.5 MB: ok 6950 ms
+2026-11-18T20:03:48.764Z 207/254 refs/heads/main est 20.8 MB: ok 11542 ms
+2026-11-18T20:04:07.765Z 208/254 refs/heads/main est 28.1 MB: ok 19001 ms
+2026-11-18T20:04:28.249Z 209/254 refs/heads/main est 20.4 MB: ok 20484 ms
+2026-11-18T20:04:42.857Z 210/254 refs/heads/main est 22.8 MB: ok 14608 ms
+2026-11-18T20:05:10.175Z 211/254 refs/heads/main est 23.3 MB: ok 27317 ms
+2026-11-18T20:05:23.417Z 212/254 refs/heads/main est 17.2 MB: ok 13242 ms
+2026-11-18T20:05:38.023Z 213/254 refs/heads/main est 24.3 MB: ok 14606 ms
+2026-11-18T20:05:57.622Z 214/254 refs/heads/main est 28.2 MB: ok 19599 ms
+2026-11-18T20:06:08.934Z 215/254 refs/heads/main est 16.5 MB: ok 11311 ms
+2026-11-18T20:06:21.679Z 216/254 refs/heads/main est 22.8 MB: ok 12744 ms
+2026-11-18T20:06:48.327Z 217/254 refs/heads/main est 19.9 MB: ok 26648 ms
+2026-11-18T20:06:57.841Z 218/254 refs/heads/main est 13.8 MB: ok 9513 ms
+2026-11-18T20:07:03.761Z 219/254 refs/heads/main est 3.9 MB: ok 5919 ms
+2026-11-18T20:07:08.486Z 220/254 refs/heads/main est 0.8 MB: ok 4724 ms
+2026-11-18T20:07:25.127Z 221/254 refs/heads/main est 0.1 MB: ok 16641 ms
+2026-11-18T20:07:38.410Z 222/254 refs/heads/main est 30.0 MB: ok 13283 ms
+2026-11-18T20:07:53.040Z 223/254 refs/heads/main est 25.8 MB: ok 14630 ms
+2026-11-18T20:08:08.051Z 224/254 refs/heads/main est 27.3 MB: ok 15010 ms
+2026-11-18T20:08:20.924Z 225/254 refs/heads/main est 23.3 MB: ok 12872 ms
+2026-11-18T20:08:38.742Z 226/254 refs/heads/main est 28.5 MB: ok 17817 ms
+2026-11-18T20:09:02.850Z 227/254 refs/heads/main est 9.0 MB: ok 24108 ms
+2026-11-18T20:09:15.467Z 228/254 refs/heads/main est 13.8 MB: ok 12616 ms
+2026-11-18T20:09:45.115Z 229/254 refs/heads/main est 21.3 MB: ok 29648 ms
+2026-11-18T20:10:03.990Z 230/254 refs/heads/main est 25.0 MB: ok 18874 ms
+2026-11-18T20:10:17.660Z 231/254 refs/heads/main est 13.7 MB: ok 13670 ms
+2026-11-18T20:10:41.880Z 232/254 refs/heads/main est 29.2 MB: ok 24220 ms
+2026-11-18T20:11:03.473Z 233/254 refs/heads/main est 23.0 MB: ok 21593 ms
+2026-11-18T20:11:19.149Z 234/254 refs/heads/main est 5.5 MB: ok 15674 ms
+2026-11-18T20:11:31.957Z 235/254 refs/heads/main est 16.5 MB: ok 12807 ms
+2026-11-18T20:11:47.668Z 236/254 refs/heads/main est 26.1 MB: ok 15711 ms
+2026-11-18T20:12:11.318Z 237/254 refs/heads/main est 21.4 MB: ok 23649 ms
+2026-11-18T20:12:25.362Z 238/254 refs/heads/main est 23.7 MB: ok 14043 ms
+2026-11-18T20:12:47.988Z 239/254 refs/heads/main est 18.0 MB: ok 22625 ms
+2026-11-18T20:12:59.978Z 240/254 refs/heads/main est 21.1 MB: ok 11989 ms
+2026-11-18T20:13:30.776Z 241/254 refs/heads/main est 27.5 MB: ok 30796 ms
+2026-11-18T20:13:44.326Z 242/254 refs/heads/main est 21.1 MB: ok 13550 ms
+2026-11-18T20:13:58.812Z 243/254 refs/heads/main est 25.1 MB: ok 14486 ms
+2026-11-18T20:14:06.376Z 244/254 refs/heads/main est 3.2 MB: ok 7563 ms
+2026-11-18T20:14:12.775Z 245/254 refs/heads/main est 4.0 MB: ok 6398 ms
+2026-11-18T20:14:33.380Z 246/254 refs/heads/main est 29.3 MB: ok 20605 ms
+2026-11-18T20:14:55.036Z 247/254 refs/heads/main est 29.2 MB: ok 21655 ms
+2026-11-18T20:15:09.194Z 248/254 refs/heads/main est 17.1 MB: ok 14156 ms
+2026-11-18T20:15:28.881Z 249/254 refs/heads/main est 18.9 MB: ok 19686 ms
+2026-11-18T20:15:57.772Z 250/254 refs/heads/main est 22.5 MB: ok 28891 ms
+2026-11-18T20:16:19.769Z 251/254 refs/heads/main est 23.6 MB: ok 21996 ms
+2026-11-18T20:16:30.891Z 252/254 refs/heads/main est 8.8 MB: ok 11122 ms
+2026-11-18T20:16:44.281Z 253/254 refs/heads/main est 14.6 MB: ok 13389 ms
+2026-11-18T20:17:04.243Z 254/254 refs/heads/main est 22.8 MB: ok 19962 ms
+2026-11-18T20:17:04.246Z seeded m3org/b034-mono-t: 4.13 GB in 5115 s

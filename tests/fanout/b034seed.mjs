@@ -18,15 +18,17 @@ const t0 = Date.now();
 for (let i = from; i < lines.length; i++) {
   const [commit, ref, est] = lines[i];
   let r;
-  for (let a = 0; a < 6; a++) {
+  // 12 tries over about 17 minutes: the orb's proxy dropped workers.dev for 3 to 4 minutes at a time on 2026-11-18
+  // (18:06, 18:12, 18:46Z), past six tries' 3.75, while the edge itself served.
+  for (let a = 0; a < 12; a++) {
     const s = Date.now();
     // `+`: the repository was created with `auto_init`, so its first `main` is not an ancestor of the seed.
     r = g.run(["-c", "http.postBuffer=104857600", "push", "-q", g.url, `+${commit}:${ref}`], bare);
     log(`${i + 1}/${lines.length} ${ref} est ${(Number(est) / 1e6).toFixed(1)} MB: ${r.ok ? "ok" : r.out.split("\n").filter(Boolean).slice(-2).join(" | ").slice(0, 200)} ${Date.now() - s} ms`);
     if (r.ok) break;
-    await sleep(15_000 * (a + 1));
+    await sleep(15_000 * Math.min(a + 1, 6));
   }
-  if (!r.ok) throw new Error(`line ${i + 1} failed six times`);
+  if (!r.ok) throw new Error(`line ${i + 1} failed twelve times`);
   bytes += Number(est);
   writeFileSync(doneFile, String(i));
 }
