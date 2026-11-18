@@ -9,11 +9,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source ${ROWS_ENV:-tests/m3/rows/env.sh}
+source tests/fanout/srvclock.sh
 TAG=$1 D=${B034_DIR:-$HOME/b034}
 ST=tests/fanout/raw/b034-$TAG.status
 [ -e tests/fanout/raw/.b034-$TAG.started ] && exec sleep infinity
 touch tests/fanout/raw/.b034-$TAG.started
-s() { echo "$(date -u +%FT%TZ) $*" >> "$ST"; }
+s() { echo "$(stamp) $*" >> "$ST"; }
 # No Cloudflare API call from a request path (B0-34's fail line): the only `api.cloudflare.com` in a request-serving
 # crate would be a bug; the deploy and ops tools are not request paths.
 n=$(rg -l "api\.cloudflare\.com" workers/edge/src workers/site/src crates --type rust | wc -l); s "api.cloudflare.com in request paths: $n files"

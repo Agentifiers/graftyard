@@ -7,6 +7,21 @@ Concurrent validate inside one git shard, and `fanout` (BUILD-PLAN AM1-WP1, "Not
   writes `raw/bench.jsonl`.
 - `plant.py`: the plants for this branch's new code; each must turn a test red.
 
+## Clocks
+
+Stamp every harness time on Cloudflare's clock, never the orb's. The orb's clock is not synchronised: it ran 7.3 to
+7.9 s behind Cloudflare's on 2026-11-18, which made a trace window 7 s early (`tests/am1/results/health-gate-lease.md`,
+"The rule saw what the trace shows") and the constant 7 s offset seen in B0-34's timings. Members' trace rows, Workers Logs, and the
+`Date` header are on Cloudflare's clock.
+
+- `srvclock.mjs` measures the offset from `Date` headers to within about ±30 ms (`node tests/fanout/srvclock.mjs`;
+  test: `node --test tests/fanout/srvclock.test.mjs`). `serverClock()` keeps it fresh for a long-running tracer.
+- `terms.mjs` and `tests/nr3/tsave.mjs` stamp `at` with it, and their first line logs the measured offset (`clock`).
+- `rows.sh`, `costrow.sh` and `b034.sh` source `srvclock.sh` and stamp status lines with `stamp`. A line that ends
+  "(orb clock)" was stamped before the offset could be measured.
+- Files written before 2026-11-18's fix are on the orb's clock. Shift them by the offset measured for that run (m50
+  +7,310 ms, m51 +7,440 ms), or by the newest trace row's lead over `at` in the run's tsave file.
+
 ## Hosted slot rules (operator, 2026-11-16 and 2026-11-17)
 
 - The only meter is `acctcost.py`, account-wide; read it before and after every hosted step.

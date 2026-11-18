@@ -7,6 +7,7 @@
 // Environment as tests/am1/hosted/lib.mjs. No token reaches argv or a log.
 import { readFileSync } from "node:fs";
 import { member, sleep, voterNames } from "../am1/hosted/lib.mjs";
+import { serverClock } from "./srvclock.mjs";
 
 const [name, secs] = process.argv.slice(2);
 const until = Date.now() + Number(secs) * 1000;
@@ -17,11 +18,15 @@ if (name.startsWith("repo:")) id = name.slice(5);
 while (!id && !(id = idOf()) && Date.now() < until) await sleep(2_000);
 if (!id) throw new Error(`${name}: no id`);
 const chain = `repo:${id}`;
-console.log(JSON.stringify({ at: new Date().toISOString(), chain }));
+// `at` is on Cloudflare's clock, the one the members' trace rows use (README, "Clocks"); the first line logs the
+// orb's measured offset.
+const clk = serverClock();
+await clk.ready;
+console.log(JSON.stringify({ at: clk.iso(), chain, clock: clk.offset() }));
 let last = "";
 let names = {};
 while (Date.now() < until) {
-  const t = Date.now();
+  const t = Date.now(), at = clk.now();
   // Each site's current voter by name: a call by site alone reaches the first generation's object, and fresh-repo's
   // background placement replaces a voter (m25cap500's site 1 read its removed `#1#f1`, stale at commit 1).
   // While no member leads, `voterNames` finds no config and answers `{}`: keep the last names, or the sample reads
@@ -38,7 +43,7 @@ while (Date.now() < until) {
   const now = st.map((s) => [s.site, s.role ?? "?", s.term ?? null, s.leader ?? null, s.votedFor ?? null, promise(s), cfg(s)]);
   // The promise's ms change every sample: the key holds only whether one stands.
   const key = JSON.stringify(now.map((m) => [...m.slice(0, 5), (m[5] ?? 0) > 0, m[6]]));
-  if (key !== last) console.log(JSON.stringify({ at: new Date(t).toISOString(), ms: Date.now() - t, members: now }));
+  if (key !== last) console.log(JSON.stringify({ at: new Date(at).toISOString(), ms: Date.now() - t, members: now }));
   last = key;
   await sleep(Math.max(0, 1_000 - (Date.now() - t)));
 }

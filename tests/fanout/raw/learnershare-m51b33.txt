@@ -1,0 +1,12 @@
+pre-change 2026-11-18T11:16:44Z..2026-11-18T11:17:42Z: index reads 10782 (186/s over 4 learners), read-index batches 45.1/s, other calls to the leader 14.5/s
+  grantable by a call that left anyway: 11.9% of reads; batches avoidable 42 of 2599 (1.6%)
+  held for the next call: 50 ms 17.3%, 100 ms 26.8%, 250 ms 51.2%, 500 ms 81.8%
+post-change 2026-11-18T11:18:30Z..2026-11-18T11:21:30Z: index reads 290058 (1611/s over 4 learners), read-index batches 23.9/s, other calls to the leader 16.8/s
+  grantable by a call that left anyway: 13.7% of reads; batches avoidable 40 of 4140 (1.0%)
+  held for the next call: 50 ms 17.9%, 100 ms 23.2%, 250 ms 35.3%, 500 ms 65.0%
+hold policy, read-index batches/s over 4 learners (today's in the header lines):
+  pre-change: 50 ms 40.2/s, 100 ms 22.7/s, 250 ms 8.4/s, 500 ms 2.3/s
+  post-change: 50 ms 31.3/s, 100 ms 18.4/s, 250 ms 7.8/s, 500 ms 3.0/s
+control, the same window with no riding, read-index batches/s:
+  pre-change: 50 ms 44.9/s, 100 ms 27.8/s, 250 ms 13.2/s, 500 ms 7.1/s
+  post-change: 50 ms 35.0/s, 100 ms 22.4/s, 250 ms 11.6/s, 500 ms 6.6/s
