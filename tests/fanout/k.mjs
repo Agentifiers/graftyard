@@ -7,7 +7,8 @@ import { api, leaderOf, log, member, tokens } from "../am1/hosted/lib.mjs";
 const [chain, k] = process.argv.slice(2);
 if (!chain?.startsWith("repo:")) throw new Error("usage: k.mjs repo:ID [k]");
 // A new repository's group is created on its first read: read it once through the edge first.
-const names = (await import("node:fs")).readFileSync(`${process.env.M3_STATE}/am1-runs-repos.txt`, "utf8").trim().split("\n").map((l) => l.split(" "));
+const fs = await import("node:fs"), list = `${process.env.M3_STATE}/am1-runs-repos.txt`;
+const names = fs.existsSync(list) ? fs.readFileSync(list, "utf8").trim().split("\n").map((l) => l.split(" ")) : [];
 const name = names.find(([, i]) => `repo:${i}` === chain)?.[0];
 if (name) await api("GET", `/api/v3/repos/m3org/${name}/branches/main`, tokens.admin);
 const leader = await leaderOf(chain);
