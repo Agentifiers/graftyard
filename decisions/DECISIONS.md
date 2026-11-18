@@ -4999,3 +4999,23 @@ Branch `c-design` (`tests/am1/results/c-design.md`), B0-33's option (c) after th
 **Evidence.** `crates/git/tests/encoding.rs`, `a_committed_promoted_entry_folds_to_the_digest_it_had_when_it_committed`: core digest `4ceb4070…77cc`, as on `0d212879`; it fails on main (`d5c31b8e…d51f`). `crates/git/tests/rollup.rs`, `a_promotion_committed_before_roll_up_is_not_rollable`; `crates/git/tests/log_archive.rs`, `a_promotion_takes_the_roll_up_format_only_when_roll_up_is_on`. `fold_corpus` on `e2bddc92` differs from `0d212879` in exactly `Promoted` 1 to 24, and on this branch matches both. `tests/m0carried/plant40.py`: 4 of 4 caught, including roll-up's unconditional write (`Promoted 1` to `24` named).
 
 **Flip.** A kind whose fold must change for an existing format, which then needs the dual-read release and a cited edit of its corpus rows; or a corpus that misses a planted fold change, which means the fixtures need more setup state.
+
+### A 32.20 `MetaSlim` keeps `SLIM_BYTES`; the alarms on slims folded before it are test-install residue, 2026-11-18
+
+**Status.** Recorded on branch `split-refold` from the orchestrator's request (T-01a17bda) to test a split parent's metadata refold before audit-moved. Code-only: one pinning test and one plant. No fold changes.
+
+**Decision.** `MetaSlim` keeps the `SLIM_BYTES` bound (`a0e4d7bc`, 2026-11-14 07:15Z) at format 32.20, with no format of its own for the 512-row rule before it. `crates/git/tests/split.rs`, `a_slim_pass_folds_to_the_digest_its_release_gave`, pins what a slim pass over 1.8 KB rows folds to now (8 slim entries, metadata digest `dd06e4b5…6fac9`), so the next in-place change to `slim` fails in CI. `tests/m0carried/plant40.py` mutant 4, `SLIM_BYTES` reverted, is caught.
+
+**Why.** `a0e4d7bc` changed what an existing 32.20 `MetaSlim` writes in place, the same kind of break as F88: an entry recorded under the 512-row rule slims up to 512 rows, while the same entry replayed on a later release stops at 128 KiB, so the slim cursor and the slimmed rows differ. Measured in memory: a 552-comment slim pass of 1.8 KB rows gives 2 entries and metadata digest `7aa6e61e…` on the merge before it (`9d08d745`) and 8 entries and `dd06e4b5…` after. Replaying the old release's 560-entry log on main gives a third digest, `cd8217e9…`, which neither release's members held. `repo:1048587`, B0-30 smoke 2's parent, slimmed from 05:59 to 06:08Z on 2026-11-14 under the 512-row rule (`tests/am1/results/b030-split.md`, "Smoke 2"), and every audit of it from 18:33Z on alarmed on the metadata tier alone, all three voters agreeing (`decisions/OPEN-QUESTIONS.md`, F88). Adding a format now would fix only test chains: no product install has split, and `SPLIT_AT` is 7 GiB.
+
+**What it beat.**
+- **A 32.26 `MetaSlim` with the byte bound, and 32.20 back on the 512-row rule.** That matches F88's rule, but the release that recorded B0-30's rerun slims (`repo:1048590`) already ran `SLIM_BYTES` at 32.20, so 32.20 would then refold wrongly for those chains instead. Both behaviours are committed at 32.20, so no gate on the format can restore every member's digest.
+- **No pin.** The corpus's single `Split` fixture slims nothing, so it would not catch the next change to `slim`.
+
+**Ruled out.** The split itself does not break the audit. `split.rs`, `a_refold_of_a_split_parent_s_metadata_tier_matches_its_members`, refolds the parent's metadata tier from snapshots before the split, at the seed, mid-pass (begun before slim entries and read after them, through `snap_undo`) and after the pass, each over the log after it, and every one matches the live digest on main.
+
+**Not explained.** `repo:196628` (BF-20's 3.99 GB tier on graft-m1, metadata-tier alarms from 2026-11-16 09:47Z with sites 0 and 2 differing from the refold and site 1 agreeing) has no split. Its tier was seeded by `/bench_seed` (`workers/site/src/snap.rs`, `bench_seed`), which writes rows from no entry with `graftyard_fold::seed`, member by member. A refold restores the seeded rows only through a snapshot, so a member seeded differently from the snapshot's writer, or seeded again after it, disagrees with the refold for good [inference, untested: the per-member seed history is not in the logs read]. It is test state, not a fold rule.
+
+**Evidence.** The two `split.rs` tests above; `plant40.py` 5 of 5; graft-m1 site a Workers Logs, `fold audit mismatch` on `repo:1048587` (from 11-14 18:33Z, at 294 and 300, metadata only) and `repo:196628` (11-16 09:47Z to 11-17 13:47Z, at 2030 and 2036, metadata only).
+
+**Flip.** A product install that splits a chain before `SLIM_BYTES` shipped, which needs a dual-read release; or a split chain on a release with `SLIM_BYTES` throughout whose metadata refold alarms.
