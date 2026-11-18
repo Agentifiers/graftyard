@@ -886,26 +886,51 @@ pub async fn read_spread_for(
 ) -> std::result::Result<Option<(Value, Step, Target)>, String> {
     let until = now_ms() + retry_for.as_millis() as u64;
     let wait = |ms| Delay::from(Duration::from_millis(ms));
-    retry_shed(until, now_ms, || spread_once(b, chain, record, body), wait).await.and_then(|r| r)
+    retry_shed(until, now_ms, || spread_once(b, chain, record, body), wait, js_sys::Math::random).await.and_then(|r| r)
 }
 
-/// Runs `attempt` until it answers, waiting the ms each shed answer names, while that wait ends before `until` (ms);
-/// a shed answer past it is the read's error, naming OVERLOADED.
+/// How long a write asks again for a read its members shed (`read_spread_for`) [guess]: a few backed-off tries, then a
+/// 503 with `Retry-After`, so a pass already under way ends it at about this plus one pass (three FOLLOWER_WAITs).
+/// LOOKUP_FOR (20 s) at a fixed 250 ms made each held write a dozen or more passes: on B0-33 m51 the learners' reads
+/// rose from 15 to 54 a second each to 136 to 514 after a leader change, and 4,200 writes answered 503 after 19 to
+/// 24 s (`tests/am1/results/health-gate-lease.md`).
+pub const SHED_RETRY_FOR: Duration = Duration::from_secs(4);
+/// The longest wait between two tries of a shed read [guess].
+const SHED_BACKOFF_MAX_MS: u64 = 2_000;
+
+/// The wait after the `n`th shed answer in a row (0 for the first): OVERLOAD_RETRY_MS doubled per shed up to
+/// SHED_BACKOFF_MAX_MS, of which a random half (`r` in 0..1) is taken off, so writes shed together do not ask again
+/// together; never under the `retryAfterMs` the members named (`named`).
+fn shed_wait(n: u32, named: u64, r: f64) -> u64 {
+    let cap = OVERLOAD_RETRY_MS.saturating_mul(1 << n.min(16)).min(SHED_BACKOFF_MAX_MS);
+    (cap / 2 + (r.clamp(0.0, 1.0) * (cap / 2) as f64) as u64).max(named)
+}
+
+/// Runs `attempt` until it answers, waiting `shed_wait` after each shed answer while that wait ends before `until`
+/// (ms); a shed answer past it is the read's error, naming OVERLOADED. `rand` gives each wait's jitter.
 async fn retry_shed<T, A, W>(
     until: u64,
     now: impl Fn() -> u64,
     mut attempt: impl FnMut() -> A,
     mut wait: impl FnMut(u64) -> W,
+    mut rand: impl FnMut() -> f64,
 ) -> std::result::Result<T, String>
 where
     A: Future<Output = std::result::Result<T, (String, u64)>>,
     W: Future<Output = ()>,
 {
+    let mut n = 0;
     loop {
         match attempt().await {
             Ok(v) => return Ok(v),
-            Err((_, ms)) if now() + ms < until => wait(ms).await,
-            Err((why, _)) => return Err(why),
+            Err((why, named)) => {
+                let ms = shed_wait(n, named, rand());
+                n += 1;
+                if now() + ms >= until {
+                    return Err(why);
+                }
+                wait(ms).await
+            }
         }
     }
 }
@@ -2641,39 +2666,73 @@ mod tests {
         assert_eq!(spread_verdict(&[None, Some((200, &busy))]), Spread::Shed(OVERLOAD_RETRY_MS));
     }
 
-    /// A write's shed read is asked again after each wait its members named while that wait ends before its deadline,
-    /// and answers once they serve it; past the deadline, or with none (a read-class request), the shed is its error.
-    #[test]
-    fn a_shed_read_is_retried_inside_its_deadline_only() {
+    /// `retry_shed` over shed answers naming `named` ms each (`sheds`), each pass taking `pass` ms, jitter `r`, from
+    /// clock 1,000: the result, the waits taken, and the clock at the end.
+    fn shed_run(
+        until: u64,
+        sheds: Vec<u64>,
+        pass: u64,
+        r: f64,
+    ) -> (std::result::Result<&'static str, String>, Vec<u64>, u64) {
         use futures_util::FutureExt;
         use std::cell::{Cell, RefCell};
-        let run = |until: u64, sheds: Vec<u64>| {
-            let (clock, waits, left) = (Cell::new(1_000u64), RefCell::new(Vec::new()), RefCell::new(sheds));
-            let r = retry_shed(
-                until,
-                || clock.get(),
-                || {
-                    let mut l = left.borrow_mut();
-                    let next = (!l.is_empty()).then(|| l.remove(0));
-                    async move { next.map_or(Ok("value"), |ms| Err((format!("shed: {OVERLOADED}"), ms))) }
-                },
-                |ms| {
-                    waits.borrow_mut().push(ms);
-                    clock.set(clock.get() + ms);
-                    async {}
-                },
-            )
-            .now_or_never()
-            .expect("no real wait");
-            (r, waits.into_inner())
-        };
-        assert_eq!(run(9_000, vec![700, 300]), (Ok("value"), vec![700, 300]));
-        // 1,000 + 700 = 1,700 < 2,000, then 1,700 + 400 is past it.
-        let (r, waits) = run(2_000, vec![700, 400, 100]);
+        let (clock, waits, left) = (Cell::new(1_000u64), RefCell::new(Vec::new()), RefCell::new(sheds));
+        let r = retry_shed(
+            until,
+            || clock.get(),
+            || {
+                clock.set(clock.get() + pass);
+                let mut l = left.borrow_mut();
+                let next = (!l.is_empty()).then(|| l.remove(0));
+                async move { next.map_or(Ok("value"), |ms| Err((format!("shed: {OVERLOADED}"), ms))) }
+            },
+            |ms| {
+                waits.borrow_mut().push(ms);
+                clock.set(clock.get() + ms);
+                async {}
+            },
+            || r,
+        )
+        .now_or_never()
+        .expect("no real wait");
+        (r, waits.into_inner(), clock.get())
+    }
+
+    /// A write's shed read is asked again after each backed-off wait while that wait ends before its deadline, and
+    /// answers once the members serve it; past the deadline, or with none (a read-class request), the shed is its
+    /// error. A wait is never under what the members named.
+    #[test]
+    fn a_shed_read_is_retried_inside_its_deadline_only() {
+        // Full jitter kept (r = 1): 250, then the members' 700 over the doubled 500.
+        assert_eq!(shed_run(9_000, vec![250, 700], 0, 1.0), (Ok("value"), vec![250, 700], 1_950));
+        // 1,000 + 250 = 1,250, then + 500 = 1,750 < 2,000, then + 1,000 is past it.
+        let (r, waits, _) = shed_run(2_000, vec![250, 250, 250, 250], 0, 1.0);
         assert!(r.is_err_and(|e| e.contains(OVERLOADED)));
-        assert_eq!(waits, vec![700]);
-        let (r, waits) = run(1_000, vec![250]);
+        assert_eq!(waits, vec![250, 500]);
+        let (r, waits, _) = shed_run(1_000, vec![250], 0, 1.0);
         assert!(r.is_err() && waits.is_empty());
+    }
+
+    /// B0-33 m51: shed reads asked again every 250 ms for LOOKUP_FOR made the learners' reads ten times the clients'.
+    /// Members that keep shedding (250 ms named each time) get a write a few doubling waits, each with up to half taken
+    /// off at random, and then its error, well inside LOOKUP_FOR even with SHED_RETRY_FOR's deadline and slow passes.
+    #[test]
+    fn a_read_the_members_keep_shedding_backs_off_and_gives_up() {
+        let all_shed = || vec![250; 100];
+        let until = 1_000 + LOOKUP_FOR.as_millis() as u64;
+        let (r, waits, _) = shed_run(until, all_shed(), 0, 1.0);
+        assert!(r.is_err());
+        assert_eq!(&waits[..5], &[250, 500, 1_000, 2_000, 2_000], "doubling to SHED_BACKOFF_MAX_MS");
+        assert!(waits.len() <= 12, "{} tries in LOOKUP_FOR, against 80 at a fixed 250 ms", waits.len() + 1);
+        let (_, low, _) = shed_run(until, all_shed(), 0, 0.0);
+        assert_eq!(&low[..4], &[250, 250, 500, 1_000], "half taken off, never under the 250 ms the members named");
+        // At the edge's deadline, with each pass taking three FOLLOWER_WAITs as on m51, the write has its error within
+        // the deadline plus one pass, and asked at most three times.
+        let until = 1_000 + SHED_RETRY_FOR.as_millis() as u64;
+        let (r, waits, end) = shed_run(until, all_shed(), 3_000, 1.0);
+        assert!(r.is_err());
+        assert!(waits.len() < 3, "{waits:?}");
+        assert!(end - 1_000 <= SHED_RETRY_FOR.as_millis() as u64 + 3_000, "gave up after {} ms", end - 1_000);
     }
 
     /// A config's learners are learned with its voters, and an older config never replaces a newer one's.

@@ -201,10 +201,13 @@ pub fn parse_renew(id: &str, body: &Value) -> Result<IssueOp<graftyard_git::blob
 /// The reply to a committed lease command, rendered on the leader from its `&Acked` and its core tier after the entry
 /// applied: 201 `{lease, overlaps}` for an acquire, where `overlaps` is every other live lease overlapping it; 200
 /// with the lease for a renew; 204 for a release.
+/// The reply is rendered over tiers that have applied the whole entry, so a renew followed by a release of the same
+/// lease in that entry (or an earlier-applied later entry) finds no row, and answers 404 as a renew of a lease that is
+/// gone does (B0-33 m50: 157 of 157 renew 500s raced a release, `tests/am1/results/c-design.md`).
 pub fn render_ok(r: &Repo<'_>, owner: &dyn AuthzRead, at: Timestamp, acked: &Acked<IssueOut>, created: bool) -> Reply {
     match &acked.out {
         IssueOut::Lease(id) => {
-            let Some(row) = lease_row(r.core, *id) else { return Reply::error(500, "no lease row", DOC) };
+            let Some(row) = lease_row(r.core, *id) else { return Reply::not_found() };
             if !created {
                 return Reply::json(200, lease_json(r, &row, at));
             }

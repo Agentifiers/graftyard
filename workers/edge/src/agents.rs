@@ -70,8 +70,8 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Respons
 }
 
 /// Whether a request to these routes is a write (`Ctx::write`): any method but `GET`, as `api::rest_repo` decides, so a
-/// task, lease, or policy write whose tier read every member asked shed asks again within LOOKUP_FOR instead of
-/// answering 503 (`spread_read`). Never set before, these writes failed at once (L0-12 m3fr9: the stall's first task
+/// task, lease, or policy write whose tier read every member asked shed asks again, backing off, within
+/// SHED_RETRY_FOR before it answers 503 (`spread_read`). Never set before, these writes failed at once (L0-12 m3fr9: the stall's first task
 /// create and the refusals' policy `PUT`, `tests/am1/results/lm1-rows-m3f.md`).
 fn writes(method: &Method) -> bool {
     *method != Method::Get
@@ -656,7 +656,7 @@ mod tests {
 
     /// L0-12 m3fr9: a task create and a policy `PUT` failed 503 at once on a tier read every member shed, because these
     /// routes never set `Ctx::write`. Every write they serve (task, lease and policy writes, a lease's release and
-    /// renew, an App's flag) is now a write, so `spread_read` asks again within LOOKUP_FOR; a `GET`, the activity feed's
+    /// renew, an App's flag) is now a write, so `spread_read` asks again within SHED_RETRY_FOR; a `GET`, the activity feed's
     /// long poll included, still answers 503 at once.
     #[test]
     fn the_agent_routes_writes_retry_a_shed_read_and_their_gets_do_not() {
