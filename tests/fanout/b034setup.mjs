@@ -11,6 +11,9 @@ import { user, pat } from "../m3/rows/lib.mjs";
 import { OP, api, bed, commit, log, must, repoShard, state, tokens } from "../am1/hosted/lib.mjs";
 
 const S = process.env.M3_STATE;
+// B034_SUFFIX names a later run's networks (b034-mono<SUF> ...): a retired run's names stay taken, and CreateRepo on a
+// taken name would hand back the retired chain.
+const SUF = process.env.B034_SUFFIX ?? "";
 const out = `${S}/b034.json`;
 const have = existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : {};
 const HOSTILE = 7_180_001, HLOGIN = "m3r-b034-hostile";
@@ -45,11 +48,11 @@ async function repo(owner, name, tok) {
   if (r.status !== 201 && r.status !== 200) throw new Error(`${owner}/${name}: ${r.status} ${JSON.stringify(r.body?.message)}`);
   return { repo: `${owner}/${name}`, chain: `repo:${r.body.id}` };
 }
-have.mono ??= { ...(await repo("m3org", "b034-mono", tokens.admin)), who: "admin" };
-have.second ??= { ...(await repo("m3-member", "b034-second", tokens.member)), who: "member" };
+have.mono ??= { ...(await repo("m3org", `b034-mono${SUF}`, tokens.admin)), who: "admin" };
+have.second ??= { ...(await repo("m3-member", `b034-second${SUF}`, tokens.member)), who: "member" };
 have.hostile ??= [];
 for (let i = have.hostile.length; i < 3; i++) {
-  have.hostile.push({ ...(await repo(HLOGIN, `b034-hostile-${i + 1}`, hostileTok)), who: "hostile" });
+  have.hostile.push({ ...(await repo(HLOGIN, `b034-hostile${SUF}-${i + 1}`, hostileTok)), who: "hostile" });
   writeFileSync(out, JSON.stringify(have, null, 2));
 }
 writeFileSync(out, JSON.stringify(have, null, 2));

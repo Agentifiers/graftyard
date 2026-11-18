@@ -25,6 +25,9 @@ while (Date.now() < until) {
       // about 0.4 GB private between them, round 27) and their summed RSS, against instcpu.py's container memory.
       uploads: procs.filter((p) => / upload-pack/.test(p.cmd)).length,
       uploadRssMb: procs.filter((p) => / upload-pack|--shallow-file/.test(p.cmd)).reduce((a, p) => a + (p.rss_mb ?? 0), 0),
+      // A stock depth-1 fetch's own pack-objects, over every process, not only the top 4: the container's stockMax
+      // measurement (b034-tails), since `uploads` also counts a shard-answered ls-refs.
+      shallow: procs.filter((p) => /--shallow-file/.test(p.cmd)).length,
       top: procs.slice(0, 4).map((p) => ({ cmd: p.cmd.slice(0, 80), nice: p.nice, cpu_s: p.cpu_s, rss_mb: p.rss_mb })),
       packs: v?.procs?.packs ?? null, ...(v ? {} : { error: r.body.slice(0, 120) }),
     }));
