@@ -2,6 +2,7 @@
 import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import status from '../data/github-status.json';
+import { REPO } from '../layouts/Page.astro';
 import MilestoneStrip from '../components/MilestoneStrip.astro';
 import AgentifiersLogo from '../components/AgentifiersLogo.astro';
 import { milestones } from '../data/milestones';
@@ -32,6 +33,7 @@ const faq = [
   ['Where does Graftyard run?', 'Only on Cloudflare: as a managed service, in your own Cloudflare account, or self-hosted.'],
   ['Why not build it on Cloudflare Artifacts?', 'A new Artifacts repository is capped at 1 GB and lives in one place. The full answer has its own page.'],
   ['Can AI coding agents use Graftyard?', 'Yes, as GitHub Apps with ordinary tokens. An opt-in agent layer adds task leases and an activity feed.'],
+  ['Is Graftyard open source?', 'Yes. The code, the design and every test result are on GitHub at Agentifiers/graftyard, under the MIT license.'],
   ['When can I use Graftyard?', 'It is in build. Milestones 0 to 3 are closed, through identity and authorization. Agent scale, Milestone 4 (webhooks, search, Actions and the web app) and Milestone 5 (release control) are under way. The Status page lists every milestone.'],
 ];
 // the build: the milestones under way, one line each, from the Status page's data
@@ -46,6 +48,7 @@ const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path
 .hero__window > .ly-piece { max-width: 760px; }
 .hero__window .ui-term { width: 100%; }
 .hero--centred .hero__lead { color: var(--ink); }
+.hero__pills { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s-3); }
 /* the hero's quote: the display face a step under the usual h1, its marks hung outside the text and in the leaf green */
 .hero h1.hero__quote { font-size: calc(var(--ly-h1) * 0.86); max-width: 20ch; line-height: 1.06; }
 .hero__quote .q { color: var(--accent); }
@@ -83,6 +86,7 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
 #maker .maker__logo { display: block; color: var(--ink); text-decoration: none; justify-self: start; }
 #maker .maker__logo .agf-logo { display: block; width: min(100%, 360px); height: auto; }
 #maker .maker__text { display: grid; gap: var(--s-4); }
+#maker .maker__links { display: flex; flex-wrap: wrap; gap: var(--s-3) var(--s-7); }
 #maker .maker__text p:not(.eyebrow) { color: var(--ink); max-width: 56ch; }
 @media (max-width: 767px) { #maker .maker { grid-template-columns: minmax(0, 1fr); } #maker .maker__logo .agf-logo { width: 220px; } }
 #build .sec-head + .ms-strip { margin-top: 0; }
@@ -116,11 +120,11 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
   <section class="hero hero--centred bg-topglow" aria-labelledby="hero-h">
     <div class="wrap"><div class="hero-text">
       <div class="hero__c">
-        <a class="pill" href="/status/"><span>In build</span><span class="muted">Milestones 0 to 3 closed</span></a>
+        <div class="hero__pills"><a class="pill" href={REPO}><span>Open source</span><span class="muted">MIT license</span></a><a class="pill" href="/status/"><span>In build</span><span class="muted">Milestones 0 to 3 closed</span></a></div>
         <h1 id="hero-h" class="hero__quote"><span class="q">“</span>Claude, rebuild GitHub. Make no mistakes. Oh, and do it in&nbsp;Rust.<span class="q">”</span></h1>
         <p class="hero__sub">Git hosting compatible with GHES&nbsp;3.22</p>
         <p class="hero__lead">Point gh, git, VS Code and JetBrains at a Graftyard host and they treat it as GitHub Enterprise Server 3.22. Every push is held in two regions before it is acknowledged.</p>
-        <div class="btn-row"><a class="btn btn--primary" href="/evidence/">See the evidence</a><a class="btn btn--secondary" href="/architecture/">How it works</a></div>
+        <div class="btn-row"><a class="btn btn--primary" href="/evidence/">See the evidence</a><a class="btn btn--secondary" href={REPO}>View on GitHub</a></div>
       </div>
       <div class="hero__window" data-fx="grain-gradient" data-fx-seed="9" role="img" aria-label="gh auth login against a Graftyard host detects GitHub Enterprise Server 3.22 and logs in">
         <div class="ly-piece" aria-hidden="true" data-ui-loop>
@@ -304,9 +308,10 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
         <a class="maker__logo" href="https://agentifiers.com" aria-label="Agentifiers"><AgentifiersLogo /></a>
         <div class="maker__text">
           <p class="eyebrow">Who builds it</p>
-          <h2 id="maker-h">Graftyard is built by Agentifiers</h2>
+          <h2 id="maker-h">Graftyard is built by Agentifiers, in the open</h2>
           <p>Agentifiers builds AI agents that do the work and ask a person first. Graftyard is the code host that rule needs: agents propose, and people decide.</p>
-          <p><a class="link" href="https://agentifiers.com">agentifiers.com<Fragment set:html={ARROW} /></a></p>
+          <p>The code, the design and every test result behind this site are public under the MIT license.</p>
+          <div class="maker__links"><a class="link" href={REPO}>Agentifiers/graftyard on GitHub<Fragment set:html={ARROW} /></a><a class="link" href="https://agentifiers.com">agentifiers.com<Fragment set:html={ARROW} /></a></div>
         </div>
       </div>
     </div>

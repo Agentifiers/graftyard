@@ -22,6 +22,8 @@ const pages = [
   { key: 'architecture', href: '/architecture/', label: 'Architecture' },
   { key: 'artifacts', href: '/why-not-artifacts/', label: 'Why not Artifacts' },
 ];
+export const REPO = 'https://github.com/Agentifiers/graftyard';
+const ghMark = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38v-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.34.66.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>';
 const sun = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.6"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M4.2 15.8l1.7-1.7M14.1 5.9l1.7-1.7"/></svg>';
 ---
 <!doctype html>
@@ -104,6 +106,11 @@ html[data-theme="dark"] .gy-logo .gy-br { fill: var(--ink); }
 .theme-btn { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: var(--r-btn); border: 1px solid var(--line-strong);
   background: transparent; color: var(--ink); cursor: pointer; flex: none; padding: 0; }
 .theme-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+/* the GitHub link beside the theme button: the same round button, the mark filled */
+.gh-btn svg { fill: currentColor; stroke: none; }
+.nav__actions { gap: var(--s-3); }
+.nav:not(.is-open) .nav__actions > .gh-btn { display: inline-grid; }
+@media (max-width: 1023px) { .nav.is-open .nav__actions > .gh-btn { width: 100%; height: 48px; } }
 .theme-btn:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); }
 html[data-theme="light"] .theme-btn circle { fill: currentColor; }
 .nav:not(.is-open) .nav__actions > .theme-btn { display: inline-grid; }
@@ -210,6 +217,7 @@ html[data-theme="light"] .frame--film > .loop-pause { right: 8px; }
       {pages.map((p) => <div class="nav__item"><a class="nav__link" href={p.href} aria-current={current === p.key ? 'page' : undefined}>{p.label}</a></div>)}
     </nav>
     <div class="nav__actions">
+      <a class="theme-btn gh-btn" href={REPO} aria-label="Graftyard on GitHub, open source"><Fragment set:html={ghMark} /></a>
       <button class="theme-btn" type="button" data-theme-toggle aria-label="Switch to light theme"><Fragment set:html={sun} /></button>
     </div>
     <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
@@ -235,14 +243,14 @@ html[data-theme="light"] .frame--film > .loop-pause { right: 8px; }
       <div class="grid">
         <div class="span-4 stack-4">
           <a class="nav__logo" href="/" aria-label="Graftyard home"><Logo /></a>
-          <p class="footer__lede">Git hosting for GitHub clients, on Cloudflare.</p>
+          <p class="footer__lede">Open-source git hosting for GitHub clients, on Cloudflare.</p>
           <a class="footer__maker" href="https://agentifiers.com"><span>Built by</span><AgentifiersLogo /></a>
         </div>
-        <div class="span-2 start-9 footer__col"><h4>Graftyard</h4><ul><li><a href="/#ghes">GHES 3.22</a></li><li><a href="/#durability">Durability</a></li><li><a href="/#questions">Questions</a></li></ul></div>
+        <div class="span-2 start-9 footer__col"><h4>Graftyard</h4><ul><li><a href="/#ghes">GHES 3.22</a></li><li><a href="/#durability">Durability</a></li><li><a href="/#questions">Questions</a></li><li><a href={REPO}>Source on GitHub</a></li></ul></div>
         <div class="span-2 footer__col"><h4>Read more</h4><ul>{pages.map((p) => <li><a href={p.href}>{p.label}</a></li>)}</ul></div>
       </div>
       <div class="footer__legal">
-        <span>&copy; 2026 Graftyard, built by <a href="https://agentifiers.com">Agentifiers</a></span>
+        <span>&copy; 2026 Graftyard, built by <a href="https://agentifiers.com">Agentifiers</a>. <a href={REPO}>MIT licensed</a>.</span>
         <span class="credits">Product names and logos are trademarks of their owners. GitHub Enterprise Server is a GitHub product, and Cloudflare Artifacts a Cloudflare product; Graftyard is affiliated with neither.</span>
       </div>
     </div>
