@@ -5,6 +5,7 @@
 # network's k is set to K (default 4) through the leader's test-faults `/bench_seed {"fanout"}`, as a step of `fanout`
 # would commit it, so the pool shards are named before load starts; FANOUT_K=1 runs a row on one shard.
 #   [ROWS="b0-29 ..."] [K=4] bash tests/fanout/rows.sh <tag>
+#   A1_EXTRA="--ls-refs-shard" adds a1.mjs flags to every row (F91's A/B off arm).
 # Output: tests/am1/raw/runs/a1-<row>-<repo>.log, tests/fanout/raw/rows-<tag>.status.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -93,7 +94,7 @@ for row in $ROWS; do
   if [ -n "${TRACE:-}" ]; then
     ( while [ ! -e "$MEMSTOP" ]; do sleep 5; done; pkill -f "a1.mjs $row --repo $repo " ) & tracers+=($!)
   fi
-  bash tests/am1/runs/a1.sh "$row" "$repo" "$rid" $flags
+  bash tests/am1/runs/a1.sh "$row" "$repo" "$rid" $flags ${A1_EXTRA:-}
   [ -e "$MEMSTOP" ] && echo "$(stamp) $row stopped: MEMSTOP $(cat $MEMSTOP)" >> "$ST"
   [ -n "${TRACE:-}" ] && touch tests/fanout/raw/.tsave-$TAG-$row.done
   # Back to k = 1, which releases the network's pool leases: a lease is only renewed or released by its own network,
