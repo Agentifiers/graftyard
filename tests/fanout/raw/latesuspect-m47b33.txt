@@ -1,0 +1,32 @@
+voter 0 rule main: 11 episodes, 364 s withheld
+voter 0 rule (i)>=1000ms: 8 episodes, 190 s withheld
+voter 0 rule (i)>=2000ms: 4 episodes, 84 s withheld
+voter 0 rule (i)>=3000ms: 1 episodes, 22 s withheld
+voter 0 rule (i)>=5000ms: 1 episodes, 20 s withheld
+voter 1 rule main: 6 episodes, 175 s withheld
+voter 1 rule (i)>=1000ms: 5 episodes, 127 s withheld
+voter 1 rule (i)>=2000ms: 1 episodes, 21 s withheld
+voter 1 rule (i)>=3000ms: 0 episodes, 0 s withheld
+voter 1 rule (i)>=5000ms: 0 episodes, 0 s withheld
+voter 2 rule main: 15 episodes, 498 s withheld
+voter 2 rule (i)>=1000ms: 12 episodes, 306 s withheld
+voter 2 rule (i)>=2000ms: 10 episodes, 210 s withheld
+voter 2 rule (i)>=3000ms: 2 episodes, 41 s withheld
+voter 2 rule (i)>=5000ms: 0 episodes, 0 s withheld
+rule main: two or more voters withholding at once 299 s
+rule (i)>=1000ms: two or more voters withholding at once 184 s
+rule (i)>=2000ms: two or more voters withholding at once 65 s
+rule (i)>=3000ms: two or more voters withholding at once 0 s
+rule (i)>=5000ms: two or more voters withholding at once 0 s
+rule main: first two-voter withholding 403.754 s after the first report
+rule (i)>=1000ms: first two-voter withholding 406.075 s after the first report
+rule (i)>=2000ms: first two-voter withholding 407.097 s after the first report
+rule (i)>=3000ms: first two-voter withholding None s after the first report
+rule (i)>=5000ms: first two-voter withholding None s after the first report
+rule main: terms whose followers would both lapse inside the term 1 of 18: [2]
+rule (i)>=1000ms: terms whose followers would both lapse inside the term 1 of 18: [18]
+rule (i)>=2000ms: terms whose followers would both lapse inside the term 2 of 18: [11, 18]
+rule (i)>=3000ms: terms whose followers would both lapse inside the term 0 of 18: []
+rule (i)>=5000ms: terms whose followers would both lapse inside the term 0 of 18: []
+rule main per term (length / first two-voter withholding after start): t2:416s/405.6 t3:15s/- t4:18s/- t5:12s/6.0 t6:20s/- t7:23s/- t8:10s/- t9:22s/- t10:17s/9.3 t11:21s/- t12:17s/- t14:17s/- t15:38s/- t16:26s/18.3 t18:21s/- t19:13s/- t20:26s/- t21:60s/-
+rule (i)>=1000ms per term (length / first two-voter withholding after start): t2:416s/407.9 t3:15s/- t4:18s/14.5 t5:12s/10.1 t6:20s/- t7:23s/- t8:10s/- t9:22s/14.8 t10:17s/11.6 t11:21s/- t12:17s/13.6 t14:17s/- t15:38s/- t16:26s/- t18:21s/- t19:13s/- t20:26s/- t21:60s/-

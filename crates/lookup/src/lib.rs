@@ -445,6 +445,10 @@ pub async fn call_opt(
     .await
 }
 
+/// How long a request waits after its cached leader's first miss before it asks that leader again (`lookup`) [guess]:
+/// the same wait as between two passes.
+pub const LEADER_RETRY: Duration = Duration::from_millis(250);
+
 /// How long a chain's lookup mark (`LOOKUP_MARK`) holds other requests off after its holder last touched it [guess]: a
 /// holder touches it before each post and pass, so a live lookup keeps it, and one whose request the runtime cancelled,
 /// whose future then never runs or drops, holds the chain this long, not LOOKUP_FOR.
@@ -532,6 +536,8 @@ where
         t.get()
     });
     let mut held: Option<Marked> = None;
+    // Whether this request's post to its cached leader already missed once (`LEADER_RETRY`).
+    let mut leader_missed = false;
     while now() < end {
         let mut k = 0;
         let mut cands = candidates(k).await.unwrap_or_default();
@@ -587,7 +593,26 @@ where
             let by =
                 if cached_leader(chain).is_some_and(|l| l.do_name == name) { SentBy::Leader } else { SentBy::Walk };
             let r = post(s, name.clone(), by).await;
-            let v = match classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. })) {
+            let answer = classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. }));
+            // lookup-retry: the first miss of a post to the cached leader, or its `busy`, is reported (a miss only) at
+            // the term this isolate holds, and the leader is asked again after LEADER_RETRY; only a second miss walks
+            // the voters. Before, the same pass posted every follower, whose `NotLeader` named the leader already
+            // tried, then reported, forgot the leader and walked again: on B0-33 m45 each follower took 222 to 224 walk
+            // `/read`s a second, all for the leader (`tests/am1/results/lm1-memory.md`, round 40).
+            if by == SentBy::Leader
+                && !leader_missed
+                && matches!(&answer, Answer::Missed(_)) | matches!(&answer, Answer::Skip(w) if w == "busy")
+            {
+                leader_missed = true;
+                if matches!(answer, Answer::Missed(_)) {
+                    suspect(Target { site: s, do_name: name.clone() }, term.max(known_term(chain)), false).await;
+                }
+                delay(LEADER_RETRY).await;
+                tried.remove(&name);
+                queue.push_front((s, name, step));
+                continue;
+            }
+            let v = match answer {
                 Answer::Missed(why) => {
                     last = format!("{name}: {why}");
                     others += 1;
@@ -1181,6 +1206,11 @@ pub fn cached_leader(chain: ChainId) -> Option<Target> {
     k.voters.into_iter().find(|(s, _)| *s == leader).map(|(site, do_name)| Target { site, do_name })
 }
 
+/// The highest term a reply from `chain` carried to this isolate, 0 before any.
+fn known_term(chain: ChainId) -> u64 {
+    KNOWN.with(|k| k.borrow().get(&chain).map_or(0, |e| e.term))
+}
+
 /// The voters the caller knows for `chain`, from the last config it learned.
 pub fn known_voters(chain: ChainId) -> Vec<Target> {
     KNOWN
@@ -1239,7 +1269,11 @@ pub async fn suspect(
 /// member's verdict on a repeat inside this gap is the one it just gave, so a campaign is late by at most this much,
 /// while a leader that sheds or drops reads drew up to 150,000 reports a run from every edge isolate's lookups
 /// (`tests/am1/results/lm1-memory.md`).
-pub const SUSPECT_GAP: Duration = Duration::from_millis(500);
+/// 1 s since lookup-retry: at 500 ms each follower took 177 to 186 a second on B0-33 m45, 37 to 39% of what waited
+/// ahead of its slow `/raft` calls, and 1 s keeps about half (`tests/am1/results/lm1-memory.md`, round 40). 5 s cut
+/// more but left 7 of the long sweep's 4,000 live seeds past the 30 s bound (worst 42.5 s), and 2.5 s one, where 1 s
+/// fails only the seed 500 ms fails (`tests/am1/results/lm1-memory.md`, "lookup-retry").
+pub const SUSPECT_GAP: Duration = Duration::from_secs(1);
 
 thread_local! {
     static REPORTED: RefCell<HashMap<(ChainId, SiteId, u64), u64>> = RefCell::new(HashMap::new());
@@ -2619,6 +2653,9 @@ mod tests {
     fn suspect_reports_are_damped_per_member_and_term() {
         let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(11)));
         let gap = SUSPECT_GAP.as_millis() as u64;
+        // lookup-retry: 1 s; 5 s broke the live sweep's bound.
+        assert_eq!(gap, 1_000);
+        assert!(2 * SUSPECT_GAP <= graftyard_raft::SUSPECT.1);
         assert!(report_due(chain, SiteId(0), 4, 1_000));
         assert!(!report_due(chain, SiteId(0), 4, 1_000 + gap - 1));
         assert!(report_due(chain, SiteId(1), 4, 1_001));
@@ -2830,6 +2867,131 @@ mod tests {
         let (v, _, t) = out.expect("answered").expect("a group");
         assert_eq!((t.site, v["value"].clone()), (SiteId(2), json!(1)));
         assert_eq!(all_reports.get(), 1, "one pass that found no leader, reported to every voter");
+    }
+
+    /// lookup-retry's harness: one request on a 3-voter chain whose cached leader is voter 0 in term 2. `answer(site,
+    /// n)` is voter `site`'s `n`th post (0-based): how long it takes, and its answer, `None` for a miss. Returns the
+    /// result, the time it came, the posts per voter, and the reports as (about, all).
+    #[allow(clippy::type_complexity)]
+    fn drive_leader_lookup(
+        chain: ChainId,
+        answer: impl Fn(SiteId, u32) -> (u64, Option<(u16, Value)>) + 'static,
+    ) -> (std::result::Result<Option<(Value, Step, Target)>, String>, u64, [u32; 3], Vec<(SiteId, bool)>) {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, 1);
+        let config = json!({ "index": 5, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        learn(chain, &json!({ "config": config }));
+        learn_leader(chain, &json!({ "meta": { "term": 2, "leader": 0 } }));
+        let names: Vec<(SiteId, String)> = KNOWN.with(|k| k.borrow()[&chain].voters.clone());
+        let clock = Rc::new(Cell::new(0u64));
+        let posts = Rc::new(RefCell::new([0u32; 3]));
+        let reports = Rc::new(RefCell::new(Vec::new()));
+        let (c1, c2, c3, p, r) = (clock.clone(), clock.clone(), clock.clone(), posts.clone(), reports.clone());
+        let answer = Rc::new(answer);
+        let mut req = Box::pin(lookup(
+            chain,
+            move || c1.get(),
+            move |k| {
+                let v = names.iter().map(|(s, n)| (*s, n.clone(), Step::Cached)).collect::<Vec<_>>();
+                async move { (k == 0).then_some(v) }
+            },
+            move |s, _name, _by| {
+                let n = p.borrow()[s.0 as usize];
+                p.borrow_mut()[s.0 as usize] += 1;
+                // Every mock future is ready at once, so a lookup that never ends loops inside one poll.
+                assert!(p.borrow().iter().sum::<u32>() < 1_000, "no answer");
+                let (c, answer) = (c2.clone(), answer.clone());
+                async move {
+                    let (ms, a) = answer(s, n);
+                    c.set(c.get() + ms);
+                    a
+                }
+            },
+            move |about: Target, _term, all| {
+                r.borrow_mut().push((about.site, all));
+                async move { None }
+            },
+            move |d: Duration| {
+                c3.set(c3.get() + d.as_millis() as u64);
+                async {}
+            },
+        ));
+        let out = loop {
+            if let Some(out) = req.as_mut().now_or_never() {
+                break out;
+            }
+            assert!(clock.get() < 60_000, "no answer");
+        };
+        let posts = *posts.borrow();
+        let reports = reports.borrow().clone();
+        (out, clock.get(), posts, reports)
+    }
+
+    /// lookup-retry: a cached leader whose read misses once, then answers, is asked again: no follower is posted, the
+    /// miss is reported once, and the leader stays cached. On main the same miss posted both followers, whose
+    /// `NotLeader` named the leader already tried, then forgot the leader and walked again.
+    #[test]
+    fn a_leader_that_misses_once_is_asked_again_and_no_follower_is_walked() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(46)));
+        let nl = move |s: SiteId| {
+            let m = |x: u8| graftyard_types::Member::new(chain, SiteId(x), graftyard_types::MemberKind::Full, x, 1);
+            json!({ "error": { "notLeader": { "term": 2, "leader": 0, "config": { "index": 5, "config": { "normal": {
+                "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } } } },
+                "meta": { "term": 2, "leader": 0, "site": s.0 } })
+        };
+        for first in [None, Some((200, json!({ "busy": true }))), Some((503, Value::Null))] {
+            let first2 = first.clone();
+            let (out, _, posts, reports) = drive_leader_lookup(chain, move |s, n| match (s.0, n) {
+                (0, 0) => (50, first2.clone()),
+                (0, _) => (50, Some((200, json!({ "value": 7, "meta": { "term": 2, "leader": 0 } })))),
+                _ => (50, Some((200, nl(s)))),
+            });
+            let (v, _, t) = out.expect("answered").expect("a group");
+            assert_eq!((t.site, v["value"].clone()), (SiteId(0), json!(7)), "{first:?}");
+            assert_eq!(posts, [2, 0, 0], "{first:?}: a follower was walked for a leader that answered on its retry");
+            let busy = first.as_ref().is_some_and(|(st, v)| *st == 200 && v.get("busy").is_some());
+            let want: Vec<(SiteId, bool)> = if busy { vec![] } else { vec![(SiteId(0), false)] };
+            assert_eq!(reports, want, "{first:?}: a miss is reported once, a `busy` not at all");
+            assert_eq!(cached_leader(chain).map(|l| l.site), Some(SiteId(0)), "{first:?}: the leader stays cached");
+        }
+    }
+
+    /// lookup-retry, the reverse: a cached leader that is gone (every post to it misses) is walked away from after its
+    /// second miss, and the request is answered by the new leader within the old bound: two posts to the dead leader
+    /// at CALL each, LEADER_RETRY between them, then the followers, where main took one CALL and the walk.
+    #[test]
+    fn a_leader_that_is_gone_is_walked_away_from_after_its_second_miss() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(47)));
+        let call = CALL.as_millis() as u64;
+        let m = |x: u8| graftyard_types::Member::new(chain, SiteId(x), graftyard_types::MemberKind::Full, x, 1);
+        let cfg = json!({ "index": 5, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        // A post to the dead leader runs to CALL; a follower answers in 50 ms. Voter 1 leads in term 3.
+        let (out, at, posts, reports) = drive_leader_lookup(chain, move |s, _| match s.0 {
+            0 => (call, None),
+            1 => (50, Some((200, json!({ "value": 9, "meta": { "term": 3, "leader": 1 } })))),
+            _ => (
+                50,
+                Some((
+                    200,
+                    json!({ "error": { "notLeader": { "term": 3, "leader": 1, "config": cfg.clone() } },
+                "meta": { "term": 3, "leader": 1 } }),
+                )),
+            ),
+        });
+        let (v, _, t) = out.expect("answered").expect("a group");
+        assert_eq!((t.site, v["value"].clone()), (SiteId(1), json!(9)));
+        assert_eq!(posts[0], 2, "the dead leader is asked once more, not again and again");
+        assert_eq!(cached_leader(chain).map(|l| l.site), Some(SiteId(1)), "the new leader is cached");
+        assert!(reports.iter().any(|(s, all)| *s == SiteId(0) && !all), "the dead leader is reported: {reports:?}");
+        // Two misses at CALL, LEADER_RETRY between them, then at most two follower posts: main's one miss plus
+        // LEADER_RETRY and one CALL, well inside LOOKUP_FOR.
+        let bound = 2 * call + LEADER_RETRY.as_millis() as u64 + 2 * 50;
+        assert!(at <= bound, "answered at {at} ms, past {bound}");
+        assert!(at < LOOKUP_FOR.as_millis() as u64);
     }
 
     /// A follower's or learner's answer from a term below the highest this isolate saw keeps the leader held; one at

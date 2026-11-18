@@ -5059,3 +5059,185 @@ operations). The short sim suite gave 12.1 s harsh, 20.7 s gray and 16.6 s live.
 Raw files in `tests/fanout/raw/`: `siteday-m45.status`, `costrow-m45b33.status`, `rows-m45b33.status`, `a1-b0-33-m45.jsonl`,
 `terms-m45b33.jsonl`, `memguard-m45b33.jsonl.xz`, `tsave-m45b33.jsonl.xz`, `inbound-m45b33.txt`, `reported-m45b33.txt`,
 `latesuspect-m45b33.txt`, `stepdowns-m45b33.txt`, `retire-m45.log`, `retirenets-m45.out`, `purge-m45.log`.
+
+### lookup-retry: a cached leader's first miss is retried there; SUSPECT_GAP 1 s (2026-11-18, code only, no spend)
+
+Branch `lookup-retry` from main 56918444 (late-suspect, m45-day, read-beat). The DECISIONS entry `lookup-retry` holds
+the decision and flip.
+
+**What changed.** In `lookup` (`crates/lookup/src/lib.rs`), the first post to the cached leader that misses or answers
+`busy` no longer starts a walk. A miss is reported once at the isolate's known term (`known_term`), the request waits
+LEADER_RETRY (250 ms), and the leader is posted again. A second miss, or the leader's `NotLeader`, walks as before.
+SUSPECT_GAP is 1 s, up from 500 ms.
+
+**Why 1 s, not the 5 s asked for.** The long sweep's live half, run per seed without stopping at the first failure,
+over its 4,000 seeds (10,000 to 13,999):
+
+| SUSPECT_GAP | seeds past 30 s | worst |
+|---|---|---|
+| 500 ms (main 56918444) | 1 | 31.8 s, seed 10353 |
+| 1 s | 1 | 31.1 s, seed 10353 |
+| 2.5 s | 1 | 30.9 s, seed 11777 |
+| 5 s | 7 | 42.5 s, seed 11504 (10.0 s at 500 ms) |
+
+At 5 s, seed 11504 shows the mechanism: a half-hung leader's followers each got one report per client per 5 s. Each
+report landed in a `late` window, but two colos rarely fell inside SUSPECT's 10 s window together, so promises kept
+renewing for 42 s.
+
+**Main fails the documented long sweep by itself.** Seed 10353 stalls 31.8 s on main 56918444 at its own gap. It
+stalls 3.9 s at late-suspect aa3bf360 and 10.5 s at read-beat f1bd7d51. Those two branches each passed alone and were
+merged separately. In the trace, leader 0 keeps sending AppendEntries every 2 s (`READ_RESEND`'s rounds) from 149 s to
+172 s, but every call fails. The followers' `appended_at` stays fresh from the occasional arrival, so late-suspect counts
+no report and the promise holds until the leader itself steps down at 172 s. Nobody leads until 180.8 s. That is a
+read-beat × late-suspect interaction in `crates/raft`, outside this change. It needs its own decision: whose rule moves,
+and whether seed 10353 joins the regression set.
+
+**Replay on m45's trace** (`tests/fanout/walkreplay.py`, 22:24:20 to 22:29:20Z):
+
+| follower | entered | walk `/read` | still walks | `/suspect` | kept at 500 ms | 1 s | 2.5 s | 5 s |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 427/s | 221.6/s | ≤ 8.4/s | 176.5/s | 106.7 | 87.6 | 54.2 | 33.4 |
+| 2 | 442/s | 224.4/s | ≤ 9.7/s | 186.3/s | 127.0 | 94.6 | 55.3 | 33.6 |
+
+At 1 s, about 212 to 215 walk `/read`s and 89 to 92 `/suspect` a second go per follower, about 300 to 305 of 427 to
+442 [inference: the leader is assumed to answer the retry as often as it answered its next post in the trace]. Against
+the replay's own 500 ms baseline, the gap saves 19 to 32 a second. Most of the saving is the retry.
+
+**Tests and plants.**
+- `a_leader_that_misses_once_is_asked_again_and_no_follower_is_walked` fails on main: a miss, a `busy` and a 503 each
+  posted both followers.
+- `a_leader_that_is_gone_is_walked_away_from_after_its_second_miss` checks two posts at CALL, then the walk, within
+  2 × CALL + LEADER_RETRY + two follower posts.
+- `a_gray_leader_moves_within_the_target_at_the_suspect_gap` (liveness, seeds 100 to 111, two colos at 1 s): calls 30%
+  moved in 6.6 to 19.0 s, the same as at 500 ms. Half-hung moved in 12.8 to 21.3 s (500 ms: 12.7 to 24.2 s), against
+  the 30 s liveness bound. A 15 s gap fails it. On seeds 300 to 311, calls 30% moves in up to 21.2 s at both 500 ms and
+  1 s, so main's gap misses the 20 s Gray target on one seed too.
+- `tests/lookupretry/plant.py`: 6 of 6 caught. The plants are main's walk, an endless retry (caught by the test's post
+  cap), an unreported miss, a reported `busy`, the 500 ms gap, and a 15 s gap in the sim.
+- Live sweep at 1 s with histories, 4,000 seeds: Porcupine Ok on both halves (2,974,283 and 2,983,372 operations).
+- The documented long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`): harsh 15.4 s (seed 11453), gray 25.9 s (seed 10939),
+  then the live half stops at seed 10353 (31.1 s). Porcupine Ok on harsh (152,313) and gray (2,339,068). Against
+  colo-unknown's 16.3 s harsh and 27.9 s gray, and late-suspect's 17.0 and 24.7 s.
+
+**Why m45's commit p99 went from 19.8 s to 57.0 s.** The cause is more work queueing behind one leader that kept its
+term, not slower rounds. m44 (a1 `mwl4mlhx`) went from term 2 to term 20 during the load, 18 changes in 5 minutes, so
+each leader led for about 15 s. When a term ended, its queue failed as `not leader` instead of waiting. The commit
+latencies that m44 recorded were capped near one term's length. m45 (`mwl97nya`) stayed at term 2 throughout, so its
+queue kept growing for the whole window:
+
+| | m44 | m45 |
+|---|---|---|
+| terms during load | 2 → 20 | 2 |
+| commands / entries at the leader | 2,747 / 63 | 3,828 / 189 |
+| commit n, p50, p99 | 3,478, 5.6 s, 19.8 s | 11,676, 3.7 s, 57.0 s |
+| `queue:slot` p50 / p99 | 5.3 / 19.3 s | 9.9 / 57.9 s |
+| round p50 / p99 | 0.67 / 12.8 s | 0.71 / 5.3 s |
+| cycle p99 | 14.2 s | 22.2 s |
+| a1 admission queued, median / max; pressure | 333 / 1,041; 43% | 272 / 1,004; 59% |
+| agent pushes ok (offered 168.8/s agent class in both) | 2,521 | 1,312 |
+
+Rounds were no slower: round p50 is about the same and round p99 fell. The leader took 39% more commands in 3 times as
+many entries and recorded 3.4 times as many commit samples. The p99 rose because the queue was never reset. It is the
+same overload, measured over 300 s instead of in 15 s pieces. Agent pushes ok fell because most of them died earlier,
+as 503 "access rows … not leader" from the edge walks (6,171), before reaching the leader. So the extra commits are not
+extra agent load admitted. They are commands that stayed in the queue for the whole window instead of failing at a term
+change. Shrinking the commit line now needs cheaper rounds or fewer commands per entry, behind voters freed from walks.
+
+### progress-suspect: a `suspect` report counts once the leader makes no progress for the follower (2026-11-18, code only, no spend)
+
+Branch `progress-suspect`, on `lookup-retry`. The orchestrator decided that late-suspect's rule moves, not
+read-beat's. The DECISIONS entry `progress-suspect` holds the decision and flip, and `late-suspect` carries an
+amendment.
+
+**The stall on main.** On live seed 10353, at main 56918444 and at 9ecd8314:
+- Leader 0's AppendEntries reached both followers 39 times from 149 s to 172 s.
+- 34 of its calls failed, 6 answers came back, and nothing committed.
+- Both followers' `appended_at` stayed fresh, so no `suspect` report counted, and their promises held.
+- Leader 0 stepped down at 172 s. The new leader (term 12) committed at 180.9 s.
+
+A healthy quorum had requests waiting and none completing for 31.8 s, against the 30 s bound. The same seed stalls
+3.9 s on late-suspect aa3bf360 alone and 10.5 s on read-beat f1bd7d51 alone.
+
+**Change.** `on_suspect` reads `progressed_at`, which is set only by an accepted append that stored an entry or raised
+the commit index. `appended_at` keeps its meaning for the storage-slow campaign check (`election.rs`), which asks
+whether the leader is heard, not whether it commits.
+
+**Tests and plants.**
+- `a_half_hung_leader_s_empty_rounds_do_not_hold_its_followers` (`sim.rs`, live seed 10353): 31,780 ms on main
+  9ecd8314 and 31,148 ms with `appended_at` back in the check over this branch; passes at 5,333 ms.
+- `a_commit_index_move_is_progress` (`leadership.rs`): a round that only raises B's commit index keeps B promising
+  through two colos' reports. It fails if only stored entries count.
+- The rest of `leadership.rs` passes unchanged, including `an_overloaded_leader_still_appending_keeps_its_promises` and
+  `a_gray_leader_whose_appends_come_late_still_loses_its_lease`.
+- `tests/latesuspect/plant.py`: 8 of 8 caught, late-suspect's five plus `appended_at` back in the check, an empty
+  append counted as progress, and commit moves not counted.
+- The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half at 4,000 seeds, 1,333 s) passed: harsh 16.8 s
+  (seed 10356), gray 24.2 s (11076), live 25.8 s (12840). Against colo-unknown's 16.3 / 27.9 / 25.4 s and
+  late-suspect's 17.0 / 24.7 / 27.8 s. Porcupine Ok on all three (147,412, 2,331,603 and 5,965,204 operations).
+
+### Round 41: the m47 slot, site day from branch lookup-retry 4e5c2afe, B0-33 (2026-11-18)
+
+**Site day.** Built from `lookup-retry` at 4e5c2afe (main 56918444 plus lookup-retry), in its own worktree. The m43
+image was reused (`containers/` unchanged); test-faults, standard-4, ROLLUP=1, 32.25; GRAFTYARD_PR_TRIGGER unset;
+`siteday exit 0`. Sites a c3434baa, b 3c8ff0bf, c 39973f7c; edge 95b61d71 at 100% (`raw/siteday-m47.status`).
+progress-suspect is not in this build.
+
+**B0-33**: repo:131355, a1 `mwlet1ns`, 5,000 agents, 300 s of load from 01:00:17.7Z, leader site 0 at term 2, k 4.
+
+| B0-33 line | m47 (lookup-retry) | m45 (late-suspect) | verdict at 90% |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 22,536 ms (p50 5,209, n 4,533; queue p99 21.1 s, round 6.9 s, confirm 7.1 s); merges 1 of 53 (33 skipped at the cap); human pushes 10 of 207 (183 skipped) | 57,018 ms; 1 of 57; 6 of 184 | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 17.2 agent-class ok a second (agent pushes 3,252 ok of 12,491; 3,888 × 503 "access rows … not leader", 1,924 fetch failed) | 7.6 | fail |
+| Zero leader changes and `suspect` | **term 2 → 21, 19 changes**, the first 46 s into load; 41,356 `suspect` reports in the voters' traces (LAX 22,163, DFW 15,605, SJC 3,041, UNKNOWN 547) | term 2 throughout | fail |
+
+**Term changes are back, from two real colos.** m45 had one edge colo (LAX), so no rule could withhold. m47's edge
+served from LAX and DFW, and later SJC. `tests/fanout/campaigns.py` puts 39 of 49 campaigns after LAX+DFW withholding,
+7 after a lapsed promise with no append for 10 s or more (most after 01:04:24Z, when every voter's trace has a 12 to 40
+s hole), and 3 unexplained.
+
+**Was 10353's mechanism involved?** No. 10353 is a leader whose empty rounds keep `appended_at` fresh while it commits
+nothing, so the followers never withhold. Here the followers withheld 39 times under the deployed `appended_at` rule.
+The withholdings came from real gaps in the leader's appends:
+- Follower append gaps in load: p50 48 to 83 ms, p90 587 to 978 ms, p99 3.0 to 6.2 s. 5 to 10% of gaps were 1 s or
+  more.
+- The first withholding: both followers took no append from leader 0 for 1.0 to 2.6 s around 01:00:48 to 01:00:55Z
+  (commit index 145 to 148), while LAX and DFW reported. Both withheld, both promises lapsed at 01:01:04Z, and site 1
+  won term 3.
+
+Replayed with progress-suspect's rule (an append counts only if it moved `last` or the commit index), the trace has
+more late reports (4,471 against 2,082 at site 0; 7,705 against 2,986 at site 2) and slightly more two-colo episodes (9,
+4, 13 against 8, 3, 11). So progress-suspect would not have held these terms, and could withhold a little more under
+this overload. The leader's own appends stall for seconds at 500 agents, and two colos see the same stall. The edge's
+miss and the follower's own evidence now agree, so late-suspect's flip line ("a leader that two colos reported and that
+stopped reaching both followers for CALL_DEADLINE") is meeting real stalls, not queueing at the edge. [inference: the
+replay marks progress from the trace's AppendStepped `last` and `commit` fields; it cannot see a truncate-and-store at
+the same index.]
+
+**The lookup retry, measured.** Walk `/read`s fell only a little: 175.7, 133.7 and 186.6 a second at voters 0, 1 and 2,
+against m45's 222 to 224 at the followers. Requests by lookup step still show `walk` at 201 to 211 a second per voter
+(`raw/inbound-m47b33.txt`). Cause: every term change forgets the leader in every isolate, and 19 changes in 300 s, with
+about 700 isolates per voter, give one walk per isolate each time. A retry only helps while the cached leader is still
+the leader. `/suspect` at the voters: 119, 38 and 194 a second (m45: 16, 177, 186), from 685 to 709 isolates; at 1 s
+each isolate sends at most one per second, so the rate is the number of isolates with a reason to report. The edge
+runs on twice m45's isolates (723 against 324 walking a voter).
+
+**Edge-walk queueing at the voters.** Of 3,104 voter-to-voter `/raft` calls joined to their callee, 1,576 missed 1 s
+or went unanswered, with p50 1,743 requests entered ahead (m45: 2,121 of 4,300, p50 716). In the slowest bucket (3 s
+or more), what waited ahead was `/read` 43% and `/suspect` 40%. The voters entered 520, 274 and 532 requests a second.
+
+**Memory.** Memguard peaks 96.9 / 64.1 / 75.1 MiB; a1's admission samples peaked at 101.6 MB. No 120 MiB stop.
+
+**Test merges** (B0-35's instrument, here for the record): site 0 computed 3, wait max 59.4 s.
+
+**Close-out.**
+- Shards swept by costrow: "sweep exit 0".
+- `retirenets.mjs 131355`: 12 names, all "not joined" (01:09:34Z).
+- Two-pass purge (gate unchanged): a 10,367, b 9,078, c 7,564 (27,009 objects); second pass 0 on every site.
+- The idle reading runs 01:16 to 01:46Z into `raw/idle-m47.txt`.
+
+**Cost.** graft-m2b by prefix from 00:28Z to 01:15Z: $1.62 of the $10 stop. The account day was $3.19 at 01:10Z.
+
+Raw files in `tests/fanout/raw/`: `siteday-m47.status`, `costrow-m47b33.status`, `rows-m47b33.status`,
+`a1-b0-33-m47.jsonl`, `terms-m47b33.jsonl`, `memguard-m47b33.jsonl.xz`, `tsave-m47b33.jsonl.xz`, `inbound-m47b33.txt`,
+`reported-m47b33.txt`, `latesuspect-m47b33.txt`, `campaigns-m47b33.txt`, `retire-m47.log`, `retirenets-m47.out`,
+`purge-m47.log`.

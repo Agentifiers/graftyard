@@ -1,0 +1,101 @@
+2026-11-18T00:53:07Z start 4e5c2afe7 /home/user/workspace/swall-m47
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T00:53:26Z start sweep ok
+2026-11-18T00:53:28Z cost account 1.55 since 2026-11-18T00:00:00Z, run 0.0 since 2026-11-18T00:28:00Z, at b0-33
+2026-11-18T00:54:07.464Z m3org/fm47b33-b033 = 131355
+2026-11-18T00:54:08.402Z repo:131355 leader 0 placing since 1794963250168: waiting
+2026-11-18T00:54:11.686Z repo:131355 leader 0 placing since 1794963250168: waiting
+2026-11-18T00:54:14.956Z repo:131355 leader 0 placing since 1794963250168: waiting
+2026-11-18T00:54:18.181Z repo:131355 leader 0 placing since 1794963250168: waiting
+2026-11-18T00:54:21.411Z repo:131355 leader 0 placing since 1794963250168: waiting
+2026-11-18T00:54:24.635Z repo:131355 leader 0 placing since 1794963250168: waiting
+2026-11-18T00:54:27.846Z repo:131355 leader 0 placing since 1794963250168: waiting
+2026-11-18T00:54:39.736Z repo:131355 leader 0: config 9 learners [{"addr":192,"doName":"repo:131355#5#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131355#5#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131355#5#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131355#5#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131355#5#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131355#5#l5","join":20
+2026-11-18T00:54:43.264Z repo:131355 leader 0: set k 4: {"grants":[[0,[5,2,1]],[2,[5,2,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T00:54:53.651Z repo:131355 leader 0: set k 4: {"grants":[[0,[5,2,1]],[2,[5,2,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T00:55:04.164Z repo:131355 leader 0: set k 4: {"grants":[[0,[5,2,1]],[2,[5,2,1]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-18T00:55:04.260Z repo:131355 leader 0: k 4 at 10
+2026-11-18T00:55:04Z b0-33 fm47b33-b033 131355 start
+2026-11-18T01:07:29.842Z repo:131355 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":21},"stepped":true,"want":0}
+2026-11-18T01:07:29.964Z repo:131355 leader 0: k 1 at 272
+2026-11-18T01:07:29Z b0-33 fm47b33-b033 131355 done exit 0
+2026-11-18T01:07:35Z torn down 131355
+site fault off: 200
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/urllib/request.py", line 1333, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+              encode_chunked=req.has_header('Transfer-encoding'))
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1386, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1432, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1381, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1141, in _send_output
+    self.send(msg)
+    ~~~~~~~~~^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1085, in send
+    self.connect()
+    ~~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/http/client.py", line 1527, in connect
+    self.sock = self._context.wrap_socket(self.sock,
+                ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+                                          server_hostname=server_hostname)
+                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/ssl.py", line 469, in wrap_socket
+    return self.sslsocket_class._create(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        sock=sock,
+        ^^^^^^^^^^
+    ...<5 lines>...
+        session=session
+        ^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/lib/python3.14/ssl.py", line 1087, in _create
+    self.do_handshake()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/ssl.py", line 1383, in do_handshake
+    self._sslobj.do_handshake()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+TimeoutError: _ssl.c:1064: The handshake operation timed out
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/user/workspace/swall-m47/tests/fanout/teardown.py", line 73, in <module>
+    for app in api("applications"):
+               ~~~^^^^^^^^^^^^^^^^
+  File "/home/user/workspace/swall-m47/tests/fanout/teardown.py", line 64, in <lambda>
+    api = lambda p: json.load(urllib.request.urlopen(urllib.request.Request(
+                              ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+        f"https://api.cloudflare.com/client/v4/accounts/{acct}/containers/{p}", headers=H), timeout=60))["result"]
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 487, in open
+    response = self._open(req, data)
+  File "/usr/lib/python3.14/urllib/request.py", line 504, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+                              '_open', req)
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 1381, in https_open
+    return self.do_open(http.client.HTTPSConnection, req,
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        context=self._context)
+                        ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 1336, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error _ssl.c:1064: The handshake operation timed out>
+2026-11-18T01:08:36Z SWEEP FAILED: shard containers still running, see above
+ALLDONE
+B033DONE

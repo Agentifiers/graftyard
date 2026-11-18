@@ -29,7 +29,7 @@ fn live_faults(seed: u64) -> (Faults, Edge) {
         2 => Faults { crash: 2, down_max_ms: 200, ..base },
         _ => Faults { drain: 1, crash: 2, down_max_ms: 500, drop: 20, partition: 1, crash_mid: 1, ..base },
     };
-    (faults, Edge { follower_reads: true, suspect_gap_ms: 500, reads_only: seed % 8 >= 4 })
+    (faults, Edge { follower_reads: true, suspect_gap_ms: 1_000, reads_only: seed % 8 >= 4 })
 }
 
 fn env(name: &str, default: u64) -> u64 {
@@ -322,6 +322,15 @@ fn a_leader_hands_off_to_no_member_it_suspects_live() {
     for seed in [12_048, 12_073] {
         sweep_with(seed..seed + 1, 10_000, live_faults);
     }
+}
+
+/// progress-suspect: main 9ecd8314 left this live seed's healthy quorum with requests waiting for 31.8 s. A half-hung
+/// leader's read-beat rounds, empty behind its entry in flight, reached both followers every 2 s while every call
+/// failed, and `late-suspect` read any accepted append as the leader reaching them, so no report counted and their
+/// promises held until it stepped down. A report counts once no append stored an entry or moved the commit index.
+#[test]
+fn a_half_hung_leader_s_empty_rounds_do_not_hold_its_followers() {
+    sweep_with(10_353..10_354, 10_000, live_faults);
 }
 
 /// Seeds the long sweep's live half runs at least, from 10,000, whatever `RAFT_SEEDS` says: main passed the bound on

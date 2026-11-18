@@ -1,0 +1,50 @@
+site 0 campaign 01:01:21.346 (report term 3, colo DFW): leader 1 term 3; last append 881 ms before; two colos 01:01:07.321 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:01:22.680 (report term 3, colo DFW): leader 1 term 3; last append 182 ms before; two colos 01:01:07.321 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:01:41.637 (report term 0, colo DFW): leader 2 term 4; last append 316 ms before; two colos 01:01:30.113 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:01:57.563 (report term 5, colo LAX): leader 1 term 5; last append 214 ms before; two colos 01:01:43.450 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:02:17.175 (report term 6, colo DFW): leader 1 term 5; last append 17012 ms before; two colos 01:01:47.430 ['DFW', 'LAX'] -> gap
+site 0 campaign 01:02:34.936 (report term 0, colo DFW): leader 1 term 7; last append 188 ms before; two colos 01:02:20.951 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:03:05.145 (report term 9, colo DFW): leader 2 term 9; last append 56 ms before; two colos 01:02:51.316 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:03:24.320 (report term 10, colo DFW): leader 1 term 10; last append 3961 ms before; two colos 01:03:08.607 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:04:03.917 (report term 12, colo LAX): leader 1 term 12; last append 60 ms before; two colos 01:03:49.402 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:05:46.975 (report term 17, colo DFW): leader 2 term 18; last append 6 ms before; two colos 01:05:27.088 ['DFW', 'LAX'] -> withheld
+site 0 campaign 01:06:01.895 (report term 19, colo DFW): leader 2 term 18; last append 14307 ms before; two colos 01:05:31.917 ['DFW', 'LAX'] -> gap
+site 0 campaign 01:06:06.597 (report term 20, colo LAX): leader 2 term 18; last append 19009 ms before; two colos 01:05:37.394 ['DFW', 'LAX'] -> gap
+site 1 campaign 01:01:04.189 (report term 2, colo DFW): leader 0 term 2; last append 1107 ms before; two colos 01:00:53.288 ['DFW', 'LAX'] -> withheld
+site 1 campaign 01:01:07.477 (report term 0, colo LAX): leader 0 term 2; last append 4395 ms before; two colos 01:00:53.288 ['DFW', 'LAX'] -> withheld
+site 1 campaign 01:01:42.198 (report term 4, colo DFW): leader 2 term None; last append 314 ms before; two colos - -> neither
+site 1 campaign 01:03:47.083 (report term 0, colo DFW): leader 0 term 11; last append 332 ms before; two colos 01:03:39.679 ['DFW', 'LAX'] -> withheld
+site 1 campaign 01:05:06.096 (report term 0, colo SJC): leader 0 term None; last append 175 ms before; two colos - -> neither
+site 1 campaign 01:05:09.060 (report term 0, colo DFW): leader 0 term None; last append 2964 ms before; two colos - -> neither
+site 1 campaign 01:05:25.571 (report term 18, colo DFW): leader 0 term None; last append 13622 ms before; two colos - -> gap
+site 1 campaign 01:05:37.798 (report term 17, colo LAX): leader 2 term 18; last append 1276 ms before; two colos 01:05:25.575 ['DFW', 'LAX'] -> withheld
+site 1 campaign 01:05:40.616 (report term 18, colo LAX): leader 2 term 18; last append 285 ms before; two colos 01:05:25.575 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:01:04.307 (report term 2, colo DFW): leader 0 term 2; last append 1033 ms before; two colos 01:00:53.363 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:01:07.521 (report term 0, colo LAX): leader 0 term 2; last append 4247 ms before; two colos 01:00:53.363 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:01:22.039 (report term 0, colo LAX): leader 1 term 3; last append 34 ms before; two colos 01:01:08.640 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:01:23.792 (report term 3, colo LAX): leader 1 term 3; last append 2 ms before; two colos 01:01:08.640 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:01:55.983 (report term 5, colo DFW): leader 1 term 5; last append 1453 ms before; two colos 01:01:42.924 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:02:14.695 (report term 0, colo DFW): leader 0 term 6; last append 90 ms before; two colos 01:01:59.472 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:03:24.445 (report term 10, colo LAX): leader 1 term 10; last append 3577 ms before; two colos 01:03:13.777 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:03:37.677 (report term 11, colo LAX): leader 0 term 11; last append 1570 ms before; two colos 01:03:25.388 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:03:39.707 (report term 11, colo LAX): leader 0 term 11; last append 258 ms before; two colos 01:03:25.388 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:03:40.543 (report term 11, colo LAX): leader 0 term 11; last append 335 ms before; two colos 01:03:25.388 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:03:43.994 (report term 11, colo DFW): leader 0 term 11; last append 418 ms before; two colos 01:03:25.388 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:03:44.908 (report term 0, colo DFW): leader 0 term 11; last append 92 ms before; two colos 01:03:25.388 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:04.682 (report term 12, colo DFW): leader 1 term 12; last append 180 ms before; two colos 01:03:49.850 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:05.709 (report term 0, colo LAX): leader 1 term 12; last append 212 ms before; two colos 01:03:49.850 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:35.516 (report term 15, colo SJC): leader 1 term 15; last append 12986 ms before; two colos 01:04:23.353 ['DFW', 'LAX'] -> gap
+site 2 campaign 01:04:41.715 (report term 15, colo LAX): leader 1 term 15; last append 1485 ms before; two colos 01:04:23.353 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:42.753 (report term 15, colo LAX): leader 1 term 15; last append 636 ms before; two colos 01:04:23.353 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:46.007 (report term 15, colo LAX): leader 1 term 15; last append 22 ms before; two colos 01:04:23.353 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:47.340 (report term 0, colo LAX): leader 1 term 15; last append 27 ms before; two colos 01:04:23.353 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:50.976 (report term 0, colo SJC): leader 1 term 15; last append 1004 ms before; two colos 01:04:23.353 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:04:52.892 (report term 0, colo SJC): leader 1 term 15; last append 2920 ms before; two colos 01:04:23.353 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:05:08.865 (report term 15, colo SJC): leader 0 term 16; last append 806 ms before; two colos 01:04:53.550 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:05:10.193 (report term 0, colo LAX): leader 0 term 16; last append 2134 ms before; two colos 01:04:53.550 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:05:10.193 (report term 16, colo SJC): leader 0 term 16; last append 2134 ms before; two colos 01:04:53.550 ['DFW', 'LAX'] -> withheld
+site 2 campaign 01:05:26.548 (report term 17, colo LAX): leader 1 term 17; last append 891 ms before; two colos 01:05:13.033 ['DFW', 'SJC'] -> withheld
+site 2 campaign 01:05:45.057 (report term 18, colo LAX): leader 1 term 17; last append 15681 ms before; two colos 01:05:15.779 ['DFW', 'LAX'] -> gap
+site 2 campaign 01:05:50.984 (report term 0, colo SJC): leader 1 term 17; last append 21608 ms before; two colos 01:05:21.091 ['LAX', 'SJC'] -> gap
+site 2 campaign 01:06:02.936 (report term 0, colo DFW): leader 0 term 19; last append 2339 ms before; two colos 01:05:52.017 ['DFW', 'LAX'] -> withheld
+campaigns by cause: {'withheld': 39, 'gap': 7, 'neither': 3}
