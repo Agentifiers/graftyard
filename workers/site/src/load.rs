@@ -1,28 +1,32 @@
 //! One loader for a repository member's two tiers, shared by `InstallSnapshot` and the fold audit (`design/DESIGN.md`,
 //! Shape, "Packs"; `design/SHARED.md`, "Folds", `fold_audit`; `decisions/DECISIONS.md`, "F48").
 //!
-//! - **A job.** Each tier from a committed snapshot in R2, then log entries applied to both tiers up to `through`, into
-//!   scratch tables (`crate::tier::SCRATCH`) beside the member's own. Entries come from the member's stored log, or
-//!   from archive objects (`R2Key::Archive`, `graftyard_fold::encode_archive_row`) for what the log no longer holds.
+//! - **A job.** Each tier from a committed snapshot in R2, then log entries applied to both tiers up to `through`.
+//!   Entries come from the member's stored log, or from archive objects (`R2Key::Archive`,
+//!   `graftyard_fold::encode_archive_row`) for what the log no longer holds.
 //! - **Batches.** The member's alarm runs one batch at a time: at most `CHUNK` bytes per R2 range read, `BATCH_MS` and
 //!   `BATCH_BYTES` per batch. Each batch's rows and the job's cursor commit in one transaction, so a reset object
 //!   resumes where the last batch ended, and memory holds one batch, never the fold.
-//! - **Install.** A follower or learner sent `InstallSnapshot` loads the named snapshots and archives, rebuilds the
-//!   `request` rows of archived entries inside retention, and calls `Member::install`; its `Write::Install` swaps the
-//!   scratch tables in, in the transaction that drops the log (`host::SqlStore`). The member then acks the round.
+//! - **Install.** A follower or learner sent `InstallSnapshot` loads the named snapshots and archives into scratch
+//!   tables (`crate::tier::SCRATCH`) beside the member's own, rebuilds the `request` rows of archived entries inside
+//!   retention, and calls `Member::install`; its `Write::Install` swaps the scratch tables in, in the transaction that
+//!   drops the log (`host::SqlStore`). The member then acks the round.
 //! - **Source.** A member whose stored log was truncated after an archive (`Host::truncate`) names its install source
 //!   (`set_source`): the newest committed snapshot of each tier at or below the archive's end, the archives from there
 //!   or from `REQUEST_RETENTION` before it, and the config and id block there. Only a leader sends it.
 //! - **Audit.** The fold audit refolds a chain from each tier's newest committed snapshot, or with `deep` the core tier
 //!   from its oldest, through the member's `applied`, and reports each tier's `fold_digest` there; with `deep` it also
 //!   checks the refold against every later core snapshot's digest on the way. `crate::fold_audit` compares the report
-//!   with every voter's digest at that index.
+//!   with every voter's digest at that index. It writes no tier table (`decisions/DECISIONS.md`, "`refold-stream`"):
+//!   each snapshot is checked against its trailer and staged as pages (`graftyard_fold::Pager`, `audit_page`), and the
+//!   entries apply through a `graftyard_fold::SnapView` over them, whose changes each batch saves in `audit_overlay`.
+//!   The job's end, its failure, and a restore with no audit running delete both tables' rows.
 
 use std::rc::Rc;
 
 use graftyard_fold::{
-    self as fold, ARCHIVE_HEADER, Restore, RestoreCursor, Schema, SnapshotFrame, check_archive_header,
-    decode_archive_some, decode_some, fold_digest, frames_header,
+    self as fold, ARCHIVE_HEADER, Key, Pager, Restore, RestoreCursor, Schema, SnapView, SnapshotFrame, Store, Stored,
+    Val, check_archive_header, decode_archive_some, decode_some, fold_digest, frames_header, key_bytes,
 };
 use graftyard_git as git;
 use graftyard_raft::{self as raft, EntryBody, Fold as _, Index, InstallSnapshot, InstallSource, InstallWanted, codec};
@@ -54,9 +58,12 @@ const BATCH_TRIES: u32 = 3;
 /// How long an install waits before it tries a failed batch again (`retry_batch`) [guess: past a transient R2 error].
 const RETRY_MS: i64 = 5_000;
 const BUSY_MS: i64 = 20;
-/// The largest snapshot object an audit restores into scratch tables [guess]. A larger tier is reported, not refolded:
-/// its scratch copy would double the member's storage (the BF-20 metadata tier's snapshot is 2.4 GB, of a 4 GB tier).
-const AUDIT_SNAPSHOT_MAX: u64 = 256 << 20;
+/// The share of the room between the member's SQLite and its `SPLIT_AT` an audit's staged pages may take [guess]: the
+/// pages are the snapshot's bytes, and a member the audit took past `SPLIT_AT` would record `MetaSplit`.
+const STAGE_SHARE: u64 = 2;
+/// An audit batch saves its `SnapView` changes once they pass this many rows [guess], so memory holds at most this
+/// many changed rows whatever an entry or a batch rewrites.
+const AUDIT_CHANGES: usize = 20_000;
 /// How often the cron audits one chain [guess]: the design's daily digest comparison (`design/SHARED.md`, "Folds").
 const AUDIT_EVERY_MS: u64 = 86_400_000;
 
@@ -64,9 +71,6 @@ const AUDIT_EVERY_MS: u64 = 86_400_000;
 struct TierLoad {
     /// The snapshot to start from, or none: the tier starts empty at index 0.
     key: Option<String>,
-    /// Not loaded at all: a deep audit refolds the core tier alone.
-    #[serde(default)]
-    skip: bool,
     to: u64,
     /// The site whose bucket holds the key, once found, and the object's size.
     site: Option<u8>,
@@ -121,6 +125,15 @@ struct Job {
     rows: u64,
     entries: u64,
     mem_max_mb: f64,
+    /// An audit job this release made, which stages pages (`refold-stream`). One an older release left running loads
+    /// scratch tables and is dropped, not resumed.
+    #[serde(default)]
+    paged: bool,
+    /// An audit's staged pages and saved changes, the rows its refold wrote.
+    #[serde(default)]
+    pages: u64,
+    #[serde(default)]
+    saved: u64,
     /// The member's own metadata tables still to drop, one a batch, before the load starts (`drop_due`).
     #[serde(default)]
     drop: Vec<String>,
@@ -173,7 +186,21 @@ fn note(h: &Rc<Host<Repo>>, m: String) {
 
 const SCRATCH_REQUEST: &str = "CREATE TABLE IF NOT EXISTS i_request (rid TEXT PRIMARY KEY, idx INTEGER NOT NULL, at INTEGER NOT NULL, events BLOB NOT NULL)";
 
-/// Drops a job's scratch tables, made again empty when `fresh`.
+/// Deletes an audit's staged pages and saved changes (`graftyard_fold::AUDIT_CLEAR`).
+fn clear_audit(sql: &SqlStorage) -> Result<()> {
+    for q in fold::AUDIT_CLEAR {
+        sql.exec(q, None)?;
+    }
+    Ok(())
+}
+
+/// Ends a job: its row goes, with an install's scratch tables or an audit's staged rows.
+fn end_job(sql: &SqlStorage, install: bool) -> Result<()> {
+    sql.exec("DELETE FROM load_job", None)?;
+    if install { reset_scratch(sql, false) } else { clear_audit(sql) }
+}
+
+/// Drops an install's scratch tables, made again empty when `fresh`.
 fn reset_scratch(sql: &SqlStorage, fresh: bool) -> Result<()> {
     for s in [git::tiers::CORE, git::tiers::METADATA] {
         for q in crate::tier::drop_scratch(&s) {
@@ -312,7 +339,7 @@ fn snapshot_to(key: &str) -> Result<u64> {
 
 fn tier_load(key: Option<String>) -> Result<TierLoad> {
     let to = key.as_deref().map(snapshot_to).transpose()?.unwrap_or(0);
-    Ok(TierLoad { key, to, skip: false, site: None, size: 0, offset: 0, restore: None, restored: false })
+    Ok(TierLoad { key, to, site: None, size: 0, offset: 0, restore: None, restored: false })
 }
 
 fn install_job(chain: ChainId, w: &InstallWanted) -> Result<Job> {
@@ -413,6 +440,7 @@ fn unload_meta(h: &Rc<Host<Repo>>) {
 }
 
 fn new_job(kind: Kind, chain: ChainId, through: u64, tiers: [TierLoad; 2], archives: Vec<Arch>, next: u64) -> Job {
+    let paged = matches!(kind, Kind::Audit { .. });
     Job {
         kind,
         chain,
@@ -434,6 +462,9 @@ fn new_job(kind: Kind, chain: ChainId, through: u64, tiers: [TierLoad; 2], archi
         rows: 0,
         entries: 0,
         mem_max_mb: wasm_mem_mb(),
+        paged,
+        pages: 0,
+        saved: 0,
         drop: Vec::new(),
     }
 }
@@ -467,11 +498,8 @@ fn audit_job(h: &Rc<Host<Repo>>, deep: bool) -> Result<Job> {
         }
         tiers.push(tier_load(start.map(|(_, _, a)| a.key.to_string()))?);
     }
-    let mut tiers: [TierLoad; 2] = tiers.try_into().expect("two tiers");
-    if deep {
-        tiers[1] = TierLoad { skip: true, restored: true, ..tier_load(None)? };
-    }
-    let next = if deep { tiers[0].to + 1 } else { tiers[0].to.min(tiers[1].to) + 1 };
+    let tiers: [TierLoad; 2] = tiers.try_into().map_err(|_| err("two tiers"))?;
+    let next = tiers[0].to.min(tiers[1].to) + 1;
     let archives = stored_archives(&h.state.storage().sql(), next)?;
     let mut job = new_job(Kind::Audit { deep }, c.join.chain, through.0, tiers, archives, next);
     job.checks = checks;
@@ -489,9 +517,22 @@ pub fn restored(h: &Rc<Host<Repo>>) {
     {
         c.m.set_install(Some(src));
     }
-    if load_job(&sql).ok().flatten().is_some() {
+    let job = load_job(&sql).ok().flatten();
+    if job.is_some() {
         h.arm_in(BUSY_MS);
     }
+    if !keeps_audit_rows(job.as_ref())
+        && let Err(e) = clear_audit(&sql)
+    {
+        note(h, format!("audit pages not cleared: {e}"));
+    }
+}
+
+/// Whether a restored member keeps the staged pages and saved changes it finds: only while the audit that wrote them
+/// still runs. Any others were left by an object reset between an audit's last batch and its end, or by a failed
+/// clear, and no job will read them.
+fn keeps_audit_rows(job: Option<&Job>) -> bool {
+    job.is_some_and(|j| !j.install())
 }
 
 pub async fn on_alarm(h: &Rc<Host<Repo>>) {
@@ -503,13 +544,18 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         Err(e) => return note(h, format!("load job unreadable: {e}")),
     };
     let install = job.install();
+    if !install && !job.paged {
+        note(h, "fold audit from an older release dropped: its scratch tables go, and the next run refolds".into());
+        let _ = sql.exec("DELETE FROM load_job", None);
+        let _ = reset_scratch(&sql, false);
+        return;
+    }
     let loaded = job.tiers.iter().all(|t| t.restored) && job.next > job.through;
     if job.tries >= BATCH_TRIES {
         let e = format!("{} batches began without committing: the isolate died under them", job.tries);
         note(h, format!("{} abandoned: {e}", if install { "install" } else { "fold audit" }));
         let _ = report(h, &json!({ "error": e, "job": job_json(&job), "at": now_ms() }));
-        let _ = sql.exec("DELETE FROM load_job", None);
-        let _ = reset_scratch(&sql, false);
+        let _ = end_job(&sql, install);
         return;
     }
     // Counted before the batch and cleared by its commit, so a batch that kills its isolate is seen by the next.
@@ -534,8 +580,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             if !install {
                 let _ = report(h, &json!({ "error": e.to_string(), "at": now_ms() }));
             }
-            let _ = sql.exec("DELETE FROM load_job", None);
-            let _ = reset_scratch(&sql, false);
+            let _ = end_job(&sql, install);
         }
     }
 }
@@ -552,7 +597,11 @@ fn report(h: &Rc<Host<Repo>>, v: &Value) -> Result<()> {
 async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<bool> {
     let t0 = now_ms();
     if !job.prepared {
-        reset_scratch(sql, true)?;
+        if job.install() {
+            reset_scratch(sql, true)?;
+        } else {
+            clear_audit(sql)?;
+        }
         job.prepared = true;
         let applied = h.core.borrow().as_ref().map_or(u64::MAX, |c| c.m.state().applied.0);
         let drop = drop_due(job.install(), applied, job.through);
@@ -579,7 +628,6 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
         commit_tx(&h.state.storage(), stmts).map_err(err)?;
         return Ok(true);
     }
-    let (mut core, mut meta) = crate::tier::scratch_tiers(sql, job.install())?;
     let tiers = h.core.borrow().as_ref().map(|c| c.m.group_fold().fold.tiers()).ok_or_else(|| err("not joined"))?;
     let mut stmts: Vec<Stmt> = Vec::new();
     let mut bytes = 0u64;
@@ -587,10 +635,16 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
     let more = |bytes: u64, job: &Job| {
         now_ms() - t0 < BATCH_MS && bytes < BATCH_BYTES && job.rows + job.entries - rows0 < BATCH_ROWS
     };
+    if !job.install() {
+        return audit_batch(h, sql, job, &tiers, t0, more).await;
+    }
+    let (mut core, mut meta) = crate::tier::scratch_tiers(sql, true)?;
     for t in 0..2 {
         while !job.tiers[t].restored && more(bytes, &job) {
             let store = if t == 0 { &mut core } else { &mut meta };
-            bytes += restore_some(h, &mut job, t, store).await?;
+            let (frames, n) = read_frames(h, &mut job, t).await?;
+            bytes += n;
+            restore_frames(&mut job, t, store, &frames)?;
             // The member's Raft inputs run between reads, as between a snapshot writer's (`crate::snap`).
             Delay::from(std::time::Duration::ZERO).await;
         }
@@ -600,20 +654,16 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
             let (es, n) = next_entries(h, sql, &mut job).await?;
             bytes += n;
             for e in es {
-                apply_one(&tiers, &mut job, &mut core, &mut meta, &e, &mut stmts)?;
+                let mut stores = [(Tier::Core, &mut core as &mut dyn Store), (Tier::Metadata, &mut meta)];
+                apply_one(&tiers, &mut job, &mut stores, &e)?;
+                install_requests(&e, &mut stmts);
             }
             Delay::from(std::time::Duration::ZERO).await;
         }
     }
     core.seal(&mut stmts);
     meta.seal(&mut stmts);
-    let ms = now_ms() - t0;
-    job.tries = 0;
-    job.batches += 1;
-    job.batch_max_ms = job.batch_max_ms.max(ms);
-    job.bytes += bytes;
-    job.mem_max_mb = job.mem_max_mb.max(wasm_mem_mb());
-    let done = job.tiers.iter().all(|t| t.restored) && job.next > job.through;
+    let done = end_batch(&mut job, t0, bytes);
     stmts.push(job_stmt(&job)?);
     commit_tx(&h.state.storage(), stmts).map_err(err)?;
     core.flushed();
@@ -622,30 +672,187 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
         return Ok(true);
     }
     match job.kind.clone() {
-        Kind::Audit { deep } => finish_audit(h, sql, &job, &core, &meta, deep).map(|()| false),
         Kind::Install { from, install } => finish_install(h, sql, &job, &core, &meta, from, *install),
+        Kind::Audit { .. } => Err(err("an audit job in the install path")),
     }
 }
 
-/// One range of tier `t`'s snapshot into its scratch tables. The bytes read.
-async fn restore_some(h: &Rc<Host<Repo>>, job: &mut Job, t: usize, store: &mut TierSql) -> Result<u64> {
-    let chain = job.chain;
+/// The batch's counters; whether the job is done.
+fn end_batch(job: &mut Job, t0: u64, bytes: u64) -> bool {
+    let ms = now_ms() - t0;
+    job.tries = 0;
+    job.batches += 1;
+    job.batch_max_ms = job.batch_max_ms.max(ms);
+    job.bytes += bytes;
+    job.mem_max_mb = job.mem_max_mb.max(wasm_mem_mb());
+    job.tiers.iter().all(|t| t.restored) && job.next > job.through
+}
+
+/// One batch of an audit (`decisions/DECISIONS.md`, "`refold-stream`"): snapshot frames checked and staged as
+/// `audit_page` rows, then entries applied through a `SnapView` per tier over the staged pages and the saved changes.
+/// The batch's pages, its changes, and the job's cursor commit in one transaction, so a reset object resumes at the
+/// last batch and no change of an entry is kept unless the batch that applied it committed.
+async fn audit_batch(
+    h: &Rc<Host<Repo>>,
+    sql: &SqlStorage,
+    mut job: Job,
+    tiers: &git::tiers::RepoTiers,
+    t0: u64,
+    more: impl Fn(u64, &Job) -> bool,
+) -> Result<bool> {
+    let mut stmts: Vec<Stmt> = Vec::new();
+    let mut bytes = 0u64;
+    let mut pages = 0u64;
+    if !job.tiers.iter().any(|t| t.restored || t.offset > 0) {
+        for tl in job.tiers.iter_mut() {
+            if let (Some(key), None) = (tl.key.clone(), tl.site) {
+                let (s, size) = find(&h.env, &key).await?;
+                (tl.site, tl.size) = (Some(s), size);
+            }
+        }
+        let need: u64 = job.tiers.iter().map(|t| t.size).sum();
+        let db = crate::split::db_bytes(h).max(0.0) as u64;
+        let split_at = crate::split::split_at(job.chain);
+        if !stage_fits(db, need, split_at) {
+            return Err(err(format!(
+                "too large to stage: {need} bytes of snapshot on a member of {db} bytes, SPLIT_AT {split_at} (F52)"
+            )));
+        }
+    }
+    for t in 0..2 {
+        while !job.tiers[t].restored && more(bytes, &job) {
+            let (frames, n) = read_frames(h, &mut job, t).await?;
+            bytes += n;
+            let mut pager = Pager::new(fold::PAGE_BYTES);
+            restore_frames(&mut job, t, &mut pager, &frames)?;
+            for p in pager.take() {
+                pages += 1;
+                stmts.push((
+                    fold::PAGE_PUT,
+                    vec![i(t as u64), p.table.to_string().into(), p.last.into(), p.first.into(), p.rows.into()],
+                ));
+            }
+            if let Some(m) = pager.meta() {
+                stmts.push(saved_stmt(t, fold::META, &[], Some(m)));
+            }
+            Delay::from(std::time::Duration::ZERO).await;
+        }
+    }
+    let mut saved = 0u64;
+    // Entries apply in a batch that staged nothing, so the views read only committed pages, and a batch that dies
+    // after its stage leaves the job's `tries` mark in place.
+    if job.tiers.iter().all(|t| t.restored) && stmts.is_empty() {
+        let staged = [SqlStaged::new(sql, 0), SqlStaged::new(sql, 1)];
+        let mut views = [SnapView::new(&staged[0], fold::CACHE_PAGES), SnapView::new(&staged[1], fold::CACHE_PAGES)];
+        while job.next <= job.through && more(bytes, &job) && views.iter().all(|v| v.changed() < AUDIT_CHANGES) {
+            let (es, n) = next_entries(h, sql, &mut job).await?;
+            bytes += n;
+            for e in es {
+                let [c, m] = &mut views;
+                let mut stores = [(Tier::Core, c as &mut dyn Store), (Tier::Metadata, m)];
+                apply_one(tiers, &mut job, &mut stores, &e)?;
+            }
+            if let Some(e) = staged.iter().find_map(|s| s.lost.borrow().clone()) {
+                return Err(err(format!("audit pages unreadable: {e}")));
+            }
+            Delay::from(std::time::Duration::ZERO).await;
+        }
+        for (t, v) in views.iter_mut().enumerate() {
+            for ((table, key), row) in v.take() {
+                saved += 1;
+                stmts.push(saved_stmt(t, &table, &key, row.as_ref()));
+            }
+        }
+    }
+    job.pages += pages;
+    job.saved += saved;
+    let done = end_batch(&mut job, t0, bytes);
+    stmts.push(job_stmt(&job)?);
+    commit_tx(&h.state.storage(), stmts).map_err(err)?;
+    if !done {
+        return Ok(true);
+    }
+    finish_audit(h, sql, &job)?;
+    Ok(false)
+}
+
+/// Whether an audit may stage `need` bytes of snapshot pages on a member of `db` bytes: within `1 / STAGE_SHARE` of the
+/// room left below `split_at`, so staging never starts a split.
+fn stage_fits(db: u64, need: u64, split_at: u64) -> bool {
+    need <= split_at.saturating_sub(db) / STAGE_SHARE
+}
+
+fn saved_stmt(t: usize, table: &str, key: &[Val], row: Option<&Stored>) -> Stmt {
+    let r = postcard::to_allocvec(&(key, row)).unwrap_or_default();
+    (fold::SAVED_PUT, vec![i(t as u64), table.to_string().into(), key_bytes(key).into(), r.into()])
+}
+
+/// One tier's staged pages and saved changes in the member's SQLite. A read SQLite refuses is kept in `lost` and
+/// answers nothing; the batch checks `lost` after each read of entries and fails before it commits.
+struct SqlStaged {
+    sql: SqlStorage,
+    tier: u64,
+    lost: std::cell::RefCell<Option<String>>,
+}
+
+impl SqlStaged {
+    fn new(sql: &SqlStorage, tier: u64) -> SqlStaged {
+        SqlStaged { sql: sql.clone(), tier, lost: std::cell::RefCell::new(None) }
+    }
+
+    fn q(&self, q: &str, mut args: Vec<SqlStorageValue>) -> Vec<Vec<SqlStorageValue>> {
+        args.insert(0, i(self.tier));
+        match rows(&self.sql, q, args) {
+            Ok(r) => r,
+            Err(e) => {
+                self.lost.borrow_mut().get_or_insert(e.to_string());
+                Vec::new()
+            }
+        }
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(&self, v: &SqlStorageValue) -> Option<T> {
+        match blob(v).ok().and_then(|b| postcard::from_bytes(b).ok()) {
+            Some(x) => Some(x),
+            None => {
+                self.lost.borrow_mut().get_or_insert("a staged row does not decode".into());
+                None
+            }
+        }
+    }
+}
+
+impl fold::Staged for SqlStaged {
+    fn page(&self, table: &str, from: &[u8]) -> Option<fold::PageAt> {
+        let r = self.q(fold::PAGE_FIND, vec![table.into(), from.to_vec().into()]);
+        let r = r.first()?;
+        Some(fold::PageAt { first: blob(&r[0]).ok()?.to_vec(), last: blob(&r[1]).ok()?.to_vec() })
+    }
+    fn rows(&self, table: &str, last: &[u8]) -> Vec<fold::Row> {
+        let r = self.q(fold::PAGE_ROWS, vec![table.into(), last.to_vec().into()]);
+        r.first().and_then(|r| self.decode(&r[0])).unwrap_or_default()
+    }
+    fn saved(&self, table: &str, key: &[Val]) -> Option<Option<Stored>> {
+        let r = self.q(fold::SAVED_GET, vec![table.into(), key_bytes(key).into()]);
+        let (_, row): (Key, Option<Stored>) = self.decode(&r.first()?[0])?;
+        Some(row)
+    }
+    fn saved_scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Option<Stored>)> {
+        let n = limit.min(i64::MAX as usize) as u64;
+        let r = self.q(fold::SAVED_SCAN, vec![table.into(), key_bytes(from).into(), i(n)]);
+        r.iter().filter_map(|r| self.decode(&r[0])).collect()
+    }
+}
+
+/// The next whole frames of tier `t`'s snapshot from its offset, and the bytes read.
+async fn read_frames(h: &Rc<Host<Repo>>, job: &mut Job, t: usize) -> Result<(Vec<SnapshotFrame>, u64)> {
     let tl = &mut job.tiers[t];
-    let Some(key) = tl.key.clone() else {
-        tl.restored = true;
-        return Ok(0);
-    };
+    let Some(key) = tl.key.clone() else { return Ok((Vec::new(), 0)) };
     if tl.site.is_none() {
         let (s, size) = find(&h.env, &key).await?;
         (tl.site, tl.size) = (Some(s), size);
-        if !matches!(job.kind, Kind::Install { .. }) && size > AUDIT_SNAPSHOT_MAX {
-            let tl = &mut job.tiers[t];
-            (tl.skip, tl.restored) = (true, true);
-            return Ok(0);
-        }
     }
-    let tl = &mut job.tiers[t];
-    let site = tl.site.expect("found");
+    let site = tl.site.ok_or_else(|| err("found"))?;
     let start = if tl.offset == 0 { frames_header().len() } else { 0 };
     let b = read_whole(&h.env, site, &key, tl.offset, tl.size, start).await?;
     if start > 0 && b.get(..start) != Some(&frames_header()[..]) {
@@ -655,13 +862,26 @@ async fn restore_some(h: &Rc<Host<Repo>>, job: &mut Job, t: usize, store: &mut T
     if frames.is_empty() {
         return Err(err(format!("{key}: no whole frame at byte {}", tl.offset)));
     }
+    tl.offset += (start + used) as u64;
+    Ok((frames, (start + used) as u64))
+}
+
+/// Frames of tier `t`'s snapshot into `store` through `Restore`, which checks them against the trailer: an install's
+/// scratch tables, or an audit's `Pager`. With no snapshot the tier starts empty at 0.
+fn restore_frames(job: &mut Job, t: usize, store: &mut dyn Store, frames: &[SnapshotFrame]) -> Result<()> {
+    let chain = job.chain;
+    let tl = &mut job.tiers[t];
+    if tl.key.is_none() {
+        tl.restored = true;
+        return Ok(());
+    }
     let s = schema(t);
     let mut r = match tl.restore.take() {
         Some(c) => Restore::resume(s, c),
         None => Restore::begin(store, s, (chain, Index(tl.to))).map_err(|e| err(e.to_string()))?,
     };
     let mut ended = false;
-    for f in &frames {
+    for f in frames {
         r.frame(store, f).map_err(|e| err(e.to_string()))?;
         match f {
             SnapshotFrame::Rows { rows, .. } => job.rows += rows.len() as u64,
@@ -669,14 +889,13 @@ async fn restore_some(h: &Rc<Host<Repo>>, job: &mut Job, t: usize, store: &mut T
         }
     }
     let tl = &mut job.tiers[t];
-    tl.offset += (start + used) as u64;
     if ended {
         r.finish_rows(store).map_err(|e| err(e.to_string()))?;
         tl.restored = true;
     } else {
         tl.restore = Some(r.cursor());
     }
-    Ok((start + used) as u64)
+    Ok(())
 }
 
 /// The next entries from `job.next`: from the stored log while it holds them (an audit), else from the archives. The
@@ -738,29 +957,35 @@ async fn next_entries(h: &Rc<Host<Repo>>, sql: &SqlStorage, job: &mut Job) -> Re
 fn apply_one(
     tiers: &git::tiers::RepoTiers,
     job: &mut Job,
-    core: &mut TierSql,
-    meta: &mut TierSql,
+    stores: &mut [(Tier, &mut dyn Store); 2],
     e: &Entry,
-    stmts: &mut Vec<Stmt>,
 ) -> Result<()> {
     if e.index.0 != job.next {
         return Err(err(format!("entry {:?} where {} was next", e.index, job.next)));
     }
-    for (t, store) in [(Tier::Core, &mut *core), (Tier::Metadata, &mut *meta)] {
-        if job.tiers[t as usize].skip {
-            continue;
-        }
-        let applied = fold::meta(&*store).applied;
+    for (t, store) in stores.iter_mut() {
+        let applied = fold::try_meta(&**store).map_err(|x| err(x.to_string()))?.applied;
         if e.index.0 == applied.0 + 1 {
-            fold::apply(tiers, store, t, e).map_err(|x| err(format!("{t:?} tier at {:?}: {x}", e.index)))?;
+            fold::apply(tiers, &mut **store, *t, e).map_err(|x| err(format!("{t:?} tier at {:?}: {x}", e.index)))?;
         } else if e.index > applied {
             return Err(err(format!("{t:?} tier at {applied:?} cannot apply {:?}", e.index)));
         }
     }
-    // An install keeps every archived request row; the ones past retention of `through` go at the end.
-    if job.install()
-        && let EntryBody::Events(evs) = &e.body
-    {
+    if e.index.0 == job.through {
+        job.through_at = Some(e.at.0);
+    }
+    if let Some(&(to, want)) = job.checks.iter().find(|c| c.0 == e.index.0) {
+        let got = fold_digest(&*stores[0].1, Tier::Core);
+        job.segments.push(json!({ "to": to, "want": want.hex(), "got": got.hex(), "ok": got == want }));
+    }
+    job.entries += 1;
+    job.next += 1;
+    Ok(())
+}
+
+/// An install keeps every archived request row; the ones past retention of `through` go at the end.
+fn install_requests(e: &Entry, stmts: &mut Vec<Stmt>) {
+    if let EntryBody::Events(evs) = &e.body {
         for (rid, r) in &e.requests {
             let row: Vec<git::repo::RepoEvent> =
                 evs[r.start as usize..r.end as usize].iter().map(git::repo::RepoFold::row_event).collect();
@@ -770,23 +995,15 @@ fn apply_one(
             ));
         }
     }
-    if e.index.0 == job.through {
-        job.through_at = Some(e.at.0);
-    }
-    if let Some(&(to, want)) = job.checks.iter().find(|c| c.0 == e.index.0) {
-        let got = fold_digest(&*core, Tier::Core);
-        job.segments.push(json!({ "to": to, "want": want.hex(), "got": got.hex(), "ok": got == want }));
-    }
-    job.entries += 1;
-    job.next += 1;
-    Ok(())
 }
 
 fn job_json(job: &Job) -> Value {
     json!({
         "through": job.through,
         "next": job.next,
-        "tiers": job.tiers.iter().map(|t| json!({ "key": t.key, "to": t.to, "offset": t.offset, "size": t.size, "restored": t.restored, "skipped": t.skip })).collect::<Vec<_>>(),
+        "tiers": job.tiers.iter().map(|t| json!({ "key": t.key, "to": t.to, "offset": t.offset, "size": t.size, "restored": t.restored })).collect::<Vec<_>>(),
+        "pages": job.pages,
+        "saved": job.saved,
         "archives": job.archives.len(),
         "batches": job.batches,
         "batchMaxMs": job.batch_max_ms,
@@ -799,27 +1016,34 @@ fn job_json(job: &Job) -> Value {
     })
 }
 
-fn finish_audit(
-    h: &Rc<Host<Repo>>,
-    sql: &SqlStorage,
-    job: &Job,
-    core: &TierSql,
-    meta: &TierSql,
-    deep: bool,
-) -> Result<()> {
+fn finish_audit(h: &Rc<Host<Repo>>, sql: &SqlStorage, job: &Job) -> Result<()> {
+    let deep = matches!(job.kind, Kind::Audit { deep: true });
+    let staged = [SqlStaged::new(sql, 0), SqlStaged::new(sql, 1)];
+    let d = |t: usize| fold_digest(&SnapView::new(&staged[t], 1), tier_of(t)).hex();
     let mut v = job_json(job);
     v["kind"] = json!("audit");
     v["deep"] = json!(deep);
     v["index"] = json!(job.through);
-    let d = |t: usize, s: &TierSql| (!job.tiers[t].skip).then(|| fold_digest(s, tier_of(t)).hex());
-    v["core"] = json!(d(0, core));
-    v["metadata"] = json!(d(1, meta));
+    v["core"] = json!(d(0));
+    v["metadata"] = json!(d(1));
+    if let Some(e) = staged.iter().find_map(|s| s.lost.borrow().clone()) {
+        return Err(err(format!("audit pages unreadable: {e}")));
+    }
     v["at"] = json!(now_ms());
-    report(h, &v)?;
-    sql.exec("DELETE FROM load_job", None)?;
-    reset_scratch(sql, false)?;
+    commit_tx(&h.state.storage(), finish_stmts(&v, now_ms())).map_err(err)?;
     console_log!("fold audit refold {v}");
     Ok(())
+}
+
+/// An audit's end, in one transaction: its report, and its job, staged pages and saved changes gone.
+fn finish_stmts(report: &Value, at: u64) -> Vec<Stmt> {
+    let mut stmts: Vec<Stmt> = vec![("DELETE FROM load_job", vec![])];
+    stmts.extend(fold::AUDIT_CLEAR.iter().map(|q| (*q, vec![])));
+    stmts.push((
+        "INSERT OR REPLACE INTO load_report (id, at, row) VALUES (1, ?, ?)",
+        vec![i(at), report.to_string().into()],
+    ));
+    stmts
 }
 
 fn finish_install(
@@ -1079,8 +1303,7 @@ pub fn audit_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let due = last.as_ref().is_none_or(|(at, _)| now_ms() >= at + AUDIT_EVERY_MS);
     let force = body["force"].as_bool().unwrap_or(false);
     if body["cancel"].as_bool().unwrap_or(false) && job.as_ref().is_some_and(|j| !j.install()) {
-        sql.exec("DELETE FROM load_job", None)?;
-        reset_scratch(&sql, false)?;
+        end_job(&sql, false)?;
     }
     let job = load_job(&sql)?;
     // The leader refolds, so the cron's lookup follows `notLeader` to it; any member answers a read or a cancel.
@@ -1161,6 +1384,9 @@ mod tests {
             rows: 0,
             entries: 0,
             mem_max_mb: 0.0,
+            paged: false,
+            pages: 0,
+            saved: 0,
             drop: Vec::new(),
         }
     }
@@ -1310,6 +1536,36 @@ mod tests {
         }
         let (_, said) = restarted(next_job(None, job(&core(), Some(&meta()), 1, vec![])));
         assert_eq!(said, "no install runs");
+    }
+
+    /// `refold-stream`: no staged page or saved change outlives its audit. The audit's end deletes both in the
+    /// transaction that writes its report; a restored member keeps them only while an audit job still runs, so an
+    /// object reset between an audit's last batch and its end, or a job that failed, leaves none behind.
+    #[test]
+    fn an_audits_staged_rows_go_at_its_end_and_on_a_restore_without_it() {
+        let stmts = super::finish_stmts(&serde_json::json!({ "kind": "audit" }), 1);
+        let qs: Vec<&str> = stmts.iter().map(|(q, _)| *q).collect();
+        for q in graftyard_fold::AUDIT_CLEAR {
+            assert!(qs.contains(&q), "the end's transaction runs {q}");
+        }
+        assert!(qs.contains(&"DELETE FROM load_job") && qs.iter().any(|q| q.contains("load_report")));
+        let mut audit = job_for(10);
+        audit.kind = Kind::Audit { deep: false };
+        assert!(super::keeps_audit_rows(Some(&audit)), "a running audit resumes on its pages");
+        assert!(!super::keeps_audit_rows(None), "no job: the pages are left over");
+        assert!(!super::keeps_audit_rows(Some(&job_for(10))), "an install's job reads no audit page");
+    }
+
+    /// An audit stages pages only within half the room left below `SPLIT_AT`, so its own pages never start a split.
+    /// BF-20's 2.4 GB metadata snapshot on its 4.5 GB member of 7 GiB is still too large (F52); `repo:65536`'s 31.6 MB
+    /// core snapshot on a small member fits.
+    #[test]
+    fn an_audit_stages_only_within_half_the_room_below_split_at() {
+        let split_at = graftyard_git::split::SPLIT_AT;
+        assert!(super::stage_fits(4_000_000, 31_600_000, split_at));
+        assert!(!super::stage_fits(4_500_000_000, 2_400_000_000, split_at));
+        assert!(super::stage_fits(0, split_at / 2, split_at) && !super::stage_fits(0, split_at / 2 + 1, split_at));
+        assert!(!super::stage_fits(split_at + 1, 1, split_at), "a member past SPLIT_AT stages nothing");
     }
 
     /// G21: one "Network connection lost" at 07:57:38Z threw away b030r5's 9-minute install. A failed install batch is

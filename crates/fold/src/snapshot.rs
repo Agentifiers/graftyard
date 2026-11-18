@@ -616,27 +616,3 @@ pub enum RefoldError {
     #[error(transparent)]
     Apply(#[from] crate::tier::FoldError),
 }
-
-/// A fold audit's refold of one tier that holds no more than one frame and one entry at a time (F48): the snapshot at
-/// `from` restored into `store`, which must be empty (a host's scratch SQLite tables), then `entries` applied in
-/// order. Returns the tier's `fold_digest` after the last entry, which the audit compares with each member's
-/// `digest_at` of the same index, or with the next snapshot's trailer when the entries end at its `to`. Chaining
-/// segments from one snapshot to the next refolds a chain from its first snapshot whatever its size.
-pub fn refold_segment<T: crate::tier::Tiered>(
-    t: &T,
-    store: &mut dyn Store,
-    schema: Schema,
-    from: (ChainId, Index),
-    frames: impl IntoIterator<Item = SnapshotFrame>,
-    entries: impl IntoIterator<Item = graftyard_raft::LogEntry<T::Event>>,
-) -> Result<Digest, RefoldError> {
-    let mut r = Restore::begin(store, schema, from)?;
-    for f in frames {
-        r.frame(store, &f)?;
-    }
-    r.finish(store)?;
-    for e in entries {
-        crate::tier::apply(t, store, schema.tier, &e)?;
-    }
-    Ok(crate::tier::fold_digest(store, schema.tier))
-}

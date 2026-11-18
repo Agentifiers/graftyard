@@ -2,8 +2,9 @@
 //! Stack, Cron Triggers; `decisions/DECISIONS.md`, "F48"). Each run takes `SAMPLE` repository chains this site homes,
 //! from this site's `MemberRegistry` shards, starting after the last run's cursor. For each chain:
 //!
-//! - its leader refolds the chain into scratch tables from each tier's newest committed snapshot plus the log tail
-//!   (`crate::load`), in alarm-driven batches, so the refold holds one batch in memory whatever the log's size. A run
+//! - its leader refolds the chain from each tier's newest committed snapshot plus the log tail (`crate::load`), in
+//!   alarm-driven batches, so the refold holds one batch in memory whatever the log's size. It writes no tier table:
+//!   the snapshot is staged as pages and the tail applies over them (`decisions/DECISIONS.md`, "`refold-stream`"). A run
 //!   starts the job (`/fold {"audit": {"start": true}}`) when the last one is a day old, and reads the last report;
 //! - every voter reports its own `fold_digest` of each tier at the report's index from its digest ring
 //!   (`/fold {"at": index}`), whatever batches it applied in;
@@ -183,7 +184,8 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) 
     json!({
         "chain": row.chain.to_string(), "index": index.0, "alarm": alarm, "tiers": tiers, "missing": missing,
         "refold": { "batches": replay["batches"], "entries": replay["entries"], "rows": replay["rows"], "bytes": replay["bytes"],
-                    "ms": replay["ms"], "memMaxMb": replay["memMaxMb"], "from": replay["tiers"], "segments": replay["segments"] },
+                    "ms": replay["ms"], "memMaxMb": replay["memMaxMb"], "from": replay["tiers"], "segments": replay["segments"],
+                    "pages": replay["pages"], "saved": replay["saved"] },
         "running": running,
     })
 }

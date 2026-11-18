@@ -145,6 +145,30 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 
 **Decision record.** A DECISIONS entry "`audit-moved`" with decision / why / beat (a refold every day per chain, F48's cadence; sampling rows instead) / evidence (this section and K10) / flip: a storage-corruption case found on an idle chain by the follow-up live-row check that a daily refold would have found first, or a refold of an unmoved chain that disagrees with its last report.
 
+## `refold-stream` built as A′ (2026-11-18, code-only, branch `refold-stream`)
+
+Built as amended after review: (A) is dropped and A′ was approved (`decisions/DECISIONS.md`, "`refold-stream`").
+- **Why not (A).** (A) answered a page not yet in memory as "absent" and re-applied the entry once the page arrived. Fold code may assert on a row it is entitled to expect: `CommentEvent::Resolved` reads its thread (present) and then the unresolved count (absent on a miss), and `count_unresolved` panics. On wasm a panic resets every member in the isolate.
+- **A′.**
+  - The snapshot is checked against its trailer by `Restore` and staged by `Pager` into 256 KB pages, one row each in `audit_page ... WITHOUT ROWID`.
+  - Entries apply through `SnapView`: the batch's changes, then `audit_overlay` (earlier batches' changes), then the page, through 8 cached pages. Every read is synchronous.
+  - Changes are saved with the batch's cursor. The audit's end deletes both tables in its report's transaction. A restore with no audit running deletes them, and so do a failed or abandoned audit.
+  - Staging is refused past half the member's room below `SPLIT_AT`; that replaces `AUDIT_SNAPSHOT_MAX`.
+  - Install is unchanged. The audit's scratch path is deleted, and so are `TierLoad.skip`, `AUDIT_SNAPSHOT_MAX` and `AUDIT_ROWS_PER_ROW`.
+- **What A′ replaces in (A)'s conditions.** Condition 1 (miss and re-apply): there are no misses. A batch's changes reach `audit_overlay` only in the batch transaction, after every entry in it applied. Condition 2 (128-frame cap): nothing to cap, so no `incomplete` count. At 256 KB pages the most pages one entry of the fixtures read is 4 per tier (73 at 300 B pages). Conditions 3 to 5 stand.
+- **Proof.**
+  - The corpus folds all 902 rows through staged pages to the golden digests.
+  - At every index, the staged refold and a restore give the same `fold_digest`, `refold_digest` and rows: on `repo:65536`'s shape scaled down, the split parent from four snapshots, and the 552-comment slim, with a cache of one page.
+  - `key_bytes` order is property-tested against `Key` order over integers across the sign boundary, empty and prefix strings and blobs, the escape byte, and composite keys. The same SQL is tested in SQLite (`crates/fold/tests/stream_sqlite.rs`).
+  - The staged-row clean-up is tested at the end and on restore.
+  - `tests/m0carried/plant44.py`: 9 of 9 caught.
+- **Cost** (`scripts/cost.py`, rows written and read, R2 Class B, duration): the line is $0.01, $1.48 and $9.03 a month (was $421, $2,517 and $3,110), and $0.10, $8.02 and $17.10 at the 65 B floor. Default totals are $235, $1,211 and $9,362; `Solo` $132, $822 and $5,558; agents add $21, $278 and $2,599. Cadence stays daily.
+- **K12 opened.** Do the live tier tables (composite key, no `WITHOUT ROWID`) write 2 rows per put? To be settled by measurement.
+- **Hosted, at the next m3f site day from a main with this merged.**
+  - Read the cron report's `idle` and `deleted` counts and the m3f PREFIX meter over two crons (audit-moved).
+  - Read one refold's `rowsWritten` against its report's `pages` and `saved` (refold-stream).
+  - Read `rowsWritten` for one `apply` on a seeded repository (K12).
+
 ## Design: the fold audit's refold writes no scratch rows (2026-11-18, code-only, for review before any build)
 
 **Why.** At `ROW_KB` 0.62 the refold line is $421, $2,517 and $3,110 a month, 64% and 68% of the bill at 50 and 300 developers (K10). The writes come from restoring each tier's snapshot into scratch tables: 2 rows written per tier row. That is likely because each table has a composite `PRIMARY KEY` without `WITHOUT ROWID`, so SQLite writes the row and its autoindex [inference, from `tier.rs` `create` and Lumenize's DO write-cost measurements (https://lumenize.com/blog/do-sqlite-write-costs) [doc, secondary]].

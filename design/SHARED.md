@@ -730,16 +730,18 @@ pub fn apply(fold: &mut Fold, e: &LogEntry) -> Result<(), FoldError>;
 /// 2^256 of SHA-256 over each row's (table, key, writing index, columns) [inference: chosen so members agree whatever
 /// their row order, and `apply` keeps it with one subtract and one add per write; `crates/fold`].
 /// Refolds sampled chains on each release and daily, compares `fold_digest`, and alarms on any mismatch. It refolds
-/// from the tier's newest committed snapshot at or below the audited index, streamed one frame at a time into empty
-/// scratch tables, then applies the stored log tail with the same `apply`, one entry at a time (`refold_segment`), so
-/// memory is one frame and one entry. A refold from one snapshot to the next must reach the next trailer's digest, so
+/// from the tier's newest committed snapshot at or below the audited index, checked against its trailer as it streams
+/// and staged as pages of at most 256 KB, one SQLite row each, then applies the stored log tail with the same `apply`,
+/// one entry at a time, over a view of those pages with each batch's changed rows saved beside them
+/// (`refold_segment`; `decisions/DECISIONS.md`, "`refold-stream`"). It writes no tier table: each page and each
+/// changed row once, both deleted at its end. Memory is a few pages and one batch. A refold from one snapshot to the next must reach the next trailer's digest, so
 /// archived ranges are audited segment by segment; the first snapshot is trusted as written [measured in memory,
 /// `tests/m3/results/m3-wp5.md`, F48]. The site's cron runs it in alarm batches of at most 1 MB, 20,000 rows, or 2 s,
 /// and skips nothing for log size; a deep audit refolds the core tier from its oldest snapshot through the whole stored
 /// log, checking each later trailer on the way. On hosted `repo:65536`, 107.7 MB of log refolded in 213 batches at a
 /// peak of 64.9 MB of wasm memory, equal to all three voters [measured, `tests/m3/results/m3-wp5.md`, "2026-11-06",
-/// F48]. A tier whose snapshot is over `AUDIT_SNAPSHOT_MAX` (256 MB [guess]) is skipped, because its scratch copy would
-/// not fit beside it in the member's storage. A chain whose last refold matched every voter and that committed no entry
+/// F48]. A chain whose snapshots would take its pages past half the member's room below `SPLIT_AT` is reported, not
+/// refolded (F52). A chain whose last refold matched every voter and that committed no entry
 /// writing its fold since is not refolded: each voter's digests at that index are compared again, with no write and no
 /// election. A tombstoned repository is neither refolded nor compared until its purge (`decisions/DECISIONS.md`,
 /// "audit-moved").
