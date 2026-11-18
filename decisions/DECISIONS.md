@@ -5218,6 +5218,21 @@ The install path is unchanged. `InstallSnapshot` still restores into scratch tab
 
 **Flip.** A hosted refold whose `rowsWritten` is more than twice the pages plus changed rows it reports, or a fixture or chain where the staged refold and a restore give different digests. Also, staging costs that pass 10% of a total at some tier, for example a snapshot-per-row size far below 65 B.
 
+### `audit-cover`: a fold-audit run spends its samples on live chains only, 2026-11-18
+
+**Decision.** Each cron run of the fold audit (`workers/site/src/fold_audit.rs`, `walk`) looks at this site's homed registry rows from its cursor until it has audited `SAMPLE` (4) chains or looked at `LOOK_MAX` (64) rows, each row at most once a run. A row costs a look and no sample when it is `retired`, `deleted`, or `skipped` (a probe or non-repository group). `retired` means this site's member answers 409 "member not joined" and so does every other site's member that its registry row names, asked directly, so no lookup and no election starts. The cursor moves to the last row looked at, and the report counts `retired`.
+
+**Why.** On `graft-m3f`'s site day m3frs (2026-11-18), site a's registry homed 53 chains (`repo:65536` to `65588`), none of them joined after the close-out; sites b and c homed none of them. The six crons from 18:18 to 19:33Z each spent all 4 samples on retired test chains 65536 to 65547 and never reached a live one [measured, `tests/am1/results/lm1-rows-m3f.md`, "Site day m3frs"]. The rows stay because the test route `/retire` (`workers/site/src/member.rs`) deletes the member's storage and resets it, standing for a lost member (BF-11's `ReplaceMember`), whose registry row must stay for its replacement; and `tests/fanout/purge.py` deletes bucket objects only. The product purge does delete each site's row (`workers/edge/src/purge.rs`, `unregister`), but between a repository's delete and its purge its rows stay as `deleted`, and those also took samples. So the cursor, not retire or purge, is where a stale or tombstoned row has to stop costing coverage.
+
+**What it beat.**
+- **Deleting the registry row from `/retire`.** It would break the lost-member case `/retire` stands for, and it leaves `deleted` rows taking samples in production.
+- **Deleting a row found not joined everywhere.** A registry write from the audit on evidence from one pass; a lost home slot answers 409 on its home too, and the other sites' answers are what tell the two apart. Left to purge, which owns the row.
+- **A larger `SAMPLE`.** Every run's refolds and voter calls grow with it, and a site of mostly retired rows still starves.
+
+**Evidence.** `a_run_over_mostly_retired_rows_still_audits_the_live_ones` (`workers/site/src/fold_audit.rs`): 30 rows of which 5 live, from a cursor, wrapping, and 200 retired rows bounded by `LOOK_MAX`. It fails on main's rule (every look a sample): no live chain reached.
+
+**Flip.** A run whose looks pass `LOOK_MAX` before it audits `SAMPLE` live chains on a real install, so live chains go unaudited for days: then purge deletes rows the audit finds retired everywhere, or the registry keeps live and tombstoned rows apart.
+
 ### `shed-backoff`: a write's shed read backs off and gives up after `SHED_RETRY_FOR`, 2026-11-18
 
 **Decision.** `graftyard_lookup::retry_shed` waits after the nth shed pass in a row `OVERLOAD_RETRY_MS` (250 ms) doubled per pass up to `SHED_BACKOFF_MAX_MS` (2 s), with a random part of up to half taken off, and never under the `retryAfterMs` the members named. The edge gives a write `SHED_RETRY_FOR` (4 s [guess]) in place of LOOKUP_FOR (20 s), and a bounded push the smaller of that and what is left of its AGENT_PUSH_BOUND (`workers/edge/src/lib.rs`, `shed_retry_for`). Past it the write answers 503 with `Retry-After: 1`, or `ng` for an Agent push, as before. Read-class requests still answer at once. This amends `lease-clock` (2), whose flip it meets.
