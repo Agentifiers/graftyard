@@ -653,11 +653,15 @@ pub fn image_for(shard: GitCacheShard, count: u16, day_step: Option<u8>, rolled_
 pub struct IngestCursor {
     pub network: NetworkId,
     pub chains: SmallVec<[(ChainId, Index); 4]>,
+    /// The default branch this disk's HEAD was last pointed at (G26), so a catch-up names HEAD only when it changed.
+    /// `None` on a cursor saved before G26, and the next catch-up names it once.
+    #[serde(default)]
+    pub head: Option<String>,
 }
 
 impl IngestCursor {
     pub fn new(network: NetworkId) -> IngestCursor {
-        IngestCursor { network, chains: SmallVec::new() }
+        IngestCursor { network, chains: SmallVec::new(), head: None }
     }
 
     pub fn at(&self, chain: ChainId) -> Index {

@@ -61,8 +61,10 @@
 //	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
 //	                                 first page deletes every ref it does not list, done=1 on the last sets HEAD;
 //	                                 neither is one page that is the whole set. Refs naming objects not here are
-//	                                 skipped and counted ("skipped"), not fatal
-//	POST /refs?net=N                 a catch-up's ref changes, the same lines, the zero oid a delete
+//	                                 skipped and counted ("skipped"), not fatal. [&head=R]: HEAD is R, the
+//	                                 repository's default branch, even before R exists; without it, refs/heads/main
+//	                                 when it exists, else the page's first ref
+//	POST /refs?net=N[&head=R]        a catch-up's ref changes, the same lines, the zero oid a delete; head as PUT's
 //	GET  /refs?net=N                 every ref, the same lines
 //	POST /promote?net=N              body: SHA-256s of ingested packs, one per line. Answers one complete (not thin)
 //	                                 pack of every object those packs brought, named by its tree entry where there is one
@@ -2268,8 +2270,7 @@ func applyRefs(rp string, dels, ups []string) (int, error) {
 	return skipped, nil
 }
 
-// setHead points HEAD at refs/heads/main when it exists, else at the first ref given, and writes it only when it
-// changes.
+// setHead points HEAD at head (handleRefs picks it) and writes it only when it changes.
 func setHead(rp, head string) {
 	if head == "" {
 		return
@@ -2282,6 +2283,8 @@ func setHead(rp, head string) {
 // handleRefs serves GET (every ref), PUT (a whole ref set, in pages: start=1 on the first page clears the refs, done=1
 // on the last sets HEAD and may start a repack), and POST (a catch-up's ref changes, deletes as the zero oid). Refs
 // naming objects the shard does not hold are skipped and counted, never fatal, so one bad ref leaves the others served.
+// head=<ref> on a done=1 PUT or a POST points HEAD at the repository's default branch; without it a PUT keeps the
+// old rule, refs/heads/main when it exists, else the first ref of the page.
 func handleRefs(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
@@ -2307,6 +2310,17 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 	want, order, err := readRefLines(r.Body, !put)
 	if err != nil {
 		fail(w, 400, "%v", err)
+		return
+	}
+	if h := q.Get("head"); h != "" && (!strings.HasPrefix(h, "refs/heads/") || strings.Contains(h, "..") || strings.ContainsAny(h, " \t\n")) {
+		fail(w, 400, "bad head %q", h)
+		return
+	}
+	// A change set with no changes only names HEAD: a catch-up over a Settings entry. HEAD is one reftable write,
+	// atomic under git's own lock, so it takes no network lock, which would wait for every streaming upload-pack.
+	if !put && len(order) == 0 {
+		setHead(rp, q.Get("head"))
+		jsonOut(w, map[string]any{"refs": 0, "skipped": 0, "repack": false})
 		return
 	}
 	l := lock(net)
@@ -2344,9 +2358,12 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repack := false
+	// head=: the repository's default branch, which GHES's clone checks out, whether or not the branch exists yet
+	// (G26), on a PUT's last page or any change set. A PUT that names none, from an older shard object, keeps the old
+	// rule.
 	if done {
-		head := ""
-		if put {
+		head := q.Get("head")
+		if head == "" && put {
 			if _, err := git(rp, []string{derivedEnv}, nil, "rev-parse", "-q", "--verify", "refs/heads/main"); err == nil {
 				head = "refs/heads/main"
 			} else if len(order) > 0 && want[order[0]] != "" {

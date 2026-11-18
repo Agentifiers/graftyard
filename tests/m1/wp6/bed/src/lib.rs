@@ -316,7 +316,7 @@ async fn get_json<T: for<'de> Deserialize<'de>>(stub: &Stub, path: &str) -> std:
 impl ChainLog for GroupLog {
     async fn head(&self, _chain: ChainId) -> std::result::Result<Head, StoreError> {
         match get_json::<ReadReply>(&self.stub, "/read").await? {
-            ReadReply::Refs(r) => Ok(Head { first: Index(1), applied: Index(r.index) }),
+            ReadReply::Refs(r) => Ok(Head { first: Index(1), applied: Index(r.index), default_branch: None }),
             ReadReply::Error { error } => Err(StoreError(format!("read: {error:?}"))),
         }
     }

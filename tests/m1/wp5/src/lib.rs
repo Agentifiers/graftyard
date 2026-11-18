@@ -267,7 +267,7 @@ impl ChainLog for StubChain {
             ok_json(call(&self.stub, Method::Get, "/refs", None).await.map_err(ws)?).await.map_err(ws)?;
         let first =
             ok_json::<u64>(call(&self.stub, Method::Get, "/first", None).await.map_err(ws)?).await.map_err(ws)?;
-        Ok(Head { first: Index(first), applied: Index(v["applied"].as_u64().unwrap_or(0)) })
+        Ok(Head { first: Index(first), applied: Index(v["applied"].as_u64().unwrap_or(0)), default_branch: None })
     }
     async fn refs_page(
         &self,

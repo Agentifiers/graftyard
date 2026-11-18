@@ -776,27 +776,36 @@ impl ShardHost<'_> {
         start: bool,
         done: bool,
         repack: bool,
+        head: Option<&str>,
     ) -> Result<(), StoreError> {
         let body: String = refs.iter().map(|(r, o)| format!("{o} {r}\n")).collect();
         let path = format!(
-            "/refs?net={}&start={}&done={}&repack={}",
+            "/refs?net={}&start={}&done={}&repack={}{}",
             network.0.0,
             u8::from(start),
             u8::from(done),
-            u8::from(repack)
+            u8::from(repack),
+            crate::catchup::head_param(head)
         );
         self.ok(Method::Put, &path, Some(body.into_bytes())).await.map(|_| ())
     }
 
     /// Applies ref changes (`crate::ingest::ref_changes`) to the container's refs: `POST /refs`, deletes then sets.
     /// An update to an object the shard does not hold is skipped by the container, as a rehydrate's is.
-    pub async fn apply_refs(&self, network: NetworkId, changes: &[(String, Option<String>)]) -> Result<(), StoreError> {
-        if changes.is_empty() {
+    /// With `head`, HEAD points at it too (the default branch, G26), and with no changes that is all the call does.
+    pub async fn apply_refs(
+        &self,
+        network: NetworkId,
+        changes: &[(String, Option<String>)],
+        head: Option<&str>,
+    ) -> Result<(), StoreError> {
+        if changes.is_empty() && head.is_none() {
             return Ok(());
         }
         let zero = "0".repeat(40);
         let body: String = changes.iter().map(|(r, o)| format!("{} {r}\n", o.as_deref().unwrap_or(&zero))).collect();
-        self.ok(Method::Post, &format!("/refs?net={}", network.0.0), Some(body.into_bytes())).await.map(|_| ())
+        let path = format!("/refs?net={}{}", network.0.0, crate::catchup::head_param(head));
+        self.ok(Method::Post, &path, Some(body.into_bytes())).await.map(|_| ())
     }
 
     pub async fn fsck(&self, network: NetworkId) -> Result<serde_json::Value, StoreError> {
@@ -1440,11 +1449,12 @@ impl ShardIo for Io<'_, '_> {
         start: bool,
         done: bool,
         repack: bool,
+        head: Option<&str>,
     ) -> Result<(), StoreError> {
-        self.host.put_refs_page(self.network, refs, start, done, repack).await
+        self.host.put_refs_page(self.network, refs, start, done, repack, head).await
     }
-    async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError> {
-        self.host.apply_refs(self.network, changes).await
+    async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError> {
+        self.host.apply_refs(self.network, changes, head).await
     }
     async fn make_room(&self, incoming: u64) -> Result<Vec<i64>, StoreError> {
         Ok(self.host.make_room(self.network, incoming, None).await?.evicted)

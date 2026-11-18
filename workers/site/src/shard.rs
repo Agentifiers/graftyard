@@ -304,13 +304,18 @@ impl GroupLog<'_> {
 }
 
 impl ChainLog for GroupLog<'_> {
-    /// The fold's last `Archived` raises `first` (`RepoFold::first_index`); `applied` is the read's index.
+    /// The fold's last `Archived` raises `first` (`RepoFold::first_index`); `applied` is the read's index; and the
+    /// `settings` row's default branch, which the shard points HEAD at (G26).
     async fn head(&self, chain: ChainId) -> std::result::Result<Head, StoreError> {
         let v = self.ranges().await?;
         if let (ChainId::Repo(r), Some(k)) = (chain, v["fanout"].as_u64()) {
             FANOUT.with(|m| m.borrow_mut().entry(r.0.0).or_default().k = k as u8);
         }
-        Ok(Head { first: Index(v["first"].as_u64().unwrap_or(1)), applied: Index(v["index"].as_u64().unwrap_or(0)) })
+        Ok(Head {
+            first: Index(v["first"].as_u64().unwrap_or(1)),
+            applied: Index(v["index"].as_u64().unwrap_or(0)),
+            default_branch: v["default_branch"].as_str().map(str::to_owned),
+        })
     }
     async fn refs_page(
         &self,

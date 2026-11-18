@@ -51,6 +51,9 @@ struct Disk {
     objects: RefCell<BTreeSet<u64>>,
     ingested: RefCell<BTreeSet<Digest>>,
     refs: RefCell<BTreeMap<String, String>>,
+    /// HEAD as the container keeps it, and the `/refs` calls that named it (G26).
+    head: RefCell<Option<String>>,
+    head_calls: Cell<usize>,
     bucket: RefCell<BTreeMap<PackId, Vec<u8>>>,
     markers: RefCell<Vec<(PackId, Marker)>>,
     inits: Cell<usize>,
@@ -143,6 +146,7 @@ impl Disk {
         self.ingested.borrow_mut().clear();
         self.refs.borrow_mut().clear();
         self.spooled.borrow_mut().clear();
+        *self.head.borrow_mut() = None;
     }
 
     fn tick(&self) -> Result<(), StoreError> {
@@ -266,10 +270,15 @@ impl ShardIo for Disk {
         start: bool,
         done: bool,
         repack: bool,
+        head: Option<&str>,
     ) -> Result<(), StoreError> {
         self.tick()?;
         if done && repack {
             self.events.borrow_mut().push("repack");
+        }
+        if done && let Some(h) = head {
+            self.head_calls.set(self.head_calls.get() + 1);
+            *self.head.borrow_mut() = Some(h.to_owned());
         }
         let mut r = self.refs.borrow_mut();
         if start {
@@ -283,8 +292,12 @@ impl ShardIo for Disk {
         }
         Ok(())
     }
-    async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError> {
+    async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError> {
         self.tick()?;
+        if let Some(h) = head {
+            self.head_calls.set(self.head_calls.get() + 1);
+            *self.head.borrow_mut() = Some(h.to_owned());
+        }
         let mut r = self.refs.borrow_mut();
         for (n, o) in changes {
             match o {
@@ -363,6 +376,8 @@ struct Log {
     first_refs_at: Cell<Option<u64>>,
     /// The chain's committed rolls, oldest first, as `ChainLog::compactions` reads them from the fold.
     rolls: RefCell<Vec<Compacted>>,
+    /// The `settings` row's default branch, which the `ranges` read answers beside the head (G26).
+    default_branch: RefCell<Option<String>>,
 }
 
 impl Log {
@@ -387,7 +402,11 @@ impl Log {
 
 impl ChainLog for Log {
     async fn head(&self, _c: ChainId) -> Result<Head, StoreError> {
-        Ok(Head { first: Index(self.first.get()), applied: Index(self.head()) })
+        Ok(Head {
+            first: Index(self.first.get()),
+            applied: Index(self.head()),
+            default_branch: self.default_branch.borrow().clone(),
+        })
     }
     async fn refs_page(&self, _c: ChainId, after: Option<String>) -> Result<(RefsPage, Index), StoreError> {
         let all = self.refs();
@@ -489,6 +508,7 @@ fn bed(n: u64, pad: usize, stored_every: u64) -> Bed {
         refs_page: 3,
         first_refs_at: Cell::new(None),
         rolls: RefCell::new(Vec::new()),
+        default_branch: RefCell::new(None),
     };
     Bed { disk, store: Store::default(), log }
 }
@@ -1306,4 +1326,63 @@ fn large_promoted_packs_fetch_four_at_once_and_still_ingest_in_log_order() {
     let took = b.disk.clock.now.get();
     assert!(took <= 3 * 2_000 + 1_000, "{took} ms for {n} large packs");
     b.assert_serves_head();
+}
+
+/// G26: the shard's HEAD is the repository's default branch, which the head read answers. A rehydrate names it on its
+/// last ref page; a catch-up names it only when it changed since (a `Settings` entry carries no ref change, so nothing
+/// else would move HEAD), once, and not on every catch-up after; a new disk names it again. A member that answers no
+/// default branch leaves the container's own rule.
+#[test]
+fn head_follows_the_default_branch_and_is_named_only_when_it_changes() {
+    let b = bed(30, 10, 0);
+    *b.log.default_branch.borrow_mut() = Some("refs/heads/b3".into());
+    assert!(b.run().unwrap().rehydrated.is_some());
+    assert_eq!(b.disk.head.borrow().as_deref(), Some("refs/heads/b3"));
+    assert_eq!(b.disk.head_calls.get(), 1, "the rehydrate names HEAD once, on its last ref page");
+
+    // Catch-ups with the default unchanged name nothing, though their entries move refs.
+    b.log.entries.replace(bed(60, 10, 0).log.entries.into_inner());
+    b.run().unwrap();
+    b.run().unwrap();
+    assert_eq!(b.disk.head_calls.get(), 1, "an unchanged default branch costs no call");
+
+    // A Settings entry changes the default and moves no ref: the next catch-up names it, the one after does not.
+    *b.log.default_branch.borrow_mut() = Some("refs/heads/b5".into());
+    b.log.entries.borrow_mut().push(LogPacks {
+        index: Index(61),
+        packs: vec![],
+        promoted: None,
+        compacted: None,
+        consumed: vec![],
+        refs: Some(vec![]),
+    });
+    b.run().unwrap();
+    assert_eq!(b.disk.head.borrow().as_deref(), Some("refs/heads/b5"));
+    assert_eq!(b.disk.head_calls.get(), 2);
+    b.run().unwrap();
+    assert_eq!(b.disk.head_calls.get(), 2);
+
+    // A new disk rehydrates and names it again, whatever the cursor said before.
+    b.disk.reset("disk-2");
+    assert!(b.run().unwrap().rehydrated.is_some());
+    assert_eq!(b.disk.head.borrow().as_deref(), Some("refs/heads/b5"));
+    assert_eq!(b.disk.head_calls.get(), 3);
+    b.assert_serves_head();
+
+    // An older member answers no default branch: nothing is named, and the container keeps its rule.
+    let old = bed(30, 10, 0);
+    old.run().unwrap();
+    old.log.entries.replace(bed(40, 10, 0).log.entries.into_inner());
+    old.run().unwrap();
+    assert_eq!((old.disk.head_calls.get(), old.disk.head.borrow().clone()), (0, None));
+}
+
+/// `&head=` survives the characters a branch name may hold and a query string would otherwise split or decode.
+#[test]
+fn the_head_parameter_is_percent_encoded() {
+    use graftyard_git::catchup::head_param;
+    assert_eq!(head_param(None), "");
+    assert_eq!(head_param(Some("refs/heads/v1.x")), "&head=refs/heads/v1.x");
+    assert_eq!(head_param(Some("refs/heads/a&b+c#d%e")), "&head=refs/heads/a%26b%2Bc%23d%25e");
+    assert_eq!(head_param(Some("refs/heads/é")), "&head=refs/heads/%C3%A9");
 }

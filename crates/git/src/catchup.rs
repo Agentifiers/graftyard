@@ -116,15 +116,18 @@ pub trait ShardIo {
     /// Whether the history of every ref, and the whole tree at each ref's tip, is on the disk: `Ok(Err(why))` when not.
     /// The check waits for a running repack, so with `repack` the container starts the repack only after it.
     async fn connected(&self, repack: bool) -> Result<Result<(), String>, StoreError>;
-    /// A page of the whole ref set; the last page (`done`) also starts the container's repack when `repack`.
+    /// A page of the whole ref set; the last page (`done`) also starts the container's repack when `repack`, and points
+    /// HEAD at `head`, the repository's default branch, when given (else the container's old rule).
     async fn put_refs_page(
         &self,
         refs: &[(String, String)],
         start: bool,
         done: bool,
         repack: bool,
+        head: Option<&str>,
     ) -> Result<(), StoreError>;
-    async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError>;
+    /// Ref changes, and HEAD pointed at `head` when given: with no changes, only HEAD.
+    async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError>;
     /// Evicts other networks so `incoming` more bytes fit; the networks evicted.
     async fn make_room(&self, incoming: u64) -> Result<Vec<i64>, StoreError>;
     /// The network's `Committed` markers from every bucket of the placement.
@@ -558,6 +561,20 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
     Ok(())
 }
 
+/// `&head=<ref>`, percent-encoded, for `/refs` (G26): a branch name may hold `&`, `+`, `#` or `%`.
+pub fn head_param(head: Option<&str>) -> String {
+    let Some(h) = head else { return String::new() };
+    let mut out = String::from("&head=");
+    for b in h.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn apply_page<I: ShardIo, S: Saved>(
     io: &I,
@@ -594,7 +611,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
                 Err(n) => return Err(Stop::Unresolved(unresolved(chain, n, from, last))),
             }
             t.refs += changes.len();
-            io.apply_refs(&changes).await?;
+            io.apply_refs(&changes, None).await?;
             cursor.advance(chain, last);
             saved.put_cursor(disk, cursor).await?;
         }
@@ -661,6 +678,8 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     let finishing = saved.rehydrating().await?.is_some();
     let mut t = Tally::default();
     let mut seen = BTreeSet::new();
+    // The network's own chain, first, names its default branch (G26).
+    let head_ref = hs.first().and_then(|h| h.default_branch.clone());
     for (chain, head) in chains.iter().zip(hs) {
         let Some(range) = cursor.behind(*chain, head.applied) else { continue };
         let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
@@ -680,6 +699,13 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
             }
         }
         lap(&mut ms, "ingest");
+    }
+    // HEAD follows a `Settings` entry that changed the default branch, which carries no ref change; one call, only
+    // when it changed since the disk's HEAD was last set.
+    if head_ref.is_some() && cursor.head != head_ref {
+        io.apply_refs(&[], head_ref.as_deref()).await?;
+        cursor.head = head_ref;
+        saved.put_cursor(&disk, &cursor).await?;
     }
     if finishing {
         saved.drop_rehydrating().await?;
@@ -890,9 +916,13 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     lap(&mut ms, "marked");
     let mut t = Tally::default();
     let mut applied = Vec::with_capacity(chains.len());
+    let mut head_ref = None;
     for (chain, last) in &last {
         let head = log.head(*chain).await?;
         applied.push(head.applied);
+        if *chain == chains[0] {
+            head_ref = head.default_branch;
+        }
         let from = Index(tail_start(last.as_ref()).0.max(state.tail.at(*chain).0 + 1));
         let mut mode = Mode::Tail { state: &mut state, seen: &mut seen, consumed: &consumed };
         match follow(io, saved, log, &disk, *chain, from, head.applied, &mut mode, &mut t).await {
@@ -911,6 +941,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     // at the first page's index, and the entries from there on are caught up after: their changes apply again, the
     // same values in the same order, and their packs arrive before the refs that need them.
     let mut cursor = IngestCursor::new(network);
+    cursor.head = head_ref.clone();
     let mut ends = Vec::with_capacity(chains.len());
     for (i, chain) in chains.iter().enumerate() {
         let (mut after, mut first) = (None, None);
@@ -922,7 +953,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             // starts after it instead (`ShardIo::connected`). Started here, the backstop waited out a whole repack of
             // the network, 20 minutes and more for 2.6 GB, answering `warming` (`tests/am1/results/lm1-memory.md`,
             // round 21).
-            io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty()).await?;
+            io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty(), head_ref.as_deref()).await?;
             r.pages += 1;
             first.get_or_insert(index);
             match page.next {

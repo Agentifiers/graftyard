@@ -1165,8 +1165,8 @@ pub const HOT_POOL: u16 = 7;
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
 /// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the object instance, which reads its member by
 /// the committed config: a caller waits its `wait`, then `warming`; a rehydrating shard says so to a caller with another next. Pushes, fetches and the
-/// archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503 [measured, `hot-shards`].
-pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
+/// archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503 [measured, `hot-shards`]. `head`: the `settings` row's `default_branch`, which HEAD names, as the edge's ls-refs does, set when it changes (G26).
+pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]>, pub head: Option<RefName> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or
     /// the default branch's tip; connectivity still uses the full ref set (`--not --all`, 3 s at 5,000 refs, m0-wp10; a
