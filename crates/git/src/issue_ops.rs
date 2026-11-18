@@ -52,10 +52,10 @@ impl<'a> RepoView<'a> {
     pub fn apply(&mut self, ev: &RepoEvent) {
         let set = tier_of(ev);
         if has(set, Tier::Core) {
-            self.tiers.write(ev, Tier::Core, self.at, &mut self.core);
+            self.tiers.write(ev, Tier::Core, self.at, crate::repo::SCRATCH_FORMAT, &mut self.core);
         }
         if has(set, Tier::Metadata) {
-            self.tiers.write(ev, Tier::Metadata, self.at, &mut self.meta);
+            self.tiers.write(ev, Tier::Metadata, self.at, crate::repo::SCRATCH_FORMAT, &mut self.meta);
         }
     }
 

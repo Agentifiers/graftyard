@@ -4980,3 +4980,22 @@ Branch `c-design` (`tests/am1/results/c-design.md`), B0-33's option (c) after th
 **Evidence.** `tests/am1/results/c-design.md`, "What holds the leader's sends" and "(c1b) under review" [measured]; `tests/fanout/votershed/p3*.py`, `p4*.py`.
 
 **Flip.** A run where the leader's open requests are held under a bound, by a cap on held commit waiters or any other means, and the output gate's share of the round-trip excess is still over 30%.
+
+### F88: a committed entry folds by its own format, and a golden-digest corpus pins every kind, 2026-11-18
+
+**Status.** Built on branch `f88-format-fold`, the operator's option (a) through the orchestrator (T-01a17bda), from this thread's trace (T-01a1d805, `decisions/OPEN-QUESTIONS.md`, F88). Lands before the next site day on any install.
+
+**Decision.** `Tiered::write` takes the entry's `format` (`crates/fold/src/tier.rs`), and `RepoEvent::Promoted` writes its `promoted_log` row only in a 32.25 entry (`REPO_FORMAT_ROLLUP`, `crates/git/src/tiers.rs`). The archive step records a promotion in 32.25 only once `GRAFTYARD_ROLLUP` is on, and in 32.1 otherwise (`crates/git/src/log_archive.rs`), so a 32.1 promotion folds as it did before roll-up on every release and no roll can consume it. A scratch view writes at the newest format (`SCRATCH_FORMAT`): only `check_compacted` reads `promoted_log` there, against a fold that logged only 32.25 promotions. `crates/git/tests/fold_corpus.rs` folds one fixture per `RepoEvent` kind (`fold_corpus.json`) at every format version it can be committed at, 902 rows, against `fold_corpus.golden`: versions 1 to 24 pinned on main `0d212879`, the release before roll-up, and version 25 on `e2bddc92`, roll-up's merge. A digest that moves fails and names the kind and version.
+
+**Why.** Roll-up changed what an existing 32.1 event writes, in place. Members that applied their promotions live before the upgrade kept digests without the row, and the fold audit's refold on the new release added it, so every audited chain with a promotion in its tail alarmed (F88; 26 of 26 alarming audits on `graft-m3f`). A committed entry must fold the same on every release, so an event's fold depends on its format, not on the running release (`design/SHARED.md`, "Schema change is a refold, never a migration"). Nothing caught it: `wire_tags.golden` pins encodings, not what an event writes.
+
+**What it beat.**
+- **(b) A dedicated release that reads both schemas and refolds lazily.** It is the design's rule for a real install, but no product install holds data, and it costs a release cycle for one table.
+- **(c) A committed backfill event for `promoted_log`.** It needs a new event and a leader step per chain, for rows only roll-up reads.
+- **Pinning only the reproduction test.** It catches this event and no other; the corpus covers every kind at every format.
+
+**Test-only cleanup is not precedent.** Chains whose members applied 32.1 promotions on the roll-up release (2026-11-16 18:29Z on) hold `promoted_log` rows that this release's refold will not write, so their audits alarm once more. They are all on test installs, which are reseeded or retired by their owners (`tests/am1/results/lm1-rows-m3f.md`, "F88 fixed: a committed entry folds by its own format"), not backfilled. On an install that holds real data, a change to what a committed event writes ships only in SHARED's dual-read release.
+
+**Evidence.** `crates/git/tests/encoding.rs`, `a_committed_promoted_entry_folds_to_the_digest_it_had_when_it_committed`: core digest `4ceb4070…77cc`, as on `0d212879`; it fails on main (`d5c31b8e…d51f`). `crates/git/tests/rollup.rs`, `a_promotion_committed_before_roll_up_is_not_rollable`; `crates/git/tests/log_archive.rs`, `a_promotion_takes_the_roll_up_format_only_when_roll_up_is_on`. `fold_corpus` on `e2bddc92` differs from `0d212879` in exactly `Promoted` 1 to 24, and on this branch matches both. `tests/m0carried/plant40.py`: 4 of 4 caught, including roll-up's unconditional write (`Promoted 1` to `24` named).
+
+**Flip.** A kind whose fold must change for an existing format, which then needs the dual-read release and a cited edit of its corpus rows; or a corpus that misses a planted fold change, which means the fixtures need more setup state.

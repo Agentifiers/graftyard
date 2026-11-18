@@ -617,8 +617,12 @@ fn seed_roll(b: &Bed, count: u64) -> Vec<Promoted> {
     b.w.borrow_mut().now = Timestamp(log_archive::ROLL_AGE_MS + 20_000);
     let ps = roll_inputs(count, 100, 0);
     for (n, p) in ps.iter().enumerate() {
-        block_on(b.record(RequestId(Ulid(1_000 + n as u128)), REPO_FORMAT_V1, vec![RepoEvent::Promoted(p.clone())]))
-            .expect("an input promotion commits");
+        block_on(b.record(
+            RequestId(Ulid(1_000 + n as u128)),
+            graftyard_git::repo::REPO_FORMAT_ROLLUP,
+            vec![RepoEvent::Promoted(p.clone())],
+        ))
+        .expect("an input promotion commits");
     }
     b.records.borrow_mut().clear();
     ps
@@ -658,6 +662,27 @@ fn an_idle_step_rolls_in_order_records_compacted_marks_it_and_advances_the_real_
     let fold = &w.repo.members[b.leader()].group_fold().fold;
     assert_eq!(fold.compactions(), vec![c.clone()]);
     assert_eq!(fold.rolled_to(), to);
+}
+
+/// A promotion is recorded in 32.25 only once roll-up is on, so the fold logs it for a later roll; with roll-up off it
+/// stays 32.1, which every release folds the same (F88).
+#[test]
+fn a_promotion_takes_the_roll_up_format_only_when_roll_up_is_on() {
+    for (var, want) in [(Some("1"), graftyard_git::repo::REPO_FORMAT_ROLLUP), (None, REPO_FORMAT_V1)] {
+        let mut d = Bed::new();
+        d.rollup = var;
+        for k in 0..60 {
+            push(&d, k, 1_500);
+        }
+        snapshot(&d);
+        let s =
+            block_on(log_archive::step(&d, &mut d.run.borrow_mut(), CAP, CAP / 5, log_archive::PROMOTE_MAX)).unwrap();
+        let Step::Promoted { from, .. } = s else { panic!("{var:?}: {s:?}") };
+        let records = d.records.borrow();
+        assert!(matches!(records[..], [(f, ref evs)] if f == want && matches!(evs[..], [RepoEvent::Promoted(_)])));
+        let logged = d.w.borrow().repo.members[d.leader()].group_fold().fold.promoted_from(from).is_some();
+        assert_eq!(logged, var.is_some(), "{var:?}: logged for roll-up");
+    }
 }
 
 /// Until a site day sets `GRAFTYARD_ROLLUP=1` (after `FormatsEnable` enabled 32.25), a run that would roll asks no

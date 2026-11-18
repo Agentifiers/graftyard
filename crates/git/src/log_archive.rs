@@ -611,7 +611,10 @@ async fn step_in<H: ArchiveHost>(
         h.mark(p, *index).await;
     }
     let p = Promoted { from, to, pack: pack.clone() };
-    let index = h.record(request, REPO_FORMAT_V1, vec![RepoEvent::Promoted(p)]).await?;
+    // In 32.25 once roll-up is on, so the fold logs the promotion for a later roll; 32.1 otherwise, which every
+    // release folds the same (F88). A site day turns roll-up on only after `FormatsEnable` enabled 32.25.
+    let format = if h.rollup() { REPO_FORMAT_ROLLUP } else { REPO_FORMAT_V1 };
+    let index = h.record(request, format, vec![RepoEvent::Promoted(p)]).await?;
     h.mark(&pack, index).await;
     Ok(Step::Promoted { from, to, index })
 }
