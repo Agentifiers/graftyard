@@ -151,6 +151,38 @@ Two changes, one row. Part A stops a stalled leader's read-index timeouts from t
 - Simulator: the harness's `spread_read` (`crates/raft/tests/common/sim.rs`) follows Part A: on a declined read from a member with `forgot`, it sheds and reports instead of taking the leader's path. Then the long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000 … long_sweep`) and Porcupine on its three histories, plus `long_liveness` on 4,000 live seeds.
   - Note: LM-1 reports seed 10353 already stalls 31.8 s on main (late-suspect with read-beat). A run of this branch is judged against main's own sweep, seed by seed.
 
+### Built (branch `b032-shed`, on main `67db458f`)
+
+- **A, the read shed:**
+  - `raft::Member::forgot()` (read-only; `check_remote` is unchanged).
+  - The site's `not_leader_reply` sheds a read-index read on a member that forgot its leader, with `forgot: {site, term}`.
+  - Lookup's `spread_once` sends one damped `suspect` about it and never reads on the leader.
+  - The simulator's `spread_read` does the same.
+- **B, the bound:**
+  - `AGENT_PUSH_BOUND` (5 s) is in both agent blocks.
+  - On the edge, `Ctx::bound` is set from the push's arrival for an App, a token with an App, or a session header. Shed-read retries stop there.
+  - `bound_at_send` refuses an Agent push with nothing left, and `gate_ng` answers a shed gate read at the bound with `ng` instead of 503. Both use B0-32's shape, `ng <ref> agent admission full, retry after 1s`.
+  - `AdmitWire::budget_ms` → `Admit::budget`. `admission_check` refuses when the expected wait passes the budget, and `expire_agents` expires at each command's `until` from the lanes only.
+- **Still 503:** a gate failure other than a shed read (no leader, not created), and a push the edge can't class Agent without the gate read (DECISIONS flip line). The rerun counts these against the bound line.
+- **Checks:**
+  - The full checks on the merged head: see the report.
+  - plant38: 6 of 6 caught.
+  - Long sweep: harsh 16.8 s, gray 24.2 s, live 29.1 s (seed 10681), all under 30 s. `progress-suspect` alone gives 16.8 / 24.2 / 25.8 s.
+  - Seeds 10000 to 10681 alone run identically on both builds (worst 23.9 s at 10312), and 10681 alone runs 2.7 s on both. Not traced: what the full run carries into it.
+  - Porcupine Ok on all three histories.
+
+### The rerun (m3fr17, once merged)
+
+- A site day on graft-m3f from the merged main, then edgever, then B0-32 alone.
+- About $2. Stop at $5 by PREFIX, or when the account passes $180 for the day.
+- Report:
+  - the burst's within-5 s count;
+  - `ng` by shape (commit send, gate, leader `Full` at admission, leader expiry), from server-timing `bound` and the client codes;
+  - 503s by cause;
+  - pushes past 5 s whose command was already in an entry: their `commit` stage started before 5 s and ended after it;
+  - `/suspect` and leader changes, from `terms.mjs`;
+  - plain `/read`s at the voters while the learners shed, from `tsave`.
+
 ### What the B0-32 rerun then checks
 
 - The pass line as written.

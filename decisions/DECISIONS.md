@@ -4759,7 +4759,7 @@ Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"
   - `a_queued_agent_command_expires_at_its_budget_not_at_agent_wait`: expired at 2,005 ms.
   - `a_command_appended_before_its_budget_lapses_commits_after_it_and_is_acked`: a 1.4 s round, a 1 s budget, 5 of 5 acked at about 1.3 s.
 - The site's `a_read_index_read_on_a_member_that_forgot_its_leader_is_shed_with_the_report`, lookup's `a_shed_that_names_a_forgotten_leader_is_reported_and_never_read_on_the_leader`, and the edge's `an_agent_push_past_its_bound_is_refused_in_the_ng_shape_before_its_commit` (the commit send and the read gate's `gate_ng`).
-- `tests/m0carried/plant37.py`: every mutant caught.
+- `tests/m0carried/plant38.py`: every mutant caught.
 - The simulator's `spread_read` follows (A); `a_read_only_group_elects_off_a_half_hung_leader` passes.
 - The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half at 4,000 seeds), on `progress-suspect` 1407f9db, passed: harsh 16.8 s (seed 10356), gray 24.2 s (11076), live 29.1 s (10681), against `progress-suspect` alone at 16.8 / 24.2 / 25.8 s.
   - Harsh and gray are identical. Live seeds 10000 to 10681 rerun alone gave the same worst (23.9 s, seed 10312) on both builds, and seed 10681 alone ran 2.7 s on both [measured].

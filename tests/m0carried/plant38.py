@@ -3,8 +3,8 @@
 "`b032-shed`"). Plants one mutant at a time, runs the tests that guard it, and restores the file byte for byte. Each
 line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
 
-    python3 tests/m0carried/plant37.py          # every mutant
-    python3 tests/m0carried/plant37.py 0 2      # by number
+    python3 tests/m0carried/plant38.py          # every mutant
+    python3 tests/m0carried/plant38.py 0 2      # by number
 """
 import os
 import subprocess
