@@ -108,6 +108,57 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## B0-32 design proposal: `b032-shed` (design only, no code yet; branch `b032-shed` from main `9ecd8314`)
+
+Two changes, one row. Part A stops a stalled leader's read-index timeouts from turning into leader reads. Part B bounds an agent push at 5 s from its arrival at the edge, so a push that cannot commit in time answers B0-32's `ng` shape.
+
+### Part A: a member that forgot its leader sheds the read and hands the edge the report
+
+**Today** (`tests/am1/results/lm1-rows-m3f.md`, "Why the burst's reads reached the leader"):
+- `check_remote` (`crates/raft/src/member/install.rs`) fails a batch's reads after `CAMPAIGN_DEADLINE`, sets `forgot`, and clears `leader` (F67 rule 12).
+- After that, `queue_remote` answers every new read `NotLeader` naming no leader, at once, until an append names a leader again.
+- The site's `/read` renders that as `{"error": {"notLeader": ..}}`. `spread_verdict` (`crates/lookup`) reads "every member declined" as `Spread::Leader`, and `call_opt` walks the voters with plain reads and `suspect` reports.
+
+**Change:**
+1. `crates/raft`: one read-only accessor, `Member::forgot() -> Option<SiteId>`, the leader this member forgot by rule 12. `check_remote`, `queue_remote`, `forgot`'s set and clear points, and every timer stay as they are. Rule 12's own campaign (`try_campaign` on a lapsed promise) is unchanged.
+2. `workers/site/src/member.rs` `read`: for an `index` read that fails `NotLeader` naming no leader while `forgot()` is `Some(l)` (both the step's `Err` and the resolution's), answer `overloaded_reply(OVERLOAD_RETRY_MS)` with `"forgot": {"site": l, "term": t}`. A genuine `NotLeader` is unchanged: one naming a leader, or one with no `forgot` (a `ReadIndexRes` saying "not leader" clears `leader` without setting `forgot`).
+3. `crates/lookup` `spread_once`: on `Spread::Shed`, if any answer carried `forgot`, send one `suspect` about that member at that term (`suspect`, damped by `SUSPECT_GAP` as now, `all = false`). The read is never sent to the leader. `spread_verdict`'s rules are unchanged; a shed answer was already `Shed`.
+
+**Why liveness holds** [inference; the sim and long sweep are the check]: the reports that elect off a half-hung leader today come from `call_opt`'s walk after the decline. Under A they come from the shed answer instead, at the same damping, about the same member and term, and without the leader read. `a_read_only_group_elects_off_a_half_hung_leader` is the case.
+
+### Part B: an agent push is answered within `AGENT_PUSH_BOUND` (5 s) of its arrival at the edge
+
+**Today:** the only time limit on an agent command is `AGENT_WAIT` (30 s, `expire_agents`), counted from its admission at the leader. On m3fr15 the server spent p50 8.3 s before `commit` (gate p90 10.0 s, context p90 13.4 s). A push read retried a shed read for up to `LOOKUP_FOR` (20 s, `read_spread_for`).
+
+**Change**, with the agent block edited identically in `design/DESIGN.md` and `design/AGENT-LAYER.md`:
+1. **`AGENT_PUSH_BOUND` = 5 s** [doc, `build/BUILD-PLAN.md` B0-32's pass line], counted from the edge's `Timing::start`. It applies to a push the edge may class agent without a read (an App token or `X-Graftyard-Agent-Session`, the `needs_install` test), and the leader applies it to a push `admission` classed Agent.
+2. **Edge, before the commit send:** each wait that is not the commit (`read_spread_for`'s shed retries, the validate, the stage) ends at the bound, not at `LOOKUP_FOR`. Past it, the push answers `ng <ref> agent admission full, retry after <n>s`. `n` is the largest `retryAfterMs` seen, rounded up, at least 1. Nothing was sent to the group, so nothing can commit later. A human push keeps today's waits.
+3. **The commit send:** `AdmitWire` gains `budget_ms`, the bound left at the send. It's relative, so the edge's and the member's clocks never meet.
+   - `crates/raft` `Admit::budget: Option<Duration>`.
+   - `admission_check` answers `Full` at once when the expected wait (queued agent commands over `AGENT_SHARE` × capacity, plus one round) is past the budget.
+   - `expire_agents` answers `Full` to a queued agent command once its budget passes, as it does at `AGENT_WAIT`.
+   - Only a command still queued, in no entry, is expired, so no acknowledgment can be lost: the same rule as `AGENT_WAIT` today.
+4. **Not bounded:** a command already in an entry. It waits for its outcome as now. On m3fr15 the entries' rounds ran 2.5 to 4.1 s while the leader stalled, so such a push can still finish past 5 s [risk; the rerun measures it].
+
+### Tests that fail on main
+
+- `crates/raft` (`leadership.rs`): a learner whose read-index batch the leader never answers reports `forgot() == Some(leader)` after `CAMPAIGN_DEADLINE`, and a new read answers `NotLeader` with no leader. The control: one cleared by a `ReadIndexRes { index: None }` reports `forgot() == None`. Fails to compile on main, which has no accessor.
+- `crates/raft` (`admission.rs`): with the agent lane full, an agent command whose budget is under the expected wait is refused `Full` at once; another, queued with budget 2 s, is answered `Full` at 2 s, not at `AGENT_WAIT`; a Human command beside them is never refused. Fails on main, which has no budget.
+- `workers/site` (`member.rs` pure test of the answer mapping): `NotLeader` with no leader and `forgot` → `overloaded` with `forgot`; with a leader named, or no `forgot` → `notLeader`.
+- `crates/lookup`: a spread whose every answer is `overloaded` with `forgot` returns `Shed` and sends one `suspect` about that site, with no post to the leader; a spread of plain `notLeader` still goes to the leader.
+- `workers/edge`: a push whose bound passed before the commit send renders `ng <ref> agent admission full, retry after <n>s`; a human push in the same state does not.
+- `tests/m0carried/plant36.py`: mutants for each rule (shed without the report; report without the shed; budget ignored at admission; budget ignored in `expire_agents`; a queued command expired once it is in an entry). Every mutant must be caught.
+- Simulator: the harness's `spread_read` (`crates/raft/tests/common/sim.rs`) follows Part A: on a declined read from a member with `forgot`, it sheds and reports instead of taking the leader's path. Then the long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000 … long_sweep`) and Porcupine on its three histories, plus `long_liveness` on 4,000 live seeds.
+  - Note: LM-1 reports seed 10353 already stalls 31.8 s on main (late-suspect with read-beat). A run of this branch is judged against main's own sweep, seed by seed.
+
+### What the B0-32 rerun then checks
+
+- The pass line as written.
+- From the trace: no plain `/read` at the voters while learners shed; `/suspect` at most one per isolate per `SUSPECT_GAP`.
+- Every push past 5 s before its send answers `ng`.
+- The count of pushes over 5 s whose command was already in an entry (Part B, item 4).
+- About $2 with a site day, which the site-script change needs.
+
 ## Rows m3fr16 (2026-11-17/18, graft-m3f, `ROWS="b0-31"`, branch `m3fr16`, main `7430a479`)
 
 **Slot.** B0-31 rerun on `dep-hedge` (main `7430a479`, with M4-WP4's F84), granted at about $3. Stops: graft-m3f past $6 by `PREFIX`, or the account past $280 (on 2026-11-18, past $180).
