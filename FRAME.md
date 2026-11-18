@@ -204,6 +204,12 @@ A hosted gate row is met when its measured result reaches 90% of each target: a 
 
 For the UTC day 2026-11-17 the account-wide spend limit is $300 instead of $200, read with `tests/fanout/acctcost.py` as before. Hosted rows run in parallel, one install each, attributed by script prefix. The 90% rule and the invariants above are unchanged. Later days return to $200 unless the operator says otherwise.
 
+### Operator decision, 2026-11-18, a separate commit bound for rehomed groups
+
+> "separate bound is fine"
+
+The orchestrator asked, for B0-31 and `decisions/OPEN-QUESTIONS.md` F81, whether a repository group whose leader is rehomed onto another continent than its owner's identity groups keeps the 1.1 s commit line (which would need a dependency lease) or gets a separate bound. The operator chose the separate bound. Such a group's buckets-up commit p99 is bounded at 2 s, failing over 3 s; every group led on its owner's continent keeps its own line. The bound is the measured floor plus one round: on B0-31 m3fr16 the cross-continent `deps:all` p99 was 820 ms and the round p99 510 ms, about 1.33 s before any queueing [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fr16"]. The 90% rule applies to it as to any line. The dependency lease stays the recorded fallback in `decisions/DECISIONS.md`, "F81".
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
