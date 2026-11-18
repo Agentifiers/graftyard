@@ -1,0 +1,51 @@
+member 0: led 56 s in the window, 292 req/s, stall 0.3 s (0%)
+member 1: led 226 s in the window, 214 req/s, stall 14.1 s (6%)
+
+leader inbound by route:step over 282 leader-seconds (req/s, share)
+  /commit:send                      92.3/s  40.2%
+  /raft:peer                        67.5/s  29.4%
+  /outcome:other                    37.6/s  16.4%
+  other:other                       11.9/s   5.2%
+  /outcome_by_request:ask           11.8/s   5.1%
+  /read:leader                       2.8/s   1.2%
+  other:-                            2.7/s   1.2%
+  /read:walk                         1.3/s   0.6%
+  /read:spread                       0.6/s   0.3%
+  other:leader                       0.4/s   0.2%
+  /outcome_by_request:walk           0.3/s   0.1%
+  /outcome_by_request:leader         0.2/s   0.1%
+  other:walk                         0.1/s   0.0%
+  /commit:leader                     0.1/s   0.0%
+  /suspect:other                     0.0/s   0.0%
+  /commit:walk                       0.0/s   0.0%
+
+stall share of the second by requests entered that second
+      0-300    s  210  stall    1%  out leg p50 -253.5 p90 478.5
+    300-600    s   64  stall   16%  out leg p50 381.0 p90 1838.0
+    600-900    s    7  stall   19%  out leg p50 680.0 p90 2131.0
+    900-1200   s    1  stall    7%  out leg p50 2565.5 p90 2565.5
+
+per second, n 282 (275 with an out leg): spearman with stall ms, with the out leg
+  all requests                    0.27   0.47
+  /commit:send                    0.07   0.35
+  /raft:peer                      0.09   0.17
+  /outcome:other                  0.14   0.38
+  other:other                     0.19  -0.05
+  /outcome_by_request:ask         0.71   0.38
+  /read:leader                   -0.11  -0.41
+  other:-                        -0.16  -0.02
+  /read:walk                     -0.09  -0.00
+  /read:spread                   -0.06   0.24
+  other:leader                    0.02  -0.25
+
+in the 18 leader-seconds with 30%+ stall: requests by stream (share there vs overall)
+  /commit:send                     117.2/s  28.1% vs 40.2%
+  /outcome_by_request:ask          104.3/s  25.0% vs  5.1%
+  /raft:peer                        82.9/s  19.9% vs 29.4%
+  /outcome:other                    78.4/s  18.8% vs 16.4%
+  other:other                       27.8/s   6.7% vs  5.2%
+  other:-                            1.9/s   0.5% vs  1.2%
+  /read:leader                       1.8/s   0.4% vs  1.2%
+  /read:walk                         1.1/s   0.3% vs  0.6%
+  other:leader                       0.6/s   0.1% vs  0.2%
+  /suspect:other                     0.3/s   0.1% vs  0.0%
