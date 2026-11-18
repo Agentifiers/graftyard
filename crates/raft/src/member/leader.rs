@@ -2148,7 +2148,9 @@ impl<C: Command> Member<C> {
     /// The `extend` of the next entry this leader appends (`design/DESIGN.md`, Shape, `ExtendLeases`): with a stall
     /// recorded in `stalled_since`, `since` is the later of the marker and the `at` of the last entry the log holds, so
     /// no lease that entry already judged expired is revived, and `by` runs to now. None while an unapplied entry in
-    /// the log already carries one, so one stall moves a lease once.
+    /// the log already carries one, so one stall moves a lease once, and None while `by` is under `EXTEND_MIN`: the
+    /// entry then carries no `extend`, and its commit clears the marker (`set_commit`), so a sub-floor stall moves no
+    /// lease. The floor compares the whole stall from `since`, not the last gap.
     fn take_extend(&self) -> Option<ExtendLeases> {
         let marker = self.state.stalled_since?;
         let applied = self.fold.applied();
@@ -2158,7 +2160,7 @@ impl<C: Command> Member<C> {
         let last = self.log.last().map_or(Timestamp(0), |e| e.at);
         let since = marker.max(last);
         let by = std::time::Duration::from_millis(self.now.0.saturating_sub(since.0));
-        (!by.is_zero()).then_some(ExtendLeases { since, by })
+        (by >= crate::EXTEND_MIN).then_some(ExtendLeases { since, by })
     }
 
     pub(super) fn tick_leader(&mut self) {

@@ -58,6 +58,8 @@ pub const LEASE: Duration = Duration::from_secs(9);
 pub const ELECTION_AFTER: Duration = Duration::from_secs(10);
 /// Subtracted from the leader's own lease end [guess].
 pub const DRIFT: Duration = Duration::from_millis(500);
+/// The shortest stall a leader stamps as `ExtendLeases` (`design/DESIGN.md`, Shape, `ExtendLeases`) [guess].
+pub const EXTEND_MIN: Duration = Duration::from_secs(2);
 /// Receipt and member-to-member calls.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(1);
 /// Per commit-path member call.

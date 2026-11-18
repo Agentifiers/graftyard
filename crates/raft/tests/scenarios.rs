@@ -1397,10 +1397,13 @@ fn a_follower_marks_a_stall_only_from_a_late_resend_of_an_uncommitted_entry() {
     }
     assert_eq!(c.m(C).state().stalled_since, Some(at), "the late re-send marks the entry's at");
     // Everything settles and commits; then a delayed copy of the re-send reaches B, which has committed past it.
+    // B learns that an entry stamped after the marker committed only from the append after it, so it syncs twice.
     c.inbox.clear();
     c.deliver_all();
     c.sync(A);
+    c.sync(A);
     assert!(c.m(B).state().commit.0 >= c.m(A).log().iter().find(|e| e.at == at).unwrap().index.0);
+    assert_eq!(c.m(B).state().stalled_since, None, "B committed past the stall");
     let late = resent.into_iter().find(|e| e.to == B).unwrap();
     c.on(B, |m, now| m.step(now, late.from, late.msg));
     assert_eq!(c.m(B).state().stalled_since, None, "a delayed append past the commit marks nothing");
@@ -2652,4 +2655,85 @@ fn a_read_round_resends_a_call_outstanding_past_read_resend() {
     c.on(A, |m, now| m.read(now)).expect("leading");
     let resent = c.inbox.iter().filter(|e| carries(e)).count();
     assert_eq!(resent, 2, "a round past READ_RESEND re-sent the entry to {resent} of 2 voters");
+}
+
+/// write-cuts cut (2): a stall under EXTEND_MIN stamps no `extend` on the next entry, that entry's commit clears every
+/// member's marker, and a later entry after idle time carries none either, so neither the stall nor the idle time
+/// moves a lease. A stall of exactly EXTEND_MIN still stamps one, of its length.
+#[test]
+fn a_stall_under_extend_min_stamps_no_extend_and_clears_its_marker() {
+    let floor = graftyard_raft::EXTEND_MIN.as_millis() as u64;
+    let stalled = |c: &mut Cluster, id: u128, ms: u64| {
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(id)), put("k", &id.to_string())))
+            .expect("leader admits");
+        let at = c.m(A).log().last().unwrap().at;
+        // The first AppendEntries are lost; the leader's tick `ms` later marks the stall at the entry's `at`, and its
+        // re-send gets through.
+        c.inbox.retain(|e| !matches!(e.msg, Message::Append(_)));
+        c.advance(ms);
+        assert_eq!(c.m(A).state().stalled_since, Some(at), "the leader marked its unacknowledged entry");
+        c.deliver_all();
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(id + 1)), put("k", "next")))
+            .expect("leader admits");
+        c.deliver_all();
+        let next = c.m(A).log().last().unwrap().clone();
+        assert_eq!(next.at.0 - at.0, ms, "the next entry is stamped as the stall ends");
+        next.extend
+    };
+    let mut c = Cluster::new(29);
+    c.elect(A);
+    c.sync(A);
+    c.sync(A);
+    assert_eq!(stalled(&mut c, 8_000, floor - 500), None, "a sub-floor stall stamps no extend");
+    c.sync(A);
+    for s in SITES {
+        assert_eq!(c.m(s).state().stalled_since, None, "{s:?} cleared its marker");
+    }
+    // Idle time after it: a kept marker would stamp the whole idle time on the next entry.
+    c.run(30_000, 1_000, |_| true);
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(8_100)), put("k", "idle"))).expect("admits");
+    c.deliver_all();
+    assert_eq!(c.m(A).log().last().unwrap().extend, None, "idle time after a sub-floor stall moves nothing");
+    c.sync(A);
+    let x = stalled(&mut c, 8_200, floor).expect("a stall of EXTEND_MIN stamps an extend");
+    assert_eq!(x.by.as_millis() as u64, floor, "{x:?}");
+}
+
+/// write-cuts cut (2): the floor judges a stall by its own length from `since`, not by the time since the last entry.
+/// A follower that campaigns after the old leader went quiet marks its stall at its campaign start, so a campaign that
+/// takes 500 ms stamps no `extend` on the new leader's `Noop`, however long the group was idle before it.
+#[test]
+fn a_quick_campaign_after_idle_time_stamps_no_extend() {
+    let mut c = Cluster::new(31);
+    c.elect(A);
+    c.sync(A);
+    c.sync(A);
+    // The election's own marker rode the first syncs; B holds no unapplied entry carrying an `extend`.
+    c.sync(A);
+    let last = c.m(A).log().last().unwrap().at;
+    assert!(c.m(B).log().iter().all(|e| e.index <= c.m(B).state().applied || e.extend.is_none()));
+    c.crash(A);
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 20_000);
+    assert_eq!(c.on(B, |m, now| m.campaign(now)), Verdict::Started);
+    // The pre-vote settles at once; the real vote's requests are held for 500 ms.
+    let mut held = Vec::new();
+    while !c.inbox.is_empty() {
+        for e in std::mem::take(&mut c.inbox) {
+            if matches!(&e.msg, Message::Vote(v) if !v.pre) {
+                held.push(e);
+            } else if e.to != A {
+                c.on(e.to, |m, now| m.step(now, e.from, e.msg));
+            }
+        }
+    }
+    assert!(c.m(B).state().stalled_since.is_some(), "the real campaign marked a stall");
+    assert!(held.iter().any(|e| matches!(&e.msg, Message::Vote(v) if !v.pre)), "{} held", held.len());
+    c.now = Timestamp(c.now.0 + 500);
+    c.inbox = held;
+    c.deliver(|e| e.to != A);
+    assert_eq!(c.m(B).role(), Role::Leader);
+    let since_last = c.m(B).log().last().unwrap().at.0 - last.0;
+    assert!(since_last > 20_000, "the new leader's first entry is {since_last} ms after the last one");
+    let ext: Vec<_> = c.m(B).log().iter().filter(|e| e.at > last).filter_map(|e| e.extend).collect();
+    assert!(ext.is_empty(), "a campaign shorter than EXTEND_MIN moved leases: {ext:?}");
 }

@@ -19,7 +19,7 @@ pub struct Group<C: Command> {
     reads: Vec<Format>,
     pub members: Vec<Option<Member<C>>>,
     pub disks: Vec<Stored<C::Fold>>,
-    inbox: Vec<Envelope<Ev<C>>>,
+    pub inbox: Vec<Envelope<Ev<C>>>,
     pub resolutions: Vec<Resolution<C>>,
     boots: u64,
     last_campaign: Timestamp,

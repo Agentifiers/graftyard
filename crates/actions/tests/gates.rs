@@ -942,3 +942,56 @@ fn an_installed_app_gets_each_jobs_workflow_job_steps_once_in_order() {
         [Some(CheckConclusion::Success), Some(CheckConclusion::Failure)]
     );
 }
+
+// ---- write-cuts cut (2) ----
+
+/// An Actions job lease follows the path leases' rule (SHARED, Actions, Leases): stalls under EXTEND_MIN move it not
+/// at all, and a stall of EXTEND_MIN or more moves it by that stall alone.
+#[test]
+fn a_job_lease_moves_only_for_a_stall_of_extend_min() {
+    let mut w = World::new();
+    w.register(1);
+    let run = w.create_run(oid(11), "refs/heads/a", 5, vec![spec("build", &[])]);
+    w.run_for(2_000);
+    let job = w.fold().run(run).unwrap().jobs[0];
+    let until = |w: &World| match w.fold().job(job).unwrap().state {
+        JobState::InProgress { lease_until, .. } => lease_until.0,
+        ref s => panic!("{s:?}"),
+    };
+    let granted = until(&w);
+    let mut n = 0;
+    // One stall of `ms` on the shard: a runner registration whose AppendEntries are lost, re-sent at the leader's tick
+    // `ms` later, then a second registration appended as the stall ends.
+    let mut stall = |w: &mut World, ms: u64| {
+        let l = w.shard.leader().unwrap();
+        let mut put = |w: &mut World| {
+            n += 1;
+            let rec = RunnerRecord {
+                scope: RunnerScope::Repo(REPO),
+                name: format!("stall{n}").into(),
+                labels: LabelSet::parse(["linux"]).unwrap(),
+                key: Box::new([1]),
+                ephemeral: false,
+                hosted: false,
+                version: "2.338.2".into(),
+            };
+            let (now, rid) = (w.now, w.rid());
+            w.shard.on(l, now, |m, t| m.commit(t, RequestId(Ulid(rid)), op(ActionsOp::PutRunner(rec)))).unwrap();
+        };
+        put(w);
+        w.shard.inbox.clear();
+        w.now = Timestamp(w.now.0 + ms);
+        w.shard.tick(w.now);
+        put(w);
+        w.shard.deliver(w.now);
+        w.shard.m(l).log().last().unwrap().extend
+    };
+    for _ in 0..3 {
+        let x = stall(&mut w, 1_500);
+        assert_eq!(until(&w), granted, "a sub-floor stall moved the job lease");
+        assert_eq!(x, None, "a 1.5 s stall stamps no extend");
+    }
+    let x = stall(&mut w, 3_000).expect("a 3 s stall stamps an extend");
+    assert_eq!(x.by.as_millis(), 3_000, "{x:?}");
+    assert_eq!(until(&w), granted + 3_000, "moved by the 3 s stall alone");
+}
