@@ -3,7 +3,7 @@
 // Sources: the plan's milestone status tables and work-package notes, tests/RESULTS.md, tests/am1/results/merge-p99.md,
 // narrow-reads-3.md (gates 17 to 19), tests/m4/results/m4-wp1-hosted.md, m4-wp2.md, m4-wp3.md, m4-wp5.md,
 // tests/m5/results/m5-wp1.md and m5-wp2.md. The plan wins wherever this file is shorter or older.
-export const asOf = '15 November 2026';
+export const asOf = '18 November 2026';
 const row = (id: string) => ` <span class="rid">${id}</span>`;
 
 export type State = 'done' | 'now' | 'next';
@@ -75,20 +75,21 @@ export const milestones: Milestone[] = [
         'Merges: p99 1,208 to 1,571 ms in three ten-minute runs, against a 2 s line' + row('B0-29'),
         'API reads: p99 1,339 to 1,982 ms with 100.00% of reads served and no leader change, three runs in a row, against a 2 s line' + row('B0-29'),
         'Leases, refusals for six kinds of actor, the activity feed, the trust view on eight resources, and a byte-identical GHES default' + row('L0-11, L0-13, L0-16, LF-4, LF-12, LF-13'),
+        'The activity feed with the leader killed every 60 s: feed p99 2,954 ms between kills against 3 s, and no overlapping exclusive leases past the clock allowance, met at 90%' + row('L0-12'),
+        '1 MiB agent pushes on a repository led from another continent, then with every bucket failing: commit p99 1,834 ms against that case\'s 2 s bound, and 1,262 of 1,262 oversized pushes refused at once' + row('B0-31'),
+        'Storage on a hot repository: its metadata moved to a child group under load, with a peak of 7.74 GB against a 9.45 GB limit and no storage-full errors, on an accelerated run from the split on, met at 90%' + row('B0-30'),
       ] },
       { title: 'Still to pass', items: [
         'Commit p99 under 600 ms with 500 agents pushing' + row('B0-29'),
-        'A 30-day storage run on a repository with a 4 GB metadata tier, which needs metadata child groups, now being built' + row('B0-30'),
-        '1 MiB agent pushes with every bucket failing, a burst of 500 pushes in one second, and 5,000 agents with human commits still under 1 s' + row('B0-31 to B0-33'),
+        'A burst of 500 pushes in one second, and 5,000 agents with human commits still under 1 s' + row('B0-32, B0-33'),
         'Git CPU for one 5 GB repository under load, with clones starting within 1 s' + row('B0-34'),
-        'The activity feed under a leader kill every 60 s' + row('L0-12'),
-        'Test merges with Actions dispatch, which waits on Milestone 4' + row('B0-35'),
+        'Test merges under 500 open pull requests, with Actions starting each run within 10 s of the push' + row('B0-35'),
       ] },
     ],
     after: 'Each piece passes on its own. The gate asks for all of it at once on one repository: 500 agents, human commits fast, no leader churn, memory under the isolate limit, and 30 days of storage.',
   },
   {
-    id: 'm4', code: 'M4', name: 'Webhooks, notifications, search, Actions and the web app', state: 'now', when: '3 of 6 work packages done',
+    id: 'm4', code: 'M4', name: 'Webhooks, notifications, search, Actions and the web app', state: 'now', when: 'Every test row passes, still in build',
     lead: 'Everything that reads the committed log: webhooks, notifications and search, the Actions engine and its runners, and the web app.',
     groups: [
       { title: 'Passing on a hosted test install', items: [
@@ -98,11 +99,12 @@ export const milestones: Milestone[] = [
         'Merge queue workflows: a <code>merge_group</code> run on each queue ref built, and each ref deleted 10 s after its pull request landed or was ejected' + row('BF-37'),
         'A site killed during a 256-job matrix: runners polled the new leader\'s site 11.5 s later, and all 256 jobs ran exactly once' + row('BF-55'),
         'The web app under Playwright: every page renders with its first data in the HTML, and the live job log streams within 2 s and falls back when its relay dies' + row('BF-38, BF-61'),
+        '2,500 runners polling one broker past its cap: 512 of 512 jobs succeeded, starting at p99 16.6 s against a 35 s line' + row('BF-54'),
+        'Hosted runners on Cloudflare Sandboxes: 50 of 50 jobs from a cold start, never more than 20 at once under the per-owner cap, and no Sandbox left behind' + row('BF-60'),
+        'The gate: an unmodified <code>actions/runner</code> ran a 2 by 4 matrix with a site taken down mid-run, and every leg finished exactly once' + row('BM-4'),
       ] },
-      { title: 'Still to pass', items: [
-        '2,500 runners polling one broker, past its cap' + row('BF-54'),
-        'Hosted runners on Cloudflare Sandboxes, under a per-owner cap' + row('BF-60'),
-        'The gate: an unmodified <code>actions/runner</code> runs a matrix while a site fails, with no job state lost' + row('BM-4'),
+      { title: 'Still in build', items: [
+        'The launch service, so a workflow step can call another action with <code>uses:</code>',
       ] },
     ],
   },
@@ -152,7 +154,7 @@ export const milestones: Milestone[] = [
     id: 'm7', code: 'M7', name: 'Breadth and modes', state: 'next', when: 'Planned, one package started early',
     lead: 'Self-hosted installs and installs in the customer\'s own Cloudflare account, managed cell accounts, metadata child groups for very large repositories, a single-site evaluation mode, import from GHES, and whole-install restore.',
     groups: [
-      { title: 'Started early', items: ['Metadata child groups, which AM1\'s 30-day storage run needs' + row('M7-WP4')] },
+      { title: 'Started early', items: ['Metadata child groups, built early for AM1\'s storage run' + row('M7-WP4')] },
       { title: 'Gate', items: ['A self-hosted install with no vendor key passes the gates of Milestones 1 to 6, and two restores into new accounts lose no entry up to their cutoff' + row('BM-7')] },
     ],
   },

@@ -72,6 +72,9 @@ const actionsRows = [
   ['The site leading the runners\' registration shard killed during a 256-job matrix (BF-55)', '256 jobs, ephemeral runners scoped to the owner', ok('256 of 256') + ' jobs ran once, none assigned twice; polls reached the new leader\'s site in 11.5 s'],
   ['The commit path, then the run\'s owner, killed before required checks are written (BF-56)', 'Two runs of 6 required jobs, one cancelled', ok('Every') + ' required check concluded, at most 10.4 s after its job finished'],
   ['Repository, environment and org secrets, then both keys rotated (BF-59)', 'A job reading all three, and a fork pull request\'s job', ok('Pass') + '. Right values before and after both rotations; the fork saw none; no plaintext in 1,296 entries or any log'],
+  ['2,500 runners polling one broker, 500 past its cap (BF-54)', '32 runs of 16 jobs on 25 Sandboxes', ok('512 of 512') + ' jobs succeeded; job start p99 16.6 s against 35 s; every runner turned away re-polled with its session valid'],
+  ['Hosted runners on Cloudflare Sandboxes, cap 20 per owner, from a cold start (BF-60)', '50 <code>ubuntu-latest</code> jobs for one owner', ok('50 of 50') + ' succeeded; at most 20 Sandboxes at once; none left 10 minutes after the last job; $0.59'],
+  ['The Milestone 4 gate: a site taken down mid-matrix (BM-4)', 'A 2 by 4 matrix of 5-minute jobs', ok('8 of 8') + ' legs succeeded, each matched, run and finished exactly once'],
 ];
 const latencyRows = [
   ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
@@ -96,7 +99,7 @@ const latencyRows = [
       <div class="doc-head">
         <p class="eyebrow">Evidence overview</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
-        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 15 November 2026, failures included.</p>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 18 November 2026, failures included.</p>
         <p class="more"><a class="link" href="/evidence/all/">Every check, benchmark and baseline, in full<Fragment set:html={ARROW} /></a></p>
       </div>
       <ul class="kpis">
@@ -170,7 +173,7 @@ const latencyRows = [
         <p>Jobs run on the stock <code>actions/runner</code>, the same binary GitHub ships. Each check kills something mid-run and then reads back what every job and check ended as.</p>
       </div>
       <Table head={['Check', 'Runs', 'Result']} rows={actionsRows} />
-      <p class="note">On the hosted test install <code>graft-m4a</code>, 14 and 15 November 2026, with runner 2.338.2. Hosted runners on Cloudflare Sandboxes, 2,500 runners on one broker, and the Milestone 4 gate are still to run; the <a href="/status/#m4">Status page</a> tracks them.</p>
+      <p class="note">On the hosted test install <code>graft-m4a</code> and the separate runner account, 14 to 17 November 2026, with runner 2.338.2. Every gate row of Milestone 4 now passes; the <a href="/status/#m4">Status page</a> tracks what is still in build.</p>
     </div>
   </section>
 
