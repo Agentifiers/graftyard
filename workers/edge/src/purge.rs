@@ -7,9 +7,12 @@
 //! - **What.** The repository's owner from `RepoOwner`, its `Authz` name, and each member's `/status` for the
 //!   repository chain and its metadata child. The gate (`purge::gate`) refuses 409 with its reason, and nothing is
 //!   retired, unless the name is `Deleted`, its `retain_until` has passed or the body says `{"early": true}`, every
-//!   member answers, every joined member's fold holds the tombstone, and none is in a group change.
-//! - **Then.** Each member gets `/purge_retire`, which refuses on its own a member that began a change since, and its
-//!   site's registry row naming it is deleted. Then each site's bucket loses the network's objects, once
+//!   member answers, and every joined voter and learner of the chain's newest committed config holds the tombstone
+//!   and is in no group change. A member outside that config is not checked (`decisions/DECISIONS.md`,
+//!   "`purge-outside`").
+//! - **Then.** Each member gets `/purge_retire`, outside members first with `{"outside": I}`, the config's index, which
+//!   refuses on its own a member that began a change or caught up into the config since, and its site's registry row
+//!   naming it is deleted. Then each site's bucket loses the network's objects, once
 //!   (`purge::purge_bucket`). 200 with the counts. The second pass is a second call once `secondPassAt` has passed:
 //!   the gate passes again on members that answer "not joined", and the response says how many objects that pass
 //!   found.
@@ -65,15 +68,23 @@ async fn purge_repo(c: &Ctx<'_>, repo: RepoId, early: bool) -> std::result::Resu
         }
     }
     let facts = Facts { deleted: authz.deleted(repo), now: crate::now(), early, members: &members };
-    if let Err(why) = purge::gate(&facts) {
-        return Ok(refused(&why));
-    }
+    let order = match purge::gate(&facts) {
+        Ok(o) => o,
+        Err(why) => return Ok(refused(&why)),
+    };
     let mut retired = Vec::new();
-    for (chain, site, name, s) in &members {
+    // Outside members first, then the newest committed config's own (`purge::gate`; `decisions/DECISIONS.md`,
+    // "`purge-outside`"), so a purge cut between them still finds that config when it is called again.
+    for purge::Retire { at, outside } in order {
+        let (chain, site, name, s) = &members[at];
+        let body = match outside {
+            Some(i) => json!({ "outside": i }).to_string(),
+            None => "{}".to_owned(),
+        };
         // A member already not joined still loses its row: a purge cut between the two left it.
         let sent = match s {
             Status::NotJoined => Some((200, Value::Null)),
-            _ => graftyard_lookup::post(&b, *site, name, "/purge_retire", b"{}").await,
+            _ => graftyard_lookup::post(&b, *site, name, "/purge_retire", body.as_bytes()).await,
         };
         match (s, sent) {
             (_, Some((200, _))) => {}
@@ -186,6 +197,9 @@ async fn status(b: &Bindings<'_>, site: SiteId, name: &str) -> Status {
         Some(v) if v["joined"] == json!(true) => Status::Joined {
             purgeable: v["purgeable"].as_bool() == Some(true),
             changing: v["changing"].as_bool() != Some(false),
+            config: v.pointer("/config/index").and_then(Value::as_u64).zip(
+                serde_json::from_value::<GroupConfig>(v.pointer("/config/config").cloned().unwrap_or_default()).ok(),
+            ),
         },
         _ => Status::Unanswered,
     }

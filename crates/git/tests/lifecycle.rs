@@ -507,11 +507,12 @@ fn a_voter_behind_the_tombstone_is_not_purgeable_and_the_purge_refuses() {
         let members: Vec<(ChainId, SiteId, Box<str>, Status)> = SITES
             .iter()
             .map(|s| {
-                let st = Status::Joined { purgeable: purgeable(&g.m(*s).group_fold().fold), changing: false };
+                let st =
+                    Status::Joined { purgeable: purgeable(&g.m(*s).group_fold().fold), changing: false, config: None };
                 (ChainId::Repo(REPO), *s, format!("repo:7#1#f{}", s.0).into_boxed_str(), st)
             })
             .collect();
-        gate(&Facts { deleted: Some(retain_until), now: g.now, early: true, members: &members })
+        gate(&Facts { deleted: Some(retain_until), now: g.now, early: true, members: &members }).map(|_| ())
     };
     assert!(g.deleted(SITES[0]).is_some() && g.deleted(SITES[1]).is_some());
     assert_eq!(g.deleted(SITES[2]), None, "the voter that was away is joined but behind the tombstone");
@@ -520,4 +521,69 @@ fn a_voter_behind_the_tombstone_is_not_purgeable_and_the_purge_refuses() {
     g.pass(4_000);
     assert!(g.deleted(SITES[2]).is_some(), "caught up");
     assert_eq!(check(&g), Ok(()));
+}
+
+/// `purge-outside` (R27) on real members, graft-m4a's shape: site 1's first-generation voter is away while the group
+/// replaces it through `Degraded { lost: 1 }` and `Normal` with `#4#f1`, then the repository is deleted. The stale
+/// voter keeps its old config and never holds the tombstone, which refused every try on main; it is outside the
+/// newest committed config, so the purge passes and retires it first.
+#[test]
+fn a_voter_a_replacement_removed_does_not_block_the_purge() {
+    use graftyard_git::purge::{Facts, Refused, Status, changing, gate, purgeable};
+    use graftyard_raft::GroupConfig;
+    use graftyard_types::{Member as Ref, MemberKind, Placement};
+    let chain = ChainId::Repo(REPO);
+    let placement = |v1: u32| -> Box<Placement> {
+        let m = |s: u8, g: u32| Ref::new(chain, SiteId(s), MemberKind::Full, s, g);
+        let raw =
+            serde_json::json!({ "voters": [m(0, 1), m(1, v1), m(2, 1)], "learners": [], "home": 0, "generation": v1 });
+        Box::new(serde_json::from_value(raw).unwrap())
+    };
+    let mut g = G::new();
+    assert_eq!(init(&mut g, settings("created")), Ok(LifecycleOut { changed: true }));
+    let stale = g.members[1].take().expect("site 1 is up");
+    let degraded = GroupConfig::Degraded { placement: placement(1), lost: SITES[1] };
+    g.on(SITES[0], |m, now| m.reconfigure(now, degraded)).expect("degraded");
+    g.pass(2_000);
+    g.boots += 1;
+    g.disks[1] = Stored::new(RepoFold::new(REPO, OWNER));
+    let (fresh, ready) = Member::restore(config(SITES[1], &formats()), g.disks[1].clone(), g.now, g.boots).unwrap();
+    g.members[1] = Some(fresh);
+    let ((), out) = ready.persist(&mut g.disks[1]);
+    g.inbox.extend(out.early.into_iter().chain(out.messages));
+    let index = g.on(SITES[0], |m, now| m.reconfigure(now, GroupConfig::Normal(placement(4)))).expect("normal");
+    g.pass(4_000);
+    assert!(g.m(SITES[0]).committed_config().is_some_and(|c| c.0 >= index), "the replacement committed");
+    let retain_until = Timestamp(g.now.0 + 90 * DAY);
+    g.deps.name(Some(RepoEntry::Deleted { repo: REPO, retain_until }));
+    assert_eq!(delete(&mut g, retain_until), Ok(LifecycleOut { changed: true }));
+    // The followers learn that commit from the leader's next append: the same delete again, which changes nothing.
+    assert_eq!(delete(&mut g, retain_until), Ok(LifecycleOut { changed: false }));
+    assert!(SITES.iter().all(|s| g.deleted(*s).is_some()), "the config's voters hold the tombstone");
+    let status = |m: &Member<RepoCmd>| Status::Joined {
+        purgeable: purgeable(&m.group_fold().fold),
+        changing: changing(m.committed_config().map(|c| &c.1), m.latest_config(), false),
+        config: m.committed_config().map(|(i, c)| (i.0, c.clone())),
+    };
+    let named = |name: &str, s: Status| (chain, SiteId(0), Box::<str>::from(name), s);
+    let members = [
+        named("repo:7#1#f0", status(g.m(SITES[0]))),
+        named("repo:7#1#f1", status(&stale)),
+        named("repo:7#1#f2", status(g.m(SITES[2]))),
+        named("repo:7#4#f1", status(g.m(SITES[1]))),
+    ];
+    assert!(!purgeable(&stale.group_fold().fold), "the stale voter never got the tombstone");
+    let order = gate(&Facts { deleted: Some(retain_until), now: g.now, early: true, members: &members })
+        .map(|o| o.into_iter().map(|r| (members[r.at].2.to_string(), r.outside.is_some())).collect::<Vec<_>>());
+    let first = order.as_ref().map(|o| o[0].clone());
+    assert_eq!(first, Ok(("repo:7#1#f1".to_string(), true)), "{order:?}");
+    // The replacement behind the tombstone still refuses: it is in the config.
+    let mut behind = members.clone();
+    behind[3].3 = Status::Joined {
+        purgeable: false,
+        changing: false,
+        config: g.m(SITES[1]).committed_config().map(|(i, c)| (i.0, c.clone())),
+    };
+    let r = gate(&Facts { deleted: Some(retain_until), now: g.now, early: true, members: &behind }).map(|_| ());
+    assert_eq!(r, Err(Refused::NoTombstone { chain, member: "repo:7#4#f1".into() }));
 }

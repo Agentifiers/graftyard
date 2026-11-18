@@ -40,6 +40,7 @@ TR = 'crates/actions/src/trigger.rs'
 PR = ['-p', 'graftyard-actions', '--lib', '--test', 'pr_trigger', '--test', 'gates']
 PU = 'crates/git/src/purge.rs'
 PG = ['-p', 'graftyard-git', '--lib', 'purge::']
+PGL = ['-p', 'graftyard-git', '--lib', '--test', 'lifecycle']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -282,6 +283,22 @@ MUTANTS = [
     ('repo-purge: a member behind the tombstone answers purgeable', PU,
      '    fold.child || crate::tiers::deleted(&*fold.core).is_some()', '    let _ = fold;\n    true',
      ['-p', 'graftyard-git', '--test', 'lifecycle']),
+    # ---- purge-outside (R27): 91 and up ----
+    ('purge-outside: an outside member is held to the tombstone too', PU,
+     '                Status::Joined { .. } if !is_in => {', '                Status::Joined { .. } if !is_in && false => {', PGL),
+    ('purge-outside: an in-config member is retired unchecked', PU,
+     '            let is_in = newest.is_none_or(|(_, c)| in_config(c, member));', '            let is_in = newest.is_none();', PGL),
+    ('purge-outside: no member of the newest config needs to answer', PU,
+     '                if !of.iter().any(|i| *f.members[*i].2 == *m) {', '                if false && !of.iter().any(|i| *f.members[*i].2 == *m) {', PGL),
+    ('purge-outside: a Degraded config\'s lost voter counts as in-config', PU,
+     '        GroupConfig::Degraded { placement, lost } => (vec![&**placement], Some(*lost)),',
+     '        GroupConfig::Degraded { placement, .. } => (vec![&**placement], None),', PGL),
+    ('purge-outside: in-config members are retired first', PU,
+     '    outside.extend(inside);\n    Ok(outside)', '    inside.extend(outside);\n    Ok(inside)', PGL),
+    ('purge-outside: the member\'s own rule ignores I', PU,
+     '        Some((at, c)) => at < i || !in_config(c, me),', '        Some((_, c)) => !in_config(c, me),', PGL),
+    ('purge-outside: C is the oldest config, not the newest', PU,
+     '            .max_by_key(|(x, _)| *x);', '            .min_by_key(|(x, _)| *x);', PGL),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

@@ -1274,15 +1274,21 @@ impl<F: Family> Routes<F> {
                 host::abort(&self.host.state, "graftyard member abort");
                 Response::from_json(&json!({ "aborted": true, "at": now_ms() }))
             }
-            // A deleted repository's purge (`graftyard_git::purge`; `decisions/DECISIONS.md`, "`repo-purge`"): this
-            // member's storage is deleted and the object resets, so it answers as never joined. Only a repository
-            // member whose fold holds the tombstone, or its metadata child, and only outside a group change; 409
-            // otherwise. Only the edge's admin route sends it: the edge forwards no path a client names to a member.
+            // A deleted repository's purge (`graftyard_git::purge`; `decisions/DECISIONS.md`, "`repo-purge`" and
+            // "`purge-outside`"): this member's storage is deleted and the object resets, so it answers as never
+            // joined. A member still outside the config the edge read, unchecked; otherwise only a repository member
+            // whose fold holds the tombstone, or its metadata child, and only outside a group change; 409 otherwise. Only the edge's admin route sends it: the edge forwards no path a client names to a member.
             (Method::Post, "/purge_retire") => {
+                // `{"outside": I}`: the edge read this member outside the newest committed config, at index I
+                // (`decisions/DECISIONS.md`, "`purge-outside`"). It is retired unchecked only while it still is.
+                let outside = req.json::<Value>().await.ok().and_then(|b| b["outside"].as_u64());
                 let refused = {
                     let core = self.host.core.borrow();
                     let c = core.as_ref().ok_or_else(|| err("not joined"))?;
-                    if !F::purgeable(&c.m.group_fold().fold) {
+                    let own = c.m.committed_config().map(|(i, cfg)| (i.0, cfg));
+                    if outside.is_some_and(|i| graftyard_git::purge::outside_may_retire(own, &c.join.me.do_name, i)) {
+                        None
+                    } else if !F::purgeable(&c.m.group_fold().fold) {
                         Some("notDeleted")
                     } else if self.changing(&c.m) {
                         Some("changing")

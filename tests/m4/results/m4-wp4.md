@@ -516,6 +516,13 @@ Plants 25 to 30 (F77, branch `f77-acquire`): 6 of 6 caught. 21 of 21 caught afte
 | 57 | A failed run read acquires with an empty name (main's rule) | the same |
 | 58 | A failed secrets read acquires without the secrets | the same |
 | 59 | A job the shard does not hold is retried as a failed read (503, not 404) | the same |
+| 91 | `purge-outside`: an outside member is held to the tombstone too (main's rule, R27) | `a_voter_a_replacement_removed_does_not_block_the_purge`, `a_voter_a_replacement_removed_is_retired_unchecked_and_first`, `a_registry_member_that_never_received_a_config_is_retired_unchecked` |
+| 92 | An in-config member is retired unchecked | the same, and `a_purge_cut_after_the_outside_step_passes_when_called_again` |
+| 93 | No member of the newest config needs to answer | `every_member_of_the_newest_config_must_answer` |
+| 94 | A `Degraded` config's lost voter counts as in-config | `a_degraded_config_s_lost_voter_is_outside_and_an_in_config_change_refuses` |
+| 95 | In-config members are retired first | `a_voter_a_replacement_removed_is_retired_unchecked_and_first`, the lifecycle test |
+| 96 | The member's own rule ignores `I` | `a_member_is_retired_unchecked_only_while_it_is_still_outside` |
+| 97 | `C` is the oldest config, not the newest | the lifecycle test and two gate tests |
 
 ## Cost estimate for the hosted runs
 
