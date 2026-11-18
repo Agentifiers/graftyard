@@ -1,0 +1,36 @@
+2026-11-18T18:15:01Z start 3301bf3e /home/user/workspace/repo/.worktrees/day51
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T18:15:20Z start sweep ok
+2026-11-18T18:15:15Z cost account 25.01 since 2026-11-18T00:00:00Z, run 1.19 since 2026-11-18T17:46:51Z, at b0-29
+2026-11-18T18:15:42.375Z m3org/fm2bb29h-b029 = 131363
+2026-11-18T18:15:52Z cost account 25.01 since 2026-11-18T00:00:00Z, run 1.19 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:16:56.339Z repo:131363 leader 0: config 9 learners [{"addr":192,"doName":"repo:131363#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131363#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131363#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131363#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131363#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131363#2#l5","join":20
+2026-11-18T18:17:29.875Z repo:131363 leader 0: set k 4: {"grants":[[0,[0,6,1]],[1,[0,6,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T18:17:40.178Z repo:131363 leader 0: set k 4: {"grants":[[0,[0,6,1]],[1,[0,6,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T18:17:50.645Z repo:131363 leader 0: set k 4: {"grants":[[0,[0,6,1]],[1,[0,6,1]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-18T18:17:50.776Z repo:131363 leader 0: k 4 at 10
+2026-11-18T18:17:59Z b0-29 fm2bb29h-b029 131363 start
+2026-11-18T18:17:54Z cost account 25.07 since 2026-11-18T00:00:00Z, run 1.25 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:19:59Z cost account 25.09 since 2026-11-18T00:00:00Z, run 1.27 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:22:02Z cost account 25.16 since 2026-11-18T00:00:00Z, run 1.34 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:24:04Z cost account 25.35 since 2026-11-18T00:00:00Z, run 1.52 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:26:06Z cost account 25.6 since 2026-11-18T00:00:00Z, run 1.77 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:28:08Z cost account 26.02 since 2026-11-18T00:00:00Z, run 2.18 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:30:12Z cost account 26.41 since 2026-11-18T00:00:00Z, run 2.57 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:32:14Z cost account 26.84 since 2026-11-18T00:00:00Z, run 2.99 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:34:16Z cost account 27.28 since 2026-11-18T00:00:00Z, run 3.4 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T18:35:20.181Z repo:131363 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-18T18:35:20.270Z repo:131363 leader 0: k 1 at 3547
+2026-11-18T18:35:28Z b0-29 fm2bb29h-b029 131363 done exit 0
+2026-11-18T18:35:33Z torn down 131363
+site fault off: 200
+git#0#pool:7 200
+git#0#pool:2 200
+git#0#pool:1 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-18T18:35:52Z sweep ok
+ALLDONE
+B029DONE

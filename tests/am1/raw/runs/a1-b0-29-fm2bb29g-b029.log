@@ -1,0 +1,16 @@
+2026-11-18T17:50:01Z
+b2145037
+a1.mjs b0-29 --repo fm2bb29g-b029 --chain repo:131362 --seconds 600 --open-prs 500 --ls-refs-shard
+file:///home/user/workspace/repo/.worktrees/day51/tests/am1/rest/a1.mjs:476
+  const r = await ghs({}); if (r.status !== 201) throw new Error(`ghs ${r.status}`); app = r.body.token;
+                                                       ^
+
+Error: ghs 503
+    at refreshApp (file:///home/user/workspace/repo/.worktrees/day51/tests/am1/rest/a1.mjs:476:56)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async file:///home/user/workspace/repo/.worktrees/day51/tests/am1/rest/a1.mjs:483:1
+
+Node.js v26.12.0
+exit 1
+2026-11-18T17:50:20Z
+DONE

@@ -1,0 +1,39 @@
+2026-11-18T17:47:03Z start b2145037 /home/user/workspace/repo/.worktrees/day51
+site fault off: 000
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T17:47:22Z start sweep ok
+2026-11-18T17:47:15Z cost account 23.62 since 2026-11-18T00:00:00Z, run 0 since 2026-11-18T17:46:51Z, at b0-29
+2026-11-18T17:47:53Z cost account 23.63 since 2026-11-18T00:00:00Z, run 0.0 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T17:47:57.712Z m3org/fm2bb29g-b029 = 131362
+2026-11-18T17:48:11.070Z repo:131362 leader 0 placing since 1795024080116: waiting
+2026-11-18T17:48:21.992Z repo:131362 leader 0: config 7 learners [{"addr":192,"doName":"repo:131362#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131362#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131362#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131362#4#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131362#4#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131362#4#l5","join":20
+2026-11-18T17:48:27.448Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:48:38.495Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:48:48.817Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:48:59.173Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:49:09.475Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:49:19.789Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:49:30.194Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:49:40.491Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:49:50.804Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T17:49:59Z cost account 23.64 since 2026-11-18T00:00:00Z, run 0.01 since 2026-11-18T17:46:51Z, at b0-29 watch
+2026-11-18T17:50:01.325Z repo:131362 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":4,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-18T17:50:01.466Z repo:131362 leader 0: k 4 at 12
+2026-11-18T17:50:09Z b0-29 fm2bb29g-b029 131362 start
+2026-11-18T17:50:25.260Z repo:131362 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-18T17:50:25.377Z repo:131362 leader 0: k 1 at 13
+2026-11-18T17:50:33Z b0-29 fm2bb29g-b029 131362 done exit 1
+2026-11-18T17:50:38Z torn down 131362
+site fault off: 200
+git#1#pool:2 200
+git#1#pool:3 200
+git#1#pool:5 200
+git#0#pool:5 200
+git#0#pool:2 200
+git#0#pool:3 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-18T17:51:00Z sweep ok
+ALLDONE
+B029DONE
