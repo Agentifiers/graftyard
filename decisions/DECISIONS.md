@@ -4732,6 +4732,27 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted or simulated run in which a leader that commits (its followers' commit index moves at least once per CALL_DEADLINE) loses its promises to two colos' reports, or in which a group whose leader commits nothing keeps its lease past the Gray region's 20 s target with two colos reporting.
 
+### `clock-guard`: the lease guard's lag is a stamp past the member clock, not past the isolate's own clock, 2026-11-18
+
+**Status.** Asked for by the operator after B0-29 on read-beat (`tests/am1/results/b029-m2b.md`, "Run 3"). Built on branch `clock-guard`, code-only. A site-script change, so it ships only through a site day.
+
+**Decision.** A stamp's lag (`workers/site/src/clock.rs`, `Clock::stamp`) is the stamp minus the member clock just before it arrived: the largest of this isolate's `Date.now()`, the floor, and every reading the member gave out. It was the stamp minus `Date.now()` alone. The guard's rule is unchanged: while the largest of the last 8 lags is `DRIFT` / 2 or more, the leader grants a read that arrives only by a round sent after it. `/stats` `clock.lagBuckets` and `lagMax` count the new lag.
+
+**Why.**
+- **The guard measured a clock no lease reads.** Since `lease-clock`, every lease decision reads the member clock, `max(Date.now(), newest stamp)`: `start_read`'s arrival, `quorum_since`, and `lease_end` through `promised_at`. The floor already takes up a stale `Date.now()`, so a stamp that the floor covers says nothing about the clock the lease compares.
+- **On B0-29 the old lag sent every read to a round.** In run `mwlbozdl`, the leader's `/stats.clock` put 143,238 of 147,133 stamps (97.4%) in the 256 ms-and-up buckets, with `lagMax` 3,520 ms and 5,061 lease fallbacks [measured]. A replay of the leader's 126,769 traced `/raft` stamps rebuilt each member's clock over the call graph. Under the old rule the window was suspect for 99.6% of them (lag p50 419, p99 2,337 ms); under this one for 0.06% (p50 0, p99 86, max 440 ms) [measured, replay; edge stamps are not traced]. Run `mwkyk9zg` gives 98.3% and 0.11%.
+- **The lag is not CPU saturation.** The leader object used 19.8 to 26.3 s of CPU a minute during load, 33 to 44% of one core (`durableObjectsPeriodicGroups`). Its ticker woke 20 ms or more late only 9 times in 600 s, and the handler's event-loop lag was 0 at p99 on 89,823 traced calls. So the 0.25 to 3.4 s gap is the platform's `Date.now()` standing still between I/O polls, the case `lease-clock`'s probe found, and admission has nothing to shed for it [measured, `tests/m0/results/clock-guard.md`].
+- **Safety rests on the floor, as before.** The guard keeps catching what the floor cannot fix: a stamp that arrives ahead of the member clock, which means this member and every sender it heard from all read late. That is F75's case, and it is still open. A stale `Date.now()` under a fresh floor puts the lease on the floor's clock, which `lease-clock` already accepts for `LogEntry.at`, expiry, and `/status` [inference].
+
+**What it beat.**
+- **Raising LAG_SUSPECT_MS or shrinking LAG_WINDOW.** The old lag passed 512 ms on 55.9% of stamps and 2 s at p99, so no threshold inside `DRIFT` stops the fallbacks. And it would still measure the wrong clock.
+- **Removing the guard.** It still catches a member clock that is behind every stamp it receives.
+- **Admission.** The leader is not CPU-bound (above), so shedding load would not move the lag.
+
+**Evidence.** `clock::tests::a_stamp_the_member_clock_already_covers_shows_no_lag` (`workers/site/src/clock.rs`) fails on main ("a stale own clock under a fresh floor counted as lag") and passes. The other three clock tests pass unchanged. `tests/m0carried/plant37.py`. `tests/m0/results/clock-guard.md`.
+
+**Flip.** A hosted B0-29 on this change that still shows `leaseFallbacks` in the thousands or `clock.lagBuckets` mostly at 256 ms and up, which would mean the member clocks themselves trail each other. Or a stale read in F75's saturating probe, which reopens the lease itself.
+
 ### `b032-shed`: a member that forgot its leader sheds read-index reads, and an agent push is answered within AGENT_PUSH_BOUND, 2026-11-18
 
 Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"). Orchestrator-approved, including both `crates/raft` changes.

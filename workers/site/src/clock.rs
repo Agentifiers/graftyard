@@ -5,9 +5,10 @@
 //! boot has seen, and every input steps at the later of the two. A stamp from a sender whose clock runs ahead raises
 //! the floor by at most that sender's drift, which DRIFT already budgets.
 //!
-//! The same readings judge the read lease. Each stamp minus this isolate's clock is the lag it showed then. While the
-//! largest of the last LAG_WINDOW lags is DRIFT / 2 or more, the clock is suspect, and the leader grants reads only by
-//! a round sent after the read arrived (`raft::Member::set_clock_suspect`).
+//! The same readings judge the read lease. Each stamp minus the member clock just before it, the clock a lease reads,
+//! is the lag it showed then; an isolate clock the floor already covers is no lag (clock-guard). While the largest of
+//! the last LAG_WINDOW lags is DRIFT / 2 or more, the clock is suspect, and the leader grants reads only by a round sent
+//! after the read arrived (`raft::Member::set_clock_suspect`).
 
 use std::collections::VecDeque;
 
@@ -37,14 +38,15 @@ impl Clock {
         self.last
     }
 
-    /// A stamp a sender put on a call or reply, read against this isolate's clock at its arrival. Raises the floor
-    /// and records the lag it showed. A stamp at or below the clock records a lag of 0.
+    /// A stamp a sender put on a call or reply, read against the member clock at its arrival (this isolate's clock
+    /// `own`, the floor, and every reading given out). Records the lag it showed, then raises the floor. A stamp at or
+    /// below the member clock records a lag of 0.
     pub fn stamp(&mut self, stamp: u64, own: u64) -> u64 {
+        let lag = stamp.saturating_sub(self.last.max(own).max(self.floor));
         self.floor = self.floor.max(stamp);
         if self.lags.len() == LAG_WINDOW {
             self.lags.pop_front();
         }
-        let lag = stamp.saturating_sub(own);
         self.lags.push_back(lag);
         lag
     }
@@ -116,5 +118,30 @@ mod tests {
         }
         c.stamp(4_000, 4_000);
         assert!(!c.suspect(), "LAG_WINDOW fresh stamps left the guard on");
+    }
+
+    /// clock-guard: the lag is a stamp past the member clock, the clock a lease reads, not past this isolate's own.
+    /// B0-29 `mwlbozdl`'s leader read its own clock 256 ms or more behind 97.4% of stamps while each stamp's floor kept
+    /// its member clock within 85 ms (p99) of the next, and its reads all took rounds.
+    #[test]
+    fn a_stamp_the_member_clock_already_covers_shows_no_lag() {
+        let mut c = Clock::default();
+        assert_eq!(c.now(10_000), 10_000);
+        // A reply 1,000 ms ahead: the member clock was behind it, so that is a lag.
+        assert_eq!(c.stamp(11_000, 10_000), 1_000);
+        assert!(c.suspect());
+        // This isolate's clock stays 1,000 ms behind, but each stamp is only 1 ms past the floor the last one set.
+        for k in 1..=LAG_WINDOW as u64 {
+            assert_eq!(c.stamp(11_000 + k, 10_000), 1, "a stale own clock under a fresh floor counted as lag");
+        }
+        assert!(!c.suspect(), "the guard held for a lag the floor already covered");
+        // A stamp 293 ms past the member clock, with the own clock still behind: a real lag again.
+        assert_eq!(c.stamp(11_008 + 293, 10_000), 293);
+        assert!(c.suspect(), "a stamp past the member clock by DRIFT / 2 left lease reads on");
+        // A reading given out counts too: the member clock read 20,000 and the isolate's own clock fell back to 19,000.
+        let mut c = Clock::default();
+        assert_eq!(c.now(20_000), 20_000);
+        assert_eq!(c.stamp(20_200, 19_000), 200, "the lag ignored the member clock's last reading");
+        assert!(!c.suspect());
     }
 }
