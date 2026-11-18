@@ -388,3 +388,58 @@ fn a_leader_keeps_the_shards_warm_only_while_it_applies_entries() {
     assert!(keep_warm_due(last, 1_000 + KEEP_WARM_MS, Index(51)), "due once it passed, with an entry applied");
     assert!(!keep_warm_due(last, 1_000 + 10 * KEEP_WARM_MS, Index(50)), "an idle group wakes no shard");
 }
+
+/// A pool warm is answered at once from the slot's own state, and only a finished rehydrate is warm: running, a cursor
+/// for its disk, and no rehydrate under way. A rehydrate saves its cursor after its first ref page, before its tail is
+/// caught up, so a cursor alone is not warm. Any other caller still waits for a catch-up. Under main's rule a pool warm
+/// waited for a catch-up too, which under B0-34's load (catch-ups of 1 to 14 s against the warm's 2 s) answered a
+/// rehydrated slot cold 34 times of 59 (LM-1 round 36).
+#[test]
+fn a_pool_warm_is_answered_at_once_and_only_a_finished_rehydrate_is_warm() {
+    use CatchupAnswer::*;
+    assert_eq!(catchup_answer(Caller::PoolWarm, true, true, false), Warm);
+    assert_eq!(catchup_answer(Caller::PoolWarm, true, true, true), Cold, "a cursor mid-rehydrate is not warm");
+    assert_eq!(catchup_answer(Caller::PoolWarm, true, false, false), Cold, "no cursor for this disk");
+    assert_eq!(catchup_answer(Caller::PoolWarm, false, true, false), Cold, "a stopped container is not warm");
+    for c in [Caller::Client, Caller::Warm, Caller::Start] {
+        assert_eq!(catchup_answer(c, true, true, false), WaitForCatchUp, "{c:?} waits for its catch-up");
+    }
+}
+
+/// A composable miss on a tip the shard has not caught up to (`NOT_YET`) is composed again once the catch-up already
+/// running ends, and goes to the slow path (a catch-up that starts after now, then stock or composed) only when that
+/// one did not bring the want, when none runs, or when the reason is one a later disk answers the same. On main every
+/// such miss took the slow path: m41's 143 waited p50 3.1 s, p99 13.1 s after the 409, all composed in the end.
+#[test]
+fn a_miss_on_a_just_moved_tip_is_composed_after_the_running_catch_up() {
+    use graftyard_git::compose::{AfterCompose, NOT_YET, compose_then_catch_up};
+    use std::cell::{Cell, RefCell};
+    // The disk's tip, the tip the running catch-up brings, and the want; the second compose answers from the disk.
+    let run = |why: &str, running: bool, brings: u32, want: u32| {
+        let disk = Cell::new(1u32);
+        let calls = RefCell::new(Vec::new());
+        let r = futures_executor::block_on(compose_then_catch_up(
+            Some(why),
+            running,
+            || async {
+                calls.borrow_mut().push("in_flight");
+                disk.set(brings);
+            },
+            || async {
+                calls.borrow_mut().push("compose");
+                (disk.get() >= want).then_some(disk.get())
+            },
+        ));
+        (r, calls.into_inner())
+    };
+    // m41's case: the tip moved to 2, the running catch-up brings 2, so the miss composes after it, in that order.
+    assert_eq!(run(NOT_YET, true, 2, 2), (AfterCompose::Composed(2), vec!["in_flight", "compose"]));
+    // The running catch-up read the head before the move: the miss waits for a later one, as on main.
+    assert_eq!(run(NOT_YET, true, 1, 2), (AfterCompose::CatchUp, vec!["in_flight", "compose"]));
+    // No catch-up runs: nothing to wait for first, so the slow path at once, with no second compose.
+    assert_eq!(run(NOT_YET, false, 2, 2), (AfterCompose::CatchUp, vec![]));
+    // A reason a later disk answers the same goes the slow path at once too.
+    for why in ["stock: no chain", "stock: over the diff cap", "stock: an annotated tag points at it"] {
+        assert_eq!(run(why, true, 2, 2), (AfterCompose::CatchUp, vec![]), "{why}");
+    }
+}

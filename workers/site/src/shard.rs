@@ -1154,7 +1154,28 @@ impl DurableObject for GitShard {
                         if why.as_deref() == Some("stock: no chain") {
                             COMPOSES.with(|m| m.borrow_mut().entry(compose.key()).or_default().synced = None);
                         }
-                        line.note(|m| m.only = Some((now_ms(), r.status_code(), why)));
+                        line.note(|m| m.only = Some((now_ms(), r.status_code(), why.clone())));
+                        // A tip that just moved: compose again once the catch-up already running ends, and wait for a
+                        // later one only if that one did not bring the want (`graftyard_git::compose::compose_then_catch_up`).
+                        let running_now =
+                            RUNS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).is_some_and(|run| run.runs.running));
+                        let again = graftyard_git::compose::compose_then_catch_up(
+                            why.as_deref(),
+                            running_now,
+                            || jobs.idle(),
+                            || async {
+                                let r =
+                                    host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.ok()?;
+                                (r.status_code() == 200).then_some(r)
+                            },
+                        )
+                        .await;
+                        if let graftyard_git::compose::AfterCompose::Composed(r) = again {
+                            line.note(|m| m.caught_up = Some(now_ms()));
+                            let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
+                            filled(&r)?;
+                            return Ok(line.forward(reply(r, at)?));
+                        }
                     }
                 }
                 if let Err(r) = caught_up().await {
@@ -1172,11 +1193,31 @@ impl DurableObject for GitShard {
                 };
                 Ok(line.forward(reply(r, at)?))
             }
-            // A new leadership's `warm` (`crate::prsync`) comes here; a merge that arrives meanwhile waits for it.
-            "/catchup" => match caught_up().await {
-                Ok(()) => Response::from_json(&jobs.report()),
-                Err(r) => r,
-            },
+            // The network leader's pool warm (`crate::fanout`, `warm_slot`) asks whether this slot may be stepped to,
+            // and is answered at once (`graftyard_git::catchup_answer`); any other caller waits for a catch-up. A new
+            // leadership's `warm` (`crate::prsync`) comes here too; a merge that arrives meanwhile waits for it.
+            "/catchup" => {
+                let pool = caller == graftyard_git::Caller::PoolWarm;
+                let (cursor, rehydrating) = if pool {
+                    (host.warm(net).await.unwrap_or(false), host.rehydrating(net).await)
+                } else {
+                    (false, false)
+                };
+                match graftyard_git::catchup_answer(caller, running, cursor, rehydrating) {
+                    graftyard_git::CatchupAnswer::WaitForCatchUp => match caught_up().await {
+                        Ok(()) => Response::from_json(&jobs.report()),
+                        Err(r) => r,
+                    },
+                    graftyard_git::CatchupAnswer::Warm => {
+                        jobs.start();
+                        Response::from_json(&jobs.report())
+                    }
+                    graftyard_git::CatchupAnswer::Cold => {
+                        jobs.start();
+                        warming()
+                    }
+                }
+            }
             "/promote" => {
                 if let Err(r) = caught_up().await {
                     return r;

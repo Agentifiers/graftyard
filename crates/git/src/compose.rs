@@ -107,6 +107,51 @@ pub fn composable(req: &V2Request) -> bool {
     want.is_some() && depth1 && ofs && done
 }
 
+/// The container's reason when a composable want is not on the disk yet: the tip moved and this shard has not caught
+/// up to it (`compose.go`, `composeMiss`). Only this reason is retried after the running catch-up; any other (no chain,
+/// an annotated tag, the diff cap) would answer the same on a later disk.
+pub const NOT_YET: &str = "stock: not a ref tip or behind HEAD";
+
+/// What a composable miss that the container answered 409 got in the end (`compose_then_catch_up`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfterCompose<R> {
+    /// Composed after the catch-up that was already running when the 409 came.
+    Composed(R),
+    /// Catch up as before, through a catch-up that starts after now, then serve (composed if the disk then allows it,
+    /// else stock): the reason was not `NOT_YET`, no catch-up was running, or the running one did not bring the want.
+    CatchUp,
+}
+
+/// A composable miss after the container's first `compose=only` answer was 409 with `why`: when `why` is `NOT_YET`
+/// and a catch-up is running (`running`), wait for it to end (`in_flight`) and ask composed again (`compose`), which
+/// answers `Some` on a 200. Only if that also misses, or no catch-up was running, or `why` is another reason, does the
+/// caller wait for a catch-up that starts after now (`AfterCompose::CatchUp`), as it always did. m41's B0-34 had 143 misses
+/// on a just-moved tip, each waiting for the running catch-up and then the next one, first byte p50 3.1 s and p99 13.1 s
+/// after the 409, every one of them composed in the end; 80 had a catch-up end before theirs (T-01a1ccdd's trace,
+/// `tests/fanout/raw/misses-m41.txt`). The same order as `merge_cache::merge_then_catch_up`, which waits for the catch-up
+/// in flight after a miss and tries again before catching up itself.
+pub async fn compose_then_catch_up<R, W, Fw, C, Fc>(
+    why: Option<&str>,
+    running: bool,
+    in_flight: W,
+    compose: C,
+) -> AfterCompose<R>
+where
+    W: FnOnce() -> Fw,
+    Fw: std::future::Future<Output = ()>,
+    C: FnOnce() -> Fc,
+    Fc: std::future::Future<Output = Option<R>>,
+{
+    if why != Some(NOT_YET) || !running {
+        return AfterCompose::CatchUp;
+    }
+    in_flight().await;
+    match compose().await {
+        Some(r) => AfterCompose::Composed(r),
+        None => AfterCompose::CatchUp,
+    }
+}
+
 /// One clone-cache miss on a shard object, for its log line `shard miss <net>` (`workers/site/src/shard.rs`,
 /// "/upload-pack"). Each time is epoch ms: when the miss arrived, `Compose::ready` returned, the `compose=only` answer
 /// came (status and `x-graft-compose`), the catch-up before stock ended, the serving answer's headers came (the

@@ -388,6 +388,32 @@ pub fn warm_step(k: u8, next: u8, slots: [&[u16]; 2], warm: [&[bool]; 2]) -> u8 
     if ready(0) && ready(1) { next } else { k }
 }
 
+/// What a shard's `/catchup` does for its caller (`catchup_answer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatchupAnswer {
+    /// Wait for a catch-up that starts after the call, within the call's `wait`, then answer 200 (else `warming`).
+    WaitForCatchUp,
+    /// Answer 200 at once; a catch-up starts in the background.
+    Warm,
+    /// Answer `warming` at once; a catch-up starts in the background.
+    Cold,
+}
+
+/// The `/catchup` answer. A pool warm (`Caller::PoolWarm`, the network leader's `/catchup?warm=pool` on a slot it
+/// holds, whose answer `warm_step` reads) asks whether the slot may be stepped to: warm once its container runs, holds a
+/// cursor for its own disk, and no rehydrate of the network is under way, which is a rehydrate finished, at once and
+/// whatever its catch-up takes. A slot behind the head is safe to step to: a forwarded push it lacks a base for comes
+/// back to the first shard (`on_catch_up`). Every other caller waits for a catch-up as before. Waiting as well, a
+/// rehydrated slot under B0-34's load answered cold to 34 of 59 warms (its catch-ups took 1 to 14 s against the warm's
+/// 2 s), and k stepped to 3 at 888 s of 900 (LM-1 round 36, T-01a1ccdd's trace).
+pub fn catchup_answer(caller: Caller, running: bool, cursor: bool, rehydrating: bool) -> CatchupAnswer {
+    match caller {
+        Caller::PoolWarm if running && cursor && !rehydrating => CatchupAnswer::Warm,
+        Caller::PoolWarm => CatchupAnswer::Cold,
+        _ => CatchupAnswer::WaitForCatchUp,
+    }
+}
+
 /// The pool shards a network keeps on each warm site after its leader asked for `want`, both ledgers granted up to
 /// `granted` (`granted_k`), and it committed `next` (`warm_step`): the k - 1 it serves, or with `reserve` one past
 /// it up to `want`; and while a step waits on cold slots (`next` < `granted`), every slot that step would serve from,

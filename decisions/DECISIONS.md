@@ -4620,3 +4620,43 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 **Evidence.** `a_dependency_read_with_no_answer_by_dep_hedge_asks_again_and_takes_the_first_answer` (`crates/lookup/src/lib.rs`) drives `dep_read` on a fake clock: m3fr12's held read (first at 4,611 ms, second answering in 9 ms) ends at 1,009 ms through the second; a read answered at 301 ms sends nothing more; a slow first that beats the second, a second that never answers, a first or second that fails, and both failing each end as the rule says. `tests/m0carried/plant35.py` plants five mutants, mutant 0 being main's behaviour (no second request), and the test catches all five.
 
 **Flip.** A hosted run where `depHedges.won` is near zero while `deps:*` p99 stays over `DEP_HEDGE` (the second request is held as the first was, so the hold is per object, not per request, and F83's reading is wrong); or one where hedged reads exceed about 5% of dependency reads, which makes the extra load worth a closer bound.
+
+### `b034-trace`: a pool warm is answered from the slot's own state, and a miss on a just-moved tip composes after the running catch-up, 2026-11-18
+
+**Status.** Built on branch `b034-trace` from main `7430a479`, granted by the orchestrator (T-01a17bda) as T-01a1ccdd's half of B0-34. Site-script and test-driver changes only; `crates/raft` and the container are unchanged. Ships on the next site day.
+
+#### A pool warm answers warm once the slot finished its rehydrate
+
+**Decision.** `/catchup?warm=pool` (`Caller::PoolWarm`) starts a catch-up in the background and answers at once (`graftyard_git::catchup_answer`): 200 when the container runs, holds a cursor for its own disk, and no rehydrate of the network is under way; `warming` otherwise. Every other `/catchup` caller still waits for a catch-up. `warm_step` reads that answer as before.
+
+**Why.** On B0-34 m41 (LM-1 round 36) the monorepo's pool slots finished their rehydrates at 22:13:56 and 22:14:49Z, then answered 34 of 59 pool warms after 22:15 with 503: each warm asked for a catch-up within `wait=2`, and under the row's load a catch-up took 1 to 14 s (`lock_ms` up to 13.5 s on packs of 0.1 to 2.3 MB). `warm_step` needs every slot's last answer warm, so k stepped to 3 only at 888 s of 900, although `/fanout` answered 200 to all 55 reports and the load stayed above `FANOUT_UP`. A slot behind the head is safe to step to: a forwarded push it lacks a base for comes back to the first shard (`on_catch_up`), as built for B0-32.
+
+**What it beat.**
+- **A longer `wait` on the pool warm.** It ties the leader's `/fanout` call to the slot's catch-up time, which under load had a 45 s p99 on `/catchup`.
+- **Warm on a cursor alone.** A rehydrate saves its cursor after its first ref page, before its tail; a slot stepped to then answers `warming` to every forwarded push for the rest of the rehydrate.
+
+**Evidence.** `a_pool_warm_is_answered_at_once_and_only_a_finished_rehydrate_is_warm` (`crates/git/tests/shard.rs`) and `a_rehydrated_slot_steps_k_under_load_whatever_its_catch_up_takes` (`crates/git/tests/agent_load.rs`, k stays 1 for the whole run under main's rule); plants 0 to 4 in `tests/b034fix/plant.py`.
+
+**Flip.** A hosted run in which pushes forwarded to a slot stepped to while behind come back 409 often enough to raise the first shard's validate p99, or in which k steps to a slot that then answers `warming`.
+
+#### A composable miss on a just-moved tip is composed again after the running catch-up
+
+**Decision.** When the container answers a composable miss 409 with `stock: not a ref tip or behind HEAD` (`compose::NOT_YET`) and a catch-up of the network is running on the shard object, the miss waits for that catch-up to end (`Jobs::idle`) and asks composed again (`compose::compose_then_catch_up`). Only if that misses, if no catch-up runs, or if the reason is another one, does it wait for a catch-up that starts after now, as before. Its miss line's `caught_up_ms` is the second ask's time.
+
+**Why.** On m41, 143 of 441 miss lines were this 409 (a probe of main just after a tip move), and every one was composed in the end, after `caught_up()` waited for the running catch-up and then the next: first byte p50 3.1 s, p99 13.1 s after the 409, against p50 0.32 s and p99 2.4 s for misses composed at once. 80 of them had a catch-up end before theirs (`tests/fanout/raw/misses-m41.txt`; the shard's catch-up lines). The order is `merge_cache::merge_then_catch_up`'s: wait for the catch-up in flight after a miss, try again, and only then catch up.
+
+**What it beat.**
+- **Composing without a catch-up, from the chain plus the want's diff, for a want the disk lacks.** The want's objects are not on the disk until a catch-up ingests them.
+- **Waiting for the running catch-up for every 409.** A chain with no base, the diff cap, or an annotated tag answers the same after any catch-up.
+
+**What it does not fix.** A catch-up's own length under load, which bounds this wait too: `indexIngest` runs `index-pack` under the network's exclusive lock (LM-1's half, (b)).
+
+**Evidence.** `a_miss_on_a_just_moved_tip_is_composed_after_the_running_catch_up` (`crates/git/tests/shard.rs`); plants 5 to 8 in `tests/b034fix/plant.py`.
+
+**Flip.** A hosted run in which most second asks still answer 409, so the extra container call adds to the first byte instead of cutting it.
+
+#### The load driver no longer blocks its own event loop
+
+**Decision.** a1.mjs's `tip:move` pushes through `Git.runAsync` (`execFile`), and each row records `loopDelay` (p50, p99, max) over the window.
+
+**Why.** `execFileSync` held node's loop about 6 s per tip move, 73 moves in m41's 900 s, so every client-side time a1 took meanwhile ended late: m41's probe ends grouped 172 to a uniform 22, with the shard's first bytes in a group 1.9 s apart at the median, and 43 of the 44 slowest probes overlapped a stall (`tests/fanout/loopstall.py`). Locally a 3 s git call held the loop 3,018 ms sync and 32 ms async. Every B0-34 client latency before this branch carries that stall.

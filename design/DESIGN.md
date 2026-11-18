@@ -1131,7 +1131,7 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// every 20, and writes the warm buckets' `compose/<net>/base-<tip>`, `part-<from>-<to>`, and `head`, which others
 /// follow. A want at a ref's tip or behind HEAD composes from the shard's chain, lagging or not, plus its diff from the
 /// chain tip, with no lock or catch-up first; past 20,000 changed entries, with `include-tag` on an annotated tag, or
-/// with no chain, stock `upload-pack` runs after a catch-up. Direct pushes take no merge, so parts follow catch-ups;
+/// with no chain, stock `upload-pack` runs after a catch-up. A want the disk lacks yet (a just-moved tip) is composed again after the running catch-up, and waits for a later one only if that one lacked it (`compose_then_catch_up`). Direct pushes take no merge, so parts follow catch-ups;
 /// `refs/pull/N/merge` stays as PrSync builds it. The shard writes each miss's whole answer to the clone cache, read or
 /// not, and the edge streams a hit from R2. On torvalds/linux a composed miss's pack began at 0.02 s, stock's at 5 s
 /// after 30 CPU-s [measured, `tests/m0/results/composed-miss.md`]. A shard object starts its container with
@@ -1157,7 +1157,7 @@ pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cos
 /// With no plan field, an owner's share is HOT_POOL - 1 [guess, B0-34's monorepo share]. Above `FANOUT_UP` a leader
 /// reserves a slot past its k - 1 (`pool_reserve`), pool-warms each held slot (`Caller::PoolWarm` starts a stopped
 /// shard) and steps only to warm slots (`warm_step`); cold, a step waited 290 s [measured, `tests/m0/results/m0-wp9.md`,
-/// B0-34, `b0-34-r8`]. A cold slot holds the high line. A ledger beat tears down given-up slots. `cost.py` prices it.
+/// B0-34, `b0-34-r8`]. A slot is warm once it holds a cursor for its disk and no rehydrate runs, whatever its catch-up takes (`catchup_answer`): its pool warm starts a catch-up and waits for none [measured: as "caught up within 2 s", 34 of 59 warms of a rehydrated slot answered cold, B0-34 m41, `tests/am1/results/b034-trace.md`]. A cold slot holds the high line. A ledger beat tears down given-up slots. `cost.py` prices it.
 pub const HOT_POOL: u16 = 7;
 /// Per (shard, network), in the shard's SQLite, derived: the index through which it applied each member chain's `Refs`,
 /// `Merged`, and `Promoted` entries and `Compacted` ones, saved per log page at the page's last index,
