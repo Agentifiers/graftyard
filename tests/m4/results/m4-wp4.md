@@ -407,6 +407,20 @@ Site day 50 (main `fbe49d59`, the format 0x15.4 reader, `GRAFTYARD_PR_TRIGGER` u
 
 **Next.** The trigger did what the design says: 1,195 runs at `refs/pull/N/merge`, 203 superseded events run at the current merge, 0 conflicts, 0 left without a run. Dispatch is bound by the repository group under the 500-agent load, as every other A1 row is. So B0-35's dispatch line moves with LM-1's commit work, not with Actions. Two trigger changes would still shorten it under load. Retry one event's `demand` without rerunning its whole batch. And move the cursor past events whose runs committed, so a failed round does not redo them.
 
+## Repository purge route, hosted check on graft-m4a (2026-11-18)
+
+The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
+
+**Result: stopped before any DELETE or purge. The gate refused 27 of the 35 chains for a reason that is not timing, so nothing was retired or deleted.**
+
+- **Who.** The route answered 404 to m3-admin: on graft-m4a no seeded user administered the install account (`authz:1`), and `/api/graftyard/v1/agents/apps` answered 403. `SetMember { user: 7100003, role: Admin }` was committed as the operator on `authz:1` at 05:29Z (index 106), as `tests/m3/hosted/rows.ts` does on other installs, and `agents/apps` answered 200 after. m3-member still gets 404 from the route [measured].
+- **The refusal.** `NoTombstone` on a site-1 member that is no longer in the group: a voter replaced by a later generation (`repo:N#1#f1`, joined in its own view at an old config, often applied index 1), which can never apply the tombstone because no leader sends it entries. The route's `plan` asks every record's bootstrap member, so it always reaches that member. 26 chains hold one: 22 on site a and all 4 wp2eu chains. 13 chains (12 on site a, and 589826) also have a registry row naming a replacement that never got a config (`config: null`, applied 0, so `changing` is true). For 65551 that member is the only blocker [measured, `/status` of every member `plan` reads].
+- **No such member.** The 8 live repositories 65537, 65548, 65552, 65554, 65556, 65559, 65561 and 65563 have only their three first-generation voters, all in the newest config. They answered `NotDeleted`, as they should before a DELETE [measured].
+- **Retries.** 65543 and 589824 were each asked 3 times, 20 s apart, with the same member named each time.
+- **Cost.** 05:19Z to 05:45Z, by `tests/fanout/acctcost.py` with `PREFIX=graft-m4a`: $0.02. The account was at $7.35 for the UTC day. No idle reading was taken: nothing changed, so the daily refolds still run (about $1.50 a day).
+
+`decisions/OPEN-QUESTIONS.md` R26 and R27 carry what this found.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
