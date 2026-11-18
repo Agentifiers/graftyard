@@ -4597,6 +4597,8 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted run in which a leader that two colos reported and that stopped reaching both followers for CALL_DEADLINE or longer kept its lease past the Gray region's 20 s target, or in which both followers still withhold from a leader whose appends reach them within CALL_DEADLINE (read `Trace::Reported` against `AppendStepped`).
 
+**Amended by `progress-suspect` (2026-11-18).** "Reaching" became "making progress for": the first case of the flip line met in the simulator. With read-beat (empty rounds behind an entry in flight) merged beside this rule, main 56918444 failed the long sweep's live half on seed 10353: a half-hung leader's empty rounds reached both followers about every 2 s for 23 s while 34 of its calls failed and nothing committed, `appended_at` stayed fresh, no report counted, and a healthy quorum had requests waiting for 31.8 s against the 30 s bound (3.9 s on this branch alone, 10.5 s on read-beat alone). The rule now reads `progressed_at`, set only by an accepted append that stored an entry or raised the commit index. See `progress-suspect`.
+
 ### `lookup-retry`: a cached leader's first miss is retried there, and SUSPECT_GAP is 1 s, 2026-11-18
 
 **Status.** Asked for by the orchestrator after B0-33 m45, with SUSPECT_GAP at 5 s; built at 1 s because 5 s broke the long sweep's live bound (below). Built on branch `lookup-retry`, not deployed. A `crates/lookup` change, so it ships on the next site day, and on the edge with it.
@@ -4626,3 +4628,23 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 - Live sweep at 1 s, 4,000 seeds with histories: longest stretch 31.1 s on seed 10353 (main 31.8 s), otherwise 24.0 s; Porcupine Ok on both 2,000-seed halves (2,974,283 and 2,983,372 operations). The documented long sweep (`RAFT_SEEDS=2000`): harsh 15.4 s, gray 25.9 s, and the live half stops at seed 10353 (31.1 s), the seed main 56918444 fails by itself (31.8 s); Porcupine Ok on the harsh (152,313 operations) and gray (2,339,068) histories.
 
 **Flip.** A hosted run in which a leader that is gone keeps requests waiting past 2 x CALL + LEADER_RETRY before they walk, or in which a gray leader with two reporting colos is not moved within the Gray region's target where it was at 500 ms. A follower `/suspect` rate that still queues ahead of `/raft` at 1 s reopens a longer gap only with a live-sweep pass at that gap.
+
+### `progress-suspect`: a `suspect` report counts once the leader makes no progress for the follower, 2026-11-18
+
+**Status.** Decided by the orchestrator after `lookup-retry` found main's sweep failing (late-suspect's rule moves, not read-beat's). Built on branch `progress-suspect`, on `lookup-retry`, not deployed. A `crates/raft` change, so it ships on the next site day.
+
+**Decision.** `on_suspect`'s own-evidence check reads `progressed_at` instead of `appended_at`: a report about the follower's leader counts toward SUSPECT only while the follower has accepted no AppendEntries that stored an entry or raised its commit index for CALL_DEADLINE. `appended_at` keeps its meaning (any accepted append) for its other reader, the storage-slow campaign check, which asks whether the leader is heard, not whether it commits.
+
+**Why.** Late-suspect asked whether the leader still reaches the follower; a lease needs to know whether the leader still makes progress for it. Read-beat sends a voter with an entry in flight an empty round every few hundred ms, and READ_RESEND resends it every 500 ms. A half-hung leader, whose calls land and whose answers are lost, keeps sending both and commits nothing. On live seed 10353 (main 56918444 and 9ecd8314) leader 0's AppendEntries reached both followers 39 times from 149 s to 172 s, 34 of its calls failed and 6 answers came back, and nothing committed; no report counted, the followers kept promising, and nobody else could win until leader 0 stepped down at 172 s; a new leader committed at 180.9 s. A healthy quorum had requests waiting and none completing for 31.8 s [measured, simulator, `tests/am1/results/lm1-memory.md`, "progress-suspect"]. An overloaded leader that still commits, as on B0-33 m44, raises the commit index on every round that carries one, so it keeps its promises.
+
+**What it beat.**
+- **Read-beat's rule moves (no empty rounds to a member with a call out):** read-beat fixed B0-29's 84 to 87% resends, and the empty round is what the lease question should ignore, not what it should stop.
+- **Count only appends that carry entries:** an idle group's leader sends none, and an entry-less round that raises the commit index is progress.
+
+**Evidence.**
+- `a_half_hung_leader_s_empty_rounds_do_not_hold_its_followers` (`crates/raft/tests/sim.rs`, live seed 10353) fails on main 9ecd8314 (31,780 ms) and on late-suspect's rule over this branch (31,148 ms); it passes at 5,333 ms.
+- `an_overloaded_leader_still_appending_keeps_its_promises`, `a_gray_leader_whose_appends_come_late_still_loses_its_lease`, `two_colos_within_the_window_stop_promises_to_a_renewing_leader` and the rest of `leadership.rs` pass unchanged.
+- `tests/latesuspect/plant.py` now plants eight bugs: late-suspect's five, plus `appended_at` back in the check, an empty append counted as progress, and commit-index moves not counted: 8 of 8 caught. `a_commit_index_move_is_progress` (`leadership.rs`) fails when only stored entries count.
+- The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half at 4,000, 1,333 s) passed. Longest stretches with a healthy quorum, requests waiting and none completing: harsh 16.8 s (seed 10356), gray 24.2 s (11076), live 25.8 s (12840), under the 30 s bound; main 56918444 stopped its live half at seed 10353 (31.8 s), and late-suspect alone passed with 17.0, 24.7 and 27.8 s. Porcupine Ok on all three histories (147,412, 2,331,603 and 5,965,204 operations).
+
+**Flip.** A hosted or simulated run in which a leader that commits (its followers' commit index moves at least once per CALL_DEADLINE) loses its promises to two colos' reports, or in which a group whose leader commits nothing keeps its lease past the Gray region's 20 s target with two colos reporting.

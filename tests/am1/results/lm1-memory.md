@@ -5142,3 +5142,35 @@ same overload, measured over 300 s instead of in 15 s pieces. Agent pushes ok fe
 as 503 "access rows … not leader" from the edge walks (6,171), before reaching the leader. So the extra commits are not
 extra agent load admitted. They are commands that stayed in the queue for the whole window instead of failing at a term
 change. Shrinking the commit line now needs cheaper rounds or fewer commands per entry, behind voters freed from walks.
+
+### progress-suspect: a `suspect` report counts once the leader makes no progress for the follower (2026-11-18, code only, no spend)
+
+Branch `progress-suspect`, on `lookup-retry`. The orchestrator decided that late-suspect's rule moves, not
+read-beat's. The DECISIONS entry `progress-suspect` holds the decision and flip, and `late-suspect` carries an
+amendment.
+
+**The stall on main.** On live seed 10353, at main 56918444 and at 9ecd8314:
+- Leader 0's AppendEntries reached both followers 39 times from 149 s to 172 s.
+- 34 of its calls failed, 6 answers came back, and nothing committed.
+- Both followers' `appended_at` stayed fresh, so no `suspect` report counted, and their promises held.
+- Leader 0 stepped down at 172 s. The new leader (term 12) committed at 180.9 s.
+
+A healthy quorum had requests waiting and none completing for 31.8 s, against the 30 s bound. The same seed stalls
+3.9 s on late-suspect aa3bf360 alone and 10.5 s on read-beat f1bd7d51 alone.
+
+**Change.** `on_suspect` reads `progressed_at`, which is set only by an accepted append that stored an entry or raised
+the commit index. `appended_at` keeps its meaning for the storage-slow campaign check (`election.rs`), which asks
+whether the leader is heard, not whether it commits.
+
+**Tests and plants.**
+- `a_half_hung_leader_s_empty_rounds_do_not_hold_its_followers` (`sim.rs`, live seed 10353): 31,780 ms on main
+  9ecd8314 and 31,148 ms with `appended_at` back in the check over this branch; passes at 5,333 ms.
+- `a_commit_index_move_is_progress` (`leadership.rs`): a round that only raises B's commit index keeps B promising
+  through two colos' reports. It fails if only stored entries count.
+- The rest of `leadership.rs` passes unchanged, including `an_overloaded_leader_still_appending_keeps_its_promises` and
+  `a_gray_leader_whose_appends_come_late_still_loses_its_lease`.
+- `tests/latesuspect/plant.py`: 8 of 8 caught, late-suspect's five plus `appended_at` back in the check, an empty
+  append counted as progress, and commit moves not counted.
+- The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half at 4,000 seeds, 1,333 s) passed: harsh 16.8 s
+  (seed 10356), gray 24.2 s (11076), live 25.8 s (12840). Against colo-unknown's 16.3 / 27.9 / 25.4 s and
+  late-suspect's 17.0 / 24.7 / 27.8 s. Porcupine Ok on all three (147,412, 2,331,603 and 5,965,204 operations).

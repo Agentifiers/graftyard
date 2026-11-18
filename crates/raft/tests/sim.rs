@@ -324,6 +324,15 @@ fn a_leader_hands_off_to_no_member_it_suspects_live() {
     }
 }
 
+/// progress-suspect: main 9ecd8314 left this live seed's healthy quorum with requests waiting for 31.8 s. A half-hung
+/// leader's read-beat rounds, empty behind its entry in flight, reached both followers every 2 s while every call
+/// failed, and `late-suspect` read any accepted append as the leader reaching them, so no report counted and their
+/// promises held until it stepped down. A report counts once no append stored an entry or moved the commit index.
+#[test]
+fn a_half_hung_leader_s_empty_rounds_do_not_hold_its_followers() {
+    sweep_with(10_353..10_354, 10_000, live_faults);
+}
+
 /// Seeds the long sweep's live half runs at least, from 10,000, whatever `RAFT_SEEDS` says: main passed the bound on
 /// 10,000 to 11,999 while 12,048 (33.0 s) and 12,073 (37.4 s) broke it, so a 2,000-seed window hid an F67 path
 /// (`tests/m0/results/f67.md`, "Rule 10 and the wider window").

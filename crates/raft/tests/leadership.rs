@@ -458,6 +458,39 @@ fn an_overloaded_leader_still_appending_keeps_its_promises() {
     assert!(c.m(B).state().promise_until > stopped, "timely appends' reports kept B withholding past 2 x SUSPECT");
 }
 
+/// `progress-suspect`: an append that only raises the follower's commit index is progress. B stores A's entry, and the
+/// round carrying its commit reaches B only past CALL_DEADLINE; two colos' reports right after that round count for
+/// nothing, so B keeps promising A while A's rounds arrive. Counting only appends that store entries withholds here.
+#[test]
+fn a_commit_index_move_is_progress() {
+    let mut c = Cluster::new(48);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    let rid = RequestId(graftyard_raft::Ulid(9_001));
+    c.on(A, |m, now| m.commit(now, rid, put("p", "1"))).expect("admits");
+    c.deliver(|e| matches!(e.msg, Message::Append(_)) && e.from == A);
+    let stored_at = c.m(B).state().commit;
+    c.deliver(|e| !matches!(e.msg, Message::Append(_)) || e.from != A);
+    c.advance(ms(graftyard_raft::CALL_DEADLINE));
+    for _ in 0..40 {
+        if c.m(B).state().commit > stored_at {
+            break;
+        }
+        c.advance(100);
+        c.deliver(|e| !(e.to == B && e.from == A) || matches!(&e.msg, Message::Append(a) if a.commit > stored_at));
+    }
+    assert!(c.m(B).state().commit > stored_at, "B never learned the commit");
+    let term = c.m(B).term();
+    for colo in [LAX, NRT] {
+        assert_eq!(report(&mut c, B, colo, A), Verdict::Promised);
+    }
+    let until = c.m(B).state().promise_until;
+    drive(&mut c, 2_000, true, &mut id, |_| false);
+    assert_eq!(c.m(A).term(), term);
+    assert!(c.m(B).state().promise_until > until, "B withheld from A right after a round that moved its commit");
+}
+
 /// The gray leader `late-suspect` must still move: A's appends reach its followers only in bursts every 1.5 s, so it
 /// keeps renewing their promises, while two colos report it. Reports in the late part of each gap count, both
 /// followers withhold, and another member leads within the Gray region's 20 s target.
