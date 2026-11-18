@@ -74,6 +74,11 @@ pub const REPO_FORMAT_FANOUT: Format = Format { family: 0x20, version: 15 };
 /// `roll-up`: `RepoEvent::Compacted`, tag 47, which only a leader of this release records itself
 /// (`crate::log_archive`).
 pub const REPO_FORMAT_ROLLUP: Format = Format { family: 0x20, version: 25 };
+/// The format a scratch view (`RepoScratch`, `crate::issue_ops::RepoView`) writes events at: the newest. `decide`
+/// sees the entry's format only once its last command is in, and `verify` writes stored entries above `applied` at the
+/// checked entry's time, not theirs. Only `promoted_log` depends on the format (F88), and only `check_compacted`
+/// reads it in a scratch view: a leader builds a roll from its applied fold, which logs only 32.25 promotions.
+pub const SCRATCH_FORMAT: Format = REPO_FORMAT_ROLLUP;
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -819,13 +824,13 @@ impl Scratch for RepoScratch<'_> {
     fn apply(&mut self, ev: &RepoEvent) {
         let (t, set) = (self.base.tiers(), tier_of(ev));
         if has(set, Tier::Core) && has(self.tag, Tier::Core) {
-            t.write(ev, Tier::Core, self.at, &mut self.core);
+            t.write(ev, Tier::Core, self.at, SCRATCH_FORMAT, &mut self.core);
         }
         if let Some(m) = self.meta.as_mut()
             && has(set, Tier::Metadata)
             && has(self.tag, Tier::Metadata)
         {
-            t.write(ev, Tier::Metadata, self.at, m);
+            t.write(ev, Tier::Metadata, self.at, SCRATCH_FORMAT, m);
         }
     }
 

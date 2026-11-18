@@ -54,7 +54,7 @@ impl Tiered for Toy {
     fn schema(tier: Tier) -> Schema {
         if tier == Tier::Core { CORE } else { META }
     }
-    fn write(&self, ev: &Ev, tier: Tier, _at: Timestamp, w: &mut dyn Rows) {
+    fn write(&self, ev: &Ev, tier: Tier, _at: Timestamp, _format: Format, w: &mut dyn Rows) {
         match (ev, tier) {
             (Ev::Core(k, v), Tier::Core) => set(w, "c", *k, *v),
             (Ev::Meta(k, v), Tier::Metadata) => set(w, "m", *k, *v),

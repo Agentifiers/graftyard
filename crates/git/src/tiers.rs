@@ -22,7 +22,7 @@
 
 use graftyard_fold::{Read, Rows, Schema, TableDef, Tiered, Val, has};
 use graftyard_identity::IdCursor;
-use graftyard_raft::TierSet;
+use graftyard_raft::{Format, TierSet};
 use graftyard_types::{AccountId, DbId, IdBlock, Index, RepoId, Tier, Timestamp};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -37,7 +37,7 @@ use crate::issues::{
 use graftyard_identity::{InvitationEvent, InvitationRow};
 
 use crate::refs::{ObjectId, RefName};
-use crate::repo::RepoEvent;
+use crate::repo::{REPO_FORMAT_ROLLUP, RepoEvent};
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -165,7 +165,7 @@ pub const CORE: Schema = Schema {
         // M4-WP3, 32.23: Actions secrets and variables by scope (`""` or `env:<name>`) and name.
         t("actions_secret", &["scope", "name"]),
         t("actions_variable", &["scope", "name"]),
-        // roll-up, 32.25: every committed `Promoted` by its `from`, and every `Compacted` by its `from`.
+        // roll-up, 32.25: every `Promoted` committed in a 32.25 entry by its `from`, and every `Compacted` by its `from`.
         t("promoted_log", &["from"]),
         t("compacted", &["from"]),
     ],
@@ -657,7 +657,7 @@ impl RepoTiers {
         }
     }
 
-    fn write_core(&self, ev: &RepoEvent, at: Timestamp, w: &mut dyn Rows) {
+    fn write_core(&self, ev: &RepoEvent, at: Timestamp, format: Format, w: &mut dyn Rows) {
         match ev {
             RepoEvent::Refs { updates, .. } => {
                 for u in updates {
@@ -686,7 +686,11 @@ impl RepoTiers {
             RepoEvent::Refused { .. } => {}
             RepoEvent::Promoted(p) => {
                 put_rec(w, "promoted", Vec::new(), p);
-                put_rec(w, "promoted_log", vec![Val::Int(p.from.0 as i64)], p);
+                // Only a 32.25 entry logs its promotion for roll-up: a 32.1 `Promoted` committed before roll-up
+                // existed, and a refold on this release must give the digest its members kept (F88).
+                if format >= REPO_FORMAT_ROLLUP {
+                    put_rec(w, "promoted_log", vec![Val::Int(p.from.0 as i64)], p);
+                }
             }
             RepoEvent::Compacted(c) => put_rec(w, "compacted", vec![Val::Int(c.from.0 as i64)], c),
             RepoEvent::Archived(a) => match &a.key {
@@ -1297,9 +1301,9 @@ impl Tiered for RepoTiers {
         }
     }
 
-    fn write(&self, ev: &RepoEvent, tier: Tier, at: Timestamp, rows: &mut dyn Rows) {
+    fn write(&self, ev: &RepoEvent, tier: Tier, at: Timestamp, format: Format, rows: &mut dyn Rows) {
         match tier {
-            Tier::Core => self.write_core(ev, at, rows),
+            Tier::Core => self.write_core(ev, at, format, rows),
             Tier::Metadata => self.write_meta(ev, at, rows),
         }
     }

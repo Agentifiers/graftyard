@@ -10,7 +10,7 @@
 //! are read, so members agree whatever their storage order, and `apply` keeps it current with one subtract and one add
 //! per write. `refold_digest` recomputes the sum from the rows, which is what an audit and a snapshot writer check.
 
-use graftyard_raft::{EntryBody, LogEntry, Record, Term, TierSet, digest};
+use graftyard_raft::{EntryBody, Format, LogEntry, Record, Term, TierSet, digest};
 use graftyard_types::{Digest, Index, SiteId, Tier, Timestamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -116,8 +116,10 @@ pub trait Tiered {
     fn tier_of(ev: &Self::Event) -> TierSet;
     fn schema(tier: Tier) -> Schema;
     /// The rows `ev` writes in `tier`, given the tier as it stands. `at` is the entry's time; nothing else about time
-    /// is available, so every member writes the same rows.
-    fn write(&self, ev: &Self::Event, tier: Tier, at: Timestamp, rows: &mut dyn Rows);
+    /// is available, so every member writes the same rows. `format` is the entry's: a committed entry folds the same
+    /// on every release, so a release that changes what an existing event writes does so only for a new format
+    /// (`design/SHARED.md`, "Schema change is a refold, never a migration"; F88).
+    fn write(&self, ev: &Self::Event, tier: Tier, at: Timestamp, format: Format, rows: &mut dyn Rows);
     /// Runs in every tier for every entry, owned or not, before its events: time-based pruning.
     fn on_entry(&self, _tier: Tier, _at: Timestamp, _rows: &mut dyn Rows) {}
     /// An entry's `extend` (`ExtendLeases`), in every tier before `on_entry` and its events: leases move by the
@@ -229,7 +231,7 @@ pub fn apply<T: Tiered>(t: &T, store: &mut dyn Store, tier: Tier, e: &LogEntry<T
     match &e.body {
         EntryBody::Events(evs) if mine => {
             for ev in evs.iter().filter(|ev| has(T::tier_of(ev), tier)) {
-                t.write(ev, tier, e.at, &mut w);
+                t.write(ev, tier, e.at, e.format, &mut w);
             }
         }
         EntryBody::IdBlock(b) => t.id_block(*b, tier, &mut w),

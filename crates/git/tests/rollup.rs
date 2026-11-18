@@ -44,7 +44,7 @@ impl Bed {
     fn promotions(&self) -> Vec<Promoted> {
         let promotions: Vec<_> = (1..=4).map(promotion).collect();
         for p in &promotions {
-            self.record(REPO_FORMAT_V1, vec![RepoEvent::Promoted(p.clone())]).expect("promotion commits");
+            self.record(REPO_FORMAT_ROLLUP, vec![RepoEvent::Promoted(p.clone())]).expect("promotion commits");
         }
         promotions
     }
@@ -129,6 +129,24 @@ fn verify_refuses_a_roll_that_skips_overlaps_or_misnames_promotions() {
     assert!(scratch.check(&RepoEvent::Compacted(overlap)).is_err(), "a roll does not overlap an earlier roll");
     let next = compacted(&p[2..], pack(24));
     scratch.check(&RepoEvent::Compacted(next)).expect("the next consecutive roll verifies");
+}
+
+/// A 32.1 `Promoted`, committed before roll-up or with it off, is not logged for roll-up, so every release folds it
+/// to the digest its members kept (F88), and no roll may consume it.
+#[test]
+fn a_promotion_committed_before_roll_up_is_not_rollable() {
+    let b = Bed::new();
+    let old = promotion(1);
+    b.record(REPO_FORMAT_V1, vec![RepoEvent::Promoted(old.clone())]).expect("a 32.1 promotion commits");
+    let new = promotion(2);
+    b.record(REPO_FORMAT_ROLLUP, vec![RepoEvent::Promoted(new.clone())]).expect("a 32.25 promotion commits");
+    b.record(REPO_FORMAT_ROLLUP, Vec::new()).expect("commit notice");
+    let fold = b.w.borrow_mut().fold();
+    assert_eq!(fold.promoted(), Some(new.clone()), "the last promotion still moves on");
+    assert_eq!(fold.promoted_from(old.from), None);
+    assert_eq!(fold.promoted_from(new.from), Some(new.clone()));
+    let c = compacted(&[old, new], pack(11));
+    assert!(fold.scratch().check(&RepoEvent::Compacted(c)).is_err(), "a roll over a 32.1 promotion");
 }
 
 #[test]
