@@ -3420,7 +3420,7 @@ impl<F: Family> Host<F> {
                 async move {
                     let t0 = now_ms();
                     let q = &json!({ "q": { "dep": true } });
-                    // `dep-hedge`: a read with no answer within DEP_HEDGE sends a second request beside it.
+                    // `dep-hedge`: a read with no answer within its chain's delay (its p90 here, up to DEP_HEDGE) sends a second.
                     let read = |record: graftyard_types::PlacementRecord| async move {
                         let (r, how) = crate::lookup::call_hedged(env, chain, &record, "/read", q).await;
                         if how != graftyard_lookup::Hedged::First {

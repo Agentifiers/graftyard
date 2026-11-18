@@ -4642,6 +4642,23 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A hosted run where `depHedges.won` is near zero while `deps:*` p99 stays over `DEP_HEDGE` (the second request is held as the first was, so the hold is per object, not per request, and F83's reading is wrong); or one where hedged reads exceed about 5% of dependency reads, which makes the extra load worth a closer bound.
 
+### `dep-hedge-adaptive`: each chain's dependency read is hedged at its own p90 in the isolate, 2026-11-18
+
+**Status.** Built on branch `dep-hedge-adaptive`, code-only. Not yet run hosted. Refines `dep-hedge` above.
+
+**Decision.** `dep_read` (`crates/lookup/src/lib.rs`) waits `dep_hedge_after(chain)` before the second request: the p90 of the chain's last 64 dependency read times in this isolate, clamped to `DEP_HEDGE_FLOOR` (100 ms) and `DEP_HEDGE` (1 s), and `DEP_HEDGE` until the chain has 16 [guess for the window, the floor and the quantile]. Each read that answered adds its time; a failed read adds nothing.
+
+**Why.** `merge-tail` found that a hedge near run 5's read p90 (about 150 ms) brings B0-29's replayed commit p99 from 675 to 589 ms (`tests/m0/results/merge-tail.md`). A constant cannot serve both leaders: on B0-31's apac leader, reading enam's identity groups at `deps:authz` p50 about 300 ms, a fixed 150 ms would hedge 79% of reads (m3fr12; 83% on m3fr16) and add 11.5 reads a second, 7.0 of them on `authz:7100001`, while 200 ms still hedges 61% [inference, lognormal fits to the recorded percentiles, `tests/m0/results/dep-hedge-adaptive.md`]. The per-chain p90 hedges about 10% on every run, adds 1.3 to 1.9 reads a second, and keeps run 5's replayed commit p99 at 593 against 589 for the fixed 150 ms.
+
+**What it beat.**
+- **A fixed 150 or 200 ms.** The far-leader rates above.
+- **Mean plus k deviations (`Timed`).** The read times are skewed (run 5 authz p50 53, p99 230), so a mean-based delay hedges a share that moves with the skew; a window's p90 hedges one in ten by construction.
+- **One window for every chain.** A near chain's short reads would set the far chain's delay, and the reverse.
+
+**Evidence.** `a_dependency_reads_hedge_waits_its_chains_own_p90` (`crates/lookup/src/lib.rs`) fails on main; `tests/m0carried/plant42.py` plants nine mutants (main's fixed DEP_HEDGE, a fixed 150 ms, one window for all chains, no recording, no floor, no cap, an unbounded window, the median, no minimum count), 9 of 9 caught. The replay is `tests/m0/cuttrace/hedgerate.py`.
+
+**Flip.** A hosted run where `depHedges.asked` is well past one read in ten (the window lags a leader that slowed), or the far leader's `depHedges.won` is near zero while it hedges one read in ten (its tail is distance, and the hedge only adds load there): raise the quantile or skip chains whose p90 passes a round.
+
 ### `b034-trace`: a pool warm is answered from the slot's own state, and a miss on a just-moved tip composes after the running catch-up, 2026-11-18
 
 **Status.** Built on branch `b034-trace` from main `7430a479`, granted by the orchestrator (T-01a17bda) as T-01a1ccdd's half of B0-34. Site-script and test-driver changes only; `crates/raft` and the container are unchanged. Ships on the next site day.
