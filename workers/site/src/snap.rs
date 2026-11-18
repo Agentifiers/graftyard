@@ -76,6 +76,9 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS meta_dropped (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)",
     // `crate::split`: a metadata child member's restore of its seed.
     "CREATE TABLE IF NOT EXISTS split_job (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
+    // `crate::live`: the running live-row check, and the last one that ended with each tier's verdict.
+    "CREATE TABLE IF NOT EXISTS live_run (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS live_last (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -203,6 +206,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             Err(e) => alarm(h, format!("snapshot {t:?}: {e}")),
         }
     }
+    busy |= crate::live::on_alarm(h).await;
     // An idle member is woken again only by applying an entry (`Family::fold_alarm_ms`), so an idle group bills no
     // alarms.
     if busy && h.joined() {
@@ -461,6 +465,8 @@ fn begin(
     if !forced && !due()? {
         return Ok(false);
     }
+    // A live-row check holding this tier's snapshot mark gives it up to the real snapshot (`crate::live`).
+    crate::live::yield_to_snapshot(h, sql, t)?;
     let mut s = store.clone();
     let job = SnapshotJob::begin(&mut s, schema(t), chain, crate::host::RELEASE.id, git::repo::REPO_FORMAT_V1)
         .map_err(|e| Error::RustError(e.to_string()))?;

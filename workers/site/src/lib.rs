@@ -29,6 +29,7 @@ mod fold_audit;
 mod hookseq;
 mod host;
 mod inbox;
+mod live;
 mod load;
 mod logread;
 mod logrelay;

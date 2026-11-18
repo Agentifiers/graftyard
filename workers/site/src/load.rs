@@ -227,6 +227,7 @@ pub fn install_stmts(stmts: &mut Vec<Stmt>) {
         "CREATE INDEX IF NOT EXISTS request_at ON request (at)",
         "DELETE FROM snap_run",
         "DELETE FROM snap_buf",
+        "DELETE FROM live_run",
         "DELETE FROM load_job",
         "DELETE FROM load_want",
         "DELETE FROM meta_dropped",

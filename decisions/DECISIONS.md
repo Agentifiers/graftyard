@@ -5180,7 +5180,7 @@ cached voter does today).
 
 **Evidence.** `workers/site/src/load.rs`, `only_an_entry_that_writes_the_fold_moves_a_chain`, and `workers/site/src/fold_audit.rs`, `an_unmoved_chain_is_compared_at_its_last_match_and_not_refolded`; per-object rows written on `graft-m3f` and `graft-m2b` (K10).
 
-**Flip.** A storage-corruption case found on an idle chain by K11's live-row check that a daily refold would have found first; a refold of an unmoved chain that disagrees with its last matching report; or a release-time fold change on an idle chain that the corpus missed and a refold would have caught.
+**Flip.** A storage-corruption case found on an idle chain by K11's live-row check ("`live-check`") that a daily refold would have found first; a refold of an unmoved chain that disagrees with its last matching report; or a release-time fold change on an idle chain that the corpus missed and a refold would have caught.
 
 ### `refold-stream`: the fold audit stages a snapshot as pages and refolds over them, writing no tier table, 2026-11-18
 
@@ -5244,6 +5244,29 @@ The install path is unchanged. `InstallSnapshot` still restores into scratch tab
 **Evidence.** As above; the leader's minute-by-minute `rowsWritten` per object from `durableObjectsPeriodicGroups`.
 
 **Flip.** The rows-written line passes 10% of a total at some tier, or another change already forces a new tier table set and a refold, in which case `WITHOUT ROWID` rides along.
+
+### `live-check`: each voter rehashes its tier rows weekly against the sum `apply` kept, 2026-11-18
+
+**Decision.** The fold audit's cron sends each voter it visits `/fold {"live": true}` beside its digest reads, on both the refold and the idle path (`workers/site/src/fold_audit.rs`). The voter answers its last live-row check and starts one when the last is `LIVE_EVERY_MS` (7 days [guess]) old (`workers/site/src/live.rs`). A check is a snapshot job with no upload (`SnapshotJob::live_step`, `crates/fold/src/snapshot.rs`): `begin` marks each tier's `to` in turn, the member's alarm reads `ROWS_PER_READ` (500) rows at a time for at most `BATCH_MS` (2 s) through `snap_undo`, and the trailer's rehash of every row as of `to` is compared with `want`, the sum `apply` kept. Then `end_snapshot` drops the copies. Nothing is uploaded or committed. The result is kept in `live_last`; a mismatch logs "fold live-row mismatch" with the chain, site and tier, and the cron report counts `liveStarted` and `liveAlarms`. It does not clear the refold's `matched`, since a refold reads no live row. Repair is the operator's (`ReplaceMember`), never automatic. Voters only; learners are F93.
+
+Conditions the orchestrator set before code:
+1. **Duration bound.** At m2-wp1's 1,200 rows/s through `snap_undo` [measured, `tests/m2/results/m2-wp1.md`], `repo:65536`'s 571,889-row core tier takes 7.9 min and BF-20's 3.99 GB, 1.33 M-row metadata tier 18.5 min, both tiers in turn. `apply` keeps at most one `snap_undo` copy per row the tier held at `to`, so the copies never pass the tier's row count; BF-20's own snapshot under 300 commands/s held its undo through 196 entries. On a busy chain they could still reach the row count, so the check counts them before each batch (`TierSql::undo_rows`, one statement) and ends as `abandoned` past `LIVE_UNDO_MAX` (50,000 copies, about 31 MB at 620 B a row [guess]). The next due visit tries again.
+2. **No added latency.** It reads at the snapshot writer's `ROWS_PER_READ` and `BATCH_MS`, and yields between reads. A visit starts none while the member leads with commands queued (`admitted_bytes` above 0), while a snapshot job or mark or a refold or install job runs, while a split parent slims, or while its metadata tier is unloaded or dropped (`live::may_start`). A real snapshot that comes due on the same tier takes it: the check ends as `yielded` (`yield_to_snapshot`), and an install that replaces a tier ends it as `gone` (`SnapshotJob::holds`), with no verdict either way.
+3. **The failing-on-main test** (`crates/fold/tests/tiers.rs`, `a_row_changed_in_storage_after_apply_is_caught_by_the_live_check_alone`): a metadata row overwritten in the store with no entry. `fold_digest`, the digest ring at `to`, and a refold of the log all still give the kept digest; the live check, run while later entries change, delete and add rows past `to`, names the metadata tier, and the clean core tier matches.
+
+`scripts/cost.py` prices it as "Fold live-row check, weekly per voter (K11)": every voter's tier rows read once a week, member duration at 1,200 rows/s, and the `snap_undo` copies of the fold puts made during each scan, put and deleted. $0.76, $4.31, and $35.52 a month at 50, 300, and 2,000 developers; $7, $41, and $339 at the 65 B floor. The default totals move to $236, $1,284, and $9,855.
+
+**Why.** Before this, the snapshot writer was the only live-row check: one non-leader voter, rotating by `to`, only when a snapshot came due, so the leader and idle chains were never checked, and Workers Logs on 12 site scripts from 11-12 to 11-18 held no "trailer digest" failure [measured]. `audit-moved`'s first flip (corruption on an idle chain) could not fire.
+
+**What it beat.**
+- **A cron of `refold_page`.** It restarts whenever `applied` moves, so it never finishes on a busy chain.
+- **The writer's check alone (today's).** It never reaches leaders or idle chains.
+- **An automatic reinstall on a mismatch.** A wrong verdict would reset a healthy member; the operator decides.
+- **Learners too.** The cron has no learner names without a lookup; F93.
+
+**Evidence.** The test above fails on main (no live check exists). `live::tests` (`a_check_starts_only_on_a_quiet_member_a_week_after_the_last`, `the_cron_reads_a_voters_mismatching_tiers_from_its_last_check`). `tests/m0carried/plant47.py`: 8 of 8 caught. The mutants: comparing the trailer with itself; a verdict on a tier an install replaced; reading live rows without `snap_undo`; abandoning at the cap, not past it; starting while the leader holds queued commands, while a snapshot runs, or at every visit; and a cron that reads no mismatch. The hosted half rides the next `graft-m3f` site day: a `liveStarted` count, one voter's `live_last`, and its rows read.
+
+**Flip.** A hosted check that is abandoned on most busy chains (then scan faster or cap by time), or that moves a leader's commit p99 while it reads (then start it only on followers); a mismatch found on a chain whose members' snapshots all match a refold (then the check, not the rows, is wrong); or the line passing 10% of a total.
 
 ### `shed-backoff`: a write's shed read backs off and gives up after `SHED_RETRY_FOR`, 2026-11-18
 

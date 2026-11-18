@@ -160,6 +160,13 @@ AUDIT_BATCH_S = 0.02               # member time per batch besides the read [gue
 AUDIT_FIXED_ROWS = 26              # rows an audit writes besides its pages, saved changes and a job row per batch: the
                                    # job's start and prepare writes and delete, the report, the cron's `audit_seen` mark,
                                    # 12 and 26 on two refolds [measured upper bound, graft-m3f site day m3frs, 2026-11-18]
+# ---- the weekly live-row check (K11; `decisions/DECISIONS.md`, "`live-check`") ----
+# Each voter rehashes every row of both tiers once per LIVE_EVERY, reading through `snap_undo` at the snapshot writer's
+# rate, and writes nothing but the `snap_undo` copies of rows that change during its scan: at most one per fold put the
+# chain's entries make while it reads, an upper bound, put and deleted. Learners are not checked.
+LIVE_EVERY_DAYS = 7                # `crate::live::LIVE_EVERY_MS` [guess]
+LIVE_ROWS_S = 1_200                # rows a scan reads a second through `snap_undo`: m2-wp1's 3.99 GB tier, 1.33 M rows in
+                                   # 18 min 26 s [measured, tests/m2/results/m2-wp1.md]
 INCLUDED = dict(workers_req=10e6, workers_cpu=30e6, do_req=1e6, do_gbs=400_000, do_rows_w=50e6, do_storage=5,
 	r2_storage=10, r2_a=1e6, r2_b=10e6, queues=1e6, email=3000, ae=10e6, obs_gb=50,
 	c_mem_gibs=25 * 3600, c_vcpu_s=375 * 60, c_disk_gbs=200 * 3600, steps=0)
@@ -300,6 +307,18 @@ def model(tier, variant="design", split=None):
 		+ audit_r / 1e6 * price("cf.do.sqlite.rows_read")
 		+ refolds * snap_mb / 1e6 * price("cf.r2.standard.class_b")
 		+ audit_gbs / 1e6 * price("cf.do.duration"))
+
+	# The live-row check: every voter's tier rows read once a week, member duration at LIVE_ROWS_S, and the undo copies.
+	live_rows = (t["core_gb"] + t["aux_gb"]) * 1024 * 1024 / ROW_KB * members * DAYS / LIVE_EVERY_DAYS
+	live_gbs = live_rows / LIVE_ROWS_S * DO_GB
+	scans = chains * members * DAYS / LIVE_EVERY_DAYS
+	scan_s = live_rows / scans / LIVE_ROWS_S
+	undo = scans * min(live_rows / scans, w["repo_entries"] / DAYS / chains / 86_400 * scan_s * FOLD_PUTS)
+	lines["Fold live-row check, weekly per voter (K11)"] = (
+		live_rows / 1e6 * price("cf.do.sqlite.rows_read")
+		+ added(rows_w + inbox_writes * INBOX_ROWS + audit_w, undo * 2, INCLUDED["do_rows_w"] * site_inc)
+		/ 1e6 * price("cf.do.sqlite.rows_written")
+		+ live_gbs / 1e6 * price("cf.do.duration"))
 
 	# Git bytes: R2 packs (or Artifacts), clone cache, Actions blobs.
 	churn = 1 + ACTIVITY["large_repo_share"] * 14 / 7          # cruft kept 14 days, weekly full repack above 1 GiB

@@ -177,6 +177,16 @@ So a product member writes about 17 rows for this entry, 16 on a follower whose 
 - `INSTALL=graft-m3f teardown.py --sweep`: the first sweep tore down `git#0#net:65588` (code `000` through the proxy, so `SWEEP FAILED`, exit 2), and the pinned rerun answered 200 and `sweep: no shard container running`, exit 0, and again at 19:03Z.
 - Cost: graft-m3f $0.09 by `PREFIX` from 17:52Z to 19:03Z ($0.08 of it site a's shard container), $2.83 for the day; the account $28.26 for the day at 19:39Z.
 
+## `live-check` built (K11, code-only, branch `live-check`, 2026-11-18)
+
+Built as approved (`decisions/DECISIONS.md`, "`live-check`"): the fold audit's cron sends each voter it visits `/fold {"live": true}`; a voter whose last check is 7 days old, and that is quiet (not leading with commands queued, no snapshot, refold, install or slim running, metadata tier loaded), runs a snapshot job with no upload on its alarm, both tiers in turn, and compares each trailer's rehash with the sum `apply` kept (`workers/site/src/live.rs`, `SnapshotJob::live_step`). Past 50,000 `snap_undo` copies it ends as `abandoned`; a real snapshot that comes due takes the tier (`yielded`); an install ends it as `gone`.
+
+- **Bound:** at 1,200 rows/s, `repo:65536`'s 571,889-row core tier takes 7.9 min and BF-20's 1.33 M-row tier 18.5 min.
+- **Test that fails on main:** `a_row_changed_in_storage_after_apply_is_caught_by_the_live_check_alone` (`crates/fold/tests/tiers.rs`): `fold_digest`, `digest_at` and a refold all agree with the overwritten tier; the live check names it.
+- **Plants:** `tests/m0carried/plant47.py`, 8 of 8 caught.
+- **Cost:** $0.76, $4.31, $35.52 a month ($7, $41, $339 at the 65 B floor); totals $236, $1,284, $9,855.
+- **Hosted half (next m3f site day, with `audit-cover`'s check):** a cron report with `liveStarted` > 0, one voter's `live_last` after the scan (`/fold {"live": true}` again), and its rows read; and `retired` > 0 with a live chain audited in the same run.
+
 ## Follow-ups to site day m3frs (code-only, branch `audit-cover`, 2026-11-18)
 
 **audit-moved's cron coverage.** graft-m3f's registry holds a row for each of the 53 chains `repo:65536` to `65588`, all homed on site 0, and none is joined (`joined.mjs 65536-65588`); `repo:0` has rows on sites 0 and 2 [measured, tools edge `/registry`]. The test route `/retire` deletes a member's storage and resets it, standing for a lost member whose row must stay for its replacement, and `tests/fanout/purge.py` deletes bucket objects only. The product purge does delete each site's row (`workers/edge/src/purge.rs`, `unregister`). So the cron's coverage was lost in the cursor: every row it looked at took one of its 4 samples, and a site of mostly retired rows (or, in production, rows between a delete and its purge) never reached a live chain. Fixed in `fold_audit::walk`: a `retired` (not joined on any site its rows name, asked directly), `deleted` or `skipped` row costs a look and no sample, up to `LOOK_MAX` 64 looks a run; the report counts `retired` (`decisions/DECISIONS.md`, "`audit-cover`"). Test `a_run_over_mostly_retired_rows_still_audits_the_live_ones`, which fails with every look counted as a sample. Hosted check at the next m3f site day: one cron report with `retired` > 0 and an `idle` or refolded live chain in the same run.
