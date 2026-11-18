@@ -165,6 +165,25 @@ Times are Cloudflare's, from the members' `/status` clock (the orb ran 7.5 s beh
 
 **Plants** 18 to 40 in `tests/m4/wp3/plant.py`: all 23 caught. The first run missed one, "a job name falls back to its id only when absent", because no workflow had `name: ''`. `16-names.yml` covers it now.
 
+## Slice B: the job's `GITHUB_TOKEN` (`gh-token`), in memory
+
+Built on branch `gh-token` from main `81ab3b9c`, code-only (`decisions/DECISIONS.md`, "`gh-token`"). No site day, edge day, or hosted run.
+
+- **What a job gets.** At `acquirejob` the edge reads the job's run and declared `permissions:` (`{"jobToken": job}` on the shard), commits the owner's Actions installation if its `Authz` lacks it, and has `graft-ops` sign `token::job_grant`: `ACTIONS_APP` on `actions_installation(owner)`, the run's repository alone, GHES's permissions (a fork's writes read), 6 h 10 min, and `jti = job_jti(job, attempt)`. The shard commits `AcquireToken` (`Acquired` plus `TokenIssued`), and the job message carries the token only from such an entry.
+- **The deny.** `RunOwner` revokes each issued job's `jti` on its `Tokens` shard when a `Finished`, `Cancel` or `LeaseExpired` completes it, before the cursor that passes the entry, with `exp` 24 h past the end.
+- **Visibility.** The edge routes no installation listing; the token route reads `NameKey::Installation`, which a negative id never holds; App deliveries skip Apps with no `AppRecord`. So no GHES 3.22 reply changes for a client that does not run Actions.
+
+**Tests.**
+- `a_vanished_runners_job_token_is_denied_at_its_lease_end` (`crates/actions/tests/gates.rs`): a runner killed after its acquire; nothing is revoked while the lease is live, the `jti` is revoked within 5 s of the lease failing the job, and the revocation outlives `JOB_TOKEN_MAX`. On main it fails to compile (no `AcquireToken`, `token::denies`, or deny in `round`); with the deny removed (plant 68) it fails at "the token is still live a minute after the lease failed its job".
+- `a_finished_cancelled_or_deleted_repositorys_job_token_is_denied`: finished, failed, cancelled by an admin, and cancelled by `RunOwner` after the repository was deleted each revoke; a skipped job and a running job's token are not revoked.
+- `the_actions_installation_commits_without_a_route_and_a_job_token_reaches_one_repository` (`crates/identity/tests/wp4.rs`): no deps, format 0x12.14, only the owner's own id and `actions_row()`, idempotent, `Uninstall` refused, `RegisterInstallation` of id ≤ 0 refused, and a minted token reaches its one repository at its permissions.
+- `key_rotation_keeps_both_keys_valid_through_the_overlap`: a 24 h job token signed by an isolate's cached old key verifies until its `exp`, and the old key retires after it.
+- Unit tests: `only_the_actions_apps_tokens_outlive_an_hour_and_none_outlives_a_day`, `a_mapping_replaces_the_default_and_a_fork_gets_reads`, `a_jobs_grant_is_its_repository_its_permissions_and_its_jti`, `a_jobs_jti_is_its_own`, `an_old_fold_keeps_its_bytes_until_a_token_row` (main's derived `ActionsFold` and this one write the same bytes until a 0x15.5 row).
+- `wire_tags.golden`: four lines appended (`ActionsEvent` 6 `JobTokens`, 7 `TokenIssued`; `ActionsOp` 11 `CreateRunWith`, 12 `AcquireToken`), nothing else changed.
+
+**Plants** 58 to 75 in `tests/m4/wp3/plant.py`: all 18 caught. The first run missed 63 ("a token's `jti` is drawn, never the job's": no test read the minted `jti`) and 70 ("every ended job is denied, issued or not": no test cancelled a job no runner held). `only_the_actions_apps_tokens_outlive_an_hour_and_none_outlives_a_day` now checks the grant's `jti`, and the cancel test cancels a queued run; both reruns are caught.
+
+
 ## Checks
 
 `cargo test -p graftyard-git -p graftyard-actions -p graftyard-api`, `cargo clippy -p graftyard-actions -p graftyard-git --all-targets -- -D warnings`, `cargo clippy -p graftyard-site --target wasm32-unknown-unknown -- -D warnings`, `cargo fmt --all -- --check`, and `scripts/check_design.py`, `check_names.py`, and `check_links.py` all pass.

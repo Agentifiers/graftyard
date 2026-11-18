@@ -180,7 +180,15 @@ fn installed() -> Installed {
     install(&mut w, org, id, row, dev);
     publish(&mut w, Kid(1), [1; 32], None);
     let now = Timestamp(w.authz(org).now.0);
-    let grant = Grant { app: f.app, installation: id, repos: RepoScope::All, permissions: rec.permissions, task: None };
+    let grant = Grant {
+        app: f.app,
+        installation: id,
+        repos: RepoScope::All,
+        permissions: rec.permissions,
+        task: None,
+        lifetime_ms: None,
+        jti: None,
+    };
     let (text, minted) = Minter::default().mint(&Src(Kid(1), [1; 32]), &grant, now, [3; 10]).unwrap();
     let k = keys(&mut w);
     let claims = stateless::verify(&text, &k, now).unwrap();
@@ -418,6 +426,8 @@ fn key_rotation_keeps_both_keys_valid_through_the_overlap() {
         repos: RepoScope::All,
         permissions: perms(&[("contents", Access::Read)]),
         task: None,
+        lifetime_ms: None,
+        jti: None,
     };
     let old_src = Src(Kid(1), [1; 32]);
     let new_src = Src(Kid(2), [2; 32]);
@@ -437,6 +447,15 @@ fn key_rotation_keeps_both_keys_valid_through_the_overlap() {
     let late = Timestamp(switch.0 + ms(SIGNING_KEY_CACHE) - 2_000);
     let (old_tok, old_claims) = cached.mint(&new_src, &grant, late, [2; 10]).unwrap();
     assert_eq!(old_claims.kid, Kid(1), "still cached");
+    // The same isolate's last job token under kid 1: an Actions App grant that lives `JOB_TOKEN_MAX`.
+    let job = Grant {
+        app: stateless::ACTIONS_APP,
+        installation: stateless::actions_installation(acct(0, 3, 9)),
+        lifetime_ms: Some(ms(stateless::JOB_TOKEN_MAX)),
+        ..grant.clone()
+    };
+    let (job_tok, job_claims) = cached.mint(&new_src, &job, late, [6; 10]).unwrap();
+    assert_eq!((job_claims.kid, job_claims.exp.0 - job_claims.iat.0), (Kid(1), ms(stateless::JOB_TOKEN_MAX)));
     let (new_tok, new_claims) = fresh.mint(&new_src, &grant, late, [3; 10]).unwrap();
     assert_eq!(new_claims.kid, Kid(2));
     let lapsed = Timestamp(switch.0 + ms(SIGNING_KEY_CACHE));
@@ -446,6 +465,7 @@ fn key_rotation_keeps_both_keys_valid_through_the_overlap() {
     let RotationStep::Retire { kid, at } = rotation_step(&epoch1, &epoch2, lapsed) else { panic!() };
     assert_eq!(kid, Kid(1));
     assert!(at.0 >= old_claims.exp.0, "kid 1 retires after its last token's exp");
+    assert!(at.0 >= job_claims.exp.0, "kid 1 retires after its last job token's exp, 24 h after it was signed");
     w.tokens_cmd(TokensCmd {
         cred: OPS,
         op: TokensOp::PutVerifyingKey { kid, key: SigningSecret([1; 32]).public(), retired: Some(at) },
@@ -455,6 +475,8 @@ fn key_rotation_keeps_both_keys_valid_through_the_overlap() {
     let during = Timestamp(old_claims.exp.0 - 1);
     assert_eq!(stateless::verify(&old_tok, &k, during), Ok(old_claims.clone()), "kid 1 inside the overlap");
     assert_eq!(stateless::verify(&new_tok, &k, during), Ok(new_claims.clone()), "kid 2 inside the overlap");
+    let job_late = Timestamp(job_claims.exp.0 - 1);
+    assert_eq!(stateless::verify(&job_tok, &k, job_late), Ok(job_claims), "kid 1's job token until its own exp");
     // A kid 1 token re-dated past `retired` (as a stolen key would sign one) fails; kid 2's still pass.
     let after = Timestamp(at.0 + 1);
     let forged = InstallationClaims {
@@ -547,6 +569,67 @@ fn an_installation_is_bounded_by_its_app_and_uninstall_fails_its_tokens_at_once(
     g.settle(&mut |c| panic!("{c}"));
     let mine = g.m(A).group_fold().fold.more.installations.clone();
     assert_eq!(g.m(B).group_fold().fold.more.installations, mine);
+}
+
+/// `gh-token`: the Actions App's installation on an owner commits with no `Names` route and no App record, in format
+/// 0x12.14, only as the owner's own negated id with `actions_row`; a second commit writes nothing; no route can be
+/// registered for it, no other App can take its id, and it cannot be uninstalled. A job's token on it reaches only the
+/// repository its claims name, at the claims' level, and `metadata` read alone gives read.
+#[test]
+fn the_actions_installation_commits_without_a_route_and_a_job_token_reaches_one_repository() {
+    use graftyard_identity::{AUTHZ_FORMAT_V14, NamesErr, actions_row};
+    use stateless::{ACTIONS_APP, actions_installation};
+    let Installed { mut w, org, .. } = installed();
+    let (r1, r2) = (repo(&mut w, org, "one"), repo(&mut w, org, "two"));
+    let id = actions_installation(org);
+    let install = |id, row| AuthzCmd { cred: OPS, op: AuthzOp::Install { id, row, app_owner: org } };
+    assert_eq!(graftyard_raft::Command::format(&install(id, actions_row())), AUTHZ_FORMAT_V14);
+    assert!(graftyard_raft::Command::deps(&install(id, actions_row()), &AuthzFold::new(org)).is_empty());
+    // Another owner's Actions id, a narrower row, and a registered id for the Actions App are all refused.
+    let other = actions_installation(acct(0, 3, 1));
+    assert_eq!(refused(w.authz_cmd(org, install(other, actions_row()))), AuthzErr::BadRecord);
+    let narrow = InstallationRow { repos: RepoScope::Selected(smallvec![r1]), ..actions_row() };
+    assert_eq!(refused(w.authz_cmd(org, install(id, narrow))), AuthzErr::BadRecord);
+    assert_eq!(refused(w.authz_cmd(org, install(InstallationId(DbId(88)), actions_row()))), AuthzErr::BadRecord);
+    w.authz_cmd(org, install(id, actions_row())).unwrap();
+    let before = { w.authz(org).committed_events(A).len() };
+    w.authz_cmd(org, install(id, actions_row())).unwrap();
+    assert_eq!(w.authz(org).committed_events(A).len(), before, "a second install writes nothing");
+    // No `Names` route may claim a negative id, so the token route never finds it.
+    let route = NamesOp::RegisterInstallation { id, app: ACTIONS_APP, owner: org };
+    assert_eq!(refused(w.names_on(NameKey::Installation(id), route)), NamesErr::Reserved);
+    // Uninstall is refused even to the operator.
+    assert_eq!(refused(w.authz_cmd(org, AuthzCmd { cred: OPS, op: AuthzOp::Uninstall { id } })), AuthzErr::Forbidden);
+    // A job token for `one` with `contents: write`, and one with `metadata: read` alone.
+    let now = Timestamp(w.authz(org).now.0);
+    let mint = |w: &mut World, p: &[(&str, Access)], r: u8| {
+        let grant = Grant {
+            app: ACTIONS_APP,
+            installation: id,
+            repos: RepoScope::Selected(smallvec![r1]),
+            permissions: perms(p),
+            task: None,
+            lifetime_ms: Some(ms(stateless::job_token_life(
+                std::time::Duration::from_secs(6 * 3600),
+                std::time::Duration::from_secs(600),
+            ))),
+            jti: None,
+        };
+        let (t, _) = Minter::default().mint(&Src(Kid(1), [1; 32]), &grant, now, [r; 10]).unwrap();
+        stateless::verify(&t, &keys(w), Timestamp(now.0 + 5 * 3_600_000)).expect("alive after five hours")
+    };
+    let write = mint(&mut w, &[("contents", Access::Write), ("metadata", Access::Read)], 1);
+    let meta = mint(&mut w, &[("metadata", Access::Read)], 2);
+    let a = w.authz(org).fresh_leader();
+    let fs: [&dyn AuthzRead; 1] = [&a];
+    let perm =
+        |c: &InstallationClaims, r| graftyard_identity::permission(&Principal::installation(c), &fs, &on(r, org));
+    assert_eq!(perm(&write, r1), Some(RepoPermission::Write));
+    assert_eq!(perm(&write, r2), None, "only the job's repository");
+    assert_eq!(perm(&meta, r1), Some(RepoPermission::Read));
+    // An owner the Actions App was never installed on gives its tokens nothing.
+    let elsewhere = InstallationClaims { installation: actions_installation(acct(0, 3, 1)), ..write.clone() };
+    assert_eq!(perm(&elsewhere, r1), None);
 }
 
 /// `app-hook-config`: `PATCH /app/hook/config`'s `SetAppHook` on the App owner's chain sets the App's webhook and

@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use graftyard_actions::shard::{JobSpec, WorkflowRun};
+use graftyard_actions::specs::Declared;
 use graftyard_actions::trigger::{
     Carried, Item, PrEvent, PrTarget, Tried, built, merge_group_run, pr_events, pr_target, pull_request_run, settle,
 };
@@ -350,7 +351,7 @@ async fn runs_on(
     owner: AccountId,
     record: &PlacementRecord,
     tip: git::refs::ObjectId,
-    make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>)>, String>,
+    make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
     let tree = match ui(env, site, repo, record, "tree", &[("commit", &commit), ("path", WORKFLOWS)]).await? {
@@ -372,7 +373,7 @@ async fn runs_on(
             continue;
         };
         let src = blob["text"].as_str().unwrap_or_default();
-        let (run, jobs) = match make(&path, src) {
+        let (run, jobs, permissions) = match make(&path, src) {
             Ok(Some(x)) => x,
             Ok(None) => continue,
             Err(e) => {
@@ -386,7 +387,7 @@ async fn runs_on(
             chain,
             record,
             "/runsvc",
-            &json!({ "op": "create_run", "run": run, "jobs": jobs }),
+            &crate::actions::create_run_body(env, &run, &jobs, &permissions),
         )
         .await?;
         let message = v["body"]["message"].as_str().unwrap_or_default();

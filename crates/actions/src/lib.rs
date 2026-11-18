@@ -14,6 +14,7 @@ pub mod run_owner;
 pub mod runsvc;
 pub mod shard;
 pub mod specs;
+pub mod token;
 pub mod trigger;
 pub mod workflow;
 

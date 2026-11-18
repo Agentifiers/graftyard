@@ -10,11 +10,21 @@ use crate::runsvc;
 use crate::shard::JobSpec;
 use crate::workflow::template::{Node, T};
 use crate::workflow::{Workflow, matrix};
+use graftyard_identity::PermissionSet;
 use graftyard_types::DbId;
+
+/// Each job's declared `GITHUB_TOKEN` permissions, by its position in `job_specs` (`ActionsOp::CreateRunWith`): the
+/// job's own `permissions:`, else the workflow's (`crate::token::declared`). A job with neither is left out.
+pub type Declared = Vec<(u16, PermissionSet)>;
 
 /// The run's jobs, or the first reason the workflow cannot run: a bad matrix, bad labels, or a job whose `needs`
 /// names a job that is not in the workflow (the parser refuses cycles).
 pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
+    job_specs_declared(w).map(|(j, _)| j)
+}
+
+/// `job_specs` and each job's declared permissions, each matrix leg its own position.
+pub fn job_specs_declared(w: &Workflow) -> Result<(Vec<JobSpec>, Declared), String> {
     // The workflow's jobs in an order where every need comes first; `needs` are checked acyclic by the parser.
     let mut order: Vec<usize> = Vec::new();
     let mut placed = vec![false; w.jobs.len()];
@@ -35,8 +45,11 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
     // Each workflow job's positions in the output, which its dependents' `needs` name.
     let mut at: Vec<Vec<usize>> = vec![Vec::new(); w.jobs.len()];
     let mut out: Vec<JobSpec> = Vec::new();
+    let mut declared: Declared = Vec::new();
     for i in order {
         let j = &w.jobs[i];
+        let perms = crate::token::declared(w.permissions.as_ref(), j.permissions.as_ref())
+            .map_err(|e| format!("{}: {e}", j.id))?;
         let labels: Vec<String> = match j.runs_on.as_ref().map(|n| &n.t) {
             Some(T::Str(s)) => vec![s.clone()],
             Some(T::Seq(v)) => v.iter().filter_map(|n| n.str().map(String::from)).collect(),
@@ -79,6 +92,9 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
             .map(Into::into);
         let mut one = |name: String, m: SmallVec<[(Box<str>, Box<str>); 4]>| {
             at[i].push(out.len());
+            if let Some(p) = &perms {
+                declared.push((out.len() as u16, p.clone()));
+            }
             out.push(JobSpec {
                 id: JobId(DbId(0)),
                 name: name.into(),
@@ -99,7 +115,7 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
             one(c.name.clone().unwrap_or_else(|| name.clone()), m);
         }
     }
-    Ok(out)
+    Ok((out, declared))
 }
 
 /// `inner`'s keys over `outer`'s. An `env` that is one expression, not a mapping, cannot be merged by key, so the
@@ -130,6 +146,26 @@ mod tests {
         assert_eq!(&*specs[0].matrix[0].1, "\"one\"");
         assert_eq!(specs[0].environment, None);
         assert!(specs[2].labels.fits(&LabelSet::parse(["self-hosted", "linux", "x64"]).unwrap()));
+    }
+
+    /// `gh-token`: each job's declared permissions sit at its own position, every matrix leg of a job included, and a
+    /// job's own `permissions:` wins over the workflow's; a job with neither declares none.
+    #[test]
+    fn each_jobs_declared_permissions_sit_at_its_own_positions() {
+        use graftyard_identity::Access;
+        let src = "on: push\npermissions: read-all\njobs:\n  last:\n    needs: legs\n    runs-on: x\n    permissions: {issues: write}\n    steps: [{run: a}]\n  legs:\n    runs-on: x\n    strategy:\n      matrix:\n        n: [1, 2]\n    steps: [{run: b}]\n";
+        let p = crate::workflow::parse("ci.yml", src);
+        assert!(p.ok(), "{:?}", p.errors);
+        let (specs, d) = job_specs_declared(&p.workflow).unwrap();
+        let names: Vec<&str> = specs.iter().map(|s| &*s.name).collect();
+        assert_eq!(names, ["legs (1)", "legs (2)", "last"]);
+        let at: Vec<u16> = d.iter().map(|(i, _)| *i).collect();
+        assert_eq!(at, [0, 1, 2]);
+        assert_eq!(d[0].1.0.get("contents"), Some(&Access::Read), "a leg takes the workflow's");
+        assert_eq!(d[1].1, d[0].1);
+        assert_eq!((d[2].1.0.get("issues"), d[2].1.0.get("contents")), (Some(&Access::Write), None), "the job's own");
+        let none = crate::workflow::parse("ci.yml", "on: push\njobs:\n  a:\n    runs-on: x\n    steps: [{run: a}]\n");
+        assert_eq!(job_specs_declared(&none.workflow).unwrap().1, Vec::new());
     }
 
     /// The environment a job's secrets come from, in both of GitHub's forms; an expression names none.

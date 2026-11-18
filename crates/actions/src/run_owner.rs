@@ -11,6 +11,11 @@
 //!
 //! R24: `steps` reads each job's `workflow_job` steps from the entries themselves, not the fold, so a job queued and
 //! taken between two rounds still gets both. The round puts them in its `RunChecksCmd` (format 32.24).
+//!
+//! `gh-token`: a round also denies the `GITHUB_TOKEN` of every job its entries ended (`crate::token::denies`), as
+//! `TokensOp::RevokeJti` on each `jti`'s shard, beside the repository writes and before the cursor, so a crash after
+//! the denies and before the cursor sends them again and a deny is never skipped. A round with denies and no touched
+//! run still moves the cursor.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,17 +23,26 @@ use graftyard_git::issues::{CheckConclusion, CheckRunId, CheckRunUpdate, CheckSt
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::run_checks::{ACTIONS_APP, RunChecksCmd};
 use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
-use graftyard_types::{ChainId, DbId, Index, RepoId, Timestamp};
+use graftyard_identity::{Jti, TokensCmd, TokensOp};
+use graftyard_types::{ChainId, CredentialShard, DbId, Index, RepoId, Timestamp};
 
 use crate::ids::RunId;
 use crate::job::{Conclusion, JobEvent, JobState, RunStatus};
 use crate::shard::{ActionsEvent, ActionsFold, ActionsOp, RunRow, consumer_request};
 
-/// One round's writes. `checks` go first; `then` only after every one of them is acknowledged or refused `Gone`.
+/// One round's writes. `checks` and `denies` go first; `then` only after every check is acknowledged or refused
+/// `Gone` and every deny is acknowledged.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Round {
     pub checks: Vec<(RepoId, RunChecksCmd)>,
+    /// The job tokens to revoke: each `TokensOp::RevokeJti` under the operator's credential (`deny_command`).
+    pub denies: Vec<TokensCmd>,
     pub then: Vec<ActionsOp>,
+}
+
+/// `TokensOp::RevokeJti` for a job's token, under the operator's credential, which the leader takes for any `jti`.
+pub fn deny_command(jti: Jti, exp: Timestamp) -> TokensCmd {
+    TokensCmd { cred: CredentialShard::NONE, op: TokensOp::RevokeJti { jti, exp } }
 }
 
 /// The runs that the entries after the cursor touched. `OwnerCursor` and `RunStatus` are `RunOwner`'s own writes,
@@ -123,9 +137,11 @@ pub fn steps<'a>(
 
 /// The round for `runs` on shard `chain`, through entry `through`. `gone` names repositories that refused an earlier
 /// round's checks: their unfinished runs are cancelled, and their checks are not sent again. `jobs` are the entries'
-/// `steps`, sent with their run's checks; none when the install has not enabled 32.24.
-/// With no run touched the round is empty and the cursor stays: it lags over idle entries, and the next round with
-/// work moves it, so `RunOwner`'s own cursor entries never start another round.
+/// `steps`, sent with their run's checks; none when the install has not enabled 32.24. `denies` are the entries' ended
+/// job tokens (`crate::token::denies`); none until a site day set `GRAFTYARD_JOB_TOKENS`.
+/// With no run touched and nothing to deny the round is empty and the cursor stays: it lags over idle entries, and the
+/// next round with work moves it, so `RunOwner`'s own cursor entries never start another round.
+#[allow(clippy::too_many_arguments)]
 pub fn round(
     chain: ChainId,
     fold: &ActionsFold,
@@ -133,9 +149,11 @@ pub fn round(
     through: Index,
     gone: &BTreeSet<RepoId>,
     jobs: &[WorkflowJobUpdate],
+    denies: &[(Jti, Timestamp)],
 ) -> Round {
-    if runs.is_empty() {
-        return Round { checks: Vec::new(), then: Vec::new() };
+    let denies: Vec<TokensCmd> = denies.iter().map(|(j, exp)| deny_command(*j, *exp)).collect();
+    if runs.is_empty() && denies.is_empty() {
+        return Round { checks: Vec::new(), denies, then: Vec::new() };
     }
     let mut by_repo: BTreeMap<RepoId, (Vec<CheckSuiteUpdate>, Vec<CheckRunUpdate>)> = BTreeMap::new();
     let mut then = Vec::new();
@@ -170,7 +188,7 @@ pub fn round(
             out.push((repo, RunChecksCmd { suite: Some(s), runs, request, jobs: steps }));
         }
     }
-    Round { checks: out, then }
+    Round { checks: out, denies, then }
 }
 
 /// A row's version follows its state, so a replay never moves it back: 1 queued, 2 in progress, 3 completed.

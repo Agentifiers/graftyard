@@ -154,10 +154,17 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
                     return service_error(503);
                 }
             };
-            // Until `GITHUB_TOKEN` minting lands the job's token is empty: the runner masks and passes it, and the
-            // gates' workflows call no API with it.
+            // The job's `GITHUB_TOKEN` once 0x15.5 and 0x12.14 are enabled (`gh-token`), else empty: the runner masks
+            // and passes it. A token that did not mint answers 503, as any other read before the commit does.
+            let github_token = match job_token(c, chain, &b).await {
+                Ok(t) => t,
+                Err(e) => {
+                    console_error!("acquirejob {chain}: GITHUB_TOKEN: {e}");
+                    return service_error(503);
+                }
+            };
             let body = json!({ "op": "acquire", "grant": g, "jobMessageId": b["jobMessageId"],
-                               "repository": repository, "github_token": "",
+                               "repository": repository, "github_token": github_token,
                                "secrets": secrets, "variables": variables });
             answer(c, chain, body).await
         }
@@ -251,6 +258,49 @@ async fn acquire_config<R: AcquireReads>(r: &R, b: &Value) -> std::result::Resul
     let (secrets, variables) =
         r.config(&run, &row, &repo, &authz).await.map_err(|e| failed(format!("secrets: {e}")))?;
     Ok((name, secrets, variables))
+}
+
+/// The job's `GITHUB_TOKEN` (`graftyard_actions::token`), or `""` before `FormatsEnable` enabled 0x15.5 and 0x12.14.
+/// The owner's Actions installation is committed first if its `Authz` lacks it, with no dep and under the operator's
+/// credential, so the first acquire on an owner installs it and every later one only reads (`decisions/DECISIONS.md`,
+/// "`gh-token`"). Then `graft-ops` signs the job's grant: its repository, its permissions, and its own `jti`.
+async fn job_token(c: &Ctx<'_>, chain: ChainId, b: &Value) -> std::result::Result<String, String> {
+    use graftyard_identity::stateless::actions_installation;
+    if !c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_TOKENS)
+        || !c.cfg.enabled.contains(&graftyard_identity::AUTHZ_FORMAT_V14)
+    {
+        return Ok(String::new());
+    }
+    let ChainId::Actions(owner, _) = chain else { return Err("not an Actions shard".into()) };
+    let id = b["jobMessageId"].as_str().unwrap_or("");
+    let job = runsvc::job_of_guid(id).or_else(|| runsvc::owner_job_of_guid(id).map(|(_, j)| j)).ok_or("no job")?;
+    let v = shard_read(c, chain, json!({ "jobToken": job.0.0 })).await?;
+    let run: WorkflowRun = serde_json::from_value(v["run"].clone()).map_err(|e| format!("run: {e}"))?;
+    let declared: Option<graftyard_identity::PermissionSet> =
+        serde_json::from_value(v["permissions"].clone()).map_err(|e| format!("permissions: {e}"))?;
+    let record = crate::placement(c, owner).await?.ok_or("the owner has no placement")?;
+    let authz = crate::authz_read(c, owner, &record).await?.ok_or("the owner has no Authz")?;
+    let inst = actions_installation(owner);
+    if authz.installation(inst).and_then(|i| i.row.as_ref()) != Some(&graftyard_identity::actions_row()) {
+        let op =
+            graftyard_identity::AuthzOp::Install { id: inst, row: graftyard_identity::actions_row(), app_owner: owner };
+        let cmd = json!({ "cred": graftyard_types::CredentialShard::NONE, "op": op });
+        let done = crate::ident::commit_owner(c, ChainId::Authz(owner), owner, cmd)
+            .await
+            .map_err(|r| format!("the Actions installation did not commit ({})", r.status))?;
+        if done.get("ok").is_none() {
+            return Err(format!("the Actions installation did not commit: {done}"));
+        }
+    }
+    let grant = graftyard_actions::token::job_grant(&run, owner, job, declared.as_ref());
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(serde_json::to_string(&grant).map_err(|e| e.to_string())?.into()));
+    let mut res = c.ops("https://graft-ops/mint", init).await.map_err(|e| e.to_string())?;
+    if res.status_code() != 200 {
+        return Err(format!("graft-ops did not mint ({})", res.status_code()));
+    }
+    let v: Value = res.json().await.map_err(|e| e.to_string())?;
+    v["token"].as_str().map(str::to_owned).ok_or_else(|| "graft-ops answered no token".into())
 }
 
 struct Acquire<'a, 'b> {

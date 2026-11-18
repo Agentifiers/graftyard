@@ -17,6 +17,9 @@
 //!   `RunChecksCmd` through the lookup, and only once each is acknowledged (or refused `Gone`) commits the shard half,
 //!   `SetRunStatus` and last `OwnerCursor`. Every request id comes from the round's content, so a round replayed after
 //!   a crash, a leader change, or a lost answer commits nothing twice. A round that did not finish arms the alarm again.
+//! - **Job tokens** (`gh-token`, once a site day set `GRAFTYARD_JOB_TOKENS`, `job_tokens`): a run's jobs' declared
+//!   `permissions:` ride `CreateRunWith`, the acquire whose answer carries the job's `GITHUB_TOKEN` commits
+//!   `AcquireToken`, and `RunOwner` revokes each marked job's `jti` when the job ends, before its cursor.
 
 use std::rc::Rc;
 
@@ -64,6 +67,7 @@ impl Family for Actions {
             act::ACTIONS_FORMAT_MERGE_GROUP,
             act::ACTIONS_FORMAT_OWNER_MATCH,
             act::ACTIONS_FORMAT_PULL_REQUEST,
+            act::ACTIONS_FORMAT_TOKENS,
         ]
     }
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
@@ -145,6 +149,12 @@ impl Family for Actions {
                 })
                 .collect();
             return json!({ "runs": runs });
+        }
+        // `{"jobToken": job}` (`gh-token`): the job's run and declared `permissions:`, which `acquirejob` mints from.
+        if let Some(j) = id_of(q, "jobToken") {
+            let j = JobId(j);
+            let run = f.job(j).and_then(|row| f.run(row.run)).map(|r| &r.run);
+            return json!({ "run": run, "permissions": f.more.tokens.get(&j) });
         }
         // M4-WP4: what the owner's broker reads from each shard for hosted demand (`graftyard_actions::hosted`).
         if q.get("hosted").and_then(Value::as_bool) == Some(true) {
@@ -241,6 +251,28 @@ async fn expire(h: &Rc<Host<Actions>>) {
     }
 }
 
+/// Whether a site day set `GRAFTYARD_JOB_TOKENS` (`gh-token`): only then is 0x15.5 sent, `acquirejob` mints a job's
+/// `GITHUB_TOKEN`, and `RunOwner` denies it. A site day sets it only once `FormatsEnable` enabled 0x15.5 and 0x12.14,
+/// after the day that shipped their readers to every member.
+pub fn job_tokens(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_JOB_TOKENS").is_ok_and(|v| v.to_string() == "1")
+}
+
+/// `ActionsTrigger`'s `create_run` call: the jobs' declared permissions ride along only where `job_tokens`, and only
+/// when a job declared some, so every other run's call is the one it was.
+pub fn create_run_body(
+    env: &worker::Env,
+    run: &act::WorkflowRun,
+    jobs: &[act::JobSpec],
+    permissions: &graftyard_actions::specs::Declared,
+) -> Value {
+    let mut b = json!({ "op": "create_run", "run": run, "jobs": jobs });
+    if job_tokens(env) && !permissions.is_empty() {
+        b["permissions"] = json!(permissions);
+    }
+    b
+}
+
 /// The most stored log bytes one `RunOwner` round reads: a round past it stops at the entry before, and the next alarm
 /// goes on from the cursor it committed [guess: a 256-job matrix's `RunCreated` is under 200 KB].
 const OWNER_ROUND_BYTES: usize = 1 << 20;
@@ -284,9 +316,10 @@ async fn run_owner(h: &Rc<Host<Actions>>) {
         return;
     }
     let runs = graftyard_actions::run_owner::touched(&fold, events.iter());
+    let denies = if job_tokens(&h.env) { graftyard_actions::token::denies(&fold, events.iter()) } else { Vec::new() };
     // A read cut at OWNER_ROUND_BYTES that touched no run still moves the cursor, or a megabyte of runner entries
     // would hold every later run back. An uncut idle read leaves it, so the cursor's own entry starts no round.
-    if runs.is_empty() && through < commit {
+    if runs.is_empty() && denies.is_empty() && through < commit {
         let op = ActionsOp::OwnerCursor { through };
         if let Err(e) = owner_shard_half(h, chain, through, vec![op]).await {
             worker::console_error!("{chain} RunOwner idle cursor through {}: {e}", through.0);
@@ -302,7 +335,7 @@ async fn run_owner(h: &Rc<Host<Actions>>) {
     };
     let mut gone = std::collections::BTreeSet::new();
     let done = loop {
-        let r = graftyard_actions::run_owner::round(chain, &fold, &runs, through, &gone, &jobs);
+        let r = graftyard_actions::run_owner::round(chain, &fold, &runs, through, &gone, &jobs, &denies);
         if r.checks.is_empty() && r.then.is_empty() {
             return;
         }
@@ -313,7 +346,10 @@ async fn run_owner(h: &Rc<Host<Actions>>) {
                 crate::host::abort(&h.state, "graftyard RunOwner kill");
                 return;
             }
-            Ok(true) => break owner_shard_half(h, chain, through, r.then).await,
+            Ok(true) => match owner_denies(h, &r.denies).await {
+                Ok(()) => break owner_shard_half(h, chain, through, r.then).await,
+                Err(e) => break Err(e),
+            },
             // A repository answered `Gone`: the round is built again without it, and cancels its runs.
             Ok(false) => continue,
             Err(e) => break Err(e),
@@ -357,6 +393,29 @@ async fn owner_round(
         }
     }
     Ok(true)
+}
+
+/// The round's job-token denies (`gh-token`): each `RevokeJti` on its `jti`'s shard under the operator's credential and
+/// a request id from the command, so a round replayed after a crash revokes nothing twice. Any failure retries the
+/// whole round, and the cursor stays until every deny committed.
+async fn owner_denies(h: &Rc<Host<Actions>>, denies: &[graftyard_identity::TokensCmd]) -> Result<(), String> {
+    if denies.is_empty() {
+        return Ok(());
+    }
+    let site = crate::SiteEnv::read(&h.env).map_err(|e| e.to_string())?;
+    let b = graftyard_lookup::Bindings { env: &h.env, sites: &site.sites };
+    for cmd in denies {
+        let chain = ChainId::Tokens(cmd.shard());
+        let body = serde_json::to_value(cmd).map_err(|e| e.to_string())?;
+        let record = crate::release::record_for(&h.env, chain).await?;
+        graftyard_lookup::create(&b, chain, &record, &json!({})).await?;
+        let rid = act::consumer_request(chain, body.to_string().as_bytes());
+        let done = graftyard_lookup::commit_as(&b, chain, &record, rid, body).await?;
+        if done.get("ok").is_none() {
+            return Err(format!("{chain} RevokeJti: {done}"));
+        }
+    }
+    Ok(())
 }
 
 /// The round's shard half, in order, each under a request id from its place in the round.
@@ -667,7 +726,12 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             let Some((row, _)) = fold_job(job) else { return Ok(refused(404, "no job")) };
             // Its own runner's acquire again, whose answer it lost: the job message again, from no new entry (F77).
             let again = matches!(row.state, JobState::InProgress { .. });
-            let op = ActionsOp::Job { job, version: row.version, event: JobEvent::Acquired };
+            // `gh-token`: an answer that carries the job's `GITHUB_TOKEN` marks it issued in the same entry.
+            let op = if job_tokens(&h.env) && !b["github_token"].as_str().unwrap_or("").is_empty() {
+                ActionsOp::AcquireToken { job, version: row.version }
+            } else {
+                ActionsOp::Job { job, version: row.version, event: JobEvent::Acquired }
+            };
             match commit(h, fresh_rid(), ActionsActor::Runner(runner), op).await {
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => return Ok(refused(409, e)),
@@ -697,7 +761,8 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 repository: names,
                 owner_login: names.split('/').next().unwrap_or(""),
                 relay_site: site,
-                github_token: b["github_token"].as_str().unwrap_or(""),
+                // Only from an entry that marked it issued, so `RunOwner` denies every token a runner was given.
+                github_token: if job_tokens(&h.env) { b["github_token"].as_str().unwrap_or("") } else { "" },
                 job_token: &job_token,
                 locked_until: row
                     .state
@@ -763,7 +828,15 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             let mut k = Vec::new();
             graftyard_fold::canon::write(&mut k, &run.key());
             let rid = act::consumer_request(chain, &k);
-            match commit(h, rid, ActionsActor::Operator, ActionsOp::CreateRun { run, jobs }).await {
+            // `gh-token`: declared permissions come only from a trigger where `job_tokens` (`create_run_body`).
+            let permissions: graftyard_actions::specs::Declared =
+                serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
+            let op = if permissions.is_empty() {
+                ActionsOp::CreateRun { run, jobs }
+            } else {
+                ActionsOp::CreateRunWith { run, jobs, permissions }
+            };
+            match commit(h, rid, ActionsActor::Operator, op).await {
                 Ok(Ok(ActionsOut::Run(r))) => json!({ "status": 201, "body": { "run": r } }),
                 Ok(r) => refused(422, r),
                 Err(e) => refused(503, e),
