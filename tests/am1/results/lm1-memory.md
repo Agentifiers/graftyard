@@ -5241,3 +5241,73 @@ Raw files in `tests/fanout/raw/`: `siteday-m47.status`, `costrow-m47b33.status`,
 `a1-b0-33-m47.jsonl`, `terms-m47b33.jsonl`, `memguard-m47b33.jsonl.xz`, `tsave-m47b33.jsonl.xz`, `inbound-m47b33.txt`,
 `reported-m47b33.txt`, `latesuspect-m47b33.txt`, `campaigns-m47b33.txt`, `retire-m47.log`, `retirenets-m47.out`,
 `purge-m47.log`.
+
+### Why the leader's AppendEntries stall 1 to 6 s under 500 agents (2026-11-18, code only, m47's trace, no spend)
+
+Asked by the orchestrator: split each follower append gap of 1 s or more into event-loop lag, waiting in the leader's
+own queue, and storage. Tool: `tests/fanout/appendgaps.py` on `raw/tsave-m47b33.jsonl.xz` and `raw/terms-m47b33.jsonl`,
+load window 01:00:18 to 01:05:18Z. Output: `raw/appendgaps-m47b33.txt`, and `raw/appendgaps-m47b33-wide.txt` with
+`WIDE=1`.
+
+**Most long gaps are elections, not stalls.** There were 111 follower gaps of 1 s or more. 65 of them (379 s) span a
+term change or a leader loss in terms.mjs's samples. The remaining in-term gaps are what lets two colos' reports count.
+
+**The exact split.** Take the two leader calls that entered the follower just before each end of a gap. Each gap is
+then the sum of three parts:
+- the leader's send spacing between those calls, on the leader's clock;
+- the growth of the out leg, sent to entered, as a difference of two out legs, so the pair skew cancels;
+- the growth of the follower's handler, on the follower's clock.
+
+| | 25 gaps held in one term (47.5 s) | 43 gaps with `WIDE=1` (91.2 s) |
+|---|---|---|
+| leader send spacing | 0.12 | 0.28 |
+| out-leg growth | 0.91 | 0.75 |
+| follower handler growth | −0.03 | −0.03 |
+| dominant part | out leg in 22 of 25 | out leg in 34 of 43 |
+
+The out-leg growth breaks down further:
+
+| part (share of the summed gap) | in one term | `WIDE=1` |
+|---|---|---|
+| leader storage confirm during its send spacing | 0.09 | 0.22 |
+| leader output gate closed at the ending call's send (a confirm in flight) | 0.26 | 0.34 |
+| leader loop lag at that send | 0.13 | 0.10 |
+| rest of the out leg: the wire and the follower's input queue | 0.51 | 0.31 |
+
+**Event-loop lag is small.** The leader's 100 ms ticker read lag 0 in every gap whose send spacing was 500 ms or more.
+Loop lag at the gap-ending send is 10 to 13% of the gap time. B0-02 measured the leader's loop as unblocked on B0-29
+(clock-guard). That agrees.
+
+**"Storage" here is mostly the isolate's queue, not disk.** A `Confirm` row times `sync()` from the call to its
+resolution, so it includes every turn queued ahead in the isolate. The leader's confirm time grows with its open
+requests when the confirm starts:
+
+| leader (site 0) open requests at confirm start | confirm p50 | confirm p90 |
+|---|---|---|
+| 0–50 | 27 ms | 203 ms |
+| 300–1,000 | 240 ms | 2.8 s |
+| 1,000+ | 494 ms | 3.2 s |
+
+The followers show the same: site 2 confirmed in 3 ms at p50 when quiet and 2.2 s at p50 when 1,000+ requests were
+open. Storage itself is not slow. The gate stays closed because the confirm's resolution waits behind the isolate's
+input.
+
+**What fills both queues.** Between the gap-ending call's send and its entry at the follower, p50 847 requests entered
+the follower. 97% came from the edge: `/suspect` 48%, `/read` 35%, `/outcome_by_request` 9%. At the leader, open
+requests at entry reached p50 190 and p90 1,454 during load (followers p50 4 to 7).
+
+**So the dominant cause is edge requests queued in the isolates:**
+- At the leader, they hold its `sync()` resolution and so its output gate (0.26 to 0.34, plus 0.09 to 0.22 of send
+  spacing under a confirm).
+- At the follower, they sit in its input ahead of `/raft` (0.31 to 0.51).
+
+Event-loop lag (0.10 to 0.13) and true storage time are minor. This is the same edge-walk queueing that m45 and m47
+measured from the callee side, now shown to drive the append gaps that let two colos withhold.
+
+**Caveats.**
+- `CallSent`'s stamp is the raw clock, which on a busy isolate can read early. Bounding each call's true send time by
+  the leader's next stamp (p50 47 ms, max 912 ms) lowers the out-leg share from 0.91 to 0.85 at most.
+- The six-connection reading (the leader's open fetches past six) is refuted. Queued calls enter their callee no
+  closer to the leader's header arrivals than random moments do (p50 272 against 222 ms), and B0-29 shows no step at
+  six.
+- The out leg does rise with the leader's own open requests at send: p50 65 ms at 0 to 50, 4.8 s at 1,000+.
