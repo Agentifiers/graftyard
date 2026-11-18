@@ -1,0 +1,71 @@
+follower append gaps >= 1000 ms in the window: 111; across a term change or leader loss: 65 (378988 ms); in one term and joined to the call that ended them: 27; pair skews {(0, 1): -395, (0, 2): 226, (1, 0): -1135, (1, 2): -105, (2, 0): -1213, (2, 1): 67}
+dominant part (gaps): {'out': 26, 'send': 1} | summed ms: {'send': 5912, 'out': 95627, 'handler': 914} | summed gap ms: 50229
+  gap          p50 1537  p90 2889  max 5400
+  send         p50 55  p90 500  max 1464
+  out          p50 2935  p90 5994  max 6728
+  handler      p50 0  p90 0  max 912
+  awaiting     p50 23  p90 91  max 118
+  lag_at_send  p50 0  p90 3865  max 10806
+  lag_max      p50 0  p90 613  max 10806
+  confirm      p50 7  p90 932  max 1000
+  stepped      p50 0  p90 0  max 0
+  sent_in_gap  p50 0  p90 7  max 8
+  lost         p50 0  p90 0  max 7
+
+send-dominated gaps: 1; inside the leader's hole:
+  ticker lag max p50 0 p90 0; share of the hole: lag 0.00, confirm 0.24, sync step 0.00
+  requests entering the leader during its holes, per s: {'/read': 14655.2, '/suspect': 6310.3, '/outcome_by_request': 2896.6, '/commit': 2896.6, '/raft': 2482.8, '/status': 34.5}
+
+out-dominated gaps: 26; ahead of the call at the follower p50 874, by route {'/suspect': 0.46, '/read': 0.37, '/outcome_by_request': 0.1, '/commit': 0.04, '/raft': 0.02}
+
+longest 12 gaps: f L at gap send out handler | leader lag max, confirm, step ms, awaiting, sent/lost
+  0 1 01:01:05.169 5400 200 2935 0 | 0 100 0 25 7/7
+  0 1 01:03:46.390 3012 26 1881 0 | 0 0 0 41 0/0
+  1 0 01:01:57.485 2889 482 627 0 | 0 482 0 38 4/0
+  2 0 01:02:04.846 2600 258 5385 2 | 413 0 0 10 2/0
+  2 1 01:01:42.924 2574 55 1946 0 | 0 54 0 40 0/0
+  1 0 01:00:54.410 2559 386 5994 0 | 0 0 0 91 2/0
+  1 0 01:01:55.032 2453 29 0 0 | 0 7 0 40 0/0
+  2 0 01:00:54.667 2368 386 5439 0 | 0 0 0 92 1/0
+  0 1 01:01:43.450 1990 55 2918 0 | 0 54 0 39 0/0
+  0 2 01:04:10.974 1729 0 5209 0 | 0 0 0 12 0/0
+  2 0 01:00:47.262 1721 0 2651 912 | 0 0 0 4 0/0
+  1 0 01:02:00.374 1648 21 2254 0 | 0 21 0 40 0/0
+
+exact split of 43 gaps in one term (91186 ms), parts summing to each gap:
+  send     share 0.28  p50 63  p90 1400  max 5433
+  queue    share 0.75  p50 1430  p90 3220  max 5772
+  handler  share -0.03  p50 0  p90 0  max 900
+  dominant: {'queue': 34, 'send': 8, 'handler': 1}
+  storage: the leader's confirms during its send spacing 0.22 plus its output gate closed at the ending call's send 0.34; the leader's loop lag at that send 0.10; the rest of the out leg (the wire and the follower's input queue) 0.31
+  gaps whose send spacing is 500 ms or more: 12; the leader's ticker lag max there p50 0 max 1264; its storage confirms overlapping p50 979
+
+gaps with no call lost: 26 of 27; summed gap 44829 ms, of which out (capped at the gap) 38355, send 5712, handler 914
+  out leg without the skew correction p50 2877 p90 5665
+  follower ticker lag max inside the gap p50 0 p90 0 max 3522
+  follower storage confirm time inside the gap p50 9 p90 288
+  follower open requests at each entry inside the gaps p50 9 p90 34 max 1111; requests entering it a second p50 241.69986719787516
+
+withholding moments: f L at | last step before (ms) | leader calls sent since: entered before / after (+ms) / never | requests entered f in that span
+  0 1 01:01:07.321 | 2152 | 3 / 0 (+None) / 15 | 2503 (1163/s)
+  0 2 01:01:33.052 | 1136 | 0 / 1 (+5529) / 0 | 219 (193/s)
+  0 1 01:01:54.339 | 1010 | 0 / 3 (+5824) / 0 | 654 (648/s)
+  0 1 01:02:29.156 | 1156 | 0 / 0 (+None) / 0 | 281 (243/s)
+  0 2 01:02:57.300 | 1133 | 0 / 11 (+5746) / 0 | 117 (103/s)
+  0 1 01:03:20.106 | 1135 | 0 / 0 (+None) / 0 | 845 (744/s)
+  0 1 01:03:48.604 | 2214 | 32 / 38 (+3169) / 0 | 430 (194/s)
+  0 2 01:04:08.670 | 1246 | 0 / 4 (+2809) / 0 | 629 (505/s)
+  1 0 01:00:55.445 | 1035 | 0 / 2 (+4625) / 0 | 204 (197/s)
+  1 0 01:02:01.432 | 1058 | 0 / 10 (+2617) / 0 | 328 (310/s)
+  1 0 01:03:39.662 | 94935 | 0 / 35 (+4276) / 296 | 24827 (262/s)
+  2 0 01:00:48.612 | 1350 | 0 / 13 (+5392) / 0 | 19 (14/s)
+  2 1 01:01:11.215 | 1002 | 0 / 1 (+7035) / 0 | 242 (242/s)
+  2 1 01:01:44.484 | 1560 | 12 / 5 (+1156) / 0 | 167 (107/s)
+  2 0 01:02:05.846 | 1000 | 0 / 6 (+8633) / 0 | 128 (128/s)
+  2 1 01:02:30.149 | 1086 | 0 / 0 (+None) / 0 | 1081 (995/s)
+  2 1 01:03:11.528 | 1221 | 0 / 0 (+None) / 0 | 615 (504/s)
+  2 0 01:03:34.854 | 1009 | 0 / 3 (+4583) / 0 | 1015 (1006/s)
+  2 1 01:03:55.794 | 1052 | 0 / 17 (+896) / 0 | 642 (610/s)
+  2 1 01:04:34.883 | 12353 | 0 / 0 (+None) / 0 | 1449 (117/s)
+  2 0 01:04:54.907 | 1226 | 0 / 10 (+1052) / 0 | 1102 (899/s)
+  2 1 01:05:17.674 | 1258 | 0 / 5 (+7830) / 0 | 1264 (1005/s)
