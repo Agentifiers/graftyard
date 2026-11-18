@@ -158,3 +158,56 @@ or the edge cancelled after it. Joined to their miss lines:
 
 (i) and (ii) both touch the shard's protocol or the composed path, so I'll send them as a design before code, as
 asked.
+
+## Correction: the over-the-cap misses came from a chain on the wrong tip
+
+Checked while writing item 3's design (`decisions/DECISIONS.md`, "`b034-tails` (proposal)"). The ranking above read
+"over the diff cap" as wants far from the tip. They were not.
+
+- **Composed until the post-kill rehydrate, then never.** Before site a's rehydrate of the monorepo ended (476 s into
+  the row), 399 of 404 miss lines were composed. Of the 193 after it, 1 composed (site b at 499 s); 128 named the cap
+  in their 409 or their answer (a 54, b 65, c 9), and 95 were 503s. The first over-the-cap line is at 496 s on a,
+  521 s on b, and 587 s on c.
+- **Real wants are never that far apart.** Over the row's 600 real tip moves (`raw/b034-m1b34.json`, checked against
+  the local linux clone), a want differs from the tip 20 moves back by at most 2,969 entries. Against the row's
+  starting `main`, the largest diff for the wants of 40 to 56 moves is 2,853. Both are far under 20,000.
+- **The chain sat on a tree outside the history.** Site b's container ran `git diff-tree -r -t 75db6f44… 16df6e07…`
+  at 10:36:46Z (`raw/shardprocs-m1b34.jsonl`). Tree `75db6f44` is the tree of no commit in linux's history and of none
+  of the seed plan's 854 commits.
+- **The cause [inference].**
+  - The rehydrate's refs page named `main` at a tip whose pack it had not loaded yet.
+  - `handleRefs` skipped that ref and pointed HEAD at the first ref of the page, a row push that holds one file.
+  - The builder's `/compose?start=1` built the base at that HEAD, and the warm buckets' `head` carried it to sites b
+    and c.
+- **The container half, reproduced locally.** A `PUT /refs` whose `main` names a missing object, with no `head=`, left
+  HEAD on the first ref (`refs/heads/a1h-run-0`), and the step built a base there. With G26's
+  `head=refs/heads/main`, HEAD stays on the unborn `main` and the step builds nothing.
+- **The fix.** G26 (on main) removes this cause on the next site day. The proposal adds a backstop: a step whose chain
+  tree is over the cap from HEAD builds a new base.
+
+The ranking changes:
+1. **The chain on the wrong tip**, fixed by G26 plus the backstop. After the rehydrate, every miss went stock or 503,
+   and those stock upload-packs made the lock queue.
+2. **Stock holding the lock.** Any stock miss still does it, and `include-tag` and no-chain misses stay stock.
+3. **"Not a ref tip"**, which is the catch-up's own length.
+
+## Expected numbers on the next hosted B0-34 row
+
+Same row, same phases, from main with G26 and `b034-tails` built.
+
+| Change | Shows as | m1b34 | Expected |
+|---|---|---|---|
+| G26 plus the base-on-big-diff step | monorepo miss lines after the kill's rehydrate: composed share; `over the diff cap` lines | 1 of 193 after 476 s; 128 over the cap | ≥ 95% composed (the 98.8% before it); 0 over the cap |
+| One deadline per upload-pack | shard `/upload-pack` 503s whose wall exceeds `wait` + 2 s; edge moving to the next site | 25 of 50 waited 29 to 99 s | 0 over `wait` + 2 s |
+| `STOCK_MAX` admission | container stock `upload-pack` processes per sample (`shardprocs`); container memory | up to 15 and 21; 12.0 of 12 GiB | ≤ 2; under 10 GiB [guess] |
+| Stock off the lock | catch-up wait for the lock alone (`stored.total_ms − index_ms` on adopt); monorepo validates over 10 s in second and hostile | 29 to 36 s; 204 of 223 | ≤ 1 s; about j9's share (12 of 1,383) [guess] |
+| `midx_ms` | site b's 35 s exclusive sections | unattributed | attributed or ruled out |
+
+What it will not fix:
+- **The human push line (≤ 3.3 s).** j9's push p99 was already 15.0 s with no stock miss and no lock queue, and site
+  a's j9 validate p99 on the shard was 9.7 s.
+- **Clone TTFB p99 ≤ 1.1 s.** The composed tail before the kill is the post-409 catch-up (p99 10.3 to 13.2 s) and
+  edge arrival delay, neither of which this changes.
+
+So the expected verdict is still a fail on those two lines. The row would show whether the second and hostile phases
+fall back to j9's level, which would leave only the catch-up length and validate on a busy container.

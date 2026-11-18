@@ -5089,6 +5089,59 @@ cached voter does today).
 
 **Flip.** A GHES 3.22 recording whose HEAD, for a repository whose default branch is not `main`, names anything but the default branch; or a hosted run where the shard's v0 or v2 HEAD differs from the edge's for the same repository.
 
+### `b034-tails` (proposal): one deadline per upload-pack, a stock cap, and stock off the network lock, 2026-11-18
+
+**Status.** Proposed, not built, on branch `b034-tails` from main `0d64813b`, for the orchestrator (T-01a17bda) before any code, because it touches the shard's composed path. It follows the m1b34 attribution (`tests/am1/results/b034-attr.md`).
+
+**Decision.**
+1. **Every wait of one upload-pack shares one deadline.** These are `Compose::ready`, the running catch-up in `compose_then_catch_up` (today `Jobs::idle`, unbounded), the later catch-up, and a stock slot. The deadline is the caller's `wait`: 15 s on the edge's first site, 60 s on the others (`VALIDATE_WAIT_*`). Past it, the object answers 503 `warming` and the edge asks the next site, as a validate does. The last site's 503 reaches git as `HTTP 503`, which is what a clone sees today.
+2. **Over the diff cap is retried like "not a ref tip".** A 409 `stock: over the diff cap` starts the chain's step (`Compose::start(true)`). The miss composes again after that step and the running catch-up, then after one that starts later, within the deadline. The container's step builds a base instead of a part when the chain tree differs from the new tip in more than `composeDiffMax` entries, so a chain on a wrong tip is replaced at its next step. A want still refused, `include-tag` on an annotated tag, or no chain goes to stock.
+3. **Stock is admitted, not queued on the lock.** The container runs at most `STOCK_MAX` = 2 [guess] stock upload-packs, counted from start until the process ends, and answers 429 at once past that. The object queues the rest in arrival order until the deadline, then answers 503 `warming`. A spooled fill holds its slot until its file is complete; a cancelled client's process is already killed (`TestCancelledCloneReleasesTheLock`).
+4. **Stock takes no network lock.** A per-network reader count replaces the lock for stock: `/evict` answers 409 while it is above zero, and a fresh `/init` waits for it. Validates, ls-refs and the ingest's exclusive section keep the lock.
+5. **`midx_ms`.** `/ingest` answers the midx write's time beside `lock_ms`, and the shard sums it in `StoredMs`.
+
+**What a client sees.**
+- **"Not a ref tip" during a catch-up:** composed once the running catch-up ends, as now. That took p50 2.8 s and p99 10.3 s in j9 (54 misses) and p50 5.7 s and p99 13.2 s in the kill phase (24). The wait is the catch-up's own length, and this change does not shorten it.
+- **Past the deadline on every site:** 503.
+- **Stock when the slots are full:** a wait, not an error. git retries neither 429 nor 503 unless `http.maxRetries` is set, and then only 429 [doc, git-config, `http.maxRetries`, "Set to 0 (the default) to disable retries"]. GHES documents its own Git rate limit as making "Git operations more likely to fail under high load" [doc, https://docs.github.com/en/enterprise-server@3.22/admin/configuring-settings/configuring-user-applications-for-your-enterprise/configuring-rate-limits]. So an immediate git-shaped refusal fails the clone where a short wait would not.
+
+**Why.**
+- **m1b34's over-the-cap misses were a chain on the wrong tip.** The diff cap itself was not the cause [measured, `tests/am1/results/b034-attr.md`, "Correction"].
+  - Before site a's post-kill rehydrate ended (476 s), 399 of 404 miss lines composed. Of the 193 after it, 1 did: 128 named the cap, and 95 were 503s.
+  - The chain tree in the container's `diff-tree` at 10:36:46Z on site b, `75db6f44`, is in neither linux's history nor the seed plan's 854 commits.
+  - Over the row's 600 real tip moves, a want differs from the tip 20 moves back by at most 2,969 entries, far under 20,000.
+  - Cause [inference]: the rehydrate's refs page named `main` at a tip whose pack it had not loaded yet. `handleRefs` skipped `main` and pointed HEAD at the first ref, a row push holding one file, and the builder's `/compose?start=1` built the base there.
+  - A local container test reproduces the container half: a PUT whose `main` names a missing object, with no `head=`, leaves HEAD on the first ref, and the step builds a base there. With G26's `head=refs/heads/main`, HEAD is unborn and the step builds nothing.
+  - G26 (main since `g26-head`) removes this cause on the next site day. Decision 2's base-on-a-big-diff is the backstop for any other wrong tip.
+- **The queue was stock readers holding the lock shared** for 20 to 99 s while a catch-up's `adopt` waited for it alone (29 to 36 s, three times). Every validate that arrived meanwhile queued behind that writer. Decision 3 bounds how many readers there are, and 4 takes them off the lock.
+- **The unbounded `idle`.** 25 of the 50 shard 503s waited out a stuck catch-up before their 15 s started.
+
+**What it beat.**
+- **A 429 to the client when the slots are full.** git fails the clone at once by default.
+- **A per-network cap instead of per-container.** The 2.6 GB processes share one container's 12 GiB whichever network they serve.
+- **Stock keeping the lock, with only the cap.** Two 99 s readers still hold a writer, and every reader after it, for 99 s.
+- **Compose over the cap from two trees.** A composed pack then carries most of both trees, which is why the cap exists.
+
+**Risks of stock without the lock.**
+- **A repack's `-d`, or an evict, under a running stock read.** The repack already runs beside readers without the lock: git keeps open packs readable and re-reads the pack directory for one it lost ("Amended 2026-11-12 (LM-1 round 7)" above). Evict and init are covered by the reader count.
+- **A midx write.** The ingest's midx write is a temp-file rename, which a reader that already mapped the old midx does not see. The repack's `--write-midx` already runs beside readers.
+- **Not covered: a reader that lists the pack directory between the ingest's pack rename and idx rename.** `moveIn` renames the pack before its index, so a reader sees no index without its pack [inference: as for composed misses since round 26, which hold no lock].
+
+**Evidence plan (tests that fail on main, then plants).**
+- **Go (container):**
+  - `/upload-pack` stock while `/ingest` waits: the ingest's exclusive section starts within 1 s while a stock fetch held open by a git wrapper is still running. On main it waits for the whole fetch.
+  - A third concurrent stock fetch answers 429 within 1 s; the first two run.
+  - `/evict` answers 409 while a stock fetch runs.
+  - `/compose` builds a base when the chain tree is over `composeDiffMax` from HEAD.
+  - `/ingest` answers `midx_ms` on the `midxEvery`-th ingest.
+- **Rust:**
+  - `compose_then_catch_up` with an over-cap reason retries after the step.
+  - Every wait ends by the deadline: a never-ending catch-up returns `CatchUp` past `wait`. On main `idle` never returns.
+  - The stock queue admits in arrival order and answers `warming` past the deadline.
+- **Plants:** stock takes the lock again; no cap; cap counted per network; `idle` unbounded; over-cap not retried; step always a part; `midx_ms` dropped.
+
+**Flip.** A hosted row where a client waiting for a stock slot fails where a 429 would have let it retry sooner. Or a stock read without the lock that fails on a pack a repack or an ingest moved. Or `STOCK_MAX` = 2 holding a stock queue past the deadline while the container has memory for more.
+
 ### A 32.20 `MetaSlim` keeps `SLIM_BYTES`; the alarms on slims folded before it are test-install residue, 2026-11-18
 
 **Status.** Recorded on branch `split-refold` from the orchestrator's request (T-01a17bda) to test a split parent's metadata refold before audit-moved. Code-only: one pinning test and one plant. No fold changes.
