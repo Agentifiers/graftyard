@@ -1,0 +1,4 @@
+2026-11-18T08:35:38Z waiting 261 s for sweep runs started before the first pass (until 2026-11-18T08:40:00.000010+00:00)
+2026-11-18T08:40:23Z 131357 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:40:23Z 131357 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T08:40:23Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
