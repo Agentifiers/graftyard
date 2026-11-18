@@ -4,7 +4,7 @@ import json, lzma, sys, collections
 path, t0 = sys.argv[1], int(sys.argv[2])
 t1 = t0 + 1000 * int(sys.argv[3] if len(sys.argv) > 3 else 600)
 ENDS = ['Empty', 'Soft', 'EntryMax', 'AgentTokens']
-CLASSES = ['human', 'mergeq', 'bot', 'agent']
+CLASSES = ['human~', 'mergeq', 'bot', 'agent']
 seen = set()
 cuts = []
 for l in (lzma.open if path.endswith('.xz') else open)(path, 'rt'):
@@ -17,6 +17,10 @@ for l in (lzma.open if path.endswith('.xz') else open)(path, 'rt'):
             continue
         seen.add(t)
         at, _, peer, batch, index, ms = r
+        # The trace reaches here through a JS number: `batch` (tokens above bit 48) is past 2^53, so take the double
+        # the site wrote, not the decimal's exact integer. Its low bits are then rounded to the double's step (8 to 32
+        # at these sizes), which only the Human count (bits 0-11) falls inside; `human~` marks it approximate.
+        batch, index, ms = int(float(batch)), int(float(index)), int(float(ms))
         cuts.append({
             'site': d.get('site'), 'at': at, 'end': ENDS[peer % 16] if peer % 16 < len(ENDS) else peer % 16,
             'held': (peer // 16) % 4, 'in_flight': peer >= 64,
