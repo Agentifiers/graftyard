@@ -1,0 +1,38 @@
+edge: graft-m1-edge serves 76787c56 at 100% (rev ecedd7938), as tests/am1/raw/b034t-siteday.log deployed
+2026-11-18T17:46:27Z meter (account, run) 23.62 0.0 before b034, expected +$7, stop $180 account, $12 run
+2026-11-18T17:47:29Z meter (account, run) 23.62 0.0
+2026-11-18T17:48:32Z meter (account, run) 23.63 0.01
+2026-11-18T17:49:34Z meter (account, run) 23.63 0.01
+2026-11-18T17:50:37Z meter (account, run) 23.65 0.01
+2026-11-18T17:51:39Z meter (account, run) 23.66 0.01
+2026-11-18T17:52:41Z meter (account, run) 23.68 0.02
+2026-11-18T17:53:44Z meter (account, run) 23.68 0.02
+2026-11-18T17:54:46Z meter (account, run) 23.68 0.03
+2026-11-18T17:55:49Z meter (account, run) 23.69 0.03
+2026-11-18T17:56:51Z meter (account, run) 23.7 0.04
+2026-11-18T17:57:53Z meter (account, run) 23.71 0.05
+2026-11-18T17:58:56Z meter (account, run) 23.72 0.06
+2026-11-18T17:59:58Z meter (account, run) 23.73 0.07
+2026-11-18T18:01:02Z meter (account, run) 23.74 0.08
+2026-11-18T18:02:05Z meter (account, run) 23.75 0.08
+2026-11-18T18:03:07Z meter (account, run) 24.91 0.09
+2026-11-18T18:04:12Z meter (account, run) 24.92 0.1
+2026-11-18T18:05:16Z meter (account, run) 24.93 0.11
+2026-11-18T18:06:18Z meter (account, run) 24.93 0.11
+2026-11-18T18:07:20Z meter (account, run) 24.94 0.12
+2026-11-18T18:08:22Z meter (account, run) 24.95 0.13
+2026-11-18T18:09:26Z meter (account, run) 24.95 0.13
+2026-11-18T18:10:30Z meter (account, run) 24.97 0.15
+2026-11-18T18:12:31Z meter (account, run) 999 0.16
+2026-11-18T18:12:31Z STOP: meter 999 0.16 within $0.5 of a stop, a1.mjs and the b034 steps stopped
+2026-11-18T18:12:38Z b034 ended: 2026-11-18T18:03:13Z seed m3r-b034-hostile/b034-hostile-t-2 exit 0
+site fault off: 200
+git#0#net:3538949 200
+git#0#net:3538948 200
+git#0#net:3538947 200
+git#0#net:3473409 200
+{"torn_down": 4, "codes": {"200": 4}}
+sweep: no shard container running
+2026-11-18T18:13:07Z sweep exit 0
+2026-11-18T18:13:09Z meter (account, run) 25.0 0.18 after b034 and the sweep
+DONE

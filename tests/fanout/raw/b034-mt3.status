@@ -1,0 +1,49 @@
+2026-11-18T18:51:57Z api.cloudflare.com in request paths: 0 files
+edge: graft-m1-edge serves 76787c56 at 100% (rev ecedd7938), as tests/am1/raw/b034t-siteday.log deployed
+2026-11-18T18:51:49.121Z b034 networks: {"mono":{"repo":"m3org/b034-mono-t","chain":"repo:1048596","who":"admin"},"second":{"repo":"m3-member/b034-second-t","chain":"repo:3473409","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-t-1","chain":"repo:3538947","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-t-2","chain":"repo:3538948","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-t-3","chain":"repo:3538949","who":"hostile"}]}
+2026-11-18T18:51:57Z seed m3-member/b034-second-t exit 0
+2026-11-18T18:51:57Z seed m3r-b034-hostile/b034-hostile-t-1 exit 0
+2026-11-18T18:51:57Z seed m3r-b034-hostile/b034-hostile-t-2 exit 0
+2026-11-18T18:51:57Z seed m3r-b034-hostile/b034-hostile-t-3 exit 0
+2026-11-18T20:17:12Z seed m3org/b034-mono-t exit 0
+2026-11-18T20:17:12Z b0-34 drain start
+2026-11-18T20:19:29Z b0-34 drain exit 0 {"at":"2026-11-18T20:19:21.279Z","s":136.9,"kind":"summary","drained":true,"stalled":false,"firstS":74.7,"drainS":62.2,"promotedFrom0":303,"promotedTo":317,"target":320,"unpromoted":20863920,"unpromotedPacks":3,"alarms":[]}
+site fault off: 200
+git#1#net:1048596 200
+git#1#net:3538949 200
+git#0#net:1048596 200
+git#0#net:3538949 200
+{"torn_down": 4, "codes": {"200": 4}}
+sweep: no shard container running
+2026-11-18T20:20:04Z b0-34 shards torn down before the cold warm
+{"net": "1048596", "running": 0, "other_image": 0}
+2026-11-18T20:20:08Z b0-34 warm start
+2026-11-18T20:22:04Z b0-34 warm exit 0 {"at":"2026-11-18T20:21:55.519Z","s":115.3,"kind":"summary","mainS":1.9,"catchupS":{"0":99.9,"1":104.3,"2":109.3},"limitMin":45}
+site 0: 62 spools, 6.04 GB in 63.2 s = 95.5 MB/s in total; per stream p50 32.8 MB/s, bytes-weighted 31.6 MB/s; streams busy mean 3.02, most 4; peak 5 s bin 131.9 MB/s; from site {0: 62}
+  MB/s by bin: 2 96 118 93 129 87 98 132 130 105 84 34 79 20
+site 1: 62 spools, 6.04 GB in 66.4 s = 90.8 MB/s in total; per stream p50 30.2 MB/s, bytes-weighted 28.9 MB/s; streams busy mean 3.14, most 4; peak 5 s bin 123.0 MB/s; from site {1: 62}
+  MB/s by bin: 13 83 123 90 89 108 99 111 115 108 90 46 67 61 5
+site 2: 62 spools, 6.04 GB in 72.4 s = 83.4 MB/s in total; per stream p50 28.4 MB/s, bytes-weighted 27.4 MB/s; streams busy mean 3.04, most 4; peak 5 s bin 123.0 MB/s; from site {0: 1, 2: 61}
+  MB/s by bin: 31 90 94 95 123 110 112 110 46 95 111 47 48 81 14 0
+site 2 pool:7: 62 spools, 6.04 GB in 71.5 s = 84.4 MB/s in total; per stream p50 29.4 MB/s, bytes-weighted 27.8 MB/s; streams busy mean 3.03, most 4; peak 5 s bin 122.7 MB/s; from site {0: 1, 2: 61}
+  MB/s by bin: 24 94 97 96 123 110 113 109 50 99 104 47 45 84 14 0
+site 2 pool:7 beside site 2, 15 bins both busy: site 2 80.5 MB/s + site 2 pool:7 80.5 MB/s = 160.9 MB/s; site 2 alone nan MB/s
+b0-34 pool probe torn down {"status":200,"body":"{\"torn_down\":true}"}
+{"name": "git#2#net:1048596", "started": "2026-11-18T20:20:13.271Z", "image": "sha256:86a9579b52b569fd9bb3606d6c9ae74e5005b7ececdbf773ed53d21fcfeb557b"}
+{"name": "git#1#net:1048596", "started": "2026-11-18T20:20:10.025Z", "image": "sha256:86a9579b52b569fd9bb3606d6c9ae74e5005b7ececdbf773ed53d21fcfeb557b"}
+{"name": "git#0#net:1048596", "started": "2026-11-18T20:20:09.912Z", "image": "sha256:86a9579b52b569fd9bb3606d6c9ae74e5005b7ececdbf773ed53d21fcfeb557b"}
+{"net": "1048596", "running": 3, "other_image": 0}
+2026-11-18T20:22:11Z b0-34 warm images exit 0
+b0-34 kept packs after the warm: {"0": {"kept": 59, "count": 62}, "1": {"kept": 59, "count": 62}, "2": {"kept": 59, "count": 62}}
+b0-34 compose after the warm site a {"n": 3, "bytes": 260792673, "files": [["base-75afd029e607623df50", 2473024, "2026-11-18T20:22:14.670Z"], ["base-75afd029e607623df50", 258319537, "2026-11-18T20:22:14.348Z"], ["head", 112, "2026-11-18T20:22:14.914Z"]]}
+b0-34 compose after the warm site b {"n": 3, "bytes": 260792673, "files": [["base-75afd029e607623df50", 2473024, "2026-11-18T20:22:24.308Z"], ["base-75afd029e607623df50", 258319537, "2026-11-18T20:22:23.469Z"], ["head", 112, "2026-11-18T20:22:24.790Z"]]}
+b0-34 compose after the warm site c {"n": 0, "bytes": 0, "files": []}
+2026-11-18T20:22:24.184Z repo:1048596 leader 0: k 1 at 322
+2026-11-18T20:22:32Z b0-34 b034-mono-t repo:1048596 start
+2026-11-18T20:42:43Z b0-34 done exit 0
+2026-11-18T20:51:00Z b0-34 misses: site a 1795034374000: <urlopen error _ssl.c:1064: The handshake operation timed out>, retry site b 1795032604000: HTTP Error 500: Internal Server Error, retry 
+b0-34 compose at the row's end site a {"n": 19, "bytes": 192067, "files": [["base-e6f3565cf989faee424", 1156, "2026-11-18T20:34:41.131Z"], ["base-e6f3565cf989faee424", 20134, "2026-11-18T20:34:40.845Z"], ["head", 455, "2026-11-18T20:41:22.719Z"], ["part-0b90e1ae09d63182c98", 1156, "2026-11-18T20:41:22.502Z"], ["part-0b90e1ae09d63182c98", 20134, "2026-11-18T20:41:22.102Z"], ["part-44262b899c0943158bb", 1156, "2026-11-18T20:35:44.445Z"], ["part-44262b899c0943158bb", 20135, "2026-11-18T20:35:44.185Z"], ["part-507e6dd3e821b1b5bab", 1156, "2026-11-18T20:36:50.520Z"]]}
+b0-34 compose at the row's end site b {"n": 19, "bytes": 192067, "files": [["base-e6f3565cf989faee424", 1156, "2026-11-18T20:34:43.248Z"], ["base-e6f3565cf989faee424", 20134, "2026-11-18T20:34:42.809Z"], ["head", 455, "2026-11-18T20:41:24.510Z"], ["part-0b90e1ae09d63182c98", 1156, "2026-11-18T20:41:23.883Z"], ["part-0b90e1ae09d63182c98", 20134, "2026-11-18T20:41:23.386Z"], ["part-44262b899c0943158bb", 1156, "2026-11-18T20:35:45.827Z"], ["part-44262b899c0943158bb", 20135, "2026-11-18T20:35:45.355Z"], ["part-507e6dd3e821b1b5bab", 1156, "2026-11-18T20:36:52.376Z"]]}
+b0-34 compose at the row's end site c {"n": 0, "bytes": 0, "files": []}
+2026-11-18T20:51:08.201Z repo:1048596 leader 0: k 3 at 3193
+DONE

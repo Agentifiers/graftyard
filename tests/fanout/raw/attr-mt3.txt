@@ -1,0 +1,17 @@
+== object 549fac76 (site a)
+  validate j9: n 990, p50 2714, p99 15954 ms, {200: 879, 429: 105, None: 3, 503: 3}
+  validate kill: n 265, p50 343, p99 3504 ms, {503: 241, 200: 24}
+  validate second: n 506, p50 832, p99 21653 ms, {503: 182, 200: 292, 429: 32}
+  validate hostile: n 1203, p50 1090, p99 21310 ms, {200: 1085, 429: 116, 503: 2}
+  catch-up 1795034099987..1795034128967: waited before indexIngest 23737 ms, lock alone 3 ms, index 1802 ms, 2 packs; stock readers open 0; validates started 89, p50 1962, p99 24312 ms
+  catch-up 1795034300111..1795034317919: waited before indexIngest 14517 ms, lock alone 1 ms, index 1447 ms, 1 packs; stock readers open 1; validates started 57, p50 856, p99 14307 ms
+  catch-up 1795034264192..1795034286898: waited before indexIngest 20715 ms, lock alone 2 ms, index 1566 ms, 1 packs; stock readers open 0; validates started 80, p50 942, p99 21310 ms
+  200 validates over 10 s, second and hostile: 91, overlapping a stalled catch-up 36
+  503 miss lines: 68 {'15 s wait right after the 409': 22, 'waited for the running catch-up, then 15 s': 46}
+== object 6d812607 (site b)
+  validate j9: n 324, p50 2401, p99 11224 ms, {200: 322, 429: 1, None: 1}
+  validate kill: n 468, p50 2365, p99 9417 ms, {200: 425, 429: 37, 503: 5, None: 1}
+  validate second: n 549, p50 1484, p99 14430 ms, {200: 493, 503: 18, 429: 38}
+  validate hostile: n 146, p50 1829, p99 199561 ms, {200: 80, 503: 6, 429: 48, None: 12}
+  200 validates over 10 s, second and hostile: 23, overlapping a stalled catch-up 0
+  503 miss lines: 73 {'15 s wait right after the 409': 7, 'waited for the running catch-up, then 15 s': 20, '60 s wait right after the 409': 46}
