@@ -5410,3 +5410,42 @@ out leg stays flat, and only 18 sends left at 50 or more open, so B0-29 neither 
 show the corollary: with no edge backlog on the leader there is no out-leg growth to explain. B0-02 also measured no
 read rounds to the followers on this run. This pair's skew estimates (1.4 s) leave raw out legs negative, so only
 differences between bins mean anything here.
+
+### The fold-audit leak on graft-m2b: 209 leftover test networks retired (2026-11-18, operator-requested cleanup)
+
+Asked by the orchestrator: every repository left joined on a test install refolds once a day from the site cron. The
+m3f thread's read of m2b's fold-audit reports found 188 chains joined.
+
+**Checked first.** Each range was checked against the notes before retiring:
+- `$M3_STATE/am1-runs-repos.txt` names every row repository from 131168 on.
+- 131107 to 131167 are older row and diagnostic repositories, none in any state file.
+- 327680 to 327699 are REST and repo-create test repositories (`m3-member/rs-user-*`, an early `m3-member/b034-hostile-1`).
+- 131133 and 131134 had no config.
+- No script or state file names any of them.
+
+**Retired** (`retirenets.mjs 131107-131295 327680-327699`, `raw/retire-leak.log`, 05:05 to 05:52Z): 209 networks. 182
+had joined members and 27 had none left. 14 lines read "STILL JOINED" from an empty `/status` reply just after
+`/retire`. All 14 were rechecked and are not joined.
+
+**Kept: 12 chains.** Each one is a fixture a row reads:
+
+| chain | name | read by |
+|---|---|---|
+| 65536 | `m2b/bf20` | BF-20 drivers; K10's refold, kept by the operator |
+| 65537, 65538, 65539, 65540 | `m2b/smoke`, `bf24`, `bf29`, `bf29r` | `~/.graft-m2b/repos.json`: B0-18, BF-24, BF-29 |
+| 131072, 131073 | `m3org/j4`, `j4b` | `$M3_STATE/m3.json`: L0-15, LF-3, BF-31 |
+| 131296, 327700, 9043968 to 9043970 | B0-34's mono, second and hostile networks | `$M3_STATE/b034.json`, kept between rounds by the operator's call |
+
+The earlier fixture check is "65536–65540 and 131072–131073 left in place".
+
+**Joined check** (`tests/fanout/joinedm2b.mjs`, 06:46Z). It covered 65536–65545, 131072–131360, 327680–327710 and
+9043968–9043975: 338 ids, 786 registry rows. 12 chains are joined, exactly the kept list, so 0 are unexpected
+(`raw/joined-leak.txt`).
+
+**Idle reading** (07:11:07 to 07:41:07Z, spanning the 07:15 and 07:30 crons):
+- graft-m2b cost $0.00 by PREFIX; the account cost $0.03, from another install.
+- `idlewatch.py` saw 0 shard containers start (`raw/idlewatch-leak.jsonl`).
+
+**Purge** (`raw/purge-leak.log`). Its gate passed 208 of 209 networks. 131260 was refused on a TLS handshake timeout
+during its status read, and is purged on its own (`raw/purge-leak-131260.log`). The two delete passes were still running
+at 07:42Z.

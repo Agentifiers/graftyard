@@ -1,0 +1,13 @@
+repo:65536: repo:65536#1#f0 follower t27 c7374; repo:65536#1#f1 follower t27 c7376; repo:65536#1#f2 follower t27 c7374
+repo:65540: repo:65540#1#f0 follower t7 c306; repo:65540#1#f1 follower t7 c307; repo:65540#1#f2 follower t7 c306
+repo:65539: repo:65539#1#f0 follower t34 c3675; repo:65539#1#f1 follower t34 c3673; repo:65539#1#f2 follower t34 c3673
+repo:65537: repo:65537#1#f0 follower t13 c603; repo:65537#1#f1 follower t13 c603; repo:65537#1#f2 follower t13 c601
+repo:65538: repo:65538#1#f0 follower t30 c956; repo:65538#1#f1 follower t30 c948; repo:65538#4#f1 follower t30 c954; repo:65538#1#f2 follower t30 c954
+repo:131072: repo:131072#1#f0 follower t16 c371; repo:131072#1#f1 follower t16 c369; repo:131072#1#f2 follower t16 c369
+repo:131073: repo:131073#1#f0 follower t5 c134; repo:131073#1#f1 follower t5 c136; repo:131073#1#f2 follower t5 c134
+repo:131296: repo:131296#1#f0 follower t2 c12903; repo:131296#1#f1 follower t2 c12903; repo:131296#1#f2 follower t2 c12903
+repo:327700: repo:327700#1#f0 follower t2 c745; repo:327700#1#f1 follower t2 c1; repo:327700#2#f1 follower t2 c743; repo:327700#1#f2 follower t2 c743
+repo:9043968: repo:9043968#1#f0 follower t2 c399; repo:9043968#1#f1 follower t2 c1; repo:9043968#5#f1 follower t2 c397; repo:9043968#1#f2 follower t2 c397
+repo:9043969: repo:9043969#1#f0 follower t2 c407; repo:9043969#1#f1 follower t2 c82; repo:9043969#2#f1 follower t2 c405; repo:9043969#1#f2 follower t2 c405
+repo:9043970: repo:9043970#1#f0 follower t2 c407; repo:9043970#1#f1 follower t2 c87; repo:9043970#2#f1 follower t2 c405; repo:9043970#1#f2 follower t2 c405
+checked 338 ids (786 registry rows); with a joined or unreadable member: 12 [65536,65537,65538,65539,65540,131072,131073,131296,327700,9043968,9043969,9043970]
