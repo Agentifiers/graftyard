@@ -4816,6 +4816,27 @@ Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"
 - A live seed past 30 s that main with `progress-suspect` passes.
 - A group whose followers shed with `forgot` while its leader still commits, which would mean the report replaced reads the leader could have served.
 
+### `cut-trace`: the leader's queue split reads one clock, and each cut records what ended it, 2026-11-18
+
+**Status.** Asked for by the operator after B0-29 run 4 (`tests/am1/results/b029-m2b.md`, "Run 4"). Built on branch `cut-trace`, code-only. (a) is a site-script change and (b) is test-faults only, so both ship through a site day; the operator approved (b)'s one `crates/raft` change as instrument-only.
+
+**Decision.**
+- (a) `/stats`'s `queue`, `queue:slot` and `queue:post`, and the last apply that splits them, read the isolate's own clock (`now_ms()`), the one a command's admission time and `commitMs` read (`workers/site/src/host.rs`, `Stats::queued`). They read the member clock at the append. Cycle, round and apply times stay on the member clock, where both of their ends are.
+- (b) `Lead::cut` returns a `CutNote` with its batch, and `cut_fresh` pushes each non-empty one to `Out::cuts`: commands taken and left per class, the batch's bytes, the agent tokens left, the frozen batches held, an entry in flight, and `CutEnd` (`Empty` 0, `Soft` 1, `EntryMax` 2, `AgentTokens` 3, append-only). The site host traces each as `Trace::Cut`, kind 29, under test-faults only. The cut takes the same commands in the same order as before.
+
+**Why.**
+- **The split mixed two clocks.** Since `lease-clock`, the member clock is floored by stamps and leads a busy isolate's own. On run 4's trace the queue as `/stats` measured it was p50 / p99 602 / 2,532 ms, and on one clock 350 / 934; the lead at `/commit` arrivals was p50 261, p99 1,495 ms, a lower bound [measured, `tests/m0/cuttrace/skew.py`]. So every `queue:slot` figure from a build with lease-clock and without this overstates the wait: B0-29 runs 1 to 4, LM-1's m45 and m47 queue p99s, and the B0-33 and B0-34 queue figures in `tests/am1/results/lm1-memory.md` rounds 34 to 41. Those runs carry an annotation; `commitMs` and their verdicts were on one clock and stand. No gate line changes.
+- **No reader of either time decides anything.** A command's `at` feeds the queue, `commitMs`, the test-faults kills (request id only), the refused path and the admitted count; the append time feeds cycle, round, apply and the split. All are `/stats` only [read in code].
+- **The trace could not say what ended a cut.** Admission samples every 10 s show a mean of 2.3 commands queued and no cap near binding (3.8 commands an entry, the agent bucket refilling 212 to 493 a second against 16.6 offered), so an empty queue is the likely end [inference]. A row per cut settles it on the next run.
+
+**What it beat.**
+- **Taking both ends from the member clock.** The admission time would have to move to it too, and the lease loop and Actions admit on `now_ms()`; the commit time a client sees is the isolate's own.
+- **Recording the end in `cut_early`.** An early cut skipped for read-ahead or a batch with no dependency makes no cut, so it has no batch to describe; no row means no cut.
+
+**Evidence.** `host::tests::the_queue_split_reads_the_clock_its_admission_read` fails on main's rule (queue 1,420 against 420) and passes. `admission::each_cut_records_what_ended_it` (an empty queue, ENTRY_SOFT at 9 of 21 pushes of 10 KiB, and agent tokens at 2 commands a second). `host::tests::a_cut_row_packs_its_note_where_the_trace_reader_looks`. `tests/m0carried/plant39.py`: 8 of 8 caught. The long sweep and Porcupine pass with output identical to main 436095f7's (harsh 16.8 s, gray 24.2 s, live 29.1 s). `tests/m0/results/cut-trace.md`.
+
+**Flip.** A hosted run whose cut rows end mostly at `Soft`, `EntryMax` or `AgentTokens`, which would make a cap the limit and reopen what moves (change (c) is held for that run). For (a): a reader of the queue split that needs the member clock, such as an expiry measured from the append.
+
 ### Not adopted: a learner's writes clear of its own output gate, 2026-11-14
 
 Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Options (a) and (b) after the A/B"; F65). The operator's pick after the gate 16 A/B: (b), the learner CPU split, not (a).

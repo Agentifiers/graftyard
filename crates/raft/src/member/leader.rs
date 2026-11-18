@@ -22,8 +22,8 @@ use crate::{CALL_DEADLINE, COMMAND_MAX, DRIFT, ENTRY_MAX, LEASE, after};
 
 use super::election::CAMPAIGN_DEADLINE;
 use super::{
-    AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, DepsUsed, DepsWanted, IdBlockError, Member, Message, ReadId,
-    ReadStart, Ready, ReconfigError, Refusal, Resolution, Role,
+    AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CutEnd, CutNote, DepsUsed, DepsWanted, IdBlockError, Member,
+    Message, ReadId, ReadStart, Ready, ReconfigError, Refusal, Resolution, Role,
 };
 
 /// Entries per AppendEntries when a follower is behind.
@@ -1059,10 +1059,11 @@ impl<C: Command> Member<C> {
     /// so `tick` cuts again once it refills.
     fn cut_fresh(&mut self) -> Option<Vec<Queued<C>>> {
         let lead = self.lead.as_mut().expect("leading");
-        let batch = Self::cut(lead, self.now, self.admit_capacity, self.entry_soft);
+        let (batch, note) = Self::cut(lead, self.now, self.admit_capacity, self.entry_soft);
         if batch.is_empty() {
             return None;
         }
+        self.out.cuts.push(note);
         Some(self.drop_replays(batch))
     }
 
@@ -1176,11 +1177,14 @@ impl<C: Command> Member<C> {
     /// any that would take the queued ones past AGENT_INLINE_ENTRY. Counted against `soft` as well, one 10 to 70 KB
     /// agent pack filled an entry, and B0-29's commit p99 at 500 agents went from 702 to 1,718 ms (LM-1,
     /// `tests/am1/results/lm1-memory.md`, round 9). Human, MergeQueue and Bot packs, which no other rule bounds, count.
-    fn cut(lead: &mut Lead<C>, now: Timestamp, fixed: Option<f32>, soft: usize) -> Vec<Queued<C>> {
+    /// With the batch, what it took and what ended it (`CutNote`).
+    fn cut(lead: &mut Lead<C>, now: Timestamp, fixed: Option<f32>, soft: usize) -> (Vec<Queued<C>>, CutNote) {
+        let (held, in_flight) = (lead.deciding.len(), lead.pending.is_some());
         let ad = &mut lead.admission;
         let cap = ad.capacity(fixed, soft);
         ad.refill(now, cap);
         let mut batch: Vec<Queued<C>> = Vec::new();
+        let mut taken = [0u32; 4];
         // (bytes ENTRY_SOFT counts, all bytes)
         let mut bytes = (0, 0);
         let fits = |q: Option<&Queued<C>>, batch: &[Queued<C>], b: (usize, usize)| {
@@ -1190,7 +1194,7 @@ impl<C: Command> Member<C> {
         for class in [AdmitClass::Human, AdmitClass::MergeQueue] {
             while fits(ad.lanes[class.lane()].front(), &batch, bytes) {
                 let q = ad.take(class).expect("front");
-                bytes = add(bytes, &q);
+                (bytes, taken[class.lane()]) = (add(bytes, &q), taken[class.lane()] + 1);
                 batch.push(q);
             }
         }
@@ -1200,22 +1204,36 @@ impl<C: Command> Member<C> {
         while n < floor && ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Agent).expect("front");
             (bytes, n, ad.tokens) = (add(bytes, &q), n + 1, ad.tokens - 1.0);
+            taken[AdmitClass::Agent.lane()] += 1;
             batch.push(q);
         }
         while fits(ad.lanes[AdmitClass::Bot.lane()].front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Bot).expect("front");
-            bytes = add(bytes, &q);
+            (bytes, taken[AdmitClass::Bot.lane()]) = (add(bytes, &q), taken[AdmitClass::Bot.lane()] + 1);
             batch.push(q);
         }
         while ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Agent).expect("front");
             (bytes, ad.tokens) = (add(bytes, &q), ad.tokens - 1.0);
+            taken[AdmitClass::Agent.lane()] += 1;
             batch.push(q);
         }
         if !batch.is_empty() {
             ad.cut_at = now;
         }
-        batch
+        // A Human, MergeQueue or Bot command left had no lane rule but bytes to stop it; an Agent one, bytes or tokens.
+        let past = |q: &Queued<C>| if bytes.0 + q.soft_bytes > soft { CutEnd::Soft } else { CutEnd::EntryMax };
+        let first = [AdmitClass::Human, AdmitClass::MergeQueue, AdmitClass::Bot].map(|c| ad.lanes[c.lane()].front());
+        let end = match (first.into_iter().flatten().next(), ad.agent().front()) {
+            (Some(q), _) => past(q),
+            (None, Some(_)) if ad.tokens < 1.0 => CutEnd::AgentTokens,
+            (None, Some(q)) => past(q),
+            (None, None) => CutEnd::Empty,
+        };
+        let left = AdmitClass::ALL.map(|c| ad.lanes[c.lane()].len() as u32);
+        let note =
+            CutNote { taken, left, soft_bytes: bytes.0, bytes: bytes.1, tokens: ad.tokens, held, in_flight, end };
+        (batch, note)
     }
 
     /// AGENT_WAIT, or an agent command's own `Admit::budget`: one still queued past its `until` is answered `Full` and

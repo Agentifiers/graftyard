@@ -31,8 +31,8 @@ pub use encode::{Enc, bootstrap, digest, encode_entry};
 pub use fold::{Command, Ev, Fold, GroupFold, MemRequests, Record, RequestRow, RequestStore, Scratch};
 pub use graftyard_types::{Digest, IdBlock, Index, RequestId, Ulid};
 pub use member::{
-    APPEND_BYTES_MAX, AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId,
-    DONE_BYTES, Deny, DepsUsed, DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError,
+    APPEND_BYTES_MAX, AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, CutEnd,
+    CutNote, DONE_BYTES, Deny, DepsUsed, DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError,
     InstallSnapshot, InstallSource, InstallWanted, LEARNER_READ_EVERY, LEARNERS_OUT_MAX, LogBase, Member, MemberConfig,
     Message, OUT_KEEP, OUT_MAX, OUTCOME_KEEP, Out, PEER_OUT_MAX, PIPELINE, READ_PIPELINE, READ_RESEND, READ_ROUND_GAP,
     ReadId, ReadStart, Ready, ReconfigError, Refusal, Resolution, RestoreError, Role, SelfAck, StepDownWhy, Storage,

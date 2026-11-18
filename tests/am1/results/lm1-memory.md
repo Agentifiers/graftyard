@@ -4014,6 +4014,12 @@ a0bca583 or later, then the 30-minute idle-start check with the reapers on, then
 trace, with a $185 stop on the meter and costok-style checks before each phase and between rows. B0-33 is skipped if
 the meter is near $185 before it starts. Nothing else.
 
+> **Annotation, 2026-11-18 (cut-trace).** On a build with lease-clock (`0b5769b7`, 2026-11-15) and without cut-trace,
+> `/stats`'s `queue`, `queue:slot` and `queue:post` mix two clocks and overstate the wait by the leader's member clock
+> lead (B0-29 run 4: queue p99 2,532 ms against 934 on one clock, `tests/m0/results/cut-trace.md`). That covers the
+> queue figures from this round to round 41 (B0-33, B0-34); earlier rounds only if their build carried lease-clock.
+> Commit p99 and the verdicts were on one clock and stand.
+
 ### Round 34: m39 site day, the idle-start check, B0-34, B0-33 with the inbound trace (2026-11-16)
 
 **Site day.** From a clean worktree at main `a0bca583`: promote-warm, registry-restore, push-reads, feed-ahead,
@@ -5011,6 +5017,9 @@ operations). The short sim suite gave 12.1 s harsh, 20.7 s gray and 16.6 s live.
 
 ### Round 40: the m45 slot, site day from branch late-suspect aa3bf360, B0-33 (2026-11-17)
 
+> **Annotation, 2026-11-18 (cut-trace).** m45's queue and `queue:slot` p99s mix two clocks and overstate the wait;
+> commit p99 and the verdict stand (`tests/m0/results/cut-trace.md`).
+
 **Site day.** Built from `late-suspect` at aa3bf360 (main 7232e22c plus late-suspect); the m43 image was reused
 (`containers/` unchanged). Sites a c1bab4d8, b 843c7094, c a0b18de5; edge 09f3f6cc at 100%; GRAFTYARD_PR_TRIGGER unset;
 `siteday exit 0` (`raw/siteday-m45.status`).
@@ -5176,6 +5185,9 @@ whether the leader is heard, not whether it commits.
   late-suspect's 17.0 / 24.7 / 27.8 s. Porcupine Ok on all three (147,412, 2,331,603 and 5,965,204 operations).
 
 ### Round 41: the m47 slot, site day from branch lookup-retry 4e5c2afe, B0-33 (2026-11-18)
+
+> **Annotation, 2026-11-18 (cut-trace).** m47's queue and `queue:slot` p99s mix two clocks and overstate the wait;
+> commit p99 and the verdict stand (`tests/m0/results/cut-trace.md`).
 
 **Site day.** Built from `lookup-retry` at 4e5c2afe (main 56918444 plus lookup-retry), in its own worktree. The m43
 image was reused (`containers/` unchanged); test-faults, standard-4, ROLLUP=1, 32.25; GRAFTYARD_PR_TRIGGER unset;
