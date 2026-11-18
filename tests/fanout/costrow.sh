@@ -18,7 +18,17 @@ s() { echo "$(stamp) $*" >> "$ST"; }
 acct() { python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r '.usd // 999' 2>/dev/null || echo 999; }
 # With RUN_PREFIX (graft-m2b) the run's delta counts only that install's scripts, for a slot that shares the account.
 runusd() { PREFIX=${RUN_PREFIX:-} python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r "${RUN_PREFIX:+.prefix_usd // }.usd // 999" 2>/dev/null || echo 999; }
-meter() { echo "$(acct "${ACCT_FROM:?}") $(runusd "${RUN_FROM:-$ACCT_FROM}")"; }
+# A failed read is 999, which stops the row; the mt row's seeds were stopped at $0.16 by one read that failed while the
+# orb's proxy dropped workers.dev and the API (2026-11-18 18:12Z). A read is retried three times, 20 s apart, before
+# 999 stands, so a lasting outage still stops the row and a passing one does not.
+meter() {
+  local u
+  for _ in 1 2 3; do
+    u="$(acct "${ACCT_FROM:?}") $(runusd "${RUN_FROM:-$ACCT_FROM}")"
+    case "$u" in *999*) sleep 20 ;; *) break ;; esac
+  done
+  echo "$u"
+}
 over() { python3 -c 'import sys; a, r = map(float, sys.argv[1].split()); n, s, rs = map(float, sys.argv[2:]); sys.exit(0 if a + n >= s or r + n >= rs else 1)' \
   "$1" "${2:-0}" "$STOP" "${RUN_STOP:-1e9}"; }
 python3 tests/fanout/edgever.py "$EDGE_LOG" ${EDGE_SCRIPT:-} >> "$ST" 2>&1 || { s "stopped: the edge is not the site day's"; echo DONE >> "$ST"; exec sleep infinity; }
