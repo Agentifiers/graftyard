@@ -4776,6 +4776,55 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Flip.** A fork route (the gate must then refuse a network another repository uses); a witness member that stops folding the core tier (`purgeable` must then come from the group); or a legal-hold feature, which must make the gate refuse.
 
+### `purge-outside`: a purge needs the tombstone only from the newest committed config, and retires the members outside it unchecked, 2026-11-18
+
+**Status.** Design, for the lead's review before code (R27). Amends "`repo-purge`": its gate, its retire order, and `/purge_retire`. Nothing else changes.
+
+**Decision.** The edge reads every member `plan` names, as today, plus each joined member's committed config and index from `/status`. Then:
+- **The newest committed config `C`, at index `I`,** is the one with the highest committed index among the members that answer. The gate requires a quorum of `C`, by `quorum::election`, to answer, joined or not joined. Otherwise it refuses `Unanswered` and names a member of `C` that did not answer. A not-joined member counts as answered: it holds no entries and acks nothing, and only a purge that passed this gate retires a member.
+- **In-config members** are `C`'s voters (`quorum::voters`, so not a `Degraded` config's `lost` voter) and its learners. Each joined one must hold the tombstone (`NoTombstone`) and must not be `changing`, as today: a committed `Joint`, a config appended past the committed one, or a placement running.
+- **Outside members** are every other member `plan` names: a voter a replacement removed, a `Degraded` config's `lost` voter, or a registry-row member that never received a config. Each is retired with no tombstone or `changing` check.
+- **`/purge_retire` takes `{"outside": I}`.** The member applies the outside rule itself only if its own committed config is older than `I`, absent, or does not name it (the site's `removed`). Otherwise it applies today's two checks, so a member that caught up into `C` after the gate read is held to the in-config rule.
+- **Order.** Outside members are retired first, then in-config members, and each registry row is deleted only if it still names that member (`DELETE /row?chain&do_name`, unchanged). A purge cut partway and called again still passes. If the in-config members went first, a rerun would find only an outside member answering, take its old config as `C`, and refuse forever.
+
+**Why it cannot lose an acknowledged write.** An acknowledged write is durable on a quorum of the config it committed under (`quorum::commit`).
+- **Every write that committed under `C` or later** has a quorum that holds no outside member, so retiring one drops no copy that the quorum needed.
+- **Every write before `I`** sits on `C`'s committing quorum by log matching, because `C`'s entry at `I` committed after it.
+- **No newer config can hide behind `C`.**
+  - A config change adds or removes one site, and only after the previous change committed (`Member::reconfigure`). A replacement goes through `Degraded { lost }` first, and that commit needs every voter but the lost one.
+  - So a quorum of `C`'s successor and a quorum of `C` share at least one member [inference: the one-change overlap that single-server membership changes rely on].
+  - If that successor had committed, some member of the answering `C` quorum holds its entry. That member then reports a committed index past `I`, which contradicts `C` being newest, or it reports `changing`, which refuses.
+- **The tombstone is still required from every joined in-config member.** So `Deleted` committed in the group, and the voter that is behind it today still refuses (`a_voter_behind_the_tombstone_is_not_purgeable_and_the_purge_refuses`).
+
+**A stale member that later gets entries.** A leader still listing an outside member must be one whose log ends before `C`, in an older term. Its quorum shares a member with `C`'s quorum, which holds a higher term and rejects it, so it commits nothing.
+- **Before the retire,** the stale member may accept that leader's entries and even apply the tombstone. That is harmless, because it counts toward no quorum of `C`.
+- **If it catches up into `C` and `C` names it,** `/purge_retire`'s own check moves it to the in-config rule.
+- **After the retire,** the member is not joined: it answers 409 to an append, votes for no one and acks nothing. A later `/join` under the same name, from a placement that reuses a failed try's generation, starts empty and catches up from the leader. That placement would show as `changing` on an in-config member and refuse the gate.
+
+**Beat.**
+- (a) Asking every joined member for the tombstone, as today: an outside member never gets entries, so the gate refuses forever. graft-m4a has 26 such chains.
+- (b) Waking the stale member, or rejoining it to the group: that is a config change on a deleted repository, only to delete it.
+- (c) The edge deleting an outside member's storage without asking it: no request path reaches a member's storage except the member itself.
+- (d) A majority of all members `plan` names, instead of of `C`: the outside members would outvote the config.
+
+**Evidence.**
+- **graft-m4a (2026-11-18)** [measured, `tests/m4/results/m4-wp4.md`]:
+  - 26 of 35 chains hold a first-generation site-1 voter outside the newest committed config, most at applied 1. In 8 of them (65539 to 65543, 65547, 65551 and 65555), `C` is `Degraded { lost: 1 }`, so `C`'s own site-1 voter `#N#f1` is outside as well: the leader does not replicate to it (`Member::targets`), and 65551's is 2 entries behind.
+  - 13 chains have a registry-row member with no config (`config: null`, applied 0).
+  - Under this rule every one of the 27 passes: `C`'s in-config voters all hold the tombstone, or answer `NotDeleted` until their `DELETE`.
+- **In memory, to build:**
+  - `crates/git/src/purge.rs`, two tests that fail on main: a stale first-generation `#1#f1` voter outside `C`, with `C`'s voters holding the tombstone, passes; a registry-row member with no config passes. Plus: refusal when a quorum of `C` does not answer; refusal on an in-config member with an uncommitted newer config; `Degraded`'s lost voter counted outside; a cut purge called again after it retired the outside members and one voter. The existing gate tests keep passing.
+  - The member's outside rule as a pure function (`purge::outside_may_retire`), tested on an older config, no config, a config that does not name it, and a config at `I` that names it.
+  - `crates/git/tests/lifecycle.rs`: on real members, a voter replaced through `Degraded { lost }` and `Normal`, then the delete, then the gate. Fails on main.
+- **Plants 91 and up** (`tests/m4/wp4/plant.py`):
+  - the tombstone checked on outside members, or skipped for in-config ones;
+  - no quorum of `C` required;
+  - `Degraded`'s lost voter counted in-config;
+  - in-config members retired first;
+  - the member's outside rule ignoring `I`.
+
+**Flip.** A config change that adds or removes more than one site at once without `Joint`, which breaks the overlap this rests on; a member that can rejoin a group under an old name while keeping its storage; or a fork route, as for "`repo-purge`".
+
 ### `b032-shed`: a member that forgot its leader sheds read-index reads, and an agent push is answered within AGENT_PUSH_BOUND, 2026-11-18
 
 Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"). Orchestrator-approved, including both `crates/raft` changes.
