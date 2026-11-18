@@ -92,6 +92,9 @@ struct Known {
     term: u64,
     /// The member generation of the config held: the highest any member in it carries (`Placement::generation`).
     generation: u32,
+    /// The member that last answered as leader, for an isolate that holds no config naming it: a chain whose leader
+    /// always answers never sends a `NotLeader`, so its voters stay unknown.
+    answered: Option<Target>,
 }
 
 thread_local! {
@@ -268,9 +271,10 @@ fn learn_leader(chain: ChainId, v: &Value) {
     });
 }
 
-/// Whether this isolate holds a leader for `chain` that its config names, so the group exists and a commit needs no
-/// create probe first (`design/DESIGN.md`, journey 1, step 1). False after any `NotLeader` (`commit_hedged` forgets
-/// the leader), after a reply from a term below the one held (`learn_leader`), and before any reply named one.
+/// Whether this isolate holds a leader for `chain`, named by its config or the member that answered as leader, so the
+/// group exists and a commit needs no create probe first (`design/DESIGN.md`, journey 1, step 1). False after any
+/// `NotLeader` (`commit_hedged` forgets the leader), after a reply from a term below the one held (`learn_leader`), and
+/// before any reply named one.
 pub fn knows_leader(chain: ChainId) -> bool {
     cached_leader(chain).is_some()
 }
@@ -673,7 +677,13 @@ where
                 continue;
             }
             learn_leader(chain, &v);
-            return Ok(Some((v, step, Target { site: s, do_name: name })));
+            let t = Target { site: s, do_name: name };
+            KNOWN.with(|k| {
+                if let Some(e) = k.borrow_mut().get_mut(&chain).filter(|e| e.leader == Some(s)) {
+                    e.answered = Some(t.clone());
+                }
+            });
+            return Ok(Some((v, step, t)));
         }
         if first_pass && unjoined > 0 && others == 0 {
             return Ok(None);
@@ -1222,11 +1232,15 @@ pub const COMMIT_RECEIPT: Duration = Duration::from_millis(2_000);
 /// command is sent again, so a send whose reply was lost costs this at most once.
 pub const RECEIPT_OPEN: Duration = Duration::from_millis(8_000);
 
-/// The member the caller last saw lead `chain`, if its config names it.
+/// The member the caller last saw lead `chain`: from its config, else the member that answered as leader.
 pub fn cached_leader(chain: ChainId) -> Option<Target> {
     let k = KNOWN.with(|k| k.borrow().get(&chain).cloned())?;
     let leader = k.leader?;
-    k.voters.into_iter().find(|(s, _)| *s == leader).map(|(site, do_name)| Target { site, do_name })
+    k.voters
+        .into_iter()
+        .find(|(s, _)| *s == leader)
+        .map(|(site, do_name)| Target { site, do_name })
+        .or(k.answered.filter(|t| t.site == leader))
 }
 
 /// The highest term a reply from `chain` carried to this isolate, 0 before any.
@@ -2850,6 +2864,39 @@ mod tests {
         assert!(config_known(chain, &rec(1)), "an edge still on the old record");
         forget_leader(chain);
         assert!(config_known(chain, &rec(2)), "a lost leader is not a lost config");
+    }
+
+    /// A leader that answers the lookup's first post, from the record's bootstrap names, is cached: the next request
+    /// posts it as the cached leader and takes no lookup mark. An isolate that never met a `NotLeader` holds no config,
+    /// and when `cached_leader` needed the leader among the config's voters every later read walked under the mark,
+    /// one request at a time (B0-29 run 5's edge, `tests/m0/results/merge-tail.md`).
+    #[test]
+    fn a_leader_found_by_its_bootstrap_name_is_cached() {
+        use futures_util::FutureExt;
+        let chain = ChainId::Names(graftyard_types::NameShard(708));
+        let leader = "names:708#1#f0".to_string();
+        let (n2, n3) = (leader.clone(), leader.clone());
+        let out = lookup(
+            chain,
+            || 0,
+            move |k| {
+                let v = vec![(SiteId(0), n2.clone(), Step::Bootstrap { depth: 0 })];
+                async move { (k == 0).then_some(v) }
+            },
+            |_s, _name, _by| async { Some((200, json!({ "value": 1, "meta": { "term": 3, "leader": 0 } }))) },
+            |_about: Target, _term, _all| async { None },
+            |_d: Duration| async {},
+        )
+        .now_or_never()
+        .expect("ready")
+        .expect("answered")
+        .expect("a group");
+        assert_eq!(out.2.do_name, n3);
+        assert_eq!(cached_leader(chain).map(|t| t.do_name), Some(leader), "the answering leader is cached");
+        assert!(mark(chain, 99, 0), "no lookup mark is left held");
+        // A later reply names a leader on another site: the member kept is not that leader, so none is cached.
+        learn_leader(chain, &json!({ "meta": { "term": 4, "leader": 1 } }));
+        assert_eq!(cached_leader(chain), None, "site 0's member is not site 1's leader");
     }
 
     /// A group whose leader is truly gone is still elected without `create`: every voter answers `NotLeader` naming

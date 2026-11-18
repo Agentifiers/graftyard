@@ -189,7 +189,7 @@ pub enum SystemChain { Release, Names, Tokens, Ids }
 /// removed one, answers with its latest committed one. The edge finds the record by route: the owner's `Names` rows for
 /// `o/r` and owner routes, `NamesEvent::RepoOwner` for `/repositories/{id}` and a network's root, and the cached
 /// `Release` view for system chains. Replies carry it. An isolate runs one lookup per chain under a plain-data mark;
-/// others poll the cache on own timers. A cached leader's first miss or `busy` is retried there; a second walks.
+/// others poll the cache. A leader that answered is cached, config or not; a first miss is retried, a second walks.
 pub struct ReplyMeta { pub term: Term, pub leader: Option<SiteId>, pub config_index: Index }
 /// Bootstrap. A group's first entry is `Config(Normal(from_record(record)))` at term 1, index 1, with a zero `prev`, no
 /// requests, and the record's `at`, so every voter builds and may propose the same bytes. A member with no committed

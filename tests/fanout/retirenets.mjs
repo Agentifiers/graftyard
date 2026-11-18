@@ -8,7 +8,7 @@
 // purge.py's own gate finds every voter "not joined". `repo-meta:N` is handled the same way when a registry row names it.
 //   node tests/fanout/retirenets.mjs FIRST-LAST|N ...      (NO_PURGE=1: retire only)
 import { appendFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { member, tools } from "../am1/hosted/lib.mjs";
 
 const LOG = process.env.RETIRE_LOG ?? "tests/fanout/raw/retirenets-m2b.log";
@@ -60,8 +60,18 @@ for (const net of nets) {
   }
   done.push(net);
 }
+// purge.py runs in its own process group, which this process kills if it is stopped itself: run under `timeout`, the
+// old `execFileSync` child outlived it, and an orphaned purge.py deleted a later run's objects with no log line
+// (131357's bucket, B0-29 run 5, `tests/m0/results/merge-tail.md`).
 if (!process.env.NO_PURGE && done.length) {
-  const out = execFileSync("uv", ["run", "-q", "--with", "boto3", "python3", "tests/fanout/purge.py", ...done.map(String)],
-    { encoding: "utf8", env: { ...process.env, PURGE_LOG: process.env.PURGE_LOG ?? "tests/fanout/raw/purge-m2b.log" } });
-  for (const l of out.trim().split("\n")) log(`purge: ${l.slice(21)}`);
+  const child = spawn("uv", ["run", "-q", "--with", "boto3", "python3", "tests/fanout/purge.py", ...done.map(String)],
+    { detached: true, stdio: ["ignore", "pipe", "inherit"],
+      env: { ...process.env, PURGE_LOG: process.env.PURGE_LOG ?? "tests/fanout/raw/purge-m2b.log" } });
+  const stop = (sig) => { try { process.kill(-child.pid, "SIGTERM"); } catch {} process.exit(sig === "SIGINT" ? 130 : 143); };
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => stop(sig));
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  const code = await new Promise((r) => child.on("close", r));
+  for (const l of out.trim().split("\n").filter(Boolean)) log(`purge: ${l.slice(21)}`);
+  if (code !== 0) { log(`purge: exit ${code}`); process.exitCode = 1; }
 }
