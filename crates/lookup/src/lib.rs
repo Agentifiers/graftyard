@@ -886,7 +886,21 @@ pub async fn read_spread_for(
 ) -> std::result::Result<Option<(Value, Step, Target)>, String> {
     let until = now_ms() + retry_for.as_millis() as u64;
     let wait = |ms| Delay::from(Duration::from_millis(ms));
-    retry_shed(until, now_ms, || spread_once(b, chain, record, body), wait, js_sys::Math::random).await.and_then(|r| r)
+    retry_shed(until, now_ms, || spread_once(b, chain, record, body, true), wait, js_sys::Math::random)
+        .await
+        .and_then(|r| r)
+}
+
+/// `read_spread` without the leader: one pass over the learners and followers, and `Ok(None)` where `read_spread`
+/// would go on to the leader. For a read the caller has another place to serve from (the edge's `ls-refs`, whose
+/// fallback is the network's shard), so it never adds to the leader's load (F91, `tests/am1/results/b029-m2b.md`).
+pub async fn read_off_leader(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    body: &Value,
+) -> std::result::Result<Option<(Value, Step, Target)>, String> {
+    spread_once(b, chain, record, body, false).await.map_err(|(why, _)| why).and_then(|r| r)
 }
 
 /// How long a write asks again for a read its members shed (`read_spread_for`) [guess]: a few backed-off tries, then a
@@ -935,13 +949,15 @@ where
     }
 }
 
-/// One pass of `read_spread`: `Err` with the wait when every member asked shed it.
+/// One pass of `read_spread`: `Err` with the wait when every member asked shed it. A read every member declines goes
+/// to the leader only with `to_leader`; without it, `Ok(Ok(None))`.
 #[allow(clippy::type_complexity)]
 async fn spread_once(
     b: &Bindings<'_>,
     chain: ChainId,
     record: &PlacementRecord,
     body: &Value,
+    to_leader: bool,
 ) -> std::result::Result<std::result::Result<Option<(Value, Step, Target)>, String>, (String, u64)> {
     let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
     let voters = if known.voters.is_empty() {
@@ -1001,6 +1017,7 @@ async fn spread_once(
             }
             Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms))
         }
+        Spread::Leader if !to_leader => Ok(Ok(None)),
         Spread::Leader => Ok(call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await),
     }
 }

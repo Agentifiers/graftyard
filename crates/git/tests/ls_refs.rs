@@ -152,3 +152,129 @@ fn host_refs_stay_hidden_and_session_refs_list_only_under_their_prefix() {
         format!("{o} refs/graftyard/sessions/t1\n{o} refs/heads/x\n<flush>")
     );
 }
+
+mod common;
+
+/// F91's read-your-writes: a push acknowledged through the leader and one follower, while the other follower heard
+/// none of it, then an `ls-refs` read on that follower by read-index (`LsRefs::query`, `ls_refs::read`). The leader's
+/// answer reaches the follower before the entries do; the read is granted only once the follower applied the leader's
+/// index, and its answer lists the pushed tip, HEAD and its branch alike, from one fold. A read granted at the
+/// follower's own applied index would list the old tip: a stale `ls-refs` after an acknowledged push.
+#[test]
+fn a_follower_ls_refs_after_an_acknowledged_push_lists_the_new_tip() {
+    use common::*;
+    use graftyard_git::ls_refs::{LsRefsRead, read};
+    let mut w = World::new();
+    let now = w.now;
+    let g = &mut w.repo;
+    let l = g.leader();
+    let b = *SITES.iter().find(|s| **s != l).unwrap();
+    // The push, acknowledged with b hearing nothing.
+    let rid = RequestId(Ulid(9 << 40));
+    let push = RepoEvent::Refs {
+        push: rid,
+        actor: None,
+        updates: vec![up("refs/heads/main", Some(oid(1)), Some(oid(2)))],
+        pack: None,
+    };
+    g.on(l, now, |m, t| m.record(t, rid, REPO_FORMAT_V1, vec![push])).unwrap();
+    for _ in 0..50 {
+        for Envelope { from, to, msg } in std::mem::take(&mut g.inbox) {
+            if from != b && to != b {
+                g.on(to, now, |m, t| m.step(t, from, msg));
+            }
+        }
+    }
+    let acked = g
+        .resolutions
+        .iter()
+        .find_map(|r| match r {
+            Resolution::Recorded { id, result: Ok(i) } if *id == rid => Some(*i),
+            _ => None,
+        })
+        .expect("the push is acknowledged without b");
+    assert!(g.members[b.0 as usize].group_fold().applied() < acked, "b has not applied the push");
+    // b's read: the leader's answer first, b's entries after it.
+    let ls = LsRefs::parse(&V2Request {
+        command: "ls-refs".into(),
+        caps: vec![],
+        args: vec![b"symrefs".to_vec(), b"ref-prefix HEAD".to_vec(), b"ref-prefix refs/heads/".to_vec()],
+    })
+    .unwrap();
+    let q = ls.query()["q"]["lsRefs"].clone();
+    let id = g.on(b, now, |m, t| m.read_index(t)).expect("b names its leader");
+    let granted = |g: &Group<RepoCmd>| {
+        g.resolutions.iter().find_map(|r| match r {
+            Resolution::Read { id: i, result } if *i == id => Some(result.clone()),
+            _ => None,
+        })
+    };
+    // Only the read-index exchange: b's ask and the leader's answer. Anything else to b waits.
+    let mut held = Vec::new();
+    for _ in 0..20 {
+        for e in std::mem::take(&mut g.inbox) {
+            let read = matches!(
+                e.msg,
+                graftyard_raft::Message::ReadIndex { .. } | graftyard_raft::Message::ReadIndexRes { .. }
+            );
+            if e.to == b && !read {
+                held.push(e);
+                continue;
+            }
+            let Envelope { from, to, msg } = e;
+            g.on(to, now, |m, t| m.step(t, from, msg));
+        }
+    }
+    assert_eq!(granted(g), None, "b has the leader's index but not its entries: the read waits");
+    // Then b's entries, and the leader's resends on ticks.
+    g.inbox.extend(held);
+    let mut answer = None;
+    let mut t = now;
+    for _ in 0..20 {
+        for Envelope { from, to, msg } in std::mem::take(&mut g.inbox) {
+            let seen = g.resolutions.len();
+            g.on(to, t, |m, t| m.step(t, from, msg));
+            let grant = g.resolutions[seen..].iter().find_map(|r| match r {
+                Resolution::Read { id: i, result: Ok(grant) } if *i == id => Some(grant.clone()),
+                _ => None,
+            });
+            if let (Some(grant), None) = (grant, &answer) {
+                let f = g.members[b.0 as usize].fresh(&grant).expect("granted on b in this input");
+                answer = Some((grant.floor(), f.index(), read(f.fold(), &q)));
+            }
+        }
+        t = Timestamp(t.0 + graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+        for s in SITES {
+            g.on(s, t, |m, t| m.tick(t));
+        }
+    }
+    let (floor, at, v) = answer.unwrap_or_else(|| panic!("b's read was not granted: {:?}", granted(g)));
+    assert!(floor >= acked && at >= acked, "granted at {at:?} (floor {floor:?}) below the push at {acked:?}");
+    let r: LsRefsRead = serde_json::from_value(v).unwrap();
+    let got = lines(&ls.answer_read(&r).expect("one fold answers"));
+    let tip = oid(2).hex();
+    assert_eq!(
+        got,
+        [format!("{tip} HEAD symref-target:refs/heads/main\n"), format!("{tip} refs/heads/main\n"), "<flush>".into()]
+    );
+}
+
+/// HEAD and its branch's line from two states (a HEAD tip that differs from the page's line, as an answer stitched
+/// from reads at two indexes gives) are never answered: the shard answers.
+#[test]
+fn head_and_its_branch_from_two_states_go_to_the_shard() {
+    use graftyard_git::ls_refs::{HeadRead, LsRefsRead};
+    let ls = LsRefs::parse(&V2Request {
+        command: "ls-refs".into(),
+        caps: vec![],
+        args: vec![b"symrefs".to_vec(), b"ref-prefix HEAD".to_vec(), b"ref-prefix refs/heads/".to_vec()],
+    })
+    .unwrap();
+    let (old, new) = (ObjectId([1; 20]).hex(), ObjectId([2; 20]).hex());
+    let page = |o: &str| RefsPage { refs: vec![("refs/heads/main".into(), o.into())], next: None };
+    let head = |o: &str| Some(HeadRead { target: b"refs/heads/main".to_vec(), oid: Some(o.into()) });
+    assert!(ls.answer_read(&LsRefsRead { head: head(&new), pages: vec![page(&new)] }).is_some(), "one state");
+    assert_eq!(ls.answer_read(&LsRefsRead { head: head(&old), pages: vec![page(&new)] }), None, "HEAD older");
+    assert_eq!(ls.answer_read(&LsRefsRead { head: head(&new), pages: vec![page(&old)] }), None, "the page older");
+    assert_eq!(ls.answer_read(&LsRefsRead { head: None, pages: vec![page(&new)] }), None, "no HEAD");
+}

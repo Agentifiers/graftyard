@@ -26,7 +26,7 @@ route = lambda code: ROUTES[code - 1] if 0 < code <= len(ROUTES) else "other"
 # sorted order, so a trace from before it names core rows `ranges` and whole-tier dumps `other` (lm1-memory round 37).
 READ_QUERIES = ["probe", "dep", "rows", "prsync", "accountLogins", "user", "summary", "split", "settings", "request",
                 "repoOwner", "repo", "ranges", "placement", "mergequeue", "login", "jti", "hosted", "genesis", "app",
-                "key", "packed", "refs", "core"]
+                "key", "packed", "refs", "core", "lsRefs"]
 query = lambda code: READ_QUERIES[code - 1] if 0 < code <= len(READ_QUERIES) else "other"
 
 args = sys.argv[1:]
