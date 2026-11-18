@@ -555,6 +555,13 @@ fn budget_left(c: &Ctx<'_>) -> Option<std::time::Duration> {
     c.bound.get().map(|until| std::time::Duration::from_millis((until - js_sys::Date::now()).max(0.0) as u64))
 }
 
+/// At the read gate: an authenticated push the edge classes Agent (`agent`) whose gate read its members shed until its
+/// AGENT_PUSH_BOUND ended answers `ng <ref> agent admission full, retry after 1s`, not 503. Any other gate failure, and
+/// any push not classed Agent, keeps the 503 with `Retry-After`.
+fn gate_ng(agent: bool, e: &str) -> Option<Refusal> {
+    (agent && e.contains(graftyard_lookup::OVERLOADED)).then(|| Refusal::agent_full(1))
+}
+
 /// At a push's commit send: an Agent push with none of its AGENT_PUSH_BOUND left is refused in B0-32's shape, `ng <ref>
 /// agent admission full, retry after 1s`, before anything reaches the group; one with some left sends it as `budget_ms`.
 /// Any other class, and a push with no bound, sends none and waits as before.
@@ -1241,6 +1248,7 @@ async fn receive_pack(
     repo: &Repo,
     path: &str,
     who: Option<Principal>,
+    early: Option<Refusal>,
 ) -> Result<Response> {
     let Some(actor) = who else { return unauthorized(c.rid, "No anonymous write access.") };
     let gz = req.headers().get("content-encoding")?.is_some_and(|e| e == "gzip");
@@ -1278,6 +1286,10 @@ async fn receive_pack(
     };
     let atomicity = if rp.caps.atomic { Atomicity::AllOrNothing } else { Atomicity::PerRef };
     let refuse = |r: Refusal| git_result(c.rid, Service::ReceivePack, r.render(&rp));
+    // A refusal decided before the body was read (`gate_bound_refusal`), rendered per ref once its commands are.
+    if let Some(r) = early {
+        return after_body(c, &mut tail, path, refuse(r)).await;
+    }
     if atomicity == Atomicity::AllOrNothing && rp.updates.len() > ATOMIC_REFS_MAX {
         return after_body(c, &mut tail, path, refuse(Refusal::too_many_atomic(rp.updates.len()))).await;
     }
@@ -2927,6 +2939,7 @@ async fn serve(
     if rpc_push && who.as_ref().is_some_and(|w| bounded(&c, w)) {
         c.timing.bound_from_start(&c.bound);
     }
+    let mut early = None;
     // The read gate, before any byte of the repository: an anonymous request for a repository that is not visibly
     // public gets 401 at once, so git asks for credentials, and a caller who may not read it gets the 404 an unknown
     // repository gets (`design/SHARED.md`, "Identity and tokens", `authorize`). A push needs read too.
@@ -2936,7 +2949,22 @@ async fn serve(
             Route::InfoRefs { service: Some(Service::ReceivePack), .. }
                 | Route::Rpc { service: Service::ReceivePack, .. }
         );
-        match api::timed(&c, "gate", read_gate(&c, repo, who.as_ref())).await? {
+        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref())).await?;
+        // AGENT_PUSH_BOUND at the read gate: an authenticated push the edge classes Agent, whose gate read its members
+        // shed until the bound, answers B0-32's `ng` once git has sent its commands, not 503. The repository resolved,
+        // so the `ng` says no more than the 503 did: an unknown repository is 404 before the gate.
+        let agent = match (&who, &gate) {
+            (Some(w), Err(_)) if c.bound.get().is_some() && rpc_push => {
+                matches!(admission(&c, w, &[], true, 0).await,
+                    Some(a) if a.class == graftyard_git::group::ClassWire::Agent)
+            }
+            _ => false,
+        };
+        match gate {
+            Err(e) if gate_ng(agent, &e).is_some() => {
+                c.timing.put("bound", 0.0);
+                early = gate_ng(agent, &e);
+            }
             Ok(graftyard_identity::Decision::Allow) => {}
             Ok(_) if who.is_none() && push => return unauthorized(rid, "No anonymous write access."),
             Ok(_) if who.is_none() => return unauthorized(rid, "Authentication required\n"),
@@ -2966,7 +2994,7 @@ async fn serve(
             }
             #[cfg(feature = "test-faults")]
             let open = push_log::opened();
-            let r = receive_pack(&c, req, repo, &format!("{owner}/{name}"), who).await;
+            let r = receive_pack(&c, req, repo, &format!("{owner}/{name}"), who, early).await;
             // A test install answers each push with its stages (`api::Timing`), as REST answers each request.
             #[cfg(feature = "test-faults")]
             {
@@ -2993,8 +3021,8 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        Cut, ShardRefusal, bound_at_send, capped, gunzip, shard_refusal, shard_url, streamed_site, validate_failed,
-        validate_sites, validate_url, warm_first,
+        Cut, ShardRefusal, bound_at_send, capped, gate_ng, gunzip, shard_refusal, shard_url, streamed_site,
+        validate_failed, validate_sites, validate_url, warm_first,
     };
 
     /// `b032-shed` B: an Agent push past its AGENT_PUSH_BOUND at the commit send is refused in B0-32's `ng` shape and
@@ -3007,6 +3035,12 @@ mod tests {
         assert_eq!(bound_at_send(true, Some(Duration::from_millis(1_200))).ok(), Some(Some(1_200)));
         assert_eq!(bound_at_send(false, Some(Duration::ZERO)).ok(), Some(None), "a Human push is not bounded");
         assert_eq!(bound_at_send(true, None).ok(), Some(None), "a push with no bound sends none");
+        // At the read gate: a shed gate read at the bound is `ng` for an Agent push, and stays 503 otherwise.
+        let shed = format!("repo:1: every member asked shed the read: {}", graftyard_lookup::OVERLOADED);
+        let r = gate_ng(true, &shed).expect("shed at the bound");
+        assert_eq!(r.reason, "agent admission full, retry after 1s");
+        assert!(gate_ng(false, &shed).is_none(), "a Human push keeps the 503");
+        assert!(gate_ng(true, "the repository's group has no leader").is_none(), "only a shed read becomes ng");
     }
 
     /// A streamed body's cap counts the bytes the edge read ahead of the stream, so a body one byte over the cap is

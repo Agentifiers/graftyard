@@ -4738,7 +4738,7 @@ Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"
 
 **Decision.** (A) A follower or learner whose read-index batch went unanswered for CAMPAIGN_DEADLINE and that forgot its leader (F67 rule 12, `raft::Member::forgot`) answers a read-index read that fails `NotLeader` naming none as `overloaded`, with `"forgot": {site, term}`. The edge's `spread_once` treats it as shed, never reads on the leader, and sends one `suspect` report about the forgotten member at that term, damped by SUSPECT_GAP. Every other `NotLeader` answers and routes as before, and `check_remote`'s timers and campaign are unchanged. (B) `AGENT_PUSH_BOUND` is 5 s from a push's arrival at the edge, for a push the edge may class Agent without a read (an App, a user token with an App, or `X-Graftyard-Agent-Session`):
 - The edge's shed-read retries end at the bound instead of LOOKUP_FOR.
-- An Agent push still unsent at the bound answers `ng <ref> agent admission full, retry after 1s`, and nothing reaches the group.
+- An Agent push still unsent at the bound answers `ng <ref> agent admission full, retry after 1s`, and nothing reaches the group. That includes an authenticated push the edge classes Agent whose read gate was shed until the bound: it answers `ng` once git has sent its commands, not the 503 a shed gate read gives every other caller. The repository has already resolved there (an unknown one is 404 before the gate), so the `ng` reveals no more than the 503 did.
 - A sent one carries what is left as `AdmitWire::budget_ms` (`Admit::budget`). The leader refuses it `Full` at once when its expected wait (agent commands queued ahead at AGENT_SHARE × capacity, plus one round) is longer. `expire_agents` answers `Full` to any agent command still in its lane at its own deadline, the earlier of AGENT_WAIT and its budget.
 - A command cut into a batch or an entry is never answered `Full`, so no acknowledgment is lost.
 
@@ -4758,11 +4758,12 @@ Branch `b032-shed` (`tests/am1/results/lm1-rows-m3f.md`, "B0-32 design proposal"
   - `an_agent_command_is_answered_within_its_budget_and_never_acked_after_full`: 20 of 20 refused at once behind 600 queued, Human all acked, no `Full` command in the fold.
   - `a_queued_agent_command_expires_at_its_budget_not_at_agent_wait`: expired at 2,005 ms.
   - `a_command_appended_before_its_budget_lapses_commits_after_it_and_is_acked`: a 1.4 s round, a 1 s budget, 5 of 5 acked at about 1.3 s.
-- The site's `a_read_index_read_on_a_member_that_forgot_its_leader_is_shed_with_the_report`, lookup's `a_shed_that_names_a_forgotten_leader_is_reported_and_never_read_on_the_leader`, and the edge's `an_agent_push_past_its_bound_is_refused_in_the_ng_shape_before_its_commit`.
+- The site's `a_read_index_read_on_a_member_that_forgot_its_leader_is_shed_with_the_report`, lookup's `a_shed_that_names_a_forgotten_leader_is_reported_and_never_read_on_the_leader`, and the edge's `an_agent_push_past_its_bound_is_refused_in_the_ng_shape_before_its_commit` (the commit send and the read gate's `gate_ng`).
 - `tests/m0carried/plant37.py`: every mutant caught.
 - The simulator's `spread_read` follows (A). The long sweep, Porcupine and `long_liveness` are judged seed by seed against main with LM-1's `progress-suspect`, in the results file.
 
 **Flip.**
+- Still answered 503, not `ng`: a gate failure that is not a shed read (no leader, not created), and any push the edge cannot class Agent without its gate read. The rerun counts both against the bound line.
 - A hosted B0-32 run whose over-5 s pushes are mostly ones already in an entry when their bound passed: a command in an entry during a leader stall is not bounded by this rule. Its entry's rounds of 2.5 to 4.1 s on m3fr15 can carry it past 5 s, and only a faster round or a smaller burst per entry would bound it.
 - A live seed past 30 s that main with `progress-suspect` passes.
 - A group whose followers shed with `forgot` while its leader still commits, which would mean the report replaced reads the leader could have served.
