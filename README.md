@@ -92,18 +92,6 @@ python3 scripts/check_links.py
 | `scripts/costs_report.py` | Regenerates `research/costs.md` from the cost scripts |
 | `scripts/census.py` | Counts GitHub wire surfaces into `research/surfaces.json` |
 
-## Cost
-
-Monthly Cloudflare list prices for one install of the default shape (one account, three sites), from `scripts/cost.py` and `scripts/cost_agents.py`. Each per-operation constant is a [guess] until a measurement replaces it.
-
-| Developers | Base | Agent layer added | Total |
-| --- | --- | --- | --- |
-| 50 | $231 | $21 | $252 |
-| 300 | $1,189 | $274 | $1,463 |
-| 2,000 | $9,187 | $2,572 | $11,759 |
-
-The totals exclude an Enterprise contract, Actions runner compute, and the sandbox compute and model tokens of agents that Graftyard runs (`design/DESIGN.md`, "Cost").
-
 ## How the design was produced
 
 A multi-agent design run wrote the design from 2026-10-23 to 2026-10-27. Research agents wrote `research/`. Arena rounds pitted competing designs against each other and folded the strongest ideas of the losers into the winner, and adversarial reviews and implementability walks closed the gaps they found (`decisions/DECISIONS.md`). `history/README.md` explains the record.
