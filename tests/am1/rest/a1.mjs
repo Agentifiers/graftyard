@@ -1319,7 +1319,10 @@ const v = {
     // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
     entries: lstats.entries, commands: lstats.commands,
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
-    feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
+    feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls,
+    // read-beat's question: whether the leader's member clock was suspect (lease-clock), and how many reads it sent
+    // to a round for it.
+    clock: lstats.clock ?? null },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
   ...(b034 ? { b034: { misses: missRows, missSummary: { n: missRows.length,
       compose: missRows.reduce((m, x) => ((m[x.compose ?? "none"] = (m[x.compose ?? "none"] ?? 0) + 1), m), {}),
