@@ -411,7 +411,7 @@ Site day 50 (main `fbe49d59`, the format 0x15.4 reader, `GRAFTYARD_PR_TRIGGER` u
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
 
-**Result: stopped before any DELETE or purge. The gate refused 27 of the 35 chains for a reason that is not timing, so nothing was retired or deleted.**
+**Result: the first run stopped before any DELETE or purge. The gate refused 27 of the 35 chains for a reason that is not timing, so nothing was retired or deleted. The 8 clean chains were purged next (below).**
 
 - **Who.** The route answered 404 to m3-admin: on graft-m4a no seeded user administered the install account (`authz:1`), and `/api/graftyard/v1/agents/apps` answered 403. `SetMember { user: 7100003, role: Admin }` was committed as the operator on `authz:1` at 05:29Z (index 106), as `tests/m3/hosted/rows.ts` does on other installs, and `agents/apps` answered 200 after. m3-member still gets 404 from the route [measured].
 - **The refusal.** `NoTombstone` on a site-1 member that is no longer in the group: a voter replaced by a later generation (`repo:N#1#f1`, joined in its own view at an old config, often applied index 1), which can never apply the tombstone because no leader sends it entries. The route's `plan` asks every record's bootstrap member, so it always reaches that member. 26 chains hold one: 22 on site a and all 4 wp2eu chains. 13 chains (12 on site a, and 589826) also have a registry row naming a replacement that never got a config (`config: null`, applied 0, so `changing` is true). For 65551 that member is the only blocker [measured, `/status` of every member `plan` reads].
@@ -420,6 +420,29 @@ The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/
 - **Cost.** 05:19Z to 05:45Z, by `tests/fanout/acctcost.py` with `PREFIX=graft-m4a`: $0.02. The account was at $7.35 for the UTC day. No idle reading was taken: nothing changed, so the daily refolds still run (about $1.50 a day).
 
 `decisions/OPEN-QUESTIONS.md` R26 and R27 carry what this found.
+
+### The 8 clean repositories, purged (2026-11-18, 05:53Z to 06:13Z)
+
+The lead granted a purge of the 8 live repositories that hold no such member, the route's first real hosted pass. Same builds, same driver and log.
+
+| Repository | `DELETE` | First pass | Retired | Objects | Second pass |
+| --- | --- | --- | --- | --- | --- |
+| 65537 `m3org/bf57b` | 204 | 503, then 200 | 0 (all 3 already gone) | 16 | 0 |
+| 65548 `m3org/nh3` | 204 | 200 | 3 | 12 | 0 |
+| 65552 `m3org/wp3-live` | 204 | 200 | 3 | 22 | 0 (after one 503) |
+| 65554 `m3org/wp3-bf59` | 204 | 503, then 200 | 2 | 16 | 0 |
+| 65556 `m3org/wp3-bf37` | 204 | 503, then 200 | 2 | 13 | 0 |
+| 65559 `m3org/wp3-bf55` | 204 | 200 | 3 | 12 | 0 |
+| 65561 `m3org/wp4-smoke` | 204 | 200 | 3 | 15 | 0 |
+| 65563 `m3org/wp4-bm4` | 204 | 200 | 3 | 15 | 0 |
+
+- **No refusal.** Every first call passed the gate at once: `early`, and the tombstone already applied on every member within the 5 s after the `DELETE` [measured].
+- **The 503s are the lost reply the design expects.** In 65537, 65554 and 65556 the first call answered "`repo:N#1#f<s>`: purge_retire answered None; retry": the member aborts as it answers, the reply is lost, and its `/status` was still read before the abort had finished. The next call found those members not joined, so it retired only the rest (65537: none left, the first call had retired all three) and purged the bucket. No member was left half-retired [measured]. The one second-pass 503 was the install's `Authz` read, retried 40 s later.
+- **Second pass.** 7 of 8 after `secondPassAt` 05:55Z, and 65563 after its own 06:10Z: each found 0 objects.
+- **Verify.** Every member that `plan` reads answers `{"joined": false}` for all 8 (`/status` of each first-generation voter and registry row). `tests/fanout/purge.py --dry-run` on the 8 networks lists 0 objects on sites a, b, and c [measured].
+- **Cost.** 05:53Z to 06:13Z: $0.02 on m4a. Site day 52 to here (05:19Z to 06:13Z): $0.05.
+
+The other 27 wait for R27's fix and the next site day and edge day.
 
 ## Spend against the $25 stop
 

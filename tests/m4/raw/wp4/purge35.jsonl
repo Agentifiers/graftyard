@@ -17,3 +17,31 @@
 {"at":"2026-11-18T05:47:11.566Z","id":589827,"step":"probe","status":409,"body":{"chain":"repo:589827","documentation_url":"graftyard","member":"repo:589827#1#f1","message":"A member has not applied the repository's tombstone"}}
 {"at":"2026-11-18T05:47:18.468Z","id":65538,"step":"probe","status":409,"body":{"documentation_url":"graftyard","message":"The repository is not deleted"}}
 {"at":"2026-11-18T05:47:24.772Z","id":65551,"step":"probe","status":409,"body":{"documentation_url":"graftyard","message":"The repository is not deleted"}}
+{"at":"2026-11-18T05:53:44.102Z","id":65537,"step":"delete","repo":"m3org/bf57b","status":204}
+{"at":"2026-11-18T05:53:58.302Z","id":65537,"step":"first","attempt":0,"status":503,"ms":14192,"body":{"documentation_url":"https://docs.github.com/enterprise-server@3.22/rest","message":"repo:65537#1#f2: purge_retire answered None; retry","status":"503"}}
+{"at":"2026-11-18T05:54:42.656Z","id":65537,"step":"first","attempt":1,"status":200,"ms":24348,"body":{"objects":16,"repo":65537,"retired":[],"secondPassAt":1794981300000}}
+{"at":"2026-11-18T05:54:47.426Z","id":65548,"step":"delete","repo":"m3org/nh3","status":204}
+{"at":"2026-11-18T05:55:18.099Z","id":65548,"step":"first","attempt":0,"status":200,"ms":30673,"body":{"objects":12,"repo":65548,"retired":["repo:65548#1#f0","repo:65548#1#f1","repo:65548#1#f2"],"secondPassAt":1794981300000}}
+{"at":"2026-11-18T05:55:23.685Z","id":65552,"step":"delete","repo":"m3org/wp3-live","status":204}
+{"at":"2026-11-18T05:55:53.495Z","id":65552,"step":"first","attempt":0,"status":200,"ms":29810,"body":{"objects":22,"repo":65552,"retired":["repo:65552#1#f0","repo:65552#1#f1","repo:65552#1#f2"],"secondPassAt":1794981300000}}
+{"at":"2026-11-18T05:55:58.008Z","id":65554,"step":"delete","repo":"m3org/wp3-bf59","status":204}
+{"at":"2026-11-18T05:56:07.043Z","id":65554,"step":"first","attempt":0,"status":503,"ms":9035,"body":{"documentation_url":"https://docs.github.com/enterprise-server@3.22/rest","message":"repo:65554#1#f0: purge_retire answered None; retry","status":"503"}}
+{"at":"2026-11-18T05:56:55.644Z","id":65554,"step":"first","attempt":1,"status":200,"ms":28597,"body":{"objects":16,"repo":65554,"retired":["repo:65554#1#f1","repo:65554#1#f2"],"secondPassAt":1794981300000}}
+{"at":"2026-11-18T05:57:01.089Z","id":65556,"step":"delete","repo":"m3org/wp3-bf37","status":204}
+{"at":"2026-11-18T05:57:16.147Z","id":65556,"step":"first","attempt":0,"status":503,"ms":15058,"body":{"documentation_url":"https://docs.github.com/enterprise-server@3.22/rest","message":"repo:65556#1#f0: purge_retire answered None; retry","status":"503"}}
+{"at":"2026-11-18T05:58:04.318Z","id":65556,"step":"first","attempt":1,"status":200,"ms":28162,"body":{"objects":13,"repo":65556,"retired":["repo:65556#1#f1","repo:65556#1#f2"],"secondPassAt":1794981300000}}
+{"at":"2026-11-18T05:58:09.103Z","id":65559,"step":"delete","repo":"m3org/wp3-bf55","status":204}
+{"at":"2026-11-18T05:58:40.277Z","id":65559,"step":"first","attempt":0,"status":200,"ms":31174,"body":{"objects":12,"repo":65559,"retired":["repo:65559#1#f0","repo:65559#1#f1","repo:65559#1#f2"],"secondPassAt":1794981300000}}
+{"at":"2026-11-18T05:58:45.388Z","id":65561,"step":"delete","repo":"m3org/wp4-smoke","status":204}
+{"at":"2026-11-18T05:59:16.989Z","id":65561,"step":"first","attempt":0,"status":200,"ms":31600,"body":{"objects":15,"repo":65561,"retired":["repo:65561#1#f0","repo:65561#1#f1","repo:65561#1#f2"],"secondPassAt":1794981300000}}
+{"at":"2026-11-18T05:59:22.221Z","id":65563,"step":"delete","repo":"m3org/wp4-bm4","status":204}
+{"at":"2026-11-18T05:59:53.481Z","id":65563,"step":"first","attempt":0,"status":200,"ms":31260,"body":{"objects":15,"repo":65563,"retired":["repo:65563#1#f0","repo:65563#1#f1","repo:65563#1#f2"],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:03:59.233Z","id":65537,"step":"second","attempt":0,"status":200,"ms":25404,"body":{"objects":0,"repo":65537,"retired":[],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:04:20.909Z","id":65548,"step":"second","attempt":0,"status":200,"ms":21668,"body":{"objects":0,"repo":65548,"retired":[],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:04:23.523Z","id":65552,"step":"second","attempt":0,"status":503,"ms":2614,"body":{"documentation_url":"https://docs.github.com/enterprise-server@3.22/rest","message":"the install's Authz chain did not answer; retry","status":"503"}}
+{"at":"2026-11-18T06:05:07.016Z","id":65552,"step":"second","attempt":1,"status":200,"ms":23484,"body":{"objects":0,"repo":65552,"retired":[],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:05:28.350Z","id":65554,"step":"second","attempt":0,"status":200,"ms":21334,"body":{"objects":0,"repo":65554,"retired":[],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:05:50.872Z","id":65556,"step":"second","attempt":0,"status":200,"ms":22521,"body":{"objects":0,"repo":65556,"retired":[],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:06:12.133Z","id":65559,"step":"second","attempt":0,"status":200,"ms":21261,"body":{"objects":0,"repo":65559,"retired":[],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:06:34.028Z","id":65561,"step":"second","attempt":0,"status":200,"ms":21894,"body":{"objects":0,"repo":65561,"retired":[],"secondPassAt":1794982200000}}
+{"at":"2026-11-18T06:10:44.212Z","id":65563,"step":"second","attempt":0,"status":200,"ms":25489,"body":{"objects":0,"repo":65563,"retired":[],"secondPassAt":1794982200000}}
