@@ -1,0 +1,60 @@
+# routewall.py: leader handler wall time by route (Workers Logs sample)
+m52-a
+  /read                n 330006  median      7  p90    714  p99   1275  max 14615
+  /raft                n  36249  median     20  p90    306  p99    973  max 1774
+  /commit              n  21715  median   1197  p90   3599  p99   4994  max 5863
+  /outcome             n  13954  median   4685  p90   9767  p99  13758  max 14675
+  /outcome_by_request  n   7474  median    251  p90    774  p99   1195  max 1604
+  /suspect             n     26  median     60  p90     95  p99    139  max 139
+m52-b
+  /read                n  24034  median    154  p90   1598  p99   4189  max 15656
+  /commit              n   5150  median   1124  p90   3231  p99   4799  max 5607
+  /raft                n   4756  median    162  p90    804  p99   3069  max 3108
+  /outcome             n   2838  median   3557  p90   6377  p99   9737  max 9782
+  /outcome_by_request  n   2369  median    216  p90    797  p99   1496  max 1620
+  /suspect             n    175  median    819  p90    922  p99    949  max 1143
+m51-a
+  /read                n  79979  median      6  p90    103  p99    767  max 1482
+  /raft                n  10543  median     14  p90     66  p99    184  max 520
+  /commit              n   9472  median    883  p90   1198  p99   2624  max 3181
+  /outcome             n   1961  median    137  p90    403  p99   1225  max 1364
+  /outcome_by_request  n    338  median    110  p90    328  p99    428  max 454
+  /suspect             n      0  median      0  p90      0  p99      0  max 0
+m51-b
+  /read                n  92304  median    120  p90   1352  p99   8209  max 25992
+  /commit              n  15268  median   1009  p90   1951  p99   3803  max 4431
+  /raft                n  15046  median     33  p90    224  p99   3075  max 3112
+  /outcome             n   8239  median    506  p90   2111  p99   4534  max 4834
+  /outcome_by_request  n   2133  median    219  p90   1053  p99   1757  max 1840
+  /suspect             n      6  median    255  p90   1583  p99   1583  max 1583
+
+# share of handlers at or over each wall time (the same sample)
+m52-a
+  /commit              n  21715 avg   1556 ms  share >=1/2/2.5/3/4/6/8 s: 58.1% 32.6% 24.5% 18.3% 5.4% 0.0% 0.0%
+  /outcome             n  13954 avg   5185 ms  share >=1/2/2.5/3/4/6/8 s: 93.6% 84.7% 79.1% 71.4% 56.8% 36.0% 21.6%
+  /outcome_by_request  n   7474 avg    347 ms  share >=1/2/2.5/3/4/6/8 s: 4.0% 0.0% 0.0% 0.0% 0.0% 0.0% 0.0%
+m51-a
+  /commit              n   9472 avg    847 ms  share >=1/2/2.5/3/4/6/8 s: 28.8% 2.3% 1.2% 0.5% 0.0% 0.0% 0.0%
+  /outcome             n   1961 avg    209 ms  share >=1/2/2.5/3/4/6/8 s: 4.7% 0.0% 0.0% 0.0% 0.0% 0.0% 0.0%
+  /outcome_by_request  n    338 avg    147 ms  share >=1/2/2.5/3/4/6/8 s: 0.0% 0.0% 0.0% 0.0% 0.0% 0.0% 0.0%
+m51-b
+  /commit              n  15268 avg   1081 ms  share >=1/2/2.5/3/4/6/8 s: 51.2% 9.6% 6.2% 3.7% 0.4% 0.0% 0.0%
+  /outcome             n   8239 avg    888 ms  share >=1/2/2.5/3/4/6/8 s: 33.4% 10.8% 7.3% 5.5% 1.8% 0.0% 0.0%
+  /outcome_by_request  n   2133 avg    385 ms  share >=1/2/2.5/3/4/6/8 s: 11.2% 0.0% 0.0% 0.0% 0.0% 0.0% 0.0%
+m52-a, longer marks
+  /commit              n  21715 avg   1556 ms  share >=2/4/6/10/11 s: 32.6% 5.4% 0.0% 0.0% 0.0%
+  /outcome             n  13954 avg   5185 ms  share >=2/4/6/10/11 s: 84.7% 56.8% 36.0% 7.6% 4.3%
+
+# attributed CPU per route (cpuTimeMs sum and mean; per-event attribution, sums exceed 1 s/s)
+m52-a
+  /commit              n   3541  cpu sum    20.3 s  avg  5.74 ms  p99   117 ms
+  /outcome             n    567  cpu sum     3.8 s  avg  6.66 ms  p99   165 ms
+  /outcome_by_request  n    993  cpu sum     6.8 s  avg  6.82 ms  p99   150 ms
+  /raft                n   3508  cpu sum    20.0 s  avg  5.69 ms  p99   117 ms
+  /read                n  86923  cpu sum   231.2 s  avg  2.66 ms  p99    39 ms
+m51-a
+  /commit              n   1460  cpu sum     9.9 s  avg  6.77 ms  p99   121 ms
+  /outcome             n    421  cpu sum     1.8 s  avg  4.34 ms  p99    82 ms
+  /outcome_by_request  n     53  cpu sum     0.3 s  avg  4.74 ms  p99   113 ms
+  /raft                n   1017  cpu sum     5.4 s  avg  5.32 ms  p99    97 ms
+  /read                n  11356  cpu sum    48.4 s  avg  4.26 ms  p99    59 ms

@@ -1,0 +1,22 @@
+per member and role: seconds, inbound req/s, syncs >= 1 s per minute, sync-busy share
+  member 0 follower   240 s      39 req/s    0.0/min     5%
+  member 0 leader      60 s     298 req/s    3.0/min    36%
+  member 1 ?            8 s     126 req/s    7.5/min    22%
+  member 1 candidate    1 s     416 req/s    0.0/min     7%
+  member 1 follower    59 s       6 req/s    0.0/min     4%
+  member 1 leader     232 s     210 req/s    4.4/min    32%
+  member 2 follower   300 s      31 req/s    0.0/min     6%
+slow syncs per minute by inbound band (all members, all roles; then followers only)
+     0-25     all  491 s   0.4/min | leader   19 s   6.3/min | follower  470 s   0.0/min
+    25-100    all  106 s   1.1/min | leader   28 s   4.3/min | follower   74 s   0.0/min
+   100-200    all  124 s   0.5/min | leader   90 s   0.7/min | follower   33 s   0.0/min
+   200-400    all  146 s   4.9/min | leader  128 s   5.6/min | follower   18 s   0.0/min
+   400-700    all   29 s   6.2/min | leader   23 s   7.8/min | follower    4 s   0.0/min
+   700-1000000000 all    4 s   0.0/min | leader    4 s   0.0/min
+Spearman, a second's sync-busy ms against its inbound (and against the inbound one second before)
+  all       n  900  same  0.59  lead  0.54
+  leader    n  292  same  0.13  lead  0.11
+  follower  n  599  same  0.19  lead  0.09
+a sync's duration against the statements of the transaction it confirmed (paired syncs; >= 1 s share, p50 ms)
+  member 0: 126 paired, Spearman  0.08; 0+ stmts n 77 1% p50 52; 250+ stmts n 47 0% p50 58; 500+ stmts n 2 0% p50 107
+  member 1: 556 paired, Spearman  0.29; 0+ stmts n 509 1% p50 40; 250+ stmts n 34 12% p50 136; 500+ stmts n 8 25% p50 76; 750+ stmts n 5 20% p50 75
