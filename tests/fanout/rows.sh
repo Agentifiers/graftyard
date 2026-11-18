@@ -70,6 +70,13 @@ for row in $ROWS; do
   if [ -n "${LEARNERS:-}" ] && ! node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1; then
     echo "$(stamp) $row: LEARNERS NOT PLACED, row skipped" >> "$ST"; continue
   fi
+  # B0-33: BF-14's arrival rows in memory on every voter (test-faults `/stats?arrival=mem`), so a `/commit` writes
+  # nothing outside its entry's transaction (`tests/am1/results/tx-mix.md`, cut 1; operator, 2026-11-18). Rows before
+  # it (m50 to m52) ran with `sql`, so they are not comparable on confirm time. memguard.mjs sets it again each sample,
+  # as a member reset goes back to `sql`. A voter that does not confirm `mem` skips the row.
+  if [ "$row" = b0-33 ] && ! node tests/fanout/arrival.mjs "repo:$rid" mem >> "$ST" 2>&1; then
+    echo "$(stamp) $row: arrival=mem NOT SET, row skipped" >> "$ST"; continue
+  fi
   # B0-34 leaves k to `fanout` itself (in band, from NetworkLoad); the others start at K.
   if [ "$row" = b0-34 ]; then node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1; else node tests/fanout/k.mjs "repo:$rid" "$K" >> "$ST" 2>&1
     # The ledgers cap a forced k: a row that did not get K is not the row as written, so it is skipped.

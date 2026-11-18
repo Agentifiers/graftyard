@@ -46,6 +46,7 @@ mod snap;
 mod split;
 mod sweep;
 mod tier;
+mod txn;
 
 pub use broker::RunnerBroker;
 pub use hookseq::HookSequencer;

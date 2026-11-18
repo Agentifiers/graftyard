@@ -2249,6 +2249,8 @@ impl<F: Family> Routes<F> {
                 // The counted bytes' high-water since the last `high=1` read (`Host::mark_mem`), and now; `high=1`
                 // starts the next one from now, so each 2 s sample shows the peak of the seconds since the one before.
                 v["memHigh"] = json!(s.mem_high);
+                // Where BF-14's arrival rows go (`?arrival=`), so a harness sees what each sample ran with.
+                v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_some() { "mem" } else { "sql" });
                 if high {
                     s.mem_high = Default::default();
                 }

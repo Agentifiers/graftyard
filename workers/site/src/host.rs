@@ -39,7 +39,6 @@ use graftyard_raft::{
 use graftyard_types::{ReleaseId, SiteId, Timestamp};
 use serde_json::{Value, json};
 use worker::js_sys;
-use worker::wasm_bindgen::closure::Closure;
 use worker::wasm_bindgen::{JsCast, JsValue};
 use worker::wasm_bindgen_futures::spawn_local;
 use worker::*;
@@ -1530,16 +1529,11 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
                             .map(<F::Fold as raft::Fold>::row_event)
                             .collect();
                         let b = codec::to_bytes(&row);
-                        let hex = rid.to_string();
-                        // A request id applied at a second index is the double apply BF-12 counts.
-                        #[cfg(feature = "test-faults")]
+                        // A request id already on disk is the double apply BF-12 counts: on test installs the
+                        // transaction writes its `dup` row only then (`crate::txn`).
                         self.stmts.push((
-                            "INSERT INTO dup (rid, idx) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM request WHERE rid = ?)",
-                            vec![hex.clone().into(), i(idx), hex.clone().into()],
-                        ));
-                        self.stmts.push((
-                            "INSERT INTO request (rid, idx, at, events) VALUES (?, ?, ?, ?) ON CONFLICT (rid) DO NOTHING",
-                            vec![hex.into(), i(idx), i(e.at.0), b.into()],
+                            crate::txn::REQUEST_INSERT,
+                            vec![rid.to_string().into(), i(idx), i(e.at.0), b.into()],
                         ));
                     }
                 }
@@ -1552,25 +1546,7 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
     }
 }
 
-/// Runs the statements in one `storage.transactionSync`, which workers-rs 0.8.7 does not bind.
-pub fn commit_tx(storage: &worker::Storage, stmts: Vec<Stmt>) -> std::result::Result<(), String> {
-    if stmts.is_empty() {
-        return Ok(());
-    }
-    let sql = storage.sql();
-    let raw: &JsValue = storage.as_raw().as_ref();
-    let f = js_sys::Reflect::get(raw, &JsValue::from_str("transactionSync"))
-        .ok()
-        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-        .ok_or("no transactionSync")?;
-    let cb = Closure::once_into_js(move || -> std::result::Result<JsValue, JsValue> {
-        for (q, a) in stmts {
-            sql.exec(q, a).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        }
-        Ok(JsValue::UNDEFINED)
-    });
-    f.call1(raw, &cb).map(|_| ()).map_err(|e| format!("{e:?}"))
-}
+pub use crate::txn::commit_tx;
 
 /// Rows one at a time: `rows` copies every row of a result into wasm memory first, and a log of 1 MB inline packs read
 /// that way ran the isolate out of memory in `load` (F45, `tests/m1/results/m1-f43.md`). A read stopped early still
