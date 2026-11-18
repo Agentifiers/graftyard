@@ -6,6 +6,10 @@
 // LEARNERS=1 saves each learner's rows too, as {at, learner: address, rows} (F74's call trace, tests/f74/calls.py).
 const { member, statuses, voterNames, sleep } = await import("../am1/hosted/lib.mjs");
 const { existsSync } = await import("node:fs");
+// `at` on Cloudflare's clock (tests/fanout/README.md, "Clocks"); the first line logs the orb's measured offset.
+const clk = (await import("../fanout/srvclock.mjs")).serverClock();
+await clk.ready;
+console.log(JSON.stringify({ at: clk.iso(), clock: clk.offset() }));
 const chain = process.argv[2];
 const every = Number(process.env.EVERY ?? 60_000);
 const since = [0, 0, 0];
@@ -25,9 +29,9 @@ for (;;) {
         const rows = r.v;
         // A reset member's clock moves on, so `since` stays valid; its new rows are all later.
         if (rows.length) since[site] = rows[rows.length - 1][0];
-        console.log(JSON.stringify({ at: new Date().toISOString(), site, leader, rows }));
+        console.log(JSON.stringify({ at: clk.iso(), site, leader, rows }));
       } catch (e) {
-        console.log(JSON.stringify({ at: new Date().toISOString(), site, error: String(e).slice(0, 120) }));
+        console.log(JSON.stringify({ at: clk.iso(), site, error: String(e).slice(0, 120) }));
       }
     }
     if (process.env.LEARNERS) {
@@ -38,14 +42,14 @@ for (;;) {
           const r = await member(chain, l.site, `/trace?since=${learnerSince[addr] ?? 0}`, undefined, 30_000, l.do_name);
           if (!Array.isArray(r.v)) throw new Error(`status ${r.status}: ${JSON.stringify(r.v).slice(0, 80)}`);
           if (r.v.length) learnerSince[addr] = r.v[r.v.length - 1][0];
-          console.log(JSON.stringify({ at: new Date().toISOString(), learner: addr, rows: r.v }));
+          console.log(JSON.stringify({ at: clk.iso(), learner: addr, rows: r.v }));
         } catch (e) {
-          console.log(JSON.stringify({ at: new Date().toISOString(), learner: addr, error: String(e).slice(0, 120) }));
+          console.log(JSON.stringify({ at: clk.iso(), learner: addr, error: String(e).slice(0, 120) }));
         }
       }
     }
   } catch (e) {
-    console.log(JSON.stringify({ at: new Date().toISOString(), error: String(e).slice(0, 120) }));
+    console.log(JSON.stringify({ at: clk.iso(), error: String(e).slice(0, 120) }));
   }
   if (last) break;
   await sleep(every);

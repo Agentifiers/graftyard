@@ -8,10 +8,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source ${ROWS_ENV:-tests/m3/rows/env.sh}
+source tests/fanout/srvclock.sh
 R=tests/fanout/raw ST=tests/fanout/raw/costrow-$TAG.status
 [ -e $R/.costrow-$TAG.started ] && exec sleep infinity
 touch $R/.costrow-$TAG.started
-s() { echo "$(date -u +%FT%TZ) $*" >> "$ST"; }
+s() { echo "$(stamp) $*" >> "$ST"; }
 # The account meter since ACCT_FROM (operator's 2026-11-16 rule: tests/fanout/acctcost.py is the only meter), and the
 # run's own delta since RUN_FROM; STOP is on the account and RUN_STOP on the run.
 acct() { python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r '.usd // 999' 2>/dev/null || echo 999; }
