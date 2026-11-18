@@ -1,0 +1,162 @@
+2026-11-18T04:45:20.102Z repo:65537: 4 names, 4 were joined, STILL JOINED repo:65537#1#f0 undefined tundefined; repo:65537#1#f2 undefined tundefined
+2026-11-18T04:45:36.696Z repo:65538: 12 names, 12 were joined, all not joined
+2026-11-18T04:45:50.165Z repo:65539: 4 names, 4 were joined, all not joined
+2026-11-18T04:46:02.513Z repo:65540: 4 names, 4 were joined, all not joined
+2026-11-18T04:46:25.244Z repo:65541: 4 names, 4 were joined, all not joined
+2026-11-18T04:46:49.096Z repo:65542: 4 names, 4 were joined, all not joined
+2026-11-18T04:47:04.223Z repo:65543: 4 names, 4 were joined, all not joined
+2026-11-18T04:47:37.700Z repo:65544: 12 names, 12 were joined, all not joined
+2026-11-18T04:48:01.879Z repo:65545: 4 names, 4 were joined, all not joined
+2026-11-18T04:48:18.650Z repo:65546: 13 names, 12 were joined, all not joined
+2026-11-18T04:48:45.223Z repo:65547: 4 names, 4 were joined, STILL JOINED repo:65547#1#f2 undefined tundefined
+2026-11-18T04:49:11.907Z repo:65548: 4 names, 4 were joined, all not joined
+2026-11-18T04:49:35.352Z repo:65549: 4 names, 4 were joined, all not joined
+2026-11-18T04:50:03.493Z repo:65550: 5 names, 4 were joined, STILL JOINED repo:65550#1#f2 undefined tundefined
+2026-11-18T04:50:21.510Z repo:65551: 3 names, 3 were joined, all not joined
+2026-11-18T04:50:45.638Z repo:65552: 11 names, 11 were joined, all not joined
+2026-11-18T04:51:26.096Z repo:65553: 13 names, 12 were joined, all not joined
+2026-11-18T04:51:48.453Z repo:65554: 4 names, 4 were joined, all not joined
+2026-11-18T04:52:17.570Z repo:65555: 12 names, 12 were joined, all not joined
+2026-11-18T04:52:38.124Z repo:65556: 4 names, 4 were joined, all not joined
+2026-11-18T04:53:12.400Z repo:65557: 4 names, 4 were joined, STILL JOINED repo:65557#1#f2 undefined tundefined
+2026-11-18T04:53:57.931Z repo:65558: 11 names, 11 were joined, STILL JOINED repo:65558#1#f2 undefined tundefined
+2026-11-18T04:54:26.879Z repo:65559: 12 names, 12 were joined, all not joined
+2026-11-18T04:54:38.709Z repo:65560: 4 names, 4 were joined, all not joined
+2026-11-18T04:54:57.366Z repo:65561: 12 names, 12 were joined, all not joined
+2026-11-18T04:55:10.671Z repo:65562: 4 names, 4 were joined, all not joined
+2026-11-18T04:55:36.277Z repo:65563: 4 names, 4 were joined, STILL JOINED repo:65563#1#f2 undefined tundefined
+2026-11-18T04:55:45.985Z repo:65564: 5 names, 4 were joined, all not joined
+2026-11-18T04:56:15.612Z repo:65565: 11 names, 11 were joined, all not joined
+2026-11-18T04:56:43.115Z repo:65566: 11 names, 11 were joined, all not joined
+2026-11-18T04:57:17.872Z repo:65567: 12 names, 12 were joined, STILL JOINED repo:65567#4#l2 undefined tundefined
+2026-11-18T04:57:44.200Z repo:65568: 11 names, 11 were joined, all not joined
+2026-11-18T04:58:23.812Z repo:65569: 12 names, 12 were joined, all not joined
+2026-11-18T04:58:50.283Z repo:65570: 13 names, 12 were joined, all not joined
+2026-11-18T04:59:52.942Z repo:65571: 13 names, 12 were joined, STILL JOINED repo:65571#1#f2 undefined tundefined; repo:65571#4#l2 undefined tundefined
+2026-11-18T05:00:15.820Z repo:65572: 12 names, 12 were joined, all not joined
+2026-11-18T05:00:37.667Z repo:65573: 12 names, 12 were joined, all not joined
+2026-11-18T05:01:18.861Z repo:65574: 12 names, 12 were joined, all not joined
+2026-11-18T05:01:51.668Z repo:65575: 12 names, 12 were joined, all not joined
+2026-11-18T05:02:12.640Z repo:65576: 12 names, 12 were joined, all not joined
+2026-11-18T05:05:00.932Z repo:65536: 3 names, 3 were joined, all not joined
+2026-11-18T05:48:44.228Z purge: 65537 purged: a 1557 -> 0, b 1581 -> 0, c 1258 -> 0
+2026-11-18T05:48:44.229Z purge: 65537 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.229Z purge: 65538 purged: a 3 -> 0, b 5 -> 0, c 4 -> 0
+2026-11-18T05:48:44.229Z purge: 65538 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.229Z purge: 65539 purged: a 203 -> 0, b 207 -> 0, c 206 -> 0
+2026-11-18T05:48:44.229Z purge: 65539 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.229Z purge: 65540 purged: a 430 -> 0, b 432 -> 0, c 431 -> 0
+2026-11-18T05:48:44.229Z purge: 65540 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.229Z purge: 65541 purged: a 278 -> 0, b 280 -> 0, c 278 -> 0
+2026-11-18T05:48:44.229Z purge: 65541 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.229Z purge: 65542 purged: a 240 -> 0, b 242 -> 0, c 239 -> 0
+2026-11-18T05:48:44.229Z purge: 65542 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.229Z purge: 65543 purged: a 83 -> 0, b 85 -> 0, c 84 -> 0
+2026-11-18T05:48:44.229Z purge: 65543 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.229Z purge: 65544 purged: a 251 -> 0, b 253 -> 0, c 250 -> 0
+2026-11-18T05:48:44.229Z purge: 65544 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65545 purged: a 289 -> 0, b 293 -> 0, c 292 -> 0
+2026-11-18T05:48:44.230Z purge: 65545 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65546 purged: a 3 -> 0, b 5 -> 0, c 4 -> 0
+2026-11-18T05:48:44.230Z purge: 65546 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65547 purged: a 461 -> 0, b 465 -> 0, c 462 -> 0
+2026-11-18T05:48:44.230Z purge: 65547 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65548 purged: a 778 -> 0, b 784 -> 0, c 782 -> 0
+2026-11-18T05:48:44.230Z purge: 65548 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65549 purged: a 1029 -> 0, b 1033 -> 0, c 1032 -> 0
+2026-11-18T05:48:44.230Z purge: 65549 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65550 purged: a 1668 -> 0, b 1672 -> 0, c 1671 -> 0
+2026-11-18T05:48:44.230Z purge: 65550 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65551 purged: a 47 -> 0, b 49 -> 0, c 44 -> 0
+2026-11-18T05:48:44.230Z purge: 65551 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65552 purged: a 2587 -> 0, b 2591 -> 0, c 2589 -> 0
+2026-11-18T05:48:44.230Z purge: 65552 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65553 purged: a 1335 -> 0, b 1339 -> 0, c 1338 -> 0
+2026-11-18T05:48:44.230Z purge: 65553 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65554 purged: a 1249 -> 0, b 1251 -> 0, c 1250 -> 0
+2026-11-18T05:48:44.230Z purge: 65554 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65555 purged: a 2498 -> 0, b 2498 -> 0, c 2495 -> 0
+2026-11-18T05:48:44.230Z purge: 65555 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65556 purged: a 784 -> 0, b 790 -> 0, c 789 -> 0
+2026-11-18T05:48:44.230Z purge: 65556 second pass: a 62 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65557 purged: a 1325 -> 0, b 1329 -> 0, c 1328 -> 0
+2026-11-18T05:48:44.230Z purge: 65557 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65558 purged: a 1513 -> 0, b 1515 -> 0, c 1514 -> 0
+2026-11-18T05:48:44.230Z purge: 65558 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65559 purged: a 2552 -> 0, b 2556 -> 0, c 2551 -> 0
+2026-11-18T05:48:44.230Z purge: 65559 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65560 purged: a 1237 -> 0, b 1239 -> 0, c 1238 -> 0
+2026-11-18T05:48:44.230Z purge: 65560 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65561 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65561 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65562 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65562 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65563 purged: a 1182 -> 0, b 1186 -> 0, c 1184 -> 0
+2026-11-18T05:48:44.230Z purge: 65563 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65564 purged: a 4 -> 0, b 6 -> 0, c 4 -> 0
+2026-11-18T05:48:44.230Z purge: 65564 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65565 purged: a 1252 -> 0, b 1254 -> 0, c 1253 -> 0
+2026-11-18T05:48:44.230Z purge: 65565 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65566 purged: a 2320 -> 0, b 2320 -> 0, c 2319 -> 0
+2026-11-18T05:48:44.230Z purge: 65566 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65567 purged: a 3202 -> 0, b 3204 -> 0, c 3202 -> 0
+2026-11-18T05:48:44.230Z purge: 65567 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65568 purged: a 2568 -> 0, b 2571 -> 0, c 2569 -> 0
+2026-11-18T05:48:44.230Z purge: 65568 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65569 purged: a 1929 -> 0, b 1930 -> 0, c 1919 -> 0
+2026-11-18T05:48:44.230Z purge: 65569 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65570 purged: a 2594 -> 0, b 2596 -> 0, c 2571 -> 0
+2026-11-18T05:48:44.230Z purge: 65570 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65571 purged: a 1541 -> 0, b 1541 -> 0, c 1541 -> 0
+2026-11-18T05:48:44.230Z purge: 65571 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65572 purged: a 1413 -> 0, b 1376 -> 0, c 1413 -> 0
+2026-11-18T05:48:44.230Z purge: 65572 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65573 purged: a 2589 -> 0, b 2552 -> 0, c 2589 -> 0
+2026-11-18T05:48:44.230Z purge: 65573 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65574 purged: a 1106 -> 0, b 1092 -> 0, c 1107 -> 0
+2026-11-18T05:48:44.230Z purge: 65574 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65575 purged: a 2847 -> 0, b 2840 -> 0, c 2847 -> 0
+2026-11-18T05:48:44.230Z purge: 65575 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: 65576 purged: a 2554 -> 0, b 2557 -> 0, c 2519 -> 0
+2026-11-18T05:48:44.230Z purge: 65576 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-18T05:48:44.230Z purge: {"dry": false, "purged": 40, "objects": 148186, "refused": [], "second": 62}
+2026-11-18T05:48:53.735Z repo:65537: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:01.882Z repo:65538: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:09.638Z repo:65539: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:17.346Z repo:65540: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:25.106Z repo:65541: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:32.983Z repo:65542: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:40.389Z repo:65543: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:48.492Z repo:65544: 4 names, 0 were joined, all not joined
+2026-11-18T05:49:55.719Z repo:65545: 4 names, 0 were joined, all not joined
+2026-11-18T05:50:02.842Z repo:65546: 4 names, 0 were joined, all not joined
+2026-11-18T05:50:09.603Z repo:65547: 4 names, 0 were joined, all not joined
+2026-11-18T05:50:16.344Z repo:65548: 4 names, 0 were joined, all not joined
+2026-11-18T05:50:23.486Z repo:65549: 4 names, 0 were joined, all not joined
+2026-11-18T05:50:30.754Z repo:65550: 4 names, 0 were joined, all not joined
+2026-11-18T05:50:37.703Z repo:65551: 3 names, 0 were joined, all not joined
+2026-11-18T05:50:44.638Z repo:65552: 3 names, 0 were joined, all not joined
+2026-11-18T05:50:52.849Z repo:65553: 4 names, 0 were joined, all not joined
+2026-11-18T05:50:59.848Z repo:65554: 4 names, 0 were joined, all not joined
+2026-11-18T05:51:06.820Z repo:65555: 4 names, 0 were joined, all not joined
+2026-11-18T05:51:14.525Z repo:65556: 4 names, 0 were joined, all not joined
+2026-11-18T05:51:22.687Z repo:65557: 4 names, 0 were joined, all not joined
+2026-11-18T05:51:28.510Z repo:65558: 3 names, 0 were joined, all not joined
+2026-11-18T05:51:36.091Z repo:65559: 4 names, 0 were joined, all not joined
+2026-11-18T05:51:44.400Z repo:65560: 4 names, 0 were joined, all not joined
+2026-11-18T05:51:51.221Z repo:65561: 4 names, 0 were joined, all not joined
+2026-11-18T05:51:58.036Z repo:65562: 4 names, 0 were joined, all not joined
+2026-11-18T05:52:04.959Z repo:65563: 4 names, 0 were joined, all not joined
+2026-11-18T05:52:11.542Z repo:65564: 4 names, 0 were joined, all not joined
+2026-11-18T05:52:18.254Z repo:65565: 3 names, 0 were joined, all not joined
+2026-11-18T05:52:24.149Z repo:65566: 3 names, 0 were joined, all not joined
+2026-11-18T05:52:31.135Z repo:65567: 4 names, 0 were joined, all not joined
+2026-11-18T05:52:37.399Z repo:65568: 3 names, 0 were joined, all not joined
+2026-11-18T05:52:44.391Z repo:65569: 4 names, 0 were joined, all not joined
+2026-11-18T05:52:52.024Z repo:65570: 4 names, 0 were joined, all not joined
+2026-11-18T05:52:59.075Z repo:65571: 4 names, 0 were joined, all not joined
+2026-11-18T05:53:06.730Z repo:65572: 4 names, 0 were joined, all not joined
+2026-11-18T05:53:13.714Z repo:65573: 4 names, 0 were joined, all not joined
+2026-11-18T05:53:20.374Z repo:65574: 4 names, 0 were joined, all not joined
+2026-11-18T05:53:26.553Z repo:65575: 4 names, 0 were joined, all not joined
+2026-11-18T05:53:33.562Z repo:65576: 4 names, 0 were joined, all not joined

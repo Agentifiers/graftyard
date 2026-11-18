@@ -19,5 +19,18 @@ Concurrent validate inside one git shard, and `fanout` (BUILD-PLAN AM1-WP1, "Not
      retired group's packs left in the buckets make every `*/15` sweep ask its dead group and alarm each pack
      (`decisions/OPEN-QUESTIONS.md`, R25). Only networks the run itself created are purged; the sweeper never
      deletes a group's packs on its own;
-  4. an `acctcost.py` reading 30 minutes later showing the install idle (under $0.10 an hour).
+  4. `joined.mjs` over every repository the run created, including ones a driver created and then skipped, ending
+     "none joined". A test repository left joined is refolded by the site's fold audit once a day (`fold_audit.rs`,
+     4 chains each `*/15` run): on `graft-m3f` 40 leftovers from 2026-11-13 to 11-16 wrote 501,211 rows in one
+     50-minute stretch of 2026-11-18 (`decisions/OPEN-QUESTIONS.md`, K10). Retiring does not delete a chain's registry
+     rows, so the audit's `homed` count stays the same; the joined count is the check. Which tool applies depends on
+     the build:
+     - a test-faults build (graft-m2b, graft-m3f): `idleretire.mjs` or `retirenets.mjs`,
+       then `purge.py`. Both call the test route `/retire`, which a product build does not serve;
+     - a product build (graft-m4a, and every customer install): delete the repository through the API, then
+       `POST /api/graftyard/v1/admin/repos/{id}/purge` (`workers/edge/src/purge.rs`) as a site admin, with
+       `{"early": true}` before `retain_until`, and the second call once `secondPassAt` has passed. It refuses a
+       repository that is not tombstoned, so a product install's test repositories are deleted first;
+  5. an `acctcost.py` reading 30 minutes later, spanning two `*/15` cron runs, showing the install idle (under $0.10 an
+     hour).
 - Anything that writes Durable Object rows in a loop is a bug to note and fix.
