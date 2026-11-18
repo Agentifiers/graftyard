@@ -615,3 +615,89 @@ fn a_snapshot_at_the_pass_end_satisfies_it() {
     p.snapshot();
     assert!(!slim_snapshot_due(&p.fold.core, &*p.fold.meta));
 }
+
+/// A fold audit of a split parent (`decisions/OPEN-QUESTIONS.md`, F88, graft-m1's metadata alarms) restores the
+/// parent's metadata tier from a committed snapshot and replays the log after it (`refold_segment`, as
+/// `workers/site/src/load.rs` does), and must reach the digest the live members kept. Snapshots taken before the split,
+/// at the seed, mid-pass (begun before slim entries and read after them, so the slim's rewrites go through
+/// `snap_undo`), and after the pass all refold through the split, the slim pass and later writes to the live digest.
+#[test]
+fn a_refold_of_a_split_parent_s_metadata_tier_matches_its_members() {
+    use graftyard_fold::{SnapshotFrame, refold_segment};
+    let mut p = Parent::new();
+    let n = p.open_issue("body");
+    for i in 0..(SLIM_ROWS * 3 + 5) {
+        p.comment(n, &format!("comment {i} {}", "w".repeat(200)));
+    }
+    let mut snaps: Vec<(&str, Index, Vec<SnapshotFrame>)> = Vec::new();
+    let at = |p: &Parent| Index(p.log.len() as u64);
+    let (_, f) = p.snapshot();
+    snaps.push(("before the split", Index(at(&p).0 - 1), f));
+    p.record(RepoEvent::Split(SplitEntry::MetaSplit { child: ChainId::RepoMeta(REPO) })).unwrap();
+    let (_, f) = p.snapshot();
+    let SplitStep::Seed { at: seed, key } = p.step(None) else { panic!("{:?}", p.step(None)) };
+    snaps.push(("the seed", seed, f));
+    p.record(RepoEvent::Split(SplitEntry::MetaSeed { at: seed, key })).unwrap();
+    // A row the seed covers, edited before the drop: the slim keeps its text.
+    p.comment(n, "between the seed and the drop");
+    p.record(RepoEvent::Split(SplitEntry::MetaDropped { seed })).unwrap();
+    p.record(RepoEvent::Split(SplitEntry::MetaSlim)).unwrap();
+    // A snapshot begun mid-pass and read after more slim entries and a write.
+    let mut job = SnapshotJob::begin(
+        &mut *p.fold.meta,
+        METADATA,
+        ChainId::Repo(REPO),
+        ReleaseId([0; 32]),
+        Format { family: 0x20, version: 1 },
+    )
+    .unwrap();
+    let mid = job.to();
+    p.record(RepoEvent::Split(SplitEntry::MetaSlim)).unwrap();
+    p.comment(n, "while the mid-pass snapshot is read");
+    let mut f = Vec::new();
+    while let Some(x) = job.next(&p.fold.meta, 3) {
+        f.push(x);
+    }
+    graftyard_fold::end_snapshot(&mut *p.fold.meta, &METADATA);
+    snaps.push(("mid-pass", mid, f));
+    while p.step(Some(&ChildView { seeded: true, loaded: true })) == SplitStep::Slim {
+        p.record(RepoEvent::Split(SplitEntry::MetaSlim)).unwrap();
+    }
+    let (_, f) = p.snapshot();
+    snaps.push(("after the pass", Index(at(&p).0 - 1), f));
+    p.comment(n, "after the pass");
+    p.commit(IssueOp::Change { n, change: IssueChange::Title("later".into()) }).unwrap();
+    let live = fold_digest(&*p.fold.meta, Tier::Metadata);
+    for (name, from, frames) in snaps {
+        let mut s = MemStore::default();
+        let entries = p.log[from.0 as usize..].iter().cloned();
+        let got = refold_segment(&tiers(), &mut s, METADATA, (ChainId::Repo(REPO), from), frames, entries).unwrap();
+        assert_eq!(got, live, "a refold from the snapshot {name} at {from:?}");
+    }
+}
+
+/// A `MetaSlim` entry folds the same on every release (`decisions/DECISIONS.md`, "A 32.20 `MetaSlim` keeps
+/// `SLIM_BYTES`"). `a0e4d7bc` bounded each entry
+/// by `SLIM_BYTES` in place, at the same format 32.20, so `repo:1048587`'s 512-row slim entries from B0-30's smoke 2
+/// refolded on a later release to a metadata digest its members never held, and the fold audit alarmed on every run
+/// from 2026-11-14 18:33Z. Pinned to what this slim pass folds to since `a0e4d7bc`, over rows large enough that
+/// `SLIM_BYTES`, not `SLIM_ROWS`, ends each entry. A change here needs a new format and SHARED's dual-read release.
+#[test]
+fn a_slim_pass_folds_to_the_digest_its_release_gave() {
+    let mut p = Parent::new();
+    let n = p.open_issue("body");
+    for i in 0..(SLIM_ROWS + 40) {
+        p.comment(n, &format!("comment {i} {}", "s".repeat(1_800)));
+    }
+    split(&mut p);
+    let slims = p
+        .log
+        .iter()
+        .filter(|e| matches!(&e.body, EntryBody::Events(v) if v == &[RepoEvent::Split(SplitEntry::MetaSlim)]))
+        .count();
+    assert_eq!(slims, 8, "SLIM_BYTES ends each entry before SLIM_ROWS");
+    assert_eq!(
+        fold_digest(&*p.fold.meta, Tier::Metadata).hex(),
+        "dd06e4b5ab5a9c0fca91a8fc693cc61b250de93657504fcb86d5fc30a9902bc7"
+    );
+}

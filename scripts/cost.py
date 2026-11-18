@@ -133,6 +133,17 @@ INBOX_READ_SHARE = 0.05            # share of API requests that read an Inbox [g
 INBOX_ROWS = 2                     # SQLite rows written per Inbox delivery [guess]
 INBOX_MB = 50                      # stored per account, pruned as GitHub prunes notifications [guess]
 
+# ---- the daily fold audit's refold (K10; `decisions/DECISIONS.md`, "audit-moved") ----
+# A refold restores each tier's newest snapshot into scratch tables and applies the log tail, on the chain's leader.
+# Each site's cron visits SAMPLE chains per run, 96 runs a day, and a chain at most once a day. Only a chain that wrote
+# its fold since its last matching audit is refolded; an unmoved one is compared from the voters' digest rings, with no
+# write. The member storage priced below is taken as all repository tiers under AUDIT_SNAPSHOT_MAX, an upper bound.
+AUDIT_ROWS_PER_ROW = 2.0           # rows written per tier row refolded: repo:65536, 571,889 core rows, 1,144,665 rows
+                                   # [measured, graft-m2b, 2026-11-17, decisions/OPEN-QUESTIONS.md K10]
+AUDIT_VISITS_PER_SITE = 96 * 4     # cron runs a day x SAMPLE, per site homing chains (`workers/site/src/fold_audit.rs`)
+REPO_CHAINS_PER_DEV = 4            # repository chains per developer, of GROUPS_PER_DEV [guess]
+AUDIT_MOVED_SHARE = 0.3            # share of tier rows in chains that wrote since their last audit [guess]
+
 INCLUDED = dict(workers_req=10e6, workers_cpu=30e6, do_req=1e6, do_gbs=400_000, do_rows_w=50e6, do_storage=5,
 	r2_storage=10, r2_a=1e6, r2_b=10e6, queues=1e6, email=3000, ae=10e6, obs_gb=50,
 	c_mem_gibs=25 * 3600, c_vcpu_s=375 * 60, c_disk_gbs=200 * 3600, steps=0)
@@ -254,6 +265,13 @@ def model(tier, variant="design", split=None):
 		+ added(gbs, DO_GB * inbox_reqs * WALL_S["read"], INCLUDED["do_gbs"] * site_inc) / 1e6 * price("cf.do.duration")
 		+ added(rows_w, inbox_writes * INBOX_ROWS, INCLUDED["do_rows_w"] * site_inc) / 1e6 * price("cf.do.sqlite.rows_written")
 		+ added(do_gb, w["devs"] * INBOX_MB / 1024, INCLUDED["do_storage"] * site_inc) * price("cf.do.sqlite.storage"))
+
+	# The fold audit: each visit to a chain that moved refolds its tiers, AUDIT_ROWS_PER_ROW rows per tier row.
+	tier_rows = (t["core_gb"] + t["aux_gb"]) * 1024 * 1024 / ROW_KB
+	visits = min(1.0, AUDIT_VISITS_PER_SITE * len(SITES if members == 3 else "A") / (t["devs"] * REPO_CHAINS_PER_DEV))
+	audit_rows = tier_rows * AUDIT_ROWS_PER_ROW * visits * DAYS * AUDIT_MOVED_SHARE
+	lines["Fold audit refolds (repository chains that moved since their last match)"] = added(
+		rows_w + inbox_writes * INBOX_ROWS, audit_rows, INCLUDED["do_rows_w"] * site_inc) / 1e6 * price("cf.do.sqlite.rows_written")
 
 	# Git bytes: R2 packs (or Artifacts), clone cache, Actions blobs.
 	churn = 1 + ACTIVITY["large_repo_share"] * 14 / 7          # cruft kept 14 days, weekly full repack above 1 GiB

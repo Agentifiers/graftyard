@@ -739,7 +739,10 @@ pub fn apply(fold: &mut Fold, e: &LogEntry) -> Result<(), FoldError>;
 /// log, checking each later trailer on the way. On hosted `repo:65536`, 107.7 MB of log refolded in 213 batches at a
 /// peak of 64.9 MB of wasm memory, equal to all three voters [measured, `tests/m3/results/m3-wp5.md`, "2026-11-06",
 /// F48]. A tier whose snapshot is over `AUDIT_SNAPSHOT_MAX` (256 MB [guess]) is skipped, because its scratch copy would
-/// not fit beside it in the member's storage.
+/// not fit beside it in the member's storage. A chain whose last refold matched every voter and that committed no entry
+/// writing its fold since is not refolded: each voter's digests at that index are compared again, with no write and no
+/// election. A tombstoned repository is neither refolded nor compared until its purge (`decisions/DECISIONS.md`,
+/// "audit-moved").
 pub async fn fold_audit(sample: &[ChainId]) -> Result<AuditReport, FoldError>;
 ```
 

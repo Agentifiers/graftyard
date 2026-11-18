@@ -989,6 +989,11 @@ impl Family for Repo {
                     )?,
                     None => crate::snap::tiers_json(fold, body["at"].as_u64()),
                 };
+                // The fold audit's skip (`crate::fold_audit`): whether this member holds an entry past `since` that
+                // writes the fold.
+                if let Some(since) = body["since"].as_u64() {
+                    v["moved"] = json!(crate::load::moved(raft::Index(since), c.m.log_base().index, c.m.log()));
+                }
                 if body.get("log").is_some() {
                     v["log"] = crate::snap::log_json(&host.state.storage().sql())?;
                     v["dbBytes"] = json!(host.state.storage().sql().database_size());
