@@ -31,6 +31,15 @@ bare `exec` of its own, outside the entry's transaction, 31 to 44 per leader con
 (`tests/am1/results/tx-mix.md`, cut 1). B0-33 rows m50 to m52 ran with `sql`, so their confirm times are not
 comparable with later rows. Every B0-33 results file states which mode it ran.
 
+## Client colos (from 2026-11-18, B0-33 m53)
+
+`b033.sh` and `b029.sh` end each row's status with its voters' `suspect` reports by edge colo (`colos.py` on the
+row's tsave). Record the colos; do not pin them: production clients reach many colos. SUSPECT withholds a promise
+only on reports from two colos, so a row whose reports all came from one colo never exercised the withhold, and its
+leader-change count says nothing about the leader's health. B0-33 m50 to m52 (and m45) were LAX-only; m53 was the first
+with two (LAX and DFW), so leader-change counts before m53 are not comparable with it
+(`tests/am1/results/b033-m53.md`). Every B0-33 and B0-29 results file states the row's colos.
+
 ## When the orb cannot reach a workers.dev host
 
 Seen on 2026-11-18 from about 13:20Z (B0-02) and at 14:33Z (B0-33 m52): the orb's resolver answered SERVFAIL for

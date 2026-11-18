@@ -23,5 +23,8 @@ ROWS=b0-29 K=4 TEARDOWN=1 NO_LF13=1 ROW_USD="b0-29:4" LEARNERS=${LEARNERS:-enam:
 until grep -q ALLDONE $R/rows-$TAG.status 2>/dev/null; do sleep 5; done
 touch $R/.tsave-$TAG.done
 sleep 70
+# The row's `suspect` reports by edge colo, in its status (tests/fanout/README.md, "Client colos"): SUSPECT withholds
+# only on two colos, so a row's leader-change count means something only beside these.
+{ echo "colos (voters' Reported rows, whole trace):"; python3 tests/fanout/colos.py $R/tsave-$TAG.jsonl 2000-01-01T00:00:00Z 2100-01-01T00:00:00Z; } >> $R/rows-$TAG.status 2>&1
 echo B029DONE >> $R/rows-$TAG.status
 exec sleep infinity
