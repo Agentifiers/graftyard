@@ -1002,3 +1002,47 @@ fn a_lapsed_lease_tears_its_slots_down_once() {
     assert_eq!(l.beat(Timestamp(2)).len(), 1);
     assert_eq!(l.beat_due(Timestamp(2)), None);
 }
+
+/// B0-34 m41's step, as the leader's `/fanout` runs it with a slot that rehydrates in 4 minutes and then catches up in
+/// 6 s each time under load, against the pool warm's 2 s call (`workers/site/src/fanout.rs`, `warm_slot`). Answered by
+/// `catchup_answer`, the slot is warm from the report after its rehydrate, and k steps at once. Under main's rule, warm
+/// only when a catch-up ended within the call, it never is, and k stays 1 for the whole run; m41 stepped at 888 s of
+/// 900 only because a quiet moment let one catch-up finish in time (LM-1 round 36).
+#[test]
+fn a_rehydrated_slot_steps_k_under_load_whatever_its_catch_up_takes() {
+    use graftyard_git::{
+        Caller, CatchupAnswer, LoadReports, PoolLedger, catchup_answer, granted_k, pool_reserve, warm_step,
+    };
+    let (s0, s1, n) = (SiteId(0), SiteId(1), net(1));
+    let (rehydrated_at, catch_up_ms, warm_call_ms) = (4u64, 6_000u64, 2_000u64);
+    let answers = |m: u64| {
+        let a = catchup_answer(Caller::PoolWarm, true, m >= 1, m < rehydrated_at);
+        // What the 2 s warm call sees: `Warm` at once, a catch-up waited for only if it ends in time.
+        a == CatchupAnswer::Warm || (a == CatchupAnswer::WaitForCatchUp && catch_up_ms <= warm_call_ms)
+    };
+    let mut r = LoadReports::default();
+    let mut ledgers = [PoolLedger::default(), PoolLedger::default()];
+    let mut k = 1u8;
+    let mut ks = Vec::new();
+    for m in 0..=15u64 {
+        for (i, site) in [s1, s0].into_iter().enumerate() {
+            let now = Timestamp(m * MIN + i as u64);
+            let prior = r.f;
+            let step = r.report([s0, s1], site, load(0.9), k, now);
+            let Some(want) = pool_reserve(k, step, r.high(), r.reserved) else { continue };
+            let slots = ledgers.each_mut().map(|l| l.ask(n, 1, want, now, |_| 6));
+            let w: [Vec<bool>; 2] = [0, 1].map(|s| vec![answers(m); slots[s].len()]);
+            let granted = granted_k(k, step.unwrap_or(k), slots.each_ref().map(|s| Some(s.len() as u8)));
+            let next = warm_step(k, granted, [&slots[0], &slots[1]], [&w[0], &w[1]]);
+            if step.is_some_and(|s| s > k) && next == k {
+                r.step_waited(prior);
+            }
+            k = next;
+            r.reserved = r.high() && want >= k;
+        }
+        ks.push(k);
+    }
+    assert!(ks[..rehydrated_at as usize].iter().all(|k| *k == 1), "no step to a slot still rehydrating: {ks:?}");
+    assert_eq!(ks[rehydrated_at as usize], 2, "the first report after the rehydrate steps: {ks:?}");
+    assert!(ks[15] >= 3, "k keeps stepping while the load stays high: {ks:?}");
+}

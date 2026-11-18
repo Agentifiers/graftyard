@@ -2,7 +2,7 @@
 // installation tokens (with `graftyard_task`), PATs, git through a credential helper, and `scan`, which refuses to
 // write a log line that holds a token. No secret goes on argv, in a URL, or in a log.
 import { createHash, createSign, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -207,6 +207,16 @@ export class Git {
     } catch (e) {
       return { ok: false, out: `${e.stdout ?? ""}${e.stderr ?? ""}`.slice(0, 2000) };
     }
+  }
+  /** `run` without stopping the event loop: a load driver's timers and fetches keep running while git does. B0-34's
+   *  `tip:move` ran `git push` through `run` (`execFileSync`) for 6 s at p50, and every other request a1 timed in that
+   *  window ended late with it (m41: probe first bytes released in batches; tests/fanout/loopstall.py). */
+  runAsync(args, cwd = this.wt) {
+    return new Promise((done) => {
+      execFile("git", ["-c", "credential.helper=", "-c", `credential.helper=${join(this.dir, ".cred.sh")}`,
+        "-c", "user.name=am1", "-c", "user.email=am1@x", ...args], { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 300_000,
+        maxBuffer: 64 << 20 }, (e, stdout, stderr) => done(e ? { ok: false, out: `${stdout ?? ""}${stderr ?? ""}`.slice(0, 2000) } : { ok: true, out: String(stdout) }));
+    });
   }
   clone() { return this.run(["clone", "-q", this.url, this.wt], this.dir); }
   remoteHead(ref) { const r = this.run(["ls-remote", this.url, ref], this.dir); return r.ok ? r.out.split("\t")[0] : null; }

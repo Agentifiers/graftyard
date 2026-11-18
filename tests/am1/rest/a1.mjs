@@ -58,6 +58,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
 import { r2list } from "../../fanout/r2list.mjs";
 
@@ -685,6 +686,12 @@ if (plan.openPrs) {
 }
 t0 = Date.now() + 5_000;
 end = t0 + seconds * 1000;
+// The driver's own event-loop delay over the load window, in the row (`loopDelay`): a timer or fetch the loop could
+// not run on time ends late, so every client-side latency is at least this late. m41's `tip:move` pushes through
+// `execFileSync` stopped the loop about 6 s each (tests/fanout/loopstall.py); a row whose max is seconds is not
+// measuring the server alone.
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+setTimeout(() => loopDelay.enable(), Math.max(0, t0 - Date.now())).unref();
 // A SIGTERM (`tests/fanout/memguard.mjs`'s stop) ends the load window now, so the row is still written, as `stopped`.
 let stopped = null;
 process.on("SIGTERM", () => { stopped = new Date().toISOString(); end = Math.min(end, Date.now()); log(`SIGTERM: window ended at ${stopped}`); });
@@ -1014,7 +1021,6 @@ function b034Phase() {
 }
 const kTimeline = []; // [s since t0, chain, k]
 if (b034) {
-  const { execFileSync: ex } = await import("node:child_process");
   // The tip: the next real first-parent commit, fast-forwarded onto main under the admin's PAT from the bare clone.
   const g = new (await import("../hosted/lib.mjs")).Git(R).as(admin);
   // From the commit after main's place in that history: the repository keeps main between rounds, so from index 0
@@ -1025,11 +1031,10 @@ if (b034) {
     const c = b034.future[next];
     if (!c) return "no more history";
     next++;
-    const r = g.run(["push", "-q", g.url, `${c}:refs/heads/main`], b034.bare);
+    const r = await g.runAsync(["push", "-q", g.url, `${c}:refs/heads/main`], b034.bare);
     if (r.ok) { main = c; return "ok"; }
     return `refused ${r.out.split("\n").filter(Boolean).slice(-1)[0]?.replace(/[0-9a-f]{12,}/g, "H").slice(0, 80) ?? ""}`;
   }, 1));
-  void ex;
   // A hot network of another owner: pushes of one new blob on its own branches and depth-1 clones read whole.
   const hot = (n, from, tag) => {
     const tips = {};
@@ -1251,6 +1256,7 @@ jobs.push((async () => {
   }
 })());
 await Promise.all(jobs);
+loopDelay.disable();
 // The last first-byte misses' R2 checks run up to a minute past the window.
 await Promise.all(fillChecks);
 const killLog = await Promise.all(killRows);
@@ -1328,6 +1334,8 @@ const v = {
       compose: missRows.reduce((m, x) => ((m[x.compose ?? "none"] = (m[x.compose ?? "none"] ?? 0) + 1), m), {}),
       filled: missRows.filter((x) => x.filled).length, notFilled: missRows.filter((x) => x.filled === false).length }, kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
+  loopDelay: { p50: Math.round(loopDelay.percentile(50) / 1e6), p99: Math.round(loopDelay.percentile(99) / 1e6),
+    max: Math.round(loopDelay.max / 1e6) },
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
   ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
