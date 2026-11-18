@@ -5174,3 +5174,70 @@ whether the leader is heard, not whether it commits.
 - The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half at 4,000 seeds, 1,333 s) passed: harsh 16.8 s
   (seed 10356), gray 24.2 s (11076), live 25.8 s (12840). Against colo-unknown's 16.3 / 27.9 / 25.4 s and
   late-suspect's 17.0 / 24.7 / 27.8 s. Porcupine Ok on all three (147,412, 2,331,603 and 5,965,204 operations).
+
+### Round 41: the m47 slot, site day from branch lookup-retry 4e5c2afe, B0-33 (2026-11-18)
+
+**Site day.** Built from `lookup-retry` at 4e5c2afe (main 56918444 plus lookup-retry), in its own worktree. The m43
+image was reused (`containers/` unchanged); test-faults, standard-4, ROLLUP=1, 32.25; GRAFTYARD_PR_TRIGGER unset;
+`siteday exit 0`. Sites a c3434baa, b 3c8ff0bf, c 39973f7c; edge 95b61d71 at 100% (`raw/siteday-m47.status`).
+progress-suspect is not in this build.
+
+**B0-33**: repo:131355, a1 `mwlet1ns`, 5,000 agents, 300 s of load from 01:00:17.7Z, leader site 0 at term 2, k 4.
+
+| B0-33 line | m47 (lookup-retry) | m45 (late-suspect) | verdict at 90% |
+|---|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 22,536 ms (p50 5,209, n 4,533; queue p99 21.1 s, round 6.9 s, confirm 7.1 s); merges 1 of 53 (33 skipped at the cap); human pushes 10 of 207 (183 skipped) | 57,018 ms; 1 of 57; 6 of 184 | fail |
+| ≥ 140 agent commands/s (≥ 126 at 90%) | 17.2 agent-class ok a second (agent pushes 3,252 ok of 12,491; 3,888 × 503 "access rows … not leader", 1,924 fetch failed) | 7.6 | fail |
+| Zero leader changes and `suspect` | **term 2 → 21, 19 changes**, the first 46 s into load; 41,356 `suspect` reports in the voters' traces (LAX 22,163, DFW 15,605, SJC 3,041, UNKNOWN 547) | term 2 throughout | fail |
+
+**Term changes are back, from two real colos.** m45 had one edge colo (LAX), so no rule could withhold. m47's edge
+served from LAX and DFW, and later SJC. `tests/fanout/campaigns.py` puts 39 of 49 campaigns after LAX+DFW withholding,
+7 after a lapsed promise with no append for 10 s or more (most after 01:04:24Z, when every voter's trace has a 12 to 40
+s hole), and 3 unexplained.
+
+**Was 10353's mechanism involved?** No. 10353 is a leader whose empty rounds keep `appended_at` fresh while it commits
+nothing, so the followers never withhold. Here the followers withheld 39 times under the deployed `appended_at` rule.
+The withholdings came from real gaps in the leader's appends:
+- Follower append gaps in load: p50 48 to 83 ms, p90 587 to 978 ms, p99 3.0 to 6.2 s. 5 to 10% of gaps were 1 s or
+  more.
+- The first withholding: both followers took no append from leader 0 for 1.0 to 2.6 s around 01:00:48 to 01:00:55Z
+  (commit index 145 to 148), while LAX and DFW reported. Both withheld, both promises lapsed at 01:01:04Z, and site 1
+  won term 3.
+
+Replayed with progress-suspect's rule (an append counts only if it moved `last` or the commit index), the trace has
+more late reports (4,471 against 2,082 at site 0; 7,705 against 2,986 at site 2) and slightly more two-colo episodes (9,
+4, 13 against 8, 3, 11). So progress-suspect would not have held these terms, and could withhold a little more under
+this overload. The leader's own appends stall for seconds at 500 agents, and two colos see the same stall. The edge's
+miss and the follower's own evidence now agree, so late-suspect's flip line ("a leader that two colos reported and that
+stopped reaching both followers for CALL_DEADLINE") is meeting real stalls, not queueing at the edge. [inference: the
+replay marks progress from the trace's AppendStepped `last` and `commit` fields; it cannot see a truncate-and-store at
+the same index.]
+
+**The lookup retry, measured.** Walk `/read`s fell only a little: 175.7, 133.7 and 186.6 a second at voters 0, 1 and 2,
+against m45's 222 to 224 at the followers. Requests by lookup step still show `walk` at 201 to 211 a second per voter
+(`raw/inbound-m47b33.txt`). Cause: every term change forgets the leader in every isolate, and 19 changes in 300 s, with
+about 700 isolates per voter, give one walk per isolate each time. A retry only helps while the cached leader is still
+the leader. `/suspect` at the voters: 119, 38 and 194 a second (m45: 16, 177, 186), from 685 to 709 isolates; at 1 s
+each isolate sends at most one per second, so the rate is the number of isolates with a reason to report. The edge
+runs on twice m45's isolates (723 against 324 walking a voter).
+
+**Edge-walk queueing at the voters.** Of 3,104 voter-to-voter `/raft` calls joined to their callee, 1,576 missed 1 s
+or went unanswered, with p50 1,743 requests entered ahead (m45: 2,121 of 4,300, p50 716). In the slowest bucket (3 s
+or more), what waited ahead was `/read` 43% and `/suspect` 40%. The voters entered 520, 274 and 532 requests a second.
+
+**Memory.** Memguard peaks 96.9 / 64.1 / 75.1 MiB; a1's admission samples peaked at 101.6 MB. No 120 MiB stop.
+
+**Test merges** (B0-35's instrument, here for the record): site 0 computed 3, wait max 59.4 s.
+
+**Close-out.**
+- Shards swept by costrow: "sweep exit 0".
+- `retirenets.mjs 131355`: 12 names, all "not joined" (01:09:34Z).
+- Two-pass purge (gate unchanged): a 10,367, b 9,078, c 7,564 (27,009 objects); second pass 0 on every site.
+- The idle reading runs 01:16 to 01:46Z into `raw/idle-m47.txt`.
+
+**Cost.** graft-m2b by prefix from 00:28Z to 01:15Z: $1.62 of the $10 stop. The account day was $3.19 at 01:10Z.
+
+Raw files in `tests/fanout/raw/`: `siteday-m47.status`, `costrow-m47b33.status`, `rows-m47b33.status`,
+`a1-b0-33-m47.jsonl`, `terms-m47b33.jsonl`, `memguard-m47b33.jsonl.xz`, `tsave-m47b33.jsonl.xz`, `inbound-m47b33.txt`,
+`reported-m47b33.txt`, `latesuspect-m47b33.txt`, `campaigns-m47b33.txt`, `retire-m47.log`, `retirenets-m47.out`,
+`purge-m47.log`.
