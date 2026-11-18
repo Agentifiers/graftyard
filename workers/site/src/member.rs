@@ -3213,7 +3213,9 @@ mod tests {
         let shed = super::not_leader_reply(true, &none, Some(SiteId(0)));
         assert!(shed.pointer("/overloaded/retryAfterMs").is_some(), "{shed}");
         assert_eq!(shed["forgot"], serde_json::json!({ "site": 0, "term": 4 }));
-        for (index, nl, forgot) in [(true, &named, Some(SiteId(0))), (true, &none, None), (false, &none, Some(SiteId(0)))] {
+        for (index, nl, forgot) in
+            [(true, &named, Some(SiteId(0))), (true, &none, None), (false, &none, Some(SiteId(0)))]
+        {
             let v = super::not_leader_reply(index, nl, forgot);
             assert!(v.pointer("/error/notLeader").is_some() && v.get("overloaded").is_none(), "{v}");
         }

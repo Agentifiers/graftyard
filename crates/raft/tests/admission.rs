@@ -622,7 +622,10 @@ fn an_agent_command_is_answered_within_its_budget_and_never_acked_after_full() {
     assert_eq!(bounded.len(), 20);
     // The lane held about 600 commands at 10/s: the expected wait (about 60 s) is past 2 s for every one.
     let at_once = bounded.iter().filter(|d| matches!(d.end, End::Full { waited: false, .. })).count();
-    println!("budget 2 s behind 600 agent commands: {at_once} of 20 refused at once, {:?}", bounded.iter().map(|d| d.ms).max());
+    println!(
+        "budget 2 s behind 600 agent commands: {at_once} of 20 refused at once, {:?}",
+        bounded.iter().map(|d| d.ms).max()
+    );
     assert_eq!(at_once, 20, "an agent command whose expected wait passes its budget is refused at admission");
     assert!(bounded.iter().all(|d| d.ms <= 2_000), "every bounded command answered within its bound");
     assert!(humans.iter().all(|d| matches!(d.end, End::Acked { .. })), "Human is never refused: {humans:?}");
@@ -630,7 +633,7 @@ fn an_agent_command_is_answered_within_its_budget_and_never_acked_after_full() {
     let leader = l.leader().expect("leader");
     let fold = &l.members[leader.0 as usize].group_fold().fold;
     for d in l.done.iter().filter(|d| matches!(d.end, End::Full { .. })) {
-        assert!(fold.0.get(&d.op.key).is_none(), "{} was answered Full and committed", d.op.key);
+        assert!(!fold.0.contains_key(&d.op.key), "{} was answered Full and committed", d.op.key);
     }
 }
 
@@ -642,20 +645,28 @@ fn a_queued_agent_command_expires_at_its_budget_not_at_agent_wait() {
     let mut l = Load::new(12, ENAM);
     l.set_capacity(Some(400.0));
     let t0 = l.now + 100;
-    l.offer((0..30).map(|i| Op { bound: Some(2_000), ..op(t0, AdmitClass::Agent, Some(i), Kind::Side, format!("q/{i}"), 0) }));
+    l.offer(
+        (0..30)
+            .map(|i| Op { bound: Some(2_000), ..op(t0, AdmitClass::Agent, Some(i), Kind::Side, format!("q/{i}"), 0) }),
+    );
     // Admitted at 200 agent commands a second; then the agent rate drops to 1 a second, so the queue stalls.
     l.run_for(105);
     l.set_capacity(Some(2.0));
     l.drain(60_000);
     let waited: Vec<_> = l.done.iter().filter(|d| matches!(d.end, End::Full { waited: true, .. })).collect();
     let acked: Vec<_> = l.done.iter().filter(|d| matches!(d.end, End::Acked { .. })).collect();
-    println!("{} acked, {} expired at {:?} ms", acked.len(), waited.len(), waited.iter().map(|d| d.ms).collect::<Vec<_>>());
+    println!(
+        "{} acked, {} expired at {:?} ms",
+        acked.len(),
+        waited.len(),
+        waited.iter().map(|d| d.ms).collect::<Vec<_>>()
+    );
     assert!(!waited.is_empty(), "some queued command expired");
     assert!(waited.iter().all(|d| d.ms >= 2_000 && d.ms <= 2_100), "expired at its 2 s budget, not at AGENT_WAIT");
     let leader = l.leader().expect("leader");
     let fold = &l.members[leader.0 as usize].group_fold().fold;
     for d in &waited {
-        assert!(fold.0.get(&d.op.key).is_none(), "{} expired and committed", d.op.key);
+        assert!(!fold.0.contains_key(&d.op.key), "{} expired and committed", d.op.key);
     }
 }
 
