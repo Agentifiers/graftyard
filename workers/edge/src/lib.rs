@@ -1864,6 +1864,15 @@ fn validate_failed(tries: Vec<(SiteId, u16, String)>) -> ShardRefusal {
     ShardRefusal::Unavailable(last.unwrap_or_else(|| "no shard to try".into()))
 }
 
+/// The log line for an upload-pack the shard did not answer 200, which the client gets as 503: the shard's status and
+/// the first `SHARD_WHY_MAX` bytes of its body, so Workers Logs say why. B0-33 m53's 3,441 ls-refs 503s from the
+/// shard carried no reason in any log (`tests/am1/results/b033-m53.md`, "The `ls-refs` split").
+fn shard_fail_line(repo: i64, status: u16, why: &str, ls_refs: bool) -> String {
+    const SHARD_WHY_MAX: usize = 200;
+    let cut = why.char_indices().nth(SHARD_WHY_MAX).map_or(why.len(), |(i, _)| i);
+    json!({ "shardFail": repo, "status": status, "why": why[..cut].trim_end(), "lsRefs": ls_refs }).to_string()
+}
+
 /// A read on the network's shards (`upload-pack`, `info-refs`) in `shard_order`: the first with
 /// `wait=VALIDATE_WAIT_HOME_S`, then each other with `wait=VALIDATE_WAIT_OTHER_S`, until one answers 200.
 /// The last answer otherwise. A fetch, like a push, waited on a home shard's 30 min rehydrate until its deadline.
@@ -2016,6 +2025,7 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     #[cfg(not(feature = "test-faults"))]
     let cache_ok = true;
     let v2 = if wants_v2(Some(&proto)) { parse_v2(&body).ok() } else { None };
+    let is_ls = v2.as_ref().is_some_and(|v| v.command == "ls-refs");
     #[cfg(feature = "test-faults")]
     let edge_ls = c.ls_refs_edge;
     #[cfg(not(feature = "test-faults"))]
@@ -2069,7 +2079,9 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     let mut r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
     let hh = git_headers(c.rid, &Service::UploadPack.result_type())?;
     if r.status_code() != 200 {
-        return text(c.rid, 503, &format!("git cache: {} {}\n", r.status_code(), r.text().await.unwrap_or_default()));
+        let why = r.text().await.unwrap_or_default();
+        worker::console_log!("{}", shard_fail_line(repo.id.0.0, r.status_code(), &why, is_ls));
+        return text(c.rid, 503, &format!("git cache: {} {why}\n", r.status_code()));
     }
     for k in ["x-graft-cursor", "x-graft-compose"] {
         if let Some(v) = r.headers().get(k)? {
@@ -3130,13 +3142,26 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        Cut, ShardRefusal, bound_at_send, capped, client_push_id, gate_ng, gunzip, ls_refs_at_edge, shard_refusal,
-        shard_url, streamed_site, validate_failed, validate_sites, validate_url, warm_first,
+        Cut, ShardRefusal, bound_at_send, capped, client_push_id, gate_ng, gunzip, ls_refs_at_edge, shard_fail_line,
+        shard_refusal, shard_url, streamed_site, validate_failed, validate_sites, validate_url, warm_first,
     };
 
     /// F91's A/B switch: the edge answers `ls-refs` unless a request names the shard with the bed token; a wrong or
     /// missing token, another value, or an install with no bed token leaves the edge's answer on. And the push id a
     /// driver sends reaches the log line only as a short plain token.
+    #[test]
+    fn a_shard_503_logs_its_reason_cut_on_a_char_boundary() {
+        let v: serde_json::Value =
+            serde_json::from_str(&shard_fail_line(131364, 503, "{\"warming\":true}\n", true)).unwrap();
+        assert_eq!((v["shardFail"].as_i64(), v["status"].as_u64()), (Some(131364), Some(503)));
+        assert_eq!(v["why"], "{\"warming\":true}", "the shard's body is the reason");
+        assert_eq!(v["lsRefs"], true);
+        // 199 ASCII bytes then a 2-byte char: the cut keeps 200 chars and never splits one.
+        let long = format!("{}é{}", "x".repeat(199), "y".repeat(500));
+        let v: serde_json::Value = serde_json::from_str(&shard_fail_line(1, 500, &long, false)).unwrap();
+        assert_eq!(v["why"].as_str().unwrap(), format!("{}é", "x".repeat(199)));
+    }
+
     #[test]
     fn ls_refs_go_to_the_shard_only_when_a_bed_request_asks() {
         assert!(ls_refs_at_edge(None, None, Some("bed")), "on by default");
