@@ -1,0 +1,7 @@
+symrefs
+unborn
+ref-prefix HEAD
+ref-prefix refs/heads/
+ref-prefix refs/tags/v2.4
+ref-prefix refs/tags/v2.40
+ref-prefix refs/heads/ma

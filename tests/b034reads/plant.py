@@ -12,6 +12,8 @@ import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 GO = 'containers/git/server/main.go'
+LS = 'crates/git/src/ls_refs.rs'
+C = ['-p', 'graftyard-git', '--test', 'ls_refs']
 G = ['go', 'go', 'test', '-count=1', '-run', 'TestIngest|TestRecordKeepsOnlyThePacksOwnObjects|TestConcurrent|TestThinPack|TestSpooled', '.']
 
 MUTANTS = [
@@ -30,9 +32,32 @@ MUTANTS = [
      '\tmidxAfterIngest(net, rp)\n\treturn time.Since(t0).Milliseconds(), 0, 0, nil',
      '\treturn time.Since(t0).Milliseconds(), 0, 0, nil', G),
     ('the quarantine left behind', GO, '\tdefer os.RemoveAll(q)\n\tl.Lock()\n', '\tl.Lock()\n', G),
+    # (a): the edge's ls-refs answer (`graftyard_git::ls_refs`), against the recorded github.com answers.
+    ('peel answered over tags the group cannot peel', LS,
+     '        (!r.peel || branches_only).then_some(r)\n', '        let _ = branches_only;\n        Some(r)\n', C),
+    ('no symref-target on HEAD', LS,
+     '            if self.symrefs {\n                line.extend_from_slice(b" symref-target:");',
+     '            if false {\n                line.extend_from_slice(b" symref-target:");', C),
+    ("HEAD by the shard's main rule, not the default branch", LS,
+     '                line.extend_from_slice(&head.target);', '                line.extend_from_slice(b"refs/heads/main");', C),
+    ('ref-prefix ignored', LS,
+     '        self.prefixes.is_empty() || self.prefixes.iter().any(|p| name.starts_with(p))',
+     '        let _ = name;\n        true', C),
+    ('overlapping prefixes not folded (a ref listed twice)', LS,
+     '            if !out.last().is_some_and(|l| p.starts_with(l)) {\n                out.push(p);\n            }',
+     '            out.push(p);', C),
+    ('session refs listed without their prefix', LS,
+     '        !hidden || (name.starts_with(SESSION_REFS.as_bytes()) && self.sessions.iter().any(|s| name.starts_with(s)))',
+     '        !hidden || name.starts_with(SESSION_REFS.as_bytes())', C),
+    ('a partial page answered', LS,
+     '        if pages.len() != self.reads().len() || pages.iter().any(|p| p.next.is_some()) {',
+     '        if pages.len() != self.reads().len() {', C),
+    ('an unborn HEAD answered without its line', LS,
+     '            let head = head?;\n            let mut line = format!("{} HEAD", head.oid?.hex()).into_bytes();',
+     '            let head = head?;\n            let Some(o) = head.oid else { pkt::flush(&mut out); return Some(out) };\n            let mut line = format!("{} HEAD", o.hex()).into_bytes();', C),
 ]
 
-ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
+ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '.worktrees/target-am1')), PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
 
 
 def run(t):

@@ -25,6 +25,7 @@ pub mod key;
 pub mod lease;
 pub mod lifecycle;
 pub mod log_archive;
+pub mod ls_refs;
 pub mod mem;
 pub mod merge;
 pub mod merge_cache;

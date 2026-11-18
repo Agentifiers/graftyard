@@ -1,0 +1,6 @@
+symrefs
+peel
+unborn
+ref-prefix HEAD
+ref-prefix refs/heads/
+ref-prefix refs/tags/

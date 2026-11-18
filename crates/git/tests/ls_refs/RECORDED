@@ -1,0 +1,3 @@
+github.com git-upload-pack v2 ls-refs answers, recorded 2026-11-18T06:46:33Z with tests/am1 ls-refs bodies (agent=git/2.56.0, object-format=sha1)
+jq = jqlang/jq, gitgit = git/git. Each <repo>-<case>.req holds the request's argument lines; .ans is the answer's bytes.
+axios = axios/axios (default branch v1.x; refs/heads/main also exists), recorded 2026-11-18T07:14Z the same way.

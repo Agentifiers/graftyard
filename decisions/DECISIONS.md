@@ -4830,6 +4830,26 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Options (a) and
 
 **Flip.** After (b), a measured learner-gate share above 30% of the gap between the API p99 and 2 s.
 
+### `b034-reads`: the edge answers a v2 `ls-refs` from the group's refs, with no shard, 2026-11-18
+
+**Status.** Built on branch `b034-reads`, B0-34's read-path half (a), which LM-1 proposed (T-01a1c694) and T-01a1ccdd builds, granted by the orchestrator (T-01a17bda). Edge only, so it ships with the next edge deploy.
+
+**Decision.** `upload_pack` (`workers/edge/src/lib.rs`) answers a v2 `command=ls-refs` itself when `graftyard_git::ls_refs::LsRefs::parse` takes it: SHA-1, only `peel`, `symrefs`, `unborn` and `ref-prefix`, and `peel` only when every read is under `refs/heads/`, since the group knows no object types. The edge reads each of git's folded prefixes (`reads`, git's `find_longest_prefixes`) as one page from the leader, and, when the answer lists HEAD, the core `settings` row for `default_branch` and that branch's tip. `LsRefs::answer` builds bytes only from whole reads. A failed read, a page with more to come (over `REFS_PAGE_MAX`), a missing `settings` row, a default branch that does not exist yet (git's `unborn HEAD`), or an oid or name that does not parse returns `None`, and the request goes to the shard as before. Host refs stay hidden and session refs list only under their own `ref-prefix`, as the shard's `hideRefs` and `lsRefsOnly` do. A test install marks an edge answer `x-graft-ls-refs: edge`.
+
+**HEAD.** HEAD is `symref-target:<default_branch>`. GHES 3.22 documents that "the default branch is also the initial branch that Git checks out locally when someone clones the repository" [doc, https://docs.github.com/en/enterprise-server@3.22/pull-requests/reference/branches, "About the default branch"], and a clone checks out what HEAD's symref names. github.com answers the same way where `refs/heads/main` exists and is not the default: axios/axios (default `v1.x`; recorded as `axios-source`), and anomalyco/opencode (`dev`), vercel/next.js (`canary`), getify/You-Dont-Know-JS (`2nd-ed`) and odysseus-dev/odysseus (`dev`), checked live on 2026-11-18. The shard's own rule differs: a rehydrate's last `PUT /refs` points HEAD at `refs/heads/main` if it exists, else at the first ref in the page order (`handleRefs`, `setHead`), never at `default_branch`. So for a repository whose default branch is not `main`, or has no `main`, the shard's ls-refs and v0 advertisement name a HEAD GHES would not. That is an existing GHES byte-diff gap in the shard, not one this change adds; the edge's answer removes it for every v2 ls-refs it serves. The shard's HEAD rule is left as it is here.
+
+**Recordings.** The wire test's answers (`crates/git/tests/ls_refs/`, `RECORDED`) come from github.com, not from GHES 3.22, so the byte-for-byte claim is [inference] until a GHES 3.22 oracle exists. Both run git's `ls-refs.c`; the HEAD rule is the one GHES documents.
+
+**Why.** B0-34 m41's clone time to first byte and tip reads started with a v2 ls-refs to the shard, which waited behind the shard's rehydrate (22:15 to 22:19Z) and `caught_up()` behind ingests: 14 of 23 and 14 of 25 shard ls-refs over 5 s on two repositories, p50 23 to 26 s (LM-1's trace; `tests/am1/results/b034-trace.md`). The refs are the group's already, and receive-pack's advertisement reads them from the leader the same way.
+
+**What it beat.**
+- **HEAD from the shard, edge answers only without HEAD.** That serves a1's `tip()` and `read:ref` (`ref-prefix refs/heads/...`) but not a clone's first round trip, which asks `ref-prefix HEAD`; and the shard's HEAD rule is the one that disagrees with GHES.
+- **Peel over tags from the shard's object types.** It needs the shard, which is what this removes; a clone that sends `peel` with `refs/tags/` still goes to the shard.
+
+**Evidence.** `crates/git/tests/ls_refs.rs`: 8 recorded github.com answers (jqlang/jq, git/git, axios/axios: clone with and without peel, peel over heads, partial and overlapping prefixes, `ref-prefix H`, HEAD without symrefs, HEAD not `main`) match byte for byte from the source answer's refs, and 3 peel-over-tags cases go to the shard. A partial page, a missing read, no HEAD, an unborn HEAD, and an unparsable oid each go to the shard. `tests/b034reads/plant.py` mutants 6 to 13, all caught. Edge wiring: wasm32 clippy with and without `test-faults`; no hosted run yet.
+
+**Flip.** A GHES 3.22 recording whose ls-refs differs from the edge's for the same refs, in HEAD or anywhere else; or the leader's ref reads at B0-34's 33 ls-refs/s plus clones costing it more than the shard reads saved.
+
 ### `b034-reads`: an `/ingest` runs `index-pack` under the network's lock shared, 2026-11-18
 
 **Status.** Built on branch `b034-reads` from main `436095f7`, granted by the orchestrator (T-01a17bda) as B0-34's read-path half (b), which LM-1 proposed (T-01a1c694) and T-01a1ccdd builds. Container only; ships on the next site day with the git image.
