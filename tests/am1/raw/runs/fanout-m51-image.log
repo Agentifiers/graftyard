@@ -1,0 +1,73 @@
+2026-11-18T12:31:57Z
+3e548e95
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+sha256:16aeac73e475a887b151a69dd71c45065b366f2860ffed7cfc7418488330dcf0
+npm notice run npx
+npm notice run 'wrangler' containers push graft-m1-site-gitshard-git:am1runs
+
+ ⛅️ wrangler 4.164.0
+────────────────────
+
+WARNING! Your credentials are stored unencrypted in '/home/user/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+Login Succeeded
+The push refers to repository [registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git]
+6e5a49aec10d: Waiting
+710f3da1112f: Waiting
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+7f39124e0199: Waiting
+6e5a49aec10d: Waiting
+710f3da1112f: Waiting
+94fa87d048c7: Waiting
+6e5a49aec10d: Waiting
+710f3da1112f: Waiting
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+6e5a49aec10d: Waiting
+710f3da1112f: Waiting
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+6e5a49aec10d: Waiting
+710f3da1112f: Waiting
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+710f3da1112f: Layer already exists
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+8d5ec177318b: Waiting
+6e5a49aec10d: Waiting
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+8d5ec177318b: Waiting
+6e5a49aec10d: Waiting
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+8d5ec177318b: Waiting
+6e5a49aec10d: Waiting
+6e5a49aec10d: Waiting
+94fa87d048c7: Waiting
+7f39124e0199: Waiting
+8d5ec177318b: Waiting
+6e5a49aec10d: Waiting
+7f39124e0199: Waiting
+8d5ec177318b: Waiting
+8d5ec177318b: Waiting
+6e5a49aec10d: Waiting
+8d5ec177318b: Waiting
+94fa87d048c7: Pushed
+8d5ec177318b: Pushed
+6e5a49aec10d: Pushed
+7f39124e0199: Pushed
+am1runs: digest: sha256:16aeac73e475a887b151a69dd71c45065b366f2860ffed7cfc7418488330dcf0 size: 1411
+Pushed image: registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git:am1runs
+exit 0
+graft-m1-site-gitshard-git@sha256:16aeac73e475a887b151a69dd71c45065b366f2860ffed7cfc7418488330dcf0
+registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:16aeac73e475a887b151a69dd71c45065b366f2860ffed7cfc7418488330dcf0
+2026-11-18T12:34:48Z
+DONE
