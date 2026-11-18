@@ -6,7 +6,8 @@ package main
 //
 //	POST /compose?net=N[&start=1][&tip=C]  the chain's next step, to C (default HEAD's commit): with no chain, a base
 //	                                 at C, only with start=1; else a part from the chain's tip to C, or, at the
-//	                                 foldEvery-th move, a new base at C. {"head","built": [file names],"cpuMs"};
+//	                                 foldEvery-th move or past composeDiffMax entries from the chain's tree, a new
+//	                                 base at C. {"head","built": [file names],"cpuMs"};
 //	                                 "head" null when there is no chain. Holds no network lock
 //	GET  /compose-head?net=N         the chain's head, {"base","parts","tree"} or null
 //	GET  /compose-file?net=N&name=F  one of the chain's files (base-<tip>.pack|.idx, part-<from>-<to>.pack|.idx)
@@ -253,7 +254,25 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 	env := append(chainFirst(net, rp), derivedEnv)
 	var next chainHead
 	var name string
-	if !have || len(h.Parts)+1 >= foldEvery {
+	// A part is the new tip's diff from the chain's tree. Past composeDiffMax entries the chain is on a tip far from
+	// HEAD, so the step builds a new base instead: on B0-34 m1b34 a base built on a one-file row push's tip (HEAD fell
+	// to the first ref after a rehydrate skipped main) took 88,000-entry parts at every move, and every miss after it
+	// went over the cap to stock (tests/am1/results/b034-attr.md, "Correction").
+	var parts []string
+	base := !have || len(h.Parts)+1 >= foldEvery
+	if !base {
+		objs, err := newObjects(rp, env, h.Tree, tip, m.gitLow)
+		if err != nil {
+			fail(w, 500, "%v", err)
+			return
+		}
+		if len(objs) > composeDiffMax {
+			base = true
+		} else {
+			parts = objs
+		}
+	}
+	if base {
 		// A base: every tree and blob of the tip, from the chain's packs and the repository.
 		objs, err := m.gitLow(rp, env, nil, "rev-list", "--objects", tree)
 		if err != nil {
@@ -268,10 +287,7 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		objs, err := newObjects(rp, env, h.Tree, tip, m.gitLow)
-		if err == nil {
-			objs, err = missingFromChain(net, rp, objs, m.gitLow)
-		}
+		objs, err := missingFromChain(net, rp, parts, m.gitLow)
 		if err == nil {
 			name = "part-" + h.tip() + "-" + tip
 			err = packTo(net, rp, env, objs, name, &m)

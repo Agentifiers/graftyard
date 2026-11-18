@@ -5089,15 +5089,15 @@ cached voter does today).
 
 **Flip.** A GHES 3.22 recording whose HEAD, for a repository whose default branch is not `main`, names anything but the default branch; or a hosted run where the shard's v0 or v2 HEAD differs from the edge's for the same repository.
 
-### `b034-tails` (proposal): one deadline per upload-pack, a stock cap, and stock off the network lock, 2026-11-18
+### `b034-tails`: one deadline per upload-pack, a stock cap, and over-the-cap misses composed after the step, 2026-11-18
 
-**Status.** Proposed, not built, on branch `b034-tails` from main `0d64813b`, for the orchestrator (T-01a17bda) before any code, because it touches the shard's composed path. It follows the m1b34 attribution (`tests/am1/results/b034-attr.md`).
+**Status.** Built, trimmed, on branch `b034-tails` from main `0d64813b`. The orchestrator (T-01a17bda) approved decisions 1, 2, 3 and 5 and held 4; this entry follows the m1b34 attribution (`tests/am1/results/b034-attr.md`). Not yet measured hosted.
 
 **Decision.**
 1. **Every wait of one upload-pack shares one deadline.** These are `Compose::ready`, the running catch-up in `compose_then_catch_up` (today `Jobs::idle`, unbounded), the later catch-up, and a stock slot. The deadline is the caller's `wait`: 15 s on the edge's first site, 60 s on the others (`VALIDATE_WAIT_*`). Past it, the object answers 503 `warming` and the edge asks the next site, as a validate does. The last site's 503 reaches git as `HTTP 503`, which is what a clone sees today.
 2. **Over the diff cap is retried like "not a ref tip".** A 409 `stock: over the diff cap` starts the chain's step (`Compose::start(true)`). The miss composes again after that step and the running catch-up, then after one that starts later, within the deadline. The container's step builds a base instead of a part when the chain tree differs from the new tip in more than `composeDiffMax` entries, so a chain on a wrong tip is replaced at its next step. A want still refused, `include-tag` on an annotated tag, or no chain goes to stock.
-3. **Stock is admitted, not queued on the lock.** The container runs at most `STOCK_MAX` = 2 [guess] stock upload-packs, counted from start until the process ends, and answers 429 at once past that. The object queues the rest in arrival order until the deadline, then answers 503 `warming`. A spooled fill holds its slot until its file is complete; a cancelled client's process is already killed (`TestCancelledCloneReleasesTheLock`).
-4. **Stock takes no network lock.** A per-network reader count replaces the lock for stock: `/evict` answers 409 while it is above zero, and a fresh `/init` waits for it. Validates, ls-refs and the ingest's exclusive section keep the lock.
+3. **Stock is admitted, not queued on the lock.** The container runs at most `stockMax` = 2 [guess] stock upload-packs, counted from start until the process ends, and answers 429 `x-graft-stock: full` at once past that; ls-refs and the advertisement take no slot. The shard object queues the rest in arrival order (`StockLine`, `STOCK_MAX` and `STOCK_POLL` in `crates/git/src/compose.rs`): only the head re-asks, every 500 ms, and a place past the deadline leaves the line and answers 503 `warming`. The client never sees the 429. The next hosted row's count of concurrent stock processes per container is what measures 2. A spooled fill holds its slot until its file is complete; a cancelled client's process is already killed (`TestCancelledCloneReleasesTheLock`).
+4. **Held: stock takes no network lock.** Not built. A per-network reader count would replace the lock for stock, with `/evict` answering 409 while it is above zero and a fresh `/init` waiting for it. G26 removes what built m1b34's queue (a base on a one-file row tip, so stock on every miss after the rehydrate), and decision 3 bounds the readers to 2, so the gain is unmeasured, while it adds a reader-versus-`moveIn` exposure (below). Flip: the next row still shows a catch-up waiting over 1 s for the exclusive lock behind stock readers.
 5. **`midx_ms`.** `/ingest` answers the midx write's time beside `lock_ms`, and the shard sums it in `StoredMs`.
 
 **What a client sees.**
@@ -5122,25 +5122,23 @@ cached voter does today).
 - **Stock keeping the lock, with only the cap.** Two 99 s readers still hold a writer, and every reader after it, for 99 s.
 - **Compose over the cap from two trees.** A composed pack then carries most of both trees, which is why the cap exists.
 
-**Risks of stock without the lock.**
+**Risks of stock without the lock (held option 4).**
 - **A repack's `-d`, or an evict, under a running stock read.** The repack already runs beside readers without the lock: git keeps open packs readable and re-reads the pack directory for one it lost ("Amended 2026-11-12 (LM-1 round 7)" above). Evict and init are covered by the reader count.
 - **A midx write.** The ingest's midx write is a temp-file rename, which a reader that already mapped the old midx does not see. The repack's `--write-midx` already runs beside readers.
 - **Not covered: a reader that lists the pack directory between the ingest's pack rename and idx rename.** `moveIn` renames the pack before its index, so a reader sees no index without its pack [inference: as for composed misses since round 26, which hold no lock].
 
-**Evidence plan (tests that fail on main, then plants).**
-- **Go (container):**
-  - `/upload-pack` stock while `/ingest` waits: the ingest's exclusive section starts within 1 s while a stock fetch held open by a git wrapper is still running. On main it waits for the whole fetch.
-  - A third concurrent stock fetch answers 429 within 1 s; the first two run.
-  - `/evict` answers 409 while a stock fetch runs.
-  - `/compose` builds a base when the chain tree is over `composeDiffMax` from HEAD.
-  - `/ingest` answers `midx_ms` on the `midxEvery`-th ingest.
-- **Rust:**
-  - `compose_then_catch_up` with an over-cap reason retries after the step.
-  - Every wait ends by the deadline: a never-ending catch-up returns `CatchUp` past `wait`. On main `idle` never returns.
-  - The stock queue admits in arrival order and answers `warming` past the deadline.
-- **Plants:** stock takes the lock again; no cap; cap counted per network; `idle` unbounded; over-cap not retried; step always a part; `midx_ms` dropped.
+**Evidence (tests, then plants that put main's rule back).**
+- **Go (container), `containers/git/server/stockmax_test.go`:**
+  - `TestStockFetchesPastStockMaxAreRefusedAtOnce`: with two stock fetches held open by a git wrapper, a third answers 429 `full` within 1 s, an ls-refs still reaches git, and once both end a fetch runs and no slot stays counted.
+  - `TestComposeStepOnAFarChainBuildsABase`: with `composeDiffMax` 20 and a chain 40 files from HEAD, the step builds a base, not a part.
+  - `TestIngestReportsTheMidxWrite`: `/ingest` answers `midx_ms` above 0 on the ingest that writes the midx, and 0 on one that does not.
+- **Rust, `crates/git/tests/shard.rs`:**
+  - `a_miss_on_a_just_moved_tip_or_a_far_chain_is_composed_after_the_catch_up_or_the_step`: an over-the-cap miss starts the step after the running catch-up and composes once the step ends.
+  - `a_stuck_catch_up_or_step_ends_at_the_deadline`: a catch-up or step that never ends returns `Late` at the deadline. On main `idle` never returns.
+  - `stock_waits_in_arrival_order_within_its_deadline`: places are served in arrival order, and a place past its deadline leaves without holding the ones behind it.
+- **Plants:** `tests/b034tails/plant.py`, 13 mutants (over-cap not retried, no step before the compose, the step before the running catch-up ends, no deadline, the line jumped, a non-head asking, a late place kept, no container cap, a slot never freed, ls-refs counted, a far step as a part, every step a base, `midx_ms` dropped); 13 of 13 caught, each by the test named above for its change, and none by a hang or a compile error.
 
-**Flip.** A hosted row where a client waiting for a stock slot fails where a 429 would have let it retry sooner. Or a stock read without the lock that fails on a pack a repack or an ingest moved. Or `STOCK_MAX` = 2 holding a stock queue past the deadline while the container has memory for more.
+**Flip.** A hosted row where a client waiting for a stock slot fails where a 429 would have let it retry sooner. Or `stockMax` = 2 holding a stock queue past the deadline while the container has memory for more. For option 4, the flip above.
 
 ### A 32.20 `MetaSlim` keeps `SLIM_BYTES`; the alarms on slims folded before it are test-install residue, 2026-11-18
 

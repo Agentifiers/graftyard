@@ -410,15 +410,19 @@ fn a_pool_warm_is_answered_at_once_and_only_a_finished_rehydrate_is_warm() {
 /// running ends, and goes to the slow path (a catch-up that starts after now, then stock or composed) only when that
 /// one did not bring the want, when none runs, or when the reason is one a later disk answers the same. On main every
 /// such miss took the slow path: m41's 143 waited p50 3.1 s, p99 13.1 s after the 409, all composed in the end.
+/// Over the diff cap is retried too, after the chain's next step (which builds a new base on a far tip): m1b34's 128
+/// over-the-cap lines came from a chain on the wrong tip and all went stock or 503 (`tests/am1/results/b034-attr.md`).
 #[test]
-fn a_miss_on_a_just_moved_tip_is_composed_after_the_running_catch_up() {
-    use graftyard_git::compose::{AfterCompose, NOT_YET, compose_then_catch_up};
+fn a_miss_on_a_just_moved_tip_or_a_far_chain_is_composed_after_the_catch_up_or_the_step() {
+    use graftyard_git::compose::{AfterCompose, NOT_YET, OVER_CAP, compose_then_catch_up};
     use std::cell::{Cell, RefCell};
-    // The disk's tip, the tip the running catch-up brings, and the want; the second compose answers from the disk.
+    // The disk's tip and the chain's tip; the running catch-up brings the disk to `brings`, the step moves the chain
+    // to the disk's tip. A compose answers when both reach the want.
     let run = |why: &str, running: bool, brings: u32, want: u32| {
-        let disk = Cell::new(1u32);
+        let (disk, chain) = (Cell::new(1u32), Cell::new(0u32));
         let calls = RefCell::new(Vec::new());
         let r = futures_executor::block_on(compose_then_catch_up(
+            std::future::pending(),
             Some(why),
             running,
             || async {
@@ -426,8 +430,13 @@ fn a_miss_on_a_just_moved_tip_is_composed_after_the_running_catch_up() {
                 disk.set(brings);
             },
             || async {
+                calls.borrow_mut().push("step");
+                chain.set(disk.get());
+            },
+            || async {
                 calls.borrow_mut().push("compose");
-                (disk.get() >= want).then_some(disk.get())
+                let on_chain = why != OVER_CAP || chain.get() >= want;
+                (disk.get() >= want && on_chain).then_some(disk.get())
             },
         ));
         (r, calls.into_inner())
@@ -438,8 +447,160 @@ fn a_miss_on_a_just_moved_tip_is_composed_after_the_running_catch_up() {
     assert_eq!(run(NOT_YET, true, 1, 2), (AfterCompose::CatchUp, vec!["in_flight", "compose"]));
     // No catch-up runs: nothing to wait for first, so the slow path at once, with no second compose.
     assert_eq!(run(NOT_YET, false, 2, 2), (AfterCompose::CatchUp, vec![]));
-    // A reason a later disk answers the same goes the slow path at once too.
-    for why in ["stock: no chain", "stock: over the diff cap", "stock: an annotated tag points at it"] {
+    // Over the cap: the step comes after the running catch-up (so it builds at the caught-up tip), then the compose.
+    assert_eq!(run(OVER_CAP, true, 2, 2), (AfterCompose::Composed(2), vec!["in_flight", "step", "compose"]));
+    // Over the cap with no catch-up running still takes the step, which a later disk would not change.
+    assert_eq!(run(OVER_CAP, false, 1, 1), (AfterCompose::Composed(1), vec!["step", "compose"]));
+    // Reasons a later disk or step answers the same go the slow path at once.
+    for why in ["stock: no chain", "stock: an annotated tag points at it", "stock: not a commit"] {
         assert_eq!(run(why, true, 2, 2), (AfterCompose::CatchUp, vec![]), "{why}");
     }
+}
+
+/// Every wait of a composable miss draws on its upload-pack's one deadline: a running catch-up or a chain step that
+/// never ends gives `Late` (the shard answers 503 `warming` and the edge asks the next site) once the deadline passes,
+/// and nothing after it runs. On main `Jobs::idle` had no bound: 25 of m1b34's 50 shard 503s waited 29 to 99 s.
+#[test]
+fn a_stuck_catch_up_or_step_ends_at_the_deadline() {
+    use futures_util::task::LocalSpawnExt;
+    use graftyard_git::compose::{AfterCompose, NOT_YET, OVER_CAP, compose_then_catch_up};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    for (why, stuck_step) in [(NOT_YET, false), (OVER_CAP, false), (OVER_CAP, true)] {
+        let composed = Rc::new(Cell::new(false));
+        let out = Rc::new(Cell::new(None));
+        let mut pool = futures_executor::LocalPool::new();
+        let (tx, rx) = futures_channel::oneshot::channel::<()>();
+        let (c, o) = (composed.clone(), out.clone());
+        pool.spawner()
+            .spawn_local(async move {
+                let r = compose_then_catch_up(
+                    async {
+                        let _ = rx.await;
+                    },
+                    Some(why),
+                    true,
+                    || async move {
+                        if !stuck_step {
+                            std::future::pending::<()>().await;
+                        }
+                    },
+                    || async move {
+                        if stuck_step {
+                            std::future::pending::<()>().await;
+                        }
+                    },
+                    || async move {
+                        c.set(true);
+                        Some(())
+                    },
+                )
+                .await;
+                o.set(Some(r));
+            })
+            .unwrap();
+        pool.run_until_stalled();
+        assert_eq!(out.take(), None, "{why}: answered before the deadline while stuck");
+        // The deadline fires while the miss is stuck; with nothing bounding the wait, as `idle` was, it stalls on.
+        let _ = tx.send(());
+        pool.run_until_stalled();
+        assert_eq!(out.take(), Some(AfterCompose::Late), "{why} stuck_step={stuck_step}");
+        assert!(!composed.get(), "no compose after the deadline");
+    }
+}
+
+/// Stock upload-packs past the container's `STOCK_MAX` wait in the shard object in arrival order: the head of the
+/// line asks the container, later ones never jump it, one past its deadline leaves without holding the next one up,
+/// and with nobody waiting a request asks at once. A wait, not a 429 to the client: git retries neither by default.
+#[test]
+fn stock_waits_in_arrival_order_within_its_deadline() {
+    use graftyard_git::compose::{STOCK_MAX, StockLine, stock_in_line};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    assert_eq!(STOCK_MAX, 2, "a named guess the next B0-34 row's stock-process count measures");
+    let line = Rc::new(RefCell::new(StockLine::default()));
+    let slots = Rc::new(Cell::new(0u32)); // free container slots
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let mut pool = futures_executor::LocalPool::new();
+    let spawner = futures_util::task::LocalSpawnExt::spawn_local;
+    // A tick the test drives: each `pause` waits for the next one.
+    let ticks = Rc::new(RefCell::new(Vec::<futures_channel::oneshot::Sender<()>>::new()));
+    let tick = {
+        let ticks = ticks.clone();
+        move || {
+            let (tx, rx) = futures_channel::oneshot::channel();
+            ticks.borrow_mut().push(tx);
+            async move {
+                let _ = rx.await;
+            }
+        }
+    };
+    let deadlines: Rc<RefCell<Vec<Option<futures_channel::oneshot::Sender<()>>>>> = Rc::default();
+    let start = |name: &'static str| {
+        let (line, slots, order, tick) = (line.clone(), slots.clone(), order.clone(), tick.clone());
+        let (tx, rx) = futures_channel::oneshot::channel::<()>();
+        deadlines.borrow_mut().push(Some(tx));
+        async move {
+            let r = stock_in_line(
+                &line,
+                async {
+                    let _ = rx.await;
+                },
+                || {
+                    let slots = slots.clone();
+                    async move {
+                        (slots.get() > 0).then(|| {
+                            slots.set(slots.get() - 1);
+                            name
+                        })
+                    }
+                },
+                tick.clone(),
+            )
+            .await;
+            order.borrow_mut().push(r.unwrap_or("late"));
+        }
+    };
+    let s = pool.spawner();
+    for n in ["a", "b", "c", "d"] {
+        spawner(&s, start(n)).unwrap();
+    }
+    pool.run_until_stalled();
+    assert_eq!(line.borrow().len(), 4, "all four refused at once and queued");
+    // Every waiter wakes, latest first, so a place that asks out of turn would take the slot.
+    let round = |pool: &mut futures_executor::LocalPool| {
+        let woken: Vec<_> = ticks.borrow_mut().drain(..).collect();
+        for t in woken.into_iter().rev() {
+            let _ = t.send(());
+        }
+        pool.run_until_stalled();
+    };
+    // One slot frees: only the head, a, takes it, though every waiter wakes.
+    slots.set(1);
+    round(&mut pool);
+    assert_eq!(*order.borrow(), vec!["a"]);
+    // b's deadline passes while it heads the line: it leaves, and c becomes the head without holding d's place.
+    let _ = deadlines.borrow_mut()[1].take().unwrap().send(());
+    pool.run_until_stalled();
+    assert_eq!(*order.borrow(), vec!["a", "late"]);
+    // A newcomer while c and d wait does not ask, even with a slot free: it joins behind them.
+    slots.set(1);
+    spawner(&s, start("f")).unwrap();
+    pool.run_until_stalled();
+    assert_eq!(*order.borrow(), vec!["a", "late"], "f asked ahead of c and d");
+    assert_eq!(line.borrow().len(), 3);
+    slots.set(2);
+    round(&mut pool);
+    round(&mut pool);
+    assert_eq!(*order.borrow(), vec!["a", "late", "c", "d"], "c before d, one place at a time");
+    slots.set(1);
+    round(&mut pool);
+    assert_eq!(*order.borrow(), vec!["a", "late", "c", "d", "f"]);
+    assert!(line.borrow().is_empty());
+    // Nobody waiting and a slot free: a new request asks at once, with no pause.
+    slots.set(1);
+    spawner(&s, start("e")).unwrap();
+    pool.run_until_stalled();
+    assert_eq!(order.borrow().last(), Some(&"e"));
+    assert!(ticks.borrow().is_empty(), "e never paused");
 }

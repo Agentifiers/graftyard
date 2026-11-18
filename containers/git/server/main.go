@@ -47,7 +47,8 @@
 //	                                 The already-ingested and /validate-kept-aside cases answer as /ingest does. A
 //	                                 staged idx that passes checkIdx against the pack is loaded instead of running
 //	                                 index-pack: the lock is held only to rename the pack and idx into objects/pack
-//	                                 and record them. {"ingested","bytes","idx": "used","index_ms": 0,"lock_ms"};
+//	                                 and record them. {"ingested","bytes","idx": "used","index_ms": 0,"lock_ms",
+//	                                 "midx_ms"} (the multi-pack-index write's part of lock_ms, 0 when none ran);
 //	                                 otherwise /ingest's index-pack and its answer (409, 422) plus "idx": "none" or
 //	                                 "rejected" (with "idxError") and "lock_ms", the time the network's lock was
 //	                                 held. The spooled files are deleted when done, except on 409, so the same call
@@ -72,7 +73,8 @@
 //	POST /have?net=N                 body: SHA-256s, one per line. {"have": [...]}: those already ingested, so a
 //	                                 resumed rehydrate skips them
 //	GET  /info-refs?net=N            upload-pack's advertisement, in the protocol the git-protocol header asks for
-//	POST /upload-pack?net=N          upload-pack --stateless-rpc, streamed
+//	POST /upload-pack?net=N          upload-pack --stateless-rpc, streamed. A stock fetch past stockMax running in
+//	                                 the container answers 429 at once, with x-graft-stock: full
 //	POST /fsck?net=N                 git fsck --strict, refs, and object counts
 //	POST /merge?net=N&base=B&head=H  the test merge of a pull request, in a quarantine: {"conflict": [paths]}, or
 //	                                 {"merge": oid, "pack": base64} once the tree-diff check passed, the pack holding
@@ -1516,12 +1518,13 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "checksum %s, want %s", sum, want)
 		return
 	}
-	indexMs, _, code, err := indexIngest(net, rp, file, sum)
+	indexMs, lockMs, midxMs, code, err := indexIngest(net, rp, file, sum)
 	if err != nil {
 		fail(w, code, "%v", err)
 		return
 	}
-	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": indexMs})
+	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": indexMs, "lock_ms": lockMs,
+		"midx_ms": midxMs})
 }
 
 // indexIngest is /ingest's tail: index-pack --strict --fix-thin of file into a quarantine with the repository's objects
@@ -1532,11 +1535,11 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 // It answers index-pack's time (to the end of the midx step, as /ingest always reported it) and how long it held the
 // lock alone, or the status to answer and the error: 409 when a thin pack's bases or a named object are not here yet,
 // 422 for another index-pack failure. A failed index leaves no quarantine.
-func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, err error) {
+func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midxMs int64, code int, err error) {
 	t0 := time.Now()
 	st, err := os.Stat(file)
 	if err != nil {
-		return 0, 0, 500, err
+		return 0, 0, 0, 500, err
 	}
 	l := lock(net)
 	l.RLock()
@@ -1544,9 +1547,9 @@ func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, er
 	l.RUnlock()
 	if err != nil {
 		if unresolved(err) {
-			return 0, 0, 409, err
+			return 0, 0, 0, 409, err
 		}
-		return 0, 0, 422, err
+		return 0, 0, 0, 422, err
 	}
 	defer os.RemoveAll(q)
 	l.Lock()
@@ -1556,13 +1559,13 @@ func indexIngest(net, rp, file, sum string) (indexMs, lockMs int64, code int, er
 		l.Unlock()
 	}()
 	if err := moveIn(q, rp, name); err != nil {
-		return 0, 0, 500, err
+		return 0, 0, 0, 500, err
 	}
 	if err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
-		return 0, 0, 500, err
+		return 0, 0, 0, 500, err
 	}
-	midxAfterIngest(net, rp)
-	return time.Since(t0).Milliseconds(), 0, 0, nil
+	midxMs = midxAfterIngest(net, rp)
+	return time.Since(t0).Milliseconds(), 0, midxMs, 0, nil
 }
 
 // indexQuarantined indexes file into a new quarantine under the repository's graft directory (`incoming-*`, which
@@ -1775,7 +1778,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 	n := st.Size()
 	name, state, why := stagedIdx(file, idxFile)
 	if state != "used" {
-		indexMs, lockMs, code, err := indexIngest(net, rp, file, sum)
+		indexMs, lockMs, midxMs, code, err := indexIngest(net, rp, file, sum)
 		if code == 409 {
 			// Kept, so the call sent again once the bases are here needs no second spool.
 			fail(w, code, "%v", err)
@@ -1787,7 +1790,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 			return
 		}
 		out := map[string]any{"ingested": true, "bytes": n, "spool_ms": 0, "index_ms": indexMs, "idx": state,
-			"lock_ms": lockMs}
+			"lock_ms": lockMs, "midx_ms": midxMs}
 		if why != "" {
 			out["idxError"] = why
 		}
@@ -1798,6 +1801,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 	l := lock(net)
 	l.Lock()
 	t0 := time.Now()
+	var midxMs int64
 	err = func() error {
 		dst := filepath.Join(rp, "objects", "pack", "pack-"+name)
 		if _, err := os.Stat(dst + ".pack"); err != nil {
@@ -1820,7 +1824,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 		if err := record(rp, sum, name, filepath.Join(rp, "objects"), n); err != nil {
 			return err
 		}
-		midxAfterIngest(net, rp)
+		midxMs = midxAfterIngest(net, rp)
 		return nil
 	}()
 	lockMs := time.Since(t0).Milliseconds()
@@ -1829,7 +1833,8 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 		fail(w, 500, "%v", err)
 		return
 	}
-	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "idx": "used", "index_ms": 0, "lock_ms": lockMs})
+	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "idx": "used", "index_ms": 0, "lock_ms": lockMs,
+		"midx_ms": midxMs})
 }
 
 // handleIdx answers the .idx of the pack /validate kept aside under sha256, for the archive's promotion to store
@@ -2197,17 +2202,21 @@ var sinceMidx sync.Map
 // midxAfterIngest writes the repository's multi-pack-index after every midxEvery-th ingest. The caller holds the
 // network's lock alone, so no reader sees a half-written one; a repack that deletes packs drops it, and git reads
 // the packs it does not cover as before.
-func midxAfterIngest(net, rp string) {
+// It answers the write's time, 0 when this ingest wrote none: B0-34 m1b34's two 35 s exclusive sections on site b
+// lined up with a midx write starved by stock upload-packs, which no field could confirm (tests/am1/results/b034-attr.md).
+func midxAfterIngest(net, rp string) int64 {
 	v, _ := sinceMidx.LoadOrStore(rp, new(int))
 	n := v.(*int)
 	*n++
 	if *n < midxEvery {
-		return
+		return 0
 	}
 	*n = 0
+	t0 := time.Now()
 	if _, err := git(rp, []string{derivedEnv}, nil, "multi-pack-index", "write"); err != nil {
 		fmt.Fprintf(os.Stderr, "multi-pack-index %s: %v\n", net, err)
 	}
+	return max(time.Since(t0).Milliseconds(), 1)
 }
 
 func listRefs(rp string, env []string) (map[string]string, error) {
@@ -2800,6 +2809,18 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		w.WriteHeader(409)
 		return
 	}
+	// A stock fetch takes one of the container's stockMax slots for as long as its process runs, a spooled one to the
+	// end of its file; past them it is answered 429 at once and the shard object holds it in line (`stockLine`).
+	if !advertise && !lsRefs(body) {
+		if stockRunning.Add(1) > stockMax {
+			stockRunning.Add(-1)
+			w.Header().Del("x-graft-spool")
+			w.Header().Set("x-graft-stock", "full")
+			fail(w, 429, "stock upload-packs full (%d running)", stockMax)
+			return
+		}
+		defer stockRunning.Add(-1)
+	}
 	l.RLock()
 	release = sync.OnceFunc(l.RUnlock)
 	defer func() { release() }()
@@ -2847,6 +2868,21 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		fmt.Fprintf(os.Stderr, "upload-pack: %v: %s\n", err, errb.String())
 	}
 	ended = err == nil
+}
+
+// stockMax: stock upload-pack fetches one container runs at once [guess: linux's took 2.6 GB of RSS each, and B0-34
+// m1b34's monorepo container ran up to 15 to 21 of them in 12 GiB, held the network's lock shared 20 to 99 s each,
+// and queued every catch-up and validate behind them (tests/am1/results/b034-attr.md)]. The next B0-34 row's
+// stock-process count per sample measures it. Composed answers, ls-refs and advertisements take no slot. A var for
+// the tests.
+var stockMax int64 = 2
+
+// stockRunning: stock fetches running in this container, across every network, which share its memory.
+var stockRunning atomic.Int64
+
+// lsRefs is whether a v2 request body is `command=ls-refs`, a short ref listing rather than a pack.
+func lsRefs(body []byte) bool {
+	return bytes.HasPrefix(body, []byte("0014command=ls-refs\n"))
 }
 
 // The host-owned refs (`crates/git` `agent::HOST_REFS`) and the session logs under them (`agent::SESSION_REFS`):

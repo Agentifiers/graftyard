@@ -178,6 +178,8 @@ pub struct StoredMs {
     pub idx_rejected: u32,
     /// The network lock's hold time over the stored packs' ingests.
     pub lock_ms: u64,
+    /// The multi-pack-index writes' part of `lock_ms` (one every `midxEvery` ingests in the container).
+    pub midx_ms: u64,
     /// Each stored pack's spool as `[start, end, bytes, site]`, start and end in the shard object's ms since the
     /// epoch, at most `SPOOLS_MAX`: the streams busy at once and the total bucket rate over time, which say whether
     /// a container's R2 reads stop at a per-container ceiling (`tests/am1/results/lm1-memory.md`, round 27b).

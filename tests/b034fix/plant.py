@@ -28,13 +28,13 @@ MUTANTS = [
     ('every caller is answered at once', SHARD,
      '        _ => CatchupAnswer::WaitForCatchUp,', '        _ => CatchupAnswer::Warm,', T),
     ("main's rule: a 409 always waits for a later catch-up", COMPOSE,
-     '    if why != Some(NOT_YET) || !running {', '    if true {', T),
+     '    if !(over || why == Some(NOT_YET) && running) {', '    if true {', T),
     ('any reason is composed again', COMPOSE,
-     '    if why != Some(NOT_YET) || !running {', '    if !running {', T),
+     '    if !(over || why == Some(NOT_YET) && running) {', '    if !(over || running) {', T),
     ('composed again with no catch-up running', COMPOSE,
-     '    if why != Some(NOT_YET) || !running {', '    if why != Some(NOT_YET) {', T),
+     '    if !(over || why == Some(NOT_YET) && running) {', '    if !(over || why == Some(NOT_YET)) {', T),
     ('composed again before the running catch-up ends', COMPOSE,
-     '    in_flight().await;\n    match compose().await {', '    match compose().await {', T),
+     '        if running {\n            in_flight().await;\n        }\n', '', T),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')

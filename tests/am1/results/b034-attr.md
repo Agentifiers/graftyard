@@ -161,7 +161,7 @@ asked.
 
 ## Correction: the over-the-cap misses came from a chain on the wrong tip
 
-Checked while writing item 3's design (`decisions/DECISIONS.md`, "`b034-tails` (proposal)"). The ranking above read
+Checked while writing item 3's design (`decisions/DECISIONS.md`, "`b034-tails`"). The ranking above read
 "over the diff cap" as wants far from the tip. They were not.
 
 - **Composed until the post-kill rehydrate, then never.** Before site a's rehydrate of the monorepo ended (476 s into
@@ -193,14 +193,15 @@ The ranking changes:
 
 ## Expected numbers on the next hosted B0-34 row
 
-Same row, same phases, from main with G26 and `b034-tails` built.
+Same row, same phases, from main with G26 and `b034-tails` built. Stock off the lock is deferred (held option 4 in
+`decisions/DECISIONS.md`, "`b034-tails`"), so its row is the flip's measurement, not an expected gain.
 
 | Change | Shows as | m1b34 | Expected |
 |---|---|---|---|
 | G26 plus the base-on-big-diff step | monorepo miss lines after the kill's rehydrate: composed share; `over the diff cap` lines | 1 of 193 after 476 s; 128 over the cap | ≥ 95% composed (the 98.8% before it); 0 over the cap |
 | One deadline per upload-pack | shard `/upload-pack` 503s whose wall exceeds `wait` + 2 s; edge moving to the next site | 25 of 50 waited 29 to 99 s | 0 over `wait` + 2 s |
-| `STOCK_MAX` admission | container stock `upload-pack` processes per sample (`shardprocs`); container memory | up to 15 and 21; 12.0 of 12 GiB | ≤ 2; under 10 GiB [guess] |
-| Stock off the lock | catch-up wait for the lock alone (`stored.total_ms − index_ms` on adopt); monorepo validates over 10 s in second and hostile | 29 to 36 s; 204 of 223 | ≤ 1 s; about j9's share (12 of 1,383) [guess] |
+| `stockMax` admission | container stock `upload-pack` processes per sample (`shardprocs`); container memory | up to 15 and 21; 12.0 of 12 GiB | ≤ 2; under 10 GiB [guess] |
+| Stock off the lock: deferred, not built | catch-up wait for the lock alone (`lock_ms − midx_ms` and `stored.total_ms − index_ms` on adopt); monorepo validates over 10 s in second and hostile | 29 to 36 s; 204 of 223 | ≤ 1 s and about j9's share (12 of 1,383) [guess], from G26 and the cap alone; over 1 s behind stock readers flips option 4 |
 | `midx_ms` | site b's 35 s exclusive sections | unattributed | attributed or ruled out |
 
 What it will not fix:
@@ -211,3 +212,17 @@ What it will not fix:
 
 So the expected verdict is still a fail on those two lines. The row would show whether the second and hostile phases
 fall back to j9's level, which would leave only the catch-up length and validate on a busy container.
+
+## Built on `b034-tails` (code only, $0)
+
+The trimmed design (`decisions/DECISIONS.md`, "`b034-tails`"): items 1 (compose after the step past the cap, with the
+base-on-a-big-diff backstop), 2 (one deadline per upload-pack), 3 (`stockMax` = 2, a wait in the object) and 4
+(`midx_ms`). Stock without the network lock is held, not built.
+
+- **Tests:** `crates/git/tests/shard.rs` (3, replacing main's `a_miss_on_a_just_moved_tip_is_composed_after_the_running_catch_up`)
+  and `containers/git/server/stockmax_test.go` (3).
+- **Plants:** `tests/b034tails/plant.py`, 13 of 13 caught, each by its own test. The first pass missed two (the line
+  jumped, a newcomer asking past waiters) and hung on two (no deadline, no container cap); the tests now wake waiters
+  latest first, admit a newcomer while others wait, run the pool until it stalls, and time out the HTTP client.
+- `tests/b034fix/plant.py` 5 to 8 and `tests/b034reads/plant.py` 1 to 4 re-anchored to the new `compose_then_catch_up`
+  and `indexIngest` signatures; all 8 still caught.
