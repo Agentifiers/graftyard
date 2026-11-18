@@ -4966,3 +4966,17 @@ Branch `voter-shed` (`tests/am1/results/voter-shed-design.md`), B0-33's option (
 **Evidence.** `tests/am1/results/voter-shed-design.md`, "Point 2" [measured].
 
 **Flip.** A run where edge reads are a measured share of the leader's open requests and the out leg tracks them.
+
+### Not adopted: (c2) the leader's sends clear of the output gate, 2026-11-18
+
+Branch `c-design` (`tests/am1/results/c-design.md`), B0-33's option (c) after the voter shed was not adopted. The orchestrator's decision (T-01a17bda).
+
+**Decision.** A member keeps writing its log, Raft state, and tier rows through SQL, so every outgoing message, AppendEntries included, still waits at the output gate for earlier writes to confirm. There is no KV write path with `allowUnconfirmed` and an explicit `sync()`.
+
+**Why.** A send can clear the gate only if every write before it is a KV `put` with `allowUnconfirmed`: in workerd `8f9bacf`, `ActorSqlite::onWrite` locks the output gate for any write without that flag, and the SQL API never passes it [inference, `io/actor-sqlite.c++`, `api/sql.c++`]; KV `put` on a SQLite-backed object accepts it [doc, https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/]. That is the storage rewrite "`m0-carried-4`" beat (a second `Store`, restore path, and migration), and every reply path would have to await `sync()` itself or ack an unconfirmed write, which `proof_for`'s `lead.matched` cannot tolerate ("Not adopted: a learner's writes clear of its own output gate"). The gain is capped by the gate's share: on m47 the gate time left at send covered 14 to 37% of the leader's round-trip excess over 300 ms, and storage confirms ran p50 36 to 41 ms, while ticker stalls filled with inbound requests covered 54% at 300 or more open [measured, `tests/am1/results/c-design.md`]. `m0-carried-4`'s flip, stall windows that line up with a write during a body, is not met. This leaves C20's send question open.
+
+**Beat.** The KV path with `allowUnconfirmed` and an explicit `sync()` before every reply.
+
+**Evidence.** `tests/am1/results/c-design.md`, "What holds the leader's sends" and "(c1b) under review" [measured]; `tests/fanout/votershed/p3*.py`, `p4*.py`.
+
+**Flip.** A run where the leader's open requests are held under a bound, by a cap on held commit waiters or any other means, and the output gate's share of the round-trip excess is still over 30%.

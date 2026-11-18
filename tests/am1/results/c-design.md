@@ -22,10 +22,10 @@ was 0 ms at p50.
 | lever | what it changes | expected out-leg change | risk | rank |
 |---|---|---|---|---|
 | (c1a) answer `/outcome_by_request` from a follower or learner's `request` row | moves 9 to 12k of the leader's 27.6k `/outcome_by_request` (the walk's) off it | small: these held 13 to 20% of entries at ≥ 64 open but little of the open count (they don't wait) | low: read-only, edge plus member, no Raft change | 3 |
-| (c1b) a per-isolate cap on `/commit` and `/outcome` waiters held open on the leader, answering `admitted` early | the commit family's 80 to 100% of the non-`/raft` open | **the largest measured lever**: out leg p50 ~0.3 s at < 64 open against 1 to 4 s at 300+ | low to medium: edge already handles `admitted`; client-visible commit latency moves to `/outcome` polls | **1** |
+| (c1b) a per-isolate cap on `/commit` and `/outcome` waiters held open on the leader, answering `admitted` early | the commit family's 80 to 100% of the non-`/raft` open | **withdrawn on review**: the release it targets is 9% of stall time, and its polls add 267 to 2,780 req/s at m47's tickets (see "(c1b) under review") | reopens F39's fold | — |
 | (c2) leader sends clear of the output gate | at most the gate's share, 14 to 37% of the round-trip excess | **medium, bounded by the gate share**; sends issued in the apply's release still wait out that release | high: storage rewrite (KV `allowUnconfirmed`), reopens `m0-carried-4`'s Beat, and the flip isn't met | 2 |
 
-Ranking by expected out-leg change per unit of risk puts (c1b) first, (c2) second and (c1a) third.
+Ranking by expected out-leg change per unit of risk first put (c1b) first, (c2) second and (c1a) third. The review below withdraws (c1b), shelves (c2) in DECISIONS, and parks (c1a) in OPEN-QUESTIONS.
 
 (c2)'s ceiling is the share of round-trip excess that the measured gate time covers. That ceiling is lower than
 what the commit waiters hold, and (c2) is a storage rewrite that today's evidence doesn't justify. Details follow.
@@ -236,3 +236,102 @@ every reply path awaiting `sync()`.
 Before (c1b) is measured, the trace needs one test-faults row: the woken waiter's handler start (`/commit` and
 `/outcome`, when `within` returns). The (c1b) run then measures the release queue directly instead of inferring it.
 That needs a site day, so it ships with (c1b).
+
+## (c1b) under review: the three questions, and a correction
+
+The orchestrator approved (c1b)'s direction and asked three things before code: the poll load a cap adds against the
+fold's 750 req/s history, bounded-batch release as the cheaper alternative, and the request-id path that keeps a
+pending-to-resend loop from committing twice. Answering them meant testing the claim (c1b) rests on: that a release
+waking hundreds of `/commit` waiters is what stalls the leader. **That test fails.** The release is a minor share of
+the stalls, so (c1b) should not be built on this evidence. Scripts: `votershed/p4*.py`.
+
+### The correction: what the stalls are made of
+
+- **The release is 9% of stall time, not a third.** Of 34.0 s of leader ticker stalls of 100 ms or more, 3.2 s falls
+  inside the gap right after an `Applied` row (`p4g.py`). Only 24 of 72 applies were followed by a gap of 100 ms or
+  more. The earlier "a third of stall time starts within 100 ms after an apply or confirm" (`p3k.py`) counted a window
+  around the start, which dense traffic fills at random.
+- **The turn that starts a stall rarely holds an apply.** The last stamped clock value before a stall's start carried
+  an `Applied` row in 2 of 17 stalls of 300 ms or more (12%). Of all frozen-stamp bursts of 100 or more rows while
+  leading, 9% do (`p4e.py`). That is the base rate, so the release is not over-represented.
+- **Stalls are made of inbound requests.** 38,210 requests entered during the 36 stalls, about 1,000 to 1,124 a
+  second. A stall's length tracks how many entered in it: Spearman 0.84. By route: `/read` 0.72, `/commit` 0.66,
+  `/outcome_by_request` 0.65, `/raft` 0.64, `/suspect` 0.39 (`p4c.py`). Their mix is close to the leader's average:
+  `/read` 41% against 50%, `/outcome_by_request` 23% against 15%, `/commit` 18% against 12%, `/suspect` 7% against
+  14%.
+- **Stalls grow with the request rate.** On member 0 a second's stall share was 8% at under 300 requests entered,
+  25% at 300 to 599, and 37% and 34% at 600 to 899 and 900 or more (`p4f.py`).
+- **The leader handled 563 to 846 req/s while leading** (members 1, 0 and 2), 6 to 14 requests per `/commit`
+  (`p4d.py`). The largest streams were the walk's `/read` (201 to 336/s), `/commit` sends (14 to 120/s), `/suspect`
+  (66 to 131/s) and the receipt's `/outcome_by_request` asks (9 to 88/s). That is the 750 to 950 req/s range in which
+  the fifth pass lost 2 of 3 runs to elections.
+- **CPU.** The trace records no CPU time per request. LM-1's earlier note measured member 0 at 0.28 to 0.40 CPU s per
+  s at 357 to 666 req/s. The ticker stalls say turns were queued, not why. [inference] Per-request isolate overhead
+  at about 1,000 inbound a second fills the isolate's turn queue whatever the route. That fits the stall length
+  tracking total requests better than any one route.
+
+So this design's earlier "what holds the leader's sends, 2." overstated the release. The commit family still holds the
+open count (point 2), but it doesn't hold it by the release: it holds it by waiting, and in waiting it costs nothing.
+What fills the turn queue is the leader's inbound request rate.
+
+### 1. The fold and the poll load a cap adds
+
+Leader open tickets on m47 ran p50 395, p90 823, max 1,465 (`memguard`, 72 samples; `p4e.py`). B0-33's sixth pass
+held up to 576 calls at once. A cap at C waiters turns the rest into polls at one per waiter per `retry_ms`:
+
+| cap | waiters | added polls/s at retry 250 ms | at 1 s | at 2 s |
+|---|---|---|---|---|
+| 128 | 576 (sixth pass max) | 1,792 | 448 | 224 |
+| 128 | 395 (m47 p50) | 1,068 | 267 | 134 |
+| 128 | 823 (m47 p90) | 2,780 | 695 | 348 |
+| 128 | 1,888 (m47 max per apply) | 7,040 | 1,760 | 880 |
+| 512 | 823 | 1,244 | 311 | 156 |
+| 512 | 1,888 | 5,504 | 1,376 | 688 |
+
+The leader already serves 563 to 846 req/s at m47. The fold's history is 750 to 950 req/s with 2 of 3 runs lost.
+No retry under 2 s keeps the added load "well under" that line at m47's p90, and polls at 2 s add up to a full second
+to every commit past the cap. Moving the polls off the leader means (c1a), a follower answering `done` from its
+`request` row. That only answers after the entry applies there, so a poll before then must still reach the leader for
+`pending`, or the edge waits blind.
+
+**Flip check.** F39's settled answer is that holding `commit` cut the leader from 750 to 950 to 459 to 498 req/s. Its
+open item is `COMMIT_HOLD`'s value, and B0-33's line is "`mitigated` until the leader's request rate falls". A cap
+past which commits poll is a partial unfold. With the stalls tracking inbound rate, it moves the leader back toward
+the rate that lost the fifth pass. It reopens F39's evidence rather than staying clear of it. The cap does not
+survive question 1.
+
+### 2. Bounded-batch release
+
+Releasing a resolution's waiters in batches of B, yielding a macrotask between batches, bounds one release turn.
+On m47 it would act on at most the 9% of stall time that follows an apply. It also delays the last waiters' replies
+by one turn per batch, and the AppendEntries in that release only by what the batches ahead of it take. That is
+cheaper than the cap: no added requests, no edge change, no fold question. It still targets the minor part, so the
+expected out-leg change is small, about the 9% bound [inference]. **Batches beat the cap; neither is worth building
+on m47's evidence.**
+
+### 3. Idempotence (for the record)
+
+The resend path cannot commit a command twice, whatever the leader answers first:
+- `Leader::admit` looks up `by_request` and joins an open ticket under the same `RequestId`: `joins` → the same `seq`.
+- A command whose id already has a `request` row skips admission and is resolved from its row:
+  `fold.request(id).is_some()`, then `drop_replays` builds `Acked` through `outcome::replay` from the stored events.
+- So a resend after `admitted` or `pending` joins or replays, and `Acked` is built only inside `outcome` and
+  `replay`.
+- One gap is recorded, not new: `by_request` lives in the leader's memory, so across a leader change an un-applied
+  command is admitted again under the new term. That is the existing `NotLeader` → resend rule, decided at most once
+  because only one entry can carry the id's row (`drop_replays` at cut time).
+
+### What I recommend instead
+
+Don't build (c1b). The lever the stall evidence points at is the leader's inbound rate per commit: 6 to 14 requests
+per `/commit` on m47, against the fifth pass's 750 to 950 req/s history. The streams that are not the command itself:
+- the walk's `/read`, 201 to 336/s on the leader;
+- `/suspect`, 66 to 131/s;
+- the receipt's `/outcome_by_request` asks, 9 to 88/s.
+
+Each has a design owner already:
+- the walk and its `/read` belong to `crates/lookup`'s `call_opt`, B0-32's shed and T-01a1d805;
+- `/suspect` damping belongs to the late-suspect and progress-suspect rules.
+
+The next step is a measurement, not code: on the next B0-33 run, read the leader's req/s by `SentBy` step beside the
+out leg. That needs no site day, since the rows exist. Then pick the stream to cut.
