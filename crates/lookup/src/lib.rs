@@ -481,6 +481,32 @@ thread_local! {
     /// behalf of a different request" and "closure invoked ... after being dropped" (`tests/m0/results/m41-held.md`).
     static LOOKUP_MARKS: RefCell<HashMap<ChainId, (u64, u64)>> = RefCell::new(HashMap::new());
     static LOOKUP_TOKENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The chains whose lookup marks this isolate logs (`trace_marks`).
+    static MARK_TRACED: RefCell<std::collections::HashSet<ChainId>> = RefCell::new(std::collections::HashSet::new());
+}
+
+/// Logs `chain`'s lookup marks in this isolate from now on: each post the mark's holder sends, with its member, step,
+/// answer and time, how the holder's lookup ended, and each request that gave up waiting on another's mark. A git
+/// cache shard turns it on for its network's chain, so a row shows why its catch-up's lookups found no member for
+/// about 2 min after B0-35 m57's term change (`decisions/OPEN-QUESTIONS.md`, F101). Logging only: no rule changes.
+pub fn trace_marks(chain: ChainId) {
+    MARK_TRACED.with(|t| t.borrow_mut().insert(chain));
+}
+
+fn mark_trace(chain: ChainId, line: impl FnOnce() -> String) {
+    if MARK_TRACED.with(|t| t.borrow().contains(&chain)) {
+        let line = line();
+        #[cfg(target_arch = "wasm32")]
+        console_log!("lookup mark {chain}: {line}");
+        #[cfg(not(target_arch = "wasm32"))]
+        MARK_LINES.with(|l| l.borrow_mut().push(line));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// Off wasm (tests), `mark_trace`'s lines.
+    static MARK_LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Takes or refreshes `chain`'s lookup mark for `token` at `now`: true if the mark is now this token's, because it was
@@ -590,8 +616,13 @@ where
                 // Another request's lookup is running: look at the cache on this request's own timer until it names a
                 // leader, or the mark is free or stale.
                 let mut found = None;
+                let waited_from = now();
                 while !mark(chain, token, now()) {
                     if now() >= end {
+                        mark_trace(chain, || {
+                            let holder = LOOKUP_MARKS.with(|m| m.borrow().get(&chain).map(|(t, _)| *t));
+                            format!("t{token} gave up after {} ms waiting on t{holder:?}", now() - waited_from)
+                        });
                         return Err(format!("{chain}: {last}"));
                     }
                     delay(LOOKUP_POLL).await;
@@ -610,8 +641,22 @@ where
             tried.insert(name.clone());
             let by =
                 if cached_leader(chain).is_some_and(|l| l.do_name == name) { SentBy::Leader } else { SentBy::Walk };
+            let posted = now();
             let r = post(s, name.clone(), by).await;
             let answer = classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. }));
+            if held.is_some() {
+                mark_trace(chain, || {
+                    let nl =
+                        r.as_ref().and_then(|(_, v)| v.pointer("/error/notLeader").or(v.pointer("/done/notLeader")));
+                    let leader = nl.and_then(|n| n.get("leader")).filter(|l| !l.is_null());
+                    format!(
+                        "t{token} post {}/{name} {step:?} {by:?}: {answer:?}{} in {} ms",
+                        s.0,
+                        nl.map(|_| format!(" notLeader(leader {leader:?})")).unwrap_or_default(),
+                        now() - posted
+                    )
+                });
+            }
             // lookup-retry: the first miss of a post to the cached leader, or its `busy`, is reported (a miss only) at
             // the term this isolate holds, and the leader is asked again after LEADER_RETRY; only a second miss walks
             // the voters. Before, the same pass posted every follower, whose `NotLeader` named the leader already
@@ -697,9 +742,15 @@ where
                     e.answered = Some(t.clone());
                 }
             });
+            if held.is_some() {
+                mark_trace(chain, || format!("t{token} found {}/{} by {step:?}", t.site.0, t.do_name));
+            }
             return Ok(Some((v, step, t)));
         }
         if first_pass && unjoined > 0 && others == 0 {
+            if held.is_some() {
+                mark_trace(chain, || format!("t{token} found no group"));
+            }
             return Ok(None);
         }
         first_pass = false;
@@ -709,7 +760,11 @@ where
             suspect(t.clone(), term, true).await;
         }
         forget_leader(chain);
+        mark_trace(chain, || format!("t{token} pass ended with no leader: {last}"));
         delay(Duration::from_millis(250)).await;
+    }
+    if held.is_some() {
+        mark_trace(chain, || format!("t{token} gave up: {last}"));
     }
     Err(format!("{chain}: {last}"))
 }
@@ -3477,6 +3532,8 @@ mod tests {
         let (v, _, t) = out.expect("answered").expect("a group");
         assert_eq!((t.site, v["value"].clone()), (SiteId(1), json!(9)));
         assert_eq!(posts[0], 2, "the dead leader is asked once more, not again and again");
+        // The chain is not traced, so nothing was logged; `a_traced_lookup_logs_its_walk_and_answers_the_same` traces it.
+        assert!(MARK_LINES.with(|l| l.borrow().is_empty()));
         assert_eq!(cached_leader(chain).map(|l| l.site), Some(SiteId(1)), "the new leader is cached");
         assert!(reports.iter().any(|(s, all)| *s == SiteId(0) && !all), "the dead leader is reported: {reports:?}");
         // Two misses at CALL, LEADER_RETRY between them, then at most two follower posts: main's one miss plus
@@ -3520,6 +3577,31 @@ mod tests {
         assert!(mark(chain, 3, 1_500 + stale), "the holder's drop frees it");
         let other = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(43)));
         assert!(mark(other, 4, 1_500), "marks are per chain");
+    }
+
+    /// Build 2 of `disk-first-reads`: a traced chain logs its mark holder's walk, each post with its member and answer,
+    /// and how it ended, and the lookup answers exactly as an untraced one: the dead leader asked twice, then voter 1.
+    #[test]
+    fn a_traced_lookup_logs_its_walk_and_answers_the_same() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(48)));
+        trace_marks(chain);
+        let call = CALL.as_millis() as u64;
+        let m = |x: u8| graftyard_types::Member::new(chain, SiteId(x), graftyard_types::MemberKind::Full, x, 1);
+        let cfg = json!({ "index": 5, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        let (out, _, posts, _) = drive_leader_lookup(chain, move |s, _| match s.0 {
+            0 => (call, None),
+            1 => (50, Some((200, json!({ "value": 9, "meta": { "term": 3, "leader": 1 } })))),
+            _ => (
+                50,
+                Some((200, json!({ "error": { "notLeader": { "term": 3, "leader": 1, "config": cfg.clone() } } }))),
+            ),
+        });
+        let (v, _, t) = out.expect("answered").expect("a group");
+        assert_eq!((t.site, v["value"].clone(), posts[0]), (SiteId(1), json!(9), 2));
+        let lines = MARK_LINES.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        assert!(lines.iter().any(|l| l.contains("post 1/") && l.contains("Reply")), "{lines:#?}");
+        assert!(lines.last().is_some_and(|l| l.contains("found 1/")), "{lines:#?}");
     }
 
     /// No future, waker or I/O object crosses requests through this crate's isolate-wide state: a Workers request owns

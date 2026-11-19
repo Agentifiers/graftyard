@@ -451,6 +451,9 @@ impl Jobs {
         let instance = instance(&self.env).map_err(|e| e.to_string())?.0;
         let host = ShardHost { state: &self.state, region, image: "git", instance };
         let chain = ChainId::Repo(RepoId(self.net.0));
+        // Logs this chain's lookup-mark holders in this isolate: B0-35 m57's catch-ups failed "no member answered" for
+        // about 2 min after a term change while the group committed (`decisions/OPEN-QUESTIONS.md`, F101).
+        graftyard_lookup::trace_marks(chain);
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record: self.record.clone() };
         // This site's bucket first for each stored pack (`graftyard_git::catchup::own_first`).
         let raw = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site));
@@ -1441,12 +1444,22 @@ impl DurableObject for GitShard {
                         .ok_or_else(|| Error::RustError(k.to_owned()))
                 };
                 let (base, head) = (oid("base")?, oid("head")?);
-                let a = graftyard_git::prsync::asked(
+                // Both commits are named, so a disk that holds them answers as a caught-up one would: the merge runs
+                // on the disk first and catches up only when the container answers that one is not here
+                // (`graftyard_git::read_on`, `disk-first-reads`). The catch-up still starts, in the background.
+                let cursor = CURSORS.with(|m| m.borrow().contains_key(&(obj.clone(), net.0.0)));
+                let rehydrating = host.rehydrating(net).await;
+                let on_disk = graftyard_git::read_on(running, cursor, rehydrating) == graftyard_git::ValidateOn::Disk;
+                if on_disk {
+                    jobs.start();
+                }
+                let a = graftyard_git::prsync::merge_disk_first(
                     &self.budgets,
                     net,
                     cause,
                     n,
                     now_ms,
+                    on_disk,
                     || async { caught_up().await.map_err(|_| graftyard_git::StoreError("warming".into())) },
                     || host.merge(net, base, head),
                 )
@@ -1489,17 +1502,47 @@ impl DurableObject for GitShard {
             }
             // The web app's private reads (`design/SHARED.md`, "Frontend and native app", the `/_t/ui/*` API): a
             // tree, blame, diff, compare, README, or ref resolution of a commit the cache holds once it caught up.
+            // A tree or a blob at a named commit answers from the disk first and waits for a catch-up only when the
+            // container answers that the commit is not here (`graftyard_git::read_on`, `disk-first-reads`): Actions
+            // dispatch reads a push's workflows this way, and on B0-35 m57 every one waited out a catch-up whose
+            // lookup found no leader. The other routes resolve refs or are the web app's, and catch up first.
             p if p.strip_prefix("/ui/").is_some_and(|r| UI_ROUTES.contains(&r)) => {
-                if let Err(r) = caught_up().await {
-                    return r;
-                }
                 let q: String = url
                     .query_pairs()
                     .filter(|(k, _)| !matches!(&**k, "repo" | "wait" | "next"))
                     .map(|(k, v)| format!("{k}={}", js_sys::encode_uri_component(&v)))
                     .collect::<Vec<_>>()
                     .join("&");
-                host.ui(net, &p[4..], &q).await.map_err(se)
+                if !matches!(&p[4..], "tree" | "blob") {
+                    if let Err(r) = caught_up().await {
+                        return r;
+                    }
+                    return host.ui(net, &p[4..], &q).await.map_err(se);
+                }
+                let cursor = CURSORS.with(|m| m.borrow().contains_key(&(obj.clone(), net.0.0)));
+                let rehydrating = host.rehydrating(net).await;
+                let on_disk = graftyard_git::read_on(running, cursor, rehydrating) == graftyard_git::ValidateOn::Disk;
+                if on_disk {
+                    jobs.start();
+                }
+                let (route, q, shard, caught_up) = (&p[4..], &q, &host, &caught_up);
+                // The error is the reply to send: `warming` from the catch-up, or the container's failure.
+                let r = graftyard_git::read_disk_first(on_disk, |catch_up| async move {
+                    if catch_up {
+                        caught_up().await?;
+                    }
+                    let answer = async {
+                        let mut r = shard.ui(net, route, q).await.map_err(se)?;
+                        let (status, body) = (r.status_code(), r.text().await?);
+                        let missing = graftyard_git::ui_missing(status, &body);
+                        let h = Headers::new();
+                        h.set("content-type", if status == 200 { "application/json" } else { "text/plain" })?;
+                        Ok((Response::ok(body)?.with_status(status).with_headers(h), missing))
+                    };
+                    answer.await.map_err(Err)
+                })
+                .await;
+                r.map(Ok).unwrap_or_else(|e| e)
             }
             _ => Response::error("not found", 404),
         }

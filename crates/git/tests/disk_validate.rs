@@ -9,7 +9,11 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use graftyard_git::{CatchUpStep, CatchUps, OnCatchUp, ValidateOn, on_catch_up, validate_on};
+use futures_executor::block_on;
+use graftyard_git::{
+    CatchUpStep, CatchUps, OnCatchUp, StoreError, ValidateOn, on_catch_up, read_disk_first, read_on, ui_missing,
+    validate_on,
+};
 
 const RUN0: u64 = 412;
 const PER_PACK: u64 = 37;
@@ -261,4 +265,141 @@ fn a_caller_waits_for_the_first_catch_up_that_starts_after_it() {
     assert!(c.start());
     c.end(true);
     assert_eq!(c.step(later), CatchUpStep::Done);
+}
+
+/// `disk-first-reads`: the shard's catch-up for B0-35 m57's tree reads and demands, which failed for 177 s with "no
+/// member answered" while the group committed under another leader (`tests/m4/results/m4-wp4.md`, "B0-35 rerun on
+/// graft-m4a after site day 57").
+fn failing_catch_up(ran: &std::cell::Cell<u32>) -> impl Fn() -> std::future::Ready<Result<(), StoreError>> + '_ {
+    move || {
+        ran.set(ran.get() + 1);
+        std::future::ready(Err(StoreError("warming".into())))
+    }
+}
+
+/// A tree or blob read of a commit on the disk answers from it while the catch-up's lookup fails, and runs no catch-up
+/// before it; a path that is not there at a commit that is (a 404 without "no commit") is the read's own answer too.
+/// Main's `/ui` caught up first, so the same read answered `warming`.
+#[test]
+fn a_tree_or_blob_read_of_a_commit_on_the_disk_answers_while_the_catch_up_fails() {
+    use std::cell::Cell;
+    assert_eq!(read_on(true, true, false), ValidateOn::Disk);
+    for (status, body) in [(200, r#"{"entries":[]}"#), (404, ".github/x.yml is not a regular file at 1234")] {
+        let caught = Cell::new(0);
+        let catch_up = failing_catch_up(&caught);
+        let got = block_on(read_disk_first(read_on(true, true, false) == ValidateOn::Disk, |c| {
+            let r = if c { catch_up() } else { std::future::ready(Ok(())) };
+            async move {
+                r.await?;
+                Ok::<_, StoreError>(((status, body), ui_missing(status, body)))
+            }
+        }));
+        assert_eq!(got, Ok((status, body)), "{status} {body}");
+        assert_eq!(caught.get(), 0, "{status}: a read of a commit on the disk waited for a catch-up");
+    }
+}
+
+/// A demand on a base and head the disk holds merges and is charged while the catch-up fails, with no catch-up first.
+#[test]
+fn a_demand_on_commits_on_the_disk_computes_while_the_catch_up_fails() {
+    use graftyard_git::issues::IssueNumber;
+    use graftyard_git::prsync::{Budgets, MergeAnswer, MergeCause, instance_vcpu, merge_disk_first};
+    use std::cell::{Cell, RefCell};
+    let budgets = RefCell::new(Budgets::new(instance_vcpu("standard-2").unwrap()));
+    let net = graftyard_types::NetworkId(graftyard_types::DbId(65571));
+    let (caught, merges) = (Cell::new(0), Cell::new(0));
+    let a = block_on(merge_disk_first(
+        &budgets,
+        net,
+        MergeCause::Dispatch,
+        IssueNumber(7),
+        || 1_000,
+        read_on(true, true, false) == ValidateOn::Disk,
+        failing_catch_up(&caught),
+        || {
+            merges.set(merges.get() + 1);
+            std::future::ready(Ok((Some(MergeAnswer::Conflict { conflict: vec!["f".into()] }), Some(30.0))))
+        },
+    ));
+    assert!(matches!(a, Ok(Some(MergeAnswer::Conflict { .. }))), "{a:?}");
+    assert_eq!((caught.get(), merges.get()), (0, 1));
+    assert_eq!(budgets.borrow().stats(net).unwrap().computed, 1, "the merge was charged");
+}
+
+/// A read that finds a commit missing on the disk still waits for a catch-up, and answers `warming` when the catch-up
+/// fails; a commit still missing once caught up is an error, never an answer. A shard that holds no cursor for its
+/// container, or is rehydrating, catches up before it reads at all.
+#[test]
+fn a_missing_commit_still_waits_for_a_catch_up_and_answers_warming() {
+    use graftyard_git::issues::IssueNumber;
+    use graftyard_git::prsync::{Budgets, MergeAnswer, MergeCause, instance_vcpu, merge_disk_first};
+    use std::cell::{Cell, RefCell};
+    assert_eq!(read_on(true, false, false), ValidateOn::CaughtUp);
+    assert_eq!(read_on(false, true, false), ValidateOn::CaughtUp);
+    assert_eq!(read_on(true, true, true), ValidateOn::CaughtUp);
+    assert!(ui_missing(404, "no commit 1234"));
+    assert!(ui_missing(404, "no repository for network 65571"));
+    assert!(!ui_missing(404, "src is not a directory at 1234") && !ui_missing(200, "no commit 1234"));
+
+    // A tree read of a commit the disk lacks: one catch-up, which fails, so `warming`.
+    let caught = Cell::new(0);
+    let catch_up = failing_catch_up(&caught);
+    let reads = Cell::new(0);
+    let got = block_on(read_disk_first(true, |c| {
+        let r = if c { catch_up() } else { std::future::ready(Ok(())) };
+        reads.set(reads.get() + 1);
+        async move {
+            r.await?;
+            Ok::<_, StoreError>((404, ui_missing(404, "no commit 1234")))
+        }
+    }));
+    assert_eq!(got, Err(StoreError("warming".into())));
+    assert_eq!(caught.get(), 1);
+
+    // A demand: the merge answers "not here" on the disk, then merges once the catch-up brought the commit.
+    let budgets = RefCell::new(Budgets::new(instance_vcpu("standard-2").unwrap()));
+    let net = graftyard_types::NetworkId(graftyard_types::DbId(65571));
+    let (caught, here) = (Cell::new(0), Cell::new(false));
+    let merge = || {
+        let a = here.get().then(|| MergeAnswer::Conflict { conflict: vec![] });
+        std::future::ready(Ok((a, Some(30.0))))
+    };
+    let catch_up = || {
+        caught.set(caught.get() + 1);
+        here.set(true);
+        std::future::ready(Ok(()))
+    };
+    let a = block_on(merge_disk_first(
+        &budgets,
+        net,
+        MergeCause::Dispatch,
+        IssueNumber(7),
+        || 1_000,
+        true,
+        catch_up,
+        merge,
+    ));
+    assert!(matches!(a, Ok(Some(MergeAnswer::Conflict { .. }))), "{a:?}");
+    assert_eq!(caught.get(), 1);
+
+    // No cursor: the catch-up runs before the merge, and a commit still missing after it is an error.
+    let (caught, merges) = (Cell::new(0), Cell::new(0));
+    let a = block_on(merge_disk_first(
+        &budgets,
+        net,
+        MergeCause::Dispatch,
+        IssueNumber(8),
+        || 1_000,
+        read_on(true, false, false) == ValidateOn::Disk,
+        || {
+            caught.set(caught.get() + 1);
+            std::future::ready(Ok(()))
+        },
+        || {
+            merges.set(merges.get() + 1);
+            std::future::ready(Ok((None::<MergeAnswer>, Some(30.0))))
+        },
+    ));
+    assert!(a.is_err(), "a commit missing after the catch-up answered {a:?}");
+    assert_eq!((caught.get(), merges.get()), (1, 1), "the catch-up ran first, then one merge");
 }

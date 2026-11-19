@@ -788,6 +788,40 @@ pub async fn asked<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = R
     r.map(|(t, _)| Some(t))
 }
 
+/// The shard's `/merge` and `/demand`: `asked` on the disk as it stands when `on_disk` (`crate::read_on`), and again
+/// after `catch_up` only when `run` answers that base or head is not there (`None`); with no catch-up first otherwise.
+/// Commits are immutable, so a disk that holds both merges them as a caught-up one would, however the catch-up goes
+/// (`decisions/DECISIONS.md`, "`disk-first-reads`"). `Ok(None)` when the budget shed it; an error when a commit is
+/// still missing after the catch-up, or the catch-up's own (`warming`).
+#[allow(clippy::too_many_arguments)]
+pub async fn merge_disk_first<T, P, F>(
+    budgets: &RefCell<Budgets>,
+    net: NetworkId,
+    cause: MergeCause,
+    n: IssueNumber,
+    clock: impl Fn() -> u64,
+    on_disk: bool,
+    catch_up: impl Fn() -> P,
+    run: impl Fn() -> F,
+) -> Result<Option<T>, crate::StoreError>
+where
+    P: Future<Output = Result<(), crate::StoreError>>,
+    F: Future<Output = Result<(Option<T>, Option<f32>), crate::StoreError>>,
+{
+    let (clock, catch_up, run) = (&clock, &catch_up, &run);
+    let a = crate::read_disk_first(on_disk, |caught| async move {
+        let prepare = || async move { if caught { catch_up().await } else { Ok(()) } };
+        let a = asked(budgets, net, cause, n, clock, prepare, run).await?;
+        let missing = matches!(a, Some(None));
+        Ok::<_, crate::StoreError>((a, missing))
+    })
+    .await?;
+    match a {
+        Some(None) => Err(crate::StoreError("a commit of the merge is not in the git cache after catching up".into())),
+        a => Ok(a.flatten()),
+    }
+}
+
 /// An on-demand test merge's command, for a single-PR GET (the edge) or Actions dispatch (the site's
 /// `crate::prsync::demand`, which M4's `ActionsTrigger` calls): the merge the shard answered for pull request `n` at
 /// (base, head), recorded as `TestMerged`. It moves no head ref and no cursor, so the consumer's batches go on as

@@ -514,6 +514,23 @@ No dispatch line was logged from 18:46:43Z to 18:49:39Z (177 s) while `ActionsTr
 
 Cost by `tests/fanout/acctcost.py`, from the site day's start at 18:32:14Z to 19:10:45Z: graft-m4a **$4.21**, and the runner account $0.00 (stop $8). a1 cancelled the row's 2,635 runs (all 202) by 19:09:04Z. The teardown sweep tore down `git#{0,1,2}#net:65571` (all 200) and found no shard container running; the containers API showed 0 active on all three m4a sites. The M2 canary's comparison excludes 18:32:14Z to 19:23:32Z.
 
+### Deeper analysis of m57
+
+Sources: Workers Logs on the three m4a site Workers, 18:41 to 18:55Z, the voter watch `b035-m57.lead`, and `dispatch-lines.jsonl` / `dispatch-split.json` in `tests/m4/raw/wp4/b035-m57/`.
+
+**1. The three leader changes.**
+- **Term 3, 18:46:40Z, f0 → f1:** a `STEP_DOWN` Confirm trip on f0 at 18:46:33.612Z, `{p99_ms: 792, slow: 6, of: 32}`, with no `/suspect` before it. f0's storage p99 was 295/563 ms in that window. P2 (`confirm-storage`, d8dcd513) judges storage time, not the wait for the flush, so it would likely have kept f0 [inference]. `tests/fanout/stepdown.py` cannot replay the window, because a product build writes no storage-time trace. The next row is a test-faults build so that it can.
+- **Term 4, 18:47:06Z, f1 → f0:** deposed by `/suspect` reports (site b 500 and site c 343 in 18:47), not by a trip of its own. f1 committed at p50 6,329 ms and p99 7,984 ms while its storage p99 was 85/207 ms, so it was slow for some other reason. The cause is unknown (`decisions/OPEN-QUESTIONS.md`, F102). Nothing here argues against m54's withhold. A follower counts a report only once it has had no AppendEntries for CALL_DEADLINE (1 s), and with commits at p50 6.3 s f1's rounds plausibly left that gap, so the election matches the rule doing its job on a slow leader [inference: a product build logs no `Trace::Reported`, so `withhold.py` cannot check it].
+- **Term 5, 18:49:37Z, f0 → f1:** a `STEP_DOWN` LoopLag trip on site a at 18:49:27.485Z, `{clamped: 2}`. Two clamped loop-lag samples in the window, as the isolate drained the backlog of the 177 s gap. P2 does not change LoopLag.
+
+**2. Why dispatch stopped while a git shard warmed.** Dispatch needs this site's shard of the network (`git#<site>#net:65571`, which the lines name `repo:65571#2#f1`) for two steps. One is `ActionsTrigger`'s workflow reads, `/ui/tree` and `/ui/blob` at the pushed commit (`workers/site/src/actions_trigger.rs`, `ui`). The other is the test merge for `pull_request` events, `/demand` (`workers/site/src/prsync.rs`, `demand`). Both call only their own site's shard, and on main the shard ran `caught_up()` before every one of them. Site a's catch-ups failed with "repo:65571: no member answered" at 18:47:29, :49, 18:48:25, :45 and 18:49:14Z (120 such lines in 18:48) while the group committed 2378 → 2787 under f0, so every read answered 503 `warming` or "no answer". Site b's shard, where `ActionsTrigger` ran after term 3, had never caught up. It rehydrated 196 entries until 18:48:11Z, and site c rehydrated until 18:48:50Z. Nothing else could answer: no step falls back to another site's shard.
+
+The fix, built on branch `r27-disk-first` (`decisions/DECISIONS.md`, "`disk-first-reads`"): a read that names only commits answers from the disk when the shard holds a cursor for its container, and waits for a catch-up only when the container answers that a commit is missing. Commits are immutable, so freshness cannot change the answer. That covers site a in term 4. Site b in term 3 had no cursor, which is the previous-holder fallback's case. That fallback would add a new cross-site call on the dispatch path, so it is recorded as `decisions/OPEN-QUESTIONS.md` G29 and not built. Expected effect on 18:46–18:49: the row's dispatch p99 at about 25–35 s instead of 184 s [guess]. What remains is site b's cold shard for about 90 s, and demands whose head was pushed during the gap.
+
+**3. The tail after recovery (p99 67.6 s after 18:49:45Z) is the backlog draining, not a slower steady state.** By entry window: 18:49:45–18:50:45Z p50 43.9 s / p99 73.6 s, the next minute p50 24.3 s / p99 46.7 s, and from 18:51:45Z p50 4.5 s / p99 6.5 s. The last is back at the steady state before 18:46:35Z (p50 3.9 s, p99 5.3 s, 585 events) [measured, `dispatch-lines.jsonl`].
+
+**Ranked code change.** First, `disk-first-reads`: it removes the shard's catch-up from the dispatch path wherever the disk holds the commits, and it is a local rule on an existing route. Second, instrumentation only: the shard isolate now logs its lookup-mark holder's posts and answers (`graftyard_lookup::trace_marks`, F101), so the next row shows why lookups found no member for about 2 min. Neither touches leadership; P2 is already on main for term 3's trip.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
@@ -707,6 +724,13 @@ Plants 25 to 30 (F77, branch `f77-acquire`): 6 of 6 caught. 21 of 21 caught afte
 | 95 | In-config members are retired first | `a_voter_a_replacement_removed_is_retired_unchecked_and_first`, the lifecycle test |
 | 96 | The member's own rule ignores `I` | `a_member_is_retired_unchecked_only_while_it_is_still_outside` |
 | 97 | `C` is the oldest config, not the newest | the lifecycle test and two gate tests |
+| 143 | A read of named commits catches up first on a disk that holds them (main's order) | both disk-first tests (`crates/git/tests/disk_validate.rs`) |
+| 144 | A demand catches up first on a disk that holds base and head (main's order) | `a_demand_on_commits_on_the_disk_computes_while_the_catch_up_fails` |
+| 145 | A read that finds a commit missing answers without a catch-up | `a_missing_commit_still_waits_for_a_catch_up_and_answers_warming` |
+| 146 | A 404 for a path at a present commit reads as a missing commit | the same, and the tree-or-blob test |
+| 147 | A rehydrating shard reads from its disk | the missing-commit test |
+| 148 | A merge still missing a commit after the catch-up answers shed | the same |
+| 149 | The lookup-mark trace logs none of the holder's posts | `a_traced_lookup_logs_its_walk_and_answers_the_same` |
 
 ## Cost estimate for the hosted runs
 
