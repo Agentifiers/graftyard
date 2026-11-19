@@ -1,0 +1,86 @@
+2026-11-19T22:59:14Z start 99bd959b ~/workspace/repo/.worktrees/m3fp3
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T22:59:31Z start sweep ok
+2026-11-19T22:59:21Z cost account 52.05 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T22:22:48Z, at b0-29
+2026-11-19T23:00:02.376Z m3org/fm3fp3-b029 = 65597
+2026-11-19T23:00:02.860Z repo:65597 leader 0 placing since 1795129209723: waiting
+2026-11-19T23:00:02Z cost account 52.15 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:00:06.294Z repo:65597 leader 0 placing since 1795129209723: waiting
+2026-11-19T23:00:09.529Z repo:65597 leader 0 placing since 1795129209723: waiting
+2026-11-19T23:00:12.833Z repo:65597 leader 0 placing since 1795129209723: waiting
+2026-11-19T23:00:16.077Z repo:65597 leader 0 placing since 1795129209723: waiting
+2026-11-19T23:00:19.337Z repo:65597 leader 0 placing since 1795129209723: waiting
+2026-11-19T23:00:22.566Z repo:65597 leader 0 placing since 1795129209723: waiting
+2026-11-19T23:00:32.844Z repo:65597 leader 0: config 9 learners [{"addr":192,"doName":"repo:65597#5#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65597#5#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65597#5#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65597#5#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65597#5#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65597#5#l5","join":200,"sit
+2026-11-19T23:00:37.822Z repo:65597 leader 0: set k 4: {"grants":[[0,[4,1,0]],[1,[4,1,0]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T23:00:48.137Z repo:65597 leader 0: set k 4: {"grants":[[0,[4,1,0]],[1,[4,1,0]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T23:00:58.676Z repo:65597 leader 0: set k 4: {"grants":[[0,[4,1,0]],[1,[4,1,0]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-19T23:00:58.795Z repo:65597 leader 0: k 4 at 10
+2026-11-19T23:01:11Z b0-29 fm3fp3-b029 65597 start
+2026-11-19T23:02:04Z cost account 52.23 since 2026-11-19T00:00:00Z, run 0.01 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:04:07Z cost account 52.32 since 2026-11-19T00:00:00Z, run 0.05 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:06:10Z cost account 52.48 since 2026-11-19T00:00:00Z, run 0.12 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:08:13Z cost account 52.71 since 2026-11-19T00:00:00Z, run 0.3 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:10:16Z cost account 52.97 since 2026-11-19T00:00:00Z, run 0.52 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:12:18Z cost account 53.46 since 2026-11-19T00:00:00Z, run 0.92 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:14:21Z cost account 53.87 since 2026-11-19T00:00:00Z, run 1.34 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:16:23Z cost account 54.27 since 2026-11-19T00:00:00Z, run 1.74 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:18:25Z cost account 54.71 since 2026-11-19T00:00:00Z, run 2.17 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:19:55.686Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:20:05.978Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:20:16.314Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:20:26.594Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:20:29Z cost account 55.04 since 2026-11-19T00:00:00Z, run 2.49 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:20:36.867Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:20:47.141Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:20:57.490Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:21:07.748Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:21:18.024Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:21:28.297Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:21:38.574Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:21:48.843Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:21:59.320Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:22:09.614Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:22:19.869Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:22:30.143Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:22:31Z cost account 55.11 since 2026-11-19T00:00:00Z, run 2.55 since 2026-11-19T22:22:48Z, at b0-29 watch
+2026-11-19T23:22:40.418Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:22:50.691Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:23:00.957Z repo:65597 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597
+2026-11-19T23:23:01.160Z repo:65597 leader 1: k {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:65597#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65597 at undefined
+2026-11-19T23:23:13Z b0-29 fm3fp3-b029 65597 done exit 0
+2026-11-19T23:23:20Z torn down 65597
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T23:23:35Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo PDX 556 {'promised': 528, 'leader': 28}
+  colo LAX 206 {'promised': 154, 'leader': 52}
+  colo site 29 {'promised': 26, 'leader': 3}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 23 (n 586) p90 33 (placement baseline); unpaired p50 47 (n 581); pooled p50 44 (n 1321)
+  load: 1-statement p50 37 (n 159); unpaired p50 29 (n 2187); pooled p50 30 p99 324 (n 2499)
+isolates: 11 members, 10 distinct ids, 1 changes; shared: l195+v0
+harness outages (2026-11-19T23:08:42Z to 2026-11-19T23:18:42Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": "n/a (low rate)", "edgePerS": 0.0, "valid": true}
+{"kind": "read:api", "measured": {"n": 116537, "served": 0.9883, "p50": 385, "p99": 2346, "cap": 534}, "outagesRemoved": {"n": 116537, "served": 0.9883, "p50": 385, "p99": 2346, "cap": 534}}
+{"kind": "read:ref", "measured": {"n": 19621, "served": 0.989, "p50": 959, "p99": 3405, "cap": 0}, "outagesRemoved": {"n": 19621, "served": 0.989, "p50": 959, "p99": 3405, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 67, "served": 0.8358, "p50": 1441, "p99": 3842, "cap": 0}, "outagesRemoved": {"n": 67, "served": 0.8358, "p50": 1441, "p99": 3842, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 2498, "served": 0.9844, "p50": 2317, "p99": 6274, "cap": 0}, "outagesRemoved": {"n": 2498, "served": 0.9844, "p50": 2317, "p99": 6274, "cap": 0}}
+B029DONE
+harness outages (2026-11-19T23:08:42Z to 2026-11-19T23:18:42Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": "n/a (low rate)", "edgePerS": 0.0, "valid": true}
+{"kind": "read:api", "measured": {"n": 116537, "served": 0.9883, "p50": 385, "p99": 2346, "cap": 534}, "outagesRemoved": {"n": 116537, "served": 0.9883, "p50": 385, "p99": 2346, "cap": 534}}
+{"kind": "read:ref", "measured": {"n": 19621, "served": 0.989, "p50": 959, "p99": 3405, "cap": 0}, "outagesRemoved": {"n": 19621, "served": 0.989, "p50": 959, "p99": 3405, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 67, "served": 0.8358, "p50": 1441, "p99": 3842, "cap": 0}, "outagesRemoved": {"n": 67, "served": 0.8358, "p50": 1441, "p99": 3842, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 2498, "served": 0.9844, "p50": 2317, "p99": 6274, "cap": 0}, "outagesRemoved": {"n": 2498, "served": 0.9844, "p50": 2317, "p99": 6274, "cap": 0}}
+harness outages (2026-11-19T23:08:42Z to 2026-11-19T23:18:42Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-19T23:08:43Z", "2026-11-19T23:08:44Z"], ["2026-11-19T23:08:48Z", "2026-11-19T23:08:50Z"], ["2026-11-19T23:08:51Z", "2026-11-19T23:08:54Z"]], "outageSeconds": 6.0, "share": 0.01, "valid": true}
+{"kind": "read:api", "measured": {"n": 116537, "served": 0.9883, "p50": 385, "p99": 2346, "cap": 534}, "outagesRemoved": {"n": 116537, "served": 0.9883, "p50": 385, "p99": 2346, "cap": 534}}
+{"kind": "read:ref", "measured": {"n": 19621, "served": 0.989, "p50": 959, "p99": 3405, "cap": 0}, "outagesRemoved": {"n": 19621, "served": 0.989, "p50": 959, "p99": 3405, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 67, "served": 0.8358, "p50": 1441, "p99": 3842, "cap": 0}, "outagesRemoved": {"n": 67, "served": 0.8358, "p50": 1441, "p99": 3842, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 2498, "served": 0.9844, "p50": 2317, "p99": 6274, "cap": 0}, "outagesRemoved": {"n": 2498, "served": 0.9844, "p50": 2317, "p99": 6274, "cap": 0}}

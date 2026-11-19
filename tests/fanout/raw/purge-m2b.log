@@ -185,3 +185,12 @@
 2026-11-19T19:56:08Z 65596 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-19T19:56:08Z 65596 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-19T19:56:08Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T23:25:34Z 65597 purged: a 1007 -> 0, b 933 -> 0, c 964 -> 0
+2026-11-19T23:25:34Z 65597 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:25:34Z {"dry": false, "purged": 1, "objects": 2904, "refused": [], "second": 0}
+2026-11-19T23:26:22Z 65597 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:26:22Z 65597 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:26:22Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T23:27:09Z 65597 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:27:09Z 65597 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:27:09Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
