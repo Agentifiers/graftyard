@@ -517,18 +517,94 @@ mod tests {
         let first = entry(1, 2, Digest([0; 32]));
         let mut a = RepoFold::new(RepoId(DbId(41)), AccountId(DbId(1)));
         a.apply_entry(&first);
-        assert_eq!(dump_wait(&a, 10_000, DUMP_EVERY_MS), None, "the first rebuild is due");
+        assert_eq!(dump_wait(&a, 1, 10_000, DUMP_EVERY_MS), None, "the first rebuild is due");
         Repo::read_json(&a, &q);
-        assert_eq!(dump_wait(&a, 10_100, DUMP_EVERY_MS), None, "the cached dump is at the tiers' state");
+        assert_eq!(dump_wait(&a, 1, 10_100, DUMP_EVERY_MS), None, "the cached dump is at the tiers' state");
         a.apply_entry(&entry(2, 5, graftyard_raft::digest(&first)));
-        assert_eq!(dump_wait(&a, 10_300, DUMP_EVERY_MS), Some(DUMP_EVERY_MS - 300));
-        assert_eq!(dump_wait(&a, 10_000 + DUMP_EVERY_MS, DUMP_EVERY_MS), None, "due again");
-        assert_eq!(dump_wait(&a, 10_001 + DUMP_EVERY_MS, DUMP_EVERY_MS), Some(DUMP_EVERY_MS - 1), "and recorded");
+        assert_eq!(dump_wait(&a, 2, 10_300, DUMP_EVERY_MS), Some(DUMP_EVERY_MS - 300));
+        assert_eq!(dump_wait(&a, 2, 10_000 + DUMP_EVERY_MS, DUMP_EVERY_MS), None, "due again");
+        assert_eq!(dump_wait(&a, 2, 10_001 + DUMP_EVERY_MS, DUMP_EVERY_MS), Some(DUMP_EVERY_MS - 1), "and recorded");
         // A learner's spacing is its own: at LEARNER_DUMP_EVERY_MS after the last rebuild one is due again.
         let at = 10_000 + DUMP_EVERY_MS;
         a.apply_entry(&entry(3, 6, graftyard_raft::digest(&entry(2, 5, graftyard_raft::digest(&first)))));
-        assert_eq!(dump_wait(&a, at + 100, LEARNER_DUMP_EVERY_MS), Some(LEARNER_DUMP_EVERY_MS - 100));
-        assert_eq!(dump_wait(&a, at + LEARNER_DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS), None, "due at its own interval");
+        assert_eq!(dump_wait(&a, 3, at + 100, LEARNER_DUMP_EVERY_MS), Some(LEARNER_DUMP_EVERY_MS - 100));
+        assert_eq!(
+            dump_wait(&a, 3, at + LEARNER_DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS),
+            None,
+            "due at its own interval"
+        );
+    }
+
+    /// `dump-floor`: a learner's whole-tier read is answered by the newest cached dump built at or above its grant's
+    /// floor, though entries applied since, and never by one below it. On B0-33 m61 the waiters for one rebuild were
+    /// asked again after it with an entry applied in between, found the dump stale, the next rebuild 500 ms away and
+    /// past their deadline, and shed: `rebuild` sheds 2,412 to 17,264 (`tests/am1/results/b033-m61-why.md`).
+    #[test]
+    fn a_learner_dump_read_is_served_at_or_above_its_floor() {
+        use crate::family::LEARNER_DUMP_EVERY_MS as EVERY;
+        use crate::host::{ReadBody, fold_answer};
+        use graftyard_api::hosted::TierRows;
+        let entry = |i: u64, k: u8, prev: Digest| LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(i),
+            prev,
+            format: REPO_FORMAT_FANOUT,
+            tiers: TierSet::CORE,
+            at: Timestamp(i),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Fanout { k }]),
+        };
+        let log: Vec<_> = (1..=4u64)
+            .scan(Digest([0; 32]), |prev, i| {
+                let e = entry(i, i as u8 + 1, *prev);
+                *prev = graftyard_raft::digest(&e);
+                Some(e)
+            })
+            .collect();
+        let dump = json!({ "rows": true, "ranges": true, "packed": true });
+        let index_of = |b: &ReadBody| match b {
+            ReadBody::Json(b) => TierRows::from_value(&serde_json::from_slice(b).unwrap()).unwrap().index,
+            other => panic!("expected an answer, got {other:?}"),
+        };
+        let mut a = RepoFold::new(RepoId(DbId(71)), AccountId(DbId(1)));
+        a.apply_entry(&log[0]);
+        let t = 80_000;
+        assert_eq!(index_of(&fold_answer::<Repo>(&a, &dump, 1, t, EVERY)), 1, "the first build");
+        a.apply_entry(&log[1]);
+        // Two reads granted at floor 2 wait for the next rebuild.
+        assert_eq!(fold_answer::<Repo>(&a, &dump, 2, t + 10, EVERY), ReadBody::Shed(EVERY - 10, None));
+        a.apply_entry(&log[2]);
+        assert_eq!(index_of(&fold_answer::<Repo>(&a, &dump, 2, t + EVERY, EVERY)), 3, "the first waiter rebuilds");
+        // Entry 4 applies before the second waiter is asked again: the dump at 3 covers its floor of 2.
+        a.apply_entry(&log[3]);
+        let second = fold_answer::<Repo>(&a, &dump, 2, t + EVERY + 1, EVERY);
+        assert_eq!(index_of(&second), 3, "the second waiter shares the rebuild, at or above its floor");
+        // A read granted at 4 must not get the dump at 3: it waits for the next rebuild, built at 4.
+        assert_eq!(fold_answer::<Repo>(&a, &dump, 4, t + EVERY + 2, EVERY), ReadBody::Shed(EVERY - 2, None));
+        assert_eq!(index_of(&fold_answer::<Repo>(&a, &dump, 4, t + 2 * EVERY, EVERY)), 4, "then at its floor");
+        // A member of the same repository whose metadata tier is still loading never takes the loaded member's dump,
+        // whatever its floor: its answer holds no metadata rows.
+        let mut c = RepoFold::with_tiers(
+            Some(RepoId(DbId(71))),
+            Some(AccountId(DbId(1))),
+            Box::new(graftyard_fold::MemStore::default()),
+            Box::new(Unloaded),
+        );
+        for e in &log {
+            c.apply_entry(e);
+        }
+        let loaded = fold_answer::<Repo>(&a, &dump, 1, t + 2 * EVERY + 1, EVERY);
+        let loading = fold_answer::<Repo>(&c, &dump, 1, t + 3 * EVERY, EVERY);
+        assert_ne!(loading, loaded, "a loading member builds its own dump");
+        let ReadBody::Json(b) = &loading else { panic!("built") };
+        assert!(TierRows::from_value(&serde_json::from_slice(b).unwrap()).unwrap().meta.is_none());
+        // Nor does the repository's metadata child, whose log and indexes are its own.
+        let mut child = RepoFold::new(RepoId(DbId(71)), AccountId(DbId(1)));
+        child.child = true;
+        child.apply_entry(&log[0]);
+        let parent = fold_answer::<Repo>(&a, &dump, 1, t + 4 * EVERY, EVERY);
+        assert_ne!(fold_answer::<Repo>(&child, &dump, 1, t + 5 * EVERY, EVERY), parent, "a child builds its own");
     }
 
     /// A merge's rows build no dump, so neither waits for one: on a learner or a voter, right after a rebuild and at a
@@ -569,7 +645,7 @@ mod tests {
         }
         // A whole-tier read is still spaced, and the merges took no rebuild slot: its rebuild is due where it was.
         assert_eq!(fold_answer::<Repo>(&a, &dump, 5, at + 10, DUMP_EVERY_MS), ReadBody::Shed(DUMP_EVERY_MS - 10, None));
-        assert_eq!(dump_wait(&a, at + DUMP_EVERY_MS, DUMP_EVERY_MS), None);
+        assert_eq!(dump_wait(&a, 2, at + DUMP_EVERY_MS, DUMP_EVERY_MS), None);
     }
 
     /// F77 (BF-54 run 2): `acquirejob`'s secrets read, `{"rows": {"actions": true}}`, is answered at once by a voter
@@ -657,31 +733,31 @@ mod tests {
         let mut a = RepoFold::new(RepoId(DbId(51)), AccountId(DbId(1)));
         a.apply_entry(&first);
         let built = dump_builds();
-        let one = dump_bytes(&a, &q).expect("a packed read is a dump");
-        let again = dump_bytes(&a, &q).expect("dump");
+        let one = dump_bytes(&a, &q, 1).expect("a packed read is a dump");
+        let again = dump_bytes(&a, &q, 1).expect("dump");
         assert!(std::rc::Rc::ptr_eq(&one, &again), "one copy for every read at this state");
         assert_eq!(dump_builds(), built + 1, "built once");
         assert_eq!(serde_json::to_vec(&Repo::read_json(&a, &q)).unwrap(), one.to_vec(), "the bytes are the answer");
         a.apply_entry(&entry(2, 5, graftyard_raft::digest(&first)));
-        let next = dump_bytes(&a, &q).expect("dump");
+        let next = dump_bytes(&a, &q, 2).expect("dump");
         assert_ne!(next, one, "an applied entry is in the next dump");
         assert_eq!(dump_builds(), built + 2);
         let mut b = RepoFold::new(RepoId(DbId(52)), AccountId(DbId(1)));
         b.apply_entry(&first);
         b.apply_entry(&entry(2, 7, graftyard_raft::digest(&first)));
-        assert_ne!(dump_bytes(&b, &q).expect("dump"), next, "another repository at the same index");
+        assert_ne!(dump_bytes(&b, &q, 2).expect("dump"), next, "another repository at the same index");
         for narrow in [
             json!({ "rows": { "access": true } }),
             json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true }),
             json!({ "rows": true }),
             json!({ "ranges": true }),
         ] {
-            assert!(dump_bytes(&a, &narrow).is_none(), "{narrow}");
+            assert!(dump_bytes(&a, &narrow, 0).is_none(), "{narrow}");
         }
         // Through the host, as a grant answers: two inputs' grants at one state get the same copy, not one each.
         let (crate::host::ReadBody::Json(x), crate::host::ReadBody::Json(y)) = (
-            crate::host::fold_answer::<Repo>(&a, &q, 0, 0, DUMP_EVERY_MS),
-            crate::host::fold_answer::<Repo>(&a, &q, 0, 1, LEARNER_DUMP_EVERY_MS),
+            crate::host::fold_answer::<Repo>(&a, &q, 2, 0, DUMP_EVERY_MS),
+            crate::host::fold_answer::<Repo>(&a, &q, 2, 1, LEARNER_DUMP_EVERY_MS),
         ) else {
             panic!("a cached dump is served")
         };
@@ -773,7 +849,7 @@ mod tests {
         let loading = narrow_bytes(&c, &repo, 2).unwrap();
         assert!(!std::rc::Rc::ptr_eq(&loading, &two), "a loading member builds its own answer");
         assert!(std::rc::Rc::ptr_eq(&narrow_bytes(&a, &repo, 2).unwrap(), &two), "a loaded member keeps its own");
-        assert!(crate::family::dump_bytes(&a, &repo).is_none(), "not a dump");
+        assert!(crate::family::dump_bytes(&a, &repo, 0).is_none(), "not a dump");
         assert!(
             follower_query(&repo, true) && !follower_query(&repo, false),
             "served once the metadata tier is loaded"
