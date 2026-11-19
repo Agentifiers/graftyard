@@ -1,0 +1,17 @@
+2026-11-19T12:53:40.303Z repo:131372: 8 names, 8 were joined, all not joined
+2026-11-19T12:53:52.332Z repo:131373: 7 names, 7 were joined, all not joined
+2026-11-19T12:56:50.664Z purge: 131372 purged: a 7 -> 0, b 9 -> 0, c 4 -> 0
+2026-11-19T12:56:50.664Z purge: 131372 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:56:50.665Z purge: 131373 purged: a 4918 -> 0, b 4595 -> 0, c 4239 -> 0
+2026-11-19T12:56:50.665Z purge: 131373 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:57:17.240Z repo:131372: 4 names, 0 were joined, all not joined
+2026-11-19T12:57:22.227Z repo:131373: 3 names, 0 were joined, all not joined
+2026-11-19T12:58:52.011Z purge: 131372 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:58:52.012Z purge: 131372 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:58:52.012Z purge: 131373 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:58:52.012Z purge: 131373 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:56:50Z 131372 purged: a 7 -> 0, b 9 -> 0, c 4 -> 0
+2026-11-19T12:56:50Z 131372 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:56:50Z 131373 purged: a 4918 -> 0, b 4595 -> 0, c 4239 -> 0
+2026-11-19T12:56:50Z 131373 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+sweep (13:57Z): no shard container running
