@@ -289,6 +289,22 @@ pub fn forget_leader(chain: ChainId) {
     });
 }
 
+/// Holds `leader` as `chain`'s leader at `term`, at the end of a lookup pass in which two or more followers named it
+/// and its only answer was one miss: it is most likely busy taking over, as f0 was for 6 to 9 s after B0-35 m58's
+/// term-4 transfer, while every pass forgot it and every other request waited on the walk (F101). The next pass asks
+/// it as the cached leader, with `LEADER_RETRY`, and other requests go to it. False, and nothing held, when the config
+/// held names no such voter or this isolate has seen a later term.
+fn keep_named_leader(chain: ChainId, leader: SiteId, term: u64) -> bool {
+    KNOWN.with(|k| {
+        let mut k = k.borrow_mut();
+        let Some(e) = k.get_mut(&chain).filter(|e| term >= e.term && e.voters.iter().any(|(s, _)| *s == leader)) else {
+            return false;
+        };
+        (e.term, e.leader) = (term, Some(leader));
+        true
+    })
+}
+
 /// Drops every cached config and leader, for a caller that must start cold.
 pub fn forget_all() {
     KNOWN.with(|k| k.borrow_mut().clear());
@@ -408,8 +424,17 @@ fn stage(known: &Known, record: &PlacementRecord, chain: ChainId, k: usize) -> O
         vs.sort_by_key(|(s, _)| Some(*s) != known.leader);
         out.extend(vs.into_iter().map(|(s, n)| (s, n, Step::Cached)));
     }
+    // A bootstrap name the held config has replaced is no member of the group: a config at the record's generation
+    // or later names another member on its site. It still answers `NotLeader` naming none from its old config, and on
+    // B0-35 m58 it ended every pass of the term-4 walk (`repo:65572#1#f1` beside the voter `#8#f1`, F101).
+    let superseded = |m: &graftyard_types::Member| {
+        known.generation >= m.generation && known.voters.iter().any(|(s, n)| *s == m.site && **n != *m.do_name)
+    };
     out.extend(
-        r.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string(), Step::Bootstrap { depth })),
+        r.bootstrap_members(chain)
+            .into_iter()
+            .filter(|m| !superseded(m))
+            .map(|m| (m.site, m.do_name.to_string(), Step::Bootstrap { depth })),
     );
     Some(Stage::Names(out))
 }
@@ -582,6 +607,9 @@ where
     let mut held: Option<Marked> = None;
     // Whether this request's post to its cached leader already missed once (`LEADER_RETRY`).
     let mut leader_missed = false;
+    // Whether this request already kept a named leader past a pass (`keep_named_leader`): once only, so a leader
+    // that keeps missing is walked away from on the pass after.
+    let mut kept_once = false;
     while now() < end {
         let mut k = 0;
         let mut cands = candidates(k).await.unwrap_or_default();
@@ -595,6 +623,11 @@ where
         // no leader, as `commit_hedged` does, or a group whose members all reset stays leaderless for a caller
         // whose only call is this lookup (a commit's `/outcome_by_request`).
         let mut leaderless: Option<Target> = None;
+        // Per leader a follower's `NotLeader` named this pass, the followers that named it; and per member, its
+        // misses this pass. A leader two or more followers name, whose only answer this pass was one miss, is kept
+        // for the next pass (`keep_named_leader`).
+        let mut named: std::collections::BTreeMap<SiteId, std::collections::BTreeSet<SiteId>> = Default::default();
+        let mut misses: std::collections::BTreeMap<SiteId, u32> = Default::default();
         let mut queue: std::collections::VecDeque<(SiteId, String, Step)> = std::mem::take(&mut cands).into();
         loop {
             let Some((s, name, step)) = queue.pop_front() else {
@@ -679,6 +712,7 @@ where
                 Answer::Missed(why) => {
                     last = format!("{name}: {why}");
                     others += 1;
+                    *misses.entry(s).or_default() += 1;
                     missed.push(Target { site: s, do_name: name });
                     continue;
                 }
@@ -726,6 +760,9 @@ where
                 // Follow a named leader first, then the config's voters.
                 let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
                 let leader = nl.get("leader").and_then(Value::as_u64).and_then(|l| u8::try_from(l).ok()).map(SiteId);
+                if let Some(l) = leader.filter(|l| !stale && *l != s) {
+                    named.entry(l).or_default().insert(s);
+                }
                 let mut next: Vec<(SiteId, String, Step)> =
                     known.voters.iter().map(|(vs, vn)| (*vs, vn.clone(), step)).collect();
                 next.sort_by_key(|(vs, _, _)| Some(*vs) != leader);
@@ -759,8 +796,18 @@ where
         if let Some(t) = &leaderless {
             suspect(t.clone(), term, true).await;
         }
-        forget_leader(chain);
-        mark_trace(chain, || format!("t{token} pass ended with no leader: {last}"));
+        let kept = !kept_once
+            && named
+                .iter()
+                .find(|(l, by)| by.len() >= 2 && misses.get(*l) == Some(&1))
+                .is_some_and(|(l, _)| keep_named_leader(chain, *l, term));
+        kept_once |= kept;
+        if !kept {
+            forget_leader(chain);
+        }
+        mark_trace(chain, || {
+            format!("t{token} pass ended with no leader{}: {last}", if kept { ", leader kept" } else { "" })
+        });
         delay(Duration::from_millis(250)).await;
     }
     if held.is_some() {
@@ -3541,6 +3588,136 @@ mod tests {
         let bound = 2 * call + LEADER_RETRY.as_millis() as u64 + 2 * 50;
         assert!(at <= bound, "answered at {at} ms, past {bound}");
         assert!(at < LOOKUP_FOR.as_millis() as u64);
+    }
+
+    /// m58's term-4 walk (`tests/m4/raw/wp4/b035-m58/lookup-mark-t4.txt`) on chain `chain`: the held config names f0
+    /// `#1#f0`, f1 by its new name `#8#f1` and f2 `#1#f2`, with no leader held, and the record is the first
+    /// generation's, so its bootstrap names include the superseded `#1#f1`. f0 misses its first `f0_misses` posts in
+    /// 10 ms, then answers as leader in term 4. f1 and f2 answer `NotLeader` naming `followers_name` (f2 only when
+    /// `two_name`, else none); `#1#f1` answers `NotLeader` naming none from its old config. `generation` is the held
+    /// config's. Returns the result and each post as (name, how it was sent, the leader held when it was sent).
+    #[allow(clippy::type_complexity)]
+    fn drive_m58_walk(
+        chain: ChainId,
+        f0_misses: u32,
+        two_name: bool,
+        generation: u32,
+    ) -> (std::result::Result<Option<(Value, Step, Target)>, String>, Vec<(String, SentBy, Option<SiteId>)>) {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let m = |s: u8, g: u32| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, g);
+        let cfg = json!({ "index": 9, "config": { "normal": {
+            "voters": [m(0, 1), m(1, generation), m(2, 1)], "learners": [], "home": 0, "generation": generation } } });
+        let old = json!({ "index": 3, "config": { "normal": {
+            "voters": [m(0, 1), m(1, 1), m(2, 1)], "learners": [], "home": 0, "generation": 1 } } });
+        learn(chain, &json!({ "config": cfg.clone() }));
+        learn_leader(chain, &json!({ "meta": { "term": 3, "leader": null } }));
+        let record = rec(1, None);
+        let clock = Rc::new(Cell::new(0u64));
+        let posts = Rc::new(RefCell::new(Vec::new()));
+        let f0_posts = Rc::new(Cell::new(0u32));
+        let (c1, c2, c3, p) = (clock.clone(), clock.clone(), clock.clone(), posts.clone());
+        let (f1n, f2n) = (m(1, generation).do_name.to_string(), m(2, 1).do_name.to_string());
+        let mut req = Box::pin(lookup(
+            chain,
+            move || c1.get(),
+            move |k| {
+                let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
+                let names = match stage(&known, &record, chain, k) {
+                    Some(Stage::Names(v)) => Some(v),
+                    Some(Stage::Registry { .. }) => Some(vec![]),
+                    None => None,
+                };
+                async move { names }
+            },
+            move |s, name: String, by| {
+                p.borrow_mut().push((name.clone(), by, cached_leader(chain).map(|t| t.site)));
+                assert!(p.borrow().len() < 1_000, "no answer");
+                let nl = |leader: Value, cfg: &Value, term: u64| {
+                    Some((
+                        200,
+                        json!({ "error": { "notLeader": { "term": term, "leader": leader, "config": cfg } },
+                        "meta": { "term": term } }),
+                    ))
+                };
+                let (ms, a) = if s == SiteId(0) {
+                    f0_posts.set(f0_posts.get() + 1);
+                    if f0_posts.get() <= f0_misses {
+                        (10, None)
+                    } else {
+                        (35, Some((200, json!({ "value": 4, "meta": { "term": 4, "leader": 0 } }))))
+                    }
+                } else if name == f1n {
+                    (100, nl(json!(0), &cfg, 4))
+                } else if name == f2n {
+                    (230, nl(if two_name { json!(0) } else { Value::Null }, &cfg, 4))
+                } else {
+                    (120, nl(Value::Null, &old, 2))
+                };
+                let c = c2.clone();
+                async move {
+                    c.set(c.get() + ms);
+                    a
+                }
+            },
+            |_about: Target, _term, _all| async { None },
+            move |d: Duration| {
+                c3.set(c3.get() + d.as_millis() as u64);
+                async {}
+            },
+        ));
+        let out = loop {
+            if let Some(out) = req.as_mut().now_or_never() {
+                break out;
+            }
+            assert!(clock.get() < 60_000, "no answer");
+        };
+        let posts = posts.borrow().clone();
+        (out, posts)
+    }
+
+    /// F101, m58's term-4 walk: the record's bootstrap name `#1#f1`, which the held config replaced with `#8#f1`, is
+    /// never posted, and after a pass in which f0 missed once while f1 and f2 named it, f0 stays held, so the next
+    /// pass and every request waiting on the walk post to it as the leader. On main every pass posted `#1#f1`, and
+    /// each one forgot f0.
+    #[test]
+    fn m58s_walk_skips_the_superseded_name_and_keeps_the_leader_two_followers_name() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(65572)));
+        let (out, posts) = drive_m58_walk(chain, 2, true, 8);
+        let (v, _, t) = out.expect("answered").expect("a group");
+        assert_eq!((t.site, v["value"].clone()), (SiteId(0), json!(4)));
+        assert!(!posts.iter().any(|(n, ..)| n.ends_with("#1#f1")), "posted the superseded name: {posts:#?}");
+        let f0: Vec<_> = posts.iter().filter(|(n, ..)| n.ends_with("#1#f0")).collect();
+        assert_eq!(f0[1].1, SentBy::Leader, "f0 was not kept after the first pass: {posts:#?}");
+        assert_eq!(f0[1].2, Some(SiteId(0)), "{posts:#?}");
+        assert_eq!(cached_leader(chain).map(|l| l.site), Some(SiteId(0)));
+    }
+
+    /// The reverse of the m58 case. A leader one follower names is not kept; a kept leader that misses again is
+    /// forgotten on the next pass, so the walk goes on; and a config older than the record (a move's) leaves the
+    /// record's bootstrap names in the walk, since its members are the ones being added.
+    #[test]
+    fn a_leader_is_kept_only_on_two_followers_word_and_once_and_bootstrap_names_stay_for_an_older_config() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(65573)));
+        let (_, posts) = drive_m58_walk(chain, 2, false, 8);
+        let f0: Vec<_> = posts.iter().filter(|(n, ..)| n.ends_with("#1#f0")).collect();
+        assert_eq!((f0[1].1, f0[1].2), (SentBy::Walk, None), "kept on one follower's word: {posts:#?}");
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(65574)));
+        let (out, posts) = drive_m58_walk(chain, 6, true, 8);
+        assert_eq!(out.expect("answered").expect("a group").2.site, SiteId(0));
+        let held: Vec<_> = posts.iter().filter(|(n, ..)| n.ends_with("#1#f0")).map(|p| p.2).collect();
+        assert!(held.iter().filter(|h| h.is_some()).count() <= 2, "kept past one pass: {posts:#?}");
+        assert!(held.last() == Some(&None), "a leader that kept missing was still held: {posts:#?}");
+        let mut record = rec(9, None);
+        record.generation = 9;
+        let known = Known {
+            voters: vec![(SiteId(0), "a".into()), (SiteId(1), "b".into()), (SiteId(2), "c".into())],
+            generation: 8,
+            ..Default::default()
+        };
+        let Some(Stage::Names(names)) = stage(&known, &record, chain, 0) else { panic!("stage 0 is names") };
+        assert_eq!(names.len(), 6, "a move's new members dropped from the walk: {names:?}");
     }
 
     /// A follower's or learner's answer from a term below the highest this isolate saw keeps the leader held; one at

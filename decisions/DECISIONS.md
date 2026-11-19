@@ -6104,3 +6104,18 @@ Plants 139 to 142 (`tests/m4/wp4/plant.py`), 4 of 4 caught: 139 removes the read
 **Flip.**
 - A hosted row where a group stays away from a healthy `home` for longer than `HOME_DEFER_MAX` plus a window.
 - A B0-35 row whose term change during the load is still the transfer back to home, with the leader's queue over `HOME_QUIET_QUEUE` at the time.
+
+### `lookup-keep`: a walk skips a superseded bootstrap name and keeps a leader two followers name, 2026-11-19
+
+**Decision.** Two changes to `graftyard_lookup::lookup`. (1) A pass leaves out a record's bootstrap name when the config this isolate holds is at that member's generation or later and names a different voter on its site: that name is a member the group has replaced. (2) At the end of a pass that found no leader, if two or more followers' `NotLeader` named the same voter, and that voter's only answer in the pass was one miss, the isolate keeps it as the leader at the pass's term instead of forgetting it. The next pass asks it as the cached leader, with lookup-retry's LEADER_RETRY rule, and requests waiting on the mark go to it. A request keeps a leader this way once; if it misses again, the pass after forgets it as before.
+
+**Why.** On B0-35 m58, after term 4, site a's shard isolate walked for 6.4 s and 9.0 s. Every pass posted the cached f0 (`Missed("no answer")` in 2 to 20 ms, f0 being mid-election and then busy), f1 by its new name `#8#f1` and f2, both `notLeader` naming leader 0, then the record's bootstrap name `#1#f1`. That first-generation site-1 member had been replaced. It still answered `notLeader(leader None)` in about 120 ms, and every pass ended "no leader: repo:65572#1#f1: not leader". The pass then forgot f0 and walked again 250 ms later [measured, `tests/m4/raw/wp4/b035-m58/lookup-mark-t4.txt`]. So the walk spent its time asking a dead name, and it threw away the leader its followers agreed on [inference].
+
+**What it beat.**
+- **Dropping bootstrap names whenever a config is held:** a move's config is older than the record, and the record's new members are exactly what the walk has to reach. A config at the member's generation or later already names that site's voter.
+- **Keeping a leader one follower names:** a single follower may be behind. Two is a quorum's worth of agreement in a three-voter group.
+- **Keeping it for every pass:** a leader that is really gone would hold every request on misses until LOOKUP_FOR.
+
+**Evidence.** `crates/lookup/src/lib.rs`: `m58s_walk_skips_the_superseded_name_and_keeps_the_leader_two_followers_name` replays m58's term-4 walk (f0 misses twice, `#8#f1` and `#1#f2` name it, `#1#f1` answers with no leader). It fails on main twice over: `#1#f1` is posted, and f0's second post is a walk. `a_leader_is_kept_only_on_two_followers_word_and_once_and_bootstrap_names_stay_for_an_older_config` checks the bounds: one follower's word keeps nothing, a leader that keeps missing is forgotten, and a config older than the record keeps all the record's names. Plants: `tests/m0carried/plant55.py`, numbers 5 to 9.
+
+**Flip.** A row whose lookup-mark lines show a kept leader that was not the leader holding a walk past one extra pass, or a group that a walk cannot reach because a name it skipped was a live member.
