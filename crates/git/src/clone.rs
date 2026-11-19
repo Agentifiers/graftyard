@@ -118,6 +118,11 @@ impl CloneKey {
     pub fn r2_key(&self, replica: u8) -> R2Key {
         R2Key::CloneCache { network: self.network, key: self.digest(), replica }
     }
+
+    /// The key's `edge-compose` manifest entry (`R2Key::CloneManifest`).
+    pub fn manifest_key(&self) -> R2Key {
+        R2Key::CloneManifest { network: self.network, key: self.digest() }
+    }
 }
 
 #[cfg(test)]
