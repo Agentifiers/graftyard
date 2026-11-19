@@ -1,0 +1,34 @@
+10:40:46.078 00cab528 jsrpc 3316fade arm cf-worker-event RunnerBox.jsrpc
+10:40:46.996 00cab528 jsrpc 0ea85566 arm cf-worker-event RunnerBox.jsrpc
+10:40:48.051 00cab528 jsrpc 30a198b3 arm cf-worker-event RunnerBox.jsrpc
+10:40:48.870 00cab528 jsrpc 4ad5caff arm cf-worker-event RunnerBox.jsrpc
+10:40:49.078 00cab528 alarm 3316fade  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:40:49.979 00cab528 jsrpc bcca9596 arm cf-worker-event RunnerBox.jsrpc
+10:40:49.996 00cab528 alarm 0ea85566  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:40:50.963 00cab528 jsrpc 776d2c3a arm cf-worker-event RunnerBox.jsrpc
+10:40:51.051 00cab528 alarm 30a198b3  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:40:51.715 00cab528 jsrpc 5831853e arm cf-worker-event RunnerBox.jsrpc
+10:40:51.870 00cab528 alarm 4ad5caff  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:40:52.506 00cab528 scheduled   cf-worker-event */5 * * * *
+10:40:52.506 00cab528 scheduled   cf-worker graft-runners pass: started 8 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0
+10:40:52.510 00cab528 jsrpc 435d73ca arm cf-worker-event RunnerBox.jsrpc
+10:40:52.979 00cab528 alarm bcca9596  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:40:53.963 00cab528 alarm 776d2c3a  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:40:54.715 00cab528 alarm 5831853e  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:40:55.510 00cab528 alarm 435d73ca  cf-worker graft-runners: launched 3 s after arm, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:41:35.650 00cab528 alarm 5831853e  cf-worker-event Thu Nov 19 2026 10:40:51 GMT+0000 (Coordinated Universal Time)
+10:41:35.650 00cab528 alarm 5831853e  cf-worker graft-runners: r23t monitor resolved after 43935 ms
+10:41:36.521 00cab528 alarm 776d2c3a  cf-worker-event Thu Nov 19 2026 10:40:50 GMT+0000 (Coordinated Universal Time)
+10:41:36.521 00cab528 alarm 776d2c3a  cf-worker graft-runners: r23t monitor resolved after 45558 ms
+10:41:37.078 00cab528 alarm 435d73ca  cf-worker-event Thu Nov 19 2026 10:40:52 GMT+0000 (Coordinated Universal Time)
+10:41:37.078 00cab528 alarm 435d73ca  cf-worker graft-runners: r23t monitor resolved after 44568 ms
+10:41:37.435 00cab528 alarm 3316fade  cf-worker-event Thu Nov 19 2026 10:40:46 GMT+0000 (Coordinated Universal Time)
+10:41:37.435 00cab528 alarm 3316fade  cf-worker graft-runners: r23t monitor resolved after 51357 ms
+10:41:38.291 00cab528 alarm bcca9596  cf-worker-event Thu Nov 19 2026 10:40:49 GMT+0000 (Coordinated Universal Time)
+10:41:38.291 00cab528 alarm bcca9596  cf-worker graft-runners: r23t monitor resolved after 48312 ms
+10:41:38.639 00cab528 alarm 0ea85566  cf-worker-event Thu Nov 19 2026 10:40:46 GMT+0000 (Coordinated Universal Time)
+10:41:38.639 00cab528 alarm 0ea85566  cf-worker graft-runners: r23t monitor resolved after 51643 ms
+10:41:39.426 00cab528 alarm 4ad5caff  cf-worker-event Thu Nov 19 2026 10:40:48 GMT+0000 (Coordinated Universal Time)
+10:41:39.426 00cab528 alarm 4ad5caff  cf-worker graft-runners: r23t monitor resolved after 50556 ms
+10:41:41.202 00cab528 alarm 30a198b3  cf-worker-event Thu Nov 19 2026 10:40:48 GMT+0000 (Coordinated Universal Time)
+10:41:41.202 00cab528 alarm 30a198b3  cf-worker graft-runners: r23t monitor resolved after 53151 ms

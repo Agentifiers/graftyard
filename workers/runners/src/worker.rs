@@ -9,7 +9,7 @@
 //!   and the private half only into the `--jitconfig` this Worker writes (`runsvc::jit_config`), so no runner key
 //!   leaves the runner account except inside its own Sandbox.
 //! - **Runner objects.** One per runner, named `runner-<id>`, called over Durable Object RPC. A pass only arms the
-//!   object (`arm`), and the object's own alarm starts the container (F80). While the version's `RUNNER_BOX` is "1",
+//!   object (`arm`), and the object's own alarm starts the container (F80). While the version's `RUNNER_BOX_ON` is "1",
 //!   the object is a `RunnerBox` (`box.mjs`): one class on one `durable_object`-policy application, started with
 //!   `ctx.container` on this version's `runner` image at the label's instance type, with the runner as the container's
 //!   main process, so its exit stops the container (`decisions/DECISIONS.md`, "`r23-runnerbox`"). Otherwise it is the
@@ -215,10 +215,10 @@ impl Live {
         Ok(Some((stub.into_rpc::<JsValue>(), name)))
     }
 
-    /// Whether this version starts runners on `RunnerBox` (`RUNNER_BOX` "1"; `decisions/DECISIONS.md`,
+    /// Whether this version starts runners on `RunnerBox` (`RUNNER_BOX_ON` "1"; `decisions/DECISIONS.md`,
     /// "`r23-runnerbox`"), else on the legacy Sandbox classes.
     fn runner_box(&self) -> bool {
-        self.env.var("RUNNER_BOX").is_ok_and(|v| v.to_string() == "1")
+        self.env.var("RUNNER_BOX_ON").is_ok_and(|v| v.to_string() == "1")
     }
 }
 
@@ -294,7 +294,7 @@ impl Host for Live {
         call_js(&stub, "arm", &[name.into(), cmd.into(), opts]).await.map(|_| ())
     }
 
-    /// A runner lives on `RunnerBox` or, if started before `RUNNER_BOX` or by a version rolled back to, on its legacy
+    /// A runner lives on `RunnerBox` or, if started before `RUNNER_BOX_ON` or by a version rolled back to, on its legacy
     /// Sandbox class: `RunnerBox` answers false for a runner it never held, and the legacy class is asked then.
     async fn destroy(&self, runner: RunnerId, instance: Instance) -> std::result::Result<(), String> {
         if let Some((stub, _)) = self.object("RUNNER_BOX", runner)?

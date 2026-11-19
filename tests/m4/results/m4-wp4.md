@@ -550,6 +550,59 @@ What each call answered, besides the 200s, all asked again by the driver:
 - **Cost** (`tests/fanout/acctcost.py`, `PREFIX=graft-m4a`): from site day 53's start to the end of the idle reading (07:48:21Z to 09:30Z), **$0.11** on graft-m4a, against the $3 stop. The account's UTC day was $10.81 at 09:30Z. **Idle**, 09:00Z to 09:30Z across the 09:15 and 09:30 crons: **$0.02** on graft-m4a (site a $0.01, no container). That matches the true idle the lead accepted before ($0.01 in 25.5 min). The leak was a daily refold per chain, so a half-hour window cannot show it stop. A 24-hour reading would: before the purge, m4a ran about $1.50 a day
 
 
+## R23: release M1 and the `RunnerBox` cold-burst check on the runner account (2026-11-19)
+
+Granted by the lead with a $2 stop on the runner account: M1 from main `911f59e2`, then one cold burst of 8 runners on a test version only (`decisions/DECISIONS.md`, "`r23-runnerbox`").
+
+**M1: done.** `graftyard runners init` ran at 10:00:04Z from `911f59e2` (bundle by `wrangler deploy --dry-run`, same image digest `d0652a89…`), exit 0 (`tests/m4/raw/wp4/runners-init.log`).
+- `graft-runners` went from migration tag `v1` to `v2`.
+- `graft-runners-runnerbox` was created on the `durable_object` policy, with no `max_instances` and an empty configuration; its id is its namespace's.
+- The two Sandbox applications are unchanged.
+- The new `WEBHOOK_SECRET` was patched into the App's hook config (200). An unsigned POST answered 401.
+- Version `e05903aa` serves 100%, with `RUNNER_BOX_ON` unset.
+
+**The test version.** `RUNNER_BOX_ON=1` plus temporary logging around `ctx.container.start` and `monitor()`, uploaded directly (`POST /workers/scripts/graft-runners/versions`, no Wrangler) as `c1d38f31` and deployed at 100% from 10:07:59Z to 10:16:18Z. Before the rename, the first upload was refused: `Binding name 'RUNNER_BOX' already in use` (code 10053), because the variable and the Durable Object namespace had the same name. The variable is now `RUNNER_BOX_ON`, and a CLI test checks that binding names are unique; it fails on `911f59e2`.
+
+**The burst.** Run 1712951 on `m3org/wp4-r23` (`tests/m4/wp4/r23.mjs`, `tests/m4/wp4/hosted/r23.yml`: 6 `ubuntu-22.04` and 2 `ubuntu-24.04-4core` jobs).
+- The first try, run 1712942, put the label in `runs-on: ${{ matrix.label }}`. The install queued those jobs as `self-hosted`, so no hosted demand was raised; the run was cancelled. `r23.yml` now names each label statically.
+- From 10:15:44Z the passes registered and armed 8 runners, 6 `standard-3` and 2 `standard-4` (the 10:15:55Z sweep logged `started 8`).
+- Every one of the 8 alarms called `ctx.container.start` without a throw. Each `monitor()` rejected 0.66 to 0.76 s later with `Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it`. `box.mjs` logged `runner exited within 3 s … image <digest>` for each, and closed it.
+- No container placed: `graft-runners-runnerbox` listed 0 instances throughout (`tests/m4/raw/wp4/r23/workers-logs.txt`, `run.log`).
+- Stopped at 10:16:07Z as the grant asked. Run 1712951 was cancelled, and M1's version `e05903aa` was redeployed at 100%. The 10:20:44Z sweep, on M1's code, deleted the 8 registrations as stale and destroyed each on `RunnerBox` (`destroyed 8`). Demand then read empty.
+
+**The four unverified items.**
+1. **A version upload needs image preparation: yes.** An image map naming a pushed, digest-pinned image is accepted by the version upload but does not run: every start's monitor rejects with "Image not found" until the image is prepared. Wrangler calls `POST /containers/image-preparations {image}` and polls it to `READY` before it uploads a version with an `images` map (`wrangler-dist/cli.js`, `waitForImagePreparation`); `graftyard runners upgrade` does not, and neither does `graftyard sites` for `GitShard`. Per the grant, this was not worked around.
+2. **How a failed start surfaces:** not a throw from `start()`. `start()` returned, and the error came from `monitor()`, under a second. A refused placement for want of an instance was not reached, because no start got that far; its shape is still [unverified].
+3. **`run.sh` as PID 1:** not reached; no container ran.
+4. **Beta policy behaviour:** the `durable_object` application was created and bound by namespace id, and `ctx.container.images.runner` returned the digest from the version's metadata. Nothing else was reached.
+
+**`box.mjs` in this failure.** It treated "Image not found" as the runner's exit: one start per runner, no retry loop, one `exited within` line per runner naming the image. That is the bad-canary signal the design names, with `by_image` counting it. Once a new version's image is prepared, an unprepared image is a release error, not a runtime one.
+
+**Cost** (`tests/fanout/acctcost.py`, 09:51Z to 10:22:35Z): runner account **$0.00** (no container ran, and its Durable Object and Workers use rounds to zero); graft-m4a $0.06. The stop was $2.
+
+### The rerun with the image prepared (same grant)
+
+The operator CLI now prepares every image a version names before it uploads (`cli/src/cf.rs`, `prepare_image`; `decisions/DECISIONS.md`, "`r23-runnerbox`").
+- **Preparation.** `POST /containers/image-preparations` for the runner image answered `pending` ("image preparation scheduled", then "snapshot artifact build already dispatched") at 10:32:19Z and `ready` at 10:33:22Z, about 63 s for this 2.04 GB image. Later calls answer `ready` at once.
+- **Upload.** The test version `00cab528` (the same bundle and metadata as `c1d38f31`) went through `Cf::upload_version` itself, from an ignored test in `cli/src/cf.rs` (`r23_upload_test_version`): 1,206 ms, with the image already prepared. Deployed at 100% from 10:36:02Z.
+- **The burst.** Run 1712968, 8 jobs. No `workflow_job` webhook reached `graft-runners` for it, so the jobs waited for the 10:40:52Z sweep (the 202 at 10:15Z on try two had come from that path too; the delivery side is not part of this check). That one sweep pass registered and armed all 8 (`started 8`).
+  - Each alarm launched its container 3 s after the arm (`launched 3 s after arm, image <digest>`, 8 of 8), with no refusal, no retry, and no "exited within" line.
+  - Containers at `standard-3` (2 vCPU, 8 GiB, 16 GB; 6) and `standard-4` (4 vCPU, 12 GiB, 20 GB; 2), in `ewr15` and `iad15`.
+  - All 8 jobs `Success`. Each printed PID 1 as `/bin/bash /home/runner/run.sh` with comm `run.sh`, 0 Sandbox SDK server processes, and 2 or 4 vCPU.
+  - Each `monitor()` resolved 43.9 to 53.2 s after its start, as the runner exited after its one job. All 8 instances were then `stopped`, exit code 0, by 10:41:41Z: the container ended with the runner, with no destroy.
+- **Shards on graft-m4a.** Creating `m3org/wp4-r23` and pushing its workflow started its network's git shard (`git#0#net:65569` on site a) on both tries. The first ran from 10:08:39Z until torn down at 10:35:17Z; the rerun's from 10:36:21Z until 10:43:57Z. `tests/m4/wp4/r23.mjs` now runs `teardown.py <repo> <repo> --shardkill` on every exit, a crash or signal included.
+- **teardown.py's 500 at 10:35Z.** The first teardown call through the new `graft-m4a-shardkill` Worker answered 500, and a direct call to the same route 8 s later answered 200 and tore the shard down. Workers Logs show the site's `/teardown` invoked once, at 10:35:18Z, outcome `ok`, from the direct call; nothing from the first call reached the shard. So the 500 came from a just-deployed workers.dev script before its Durable Object bindings answered, not from the shard, and the script now retries a 5xx, as it already retried a 404, and prints its body. The rerun's teardown through the fixed script answered 200 on the first call.
+
+**The four items, settled or not.**
+1. **Image preparation:** needed, and now in the CLI. With it, all 8 starts placed and ran.
+2. **How a failed start surfaces:** through `monitor()` rejecting, not a throw from `start()` (the first try). Refused placement for want of capacity was not reached on either try, and stays [unverified]. It was not forced.
+3. **`run.sh` as PID 1:** yes, `/bin/bash /home/runner/run.sh` on 8 of 8 under the entrypoint override on the `cloudflare/sandbox` base, with the Sandbox server not running; the container stopped with exit 0 when the runner exited.
+4. **Beta policy behaviour:** one `durable_object` application served both instance types chosen per start, placed each start in about 3 s, and stopped each container with its main process. Nothing unexpected.
+
+**An unplanned third run.** The driver ran as an orb service, which restarted it after it exited, and it dispatched run 1712985 at 10:52:24Z. The service was stopped at 10:52:47Z, and its exit hook tore the shard down (200). `graft-runners` went back to M1's version `e05903aa` at 100%. The run's cancel answered 503 (the install shed its tier reads) until 10:56:05Z, so the 10:55:56Z sweep, now on M1's Sandbox path, started its 8 jobs on `SandboxStd3` (6) and `SandboxStd4` (2). All 8 logged "launched runner": seven 2 s after the arm, and `6349d772` 34 s after it, having logged "There is no container instance that can be provided" 37 times from 10:55:54Z to 10:56:25Z. That is a placement refusal that retried until it placed, seen on the legacy Sandbox path, not on `RunnerBox`. Its runner went `stale` after the cancel, and the 11:00:47Z sweep destroyed it (`sandbox.destroy success`). Lesson: one-shot drivers do not run as orb services. This run's `run.log` overwrote the rerun's; the rerun's facts are in `result.json`, `samples.jsonl`, and `workers-logs.txt`, and this run's are under `try3/`.
+
+**Close-out.** At 11:03Z the runner account listed 0 running on all three applications (`runnerbox` 8 `stopped`, `sandboxstd3` 299 and `sandboxstd4` 2 `inactive`), hosted demand was empty, and graft-m4a's three gitshard applications listed 0 running. Cost from 09:51Z to 11:03:41Z (`tests/fanout/acctcost.py`): the runner account $0.02, graft-m4a $0.16 (the leaked shard included), **$0.18 of the $2 stop** for both tries, the rerun, and the third run.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |

@@ -35,7 +35,7 @@ const config = {
     HOSTED_RUNNERS_APP_ID: String(c.app_id),
     HOSTED_OWNERS: JSON.stringify(c.owners),
     ACCOUNT_VCPU: String(c.account_vcpu ?? 15000),
-    ...(c.runner_box ? { RUNNER_BOX: "1" } : {}),
+    ...(c.runner_box ? { RUNNER_BOX_ON: "1" } : {}),
   },
   secrets_store_secrets: [{ binding: "HOSTED_RUNNERS_APP_KEY", store_id: storeId, secret_name: secretName }],
   durable_objects: {

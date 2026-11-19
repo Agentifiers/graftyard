@@ -131,7 +131,7 @@ fn bindings(spec: &Spec, store: &str, webhook: Option<&str>) -> Vec<Value> {
     b.extend(CLASSES.iter().map(|(c, n, _)| json!({ "type": "durable_object_namespace", "name": n, "class_name": c })));
     b.push(json!({ "type": "durable_object_namespace", "name": BOX.1, "class_name": BOX.0 }));
     if spec.runner_box {
-        b.push(text("RUNNER_BOX", "1".into()));
+        b.push(text("RUNNER_BOX_ON", "1".into()));
     }
     if let Some(w) = webhook {
         b.push(json!({ "type": "secret_text", "name": "WEBHOOK_SECRET", "text": w }));
@@ -433,6 +433,7 @@ mod tests {
                 ("GET", "/workers/scripts/graft-runners/subdomain") => ok(json!({ "enabled": false })),
                 ("GET", "/workers/subdomain") => ok(json!({ "subdomain": "graftyard-runners" })),
                 ("GET", "/containers/applications") => ok(json!([])),
+                ("POST", "/containers/image-preparations") => ok(json!({ "status": "ready" })),
                 ("GET", "/workers/scripts/graft-runners/settings") => ok(json!({ "bindings": [
                     { "type": "durable_object_namespace", "name": "SANDBOX_STD3", "namespace_id": "ns3" },
                     { "type": "durable_object_namespace", "name": "SANDBOX_STD4", "namespace_id": "ns4" },
@@ -450,7 +451,7 @@ mod tests {
         let d = scratch();
         let log = Log::default();
         let mut answer = account(log.clone());
-        let (url, _rx) = serve(14, move |s| answer(s));
+        let (url, _rx) = serve(15, move |s| answer(s));
         let cf = Cf::with(&url, "r", "t");
         let args = InitArgs {
             account: "r",
@@ -477,7 +478,7 @@ mod tests {
             r#"{{"class_name":"RunnerBox","images":{{"runner":"{IMAGE}"}},"name":"graft-runners-runnerbox"}}"#
         )));
         // Release M1 adds the class and starts nothing on it.
-        assert!(!upload.contains(r#""name":"RUNNER_BOX","text""#), "RUNNER_BOX is set only by runner_box");
+        assert!(!upload.contains("RUNNER_BOX_ON"), "RUNNER_BOX_ON is set only by runner_box");
         assert!(upload.contains(r#""store_id":"st1""#) && upload.contains(r#""nodejs_compat""#));
         assert!(!upload.contains("BEGIN RSA"), "the App key goes only to Secrets Store");
         let sched: Value =
@@ -513,7 +514,7 @@ mod tests {
         let d = scratch();
         let log = Log::default();
         let mut base = account(log.clone());
-        let (url, _rx) = serve(13, move |s| match (s.line.split(' ').next().unwrap_or(""), path(s).as_str()) {
+        let (url, _rx) = serve(14, move |s| match (s.line.split(' ').next().unwrap_or(""), path(s).as_str()) {
             ("GET", "/workers/scripts") => (
                 200,
                 json!({ "success": true, "result": [{ "id": "graft-runners", "migration_tag": "v1" }] }).to_string(),
@@ -608,6 +609,19 @@ mod tests {
         assert!(upgrade_with(&cf, upgrade_args(&d, IMAGE), 0).unwrap_err().contains("lists no image"));
     }
 
+    /// A `runners.json` with `runner_box` set or not.
+    fn scratch_spec(runner_box: bool) -> std::path::PathBuf {
+        let p = scratch().join("runners.json");
+        fs::write(
+            &p,
+            format!(
+                r#"{{"script":"graft-runners","graftyard_url":"https://git.example","app_id":7,"owners":{{"acme":11}},"runner_box":{runner_box}}}"#
+            ),
+        )
+        .unwrap();
+        p
+    }
+
     /// The three upgrade runs (10%, refused before the day, 100%), with `runner_box` set or not; every request made.
     fn canary(runner_box: bool) -> (String, Vec<(String, String, Vec<u8>)>) {
         let d = scratch();
@@ -649,6 +663,7 @@ mod tests {
                 }
                 ("GET", "/secrets_store/stores") => ok(json!([{ "id": "st1", "name": "graft-runners" }])),
                 ("GET", "/workers/scripts") => ok(json!([{ "id": "graft-runners", "migration_tag": "v2" }])),
+                ("POST", "/containers/image-preparations") => ok(json!({ "status": "ready" })),
                 ("GET", "/containers/applications") => ok(json!([
                     { "id": "a3", "name": "graft-runners-sandboxstd3" }, { "id": "a4", "name": "graft-runners-sandboxstd4" }
                 ])),
@@ -696,7 +711,7 @@ mod tests {
         );
     }
 
-    /// With `runner_box`, the 10% version carries the image in `RunnerBox`'s image map and sets `RUNNER_BOX`, so its
+    /// With `runner_box`, the 10% version carries the image in `RunnerBox`'s image map and sets `RUNNER_BOX_ON`, so its
     /// own starts run it, and no run rolls an application.
     #[test]
     fn upgrade_with_runner_box_carries_the_image_in_the_version_and_rolls_nothing() {
@@ -707,8 +722,17 @@ mod tests {
         assert!(upload.contains(&format!(
             r#"{{"class_name":"RunnerBox","images":{{"runner":"{IMAGE}"}},"name":"graft-runners-runnerbox"}}"#
         )));
-        assert!(upload.contains(r#"{"name":"RUNNER_BOX","text":"1","type":"plain_text"}"#), "{upload}");
+        assert!(upload.contains(r#"{"name":"RUNNER_BOX_ON","text":"1","type":"plain_text"}"#), "{upload}");
+        // The API refuses a version whose bindings repeat a name (code 10053, R23's M1 check on 2026-11-19: the
+        // variable and the namespace were both `RUNNER_BOX`).
+        let spec = Spec::read(&scratch_spec(true)).unwrap();
+        let names: Vec<String> =
+            bindings(&spec, "st1", Some("w")).iter().map(|b| b["name"].as_str().unwrap().to_string()).collect();
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "binding names repeat: {names:?}");
         assert!(!log.iter().any(|(m, ..)| m == "PATCH"), "nothing rolls");
+        let at = |p: &str| log.iter().position(|(m, x, _)| m == "POST" && x == p).unwrap();
+        assert!(at("/containers/image-preparations") < at("/workers/scripts/graft-runners/versions"), "prepared first");
         assert!(!log.iter().any(|(_, p, _)| p.contains("/rollouts")), "nothing rolls");
         let deploys = log.iter().filter(|(m, p, _)| m == "POST" && p == "/workers/scripts/graft-runners/deployments");
         assert_eq!(deploys.count(), 2, "10%, then 100%");

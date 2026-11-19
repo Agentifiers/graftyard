@@ -4,9 +4,9 @@
 //
 // - `RunnerBox` (`box.mjs`; decisions/DECISIONS.md, `r23-runnerbox`): one runner per object on the runner account's one
 //   `durable_object`-policy container application, started with the platform's `ctx.container` and the image of the
-//   Worker version that runs the object. Starts use it while the version's `RUNNER_BOX` is "1".
+//   Worker version that runs the object. Starts use it while the version's `RUNNER_BOX_ON` is "1".
 // - `SandboxStd3` and `SandboxStd4` (`launch.mjs`): the Sandbox SDK's class, one per instance type on two
-//   `default`-policy applications, which serve runners started before `RUNNER_BOX` and are deleted at release M3.
+//   `default`-policy applications, which serve runners started before `RUNNER_BOX_ON` and are deleted at release M3.
 import { DurableObject } from "cloudflare:workers";
 import { Sandbox } from "@cloudflare/sandbox";
 import * as box from "./box.mjs";
