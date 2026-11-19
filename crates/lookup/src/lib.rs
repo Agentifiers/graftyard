@@ -825,6 +825,20 @@ pub fn leader_never_serves(q: &Value) -> bool {
 /// (`decisions/DECISIONS.md`, "`tier-off-leader`", the flip).
 pub const TIER_OFF: &str = "tierOff";
 
+/// The read `Spread::Elect` sends the leader's way instead of the dump: it answers nothing of the fold, as `create`'s
+/// probe does, so a new leader serves no dump for it.
+const ELECT_PROBE: &str = r#"{"q":{"probe":true}}"#;
+
+/// The body a pass sends the leader's way for its verdict, if any: the read itself after every member declined a read
+/// the leader may serve (`Leader`), the probe for `Elect`, and nothing for any other.
+fn leader_body(verdict: &Spread, body: &Value) -> Option<String> {
+    match verdict {
+        Spread::Leader => Some(body.to_string()),
+        Spread::Elect => Some(ELECT_PROBE.to_owned()),
+        _ => None,
+    }
+}
+
 fn tier_off_why(chain: ChainId) -> String {
     format!("{chain}: every member declined a read the leader never serves: {OVERLOADED} ({TIER_OFF})")
 }
@@ -843,18 +857,23 @@ enum Spread {
     /// tier is loading, or it knows no leader) or a 4xx (not joined: a group not created yet), or none was asked. The
     /// leader by `call_opt`, which finds a group not yet created and reports a leaderless one with `suspect`.
     Leader,
-    /// Every one asked declined a read the leader never serves (`leader_never_serves`) and one named a leader or a
-    /// term: shed as `Shed` is, with its own reason, TIER_OFF, so a row counts the 503s this rule makes.
+    /// Every one asked declined a read the leader never serves (`leader_never_serves`) and one named a leader: shed as
+    /// `Shed` is, with its own reason, TIER_OFF, so a row counts the 503s this rule makes.
     TierOff,
+    /// Every one asked declined a read the leader never serves, at least one answered `notLeader`, and none named a
+    /// leader: the group may have none. The read is shed as `TierOff` is, after a cheap read (`ELECT_PROBE`, never
+    /// the read itself) goes the leader's way by `call_opt`, whose lookup reports the leaderless group with `suspect`
+    /// and so starts its election: campaigns are request-driven (F67), and a group read only by dumps and `ls-refs`
+    /// sent nothing else that would start one (M4-WP4 j4, repo:65536, leaderless at term 4 for over 7 minutes).
+    Elect,
     /// Every one asked declined a read the leader never serves (`leader_never_serves`) and none answered `notLeader`:
     /// none is joined, so the group may not exist yet, and the caller creates it and asks again.
     Absent,
 }
 
 /// `read_spread`'s choice from the answers of the members `spread_order` named, in order. `leader_ok` is false for a
-/// read the leader never serves: one that every member declined is then `TierOff` if any answered `notLeader` (a group
-/// with a leader, between elections, or whose followers' tiers are loading), so it is answered 503 or asked again,
-/// and `Absent` if none did.
+/// read the leader never serves: one that every member declined is then `TierOff` if any named a leader, `Elect` if
+/// some answered `notLeader` and none named one, and `Absent` if none answered `notLeader` (none is joined).
 fn spread_verdict(answers: &[Option<(u16, &Value)>], leader_ok: bool) -> Spread {
     if let Some(i) = answers.iter().position(|r| follower_answer_usable(*r)) {
         return Spread::Use(i);
@@ -862,10 +881,15 @@ fn spread_verdict(answers: &[Option<(u16, &Value)>], leader_ok: bool) -> Spread 
     let not_leader = |r: &Option<(u16, &Value)>| matches!(r, Some((200, v)) if v.pointer("/error/notLeader").is_some() || v.pointer("/done/notLeader").is_some());
     let declined = |r: &Option<(u16, &Value)>| not_leader(r) || matches!(r, Some((s, _)) if (400..500).contains(s));
     if answers.iter().all(declined) {
-        return match (leader_ok, answers.iter().any(not_leader)) {
-            (true, _) => Spread::Leader,
-            (false, true) => Spread::TierOff,
-            (false, false) => Spread::Absent,
+        let named = |r: &Option<(u16, &Value)>| {
+            matches!(r, Some((200, v)) if v.pointer("/error/notLeader/leader").or(v.pointer("/done/notLeader/leader"))
+                .is_some_and(Value::is_u64))
+        };
+        return match (leader_ok, answers.iter().any(named), answers.iter().any(not_leader)) {
+            (true, _, _) => Spread::Leader,
+            (false, true, _) => Spread::TierOff,
+            (false, false, true) => Spread::Elect,
+            (false, false, false) => Spread::Absent,
         };
     }
     let wait = answers.iter().filter_map(|r| match classify(*r, false) {
@@ -1042,10 +1066,18 @@ async fn spread_once(
         }
     }
     let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
-    match spread_verdict(&seen, leader_ok) {
+    let verdict = spread_verdict(&seen, leader_ok);
+    let to_leader_body = leader_body(&verdict, body);
+    match verdict {
         Spread::Use(_) => unreachable!("a usable answer returned above"),
         Spread::Absent => Ok(Ok(None)),
         Spread::TierOff => Err((tier_off_why(chain), OVERLOAD_RETRY_MS)),
+        Spread::Elect => {
+            // The lookup's answer is not the read's: the read is shed, and its retry finds a follower with a leader.
+            let probe = to_leader_body.unwrap_or_default();
+            let _ = call_opt(b, chain, record, "/read", probe.as_bytes()).await;
+            Err((tier_off_why(chain), OVERLOAD_RETRY_MS))
+        }
         Spread::Shed(ms) => {
             // A member that shed it because its read-index call to the leader went unanswered (F67 rule 12) names
             // that leader: one `suspect` report about it, damped by SUSPECT_GAP, stands in for the leader walk a
@@ -1059,7 +1091,7 @@ async fn spread_once(
             Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms))
         }
         Spread::Leader if !to_leader => Ok(Ok(None)),
-        Spread::Leader => Ok(call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await),
+        Spread::Leader => Ok(call_opt(b, chain, record, "/read", to_leader_body.unwrap_or_default().as_bytes()).await),
     }
 }
 
@@ -2722,11 +2754,18 @@ mod tests {
         let null = Value::Null;
         for answers in [
             vec![Some((200, &named)), Some((200, &named)), Some((200, &named))],
-            vec![Some((200, &leaderless)), Some((409, &null))],
+            vec![Some((200, &leaderless)), Some((200, &named))],
             vec![Some((409, &null)), Some((200, &named))],
         ] {
             assert_eq!(spread_verdict(&answers, false), Spread::TierOff, "{answers:?}");
             assert_eq!(spread_verdict(&answers, true), Spread::Leader, "{answers:?}");
+        }
+        // No member names a leader: `Elect`, which sends the probe the leader's way and never the read.
+        for answers in [
+            vec![Some((200, &leaderless)), Some((200, &leaderless)), Some((200, &leaderless))],
+            vec![Some((200, &leaderless)), Some((409, &null))],
+        ] {
+            assert_eq!(spread_verdict(&answers, false), Spread::Elect, "{answers:?}");
         }
         for answers in [vec![Some((409, &null)), Some((404, &null))], vec![]] {
             assert_eq!(spread_verdict(&answers, false), Spread::Absent, "{answers:?}");
@@ -2736,6 +2775,91 @@ mod tests {
         let why = tier_off_why(ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9))));
         assert!(why.contains(OVERLOADED) && why.contains(TIER_OFF), "{why}");
         assert!(!format!("repo:9: every member asked shed the read: {OVERLOADED}").contains(TIER_OFF));
+    }
+
+    /// M4-WP4 j4: a group read only by dumps whose voters all answer `notLeader` naming no leader elects. The pass's
+    /// verdict is `Elect`, which sends the probe, never the dump, the leader's way; that lookup reports the leaderless
+    /// group to every voter with `suspect`, a voter campaigns on it, and the lookup finds the new leader within F67's
+    /// 30 s bound. On tier-off-leader as first built the verdict was `TierOff`, which sent nothing: no report, no
+    /// campaign, and the group stayed leaderless for over 7 minutes.
+    #[test]
+    fn a_leaderless_group_read_only_by_dumps_elects_and_never_serves_the_dump() {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(65_536)));
+        let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, 1);
+        let cfg = json!({ "index": 5, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        learn(chain, &json!({ "config": cfg }));
+        let dump = json!({ "q": { "rows": true, "ranges": true, "packed": true } });
+        let leaderless = json!({ "error": { "notLeader": { "term": 4, "leader": null } } });
+        let seen = [Some((200, &leaderless)), Some((200, &leaderless)), Some((200, &leaderless))];
+        let verdict = spread_verdict(&seen, false);
+        assert_eq!(verdict, Spread::Elect);
+        let body = leader_body(&verdict, &dump).expect("a leaderless decline sends something the leader's way");
+        assert!(!leader_never_serves(&serde_json::from_str::<Value>(&body).unwrap()["q"]), "never the dump: {body}");
+        // A named leader's decline sends nothing: the read is `TierOff` and its retry finds a follower.
+        let named = json!({ "error": { "notLeader": { "term": 4, "leader": 0 } } });
+        assert_eq!(leader_body(&spread_verdict(&[Some((200, &named))], false), &dump), None);
+        let names: Vec<(SiteId, String)> = KNOWN.with(|k| k.borrow()[&chain].voters.clone());
+        let clock = Rc::new(Cell::new(0u64));
+        // When a voter took the all-voters report that starts its campaign; it leads CAMPAIGN_MS later.
+        const CAMPAIGN_MS: u64 = 1_000;
+        let campaigned: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        let bodies = Rc::new(RefCell::new(Vec::<String>::new()));
+        struct At(Rc<Cell<u64>>, u64);
+        impl Future for At {
+            type Output = ();
+            fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0.get() >= self.1 { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+            }
+        }
+        let (c1, c2, c3, c4) = (clock.clone(), clock.clone(), clock.clone(), clock.clone());
+        let (camp2, camp3, bodies2) = (campaigned.clone(), campaigned.clone(), bodies.clone());
+        let mut req = Box::pin(lookup(
+            chain,
+            move || c1.get(),
+            move |k| {
+                let v = names.iter().map(|(s, n)| (*s, n.clone(), Step::Cached)).collect::<Vec<_>>();
+                async move { (k == 0).then_some(v) }
+            },
+            move |s, _name, _by| {
+                let (c, camp, bodies, body, cfg) =
+                    (c2.clone(), camp2.clone(), bodies2.clone(), body.clone(), cfg.clone());
+                async move {
+                    bodies.borrow_mut().push(body);
+                    let sent = c.get();
+                    At(c.clone(), sent + 50).await;
+                    let leads = camp.get().is_some_and(|t| c.get() >= t + CAMPAIGN_MS);
+                    if leads && s == SiteId(1) {
+                        return Some((200, json!({ "value": "probe", "meta": { "term": 5, "leader": 1 } })));
+                    }
+                    let leader = if leads { json!(1) } else { Value::Null };
+                    let nl = json!({ "term": if leads { 5 } else { 4 }, "leader": leader, "config": cfg });
+                    Some((200, json!({ "error": { "notLeader": nl }, "meta": { "term": 4 } })))
+                }
+            },
+            move |_about: Target, _term, all| {
+                let (c, camp) = (c3.clone(), camp3.clone());
+                async move {
+                    if all && camp.get().is_none() {
+                        camp.set(Some(c.get()));
+                    }
+                    None
+                }
+            },
+            move |d: Duration| At(c4.clone(), c4.get() + d.as_millis() as u64),
+        ));
+        let mut out = None;
+        while out.is_none() && clock.get() < 30_000 {
+            out = req.as_mut().now_or_never();
+            clock.set(clock.get() + 1);
+        }
+        let (_, _, t) = out.expect("the lookup ended within F67's 30 s bound").expect("no error").expect("a group");
+        assert_eq!(t.site, SiteId(1), "the lookup found the new leader");
+        assert!(campaigned.get().is_some(), "the lookup reported the leaderless group, which starts the election");
+        assert!(bodies.borrow().iter().all(|b| b == ELECT_PROBE), "only the probe went the leader's way");
     }
 
     /// `b032-shed` A: a member that forgot its leader sheds the read and names it. Every such answer is `Shed`, never a
