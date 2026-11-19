@@ -58,13 +58,14 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync, gzipSync } from "node:zlib";
 import { parseArgs } from "node:util";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
+import { edgeInvocations, postH1, tagLost } from "./h1.mjs";
 import { r2list } from "../../fanout/r2list.mjs";
 import { serverClock } from "../../fanout/srvclock.mjs";
 
@@ -510,28 +511,17 @@ const lsShardNow = () => opt["ls-refs-shard"] || (LS_EVERY_MS > 0 && lsWindow() 
 const lsHeaders = (path) => (path === "git-upload-pack" && lsShardNow() ? { "x-graft-ls-refs": "shard", "x-bed-token": BED } : {});
 // Past the edge's own worst case, so every push ends in the edge's answer and none in the driver's timeout: three
 // shards' validate waits (15 + 60 + 60 s) then the commit. At 120 s, B0-32's burst pushes still in their third
-// shard's wait were cut and counted as lost (lm1-rows-m3f.md, B0-32).
+// shard's wait were cut and counted as lost (lm1-rows-m3f.md, B0-32). For the burst's HTTP/1.1 pushes it runs on a wall
+// clock from the send (`h1.mjs`): as a socket idle timeout it let two m3fe2 pushes stay open 403 s (A32).
 const GIT_TIMEOUT_MS = 200_000;
+// Workers Logs' delay before an invocation can be counted [guess]: the lookup of a burst push with no answer waits it.
+const LOGS_LAG_MS = 60_000;
 // B0-32's burst client: HTTP/1.1 on its own keep-alive pool, sized to the burst, as git itself pushes. On m3fr14 every
 // burst push on the shared HTTP/2 client ended in a stream or socket reset with no answer, as B0-30 saw this orb's
 // HTTP/2 connections to LAX reset under all their streams at once; the rest of the driver keeps `fetch` (HTTP/2), so
 // its numbers stay comparable with earlier runs.
 const BURST_PROTOCOL = "http/1.1 (node:https Agent, keepAlive, maxSockets = burst pushes)";
 let burstAgent = null;
-function postH1(url, body, headers, agent) {
-  return new Promise((resolve, reject) => {
-    const req = httpsRequest(url, { method: "POST", headers: { ...headers, "content-length": body.length }, agent, timeout: GIT_TIMEOUT_MS }, (res) => {
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () => resolve({ status: res.statusCode, buf: Buffer.concat(chunks),
-        headers: new Headers(Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])) }));
-      res.on("error", reject);
-    });
-    req.on("timeout", () => req.destroy(Object.assign(new Error("timeout"), { code: "TIMEOUT" })));
-    req.on("error", reject);
-    req.end(body);
-  });
-}
 // B0-34 (a): which v2 ls-refs the edge answered from the group's refs (a test edge's `x-graft-ls-refs: edge`) and
 // which went on to the shard, by status, over every ls-refs this driver sends (`lsRefsBy` in the row).
 const lsRefsBy = {};
@@ -558,7 +548,7 @@ async function gitOnce(path, tok, body, headers = {}, repo = R, agent = null) {
   const t = Date.now();
   if (agent) {
     try {
-      const r = await postH1(`${EDGE}/${repo}.git/${path}`, body, { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...lsHeaders(path), ...headers }, agent);
+      const r = await postH1(`${EDGE}/${repo}.git/${path}`, body, { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...lsHeaders(path), ...headers }, agent, GIT_TIMEOUT_MS);
       return { status: r.status, text: r.buf.toString("latin1"), ms: Date.now() - t, headers: r.headers };
     } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
   }
@@ -596,7 +586,7 @@ async function push(tok, ref, from, path, bytes, extra = {}, agent = null) {
     // why-logs: a test edge's `server-timing`, so each refusal's stage is read from the push (tests/fanout/pushfull.py).
     timing: r.headers?.get?.("server-timing") ?? null });
   notePushTiming(r.headers?.get?.("server-timing"), res);
-  return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null];
+  return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null, { client, start, end: cfClock.now() }];
 }
 // push-reads: a test edge's `server-timing` on every push (resolve, auth, install, gate, context, validate, admission,
 // commit, stage, total), each stage's ms by name, plus how many commits ran the create probe (`probe`) and how many
@@ -994,14 +984,23 @@ if (plan.burst) jobs.push((async () => {
   const r = await Promise.all(Array.from({ length: plan.burst.pushes }, (_, k) => sleep((k * 1000) / plan.burst.pushes).then(async () => {
     const a = agents[k % agents.length];
     const at = Date.now();
-    const [res, ms, , err, timing] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes), {}, burstAgent);
+    const [res, ms, , err, timing, id] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes), {}, burstAgent);
     note("push:burst", ms, res);
-    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), timing, ...(err ? { err } : {}) });
+    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), timing, ...id, ...(err ? { err } : {}) });
     return [res, Date.now() - s];
   })));
   burstAgent.destroy();
+  // A push with no answer (status 0) ends at GIT_TIMEOUT_MS on a wall clock (`h1.mjs`) and is looked up in the edge's
+  // Workers Logs by its client id: `no edge invocation` is lost before the edge (A32), `edge ran it` is the edge's.
+  // The lookup waits LOGS_LAG_MS for the logs to land, and a failed lookup is never counted as `no edge invocation`.
+  const unanswered = sent.filter((x) => x.res.startsWith("http 0 "));
+  if (unanswered.length) await sleep(LOGS_LAG_MS);
+  const lost = await tagLost(unanswered, (client, from, to) => edgeInvocations({ account: process.env.CLOUDFLARE_ACCOUNT_ID,
+    token: process.env.CLOUDFLARE_API_TOKEN, script: new URL(EDGE).hostname.split(".")[0], client, from, to }));
+  const tagged = new Map(lost.map((x) => [x.k, x.edge]));
   writeRow(OUT, { step: "burst", protocol: BURST_PROTOCOL, hot, warm, pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
-    unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")) });
+    unanswered: lost.reduce((m, x) => ((m[x.edge] = (m[x.edge] ?? 0) + 1), m), {}),
+    unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")).map((x) => (tagged.has(x.k) ? { ...x, edge: tagged.get(x.k) } : x)) });
   // Every burst push's stages, in send order, for where each one's time went.
   writeRow(OUT, { step: "burst timing", pushes: sent.sort((x, y) => x.k - y.k).map(({ k, ms, res, timing }) => ({ k, ms, res: String(res).slice(0, 40), timing })) });
 })());

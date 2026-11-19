@@ -564,8 +564,9 @@ fn an_unknown_colo_is_no_second_witness_but_still_starts_a_campaign() {
     let stopped = c.m(B).state().promise_until;
     drive(&mut c, 500, true, &mut id, |_| false);
     assert_eq!(c.m(B).state().promise_until, stopped, "two colos no longer withhold");
-    // Idle until C's promise lapses: one unknown-colo report then starts its campaign.
-    c.run(ms(graftyard_raft::ELECTION_AFTER) + 200, 200, |_| true);
+    // Idle until C's promise lapses, counted from the idle leader's commit round: one unknown-colo report then starts
+    // its campaign.
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + ms(graftyard_raft::CALL_DEADLINE) + 200, 200, |_| true);
     assert_eq!(report(&mut c, C, site_script, A), Verdict::Started);
 }
 
@@ -874,7 +875,10 @@ fn one_follower_stall_counts_once_per_deadline() {
         let mut id = 0;
         c.elect(A);
         drive(&mut c, 3_000, true, &mut id, |_| false);
-        // An idle leader's lease lapses, so each read starts a round to each follower; every one misses its deadline.
+        // An idle leader's lease lapses after its commit round, so each read starts a round to each follower; every one
+        // misses its deadline.
+        c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+        c.deliver_all();
         c.advance(graftyard_raft::LEASE.as_millis() as u64);
         c.deliver_all();
         c.inbox.clear();
