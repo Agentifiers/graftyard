@@ -567,6 +567,15 @@ async function gitOnce(path, tok, body, headers = {}, repo = R, agent = null) {
 }
 const lsRefs = (tok, prefix) => git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt(`ref-prefix ${prefix}\n`), Buffer.from("0000")]),
   { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" });
+// The receive-pack advertisement, as `git push` reads it before its POST (`git-shaped-push`): its status, after the whole
+// body, which the edge streams from the group's refs.
+const receiveAdvert = async (tok) => {
+  try {
+    const r = await fetch(`${EDGE}/${R}.git/info/refs?service=git-receive-pack`, { headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders() }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
+    await r.arrayBuffer();
+    return r.status;
+  } catch (e) { return `error ${String(e).slice(0, 30)}`; }
+};
 const tip = async (ref) => (await lsRefs(admin, ref)).text.match(new RegExp(`([0-9a-f]{40}) ${ref}\\n`))?.[1] ?? null;
 // A fresh repository's `main` (auto_init) was missing from ls-refs for seconds after its 201 on m23 (2 of 4 creates):
 // wait up to 120 s and log the wait, so it is measured rather than a failed run.
@@ -767,6 +776,8 @@ process.on("SIGTERM", () => { stopped = new Date().toISOString(); end = Math.min
 
 // The scheduler: each kind at its rate, Poisson, with at most `cap` in flight per kind.
 const inflight = {};
+/** A job that noted its own sample (`git-shaped-push`) returns this, so `every` does not note the job's whole time. */
+const SAMPLED = Symbol("sampled");
 function every(kind, perS, f, cap = 400) {
   if (!perS) return Promise.resolve();
   return (async () => {
@@ -776,7 +787,7 @@ function every(kind, perS, f, cap = 400) {
         inflight[kind] = (inflight[kind] ?? 0) + 1;
         const s = Date.now();
         const k = half(kind);
-        f().then((code) => note(k, Date.now() - s, code)).catch((e) => note(k, Date.now() - s, `error ${String(e).slice(0, 30)}`))
+        f().then((code) => { if (code !== SAMPLED) note(k, Date.now() - s, code); }).catch((e) => note(k, Date.now() - s, `error ${String(e).slice(0, 30)}`))
           .finally(() => { inflight[kind]--; });
       } else note(kind, 0, "skipped: cap");
       await sleep(-Math.log(1 - Math.random()) * 1000 / perS);
@@ -933,13 +944,22 @@ const jobs = [
     humanInFlight[k] = (humanInFlight[k] ?? 0) + 1;
     let raced = humanInFlight[k] > 1;
     try {
-      const [res, , , , timing] = await push(admin, ref, await tip(ref), `a1h/${k}.txt`, randomBytes(20_000));
+      // `git-shaped-push` (decisions/DECISIONS.md): the sample is what `git push` does over smart HTTP, the
+      // receive-pack advertisement and then the POST. a1's tip read, an upload-pack `ls-refs` git push never makes,
+      // comes first and is its own line, `push:human:tip`.
+      const t = Date.now();
+      const from = await tip(ref);
+      note("push:human:tip", Date.now() - t, from ? "ok" : "none");
+      const [hk, s] = [half("push:human"), Date.now()];
+      const adv = await receiveAdvert(admin);
+      if (adv !== 200) { note(hk, Date.now() - s, `adv ${adv}`); return SAMPLED; }
+      const [res, , , , timing] = await push(admin, ref, from, `a1h/${k}.txt`, randomBytes(20_000));
+      note(hk, Date.now() - s, (raced ||= humanInFlight[k] > 1) && res === "stale" ? "stale:race" : res);
       // The edge clock beside the client's: a test edge's `server-timing` `total` for the POST alone (B0-34's
       // latency lines, decisions/OPEN-QUESTIONS.md A33).
       const edge = /total;dur=(\d+)/.exec(timing ?? "");
       if (edge) note("push:human:edge", Number(edge[1]), res);
-      raced ||= humanInFlight[k] > 1;
-      return res === "stale" && raced ? "stale:race" : res;
+      return SAMPLED;
     } finally { humanInFlight[k]--; }
   }, 5),
   every("side:human", plan.human / 2 + plan.bot, async () => {

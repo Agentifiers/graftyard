@@ -5883,6 +5883,35 @@ site waits the whole deadline) the test fails. Plants (`tests/chainwait/plant.py
 - Kill's misses get slower than mt6's 17.2 s p99 because site c waits longer than site b did: send the last try back to
   the shard that holds a chain, or take G28's fix.
 
+### `git-shaped-push`: a1's human push sample is the receive-pack advertisement plus the POST, 2026-11-19
+
+**Status.** Harness only (`tests/am1/rest/a1.mjs`). Built on branch `b034-chainwait`. The B0-34 gate is unchanged.
+
+**Decision.** a1's `push:human` sample times what `git push` does over smart HTTP: the
+`GET info/refs?service=git-receive-pack` advertisement, then the `POST git-receive-pack`. The tip read that a1 uses to
+build its pack, a v2 `ls-refs` through `git-upload-pack`, comes before the timer and is its own line, `push:human:tip`.
+`push:human:edge` stays the POST's edge `server-timing` `total`.
+
+**Why.** On B0-34 mt6 the second network's 20.4 s human push p99 was 18.56 s of the tip read and 1.80 s of POST
+(`tests/am1/results/b034-mt6.md`, "3. The second network's human push"). By phase the tip read took p99 2.8 / 2.9 /
+18.6 / 4.3 s. `git push` makes no upload-pack `ls-refs`: it reads the receive-pack advertisement, which the edge answers
+from the group's refs (`receive_pack_stream`), and then POSTs [doc: git's `http-push` and `send-pack` over smart HTTP].
+Before this change the line timed one read a real push does not make, and missed the advertisement a real push does.
+a1 never sent that advertisement, so the "advertisement GET before the POST, p50 925 ms, p99 2.6 s" in
+`tests/am1/results/b034-mt4.md` measured the tip read, not the advertisement [inference from `a1.mjs`, which has no
+`info/refs` request before this change].
+
+**What it beat.**
+- **Keeping the old sample.** It is comparable with mt4 to mt6, but it mixes in an upload-pack read whose tail is a
+  shard's, not the push's.
+- **Timing the POST alone.** That leaves out the advertisement round trip that every real push pays.
+
+**Evidence.** Rows from now on report `push:human@<phase>` (advertisement plus POST), `push:human:tip@<phase>` and
+`push:human:edge@<phase>`. A row's `push:human` is not comparable with mt4 to mt6's.
+
+**Flip.** A33's answer judging B0-34 on a clock that makes this moot, or a git client trace showing a push makes a
+read this sample leaves out.
+
 ### `held-grant`: a leader read released after later inputs answers at the member's state then, 2026-11-19
 
 **Status.** Built on branch `leader-keep`, not deployed. It is a site-script change, so it ships on a site day; it rides a later edge day with a B0-29 row. Nothing in `crates/raft` changes.
