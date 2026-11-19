@@ -52,6 +52,7 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
         (),
         at,
         read_class,
+        &c.timing,
         dep_fold::<TokensFold>(c, ChainId::Tokens(TokenShard(0))),
     );
     let read_jti = async {
@@ -78,7 +79,7 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
             }
         }
     };
-    let revoked = crate::rcache::through(&crate::rcache::JTIS, jti.0.0, at, read_class, read_jti);
+    let revoked = crate::rcache::through(&crate::rcache::JTIS, jti.0.0, at, read_class, &c.timing, read_jti);
     let (keys, revoked) = futures_util::future::join(keys, revoked).await;
     let Some(keys) = keys.map_err(Error::RustError)? else { return Ok(None) };
     let claims = match stateless::verify(text, &keys, now()) {

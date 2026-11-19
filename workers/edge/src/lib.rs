@@ -638,7 +638,7 @@ async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<Acco
             _ => None,
         })
     };
-    rcache::through(&rcache::LOGINS, l.key(), now(), c.read_class.get(), read).await
+    rcache::through(&rcache::LOGINS, l.key(), now(), c.read_class.get(), &c.timing, read).await
 }
 
 /// `owner`'s `Authz` fold, read as a `dep` by read-index on the group's learners and followers
@@ -668,7 +668,7 @@ pub(crate) async fn authz_read_as(
         let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
         graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
     };
-    rcache::through(&rcache::AUTHZ, owner, now(), cached, read).await
+    rcache::through(&rcache::AUTHZ, owner, now(), cached, &c.timing, read).await
 }
 
 /// One read of an owner's `Authz` group: on its leader for a REST merge (`Ctx::leader_reads`), else by read-index on
@@ -724,7 +724,7 @@ async fn placement(c: &Ctx<'_>, owner: AccountId) -> std::result::Result<Option<
         let v = system_read(c, ChainId::Names(account_shard(owner)), json!({ "placement": owner.0.0 })).await?;
         serde_json::from_value(v["placement"].clone()).map_err(|e| e.to_string())
     };
-    rcache::through(&rcache::PLACEMENTS, owner, now(), c.read_class.get(), read).await
+    rcache::through(&rcache::PLACEMENTS, owner, now(), c.read_class.get(), &c.timing, read).await
 }
 
 /// A `fresh` read of a system chain's group, found by its record in the `Release` view. A shard with no group holds
@@ -853,7 +853,7 @@ async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
         let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
         Ok::<_, Error>(serde_json::from_value::<Option<TokenRow>>(v["token"].clone())?)
     };
-    let row = rcache::through(&rcache::TOKENS, hash, at, c.read_class.get(), read).await?;
+    let row = rcache::through(&rcache::TOKENS, hash, at, c.read_class.get(), &c.timing, read).await?;
     // A `ghr_` only refreshes (`usertok`), and a lapsed token is no caller: `decide` sees no clock. Checked on every
     // use, so a cached row lapses at its `expires`.
     let row = row.filter(|r| !r.revoked && usertok::usable(r.kind, r.expires, now()));

@@ -8,7 +8,8 @@ no run) as last logged and on the first try (a failed round or a new leader runs
 
 The events view answers at most 100 lines a query, newest first, so the window is walked back in slices per site
 script ($INSTALL-site-{a,b,c}, INSTALL default graft-m4a). Account and token from the environment, the token only as a
-header."""
+header. RAW=<path> also writes every parsed line, one JSON object a line (site, log time, PR, entry index, ms, asks).
+"""
 import collections, json, os, re, sys, time, urllib.error, urllib.request
 from datetime import datetime
 
@@ -37,17 +38,30 @@ def query(script, needle, lo, hi):
 
 
 def walk(script, needle):
-    out, seen, hi, lo = [], set(), ms(b), ms(a)
-    while hi > lo:
+    """Every line in [a, b): a slice that answers 100 is halved, since the view's order is not by time. A round logs its
+    events in one millisecond, so a 1 ms slice of 100 is read again split by the PR number's leading digits (`#7 `,
+    `#42`, which also holds 420 to 429). The walk before this stepped back from the oldest line returned and stopped
+    early: B0-35 m54's first pass kept 17 of site b's 1,642 lines in one try and 281 of site a's 2,168 in another."""
+    out, seen = [], set()
+
+    def take(got):
+        for e in got:
+            if e["$metadata"]["id"] not in seen:
+                seen.add(e["$metadata"]["id"])
+                out.append(e)
+
+    def slice_(lo, hi):
         got = query(script, needle, lo, hi)
-        new = [e for e in got if e["$metadata"]["id"] not in seen]
-        for e in new:
-            seen.add(e["$metadata"]["id"])
-        out += new
-        if len(got) < 100 or not new:
-            break
-        # Lines that share the oldest millisecond are re-read on the next slice and dropped by id.
-        hi = min(e["timestamp"] for e in got) + 1
+        if len(got) < 100:
+            return take(got)
+        if hi - lo > 1:
+            mid = (lo + hi) // 2
+            return slice_(lo, mid) or slice_(mid, hi)
+        stem = needle if needle.endswith("#") else needle + "#"
+        for k in [f"{d} " for d in range(1, 10)] + [str(d) for d in range(10, 100)]:
+            take(query(script, stem + k, lo, hi))
+
+    slice_(ms(a), ms(b))
     return out
 
 
@@ -71,6 +85,11 @@ for site in "abc":
         msg = e["$metadata"].get("message") or ""
         if " demand " in msg:
             errors[re.sub(r"\d{3,}", "N", msg)[:120]] += 1
+
+if os.environ.get("RAW"):
+    with open(os.environ["RAW"], "w") as f:
+        for x in sorted(events, key=lambda y: y["t"]):
+            f.write(json.dumps(x) + "\n")
 
 # One event is (index, n, action); a rerun round logs it again.
 by = collections.defaultdict(list)
