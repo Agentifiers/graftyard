@@ -8,7 +8,8 @@ no run) as last logged and on the first try (a failed round or a new leader runs
 
 The events view answers at most 100 lines a query, newest first, so the window is walked back in slices per site
 script ($INSTALL-site-{a,b,c}, INSTALL default graft-m4a). Account and token from the environment, the token only as a
-header. RAW=<path> also writes every parsed line, one JSON object a line (site, log time, PR, entry index, ms, asks).
+header. RAW=<path> also writes every parsed line, one JSON object a line (site, log time, PR, entry index, ms, asks,
+and on builds with `trigger-stream` the split: wait, demand, reads, create).
 """
 import collections, json, os, re, sys, time, urllib.error, urllib.request
 from datetime import datetime
@@ -18,6 +19,7 @@ repo, a, b = sys.argv[1], sys.argv[2], sys.argv[3]
 P = os.environ.get("INSTALL", "graft-m4a")
 ms = lambda s: int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 LINE = re.compile(r"actions dispatch (\d+) #(\d+) (\w+) at (\d+): (\d+) runs in (\d+)ms, (\d+) asks(.*)")
+SPLIT = re.compile(r"\b(wait|demand|reads|create) (\d+)ms")
 
 
 def query(script, needle, lo, hi):
@@ -76,8 +78,12 @@ for site in "abc":
     for e in walk(script, f"actions dispatch {repo} "):
         m = LINE.search(e["$metadata"].get("message") or "")
         if m:
-            events.append({"site": site, "t": e["timestamp"], "n": int(m[2]), "action": m[3], "index": int(m[4]),
-                           "runs": int(m[5]), "ms": int(m[6]), "asks": int(m[7]), "tail": m[8]})
+            x = {"site": site, "t": e["timestamp"], "n": int(m[2]), "action": m[3], "index": int(m[4]),
+                 "runs": int(m[5]), "ms": int(m[6]), "asks": int(m[7]), "tail": m[8]}
+            # `trigger-stream`'s split: the wait before the try, then its demand, workflow reads, and CreateRuns.
+            for k, v in SPLIT.findall(m[8]):
+                x[k] = int(v)
+            events.append(x)
     for e in walk(script, f"actions trigger {repo}"):
         msg = re.sub(r"\d{3,}", "N", e["$metadata"].get("message") or "")
         errors[msg[:120]] += 1
@@ -124,5 +130,8 @@ print(json.dumps({
     "unmergedPct": round(100 * outcome["unmerged"] / n, 2) if n else None,
     "superseded": superseded, "asks": {o: dict(sorted(c.items())) for o, c in asks.items()},
     "entryToRunMs": {"n": len(ran_ms), "p50": pct(ran_ms, 0.5), "p99": pct(ran_ms, 0.99), "max": max(ran_ms) if ran_ms else None},
+    # Builds with `trigger-stream` log each try's split; per part, over the tries of events that ran.
+    "splitMs": {k: {"p50": pct(v, 0.5), "p99": pct(v, 0.99)} for k in ("wait", "demand", "reads", "create")
+                if (v := [y[k] for xs in by.values() for y in xs if k in y and y["runs"] > 0])},
     "errors": dict(errors.most_common(20)),
 }))

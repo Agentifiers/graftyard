@@ -13,7 +13,7 @@ use graftyard_actions::shard::{
     ActionsOut, WorkflowRun,
 };
 use graftyard_actions::trigger::{
-    Carried, Item, PR_REPLAY_MS, PrEvent, PrTarget, Tried, pr_events, pr_target, pull_request_run, settle,
+    Carried, Item, PR_REPLAY_MS, PrEvent, PrTarget, Stream, Tried, pr_events, pr_target, pull_request_run, settle,
 };
 use graftyard_git::issues::{HeadSpec, IssueCapture, IssueNumber, MergeabilityResult, PrCapture, PrState};
 use graftyard_git::prsync::{REPO_FORMAT_V3, views};
@@ -350,4 +350,140 @@ fn a_shed_merge_is_carried_alone_and_the_cursor_waits_below_it() {
     assert!(last.0.is_empty());
     assert_eq!(last.1.len(), 2, "both events given up, unmerged");
     assert_eq!(last.2, gone.index);
+}
+
+/// One item's try, as `ActionsTrigger` makes it: the run at the current merge when it is clean, `Again` while the
+/// merge is still missing.
+fn try_item(w: &mut World, c: &Carried) -> Tried {
+    let Item::Pr(p) = &c.item else { unreachable!("this world builds no queue refs") };
+    match w.run_for(c.index, p) {
+        Some(run) => {
+            assert!(matches!(w.create(run), Some(Ok(ActionsOut::Run(_)))), "each run is created once");
+            Tried::Done
+        }
+        None if pr_target(&w.view(p.n.0)) == PrTarget::Pending => Tried::Again,
+        None => Tried::Done,
+    }
+}
+
+/// The runs a shard holds, without their ids, which depend on the order they were created in.
+fn runs(w: &World) -> Vec<(String, String, [u8; 20], Index)> {
+    let mut v: Vec<_> = w
+        .shard
+        .fold()
+        .runs
+        .values()
+        .map(|r| (r.run.workflow.to_string(), r.run.head_ref.to_string(), r.run.head_sha, r.run.trigger.1))
+        .collect();
+    v.sort();
+    v
+}
+
+/// A world with five entries that each move both pull requests' heads, ten events. Pull request 2's merge is there,
+/// pull request 1's is shed until `merge_one` records it.
+fn five_pushes(w: &mut World) -> Vec<LogEntry<graftyard_raft::Ev<RepoCmd>>> {
+    let es: Vec<_> = (0..5).map(|i| w.push_both(oid(300 + 2 * i), oid(301 + 2 * i))).collect();
+    w.test_merge(2, clean(2));
+    es
+}
+
+/// `trigger-stream`: the same entries run as a stream (`Stream`, two items at once) and as rounds (`settle`) commit
+/// the same `CreateRun`s, only at other times. Each event gets exactly one run, at the merge current when it is
+/// created, and the cursor ends at the last entry read either way. While an item is unfinished, queued, running, or
+/// waiting to be tried again, the stream's cursor stays below its entry, so a crash replays it and never skips it.
+#[test]
+fn a_stream_commits_the_runs_rounds_commit_and_its_cursor_never_passes_an_unfinished_event() {
+    // Rounds.
+    let mut r = World::new(vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST]);
+    let es = five_pushes(&mut r);
+    let through = es.last().unwrap().index;
+    let todo: Vec<Carried> = es.iter().flat_map(|e| items(&r, e)).collect();
+    assert_eq!(todo.len(), 10);
+    let first = round(&mut r, todo.clone(), through);
+    assert_eq!((first.0.len(), first.2), (5, Index(es[0].index.0 - 1)), "pull request 1's five events carried");
+    r.test_merge(1, clean(1));
+    let second = round(&mut r, first.0, through);
+    assert!(second.0.is_empty() && second.1.is_empty());
+    assert_eq!(second.2, through);
+
+    // A stream, two at a time.
+    let mut s = World::new(vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST]);
+    let es2 = five_pushes(&mut s);
+    assert_eq!(es2.iter().map(|e| e.index).collect::<Vec<_>>(), es.iter().map(|e| e.index).collect::<Vec<_>>());
+    let mut st = Stream::new(Index(es[0].index.0 - 1), 2);
+    st.read(todo.clone(), through);
+    let mut now = s.now.0;
+    let mut merged = false;
+    let mut steps = 0;
+    loop {
+        let started = st.start(now);
+        assert!(st.running() <= 2, "never more than the cap at once");
+        if started.is_empty() && st.running() == 0 {
+            match st.next_retry() {
+                Some(t) => {
+                    // Pull request 1's merge lands while its events wait to be tried again.
+                    if !merged {
+                        s.test_merge(1, clean(1));
+                        merged = true;
+                    }
+                    now = t;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        for (id, c) in started {
+            let unfinished = st.cursor();
+            assert!(unfinished < c.index, "running item at {} but the cursor may commit {}", c.index.0, unfinished.0);
+            let t = try_item(&mut s, &c);
+            assert!(st.finish(id, t, now).is_none(), "nothing is given up inside the hour");
+            if t == Tried::Again {
+                assert!(st.cursor() < c.index, "an item to be tried again holds the cursor below its entry");
+            }
+        }
+        // Between starts: every item still unfinished is waiting to be tried again, and the oldest holds the cursor.
+        if st.running() == 0 && st.queued() == 0 && st.next_retry().is_some() {
+            assert_eq!(st.cursor(), Index(es[0].index.0 - 1), "pull request 1's retries hold the cursor");
+        }
+        steps += 1;
+        assert!(steps < 100);
+    }
+    assert_eq!(st.cursor(), through, "every item done: the cursor passes every entry read");
+    assert_eq!(runs(&s), runs(&r), "the same runs, at the same merges, for the same entries");
+    assert_eq!(runs(&s).len(), 10, "one run per event");
+}
+
+/// `trigger-stream`: a slow item holds one slot, not the items behind it, even in its own entry. With a cap of two
+/// and the first event never ending, the other nine still start and finish one at a time beside it, and the cursor
+/// waits below the slow item's entry until it ends.
+#[test]
+fn a_slow_event_holds_one_slot_and_the_cursor_waits_below_it() {
+    let mut w = World::new(vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST]);
+    let es = five_pushes(&mut w);
+    w.test_merge(1, clean(1));
+    let through = es.last().unwrap().index;
+    let todo: Vec<Carried> = es.iter().flat_map(|e| items(&w, e)).collect();
+    let mut st = Stream::new(Index(es[0].index.0 - 1), 2);
+    st.read(todo, through);
+    let now = w.now.0;
+    let mut started = st.start(now);
+    let (slow, slow_item) = started.remove(0);
+    assert_eq!(slow_item.index, es[0].index, "the first event of the first entry");
+    let (mut done, mut last) = (0, slow_item.index);
+    while !started.is_empty() {
+        let (id, c) = started.remove(0);
+        assert!(c.index >= last, "items start in log order");
+        last = c.index;
+        let t = try_item(&mut w, &c);
+        st.finish(id, t, now);
+        done += 1;
+        assert_eq!(st.cursor(), Index(es[0].index.0 - 1), "the slow item holds the cursor below its entry");
+        started.extend(st.start(now));
+        assert!(st.running() <= 2);
+    }
+    assert_eq!(done, 9, "the nine behind the slow item all ran beside it");
+    let t = try_item(&mut w, &slow_item);
+    st.finish(slow, t, now);
+    assert_eq!(st.cursor(), through);
+    assert_eq!(runs(&w).len(), 10);
 }
