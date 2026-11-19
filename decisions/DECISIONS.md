@@ -5638,8 +5638,9 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 
 ### `shed-retry-2s`: a write asks a shed read again for 2 s, not 4, 2026-11-19
 
-**Status.** Built on branch `shed-retry` from main `04388cfb`, not deployed. `crates/lookup` (`SHED_RETRY_FOR`) and the
-edge, so it ships on an edge day; the sites are unchanged. Nothing in `crates/raft`.
+**Status.** Kept. Merged in main `efc92735`; on graft-m2b's edge since edge day m60 (edge 62241925 from main `6abde983`),
+with the sites on m56's `1465c208b`. `crates/lookup` (`SHED_RETRY_FOR`) and the edge, so it ships on an edge day.
+Nothing in `crates/raft`.
 
 **Decision.** `SHED_RETRY_FOR` is 2 s, down from 4 s; `shed-backoff`'s backoff, jitter and `retryAfterMs` floor are
 unchanged, as is a bounded push's `left.min(SHED_RETRY_FOR)`. A write whose members shed every pass now asks once and
@@ -5690,6 +5691,20 @@ j the fitted shed share, started from a full jam.
 members that always shed, with passes of 1 to 3 s and jitter across its range, make at most 2 asks each, 300 member
 reads in all; at main's 4 s a 1 s pass gets 3. `a_write_asks_a_shed_read_again_for_seconds_not_lookup_for` bounds the
 edge's budget at 2 s. `tests/m0carried/plant51.py` catches 5 of 5.
+
+**Hosted, B0-33 m60r33** (graft-m2b, same script and offered load as m56, learner gate passed, outages 3%;
+`tests/am1/results/b033-m60.md`). Neither flip fired: 9,408 of 47,865 writes ended 503 (19.7%, m56 27%), 9,901 edge
+503s against 12,759, 0 × 500, and member `/read` per offered request 2.26 over the row against 2.56 (last three
+minutes 2.59, 2.65, 2.75 against m56's 3.4) [measured]. The model's 1.38 was optimistic [inference, from refitting
+`shedmodel.py` on m60's own trace]:
+- **It models only the retry loop.** Its calm state has no shed share below the fitted onset, and m60 had two leader
+  transfers in its first 66 s and then a leader on site c (apac) for the rest. Learners read-index against that far
+  leader, so their `late` sheds rose (learner 192's from 902 in the first minute to about 4,700 a minute), and the shed share of writes went 3%,
+  3%, 15%, 29%, 43% by minute. The first two minutes, with the leader near, ran 1.67 and 1.65.
+- **The fit moves with the leader.** On m60's trace the onset L₀ is 270 member reads a second, not m56's 365, and a
+  served write costs 1.34 reads, not 1.19, so the calm state is 1.53. At 2 s the storm still has no fixed point at the
+  fitted values, but with L₀ 40 lower it reaches a 0.18 shed share; on m56's fit it had none.
+- So 1.38 was m56's near, steady leader carried over; the gap to 2.26 is sheds the loop does not make.
 
 **Flip.** Any of these on the next B0-33 at equal offered load:
 - More edge 503s than m56's 12,759, or a higher share of writes ending 503.
