@@ -1,0 +1,32 @@
+on: workflow_dispatch
+# `runs-on` is static per job: the install evaluates no expression in `runs-on` (a `${{ matrix.label }}` job queued as
+# `self-hosted`, run 1712942).
+jobs:
+  std3:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        n: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: What runs as PID 1
+        run: |
+          # argv[0] and argv[1] only: the rest of PID 1's command line is the JIT config.
+          echo "r23 pid1 $(tr '\0' ' ' </proc/1/cmdline | cut -d' ' -f1-2)"
+          echo "r23 comm1 $(cat /proc/1/comm)"
+          echo "r23 sandbox-server $(pgrep -c -f container-server || true)"
+          echo "r23 nproc $(nproc) mem $(free -m | awk '/Mem/{print $2}')"
+          sleep 30
+  std4:
+    runs-on: ubuntu-24.04-4core
+    strategy:
+      matrix:
+        n: [6, 7]
+    steps:
+      - name: What runs as PID 1
+        run: |
+          # argv[0] and argv[1] only: the rest of PID 1's command line is the JIT config.
+          echo "r23 pid1 $(tr '\0' ' ' </proc/1/cmdline | cut -d' ' -f1-2)"
+          echo "r23 comm1 $(cat /proc/1/comm)"
+          echo "r23 sandbox-server $(pgrep -c -f container-server || true)"
+          echo "r23 nproc $(nproc) mem $(free -m | awk '/Mem/{print $2}')"
+          sleep 30

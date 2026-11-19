@@ -131,7 +131,7 @@ fn bindings(spec: &Spec, store: &str, webhook: Option<&str>) -> Vec<Value> {
     b.extend(CLASSES.iter().map(|(c, n, _)| json!({ "type": "durable_object_namespace", "name": n, "class_name": c })));
     b.push(json!({ "type": "durable_object_namespace", "name": BOX.1, "class_name": BOX.0 }));
     if spec.runner_box {
-        b.push(text("RUNNER_BOX", "1".into()));
+        b.push(text("RUNNER_BOX_ON", "1".into()));
     }
     if let Some(w) = webhook {
         b.push(json!({ "type": "secret_text", "name": "WEBHOOK_SECRET", "text": w }));
@@ -477,7 +477,7 @@ mod tests {
             r#"{{"class_name":"RunnerBox","images":{{"runner":"{IMAGE}"}},"name":"graft-runners-runnerbox"}}"#
         )));
         // Release M1 adds the class and starts nothing on it.
-        assert!(!upload.contains(r#""name":"RUNNER_BOX","text""#), "RUNNER_BOX is set only by runner_box");
+        assert!(!upload.contains("RUNNER_BOX_ON"), "RUNNER_BOX_ON is set only by runner_box");
         assert!(upload.contains(r#""store_id":"st1""#) && upload.contains(r#""nodejs_compat""#));
         assert!(!upload.contains("BEGIN RSA"), "the App key goes only to Secrets Store");
         let sched: Value =
@@ -608,6 +608,19 @@ mod tests {
         assert!(upgrade_with(&cf, upgrade_args(&d, IMAGE), 0).unwrap_err().contains("lists no image"));
     }
 
+    /// A `runners.json` with `runner_box` set or not.
+    fn scratch_spec(runner_box: bool) -> std::path::PathBuf {
+        let p = scratch().join("runners.json");
+        fs::write(
+            &p,
+            format!(
+                r#"{{"script":"graft-runners","graftyard_url":"https://git.example","app_id":7,"owners":{{"acme":11}},"runner_box":{runner_box}}}"#
+            ),
+        )
+        .unwrap();
+        p
+    }
+
     /// The three upgrade runs (10%, refused before the day, 100%), with `runner_box` set or not; every request made.
     fn canary(runner_box: bool) -> (String, Vec<(String, String, Vec<u8>)>) {
         let d = scratch();
@@ -696,7 +709,7 @@ mod tests {
         );
     }
 
-    /// With `runner_box`, the 10% version carries the image in `RunnerBox`'s image map and sets `RUNNER_BOX`, so its
+    /// With `runner_box`, the 10% version carries the image in `RunnerBox`'s image map and sets `RUNNER_BOX_ON`, so its
     /// own starts run it, and no run rolls an application.
     #[test]
     fn upgrade_with_runner_box_carries_the_image_in_the_version_and_rolls_nothing() {
@@ -707,7 +720,14 @@ mod tests {
         assert!(upload.contains(&format!(
             r#"{{"class_name":"RunnerBox","images":{{"runner":"{IMAGE}"}},"name":"graft-runners-runnerbox"}}"#
         )));
-        assert!(upload.contains(r#"{"name":"RUNNER_BOX","text":"1","type":"plain_text"}"#), "{upload}");
+        assert!(upload.contains(r#"{"name":"RUNNER_BOX_ON","text":"1","type":"plain_text"}"#), "{upload}");
+        // The API refuses a version whose bindings repeat a name (code 10053, R23's M1 check on 2026-11-19: the
+        // variable and the namespace were both `RUNNER_BOX`).
+        let spec = Spec::read(&scratch_spec(true)).unwrap();
+        let names: Vec<String> =
+            bindings(&spec, "st1", Some("w")).iter().map(|b| b["name"].as_str().unwrap().to_string()).collect();
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "binding names repeat: {names:?}");
         assert!(!log.iter().any(|(m, ..)| m == "PATCH"), "nothing rolls");
         assert!(!log.iter().any(|(_, p, _)| p.contains("/rollouts")), "nothing rolls");
         let deploys = log.iter().filter(|(m, p, _)| m == "POST" && p == "/workers/scripts/graft-runners/deployments");

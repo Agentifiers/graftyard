@@ -18,3 +18,10 @@ exit 0
   graft-runners: deployed, sweep */5 * * * *, webhook at https://graft-runners.<runner-workers-subdomain>.workers.dev
   container application graft-runners-sandboxstd3: exists
   container application graft-runners-sandboxstd4: exists
+== R23 M1 2026-11-19T10:00:04Z from 911f59e2, bundle /tmp/r23-bundle, RUNNER_BOX unset, new WEBHOOK_SECRET
+  HostedRunnersAppKey: written to Secrets Store graft-runners (2b564b906c40496ea9544799904bc93b)
+  graft-runners: deployed, sweep */5 * * * *, webhook at https://graft-runners.<runner-workers-subdomain>.workers.dev
+  container application graft-runners-runnerbox: created, durable_object policy
+  container application graft-runners-sandboxstd3: exists
+  container application graft-runners-sandboxstd4: exists
+exit 0

@@ -550,6 +550,36 @@ What each call answered, besides the 200s, all asked again by the driver:
 - **Cost** (`tests/fanout/acctcost.py`, `PREFIX=graft-m4a`): from site day 53's start to the end of the idle reading (07:48:21Z to 09:30Z), **$0.11** on graft-m4a, against the $3 stop. The account's UTC day was $10.81 at 09:30Z. **Idle**, 09:00Z to 09:30Z across the 09:15 and 09:30 crons: **$0.02** on graft-m4a (site a $0.01, no container). That matches the true idle the lead accepted before ($0.01 in 25.5 min). The leak was a daily refold per chain, so a half-hour window cannot show it stop. A 24-hour reading would: before the purge, m4a ran about $1.50 a day
 
 
+## R23: release M1 and the `RunnerBox` cold-burst check on the runner account (2026-11-19)
+
+Granted by the lead with a $2 stop on the runner account: M1 from main `911f59e2`, then one cold burst of 8 runners on a test version only (`decisions/DECISIONS.md`, "`r23-runnerbox`").
+
+**M1: done.** `graftyard runners init` ran at 10:00:04Z from `911f59e2` (bundle by `wrangler deploy --dry-run`, same image digest `d0652a89…`), exit 0 (`tests/m4/raw/wp4/runners-init.log`).
+- `graft-runners` went from migration tag `v1` to `v2`.
+- `graft-runners-runnerbox` was created on the `durable_object` policy, with no `max_instances` and an empty configuration; its id is its namespace's.
+- The two Sandbox applications are unchanged.
+- The new `WEBHOOK_SECRET` was patched into the App's hook config (200). An unsigned POST answered 401.
+- Version `e05903aa` serves 100%, with `RUNNER_BOX_ON` unset.
+
+**The test version.** `RUNNER_BOX_ON=1` plus temporary logging around `ctx.container.start` and `monitor()`, uploaded directly (`POST /workers/scripts/graft-runners/versions`, no Wrangler) as `c1d38f31` and deployed at 100% from 10:07:59Z to 10:16:18Z. Before the rename, the first upload was refused: `Binding name 'RUNNER_BOX' already in use` (code 10053), because the variable and the Durable Object namespace had the same name. The variable is now `RUNNER_BOX_ON`, and a CLI test checks that binding names are unique; it fails on `911f59e2`.
+
+**The burst.** Run 1712951 on `m3org/wp4-r23` (`tests/m4/wp4/r23.mjs`, `tests/m4/wp4/hosted/r23.yml`: 6 `ubuntu-22.04` and 2 `ubuntu-24.04-4core` jobs).
+- The first try, run 1712942, put the label in `runs-on: ${{ matrix.label }}`. The install queued those jobs as `self-hosted`, so no hosted demand was raised; the run was cancelled. `r23.yml` now names each label statically.
+- From 10:15:44Z the passes registered and armed 8 runners, 6 `standard-3` and 2 `standard-4` (the 10:15:55Z sweep logged `started 8`).
+- Every one of the 8 alarms called `ctx.container.start` without a throw. Each `monitor()` rejected 0.66 to 0.76 s later with `Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it`. `box.mjs` logged `runner exited within 3 s … image <digest>` for each, and closed it.
+- No container placed: `graft-runners-runnerbox` listed 0 instances throughout (`tests/m4/raw/wp4/r23/workers-logs.txt`, `run.log`).
+- Stopped at 10:16:07Z as the grant asked. Run 1712951 was cancelled, and M1's version `e05903aa` was redeployed at 100%. The 10:20:44Z sweep, on M1's code, deleted the 8 registrations as stale and destroyed each on `RunnerBox` (`destroyed 8`). Demand then read empty.
+
+**The four unverified items.**
+1. **A version upload needs image preparation: yes.** An image map naming a pushed, digest-pinned image is accepted by the version upload but does not run: every start's monitor rejects with "Image not found" until the image is prepared. Wrangler calls `POST /containers/image-preparations {image}` and polls it to `READY` before it uploads a version with an `images` map (`wrangler-dist/cli.js`, `waitForImagePreparation`); `graftyard runners upgrade` does not, and neither does `graftyard sites` for `GitShard`. Per the grant, this was not worked around.
+2. **How a failed start surfaces:** not a throw from `start()`. `start()` returned, and the error came from `monitor()`, under a second. A refused placement for want of an instance was not reached, because no start got that far; its shape is still [unverified].
+3. **`run.sh` as PID 1:** not reached; no container ran.
+4. **Beta policy behaviour:** the `durable_object` application was created and bound by namespace id, and `ctx.container.images.runner` returned the digest from the version's metadata. Nothing else was reached.
+
+**`box.mjs` in this failure.** It treated "Image not found" as the runner's exit: one start per runner, no retry loop, one `exited within` line per runner naming the image. That is the bad-canary signal the design names, with `by_image` counting it. Once a new version's image is prepared, an unprepared image is a release error, not a runtime one.
+
+**Cost** (`tests/fanout/acctcost.py`, 09:51Z to 10:22:35Z): runner account **$0.00** (no container ran, and its Durable Object and Workers use rounds to zero); graft-m4a $0.06. The stop was $2.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
