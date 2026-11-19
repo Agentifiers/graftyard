@@ -959,8 +959,11 @@ pub async fn read_off_leader(
 /// 503 with `Retry-After`, so a pass already under way ends it at about this plus one pass (three FOLLOWER_WAITs).
 /// LOOKUP_FOR (20 s) at a fixed 250 ms made each held write a dozen or more passes: on B0-33 m51 the learners' reads
 /// rose from 15 to 54 a second each to 136 to 514 after a leader change, and 4,200 writes answered 503 after 19 to
-/// 24 s (`tests/am1/results/health-gate-lease.md`).
-pub const SHED_RETRY_FOR: Duration = Duration::from_secs(4);
+/// 24 s (`tests/am1/results/health-gate-lease.md`). At 4 s a write that met a shed made about five member reads before
+/// its 503, against about 1.2 for a served one, which held B0-33 m56's learners at 520 to 604 reads a second for 166
+/// offered requests; 2 s gives such a write one backed-off retry pass at most (`decisions/DECISIONS.md`,
+/// "`shed-retry-2s`").
+pub const SHED_RETRY_FOR: Duration = Duration::from_secs(2);
 /// The longest wait between two tries of a shed read [guess].
 const SHED_BACKOFF_MAX_MS: u64 = 2_000;
 
@@ -2958,6 +2961,31 @@ mod tests {
         assert!(r.is_err());
         assert!(waits.len() < 3, "{waits:?}");
         assert!(end - 1_000 <= SHED_RETRY_FOR.as_millis() as u64 + 3_000, "gave up after {} ms", end - 1_000);
+    }
+
+    /// `shed-retry-2s`: on B0-33 m56 a write that met a shed made about five member reads before its 503, and those
+    /// retries held the learners at 520 to 604 reads a second for 166 offered requests. A jammed pass takes at least
+    /// one member's FOLLOWER_WAIT (1 s, a `late` shed, 62% of m56's learner sheds), and against such passes a write now
+    /// asks at most twice (one pass and one backed-off retry) within SHED_RETRY_FOR, whatever the jitter: N writes make
+    /// at most 2N passes, 6N member reads with SPREAD_TRIES members a pass. At 4 s they asked three times. Passes that
+    /// shed at once still get at most four asks, the backoff's 250, 250 and 500 ms waits.
+    #[test]
+    fn writes_whose_members_always_shed_ask_at_most_twice_each() {
+        let until = 1_000 + SHED_RETRY_FOR.as_millis() as u64;
+        let writes = 50;
+        let mut reads = 0;
+        for (i, pass) in [1_000, 1_100, 1_250, 2_000, 3_000].into_iter().cycle().take(writes).enumerate() {
+            let r = (i as f64 * 0.37).fract();
+            let (res, waits, _) = shed_run(until, vec![250; 100], pass, r);
+            assert!(res.is_err_and(|e| e.contains(OVERLOADED)));
+            assert!(waits.len() <= 1, "write {i} (pass {pass} ms, jitter {r:.2}) asked {} times", waits.len() + 1);
+            reads += (waits.len() + 1) * SPREAD_TRIES;
+        }
+        assert!(reads <= 2 * SPREAD_TRIES * writes, "{reads} member reads for {writes} writes");
+        for r in [0.0, 0.5, 1.0] {
+            let (_, waits, _) = shed_run(until, vec![250; 100], 0, r);
+            assert!(waits.len() < 4, "an instant shed asked {} times", waits.len() + 1);
+        }
     }
 
     /// A config's learners are learned with its voters, and an older config never replaces a newer one's.
