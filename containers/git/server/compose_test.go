@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -570,4 +572,231 @@ func TestComposedMissesDoNotQueueBehindTheLock(t *testing.T) {
 	if spoolEnd := time.Since(t0); spoolEnd-lockFree < spoolEnd/10 {
 		t.Fatalf("the writer waited %v, the spool ran %v: the lock was held to the spool's end", lockFree, spoolEnd)
 	}
+}
+
+// tailAnswer asks compose=only&tail=1 for body and, from its manifest, builds the answer as the edge does under
+// edge-compose: the shallow line and packfile header, a pack header of the total count, each chain pack's body read
+// from R2 (here the chain file the manifest names, which ready_chain copies byte for byte), the tail, and a SHA-1
+// trailer, in side-band packets (the header alone, then the rest at sidebandMax), then a flush. It also checks the manifest's own numbers against those files.
+func tailAnswer(t *testing.T, up, body string) (*http.Response, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest("POST", up+"&compose=only&tail=1", strings.NewReader(body))
+	req.Header.Set("git-protocol", "version=2")
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	b, _ := io.ReadAll(r.Body)
+	if r.StatusCode != 200 || r.Header.Get("x-graft-compose") != "tail" {
+		return r, b
+	}
+	if r.Header.Get("content-length") != fmt.Sprint(len(b)) {
+		t.Fatalf("content-length %s for %d bytes", r.Header.Get("content-length"), len(b))
+	}
+	line, tail, ok := bytes.Cut(b, []byte("\n"))
+	if !ok {
+		t.Fatalf("no manifest line in %d bytes", len(b))
+	}
+	var m struct {
+		V     int    `json:"v"`
+		Want  string `json:"want"`
+		Packs []struct {
+			Key string `json:"key"`
+			N   uint32 `json:"n"`
+			Len int64  `json:"len"`
+		} `json:"packs"`
+		TailN uint32 `json:"tailN"`
+		Tail  int    `json:"tail"`
+	}
+	if err := json.Unmarshal(line, &m); err != nil || m.V != 1 || len(m.Packs) == 0 || m.Tail != len(tail) {
+		t.Fatalf("manifest %s (%v), tail %d bytes", line, err, len(tail))
+	}
+	var pack bytes.Buffer
+	count := m.TailN
+	var bodies [][]byte
+	for _, p := range m.Packs {
+		name, ok := strings.CutPrefix(p.Key, "compose/7/")
+		if !ok || !strings.HasSuffix(name, ".pack") {
+			t.Fatalf("pack key %q", p.Key)
+		}
+		f, err := os.ReadFile(filepath.Join(composeObjects("7"), "pack", "pack-"+name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if binary.BigEndian.Uint32(f[8:12]) != p.N || int64(len(f)-32) != p.Len {
+			t.Fatalf("%s: manifest n %d len %d, file n %d len %d", name, p.N, p.Len, binary.BigEndian.Uint32(f[8:12]), len(f)-32)
+		}
+		count += p.N
+		bodies = append(bodies, f[12:len(f)-20])
+	}
+	hdr := []byte{'P', 'A', 'C', 'K', 0, 0, 0, 2, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(hdr[8:], count)
+	pack.Write(hdr)
+	for _, b := range bodies {
+		pack.Write(b)
+	}
+	pack.Write(tail)
+	sum := sha1.Sum(pack.Bytes())
+	pack.Write(sum[:])
+	var out bytes.Buffer
+	out.WriteString(pkt("shallow-info\n") + pkt("shallow "+m.Want) + "0001" + pkt("packfile\n"))
+	// The header is its own packet, as composeMiss flushes it before the bodies so the client's first byte comes early;
+	// the rest goes in packets of sidebandMax.
+	out.WriteString(hex4(12+5) + "\x01")
+	out.Write(pack.Bytes()[:12])
+	for p := pack.Bytes()[12:]; len(p) > 0; {
+		k := min(len(p), sidebandMax)
+		out.WriteString(hex4(k + 5))
+		out.WriteByte(1)
+		out.Write(p[:k])
+		p = p[k:]
+	}
+	out.WriteString("0000")
+	return r, out.Bytes()
+}
+
+// compose=only&tail=1 (edge-compose): the manifest and tail a client gets once the edge streams the chain from R2 are
+// the same pack, object for object, as the container's composed answer, and a client's index-pack --strict takes it
+// with the wanted commit's tree: on a base alone, across parts, on a want behind a lagging chain, and after a fold.
+// Whatever compose=only answers 409 to, tail=1 does too, and a tail past tailMax is composed whole as before.
+func TestComposedTailMatchesTheComposedAnswer(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	history(t, wt, 40, 60, 3)
+	pushTip(t, wt)
+	up := s.URL + "/upload-pack?net=7"
+	tree := func(c string) string { return run(t, wt, "", "rev-parse", c+"^{tree}") }
+	same := func(stage, want string) {
+		t.Helper()
+		r, b := tailAnswer(t, up, fetchBody(want))
+		if r.Header.Get("x-graft-compose") != "tail" {
+			t.Fatalf("%s: tail=1 answered %d %q", stage, r.StatusCode, r.Header.Get("x-graft-compose"))
+		}
+		rc, c := uploadV2(t, up, fetchBody(want))
+		if rc.Header.Get("x-graft-compose") != "composed" {
+			t.Fatalf("%s: composed answer %q", stage, rc.Header.Get("x-graft-compose"))
+		}
+		if !bytes.Equal(b, c) {
+			t.Fatalf("%s: the edge's answer (%d bytes) differs from the composed one (%d bytes)", stage, len(b), len(c))
+		}
+		cloneInto(t, b, want, tree(want))
+	}
+	// No chain: 409 with compose=only's reason, and no body.
+	r, b := tailAnswer(t, up, fetchBody(run(t, wt, "", "rev-parse", "HEAD")))
+	if r.StatusCode != 409 || r.Header.Get("x-graft-compose") != "stock: no chain" || len(b) != 0 {
+		t.Fatalf("no chain: %d %q, %d bytes", r.StatusCode, r.Header.Get("x-graft-compose"), len(b))
+	}
+	compose(t, s.URL, "&start=1")
+	same("base alone", run(t, wt, "", "rev-parse", "HEAD"))
+	for i, m := range []map[string]string{{"d0/f0.txt": "one\n", "new/a.txt": "a\n"}, {"d1/f1.txt": "two\n"}} {
+		commit(t, wt, m)
+		pushTip(t, wt)
+		compose(t, s.URL, "")
+		if i == 0 {
+			same("one part", run(t, wt, "", "rev-parse", "HEAD"))
+		}
+	}
+	same("two parts", run(t, wt, "", "rev-parse", "HEAD"))
+	// A want past a lagging chain, with a rename: its own objects are the whole difference.
+	run(t, wt, "", "mv", "new", "renamed")
+	run(t, wt, "", "commit", "-qm", "rename")
+	pushed := pushTip(t, wt)
+	same("past the chain", pushed)
+	// Not composable, or not on the chain's terms: 409 with the same reason compose=only gives.
+	loose := commit(t, wt, map[string]string{"loose": "l\n"})
+	for _, c := range []struct{ name, body, why string }{
+		{"a filter", fetchBody(loose, "filter blob:none"), "stock: not composable"},
+		{"a want no ref names", fetchBody(loose), "stock: not a ref tip or behind HEAD"},
+	} {
+		r, b := tailAnswer(t, up, c.body)
+		if r.StatusCode != 409 || r.Header.Get("x-graft-compose") != c.why || len(b) != 0 {
+			t.Fatalf("%s: %d %q, %d bytes", c.name, r.StatusCode, r.Header.Get("x-graft-compose"), len(b))
+		}
+	}
+	// A tail past tailMax: the composed answer, whole, as compose=only gives it.
+	head := pushed
+	tailMax = 10
+	r, b = tailAnswer(t, up, fetchBody(head))
+	tailMax = 8 << 20
+	if r.StatusCode != 200 || r.Header.Get("x-graft-compose") != "composed" {
+		t.Fatalf("a tail past tailMax: %d %q", r.StatusCode, r.Header.Get("x-graft-compose"))
+	}
+	cloneInto(t, b, head, tree(head))
+	// The fold: one base again, still the same answer.
+	for i := 0; i < foldEvery+1; i++ {
+		commit(t, wt, map[string]string{fmt.Sprintf("d%d/f%d.txt", i%4, i%40): fmt.Sprintf("fold %d\n", i)})
+		pushTip(t, wt)
+		compose(t, s.URL, "")
+	}
+	if n, _ := filepath.Glob(filepath.Join(composeObjects("7"), "pack", "pack-base-*.pack")); len(n) != 1 {
+		t.Fatalf("bases after the fold: %v", n)
+	}
+	same("after the fold", run(t, wt, "", "rev-parse", "HEAD"))
+}
+
+// With EDGEBED_OUT set, writes a chain and its answers for tests/composed/edgebed/run.sh: chain/<file>.pack for each
+// pack, manifest-<stage> (the compose=only&tail=1 answer), composed-<stage> (the container's composed answer), want-<stage>
+// and tree-<stage>, at stages base, parts (two parts, a want past the chain), and fold. The chain's files are a large
+// random blob, so the composed answer spans many side-band packets and R2 reads several chunks per pack.
+func TestWriteEdgeBedChain(t *testing.T) {
+	out := os.Getenv("EDGEBED_OUT")
+	if out == "" {
+		t.Skip("EDGEBED_OUT not set")
+	}
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	history(t, wt, 40, 60, 3)
+	big := make([]byte, 3<<20)
+	x := uint32(7)
+	for i := range big {
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		big[i] = byte(x)
+	}
+	commit(t, wt, map[string]string{"big.bin": string(big)})
+	pushTip(t, wt)
+	up := s.URL + "/upload-pack?net=7"
+	os.MkdirAll(filepath.Join(out, "chain"), 0o755)
+	stage := func(name, want string) {
+		req, _ := http.NewRequest("POST", up+"&compose=only&tail=1", strings.NewReader(fetchBody(want)))
+		req.Header.Set("git-protocol", "version=2")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.Header.Get("x-graft-compose") != "tail" {
+			t.Fatalf("%s: %d %q", name, r.StatusCode, r.Header.Get("x-graft-compose"))
+		}
+		_, c := uploadV2(t, up, fetchBody(want))
+		files, _ := filepath.Glob(filepath.Join(composeObjects("7"), "pack", "pack-*.pack"))
+		for _, f := range files {
+			b, _ := os.ReadFile(f)
+			os.WriteFile(filepath.Join(out, "chain", strings.TrimPrefix(filepath.Base(f), "pack-")), b, 0o644)
+		}
+		for k, v := range map[string][]byte{"manifest-": m, "composed-": c, "want-": []byte(want),
+			"tree-": []byte(run(t, wt, "", "rev-parse", want+"^{tree}"))} {
+			os.WriteFile(filepath.Join(out, k+name), v, 0o644)
+		}
+	}
+	compose(t, s.URL, "&start=1")
+	stage("base", run(t, wt, "", "rev-parse", "HEAD"))
+	for _, m := range []map[string]string{{"d0/f0.txt": "one\n"}, {"d1/f1.txt": "two\n", "new/a": "a\n"}} {
+		commit(t, wt, m)
+		pushTip(t, wt)
+		compose(t, s.URL, "")
+	}
+	commit(t, wt, map[string]string{"past.txt": "past the chain\n"})
+	stage("parts", pushTip(t, wt))
+	for i := 0; i < foldEvery+1; i++ {
+		commit(t, wt, map[string]string{fmt.Sprintf("d%d/f%d.txt", i%4, i%40): fmt.Sprintf("fold %d\n", i)})
+		pushTip(t, wt)
+		compose(t, s.URL, "")
+	}
+	stage("fold", run(t, wt, "", "rev-parse", "HEAD"))
 }

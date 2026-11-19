@@ -47,6 +47,13 @@ pub enum R2Key {
         key: Digest,
         replica: u8,
     },
+    /// A composed miss's clone-cache entry under `edge-compose`: the manifest line and tail the edge streams the answer
+    /// from (`crate::compose::Manifest`), beside the `CloneCache` entry of the same key, which an edge before
+    /// `edge-compose` reads and so never sees a manifest.
+    CloneManifest {
+        network: NetworkId,
+        key: Digest,
+    },
     /// A composed-miss chain's file in a warm bucket, derived: `head`, or `base-<tip>` and `part-<from>-<to>`, each
     /// `.pack` or `.idx` (`crate::compose`).
     Compose {
@@ -120,6 +127,7 @@ impl fmt::Display for R2Key {
                 write!(f, "archive/{chain}/{}-{}-{}", pad(*from), pad(*to), digest.hex())
             }
             R2Key::CloneCache { network, key, replica } => write!(f, "clone/{}/{}/{replica}", network.0.0, key.hex()),
+            R2Key::CloneManifest { network, key } => write!(f, "clone/{}/{}/manifest", network.0.0, key.hex()),
             R2Key::Compose { network, file } => write!(f, "compose/{}/{file}", network.0.0),
             R2Key::Blob { repo, oid } => write!(f, "blob/{}/{}", repo.0.0, oid.hex()),
             R2Key::ArchiveCache { network, commit, prefix, format } => {
@@ -181,6 +189,7 @@ impl FromStr for R2Key {
                 let (from, to, digest) = range(r)?;
                 R2Key::Archive { chain: chain(c)?, from, to, digest }
             }
+            ["clone", n, k, "manifest"] => R2Key::CloneManifest { network: net(n)?, key: digest(k)? },
             ["clone", n, k, r] => R2Key::CloneCache {
                 network: net(n)?,
                 key: digest(k)?,
@@ -247,6 +256,7 @@ mod tests {
                 digest,
             },
             R2Key::CloneCache { network, key: digest, replica: 7 },
+            R2Key::CloneManifest { network, key: digest },
             R2Key::Compose { network, file: "head".into() },
             R2Key::Compose { network, file: format!("part-{}-{}.idx", "a".repeat(40), "b".repeat(40)) },
             R2Key::Blob { repo: RepoId(DbId(5)), oid: digest },
