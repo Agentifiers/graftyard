@@ -82,6 +82,21 @@ for row in $ROWS; do
     # The ledgers cap a forced k: a row that did not get K is not the row as written, so it is skipped.
     tail -1 "$ST" | grep -q ": k $K at " || { echo "$(stamp) $row: k $K not granted, row skipped" >> "$ST"; continue; }
   fi
+  # The shard gate before load: every site's network shard has caught up and reports no rehydrate under way. On B0-33
+  # m61 sites b and c started their shards only under load and rehydrated for 122.6 and 129.5 s, and 486 requests
+  # answered `warming`; the leadership's `warm` keep starts no stopped container, so it never woke them
+  # (`tests/am1/results/b033-m61-why.md`). A row whose shards are not warm within SHARD_GATE_MIN is skipped, not run
+  # on cold shards. SHARD_GATE=0 leaves it out.
+  if [ "${SHARD_GATE:-1}" != 0 ]; then
+    gate=ok; warms=()
+    for s in 0 1 2; do
+      node tests/fanout/shardwarm.mjs "$rid" "$s" "${SHARD_GATE_MIN:-10}" > tests/fanout/raw/shardgate-$TAG-$row-$s.jsonl 2>&1 &
+      warms+=($!)
+    done
+    for p in "${warms[@]}"; do wait "$p" || gate=cold; done
+    for s in 0 1 2; do echo "$(stamp) $row shard gate site $s: $(tail -1 tests/fanout/raw/shardgate-$TAG-$row-$s.jsonl)" >> "$ST"; done
+    [ "$gate" = ok ] || { echo "$(stamp) $row: SHARDS NOT WARM, row skipped" >> "$ST"; continue; }
+  fi
   case $row in
     b0-29) flags="--seconds 600 --open-prs ${B029_PRS:-500}" ;;
     b0-31) flags="--seconds 600" ;;

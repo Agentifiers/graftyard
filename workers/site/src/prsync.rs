@@ -331,12 +331,16 @@ fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRec
                 let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
                 let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
                 match r.status_code() {
-                    200 => Ok(()),
+                    // A stopped shard skips a warm (`graftyard_git::serve`): logged as one, not as a warm shard, which
+                    // on B0-33 m61 hid that sites b and c were stopped until load started them
+                    // (`tests/am1/results/b033-m61-why.md`).
+                    200 => Ok(r.headers().get("x-graft-skipped").ok().flatten()),
                     s => Err(format!("{s} {}", r.text().await.unwrap_or_default())),
                 }
             };
             match crate::host::within(FIRST_FOR, r).await {
-                Some(Ok(())) => console_log!("shard warm {} site {} {}ms", repo.0.0, at.0, now_ms() - t0),
+                Some(Ok(Some(why))) => console_log!("shard warm {} site {} skipped: {why}", repo.0.0, at.0),
+                Some(Ok(None)) => console_log!("shard warm {} site {} {}ms", repo.0.0, at.0, now_ms() - t0),
                 Some(Err(e)) => console_error!("shard warm {} site {}: {e}", repo.0.0, at.0),
                 None => console_error!("shard warm {} site {}: no answer in {} s", repo.0.0, at.0, FIRST_FOR.as_secs()),
             }
