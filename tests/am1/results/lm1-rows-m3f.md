@@ -114,6 +114,63 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fe2: B0-32 on main `8c794619` (`edge-read-batch`) (2026-11-19, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** Granted by the orchestrator after m3fb32: one edge day from main `8c794619`, then one B0-32 rerun, inside the $10 stop on graft-m3f counted from 00:38:18Z. The run went through the egress proxy under the harness-outage rule (`tests/fanout/README.md`, "Harness outages on gate rows"). m3fe1, the first try on the same edge, was stopped in placement for a restart and has no result (`install-m3f.md`). Committed raw files: `tests/fanout/raw/rows-m3fe2.status`, `tests/fanout/raw/{terms,admit,vmem}-m3fe2-b0-32.jsonl`, `tests/fanout/raw/tsave-m3fe2-b0-32.jsonl.xz`, `tests/fanout/raw/arrivals-m3fe2.jsonl`. The a1 files (`a1-b0-32-mwn5807e.jsonl`, `a1-pushes-b0-32-mwn5807e.jsonl`, `a1-samples-b0-32-mwn5807e.jsonl.gz`) are under the ignored `tests/am1/raw/` on this thread's orb.
+
+- **Edge day** m3fe1, 03:52Z to 03:53:49Z, `edge exit 0`: edge `a69d83c8` at 100% (rev `fb89ba98`, main `8c794619` plus a log commit). No site day: `edge-read-batch` changes only the edge, so the sites stayed on m3fb32's build (main `76c3e131`).
+- **Setup:** repo 65592 (run `mwn5807e`), 8 learners, k 4 at index 8, leader site 0 at term 2. The burst left at 06:08:46.6Z on Cloudflare's clock, after a 60 s warm-up.
+- **Colos:** client DFW. The edge served the burst window's receive-packs in LAX (271), DFW (219) and SJC (125). m3fb32's were DFW 272 and LAX 151; m3fr17's were ATL, LAX, EWR and DFW.
+- **Harness outages:** 06:07:36–42Z and 06:07:44–47Z, 9 s, share 0.05, valid. Both fell before the burst, so every burst line reads the same with the outages removed.
+- **Spend:** $1.48 on graft-m3f by `PREFIX` from 00:38:18Z to 06:46Z (stop $10); the account was $16.64 for the UTC day.
+
+### Result: met at 90%, provisionally (orchestrator, 2026-11-19) [measured]
+
+Judged on the edge clock (`server-timing` `total`), as from m3fb32 on. **Client clock includes orb connection setup:** the client clock includes opening 500 new HTTP/1.1 connections from one orb, which a production fleet keeping its connections alive does not pay. On the client clock 3 of 498 `ok` came within 5 s (p50 7,686 ms, p99 10,209 ms).
+
+| Gate line | m3fe2 (measured = outages removed) | m3fb32 | m3fr17 |
+|---|---|---|---|
+| Every push acknowledged within 5 s, or `ng … agent admission full` | **496 of 500 (99.2%), met at 90%.** 498 `ok`, 0 `full`, 2 with no answer (below). Edge total p50 3,541 ms, p99 4,863 ms; the 2 `ok` over 5 s took 5,056 and 5,105 ms | 80 of 310 `ok`, 190 `full` | 167 of 474 `ok`, 20 `full`, 6 lost before the edge |
+| No other refusal shape | Pass: 0 burst 503s | Pass | Pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` (64 MiB) | Pass: admit trace peak 132,877 B, 22 queued | Pass | Pass |
+| Every merge in one of the next 2 entries, none delayed over 2 s | Pass: 24 of 24 `merge:only` 200, edge max 1,603 ms (client p99 1,668) | Fail (edge max 6,920 ms) | 19 × 200, 1 × 409, 1 × 503 |
+| Zero leader changes | Pass: term 2, leader site 0 throughout | Pass | 1 change |
+| Zero `suspect` | Pass: 0 from the edge (`pushTiming`). The 3 voter `Reported` rows at 06:01:52Z (colo LAX) fell during group setup at term 1, before any load; the orchestrator ruled them not the row's | 34 edge, 32 + 32 `tsave` | 5 edge, 18 + 18 |
+| No object reset from memory | Pass: one boot per voter, wasm high 34.5 MB | Pass | Pass |
+
+Leader commit p50 332 ms, p99 856 ms, against m3fb32's 568 and 1,660.
+
+### The front, with `edge-read-batch`
+
+Burst pushes' `server-timing` (498 `ok`), p50 / p99 in ms. The front is max(auth + install, resolve).
+
+| Stage | m3fe2 | m3fb32 | m3fr17 |
+|---|---|---|---|
+| auth | **120** / 280 | 591 / 754 | 170 / 2,578 |
+| install | 600 / 994 | 905 / 1,204 | **416** / 959 |
+| resolve | **551** / 949 | 1,390 / 2,051 | 594 / 2,432 |
+| front | **767** / 1,180 | 1,563 / 2,051 | 775 / 3,338 |
+| gate + context + validate, then the front: wall before the first send | 1,885 / 3,434 | 2,933 / 4,264 | 2,114 / 5,289 |
+| after the first send | 1,338 / 2,539 | 3,000 / 5,726 | 3,120 / 4,882 |
+| total | 3,541 / 4,863 | 6,431 / 7,898 | 5,538 / 7,443 |
+
+- **Batch counters:** `rcread` 5 / 7, `rcshare` 1 / 7, `rcwait` 660 / 1,940 ms (max 2,160). 367 of 498 pushes waited in a batch.
+- The front met the 775 ms target and `rcwait` p99 stayed under the 4 s flip line, so `edge-read-batch` holds (DECISIONS, "`edge-read-batch`").
+- **The gap:** install p50 is 600 ms against m3fr17's 416. It does not come down with burst order (quintile medians 509, 593, 632, 628, 619 ms), and 74 pushes had install over 500 ms with `rcwait` under 100 ms, so not all of it is batch waiting.
+
+### The two pushes with no answer: never reached the edge [measured]
+
+k 188 and 189 (client ids `mwn5807e-486` and `-487`, refs `refs/heads/claude/a1-mwn5807e-188-b` and `-189-b`, new tips `7986bc09…` and `78b8b9d2…`) left the client at 06:08:48.20Z on the burst's HTTP/1.1 pool. Both ended in the client's own timeout at 06:15:31Z after 403 s, with status 0 and no request id.
+
+- **The edge never ran them.** From 06:08:40 to 06:16:00Z Workers Logs count 1,126 receive-pack invocations, all outcome `ok` and status 200, the longest 12,122 ms of wall time. That is exactly the number of client pushes in the window that got a request id (1,126 of 1,129; the third without one failed in 10 ms with `fetch failed` at 06:10:36Z). No receive-pack ran after 06:16Z. Across every edge invocation from 06:08:40 to 06:20Z, 1 was `canceled`, and it was a `/_bed/shard_status` call.
+- **No log line on any script.** No edge, site a, b or c log line names either ref or either tip (06:08 to 06:30Z). The edge's `push_log`, written on every receive-pack return in a test-faults build, has no line for either client id.
+- **Edge arrivals in that second:** the edge took 12 invocations at 06:08:48Z, 3 of them receive-packs, and the sites kept serving. By the rule's definition this is not a harness outage, so the two count against the line as measured, and the line is judged with them as failures.
+- **So no invariant broke:** no 2xx left without quorum, and no committed push was reported failed. A push the edge never ran could not reach a leader, so neither ref moved. The group was retired before this trace, so its refs were not read back directly; the evidence is the invocation count and the missing log lines.
+- **Which deadline let it run:** none on the edge, which never held them. On the client, `GIT_TIMEOUT_MS` (200 s) is `https.request`'s socket idle timeout, not a wall-clock deadline. Why it fired at 403 s and not 200 s is not settled [unverified].
+- **Where they were lost:** between the client's HTTP/1.1 pool and the edge, which is the orb's egress proxy or the pool itself [inference]. m3fr17's 6 "lost before the edge" are the same class.
+
+Recorded in `decisions/OPEN-QUESTIONS.md`, A32.
+
 ## Rows m3fb32: B0-32 on main `76c3e131` (2026-11-19, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** Granted by the orchestrator after m3flc: one site day from main `76c3e131` or later (`tier-off-leader`, F91, both write cuts), then B0-32. Stops: graft-m3f at $10 from the site day's start, or the account at $170. Committed raw files: `tests/fanout/raw/rows-m3fb32.status`, `tests/fanout/raw/{terms,admit,vmem}-m3fb32-b0-32.jsonl`, `tests/fanout/raw/tsave-m3fb32-b0-32.jsonl.xz`. The a1 files (`a1-b0-32-mwmura9l.jsonl`, `a1-pushes-b0-32-mwmura9l.jsonl`, `runs/{siteday-m3f-m3fb32,a1-b0-32-fm3fb32-b032}.log`) are under the ignored `tests/am1/raw/` on this thread's orb, as on earlier rounds.

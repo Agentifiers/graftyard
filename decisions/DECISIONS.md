@@ -5452,7 +5452,13 @@ Conditions the orchestrator set before code:
 
 ### `edge-read-batch`: write-class identity reads of one key in one isolate share the next read, never the one in flight, 2026-11-19
 
-**Status.** Built on branch `edge-read-batch`, code-only, approved by the orchestrator after B0-32 m3fb32. Not deployed: it needs an edge day, and it is judged on the next B0-32. Nothing in `crates/raft`.
+**Status.** Measured on B0-32 m3fe2 (2026-11-19, graft-m3f, edge from main `8c794619`), and it holds:
+- The push front p50 was 767 ms, against the 775 ms target, m3fb32's 1,563 and m3fr17's 775. auth fell from 591 to 120 ms and resolve from 1,390 to 551.
+- `rcwait` p99 was 1,940 ms, under the flip's 4 s. `rcread` was 5 / 7 and `rcshare` 1 / 7 at p50 / p99.
+- 496 of 500 burst pushes were acknowledged within 5 s on the edge clock, with 0 `full` [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fe2"].
+- **Gap:** install p50 is still 600 ms, against m3fr17's 416 ms. 74 pushes had install over 500 ms with `rcwait` under 100 ms, so batch waiting does not explain all of it.
+
+Nothing in `crates/raft`.
 
 **Decision.** `rcache::through`'s write-class path goes through a per-key, per-isolate batch (`rcache::batched`):
 - A call with no read of its key in flight starts one.
@@ -5489,7 +5495,7 @@ That the time is the isolate's per-read work and not the members' is an inferenc
   - `a_stuck_or_dropped_read_does_not_hold_its_waiters`.
   - `a_batched_read_refills_the_entry_for_read_class_requests`.
 - `tests/m0carried/plant48.py` catches 7 of 7, mutant 0 among them: a waiter handed the in-flight read's answer.
-- No hosted measurement yet.
+- B0-32 m3fe2, graft-m3f: the front split and batch counters under "Status" [measured].
 
 **Flip.** Any of these on the next B0-32 or later:
 - The push front does not come down toward m3fr17's 775 ms at p50 while `rcshare` shows sharing. The cost was then not per-read isolate work.
