@@ -20,7 +20,7 @@ npm run build     # static output in dist/
 - `src/components/Logo.astro` is the Graftyard logo (graftyard-option-9.svg). On a dark page its branches take the text colour.
 - `src/components/Film.astro` and `src/components/Table.astro` are the film frame and the results table, which stacks into labelled rows on a phone.
 - `public/assets/` holds the parts of the taste-skill kit the pages use (MIT, `LICENSE.taste-skill`). Edit the pages, not these files.
-- `public/film/` holds the rendered loops: `push-loop`, `ghes-loop` and `chaos-loop`, each as `.mp4`, `.webm` and a `.jpg` poster.
+- `public/film/` holds the rendered loops: `push-loop`, `ghes-loop`, `chaos-loop`, `agents-loop` and `durability-loop`, each as `.mp4`, `.webm` and a `.jpg` poster.
 - `film/` is the cinetic Remotion project that renders the loops. See its `package.json` scripts.
 
 ## Deploying to graftyard.com

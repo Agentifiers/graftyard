@@ -5,8 +5,9 @@ import { Film, FilmProps } from './Film';
 import { FilmEvery, everyMetadata, FilmSub, subMetadata } from './FilmSub';
 import { TOTAL as AGENTS_TOTAL } from './agents/timeline';
 import { TOTAL as CHAOS_TOTAL } from './chaos/timeline';
+import { TOTAL as DURABILITY_TOTAL } from './durability/timeline';
 import { TOTAL as GHES_TOTAL } from './ghes/timeline';
-import { AgentsFilm, ChaosFilm, GhesFilm } from './LoopFilms';
+import { AgentsFilm, ChaosFilm, DurabilityFilm, GhesFilm } from './LoopFilms';
 import { BrandAvatar, BrandHeader, BrandLockup, BrandMark, LogoSheet, LogoWallStill, MarkSizes, MarkStill } from './Stills';
 import { FPS, H, TOTAL, W } from './timeline';
 
@@ -27,10 +28,11 @@ export const RemotionRoot: React.FC = () => (
     />
     {/* The film sampled for a dev round: every 4th frame (--props='{"step":4,"offset":2}' for the others). */}
     <Composition id="FilmEvery" component={FilmEvery} durationInFrames={TOTAL} fps={FPS} width={W} height={H} defaultProps={{ step: 4, offset: 0 }} calculateMetadata={everyMetadata} />
-    {/* The newer loops (src/LoopFilms.tsx): npm run loop:ghes, npm run loop:chaos, npm run loop:agents. */}
+    {/* The newer loops (src/LoopFilms.tsx): npm run loop:ghes, npm run loop:chaos, npm run loop:agents, npm run loop:durability. */}
     <Composition id="Ghes" component={GhesFilm} durationInFrames={GHES_TOTAL} fps={FPS} width={W} height={H} defaultProps={{ audit: false } as FilmProps} />
     <Composition id="Chaos" component={ChaosFilm} durationInFrames={CHAOS_TOTAL} fps={FPS} width={W} height={H} defaultProps={{ audit: false } as FilmProps} />
     <Composition id="Agents" component={AgentsFilm} durationInFrames={AGENTS_TOTAL} fps={FPS} width={W} height={H} defaultProps={{ audit: false } as FilmProps} />
+    <Composition id="Durability" component={DurabilityFilm} durationInFrames={DURABILITY_TOTAL} fps={FPS} width={W} height={H} defaultProps={{ audit: false } as FilmProps} />
 
     <Folder name="Stills">
       <Still id="Mark16" component={MarkStill} width={16} height={16} defaultProps={{ size: 16, surface: 'paper' as const }} />
