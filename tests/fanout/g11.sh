@@ -27,7 +27,7 @@ node tests/fanout/terms.mjs "repo:$rid" 3600 > $R/terms-$TAG-g11.jsonl 2>&1 & TE
 node tests/fanout/b034seed.mjs "$BARE" "$PLAN" "m3org/$repo" admin > $R/g11-seed-$TAG.log 2>&1
 s "seed exit $?: $(tail -1 $R/g11-seed-$TAG.log)"
 from=$(stamp)
-node tests/fanout/g11.mjs "$repo" "$PLAN" "$BARE" 2 24 > $R/g11-$TAG.jsonl 2>&1
+node tests/fanout/g11.mjs "$repo" "$PLAN" "$BARE" 2 "${PRS:-24}" > $R/g11-$TAG.jsonl 2>&1
 s "g11 exit $?: $(tail -1 $R/g11-$TAG.jsonl)"
 to=$(stamp)
 s "client colo: $(curl -s -m 20 "$GRAFT_EDGE/cdn-cgi/trace" | grep -E '^colo=')"
