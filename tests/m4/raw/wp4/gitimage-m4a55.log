@@ -1,0 +1,87 @@
++ cd /tmp/m4a-deploy
++ date -u +%FT%TZ
+2026-11-19T15:40:13Z
++ git rev-parse --short HEAD
+e1b99f5b
++ sudo -n docker build -q -t graft-m1-site-gitshard-git:m4a55 containers/git
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+sha256:f8972f8538dfc7b297b6dafd9f43b63d9da6bbac71feaef087f77944b24cc690
+++ mktemp -d
++ bin=/tmp/tmp.fA5RmzCaqm
++ printf '#!/bin/sh\nexec sudo -n docker "$@"\n'
++ chmod +x /tmp/tmp.fA5RmzCaqm/docker
++ cd /home/user/workspace/repo/tests/m0
++ WRANGLER_DOCKER_BIN=/tmp/tmp.fA5RmzCaqm/docker
++ timeout 900 npx wrangler containers push graft-m1-site-gitshard-git:m4a55
+npm notice run npx
+npm notice run 'wrangler' containers push graft-m1-site-gitshard-git:m4a55
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0
+────────────────────
+
+WARNING! Your credentials are stored unencrypted in '/root/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+Login Succeeded
+The push refers to repository [registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git]
+d02340bc99c3: Waiting
+4a67f756216b: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Waiting
+d02340bc99c3: Waiting
+4a67f756216b: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Waiting
+d02340bc99c3: Waiting
+4a67f756216b: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Waiting
+d02340bc99c3: Waiting
+4a67f756216b: Waiting
+4a67f756216b: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Waiting
+d02340bc99c3: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Waiting
+d02340bc99c3: Waiting
+4a67f756216b: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Waiting
+d02340bc99c3: Waiting
+4a67f756216b: Waiting
+4a67f756216b: Layer already exists
+b1ddb8505937: Waiting
+05e3d4aa8e57: Waiting
+710f3da1112f: Layer already exists
+d02340bc99c3: Layer already exists
+05e3d4aa8e57: Waiting
+b1ddb8505937: Waiting
+05e3d4aa8e57: Waiting
+b1ddb8505937: Waiting
+b1ddb8505937: Waiting
+05e3d4aa8e57: Waiting
+05e3d4aa8e57: Waiting
+b1ddb8505937: Waiting
+b1ddb8505937: Waiting
+05e3d4aa8e57: Waiting
+b1ddb8505937: Pushed
+05e3d4aa8e57: Pushed
+m4a55: digest: sha256:f8972f8538dfc7b297b6dafd9f43b63d9da6bbac71feaef087f77944b24cc690 size: 1411
+Pushed image: registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git:m4a55
++ sudo -n docker inspect --format '{{join .RepoDigests "\n"}}' graft-m1-site-gitshard-git:m4a55
+graft-m1-site-gitshard-git@sha256:f8972f8538dfc7b297b6dafd9f43b63d9da6bbac71feaef087f77944b24cc690
+registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f8972f8538dfc7b297b6dafd9f43b63d9da6bbac71feaef087f77944b24cc690
++ date -u +%FT%TZ
+2026-11-19T15:40:44Z
++ echo DONE
+DONE

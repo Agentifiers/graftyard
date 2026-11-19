@@ -28,7 +28,7 @@ use graftyard_types::{AccountId, ChainId, CredentialShard, DbId, Index, RepoId, 
 
 use crate::ids::RunId;
 use crate::job::{Conclusion, JobEvent, JobState, RunStatus};
-use crate::shard::{ActionsEvent, ActionsFold, ActionsOp, RunRow, consumer_request};
+use crate::shard::{ActionsActor, ActionsCmd, ActionsEvent, ActionsFold, ActionsOp, RunRow, consumer_request};
 
 /// One round's writes. `checks` and `denies` go first; `then` only after every check is acknowledged or refused
 /// `Gone` and every deny is acknowledged.
@@ -189,6 +189,25 @@ pub fn round(
         }
     }
     Round { checks: out, denies, then }
+}
+
+/// A round's shard half as the host sends it: each command under the operator's credential and a request id from
+/// its place in the round (`through`, index), so a half sent again after a crash or timeout commits nothing twice and
+/// is answered from the rows of what already committed. The host admits them all in one turn, so admission cuts them
+/// into as few entries as ENTRY_SOFT allows (`decisions/DECISIONS.md`, "`replay-wait`").
+pub fn shard_half(
+    chain: ChainId,
+    through: Index,
+    then: Vec<ActionsOp>,
+) -> Vec<(graftyard_types::RequestId, ActionsCmd)> {
+    then.into_iter()
+        .enumerate()
+        .map(|(i, op)| {
+            let mut key = Vec::new();
+            graftyard_fold::canon::write(&mut key, &(through.0, i as u32));
+            (consumer_request(chain, &key), ActionsCmd { actor: ActionsActor::Operator, op })
+        })
+        .collect()
 }
 
 /// What a repository's answer to one of a round's `RunChecksCmd`s means for the round.

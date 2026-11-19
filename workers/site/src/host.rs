@@ -3320,7 +3320,10 @@ impl<F: Family> Host<F> {
         });
     }
 
-    /// Registers a waiter for `ticket`; `admitted` names the request it was admitted for, and when.
+    /// Registers a waiter for `ticket`; `admitted` names the request it was admitted for, and when. A ticket the member
+    /// already resolved answers at once (`resolved_now`): a command whose request id already committed is answered
+    /// from its row inside the input that admitted it, so a caller that waits after `input` dispatched that output
+    /// would otherwise never hear it (`decisions/DECISIONS.md`, "`replay-wait`").
     pub fn wait_ticket(
         &self,
         ticket: Ticket,
@@ -3328,6 +3331,10 @@ impl<F: Family> Host<F> {
     ) -> oneshot::Receiver<Outcome<F>> {
         let (tx, rx) = oneshot::channel();
         if let Some(core) = self.core.borrow_mut().as_mut() {
+            if let Some(o) = resolved_now::<F>(core.m.outcome(ticket)) {
+                let _ = tx.send(o);
+                return rx;
+            }
             core.waiters.entry(ticket).or_default().push(tx);
             if let Some(a) = admitted {
                 core.admitted.entry(ticket).or_insert(a);
@@ -4072,6 +4079,14 @@ pub fn needs_block<F: Family>(o: &Outcome<F>) -> bool {
     matches!(o, Err(CommitError::Refused { err: e, .. }) if F::needs_block(e))
 }
 
+/// `Member::outcome`'s answer as a waiter takes it: a resolved ticket's outcome, or `None` to wait. A pending ticket
+/// waits; so does `NotLeader`, which `outcome` also answers for a ticket it no longer knows, since the host resolves
+/// a ticket lost to a leadership change through its own path; and so does a refusal for want of an id block, which
+/// the lease loop sends again under a new ticket (`current`).
+fn resolved_now<F: Family>(o: Option<Outcome<F>>) -> Option<Outcome<F>> {
+    o.filter(|o| !matches!(o, Err(CommitError::NotLeader(_))) && !needs_block::<F>(o))
+}
+
 pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -4339,6 +4354,30 @@ mod tests {
         let src = include_str!("host.rs");
         assert_eq!(src.matches(concat!("released_view(&core.m, ", "&g)")).count(), 1);
         assert_eq!(src.matches(concat!("core.m.fresh", "(&g)")).count(), 0);
+    }
+
+    /// `replay-wait`: a waiter takes a resolved ticket's outcome at once, and waits on a pending ticket, on `NotLeader`,
+    /// and on a refusal for want of an id block, which the lease loop sends again under a new ticket. `wait_ticket`
+    /// reads it before it registers, so a replayed request id, which the leader answers inside the admitting input, is
+    /// not missed (graft-m4a `actions:7100001.0` timed out every `RunOwner` round on one, 2026-11-19). An `Ok` outcome
+    /// cannot be built outside the raft crate; `crates/actions/tests/gates.rs` shows the leader answers one.
+    #[test]
+    fn a_resolved_ticket_answers_its_waiter_at_once() {
+        use graftyard_actions::shard::ActionsErr;
+        use graftyard_raft::{CommitError, Index, NotLeader, Term};
+        type A = crate::actions::Actions;
+        let refused = |err| -> super::Outcome<A> { Err(CommitError::Refused { index: Index(7), err }) };
+        let nl: super::Outcome<A> =
+            Err(CommitError::NotLeader(NotLeader { term: Term(3), leader: None, config: None }));
+        assert!(super::resolved_now::<A>(Some(refused(ActionsErr::Forbidden))).is_some(), "a refusal answers");
+        assert!(super::resolved_now::<A>(Some(refused(ActionsErr::NeedIdBlock))).is_none(), "an id block waits");
+        assert!(super::resolved_now::<A>(Some(nl)).is_none(), "NotLeader waits");
+        assert!(super::resolved_now::<A>(None).is_none(), "pending waits");
+        // `wait_ticket` consults it before it registers the waiter.
+        let src = include_str!("host.rs");
+        let wait = &src[src.find("pub fn wait_ticket(").unwrap()..];
+        let wait = &wait[..wait.find("\n    }\n").unwrap()];
+        assert!(wait.find("resolved_now").unwrap() < wait.find("waiters.entry").unwrap());
     }
 
     #[test]

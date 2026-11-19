@@ -444,27 +444,37 @@ async fn owner_shard_half(
     through: raft::Index,
     then: Vec<ActionsOp>,
 ) -> Result<(), String> {
-    for (i, op) in then.into_iter().enumerate() {
-        let mut key = Vec::new();
-        graftyard_fold::canon::write(&mut key, &(through.0, i as u32));
-        let rid = act::consumer_request(chain, &key);
-        let cmd = ActionsCmd { actor: ActionsActor::Operator, op };
-        let admitted = match h.input(|m, t| m.commit(t, rid, cmd)) {
-            Ok(Ok(a)) => a,
-            Ok(Err(e)) => return Err(crate::host::call_error_json(&e).to_string()),
-            Err(e) => return Err(e.to_string()),
-        };
-        h.served();
-        match crate::host::within(std::time::Duration::from_secs(10), h.wait_ticket(admitted.ticket, None)).await {
+    // Every command is admitted in this one turn, before any outcome is awaited, so admission cuts them into as few
+    // entries as ENTRY_SOFT allows, in order, and `decide` sees each command's predecessors in its entry. One at a time
+    // a gone repository's 2,870 unfinished runs took 5,741 round trips and held the shard's cursor past every budget
+    // (`decisions/DECISIONS.md`, "`replay-wait`"). Each keeps its request id from its place in the round, so a half
+    // sent again after a timeout is answered from the rows of what already committed.
+    let mut waits = Vec::with_capacity(then.len());
+    for (rid, cmd) in graftyard_actions::run_owner::shard_half(chain, through, then) {
+        let (admitted, out) = h.step(|m, t| m.commit(t, rid, cmd)).map_err(|e| e.to_string())?;
+        // The waiter is registered before `dispatch` delivers this input's outputs, so a replay resolved inside it is heard.
+        let w = admitted.as_ref().map(|a| h.wait_ticket(a.ticket, None));
+        h.dispatch(out, None);
+        waits.push(w.map_err(|e| crate::host::call_error_json(e).to_string())?);
+    }
+    h.served();
+    let end = crate::now_ms() + OWNER_HALF_MS;
+    for w in waits {
+        let left = std::time::Duration::from_millis(end.saturating_sub(crate::now_ms()).max(1));
+        match crate::host::within(left, w).await {
             Some(Ok(Ok(_))) => {}
             // A refusal of a command the round built from the fold is a replay (`Duplicate`) or a status that already
             // holds: the next command still goes.
             Some(Ok(Err(_))) => {}
-            _ => return Err("the shard half did not commit in 10 s".into()),
+            _ => return Err(format!("the shard half did not commit in {} s", OWNER_HALF_MS / 1000)),
         }
     }
     Ok(())
 }
+
+/// How long a round's whole shard half may take to commit [guess]: about two entries a round takes, each a few hundred
+/// ms on a quiet three-site group, with a wide margin. Before `replay-wait` this was each command's own 10 s.
+const OWNER_HALF_MS: u64 = 10_000;
 
 // ---- the run service, on the leader
 

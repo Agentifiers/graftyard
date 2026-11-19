@@ -1,0 +1,88 @@
+2026-11-19T15:50:07Z
+e1b99f5b
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling graftyard-types v0.1.0 (/tmp/m4a-deploy/crates/types)
+   Compiling graftyard-raft v0.1.0 (/tmp/m4a-deploy/crates/raft)
+   Compiling graftyard-wire v0.1.0 (/tmp/m4a-deploy/crates/wire)
+   Compiling graftyard-release v0.1.0 (/tmp/m4a-deploy/crates/release)
+   Compiling graftyard-fold v0.1.0 (/tmp/m4a-deploy/crates/fold)
+   Compiling graftyard-lookup v0.1.0 (/tmp/m4a-deploy/crates/lookup)
+   Compiling graftyard-identity v0.1.0 (/tmp/m4a-deploy/crates/identity)
+   Compiling graftyard-git v0.1.0 (/tmp/m4a-deploy/crates/git)
+   Compiling graftyard-actions v0.1.0 (/tmp/m4a-deploy/crates/actions)
+   Compiling graftyard-api v0.1.0 (/tmp/m4a-deploy/crates/api)
+   Compiling graftyard-edge v0.1.0 (/tmp/m4a-deploy/workers/edge)
+    Finished `release` profile [optimized] target(s) in 1m 43s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 1m 59s
+[INFO]: 📦   Your wasm pkg is ready to publish at /tmp/edge-prod-graft-m4a-edge/.tmp.
+
+  index.js  31.7kb
+
+⚡ Done in 7ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-edge.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.165.0
+────────────────────
+🌀 Building list of assets...
+✨ Read 396 files from the assets directory /tmp/m4a-deploy/web/dist/client
+🌀 Starting asset upload...
+No updated asset files to upload. Proceeding with deployment...
+Total Upload: 5472.26 KiB / gzip: 1799.08 KiB
+Worker Startup Time: 7 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                     
+env.MEMBER_0 (Member, defined in graft-m4a-site-a)                           Durable Object               
+env.REGISTRY_0 (Registry, defined in graft-m4a-site-a)                       Durable Object               
+env.SHARD_0 (GitShard, defined in graft-m4a-site-a)                          Durable Object               
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m4a-site-a)                   Durable Object               
+env.SEARCH_0 (SearchShard, defined in graft-m4a-site-a)                      Durable Object               
+env.INBOX_0 (Inbox, defined in graft-m4a-site-a)                             Durable Object               
+env.LOGRELAY_0 (LogRelay, defined in graft-m4a-site-a)                       Durable Object               
+env.BROKER_0 (RunnerBroker, defined in graft-m4a-site-a)                     Durable Object               
+env.MEMBER_1 (Member, defined in graft-m4a-site-b)                           Durable Object               
+env.REGISTRY_1 (Registry, defined in graft-m4a-site-b)                       Durable Object               
+env.SHARD_1 (GitShard, defined in graft-m4a-site-b)                          Durable Object               
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m4a-site-b)                   Durable Object               
+env.SEARCH_1 (SearchShard, defined in graft-m4a-site-b)                      Durable Object               
+env.INBOX_1 (Inbox, defined in graft-m4a-site-b)                             Durable Object               
+env.LOGRELAY_1 (LogRelay, defined in graft-m4a-site-b)                       Durable Object               
+env.BROKER_1 (RunnerBroker, defined in graft-m4a-site-b)                     Durable Object               
+env.MEMBER_2 (Member, defined in graft-m4a-site-c)                           Durable Object               
+env.REGISTRY_2 (Registry, defined in graft-m4a-site-c)                       Durable Object               
+env.SHARD_2 (GitShard, defined in graft-m4a-site-c)                          Durable Object               
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m4a-site-c)                   Durable Object               
+env.SEARCH_2 (SearchShard, defined in graft-m4a-site-c)                      Durable Object               
+env.INBOX_2 (Inbox, defined in graft-m4a-site-c)                             Durable Object               
+env.LOGRELAY_2 (LogRelay, defined in graft-m4a-site-c)                       Durable Object               
+env.BROKER_2 (RunnerBroker, defined in graft-m4a-site-c)                     Durable Object               
+env.BUCKET_0 (graft-m4a-site-a-packs)                                        R2 Bucket                    
+env.BUCKET_1 (graft-m4a-site-b-packs)                                        R2 Bucket                    
+env.BUCKET_2 (graft-m4a-site-c-packs)                                        R2 Bucket                    
+env.OPS (graft-m4a-ops)                                                      Worker                       
+env.ASSETS                                                                   Assets                       
+env.VERSION                                                                  Worker Version Metadata      
+env.PLAN ("pro")                                                             Environment Variable         
+env.SSH_OPTION ("off")                                                       Environment Variable         
+env.EDGE_CAP_BYTES ("80000000")                                              Environment Variable         
+env.FORMATS_ENABLED ("32.1,32.4,32.5,32.6,32.7,32.9,32.11,3...")             Environment Variable         
+env.PART_BYTES ("5242880")                                                   Environment Variable         
+env.HOST ("graft-m4a-edge.graftyard-m0-be2a.work...")                        Environment Variable         
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")             Environment Variable         
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                         Environment Variable         
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")      Environment Variable         
+env.OPS_SCRIPT ("graft-m4a-ops")                                             Environment Variable         
+env.RUN_SERVICE_PUBLIC ("35f3192f9087eceb3316c4abecb151fd3f324...")          Environment Variable         
+
+Uploaded graft-m4a-edge (4.69 sec)
+Deployed graft-m4a-edge triggers (0.42 sec)
+  https://graft-m4a-edge.graftyard-m0-be2a.workers.dev
+Current Version ID: 99376d29-d6b2-4713-8c3c-6e5b241c7843
+exit 0
+2026-11-19T15:52:14Z
+DONE
