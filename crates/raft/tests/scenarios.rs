@@ -2776,3 +2776,42 @@ fn an_idle_leader_tells_its_followers_the_last_commit_once() {
     }
     assert_eq!(c.m(A).role(), Role::Leader);
 }
+
+/// A fresh leader has told no follower anything, so its first idle period sends each follower one empty round after
+/// CALL_DEADLINE, which carries its term's commit, and then nothing: right after the group's first election and after a
+/// hand-off, and the leader keeps leading through both.
+#[test]
+fn a_fresh_leaders_first_idle_period_sends_one_round_per_follower_then_nothing() {
+    let deadline = graftyard_raft::CALL_DEADLINE.as_millis() as u64;
+    // Per idle CALL_DEADLINE, the AppendEntries `l` sent.
+    let idle = |c: &mut Cluster, l: SiteId| -> Vec<usize> {
+        (0..6)
+            .map(|_| {
+                c.advance(deadline + 1);
+                let n = c.inbox.iter().filter(|e| e.from == l && matches!(e.msg, Message::Append(_))).count();
+                c.deliver_all();
+                n
+            })
+            .collect()
+    };
+    let mut c = Cluster::new(9);
+    c.elect(A);
+    assert_eq!(idle(&mut c, A), [2, 0, 0, 0, 0, 0], "a new group's leader");
+    for s in [B, C] {
+        assert_eq!(c.m(s).state().commit, c.m(A).state().commit, "{s:?} holds the first term's commit");
+    }
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    for _ in 0..40 {
+        c.advance(100);
+        c.deliver_all();
+        if c.m(B).role() == Role::Leader && c.m(A).role() != Role::Leader {
+            break;
+        }
+    }
+    assert_eq!(c.leader(), Some(B));
+    assert_eq!(idle(&mut c, B), [2, 0, 0, 0, 0, 0], "a leader after a hand-off");
+    for s in [A, C] {
+        assert_eq!(c.m(s).state().commit, c.m(B).state().commit, "{s:?} holds the new term's commit");
+    }
+    assert_eq!(c.leader(), Some(B));
+}
