@@ -5414,6 +5414,52 @@ Conditions the orchestrator set before code:
 
 **Flip.** A client that refuses the edge's pack (its trailer or header), edge CPU per composed miss over 30 ms per 10 MB, or an invoice showing container-to-object bytes unbilled. That last one would leave only the double read worth fixing.
 
+### `edge-read-batch`: write-class identity reads of one key in one isolate share the next read, never the one in flight, 2026-11-19
+
+**Status.** Built on branch `edge-read-batch`, code-only, approved by the orchestrator after B0-32 m3fb32. Not deployed: it needs an edge day, and it is judged on the next B0-32. Nothing in `crates/raft`.
+
+**Decision.** `rcache::through`'s write-class path goes through a per-key, per-isolate batch (`rcache::batched`):
+- A call with no read of its key in flight starts one.
+- A call that arrives while a read is in flight never takes that read's answer. It waits for the read to end, then shares the next read, which the first waiter to see the key idle starts.
+- A call takes an answer only from a read whose id is at or above the next id when it arrived. So every answer comes from a read that started after the call arrived, and a write still reads fresh.
+- An error is shared as the answer is: every call that shared the read fails the same way, and the read has ended, so the next call starts a new read.
+- A read in flight past `BATCH_STALE` (2 s [guess]) is not waited on, and a read whose future was dropped frees its waiters at once (`Running`'s drop). A cancelled request never drops its future, which `BATCH_STALE` bounds.
+- A call therefore waits at most for the read in flight plus one more read, each counted up to `BATCH_STALE`, plus a `BATCH_POLL` (20 ms) per step.
+- Waiters poll plain data on their own `Delay`, as `lookup-poll` does: read ids, start times, and the last answer per key. No request holds or wakes another's future, and the last answer is a value, never a promise (F65).
+- The call that ran a read stores a kept answer stamped with its own start, as before, so read-class requests still use it within `READ_CACHE`.
+- Read-class requests are unchanged.
+- A push's `server-timing` gains `rcread`, `rcshare` and `rcwait`: the write-class identity reads it ran, the answers it shared, and the ms it waited in batches.
+
+The keys are the six `rcache` caches with a write-class path: the token row, the `ghs_` keys and `jti`, the login, the owner's `Placement`, and the owner's and install's `Authz`.
+
+**Why.** On B0-32 m3fb32 (main `76c3e131`, graft-m3f), the burst's push front (max(auth + install, resolve)) took p50 1,563 ms, against 775 ms on m3fr17:
+- auth went from 170 to 591 ms, install from 416 to 905, and resolve from 594 to 1,390.
+- The members answered the same reads in single-digit ms at the median, so the time was spent in the edge isolates.
+- The burst ran in 2 colos, not m3fr17's 4.
+- A push is write-class, so every one of 500 pushes read the same five answers fresh.
+- With the budget it left, 188 of 190 `full` were the leader's own `AGENT_PUSH_BOUND`, after admission [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fb32"].
+
+That the time is the isolate's per-read work and not the members' is an inference. The flat member times and the two-colo spread support it.
+
+**What it beat.**
+- **Sharing the read in flight (single-flight).** It cuts more reads, but a call that arrives while a read is in flight would take an answer read before it arrived. A revocation committed between the read's start and the call's arrival would then let the write through. The orchestrator's invariant rules it out, and so does `tests/m0carried/plant48.py`'s mutant 0.
+- **Letting write-class requests use the `READ_CACHE` entry.** It breaks "a write reads fresh" outright (SHARED, "Token revocation"; DESIGN, Identity).
+- **Holding waiters' futures or wakers in isolate state** (`lookup-share`'s `Turn`). It ran one request's I/O in another's context on m42 and m3f (`lookup-poll`).
+
+**Evidence.**
+- `rcache` tests:
+  - `calls_during_a_read_share_the_next_read_never_the_one_in_flight`: four calls, two reads; the three that came during read 1 all get read 2, within the read in flight plus one read plus polls.
+  - `a_shared_read_that_fails_fails_every_waiter_and_the_next_call_reads_again`.
+  - `a_stuck_or_dropped_read_does_not_hold_its_waiters`.
+  - `a_batched_read_refills_the_entry_for_read_class_requests`.
+- `tests/m0carried/plant48.py` catches 7 of 7, mutant 0 among them: a waiter handed the in-flight read's answer.
+- No hosted measurement yet.
+
+**Flip.** Any of these on the next B0-32 or later:
+- The push front does not come down toward m3fr17's 775 ms at p50 while `rcshare` shows sharing. The cost was then not per-read isolate work.
+- `rcwait` at p99 above about two reads, about 4 s. The batch then holds callers longer than reading alone would.
+- A write is seen to pass on a token, `jti` or grant revoked before it arrived. That would break the invariant.
+
 ### `tier-off-leader`: a whole-tier dump or an `ls-refs` never runs on the acting leader, 2026-11-18
 
 **Status.** The orchestrator chose candidate (1) of the m53 leader-tail plan. Built on branch `tier-off-leader`, not deployed. The member half needs a site day; the edge half rides the same day. Nothing in `crates/raft`.
