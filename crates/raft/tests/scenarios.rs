@@ -1593,6 +1593,15 @@ fn a_voter_is_pipelined_unless_its_link_is_lossy() {
         assert_eq!(failed, fail);
         // Past CALL_DEADLINE, so a leader whose retries to C ran out sends again from its tick.
         c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+        // The idle leader's commit round to a C that holds every entry carries none; C answers it, as it would within
+        // a round trip, so it holds no pipeline slot below.
+        let (beat, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut c.inbox)
+            .into_iter()
+            .partition(|e| e.to == C && matches!(&e.msg, Message::Append(a) if a.entries.is_empty()));
+        c.inbox = rest;
+        for graftyard_raft::Envelope { from, to, msg } in beat {
+            c.on(to, |m, now| m.step(now, from, msg));
+        }
         let mut to_c = 0;
         for i in 0..(graftyard_raft::PIPELINE as u128 * 3) {
             admit(&mut c, A, 9_800 + i, put(&format!("h{i}"), "v"));
@@ -2736,4 +2745,34 @@ fn a_quick_campaign_after_idle_time_stamps_no_extend() {
     assert!(since_last > 20_000, "the new leader's first entry is {since_last} ms after the last one");
     let ext: Vec<_> = c.m(B).log().iter().filter(|e| e.at > last).filter_map(|e| e.extend).collect();
     assert!(ext.is_empty(), "a campaign shorter than EXTEND_MIN moved leases: {ext:?}");
+}
+
+/// R29: a group that commits an entry and goes quiet still tells its followers the commit within about one
+/// CALL_DEADLINE, with no further command; then its leader sends nothing more while idle. Before, a follower learned a
+/// commit only from the next append, so on graft-m4a's 65567 both followers sat one commit behind until a `/campaign`.
+#[test]
+fn an_idle_leader_tells_its_followers_the_last_commit_once() {
+    let mut c = Cluster::new(7);
+    c.elect(A);
+    c.sync(A);
+    admit(&mut c, A, 29, put("last", "write"));
+    c.deliver_all();
+    let commit = c.m(A).state().commit;
+    assert_eq!(c.m(A).last_index(), commit, "the leader committed its last entry");
+    assert!(c.m(B).state().commit < commit && c.m(C).state().commit < commit, "the followers learn it only later");
+    let deadline = graftyard_raft::CALL_DEADLINE.as_millis() as u64;
+    // Not before CALL_DEADLINE: a busy group's next entry carries the commit instead of an empty round.
+    c.advance(deadline / 2);
+    assert!(c.inbox.is_empty(), "a commit round inside CALL_DEADLINE");
+    c.advance(deadline / 2 + 1);
+    c.deliver_all();
+    for s in [B, C] {
+        assert_eq!(c.m(s).state().commit, commit, "{s:?} learned the last commit within one CALL_DEADLINE");
+    }
+    // Told, the followers get nothing more from an idle leader.
+    for _ in 0..5 {
+        c.advance(deadline + 1);
+        assert!(c.inbox.is_empty(), "an idle leader sent {:?}", c.inbox.iter().map(|e| &e.msg).collect::<Vec<_>>());
+    }
+    assert_eq!(c.m(A).role(), Role::Leader);
 }

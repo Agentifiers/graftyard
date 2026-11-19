@@ -4337,6 +4337,34 @@ Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (9
 - A row where head-push merges shed `late` because dispatch takes the turn: lower `DISPATCH_STREAK_MAX`.
 - An event that starts no run or two (the `pr-trigger` flip).
 
+### `r29-commit-heartbeat`: an idle leader tells each follower its last commit once, and a purge wakes the group first, 2026-11-19
+
+**Status.** Code-only, on branch `r29-commit-heartbeat`, not deployed. The Raft half ships on a site day; the purge route's probe is edge code and ships on an edge day. Answers R29 (`decisions/OPEN-QUESTIONS.md`).
+
+**Decision.**
+- **A commit round** (`tick_leader`, `crates/raft/src/member/leader.rs`). The leader keeps, per follower, the commit its latest answered round told it: the lower of the commit that round carried and the index the follower matched (`Lead::told`, from `Lead::telling`). A follower that holds every entry but was told less than the leader's commit gets one more AppendEntries once the last round to it is `CALL_DEADLINE` old. A busy group's next entry carries the commit, so it sends nothing extra; an idle leader that told every follower sends nothing at all, as before.
+- **The purge route wakes the group** (`workers/edge/src/purge.rs`). Before it reads the members' statuses, it sends one `{"q": {"probe": true}}` read per chain through `call_opt`, whose lookup reports a leaderless group with `suspect` and so starts its election, as `tier-off-elect` does for a group read only by dumps. A chain with no group answers `None` and is not created.
+
+**Why.** On graft-m4a's 65567 (2026-11-18) `#1#f0` held commit 5044, with both followers at commit 5043 and last 5044, all three followers in term 26 with no leader; the gate refused `NoTombstone` for 4.5 minutes, until one `/campaign` made `#1#f0` lead and its next append carried 5044 [measured, R29]. In memory the first half reproduces with no leader loss: after one commit and 30 idle `CALL_DEADLINE`s, the leader holds commit 4 and both followers commit 3 (`an_idle_leader_tells_its_followers_the_last_commit_once` fails on main f6123990). The leader sends a follower an append only while it is behind or a read, transfer, or campaign waits, and a follower learns a commit only from an append. The second half is why 65567 also had no leader: `keep_led` campaigns only while `Family::needs_leader` holds (split or archive due), and nothing reads a deleted repository. With the commit round the followers learn the commit about 1 s after it, while the host's ticker still runs (`ACTIVE_FOR_MS`, 3 s), so a leader lost later leaves nothing to tell [inference]. A leader lost inside that second still can, and the probe covers the one reader that needs it.
+
+**What it beat.**
+- **Treating "told below commit" as `behind`, every `CALL_DEADLINE`, with no told record.** An idle leader then beats forever, which breaks `suspect`'s "a report counts only while the leader makes no progress" (plant 108 fails four `leadership` tests that way).
+- **The commit round at once, after each commit.** A busy group sends an empty round beside every entry; waiting `CALL_DEADLINE` lets the next entry carry it.
+- **`keep_led` counting an uncommitted follower as work due.** It would campaign every leaderless group whose follower is one commit short, deleted or not, for a fact only a purge reads, and a follower cannot tell a commit it was never told from an entry that never committed.
+- **The purge gate accepting a member one commit short.** The tombstone is the purge's evidence; the gate must see it applied.
+
+**Evidence.**
+- `an_idle_leader_tells_its_followers_the_last_commit_once` (`crates/raft/tests/scenarios.rs`): fails on main; checks nothing leaves inside `CALL_DEADLINE`, both followers reach the leader's commit just after it, and then five more idle `CALL_DEADLINE`s send nothing.
+- Tests that assumed an idle leader sends nothing after `Cluster::sync`: `sync` now runs one more `CALL_DEADLINE`, so a report after it is still late; two `leadership` tests and `a_voter_is_pipelined_unless_its_link_is_lossy` count the commit round's time. `bf68_eu_documents_stay_in_eu_shards_a_killed_shard_reports_incomplete_until_its_rebuild` (`crates/api/tests/activity_gates.rs`) waited only for 13 documents to be indexed, and a comment adds none; with followers learning commits sooner the count reached 13 at 1.4 s instead of 2.9 s, before the comment's entry was indexed, so it now waits for the comment too. The simulator sweeps pass unchanged.
+- Plants 106 to 108 (`tests/m4/wp4/plant.py`): main's rule (106), the round at once (107), and an answer never counted as told (108). 3 of 3 caught.
+- The purge probe has no test of its own: `workers/edge` has no harness for the route's bindings. Hosted: not run.
+
+**Cost.** At most one empty AppendEntries per follower per commit, and only when the group commits less often than once per `CALL_DEADLINE` [inference]. A down follower already got a re-send every `CALL_DEADLINE` while behind, so it adds none there.
+
+**Flip.**
+- A hosted row where a group that commits about once a second or less shows AppendEntries per entry above 2 per follower, or leader CPU from empty rounds: send the round on the lease extension's schedule instead.
+- A purge refused `NoTombstone` again after a second call on a group with a committed tombstone: the probe did not wake it, so wake it from the member (`keep_led` for a tombstoned repository).
+
 ### `roll-up`: a bounded roll of a chain's oldest promoted packs, recorded as `Compacted` on the repository chain, 2026-11-16
 
 **Status.** Approved by the operator after round 32's review, with the repository-chain form; built on branch `rollup` (G9), not deployed. Built: the fold and `verify`, the archive alarm's roll step (`log_archive::roll_plan`, `Step::Rolled`), the site's warm `/roll` through the promotion path, the container's `/roll`, the rehydrate's read of produced packs with its fallback to the consumed packs, the site variable `GRAFTYARD_ROLLUP` that gates every roll (`log_archive::rollup_enabled`: unset, the alarm sends no `/roll` and records no `Compacted`; a site day sets it to `1` only after `FormatsEnable` enabled 32.25, as R24's `GRAFTYARD_APP_HOOKS` waits for 32.24), and the deletion guard as a pure rule (`sweep::consumed_deletable`). Not built: the sweeper's deletion of consumed packs, which waits for that rule's shard answers (G9's remainder). DESIGN, Shape, `Promoted` and `rehydrate`, and Failure modes (pack buckets bad-deploy, git caches noisy-tenant) carry the rule; this entry carries the numbers.
