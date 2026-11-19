@@ -650,13 +650,20 @@ impl AuthzFold {
     }
 
     /// `repo-gone` (`decisions/DECISIONS.md`): whether a cursor consumer whose write to `repo` failed ends that work
-    /// instead of retrying it. It needs two proofs: the repository's own chain has no group (`no_group`: the lookup
-    /// reached members and every one answered not joined, `graftyard_lookup::is_no_group`), and this owner, the one
-    /// its `RepoOwner` row names, holds it under no name. A repository in a transfer can fail the second while live,
-    /// once a new create takes its `Alias` and before `RepoOwner` moves, but it still has its group; one that is only
-    /// down fails neither. A deleted repository whose group still answers is the group's own `Gone`, not this.
-    pub fn repo_gone(&self, repo: RepoId, no_group: bool) -> bool {
-        no_group && !self.holds(repo)
+    /// instead of retrying it. It needs two proofs:
+    /// - **No group.** The lookup answered no group (`lookup_no_group`, `graftyard_lookup::is_no_group`), and every
+    ///   site's registry answered that it holds no row for the chain (`rows`, `graftyard_types::no_row_anywhere`).
+    ///   The lookup's answer is relative to the record it used: under an owner's record whose placement the group
+    ///   has left, or with a registry read that timed out, it can say no group for a live group. The rows cannot:
+    ///   every voter writes one on its own site before it stores anything, and only a purge deletes one.
+    /// - **No name.** This owner, the one its `RepoOwner` row names, holds it under no name.
+    ///
+    /// A repository in a transfer can fail the name proof while live, once a new create takes its `Alias` and before
+    /// `RepoOwner` moves, and the lookup's no group too when the group already moved to the new owner's placement, but
+    /// its voters' rows stay; one that is only down fails both. A deleted repository whose group still answers is the
+    /// group's own `Gone`, not this.
+    pub fn repo_gone(&self, repo: RepoId, lookup_no_group: bool, rows: &[graftyard_types::RowRead]) -> bool {
+        lookup_no_group && graftyard_types::no_row_anywhere(rows) && !self.holds(repo)
     }
 
     /// The `retain_until` of a name this owner holds `Deleted` for the repository (F59's delete finisher).

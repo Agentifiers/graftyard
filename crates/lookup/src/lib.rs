@@ -350,6 +350,18 @@ async fn registry_row(b: &Bindings<'_>, at: SiteId, chain: ChainId) -> Option<Re
     within(CALL, call).await.flatten()
 }
 
+/// Every site's registry answer for `chain`, read in parallel (`decisions/DECISIONS.md`, "`repo-gone`"): unlike
+/// `registry_row`, a definite 404 is told apart from a read that failed.
+pub async fn registry_reads(b: &Bindings<'_>, chain: ChainId) -> Vec<graftyard_types::RowRead> {
+    let read = |at: SiteId| async move {
+        let stub = b.registry(at, &MemberRegistry::for_chain(at, chain).do_name()).ok()?;
+        let res = stub.fetch_with_str(&format!("https://registry/row?chain={chain}")).await.ok()?;
+        Some(res.status_code())
+    };
+    let reads = b.sites.0.iter().map(|s| async move { within(CALL, read(s.id)).await.flatten() });
+    futures_util::future::join_all(reads).await.into_iter().map(graftyard_types::RowRead::of).collect()
+}
+
 /// The record of a chain whose record the caller does not hold (the `Release` group, before a cold isolate has its
 /// genesis): the voters and generation from the first `MemberRegistry` row any site holds for it, with the sites in
 /// the row's order. Its bootstrap names are the row's voters' names at that generation, as `bootstrap_members` builds.

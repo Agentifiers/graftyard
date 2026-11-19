@@ -24,7 +24,7 @@ use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::run_checks::{ACTIONS_APP, RunChecksCmd, RunChecksOut};
 use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
 use graftyard_identity::{Jti, TokensCmd, TokensOp};
-use graftyard_types::{ChainId, CredentialShard, DbId, Index, RepoId, Timestamp};
+use graftyard_types::{AccountId, ChainId, CredentialShard, DbId, Index, RepoId, Timestamp};
 
 use crate::ids::RunId;
 use crate::job::{Conclusion, JobEvent, JobState, RunStatus};
@@ -215,6 +215,15 @@ pub fn checks_answer(out: Option<RunChecksOut>, gone: bool) -> ChecksAnswer {
         None if gone => ChecksAnswer::Gone,
         None => ChecksAnswer::Retry,
     }
+}
+
+/// The owner whose placement record a failed `RunChecksCmd` is sent again under, or `None` to keep the answer: only
+/// when the commit under the shard owner's record found no group (`no_group`) and the repository's `RepoOwner` row
+/// names another owner now. A run's repository can leave the shard's owner by a transfer, and its group can then
+/// move to the new owner's placement, which the shard owner's record does not name (`decisions/DECISIONS.md`,
+/// "`repo-gone`").
+pub fn record_owner(shard_owner: AccountId, no_group: bool, repo_owner: Option<AccountId>) -> Option<AccountId> {
+    repo_owner.filter(|o| no_group && *o != shard_owner)
 }
 
 /// A row's version follows its state, so a replay never moves it back: 1 queued, 2 in progress, 3 completed.

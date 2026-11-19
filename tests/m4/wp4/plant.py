@@ -396,9 +396,21 @@ MUTANTS = [
      '            RepoEntry::Alias { .. } => false,\n            RepoEntry::Live { repo: r, .. }\n',
      ['-p', 'graftyard-identity', '--test', 'audit']),
     ('Authz alone is proof a repository is gone', AZ,
-     '        no_group && !self.holds(repo)', '        !self.holds(repo)', G),
+     '        lookup_no_group && graftyard_types::no_row_anywhere(rows) && !self.holds(repo)', '        !self.holds(repo)', G),
     ('any lookup error reads as no group', 'crates/lookup/src/lib.rs',
      '    e.ends_with(&format!(": {NO_GROUP}"))', '    !e.is_empty()', ['-p', 'graftyard-lookup', '--lib', 'no_group']),
+    # ---- repo-gone, the cross-placement transfer (the lead's review of 839fa6b0): 135 and up ----
+    ('the lookup\'s no group under the shard owner\'s record is proof, rows unread (839fa6b0\'s rule)', AZ,
+     '        lookup_no_group && graftyard_types::no_row_anywhere(rows) && !self.holds(repo)',
+     '        lookup_no_group && !self.holds(repo)', G),
+    ('a failed RunChecks is never sent again under the RepoOwner owner\'s record', O,
+     '    repo_owner.filter(|o| no_group && *o != shard_owner)', '    repo_owner.filter(|_| false)', G),
+    ('a registry read that failed counts as no row', 'crates/types/src/registry.rs',
+     '            _ => RowRead::Failed,\n        }', '            _ => RowRead::NoRow,\n        }',
+     ['-p', 'graftyard-types', '--lib', 'registry']),
+    ('one site answering no row is enough', 'crates/types/src/registry.rs',
+     '    !reads.is_empty() && reads.iter().all(|r| *r == RowRead::NoRow)', '    reads.iter().any(|r| *r == RowRead::NoRow)',
+     ['-p', 'graftyard-types', '--lib', 'registry']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

@@ -23,7 +23,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::Group;
-use graftyard_actions::run_owner::{ChecksAnswer, checks_answer, round, steps, touched};
+use graftyard_actions::run_owner::{ChecksAnswer, checks_answer, record_owner, round, steps, touched};
 use graftyard_actions::shard::{
     ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold,
     ActionsOp, ActionsOut, JobSpec, RunnerRecord, RunnerScope, WorkflowRun,
@@ -39,7 +39,7 @@ use graftyard_git::repo::{REPO_FORMAT_V1, RepoCmd, RepoEvent, RepoFold, RepoOut}
 use graftyard_git::run_checks::REPO_FORMAT_ACTIONS;
 use graftyard_identity::{Jti, TOKENS_FORMAT, TOKENS_FORMAT_V2, TokensCmd, TokensFold, TokensRead, jti_shard};
 use graftyard_raft::{CommitError, RequestId, Ulid};
-use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, Timestamp};
+use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, RowRead, Timestamp};
 use smallvec::{SmallVec, smallvec};
 
 const OWNER: AccountId = AccountId(DbId(100));
@@ -92,8 +92,13 @@ struct World {
     shard: Group<ActionsCmd>,
     repo: Group<RepoCmd>,
     repo2: Group<RepoCmd>,
-    /// Repositories whose members were purged: no group answers a commit to them.
+    /// Repositories whose members were purged: no group answers a commit to them, and no site holds a registry row.
     purged: BTreeSet<RepoId>,
+    /// Repositories whose group moved to another owner's placement: a lookup under the shard owner's record finds no
+    /// group, but their voters' registry rows stay, and one under that owner's record finds the group.
+    moved: BTreeMap<RepoId, AccountId>,
+    /// The owner each repository's `RepoOwner` row names, when it is not the shard's owner.
+    repo_owner: BTreeMap<RepoId, AccountId>,
     /// The owner's `Authz` names, which `RunOwner` reads when a repository's commit fails (`repo-gone`).
     authz: graftyard_identity::AuthzFold,
     next: u128,
@@ -147,6 +152,8 @@ impl World {
             repo,
             repo2,
             purged: BTreeSet::new(),
+            moved: BTreeMap::new(),
+            repo_owner: BTreeMap::new(),
             authz,
             next: 1,
             runners: Vec::new(),
@@ -405,8 +412,19 @@ impl World {
         for (repo, cmd) in r.checks {
             let id = cmd.request.0.0;
             let g = if repo == REPO2 { &mut self.repo2 } else { &mut self.repo };
-            // No leader, a lost ticket, a refusal, or a purged repository's missing group: no outcome.
-            let commit = (!self.purged.contains(&repo)).then(|| g.commit(self.now, id, RepoCmd::RunChecks(cmd)));
+            // No leader, a lost ticket, a refusal, or no group under the record used: no outcome. The lookup under
+            // the shard owner's record finds no group for a purged repository and for one whose group moved to
+            // another owner's placement; then the same request goes again under the record of the owner `RepoOwner`
+            // names, when that is another owner (`record_owner`).
+            let at =
+                |o: AccountId| !self.purged.contains(&repo) && self.moved.get(&repo).copied().unwrap_or(OWNER) == o;
+            let mut no_group = !at(OWNER);
+            let mut commit = (!no_group).then(|| g.commit(self.now, id, RepoCmd::RunChecks(cmd.clone())));
+            let now_owner = self.repo_owner.get(&repo).copied().unwrap_or(OWNER);
+            if let Some(o) = record_owner(OWNER, no_group, Some(now_owner)) {
+                no_group = !at(o);
+                commit = (!no_group).then(|| g.commit(self.now, id, RepoCmd::RunChecks(cmd)));
+            }
             let out = match commit.flatten() {
                 Some(Ok(a)) => match a.out {
                     RepoOut::RunChecks(o) => Some(o),
@@ -414,9 +432,10 @@ impl World {
                 },
                 _ => None,
             };
-            // The lookup's error says no group only for a purged repository (`graftyard_lookup::is_no_group`); no
-            // leader, a lost ticket, or a refusal is another error.
-            let gone = out.is_none() && self.authz.repo_gone(repo, self.purged.contains(&repo));
+            // Every site's registry: no row only once the repository's members were purged; a moved group's voters
+            // keep theirs.
+            let rows = [if self.purged.contains(&repo) { RowRead::NoRow } else { RowRead::Row }; 3];
+            let gone = out.is_none() && self.authz.repo_gone(repo, no_group, &rows);
             match checks_answer(out, gone) {
                 ChecksAnswer::Applied => {}
                 // The round is rebuilt with the repository gone, so its shard half cancels the run.
@@ -1288,6 +1307,61 @@ fn a_transferring_repository_whose_alias_was_retaken_is_not_gone_while_down() {
     let f = w.fold();
     assert!(!w.gone.contains(&REPO2));
     assert_eq!(f.run(run).unwrap().status, RunStatus::Completed(Conclusion::Success));
+    let actions: Vec<_> = w
+        .repo2
+        .committed_after(Index(0))
+        .into_iter()
+        .flat_map(|(_, e)| e)
+        .filter_map(|e| match e {
+            RepoEvent::WorkflowJob(u) => Some(u.action),
+            _ => None,
+        })
+        .collect();
+    use graftyard_git::workflow_job::JobAction::{Completed, InProgress, Queued};
+    assert_eq!(actions, [Queued, InProgress, Completed]);
+}
+
+/// `repo-gone`'s cross-placement transfer race (the lead's review of `839fa6b0`). `REPO2` is transferred to another
+/// owner whose placement differs: the group has already moved there, the source's `Alias` was taken by a new create,
+/// and `RepoOwner` still names the shard's owner. A lookup under that owner's record finds no group, and the owner
+/// holds the repository under no name, which were both proofs on `839fa6b0`, so `RunOwner` cancelled a live run. The
+/// voters' registry rows stay, so it is not gone: the cursor holds and nothing is cancelled. Once `RepoOwner` moves,
+/// the round goes again under the new owner's record and the run's checks and steps land, so a transferred
+/// repository never holds the shard's cursor for good either.
+#[test]
+fn a_transferred_repository_whose_group_moved_is_not_gone_under_its_old_owners_record() {
+    use graftyard_identity::{RepoEntry, RepoName};
+    let mut w = World::new();
+    w.app_hooks = true;
+    w.plans.insert("lint".into(), Plan { ms: 20_000, ends: Conclusion::Success });
+    w.register(1);
+    let run = w.create_run_in(REPO2, oid(21), "refs/heads/main", 2, vec![spec("lint", &[])]);
+    w.run_for(3_000);
+    // The transfer's steps in SHARED's order: the group moves to the new owner's placement first, then the source's
+    // `Live` turns `Alias`, and a new create takes the key. `RepoOwner` has not moved.
+    let to = AccountId(DbId(200));
+    w.moved.insert(REPO2, to);
+    let key = RepoName::parse("b").unwrap().key();
+    w.authz.names.insert(key.clone(), RepoEntry::Alias { repo: REPO2, epoch: Default::default() });
+    w.authz.names.insert(key, RepoEntry::Live { repo: RepoId(DbId(9)), epoch: Default::default() });
+    assert!(!w.authz.holds(REPO2), "the race's state: the RepoOwner owner names it nowhere");
+    let stuck = w.fold().owner_cursor;
+    w.run_for(2 * MIN);
+    let f = w.fold();
+    assert!(!w.gone.contains(&REPO2), "a live repository whose group moved is not gone");
+    assert!(
+        f.run_jobs(run).iter().all(|j| j.state.completed() != Some(Conclusion::Cancelled)),
+        "{:?}",
+        f.run_jobs(run)
+    );
+    assert_eq!(f.owner_cursor, stuck, "the cursor holds below the moved repository's unsent checks");
+    // `RepoOwner` moves: the next round finds the group under the new owner's record.
+    w.repo_owner.insert(REPO2, to);
+    w.run_for(MIN);
+    let f = w.fold();
+    assert!(!w.gone.contains(&REPO2));
+    assert_eq!(f.run(run).unwrap().status, RunStatus::Completed(Conclusion::Success));
+    assert!(f.owner_cursor > stuck, "the cursor passed the transferred repository");
     let actions: Vec<_> = w
         .repo2
         .committed_after(Index(0))

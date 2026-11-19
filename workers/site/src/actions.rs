@@ -382,7 +382,17 @@ async fn owner_round(
     for (repo, cmd) in &r.checks {
         let body =
             serde_json::to_value(graftyard_git::repo::RepoCmd::RunChecks(cmd.clone())).map_err(|e| e.to_string())?;
-        let (out, why) = match graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &record, cmd.request, body).await {
+        let mut done = graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &record, cmd.request, body.clone()).await;
+        // The shard owner's record finds a repository it created, but not one transferred to another owner whose
+        // group then moved to that owner's placement (`repo-gone`): on no group, the same request again under the
+        // record of the owner `RepoOwner` names now, so a transferred repository's runs never hold the cursor.
+        let no_group = done.as_ref().is_err_and(|e| graftyard_lookup::is_no_group(e));
+        let now = if no_group { crate::member::repo_owner(&h.env, *repo).await.ok() } else { None };
+        if let Some(now) = graftyard_actions::run_owner::record_owner(owner, no_group, now) {
+            let moved = crate::member::owner_record(&h.env, now).await?;
+            done = graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &moved, cmd.request, body).await;
+        }
+        let (out, why) = match done {
             Ok(done) => (serde_json::from_value(done["ok"]["out"]["RunChecks"].clone()).ok(), done.to_string()),
             Err(e) => (None, e),
         };
