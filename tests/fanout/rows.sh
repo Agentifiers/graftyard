@@ -20,7 +20,7 @@ ST=tests/fanout/raw/rows-$TAG.status
 case "$PWD" in /tmp/*) echo "rows.sh: run from a worktree under /home/user/workspace, not $PWD" >&2; exit 1 ;; esac
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "rows.sh: commit the driver changes first" >&2; exit 1; }
 touch tests/fanout/raw/.rows-$TAG.started
-echo "$(stamp) start $(git rev-parse --short HEAD) $PWD" >> "$ST"
+echo "$(stamp) start $(git rev-parse --short HEAD) ${PWD/#"$HOME"/\~}" >> "$ST"
 # A restart's leftovers: an earlier run cut off before its teardown leaves shard containers billing (m3fr7: 7 found at
 # 04:26Z). The sweep tears down every running shard and is a no-op on an install with none.
 if python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; then echo "$(stamp) start sweep ok" >> "$ST"

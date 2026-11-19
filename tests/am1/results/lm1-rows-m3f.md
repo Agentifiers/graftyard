@@ -171,6 +171,36 @@ k 188 and 189 (client ids `mwn5807e-486` and `-487`, refs `refs/heads/claude/a1-
 
 Recorded in `decisions/OPEN-QUESTIONS.md`, A32.
 
+### Follow-up 1: the burst client's wall-clock deadline (code-only, branch `a1-wall`)
+
+`a1.mjs`'s burst pushes now go through `tests/am1/rest/h1.mjs`'s `postH1`. It ends a request at `GIT_TIMEOUT_MS` (200 s) on a timer that starts at the send, so a request lost before the edge ends at 200 s and is counted, not left open for 403 s.
+
+- **Tagging:** after the burst, each push with no answer (status 0) is looked up in the edge's Workers Logs by its `x-graft-client-push` id (`edgeInvocations`), after `LOGS_LAG_MS` (60 s [guess]). The burst row's `unanswered` counts them as `no edge invocation`, `edge ran it`, or `edge lookup failed`, and each `unacked` entry carries its tag. A lookup that fails three times is never counted as `no edge invocation`.
+- **Test** (`node --test tests/am1/rest/h1.test.mjs`): a local server answers 200 headers, then sends a byte every 50 ms and never ends. The deadline must end it at 300 ms. With `postH1` put back to the old idle `timeout`, the test hangs to its 5 s limit and fails. The other tests check that an answer arrives intact, the lookup's query and its failure paths, and the three tags.
+- **Live check:** run over m3fe2's window, the lookup tags `mwn5807e-318` `edge ran it`, and `-486` and `-487` `no edge invocation`. That matches the trace above.
+- `rows.sh` now writes its "start" line with `~` in place of `$HOME`, so status files carry no home path.
+
+### Follow-up 2: the install gap traced (m3fe2 logs, no hosted spend) [measured]
+
+The question: install p50 600 ms against m3fr17's 416, and 74 pushes with install over 500 ms and `rcwait` under 100 ms. `install` times `install_authz` (`workers/edge/src/lib.rs`): the install account's `Placement` row through `rcache::PLACEMENTS`, then its `Authz` fold through `rcache::AUTHZ`, each one `read_spread` to the learners and followers of a system group.
+
+- **The 74 are cold isolates, not slow reads.** All 74 ran in an isolate with no push before the burst, and 71 were that isolate's first push of the run. Each ran all 7 write-class reads itself (`rcread` 7 in 71 of 74, `rcshare` 0). The burst ran on 116 isolates, and only 2 burst pushes landed in an isolate that had served the warm-up.
+- **Member time is the same on both runs.** Sampled `/read` wall time at the objects the install read reaches, burst window, median / p90 in ms:
+
+  | Member | m3fe2 | m3fr17 |
+  |---|---|---|
+  | `authz:1#1#f1` | 110 / 293 | 107 / 107 (sample capped at 1,000) |
+  | `authz:1#1#f2` | 181 / 247 | 191 / 255 |
+  | `authz:1#1#f0` (leader) | 23 / 112 | 9 / 246 |
+
+  The `names` shard of `Placement(install)` (shard 24) and its p90 read 5 / 50 on m3fr17. It did not come back in m3fe2's sample: Workers Logs timed out on the wider query.
+- **Where the 500 to 600 ms goes in a cold isolate:** two reads in a row (`Placement`, then `Authz`). Each is a `read_spread` to the group's followers, f1 (weur) and f2 (apac) for a leader at f0 (enam), the only member with a median near 10 ms. Each costs its member's read-index round to the enam leader plus the hop: about 110 to 250 ms at the member alone. That puts two reads at about 400 to 500 ms before decode [inference from the member times above; the edge does not time the two reads apart].
+- **Decode is not it:** the push's whole edge CPU was p50 27 to 50 ms by colo (DFW 27, SJC 50, LAX 75), against the 600 ms install wall.
+- **Batching adds the rest in warm isolates.** By `rcwait`, install p50 was 504 ms at under 100 ms of wait, 522 at 100 to 500, 620 at 500 to 1,000, and 709 over 1 s. A push that shared the next read waits up to one read in flight plus its own (DECISIONS, "`edge-read-batch`"), and that wait lands in `install`. Pushes with no wait in an isolate that had already read (18) had install p50 377 ms, at m3fr17's level.
+- **So the gap is cold isolates plus batch waits. No `Authz` member read is slower than on m3fr17,** and the `names` shard was not compared. In m3fe2, 496 of 498 burst pushes ran in an isolate that had served no warm-up push. m3fr17's install p10 was 222 ms against m3fe2's 379, which fits more of its pushes finding a warm isolate [inference: m3fr17's isolates were not read, because its push_log query timed out].
+
+**No fix proposed.** The front still met its 775 ms target. Making install wait less in a cold isolate would mean starting the `Placement` and `Authz` reads together, which needs the `Placement` record to address the `Authz` group, or reading the `Authz` group's learners first. The first changes the read path's order and the second changes `read_spread`'s order for every chain. Neither pays for 184 ms at the median while the line passes. If a later B0-32 fails on the front, the step is to time `placement` and `authz_read` apart in `server-timing` (`instpl`, `instaz`) and decide from that.
+
 ## Rows m3fb32: B0-32 on main `76c3e131` (2026-11-19, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** Granted by the orchestrator after m3flc: one site day from main `76c3e131` or later (`tier-off-leader`, F91, both write cuts), then B0-32. Stops: graft-m3f at $10 from the site day's start, or the account at $170. Committed raw files: `tests/fanout/raw/rows-m3fb32.status`, `tests/fanout/raw/{terms,admit,vmem}-m3fb32-b0-32.jsonl`, `tests/fanout/raw/tsave-m3fb32-b0-32.jsonl.xz`. The a1 files (`a1-b0-32-mwmura9l.jsonl`, `a1-pushes-b0-32-mwmura9l.jsonl`, `runs/{siteday-m3f-m3fb32,a1-b0-32-fm3fb32-b032}.log`) are under the ignored `tests/am1/raw/` on this thread's orb, as on earlier rounds.
