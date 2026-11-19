@@ -53,7 +53,7 @@ pub fn merge_group_run(
     path: &str,
     src: &str,
     b: &Built,
-) -> Result<Option<(WorkflowRun, Vec<JobSpec>)>, String> {
+) -> Result<Option<(WorkflowRun, Vec<JobSpec>, crate::specs::Declared)>, String> {
     let parsed = crate::workflow::parse(path, src);
     if !parsed.ok() {
         return Err(parsed.errors.join("; "));
@@ -63,7 +63,7 @@ pub fn merge_group_run(
     if !parsed.workflow.events.as_ref().is_some_and(|ev| triggers(ev, &t)) {
         return Ok(None);
     }
-    let jobs = crate::specs::job_specs(&parsed.workflow)?;
+    let (jobs, declared) = crate::specs::job_specs_declared(&parsed.workflow)?;
     let run = WorkflowRun {
         id: RunId(DbId(0)),
         repo,
@@ -76,7 +76,7 @@ pub fn merge_group_run(
         concurrency: None,
         fork: false,
     };
-    Ok(Some((run, jobs)))
+    Ok(Some((run, jobs, declared)))
 }
 
 /// An entry older than this starts no `pull_request` run: a first scan of a repository's log, where a site day just set
@@ -159,7 +159,7 @@ pub fn pull_request_run(
     action: &str,
     base: &RefName,
     merge: ObjectId,
-) -> Result<Option<(WorkflowRun, Vec<JobSpec>)>, String> {
+) -> Result<Option<(WorkflowRun, Vec<JobSpec>, crate::specs::Declared)>, String> {
     let parsed = crate::workflow::parse(path, src);
     if !parsed.ok() {
         return Err(parsed.errors.join("; "));
@@ -169,7 +169,7 @@ pub fn pull_request_run(
     if !parsed.workflow.events.as_ref().is_some_and(|ev| triggers(ev, &t)) {
         return Ok(None);
     }
-    let jobs = crate::specs::job_specs(&parsed.workflow)?;
+    let (jobs, declared) = crate::specs::job_specs_declared(&parsed.workflow)?;
     let run = WorkflowRun {
         id: RunId(DbId(0)),
         repo,
@@ -182,7 +182,7 @@ pub fn pull_request_run(
         concurrency: None,
         fork: false,
     };
-    Ok(Some((run, jobs)))
+    Ok(Some((run, jobs, declared)))
 }
 
 /// One unit of `ActionsTrigger`'s work from entry `index` (stamped `at`, ms) whose runs have not committed yet: a

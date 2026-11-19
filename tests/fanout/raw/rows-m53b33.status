@@ -1,0 +1,33 @@
+2026-11-18T21:43:13Z start adfb3aeb2 /home/user/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-18T21:43:31Z start sweep ok
+2026-11-18T21:43:24Z cost account 30.72 since 2026-11-18T00:00:00Z, run 0.0 since 2026-11-18T21:29:00Z, at b0-33
+2026-11-18T21:44:05.817Z m3org/fm53b33-b033 = 131364
+2026-11-18T21:44:06.225Z repo:131364 leader 0 placing since 1795038246974: waiting
+2026-11-18T21:44:09.469Z repo:131364 leader 0 placing since 1795038246974: waiting
+2026-11-18T21:44:12.717Z repo:131364 leader 0 placing since 1795038246974: waiting
+2026-11-18T21:44:15.947Z repo:131364 leader 0 placing since 1795038246974: waiting
+2026-11-18T21:44:24.625Z repo:131364 leader 0: config 7 learners [{"addr":192,"doName":"repo:131364#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131364#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131364#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131364#4#l3","join":200,"site":0,"slot":3}]
+2026-11-18T21:44:25.597Z repo:131364 site 0: arrival mem (asked mem, status 200)
+2026-11-18T21:44:25.811Z repo:131364 site 1: arrival mem (asked mem, status 200)
+2026-11-18T21:44:26.097Z repo:131364 site 2: arrival mem (asked mem, status 200)
+2026-11-18T21:44:30.504Z repo:131364 leader 0: set k 4: {"grants":[[0,[5,0,4]],[2,[5,0,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T21:44:40.841Z repo:131364 leader 0: set k 4: {"grants":[[0,[5,0,4]],[2,[5,0,4]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-18T21:44:51.465Z repo:131364 leader 0: set k 4: {"grants":[[0,[5,0,4]],[2,[5,0,4]]],"k":4,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-18T21:44:51.596Z repo:131364 leader 0: k 4 at 10
+2026-11-18T21:45:00Z b0-33 fm53b33-b033 131364 start
+2026-11-18T21:53:44.327Z repo:131364 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":23},"stepped":true,"want":0}
+2026-11-18T21:53:44.447Z repo:131364 leader 0: k 1 at 572
+2026-11-18T21:53:53Z b0-33 fm53b33-b033 131364 done exit 0
+2026-11-18T21:53:59Z torn down 131364
+site fault off: 200
+git#2#pool:6 200
+git#2#pool:5 200
+git#2#pool:1 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-18T21:54:16Z sweep ok
+ALLDONE
+B033DONE

@@ -1,0 +1,6 @@
+2026-11-18T22:00:14.430Z repo:131364: 8 names, 8 were joined, all not joined
+2026-11-18T22:10:25.628Z purge: waiting 478 s for sweep runs started before the first pass (until 2026-11-18T22:10:00.000010+00:00)
+2026-11-18T22:10:25.628Z purge: 131364 purged: a 4934 -> 0, b 4377 -> 145, c 4307 -> 0
+2026-11-18T22:10:25.628Z purge: 131364 second pass: a 2 -> 0, b 180 -> 0, c 0 -> 0
+2026-11-18T22:10:25.628Z purge: {"dry": false, "purged": 1, "objects": 13618, "refused": [], "second": 182}
+RETIREDONE

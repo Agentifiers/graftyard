@@ -1398,6 +1398,8 @@ impl NamesCmd {
                     }
                 }
             }
+            // Ids `Ids` assigns are positive; a negative one is an owner's Actions installation, which has no route.
+            NamesOp::RegisterInstallation { id, .. } if id.0.0 <= 0 => Err(NamesErr::Reserved),
             NamesOp::RegisterInstallation { id, app, owner } => match s.installation(*id) {
                 Some(r) if r == (*app, *owner) => Ok((SmallVec::new(), NamesOut::Done)),
                 Some((_, by)) => Err(NamesErr::Taken { by }),

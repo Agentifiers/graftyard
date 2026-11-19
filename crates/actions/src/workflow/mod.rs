@@ -69,6 +69,8 @@ pub struct Job {
     pub continue_on_error: Option<Node>,
     pub defaults: Option<Node>,
     pub call: Option<Call>,
+    /// `permissions:`, as written: a mapping, `read-all`, or `write-all` (`crate::token`). Not in the oracle's JSON.
+    pub permissions: Option<Node>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -80,6 +82,8 @@ pub struct Workflow {
     pub concurrency: Option<Node>,
     pub defaults: Option<Node>,
     pub jobs: Vec<Job>,
+    /// The workflow's `permissions:`, which each job without its own takes. Not in the oracle's JSON.
+    pub permissions: Option<Node>,
 }
 
 /// A parsed workflow file. `errors` are the oracle's messages; a workflow with any is not run.
@@ -266,6 +270,7 @@ pub fn parse(file: &str, src: &str) -> Parsed {
                 Some("env") => w.env = Some(v.clone()),
                 Some("name") => w.name = Some(v.clone()),
                 Some("defaults") => w.defaults = Some(v.clone()),
+                Some("permissions") => w.permissions = Some(v.clone()),
                 _ => {}
             }
         }
@@ -732,6 +737,7 @@ fn convert_job(cx: &mut Cx, key: &Node, id: &str, body: &[(Node, Node)]) -> Job 
         continue_on_error: None,
         defaults: None,
         call: None,
+        permissions: None,
     };
     let mut name = None;
     let mut uses = None;
@@ -798,6 +804,7 @@ fn convert_job(cx: &mut Cx, key: &Node, id: &str, body: &[(Node, Node)]) -> Job 
             "timeout-minutes" => j.timeout_minutes = Some(v.clone()),
             "continue-on-error" => j.continue_on_error = Some(v.clone()),
             "defaults" => j.defaults = Some(v.clone()),
+            "permissions" => j.permissions = Some(v.clone()),
             _ => {}
         }
     }

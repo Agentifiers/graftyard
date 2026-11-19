@@ -22,9 +22,14 @@ WF = 'crates/actions/src/workflow/filter.rs'
 B = 'crates/actions/src/broker.rs'
 R = 'crates/actions/src/runsvc.rs'
 L = 'crates/actions/src/launch.rs'
+T = 'crates/actions/src/token.rs'
+ST = 'crates/identity/src/stateless.rs'
+AZ = 'crates/identity/src/authz.rs'
+NM = 'crates/identity/src/names.rs'
 LIB = ['-p', 'graftyard-actions', '--lib']
 ACT = ['-p', 'graftyard-actions', '--test', 'gates', '--lib']
 WFT = ['-p', 'graftyard-actions', '--test', 'workflows', '--lib']
+ID = ['-p', 'graftyard-identity', '--test', 'wp4', '--lib']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -190,6 +195,57 @@ MUTANTS = [
     ("tar_url is the API's tarball redirect", L,
      '    (format!("{codeload}/legacy.tar.gz/{h}"), format!("{codeload}/legacy.zip/{h}"))',
      '    (format!("{codeload}/tarball/{h}"), format!("{codeload}/legacy.zip/{h}"))', LIB),
+    # ---- slice B: the job's GITHUB_TOKEN (`gh-token`, `tests/m4/results/m4-wp3.md`) ----
+    ('every App, the Actions App too, is held to an hour', ST,
+     '    if app == ACTIONS_APP { JOB_TOKEN_MAX } else { INSTALLATION_TOKEN_TTL }',
+     '    INSTALLATION_TOKEN_TTL', ID),
+    ('every App, not only the Actions App, may mint for a day', ST,
+     '    if app == ACTIONS_APP { JOB_TOKEN_MAX } else { INSTALLATION_TOKEN_TTL }',
+     '    JOB_TOKEN_MAX', ID),
+    ('mint ignores the cap on a grant\'s lifetime', ST,
+     '        let life = grant.lifetime_ms.unwrap_or(ms(INSTALLATION_TOKEN_TTL)).min(ms(max_lifetime(grant.app)));',
+     '        let life = grant.lifetime_ms.unwrap_or(ms(INSTALLATION_TOKEN_TTL));', ID),
+    ('verify allows any lifetime', ST,
+     '        if c.exp.0.saturating_sub(c.iat.0) > ms(max_lifetime(c.app)) {',
+     '        if false {', ID),
+    ('a key retires one hour token after its switch, as on main', ST,
+     '            at: Timestamp(at.0 + ms(SIGNING_KEY_CACHE) + ms(JOB_TOKEN_MAX) + ms(CLOCK_SKEW)),',
+     '            at: Timestamp(at.0 + ms(SIGNING_KEY_CACHE) + ms(INSTALLATION_TOKEN_TTL) + ms(CLOCK_SKEW)),', ID),
+    ('a token\'s jti is drawn, never the job\'s', ST,
+     '            jti: grant.jti.unwrap_or(Jti(Ulid::new(now, rand))),',
+     '            jti: Jti(Ulid::new(now, rand)),', ID),
+    ('the Actions installation is taken at any id', AZ,
+     '            let ok = *id == crate::stateless::actions_installation(owner) && *row == actions_row();',
+     '            let ok = *row == actions_row();', ID),
+    ('the Actions installation is taken with any row', AZ,
+     '            let ok = *id == crate::stateless::actions_installation(owner) && *row == actions_row();',
+     '            let ok = *id == crate::stateless::actions_installation(owner);', ID),
+    ('the Actions installation can be uninstalled', AZ,
+     '            AuthzOp::Uninstall { id } if crate::stateless::is_actions_installation(*id) => Err(AuthzErr::Forbidden),\n',
+     '', ID),
+    ('a negative installation id can be registered', NM,
+     '            NamesOp::RegisterInstallation { id, .. } if id.0.0 <= 0 => Err(NamesErr::Reserved),\n',
+     '', ID),
+    ('a lease expiry denies no token', T,
+     '        if !matches!(event, JobEvent::Finished(_) | JobEvent::Cancel | JobEvent::LeaseExpired) {',
+     '        if !matches!(event, JobEvent::Finished(_) | JobEvent::Cancel) {', ACT),
+    ('a cancel denies no token', T,
+     '        if !matches!(event, JobEvent::Finished(_) | JobEvent::Cancel | JobEvent::LeaseExpired) {',
+     '        if !matches!(event, JobEvent::Finished(_) | JobEvent::LeaseExpired) {', ACT),
+    ('every ended job is denied, issued or not', T,
+     '        let Some(j) = fold.job(*job).filter(|_| fold.more.issued.contains(job)) else { continue };',
+     '        let Some(j) = fold.job(*job) else { continue };', ACT),
+    ('the deny lapses an hour after the job ends', T,
+     '    Timestamp(ended.0 + JOB_TOKEN_MAX.as_millis() as u64)',
+     '    Timestamp(ended.0 + 3_600_000)', ACT),
+    ('a fork keeps its writes', T,
+     '            *a = (*a).min(Access::Read);', '            *a = (*a).max(Access::Read);', LIB),
+    ('the workflow\'s permissions beat the job\'s', T,
+     '    job.or(workflow).map(parse).transpose()', '    workflow.or(job).map(parse).transpose()', LIB),
+    ('a jti ignores the attempt', T,
+     "    r[8..].copy_from_slice(&attempt.to_be_bytes());\n", '', LIB),
+    ('a job token is for every repository', T,
+     '        repos: RepoScope::Selected(smallvec::smallvec![run.repo]),', '        repos: RepoScope::All,', LIB),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

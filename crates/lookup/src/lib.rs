@@ -811,6 +811,24 @@ fn answer_sample(r: Option<(u16, &Value)>, elapsed_ms: f64) -> f64 {
     if follower_answer_usable(r) { elapsed_ms } else { FOLLOWER_CALL.as_millis() as f64 }
 }
 
+/// Whether `q` (a `/read` body's `q`) is a read the acting leader never serves by read-index, and `read_spread` never
+/// sends on to it: a whole-tier dump (`{"rows": true}`) or an `ls-refs` (`{"lsRefs": ..}`). On B0-33 m53 the acting
+/// leader served 5,460 whole-tier dumps in two bursts after leader changes, 3,835 of them sent on after every member
+/// declined; its first stall held 1,052 reads in 5.2 s with no write stepped (`design/DESIGN.md`, "Follower read";
+/// `decisions/DECISIONS.md`, "`tier-off-leader`"). A merge's rows, a narrow API read and the read gate's rows are not.
+pub fn leader_never_serves(q: &Value) -> bool {
+    q.get("rows").is_some_and(Value::is_boolean) || q.get("lsRefs").is_some()
+}
+
+/// The reason a `TierOff` read fails with: it names OVERLOADED, so every caller treats it as a shed read (503 with
+/// `Retry-After: 1`, a write's shed retry, an Agent push's `ng`), and TIER_OFF, so the edge logs it apart
+/// (`decisions/DECISIONS.md`, "`tier-off-leader`", the flip).
+pub const TIER_OFF: &str = "tierOff";
+
+fn tier_off_why(chain: ChainId) -> String {
+    format!("{chain}: every member declined a read the leader never serves: {OVERLOADED} ({TIER_OFF})")
+}
+
 /// What `read_spread` does with the answers it got, in order.
 #[derive(Debug, PartialEq, Eq)]
 enum Spread {
@@ -825,20 +843,30 @@ enum Spread {
     /// tier is loading, or it knows no leader) or a 4xx (not joined: a group not created yet), or none was asked. The
     /// leader by `call_opt`, which finds a group not yet created and reports a leaderless one with `suspect`.
     Leader,
+    /// Every one asked declined a read the leader never serves (`leader_never_serves`) and one named a leader or a
+    /// term: shed as `Shed` is, with its own reason, TIER_OFF, so a row counts the 503s this rule makes.
+    TierOff,
+    /// Every one asked declined a read the leader never serves (`leader_never_serves`) and none answered `notLeader`:
+    /// none is joined, so the group may not exist yet, and the caller creates it and asks again.
+    Absent,
 }
 
-/// `read_spread`'s choice from the answers of the members `spread_order` named, in order.
-fn spread_verdict(answers: &[Option<(u16, &Value)>]) -> Spread {
+/// `read_spread`'s choice from the answers of the members `spread_order` named, in order. `leader_ok` is false for a
+/// read the leader never serves: one that every member declined is then `TierOff` if any answered `notLeader` (a group
+/// with a leader, between elections, or whose followers' tiers are loading), so it is answered 503 or asked again,
+/// and `Absent` if none did.
+fn spread_verdict(answers: &[Option<(u16, &Value)>], leader_ok: bool) -> Spread {
     if let Some(i) = answers.iter().position(|r| follower_answer_usable(*r)) {
         return Spread::Use(i);
     }
-    let declined = |r: &Option<(u16, &Value)>| match r {
-        Some((200, v)) => v.pointer("/error/notLeader").is_some() || v.pointer("/done/notLeader").is_some(),
-        Some((s, _)) => (400..500).contains(s),
-        None => false,
-    };
+    let not_leader = |r: &Option<(u16, &Value)>| matches!(r, Some((200, v)) if v.pointer("/error/notLeader").is_some() || v.pointer("/done/notLeader").is_some());
+    let declined = |r: &Option<(u16, &Value)>| not_leader(r) || matches!(r, Some((s, _)) if (400..500).contains(s));
     if answers.iter().all(declined) {
-        return Spread::Leader;
+        return match (leader_ok, answers.iter().any(not_leader)) {
+            (true, _) => Spread::Leader,
+            (false, true) => Spread::TierOff,
+            (false, false) => Spread::Absent,
+        };
     }
     let wait = answers.iter().filter_map(|r| match classify(*r, false) {
         Answer::Overloaded(ms) => Some(ms),
@@ -972,6 +1000,10 @@ async fn spread_once(
         known.learners.into_iter().map(|(s, n)| (s, n.clone(), m.get(&(s, n)).and_then(|t| t.score(now)))).collect()
     });
     let n_learners = learners.len();
+    // A whole-tier dump or an `ls-refs` never goes on to the leader, unless the group has no other member to serve it
+    // (a `Solo` group: one voter, no learners), whose leader serves every read.
+    let alone = voters.len() <= 1 && n_learners == 0;
+    let leader_ok = alone || !body.get("q").is_some_and(leader_never_serves);
     let mut indexed = body.clone();
     indexed["index"] = json!(true);
     let bytes = indexed.to_string();
@@ -993,6 +1025,13 @@ async fn spread_once(
         let usable = follower_answer_usable(seen);
         if let Some((_, v)) = &r {
             learn_config(chain, v);
+            // A leader that declined a whole-tier read names itself: this isolate leaves it out of its next pass.
+            if let Some(nl) = v.pointer("/error/notLeader").filter(|nl| !leader_ok && nl["leader"].is_u64()) {
+                learn_leader_from_follower(
+                    chain,
+                    &json!({ "meta": { "term": nl.get("term"), "leader": nl.get("leader") } }),
+                );
+            }
         }
         answers.push(r);
         if usable {
@@ -1003,8 +1042,10 @@ async fn spread_once(
         }
     }
     let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
-    match spread_verdict(&seen) {
+    match spread_verdict(&seen, leader_ok) {
         Spread::Use(_) => unreachable!("a usable answer returned above"),
+        Spread::Absent => Ok(Ok(None)),
+        Spread::TierOff => Err((tier_off_why(chain), OVERLOAD_RETRY_MS)),
         Spread::Shed(ms) => {
             // A member that shed it because its read-index call to the leader went unanswered (F67 rule 12) names
             // that leader: one `suspect` report about it, damped by SUSPECT_GAP, stands in for the leader walk a
@@ -2630,7 +2671,7 @@ mod tests {
         // send the read to the leader while another member sheds it.
         let leaderless = json!({ "error": { "notLeader": { "term": 3, "leader": null } } });
         let null = Value::Null;
-        assert_eq!(spread_verdict(&[Some((200, &shed)), Some((200, &value))]), Spread::Use(1));
+        assert_eq!(spread_verdict(&[Some((200, &shed)), Some((200, &value))], true), Spread::Use(1));
         for answers in [
             vec![Some((200, &shed)), Some((200, &shed)), Some((200, &shed))],
             vec![Some((200, &named)), Some((200, &shed))],
@@ -2641,7 +2682,7 @@ mod tests {
             vec![Some((200, &named)), Some((409, &null)), None],
             vec![Some((200, &leaderless)), Some((200, &shed))],
         ] {
-            assert!(matches!(spread_verdict(&answers), Spread::Shed(_)), "{answers:?}");
+            assert!(matches!(spread_verdict(&answers, true), Spread::Shed(_)), "{answers:?}");
         }
         for answers in [
             vec![Some((200, &named)), Some((200, &named))],
@@ -2650,8 +2691,51 @@ mod tests {
             vec![Some((200, &leaderless)), Some((200, &named))],
             vec![],
         ] {
-            assert_eq!(spread_verdict(&answers), Spread::Leader, "{answers:?}");
+            assert_eq!(spread_verdict(&answers, true), Spread::Leader, "{answers:?}");
         }
+    }
+
+    /// `tier-off-leader`: a whole-tier dump or an `ls-refs` is a read the leader never serves; a merge's rows, a narrow
+    /// API read and the read gate's rows still may. One that every member declined never goes on to the leader: it is
+    /// shed (503 or asked again) when any member named a leader or a term, and `Absent` (create the group, ask again)
+    /// only when none is joined. A value from any member is still used.
+    #[test]
+    fn a_whole_tier_read_every_member_declines_never_goes_to_the_leader() {
+        for q in [
+            json!({ "rows": true, "ranges": true, "packed": true }),
+            json!({ "lsRefs": { "reads": [""], "head": true } }),
+        ] {
+            assert!(leader_never_serves(&q), "{q}");
+        }
+        for q in [
+            json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true }),
+            json!({ "rows": { "api": { "issues": {} } } }),
+            json!({ "rows": { "access": true, "agent": true } }),
+            json!({ "probe": true }),
+            json!({ "refs": { "prefix": "" } }),
+        ] {
+            assert!(!leader_never_serves(&q), "{q}");
+        }
+        let value = json!({ "value": 1, "index": 3 });
+        let named = json!({ "error": { "notLeader": { "term": 3, "leader": 0 } } });
+        let leaderless = json!({ "error": { "notLeader": { "term": 3, "leader": null } } });
+        let null = Value::Null;
+        for answers in [
+            vec![Some((200, &named)), Some((200, &named)), Some((200, &named))],
+            vec![Some((200, &leaderless)), Some((409, &null))],
+            vec![Some((409, &null)), Some((200, &named))],
+        ] {
+            assert_eq!(spread_verdict(&answers, false), Spread::TierOff, "{answers:?}");
+            assert_eq!(spread_verdict(&answers, true), Spread::Leader, "{answers:?}");
+        }
+        for answers in [vec![Some((409, &null)), Some((404, &null))], vec![]] {
+            assert_eq!(spread_verdict(&answers, false), Spread::Absent, "{answers:?}");
+        }
+        assert_eq!(spread_verdict(&[Some((200, &named)), Some((200, &value))], false), Spread::Use(1));
+        // Its reason is a shed's, which every caller already answers 503 or retries, and it names TIER_OFF apart.
+        let why = tier_off_why(ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9))));
+        assert!(why.contains(OVERLOADED) && why.contains(TIER_OFF), "{why}");
+        assert!(!format!("repo:9: every member asked shed the read: {OVERLOADED}").contains(TIER_OFF));
     }
 
     /// `b032-shed` A: a member that forgot its leader sheds the read and names it. Every such answer is `Shed`, never a
@@ -2668,10 +2752,10 @@ mod tests {
         let named = json!({ "error": { "notLeader": { "term": 3, "leader": 0 } } });
         let shed = overloaded_reply(250);
         let all = [Some((200, &f3)), Some((200, &f4)), Some((200, &f3))];
-        assert!(matches!(spread_verdict(&all), Spread::Shed(_)));
+        assert!(matches!(spread_verdict(&all, true), Spread::Shed(_)));
         assert_eq!(forgot_of(&all), Some((SiteId(0), 4)));
         assert_eq!(forgot_of(&[Some((200, &shed)), None]), None);
-        assert_eq!(spread_verdict(&[Some((200, &named)), Some((200, &named))]), Spread::Leader);
+        assert_eq!(spread_verdict(&[Some((200, &named)), Some((200, &named))], true), Spread::Leader);
     }
 
     /// A shed spread read waits the longest `retryAfterMs` its members named, else OVERLOAD_RETRY_MS (one timed out or
@@ -2679,8 +2763,8 @@ mod tests {
     #[test]
     fn a_shed_spread_waits_what_its_members_named() {
         let (slow, fast, busy) = (overloaded_reply(700), overloaded_reply(300), json!({ "busy": true }));
-        assert_eq!(spread_verdict(&[Some((200, &fast)), None, Some((200, &slow))]), Spread::Shed(700));
-        assert_eq!(spread_verdict(&[None, Some((200, &busy))]), Spread::Shed(OVERLOAD_RETRY_MS));
+        assert_eq!(spread_verdict(&[Some((200, &fast)), None, Some((200, &slow))], true), Spread::Shed(700));
+        assert_eq!(spread_verdict(&[None, Some((200, &busy))], true), Spread::Shed(OVERLOAD_RETRY_MS));
     }
 
     /// `retry_shed` over shed answers naming `named` ms each (`sheds`), each pass taking `pass` ms, jitter `r`, from

@@ -1002,6 +1002,12 @@ impl Family for Repo {
                 if let Some(since) = body["since"].as_u64() {
                     v["moved"] = json!(crate::load::moved(raft::Index(since), c.m.log_base().index, c.m.log()));
                 }
+                // The fold audit's live-row check (`crate::live`): the last result, and a new check when one is due.
+                if body["live"] == json!(true) {
+                    drop(core);
+                    v["live"] = crate::live::route(host)?;
+                    return Ok(v);
+                }
                 if body.get("log").is_some() {
                     v["log"] = crate::snap::log_json(&host.state.storage().sql())?;
                     v["dbBytes"] = json!(host.state.storage().sql().database_size());
@@ -1753,7 +1759,8 @@ impl Family for Authz {
         // 0x12.4 the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set;
         // 0x12.11 F59's create with its settings, which the edge sends only once `FormatsEnable` enabled it, and the
         // consumer's abort; 0x12.12 M4-WP3's `SealKey` and org secret and variable ops, which the edge sends only once
-        // `FormatsEnable` enabled it; 0x12.13 `PATCH /app/hook/config`'s `SetAppHook`, likewise.
+        // `FormatsEnable` enabled it; 0x12.13 `PATCH /app/hook/config`'s `SetAppHook`, likewise; 0x12.14 the Actions
+        // App's installation, which `acquirejob` commits only once `FormatsEnable` enabled it (`gh-token`).
         vec![
             id::AUTHZ_FORMAT,
             id::AUTHZ_FORMAT_V2,
@@ -1762,6 +1769,7 @@ impl Family for Authz {
             id::AUTHZ_FORMAT_V11,
             id::AUTHZ_FORMAT_V12,
             id::AUTHZ_FORMAT_V13,
+            id::AUTHZ_FORMAT_V14,
         ]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`): a transfer's

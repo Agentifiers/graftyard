@@ -33,6 +33,55 @@ use crate::tokens::{Ed25519Public, Jti, Kid, RepoScope, TokensRead};
 
 /// "Installation tokens expire one hour from the time you create them" (`research/agents.md`, finding 4.2).
 pub const INSTALLATION_TOKEN_TTL: Duration = Duration::from_secs(3600);
+/// A job's `GITHUB_TOKEN` lives at most this long: "because the `GITHUB_TOKEN` is an installation access token, it
+/// can only be refreshed for up to 24 hours" [doc: GHES 3.22, "GITHUB_TOKEN"]. Only the Actions App's tokens may live
+/// past `INSTALLATION_TOKEN_TTL`, and `acquirejob` alone mints one (`JobToken`); the job-end `jti` deny is the real
+/// bound (`decisions/DECISIONS.md`, "`gh-token`").
+pub const JOB_TOKEN_MAX: Duration = Duration::from_secs(24 * 3600);
+
+/// The install-owned Actions App, whose installation a job's `GITHUB_TOKEN` is and whose check runs `RunOwner` writes
+/// (`design/DESIGN.md`, `ActorId`): id 2 of cell 0's block 0, which `Ids` never leases, beside the install account's
+/// id 1 [inference: an install-wide App needs an id no account or App takes; block 0 is the only range nothing else
+/// assigns]. It has no `AppRecord`: no slug, key, client, or webhook, so no App route, token request, or delivery
+/// reaches it.
+pub const ACTIONS_APP: AppId = AppId(graftyard_types::DbId(2));
+
+/// The `GITHUB_TOKEN` scopes GHES 3.22 lists, by their App permission names: the workflow's `pull-requests` is the
+/// token's `pull_requests` [doc: GHES 3.22, "Workflow syntax for GitHub Actions", `permissions`, and "Permissions
+/// required for GitHub Apps"]. `read-all` and `write-all` set each of them.
+pub const ACTIONS_SCOPES: [&str; 12] = [
+    "actions",
+    "checks",
+    "contents",
+    "deployments",
+    "discussions",
+    "issues",
+    "packages",
+    "pages",
+    "pull_requests",
+    "repository_projects",
+    "security_events",
+    "statuses",
+];
+
+/// The Actions App's installation on `owner`: the owner's id negated. Every id `Ids` assigns is positive (`DbId::pack`
+/// of a cell, block, and offset), so no installation registered through `RegisterInstallation` takes one, and an
+/// owner has exactly one.
+pub fn actions_installation(owner: graftyard_types::AccountId) -> InstallationId {
+    InstallationId(graftyard_types::DbId(-owner.0.0))
+}
+
+/// Whether an installation is the Actions App's, which every listing of installations leaves out, as GHES lists no
+/// `github-actions` installation [inference: GHES 3.22's installation routes take an App JWT or a user's token and
+/// name only Apps the caller registered or installed].
+pub fn is_actions_installation(id: InstallationId) -> bool {
+    id.0.0 < 0
+}
+
+/// The longest a token of `app` may live: `JOB_TOKEN_MAX` for the Actions App, `INSTALLATION_TOKEN_TTL` for any other.
+pub fn max_lifetime(app: AppId) -> Duration {
+    if app == ACTIONS_APP { JOB_TOKEN_MAX } else { INSTALLATION_TOKEN_TTL }
+}
 /// DESIGN's: at most this long per `graft-ops` isolate.
 pub const SIGNING_KEY_CACHE: Duration = Duration::from_secs(3600);
 /// How far a token's `iat` may be ahead of the verifier's clock [guess].
@@ -238,7 +287,7 @@ impl Unverified {
         vk.verify_strict(self.signed.as_bytes(), &ed25519_dalek::Signature::from_bytes(&self.sig))
             .map_err(|_| StatelessError::Signature)?;
         let c = self.claims;
-        if c.exp.0.saturating_sub(c.iat.0) > ms(INSTALLATION_TOKEN_TTL) {
+        if c.exp.0.saturating_sub(c.iat.0) > ms(max_lifetime(c.app)) {
             return Err(StatelessError::Lifetime);
         }
         if c.iat.0 > now.0 + ms(CLOCK_SKEW) {
@@ -304,6 +353,23 @@ pub struct Grant {
     pub permissions: PermissionSet,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<SessionId>,
+    /// How long the token lives, in milliseconds, when not `INSTALLATION_TOKEN_TTL`: only `acquirejob` sets it, for a
+    /// job's `GITHUB_TOKEN` (`job_token_life`). `mint` caps it at `max_lifetime(app)`, so another App's grant that names
+    /// one still gets an hour. Absent from the JSON when `None`, so every other grant keeps its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_ms: Option<u64>,
+    /// The token's `jti` when the caller chose it: `acquirejob` names the job's own (`graftyard_actions::token::job_jti`),
+    /// so `RunOwner` can deny it when the job ends without storing it. Absent from the JSON when `None`, and then
+    /// `mint` draws one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<Jti>,
+}
+
+/// A job's `GITHUB_TOKEN` lifetime: the job's limit plus one lease, so a job that runs to its limit and whose runner
+/// then vanishes still holds a live token until the lease fails the job and `RunOwner` denies it, capped at
+/// `JOB_TOKEN_MAX` (`decisions/DECISIONS.md`, "`gh-token`").
+pub fn job_token_life(job_limit: Duration, lease: Duration) -> Duration {
+    (job_limit + lease).min(JOB_TOKEN_MAX)
 }
 
 /// One `graft-ops` isolate's minter: the unwrapped key and when it was fetched.
@@ -337,14 +403,15 @@ impl Minter {
         }
         let (kid, key, _) = self.held.as_ref().expect("held");
         let iat = Timestamp(now.0 / 1000 * 1000);
+        let life = grant.lifetime_ms.unwrap_or(ms(INSTALLATION_TOKEN_TTL)).min(ms(max_lifetime(grant.app)));
         let claims = InstallationClaims {
             app: grant.app,
             installation: grant.installation,
             repos: grant.repos.clone(),
             permissions: grant.permissions.clone(),
-            jti: Jti(Ulid::new(now, rand)),
+            jti: grant.jti.unwrap_or(Jti(Ulid::new(now, rand))),
             iat,
-            exp: Timestamp(iat.0 + ms(INSTALLATION_TOKEN_TTL)),
+            exp: Timestamp(iat.0 + life / 1000 * 1000),
             kid: *kid,
             task: grant.task.clone(),
         };
@@ -377,10 +444,11 @@ pub struct KeyEpoch {
     pub switched: Option<Timestamp>,
 }
 
-/// What a rotation does next: switch the key source to the new key once its row has been published for one token
-/// lifetime, so every edge has had time to see it; then retire the old key once no token it signed can still be
-/// live. An isolate may hold the old key for `SIGNING_KEY_CACHE` after the switch, and its last token lives
-/// `INSTALLATION_TOKEN_TTL`, so the old key retires at the switch plus both.
+/// What a rotation does next: switch the key source to the new key once its row has been published for one
+/// installation-token lifetime, so every edge has had time to see it; then retire the old key once no token it signed
+/// can still be live. An isolate may hold the old key for `SIGNING_KEY_CACHE` after the switch, and its last token is
+/// a job's `GITHUB_TOKEN`, which lives up to `JOB_TOKEN_MAX`, so the old key retires at the switch plus both
+/// (`decisions/DECISIONS.md`, "`gh-token`").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RotationStep {
     /// Keep signing with the old key.
@@ -398,7 +466,7 @@ pub fn rotation_step(old: &KeyEpoch, new: &KeyEpoch, now: Timestamp) -> Rotation
         None => RotationStep::Wait,
         Some(at) => RotationStep::Retire {
             kid: old.kid,
-            at: Timestamp(at.0 + ms(SIGNING_KEY_CACHE) + ms(INSTALLATION_TOKEN_TTL) + ms(CLOCK_SKEW)),
+            at: Timestamp(at.0 + ms(SIGNING_KEY_CACHE) + ms(JOB_TOKEN_MAX) + ms(CLOCK_SKEW)),
         },
     }
 }
@@ -509,7 +577,7 @@ pub fn access_token_grant(
         .ok_or(TokenRequestError::NoInstallation)?;
     let (repos, permissions) =
         narrow(&row.repos, &row.permissions, &app.permissions, req, resolve).map_err(TokenRequestError::Narrow)?;
-    Ok(Grant { app: app.id, installation: id, repos, permissions, task: None })
+    Ok(Grant { app: app.id, installation: id, repos, permissions, task: None, lifetime_ms: None, jti: None })
 }
 
 /// `DELETE /installation/token`: the command the edge commits on `jti_shard` under the token itself. The leader
@@ -548,6 +616,8 @@ mod tests {
             repos,
             permissions: perms(&[("contents", Access::Write), ("metadata", Access::Read)]),
             task: None,
+            lifetime_ms: None,
+            jti: None,
         }
     }
 
@@ -635,6 +705,65 @@ mod tests {
         }
     }
 
+    /// A job's `GITHUB_TOKEN` lives the job limit plus a lease, up to `JOB_TOKEN_MAX`, and only the Actions App's
+    /// tokens may: another App's grant naming a longer life is minted for an hour, and a token claiming more than its
+    /// App's maximum is refused even under a good signature.
+    #[test]
+    fn only_the_actions_apps_tokens_outlive_an_hour_and_none_outlives_a_day() {
+        let now = Timestamp(1_800_000_000_000);
+        let (src, f) = (Src(Kid(3), [5; 32]), keys(Kid(3), [5; 32], None));
+        let hour = ms(INSTALLATION_TOKEN_TTL);
+        let six = job_token_life(Duration::from_secs(6 * 3600), Duration::from_secs(600));
+        assert_eq!(ms(six), 6 * hour + 600_000);
+        assert_eq!(job_token_life(Duration::from_secs(5 * 86_400), Duration::from_secs(600)), JOB_TOKEN_MAX);
+        let named = Jti(Ulid::new(Timestamp(0), [9; 10]));
+        let job = Grant {
+            app: ACTIONS_APP,
+            installation: actions_installation(graftyard_types::AccountId(DbId(77))),
+            lifetime_ms: Some(ms(six)),
+            jti: Some(named),
+            ..grant(RepoScope::All)
+        };
+        let (t, c) = Minter::default().mint(&src, &job, now, [1; 10]).unwrap();
+        assert_eq!(c.exp.0 - c.iat.0, ms(six));
+        assert_eq!(c.jti, named, "the job's own jti, which RunOwner denies");
+        assert_eq!(verify(&t, &f, Timestamp(now.0 + 6 * hour)), Ok(c), "alive past an hour");
+        // Another App asks for the same life and gets an hour.
+        let other = Grant { lifetime_ms: Some(ms(six)), ..grant(RepoScope::All) };
+        let (t, c) = Minter::default().mint(&src, &other, now, [2; 10]).unwrap();
+        assert_eq!(c.exp.0 - c.iat.0, hour);
+        assert_eq!(c.jti, Jti(Ulid::new(now, [2; 10])), "a grant naming no jti gets a drawn one");
+        assert_eq!(verify(&t, &f, Timestamp(now.0 + hour)), Err(StatelessError::Expired));
+        // A day and a second asked of the Actions App is minted for a day.
+        let long = Grant { lifetime_ms: Some(ms(JOB_TOKEN_MAX) + 1_000), ..job.clone() };
+        let (_, c) = Minter::default().mint(&src, &long, now, [3; 10]).unwrap();
+        assert_eq!(c.exp.0 - c.iat.0, ms(JOB_TOKEN_MAX));
+        // Signed claims over each App's maximum: refused at verify.
+        let iat = Timestamp(now.0 / 1000 * 1000);
+        let over = |app, life| {
+            let claims = InstallationClaims {
+                app,
+                installation: InstallationId(DbId(42)),
+                repos: RepoScope::All,
+                permissions: PermissionSet::default(),
+                jti: Jti(Ulid::new(now, [4; 10])),
+                iat,
+                exp: Timestamp(iat.0 + life),
+                kid: Kid(3),
+                task: None,
+            };
+            verify(&sign_with(&SigningSecret([5; 32]), &claims), &f, now)
+        };
+        assert_eq!(over(AppId(DbId(1_234_567)), hour + 1_000), Err(StatelessError::Lifetime));
+        assert!(over(ACTIONS_APP, hour + 1_000).is_ok());
+        assert_eq!(over(ACTIONS_APP, ms(JOB_TOKEN_MAX) + 1_000), Err(StatelessError::Lifetime));
+        // The Actions installation of an owner is its own and can never be a registered one.
+        let o = graftyard_types::AccountId(DbId::pack(3, 7, 1).unwrap());
+        assert!(is_actions_installation(actions_installation(o)));
+        assert_ne!(actions_installation(o), actions_installation(graftyard_types::AccountId(DbId(o.0.0 + 1))));
+        assert!(!is_actions_installation(InstallationId(DbId::pack(255, DbId::MAX_BLOCK, u16::MAX).unwrap())));
+    }
+
     #[test]
     fn the_signing_key_is_cached_for_at_most_signing_key_cache() {
         let src = Src(Kid(1), [8; 32]);
@@ -699,10 +828,10 @@ mod tests {
         assert_eq!(rotation_step(&old, &new, Timestamp(10 * h + h - 1)), RotationStep::Wait);
         assert_eq!(rotation_step(&old, &new, Timestamp(11 * h)), RotationStep::SignWithNew);
         let old = KeyEpoch { switched: Some(Timestamp(11 * h)), ..old };
-        // A cached isolate may sign with kid 1 until 12 h, and that token lives until 13 h.
+        // A cached isolate may sign with kid 1 until 12 h, and a job's token it signs then lives until 36 h.
         assert_eq!(
             rotation_step(&old, &new, Timestamp(11 * h)),
-            RotationStep::Retire { kid: Kid(1), at: Timestamp(13 * h + ms(CLOCK_SKEW)) }
+            RotationStep::Retire { kid: Kid(1), at: Timestamp(36 * h + ms(CLOCK_SKEW)) }
         );
     }
 }

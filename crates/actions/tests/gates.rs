@@ -14,6 +14,9 @@
 //! - R24: a run whose second job `needs` the first gets each job's `workflow_job` `queued`, `in_progress`, and
 //!   `completed`, once each and in order, to an App installed on the owner that subscribes, and nothing to an App
 //!   without `actions` read or whose installation does not reach the repository.
+//! - `gh-token`: every way a job a runner held ends (finished, cancelled, its lease lost, its repository deleted)
+//!   denies the job's `GITHUB_TOKEN` `jti` on its `Tokens` shard, through a deny that outlives the token, and nothing
+//!   denies a token while its job runs.
 
 mod common;
 
@@ -34,6 +37,7 @@ use graftyard_git::merge::required_on;
 use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoCmd, RepoEvent, RepoFold, RepoOut};
 use graftyard_git::run_checks::{REPO_FORMAT_ACTIONS, RunChecksOut};
+use graftyard_identity::{Jti, TOKENS_FORMAT, TOKENS_FORMAT_V2, TokensCmd, TokensFold, TokensRead, jti_shard};
 use graftyard_raft::{CommitError, RequestId, Ulid};
 use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, Timestamp};
 use smallvec::{SmallVec, smallvec};
@@ -101,6 +105,9 @@ struct World {
     app_hooks: bool,
     /// When each (head SHA, check name) first had a conclusion on the repository's leader.
     concluded_at: BTreeMap<(ObjectId, Box<str>), (Timestamp, CheckConclusion)>,
+    /// `gh-token`: `RunOwner` denies ended jobs' tokens (the site's `GRAFTYARD_JOB_TOKENS`), on each `jti`'s shard.
+    job_tokens: bool,
+    tokens: BTreeMap<u16, Group<TokensCmd>>,
 }
 
 impl World {
@@ -108,7 +115,7 @@ impl World {
         let now = Timestamp(1_000_000);
         let mut shard = Group::new(
             ChainId::Actions(OWNER, 3),
-            vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST],
+            vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, graftyard_actions::shard::ACTIONS_FORMAT_TOKENS],
             ActionsFold::default(),
             now,
         );
@@ -136,6 +143,8 @@ impl World {
             rounds: 0,
             app_hooks: false,
             concluded_at: BTreeMap::new(),
+            job_tokens: false,
+            tokens: BTreeMap::new(),
         };
         w.seed_repo();
         w
@@ -306,10 +315,13 @@ impl World {
             if !matches!(self.shard_cmd(m), Some(Ok(_))) {
                 continue;
             }
-            let a = ActionsCmd {
-                actor: ActionsActor::Runner(r),
-                op: ActionsOp::Job { job, version: version + 1, event: JobEvent::Acquired },
+            // `gh-token`: the site's acquire marks the token it mints.
+            let op = if self.job_tokens {
+                ActionsOp::AcquireToken { job, version: version + 1 }
+            } else {
+                ActionsOp::Job { job, version: version + 1, event: JobEvent::Acquired }
             };
+            let a = ActionsCmd { actor: ActionsActor::Runner(r), op };
             assert!(matches!(self.shard_cmd(a), Some(Ok(_))));
             let ms = self.plans.get(&name).map_or(u64::MAX / 2, |p| p.ms);
             self.running.insert(job, (r, Timestamp(self.now.0 + ms)));
@@ -356,7 +368,12 @@ impl World {
         } else {
             Vec::new()
         };
-        let r = round(self.shard.chain, &f, &runs, through, &self.gone, &jobs);
+        let denies = if self.job_tokens {
+            graftyard_actions::token::denies(&f, entries.iter().flat_map(|(_, e)| e.iter()))
+        } else {
+            Vec::new()
+        };
+        let r = round(self.shard.chain, &f, &runs, through, &self.gone, &jobs, &denies);
         if r.checks.is_empty() && r.then.is_empty() {
             return;
         }
@@ -375,6 +392,17 @@ impl World {
                 },
                 // No leader, a lost ticket, or a refusal: the round runs again next step.
                 _ => return,
+            }
+        }
+        for cmd in r.denies {
+            let (now, id) = (self.now, self.rid());
+            let shard = cmd.shard();
+            let g = self.tokens.entry(shard.0).or_insert_with(|| {
+                let chain = ChainId::Tokens(shard);
+                Group::new(chain, vec![TOKENS_FORMAT, TOKENS_FORMAT_V2], TokensFold::new(shard), now)
+            });
+            if !matches!(g.commit(now, id, cmd), Some(Ok(_))) {
+                return;
             }
         }
         if self.kill_owner_after_checks {
@@ -404,6 +432,11 @@ impl World {
                 }
             }
         }
+    }
+
+    /// Whether `jti` is revoked at `at` on its shard's leader.
+    fn revoked(&self, jti: Jti, at: Timestamp) -> bool {
+        self.tokens.get(&jti_shard(&jti).0).is_some_and(|g| g.fold().jti_revoked(&jti, at))
     }
 
     fn step(&mut self) {
@@ -486,6 +519,105 @@ fn bf4_a_killed_runners_job_fails_at_its_lease_end_with_the_group_idle() {
         }
     }
     assert_eq!(w.fold().run(run).unwrap().status, RunStatus::Completed(Conclusion::Failure));
+}
+
+// ---- gh-token ----
+
+/// The job's `GITHUB_TOKEN` `jti`, as `acquirejob` mints it.
+fn jti_of(w: &World, job: JobId) -> Jti {
+    let f = w.fold();
+    graftyard_actions::token::job_jti(job, f.run(f.job(job).unwrap().run).unwrap().run.attempt)
+}
+
+/// BF-4's case for the token: a runner that holds a job vanishes, and nothing more comes from it. Its job's
+/// `GITHUB_TOKEN` lives the job limit plus a lease, so only the deny bounds it: `RunOwner` revokes the `jti` within a
+/// round of the lease failing the job, and the row outlives the longest token the job could hold. Before the lease
+/// ends nothing is revoked. On main, `RunOwner` revokes nothing.
+#[test]
+fn a_vanished_runners_job_token_is_denied_at_its_lease_end() {
+    let mut w = World::new();
+    w.job_tokens = true;
+    w.register(1);
+    let run = w.create_run(oid(11), "refs/heads/a", 5, vec![spec("build", &[])]);
+    w.run_for(2_000);
+    let job = w.fold().run(run).unwrap().jobs[0];
+    let JobState::InProgress { lease_until, .. } = w.fold().job(job).unwrap().state else { panic!("not running") };
+    let jti = jti_of(&w, job);
+    // kill -9 after the acquire: no renew, no finish.
+    w.running.clear();
+    w.runners.clear();
+    // The step that reaches `lease_until` is the one whose alarm fails the job.
+    while w.now.0 + STEP < lease_until.0 {
+        w.step();
+        assert!(!w.revoked(jti, w.now), "denied while its lease was live");
+    }
+    let mut denied = None;
+    for _ in 0..(60_000 / STEP) {
+        w.step();
+        if w.revoked(jti, w.now) {
+            denied = Some(w.now);
+            break;
+        }
+    }
+    let denied = denied.expect("the token is still live a minute after the lease failed its job");
+    let JobState::Completed { conclusion, at } = w.fold().job(job).unwrap().state else { panic!("not completed") };
+    assert_eq!(conclusion, Conclusion::Failure);
+    assert!(denied.0 - at.0 <= 5_000, "denied {} ms after the job failed", denied.0 - at.0);
+    let longest = at.0 + graftyard_identity::stateless::JOB_TOKEN_MAX.as_millis() as u64;
+    assert!(w.revoked(jti, Timestamp(longest - 1)), "the deny lapses before the longest token the job could hold");
+}
+
+/// The other three ways a held job ends, each denying its token: it finishes, an admin cancels its run, and its
+/// repository is deleted, which `RunOwner` answers with `CancelRun`. A job that ended without a runner (a need that
+/// failed, or a cancel while queued) had no token and costs no deny, and another job's token stays live.
+#[test]
+fn a_finished_cancelled_or_deleted_repositorys_job_token_is_denied() {
+    let mut w = World::new();
+    w.job_tokens = true;
+    w.plans.insert("fin".into(), Plan { ms: 20_000, ends: Conclusion::Success });
+    w.plans.insert("bad".into(), Plan { ms: 10_000, ends: Conclusion::Failure });
+    w.register(4);
+    let fin = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("fin", &[])]);
+    let cxl = w.create_run(oid(11), "refs/heads/a", 3, vec![spec("cxl", &[]), spec("bad", &[]), spec("after", &[1])]);
+    let live = w.create_run(oid(12), "refs/heads/b", 4, vec![spec("live", &[])]);
+    // Cancelled while queued: no runner was given its token, so nothing is denied for it.
+    let early = w.create_run(oid(13), "refs/heads/c", 5, vec![spec("early", &[])]);
+    let j_early = w.fold().run(early).unwrap().jobs[0];
+    let stop = ActionsCmd { actor: ActionsActor::Admin(AccountId(DbId(5))), op: ActionsOp::CancelRun { run: early } };
+    assert!(matches!(w.shard_cmd(stop), Some(Ok(_))));
+    w.run_for(2_000);
+    let jobs = |w: &World, r: RunId| w.fold().run(r).unwrap().jobs.clone();
+    let (j_fin, j_cxl, j_bad, j_after, j_live) =
+        (jobs(&w, fin)[0], jobs(&w, cxl)[0], jobs(&w, cxl)[1], jobs(&w, cxl)[2], jobs(&w, live)[0]);
+    assert!(!w.revoked(jti_of(&w, j_cxl), w.now));
+    w.run_for(25_000);
+    assert!(w.revoked(jti_of(&w, j_fin), w.now), "finished");
+    assert!(w.revoked(jti_of(&w, j_bad), w.now), "failed");
+    assert_eq!(w.fold().job(j_after).unwrap().state.completed(), Some(Conclusion::Skipped));
+    assert!(!w.revoked(jti_of(&w, j_after), w.now), "skipped before any runner held it");
+    assert_eq!(w.fold().job(j_early).unwrap().state.completed(), Some(Conclusion::Cancelled));
+    assert!(!w.revoked(jti_of(&w, j_early), w.now), "cancelled before any runner held it");
+    let cancel = ActionsCmd { actor: ActionsActor::Admin(AccountId(DbId(5))), op: ActionsOp::CancelRun { run: cxl } };
+    assert!(matches!(w.shard_cmd(cancel), Some(Ok(_))));
+    w.run_for(5_000);
+    assert!(w.revoked(jti_of(&w, j_cxl), w.now), "cancelled");
+    assert!(!w.revoked(jti_of(&w, j_live), w.now), "another job's token is untouched");
+    // The repository is deleted: RunOwner's next round finds it `Gone` and cancels the live run. A renew writes only
+    // once less than `LEASE_REWRITE_UNDER` is left, and that write is the shard entry the round reads.
+    w.run_for(6 * MIN);
+    assert!(!w.revoked(jti_of(&w, j_live), w.now), "a running job's token stays live");
+    let (now, id) = (w.now, w.rid());
+    let gone = RepoEvent::Deleted { retain_until: Timestamp(now.0 + 86_400_000), actor: None };
+    w.repo.record(now, id, graftyard_git::repo::REPO_FORMAT_REPOS, vec![gone]);
+    let v = w.fold().job(j_live).unwrap().version;
+    let renew = ActionsCmd {
+        actor: ActionsActor::Job(j_live),
+        op: ActionsOp::Job { job: j_live, version: v, event: JobEvent::Renewed },
+    };
+    assert!(w.shard_cmd(renew).is_some());
+    w.run_for(10_000);
+    assert_eq!(w.fold().job(j_live).unwrap().state.completed(), Some(Conclusion::Cancelled));
+    assert!(w.revoked(jti_of(&w, j_live), w.now), "its repository deleted");
 }
 
 // ---- BF-56 ----

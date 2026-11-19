@@ -392,6 +392,8 @@ pub struct Stats {
     /// answered `overloaded` after FOLLOWER_WAIT (`crate::member`).
     pub follower_reads: u32,
     pub follower_refused: u32,
+    /// Whole-tier and `ls-refs` read-index reads this member refused while it led (`tier-off-leader`).
+    pub leader_refused: u32,
     pub follower_late: u32,
     /// Reads served by `stale()` under a `StaleMode` flag (`crate::member`, `read_stale`).
     pub stale_reads: u32,

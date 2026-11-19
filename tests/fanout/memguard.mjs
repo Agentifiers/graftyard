@@ -31,7 +31,10 @@ for (let k = 0; Date.now() < until; k++) {
   const st = await Promise.all([0, 1, 2].map(async (s) => {
     const v = (await member(chain, s, q, undefined, 5_000, names[s]).catch(() => ({}))).v ?? {};
     return { site: s, role: v.role ?? null, mib: v.wasmMemMb == null ? null : +(v.wasmMemMb * 1e6 / 1048576).toFixed(1),
-      memSplit: v.memSplit ?? null, arrival: v.arrival ?? null };
+      memSplit: v.memSplit ?? null, arrival: v.arrival ?? null,
+      // tier-off-leader: the isolate's packed dump builds and the whole-tier or ls-refs read-index reads it refused
+      // while leading, both counters since the isolate started (per second by difference between samples).
+      dumpBuilds: v.dumpBuilds ?? null, leaderRefused: v.leaderRefused ?? null };
   }));
   const row = { at: new Date(t).toISOString(), members: st };
   console.log(JSON.stringify(row));
