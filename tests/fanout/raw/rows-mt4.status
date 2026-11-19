@@ -1,0 +1,6 @@
+harness outages (2026-11-19T06:20:03Z to 2026-11-19T06:35:03Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-19T06:20:05Z", "2026-11-19T06:20:06Z"], ["2026-11-19T06:20:07Z", "2026-11-19T06:20:08Z"], ["2026-11-19T06:20:10Z", "2026-11-19T06:20:14Z"]], "outageSeconds": 6.0, "share": 0.0067, "valid": true}
+{"kind": "read:api", "measured": {"n": 175157, "served": 0.9995, "p50": 611, "p99": 2324, "cap": 0}, "outagesRemoved": {"n": 175075, "served": 0.9995, "p50": 611, "p99": 2325, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 29597, "served": 0.9994, "p50": 1140, "p99": 3360, "cap": 0}, "outagesRemoved": {"n": 29577, "served": 0.9994, "p50": 1140, "p99": 3360, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}

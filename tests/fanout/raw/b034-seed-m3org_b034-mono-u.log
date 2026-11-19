@@ -1,0 +1,9 @@
+2026-11-19T06:07:08.212Z 249/254 refs/heads/main est 18.9 MB: send-pack: unexpected disconnect while reading sideband packet | fatal: the remote end hung up unexpectedly 46559 ms
+2026-11-19T06:08:01.669Z 249/254 refs/heads/main est 18.9 MB: send-pack: unexpected disconnect while reading sideband packet | fatal: the remote end hung up unexpectedly 38434 ms
+2026-11-19T06:08:51.509Z 249/254 refs/heads/main est 18.9 MB: ok 19834 ms
+2026-11-19T06:09:13.915Z 250/254 refs/heads/main est 22.5 MB: ok 22405 ms
+2026-11-19T06:09:36.717Z 251/254 refs/heads/main est 23.6 MB: ok 22801 ms
+2026-11-19T06:10:00.300Z 252/254 refs/heads/main est 8.8 MB: ok 23582 ms
+2026-11-19T06:10:13.983Z 253/254 refs/heads/main est 14.6 MB: ok 13682 ms
+2026-11-19T06:10:45.757Z 254/254 refs/heads/main est 22.8 MB: ok 31774 ms
+2026-11-19T06:10:45.757Z seeded m3org/b034-mono-u: 0.11 GB in 264 s
