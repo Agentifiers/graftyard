@@ -1,0 +1,19 @@
+{"logged": 12759, "edge5xx": 12759, "byStatus": {"503": 12759}}
+   4382 503 task
+   2423 503 graphql
+   2251 503 renew
+   1708 503 rest-repo-write
+    745 503 receive-pack
+    740 503 lease
+    504 503 upload-pack
+      6 503 merge
+by reason:
+   4382 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   2423 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   2251 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1708 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    745 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: {"warming":true}); retry
+    740 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    265 503 upload-pack      git cache: N {"warming":true}
+    239 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      6 503 merge            the git cache: N {"warming":true}

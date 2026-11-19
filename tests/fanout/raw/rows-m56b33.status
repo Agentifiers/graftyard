@@ -1,0 +1,52 @@
+2026-11-19T07:25:08Z start 1465c208b <repo>
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T07:25:24Z start sweep ok
+2026-11-19T07:25:15Z cost account 16.67 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T06:50:21Z, at b0-33
+2026-11-19T07:25:55.199Z m3org/fm56b33-b033 = 131370
+2026-11-19T07:25:59.164Z repo:131370 leader 0: config 5 learners [{"addr":192,"doName":"repo:131370#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131370#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131370#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131370#2#l3","join":200,"site":0,"slot":3}]
+2026-11-19T07:25:59.652Z repo:131370 site 0: arrival mem (asked mem, status 200)
+2026-11-19T07:25:59.841Z repo:131370 site 1: arrival mem (asked mem, status 200)
+2026-11-19T07:26:00.081Z repo:131370 site 2: arrival mem (asked mem, status 200)
+2026-11-19T07:26:02.654Z repo:131370 leader 0: set k 4: {"grants":[[0,[0,3,1]],[1,[0,3,1]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T07:26:13.138Z repo:131370 leader 0: set k 4: {"grants":[[0,[0,3,1]],[1,[0,3,1]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T07:26:23.554Z repo:131370 leader 0: set k 4: {"grants":[[0,[0,3,1]],[1,[0,3,1]]],"k":4,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-19T07:26:23.645Z repo:131370 leader 0: k 4 at 7
+2026-11-19T07:26:33Z b0-33 fm56b33-b033 131370 start
+2026-11-19T07:37:54.987Z repo:131370 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-19T07:37:55.095Z repo:131370 leader 0: k 1 at 675
+2026-11-19T07:38:05Z b0-33 fm56b33-b033 131370 done exit 0
+2026-11-19T07:38:10Z torn down 131370
+site fault off: 200
+git#2#net:131370 200
+git#1#pool:4 200
+git#1#pool:2 000
+git#1#pool:1 200
+SWEEP FAILED: 1 shard containers still running: [('graft-m2b-site-c-gitshard', 'git#2#net:131370')]
+{"torn_down": 4, "codes": {"200": 3, "000": 1}}
+2026-11-19T07:40:31Z SWEEP FAILED: shard containers still running, see above
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 105 {'leader': 1, 'promised': 104}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 19 (n 101) (placement baseline); unpaired p50 41 (n 101); pooled p50 22 (n 202)
+  load: 1-statement p50 75 (n 176); unpaired p50 68 (n 177); pooled p50 71 p99 1532 (n 610)
+isolates: 7 members, 7 distinct ids, 0 changes; shared: none
+harness outages (2026-11-19T07:31:20Z to 2026-11-19T07:36:20Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-19T07:31:20Z", "2026-11-19T07:31:27Z"], ["2026-11-19T07:31:28Z", "2026-11-19T07:31:32Z"]], "outageSeconds": 11.0, "share": 0.0367, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 9267, "served": 0.9082, "p50": 2500, "p99": 81603, "cap": 145}, "outagesRemoved": {"n": 9237, "served": 0.9079, "p50": 2511, "p99": 81603, "cap": 145}}
+{"kind": "merge:only", "measured": {"n": 15, "served": 0.4, "p50": 15278, "p99": 18366, "cap": 0}, "outagesRemoved": {"n": 15, "served": 0.4, "p50": 15278, "p99": 18366, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 12482, "served": 0.5533, "p50": 5078, "p99": 79063, "cap": 0}, "outagesRemoved": {"n": 12441, "served": 0.5522, "p50": 5079, "p99": 79063, "cap": 0}}
+5xx by reason (2026-11-19T07:31:30Z to 2026-11-19T07:37:46Z):
+{"logged": 0, "edge5xx": 14340, "byStatus": {"503": 14340}}
+by reason:
+push refusals by stage:
+{"agentPushes": {"ok": 6906, "full": 4603, "other": 973}, "fullBy": {"admission": 2312, "edge (bound_at_send)": 1367, "no commit stage": 599, "expire_agents (queued)": 325}, "fullMarks": {"ask": 1, "stagefirst": 162, "busy": 0, "missed": 0, "suspect": 0}}
+budget left at the first send | ok / full
+  under 1 s  | 116 / 2551
+  1 to 2 s   | 1025 / 1106
+  2 to 3 s   | 2707 / 326
+  3 to 5 s   | 3058 / 21
+B033DONE

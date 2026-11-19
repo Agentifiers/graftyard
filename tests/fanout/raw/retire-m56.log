@@ -1,0 +1,8 @@
+2026-11-19T07:57:08.309Z repo:131370: 7 names, 7 were joined, all not joined
+2026-11-19T08:01:14.755Z purge: 131370 purged: a 12931 -> 0, b 11603 -> 0, c 9495 -> 0
+2026-11-19T08:01:14.756Z purge: 131370 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T08:01:14.756Z purge: {"dry": false, "purged": 1, "objects": 34029, "refused": [], "second": 0}
+exit 0
+repo:131370 ---
+none joined of 1
+joined exit 0
