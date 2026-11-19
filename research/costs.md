@@ -138,8 +138,8 @@ The first cost model found three costs that the DSQL design hid.
 | Developers | Cloudflare default (one account, three sites) | Cloudflare, account-separated sites | Cloudflare `Solo` (evaluation, no SLO) | AWS design, one Region | AWS design, Paired |
 | --- | --- | --- | --- | --- | --- |
 | 50 | $236 | $247 | $133 | $1,287 | $2,292 |
-| 300 | $1,284 | $1,151 | $824 | $2,573 | $4,466 |
-| 2,000 | $9,855 | $9,752 | $5,723 | $12,432 | $20,636 |
+| 300 | $1,059 | $926 | $599 | $2,573 | $4,466 |
+| 2,000 | $9,630 | $9,527 | $5,498 | $12,432 | $20,636 |
 
 At 50 developers the cheapest reliable setups are the Cloudflare default at $236 (RPO zero across three continents, on the Pro plan with a 100 MB HTTPS push cap and an unpriced Spectrum add-on), AWS `scrappy` at $226 (one Region with a cold recovery Region, so a Region loss is not RPO zero), and AWS `scrappy-paired` at $388 (RPO zero across two Regions).
 
@@ -150,7 +150,7 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | Line item | Per month | Share |
 | --- | --- | --- |
 | Containers memory (provisioned) | $157 | 67% |
-| Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced) | $25 | 11% |
+| Zone plan (Pro list; Business, Enterprise, and managed cells not priced) | $25 | 11% |
 | Containers disk (provisioned) | $9 | 4% |
 | R2 storage (pack copies, clone cache, Actions) | $9 | 4% |
 | Durable Objects SQLite storage | $8 | 3% |
@@ -188,5 +188,5 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | Developers | Cloudflare default | Agent layer added | Default with agents | Added share |
 | --- | --- | --- | --- | --- |
 | 50 | $236 | $21 | $257 | 9% |
-| 300 | $1,284 | $330 | $1,615 | 26% |
-| 2,000 | $9,855 | $2,948 | $12,802 | 30% |
+| 300 | $1,059 | $330 | $1,390 | 31% |
+| 2,000 | $9,630 | $2,948 | $12,577 | 31% |

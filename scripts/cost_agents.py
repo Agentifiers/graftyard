@@ -653,7 +653,6 @@ SCENARIOS = {
 	"S1: accepted or low risk": LOW_RISK,
 	"S2: S1 + shard-class (recommended)": LOW_RISK + ("shard-class",),
 	"S3: S2 + pool-2 (deferred to a B0-34 pass)": LOW_RISK + ("shard-class", "pool-2"),
-	"S4: S3 + pro-plan (operator's call, not recommended here)": LOW_RISK + ("shard-class", "pool-2", "pro-plan"),
 	"S2 with shard-class-lean (1 vCPU ordinary shards)": LOW_RISK + ("shard-class-lean",),
 	"S2 + ws-half (if the working set measures at half)": LOW_RISK + ("shard-class", "ws-half"),
 	"Correction: as built today (fill-as-built)": ("fill-as-built",),
