@@ -100,7 +100,7 @@ have warned of it.
 - A confirm is judged only when it ends, and none ended for 24 s.
 - Any transfer it started would have waited at the same output gate.
 
-The followers' election was the only way out, and it took 14 s.
+The followers' election was the only way out, and it took 14 s. What the leader should do instead is `decisions/OPEN-QUESTIONS.md`, F99.
 
 ### Not the new code [measured for what each change touches; inference that nothing else did]
 
