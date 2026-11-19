@@ -111,8 +111,10 @@ node tests/fanout/terms.mjs "$chain" 1100 > tests/fanout/raw/terms-b034$TAG.json
 bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
 s "b0-34 done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-34-$mono.log)"
 # Harness outages (tests/fanout/README.md): the edge's arrivals per second and each line with the outage windows
-# removed, to tests/fanout/raw/rows-<tag>.status (outages.sh, as b029.sh and b033.sh).
-bash tests/fanout/outages.sh "$TAG" b0-34 "$mono"
+# removed, to tests/fanout/raw/rows-<tag>.status (outages.sh, as b029.sh and b033.sh). B0-34's two latency lines per
+# phase on both clocks: the client's, and the edge's `server-timing` `total` (decisions/OPEN-QUESTIONS.md, A33).
+KINDS=$(for p in j9 kill second hostile; do printf 'push:human@%s push:human:edge@%s read:cloneTtfb@%s read:cloneTtfb:edge@%s ' $p $p $p $p; done) \
+  bash tests/fanout/outages.sh "$TAG" b0-34 "$mono"
 # The miss-log branch's line per clone-cache miss (`shard miss <net> <key>`), joined to each probe row: container,
 # shard transit, and edge plus network, by compose answer. Workers Logs lag a few minutes, so it runs after a wait.
 rows=$(ls -t tests/am1/raw/a1-b0-34-*.jsonl | head -1)

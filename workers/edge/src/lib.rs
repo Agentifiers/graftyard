@@ -1946,6 +1946,10 @@ async fn validate_on(
     if r.status_code() != 200 {
         return Ok(Err((r.status_code(), r.text().await.unwrap_or_default())));
     }
+    // The container's split of the validate, as `v_*` stages of this request (`api::Timing`).
+    for (name, ms) in validate_timing(&r.headers().get("x-graft-validate-timing")?.unwrap_or_default()) {
+        c.timing.put(name, ms as f64);
+    }
     if detail.is_empty() {
         return Ok(Ok((Some(r.json::<PackIndex>().await?), Vec::new())));
     }
@@ -1957,6 +1961,23 @@ async fn validate_on(
     }
     let d: Detailed = r.json().await?;
     Ok(Ok((d.index, d.detail)))
+}
+
+/// The shard's `x-graft-validate-timing` (`name;dur=N, ...`) as this request's stages: `lock_wait`, `index`, and
+/// `walk` become `v_lock_wait`, `v_index`, and `v_walk`; any other name is ignored.
+fn validate_timing(h: &str) -> Vec<(&'static str, u64)> {
+    h.split(',')
+        .filter_map(|part| {
+            let (name, dur) = part.trim().split_once(";dur=")?;
+            let name = match name {
+                "lock_wait" => "v_lock_wait",
+                "index" => "v_index",
+                "walk" => "v_walk",
+                _ => return None,
+            };
+            Some((name, dur.trim().parse().ok()?))
+        })
+        .collect()
 }
 
 /// `auto_init`'s first commit on a new repository (`crate::repos`): the README commit's pack, validated by the git
@@ -3110,7 +3131,7 @@ async fn serve(
         Route::InfoRefs { service: Some(Service::ReceivePack), .. } | Route::Rpc { service: Service::ReceivePack, .. }
     ));
     let rpc_push = matches!(route, Route::Rpc { service: Service::ReceivePack, .. });
-    if rpc_push {
+    if rpc_push || matches!(route, Route::Rpc { service: Service::UploadPack, .. }) {
         c.timing.start();
     }
     // The token, the name, and a push's install `Authz` start together (`design/DESIGN.md`, journey 1, step 1): none
@@ -3190,7 +3211,14 @@ async fn serve(
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
-            upload_pack(&c, &mut req, repo).await
+            let r = upload_pack(&c, &mut req, repo).await;
+            // A test install answers each fetch with its stages: `total` is the edge's time to the shard's headers,
+            // its time to first byte.
+            #[cfg(feature = "test-faults")]
+            if let Ok(r) = &r {
+                r.headers().set("server-timing", &c.timing.header())?;
+            }
+            r
         }
         Route::Rpc { service: Service::ReceivePack, .. } => {
             if req.method() != Method::Post {
@@ -3231,8 +3259,17 @@ mod tests {
     use super::{
         Cut, ShardRefusal, bound_at_send, capped, client_push_id, fivexx_line, gate_ng, gunzip, ls_refs_at_edge,
         route_kind, shard_fail_line, shard_refusal, shard_url, streamed_site, validate_failed, validate_sites,
-        validate_url, warm_first,
+        validate_timing, validate_url, warm_first,
     };
+
+    /// The shard's validate timing becomes the three `v_*` stages, and an unknown name is dropped.
+    #[test]
+    fn validate_timing_keeps_the_three_known_stages() {
+        assert_eq!(
+            validate_timing("lock_wait;dur=12, index;dur=3, walk;dur=40, other;dur=9"),
+            [("v_lock_wait", 12), ("v_index", 3), ("v_walk", 40)]
+        );
+    }
 
     /// Every 5xx reaches one log line with its route class and the reply's reason: a JSON reply's `message`, not its
     /// whole body, and a text reply's body, both cut to 200 characters on a char boundary.

@@ -605,15 +605,25 @@ pub struct Room {
     pub busy: Vec<i64>,
 }
 
-/// `ShardHost::validate`'s answer: the pack's index (none for a detail-only call) and each update's detail, or the
+/// `ShardHost::validate`'s answer: the pack's index (none for a detail-only call), each update's detail, and the
+/// container's times (`ValidateMs`), or the
 /// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`, or, checked
 /// on the disk as it stands, a base or ref the disk does not hold yet: the container kept the request as `held`, to
 /// be checked again once the shard caught up (`OnDisk::Held`).
 #[derive(Debug)]
 pub enum Validated {
-    Done(Option<PackIndex>, Vec<crate::agent::RefDetail>),
+    Done(Option<PackIndex>, Vec<crate::agent::RefDetail>, ValidateMs),
     Busy { retry_after_s: u32 },
     MissingBase { held: String },
+}
+
+/// Where a validate's time went in the container: the wait for the network lock shared, `index-pack` (0 for detail
+/// only), and the connectivity walk and the detail after it. Zero from an image that does not report them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ValidateMs {
+    pub lock_wait: u64,
+    pub index: u64,
+    pub walk: u64,
 }
 
 /// Which disk a validate checks against: one the shard just caught up, the disk as it stands (`disk=1`), whose
@@ -638,6 +648,12 @@ struct ValidateOut {
     trailer: String,
     #[serde(default)]
     detail: Vec<crate::agent::RefDetail>,
+    #[serde(default)]
+    lock_wait_ms: u64,
+    #[serde(default)]
+    index_ms: u64,
+    #[serde(default)]
+    walk_ms: u64,
 }
 
 /// The shard object's view of its container.
@@ -930,8 +946,9 @@ impl ShardHost<'_> {
             return Err((Some(r.status_code()), StoreError(format!("validate: {} {t}", r.status_code()))));
         }
         let v: ValidateOut = r.json().await.map_err(worker_err).map_err(none)?;
+        let ms = ValidateMs { lock_wait: v.lock_wait_ms, index: v.index_ms, walk: v.walk_ms };
         if v.checksum.is_empty() {
-            return Ok(Validated::Done(None, v.detail));
+            return Ok(Validated::Done(None, v.detail, ms));
         }
         let ix = PackIndex {
             checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| none(StoreError("checksum".into())))?,
@@ -939,7 +956,7 @@ impl ShardHost<'_> {
             objects: v.objects,
             trailer: v.trailer.into(),
         };
-        Ok(Validated::Done(Some(ix), v.detail))
+        Ok(Validated::Done(Some(ix), v.detail, ms))
     }
 
     pub async fn init(&self, network: NetworkId, fresh: bool) -> Result<(), StoreError> {
@@ -973,19 +990,26 @@ impl ShardHost<'_> {
     /// Applies ref changes (`crate::ingest::ref_changes`) to the container's refs: `POST /refs`, deletes then sets.
     /// An update to an object the shard does not hold is skipped by the container, as a rehydrate's is.
     /// With `head`, HEAD points at it too (the default branch, G26), and with no changes that is all the call does.
+    /// Answers the container's wait for the network lock alone, 0 when it reported none.
     pub async fn apply_refs(
         &self,
         network: NetworkId,
         changes: &[(String, Option<String>)],
         head: Option<&str>,
-    ) -> Result<(), StoreError> {
+    ) -> Result<u64, StoreError> {
+        #[derive(Default, Deserialize)]
+        struct Out {
+            #[serde(default)]
+            lock_wait_ms: u64,
+        }
         if changes.is_empty() && head.is_none() {
-            return Ok(());
+            return Ok(0);
         }
         let zero = "0".repeat(40);
         let body: String = changes.iter().map(|(r, o)| format!("{} {r}\n", o.as_deref().unwrap_or(&zero))).collect();
         let path = format!("/refs?net={}{}", network.0.0, crate::catchup::head_param(head));
-        self.ok(Method::Post, &path, Some(body.into_bytes())).await.map(|_| ())
+        let mut r = self.ok(Method::Post, &path, Some(body.into_bytes())).await?;
+        Ok(r.json::<Out>().await.unwrap_or_default().lock_wait_ms)
     }
 
     pub async fn fsck(&self, network: NetworkId) -> Result<serde_json::Value, StoreError> {
@@ -1451,6 +1475,8 @@ impl ShardIo for Io<'_, '_> {
         #[derive(Deserialize)]
         struct Out {
             results: Vec<String>,
+            #[serde(default)]
+            lock_wait_ms: u64,
         }
         let heads: Vec<String> = packs.iter().map(|(s, b)| format!("{} {}\n", s.hex(), b.len())).collect();
         let total: usize = packs.iter().zip(&heads).map(|((_, b), h)| h.len() + b.len()).sum();
@@ -1482,6 +1508,12 @@ impl ShardIo for Io<'_, '_> {
             return Err(StoreError(format!("{path}: {} {}", r.status_code(), r.text().await.unwrap_or_default())));
         }
         let o: Out = r.json().await.map_err(worker_err)?;
+        {
+            // The batch takes the lock alone.
+            let mut st = self.stored.borrow_mut();
+            st.lock_wait_ms += o.lock_wait_ms;
+            st.lock_excl_wait_ms += o.lock_wait_ms;
+        }
         o.results
             .iter()
             .map(|a| match a.as_str() {
@@ -1563,6 +1595,10 @@ impl ShardIo for Io<'_, '_> {
             #[serde(default)]
             midx_ms: u64,
             #[serde(default)]
+            lock_wait_ms: u64,
+            #[serde(default)]
+            lock_excl_wait_ms: u64,
+            #[serde(default)]
             idx: String,
         }
         let t0 = js_sys::Date::now() as u64;
@@ -1604,6 +1640,8 @@ impl ShardIo for Io<'_, '_> {
         st.index_ms += o.index_ms;
         st.lock_ms += o.lock_ms;
         st.midx_ms += o.midx_ms;
+        st.lock_wait_ms += o.lock_wait_ms;
+        st.lock_excl_wait_ms += o.lock_excl_wait_ms;
         match o.idx.as_str() {
             "used" => st.idx_used += 1,
             "rejected" => st.idx_rejected += 1,
@@ -1660,7 +1698,9 @@ impl ShardIo for Io<'_, '_> {
         self.host.put_refs_page(self.network, refs, start, done, repack, head).await
     }
     async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError> {
-        self.host.apply_refs(self.network, changes, head).await
+        let w = self.host.apply_refs(self.network, changes, head).await?;
+        self.stored.borrow_mut().refs_lock_wait_ms += w;
+        Ok(())
     }
     async fn make_room(&self, incoming: u64) -> Result<Vec<i64>, StoreError> {
         Ok(self.host.make_room(self.network, incoming, None).await?.evicted)

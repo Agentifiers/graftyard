@@ -26,14 +26,23 @@
 //	                                 a deadline and queued humans go before agents (FIFO within each lane). Agents wait
 //	                                 up to 2s, with at most 8*slots queued, or get 429 and Retry-After whole seconds.
 //	                                 derived=1 is the shard's own archive-promotion validate: its CPU is derived
-//	                                 and it does not count in the queue depth
+//	                                 and it does not count in the queue depth. Both 200 answers carry
+//	                                 "lock_wait_ms", the wait for the network's lock shared (not the admission wait),
+//	                                 "index_ms", index-pack's time (0 for detail only), and "walk_ms", the time from
+//	                                 after index-pack through the connectivity walk and the detail, up to setting the
+//	                                 pack aside (detail only: the detail's time)
 //	POST /ingest?net=N&sha256=H      body: a committed pack. A pack /validate kept aside under H moves in without a
 //	                                 second index-pack; otherwise verifies H while writing, then index-pack --strict
 //	                                 --fix-thin into the repository. 409 when a thin pack's bases are not there yet
 //	                                 or an object its objects name is not here yet, 422 on a checksum mismatch.
-//	                                 Idempotent per H
+//	                                 Idempotent per H. {"ingested": true,"adopted": true,"lock_wait_ms"} for a kept
+//	                                 pack; otherwise {"ingested","bytes","spool_ms","index_ms","lock_ms","midx_ms",
+//	                                 "lock_wait_ms","lock_excl_wait_ms"}: lock_wait_ms sums every wait for the
+//	                                 network's lock (alone for the adopt check, shared for index-pack, alone for the
+//	                                 move), lock_excl_wait_ms the waits for it alone
 //	POST /ingest-batch?net=N         body: per pack, "<sha256> <bytes>\n" and its bytes. Each ingested as /ingest
-//	                                 does, in order; {"results": ["done"|"later", ...]}, "later" for /ingest's 409.
+//	                                 does, in order; {"results": ["done"|"later", ...],"lock_wait_ms"}, "later" for
+//	                                 /ingest's 409; lock_wait_ms the wait for the network's lock alone.
 //	                                 422 for the call on a checksum mismatch or another index-pack failure
 //	POST /spool?net=N&sha256=H       body: a stored pack, streamed. Spools it, holding no lock, to
 //	                                 <data>/spool/stored-<net>-<H>.pack for a later /ingest &spooled=1, so a
@@ -48,7 +57,8 @@
 //	                                 staged idx that passes checkIdx against the pack is loaded instead of running
 //	                                 index-pack: the lock is held only to rename the pack and idx into objects/pack
 //	                                 and record them. {"ingested","bytes","idx": "used","index_ms": 0,"lock_ms",
-//	                                 "midx_ms"} (the multi-pack-index write's part of lock_ms, 0 when none ran);
+//	                                 "midx_ms","lock_wait_ms","lock_excl_wait_ms"} (midx_ms the multi-pack-index
+//	                                 write's part of lock_ms, 0 when none ran; both waits /ingest's, all alone);
 //	                                 otherwise /ingest's index-pack and its answer (409, 422) plus "idx": "none" or
 //	                                 "rejected" (with "idxError") and "lock_ms", the time the network's lock was
 //	                                 held. The spooled files are deleted when done, except on 409, so the same call
@@ -65,7 +75,9 @@
 //	                                 skipped and counted ("skipped"), not fatal. [&head=R]: HEAD is R, the
 //	                                 repository's default branch, even before R exists; without it, refs/heads/main
 //	                                 when it exists, else the page's first ref
-//	POST /refs?net=N[&head=R]        a catch-up's ref changes, the same lines, the zero oid a delete; head as PUT's
+//	POST /refs?net=N[&head=R]        a catch-up's ref changes, the same lines, the zero oid a delete; head as PUT's.
+//	                                 PUT and POST answer {"refs","skipped","repack","lock_wait_ms"}, the last the wait
+//	                                 for the network's lock alone (0 for a POST of no changes, which takes no lock)
 //	GET  /refs?net=N                 every ref, the same lines
 //	POST /promote?net=N              body: SHA-256s of ingested packs, one per line. Answers one complete (not thin)
 //	                                 pack of every object those packs brought, named by its tree entry where there is one
@@ -936,7 +948,9 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
 	// `aside` (finishValidate).
 	l := lock(net)
+	w0 := time.Now()
 	l.RLock()
+	lockWaitMs := time.Since(w0).Milliseconds()
 	defer l.RUnlock()
 	if _, err := os.Stat(rp); err != nil {
 		if disk {
@@ -963,6 +977,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}()
 	if n == 0 && len(updates) > 0 {
 		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
+		w1 := time.Now()
 		if disk {
 			if b, err := behind(rp, validateEnv, updates, nil); err != nil || b {
 				refuse("detail", cmpErr(err, errBehind))
@@ -974,7 +989,8 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			refuse("detail", err)
 			return
 		}
-		jsonOut(w, map[string]any{"detail": d})
+		jsonOut(w, map[string]any{"detail": d, "lock_wait_ms": lockWaitMs, "index_ms": 0,
+			"walk_ms": time.Since(w1).Milliseconds()})
 		return
 	}
 	if n == 0 {
@@ -985,11 +1001,14 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	env := []string{"GIT_OBJECT_DIRECTORY=" + q, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(rp, "objects")}
 	env = append(env, validateEnv...)
 	os.MkdirAll(filepath.Join(q, "pack"), 0o755)
+	i0 := time.Now()
 	name, err := indexPack(rp, env, file)
 	if err != nil {
 		refuse("index-pack", err)
 		return
 	}
+	w1 := time.Now()
+	indexMs := w1.Sub(i0).Milliseconds()
 	if len(tips) > 0 {
 		// Tips on stdin: a push may name 10,000 of them.
 		in := strings.Join(tips, "\n") + "\n"
@@ -1012,7 +1031,8 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		trailer = hex.EncodeToString(t)
 	}
 	// Detail reads the quarantine, so it runs before the pack is set aside.
-	out := map[string]any{"checksum": sum, "bytes": n, "objects": len(objs), "trailer": trailer}
+	out := map[string]any{"checksum": sum, "bytes": n, "objects": len(objs), "trailer": trailer,
+		"lock_wait_ms": lockWaitMs, "index_ms": indexMs}
 	if len(updates) > 0 {
 		if disk {
 			have := map[string]bool{}
@@ -1037,6 +1057,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "%v", err)
 		return
 	}
+	out["walk_ms"] = time.Since(w1).Milliseconds()
 	if err := finishValidate(net, rp, q, sum); err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -1509,7 +1530,9 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l := lock(net)
+	w0 := time.Now()
 	l.Lock()
+	adoptWaitMs := time.Since(w0).Milliseconds()
 	if name, sent, ok, err := adopt(rp, want); ok {
 		if err == nil {
 			err = record(rp, want, name, filepath.Join(rp, "objects"), sent)
@@ -1523,12 +1546,12 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, "%v", err)
 			return
 		}
-		jsonOut(w, map[string]any{"ingested": true, "adopted": true})
+		jsonOut(w, map[string]any{"ingested": true, "adopted": true, "lock_wait_ms": adoptWaitMs})
 		return
 	}
 	l.Unlock()
 	if spooled {
-		ingestSpooled(w, net, rp, want)
+		ingestSpooled(w, net, rp, want, adoptWaitMs)
 		return
 	}
 	// The spool's time is the body's read, from a bucket when a catch-up streams a stored pack here; index_ms is
@@ -1545,13 +1568,13 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "checksum %s, want %s", sum, want)
 		return
 	}
-	indexMs, lockMs, midxMs, code, err := indexIngest(net, rp, file, sum)
+	indexMs, lockMs, midxMs, waitMs, exclWaitMs, code, err := indexIngest(net, rp, file, sum)
 	if err != nil {
 		fail(w, code, "%v", err)
 		return
 	}
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": indexMs, "lock_ms": lockMs,
-		"midx_ms": midxMs})
+		"midx_ms": midxMs, "lock_wait_ms": adoptWaitMs + waitMs, "lock_excl_wait_ms": adoptWaitMs + exclWaitMs})
 }
 
 // indexIngest is /ingest's tail: index-pack --strict --fix-thin of file into a quarantine with the repository's objects
@@ -1559,40 +1582,45 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 // in, its objects recorded under sum, and the multi-pack-index's count. Readers and validates of the network run
 // through the index step: with all of it under the lock alone, B0-34 m41's catch-ups held the lock 5.5 to 13.5 s for
 // packs of 0.1 to 2.3 MB, and every ls-refs, upload-pack and validate queued behind them (`TestIngestIndexesOutsideTheLock`).
-// It answers index-pack's time (to the end of the midx step, as /ingest always reported it) and how long it held the
-// lock alone, or the status to answer and the error: 409 when a thin pack's bases or a named object are not here yet,
-// 422 for another index-pack failure. A failed index leaves no quarantine.
-func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midxMs int64, code int, err error) {
+// It answers index-pack's time (to the end of the midx step, as /ingest always reported it), how long it held the
+// lock alone, how long it waited for the lock (shared and alone, summed) and for the lock alone, or the status to
+// answer and the error: 409 when a thin pack's bases or a named object are not here yet, 422 for another index-pack
+// failure. A failed index leaves no quarantine.
+func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midxMs, waitMs, exclWaitMs int64, code int, err error) {
 	t0 := time.Now()
 	st, err := os.Stat(file)
 	if err != nil {
-		return 0, 0, 0, 500, err
+		return 0, 0, 0, 0, 0, 500, err
 	}
 	l := lock(net)
+	w0 := time.Now()
 	l.RLock()
+	sharedWaitMs := time.Since(w0).Milliseconds()
 	q, name, err := indexQuarantined(rp, file)
 	l.RUnlock()
 	if err != nil {
 		if unresolved(err) {
-			return 0, 0, 0, 409, err
+			return 0, 0, 0, 0, 0, 409, err
 		}
-		return 0, 0, 0, 422, err
+		return 0, 0, 0, 0, 0, 422, err
 	}
 	defer os.RemoveAll(q)
+	w1 := time.Now()
 	l.Lock()
 	t1 := time.Now()
+	exclWaitMs = t1.Sub(w1).Milliseconds()
 	defer func() {
 		lockMs = time.Since(t1).Milliseconds()
 		l.Unlock()
 	}()
 	if err := moveIn(q, rp, name); err != nil {
-		return 0, 0, 0, 500, err
+		return 0, 0, 0, 0, 0, 500, err
 	}
 	if err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
-		return 0, 0, 0, 500, err
+		return 0, 0, 0, 0, 0, 500, err
 	}
 	midxMs = midxAfterIngest(net, rp)
-	return time.Since(t0).Milliseconds(), 0, midxMs, 0, nil
+	return time.Since(t0).Milliseconds(), 0, midxMs, sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil
 }
 
 // indexQuarantined indexes file into a new quarantine under the repository's graft directory (`incoming-*`, which
@@ -1794,8 +1822,9 @@ func stagedIdx(packFile, idxFile string) (name, state, why string) {
 
 // ingestSpooled is /ingest &spooled=1 once the pack is neither ingested nor kept aside by /validate: the pack /spool
 // staged goes in with its staged idx when that passes checkIdx, holding the network's lock only for two renames and
-// the record, and through index-pack otherwise.
-func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
+// the record, and through index-pack otherwise. adoptWaitMs is /ingest's wait for the lock alone before it looked for a
+// pack to adopt, counted into both lock waits the answer reports.
+func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64) {
 	file, idxFile := storedPath(net, sum, ".pack"), storedPath(net, sum, ".idx")
 	st, err := os.Stat(file)
 	if err != nil {
@@ -1805,7 +1834,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 	n := st.Size()
 	name, state, why := stagedIdx(file, idxFile)
 	if state != "used" {
-		indexMs, lockMs, midxMs, code, err := indexIngest(net, rp, file, sum)
+		indexMs, lockMs, midxMs, waitMs, exclWaitMs, code, err := indexIngest(net, rp, file, sum)
 		if code == 409 {
 			// Kept, so the call sent again once the bases are here needs no second spool.
 			fail(w, code, "%v", err)
@@ -1817,7 +1846,8 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 			return
 		}
 		out := map[string]any{"ingested": true, "bytes": n, "spool_ms": 0, "index_ms": indexMs, "idx": state,
-			"lock_ms": lockMs, "midx_ms": midxMs}
+			"lock_ms": lockMs, "midx_ms": midxMs, "lock_wait_ms": adoptWaitMs + waitMs,
+			"lock_excl_wait_ms": adoptWaitMs + exclWaitMs}
 		if why != "" {
 			out["idxError"] = why
 		}
@@ -1826,8 +1856,10 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 	}
 	defer removeStored(net, sum)
 	l := lock(net)
+	w0 := time.Now()
 	l.Lock()
 	t0 := time.Now()
+	waitMs := adoptWaitMs + t0.Sub(w0).Milliseconds()
 	var midxMs int64
 	err = func() error {
 		dst := filepath.Join(rp, "objects", "pack", "pack-"+name)
@@ -1861,7 +1893,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string) {
 		return
 	}
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "idx": "used", "index_ms": 0, "lock_ms": lockMs,
-		"midx_ms": midxMs})
+		"midx_ms": midxMs, "lock_wait_ms": waitMs, "lock_excl_wait_ms": waitMs})
 }
 
 // handleIdx answers the .idx of the pack /validate kept aside under sha256, for the archive's promotion to store
@@ -2007,7 +2039,9 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 	results := make([]string, len(packs))
 	var run []int
 	l := lock(net)
+	w0 := time.Now()
 	l.Lock()
+	lockWaitMs := time.Since(w0).Milliseconds()
 	defer l.Unlock()
 	for i, p := range packs {
 		if _, err := os.Stat(filepath.Join(rp, "graft", p.sum+".objs")); err == nil {
@@ -2033,7 +2067,7 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "%v", err)
 		return
 	}
-	jsonOut(w, map[string]any{"results": results})
+	jsonOut(w, map[string]any{"results": results, "lock_wait_ms": lockWaitMs})
 }
 
 // One pack of an /ingest-batch call, spooled to file.
@@ -2360,11 +2394,13 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 	// atomic under git's own lock, so it takes no network lock, which would wait for every streaming upload-pack.
 	if !put && len(order) == 0 {
 		setHead(rp, q.Get("head"))
-		jsonOut(w, map[string]any{"refs": 0, "skipped": 0, "repack": false})
+		jsonOut(w, map[string]any{"refs": 0, "skipped": 0, "repack": false, "lock_wait_ms": 0})
 		return
 	}
 	l := lock(net)
+	w0 := time.Now()
 	l.Lock()
+	lockWaitMs := time.Since(w0).Milliseconds()
 	defer l.Unlock()
 	var dels, ups []string
 	if put && start {
@@ -2417,7 +2453,7 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 			repack = startRepack(net, rp)
 		}
 	}
-	jsonOut(w, map[string]any{"refs": len(want), "skipped": skipped, "repack": repack})
+	jsonOut(w, map[string]any{"refs": len(want), "skipped": skipped, "repack": repack, "lock_wait_ms": lockWaitMs})
 }
 
 // REPACK_AT: the pack count past which a catch-up starts a geometric repack [guess]. Every ingested pack stays its
