@@ -30,6 +30,9 @@
 //     [--first-for MS]   # B0-35, test installs: the leader gives each `PrSync` first attempt MS before the queue re-sends it
 //     [--ls-refs-shard]  # F91's A/B off arm: every upload-pack carries `x-graft-ls-refs: shard` with the bed token, so a
 //                        # test edge sends v2 ls-refs to the shard, as before b034-reads (`ls_refs_at_edge`)
+//     [--ls-refs-shard-every S]  # F91's within-network control: the off arm only in odd S-second windows of
+//                        # Cloudflare's clock (floor(ms / (S * 1000)) odd), so one network carries both arms and a
+//                        # trace's own timestamps say which arm each row is in (`tests/fanout/lsrefsab.py`)
 //     [--b034 FILE]      # B0-34 as written, on the seeded 5 GB monorepo (tests/fanout/b034.sh). FILE is JSON:
 //                        # `bare` (the local torvalds/linux clone) and `future` (the first-parent commits after the
 //                        # seeded main), which replace the PR merges: 10 a minute push the next one to main, so the
@@ -71,7 +74,8 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
   "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" },
-  "ls-refs-shard": { type: "boolean" } } });
+  "ls-refs-shard": { type: "boolean" }, "ls-refs-shard-every": { type: "string" } } });
+if (opt["ls-refs-shard"] && opt["ls-refs-shard-every"]) throw new Error("--ls-refs-shard and --ls-refs-shard-every exclude each other");
 
 // ---- the plan, from the rows ----
 
@@ -490,8 +494,14 @@ const placeFailing = () => plan.placeFailAt !== undefined && Date.now() >= t0 + 
 // m3fr8 labelled agent pushes when they ended, and 17 sent with buckets up landed in `push:agent@fail` as commits.
 const half = (k) => (plan.placeFailAt === undefined ? k : `${k}${placeFailing() ? "@fail" : "@up"}`);
 const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-token": BED } : {});
-// F91's A/B off arm (`--ls-refs-shard`): every upload-pack asks a test edge to send its ls-refs to the shard.
-const lsHeaders = (path) => (opt["ls-refs-shard"] && path === "git-upload-pack" ? { "x-graft-ls-refs": "shard", "x-bed-token": BED } : {});
+// F91's A/B off arm (`--ls-refs-shard`): every upload-pack asks a test edge to send its ls-refs to the shard. With
+// `--ls-refs-shard-every S` only in odd S-second windows of Cloudflare's clock, the members' trace clock; the arm is
+// decided when the request is sent.
+const LS_EVERY_MS = opt["ls-refs-shard-every"] ? Number(opt["ls-refs-shard-every"]) * 1000 : 0;
+if (opt["ls-refs-shard-every"] && !(LS_EVERY_MS >= 10_000)) throw new Error("--ls-refs-shard-every takes seconds, at least 10");
+const lsWindow = () => Math.floor(cfClock.now() / LS_EVERY_MS);
+const lsShardNow = () => opt["ls-refs-shard"] || (LS_EVERY_MS > 0 && lsWindow() % 2 === 1);
+const lsHeaders = (path) => (path === "git-upload-pack" && lsShardNow() ? { "x-graft-ls-refs": "shard", "x-bed-token": BED } : {});
 // Past the edge's own worst case, so every push ends in the edge's answer and none in the driver's timeout: three
 // shards' validate waits (15 + 60 + 60 s) then the commit. At 120 s, B0-32's burst pushes still in their third
 // shard's wait were cut and counted as lost (lm1-rows-m3f.md, B0-32).
@@ -519,14 +529,23 @@ function postH1(url, body, headers, agent) {
 // B0-34 (a): which v2 ls-refs the edge answered from the group's refs (a test edge's `x-graft-ls-refs: edge`) and
 // which went on to the shard, by status, over every ls-refs this driver sends (`lsRefsBy` in the row).
 const lsRefsBy = {};
-const tallyLsRefs = (body, r) => {
+// With `--ls-refs-shard-every`, the same tally per window (`lsRefsWindows`, keyed by the window's start on Cloudflare's
+// clock), so the row shows that each window's ls-refs went where its arm says.
+const lsRefsWindows = {};
+const tallyLsRefs = (body, r, win) => {
   if (!Buffer.isBuffer(body) || !body.includes("command=ls-refs")) return;
   const k = `${r.headers?.get?.("x-graft-ls-refs") ?? "shard"} ${r.status}`;
   lsRefsBy[k] = (lsRefsBy[k] ?? 0) + 1;
+  if (LS_EVERY_MS) {
+    const w = new Date(win * LS_EVERY_MS).toISOString();
+    lsRefsWindows[w] ??= { arm: win % 2 === 1 ? "shard" : "edge" };
+    lsRefsWindows[w][k] = (lsRefsWindows[w][k] ?? 0) + 1;
+  }
 };
 async function git(path, tok, body, headers = {}, repo = R, agent = null) {
+  const win = LS_EVERY_MS ? lsWindow() : 0;
   const r = await gitOnce(path, tok, body, headers, repo, agent);
-  tallyLsRefs(body, r);
+  tallyLsRefs(body, r, win);
   return r;
 }
 async function gitOnce(path, tok, body, headers = {}, repo = R, agent = null) {
@@ -1365,6 +1384,7 @@ const v = {
       filled: missRows.filter((x) => x.filled).length, notFilled: missRows.filter((x) => x.filled === false).length }, kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
   lsRefsBy,
+  ...(LS_EVERY_MS ? { lsRefsEvery: LS_EVERY_MS / 1000, lsRefsWindows } : {}),
   loopDelay: { p50: Math.round(loopDelay.percentile(50) / 1e6), p99: Math.round(loopDelay.percentile(99) / 1e6),
     max: Math.round(loopDelay.max / 1e6) },
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),

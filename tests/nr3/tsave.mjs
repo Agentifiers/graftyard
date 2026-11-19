@@ -4,6 +4,9 @@
 // legs.py merges them into the run's trace (`v<site>` and the leader's `f<site>`).
 //   DONE_FILE=path node tests/nr3/tsave.mjs repo:ID > tests/nr3/raw/tsave-TAG.jsonl
 // LEARNERS=1 saves each learner's rows too, as {at, learner: address, rows} (F74's call trace, tests/f74/calls.py).
+// ISOLATES=1 also reads each voter's and learner's test-faults `/isolate` with every pull, and logs
+// {at, site | learner, isolate, since} when a member's isolate id first shows or changes. The id is random per isolate
+// (`crate::faults`), so two members that report the same id ran in one isolate (`tests/fanout/isolates.py`).
 const { member, statuses, voterNames, sleep } = await import("../am1/hosted/lib.mjs");
 const { existsSync } = await import("node:fs");
 // `at` on Cloudflare's clock (tests/fanout/README.md, "Clocks"); the first line logs the orb's measured offset.
@@ -14,6 +17,24 @@ const chain = process.argv[2];
 const every = Number(process.env.EVERY ?? 60_000);
 const since = [0, 0, 0];
 const learnerSince = {};
+const isolateSeen = {};
+// One member's isolate, logged only when it first shows or changes; `key` is {site} or {learner}.
+async function isolate(key, site, doName) {
+  if (!process.env.ISOLATES) return;
+  const id = Object.values(key)[0] + (key.learner === undefined ? "v" : "l");
+  try {
+    const r = await member(chain, site, "/isolate", undefined, 15_000, doName);
+    const v = r.v?.isolate ?? null;
+    if (v !== null && isolateSeen[id] !== v) {
+      isolateSeen[id] = v;
+      console.log(JSON.stringify({ at: clk.iso(), ...key, isolate: v, since: r.v.since ?? null }));
+    }
+  } catch (e) {
+    // Once per member until it answers again, so a tree without the route does not log every pull.
+    if (isolateSeen[id] !== "error") console.log(JSON.stringify({ at: clk.iso(), ...key, isolateError: String(e).slice(0, 120) }));
+    isolateSeen[id] = "error";
+  }
+}
 const done = () => process.env.DONE_FILE && existsSync(process.env.DONE_FILE);
 for (;;) {
   const last = done();
@@ -30,6 +51,7 @@ for (;;) {
         // A reset member's clock moves on, so `since` stays valid; its new rows are all later.
         if (rows.length) since[site] = rows[rows.length - 1][0];
         console.log(JSON.stringify({ at: clk.iso(), site, leader, rows }));
+        await isolate({ site }, site, names[site]);
       } catch (e) {
         console.log(JSON.stringify({ at: clk.iso(), site, error: String(e).slice(0, 120) }));
       }
@@ -43,6 +65,7 @@ for (;;) {
           if (!Array.isArray(r.v)) throw new Error(`status ${r.status}: ${JSON.stringify(r.v).slice(0, 80)}`);
           if (r.v.length) learnerSince[addr] = r.v[r.v.length - 1][0];
           console.log(JSON.stringify({ at: clk.iso(), learner: addr, rows: r.v }));
+          await isolate({ learner: addr }, l.site, l.do_name);
         } catch (e) {
           console.log(JSON.stringify({ at: clk.iso(), learner: addr, error: String(e).slice(0, 120) }));
         }
