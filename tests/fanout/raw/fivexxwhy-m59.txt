@@ -1,0 +1,33 @@
+5xx by reason (2026-11-19T12:43:20Z to 2026-11-19T12:47:47Z):
+{"logged": 19832, "edge5xx": 19832, "byStatus": {"500": 4, "503": 19828}}
+   6317 503 task
+   3636 503 upload-pack
+   3303 503 graphql
+   2984 503 renew
+   2432 503 rest-repo-write
+   1096 503 lease
+     57 503 receive-pack
+      4 500 receive-pack
+      3 503 merge
+by reason:
+   5990 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   3423 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   3125 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   2829 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   2314 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1039 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    326 503 task             repo:N: no outcome: repo:N#N#fN: missed
+    178 503 graphql          repo:N: no outcome: repo:N#N#fN: missed
+    155 503 renew            repo:N: no outcome: repo:N#N#fN: missed
+    139 503 upload-pack      git cache: N repo:N: repo:N#N#fN: not leader
+    118 503 rest-repo-write  repo:N: no outcome: repo:N#N#fN: missed
+     74 503 upload-pack      git cache: N {"warming":true}
+     57 503 lease            repo:N: no outcome: repo:N#N#fN: missed
+     32 503 receive-pack     the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     13 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: repo:N: repo:N#N#fN: not leader); retry
+     11 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: {"warming":true}); retry
+      4 500 receive-pack     repo:N: no outcome: repo:N#N#fN: missed
+      2 503 merge            the git cache: N {"warming":true}
+      1 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: repo:N: repo:N#N#fN: no answer); retry
+      1 503 merge            repo:N: no outcome: repo:N#N#fN: missed
+      1 503 task             the member answered {"full":{"retry_after_s":N}}

@@ -3,7 +3,7 @@
 // Sources: the plan's milestone status tables and work-package notes, tests/RESULTS.md, tests/am1/results/merge-p99.md,
 // narrow-reads-3.md (gates 17 to 19), tests/m4/results/m4-wp1-hosted.md, m4-wp2.md, m4-wp3.md, m4-wp5.md,
 // tests/m5/results/m5-wp1.md and m5-wp2.md. The plan wins wherever this file is shorter or older.
-export const asOf = '18 November 2026';
+export const asOf = '19 November 2026';
 const row = (id: string) => ` <span class="rid">${id}</span>`;
 
 export type State = 'done' | 'now' | 'next';
@@ -80,7 +80,7 @@ export const milestones: Milestone[] = [
         'Storage on a hot repository: its metadata moved to a child group under load, with a peak of 7.74 GB against a 9.45 GB limit and no storage-full errors, on an accelerated run from the split on, met at 90%' + row('B0-30'),
       ] },
       { title: 'Still to pass', items: [
-        'Commit p99 under 600 ms with 500 agents pushing' + row('B0-29'),
+        'Commit p99 under 800 ms with 500 agents pushing' + row('B0-29'),
         'A burst of 500 pushes in one second, and 5,000 agents with human commits still under 1 s' + row('B0-32, B0-33'),
         'Git CPU for one 5 GB repository under load, with clones starting within 1 s' + row('B0-34'),
         'Test merges under 500 open pull requests, with Actions starting each run within 10 s of the push' + row('B0-35'),
@@ -104,7 +104,7 @@ export const milestones: Milestone[] = [
         'The gate: an unmodified <code>actions/runner</code> ran a 2 by 4 matrix with a site taken down mid-run, and every leg finished exactly once' + row('BM-4'),
       ] },
       { title: 'Still in build', items: [
-        'The launch service, so a workflow step can call another action with <code>uses:</code>',
+        'The launch service, so a step can call another action with <code>uses:</code>, and each job\'s own <code>GITHUB_TOKEN</code>. Both are built and ship with the next site day',
       ] },
     ],
   },

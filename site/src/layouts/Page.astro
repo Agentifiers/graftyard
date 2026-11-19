@@ -7,7 +7,7 @@ import AgentifiersLogo from '../components/AgentifiersLogo.astro';
 interface Props {
   title: string;
   description: string;
-  current?: 'agents' | 'evidence' | 'status' | 'architecture' | 'artifacts';
+  current?: 'agents' | 'durability' | 'evidence' | 'status' | 'architecture' | 'artifacts';
   doc?: boolean;
   extraCss?: string[];
 }
@@ -17,6 +17,7 @@ const ogImage = new URL('/brand/graftyard-og-1200x630.png', Astro.site).href;
 
 const pages = [
   { key: 'agents', href: '/agents/', label: 'Agents' },
+  { key: 'durability', href: '/durability/', label: 'Durability' },
   { key: 'evidence', href: '/evidence/', label: 'Evidence' },
   { key: 'status', href: '/status/', label: 'Status' },
   { key: 'architecture', href: '/architecture/', label: 'Architecture' },
@@ -246,7 +247,7 @@ html[data-theme="light"] .frame--film > .loop-pause { right: 8px; }
           <p class="footer__lede">Open-source git hosting for GitHub clients, on Cloudflare.</p>
           <a class="footer__maker" href="https://agentifiers.com"><span>Built by</span><AgentifiersLogo /></a>
         </div>
-        <div class="span-2 start-9 footer__col"><h4>Graftyard</h4><ul><li><a href="/#ghes">GHES 3.22</a></li><li><a href="/#durability">Durability</a></li><li><a href="/#questions">Questions</a></li><li><a href={REPO}>Source on GitHub</a></li></ul></div>
+        <div class="span-2 start-9 footer__col"><h4>Graftyard</h4><ul><li><a href="/#ghes">GHES 3.22</a></li><li><a href="/durability/">Durability</a></li><li><a href="/#questions">Questions</a></li><li><a href={REPO}>Source on GitHub</a></li></ul></div>
         <div class="span-2 footer__col"><h4>Read more</h4><ul>{pages.map((p) => <li><a href={p.href}>{p.label}</a></li>)}</ul></div>
       </div>
       <div class="footer__legal">

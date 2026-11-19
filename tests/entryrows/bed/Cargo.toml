@@ -1,0 +1,24 @@
+[package]
+name = "entryrows"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker = "0.8.7"
+graftyard-api = { path = "../../../crates/api" }
+graftyard-fold = { path = "../../../crates/fold" }
+graftyard-git = { path = "../../../crates/git" }
+graftyard-raft = { path = "../../../crates/raft" }
+graftyard-types = { path = "../../../crates/types" }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1

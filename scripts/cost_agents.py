@@ -83,8 +83,8 @@ SESSION_PUSHES = 1         # one push of the session log blob under refs/graftya
 SESSION_KB = 200           # compressed, redacted session log per task (candidate C) [guess]
 SESSION_MONTHS = 12        # retention; the default is the org's audit-log retention, priced at 12 months [guess]
 PACK_COPIES = 3 + 1        # three site buckets plus the vault's locked copy
-FOLD_ROWS_PER_PUSH = 2 * 2  # one PathSet row and one provenance row per agent push, per member [guess], each put
-                            # written to its table and its key index [measured, K12]
+AGENT_PUSH_KIND = "Refs,Provenance,PathSet"   # an agent push's entry; the base prices each push as `Refs` alone, so the
+                           # `Provenance` and `PathSet` rows are this layer's line (cf.REPO_KIND_ROWS) [measured]
 MEMBERS = 3
 PUSH_GC_DAYS = 14          # agent branch bytes kept until GC drops them after merge or close
 PREDICT_MEAN_PAIRS = 1.80  # path-overlapping pairs per head push on a real fleet's pushes: 5,637 pairs for 3,134 pushes
@@ -229,6 +229,14 @@ def agent_activity(tier, with_mcp):
 	a["api_requests"] += TASKS * REST + checks + rows + leases + TASKS * FEED_POLLS_PER_TASK
 	a["metadata_writes"] += (TASKS * (PRS + REST_WRITES) + TASKS * PUSHES * (PRSYNC_EXTRA + TEST_MERGES_PER_PUSH)
 		+ checks + rows + leases)
+	# The agent writes by `RepoEvent` kind, for their measured rows (cf.meta_fold_rows); REST writes take the base's mix.
+	renews = TASK_MIN * 60 / LEASE_RENEW_S
+	a["meta_kinds"] = {"PrOpened": TASKS * PRS, cf.PRSYNC_KIND: TASKS * PUSHES * PRSYNC_EXTRA,
+		"TestMerged": TASKS * PUSHES * TEST_MERGES_PER_PUSH, "CheckRun": checks, "AgentGate": TASKS * PRS * GATE_ROWS,
+		"TaskCreated": TASKS * TASK_API_SHARE * TASK_ROWS, "TaskUpdated": TASKS * TASK_API_SHARE * TASK_STATE_WRITES,
+		"LeaseAcquire": TASKS * LEASES_PER_TASK, "LeaseRelease": TASKS * LEASES_PER_TASK,
+		"LeaseRenew": TASKS * LEASES_PER_TASK * renews}
+	assert abs(sum(a["meta_kinds"].values()) + TASKS * REST_WRITES - (a["metadata_writes"] - a0["metadata_writes"])) < 1e-9
 	a["emails"] += TASKS * EMAILS_PER_TASK
 	clones = TASKS * CLONES
 	clone_mb_out = t["checkout_mb"] * (1 - CLONE_HIT) * cf.miss_out(cf.COMPOSED_SHARE * CLONE_SHALLOW)
@@ -321,7 +329,7 @@ def learner_cost(tier):
 	duration = n * active_s * cf.DO_GB / 1e6 * price("cf.do.duration")
 	# Entries a month on the hot group: its agent pushes at A1's entries per push (10 entries/s for 500 pushes/120 s).
 	entries = hot_storage(tier)["pushes"] * A1_ENTRIES_S / (500 / PUSH_EVERY_S)
-	rows = n * entries * cf.entry_rows() / 1e6 * price("cf.do.sqlite.rows_written")
+	rows = n * entries * cf.repo_entry_rows(AGENT_PUSH_KIND) / 1e6 * price("cf.do.sqlite.rows_written")
 	# One append per entry per learner, and the API reads they take from the voters while active.
 	reqs = (n * entries + (reads * active_s if n else 0.0)) / 1e6 * price("cf.do.requests")
 	return dict(n=n, reads=reads, load=load, gb=member_gb, storage=storage, duration=duration, rows=rows, reqs=reqs,
@@ -371,7 +379,7 @@ def lines(tier):
 
 	# graft-mcp: MCP requests and the REST behind them, plus session auth requests and grant and scoped-token entries.
 	sessions = per_month(devs, TASKS * MCP_SHARE)
-	auth_rows = sessions * 2 * MEMBERS * cf.entry_rows()   # a scoped-token hash on Tokens, a grant generation on Identity
+	auth_rows = sessions * 2 * MEMBERS * cf.BLOB_ENTRY_ROWS   # a scoped-token hash on Tokens, a grant on Identity
 	out["graft-mcp: tool calls and REST behind them (base lines)"] = sum(l2.values()) - sum(l1.values())
 	out["graft-mcp: CPU, consent and session auth, grant and scoped-token entries"] = (
 		per_month(devs, TASKS * MCP_SHARE * MCP_CALLS) * MCP_CPU_MS / 1e6 * price("cf.workers.cpu")
@@ -383,7 +391,7 @@ def lines(tier):
 	# the group's reads and appends as DO requests. Scaled by the tier's peak agents against A1's 500.
 	lc = learner_cost(tier)
 	out["Learners on the largest network's group (storage, duration, applied rows, requests; K9)"] = lc["cost"]
-	fold_rows = FOLD_ROWS_PER_PUSH // 2 if "without-rowid" in cf.LEVERS else FOLD_ROWS_PER_PUSH
+	fold_rows = cf.kind_rows(AGENT_PUSH_KIND) - cf.kind_rows(cf.PUSH_KIND)
 	out["Folds: PathSet and provenance rows"] = (agent_pushes * fold_rows * MEMBERS / 1e6
 		* price("cf.do.sqlite.rows_written"))
 	# Each working agent keeps one feed poll held on a member. Priced as the base prices DO wall time, per request with
@@ -648,7 +656,7 @@ def with_levers(names, f):
 		cf.LEVERS.update(saved)
 
 
-LOW_RISK = ("edge-compose", "upload-once", "without-rowid", "logs-sample", "r2-ia", "feed-shared")
+LOW_RISK = ("edge-compose", "upload-once", "logs-sample", "r2-ia", "feed-shared")   # without-rowid is not built
 SCENARIOS = {
 	"S1: accepted or low risk": LOW_RISK,
 	"S2: S1 + shard-class (recommended)": LOW_RISK + ("shard-class",),
