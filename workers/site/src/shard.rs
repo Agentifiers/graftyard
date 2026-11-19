@@ -467,8 +467,9 @@ impl Jobs {
         let v = serde_json::to_value(&c).unwrap_or(Value::Null);
         if c.rehydrated.is_some() {
             console_log!("shard rehydrate {}: {v}", self.net.0.0);
-        } else if c.stored.packs > 0 {
-            // Where a catch-up's stored packs came from and how its time split between their fetch and `index-pack`.
+        } else if c.stored.packs > 0 || c.entries > 0 {
+            // Where a catch-up's stored packs came from, how its time split between their fetch and `index-pack`, and
+            // how long its ingests and ref writes waited for the network lock, inline-only catch-ups too.
             console_log!(
                 "shard catch-up stored {}: {}",
                 self.net.0.0,
@@ -1086,9 +1087,17 @@ impl DurableObject for GitShard {
                 };
                 match r {
                     Ok(Validated::MissingBase { .. }) => Response::error("validate: a held request missed again", 503),
-                    Ok(graftyard_git::host::Validated::Done(Some(ix), _)) if detailn == 0 => Response::from_json(&ix),
-                    Ok(graftyard_git::host::Validated::Done(ix, detail)) => {
-                        Response::from_json(&json!({ "index": ix, "detail": detail }))
+                    Ok(Validated::Done(ix, detail, ms)) => {
+                        let r = match ix {
+                            Some(ix) if detailn == 0 => Response::from_json(&ix)?,
+                            ix => Response::from_json(&json!({ "index": ix, "detail": detail }))?,
+                        };
+                        // The container's split of the validate, which the edge reads into the push's stages.
+                        r.headers().set(
+                            "x-graft-validate-timing",
+                            &format!("lock_wait;dur={}, index;dur={}, walk;dur={}", ms.lock_wait, ms.index, ms.walk),
+                        )?;
+                        Ok(r)
                     }
                     Ok(graftyard_git::host::Validated::Busy { retry_after_s }) => {
                         let h = Headers::new();

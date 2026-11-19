@@ -20,5 +20,6 @@ sum=$(python3 tests/fanout/arrivals.py "${RUN_PREFIX:-graft-m2b}" "$from" "$to" 
 { echo "harness outages ($from to $to, edge 0 while the sites serve; over 5% of the window: invalid, rerun):"
   echo "$sum"
   s=tests/am1/raw/a1-samples-$ROW-$run.jsonl.gz
-  if [ -f "$s" ]; then python3 tests/fanout/outagecut.py "$s" "$sum"; else echo "no $s: lines as measured only"; fi
+  # KINDS (space-separated) replaces outagecut.py's default lines, as b034.sh's client and edge clocks.
+  if [ -f "$s" ]; then python3 tests/fanout/outagecut.py "$s" "$sum" ${KINDS:-}; else echo "no $s: lines as measured only"; fi
 } >> "$ST" 2>&1

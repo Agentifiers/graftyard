@@ -357,7 +357,7 @@ impl DurableObject for GitShard {
                 head.extend_from_slice(&req.bytes().await?);
                 let body = Some(js_sys::Uint8Array::from(head.as_slice()).into());
                 match host.validate(NET, tipsn, 0, false, false, graftyard_git::host::OnDisk::CaughtUp, body).await {
-                    Ok(graftyard_git::host::Validated::Done(Some(ix), _)) => Response::from_json(&ix),
+                    Ok(graftyard_git::host::Validated::Done(Some(ix), _, _)) => Response::from_json(&ix),
                     Ok(_) => Response::error("validate gave no index", 422),
                     Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
                 }

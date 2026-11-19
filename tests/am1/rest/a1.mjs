@@ -810,6 +810,9 @@ async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
     await reader.read();
     const ms = Date.now() - s;
     note(kind, ms, String(r.status));
+    // A test install's edge answers its own time to the shard's headers, its time to first byte.
+    const edge = /total;dur=(\d+)/.exec(r.headers.get("server-timing") ?? "");
+    if (edge) note(`${kind}:edge`, Number(edge[1]), String(r.status));
     if (firstByte && b034) {
       const cache = r.headers.get("x-graft-clone-cache"), compose = r.headers.get("x-graft-compose");
       note(`${kind}:${cache ?? "nocache"}`, ms, compose ?? String(r.status));
@@ -912,7 +915,11 @@ const jobs = [
     humanInFlight[k] = (humanInFlight[k] ?? 0) + 1;
     let raced = humanInFlight[k] > 1;
     try {
-      const [res] = await push(admin, ref, await tip(ref), `a1h/${k}.txt`, randomBytes(20_000));
+      const [res, , , , timing] = await push(admin, ref, await tip(ref), `a1h/${k}.txt`, randomBytes(20_000));
+      // The edge clock beside the client's: a test edge's `server-timing` `total` for the POST alone (B0-34's
+      // latency lines, decisions/OPEN-QUESTIONS.md A33).
+      const edge = /total;dur=(\d+)/.exec(timing ?? "");
+      if (edge) note("push:human:edge", Number(edge[1]), res);
       raced ||= humanInFlight[k] > 1;
       return res === "stale" && raced ? "stale:race" : res;
     } finally { humanInFlight[k]--; }
