@@ -453,21 +453,24 @@ pub enum StepDownWhy {
     CommitErrors { calls: Vec<(SiteId, u32, u32)> },
     /// The window's p99 and how many of `of` confirms passed `confirm_p99_ms`.
     Confirm { p99_ms: u32, slow: u32, of: u32 },
-    /// The event loop is behind (LOOP_LAG): `clamped` confirms in LOOP_LAG's window read whole 100 ms ticks.
+    /// The event loop is behind (LOOP_LAG): `clamped` syncs in LOOP_LAG's window ended confirms that read whole 100 ms
+    /// ticks on the isolate's clock.
     LoopLag { clamped: u32 },
 }
 
 /// The window a `STEP_DOWN` trip judged, for the host's log: its bounds on the member clock and each confirm that
 /// ended in it. `confirms` is (end, storage ms), what the confirm rule judges; `whole` is (end, ms from
-/// `confirm_begin`), what the loop-lag rule judges. These rules read only these samples, so an offline replay of a
-/// candidate rule needs nothing else (`tests/fanout/stepdown.py`). `kept` is every confirm of this leadership that
-/// ended in the last CONFIRM_KEEP (30 s), as (end, ms from `confirm_begin`), so a longer window can be replayed too.
+/// `confirm_begin`) on the member clock; `isolate` is (end, ms on the isolate's clock, sync), what the loop-lag rule
+/// judges, one sample per sync. These rules read only these samples, so an offline replay of a candidate rule needs
+/// nothing else (`tests/fanout/stepdown.py`). `kept` is every confirm of this leadership that ended in the last
+/// CONFIRM_KEEP (30 s), as (end, ms from `confirm_begin`), so a longer window can be replayed too.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct StepDownWindow {
     pub from: Timestamp,
     pub to: Timestamp,
     pub confirms: Vec<(Timestamp, u32)>,
     pub whole: Vec<(Timestamp, u32)>,
+    pub isolate: Vec<(Timestamp, u32, Option<u64>)>,
     pub kept: Vec<(Timestamp, u32)>,
 }
 
@@ -503,6 +506,20 @@ impl<E> Envelope<E> {
 /// One storage confirm the host reported begun with `Member::confirm_begin`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConfirmId(pub u64);
+
+/// What a host measured of one storage confirm, reported with `Member::confirm_end_timed`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConfirmTimes {
+    /// The storage itself, the deferred flush's transaction to its `sync()`'s end: what `STEP_DOWN`'s confirm rule
+    /// judges (`decisions/DECISIONS.md`, "`confirm-storage`").
+    pub storage_ms: u32,
+    /// The whole confirm, its input's step to `sync()`'s end, on the isolate's own `Date.now()`: what `LOOP_LAG` judges,
+    /// because workerd's clamp is on that clock and the member clock, raised by peer stamps, does not keep it
+    /// (`lease-clock`). `None` when the member clock is the isolate's.
+    pub isolate_ms: Option<u32>,
+    /// The `sync()` that ended it: the confirms one sync ends are one `LOOP_LAG` sample. `None`: its own sync.
+    pub sync: Option<u64>,
+}
 
 /// The answer to `Member::campaign` (the `suspect` path), and the end of a campaign it started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

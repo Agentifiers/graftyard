@@ -306,16 +306,19 @@ pub const SCHEMA: &[&str] = &[
 #[cfg(feature = "test-faults")]
 use crate::faults::{Fault, Kill};
 
-/// The log line of a `STEP_DOWN` trip's window: `{"stepDownWindow": {from, to, slow, of, confirms, whole, kept}}`, where
-/// `slow` counts the confirms whose storage took over `confirm_p99_ms`, `confirms` lists each as [end, storage ms] on the
-/// member clock, `whole` as [end, ms from the step], and `kept` the last 30 s from the step.
+/// The log line of a `STEP_DOWN` trip's window: `{"stepDownWindow": {from, to, slow, of, confirms, whole, isolate,
+/// kept}}`, where `slow` counts the confirms whose storage took over `confirm_p99_ms`, `confirms` lists each as [end,
+/// storage ms] on the member clock, `whole` as [end, ms from the step], `isolate` as [end, ms from the step on the
+/// isolate's clock, sync] (`LOOP_LAG`'s samples; sync -1 for none), and `kept` the last 30 s from the step.
 pub(crate) fn step_down_line(w: &graftyard_raft::StepDownWindow) -> String {
     let slow = w.confirms.iter().filter(|c| c.1 > graftyard_raft::STEP_DOWN.confirm_p99_ms).count();
     let pairs = |v: &[(graftyard_types::Timestamp, u32)]| -> Vec<[u64; 2]> {
         v.iter().map(|(t, ms)| [t.0, u64::from(*ms)]).collect()
     };
+    let isolate: Vec<[i64; 3]> =
+        w.isolate.iter().map(|(t, ms, s)| [t.0 as i64, i64::from(*ms), s.map_or(-1, |s| s as i64)]).collect();
     json!({ "stepDownWindow": { "from": w.from.0, "to": w.to.0, "slow": slow, "of": w.confirms.len(),
-        "confirms": pairs(&w.confirms), "whole": pairs(&w.whole), "kept": pairs(&w.kept) } })
+        "confirms": pairs(&w.confirms), "whole": pairs(&w.whole), "isolate": isolate, "kept": pairs(&w.kept) } })
     .to_string()
 }
 
@@ -1181,8 +1184,9 @@ pub struct Core<F: Family> {
     pub dep_reads: HashMap<u64, Vec<Value>>,
 }
 
-/// A storage confirm begun: its id, its start when the leader times it, and the input's `SelfAck`.
-type Unconfirmed = (raft::ConfirmId, Option<u64>, Option<raft::SelfAck>);
+/// A storage confirm begun: its id, its start when the leader times it, its step on the isolate's clock (`LOOP_LAG`'s
+/// sample), and the input's `SelfAck`.
+type Unconfirmed = (raft::ConfirmId, Option<u64>, u64, Option<raft::SelfAck>);
 
 pub struct Host<F: Family> {
     pub state: Rc<State>,
@@ -1228,6 +1232,8 @@ pub struct Host<F: Family> {
     flush_waiters: RefCell<Vec<oneshot::Sender<()>>>,
     /// Confirms begun and `SelfAck`s waiting for the writes of the next `flush` to be durable.
     unconfirmed: RefCell<Vec<Unconfirmed>>,
+    /// Syncs this boot has awaited, which names each one (`raft::ConfirmTimes::sync`).
+    syncs: Cell<u64>,
     pub stats: RefCell<Stats>,
     /// The host's own record of its storage confirms, for each `Acked`'s evidence (`ack_json`): the log's last index
     /// once a transaction that appended was confirmed durable, and `now_ms()` then. A truncation caps every row.
@@ -1970,6 +1976,7 @@ impl<F: Family> Host<F> {
             held: RefCell::new(Vec::new()),
             flush_waiters: RefCell::new(Vec::new()),
             unconfirmed: RefCell::new(Vec::new()),
+            syncs: Cell::new(0),
             stats: RefCell::new(Stats::default()),
             synced: RefCell::new(VecDeque::new()),
             queued_last: Cell::new(None),
@@ -2427,7 +2434,8 @@ impl<F: Family> Host<F> {
                     .iter()
                     .chain(&out.messages)
                     .any(|e| matches!(&e.msg, raft::Message::Append(a) if !a.entries.is_empty()));
-            self.unconfirmed.borrow_mut().push((id, timed.then(now_ms), out.self_ack.take()));
+            let stepped = now_ms();
+            self.unconfirmed.borrow_mut().push((id, timed.then_some(stepped), stepped, out.self_ack.take()));
         }
         #[cfg(feature = "test-faults")]
         let lease_at = core.m.role() == Role::Leader && ready_appended_events;
@@ -2717,7 +2725,9 @@ impl<F: Family> Host<F> {
                         synced.pop_front();
                     }
                 }
-                for (id, timed, ack) in pending {
+                // One sync ends every confirm queued before it: they read one span, so `LOOP_LAG` counts them once.
+                let sync_id = Some(h.syncs.replace(h.syncs.get() + 1));
+                for (id, timed, stepped, ack) in pending {
                     if let Some(t0) = timed {
                         let mut s = h.stats.borrow_mut();
                         if s.confirm_ms.len() < SAMPLES_MAX {
@@ -2728,8 +2738,12 @@ impl<F: Family> Host<F> {
                             s.confirm_split.push(ConfirmSplit { gate, sync, turn, stmts: n_stmts, bytes: n_bytes });
                         }
                     }
-                    let storage = synced_at.saturating_sub(tx_at) as u32;
-                    let _ = h.input(|m, t| m.confirm_end_timed(t, id, storage));
+                    let times = raft::ConfirmTimes {
+                        storage_ms: synced_at.saturating_sub(tx_at) as u32,
+                        isolate_ms: Some(synced_at.saturating_sub(stepped) as u32),
+                        sync: sync_id,
+                    };
+                    let _ = h.input(|m, t| m.confirm_end_timed(t, id, times));
                     if let Some(ack) = ack {
                         let _ = h.input(|m, t| m.self_ack(t, ack));
                     }
@@ -4259,6 +4273,11 @@ mod tests {
             to: Timestamp(11_000),
             confirms: vec![(Timestamp(2_000), 500), (Timestamp(3_000), 501), (Timestamp(4_000), 40)],
             whole: vec![(Timestamp(2_000), 900), (Timestamp(3_000), 501), (Timestamp(4_000), 640)],
+            isolate: vec![
+                (Timestamp(2_000), 433, Some(7)),
+                (Timestamp(3_000), 501, Some(7)),
+                (Timestamp(4_000), 640, None),
+            ],
             kept: vec![(Timestamp(500), 900)],
         };
         let v: serde_json::Value = serde_json::from_str(&super::step_down_line(&w)).unwrap();
@@ -4266,7 +4285,8 @@ mod tests {
             v,
             serde_json::json!({ "stepDownWindow": { "from": 1000, "to": 11000, "slow": 1, "of": 3,
                 "confirms": [[2000, 500], [3000, 501], [4000, 40]],
-                "whole": [[2000, 900], [3000, 501], [4000, 640]], "kept": [[500, 900]] } })
+                "whole": [[2000, 900], [3000, 501], [4000, 640]],
+                "isolate": [[2000, 433, 7], [3000, 501, 7], [4000, 640, -1]], "kept": [[500, 900]] } })
         );
     }
 

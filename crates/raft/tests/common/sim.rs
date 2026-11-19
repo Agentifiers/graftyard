@@ -19,9 +19,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_raft::{
-    Admitted, Alarm, ByRequest, CallError, CallFailure, Colo, CommitError, ConfirmId, Digest, EntryBody, Envelope,
-    Index, Member, MemberConfig, Message, Out, ReadId, Receipt, ReleaseTag, RequestId, Resolution, Role, SelfAck,
-    Stored, Term, Ticket, Write,
+    Admitted, Alarm, ByRequest, CallError, CallFailure, Colo, CommitError, ConfirmId, ConfirmTimes, Digest, EntryBody,
+    Envelope, Index, Member, MemberConfig, Message, Out, ReadId, Receipt, ReleaseTag, RequestId, Resolution, Role,
+    SelfAck, Stored, Term, Ticket, Write,
 };
 use graftyard_types::{ChainId, DbId, PlacementName, PlacementRecord, Region, ReleaseId, RepoId, SiteId, Timestamp};
 
@@ -933,12 +933,15 @@ impl Sim {
                 self.note_synced(*s, writes.iter().any(|w| matches!(w, Write::Append(_))));
             }
         }
-        for (_, s, generation, id, _, ack, storage) in ends {
+        for (end, s, generation, id, _, ack, storage) in ends {
             // An earlier report in this loop may have crashed the member.
             if generation != self.generation[s.0 as usize] {
                 continue;
             }
-            if let Some((_, res)) = self.call(s, |m, t| m.confirm_end_timed(t, id, storage)) {
+            // The confirms that end at one instant behind the site's output gate are one `sync()`, as on the host.
+            // The sim's member clock is its isolate's (no stamp floor), so it reports no separate isolate time.
+            let times = ConfirmTimes { storage_ms: storage, isolate_ms: None, sync: Some(end.0) };
+            if let Some((_, res)) = self.call(s, |m, t| m.confirm_end_timed(t, id, times)) {
                 self.handle(s, res);
             }
             if let Some(ack) = ack
