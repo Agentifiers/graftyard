@@ -114,6 +114,34 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Site day m3fg11: G11's hosted rehome (2026-11-19, graft-m3f, main `1d815c92`)
+
+**Slot.** Granted by the orchestrator after `g11-warm` merged: one site day from main `1d815c92` (`g11-warm`, R29, why-logs, a1-wall), then one seeded repository and one planned rehome, under the harness-outage rule, with a $3 stop on m3f counted from the site day's start. Raw files: `tests/fanout/raw/g11-m3fg11.{status,jsonl}`, `terms-m3fg11-g11.jsonl`, `g11-seed-m3fg11.log`, `arrivals-m3fg11.jsonl`. Driver: `tests/fanout/g11.sh` and `g11.mjs`, run through the egress proxy.
+
+- **Site day:** 08:49:33Z to 09:03:22Z, `site exit 0`, `edge exit 0`. Image `sha256:171857b3…`, built from `1d815c92` because `containers/git` changed since `7b576074`.
+- **Setup:** repo 65593 (`fm3fg11-g11`), seeded from a bare git/git clone in 12 pushes, 0.25 GB in 167 s (`b034plan.py` at 30 MB steps; the plan is `tests/fanout/raw/g11plan-m3fg11.txt`). 24 PRs opened, each at the next of the plan's first-parent commits. Site 0 led at term 2, and site 0's shard was warm (`/catchup` 200).
+- **The move:** site c's shard was torn down at 09:09:57.4Z, so the target was cold. Merges ran one every 6 s from 30 s before the move.
+  - The first `/move` (on site 0, 09:09:58.3Z, 588 ms) committed `Home`, home 2.
+  - The trace shows site 2 leading at term 3 at 09:10:00.3Z, about 1.5 s later, with no `Transfer` asked. The raft core's `maybe_hand_off` moved leadership to the config's new home by itself.
+  - The second `/move` (on site 2, 09:10:01.6Z) answered `Done`. The move took 4.2 s from the first ask to `Done`.
+- **G11's gate did not run:** 0 held asks, no `waitedMs`, no `cold` label. `move_step`'s `Transfer` arm was never reached. The move was cold in fact, without the label. m3fr16's rehome went the same way: `Home` then `Done` on site 2, warmed after by `shardwarm.mjs`.
+- **MergeQueue `warming` in the minute after the hand-off: 1 of 9** (m3fr7: 5 of 5).
+  - PR 7 (09:10:02.6Z) answered 503 `the git cache: 503 {"warming":true}` after 15.6 s, then merged on its retry in 11.2 s, shard `waited;dur=8630`.
+  - The other 8 merged in 1.1 to 2.4 s.
+  - Site c's cold rehydrate logged `catch_up` 20,065 ms for 87 entries, 0.46 MB inline and no packs (m3fr7: 69.0 s for 268 MB in 257 packs). This repository's packs are far fewer, so the two are not like-for-like on the window's length [measured, Workers Logs, graft-m3f-site-c, 09:10:28Z].
+- **R29:** after 30 s with no write, all three voters were at commit 116 and applied 116, with site 2 leading at term 3. 0 leader changes besides the planned one (`terms-m3fg11-g11.jsonl`).
+- **Colos:** client LAX at the start and the end.
+- **Harness outages:** `arrivals.py` marked 54% of the seconds from 09:07:29 to 09:12:05Z as edge 0 with sites serving (`"valid": false`). The edge averaged 0.53 requests a second over that span and 0.18 in the merge window. That is the row's own one-request-every-6-s gap, not a dropped host: every merge and `/move` got an answer, with no `fetch failed`. The orchestrator's rule for such rows is now rule 5 of `tests/fanout/README.md`, "Harness outages on gate rows". No line reads differently with or without the windows.
+- **Cost:** graft-m3f $0.05 by `PREFIX` from 08:49:33Z (stop $3). The account was $18.92 for the UTC day at 08:48Z.
+- **Close-out:**
+  - `retirenets.mjs 65593`: 3 names, all not joined.
+  - `purge.py`: 115 objects (a 39, b 36, c 40), second pass 0.
+  - `joined.mjs 65593`: none joined.
+  - Two sweeps at 09:30Z: no shard container running.
+  - Idle reading from 09:31Z: $0.00 at 09:47Z.
+
+**Verdict and the fix.** The wait has to come before the config that triggers the hand-off, not before `Transfer`. Branch `g11-home` moves it there (`decisions/DECISIONS.md`, "`g11-warm`").
+
 ## G11 built: a planned rehome warms the target's shard first (2026-11-19, code-only, branch `g11-warm`)
 
 Approved by the orchestrator after B0-31 was met on m3fr16, which left no other B0-31 item in BUILD-PLAN. `decisions/DECISIONS.md`, "`g11-warm`", has the decision and its flip.

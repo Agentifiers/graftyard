@@ -7,3 +7,8 @@
 2026-11-19T04:00:59.068Z purge: 65591 REFUSED: not retired (0:<urlopen error Tunnel connection failed: 502 Bad Gateway>, 1:registry: <urlopen error Tunnel connection failed: 502 Bad Gateway>, 1:<urlopen error Tunnel conn)
 2026-11-19T04:00:59.069Z purge: {"dry": false, "purged": 0, "objects": 0, "refused": [65591], "second": 0}
 2026-11-19T06:28:42.736Z repo:65592: 11 names, 11 were joined, all not joined
+2026-11-19T09:16:49.904Z repo:65593: 3 names, 3 were joined, all not joined
+2026-11-19T09:25:23.032Z purge: waiting 463 s for sweep runs started before the first pass (until 2026-11-19T09:25:00.000007+00:00)
+2026-11-19T09:25:23.033Z purge: 65593 purged: a 39 -> 0, b 36 -> 0, c 40 -> 0
+2026-11-19T09:25:23.033Z purge: 65593 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T09:25:23.033Z purge: {"dry": false, "purged": 1, "objects": 115, "refused": [], "second": 0}
