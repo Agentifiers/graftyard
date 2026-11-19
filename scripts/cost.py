@@ -13,7 +13,7 @@ working sets, leader split, site-loss rate) is a [guess] until Milestone 0 measu
 tagged [measured]. Excluded, as in
 scripts/cost_model.py: Actions runner compute, the vendor fee, and tax. Also excluded: any Enterprise contract, which
 has no list price. Managed cells and any install that accepts pushes over 200 MB need one on top of these figures.
-The plan line uses Pro or Business list.
+The plan line uses Pro list at every tier; Business and Enterprise are install options, not priced.
 
 Variants:
 	design     the default: one install account with three site Worker scripts pinned to enam, weur, and apac; every
@@ -79,7 +79,9 @@ SSH_OPTION_PLANS = ("cf.plan.pro.monthly", "cf.plan.business.monthly")  # the op
                                    # it; --ssh-option prices it. Tunnel bytes are not billed and Spectrum is not in the
                                    # path, so it adds the SSH fronts and the SSH bytes crossing them (container egress)
 SSH_OPTION = False                 # set by --ssh-option only
-PLAN = {"small": "cf.plan.pro.monthly", "medium": "cf.plan.business.monthly", "large": "cf.plan.business.monthly"}
+PLAN = {"small": "cf.plan.pro.monthly", "medium": "cf.plan.pro.monthly", "large": "cf.plan.pro.monthly"}
+                                   # Pro at every tier (FRAME.md, "Operator decision, 2026-11-19, Pro plan"): 100 MB
+                                   # HTTPS pushes; Business (200 MB) and Enterprise (5 GB, Spectrum SSH) stay install options
 VARIANTS = ("design", "separate", "solo", "artifacts")
 
 # ---- git cache shards (CF-ACT-9) ----
@@ -173,7 +175,7 @@ LIVE_ROWS_S = 1_200                # rows a scan reads a second through `snap_un
 # them at 300 and 2,000 developers, base plus agents. Each is a proposal for the operator, not the design of record.
 LEVERS = set()
 LEVER_NAMES = ("shard-class", "shard-class-lean", "edge-compose", "upload-once", "without-rowid", "feed-shared", "logs-sample",
-	"pool-2", "pro-plan", "r2-ia", "separate-accounts", "night-one-copy", "k2-unbilled", "fill-as-built", "ws-half")
+	"pool-2", "r2-ia", "separate-accounts", "night-one-copy", "k2-unbilled", "fill-as-built", "ws-half")
 # Not levers, and in no scenario: k2-unbilled (container bytes back to the shard object unbilled, open question K2: the
 # shards start with `enableInternet` false, yet `containersUsageAdaptiveGroups.txBytes` counted 541 GB for the account
 # from 2026-11-01 to 18 [measured, read-only GraphQL], so the meter counts those bytes; billing is unconfirmed because
@@ -264,10 +266,6 @@ def entry_rows():
 	return WITHOUT_ROWID_ROWS if "without-rowid" in LEVERS else ENTRY_ROWS
 
 
-def plan(tier):
-	return "cf.plan.pro.monthly" if "pro-plan" in LEVERS else PLAN[tier]
-
-
 def miss_out(composed=None):
 	"""Bytes that leave a container per byte of clone-cache miss. The default counts each miss once. As built
 	(fill-as-built, and every stock miss under edge-compose) the fill reads the spool out a second time. Under
@@ -336,7 +334,7 @@ def model(tier, variant="design", split=None):
 	lines = {}
 
 	lines["Workers Paid subscriptions (install)"] = accounts * price("cf.workers.paid.subscription")
-	lines["Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced)"] = price(plan(tier))
+	lines["Zone plan (Pro list; Business, Enterprise, and managed cells not priced)"] = price(PLAN[tier])
 
 	# Workers: requests enter at graft-front and reach the edge over a service binding, which bills no second request.
 	# In the one-account default, member RPCs are Durable Object binding calls and cost DO requests only. In the
@@ -470,7 +468,7 @@ def model(tier, variant="design", split=None):
 			+ added(disk_gbs, pool_s * s["pool_disk"], INCLUDED["c_disk_gbs"] * site_inc) * price("cf.containers.disk"))
 
 	ssh_gb = (w["dev_gb"] + w["push_gb"]) * ssh_share(tier)
-	ssh_inc = 5 if plan(tier) == "cf.plan.pro.monthly" else 10
+	ssh_inc = 5 if PLAN[tier] == "cf.plan.pro.monthly" else 10
 	lines["Spectrum SSH data"] = over(ssh_gb, ssh_inc) * price("cf.spectrum.ssh.overage")
 	lines["Spectrum SSH add-on fee [unverified, no list price found]"] = SPECTRUM_ADDON_USD if PLAN[tier] in SSH_PLANS else 0
 	lines["Queues (webhooks, notifications, indexing)"] = over(queue_msgs * 3, INCLUDED["queues"]) / 1e6 * price("cf.queues.operations")

@@ -210,6 +210,12 @@ For the UTC day 2026-11-17 the account-wide spend limit is $300 instead of $200,
 
 The orchestrator asked, for B0-31 and `decisions/OPEN-QUESTIONS.md` F81, whether a repository group whose leader is rehomed onto another continent than its owner's identity groups keeps the 1.1 s commit line (which would need a dependency lease) or gets a separate bound. The operator chose the separate bound. Such a group's buckets-up commit p99 is bounded at 2 s, failing over 3 s; every group led on its owner's continent keeps its own line. The bound is the measured floor plus one round: on B0-31 m3fr16 the cross-continent `deps:all` p99 was 820 ms and the round p99 510 ms, about 1.33 s before any queueing [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fr16"]. The 90% rule applies to it as to any line. The dependency lease stays the recorded fallback in `decisions/DECISIONS.md`, "F81".
 
+### Operator decision, 2026-11-19, Pro plan
+
+> "1. Pro is fine."
+
+The orchestrator asked, after the cost-lever review, whether the default zone plan could be Pro instead of Business at 300 and 2,000 developers: Pro list is $25 a month against Business's $250, and Business has a 200 MB request body limit where Pro has 100 MB (`research/cloudflare.md`, Workers) and a "100% Uptime" SLA (`research/cloudflare-uptime.md`, finding 29), which Pro does not carry [inference: no Pro SLA was found]. The operator chose Pro. The default zone plan is Pro at every tier, so the default HTTPS push body limit is 100 MB, and `scripts/cost.py` prices Pro at 50, 300, and 2,000 developers. Business (200 MB) and Enterprise (up to 5 GB, and native SSH through Spectrum) remain install options for an install that needs them, priced outside the tables [inference: the operator named the default only]. A push over 100 MB on the default plan gets Cloudflare's bare 413, and the install docs and the 413 runbook name the `cloudflared` SSH option where the install has it on, and otherwise Enterprise or splitting the push, as before; an install whose pushes fall between 100 and 200 MB can move to Business instead [inference] (`decisions/DECISIONS.md`, "`pro-default`").
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
