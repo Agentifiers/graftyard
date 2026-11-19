@@ -11,3 +11,13 @@
 2026-11-19T01:41:17Z 65590 purged: a 0 -> 0, b 0 -> 0, c 1102 -> 0
 2026-11-19T01:41:17Z 65590 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-19T01:41:17Z {"dry": false, "purged": 1, "objects": 1102, "refused": [], "second": 0}
+2026-11-19T04:00:58Z 65591 REFUSED: not retired (0:<urlopen error Tunnel connection failed: 502 Bad Gateway>, 1:registry: <urlopen error Tunnel connection failed: 502 Bad Gateway>, 1:<urlopen error Tunnel conn)
+2026-11-19T04:00:58Z {"dry": false, "purged": 0, "objects": 0, "refused": [65591], "second": 0}
+2026-11-19T04:01:51Z waiting 488 s for sweep runs started before the first pass (until 2026-11-19T04:10:00.000010+00:00)
+2026-11-19T04:08:55Z waiting 64 s for sweep runs started before the first pass (until 2026-11-19T04:10:00.000013+00:00)
+2026-11-19T04:10:23Z 65591 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T04:10:23Z 65591 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T04:10:23Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T06:44:34Z 65592 purged: a 0 -> 0, b 0 -> 0, c 209 -> 0
+2026-11-19T06:44:34Z 65592 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T06:44:34Z {"dry": false, "purged": 1, "objects": 209, "refused": [], "second": 0}

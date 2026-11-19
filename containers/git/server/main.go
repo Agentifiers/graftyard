@@ -2797,6 +2797,34 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		}
 		body = b
 	}
+	// compose=only&tail=1 (edge-compose): the chain's manifest and the want's own objects, not the composed pack, so the
+	// edge streams the chain's packs from the warm bucket and only the tail leaves this container. A container on the
+	// previous image ignores tail=1 and answers compose=only as before. A tail past tailMax goes on below, composed
+	// whole and spooled, as compose=only.
+	if q := r.URL.Query(); !advertise && q.Get("compose") == "only" && q.Get("tail") == "1" {
+		want, tag, ok := composable(body)
+		if !ok || !strings.Contains(proto, "version=2") {
+			w.Header().Set("x-graft-compose", "stock: not composable")
+			w.WriteHeader(409)
+			return
+		}
+		c, why := composePlan(net, rp, want, tag)
+		if c == nil {
+			w.Header().Set("x-graft-compose", "stock: "+why)
+			w.WriteHeader(409)
+			return
+		}
+		if len(c.inc)-32 <= tailMax {
+			b := manifestOf(net, want, c)
+			c.close()
+			w.Header().Set("content-type", "application/x-graft-compose-tail")
+			w.Header().Set("content-length", strconv.Itoa(len(b)))
+			w.Header().Set("x-graft-compose", "tail")
+			w.Write(b)
+			return
+		}
+		c.close()
+	}
 	l := lock(net)
 	// A clone-cache fill (`spool=<key>`, one at a time per key): the whole answer also goes to a file, written to its
 	// end after the client goes, which the shard object puts to the clone cache (compose.go, "the clone-cache fill").

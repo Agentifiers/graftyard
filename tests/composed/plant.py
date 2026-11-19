@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """composed-miss: planted bugs in this branch's new code (the container's composed miss, chain steps, chain install
 and clone-cache spool, a want or chain behind HEAD, compose=only and the network lock; the shard object's request rule
-and chain file layout). The edge's streamed hit is planted by tests/composed/bed/run.sh with WHOLE=1, and the miss line's
+and chain file layout; edge-compose's manifest and tail, and the edge's answer streamed from R2, whose plants run
+tests/composed/edgebed/run.sh). The edge's streamed hit is planted by tests/composed/bed/run.sh with WHOLE=1, and the miss line's
 first-chunk forward by running it with FWD=1 against a planted `on_first_chunk`. Plants one mutant at a time, runs the
 tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run
 from the worktree root:
@@ -23,6 +24,9 @@ MISS = ('go', 'TestComposedMiss$')
 FILL = ('go', 'TestCancelledFillStillSpoolsTheWholeAnswer')
 COMPOSE_RS = ('cargo', 'graftyard-git', 'compose::')
 KEY_RS = ('cargo', 'graftyard-git', 'key::')
+HOST = 'crates/git/src/host.rs'
+TAIL = ('go', 'TestComposedTailMatchesTheComposedAnswer')
+BED = ('bed',)
 
 MUTANTS = [
     # The composed pack.
@@ -112,10 +116,37 @@ MUTANTS = [
      '            Some((_, 200, _)) => "composed".into(),', COMPOSE_RS),
     ('a miss line drops the first chunk\'s time', RS, '            "first_ms": self.first.map(ms),',
      '            "first_ms": self.served.as_ref().map(|(t, ..)| ms(*t)),', COMPOSE_RS),
+    # edge-compose: the container's manifest and tail.
+    ('the tail keeps its pack header', CG, 'c.inc[12:len(c.inc)-20]', 'c.inc[0:len(c.inc)-20]', TAIL),
+    ('the manifest counts the tail as empty', CG, 'TailN: binary.BigEndian.Uint32(c.inc[8:12])', 'TailN: 0', TAIL),
+    ('a tail past tailMax is sent as a manifest', MAIN, 'if len(c.inc)-32 <= tailMax {', 'if len(c.inc)-32 <= tailMax || true {',
+     TAIL),
+    # edge-compose: the edge's reading and framing, pure.
+    ('a manifest may name another network\'s packs', RS, 'if n == network && file.ends_with(".pack"))',
+     'if file.ends_with(".pack"))', COMPOSE_RS),
+    ('the count leaves out the tail', RS, 'try_fold(self.tail_n,', 'try_fold(0u32,', COMPOSE_RS),
+    ('a side-band packet\'s length leaves out its header', RS, 'format!("{:04x}", n + 5)', 'format!("{:04x}", n + 4)',
+     COMPOSE_RS),
+    ('answer_len leaves out the closing flush', RS, 'rest.div_ceil(SIDEBAND_MAX) * 5 + rest + 4',
+     'rest.div_ceil(SIDEBAND_MAX) * 5 + rest', COMPOSE_RS),
+    # edge-compose: the edge's streamed answer, in local workerd (tests/composed/edgebed/run.sh).
+    ('the trailer is not sent', HOST, 'frame(&mut framer, &sum).await?;', '', BED),
+    ('each pack\'s trailer is sent with its body', HOST, 'let mut left = p.body;', 'let mut left = p.body + 20;', BED),
+    ('a chain pack is not checked against the manifest\'s count', HOST, 'pack_count(&head) != Some(p.n)',
+     'pack_count(&head).is_none()', BED),
+    ('the rest of the chunk holding the header is dropped', HOST, 'rest = Some(v.subarray(k, v.length()));', '', BED),
+    ('the pack header is left out of the hash', HOST, 'write(&hasher, &js_sys::Uint8Array::from(&hp[5..])).await?;', '',
+     BED),
 ]
 
 
 def run(t):
+    if t[0] == 'bed':
+        env = dict(ENV, CARGO_TARGET_DIR=os.environ.get('PLANT_BED_TARGET', '/tmp/edgebed-target'))
+        r = subprocess.run([os.path.join(ROOT, 'tests/composed/edgebed/run.sh')], cwd=ROOT, env=env, capture_output=True,
+                           text=True, timeout=1800)
+        out = r.stdout + r.stderr
+        return r.returncode, out, 'error[E' in out
     if t[0] == 'go':
         r = subprocess.run(['go', 'test', '-count=1', '-timeout', os.environ.get('PLANT_GO_TIMEOUT', '300s'), '-run', t[1], '.'],
                            cwd=os.path.join(ROOT, 'containers/git/server'), capture_output=True, text=True, timeout=600)

@@ -2068,9 +2068,20 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     // The clone cache lives in the home site's bucket.
     let cache_binding = format!("BUCKET_{}", repo.record.home.0);
     let cache = R2(c.env.bucket(&cache_binding)?);
+    let net = NetworkId(repo.id.0);
     if let Some(k) = &key {
         let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
         h.set("x-graft-clone-cache", "hit")?;
+        // A composed miss's entry is a manifest (`edge-compose`), streamed from the chain in the same bucket. One whose
+        // chain has moved on (a fold deleted its files) is a miss, which writes a new one.
+        if let Some(o) = cache.0.get(k.manifest_key().to_string()).execute().await.map_err(|e| e.to_string())?
+            && o.size() <= graftyard_git::compose::TAIL_ANSWER_MAX
+            && let Some(b) = o.body()
+            && let Some(r) =
+                graftyard_git::host::manifest_answer(&cache, net, b.bytes().await?, h.clone()).await.map_err(|e| e.0)?
+        {
+            return Ok(r);
+        }
         if let Some(r) =
             graftyard_git::host::cached_response(&cache, &k.r2_key(0).to_string(), h).await.map_err(|e| e.0)?
         {
@@ -2079,10 +2090,30 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     }
     // A miss names its key (`fill=`): the shard spools the whole answer and puts it to the cache itself, so a client
     // that stops reading still leaves an entry. The edge's own tee stored only answers a client read to the end, and
-    // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard").
+    // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard"). With
+    // `tail=1` (`edge-compose`) a composed miss comes back as the chain's manifest and the want's own objects, and the
+    // edge streams the chain's packs from the home bucket, so only the tail leaves the container. A chain file the
+    // bucket lacks sends the miss back to the shard for the composed pack, as before.
     let fill = key.as_ref().map_or(String::new(), |k| format!("&fill={}", k.digest().hex()));
     let url = format!("https://shard/upload-pack?repo={}{fill}", repo.id.0.0);
-    let mut r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
+    let tail_url = format!("{url}{}", if key.is_some() { "&tail=1" } else { "" });
+    let mut r = shard_read(c, repo, &tail_url, Method::Post, &proto, Some(&body)).await?;
+    if r.status_code() == 200 && r.headers().get("x-graft-compose")?.as_deref() == Some(graftyard_git::compose::TAIL) {
+        let len = r.headers().get("content-length")?.and_then(|v| v.parse::<u64>().ok());
+        let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
+        h.set("x-graft-clone-cache", "miss")?;
+        h.set("x-graft-compose", "composed: r2")?;
+        if let Some(v) = r.headers().get("x-graft-cursor")? {
+            h.set("x-graft-cursor", &v)?;
+        }
+        if len.is_some_and(|n| n <= graftyard_git::compose::TAIL_ANSWER_MAX)
+            && let Some(a) =
+                graftyard_git::host::manifest_answer(&cache, net, r.bytes().await?, h).await.map_err(|e| e.0)?
+        {
+            return Ok(a);
+        }
+        r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
+    }
     let hh = git_headers(c.rid, &Service::UploadPack.result_type())?;
     if r.status_code() != 200 {
         let why = r.text().await.unwrap_or_default();

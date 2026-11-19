@@ -1007,8 +1007,12 @@ fn bf68_eu_documents_stay_in_eu_shards_a_killed_shard_reports_incomplete_until_i
         }
     }
     b.issue(eu_pub, ALICE, comment(made.iter().find(|m| m.0 == eu_pub).unwrap().1, "a durian in a comment"));
-    until(&mut b, 60_000, &mut |b| b.shards.values().map(Shard::count).sum::<i64>() == made.len() as i64)
-        .expect("indexed");
+    // Every document, and the comment, which adds none: a count alone passes before the comment's entry is indexed.
+    until(&mut b, 60_000, &mut |b| {
+        b.shards.values().map(Shard::count).sum::<i64>() == made.len() as i64
+            && !b.search("durian in:comments", &[Domain::Eu], &[]).hits.is_empty()
+    })
+    .expect("indexed");
 
     // Residency: every EU-owned document is in an `eu`-jurisdiction shard on an `eu` site, and only there.
     let sites = Bed::sites();

@@ -4337,6 +4337,38 @@ Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (9
 - A row where head-push merges shed `late` because dispatch takes the turn: lower `DISPATCH_STREAK_MAX`.
 - An event that starts no run or two (the `pr-trigger` flip).
 
+### `r29-commit-heartbeat`: an idle leader tells each follower its last commit once, and a purge wakes the group first, 2026-11-19
+
+**Status.** Code-only, on branch `r29-commit-heartbeat`, not deployed. The Raft half ships on a site day; the purge route's probe is edge code and ships on an edge day. Answers R29 (`decisions/OPEN-QUESTIONS.md`).
+
+**Decision.**
+- **A commit round** (`tick_leader`, `crates/raft/src/member/leader.rs`). The leader keeps, per follower, the commit its latest answered round told it: the lower of the commit that round carried and the index the follower matched (`Lead::told`, from `Lead::telling`). A follower that holds every entry but was told less than the leader's commit gets one more AppendEntries once the last round to it is `CALL_DEADLINE` old. A busy group's next entry carries the commit, so it sends nothing extra; an idle leader that told every follower sends nothing at all, as before.
+- **The purge route wakes the group** (`workers/edge/src/purge.rs`). Before it reads the members' statuses, it sends one `{"q": {"probe": true}}` read per chain through `call_opt`, whose lookup reports a leaderless group with `suspect` and so starts its election, as `tier-off-elect` does for a group read only by dumps. A chain with no group answers `None` and is not created.
+
+**Why.** On graft-m4a's 65567 (2026-11-18) `#1#f0` held commit 5044, with both followers at commit 5043 and last 5044, all three followers in term 26 with no leader; the gate refused `NoTombstone` for 4.5 minutes, until one `/campaign` made `#1#f0` lead and its next append carried 5044 [measured, R29]. In memory the first half reproduces with no leader loss: after one commit and 30 idle `CALL_DEADLINE`s, the leader holds commit 4 and both followers commit 3 (`an_idle_leader_tells_its_followers_the_last_commit_once` fails on main f6123990). The leader sends a follower an append only while it is behind or a read, transfer, or campaign waits, and a follower learns a commit only from an append. The second half is why 65567 also had no leader: `keep_led` campaigns only while `Family::needs_leader` holds (split or archive due), and nothing reads a deleted repository. With the commit round the followers learn the commit about 1 s after it, while the host's ticker still runs (`ACTIVE_FOR_MS`, 3 s), so a leader lost later leaves nothing to tell [inference]. A leader lost inside that second still can, and the probe covers the one reader that needs it.
+
+**What it beat.**
+- **Treating "told below commit" as `behind`, every `CALL_DEADLINE`, with no told record.** An idle leader then beats forever, which breaks `suspect`'s "a report counts only while the leader makes no progress" (plant 108 fails four `leadership` tests that way).
+- **The commit round at once, after each commit.** A busy group sends an empty round beside every entry; waiting `CALL_DEADLINE` lets the next entry carry it.
+- **`keep_led` counting an uncommitted follower as work due.** It would campaign every leaderless group whose follower is one commit short, deleted or not, for a fact only a purge reads, and a follower cannot tell a commit it was never told from an entry that never committed.
+- **The purge gate accepting a member one commit short.** The tombstone is the purge's evidence; the gate must see it applied.
+
+**Evidence.**
+- `an_idle_leader_tells_its_followers_the_last_commit_once` (`crates/raft/tests/scenarios.rs`): fails on main; checks nothing leaves inside `CALL_DEADLINE`, both followers reach the leader's commit just after it, and then five more idle `CALL_DEADLINE`s send nothing.
+- Tests that assumed an idle leader sends nothing after `Cluster::sync`: `sync` now runs one more `CALL_DEADLINE`, so a report after it is still late; two `leadership` tests and `a_voter_is_pipelined_unless_its_link_is_lossy` count the commit round's time. `bf68_eu_documents_stay_in_eu_shards_a_killed_shard_reports_incomplete_until_its_rebuild` (`crates/api/tests/activity_gates.rs`) waited only for 13 documents to be indexed, and a comment adds none; with followers learning commits sooner the count reached 13 at 1.4 s instead of 2.9 s, before the comment's entry was indexed, so it now waits for the comment too. The simulator sweeps pass unchanged.
+- Plants 106 to 108 (`tests/m4/wp4/plant.py`): main's rule (106), the round at once (107), and an answer never counted as told (108). 3 of 3 caught.
+- `a_fresh_leaders_first_idle_period_sends_one_round_per_follower_then_nothing` (`crates/raft/tests/scenarios.rs`): a new leader has no `told` entry, so its first idle period sends each follower one empty round after `CALL_DEADLINE`, carrying its term's commit, and then nothing for five more; it checks this after a new group's first election and after a hand-off, with the leader still leading.
+- The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000 RAFT_HISTORY=...`, `crates/raft/tests/sim.rs`, `long_sweep`) on the branch merged with main 03404ace (7a4b1c05): exit 0 in 920 s. Porcupine (`-seg 2000`): `hist.jsonl` Ok on 146,836 operations, `hist.jsonl.gray` Ok on 2,335,345, `hist.jsonl.live` Ok on 5,287,143. Longest stretches with a healthy quorum and nothing completing: HARSH 14.7 s (seed 10439), GRAY 28.5 s (11893), live 25.2 s (13897), under the 30 s bound; main 03404ace's own sweep gave 16.8 s, 24.2 s (11076), and 29.1 s (10681) [measured].
+- The GRAY tail, seed by seed over the same 2,000 seeds: branch mean 8,880 ms, p99 21.5 s, 33 seeds over 20 s and 2 over 25 s; main mean 8,769 ms, p99 20.4 s, 22 over 20 s and 0 over 25 s. 594 seeds moved by more than 5 s, 294 longer and 300 shorter, and seed 11893 itself is 13.9 s on main [measured]. That fits the timing churn `tests/m0/results/read-rounds.md` found (673 of 2,000 seeds moved by more than 5 s), not a stall the commit round causes [inference].
+- **The purge probe is [unverified] until the edge day that carries it.** `workers/edge` has no harness for the route's bindings, so no test drives it. Its check: the next purge of a chain whose group has no leader reads every member's status with no 503 and passes or refuses on the gate's facts, with no `/campaign` before it. Hosted: not run.
+
+**Cost.** At most one empty AppendEntries per follower per commit, and only when the group commits less often than once per `CALL_DEADLINE` [inference]. A down follower already got a re-send every `CALL_DEADLINE` while behind, so it adds none there.
+
+**Flip.**
+- A hosted row where a group that commits about once a second or less shows AppendEntries per entry above 2 per follower, or leader CPU from empty rounds: send the round on the lease extension's schedule instead.
+- A long sweep whose GRAY or live half breaks the 30 s bound, or a second sweep that again puts more GRAY seeds over 20 s than main (here 33 against 22): find whether the commit round renews a gray leader's promises.
+- A purge refused `NoTombstone` again after a second call on a group with a committed tombstone: the probe did not wake it, so wake it from the member (`keep_led` for a tombstoned repository).
+
 ### `roll-up`: a bounded roll of a chain's oldest promoted packs, recorded as `Compacted` on the repository chain, 2026-11-16
 
 **Status.** Approved by the operator after round 32's review, with the repository-chain form; built on branch `rollup` (G9), not deployed. Built: the fold and `verify`, the archive alarm's roll step (`log_archive::roll_plan`, `Step::Rolled`), the site's warm `/roll` through the promotion path, the container's `/roll`, the rehydrate's read of produced packs with its fallback to the consumed packs, the site variable `GRAFTYARD_ROLLUP` that gates every roll (`log_archive::rollup_enabled`: unset, the alarm sends no `/roll` and records no `Compacted`; a site day sets it to `1` only after `FormatsEnable` enabled 32.25, as R24's `GRAFTYARD_APP_HOOKS` waits for 32.24), and the deletion guard as a pure rule (`sweep::consumed_deletable`). Not built: the sweeper's deletion of consumed packs, which waits for that rule's shard answers (G9's remainder). DESIGN, Shape, `Promoted` and `rehydrate`, and Failure modes (pack buckets bad-deploy, git caches noisy-tenant) carry the rule; this entry carries the numbers.
@@ -5430,7 +5462,7 @@ Conditions the orchestrator set before code:
 
 ### `edge-compose`: a composed clone-cache miss streams from R2 through the edge, not out of a container, 2026-11-19
 
-**Decision.** The orchestrator (T-01a17bda) accepted it as a design change; it is unbuilt. On a composed miss (DESIGN, Shape, git cache shards) the edge asks the shard for the tail only (`compose=tail`): the pack of the want's own new objects and the chain's head with its object count. The edge then streams the chain's `compose/<net>/base-<tip>` and `part-<from>-<to>` pack bodies from the warm bucket, then the tail. It writes the pack header from the count and computes the SHA-1 trailer as it streams. The shard puts a manifest to the clone cache, naming the chain's files, the tail's object, and the trailer, and a hit streams the same files. Stock misses keep today's spool and fill. A chain file missing in R2, or a head the shard no longer holds, sends the miss to the shard's own composed answer as today, so the change adds no failure the miss path lacks.
+**Decision.** The orchestrator (T-01a17bda) accepted it as a design change. It is built on branch `edge-compose`, code-only, and not deployed: it needs a site day for the container and shard and an edge day. On a composed miss (DESIGN, Shape, git cache shards) the edge asks the shard for the tail only (`compose=tail`): the pack of the want's own new objects and the chain's head with its object count. The edge then streams the chain's `compose/<net>/base-<tip>` and `part-<from>-<to>` pack bodies from the warm bucket, then the tail. It writes the pack header from the count and computes the SHA-1 trailer as it streams. The shard puts the answer to the clone cache as the key's manifest entry (`clone/<net>/<key>/manifest`): one JSON line naming the chain's pack keys and object counts, then the tail, which the container caps at 8 MiB [guess] and composes whole past it. A hit streams the same files and hashes the trailer again. Stock misses keep today's spool and fill. A chain file missing in R2, or a head the shard no longer holds, sends the miss to the shard's own composed answer as today, so the change adds no failure the miss path lacks.
 
 **Why.** Container egress is the second line of the bill: $1,708 of the base and $1,436 of the agent layer at 2,000 developers. Three quarters of it is CI clone-cache misses, which `cost.py` counts once. As built, a miss crosses the container twice: once to the client, then again when `put_spooled` (`crates/git/src/host.rs`) reads the spool back to put it to R2. With that, the as-built bill is about $15,211 a month at 2,000 developers, not $12,577 (`cost_agents.py --levers`, `fill-as-built`). The chain's files already sit in both warm buckets (`ready_chain`), and R2 bills no egress. Moving composed misses there cuts $1,649 a month against the model at 2,000 developers and $124 at 300 (`edge-compose`, which still counts stock misses twice). Against as built, with the rest of the recommended scenario, the cut is $6,547 (`S2 against as built`). It is also lighter on the shard: the container sends kilobytes, not a 300 MB answer, so composed misses stop queueing behind the shard object's transit (round 26's batched first bytes).
 
@@ -5442,7 +5474,7 @@ Conditions the orchestrator set before code:
 
 **Split with `b034-next`** (T-01a1ccdd). That thread owns `upload()` in `containers/git/server/main.go`, `composeMiss` and the chain files, the stock path in `workers/site/src/shard.rs`, an abort signal through `call`, `upload_pack`, and `upload_pack_spooled`, and the edge's `ls_refs` HEAD. This change owns `compose=tail` in `compose.go`, `put_spooled`, the shard's fill closure, and the edge's miss path. It starts from the merge of `b034-next`.
 
-**Gate.** A local bed (`tests/composed/bed`) where the edge's composed answer passes `index-pack --strict` and fsck, with a tree equal to the tip's, across a part boundary and a fold. Then a hosted B0-34 row, held until B0-34's own fixes pass, where per-shard `txBytes` falls by the composed share of misses, composed clone TTFB p99 stays under 1.1 s, and edge CPU per composed miss is measured against `HASH_CPU_MS_PER_MB` (3 ms/MB [guess]).
+**Gate.** A local bed (`tests/composed/edgebed/run.sh`) where the edge's composed answer passes `index-pack --strict` and fsck, with a tree equal to the tip's, across a part boundary and a fold. Then a hosted B0-34 row, held until B0-34's own fixes pass, where per-shard `txBytes` falls by the composed share of misses, composed clone TTFB p99 stays under 1.1 s, and edge CPU per composed miss is measured against `HASH_CPU_MS_PER_MB` (3 ms/MB [guess]). The local half passes: in local workerd the edge's answer is byte-identical to the container's composed answer at a base, two parts with a want past the chain, and after a fold, with a 3 MiB blob across about 50 side-band packets, and `index-pack --strict` and fsck take it with the tip's tree. A chain pack missing or with another count, and another network's manifest, are declined, and wasm memory stays at 4 MiB [measured, `tests/composed/edgebed/run.sh`; plants in `tests/composed/plant.py`]. The hosted row is still to run.
 
 **Logs.** The same edit adds a Workers Logs rule (DESIGN, Stack). Head sampling may drop ok invocation logs only. Errors, refusals, sheds, 5xx answers, `ng` lines, and step-downs are never sampled: they go to Analytics Engine and Basin in full. At a 25% keep this saves $320 a month at 2,000 developers (`logs-sample`). It ships as a config change, so on a site day.
 
@@ -5452,7 +5484,13 @@ Conditions the orchestrator set before code:
 
 ### `edge-read-batch`: write-class identity reads of one key in one isolate share the next read, never the one in flight, 2026-11-19
 
-**Status.** Built on branch `edge-read-batch`, code-only, approved by the orchestrator after B0-32 m3fb32. Not deployed: it needs an edge day, and it is judged on the next B0-32. Nothing in `crates/raft`.
+**Status.** Measured on B0-32 m3fe2 (2026-11-19, graft-m3f, edge from main `8c794619`), and it holds:
+- The push front p50 was 767 ms, against the 775 ms target, m3fb32's 1,563 and m3fr17's 775. auth fell from 591 to 120 ms and resolve from 1,390 to 551.
+- `rcwait` p99 was 1,940 ms, under the flip's 4 s. `rcread` was 5 / 7 and `rcshare` 1 / 7 at p50 / p99.
+- 496 of 500 burst pushes were acknowledged within 5 s on the edge clock, with 0 `full` [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fe2"].
+- **Gap:** install p50 is still 600 ms, against m3fr17's 416 ms. 74 pushes had install over 500 ms with `rcwait` under 100 ms, so batch waiting does not explain all of it.
+
+Nothing in `crates/raft`.
 
 **Decision.** `rcache::through`'s write-class path goes through a per-key, per-isolate batch (`rcache::batched`):
 - A call with no read of its key in flight starts one.
@@ -5489,7 +5527,7 @@ That the time is the isolate's per-read work and not the members' is an inferenc
   - `a_stuck_or_dropped_read_does_not_hold_its_waiters`.
   - `a_batched_read_refills_the_entry_for_read_class_requests`.
 - `tests/m0carried/plant48.py` catches 7 of 7, mutant 0 among them: a waiter handed the in-flight read's answer.
-- No hosted measurement yet.
+- B0-32 m3fe2, graft-m3f: the front split and batch counters under "Status" [measured].
 
 **Flip.** Any of these on the next B0-32 or later:
 - The push front does not come down toward m3fr17's 775 ms at p50 while `rcshare` shows sharing. The cost was then not per-read isolate work.

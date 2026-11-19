@@ -212,15 +212,18 @@ impl Cluster {
         assert_eq!(self.m(s).role(), Role::Leader, "{s:?} did not win");
     }
 
-    /// Commits one more entry through leader `l`, so every follower learns the commit index of the earlier ones:
-    /// a follower learns it only from the next append.
+    /// Commits one more entry through leader `l`, and runs until every follower holds the leader's commit (the idle
+    /// leader's commit round, one CALL_DEADLINE after the entry) and then one more CALL_DEADLINE with nothing sent, so
+    /// a `suspect` report right after counts as late.
     pub fn sync(&mut self, l: SiteId) {
         let id = graftyard_raft::RequestId(graftyard_raft::Ulid(u128::MAX - u128::from(self.now.0)));
         let cmd = KvCmd::Put { key: "sync".into(), value: self.now.0.to_string() };
         self.on(l, |m, now| m.commit(now, id, cmd)).expect("leader admits");
         self.deliver_all();
-        self.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
-        self.deliver_all();
+        for _ in 0..2 {
+            self.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+            self.deliver_all();
+        }
     }
 
     /// Admits `hold` so one entry is in flight, then `cmds`, which group into the next entry; delivers until that
