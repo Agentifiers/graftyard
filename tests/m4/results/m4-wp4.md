@@ -489,6 +489,31 @@ With 1 and 2, the expected entry-to-run is the 0-ask in-round time, p50 about 10
 
 **Built** code-only on branch `dispatch-tail` as approved (`decisions/DECISIONS.md`, "`trigger-stream`"). In memory, a stream and rounds commit the same `CreateRun`s for one entry stream, a slow event holds one slot and the cursor below it, and a dispatch merge behind queued pushes and GETs runs first, at most four in a row while another waits. Plants 99 to 105 are caught. The rerun waits on a site day for it and on LM-1's B0-33 work.
 
+## B0-35 rerun on graft-m4a after site day 57 (2026-11-19, row m57)
+
+Site day 57 (18:32:14Z to 18:33:18Z) shipped main `801c1b5a` as a product build, with git shard image `m4a56` (no `containers/git` change since it was built) and day 56's flags. Edge day 28 stayed: the edge changed only in comments since `e1b99f5b`. `dispatch-tail` and `shed-retry` were on m4a from site day 55; this day added `lock-split`, `sync-stall-q`, and `round-time`. `tests/m4/wp4/b035.sh` ran on a new repository, `m3org/b035-m57` = repo 65571, with 8 learners. Run `mwnw5a81`: 500 of 500 PRs opened, the learner gate passed 8 of 8 in 1.3 s, then 600 s from 18:41:45.615Z. A first start at 18:33Z stopped at once on two harness causes (no `TOOLS_TOKEN_FILE` in the service's environment, and `b035watch.sh` counting R23's 8 `stopped` RunnerBox instances as running Sandboxes); both were fixed before the row. Raw files: `tests/am1/raw/a1-b0-35-mwnw5a81.jsonl` (not committed), `tests/m4/raw/wp4/b035-m57/`, and the voter watch `b035-m57.lead`, which now reads each site's live voter.
+
+**Verdict: fails on dispatch p99, 184 s** (met at 10 s, fail over 30 s). Before the first term change, dispatch met the line: the 585 events logged before 18:46:35Z had entry-to-run p50 3.9 s and p99 5.3 s. The tail is three leader changes and the shard warm-up after them. Both budget lines, the list-field line, and the memory line pass.
+
+| Line | Value | Source |
+| --- | --- | --- |
+| Dispatch p50 / p99 / max, push acknowledgment to run listed (driver) | **11.4 s / 184.5 s / 200 s**, 2,420 of 2,420 paired | `a1.mjs` `dispatch` |
+| Dispatch, entry to run (site) | p50 32.6 s, p99 203 s (1,565 runs); `splitMs` p50 / p99: wait 19.6 s / 182.3 s, demand 2.0 s / 179.0 s, reads 2.0 s / 19.2 s, create 0.6 s / 4.8 s | `dispatchlog.py` |
+| By entry minute from t0 | minutes 0 to 3 p99 4.9 to 6.1 s; minutes 4 to 7 p50 97 to 195 s; minutes 8 to 10 p50 44, 24, 4.5 s | `dispatchsplit.py` |
+| Test-merge vCPU (leader's shard, 1 vCPU budget) | **0.46** over merge wall (140.7 s CPU over 307.3 s), 0.23 over the 600 s window; 3,814 computed, 1,586 shed `late`; `inFlightMax` 364, wait max 11.8 s | leader `/stats` `testMerges.shard` |
+| List-field computes | **0** of 60,329 list-field asks | same |
+| `mergeable` polls | 4,353 `MERGEABLE`, 51,365 `UNKNOWN`, 4,200 × 503 | `a1.mjs` `pollAnswers` |
+| Agent pushes acknowledged | 2,420 of 2,500, p50 2.1 s, p99 16.9 s; 73 × 503 shed read, 7 × 503 shard warming | `a1.mjs` |
+| Leader commit p50 / p99 | 526 ms / 2,981 ms | leader `/stats` |
+| Leader changes | f0 → f1 (term 3) 18:46:40Z, f1 → f0 (term 4) 18:47:06Z, f0 → f1 (term 5) 18:49:37Z | `a1.mjs` `leaderChanges`, `b035-m57.lead` |
+| `/suspect` per minute, sites a / b / c | 18:46: 287 / 70 / 0; 18:47: 34 / 500 / 343; 18:49: 418 / 15 / 418; 18:50: 625 / 4 / 625; 18:51: 243 / 3 / 243; 0 in 18:44, 18:45 and 18:48 | Workers Logs |
+| Worker outcomes 18:41 to 18:55Z | a 619,514 ok, 1,482 canceled, 57 exception; b 190,646 / 857 / 33; c 170,000 ok; no `exceededMemory` or `exceededCpu` | Workers Logs |
+| Sandboxes started | 0 | `b035watch.sh` |
+
+No dispatch line was logged from 18:46:43Z to 18:49:39Z (177 s) while `ActionsTrigger` moved between sites a and b. In that window the shard answered `{"warming":true}`, and the demands and tree reads that named `repo:65571#2#f1` failed with "no answer". Shards rehydrated on site b at 18:48:11Z and on site c at 18:48:50Z, and site a's promotion failed after 94 s at 18:48:36Z with "warming". Events that entered after 18:49:45Z had p50 25.7 s and p99 67.6 s.
+
+Cost by `tests/fanout/acctcost.py`, from the site day's start at 18:32:14Z to 19:10:45Z: graft-m4a **$4.21**, and the runner account $0.00 (stop $8). a1 cancelled the row's 2,635 runs (all 202) by 19:09:04Z. The teardown sweep tore down `git#{0,1,2}#net:65571` (all 200) and found no shard container running; the containers API showed 0 active on all three m4a sites. The M2 canary's comparison excludes 18:32:14Z to 19:23:32Z.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.

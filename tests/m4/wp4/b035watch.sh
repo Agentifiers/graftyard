@@ -26,7 +26,9 @@ get = lambda p: json.load(urllib.request.urlopen(urllib.request.Request(
 n = 0
 for app in get("containers/applications"):
     for i in get(f"containers/applications/{app['id']}/instances?per_page=1000")["instances"]:
-        n += (i.get("status") or {}).get("state", "inactive") != "inactive"
+        # A RunnerBox instance whose runner exited stays listed as `stopped` (R23's 10:41Z burst, exit 0): only a state
+        # that can bill counts.
+        n += (i.get("status") or {}).get("state", "inactive") not in ("inactive", "stopped", "failed")
 print(n)
 PY
 )
