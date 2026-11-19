@@ -1,6 +1,6 @@
 // G11's hosted rehome on graft-m3f: one seeded repository (b034seed.mjs, git/git's first-parent history) is rehomed
 // on site <to> by `/move` (transfer.mjs's loop) with site <to>'s git cache shard torn down first, so the target is cold
-// and `move_step`'s Transfer has to hold on it (`graftyard_identity::group_move::transfer_gate`, WARM_BEFORE_TRANSFER).
+// and `move_step`'s `Home` step has to hold on it (`graftyard_identity::group_move::warm_site`, `transfer_gate`).
 // MergeQueue merges run one at a time, at most 10 a minute, from 30 s before the move until 90 s after the hand-off,
 // each a pre-opened PR whose head is the next commit of the plan's `# future` line, so the minute after the hand-off
 // is compared with m3fr7's 5 `warming` answers of 5. Then 30 s idle and every voter's `/status` commit (R29).
@@ -71,25 +71,32 @@ const mergeLoop = (async () => {
 })();
 await sleep(30_000);
 
-// The move: transfer.mjs's loop, each answer timed, right after the target's shard is torn down.
+// The move: transfer.mjs's loop, each answer timed, right after the target's shard is torn down. `handoffS` is when an
+// ask first found the leader on <to>, within one 3 s pause of the hand-off; terms-<tag>-g11.jsonl has it to the second.
 const kill = await bedGet(`/_bed/kill?repo=${id}&shard=${to}`).catch((e) => ({ status: 0, body: String(e) }));
 out("target torn down", { site: to, status: kill.status, body: kill.body.slice(0, 120) });
 const target = { name: "Tri", sites: [0, 1, 2], home: to, generation: 1, moving_from: null, at: 0 };
 const t0 = Date.now();
-let held = 0, done = false, last = null;
+let held = 0, done = false, last = null, firstHeld = null;
 const until = t0 + 300_000;
 while (Date.now() < until && !done) {
   const l = await leaderOf(chain);
+  // The hand-off: the first ask that finds the leader on <to> (the core hands off by itself once `Home` commits).
+  if (l === to && !handoffAt) handoffAt = Date.now();
   const s = Date.now();
   const r = await member(chain, l, "/move", { to: target }, 60_000);
   const v = r.v ?? { status: r.status };
-  out("move", { on: l, ms: Date.now() - s, sinceStartS: +((s - t0) / 1000).toFixed(1), v: JSON.stringify(v).slice(0, 200) });
-  if (v?.warming) held++;
-  if (v?.transfer && !handoffAt) { handoffAt = Date.now(); last = v; }
+  // `move_step` answers {step, ok | error, config, ms}; the wait's fields are under `ok`.
+  const ok = v?.ok ?? {};
+  out("move", { on: l, ms: Date.now() - s, sinceStartS: +((s - t0) / 1000).toFixed(1), step: v?.step ?? null,
+    ok: JSON.stringify(v?.ok ?? null).slice(0, 200), error: v?.error ? JSON.stringify(v.error).slice(0, 200) : null });
+  if (ok.warming) { held++; firstHeld ??= s; }
+  else if (v?.ok && v.step !== "Done" && !last) last = { step: v.step, at: s, ...ok };
   done = v?.step === "Done";
   if (!done) await sleep(3_000);
 }
-out("move end", { done, held, waitedMs: last?.waitedMs ?? null, cold: last?.cold ?? false, transfer: last?.transfer ?? null,
+out("move end", { done, held, step: last?.step ?? null, waitedMs: last?.waitedMs ?? null, cold: last?.cold ?? false,
+  heldS: firstHeld && last ? +((last.at - firstHeld) / 1000).toFixed(1) : null,
   totalS: +((Date.now() - t0) / 1000).toFixed(1), handoffS: handoffAt ? +((handoffAt - t0) / 1000).toFixed(1) : null });
 const sh = await bedGet(`/_bed/shard_status?repo=${id}&shard=${to}`).catch((e) => ({ status: 0, body: String(e) }));
 out("target shard after hand-off", { status: sh.status, body: sh.body.slice(0, 300) });

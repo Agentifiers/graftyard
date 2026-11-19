@@ -3033,48 +3033,42 @@ impl<F: Family> Routes<F> {
         let mut rtt = rtt_rows(&self.host.state, &self.host.env)?;
         let voters_of =
             |p: &graftyard_types::Placement| p.voters().iter().cloned().collect::<arrayvec::ArrayVec<_, 3>>();
+        // A repository group's planned step that moves its leader, a `Transfer` or a config naming another home (which
+        // the raft core hands leadership to by itself, `maybe_hand_off`), waits first for that site's git cache shard
+        // to catch up, up to WARM_BEFORE_TRANSFER, so the catch-up runs while the old leader still serves (G11). Past
+        // the bound the step goes cold and says so. Only this planned route waits: elections and `STEP_DOWN` never do.
+        let mut cold = None;
+        if let (ChainId::Repo(repo), Some(next)) =
+            (chain, graftyard_identity::group_move::warm_site(&cfg, me, &to, step))
+        {
+            use graftyard_identity::group_move::{TransferGate, transfer_gate};
+            let warm = shard_warm(&self.host.env, &site, repo, next, &record).await;
+            let now = Timestamp(now_ms());
+            let (gate, wait, waited) =
+                WARM_WAITS.with(|w| transfer_gate(warm, w.borrow().get(&(chain, next)).copied(), now));
+            WARM_WAITS.with(|w| match wait {
+                Some(v) => w.borrow_mut().insert((chain, next), v),
+                None => w.borrow_mut().remove(&(chain, next)),
+            });
+            match gate {
+                TransferGate::Hold => {
+                    return self
+                        .reply(json!({ "step": label, "ok": { "warming": true, "waitedMs": waited, "site": next.0 },
+                        "ms": now_ms() - t0 }));
+                }
+                TransferGate::Go => {}
+                TransferGate::GoCold => {
+                    console_log!("move {chain}: {label} to site {} cold after {waited} ms", next.0);
+                    cold = Some(waited);
+                }
+            }
+        }
         let r: std::result::Result<Value, String> = match (step, &cfg) {
             (MoveStep::Done, _) => Ok(json!({ "step": "Done" })),
             (MoveStep::Degraded, _) => Err("the config is Degraded: replace the lost member first".into()),
             (MoveStep::Transfer { to }, _) => {
-                // A repository group's planned transfer waits first for the target site's git cache shard to catch
-                // up, up to WARM_BEFORE_TRANSFER, so the shard's catch-up runs while the old leader still serves
-                // (G11). Past the bound it transfers cold and says so.
-                let gate = match chain {
-                    ChainId::Repo(repo) => {
-                        use graftyard_identity::group_move::{TransferGate, transfer_gate};
-                        let warm = shard_warm(&self.host.env, &site, repo, to, &record).await;
-                        let now = Timestamp(now_ms());
-                        let (gate, wait, waited) =
-                            WARM_WAITS.with(|w| transfer_gate(warm, w.borrow().get(&(chain, to)).copied(), now));
-                        WARM_WAITS.with(|w| match wait {
-                            Some(v) => w.borrow_mut().insert((chain, to), v),
-                            None => w.borrow_mut().remove(&(chain, to)),
-                        });
-                        match gate {
-                            TransferGate::Hold => Some(Ok(json!({ "warming": true, "waitedMs": waited }))),
-                            TransferGate::Go => None,
-                            TransferGate::GoCold => {
-                                console_log!("move {chain}: transfer to site {} cold after {waited} ms", to.0);
-                                Some(Err(waited))
-                            }
-                        }
-                    }
-                    _ => None,
-                };
-                match gate {
-                    Some(Ok(held)) => Ok(held),
-                    cold => {
-                        let r = self.host.input(|m, t| m.transfer(t, to))?;
-                        r.map(|id| match cold {
-                            Some(Err(waited)) => {
-                                json!({ "transfer": id.0.to_string(), "cold": true, "waitedMs": waited })
-                            }
-                            _ => json!({ "transfer": id.0.to_string() }),
-                        })
-                        .map_err(|e| format!("{e:?}"))
-                    }
-                }
+                let r = self.host.input(|m, t| m.transfer(t, to))?;
+                r.map(|id| json!({ "transfer": id.0.to_string() })).map_err(|e| format!("{e:?}"))
             }
             (MoveStep::Swap { add, drop }, raft::GroupConfig::Normal(p)) => {
                 let old = p.voters().iter().find(|m| m.site == drop).cloned().ok_or_else(|| err("no member there"))?;
@@ -3101,18 +3095,8 @@ impl<F: Family> Routes<F> {
                 }
                 let voters: arrayvec::ArrayVec<MemberRef, 3> =
                     voters_of(p).into_iter().map(|m| if m.site == drop { new.clone() } else { m }).collect();
-                // The home stays unless it leaves; then the target's home if the new half holds it as a Full voter,
-                // else the new member's site, until `Home` moves it.
-                let home = if p.home() != drop {
-                    p.home()
-                } else if voters
-                    .iter()
-                    .any(|m: &MemberRef| m.site == to.home && m.kind == graftyard_types::MemberKind::Full)
-                {
-                    to.home
-                } else {
-                    add
-                };
+                // The home stays unless it leaves (`swap_home`, the site `warm_site` waited for).
+                let home = graftyard_identity::group_move::swap_home(p, add, drop, to.home);
                 match checked(voters, home, &rtt) {
                     Ok(np) => self
                         .change(raft::GroupConfig::Joint { old: p.clone(), new: Box::new(np) }, based_on)
@@ -3150,6 +3134,14 @@ impl<F: Family> Routes<F> {
             (s, c) => Err(format!("{s:?} does not apply to {c:?}")),
         };
         let config = self.host.core.borrow().as_ref().and_then(|c| c.m.committed_config().map(|c| json!(c)));
+        // A step taken past WARM_BEFORE_TRANSFER says so, with the ms waited.
+        let r = r.map(|mut v| {
+            if let (Some(waited), Some(o)) = (cold, v.as_object_mut()) {
+                o.insert("cold".into(), json!(true));
+                o.insert("waitedMs".into(), json!(waited));
+            }
+            v
+        });
         match r {
             Ok(v) => self.reply(json!({ "step": label, "ok": v, "config": config, "ms": now_ms() - t0 })),
             Err(e) => self.reply(json!({ "step": label, "error": e, "config": config, "ms": now_ms() - t0 })),

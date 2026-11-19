@@ -142,6 +142,13 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 
 **Verdict and the fix.** The wait has to come before the config that triggers the hand-off, not before `Transfer`. Branch `g11-home` moves it there (`decisions/DECISIONS.md`, "`g11-warm`").
 
+**The fix, `g11-home` (code-only, approved by the orchestrator).**
+- **The gate moved.** `move_step` waits before any planned step that makes another site the next leader (`group_move::warm_site`): a `Home` step's new home, a `Swap` that drops the home (`swap_home`), and a `Transfer`'s target. A held step changes nothing and answers `{"warming": true, "waitedMs", "site"}`. A step past the bound carries `"cold": true`.
+- **Other ways the core hands off, checked in the code.** `maybe_hand_off` hands off to `home()`, read from the latest config in the log (`log_config`), and otherwise only on a drain or `no_lead`, which are not planned moves. The only product paths that write a config are `/move` (`Home`, `Swap`, `Leave`), the re-placement and `/learners`. The re-placement and `/learners` keep `p.home()`. `Leave` keeps the `Joint`'s new home, which the `Swap` before it already waited for. `/reconfigure` is a test route with no product caller.
+- **The `Transfer` gate stays.** It covers a move where the core did not hand off, for example a home whose calls failed in the window, or a `Joint`'s leader on the dropped site. An expired wait is kept, so a `Transfer` after a cold `Home` goes cold at once instead of waiting a second 60 s.
+- **The driver** now reads `move_step`'s `{step, ok}` shape, which m3fg11's 200-character cut lost, and times `heldS` and the hand-off.
+- **Tests:** four new on real members (`crates/identity/tests/group_move.rs`), one changed unit test, and `plant49.py` 8 of 8.
+
 ## G11 built: a planned rehome warms the target's shard first (2026-11-19, code-only, branch `g11-warm`)
 
 Approved by the orchestrator after B0-31 was met on m3fr16, which left no other B0-31 item in BUILD-PLAN. `decisions/DECISIONS.md`, "`g11-warm`", has the decision and its flip.

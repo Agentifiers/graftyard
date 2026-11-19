@@ -99,6 +99,10 @@ kept serving, and 924 API reads, 510 ref reads and 71 agent pushes ended `fetch 
    3 s before one).
 4. If the windows cover more than 5% of the load window, the row is invalid and reruns. It is not judged on the
    remainder.
+5. A row below about 1 edge request a second does not use the edge-0 rule: its own idle gaps read as edge 0 while
+   the sites serve. m3fg11 (one merge every 6 s) marked 54% of its seconds that way with every request answered
+   (`tests/am1/results/lm1-rows-m3f.md`, "Site day m3fg11"). `arrivals.py` prints `"outages": "n/a (low rate)"` for such
+   a row, nothing is removed, and a dropped request shows as a `fetch failed` in the row's own answers.
 
 ## Hosted slot rules (operator, 2026-11-16 and 2026-11-17)
 

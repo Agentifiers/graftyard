@@ -179,9 +179,9 @@ pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 1
 /// `ReplaceMember` spare. A change bumps `generation` and keeps the old record in `moving_from`. A Workflow then moves
 /// each group and child group from the old sites' `MemberRegistry` rows, one voter site per change (a one-site `Joint`,
 /// then `Normal`; leadership leaves a site before it is dropped; `reconfigure` refuses a disjoint `Joint`, BF-30), then
-/// clears `moving_from`; `home` alone is one change and a transfer. A repository group's transfer first waits up to
-/// `WARM_BEFORE_TRANSFER` for the target's git cache shard to catch up, then moves cold. A record's `home` only seeds
-/// bootstrap (BF-11).
+/// clears `moving_from`; `home` alone is one change and a transfer. A repository group's step that moves its leader (a
+/// transfer, or a `home` the core then hands off to) first waits up to `WARM_BEFORE_TRANSFER` for that site's git cache
+/// shard, then goes cold; a failover never waits. A record's `home` only seeds bootstrap (BF-11).
 pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteId; 3]>, pub home: SiteId,
                              pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
 pub enum SystemChain { Release, Names, Tokens, Ids }
