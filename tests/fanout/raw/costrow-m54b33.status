@@ -1,0 +1,20 @@
+edge: graft-m2b-edge serves f14125dc at 100% (rev a5b6a3dd0), as tests/am1/raw/runs/fanout-m54-edge.log deployed
+2026-11-19T01:13:24Z meter (account, run) 3.09 0.0 before b033, expected +$2.5, stop $170 account, $10 run
+2026-11-19T01:14:26Z meter (account, run) 3.21 0.0
+2026-11-19T01:15:29Z meter (account, run) 3.35 0.0
+2026-11-19T01:16:31Z meter (account, run) 3.61 0.01
+2026-11-19T01:17:34Z meter (account, run) 3.99 0.03
+2026-11-19T01:18:37Z meter (account, run) 4.41 0.06
+2026-11-19T01:19:39Z meter (account, run) 4.9 0.27
+2026-11-19T01:20:42Z meter (account, run) 5.48 0.63
+2026-11-19T01:21:43Z meter (account, run) 6.1 1.05
+2026-11-19T01:22:46Z meter (account, run) 6.61 1.47
+2026-11-19T01:23:47Z meter (account, run) 7.12 1.73
+2026-11-19T01:24:50Z meter (account, run) 7.51 1.89
+2026-11-19T01:25:35Z b033 ended:   colo site 166 {'promised': 137, 'leader': 14, 'busy': 15}
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T01:25:50Z sweep exit 0
+2026-11-19T01:25:53Z meter (account, run) 7.74 1.9 after b033 and the sweep
+DONE

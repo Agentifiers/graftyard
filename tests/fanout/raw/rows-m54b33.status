@@ -1,0 +1,38 @@
+2026-11-19T01:13:24Z start 35a155340 /home/user/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T01:13:41Z start sweep ok
+2026-11-19T01:13:34Z cost account 3.11 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T00:58:08Z, at b0-33
+2026-11-19T01:14:12.911Z m3org/fm54b33-b033 = 131368
+2026-11-19T01:14:13.434Z repo:131368 leader 0 placing since 1795050858032: waiting
+2026-11-19T01:14:16.739Z repo:131368 leader 0 placing since 1795050858032: waiting
+2026-11-19T01:14:24.725Z repo:131368 leader 0: config 7 learners [{"addr":192,"doName":"repo:131368#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131368#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131368#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131368#3#l3","join":200,"site":0,"slot":3}]
+2026-11-19T01:14:25.563Z repo:131368 site 0: arrival mem (asked mem, status 200)
+2026-11-19T01:14:25.775Z repo:131368 site 1: arrival mem (asked mem, status 200)
+2026-11-19T01:14:26.043Z repo:131368 site 2: arrival mem (asked mem, status 200)
+2026-11-19T01:14:30.365Z repo:131368 leader 0: set k 4: {"grants":[[0,[1,6,3]],[1,[1,6,3]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T01:14:40.733Z repo:131368 leader 0: set k 4: {"grants":[[0,[1,6,3]],[1,[1,6,3]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T01:14:51.236Z repo:131368 leader 0: set k 4: {"grants":[[0,[1,6,3]],[1,[1,6,3]]],"k":4,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-19T01:14:51.370Z repo:131368 leader 0: k 4 at 11
+2026-11-19T01:15:00Z b0-33 fm54b33-b033 131368 start
+2026-11-19T01:23:31.394Z repo:131368 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":7},"stepped":true,"want":0}
+2026-11-19T01:23:31.639Z repo:131368 leader 0: k 1 at 534
+2026-11-19T01:23:40Z b0-33 fm54b33-b033 131368 done exit 0
+2026-11-19T01:23:47Z torn down 131368
+site fault off: 200
+git#1#pool:2 200
+git#1#pool:7 200
+git#1#pool:4 200
+git#0#pool:4 200
+git#0#pool:2 200
+git#0#pool:7 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-19T01:24:13Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo DFW 6868 {'promised': 5871, 'leader': 489, 'started': 5, 'busy': 495, 'mayNotLead': 8}
+  colo LAX 2081 {'promised': 1808, 'leader': 136, 'busy': 133, 'started': 3, 'mayNotLead': 1}
+  colo site 166 {'promised': 137, 'leader': 14, 'busy': 15}
+B033DONE

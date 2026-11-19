@@ -80,3 +80,40 @@
 2026-11-18T22:10:25.628Z purge: 131364 purged: a 4934 -> 0, b 4377 -> 145, c 4307 -> 0
 2026-11-18T22:10:25.628Z purge: 131364 second pass: a 2 -> 0, b 180 -> 0, c 0 -> 0
 2026-11-18T22:10:25.628Z purge: {"dry": false, "purged": 1, "objects": 13618, "refused": [], "second": 182}
+2026-11-19T01:29:03.729Z repo:131368: 8 names, 8 were joined, all not joined
+2026-11-19T01:29:04.661Z purge: exit null
+2026-11-19T01:29:12.496Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:29:12.977Z purge: exit null
+2026-11-19T01:29:20.798Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:29:21.214Z purge: exit null
+2026-11-19T01:29:29.117Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:33:05.051Z purge: 131368 purged: a 9892 -> 0, b 9007 -> 91, c 7775 -> 185
+2026-11-19T01:33:05.052Z purge: 131368 second pass: a 0 -> 0, b 206 -> 0, c 185 -> 0
+2026-11-19T01:33:05.052Z purge: {"dry": false, "purged": 1, "objects": 26674, "refused": [], "second": 391}
+2026-11-19T01:33:14.136Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:40:23.926Z purge: waiting 377 s for sweep runs started before the first pass (until 2026-11-19T01:40:00.000010+00:00)
+2026-11-19T01:40:23.926Z purge: 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:40:23.926Z purge: 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:40:23.926Z purge: {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:40:34.390Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:41:25.167Z purge: 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:41:25.168Z purge: 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:41:25.168Z purge: {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:41:35.607Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:42:23.865Z purge: 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:42:23.865Z purge: 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:42:23.865Z purge: {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:42:32.733Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:43:30.702Z purge: 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:43:30.702Z purge: 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:43:30.702Z purge: {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:43:40.893Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:44:30.115Z purge: 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:44:30.116Z purge: 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:44:30.116Z purge: {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:44:38.188Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:45:03.244Z repo:131368: 4 names, 0 were joined, all not joined
+2026-11-19T01:55:24.173Z purge: waiting 570 s for sweep runs started before the first pass (until 2026-11-19T01:55:00.000010+00:00)
+2026-11-19T01:55:24.174Z purge: 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:55:24.174Z purge: 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:55:24.174Z purge: {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
