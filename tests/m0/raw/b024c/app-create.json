@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "errors": [],
+  "result": {
+    "protocol": "tcp/22",
+    "traffic_type": "worker",
+    "origin_worker_id": "cda80b0a50f444fb90a30931ecc210fc",
+    "dns": {
+      "type": "CNAME",
+      "name": "tcpprobe.graftyard.dev"
+    },
+    "edge_ips": null,
+    "created_on": "2026-11-19T21:18:49.103513Z"
+  }
+}

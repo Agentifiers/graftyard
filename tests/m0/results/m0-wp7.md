@@ -320,3 +320,38 @@ amp orb service stop wp7-24h-r4; amp orb service stop wp7-finish
 node run/wp7.ts delete
 rm -rf .gen/wp7
 ```
+
+## B0-24c: Spectrum Worker application on Pro (2026-11-19)
+
+Cloudflare's VP of developers announced on 2026-11-19 that Spectrum now serves Pro and Business zones and can send TCP to a Worker. Cloudflare's 2026-11-19 changelog covers only the dashboard redesign, and the protocols-per-plan page (dated 2026-08-14) still lists TCP as "No" on Pro and Business. So the operator approved a probe on `graftyard.dev`.
+
+**Verdict: pass [measured].** A Pro zone creates a TCP Spectrum application on port 22 whose origin is a Worker (`traffic_type: "worker"`, `origin_worker_id`). Raw TCP from the public Internet reaches the Worker's `connect()` handler and goes both ways, and one connection stays open for 10 minutes. B0-24 (2026-10-30) got "The requested protocol is not available" (13002) for a plain SSH app on port 22 on this same zone, so this is a platform change since then.
+
+**Steps** (raw in `tests/m0/raw/b024c/`):
+1. Uploaded `graft-tcpprobe`, a module Worker (`worker.mjs`) whose `connect(socket)` writes a hello line with `socket.opened`'s addresses, then echoes every byte. It was uploaded through the Workers script API, with compatibility date 2026-11-01 and no flags.
+2. `POST zones/:zone/spectrum/apps` with `{"protocol":"tcp/22","dns":{"type":"CNAME","name":"tcpprobe.graftyard.dev"},"traffic_type":"worker","origin_worker_id":<tag>}`. The first try, which included `"tls":"off"`, was refused with 10012 `unknown field "tls"`. That's the same pay-as-you-go field filter B0-24 met for `virtual_network_id`. Without `tls` it succeeded on port 22 (`app-create.json`).
+3. From the orb, `client.py`:
+   - connected to `tcpprobe.graftyard.dev:22`;
+   - read the hello;
+   - echoed 1 MiB in 64 KiB chunks;
+   - held the connection with a ping every 30 s for 600 s;
+   - half-closed it.
+4. Deleted the application and the Worker. Afterwards the zone lists 0 Spectrum apps and no `tcpprobe` DNS record, and the script answers 404.
+
+**Results** (`hold.json`; a first 0 s run gave the same figures):
+
+| Measure | Value |
+|---|---|
+| TCP connect | 16 ms (34 ms on the first run) |
+| Hello from `connect()` | 52 ms after connect |
+| `socket.opened` in the Worker | `remoteAddress` is the client's real address and port (masked as `<orb-egress>`); `localAddress` is the Spectrum edge address on port 22 |
+| 1 MiB echo | byte-exact, 336 ms |
+| Held connection | 600 s, 20 of 20 pings echoed, 14 to 19 ms each |
+| Close | clean: the Worker closed its side after the client's half-close |
+
+**What it settles, and what it doesn't:**
+- It answers the `research/cloudflare.md` question "whether Spectrum can use a Container as an origin": Spectrum can reach a Worker. From there the socket can be passed to a Durable Object and to its container's TCP port (Cloudflare's blog, "Cloudflare Workers and Containers now support inbound TCP connections and gRPC", shows that chain [doc]). This probe did not exercise the Durable Object or container hops.
+- The API reference says a pay-as-you-go zone may have at most one Worker application per transport (one TCP, one UDP), refused with 11034 [doc; not exercised]. So one zone gets one port-22 ingress, and the Worker routes each connection itself.
+- Price is not published for Worker applications. Spectrum's Pro SSH allowance is 5 GB a month, then $1/GB [doc], and Workers bills requests and CPU [doc]. The billing line this probe produced was not read [unverified].
+- How long a Worker invocation can hold a `connect()` socket isn't documented. 600 s held. A git clone of a 5 GB network over SSH lasts longer [unverified].
+- The probe spent nothing measurable: the zone was already on Pro, and about 2 MiB crossed Spectrum.
