@@ -5914,6 +5914,38 @@ Every other consumer that writes to or reads another repository chain was checke
 - A live group with no registry row on any site: a voter that stores entries before its row, a path other than the purge that deletes rows, or a site dropped from the site table while it still holds a voter. Then the rows are no longer proof, and the rule needs the purge's own record.
 - A consumer added later that writes to another repository chain: it needs the same check, or this rule covers less than it says.
 
+### `replay-wait`: a waiter hears a request the leader answered from its row, and `RunOwner`'s shard half goes in one turn, 2026-11-19
+
+**Status.** Built code-only on branch `replay-wait`, from main `e1b99f5b`. Not deployed: it ships on site day 56, which the lead pre-approved once it is merged.
+
+**Decision.** Two changes, one per cause of `RunOwner`'s stuck cursor on graft-m4a after site day 55:
+- **`Host::wait_ticket` answers a resolved ticket at once.** Before it registers a waiter it reads `Member::outcome(ticket)`, and a resolved ticket's outcome goes to the waiter right away (`resolved_now`, `workers/site/src/host.rs`). A pending ticket, `NotLeader` (which `outcome` also answers for a ticket it no longer knows), and a refusal for want of an id block still wait, as before. This is the one place every caller registers, so it covers all of them: `owner_shard_half`, `activity::commit_here`, `hookseq::commit_cursor`, the Actions `ExpireLeases` commit, and the snapshot push.
+- **The shard half is admitted in one turn.** `owner_shard_half` (`workers/site/src/actions.rs`) admits every command with `h.step`, registers each waiter before `dispatch` delivers that input's outputs, and only then awaits the outcomes, under one deadline for the whole half (`OWNER_HALF_MS`, 10 s [guess]). Admission then cuts the half into as few entries as `ENTRY_SOFT` allows, and `decide` sees each command's predecessors in its entry. Each command keeps the request id derived from (`through`, its place in the round), now built in one place (`graftyard_actions::run_owner::shard_half`), so a half sent again after a timeout is answered from the rows of what already committed.
+
+**Why.** After site day 55, `RunOwner` on `actions:7100001.0` classified purged 65568 as gone from 15:56:27Z (`repo-gone`'s first hosted proof), and its round rebuilt a shard half of 5,741 commands: `CancelRun` and `SetRunStatus` for each of 2,870 unfinished runs, then `OwnerCursor`. Every command decides `Ok` at 10 bytes on the live fold, so `decide`, `ENTRY_MAX`, and admission are not the cause [verified: the fold read through `dep`, decoded locally]. `outcome_by_request` on the derived ids shows commands 0 to 188 committed at indexes 11833 to 12021 in the first round, and 189 onward never [measured]. Every later round sent command 0 again under the same request id. The leader answers an already-committed id inside the admitting input (admit, pump, `drop_replays`, `resolve`), and `owner_shard_half` called `h.input`, which dispatches that answer, before it called `wait_ticket`. The waiter never heard it, and the round timed out at command 0 every time with the leader idle: commit = last = 12170 and admission queue 0 [measured; reproduced in memory, `a_replayed_request_resolves_in_the_admitting_input_and_its_outcome_stays_readable`].
+
+The lead's hypothesis, that "did not commit in 10 s" was a budget for the whole half and 189 serial commits just ran out of it, does not hold: on main every command had its own 10 s (`owner_shard_half` at `e1b99f5b` and at `67483ab9`). Why the first round stopped after command 188 is not known: a site-a Member alarm was cancelled at 15:55:54.625Z (`fb3936e1`, 83 ms wall), so an isolate eviction mid-half is an [inference]. Day 54 logged the same timeout at 01:55:44Z and 01:56:15Z, before the purge (`decisions/OPEN-QUESTIONS.md`, R31). Whatever stops a half, the first change lets the next round go on from where it stopped.
+
+The ticket fix alone is not enough. At about 53 ms a command, one at a time, a gone repository with thousands of unfinished runs holds the owner shard's cursor for 30 to 45 minutes of rounds, and every other repository on the shard gets no checks or `workflow_job` deliveries for that time: the failure `repo-gone` exists to stop (the lead's review).
+
+**What it beat.**
+- (a) Each caller registers its waiter before `dispatch` itself: five call sites to keep right, and a sixth one later breaks it again. `wait_ticket` reading the member's own answer covers every caller.
+- (b) A longer timeout: the replayed command's answer never comes, so no timeout is long enough.
+- (c) The ticket fix alone, one command at a time: correct, but holds the cursor 30 to 45 minutes for a large gone repository.
+- (d) A new batch command (`CancelRuns`): a new command format and a site-day format flag, when admission already puts many commands into one entry.
+
+**Evidence.** In memory, each fails on main:
+- `a_resolved_ticket_answers_its_waiter_at_once` (`workers/site/src/host.rs`): a refusal answers at once; a pending ticket, `NotLeader`, and `NeedIdBlock` wait; `wait_ticket` reads it before it registers.
+- `a_replayed_request_resolves_in_the_admitting_input_and_its_outcome_stays_readable` (`crates/actions/tests/gates.rs`): a resent request id resolves inside the input that admitted it, and `outcome` still answers it afterwards.
+- `a_gone_repositorys_thousands_of_runs_cancel_in_one_round_and_the_next_repositorys_job_is_delivered` (same file): a gone repository with 2,870 unfinished runs, the measured count. Its half of 5,741 commands commits in at most 4 entries within 3 rounds, every run is cancelled, the cursor passes, and the next repository's job gets `queued`, `in_progress`, and `completed`. On main's one command at a time it reports 5,741 commands in 5,741 entries.
+
+Plants 139 to 142 (`tests/m4/wp4/plant.py`), 4 of 4 caught: 139 removes the read from `wait_ticket` (main), 140 takes `NotLeader` as resolved, 141 takes an id-block refusal as resolved, and 142 keys every command of a half at index 0. Hosted: not run; site day 56's first `RunOwner` round on `actions:7100001.0` is the check, when its cursor passes 9925.
+
+**Flip.**
+- A member that resolves a replay later than the admitting input, through its own output: then the read in `wait_ticket` is never hit, and can go.
+- A half large enough that admission refuses it whole (the admission caps, not `ENTRY_MAX`): then the half is sent in slices, each awaited before the next.
+- `OWNER_HALF_MS` [guess]: if site day 56's first round takes more than half of it on 5,741 commands, raise it from that round's measured time.
+
 ### `without-rowid`: tier tables keep their rowid schema, 2026-11-19 (not built)
 
 **Decision.** The fold tier tables stay as `tier.rs` `create` makes them, a rowid table beside the automatic index of the composite key. No new tier table set and no refold of members for `WITHOUT ROWID`. `cost.py` keeps `without-rowid` as a priced lever only (`python3 scripts/cost_agents.py --levers`).

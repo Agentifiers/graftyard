@@ -411,6 +411,19 @@ MUTANTS = [
     ('one site answering no row is enough', 'crates/types/src/registry.rs',
      '    !reads.is_empty() && reads.iter().all(|r| *r == RowRead::NoRow)', '    reads.iter().any(|r| *r == RowRead::NoRow)',
      ['-p', 'graftyard-types', '--lib', 'registry']),
+    # ---- replay-wait (site day 55): a replayed request id's waiter, and the batched shard half: 139 and up ----
+    ('wait_ticket waits on a ticket the leader already resolved (main)', 'workers/site/src/host.rs',
+     '            if let Some(o) = resolved_now::<F>(core.m.outcome(ticket)) {\n                let _ = tx.send(o);\n                return rx;\n            }\n',
+     '', SITE[:3] + ['a_resolved_ticket']),
+    ('a waiter takes NotLeader as resolved', 'workers/site/src/host.rs',
+     "    o.filter(|o| !matches!(o, Err(CommitError::NotLeader(_))) && !needs_block::<F>(o))",
+     "    o.filter(|o| !needs_block::<F>(o))", SITE[:3] + ['a_resolved_ticket']),
+    ('a waiter takes an id-block refusal as resolved', 'workers/site/src/host.rs',
+     "    o.filter(|o| !matches!(o, Err(CommitError::NotLeader(_))) && !needs_block::<F>(o))",
+     "    o.filter(|o| !matches!(o, Err(CommitError::NotLeader(_))))", SITE[:3] + ['a_resolved_ticket']),
+    ('the shard half keys every command at index 0 (a retry replays the wrong rows)', O,
+     '            graftyard_fold::canon::write(&mut key, &(through.0, i as u32));\n            (consumer_request',
+     '            graftyard_fold::canon::write(&mut key, &(through.0, 0u32));\n            let _ = i;\n            (consumer_request', G),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

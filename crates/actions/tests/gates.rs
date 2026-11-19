@@ -112,6 +112,10 @@ struct World {
     gone: BTreeSet<RepoId>,
     /// Kill `RunOwner` after its next round's repository writes, before its shard half.
     kill_owner_after_checks: bool,
+    /// The entries the last shard half took, or `None` when one of its commands did not resolve.
+    half_entries: Option<usize>,
+    /// The largest shard half sent, in commands, and the entries it took.
+    largest_half: (usize, usize),
     rounds: u32,
     /// R24: `RunOwner` sends each job's `workflow_job` steps (the site's `GRAFTYARD_APP_HOOKS`).
     app_hooks: bool,
@@ -163,6 +167,8 @@ impl World {
             owner_down_until: Timestamp(0),
             gone: BTreeSet::new(),
             kill_owner_after_checks: false,
+            half_entries: None,
+            largest_half: (0, 0),
             rounds: 0,
             app_hooks: false,
             concluded_at: BTreeMap::new(),
@@ -463,14 +469,36 @@ impl World {
             self.owner_down_until = Timestamp(self.now.0 + 20_000);
             return;
         }
-        for (i, o) in r.then.into_iter().enumerate() {
-            let mut key = Vec::new();
-            graftyard_fold::canon::write(&mut key, &(through.0, i as u32));
-            let id = graftyard_actions::shard::consumer_request(self.shard.chain, &key).0.0;
-            if !matches!(self.shard.commit(self.now, id, op(o)), Some(Ok(_))) {
-                return;
+        let n = r.then.len();
+        let took = self.shard_half(through, r.then);
+        self.half_entries = took;
+        if let Some(e) = took {
+            self.largest_half = self.largest_half.max((n, e));
+        }
+    }
+
+    /// The shard half as the site sends it (`workers/site/src/actions.rs`, `owner_shard_half`): every command admitted
+    /// in one turn under its derived request id, then the outcomes read. Returns how many entries it took, or `None`
+    /// when a command did not resolve. A replayed id resolves inside the input that admits it, so its outcome is read
+    /// from the resolutions of that input, as the host's `wait_ticket` now reads `Member::outcome` (`replay-wait`).
+    fn shard_half(&mut self, through: Index, then: Vec<ActionsOp>) -> Option<usize> {
+        let l = self.shard.leader()?;
+        let before = self.shard.commit_index();
+        let mut tickets = Vec::new();
+        for (rid, cmd) in graftyard_actions::run_owner::shard_half(self.shard.chain, through, then) {
+            let a = self.shard.on(l, self.now, |m, t| m.commit(t, rid, cmd)).ok()?;
+            tickets.push(a.ticket);
+        }
+        self.shard.deliver(self.now);
+        for t in tickets {
+            let resolved = self.shard.resolutions.iter().rev().any(|r| {
+                matches!(r, graftyard_raft::Resolution::Ticket { ticket, result: Ok(_) | Err(CommitError::Refused { .. }) } if *ticket == t)
+            });
+            if !resolved {
+                return None;
             }
         }
+        Some((self.shard.commit_index().0 - before.0) as usize)
     }
 
     /// Records when each required check on the open heads first had a conclusion.
@@ -1374,4 +1402,81 @@ fn a_transferred_repository_whose_group_moved_is_not_gone_under_its_old_owners_r
         .collect();
     use graftyard_git::workflow_job::JobAction::{Completed, InProgress, Queued};
     assert_eq!(actions, [Queued, InProgress, Completed]);
+}
+
+/// `replay-wait`, the graft-m4a size (`actions:7100001.0` on 2026-11-19): a purged repository with 2,870 unfinished
+/// runs, so its round's shard half is 5,741 commands, then the next repository's job on the same shard. The whole half
+/// commits in a few entries within one round, the cursor passes it, and the next repository's run completes with its
+/// `workflow_job` steps. On main each command was its own round trip under its own 10 s wait, and the first half
+/// committed 189 of the 5,741 before it timed out.
+#[test]
+fn a_gone_repositorys_thousands_of_runs_cancel_in_one_round_and_the_next_repositorys_job_is_delivered() {
+    use graftyard_identity::{RepoEntry, RepoName};
+    let mut w = World::new();
+    w.app_hooks = true;
+    w.plans.insert("lint".into(), Plan { ms: 10_000, ends: Conclusion::Success });
+    const N: u32 = 2_870;
+    w.shard.id_block(w.now, IdBlock::whole(1, 9).unwrap());
+    let runs: Vec<RunId> = (0..N)
+        .map(|i| w.create_run(oid(1_000 + i), &format!("refs/heads/b{i}"), 2, vec![spec("build", &[])]))
+        .collect();
+    w.purged.insert(REPO);
+    let key = RepoName::parse("a").unwrap().key();
+    w.authz.names.insert(key, RepoEntry::Deleted { repo: REPO, retain_until: Timestamp(w.now.0 + 86_400_000) });
+    let before = w.fold().owner_cursor;
+    // The round that finds the repository gone, then the round rebuilt with it in `gone`, whose shard half carries
+    // every command: three steps leave a margin, and RunOwner runs once a step.
+    let rounds = w.rounds;
+    w.run_for(STEP * 3);
+    let f = w.fold();
+    assert!(w.gone.contains(&REPO));
+    assert!(runs.iter().all(|r| f.run(*r).unwrap().status == RunStatus::Completed(Conclusion::Cancelled)));
+    assert!(f.owner_cursor > before, "the cursor passed the gone repository's runs");
+    assert!(w.half_entries.is_some(), "every command of the last half resolved");
+    let (commands, entries) = w.largest_half;
+    assert_eq!(commands, 2 * N as usize + 1, "CancelRun and SetRunStatus per run, then OwnerCursor");
+    assert!(entries <= 4, "{commands} commands in {entries} entries");
+    assert!(w.rounds - rounds <= 3, "{} rounds", w.rounds - rounds);
+    // The next repository's job on the same shard.
+    w.register(1);
+    let next = w.create_run_in(REPO2, oid(21), "refs/heads/main", 2, vec![spec("lint", &[])]);
+    w.run_for(MIN);
+    assert_eq!(w.fold().run(next).unwrap().status, RunStatus::Completed(Conclusion::Success));
+    let steps: Vec<_> = w
+        .repo2
+        .committed_after(Index(0))
+        .into_iter()
+        .flat_map(|(_, e)| e)
+        .filter_map(|e| match e {
+            RepoEvent::WorkflowJob(u) => Some(u.action),
+            _ => None,
+        })
+        .collect();
+    use graftyard_git::workflow_job::JobAction::{Completed, InProgress, Queued};
+    assert_eq!(steps, [Queued, InProgress, Completed]);
+}
+
+/// `replay-wait`: a command whose request id already committed is answered from its row inside the input that admits
+/// it, and `Member::outcome` still answers that ticket after, so the host's `wait_ticket`, which reads `outcome`
+/// before it waits, hears it. On graft-m4a every `RunOwner` retry sent the shard half's first command again under its
+/// id, the leader answered it inside `input`, and the waiter registered after timed out every round for 10 s with the
+/// group idle (`actions:7100001.0`, 15:56Z to 16:30Z on 2026-11-19).
+#[test]
+fn a_replayed_request_resolves_in_the_admitting_input_and_its_outcome_stays_readable() {
+    let mut w = World::new();
+    let run = w.create_run(oid(5_000), "refs/heads/x", 2, vec![spec("build", &[])]);
+    let id = RequestId(Ulid(0xABCD << 32));
+    let first = w.shard.commit(w.now, id.0.0, op(ActionsOp::CancelRun { run }));
+    assert!(matches!(first, Some(Ok(_))), "{first:?}");
+    let l = w.shard.leader().unwrap();
+    let n = w.shard.resolutions.len();
+    let a = w.shard.on(l, w.now, |m, t| m.commit(t, id, op(ActionsOp::CancelRun { run }))).expect("admitted");
+    let in_input = w.shard.resolutions[n..]
+        .iter()
+        .any(|r| matches!(r, graftyard_raft::Resolution::Ticket { ticket, result: Ok(_) } if *ticket == a.ticket));
+    assert!(in_input, "the replay resolved inside the admitting input, before any waiter could register");
+    assert!(
+        matches!(w.shard.m(l).outcome(a.ticket), Some(Ok(_))),
+        "the leader still answers the resolved ticket, which `wait_ticket` reads first"
+    );
 }
