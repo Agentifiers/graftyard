@@ -2099,8 +2099,8 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
 /// (`graftyard_lookup::read_off_leader`), so every line is from one fold at or above the read's floor and a push
 /// acknowledged before the request shows. On run 6 the leader's 36 refs pages a second beside its commit path took
 /// its commit p99 to 7,720 ms, and to 817 ms with them off (F91, `tests/am1/results/b029-m2b.md`). `None` on a shed,
-/// declined, or failed read, a partial page, a missing `settings` row, or a default branch that does not exist yet, so
-/// the shard answers.
+/// declined, or failed read, a partial page, or a default branch that does not exist yet, so the shard answers. HEAD
+/// is `refs/heads/main` for a repository with no `settings` row, as the shard's is (`graftyard_git::tiers::default_branch`).
 async fn ls_refs(c: &Ctx<'_>, repo: &Repo, ls: &graftyard_git::ls_refs::LsRefs) -> Option<Vec<u8>> {
     let b = c.bindings();
     let (v, _, _) =

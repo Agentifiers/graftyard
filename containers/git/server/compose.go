@@ -30,6 +30,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -706,16 +707,31 @@ func (t *tee) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// flushOnWrite flushes the client after each write, so the first packets reach it before the whole pack is made.
+// flushOnWrite flushes the client after each write, so the first packets reach it before the whole pack is made. Each
+// write and flush must reach the client within clientWriteTimeout, or it fails: then upload-pack's copy stops and
+// kills the process, or a spool goes on alone (`tee`), and either way the network's shared lock is released. Without
+// it, a caller that stopped reading but kept its connection blocked the write for good: on B0-34 mt3 one stock
+// pack-objects each on sites b and c sat 15 minutes at frozen CPU holding the lock, no catch-up stored again, and
+// every upload-pack there answered 503 `warming` (`tests/am1/results/b034-mt.md`, `TestStalledCloneReleasesTheLock`).
 type flushOnWrite struct{ w http.ResponseWriter }
 
 func (f flushOnWrite) Write(p []byte) (int, error) {
+	rc := http.NewResponseController(f.w)
+	// A writer without deadlines (a test's) answers ErrNotSupported and writes as before.
+	_ = rc.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
 	n, err := f.w.Write(p)
-	if fl, ok := f.w.(http.Flusher); ok && err == nil {
-		fl.Flush()
+	if err != nil {
+		return n, err
 	}
-	return n, err
+	if err := rc.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return n, err
+	}
+	return n, nil
 }
+
+// clientWriteTimeout: how long one write of an upload-pack answer may wait for its caller [guess: a 64 KiB write to a
+// reading caller takes milliseconds; the shard object and the edge read on as the client does]. A var for the tests.
+var clientWriteTimeout = 30 * time.Second
 
 func handleSpooled(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")

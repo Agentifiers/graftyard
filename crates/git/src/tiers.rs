@@ -258,6 +258,15 @@ pub fn deleted(core: &(impl Read + ?Sized)) -> Option<(Timestamp, Option<Account
     get_rec(core, "deleted", &[])
 }
 
+/// The repository's default branch: the `settings` row's, else `refs/heads/main`, which is how every read of a
+/// repository with no `Settings` row takes it (`crate::transfer`'s defaults). Both HEADs read it, the shard's through
+/// the member's `ranges` read and the edge's v2 ls-refs (G26), so the two never disagree. A pre-F59 create whose edge
+/// died after `RepoOwner` has no row and no finisher to write one.
+pub fn default_branch(core: &(impl Read + ?Sized)) -> RefName {
+    get_rec::<crate::issues::RepoSettings>(core, "settings", &[])
+        .map_or_else(|| RefName::parse(b"refs/heads/main").expect("a valid ref"), |s| s.default_branch)
+}
+
 pub fn get_rec<T: DeserializeOwned>(r: &(impl Read + ?Sized), table: &str, key: &[Val]) -> Option<T> {
     match r.get(table, key)?.first() {
         Some(Val::Blob(b)) => Some(postcard::from_bytes(b).expect("a fold row this release wrote")),
