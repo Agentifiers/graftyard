@@ -5,6 +5,7 @@ Usage:
 	python3 scripts/cost.py                       # summary for every tier and variant, shard counts, egress split
 	python3 scripts/cost.py --detail large design
 	python3 scripts/cost.py --ssh-option            # what the opt-in cloudflared SSH option adds on Pro and Business
+	python3 scripts/cost.py --lever shard-mem,edge-compose --detail large design   # with cost levers on (LEVERS below)
 
 Workload comes from scripts/cost_model.py (TIERS, ACTIVITY). Prices are the cf.* entries in research/prices.json.
 Every per-operation constant below (requests per git operation, CPU ms, rows per entry, container sizes, hit rates,
@@ -167,6 +168,55 @@ AUDIT_FIXED_ROWS = 26              # rows an audit writes besides its pages, sav
 LIVE_EVERY_DAYS = 7                # `crate::live::LIVE_EVERY_MS` [guess]
 LIVE_ROWS_S = 1_200                # rows a scan reads a second through `snap_undo`: m2-wp1's 3.99 GB tier, 1.33 M rows in
                                    # 18 min 26 s [measured, tests/m2/results/m2-wp1.md]
+# ---- cost levers: proposals priced on request, off by default, so every default figure above stays as it is ----
+# `--lever a,b` here or in `scripts/cost_agents.py` turns levers on; `python3 scripts/cost_agents.py --levers` ranks
+# them at 300 and 2,000 developers, base plus agents. Each is a proposal for the operator, not the design of record.
+LEVERS = set()
+LEVER_NAMES = ("shard-class", "shard-class-lean", "edge-compose", "upload-once", "without-rowid", "feed-shared", "logs-sample",
+	"pool-2", "pro-plan", "r2-ia", "separate-accounts", "night-one-copy", "k2-unbilled", "fill-as-built", "ws-half")
+# Not levers, and in no scenario: k2-unbilled (container bytes back to the shard object unbilled, open question K2: the
+# shards start with `enableInternet` false, yet `containersUsageAdaptiveGroups.txBytes` counted 541 GB for the account
+# from 2026-11-01 to 18 [measured, read-only GraphQL], so the meter counts those bytes; billing is unconfirmed because
+# every region stayed inside its allowance), fill-as-built (the shard reads each spooled miss out of
+# the container a second time to put it to R2, `put_spooled` in `crates/git/src/host.rs`, which the default's "leave a
+# container once" does not count [inference from the code]), ws-half (the daily working set at half of WORKING_SET).
+# shard-class: two shard classes per site. Networks over LARGE_NET_GB of packs, and the hot pool, stay on the tier's
+# instance; the rest go to an ordinary class on a custom instance with less memory and the full 20 GB disk, by
+# rendezvous within their class. A one-size cut is refuted: B0-34 mt3's monorepo shards peaked at 10.0 / 10.0 / 8.9 GiB
+# of 12 with stock at most 2, and site a exited 137 [measured, `tests/am1/results/b034-mt.md`]. The ordinary type meets
+# every documented constraint, the legacy policy's included: at least 3 GiB per vCPU, disk up to 20 GB at any memory
+# (changelog, 2026-09-29) [doc]; the `durable_object` policy names the size per `start()`, so each shard object can
+# take its class (https://developers.cloudflare.com/containers/platform/limits/) [doc]. A network that crosses
+# LARGE_NET_GB moves class with one rehydrate on the new shard while the old one serves [inference].
+LARGE_NET_GB = 1                   # the line ACTIVITY's large_repo_share draws, which full-repacks weekly
+LARGE_WS_SHARE = 0.5               # share of the daily working set in networks over LARGE_NET_GB: large_repo_share [guess]
+ORDINARY = {"small": ("custom", 1, 3, 20), "medium": ("custom", 2, 6, 20), "large": ("custom", 2, 6, 20)}
+                                   # (name, vCPU, GiB, GB disk): git's memory scales with the network's packs, about
+                                   # 2.7 GB per stock fetch of the 6 GB linux pack [measured, b034-mt], so under 0.5 GB
+                                   # for a network under 1 GiB, two of them plus a repack well under 3 GiB [inference]
+ORDINARY_LEAN = ("custom", 1, 3, 20)   # shard-class-lean: the ordinary class at 1 vCPU, the smallest the 3 GiB-per-vCPU
+                                   # rule allows; it halves validate and miss concurrency per shard [inference]
+# edge-compose: the edge answers a composed miss from the chain's base and parts in R2 (free egress) and takes only the
+# wanted commit's own objects (the tail) and the object count from the shard, writing the pack header and hashing the
+# trailer as it streams; the shard fills the entry from the same R2 files and the tail. Stock misses keep today's
+# fill, which reads the spool out of the container a second time, so they count twice.
+COMPOSED_SHARE = 0.9               # share of CI misses that compose: 36 of 51 in LM-1 round 26 before its fixes [guess]
+TAIL_SHARE = 0.05                  # the container's part of a composed answer, of the checkout's bytes [guess]
+CHAIN_READS = 22                   # R2 reads per composed miss: a base and 10 parts on average, read twice [guess]
+COMPOSE_WALL_S = 2                 # shard object wall time per composed miss for the tail and the fill, at 128 MB [guess]
+HASH_CPU_MS_PER_MB = 3             # edge CPU to SHA-1 a composed answer, about 330 MB/s in wasm [guess]
+WITHOUT_ROWID_ROWS = 11            # without-rowid: each of 6 fold puts writes 1 row, not 2; `log` 1, `request` 2, `raft_state` 2
+LOG_KEEP = 0.25                    # logs-sample: share of Workers Logs bytes kept: every non-ok line, 1 in 8 ok lines [guess]
+FEED_SHARE = 4                     # feed-shared (cost_agents.py): working agents whose held polls share one member's
+                                   # duration, which DO pricing bills per object, "shared across all requests active on
+                                   # an Object at once" (https://developers.cloudflare.com/durable-objects/platform/pricing/)
+                                   # [doc]; 4 a member [guess], against 1 in the upper bound and 500 in HOT_SHARE's A1
+POOL_WARM = 2                      # pool-2: pool shards kept warm per site, B0-34's kMax 3 less 1 [measured, b034-m1]
+IA_ACTIONS = 0.6                   # r2-ia: share of Actions bytes (logs, artifacts) older than 7 days [guess] on R2
+                                   # Infrequent Access, with the async third copy of live packs (cruft stays Standard,
+                                   # under IA's 30-day minimum); 5% of the Actions bytes read back a month [guess]
+NIGHT_HOURS = 12                   # night-one-copy: hours a day each network keeps one warm copy, not two
+
 INCLUDED = dict(workers_req=10e6, workers_cpu=30e6, do_req=1e6, do_gbs=400_000, do_rows_w=50e6, do_storage=5,
 	r2_storage=10, r2_a=1e6, r2_b=10e6, queues=1e6, email=3000, ae=10e6, obs_gb=50,
 	c_mem_gibs=25 * 3600, c_vcpu_s=375 * 60, c_disk_gbs=200 * 3600, steps=0)
@@ -210,17 +260,52 @@ def ssh_fronts(tier):
 	return SSH_CONTAINERS[0] if PLAN[tier] in SSH_PLANS or ssh_option(tier) else 0
 
 
+def entry_rows():
+	return WITHOUT_ROWID_ROWS if "without-rowid" in LEVERS else ENTRY_ROWS
+
+
+def plan(tier):
+	return "cf.plan.pro.monthly" if "pro-plan" in LEVERS else PLAN[tier]
+
+
+def miss_out(composed=None):
+	"""Bytes that leave a container per byte of clone-cache miss. The default counts each miss once. As built
+	(fill-as-built, and every stock miss under edge-compose) the fill reads the spool out a second time. Under
+	edge-compose a composed miss sends only its tail, twice at most (client and fill); `composed` is the share of
+	misses that compose."""
+	fill = 2 if "fill-as-built" in LEVERS else 1
+	if "edge-compose" not in LEVERS:
+		return fill
+	c = COMPOSED_SHARE if composed is None else composed
+	return (1 - c) * 2 + c * TAIL_SHARE * 2
+
+
 def shards(tier):
 	"""Git cache shards: one warm copy of the daily working set, and what any two sites reserve."""
 	t = TIERS[tier]
 	name, vcpu, gib, disk = INSTANCE[tier]
-	working_set_gb = t["git_gb"] * WORKING_SET[tier]
+	working_set_gb = t["git_gb"] * WORKING_SET[tier] * (0.5 if "ws-half" in LEVERS else 1)
 	n = max(1, math.ceil(working_set_gb / (disk - SCRATCH_GB)))
+	classes = [(n, vcpu, gib, disk)]
+	if LEVERS & {"shard-class", "shard-class-lean"}:
+		_, ovcpu, ogib, odisk = ORDINARY_LEAN if "shard-class-lean" in LEVERS else ORDINARY[tier]
+		big = max(1, math.ceil(working_set_gb * LARGE_WS_SHARE / (disk - SCRATCH_GB)))
+		small = math.ceil(working_set_gb * (1 - LARGE_WS_SHARE) / (odisk - SCRATCH_GB))
+		classes = [(big, vcpu, gib, disk), (small, ovcpu, ogib, odisk)]
+		n = big + small
+		name = f"{big} {name} + {small} custom {ovcpu} vCPU {ogib} GiB {odisk} GB"
 	# The start cap per site is n plus the hot pool, so any two sites can hold both warm copies of every network after a
 	# site loss, and fan-out draws on the pool with no site day.
 	max_per_site = n + HOT_POOL_PER_SITE
 	reserved_vcpu = len(SITES) * max_per_site * vcpu + ssh_fronts(tier) * SSH_CONTAINERS[1]
-	return dict(instance=name, vcpu=vcpu, gib=gib, disk=disk, working_set_gb=working_set_gb, shards=n,
+	pool_gib, pool_disk = gib, disk   # the hot pool stays on the tier's instance in every class split
+	if len(classes) > 1:
+		reserved_vcpu = (len(SITES) * (sum(c[0] * c[1] for c in classes) + HOT_POOL_PER_SITE * vcpu)
+			+ ssh_fronts(tier) * SSH_CONTAINERS[1])
+		gib = sum(c[0] * c[2] for c in classes) / n    # the mean over shards, so n * gib is the class-weighted sum
+		disk = sum(c[0] * c[3] for c in classes) / n
+	return dict(instance=name, vcpu=vcpu, gib=gib, disk=disk, pool_gib=pool_gib, pool_disk=pool_disk,
+		working_set_gb=working_set_gb, shards=n,
 		warm=n * WARM_COPIES, hot_pool=HOT_POOL_PER_SITE, start_cap_per_site=max_per_site,
 		reserved_vcpu=reserved_vcpu, alarm_vcpu=0.7 * ACCOUNT_VCPU)
 
@@ -232,6 +317,8 @@ def egress_cost(egress_gb, split, accounts_with_sites):
 		cls = EGRESS_CLASS[SITES[site]]
 		by_class[cls] = by_class.get(cls, 0.0) + egress_gb * share
 	total = 0.0
+	if "k2-unbilled" in LEVERS:
+		return total
 	for cls, gb in by_class.items():
 		pid, region, included = EGRESS_PRICE[cls]
 		total += over(gb, included * accounts_with_sites) * price(pid, region)
@@ -240,6 +327,8 @@ def egress_cost(egress_gb, split, accounts_with_sites):
 
 def model(tier, variant="design", split=None):
 	split = split or LEADER_SPLIT
+	if variant == "design" and "separate-accounts" in LEVERS:
+		variant = "separate"
 	t, w = workload(tier)
 	members = 1 if variant in ("solo", "artifacts") else 3
 	accounts = 4 if variant == "separate" else 1
@@ -247,7 +336,7 @@ def model(tier, variant="design", split=None):
 	lines = {}
 
 	lines["Workers Paid subscriptions (install)"] = accounts * price("cf.workers.paid.subscription")
-	lines["Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced)"] = price(PLAN[tier])
+	lines["Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced)"] = price(plan(tier))
 
 	# Workers: requests enter at graft-front and reach the edge over a service binding, which bills no second request.
 	# In the one-account default, member RPCs are Durable Object binding calls and cost DO requests only. In the
@@ -263,6 +352,8 @@ def model(tier, variant="design", split=None):
 		+ w["pushes"] * CPU_MS["push"] + ring_reqs * CPU_MS["ring"] + queue_msgs * CPU_MS["queue"]
 		+ (w["api"] + w["git_ops"] * GIT_REQS) * CPU_MS["front"])
 	lines["Workers requests"] = over(edge_reqs + ring_reqs, INCLUDED["workers_req"] * accounts) / 1e6 * price("cf.workers.requests")
+	if "edge-compose" in LEVERS:
+		cpu += w["jobs"] * (1 - CI_HIT) * COMPOSED_SHARE * t["checkout_mb"] * HASH_CPU_MS_PER_MB
 	lines["Workers CPU (graft-front, edge, sites)"] = over(cpu, INCLUDED["workers_cpu"] * accounts) / 1e6 * price("cf.workers.cpu")
 
 	# Durable Objects: leaders, followers, identity and Authz reads, lease rounds. Allowances are per account; the
@@ -270,7 +361,9 @@ def model(tier, variant="design", split=None):
 	do_reqs = w["reads"] * 1.5 + w["entries"] * members + lease_rpcs
 	gbs = DO_GB * (w["reads"] * WALL_S["read"] + w["entries"] * WALL_S["commit"]
 		+ append_rpcs * WALL_S["append"] + lease_rpcs * WALL_S["lease"])
-	rows_w = w["entries"] * members * ENTRY_ROWS
+	if "edge-compose" in LEVERS:
+		gbs += DO_GB * w["jobs"] * (1 - CI_HIT) * COMPOSED_SHARE * COMPOSE_WALL_S
+	rows_w = w["entries"] * members * entry_rows()
 	inline_gb = w["pushes"] * ACTIVITY["inline_push_kb"] / 1024 / 1024 * 0.25   # inline packs live about a week
 	do_gb = (t["core_gb"] + t["aux_gb"] + inline_gb) * members
 	site_inc = 3 if variant == "separate" else 1
@@ -332,7 +425,14 @@ def model(tier, variant="design", split=None):
 		r2_gb = t["git_gb"] * churn * copies + t["git_gb"] * 0.1 + t["actions_gb"]
 	r2_a = w["pushes"] * 2 * min(copies, 2) + w["jobs"] * (1 - CI_HIT) + w["jobs"] * 20 + w["entries"] / 500
 	r2_b = w["jobs"] * CI_HIT + w["fetches"] * 0.2 + w["jobs"] * 20 + vault_pulls
-	lines["R2 storage (pack copies, clone cache, Actions)"] = over(r2_gb, INCLUDED["r2_storage"] * site_inc) * price("cf.r2.standard.storage")
+	if "edge-compose" in LEVERS:
+		r2_b += w["jobs"] * (1 - CI_HIT) * COMPOSED_SHARE * CHAIN_READS
+	ia_gb = 0.0
+	if "r2-ia" in LEVERS and variant != "artifacts":
+		ia_gb = (t["git_gb"] if copies == 3 else 0) + t["actions_gb"] * IA_ACTIONS
+		r2_gb -= ia_gb
+	lines["R2 storage (pack copies, clone cache, Actions)"] = (over(r2_gb, INCLUDED["r2_storage"] * site_inc) * price("cf.r2.standard.storage")
+		+ ia_gb * price("cf.r2.ia.storage") + t["actions_gb"] * IA_ACTIONS * 0.05 * price("cf.r2.ia.retrieval") * (ia_gb > 0))
 	lines["R2 Class A"] = over(r2_a, INCLUDED["r2_a"] * site_inc) / 1e6 * price("cf.r2.standard.class_a")
 	lines["R2 Class B"] = over(r2_b, INCLUDED["r2_b"] * site_inc) / 1e6 * price("cf.r2.standard.class_b")
 
@@ -341,6 +441,8 @@ def model(tier, variant="design", split=None):
 	if variant != "artifacts":
 		s = shards(tier)
 		n = s["shards"] if variant == "solo" else s["warm"]
+		if "night-one-copy" in LEVERS and variant != "solo":
+			n = s["shards"] * (WARM_COPIES - NIGHT_HOURS / 24)
 		mem_gibs = n * s["gib"] * SECONDS + ssh_fronts(tier) * SSH_CONTAINERS[2] * SECONDS
 		disk_gbs = n * s["disk"] * SECONDS + ssh_fronts(tier) * SSH_CONTAINERS[3] * SECONDS
 		repack_gb = t["git_gb"] * ACTIVITY["large_repo_share"] * 4.3
@@ -349,7 +451,9 @@ def model(tier, variant="design", split=None):
 		# Developer fetches and clone-cache misses leave a container once (the Worker tees a miss to R2 and the first
 		# client). Pushed packs never leave a container: the Worker tees the request body to two buckets while the
 		# container only reads it to validate. Repacks upload one copy per pack site. SSH bytes cross the SSH front.
-		egress_gb = (w["dev_gb"] + w["ci_gb"] * (1 - CI_HIT) + repack_gb * min(copies, 2)
+		# upload-once: a repacked pack leaves the container once, to its home bucket, and the second copy is an R2 read.
+		egress_gb = (w["dev_gb"] + w["ci_gb"] * (1 - CI_HIT) * miss_out()
+			+ repack_gb * (1 if "upload-once" in LEVERS else min(copies, 2))
 			+ (w["dev_gb"] + w["push_gb"]) * (SSH_SHARE if ssh_option(tier) else ssh_share(tier)))
 		site_split = {"A": 1.0} if variant == "solo" else split
 		lines["Containers memory (provisioned)"] = over(mem_gibs, INCLUDED["c_mem_gibs"] * site_inc) * price("cf.containers.memory")
@@ -357,22 +461,23 @@ def model(tier, variant="design", split=None):
 		lines["Containers disk (provisioned)"] = over(disk_gbs, INCLUDED["c_disk_gbs"] * site_inc) * price("cf.containers.disk")
 		lines["Containers egress by site region and leader split"] = egress_cost(egress_gb, site_split, site_inc)
 		# Hot pool kept warm in working hours, priced above the warm shards' memory and disk and their allowances.
-		pool = HOT_POOL_PER_SITE * (1 if variant == "solo" else WARM_COPIES) if tier in HOT_POOL_WARM_TIERS else 0
+		per_site = POOL_WARM if "pool-2" in LEVERS else HOT_POOL_PER_SITE
+		pool = per_site * (1 if variant == "solo" else WARM_COPIES) if tier in HOT_POOL_WARM_TIERS else 0
 		pool_s = pool * HOT_POOL_WARM_HOURS / 24 * SECONDS
 		added = lambda base, extra, inc: over(base + extra, inc) - over(base, inc)
 		lines["Containers: hot pool kept warm for hot networks, working hours"] = (
-			added(mem_gibs, pool_s * s["gib"], INCLUDED["c_mem_gibs"] * site_inc) * price("cf.containers.memory")
-			+ added(disk_gbs, pool_s * s["disk"], INCLUDED["c_disk_gbs"] * site_inc) * price("cf.containers.disk"))
+			added(mem_gibs, pool_s * s["pool_gib"], INCLUDED["c_mem_gibs"] * site_inc) * price("cf.containers.memory")
+			+ added(disk_gbs, pool_s * s["pool_disk"], INCLUDED["c_disk_gbs"] * site_inc) * price("cf.containers.disk"))
 
 	ssh_gb = (w["dev_gb"] + w["push_gb"]) * ssh_share(tier)
-	ssh_inc = 5 if PLAN[tier] == "cf.plan.pro.monthly" else 10
+	ssh_inc = 5 if plan(tier) == "cf.plan.pro.monthly" else 10
 	lines["Spectrum SSH data"] = over(ssh_gb, ssh_inc) * price("cf.spectrum.ssh.overage")
 	lines["Spectrum SSH add-on fee [unverified, no list price found]"] = SPECTRUM_ADDON_USD if PLAN[tier] in SSH_PLANS else 0
 	lines["Queues (webhooks, notifications, indexing)"] = over(queue_msgs * 3, INCLUDED["queues"]) / 1e6 * price("cf.queues.operations")
 	lines["Email Sending"] = over(w["emails"], INCLUDED["email"]) / 1000 * price("cf.email.sending")
 	lines["Analytics Engine (per-repo counters, SLO points)"] = over(w["reads"] + w["entries"], INCLUDED["ae"]) / 1e6 * price(
 		"cf.analytics_engine.writes")
-	logs_gb = t["logs_gb_day"] * DAYS
+	logs_gb = t["logs_gb_day"] * DAYS * (LOG_KEEP if "logs-sample" in LEVERS else 1)
 	lines["Workers Logs ingest and storage"] = (over(logs_gb, INCLUDED["obs_gb"]) * price("cf.observability.ingest")
 		+ over(logs_gb * 7 / 30, 10) * price("cf.observability.storage"))
 	audit_gb = w["entries"] * 2 / 1024 / 1024
@@ -469,8 +574,21 @@ def ssh_option_report():
 			f"| {money(added)} | {money(fronts)} | {money(with_opt[egress] - base[egress])} |")
 
 
+def set_levers(args):
+	"""Takes `--lever a,b` out of args and turns those levers on."""
+	if "--lever" in args:
+		i = args.index("--lever")
+		names = set(args[i + 1].split(","))
+		bad = names - set(LEVER_NAMES)
+		if bad:
+			sys.exit(f"unknown lever {sorted(bad)}; levers: {', '.join(LEVER_NAMES)}")
+		LEVERS.update(names)
+		del args[i:i + 2]
+	return args
+
+
 if __name__ == "__main__":
-	args = sys.argv[1:]
+	args = set_levers(sys.argv[1:])
 	if args[:1] == ["--detail"]:
 		detail(args[1], args[2])
 	elif args[:1] == ["--ssh-option"]:
