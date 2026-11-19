@@ -6,6 +6,9 @@ Concurrent validate inside one git shard, and `fanout` (BUILD-PLAN AM1-WP1, "Not
   1, 2, 4 and 8 concurrent pushes. `run-bench.sh` runs the before (`aa9e097`) and after images as an orb service and
   writes `raw/bench.jsonl`.
 - `plant.py`: the plants for this branch's new code; each must turn a test red.
+- `workingset.py FROM TO [GIT_BYTES]`: the daily working set (`decisions/OPEN-QUESTIONS.md`, G1) from each running
+  shard's daily `shard stats` line in Workers Logs: networks and bytes held, and fetched, pushed, caught up, and used
+  in the line's day, per site and in all. Reads logs only; it starts nothing.
 
 ## Clocks
 

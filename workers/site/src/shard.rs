@@ -1453,6 +1453,11 @@ impl DurableObject for GitShard {
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };
         let renewed = host.on_alarm(Timestamp(now_ms())).await.map_err(se);
+        // Once a day, the disk's networks with their bytes and last fetch, push, and catch-up, which measure the daily
+        // working set (`decisions/OPEN-QUESTIONS.md`, G1). It never fails the alarm.
+        if let Err(e) = host.log_stats(Timestamp(now_ms())).await {
+            console_error!("shard stats: {}", e.0);
+        }
         // The pool ledger's heartbeat (`graftyard_git::PoolLedger::beat`), on the one object that holds a ledger. It
         // runs after the container's renewal, which replaces the object's alarm, so its nearer one is armed last, and
         // whether or not the renewal failed. A test-faults outage skips the beat, as a down object would.

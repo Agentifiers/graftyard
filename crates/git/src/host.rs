@@ -425,10 +425,20 @@ struct ReposOut {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RepoOut {
     network: String,
     bytes: u64,
     used: u64,
+    // A container on the previous release's image (`git_prev`) reports none of these.
+    #[serde(default)]
+    pack_bytes: u64,
+    #[serde(default)]
+    fetched: u64,
+    #[serde(default)]
+    pushed: u64,
+    #[serde(default)]
+    caught_up: u64,
 }
 
 /// What `make_room` saw and did.
@@ -671,6 +681,25 @@ impl ShardHost<'_> {
             s.set_alarm(alarm_at(now, next)).await.map_err(worker_err)?;
         }
         Ok(true)
+    }
+
+    /// From the alarm of a shard whose container runs, once a day (`stats_due`): the `shard stats` line of every
+    /// repository on its disk (`crate::shard::stats_line`), logged under the object's name. A container that is not
+    /// running is not started for it, and a failed listing logs nothing and is tried at the next alarm.
+    pub async fn log_stats(&self, now: Timestamp) -> Result<(), StoreError> {
+        if !self.container()?.running() {
+            return Ok(());
+        }
+        let s = self.state.storage();
+        let last: Option<u64> = s.get("stats_at").await.map_err(worker_err)?;
+        if !crate::shard::stats_due(now, last.map(Timestamp)) {
+            return Ok(());
+        }
+        let (disk, repos) = self.repos().await?;
+        s.put("stats_at", now.0).await.map_err(worker_err)?;
+        let name = self.state.id().name().unwrap_or_else(|| self.state.id().to_string());
+        worker::console_log!("shard stats {name}: {}", crate::shard::stats_line(disk, &repos, now));
+        Ok(())
     }
 
     pub async fn on_alarm(&self, now: Timestamp) -> Result<Renewal, StoreError> {
@@ -1110,10 +1139,15 @@ impl ShardHost<'_> {
             .repos
             .iter()
             .filter_map(|o| {
+                let at = |t: u64| (t > 0).then_some(Timestamp(t));
                 Some(DiskRepo {
                     network: NetworkId(graftyard_types::DbId(o.network.parse().ok()?)),
                     bytes: o.bytes,
                     used: Timestamp(o.used),
+                    pack_bytes: o.pack_bytes,
+                    fetched: at(o.fetched),
+                    pushed: at(o.pushed),
+                    caught_up: at(o.caught_up),
                 })
             })
             .collect();
