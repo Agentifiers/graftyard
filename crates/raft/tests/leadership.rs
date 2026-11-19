@@ -752,6 +752,14 @@ fn six_slow_confirms_trip_and_five_do_not() {
             assert!(matches!(sd[0].1, StepDownWhy::Confirm { slow: 6, .. }), "{sd:?}");
             assert!(!c.inbox.iter().any(|e| matches!(e.msg, Message::Probe { .. })));
             assert_ne!(c.leader(), Some(A));
+            // The trip's own window, for the host's log: the six slow confirms it judged, inside its 10 s bounds.
+            let w = c.m(A).step_down_window().expect("a transfer keeps its window");
+            assert_eq!(w.to.0 - w.from.0, 10_000);
+            assert_eq!(w.confirms.iter().filter(|x| x.1 > 500).count(), 6, "{w:?}");
+            assert!(w.confirms.iter().all(|x| x.0 >= w.from && x.0 <= w.to), "{w:?}");
+            assert!(w.confirms.iter().all(|x| w.kept.contains(x)), "the 30 s samples hold the window's: {w:?}");
+        } else {
+            assert_eq!(c.m(A).step_down_window(), None, "no trip, no window");
         }
     }
 }

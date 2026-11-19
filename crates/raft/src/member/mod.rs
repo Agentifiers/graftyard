@@ -457,6 +457,18 @@ pub enum StepDownWhy {
     LoopLag { clamped: u32 },
 }
 
+/// The window a `STEP_DOWN` trip judged, for the host's log: its bounds on the member clock and each confirm that
+/// ended in it, as (end, ms). The confirm and loop-lag rules read only these samples, so an offline replay of a
+/// candidate rule needs nothing else (`tests/fanout/stepdown.py`). `kept` is every confirm of this leadership that
+/// ended in the last CONFIRM_KEEP (30 s), as (end, ms), so a longer window can be replayed too.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StepDownWindow {
+    pub from: Timestamp,
+    pub to: Timestamp,
+    pub confirms: Vec<(Timestamp, u32)>,
+    pub kept: Vec<(Timestamp, u32)>,
+}
+
 /// A member-to-member call the host saw fail: an error, or no reply within CALL_DEADLINE. `Envelope::failure` builds
 /// it from the request the member sent. Only AppendEntries and probe pings are counted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -750,6 +762,8 @@ pub struct Member<C: Command> {
     /// The leader this member forgot because its read-index call to it failed (F67): reports about it still count.
     /// A leader it never heard from (a transfer target it voted for) is not one: reports about it do not count.
     forgot: Option<SiteId>,
+    /// The window of this member's last `STEP_DOWN` trip, for the host's log only.
+    last_trip: Option<StepDownWindow>,
     /// A voter refused this member's pre-vote as `Suspected`: it starts no other campaign until then, half the bar.
     retry_pre_at: Timestamp,
     /// The term this member last granted a rival's pre-vote for, and until when it starts no campaign of its own:
@@ -905,6 +919,7 @@ impl<C: Command> Member<C> {
             drained: BTreeSet::new(),
             stand_aside_until: Timestamp(0),
             forgot: None,
+            last_trip: None,
             retry_pre_at: Timestamp(0),
             pre_granted: (Term(0), Timestamp(0)),
             own_durable,
@@ -983,6 +998,10 @@ impl<C: Command> Member<C> {
     /// with this member named for `suspect`, rather than as not its to serve (`decisions/DECISIONS.md`, "`b032-shed`").
     pub fn forgot(&self) -> Option<SiteId> {
         self.forgot.filter(|_| self.leader.is_none())
+    }
+    /// The window this member's last `STEP_DOWN` trip judged, as it stood at the trip; read only by the host's log.
+    pub fn step_down_window(&self) -> Option<&StepDownWindow> {
+        self.last_trip.as_ref()
     }
     /// The entries in memory: those above `log_base()`.
     pub fn log(&self) -> &[LogEntry<Ev<C>>] {
