@@ -43,6 +43,19 @@ leader-change count says nothing about the leader's health. B0-33 m50 to m52 (an
 with two (LAX and DFW), so leader-change counts before m53 are not comparable with it
 (`tests/am1/results/b033-m53.md`). Every B0-33 and B0-29 results file states the row's colos.
 
+## Placement baseline (from 2026-11-19, B0-29's A-B-A)
+
+Every B0-29 and B0-33 results file states the leader's storage confirm p50 in the row's setup, before load, beside
+its load confirm. `b029.sh` and `b033.sh` end each row's status with it (`lsrefsab.py` on the row's tsave). Each row
+is a new network on new Durable Objects, and on one build the setup p50 ranged from 39 to 70 ms by placement alone
+(`tests/am1/results/b029-m2b.md`, the A-B-A). A load confirm is read against its own network's baseline, not
+against another row's.
+
+For F91's within-network control, run `b029.sh` with `A1_EXTRA="--ls-refs-shard-every 60"` and `LS_EVERY=60`. a1.mjs
+then sends `x-graft-ls-refs: shard` only in odd minutes of Cloudflare's clock, so one network carries both arms. tsave
+reads every member's `/isolate` (`ISOLATES=1`). `lsrefsab.py TSAVE 60` pairs each shard minute with the edge minute
+before it and names any members that shared an isolate.
+
 ## When the orb cannot reach a workers.dev host
 
 Seen on 2026-11-18 from about 13:20Z (B0-02) and at 14:33Z (B0-33 m52): the orb's resolver answered SERVFAIL for
