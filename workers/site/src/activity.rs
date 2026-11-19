@@ -581,7 +581,7 @@ async fn counts_round(h: &Rc<Host<Identity>>, account: AccountId, applied: Index
             let done = match graftyard_lookup::commit_as(&b, ChainId::Repo(repo), &record, request, cmd).await {
                 Ok(d) => d,
                 // A purged repository has no counts to keep, and its failure must not hold the cursor (`repo-gone`).
-                Err(e) if crate::member::repo_gone(&h.env, repo).await == Ok(true) => {
+                Err(e) if crate::member::repo_gone(&h.env, repo, &e).await => {
                     console_log!("counts {}: repo:{} is gone ({e}); its updates are dropped", account.0.0, repo.0.0);
                     continue 'repos;
                 }

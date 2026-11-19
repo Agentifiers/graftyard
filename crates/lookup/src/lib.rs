@@ -1195,7 +1195,7 @@ fn classify(r: Option<(u16, &Value)>, bootstrap: bool) -> Answer {
     Answer::Reply
 }
 
-/// `call_opt` for a group that must exist: no group is an error.
+/// `call_opt` for a group that must exist: no group is an error, which `is_no_group` reads.
 pub async fn call_raw(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -1203,7 +1203,19 @@ pub async fn call_raw(
     path: &str,
     body: &[u8],
 ) -> std::result::Result<(Value, Step, Target), String> {
-    call_opt(b, chain, record, path, body).await?.ok_or_else(|| format!("{chain}: no group"))
+    call_opt(b, chain, record, path, body).await?.ok_or_else(|| format!("{chain}: {NO_GROUP}"))
+}
+
+/// The end of `call_raw`'s error when the chain has no group: on the rule's first pass every member it reached
+/// answered that it is not joined and none answered any other way (`call_opt`). A group that is only down, moving, or
+/// changing leaders has members that answer otherwise, so it never ends an error this way.
+pub const NO_GROUP: &str = "no group";
+
+/// Whether a call's or a commit's error says the chain has no group: `call_raw`'s error, or `commit_as` giving up
+/// with it as its last attempt's error. Any other failure (no leader, a timeout, a refusal, a shed) is not, so a
+/// caller that ends work on no group retries those (`decisions/DECISIONS.md`, "`repo-gone`").
+pub fn is_no_group(e: &str) -> bool {
+    e.ends_with(&format!(": {NO_GROUP}"))
 }
 
 /// The longest a dependency read waits for its first request before it sends a second one, and the wait before
@@ -2121,6 +2133,25 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `repo-gone`: only a call or commit whose last error is no group reads as no group; the stuck graft-m4a round's
+    /// error does, and an outage's or a leaderless group's does not.
+    #[test]
+    fn only_a_missing_group_reads_as_no_group() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(65568)));
+        assert!(is_no_group(&format!("{chain}: {NO_GROUP}")));
+        // The measured graft-m4a log line's error, `commit_as` giving up on `call_raw`'s.
+        assert!(is_no_group("repo:65568: commit gave up: repo:65568: no group"));
+        for other in [
+            "repo:65568: commit gave up: repo:65568#1#f0: not joined",
+            "repo:65568: commit gave up: repo:65568#1#f1: no answer",
+            "repo:65568: commit gave up: {\"error\":{\"notLeader\":{\"term\":3,\"leader\":null}}}",
+            "repo:65568: repo:65568#1#f2: OVERLOADED 250 ms",
+            "repo:65568: no group answered, then a member did: busy",
+        ] {
+            assert!(!is_no_group(other), "{other}");
+        }
+    }
 
     /// A read during a repository's create, before `RepoOwner` commits, is "not created" only when a majority of the
     /// bootstrap members found no row; members that did not answer, refused for another reason (such as a `Names`

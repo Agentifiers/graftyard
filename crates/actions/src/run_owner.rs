@@ -202,10 +202,11 @@ pub enum ChecksAnswer {
 }
 
 /// `out` is the leader's outcome, `None` when the commit failed: no group answered, no leader, or a refusal. `gone`
-/// is asked only then: whether the owner the repository's `RepoOwner` row names holds it under no name
-/// (`graftyard_identity::AuthzFold::holds`). A deleted repository's group answers `Gone` from its tombstone; a purged
-/// one has no group, and its owner's `Authz` is the proof instead (`decisions/DECISIONS.md`, "`repo-gone`"). Without
-/// that proof a failure retries, so a repository that is only down holds the cursor and loses no check.
+/// is asked only then: `graftyard_identity::AuthzFold::repo_gone`, which needs the failure to be no group and the
+/// owner the repository's `RepoOwner` row names to hold it under no name. A deleted repository's group answers `Gone`
+/// from its tombstone; a purged one has no group, and those two proofs stand in for it (`decisions/DECISIONS.md`,
+/// "`repo-gone`"). Without them a failure retries, so a repository that is only down, or live in a transfer, holds
+/// the cursor and loses no check.
 pub fn checks_answer(out: Option<RunChecksOut>, gone: bool) -> ChecksAnswer {
     match out {
         Some(RunChecksOut::Applied(_)) => ChecksAnswer::Applied,

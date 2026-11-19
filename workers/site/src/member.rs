@@ -3361,18 +3361,30 @@ pub async fn repo_owner(env: &Env, repo: graftyard_types::RepoId) -> std::result
     repo_owner_row(env, repo).await?.ok_or_else(|| format!("{repo:?} has no RepoOwner row"))
 }
 
-/// Whether `repo` is gone for good (`decisions/DECISIONS.md`, "`repo-gone`"): its `RepoOwner` row names an owner whose
-/// `Authz` fold holds it under no name (`AuthzFold::holds`), so it was deleted, maybe purged, or its create aborted. A
-/// cursor consumer whose write to the repository failed asks this, and ends that work on `Ok(true)` instead of
-/// retrying it behind every later entry. No row, or a read that fails, is not proof: `Ok(false)` and `Err` retry.
-pub async fn repo_gone(env: &Env, repo: graftyard_types::RepoId) -> std::result::Result<bool, String> {
-    let Some(owner) = repo_owner_row(env, repo).await? else { return Ok(false) };
+/// The one place a cursor consumer classifies a failed write or read on a repository it does not own
+/// (`decisions/DECISIONS.md`, "`repo-gone`"): `err` is the lookup's error. True only with both proofs of
+/// `AuthzFold::repo_gone`: the error says the chain has no group (`graftyard_lookup::is_no_group`), and the owner its
+/// `RepoOwner` row names holds it under no name. Any other error (no leader, a timeout, a refusal, a shed) is false
+/// without a read, and so are no row and a read that fails, so the consumer retries.
+pub async fn repo_gone(env: &Env, repo: graftyard_types::RepoId, err: &str) -> bool {
+    let no_group = graftyard_lookup::is_no_group(err);
+    if !no_group {
+        return false;
+    }
+    owner_authz(env, repo).await.is_ok_and(|f| f.is_some_and(|f| f.repo_gone(repo, no_group)))
+}
+
+/// The `Authz` fold of the owner `repo`'s `RepoOwner` row names; `None` with no row.
+async fn owner_authz(
+    env: &Env,
+    repo: graftyard_types::RepoId,
+) -> std::result::Result<Option<graftyard_identity::AuthzFold>, String> {
+    let Some(owner) = repo_owner_row(env, repo).await? else { return Ok(None) };
     let chain = ChainId::Authz(owner);
     let (v, _) =
         lookup::call(env, chain, &owner_record(env, owner).await?, "/read", &json!({ "q": { "dep": true } })).await?;
     let bytes = v.get("value").and_then(Value::as_str).and_then(host::unhex).ok_or("no Authz fold")?;
-    let fold = raft::codec::from_bytes::<graftyard_identity::AuthzFold>(&bytes).map_err(|e| e.to_string())?;
-    Ok(!fold.holds(repo))
+    raft::codec::from_bytes::<graftyard_identity::AuthzFold>(&bytes).map(Some).map_err(|e| e.to_string())
 }
 
 /// `repo_owner`, with `None` only when the `Names` leader answered and holds no row; a read that failed is `Err`.

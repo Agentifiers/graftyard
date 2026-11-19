@@ -395,6 +395,10 @@ MUTANTS = [
      '            RepoEntry::Live { repo: r, .. }\n            | RepoEntry::Alias { repo: r, .. }\n',
      '            RepoEntry::Alias { .. } => false,\n            RepoEntry::Live { repo: r, .. }\n',
      ['-p', 'graftyard-identity', '--test', 'audit']),
+    ('Authz alone is proof a repository is gone', AZ,
+     '        no_group && !self.holds(repo)', '        !self.holds(repo)', G),
+    ('any lookup error reads as no group', 'crates/lookup/src/lib.rs',
+     '    e.ends_with(&format!(": {NO_GROUP}"))', '    !e.is_empty()', ['-p', 'graftyard-lookup', '--lib', 'no_group']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

@@ -638,9 +638,8 @@ impl AuthzFold {
     }
 
     /// Whether this owner, the one the repository's `RepoOwner` row names, still holds it under a name: `Live`, the
-    /// `Alias` a transfer leaves before `RepoOwner` moves, or a `Reserved` name. A repository it holds under none was
-    /// deleted (`Deleted`, the delete's commit point) or its create was aborted, and every route already treats it as
-    /// gone, so a cursor consumer whose write to it failed ends that work instead of retrying it (`repo-gone`).
+    /// `Alias` a transfer leaves before `RepoOwner` moves, or a `Reserved` name. Not holding it is not enough to call
+    /// it gone (`repo_gone`): a transfer's `Alias` can be taken by a new create before `RepoOwner` moves.
     pub fn holds(&self, repo: RepoId) -> bool {
         self.names.values().any(|e| match e {
             RepoEntry::Live { repo: r, .. }
@@ -648,6 +647,16 @@ impl AuthzFold {
             | RepoEntry::Reserved { repo: r, .. } => *r == repo,
             RepoEntry::Deleted { .. } => false,
         })
+    }
+
+    /// `repo-gone` (`decisions/DECISIONS.md`): whether a cursor consumer whose write to `repo` failed ends that work
+    /// instead of retrying it. It needs two proofs: the repository's own chain has no group (`no_group`: the lookup
+    /// reached members and every one answered not joined, `graftyard_lookup::is_no_group`), and this owner, the one
+    /// its `RepoOwner` row names, holds it under no name. A repository in a transfer can fail the second while live,
+    /// once a new create takes its `Alias` and before `RepoOwner` moves, but it still has its group; one that is only
+    /// down fails neither. A deleted repository whose group still answers is the group's own `Gone`, not this.
+    pub fn repo_gone(&self, repo: RepoId, no_group: bool) -> bool {
+        no_group && !self.holds(repo)
     }
 
     /// The `retain_until` of a name this owner holds `Deleted` for the repository (F59's delete finisher).

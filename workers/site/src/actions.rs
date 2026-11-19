@@ -386,8 +386,8 @@ async fn owner_round(
             Ok(done) => (serde_json::from_value(done["ok"]["out"]["RunChecks"].clone()).ok(), done.to_string()),
             Err(e) => (None, e),
         };
-        // A purged repository has no group to answer `Gone`: its owner's `Authz` is the proof (`repo-gone`).
-        let proven = out.is_none() && crate::member::repo_gone(&h.env, *repo).await == Ok(true);
+        // A purged repository has no group to answer `Gone` (`repo-gone`): no group plus its owner's `Authz`.
+        let proven = out.is_none() && crate::member::repo_gone(&h.env, *repo, &why).await;
         match graftyard_actions::run_owner::checks_answer(out, proven) {
             ChecksAnswer::Applied => {}
             ChecksAnswer::Gone => {

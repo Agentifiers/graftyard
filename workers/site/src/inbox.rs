@@ -263,7 +263,7 @@ impl Inbox {
                 Ok(x) => x,
                 // A purged repository has no notices left to replay, and must not fail every later rebuild
                 // (`repo-gone`).
-                Err(e) if crate::member::repo_gone(&self.env, repo).await == Ok(true) => {
+                Err(e) if crate::member::repo_gone(&self.env, repo, &e).await => {
                     replayed.push(json!({ "chain": chain.to_string(), "gone": e }));
                     continue;
                 }

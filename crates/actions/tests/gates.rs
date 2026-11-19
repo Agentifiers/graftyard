@@ -414,7 +414,9 @@ impl World {
                 },
                 _ => None,
             };
-            let gone = out.is_none() && !self.authz.holds(repo);
+            // The lookup's error says no group only for a purged repository (`graftyard_lookup::is_no_group`); no
+            // leader, a lost ticket, or a refusal is another error.
+            let gone = out.is_none() && self.authz.repo_gone(repo, self.purged.contains(&repo));
             match checks_answer(out, gone) {
                 ChecksAnswer::Applied => {}
                 // The round is rebuilt with the repository gone, so its shard half cancels the run.
@@ -1241,4 +1243,61 @@ fn a_purged_repository_does_not_hold_the_next_repositorys_workflow_jobs() {
     }
     use JobAction::{Completed, InProgress, Queued};
     assert_eq!(got, [(next.0, Queued), (next.0, InProgress), (next.0, Completed)]);
+}
+
+/// `repo-gone`'s transfer race: the owner's `Alias` for a repository it transferred away is taken by a new create
+/// before the finisher moves `RepoOwner`, so that owner holds the transferred repository under no name while it is
+/// live. Its group then loses every member for a while, and `RunOwner`'s write fails with no leader. Authz alone would
+/// call it gone and cancel a live repository's run; without the no-group proof the cursor holds, nothing is cancelled,
+/// and once the group is back the run's checks and `workflow_job` steps arrive.
+#[test]
+fn a_transferring_repository_whose_alias_was_retaken_is_not_gone_while_down() {
+    use graftyard_identity::{RepoEntry, RepoName};
+    let mut w = World::new();
+    w.app_hooks = true;
+    w.plans.insert("lint".into(), Plan { ms: 20_000, ends: Conclusion::Success });
+    w.register(1);
+    // `REPO2` moved to another owner: this owner's `Live` became its `Alias` (`LeaveAlias`), and a new create took
+    // the key (`free_for` lets a create take an `Alias`). `RepoOwner` still names this owner.
+    let key = RepoName::parse("b").unwrap().key();
+    let new = RepoId(DbId(9));
+    w.authz.names.insert(key.clone(), RepoEntry::Alias { repo: REPO2, epoch: Default::default() });
+    w.authz.names.insert(key, RepoEntry::Live { repo: new, epoch: Default::default() });
+    assert!(!w.authz.holds(REPO2), "the race's state: the RepoOwner owner names it nowhere");
+    let run = w.create_run_in(REPO2, oid(21), "refs/heads/main", 2, vec![spec("lint", &[])]);
+    w.run_for(3_000);
+    // Every member of the repository's group goes down: commits fail with no leader, not no group.
+    for s in common::SITES {
+        w.repo2.crash(s);
+    }
+    let stuck = w.fold().owner_cursor;
+    w.run_for(2 * MIN);
+    let f = w.fold();
+    assert!(!w.gone.contains(&REPO2), "a live repository that is down is not gone");
+    assert!(
+        f.run_jobs(run).iter().all(|j| j.state.completed() != Some(Conclusion::Cancelled)),
+        "{:?}",
+        f.run_jobs(run)
+    );
+    assert_eq!(f.owner_cursor, stuck, "the cursor holds below the down repository's unsent checks");
+    // The group comes back: the held round lands, nothing was lost.
+    for s in common::SITES {
+        w.repo2.restart(s, w.now);
+    }
+    w.run_for(MIN);
+    let f = w.fold();
+    assert!(!w.gone.contains(&REPO2));
+    assert_eq!(f.run(run).unwrap().status, RunStatus::Completed(Conclusion::Success));
+    let actions: Vec<_> = w
+        .repo2
+        .committed_after(Index(0))
+        .into_iter()
+        .flat_map(|(_, e)| e)
+        .filter_map(|e| match e {
+            RepoEvent::WorkflowJob(u) => Some(u.action),
+            _ => None,
+        })
+        .collect();
+    use graftyard_git::workflow_job::JobAction::{Completed, InProgress, Queued};
+    assert_eq!(actions, [Queued, InProgress, Completed]);
 }
