@@ -24,6 +24,7 @@
 use std::rc::Rc;
 
 use graftyard_actions::broker::{Pick, Taken};
+use graftyard_actions::run_owner::ChecksAnswer;
 use graftyard_actions::runsvc::{self, Grant, RunnerAt, ServiceKey, Urls};
 use graftyard_actions::shard::{
     ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold, ActionsOp, ActionsOut,
@@ -381,15 +382,33 @@ async fn owner_round(
     for (repo, cmd) in &r.checks {
         let body =
             serde_json::to_value(graftyard_git::repo::RepoCmd::RunChecks(cmd.clone())).map_err(|e| e.to_string())?;
-        let done = graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &record, cmd.request, body).await?;
-        let out = &done["ok"]["out"]["RunChecks"];
-        if out == "Gone" {
-            gone.insert(*repo);
-            return Ok(false);
+        let mut done = graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &record, cmd.request, body.clone()).await;
+        // The shard owner's record finds a repository it created, but not one transferred to another owner whose
+        // group then moved to that owner's placement (`repo-gone`): on no group, the same request again under the
+        // record of the owner `RepoOwner` names now, so a transferred repository's runs never hold the cursor.
+        let no_group = done.as_ref().is_err_and(|e| graftyard_lookup::is_no_group(e));
+        let now = if no_group { crate::member::repo_owner(&h.env, *repo).await.ok() } else { None };
+        if let Some(now) = graftyard_actions::run_owner::record_owner(owner, no_group, now) {
+            let moved = crate::member::owner_record(&h.env, now).await?;
+            done = graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &moved, cmd.request, body).await;
         }
-        if out.get("Applied").is_none() {
+        let (out, why) = match done {
+            Ok(done) => (serde_json::from_value(done["ok"]["out"]["RunChecks"].clone()).ok(), done.to_string()),
+            Err(e) => (None, e),
+        };
+        // A purged repository has no group to answer `Gone` (`repo-gone`): no group plus its owner's `Authz`.
+        let proven = out.is_none() && crate::member::repo_gone(&h.env, *repo, &why).await;
+        match graftyard_actions::run_owner::checks_answer(out, proven) {
+            ChecksAnswer::Applied => {}
+            ChecksAnswer::Gone => {
+                if proven {
+                    worker::console_log!("{chain} RunOwner: repo:{} is gone ({why}); its runs are cancelled", repo.0.0);
+                }
+                gone.insert(*repo);
+                return Ok(false);
+            }
             // `Unavailable` (the metadata tier loading), a refusal, or no outcome: the round runs again.
-            return Err(format!("{chain} RunChecks on repo:{}: {done}", repo.0.0));
+            ChecksAnswer::Retry => return Err(format!("{chain} RunChecks on repo:{}: {why}", repo.0.0)),
         }
     }
     Ok(true)

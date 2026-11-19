@@ -38,6 +38,34 @@ pub struct RegistryRow {
     pub sites: SmallVec<[SiteId; 3]>,
 }
 
+/// One site's registry answer for a chain, as `repo-gone` reads it (`decisions/DECISIONS.md`, "`repo-gone`"): a row, a
+/// definite no row (404), or no answer (any other status, or none within the lookup's `CALL`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowRead {
+    Row,
+    NoRow,
+    Failed,
+}
+
+impl RowRead {
+    /// A `GET /row` answer's status: 200 a row, 404 none, anything else or no answer a read that failed.
+    pub fn of(status: Option<u16>) -> RowRead {
+        match status {
+            Some(200) => RowRead::Row,
+            Some(404) => RowRead::NoRow,
+            _ => RowRead::Failed,
+        }
+    }
+}
+
+/// Whether every site's registry answered that it holds no row for the chain: positive proof that the chain has no
+/// voter anywhere, whatever record a lookup used. Every voter writes its row on its own site before it stores
+/// anything, and only a purge deletes a row (`graftyard_git::purge`), so a live group, moved or in a transfer, always
+/// leaves one. A read that failed proves nothing.
+pub fn no_row_anywhere(reads: &[RowRead]) -> bool {
+    !reads.is_empty() && reads.iter().all(|r| *r == RowRead::NoRow)
+}
+
 /// A `PUT /row` to a site's registry: `row`, with `replacing` empty for a member's own write, or naming the placement
 /// tries whose rows a restore may replace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +124,21 @@ mod tests {
             seen[MemberRegistry::for_chain(SiteId(0), ChainId::Repo(RepoId(DbId(i)))).shard as usize] += 1;
         }
         assert!(seen.iter().all(|&n| (50..=160).contains(&n)), "{seen:?}");
+    }
+
+    /// `repo-gone`: only every site answering 404 proves the chain has no voter; one row, one failed read (a 5xx, a
+    /// timeout), or no site at all proves nothing.
+    #[test]
+    fn only_every_site_answering_no_row_proves_no_voter() {
+        use RowRead::*;
+        assert_eq!(
+            [Some(200), Some(404), Some(500), Some(409), None].map(RowRead::of),
+            [Row, NoRow, Failed, Failed, Failed]
+        );
+        assert!(no_row_anywhere(&[NoRow, NoRow, NoRow]));
+        for reads in [&[Row, NoRow, NoRow][..], &[NoRow, Failed, NoRow], &[NoRow, NoRow, Row], &[]] {
+            assert!(!no_row_anywhere(reads), "{reads:?}");
+        }
     }
 
     /// The site's registry as `PUT /row` keeps it: one row per chain, each put applied when `replaces` allows.

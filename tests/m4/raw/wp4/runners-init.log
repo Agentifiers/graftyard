@@ -25,3 +25,6 @@ exit 0
   container application graft-runners-sandboxstd3: exists
   container application graft-runners-sandboxstd4: exists
 exit 0
+== R23 M2 10% 2026-11-19T11:34:43Z from 66755ddd, bundle /tmp/m2-bundle, runner_box true, release 78ee8b483cdd
+  graft-runners: release 78ee8b483cdd56dd2999762d1b2d238d4ea5e9761a24ef1afc0535c35664d99d uploaded as 13193b05-5b77-4e07-b63d-75f2b50d7a34, at 10%; rerun after 86400 s
+exit 0
