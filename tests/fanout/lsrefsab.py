@@ -68,13 +68,16 @@ def kinds(rows):
 
 def main(path, every_s=None):
     voters, learners, leader, isolates = load(path)
-    lead = max(voters, key=lambda s: sum(1 for x in voters[s] if x[1] == 16 and leader.get(s) == s), default=None)
-    if lead is None:
+    if not voters:
         sys.exit("no voter rows")
-    typed = kinds(voters[lead])
-    conf = [(t, ms) for t, ms, _ in typed]
     reads = collections.Counter(x[0] // 30000 for v in learners.values() for x in v if x[1] == 25 and x[4] % 64 == 2)
     hot = sorted(b for b, n in reads.items() if n > READS_LOAD * 30)
+    # The leader is the voter that flushed most in the 60 s before load: the one whose placement the row starts on.
+    # The last snapshot's `leader` names the leader at the end, which after a change is another site (m3fp2).
+    a0 = hot[0] * 30000 if hot else None
+    lead = max(voters, key=lambda s: sum(1 for x in voters[s] if x[1] == 16 and (a0 is None or a0 - 60000 <= x[0] < a0)))
+    typed = kinds(voters[lead])
+    conf = [(t, ms) for t, ms, _ in typed]
     t_first = conf[0][0] if conf else 0
     if not hot:
         print(f"leader site {lead}: no load window (learner /read never above {READS_LOAD}/s)")
@@ -84,7 +87,8 @@ def main(path, every_s=None):
     under = [(ms, k) for t, ms, k in typed if a + 30000 <= t < b - 30000]
     of = lambda xs, k: [ms for ms, kk in xs if k in (kk, "all")]
     p50n = lambda xs: f"p50 {pct(xs, .5)} (n {len(xs)})"
-    print(f"leader site {lead}: setup 1-statement confirm {p50n(of(setup, '1'))} (placement baseline); "
+    one = of(setup, '1')
+    print(f"leader site {lead}: setup 1-statement confirm {p50n(one)} p90 {pct(one, .9)} (placement baseline); "
           f"unpaired {p50n(of(setup, 'unpaired'))}; pooled {p50n(of(setup, 'all'))}")
     print(f"  load: 1-statement {p50n(of(under, '1'))}; unpaired {p50n(of(under, 'unpaired'))}; "
           f"pooled p50 {pct(of(under, 'all'), .5)} p99 {pct(of(under, 'all'), .99)} (n {len(under)})")
