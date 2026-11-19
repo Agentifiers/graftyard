@@ -1,0 +1,53 @@
+2026-11-19T02:19:38Z start abc13a0a <worktree>
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T02:19:58Z start sweep ok
+2026-11-19T02:19:50Z cost account 10.1 since 2026-11-19T00:00:00Z, run 0 since 2026-11-19T02:19:26Z, at b0-29
+2026-11-19T02:20:18.686Z m3org/fm2bb29n-b029 = 131369
+2026-11-19T02:20:19.425Z repo:131369 leader 0 placing since 1795054821234: waiting
+2026-11-19T02:20:30Z cost account 10.11 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:20:31.242Z repo:131369 leader 0: config 9 learners [{"addr":192,"doName":"repo:131369#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131369#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131369#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131369#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131369#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131369#3#l5","join":20
+2026-11-19T02:20:34.790Z repo:131369 leader 0: set k 4: {"grants":[[0,[6,5,2]],[2,[6,5,2]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T02:20:45.171Z repo:131369 leader 0: set k 4: {"grants":[[0,[6,5,2]],[2,[6,5,2]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T02:20:55.725Z repo:131369 leader 0: set k 4: {"grants":[[0,[6,5,2]],[2,[6,5,2]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-19T02:20:55.853Z repo:131369 leader 0: k 4 at 10
+2026-11-19T02:21:05Z b0-29 fm2bb29n-b029 131369 start
+2026-11-19T02:22:32Z cost account 10.15 since 2026-11-19T00:00:00Z, run 0.02 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:24:34Z cost account 10.22 since 2026-11-19T00:00:00Z, run 0.07 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:26:35Z cost account 10.43 since 2026-11-19T00:00:00Z, run 0.26 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:28:37Z cost account 10.68 since 2026-11-19T00:00:00Z, run 0.47 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:30:39Z cost account 11.05 since 2026-11-19T00:00:00Z, run 0.82 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:32:41Z cost account 11.51 since 2026-11-19T00:00:00Z, run 1.24 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:34:43Z cost account 11.95 since 2026-11-19T00:00:00Z, run 1.67 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:36:45Z cost account 12.34 since 2026-11-19T00:00:00Z, run 2.05 since 2026-11-19T02:19:26Z, at b0-29 watch
+2026-11-19T02:38:04.007Z repo:131369 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-19T02:38:04.136Z repo:131369 leader 0: k 1 at 3602
+2026-11-19T02:38:13Z b0-29 fm2bb29n-b029 131369 done exit 0
+2026-11-19T02:38:17Z torn down 131369
+site fault off: 000
+git#2#pool:3 000
+git#2#pool:6 000
+git#2#pool:7 000
+git#0#pool:7 000
+git#0#pool:3 000
+git#0#pool:6 000
+{"torn_down": 6, "codes": {"000": 6}}
+sweep: no shard container running
+2026-11-19T02:38:48Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+placement baseline:
+leader site 0: setup confirm p50 39 (n 1360, before load) | load confirm p50 43 p99 131 (n 4031)
+  window 02:28:00: edge  learner ls-refs+refs  25.6/s, leader confirm p50 42 p99 131 (n 353)
+  window 02:29:00: shard learner ls-refs+refs   0.3/s, leader confirm p50 41 p99 145 (n 479)
+  window 02:30:00: edge  learner ls-refs+refs  33.5/s, leader confirm p50 43 p99 189 (n 428)
+  window 02:31:00: shard learner ls-refs+refs   0.1/s, leader confirm p50 45 p99 154 (n 437)
+  window 02:32:00: edge  learner ls-refs+refs  34.4/s, leader confirm p50 43 p99 140 (n 455)
+  window 02:33:00: shard learner ls-refs+refs   0.1/s, leader confirm p50 42 p99 148 (n 478)
+  window 02:34:00: edge  learner ls-refs+refs  33.3/s, leader confirm p50 43 p99 102 (n 467)
+  window 02:35:00: shard learner ls-refs+refs   0.1/s, leader confirm p50 41 p99 148 (n 482)
+  window 02:36:00: edge  learner ls-refs+refs  33.9/s, leader confirm p50 43 p99 110 (n 452)
+paired edge minus shard confirm p50: median +1.0 ms over 4 pairs; edge slower in 3, shard slower in 1
+isolates: 11 members, 11 distinct ids, 13 changes; shared: none
+B029DONE

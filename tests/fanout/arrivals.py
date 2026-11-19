@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""arrivals.py PREFIX FROM TO [OUT] -> one install's invocations per second by script, from the Workers Logs calculations
+view, and the harness-outage windows of a gate row (tests/fanout/README.md, "Harness outages on gate rows").
+
+A second is an outage second when the main edge (PREFIX-edge) got 0 invocations while the site scripts (PREFIX-site-*)
+got some: the orb could not reach the edge, and the sites kept serving. Adjacent outage seconds join into one window.
+Prints one JSON line per second to OUT (default stdout: {"t": iso, "edge": n, "sites": n, "tools": n}), then a summary:
+the windows, their seconds, and their share of FROM..TO. The row is invalid and reruns when the share is over
+MAX_SHARE. Account and token from the environment, the token only as a header.
+"""
+import json
+import os
+import sys
+import urllib.request
+from datetime import datetime, timezone
+
+MAX_SHARE = 0.05  # over this share of the load window in outages, the row is invalid and reruns
+STEP = 1000
+
+
+def ms(s):
+    return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+def iso(t):
+    return datetime.fromtimestamp(t / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def query(prefix, a, b):
+    """{second ms: {service: count}} over [a, b), at most 10 minutes a call (the view's 600 points at 1 s)."""
+    acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+    out = {}
+    t = a
+    while t < b:
+        u = min(b, t + 600 * STEP)
+        body = {"queryId": "q", "timeframe": {"from": t, "to": u}, "view": "calculations", "limit": 2000, "granularity": STEP,
+                "parameters": {"filters": [{"key": "$metadata.service", "operation": "starts_with", "type": "string", "value": f"{prefix}-"}],
+                               "calculations": [{"operator": "count"}],
+                               "groupBys": [{"type": "string", "value": "$metadata.service"}]}}
+        r = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
+                                   data=json.dumps(body).encode(), method="POST",
+                                   headers={"authorization": f"Bearer {tok}", "content-type": "application/json"})
+        res = json.load(urllib.request.urlopen(r, timeout=90))["result"]["calculations"][0]
+        for s in res.get("series", []):
+            sec = ms(s["time"].replace(" ", "T") + "Z")
+            for d in s["data"]:
+                out.setdefault(sec, {})[d["groupKey"]] = out.get(sec, {}).get(d["groupKey"], 0) + int(d["count"])
+        t = u
+    return out
+
+
+def series(prefix, counts, a, b):
+    rows = []
+    for t in range(a - a % STEP, b, STEP):
+        c = counts.get(t, {})
+        rows.append({"t": t, "edge": c.get(f"{prefix}-edge", 0),
+                     "sites": sum(n for k, n in c.items() if k.startswith(f"{prefix}-site-")),
+                     "tools": c.get(f"{prefix}-tools-edge", 0)})
+    return rows
+
+
+def outages(rows):
+    """[(start ms, end ms)] of runs of seconds with edge 0 and sites > 0; end is exclusive."""
+    wins, start = [], None
+    for r in rows + [{"t": None, "edge": 1, "sites": 0}]:
+        bad = r["edge"] == 0 and r["sites"] > 0
+        if bad and start is None:
+            start = r["t"]
+        elif not bad and start is not None:
+            wins.append((start, prev + STEP))
+            start = None
+        prev = r["t"]
+    return wins
+
+
+def summary(wins, a, b):
+    secs = sum(e - s for s, e in wins) / 1000
+    share = secs / ((b - a) / 1000)
+    return {"outages": [[iso(s), iso(e)] for s, e in wins], "outageSeconds": secs, "share": round(share, 4),
+            "valid": share <= MAX_SHARE}
+
+
+def main(argv):
+    prefix, a, b = argv[0], ms(argv[1]), ms(argv[2])
+    rows = series(prefix, query(prefix, a, b), a, b)
+    with (open(argv[3], "w") if len(argv) > 3 else sys.stdout) as f:
+        for r in rows:
+            f.write(json.dumps({**r, "t": iso(r["t"])}) + "\n")
+    s = summary(outages(rows), a, b)
+    print(json.dumps(s), file=sys.stderr if len(argv) <= 3 else sys.stdout)
+    return s
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 4:
+        sys.exit(__doc__)
+    main(sys.argv[1:])
