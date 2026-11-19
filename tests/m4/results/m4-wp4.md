@@ -407,6 +407,86 @@ Site day 50 (main `fbe49d59`, the format 0x15.4 reader, `GRAFTYARD_PR_TRIGGER` u
 
 **Next.** The trigger did what the design says: 1,195 runs at `refs/pull/N/merge`, 203 superseded events run at the current merge, 0 conflicts, 0 left without a run. Dispatch is bound by the repository group under the 500-agent load, as every other A1 row is. So B0-35's dispatch line moves with LM-1's commit work, not with Actions. Two trigger changes would still shorten it under load. Retry one event's `demand` without rerunning its whole batch. And move the cursor past events whose runs committed, so a failed round does not redo them.
 
+## B0-35 rerun on graft-m4a after site day 54 (2026-11-19, row m54)
+
+Site day 54 (00:52:22Z to 00:53:32Z) and edge day 27 (to 00:56:07Z, version `51a5ec5b`) shipped main `67483ab9` (`76c3e131` plus results-only commits) as product builds, with git shard image `m4a54` (`tests/am1/results/install-m4a.md`). The flags were day 53's (`GRAFTYARD_APP_HOOKS=1`, `GRAFTYARD_PR_TRIGGER=1`), `GRAFTYARD_JOB_TOKENS` was unset, and `FORMATS_ENABLED` was edge day 26's. `tests/m4/wp4/b035.sh` ran on a new repository, `m3org/b035-m54` = repo 65568, with 8 learners. Run `mwmusr0e`: 500 of 500 PRs opened, then 600 s from 01:15:54.778Z. Raw files: `tests/am1/raw/a1-b0-35-mwmusr0e.jsonl`, `a1-pushes-b0-35-mwmusr0e.jsonl`, `tests/m4/raw/wp4/b035-m54/`, and the voter watch `b035-m54.lead`.
+
+**Verdict: fails on dispatch p99, 120 s** (met at 11 s, fail over 30 s). Both budget lines pass. That is a step from m4a's first run (680 s), because the group now acknowledges the load's pushes.
+
+| Line | Value | Source |
+| --- | --- | --- |
+| Dispatch p50 / p99 / max, push acknowledgment to run listed (driver) | **45.2 s / 120.2 s / 170 s**, 2,471 of 2,471 paired | `a1.mjs` `dispatch` |
+| Dispatch, entry to first `RunCreated` log (site) | p50 44.5 s, p90 78.9 s, p99 144.9 s (2,391 events) | `dispatchsplit.py` |
+| Test-merge vCPU (leader's shard, 1 vCPU budget) | **0.54** (198.0 s spent over 367.1 s of merge wall); 5,294 computed, 1,372 shed, all `late`; `inFlightMax` 371, wait max 13.4 s | leader `/stats` `testMerges.shard` |
+| List-field computes | **0** of 50,516 list-field asks | same |
+| Agent pushes acknowledged | 2,471 of 2,500, p50 2.1 s, p99 12.8 s | `a1.mjs` |
+| `mergeable` polls | 3,110 `MERGEABLE`, 54,064 `UNKNOWN`, 2,357 × 503 | `a1.mjs` `pollAnswers` |
+| Leader commit p99 | 4,665 ms | leader `/stats` |
+| Events: run / no run / `unmerged` on the first try / superseded / logged twice | 2,391 / 53 / 13 (0.53%) / 21 / 416 | `dispatchlog.py` |
+| Sandboxes started | 0 | `b035watch.sh` |
+
+`dispatchlog.py`'s first pass lost lines. Its walk stepped back from the oldest line each 100-line slice returned, and it stopped early when a round logged 100 lines in one millisecond: one pass kept 17 of site b's 1,642 lines. The walk now bisects by time and splits a full millisecond by PR number. The rerun read 3,174 lines; Workers Logs counts are site a 1,688 (it read 1,411), b 1,642 (1,587), and c 176 (176). The figures here come from that rerun.
+
+### Where dispatch time goes
+
+The stages, from the push acknowledgment:
+
+1. **Push acknowledgment to entry:** none. The entry is stamped before the push is acknowledged (leader commit p50 0.7 s, p99 4.7 s), so the driver's acknowledgment-to-run (p50 45.2 s) is a little shorter than the site's entry-to-run (p50 44.5 s on first runs). The push acknowledgment itself (p50 2.1 s, p99 12.8 s) is before the driver's clock starts.
+2. **Entry to the start of the `ActionsTrigger` round that takes it:** p50 26.2 s, p90 65.2 s, p99 96.9 s (2,251 events whose previous round's end is known). **This stage holds the tail.** The slowest 1% (22 events, 132 s and more) waited 119 s on average for their round and spent 31 s inside it. The slowest 5% (112 events, 92 s and more) waited 88 s and spent 23 s inside.
+3. **Inside the round, per event:** p50 14.7 s, p99 52.1 s. The demand loop takes most of it: by asks, 0 asks p50 10.2 s, 1 ask 18.1 s, 2 asks 33.3 s, 3 asks 43.4 s. Each ask is one `demand` call, a `/read`, and a shard `/demand` whose merge waits its turn, plus DEMAND_WAIT_MS (2 s) between asks. Events with no ask still spend 10 s (p50), which is the workflow `tree`/`blob` reads and `CreateRun` on the Actions shard.
+4. **`CreateRun` commit, broker match, and `acquirejob`:** the first is inside stage 3. B0-35's label has no runner, so dispatch ends at `RunCreated`, and the broker and `acquirejob` play no part in this line.
+5. **Run listed by the driver:** within one 1 s poll.
+
+A round is one batch of up to 200 entries, and its events run at once (`join_all`). The round ends only when its slowest event finishes: rounds took p50 42.2 s and p99 75.0 s. Entries that commit during a round wait for the next one. So an entry waits about one round length for its round to start, then its own demand loop, which is why entry-to-run (p50 44.5 s) is about one round. By entry minute from t0, the worst minutes were 4 and 5 (p99 148.6 s and 168.4 s). Those are 01:19:54 to 01:21:54Z, the minutes of the term changes below, where events entered then p50 69.8 s and p99 163.6 s against p50 40.7 s and p99 92.4 s for the rest. Outside those minutes the p99 is still 92 s, so the round structure, not the leader changes, sets the line.
+
+### The leader changes
+
+The voter watcher read site 1's superseded `repo:65568#1#f1` (generation 1, applied 12, term 2), not the live `#3#f1`, so site 1's row is wrong throughout: the lead settled that `#1#f1` is the dropped first-generation name. Read through f0 and f2, the leaders were:
+
+| Time (Z) | Term | Leader | Cause, as the logs show it |
+| --- | --- | --- | --- |
+| to 01:21:09 | 2 | f0 (site 0) | — |
+| 01:21:09 | 3 | `#3#f1` (site 1) | **suspect withhold**: the sites logged `/suspect` 115 / 115 (b, c) in 01:20 and 804 / 406 / 992 in 01:21, against 0 to 1 a minute before. |
+| about 01:21:30 | 4 | not caught (15 s watch) | the same `/suspect` burst. |
+| 01:21:41 | 5 | `#3#f1` | the same burst, with 195 / 3 / 168 `/suspect` in 01:22, then none to 01:26. |
+| 01:26:10 | 6 | f0 | after the load window ended at 01:25:54. |
+| 01:26:25 | 7 | f2 (site 2) | during the tail. Commits stalled at 3076 from 01:26:41 to 01:28:33. Sites a and b each logged 100 or more "Subrequest depth limit exceeded" from 01:26:21 to 01:26:25. |
+| 01:31:31 | 8 | f0 | after the load; it held to the end. |
+
+The edge's clients came from DFW and LAX (108,258 and 90,236 requests in the first 10 minutes, about 1,100 from ORD), so a `suspect` from both colos within 10 s meets SUSPECT's two-colo rule. The product build serves no `/elections` or `/trace`, so StepDown cannot be told from a lapse in these logs. The `/suspect` burst at 01:20 to 01:22 is the only cause the logs show for terms 3 to 5, and terms 6 to 8 fall after the window. The `ActionsTrigger` moved from site a to site b at 01:21:55 to 01:22 (site a logged its last full round at 01:22, site b its first at 01:22:07), with 72 `demand` errors naming `#3#f1` "not leader" or "no answer" on the way.
+
+### The `mergeable` answers
+
+The 54,064 `UNKNOWN` against 3,110 `MERGEABLE` come from how GETs reach the shard. A single-PR GraphQL poll by the App asks the shard for a merge (`/demand?cause=get`) after the reply, which never waits. The shard coalesces GETs per PR for GET_COALESCE_MS (30 s) and runs one only on a positive balance that leaves half a second's budget for pushes and dispatch (`MergeBudget::decide`). Of 29,983 GET asks, 3,691 computed. Each PR's head moved every 120 s and the base 80 times in the window (p50 5.1 s apart), and `mergeable` reads only a merge at the current head and base (`prsync::mergeable`). So a computed merge went stale within about one base move. These figures bound the three kinds, but per-poll data does not exist to classify each answer:
+
+- **Never asked:** of the 26,292 GET asks that did not compute, at least 24,920 fell inside a PR's 30 s coalescing slot and were refused without a compute (the rest are at most the 1,372 `late` sheds). No merge was refused by the budget itself: `shed` equals `late`.
+- **A compute in flight or shed late:** 1,372 merges shed `late` (TURN_WAIT_MS, 10 s). Waits ran to 13.4 s, with 371 in line at most.
+- **Computed but stale:** 3,691 GET computes and 5,294 merges in all. Of the admitted merges' waits, 2,201 were 5 to 10 s and 1,978 were 10 to 20 s (`waitHist`), while the base moved every 5 s or so, so most were stale before a poll could read them.
+
+A poller that read `MERGEABLE` read it within the line's window: 3,110 polls did, so yes, some 5 s pollers saw it. But the row cannot say how many distinct PRs or how soon after a push, because `a1.mjs` records answer counts, not per-poll rows. GHES also answers `null` (GraphQL `UNKNOWN`) until it computes a merge, so `UNKNOWN` is the documented shape, not an error.
+
+### j4 during the site day (asked by the lead)
+
+- **First and last 503:** 00:57:57.585Z (`GET /api/graftyard/v1/repos/m3org/j4/actions/runs`) and 01:05:41.840Z, 31 in all on graft-m4a-edge. Before that, j4 and its hooks answered 200 at 00:57:39 to 00:57:41Z. j4 was leaderless with reads for 7 min 44 s. f0 resumed at 01:08:19Z, and reads after that were 404s, the normal answer.
+- **`suspect` and `forgot`:** in 00:56 to 01:09Z the sites stepped one `/suspect` each on a and c, both at 01:01:10Z, and none on b. A `suspect` is sent only when a shed answer names a `forgot` leader (`crates/lookup/src/lib.rs`, `forgot_of`), so `forgot` answers fired at about 01:01:10Z. No site logged a `keep led` probe or campaign. The member reads were 201 / 61 / 69 `/read`s on sites a / b / c, all `ok`.
+- **Why f1 sat at 5248:** j4's config at index 5251 is `Degraded` with `lost` = site 1. `quorum::voters` leaves the lost site out (`crates/raft/src/quorum.rs`), and the leader replicates only to `targets()`, its voters and learners (`crates/raft/src/member/leader.rs`). So no leader sends `#2#f1` entries past the config that dropped it, and it stays at its last applied index, 5248 (last 5250, its own `configIndex` 7). It is the same shape as 65568's `#1#f1` at applied 12.
+
+### Close-out and cost
+
+The b035 and b035lead services were stopped. The sweep found no shard container running. 65568 was purged through the route: `DELETE` 204, the first pass 503 (a lost reply from `#1#f1`), then 200 retiring 11 members and deleting 877 objects, then the second pass 200 with 0 objects (`purge35.jsonl`). `b035watch` and the two site-day build services were stopped at 02:20Z.
+
+Cost by `tests/fanout/acctcost.py`, from the site day's start at 00:52:22Z to 02:40Z: graft-m4a **$4.39**, and the runner account $0.00. The idle reading from 02:00Z to 02:40Z was graft-m4a $0.02. The account's UTC day was $9.77 at 02:40Z. The grant's $12 stop has $7.61 left.
+
+### Next: the dispatch tail
+
+The tail is the round, not the group. An entry waits for the round in flight to finish its slowest event, then for its own demand loop. The proposed fix is code-only, in `ActionsTrigger` and the shard's merge turn:
+
+1. **Stream events instead of rounds.** Each scan reads the newly applied entries and starts their events at once, with no wait for the events already running. A bound on events in flight protects the isolate. The cursor still settles below the oldest unfinished event, as carried items do now (`trigger::settle`), so a new leader still rescans what was not done. This removes stage 2 (p50 26.2 s, p99 96.9 s).
+2. **Dispatch merges go first in the turn.** The merge turn is one line shared by head pushes, dispatch, and GETs, and up to 371 merges waited in it. `MergeCause` already says dispatch is served before GETs, but the turn does not order by cause. A dispatch merge that takes the next turn waits one merge (tens of ms) instead of 5 to 20 s, which shortens each ask in stage 3 (1 ask p50 18.1 s, 2 asks 33.3 s).
+3. **Time each part of an event in its log line:** the demand, the workflow reads, and `CreateRun`. Events with no ask still took 10.2 s (p50), and this row cannot split that time.
+
+With 1 and 2, the expected entry-to-run is the 0-ask in-round time, p50 about 10 s and p99 about 15 s on this row's load. That is inside the fail line, but it is not shown to meet 11 s until 3 attributes those 10 s. B0-35 is not rerun until this change, or LM-1's leader-tail work, lands.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
