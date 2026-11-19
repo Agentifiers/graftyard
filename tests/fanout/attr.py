@@ -60,8 +60,10 @@ for obj, _ in objs.most_common(2):
         v = [r for r in reqs if r['obj'] == obj and r['path'] == '/validate' and r['wall'] is not None and phase(r['t']) == ph]
         c = collections.Counter(r['st'] for r in v)
         print(f'  validate {ph}: n {len(v)}, p50 {pct([r["wall"] for r in v], .5)}, p99 {pct([r["wall"] for r in v], .99)} ms, {dict(c)}')
-    stock = [(l['arrived'] + l['caught_up_ms'], l['arrived'] + l['headers_ms']) for l in misses
-             if l['site'] == site and l['answer'].startswith('stock') and l['caught_up_ms'] is not None and l['headers_ms']]
+    # A stock reader holds the lock shared from its catch-up until its client goes, which for the probe is just after
+    # its first byte; the container sends the headers at once, so `headers_ms` undercounts it (b034-mt.md, "The flip").
+    stock = [(l['arrived'] + l['caught_up_ms'], l['arrived'] + l['first_ms']) for l in misses
+             if l['site'] == site and l['answer'].startswith('stock') and l['caught_up_ms'] is not None and l['first_ms']]
     stalls = [c for c in cus[obj] if c['waited'] > 10_000 or c['lock'] > 10_000]
     for c in stalls:
         v = [r['wall'] for r in reqs if r['obj'] == obj and r['path'] == '/validate' and r['wall'] and c['start'] <= r['t'] < c['end']]

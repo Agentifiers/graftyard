@@ -343,14 +343,22 @@ mod tests {
         assert!(Repo::reads().contains(&REPO_FORMAT_FANOUT));
     }
 
-    /// G26: the same read answers the `settings` row's default branch, which the shard points HEAD at, and null before
-    /// the first `Settings` entry, when the container keeps its own rule.
+    /// G26: the same read answers the `settings` row's default branch, which the shard points HEAD at, and before the
+    /// first `Settings` entry `refs/heads/main`, as every other read of the repository takes it. With no row the
+    /// container's own rule (`main` if it exists, else the page's first ref) put HEAD on a row push's branch in B0-34
+    /// mt3 (`tests/am1/results/b034-mt.md`). The edge's ls-refs read (`lsRefs`) names the same HEAD both times.
     #[test]
     fn the_ranges_read_answers_the_default_branch() {
         use graftyard_git::issues::{MergeMethod, RepoSettings, Visibility};
         let mut fold = RepoFold::new(RepoId(DbId(9)), AccountId(DbId(1)));
         let q = json!({ "ranges": true });
-        assert_eq!(Repo::read_json(&fold, &q)["default_branch"], serde_json::Value::Null);
+        let ls = json!({ "lsRefs": { "reads": [], "head": true } });
+        let ls_head = |fold: &RepoFold| -> Vec<u8> {
+            let r: graftyard_git::ls_refs::LsRefsRead = serde_json::from_value(Repo::read_json(fold, &ls)).unwrap();
+            r.head.expect("HEAD is named").target
+        };
+        assert_eq!(Repo::read_json(&fold, &q)["default_branch"], "refs/heads/main");
+        assert_eq!(ls_head(&fold), b"refs/heads/main");
         let settings = RepoSettings {
             owner: AccountId(DbId(1)),
             enterprise: None,
@@ -381,6 +389,7 @@ mod tests {
             body: EntryBody::Events(vec![RepoEvent::Settings(settings)]),
         });
         assert_eq!(Repo::read_json(&fold, &q)["default_branch"], "refs/heads/v1.x");
+        assert_eq!(ls_head(&fold), b"refs/heads/v1.x");
     }
 
     /// A push's one repository read (`{"access": true, "agent": true}`) answers the access rows and the agent rows,

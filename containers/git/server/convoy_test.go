@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -226,6 +227,71 @@ func TestCancelledCloneReleasesTheLock(t *testing.T) {
 		t.Fatal("the network's lock is still held after upload-pack's write failed")
 	}
 	lock("7").Unlock()
+}
+
+// A clone whose caller stops reading but keeps its connection open releases the network's lock. The write to it blocks
+// rather than fails, so before the write deadline upload-pack never ended and its shared lock held every later
+// /ingest: on B0-34 mt3 a stock pack-objects each on sites b and c sat 15 minutes at frozen CPU, no catch-up stored
+// again on those objects, and every upload-pack there answered 503 `warming` (`tests/am1/results/b034-mt.md`).
+func TestStalledCloneReleasesTheLock(t *testing.T) {
+	old := clientWriteTimeout
+	clientWriteTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { clientWriteTimeout = old })
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	// Incompressible and well past the sockets' buffers, so the write blocks once the caller stops reading.
+	big := make([]byte, 32<<20)
+	r := uint32(1)
+	for i := range big {
+		r ^= r << 13
+		r ^= r >> 17
+		r ^= r << 5
+		big[i] = byte(r)
+	}
+	base := commit(t, wt, map[string]string{"big.bin": string(big)})
+	run(t, wt, "", "push", "-q", repo("7"), "main")
+	putRefs(t, s.URL, base)
+
+	pkt := func(l string) string { return fmt.Sprintf("%04x%s", len(l)+4, l) }
+	body := pkt("command=fetch\n") + "0001" + pkt("no-progress\n") + pkt("want "+base+"\n") + pkt("deepen 1\n") +
+		pkt("done\n") + "0000"
+	c, err := net.Dial("tcp", strings.TrimPrefix(s.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "POST /upload-pack?net=7 HTTP/1.1\r\nHost: x\r\nGit-Protocol: version=2\r\nContent-Length: %d\r\n\r\n%s",
+		len(body), body)
+	// One read of the answer's start, then no more: the connection stays open, as a caller that stalled.
+	if _, err := c.Read(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetReadBuffer(4096)
+	}
+
+	run(t, wt, "", "checkout", "-q", "-B", "one", base)
+	t1 := commit(t, wt, map[string]string{"one": "1\n"})
+	p1 := packOfWt(t, wt, t1, base)
+	sum := sha256.Sum256(p1)
+	done := make(chan string, 1)
+	go func() {
+		if code, body := postBody(t, s.URL+"/ingest?net=7&sha256="+hex.EncodeToString(sum[:]), p1); code != 200 {
+			done <- fmt.Sprintf("ingest: %d %s", code, body)
+			return
+		}
+		done <- ""
+	}()
+	select {
+	case e := <-done:
+		if e != "" {
+			t.Fatal(e)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("an /ingest behind a stalled clone did not finish in 20 s: the clone still holds the network's lock")
+	}
 }
 
 // failAfter is a ResponseWriter that takes `left` writes, then fails every one, as a gone client's connection does.

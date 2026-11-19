@@ -51,8 +51,8 @@ pub struct Head {
     pub oid: Option<ObjectId>,
 }
 
-/// A member's answer to `LsRefs::query`, all from one fold: HEAD's branch and tip when asked and the `settings` row
-/// exists, and one page per read, in the query's order.
+/// A member's answer to `LsRefs::query`, all from one fold: HEAD's branch (`crate::tiers::default_branch`) and tip when
+/// asked, and one page per read, in the query's order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LsRefsRead {
     pub head: Option<HeadRead>,
@@ -76,12 +76,8 @@ pub fn read(fold: &RepoFold, q: &serde_json::Value) -> serde_json::Value {
     };
     let Some((reads, head)) = parse() else { return serde_json::Value::Null };
     let head = head
-        .then(|| crate::tiers::get_rec::<crate::issues::RepoSettings>(&*fold.core, "settings", &[]))
-        .flatten()
-        .map(|s| HeadRead {
-            oid: fold.get(&s.default_branch).map(|o| o.hex()),
-            target: s.default_branch.as_bytes().to_vec(),
-        });
+        .then(|| crate::tiers::default_branch(&*fold.core))
+        .map(|b| HeadRead { oid: fold.get(&b).map(|o| o.hex()), target: b.as_bytes().to_vec() });
     let pages = reads.iter().map(|p| crate::group::refs_page(fold, p, None, REFS_PAGE_MAX)).collect();
     serde_json::to_value(LsRefsRead { head, pages }).unwrap_or(serde_json::Value::Null)
 }

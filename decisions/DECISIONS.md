@@ -5089,6 +5089,24 @@ cached voter does today).
 
 **Flip.** A GHES 3.22 recording whose HEAD, for a repository whose default branch is not `main`, names anything but the default branch; or a hosted run where the shard's v0 or v2 HEAD differs from the edge's for the same repository.
 
+**Amended 2026-11-19 (`b034-next`): a repository with no `Settings` row reads `refs/heads/main`.** B0-34 mt3's monorepo had no row (`b034setup.mjs`'s test-faults owner path), so `ranges` answered null, the shard sent no `head=`, and the container's main-or-first rule put HEAD on a row push's branch after each rehydrate: 15 over-the-cap misses, as in m1b34 (`tests/am1/results/b034-mt.md`). A product path leaves a live repository with no row too: a create on an edge with 32.13 enabled but not 0x12.11 and 32.17 (pre-F59) whose edge dies after `RepoOwner` has no finisher, and any create is rowless until its `InitRepo` or `Audit`'s `Lifecycle::Init` commits. Every other read already takes such a repository as `main` (`graftyard_git::transfer`, `graftyard_api::repos::defaults`). So the default lives in one place, `graftyard_git::tiers::default_branch`, which the member's `ranges` read (the shard's HEAD) and its `lsRefs` read (the edge's HEAD) both call; the edge's ls-refs now answers a rowless repository too instead of sending it to the shard. Fixing only the harness would have left the shard and the edge disagreeing on such a repository. Evidence: `the_ranges_read_answers_the_default_branch` asserts `refs/heads/main` from both reads before the first `Settings` (fails on main: `Null`); `tests/b034next/plant.py` mutants 0 to 3.
+
+### Writes to an upload-pack's caller have a deadline, 2026-11-19
+
+**Status.** Built on branch `b034-next` from main `81ab3b9c`. Git image; ships on a site day.
+
+**Decision.** Each write and flush of an upload-pack answer to its caller (`flushOnWrite`, `containers/git/server/compose.go`) must complete within `clientWriteTimeout`, 30 s [guess], through `http.ResponseController.SetWriteDeadline`. A write past it fails: a stock answer's copy stops, kills `upload-pack`, and releases the network's shared lock; a spooled one goes on to its file alone (`tee`), with the lock already released.
+
+**Why.** B0-34 mt3: from about 20:36Z one stock `pack-objects` on each of sites b and c held the monorepo's lock for 15 minutes at frozen CPU (39.28 s and 30.42 s, every `shardprocs` sample to the 20:51 sweep). Its caller had stopped reading but kept the connection open, so the write blocked rather than failed and `TestCancelledCloneReleasesTheLock`'s path never ran. No catch-up stored again on those objects (c's last at 672.9 s, b's at 596 s), and every later upload-pack there answered 503 `warming` within its deadline: 64 on c and 67 on b after 600 s. That, not a missing chain, was "site c had no compose chain": bucket c holds no `compose/` files by design, since c is not one of the network's warm sites, and c composed 30 misses before 600 s from a's and b's chains [measured, `tests/am1/results/b034-mt.md`, Workers Logs `raw/shardev-mt3.jsonl.xz`].
+
+**What it beat.**
+- **Aborting the object's fetch to the container when the edge's request goes.** The object's side is the reader that stopped; aborting it needs a signal threaded through `ShardHost::call` and covers only callers the runtime cancels. The deadline covers every caller in one place.
+- **A deadline on the whole answer.** A 5 GB clone over a slow link is legitimate; a write that makes no progress for 30 s is not.
+
+**Evidence.** `TestStalledCloneReleasesTheLock` (`containers/git/server/convoy_test.go`): a raw TCP caller reads 64 bytes of a 32 MB answer and stops, holding the connection; an `/ingest` must then finish. It fails on main after 20 s. `tests/b034next/plant.py` mutant 4.
+
+**Flip.** A hosted row where a stock `pack-objects` stays in `shardprocs` with constant CPU for over a minute; or legitimate clones failing with write timeouts (a reading caller slower than 64 KiB in 30 s).
+
 ### `b034-tails`: one deadline per upload-pack, a stock cap, and over-the-cap misses composed after the step, 2026-11-18
 
 **Status.** Built, trimmed, on branch `b034-tails` from main `0d64813b`. The orchestrator (T-01a17bda) approved decisions 1, 2, 3 and 5 and held 4; this entry follows the m1b34 attribution (`tests/am1/results/b034-attr.md`). Not yet measured hosted.
