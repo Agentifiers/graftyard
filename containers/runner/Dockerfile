@@ -1,8 +1,10 @@
 # The hosted runner image (design/SHARED.md, "Actions", Hosted runners; build/BUILD-PLAN.md, M4-WP4): the Sandbox SDK's
 # base image, whose `/container-server/sandbox` serves the SDK's calls, plus an unmodified `actions/runner` at the
 # version the install pins (tests/m4/wp3/runner-protocol.md), checked against the release's published SHA-256.
-# `graft-runners` starts `run.sh --jitconfig` in it, one job per Sandbox (workers/runners/src/worker.rs). Built and pushed
-# by wrangler from workers/runners/deploy.mjs's config. Not built yet: the first hosted run builds it.
+# `graft-runners` starts `run.sh --jitconfig` in it, one job per container (workers/runners/src/worker.rs): on the legacy
+# Sandbox classes through the base image's server, and on `RunnerBox` (workers/runners/box.mjs) as the container's main
+# process, whose entrypoint override bypasses that server [unverified until release M1's check]. Built and pushed by
+# wrangler from workers/runners/deploy.mjs's config.
 ARG SANDBOX_VERSION=0.12.14
 FROM docker.io/cloudflare/sandbox:${SANDBOX_VERSION}
 
