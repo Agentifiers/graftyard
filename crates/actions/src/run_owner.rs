@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_git::issues::{CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CheckSuiteUpdate};
 use graftyard_git::refs::{ObjectId, RefName};
-use graftyard_git::run_checks::{ACTIONS_APP, RunChecksCmd};
+use graftyard_git::run_checks::{ACTIONS_APP, RunChecksCmd, RunChecksOut};
 use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
 use graftyard_identity::{Jti, TokensCmd, TokensOp};
 use graftyard_types::{ChainId, CredentialShard, DbId, Index, RepoId, Timestamp};
@@ -189,6 +189,31 @@ pub fn round(
         }
     }
     Round { checks: out, denies, then }
+}
+
+/// What a repository's answer to one of a round's `RunChecksCmd`s means for the round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChecksAnswer {
+    Applied,
+    /// The repository takes no more checks: the round is built again with it in `gone`, which cancels its runs.
+    Gone,
+    /// The round runs again, and the cursor stays.
+    Retry,
+}
+
+/// `out` is the leader's outcome, `None` when the commit failed: no group answered, no leader, or a refusal. `gone`
+/// is asked only then: whether the owner the repository's `RepoOwner` row names holds it under no name
+/// (`graftyard_identity::AuthzFold::holds`). A deleted repository's group answers `Gone` from its tombstone; a purged
+/// one has no group, and its owner's `Authz` is the proof instead (`decisions/DECISIONS.md`, "`repo-gone`"). Without
+/// that proof a failure retries, so a repository that is only down holds the cursor and loses no check.
+pub fn checks_answer(out: Option<RunChecksOut>, gone: bool) -> ChecksAnswer {
+    match out {
+        Some(RunChecksOut::Applied(_)) => ChecksAnswer::Applied,
+        Some(RunChecksOut::Gone) => ChecksAnswer::Gone,
+        Some(RunChecksOut::Unavailable) => ChecksAnswer::Retry,
+        None if gone => ChecksAnswer::Gone,
+        None => ChecksAnswer::Retry,
+    }
 }
 
 /// A row's version follows its state, so a replay never moves it back: 1 queued, 2 in progress, 3 completed.

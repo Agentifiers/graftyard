@@ -24,6 +24,7 @@
 use std::rc::Rc;
 
 use graftyard_actions::broker::{Pick, Taken};
+use graftyard_actions::run_owner::ChecksAnswer;
 use graftyard_actions::runsvc::{self, Grant, RunnerAt, ServiceKey, Urls};
 use graftyard_actions::shard::{
     ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold, ActionsOp, ActionsOut,
@@ -381,15 +382,23 @@ async fn owner_round(
     for (repo, cmd) in &r.checks {
         let body =
             serde_json::to_value(graftyard_git::repo::RepoCmd::RunChecks(cmd.clone())).map_err(|e| e.to_string())?;
-        let done = graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &record, cmd.request, body).await?;
-        let out = &done["ok"]["out"]["RunChecks"];
-        if out == "Gone" {
-            gone.insert(*repo);
-            return Ok(false);
-        }
-        if out.get("Applied").is_none() {
+        let (out, why) = match graftyard_lookup::commit_as(&b, ChainId::Repo(*repo), &record, cmd.request, body).await {
+            Ok(done) => (serde_json::from_value(done["ok"]["out"]["RunChecks"].clone()).ok(), done.to_string()),
+            Err(e) => (None, e),
+        };
+        // A purged repository has no group to answer `Gone`: its owner's `Authz` is the proof (`repo-gone`).
+        let proven = out.is_none() && crate::member::repo_gone(&h.env, *repo).await == Ok(true);
+        match graftyard_actions::run_owner::checks_answer(out, proven) {
+            ChecksAnswer::Applied => {}
+            ChecksAnswer::Gone => {
+                if proven {
+                    worker::console_log!("{chain} RunOwner: repo:{} is gone ({why}); its runs are cancelled", repo.0.0);
+                }
+                gone.insert(*repo);
+                return Ok(false);
+            }
             // `Unavailable` (the metadata tier loading), a refusal, or no outcome: the round runs again.
-            return Err(format!("{chain} RunChecks on repo:{}: {done}", repo.0.0));
+            ChecksAnswer::Retry => return Err(format!("{chain} RunChecks on repo:{}: {why}", repo.0.0)),
         }
     }
     Ok(true)

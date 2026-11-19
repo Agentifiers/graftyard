@@ -23,7 +23,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::Group;
-use graftyard_actions::run_owner::{round, steps, touched};
+use graftyard_actions::run_owner::{ChecksAnswer, checks_answer, round, steps, touched};
 use graftyard_actions::shard::{
     ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold,
     ActionsOp, ActionsOut, JobSpec, RunnerRecord, RunnerScope, WorkflowRun,
@@ -36,7 +36,7 @@ use graftyard_git::issues::{
 use graftyard_git::merge::required_on;
 use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoCmd, RepoEvent, RepoFold, RepoOut};
-use graftyard_git::run_checks::{REPO_FORMAT_ACTIONS, RunChecksOut};
+use graftyard_git::run_checks::REPO_FORMAT_ACTIONS;
 use graftyard_identity::{Jti, TOKENS_FORMAT, TOKENS_FORMAT_V2, TokensCmd, TokensFold, TokensRead, jti_shard};
 use graftyard_raft::{CommitError, RequestId, Ulid};
 use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, Timestamp};
@@ -44,6 +44,8 @@ use smallvec::{SmallVec, smallvec};
 
 const OWNER: AccountId = AccountId(DbId(100));
 const REPO: RepoId = RepoId(DbId(7));
+/// A second repository on the same Actions shard, after `REPO` in the round's order (`repo-gone`).
+const REPO2: RepoId = RepoId(DbId(8));
 const STEP: u64 = 500;
 const MIN: u64 = 60_000;
 
@@ -89,6 +91,11 @@ struct World {
     now: Timestamp,
     shard: Group<ActionsCmd>,
     repo: Group<RepoCmd>,
+    repo2: Group<RepoCmd>,
+    /// Repositories whose members were purged: no group answers a commit to them.
+    purged: BTreeSet<RepoId>,
+    /// The owner's `Authz` names, which `RunOwner` reads when a repository's commit fails (`repo-gone`).
+    authz: graftyard_identity::AuthzFold,
     next: u128,
     runners: Vec<RunnerId>,
     /// Per job: the runner holding it, and when it finishes.
@@ -127,11 +134,20 @@ impl World {
             REPO_FORMAT_ACTIONS,
             graftyard_git::workflow_job::REPO_FORMAT_WORKFLOW_JOB,
         ];
-        let repo = Group::new(ChainId::Repo(REPO), reads, RepoFold::new(REPO, OWNER), now);
+        let repo = Group::new(ChainId::Repo(REPO), reads.clone(), RepoFold::new(REPO, OWNER), now);
+        let repo2 = Group::new(ChainId::Repo(REPO2), reads, RepoFold::new(REPO2, OWNER), now);
+        let mut authz = graftyard_identity::AuthzFold::new(OWNER);
+        for (n, r) in [("a", REPO), ("b", REPO2)] {
+            let entry = graftyard_identity::RepoEntry::Live { repo: r, epoch: Default::default() };
+            authz.names.insert(graftyard_identity::RepoName::parse(n).unwrap().key(), entry);
+        }
         let mut w = World {
             now,
             shard,
             repo,
+            repo2,
+            purged: BTreeSet::new(),
+            authz,
             next: 1,
             runners: Vec::new(),
             running: BTreeMap::new(),
@@ -155,7 +171,8 @@ impl World {
         self.next << 32
     }
 
-    /// Settings, `main`, a rule on `main` requiring every job's check, and two open pull requests.
+    /// Settings, `main`, a rule on `main` requiring every job's check, and two open pull requests; `REPO2` gets the
+    /// settings alone.
     fn seed_repo(&mut self) {
         let settings = RepoSettings {
             owner: OWNER,
@@ -203,7 +220,10 @@ impl World {
             pack: None,
         };
         let (now, id) = (self.now, self.rid());
+        let other = RepoSettings { ..settings.clone() };
         self.repo.record(now, id, REPO_FORMAT_V1, vec![RepoEvent::Settings(settings), refs, RepoEvent::Rule(rule)]);
+        let id = self.rid();
+        self.repo2.record(now, id, REPO_FORMAT_V1, vec![RepoEvent::Settings(other)]);
         for (n, branch, head) in [(1, "refs/heads/a", oid(11)), (2, "refs/heads/b", oid(12))] {
             let issue = IssueCapture {
                 id: DbId((1 << 40) + n),
@@ -261,14 +281,18 @@ impl World {
 
     /// `ActionsTrigger`'s commit point for a run on `head`, from the repository entry `index`.
     fn create_run(&mut self, head: ObjectId, branch: &str, index: u64, jobs: Vec<JobSpec>) -> RunId {
+        self.create_run_in(REPO, head, branch, index, jobs)
+    }
+
+    fn create_run_in(&mut self, repo: RepoId, head: ObjectId, branch: &str, index: u64, jobs: Vec<JobSpec>) -> RunId {
         let run = WorkflowRun {
             id: RunId(DbId(0)),
-            repo: REPO,
+            repo,
             workflow: ".github/workflows/ci.yml".into(),
             event: "pull_request".into(),
             head_sha: head.0,
             head_ref: branch.into(),
-            trigger: (ChainId::Repo(REPO), Index(index)),
+            trigger: (ChainId::Repo(repo), Index(index)),
             attempt: 1,
             concurrency: None,
             fork: false,
@@ -380,18 +404,25 @@ impl World {
         self.rounds += 1;
         for (repo, cmd) in r.checks {
             let id = cmd.request.0.0;
-            match self.repo.commit(self.now, id, RepoCmd::RunChecks(cmd)) {
+            let g = if repo == REPO2 { &mut self.repo2 } else { &mut self.repo };
+            // No leader, a lost ticket, a refusal, or a purged repository's missing group: no outcome.
+            let commit = (!self.purged.contains(&repo)).then(|| g.commit(self.now, id, RepoCmd::RunChecks(cmd)));
+            let out = match commit.flatten() {
                 Some(Ok(a)) => match a.out {
-                    RepoOut::RunChecks(RunChecksOut::Applied(_)) => {}
-                    // The round is rebuilt with the repository gone, so its shard half cancels the run.
-                    RepoOut::RunChecks(RunChecksOut::Gone) => {
-                        self.gone.insert(repo);
-                        return;
-                    }
-                    _ => return,
+                    RepoOut::RunChecks(o) => Some(o),
+                    _ => None,
                 },
-                // No leader, a lost ticket, or a refusal: the round runs again next step.
-                _ => return,
+                _ => None,
+            };
+            let gone = out.is_none() && !self.authz.holds(repo);
+            match checks_answer(out, gone) {
+                ChecksAnswer::Applied => {}
+                // The round is rebuilt with the repository gone, so its shard half cancels the run.
+                ChecksAnswer::Gone => {
+                    self.gone.insert(repo);
+                    return;
+                }
+                ChecksAnswer::Retry => return,
             }
         }
         for cmd in r.denies {
@@ -444,6 +475,7 @@ impl World {
         let now = self.now;
         self.shard.tick(now);
         self.repo.tick(now);
+        self.repo2.tick(now);
         self.runners_step();
         self.alarm();
         self.owner_step();
@@ -1126,4 +1158,87 @@ fn a_job_lease_moves_only_for_a_stall_of_extend_min() {
     let x = stall(&mut w, 3_000).expect("a 3 s stall stamps an extend");
     assert_eq!(x.by.as_millis(), 3_000, "{x:?}");
     assert_eq!(until(&w), granted + 3_000, "moved by the 3 s stall alone");
+}
+
+// ---- repo-gone ----
+
+/// `repo-gone`: one repository on a shard is purged, so no group answers its `RunChecksCmd`, and the next
+/// repository's job runs on the same shard. While the owner's `Authz` still holds the purged repository's name, its
+/// failure is an outage: the cursor stays and its run is not cancelled. Once the name is `Deleted`, `RunOwner`
+/// cancels its run, moves past it, and the next repository's `workflow_job` steps reach the App. On main, the round
+/// retried the purged repository forever and held every later repository's checks and steps behind it (graft-m4a,
+/// `actions:7100001.0`, 2026-11-19, 01:56Z to 11:40Z and on).
+#[test]
+fn a_purged_repository_does_not_hold_the_next_repositorys_workflow_jobs() {
+    use graftyard_git::sequencer::{app_targets, plan};
+    use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
+    use graftyard_identity::{
+        Access, AppId, InstallationId, InstallationRow, InstallationState, PermissionSet, RepoEntry, RepoName,
+        RepoScope,
+    };
+    let mut w = World::new();
+    w.app_hooks = true;
+    w.plans.insert("build".into(), Plan { ms: 20_000, ends: Conclusion::Success });
+    w.plans.insert("lint".into(), Plan { ms: 10_000, ends: Conclusion::Success });
+    w.register(2);
+    // `REPO`'s run is in progress when its members are purged.
+    let old = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("build", &[]), spec("test", &[0])]);
+    w.run_for(3_000);
+    w.purged.insert(REPO);
+    // Its build finishes after the purge: a round now owes the purged repository that conclusion.
+    w.run_for(30_000);
+    let stuck = w.fold().owner_cursor;
+    let next = w.create_run_in(REPO2, oid(21), "refs/heads/main", 2, vec![spec("lint", &[])]);
+    w.run_for(2 * MIN);
+    let f = w.fold();
+    assert!(!w.gone.contains(&REPO), "a repository its owner still names is down, not gone");
+    assert!(f.run_jobs(old).iter().all(|j| j.state.completed() != Some(Conclusion::Cancelled)));
+    assert_eq!(f.owner_cursor, stuck, "the cursor holds below the purged repository's unsent conclusion");
+    let lint_steps = |w: &World| {
+        w.repo2
+            .committed_after(Index(0))
+            .into_iter()
+            .flat_map(|(_, e)| e)
+            .any(|e| matches!(e, RepoEvent::WorkflowJob(_)))
+    };
+    assert!(!lint_steps(&w), "held behind the purged repository while its owner still names it");
+
+    // The delete's commit point: the owner's name for `REPO` is `Deleted`.
+    let key = RepoName::parse("a").unwrap().key();
+    w.authz.names.insert(key, RepoEntry::Deleted { repo: REPO, retain_until: Timestamp(w.now.0 + 86_400_000) });
+    w.run_for(MIN);
+    let f = w.fold();
+    assert!(w.gone.contains(&REPO));
+    assert!(f.run_jobs(old).iter().all(|j| j.state.completed().is_some()), "{:?}", f.run_jobs(old));
+    assert!(f.run_jobs(old).iter().any(|j| j.state.completed() == Some(Conclusion::Cancelled)));
+    assert_eq!(f.run(next).unwrap().status, RunStatus::Completed(Conclusion::Success));
+    // Only `RunOwner`'s own entries are left past the cursor, which start no round.
+    let left = w.shard.committed_after(f.owner_cursor);
+    assert!(left.iter().flat_map(|(_, e)| e).all(|e| matches!(e, ActionsEvent::OwnerCursor { .. })), "{left:?}");
+
+    // The next repository's steps reach an App installed on the owner.
+    let reads = PermissionSet(
+        [("actions", Access::Read), ("metadata", Access::Read)].iter().map(|(k, a)| (Box::from(*k), *a)).collect(),
+    );
+    let row = InstallationRow { app: AppId(DbId(51)), repos: RepoScope::All, permissions: reads };
+    let installations = [(InstallationId(DbId(901)), InstallationState { row: Some(row), not_before: Timestamp(0) })]
+        .into_iter()
+        .collect();
+    let records = [app(51, &["workflow_job"])];
+    let targets = app_targets(&installations, REPO2, |a| records.iter().find(|r| r.id == a));
+    let l = w.repo2.leader().unwrap();
+    let core = &w.repo2.fold().core;
+    let render = |wh: &graftyard_git::hooks::Webhook, _: Option<InstallationId>| match &wh.subject {
+        graftyard_git::hooks::Subject::WorkflowJob(u) => serde_json::to_vec(u).ok(),
+        _ => None,
+    };
+    let mut got = Vec::new();
+    for e in w.repo2.m(l).log() {
+        for r in plan(core, REPO2, 1, e, &targets, render) {
+            let u: WorkflowJobUpdate = serde_json::from_slice(&r.body).unwrap();
+            got.push((u.run, u.action));
+        }
+    }
+    use JobAction::{Completed, InProgress, Queued};
+    assert_eq!(got, [(next.0, Queued), (next.0, InProgress), (next.0, Completed)]);
 }

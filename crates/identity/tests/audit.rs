@@ -640,6 +640,8 @@ fn audit_alone_finishes_a_transfer_whose_finisher_died_after_reserved() {
         // 404 in that window before `id_name`), and under the destination's `Live` name after.
         assert_eq!(fa.id_name(repo), Some(&name.key()));
         assert_eq!(fb.id_name(repo), Some(&name.key()));
+        // `repo-gone`: neither owner's `Alias` nor `Live` reads as gone.
+        assert!(fa.holds(repo) && fb.holds(repo));
         let ro: NamesFold = w.names(ChainId::Names(name_shard(&NameKey::Repo(repo)))).fresh_leader();
         assert_eq!(ro.repo_owner(repo), Some(beta));
         assert!(fb.audit_cursor() > Index(0), "the cursor moved past the reservation");
@@ -1081,6 +1083,8 @@ fn audit_tombstones_a_delete_killed_after_its_name() {
     assert_eq!(repo.read.life, RepoLife::Deleted);
     let authz: AuthzFold = w.authz(owner).fresh_leader();
     assert_eq!(authz.name(&name.key()), Some(RepoEntry::Deleted { repo: repo_id, retain_until }));
+    // `repo-gone`: a deleted name is no hold, so a cursor consumer may end the repository's work.
+    assert!(!authz.holds(repo_id));
     assert_quiescent(&mut w, owner, repo_id, &mut repo);
 }
 

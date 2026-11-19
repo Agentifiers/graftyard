@@ -569,7 +569,7 @@ async fn counts_round(h: &Rc<Host<Identity>>, account: AccountId, applied: Index
         }
         git::watch::counts_plan(account, &fold, applied, &es)
     };
-    for (repo, ups) in plan {
+    'repos: for (repo, ups) in plan {
         let owner = owner_of(&h.env, repo).await.map_err(Error::RustError)?;
         let record = record_of(&h.env, owner).await.map_err(Error::RustError)?;
         for (i, chunk) in ups.chunks(COUNTS_BATCH_MAX).enumerate() {
@@ -578,9 +578,15 @@ async fn counts_round(h: &Rc<Host<Identity>>, account: AccountId, applied: Index
             let site = SiteEnv::read(&h.env)?;
             let b = graftyard_lookup::Bindings { env: &h.env, sites: &site.sites };
             let cmd = serde_json::to_value(&cmd)?;
-            let done = graftyard_lookup::commit_as(&b, ChainId::Repo(repo), &record, request, cmd)
-                .await
-                .map_err(Error::RustError)?;
+            let done = match graftyard_lookup::commit_as(&b, ChainId::Repo(repo), &record, request, cmd).await {
+                Ok(d) => d,
+                // A purged repository has no counts to keep, and its failure must not hold the cursor (`repo-gone`).
+                Err(e) if crate::member::repo_gone(&h.env, repo).await == Ok(true) => {
+                    console_log!("counts {}: repo:{} is gone ({e}); its updates are dropped", account.0.0, repo.0.0);
+                    continue 'repos;
+                }
+                Err(e) => return Err(Error::RustError(e)),
+            };
             if done.get("ok").is_none() {
                 return Err(Error::RustError(format!("counts on {repo:?}: {done}")));
             }

@@ -259,9 +259,16 @@ impl Inbox {
                 From::After(i) => json!({ "after": i.0 }),
                 From::Since(t) => json!({ "since": t.0 }),
             };
-            let entries = crate::activity::replay_notices(&self.env, repo, account, body)
-                .await
-                .map_err(|e| Error::RustError(format!("replay {chain}: {e}")))?;
+            let entries = match crate::activity::replay_notices(&self.env, repo, account, body).await {
+                Ok(x) => x,
+                // A purged repository has no notices left to replay, and must not fail every later rebuild
+                // (`repo-gone`).
+                Err(e) if crate::member::repo_gone(&self.env, repo).await == Ok(true) => {
+                    replayed.push(json!({ "chain": chain.to_string(), "gone": e }));
+                    continue;
+                }
+                Err(e) => return Err(Error::RustError(format!("replay {chain}: {e}"))),
+            };
             let n = entries.len();
             for (index, ns) in entries {
                 ib.apply(chain, index, &ns);

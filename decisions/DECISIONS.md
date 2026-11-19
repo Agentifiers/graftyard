@@ -5768,3 +5768,35 @@ The six slow merges in the three traces are exactly the six held-and-stepped mer
 **Evidence.** `tests/m0/results/b029-tail.md`, section 2 (`tests/m0/cuttrace/freezesim.py`, `latejoin.py`, `bycut.py`).
 
 **Flip.** Revisit (b) if other fixes bring the measured B0-29 commit p99 to within about 100 ms of 660, so that (b) would close the gap. The gap is OPEN-QUESTIONS F98.
+
+### `repo-gone`: a cursor consumer ends its work on a purged repository instead of retrying it, 2026-11-19
+
+**Status.** Built code-only on branch `r24-purged-gone`, from main `66755ddd`, at the lead's request. Not deployed: it ships on the next graft-m4a site day, which the lead grants. Until then `graft-runners`' sweep starts hosted runners without `workflow_job` deliveries.
+
+**Decision.** When a consumer's write to a repository it does not own fails, it asks one more question before it retries: does the owner that the repository's `RepoOwner` row names still hold the repository under a name in its `Authz` fold (`AuthzFold::holds`: `Live`, `Alias`, or `Reserved`)? If not, the repository was deleted (maybe purged) or its create was aborted, and the work ends with a terminal outcome:
+- **`RunOwner`** (`workers/site/src/actions.rs`, `owner_round`; the pure rule is `graftyard_actions::run_owner::checks_answer`): the failed `RunChecksCmd` counts as `Gone`, the existing abort path, so the round is rebuilt with the repository in `gone`. That cancels its unfinished runs, sends it nothing more, and lets the cursor pass.
+- **`Counts`** (`workers/site/src/activity.rs`, `counts_round`): the repository's watcher updates are dropped and the round goes on to the cursor.
+- **`Inbox` rebuild** (`workers/site/src/inbox.rs`): the repository's replay is skipped and recorded as `gone` in the answer.
+
+The check is `crate::member::repo_gone`: one `RepoOwner` read and one `Authz` `dep` read, made only after a commit or read has already failed. No row, or a read that fails, is not proof, so the consumer retries as before. A repository that is only down (no leader, a site lost) is still held by its owner, so its consumer still waits and loses nothing.
+
+Every other consumer that writes to or reads another repository chain was checked and needs nothing:
+- `HookSequencer` and `ActionsTrigger` run on the repository's own leader, so a purged repository has no consumer.
+- `PrSync` and `MergeQueue` messages are acked on failure and re-sent from the repository's own cursor.
+- The fold audit and the search rebuild read the registry and skip retired chains.
+- The `Audit` finisher's repository steps already read `RepoLife::NoGroup`, which owes nothing for a delete.
+
+**Why.** On graft-m4a, `purge35.mjs` purged repository 65568 at 01:56Z on 2026-11-19 while `actions:7100001.0` still owed it check rows. From then on every `RunOwner` round failed on 65568 with `commit gave up: repo:65568: no group`, and the shard's cursor stayed at 9925. Every repository that hashes to shard 0 (65567, 65568, and 65569) stopped getting check runs, check suites, and `workflow_job` steps. On R23's runs 1712951 and 1712968 on 65569, no `workflow_job` reached `graft-runners`, and its 5-minute sweep started every runner [measured: Workers Logs, `actions:7100001.0 RunOwner through 9925: repo:65568: commit gave up: repo:65568: no group`, every ~42 s from 01:56:57Z through 10:57:55Z]. The repository's own group answered `Gone` only while it existed. The purge removed the group, and with it the only answer that ended the work.
+
+**What it beat.**
+- (a) Retry forever: that is main, and it stops a whole shard.
+- (b) Treat "no group" itself as gone: a group whose members all reset, or a site loss, also reads as no group for a while (R25 refused the same rule for the sweeper). It would cancel live runs and drop their checks.
+- (c) Purge cancels the repository's runs first: the purge route runs on the edge and would have to reach every Actions shard, and a run created after it would still stop the shard.
+- (d) Skip the failing repository for this round only, and move the cursor: it loses checks for a repository that is only down.
+
+**Evidence.** In memory: `a_purged_repository_does_not_hold_the_next_repositorys_workflow_jobs` (`crates/actions/tests/gates.rs`). Two repositories share one shard; the first is purged with a run in flight. While its owner still names it, the cursor holds and no run is cancelled. Once the name is `Deleted`, its run is cancelled, the second repository's run completes, and an App installed on the owner gets that run's `queued`, `in_progress`, and `completed` exactly once each. `holds` is checked on real `Authz` folds in `crates/identity/tests/audit.rs`, for the transfer's `Alias` and `Live` and for the delete's `Deleted`. Plants 129 to 132 (`tests/m4/wp4/plant.py`). Hosted: not run; the next site day's first `RunOwner` round on `actions:7100001.0` is the check, when its cursor passes 9925.
+
+**Flip.**
+- A delete that can be undone after its group is purged: then `Deleted` is no longer final, and the consumer must wait for the purge's own record instead.
+- A repository whose `RepoOwner` row can be missing while it lives: today `repo_gone` reads no row as not proven, which only retries.
+- A consumer added later that writes to another repository chain: it needs the same check, or this rule covers less than it says.

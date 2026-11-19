@@ -383,6 +383,18 @@ MUTANTS = [
     ('r23-prep: the upload is made before the image is prepared', CF,
      '        self.prepare_images(metadata)?;\n        let v = self.multipart("POST", &format!("/workers/scripts/{script}/versions"), metadata, modules)?;',
      '        let v = self.multipart("POST", &format!("/workers/scripts/{script}/versions"), metadata, modules)?;\n        self.prepare_images(metadata)?;', CLIALL),
+    # ---- repo-gone: a purged repository does not hold RunOwner's cursor ----
+    ('a failed RunChecks always retries (main)', O,
+     '        None if gone => ChecksAnswer::Gone,\n', '', G),
+    ('a failed RunChecks on a repository its owner still names is gone', O,
+     '        None => ChecksAnswer::Retry,\n    }', '        None => ChecksAnswer::Gone,\n    }', G),
+    ('a Deleted name still counts as held', AZ,
+     '            RepoEntry::Deleted { .. } => false,\n        })', '            RepoEntry::Deleted { .. } => true,\n        })',
+     G + ['-p', 'graftyard-identity', '--test', 'audit']),
+    ('an Alias does not count as held', AZ,
+     '            RepoEntry::Live { repo: r, .. }\n            | RepoEntry::Alias { repo: r, .. }\n',
+     '            RepoEntry::Alias { .. } => false,\n            RepoEntry::Live { repo: r, .. }\n',
+     ['-p', 'graftyard-identity', '--test', 'audit']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

@@ -637,6 +637,19 @@ impl AuthzFold {
         find(true).or_else(|| find(false))
     }
 
+    /// Whether this owner, the one the repository's `RepoOwner` row names, still holds it under a name: `Live`, the
+    /// `Alias` a transfer leaves before `RepoOwner` moves, or a `Reserved` name. A repository it holds under none was
+    /// deleted (`Deleted`, the delete's commit point) or its create was aborted, and every route already treats it as
+    /// gone, so a cursor consumer whose write to it failed ends that work instead of retrying it (`repo-gone`).
+    pub fn holds(&self, repo: RepoId) -> bool {
+        self.names.values().any(|e| match e {
+            RepoEntry::Live { repo: r, .. }
+            | RepoEntry::Alias { repo: r, .. }
+            | RepoEntry::Reserved { repo: r, .. } => *r == repo,
+            RepoEntry::Deleted { .. } => false,
+        })
+    }
+
     /// The `retain_until` of a name this owner holds `Deleted` for the repository (F59's delete finisher).
     pub fn deleted(&self, repo: RepoId) -> Option<Timestamp> {
         self.names.values().find_map(|e| match e {
