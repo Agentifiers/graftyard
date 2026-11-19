@@ -1,0 +1,14 @@
+2026-11-19T10:09:18.099Z repo:131371: 7 names, 7 were joined, all not joined
+2026-11-19T10:12:06.368Z purge: 131371 purged: a 8444 -> 0, b 7769 -> 0, c 6571 -> 0
+2026-11-19T10:12:06.369Z purge: 131371 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T10:12:06.369Z purge: {"dry": false, "purged": 1, "objects": 22784, "refused": [], "second": 0}
+retire exit 0
+repo:131371 ---
+none joined of 1
+joined exit 0
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+sweep exit 0
+2026-11-19T10:12:23Z
+RETIREDONE
