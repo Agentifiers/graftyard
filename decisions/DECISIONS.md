@@ -5575,7 +5575,7 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 
 ### `g11-warm`: a planned rehome warms the next leader site's git cache shard before it moves the leader, 2026-11-19
 
-**Status.** Built on branch `g11-warm` (merged as `1d815c92`) with the wait on `Transfer`, measured on m3fg11, and moved to the step that triggers the hand-off on branch `g11-home`, code-only, approved by the orchestrator. Not deployed: it needs a site day, and a hosted rehome judges it. Nothing in `crates/raft`.
+**Status.** Built on branch `g11-warm` (merged as `1d815c92`) with the wait on `Transfer`, measured on m3fg11, and moved to the step that triggers the hand-off on branch `g11-home` (merged as `f466a39e`). Measured on m3fg12 and accepted by the orchestrator: G11 passes. Nothing in `crates/raft`.
 
 **Decision.**
 - A repository group's planned `/move` step (`move_step` in `workers/site/src/member.rs`) that makes another site the next leader first asks that site's first git cache shard of the network for `/catchup`, as a client with `next=1`. That starts a stopped container, and a shard that is still rehydrating answers `warming` at once. `graftyard_identity::group_move::warm_site` names the site:
@@ -5612,6 +5612,12 @@ That the time is the isolate's per-read work and not the members' is an inferenc
   - `warm_site_names_the_next_leaders_site`.
 - `tests/m0carried/plant49.py` catches 8 of 8, among them the orchestrator's two plants: a transfer that goes at once, and a `Home` that commits at once.
 - m3fg11 is the measurement for the `Transfer`-only wait. `tests/fanout/rows.sh` keeps its `shardwarm.mjs` step until a hosted rehome shows the move warmed the shard itself.
+- m3fg12 (main `f466a39e`, the wait on `Home`), on repo:65594, a 251 MB git/git network seeded in 250 pushes and rehomed to apac with its shard torn down first [measured, `tests/am1/results/lm1-rows-m3f.md`, "Site day m3fg12"]:
+  - `Home` was held 17 times over 68 s, with home and leader unchanged. Each held ask answered in about 0.3 s, and the old leader served 12 of 12 merges meanwhile.
+  - The shard answered warm at 59.2 s waited, 0.8 s inside WARM_BEFORE_TRANSFER, so the move was not cold. Site c's rehydrate ran catch_up 66.2 s for 183 entries and 33 packs (m3fr7: 69.0 s).
+  - `Home` committed, and the core handed leadership to site 2 within 1 s, with no `Transfer` asked.
+  - MergeQueue `warming` in the minute after the hand-off: 0 of 11 (m3fr7: 5 of 5; m3fg11: 1 of 9). The move took 73.2 s against m3fg11's 4.2 s cold move.
+  - The 0.8 s margin is the flip's first condition seen once. The bound stays at 60 s until more rehomes judge it (orchestrator, 2026-11-19).
 
 **Flip.** Either of these on a hosted rehome:
 - Most planned rehomes move cold (`"cold": true`). The bound is then too short for the shards it meets, or the catch-up ask is wrong.

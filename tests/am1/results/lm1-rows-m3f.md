@@ -114,6 +114,32 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Site day m3fg12: G11's rerun on `g11-home` (2026-11-19, graft-m3f, main `f466a39e`)
+
+**Slot.** Granted by the orchestrator after `g11-home` merged: one site day from main `f466a39e` (`g11-home`, with LM-1's edge-only tier-read-batch reverted), then one seeded repository nearer m3fr7's size and one planned rehome, under the harness-outage rule, with a $3 stop on m3f counted from the site day's start. Raw files: `tests/fanout/raw/g11-m3fg12.{status,jsonl}`, `terms-m3fg12-g11.jsonl`, `g11-seed-m3fg12.log`, `arrivals-m3fg12.jsonl`, and the plan `g11plan-m3fg12.txt`. Driver: `tests/fanout/g11.sh` (`PRS=40`), run through the egress proxy. **Verdict: G11 passes** (orchestrator, 2026-11-19).
+
+- **Site day:** 10:35:02Z to 10:48:27Z, `site exit 0`, `edge exit 0`. Image `sha256:15bc0e2d…`, built from `f466a39e` because `containers/git` changed since `1d815c92` (b034-lockwait).
+- **Setup:** repo 65594 (`fm3fg12-g11`), seeded from a bare git/git clone in 250 pushes spaced evenly along the first-parent history, 0.25 GB in 1,128 s, largest push 5.7 MB. 40 PRs opened. Site 0 led at term 2, and site 0's shard was warm. Site c's shard was torn down at 11:11:52.8Z.
+- **The move:**
+  - The first `/move` asked at 11:11:53Z. 17 asks from site 0 answered `Home { home: SiteId(2) }` with `{"warming": true, "site": 2}` in about 0.3 s each, over 68 s. The last held ask read `waitedMs` 59,208. Home and leader stayed on site 0 at term 2 throughout.
+  - Site c's rehydrate ended at 11:12:59.6Z: `catch_up` 66,172 ms, 183 entries, 25 stored packs (131 MB) and 8 packs, index 14.1 s, `tail` 65.0 s [measured, Workers Logs, graft-m3f-site-c]. m3fr7's was 69.0 s for 268 MB in 257 packs, so this is like-for-like.
+  - The next ask, at 11:13:02.4Z, found the shard warm and committed `Home` (configIndex 406), with no `cold` label.
+  - The trace shows site 2 leading at term 3 at 11:13:02.98Z, under 1 s after the commit, with no `Transfer` asked. The ask at 11:13:05.9Z answered `Done`.
+  - The move took 73.2 s from the first ask to `Done` (m3fg11's cold move: 4.2 s).
+- **Merges:** 33 of 33 merged.
+  - During the 68 s hold, the old leader served 12 of 12, at p50 1.08 s and max 1.28 s.
+  - In the minute after the hand-off, **0 of 11 answered `warming`**, all 200, at p50 1.76 s and max 2.45 s (m3fr7: 5 of 5 `warming`; m3fg11: 1 of 9). The new home's shard answered with `waited;dur=0`, and with `catchup` 240 to 380 ms on every other merge.
+- **R29:** after 30 s with no write, all three voters were at commit 423 and applied 423, with site 2 leading at term 3. 0 leader changes besides the planned one.
+- **Colos:** client LAX at the start and the end.
+- **Harness outages:** `{"outages": "n/a (low rate)", "edgePerS": 0.58, "valid": true}`, by rule 5 of `tests/fanout/README.md`, "Harness outages on gate rows". Every merge and `/move` got an answer.
+- **The margin:** the shard went warm at 59.2 s waited, 0.8 s inside WARM_BEFORE_TRANSFER, on a network of this size. That is the first condition of `g11-warm`'s flip, seen once. The orchestrator kept the bound at 60 s until more rehomes judge it.
+- **Cost:** graft-m3f $0.16 by `PREFIX` from 10:35:02Z to 11:26Z (stop $3), and $0.00 from 11:16Z on. The account was $22.92 for the UTC day at 11:26Z.
+- **Close-out:**
+  - `retirenets.mjs 65594`: 4 names, all not joined.
+  - `purge.py`: 297 objects (a 108, b 84, c 105). The second pass deleted 1 more on site a, which a sweep run had written, and listed 0.
+  - `joined.mjs 65594`: none joined.
+  - Two end sweeps at 11:26Z: no shard container running.
+
 ## Site day m3fg11: G11's hosted rehome (2026-11-19, graft-m3f, main `1d815c92`)
 
 **Slot.** Granted by the orchestrator after `g11-warm` merged: one site day from main `1d815c92` (`g11-warm`, R29, why-logs, a1-wall), then one seeded repository and one planned rehome, under the harness-outage rule, with a $3 stop on m3f counted from the site day's start. Raw files: `tests/fanout/raw/g11-m3fg11.{status,jsonl}`, `terms-m3fg11-g11.jsonl`, `g11-seed-m3fg11.log`, `arrivals-m3fg11.jsonl`. Driver: `tests/fanout/g11.sh` and `g11.mjs`, run through the egress proxy.
