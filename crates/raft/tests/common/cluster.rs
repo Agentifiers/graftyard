@@ -266,6 +266,15 @@ impl Cluster {
         self.on(s, |m, now| m.confirm_end(now, id));
     }
 
+    /// One storage confirm on `s` that takes `ms` from its begin, of which its storage took `storage_ms`: the rest
+    /// waited for the host's deferred flush and the input's turn (`Member::confirm_end_timed`).
+    pub fn timed_confirm(&mut self, s: SiteId, ms: u64, storage_ms: u32) {
+        let now = self.now;
+        let id = self.members[s.0 as usize].as_mut().expect("member is up").confirm_begin(now);
+        self.advance(ms);
+        self.on(s, |m, now| m.confirm_end_timed(now, id, storage_ms));
+    }
+
     /// Every alarm released so far, with its site.
     pub fn alarms(&self) -> &[(SiteId, graftyard_raft::Alarm)] {
         &self.alarms

@@ -137,6 +137,26 @@ b → c trips would not have fired, and the group would have kept its home leade
 135 agent commands a second in a minute. Proposal 1's instrument second, because it is what can show whether
 per-entry work, and not only the far placement, makes a loaded leader's turns long.
 
+## Built on `confirm-flush` (2026-11-19, code only, no hosted row)
+
+- **Proposal 2, `confirm-storage`.** The host times each deferred flush from its transaction to `sync()`'s end and
+  reports it with `Member::confirm_end_timed`. The confirm rule counts that time; LOOP_LAG, the own-stall exclusion
+  and `kept` still read step-to-end. A trip's `stepDownWindow` log line now carries `confirms` (storage) and `whole`
+  (step to end), so a hosted row shows both. Design: `design/DESIGN.md` Shape (`STEP_DOWN`), `decisions/DECISIONS.md`
+  "`confirm-storage`". Tests in `crates/raft/tests/leadership.rs`; plants `tests/m0carried/plant53.py`.
+- **Proposal 1's instrument only.** `Trace::Work` (kind 30, test-faults) per leader input step that sends, writes,
+  applies or resolves: AppendEntries with entries and their entries' bytes per message, statements queued and their
+  bytes, entries and events applied, resolutions. Reply bytes are not measured: the step does not render replies.
+  `tests/fanout/work.py` reads it and sums the bytes of work inside each ticker stall. Encode-once is not built
+  (F100).
+- **Checks.** The first test (`a_long_wait_for_the_flush_over_quick_storage_does_not_trip_the_confirm_rule`) fails on
+  main's step-to-end rule; plant53 caught 3 of 3. Long sweep (2,000 seeds × 10,000 steps): harsh 0 step-downs and 8,206
+  holds, as main; gray 2,138 step-downs against main's 2,117, longest stuck stretch 28,501 ms (seed 11893) against main's
+  24,153; live 1,791 against 1,764, 25,191 ms against 29,145, all under the 30 s bound. The main figures are from an
+  earlier sweep (06:16 that day, before later merges). Seed 11893 alone, with the member fed main's `confirm_end`
+  instead, also stalls 28,501 ms, so that stretch is not this change. Porcupine Ok on `hist.jsonl` (146,836 operations)
+  and `hist.jsonl.gray` (2,335,345).
+
 ## Files
 
 - `tests/fanout/applegs.py`: fetch and join for the table above.

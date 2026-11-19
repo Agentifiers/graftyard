@@ -839,6 +839,8 @@ The operator left the question, raised from M0-WP6 as G5 and now closed, to the 
 
 **Open, 2026-11-19 (F99).** The confirm rule judges a confirm only when it ends. On B0-29 m3fhg one leader `sync()` stayed open 23,957 ms with its loop alive, the output gate held every send, and only the followers' election moved the group, about 14 s later (`tests/m0/results/held-grant-m3f.md`). Whether a bound on the oldest unconfirmed write or an earlier pre-vote should act first is `decisions/OPEN-QUESTIONS.md`, F99. This is not a flip: the rule did what it says, and the stall was one it cannot see.
 
+**Amended, 2026-11-19 (`confirm-storage`).** The confirmation this rule counts is the storage's own time, from the deferred flush's transaction to its `sync()`'s end, no longer the time from the input's step. See "`confirm-storage`" below; the six-confirmation count, the window and the quarantine are unchanged.
+
 ### GC and the writes it races each name the index they read (2026-10-30)
 
 **Decision.** GC's `Compacted` names the index its roots were read at, and `decide` refuses it if any ref changed after that index. A push that names objects it does not send, and `RestoredTo`, name the pack-set index their connectivity walk read, and `decide` refuses either if a `Compacted` committed after it. GC resubmits its packs when no object it would delete became reachable, and replans otherwise.
@@ -5927,3 +5929,21 @@ Every other consumer that writes to or reads another repository chain was checke
 **Evidence.** `tests/entryrows/run.sh` (local workerd, `wrangler dev`, the member's `workers/site/src/tier.rs` and `txn.rs` compiled into the bed, DDL checked against `host.rs` and `faults.rs`): rows written for each of the 48 `fold_corpus.json` kinds, two multi-event entries and K12's `DefineLabel`, as built and `WITHOUT ROWID`; a blob-fold entry; the later deletes; bytes per row by size. K12's hosted `DefineLabel` (19 on the leader, 15 on followers, `tests/am1/results/lm1-rows-m3f.md`) agrees with the bed. Figures: `python3 scripts/cost_agents.py --levers`.
 
 **Flip.** Rows written pass 10% of a total with agents again at some tier (`scripts/cost_agents.py`), or a measured family whose fold rows `WITHOUT ROWID` would cut by half or more (none of the 51 entries measured is cut by more than 43%: `Refs,TestMerged,ConsumerCursor` 16 to 9), or another change already forces a new tier table set and a refold, in which case (b) rides along.
+
+### `confirm-storage`: `STEP_DOWN`'s confirm rule judges storage time, not the wait for the flush, 2026-11-19
+
+**Decision.** A sample the confirm rule counts (6 over `confirm_p99_ms` in the 10 s window) is the storage's own time: the host's transaction for the deferred flush to the end of its `sync()`, reported with `Member::confirm_end_timed`. The member still begins each confirm at the input's step, and the step-to-end time still feeds `LOOP_LAG`, the own-stall exclusion of failed calls, and the trip's `kept` log. RESET_QUARANTINE, the count, the window and the target rules are unchanged. This amends "`STEP_DOWN`'s confirm rule needs six slow confirmations, and `INLINE_MAX_HOT` is 64 KiB (2026-10-30)".
+
+**Why.** The rule exists for slow storage: F35's evidence is bare objects "writing and syncing", and B0-06's gray case is slow `sync()`. Measured from the step, a sample also holds the wait for the deferred flush and for the input's turn, which a loaded leader's long turns stretch. On B0-33 m60 the home leader a tripped Confirm 6 of 18 at 14:39:39 with 2 of 25 syncs over 500 ms in its window, and b tripped 6 of 16 at 14:40:23 with 1. RESET_QUARANTINE then left c (apac) the only target, it held through 17 trips, and the group came home 305 s after a's step-down. Replayed on `sync()` times, the same rule trips once on m60 against 10 Confirm alarms and once on m56 against 5, and the a → b and b → c trips would not have fired [measured; the replay is an inference, `tests/am1/results/round-time.md`, section 2]. A leader whose turns are long is LOOP_LAG's case (whole-tick confirms of 200 ms or more) and CommitErrors' case (late calls), which keep judging it.
+
+**What it beat.**
+- **A shorter RESET_QUARANTINE for `stepped_down_at`** (operator decision, 2026-11-19). It is what stops two healthy sites passing a group back and forth while a third is sick, and under load the home leader would trip again and bounce.
+- **A home-first or near-home tie-break among targets.** After one step-down from home a three-voter group has one candidate or none, so it changes nothing (`tests/am1/results/round-time.md`, section 2).
+- **Measuring from the flush's `began` after `commit_tx`** (the `ConfirmSplit` `sync` leg). The transaction's own statements are storage work, and m52's 1,000-statement leader confirms were slow inside it (F92).
+
+**Evidence.** `crates/raft/tests/leadership.rs`: `a_long_wait_for_the_flush_over_quick_storage_does_not_trip_the_confirm_rule` (six confirms 750 ms from the step, storage 50 ms; fails on the step-to-end rule), `slow_storage_still_trips_the_confirm_rule_and_transfers` (storage 750 ms, the B0-06 guard), and `a_quick_storage_confirm_held_behind_the_flush_still_excuses_its_misses` (the own-stall exclusion still reads the whole confirm). Plants: `tests/m0carried/plant53.py`. The sim runs each transaction at its step, with no deferred flush, so it reports storage as the whole confirm (the in-order wait behind earlier confirms is storage on the host too, since `sync()` confirms in order), and `crates/raft/tests/liveness.rs` and the long sweep exercise the rule as before.
+
+**Flip.**
+- A leader whose syncs are slow but whose flush waits are short is no longer moved, and the group's commit p99 gets worse because of it: revert (operator, 2026-11-19).
+- A B0-06 rerun where a gray-storage leader stays in place past 20 s.
+- A B0-33 Confirm trip whose window's `sync()` p99 is under 500 ms (the rule still tripping on something other than storage).

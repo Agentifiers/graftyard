@@ -306,15 +306,16 @@ pub const SCHEMA: &[&str] = &[
 #[cfg(feature = "test-faults")]
 use crate::faults::{Fault, Kill};
 
-/// The log line of a `STEP_DOWN` trip's window: `{"stepDownWindow": {from, to, slow, of, confirms}}`, where `slow` counts
-/// the confirms over `confirm_p99_ms`, `confirms` lists each as [end, ms] on the member clock, and `kept` the last 30 s.
+/// The log line of a `STEP_DOWN` trip's window: `{"stepDownWindow": {from, to, slow, of, confirms, whole, kept}}`, where
+/// `slow` counts the confirms whose storage took over `confirm_p99_ms`, `confirms` lists each as [end, storage ms] on the
+/// member clock, `whole` as [end, ms from the step], and `kept` the last 30 s from the step.
 pub(crate) fn step_down_line(w: &graftyard_raft::StepDownWindow) -> String {
     let slow = w.confirms.iter().filter(|c| c.1 > graftyard_raft::STEP_DOWN.confirm_p99_ms).count();
     let pairs = |v: &[(graftyard_types::Timestamp, u32)]| -> Vec<[u64; 2]> {
         v.iter().map(|(t, ms)| [t.0, u64::from(*ms)]).collect()
     };
     json!({ "stepDownWindow": { "from": w.from.0, "to": w.to.0, "slow": slow, "of": w.confirms.len(),
-        "confirms": pairs(&w.confirms), "kept": pairs(&w.kept) } })
+        "confirms": pairs(&w.confirms), "whole": pairs(&w.whole), "kept": pairs(&w.kept) } })
     .to_string()
 }
 
@@ -677,6 +678,14 @@ pub enum Trace {
     /// 2^53, so the JS number the trace passes through holds it exactly.
     #[cfg(feature = "test-faults")]
     Cut = 29,
+    /// round-time's turn trace (`tests/am1/results/round-time.md`): what one input step on a leader produced, the work
+    /// its turn then does, packed by `work_row`. `peer` is the AppendEntries with entries it sends, `batch` their
+    /// entries' encoded bytes summed per message (an entry to six peers counts six times; each is encoded again to
+    /// send), `index` the statements it queued and their bytes, `ms` the entries and events it applied and the
+    /// resolutions it answers. Logged only for a step that sends, writes, applies or resolves. The isolate's clock does
+    /// not move inside a turn, so `tests/fanout/work.py` joins these rows to ticker stalls (`Lag`) by order and time.
+    #[cfg(feature = "test-faults")]
+    Work = 30,
 }
 
 /// `Trace::Cut`'s columns (`peer`, `batch`, `index`, `ms`) for one cut; `tests/m0/cuttrace/cuts.py` unpacks them.
@@ -689,6 +698,25 @@ fn cut_row(n: &raft::CutNote) -> (u8, u64, u64, u64) {
     let bytes = |v: usize| (v as u64).min((1 << 21) - 1);
     let ms = bytes(n.soft_bytes) | bytes(n.bytes) << 21 | (n.tokens.max(0.0) as u64).min((1 << 11) - 1) << 42;
     (peer, taken, left, ms)
+}
+
+/// One step's work, as `Trace::Work`'s columns: (`peer`, `batch`, `index`, `ms`). Each column stays under 2^53, so the
+/// JS number the trace passes through holds it exactly; counts saturate at their field's width.
+#[cfg(any(test, feature = "test-faults"))]
+fn work_row(
+    appends: usize,
+    append_bytes: usize,
+    stmts: (u32, u32),
+    applied: u64,
+    events: usize,
+    resolutions: usize,
+) -> (u8, u64, u64, u64) {
+    let sat = |v: u64, bits: u32| v.min((1 << bits) - 1);
+    let peer = appends.min(255) as u8;
+    let batch = sat(append_bytes as u64, 52);
+    let index = sat(u64::from(stmts.0), 20) | sat(u64::from(stmts.1), 32) << 20;
+    let ms = sat(applied, 16) | sat(events as u64, 16) << 16 | sat(resolutions as u64, 16) << 32;
+    (peer, batch, index, ms)
 }
 
 /// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.
@@ -2326,6 +2354,32 @@ impl<F: Family> Host<F> {
             self.trace(Trace::Cut, peer, batch, index, ms);
         }
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
+        #[cfg(feature = "test-faults")]
+        if core.m.role() == Role::Leader {
+            let mut appends = 0;
+            let mut append_bytes = 0;
+            for e in out.early.iter().chain(&out.messages) {
+                if let raft::Message::Append(a) = &e.msg
+                    && !a.entries.is_empty()
+                {
+                    appends += 1;
+                    append_bytes += a.entries.iter().filter_map(|x| core.m.entry_len(x.index)).sum::<usize>();
+                }
+            }
+            let events: usize = (applied0.0 + 1..=applied.0)
+                .filter_map(|x| core.m.entry_at(Index(x)))
+                .map(|e| match &e.body {
+                    EntryBody::Events(evs) => evs.len(),
+                    _ => 0,
+                })
+                .sum();
+            let n_applied = applied.0.saturating_sub(applied0.0);
+            if appends > 0 || !stmts.is_empty() || n_applied > 0 || !out.resolutions.is_empty() {
+                let (peer, batch, index, ms) =
+                    work_row(appends, append_bytes, stmt_bytes(&stmts), n_applied, events, out.resolutions.len());
+                self.trace(Trace::Work, peer, batch, index, ms);
+            }
+        }
         if let Some(b) = store.installed {
             self.queued_last.set(Some(b.index.0));
             *self.synced.borrow_mut() = VecDeque::new();
@@ -2600,6 +2654,10 @@ impl<F: Family> Host<F> {
     /// storage confirm, and each `SelfAck`, once `sync()` says the writes are durable. The Durable Object confirms
     /// writes in order, so one `sync()` covers every input queued so far.
     fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
+        // `STEP_DOWN`'s confirm rule judges the storage from here, the transaction, to `sync()`'s end: not the wait for
+        // this deferred flush or for the input's turn, which `confirm_begin` at the step also counts
+        // (`decisions/DECISIONS.md`, "`confirm-storage`"). A late isolate clock here reads long, never short.
+        let tx_at = now_ms();
         let stmts = std::mem::take(&mut *self.queue.borrow_mut());
         let (n_stmts, n_bytes) = stmt_bytes(&stmts);
         if n_bytes >= CONFIRM_BIG {
@@ -2670,7 +2728,8 @@ impl<F: Family> Host<F> {
                             s.confirm_split.push(ConfirmSplit { gate, sync, turn, stmts: n_stmts, bytes: n_bytes });
                         }
                     }
-                    let _ = h.input(|m, t| m.confirm_end(t, id));
+                    let storage = synced_at.saturating_sub(tx_at) as u32;
+                    let _ = h.input(|m, t| m.confirm_end_timed(t, id, storage));
                     if let Some(ack) = ack {
                         let _ = h.input(|m, t| m.self_ack(t, ack));
                     }
@@ -4173,8 +4232,9 @@ fn log_take(rows: impl Iterator<Item = Result<(Value, usize)>>, n: usize, cap: u
 
 #[cfg(test)]
 mod tests {
-    /// A trip's window logs its bounds and every sample, and `slow` counts only confirms over `confirm_p99_ms`: one of
-    /// exactly 500 ms is not slow, as `STEP_DOWN`'s rule reads it.
+    /// A trip's window logs its bounds and every sample, and `slow` counts only confirms whose storage took over
+    /// `confirm_p99_ms`: one of exactly 500 ms is not slow, nor one whose step-to-end time alone is over it, as
+    /// `STEP_DOWN`'s rule reads them.
     #[test]
     fn a_step_down_window_logs_its_samples_and_slow_count() {
         use graftyard_raft::StepDownWindow;
@@ -4183,13 +4243,15 @@ mod tests {
             from: Timestamp(1_000),
             to: Timestamp(11_000),
             confirms: vec![(Timestamp(2_000), 500), (Timestamp(3_000), 501), (Timestamp(4_000), 40)],
+            whole: vec![(Timestamp(2_000), 900), (Timestamp(3_000), 501), (Timestamp(4_000), 640)],
             kept: vec![(Timestamp(500), 900)],
         };
         let v: serde_json::Value = serde_json::from_str(&super::step_down_line(&w)).unwrap();
         assert_eq!(
             v,
             serde_json::json!({ "stepDownWindow": { "from": 1000, "to": 11000, "slow": 1, "of": 3,
-                "confirms": [[2000, 500], [3000, 501], [4000, 40]], "kept": [[500, 900]] } })
+                "confirms": [[2000, 500], [3000, 501], [4000, 40]],
+                "whole": [[2000, 900], [3000, 501], [4000, 640]], "kept": [[500, 900]] } })
         );
     }
 
@@ -4552,6 +4614,26 @@ mod tests {
         s.applied_at(Clocks { member: 3_000, raw: 1_900 });
         s.queued(2_000, Clocks { member: 3_150, raw: 2_150 });
         assert_eq!((s.queue_ms[1], s.queue_slot_ms[1], s.queue_post_ms[1]), (150, 0, 150));
+    }
+
+    /// round-time: `tests/fanout/work.py` unpacks kind 30's columns by these bit positions. A step that sends one
+    /// 1.5 MB entry to two followers and four learners reports six appends and 9 MB; past a field's width a count
+    /// saturates, and every column survives a JS number.
+    #[test]
+    fn a_work_row_packs_a_step_where_the_trace_reader_looks() {
+        let entry = graftyard_raft::ENTRY_MAX;
+        let (peer, batch, index, ms) = super::work_row(6, 6 * entry, (476, 1_400_000), 2, 131, 120);
+        assert_eq!((peer, batch), (6, 9_000_000));
+        assert_eq!((index & 0xf_ffff, index >> 20), (476, 1_400_000));
+        assert_eq!((ms & 0xffff, (ms >> 16) & 0xffff, ms >> 32), (2, 131, 120));
+        let (peer, batch, index, ms) =
+            super::work_row(300, usize::MAX, (u32::MAX, u32::MAX), u64::MAX, 70_000, 1 << 20);
+        assert_eq!(peer, 255, "appends saturate at 255");
+        assert_eq!((index & 0xf_ffff, index >> 20), ((1 << 20) - 1, u64::from(u32::MAX)));
+        assert_eq!((ms & 0xffff, (ms >> 16) & 0xffff, ms >> 32), (0xffff, 0xffff, 0xffff));
+        for v in [batch, index, ms] {
+            assert_eq!(v as f64 as u64, v, "{v} does not survive a JS number");
+        }
     }
 
     /// cut-trace: `tests/m0/cuttrace/cuts.py` unpacks kind 29's columns by these bit positions.

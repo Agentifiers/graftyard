@@ -865,6 +865,81 @@ fn deadline_misses_during_the_leaders_own_stall_are_excused() {
     assert!(counted.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{counted:?}");
 }
 
+/// `confirm-storage`: six confirms on a loaded leader, each 750 ms from its step, of which storage took `storage` ms.
+/// 750 ms is not a whole tick, so the loop-lag rule stays out of it.
+fn six_timed_confirms(storage: u32) -> Cluster {
+    let mut c = Cluster::new(53);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 2_000, true, &mut id, |_| false);
+    for _ in 0..6 {
+        c.timed_confirm(A, 750, storage);
+        c.deliver_all();
+    }
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    c
+}
+
+/// The confirm rule judges a confirm's storage, not its wait for the deferred flush. On B0-33 m60 the home leader
+/// tripped `Confirm { slow: 6, of: 18 }` with 2 of its 25 `sync()`s over 500 ms, and two such trips left the group on
+/// apac for 4 minutes under RESET_QUARANTINE (`tests/am1/results/round-time.md`, section 2). Six confirms of 750 ms
+/// from the step over 50 ms of storage do not trip.
+#[test]
+fn a_long_wait_for_the_flush_over_quick_storage_does_not_trip_the_confirm_rule() {
+    let c = six_timed_confirms(50);
+    let sd = step_downs(&c);
+    assert!(sd.is_empty(), "a 700 ms flush wait over 50 ms of storage tripped: {sd:?}");
+    assert_eq!(c.leader(), Some(A));
+}
+
+/// The other half: six confirms whose storage took 750 ms trip and transfer, as B0-06's slow-storage leader must
+/// (`six_slow_confirms_trip_and_five_do_not` covers a host that reports no storage time).
+#[test]
+fn slow_storage_still_trips_the_confirm_rule_and_transfers() {
+    let c = six_timed_confirms(750);
+    let sd = step_downs(&c);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, Some(_)))), "{sd:?}");
+    assert_ne!(c.leader(), Some(A), "slow storage kept its leader");
+    let w = c.m(A).step_down_window().expect("a transfer keeps its window");
+    assert_eq!(w.confirms.iter().filter(|x| x.1 == 750).count(), 6, "{w:?}");
+}
+
+/// The own-stall exclusion still reads the whole confirm, step to end: the output gate held every send for all of
+/// it, so a call whose deadline passed meanwhile is the leader's own stall even when its storage was quick. The
+/// control reports the same misses as errors, which the exclusion does not cover.
+#[test]
+fn a_quick_storage_confirm_held_behind_the_flush_still_excuses_its_misses() {
+    let run = |excuse: bool| {
+        let mut c = Cluster::new(54);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 3_000, true, &mut id, |_| false);
+        let now = c.now;
+        let cid = c.members[A.0 as usize].as_mut().unwrap().confirm_begin(now);
+        let mut stalled = Vec::new();
+        for _ in 0..35 {
+            c.advance(100);
+            id += 1;
+            let rid = RequestId(graftyard_raft::Ulid(id));
+            let _ = c.on(A, |m, now| m.commit(now, rid, put("load", "x")));
+            stalled.extend(c.inbox.drain(..).filter(|e| e.from == A && request(e)));
+            c.deliver_all();
+        }
+        // 3.5 s from the step, of which storage took 50 ms.
+        c.on(A, |m, now| m.confirm_end_timed(now, cid, 50));
+        for e in stalled {
+            let f = e.failure(excuse).unwrap();
+            c.on(A, |m, now| m.call_failed(now, f));
+        }
+        drive(&mut c, 2_000, true, &mut id, |_| false);
+        step_downs(&c)
+    };
+    let excused = run(true);
+    assert!(excused.iter().all(|s| !matches!(s.1, StepDownWhy::CommitErrors { .. })), "{excused:?}");
+    let counted = run(false);
+    assert!(counted.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{counted:?}");
+}
+
 /// One stall of a follower counts once per CALL_DEADLINE, however many rounds it missed (LM-1: a 1.9 s stall missed
 /// 17 to 31 per-read rounds at once and moved healthy identity leaders). Misses sent a deadline or more apart still
 /// count, so a follower that keeps failing still trips the rule.
