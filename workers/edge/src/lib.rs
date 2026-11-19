@@ -3146,7 +3146,7 @@ mod tests {
         shard_refusal, shard_url, streamed_site, validate_failed, validate_sites, validate_url, warm_first,
     };
 
-    /// A shard's non-200 upload-pack answer logs its status and reason, cut on a char boundary.
+    /// A shard's non-200 answer reaches the edge's log line with its reason, cut to 200 characters on a char boundary.
     #[test]
     fn a_shard_503_logs_its_reason_cut_on_a_char_boundary() {
         let v: serde_json::Value =
