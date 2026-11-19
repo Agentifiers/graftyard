@@ -8,3 +8,6 @@
 2026-11-19T00:10:22Z 65589 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-19T00:10:22Z 65589 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-19T00:10:22Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:41:17Z 65590 purged: a 0 -> 0, b 0 -> 0, c 1102 -> 0
+2026-11-19T01:41:17Z 65590 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:41:17Z {"dry": false, "purged": 1, "objects": 1102, "refused": [], "second": 0}

@@ -114,6 +114,97 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## Rows m3fb32: B0-32 on main `76c3e131` (2026-11-19, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** Granted by the orchestrator after m3flc: one site day from main `76c3e131` or later (`tier-off-leader`, F91, both write cuts), then B0-32. Stops: graft-m3f at $10 from the site day's start, or the account at $170. Committed raw files: `tests/fanout/raw/rows-m3fb32.status`, `tests/fanout/raw/{terms,admit,vmem}-m3fb32-b0-32.jsonl`, `tests/fanout/raw/tsave-m3fb32-b0-32.jsonl.xz`. The a1 files (`a1-b0-32-mwmura9l.jsonl`, `a1-pushes-b0-32-mwmura9l.jsonl`, `runs/{siteday-m3f-m3fb32,a1-b0-32-fm3fb32-b032}.log`) are under the ignored `tests/am1/raw/` on this thread's orb, as on earlier rounds.
+
+- **Site day** 00:38:18Z to 00:50:59Z, `site exit 0`, `edge exit 0`. Image `sha256:1e6cc1d0…` reused (`containers/` unchanged since `7b576074`), standard-4, test-faults. Sites `ce49f4f5` / `81350e53` / `dfa4c0f7`, edge `c65f55bf` at 100% (edgever, rev `76c3e131`).
+- **Setup:** repo 65590, config 11 with 8 learners, k 4 at index 12, leader site 0 at term 2. The burst left at 01:15:42Z, after a 61 s warm-up.
+- **Client colo:** DFW from `/cdn-cgi/trace` at 00:38Z and 01:36Z. The edge's Workers Logs put the burst's receive-packs in DFW (272) and LAX (151); m3fr17's were ATL 267, LAX 175, EWR 129 and DFW 28.
+- **Spend:** $0.65 on graft-m3f by `PREFIX` from 00:38:18Z to 01:37Z (stop $10); the account was $8.86 for the UTC day.
+
+### Result: fail [measured]
+
+**Judged on the edge clock (orchestrator, 2026-11-19).** The client clock includes the orb's connection setup: about 4 s before the edge's clock starts, spent opening 500 new HTTP/1.1 connections from one orb. A production fleet keeps its connections alive, so that time is not the product's. From this run on, the 5 s line is the edge's `server-timing` `total`. The client figures are kept for comparison with m3fr8, m3fr11 and m3fr17.
+
+| Gate line | m3fb32 | m3fr17 |
+|---|---|---|
+| Every push acknowledged within 5 s, or `ng … agent admission full` | **Fail.** 310 `ok`, 190 `full`, 0 lost. On the edge clock 80 of 310 `ok` within 5 s; edge total p50 6,431 ms, p99 7,898 ms. Client clock: 0 of 500, `ok` from 7.4 s, p50 10.4 s, p99 13.5 s | 474 `ok`, 20 `full`, 6 lost before the edge. Edge clock: 167 of 474 within 5 s, p50 5.5 s |
+| No other refusal shape | Pass: 0 burst 503s. Other traffic: 113 `read:api` 503s, 6 on ref reads | 0 on the burst |
+| Queued agent bytes under `AGENT_QUEUE_MAX` (64 MiB) | Pass: peak 111,706 B, 5 queued in `/stats`; the leader's own admit trace peaked at 138 queued, 216,345 B | Pass |
+| Every merge in one of the next 2 entries, none delayed over 2 s | **Fail.** 22 of 22 `merge:only` returned 200, but 3 took over 2 s on the client clock and 2 on the edge clock (edge max 6,920 ms: `merge_plan` 4,468, `shard:waited` 2,823). Not judged from entries | 19 × 200, 1 × 409, 1 × 503 warming |
+| Zero leader changes | Pass: term 2 throughout, leader site 0 (20 `terms` samples) | 1 change, term 2 → 3 |
+| Zero `suspect` | **Fail.** 34 from the edge (`pushTiming`), 32 at each of sites 1 and 2 (`tsave` `Reported`) | 5 edge, 18 + 18 `tsave` |
+| No object reset from memory | Pass: one boot per voter in `vmem`, wasm high 34.7 MB | Pass |
+
+Leader commit p50 568 ms, p99 1,660 ms (n 3,757), against m3fr17's 459 and 3,514. Queue p99 1,000 ms, round p99 444 ms, confirm p99 249 ms.
+
+Against earlier runs: m3fr11 had 499 `ok`, 1 within 5 s by the client, and 103 `suspect`. m3fr8 had 498 `ok`, 0 within 5 s, and a client p50 of 13.5 s. This run is better on leader commit p99 and on leader stability. It is worse on the two numbers the line counts: `full` went from 20 to 190, and edge-clock `ok` within 5 s from 167 to 80.
+
+### Where the edge's 6.4 s goes
+
+Each push's `server-timing` stages, burst pushes only, in ms. auth plus install run alongside resolve, so the wall before the first send is max(auth + install, resolve) + gate + context + validate.
+
+| Stage | m3fb32 p50 / p99 | m3fr17 p50 / p99 |
+|---|---|---|
+| auth | **591** / 754 | 170 / 2,578 |
+| install | **905** / 1,204 | 416 / 959 |
+| resolve | **1,390** / 2,051 | 594 / 2,432 |
+| gate | 0 / 2,292 | 0 / 1,998 |
+| context | 330 / 1,163 | 366 / 2,135 |
+| validate | 768 / 1,495 | 578 / 1,333 |
+| front: max(auth + install, resolve) | **1,563** / 2,051 | 775 / 3,338 |
+| wall before the first send | **2,933** / 4,264 | 2,114 / 5,289 |
+| after the first send (commit, stage, ask) | 3,000 / 5,726 | 3,120 / 4,882 |
+| total | 6,431 / 7,898 | 5,538 / 7,443 |
+
+- **What grew:** the front. auth went from 170 to 591 ms at p50, install from 416 to 905, and resolve from 594 to 1,390. The other stages moved less than 200 ms, and the time after the first send stayed flat (3.0 s against 3.1 s).
+- **Not cold caches:** in burst order, the first 100 pushes had auth p50 142 and resolve p50 551 ms. Pushes 100 to 500 sat at auth 585 to 652 and resolve 1,407 to 1,488. m3fr17's quintiles stayed at 113 to 210 and 504 to 674.
+- **Not the members:** wall time of `/read` on the system groups these stages read was the same on both runs (Workers Logs, sampled):
+
+  | Member | m3fb32 median / p99 | m3fr17 median / p99 |
+  |---|---|---|
+  | `names:152#1#f0` | 3 / 119 | 4 / 131 |
+  | `tokens:0#1#f0` | 3 / 238 | similar ids in m3fr17 read 3 to 4 / 246 |
+  | `authz:7100001` f1 / f2 | 104 / 309 and 259 / 379 | 100 / 229 and 253 / 406 |
+
+  Member-side `/read` p90 fell from 488 to 242 ms, and `/commit` median from 1,293 to 714 ms.
+- **Where the time went instead:** each of these stages is a fresh read from an edge isolate (`authenticate`, `install_authz`, `resolve`: `account_of`, `placement`, `authz_get`). The member answers in single-digit milliseconds, so the extra 0.4 to 0.8 s per stage is spent in the edge isolate before or after the call. The edge's CPU says where: the burst ran in two colos, not four. m3fr17 spread its 599 receive-packs over ATL, LAX, EWR and DFW. m3fb32 put 272 in DFW and 151 in LAX, with LAX at a median 80 ms CPU per push and 18.0 s of CPU in the 25 s window. Fewer edge isolates served the same 500 pushes, and every push in an isolate waits behind the others' CPU (sub-requests are I/O, the stages' JSON and token checks are not) [inference: Workers Logs gives CPU per colo, not per isolate; the stage split and the flat member times are measured].
+- **Leader-side:** nothing in this window ties the grown stages to `tier-off-leader`. Those reads (`names`, `tokens`, `authz`) are not whole-tier dumps or `ls-refs`, so `leader_never_serves` is false for them and their path is unchanged (`crates/lookup/src/lib.rs`, `leader_never_serves`).
+
+### Why `full` grew from 20 to 190
+
+- **The gate that answered:** the leader's own `AGENT_PUSH_BOUND`, after the command was admitted. 188 of the 190 `full` had a last commit stage of 600 ms or more: queued, then answered `Full` when their `until` passed (`expire_agents`, `crates/raft/src/member/leader.rs`). Only 2 were refused at admission, and 0 at the edge's `bound` (`bound_at_send`). 127 of them carried an `ask`: the send stayed open past `COMMIT_RECEIPT` (2 s), the edge asked `/outcome_by_request`, and the answer was the `Full` outcome. 93 had staged first (Stage, then a second send).
+- **Why they ran out of budget:** a push's budget at its send is 5 s minus the edge's front. With the front up 0.8 s, the budget left at the last send fell to a p50 of 1,089 ms for the `full` pushes (54 had 0 left) and 2,219 ms for the `ok` ones. By how much was left at the first send:
+
+  | Budget left at the first send | m3fb32 ok / full | m3fr17 ok / full |
+  |---|---|---|
+  | under 1 s | 0 / 26 | 6 / 7 |
+  | 1 to 2 s | 69 / **131** | 68 / 7 |
+  | 2 to 3 s | 157 / 33 | 180 / 6 |
+  | 3 to 5 s | 84 / 0 | 220 / 0 |
+
+  Every push with 3 s or more left committed. Below 2 s, two thirds were refused.
+- **Admission capacity did not shrink to cause it.** The leader cut every batch `Empty`, taking every queued command, on every cut from 01:15:50 to 01:16:15Z (57 of 57 Cut rows, `CutEnd::Empty`, 0 left in any class). No cut stopped on Soft, EntryMax or AgentTokens. The admit trace's capacity sat at 452 to 770 commands/s during the burst (m3fr17: 663 to 912), with cmd_bytes 444 to 1,246.
+- **What held the queued commands instead:** the burst reached the leader late and all at once, and then the leader stalled once. All times are on Cloudflare's clock, which a1's push log and `tsave` share; the orb's clock ran 9.3 s behind it.
+  - **01:15:52.7Z:** the edge took the burst, 237 agent pushes in 2 s (`a1-pushes`).
+  - **01:15:57.5 to 01:16:00.5Z:** the commands reached the leader, about 3 s later, which is the front above. Cuts grew from 7 to 27 commands, then to 94 and 160 at 01:16:00.2 and 01:16:00.5Z, with 591 requests open at entry.
+  - **01:16:01.2 to 01:16:04.5Z, no cut for 3.3 s:** entry 322, the batch after the 160-command entry, took **2,618 ms** in its storage confirm (`Trace::Confirm`, 01:16:03.959Z), and the next flush carried 66 statements. It was the run's only confirm over 1 s. m3fr17's burst had two, 1,901 and 2,032 ms.
+  - Pushes that arrived with 1 to 2 s left and queued behind that confirm passed their `until` there.
+- **Neither `tier-off-leader` nor the write cuts slowed how fast admission frees room.**
+  - Reads at the leader went down: site a's sampled `/read` count was 208 in the 20 s window, against m3fr17's 263, and the followers took 6 and 150. notLeader answers were not counted separately.
+  - Round p99 was 444 ms, against m3fr17's 485.
+  - The write cuts lowered `/commit` handler time, median 1,293 to 714 ms.
+  - What changed was arrival: the pushes reached `commit` 0.8 s later at the median and more bunched. The one storage stall then landed on pushes with no budget left.
+- **The 34 `suspect`:** from `missed` receipts on sends that stayed open past `COMMIT_RECEIPT` with no 200 to the ask, from 01:16:00 to 01:16:04Z: the 591 open requests, then the 2.6 s confirm. Same mechanism as m3fr11's 103, a third as many.
+
+### Proposed fix (code-only, for review)
+
+Two separate gaps; the first explains most of the line.
+
+1. **The edge's front costs 1.6 s at the median under the burst, for reads whose answers do not change within a burst.** The token, the install `Authz` and the owner's `Names`/`Placement`/`Authz` rows are the same for all 500 pushes. A push is write-class, so `rcache::through` reads fresh every time (`workers/edge/src/rcache.rs`), and each read is a full lookup and JSON decode in a shared, CPU-bound isolate. Proposal: **one in-flight read per key per isolate for write-class requests** (single-flight). Concurrent pushes in the same isolate share the same fresh read instead of each starting their own. That keeps "a write reads fresh": the shared read starts after each joiner arrived, so no push uses an answer older than its own arrival. It cuts the reads per isolate from 500 to about one per stage per round trip. Then measure the front on the next B0-32: the target is m3fr17's 775 ms or lower, which by the table above moves 131 + 33 `full` pushes into the 2 to 3 s bucket that commits. Test: N concurrent `through` calls with `read_class` false start one read and all get its answer, and one that arrives after the read started starts a new one. Nothing in crates/raft.
+2. **One storage confirm of 2.6 s after a 160-command entry.** `admission_check` admitted these pushes because `expected_wait` (the queue at the agent rate plus one average round, about 280 ms) fit their budget. The 2.6 s confirm then took the budget, and 186 of 188 refusals came from `expire_agents`, after a 2 s receipt wait and an ask. This is not something to fix in admission's arithmetic, which cannot foresee one slow sync. The question is why entry 322's confirm was 2,618 ms when the run's confirm p99 was 249. m3fr17 had the same shape: two confirms around 2 s after its largest cut. That belongs with LM-1's leader-tail plan (`tests/am1/results/lm1-memory.md`; slow syncs follow the leader's own write volume, F92). I have not touched crates/raft or the host's transaction. Gap 1 comes first because it decides how many pushes reach the leader with budget to spare.
+
 ## Site day m3frs: the audit's hosted checks and K12 (2026-11-18, graft-m3f, main `7b576074`)
 
 Site day and edge day from main `7b576074` (`refold-stream`, `audit-moved`, `b034-tails`), 17:54:52Z to 18:08:53Z, `site exit 0`, `edge exit 0` (`tests/am1/raw/runs/siteday-m3f-m3frs.log`). New shard image `sha256:1e6cc1d0…`, standard-4. Sites `ef2045c3` / `1cc81f49` / `53fd05b7` (phase 1 `aa15cfd8` / `b88c2482` / `f3850881`), edge `18a707d8`. One seeded repository, `m3org/k12-g1wc3` = `repo:65588` (leader on site 0, voters `#1#f0..2`), made by REST create plus 4 labels, then one `POST /labels` (a `DefineLabel` entry) at the start of each quiet minute. Per-object rows come from `durableObjectsPeriodicGroups` by object name and minute.
