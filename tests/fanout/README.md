@@ -45,8 +45,10 @@ with two (LAX and DFW), so leader-change counts before m53 are not comparable wi
 
 ## Placement baseline (from 2026-11-19, B0-29's A-B-A)
 
-Every B0-29 and B0-33 results file states the leader's storage confirm p50 in the row's setup, before load, beside
-its load confirm. `b029.sh` and `b033.sh` end each row's status with it (`lsrefsab.py` on the row's tsave). Each row
+Every B0-29 and B0-33 results file states the leader's 1-statement storage confirm p50 in the row's setup, before
+load, beside its load confirm. The pooled setup p50 is not the baseline: setup confirms are two near-equal groups,
+1-statement deferred flushes and unpaired in-step confirms, and the pooled median flips between them on one sample
+(`tests/am1/results/b033-m54.md`, "4. Setup baseline"). `b029.sh` and `b033.sh` end each row's status with it (`lsrefsab.py` on the row's tsave). Each row
 is a new network on new Durable Objects, and on one build the setup p50 ranged from 39 to 70 ms by placement alone
 (`tests/am1/results/b029-m2b.md`, the A-B-A). A load confirm is read against its own network's baseline, not
 against another row's.
@@ -79,6 +81,24 @@ driver such as `mkrepos.mjs` creates nothing: `rows.sh` logs "no repo". Check wi
 3. Never commit the pin or the address, and never put either in a driver: the address is Cloudflare's and can change,
    and the pin hides a real resolution failure from the next run. Note in the run's results that the workaround was
    used, as `tests/am1/results/b033-m52.md` does.
+
+## Harness outages on gate rows (operator, 2026-11-19)
+
+Gate rows from this orb run through the egress proxy (`NODE_USE_ENV_PROXY=1`, no `/etc/hosts` pin; orb services do not
+inherit `HTTPS_PROXY`, so run the driver where the shell's proxy variables are set). The proxy can drop one host: on
+B0-29 row `m2bb29n` the main edge received no request from 02:28:04 to 02:28:18Z while the sites and the tools edge
+kept serving, and 924 API reads, 510 ref reads and 71 agent pushes ended `fetch failed` with no answer
+(`tests/am1/results/b029-m2b.md`, "The within-network control"). The rule, so an exclusion cannot hide a product fault:
+
+1. Every row records its client colos (`colos.py`) and the edge's and sites' arrivals per second from Workers Logs
+   (`arrivals.py`, to `tests/fanout/raw/arrivals-<tag>.jsonl`). `b029.sh` and `b033.sh` do both through `outages.sh`.
+2. A second is a harness outage only when the main edge got 0 invocations while the site scripts got some. Anything
+   else, such as an edge that answers 503 or 0 from its own code, or an edge and sites both silent, is the product's.
+3. Every line is reported twice, as measured and with the outage windows removed, and the windows are listed
+   (`outagecut.py` on a1's `a1-samples-<row>-<run>.jsonl.gz`, which drops a sample that started in a window or up to
+   3 s before one).
+4. If the windows cover more than 5% of the load window, the row is invalid and reruns. It is not judged on the
+   remainder.
 
 ## Hosted slot rules (operator, 2026-11-16 and 2026-11-17)
 
