@@ -37,7 +37,9 @@ mod lookup;
 mod member;
 mod merge_queue;
 mod prsync;
-#[cfg(feature = "test-faults")]
+// Also in unit tests, which drive a member over its fold (`host::tests`).
+#[cfg(any(test, feature = "test-faults"))]
+#[cfg_attr(not(feature = "test-faults"), allow(dead_code))]
 mod register;
 mod registry;
 mod release;

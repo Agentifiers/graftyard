@@ -845,6 +845,7 @@ pub enum WorkspaceMode { Fork, InRepo }
 /// [guess]), empty to a voter with calls out under READ_RESEND (500 ms [guess]). Read-index answers wait for `Noop`.
 /// `Fresh` reads touch SQLite after the lease check, isolate state only under a key read there (F65's dump): a replaced
 /// instance cannot answer. Followers batch read-indexes per 10 ms, learners per 50 ms resent at HEDGE (500 ms [guess]).
+/// A grant held for a deferred transaction answers at release, at or above its floor (`held-grant` [measured]).
 pub async fn fresh(&self, arrived: Instant) -> Result<Fresh<'_>, NotLeader>;
 /// Stale mode starts only by a customer-signed `StaleMode` flag, committed in the `Release` group or, when it cannot
 /// commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and fetches at

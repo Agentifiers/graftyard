@@ -86,6 +86,18 @@ pub fn shared_answer(
     (b, false)
 }
 
+/// The view a granted read answers from when `Host::release` resolves it: the member's state then, at or above the
+/// grant's floor, and refused only after a restart (`raft::Member::fresh_after`). An output held for a deferred
+/// transaction (`Host::dispatch`) is released after later inputs, where `Member::fresh`, good only in the grant's own
+/// input, refused the read `notLeader` naming the leader itself, and the edge walked the followers for a leader it had
+/// (`decisions/DECISIONS.md`, "`held-grant`").
+fn released_view<'a, C: raft::Command>(
+    m: &'a raft::Member<C>,
+    g: &raft::ReadGrant,
+) -> Result<raft::Fresh<'a, C::Fold>, NotLeader> {
+    m.fresh_after(g)
+}
+
 /// A granted read's answer from the group's fold at `now`, for a member that spaces dump rebuilds by `every`
 /// (`family::dump_every`): `Shed` when a stale dump's rebuild is not due (checked here, where the dump would be
 /// built, so one granted batch rebuilds at most once per `every`); else the family's shared bytes (`read_bytes`, one
@@ -2741,10 +2753,11 @@ impl<F: Family> Host<F> {
                         // in which the isolate answered nothing, and the group lost its leader for 10 minutes
                         // (`tests/am1/results/lm1-memory.md`, "The leaderless group").
                         if let Some((q, tx)) = core.reads.remove(&id).filter(|(_, tx)| !tx.is_canceled()) {
-                            // `fresh` only before the member's next input: this runs right after the input. A `dep`
-                            // read answers the whole fold in the crate's codec, hex, for another group's `deps`.
+                            // At the member's state now, which later inputs may have moved past the grant's while
+                            // this output waited for a deferred transaction (`released_view`). A `dep` read answers
+                            // the whole fold in the crate's codec, hex, for another group's `deps`.
                             let v = result.and_then(|g| {
-                                core.m.fresh(&g).map(|f| {
+                                released_view(&core.m, &g).map(|f| {
                                     let floor = g.floor().0;
                                     let (body, hit) = shared_answer(&mut built, &q, floor, || {
                                         // `probe`: only that a member leads (`graftyard_lookup::create`).
@@ -4181,6 +4194,110 @@ mod tests {
         assert!(!super::out_of_space(
             "Durable Object storage operation exceeded timeout which caused object to be reset."
         ));
+    }
+
+    /// `held-grant`: a leader read whose output waited for a deferred transaction is resolved after later inputs.
+    /// The released view answers it at the member's state then, at or above the grant's floor, where `fresh` refused
+    /// it `notLeader` naming the leader itself (B0-29: 4 of 4 such merge reads walked the followers, 0 of 68 others).
+    /// A restart still refuses it.
+    #[test]
+    fn a_read_released_after_later_inputs_answers_at_the_state_then() {
+        use crate::register::{REG_FORMAT, Reg, RegCmd};
+        use graftyard_raft::{Envelope, Member, ReadGrant, RequestId, Resolution, Role, Stored, Ulid};
+        use graftyard_types::{ChainId, DbId, PlacementName, PlacementRecord, Region, RepoId, SiteId, Timestamp};
+        let chain = ChainId::Repo(RepoId(DbId(42)));
+        let record = PlacementRecord {
+            name: PlacementName::Tri,
+            sites: [0, 1, 2].into_iter().map(SiteId).collect(),
+            home: SiteId(0),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        };
+        let cfg = |s: u8| graftyard_raft::MemberConfig {
+            chain,
+            me: SiteId(s),
+            record: record.clone(),
+            regions: vec![(SiteId(0), Region::Enam), (SiteId(1), Region::Weur), (SiteId(2), Region::Apac)],
+            release: super::RELEASE,
+            reads: vec![REG_FORMAT],
+        };
+        struct G {
+            m: Vec<Member<RegCmd>>,
+            disks: Vec<Stored<Reg>>,
+            inbox: Vec<Envelope<crate::register::RegEvent>>,
+            resolved: Vec<Resolution<RegCmd>>,
+            now: Timestamp,
+        }
+        impl G {
+            fn on<R>(
+                &mut self,
+                i: usize,
+                f: impl FnOnce(&mut Member<RegCmd>, Timestamp) -> graftyard_raft::Ready<RegCmd, R>,
+            ) -> R {
+                let now = self.now;
+                let (r, mut out) = f(&mut self.m[i], now).persist(&mut self.disks[i]);
+                loop {
+                    self.inbox.extend(out.early.drain(..).chain(out.messages.drain(..)));
+                    self.resolved.append(&mut out.resolutions);
+                    let Some(ack) = out.self_ack.take() else { break };
+                    out = self.m[i].self_ack(now, ack).persist(&mut self.disks[i]).1;
+                }
+                r
+            }
+            fn deliver(&mut self) {
+                while !self.inbox.is_empty() {
+                    for Envelope { from, to, msg } in std::mem::take(&mut self.inbox) {
+                        self.on(to.0 as usize, |m, t| m.step(t, from, msg));
+                    }
+                }
+            }
+            fn put(&mut self, n: u128, v: &str) {
+                let cmd = RegCmd::Put { key: "k".into(), value: v.into() };
+                self.on(0, |m, t| m.commit(t, RequestId(Ulid(n)), cmd)).expect("the leader admits");
+                self.deliver();
+            }
+        }
+        let mut g = G {
+            m: (0..3).map(|s| Member::new(cfg(s), u64::from(s) + 1).unwrap()).collect(),
+            disks: (0..3).map(|_| Stored::new(Reg::default())).collect(),
+            inbox: Vec::new(),
+            resolved: Vec::new(),
+            now: Timestamp(10_000),
+        };
+        for _ in 0..3 {
+            if g.m[0].role() != Role::Leader {
+                g.on(0, |m, t| m.campaign(t));
+                g.deliver();
+            }
+        }
+        assert_eq!(g.m[0].role(), Role::Leader);
+        g.put(1, "1");
+        // A grant, by lease or after its round.
+        let grant = |g: &mut G| -> Option<ReadGrant> {
+            let id = g.on(0, |m, t| m.read(t)).expect("the leader reads");
+            g.deliver();
+            g.resolved.iter().rev().find_map(|r| match r {
+                Resolution::Read { id: i, result: Ok(gr) } if i == &id => Some(gr.clone()),
+                _ => None,
+            })
+        };
+        let gr = grant(&mut g).or_else(|| grant(&mut g)).expect("granted");
+        let floor = gr.floor();
+        // Later inputs run before the held output is released: a write commits and applies.
+        g.now = Timestamp(g.now.0 + 5);
+        g.put(2, "2");
+        assert!(g.m[0].fresh(&gr).is_err(), "the grant's own view is gone after later inputs");
+        let v = super::released_view(&g.m[0], &gr).expect("a released grant still answers on the leader");
+        assert!(v.index() > floor, "at the state then, {:?}, past the floor {floor:?}", v.index());
+        assert_eq!(v.fold().0.get("k").map(String::as_str), Some("2"));
+        // After a restart the grant answers nothing.
+        let (restarted, _) = Member::<RegCmd>::restore(cfg(0), g.disks[0].clone(), Timestamp(g.now.0 + 1), 99).unwrap();
+        assert!(super::released_view(&restarted, &gr).is_err(), "a grant from before a restart is refused");
+        // `Host::release` resolves every read through it: a direct `fresh` there refuses held grants again.
+        let src = include_str!("host.rs");
+        assert_eq!(src.matches(concat!("released_view(&core.m, ", "&g)")).count(), 1);
+        assert_eq!(src.matches(concat!("core.m.fresh", "(&g)")).count(), 0);
     }
 
     #[test]
