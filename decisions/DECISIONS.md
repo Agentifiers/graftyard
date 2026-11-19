@@ -5843,7 +5843,7 @@ The six slow merges in the three traces are exactly the six held-and-stepped mer
 
 **Evidence.** `tests/m0/results/b029-tail.md`, section 2 (`tests/m0/cuttrace/freezesim.py`, `latejoin.py`, `bycut.py`).
 
-**Flip.** Revisit (b) if other fixes bring the measured B0-29 commit p99 to within about 100 ms of 660, so that (b) would close the gap. The gap is OPEN-QUESTIONS F98.
+**Flip.** Revisit (b) if other fixes bring the measured B0-29 commit p99 to within about 100 ms of the line, so that (b) would close the gap. The line was 660 at 90%; since the operator moved it to 800 ms (`FRAME.md`, "Operator decision, 2026-11-19, B0-29's commit line"), that is within about 100 ms of 880. The gap was OPEN-QUESTIONS F98, now answered.
 
 ### `without-rowid`: tier tables keep their rowid schema, 2026-11-19 (not built)
 
