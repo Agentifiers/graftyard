@@ -14,7 +14,9 @@ use crate::fold::Command;
 use crate::types::{GroupConfig, Term};
 use crate::{CALL_DEADLINE, LOOP_LAG, RESET_QUARANTINE, STEP_DOWN, after};
 
-use super::{Alarm, CallFailure, ConfirmId, FailedCall, Member, Message, Ready, Role, StepDownWhy, StepDownWindow};
+use super::{
+    Alarm, CallFailure, ConfirmId, ConfirmTimes, FailedCall, Member, Message, Ready, Role, StepDownWhy, StepDownWindow,
+};
 
 /// Pings in a `linkErrors` probe, five at a time: one failure in 20 is the 5% threshold.
 const LINK_PINGS: u8 = 20;
@@ -40,9 +42,8 @@ pub(super) struct LeaderHealth {
     calls: VecDeque<(Timestamp, SiteId, bool, bool)>,
     /// Rounds already counted, so a duplicated reply or a failure report after a reply counts once.
     counted: BTreeSet<(SiteId, u64)>,
-    /// Per storage confirm that ended in the window: when, how long it took from `confirm_begin`, and how long its
-    /// storage took (`confirm_end_timed`; the whole confirm when the host did not say).
-    confirms: VecDeque<(Timestamp, u32, u32)>,
+    /// Per storage confirm that ended in the window: when, and what was measured of it.
+    confirms: VecDeque<Ended>,
     /// Followers that answered an AppendEntries in this leadership. A failed call to one not yet heard from is not
     /// counted: the quorum commits without a follower it has not reached.
     heard: BTreeSet<SiteId>,
@@ -62,6 +63,26 @@ pub(super) struct LeaderHealth {
     home_after: Option<Timestamp>,
     /// No automatic hand-off before this: the last one was abandoned.
     handoff_after: Option<Timestamp>,
+}
+
+/// One storage confirm that ended in a leader's window.
+struct Ended {
+    at: Timestamp,
+    id: ConfirmId,
+    /// From `confirm_begin` to its end, on the member clock.
+    whole: u32,
+    /// Its storage (`ConfirmTimes::storage_ms`; `whole` when the host did not say).
+    storage: u32,
+    /// From its step to its end on the isolate's clock (`ConfirmTimes::isolate_ms`; `whole` when the host did not say).
+    isolate: u32,
+    sync: Option<u64>,
+}
+
+impl Ended {
+    /// The sample `LOOP_LAG` counts it in: its sync, or itself when the host named none.
+    fn sample(&self) -> (bool, u64) {
+        self.sync.map_or((false, self.id.0), |s| (true, s))
+    }
 }
 
 struct LeaderProbe {
@@ -138,26 +159,28 @@ impl<C: Command> Member<C> {
         self.confirm_ended(now, id, None)
     }
 
-    /// The confirm `id` ended, and of it the storage itself (the host's transaction and `sync()`) took `storage_ms`
-    /// on the host's clock; the rest waited for the deferred flush and the input's turn. `STEP_DOWN`'s confirm rule
-    /// judges `storage_ms`. The loop-lag rule, the own-stall exclusion and the trip's `kept` samples read the whole
-    /// confirm, because the output gate holds every send for all of it (`decisions/DECISIONS.md`, "`confirm-storage`").
-    pub fn confirm_end_timed(&mut self, now: Timestamp, id: ConfirmId, storage_ms: u32) -> Ready<C, ()> {
-        self.confirm_ended(now, id, Some(storage_ms))
+    /// The confirm `id` ended, and the host measured it (`ConfirmTimes`). `STEP_DOWN`'s confirm rule judges its storage
+    /// (`decisions/DECISIONS.md`, "`confirm-storage`"), and `LOOP_LAG` its time on the isolate's clock, one sample per
+    /// sync (`LOOP_LAG`'s 2026-11-20 amendment). The own-stall exclusion and the trip's `kept` samples read the whole
+    /// confirm on the member clock, because the output gate holds every send for all of it.
+    pub fn confirm_end_timed(&mut self, now: Timestamp, id: ConfirmId, times: ConfirmTimes) -> Ready<C, ()> {
+        self.confirm_ended(now, id, Some(times))
     }
 
-    fn confirm_ended(&mut self, now: Timestamp, id: ConfirmId, storage_ms: Option<u32>) -> Ready<C, ()> {
+    fn confirm_ended(&mut self, now: Timestamp, id: ConfirmId, times: Option<ConfirmTimes>) -> Ready<C, ()> {
         self.begin(now);
         if let Some((began, end)) = self.confirms.get_mut(&id) {
             *end = Some(now);
             let ms = now.0.saturating_sub(began.0) as u32;
             let began = *began;
             // Two clocks: storage measured on the host's cannot be longer than the confirm it is part of.
-            let storage = storage_ms.map_or(ms, |s| s.min(ms));
+            let storage = times.map_or(ms, |t| t.storage_ms.min(ms));
+            let isolate = times.and_then(|t| t.isolate_ms).unwrap_or(ms);
+            let sync = times.and_then(|t| t.sync);
             if let Some(lead) = self.lead.as_mut()
                 && began >= lead.started()
             {
-                lead.health.confirms.push_back((now, ms, storage));
+                lead.health.confirms.push_back(Ended { at: now, id, whole: ms, storage, isolate, sync });
                 self.check_health();
             }
         }
@@ -235,7 +258,7 @@ impl<C: Command> Member<C> {
         while h.rtts.front().is_some_and(|c| c.0 < since) {
             h.rtts.pop_front();
         }
-        while h.confirms.front().is_some_and(|c| c.0 < since) {
+        while h.confirms.front().is_some_and(|c| c.at < since) {
             h.confirms.pop_front();
         }
         if h.counted.len() > 4096 {
@@ -335,19 +358,26 @@ impl<C: Command> Member<C> {
         if errors {
             return Some(StepDownWhy::CommitErrors { calls: counts });
         }
-        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.2).collect();
+        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.storage).collect();
         ms.sort_unstable();
         let p99 = ms.get(ms.len() * 99 / 100).copied().unwrap_or(0);
         let slow = ms.iter().filter(|m| **m > STEP_DOWN.confirm_p99_ms).count() as u32;
         if p99 > STEP_DOWN.confirm_p99_ms && slow >= u32::from(STEP_DOWN.confirm_slow_min) {
             return Some(StepDownWhy::Confirm { p99_ms: p99, slow, of: ms.len() as u32 });
         }
-        // A lagging loop: confirms that read whole ticks. Its confirms stay under `confirm_p99_ms` often enough that
-        // the confirm rule never tripped in B0-02's runs with the signature (`tests/m0/results/carried-8.md`).
+        // A lagging loop: confirms that read whole ticks on the isolate's clock, where workerd's clamp is. Its confirms
+        // stay under `confirm_p99_ms` often enough that the confirm rule never tripped in B0-02's runs with the
+        // signature (`tests/m0/results/carried-8.md`). The confirms one sync ends read one span, so they are one sample.
         let (min, within, at_least) = LOOP_LAG;
         let since = Timestamp(self.now.0.saturating_sub(within.as_millis() as u64));
-        let clamped =
-            lead.health.confirms.iter().filter(|c| c.0 >= since && c.1 >= at_least && c.1 % 100 == 0).count() as u32;
+        let clamped = lead
+            .health
+            .confirms
+            .iter()
+            .filter(|c| c.at >= since && c.isolate >= at_least && c.isolate % 100 == 0)
+            .map(Ended::sample)
+            .collect::<BTreeSet<_>>()
+            .len() as u32;
         if clamped >= min {
             return Some(StepDownWhy::LoopLag { clamped });
         }
@@ -401,8 +431,9 @@ impl<C: Command> Member<C> {
     /// The window `tripped` judged, kept for the host's log (`Member::step_down_window`); no decision reads it.
     fn note_trip(&mut self) {
         let Some(lead) = self.lead.as_ref() else { return };
-        let confirms = lead.health.confirms.iter().map(|c| (c.0, c.2)).collect();
-        let whole = lead.health.confirms.iter().map(|c| (c.0, c.1)).collect();
+        let confirms = lead.health.confirms.iter().map(|c| (c.at, c.storage)).collect();
+        let whole = lead.health.confirms.iter().map(|c| (c.at, c.whole)).collect();
+        let isolate = lead.health.confirms.iter().map(|c| (c.at, c.isolate, c.sync)).collect();
         let started = lead.started();
         let mut kept: Vec<(Timestamp, u32)> = self
             .confirms
@@ -412,7 +443,7 @@ impl<C: Command> Member<C> {
             .collect();
         kept.sort_unstable();
         let since = Timestamp(self.now.0.saturating_sub(window().as_millis() as u64));
-        self.last_trip = Some(StepDownWindow { from: since, to: self.now, confirms, whole, kept });
+        self.last_trip = Some(StepDownWindow { from: since, to: self.now, confirms, whole, isolate, kept });
     }
 
     fn hold(&mut self, why: StepDownWhy) {

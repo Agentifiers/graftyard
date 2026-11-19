@@ -8,8 +8,8 @@ use common::cluster::Cluster;
 use common::kv::{FUTURE_FORMAT, KV_FORMAT, KvCmd, KvEvent};
 use common::sim::{SITES, config};
 use graftyard_raft::{
-    Alarm, Colo, CommitError, Deny, Envelope, LEASE, Message, Receipt, ReleaseTag, RequestId, Resolution, Role,
-    StepDownWhy, Term, TransferError, Verdict, VoteReq,
+    Alarm, Colo, CommitError, ConfirmTimes, Deny, Envelope, LEASE, Message, Receipt, ReleaseTag, RequestId, Resolution,
+    Role, StepDownWhy, Term, TransferError, Verdict, VoteReq,
 };
 use graftyard_types::{ReleaseId, SiteId, Timestamp};
 
@@ -794,6 +794,61 @@ fn two_clamped_confirms_trip_loop_lag() {
     }
 }
 
+/// Syncs on A 1 s apart, after 2 s of load, each ending its confirms `member` ms after their step on the member clock,
+/// with each confirm's isolate-clock reading (`ConfirmTimes`); then 3 s more. Returns the step-downs.
+fn timed_syncs(member: u64, syncs: &[&[u32]]) -> (Cluster, Vec<(SiteId, StepDownWhy, Option<SiteId>)>) {
+    let mut c = Cluster::new(53);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 2_000, true, &mut id, |_| false);
+    for (n, isolate) in syncs.iter().enumerate() {
+        if n > 0 {
+            drive(&mut c, 1_000, true, &mut id, |_| false);
+        }
+        let now = c.now;
+        let m = c.members[A.0 as usize].as_mut().unwrap();
+        let ids: Vec<_> = isolate.iter().map(|_| m.confirm_begin(now)).collect();
+        c.advance(member);
+        for (cid, ms) in ids.into_iter().zip(*isolate) {
+            let times = ConfirmTimes { storage_ms: 40, isolate_ms: Some(*ms), sync: Some(n as u64) };
+            c.on(A, |m, now| m.confirm_end_timed(now, cid, times));
+        }
+        c.deliver_all();
+    }
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    let sd = step_downs(&c);
+    (c, sd)
+}
+
+/// LOOP_LAG reads the isolate's clock and counts one sample per `sync()` (`decisions/DECISIONS.md`, `LOOP_LAG`, amended
+/// 2026-11-20). On B0-29 m3fp2 two confirms one sync ended read 500 / 500 on the member clock, which peer stamps had
+/// moved between their step and their end, and 532 / 533 on the isolate's clock; the rule tripped with no lag in the
+/// trace, and the transfer cost more than it ended (`tests/m0/results/confirm-storage-m3f.md`, section 2).
+#[test]
+fn whole_ticks_on_the_member_clock_or_in_one_sync_do_not_trip_loop_lag() {
+    let cases: [&[&[u32]]; 3] = [
+        // m3fp2: one sync, whole ticks on the member clock only.
+        &[&[532, 533]],
+        // One sync whose two confirms both read whole ticks: one sample, not two.
+        &[&[500, 500]],
+        // Two syncs, whole ticks on the member clock only.
+        &[&[532], &[533]],
+    ];
+    for syncs in cases {
+        let (_, sd) = timed_syncs(500, syncs);
+        assert!(sd.is_empty(), "isolate syncs {syncs:?}: {sd:?}");
+    }
+}
+
+/// Two syncs within 2 s whose confirms read whole ticks of 200 ms or more on the isolate's clock still trip LOOP_LAG and
+/// transfer, though stamps moved the member clock off the tick (750 ms there): the clamp the rule was built on.
+#[test]
+fn two_clamped_isolate_syncs_trip_loop_lag_and_transfer() {
+    let (c, sd) = timed_syncs(750, &[&[300], &[400]]);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::LoopLag { clamped: 2 }, Some(_)))), "{sd:?}");
+    assert_ne!(c.leader(), Some(A));
+}
+
 /// A confirm trip disqualifies a target only on a link that fails `commit_fail_min` times or more, as the commit-error
 /// rule counts one: one or two missed calls in a quiet window pass 5% on noise alone (F37). In B0-02's r330-9 a leader
 /// storage stall tripped `Confirm { p99_ms: 1042, slow: 6, of: 21 }` and held with `to: None`, and the stall stayed on
@@ -926,7 +981,8 @@ fn a_quick_storage_confirm_held_behind_the_flush_still_excuses_its_misses() {
             c.deliver_all();
         }
         // 3.5 s from the step, of which storage took 50 ms.
-        c.on(A, |m, now| m.confirm_end_timed(now, cid, 50));
+        let times = graftyard_raft::ConfirmTimes { storage_ms: 50, ..Default::default() };
+        c.on(A, |m, now| m.confirm_end_timed(now, cid, times));
         for e in stalled {
             let f = e.failure(excuse).unwrap();
             c.on(A, |m, now| m.call_failed(now, f));

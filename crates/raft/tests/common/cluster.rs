@@ -272,7 +272,8 @@ impl Cluster {
         let now = self.now;
         let id = self.members[s.0 as usize].as_mut().expect("member is up").confirm_begin(now);
         self.advance(ms);
-        self.on(s, |m, now| m.confirm_end_timed(now, id, storage_ms));
+        let times = graftyard_raft::ConfirmTimes { storage_ms, ..Default::default() };
+        self.on(s, |m, now| m.confirm_end_timed(now, id, times));
     }
 
     /// Every alarm released so far, with its site.
