@@ -1,0 +1,76 @@
+2026-11-19T13:58:38Z start 075ce4d3 ~/workspace/repo/.worktrees/m3fhg
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T13:58:55Z start sweep ok
+2026-11-19T13:58:46Z cost account 26.59 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T13:42:08Z, at b0-29
+2026-11-19T13:59:26Z cost account 26.59 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T13:59:36.227Z m3org/fm3fhg-b029 = 65595
+2026-11-19T13:59:36.652Z repo:65595 leader 0 placing since 1795096782449: waiting
+2026-11-19T13:59:39.885Z repo:65595 leader 0 placing since 1795096782449: waiting
+2026-11-19T13:59:50.816Z repo:65595 leader 0: config 7 learners [{"addr":192,"doName":"repo:65595#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65595#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65595#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65595#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65595#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65595#3#l5","join":200,"sit
+2026-11-19T13:59:54.592Z repo:65595 leader 0: set k 4: {"grants":[[0,[4,6,0]],[2,[4,6,0]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T14:00:05.401Z repo:65595 leader 0: set k 4: {"grants":[[0,[4,6,0]],[2,[4,6,0]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T14:00:15.978Z repo:65595 leader 0: set k 4: {"grants":[[0,[4,6,0]],[2,[4,6,0]]],"k":4,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-19T14:00:16.121Z repo:65595 leader 0: k 4 at 10
+2026-11-19T14:00:27Z b0-29 fm3fhg-b029 65595 start
+2026-11-19T14:01:28Z cost account 26.61 since 2026-11-19T00:00:00Z, run 0.01 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:03:32Z cost account 26.66 since 2026-11-19T00:00:00Z, run 0.06 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:05:35Z cost account 26.75 since 2026-11-19T00:00:00Z, run 0.15 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:07:37Z cost account 26.93 since 2026-11-19T00:00:00Z, run 0.33 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:09:40Z cost account 27.23 since 2026-11-19T00:00:00Z, run 0.63 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:11:43Z cost account 27.63 since 2026-11-19T00:00:00Z, run 1.03 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:13:45Z cost account 27.99 since 2026-11-19T00:00:00Z, run 1.39 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:15:50Z cost account 28.4 since 2026-11-19T00:00:00Z, run 1.8 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:17:53Z cost account 28.82 since 2026-11-19T00:00:00Z, run 2.24 since 2026-11-19T13:42:08Z, at b0-29 watch
+2026-11-19T14:18:18.898Z repo:65595 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":4},"stepped":true,"want":0}
+2026-11-19T14:18:19.182Z repo:65595 leader 0: k 1 at 3300
+2026-11-19T14:18:30Z b0-29 fm3fhg-b029 65595 done exit 0
+2026-11-19T14:18:36Z torn down 65595
+site fault off: 200
+git#2#pool:1 200
+git#2#pool:7 200
+git#2#pool:5 200
+git#0#pool:5 200
+git#0#pool:1 200
+git#0#pool:7 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-19T14:18:55Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 1208 {'leader': 103, 'promised': 762, 'started': 4, 'busy': 339}
+  colo site 33 {'leader': 4, 'started': 1, 'promised': 24, 'busy': 4}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 16 (n 608) (placement baseline); unpaired p50 39 (n 603); pooled p50 36 (n 1353)
+  load: 1-statement p50 22 (n 1298); unpaired p50 45 (n 1287); pooled p50 40 p99 107 (n 3652)
+isolates: 11 members, 11 distinct ids, 6 changes; shared: none
+harness outages (2026-11-19T14:07:29Z to 2026-11-19T14:17:29Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+Traceback (most recent call last):
+  File "<worktree>/tests/fanout/outagecut.py", line 56, in <module>
+    main(sys.argv[1:])
+    ~~~~^^^^^^^^^^^^^^
+  File "<worktree>/tests/fanout/outagecut.py", line 43, in main
+    text = src if src.lstrip().startswith("{") else open(src).read().strip().splitlines()[-1]
+                                                    ~~~~^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'urllib.error.HTTPError: HTTP Error 500: Internal Server Error'
+B029DONE
+harness outages (2026-11-19T14:07:29Z to 2026-11-19T14:17:29Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-19T14:08:02Z", "2026-11-19T14:08:03Z"], ["2026-11-19T14:08:05Z", "2026-11-19T14:08:06Z"], ["2026-11-19T14:08:56Z", "2026-11-19T14:08:57Z"], ["2026-11-19T14:09:17Z", "2026-11-19T14:09:18Z"], ["2026-11-19T14:09:38Z", "2026-11-19T14:09:39Z"], ["2026-11-19T14:09:52Z", "2026-11-19T14:09:53Z"], ["2026-11-19T14:09:54Z", "2026-11-19T14:09:55Z"], ["2026-11-19T14:09:57Z", "2026-11-19T14:09:58Z"], ["2026-11-19T14:10:07Z", "2026-11-19T14:10:08Z"], ["2026-11-19T14:10:43Z", "2026-11-19T14:10:44Z"], ["2026-11-19T14:10:47Z", "2026-11-19T14:10:49Z"], ["2026-11-19T14:10:51Z", "2026-11-19T14:10:52Z"], ["2026-11-19T14:10:59Z", "2026-11-19T14:11:00Z"], ["2026-11-19T14:11:04Z", "2026-11-19T14:11:06Z"], ["2026-11-19T14:11:23Z", "2026-11-19T14:11:24Z"], ["2026-11-19T14:11:28Z", "2026-11-19T14:11:30Z"], ["2026-11-19T14:11:42Z", "2026-11-19T14:11:43Z"], ["2026-11-19T14:12:16Z", "2026-11-19T14:12:17Z"], ["2026-11-19T14:13:14Z", "2026-11-19T14:13:15Z"], ["2026-11-19T14:13:16Z", "2026-11-19T14:13:17Z"], ["2026-11-19T14:13:21Z", "2026-11-19T14:13:22Z"], ["2026-11-19T14:13:26Z", "2026-11-19T14:13:27Z"], ["2026-11-19T14:13:30Z", "2026-11-19T14:13:31Z"], ["2026-11-19T14:13:32Z", "2026-11-19T14:13:34Z"], ["2026-11-19T14:13:47Z", "2026-11-19T14:13:48Z"], ["2026-11-19T14:14:02Z", "2026-11-19T14:14:04Z"], ["2026-11-19T14:14:37Z", "2026-11-19T14:14:38Z"], ["2026-11-19T14:14:50Z", "2026-11-19T14:14:51Z"], ["2026-11-19T14:15:00Z", "2026-11-19T14:15:01Z"], ["2026-11-19T14:15:20Z", "2026-11-19T14:15:21Z"], ["2026-11-19T14:15:22Z", "2026-11-19T14:15:23Z"], ["2026-11-19T14:15:27Z", "2026-11-19T14:15:28Z"], ["2026-11-19T14:15:57Z", "2026-11-19T14:15:58Z"], ["2026-11-19T14:16:02Z", "2026-11-19T14:16:03Z"], ["2026-11-19T14:16:10Z", "2026-11-19T14:16:11Z"], ["2026-11-19T14:16:14Z", "2026-11-19T14:16:15Z"], ["2026-11-19T14:16:31Z", "2026-11-19T14:16:33Z"], ["2026-11-19T14:17:05Z", "2026-11-19T14:17:06Z"], ["2026-11-19T14:17:10Z", "2026-11-19T14:17:11Z"]], "outageSeconds": 45.0, "share": 0.075, "valid": false}
+{"kind": "read:api", "measured": {"n": 115832, "served": 0.9765, "p50": 368, "p99": 2377, "cap": 237}, "outagesRemoved": {"n": 86741, "served": 0.9757, "p50": 370, "p99": 2419, "cap": 67}}
+{"kind": "read:ref", "measured": {"n": 19646, "served": 0.9827, "p50": 937, "p99": 3960, "cap": 0}, "outagesRemoved": {"n": 14740, "served": 0.9818, "p50": 942, "p99": 3565, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 70, "served": 0.8857, "p50": 982, "p99": 19352, "cap": 0}, "outagesRemoved": {"n": 50, "served": 0.9, "p50": 982, "p99": 19352, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 2501, "served": 0.9712, "p50": 1962, "p99": 16610, "cap": 0}, "outagesRemoved": {"n": 1875, "served": 0.9701, "p50": 1992, "p99": 16854, "cap": 0}}
+harness outages (2026-11-19T14:07:29Z to 2026-11-19T14:17:29Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": "n/a (low rate)", "edgePerS": 0.0, "valid": true}
+{"kind": "read:api", "measured": {"n": 115832, "served": 0.9765, "p50": 368, "p99": 2377, "cap": 237}, "outagesRemoved": {"n": 115832, "served": 0.9765, "p50": 368, "p99": 2377, "cap": 237}}
+{"kind": "read:ref", "measured": {"n": 19646, "served": 0.9827, "p50": 937, "p99": 3960, "cap": 0}, "outagesRemoved": {"n": 19646, "served": 0.9827, "p50": 937, "p99": 3960, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 70, "served": 0.8857, "p50": 982, "p99": 19352, "cap": 0}, "outagesRemoved": {"n": 70, "served": 0.8857, "p50": 982, "p99": 19352, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 2501, "served": 0.9712, "p50": 1962, "p99": 16610, "cap": 0}, "outagesRemoved": {"n": 2501, "served": 0.9712, "p50": 1962, "p99": 16610, "cap": 0}}
+harness outages, re-read (the two appends above came from degraded Workers Logs answers: sparse 10,000-count buckets, then an empty series; this read has every second):
+{"outages": [["2026-11-19T14:07:33Z", "2026-11-19T14:07:36Z"], ["2026-11-19T14:07:37Z", "2026-11-19T14:07:42Z"]], "outageSeconds": 8.0, "share": 0.0133, "valid": true}
+{"kind": "read:api", "measured": {"n": 115832, "served": 0.9765, "p50": 368, "p99": 2377, "cap": 237}, "outagesRemoved": {"n": 115609, "served": 0.9764, "p50": 367, "p99": 2372, "cap": 237}}
+{"kind": "read:ref", "measured": {"n": 19646, "served": 0.9827, "p50": 937, "p99": 3960, "cap": 0}, "outagesRemoved": {"n": 19617, "served": 0.9827, "p50": 936, "p99": 3960, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 70, "served": 0.8857, "p50": 982, "p99": 19352, "cap": 0}, "outagesRemoved": {"n": 70, "served": 0.8857, "p50": 982, "p99": 19352, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 2501, "served": 0.9712, "p50": 1962, "p99": 16610, "cap": 0}, "outagesRemoved": {"n": 2497, "served": 0.9712, "p50": 1962, "p99": 16621, "cap": 0}}
