@@ -820,6 +820,15 @@ pub fn leader_never_serves(q: &Value) -> bool {
     q.get("rows").is_some_and(Value::is_boolean) || q.get("lsRefs").is_some()
 }
 
+/// The reason a `TierOff` read fails with: it names OVERLOADED, so every caller treats it as a shed read (503 with
+/// `Retry-After: 1`, a write's shed retry, an Agent push's `ng`), and TIER_OFF, so the edge logs it apart
+/// (`decisions/DECISIONS.md`, "`tier-off-leader`", the flip).
+pub const TIER_OFF: &str = "tierOff";
+
+fn tier_off_why(chain: ChainId) -> String {
+    format!("{chain}: every member declined a read the leader never serves: {OVERLOADED} ({TIER_OFF})")
+}
+
 /// What `read_spread` does with the answers it got, in order.
 #[derive(Debug, PartialEq, Eq)]
 enum Spread {
@@ -834,13 +843,16 @@ enum Spread {
     /// tier is loading, or it knows no leader) or a 4xx (not joined: a group not created yet), or none was asked. The
     /// leader by `call_opt`, which finds a group not yet created and reports a leaderless one with `suspect`.
     Leader,
+    /// Every one asked declined a read the leader never serves (`leader_never_serves`) and one named a leader or a
+    /// term: shed as `Shed` is, with its own reason, TIER_OFF, so a row counts the 503s this rule makes.
+    TierOff,
     /// Every one asked declined a read the leader never serves (`leader_never_serves`) and none answered `notLeader`:
     /// none is joined, so the group may not exist yet, and the caller creates it and asks again.
     Absent,
 }
 
 /// `read_spread`'s choice from the answers of the members `spread_order` named, in order. `leader_ok` is false for a
-/// read the leader never serves: one that every member declined is then `Shed` if any answered `notLeader` (a group
+/// read the leader never serves: one that every member declined is then `TierOff` if any answered `notLeader` (a group
 /// with a leader, between elections, or whose followers' tiers are loading), so it is answered 503 or asked again,
 /// and `Absent` if none did.
 fn spread_verdict(answers: &[Option<(u16, &Value)>], leader_ok: bool) -> Spread {
@@ -852,7 +864,7 @@ fn spread_verdict(answers: &[Option<(u16, &Value)>], leader_ok: bool) -> Spread 
     if answers.iter().all(declined) {
         return match (leader_ok, answers.iter().any(not_leader)) {
             (true, _) => Spread::Leader,
-            (false, true) => Spread::Shed(OVERLOAD_RETRY_MS),
+            (false, true) => Spread::TierOff,
             (false, false) => Spread::Absent,
         };
     }
@@ -1033,6 +1045,7 @@ async fn spread_once(
     match spread_verdict(&seen, leader_ok) {
         Spread::Use(_) => unreachable!("a usable answer returned above"),
         Spread::Absent => Ok(Ok(None)),
+        Spread::TierOff => Err((tier_off_why(chain), OVERLOAD_RETRY_MS)),
         Spread::Shed(ms) => {
             // A member that shed it because its read-index call to the leader went unanswered (F67 rule 12) names
             // that leader: one `suspect` report about it, damped by SUSPECT_GAP, stands in for the leader walk a
@@ -2712,13 +2725,17 @@ mod tests {
             vec![Some((200, &leaderless)), Some((409, &null))],
             vec![Some((409, &null)), Some((200, &named))],
         ] {
-            assert_eq!(spread_verdict(&answers, false), Spread::Shed(OVERLOAD_RETRY_MS), "{answers:?}");
+            assert_eq!(spread_verdict(&answers, false), Spread::TierOff, "{answers:?}");
             assert_eq!(spread_verdict(&answers, true), Spread::Leader, "{answers:?}");
         }
         for answers in [vec![Some((409, &null)), Some((404, &null))], vec![]] {
             assert_eq!(spread_verdict(&answers, false), Spread::Absent, "{answers:?}");
         }
         assert_eq!(spread_verdict(&[Some((200, &named)), Some((200, &value))], false), Spread::Use(1));
+        // Its reason is a shed's, which every caller already answers 503 or retries, and it names TIER_OFF apart.
+        let why = tier_off_why(ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9))));
+        assert!(why.contains(OVERLOADED) && why.contains(TIER_OFF), "{why}");
+        assert!(!format!("repo:9: every member asked shed the read: {OVERLOADED}").contains(TIER_OFF));
     }
 
     /// `b032-shed` A: a member that forgot its leader sheds the read and names it. Every such answer is `Shed`, never a

@@ -618,9 +618,23 @@ async fn first_use(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<(), R
 
 /// A spread or leader read that failed (`graftyard_lookup::read_spread`): 503 with `Retry-After`, 1 s when the
 /// members shed it (`graftyard_lookup::OVERLOADED`), which they answer within about one FOLLOWER_WAIT, else 5 s.
+/// A read that `tier-off-leader` shed (`graftyard_lookup::TIER_OFF`: every member declined a whole-tier dump, which
+/// the leader never serves) is also logged as `{"shed": "tierOff"}`, so a row counts the 503s this rule makes apart from
+/// the members' own sheds (`decisions/DECISIONS.md`, "`tier-off-leader`", the flip).
 pub(crate) fn read_failed(why: &str, e: &str) -> Reply {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(line) = tier_off_line(why, e) {
+        worker::console_log!("{line}");
+    }
     let retry = if e.contains(graftyard_lookup::OVERLOADED) { "1" } else { "5" };
     Reply::error(503, &format!("{why} ({e})"), "rest").with("retry-after", retry)
+}
+
+/// `read_failed`'s log line for a `tier-off-leader` shed, `None` for any other failed read.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn tier_off_line(why: &str, e: &str) -> Option<String> {
+    e.contains(graftyard_lookup::TIER_OFF)
+        .then(|| json!({ "shed": graftyard_lookup::TIER_OFF, "why": why }).to_string())
 }
 
 /// `tier_rows`'s query. `ranges` too: a member built before the `rows` read answers its small ranges reply instead of
@@ -2318,6 +2332,18 @@ mod tests {
         let shed = format!("repo:9: every member asked shed the read: {}", graftyard_lookup::OVERLOADED);
         let r = super::read_failed("rows", &shed);
         assert_eq!((r.status, r.header("retry-after")), (503, Some("1")));
+        // tier-off-leader's shed is a shed: 503 with `Retry-After: 1`, its reason in the body.
+        let tier = format!(
+            "repo:9: every member declined a read the leader never serves: {} ({})",
+            graftyard_lookup::OVERLOADED,
+            graftyard_lookup::TIER_OFF
+        );
+        let r = super::read_failed("rows", &tier);
+        assert_eq!((r.status, r.header("retry-after")), (503, Some("1")));
+        // ...and only it is logged apart, `{"shed": "tierOff"}`, which a row counts against its 503s.
+        let line: serde_json::Value = serde_json::from_str(&super::tier_off_line("rows", &tier).unwrap()).unwrap();
+        assert_eq!(line["shed"], "tierOff");
+        assert_eq!(super::tier_off_line("rows", &shed), None, "a members' shed is not tierOff");
         let r = super::read_failed("rows", "repo:9: repo:9#1#f0: no answer");
         assert_eq!((r.status, r.header("retry-after")), (503, Some("5")));
     }
