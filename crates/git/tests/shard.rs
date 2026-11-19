@@ -517,6 +517,49 @@ fn a_stuck_catch_up_or_step_ends_at_the_deadline() {
     }
 }
 
+/// A composable miss's wait for its chain (`chain_ready`), on a virtual clock: the chain is ready `ready_at` after the
+/// miss arrives (`None`: not within any wait), and the shard answers `warming` when its wait ends first. With another
+/// site to try (`next=1`) the wait is `CHAIN_WAIT_FORWARDED`, not the deadline; the last site waits all that is left.
+/// On main every site waited the whole deadline: B0-34 mt6's builder held 38 misses 15 s each while site b had a synced
+/// chain (`tests/am1/results/b034-mt6.md`).
+#[test]
+fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_deadline() {
+    use graftyard_git::compose::{CHAIN_WAIT_FORWARDED, chain_ready};
+    use std::cell::Cell;
+    use std::task::Poll;
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    // (answered composed, the wait the shard slept for)
+    let run = |follows: bool, left: Duration, ready_at: Option<Duration>| {
+        let slept = Cell::new(None::<Duration>);
+        let ready = std::future::poll_fn(|_| match (slept.get(), ready_at) {
+            (Some(w), Some(r)) if r <= w => Poll::Ready(()),
+            _ => Poll::Pending,
+        });
+        let composed = futures_executor::block_on(chain_ready(follows, left, ready, |w| {
+            slept.set(Some(w));
+            std::future::poll_fn(
+                move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
+            )
+        }));
+        (composed, slept.get().expect("the shard sleeps for its wait"))
+    };
+    assert_eq!(CHAIN_WAIT_FORWARDED, s(2));
+    // mt6's case: the home (wait=15, next=1), its chain not stepped. Warming at the bound, not at 15 s.
+    assert_eq!(run(true, s(15), None), (false, s(2)));
+    // The same on a middle site (wait=60, next=1), and a chain 5 s away still sends it on: the next site composes.
+    assert_eq!(run(true, s(60), Some(s(5))), (false, s(2)));
+    // A deadline already under the bound keeps what is left.
+    assert_eq!(run(true, Duration::from_millis(800), None), (false, Duration::from_millis(800)));
+    // The last site (no next) waits all that is left: kill's case ends here, at the last site's full wait.
+    assert_eq!(run(false, s(60), None), (false, s(60)));
+    assert_eq!(run(false, s(60), Some(s(14))), (true, s(60)), "a chain 14 s away composes on the last site");
+    // A ready chain composes as before, on any site, and one ready inside the bound composes on a forwarded miss.
+    assert_eq!(run(true, s(15), Some(Duration::ZERO)), (true, s(2)));
+    assert_eq!(run(false, s(15), Some(Duration::ZERO)), (true, s(15)));
+    assert_eq!(run(true, s(15), Some(Duration::from_millis(1_500))), (true, s(2)));
+}
+
 /// Stock upload-packs past the container's `STOCK_MAX` wait in the shard object in arrival order: the head of the
 /// line asks the container, later ones never jump it, one past its deadline leaves without holding the next one up,
 /// and with nobody waiting a request asks at once. A wait, not a 429 to the client: git retries neither by default.

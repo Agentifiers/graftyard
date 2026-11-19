@@ -1200,7 +1200,11 @@ impl DurableObject for GitShard {
                         net,
                         record: log.record.clone(),
                     };
-                    if crate::host::within(left(), compose.ready()).await.is_none() {
+                    // With another site after this one (`next=1`) the chain gets `CHAIN_WAIT_FORWARDED`, not the whole
+                    // deadline: the next site's chain is usually synced (`graftyard_git::compose::chain_ready`).
+                    let follows = q(&url, "next").is_some();
+                    if !graftyard_git::compose::chain_ready(follows, left(), compose.ready(), worker::Delay::from).await
+                    {
                         return Ok(line.forward(warming()?));
                     }
                     line.note(|m| m.ready = Some(now_ms()));

@@ -113,13 +113,18 @@ s "b0-34 done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-34-$mono.log)"
 # Harness outages (tests/fanout/README.md): the edge's arrivals per second and each line with the outage windows
 # removed, to tests/fanout/raw/rows-<tag>.status (outages.sh, as b029.sh and b033.sh). B0-34's two latency lines per
 # phase on both clocks: the client's, and the edge's `server-timing` `total` (decisions/OPEN-QUESTIONS.md, A33).
-KINDS=$(for p in j9 kill second hostile; do printf 'push:human@%s push:human:edge@%s read:cloneTtfb@%s read:cloneTtfb:edge@%s ' $p $p $p $p; done) \
+# `push:human` is the receive-pack advertisement plus the POST, and a1's tip read is its own line, `push:human:tip`
+# (decisions/DECISIONS.md, `git-shaped-push`).
+KINDS=$(for p in j9 kill second hostile; do printf 'push:human@%s push:human:edge@%s push:human:tip@%s read:cloneTtfb@%s read:cloneTtfb:edge@%s ' $p $p $p $p $p; done) \
   bash tests/fanout/outages.sh "$TAG" b0-34 "$mono"
 # The miss-log branch's line per clone-cache miss (`shard miss <net> <key>`), joined to each probe row: container,
 # shard transit, and edge plus network, by compose answer. Workers Logs lag a few minutes, so it runs after a wait.
 rows=$(ls -t tests/am1/raw/a1-b0-34-*.jsonl | head -1)
 sleep 180; RAW=tests/fanout/raw/misslines-$TAG.jsonl python3 tests/fanout/misses.py "$rows" "$(date -u -d '-35 min' +%FT%TZ)" "$(date -u +%FT%TZ)" "${chain#repo:}" > tests/fanout/raw/misses-$TAG.txt 2>&1
 s "b0-34 misses: $(head -2 tests/fanout/raw/misses-$TAG.txt | tr '\n' ' ')"
+# Composed-miss waits by phase and the shard /upload-pack 503s split cold, capacity and deadline, over every network.
+python3 tests/fanout/miss503.py "$rows" "$(date -u -d '-35 min' +%FT%TZ)" "$(date -u +%FT%TZ)" > tests/fanout/raw/miss503-$TAG.txt 2>&1
+s "b0-34 503s: $(tail -1 tests/fanout/raw/miss503-$TAG.txt)"
 compose "at the row's end"
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
 echo DONE >> "$ST"
