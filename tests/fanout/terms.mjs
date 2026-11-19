@@ -11,7 +11,16 @@ import { serverClock } from "./srvclock.mjs";
 
 const [name, secs] = process.argv.slice(2);
 const until = Date.now() + Number(secs) * 1000;
-const idOf = () => readFileSync(`${process.env.M3_STATE}/am1-runs-repos.txt`, "utf8").split("\n").map((l) => l.split(" ")).find(([n]) => n === name)?.[1];
+// A fresh install's state has no am1-runs-repos.txt until rows.sh creates the first repository, so a missing file
+// waits like a missing line (m3fhg: terms.mjs started 58 s before the file and exited ENOENT).
+const idOf = () => {
+  try {
+    return readFileSync(`${process.env.M3_STATE}/am1-runs-repos.txt`, "utf8").split("\n").map((l) => l.split(" ")).find(([n]) => n === name)?.[1];
+  } catch (e) {
+    if (e.code === "ENOENT") return undefined;
+    throw e;
+  }
+};
 let id;
 // A `repo:N` argument names the chain directly (B0-34's b034-mono is not in am1-runs-repos.txt).
 if (name.startsWith("repo:")) id = name.slice(5);
