@@ -3344,6 +3344,8 @@ mod tests {
         let w = super::shed_retry_for(true, None);
         assert_eq!(w, graftyard_lookup::SHED_RETRY_FOR);
         assert!(w * 4 <= graftyard_lookup::LOOKUP_FOR, "{w:?}");
+        // `shed-retry-2s`: at 4 s a write that met a shed made about five member reads before its 503 (B0-33 m56).
+        assert!(w <= Duration::from_secs(2), "{w:?}");
         assert_eq!(super::shed_retry_for(true, Some(Duration::from_secs(60))), w);
         assert_eq!(super::shed_retry_for(true, Some(Duration::from_millis(900))), Duration::from_millis(900));
         assert_eq!(super::shed_retry_for(false, None), Duration::ZERO);
