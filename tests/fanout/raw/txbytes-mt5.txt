@@ -1,0 +1,6 @@
+mt4 graft-m1-site-a-gitshard tx 62.20 GB cpu 5067 s instances 8
+mt4 graft-m1-site-b-gitshard tx 8.22 GB cpu 1363 s instances 5
+mt4 graft-m1-site-c-gitshard tx 4.35 GB cpu 2290 s instances 8
+mt5 graft-m1-site-a-gitshard tx 19.47 GB cpu 4801 s instances 12
+mt5 graft-m1-site-b-gitshard tx 10.29 GB cpu 1712 s instances 7
+mt5 graft-m1-site-c-gitshard tx 5.83 GB cpu 2684 s instances 10

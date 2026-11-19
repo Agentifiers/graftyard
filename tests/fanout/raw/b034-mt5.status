@@ -1,0 +1,55 @@
+2026-11-19T10:17:48Z api.cloudflare.com in request paths: 0 files
+edge: graft-m1-edge serves 3f8436b4 at 100% (rev 50da79d7b), as tests/am1/raw/b034v-siteday.log deployed
+2026-11-19T10:17:38.115Z b034 networks: {"mono":{"repo":"m3org/b034-mono-v","chain":"repo:1048598","who":"admin"},"second":{"repo":"m3-member/b034-second-v","chain":"repo:3473411","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-v-1","chain":"repo:3538953","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-v-2","chain":"repo:3538954","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-v-3","chain":"repo:3538955","who":"hostile"}]}
+2026-11-19T10:21:40Z seed m3-member/b034-second-v exit 0
+2026-11-19T10:25:09Z seed m3r-b034-hostile/b034-hostile-v-1 exit 0
+2026-11-19T10:33:57Z seed m3r-b034-hostile/b034-hostile-v-2 exit 0
+2026-11-19T10:37:28Z seed m3r-b034-hostile/b034-hostile-v-3 exit 0
+2026-11-19T11:57:40Z seed m3org/b034-mono-v exit 0
+2026-11-19T11:57:40Z b0-34 drain start
+2026-11-19T11:59:47Z b0-34 drain exit 0 {"at":"2026-11-19T11:59:36.657Z","s":126.5,"kind":"summary","drained":true,"stalled":false,"firstS":33.1,"drainS":93.4,"promotedFrom0":299,"promotedTo":313,"target":316,"unpromoted":20905111,"unpromotedPacks":3,"alarms":[]}
+site fault off: 200
+git#1#net:1048598 200
+git#0#net:1048598 200
+git#0#net:3538955 200
+git#0#net:3538954 200
+git#0#net:3538953 200
+git#0#net:3473411 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-19T12:00:26Z b0-34 shards torn down before the cold warm
+{"net": "1048598", "running": 0, "other_image": 0}
+2026-11-19T12:00:29Z b0-34 warm start
+2026-11-19T12:02:35Z b0-34 warm exit 0 {"at":"2026-11-19T12:02:25.351Z","s":126.3,"kind":"summary","mainS":2,"catchupS":{"0":110.1,"1":126.3,"2":111.2},"limitMin":45}
+site 2: 62 spools, 6.04 GB in 71.4 s = 84.5 MB/s in total; per stream p50 28.6 MB/s, bytes-weighted 29.7 MB/s; streams busy mean 2.85, most 4; peak 5 s bin 143.1 MB/s; from site {2: 62}
+  MB/s by bin: 19 86 107 131 143 57 120 110 88 103 89 22 48 65 19 1
+site 2 pool:7: 62 spools, 6.04 GB in 71.6 s = 84.3 MB/s in total; per stream p50 28.8 MB/s, bytes-weighted 29.8 MB/s; streams busy mean 2.83, most 4; peak 5 s bin 140.3 MB/s; from site {2: 62}
+  MB/s by bin: 16 73 140 115 139 61 132 101 83 104 88 21 48 65 19 1
+site 2 pool:7 beside site 2, 15 bins both busy: site 2 80.4 MB/s + site 2 pool:7 80.4 MB/s = 160.9 MB/s; site 2 alone nan MB/s
+b0-34 pool probe torn down {"status":200,"body":"{\"torn_down\":true}"}
+{"name": "git#2#net:1048598", "started": "2026-11-19T12:00:31.094Z", "image": "sha256:0bc70d3bf67d79beee53d734d594e9481d814ea0e40448c4f7728f919273e8c8"}
+{"name": "git#1#net:1048598", "started": "2026-11-19T12:00:30.765Z", "image": "sha256:0bc70d3bf67d79beee53d734d594e9481d814ea0e40448c4f7728f919273e8c8"}
+{"name": "git#0#net:1048598", "started": "2026-11-19T12:00:30.62Z", "image": "sha256:0bc70d3bf67d79beee53d734d594e9481d814ea0e40448c4f7728f919273e8c8"}
+{"net": "1048598", "running": 3, "other_image": 0}
+2026-11-19T12:02:43Z b0-34 warm images exit 0
+b0-34 kept packs after the warm: {"0": {"kept": 59, "count": 62}, "1": {"kept": 59, "count": 62}, "2": {"kept": 59, "count": 62}}
+b0-34 compose after the warm site a {"n": 3, "bytes": 260792673, "files": [["base-75afd029e607623df50", 2473024, "2026-11-19T12:02:45.264Z"], ["base-75afd029e607623df50", 258319537, "2026-11-19T12:02:44.858Z"], ["head", 112, "2026-11-19T12:02:45.676Z"]]}
+b0-34 compose after the warm site b {"n": 0, "bytes": 0, "files": []}
+b0-34 compose after the warm site c {"n": 29, "bytes": 689718337, "files": [["base-7bcff5a3969b0e39608", 2363628, "2026-11-19T11:53:10.083Z"], ["base-7bcff5a3969b0e39608", 249316519, "2026-11-19T11:53:09.116Z"], ["head", 670, "2026-11-19T11:57:52.837Z"], ["part-1e6d5dea34325df8dc2", 195168, "2026-11-19T11:54:53.722Z"], ["part-1e6d5dea34325df8dc2", 38861142, "2026-11-19T11:54:52.866Z"], ["part-2d71340ff1d41a5b9fc", 82216, "2026-11-19T11:56:01.178Z"], ["part-2d71340ff1d41a5b9fc", 19730186, "2026-11-19T11:56:00.033Z"], ["part-3b6bf5b1f8e3d17d756", 184388, "2026-11-19T11:55:26.648Z"]]}
+2026-11-19T12:02:54.522Z repo:1048598 leader 0: k 1 at 318
+2026-11-19T12:03:05Z b0-34 b034-mono-v repo:1048598 start
+2026-11-19T12:22:11Z b0-34 done exit 0
+2026-11-19T12:29:08Z b0-34 misses: {"probes": 378, "lines": 394, "joined": 337, "probes_without_line": 41, "lines_without_probe": 57} {"answers": {"tail": 231, "composed": 76, "status 503": 30}} 
+b0-34 compose at the row's end site a {"n": 13, "bytes": 261734158, "files": [["base-615d300648869c774bd", 2477672, "2026-11-19T12:20:18.031Z"], ["base-615d300648869c774bd", 258690670, "2026-11-19T12:20:17.655Z"], ["head", 326, "2026-11-19T12:21:28.138Z"], ["part-3eab830189d94f0f80f", 1324, "2026-11-19T12:20:51.450Z"], ["part-3eab830189d94f0f80f", 289307, "2026-11-19T12:20:51.210Z"], ["part-6098d87eaf31f48153c", 1212, "2026-11-19T12:21:27.935Z"], ["part-6098d87eaf31f48153c", 62378, "2026-11-19T12:21:27.723Z"], ["part-615d300648869c774bd", 1688, "2026-11-19T12:20:47.175Z"]]}
+b0-34 compose at the row's end site b {"n": 0, "bytes": 0, "files": []}
+b0-34 compose at the row's end site c {"n": 13, "bytes": 261734158, "files": [["base-615d300648869c774bd", 2477672, "2026-11-19T12:20:43.305Z"], ["base-615d300648869c774bd", 258690670, "2026-11-19T12:20:42.238Z"], ["head", 326, "2026-11-19T12:21:31.002Z"], ["part-3eab830189d94f0f80f", 1324, "2026-11-19T12:20:53.847Z"], ["part-3eab830189d94f0f80f", 289307, "2026-11-19T12:20:53.008Z"], ["part-6098d87eaf31f48153c", 1212, "2026-11-19T12:21:30.111Z"], ["part-6098d87eaf31f48153c", 62378, "2026-11-19T12:21:29.303Z"], ["part-615d300648869c774bd", 1688, "2026-11-19T12:20:49.510Z"]]}
+file://tests/am1/hosted/lib.mjs:126
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:1048598
+    at leaderOf (file://tests/am1/hosted/lib.mjs:126:9)
+    at async file://tests/fanout/k.mjs:14:16
+
+Node.js v26.12.0
+DONE
