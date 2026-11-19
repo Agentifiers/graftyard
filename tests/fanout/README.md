@@ -45,8 +45,10 @@ with two (LAX and DFW), so leader-change counts before m53 are not comparable wi
 
 ## Placement baseline (from 2026-11-19, B0-29's A-B-A)
 
-Every B0-29 and B0-33 results file states the leader's storage confirm p50 in the row's setup, before load, beside
-its load confirm. `b029.sh` and `b033.sh` end each row's status with it (`lsrefsab.py` on the row's tsave). Each row
+Every B0-29 and B0-33 results file states the leader's 1-statement storage confirm p50 in the row's setup, before
+load, beside its load confirm. The pooled setup p50 is not the baseline: setup confirms are two near-equal groups,
+1-statement deferred flushes and unpaired in-step confirms, and the pooled median flips between them on one sample
+(`tests/am1/results/b033-m54.md`, "4. Setup baseline"). `b029.sh` and `b033.sh` end each row's status with it (`lsrefsab.py` on the row's tsave). Each row
 is a new network on new Durable Objects, and on one build the setup p50 ranged from 39 to 70 ms by placement alone
 (`tests/am1/results/b029-m2b.md`, the A-B-A). A load confirm is read against its own network's baseline, not
 against another row's.
