@@ -71,6 +71,8 @@ mod usertok;
 const AGENT: &str = "git/graftyard-m1";
 /// `design/DESIGN.md`, Shape, `Unsupported`: "The edge renders it as 503 with `Retry-After: 5` [guess]".
 const UNSUPPORTED_RETRY_AFTER: &str = "5";
+/// A commit with no outcome (`no_outcome`): the REST routes' `Retry-After` for the same answer (`api::unavailable`).
+const NO_OUTCOME_RETRY_AFTER: &str = "5";
 
 fn now() -> Timestamp {
     Timestamp(Date::now().as_millis())
@@ -1006,12 +1008,14 @@ async fn commit(
     first: Option<&serde_json::Value>,
     trace: Option<&std::cell::RefCell<Vec<serde_json::Value>>>,
     lookup: Option<&[u8]>,
-) -> Result<std::result::Result<PushOutcome, CallErrorWire>> {
+) -> Result<std::result::Result<PushOutcome, CommitFail>> {
     // A group whose leader this isolate holds exists: no create probe first. With none held (a first commit, or after
     // `NotLeader` or a reply from an older term), the probe runs as before (`graftyard_lookup::knows_leader`).
     if !graftyard_lookup::knows_leader(ChainId::Repo(repo.id)) {
         let since = js_sys::Date::now();
-        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        if let Err(e) = ensure_group(c, repo).await {
+            return commit_result(Err(Err(e)));
+        }
         // B0-32's count of commits that probed (`probe` in `server-timing`; a commit without one skipped it).
         c.timing.add("probe", since);
     }
@@ -1045,14 +1049,39 @@ async fn commit(
         };
         c.timing.put(name, 0.0);
     }
+    commit_result(r)
+}
+
+/// Why a commit gave no `PushOutcome`: the member's error (`CallErrorWire`), or no outcome came in time
+/// (`commit_hedged`'s `Err(Err(_))`, or the group's create probe failed). Each is a retryable 503, never a 500: B0-33
+/// m59r33's four edge 500s were receive-pack commits that ended `no outcome: …: missed` under leader churn.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum CommitFail {
+    Wire(CallErrorWire),
+    NoOutcome(String),
+}
+
+/// `commit_hedged`'s answer as `commit` returns it.
+fn commit_result(
+    r: std::result::Result<serde_json::Value, std::result::Result<serde_json::Value, String>>,
+) -> Result<std::result::Result<PushOutcome, CommitFail>> {
     Ok(match r {
-        Ok(done) => match serde_json::from_value::<PushOutcome>(done) {
-            Ok(o) => Ok(o),
-            Err(_) => Err(unreadable_reply()),
-        },
-        Err(Ok(error)) => Err(serde_json::from_value::<CallErrorWire>(error).unwrap_or_else(|_| unreadable_reply())),
-        Err(Err(e)) => return Err(Error::RustError(e)),
+        Ok(done) => serde_json::from_value::<PushOutcome>(done).map_err(|_| CommitFail::Wire(unreadable_reply())),
+        Err(Ok(error)) => {
+            Err(CommitFail::Wire(serde_json::from_value::<CallErrorWire>(error).unwrap_or_else(|_| unreadable_reply())))
+        }
+        Err(Err(e)) => Err(CommitFail::NoOutcome(e)),
     })
+}
+
+/// A push whose commit gave no outcome in time: 503 with `Retry-After`, before any byte of a git result, as a group
+/// with no leader is, so git prints the HTTP error and the push can be sent again.
+fn no_outcome(rid: RequestId, why: &str) -> Result<Response> {
+    let h = headers(rid)?;
+    h.set("retry-after", NO_OUTCOME_RETRY_AFTER)?;
+    h.set("content-type", "text/plain; charset=utf-8")?;
+    Ok(Response::ok(format!("the push's commit gave no outcome ({why}); retry\n"))?.with_status(503).with_headers(h))
 }
 
 /// The body a push's commit asks `/outcome_by_request` with while its send is open (`graftyard_lookup::Hooks`): the
@@ -1529,14 +1558,14 @@ async fn receive_pack(
     }
     let lookup = lookup_body(c.rid, &push);
     let mut reply = api::timed(c, "commit", commit(c, repo, &body, first.as_ref(), None, Some(&lookup))).await?;
-    if let Err(CallErrorWire::Stage(_)) = &reply {
+    if let Err(CommitFail::Wire(CallErrorWire::Stage(_))) = &reply {
         hot::staged(repo.id, now());
     }
     // `AdmitError::Stage`: the leader asks for the inline pack as a stored one, sent again under the same request id.
-    if let (Err(CallErrorWire::Stage(_)), true) = (&reply, placement_failing(c)) {
+    if let (Err(CommitFail::Wire(CallErrorWire::Stage(_))), true) = (&reply, placement_failing(c)) {
         return refuse(Refusal::agent_full(OUTAGE_RETRY_S));
     }
-    if let (Err(CallErrorWire::Stage(_)), Some(ix), Some(mut a)) = (&reply, index, admit) {
+    if let (Err(CommitFail::Wire(CallErrorWire::Stage(_))), Some(ix), Some(mut a)) = (&reply, index, admit) {
         let raw = buckets(c.env, c.sites)?;
         let refs: Vec<(SiteId, &R2)> =
             raw.iter().filter(|(s, _)| repo.record.sites.contains(s)).map(|(s, b)| (*s, b)).collect();
@@ -1590,12 +1619,15 @@ async fn receive_pack(
             _ => refuse(Refusal::refused(&r.err)),
         },
         Ok(PushOutcome::Full(f)) => refuse(Refusal::agent_full(f.retry_after_s)),
-        Ok(PushOutcome::NotLeader(_)) | Err(CallErrorWire::NotLeader(_)) => {
+        Ok(PushOutcome::NotLeader(_)) | Err(CommitFail::Wire(CallErrorWire::NotLeader(_))) => {
             text(c.rid, 503, "the repository's group has no leader; retry\n")
         }
-        Err(CallErrorWire::Unsupported(u)) => unsupported(c.rid, u.family, u.version),
-        Err(CallErrorWire::TooLarge(t)) => refuse(Refusal::updates_too_large(t.len, t.max, rp.updates.len())),
-        Err(CallErrorWire::Stage(_)) => text(c.rid, 503, "the pack could not be staged; retry\n"),
+        Err(CommitFail::Wire(CallErrorWire::Unsupported(u))) => unsupported(c.rid, u.family, u.version),
+        Err(CommitFail::Wire(CallErrorWire::TooLarge(t))) => {
+            refuse(Refusal::updates_too_large(t.len, t.max, rp.updates.len()))
+        }
+        Err(CommitFail::Wire(CallErrorWire::Stage(_))) => text(c.rid, 503, "the pack could not be staged; retry\n"),
+        Err(CommitFail::NoOutcome(e)) => no_outcome(c.rid, &e),
     }
 }
 
@@ -3257,10 +3289,39 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        Cut, ShardRefusal, bound_at_send, capped, client_push_id, fivexx_line, gate_ng, gunzip, ls_refs_at_edge,
-        route_kind, shard_fail_line, shard_refusal, shard_url, streamed_site, validate_failed, validate_sites,
-        validate_timing, validate_url, warm_first,
+        CommitFail, Cut, ShardRefusal, bound_at_send, capped, client_push_id, commit_result, fivexx_line, gate_ng,
+        gunzip, ls_refs_at_edge, route_kind, shard_fail_line, shard_refusal, shard_url, streamed_site, validate_failed,
+        validate_sites, validate_timing, validate_url, warm_first,
     };
+
+    /// A commit that gave no outcome in time is a `CommitFail::NoOutcome` the push answers 503 with `Retry-After`,
+    /// not an edge error, which the runtime answers 500 (B0-33 m59r33: four receive-pack 500s, each `no outcome: …:
+    /// missed`). A member's error and an unreadable reply stay `Wire`, and an outcome stays an outcome.
+    #[test]
+    fn a_commit_with_no_outcome_is_a_retryable_failure_not_an_edge_error() {
+        use graftyard_git::group::{CallErrorWire, PushOutcome};
+        let missed = "repo:131373: no outcome: repo:131373#1#f1: missed".to_owned();
+        match commit_result(Err(Err(missed.clone()))) {
+            Ok(Err(CommitFail::NoOutcome(e))) => assert_eq!(e, missed),
+            other => panic!("{other:?}"),
+        }
+        let nl = serde_json::json!({ "notLeader": { "term": 4, "leader": null } });
+        assert!(matches!(commit_result(Err(Ok(nl))), Ok(Err(CommitFail::Wire(CallErrorWire::NotLeader(_))))));
+        assert!(matches!(
+            commit_result(Err(Ok(serde_json::json!({ "nonsense": 1 })))),
+            Ok(Err(CommitFail::Wire(CallErrorWire::Unsupported(_))))
+        ));
+        // An answer that is not a `PushOutcome` stays `Unsupported` (503), never a lost reply a re-send could replay.
+        assert!(matches!(
+            commit_result(Ok(serde_json::json!({ "nonsense": 1 }))),
+            Ok(Err(CommitFail::Wire(CallErrorWire::Unsupported(_))))
+        ));
+        let full = serde_json::json!({ "full": { "retry_after_s": 2 } });
+        assert!(matches!(commit_result(Ok(full)), Ok(Ok(PushOutcome::Full(_)))));
+        // A test install's `/_bed/push` and BF-12's driver read a member error as `{"Err": <CallErrorWire>}`.
+        let wire = CommitFail::Wire(CallErrorWire::Stage(true));
+        assert_eq!(serde_json::to_value(&wire).unwrap(), serde_json::json!({ "stage": true }));
+    }
 
     /// The shard's validate timing becomes the three `v_*` stages, and an unknown name is dropped.
     #[test]
