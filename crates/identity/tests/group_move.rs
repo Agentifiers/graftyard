@@ -4,7 +4,9 @@
 //! every step, every committed command survives on the final members, and the group never names a config its leader
 //! is not in.
 
-use graftyard_identity::group_move::{MoveStep, next_step};
+use graftyard_identity::group_move::{
+    MoveStep, TransferGate, WARM_BEFORE_TRANSFER, WarmWait, next_step, transfer_gate, warm_site,
+};
 use graftyard_identity::{NAMES_FORMAT, NamesCmd, NamesFold, NamesOp, NamesRead};
 use graftyard_raft::{
     Envelope, Ev, GroupConfig, Member, MemberConfig, ReconfigError, ReleaseTag, RequestId, Resolution, Role, Stored,
@@ -394,4 +396,157 @@ fn a_move_between_solo_and_three_sites_is_unsupported() {
     let normal = |r: &PlacementRecord| GroupConfig::Normal(Box::new(Placement::from_record(CHAIN, r).unwrap()));
     assert_eq!(next_step(&normal(&solo), SiteId(0), &tri), MoveStep::Unsupported, "Solo to Tri");
     assert_eq!(next_step(&normal(&tri), SiteId(0), &solo), MoveStep::Unsupported, "Tri to Solo");
+}
+
+/// The target site's git cache shard, as `move_step`'s `shard_warm` sees it: warm from `warm_at` (ms) on, or never.
+struct Shard {
+    warm_at: Option<u64>,
+}
+
+/// What one gated `/move` ask did (`move_step`): held on the shard, or the step taken, and whether cold.
+#[derive(Debug, PartialEq)]
+enum Ask {
+    Held,
+    Took(MoveStep, bool),
+}
+
+impl G {
+    /// One `/move` ask as `move_step` answers it: a step that moves the leader (`warm_site`) asks the shard and
+    /// `transfer_gate` first, and a held step changes nothing.
+    fn ask(&mut self, to: &PlacementRecord, shard: &Shard, wait: &mut Option<WarmWait>) -> Ask {
+        let (cfg, l) = (self.cfg(), self.leader());
+        let step = next_step(&cfg, l, to);
+        let mut cold = false;
+        if warm_site(&cfg, l, to, step).is_some() {
+            let warm = shard.warm_at.is_some_and(|w| self.now.0 >= w);
+            let (gate, next, _) = transfer_gate(warm, *wait, self.now);
+            *wait = next;
+            match gate {
+                TransferGate::Hold => return Ask::Held,
+                TransferGate::Go => {}
+                TransferGate::GoCold => cold = true,
+            }
+        }
+        if step != MoveStep::Done {
+            self.perform(step, to);
+        }
+        Ask::Took(step, cold)
+    }
+
+    fn home(&self) -> SiteId {
+        match self.cfg() {
+            GroupConfig::Normal(p) => p.home(),
+            c => panic!("{c:?}"),
+        }
+    }
+}
+
+/// G11 after m3fg11: once a config naming another home is in the log, the core hands leadership to it by itself, so
+/// a planned home-only move holds `Home`, not only `Transfer`, while the new home's shard warms. Held, nothing changes:
+/// the home and the leader stay. Once the shard is warm `Home` commits, and leadership follows with no `Transfer`.
+#[test]
+fn a_planned_home_holds_while_the_new_homes_shard_warms_and_the_hand_off_follows() {
+    let mut g = G::new();
+    let to = record([0, 1, 2], 2);
+    let shard = Shard { warm_at: Some(g.now.0 + 20_000) };
+    let mut wait = None;
+    let mut held = 0;
+    loop {
+        match g.ask(&to, &shard, &mut wait) {
+            Ask::Held => {
+                held += 1;
+                assert_eq!((g.home(), g.leader()), (SiteId(0), SiteId(0)), "a held Home changes nothing");
+                g.pass(5_000);
+            }
+            Ask::Took(step, cold) => {
+                assert_eq!((step, cold), (MoveStep::Home { home: SiteId(2) }, false));
+                break;
+            }
+        }
+    }
+    assert_eq!(held, 4, "asked every 5 s, warm 20 s in");
+    assert_eq!(g.home(), SiteId(2));
+    // The core's hand-off back to `home` (`maybe_hand_off`, after HOME_CALLS answered calls to it): writes keep the
+    // group's calls going, as client load does, and no `Transfer` is asked.
+    for k in 0..30 {
+        if g.leader() == SiteId(2) {
+            break;
+        }
+        g.write(200 + k);
+    }
+    assert_eq!(g.leader(), SiteId(2), "leadership follows the committed home");
+    assert_eq!(g.ask(&to, &shard, &mut wait), Ask::Took(MoveStep::Done, false));
+    g.assert_all_kept(&[0, 1, 2]);
+}
+
+/// A shard that never warms: `Home` commits cold at WARM_BEFORE_TRANSFER, and a warm one at the first ask commits at once.
+#[test]
+fn a_planned_home_commits_cold_at_the_deadline_or_at_once_when_warm() {
+    let mut g = G::new();
+    let to = record([0, 1, 2], 1);
+    let t0 = g.now.0;
+    let (mut wait, mut asks) = (None, 0);
+    let (took, at) = loop {
+        asks += 1;
+        let at = g.now.0;
+        match g.ask(&to, &Shard { warm_at: None }, &mut wait) {
+            Ask::Held => g.pass(5_000),
+            t => break (t, at),
+        }
+    };
+    assert_eq!(took, Ask::Took(MoveStep::Home { home: SiteId(1) }, true));
+    assert_eq!(at - t0, WARM_BEFORE_TRANSFER.as_millis() as u64, "cold at the deadline, {asks} asks");
+    assert_eq!(g.home(), SiteId(1));
+
+    let mut g = G::new();
+    let mut wait = None;
+    let to = record([0, 1, 2], 1);
+    assert_eq!(
+        g.ask(&to, &Shard { warm_at: Some(0) }, &mut wait),
+        Ask::Took(MoveStep::Home { home: SiteId(1) }, false)
+    );
+    assert_eq!(g.home(), SiteId(1));
+}
+
+/// Only a planned step waits: with `Home` held on a cold shard, the leader's loss still elects a new leader at the
+/// first campaign (the host campaigns on a request), which serves writes at once, and the move goes on from it, gated
+/// again as a planned step.
+#[test]
+fn a_failover_never_waits_for_the_shard() {
+    let mut g = G::new();
+    g.write(1);
+    let to = record([0, 1, 2], 2);
+    let shard = Shard { warm_at: None };
+    let mut wait = None;
+    assert_eq!(g.ask(&to, &shard, &mut wait), Ask::Held);
+    g.members[0] = None;
+    g.inbox.retain(|e| e.from != SiteId(0));
+    let lost = g.now.0;
+    while g.m(SiteId(1)).role() != Role::Leader {
+        assert!(g.now.0 - lost < 10_000, "site 1 not elected 10 s after the loss");
+        g.pass(1_000);
+        g.on(SiteId(1), |m, now| m.campaign(now));
+        g.deliver();
+    }
+    g.write(2);
+    assert_eq!(g.home(), SiteId(0), "the held Home never committed");
+    // The new leader's planned move is still gated on the cold shard.
+    assert_eq!(g.ask(&to, &shard, &mut wait), Ask::Held);
+}
+
+/// `warm_site` names the site a step makes the next leader: a `Transfer`'s target, a `Home`'s home, and a `Swap`'s only
+/// when it drops the home; never the leader's own site.
+#[test]
+fn warm_site_names_the_next_leaders_site() {
+    let g = G::new();
+    let cfg = g.cfg();
+    let s = SiteId;
+    assert_eq!(warm_site(&cfg, s(0), &record([0, 1, 2], 2), MoveStep::Home { home: s(2) }), Some(s(2)));
+    assert_eq!(warm_site(&cfg, s(0), &record([3, 1, 2], 3), MoveStep::Transfer { to: s(1) }), Some(s(1)));
+    // The swap drops site 1, not the home: no leader moves.
+    assert_eq!(warm_site(&cfg, s(0), &record([0, 3, 2], 0), MoveStep::Swap { add: s(3), drop: s(1) }), None);
+    // The swap drops the home (0) and adds the target's home (3): the `Joint` names 3, which the core hands off to.
+    assert_eq!(warm_site(&cfg, s(1), &record([3, 1, 2], 3), MoveStep::Swap { add: s(3), drop: s(0) }), Some(s(3)));
+    // Home on the leader's own site moves no leader.
+    assert_eq!(warm_site(&cfg, s(2), &record([0, 1, 2], 2), MoveStep::Home { home: s(2) }), None);
 }

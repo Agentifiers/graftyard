@@ -943,16 +943,6 @@ pub async fn read_spread_for(
         .and_then(|r| r)
 }
 
-/// One pass of `read_spread_for` (`spread_once`, the leader allowed): the answer, or a shed naming the wait its
-/// members asked for. The edge's write-class tier read runs these passes through one batch per key, so concurrent
-/// writes to one repository share each pass and its shed (`tier-read-batch`, `workers/edge/src/rcache.rs`).
-pub type Pass = std::result::Result<std::result::Result<Option<(Value, Step, Target)>, String>, (String, u64)>;
-
-/// One pass of `read_spread_for`, for a caller that runs `retry_shed` itself.
-pub async fn spread_pass(b: &Bindings<'_>, chain: ChainId, record: &PlacementRecord, body: &Value) -> Pass {
-    spread_once(b, chain, record, body, true).await
-}
-
 /// `read_spread` without the leader: one pass over the learners and followers, and `Ok(None)` where `read_spread`
 /// would go on to the leader. For a read the caller has another place to serve from (the edge's `ls-refs`, whose
 /// fallback is the network's shard), so it never adds to the leader's load (F91, `tests/am1/results/b029-m2b.md`).
@@ -984,7 +974,7 @@ fn shed_wait(n: u32, named: u64, r: f64) -> u64 {
 
 /// Runs `attempt` until it answers, waiting `shed_wait` after each shed answer while that wait ends before `until`
 /// (ms); a shed answer past it is the read's error, naming OVERLOADED. `rand` gives each wait's jitter.
-pub async fn retry_shed<T, A, W>(
+async fn retry_shed<T, A, W>(
     until: u64,
     now: impl Fn() -> u64,
     mut attempt: impl FnMut() -> A,

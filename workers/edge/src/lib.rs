@@ -698,25 +698,7 @@ pub(crate) async fn spread_read(
     record: &PlacementRecord,
     q: &serde_json::Value,
 ) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
-    let retry_for = shed_retry_for(c.write.get(), budget_left(c));
-    if !c.write.get() {
-        return graftyard_lookup::read_spread_for(b, chain, record, q, retry_for).await;
-    }
-    // `tier-read-batch`: a write's spread read and its shed retries go through one batch per chain and query in this
-    // isolate, so writes to one repository share each pass instead of each asking the members (`rcache::retried`).
-    let until = graftyard_lookup::now_ms() + retry_for.as_millis() as u64;
-    let (r, passes) = rcache::retried(
-        &rcache::TIERS,
-        rcache::tier_key(chain, q),
-        until,
-        || graftyard_lookup::spread_pass(b, chain, record, q),
-        graftyard_lookup::now_ms,
-        worker::Delay::from,
-        js_sys::Math::random,
-    )
-    .await;
-    c.timing.tiers(passes);
-    r.and_then(|r| r)
+    graftyard_lookup::read_spread_for(b, chain, record, q, shed_retry_for(c.write.get(), budget_left(c))).await
 }
 
 /// How long `spread_read` asks again for a shed read: not at all for a read-class request; SHED_RETRY_FOR for a write,

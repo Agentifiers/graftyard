@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""g11-warm: planted bugs in a planned transfer's wait for the target site's git cache shard
+"""g11-warm: planted bugs in a planned move's wait for the next leader site's git cache shard
 (`decisions/DECISIONS.md`, "`g11-warm`"). Plants one mutant at a time, runs the tests that guard it, and restores the
 file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
 
@@ -12,7 +12,9 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 GM = 'crates/identity/src/group_move.rs'
-TEST = ['cargo', 'test', '-q', '-p', 'graftyard-identity', '--lib', '--', 'group_move']
+# The gate's own tests and the moves through it on real members (`crates/identity/tests/group_move.rs`).
+TEST = ['bash', '-c', 'cargo test -q -p graftyard-identity --lib -- group_move && '
+        'cargo test -q -p graftyard-identity --test group_move']
 
 MUTANTS = [
     # The orchestrator's plant: the transfer goes at once, warm or not.
@@ -29,6 +31,15 @@ MUTANTS = [
      '    if warm {\n        return (TransferGate::Go, None, waited);\n    }\n    if waited >= bound {\n',
      '    if warm && waited < bound {\n        return (TransferGate::Go, None, waited);\n    }\n    if waited >= bound && !warm {\n',
      TEST),
+    # m3fg11's case: `Home` commits at once, and the core hands off to a cold shard.
+    ('a planned Home commits at once, whatever the shard answers', GM,
+     '        (MoveStep::Home { home }, _) => home,\n', '        (MoveStep::Home { .. }, _) => return None,\n', TEST),
+    ('a Swap that drops the home never waits', GM,
+     '            if home == p.home() {\n                return None;\n', '            if home == p.home() || true {\n                return None;\n',
+     TEST),
+    ('a cold step forgets its wait, so the next step waits a second bound', GM,
+     '        return (TransferGate::GoCold, wait.map(|w| WarmWait { last: now, ..w }), waited);\n',
+     '        return (TransferGate::GoCold, None, waited);\n', TEST),
 ]
 
 

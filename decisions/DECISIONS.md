@@ -5577,31 +5577,45 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 - `rcwait` at p99 above about two reads, about 4 s. The batch then holds callers longer than reading alone would.
 - A write is seen to pass on a token, `jti` or grant revoked before it arrived. That would break the invariant.
 
-### `g11-warm`: a planned rehome warms the target site's git cache shard before it moves the leader, 2026-11-19
+### `g11-warm`: a planned rehome warms the next leader site's git cache shard before it moves the leader, 2026-11-19
 
-**Status.** Built on branch `g11-warm`, code-only, approved by the orchestrator. Not deployed. It needs a site day, and a hosted rehome judges it. Nothing in `crates/raft`.
+**Status.** Built on branch `g11-warm` (merged as `1d815c92`) with the wait on `Transfer`, measured on m3fg11, and moved to the step that triggers the hand-off on branch `g11-home`, code-only, approved by the orchestrator. Not deployed: it needs a site day, and a hosted rehome judges it. Nothing in `crates/raft`.
 
 **Decision.**
-- A repository group's planned `Transfer` (`/move`, `move_step` in `workers/site/src/member.rs`) first asks the target site's first git cache shard of the network for `/catchup`, as a client with `next=1`. That starts a stopped container, and a shard that is still rehydrating answers `warming` at once.
-- While the shard answers anything but 200, the step answers `{"warming": true}` without transferring, and the caller asks again. The audit consumer's move (`repo_step`) asks again after 5 s and does not count those asks against its 40 steps.
-- The wait has a deadline, `WARM_BEFORE_TRANSFER` (60 s [guess], `graftyard_identity::group_move`). Past it the step transfers anyway, answers `"cold": true` with the ms waited, and logs `transfer to site N cold`.
-- The wait is kept per leader isolate, by chain and target site (`transfer_gate`). A wait whose last ask is older than the deadline belongs to a move that stopped asking, so it starts again.
+- A repository group's planned `/move` step (`move_step` in `workers/site/src/member.rs`) that makes another site the next leader first asks that site's first git cache shard of the network for `/catchup`, as a client with `next=1`. That starts a stopped container, and a shard that is still rehydrating answers `warming` at once. `graftyard_identity::group_move::warm_site` names the site:
+  - a `Home` step's new home;
+  - a `Swap` that drops the home, the `Joint`'s new home (`swap_home`);
+  - a `Transfer`'s target.
+- The wait covers `Home` and a home-moving `Swap` because a config naming another home triggers the hand-off. Once such a config is in the log, the raft core's `maybe_hand_off` (`crates/raft/src/member/health.rs`) transfers leadership to it by itself, after HOME_CALLS answered calls and one health window. So a wait on `Transfer` alone comes after the hand-off.
+- The wait stays on `Transfer`, for a move where the core did not hand off: a home whose calls failed, `home_after` after an abandoned transfer, a `Joint`'s leader on the dropped site, or a leader site that leaves. When a step went cold, the expired wait is kept, so that move's next step to the same site goes cold at once instead of waiting a second bound.
+- While the shard answers anything but 200, the step answers `{"warming": true, "waitedMs", "site"}` and changes nothing; the caller asks again. The audit consumer's move (`repo_step`) asks again after 5 s and does not count those asks against its 40 steps.
+- The wait has a deadline, `WARM_BEFORE_TRANSFER` (60 s [guess], `graftyard_identity::group_move`). Past it the step goes anyway, its answer carries `"cold": true` with the ms waited, and it logs `move <chain>: <step> to site N cold`.
+- The wait is kept per leader isolate, by chain and site (`transfer_gate`). A wait whose last ask is older than the deadline belongs to a move that stopped asking, so it starts again.
 - Only repository chains wait: identity and system groups have no git cache shard.
+- Only the planned `/move` route waits. An election, `STEP_DOWN`, a drain or `no_lead` hand-off, and a re-placement never ask a shard. No path other than `/move` writes a config naming another home: a re-placement and `/learners` keep `p.home()`, and `/reconfigure` is a test route with no product caller.
 
-**Why.** After B0-31 m3fr7 moved repo:65570's home and leader to apac, apac's shard was cold. Its rehydrate ran 34.2 s, tail 59.7 s, catch-up 69.0 s (268 MB in 257 packs), and every MergeQueue merge in that window answered `warming` after MERGE_WAIT: 5 of 5, 28 to 66 s after the move, and none once it was warm [measured, `tests/am1/results/lm1-rows-m3f.md`, Rows m3fr7; `decisions/OPEN-QUESTIONS.md`, G11]. Waiting before the hand-off moves that catch-up to a time when the old leader still serves merges from its own warm shard.
+**Why.**
+- After B0-31 m3fr7 moved repo:65570's home and leader to apac, apac's shard was cold. Its rehydrate ran 34.2 s, tail 59.7 s, catch-up 69.0 s (268 MB in 257 packs), and every MergeQueue merge in that window answered `warming` after MERGE_WAIT: 5 of 5, 28 to 66 s after the move, and none once it was warm [measured, `tests/am1/results/lm1-rows-m3f.md`, Rows m3fr7; `decisions/OPEN-QUESTIONS.md`, G11]. Waiting before the hand-off moves that catch-up to a time when the old leader still serves merges from its own warm shard.
+- On m3fg11 (main `1d815c92`, the wait on `Transfer` only), the first `/move` committed `Home` (home 2) at 09:09:58Z. The core moved leadership to site 2 about 1.5 s later (term 2 → 3), and the next `/move` answered `Done`. The `Transfer` arm never ran: 0 held asks, no `waitedMs`, no `cold` label, and 1 of 9 merges in the next minute answered `warming` against a shard torn down just before the move [measured, `tests/am1/results/lm1-rows-m3f.md`, "Site day m3fg11"].
 
 **What it beat.**
 - **Leaving it to the row's setup** (`tests/fanout/shardwarm.mjs`): that works for B0-31 but not for a customer's rehome.
 - **Warming after the transfer:** that is the m3fr7 window itself.
 - **Waiting with no deadline:** a target shard that never warms, such as one whose container cannot start, would stop the move. The hand-off is what a rehome is for, and the shard still warms after it.
+- **Holding the core's `maybe_hand_off` on the shard:** that puts a shard check in `crates/raft`, and a cache in the raft core's leader rule. Waiting before the config that triggers the hand-off keeps the core unchanged.
 
 **Evidence.**
-- `group_move` tests:
+- `group_move` unit tests:
   - `a_transfer_holds_while_the_target_shard_warms_and_goes_once_it_is_warm`;
-  - `a_shard_that_never_warms_lets_the_transfer_go_cold_at_the_deadline`;
+  - `a_shard_that_never_warms_lets_the_transfer_go_cold_at_the_deadline`, which also checks that the expired wait is kept;
   - `a_wait_left_by_a_move_that_stopped_asking_starts_again`.
-- `tests/m0carried/plant49.py` catches 5 of 5, among them the orchestrator's plant: a transfer that goes at once.
-- No hosted measurement yet. `tests/fanout/rows.sh` keeps its `shardwarm.mjs` step until a hosted rehome shows the move warmed the shard itself.
+- `crates/identity/tests/group_move.rs`, on real members:
+  - `a_planned_home_holds_while_the_new_homes_shard_warms_and_the_hand_off_follows`: 4 held asks change neither home nor leader, then `Home` commits warm and leadership follows with no `Transfer`;
+  - `a_planned_home_commits_cold_at_the_deadline_or_at_once_when_warm`;
+  - `a_failover_never_waits_for_the_shard`: with `Home` held, the leader's loss elects site 1, which commits a write;
+  - `warm_site_names_the_next_leaders_site`.
+- `tests/m0carried/plant49.py` catches 8 of 8, among them the orchestrator's two plants: a transfer that goes at once, and a `Home` that commits at once.
+- m3fg11 is the measurement for the `Transfer`-only wait. `tests/fanout/rows.sh` keeps its `shardwarm.mjs` step until a hosted rehome shows the move warmed the shard itself.
 
 **Flip.** Either of these on a hosted rehome:
 - Most planned rehomes move cold (`"cold": true`). The bound is then too short for the shards it meets, or the catch-up ask is wrong.
@@ -5609,7 +5623,7 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 
 ### `tier-read-batch`: a write's spread read and its shed retries share one batch per chain and query, 2026-11-19
 
-**Status.** Built on branch `tier-read-batch` from main `896fb32f`, not deployed. Edge code only (`workers/edge`, and `crates/lookup` exposes one pass and `retry_shed`), so it ships on an edge day. Nothing in `crates/raft`.
+**Status.** Reverted from main on 2026-11-19 after B0-33 m57b33 (graft-m2b, edge f786a952 from main `61853463`): 441 uncaught edge 500s appeared, which m56 had none of. A runtime cancel ("code had hung and would never generate a response") at 09:52:04Z was followed by "memory access out of bounds" in `worker::Delay`'s poll, "Cannot invoke closure from previous WASM instance" ×394 and "Promise will never complete" ×199. 7,467 503s were the new "waited past its deadline for another write's read", trshare p50 was 0, and trwait p99 sat at the 4 s flip line. Member /read per request did fall, from 2.56 to 1.35 [measured, LM-1 thread T-01a1c694, m57b33 verdict]. The code stays on branch `tier-read-batch` (76776859) until the hang is explained; the text below is the design as built.
 
 **Decision.** `crate::spread_read` for a write-class request (`Ctx::write`) runs through `rcache::retried`, `edge-read-batch`'s batch with the shed retry inside it:
 - Each try is one `graftyard_lookup::spread_pass` through the key's batch (`rcache::batched_from`, the same `Ttl::step` as `edge-read-batch`). A write never takes the answer of a pass that started before it arrived: it waits out the pass in flight and shares the next one, which the first waiter to see the key idle starts.
