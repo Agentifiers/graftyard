@@ -290,10 +290,12 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 
 | Group | Rows |
 | --- | --- |
-| Foundation and protocol | 87 |
+| Foundation and protocol | 88 |
+| F103 | Found in B0-33 m61's analysis (2026-11-19): should `own_stall` excuse an AppendEntries that missed `CALL_DEADLINE` while sent during any open leader confirm, not only one whose confirm began at or before the send and ended after send + 1 s? m61's three CommitErrors holds on site a (19:44:51, 19:45:14, 19:45:25Z) each counted 3 failed calls per follower of 14 to 19. Every one answered ok after the deadline; the followers' handlers took p50 17 to 71 ms, 67% of the late calls left while the leader's own confirm was open (p50 753 ms left, against 13% of fast calls), and calls sent while a 189 to 833 ms confirm was open that ended inside the deadline were counted, as rounds 5269 and 5270 (189 ms left, calls of 1,686 and 1,895 ms) [measured, `tests/am1/results/b033-m61-why.md`, question 4]. The holds moved no leader; they cost the last 30 s of rounds. Excusing more calls also hides a slow follower behind a slow leader [inference] | `crates/raft/src/member/health.rs`, `own_stall`; `design/DESIGN.md`, Shape, `STEP_DOWN` | CommitErrors holds on a loaded leader with slow confirms | A raft-sim case with a leader confirm open at send that ends inside the deadline and a late answer, against main's count; then a B0-33 row's CommitErrors holds |
 | Cloudflare platform facts | 21 |
-| Git and storage | 29 |
+| Git and storage | 30 |
+| G30 | Found in B0-33 m61's analysis (2026-11-19): should a last-site git shard that is rehydrating answer a `next`-less validate 503 with `Retry-After` at once, instead of holding it for the edge's whole wait? On m61 the home shard's 15 s `/catchup?next=1` probe failed while its catch-ups ran 25.5 to 73.5 s, so `validate_streamed` sent packs to site c, mid-rehydrate, which held each for 60 s and then answered `warming`: 400 receive-pack 503s, validate p99 75.8 s in the first minutes, and 28.5% of agent-seconds spent waiting in validate [measured, `tests/am1/results/b033-m61-why.md`, question 1]. Answering at once contradicts `chain-wait`'s rule, merged 2026-11-19, that the last site keeps the whole deadline so a miss never runs out of shards that would wait (`decisions/DECISIONS.md`, "`chain-wait`"), so it is not built. The harness now waits for every site's shard before load (`tests/fanout/rows.sh`, the shard gate), which removes the case from rows but not from a client whose shards go cold under load | `design/DESIGN.md`, Shape, `IngestCursor`; `graftyard_git::warming_now` | Push availability while a non-home shard rehydrates under load | A row with a shard killed under load (B0-34's kill phase) with and without the gate, counting `warming` 503s and validate stalls; or an operator decision that the last site may answer at once while rehydrating |
 | Release and operations | 27 |
 | Agents | 25 |
 | Costs | 12 |
-| Total | 201 |
+| Total | 203 |
