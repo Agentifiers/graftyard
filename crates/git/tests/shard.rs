@@ -273,7 +273,15 @@ fn container_day_covers_10_50_100_percent_in_rendezvous_order_and_rollback_wins(
 }
 
 fn repo(n: i64, mb: u64, used: u64) -> DiskRepo {
-    DiskRepo { network: net(n), bytes: mb << 20, used: Timestamp(used) }
+    DiskRepo {
+        network: net(n),
+        bytes: mb << 20,
+        used: Timestamp(used),
+        pack_bytes: 0,
+        fetched: None,
+        pushed: None,
+        caught_up: None,
+    }
 }
 
 #[test]
@@ -603,4 +611,45 @@ fn stock_waits_in_arrival_order_within_its_deadline() {
     pool.run_until_stalled();
     assert_eq!(order.borrow().last(), Some(&"e"));
     assert!(ticks.borrow().is_empty(), "e never paused");
+}
+
+/// The daily `shard stats` line counts a network in the day's fetched, pushed, or caught-up total only when that kind
+/// of request came within the 24 h before the line, 1 ms short of a day in and a full day out, and sums the
+/// repository's whole bytes, not its packs'. It is due once a day.
+#[test]
+fn shard_stats_count_each_kind_within_the_day() {
+    const H: u64 = 3_600_000;
+    let now = Timestamp(100 * H);
+    let at = |t: u64| Some(Timestamp(t));
+    let r = |n: i64, mb: u64, used: u64, fetched, pushed, caught_up| DiskRepo {
+        network: net(n),
+        bytes: mb << 20,
+        used: Timestamp(used),
+        pack_bytes: (mb << 20) / 2,
+        fetched,
+        pushed,
+        caught_up,
+    };
+    let repos = [
+        // Fetched 1 ms inside the day, pushed long ago.
+        r(1, 300, now.0 - 1, at(now.0 - 24 * H + 1), at(10 * H), at(now.0 - 1)),
+        // Fetched exactly a day ago: out. Caught up within the day only.
+        r(2, 500, now.0 - 2 * H, at(now.0 - 24 * H), None, at(now.0 - 2 * H)),
+        // Pushed within the day, never fetched.
+        r(3, 70, now.0 - H, None, at(now.0 - H), None),
+        // Idle two days.
+        r(4, 900, now.0 - 48 * H, at(now.0 - 48 * H), None, None),
+    ];
+    let v = stats_line(1 << 40, &repos, now);
+    let day = |k: &str| (v["day"][k]["networks"].as_u64().unwrap(), v["day"][k]["bytes"].as_u64().unwrap() >> 20);
+    assert_eq!((v["held"]["networks"].as_u64(), v["held"]["bytes"].as_u64().map(|b| b >> 20)), (Some(4), Some(1770)));
+    assert_eq!(day("fetched"), (1, 300));
+    assert_eq!(day("pushed"), (1, 70));
+    assert_eq!(day("caught_up"), (2, 800));
+    assert_eq!(day("used"), (3, 870));
+    assert_eq!(v["repos"][2]["fetched"], serde_json::Value::Null);
+    assert_eq!(v["repos"][0]["pack_bytes"].as_u64(), Some(150 << 20));
+    assert!(stats_due(now, None));
+    assert!(!stats_due(now, Some(Timestamp(now.0 - 24 * H + 1))));
+    assert!(stats_due(now, Some(Timestamp(now.0 - 24 * H))));
 }

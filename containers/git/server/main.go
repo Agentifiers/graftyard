@@ -87,8 +87,11 @@
 //	                                 "conflict": {"index", "paths"} or null, "pack": every step's objects, "engine"}
 //	GET  /archive?net=N&commit=C&prefix=P&format=tar.gz|zip  `git archive` of C
 //	GET  /repos                      the LRU's view of the disk: {"disk": bytes the filesystem holds (or
-//	                                 GRAFT_DISK_BYTES), "repos": [{"network","bytes","used"}]}, where used is the
-//	                                 last request's time in ms, kept as <repo>/graft-used's mtime
+//	                                 GRAFT_DISK_BYTES), "repos": [{"network","bytes","used","packBytes","fetched",
+//	                                 "pushed","caughtUp"}]}, where used is the last request's time in ms, kept as
+//	                                 <repo>/graft-used's mtime; packBytes the repository's packs; and fetched,
+//	                                 pushed, and caughtUp the last client fetch (info-refs or upload-pack), client
+//	                                 validate, and ingest or ref write, each in ms or 0 for none (`mark`)
 //	POST /evict?net=N                deletes the repository; 409 while a request holds it, so a clone streaming
 //	                                 from it is never cut
 //	GET  /procs[?net=N]              {"procs": [{"pid","cmd","nice","cpu_s","rss_mb"}]}: every running git process,
@@ -334,15 +337,35 @@ func netParam(w http.ResponseWriter, r *http.Request, mustExist bool) (string, s
 }
 
 // touch records a request on the repository for the LRU, as the mtime of <repo>/graft-used.
-func touch(rp string) {
+func touch(rp string) { mark(rp, "used") }
+
+// The kinds of request /repos reports the last time of, for the daily `shard stats` line that measures the working
+// set (decisions/OPEN-QUESTIONS.md, G1): a client's fetch, a client's push, and a catch-up's write.
+const (
+	markFetch   = "fetch"
+	markPush    = "push"
+	markCatchUp = "catchup"
+)
+
+// mark records a request of one kind on the repository as the mtime of <repo>/graft-<kind>; nothing for a
+// repository not on disk.
+func mark(rp, kind string) {
 	if _, err := os.Stat(rp); err != nil {
 		return
 	}
-	p := filepath.Join(rp, "graft-used")
+	p := filepath.Join(rp, "graft-"+kind)
 	now := time.Now()
 	if err := os.Chtimes(p, now, now); err != nil {
 		os.WriteFile(p, nil, 0o644)
 	}
+}
+
+// marked is the time of the repository's last request of one kind in ms, 0 for none.
+func marked(rp, kind string) int64 {
+	if fi, err := os.Stat(filepath.Join(rp, "graft-"+kind)); err == nil {
+		return fi.ModTime().UnixMilli()
+	}
+	return 0
 }
 
 func dirBytes(d string) int64 {
@@ -386,7 +409,9 @@ func handleRepos(w http.ResponseWriter, r *http.Request) {
 		} else if fi, err := os.Stat(d); err == nil {
 			used = fi.ModTime().UnixMilli()
 		}
-		repos = append(repos, map[string]any{"network": net, "bytes": dirBytes(d), "used": used})
+		repos = append(repos, map[string]any{"network": net, "bytes": dirBytes(d), "used": used,
+			"packBytes": dirBytes(filepath.Join(d, "objects", "pack")), "fetched": marked(d, markFetch),
+			"pushed": marked(d, markPush), "caughtUp": marked(d, markCatchUp)})
 	}
 	jsonOut(w, map[string]any{"disk": diskBytes(), "repos": repos})
 }
@@ -804,6 +829,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	if derivedValidate {
 		validateEnv = []string{derivedEnv}
 	} else {
+		mark(rp, markPush)
 		validating.Add(1) // waiting for admission or running: the queue
 		defer validating.Add(-1)
 	}
@@ -1467,6 +1493,7 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	mark(rp, markCatchUp)
 	want := r.URL.Query().Get("sha256")
 	if !sumRe.MatchString(want) {
 		fail(w, 400, "bad sha256")
@@ -1944,6 +1971,7 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	mark(rp, markCatchUp)
 	os.MkdirAll(filepath.Join(data, "spool"), 0o755)
 	dir, err := os.MkdirTemp(filepath.Join(data, "spool"), "batch-")
 	if err != nil {
@@ -2298,6 +2326,9 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
 		return
+	}
+	if r.Method != http.MethodGet {
+		mark(rp, markCatchUp)
 	}
 	if r.Method == http.MethodGet {
 		refs, err := listRefs(rp, []string{derivedEnv})
@@ -2744,6 +2775,7 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	if !ok {
 		return
 	}
+	mark(rp, markFetch)
 	// The client's Git-Protocol header, which the object forwards; git 2.26 and later ask for version 2.
 	proto := r.Header.Get("git-protocol")
 	// The body is read before the network's lock, as /validate's is.

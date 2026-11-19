@@ -44,9 +44,13 @@ func call(t *testing.T, s *httptest.Server, method, path string) (int, map[strin
 type listed struct {
 	Disk  int64 `json:"disk"`
 	Repos []struct {
-		Network string `json:"network"`
-		Bytes   int64  `json:"bytes"`
-		Used    int64  `json:"used"`
+		Network   string `json:"network"`
+		Bytes     int64  `json:"bytes"`
+		Used      int64  `json:"used"`
+		PackBytes int64  `json:"packBytes"`
+		Fetched   int64  `json:"fetched"`
+		Pushed    int64  `json:"pushed"`
+		CaughtUp  int64  `json:"caughtUp"`
 	} `json:"repos"`
 }
 
@@ -102,6 +106,69 @@ func TestReposReportsSizeAndLastUse(t *testing.T) {
 	}
 	if used(after, "1") <= used(after, "2") {
 		t.Fatalf("network 1 is the most recent: %+v", after)
+	}
+}
+
+// /repos reports each network's last fetch, push, and catch-up apart, for the daily `shard stats` line: a stock fetch
+// is not a push, a derived validate (the shard's own promotion) is neither, and a fsck moves only used.
+func TestReposReportsFetchPushAndCatchUpApart(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	base := history(t, wt, 3, 50, 1)
+	run(t, wt, "", "push", "-q", repo("7"), "main")
+	// A small push unpacks to loose objects, so packBytes may be 0, but never more than the repository.
+	get := func() (fetched, pushed, caughtUp, packBytes int64) {
+		for _, r := range repos(t, s).Repos {
+			if r.Network == "7" {
+				if r.PackBytes > r.Bytes {
+					t.Fatalf("packBytes %d over bytes %d", r.PackBytes, r.Bytes)
+				}
+				return r.Fetched, r.Pushed, r.CaughtUp, r.PackBytes
+			}
+		}
+		t.Fatal("network 7 not listed")
+		return
+	}
+	if f, p, c, _ := get(); f != 0 || p != 0 || c != 0 {
+		t.Fatalf("a new repository: fetched %d pushed %d caughtUp %d", f, p, c)
+	}
+	tip := commit(t, wt, map[string]string{"new.txt": "new\n"})
+	pack, err := gitOut(wt, tip+"\n^"+base+"\n", "pack-objects", "--stdout", "--revs", "-q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, body := postBody(t, s.URL+"/validate?net=7&derived=1&tips="+tip, pack); code != 200 {
+		t.Fatalf("derived validate: %d %s", code, body)
+	}
+	call(t, s, "POST", "/fsck?net=7")
+	if f, p, c, _ := get(); f != 0 || p != 0 || c != 0 {
+		t.Fatalf("a derived validate and a fsck: fetched %d pushed %d caughtUp %d", f, p, c)
+	}
+	if r, err := http.Get(s.URL + "/info-refs?net=7"); err != nil {
+		t.Fatal(err)
+	} else {
+		r.Body.Close()
+	}
+	fetched, p, c, _ := get()
+	if fetched == 0 || p != 0 || c != 0 {
+		t.Fatalf("a fetch: fetched %d pushed %d caughtUp %d", fetched, p, c)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if code, body := postBody(t, s.URL+"/validate?net=7&tips="+tip, pack); code != 200 {
+		t.Fatalf("client validate: %d %s", code, body)
+	}
+	f, pushed, c, _ := get()
+	if f != fetched || pushed <= fetched || c != 0 {
+		t.Fatalf("a push: fetched %d (was %d) pushed %d caughtUp %d", f, fetched, pushed, c)
+	}
+	if r, err := http.Post(s.URL+"/refs?net=7", "", strings.NewReader(tip+" refs/heads/x\n")); err != nil {
+		t.Fatal(err)
+	} else {
+		r.Body.Close()
+	}
+	if f, p, c, _ := get(); f != fetched || p != pushed || c < pushed {
+		t.Fatalf("a ref write: fetched %d pushed %d caughtUp %d", f, p, c)
 	}
 }
 

@@ -696,6 +696,57 @@ pub struct DiskRepo {
     pub bytes: u64,
     /// The last request that read or wrote it, by the shard's clock.
     pub used: Timestamp,
+    /// Its packs' bytes, of `bytes`.
+    pub pack_bytes: u64,
+    /// The last client fetch (`info-refs` or `upload-pack`), client validate, and catch-up write (ingest or refs),
+    /// `None` for none since the repository was made or before a container that records them.
+    pub fetched: Option<Timestamp>,
+    pub pushed: Option<Timestamp>,
+    pub caught_up: Option<Timestamp>,
+}
+
+/// How often a running shard logs its `shard stats` line (`stats_line`) from its alarm.
+pub const STATS_EVERY: Duration = Duration::from_secs(24 * 3600);
+
+/// Whether the shard's alarm at `now` logs its `shard stats` line, given when it last did: when it never did, or
+/// STATS_EVERY ago or longer.
+pub fn stats_due(now: Timestamp, last: Option<Timestamp>) -> bool {
+    last.is_none_or(|l| now.0.saturating_sub(l.0) >= STATS_EVERY.as_millis() as u64)
+}
+
+/// The daily `shard stats` line: every repository on the shard's disk with its bytes, its packs' bytes, and its last
+/// use, fetch, push, and catch-up, and the totals of those fetched, pushed, and used in the day before `now`. Summed
+/// over every shard of every site, the fetched day's bytes are the daily working set that `scripts/cost.py` guesses
+/// (`decisions/OPEN-QUESTIONS.md`, G1); a network warm on two sites counts on each, as its shards do. Times are ms.
+pub fn stats_line(disk: u64, repos: &[DiskRepo], now: Timestamp) -> serde_json::Value {
+    let day = STATS_EVERY.as_millis() as u64;
+    let within = |t: Option<Timestamp>| t.is_some_and(|t| now.0.saturating_sub(t.0) < day);
+    let sum = |f: &dyn Fn(&DiskRepo) -> bool| -> (usize, u64) {
+        repos.iter().filter(|r| f(r)).fold((0, 0), |(n, b), r| (n + 1, b + r.bytes))
+    };
+    let (held_n, held) = sum(&|_| true);
+    let total = |(n, bytes): (usize, u64)| serde_json::json!({ "networks": n, "bytes": bytes });
+    let t = |t: Option<Timestamp>| t.map(|t| t.0);
+    serde_json::json!({
+        "at": now.0,
+        "disk": disk,
+        "held": total((held_n, held)),
+        "day": {
+            "used": total(sum(&|r| within(Some(r.used)))),
+            "fetched": total(sum(&|r| within(r.fetched))),
+            "pushed": total(sum(&|r| within(r.pushed))),
+            "caught_up": total(sum(&|r| within(r.caught_up))),
+        },
+        "repos": repos.iter().map(|r| serde_json::json!({
+            "network": r.network.0.0,
+            "bytes": r.bytes,
+            "pack_bytes": r.pack_bytes,
+            "used": r.used.0,
+            "fetched": t(r.fetched),
+            "pushed": t(r.pushed),
+            "caught_up": t(r.caught_up),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// The repositories to evict, least recently used first, so the rest fit under `DISK_USE_PCT` of `disk_bytes` with
