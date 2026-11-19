@@ -539,7 +539,7 @@ impl MergeBudget {
 pub struct Budgets {
     vcpu: f32,
     of: BTreeMap<NetworkId, MergeBudget>,
-    turns: BTreeMap<NetworkId, crate::merge_cache::CatchUps>,
+    turns: BTreeMap<NetworkId, MergeTurn>,
 }
 
 impl Budgets {
@@ -563,8 +563,143 @@ impl Budgets {
         self.of.entry(net).or_insert_with(|| MergeBudget::restored(vcpu, now, stats));
     }
 
-    fn turn(&mut self, net: NetworkId) -> crate::merge_cache::CatchUps {
+    fn turn(&mut self, net: NetworkId) -> MergeTurn {
         self.turns.entry(net).or_default().clone()
+    }
+}
+
+/// Dispatch merges a network's turn gives in a row, while other merges wait, before it gives one of those [guess: one
+/// head push or GET per four dispatch merges keeps both moving under B0-35's mix, where pushes, dispatch, and GETs
+/// arrived at comparable rates].
+pub const DISPATCH_STREAK_MAX: u32 = 4;
+
+/// One network's turn: merges run one at a time (`asked`), and when the turn frees, a waiting `Dispatch` merge goes
+/// before a waiting head push or GET, as `MergeCause` says, unless DISPATCH_STREAK_MAX dispatch merges just ran in a
+/// row, so pushes and GETs never starve under a constant stream of dispatch. Within each cause, first come first
+/// served. On B0-35 m54 the turn was one line for every cause, up to 371 merges long, and each of dispatch's asks
+/// waited 5 to 20 s in it (`tests/m4/results/m4-wp4.md`, "B0-35 rerun on graft-m4a after site day 54").
+#[derive(Clone, Default)]
+pub struct MergeTurn(std::rc::Rc<RefCell<TurnLine>>);
+
+#[derive(Default)]
+struct TurnLine {
+    busy: bool,
+    next: u64,
+    /// Waiting merges by ticket, dispatch and the rest, and the ticket the turn was handed to but not yet taken by.
+    dispatch: std::collections::VecDeque<u64>,
+    other: std::collections::VecDeque<u64>,
+    wakers: BTreeMap<u64, std::task::Waker>,
+    handed: Option<u64>,
+    streak: u32,
+}
+
+/// The turn, held; dropping it hands the turn to the next waiting merge.
+pub struct Turn(MergeTurn);
+
+impl MergeTurn {
+    /// Waits for the turn for a merge of `cause`. Dropped while waiting, it leaves the line, and a turn already handed
+    /// to it goes on to the next merge.
+    pub fn take(&self, cause: MergeCause) -> Waiter {
+        Waiter { turn: self.clone(), cause, ticket: None }
+    }
+
+    /// Merges waiting for the turn.
+    pub fn waiting(&self) -> usize {
+        let l = self.0.borrow();
+        l.dispatch.len() + l.other.len()
+    }
+
+    /// Frees the turn and hands it to the next waiting merge: a dispatch merge unless DISPATCH_STREAK_MAX ran in a row
+    /// and another merge waits.
+    fn release(&self) {
+        let waker = {
+            let mut l = self.0.borrow_mut();
+            l.busy = false;
+            let dispatch_next = !l.dispatch.is_empty() && (l.other.is_empty() || l.streak < DISPATCH_STREAK_MAX);
+            let next = if dispatch_next {
+                l.streak += 1;
+                l.dispatch.pop_front()
+            } else {
+                l.streak = 0;
+                l.other.pop_front()
+            };
+            next.and_then(|t| {
+                l.handed = Some(t);
+                l.wakers.remove(&t)
+            })
+        };
+        if let Some(w) = waker {
+            w.wake();
+        }
+    }
+}
+
+/// A merge waiting for its network's turn (`MergeTurn::take`).
+pub struct Waiter {
+    turn: MergeTurn,
+    cause: MergeCause,
+    ticket: Option<u64>,
+}
+
+impl std::future::Future for Waiter {
+    type Output = Turn;
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Turn> {
+        let me = self.turn.clone();
+        let mut l = me.0.borrow_mut();
+        let t = match self.ticket {
+            Some(t) => t,
+            None if !l.busy && l.handed.is_none() => {
+                l.busy = true;
+                l.streak = u32::from(self.cause == MergeCause::Dispatch);
+                return std::task::Poll::Ready(Turn(me.clone()));
+            }
+            None => {
+                l.next += 1;
+                let t = l.next;
+                if self.cause == MergeCause::Dispatch {
+                    l.dispatch.push_back(t)
+                } else {
+                    l.other.push_back(t)
+                }
+                self.ticket = Some(t);
+                t
+            }
+        };
+        if l.handed == Some(t) {
+            l.handed = None;
+            l.busy = true;
+            self.ticket = None;
+            return std::task::Poll::Ready(Turn(me.clone()));
+        }
+        l.wakers.insert(t, cx.waker().clone());
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        let Some(t) = self.ticket else { return };
+        let handed = {
+            let mut l = self.turn.0.borrow_mut();
+            l.wakers.remove(&t);
+            l.dispatch.retain(|x| *x != t);
+            l.other.retain(|x| *x != t);
+            let handed = l.handed == Some(t);
+            if handed {
+                l.handed = None;
+                l.busy = true;
+            }
+            handed
+        };
+        if handed {
+            self.turn.release();
+        }
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        self.0.release();
     }
 }
 
@@ -628,7 +763,7 @@ pub async fn asked<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = R
     prepare().await?;
     let queued = clock();
     let turn = budgets.borrow_mut().turn(net);
-    let _turn = turn.turn().await;
+    let _turn = turn.take(cause).await;
     let now = clock();
     // Its turn came too late to be of use: shed, as past the budget, without running, so the line clears at once. A
     // GET keeps its coalescing slot, so its poller does not put the same pull request back in the line it just left.

@@ -4301,6 +4301,42 @@ A test install also logs one line per push with an isolate token and the pushes 
 
 **Flip.** A hosted run in which a `pull_request` event starts no run or two, or starts one at a commit other than the merge current at its creation; GHES behaviour that differs from the cited doc; or a `paths` filter, which needs the merge's changed paths (not built: `paths` passes, as for a new branch).
 
+### `trigger-stream`: `ActionsTrigger` runs as a stream, and dispatch merges go first in the turn, 2026-11-19
+
+**Status.** Approved by the lead (T-01a17bda) after B0-35 m54, code-only, on branch `dispatch-tail`. It ships on a site day, with no format change. B0-35's rerun waits on it and on LM-1's B0-33 work on the shed reads behind m54's `suspect` burst.
+
+**Decision.**
+- **A stream, not rounds** (`graftyard_actions::trigger::Stream`, host `workers/site/src/actions_trigger.rs`). Each queue ref and pull request event starts as soon as its entry is read and a slot is free, up to `IN_FLIGHT_MAX` (100 [guess]) at once, and each ends on its own. When one ends, the host starts the next item and reads more entries. It reads the next `BATCH` only while every item read has started and a slot is free, so the items waiting for a slot are at most one batch's.
+- **The cursor rule is `settle`'s.** The cursor may commit just below the oldest item not done, whether it is queued, running, or waiting to be tried again (`low_water`), or at the last entry read when every item is done. A new leader rescans from the committed cursor, so a crash replays each item not done and never skips one, and the shard's run key makes a replay create nothing twice. It commits at most every `CURSOR_EVERY_MS` (5 s [guess]) while items end, so a stream of events costs one cursor entry an interval, not one per event.
+- **Tried again alone.** An item that ended `Again` (its merge still shed after `DEMAND_TRIES` asks, a read or `CreateRun` failed) starts again `RETRY_MS` (5 s) later, ahead of newer items, and is given up as `unmerged` an hour after its entry, as under rounds.
+- **Dispatch first in the turn** (`graftyard_git::prsync::MergeTurn`). When a network's turn frees, a waiting `Dispatch` merge goes before waiting head pushes and GETs, as `MergeCause` says, unless `DISPATCH_STREAK_MAX` (4 [guess]) dispatch merges just ran in a row and another merge waits. Within a cause it is first come, first served. A merge that leaves the line while the turn is handed to it passes the turn on.
+- **Timing in the log line.** Each `actions dispatch` line ends with `wait Nms demand Nms reads Nms create Nms`: the wait from the entry to the try's start, the test merge's asks, the workflow `tree`/`blob` reads, and the `CreateRun` calls.
+
+**Why.** B0-35 m54 failed dispatch at p99 120 s. The tail was the rounds: a round ran its batch's events together and ended only with its slowest, p50 42 s and p99 75 s, and an entry that committed during it waited for the next one, p50 26.2 s and p99 96.9 s. The slowest 1% waited 119 s on average for their round against 31 s inside it. Each ask inside a round waited in one turn shared by every cause, up to 371 merges long, so 1 ask took p50 18.1 s and 2 asks 33.3 s against 10.2 s with none [measured, `tests/m4/results/m4-wp4.md`, "B0-35 rerun on graft-m4a after site day 54"]. The leader changes widened the tail in their minutes, but the other minutes' p99 was still 92 s. With both changes the expected entry-to-run is about the 0-ask time, p50 about 10 s and p99 about 15 s on m54's load [inference]. The timing split is there to attribute those 10 s, which m54 could not.
+
+**What it beat.**
+- **Shorter rounds** (a smaller `BATCH`). A round still ends with its slowest event, and one shed merge holds it for four asks.
+- **Rounds that do not wait for a slow event**, starting the next round while carried events run. That is a stream with two names for one state, and the round's cursor would need the stream's rule anyway.
+- **A separate dispatch turn** that runs beside head pushes. It would run two merges at once on one network, which `budgeted`'s overrun bound forbids: each merge is admitted only once the one before was charged.
+- **Strict priority for dispatch.** Under a constant stream of dispatch, head pushes and GETs would never run.
+
+**Evidence.** `crates/actions/tests/pr_trigger.rs`:
+- `a_stream_commits_the_runs_rounds_commit_and_its_cursor_never_passes_an_unfinished_event` runs ten events both ways, with one pull request's merge shed at first. It compares the committed `CreateRun`s, by workflow, ref, commit, and entry, and checks the cursor against every running and retried item.
+- `a_slow_event_holds_one_slot_and_the_cursor_waits_below_it`: with a cap of two and the first event never ending, the other nine run beside it, and the cursor waits below it.
+
+`crates/git/tests/agent_load.rs`, `dispatch_goes_first_in_the_turn_and_the_rest_never_starve`:
+- a dispatch merge behind queued head pushes and a GET runs first;
+- under 21 dispatch merges, no more than four run in a row while another waits;
+- a dropped waiter passes the turn on.
+
+Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (99), a retried item that does not hold it (100), no cap (101), a retry dropped (102), a first-come turn (103), unbounded dispatch (104), and a dropped waiter that keeps the turn (105). Hosted: not run.
+
+**Flip.**
+- A hosted B0-35 row where entry-to-run's p99 still comes from waiting for a slot (the `wait` field) rather than the try: raise `IN_FLIGHT_MAX`, or move dispatch off the leader's isolate.
+- An isolate memory error with 100 items in flight.
+- A row where head-push merges shed `late` because dispatch takes the turn: lower `DISPATCH_STREAK_MAX`.
+- An event that starts no run or two (the `pr-trigger` flip).
+
 ### `roll-up`: a bounded roll of a chain's oldest promoted packs, recorded as `Compacted` on the repository chain, 2026-11-16
 
 **Status.** Approved by the operator after round 32's review, with the repository-chain form; built on branch `rollup` (G9), not deployed. Built: the fold and `verify`, the archive alarm's roll step (`log_archive::roll_plan`, `Step::Rolled`), the site's warm `/roll` through the promotion path, the container's `/roll`, the rehydrate's read of produced packs with its fallback to the consumed packs, the site variable `GRAFTYARD_ROLLUP` that gates every roll (`log_archive::rollup_enabled`: unset, the alarm sends no `/roll` and records no `Compacted`; a site day sets it to `1` only after `FormatsEnable` enabled 32.25, as R24's `GRAFTYARD_APP_HOOKS` waits for 32.24), and the deletion guard as a pure rule (`sweep::consumed_deletable`). Not built: the sweeper's deletion of consumed packs, which waits for that rule's shard answers (G9's remainder). DESIGN, Shape, `Promoted` and `rehydrate`, and Failure modes (pack buckets bad-deploy, git caches noisy-tenant) carry the rule; this entry carries the numbers.
