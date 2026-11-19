@@ -5534,6 +5534,36 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 - `rcwait` at p99 above about two reads, about 4 s. The batch then holds callers longer than reading alone would.
 - A write is seen to pass on a token, `jti` or grant revoked before it arrived. That would break the invariant.
 
+### `g11-warm`: a planned rehome warms the target site's git cache shard before it moves the leader, 2026-11-19
+
+**Status.** Built on branch `g11-warm`, code-only, approved by the orchestrator. Not deployed. It needs a site day, and a hosted rehome judges it. Nothing in `crates/raft`.
+
+**Decision.**
+- A repository group's planned `Transfer` (`/move`, `move_step` in `workers/site/src/member.rs`) first asks the target site's first git cache shard of the network for `/catchup`, as a client with `next=1`. That starts a stopped container, and a shard that is still rehydrating answers `warming` at once.
+- While the shard answers anything but 200, the step answers `{"warming": true}` without transferring, and the caller asks again. The audit consumer's move (`repo_step`) asks again after 5 s and does not count those asks against its 40 steps.
+- The wait has a deadline, `WARM_BEFORE_TRANSFER` (60 s [guess], `graftyard_identity::group_move`). Past it the step transfers anyway, answers `"cold": true` with the ms waited, and logs `transfer to site N cold`.
+- The wait is kept per leader isolate, by chain and target site (`transfer_gate`). A wait whose last ask is older than the deadline belongs to a move that stopped asking, so it starts again.
+- Only repository chains wait: identity and system groups have no git cache shard.
+
+**Why.** After B0-31 m3fr7 moved repo:65570's home and leader to apac, apac's shard was cold. Its rehydrate ran 34.2 s, tail 59.7 s, catch-up 69.0 s (268 MB in 257 packs), and every MergeQueue merge in that window answered `warming` after MERGE_WAIT: 5 of 5, 28 to 66 s after the move, and none once it was warm [measured, `tests/am1/results/lm1-rows-m3f.md`, Rows m3fr7; `decisions/OPEN-QUESTIONS.md`, G11]. Waiting before the hand-off moves that catch-up to a time when the old leader still serves merges from its own warm shard.
+
+**What it beat.**
+- **Leaving it to the row's setup** (`tests/fanout/shardwarm.mjs`): that works for B0-31 but not for a customer's rehome.
+- **Warming after the transfer:** that is the m3fr7 window itself.
+- **Waiting with no deadline:** a target shard that never warms, such as one whose container cannot start, would stop the move. The hand-off is what a rehome is for, and the shard still warms after it.
+
+**Evidence.**
+- `group_move` tests:
+  - `a_transfer_holds_while_the_target_shard_warms_and_goes_once_it_is_warm`;
+  - `a_shard_that_never_warms_lets_the_transfer_go_cold_at_the_deadline`;
+  - `a_wait_left_by_a_move_that_stopped_asking_starts_again`.
+- `tests/m0carried/plant49.py` catches 5 of 5, among them the orchestrator's plant: a transfer that goes at once.
+- No hosted measurement yet. `tests/fanout/rows.sh` keeps its `shardwarm.mjs` step until a hosted rehome shows the move warmed the shard itself.
+
+**Flip.** Either of these on a hosted rehome:
+- Most planned rehomes move cold (`"cold": true`). The bound is then too short for the shards it meets, or the catch-up ask is wrong.
+- A move takes longer than before by more than WARM_BEFORE_TRANSFER. The wait then costs more than the merge window it saves.
+
 ### `tier-off-leader`: a whole-tier dump or an `ls-refs` never runs on the acting leader, 2026-11-18
 
 **Status.** The orchestrator chose candidate (1) of the m53 leader-tail plan. Built on branch `tier-off-leader`, not deployed. The member half needs a site day; the edge half rides the same day. Nothing in `crates/raft`.

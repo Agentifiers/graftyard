@@ -114,6 +114,16 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **B0-32:** 450 of 500 burst pushes within 5 s. Every run's commit wait is 5 to 46 s; held for B0-02's duplicate-append fix.
 - **L0-12:** one whole run with feed p99 at most 3.3 s and the member clock under 500 ms. The feed fix (`learner-lag`, `feed-gone-route`) and the writes' retry (`agents-write`) are built and not yet run hosted.
 
+## G11 built: a planned rehome warms the target's shard first (2026-11-19, code-only, branch `g11-warm`)
+
+Approved by the orchestrator after B0-31 was met on m3fr16, which left no other B0-31 item in BUILD-PLAN. `decisions/DECISIONS.md`, "`g11-warm`", has the decision and its flip.
+
+- **What changed:** before `move_step`'s `Transfer`, a repository group's leader asks the target site's first shard of the network for `/catchup` (`next=1`, 5 s wait, 10 s call). While it answers anything but 200, the step answers `{"warming": true, "waitedMs": ..}` and does not transfer. After `WARM_BEFORE_TRANSFER` (60 s [guess]) it transfers anyway, answers `"cold": true`, and logs `transfer to site N cold after N ms`. The gate is the pure `graftyard_identity::group_move::transfer_gate`.
+- **Callers:** the audit consumer's move asks again after 5 s, without counting the held asks against its 40 steps. `tests/am1/runs/transfer.mjs` already asks again every 3 s until `Done`, for up to 300 s, so the wait fits inside it.
+- **Tests:** three in `group_move`: holds while warming then goes warm; goes cold at the deadline (and warm if warm by then); a wait left by a stopped move starts again. `tests/m0carried/plant49.py` catches 5 of 5, the first being a transfer that goes at once.
+- **Not changed:** `tests/fanout/rows.sh` keeps `shardwarm.mjs` for B0-31 until a hosted rehome shows the move warmed the shard itself.
+- **Hosted check, not run:** one rehome on graft-m3f with a site day from this branch. It should read the step's `waitedMs` and `cold`, and MergeQueue merges in the minute after the hand-off against m3fr7's 5 of 5 `warming`.
+
 ## Rows m3fe2: B0-32 on main `8c794619` (`edge-read-batch`) (2026-11-19, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** Granted by the orchestrator after m3fb32: one edge day from main `8c794619`, then one B0-32 rerun, inside the $10 stop on graft-m3f counted from 00:38:18Z. The run went through the egress proxy under the harness-outage rule (`tests/fanout/README.md`, "Harness outages on gate rows"). m3fe1, the first try on the same edge, was stopped in placement for a restart and has no result (`install-m3f.md`). Committed raw files: `tests/fanout/raw/rows-m3fe2.status`, `tests/fanout/raw/{terms,admit,vmem}-m3fe2-b0-32.jsonl`, `tests/fanout/raw/tsave-m3fe2-b0-32.jsonl.xz`, `tests/fanout/raw/arrivals-m3fe2.jsonl`. The a1 files (`a1-b0-32-mwn5807e.jsonl`, `a1-pushes-b0-32-mwn5807e.jsonl`, `a1-samples-b0-32-mwn5807e.jsonl.gz`) are under the ignored `tests/am1/raw/` on this thread's orb.
