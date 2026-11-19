@@ -8,7 +8,7 @@
 // back on it within one sample, and each sample records what the voter ran with (`arrival`).
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { member, voterNames, sleep } from "../am1/hosted/lib.mjs";
+import { member, statuses, sleep } from "../am1/hosted/lib.mjs";
 const [name, secs, every = "2", limit = "120", arrival] = process.argv.slice(2);
 const q = `/stats?summary=1${arrival ? `&arrival=${arrival}` : ""}`;
 const until = Date.now() + Number(secs) * 1000;
@@ -19,14 +19,18 @@ if (name.startsWith("repo:")) id = name.slice(5);
 while (!id && !(id = idOf()) && Date.now() < until) await sleep(2_000);
 const chain = `repo:${id}`;
 let names = {};
+// why-logs: the learners of the committed config (`{site, do_name}`), sampled beside the voters for `shedBy`.
+let learners = [];
 let stopped = false;
 const recent = [];
 for (let k = 0; Date.now() < until; k++) {
   const t = Date.now();
   // The names change only on a replacement: refreshed every 30 samples, or while none are known.
   if (k % 30 === 0 || !Object.keys(names).length) {
-    const got = await voterNames(chain).catch(() => ({}));
-    if (Object.keys(got).length) names = got;
+    const sts = await statuses(chain).catch(() => []);
+    const cfg = sts.find((x) => x.role === "leader")?.config?.config?.normal;
+    if (cfg?.voters) names = Object.fromEntries(cfg.voters.map((v) => [v.site, v.do_name]));
+    if (cfg?.learners) learners = cfg.learners;
   }
   const st = await Promise.all([0, 1, 2].map(async (s) => {
     const v = (await member(chain, s, q, undefined, 5_000, names[s]).catch(() => ({}))).v ?? {};
@@ -34,9 +38,16 @@ for (let k = 0; Date.now() < until; k++) {
       memSplit: v.memSplit ?? null, arrival: v.arrival ?? null,
       // tier-off-leader: the isolate's packed dump builds and the whole-tier or ls-refs read-index reads it refused
       // while leading, both counters since the isolate started (per second by difference between samples).
-      dumpBuilds: v.dumpBuilds ?? null, leaderRefused: v.leaderRefused ?? null };
+      dumpBuilds: v.dumpBuilds ?? null, leaderRefused: v.leaderRefused ?? null,
+      // why-logs: the reads this isolate shed, by gate (readsMax, answerBytes, heavyReads, rebuild, late, forgot).
+      shedBy: v.shedBy ?? null };
   }));
-  const row = { at: new Date(t).toISOString(), members: st };
+  // Learners are not memory-guarded (they hold no commit path); only their shed reads are recorded.
+  const ls = await Promise.all(learners.map(async (l, i) => {
+    const v = (await member(chain, l.site, q, undefined, 5_000, l.do_name).catch(() => ({}))).v ?? {};
+    return { learner: 192 + i, site: l.site, shedBy: v.shedBy ?? null, dumpBuilds: v.dumpBuilds ?? null };
+  }));
+  const row = { at: new Date(t).toISOString(), members: st, learners: ls };
   console.log(JSON.stringify(row));
   recent.push(row);
   while (recent.length && Date.parse(recent[0].at) < t - 60_000) recent.shift();

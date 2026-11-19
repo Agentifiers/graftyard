@@ -294,6 +294,21 @@ pub const SCHEMA: &[&str] = &[
 #[cfg(feature = "test-faults")]
 use crate::faults::{Fault, Kill};
 
+/// The log line of a `STEP_DOWN` trip's window: `{"stepDownWindow": {from, to, slow, of, confirms}}`, where `slow` counts
+/// the confirms over `confirm_p99_ms`, `confirms` lists each as [end, ms] on the member clock, and `kept` the last 30 s.
+pub(crate) fn step_down_line(w: &graftyard_raft::StepDownWindow) -> String {
+    let slow = w.confirms.iter().filter(|c| c.1 > graftyard_raft::STEP_DOWN.confirm_p99_ms).count();
+    let pairs = |v: &[(graftyard_types::Timestamp, u32)]| -> Vec<[u64; 2]> {
+        v.iter().map(|(t, ms)| [t.0, u64::from(*ms)]).collect()
+    };
+    json!({ "stepDownWindow": { "from": w.from.0, "to": w.to.0, "slow": slow, "of": w.confirms.len(),
+        "confirms": pairs(&w.confirms), "kept": pairs(&w.kept) } })
+    .to_string()
+}
+
+/// Keys of `Stats::shed_by`, in count order.
+pub const SHED_GATES: [&str; 6] = ["readsMax", "answerBytes", "heavyReads", "rebuild", "late", "forgot"];
+
 #[derive(Default)]
 pub struct Stats {
     /// Leader: a command's admission to its ticket's resolution on the commit-advance path, in ms.
@@ -370,6 +385,8 @@ pub struct Stats {
     last_apply_at: u64,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
+    /// Reads shed by gate or later overload cause, indexed by `SHED_GATES`.
+    pub shed_by: [u32; 6],
     /// Every stamp's lag (`crate::clock`), stamp minus the member clock at its arrival, by bucket: 0, then below 2^i
     /// ms for i from 1, the last bucket open; and the largest seen.
     pub clock_lag: [u32; 16],
@@ -2809,6 +2826,10 @@ impl<F: Family> Host<F> {
                 let mut s = self.stats.borrow_mut();
                 for a in out.alarms {
                     console_log!("member alarm: {a:?}");
+                    // why-logs: the window the trip judged, its own samples, so a candidate rule is replayed on them.
+                    if let (graftyard_raft::Alarm::StepDown { .. }, Some(w)) = (&a, core.m.step_down_window()) {
+                        console_log!("{}", step_down_line(w));
+                    }
                     if s.alarms.len() < 50 {
                         s.alarms.push(format!("{now} {a:?}"));
                     }
@@ -4139,6 +4160,26 @@ fn log_take(rows: impl Iterator<Item = Result<(Value, usize)>>, n: usize, cap: u
 
 #[cfg(test)]
 mod tests {
+    /// A trip's window logs its bounds and every sample, and `slow` counts only confirms over `confirm_p99_ms`: one of
+    /// exactly 500 ms is not slow, as `STEP_DOWN`'s rule reads it.
+    #[test]
+    fn a_step_down_window_logs_its_samples_and_slow_count() {
+        use graftyard_raft::StepDownWindow;
+        use graftyard_types::Timestamp;
+        let w = StepDownWindow {
+            from: Timestamp(1_000),
+            to: Timestamp(11_000),
+            confirms: vec![(Timestamp(2_000), 500), (Timestamp(3_000), 501), (Timestamp(4_000), 40)],
+            kept: vec![(Timestamp(500), 900)],
+        };
+        let v: serde_json::Value = serde_json::from_str(&super::step_down_line(&w)).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "stepDownWindow": { "from": 1000, "to": 11000, "slow": 1, "of": 3,
+                "confirms": [[2000, 500], [3000, 501], [4000, 40]], "kept": [[500, 900]] } })
+        );
+    }
+
     /// `GET /log` stops before the row that would cross its byte cap, still takes a first row over it, and holds `n`:
     /// a harness read of 400 entries with ~320 KB packs answered ~128 MB and reset b030r6's leader.
     #[test]

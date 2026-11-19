@@ -25,5 +25,15 @@ sleep 70
 { echo "placement baseline:"; python3 tests/fanout/lsrefsab.py $R/tsave-$TAG.jsonl ${LS_EVERY:-}; } >> $R/rows-$TAG.status 2>&1
 # Harness outages: the edge's arrivals per second and every line with the outage windows removed (outages.sh).
 bash tests/fanout/outages.sh "$TAG" b0-33 "f$TAG-b033"
+# why-logs: the edge's 5xx by reason over the row (fivexxwhy.py), and where each refused agent push was refused
+# (pushfull.py on a1's per-push log), from the row's first to its last a1 row.
+run=$(grep -o 'a1-pushes-b0-33-[a-z0-9]*' $R/rows-$TAG.status 2>/dev/null | tail -1)
+[ -z "$run" ] && run=$(ls -t tests/am1/raw/a1-pushes-b0-33-*.jsonl 2>/dev/null | head -1 | xargs -r basename | sed 's/\.jsonl$//')
+if [ -n "$run" ]; then
+  py=tests/am1/raw/$run.jsonl
+  from=$(head -1 $py | jq -r '.start/1000|todate'); to=$(tail -1 $py | jq -r '.end/1000|todate')
+  { echo "5xx by reason ($from to $to):"; python3 tests/fanout/fivexxwhy.py "$from" "$to"; } >> $R/rows-$TAG.status 2>&1
+  { echo "push refusals by stage:"; python3 tests/fanout/pushfull.py $py; } >> $R/rows-$TAG.status 2>&1
+fi
 echo B033DONE >> $R/rows-$TAG.status
 exec sleep infinity
