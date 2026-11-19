@@ -179,6 +179,31 @@ where
     }
 }
 
+/// How long a composable miss waits for its shard's chain step when the edge has another site to try (`next=1`)
+/// [guess: site b composed B0-34 mt6's misses in 0.2 to 0.75 s from a synced chain]. Past it the shard answers 503
+/// `warming` and the step goes on in the background (`decisions/DECISIONS.md`, "`chain-wait`").
+pub const CHAIN_WAIT_FORWARDED: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a composable miss's chain is ready (`ready` ended) before its wait runs out. `follows`: the edge has another
+/// site to try (`next=1`), so the wait is at most `CHAIN_WAIT_FORWARDED`; the last site waits all `left`, what remains
+/// of the upload-pack's deadline, so a miss never runs out of sites that would wait for a chain. `false` means the
+/// shard answers 503 `warming`. As `crate::warming_now` does for a rehydrate: on B0-34 mt6 a builder whose chain had
+/// not stepped after its rehydrate held 38 misses for the home's whole 15 s, each then composed on site b in under
+/// 1 s (`tests/am1/results/b034-mt6.md`, "1. Where the clone TTFB tail goes").
+pub async fn chain_ready<R, S, D>(follows: bool, left: std::time::Duration, ready: R, sleep: S) -> bool
+where
+    R: std::future::Future<Output = ()>,
+    S: FnOnce(std::time::Duration) -> D,
+    D: std::future::Future<Output = ()>,
+{
+    let wait = if follows { left.min(CHAIN_WAIT_FORWARDED) } else { left };
+    let ready = std::pin::pin!(ready);
+    match futures_util::future::select(ready, std::pin::pin!(sleep(wait))).await {
+        futures_util::future::Either::Left(_) => true,
+        futures_util::future::Either::Right(_) => false,
+    }
+}
+
 /// Stock upload-packs one shard container runs at once [guess], as the container's `stockMax`: linux's took 2.6 GB of
 /// RSS each, and m1b34's monorepo container ran 15 to 21 of them in 12 GiB, holding the network's lock shared 20 to
 /// 99 s each, while catch-ups and every validate queued behind them (`tests/am1/results/b034-attr.md`). The next B0-34

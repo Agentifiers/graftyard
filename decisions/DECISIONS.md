@@ -5829,6 +5829,60 @@ Starvation: a deleter waiting on `rw.Lock` already blocks new `RLock`s (Go's `sy
 
 **Flip.** Built: when a B0-34 row shows catch-ups waiting over 1 s for the lock alone behind validates (`lock_excl_wait_ms`); if that wait is small, the inference is dead and this is not built. Reversed after the build: any validate, in a hosted row or the Go test, that sees a missing object it would not see serially (a 422 connectivity or missing-base, or a held `disk=1` answer, that passes on an immediate retry with no catch-up between), or a deleter whose wait grows past the longest reader's.
 
+### `chain-wait`: a forwarded miss waits at most 2 s for its shard's chain, 2026-11-19 (built 2026-11-19)
+
+**Status.** Built on branch `b034-chainwait`, not yet on a hosted row. Site script only (`workers/site/src/shard.rs`),
+so it ships on a site day. The operator asked for it from B0-34 mt6's analysis.
+
+**Decision.** A composable clone-cache miss waits for its shard's chain step (`Compose::ready`) for at most
+`CHAIN_WAIT_FORWARDED`, 2 s [guess], when the edge has another site to try after this one (`next=1`). Past that the
+shard answers 503 `warming`, the step goes on in the background, and the edge asks the next site. The last site, with
+no `next`, still waits all that is left of the upload-pack's deadline, as before (`graftyard_git::compose::chain_ready`).
+This carries `warming_now`'s rehydrate rule over to the chain wait: a shard that is not ready answers a caller with
+somewhere else to go at once, and the last try waits, so a miss never runs out of shards that would wait for a chain.
+
+**What it does in kill's case.** On mt6, after the home shard died, the edge tried site b first. Site b had not
+stepped its chain yet, and 12 misses waited 4.5 to 14.2 s there. Site c's bucket held no chain files. With this
+change site b answers `warming` at 2 s and the edge goes on to site c, the last site, which waits its whole deadline
+for a chain it must fetch or step. So kill's misses end at site c's full wait, as the operator expected. Whether that is
+faster than waiting on site b depends on how long site c takes to install the chain [unverified]. The next row's kill
+phase measures it.
+
+**Why.** On B0-34 mt6, site a's builder shard `1502d838` answered the network's composable misses after its rehydrate
+ended at 18:21:47Z without a stepped chain. From 18:22:04 to 18:22:58Z all 38 of them waited the edge's whole 15 s home
+`wait` at `Compose::ready` and answered 503. Site b then composed each one in 0.2 to 0.75 s from a synced chain, so a1's
+41 `composed` probes were p50 17.9 s and p99 36.2 s, almost all of it the 15 s on site a
+(`tests/am1/results/b034-mt6.md`, "1. Where the clone TTFB tail goes"). Taking 15 s off the 32 probes those 503s match
+moves clone TTFB p99 for second from 22.6 to about 14.3 s and for hostile from 19.6 to about 12.8 s [inference: each
+gains about 2 s at the bound]. j9 is unchanged at 4.3 s.
+
+**What it beat.**
+- **Waiting the whole deadline on every site (main).** Correct but slow: a cold chain on the first site costs every
+  miss its full wait while the next site is warm.
+- **Answering `warming` at once whenever the chain is not synced.** A chain that steps in under 2 s would send misses
+  on for nothing. A step on a shard that already holds a chain returns at once anyway (`Compose::ready`).
+- **Installing the chain head from R2 on a fresh builder** removes the wait at its source but is a bigger change in
+  `ready_chain`. It is open as G28.
+
+**Evidence.** `a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_deadline`
+(`crates/git/tests/shard.rs`) runs `chain_ready` on a virtual clock. A forwarded miss on a chain that is not ready
+answers `warming` at the bound, from a 15 s or a 60 s deadline, and keeps a deadline already under it. The last site
+waits its whole deadline and composes on a chain 14 s away. A ready chain composes on any site. On main's rule (every
+site waits the whole deadline) the test fails. Plants (`tests/chainwait/plant.py`), all 7 caught:
+- every site waits the whole deadline (main's rule);
+- the last site waits only the bound;
+- the bound ignores what is left of the deadline;
+- the rule inverted;
+- a timeout read as ready;
+- a ready chain read as late;
+- a 20 s bound.
+
+**Flip.**
+- A hosted row's forwarded misses that answered `warming` at the bound on a shard whose chain was ready within 1 s
+  after it: raise the bound.
+- Kill's misses get slower than mt6's 17.2 s p99 because site c waits longer than site b did: send the last try back to
+  the shard that holds a chain, or take G28's fix.
+
 ### `held-grant`: a leader read released after later inputs answers at the member's state then, 2026-11-19
 
 **Status.** Built on branch `leader-keep`, not deployed. It is a site-script change, so it ships on a site day; it rides a later edge day with a B0-29 row. Nothing in `crates/raft` changes.
