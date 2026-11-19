@@ -1,0 +1,15 @@
+2026-11-19T16:34:51.358Z 1/13 refs/heads/main est 22.1 MB: ok 46649 ms
+2026-11-19T16:35:14.238Z 2/13 refs/heads/main est 24.0 MB: ok 22872 ms
+2026-11-19T16:35:57.289Z 3/13 refs/heads/main est 43.6 MB: ok 43051 ms
+2026-11-19T16:36:23.788Z 4/13 refs/heads/main est 43.7 MB: ok 26499 ms
+2026-11-19T16:36:28.742Z 5/13 refs/heads/main est 56.5 MB: remote: the repository's access rows did not answer; retry (repo:3538958: every member asked shed the read: overloaded) | fatal: unable to access 'https://graft-m1-edge.<workers-subdomain>.workers.dev/m 4954 ms
+2026-11-19T16:37:13.217Z 5/13 refs/heads/main est 56.5 MB: ok 29457 ms
+2026-11-19T16:37:30.592Z 6/13 refs/heads/main est 35.0 MB: ok 17374 ms
+2026-11-19T16:37:57.645Z 7/13 refs/heads/main est 59.8 MB: ok 27053 ms
+2026-11-19T16:38:07.674Z 8/13 refs/heads/main est 14.8 MB: ok 10026 ms
+2026-11-19T16:38:16.680Z 9/13 refs/heads/main est 9.0 MB: ok 9006 ms
+2026-11-19T16:38:23.279Z 10/13 refs/heads/main est 5.4 MB: ok 6599 ms
+2026-11-19T16:38:30.093Z 11/13 refs/heads/main est 1.8 MB: ok 6814 ms
+2026-11-19T16:38:34.748Z 12/13 refs/heads/main est 0.3 MB: ok 4654 ms
+2026-11-19T16:38:38.563Z 13/13 refs/heads/main est 0.1 MB: ok 3815 ms
+2026-11-19T16:38:38.564Z seeded m3r-b034-hostile/b034-hostile-w-3: 0.32 GB in 274 s

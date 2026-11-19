@@ -1,0 +1,17 @@
+2026-11-19T18:48:41.950Z repo:1048599: 4 names, 4 were joined, all not joined
+2026-11-19T18:48:51.648Z repo:3473412: 4 names, 4 were joined, all not joined
+2026-11-19T18:49:00.656Z repo:3538956: 4 names, 4 were joined, all not joined
+2026-11-19T18:49:10.623Z repo:3538957: 4 names, 4 were joined, all not joined
+2026-11-19T18:49:19.360Z repo:3538958: 4 names, 4 were joined, all not joined
+2026-11-19T18:57:24.733Z purge: waiting 92 s for sweep runs started before the first pass (until 2026-11-19T18:55:00.000010+00:00)
+2026-11-19T18:57:24.734Z purge: 1048599 purged: a 1524 -> 0, b 1434 -> 0, c 1419 -> 0
+2026-11-19T18:57:24.734Z purge: 1048599 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T18:57:24.734Z purge: 3473412 purged: a 37 -> 0, b 35 -> 0, c 34 -> 0
+2026-11-19T18:57:24.734Z purge: 3473412 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T18:57:24.734Z purge: 3538956 purged: a 37 -> 0, b 35 -> 0, c 34 -> 0
+2026-11-19T18:57:24.734Z purge: 3538956 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T18:57:24.734Z purge: 3538957 purged: a 40 -> 0, b 41 -> 0, c 37 -> 0
+2026-11-19T18:57:24.734Z purge: 3538957 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T18:57:24.734Z purge: 3538958 purged: a 37 -> 0, b 35 -> 0, c 32 -> 0
+2026-11-19T18:57:24.734Z purge: 3538958 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T18:57:24.734Z purge: {"dry": false, "purged": 5, "objects": 4811, "refused": [], "second": 0}
