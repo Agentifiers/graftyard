@@ -852,7 +852,7 @@ pub async fn fresh(&self, arrived: Instant) -> Result<Fresh<'_>, NotLeader>;
 /// commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and fetches at
 /// `applied` for the flag's limit (default 4 h); writes return 503. Stale reads break read-your-writes across clients.
 pub fn stale(&self) -> Result<Stale<'_>, StaleError>;
-pub enum ReadView<'a> { Fresh(Fresh<'a>), Stale(Stale<'a>) }
+pub enum ReadView<'a> { Fresh(Fresh<'a>), Stale(Stale<'a>) } // held: at release, ≥ floor (`held-grant` [measured])
 
 // ---- Release group (one per install, cell, and front account; placed on `Tri`) ----
 /// Every entry is signed over `Bound` plus its body, so it verifies once, on one install, at one position. `prev` is

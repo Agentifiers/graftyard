@@ -5724,3 +5724,47 @@ Starvation: a deleter waiting on `rw.Lock` already blocks new `RLock`s (Go's `sy
 **Evidence.** The code paths above at `50da79d7`. The build's test, `TestValidateSerialEquivalence`: a repository with history, a script of K writer steps (ingests on the adopt, index and spooled paths, `/refs` sets with a D/F rename, a multi-pack-index write) and N validates (pack and detail-only, default and `disk=1`, some on content only later steps bring), each validate's result checked against serial validates at every state S0..SK: it must equal serial(S_i) for an i between the step completed before it started and the step completed after it ended. Test hooks pause inside `moveIn` between renames, between `/refs`' two transactions, and between adopt's claim and its move. Plants it must catch: `moveIn` renaming `.idx` first, validate walking `--all` instead of its snapshot, `/refs` without `refsMu`, adopt without its claim rename, and the `.keep` after the `.idx`.
 
 **Flip.** Built: when a B0-34 row shows catch-ups waiting over 1 s for the lock alone behind validates (`lock_excl_wait_ms`); if that wait is small, the inference is dead and this is not built. Reversed after the build: any validate, in a hosted row or the Go test, that sees a missing object it would not see serially (a 422 connectivity or missing-base, or a held `disk=1` answer, that passes on an immediate retry with no catch-up between), or a deleter whose wait grows past the longest reader's.
+
+### `held-grant`: a leader read released after later inputs answers at the member's state then, 2026-11-19
+
+**Status.** Built on branch `leader-keep`, not deployed. It is a site-script change, so it ships on a site day; it rides a later edge day with a B0-29 row. Nothing in `crates/raft` changes.
+
+**Decision.** `Host::release` resolves a granted read through `released_view`, which is `raft::Member::fresh_after`: the member's fold when the output is released, at or above the grant's floor, refused after a restart. Before, it called `Member::fresh`, which is good only within the grant's own input, and refused the read with `notLeader` otherwise. An output waits for a deferred transaction (`Host::dispatch`) when an earlier input wrote and sent AppendEntries early. Inputs that run before that transaction (a `/raft` call, another read, a write) bump the member's step, so the held grant failed `fresh`. The leader then answered its own read `notLeader` naming itself, and the edge's `lookup` took that as "not the leader" and walked s1 and s2 before it posted s0 again.
+
+**Why.** This is item 5's 1–2 s `tier_ahead` on a REST merge's rows read (`tests/m0/results/b029-tail.md`, section 3). The handoff's hypothesis was that a learner's answer naming no leader cleared the edge's cached leader. The traces disprove it: each slow lookup posted the cached leader first (`SentBy::Leader`) and walked only after it answered, and Workers Logs show that answer as a 200 in 28–32 ms. Ordering site 0's trace rows (one isolate, so log order is execution order) and classing each leader plain read by whether its output was held and another input stepped first, then counting the isolates that walked within 2 s (`tests/m0/cuttrace/heldgrant.py`):
+
+| read | run 7 | row 1 | control |
+|---|---|---|---|
+| a merge's rows, held and stepped past | 1 of 1 walked | 1 of 1 | 4 of 4 |
+| a merge's rows, held, nothing stepped first | 0 of 1 | 0 of 0 | 0 of 3 |
+| a merge's rows, not held | 0 of 75 | 0 of 51 | 0 of 68 |
+| `ranges`, held and stepped past | 234 of 244 | 91 of 92 | 193 of 195 |
+| `ranges`, not held | 1,143 of 4,575 | 399 of 2,862 | 784 of 4,332 |
+
+The six slow merges in the three traces are exactly the six held-and-stepped merge reads [measured]. The `ranges` rows show the same refusal on the edge's other leader reads, at 3–5% of the leader's plain reads.
+
+**Safety.** The rule is unchanged: no answer is older than the commit index the leader confirmed for the read. The grant's floor is the applied index at the grant, and every applied entry is committed, so a later state holds every entry acknowledged before the read arrived. An answer that also shows entries committed after it arrived is linearized between arrival and reply, as a follower's `fresh_after` answer already is (`narrow-reads-3`'s floor rule, "Safety"). A grant from an earlier boot is refused. Answering at the grant's state was not possible here: the fold has moved on and only the current one is held.
+
+**What it beat.**
+- **The edge keeps its held leader on a learner's answer naming none.** That was the hypothesis. The test it called for shows the cache is cleared that way, but no slow lookup took that path: each one first posted the leader it held.
+- **The edge re-posts the leader once when it answers `notLeader` naming itself.** That costs a round trip per refusal, and it hides a refusal the member should never make.
+- **The member keeps every held read's answer at its grant's state.** That needs a fold copy per held output.
+
+**Evidence.**
+- `host::tests::a_read_released_after_later_inputs_answers_at_the_state_then` (`workers/site/src/host.rs`) drives a three-member register group. It takes a leader grant, commits and applies a write in later inputs, and checks that the released view answers past the floor with the new value, and that a restart refuses it. With main's `fresh` it fails.
+- `tests/m0carried/plant50.py` catches 3 of 3 plants: main's rule, a release that calls `fresh` directly, and a grant answering across a restart.
+- The trace split above (`tests/m0/results/held-grant.md`).
+
+**Flip.** Reverse it if the edge sees more `notLeader` round trips on leader reads after it ships: `SentBy::Walk` posts within 2 s of a held-and-stepped leader read should fall from about 95% to near zero (`heldgrant.py`). Reverse it also if a merge is served by an old leader, meaning a read answered at a state below a write acknowledged before it arrived, from a member deposed between grant and release. Every grant's floor is committed, so this would need a bug in the floor; a B0-29 row's read-your-write rounds and the simulator's deferred reads are where it would show.
+
+### B0-29 late join deferred, 2026-11-19
+
+**Decision.** Option (b) is not built: a command admitted after a batch froze does not join it. B0-29's freeze stays as built, and that is option (a): the first frozen batch is cut at the in-flight entry's append + `round_ms` − `deps_ms`, which is its expected apply less the measured read (`crates/raft/src/member/leader.rs`, `cut_early`).
+
+**Why.** (b) would let a command admitted after a batch froze join the newest frozen batch until `decide_held` runs, with its own `DepsWanted` asked at admission, since reusing the batch's read breaks read-after-admission. It would be decided after the batch's earlier commands on the post-apply fold. A joiner whose read is late, or that gains a chain at apply, rides the next entry, and a capped batch takes no joiner. By the replay it gains about 60–100 ms: main 722 / 839 / 725 against (b) 663 / 732 / 643 on run 7, row 1 and the control, with 14–15% of commands joining. The predicted `/stats` commit p99 is 758 / 610 / 699 against the 660 line at 90%, under it on one row of three [inference]. It is a `crates/raft` change beside the read-after-admission invariant (BF-15/BF-27, `read-ahead`'s flip, `a_command_admitted_after_the_early_cut_waits_for_the_next_entry`), and it adds about 0.15 `Authz` dependency reads per command. That is a lot of risk for a line it does not clear alone.
+
+**What it beat.** (b) with one shared re-read per batch: 684–706 / 794–843 / 683–696, not enough. Moving (a)'s timing earlier or later: 738–904, worse than main. Building (b) now.
+
+**Evidence.** `tests/m0/results/b029-tail.md`, section 2 (`tests/m0/cuttrace/freezesim.py`, `latejoin.py`, `bycut.py`).
+
+**Flip.** Revisit (b) if other fixes bring the measured B0-29 commit p99 to within about 100 ms of 660, so that (b) would close the gap. The gap is OPEN-QUESTIONS F98.
