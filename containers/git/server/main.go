@@ -38,11 +38,13 @@
 //	                                 Idempotent per H. {"ingested": true,"adopted": true,"lock_wait_ms"} for a kept
 //	                                 pack; otherwise {"ingested","bytes","spool_ms","index_ms","lock_ms","midx_ms",
 //	                                 "lock_wait_ms","lock_excl_wait_ms"}: lock_wait_ms sums every wait for the
-//	                                 network's lock (alone for the adopt check, shared for index-pack, alone for the
-//	                                 move), lock_excl_wait_ms the waits for it alone
+//	                                 network's locks (the writer's section for the adopt check, the lock shared for
+//	                                 index-pack, the section for the move), lock_excl_wait_ms the section's waits.
+//	                                 The section (`writeLock`) is the writer lock, then the lock shared: a writer
+//	                                 waits for other writers and the deleters, not for validates and readers
 //	POST /ingest-batch?net=N         body: per pack, "<sha256> <bytes>\n" and its bytes. Each ingested as /ingest
 //	                                 does, in order; {"results": ["done"|"later", ...],"lock_wait_ms"}, "later" for
-//	                                 /ingest's 409; lock_wait_ms the wait for the network's lock alone.
+//	                                 /ingest's 409; lock_wait_ms the wait for the writer's section.
 //	                                 422 for the call on a checksum mismatch or another index-pack failure
 //	POST /spool?net=N&sha256=H       body: a stored pack, streamed. Spools it, holding no lock, to
 //	                                 <data>/spool/stored-<net>-<H>.pack for a later /ingest &spooled=1, so a
@@ -58,7 +60,7 @@
 //	                                 index-pack: the lock is held only to rename the pack and idx into objects/pack
 //	                                 and record them. {"ingested","bytes","idx": "used","index_ms": 0,"lock_ms",
 //	                                 "midx_ms","lock_wait_ms","lock_excl_wait_ms"} (midx_ms the multi-pack-index
-//	                                 write's part of lock_ms, 0 when none ran; both waits /ingest's, all alone);
+//	                                 write's part of lock_ms, 0 when none ran; both waits the writer's section's);
 //	                                 otherwise /ingest's index-pack and its answer (409, 422) plus "idx": "none" or
 //	                                 "rejected" (with "idxError") and "lock_ms", the time the network's lock was
 //	                                 held. The spooled files are deleted when done, except on 409, so the same call
@@ -77,7 +79,9 @@
 //	                                 when it exists, else the page's first ref
 //	POST /refs?net=N[&head=R]        a catch-up's ref changes, the same lines, the zero oid a delete; head as PUT's.
 //	                                 PUT and POST answer {"refs","skipped","repack","lock_wait_ms"}, the last the wait
-//	                                 for the network's lock alone (0 for a POST of no changes, which takes no lock)
+//	                                 for the writer's section and refsLock, and for the lock alone when the set
+//	                                 renames a ref between file and directory (0 for a POST of no changes, which
+//	                                 takes no lock). One transaction, two for that rename (`applyRefs`)
 //	GET  /refs?net=N                 every ref, the same lines
 //	POST /promote?net=N              body: SHA-256s of ingested packs, one per line. Answers one complete (not thin)
 //	                                 pack of every object those packs brought, named by its tree entry where there is one
@@ -199,16 +203,48 @@ var (
 	netRe = regexp.MustCompile(`^[0-9]{1,19}$`)
 	hexRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 	sumRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	// One lock per network: git's own locking covers refs and packs, but a fresh init must not race an ingest.
-	// Readers (upload-pack, fsck) hold it shared, so /evict, which needs it alone, never removes a repository
-	// under a running request.
-	locks sync.Map
+	// Per network (decisions/DECISIONS.md, "`lock-split`"): `lock` keeps the repository there. Readers, validates and
+	// the additive writers hold it shared; only the deleters (/evict, which never waits, a fresh /init, and a /refs
+	// set that renames a ref between file and directory) hold it alone, so /evict never removes a repository under a
+	// running request. `writer` makes the additive writers exclude one another, and `refsLock` makes a validate's
+	// read of the refs see a whole /refs call or none of it. The order is always writer, lock, refsLock.
+	locks, writers, refsLocks sync.Map
 )
 
 func lock(net string) *sync.RWMutex {
 	m, _ := locks.LoadOrStore(net, &sync.RWMutex{})
 	return m.(*sync.RWMutex)
 }
+
+func writer(net string) *sync.Mutex {
+	m, _ := writers.LoadOrStore(net, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+func refsLock(net string) *sync.RWMutex {
+	m, _ := refsLocks.LoadOrStore(net, &sync.RWMutex{})
+	return m.(*sync.RWMutex)
+}
+
+// writeLock takes an additive writer's section, the network's writer lock and then its lock shared, and answers how
+// long it waited for both and the release. A writer waits for other writers and the deleters, not for validates and
+// readers: B0-34 mt5's catch-ups waited up to 88 s for the lock alone, behind validates in 173 of the monorepo's 200
+// waits over 1 s, and behind slow stock clones on the others (`tests/am1/results/b034-mt5.md`).
+func writeLock(net string) (int64, func()) {
+	w0 := time.Now()
+	wl, l := writer(net), lock(net)
+	wl.Lock()
+	l.RLock()
+	return time.Since(w0).Milliseconds(), func() {
+		l.RUnlock()
+		wl.Unlock()
+	}
+}
+
+// pauseAt runs at the points where lock-split's safety rests on an order: after each rename of moveIn, between
+// /refs' transactions and its HEAD, between adopt's claim and its move, and after a validate's ref snapshot. Tests
+// stall or interleave there (`TestValidateSerialEquivalence`).
+var pauseAt = func(at, rp string) {}
 
 func repo(net string) string { return filepath.Join(data, net+".git") }
 
@@ -585,16 +621,15 @@ var errBehind = errors.New("the disk's refs are behind this push")
 // (`have`), as when a catch-up ingested a page's packs and has not applied its refs. Either way the shard catches up
 // and asks again (`hold`), so the new commits and the merge base never come from refs a commit the push builds on
 // has passed.
-func behind(rp string, env []string, us []update, have map[string]bool) (bool, error) {
+func behind(rp string, env []string, snap refSnap, us []update, have map[string]bool) (bool, error) {
 	for _, u := range us {
 		if zero(u.New) {
 			continue
 		}
-		cur, _ := git(rp, env, nil, "rev-parse", "--verify", "-q", u.Ref)
-		if c := strings.TrimSpace(string(cur)); c != u.Old && !(c == "" && zero(u.Old)) {
+		if c := snap.refs[u.Ref]; c != u.Old && !(c == "" && zero(u.Old)) {
 			return true, nil
 		}
-		out, err := git(rp, env, nil, "rev-list", u.New, "--not", "--all")
+		out, err := git(rp, env, strings.NewReader(u.New+"\n"+snap.not()), "rev-list", "--stdin")
 		if err != nil {
 			return false, err
 		}
@@ -606,6 +641,44 @@ func behind(rp string, env []string, us []update, have map[string]bool) (bool, e
 	}
 	return false, nil
 }
+
+// refSnap is one read of a repository's refs, every ref and HEAD (what `--all` names), taken once per validate. A
+// validate runs several git processes that each read refs (connectivity, behind, details), and a /refs call can land
+// between them; reading them all from one snapshot taken under refsLock makes the validate's answer the one it would
+// give run alone at the snapshot's moment, while objects only grow under it (decisions/DECISIONS.md, "`lock-split`").
+type refSnap struct {
+	refs map[string]string
+	tail string // rev-list's stdin after the tips: "--not" and every ref's oid once
+}
+
+func snapshot(net, rp string, env []string) (refSnap, error) {
+	rl := refsLock(net)
+	rl.RLock()
+	out, err := git(rp, env, nil, "for-each-ref", "--include-root-refs", "--format=%(objectname) %(refname)")
+	rl.RUnlock()
+	if err != nil {
+		return refSnap{}, err
+	}
+	s := refSnap{refs: map[string]string{}}
+	var b strings.Builder
+	b.WriteString("--not\n")
+	seen := map[string]bool{}
+	for _, l := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(l); len(f) == 2 && (f[1] == "HEAD" || strings.HasPrefix(f[1], "refs/")) {
+			s.refs[f[1]] = f[0]
+			if !seen[f[0]] {
+				seen[f[0]] = true
+				b.WriteString(f[0] + "\n")
+			}
+		}
+	}
+	s.tail = b.String()
+	return s, nil
+}
+
+// not is rev-list's stdin tail that excludes everything the snapshot's refs reach, as `--not --all` does for the
+// refs as they are when git reads them.
+func (s refSnap) not() string { return s.tail }
 
 // cmpErr is err, or other when err is nil.
 func cmpErr(err, other error) error {
@@ -944,9 +1017,10 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "%s: %v", what, err)
 	}
 	// Shared: a validate writes only its own quarantine and reads the repository's objects and refs, so validates of
-	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
-	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
-	// `aside` (finishValidate).
+	// one network run side by side with each other and with the additive writers (ingest, refs), and only the
+	// deleters (init, evict), which take the lock alone, wait for them. Its refs come from one snapshot (`refSnap`);
+	// objects only grow under it, each pack whole, since moveIn renames the index last. The one shared write,
+	// setting the quarantine aside under the pack's SHA-256, takes `aside` (finishValidate).
 	l := lock(net)
 	w0 := time.Now()
 	l.RLock()
@@ -960,6 +1034,12 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	snap, err := snapshot(net, rp, validateEnv)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	pauseAt("validate-snapshot", rp)
 	sweepValidated(rp)
 	q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "incoming-")
 	if err != nil {
@@ -979,12 +1059,12 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
 		w1 := time.Now()
 		if disk {
-			if b, err := behind(rp, validateEnv, updates, nil); err != nil || b {
+			if b, err := behind(rp, validateEnv, snap, updates, nil); err != nil || b {
 				refuse("detail", cmpErr(err, errBehind))
 				return
 			}
 		}
-		d, err := details(rp, validateEnv, updates)
+		d, err := details(rp, validateEnv, snap, updates)
 		if err != nil {
 			refuse("detail", err)
 			return
@@ -1012,7 +1092,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	if len(tips) > 0 {
 		// Tips on stdin: a push may name 10,000 of them.
 		in := strings.Join(tips, "\n") + "\n"
-		if _, err := git(rp, env, strings.NewReader(in), "rev-list", "--objects", "--quiet", "--stdin", "--not", "--all"); err != nil {
+		if _, err := git(rp, env, strings.NewReader(in+snap.not()), "rev-list", "--objects", "--quiet", "--stdin"); err != nil {
 			refuse("connectivity", err)
 			return
 		}
@@ -1039,12 +1119,12 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			for _, o := range objs {
 				have[o] = true
 			}
-			if b, err := behind(rp, env, updates, have); err != nil || b {
+			if b, err := behind(rp, env, snap, updates, have); err != nil || b {
 				refuse("detail", cmpErr(err, errBehind))
 				return
 			}
 		}
-		d, err := details(rp, env, updates)
+		d, err := details(rp, env, snap, updates)
 		if err != nil {
 			refuse("detail", err)
 			return
@@ -1077,8 +1157,18 @@ func finishValidate(net, rp, q, sum string) error {
 	mu.Lock()
 	defer mu.Unlock()
 	dst := filepath.Join(rp, "graft", "validated-"+sum)
-	os.RemoveAll(dst)
+	discard(rp, dst)
 	return os.Rename(q, dst)
+}
+
+// discard removes an aside the way adopt claims one, by renaming it first: os.RemoveAll unlinks a directory's files
+// through a handle that follows a rename, so removing the aside in place could delete the files of a pack adopt just
+// claimed and is moving in. Only one rename of `validated-<sum>` wins.
+func discard(rp, dir string) {
+	gone := filepath.Join(rp, "graft", fmt.Sprintf("discard-%d", adoptSeq.Add(1)))
+	if os.Rename(dir, gone) == nil {
+		os.RemoveAll(gone)
+	}
 }
 
 // validating counts the validates waiting or running on this container, for /load's queue depth.
@@ -1358,13 +1448,16 @@ func parseUpdates(head string) ([]update, error) {
 	return us, nil
 }
 
-func details(rp string, env []string, us []update) ([]refDetail, error) {
+func details(rp string, env []string, snap refSnap, us []update) ([]refDetail, error) {
 	emptyTree, err := git(rp, env, strings.NewReader(""), "hash-object", "-t", "tree", "--stdin")
 	if err != nil {
 		return nil, err
 	}
 	empty := strings.TrimSpace(string(emptyTree))
-	head, _ := git(rp, env, nil, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+	var head []byte
+	if h := snap.refs["HEAD"]; h != "" {
+		head, _ = git(rp, env, nil, "rev-parse", "--verify", "-q", h+"^{commit}")
+	}
 	var out []refDetail
 	for _, u := range us {
 		if zero(u.New) {
@@ -1372,7 +1465,7 @@ func details(rp string, env []string, us []update) ([]refDetail, error) {
 		}
 		d := refDetail{Ref: u.Ref, Paths: []string{}, Commits: []commitObj{}}
 		// The new commits: reachable from the new tip and from no ref the repository holds.
-		list, err := git(rp, env, nil, "rev-list", fmt.Sprintf("--max-count=%d", commitsMax+1), u.New, "--not", "--all")
+		list, err := git(rp, env, strings.NewReader(u.New+"\n"+snap.not()), "rev-list", fmt.Sprintf("--max-count=%d", commitsMax+1), "--stdin")
 		if err != nil {
 			return nil, err
 		}
@@ -1468,7 +1561,15 @@ func splitBatch(raw []byte) [][]byte {
 func sweepValidated(rp string) {
 	dirs, _ := filepath.Glob(filepath.Join(rp, "graft", "validated-*"))
 	inc, _ := filepath.Glob(filepath.Join(rp, "graft", "incoming-*"))
-	for _, d := range append(dirs, inc...) {
+	for _, d := range dirs {
+		if st, err := os.Stat(d); err == nil && time.Since(st.ModTime()) > time.Hour {
+			discard(rp, d)
+		}
+	}
+	// A claim or a discard a restart cut off.
+	left, _ := filepath.Glob(filepath.Join(rp, "graft", "adopting-*"))
+	gone, _ := filepath.Glob(filepath.Join(rp, "graft", "discard-*"))
+	for _, d := range append(append(inc, left...), gone...) {
 		if st, err := os.Stat(d); err == nil && time.Since(st.ModTime()) > time.Hour {
 			os.RemoveAll(d)
 		}
@@ -1477,26 +1578,44 @@ func sweepValidated(rp string) {
 
 // adopt moves a pack /validate kept aside under sum into the repository: pack, then rev, then index, as receive-pack
 // migrates a quarantine. It also answers the sent length validate saved, or zero for an older aside without it, and
-// false when there is no pack.
+// false when there is no pack. It first claims the aside by renaming it to a name of its own: validates run beside it
+// (`lock-split`), and one may sweep an hour-old aside (sweepValidated) or replace it with the same bytes
+// (finishValidate) while adopt moves its files. Either the validate got there first and adopt finds no aside, so the
+// caller indexes the pack instead, or adopt owns the files it moves.
 func adopt(rp, sum string) (name string, sent int64, ok bool, err error) {
 	src := filepath.Join(rp, "graft", "validated-"+sum)
+	claimed := filepath.Join(rp, "graft", fmt.Sprintf("adopting-%s-%d", sum, adoptSeq.Add(1)))
+	now := time.Now()
+	os.Chtimes(src, now, now) // the sweep's hour for the claim starts now
+	if err := os.Rename(src, claimed); err != nil {
+		return "", 0, false, nil
+	}
+	src = claimed
+	defer os.RemoveAll(src)
+	pauseAt("adopt-claimed", rp)
 	idx, _ := filepath.Glob(filepath.Join(src, "pack", "pack-*.idx"))
 	if len(idx) != 1 {
 		return "", 0, false, nil
 	}
 	name = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(idx[0]), "pack-"), ".idx")
+	if _, err := os.Stat(filepath.Join(src, "pack", "pack-"+name+".pack")); err != nil {
+		return "", 0, false, nil
+	}
 	if b, err := os.ReadFile(filepath.Join(src, "bytes")); err == nil {
 		sent, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
 	}
 	if err := moveIn(src, rp, name); err != nil {
 		return "", sent, true, err
 	}
-	os.RemoveAll(src)
 	return name, sent, true, nil
 }
 
+var adoptSeq atomic.Int64
+
 // moveIn moves pack name from quarantine q into the repository: pack, then rev, then index, as receive-pack migrates
-// a quarantine, because git finds a pack by its index. The caller holds the network's lock alone.
+// a quarantine. A validate or reader runs beside it (the caller holds the writer's section, `writeLock`, not the lock
+// alone), and each rename is atomic: git adds a pack from its index only once the pack file is there, and computes a
+// missing reverse index, so it sees no pack or the whole pack in any order (decisions/DECISIONS.md, "`lock-split`").
 func moveIn(q, rp, name string) error {
 	for _, ext := range []string{".pack", ".rev", ".idx"} {
 		from := filepath.Join(q, "pack", "pack-"+name+ext)
@@ -1504,6 +1623,7 @@ func moveIn(q, rp, name string) error {
 			if err := os.Rename(from, filepath.Join(rp, "objects", "pack", "pack-"+name+ext)); err != nil {
 				return err
 			}
+			pauseAt("movein"+ext, rp)
 		}
 	}
 	return nil
@@ -1529,15 +1649,12 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]any{"ingested": false})
 		return
 	}
-	l := lock(net)
-	w0 := time.Now()
-	l.Lock()
-	adoptWaitMs := time.Since(w0).Milliseconds()
+	adoptWaitMs, unlock := writeLock(net)
 	if name, sent, ok, err := adopt(rp, want); ok {
 		if err == nil {
 			err = record(rp, want, name, filepath.Join(rp, "objects"), sent)
 		}
-		l.Unlock()
+		unlock()
 		io.Copy(io.Discard, r.Body)
 		if spooled {
 			removeStored(net, want)
@@ -1549,7 +1666,7 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]any{"ingested": true, "adopted": true, "lock_wait_ms": adoptWaitMs})
 		return
 	}
-	l.Unlock()
+	unlock()
 	if spooled {
 		ingestSpooled(w, net, rp, want, adoptWaitMs)
 		return
@@ -1578,12 +1695,13 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 }
 
 // indexIngest is /ingest's tail: index-pack --strict --fix-thin of file into a quarantine with the repository's objects
-// as its alternate, under the network's lock shared, as /validate indexes; then, under the lock alone, the pack moved
-// in, its objects recorded under sum, and the multi-pack-index's count. Readers and validates of the network run
-// through the index step: with all of it under the lock alone, B0-34 m41's catch-ups held the lock 5.5 to 13.5 s for
-// packs of 0.1 to 2.3 MB, and every ls-refs, upload-pack and validate queued behind them (`TestIngestIndexesOutsideTheLock`).
-// It answers index-pack's time (to the end of the midx step, as /ingest always reported it), how long it held the
-// lock alone, how long it waited for the lock (shared and alone, summed) and for the lock alone, or the status to
+// as its alternate, under the network's lock shared, as /validate indexes; then, in the writer's section
+// (`writeLock`), the pack moved in, its objects recorded under sum, and the multi-pack-index's count. Readers and
+// validates of the network run through both: with all of it under the lock alone, B0-34 m41's catch-ups held the lock
+// 5.5 to 13.5 s for packs of 0.1 to 2.3 MB, and every ls-refs, upload-pack and validate queued behind them
+// (`TestIngestIndexesOutsideTheLock`). It answers index-pack's time (to the end of the midx step, as /ingest always
+// reported it), how long it held the writer's section, how long it waited for the lock shared and for the section,
+// summed, and for the section alone, or the status to
 // answer and the error: 409 when a thin pack's bases or a named object are not here yet, 422 for another index-pack
 // failure. A failed index leaves no quarantine.
 func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midxMs, waitMs, exclWaitMs int64, code int, err error) {
@@ -1605,13 +1723,11 @@ func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midxMs, waitMs, ex
 		return 0, 0, 0, 0, 0, 422, err
 	}
 	defer os.RemoveAll(q)
-	w1 := time.Now()
-	l.Lock()
+	exclWaitMs, unlock := writeLock(net)
 	t1 := time.Now()
-	exclWaitMs = t1.Sub(w1).Milliseconds()
 	defer func() {
 		lockMs = time.Since(t1).Milliseconds()
-		l.Unlock()
+		unlock()
 	}()
 	if err := moveIn(q, rp, name); err != nil {
 		return 0, 0, 0, 0, 0, 500, err
@@ -1821,8 +1937,8 @@ func stagedIdx(packFile, idxFile string) (name, state, why string) {
 }
 
 // ingestSpooled is /ingest &spooled=1 once the pack is neither ingested nor kept aside by /validate: the pack /spool
-// staged goes in with its staged idx when that passes checkIdx, holding the network's lock only for two renames and
-// the record, and through index-pack otherwise. adoptWaitMs is /ingest's wait for the lock alone before it looked for a
+// staged goes in with its staged idx when that passes checkIdx, holding the writer's section only for two renames and
+// the record, and through index-pack otherwise. adoptWaitMs is /ingest's wait for the section before it looked for a
 // pack to adopt, counted into both lock waits the answer reports.
 func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64) {
 	file, idxFile := storedPath(net, sum, ".pack"), storedPath(net, sum, ".idx")
@@ -1855,11 +1971,9 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64
 		return
 	}
 	defer removeStored(net, sum)
-	l := lock(net)
-	w0 := time.Now()
-	l.Lock()
+	wait, unlock := writeLock(net)
 	t0 := time.Now()
-	waitMs := adoptWaitMs + t0.Sub(w0).Milliseconds()
+	waitMs := adoptWaitMs + wait
 	var midxMs int64
 	err = func() error {
 		dst := filepath.Join(rp, "objects", "pack", "pack-"+name)
@@ -1893,7 +2007,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64
 		return nil
 	}()
 	lockMs := time.Since(t0).Milliseconds()
-	l.Unlock()
+	unlock()
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -2048,11 +2162,8 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	results := make([]string, len(packs))
 	var run []int
-	l := lock(net)
-	w0 := time.Now()
-	l.Lock()
-	lockWaitMs := time.Since(w0).Milliseconds()
-	defer l.Unlock()
+	lockWaitMs, unlock := writeLock(net)
+	defer unlock()
 	for i, p := range packs {
 		if _, err := os.Stat(filepath.Join(rp, "graft", p.sum+".objs")); err == nil {
 			results[i] = "done"
@@ -2088,7 +2199,7 @@ type batchPack struct{ sum, file string }
 // pack, which is ingested as /ingest ingests it. Two packs of one run can carry the same object, which --strict refuses
 // in one pack ("appears twice"): the split puts them in two packs, as one /ingest each would. A pack whose bases are
 // in a later pack, or not here at all, splits the same way and ends "later" on its own. The caller holds the
-// network's lock alone.
+// writer's section (`writeLock`).
 func ingestRun(net, rp, dir string, packs []batchPack, run []int, results []string) error {
 	if len(run) == 0 {
 		return nil
@@ -2272,8 +2383,9 @@ const midxEvery = 50
 var sinceMidx sync.Map
 
 // midxAfterIngest writes the repository's multi-pack-index after every midxEvery-th ingest. The caller holds the
-// network's lock alone, so no reader sees a half-written one; a repack that deletes packs drops it, and git reads
-// the packs it does not cover as before.
+// writer's section (`writeLock`), so no two writes overlap; git writes the file beside it and renames it in, so a
+// reader sees the old one or the new one. A repack that deletes packs drops it, and git reads the packs it does not
+// cover as before.
 // It answers the write's time, 0 when this ingest wrote none: B0-34 m1b34's two 35 s exclusive sections on site b
 // lined up with a midx write starved by stock upload-packs, which no field could confirm (tests/am1/results/b034-attr.md).
 func midxAfterIngest(net, rp string) int64 {
@@ -2332,15 +2444,24 @@ func readRefLines(r io.Reader, zeroOK bool) (map[string]string, []string, error)
 	return want, order, sc.Err()
 }
 
-// applyRefs runs the deletes, then the updates, each as `update-ref --stdin --batch-updates`, so a ref that names an
-// object the shard does not hold, or that conflicts with another name, is rejected alone and the rest apply. Answers
-// how many updates were skipped. Deletes commit before updates: a set may move a name from a file to a directory
-// (refs/heads/a deleted, refs/heads/a/b created).
+// applyRefs runs the deletes and the updates as `update-ref --stdin --batch-updates`, so a ref that names an object
+// the shard does not hold, or that conflicts with another name, is rejected alone and the rest apply. Answers how many
+// updates were skipped. It is one transaction, which an upload-pack's advertisement, reading refs with no lock but
+// the network's shared one, sees whole or not at all; only when the set moves a name between file and directory
+// (refs/heads/a deleted, refs/heads/a/b created, `dirFile`), which one transaction refuses, the deletes commit first
+// in a transaction of their own, and the caller then holds the network's lock alone.
 func applyRefs(rp string, dels, ups []string) (int, error) {
+	sets := [][]string{append(append([]string{}, dels...), ups...)}
+	if dirFile(dels, ups) {
+		sets = [][]string{dels, ups}
+	}
 	skipped := 0
-	for _, lines := range [][]string{dels, ups} {
+	for i, lines := range sets {
 		if len(lines) == 0 {
 			continue
+		}
+		if i > 0 {
+			pauseAt("refs-between", rp)
 		}
 		out, err := git(rp, []string{derivedEnv}, strings.NewReader(strings.Join(lines, "")), "update-ref", "--stdin", "--batch-updates")
 		if err != nil {
@@ -2349,6 +2470,29 @@ func applyRefs(rp string, dels, ups []string) (int, error) {
 		skipped += strings.Count(string(out), "rejected ")
 	}
 	return skipped, nil
+}
+
+// dirFile is whether a deleted ref and an updated one are a file and a directory of the same name, which git refuses
+// in one transaction ("'refs/heads/a' exists; cannot create 'refs/heads/a/b'").
+func dirFile(dels, ups []string) bool {
+	gone := map[string]bool{}
+	for _, d := range dels {
+		gone[strings.TrimSpace(strings.TrimPrefix(d, "delete "))] = true
+	}
+	for _, u := range ups {
+		ref := strings.Fields(u)[1]
+		for i := range len(ref) {
+			if ref[i] == '/' && gone[ref[:i]] {
+				return true
+			}
+		}
+		for d := range gone {
+			if strings.HasPrefix(d, ref+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // setHead points HEAD at head (handleRefs picks it) and writes it only when it changes.
@@ -2407,11 +2551,15 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]any{"refs": 0, "skipped": 0, "repack": false, "lock_wait_ms": 0})
 		return
 	}
-	l := lock(net)
+	// An additive writer (`writeLock`): validates and readers run on beside it. refsLock, alone, holds a validate's
+	// ref snapshot off until the whole call, its HEAD included, has landed.
 	w0 := time.Now()
-	l.Lock()
-	lockWaitMs := time.Since(w0).Milliseconds()
-	defer l.Unlock()
+	wl, l, rl := writer(net), lock(net), refsLock(net)
+	wl.Lock()
+	defer wl.Unlock()
+	l.RLock()
+	unlock := l.RUnlock
+	defer func() { unlock() }()
 	var dels, ups []string
 	if put && start {
 		have, err := listRefs(rp, []string{derivedEnv})
@@ -2438,6 +2586,17 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// A rename between file and directory commits in two transactions, and a reader with no snapshot must not see
+	// the name gone between them, so that call alone holds the lock alone, as a deleter does. The writer lock it
+	// keeps throughout means no other writer changes the refs it listed meanwhile.
+	if dirFile(dels, ups) {
+		l.RUnlock()
+		l.Lock()
+		unlock = l.Unlock
+	}
+	rl.Lock()
+	defer rl.Unlock()
+	lockWaitMs := time.Since(w0).Milliseconds()
 	skipped, err := applyRefs(rp, dels, ups)
 	if err != nil {
 		fail(w, 422, "%v", err)
@@ -2456,6 +2615,7 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 				head = order[0]
 			}
 		}
+		pauseAt("refs-head", rp)
 		setHead(rp, head)
 		// repack=0: a rehydrate that skipped covered packs runs /connected next, which waits for any repack, so it
 		// asks /connected to start the repack after its walk instead (tests/am1/results/lm1-memory.md, round 21).
@@ -2874,10 +3034,11 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	l := lock(net)
 	// A clone-cache fill (`spool=<key>`, one at a time per key): the whole answer also goes to a file, written to its
 	// end after the client goes, which the shard object puts to the clone cache (compose.go, "the clone-cache fill").
-	// A stock answer holds the network's lock shared only while its client reads: a spooled one goes on to its end
-	// after a cancel (B0-34's probe cancels after one byte), and holding the lock that long, 60 to 200 s for round 26's
-	// stock misses, held every ingest behind it, and every reader behind the waiting writer. Unlocked, the rest of the
-	// spool risks only an evict, which fails it and leaves no entry.
+	// A stock answer holds the network's lock shared only while its client reads, and at most stockHoldMax: a spooled
+	// one goes on to its end after a cancel (B0-34's probe cancels after one byte), and holding the lock that long, 60
+	// to 200 s for round 26's stock misses, held every ingest behind it, and every reader behind the waiting writer.
+	// Unlocked, the rest of the answer risks only a deleter (an evict or a fresh init), which fails it and leaves no
+	// spool entry.
 	release := sync.OnceFunc(func() {})
 	out := io.Writer(flushOnWrite{w})
 	var done func(bool)
@@ -2930,6 +3091,8 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	l.RLock()
 	release = sync.OnceFunc(l.RUnlock)
 	defer func() { release() }()
+	held := time.AfterFunc(stockHoldMax, func() { release() })
+	defer held.Stop()
 	var sessions []string
 	if strings.Contains(proto, "version=2") {
 		sessions = sessionPrefixes(body)
@@ -2975,6 +3138,15 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	}
 	ended = err == nil
 }
+
+// stockHoldMax: how long a stock answer, ls-refs and advertisements included, may hold the network's lock shared
+// [guess: upload-pack reads the refs and checks the wants before pack-objects starts, in well under a second for
+// B0-34's networks; after that it reads objects only, which are content-addressed and which the lock-free repack
+// already deletes and rewrites under it]. Past it the answer streams on unlocked, so a deleter (a fresh init, or a
+// /refs set that renames between file and directory; /evict never waits) waits at most this long behind a client that
+// reads slowly. B0-34 mt5's stock whole clones held it 36 to 119 s at the client's pace, and catch-ups waited up to
+// 88 s behind them (`tests/am1/results/b034-mt5.md`, `TestSlowStockReaderReleasesTheLock`). A var for the tests.
+var stockHoldMax = 10 * time.Second
 
 // stockMax: stock upload-pack fetches one container runs at once [guess: linux's took 2.6 GB of RSS each, and B0-34
 // m1b34's monorepo container ran up to 15 to 21 of them in 12 GiB, held the network's lock shared 20 to 99 s each,

@@ -176,15 +176,18 @@ pub struct StoredMs {
     /// Packs loaded through their stored `.idx`, and stored `.idx` the container refused (then `index-pack` ran).
     pub idx_used: u32,
     pub idx_rejected: u32,
-    /// The network lock's hold time over the stored packs' ingests.
+    /// The writer's section's hold time over the stored packs' ingests (the container's `writeLock`).
     pub lock_ms: u64,
     /// The multi-pack-index writes' part of `lock_ms` (one every `midxEvery` ingests in the container).
     pub midx_ms: u64,
-    /// The waits for the network lock, shared and alone, over every ingest of the catch-up, stored and inline.
+    /// The waits for the network's locks, index-pack's shared one and the writer's section, over every ingest of the
+    /// catch-up, stored and inline.
     pub lock_wait_ms: u64,
-    /// The waits for the network lock alone, the part of `lock_wait_ms` behind validates and readers.
+    /// The waits for the writer's section, the part of `lock_wait_ms` behind other writers and the deleters; since
+    /// `lock-split` no longer behind validates and readers (decisions/DECISIONS.md).
     pub lock_excl_wait_ms: u64,
-    /// The waits for the network lock alone over the catch-up's `/refs` calls.
+    /// The waits for the writer's section over the catch-up's `/refs` calls, and for the lock alone on a set that
+    /// renames a ref between file and directory.
     pub refs_lock_wait_ms: u64,
     /// Each stored pack's spool as `[start, end, bytes, site]`, start and end in the shard object's ms since the
     /// epoch, at most `SPOOLS_MAX`: the streams busy at once and the total bucket rate over time, which say whether

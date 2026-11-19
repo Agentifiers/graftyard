@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -504,4 +506,78 @@ func TestConnectedRunsBeforeTheRehydratesRepack(t *testing.T) {
 		t.Fatal("a last ref page without repack=0 started no repack")
 	}
 	release <- struct{}{}
+}
+
+// A stock answer whose client reads slowly, pausing for less than clientWriteTimeout, holds the network's lock shared
+// for at most stockHoldMax and then streams on unlocked. B0-34 mt5's stock whole clones held it 36 to 119 s at the
+// client's pace, and catch-ups waited up to 88 s behind them (`tests/am1/results/b034-mt5.md`). With lock-split the
+// catch-ups no longer wait for readers, but the deleters do: here a /refs set that renames a ref between file and
+// directory, which takes the lock alone, must land while the clone's client is still paused, and the clone must then
+// get a whole pack.
+func TestSlowStockReaderReleasesTheLock(t *testing.T) {
+	old := stockHoldMax
+	stockHoldMax = 300 * time.Millisecond
+	t.Cleanup(func() { stockHoldMax = old })
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	// Incompressible and past the loopback sockets' buffers, so the answer's writes block while the client pauses.
+	big := make([]byte, 24<<20)
+	r := uint32(7)
+	for i := range big {
+		r ^= r << 13
+		r ^= r >> 17
+		r ^= r << 5
+		big[i] = byte(r)
+	}
+	base := commit(t, wt, map[string]string{"big.bin": string(big)})
+	run(t, wt, "", "push", "-q", repo("7"), "main", "main:refs/heads/a")
+	putRefs(t, s.URL, base)
+	refsCall(t, s.URL, "POST", "", base+" refs/heads/a\n")
+
+	// A whole clone with no deepen, as a1's hot clones send, so it is stock.
+	pkt := func(l string) string { return fmt.Sprintf("%04x%s", len(l)+4, l) }
+	body := pkt("command=fetch\n") + "0001" + pkt("no-progress\n") + pkt("want "+base+"\n") + pkt("done\n") + "0000"
+	c, err := net.Dial("tcp", strings.TrimPrefix(s.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req, _ := http.NewRequest("POST", s.URL+"/upload-pack?net=7", strings.NewReader(body))
+	req.Header.Set("git-protocol", "version=2")
+	if err := req.Write(c); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(c), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pack has begun: its objects are counted and its refs read, so the lock is no longer needed.
+	var got bytes.Buffer
+	if _, err := io.CopyN(&got, resp.Body, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	// The client pauses, well within clientWriteTimeout (30 s), while a deleter asks for the lock alone.
+	refsDone := make(chan string, 1)
+	go func() {
+		code, b := postBody(t, s.URL+"/refs?net=7", []byte(strings.Repeat("0", 40)+" refs/heads/a\n"+base+" refs/heads/a/b\n"))
+		refsDone <- fmt.Sprintf("%d %s", code, b)
+	}()
+	select {
+	case a := <-refsDone:
+		if !strings.HasPrefix(a, "200 ") || !strings.Contains(a, `"skipped":0`) {
+			t.Fatalf("the D/F /refs: %s", a)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the D/F /refs did not land in 5 s behind a paused stock reader: the answer still holds the lock")
+	}
+	if _, err := io.Copy(&got, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	_, pack := packOfResponse(t, got.Bytes())
+	dir := t.TempDir()
+	run(t, dir, "", "init", "-q", "--bare", "c.git")
+	run(t, filepath.Join(dir, "c.git"), string(pack), "index-pack", "--strict", "--stdin")
+	run(t, filepath.Join(dir, "c.git"), "", "cat-file", "-e", base)
 }
