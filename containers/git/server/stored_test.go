@@ -456,3 +456,50 @@ func TestCheckIdx(t *testing.T) {
 		t.Fatalf("count mismatch: %q", why)
 	}
 }
+
+// A spooled promotion is kept before git can see it. The geometric repack takes no network lock, so one that lists the
+// packs as the promotion's index is renamed in must already find its `.keep`: otherwise it rolls the promotion with the
+// other unkept packs, and the pack /roll and /promote name by `graft/<sum>.name` is gone.
+func TestSpooledPromotionIsKeptBeforeItIsVisible(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	files := func(tag string) map[string]string {
+		set := map[string]string{}
+		for i := range 10 {
+			set[fmt.Sprintf("f%d.txt", i)] = fmt.Sprintf("%s %d\n", tag, i)
+		}
+		return set
+	}
+	// An unkept pack already on disk, as large as the promotion, so a geometric repack rolls the two together.
+	wa := t.TempDir()
+	run(t, wa, "", "init", "-q", "-b", "main")
+	run(t, repo("7"), string(selfPack(t, wa, commit(t, wa, files("a")))), "index-pack", "--stdin")
+	wb := t.TempDir()
+	run(t, wb, "", "init", "-q", "-b", "main")
+	tip := commit(t, wb, files("b"))
+	pack := selfPack(t, wb, tip)
+	sum := stage(t, s.URL, "7", pack, idxFor(t, pack))
+	ran := false
+	old := packVisible
+	packVisible = func(rp string) {
+		ran = true
+		if err := runRepack(rp); err != nil {
+			t.Errorf("repack: %v", err)
+		}
+	}
+	defer func() { packVisible = old }()
+	code, a, body := ingestStaged(t, s.URL, "7", sum)
+	if !ran {
+		t.Fatalf("the hook never ran: %d %s", code, body)
+	}
+	if code != 200 || a.Idx != "used" {
+		t.Fatalf("ingest: %d %s", code, body)
+	}
+	dst := filepath.Join(repo("7"), "objects", "pack", "pack-"+hex.EncodeToString(pack[len(pack)-20:]))
+	for _, ext := range []string{".pack", ".idx", ".keep"} {
+		if _, err := os.Stat(dst + ext); err != nil {
+			t.Fatalf("the promotion's %s is gone after a repack ran as it became visible: %v", ext, err)
+		}
+	}
+	run(t, repo("7"), "", "cat-file", "-e", tip)
+}
