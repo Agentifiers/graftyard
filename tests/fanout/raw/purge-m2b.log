@@ -148,3 +148,26 @@
 2026-11-18T22:10:25Z 131364 purged: a 4934 -> 0, b 4377 -> 145, c 4307 -> 0
 2026-11-18T22:10:25Z 131364 second pass: a 2 -> 0, b 180 -> 0, c 0 -> 0
 2026-11-18T22:10:25Z {"dry": false, "purged": 1, "objects": 13618, "refused": [], "second": 182}
+2026-11-19T01:33:04Z 131368 purged: a 9892 -> 0, b 9007 -> 91, c 7775 -> 185
+2026-11-19T01:33:04Z 131368 second pass: a 0 -> 0, b 206 -> 0, c 185 -> 0
+2026-11-19T01:33:04Z {"dry": false, "purged": 1, "objects": 26674, "refused": [], "second": 391}
+2026-11-19T01:33:42Z waiting 377 s for sweep runs started before the first pass (until 2026-11-19T01:40:00.000010+00:00)
+2026-11-19T01:40:23Z 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:40:23Z 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:40:23Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:41:24Z 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:41:24Z 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:41:24Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:42:23Z 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:42:23Z 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:42:23Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:43:30Z 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:43:30Z 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:43:30Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:44:30Z 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:44:30Z 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:44:30Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+2026-11-19T01:45:29Z waiting 570 s for sweep runs started before the first pass (until 2026-11-19T01:55:00.000010+00:00)
+2026-11-19T01:55:24Z 131368 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:55:24Z 131368 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T01:55:24Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
