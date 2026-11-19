@@ -1,0 +1,31 @@
+{"logged": 10662, "edge5xx": 11106, "byStatus": {"500": 444, "503": 10662}}
+   3806 503 task
+   1936 503 graphql
+   1860 503 renew
+   1347 503 rest-repo-write
+    791 503 upload-pack
+    584 503 lease
+    321 503 receive-pack
+     17 503 merge
+by reason:
+   3010 503 task             the repository's tier rows did not answer; retry (waited past its deadline for another write's read: overloaded)
+   1511 503 graphql          the repository's tier rows did not answer; retry (waited past its deadline for another write's read: overloaded)
+   1443 503 renew            the repository's tier rows did not answer; retry (waited past its deadline for another write's read: overloaded)
+   1046 503 rest-repo-write  the repository's tier rows did not answer; retry (waited past its deadline for another write's read: overloaded)
+    795 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    550 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    453 503 lease            the repository's tier rows did not answer; retry (waited past its deadline for another write's read: overloaded)
+    424 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    416 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    301 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    248 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: Error: list: Reduce your concurrent request rate for the same object. (N)); retry
+    238 503 upload-pack      git cache: N {"warming":true}
+    131 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     65 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: {"warming":true}); retry
+     17 503 merge            the git cache: N {"warming":true}
+      4 503 receive-pack     the repository's access rows did not answer; retry (waited past its deadline for another write's read: overloaded)
+      4 503 receive-pack     the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      3 503 upload-pack      git cache: N Error: list: Reduce your concurrent request rate for the same object. (N)
+      1 503 renew            the repository's tier rows did not answer; retry (repo:N: every member declined a read the leader never serves: overloaded (tierOff))
+      1 503 task             the repository's tier rows did not answer; retry (repo:N: every member declined a read the leader never serves: overloaded (tierOff))
+      1 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member declined a read the leader never serves: overloaded (tierOff))

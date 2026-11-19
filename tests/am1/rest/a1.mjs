@@ -762,7 +762,13 @@ function every(kind, perS, f, cap = 400) {
   })();
 }
 const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
-const st = (r) => String(r.status);
+// tier-read-batch: each answered API request's tier batch counters (`trread`, `trshare`, `trwait` in a test edge's
+// `server-timing`), so the row reports them for writes beside pushes' (`pushTiming`).
+const tierStages = {};
+const st = (r) => {
+  for (const m of (r.headers?.["server-timing"] ?? "").matchAll(/(tr(?:read|share|wait));dur=(\d+)/g)) (tierStages[m[1]] ??= []).push(Number(m[2]));
+  return String(r.status);
+};
 // A test edge's `server-timing` on each answered API read: each stage's ms, kept as `api:<stage>` (narrow-reads-2).
 const stages = (r) => {
   if (r.status === 200) for (const m of (r.headers?.["server-timing"] ?? "").matchAll(/([a-z_]+);dur=(\d+)/g)) note(`api:${m[1]}`, Number(m[2]), "200");
@@ -1423,6 +1429,7 @@ const v = {
     max: Math.round(loopDelay.max / 1e6) },
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
   leaderChanges,
+  ...(Object.keys(tierStages).length ? { apiTierBatch: Object.fromEntries(Object.entries(tierStages).map(([k, xs]) => [k, ps(xs)])) } : {}),
   ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {
