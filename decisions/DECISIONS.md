@@ -837,6 +837,8 @@ The operator left the question, raised from M0-WP6 as G5 and now closed, to the 
 
 **Flip.** A B0-06 rerun where the 6-write rule leaves a gray-storage leader in place past 20 s. For `commit_fail_min`: a B0-06 or B0-31 run where a leader on a failing site collects under 3 failures per follower in a window and stays past 20 s; failing writes and quiet groups (under about 10 calls per follower a window) were not run with it. A B0-31 run at 64 KiB with commit p99 over 1 s from staging every push larger than 64 KiB, or R2 Class A writes that move `scripts/cost_agents.py`'s total. For the own-stall exclusion: a gray-leader case, B0-06 slow storage or failing calls, where the exclusion delays the move past 20 s.
 
+**Open, 2026-11-19 (F99).** The confirm rule judges a confirm only when it ends. On B0-29 m3fhg one leader `sync()` stayed open 23,957 ms with its loop alive, the output gate held every send, and only the followers' election moved the group, about 14 s later (`tests/m0/results/held-grant-m3f.md`). Whether a bound on the oldest unconfirmed write or an earlier pre-vote should act first is `decisions/OPEN-QUESTIONS.md`, F99. This is not a flip: the rule did what it says, and the stall was one it cannot see.
+
 ### GC and the writes it races each name the index they read (2026-10-30)
 
 **Decision.** GC's `Compacted` names the index its roots were read at, and `decide` refuses it if any ref changed after that index. A push that names objects it does not send, and `RestoredTo`, name the pack-set index their connectivity walk read, and `decide` refuses either if a `Compacted` committed after it. GC resubmits its packs when no object it would delete became reachable, and replans otherwise.
