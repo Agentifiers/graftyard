@@ -1,0 +1,42 @@
+10:15:44.304 c1d38f31 jsrpc e2284a67 arm cf-worker-event RunnerBox.jsrpc
+10:15:45.595 c1d38f31 jsrpc 1beccba2 arm cf-worker-event RunnerBox.jsrpc
+10:15:45.975 c1d38f31 alarm e2284a67  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:45.975 c1d38f31 alarm e2284a67  cf-worker graft-runners: r23t monitor rejected after 1671 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:45.975 c1d38f31 alarm e2284a67  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:46.353 c1d38f31 alarm 1beccba2  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:46.353 c1d38f31 alarm 1beccba2  cf-worker graft-runners: r23t monitor rejected after 758 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:46.353 c1d38f31 alarm 1beccba2  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:47.304 c1d38f31 alarm e2284a67  cf-worker-event Thu Nov 19 2026 10:15:44 GMT+0000 (Coordinated Universal Time)
+10:15:47.454 c1d38f31 jsrpc 3630a269 arm cf-worker-event RunnerBox.jsrpc
+10:15:48.113 c1d38f31 alarm 3630a269  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:48.113 c1d38f31 alarm 3630a269  cf-worker graft-runners: r23t monitor rejected after 659 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:48.113 c1d38f31 alarm 3630a269  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:48.595 c1d38f31 alarm 1beccba2  cf-worker-event Thu Nov 19 2026 10:15:45 GMT+0000 (Coordinated Universal Time)
+10:15:49.450 c1d38f31 jsrpc 97c394a9 arm cf-worker-event RunnerBox.jsrpc
+10:15:50.215 c1d38f31 alarm 97c394a9  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:50.215 c1d38f31 alarm 97c394a9  cf-worker graft-runners: r23t monitor rejected after 765 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:50.215 c1d38f31 alarm 97c394a9  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:50.454 c1d38f31 alarm 3630a269  cf-worker-event Thu Nov 19 2026 10:15:47 GMT+0000 (Coordinated Universal Time)
+10:15:51.140 c1d38f31 jsrpc 3651b1d0 arm cf-worker-event RunnerBox.jsrpc
+10:15:51.888 c1d38f31 alarm 3651b1d0  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:51.888 c1d38f31 alarm 3651b1d0  cf-worker graft-runners: r23t monitor rejected after 748 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:51.888 c1d38f31 alarm 3651b1d0  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:52.424 c1d38f31 jsrpc 5ec71257 arm cf-worker-event RunnerBox.jsrpc
+10:15:52.450 c1d38f31 alarm 97c394a9  cf-worker-event Thu Nov 19 2026 10:15:49 GMT+0000 (Coordinated Universal Time)
+10:15:53.228 c1d38f31 alarm 5ec71257  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:53.228 c1d38f31 alarm 5ec71257  cf-worker graft-runners: r23t monitor rejected after 804 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:53.228 c1d38f31 alarm 5ec71257  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:53.724 c1d38f31 jsrpc 118c9060 arm cf-worker-event RunnerBox.jsrpc
+10:15:54.140 c1d38f31 alarm 3651b1d0  cf-worker-event Thu Nov 19 2026 10:15:51 GMT+0000 (Coordinated Universal Time)
+10:15:54.553 c1d38f31 alarm 118c9060  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:54.553 c1d38f31 alarm 118c9060  cf-worker graft-runners: r23t monitor rejected after 829 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:54.553 c1d38f31 alarm 118c9060  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:55.410 c1d38f31 scheduled   cf-worker-event */5 * * * *
+10:15:55.410 c1d38f31 scheduled   cf-worker graft-runners pass: started 8 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0
+10:15:55.414 c1d38f31 jsrpc 8a3c4ae7 arm cf-worker-event RunnerBox.jsrpc
+10:15:55.424 c1d38f31 alarm 5ec71257  cf-worker-event Thu Nov 19 2026 10:15:52 GMT+0000 (Coordinated Universal Time)
+10:15:56.381 c1d38f31 alarm 8a3c4ae7  cf-worker graft-runners: runner exited within 3 s of its start, image registry.cloudflare.com/<acct>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+10:15:56.381 c1d38f31 alarm 8a3c4ae7  cf-worker graft-runners: r23t monitor rejected after 967 ms Error: Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:56.381 c1d38f31 alarm 8a3c4ae7  cf-worker Image not found. Please, make sure you have pushed the image, you have set a digest on it, and have created an application with it
+10:15:56.724 c1d38f31 alarm 118c9060  cf-worker-event Thu Nov 19 2026 10:15:53 GMT+0000 (Coordinated Universal Time)
+10:15:58.414 c1d38f31 alarm 8a3c4ae7  cf-worker-event Thu Nov 19 2026 10:15:55 GMT+0000 (Coordinated Universal Time)

@@ -580,6 +580,29 @@ Granted by the lead with a $2 stop on the runner account: M1 from main `911f59e2
 
 **Cost** (`tests/fanout/acctcost.py`, 09:51Z to 10:22:35Z): runner account **$0.00** (no container ran, and its Durable Object and Workers use rounds to zero); graft-m4a $0.06. The stop was $2.
 
+### The rerun with the image prepared (same grant)
+
+The operator CLI now prepares every image a version names before it uploads (`cli/src/cf.rs`, `prepare_image`; `decisions/DECISIONS.md`, "`r23-runnerbox`").
+- **Preparation.** `POST /containers/image-preparations` for the runner image answered `pending` ("image preparation scheduled", then "snapshot artifact build already dispatched") at 10:32:19Z and `ready` at 10:33:22Z, about 63 s for this 2.04 GB image. Later calls answer `ready` at once.
+- **Upload.** The test version `00cab528` (the same bundle and metadata as `c1d38f31`) went through `Cf::upload_version` itself, from an ignored test in `cli/src/cf.rs` (`r23_upload_test_version`): 1,206 ms, with the image already prepared. Deployed at 100% from 10:36:02Z.
+- **The burst.** Run 1712968, 8 jobs. No `workflow_job` webhook reached `graft-runners` for it, so the jobs waited for the 10:40:52Z sweep (the 202 at 10:15Z on try two had come from that path too; the delivery side is not part of this check). That one sweep pass registered and armed all 8 (`started 8`).
+  - Each alarm launched its container 3 s after the arm (`launched 3 s after arm, image <digest>`, 8 of 8), with no refusal, no retry, and no "exited within" line.
+  - Containers at `standard-3` (2 vCPU, 8 GiB, 16 GB; 6) and `standard-4` (4 vCPU, 12 GiB, 20 GB; 2), in `ewr15` and `iad15`.
+  - All 8 jobs `Success`. Each printed PID 1 as `/bin/bash /home/runner/run.sh` with comm `run.sh`, 0 Sandbox SDK server processes, and 2 or 4 vCPU.
+  - Each `monitor()` resolved 43.9 to 53.2 s after its start, as the runner exited after its one job. All 8 instances were then `stopped`, exit code 0, by 10:41:41Z: the container ended with the runner, with no destroy.
+- **Shards on graft-m4a.** Creating `m3org/wp4-r23` and pushing its workflow started its network's git shard (`git#0#net:65569` on site a) on both tries. The first ran from 10:08:39Z until torn down at 10:35:17Z; the rerun's from 10:36:21Z until 10:43:57Z. `tests/m4/wp4/r23.mjs` now runs `teardown.py <repo> <repo> --shardkill` on every exit, a crash or signal included.
+- **teardown.py's 500 at 10:35Z.** The first teardown call through the new `graft-m4a-shardkill` Worker answered 500, and a direct call to the same route 8 s later answered 200 and tore the shard down. Workers Logs show the site's `/teardown` invoked once, at 10:35:18Z, outcome `ok`, from the direct call; nothing from the first call reached the shard. So the 500 came from a just-deployed workers.dev script before its Durable Object bindings answered, not from the shard, and the script now retries a 5xx, as it already retried a 404, and prints its body. The rerun's teardown through the fixed script answered 200 on the first call.
+
+**The four items, settled or not.**
+1. **Image preparation:** needed, and now in the CLI. With it, all 8 starts placed and ran.
+2. **How a failed start surfaces:** through `monitor()` rejecting, not a throw from `start()` (the first try). Refused placement for want of capacity was not reached on either try, and stays [unverified]. It was not forced.
+3. **`run.sh` as PID 1:** yes, `/bin/bash /home/runner/run.sh` on 8 of 8 under the entrypoint override on the `cloudflare/sandbox` base, with the Sandbox server not running; the container stopped with exit 0 when the runner exited.
+4. **Beta policy behaviour:** one `durable_object` application served both instance types chosen per start, placed each start in about 3 s, and stopped each container with its main process. Nothing unexpected.
+
+**An unplanned third run.** The driver ran as an orb service, which restarted it after it exited, and it dispatched run 1712985 at 10:52:24Z. The service was stopped at 10:52:47Z, and its exit hook tore the shard down (200). `graft-runners` went back to M1's version `e05903aa` at 100%. The run's cancel answered 503 (the install shed its tier reads) until 10:56:05Z, so the 10:55:56Z sweep, now on M1's Sandbox path, started its 8 jobs on `SandboxStd3` (6) and `SandboxStd4` (2). All 8 logged "launched runner": seven 2 s after the arm, and `6349d772` 34 s after it, having logged "There is no container instance that can be provided" 37 times from 10:55:54Z to 10:56:25Z. That is a placement refusal that retried until it placed, seen on the legacy Sandbox path, not on `RunnerBox`. Its runner went `stale` after the cancel, and the 11:00:47Z sweep destroyed it (`sandbox.destroy success`). Lesson: one-shot drivers do not run as orb services. This run's `run.log` overwrote the rerun's; the rerun's facts are in `result.json`, `samples.jsonl`, and `workers-logs.txt`, and this run's are under `try3/`.
+
+**Close-out.** At 11:03Z the runner account listed 0 running on all three applications (`runnerbox` 8 `stopped`, `sandboxstd3` 299 and `sandboxstd4` 2 `inactive`), hosted demand was empty, and graft-m4a's three gitshard applications listed 0 running. Cost from 09:51Z to 11:03:41Z (`tests/fanout/acctcost.py`): the runner account $0.02, graft-m4a $0.16 (the leaked shard included), **$0.18 of the $2 stop** for both tries, the rerun, and the third run.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |

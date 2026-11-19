@@ -9,6 +9,11 @@
 //
 // Every 10 s: the run's jobs and the `RunnerBox` application's instances. After the last job, 10 more minutes, then
 // once more. Pass: 8 jobs Success; PID 1 is the runner on each; no instance and no hosted registration left.
+//
+// Creating the repository and pushing the workflow starts its network's git shard on graft-m4a (`git#0#net:<repo>`),
+// which bills until torn down; the first check left one running for 27 minutes. So every exit, a crash or a signal
+// included, runs `tests/fanout/teardown.py <repo> <repo> --shardkill` (CLOUDFLARE_ACCOUNT_ID/API_TOKEN of the install).
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { EDGE, Git, api, log, row, secret, sleep, tokens } from "../../am1/hosted/lib.mjs";
@@ -49,6 +54,19 @@ const live = (b) => Object.values(b).flatMap((s) => Object.entries(s)).filter(([
 const made = await api("POST", "/api/v3/orgs/m3org/repos", admin, { name: NAME, private: true, auto_init: true });
 if (!(made.status === 422 && JSON.stringify(made.body).includes("already exists"))) must("create", made, 201);
 const repoId = must("repo", await api("GET", `/api/v3/repos/${R}`, admin)).id;
+// The shard teardown runs once, on any exit after this point.
+let tornDown = false;
+function teardown(why) {
+  if (tornDown) return;
+  tornDown = true;
+  const r = spawnSync("python3", ["tests/fanout/teardown.py", String(repoId), String(repoId), "--shardkill"],
+    { cwd: repoRoot, env: { ...process.env, INSTALL: "graft-m4a" }, encoding: "utf8", timeout: 300_000 });
+  log(`shard teardown (${why}): exit ${r.status} ${(r.stdout ?? "").trim().split("\n").slice(-2).join(" | ")}`);
+}
+process.on("exit", () => teardown("exit"));
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => { teardown(sig); process.exit(130); });
+process.on("uncaughtException", (e) => { log(`crashed: ${e?.stack ?? e}`); teardown("crash"); process.exit(1); });
+process.on("unhandledRejection", (e) => { log(`crashed: ${e?.stack ?? e}`); teardown("crash"); process.exit(1); });
 const g = new Git(R).as(admin);
 for (let i = 0; !g.clone().ok; i++) {
   if (i > 10) throw new Error("clone");
@@ -132,6 +150,7 @@ const checks = {
 const result = { repo: R, repoId, run, lastJobS: lastDone ? Math.round((lastDone - t0) / 1000) : null, maxLive, after, legs,
   jobs: Object.fromEntries([...jobs].map(([k, e]) => [k, { startedS: e.started && (e.started - t0) / 1000, doneS: e.done && (e.done - t0) / 1000, conclusion: e.conclusion }])),
   checks, pass: Object.values(checks).every(Boolean) };
+teardown("end");
 writeFileSync(join(out, "result.json"), JSON.stringify(result, null, 2));
 log(`R23 cold burst: ${result.pass ? "PASS" : "FAIL"} ${JSON.stringify(checks)}; last job ${result.lastJobS} s; at most ${maxLive} live instances`);
 process.exit(result.pass ? 0 : 1);

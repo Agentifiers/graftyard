@@ -433,6 +433,7 @@ mod tests {
                 ("GET", "/workers/scripts/graft-runners/subdomain") => ok(json!({ "enabled": false })),
                 ("GET", "/workers/subdomain") => ok(json!({ "subdomain": "graftyard-runners" })),
                 ("GET", "/containers/applications") => ok(json!([])),
+                ("POST", "/containers/image-preparations") => ok(json!({ "status": "ready" })),
                 ("GET", "/workers/scripts/graft-runners/settings") => ok(json!({ "bindings": [
                     { "type": "durable_object_namespace", "name": "SANDBOX_STD3", "namespace_id": "ns3" },
                     { "type": "durable_object_namespace", "name": "SANDBOX_STD4", "namespace_id": "ns4" },
@@ -450,7 +451,7 @@ mod tests {
         let d = scratch();
         let log = Log::default();
         let mut answer = account(log.clone());
-        let (url, _rx) = serve(14, move |s| answer(s));
+        let (url, _rx) = serve(15, move |s| answer(s));
         let cf = Cf::with(&url, "r", "t");
         let args = InitArgs {
             account: "r",
@@ -513,7 +514,7 @@ mod tests {
         let d = scratch();
         let log = Log::default();
         let mut base = account(log.clone());
-        let (url, _rx) = serve(13, move |s| match (s.line.split(' ').next().unwrap_or(""), path(s).as_str()) {
+        let (url, _rx) = serve(14, move |s| match (s.line.split(' ').next().unwrap_or(""), path(s).as_str()) {
             ("GET", "/workers/scripts") => (
                 200,
                 json!({ "success": true, "result": [{ "id": "graft-runners", "migration_tag": "v1" }] }).to_string(),
@@ -662,6 +663,7 @@ mod tests {
                 }
                 ("GET", "/secrets_store/stores") => ok(json!([{ "id": "st1", "name": "graft-runners" }])),
                 ("GET", "/workers/scripts") => ok(json!([{ "id": "graft-runners", "migration_tag": "v2" }])),
+                ("POST", "/containers/image-preparations") => ok(json!({ "status": "ready" })),
                 ("GET", "/containers/applications") => ok(json!([
                     { "id": "a3", "name": "graft-runners-sandboxstd3" }, { "id": "a4", "name": "graft-runners-sandboxstd4" }
                 ])),
@@ -729,6 +731,8 @@ mod tests {
         let unique: std::collections::BTreeSet<&String> = names.iter().collect();
         assert_eq!(unique.len(), names.len(), "binding names repeat: {names:?}");
         assert!(!log.iter().any(|(m, ..)| m == "PATCH"), "nothing rolls");
+        let at = |p: &str| log.iter().position(|(m, x, _)| m == "POST" && x == p).unwrap();
+        assert!(at("/containers/image-preparations") < at("/workers/scripts/graft-runners/versions"), "prepared first");
         assert!(!log.iter().any(|(_, p, _)| p.contains("/rollouts")), "nothing rolls");
         let deploys = log.iter().filter(|(m, p, _)| m == "POST" && p == "/workers/scripts/graft-runners/deployments");
         assert_eq!(deploys.count(), 2, "10%, then 100%");

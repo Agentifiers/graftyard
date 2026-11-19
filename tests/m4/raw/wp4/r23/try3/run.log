@@ -1,0 +1,4 @@
+2026-11-19T10:52:20.669Z repo m3org/wp4-r23 (repo:65569); boxes before {"runnerbox":{"stopped":8},"sandboxstd4":{},"sandboxstd3":{"inactive":293}}
+2026-11-19T10:52:24.191Z run 1712985 dispatched
+2026-11-19T10:52:27.399Z +1s jobs {"queued":8} boxes {"runnerbox":{"stopped":8},"sandboxstd4":{},"sandboxstd3":{"inactive":293}}
+2026-11-19T10:52:47.087Z shard teardown (SIGTERM): exit 0 {"torn_down": 1, "codes": {"200": 1}} | shardkill deleted: True

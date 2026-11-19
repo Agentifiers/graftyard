@@ -46,15 +46,21 @@ if "--shardkill" in sys.argv[1:]:
     print(f"shardkill deployed: {base}", flush=True)
 
     def kill(site, inst):
-        # A new workers.dev route takes a few seconds to answer: retry a 404 or a failed call for a minute.
+        # A new workers.dev route takes a few seconds to answer: retry a 404, a 5xx, or a failed call for a minute.
+        # `/teardown` is idempotent, so a retry after a 5xx is safe. The 5xx is printed with its body: on 2026-11-19
+        # the first call, made the moment the script deployed, answered 500, and a call 8 s later tore the shard down.
+        code = ""
         for _ in range(12):
-            r = subprocess.run(["curl", "-s", "-m", "60", "-X", "POST", "-H", "@-", "-o", "/dev/null", "-w", "%{http_code}",
+            r = subprocess.run(["curl", "-s", "-m", "60", "-X", "POST", "-H", "@-", "-w", "\n%{http_code}",
                                 f"{base}/?site={site}&name={urllib.parse.quote(inst)}"],
                                input=f"x-t: {tok_k}\n", capture_output=True, text=True)
-            if r.stdout not in ("404", "000", ""):
-                return r.stdout
+            body, _, code = r.stdout.rpartition("\n")
+            if code.startswith("5"):
+                print(f"{inst}: {code} {body[:300]!r}; again in 5 s", flush=True)
+            elif code not in ("404", "000", ""):
+                return code
             time.sleep(5)
-        return r.stdout or f"fail({r.returncode})"
+        return code or f"fail({r.returncode})"
 
     atexit.register(lambda: (shutil.rmtree(work), print("shardkill deleted:", subprocess.run(
         [wrangler, "delete", name, "--force"], capture_output=True, text=True).returncode == 0, flush=True)))

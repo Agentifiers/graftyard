@@ -17,6 +17,8 @@ B = 'crates/actions/src/broker.rs'
 R = 'cli/src/runners.rs'
 T = ['-p', 'graftyard-actions', '-p', 'graftyard-runners', '--lib', '--test', 'bf60']
 CLI = ['-p', 'graftyard', 'runners::']
+CLIALL = ['-p', 'graftyard', '--bin', 'graftyard']
+CF = 'cli/src/cf.rs'
 G = ['-p', 'graftyard-actions', '--lib', '--test', 'gates']
 J = 'crates/actions/src/job.rs'
 F = 'workers/site/src/family.rs'
@@ -366,6 +368,21 @@ MUTANTS = [
      '        Some("v1") => {}', CLI),
     ('r23: upgrade uploads a version to an account without RunnerBox', R,
      '                Some(t) if t == MIGRATION_TAG => {}', '                _ => {}', CLI),
+    # ---- R23 image preparation (cli/src/cf.rs): 123 and up ----
+    ('r23-prep: a version upload names an image it never prepared (main\'s rule)', CF,
+     '        self.prepare_images(metadata)?;\n        let v = self.multipart("POST"', '        let v = self.multipart("POST"', CLIALL),
+    ('r23-prep: a site script upload names an image it never prepared', CF,
+     '        self.prepare_images(metadata)?;\n        self.multipart("PUT"', '        self.multipart("PUT"', CLIALL),
+    ('r23-prep: a pending image counts as ready', CF,
+     '                Some("ready") => return Ok(()),', '                Some("ready" | "pending") => return Ok(()),', CLIALL),
+    ('r23-prep: an image never ready is polled forever', CF,
+     '                Some("pending") if Instant::now() + self.prep_poll <= deadline =>',
+     '                Some("pending") if true =>', CLIALL),
+    ('r23-prep: an image refused by preparation is uploaded anyway', CF,
+     '                Some("error") => {\n                    return Err(', '                Some("error") => {\n                    return Ok(()); #[allow(unreachable_code)] return Err(', CLIALL),
+    ('r23-prep: the upload is made before the image is prepared', CF,
+     '        self.prepare_images(metadata)?;\n        let v = self.multipart("POST", &format!("/workers/scripts/{script}/versions"), metadata, modules)?;',
+     '        let v = self.multipart("POST", &format!("/workers/scripts/{script}/versions"), metadata, modules)?;\n        self.prepare_images(metadata)?;', CLIALL),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
