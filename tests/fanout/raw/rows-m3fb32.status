@@ -1,0 +1,54 @@
+2026-11-19T01:06:29Z start 0b0618be /home/user/workspace/gy
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T01:06:45Z start sweep ok
+2026-11-19T01:06:37Z cost account 2.99 since 2026-11-19T00:00:00Z, run 0.0 since 2026-11-19T00:38:18Z, at b0-32
+2026-11-19T01:07:23.443Z m3org/fm3fb32-b032 = 65590
+2026-11-19T01:07:24.019Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:27.243Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:30.567Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:33.770Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:37.005Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:40.190Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:43.377Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:46.590Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:49.791Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:52.983Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:56.180Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:07:59.392Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:02.588Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:05.776Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:08.958Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:12.141Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:15.333Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:18.528Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:21.710Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:24.902Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:28.077Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:31.291Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:34.475Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:37.662Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:40.851Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:44.041Z repo:65590 leader 0 placing since 1795050447682: waiting
+2026-11-19T01:08:54.780Z repo:65590 leader 0: config 11 learners [{"addr":192,"doName":"repo:65590#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65590#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65590#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65590#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65590#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65590#3#l5","join":200,"sit
+2026-11-19T01:09:01.073Z repo:65590 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T01:09:11.435Z repo:65590 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T01:09:22.019Z repo:65590 leader 0: set k 4: {"grants":[[0,[1,2,4]],[1,[1,2,4]]],"k":4,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-19T01:09:22.140Z repo:65590 leader 0: k 4 at 12
+2026-11-19T01:09:31Z b0-32 fm3fb32-b032 65590 start
+2026-11-19T01:18:29.345Z repo:65590 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-19T01:18:29.463Z repo:65590 leader 0: k 1 at 698
+2026-11-19T01:18:38Z b0-32 fm3fb32-b032 65590 done exit 0
+2026-11-19T01:18:42Z torn down 65590
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T01:20:09Z sweep ok
+ALLDONE
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T01:20:32Z SWEEP2 OK
+2026-11-19T01:20:32Z cost {"from": "2026-11-19T00:38:18Z", "to": "2026-11-19T01:20:32Z", "containers": 0.35, "do_rows": 3.0, "do_duration": 0.15, "do_requests": 0.22, "workers": 0.15, "usd": 3.87, "prefix": "graft-m3f", "prefix_usd": 0.64}
+FINISHED
