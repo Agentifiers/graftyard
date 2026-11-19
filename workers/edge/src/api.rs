@@ -88,6 +88,8 @@ pub(crate) struct Timing {
     /// 66 of 68 merges in LM-1's m19 smokes answered no shard timing (`merge-p99`).
     trace: std::cell::RefCell<Vec<Value>>,
     shard: std::cell::RefCell<String>,
+    /// `edge-read-batch`: this request's write-class `rcache` reads it ran, shared, and the ms it waited in batches.
+    rc: std::cell::Cell<(u32, u32, f64)>,
 }
 
 impl Timing {
@@ -98,6 +100,12 @@ impl Timing {
         self.phases.borrow_mut().clear();
         self.trace.borrow_mut().clear();
         self.shard.borrow_mut().clear();
+        self.rc.set((0, 0, 0.0));
+    }
+    /// One write-class `rcache` read: its own (`shared` false) or another call's, after `waited` ms in its batch.
+    pub(crate) fn rcache(&self, shared: bool, waited: f64) {
+        let (run, share, wait) = self.rc.get();
+        self.rc.set(if shared { (run, share + 1, wait + waited) } else { (run + 1, share, wait + waited) });
     }
     /// Sets `bound` to AGENT_PUSH_BOUND after this request's start, its arrival at the edge.
     pub(crate) fn bound_from_start(&self, bound: &std::cell::Cell<Option<f64>>) {
@@ -123,6 +131,10 @@ impl Timing {
     /// Each stage and its ms, then `total`.
     fn phases(&self) -> Vec<(&'static str, f64)> {
         let mut out = self.phases.borrow().clone();
+        let (run, share, wait) = self.rc.get();
+        if run + share > 0 {
+            out.extend([("rcread", f64::from(run)), ("rcshare", f64::from(share)), ("rcwait", wait)]);
+        }
         out.push(("total", js_sys::Date::now() - self.start.get()));
         out
     }
