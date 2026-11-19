@@ -1,0 +1,2 @@
+edge: graft-m1-edge serves 9a312da4 at 100% (rev ad943301b), as tests/am1/raw/b034u-siteday.log deployed
+2026-11-19T01:55:36.528Z b034 networks: {"mono":{"repo":"m3org/b034-mono-u","chain":"repo:1048597","who":"admin"},"second":{"repo":"m3-member/b034-second-u","chain":"repo:3473410","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-u-1","chain":"repo:3538950","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-u-2","chain":"repo:3538951","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-u-3","chain":"repo:3538952","who":"hostile"}]}

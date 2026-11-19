@@ -1,0 +1,14 @@
+== object 2840604e (site a)
+  validate j9: n 1376, p50 2752, p99 10341 ms, {200: 1217, 429: 150, 503: 9}
+  validate kill: n 286, p50 417, p99 3274 ms, {503: 221, 200: 65}
+  validate second: n 697, p50 969, p99 5679 ms, {503: 117, 200: 569, 429: 11}
+  validate hostile: n 687, p50 990, p99 6564 ms, {200: 683, 503: 3, 429: 1}
+  200 validates over 10 s, second and hostile: 0, overlapping a stalled catch-up 0
+  503 miss lines: 0 {}
+== object bd589ee2 (site a)
+  validate j9: n 101, p50 1439, p99 8035 ms, {200: 85, 409: 9, 429: 7}
+  validate kill: n 43, p50 1430, p99 3637 ms, {200: 43}
+  validate second: n 277, p50 1060, p99 5182 ms, {200: 269, 409: 4, 429: 4}
+  validate hostile: n 285, p50 1037, p99 5319 ms, {200: 282, 409: 3}
+  200 validates over 10 s, second and hostile: 0, overlapping a stalled catch-up 0
+  503 miss lines: 0 {}

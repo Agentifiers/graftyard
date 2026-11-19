@@ -1,0 +1,61 @@
+2026-11-19T01:55:49Z api.cloudflare.com in request paths: 0 files
+edge: graft-m1-edge serves 9a312da4 at 100% (rev ad943301b), as tests/am1/raw/b034u-siteday.log deployed
+2026-11-19T01:55:40.870Z b034 networks: {"mono":{"repo":"m3org/b034-mono-u","chain":"repo:1048597","who":"admin"},"second":{"repo":"m3-member/b034-second-u","chain":"repo:3473410","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-u-1","chain":"repo:3538950","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-u-2","chain":"repo:3538951","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-u-3","chain":"repo:3538952","who":"hostile"}]}
+2026-11-19T02:00:25Z seed m3-member/b034-second-u exit 0
+2026-11-19T02:06:47Z seed m3r-b034-hostile/b034-hostile-u-1 exit 0
+2026-11-19T02:12:42Z seed m3r-b034-hostile/b034-hostile-u-2 exit 0
+2026-11-19T02:17:26Z seed m3r-b034-hostile/b034-hostile-u-3 exit 0
+2026-11-19T06:06:14Z resumed after the restart, through the egress proxy
+2026-11-19T06:06:30Z api.cloudflare.com in request paths: 0 files
+edge: graft-m1-edge serves 9a312da4 at 100% (rev ad943301b), as tests/am1/raw/b034u-siteday.log deployed
+2026-11-19T06:06:21.076Z b034 networks: {"mono":{"repo":"m3org/b034-mono-u","chain":"repo:1048597","who":"admin"},"second":{"repo":"m3-member/b034-second-u","chain":"repo:3473410","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-u-1","chain":"repo:3538950","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-u-2","chain":"repo:3538951","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-u-3","chain":"repo:3538952","who":"hostile"}]}
+2026-11-19T06:06:31Z seed m3-member/b034-second-u exit 0
+2026-11-19T06:06:31Z seed m3r-b034-hostile/b034-hostile-u-1 exit 0
+2026-11-19T06:06:31Z seed m3r-b034-hostile/b034-hostile-u-2 exit 0
+2026-11-19T06:06:31Z seed m3r-b034-hostile/b034-hostile-u-3 exit 0
+2026-11-19T06:10:55Z seed m3org/b034-mono-u exit 0
+2026-11-19T06:10:55Z b0-34 drain start
+2026-11-19T06:13:35Z b0-34 drain exit 0 {"at":"2026-11-19T06:13:25.272Z","s":159.3,"kind":"summary","drained":true,"stalled":false,"firstS":159.3,"drainS":0,"promotedFrom0":312,"promotedTo":319,"target":323,"unpromoted":20947560,"unpromotedPacks":3,"alarms":[]}
+site fault off: 200
+git#2#net:1048597 200
+git#1#net:1048597 200
+git#0#net:1048597 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-19T06:14:01Z b0-34 shards torn down before the cold warm
+{"net": "1048597", "running": 0, "other_image": 0}
+2026-11-19T06:14:04Z b0-34 warm start
+2026-11-19T06:16:15Z b0-34 warm exit 0 {"at":"2026-11-19T06:16:05.675Z","s":131.5,"kind":"summary","mainS":2,"catchupS":{"0":82,"1":82.6,"2":131.5},"limitMin":45}
+site 0: 62 spools, 6.03 GB in 47.7 s = 126.4 MB/s in total; per stream p50 43.8 MB/s, bytes-weighted 40.0 MB/s; streams busy mean 3.16, most 4; peak 5 s bin 167.2 MB/s; from site {0: 62}
+  MB/s by bin: 8 96 162 157 131 135 167 140 78 108 24
+site 1: 62 spools, 6.03 GB in 49.4 s = 122.0 MB/s in total; per stream p50 41.7 MB/s, bytes-weighted 38.9 MB/s; streams busy mean 3.14, most 4; peak 5 s bin 164.9 MB/s; from site {1: 62}
+  MB/s by bin: 13 135 165 131 141 99 148 142 100 68 65
+site 2 pool:7: 62 spools, 6.03 GB in 49.2 s = 122.6 MB/s in total; per stream p50 54.0 MB/s, bytes-weighted 42.5 MB/s; streams busy mean 2.89, most 4; peak 5 s bin 214.6 MB/s; from site {0: 1, 2: 61}
+  MB/s by bin: 2 95 162 203 212 215 186 57 54 21
+b0-34 pool probe torn down {"status":200,"body":"{\"torn_down\":true}"}
+{"name": "git#2#net:1048597", "started": "2026-11-19T06:14:05.186Z", "image": "sha256:c145338844406c027dab8da4b69700979bb767454293d1c2b206ad3f5c8098b1"}
+{"name": "git#1#net:1048597", "started": "2026-11-19T06:14:05.092Z", "image": "sha256:c145338844406c027dab8da4b69700979bb767454293d1c2b206ad3f5c8098b1"}
+{"name": "git#0#net:1048597", "started": "2026-11-19T06:14:05.002Z", "image": "sha256:c145338844406c027dab8da4b69700979bb767454293d1c2b206ad3f5c8098b1"}
+{"net": "1048597", "running": 3, "other_image": 0}
+2026-11-19T06:16:21Z b0-34 warm images exit 0
+b0-34 kept packs after the warm: {"0": {"kept": 59, "count": 62}, "1": {"kept": 59, "count": 62}, "2": {"kept": 59, "count": 62}}
+b0-34 compose after the warm site a {"n": 3, "bytes": 260782422, "files": [["base-75afd029e607623df50", 2473024, "2026-11-19T06:15:52.625Z"], ["base-75afd029e607623df50", 258309286, "2026-11-19T06:15:52.397Z"], ["head", 112, "2026-11-19T06:15:52.809Z"]]}
+b0-34 compose after the warm site b {"n": 0, "bytes": 0, "files": []}
+b0-34 compose after the warm site c {"n": 3, "bytes": 260782422, "files": [["base-75afd029e607623df50", 2473024, "2026-11-19T06:16:18.057Z"], ["base-75afd029e607623df50", 258309286, "2026-11-19T06:16:15.621Z"], ["head", 112, "2026-11-19T06:16:19.563Z"]]}
+2026-11-19T06:16:33.229Z repo:1048597 leader 0: k 1 at 324
+2026-11-19T06:16:43Z b0-34 b034-mono-u repo:1048597 start
+2026-11-19T06:36:04Z b0-34 done exit 0
+2026-11-19T06:40:14Z b0-34 misses: site a 1795069054000: HTTP Error 500: Internal Server Error, retry site a 1795069864000: HTTP Error 500: Internal Server Error, retry 
+b0-34 compose at the row's end site a {"n": 9, "bytes": 262897456, "files": [["base-a638bfbfa1f8e8fbf36", 2475824, "2026-11-19T06:34:47.024Z"], ["base-a638bfbfa1f8e8fbf36", 258519018, "2026-11-19T06:34:46.803Z"], ["head", 240, "2026-11-19T06:35:19.713Z"], ["part-9d64bf433c53cab2f48", 1184, "2026-11-19T06:35:15.909Z"], ["part-9d64bf433c53cab2f48", 7572, "2026-11-19T06:35:15.734Z"], ["part-a638bfbfa1f8e8fbf36", 12776, "2026-11-19T06:35:10.166Z"], ["part-a638bfbfa1f8e8fbf36", 1864853, "2026-11-19T06:35:10.006Z"], ["part-b1737ad4406a35f20ea", 1324, "2026-11-19T06:35:19.564Z"]]}
+b0-34 compose at the row's end site b {"n": 0, "bytes": 0, "files": []}
+b0-34 compose at the row's end site c {"n": 9, "bytes": 262897456, "files": [["base-a638bfbfa1f8e8fbf36", 2475824, "2026-11-19T06:35:01.605Z"], ["base-a638bfbfa1f8e8fbf36", 258519018, "2026-11-19T06:34:59.993Z"], ["head", 240, "2026-11-19T06:35:22.634Z"], ["part-9d64bf433c53cab2f48", 1184, "2026-11-19T06:35:17.922Z"], ["part-9d64bf433c53cab2f48", 7572, "2026-11-19T06:35:17.215Z"], ["part-a638bfbfa1f8e8fbf36", 12776, "2026-11-19T06:35:12.801Z"], ["part-a638bfbfa1f8e8fbf36", 1864853, "2026-11-19T06:35:11.999Z"], ["part-b1737ad4406a35f20ea", 1324, "2026-11-19T06:35:21.802Z"]]}
+file://./tests/am1/hosted/lib.mjs:126
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:1048597
+    at leaderOf (file://./tests/am1/hosted/lib.mjs:126:9)
+    at async file://./tests/fanout/k.mjs:14:16
+
+Node.js v26.12.0
+DONE
