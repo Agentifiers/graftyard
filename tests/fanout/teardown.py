@@ -38,8 +38,15 @@ if "--shardkill" in sys.argv[1:]:
                                                      "script_name": f"{install}-site-{c}"} for i, c in enumerate("abc")]}}, f)
     fd = os.open(f"{work}/secrets.json", os.O_WRONLY | os.O_CREAT, 0o600)
     os.write(fd, json.dumps({"TOKEN": tok_k}).encode()); os.close(fd)
-    r = subprocess.run([wrangler, "deploy", "-c", f"{work}/wrangler.json", "--secrets-file", f"{work}/secrets.json"],
-                       capture_output=True, text=True)
+    # Wrangler reads the new Worker back right after its upload, and on 2026-11-19 that read answered 10007 ("does
+    # not exist") though the upload had answered 200; the same deploy a minute later went through. Deploy is
+    # idempotent, so one more try after 10 s.
+    for _ in range(2):
+        r = subprocess.run([wrangler, "deploy", "-c", f"{work}/wrangler.json", "--secrets-file", f"{work}/secrets.json"],
+                           capture_output=True, text=True)
+        if not r.returncode or "10007" not in r.stderr:
+            break
+        time.sleep(10)
     if r.returncode:
         sys.exit(f"shardkill deploy failed: {r.stderr[-400:]}")
     base = f"https://{name}." + edge.split("://")[1].split(".", 1)[1]
