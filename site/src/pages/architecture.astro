@@ -59,6 +59,35 @@ const failures = [
     </div>
   </section>
 
+  <section class="section" id="hard-part" aria-labelledby="hard-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <p class="eyebrow">The hard part</p>
+          <h2 id="hard-h" style="margin-top: var(--s-3)">Never lose a push the host said yes to</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">A git host cannot drop a push it has acknowledged. Cloudflare will lose a region, slow one down for hours, and redeploy a site under live traffic, and no storage product it sells promises zero loss across regions.</p>
+        </div>
+        <div class="span-7 start-6 prose">
+          <p>So Graftyard runs its own consensus on Durable Objects and keeps every push fast enough that <code>git push</code> still feels normal.</p>
+          <ul style="padding-left: 0; list-style: none">
+            <li><b>Every repository is a Raft group</b> of three SQLite-backed Durable Objects in North America, Europe and Asia-Pacific. Owners, token shards and Actions state get their own groups.</li>
+            <li><b>The compiler enforces the acknowledgment.</b> A success reply needs an <code>Acked</code> value, and only the code that has counted a quorum on two continents can build one. A handler that skips the quorum does not compile.</li>
+            <li><b>One entry in flight per group.</b> Every command that arrives meanwhile joins the next entry, and the function that decides each command is pure, so every replay gives the same answer.</li>
+            <li><b>The log is the event stream.</b> An event exists only if its change committed, so a webhook or a workflow can never fire for a write that did not happen.</li>
+            <li><b>Failure is the normal case.</b> Leaders move off a site before a deploy touches it, and off a sick region within about 20 s.</li>
+            <li><b>Measured before built.</b> Every platform number the design depends on was tested on Cloudflare before any product code existed.</li>
+          </ul>
+        </div>
+      </div>
+      <ul class="kpis">
+        <li><b>0 of 3,588,424</b><span>acknowledged writes lost in audited chaos runs on Cloudflare</span></li>
+        <li><b>12,000 of 12,000</b><span>leaders killed between the quorum and the reply returned the original outcome</span></li>
+        <li><b>84 of 85</b><span>planted bugs caught by the test suites</span></li>
+      </ul>
+      <p class="more"><a class="link" href="/durability/">Every way to lose a write, and what holds it<Fragment set:html={ARROW} /></a></p>
+    </div>
+  </section>
+
   <section class="section" id="path" aria-labelledby="path-h">
     <div class="wrap">
       <div class="grid">

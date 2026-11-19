@@ -1,0 +1,38 @@
+== lock holders (validate, merge, stock upload) at the wait's start, still holding 1 s in
+  ('hot', '/validate') 3
+  ('hot', 'none') 8
+  ('hot', 'stock') 6
+  ('mono-a', '/merge') 18
+  ('mono-a', '/merge+/validate') 103
+  ('mono-a', '/validate') 29
+  ('mono-a', 'none') 8
+  ('mono-b', '/validate') 30
+  ('mono-c', '/validate') 11
+  ('mono-c', 'none') 1
+== the last holder to release (the reader the writer waited out)
+  ('hot', '/validate') 3
+  ('hot', 'none') 8
+  ('hot', 'stock') 6
+  ('mono-a', '/merge') 41
+  ('mono-a', '/validate') 109
+  ('mono-a', 'none') 8
+  ('mono-b', '/validate') 30
+  ('mono-c', '/validate') 11
+  ('mono-c', 'none') 1
+mono a n 158 validate holding 132 merge 121 stock 0 validates only 29 none 8
+mono b n 30 validate holding 30 merge 0 stock 0 validates only 30 none 0
+mono c n 12 validate holding 11 merge 0 stock 0 validates only 11 none 1
+== long waits (>20 s)
+  b 3538953 excl 88.3 s; holders []
+  b 3538955 excl 87.1 s; holders [('stock', 643.3, 735.7, None), ('stock', 643.3, 735.6, None)]
+  c 3538955 excl 86.4 s; holders [('/validate', 618.5, 678.6, 503), ('/validate', 618.4, 678.4, 503), ('/validate', 618.2, 678.3, 503), ('/validate', 618.1, 678.2, 503), ('/validate', 632.0, 692.0, 503)]
+  c 3538954 excl 83.9 s; holders [('/validate', 631.8, 691.9, 503), ('/validate', 624.1, 684.1, 503), ('/validate', 623.4, 683.5, 503), ('/validate', 620.2, 680.2, 503), ('/validate', 619.7, 679.8, 503), ('/validate', 619.2, 679.3, 503)]
+  b 3538954 excl 71.8 s; holders []
+  c 3538953 excl 68.0 s; holders [('/validate', 632.1, 692.1, 503), ('/validate', 632.1, 692.1, 503), ('/validate', 632.0, 692.0, 503), ('/validate', 631.9, 692.0, 503), ('/validate', 631.9, 691.9, 503)]
+  b 3473411 excl 47.1 s; holders []
+  a 3538955 excl 45.7 s; holders []
+  a 3473411 excl 43.4 s; holders [('stock', 458.3, 508.1, 200), ('stock', 458.3, 506.1, 200)]
+  a 3538954 excl 43.0 s; holders []
+  c 3538955 excl 27.1 s; holders [('stock', 758.3, 792.9, 200)]
+  c 3538955 excl 22.1 s; holders [('stock', 758.3, 792.9, 200), ('stock', 786.9, 813.8, None)]
+  c 3473411 excl 20.3 s; holders [('stock', 513.6, 556.5, None), ('stock', 513.6, 550.7, 200), ('stock', 513.6, 546.6, 200)]

@@ -1,0 +1,16 @@
+2026-11-19T12:51:57.063Z repo:1048598: 3 names, 3 were joined, all not joined
+2026-11-19T12:52:05.414Z repo:3473411: 4 names, 4 were joined, all not joined
+2026-11-19T12:52:14.845Z repo:3538953: 4 names, 4 were joined, all not joined
+2026-11-19T12:52:23.369Z repo:3538954: 3 names, 3 were joined, all not joined
+2026-11-19T12:52:33.135Z repo:3538955: 4 names, 4 were joined, all not joined
+2026-11-19T12:59:09.453Z purge: 1048598 purged: a 1463 -> 0, b 1324 -> 0, c 1344 -> 0
+2026-11-19T12:59:09.454Z purge: 1048598 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:59:09.454Z purge: 3473411 purged: a 37 -> 0, b 35 -> 0, c 37 -> 0
+2026-11-19T12:59:09.454Z purge: 3473411 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:59:09.454Z purge: 3538953 purged: a 37 -> 0, b 38 -> 0, c 34 -> 0
+2026-11-19T12:59:09.454Z purge: 3538953 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:59:09.454Z purge: 3538954 purged: a 37 -> 0, b 35 -> 0, c 34 -> 0
+2026-11-19T12:59:09.454Z purge: 3538954 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:59:09.455Z purge: 3538955 purged: a 37 -> 0, b 35 -> 0, c 34 -> 0
+2026-11-19T12:59:09.455Z purge: 3538955 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T12:59:09.455Z purge: {"dry": false, "purged": 5, "objects": 4561, "refused": [], "second": 0}

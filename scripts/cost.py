@@ -8,9 +8,9 @@ Usage:
 	python3 scripts/cost.py --lever shard-mem,edge-compose --detail large design   # with cost levers on (LEVERS below)
 
 Workload comes from scripts/cost_model.py (TIERS, ACTIVITY). Prices are the cf.* entries in research/prices.json.
-Every per-operation constant below (requests per git operation, CPU ms, rows per entry, container sizes, hit rates,
-working sets, leader split, site-loss rate) is a [guess] until Milestone 0 measures it, except the git CPU constants
-tagged [measured]. Excluded, as in
+Every per-operation constant below (requests per git operation, CPU ms, container sizes, hit rates, working sets,
+leader split, site-loss rate) is a [guess] until Milestone 0 measures it, except the git CPU constants and the member
+rows written per entry (`bash tests/entryrows/run.sh`, local workerd) tagged [measured]. Excluded, as in
 scripts/cost_model.py: Actions runner compute, the vendor fee, and tax. Also excluded: any Enterprise contract, which
 has no list price. Managed cells and any install that accepts pushes over 200 MB need one on top of these figures.
 The plan line uses Pro list at every tier; Business and Enterprise are install options, not priced.
@@ -47,10 +47,43 @@ ENTRY_PER_PUSH = 1.3               # pushes plus PrSync bot entries
 ENTRY_PER_JOB_REPO = 0.2           # RequiredCheck entries on repository chains
 ENTRY_PER_JOB_ACTIONS = 7          # job transitions and lease rewrites on the org's Actions chain
 FOLD_PUTS = 6                      # fold rows an entry puts per member: a `DefineLabel` puts 6 [measured, K12]
-ENTRY_ROWS = 17                    # rows written per entry per member: each fold put 2 (a tier table's rowid table and
-                                   # its key's automatic index), `log` 1, `request` 2, `raft_state` 1 or 2. The leader
-                                   # wrote 19 for one `DefineLabel`, 2 of them test-only [measured, graft-m3f site day
-                                   # m3frs, 2026-11-18, K12; the split is inference, `tests/am1/results/lm1-rows-m3f.md`]
+# ---- member rows written per entry, by family and kind (K12; `decisions/DECISIONS.md`, "`k12-rows`") ----
+# Counted by local workerd's per-statement `rows_written()`, the meter Cloudflare bills, with the member's own
+# `workers/site/src/tier.rs` statements: `bash tests/entryrows/run.sh` [measured, 2026-11-19]. Each repository entry
+# is one `crates/git/tests/fold_corpus.json` fixture applied after its setup entry.
+REPO_KIND_ROWS = {"Refs": (10, 6), "Refused": (6, 4), "Promoted": (9, 6), "Archived": (7, 5),
+	"IssueOpened": (17, 11), "PrOpened": (23, 14), "PrClosed": (17, 12), "IssueChanged": (13, 9), "Comment": (16, 11),
+	"Review": (19, 12), "Labels": (12, 8), "Rule": (7, 5), "Settings": (8, 6), "RequiredCheck": (8, 5),
+	"CheckRun": (11, 7), "CheckSuite": (11, 7), "Status": (10, 6), "Release": (13, 8), "ReleaseAsset": (11, 7),
+	"LfsObject": (8, 5), "LfsLock": (11, 7), "TestMerged": (10, 6), "ConsumerCursor": (8, 5), "Merged": (20, 14),
+	"Queue": (10, 6), "Collaborator": (8, 5), "Invitation": (9, 6), "Provenance": (8, 5), "AgentMeta": (8, 5),
+	"AgentGate": (8, 5), "AgentPolicy": (7, 5), "TaskCreated": (12, 7), "TaskUpdated": (11, 7), "Created": (7, 5),
+	"Deleted": (7, 5), "LeaseAcquire": (15, 9), "LeaseRenew": (11, 7), "LeaseRelease": (9, 7), "PathSet": (8, 5),
+	"Fanout": (7, 5), "Hook": (9, 6), "HookCursor": (7, 5), "Watchers": (13, 8), "Split": (8, 5),
+	"ActionsSecret": (8, 5), "ActionsVariable": (8, 5), "WorkflowJob": (10, 6), "Compacted": (8, 5),
+	"Refs,Provenance,PathSet": (14, 8), "Refs,TestMerged,ConsumerCursor": (16, 9), "DefineLabel (K12)": (9, 6)}
+                                   # fold-tier rows (FTS5 included) per member for one entry of each kind: (as built,
+                                   # with `WITHOUT ROWID` tier tables, the `without-rowid` lever) [measured]. Every entry
+                                   # writes `_fold` and `_digest` in both tiers, 6 of them as built
+RAFT_STATE_ROWS = (3 + 2 + 2) / 3  # `raft_state` writes per entry, the mean of three members. The bed's `DefineLabel` writes
+                                   # 13 rows besides them, and its test-only `arrival` row 3; graft-m3f's leader wrote 19
+                                   # (so 3) and its followers 15 (so 2) for that entry [measured, K12,
+                                   # `tests/am1/results/lm1-rows-m3f.md`; the split by member is inference]
+HOST_ROWS = 3 + 1 + RAFT_STATE_ROWS   # the rest of an entry's apply: the `request` row 3 (its table, the `rid` index
+                                   # and `request_at`) and `log` 1 [measured, bed], and `raft_state`
+REPO_DELETE_ROWS = 2               # later, per repository entry: its `request` row expired, its `log` row truncated after
+                                   # its archive, 1 each [measured, bed]. Not priced: the `_digest` ring's 2 deletes an
+                                   # entry, which start past DIGESTS_KEEP (20,000) entries on a chain, about 6 years of
+                                   # an average chain at 2,000 developers (277 entries a month) but sooner on a hot one
+BLOB_FOLD_ROWS = 1                 # a blob-fold family (Actions, Identity, Tokens, Names, Authz, Ids) writes its whole fold
+                                   # as one `fold` row, a rowid alias [measured, bed]
+BLOB_DELETE_ROWS = 1               # its `request` row expired [measured, bed]; its log is not archived
+                                   # (`Family::archived` is empty outside `Repo`, `workers/site/src/family.rs`)
+BLOB_ENTRY_ROWS = BLOB_FOLD_ROWS + HOST_ROWS + BLOB_DELETE_ROWS
+PUSH_KIND, PRSYNC_KIND, JOB_KIND = "Refs", "Refs,TestMerged,ConsumerCursor", "RequiredCheck"
+META_MIX = {"Comment": 0.4, "Review": 0.15, "IssueChanged": 0.2, "Labels": 0.1, "IssueOpened": 0.05,
+	"PrOpened": 0.05, "Merged": 0.05}   # ACTIVITY's metadata writes by kind: comments, reviews, issue and pull request
+                                   # edits [guess]; merges at the 5% `workload` prices them at
 LEASE_MISS = 0.25                  # share of reads that find the leader lease expired and pay one read-index RPC
 WALL_S = dict(read=0.005, commit=0.12, append=0.005, lease=0.07)
 CI_HIT = 0.7                       # clone-cache hit rate: about 3.75 CI checkouts per pushed SHA, the first one misses
@@ -207,7 +240,8 @@ TAIL_SHARE = 0.05                  # the container's part of a composed answer, 
 CHAIN_READS = 22                   # R2 reads per composed miss: a base and 10 parts on average, read twice [guess]
 COMPOSE_WALL_S = 2                 # shard object wall time per composed miss for the tail and the fill, at 128 MB [guess]
 HASH_CPU_MS_PER_MB = 3             # edge CPU to SHA-1 a composed answer, about 330 MB/s in wasm [guess]
-WITHOUT_ROWID_ROWS = 11            # without-rowid: each of 6 fold puts writes 1 row, not 2; `log` 1, `request` 2, `raft_state` 2
+# without-rowid: every tier table `WITHOUT ROWID` (REPO_KIND_ROWS' second figure). Not built (`decisions/DECISIONS.md`,
+# "`without-rowid`"): it needs a refold of every member, and rows of about 1 to 4.7 KB take more space.
 LOG_KEEP = 0.25                    # logs-sample: share of Workers Logs bytes kept: every non-ok line, 1 in 8 ok lines [guess]
 FEED_SHARE = 4                     # feed-shared (cost_agents.py): working agents whose held polls share one member's
                                    # duration, which DO pricing bills per object, "shared across all requests active on
@@ -237,6 +271,10 @@ def workload(tier):
 	w["actions_entries"] = w["jobs"] * ENTRY_PER_JOB_ACTIONS
 	w["identity_entries"] = m(USER_RECORDS)
 	w["entries"] = w["repo_entries"] + w["actions_entries"] + w["identity_entries"]
+	w["rows"] = (w["pushes"] * (repo_entry_rows(PUSH_KIND) + (ENTRY_PER_PUSH - 1) * repo_entry_rows(PRSYNC_KIND))
+		+ w["meta"] * (meta_fold_rows(a) + HOST_ROWS + REPO_DELETE_ROWS)
+		+ w["jobs"] * ENTRY_PER_JOB_REPO * repo_entry_rows(JOB_KIND)
+		+ (w["actions_entries"] + w["identity_entries"]) * BLOB_ENTRY_ROWS)
 	w["merges"] = w["meta"] * 0.05
 	w["git_ops"] = w["pushes"] + w["fetches"] + w["jobs"]
 	w["reads"] = w["api"] + w["git_ops"]
@@ -262,8 +300,23 @@ def ssh_fronts(tier):
 	return SSH_CONTAINERS[0] if PLAN[tier] in SSH_PLANS or ssh_option(tier) else 0
 
 
-def entry_rows():
-	return WITHOUT_ROWID_ROWS if "without-rowid" in LEVERS else ENTRY_ROWS
+def kind_rows(kind):
+	"""Fold-tier rows one repository entry of `kind` writes per member, with `WITHOUT ROWID` tables under the lever."""
+	return REPO_KIND_ROWS[kind][1 if "without-rowid" in LEVERS else 0]
+
+
+def repo_entry_rows(kind):
+	"""All rows one repository entry of `kind` writes per member: its fold rows, the host's, and its later deletes."""
+	return kind_rows(kind) + HOST_ROWS + REPO_DELETE_ROWS
+
+
+def meta_fold_rows(a):
+	"""Mean fold rows of a metadata write: META_MIX for ACTIVITY's own, plus any `meta_kinds` (writes a developer day,
+	by kind) that `scripts/cost_agents.py` adds."""
+	kinds = a.get("meta_kinds", {})
+	human = a["metadata_writes"] - sum(kinds.values())
+	mix = sum(w * kind_rows(k) for k, w in META_MIX.items()) / sum(META_MIX.values())
+	return (human * mix + sum(n * kind_rows(k) for k, n in kinds.items())) / a["metadata_writes"]
 
 
 def miss_out(composed=None):
@@ -361,7 +414,7 @@ def model(tier, variant="design", split=None):
 		+ append_rpcs * WALL_S["append"] + lease_rpcs * WALL_S["lease"])
 	if "edge-compose" in LEVERS:
 		gbs += DO_GB * w["jobs"] * (1 - CI_HIT) * COMPOSED_SHARE * COMPOSE_WALL_S
-	rows_w = w["entries"] * members * entry_rows()
+	rows_w = w["rows"] * members
 	inline_gb = w["pushes"] * ACTIVITY["inline_push_kb"] / 1024 / 1024 * 0.25   # inline packs live about a week
 	do_gb = (t["core_gb"] + t["aux_gb"] + inline_gb) * members
 	site_inc = 3 if variant == "separate" else 1

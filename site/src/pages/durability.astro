@@ -1,0 +1,177 @@
+---
+// Durability, for readers: what a Graftyard install does about every way a write could be lost, and the tests behind
+// it. Sources: design/DESIGN.md ("Summary", "Downtime" and its RPO and RTO table, "Invariants"), research/uptime.md
+// findings 40 to 49, research/cloudflare-uptime.md, crates/raft/src/outcome.rs, tests/RESULTS.md ("Totals",
+// "Linearizability and chaos runs on Cloudflare", "Other gate runs"), tests/m0/results/m0-wp8.md (B0-28) and
+// build/BUILD-PLAN.md, as of 2026-11-19. The design document wins wherever this page is shorter or older.
+import Page from '../layouts/Page.astro';
+import Film from '../components/Film.astro';
+import Table from '../components/Table.astro';
+
+const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
+const ok = (s: string) => `<span class="ok">${s}</span>`;
+
+// each way a write could be lost, and what holds it (DESIGN, "Downtime" and "RPO and RTO per durability class")
+const losses = [
+  ['A data center inside a site', 'Durable Object storage confirms each write on 3 of 5 followers in different data centers, and R2 replicates in the region', ok('0 lost') + ', no effect'],
+  ['A whole region, or a continent', 'The other two sites still hold every acknowledged entry and form a quorum; a leader is elected there', ok('0 lost') + ', 11.0 to 12.9 s measured'],
+  ['A region slow or erroring, not down', 'Followers report a sick leader from two places, and a leader with slow storage steps down on its own', ok('0 lost') + ', leaders move within about 20 s'],
+  ['A leader killed after the quorum, before it answers', 'The client resends under the same request id and gets the outcome that committed, never a second apply', ok('12,000 of 12,000') + ' kept their outcome'],
+  ['A site deploy, or a bad release', 'One site a day, drained first. Followers check every entry, and a follower that cannot read one deposes the leader that wrote it', 'Targets 0 failed writes; signed rollback'],
+  ['One member\'s storage corrupted', 'Two other members hold the same log, and each voter rehashes its rows weekly against what it applied to catch silent damage', ok('0 lost') + ', two copies remain'],
+  ['A branch deleted or force-pushed by mistake', 'Every ref value of the last 35 days is kept as a garbage-collection root, so any past state is restorable', ok('Restored') + ' on day 30, 0 objects missing'],
+  ['R2 failing everywhere', 'Pushes up to 1 MiB ride inside the log entry instead of a bucket', 'Small pushes still land'],
+  ['The account itself compromised', 'A vault in a separate account, with locked buckets, holds snapshots, log tails and packs', 'Restore to a chosen cutoff (Milestone 5)'],
+  ['Cloudflare down everywhere', 'An optional lifeboat on the customer\'s own hosts keeps the log and packs and serves clones and reads', 'Read-only until it returns (Milestone 6)'],
+];
+
+// GitHub's own incident classes and what the design does about each (DESIGN, "Downtime"; research/uptime.md)
+const github = [
+  ['A 43 s partition promoted a primary across the country; 954 writes on one cluster never replicated, and the outage ran 24 h 11 min (2018)', 'There is no primary to promote. A minority side cannot commit, so there are no divergent writes to reconcile'],
+  ['A partial disk failure that automatic failover could not detect (2023)', 'Failure is detected by the protocol, not health checks. A member whose storage stalls stops acking, and a slow leader loses its lease'],
+  ['A dropped column still referenced, and online schema migrations at peak (2025, 2026)', 'No DDL anywhere. Data shapes change by refold, one site at a time, and an entry a follower cannot read deposes its writer'],
+  ['A 32-bit key overflow blocked new review threads for 3.7 h (2026)', '64-bit indexes everywhere, ids leased in blocks, an alarm at half the space'],
+  ['A merge queue reverted 2,092 pull requests across 658 repositories (2026)', 'Queue tips only fast-forward, a tree-diff check runs before every merge, and any repository restores to an earlier index'],
+  ['A Redis failover left no writable primary (2026)', 'Leadership moves by the same transfer and election the protocol runs every day, not a separate failover path'],
+];
+
+const tests = [
+  ['Seven chaos runs on Cloudflare, 104.6 h', '16,258 member resets, 10,680 leadership transfers, 5% of calls failing', ok('0 of 3,588,424') + ' audited acknowledged writes lost; 12,304,207 operations checked for linearizability'],
+  ['Leaders killed between the quorum and the reply', '12,000 kills on Durable Objects and through the git edge', ok('12,000 of 12,000') + ' returned the original outcome; 0 applied twice'],
+  ['Every member of 4 or 8 groups reset inside 60 s', '100 writes/s', ok('Every group') + ' committing again within 1.2 s of its last reset'],
+  ['22% of member calls and storage writes failing', '9 runs, 300 pushes each', ok('92.3% to 98.7%') + ' of pushes land within three attempts'],
+  ['Restore window: a branch deleted and another force-pushed on day 1, restored on day 30', 'GC and archiving running, every member truncated past day 0', ok('Both refs') + ' back on all three members; 397 objects read from R2, 0 missing'],
+  ['Raft simulator, harsh and gray faults', '40,191,804 steps, 2,000 seeds', ok('1,000,856') + ' acknowledged writes, each with valid evidence of its quorum'],
+  ['Planted bugs: code mutants run one at a time against the test suites', '85 in Milestones 0 and 1', ok('84 of 85') + ' caught; the one missed was a resumed leader sending entries before they were durable, now covered'],
+];
+---
+<Page title="Durability: how Graftyard keeps every acknowledged push | Graftyard"
+  description="How Graftyard makes an acknowledged git push survive a lost region, a gray failure, a bad deploy and a killed leader, on Cloudflare, and the 104.6 hours of chaos that tested it."
+  current="durability" doc>
+<style is:global slot="head">
+/* durability page: the promise, the acknowledgment code, and the rows of failure classes */
+.dur-hero .kpis { margin-top: var(--s-8); }
+.ack { display: block; margin: 0; padding: var(--s-6); border: 1px solid var(--line); border-radius: var(--r-md, 6px); background: var(--surface); font: 400 14px/1.6 var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); color: var(--ink); overflow-x: auto; }
+.ack .c { color: var(--muted); }
+.ack .k { color: var(--accent); }
+html[data-theme="light"] .ack .k { color: #4f7a1f; }
+.layers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-7) var(--gutter); margin: var(--s-8) 0 0; padding: 0; list-style: none; }
+.layers > li { display: grid; gap: var(--s-3); align-content: start; padding-top: var(--s-5); border-top: 1px solid var(--line); }
+.layers h3 { font-size: clamp(20px, 0.6vw + 16px, 24px); line-height: 1.2; }
+.layers p { color: var(--ink); max-width: 56ch; }
+.layers .n { font: 500 var(--t-small)/1 var(--font-text); color: var(--accent); }
+html[data-theme="light"] .layers .n { color: #4f7a1f; }
+@media (max-width: 767px) { .layers { grid-template-columns: minmax(0, 1fr); } .ack { padding: var(--s-5); font-size: 13px; } }
+</style>
+  <section class="section dur-hero" aria-labelledby="du-h">
+    <div class="wrap">
+      <div class="doc-head">
+        <p class="eyebrow">Durability</p>
+        <h1 id="du-h">When Graftyard says yes to a push, the push&nbsp;exists</h1>
+        <p class="t-lead">No Cloudflare storage product promises zero data loss across regions. So Graftyard built its own replication on Durable Objects, made the guarantee something the compiler checks, and then spent 104.6 hours trying to break it on Cloudflare.</p>
+      </div>
+      <ul class="kpis">
+        <li><b>0 of 3,588,424</b><span>acknowledged writes lost in audited chaos runs, with members reset every 8 to 16 s</span></li>
+        <li><b>3 continents</b><span>hold every repository: North America, Europe and Asia-Pacific</span></li>
+        <li><b>2 regions</b><span>must store a push before git hears <code>ok</code></span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="promise" aria-labelledby="promise-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <p class="eyebrow">The promise</p>
+          <h2 id="promise-h" style="margin-top: var(--s-3)">Zero acknowledged writes lost when any one site fails</h2>
+          <div class="prose" style="margin-top: var(--s-5)">
+            <p>A site is a region: North America, Europe or Asia-Pacific. Lose a data center, a region, a continent, or a site's release, and every push, merge, review and token change Graftyard acknowledged is still there.</p>
+            <p>Each repository is a small Raft group with one member on each continent. A push counts once the leader and one follower on another continent have stored it, and its pack bytes are in R2 buckets on two of those sites.</p>
+          </div>
+        </div>
+        <Film name="push-loop" label="A git push held on two continents, then acknowledged" class="span-7 start-6" />
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="compiler" aria-labelledby="compiler-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <p class="eyebrow">Checked by the compiler</p>
+          <h2 id="compiler-h" style="margin-top: var(--s-3)">There is no code path that says yes too early</h2>
+          <div class="prose" style="margin-top: var(--s-5)">
+            <p>Every success reply, from git's <code>ok</code> to a REST 201, is rendered from an <code>Acked</code> value. Only the code that counted a quorum on two continents can build one, so a handler that skips the quorum does not compile.</p>
+            <p>A refusal waits for the same quorum, because it can rest on an earlier command in the same entry. Nothing is answered from an entry that might still be lost.</p>
+          </div>
+        </div>
+        <div class="span-7 start-6">
+<pre class="ack" aria-label="The Acked type from crates/raft/src/outcome.rs"><span class="c">// crates/raft/src/outcome.rs</span>
+<span class="c">/// Built only inside `outcome`, from the acks the leader counted.</span>
+<span class="c">/// `report_status` and every 2xx renderer take `&amp;Acked`.</span>
+<span class="k">pub struct</span> Acked&lt;T&gt; &#123;
+    <span class="k">pub</span> index: Index,
+    <span class="k">pub</span> out: T,
+    quorum: QuorumProof,   <span class="c">// private: no one else can make one</span>
+&#125;</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="layers" aria-labelledby="layers-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">How it holds</p>
+        <h2 id="layers-h">Six rules, each one closing a way to lose data</h2>
+      </div>
+      <ul class="layers">
+        <li><span class="n">01</span><h3>One entry in flight per group</h3><p>A follower checks entry k+1 only after it applies k. Every command that arrives meanwhile joins the next entry, so order is never in doubt.</p></li>
+        <li><span class="n">02</span><h3>Decisions are pure</h3><p>Each command is decided from the repository's state and the commands before it, nothing else. Every member and every replay reaches the same answer.</p></li>
+        <li><span class="n">03</span><h3>The log is the only record</h3><p>An event exists if and only if its change committed. Webhooks, Actions and search read the log through cursors, so none can fire for a write that did not happen, or miss one that did.</p></li>
+        <li><span class="n">04</span><h3>A retry never applies twice</h3><p>Every request carries an id. A client that lost its answer resends and gets the outcome that committed, even from a new leader.</p></li>
+        <li><span class="n">05</span><h3>No Cloudflare API on the request path</h3><p>Pushes and fail-over never call the control plane, so the 41-hour API outage of November 2023 would not stop a write.</p></li>
+        <li><span class="n">06</span><h3>Releases cannot outrun their readers</h3><p>New data formats switch on only after every site can read them. A follower still on the older release that cannot read an entry deposes the leader that wrote it.</p></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="losses" aria-labelledby="losses-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Every way to lose a write</p>
+        <h2 id="losses-h">What happens when each part fails</h2>
+        <p>Layered from the data center up to Cloudflare itself. The vault and the lifeboat, the last two rows, arrive with Milestones 5 and 6.</p>
+      </div>
+      <Table head={['What fails', 'What Graftyard does', 'Result']} rows={losses} />
+    </div>
+  </section>
+
+  <section class="section" id="github" aria-labelledby="github-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Designed against real outages</p>
+        <h2 id="github-h">GitHub's incidents, and the class each one cannot happen in</h2>
+        <p>The design was checked against 136 incidents from GitHub's availability reports and Cloudflare's published incidents since 2023. These are the ones about data and failover.</p>
+      </div>
+      <Table head={['What happened at GitHub', 'In Graftyard']} rows={github} />
+      <p class="note">From GitHub's post-incident analysis of October 21, 2018 and its monthly availability reports, January 2023 to September 2026. The full list, Cloudflare's incidents included, is in <a href="https://github.com/Agentifiers/graftyard/blob/main/design/DESIGN.md#downtime"><code>design/DESIGN.md</code>, "Downtime"</a>.</p>
+    </div>
+  </section>
+
+  <section class="section" id="tested" aria-labelledby="tested-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <p class="eyebrow">Tried on the real platform</p>
+          <h2 id="tested-h" style="margin-top: var(--s-3)">Then we tried to break it</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">Not a simulation of Cloudflare: real Durable Objects on three continents, with clients writing from Atlanta, London and Singapore while a driver reset members and moved leaders. Afterwards every site's stored log was read back and every acknowledged write looked up.</p>
+        </div>
+        <Film name="chaos-loop" label="Members reset and leadership moves between three sites while writes keep landing and none is lost" class="span-7 start-6" />
+      </div>
+      <Table head={['Test', 'Load and faults', 'Result']} rows={tests} />
+      <p class="note">Every figure is from <a href="https://github.com/Agentifiers/graftyard/blob/main/tests/RESULTS.md"><code>tests/RESULTS.md</code></a>, which lists each run with its faults, checks and source. One chaos run found a real bug, a reused ticket after a leader reset; it was fixed and the 48-hour run followed.</p>
+      <p class="more"><a class="link" href="/evidence/#chaos">Every chaos run<Fragment set:html={ARROW} /></a></p>
+    </div>
+  </section>
+</Page>
