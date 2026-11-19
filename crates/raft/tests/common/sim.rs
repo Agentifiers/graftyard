@@ -263,7 +263,10 @@ impl graftyard_raft::Storage<KvEvent> for Pending {
 
 /// One storage confirm in progress: when it ends, the site and its generation, the confirm id, the writes it makes
 /// durable, and the leader's `SelfAck` for them.
-type ConfirmEnd = (Timestamp, SiteId, u64, ConfirmId, Vec<Write<KvEvent>>, Option<SelfAck>);
+/// (end, site, generation, id, writes, self-ack, storage ms). The sim runs each transaction at its step, with no
+/// deferred flush, so its storage is the whole confirm, the in-order wait behind earlier ones included, as the host's
+/// `sync()` measures it (`confirm_end_timed`).
+type ConfirmEnd = (Timestamp, SiteId, u64, ConfirmId, Vec<Write<KvEvent>>, Option<SelfAck>, u32);
 
 /// A member's disk: the reference `Stored`, plus each entry's digest so the invariant check does not rehash.
 pub struct Disk {
@@ -730,7 +733,8 @@ impl Sim {
             // Confirms overlap and complete in order: this one ends after its own time and after every earlier one.
             let end = Timestamp((self.now.0 + ms).max(self.gate[i].0));
             self.gate[i] = end;
-            self.confirm_ends.push((end, s, self.generation[i], id, pending.0, out.self_ack.take()));
+            let storage = (end.0 - self.now.0) as u32;
+            self.confirm_ends.push((end, s, self.generation[i], id, pending.0, out.self_ack.take(), storage));
         }
         let g = self.generation[i];
         self.catchups.extend(std::mem::take(&mut out.catchup).into_iter().map(|c| (s, g, c)));
@@ -921,7 +925,7 @@ impl Sim {
         self.confirm_ends = keep;
         ends.sort_by_key(|e| e.0);
         // Every confirm due by now is durable, even if reporting an earlier one crashes its member.
-        for (_, s, generation, _, writes, _) in &ends {
+        for (_, s, generation, _, writes, _, _) in &ends {
             if *generation == self.generation[s.0 as usize] {
                 for w in writes {
                     graftyard_raft::Storage::write(&mut self.disks[s.0 as usize], w);
@@ -929,12 +933,12 @@ impl Sim {
                 self.note_synced(*s, writes.iter().any(|w| matches!(w, Write::Append(_))));
             }
         }
-        for (_, s, generation, id, _, ack) in ends {
+        for (_, s, generation, id, _, ack, storage) in ends {
             // An earlier report in this loop may have crashed the member.
             if generation != self.generation[s.0 as usize] {
                 continue;
             }
-            if let Some((_, res)) = self.call(s, |m, t| m.confirm_end(t, id)) {
+            if let Some((_, res)) = self.call(s, |m, t| m.confirm_end_timed(t, id, storage)) {
                 self.handle(s, res);
             }
             if let Some(ack) = ack

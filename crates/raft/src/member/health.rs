@@ -40,8 +40,9 @@ pub(super) struct LeaderHealth {
     calls: VecDeque<(Timestamp, SiteId, bool, bool)>,
     /// Rounds already counted, so a duplicated reply or a failure report after a reply counts once.
     counted: BTreeSet<(SiteId, u64)>,
-    /// Per storage confirm that ended in the window: when, and how long it took.
-    confirms: VecDeque<(Timestamp, u32)>,
+    /// Per storage confirm that ended in the window: when, how long it took from `confirm_begin`, and how long its
+    /// storage took (`confirm_end_timed`; the whole confirm when the host did not say).
+    confirms: VecDeque<(Timestamp, u32, u32)>,
     /// Followers that answered an AppendEntries in this leadership. A failed call to one not yet heard from is not
     /// counted: the quorum commits without a follower it has not reached.
     heard: BTreeSet<SiteId>,
@@ -131,17 +132,32 @@ impl<C: Command> Member<C> {
         id
     }
 
-    /// The confirm `id` ended: its writes are durable.
+    /// The confirm `id` ended: its writes are durable. Its storage took the whole confirm: a host whose transaction
+    /// runs at `confirm_begin`.
     pub fn confirm_end(&mut self, now: Timestamp, id: ConfirmId) -> Ready<C, ()> {
+        self.confirm_ended(now, id, None)
+    }
+
+    /// The confirm `id` ended, and of it the storage itself (the host's transaction and `sync()`) took `storage_ms`
+    /// on the host's clock; the rest waited for the deferred flush and the input's turn. `STEP_DOWN`'s confirm rule
+    /// judges `storage_ms`. The loop-lag rule, the own-stall exclusion and the trip's `kept` samples read the whole
+    /// confirm, because the output gate holds every send for all of it (`decisions/DECISIONS.md`, "`confirm-storage`").
+    pub fn confirm_end_timed(&mut self, now: Timestamp, id: ConfirmId, storage_ms: u32) -> Ready<C, ()> {
+        self.confirm_ended(now, id, Some(storage_ms))
+    }
+
+    fn confirm_ended(&mut self, now: Timestamp, id: ConfirmId, storage_ms: Option<u32>) -> Ready<C, ()> {
         self.begin(now);
         if let Some((began, end)) = self.confirms.get_mut(&id) {
             *end = Some(now);
             let ms = now.0.saturating_sub(began.0) as u32;
             let began = *began;
+            // Two clocks: storage measured on the host's cannot be longer than the confirm it is part of.
+            let storage = storage_ms.map_or(ms, |s| s.min(ms));
             if let Some(lead) = self.lead.as_mut()
                 && began >= lead.started()
             {
-                lead.health.confirms.push_back((now, ms));
+                lead.health.confirms.push_back((now, ms, storage));
                 self.check_health();
             }
         }
@@ -319,7 +335,7 @@ impl<C: Command> Member<C> {
         if errors {
             return Some(StepDownWhy::CommitErrors { calls: counts });
         }
-        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.1).collect();
+        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.2).collect();
         ms.sort_unstable();
         let p99 = ms.get(ms.len() * 99 / 100).copied().unwrap_or(0);
         let slow = ms.iter().filter(|m| **m > STEP_DOWN.confirm_p99_ms).count() as u32;
@@ -385,7 +401,8 @@ impl<C: Command> Member<C> {
     /// The window `tripped` judged, kept for the host's log (`Member::step_down_window`); no decision reads it.
     fn note_trip(&mut self) {
         let Some(lead) = self.lead.as_ref() else { return };
-        let confirms = lead.health.confirms.iter().copied().collect();
+        let confirms = lead.health.confirms.iter().map(|c| (c.0, c.2)).collect();
+        let whole = lead.health.confirms.iter().map(|c| (c.0, c.1)).collect();
         let started = lead.started();
         let mut kept: Vec<(Timestamp, u32)> = self
             .confirms
@@ -395,7 +412,7 @@ impl<C: Command> Member<C> {
             .collect();
         kept.sort_unstable();
         let since = Timestamp(self.now.0.saturating_sub(window().as_millis() as u64));
-        self.last_trip = Some(StepDownWindow { from: since, to: self.now, confirms, kept });
+        self.last_trip = Some(StepDownWindow { from: since, to: self.now, confirms, whole, kept });
     }
 
     fn hold(&mut self, why: StepDownWhy) {

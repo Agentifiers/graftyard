@@ -458,14 +458,16 @@ pub enum StepDownWhy {
 }
 
 /// The window a `STEP_DOWN` trip judged, for the host's log: its bounds on the member clock and each confirm that
-/// ended in it, as (end, ms). The confirm and loop-lag rules read only these samples, so an offline replay of a
+/// ended in it. `confirms` is (end, storage ms), what the confirm rule judges; `whole` is (end, ms from
+/// `confirm_begin`), what the loop-lag rule judges. These rules read only these samples, so an offline replay of a
 /// candidate rule needs nothing else (`tests/fanout/stepdown.py`). `kept` is every confirm of this leadership that
-/// ended in the last CONFIRM_KEEP (30 s), as (end, ms), so a longer window can be replayed too.
+/// ended in the last CONFIRM_KEEP (30 s), as (end, ms from `confirm_begin`), so a longer window can be replayed too.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct StepDownWindow {
     pub from: Timestamp,
     pub to: Timestamp,
     pub confirms: Vec<(Timestamp, u32)>,
+    pub whole: Vec<(Timestamp, u32)>,
     pub kept: Vec<(Timestamp, u32)>,
 }
 
@@ -1021,6 +1023,11 @@ impl<C: Command> Member<C> {
     /// The entry at `i`, if it is in memory.
     pub fn entry_at(&self, i: Index) -> Option<&LogEntry<Ev<C>>> {
         (i > self.base.index && i <= self.last()).then(|| self.entry(i))
+    }
+    /// The canonical encoded length of the entry at `i`, if it is in memory: what `log_bytes` counts for it, kept
+    /// from its append, so a host's trace reads it without encoding the entry again.
+    pub fn entry_len(&self, i: Index) -> Option<usize> {
+        (i > self.base.index && i <= self.last()).then(|| self.sizes[(i.0 - self.base.index.0 - 1) as usize])
     }
     /// The digest of the entry at `i`, if it is in memory or is the base.
     pub fn digest_of(&self, i: Index) -> Option<Digest> {

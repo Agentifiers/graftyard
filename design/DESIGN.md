@@ -294,42 +294,42 @@ pub const APPEND_BYTES_MAX: usize = 100_000;                     // per AppendEn
 pub const LATE_LIMIT: Duration = Duration::from_secs(10);        // past CALL_DEADLINE a late answer is stepped [guess]
 pub const LOG_WINDOW: u64 = 1_000; pub const LOG_BYTES: usize = 8_000_000;  // `load`'s log: entries, bytes [guess]
 /// A leader steps down when, over `window_s`, its commit-path error rate passes `commit_errors` or its storage confirm
-/// p99 passes `confirm_p99_ms`. A new leader counts a follower's failed calls only once that follower answered it in
-/// its term, because the quorum commits without a follower it has not reached, such as a killed leader still resetting:
-/// without this, 7 of 60 groups changed leader again 21.8 to 25.8 s after a leader kill, and with it 0 of 90 did
-/// [measured, `tests/m0/results/m0-wp4.md`, "Leader kill"]. Misses to one follower within CALL_DEADLINE of its last
-/// counted one count once: a 1.9 s stall missed 17 to 31 rounds [measured, LM-1]. The commit-error rule also needs at
-/// least `commit_fail_min` failed calls to every follower in the window, as the confirm rule needs `confirm_slow_min`:
-/// a far follower misses CALL_DEADLINE about once in 10 to 15 small calls with no fault, and at 10 to 30 calls a window
-/// one or two misses pass 5%. AppendEntries of 500 kB or more missed it in 230 of 365 soak calls [measured,
-/// `tests/m1/results/m1-f43.md`], so large packs may trip it unfaulted [inference; F41]. A failed call whose deadline
-/// elapsed while the leader's own storage confirm was outstanding (begun before the call and unconfirmed at its
-/// deadline) counts toward neither `commit_errors` nor `commit_fail_min`, because the confirm rule owns the leader's
-/// storage stalls: in two LF-12 phases one 3.5 s confirm made every failed call to the near follower in the window, and
-/// the commit-error rule moved a healthy group, once onto its far member [measured, `tests/m0/results/m0-wp12.md`,
-/// LF-12, ninth pass]. That the exclusion keeps such a leader is [inference]: replayed offline on those records it
-/// removed 3 of 3 and 4 of 4 failed calls to the near follower, so neither would have tripped, and it was inert in 26
-/// tenth-pass phase-members, where no confirm passed CALL_DEADLINE [measured, same, tenth pass]. With the count, leader
-/// kills under load gave 0 follow-on changes in 90 groups against 2 in 90 without it, and leaders still left a site
-/// failing 30% of calls in 2.9 to 4.1 s and slow storage in 2.8 to 4.2 s [measured, `tests/m0/results/m0-wp4.md`,
-/// "`STEP_DOWN` target on the leader's calls and the other follower's probe; F37 as `min3-`"]. Failing writes were not
-/// run with the count, and a quiet group needs about 10 calls per follower a window at 30% errors to collect 3
-/// [inference]. `confirm_slow_min` has the same limit: a slow leader confirming 2 writes/s left in p50 10.4 s, max 21.9
-/// s, against Milestone 0's 2.8 to 4.2 s [measured, simulator, `tests/m1/results/m1-wp3.md`, "Liveness against
-/// Milestone 0"; F41]. On errors, it first asks the other follower to ping each candidate target, and holds for one
-/// window if no candidate's link reads under `commit_errors`: every site is failing alike (the June 2025 class), and a
-/// transfer only adds an election. B0-25 ran down to 79% without this hold (`tests/m0/results/m0-wp2.md`, B0-25). The
-/// confirm rule trips only on at least `confirm_slow_min` confirmations over `confirm_p99_ms` in the window. A group
-/// committing about 5 entries/s holds under 100 confirmations in 10 s, so a p99 is its maximum: in M0-WP9 one slow
-/// write moved the leader 6 times in 4 of 9 runs with no fault injected [measured, `tests/m0/results/m0-wp9.md`,
-/// "STEP_DOWN under load"]. Durable Object storage itself stalls: a bare object writing and syncing at a member's rate
-/// saw stalls over 500 ms about every 5 s, and 7 of 168 such objects hit 3 or 4 in one 10 s window, so 6 leaves a
-/// margin of two [measured, `tests/m0/results/m0-wp4.md`, "F35"]. A `STEP_DOWN` transfer targets a follower outside
-/// RESET_QUARANTINE of its own `stepped_down_at`, which every AppendEntries reply carries. On a confirm trip the
-/// leader's calls to the target must not fail over `commit_errors` with `commit_fail_min` failed (rate alone held a
-/// stall with `to: None`, `tests/m0/results/carried-2.md`), and no probe runs. On a commit-error trip the leader's
-/// calls fail over `commit_errors` to every follower by definition, so the target qualifies instead on the other
-/// follower's calls to it: that follower runs a `linkErrors` probe of the target, which must read under
+/// p99 passes `confirm_p99_ms`, timed from the flush (`confirm-storage`). A new leader counts a follower's failed calls
+/// only once that follower answered it in its term, because the quorum commits without a follower it has not reached,
+/// such as a killed leader still resetting: without this, 7 of 60 groups changed leader again 21.8 to 25.8 s after a
+/// leader kill, and with it 0 of 90 did [measured, `tests/m0/results/m0-wp4.md`, "Leader kill"]. Misses to one follower
+/// within CALL_DEADLINE of its last counted one count once: a 1.9 s stall missed 17 to 31 rounds [measured, LM-1]. The
+/// commit-error rule also needs at least `commit_fail_min` failed calls to every follower in the window, as the confirm
+/// rule needs `confirm_slow_min`: a far follower misses CALL_DEADLINE about once in 10 to 15 small calls with no fault,
+/// and at 10 to 30 calls a window one or two misses pass 5%. AppendEntries of 500 kB or more missed it in 230 of 365
+/// soak calls [measured, `tests/m1/results/m1-f43.md`], so large packs may trip it unfaulted [inference; F41]. A failed
+/// call whose deadline elapsed while the leader's own storage confirm was outstanding (begun before the call and
+/// unconfirmed at its deadline) counts toward neither `commit_errors` nor `commit_fail_min`, because the confirm rule
+/// owns the leader's storage stalls: in two LF-12 phases one 3.5 s confirm made every failed call to the near follower
+/// in the window, and the commit-error rule moved a healthy group, once onto its far member [measured,
+/// `tests/m0/results/m0-wp12.md`, LF-12, ninth pass]. That the exclusion keeps such a leader is [inference]: replayed
+/// offline on those records it removed 3 of 3 and 4 of 4 failed calls to the near follower, so neither would have
+/// tripped, and it was inert in 26 tenth-pass phase-members, where no confirm passed CALL_DEADLINE [measured, same,
+/// tenth pass]. With the count, leader kills under load gave 0 follow-on changes in 90 groups against 2 in 90 without
+/// it, and leaders still left a site failing 30% of calls in 2.9 to 4.1 s and slow storage in 2.8 to 4.2 s [measured,
+/// `tests/m0/results/m0-wp4.md`, "`STEP_DOWN` target on the leader's calls and the other follower's probe; F37 as
+/// `min3-`"]. Failing writes were not run with the count, and a quiet group needs about 10 calls per follower a window
+/// at 30% errors to collect 3 [inference]. `confirm_slow_min` has this limit: a slow leader confirming 2 writes/s left
+/// in p50 10.4 s, max 21.9 s, against Milestone 0's 2.8 to 4.2 s [measured, simulator, `tests/m1/results/m1-wp3.md`,
+/// "Liveness against Milestone 0"; F41]. On errors, it first asks the other follower to ping each candidate target, and
+/// holds for one window if no candidate's link reads under `commit_errors`: every site is failing alike (the June 2025
+/// class), and a transfer only adds an election. B0-25 ran down to 79% without this hold (`tests/m0/results/m0-wp2.md`,
+/// B0-25). The confirm rule trips only on at least `confirm_slow_min` confirmations over `confirm_p99_ms` in the
+/// window. A group committing about 5 entries/s holds under 100 confirmations in 10 s, so a p99 is its maximum: in
+/// M0-WP9 one slow write moved the leader 6 times in 4 of 9 runs with no fault injected [measured,
+/// `tests/m0/results/m0-wp9.md`, "STEP_DOWN under load"]. Durable Object storage itself stalls: a bare object writing
+/// and syncing at a member's rate saw stalls over 500 ms about every 5 s, and 7 of 168 such objects hit 3 or 4 in one
+/// 10 s window, so 6 leaves a margin of two [measured, `tests/m0/results/m0-wp4.md`, "F35"]. A `STEP_DOWN` transfer
+/// targets a follower outside RESET_QUARANTINE of its own `stepped_down_at`, which every AppendEntries reply carries.
+/// On a confirm trip the leader's calls to the target must not fail over `commit_errors` with `commit_fail_min` failed
+/// (rate alone held a stall with `to: None`, `tests/m0/results/carried-2.md`), and no probe runs. On a commit-error
+/// trip the leader's calls fail over `commit_errors` to every follower by definition, so the target qualifies instead
+/// on the other follower's calls to it: that follower runs a `linkErrors` probe of the target, which must read under
 /// `commit_errors`, and a probe that cannot run disqualifies it. Among those it takes the one with the fewest failed
 /// calls, then the most caught up, and holds if none qualifies. A target's own calls to the other follower measure that
 /// follower too: after an election left a failing-write site as a follower, that reading qualified only the sick site,
