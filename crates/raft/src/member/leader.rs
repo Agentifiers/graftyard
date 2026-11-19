@@ -353,6 +353,12 @@ pub(super) struct Lead<C: Command> {
     /// Per follower, when an AppendEntries answer of this term last arrived, on this leader's clock. Unlike
     /// `acked_at`, a transfer's lease reset does not clear it.
     heard: BTreeMap<SiteId, Timestamp>,
+    /// Per follower, the commit index it acknowledged: the lower of the commit an answered round carried and the index
+    /// it matched. `tick` sends a follower below the leader's commit one round once its last round is CALL_DEADLINE old,
+    /// so a group that commits and goes quiet still tells its followers (R29, `r29-commit-heartbeat`).
+    told: BTreeMap<SiteId, Index>,
+    /// Per follower, the latest AppendEntries round sent, the commit it carried, and when.
+    telling: BTreeMap<SiteId, (u64, Index, Timestamp)>,
 }
 
 impl<C: Command> Lead<C> {
@@ -448,6 +454,8 @@ impl<C: Command> Member<C> {
             retries: BTreeMap::new(),
             waiting_since: None,
             heard: BTreeMap::new(),
+            told: BTreeMap::new(),
+            telling: BTreeMap::new(),
         });
         if self.state.transfer.is_some() {
             // A transfer this member ran before it restarted is over.
@@ -668,6 +676,8 @@ impl<C: Command> Member<C> {
             lead.acked_at.remove(&p);
             lead.retries.remove(&p);
             lead.refusals.remove(&p);
+            lead.told.remove(&p);
+            lead.telling.remove(&p);
         }
         self.lead.as_mut().expect("leading").pending = Some((index, Vec::new()));
         self.broadcast(false);
@@ -1580,6 +1590,7 @@ impl<C: Command> Member<C> {
             transfer,
             lead_seq: self.state.lead_seq,
         };
+        self.lead.as_mut().expect("leading").telling.insert(peer, (round, commit, now));
         self.send(peer, Message::Append(req));
     }
 
@@ -1646,6 +1657,7 @@ impl<C: Command> Member<C> {
                 transfer,
                 lead_seq,
             };
+            self.lead.as_mut().expect("leading").telling.insert(c.to, (c.round, commit, now));
             self.send(c.to, Message::Append(req));
         }
         self.finish(())
@@ -1694,6 +1706,13 @@ impl<C: Command> Member<C> {
         let next = lead.next.entry(from).or_insert(last.next());
         if res.ok {
             *next = (*next).max(matched.next());
+            // The latest round's answer: the follower set its commit to the lower of the round's and what it matched.
+            if let Some(&(round, commit, _)) = lead.telling.get(&from)
+                && round == res.round
+            {
+                let told = lead.told.entry(from).or_insert(Index(0));
+                *told = (*told).max(commit.min(res.matched));
+            }
             if res.sent_at >= lead.lease_floor {
                 let a = lead.acked_at.entry(from).or_insert(res.sent_at);
                 *a = (*a).max(res.sent_at);
@@ -2077,6 +2096,8 @@ impl<C: Command> Member<C> {
             transfer,
             lead_seq: self.state.lead_seq,
         };
+        let lead = self.lead.as_mut().expect("leading");
+        lead.telling.insert(peer, (lead.round, commit, now));
         self.send(peer, Message::Append(req));
         true
     }
@@ -2201,7 +2222,7 @@ impl<C: Command> Member<C> {
             self.end_leadership();
             return;
         }
-        let last = self.last();
+        let (last, commit) = (self.last(), self.state.commit);
         // A transfer keeps sending rounds that carry its id, so the other follower accepts one.
         let waiting = !lead.ready || !lead.reads.is_empty() || lead.transfer.is_some();
         let due: Vec<SiteId> = self
@@ -2211,7 +2232,11 @@ impl<C: Command> Member<C> {
                 let gap = if self.state.cannot_follow.contains(p) { CANNOT_FOLLOW_RETRY } else { CALL_DEADLINE };
                 let behind = lead.next.get(p).is_none_or(|n| *n <= last);
                 let idle = lead.sent.get(p).is_none_or(|(_, at)| now >= after(*at, gap));
-                idle && (behind || waiting)
+                // A follower that holds every entry but not the latest commit (R29): one round once the last round
+                // to it is CALL_DEADLINE old, so a busy group's next entry carries the commit instead.
+                let untold = lead.told.get(p).is_none_or(|t| *t < commit)
+                    && lead.telling.get(p).is_none_or(|(_, _, at)| now >= after(*at, gap));
+                idle && (behind || waiting || untold)
             })
             .collect();
         for p in due {

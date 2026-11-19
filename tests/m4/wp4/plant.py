@@ -41,6 +41,7 @@ PR = ['-p', 'graftyard-actions', '--lib', '--test', 'pr_trigger', '--test', 'gat
 PU = 'crates/git/src/purge.rs'
 PG = ['-p', 'graftyard-git', '--lib', 'purge::']
 PGL = ['-p', 'graftyard-git', '--lib', '--test', 'lifecycle']
+RAFT = ['-p', 'graftyard-raft', '--test', 'scenarios', '--test', 'leadership']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -321,6 +322,14 @@ MUTANTS = [
     ('trigger-stream: a waiter dropped while handed the turn keeps it', 'crates/git/src/prsync.rs',
      '        if handed {\n            self.turn.release();\n        }', '        let _ = handed;',
      ['-p', 'graftyard-git', '--test', 'agent_load']),
+    # ---- R29: an idle leader's commit round ----
+    ('r29: an idle leader never tells a follower the last commit (main)', 'crates/raft/src/member/leader.rs',
+     '                idle && (behind || waiting || untold)', '                idle && (behind || waiting)', RAFT),
+    ('r29: the commit round goes at once, not after CALL_DEADLINE', 'crates/raft/src/member/leader.rs',
+     '                    && lead.telling.get(p).is_none_or(|(_, _, at)| now >= after(*at, gap));',
+     '                    && true;', RAFT),
+    ('r29: an answered round never counts as told, so an idle leader beats forever', 'crates/raft/src/member/leader.rs',
+     '                *told = (*told).max(commit.min(res.matched));', '                let _ = (told, commit);', RAFT),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

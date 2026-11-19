@@ -10,6 +10,7 @@
 //!   member answers, and every joined voter and learner of the chain's newest committed config holds the tombstone
 //!   and is in no group change. A member outside that config is not checked (`decisions/DECISIONS.md`,
 //!   "`purge-outside`").
+//!   Before the statuses, one probe read per chain through the lookup wakes a leaderless group (R29).
 //! - **Then.** Each member gets `/purge_retire`, outside members first with `{"outside": I}`, the config's index, which
 //!   refuses on its own a member that began a change or caught up into the config since, and its site's registry row
 //!   naming it is deleted. Then each site's bucket loses the network's objects, once
@@ -31,6 +32,8 @@ use worker::*;
 use crate::Ctx;
 
 pub const PREFIX: &str = "/api/graftyard/v1/admin/repos/";
+/// A read that answers nothing of the fold (`graftyard_lookup::ensure`).
+const PROBE: &str = r#"{"q":{"probe":true}}"#;
 
 /// The route, or `None` for another path.
 pub async fn route(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Option<Reply>> {
@@ -62,6 +65,13 @@ async fn purge_repo(c: &Ctx<'_>, repo: RepoId, early: bool) -> std::result::Resu
     let b = c.bindings();
     let mut members = Vec::new();
     for chain in purge::chains(repo) {
+        // One probe read first, through the lookup: a group that committed its last entry and lost its leader before
+        // the leader's commit round left its followers one commit short, holding no tombstone, and nothing else reads
+        // a deleted repository to elect one (R29; `decisions/DECISIONS.md`, "`r29-commit-heartbeat`"). The lookup
+        // reports a leaderless group and starts its election; the new leader's commit round then reaches them, so a
+        // refused purge passes when called again. A chain with no group answers `None` and is not created. Its answer
+        // is not used: the statuses below are the gate's facts either way.
+        let _ = graftyard_lookup::call_opt(&b, chain, &r.record, "/read", PROBE.as_bytes()).await;
         for (site, name) in plan(&b, &r.record, chain).await {
             let s = status(&b, site, &name).await;
             members.push((chain, site, name, s));
