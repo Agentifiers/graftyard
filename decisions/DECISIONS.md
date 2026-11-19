@@ -5979,3 +5979,5 @@ Plants 139 to 142 (`tests/m4/wp4/plant.py`), 4 of 4 caught: 139 removes the read
 - A leader whose syncs are slow but whose flush waits are short is no longer moved, and the group's commit p99 gets worse because of it: revert (operator, 2026-11-19).
 - A B0-06 rerun where a gray-storage leader stays in place past 20 s.
 - A B0-33 Confirm trip whose window's `sync()` p99 is under 500 ms (the rule still tripping on something other than storage).
+
+**Hosted, 2026-11-19 (B0-33 m61r33, site day m61 from d8dcd5139).** No Confirm trip and no flip met: site a led at term 2 for the whole row with 0 leader changes. Its 3 alarms were CommitErrors holds, whose windows held at most 3 storage samples over 500 ms (whole: 5). Round p50 324 and p99 1,749 ms, against m60's 542 and 4,133. The row did not repeat m60's whole-versus-storage gap (replayed, both rules give 0 trips), so it neither confirms nor refutes the rule's effect, and the sites also carried every change merged since m56 (`tests/am1/results/b033-m61.md`).
