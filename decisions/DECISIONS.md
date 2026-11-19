@@ -6107,3 +6107,36 @@ Plants 139 to 142 (`tests/m4/wp4/plant.py`), 4 of 4 caught: 139 removes the read
 **Flip.**
 - Any read answered by a dump built below its floor: a read-your-write miss on a whole-tier read after a push acknowledged before it.
 - The next B0-33 at equal offered load still showing `rebuild` sheds near m61's 17,264, or tier-shed 503s not falling toward m60's 9,518.
+
+### `home-quiet`: the transfer back to `home` waits for a quiet leader, up to 10 min, 2026-11-19
+
+**Decision.** Once the transfer back to `home` is due (DECISIONS, "'Recovered' for the transfer back to `home`"), the leader starts it only while it is quiet: at most `HOME_QUIET_QUEUE` (16) commands wait in admission's lanes, and the entry in flight, if any, is at most half of the leader's `entry_soft` (ENTRY_SOFT/2, 50 kB). It checks each tick. `HOME_DEFER_MAX` (10 min) after the transfer first came due it goes anyway, quiet or not. The clock starts when `home` first counts as recovered (may lead, outside RESET_QUARANTINE, HOME_CALLS answered with none failed) and restarts only when `home` stops counting as recovered, so a deferral never outlasts the cap while `home` stays healthy. Both numbers are [guess]. Drain, `STEP_DOWN` and refusal hand-offs are unchanged and never wait.
+
+**Why.** A transfer stalls everything that waits on the leader until the new one serves: the entry in flight, the queue behind it, and every lookup that has to find the new leader. On B0-35 m58 the one leader change in the load was this transfer, 1.05 s after f0's RESET_QUARANTINE ended, with f1 healthy. Dispatch p99 in the minute around it was 15.1 s (demand p99 14.5 s), against 2.7 s before it and 3.9 s after [measured, `tests/m4/results/m4-wp4.md`, "B0-35 on a test-faults build after site day 58"]. The move home gains latency for the home site's clients, but it is never urgent, so it can wait for a gap in the load [inference].
+
+**What it beat.**
+- **No gate (main):** the m58 tail above.
+- **A longer RESET_QUARANTINE:** it delays the move home by a fixed time that has nothing to do with the load, and it is what keeps a group from bouncing between two sites (operator decision, 2026-11-19, under `confirm-storage`).
+- **No cap:** a leader under steady load would never go home.
+- **Counting frozen batches too:** no test could tell the difference, since the KV group reads no dependencies, and `AdmissionView::queued` is the number a host already logs.
+
+**Evidence.** `crates/raft/tests/leadership.rs`: `a_busy_leader_defers_the_transfer_home_until_quiet` (48 commands a step, and one 60 kB command a step, each for 60 s: B stays, then goes home within 15 s of quiet) and `the_defer_cap_sends_a_busy_leader_home` (the 48-command load for the whole cap: B stays until the cap, then goes home and the committed data is intact). Both fail on main's rule. `leadership_returns_home_after_it_recovers_and_catches_up`, `a_quarantined_home_gets_no_transfer` and `a_resumed_led_term_still_goes_home` pass unchanged. Plants: `tests/m0carried/plant56.py`, numbers 0 to 4. The sweep and Porcupine results are in `tests/m0/results/home-quiet.md`.
+
+**Flip.**
+- A hosted row where a group stays away from a healthy `home` for longer than `HOME_DEFER_MAX` plus a window.
+- A B0-35 row whose term change during the load is still the transfer back to home, with the leader's queue over `HOME_QUIET_QUEUE` at the time.
+
+### `lookup-keep`: a walk skips a superseded bootstrap name and keeps a leader two followers name, 2026-11-19
+
+**Decision.** Two changes to `graftyard_lookup::lookup`. (1) A pass leaves out a record's bootstrap name when the config this isolate holds is at that member's generation or later and names a different voter on its site: that name is a member the group has replaced. (2) At the end of a pass that found no leader, if two or more followers' `NotLeader` named the same voter, and that voter's only answer in the pass was one miss, the isolate keeps it as the leader at the pass's term instead of forgetting it. The next pass asks it as the cached leader, with lookup-retry's LEADER_RETRY rule, and requests waiting on the mark go to it. A request keeps a leader this way once; if it misses again, the pass after forgets it as before.
+
+**Why.** On B0-35 m58, after term 4, site a's shard isolate walked for 6.4 s and 9.0 s. Every pass posted the cached f0 (`Missed("no answer")` in 2 to 20 ms, f0 being mid-election and then busy), f1 by its new name `#8#f1` and f2, both `notLeader` naming leader 0, then the record's bootstrap name `#1#f1`. That first-generation site-1 member had been replaced. It still answered `notLeader(leader None)` in about 120 ms, and every pass ended "no leader: repo:65572#1#f1: not leader". The pass then forgot f0 and walked again 250 ms later [measured, `tests/m4/raw/wp4/b035-m58/lookup-mark-t4.txt`]. So the walk spent its time asking a dead name, and it threw away the leader its followers agreed on [inference].
+
+**What it beat.**
+- **Dropping bootstrap names whenever a config is held:** a move's config is older than the record, and the record's new members are exactly what the walk has to reach. A config at the member's generation or later already names that site's voter.
+- **Keeping a leader one follower names:** a single follower may be behind. Two is a quorum's worth of agreement in a three-voter group.
+- **Keeping it for every pass:** a leader that is really gone would hold every request on misses until LOOKUP_FOR.
+
+**Evidence.** `crates/lookup/src/lib.rs`: `m58s_walk_skips_the_superseded_name_and_keeps_the_leader_two_followers_name` replays m58's term-4 walk (f0 misses twice, `#8#f1` and `#1#f2` name it, `#1#f1` answers with no leader). It fails on main twice over: `#1#f1` is posted, and f0's second post is a walk. `a_leader_is_kept_only_on_two_followers_word_and_once_and_bootstrap_names_stay_for_an_older_config` checks the bounds: one follower's word keeps nothing, a leader that keeps missing is forgotten, and a config older than the record keeps all the record's names. Plants: `tests/m0carried/plant56.py`, numbers 5 to 9.
+
+**Flip.** A row whose lookup-mark lines show a kept leader that was not the leader holding a walk past one extra pass, or a group that a walk cannot reach because a name it skipped was a live member.

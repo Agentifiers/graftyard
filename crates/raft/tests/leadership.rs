@@ -1226,6 +1226,66 @@ fn a_resumed_led_term_still_goes_home() {
     assert_eq!(c.leader(), Some(A));
 }
 
+/// Drives the group for `total` ms in 100 ms steps under a load the leader cannot drain within a step: each step the
+/// leader takes `n` writes of `bytes` each, then ticks with them queued or in flight, then everything is delivered.
+fn drive_busy(c: &mut Cluster, total: u64, n: usize, bytes: usize, next_id: &mut u128) {
+    let mut t = 0;
+    while t < total {
+        if let Some(l) = c.leader() {
+            for _ in 0..n {
+                *next_id += 1;
+                let id = RequestId(graftyard_raft::Ulid(*next_id));
+                let _ = c.on(l, |m, now| m.commit(now, id, put("load", &"x".repeat(bytes))));
+            }
+        }
+        c.advance(100);
+        c.deliver_all();
+        t += 100;
+    }
+}
+
+/// A group led away from `home` (A) by B, with A back up and answering, so the transfer home is due.
+fn away_from_home(seed: u64, id: &mut u128) -> Cluster {
+    let mut c = Cluster::new(seed);
+    c.elect(A);
+    c.sync(A);
+    c.crash(A);
+    c.elect_after_promises(B);
+    drive(&mut c, 15_000, true, id, |_| false);
+    c.restart(A);
+    c
+}
+
+/// home-quiet: a leader that is busy when the transfer home comes due defers it, and hands back once quiet. Busy is
+/// either more than HOME_QUIET_QUEUE commands queued, or an entry in flight over half of ENTRY_SOFT. On main both
+/// loads moved the group home within one window.
+#[test]
+fn a_busy_leader_defers_the_transfer_home_until_quiet() {
+    for (seed, n, bytes) in [(65, 3 * graftyard_raft::HOME_QUIET_QUEUE, 10), (66, 1, 60_000)] {
+        let mut id = 0;
+        let mut c = away_from_home(seed, &mut id);
+        drive_busy(&mut c, 60_000, n, bytes, &mut id);
+        assert_eq!(c.leader(), Some(B), "{n} x {bytes} B a step: moved home while busy");
+        drive(&mut c, 15_000, true, &mut id, |_| false);
+        assert_eq!(c.leader(), Some(A), "{n} x {bytes} B a step: did not return home once quiet");
+    }
+}
+
+/// home-quiet: a leader that stays busy still goes home HOME_DEFER_MAX after the transfer first came due.
+#[test]
+fn the_defer_cap_sends_a_busy_leader_home() {
+    let cap = ms(graftyard_raft::HOME_DEFER_MAX);
+    let mut id = 0;
+    let mut c = away_from_home(67, &mut id);
+    // Due about one STEP_DOWN window after A answers again; held to just short of the cap from then.
+    drive_busy(&mut c, cap - 10_000, 3 * graftyard_raft::HOME_QUIET_QUEUE, 10, &mut id);
+    assert_eq!(c.leader(), Some(B), "moved home before HOME_DEFER_MAX");
+    drive_busy(&mut c, 30_000, 3 * graftyard_raft::HOME_QUIET_QUEUE, 10, &mut id);
+    assert_eq!(c.leader(), Some(A), "still away from home past HOME_DEFER_MAX");
+    c.sync(A);
+    assert!(SITES.iter().all(|s| c.value(*s, "sync").is_some()));
+}
+
 /// A leader on a drained site hands off within one LEASE, a drained member refuses a transfer (so the leader
 /// abandons at once), and pre-vote refuses a drained candidate.
 #[test]

@@ -32,6 +32,7 @@ mod leader;
 mod log;
 mod transfer;
 
+pub use health::{HOME_DEFER_MAX, HOME_QUIET_QUEUE};
 pub use install::{LEARNER_READ_EVERY, READ_PIPELINE};
 pub use leader::{
     APPEND_BYTES_MAX, DONE_BYTES, LEARNERS_OUT_MAX, OUT_KEEP, OUT_MAX, OUTCOME_KEEP, PEER_OUT_MAX, PIPELINE,

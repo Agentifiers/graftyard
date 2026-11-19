@@ -29,6 +29,12 @@ const CONFIRM_KEEP: Duration = Duration::from_secs(30);
 const HOME_CALLS: u32 = 5;
 /// After a transfer to `home` is abandoned, the next try waits this long [guess].
 const HOME_RETRY: Duration = Duration::from_secs(60);
+/// The transfer back to `home` waits for a quiet leader (`Member::quiet`): at most this many commands queued [guess]
+/// (`home-quiet`).
+pub const HOME_QUIET_QUEUE: usize = 16;
+/// How long the transfer back to `home` waits for a quiet leader after it is first due, before it goes anyway [guess]:
+/// `home` is always regained.
+pub const HOME_DEFER_MAX: Duration = Duration::from_secs(600);
 
 fn window() -> Duration {
     Duration::from_secs(u64::from(STEP_DOWN.window_s))
@@ -61,6 +67,8 @@ pub(super) struct LeaderHealth {
     pub(super) peer_quarantine: BTreeMap<SiteId, (Option<Timestamp>, [Timestamp; 2])>,
     /// No transfer back to `home` before this: one to it was abandoned.
     home_after: Option<Timestamp>,
+    /// When `home` first counted as recovered in this leadership, and has since: HOME_DEFER_MAX runs from it.
+    home_due: Option<Timestamp>,
     /// No automatic hand-off before this: the last one was abandoned.
     handoff_after: Option<Timestamp>,
 }
@@ -539,21 +547,32 @@ impl<C: Command> Member<C> {
             return;
         }
         let home = self.home();
-        if home == self.cfg.me
-            || !self.may_lead_target(home)
-            || self.quarantined(home)
-            // Caught up: `home` holds every committed entry. The transfer itself brings it to the last index; under
-            // load one entry is always in flight, so asking for the last index first would rarely hold.
-            || lead.matched(home) < self.state.commit
+        if home == self.cfg.me {
+            return;
+        }
+        // Recovered: `home` may lead, is outside RESET_QUARANTINE, and answered at least HOME_CALLS calls in the window
+        // with none failed. Only a `home` that stops being recovered restarts HOME_DEFER_MAX.
+        let calls = lead.health.calls.iter().filter(|c| c.1 == home);
+        let (n, failed) = calls.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));
+        if !self.may_lead_target(home) || self.quarantined(home) || n < HOME_CALLS || failed > 0 {
+            self.lead.as_mut().expect("leading").health.home_due = None;
+            return;
+        }
+        // Caught up: `home` holds every committed entry. The transfer itself brings it to the last index; under load
+        // one entry is always in flight, so asking for the last index first would rarely hold.
+        if lead.matched(home) < self.state.commit
             || self.now < after(lead.started(), window())
             || lead.health.home_after.is_some_and(|t| self.now < t)
+            || self.tripped().is_some()
         {
             return;
         }
-        // Recovered: `home` answered at least HOME_CALLS calls in the window and none failed.
-        let calls = lead.health.calls.iter().filter(|c| c.1 == home);
-        let (n, failed) = calls.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));
-        if n >= HOME_CALLS && failed == 0 && self.tripped().is_none() {
+        // home-quiet: due, the transfer waits for a quiet leader, because it stalls whatever waits on this one until
+        // `home` serves (B0-35 m58's term 4: dispatch p99 15.1 s that minute against 2.7 s before), and goes anyway
+        // HOME_DEFER_MAX after it was first due.
+        let now = self.now;
+        let due = *self.lead.as_mut().expect("leading").health.home_due.get_or_insert(now);
+        if self.quiet(HOME_QUIET_QUEUE) || now >= after(due, HOME_DEFER_MAX) {
             let _ = self.start_transfer(home, false, false);
         }
     }

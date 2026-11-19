@@ -402,7 +402,7 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 /// answers while the other follower does not (F67 rule 13): it sends `transfer: None`, serves `fresh` after a round. It
 /// transfers when its site is drained, STEP_DOWN trips, an older release refuses its entry, or `home` recovered (5
 /// calls in a `STEP_DOWN` window, none failed, outside RESET_QUARANTINE, not tripped) and holds every committed entry,
-/// retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`]. Leases read the member clock (`DRIFT`).
+/// retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`]; that hand-back waits for a quiet leader (at most 16 commands queued, the entry in flight at most ENTRY_SOFT/2) and goes anyway 10 min after it was first due [guess, `home-quiet`]. Leases read the member clock (`DRIFT`).
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
 /// Edge to a follower on another site when a leader's receipt misses CALL_DEADLINE, once per chain, `about` and term
