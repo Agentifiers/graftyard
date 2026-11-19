@@ -1,6 +1,6 @@
 #!/bin/bash
 # B0-35's stop watcher on graft-m4a (slot 2026-11-17): every 2 minutes, acctcost by PREFIX=graft-m4a plus the runner
-# account since FROM ($8 stop), the install account's UTC day ($280 stop), and any Sandbox instance not `inactive` in
+# account since FROM (STOP, default $8), the install account's UTC day (DAYSTOP, default $280), and any Sandbox instance not `inactive` in
 # the runner account's applications (stop: the workflow's label has no runner). The fourth stop, a run for an entry
 # over 1 h old, is checked from the run: the repository is new, so every entry it holds is newer than FROM. On a stop
 # it writes tests/m4/raw/wp4/b035-$TAG.STOP; the thread then stops the service.
@@ -8,7 +8,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 source tests/am1/lf13/env-m4a.sh >/dev/null 2>&1
-FROM=${FROM:?} TAG=${TAG:?}
+FROM=${FROM:?} TAG=${TAG:?} STOP=${STOP:-8} DAYSTOP=${DAYSTOP:-280}
 OUT=tests/m4/raw/wp4/b035-$TAG.watch
 STOP=tests/m4/raw/wp4/b035-$TAG.STOP
 RUNNER=(env CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_RUNNER_ACCOUNT_ID:?} CLOUDFLARE_API_TOKEN="$CLOUDFLARE_RUNNER_API_TOKEN")
@@ -32,7 +32,7 @@ PY
 )
   T=$(python3 -c "print(round(${M:-0}+${RUN:-0},2))")
   echo "$N m4a $M runner $RUN mine $T account-day $DAY sandboxes-running $SB" >> "$OUT"
-  if python3 -c "import sys;sys.exit(0 if ${T}>=8 or ${DAY:-0}>=280 else 1)"; then echo "$N STOP cost mine $T day $DAY" > "$STOP"; fi
+  if python3 -c "import sys;sys.exit(0 if ${T}>=${STOP} or ${DAY:-0}>=${DAYSTOP} else 1)"; then echo "$N STOP cost mine $T day $DAY" > "$STOP"; fi
   if [ "$SB" != "?" ] && [ "$SB" -gt 0 ]; then echo "$N STOP sandboxes running $SB" > "$STOP"; fi
   sleep 120
 done

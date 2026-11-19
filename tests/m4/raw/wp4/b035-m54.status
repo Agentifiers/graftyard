@@ -1,0 +1,17 @@
+2026-11-19T01:09:43Z start f88f1a48
+2026-11-19T01:10:07.926Z m3org/b035-m54 = 65568
+2026-11-19T01:10:13.352Z repo:65568 leader 0 placing since 1795050611381: waiting
+2026-11-19T01:10:16.600Z repo:65568 leader 0 placing since 1795050611381: waiting
+2026-11-19T01:10:19.801Z repo:65568 leader 0 placing since 1795050611381: waiting
+2026-11-19T01:10:30.495Z repo:65568 leader 0: config 20 learners [{"addr":192,"doName":"repo:65568#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65568#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65568#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65568#4#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65568#4#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65568#4#l5","join":200,"sit
+2026-11-19T01:10:30Z b0-35 b035-m54 65568 start
+2026-11-19T01:43:35Z b0-35 b035-m54 65568 done exit 0
+shardkill deployed: https://graft-m4a-shardkill.<workers-subdomain>.workers.dev
+git#2#net:65568 200
+git#1#net:65568 200
+git#0#net:65568 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+shardkill deleted: True
+2026-11-19T01:44:20Z sweep ok
+ALLDONE
