@@ -42,8 +42,8 @@ struct Flight<V> {
 
 /// What a write-class call does next with its key's batch.
 enum Step<V> {
-    /// A read that started after the call arrived has answered: its id and answer.
-    Take(u64, Result<Option<V>, String>),
+    /// A read that started after the call arrived has answered.
+    Take(Result<Option<V>, String>),
     /// Start the next read, with this id.
     Start(u64),
     /// A read is in flight: look again after BATCH_POLL.
@@ -60,17 +60,11 @@ pub(crate) struct Ttl<K, V> {
     flights: BTreeMap<K, Flight<V>>,
     /// The id of the last batched read started on this cache, any key.
     seq: u64,
-    /// A read in flight this long after it started is no longer waited on: BATCH_STALE, or TIER_STALE for a tier pass.
-    stale: Duration,
 }
 
 impl<K: Ord, V: Clone> Ttl<K, V> {
     pub(crate) const fn new(cap: usize, keep: fn(&V) -> bool) -> Self {
-        Self::with_stale(cap, keep, BATCH_STALE)
-    }
-
-    pub(crate) const fn with_stale(cap: usize, keep: fn(&V) -> bool, stale: Duration) -> Self {
-        Ttl { entries: BTreeMap::new(), cap, keep, flights: BTreeMap::new(), seq: 0, stale }
+        Ttl { entries: BTreeMap::new(), cap, keep, flights: BTreeMap::new(), seq: 0 }
     }
 
     /// The id the first read that starts after now will get: a call takes only answers of reads at or above it.
@@ -80,8 +74,7 @@ impl<K: Ord, V: Clone> Ttl<K, V> {
 
     /// A write-class call's next step on `k`'s batch at `now`, for a call that needs a read with id `need` or later.
     fn step(&mut self, k: K, need: u64, now: u64) -> Step<V> {
-        let stale_ms = self.stale.as_millis() as u64;
-        let stale = |at: u64| now >= at + stale_ms;
+        let stale = |at: u64| now >= at + BATCH_STALE.as_millis() as u64;
         if self.flights.len() >= self.cap && !self.flights.contains_key(&k) {
             // Only idle batches go: a waiter whose answer is dropped finds no read in flight and starts one.
             self.flights.retain(|_, f| f.running.is_some());
@@ -90,7 +83,7 @@ impl<K: Ord, V: Clone> Ttl<K, V> {
         if let Some((id, r)) = &f.done
             && *id >= need
         {
-            return Step::Take(*id, r.clone());
+            return Step::Take(r.clone());
         }
         match f.running {
             Some((_, at)) if !stale(at) => Step::Wait,
@@ -153,30 +146,6 @@ macro_rules! caches {
         }
     };
 }
-
-thread_local! {
-    /// `tier-read-batch`: a write-class repository tier read's passes, by chain and query (`retried`). Never kept: a
-    /// pass is only shared, never served to a later call from an entry.
-    pub(crate) static TIERS: RefCell<Ttl<(graftyard_types::ChainId, String), TierPass>> =
-        const { RefCell::new(Ttl::with_stale(256, never, TIER_STALE)) };
-}
-
-/// A write's spread read's batch key: its chain and its query's JSON text. `serde_json` writes an object's keys in
-/// order, so one query is one text. Two writes share a pass only when they ask the same chain for exactly the same
-/// rows: a narrow API read's query holds its whole route (`{"rows": {"api": spec}}`), so it shares only with the
-/// same route on the same repository, and a merge's rows only with the same merge. Freshness needs no part of the
-/// key: a call takes only a pass that started after it arrived, whose read-index floor is then at or above every
-/// write acknowledged before the call.
-pub(crate) fn tier_key(chain: graftyard_types::ChainId, q: &serde_json::Value) -> (graftyard_types::ChainId, String) {
-    (chain, q.to_string())
-}
-
-/// One pass of a repository tier read (`graftyard_lookup::Pass`), as `TIERS` shares it.
-pub(crate) type TierPass = graftyard_lookup::Pass;
-
-/// A tier pass in flight this long is no longer waited on [inference]: a pass asks at most `SPREAD_TRIES` (3) members,
-/// each within `FOLLOWER_CALL` (2 s), so a pass still running past 6.5 s belongs to a request that stopped.
-pub(crate) const TIER_STALE: Duration = Duration::from_millis(6_500);
 
 caches! {
     TOKENS: [u8; 32] => crate::TokenRow, 4_096, usable_row;
@@ -261,38 +230,15 @@ pub(crate) async fn batched<
     now: impl Fn() -> u64,
     delay: impl Fn(Duration) -> D,
 ) -> Batched<V, E> {
-    let need = cache.with(|c| c.borrow().next_id());
-    batched_from(cache, k, at, need, u64::MAX, read, now, delay).await.expect("no deadline").0
-}
-
-/// `batched` for a call that takes only answers of reads with id `need` or later, and stops waiting at `until` (ms):
-/// `None` if `until` passed while another call's read was in flight, before this call started one. With the answer,
-/// the id of the read that made it, so a call that asks again takes only a later one (`retried`).
-#[expect(clippy::too_many_arguments, reason = "the clock and timer are passed in so a test drives many calls at once")]
-async fn batched_from<
-    K: Ord + Clone + 'static,
-    V: Clone + 'static,
-    E: std::fmt::Display + From<String>,
-    D: Future<Output = ()>,
->(
-    cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>,
-    k: K,
-    at: Timestamp,
-    need: u64,
-    until: u64,
-    read: impl Future<Output = Result<Option<V>, E>>,
-    now: impl Fn() -> u64,
-    delay: impl Fn(Duration) -> D,
-) -> Option<(Batched<V, E>, u64)> {
     let since = now();
+    let need = cache.with(|c| c.borrow().next_id());
     let id = loop {
         match cache.with(|c| c.borrow_mut().step(k.clone(), need, now())) {
-            Step::Take(id, r) => {
+            Step::Take(r) => {
                 let waited_ms = now().saturating_sub(since) as f64;
-                return Some((Batched { answer: r.map_err(E::from), shared: true, waited_ms }, id));
+                return Batched { answer: r.map_err(E::from), shared: true, waited_ms };
             }
             Step::Start(id) => break id,
-            Step::Wait if now() >= until => return None,
             Step::Wait => delay(BATCH_POLL).await,
         }
     };
@@ -307,71 +253,7 @@ async fn batched_from<
     if let Ok(Some(v)) = &answer {
         put(cache, k, at, v.clone());
     }
-    Some((Batched { answer, shared: false, waited_ms }, id))
-}
-
-/// A pass's answer or its shed, with the wait its members named (`graftyard_lookup::retry_shed`'s attempt).
-pub(crate) type Shed<T> = Result<T, (String, u64)>;
-
-/// This request's tier passes: reads it ran, passes it shared, and the ms it waited in its batch
-/// (`server-timing` `trread`, `trshare`, `trwait`).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Passes {
-    pub(crate) ran: u32,
-    pub(crate) shared: u32,
-    pub(crate) waited_ms: f64,
-}
-
-/// A write-class read retried through its members' sheds as one batch per key (`tier-read-batch`): each try goes
-/// through `k`'s batch (`batched_from`), so concurrent writes share each pass and its shed, and the shed retry is
-/// `graftyard_lookup::retry_shed`'s, with its backoff and deadline `until` (ms). A call takes only a pass that started
-/// after it arrived, and after a shed only a pass later than the one it saw, which may already be running: so N writes
-/// shed together ask the members once per round, not N times. A call still waiting on another's pass at `until` ends
-/// with an OVERLOADED shed, as a pass of its own past it would. `pass` makes one try; nothing is kept.
-pub(crate) async fn retried<K: Ord + Clone + 'static, T: Clone + 'static, P, D: Future<Output = ()>>(
-    cache: &'static std::thread::LocalKey<RefCell<Ttl<K, Shed<T>>>>,
-    k: K,
-    until: u64,
-    mut pass: impl FnMut() -> P,
-    now: impl Fn() -> u64 + Clone,
-    delay: impl Fn(Duration) -> D + Clone,
-    rand: impl FnMut() -> f64,
-) -> (Result<T, String>, Passes)
-where
-    P: Future<Output = Result<T, (String, u64)>>,
-{
-    let need = std::cell::Cell::new(cache.with(|c| c.borrow().next_id()));
-    let passes = std::cell::Cell::new(Passes::default());
-    let (need, passes_r) = (&need, &passes);
-    let attempt = || {
-        let read = pass();
-        let (k, now, delay) = (k.clone(), now.clone(), delay.clone());
-        async move {
-            let read = async { Ok::<_, String>(Some(read.await)) };
-            let Some((b, id)) = batched_from(cache, k, Timestamp(0), need.get(), until, read, now, delay).await else {
-                let why =
-                    format!("waited past its deadline for another write's read: {}", graftyard_lookup::OVERLOADED);
-                return Err((why, 0));
-            };
-            need.set(id + 1);
-            let mut p = passes_r.get();
-            if b.shared {
-                p.shared += 1
-            } else {
-                p.ran += 1
-            }
-            p.waited_ms += b.waited_ms;
-            passes_r.set(p);
-            match b.answer {
-                Ok(Some(r)) => r,
-                Ok(None) => Err(("no pass answer".to_owned(), 0)),
-                Err(e) => Err((e, 0)),
-            }
-        }
-    };
-    let r =
-        graftyard_lookup::retry_shed(until, now.clone(), attempt, |ms| delay(Duration::from_millis(ms)), rand).await;
-    (r, passes.get())
+    Batched { answer, shared: false, waited_ms }
 }
 
 /// A started batch read: answered through `end`, or, if its future is dropped first, abandoned so its waiters do not
@@ -396,11 +278,6 @@ impl<K: Ord + Clone, V: Clone> Drop for Running<K, V> {
             self.cache.with(|c| c.borrow_mut().abandoned(k, self.id));
         }
     }
-}
-
-/// No answer is kept: a tier pass is shared by the calls waiting on it, never served from an entry.
-fn never<V>(_: &V) -> bool {
-    false
 }
 
 /// Every answer is kept: a fold, a placement, a claimed login.
@@ -680,138 +557,5 @@ mod tests {
         run(&[at(5, 100)], None);
         assert_eq!(get(&B, &1, Timestamp(5), true), Some(1));
         assert_eq!(get(&B, &1, Timestamp(5), false), None);
-    }
-
-    thread_local! {
-        static TR: RefCell<Ttl<String, Shed<u32>>> = const { RefCell::new(Ttl::with_stale(8, never, TIER_STALE)) };
-    }
-
-    /// A tier pass's answer at a run's member: its pass number from 1 and whether the members shed it.
-    type PassFn = Rc<dyn Fn(u32) -> Shed<u32>>;
-
-    /// What one `retried` call of a run got.
-    type TierGot = (Result<u32, String>, Passes);
-
-    /// Runs one `retried` call per arrival in `arrives` (ms) on `TR`, under the key `key(i)` for call i, on one clock, one poll per ms, each pass
-    /// taking `pass_ms`, answered by `answer` from its pass number, each call's deadline `retry_for` after it arrived.
-    /// Returns what each call got, its `Passes`, and the passes that reached the members.
-    fn tier_run(
-        arrives: &[u64],
-        key: impl Fn(usize) -> String,
-        pass_ms: u64,
-        retry_for: u64,
-        answer: PassFn,
-    ) -> (Vec<TierGot>, u32) {
-        type Fut = std::pin::Pin<Box<dyn Future<Output = TierGot>>>;
-        TR.with(|b| *b.borrow_mut() = Ttl::with_stale(8, never, TIER_STALE));
-        let clock = Rc::new(Cell::new(0u64));
-        let reads = Rc::new(Cell::new(0u32));
-        let mut futs: Vec<Option<Fut>> = arrives.iter().map(|_| None).collect();
-        let mut got: Vec<Option<TierGot>> = arrives.iter().map(|_| None).collect();
-        for _ in 0..60_000 {
-            let now = clock.get();
-            for (i, a) in arrives.iter().enumerate() {
-                if *a == now {
-                    let (cl, rd, ans) = (clock.clone(), reads.clone(), answer.clone());
-                    let pass = move || {
-                        let (cl, rd, ans) = (cl.clone(), rd.clone(), ans.clone());
-                        async move {
-                            rd.set(rd.get() + 1);
-                            let n = rd.get();
-                            At(cl.clone(), cl.get() + pass_ms).await;
-                            ans(n)
-                        }
-                    };
-                    let (c1, c2) = (clock.clone(), clock.clone());
-                    futs[i] = Some(Box::pin(retried(
-                        &TR,
-                        key(i),
-                        now + retry_for,
-                        pass,
-                        move || c1.get(),
-                        move |d: Duration| At(c2.clone(), c2.get() + d.as_millis() as u64),
-                        || 1.0,
-                    )));
-                }
-            }
-            for (i, f) in futs.iter_mut().enumerate() {
-                if let Some(fut) = f
-                    && let Some(r) = fut.as_mut().now_or_never()
-                {
-                    got[i] = Some(r);
-                    *f = None;
-                }
-            }
-            if got.iter().all(Option::is_some) {
-                return (got.into_iter().map(Option::unwrap).collect(), reads.get());
-            }
-            clock.set(now + 1);
-        }
-        panic!("a retried call never ended");
-    }
-
-    /// `tier-read-batch`: writes that arrive while a tier pass is in flight never take that pass's answer; they wait
-    /// it out and share the next pass, so N writes during one read cost 2 member reads, and each gets the second.
-    #[test]
-    fn writes_during_a_tier_read_share_the_next_read_never_the_one_in_flight() {
-        let ok: PassFn = Rc::new(Ok);
-        let arrives = [0, 10, 20, 30, 40, 50, 60, 70];
-        let (got, reads) = tier_run(&arrives, |_| "k".into(), 100, 4_000, ok);
-        assert_eq!(reads, 2, "one pass for the first write, one shared by the seven that came during it");
-        assert_eq!(got[0].0, Ok(1));
-        for (i, g) in got.iter().enumerate().skip(1) {
-            assert_eq!(g.0, Ok(2), "write {i} arrived during pass 1, so it never takes pass 1's answer");
-        }
-        let ran: u32 = got.iter().map(|g| g.1.ran).sum();
-        let shared: u32 = got.iter().map(|g| g.1.shared).sum();
-        assert_eq!((ran, shared), (2, 6), "two writes ran a pass, six shared one");
-    }
-
-    /// A shed is shared as an answer is, and the shed retry runs as one batch: N writes shed together through 3 shed
-    /// passes and then served make 4 member reads, not 4N, and every one of them is served by the fourth.
-    #[test]
-    fn writes_shed_together_retry_as_one_batch_per_key() {
-        let shed3: PassFn =
-            Rc::new(|n| if n <= 3 { Err((format!("shed {n}: {}", graftyard_lookup::OVERLOADED), 250)) } else { Ok(n) });
-        let (got, reads) = tier_run(&[0, 0, 0, 0, 0, 0], |_| "k".into(), 50, 10_000, shed3);
-        assert_eq!(reads, 4, "three shed passes and one served, for all six writes");
-        for (i, g) in got.iter().enumerate() {
-            assert_eq!(g.0, Ok(4), "write {i}");
-        }
-        // Past the deadline the shed is every waiter's error, naming OVERLOADED, so the edge answers 503.
-        let always: PassFn = Rc::new(|n| Err((format!("shed {n}: {}", graftyard_lookup::OVERLOADED), 250)));
-        let (got, reads) = tier_run(&[0, 0, 0, 0], |_| "k".into(), 50, 1_000, always);
-        // Alone, each write makes 3 passes inside 1 s (at 0, 300 and 850 ms), 12 for four. Batched they make 4: the
-        // write polled after the first one's pass started does not take it, so it runs one phase behind.
-        assert!(reads <= 4, "{reads} passes for four writes shed inside 1 s: {got:?}");
-        for g in &got {
-            assert!(g.0.as_ref().is_err_and(|e| e.contains(graftyard_lookup::OVERLOADED)), "{:?}", g.0);
-        }
-    }
-
-    /// A push whose read gate decision was cached reads its agent rows with the gate's own query (`push_context`), so
-    /// it shares the batch of the pushes whose gate reads them: four of each during one pass cost two member reads, as
-    /// eight gate reads do. Read as the agent rows alone, as before, its key differed and it made its own passes. Two
-    /// different queries on one repository never share.
-    #[test]
-    fn a_cached_gate_push_shares_the_gate_reads_batch() {
-        let chain = graftyard_types::ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(7)));
-        let gate = tier_key(chain, &crate::api::rows_query(crate::api::push_rows_q()));
-        let context = tier_key(chain, &crate::api::rows_query(crate::agents::context_rows()));
-        let key = |k: &(graftyard_types::ChainId, String)| format!("{}|{}", k.0, k.1);
-        let (g, c) = (key(&gate), key(&context));
-        let ok: PassFn = Rc::new(Ok);
-        let arrives = [0, 10, 20, 30, 40, 50, 60, 70, 80];
-        let (got, reads) =
-            tier_run(&arrives, |i| if i % 2 == 0 { g.clone() } else { c.clone() }, 100, 4_000, ok.clone());
-        assert_eq!(reads, 2, "one pass for the first push, one for the eight during it, gate or cached gate alike");
-        assert!(got.iter().skip(1).all(|r| r.0 == Ok(2)));
-        // Another query on the same repository (a merge's rows) is another key: a merge read that arrives during a gate
-        // pass starts its own pass at once, and a later gate read still waits for the next gate pass, so three reads
-        // make three passes. Keyed by chain alone, the merge read and the later gate read would share one.
-        let merge = key(&tier_key(chain, &crate::api::rows_query(serde_json::json!({ "merge": 3 }))));
-        let (got, reads) = tier_run(&[0, 10, 20], |i| if i == 1 { merge.clone() } else { g.clone() }, 100, 4_000, ok);
-        assert_eq!(reads, 3, "the merge read never shares a gate pass: {got:?}");
-        assert_eq!((got[1].1.ran, got[1].1.shared), (1, 0), "the merge read ran its own pass");
     }
 }

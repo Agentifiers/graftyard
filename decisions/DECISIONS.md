@@ -5619,7 +5619,7 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 
 ### `tier-read-batch`: a write's spread read and its shed retries share one batch per chain and query, 2026-11-19
 
-**Status.** Built on branch `tier-read-batch` from main `896fb32f`, not deployed. Edge code only (`workers/edge`, and `crates/lookup` exposes one pass and `retry_shed`), so it ships on an edge day. Nothing in `crates/raft`.
+**Status.** Reverted from main on 2026-11-19 after B0-33 m57b33 (graft-m2b, edge f786a952 from main `61853463`): 441 uncaught edge 500s appeared, which m56 had none of. A runtime cancel ("code had hung and would never generate a response") at 09:52:04Z was followed by "memory access out of bounds" in `worker::Delay`'s poll, "Cannot invoke closure from previous WASM instance" ×394 and "Promise will never complete" ×199. 7,467 503s were the new "waited past its deadline for another write's read", trshare p50 was 0, and trwait p99 sat at the 4 s flip line. Member /read per request did fall, from 2.56 to 1.35 [measured, LM-1 thread T-01a1c694, m57b33 verdict]. The code stays on branch `tier-read-batch` (76776859) until the hang is explained; the text below is the design as built.
 
 **Decision.** `crate::spread_read` for a write-class request (`Ctx::write`) runs through `rcache::retried`, `edge-read-batch`'s batch with the shed retry inside it:
 - Each try is one `graftyard_lookup::spread_pass` through the key's batch (`rcache::batched_from`, the same `Ttl::step` as `edge-read-batch`). A write never takes the answer of a pass that started before it arrived: it waits out the pass in flight and shares the next one, which the first waiter to see the key idle starts.
