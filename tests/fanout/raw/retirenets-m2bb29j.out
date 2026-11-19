@@ -1,0 +1,7 @@
+2026-11-19T00:52:13.430Z repo:131366: 11 names, 11 were joined, all not joined
+2026-11-19T00:55:24.155Z purge: waiting 127 s for sweep runs started before the first pass (until 2026-11-19T00:55:00.000005+00:00)
+2026-11-19T00:55:24.155Z purge: 131366 purged: a 406 -> 0, b 403 -> 0, c 406 -> 0
+2026-11-19T00:55:24.155Z purge: 131366 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T00:55:24.155Z purge: {"dry": false, "purged": 1, "objects": 1215, "refused": [], "second": 0}
+retirenets exit 0 2026-11-19T00:55:24Z
+CLOSEDONE
