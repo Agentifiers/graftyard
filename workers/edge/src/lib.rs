@@ -3146,9 +3146,7 @@ mod tests {
         shard_refusal, shard_url, streamed_site, validate_failed, validate_sites, validate_url, warm_first,
     };
 
-    /// F91's A/B switch: the edge answers `ls-refs` unless a request names the shard with the bed token; a wrong or
-    /// missing token, another value, or an install with no bed token leaves the edge's answer on. And the push id a
-    /// driver sends reaches the log line only as a short plain token.
+    /// A shard's non-200 answer reaches the edge's log line with its reason, cut to 200 characters on a char boundary.
     #[test]
     fn a_shard_503_logs_its_reason_cut_on_a_char_boundary() {
         let v: serde_json::Value =
@@ -3162,6 +3160,9 @@ mod tests {
         assert_eq!(v["why"].as_str().unwrap(), format!("{}é", "x".repeat(199)));
     }
 
+    /// F91's A/B switch: the edge answers `ls-refs` unless a request names the shard with the bed token; a wrong or
+    /// missing token, another value, or an install with no bed token leaves the edge's answer on. And the push id a
+    /// driver sends reaches the log line only as a short plain token.
     #[test]
     fn ls_refs_go_to_the_shard_only_when_a_bed_request_asks() {
         assert!(ls_refs_at_edge(None, None, Some("bed")), "on by default");

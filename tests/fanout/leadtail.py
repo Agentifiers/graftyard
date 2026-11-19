@@ -7,8 +7,9 @@
    storage confirm (Confirm 10) still open at the send, which the output gate holds the fetch behind, and the
    callee's confirm open when its handler returned.
 2. The leader's stall seconds (a tick lag, Lag 8, or a confirm ending that second, at 500 ms or more) against the
-   whole-tier reads (`packed` and `lsRefs`, ReadQuery 26) and other inbound (Entered 25) in that second and the 3
-   before, and where those whole-tier reads came from (SentBy 27's lookup step).
+   whole-tier reads (`packed`, ReadQuery 26 code 22) and other inbound (Entered 25) in that second and the 3 before,
+   and where the leader's `packed`, `core` (code 24, the read gate's rows) and `lsRefs` (code 25) reads came from
+   (SentBy 27's lookup step). Codes are `READ_QUERIES` index + 1 (`workers/site/src/host.rs`).
 Learners' rows are left out. Times are on Cloudflare's clock (the trace's own stamps)."""
 import bisect, collections, datetime, json, lzma, sys
 
@@ -65,9 +66,9 @@ for s, V in rows.items():
             continue
         k = (s, x[0] // 1000)
         sec[k]["seen"] = 1
-        if x[1] == 26 and x[4] in (22, 24):
-            sec[k]["tier"] += 1
-            src[("packed" if x[4] == 22 else "lsRefs", "index" if x[5] else "leader",
+        if x[1] == 26 and x[4] in (22, 24, 25):
+            sec[k]["tier"] += x[4] == 22
+            src[({22: "packed", 24: "core", 25: "lsRefs"}[x[4]], "index" if x[5] else "leader",
                  {0: "other", 1: "Leader", 2: "Walk", 3: "Spread"}.get(by.get(x[3]), "none"))] += 1
         elif x[1] == 25:
             sec[k]["in"] += 1
@@ -83,6 +84,6 @@ for name, f, bands in (("whole-tier reads (4 s)", lambda k: prior(k, "tier"), (0
         K = [k for k in keys if lo <= f(k) < hi]
         print(f"  {name} {lo}-{hi if hi < 10**9 else ''}: seconds {len(K)}, stalled {sum(map(stalled, K))}"
               f" ({100 * sum(map(stalled, K)) / max(1, len(K)):.0f}%)")
-print("  whole-tier reads at the leader by (query, kind, lookup step):")
+print("  packed, core and lsRefs reads at the leader by (query, kind, lookup step):")
 for k, v in src.most_common():
     print(f"    {k}: {v}")
