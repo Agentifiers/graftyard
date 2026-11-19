@@ -5410,6 +5410,8 @@ Conditions the orchestrator set before code:
 
 **Evidence.** `a_read_the_members_keep_shedding_backs_off_and_gives_up` and `a_shed_read_is_retried_inside_its_deadline_only` (`crates/lookup/src/lib.rs`), and `a_write_asks_a_shed_read_again_for_seconds_not_lookup_for` (`workers/edge/src/lib.rs`), which fail on main. `tests/m0carried/plant43.py`. `tests/am1/results/health-gate-lease.md`, item 2.
 
+**Amended** by `shed-retry-2s` (2026-11-19): `SHED_RETRY_FOR` is 2 s.
+
 **Flip.** A hosted row where writes behind the read gate answer 503 after SHED_RETRY_FOR during a stall that ended within LOOKUP_FOR often enough to fail a gate line on 5xx share, with the learners' read rate not over twice the clients' while it lasts: then the retry budget, not the multiplier, is the cost.
 
 ### `lease-gone`: a renew whose lease a release in its entry removed answers 404, 2026-11-18
@@ -5626,6 +5628,67 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 **Flip.** Either of these on a hosted rehome:
 - Most planned rehomes move cold (`"cold": true`). The bound is then too short for the shards it meets, or the catch-up ask is wrong.
 - A move takes longer than before by more than WARM_BEFORE_TRANSFER. The wait then costs more than the merge window it saves.
+
+### `shed-retry-2s`: a write asks a shed read again for 2 s, not 4, 2026-11-19
+
+**Status.** Built on branch `shed-retry` from main `04388cfb`, not deployed. `crates/lookup` (`SHED_RETRY_FOR`) and the
+edge, so it ships on an edge day; the sites are unchanged. Nothing in `crates/raft`.
+
+**Decision.** `SHED_RETRY_FOR` is 2 s, down from 4 s; `shed-backoff`'s backoff, jitter and `retryAfterMs` floor are
+unchanged, as is a bounded push's `left.min(SHED_RETRY_FOR)`. A write whose members shed every pass now asks once and
+retries once after a 125 to 500 ms wait (a jammed pass takes a member's FOLLOWER_WAIT, 1 s, or more), then answers 503
+with `Retry-After: 1`, or `ng` for an Agent push. This amends `shed-backoff`.
+
+**Why.** On B0-33 m56 (graft-m2b, why-logs `1465c208b`), offered tier-read writes stayed at 166 a second while the
+members' edge `/read` rose from 228 to 604 a second, 98% on the learners, and the share of writes answering 503 rose
+from 0 to 67% (`tests/am1/results/b033-m56.md`):
+- **Reads per write by outcome.** Regressing each 10 s bin's member `/read` on that bin's served, 503 and other writes
+  gives 1.19 reads per served write and 5.00 per write that ended 503 (`tests/fanout/shedmodel.py`). On m57 the edge counted pushes' passes directly: a push that ended `full` or 503 ran 3
+  to 6 passes, p50 3.
+- **The loop.** A write that meets a shed retries for 4 s, so the learners take about five reads for it; the extra reads
+  slow their read-index rounds (p50 83 ms at 126 reads a second, 400 to 527 ms at 466 to 578), which makes more `late`
+  sheds (62% of the learners' 56,938), which makes more retrying writes [measured, `b033-m56.md`, questions 1 and 2].
+- **Shed share against load.** Over m56's 20 s bins the share of writes ending 503 fits 1 − e^(−(L − 365)/220) of the
+  member `/read` rate L.
+
+**The model** (`tests/fanout/shedmodel.py`). Offered writes W = 165.9/s and ref reads 31.4/s from m56; reads per served
+write 1.19; reads per jammed write from a Monte Carlo of `retry_shed` (members shed late 62% of the time, else at once,
+SPREAD_TRIES a pass), scaled so 4 s gives m56's 5.00; then the fixed point of L = W × (1.19 + j × (r − 1.19)) + 31.4 with
+j the fitted shed share, started from a full jam.
+
+| `SHED_RETRY_FOR` | reads per jammed write | storm state: shed share, member /read per request | 503 per s |
+|---|---|---|---|
+| 4 s (main) | 5.02 | 0.83, 4.56 | 138 |
+| one retry pass, 4 s | 4.65 | 0.71, 3.82 | 117 |
+| 3 s | 4.18 | 0 (0.59 to 0.84 with the fit moved), 1.38 | 0 |
+| **2 s** | **3.10** | **0, 1.38** | **0** |
+| 1.5 s | 2.48 | 0, 1.38 | 0 |
+
+- At 2 s the storm has no fixed point with L₀ ± 40 or K ± 30%; at 3 s and 3.5 s it has one when L₀ is 40 lower or K 30%
+  less; at 4 s it has one under every fit but K + 30%. The calm state is 1.38 member reads per request at every value.
+- m56 measured 2.56 over the row and 3.4 at its end; the model's 4.56 is the state the row was moving toward [inference].
+- The model holds only the retry loop. Its 0 is the 503s that loop makes: a stall, a leader change or a slow far learner
+  still sheds writes, and below L₀ the fit has no shed share to give them. m56's first 80 s had 0 to 1% [measured].
+- A retry that skips members that shed in the last N ms was not modelled: it adds isolate state per member, and with
+  4 learners and 2 followers it still asks three members a pass.
+
+**What it beat.**
+- **One retry pass, deadline kept.** Cuts a jammed write from 5.02 reads to 4.65 and leaves the storm (shed share 0.71).
+- **No retry.** 2.33 reads per jammed write, but a 1 s stall then fails a Human push, which `shed-backoff` fixed
+  (`lease-clock`: an `Authz` leader stalled 7.4 s left both followers without a read index).
+- **Sharing passes across writes (`tier-read-batch`).** Dropped: per isolate, it shared 8.6% of passes on m57 and its
+  waits were a 503 cause of their own.
+
+**Evidence.** `writes_whose_members_always_shed_ask_at_most_twice_each` (`crates/lookup/src/lib.rs`): 50 writes against
+members that always shed, with passes of 1 to 3 s and jitter across its range, make at most 2 asks each, 300 member
+reads in all; at main's 4 s a 1 s pass gets 3. `a_write_asks_a_shed_read_again_for_seconds_not_lookup_for` bounds the
+edge's budget at 2 s. `tests/m0carried/plant51.py` catches 5 of 5.
+
+**Flip.** Any of these on the next B0-33 at equal offered load:
+- More edge 503s than m56's 12,759, or a higher share of writes ending 503.
+- Member `/read` per offered request not falling below m56's 2.56 over the row (model: 1.38).
+- Writes behind a stall that ended within 4 s failing where they passed at 4 s, often enough to fail a gate line: then
+  the budget, not the multiplier, is the cost, as `shed-backoff`'s flip says.
 
 ### `tier-read-batch`: a write's spread read and its shed retries share one batch per chain and query, 2026-11-19
 
