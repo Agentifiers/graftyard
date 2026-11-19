@@ -74,8 +74,9 @@ pub use shard::{
     SHARDS, STATS_EVERY, Serve, TOUCH_EVERY, ValidateOn, WARM_FOR, caller, catchup_answer, clone_cache_buckets,
     combine, container_regions, evict_plan, fanout, granted_k, image_for, keep_warm_due, may_start, object_name,
     on_catch_up, owner_share, pool_ask, pool_forward, pool_grants, pool_keep, pool_reserve, promote_lapse,
-    promote_moves_on, promote_sites, promote_wait_s, push_validator, region_check, renewal, serve, shards_for,
-    stats_due, stats_line, touch_due, validate_on, validate_status, validator, warm_sites, warm_step, warming_now,
+    promote_moves_on, promote_sites, promote_wait_s, push_validator, read_disk_first, read_on, region_check, renewal,
+    serve, shards_for, stats_due, stats_line, touch_due, ui_missing, validate_on, validate_status, validator,
+    warm_sites, warm_step, warming_now,
 };
 pub use store::{
     Copies, PART_SIZE, PackStore, Pipe, PipeReader, Place, PlaceError, PutOutcome, Stage, Streamed, TeeError,

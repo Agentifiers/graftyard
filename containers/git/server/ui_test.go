@@ -521,3 +521,30 @@ func TestUICommits(t *testing.T) {
 		}
 	}
 }
+
+// TestUIMissingCommitWording pins the answers the shard tells apart for disk-first reads (`graftyard_git::ui_missing`,
+// decisions/DECISIONS.md, `disk-first-reads`): a tree or blob read of a commit the disk lacks, or of a network it
+// holds no repository for, starts "no commit " or "no repository "; a path that is not there at a commit the disk
+// holds is a 404 that starts neither way, so the shard answers it without a catch-up.
+func TestUIMissingCommitWording(t *testing.T) {
+	s, wt, push := uiRepo(t)
+	c := commitMsg(t, wt, map[string]string{"src/a.rs": "a\n"}, "one")
+	push()
+	absent := strings.Repeat("e", 40)
+	for _, tc := range []struct{ path, prefix string }{
+		{"/ui/tree?net=7&commit=" + absent + "&path=", "no commit "},
+		{"/ui/blob?net=7&commit=" + absent + "&path=src/a.rs", "no commit "},
+		{"/ui/tree?net=8&commit=" + c + "&path=", "no repository "},
+		{"/ui/blob?net=8&commit=" + c + "&path=src/a.rs", "no repository "},
+	} {
+		if code, body := uiGet(t, s, tc.path, nil); code != 404 || !strings.HasPrefix(body, tc.prefix) {
+			t.Errorf("%s: %d %q, want 404 starting %q", tc.path, code, body, tc.prefix)
+		}
+	}
+	for _, p := range []string{"/ui/tree?net=7&commit=" + c + "&path=nope", "/ui/blob?net=7&commit=" + c + "&path=nope"} {
+		code, body := uiGet(t, s, p, nil)
+		if code != 404 || strings.HasPrefix(body, "no commit ") || strings.HasPrefix(body, "no repository ") {
+			t.Errorf("%s: %d %q, want a 404 that names the path", p, code, body)
+		}
+	}
+}

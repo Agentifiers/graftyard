@@ -1165,7 +1165,7 @@ pub const HOT_POOL: u16 = 7;
 /// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
 /// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the object instance, which reads its member by
-/// the committed config: a caller waits its `wait`, then `warming`; a rehydrating shard says so to a caller with another next. Pushes, fetches and the
+/// the committed config: a caller waits its `wait`, then `warming`; a rehydrating shard says so to a caller with another next. A read that names only commits (a test merge's base and head, a tree or blob at a commit) answers from the disk with no catch-up once the object holds a cursor for its running container, and waits as above only when an object it needs is missing: a commit's answer never changes, so a catch-up cannot change it (`disk-first-reads`, the rule `disk-validate` set for pushes). Pushes, fetches and the
 /// archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503 [measured, `hot-shards`]. `head`: the `settings` row's `default_branch`, which HEAD names, as the edge's ls-refs does, set when it changes (G26).
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]>, pub head: Option<RefName> }
 impl GitCacheShard {

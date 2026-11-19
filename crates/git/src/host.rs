@@ -1043,18 +1043,24 @@ impl ShardHost<'_> {
 
     /// The test merge of `head` into `base` (`GitCacheShard::merge` without the plan): the container's `/merge`, which
     /// runs merge-tree, commit-tree, and the tree-diff check in a quarantine and leaves the repository unchanged. With
-    /// the answer, the CPU ms of the merge's own git processes (`cpuMs`), which TEST_MERGE_BUDGET is charged.
+    /// the answer, the CPU ms of the merge's own git processes (`cpuMs`), which TEST_MERGE_BUDGET is charged. `None`
+    /// when base or head, or the whole repository, is not on the disk (`crate::merge_cache::needs_catch_up`).
     pub async fn merge(
         &self,
         network: NetworkId,
         base: crate::refs::ObjectId,
         head: crate::refs::ObjectId,
-    ) -> Result<(crate::prsync::MergeAnswer, Option<f32>), StoreError> {
+    ) -> Result<(Option<crate::prsync::MergeAnswer>, Option<f32>), StoreError> {
         let path = format!("/merge?net={}&base={}&head={}", network.0.0, base.hex(), head.hex());
-        let mut r = self.ok(Method::Post, &path, None).await?;
+        let mut r = self.call(Method::Post, &path, None, &[]).await?;
+        match r.status_code() {
+            c if crate::merge_cache::needs_catch_up(c) => return Ok((None, None)),
+            c if c >= 300 => return Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
+            _ => {}
+        }
         let v: serde_json::Value = r.json().await.map_err(worker_err)?;
         let cpu = v["cpuMs"].as_f64().map(|c| c as f32);
-        Ok((serde_json::from_value(v).map_err(|e| StoreError(format!("{path}: {e}")))?, cpu))
+        Ok((Some(serde_json::from_value(v).map_err(|e| StoreError(format!("{path}: {e}")))?), cpu))
     }
 
     /// `GitCacheShard::merge` for a real merge or a merge-queue group: each head in turn on the previous result, from

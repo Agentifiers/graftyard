@@ -424,6 +424,22 @@ MUTANTS = [
     ('the shard half keys every command at index 0 (a retry replays the wrong rows)', O,
      '            graftyard_fold::canon::write(&mut key, &(through.0, i as u32));\n            (consumer_request',
      '            graftyard_fold::canon::write(&mut key, &(through.0, 0u32));\n            let _ = i;\n            (consumer_request', G),
+    # ---- disk-first-reads (B0-35 m57): reads of named commits from the disk, 143 and up ----
+    ('a read of named commits catches up first even on a disk that holds them (main)', 'crates/git/src/shard.rs',
+     '    if on_disk {\n        let (t, missing) = read(false).await?;', '    if false {\n        let (t, missing) = read(false).await?;', ['-p', 'graftyard-git', '--test', 'disk_validate']),
+    ('a demand catches up first even on a disk that holds base and head (main)', 'crates/git/src/prsync.rs',
+     '    let a = crate::read_disk_first(on_disk, |caught| async move {', '    let a = crate::read_disk_first(on_disk && false, |caught| async move {', ['-p', 'graftyard-git', '--test', 'disk_validate']),
+    ('a read that finds a commit missing on the disk answers without a catch-up', 'crates/git/src/shard.rs',
+     '        if !missing {\n            return Ok(t);', '        if true || !missing {\n            return Ok(t);', ['-p', 'graftyard-git', '--test', 'disk_validate']),
+    ('a 404 for a path at a commit on the disk reads as a missing commit', 'crates/git/src/shard.rs',
+     '    status == 404 && (body.starts_with("no commit ") || body.starts_with("no repository "))', '    status == 404', ['-p', 'graftyard-git', '--test', 'disk_validate']),
+    ('a rehydrating shard reads from its disk', 'crates/git/src/shard.rs',
+     '    if rehydrating { ValidateOn::CaughtUp } else { validate_on(false, running, cursor) }', '    validate_on(false, running, cursor)', ['-p', 'graftyard-git', '--test', 'disk_validate']),
+    ('a merge still missing a commit after the catch-up answers shed, not an error', 'crates/git/src/prsync.rs',
+     '        Some(None) => Err(crate::StoreError("a commit of the merge is not in the git cache after catching up".into())),', '        Some(None) => Ok(None),', ['-p', 'graftyard-git', '--test', 'disk_validate']),
+    ('the lookup-mark trace logs nothing for the holder\'s posts', 'crates/lookup/src/lib.rs',
+     '            let posted = now();\n            let r = post(s, name.clone(), by).await;\n            let answer = classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. }));\n            if held.is_some() {',
+     '            let posted = now();\n            let r = post(s, name.clone(), by).await;\n            let answer = classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. }));\n            if held.is_none() {', ['-p', 'graftyard-lookup', '--lib', 'a_traced_lookup']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

@@ -889,6 +889,39 @@ pub fn validate_on(derived: bool, running: bool, cursor: bool) -> ValidateOn {
     if derived || !running || !cursor { ValidateOn::CaughtUp } else { ValidateOn::Disk }
 }
 
+/// Which disk a read that names only commits answers from (`decisions/DECISIONS.md`, "`disk-first-reads`"): the disk as
+/// it stands once this isolate caught the running container up (`cursor`) and no rehydrate is rebuilding it, as
+/// `validate_on` decides for a push. A commit's tree, blobs and merge with another commit are the same on every disk
+/// that holds them, so a catch-up can only add a missing commit, never change an answer.
+pub fn read_on(running: bool, cursor: bool, rehydrating: bool) -> ValidateOn {
+    if rehydrating { ValidateOn::CaughtUp } else { validate_on(false, running, cursor) }
+}
+
+/// Whether the container's answer to a `/ui` read says a commit it names is not on its disk: a 404 "no commit", or
+/// "no repository" for a container that holds none of the network (`containers/git/server/ui.go`, `dirAt`; `main.go`,
+/// `netParam`). Any other 404 (a path that is not there at a commit that is) is the read's answer.
+pub fn ui_missing(status: u16, body: &str) -> bool {
+    status == 404 && (body.starts_with("no commit ") || body.starts_with("no repository "))
+}
+
+/// A read on the disk first (`read_on`), and again after a catch-up only when the disk lacked something it names.
+/// `read(caught_up)` catches up first when `caught_up` is true, then answers the result and whether it found an object
+/// missing. The read after the catch-up is the answer either way, so a commit still missing once caught up answers as
+/// it always did, and a disk that holds every commit answers however the catch-up would have gone.
+pub async fn read_disk_first<T, E, R, F>(on_disk: bool, read: R) -> Result<T, E>
+where
+    R: Fn(bool) -> F,
+    F: std::future::Future<Output = Result<(T, bool), E>>,
+{
+    if on_disk {
+        let (t, missing) = read(false).await?;
+        if !missing {
+            return Ok(t);
+        }
+    }
+    Ok(read(true).await?.0)
+}
+
 /// What a shard does with a push that needs a catch-up first: one it does not validate on the disk as it stands
 /// (`validate_on`), or one whose base or ref the container found missing there (`crate::host::Validated::MissingBase`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
