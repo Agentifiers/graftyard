@@ -235,16 +235,17 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
     <div class="wrap">
       <div class="grid">
         <div class="span-5">
-          <h2 id="durability-h">Every git push held in two regions</h2>
-          <p class="t-lead" style="margin-top: var(--s-5)">Each repository lives on three sites: North America, Europe and Asia-Pacific. A push is acknowledged only after sites in two regions hold it.</p>
+          <p class="eyebrow">Durability</p>
+          <h2 id="durability-h" style="margin-top: var(--s-3)">A region goes dark, and no push is lost</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">Every repository lives on three continents. A push is acknowledged only once two of them hold it, and the code that says yes cannot compile without that proof.</p>
           <ul class="facts">
-            <li><b>107 to 189 ms</b> median for the one cross-region round a write needs, under load.</li>
-            <li><b>172 to 370 ms</b> median commit with one entry in flight; p99 399 to 690 ms.</li>
-            <li><b>11.0 to 12.9 s</b> to recover from losing a region's members, with 0 failed operations.</li>
+            <li><b>2 of 3 continents</b> hold every push before git hears <code>ok</code>.</li>
+            <li><b>12,000 of 12,000</b> leaders killed mid-reply returned the original outcome.</li>
+            <li><b>11.0 to 12.9 s</b> to recover from losing a region, with 0 failed operations.</li>
           </ul>
-          <p class="more"><a class="link" href="/durability/">How a push is held<Fragment set:html={ARROW} /></a></p>
+          <p class="more"><a class="link" href="/durability/">How Graftyard keeps every push<Fragment set:html={ARROW} /></a></p>
         </div>
-        <Film name="push-loop" label="A git push held on two continents, then acknowledged" class="span-7 start-6" />
+        <Film name="durability-loop" label="Pushes acknowledged on two of three sites; Europe goes dark, pushes keep being acknowledged on North America and Asia-Pacific with 0 lost, then Europe returns and catches up" class="span-7 start-6" />
       </div>
     </div>
   </section>
