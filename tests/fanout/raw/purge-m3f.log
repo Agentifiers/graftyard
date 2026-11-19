@@ -3,3 +3,8 @@
 2026-11-18T18:59:47Z 65588 purged: a 4 -> 0, b 6 -> 0, c 4 -> 0
 2026-11-18T18:59:47Z 65588 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-18T18:59:47Z {"dry": false, "purged": 1, "objects": 14, "refused": [], "second": 0}
+2026-11-19T00:07:57Z waiting 122 s for sweep runs started before the first pass (until 2026-11-19T00:10:00.000007+00:00)
+2026-11-19T00:08:59Z waiting 60 s for sweep runs started before the first pass (until 2026-11-19T00:10:00.000007+00:00)
+2026-11-19T00:10:22Z 65589 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T00:10:22Z 65589 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T00:10:22Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
