@@ -9,7 +9,7 @@ Agents are clients of the GHES 3.22 surface Graftyard must serve anyway (`resear
 - **New surfaces.** (1) A remote MCP server at `mcp.<host>` on spec 2026-07-28, with a consent page per client, per-client grants, narrowed refreshes, static toolsets by default, and Code Mode as a priced opt-in per org. (2) An opt-in media type that returns hidden-content-stripped text, author trust, overlaps, and provenance beside the untouched `body`. (3) Chain-resident provenance, with trailers and `refs/notes/ai` parsed during `validate`, sessions linked only when authenticated, and session logs as stored blobs under a host-owned ref, readable as JSON. (4) Neutral `graftyard/overlap` and `graftyard/provenance` check runs posted before a PR exists, ordinary `agent:` and `overlap:` labels, an agents page per repository, and an advisory conflict predictor. (5) Leases on paths and refs, kept as chain state on the repository's group, a long-polled activity feed, and a task API with GitHub's agent task states, all under `/api/graftyard/v1`, where leases are advisory unless a repository makes them refuse agent pushes.
 - **Artifacts plays no role.** The 1 GB cap rules out the A1 monorepo, a repository is one logical instance in a beta with no SLA, prediction needs branches in the network's shard, and same-network forks already share packs, so best-of-N attempts fit in a workspace fork (`research/artifacts-recheck.md` sections 1 and 3).
 - **A1 on the base.** 500 agents put 27.6 commands/s on the monorepo's group, 25.2/s of it agent class with lease renewals and task updates, 11 times under the base's 300 commands/s Milestone 0 gate, and about 305 req/s on its leader against 1,000. Feed polls, 45/s, go to learners, or to followers while a group has none, and never to the leader (`cost_agents.py --a1`) [inference]. With git CPU measured on torvalds/linux and composed clone-cache misses, the network's git cache needs 2.68 vCPU and k = 1 shard per warm site (`cost_agents.py --a1`; `tests/m0/results/m0-wp9.md`, B0-34) [measured constants]. Recomputing every open PR's test merge on each base move would need 4 vCPU, and test merges stay lazy, coalesced, and budgeted. `LOG_MAX_BYTES` caps each member's log at 2 GB, and Milestone 0 measured a member seeded with a 3.93 GB metadata tier at 8.45 GB after 30 days, reaching `CHILD_GROUP_AT` (8 GiB) in about 32 days (B0-30) [measured].
-- **Cost.** The layer adds $21, $330, and $2,948 a month at 50, 300, and 2,000 developers, 9% to 31% of the base, with the largest network's fan-out shards (none, at measured git CPU), its learners (none at 2,000 developers, since API reads are narrow; K9), and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
+- **Cost.** The layer adds $21, $328, and $2,931 a month at 50, 300, and 2,000 developers, 9% to 32% of the base, with the largest network's fan-out shards (none, at measured git CPU), its learners (none at 2,000 developers, since API reads are narrow; K9), and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
 
 ## Artifacts' role
 
@@ -619,7 +619,7 @@ A stronger form of the router runs the model loop in the controller, so the sand
 5. At the callback the cookie must match `state`, once. At `/token`, `graft-mcp` checks PKCE, redeems the GHES code, calls `POST /applications/{client_id}/token/scoped` to narrow the `ghu_` token (https://docs.github.com/en/enterprise-server@3.22/rest/apps/apps), and keeps the unscoped one sealed in the `McpRefresh`, deleting it with `DELETE /applications/{client_id}/token` only after the next refresh has spent the `ghr_`. On Graftyard's host a `ghu_` and its `ghr_` are paired and revoking either revokes both (`design/DESIGN.md`, Shape, Identity), so an earlier delete would break the refresh; whether a GHES host lets the `ghr_` survive no longer decides anything [unverified, no GHES instance] (`decisions/DECISIONS.md`, "Decisions for a Pro-only build with no GHES, 2026-10-31"). The approved client becomes an `McpGrant` row in Alice's `Identity` group, listed and revocable at `https://mcp.<host>/settings`.
 6. It returns a sealed `McpToken` with audience `https://mcp.<host>/`, one hour, and a sealed `McpRefresh` that carries the narrowing and the grant's generation. The authorization response carries the RFC 9207 `iss` parameter (`history/review/cloudflare-agents-judge.md`). A token with another audience gets 401, and the client's token never reaches `/api/v3`. Each refresh calls `token/scoped` again. A refresh with an older generation is refused and revokes the grant.
 7. Thirty tool calls follow. Each is one to three REST calls over the service binding, every text field rendered with the trust view, with `retry_after_s` and rate fields on errors (`research/agents.md` 3.8). Writes run as the `Graftyard MCP` `AgentApp` with `requester = sub`, so they fill `actor_is_agent` and take the agent admission class. The scoped token's `Tokens` row carries the grant id and its write scope, so the host refuses approve and merge unless the consent named them, and an approval through MCP never writes `AgentGate`. Revoking the client at `https://mcp.<host>/settings` deletes its upstream tokens, the held unscoped `ghu_` included, and revoking the App in the user's GHES settings kills every one, so the next write fails at once and reads within 10 s (`design/DESIGN.md`, Shape, `READ_CACHE`).
-8. Cost per session is $0.00033 at 300 and 2,000 developers (`cost_agents.py`). With Code Mode opted in, each `search()` or `execute()` runs new model-written code, billed as a new Dynamic Worker at $0.002 (https://developers.cloudflare.com/dynamic-workers/pricing/), about $0.06 a session [inference].
+8. Cost per session is $0.00028 at 300 and 2,000 developers (`cost_agents.py`). With Code Mode opted in, each `search()` or `execute()` runs new model-written code, billed as a new Dynamic Worker at $0.002 (https://developers.cloudflare.com/dynamic-workers/pricing/), about $0.06 a session [inference].
 
 **A8. Installs and incidents.**
 
@@ -850,18 +850,18 @@ Behavior is the same in managed, BYOC, and self-hosted. Only rate-limit defaults
 
 ## Cost
 
-Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/cost.py`'s `design` variant with and without the agent workload, then prices the new pieces. Every monthly line uses 5 pushes a task, the fan-out sizing included, and A1's push every 2 minutes is the separate peak case of `--a1`. One clone-cache miss model serves CPU, egress, and storage. A tip misses on its first checkout, so each agent CI job, at 3 for 5 pushes, misses, and agent clones at the moving tip share CI's 70% hit rate. Every constant is a [guess] until Milestone 0, except git CPU, measured on torvalds/linux (`tests/m0/results/m0-wp9.md`, B0-34), the predictor's cost per pair (`tests/m0/results/m0-wp16.md`, L0-05), and the on-disk factors for member bytes (B0-30). The tables below are its output.
+Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/cost.py`'s `design` variant with and without the agent workload, then prices the new pieces. Every monthly line uses 5 pushes a task, the fan-out sizing included, and A1's push every 2 minutes is the separate peak case of `--a1`. One clone-cache miss model serves CPU, egress, and storage. A tip misses on its first checkout, so each agent CI job, at 3 for 5 pushes, misses, and agent clones at the moving tip share CI's 70% hit rate. Every constant is a [guess] until Milestone 0, except git CPU, measured on torvalds/linux (`tests/m0/results/m0-wp9.md`, B0-34), the predictor's cost per pair (`tests/m0/results/m0-wp16.md`, L0-05), the on-disk factors for member bytes (B0-30), and member rows written per entry, priced by kind as `scripts/cost.py` does (`bash tests/entryrows/run.sh`, `tests/entryrows/README.md`). The tables below are its output.
 
 | Added line item | 50 devs | 300 devs | 2,000 devs |
 | --- | --- | --- | --- |
-| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $5 | $250 | $2,401 |
+| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $5 | $248 | $2,389 |
 | Containers: test merges on agent head pushes (active vCPU) | $0 | $0 | $1 |
 | Hot-network fan-out: extra warm shards for the largest network | $0 | $0 | $0 |
 | Clone cache: agent-tip entries in the first warm bucket | $0 | $2 | $25 |
 | Clone cache: hot-network entries copied to the second warm bucket | $0 | $2 | $28 |
 | Conflict predictor on the second warm site, 8 pairs a push (active vCPU) | $1 | $8 | $54 |
 | graft-mcp: tool calls and REST behind them (base lines) | $0 | $3 | $21 |
-| graft-mcp: CPU, consent and session auth, grant and scoped-token entries | $0 | $1 | $10 |
+| graft-mcp: CPU, consent and session auth, grant and scoped-token entries | $0 | $1 | $5 |
 | Learners on the largest network's group (storage, duration, applied rows, requests; K9) | $0 | $0 | $0 |
 | Folds: PathSet and provenance rows | $0 | $2 | $11 |
 | Activity feed: long-poll hold time on members (upper bound) | $9 | $51 | $342 |
@@ -872,16 +872,16 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 | Agents account: front, outbound router, webhooks, Workflow requests and CPU | $0 | $0 | $4 |
 | Install: `Release` reads by the agents account (edge and member requests) | $0 | $0 | $1 |
 | Agents account: Workflow steps | $0 | $0 | $7 |
-| **Added total** | **$21** | **$330** | **$2,948** |
-| Base total (`scripts/cost.py`, design) | $236 | $1,059 | $9,630 |
-| Added share of base | 9% | 31% | 31% |
-| Added cost per agent task | $0.0047 | $0.0121 | $0.0162 |
-| MCP cost per session (30 calls) | $0.00013 | $0.00033 | $0.00033 |
+| **Added total** | **$21** | **$328** | **$2,931** |
+| Base total (`scripts/cost.py`, design) | $236 | $1,013 | $9,323 |
+| Added share of base | 9% | 32% | 31% |
+| Added cost per agent task | $0.0047 | $0.0120 | $0.0161 |
+| MCP cost per session (30 calls) | $0.00008 | $0.00028 | $0.00028 |
 
 | Base line grown by agents | 50 devs | 300 devs | 2,000 devs |
 | --- | --- | --- | --- |
 | Containers egress by site region and leader split | $0 | $108 | $1,436 |
-| Durable Objects SQLite rows written | $0 | $86 | $574 |
+| Durable Objects SQLite rows written | $0 | $84 | $563 |
 | Workers Logs ingest and storage | $0 | $12 | $81 |
 | R2 Class A | $2 | $10 | $70 |
 | Email Sending | $2 | $10 | $64 |
