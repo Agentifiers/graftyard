@@ -17,6 +17,16 @@ ST=tests/fanout/raw/rows-$TAG.status
 # rows.sh ends with `exec sleep infinity`; run it in the background and wait for ALLDONE.
 bash tests/fanout/rows.sh "$TAG" &
 until grep -q '^ALLDONE' "$ST" 2>/dev/null; do sleep 20; done
+# Each row's client colos and harness outages (tests/fanout/README.md, "Harness outages on gate rows"): the voters'
+# `suspect` reports by edge colo, and the edge's and sites' arrivals per second with every line as measured and with
+# the outage windows removed (outages.sh).
+for row in $ROWS; do
+  repo=$(grep -E " $row [^ ]+ [0-9]+ start$" "$ST" | tail -1 | awk '{print $3}')
+  [ -n "$repo" ] || continue
+  { echo "$row colos (voters' Reported rows):"; python3 tests/fanout/colos.py tests/fanout/raw/tsave-$TAG-$row.jsonl \
+      2000-01-01T00:00:00Z 2100-01-01T00:00:00Z; } >> "$ST" 2>&1
+  RUN_PREFIX=graft-m3f bash tests/fanout/outages.sh "$TAG" "$row" "$repo"
+done
 if python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; then echo "$(date -u +%FT%TZ) SWEEP2 OK" >> "$ST"
 else echo "$(date -u +%FT%TZ) SWEEP2 FAILED" >> "$ST"; fi
 echo "$(date -u +%FT%TZ) cost $(PREFIX=graft-m3f python3 tests/fanout/acctcost.py "${RUN_FROM:-$ACCT_FROM}" 2>/dev/null | head -1)" >> "$ST"
