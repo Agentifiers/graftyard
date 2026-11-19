@@ -36,6 +36,44 @@ use crate::faults::Kill;
 use crate::host::{self, Host, Trace, err, within};
 use crate::{SiteEnv, lookup, now_ms};
 
+thread_local! {
+    /// Per (repository chain, target site): this leader isolate's wait for the target's git cache shard before a
+    /// planned transfer (`graftyard_identity::group_move::transfer_gate`).
+    static WARM_WAITS: RefCell<std::collections::HashMap<(ChainId, SiteId), graftyard_identity::group_move::WarmWait>> =
+        RefCell::default();
+}
+
+/// How long one ask of the target shard's catch-up may take before it counts as still warming [guess]: the shard
+/// waits at most WARM_ASK_WAIT_S itself, and a rehydrating one answers at once (`next=1`).
+const WARM_ASK: Duration = Duration::from_secs(10);
+const WARM_ASK_WAIT_S: u64 = 5;
+
+/// Whether `to`'s first git cache shard of `repo`'s network answered its catch-up 200. Anything else, `warming`, an
+/// error or no answer in WARM_ASK, is not warm. The call is a client's, so it starts a stopped container.
+async fn shard_warm(
+    env: &Env,
+    site: &SiteEnv,
+    repo: graftyard_types::RepoId,
+    to: SiteId,
+    record: &PlacementRecord,
+) -> bool {
+    let call = async {
+        let rec = serde_json::to_string(record).ok()?;
+        let name = format!("git#{}#net:{}", to.0, repo.0.0);
+        let st = crate::fanout::stub(env, &site.sites, to, &name).ok()?;
+        let url = format!(
+            "https://shard/catchup?repo={}&record={}&wait={WARM_ASK_WAIT_S}&next=1",
+            repo.0.0,
+            worker::js_sys::encode_uri_component(&rec)
+        );
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post);
+        let r = st.fetch_with_request(Request::new_with_init(&url, &init).ok()?).await.ok()?;
+        Some(r.status_code() == 200)
+    };
+    within(WARM_ASK, call).await.flatten().unwrap_or(false)
+}
+
 /// How long a learner's `ReadIndex` call stays open for the leader's answer when it needs a round [guess]: under
 /// the asker's CALL_DEADLINE, past one round to the far voter (230 ms measured, `tests/m2/results/install-m2b.md`).
 const READ_INDEX_HOLD: Duration = Duration::from_millis(500);
@@ -2999,8 +3037,44 @@ impl<F: Family> Routes<F> {
             (MoveStep::Done, _) => Ok(json!({ "step": "Done" })),
             (MoveStep::Degraded, _) => Err("the config is Degraded: replace the lost member first".into()),
             (MoveStep::Transfer { to }, _) => {
-                let r = self.host.input(|m, t| m.transfer(t, to))?;
-                r.map(|id| json!({ "transfer": id.0.to_string() })).map_err(|e| format!("{e:?}"))
+                // A repository group's planned transfer waits first for the target site's git cache shard to catch
+                // up, up to WARM_BEFORE_TRANSFER, so the shard's catch-up runs while the old leader still serves
+                // (G11). Past the bound it transfers cold and says so.
+                let gate = match chain {
+                    ChainId::Repo(repo) => {
+                        use graftyard_identity::group_move::{TransferGate, transfer_gate};
+                        let warm = shard_warm(&self.host.env, &site, repo, to, &record).await;
+                        let now = Timestamp(now_ms());
+                        let (gate, wait, waited) =
+                            WARM_WAITS.with(|w| transfer_gate(warm, w.borrow().get(&(chain, to)).copied(), now));
+                        WARM_WAITS.with(|w| match wait {
+                            Some(v) => w.borrow_mut().insert((chain, to), v),
+                            None => w.borrow_mut().remove(&(chain, to)),
+                        });
+                        match gate {
+                            TransferGate::Hold => Some(Ok(json!({ "warming": true, "waitedMs": waited }))),
+                            TransferGate::Go => None,
+                            TransferGate::GoCold => {
+                                console_log!("move {chain}: transfer to site {} cold after {waited} ms", to.0);
+                                Some(Err(waited))
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                match gate {
+                    Some(Ok(held)) => Ok(held),
+                    cold => {
+                        let r = self.host.input(|m, t| m.transfer(t, to))?;
+                        r.map(|id| match cold {
+                            Some(Err(waited)) => {
+                                json!({ "transfer": id.0.to_string(), "cold": true, "waitedMs": waited })
+                            }
+                            _ => json!({ "transfer": id.0.to_string() }),
+                        })
+                        .map_err(|e| format!("{e:?}"))
+                    }
+                }
             }
             (MoveStep::Swap { add, drop }, raft::GroupConfig::Normal(p)) => {
                 let old = p.voters().iter().find(|m| m.site == drop).cloned().ok_or_else(|| err("no member there"))?;

@@ -373,7 +373,11 @@ async fn repo_step(
             // leader is found once, then called with a step's own deadline.
             let body = json!({ "to": to }).to_string();
             let probe = json!({ "q": { "probe": true } }).to_string();
-            for _ in 0..40 {
+            // 40 steps, not counting the asks a transfer holds while the target's shard warms: those end within
+            // WARM_BEFORE_TRANSFER on their own.
+            let mut steps = 0;
+            while steps < 40 {
+                steps += 1;
                 let (_, _, t) = graftyard_lookup::call_opt(&b, chain, &record, "/read", probe.as_bytes())
                     .await?
                     .ok_or_else(|| format!("{chain}: no group"))?;
@@ -397,6 +401,12 @@ async fn repo_step(
                 }
                 if let Some(e) = v.get("error") {
                     return Err(format!("{chain} move: {e}"));
+                }
+                // The transfer waits for the target's git cache shard (G11): ask again shortly.
+                if v.pointer("/ok/warming").is_some() {
+                    steps -= 1;
+                    worker::Delay::from(std::time::Duration::from_secs(5)).await;
+                    continue;
                 }
                 // A transfer completes within the LEASE; the next step goes to the new leader.
                 if v["ok"].get("transfer").is_some() {
