@@ -1046,3 +1046,118 @@ fn a_rehydrated_slot_steps_k_under_load_whatever_its_catch_up_takes() {
     assert_eq!(ks[rehydrated_at as usize], 2, "the first report after the rehydrate steps: {ks:?}");
     assert!(ks[15] >= 3, "k keeps stepping while the load stays high: {ks:?}");
 }
+
+/// `trigger-stream` (2): when a network's turn frees, a dispatch merge goes before head pushes and GETs that were in
+/// line before it (`MergeCause`: pushes and dispatch first, then GETs), and under a constant stream of dispatch a
+/// head push or GET still runs after at most DISPATCH_STREAK_MAX dispatch merges in a row. Within a cause the line is
+/// first come, first served, and a merge that leaves the line while the turn is being handed to it passes the turn
+/// on rather than losing it. Through `budgeted` on a manual clock, so every merge waits only for the turn.
+#[test]
+fn dispatch_goes_first_in_the_turn_and_the_rest_never_starve() {
+    use graftyard_git::prsync::{DISPATCH_STREAK_MAX, MergeTurn};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::task::Poll;
+    // A 4 vCPU budget at a 1 ms merge never sheds, so the order is the turn's alone.
+    let budgets = Rc::new(RefCell::new(Budgets::new(instance_vcpu("standard-4").unwrap())));
+    let order = Rc::new(RefCell::new(Vec::<(MergeCause, u32)>::new()));
+    let gate = Rc::new(RefCell::new(None::<futures_channel::oneshot::Receiver<()>>));
+    let mut pool = futures_executor::LocalPool::new();
+    let spawn = |pool: &mut futures_executor::LocalPool, cause: MergeCause, n: u32| {
+        let (budgets, order, gate) = (budgets.clone(), order.clone(), gate.clone());
+        use futures_util::task::LocalSpawnExt;
+        pool.spawner()
+            .spawn_local(async move {
+                let r = budgeted(
+                    &budgets,
+                    net(1),
+                    cause,
+                    IssueNumber(n),
+                    || 1_000,
+                    || async { Ok::<(), ()>(()) },
+                    || async {
+                        order.borrow_mut().push((cause, n));
+                        // The first merge holds the turn until the test lets it go, so the others queue behind it.
+                        let held = gate.borrow_mut().take();
+                        if let Some(rx) = held {
+                            let _ = rx.await;
+                        }
+                        Ok((MergeAnswer::Conflict { conflict: vec![] }, Some(1.0)))
+                    },
+                )
+                .await;
+                assert!(r.unwrap().is_some(), "nothing is shed");
+            })
+            .unwrap();
+    };
+    let (tx, rx) = futures_channel::oneshot::channel();
+    *gate.borrow_mut() = Some(rx);
+    spawn(&mut pool, MergeCause::HeadPush, 0);
+    pool.run_until_stalled();
+    // In line behind it: two head pushes and a GET, then three dispatch merges, then one more head push.
+    for (cause, n) in [(MergeCause::HeadPush, 1), (MergeCause::Get, 2), (MergeCause::HeadPush, 3)] {
+        spawn(&mut pool, cause, n);
+    }
+    for n in 10..13 {
+        spawn(&mut pool, MergeCause::Dispatch, n);
+    }
+    spawn(&mut pool, MergeCause::HeadPush, 4);
+    pool.run_until_stalled();
+    assert_eq!(order.borrow().len(), 1, "one merge runs at a time");
+    tx.send(()).unwrap();
+    pool.run_until_stalled();
+    let got: Vec<u32> = order.borrow().iter().map(|(_, n)| *n).collect();
+    assert_eq!(got, vec![0, 10, 11, 12, 1, 2, 3, 4], "dispatch first, then the rest in arrival order");
+
+    // A constant stream of dispatch: 20 queued behind a held turn, with three others (a new GET: one for pull request
+    // 2 would fall in its 30 s coalescing slot). Each other merge runs after at
+    // most DISPATCH_STREAK_MAX dispatch merges in a row.
+    order.borrow_mut().clear();
+    let (tx, rx) = futures_channel::oneshot::channel();
+    *gate.borrow_mut() = Some(rx);
+    spawn(&mut pool, MergeCause::Dispatch, 100);
+    pool.run_until_stalled();
+    for (cause, n) in [(MergeCause::HeadPush, 1), (MergeCause::Get, 5), (MergeCause::HeadPush, 3)] {
+        spawn(&mut pool, cause, n);
+    }
+    for n in 101..121 {
+        spawn(&mut pool, MergeCause::Dispatch, n);
+    }
+    pool.run_until_stalled();
+    tx.send(()).unwrap();
+    pool.run_until_stalled();
+    let o = order.borrow();
+    assert_eq!(o.len(), 24);
+    // Count streaks only up to the last other merge: past it nothing else waits, and dispatch runs on.
+    let last_other = o.iter().rposition(|(c, _)| *c != MergeCause::Dispatch).unwrap();
+    let mut run = 0u32;
+    for (cause, _) in &o[..last_other] {
+        if *cause == MergeCause::Dispatch {
+            run += 1;
+            assert!(run <= DISPATCH_STREAK_MAX, "{} dispatch in a row while others waited: {o:?}", run);
+        } else {
+            run = 0;
+        }
+    }
+    assert_eq!(run, DISPATCH_STREAK_MAX, "dispatch does take its streak before an other");
+    let others: Vec<u32> = o.iter().filter(|(c, _)| *c != MergeCause::Dispatch).map(|(_, n)| *n).collect();
+    assert_eq!(others, vec![1, 5, 3], "the others keep their order");
+    let pos = |n: u32| o.iter().position(|(_, m)| *m == n).unwrap();
+    assert!(pos(3) <= 3 * (DISPATCH_STREAK_MAX as usize + 1), "the last other ran within three streaks");
+    drop(o);
+
+    // A waiter dropped while the turn is handed to it passes the turn on.
+    let turn = MergeTurn::default();
+    let waker = futures_util::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let held = std::pin::pin!(turn.take(MergeCause::HeadPush));
+    let Poll::Ready(held) = held.poll(&mut cx) else { panic!("a free turn is taken at once") };
+    let mut a = Box::pin(turn.take(MergeCause::Dispatch));
+    let mut b = Box::pin(turn.take(MergeCause::Get));
+    assert!(a.as_mut().poll(&mut cx).is_pending() && b.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(turn.waiting(), 2);
+    drop(held);
+    drop(a);
+    assert!(matches!(b.as_mut().poll(&mut cx), Poll::Ready(_)), "the turn went on to the next waiter");
+    assert_eq!(turn.waiting(), 0);
+}

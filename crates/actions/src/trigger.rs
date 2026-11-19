@@ -225,8 +225,115 @@ pub fn settle(tried: Vec<(Carried, Tried)>, through: Index, now: u64) -> (Vec<Ca
             (Tried::Again, _) => carried.push(c),
         }
     }
-    let cursor = carried.iter().map(|c| Index(c.index.0.saturating_sub(1))).min().unwrap_or(through).min(through);
+    let cursor = low_water(&carried, through);
     (carried, dropped, cursor)
+}
+
+/// The index `ActionsTrigger`'s cursor may commit: just below the oldest `unfinished` item's entry, so a new leader,
+/// whose scan starts past the committed cursor, rescans it and never skips it; or `reached`, the last entry read, when
+/// every item is done. A crash replays done items, which the shard's run key makes create nothing twice.
+pub fn low_water<'a>(unfinished: impl IntoIterator<Item = &'a Carried>, reached: Index) -> Index {
+    unfinished.into_iter().map(|c| Index(c.index.0.saturating_sub(1))).min().unwrap_or(reached).min(reached)
+}
+
+/// Items one leadership's `ActionsTrigger` runs at once [guess: B0-35 m54 offered about 4 events a second, each about
+/// 15 s inside its round, so about 60 at once at steady state; its rounds ran up to 250 at once in one isolate with no
+/// memory error (`tests/m4/results/m4-wp4.md`, "B0-35 rerun on graft-m4a after site day 54")].
+pub const IN_FLIGHT_MAX: usize = 100;
+/// An item that ended `Again` is started again this long after.
+pub const RETRY_MS: u64 = 5_000;
+
+/// One leadership's `ActionsTrigger` work as a stream (`decisions/DECISIONS.md`, "`trigger-stream`"): each item starts
+/// as soon as its entry is read and a slot is free, up to `cap` at once, and each ends on its own, so no item waits
+/// for another's merge. Rounds, which this replaced, started a batch's items together and read the next entries only
+/// once the slowest had ended: on B0-35 m54 an entry waited p50 26 s and p99 97 s for the round in flight. An item
+/// still to start, running, or waiting to be tried again is unfinished, and the cursor stays below the oldest one
+/// (`low_water`). Ids are this leadership's; the host runs each started item and calls `finish` with its id.
+#[derive(Clone, Debug)]
+pub struct Stream {
+    reached: Index,
+    cap: usize,
+    next: u64,
+    queued: std::collections::VecDeque<Carried>,
+    running: std::collections::BTreeMap<u64, Carried>,
+    retry: Vec<(u64, Carried)>,
+}
+
+impl Stream {
+    /// A leadership's stream, from the committed cursor `from`.
+    pub fn new(from: Index, cap: usize) -> Stream {
+        Stream {
+            reached: from,
+            cap: cap.max(1),
+            next: 0,
+            queued: Default::default(),
+            running: Default::default(),
+            retry: Vec::new(),
+        }
+    }
+
+    /// The last entry read.
+    pub fn reached(&self) -> Index {
+        self.reached
+    }
+
+    /// Items read and not started yet.
+    pub fn queued(&self) -> usize {
+        self.queued.len()
+    }
+
+    pub fn running(&self) -> usize {
+        self.running.len()
+    }
+
+    /// Entries up to `through` were read, and these are their items, in log order.
+    pub fn read(&mut self, items: impl IntoIterator<Item = Carried>, through: Index) {
+        self.queued.extend(items);
+        self.reached = self.reached.max(through);
+    }
+
+    /// The items to start now, each with its id: those due to be tried again first, oldest entry first, then those
+    /// read, in log order, while fewer than `cap` run.
+    pub fn start(&mut self, now: u64) -> Vec<(u64, Carried)> {
+        let (mut due, later): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.retry).into_iter().partition(|(t, _)| *t <= now);
+        self.retry = later;
+        due.sort_by_key(|(_, c)| c.index);
+        for (_, c) in due.into_iter().rev() {
+            self.queued.push_front(c);
+        }
+        let mut out = Vec::new();
+        while self.running.len() < self.cap {
+            let Some(c) = self.queued.pop_front() else { break };
+            self.next += 1;
+            self.running.insert(self.next, c.clone());
+            out.push((self.next, c));
+        }
+        out
+    }
+
+    /// Item `id` ended `t`, by `settle`'s rule: done; to be tried again RETRY_MS from `now`; or, a pull request event
+    /// still not done PR_REPLAY_MS after its entry, given up and returned (`unmerged`). An id this stream did not
+    /// start, such as a previous leadership's, changes nothing.
+    pub fn finish(&mut self, id: u64, t: Tried, now: u64) -> Option<Carried> {
+        let c = self.running.remove(&id)?;
+        let (again, mut dropped, _) = settle(vec![(c, t)], self.reached, now);
+        self.retry.extend(again.into_iter().map(|c| (now + RETRY_MS, c)));
+        dropped.pop()
+    }
+
+    /// The index the cursor may commit (`low_water` over every unfinished item).
+    pub fn cursor(&self) -> Index {
+        low_water(
+            self.queued.iter().chain(self.running.values()).chain(self.retry.iter().map(|(_, c)| c)),
+            self.reached,
+        )
+    }
+
+    /// When the earliest item waiting to be tried again is due.
+    pub fn next_retry(&self) -> Option<u64> {
+        self.retry.iter().map(|(t, _)| *t).min()
+    }
 }
 
 #[cfg(test)]

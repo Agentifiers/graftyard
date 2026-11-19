@@ -487,6 +487,8 @@ The tail is the round, not the group. An entry waits for the round in flight to 
 
 With 1 and 2, the expected entry-to-run is the 0-ask in-round time, p50 about 10 s and p99 about 15 s on this row's load. That is inside the fail line, but it is not shown to meet 11 s until 3 attributes those 10 s. B0-35 is not rerun until this change, or LM-1's leader-tail work, lands.
 
+**Built** code-only on branch `dispatch-tail` as approved (`decisions/DECISIONS.md`, "`trigger-stream`"). In memory, a stream and rounds commit the same `CreateRun`s for one entry stream, a slow event holds one slot and the cursor below it, and a dispatch merge behind queued pushes and GETs runs first, at most four in a row while another waits. Plants 99 to 105 are caught. The rerun waits on a site day for it and on LM-1's B0-33 work.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.

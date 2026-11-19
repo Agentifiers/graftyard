@@ -2,23 +2,30 @@
 //! is `graftyard_actions::trigger`). It runs in band on a repository leader's alarm, as `Notify` and `Search` do
 //! (`crate::activity`), with no queue hop.
 //!
-//! - **Scan.** From the committed `ActionsTrigger` cursor, or from where this leadership's scan reached, it reads at
-//!   most `BATCH` committed entries from the leader's log and lists the queue refs each `GroupBuilt` built.
-//! - **Runs.** For each one it lists `.github/workflows` at the ref's tip on this site's git cache shard (`/ui/tree`,
-//!   `/ui/blob`), and commits each matching workflow's `CreateRun` (format 0x15.2) on the repository's Actions shard
-//!   through `/runsvc`. The run key names the entry and the queue ref, so a batch run twice creates each run once.
-//! - **Cursor.** After a batch that built a queue ref, and every `CURSOR_STRIDE` entries otherwise, it commits
-//!   `ConsumerCursorCmd { ActionsTrigger }` through its own member, so a new leader rescans at most that much.
+//! - **Stream** (`decisions/DECISIONS.md`, "`trigger-stream`"; the state is `graftyard_actions::trigger::Stream`).
+//!   From the committed `ActionsTrigger` cursor it reads at most `BATCH` committed entries at a time from the leader's
+//!   log, and lists the queue refs each `GroupBuilt` built and the pull request events each entry holds. Each item
+//!   starts as soon as a slot is free, up to `IN_FLIGHT_MAX` at once, and ends on its own. The next entries are read
+//!   once the items read have all started, so no item waits for another's merge, as items in rounds did.
+//! - **Runs.** For each queue ref it lists `.github/workflows` at the ref's tip on this site's git cache shard
+//!   (`/ui/tree`, `/ui/blob`), and commits each matching workflow's `CreateRun` (format 0x15.2) on the repository's
+//!   Actions shard through `/runsvc`. The run key names the entry and the queue ref, so an item run twice creates each
+//!   run once.
+//! - **Cursor.** Just below the oldest item not done (`graftyard_actions::trigger::low_water`), or at the last entry
+//!   read when every item is done, so a new leader rescans every item not done and never skips one. It commits as
+//!   `ConsumerCursorCmd { ActionsTrigger }` through its own member, at most every `CURSOR_EVERY_MS` while items end,
+//!   and every `CURSOR_STRIDE` entries otherwise.
 //! - **Off by default**, as `crate::activity` is: only where `GRAFTYARD_ACTIVITY` is `1`, since its cursor is 32.19.
 //!   Its 0x15.2 `CreateRun` goes only to a shard whose members read it, which one site day gives all three sites.
 //! - **`pull_request`** (B0-35; `decisions/DECISIONS.md`, "`pr-trigger`"), only where a later site day set
 //!   `GRAFTYARD_PR_TRIGGER` to `1`: each `opened`, `synchronize`, and `reopened` in an entry under an hour old asks for
 //!   the pull request's test merge (`crate::prsync::demand`) and commits each matching workflow's `CreateRun` (format
 //!   0x15.4) at the merge commit, on `refs/pull/N/merge`. A conflicting merge starts no run.
-//! - **Carried items** (F84): a queue ref or event a round could not finish (its merge still shed, a read or a
-//!   `CreateRun` failed) is kept in this leadership's scan and tried again by the next round, `RETRY_MS` later, while
-//!   the rest of its batch counts as done. The cursor commits just below the oldest carried entry
-//!   (`graftyard_actions::trigger::settle`). An event still not done an hour after its entry is given up, `unmerged`.
+//! - **Tried again** (F84): an item that could not finish (its merge still shed after `DEMAND_TRIES` asks, a read or
+//!   a `CreateRun` that failed) starts again `RETRY_MS` later, alone. An event still not done an hour after its entry is
+//!   given up, `unmerged`.
+//! - **Timing.** Each event's log line splits its time into the wait before its try started, the demand, the workflow
+//!   reads, and the `CreateRun`s.
 //!
 //! No request path calls the Cloudflare API: every call is a Durable Object binding.
 
@@ -29,7 +36,8 @@ use std::rc::Rc;
 use graftyard_actions::shard::{JobSpec, WorkflowRun};
 use graftyard_actions::specs::Declared;
 use graftyard_actions::trigger::{
-    Carried, Item, PrEvent, PrTarget, Tried, built, merge_group_run, pr_events, pr_target, pull_request_run, settle,
+    Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, RETRY_MS, Stream, Tried, built, merge_group_run, pr_events,
+    pr_target, pull_request_run,
 };
 use graftyard_git as git;
 use graftyard_git::issues::Consumer;
@@ -45,31 +53,44 @@ use crate::SiteEnv;
 use crate::family::Repo;
 use crate::host::Host;
 
-/// Entries one round reads at most [guess].
+/// Entries one scan reads at most [guess].
 const BATCH: u64 = 200;
 /// With no queue ref built, the cursor is committed only this many entries apart, so it costs no entry per batch.
 const CURSOR_STRIDE: u64 = 1_000;
-/// After a failed round, or one that carried items, the alarm comes back in this long.
-const RETRY_MS: i64 = 5_000;
-/// A pull request event asks for its test merge at most this many times a round, DEMAND_WAIT_MS apart, and is then
-/// carried to the next round [guess: the counts].
+/// Batches one call of `pump` reads at most.
+const READS_PER_PUMP: usize = 4;
+/// The cursor commits at most this often while items end [guess: rounds committed it about every 42 s on B0-35 m54].
+const CURSOR_EVERY_MS: u64 = 5_000;
+/// A pull request event asks for its test merge at most this many times a try, DEMAND_WAIT_MS apart, and is then
+/// tried again RETRY_MS later [guess: the counts].
 const DEMAND_TRIES: u32 = 4;
 const DEMAND_WAIT_MS: u64 = 2_000;
 const WORKFLOWS: &str = ".github/workflows";
 
-/// A leadership's scan: its (term, boot), how far it read, whether a round runs, the items carried to the next round,
-/// and whether a cursor commit is owed (the last one failed).
+/// A leadership's stream (`graftyard_actions::trigger::Stream`): its (term, boot), the items read, running, and to be
+/// tried again, whether a cursor commit runs, the index last committed, and whether a commit is owed (the last failed).
 struct Scan {
     leadership: (u64, u64),
-    reached: Index,
-    running: bool,
-    carried: Vec<Carried>,
+    stream: Stream,
+    committing: bool,
+    committed: Index,
     owed: bool,
+    /// An item ended since the last cursor commit, and when that commit started.
+    worked: bool,
+    last_commit: u64,
 }
 
 impl Scan {
-    fn new(leadership: (u64, u64), reached: Index) -> Scan {
-        Scan { leadership, reached, running: false, carried: Vec::new(), owed: false }
+    fn new(leadership: (u64, u64), cursor: Index) -> Scan {
+        Scan {
+            leadership,
+            stream: Stream::new(cursor, IN_FLIGHT_MAX),
+            committing: false,
+            committed: cursor,
+            owed: false,
+            worked: false,
+            last_commit: 0,
+        }
     }
 }
 
@@ -78,82 +99,192 @@ thread_local! {
     static SCAN: RefCell<HashMap<String, Scan>> = RefCell::default();
 }
 
-/// A request id from the chain and the cursor's index: the tag `0x4154` ("AT") in the top 16 bits.
 fn rid(repo: RepoId, through: Index) -> RequestId {
     RequestId(Ulid(
         (0x4154u128 << 112) | (u128::from(repo.0.0 as u64 & 0xffff_ffff_ffff) << 64) | u128::from(through.0),
     ))
 }
 
+/// What a leader's alarm hands the stream: the member's key, its leadership, the repository and its owner and record,
+/// the committed cursor, and the applied index.
+struct Found {
+    key: String,
+    leadership: (u64, u64),
+    repo: RepoId,
+    owner: AccountId,
+    cursor: Index,
+    applied: Index,
+    record: PlacementRecord,
+}
+
 pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     // Its cursor is a 32.19 command, so it runs where `Notify` and `Search` do.
-    if !crate::activity::enabled(&h.env) {
-        return;
+    if crate::activity::enabled(&h.env) {
+        pump(h);
     }
-    let found = {
-        let core = h.core.borrow();
-        let Some(c) = core.as_ref().filter(|c| c.m.role() == Role::Leader) else { return };
-        let ChainId::Repo(repo) = c.join.chain else { return };
-        let fold = &c.m.group_fold().fold;
-        // Only a repository with a merge queue rule or a queue can build a queue ref, so no other one scans its log.
-        let core = &*fold.core;
-        let queued = graftyard_fold::Read::prefix(core, "rule", &[]).into_iter().any(|(k, _)| {
-            git::tiers::get_rec::<git::issues::BranchRule>(core, "rule", &k)
-                .is_some_and(|r| r.protection.is_some_and(|p| p.merge_queue.is_some()))
-        });
-        if !queued && git::queue::queue_bases(core).is_empty() && !pr_trigger(&h.env) {
-            return;
-        }
-        let cursor = git::tiers::consumer_cursor(&*fold.core, Consumer::ActionsTrigger);
-        let Some(info) = git::search::RepoInfo::of(repo, &*fold.core) else { return };
-        let key = c.join.me.do_name.to_string();
-        (key, (c.m.term().0, c.m.boot()), repo, info.owner, cursor, c.m.state().applied, c.join.record.clone())
-    };
-    let (key, leadership, repo, owner, cursor, applied, record) = found;
-    let start = SCAN.with(|s| {
-        let mut s = s.borrow_mut();
-        let e = s.entry(key.clone()).or_insert_with(|| Scan::new(leadership, cursor));
-        if e.leadership != leadership {
-            *e = Scan::new(leadership, cursor);
-        }
-        let from = e.reached.max(cursor);
-        if e.running || (from >= applied && e.carried.is_empty() && !e.owed) {
-            return None;
-        }
-        e.running = true;
-        Some((from, std::mem::take(&mut e.carried), e.owed))
+}
+
+/// This member's stream inputs now, or `None` when it does not lead or this repository has nothing to scan for.
+fn found(h: &Rc<Host<Repo>>) -> Option<Found> {
+    let core = h.core.borrow();
+    let c = core.as_ref().filter(|c| c.m.role() == Role::Leader)?;
+    let ChainId::Repo(repo) = c.join.chain else { return None };
+    let fold = &c.m.group_fold().fold;
+    // Only a repository with a merge queue rule or a queue can build a queue ref, so no other one scans its log.
+    let core = &*fold.core;
+    let queued = graftyard_fold::Read::prefix(core, "rule", &[]).into_iter().any(|(k, _)| {
+        git::tiers::get_rec::<git::issues::BranchRule>(core, "rule", &k)
+            .is_some_and(|r| r.protection.is_some_and(|p| p.merge_queue.is_some()))
     });
-    let Some((from, carried, owed)) = start else { return };
-    let through = Index(applied.0.min(from.0 + BATCH).max(from.0));
-    let w = Rc::downgrade(h);
-    spawn_local(async move {
-        let Some(h) = w.upgrade() else { return };
-        let r = round(&h, repo, owner, &record, cursor, from, through, carried.clone(), owed).await;
-        let again = SCAN.with(|s| {
-            let mut s = s.borrow_mut();
-            let Some(e) = s.get_mut(&key).filter(|e| e.leadership == leadership) else { return false };
-            e.running = false;
-            match &r {
-                Ok((left, committed)) => {
-                    e.reached = through;
-                    e.carried = left.clone();
-                    e.owed = !committed;
+    if !queued && git::queue::queue_bases(core).is_empty() && !pr_trigger(&h.env) {
+        return None;
+    }
+    let info = git::search::RepoInfo::of(repo, core)?;
+    Some(Found {
+        key: c.join.me.do_name.to_string(),
+        leadership: (c.m.term().0, c.m.boot()),
+        repo,
+        owner: info.owner,
+        cursor: git::tiers::consumer_cursor(core, Consumer::ActionsTrigger),
+        applied: c.m.state().applied,
+        record: c.join.record.clone(),
+    })
+}
+
+/// Reads what entries the stream has room for, starts every item it lets start, and commits the cursor when it is
+/// due. Called by the alarm and again as each item ends, so an entry's items start as soon as it is applied and a slot
+/// is free, and none waits for another item's merge (`decisions/DECISIONS.md`, "`trigger-stream`").
+fn pump(h: &Rc<Host<Repo>>) {
+    let Some(f) = found(h) else { return };
+    let f = Rc::new(f);
+    let now = crate::now_ms();
+    let with_prs = pr_trigger(&h.env);
+    let (started, commit) = {
+        let read = |from: Index| -> std::result::Result<(Vec<Carried>, Index), String> {
+            let through = Index(f.applied.0.min(from.0 + BATCH).max(from.0));
+            let core = h.core.borrow();
+            let c = core.as_ref().ok_or("not joined")?;
+            let sql = h.state.storage().sql();
+            let first = c.m.group_fold().fold.first_index();
+            let mut items = Vec::new();
+            for i in from.0.max(first.0.saturating_sub(1)) + 1..=through.0 {
+                let e = match c.m.entry_at(Index(i)) {
+                    Some(e) => e.clone(),
+                    None => crate::host::stored_entry::<Repo>(&sql, Index(i))
+                        .ok_or_else(|| format!("entry {i} is in neither the member nor the stored log"))?,
+                };
+                let item = |item| Carried { index: e.index, at: e.at.0, item };
+                items.extend(built(&e).into_iter().map(|b| item(Item::Queue(b))));
+                if with_prs {
+                    let core = &c.m.group_fold().fold.core;
+                    items.extend(pr_events(core, f.repo, &e, now).into_iter().map(|p| item(Item::Pr(p))));
                 }
-                // Read nothing new: try the same items again.
-                Err(_) => e.carried = carried,
             }
-            !e.carried.is_empty() || e.owed
+            Ok((items, through))
+        };
+        SCAN.with(|s| {
+            let mut s = s.borrow_mut();
+            let e = s.entry(f.key.clone()).or_insert_with(|| Scan::new(f.leadership, f.cursor));
+            if e.leadership != f.leadership {
+                *e = Scan::new(f.leadership, f.cursor);
+            }
+            e.committed = e.committed.max(f.cursor);
+            // Read the next entries only while a slot is free and every item read has started, so the items waiting
+            // for a slot are at most one batch's, and a stream far behind the log reads READS_PER_PUMP batches and
+            // comes back on the next alarm rather than reading the whole log in one invocation.
+            let mut started = e.stream.start(now);
+            for _ in 0..READS_PER_PUMP {
+                if e.stream.queued() > 0 || e.stream.running() >= IN_FLIGHT_MAX || e.stream.reached() >= f.applied {
+                    break;
+                }
+                match read(e.stream.reached()) {
+                    Ok((items, through)) => e.stream.read(items, through),
+                    Err(err) => {
+                        console_error!("actions trigger {}: {err}", f.repo.0.0);
+                        h.arm_in(RETRY_MS as i64);
+                        break;
+                    }
+                }
+                started.extend(e.stream.start(now));
+            }
+            if e.stream.queued() == 0 && e.stream.running() < IN_FLIGHT_MAX && e.stream.reached() < f.applied {
+                h.arm_in(0);
+            }
+            // The cursor commits once items ended since the last commit, at most every CURSOR_EVERY_MS, so a stream
+            // of events costs one cursor entry per interval, not one per event, and the cursor's own entry, which
+            // holds no item, commits nothing again. A failed commit is owed; CURSOR_STRIDE entries with no item
+            // commit too, so a new leader rescans at most that many.
+            let cursor = e.stream.cursor();
+            let gap = now.saturating_sub(e.last_commit);
+            let due = cursor > e.committed
+                && (e.owed || cursor.0 >= e.committed.0 + CURSOR_STRIDE || (e.worked && gap >= CURSOR_EVERY_MS));
+            let commit = (!e.committing && due).then(|| {
+                e.committing = true;
+                e.worked = false;
+                e.last_commit = now;
+                cursor
+            });
+            if !e.committing && e.worked && cursor > e.committed {
+                h.arm_in(CURSOR_EVERY_MS.saturating_sub(gap) as i64);
+            }
+            if let Some(t) = e.stream.next_retry() {
+                h.arm_in(t.saturating_sub(now) as i64);
+            }
+            (started, commit)
+        })
+    };
+    for (id, c) in started {
+        let (w, f) = (Rc::downgrade(h), f.clone());
+        spawn_local(async move {
+            let Some(h) = w.upgrade() else { return };
+            let t = run_item(&h, &f, &c).await;
+            let now = crate::now_ms();
+            let dropped = SCAN.with(|s| {
+                s.borrow_mut().get_mut(&f.key).filter(|e| e.leadership == f.leadership).and_then(|e| {
+                    e.worked = true;
+                    e.stream.finish(id, t, now)
+                })
+            });
+            if let Some(c) = dropped
+                && let Item::Pr(p) = &c.item
+            {
+                console_log!(
+                    "actions dispatch {} #{} {} at {}: 0 runs in {}ms, 0 asks, unmerged",
+                    f.repo.0.0,
+                    p.n.0,
+                    p.action,
+                    c.index.0,
+                    now.saturating_sub(c.at)
+                );
+            }
+            pump(&h);
         });
-        match r {
-            Ok(_) if through < applied => h.arm_in(0),
-            Ok(_) if again => h.arm_in(RETRY_MS),
-            Ok(_) => {}
-            Err(e) => {
-                console_error!("actions trigger {}: {e}", repo.0.0);
-                h.arm_in(RETRY_MS);
+    }
+    if let Some(cursor) = commit {
+        let (w, f) = (Rc::downgrade(h), f.clone());
+        spawn_local(async move {
+            let Some(h) = w.upgrade() else { return };
+            let request = rid(f.repo, cursor);
+            let cmd = ConsumerCursorCmd { consumer: Consumer::ActionsTrigger, through: cursor, request };
+            let r = crate::activity::commit_here(&h, request, git::repo::RepoCmd::ConsumerCursor(cmd)).await;
+            if let Err(e) = &r {
+                console_error!("actions trigger {} cursor {}: {e}", f.repo.0.0, cursor.0);
             }
-        }
-    });
+            let again = SCAN.with(|s| {
+                let mut s = s.borrow_mut();
+                let Some(e) = s.get_mut(&f.key).filter(|e| e.leadership == f.leadership) else { return false };
+                e.committing = false;
+                e.owed = r.is_err();
+                if r.is_ok() {
+                    e.committed = e.committed.max(cursor);
+                }
+                e.owed
+            });
+            // Items that ended while it committed are not covered: look again, so the cursor's last move is not left
+            // to an unrelated alarm.
+            if again { h.arm_in(RETRY_MS as i64) } else { pump(&h) }
+        });
+    }
 }
 
 /// Whether a site day set `GRAFTYARD_PR_TRIGGER`, after the day that shipped format 0x15.4's reader.
@@ -161,104 +292,51 @@ fn pr_trigger(env: &Env) -> bool {
     env.var("GRAFTYARD_PR_TRIGGER").is_ok_and(|v| v.to_string() == "1")
 }
 
-/// The items `carried` from the last round, then every queue ref entries `from + 1 ..= through` built and every pull
-/// request event they hold: each is tried once, then the cursor. `Err` only when the entries could not be read;
-/// otherwise the items left for the next round and whether the cursor commit, when one was due, went through.
-#[allow(clippy::too_many_arguments)]
-async fn round(
-    h: &Rc<Host<Repo>>,
-    repo: RepoId,
-    owner: AccountId,
-    record: &PlacementRecord,
-    committed: Index,
-    from: Index,
-    through: Index,
-    carried: Vec<Carried>,
-    owed: bool,
-) -> std::result::Result<(Vec<Carried>, bool), String> {
-    let mut items = carried;
-    let with_prs = pr_trigger(&h.env);
-    {
-        let core = h.core.borrow();
-        let c = core.as_ref().ok_or("not joined")?;
-        let sql = h.state.storage().sql();
-        let first = c.m.group_fold().fold.first_index();
-        for i in from.0.max(first.0.saturating_sub(1)) + 1..=through.0 {
-            let e = match c.m.entry_at(Index(i)) {
-                Some(e) => e.clone(),
-                None => crate::host::stored_entry::<Repo>(&sql, Index(i))
-                    .ok_or_else(|| format!("entry {i} is in neither the member nor the stored log"))?,
-            };
-            let item = |item| Carried { index: e.index, at: e.at.0, item };
-            items.extend(built(&e).into_iter().map(|b| item(Item::Queue(b))));
-            if with_prs {
-                let core = &c.m.group_fold().fold.core;
-                items.extend(pr_events(core, repo, &e, crate::now_ms()).into_iter().map(|p| item(Item::Pr(p))));
+/// One item: a queue ref's runs at its tip, or a pull request event's runs at its test merge. `Again` when a read or a
+/// `CreateRun` failed, or the event's merge is still shed.
+async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
+    let site = match SiteEnv::read(&h.env) {
+        Ok(s) => s,
+        Err(e) => {
+            console_error!("actions trigger {}: {e}", f.repo.0.0);
+            return Tried::Again;
+        }
+    };
+    let b = Bindings { env: &h.env, sites: &site.sites };
+    match &c.item {
+        Item::Queue(q) => {
+            let t0 = crate::now_ms();
+            let make = |path: &str, src: &str| merge_group_run(f.repo, c.index, path, src, q);
+            let mut times = Times::default();
+            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, &mut times).await {
+                Ok(n) => {
+                    let ms = crate::now_ms() - t0;
+                    console_log!(
+                        "actions trigger {} {} at {}: {n} runs in {ms}ms",
+                        f.repo.0.0,
+                        q.queue_ref.display(),
+                        c.index.0
+                    );
+                    Tried::Done
+                }
+                Err(e) => {
+                    console_error!("actions trigger {} {} at {}: {e}", f.repo.0.0, q.queue_ref.display(), c.index.0);
+                    Tried::Again
+                }
             }
         }
+        Item::Pr(p) => pull_request_runs(h, &site, &b, f.repo, f.owner, &f.record, c.index, c.at, p).await,
     }
-    let site = SiteEnv::read(&h.env).map_err(|e| e.to_string())?;
-    let b = Bindings { env: &h.env, sites: &site.sites };
-    let mut tried = Vec::with_capacity(items.len());
-    for (c, q) in items.iter().filter_map(|c| match &c.item {
-        Item::Queue(q) => Some((c, q)),
-        Item::Pr(_) => None,
-    }) {
-        let t0 = crate::now_ms();
-        let make = |path: &str, src: &str| merge_group_run(repo, c.index, path, src, q);
-        let t = match runs_on(&h.env, &site, &b, repo, owner, record, q.tip, make).await {
-            Ok(n) => {
-                let ms = crate::now_ms() - t0;
-                console_log!(
-                    "actions trigger {} {} at {}: {n} runs in {ms}ms",
-                    repo.0.0,
-                    q.queue_ref.display(),
-                    c.index.0
-                );
-                Tried::Done
-            }
-            Err(e) => {
-                console_error!("actions trigger {} {} at {}: {e}", repo.0.0, q.queue_ref.display(), c.index.0);
-                Tried::Again
-            }
-        };
-        tried.push((c.clone(), t));
-    }
-    let prs: Vec<(&Carried, &PrEvent)> = items
-        .iter()
-        .filter_map(|c| match &c.item {
-            Item::Pr(p) => Some((c, p)),
-            Item::Queue(_) => None,
-        })
-        .collect();
-    let dispatched = futures_util::future::join_all(
-        prs.iter().map(|(c, p)| pull_request_runs(h, &site, &b, repo, owner, record, c.index, c.at, p)),
-    )
-    .await;
-    tried.extend(prs.into_iter().map(|(c, _)| c.clone()).zip(dispatched));
-    let any = !tried.is_empty();
-    let (left, dropped, cursor) = settle(tried, through, crate::now_ms());
-    for c in &dropped {
-        let Item::Pr(p) = &c.item else { continue };
-        let ms = crate::now_ms().saturating_sub(c.at);
-        console_log!(
-            "actions dispatch {} #{} {} at {}: 0 runs in {ms}ms, 0 asks, unmerged",
-            repo.0.0,
-            p.n.0,
-            p.action,
-            c.index.0
-        );
-    }
-    if cursor <= committed || !(any || owed || cursor.0 >= committed.0 + CURSOR_STRIDE) {
-        return Ok((left, true));
-    }
-    let request = rid(repo, cursor);
-    let cmd = ConsumerCursorCmd { consumer: Consumer::ActionsTrigger, through: cursor, request };
-    let r = crate::activity::commit_here(h, request, git::repo::RepoCmd::ConsumerCursor(cmd)).await;
-    if let Err(e) = &r {
-        console_error!("actions trigger {} cursor {}: {e}", repo.0.0, cursor.0);
-    }
-    Ok((left, r.is_ok()))
+}
+
+/// Where one event's dispatch time went, in ms: its test merge's asks (`demand`, with the waits between them), the
+/// workflow reads on the git cache shard (`tree`, `blob`), and the `CreateRun` calls (`decisions/DECISIONS.md`,
+/// "`trigger-stream`"). The rest of the logged time is the wait from the entry's `at` to the item's start.
+#[derive(Default)]
+struct Times {
+    demand: u64,
+    reads: u64,
+    create: u64,
 }
 
 /// Pull request event `p` of entry `index` (stamped `at`): its test merge, asked for when missing, then every matching
@@ -303,6 +381,8 @@ async fn pull_request_try(
         let (_, mut v) = git::prsync::views(&c.m.group_fold().fold.core, repo, &[p.n]);
         v.pop().ok_or_else(|| format!("pull request {} is not in the fold", p.n.0))
     };
+    let started = crate::now_ms();
+    let mut times = Times::default();
     let mut v = view()?;
     let mut tries = 0;
     while pr_target(&v) == PrTarget::Pending && tries < DEMAND_TRIES {
@@ -315,16 +395,19 @@ async fn pull_request_try(
         }
         v = view()?;
     }
+    times.demand = crate::now_ms().saturating_sub(started);
     let superseded = p.after.is_some_and(|a| a != v.head);
     let n = match pr_target(&v) {
         PrTarget::Merge(merge) => {
             let make = |path: &str, src: &str| pull_request_run(repo, index, path, src, p.n, p.action, &v.base, merge);
-            runs_on(&h.env, site, b, repo, owner, record, merge, make).await?
+            runs_on(&h.env, site, b, repo, owner, record, merge, make, &mut times).await?
         }
         PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
+    // The split of the time logged: the wait from the entry to this try's start, then the try's demand, workflow
+    // reads, and `CreateRun`s (`Times`).
     console_log!(
-        "actions dispatch {} #{} {} at {}: {n} runs in {}ms, {tries} asks{}{}",
+        "actions dispatch {} #{} {} at {}: {n} runs in {}ms, {tries} asks{}{}; wait {}ms demand {}ms reads {}ms create {}ms",
         repo.0.0,
         p.n.0,
         p.action,
@@ -335,7 +418,11 @@ async fn pull_request_try(
             PrTarget::Conflict => ", conflict",
             PrTarget::Pending => ", pending",
             _ => "",
-        }
+        },
+        started.saturating_sub(at),
+        times.demand,
+        times.reads,
+        times.create
     );
     Ok(if pr_target(&v) == PrTarget::Pending { Tried::Again } else { Tried::Done })
 }
@@ -352,9 +439,13 @@ async fn runs_on(
     record: &PlacementRecord,
     tip: git::refs::ObjectId,
     make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
+    times: &mut Times,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
-    let tree = match ui(env, site, repo, record, "tree", &[("commit", &commit), ("path", WORKFLOWS)]).await? {
+    let t = crate::now_ms();
+    let tree = ui(env, site, repo, record, "tree", &[("commit", &commit), ("path", WORKFLOWS)]).await;
+    times.reads += crate::now_ms().saturating_sub(t);
+    let tree = match tree? {
         Some(t) => t,
         None => return Ok(0),
     };
@@ -369,7 +460,10 @@ async fn runs_on(
     let chain = ChainId::Actions(owner, graftyard_actions::actions_shard(repo));
     let mut n = 0;
     for path in files {
-        let Some(blob) = ui(env, site, repo, record, "blob", &[("commit", &commit), ("path", &path)]).await? else {
+        let t = crate::now_ms();
+        let blob = ui(env, site, repo, record, "blob", &[("commit", &commit), ("path", &path)]).await;
+        times.reads += crate::now_ms().saturating_sub(t);
+        let Some(blob) = blob? else {
             continue;
         };
         let src = blob["text"].as_str().unwrap_or_default();
@@ -381,15 +475,21 @@ async fn runs_on(
                 continue;
             }
         };
-        graftyard_lookup::create(b, chain, record, &json!({})).await?;
-        let (v, _) = graftyard_lookup::call(
-            b,
-            chain,
-            record,
-            "/runsvc",
-            &crate::actions::create_run_body(env, &run, &jobs, &permissions),
-        )
-        .await?;
+        let t = crate::now_ms();
+        let created = async {
+            graftyard_lookup::create(b, chain, record, &json!({})).await?;
+            graftyard_lookup::call(
+                b,
+                chain,
+                record,
+                "/runsvc",
+                &crate::actions::create_run_body(env, &run, &jobs, &permissions),
+            )
+            .await
+        }
+        .await;
+        times.create += crate::now_ms().saturating_sub(t);
+        let (v, _) = created?;
         let message = v["body"]["message"].as_str().unwrap_or_default();
         match v["status"].as_u64() {
             Some(201) => n += 1,
