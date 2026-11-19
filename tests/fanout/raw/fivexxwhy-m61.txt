@@ -1,0 +1,21 @@
+5xx by reason (2026-11-19T19:40:22Z to 2026-11-19T19:45:42Z):
+{"logged": 16112, "edge5xx": 16112, "byStatus": {"503": 16112}}
+   5705 503 task
+   3207 503 graphql
+   2933 503 renew
+   2261 503 rest-repo-write
+   1064 503 lease
+    522 503 upload-pack
+    405 503 receive-pack
+     15 503 merge
+by reason:
+   5705 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   3207 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   2933 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   2261 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1064 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    451 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    400 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: {"warming":true}); retry
+     71 503 upload-pack      git cache: N {"warming":true}
+     15 503 merge            the git cache: N {"warming":true}
+      5 503 receive-pack     the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
