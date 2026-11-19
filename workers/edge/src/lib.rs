@@ -1493,7 +1493,13 @@ async fn receive_pack(
     // nothing reaches the group; one sent carries what is left, which the leader holds it to (`Admit::budget`).
     if let Some(a) = admit.as_mut() {
         match bound_at_send(a.class == graftyard_git::group::ClassWire::Agent, budget_left(c)) {
-            Ok(b) => a.budget_ms = b,
+            Ok(b) => {
+                // why-logs: what is left of the bound at the first send, so a refusal's stage reads its budget.
+                if let Some(ms) = b {
+                    c.timing.put("budget", ms as f64);
+                }
+                a.budget_ms = b
+            }
             Err(r) => {
                 c.timing.put("bound", 0.0);
                 return refuse(r);
@@ -2062,9 +2068,20 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     // The clone cache lives in the home site's bucket.
     let cache_binding = format!("BUCKET_{}", repo.record.home.0);
     let cache = R2(c.env.bucket(&cache_binding)?);
+    let net = NetworkId(repo.id.0);
     if let Some(k) = &key {
         let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
         h.set("x-graft-clone-cache", "hit")?;
+        // A composed miss's entry is a manifest (`edge-compose`), streamed from the chain in the same bucket. One whose
+        // chain has moved on (a fold deleted its files) is a miss, which writes a new one.
+        if let Some(o) = cache.0.get(k.manifest_key().to_string()).execute().await.map_err(|e| e.to_string())?
+            && o.size() <= graftyard_git::compose::TAIL_ANSWER_MAX
+            && let Some(b) = o.body()
+            && let Some(r) =
+                graftyard_git::host::manifest_answer(&cache, net, b.bytes().await?, h.clone()).await.map_err(|e| e.0)?
+        {
+            return Ok(r);
+        }
         if let Some(r) =
             graftyard_git::host::cached_response(&cache, &k.r2_key(0).to_string(), h).await.map_err(|e| e.0)?
         {
@@ -2073,10 +2090,30 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     }
     // A miss names its key (`fill=`): the shard spools the whole answer and puts it to the cache itself, so a client
     // that stops reading still leaves an entry. The edge's own tee stored only answers a client read to the end, and
-    // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard").
+    // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard"). With
+    // `tail=1` (`edge-compose`) a composed miss comes back as the chain's manifest and the want's own objects, and the
+    // edge streams the chain's packs from the home bucket, so only the tail leaves the container. A chain file the
+    // bucket lacks sends the miss back to the shard for the composed pack, as before.
     let fill = key.as_ref().map_or(String::new(), |k| format!("&fill={}", k.digest().hex()));
     let url = format!("https://shard/upload-pack?repo={}{fill}", repo.id.0.0);
-    let mut r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
+    let tail_url = format!("{url}{}", if key.is_some() { "&tail=1" } else { "" });
+    let mut r = shard_read(c, repo, &tail_url, Method::Post, &proto, Some(&body)).await?;
+    if r.status_code() == 200 && r.headers().get("x-graft-compose")?.as_deref() == Some(graftyard_git::compose::TAIL) {
+        let len = r.headers().get("content-length")?.and_then(|v| v.parse::<u64>().ok());
+        let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
+        h.set("x-graft-clone-cache", "miss")?;
+        h.set("x-graft-compose", "composed: r2")?;
+        if let Some(v) = r.headers().get("x-graft-cursor")? {
+            h.set("x-graft-cursor", &v)?;
+        }
+        if len.is_some_and(|n| n <= graftyard_git::compose::TAIL_ANSWER_MAX)
+            && let Some(a) =
+                graftyard_git::host::manifest_answer(&cache, net, r.bytes().await?, h).await.map_err(|e| e.0)?
+        {
+            return Ok(a);
+        }
+        r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
+    }
     let hh = git_headers(c.rid, &Service::UploadPack.result_type())?;
     if r.status_code() != 200 {
         let why = r.text().await.unwrap_or_default();
@@ -2835,7 +2872,27 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     // request that asks for it (`graft-front` sends `FRONT_HEADER`) gets the header, and `graft-front` takes it off
     // the client's response, so no client response changes.
     let report = req.headers().has(FRONT_HEADER)?;
-    let r = serve(req, &env, &ctx, rid, &cfg, url, path, &sites, anchor).await;
+    let method = req.method();
+    let r = serve(req, &env, &ctx, rid, &cfg, url, path.clone(), &sites, anchor).await;
+    // why-logs: one line per 5xx, whatever route answered it, with the reply's message, so a row counts its 5xx by
+    // reason (`tests/fanout/fivexxwhy.py`). The body is read from a clone after the reply is sent.
+    let r = match r {
+        Ok(mut res) if res.status_code() >= 500 => {
+            let (status, kind) = (res.status_code(), route_kind(&method, &path));
+            if let Ok(mut copy) = res.cloned() {
+                ctx.wait_until(async move {
+                    let body = copy.text().await.unwrap_or_default();
+                    console_log!("{}", fivexx_line(status, kind, &body));
+                });
+            }
+            Ok(res)
+        }
+        Err(e) => {
+            console_log!("{}", fivexx_line(500, route_kind(&method, &path), &e.to_string()));
+            Err(e)
+        }
+        r => r,
+    };
     match (r, report.then(|| env.get_binding::<WorkerVersionMetadata>("VERSION"))) {
         (Ok(res), Some(Ok(v))) => {
             // A response whose headers are immutable (an R2 or subrequest body passed through) is copied once.
@@ -2849,6 +2906,36 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         }
         (r, _) => r,
     }
+}
+
+/// A request's route class for `fivexx_line`, from its method and path.
+fn route_kind(method: &Method, path: &str) -> &'static str {
+    let agents = path.starts_with(graftyard_api::agents::PREFIX);
+    match () {
+        _ if path.ends_with("/git-upload-pack") => "upload-pack",
+        _ if path.ends_with("/git-receive-pack") => "receive-pack",
+        _ if path.ends_with("/info/refs") => "info-refs",
+        _ if path.ends_with("/graphql") => "graphql",
+        _ if agents && path.contains("/renew") => "renew",
+        _ if agents && path.contains("/leases") => "lease",
+        _ if agents && path.contains("/tasks") => "task",
+        _ if agents => "agents",
+        _ if path.contains("/merge") => "merge",
+        _ if path.contains("/repos/") && *method == Method::Get => "rest-repo-read",
+        _ if path.contains("/repos/") => "rest-repo-write",
+        _ => "other",
+    }
+}
+
+/// The log line of a 5xx reply: `{"fivexx": status, "kind", "why"}`, where `why` is a JSON body's `message`, else the
+/// body itself, cut to 200 characters on a char boundary.
+fn fivexx_line(status: u16, kind: &str, body: &str) -> String {
+    const WHY_MAX: usize = 200;
+    let msg =
+        serde_json::from_str::<serde_json::Value>(body).ok().and_then(|v| v["message"].as_str().map(str::to_owned));
+    let why = msg.as_deref().unwrap_or(body).trim();
+    let cut = why.char_indices().nth(WHY_MAX).map_or(why.len(), |(i, _)| i);
+    json!({ "fivexx": status, "kind": kind, "why": why[..cut].trim_end() }).to_string()
 }
 
 /// The request header `graft-front` sends, asking for `EDGE_VERSION_HEADER`.
@@ -3142,9 +3229,42 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        Cut, ShardRefusal, bound_at_send, capped, client_push_id, gate_ng, gunzip, ls_refs_at_edge, shard_fail_line,
-        shard_refusal, shard_url, streamed_site, validate_failed, validate_sites, validate_url, warm_first,
+        Cut, ShardRefusal, bound_at_send, capped, client_push_id, fivexx_line, gate_ng, gunzip, ls_refs_at_edge,
+        route_kind, shard_fail_line, shard_refusal, shard_url, streamed_site, validate_failed, validate_sites,
+        validate_url, warm_first,
     };
+
+    /// Every 5xx reaches one log line with its route class and the reply's reason: a JSON reply's `message`, not its
+    /// whole body, and a text reply's body, both cut to 200 characters on a char boundary.
+    #[test]
+    fn a_5xx_logs_its_kind_and_the_reply_message() {
+        let v: serde_json::Value = serde_json::from_str(&fivexx_line(
+            503,
+            "rest-repo-read",
+            r#"{"message":"Service Unavailable: rows (overloaded)","documentation_url":"https://docs.github.com/rest"}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"fivexx": 503, "kind": "rest-repo-read", "why": "Service Unavailable: rows (overloaded)"})
+        );
+        let v: serde_json::Value = serde_json::from_str(&fivexx_line(
+            503,
+            "receive-pack",
+            "git cache: no shard could check the pack (x); retry\n",
+        ))
+        .unwrap();
+        assert_eq!(v["why"], "git cache: no shard could check the pack (x); retry");
+        let long = format!("{}é{}", "x".repeat(199), "y".repeat(500));
+        let v: serde_json::Value = serde_json::from_str(&fivexx_line(500, "other", &long)).unwrap();
+        assert_eq!(v["why"].as_str().unwrap(), format!("{}é", "x".repeat(199)));
+        use worker::Method::{Get, Post};
+        assert_eq!(route_kind(&Get, "/api/v3/repos/o/r/pulls"), "rest-repo-read");
+        assert_eq!(route_kind(&Post, "/api/v3/repos/o/r/labels"), "rest-repo-write");
+        assert_eq!(route_kind(&Post, "/o/r.git/git-receive-pack"), "receive-pack");
+        assert_eq!(route_kind(&Post, "/api/graftyard/v1/repos/o/r/leases/7/renew"), "renew");
+        assert_eq!(route_kind(&Post, "/api/graphql"), "graphql");
+    }
 
     /// A shard's non-200 answer reaches the edge's log line with its reason, cut to 200 characters on a char boundary.
     #[test]

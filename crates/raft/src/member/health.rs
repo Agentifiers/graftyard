@@ -14,7 +14,7 @@ use crate::fold::Command;
 use crate::types::{GroupConfig, Term};
 use crate::{CALL_DEADLINE, LOOP_LAG, RESET_QUARANTINE, STEP_DOWN, after};
 
-use super::{Alarm, CallFailure, ConfirmId, FailedCall, Member, Message, Ready, Role, StepDownWhy};
+use super::{Alarm, CallFailure, ConfirmId, FailedCall, Member, Message, Ready, Role, StepDownWhy, StepDownWindow};
 
 /// Pings in a `linkErrors` probe, five at a time: one failure in 20 is the 5% threshold.
 const LINK_PINGS: u8 = 20;
@@ -382,7 +382,24 @@ impl<C: Command> Member<C> {
             Some(LeaderProbe { id, why, started: now, sent_at: now, results });
     }
 
+    /// The window `tripped` judged, kept for the host's log (`Member::step_down_window`); no decision reads it.
+    fn note_trip(&mut self) {
+        let Some(lead) = self.lead.as_ref() else { return };
+        let confirms = lead.health.confirms.iter().copied().collect();
+        let started = lead.started();
+        let mut kept: Vec<(Timestamp, u32)> = self
+            .confirms
+            .values()
+            .filter(|(b, _)| *b >= started)
+            .filter_map(|(b, e)| e.map(|e| (e, e.0.saturating_sub(b.0) as u32)))
+            .collect();
+        kept.sort_unstable();
+        let since = Timestamp(self.now.0.saturating_sub(window().as_millis() as u64));
+        self.last_trip = Some(StepDownWindow { from: since, to: self.now, confirms, kept });
+    }
+
     fn hold(&mut self, why: StepDownWhy) {
+        self.note_trip();
         let until = after(self.now, window());
         if let Some(lead) = self.lead.as_mut() {
             lead.health.hold_until = Some(until);
@@ -401,7 +418,10 @@ impl<C: Command> Member<C> {
             return;
         };
         match self.start_transfer(to, true, false) {
-            Ok(_) => self.out.alarms.push(Alarm::StepDown { why, to: Some(to) }),
+            Ok(_) => {
+                self.note_trip();
+                self.out.alarms.push(Alarm::StepDown { why, to: Some(to) })
+            }
             Err(_) => self.hold(why),
         }
     }

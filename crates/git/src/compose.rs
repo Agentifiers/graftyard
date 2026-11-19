@@ -315,6 +315,178 @@ impl MissLog {
     }
 }
 
+// ---- edge-compose: the composed answer streamed from R2 ----
+
+/// The `x-graft-compose` of a `compose=only&tail=1` answer under `edge-compose`: a `Manifest` line and the tail, not the
+/// composed pack. The clone-cache entry it fills holds the same bytes under `R2Key::CloneManifest`.
+pub const TAIL: &str = "tail";
+
+/// The most bytes a manifest answer may hold: the line and the container's `tailMax` of 8 MiB. Past it the edge does not
+/// read it and answers as a miss.
+pub const TAIL_ANSWER_MAX: u64 = MANIFEST_MAX as u64 + (8 << 20);
+
+/// The longest manifest line the edge reads before it gives up and answers as a miss [guess: 20 packs of about 130
+/// bytes each, a fold's worth, are under 3 KB].
+pub const MANIFEST_MAX: usize = 64 << 10;
+
+/// The first line of a `compose=tail` answer and of a manifest clone-cache entry (`containers/git/server/compose.go`,
+/// `manifestOf`): the chain's packs in pack order, each by its R2 key in the warm bucket with its object count, and the
+/// tail that follows the line, the body of the want's own pack with no header or trailer. The pack the client gets is a
+/// header of the total count, each chain pack's body (its bytes 12 to its length less 20), the tail, and a SHA-1
+/// trailer of all of it, the header in its own side-band packet (`header_packet`) and the rest in `Framer`'s, the same
+/// bytes as the container's composed answer (`TestComposedTailMatchesTheComposedAnswer`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manifest {
+    pub v: u32,
+    pub want: String,
+    pub packs: Vec<ManifestPack>,
+    #[serde(rename = "tailN")]
+    pub tail_n: u32,
+    /// The tail's length in bytes.
+    pub tail: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestPack {
+    pub key: String,
+    pub n: u32,
+    /// The body's length on the container that wrote the line. The edge streams the bucket's copy at its own length.
+    pub len: u64,
+}
+
+/// What reading the start of a manifest answer found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ManifestLine {
+    /// The line, checked, and where the tail starts in the bytes read.
+    Read(Manifest, usize),
+    /// No newline yet within `MANIFEST_MAX`: read more.
+    More,
+    /// Not a manifest of this network: the answer is not used.
+    Bad,
+}
+
+impl Manifest {
+    /// The manifest line at the start of `head`, checked against `network`: version 1, a full SHA-1 want, and every
+    /// key a chain pack of this network (`R2Key::Compose`, a `.pack` file).
+    pub fn read(head: &[u8], network: graftyard_types::NetworkId) -> ManifestLine {
+        let Some(nl) = head.iter().position(|b| *b == b'\n') else {
+            return if head.len() < MANIFEST_MAX { ManifestLine::More } else { ManifestLine::Bad };
+        };
+        let Ok(m) = serde_json::from_slice::<Manifest>(&head[..nl]) else { return ManifestLine::Bad };
+        let pack_ok = |p: &ManifestPack| {
+            matches!(p.key.parse::<crate::key::R2Key>(),
+                Ok(crate::key::R2Key::Compose { network: n, file }) if n == network && file.ends_with(".pack"))
+        };
+        let want_ok = ObjectId::parse_hex(m.want.as_bytes()).is_some();
+        if m.v != 1 || !want_ok || m.packs.is_empty() || !m.packs.iter().all(pack_ok) {
+            return ManifestLine::Bad;
+        }
+        ManifestLine::Read(m, nl + 1)
+    }
+
+    /// The answer's object count: every chain pack's and the tail's. `None` past `u32`.
+    pub fn count(&self) -> Option<u32> {
+        self.packs.iter().try_fold(self.tail_n, |n, p| n.checked_add(p.n))
+    }
+
+    /// The v2 fetch answer's bytes before the pack: the shallow line for the depth-1 want and the `packfile` section
+    /// header, as the container's composed answer writes them.
+    pub fn prefix(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for l in ["shallow-info\n".to_owned(), format!("shallow {}", self.want)] {
+            out.extend(format!("{:04x}{l}", l.len() + 4).bytes());
+        }
+        out.extend(b"0001");
+        out.extend(format!("{:04x}packfile\n", 13).bytes());
+        out
+    }
+}
+
+/// A chain pack's object count from its first 12 bytes: `PACK`, version 2, then the count. `None` for anything else.
+pub fn pack_count(head: &[u8]) -> Option<u32> {
+    (head.len() >= 12 && &head[..8] == b"PACK\0\0\0\x02").then(|| u32::from_be_bytes(head[8..12].try_into().unwrap()))
+}
+
+/// The pack header for `count` objects.
+pub fn pack_header(count: u32) -> [u8; 12] {
+    let mut h = *b"PACK\0\0\0\x02\0\0\0\0";
+    h[8..].copy_from_slice(&count.to_be_bytes());
+    h
+}
+
+/// The most pack bytes in one side-band packet, as upload-pack's side-band-64k sends: 65,520 less the 4-byte length
+/// and the band byte.
+pub const SIDEBAND_MAX: u64 = 65_515;
+
+/// The pack header as its own side-band packet: the container's composed answer flushes it before the chain's bodies,
+/// so the client's first pack byte comes before any R2 read, and the edge's answer is the same bytes.
+pub fn header_packet(count: u32) -> [u8; 17] {
+    let mut p = [0u8; 17];
+    p[..5].copy_from_slice(b"0011\x01");
+    p[5..].copy_from_slice(&pack_header(count));
+    p
+}
+
+/// The answer's whole length for a `prefix` of `prefix` bytes and a pack of `pack` bytes (header, bodies, tail, and
+/// trailer): the header's packet, the rest in `Framer`'s packets, then the closing flush. Known before the first byte,
+/// so the edge streams it through a fixed-length stream and a cut answer can never look whole.
+pub fn answer_len(prefix: u64, pack: u64) -> u64 {
+    let rest = pack - 12;
+    prefix + 17 + rest.div_ceil(SIDEBAND_MAX) * 5 + rest + 4
+}
+
+/// One step of writing pack bytes in side-band packets: a packet's 5-byte header, or bytes `start..end` of the chunk
+/// being written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Piece {
+    Header([u8; 5]),
+    Data(usize, usize),
+}
+
+/// Cuts the pack after its header (`header_packet`), of known length, into side-band packets of `SIDEBAND_MAX` bytes,
+/// the last one shorter, whatever sizes its bytes arrive in: each packet's header gives its length before its first byte, so the edge writes R2's chunks
+/// as they come, as views, and never holds a packet.
+#[derive(Clone, Debug)]
+pub struct Framer {
+    left: u64,
+    in_packet: u64,
+}
+
+impl Framer {
+    pub fn new(pack: u64) -> Framer {
+        Framer { left: pack, in_packet: 0 }
+    }
+
+    /// The pieces that write the next `len` pack bytes. `None` when they pass the pack's length.
+    pub fn pieces(&mut self, len: usize) -> Option<Vec<Piece>> {
+        if len as u64 > self.left + self.in_packet {
+            return None;
+        }
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < len {
+            if self.in_packet == 0 {
+                let n = self.left.min(SIDEBAND_MAX);
+                let mut h = [1u8; 5];
+                h[..4].copy_from_slice(format!("{:04x}", n + 5).as_bytes());
+                out.push(Piece::Header(h));
+                self.in_packet = n;
+                self.left -= n;
+            }
+            let k = (self.in_packet as usize).min(len - at);
+            out.push(Piece::Data(at, at + k));
+            at += k;
+            self.in_packet -= k as u64;
+        }
+        Some(out)
+    }
+
+    /// Whether every byte of the pack was written.
+    pub fn done(&self) -> bool {
+        self.left == 0 && self.in_packet == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +622,82 @@ mod tests {
         ] {
             assert!(!file_name_ok(bad), "{bad}");
         }
+    }
+
+    fn manifest_line(net: i64, packs: &[(&str, u32)], tail: u64) -> String {
+        let packs: Vec<serde_json::Value> = packs
+            .iter()
+            .map(|(k, n)| serde_json::json!({ "key": format!("compose/{net}/{k}"), "n": n, "len": 100 }))
+            .collect();
+        serde_json::json!({ "v": 1, "want": id('a'), "packs": packs, "tailN": 3, "tail": tail }).to_string()
+    }
+
+    /// A manifest is read only as a whole line of this network's chain packs, and its tail starts after the newline.
+    #[test]
+    fn a_manifest_names_only_this_networks_chain_packs() {
+        use graftyard_types::{DbId, NetworkId};
+        let net = NetworkId(DbId(7));
+        let base = format!("base-{}.pack", id('b'));
+        let line = manifest_line(7, &[(&base, 10), (&format!("part-{}-{}.pack", id('b'), id('c')), 4)], 5);
+        let mut b = line.clone().into_bytes();
+        b.push(b'\n');
+        b.extend(b"TAIL!");
+        let ManifestLine::Read(m, at) = Manifest::read(&b, net) else { panic!("{line}") };
+        assert_eq!((at, &b[at..]), (line.len() + 1, &b"TAIL!"[..]));
+        assert_eq!(m.count(), Some(17), "10 + 4 + the tail's 3");
+        // Half a line asks for more, until MANIFEST_MAX.
+        assert_eq!(Manifest::read(&b[..line.len()], net), ManifestLine::More);
+        assert_eq!(Manifest::read(&vec![b' '; MANIFEST_MAX], net), ManifestLine::Bad);
+        let bad = |l: String| Manifest::read(format!("{l}\n").as_bytes(), net);
+        assert_eq!(bad(manifest_line(8, &[(&base, 1)], 0)), ManifestLine::Bad, "another network's pack");
+        assert_eq!(bad(manifest_line(7, &[(&format!("base-{}.idx", id('b')), 1)], 0)), ManifestLine::Bad, "an .idx");
+        assert_eq!(bad(manifest_line(7, &[("head", 1)], 0)), ManifestLine::Bad, "the head");
+        assert_eq!(bad(manifest_line(7, &[], 0)), ManifestLine::Bad, "no packs");
+        assert_eq!(bad(line.replace(&id('a'), &id('A'))), ManifestLine::Bad, "an upper-case want");
+        assert_eq!(bad(line.replace("\"v\":1", "\"v\":2")), ManifestLine::Bad, "another version");
+        let over = manifest_line(7, &[(&base, u32::MAX)], 0);
+        let ManifestLine::Read(m, _) = bad(over) else { panic!() };
+        assert_eq!(m.count(), None, "a count past u32");
+    }
+
+    /// The framer's packets are the container's side-band framing whatever sizes R2's chunks come in: the same bytes
+    /// as framing the pack whole, and `answer_len` is their length with the prefix and the flush.
+    #[test]
+    fn the_framer_frames_any_chunking_as_the_container_does() {
+        // upload-pack's side-band-64k packet: 65,520 bytes, 65,515 of them data.
+        let pack: Vec<u8> = (0..(2 * 65_515 + 1000)).map(|i| (i * 7 % 251) as u8).collect();
+        let mut want = header_packet(42).to_vec();
+        assert_eq!(&want[5..], &pack_header(42)[..]);
+        let mut hdr = pack_header(42).to_vec();
+        hdr.extend(&pack);
+        for c in pack.chunks(65_515) {
+            want.extend(format!("{:04x}", c.len() + 5).bytes());
+            want.push(1);
+            want.extend(c);
+        }
+        for chunk in [1usize, 4096, 65_515, 65_516, 200_000] {
+            let mut f = Framer::new(pack.len() as u64);
+            let mut got = header_packet(42).to_vec();
+            for c in pack.chunks(chunk) {
+                for p in f.pieces(c.len()).unwrap() {
+                    match p {
+                        Piece::Header(h) => got.extend(h),
+                        Piece::Data(a, b) => got.extend(&c[a..b]),
+                    }
+                }
+            }
+            assert!(f.done(), "chunk {chunk}");
+            assert_eq!(got, want, "chunk {chunk}");
+            assert_eq!(f.pieces(1), None, "past the end");
+        }
+        let prefix = 30;
+        assert_eq!(answer_len(prefix, hdr.len() as u64), prefix + want.len() as u64 + 4);
+        let mut f = Framer::new(10);
+        assert!(f.pieces(4).is_some() && !f.done());
+        assert_eq!(f.pieces(7), None, "7 more of 6 left");
+        assert_eq!(pack_count(&pack_header(9)), Some(9));
+        assert_eq!(pack_count(b"PACK\0\0\0\x03\0\0\0\x09"), None, "version 3");
+        let m = Manifest { v: 1, want: id('a'), packs: vec![], tail_n: 0, tail: 0 };
+        assert_eq!(m.prefix(), format!("0011shallow-info\n0034shallow {}0001000dpackfile\n", id('a')).into_bytes());
     }
 }

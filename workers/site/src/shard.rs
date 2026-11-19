@@ -1109,6 +1109,9 @@ impl DurableObject for GitShard {
                 // A clone-cache miss (`fill=<CloneKey digest>`): the container spools the whole answer whether or not
                 // the client reads it to the end, and this object puts it to the home bucket, where the edge reads.
                 let fill = q(&url, "fill").and_then(|h| graftyard_types::Digest::parse_hex(&h));
+                // `tail=1` (`edge-compose`): an edge that streams composed misses from R2 asks for the manifest and tail
+                // instead of the composed pack. An edge before it never sends it and gets the pack as before.
+                let tail = q(&url, "tail").as_deref() == Some("1");
                 // Each miss logs one `shard miss <net> <key>` line: its wait for the chain, the `compose=only` answer,
                 // the catch-up before stock, the serving answer's headers (the container's first byte) and its first
                 // chunk on to the edge, so a run splits the client's time to first byte between the chain, the
@@ -1117,6 +1120,36 @@ impl DurableObject for GitShard {
                     format!("{} {}", net.0.0, fill.map(|k| k.hex()).unwrap_or_default()),
                     fill.map(|_| graftyard_git::compose::MissLog { arrived, ..Default::default() }),
                 );
+                // A composed miss under `edge-compose` (`x-graft-compose: tail`): the manifest and tail, read whole (the
+                // container caps the tail at 8 MiB), passed to the edge, which streams the chain from the warm bucket,
+                // and put to the key's manifest entry after the answer, as a stock fill is. Nothing is spooled, and
+                // nothing leaves the container but the tail.
+                let tail_fill = |mut r: Response| async move {
+                    let bytes = r.bytes().await?;
+                    if let Some(k) = fill {
+                        let (env, home, put) = (self.env.clone(), log.record.home, bytes.clone());
+                        self.state.wait_until(async move {
+                            let key = graftyard_git::key::R2Key::CloneManifest { network: net, key: k }.to_string();
+                            let r = match env.bucket(&format!("BUCKET_{}", home.0)) {
+                                Ok(b) => b.put(&key, put).execute().await.map(|_| ()),
+                                Err(e) => Err(e),
+                            };
+                            if let Err(e) = r {
+                                console_error!("shard clone-cache manifest {}: {e}", net.0.0);
+                            }
+                        });
+                    }
+                    let h = Headers::new();
+                    for (k, v) in r.headers().entries() {
+                        h.set(&k, &v)?;
+                    }
+                    Ok::<_, Error>(Response::from_bytes(bytes)?.with_headers(h))
+                };
+                let is_tail = |r: &Response| {
+                    r.status_code() == 200
+                        && r.headers().get("x-graft-compose").ok().flatten().as_deref()
+                            == Some(graftyard_git::compose::TAIL)
+                };
                 let filled = |r: &Response| -> Result<()> {
                     let Some(spool) = fill.filter(|_| r.headers().get("x-graft-spool").ok().flatten().is_some()) else {
                         return Ok(());
@@ -1164,7 +1197,15 @@ impl DurableObject for GitShard {
                     line.note(|m| m.ready = Some(now_ms()));
                     if running && let Some(b) = &body {
                         let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
-                        let r = host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.map_err(se)?;
+                        let r = if tail {
+                            host.upload_pack_tail(net, b.clone(), &proto, fill).await
+                        } else {
+                            host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await
+                        }
+                        .map_err(se)?;
+                        if is_tail(&r) {
+                            return Ok(line.forward(reply(tail_fill(r).await?, at)?));
+                        }
                         if r.status_code() == 200 {
                             filled(&r)?;
                             return Ok(line.forward(reply(r, at)?));
@@ -1187,8 +1228,11 @@ impl DurableObject for GitShard {
                             || jobs.idle(),
                             || compose.next_step(),
                             || async {
-                                let r =
-                                    host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.ok()?;
+                                let r = if tail {
+                                    host.upload_pack_tail(net, b.clone(), &proto, fill).await.ok()?
+                                } else {
+                                    host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.ok()?
+                                };
                                 (r.status_code() == 200).then_some(r)
                             },
                         )
@@ -1198,6 +1242,9 @@ impl DurableObject for GitShard {
                                 line.note(|m| m.caught_up = Some(now_ms()));
                                 let at =
                                     CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
+                                if is_tail(&r) {
+                                    return Ok(line.forward(reply(tail_fill(r).await?, at)?));
+                                }
                                 filled(&r)?;
                                 return Ok(line.forward(reply(r, at)?));
                             }

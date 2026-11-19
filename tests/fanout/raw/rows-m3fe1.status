@@ -1,0 +1,14 @@
+2026-11-19T03:55:02Z start b2b080de ~/workspace/gy
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T03:55:22Z start sweep ok
+2026-11-19T03:55:14Z cost account 13.87 since 2026-11-19T00:00:00Z, run 0.65 since 2026-11-19T00:38:18Z, at b0-32
+2026-11-19T03:55:55.449Z m3org/fm3fe1-b032 = 65591
+2026-11-19T03:55:59.198Z repo:65591 leader 0 placing since 1795060560727: waiting
+2026-11-19T03:56:10.112Z repo:65591 leader 0: config 9 learners [{"addr":192,"doName":"repo:65591#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65591#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65591#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65591#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65591#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65591#3#l5","join":200,"sit
+2026-11-19T03:56:15.858Z repo:65591 leader 0: set k 4: {"grants":[[0,[4,2,1]],[2,[4,2,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T03:56:26.306Z repo:65591 leader 0: set k 4: {"grants":[[0,[4,2,1]],[2,[4,2,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-19T03:56:36.955Z repo:65591 leader 0: set k 4: {"grants":[[0,[4,2,1]],[2,[4,2,1]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-19T03:56:37.119Z repo:65591 leader 0: k 4 at 10
+2026-11-19T03:56:46Z b0-32 fm3fe1-b032 65591 start

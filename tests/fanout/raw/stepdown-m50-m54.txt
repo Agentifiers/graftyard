@@ -1,0 +1,30 @@
+== m50: 12 trips (Confirm 9, CommitErrors 3), 1 transfers; 11 stall episodes while leading in the load window
+  now      Confirm trips kept  9/9, transfers 1/1; with a stall before: kept 7, dropped 0
+  share25  Confirm trips kept  9/9, transfers 1/1; with a stall before: kept 7, dropped 0
+  share33  Confirm trips kept  7/9, transfers 1/1; with a stall before: kept 6, dropped 1
+  share40  Confirm trips kept  6/9, transfers 0/1; with a stall before: kept 5, dropped 2
+  transfer 10:18:27.998 site 0 Confirm -> Some(SiteId(1)): 420 flushed stmts/s in the 10 s before; hold-busy (> 100/s) holds
+== m51: 5 trips (Confirm 2, CommitErrors 3), 1 transfers; 1 stall episodes while leading in the load window
+  now      Confirm trips kept  2/2, transfers 1/1; with a stall before: kept 1, dropped 0
+  share25  Confirm trips kept  1/2, transfers 1/1; with a stall before: kept 1, dropped 0
+  share33  Confirm trips kept  0/2, transfers 0/1; with a stall before: kept 0, dropped 1
+  share40  Confirm trips kept  0/2, transfers 0/1; with a stall before: kept 0, dropped 1
+  transfer 11:17:42.318 site 0 Confirm -> Some(SiteId(1)): 67 flushed stmts/s in the 10 s before; hold-busy (> 100/s) transfers
+== m52: 22 trips (Confirm 18, CommitErrors 4), 1 transfers; 8 stall episodes while leading in the load window
+  now      Confirm trips kept 18/18, transfers 1/1; with a stall before: kept 17, dropped 0
+  share25  Confirm trips kept 18/18, transfers 1/1; with a stall before: kept 17, dropped 0
+  share33  Confirm trips kept 14/18, transfers 0/1; with a stall before: kept 14, dropped 3
+  share40  Confirm trips kept 14/18, transfers 0/1; with a stall before: kept 14, dropped 3
+  transfer 14:48:08.783 site 0 Confirm -> Some(SiteId(1)): 266 flushed stmts/s in the 10 s before; hold-busy (> 100/s) holds
+== m53: 6 trips (Confirm 1, CommitErrors 5), 0 transfers; 6 stall episodes while leading in the load window
+  now      Confirm trips kept  1/1, transfers 0/0; with a stall before: kept 1, dropped 0
+  share25  Confirm trips kept  1/1, transfers 0/0; with a stall before: kept 1, dropped 0
+  share33  Confirm trips kept  1/1, transfers 0/0; with a stall before: kept 1, dropped 0
+  share40  Confirm trips kept  1/1, transfers 0/0; with a stall before: kept 1, dropped 0
+== m54: 17 trips (Confirm 11, CommitErrors 6), 2 transfers; 8 stall episodes while leading in the load window
+  now      Confirm trips kept 11/11, transfers 1/1; with a stall before: kept 7, dropped 0
+  share25  Confirm trips kept 10/11, transfers 1/1; with a stall before: kept 7, dropped 0
+  share33  Confirm trips kept  8/11, transfers 1/1; with a stall before: kept 7, dropped 0
+  share40  Confirm trips kept  6/11, transfers 1/1; with a stall before: kept 5, dropped 2
+  transfer 01:18:21.935 site 0 Confirm -> Some(SiteId(2)): 192 flushed stmts/s in the 10 s before; hold-busy (> 100/s) holds
+  transfer 01:18:35.291 site 2 CommitErrors -> Some(SiteId(1)): 390 flushed stmts/s in the 10 s before; hold-busy (> 100/s) holds

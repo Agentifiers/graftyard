@@ -335,6 +335,157 @@ pub async fn cached_response(b: &R2, key: &str, headers: Headers) -> Result<Opti
     Ok(Some(Response::from_body(body).map_err(worker_err)?.with_headers(headers)))
 }
 
+/// The composed answer a manifest and tail describe (`crate::compose::Manifest`), streamed from the chain's packs in
+/// `bucket`, every one opened and checked first (`open_chain`, `composed_answer`): the edge's answer to a composed miss
+/// and to a manifest hit under `edge-compose`. `None`, and nothing sent, when the bytes are not a manifest of this
+/// network, the tail's length is not the manifest's, or a chain pack is missing or not the one the manifest counted.
+pub async fn manifest_answer(
+    bucket: &R2,
+    network: NetworkId,
+    bytes: Vec<u8>,
+    headers: Headers,
+) -> Result<Option<Response>, StoreError> {
+    use crate::compose::{Manifest, ManifestLine};
+    let ManifestLine::Read(m, at) = Manifest::read(&bytes, network) else { return Ok(None) };
+    if (bytes.len() - at) as u64 != m.tail || m.count().is_none() {
+        return Ok(None);
+    }
+    let Some(packs) = open_chain(bucket, &m).await? else { return Ok(None) };
+    let tail = bytes[at..].to_vec();
+    composed_answer(m, packs, tail, headers).map(Some)
+}
+
+/// One chain pack of a manifest, open in its bucket: its stream positioned after the 12-byte header, any bytes of the
+/// first chunk past the header, and its body's length (the object less header and trailer).
+pub struct OpenPack {
+    key: String,
+    chunks: wasm_streams::readable::IntoStream<'static>,
+    first: Option<js_sys::Uint8Array>,
+    body: u64,
+}
+
+/// Every chain pack a manifest names, opened in `bucket` before the answer starts, as the container opens its files
+/// before it sends: a fold that deletes them meanwhile leaves the reads already open, and each one's header is checked
+/// against the manifest's count. `None` when one is missing, short, or not the pack the manifest counted, so the
+/// caller asks the shard instead and no client sees a cut answer.
+pub async fn open_chain(bucket: &R2, m: &crate::compose::Manifest) -> Result<Option<Vec<OpenPack>>, StoreError> {
+    use wasm_bindgen::JsCast;
+    let mut out = Vec::with_capacity(m.packs.len());
+    for p in &m.packs {
+        let Some(o) = bucket.0.get(&p.key).execute().await.map_err(err)? else { return Ok(None) };
+        if o.size() < 32 {
+            return Ok(None);
+        }
+        let raw = o.body().ok_or_else(|| StoreError(format!("{}: no body", p.key)))?.response_body().map_err(err)?;
+        let worker::ResponseBody::Stream(raw) = raw else { return Ok(None) };
+        let mut chunks = wasm_streams::ReadableStream::from_raw(raw).into_stream();
+        let mut head: Vec<u8> = Vec::with_capacity(12);
+        let mut rest = None;
+        while head.len() < 12 {
+            let Some(c) = futures_util::StreamExt::next(&mut chunks).await else { return Ok(None) };
+            let v: js_sys::Uint8Array = c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into();
+            let k = (12 - head.len()).min(v.length() as usize) as u32;
+            head.extend(v.subarray(0, k).to_vec());
+            if k < v.length() {
+                rest = Some(v.subarray(k, v.length()));
+            }
+        }
+        if crate::compose::pack_count(&head) != Some(p.n) {
+            return Ok(None);
+        }
+        out.push(OpenPack { key: p.key.clone(), chunks, first: rest, body: o.size() - 32 });
+    }
+    Ok(Some(out))
+}
+
+/// The composed answer a manifest describes, from the chain packs `open_chain` opened (`decisions/DECISIONS.md`,
+/// `edge-compose`): the prefix, the pack header's packet, each pack's body, then `tail`, framed in side-band packets
+/// (`crate::compose::Framer`) and closed by the SHA-1 trailer of the pack and a flush, the same bytes as the
+/// container's composed answer. The body goes through a `FixedLengthStream` of `answer_len`, so a read that fails
+/// midway ends the answer short and the client's index-pack refuses it, never a pack that looks whole. R2's chunks stay
+/// JavaScript values written as views, and each pack's 20-byte trailer is dropped unsent: the isolate holds one chunk
+/// and the tail, never the pack.
+pub fn composed_answer(
+    m: crate::compose::Manifest,
+    packs: Vec<OpenPack>,
+    tail: Vec<u8>,
+    headers: Headers,
+) -> Result<Response, StoreError> {
+    use crate::compose::{Framer, Piece, answer_len, header_packet};
+    use wasm_bindgen::JsCast;
+    let count = m.count().ok_or_else(|| StoreError("manifest count past u32".into()))?;
+    let prefix = m.prefix();
+    let pack = 12 + packs.iter().map(|p| p.body).sum::<u64>() + tail.len() as u64 + 20;
+    let len = answer_len(prefix.len() as u64, pack);
+    let fixed = worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len))
+        .map_err(|e| err(worker::Error::from(e)))?;
+    let readable = fixed.readable();
+    let writer = fixed.writable().get_writer().map_err(|e| err(worker::Error::from(e)))?;
+    let digest = worker::crypto::DigestStream::new(worker::crypto::DigestStreamAlgorithm::Sha1);
+    let hasher = digest.raw().get_writer().map_err(|e| err(worker::Error::from(e)))?;
+    headers.set("content-length", &len.to_string()).map_err(worker_err)?;
+    worker::wasm_bindgen_futures::spawn_local(async move {
+        let write = async |w: &worker::web_sys::WritableStreamDefaultWriter,
+                           v: &js_sys::Uint8Array|
+               -> Result<(), StoreError> { js(Ok(w.write_with_chunk(v))).await.map(|_| ()) };
+        let run = async {
+            write(&writer, &js_sys::Uint8Array::from(prefix.as_slice())).await?;
+            let hp = header_packet(count);
+            write(&writer, &js_sys::Uint8Array::from(&hp[..])).await?;
+            write(&hasher, &js_sys::Uint8Array::from(&hp[5..])).await?;
+            let mut framer = Framer::new(pack - 12);
+            // One run of pack bytes as its packets to the client.
+            let frame = async |framer: &mut Framer, v: &js_sys::Uint8Array| -> Result<(), StoreError> {
+                let pieces = framer.pieces(v.length() as usize).ok_or_else(|| StoreError("past the pack".into()))?;
+                for p in pieces {
+                    match p {
+                        Piece::Header(h) => write(&writer, &js_sys::Uint8Array::from(&h[..])).await?,
+                        Piece::Data(a, b) => write(&writer, &v.subarray(a as u32, b as u32)).await?,
+                    }
+                }
+                Ok(())
+            };
+            // Every run before the trailer also goes to the hash.
+            let send = async |framer: &mut Framer, v: js_sys::Uint8Array| -> Result<(), StoreError> {
+                frame(framer, &v).await?;
+                write(&hasher, &v).await
+            };
+            for mut p in packs {
+                let mut left = p.body;
+                let mut next = p.first.take();
+                while left > 0 {
+                    let v = match next.take() {
+                        Some(v) => v,
+                        None => match futures_util::StreamExt::next(&mut p.chunks).await {
+                            Some(c) => c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into(),
+                            None => return Err(StoreError(format!("{}: {left} body bytes short", p.key))),
+                        },
+                    };
+                    let k = left.min(u64::from(v.length()));
+                    send(&mut framer, v.subarray(0, k as u32)).await?;
+                    left -= k;
+                }
+                // The pack's own trailer and anything past it: not sent, and the read is let go.
+                drop(p.chunks);
+            }
+            send(&mut framer, js_sys::Uint8Array::from(tail.as_slice())).await?;
+            js(Ok(hasher.close())).await?;
+            let sum = digest.digest().await.map_err(err)?;
+            frame(&mut framer, &sum).await?;
+            if !framer.done() {
+                return Err(StoreError("the pack ended short".into()));
+            }
+            write(&writer, &js_sys::Uint8Array::from(&b"0000"[..])).await?;
+            js(Ok(writer.close())).await.map(|_| ())
+        };
+        if let Err(e) = run.await {
+            worker::console_error!("edge-compose answer: {}", e.0);
+            let _ = writer.abort_with_reason(&e.0.into());
+        }
+    });
+    Response::from_body(worker::ResponseBody::Stream(readable)).map_err(worker_err).map(|r| r.with_headers(headers))
+}
+
 /// `r` with its body passed on chunk by chunk, calling `first` when the first chunk goes on, or dropping it unrun if
 /// the body ends or is cancelled before one. The chunks stay JavaScript values, so a 270 MB answer never enters wasm
 /// memory (`tests/composed/bed/run.sh`, `FWD=1`), and a cancel from the reader cancels `r`'s body. A body that is not
@@ -962,6 +1113,24 @@ impl ShardHost<'_> {
             path.push_str("&compose=only");
         }
         self.call(Method::Post, &path, Some(body), &h).await
+    }
+
+    /// A composable fetch's chain as a manifest and its tail (`compose=only&tail=1`, `edge-compose`): the container's
+    /// answer, 200 with `x-graft-compose: tail` and the bytes whole, or the same answers `compose=only` gives (409 with
+    /// its reason; a composed pack, spooled under `spool`, when the tail passes the container's cap or the container is
+    /// on an image without it).
+    pub async fn upload_pack_tail(
+        &self,
+        network: NetworkId,
+        body: Vec<u8>,
+        git_protocol: &str,
+        spool: Option<Digest>,
+    ) -> Result<Response, StoreError> {
+        let mut path = format!("/upload-pack?net={}&compose=only&tail=1", network.0.0);
+        if let Some(s) = spool {
+            path.push_str(&format!("&spool={}", s.hex()));
+        }
+        self.call(Method::Post, &path, Some(body), &[("git-protocol", git_protocol)]).await
     }
 
     /// The whole answer a spooled upload-pack wrote, put to each of `to` under `key` without passing through the

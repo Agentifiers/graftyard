@@ -5458,7 +5458,7 @@ Conditions the orchestrator set before code:
 
 ### `edge-compose`: a composed clone-cache miss streams from R2 through the edge, not out of a container, 2026-11-19
 
-**Decision.** The orchestrator (T-01a17bda) accepted it as a design change; it is unbuilt. On a composed miss (DESIGN, Shape, git cache shards) the edge asks the shard for the tail only (`compose=tail`): the pack of the want's own new objects and the chain's head with its object count. The edge then streams the chain's `compose/<net>/base-<tip>` and `part-<from>-<to>` pack bodies from the warm bucket, then the tail. It writes the pack header from the count and computes the SHA-1 trailer as it streams. The shard puts a manifest to the clone cache, naming the chain's files, the tail's object, and the trailer, and a hit streams the same files. Stock misses keep today's spool and fill. A chain file missing in R2, or a head the shard no longer holds, sends the miss to the shard's own composed answer as today, so the change adds no failure the miss path lacks.
+**Decision.** The orchestrator (T-01a17bda) accepted it as a design change. It is built on branch `edge-compose`, code-only, and not deployed: it needs a site day for the container and shard and an edge day. On a composed miss (DESIGN, Shape, git cache shards) the edge asks the shard for the tail only (`compose=tail`): the pack of the want's own new objects and the chain's head with its object count. The edge then streams the chain's `compose/<net>/base-<tip>` and `part-<from>-<to>` pack bodies from the warm bucket, then the tail. It writes the pack header from the count and computes the SHA-1 trailer as it streams. The shard puts the answer to the clone cache as the key's manifest entry (`clone/<net>/<key>/manifest`): one JSON line naming the chain's pack keys and object counts, then the tail, which the container caps at 8 MiB [guess] and composes whole past it. A hit streams the same files and hashes the trailer again. Stock misses keep today's spool and fill. A chain file missing in R2, or a head the shard no longer holds, sends the miss to the shard's own composed answer as today, so the change adds no failure the miss path lacks.
 
 **Why.** Container egress is the second line of the bill: $1,708 of the base and $1,436 of the agent layer at 2,000 developers. Three quarters of it is CI clone-cache misses, which `cost.py` counts once. As built, a miss crosses the container twice: once to the client, then again when `put_spooled` (`crates/git/src/host.rs`) reads the spool back to put it to R2. With that, the as-built bill is about $15,211 a month at 2,000 developers, not $12,577 (`cost_agents.py --levers`, `fill-as-built`). The chain's files already sit in both warm buckets (`ready_chain`), and R2 bills no egress. Moving composed misses there cuts $1,649 a month against the model at 2,000 developers and $124 at 300 (`edge-compose`, which still counts stock misses twice). Against as built, with the rest of the recommended scenario, the cut is $6,547 (`S2 against as built`). It is also lighter on the shard: the container sends kilobytes, not a 300 MB answer, so composed misses stop queueing behind the shard object's transit (round 26's batched first bytes).
 
@@ -5470,7 +5470,7 @@ Conditions the orchestrator set before code:
 
 **Split with `b034-next`** (T-01a1ccdd). That thread owns `upload()` in `containers/git/server/main.go`, `composeMiss` and the chain files, the stock path in `workers/site/src/shard.rs`, an abort signal through `call`, `upload_pack`, and `upload_pack_spooled`, and the edge's `ls_refs` HEAD. This change owns `compose=tail` in `compose.go`, `put_spooled`, the shard's fill closure, and the edge's miss path. It starts from the merge of `b034-next`.
 
-**Gate.** A local bed (`tests/composed/bed`) where the edge's composed answer passes `index-pack --strict` and fsck, with a tree equal to the tip's, across a part boundary and a fold. Then a hosted B0-34 row, held until B0-34's own fixes pass, where per-shard `txBytes` falls by the composed share of misses, composed clone TTFB p99 stays under 1.1 s, and edge CPU per composed miss is measured against `HASH_CPU_MS_PER_MB` (3 ms/MB [guess]).
+**Gate.** A local bed (`tests/composed/edgebed/run.sh`) where the edge's composed answer passes `index-pack --strict` and fsck, with a tree equal to the tip's, across a part boundary and a fold. Then a hosted B0-34 row, held until B0-34's own fixes pass, where per-shard `txBytes` falls by the composed share of misses, composed clone TTFB p99 stays under 1.1 s, and edge CPU per composed miss is measured against `HASH_CPU_MS_PER_MB` (3 ms/MB [guess]). The local half passes: in local workerd the edge's answer is byte-identical to the container's composed answer at a base, two parts with a want past the chain, and after a fold, with a 3 MiB blob across about 50 side-band packets, and `index-pack --strict` and fsck take it with the tip's tree. A chain pack missing or with another count, and another network's manifest, are declined, and wasm memory stays at 4 MiB [measured, `tests/composed/edgebed/run.sh`; plants in `tests/composed/plant.py`]. The hosted row is still to run.
 
 **Logs.** The same edit adds a Workers Logs rule (DESIGN, Stack). Head sampling may drop ok invocation logs only. Errors, refusals, sheds, 5xx answers, `ng` lines, and step-downs are never sampled: they go to Analytics Engine and Basin in full. At a 25% keep this saves $320 a month at 2,000 developers (`logs-sample`). It ships as a config change, so on a site day.
 
@@ -5480,7 +5480,13 @@ Conditions the orchestrator set before code:
 
 ### `edge-read-batch`: write-class identity reads of one key in one isolate share the next read, never the one in flight, 2026-11-19
 
-**Status.** Built on branch `edge-read-batch`, code-only, approved by the orchestrator after B0-32 m3fb32. Not deployed: it needs an edge day, and it is judged on the next B0-32. Nothing in `crates/raft`.
+**Status.** Measured on B0-32 m3fe2 (2026-11-19, graft-m3f, edge from main `8c794619`), and it holds:
+- The push front p50 was 767 ms, against the 775 ms target, m3fb32's 1,563 and m3fr17's 775. auth fell from 591 to 120 ms and resolve from 1,390 to 551.
+- `rcwait` p99 was 1,940 ms, under the flip's 4 s. `rcread` was 5 / 7 and `rcshare` 1 / 7 at p50 / p99.
+- 496 of 500 burst pushes were acknowledged within 5 s on the edge clock, with 0 `full` [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fe2"].
+- **Gap:** install p50 is still 600 ms, against m3fr17's 416 ms. 74 pushes had install over 500 ms with `rcwait` under 100 ms, so batch waiting does not explain all of it.
+
+Nothing in `crates/raft`.
 
 **Decision.** `rcache::through`'s write-class path goes through a per-key, per-isolate batch (`rcache::batched`):
 - A call with no read of its key in flight starts one.
@@ -5517,7 +5523,7 @@ That the time is the isolate's per-read work and not the members' is an inferenc
   - `a_stuck_or_dropped_read_does_not_hold_its_waiters`.
   - `a_batched_read_refills_the_entry_for_read_class_requests`.
 - `tests/m0carried/plant48.py` catches 7 of 7, mutant 0 among them: a waiter handed the in-flight read's answer.
-- No hosted measurement yet.
+- B0-32 m3fe2, graft-m3f: the front split and batch counters under "Status" [measured].
 
 **Flip.** Any of these on the next B0-32 or later:
 - The push front does not come down toward m3fr17's 775 ms at p50 while `rcshare` shows sharing. The cost was then not per-read isolate work.

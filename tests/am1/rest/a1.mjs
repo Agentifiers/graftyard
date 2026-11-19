@@ -592,7 +592,9 @@ async function push(tok, ref, from, path, bytes, extra = {}, agent = null) {
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
   writeRow(PUSHES, { client, kind: ref.includes("/claude/") ? "agent" : ref.includes("/a1m-") ? "merge" : "human", ref, old: from ?? null, new: commit,
-    start, end: cfClock.now(), status: r.status, result: res, rid: r.headers?.get?.("x-github-request-id") ?? null, err: r.err ?? null });
+    start, end: cfClock.now(), status: r.status, result: res, rid: r.headers?.get?.("x-github-request-id") ?? null, err: r.err ?? null,
+    // why-logs: a test edge's `server-timing`, so each refusal's stage is read from the push (tests/fanout/pushfull.py).
+    timing: r.headers?.get?.("server-timing") ?? null });
   notePushTiming(r.headers?.get?.("server-timing"), res);
   return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null];
 }
@@ -1304,6 +1306,26 @@ if (leader !== undefined) jobs.push((async () => {
     await sleep(10_000);
   }
 })());
+// why-logs: at every leader change in the window, the outgoing leader's `/stats?summary=1` (its admission, commit
+// split, shed reads and StepDown samples since the row's reset), read once it has stepped down, so a row sees what the
+// leader held when it lost the lead. `/status` every 2 s; one `leader stats` row per change.
+const leaderChanges = [];
+jobs.push((async () => {
+  await sleep(Math.max(0, t0 - Date.now()));
+  let was = leaderBefore.filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
+  while (Date.now() < end) {
+    await sleep(2_000);
+    const l = (await statuses(CHAIN).catch(() => [])).filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
+    if (!l || (was && l.site === was.site && l.term === was.term)) continue;
+    const at = new Date(cfClock.now()).toISOString();
+    if (was) {
+      const v = (await member(CHAIN, was.site, "/stats?summary=1", undefined, 15_000, voterAt(CHAIN, was.site)).catch((e) => ({ v: { error: String(e).slice(0, 120) } }))).v ?? null;
+      writeRow(OUT, { step: "leader stats", at, from: { site: was.site, term: was.term }, to: { site: l.site, term: l.term }, stats: v });
+    }
+    leaderChanges.push({ at, from: was ? { site: was.site, term: was.term } : null, to: { site: l.site, term: l.term } });
+    was = l;
+  }
+})());
 jobs.push((async () => {
   while (Date.now() < end) {
     await sleep(15_000);
@@ -1394,6 +1416,7 @@ const v = {
   loopDelay: { p50: Math.round(loopDelay.percentile(50) / 1e6), p99: Math.round(loopDelay.percentile(99) / 1e6),
     max: Math.round(loopDelay.max / 1e6) },
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
+  leaderChanges,
   ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {

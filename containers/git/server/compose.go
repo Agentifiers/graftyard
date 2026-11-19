@@ -17,6 +17,9 @@ package main
 //	GET  /spooled?id=H               the whole response a /upload-pack &spool=H wrote, once it ended, with its length;
 //	                                 404 when it failed or there is none
 //	DELETE /spooled?id=H             deletes it
+//	POST /upload-pack?net=N&compose=only&tail=1  a composable fetch's chain as a manifest and its tail
+//	                                 (`manifestOf`, x-graft-compose: tail), for the edge to stream from R2; a tail over
+//	                                 tailMax is answered composed whole, as compose=only; 409 as compose=only otherwise
 //
 // The chain is a base, the depth-1 trees and blobs of one tip, and one part per tip move, the new tip's trees and
 // blobs that the base and earlier parts lack. No two of its packs share an object, none holds a commit, and every
@@ -481,78 +484,39 @@ type chainPack struct {
 	n    uint32
 }
 
+// composed is a composable fetch's answer as the chain makes it: the chain's packs, open, and the pack of the want's
+// own new objects (inc, a whole pack with its header and trailer).
+type composed struct {
+	h     chainHead
+	packs []chainPack
+	inc   []byte
+}
+
+func (c *composed) close() {
+	for _, p := range c.packs {
+		p.f.Close()
+	}
+}
+
+// count is the answer's object count: every chain pack's and the want's own.
+func (c *composed) count() uint32 {
+	n := binary.BigEndian.Uint32(c.inc[8:12])
+	for _, p := range c.packs {
+		n += p.n
+	}
+	return n
+}
+
 // composeMiss answers a composable fetch from the chain, or says why not; it writes nothing when it answers false.
-// The caller holds the network's lock shared.
+// It takes no network lock (upload).
 func composeMiss(w http.ResponseWriter, out io.Writer, net, rp, want string, includeTag bool) (bool, string) {
-	h, ok := readHead(net)
-	if !ok {
-		return false, "no chain"
+	c, why := composePlan(net, rp, want, includeTag)
+	if c == nil {
+		return false, why
 	}
-	var m cpuMeter
-	// The chain need not be at HEAD: a want past its tip, HEAD after moves whose parts are not built or not fetched yet,
-	// is the chain plus the want's diff from the chain tip, within composeDiffMax and packed with no delta search. Held
-	// to HEAD, every miss on a shard whose chain lagged the tip went to stock, at a time to first byte of 2 to 209 s
-	// (LM-1 round 26, 9 of 51 misses).
-	// A want is a ref's tip or behind HEAD, as stock upload-pack's allowReachableSHA1InWant serves it on main. A clone
-	// that read main's tip just before a move wants the old tip: 6 of round 26's misses went to stock for that.
-	refs, err := m.git(rp, nil, nil, "for-each-ref", "--points-at="+want, "--format=%(refname) %(objecttype)")
-	if err != nil {
-		return false, "not a ref tip"
-	}
-	if len(bytes.TrimSpace(refs)) == 0 {
-		if _, err := m.git(rp, nil, nil, "merge-base", "--is-ancestor", want, "HEAD"); err != nil {
-			return false, "not a ref tip or behind HEAD"
-		}
-	}
-	if includeTag && annotatedTag.Match(refs) {
-		return false, "an annotated tag points at it"
-	}
-	if t, err := m.git(rp, nil, nil, "cat-file", "-t", want); err != nil || strings.TrimSpace(string(t)) != "commit" {
-		return false, "not a commit"
-	}
-	// Open every pack first: a fold that lands meanwhile deletes them, and open files stay readable.
-	var packs []chainPack
-	defer func() {
-		for _, p := range packs {
-			p.f.Close()
-		}
-	}()
-	for _, p := range h.packs() {
-		f, err := os.Open(chainFile(net, p, "pack"))
-		if err != nil {
-			return false, "chain pack missing"
-		}
-		st, _ := f.Stat()
-		head := make([]byte, 12)
-		if _, err := f.ReadAt(head, 0); err != nil || st.Size() < 32 || string(head[:4]) != "PACK" {
-			f.Close()
-			return false, "chain pack unreadable"
-		}
-		packs = append(packs, chainPack{f, st.Size() - 32, binary.BigEndian.Uint32(head[8:])})
-	}
-	env := inCompose(net)
-	objs, err := newObjects(rp, env, h.Tree, want, m.git)
-	if err != nil {
-		return false, "diff: " + err.Error()
-	}
-	if len(objs) > composeDiffMax {
-		return false, "over the diff cap"
-	}
-	objs, err = missingFromChain(net, rp, append([]string{want + " "}, objs...), m.git)
-	if err != nil {
-		return false, err.Error()
-	}
-	// No delta search, as for the parts: a delta's base may only be in this pack, and a want behind a lagging chain
-	// can bring thousands of objects, which a delta search held to 9 to 19 CPU-s a miss (M0-WP9, B0-34, third pass).
-	inc, err := m.git(rp, env, strings.NewReader(strings.Join(objs, "\n")+"\n"), "pack-objects", "--stdout", "-q",
-		"--delta-base-offset", "--window=0", "--threads=1")
-	if err != nil || len(inc) < 32 {
-		return false, "pack of its own objects failed"
-	}
-	count := binary.BigEndian.Uint32(inc[8:12])
-	for _, p := range packs {
-		count += p.n
-	}
+	defer c.close()
+	packs, inc := c.packs, c.inc
+	count := c.count()
 	w.Header().Set("x-graft-compose", "composed")
 	bw := bufio.NewWriterSize(out, 1<<16)
 	pktLine(bw, "shallow-info\n")
@@ -583,6 +547,109 @@ func composeMiss(w http.ResponseWriter, out io.Writer, net, rp, want string, inc
 		return true, "cut"
 	}
 	return true, ""
+}
+
+// tailMax: the largest tail a compose=tail answer carries [guess]. The shard object holds the manifest whole to put it
+// and pass it on, and the edge holds it whole to stream from it, each in a 128 MB isolate. A want whose own objects
+// pass it is composed here as before. A var for the tests.
+var tailMax = 8 << 20
+
+// manifestOf is a compose=tail answer: one JSON line naming the chain's packs in the warm buckets
+// (compose/<net>/<name>.pack) with their object counts and body lengths (the pack less its 12-byte header and 20-byte
+// trailer), the want, and the tail's count and length, then the tail, the
+// body of the want's own pack with no header or trailer. The edge streams the chain's pack bodies from R2 after a pack
+// header of the total count and then the tail, hashing the trailer as it goes; the answer is the bytes composeMiss
+// writes from the same chain files (decisions/DECISIONS.md, `edge-compose`).
+func manifestOf(net, want string, c *composed) []byte {
+	type pack struct {
+		Key string `json:"key"`
+		N   uint32 `json:"n"`
+		Len int64  `json:"len"`
+	}
+	m := struct {
+		V     int    `json:"v"`
+		Want  string `json:"want"`
+		Packs []pack `json:"packs"`
+		TailN uint32 `json:"tailN"`
+		Tail  int    `json:"tail"`
+	}{V: 1, Want: want, TailN: binary.BigEndian.Uint32(c.inc[8:12]), Tail: len(c.inc) - 32}
+	for i, p := range c.h.packs() {
+		m.Packs = append(m.Packs, pack{Key: "compose/" + net + "/" + p + ".pack", N: c.packs[i].n, Len: c.packs[i].body})
+	}
+	b, _ := json.Marshal(m)
+	return append(append(b, '\n'), c.inc[12:len(c.inc)-20]...)
+}
+
+// composePlan opens the chain's packs and builds the want's own pack, or says why the chain does not answer it.
+func composePlan(net, rp, want string, includeTag bool) (*composed, string) {
+	h, ok := readHead(net)
+	if !ok {
+		return nil, "no chain"
+	}
+	var m cpuMeter
+	// The chain need not be at HEAD: a want past its tip, HEAD after moves whose parts are not built or not fetched yet,
+	// is the chain plus the want's diff from the chain tip, within composeDiffMax and packed with no delta search. Held
+	// to HEAD, every miss on a shard whose chain lagged the tip went to stock, at a time to first byte of 2 to 209 s
+	// (LM-1 round 26, 9 of 51 misses).
+	// A want is a ref's tip or behind HEAD, as stock upload-pack's allowReachableSHA1InWant serves it on main. A clone
+	// that read main's tip just before a move wants the old tip: 6 of round 26's misses went to stock for that.
+	refs, err := m.git(rp, nil, nil, "for-each-ref", "--points-at="+want, "--format=%(refname) %(objecttype)")
+	if err != nil {
+		return nil, "not a ref tip"
+	}
+	if len(bytes.TrimSpace(refs)) == 0 {
+		if _, err := m.git(rp, nil, nil, "merge-base", "--is-ancestor", want, "HEAD"); err != nil {
+			return nil, "not a ref tip or behind HEAD"
+		}
+	}
+	if includeTag && annotatedTag.Match(refs) {
+		return nil, "an annotated tag points at it"
+	}
+	if t, err := m.git(rp, nil, nil, "cat-file", "-t", want); err != nil || strings.TrimSpace(string(t)) != "commit" {
+		return nil, "not a commit"
+	}
+	// Open every pack first: a fold that lands meanwhile deletes them, and open files stay readable.
+	c := &composed{h: h}
+	ok = false
+	defer func() {
+		if !ok {
+			c.close()
+		}
+	}()
+	for _, p := range h.packs() {
+		f, err := os.Open(chainFile(net, p, "pack"))
+		if err != nil {
+			return nil, "chain pack missing"
+		}
+		st, _ := f.Stat()
+		head := make([]byte, 12)
+		if _, err := f.ReadAt(head, 0); err != nil || st.Size() < 32 || string(head[:4]) != "PACK" {
+			f.Close()
+			return nil, "chain pack unreadable"
+		}
+		c.packs = append(c.packs, chainPack{f, st.Size() - 32, binary.BigEndian.Uint32(head[8:])})
+	}
+	env := inCompose(net)
+	objs, err := newObjects(rp, env, h.Tree, want, m.git)
+	if err != nil {
+		return nil, "diff: " + err.Error()
+	}
+	if len(objs) > composeDiffMax {
+		return nil, "over the diff cap"
+	}
+	objs, err = missingFromChain(net, rp, append([]string{want + " "}, objs...), m.git)
+	if err != nil {
+		return nil, err.Error()
+	}
+	// No delta search, as for the parts: a delta's base may only be in this pack, and a want behind a lagging chain
+	// can bring thousands of objects, which a delta search held to 9 to 19 CPU-s a miss (M0-WP9, B0-34, third pass).
+	inc, err := m.git(rp, env, strings.NewReader(strings.Join(objs, "\n")+"\n"), "pack-objects", "--stdout", "-q",
+		"--delta-base-offset", "--window=0", "--threads=1")
+	if err != nil || len(inc) < 32 {
+		return nil, "pack of its own objects failed"
+	}
+	c.inc, ok = inc, true
+	return c, ""
 }
 
 func pktLine(w io.Writer, s string) { fmt.Fprintf(w, "%04x%s", len(s)+4, s) }
