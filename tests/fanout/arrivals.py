@@ -15,6 +15,9 @@ import urllib.request
 from datetime import datetime, timezone
 
 MAX_SHARE = 0.05  # over this share of the load window in outages, the row is invalid and reruns
+# Under about one edge request a second, an edge-0 second is the row's own idle gap, not a dropped host: m3fg11 (one
+# merge every 6 s) marked 54% of its seconds (tests/fanout/README.md, "Harness outages on gate rows", rule 5).
+MIN_EDGE_RATE = 1.0
 STEP = 1000
 
 
@@ -73,7 +76,13 @@ def outages(rows):
     return wins
 
 
-def summary(wins, a, b):
+def summary(wins, a, b, rows=None):
+    """The windows and their share; with `rows`, a row whose edge got under MIN_EDGE_RATE requests a second over the
+    window is not judged by the rule: `outages` reads "n/a (low rate)" and nothing is removed."""
+    if rows is not None:
+        rate = sum(r["edge"] for r in rows) / max(1, (b - a) / 1000)
+        if rate < MIN_EDGE_RATE:
+            return {"outages": "n/a (low rate)", "edgePerS": round(rate, 2), "valid": True}
     secs = sum(e - s for s, e in wins) / 1000
     share = secs / ((b - a) / 1000)
     return {"outages": [[iso(s), iso(e)] for s, e in wins], "outageSeconds": secs, "share": round(share, 4),
@@ -86,7 +95,7 @@ def main(argv):
     with (open(argv[3], "w") if len(argv) > 3 else sys.stdout) as f:
         for r in rows:
             f.write(json.dumps({**r, "t": iso(r["t"])}) + "\n")
-    s = summary(outages(rows), a, b)
+    s = summary(outages(rows), a, b, rows)
     print(json.dumps(s), file=sys.stderr if len(argv) <= 3 else sys.stdout)
     return s
 

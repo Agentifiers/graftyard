@@ -25,6 +25,18 @@ class Outages(unittest.TestCase):
         s = arrivals.summary([(T, T + 3000), (T + 50_000, T + 53_000)], a, b)
         self.assertEqual((s["outageSeconds"], s["valid"]), (6.0, False))
 
+    def test_a_row_under_one_edge_request_a_second_is_not_judged(self):
+        # m3fg11's shape: one edge request every 6 s, so 5 of every 6 seconds read edge 0 while the sites serve.
+        r = rows([(1, 9) if i % 6 == 0 else (0, 9) for i in range(60)])
+        wins = arrivals.outages(r)
+        self.assertEqual(len(wins), 10)
+        s = arrivals.summary(wins, T, T + 60_000, r)
+        self.assertEqual((s["outages"], s["valid"]), ("n/a (low rate)", True))
+        # The same idle gaps in a row at the rule's rate (here 2 a second outside them) are outages, and invalidate it.
+        busy = rows([(2, 9) if i % 6 == 0 else (0, 9) if i % 6 == 1 else (2, 9) for i in range(60)])
+        s = arrivals.summary(arrivals.outages(busy), T, T + 60_000, busy)
+        self.assertEqual((s["outageSeconds"], s["valid"]), (10.0, False))
+
     def test_cut_removes_samples_in_and_just_before_a_window(self):
         samples = [[T + 1000, "read:api", 300, "200"],  # 4 s before the window: kept
                    [T + 3000, "read:api", 2000, "0"],  # 2 s before: its retries ran into it, removed
