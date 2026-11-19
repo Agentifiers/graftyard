@@ -773,6 +773,16 @@ impl<C: Command> Member<C> {
         self.own_clock = Some(self.own_clock.map_or(own, |o| o.max(own)));
     }
 
+    /// Whether this leader is quiet enough to hand its group back to `home` (`maybe_hand_off`, `home-quiet`): at most
+    /// `queue` commands wait in admission's lanes (`AdmissionView::queued`), and the entry in flight, if any, holds at
+    /// most half of `entry_soft`. A transfer stalls whatever waits on the leader until the new one serves.
+    pub(super) fn quiet(&self, queue: usize) -> bool {
+        let Some(lead) = &self.lead else { return false };
+        let queued: usize = lead.admission.lanes.iter().map(Lane::len).sum();
+        let entry = lead.pending.as_ref().and_then(|(i, _)| self.entry_len(*i)).unwrap_or(0);
+        queued <= queue && entry <= self.entry_soft / 2
+    }
+
     /// What admission sees now, as leader: capacity, queued agent commands and bytes, whether the group is hot and
     /// under pressure. `None` on a follower.
     pub fn admission(&self) -> Option<AdmissionView> {
