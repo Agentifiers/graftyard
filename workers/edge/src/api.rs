@@ -90,8 +90,6 @@ pub(crate) struct Timing {
     shard: std::cell::RefCell<String>,
     /// `edge-read-batch`: this request's write-class `rcache` reads it ran, shared, and the ms it waited in batches.
     rc: std::cell::Cell<(u32, u32, f64)>,
-    /// `tier-read-batch`: this request's write-class spread passes it ran, shared, and the ms it waited in batches.
-    tr: std::cell::Cell<crate::rcache::Passes>,
 }
 
 impl Timing {
@@ -103,16 +101,6 @@ impl Timing {
         self.trace.borrow_mut().clear();
         self.shard.borrow_mut().clear();
         self.rc.set((0, 0, 0.0));
-        self.tr.set(crate::rcache::Passes::default());
-    }
-    /// One write-class spread read's passes (`crate::spread_read`).
-    pub(crate) fn tiers(&self, p: crate::rcache::Passes) {
-        let t = self.tr.get();
-        self.tr.set(crate::rcache::Passes {
-            ran: t.ran + p.ran,
-            shared: t.shared + p.shared,
-            waited_ms: t.waited_ms + p.waited_ms,
-        });
     }
     /// One write-class `rcache` read: its own (`shared` false) or another call's, after `waited` ms in its batch.
     pub(crate) fn rcache(&self, shared: bool, waited: f64) {
@@ -146,10 +134,6 @@ impl Timing {
         let (run, share, wait) = self.rc.get();
         if run + share > 0 {
             out.extend([("rcread", f64::from(run)), ("rcshare", f64::from(share)), ("rcwait", wait)]);
-        }
-        let t = self.tr.get();
-        if t.ran + t.shared > 0 {
-            out.extend([("trread", f64::from(t.ran)), ("trshare", f64::from(t.shared)), ("trwait", t.waited_ms)]);
         }
         out.push(("total", js_sys::Date::now() - self.start.get()));
         out
@@ -683,28 +667,13 @@ pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<s
 /// journey 1, step 1): the store, and whether the member answered the agent rows too (`"agent": true` beside them; a
 /// member built before it answers the access rows alone, and `agents::push_context` then reads them on their own).
 pub(crate) async fn push_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<(MemStore, bool), String>> {
-    core_rows_q(c, repo, push_rows_q()).await
+    core_rows_q(c, repo, json!({ "access": true, "agent": true })).await
 }
 
-/// A push's rows, `{"access": true, "agent": true}`: the read gate's, and `agents::push_context`'s when the gate's
-/// decision was cached, so every push to a repository asks one query and shares one batch key (`tier-read-batch`).
-pub(crate) fn push_rows_q() -> Value {
-    json!({ "access": true, "agent": true })
-}
-
-/// The member query of a core rows read (`core_rows`, `push_rows`).
-pub(crate) fn rows_query(rows: Value) -> Value {
-    json!({ "q": { "rows": rows, "ranges": true } })
-}
-
-pub(crate) async fn core_rows_q(
-    c: &Ctx<'_>,
-    repo: &Repo,
-    rows: Value,
-) -> Result<std::result::Result<(MemStore, bool), String>> {
+async fn core_rows_q(c: &Ctx<'_>, repo: &Repo, rows: Value) -> Result<std::result::Result<(MemStore, bool), String>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
-    let q = rows_query(rows);
+    let q = json!({ "q": { "rows": rows, "ranges": true } });
     let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
     if let Ok(None) = v {
         if let Err(e) = ensure_group(c, repo).await {

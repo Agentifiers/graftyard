@@ -35,6 +35,7 @@ HC = ['-p', 'graftyard-identity', '--test', 'wp4', '-p', 'graftyard-api', '--tes
 EA = 'workers/edge/src/actions.rs'
 EDGE = ['-p', 'graftyard-edge', '--lib', 'actions::']
 L = 'workers/runners/launch.mjs'
+BX = 'workers/runners/box.mjs'
 NODE = ['node']  # `node --test workers/runners/tests/`, not cargo
 TR = 'crates/actions/src/trigger.rs'
 PR = ['-p', 'graftyard-actions', '--lib', '--test', 'pr_trigger', '--test', 'gates']
@@ -330,6 +331,41 @@ MUTANTS = [
      '                    && true;', RAFT),
     ('r29: an answered round never counts as told, so an idle leader beats forever', 'crates/raft/src/member/leader.rs',
      '                *told = (*told).max(commit.min(res.matched));', '                let _ = (told, commit);', RAFT),
+    # ---- R23 RunnerBox: 109 and up ----
+    ('r23: the start names no image, so the application\'s default runs', BX,
+     '    c.start({ image, instance: st.instance,', '    c.start({ instance: st.instance,', NODE),
+    ('r23: the runner runs under a shell that signals PID 1 (the Sandbox shape)', BX,
+     """'exec /home/runner/run.sh --jitconfig "$JIT"'""", """'/home/runner/run.sh --jitconfig "$JIT"; kill -TERM 1'""",
+     NODE),
+    ('r23: a retried alarm starts without asking whether the container runs', BX,
+     '  if (!c.running) {\n    if (!image)', '  if (true) {\n    if (!image)', NODE),
+    ('r23: a start refused placement never gives up', BX,
+     '  if (Date.now() - st.armedAt > GIVE_UP_MS) {', '  if (false) {', NODE),
+    ('r23: a refused placement counts as the runner\'s exit, so it is never tried again', BX,
+     '      (e) => (NO_INSTANCE.test(String(e?.message ?? e)) ? Promise.reject(e) : "exited"),',
+     '      () => "exited",', NODE),
+    ('r23: a start that lands after a destroy is kept', BX,
+     '  if ((await o.ctx.storage.get(KEY))?.state === "closed") return close(o);\n', '', NODE),
+    ('r23: destroy answers true for a runner this class never held', BX,
+     '  if (!(await o.ctx.storage.get(KEY))) return false;\n', '', NODE),
+    ('r23: every start is standard-3', BX, '    c.start({ image, instance: st.instance,',
+     '    c.start({ image, instance: "standard-3",', NODE),
+    ('r23: no inactivity timeout, so the runtime stops a running job when the object idles', BX,
+     '  if (c.running) await c.setInactivityTimeout(JOB_MS);', '', NODE),
+    ('r23: RunnerBox\'s application is created on the default policy', R,
+     '            "name": name,\n            "scheduling_policy": "durable_object",',
+     '            "name": name,\n            "scheduling_policy": "default",', CLI),
+    ('r23: the version carries no runner image', R,
+     '    containers.push(json!({ "name": spec.app(BOX.0), "class_name": BOX.0, "images": { "runner": image } }));',
+     '    containers.push(json!({ "name": spec.app(BOX.0), "class_name": BOX.0 }));', CLI),
+    ('r23: a runner_box upgrade still rolls the legacy applications at 100%', R,
+     '            if spec.runner_box {\n                cf.deploy_versions', '            if false {\n                cf.deploy_versions',
+     CLI),
+    ('r23: init on a v1 account adds no RunnerBox migration', R,
+     '        Some("v1") => meta["migrations"] = json!({ "old_tag": "v1", "new_tag": MIGRATION_TAG, "steps": [add_box] }),',
+     '        Some("v1") => {}', CLI),
+    ('r23: upgrade uploads a version to an account without RunnerBox', R,
+     '                Some(t) if t == MIGRATION_TAG => {}', '                _ => {}', CLI),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

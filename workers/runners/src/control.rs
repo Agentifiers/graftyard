@@ -253,4 +253,75 @@ mod tests {
         let rep = futures_executor::block_on(pass(&stub(d, Vec::new(), 10)));
         assert_eq!((rep.started, rep.vcpu_stopped), (1, 2), "7 vCPU of 10 holds one 4-vCPU Sandbox");
     }
+
+    /// The account in a cold burst: owners, each with the install's per-owner count as `decide` keeps it, and the
+    /// vCPU started. Every pass reads the same demand, as passes that overlap read before any of them registers.
+    struct Burst {
+        owners: Vec<String>,
+        demand: HostedDemand,
+        registered: RefCell<std::collections::BTreeMap<String, u16>>,
+        started_vcpu: RefCell<u32>,
+        next: RefCell<i64>,
+        vcpu: u32,
+    }
+
+    impl Host for Burst {
+        fn owners(&self) -> Vec<String> {
+            self.owners.clone()
+        }
+        fn account_vcpu(&self) -> u32 {
+            self.vcpu
+        }
+        async fn demand(&self, _: &str) -> Result<HostedDemand, String> {
+            Ok(self.demand.clone())
+        }
+        async fn register(&self, owner: &str, _: &'static HostedLabel) -> Registered {
+            let mut reg = self.registered.borrow_mut();
+            let n = reg.entry(owner.into()).or_default();
+            if *n >= graftyard_actions::hosted::HOSTED_CAP {
+                return Registered::Full;
+            }
+            *n += 1;
+            *self.next.borrow_mut() += 1;
+            Registered::Runner { id: r(*self.next.borrow()), jit: "j".into() }
+        }
+        async fn delete(&self, _: &str, _: RunnerId) -> Result<bool, String> {
+            Ok(true)
+        }
+        async fn start(&self, _: &str, _: RunnerId, i: Instance, _: String) -> Result<(), String> {
+            *self.started_vcpu.borrow_mut() += i.vcpu();
+            Ok(())
+        }
+        async fn destroy(&self, _: RunnerId, _: Instance) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// With no per-application `max_instances` (R23's `RunnerBox`), a cold burst is bounded by the two rules a pass
+    /// applies: `decide`'s per-owner cap, which holds across passes, and `RUNNER_VCPU_STOP_PCT`, which holds within a
+    /// pass, so passes that overlap can each start up to it but never past the cap; the account's vCPU limit, past
+    /// which the platform refuses the start, is the box's (`tests/box.test.mjs`).
+    #[test]
+    fn a_cold_burst_is_bounded_by_the_cap_across_passes_and_the_vcpu_stop_within_one() {
+        let burst = || Burst {
+            owners: vec!["a".into(), "b".into(), "c".into()],
+            demand: HostedDemand { labels: vec![want("ubuntu-latest", 20)], stale: Vec::new(), runners: Vec::new() },
+            registered: RefCell::default(),
+            started_vcpu: RefCell::default(),
+            next: RefCell::new(0),
+            vcpu: 100,
+        };
+        // One pass: 70 vCPU of 100 is 35 `standard-3`: owner a's 20, then b's 15; b's other 5 and all of c wait.
+        let h = burst();
+        let rep = futures_executor::block_on(pass(&h));
+        assert_eq!((rep.started, rep.vcpu_stopped, *h.started_vcpu.borrow()), (35, 25, 70));
+        // Four passes that read before any registered: each starts up to its stop, and the cap stops them at 20 per
+        // owner, 120 vCPU here, which the account's limit then bounds.
+        let h = burst();
+        let reps = futures_executor::block_on(futures_util::future::join_all((0..4).map(|_| pass(&h))));
+        assert!(h.registered.borrow().values().all(|n| *n == 20), "{:?}", h.registered.borrow());
+        assert_eq!(reps.iter().map(|r| r.started).sum::<u32>(), 60);
+        assert!(reps.iter().all(|r| r.started * 2 <= 70), "no pass starts past its stop");
+        assert!(reps.iter().map(|r| r.full).sum::<u32>() > 0, "later passes are refused at the cap");
+    }
 }

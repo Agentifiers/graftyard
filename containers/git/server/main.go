@@ -1863,22 +1863,28 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64
 	var midxMs int64
 	err = func() error {
 		dst := filepath.Join(rp, "objects", "pack", "pack-"+name)
+		// Only a promotion stores an `.idx`, and its pack is complete and already delta-searched, so it is kept: the
+		// geometric repack then rolls only the pushed tail (`unkeptPacks`), where rolling 8.6 GB of promotions held
+		// every shard of B0-34 at 4 vCPU for minutes (tests/am1/results/lm1-memory.md, rounds 24c and 25). The
+		// `.keep` goes first: the repack takes no network lock (startRepack), so one that lists the packs between the
+		// index's rename and a later `.keep` rolls the promotion into a new pack and deletes it under the name record
+		// writes (`TestSpooledPromotionIsKeptBeforeItIsVisible`).
+		if err := os.WriteFile(dst+".keep", nil, 0o644); err != nil {
+			return err
+		}
 		if _, err := os.Stat(dst + ".pack"); err != nil {
 			// The pack before its index, as index-pack and a quarantine's migration order them: git finds a pack by
 			// its index.
 			if err := os.Rename(file, dst+".pack"); err != nil {
+				os.Remove(dst + ".keep")
 				return err
 			}
 			if err := os.Rename(idxFile, dst+".idx"); err != nil {
 				os.Remove(dst + ".pack")
+				os.Remove(dst + ".keep")
 				return err
 			}
-		}
-		// Only a promotion stores an `.idx`, and its pack is complete and already delta-searched, so it is kept: the
-		// geometric repack then rolls only the pushed tail (`unkeptPacks`), where rolling 8.6 GB of promotions held
-		// every shard of B0-34 at 4 vCPU for minutes (tests/am1/results/lm1-memory.md, rounds 24c and 25).
-		if err := os.WriteFile(dst+".keep", nil, 0o644); err != nil {
-			return err
+			packVisible(rp)
 		}
 		if err := record(rp, sum, name, filepath.Join(rp, "objects"), n); err != nil {
 			return err
@@ -1895,6 +1901,10 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "idx": "used", "index_ms": 0, "lock_ms": lockMs,
 		"midx_ms": midxMs, "lock_wait_ms": waitMs, "lock_excl_wait_ms": waitMs})
 }
+
+// packVisible runs once a spooled promotion's index is renamed in, the moment git and a lock-free repack can see the
+// pack; tests run a repack there.
+var packVisible = func(rp string) {}
 
 // handleIdx answers the .idx of the pack /validate kept aside under sha256, for the archive's promotion to store
 // beside the promoted pack.

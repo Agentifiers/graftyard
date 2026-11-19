@@ -12,7 +12,9 @@ Reads the runner account's Workers Logs for `graft-runners` (events view, every 
   `graft-runners: launched` line per process it starts).
 
 It also counts the delivery passes whose `waitUntil` the runtime cancelled at its 30 s limit, and the Sandbox objects'
-alarm invocations (each `setAlarm` is one row written). Prints one JSON summary. The first `BURST` Sandboxes (default
+alarm invocations (each `setAlarm` is one row written). Since R23 (`RunnerBox`, `workers/runners/box.mjs`) it also
+counts, per image, the starts that launched, exited within 3 s, or gave up: the canary check before a
+`graftyard runners upgrade` goes to 100% (`decisions/DECISIONS.md`, "`r23-runnerbox`"). Prints one JSON summary. The first `BURST` Sandboxes (default
 20, the cap) are reported apart from the later ones, which each start as a slot frees. Account and token from the
 environment (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`), the token only as a header.
 """
@@ -52,7 +54,7 @@ for lo in range(ms(a), ms(b), 30_000):
             break
         hi = min(e["timestamp"] for e in got) + 1
 
-addressed, errors, destroyed, alarms, cancelled, launched = {}, {}, set(), 0, 0, {}
+addressed, errors, destroyed, alarms, cancelled, launched, by_image = {}, {}, set(), 0, 0, {}, {}
 for e in sorted(events, key=lambda e: e["timestamp"]):
     m, w = e["$metadata"], e.get("$workers") or {}
     msg, obj = (m.get("message") or "").lower(), w.get("durableObjectId")
@@ -66,6 +68,12 @@ for e in sorted(events, key=lambda e: e["timestamp"]):
         continue
     if obj and msg.startswith("graft-runners: launched"):
         launched[obj] = launched.get(obj, 0) + 1
+    # `box.mjs` ends each start's line with ", image <ref>".
+    for kind, prefix in (("launched", "graft-runners: launched"), ("exited", "graft-runners: runner exited within"),
+                         ("gave_up", "graft-runners: gave up")):
+        if msg.startswith(prefix) and ", image " in msg:
+            img = (m.get("message") or "").rsplit(", image ", 1)[1].split(";")[0]
+            by_image.setdefault(img, {"launched": 0, "exited": 0, "gave_up": 0})[kind] += 1
     if "waituntil() tasks did not complete" in msg:
         cancelled += 1
     for kind in (NO_INSTANCE, RATE):
@@ -98,4 +106,5 @@ print(json.dumps({
     "launched": len(launched),
     "launched_twice": sum(1 for n in launched.values() if n > 1),
     "sandbox_alarm_invocations": alarms,
+    "by_image": by_image,
 }, indent=1))

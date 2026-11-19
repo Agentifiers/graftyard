@@ -7,12 +7,17 @@
 //! (`tests/m4/wp4/image.sh`).
 //!
 //! - `init` writes `HostedRunnersAppKey` to the runner account's Secrets Store `graft-runners`, uploads and deploys the
-//!   script with its bindings, its `v1` migration, and the 5-minute sweep, turns on its workers.dev route for the App's
-//!   webhook, and creates the `standard-3` and `standard-4` container applications. A rerun changes nothing that exists.
+//!   script with its bindings, its migrations to `v2`, and the 5-minute sweep, turns on its workers.dev route for the
+//!   App's webhook, and creates the container applications: `RunnerBox`'s, on the `durable_object` policy, and the
+//!   legacy Sandbox classes' `standard-3` and `standard-4` ones. A rerun changes nothing that exists, so on an account
+//!   at `v1` it is release M1, which adds `RunnerBox` and starts nothing on it (`decisions/DECISIONS.md`,
+//!   "`r23-runnerbox`").
 //! - `upgrade` deploys only a release whose `release.json` verifies under the release key and lists every bundle file's
-//!   SHA-256 and the image digest. Its first run uploads the version, tagged with the release id, and sends it 10% of
-//!   traffic; a run at least `CANARY` later sends it 100% and rolls both container applications to the image [guess, the
-//!   design's 10% for a day]. The 10% half runs the old image, because a container application has one image.
+//!   SHA-256 and the image digest. Its first run uploads the version, tagged with the release id, with the image as
+//!   `RunnerBox`'s `runner` image, and sends it 10% of traffic; a run at least `CANARY` later sends it 100% [guess, the
+//!   design's 10% for a day]. While `runners.json` sets `runner_box`, the version starts runners on `RunnerBox`, so the
+//!   10% start the new image and nothing rolls. Without it the version starts them on the legacy classes, whose
+//!   applications hold one image each, so the 100% run also rolls both to the image.
 
 use std::fs;
 use std::path::Path;
@@ -31,13 +36,18 @@ const STORE: &str = "graft-runners";
 const APP_KEY_SECRET: &str = "HostedRunnersAppKey";
 /// SHARED's sweep, every 5 minutes [guess].
 const SWEEP_CRON: &str = "*/5 * * * *";
-const MIGRATION_TAG: &str = "v1";
+/// `v1` added the legacy Sandbox classes and `v2` adds `RunnerBox` (release M1).
+const MIGRATION_TAG: &str = "v2";
 /// The canary's share and how long it holds before 100% (`design/DESIGN.md`, "Failure modes", `actions state`).
 const CANARY_PCT: u8 = 10;
 const CANARY: u64 = 86_400;
-/// One container class per instance type (`workers/runners/entry.mjs`), with the binding the Worker calls.
+/// The legacy Sandbox SDK classes, one per instance type (`workers/runners/entry.mjs`), with the binding the Worker
+/// calls. Release M3 deletes them.
 const CLASSES: [(&str, &str, &str); 2] =
     [("SandboxStd3", "SANDBOX_STD3", "standard-3"), ("SandboxStd4", "SANDBOX_STD4", "standard-4")];
+/// The one runner class (`workers/runners/box.mjs`) and its binding: each start picks the instance type, and the image
+/// is the version's `runner` image.
+const BOX: (&str, &str) = ("RunnerBox", "RUNNER_BOX");
 
 /// `workers/runners/deploy.mjs`'s `runners.json`.
 pub struct Spec {
@@ -47,6 +57,8 @@ pub struct Spec {
     owners: Value,
     vcpu: u64,
     max: [u64; 2],
+    /// `"runner_box": true`: the version starts runners on `RunnerBox` (release M2).
+    runner_box: bool,
 }
 
 impl Spec {
@@ -61,6 +73,7 @@ impl Spec {
             owners: v["owners"].clone(),
             vcpu: v["account_vcpu"].as_u64().unwrap_or(15_000),
             max: [v["max_instances"]["std3"].as_u64().unwrap_or(20), v["max_instances"]["std4"].as_u64().unwrap_or(5)],
+            runner_box: v["runner_box"].as_bool().unwrap_or(false),
         })
     }
 
@@ -116,38 +129,65 @@ fn bindings(spec: &Spec, store: &str, webhook: Option<&str>) -> Vec<Value> {
         json!({ "type": "secrets_store_secret", "name": "HOSTED_RUNNERS_APP_KEY", "store_id": store, "secret_name": APP_KEY_SECRET }),
     ];
     b.extend(CLASSES.iter().map(|(c, n, _)| json!({ "type": "durable_object_namespace", "name": n, "class_name": c })));
+    b.push(json!({ "type": "durable_object_namespace", "name": BOX.1, "class_name": BOX.0 }));
+    if spec.runner_box {
+        b.push(text("RUNNER_BOX", "1".into()));
+    }
     if let Some(w) = webhook {
         b.push(json!({ "type": "secret_text", "name": "WEBHOOK_SECRET", "text": w }));
     }
     b
 }
 
-fn metadata(spec: &Spec, bindings: Vec<Value>) -> Value {
+/// The version's metadata. `RunnerBox`'s entry carries the image map its objects start from, as the site script's
+/// `GitShard` does (`cli/src/sites.rs`); the legacy entries carry none, because their applications hold the image.
+fn metadata(spec: &Spec, bindings: Vec<Value>, image: &str) -> Value {
+    let mut containers: Vec<Value> =
+        CLASSES.iter().map(|(c, ..)| json!({ "name": spec.app(c), "class_name": c })).collect();
+    containers.push(json!({ "name": spec.app(BOX.0), "class_name": BOX.0, "images": { "runner": image } }));
     json!({
         "main_module": "entry.js",
         "compatibility_date": COMPAT_DATE,
         "compatibility_flags": COMPAT_FLAGS,
         "bindings": bindings,
-        "containers": CLASSES.iter().map(|(c, ..)| json!({ "name": spec.app(c), "class_name": c })).collect::<Vec<_>>(),
+        "containers": containers,
         "observability": { "enabled": true },
     })
 }
 
-/// The container applications by class, each with its id and image, created by `init` when missing.
+/// The container applications by class, created by `init` when missing. `RunnerBox`'s is keyed by its namespace and
+/// takes the `durable_object` policy, which is fixed at creation, so it has no image, instance type, or
+/// `max_instances`: the image comes from each version, the instance type from each start, and starts are bounded by
+/// the owner's cap, `RUNNER_VCPU_STOP_PCT`, and the account's vCPU limit (`decisions/DECISIONS.md`, "`r23-runnerbox`").
 fn ensure_apps(cf: &Cf, spec: &Spec, image: &str) -> Res<()> {
     let apps = cf.container_apps()?;
     let bound = cf.bindings(&spec.script)?;
+    let namespace = |binding: &str| {
+        bound
+            .iter()
+            .find(|b| b["name"] == json!(binding))
+            .and_then(|b| b["namespace_id"].as_str())
+            .map(String::from)
+            .ok_or_else(|| format!("{}: the deployed version has no {binding} namespace", spec.script))
+    };
+    let name = spec.app(BOX.0);
+    if apps.iter().any(|a| a["name"] == json!(name)) {
+        println!("  container application {name}: exists");
+    } else {
+        cf.create_container_app(&json!({
+            "name": name,
+            "scheduling_policy": "durable_object",
+            "durable_objects": { "namespace_id": namespace(BOX.1)? },
+        }))?;
+        println!("  container application {name}: created, durable_object policy");
+    }
     for (i, (class, binding, instance)) in CLASSES.iter().enumerate() {
         let name = spec.app(class);
         if apps.iter().any(|a| a["name"] == json!(name)) {
             println!("  container application {name}: exists");
             continue;
         }
-        let ns = bound
-            .iter()
-            .find(|b| b["name"] == json!(binding))
-            .and_then(|b| b["namespace_id"].as_str())
-            .ok_or_else(|| format!("{}: the deployed version has no {binding} namespace", spec.script))?;
+        let ns = namespace(binding)?;
         cf.create_container_app(&json!({
             "name": name,
             "scheduling_policy": "default",
@@ -191,14 +231,18 @@ fn init_with(cf: &Cf, a: InitArgs) -> Res<()> {
     cf.put_secret(&store, APP_KEY_SECRET, &key, "graftyard runners init: the graftyard-hosted-runners App key")?;
     println!("  {APP_KEY_SECRET}: written to Secrets Store {STORE} ({store})");
     let tag = cf.scripts()?.into_iter().find(|(s, _)| *s == spec.script).map(|(_, t)| t);
-    let mut meta = metadata(&spec, bindings(&spec, &store, Some(&webhook)));
+    let mut meta = metadata(&spec, bindings(&spec, &store, Some(&webhook)), a.image);
+    let add_box = json!({ "new_sqlite_classes": [BOX.0] });
     match tag.flatten().as_deref() {
         None => {
-            meta["migrations"] =
-                json!({ "new_tag": MIGRATION_TAG, "steps": [{ "new_sqlite_classes": CLASSES.map(|c| c.0) }] })
+            meta["migrations"] = json!({
+                "new_tag": MIGRATION_TAG,
+                "steps": [{ "new_sqlite_classes": CLASSES.map(|c| c.0) }, add_box],
+            })
         }
+        Some("v1") => meta["migrations"] = json!({ "old_tag": "v1", "new_tag": MIGRATION_TAG, "steps": [add_box] }),
         Some(MIGRATION_TAG) => {}
-        Some(t) => return Err(format!("{} has migration tag {t:?}, not {MIGRATION_TAG:?}", spec.script)),
+        Some(t) => return Err(format!("{} has migration tag {t:?}, not v1 or {MIGRATION_TAG:?}", spec.script)),
     }
     cf.put_script(&spec.script, &meta, &bundle.modules())?;
     cf.put_schedules(&spec.script, &[SWEEP_CRON])?;
@@ -288,6 +332,11 @@ fn upgrade_with(cf: &Cf, a: UpgradeArgs, now_s: u64) -> Res<()> {
                     "release {release} is at {CANARY_PCT}% for {age} s; it goes to 100% after {CANARY} s"
                 ));
             }
+            if spec.runner_box {
+                cf.deploy_versions(&spec.script, &[(&new, 100)], &format!("graftyard runners upgrade {release} 100%"))?;
+                println!("  {}: release {release} at 100%, starting RunnerBox on {}", spec.script, a.image);
+                return Ok(());
+            }
             let apps = cf.container_apps()?;
             for (class, _, instance) in CLASSES {
                 let app = apps
@@ -306,8 +355,15 @@ fn upgrade_with(cf: &Cf, a: UpgradeArgs, now_s: u64) -> Res<()> {
         (Some(_), None) => Err("the deployment holds only this release, below 100%".into()),
         (None, None) => Err(format!("{} has no deployment: run graftyard runners init first", spec.script)),
         (None, Some(old)) => {
+            // A version upload carries no migration, so `RunnerBox` must exist first (release M1, `init`).
+            match cf.scripts()?.into_iter().find(|(s, _)| *s == spec.script).and_then(|(_, t)| t) {
+                Some(t) if t == MIGRATION_TAG => {}
+                t => {
+                    return Err(format!("{} is at migration tag {t:?}: run graftyard runners init first", spec.script));
+                }
+            }
             let store = cf.store(STORE)?;
-            let mut meta = metadata(&spec, bindings(&spec, &store, None));
+            let mut meta = metadata(&spec, bindings(&spec, &store, None), a.image);
             meta["keep_bindings"] = json!(["secret_text"]);
             meta["annotations"] = json!({ "workers/tag": release, "workers/message": "graftyard runners upgrade" });
             let new = cf.upload_version(&spec.script, &meta, &bundle.modules())?;
@@ -380,18 +436,21 @@ mod tests {
                 ("GET", "/workers/scripts/graft-runners/settings") => ok(json!({ "bindings": [
                     { "type": "durable_object_namespace", "name": "SANDBOX_STD3", "namespace_id": "ns3" },
                     { "type": "durable_object_namespace", "name": "SANDBOX_STD4", "namespace_id": "ns4" },
+                    { "type": "durable_object_namespace", "name": "RUNNER_BOX", "namespace_id": "nsb" },
                 ] })),
                 _ => ok(json!({})),
             }
         })
     }
 
+    /// A fresh account gets both migration steps and three applications: `RunnerBox`'s on the `durable_object` policy
+    /// with no image, instance type, or instance cap, and the legacy classes' two.
     #[test]
-    fn init_writes_the_key_to_secrets_store_and_creates_both_instance_types() {
+    fn init_writes_the_key_to_secrets_store_and_creates_the_runner_applications() {
         let d = scratch();
         let log = Log::default();
         let mut answer = account(log.clone());
-        let (url, _rx) = serve(13, move |s| answer(s));
+        let (url, _rx) = serve(14, move |s| answer(s));
         let cf = Cf::with(&url, "r", "t");
         let args = InitArgs {
             account: "r",
@@ -411,7 +470,14 @@ mod tests {
         // Only the bundle's modules, the migration for both Sandbox classes, and the key bound from the store.
         assert!(upload.contains("filename=\"entry.js\"") && upload.contains("filename=\"ab12-index_bg.wasm\""));
         assert!(!upload.contains("README"));
-        assert!(upload.contains(r#""new_sqlite_classes":["SandboxStd3","SandboxStd4"]"#));
+        assert!(upload.contains(
+            r#""migrations":{"new_tag":"v2","steps":[{"new_sqlite_classes":["SandboxStd3","SandboxStd4"]},{"new_sqlite_classes":["RunnerBox"]}]}"#
+        ));
+        assert!(upload.contains(&format!(
+            r#"{{"class_name":"RunnerBox","images":{{"runner":"{IMAGE}"}},"name":"graft-runners-runnerbox"}}"#
+        )));
+        // Release M1 adds the class and starts nothing on it.
+        assert!(!upload.contains(r#""name":"RUNNER_BOX","text""#), "RUNNER_BOX is set only by runner_box");
         assert!(upload.contains(r#""store_id":"st1""#) && upload.contains(r#""nodejs_compat""#));
         assert!(!upload.contains("BEGIN RSA"), "the App key goes only to Secrets Store");
         let sched: Value =
@@ -422,14 +488,66 @@ mod tests {
             .filter(|(m, p, _)| m == "POST" && p == "/containers/applications")
             .map(|(.., b)| serde_json::from_slice(b).unwrap())
             .collect();
-        assert_eq!(apps.len(), 2);
-        assert_eq!(apps[0]["configuration"], json!({ "image": IMAGE, "instance_type": "standard-3" }));
+        assert_eq!(apps.len(), 3);
         assert_eq!(
-            (apps[0]["max_instances"].clone(), apps[0]["durable_objects"]["namespace_id"].clone()),
+            apps[0],
+            json!({
+                "name": "graft-runners-runnerbox",
+                "scheduling_policy": "durable_object",
+                "durable_objects": { "namespace_id": "nsb" },
+            })
+        );
+        assert_eq!(apps[1]["configuration"], json!({ "image": IMAGE, "instance_type": "standard-3" }));
+        assert_eq!(
+            (apps[1]["max_instances"].clone(), apps[1]["durable_objects"]["namespace_id"].clone()),
             (json!(20), json!("ns3"))
         );
-        assert_eq!(apps[1]["configuration"]["instance_type"], json!("standard-4"));
-        assert_eq!(apps[1]["durable_objects"]["namespace_id"], json!("ns4"));
+        assert_eq!(apps[2]["configuration"]["instance_type"], json!("standard-4"));
+        assert_eq!(apps[2]["durable_objects"]["namespace_id"], json!("ns4"));
+    }
+
+    /// Release M1 on an account at `v1`: only the `RunnerBox` step, from `v1`, and only `RunnerBox`'s application is
+    /// created; the legacy applications that exist are left alone.
+    #[test]
+    fn init_on_a_v1_account_adds_only_runnerbox() {
+        let d = scratch();
+        let log = Log::default();
+        let mut base = account(log.clone());
+        let (url, _rx) = serve(13, move |s| match (s.line.split(' ').next().unwrap_or(""), path(s).as_str()) {
+            ("GET", "/workers/scripts") => (
+                200,
+                json!({ "success": true, "result": [{ "id": "graft-runners", "migration_tag": "v1" }] }).to_string(),
+            ),
+            ("GET", "/containers/applications") => (
+                200,
+                json!({ "success": true, "result": [
+                { "id": "a3", "name": "graft-runners-sandboxstd3" }, { "id": "a4", "name": "graft-runners-sandboxstd4" }
+            ] })
+                .to_string(),
+            ),
+            _ => base(s),
+        });
+        let cf = Cf::with(&url, "r", "t");
+        let args = InitArgs {
+            account: "r",
+            spec: &d.join("runners.json"),
+            bundle: &d.join("bundle"),
+            image: IMAGE,
+            app_key: &d.join("app.pem"),
+            webhook_secret: &d.join("hook"),
+        };
+        init_with(&cf, args).unwrap();
+        let log = log.lock().unwrap();
+        let upload = log.iter().find(|(m, p, _)| m == "PUT" && p == "/workers/scripts/graft-runners").unwrap();
+        assert!(String::from_utf8_lossy(&upload.2).contains(
+            r#""migrations":{"new_tag":"v2","old_tag":"v1","steps":[{"new_sqlite_classes":["RunnerBox"]}]}"#
+        ));
+        let created: Vec<&str> = log
+            .iter()
+            .filter(|(m, p, _)| m == "POST" && p == "/containers/applications")
+            .map(|(.., b)| if String::from_utf8_lossy(b).contains("runnerbox") { "runnerbox" } else { "other" })
+            .collect();
+        assert_eq!(created, ["runnerbox"]);
     }
 
     #[test]
@@ -490,9 +608,16 @@ mod tests {
         assert!(upgrade_with(&cf, upgrade_args(&d, IMAGE), 0).unwrap_err().contains("lists no image"));
     }
 
-    #[test]
-    fn upgrade_canaries_at_10_percent_then_goes_to_100_only_a_day_later() {
+    /// The three upgrade runs (10%, refused before the day, 100%), with `runner_box` set or not; every request made.
+    fn canary(runner_box: bool) -> (String, Vec<(String, String, Vec<u8>)>) {
         let d = scratch();
+        if runner_box {
+            fs::write(
+                d.join("runners.json"),
+                r#"{"script":"graft-runners","graftyard_url":"https://git.example","app_id":7,"owners":{"acme":11},"runner_box":true}"#,
+            )
+            .unwrap();
+        }
         release(&d, &[3; 32], &[("entry.js", b"export default {}"), ("ab12-index_bg.wasm", b"\0asm")], DIGEST);
         let rid = hex(&Sha256::digest(fs::read(d.join("release.json")).unwrap()));
         // The deployment's state across the three runs: old at 100%, then old 90% and new 10% made at T.
@@ -523,6 +648,7 @@ mod tests {
                     ok(json!({}))
                 }
                 ("GET", "/secrets_store/stores") => ok(json!([{ "id": "st1", "name": "graft-runners" }])),
+                ("GET", "/workers/scripts") => ok(json!([{ "id": "graft-runners", "migration_tag": "v2" }])),
                 ("GET", "/containers/applications") => ok(json!([
                     { "id": "a3", "name": "graft-runners-sandboxstd3" }, { "id": "a4", "name": "graft-runners-sandboxstd4" }
                 ])),
@@ -535,7 +661,13 @@ mod tests {
         let err = upgrade_with(&cf, upgrade_args(&d, IMAGE), t + CANARY - 1).unwrap_err();
         assert!(err.contains("at 10%"), "{err}");
         upgrade_with(&cf, upgrade_args(&d, IMAGE), t + CANARY).unwrap();
-        let log = log.lock().unwrap();
+        let log = log.lock().unwrap().clone();
+        (rid, log)
+    }
+
+    #[test]
+    fn upgrade_canaries_at_10_percent_then_goes_to_100_only_a_day_later() {
+        let (rid, log) = canary(false);
         let deploys: Vec<Value> = log
             .iter()
             .filter(|(m, p, _)| m == "POST" && p == "/workers/scripts/graft-runners/deployments")
@@ -562,6 +694,42 @@ mod tests {
             ["/containers/applications/a3", "/containers/applications/a4"],
             "the image rolls only at 100%"
         );
+    }
+
+    /// With `runner_box`, the 10% version carries the image in `RunnerBox`'s image map and sets `RUNNER_BOX`, so its
+    /// own starts run it, and no run rolls an application.
+    #[test]
+    fn upgrade_with_runner_box_carries_the_image_in_the_version_and_rolls_nothing() {
+        let (_, log) = canary(true);
+        let upload =
+            log.iter().find(|(m, p, _)| m == "POST" && p == "/workers/scripts/graft-runners/versions").unwrap();
+        let upload = String::from_utf8_lossy(&upload.2);
+        assert!(upload.contains(&format!(
+            r#"{{"class_name":"RunnerBox","images":{{"runner":"{IMAGE}"}},"name":"graft-runners-runnerbox"}}"#
+        )));
+        assert!(upload.contains(r#"{"name":"RUNNER_BOX","text":"1","type":"plain_text"}"#), "{upload}");
+        assert!(!log.iter().any(|(m, ..)| m == "PATCH"), "nothing rolls");
+        assert!(!log.iter().any(|(_, p, _)| p.contains("/rollouts")), "nothing rolls");
+        let deploys = log.iter().filter(|(m, p, _)| m == "POST" && p == "/workers/scripts/graft-runners/deployments");
+        assert_eq!(deploys.count(), 2, "10%, then 100%");
+    }
+
+    #[test]
+    fn upgrade_refuses_an_account_without_runnerbox() {
+        let d = scratch();
+        release(&d, &[3; 32], &[("entry.js", b"export default {}"), ("ab12-index_bg.wasm", b"\0asm")], DIGEST);
+        let (url, _rx) = serve(5, move |s| {
+            let ok = |r: Value| (200, json!({ "success": true, "result": r }).to_string());
+            match path(s).as_str() {
+                "/workers/scripts/graft-runners/deployments" => ok(json!({ "deployments": [{
+                    "versions": [{ "version_id": "old", "percentage": 100 }], "created_on": "2026-11-15T12:00:00Z"
+                }] })),
+                "/workers/scripts" => ok(json!([{ "id": "graft-runners", "migration_tag": "v1" }])),
+                _ => ok(json!({ "annotations": {} })),
+            }
+        });
+        let err = upgrade_with(&Cf::with(&url, "r", "t"), upgrade_args(&d, IMAGE), 0).unwrap_err();
+        assert!(err.contains("runners init first"), "{err}");
     }
 
     #[test]

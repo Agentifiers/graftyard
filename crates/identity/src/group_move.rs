@@ -94,7 +94,41 @@ pub fn next_step(cfg: &GroupConfig, leader: SiteId, to: &PlacementRecord) -> Mov
     MoveStep::Swap { add, drop }
 }
 
-/// How long a repository group's planned `Transfer` waits for the target site's git cache shard to answer its
+/// The `Joint`'s home after `Swap { add, drop }` on `p`: the home stays unless its site leaves; then the target's home
+/// if the new half holds it as a Full voter, else the new member's site, until `Home` moves it.
+pub fn swap_home(p: &graftyard_types::Placement, add: SiteId, drop: SiteId, to_home: SiteId) -> SiteId {
+    if p.home() != drop {
+        return p.home();
+    }
+    // The new member on `add` takes the kind of the one on `drop`.
+    let at = if to_home == add { drop } else { to_home };
+    let full =
+        to_home != drop && p.voters().iter().any(|m| m.site == at && m.kind == graftyard_types::MemberKind::Full);
+    if full { to_home } else { add }
+}
+
+/// The site a planned step makes the group's next leader, whose git cache shard the step waits for first (G11):
+/// a `Transfer`'s target, or the new home a `Home` or a home-moving `Swap` commits. Once a config naming another home
+/// is in the log, the raft core hands leadership to it by itself (`maybe_hand_off`), so the wait comes before that
+/// config, not before a `Transfer` the core makes moot (m3fg11: `Home` committed and the leader moved 1.5 s later,
+/// with no `Transfer` asked). `None` when the step moves no leader.
+pub fn warm_site(cfg: &GroupConfig, leader: SiteId, to: &PlacementRecord, step: MoveStep) -> Option<SiteId> {
+    let next = match (step, cfg) {
+        (MoveStep::Transfer { to }, _) => to,
+        (MoveStep::Home { home }, _) => home,
+        (MoveStep::Swap { add, drop }, GroupConfig::Normal(p)) => {
+            let home = swap_home(p, add, drop, to.home);
+            if home == p.home() {
+                return None;
+            }
+            home
+        }
+        _ => return None,
+    };
+    (next != leader).then_some(next)
+}
+
+/// How long a repository group's planned move waits for the next leader site's git cache shard to answer its
 /// catch-up before it moves leadership anyway [guess]. After B0-31 m3fr7's rehome to apac, that site's shard took
 /// 69.0 s to catch up (268 MB in 257 packs), and every MergeQueue merge in that window answered `warming`
 /// (`decisions/OPEN-QUESTIONS.md`, G11). Waiting first moves that window ahead of the hand-off, while the old leader
@@ -133,7 +167,9 @@ pub fn transfer_gate(warm: bool, wait: Option<WarmWait>, now: Timestamp) -> (Tra
         return (TransferGate::Go, None, waited);
     }
     if waited >= bound {
-        return (TransferGate::GoCold, None, waited);
+        // The expired wait is kept, so the next step of the same move (a `Transfer` after a cold `Home` the core did
+        // not hand off) goes cold at once instead of waiting a second bound.
+        return (TransferGate::GoCold, wait.map(|w| WarmWait { last: now, ..w }), waited);
     }
     let since = wait.map_or(now, |w| w.since);
     (TransferGate::Hold, Some(WarmWait { since, last: now }), waited)
@@ -178,7 +214,10 @@ mod tests {
         // One ms short of the bound still holds.
         let w = Some(WarmWait { since: Timestamp(0), last: Timestamp(59 * S) });
         assert_eq!(transfer_gate(false, w, Timestamp(60 * S - 1)).0, TransferGate::Hold);
-        assert_eq!(transfer_gate(false, w, Timestamp(60 * S)), (TransferGate::GoCold, None, 60 * S));
+        let (gate, kept, waited) = transfer_gate(false, w, Timestamp(60 * S));
+        assert_eq!((gate, waited), (TransferGate::GoCold, 60 * S));
+        // The expired wait is kept: the move's next step to the same site goes cold at once, not after a second bound.
+        assert_eq!(transfer_gate(false, kept, Timestamp(63 * S)).0, TransferGate::GoCold);
         // Warm by the deadline: it goes warm, never held.
         assert_eq!(transfer_gate(true, w, Timestamp(60 * S)), (TransferGate::Go, None, 60 * S));
     }

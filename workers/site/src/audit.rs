@@ -373,7 +373,7 @@ async fn repo_step(
             // leader is found once, then called with a step's own deadline.
             let body = json!({ "to": to }).to_string();
             let probe = json!({ "q": { "probe": true } }).to_string();
-            // 40 steps, not counting the asks a transfer holds while the target's shard warms: those end within
+            // 40 steps, not counting the asks a step holds while the next leader's shard warms: those end within
             // WARM_BEFORE_TRANSFER on their own.
             let mut steps = 0;
             while steps < 40 {
@@ -402,7 +402,7 @@ async fn repo_step(
                 if let Some(e) = v.get("error") {
                     return Err(format!("{chain} move: {e}"));
                 }
-                // The transfer waits for the target's git cache shard (G11): ask again shortly.
+                // The step waits for the next leader site's git cache shard (G11): ask again shortly.
                 if v.pointer("/ok/warming").is_some() {
                     steps -= 1;
                     worker::Delay::from(std::time::Duration::from_secs(5)).await;

@@ -4369,6 +4369,45 @@ Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (9
 - A long sweep whose GRAY or live half breaks the 30 s bound, or a second sweep that again puts more GRAY seeds over 20 s than main (here 33 against 22): find whether the commit round renews a gray leader's promises.
 - A purge refused `NoTombstone` again after a second call on a group with a committed tombstone: the probe did not wake it, so wake it from the member (`keep_led` for a tombstoned repository).
 
+### `r23-runnerbox`: hosted runners start on one `RunnerBox` class with the platform's `ctx.container`, so a 10% version runs its own image, 2026-11-19
+
+**Status.** Code-only, on branch `r23-runnerbox`, not deployed. Answers R23 (`decisions/OPEN-QUESTIONS.md`). Option (a) of the R23 design, approved by the operator through the lead thread on 2026-11-19.
+
+**Decision.**
+- **One class, one application.** `RunnerBox` (`workers/runners/entry.mjs`, start logic in `workers/runners/box.mjs`) extends `DurableObject` and uses no Sandbox SDK. It runs on one container application created with the `durable_object` scheduling policy, which takes no image, instance type, or `max_instances` (`cli/src/runners.rs`, `ensure_apps`). Each `graft-runners` version names the image in its metadata, `containers: [{ class_name: "RunnerBox", images: { runner: <digest> } }]`, as the site script's `GitShard` does.
+- **The start.** A pass calls `arm(name, instance, jit)`, which stores the start once and sets the object's alarm. The alarm calls `ctx.container.start({ image: images.runner, instance, enableInternet: true, env: { JIT }, entrypoint })` unless the container is running, with `entrypoint` `/bin/sh -c 'exec /home/runner/run.sh --jitconfig "$JIT"'`, so the runner is PID 1 and its exit stops the container. A start that the platform refuses ("no container instance") is tried again every 10 s and gives up 6 minutes after the arm, before `HOSTED_IDLE`. A start that ends within 3 s logs `runner exited within 3 s … image X`; one that runs sets the inactivity timeout to 6 h and logs `launched … image X`. A destroy wins over a start in flight. F80's shape is kept.
+- **Routing.** The Worker starts on `RunnerBox` while the version's `RUNNER_BOX` variable is "1" (`runners.json` `runner_box`), and on the legacy `SandboxStd3`/`SandboxStd4` otherwise. `destroy` asks `RunnerBox` first, which answers false for a runner it never held, then the legacy class.
+- **Releases.** Each stands alone and rolls back alone.
+  - **M1** (`graftyard runners init` on the `v1` account, a whole deploy): adds the `RunnerBox` class (migration `v1` to `v2`) and its application, and removes nothing; `RUNNER_BOX` stays unset, so nothing starts on it. Rollback: none needed for behavior, since the class is unused; a class cannot be removed without a new migration, so it stays.
+  - **M2** (`graftyard runners upgrade` with `runner_box: true`): the version at 10% for a day starts its runners on `RunnerBox` with its own image, then 100%. No application rolls. Rollback: deploy the previous version at 100%; boxes already armed finish their jobs, and `destroy` still reaches runners on either class.
+  - **M3**, only after M2 has run a day at 100% with no stale runners: a whole deploy with migration `v3` (`deleted_classes: ["SandboxStd3", "SandboxStd4"]`), then delete their two applications. Rollback: there is no class rollback, which is why M3 has its gate; to recover, deploy M2's code without the legacy fallback, or re-add the classes under a new migration.
+- **Concurrency.** With no `max_instances`, a cold burst is bounded by: `decide`'s per-owner cap across passes (a registration past 20 gets 409 and the pass moves to the next label); `RUNNER_VCPU_STOP_PCT` within a pass, counted from every registered runner (the start is skipped, counted in `vcpu_stopped`, and logged); and the account's vCPU limit (placement is refused, the box retries, then gives up and the registration goes stale). Overlapping passes each count only what they read, so between owners the account limit is the backstop.
+
+**Why.** R23: a `default`-policy application holds one image, so `runners upgrade`'s 10% version started its Sandboxes on the old image, and a bad image reached every runner at once at the 100% roll. The pinned `@cloudflare/containers` 0.3.7 builds the start config from four fields only and cannot pass `image` or `instance` (`container.js:1317-1378`), and Cloudflare's guide says the `Container` class does not support the `durable_object` policy [doc: containers/guides/migrate-to-durable-object-scheduling-policy]. The policy is fixed at creation [doc: containers/configuration/scheduling-policy], so a new application is needed in any case. During a gradual deployment each object sees the image map of the version that runs it [doc], and running containers keep their startup image [measured, `tests/m0/results/container-survival.json`].
+
+**What it beat.**
+- **(b) Wrapping the Sandbox SDK's private `container`** in the `RunnerSandbox` constructor. It needs the same new application and all three releases, and a `^0.3.x` patch that renames the field or adds a second start site makes every start fail, or silently run the default image, with no compile error.
+- **(c) No new application: rolling the existing applications at 10%, or alternating application pairs per release.** An application rollout replaces running containers, so it can kill jobs in flight, and an image rolled apart from the Worker version breaks the pairing between the runner image and the code that starts it.
+- **Sandbox SDK 1.x.** It is a rewrite with no Sandbox class whose own example calls `ctx.container.start`, so it buys nothing over calling it directly.
+
+**Evidence.**
+- `workers/runners/tests/box.test.mjs` (`node --test 'workers/runners/tests/*.test.mjs'`), a fake account on virtual time. All of these fail on main, which has no `box.mjs`:
+  - a 10% version starts its own image and the other 90% theirs;
+  - a broken image at 10% logs one `exited within` line naming it, while the 90% launch;
+  - placement refusals retry and a retried alarm starts none, with exactly one placed start;
+  - the runner is PID 1 and its exit stops the container;
+  - a cold burst of 16 on 20 vCPU never runs more than 20, and starts that outlast the give-up close;
+  - a destroy during a refused or placed start wins.
+- `a_cold_burst_is_bounded_by_the_cap_across_passes_and_the_vcpu_stop_within_one` (`workers/runners/src/control.rs`): one pass over three owners with 100 vCPU starts 35 (70 vCPU) and skips 25; four overlapping passes register exactly 20 per owner and no pass starts past its stop.
+- CLI (`cli/src/runners.rs`): init creates `RunnerBox`'s application on `durable_object` with no image or cap and migrates `v1` to `v2`; on a `v1` account it adds only `RunnerBox`; a `runner_box` upgrade's version carries the image and `RUNNER_BOX`, and nothing rolls; upgrade refuses an account without `RunnerBox`.
+- Plants 109 to 122 (`tests/m4/wp4/plant.py`), 14 of 14 caught. Plants 15, 16, and 18 to 20 still caught.
+- **[unverified] until M1's cold-burst check on the runner account:** how a refused placement surfaces natively (a throw from `start` or a rejected `monitor`; `box.mjs` handles both); whether a direct API version upload needs Wrangler's `image-preparations` step first; that the `cloudflare/sandbox` base image runs `run.sh` under the entrypoint override; and the `durable_object` policy itself, which is in beta.
+
+**Flip.**
+- M1's cold-burst check shows a refused placement that is neither a throw nor a "no container instance" rejection, or starts that place more than the account's vCPU: then cap starts in the box (a counter object) before M2.
+- A canary whose bad image the by-image count missed: then gate the 100% run on `tests/m4/wp4/sandboxstarts.py`'s `by_image` in `runners upgrade` itself.
+- The Containers platform adding an application-level instance cap to the `durable_object` policy: then set it as the legacy applications' `max_instances` did.
+
 ### `roll-up`: a bounded roll of a chain's oldest promoted packs, recorded as `Compacted` on the repository chain, 2026-11-16
 
 **Status.** Approved by the operator after round 32's review, with the repository-chain form; built on branch `rollup` (G9), not deployed. Built: the fold and `verify`, the archive alarm's roll step (`log_archive::roll_plan`, `Step::Rolled`), the site's warm `/roll` through the promotion path, the container's `/roll`, the rehydrate's read of produced packs with its fallback to the consumed packs, the site variable `GRAFTYARD_ROLLUP` that gates every roll (`log_archive::rollup_enabled`: unset, the alarm sends no `/roll` and records no `Compacted`; a site day sets it to `1` only after `FormatsEnable` enabled 32.25, as R24's `GRAFTYARD_APP_HOOKS` waits for 32.24), and the deletion guard as a pure rule (`sweep::consumed_deletable`). Not built: the sweeper's deletion of consumed packs, which waits for that rule's shard answers (G9's remainder). DESIGN, Shape, `Promoted` and `rehydrate`, and Failure modes (pack buckets bad-deploy, git caches noisy-tenant) carry the rule; this entry carries the numbers.
@@ -5534,31 +5573,45 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 - `rcwait` at p99 above about two reads, about 4 s. The batch then holds callers longer than reading alone would.
 - A write is seen to pass on a token, `jti` or grant revoked before it arrived. That would break the invariant.
 
-### `g11-warm`: a planned rehome warms the target site's git cache shard before it moves the leader, 2026-11-19
+### `g11-warm`: a planned rehome warms the next leader site's git cache shard before it moves the leader, 2026-11-19
 
-**Status.** Built on branch `g11-warm`, code-only, approved by the orchestrator. Not deployed. It needs a site day, and a hosted rehome judges it. Nothing in `crates/raft`.
+**Status.** Built on branch `g11-warm` (merged as `1d815c92`) with the wait on `Transfer`, measured on m3fg11, and moved to the step that triggers the hand-off on branch `g11-home`, code-only, approved by the orchestrator. Not deployed: it needs a site day, and a hosted rehome judges it. Nothing in `crates/raft`.
 
 **Decision.**
-- A repository group's planned `Transfer` (`/move`, `move_step` in `workers/site/src/member.rs`) first asks the target site's first git cache shard of the network for `/catchup`, as a client with `next=1`. That starts a stopped container, and a shard that is still rehydrating answers `warming` at once.
-- While the shard answers anything but 200, the step answers `{"warming": true}` without transferring, and the caller asks again. The audit consumer's move (`repo_step`) asks again after 5 s and does not count those asks against its 40 steps.
-- The wait has a deadline, `WARM_BEFORE_TRANSFER` (60 s [guess], `graftyard_identity::group_move`). Past it the step transfers anyway, answers `"cold": true` with the ms waited, and logs `transfer to site N cold`.
-- The wait is kept per leader isolate, by chain and target site (`transfer_gate`). A wait whose last ask is older than the deadline belongs to a move that stopped asking, so it starts again.
+- A repository group's planned `/move` step (`move_step` in `workers/site/src/member.rs`) that makes another site the next leader first asks that site's first git cache shard of the network for `/catchup`, as a client with `next=1`. That starts a stopped container, and a shard that is still rehydrating answers `warming` at once. `graftyard_identity::group_move::warm_site` names the site:
+  - a `Home` step's new home;
+  - a `Swap` that drops the home, the `Joint`'s new home (`swap_home`);
+  - a `Transfer`'s target.
+- The wait covers `Home` and a home-moving `Swap` because a config naming another home triggers the hand-off. Once such a config is in the log, the raft core's `maybe_hand_off` (`crates/raft/src/member/health.rs`) transfers leadership to it by itself, after HOME_CALLS answered calls and one health window. So a wait on `Transfer` alone comes after the hand-off.
+- The wait stays on `Transfer`, for a move where the core did not hand off: a home whose calls failed, `home_after` after an abandoned transfer, a `Joint`'s leader on the dropped site, or a leader site that leaves. When a step went cold, the expired wait is kept, so that move's next step to the same site goes cold at once instead of waiting a second bound.
+- While the shard answers anything but 200, the step answers `{"warming": true, "waitedMs", "site"}` and changes nothing; the caller asks again. The audit consumer's move (`repo_step`) asks again after 5 s and does not count those asks against its 40 steps.
+- The wait has a deadline, `WARM_BEFORE_TRANSFER` (60 s [guess], `graftyard_identity::group_move`). Past it the step goes anyway, its answer carries `"cold": true` with the ms waited, and it logs `move <chain>: <step> to site N cold`.
+- The wait is kept per leader isolate, by chain and site (`transfer_gate`). A wait whose last ask is older than the deadline belongs to a move that stopped asking, so it starts again.
 - Only repository chains wait: identity and system groups have no git cache shard.
+- Only the planned `/move` route waits. An election, `STEP_DOWN`, a drain or `no_lead` hand-off, and a re-placement never ask a shard. No path other than `/move` writes a config naming another home: a re-placement and `/learners` keep `p.home()`, and `/reconfigure` is a test route with no product caller.
 
-**Why.** After B0-31 m3fr7 moved repo:65570's home and leader to apac, apac's shard was cold. Its rehydrate ran 34.2 s, tail 59.7 s, catch-up 69.0 s (268 MB in 257 packs), and every MergeQueue merge in that window answered `warming` after MERGE_WAIT: 5 of 5, 28 to 66 s after the move, and none once it was warm [measured, `tests/am1/results/lm1-rows-m3f.md`, Rows m3fr7; `decisions/OPEN-QUESTIONS.md`, G11]. Waiting before the hand-off moves that catch-up to a time when the old leader still serves merges from its own warm shard.
+**Why.**
+- After B0-31 m3fr7 moved repo:65570's home and leader to apac, apac's shard was cold. Its rehydrate ran 34.2 s, tail 59.7 s, catch-up 69.0 s (268 MB in 257 packs), and every MergeQueue merge in that window answered `warming` after MERGE_WAIT: 5 of 5, 28 to 66 s after the move, and none once it was warm [measured, `tests/am1/results/lm1-rows-m3f.md`, Rows m3fr7; `decisions/OPEN-QUESTIONS.md`, G11]. Waiting before the hand-off moves that catch-up to a time when the old leader still serves merges from its own warm shard.
+- On m3fg11 (main `1d815c92`, the wait on `Transfer` only), the first `/move` committed `Home` (home 2) at 09:09:58Z. The core moved leadership to site 2 about 1.5 s later (term 2 → 3), and the next `/move` answered `Done`. The `Transfer` arm never ran: 0 held asks, no `waitedMs`, no `cold` label, and 1 of 9 merges in the next minute answered `warming` against a shard torn down just before the move [measured, `tests/am1/results/lm1-rows-m3f.md`, "Site day m3fg11"].
 
 **What it beat.**
 - **Leaving it to the row's setup** (`tests/fanout/shardwarm.mjs`): that works for B0-31 but not for a customer's rehome.
 - **Warming after the transfer:** that is the m3fr7 window itself.
 - **Waiting with no deadline:** a target shard that never warms, such as one whose container cannot start, would stop the move. The hand-off is what a rehome is for, and the shard still warms after it.
+- **Holding the core's `maybe_hand_off` on the shard:** that puts a shard check in `crates/raft`, and a cache in the raft core's leader rule. Waiting before the config that triggers the hand-off keeps the core unchanged.
 
 **Evidence.**
-- `group_move` tests:
+- `group_move` unit tests:
   - `a_transfer_holds_while_the_target_shard_warms_and_goes_once_it_is_warm`;
-  - `a_shard_that_never_warms_lets_the_transfer_go_cold_at_the_deadline`;
+  - `a_shard_that_never_warms_lets_the_transfer_go_cold_at_the_deadline`, which also checks that the expired wait is kept;
   - `a_wait_left_by_a_move_that_stopped_asking_starts_again`.
-- `tests/m0carried/plant49.py` catches 5 of 5, among them the orchestrator's plant: a transfer that goes at once.
-- No hosted measurement yet. `tests/fanout/rows.sh` keeps its `shardwarm.mjs` step until a hosted rehome shows the move warmed the shard itself.
+- `crates/identity/tests/group_move.rs`, on real members:
+  - `a_planned_home_holds_while_the_new_homes_shard_warms_and_the_hand_off_follows`: 4 held asks change neither home nor leader, then `Home` commits warm and leadership follows with no `Transfer`;
+  - `a_planned_home_commits_cold_at_the_deadline_or_at_once_when_warm`;
+  - `a_failover_never_waits_for_the_shard`: with `Home` held, the leader's loss elects site 1, which commits a write;
+  - `warm_site_names_the_next_leaders_site`.
+- `tests/m0carried/plant49.py` catches 8 of 8, among them the orchestrator's two plants: a transfer that goes at once, and a `Home` that commits at once.
+- m3fg11 is the measurement for the `Transfer`-only wait. `tests/fanout/rows.sh` keeps its `shardwarm.mjs` step until a hosted rehome shows the move warmed the shard itself.
 
 **Flip.** Either of these on a hosted rehome:
 - Most planned rehomes move cold (`"cold": true`). The bound is then too short for the shards it meets, or the catch-up ask is wrong.
@@ -5566,7 +5619,7 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 
 ### `tier-read-batch`: a write's spread read and its shed retries share one batch per chain and query, 2026-11-19
 
-**Status.** Built on branch `tier-read-batch` from main `896fb32f`, not deployed. Edge code only (`workers/edge`, and `crates/lookup` exposes one pass and `retry_shed`), so it ships on an edge day. Nothing in `crates/raft`.
+**Status.** Reverted from main on 2026-11-19 after B0-33 m57b33 (graft-m2b, edge f786a952 from main `61853463`): 441 uncaught edge 500s appeared, which m56 had none of. A runtime cancel ("code had hung and would never generate a response") at 09:52:04Z was followed by "memory access out of bounds" in `worker::Delay`'s poll, "Cannot invoke closure from previous WASM instance" ×394 and "Promise will never complete" ×199. 7,467 503s were the new "waited past its deadline for another write's read", trshare p50 was 0, and trwait p99 sat at the 4 s flip line. Member /read per request did fall, from 2.56 to 1.35 [measured, LM-1 thread T-01a1c694, m57b33 verdict]. The code stays on branch `tier-read-batch` (76776859) until the hang is explained; the text below is the design as built.
 
 **Decision.** `crate::spread_read` for a write-class request (`Ctx::write`) runs through `rcache::retried`, `edge-read-batch`'s batch with the shed retry inside it:
 - Each try is one `graftyard_lookup::spread_pass` through the key's batch (`rcache::batched_from`, the same `Ttl::step` as `edge-read-batch`). A write never takes the answer of a pass that started before it arrived: it waits out the pass in flight and shares the next one, which the first waiter to see the key idle starts.
@@ -5643,3 +5696,27 @@ Report the served share, the `tierOff` count and its share of 503s whenever they
 **Evidence.** `research/cloudflare.md`, Workers (request body by plan) and the Spectrum row (plan prices). `scripts/cost.py` (`PLAN`) and `python3 scripts/cost.py --ssh-option`, where the `cloudflared` option on Pro adds $22, $25, and $40 at the three tiers.
 
 **Flip.** A measured push or imported pack over 100 MB on an install that can't use SSH or Enterprise. That install moves to Business, and if such installs are the norm, Business becomes the default again.
+
+### `lock-split`: additive writers stop excluding validates, 2026-11-19 (designed, not built, gated on step one's row)
+
+**Status.** Designed, not built. The operator accepted this design on 2026-11-19 and held the build behind its own flip: it is built only if a B0-34 row on `b034-lockwait`'s instruments shows catch-ups waiting over 1 s for the network's lock alone behind validates (`lock_excl_wait_ms`). The design text in `design/DESIGN.md` comes with the build.
+
+**Decision.** In the git cache shard's container (`containers/git/server/main.go`), each network gets two locks. `rw` is today's `sync.RWMutex`: validates, upload-pack and ls-refs, `/promote`, `/merge` and every other reader take it shared; only the deleters take it alone. `wr` is a new `sync.Mutex` for the additive writers (adopt and the index path's move in `/ingest`, `&spooled=1`, `/ingest-batch`, `/refs`, `midxAfterIngest`), which take `wr` and then `rw` shared. The order is `wr` first, then `rw`, and a deleter takes only `rw`, so there is no cycle; writers still exclude one another, so `moveIn`, `record` and the multi-pack-index never interleave. The deleters are evict, which already takes `TryLock` and answers 409 rather than waiting, and fresh init. `repack -d` is not one: `startRepack` holds no network lock on purpose (LM-1 round 7, `TestRepackHoldsNoNetworkLock`), and this keeps it so.
+
+Safety, objects before refs and no half-adopted pack:
+- **Pack visibility.** git finds a pack by its `.idx`. `moveIn` renames `.pack`, `.rev`, then `.idx`, each atomically, so a reader sees no pack or the whole pack, and a reader that started before the move rescans the pack directory on a missed object (`reprepare_packed_git`). `/ingest-batch`'s `index-pack` writes temporary files and renames them in the same order, as receive-pack does beside concurrent fetches.
+- **`.keep` order.** A spooled promotion's `.keep` is written before its index is renamed in (`b034-keep`, built apart from this, since the race with the lock-free repack exists without it).
+- **Objects before refs.** A catch-up calls `apply_refs` only after `ingest_all` returned for every pack of the page (`crates/git/src/catchup.rs`), and `/ingest` answers only after its renames. As a backstop, `update-ref --batch-updates` rejects a ref to an object the disk lacks.
+- **Adopt against the sweep.** `sweepValidated` runs inside validate and would overlap adopt, so adopt first claims `graft/validated-<sum>` by renaming it to a private name. Either the sweep removed it first and adopt falls back to the index path, or adopt owns it; the same claim settles adopt against `finishValidate`'s replace, whose copy is the same bytes.
+- **One ref snapshot per validate.** A validate runs several git processes (connectivity, `behind`, HEAD, and per update a rev-list and merge-base), each reading refs on its own, and `/refs` writes deletes and updates in two transactions for D/F renames. So under `rw` shared, validate reads `for-each-ref` once inside a short `refsMu` read, every walk uses `--not --stdin` with the snapshot's oids instead of `--all`, and HEAD and each `u.Ref` come from the snapshot. `/refs` holds `refsMu` alone across both transactions. A snapshot then sees refs before or after a whole `/refs` call, objects only grow while the validate runs, and its result is the validate run serially at the snapshot's moment; a writer waits for snapshot reads, milliseconds, not whole validates.
+- **Readers outside validate.** upload-pack's advertisement can't take a snapshot, so `/refs` stays one transaction unless a delete and an update conflict by D/F, and that path alone takes `rw` alone, as today.
+
+Starvation: a deleter waiting on `rw.Lock` already blocks new `RLock`s (Go's `sync.RWMutex` [doc]), so validates can't starve it, and its wait is bounded by the longest running reader. A stock upload holds `rw` only while its client reads, evict never waits, and fresh init, the one blocking deleter, runs only at rehydrate. What goes away is mt4's convoy, where a writer queued on `rw.Lock` held every new validate behind it.
+
+**Why.** B0-34 mt4's slow clone misses (55 of 56 over 5 s) and slowest human pushes waited for catch-ups on the monorepo's busy first shard, and a catch-up's `/ingest` and `/refs` take the lock alone, so they wait for every running validate and then hold new validates behind them [inference, `tests/am1/results/b034-mt4.md`, "The ranked fix candidate"]. Nothing measured the wait itself, so step one (`b034-lockwait`) measures it first.
+
+**Beat.** Keeping one lock (today's code), since it is correct and the inference is unmeasured; this design wins only if step one's row confirms the wait. Taking `rw` shared for writers with no snapshot: a validate could mix two ref states, or read a deleted ref with its new name not yet set.
+
+**Evidence.** The code paths above at `50da79d7`. The build's test, `TestValidateSerialEquivalence`: a repository with history, a script of K writer steps (ingests on the adopt, index and spooled paths, `/refs` sets with a D/F rename, a multi-pack-index write) and N validates (pack and detail-only, default and `disk=1`, some on content only later steps bring), each validate's result checked against serial validates at every state S0..SK: it must equal serial(S_i) for an i between the step completed before it started and the step completed after it ended. Test hooks pause inside `moveIn` between renames, between `/refs`' two transactions, and between adopt's claim and its move. Plants it must catch: `moveIn` renaming `.idx` first, validate walking `--all` instead of its snapshot, `/refs` without `refsMu`, adopt without its claim rename, and the `.keep` after the `.idx`.
+
+**Flip.** Built: when a B0-34 row shows catch-ups waiting over 1 s for the lock alone behind validates (`lock_excl_wait_ms`); if that wait is small, the inference is dead and this is not built. Reversed after the build: any validate, in a hosted row or the Go test, that sees a missing object it would not see serially (a 422 connectivity or missing-base, or a held `disk=1` answer, that passes on an immediate retry with no catch-up between), or a deleter whose wait grows past the longest reader's.

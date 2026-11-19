@@ -41,7 +41,9 @@ def main(argv):
         samples = [json.loads(x) for x in f if x.strip()]
     src = argv[1]
     text = src if src.lstrip().startswith("{") else open(src).read().strip().splitlines()[-1]
-    wins = [(ms(a), ms(b)) for a, b in json.loads(text)["outages"]]
+    outs = json.loads(text)["outages"]
+    # A low-rate row (arrivals.py's "n/a (low rate)") is not judged by the rule: nothing is removed.
+    wins = [(ms(a), ms(b)) for a, b in outs] if isinstance(outs, list) else []
     kinds = argv[2:] or ["read:api", "read:ref", "merge:only", "push:agent"]
     for k in kinds:
         mine = [s for s in samples if s[1] == k]
