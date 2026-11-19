@@ -7,21 +7,28 @@ import subprocess
 MB = "workers/site/src/member.rs"
 LK = "crates/lookup/src/lib.rs"
 SITE = ["cargo", "test", "-q", "-p", "graftyard-site", "--lib", "--", "a_follower_serves_only"]
-LOOK = ["cargo", "test", "-q", "-p", "graftyard-lookup", "--lib", "--", "whole_tier_read_every_member"]
+LOOK = ["cargo", "test", "-q", "-p", "graftyard-lookup", "--lib", "--", "whole_tier_read_every_member",
+        "leaderless_group_read_only"]
 GATE = "    if index && (if leading { off_leader } else { !servable }) {"
-DECL = "            (false, true) => Spread::TierOff,"
+DECL = "            (false, true, _) => Spread::TierOff,"
+ELECT = "            (false, false, true) => Spread::Elect,"
+EBODY = "        Spread::Elect => Some(ELECT_PROBE.to_owned()),"
 PRED = '    q.get("rows").is_some_and(Value::is_boolean) || q.get("lsRefs").is_some()'
 M = [("main's gate: a leader serves every read-index read", MB, GATE, "    if index && !leading && !servable {", SITE),
      ("the leader refuses only when it is past HEAVY_READS", MB, GATE,
       "    if index && (if leading { off_leader && heavies >= HEAVY_READS } else { !servable }) {", SITE),
      ("a follower refuses an off-leader read too", MB, GATE, "    if index && (off_leader || (!leading && !servable)) {", SITE),
-     ("main's verdict: a declined whole-tier read goes to the leader", LK, DECL, "            (false, true) => Spread::Leader,", LOOK),
-     ("a declined whole-tier read with a leader named counts as absent", LK, DECL, "            (false, true) => Spread::Absent,", LOOK),
+     ("main's verdict: a declined whole-tier read goes to the leader", LK, DECL, "            (false, true, _) => Spread::Leader,", LOOK),
+     ("a declined whole-tier read with a leader named counts as absent", LK, DECL, "            (false, true, _) => Spread::Absent,", LOOK),
      ("a declined whole-tier read is a plain shed, with no tierOff reason", LK, DECL,
-      "            (false, true) => Spread::Shed(OVERLOAD_RETRY_MS),", LOOK),
+      "            (false, true, _) => Spread::Shed(OVERLOAD_RETRY_MS),", LOOK),
      ("the tierOff reason drops OVERLOADED, so callers stop treating it as shed", LK,
       '    format!("{chain}: every member declined a read the leader never serves: {OVERLOADED} ({TIER_OFF})")',
       '    format!("{chain}: every member declined a read the leader never serves ({TIER_OFF})")', LOOK),
+     ("tier-off without the probe: a leaderless decline is TierOff, so no lookup starts an election", LK, ELECT,
+      "            (false, false, true) => Spread::TierOff,", LOOK),
+     ("a leaderless decline counts as absent", LK, ELECT, "            (false, false, true) => Spread::Absent,", LOOK),
+     ("Elect sends the dump itself the leader's way", LK, EBODY, "        Spread::Elect => Some(body.to_string()),", LOOK),
      ("ls-refs is not covered", LK, PRED, '    q.get("rows").is_some_and(Value::is_boolean)', LOOK),
      ("a merge's rows are kept off the leader too", LK, PRED, '    q.get("rows").is_some() || q.get("lsRefs").is_some()', LOOK)]
 for name, f, old, new, cmd in M:
