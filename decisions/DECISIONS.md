@@ -5564,6 +5564,45 @@ That the time is the isolate's per-read work and not the members' is an inferenc
 - Most planned rehomes move cold (`"cold": true`). The bound is then too short for the shards it meets, or the catch-up ask is wrong.
 - A move takes longer than before by more than WARM_BEFORE_TRANSFER. The wait then costs more than the merge window it saves.
 
+### `tier-read-batch`: a write's spread read and its shed retries share one batch per chain and query, 2026-11-19
+
+**Status.** Built on branch `tier-read-batch` from main `896fb32f`, not deployed. Edge code only (`workers/edge`, and `crates/lookup` exposes one pass and `retry_shed`), so it ships on an edge day. Nothing in `crates/raft`.
+
+**Decision.** `crate::spread_read` for a write-class request (`Ctx::write`) runs through `rcache::retried`, `edge-read-batch`'s batch with the shed retry inside it:
+- Each try is one `graftyard_lookup::spread_pass` through the key's batch (`rcache::batched_from`, the same `Ttl::step` as `edge-read-batch`). A write never takes the answer of a pass that started before it arrived: it waits out the pass in flight and shares the next one, which the first waiter to see the key idle starts.
+- A shed or error is shared as an answer is. After a shed, a write takes only a pass later than the one it saw, which may already be running, so writes shed together retry as one batch: one pass a round per key, not one per write. The backoff and deadline are `retry_shed`'s, unchanged.
+- A write still waiting on another write's pass at its own deadline ends with an OVERLOADED shed, as its own pass past the deadline would, so the edge answers 503 with `Retry-After: 1` or `ng` as before.
+- Waiters poll plain data (`BATCH_POLL`) on their own timer; no future, waker or promise crosses requests (F65, `lookup-poll`). Nothing is kept: a pass is shared only with the writes waiting on it (`never`). A pass in flight past `TIER_STALE` (6.5 s: three members at `FOLLOWER_CALL` each) is not waited on.
+- **The key** (`rcache::tier_key`) is the chain and the query's exact JSON text. Two writes share only when they ask the same chain for the same rows. A narrow API read's query holds its whole route (`{"rows": {"api": spec}}`) and shares only with that route on that repository; a merge's rows only with the same merge; the read gate's access rows only with each other. Freshness is not in the key: every pass a write takes started after the write arrived, so its read-index floor covers every write acknowledged before it.
+- **One tier read per push.** When the read gate's decision is cached, `agents::push_context` reads the gate's own query (`{"access": true, "agent": true}`, `api::push_rows_q`) instead of the agent rows alone, so it shares the batch of every push whose gate reads them. An older member that answers the access rows alone still gets an agent-rows read.
+- Read-class requests are unchanged: one pass, no retry, no batch.
+- A request's `server-timing` gains `trread`, `trshare` and `trwait` beside `rcread`, `rcshare` and `rcwait`: the passes it ran, the passes it shared, and the ms it waited in tier batches.
+
+**Why.** On B0-33 m56 (graft-m2b, why-logs `1465c208b`), every write read and retried its tier rows alone:
+- 90% of the row's 12,759 503s were "the repository's tier rows did not answer … every member asked shed the read" (`fivexxwhy.py`), and the learners shed 56,938 reads, 62% of them `late` (FOLLOWER_WAIT running out).
+- Offered requests stayed at 166 a second while member `/read` rose 189, 285, 445, 563 and 581 a second by minute, 98% on the learners: 2.5 member reads per request over the row and 3.5 in its last two minutes. The learners' read-index rounds slowed with it, p50 83 ms at 126 reads a second to 400 to 527 ms at 466 to 578.
+- 8,729 of 12,343 agent pushes had a cached gate decision and read their agent rows a second time alone (`context` p50 1,422, p90 3,746 ms). For the 2,551 `full` pushes with under 1 s of budget at the first send, `context` was p50 3,275 ms against 400 ms for pushes with 3 to 5 s left, and the front was flat at about 560 ms [measured, `tests/am1/results/b033-m56.md`].
+
+That the retries cause the growth, and that batching cuts member reads toward one per isolate per pass, is an inference: the edge did not log passes per request.
+
+**What it beat.**
+- **Sharing the pass in flight (single-flight).** Fewer reads, but a write could take a pass read before it arrived and act on a tier row older than an acknowledged write. Same rule as `edge-read-batch`.
+- **Batching each pass but retrying per caller.** N writes shed together each start their own next pass after their own backoff, so a shed round still costs up to N passes.
+- **Keying by chain alone.** A merge, an API route and a push gate would share passes of different rows.
+- **Caching tier rows for writes.** Breaks "a write reads fresh", as for identity.
+
+**Evidence.**
+- `rcache` tests, through `retried` on one clock:
+  - `writes_during_a_tier_read_share_the_next_read_never_the_one_in_flight`: 8 writes, 2 member reads; the 7 that arrived during pass 1 all get pass 2.
+  - `writes_shed_together_retry_as_one_batch_per_key`: 6 writes through 3 shed passes then a served one make 4 member reads, not 24; 4 writes always shed inside 1 s make at most 4 passes, against 12 alone, and every one ends OVERLOADED.
+  - `a_cached_gate_push_shares_the_gate_reads_batch`: 9 pushes, gate reads and cached-gate reads mixed, make 2 member reads; a merge read during a gate pass runs its own.
+- Each fails on main's behaviour. `tests/tierbatch/plant.py` catches 6 of 6: no batch (main: each write its own passes); after a shed a waiter takes the pass it saw; the key by chain alone; a cached-gate push reading its agent rows alone (main); a waiter handed the answer of the read in flight; a call taking any answer.
+
+**Flip.** Any of these on the next B0-33 or later:
+- Learner `/read` per offered request does not fall toward 1 (m56: 2.5 over the row, 3.5 at its end) while `trshare` shows sharing. The growth was then not the writes' own retries.
+- A write is seen to pass on a tier row older than a write acknowledged before it arrived. That breaks the invariant.
+- `trwait` at p99 above `SHED_RETRY_FOR` (4 s). The batch then holds writes past the window they had alone.
+
 ### `tier-off-leader`: a whole-tier dump or an `ls-refs` never runs on the acting leader, 2026-11-18
 
 **Status.** The orchestrator chose candidate (1) of the m53 leader-tail plan. Built on branch `tier-off-leader`, not deployed. The member half needs a site day; the edge half rides the same day. Nothing in `crates/raft`.

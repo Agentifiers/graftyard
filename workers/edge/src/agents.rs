@@ -339,6 +339,11 @@ pub(crate) struct AgentPush {
     core: graftyard_fold::MemStore,
 }
 
+/// The rows `push_context` reads when the read gate did not hold them: the gate's own query (`api::push_rows_q`).
+pub(crate) fn context_rows() -> serde_json::Value {
+    crate::api::push_rows_q()
+}
+
 pub(crate) async fn push_context(
     c: &Ctx<'_>,
     repo: &crate::Repo,
@@ -351,12 +356,19 @@ pub(crate) async fn push_context(
     if !agentish(c, &push.actor, install.as_ref(), &push.updates) {
         return None;
     }
-    // The read gate's one read holds the agent rows unless the member answered access alone (an older release).
+    // The read gate's one read holds the agent rows unless the member answered access alone (an older release). With
+    // the gate's decision cached, the push reads the gate's own query, not the agent rows alone, so it shares the
+    // batch of every other push to the repository (`tier-read-batch`); an older member's access-only answer still
+    // reads the agent rows on their own.
     let held = c.push_rows.borrow().as_ref().filter(|(_, agent)| *agent).map(|(core, _)| core.clone());
     let core = match held {
         Some(core) => core,
-        None => match crate::api::core_rows(c, repo, "agent").await {
-            Ok(Ok(store)) => store,
+        None => match crate::api::core_rows_q(c, repo, context_rows()).await {
+            Ok(Ok((store, true))) => store,
+            Ok(Ok((_, false))) => match crate::api::core_rows(c, repo, "agent").await {
+                Ok(Ok(store)) => store,
+                _ => graftyard_fold::MemStore::default(),
+            },
             _ => graftyard_fold::MemStore::default(),
         },
     };
