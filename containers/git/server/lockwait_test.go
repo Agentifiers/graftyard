@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// Catch-up writers and validates report how long they waited for the network's lock, so a hosted run can tell a
-// catch-up's writer waiting behind validates that hold the lock shared from validates waiting behind that writer. The
-// test holds the lock itself for hold, shared against the writers and alone against a validate, and each answer's wait
-// must cover most of it; the same calls uncontended must report a small wait.
+// Catch-up writers and validates report how long they waited for the network's locks, so a hosted run can tell a
+// catch-up's writer waiting behind another writer or a deleter from validates waiting behind a deleter. The test holds
+// a lock itself for hold: the writer lock against the writers and the lock alone against a validate, and each answer's
+// wait must cover most of it; the same calls uncontended must report a small wait. With lock-split
+// (decisions/DECISIONS.md, "`lock-split`") a writer no longer waits for the lock held shared, as by running validates
+// and readers: behind that hold every writer must answer while it is held.
 func TestLockWait(t *testing.T) {
 	const hold = 300 * time.Millisecond
 	minWait := float64((hold - 50*time.Millisecond).Milliseconds())
@@ -61,16 +64,15 @@ func TestLockWait(t *testing.T) {
 		code, _, body := validateDetail(t, s.URL, []string{tip}, nil, p)
 		return code, []byte(body)
 	}
-	// contended runs f while the test holds the network's lock for hold (alone when excl, else shared) and answers
-	// f's status and body; f must not answer before the lock is let go.
+	// contended runs f while the test holds a lock of the network for hold, the writer lock or the lock alone, and
+	// answers f's status and body; f must not answer before the lock is let go.
 	contended := func(what string, excl bool, f func() (int, []byte)) (int, []byte) {
 		t.Helper()
-		l := lock("7")
+		l := sync.Locker(writer("7"))
 		if excl {
-			l.Lock()
-		} else {
-			l.RLock()
+			l = lock("7")
 		}
+		l.Lock()
 		type answer struct {
 			code int
 			body []byte
@@ -88,11 +90,7 @@ func TestLockWait(t *testing.T) {
 			done <- a
 		default:
 		}
-		if excl {
-			l.Unlock()
-		} else {
-			l.RUnlock()
-		}
+		l.Unlock()
 		a := <-done
 		if early {
 			t.Fatalf("%s answered while the test held the lock: %d %s", what, a.code, a.body)
@@ -130,7 +128,33 @@ func TestLockWait(t *testing.T) {
 		t.Fatalf("uncontended ingest-batch: lock_wait_ms %v", ms)
 	}
 
-	// Writers behind the lock held shared, as behind running validates.
+	// Writers beside the lock held shared, as beside running validates and slow readers: each answers meanwhile.
+	beside := func(what string, f func() (int, []byte)) {
+		t.Helper()
+		l := lock("7")
+		l.RLock()
+		defer l.RUnlock()
+		done := make(chan string, 1)
+		go func() {
+			c, b := f()
+			done <- fmt.Sprintf("%d %s", c, b)
+		}()
+		select {
+		case got := <-done:
+			if !strings.HasPrefix(got, "200 ") {
+				t.Fatalf("%s beside the lock held shared: %s", what, got)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s waited for the network's lock held shared", what)
+		}
+	}
+	tip, p = next("beside")
+	beside("ingest", func() (int, []byte) { return ingest(p) })
+	beside("refs", func() (int, []byte) { return refsPost(tip) })
+	_, p = next("beside-batch")
+	beside("ingest-batch", func() (int, []byte) { return batch(p) })
+
+	// Writers behind the writer lock held, as behind another catch-up's writer.
 	tip, p = next("ingest")
 	code, body = contended("ingest", false, func() (int, []byte) { return ingest(p) })
 	v = decode("ingest", code, body)

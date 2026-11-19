@@ -31,7 +31,8 @@ MUTANTS = [
     ('no multi-pack-index count after an ingest', GO,
      '\tmidxMs = midxAfterIngest(net, rp)\n\treturn time.Since(t0).Milliseconds(), 0, midxMs, sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil',
      '\treturn time.Since(t0).Milliseconds(), 0, midxMs, sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil', G),
-    ('the quarantine left behind', GO, '\tdefer os.RemoveAll(q)\n\tw1 := time.Now()\n', '\tw1 := time.Now()\n', G),
+    ('the quarantine left behind', GO, '\tdefer os.RemoveAll(q)\n\texclWaitMs, unlock := writeLock(net)\n',
+     '\texclWaitMs, unlock := writeLock(net)\n', G),
     # (a): the edge's ls-refs answer (`graftyard_git::ls_refs`), against the recorded github.com answers.
     ('peel answered over tags the group cannot peel', LS,
      '        (!r.peel || branches_only).then_some(r)\n', '        let _ = branches_only;\n        Some(r)\n', C),
