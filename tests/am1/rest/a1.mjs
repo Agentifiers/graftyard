@@ -129,6 +129,11 @@ export function offered(p) {
   };
 }
 
+/** The learner gate before load: the learners not caught up, `applied` (undefined: no answer) more than one entry
+ * below the leader's `commit`. One below counts as caught up: without R29's commit round (`1edea785`) an idle leader
+ * never tells a learner the last commit (`tests/am1/results/b033-m59.md`). */
+export const learnersBehind = (applied, commit) => applied.filter((a) => a === undefined || a < commit - 1).length;
+
 const FIELDS = ["spentMs", "wallMs", "computed", "shed", "late", "getAsked", "getComputes", "listAsked", "listComputes"];
 // `graftyard_git::prsync::WAIT_EDGES_MS`: the upper edges of `waitHist`'s buckets, then one bucket past the last.
 export const WAIT_EDGES_MS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, 120000];
@@ -354,6 +359,9 @@ if (opt.selftest) {
     const h = (m) => WAIT_EDGES_MS.concat([0]).map((_, i) => m[i] ?? 0);
     const waitWin = budgetWindow([bs(1, 0, 0, 0, { waitHist: h({ 0: 50, 11: 1 }) }), null],
       [bs(1, 0, 0, 0, { waitHist: h({ 0: 147, 11: 2, 12: 2 }), waitMaxMs: 70000 }), null], 60);
+    // The learner gate: m59r33's 113 of 114 passes, 112 or no answer does not, and a learner ahead of a stale commit does.
+    const gate = learnersBehind([113, 113, 114, 113], 114) === 0 && learnersBehind([113, 112, 114], 114) === 1
+      && learnersBehind([114, undefined], 114) === 1 && learnersBehind([0, 0], 1) === 0 && learnersBehind([115], 114) === 0;
     const win = w.sites.length === 2 && w.computed === 54 && w.shed === 4 && w.vcpuUsed === 0.1067 && w.withinBudget && w.sites[1].restarted
       && w.getAsked === 20 && w.getComputes === 4 && w.listAsked === 7 && w.cpuToWall === 0.5 && !w.overrun
       && old.getAsked === 0 && !old.overrun && over.overrun && w.inFlightMax === 3 && old.inFlightMax === 0
@@ -400,8 +408,8 @@ if (opt.selftest) {
     const dl = dispatchLine([{ n: 1, at: 100 }, { n: 1, at: 200 }, { n: 2, at: 300 }],
       [{ n: 1, seenAt: 40 }, { n: 1, seenAt: 150 }, { n: 1, seenAt: 260 }, { n: 3, seenAt: 120 }], 90, 1000);
     const disp = dl.paired === 2 && dl.p50 === 60 && dl.max === 60 && dl.missing === 1 && dl.unpaired === 1 && dl.setupRuns === 1;
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split, clock, dispatch: disp }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split || !clock || !disp
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split, clock, dispatch: disp, learnerGate: gate }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split || !clock || !disp || !gate
       || why !== "refused pack N bytes over INLINE_MAX_HOT N" || unp !== "refused unpacker error: validate: shard N after N ms") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
@@ -708,9 +716,15 @@ if (plan.openPrs) {
   for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; agents[k].prN = pr.number; }
 }
 
-// No learner catches up inside the window: before it starts, every learner has applied the leader's commit index as
-// setup left it (up to 120 s), so a learner's join and catch-up, which raised a leader's wasm high-water from 28 to
-// 73 MiB on graft-m3e (narrow-reads-3), falls in setup on every row. The wait and the leader's memory then are logged.
+// No learner catches up inside the window: before it starts, every learner must have applied the leader's commit
+// index as setup left it, or one entry less, for up to LEARNER_WAIT_MS. One less is allowed because the sites of
+// LM-1's m56 script (1465c208b) lack R29's commit round (`1edea785`): an idle leader never tells a learner the last
+// commit, so a learner holding every entry stays at commit - 1 until load's first append (B0-33 m56, m57 and m59r33
+// all ended setup with 4 of 4 learners at 113 of 114, `tests/am1/results/b033-m59.md`). A learner further behind, or
+// one that never answers, is not caught up: the run aborts before load, writes `learner gate` with `aborted`, and
+// exits 3, so no row is written and it is not counted. A learner's join and catch-up raised a leader's wasm
+// high-water from 28 to 73 MiB on graft-m3e (narrow-reads-3), which is why it must fall in setup.
+const LEARNER_WAIT_MS = 300_000;
 {
   const st = await statuses(CHAIN);
   const lead = st.find((s) => s.role === "leader") ?? await (async () => {
@@ -720,15 +734,23 @@ if (plan.openPrs) {
   const ls = (st.find((s) => s.config)?.config?.config?.normal?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
   if (lead && ls.length) {
     const since = Date.now();
-    let behind = ls;
-    while (behind.length && Date.now() - since < 120_000) {
-      const at = await Promise.all(behind.map(async (l) => (await member(CHAIN, l.site, "/status", undefined, 15_000, l.name).catch(() => ({}))).v?.applied ?? 0));
-      behind = behind.filter((_, i) => at[i] < lead.commit);
-      if (behind.length) await sleep(2_000);
+    let at = [], behind = ls.length, commit = lead.commit;
+    for (;;) {
+      commit = (await member(CHAIN, lead.site, "/status", undefined, 15_000).catch(() => ({}))).v?.commit ?? commit;
+      at = await Promise.all(ls.map(async (l) => (await member(CHAIN, l.site, "/status", undefined, 15_000, l.name).catch(() => ({}))).v?.applied));
+      behind = learnersBehind(at, commit);
+      if (!behind || Date.now() - since >= LEARNER_WAIT_MS) break;
+      await sleep(2_000);
     }
     const mem = (await member(CHAIN, lead.site, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v?.wasmMemMb ?? null;
-    writeRow(OUT, { step: "learners caught up", learners: ls.length, behind: behind.length, commit: lead.commit, waitMs: Date.now() - since, leaderWasmMb: mem });
-    log(`learners caught up to ${lead.commit}: ${ls.length - behind.length}/${ls.length} in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
+    const gate = { step: "learner gate", rule: "applied >= commit - 1", learners: ls.length, behind, commit, applied: at, waitMs: Date.now() - since, leaderWasmMb: mem };
+    if (behind) {
+      writeRow(OUT, { ...gate, aborted: true });
+      log(`learner gate: ${behind}/${ls.length} learners more than one entry below ${commit} after ${Date.now() - since} ms (applied ${JSON.stringify(at)}); aborting before load, not counted`);
+      process.exit(3);
+    }
+    writeRow(OUT, gate);
+    log(`learner gate: ${ls.length}/${ls.length} learners within one entry of ${commit} (applied ${JSON.stringify(at)}) in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
   }
 }
 t0 = Date.now() + 5_000;
