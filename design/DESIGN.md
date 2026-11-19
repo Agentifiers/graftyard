@@ -103,7 +103,7 @@ let acked = match group(ChainId::Repo(repo)).commit(push).await? {
 | Email Routing | GA | Reply-by-email for issues and pull requests |
 | Email Sending (Email Service) | beta | Notification and password email, off every core path |
 | Workers Analytics Engine | GA | Per-repository and per-group traffic counters, learner placement input, SLO data points |
-| Workers Logs | GA | Request and error logs |
+| Workers Logs | GA | Request and error logs. Head sampling never drops an error, refusal, shed, 5xx, `ng`, or step-down: those lines go to Analytics Engine and Basin in full, and only ok invocation logs sample (`logs-sample`, unbuilt) |
 | Basin Pipelines | GA | Stream audit entries and SLO events into Iceberg tables |
 | Basin Catalog | GA | Iceberg tables for audit retention and SLO history |
 | Basin SQL | GA | Operator queries over audit and SLO tables; never serves a user request |
@@ -1108,7 +1108,7 @@ pub struct InstallSnapshot { pub term: Term, pub core: R2Key, pub metadata: Opti
 /// keeps at least one snapshot at or below every index inside the window. The vault deletes a pack no sooner than
 /// RESTORE_WINDOW after the install's GC deletes it.
 pub const RESTORE_WINDOW: Duration = Duration::from_secs(35 * 86_400);
-/// Same response bytes for the same key: protocol v2 fetch with no haves is deterministic for a fixed ref state.
+/// Same response bytes for the same key: protocol v2 fetch with no haves is deterministic for a fixed ref state. A composed miss's entry is a manifest naming the chain's R2 files, its tail, and its pack trailer (`edge-compose`, unbuilt).
 pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Option<u32>, pub filter: Option<FilterSpec>,
                       pub caps: CapSet, pub tags: Option<Digest> /* refs/tags/ digest, with include-tag (M1-WP6) */ }
 
@@ -1132,8 +1132,7 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// every 20, and writes the warm buckets' `compose/<net>/base-<tip>`, `part-<from>-<to>`, and `head`, which others
 /// follow. A want at a ref's tip or behind HEAD composes from the shard's chain, lagging or not, plus its diff from the
 /// chain tip, with no lock or catch-up first. A step whose chain tree is past 20,000 changed entries from the new tip builds a base, not a part. A want the disk lacks yet (a just-moved tip), or past 20,000 entries from the chain, starts the step and is composed again after the running catch-up, then after one that starts later (`compose_then_catch_up`); `include-tag` on an annotated tag, no chain, or a want still refused goes to stock. All of one upload-pack's waits draw on one deadline, the caller's `wait`, past which the object answers 503 `warming` and the edge asks the next site. A container runs at most `STOCK_MAX` stock fetches (2 [guess]: linux's took 2.6 GB each) and answers 429 at once past it; the object queues the rest in arrival order within that deadline, since git retries neither 429 nor 503 by default [doc, git-config, `http.maxRetries`] and sets no read timeout unless `http.lowSpeedTime` is. Direct pushes take no merge, so parts follow catch-ups;
-/// `refs/pull/N/merge` stays as PrSync builds it. The shard writes each miss's whole answer to the clone cache, read or
-/// not, and the edge streams a hit from R2. On torvalds/linux a composed miss's pack began at 0.02 s, stock's at 5 s
+/// `refs/pull/N/merge` stays as PrSync builds it. The shard writes each stock miss's whole answer to the clone cache, read or not, from its spool, which crosses the container twice (`put_spooled`). Under `edge-compose` [unbuilt], a composed miss leaves no copy in a container: the edge streams the chain's base and parts from R2 (free egress), with the shard's tail (`compose=tail`, the want's own objects and the object count) last, writing the pack header and hashing the trailer itself, and the shard fills the entry as a manifest. The edge streams a hit from R2. On torvalds/linux a composed miss's pack began at 0.02 s, stock's at 5 s
 /// after 30 CPU-s [measured, `tests/m0/results/composed-miss.md`]. A shard object starts its container with
 /// `ctx.container.start()`, naming its image, the tier's instance size, and `enableInternet: false`, so the container
 /// reaches R2 and members only through its object. It starts one only while its index is under `count + HOT_POOL`. With
