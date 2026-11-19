@@ -1,0 +1,19 @@
+2026-11-19T10:48:51Z start ecea6c17
+2026-11-19T10:48:51Z client colo: colo=LAX
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-19T10:49:07Z start sweep ok
+2026-11-19T10:49:23.245Z m3org/fm3fg12-g11 = 65594
+2026-11-19T10:49:33Z repo fm3fg12-g11 = 65594
+2026-11-19T11:08:21Z seed exit 0: 2026-11-19T11:08:11.128Z seeded m3org/fm3fg12-g11: 0.25 GB in 1128 s
+2026-11-19T11:15:10Z g11 exit 0: {"at":"2026-11-19T11:15:10.574Z","step":"rehomed","ok":true}
+2026-11-19T11:15:10Z client colo: colo=LAX
+2026-11-19T11:15:12Z arrivals 2026-11-19T11:08:21Z to 2026-11-19T11:15:10Z: {"outages": "n/a (low rate)", "edgePerS": 0.58, "valid": true}
+site fault off: 200
+git#2#net:65594 200
+git#0#net:65594 200
+{"torn_down": 2, "codes": {"200": 2}}
+sweep: no shard container running
+2026-11-19T11:15:30Z sweep ok
+DONE
