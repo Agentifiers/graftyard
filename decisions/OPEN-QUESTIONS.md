@@ -287,7 +287,7 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 | Foundation and protocol | 84 |
 | Cloudflare platform facts | 21 |
 | Git and storage | 27 |
-| Release and operations | 25 |
+| Release and operations | 26 |
 | Agents | 25 |
 | Costs | 12 |
-| Total | 194 |
+| Total | 195 |
