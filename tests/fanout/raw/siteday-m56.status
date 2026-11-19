@@ -1,0 +1,5 @@
+image registry.cloudflare.com/<account>/graft-m1-site-gitshard-git@sha256:ef25b63a8357c5960a87276ae35d0ae1058f60e73069ce40ce168ce393a08f60
+siteday exit 0
+Current Version ID: 44177402-db04-4293-9551-803d7f70358a
+DONE
+first attempt 07:01Z failed: IMG carried m55's masked <account> path; sites not deployed, edge bc98f851 deployed; rerun from 07:12:50Z

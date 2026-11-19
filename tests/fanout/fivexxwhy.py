@@ -13,33 +13,30 @@ svc = sys.argv[3] if len(sys.argv) > 3 else "graft-m2b-edge"
 ms = lambda s: int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 
 
-def count(filters, group):
+def count(filters, groups):
     body = {"queryId": "q", "timeframe": {"from": ms(a), "to": ms(b)}, "view": "calculations", "limit": 2000,
             "parameters": {"filters": [{"key": "$metadata.service", "operation": "eq", "type": "string", "value": svc}]
                            + filters, "calculations": [{"operator": "count"}],
-                           "groupBys": [{"type": "string", "value": group}], "limit": 2000}}
+                           "groupBys": [{"type": t, "value": g} for g, t in groups], "limit": 2000}}
     r = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
                                data=json.dumps(body).encode(), method="POST",
                                headers={"authorization": f"Bearer {tok}", "content-type": "application/json"})
     agg = json.load(urllib.request.urlopen(r, timeout=90))["result"]["calculations"][0]["aggregates"]
-    return {str(x["groups"][0]["value"]): int(x["count"]) for x in agg}
+    return [([str(g["value"]) for g in x["groups"]], int(x["count"])) for x in agg]
 
 
 def norm(why):
     return re.sub(r"\d+", "N", re.sub(r"[0-9a-f]{16,}", "H", why))
 
 
-lines = count([{"key": "$metadata.message", "operation": "includes", "type": "string", "value": '"fivexx":'}],
-              "$metadata.message")
+# Workers Logs parses a JSON line into fields (`fivexx`, `kind`, `why`) and keeps no `$metadata.message` for it, so the
+# lines are counted by those fields.
 by = collections.Counter()
-for msg, n in lines.items():
-    try:
-        v = json.loads(msg)
-        by[(v["fivexx"], v["kind"], norm(v["why"]))] += n
-    except (ValueError, KeyError, TypeError):
-        by[(0, "?", norm(msg)[:200])] += n
-status = count([{"key": "$workers.event.response.status", "operation": "gte", "type": "number", "value": 500}],
-               "$workers.event.response.status")
+for (s, k, w), n in count([{"key": "fivexx", "operation": "exists", "type": "number"}],
+                          [("fivexx", "number"), ("kind", "string"), ("why", "string")]):
+    by[(s, k, norm(w))] += n
+status = {g[0]: n for g, n in count([{"key": "$workers.event.response.status", "operation": "gte", "type": "number",
+                                      "value": 500}], [("$workers.event.response.status", "number")])}
 logged, answered = sum(by.values()), sum(status.values())
 print(json.dumps({"logged": logged, "edge5xx": answered, "byStatus": status}))
 kinds = collections.Counter()
