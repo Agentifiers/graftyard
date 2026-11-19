@@ -57,11 +57,11 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync } from "node:zlib";
+import { deflateSync, gzipSync } from "node:zlib";
 import { parseArgs } from "node:util";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
@@ -453,6 +453,11 @@ const OUT = `${RAW}a1-${row}-${RUN}.jsonl`;
 // client's push id, sent as `x-graft-client-push` and logged by a test edge beside its answer, the ref, old and new
 // tips, the reply's request id, the result or error, and start and end on Cloudflare's clock.
 const PUSHES = `${RAW}a1-pushes-${row}-${RUN}.jsonl`;
+// Harness outages (tests/fanout/README.md, "Harness outages on gate rows"): every load-window sample, [start on
+// Cloudflare's clock, kind, ms, code], so each line can be read again with a row's outage windows removed
+// (tests/fanout/outagecut.py). Written once at the end, gzipped.
+const SAMPLES = `${RAW}a1-samples-${row}-${RUN}.jsonl.gz`;
+const samples = [];
 const cfClock = serverClock();
 await cfClock.ready;
 let pushSeq = 0;
@@ -466,6 +471,7 @@ const PHASED = /^(push:|read:clone|tip:move|hot:)/;
 const note = (k, ms, code) => {
   if (b034 && PHASED.test(k)) k += b034Phase();
   (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1;
+  samples.push([cfClock.now() - ms, k, ms, String(code)]);
 };
 const pct = (xs, p) => { const s = [...(xs ?? [])].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
 const mergeSteps = [];
@@ -1414,6 +1420,7 @@ const v = {
     firstFor: opt["first-for"] ? Number(opt["first-for"]) : null },
 };
 writeRow(OUT, v);
+writeFileSync(SAMPLES, gzipSync(samples.map((x) => JSON.stringify(x)).join("\n") + "\n"));
 log(JSON.stringify(v).slice(0, 4000));
 // L0-12: the replay's tasks hold every requester's TASKS_OPEN_PER_REQUESTER (100) open slots, m3-ci's own included,
 // so the row's stall and refusal parts after it could create no task (rows m22: 422 "The requester has too many open

@@ -29,5 +29,7 @@ sleep 70
 # The leader's setup-phase confirm beside its load confirm (tests/fanout/README.md, "Placement baseline"); with
 # LS_EVERY (a1.mjs --ls-refs-shard-every, through A1_EXTRA), the paired minutes and the isolates too.
 { echo "placement baseline:"; python3 tests/fanout/lsrefsab.py $R/tsave-$TAG.jsonl ${LS_EVERY:-}; } >> $R/rows-$TAG.status 2>&1
+# Harness outages: the edge's arrivals per second and every line with the outage windows removed (outages.sh).
+bash tests/fanout/outages.sh "$TAG" b0-29 "f$TAG-b029"
 echo B029DONE >> $R/rows-$TAG.status
 exec sleep infinity
