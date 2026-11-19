@@ -1,0 +1,18 @@
+harness outages (2026-11-19T18:12:52Z to 2026-11-19T18:27:52Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-19T18:12:52Z", "2026-11-19T18:12:53Z"], ["2026-11-19T18:12:54Z", "2026-11-19T18:12:56Z"], ["2026-11-19T18:12:59Z", "2026-11-19T18:13:00Z"], ["2026-11-19T18:13:02Z", "2026-11-19T18:13:05Z"]], "outageSeconds": 7.0, "share": 0.0078, "valid": true}
+{"kind": "push:human@j9", "measured": {"n": 183, "served": 0.9617, "p50": 3097, "p99": 6253, "cap": 8}, "outagesRemoved": {"n": 182, "served": 0.9615, "p50": 3097, "p99": 6253, "cap": 8}}
+{"kind": "push:human:edge@j9", "measured": {"n": 183, "served": 0.9617, "p50": 1912, "p99": 4215, "cap": 0}, "outagesRemoved": {"n": 183, "served": 0.9617, "p50": 1912, "p99": 4215, "cap": 0}}
+{"kind": "read:cloneTtfb@j9", "measured": {"n": 326, "served": 1.0, "p50": 1737, "p99": 4328, "cap": 0}, "outagesRemoved": {"n": 325, "served": 1.0, "p50": 1737, "p99": 4328, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@j9", "measured": {"n": 326, "served": 1.0, "p50": 1644, "p99": 4263, "cap": 0}, "outagesRemoved": {"n": 325, "served": 1.0, "p50": 1644, "p99": 4263, "cap": 0}}
+{"kind": "push:human@kill", "measured": {"n": 70, "served": 0.9429, "p50": 3317, "p99": 6032, "cap": 7}, "outagesRemoved": {"n": 70, "served": 0.9429, "p50": 3317, "p99": 6032, "cap": 7}}
+{"kind": "push:human:edge@kill", "measured": {"n": 70, "served": 0.9429, "p50": 1863, "p99": 3288, "cap": 0}, "outagesRemoved": {"n": 70, "served": 0.9429, "p50": 1863, "p99": 3288, "cap": 0}}
+{"kind": "read:cloneTtfb@kill", "measured": {"n": 133, "served": 1.0, "p50": 2861, "p99": 15699, "cap": 0}, "outagesRemoved": {"n": 133, "served": 1.0, "p50": 2861, "p99": 15699, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@kill", "measured": {"n": 133, "served": 1.0, "p50": 2744, "p99": 15636, "cap": 0}, "outagesRemoved": {"n": 133, "served": 1.0, "p50": 2744, "p99": 15636, "cap": 0}}
+{"kind": "push:human@second", "measured": {"n": 92, "served": 0.9348, "p50": 3527, "p99": 20357, "cap": 2}, "outagesRemoved": {"n": 92, "served": 0.9348, "p50": 3527, "p99": 20357, "cap": 2}}
+{"kind": "push:human:edge@second", "measured": {"n": 92, "served": 0.9348, "p50": 1947, "p99": 10336, "cap": 0}, "outagesRemoved": {"n": 92, "served": 0.9348, "p50": 1947, "p99": 10336, "cap": 0}}
+{"kind": "read:cloneTtfb@second", "measured": {"n": 153, "served": 0.9935, "p50": 2928, "p99": 22556, "cap": 0}, "outagesRemoved": {"n": 153, "served": 0.9935, "p50": 2928, "p99": 22556, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@second", "measured": {"n": 152, "served": 1.0, "p50": 2840, "p99": 22164, "cap": 0}, "outagesRemoved": {"n": 152, "served": 1.0, "p50": 2840, "p99": 22164, "cap": 0}}
+{"kind": "push:human@hostile", "measured": {"n": 158, "served": 0.9494, "p50": 3478, "p99": 8592, "cap": 9}, "outagesRemoved": {"n": 158, "served": 0.9494, "p50": 3478, "p99": 8592, "cap": 9}}
+{"kind": "push:human:edge@hostile", "measured": {"n": 157, "served": 0.9554, "p50": 1737, "p99": 4902, "cap": 0}, "outagesRemoved": {"n": 157, "served": 0.9554, "p50": 1737, "p99": 4902, "cap": 0}}
+{"kind": "read:cloneTtfb@hostile", "measured": {"n": 320, "served": 0.9969, "p50": 2149, "p99": 19599, "cap": 0}, "outagesRemoved": {"n": 320, "served": 0.9969, "p50": 2149, "p99": 19599, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@hostile", "measured": {"n": 319, "served": 1.0, "p50": 1974, "p99": 19198, "cap": 0}, "outagesRemoved": {"n": 319, "served": 1.0, "p50": 1974, "p99": 19198, "cap": 0}}

@@ -1,0 +1,58 @@
+2026-11-19T16:19:07Z api.cloudflare.com in request paths: 0 files
+edge: graft-m1-edge serves 3de98a60 at 100% (rev a85f08d04), as tests/am1/raw/b034w-siteday.log deployed
+2026-11-19T16:18:56.255Z b034 networks: {"mono":{"repo":"m3org/b034-mono-w","chain":"repo:1048599","who":"admin"},"second":{"repo":"m3-member/b034-second-w","chain":"repo:3473412","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-w-1","chain":"repo:3538956","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-w-2","chain":"repo:3538957","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-w-3","chain":"repo:3538958","who":"hostile"}]}
+2026-11-19T16:23:09Z seed m3-member/b034-second-w exit 0
+2026-11-19T16:27:48Z seed m3r-b034-hostile/b034-hostile-w-1 exit 0
+2026-11-19T16:34:15Z seed m3r-b034-hostile/b034-hostile-w-2 exit 0
+2026-11-19T16:38:49Z seed m3r-b034-hostile/b034-hostile-w-3 exit 0
+2026-11-19T18:02:37Z seed m3org/b034-mono-w exit 0
+2026-11-19T18:02:38Z b0-34 drain start
+2026-11-19T18:04:47Z b0-34 drain exit 0 {"at":"2026-11-19T18:04:36.396Z","s":129.6,"kind":"summary","drained":true,"stalled":false,"firstS":66.4,"drainS":63.2,"promotedFrom0":301,"promotedTo":315,"target":318,"unpromoted":20947585,"unpromotedPacks":3,"alarms":[]}
+site fault off: 200
+git#0#net:1048599 200
+git#0#net:3538958 200
+git#0#net:3538957 200
+git#0#net:3538956 200
+git#0#net:3473412 200
+{"torn_down": 5, "codes": {"200": 5}}
+sweep: no shard container running
+2026-11-19T18:05:24Z b0-34 shards torn down before the cold warm
+{"net": "1048599", "running": 0, "other_image": 0}
+2026-11-19T18:05:26Z b0-34 warm start
+2026-11-19T18:08:51Z b0-34 warm exit 0 {"at":"2026-11-19T18:08:40.170Z","s":204.9,"kind":"summary","mainS":2.4,"catchupS":{"0":106.3,"1":100.7,"2":114.9},"limitMin":45}
+site 0: 62 spools, 6.03 GB in 66.2 s = 91.0 MB/s in total; per stream p50 31.4 MB/s, bytes-weighted 31.1 MB/s; streams busy mean 2.93, most 4; peak 5 s bin 126.1 MB/s; from site {0: 61, 1: 1}
+  MB/s by bin: 35 105 115 116 120 72 99 107 81 97 126 88 45
+site 1: 62 spools, 6.03 GB in 61.9 s = 97.5 MB/s in total; per stream p50 33.5 MB/s, bytes-weighted 32.7 MB/s; streams busy mean 2.98, most 4; peak 5 s bin 138.3 MB/s; from site {1: 62}
+  MB/s by bin: 79 98 125 138 128 99 120 113 128 44 77 47 9
+site 2: 62 spools, 6.03 GB in 73.5 s = 82.0 MB/s in total; per stream p50 24.3 MB/s, bytes-weighted 24.8 MB/s; streams busy mean 3.31, most 4; peak 5 s bin 112.8 MB/s; from site {2: 62}
+  MB/s by bin: 70 98 98 113 91 90 83 95 101 99 77 57 58 61 14
+site 2 pool:7: 62 spools, 6.03 GB in 160.3 s = 37.6 MB/s in total; per stream p50 43.1 MB/s, bytes-weighted 23.2 MB/s; streams busy mean 1.62, most 4; peak 5 s bin 203.0 MB/s; from site {2: 62}
+  MB/s by bin: 70 99 96 42 91 55 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 53 128 200 203 16 129 4
+site 2 pool:7 beside site 2, 15 bins both busy: site 2 80.4 MB/s + site 2 pool:7 30.8 MB/s = 111.2 MB/s; site 2 alone nan MB/s
+b0-34 pool probe torn down {"status":200,"body":"{\"torn_down\":true}"}
+{"name": "git#2#net:1048599", "started": "2026-11-19T18:05:30.849Z", "image": "sha256:5aeda0ceccccc394fe7360ce4ee5e6e275e5db7ccb2d540d4ab5fc661e81b4e3"}
+{"name": "git#1#net:1048599", "started": "2026-11-19T18:05:28.169Z", "image": "sha256:5aeda0ceccccc394fe7360ce4ee5e6e275e5db7ccb2d540d4ab5fc661e81b4e3"}
+{"name": "git#0#net:1048599", "started": "2026-11-19T18:05:27.71Z", "image": "sha256:5aeda0ceccccc394fe7360ce4ee5e6e275e5db7ccb2d540d4ab5fc661e81b4e3"}
+{"net": "1048599", "running": 3, "other_image": 0}
+2026-11-19T18:08:59Z b0-34 warm images exit 0
+b0-34 kept packs after the warm: {"0": {"kept": 59, "count": 62}, "1": {"kept": 59, "count": 62}, "2": {"kept": 59, "count": 62}}
+b0-34 compose after the warm site a {"n": 3, "bytes": 260792555, "files": [["base-75afd029e607623df50", 2473024, "2026-11-19T18:07:54.312Z"], ["base-75afd029e607623df50", 258319419, "2026-11-19T18:07:54.065Z"], ["head", 112, "2026-11-19T18:07:54.689Z"]]}
+b0-34 compose after the warm site b {"n": 3, "bytes": 260792555, "files": [["base-75afd029e607623df50", 2473024, "2026-11-19T18:08:04.972Z"], ["base-75afd029e607623df50", 258319419, "2026-11-19T18:08:03.514Z"], ["head", 112, "2026-11-19T18:08:06.039Z"]]}
+b0-34 compose after the warm site c {"n": 0, "bytes": 0, "files": []}
+2026-11-19T18:09:10.327Z repo:1048599 leader 0: k 1 at 322
+2026-11-19T18:09:21Z b0-34 b034-mono-w repo:1048599 start
+2026-11-19T18:29:27Z b0-34 done exit 0
+2026-11-19T18:37:08Z b0-34 misses: site b 1795113023000: HTTP Error 500: Internal Server Error, retry {"probes": 189, "lines": 248, "joined": 180, "probes_without_line": 9, "lines_without_probe": 68} 
+b0-34 compose at the row's end site a {"n": 9, "bytes": 261670783, "files": [["base-35a4474b5c3dd4315f7", 2477672, "2026-11-19T18:27:25.488Z"], ["base-35a4474b5c3dd4315f7", 258676016, "2026-11-19T18:27:25.141Z"], ["head", 240, "2026-11-19T18:28:02.906Z"], ["part-35a4474b5c3dd4315f7", 1940, "2026-11-19T18:27:50.174Z"], ["part-35a4474b5c3dd4315f7", 471043, "2026-11-19T18:27:49.972Z"], ["part-7ed2632ec7d72e926b9", 1296, "2026-11-19T18:28:02.649Z"], ["part-7ed2632ec7d72e926b9", 28358, "2026-11-19T18:28:02.363Z"], ["part-e01a83e12604aa2f8d4", 1240, "2026-11-19T18:27:54.735Z"]]}
+b0-34 compose at the row's end site b {"n": 9, "bytes": 261670783, "files": [["base-35a4474b5c3dd4315f7", 2477672, "2026-11-19T18:27:44.302Z"], ["base-35a4474b5c3dd4315f7", 258676016, "2026-11-19T18:27:42.824Z"], ["head", 240, "2026-11-19T18:28:06.011Z"], ["part-35a4474b5c3dd4315f7", 1940, "2026-11-19T18:27:52.319Z"], ["part-35a4474b5c3dd4315f7", 471043, "2026-11-19T18:27:51.393Z"], ["part-7ed2632ec7d72e926b9", 1296, "2026-11-19T18:28:04.928Z"], ["part-7ed2632ec7d72e926b9", 28358, "2026-11-19T18:28:03.966Z"], ["part-e01a83e12604aa2f8d4", 1240, "2026-11-19T18:27:57.433Z"]]}
+b0-34 compose at the row's end site c {"n": 0, "bytes": 0, "files": []}
+file://./tests/am1/hosted/lib.mjs:126
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:1048599
+    at leaderOf (file://./tests/am1/hosted/lib.mjs:126:9)
+    at async file://./tests/fanout/k.mjs:14:16
+
+Node.js v26.12.0
+DONE
