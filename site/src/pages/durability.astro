@@ -89,7 +89,7 @@ html[data-theme="light"] .layers .n { color: #4f7a1f; }
             <p>Each repository is a small Raft group with one member on each continent. A push counts once the leader and one follower on another continent have stored it, and its pack bytes are in R2 buckets on two of those sites.</p>
           </div>
         </div>
-        <Film name="push-loop" label="A git push held on two continents, then acknowledged" class="span-7 start-6" />
+        <Film name="durability-loop" label="Pushes acknowledged on two of three sites; Europe goes dark, pushes keep being acknowledged on North America and Asia-Pacific with 0 lost, then Europe returns and catches up" class="span-7 start-6" />
       </div>
     </div>
   </section>

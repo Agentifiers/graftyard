@@ -2,10 +2,12 @@ import React from 'react';
 import { AbsoluteFill } from 'remotion';
 import { AgentsLoop } from './acts/AgentsLoop';
 import { ChaosLoop } from './acts/ChaosLoop';
+import { DurabilityLoop } from './acts/DurabilityLoop';
 import { GhesLoop } from './acts/GhesLoop';
 import { COPY as AGENTS_COPY } from './agents/timeline';
 import { C } from './brand/tokens';
 import { COPY as CHAOS_COPY } from './chaos/timeline';
+import { COPY as DURABILITY_COPY } from './durability/timeline';
 import { COPY as GHES_COPY } from './ghes/timeline';
 import type { FilmProps } from './Film';
 import { Audit } from './lib/Audit';
@@ -42,6 +44,17 @@ export const AgentsFilm: React.FC<FilmProps> = ({ audit = false, safe }) => (
     <FilmProvider value={{ copy: AGENTS_COPY }}>
       <AbsoluteFill style={{ background: C.paper }}>
         <AgentsLoop />
+        {audit && <Audit safe={safe} />}
+      </AbsoluteFill>
+    </FilmProvider>
+  </FontGate>
+);
+
+export const DurabilityFilm: React.FC<FilmProps> = ({ audit = false, safe }) => (
+  <FontGate>
+    <FilmProvider value={{ copy: DURABILITY_COPY }}>
+      <AbsoluteFill style={{ background: C.paper }}>
+        <DurabilityLoop />
         {audit && <Audit safe={safe} />}
       </AbsoluteFill>
     </FilmProvider>
