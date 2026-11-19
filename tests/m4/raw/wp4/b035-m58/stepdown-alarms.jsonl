@@ -1,0 +1,2 @@
+{"svc": "a", "t": "21:32:41.682", "alarm": "member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 26, 3), (SiteId(2), 25, 3)] }, to: Some(SiteId(1)) }"}
+{"svc": "a", "t": "21:33:03.527", "alarm": "member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 51, 3), (SiteId(2), 51, 3)] }, to: Some(SiteId(1)) }"}
