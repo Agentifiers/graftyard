@@ -463,6 +463,8 @@ impl Jobs {
         if s.get_alarm().await.ok().flatten().is_none_or(|at| at > (now_ms() + WARMING_ALARM_MS) as i64) {
             let _ = s.set_alarm(std::time::Duration::from_millis(WARMING_ALARM_MS)).await;
         }
+        // The page-overlap trace: this object's cursor before the run, as its last run in this isolate left it.
+        let before = CURSORS.with(|m| m.borrow().get(&self.key()).copied());
         let r = host.catch_up(self.net, &[chain], &bs, &log).await;
         let _ = s.delete(WARMING_KEY).await;
         let c = r.map_err(|e| e.0)?;
@@ -473,10 +475,18 @@ impl Jobs {
         } else if c.stored.packs > 0 || c.entries > 0 {
             // Where a catch-up's stored packs came from, how its time split between their fetch and `index-pack`, and
             // how long its ingests and ref writes waited for the network lock, inline-only catch-ups too.
+            // `obj`, `from`, `to` and `refetched`: which shard object ran it, its cursor before (this isolate's last
+            // run, `null` after a reset) and after, and the entries it read that the cursor before already held, so a
+            // row splits a site's catch-ups by shard and sees any page read twice (B0-33 m61's 2,348 entries on site a
+            // were four shard objects', three pool shards at 740 each, `tests/am1/results/lm1-floor-dump.md`).
+            // Logging only.
+            let to = c.cursor.at(chain).0;
+            let refetched = before.map(|b| (c.entries as u64).saturating_sub(to.saturating_sub(b)));
             console_log!(
                 "shard catch-up stored {}: {}",
                 self.net.0.0,
-                serde_json::json!({ "ms": c.ms, "stored": c.stored, "entries": c.entries })
+                serde_json::json!({ "ms": c.ms, "stored": c.stored, "entries": c.entries, "obj": self.obj,
+                    "from": before, "to": to, "refetched": refetched })
             );
         }
         REPORTS.with(|m| m.borrow_mut().insert(self.key(), v));
