@@ -157,11 +157,38 @@ impl Default for Feed {
 }
 
 thread_local! {
-    pub static FEEDS: RefCell<BTreeMap<RepoId, Rc<RefCell<Feed>>>> = const { RefCell::new(BTreeMap::new()) };
+    /// Each member's feed, by its object name, with the boot it belongs to. Keyed by member, not by repository: a
+    /// learner and its group's voter can share one isolate, and keyed by repository they shared one `Feed`, so the
+    /// voter's inputs woke the learner's held polls from the voter's object (B0-29 m3fp3: 220,515 "closure invoked
+    /// recursively or after being dropped" and 3,897 "Cannot perform I/O on behalf of a different Durable Object";
+    /// `decisions/DECISIONS.md`, "`feed-per-member`"). A new boot starts a new feed: an object reset in the same
+    /// isolate leaves its old polls' futures unfinished, and the new boot must not wake them, as `crate::shard`'s
+    /// `RUNS` is keyed by instance.
+    static FEEDS: RefCell<BTreeMap<Box<str>, Kept>> = const { RefCell::new(BTreeMap::new()) };
 }
 
-pub fn of(repo: RepoId) -> Rc<RefCell<Feed>> {
-    FEEDS.with(|f| f.borrow_mut().entry(repo).or_default().clone())
+/// A member's feed in `FEEDS`, with the boot it belongs to.
+type Kept = (u64, Rc<RefCell<Feed>>);
+
+/// The feed of the member named `member` at boot `boot`: a new one when none is kept or the kept one is another
+/// boot's.
+pub fn of(member: &str, boot: u64) -> Rc<RefCell<Feed>> {
+    FEEDS.with(|f| {
+        let mut f = f.borrow_mut();
+        match f.get(member) {
+            Some((b, feed)) if *b == boot => feed.clone(),
+            _ => {
+                let feed = Rc::new(RefCell::new(Feed::default()));
+                f.insert(member.into(), (boot, feed.clone()));
+                feed
+            }
+        }
+    })
+}
+
+/// The member's feed status for `/status`, if it has a feed at this boot.
+pub fn status_of(member: &str, boot: u64) -> Option<Value> {
+    FEEDS.with(|f| f.borrow().get(member).filter(|(b, _)| *b == boot).map(|(_, feed)| feed.borrow().status()))
 }
 
 impl Feed {
@@ -339,7 +366,7 @@ pub fn event_json(e: &feed::ActivityEvent) -> Value {
 /// `dep`, then refreshed each minute so a lease whose holder lost access expires), then `poll`.
 pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Value) -> worker::Result<Value> {
     let p: Poll = serde_json::from_value(body).map_err(|e| crate::host::err(e.to_string()))?;
-    let (repo, role, owner, record, committed) = {
+    let (repo, role, owner, record, committed, feed) = {
         let core = host.core.borrow();
         let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
         let Some(repo) = c.m.group_fold().fold.repo else { return Ok(json!({ "admit": "notServing" })) };
@@ -351,8 +378,8 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
             _ => FeedRole::Follower,
         };
         // What this member has applied and heard of, for `Following` before any input since boot fed it.
-        let f = of(repo);
-        let mut f = f.borrow_mut();
+        let feed = of(&c.join.me.do_name, c.m.boot());
+        let mut f = feed.borrow_mut();
         f.polls += 1;
         if role == FeedRole::Leader {
             f.leader_polls += 1;
@@ -365,13 +392,12 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
         drop(f);
         // The highest index this member knows the group committed (`Host::committed`): a cursor past it is gone.
         let committed = host.committed(c.m.state().commit);
-        (repo, role, c.join.owner, c.join.record.clone(), committed)
+        (repo, role, c.join.owner, c.join.record.clone(), committed, feed)
     };
     if matches!(role, FeedRole::Leader | FeedRole::Witness) {
         // Never a leader's or a witness's: answered before any read.
         return Ok(json!({ "admit": "notServing" }));
     }
-    let feed = of(repo);
     let (refresh, wait) = feed.borrow_mut().refresh(now_ms(), owner.is_some());
     if let Some(rx) = wait {
         let _ = rx.await;
@@ -467,6 +493,92 @@ mod tests {
         };
         assert_eq!(v["admit"], "gone", "{v}");
         assert_eq!(feed.borrow().serving.held, 0, "nothing held");
+    }
+
+    /// `feed-per-member`: a learner and its group's voter in one isolate keep separate feeds. On B0-29 m3fp3 learner
+    /// 195 and site 0's voter of repo:65597 shared an isolate and, keyed by repository, one `Feed`: the voter's every
+    /// input woke the learner's held polls from the voter's object, and its gap became the learner's. Here the voter
+    /// steps with a refused AppendEntries reply (a gap): the learner's held poll stays waiting and the learner still
+    /// follows. A new boot of the learner gets a new feed, so a reset object never wakes its old boot's polls.
+    #[test]
+    fn a_voters_input_never_wakes_a_learners_poll_in_the_same_isolate() {
+        use crate::family::{Family, Repo};
+        use graftyard_raft::{AppendRes, Envelope, MemberConfig, Message, Out, Term};
+        use graftyard_types::{
+            ChainId, DbId, Member as MemberRef, MemberKind, PlacementName, PlacementRecord, Region, SiteId, Timestamp,
+        };
+        let repo = graftyard_types::RepoId(DbId(65_597));
+        let chain = ChainId::Repo(repo);
+        let record = PlacementRecord {
+            name: PlacementName::Tri,
+            sites: [0, 1, 2].into_iter().map(SiteId).collect(),
+            home: SiteId(0),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        };
+        let member = |me: &MemberRef, seed: u64| {
+            let cfg = MemberConfig {
+                chain,
+                me: me.addr(),
+                record: record.clone(),
+                regions: vec![(SiteId(0), Region::Enam), (SiteId(1), Region::Weur), (SiteId(2), Region::Apac)],
+                release: crate::host::RELEASE,
+                reads: Repo::reads(),
+            };
+            graftyard_raft::Member::<<Repo as Family>::C>::new(cfg, seed).expect("a member")
+        };
+        let join = |me: MemberRef| crate::member::Join {
+            chain,
+            me,
+            record: record.clone(),
+            peers: Vec::new(),
+            owner: None,
+            genesis: None,
+            #[cfg(feature = "test-faults")]
+            no_claim: false,
+        };
+        let (voter, learner) = (
+            join(MemberRef::new(chain, SiteId(0), MemberKind::Full, 0, 1)),
+            join(MemberRef::new(chain, SiteId(0), MemberKind::Learner, 3, 1)),
+        );
+        let (vm, lm) = (member(&voter.me, 1), member(&learner.me, 2));
+        assert_ne!(vm.boot(), lm.boot());
+
+        let lf = super::of(&learner.me.do_name, lm.boot());
+        let since = lf.borrow().stops;
+        let mut held = lf.borrow_mut().wait(since).expect("the learner follows: its poll waits");
+
+        let gap = AppendRes {
+            term: Term(2),
+            boot: vm.boot(),
+            round: 1,
+            sent_at: Timestamp(0),
+            prev_index: graftyard_types::Index(5),
+            ok: false,
+            matched: graftyard_types::Index(0),
+            last: graftyard_types::Index(3),
+            promise: false,
+            refused: None,
+            stepped_down_at: None,
+            boots: [Timestamp(0); 2],
+            release: crate::host::RELEASE,
+        };
+        let out = Out::<<Repo as Family>::C> {
+            messages: vec![Envelope { from: SiteId(0), to: SiteId(1), msg: Message::AppendRes(gap) }],
+            ..Default::default()
+        };
+        let at = vm.state().applied;
+        Repo::stepped(&vm, &voter, at, at, &out);
+
+        assert!(super::of(&voter.me.do_name, vm.boot()).borrow().gap, "the voter's own feed took its gap");
+        assert_eq!(held.try_recv(), Ok(None), "the voter's input woke no poll of the learner");
+        assert!(!lf.borrow().gap, "the learner still follows");
+        assert!(lf.borrow().following().following());
+
+        let next = super::of(&learner.me.do_name, lm.boot() + 1);
+        assert!(!Rc::ptr_eq(&next, &lf), "a new boot of the learner starts a new feed");
+        assert!(super::status_of(&learner.me.do_name, lm.boot()).is_none(), "the old boot's feed is gone");
     }
 
     /// A burst of polls after the owner went stale sends one `Authz` read: the first poll reads, the rest wait for it

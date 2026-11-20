@@ -6140,3 +6140,75 @@ Plants 139 to 142 (`tests/m4/wp4/plant.py`), 4 of 4 caught: 139 removes the read
 **Evidence.** `crates/lookup/src/lib.rs`: `m58s_walk_skips_the_superseded_name_and_keeps_the_leader_two_followers_name` replays m58's term-4 walk (f0 misses twice, `#8#f1` and `#1#f2` name it, `#1#f1` answers with no leader). It fails on main twice over: `#1#f1` is posted, and f0's second post is a walk. `a_leader_is_kept_only_on_two_followers_word_and_once_and_bootstrap_names_stay_for_an_older_config` checks the bounds: one follower's word keeps nothing, a leader that keeps missing is forgotten, and a config older than the record keeps all the record's names. Plants: `tests/m0carried/plant56.py`, numbers 5 to 9.
 
 **Flip.** A row whose lookup-mark lines show a kept leader that was not the leader holding a walk past one extra pass, or a group that a walk cannot reach because a name it skipped was a live member.
+
+### `feed-per-member`: a member's activity feed is keyed by its object and boot, never shared in an isolate, 2026-11-20
+
+**Decision.** `crate::feed::FEEDS` is keyed by the member's object name and holds the boot it belongs to. A member's
+ring, held polls (`waiters`), owner read in flight (`refreshing`), and following state are its own. A new boot of the
+same object gets a new `Feed`. The site's isolate-wide state is checked like `lookup-poll`'s: any `thread_local!` that
+holds a waker, future, JS object, or `oneshot::Sender` (directly or through a struct that holds one) must be listed as
+keyed by one object instance, or `workers/site/src/lib.rs`'s `no_isolate_state_carries_one_objects_io_into_another`
+fails.
+
+**Why.** B0-29 m3fp3 (graft-m3f, `3e521931`) had learner 195 and site 0's voter of repo:65597 in one isolate. a1's
+`/isolate` probes gave both the id `202bf0b1eb80`, and those two objects logged every error. Site a logged 220,515
+"closure invoked recursively or after being dropped" and 3,897 "Cannot perform I/O on behalf of a different Durable
+Object" (all on the learner's `/feed`), without a gap from 23:08:57.536 to 23:19:19, and no other site logged any
+[measured, `tests/m0/results/looplag-clock-m3f.md`]. `FEEDS` was keyed by `RepoId` (since `7613c04a`), so both
+members shared one `Feed`. Each voter input ran `Repo::stepped`, which ends in `Feed::fed`, and `fed` sends to every
+waiter. That ran the learner's held polls inside the voter's object. Each woken poll dropped one `within` `Delay`
+(its `clearTimeout`), set the next, and did the learner's I/O under the voter's context [read from the code]. The
+shared `Feed` also mixed the two members' gap, install, applied time, and ring, so one member's gap stopped the
+other's polls [read from the code]. graft-m2b's burst on 2026-11-13 (`24dec508`, 94,336 on Member `/read`, 4,498
+different-object errors) came from exactly two Member objects as well, on a build before every suspect then under
+review [measured, Workers Logs, counted by M4-WP4]. B0-35 m58 (`f50ad36b`) logged none. No other traced row had a
+learner and its voter in one isolate (`tests/fanout/isolates.py` over m3fhg, m3fp2, m2bb29n, and m56 to m61), so
+the bug needed the platform's placement to show.
+
+**What it beat.**
+- **Keying by repository and waking only waiters of the object that steps:** the ring and following state would
+  still mix, so a voter's gap would still answer a learner's polls.
+- **Keying by object name alone:** an object reset in the same isolate (`ctx.abort()`) leaves its old polls'
+  futures unfinished, and its new boot would wake them, as `crate::shard`'s `RUNS` met before it was keyed by
+  instance (`tests/am1/results/rehydrate-batch.md`).
+- **No isolate-wide feed (state on `Host`):** `Repo::stepped` and `load::finish_install` take the member, not the
+  host, and the boot key gives the same isolation with four call sites changed.
+
+**Audit of the site's other isolate-wide state keyed by repository or chain** (`workers/site/src`, every
+`thread_local!`):
+- **Holding a sender or future:** `feed::FEEDS` (fixed here), `shard::RUNS` and `shard::COMPOSES`. Both shard
+  statics are keyed by the shard object instance (`GitShard::run_key`) and network, so they are per object already.
+- **Keyed by member object name, plain data:** `prsync::{DISPATCHERS, WARMED, DROP_FIRST, FIRST_FOR_MS}`,
+  `merge_queue::{LEADS, KILL, HOLD}`, `archive::{RUNNING, LEFT, SUMMED, RUN}`, `audit::RUNNING`,
+  `activity::BUSY`, `hookseq::CONSUMERS`, `actions_trigger::SCAN`, `fanout::REPORTS`, `split::{RUNNING,
+  CHECKED}`.
+- **Keyed by repository or chain, plain data that is the group's, not one member's, so sharing it is correct:**
+  - `family::{DUMPS, NARROW}`: answers at an applied index, the same from every member (`dump-floor`).
+  - `split::CACHE`: child rows by key.
+  - `activity::{RECORDS, OWNERS}` and `prsync::RECORDS`: placement records and owners with read times.
+  - `fanout::WARM`: per network, site, and slot.
+  - `split::SPLIT_AT_FOR` (test faults).
+- **Keyed by repository or chain, used by one role only:**
+  - `family::REBUILT` and `family::NARROW_BUILT` space dump and narrow builds per repository. A learner and its
+    voter in one isolate share the spacing, so one's build can make the other wait up to `DUMP_EVERY_MS` or
+    `NARROW_EVERY_MS` for an answer the cache then serves to both. That costs latency, not correctness, and no I/O
+    crosses objects. It is left as is.
+  - `actions::{HINTED, TAKEN, OWNER_KILL, OWNER_HOLD}` and `member::WARM_WAITS` are read and written only on the
+    group's leader's paths (`expire` and the broker asks check `Role::Leader`; `WARM_WAITS` is the transfer gate), and
+    one isolate holds at most one leader of a chain.
+  - `split::MISSED` is filled and drained within one synchronous stretch (`split::since`).
+
+**Evidence.**
+- `workers/site/src/feed.rs`, `a_voters_input_never_wakes_a_learners_poll_in_the_same_isolate`: a voter's
+  `Repo::stepped` with a refused AppendEntries reply leaves the learner's held poll waiting and the learner
+  following. It fails on main's key (the poll is woken, `Ok(Some(true))`). Running `stepped` natively needed
+  `now_ms()` to read the system clock off wasm.
+- `workers/site/src/lib.rs`, `no_isolate_state_carries_one_objects_io_into_another`.
+- `tests/feedbed/run.sh` in local workerd (one isolate for every object): 30 held polls on a learner and 20 voter
+  inputs. Keyed by repository: 90 "Cannot perform I/O on behalf of a different Durable Object" and 0 of 30 polls
+  answered. Keyed by member: 0 errors, 30 of 30 held, 0 wakes.
+- Plants: `tests/m0carried/plant57.py`, 6 of 6.
+
+**Flip.** A row where `isolates.py` shows a learner and its voter sharing an isolate and site Workers Logs still show
+"closure invoked recursively or after being dropped" or "different Durable Object" on Member routes, or a feed
+whose poll misses an event its own member applied because of the boot key (a boot change with no reset).

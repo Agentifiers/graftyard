@@ -1095,8 +1095,12 @@ fn finish_install(
     // `gone` and a lease the next entry releases reports `Released`. Read here, from the loaded tables: the install's
     // own input, which the feed also sees (`Repo::stepped`), runs before its table swap is flushed and would read the
     // member's tables from before the install (LF-13 on graft-m3c: one `Released` missing on F in each run).
-    if let Some(repo) = h.core.borrow().as_ref().and_then(|c| c.m.group_fold().fold.repo) {
-        let f = crate::feed::of(repo);
+    let fed = h
+        .core
+        .borrow()
+        .as_ref()
+        .and_then(|c| c.m.group_fold().fold.repo.map(|r| (r, crate::feed::of(&c.join.me.do_name, c.m.boot()))));
+    if let Some((repo, f)) = fed {
         let mut f = f.borrow_mut();
         if let Some(owner) = f.owner.clone() {
             f.ring.skip(repo, &owner, core, (through, graftyard_types::Timestamp(at)));
