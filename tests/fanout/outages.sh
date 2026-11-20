@@ -16,10 +16,15 @@ from=$(echo "$line" | sed -E 's/.* s from ([0-9T:.-]+Z).*/\1/')
 [ -n "$run" ] && [ -n "$secs" ] && [ -n "$from" ] || { echo "outages: no load window in $log" >> "$ST"; exit 0; }
 to=$(python3 -c "import datetime,sys; t=datetime.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))+datetime.timedelta(seconds=int(sys.argv[2])); print(t.strftime('%Y-%m-%dT%H:%M:%SZ'))" "$from" "$secs")
 from=${from%.*}Z
+# The window opens at the client's first request, not the announced start: the seconds between are the driver's own
+# setup, when the edge is idle by design (decisions/DECISIONS.md, "`outage-window`"). Without samples it stays at the
+# announced start.
+s=tests/am1/raw/a1-samples-$ROW-$run.jsonl.gz
+announced=$from
+[ -f "$s" ] && first=$(python3 tests/fanout/outagecut.py --first "$s" 2>/dev/null) && [ -n "$first" ] && from=$first
 sum=$(python3 tests/fanout/arrivals.py "${RUN_PREFIX:-graft-m2b}" "$from" "$to" $R/arrivals-$TAG.jsonl 2>&1 | tail -1)
-{ echo "harness outages ($from to $to, edge 0 while the sites serve; over 5% of the window: invalid, rerun):"
+{ echo "harness outages ($from, the first request, to $to; announced $announced; edge 0 while the sites serve; over 5% of the window: invalid, rerun):"
   echo "$sum"
-  s=tests/am1/raw/a1-samples-$ROW-$run.jsonl.gz
   # KINDS (space-separated) replaces outagecut.py's default lines, as b034.sh's client and edge clocks.
   if [ -f "$s" ]; then python3 tests/fanout/outagecut.py "$s" "$sum" ${KINDS:-}; else echo "no $s: lines as measured only"; fi
 } >> "$ST" 2>&1

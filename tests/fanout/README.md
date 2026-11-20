@@ -98,7 +98,10 @@ kept serving, and 924 API reads, 510 ref reads and 71 agent pushes ended `fetch 
    (`outagecut.py` on a1's `a1-samples-<row>-<run>.jsonl.gz`, which drops a sample that started in a window or up to
    3 s before one).
 4. If the windows cover more than 5% of the load window, the row is invalid and reruns. It is not judged on the
-   remainder.
+   remainder. The load window opens at the client's first request (a1's earliest sample, `outagecut.py --first`), not
+   at the driver's announced start, and ends at the announced end; `outages.sh` computes it. The seconds between the
+   announced start and the first request are the driver's own setup, when the edge is idle by design (operator,
+   2026-11-20; `decisions/DECISIONS.md`, "`outage-window`").
 5. A row below about 1 edge request a second does not use the edge-0 rule: its own idle gaps read as edge 0 while
    the sites serve. m3fg11 (one merge every 6 s) marked 54% of its seconds that way with every request answered
    (`tests/am1/results/lm1-rows-m3f.md`, "Site day m3fg11"). `arrivals.py` prints `"outages": "n/a (low rate)"` for such

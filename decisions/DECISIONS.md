@@ -6495,3 +6495,18 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 **Evidence.** `crates/raft/tests/leadership.rs`, under "step-agree": `a_loaded_leader_that_still_commits_holds_through_its_own_confirm_trip` (fails on main, which transfers), `a_hot_leader_on_a_site_the_others_call_sick_still_moves`, `a_hot_leader_that_stopped_committing_is_not_kept`, and `a_quiet_groups_own_trip_still_transfers`. Plants in `tests/m0carried/plant60.py`, 6 of 6 caught. The long sweep and Porcupine on the branch and on main are in `tests/m0/results/step-agree.md`.
 
 **Flip.** A hot leader held while its group's commits stall for longer than HOT_WINDOW plus one STEP_DOWN window, or B0-06's rerun moving a group off its gray site later than 20 s: then the hold needs its own progress bound, or the verdict must come from the other sites before the first trip.
+
+### `outage-window`: a gate row's harness-outage window opens at the client's first request, 2026-11-20
+
+**Decision.** The load window that the harness-outage rule's 5% share is taken over opens at the client's first request (a1's earliest sample in `a1-samples-<row>-<run>.jsonl.gz`), not at the driver's announced start, and still ends at the announced end. `tests/fanout/outages.sh` computes it with `outagecut.py --first` and passes it to `arrivals.py`, so every later row applies it with no hand recount; a row with no samples file keeps the announced start. Rules 1 to 3 and 5 are unchanged: a second counts only when the main edge got 0 invocations while the sites served (`tests/fanout/README.md`, "Harness outages on gate rows", rule 4).
+
+**Why.** The seconds between the announced start and the first request are the driver's own setup, when no request is sent and the edge is idle by design, so they measure nothing about the harness. On B0-32 m3fwi3 the first request left 13 s after the announced start (08:46:02Z, then 08:46:15Z), and 8 of the row's 12 edge-0 seconds fell before it; on m3fwi2, 14 s and 7 of 11. Counted from the announced start the shares were 0.0667 and 0.0611, invalid; from the first request each is 4 s, share 0.024, valid [measured, `tests/fanout/raw/arrivals-m3fwi{2,3}.jsonl`, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fwi2 and m3fwi3"]. The operator ruled both rows valid fails on this basis (2026-11-20).
+
+**What it beat.**
+- **Opening the window at the burst or at the first load sample:** it would leave the warm-up out, where a dropped host is as real as in the burst.
+- **Rule 5's low-rate exemption for the setup seconds:** it judges a whole row by its mean rate, and a busy row's setup seconds would still count.
+- **A recount by hand per row:** m3fwi's recount was by hand, and a later row would apply the old window by default.
+
+**Evidence.** `tests/fanout/test_outages.py`, `test_the_window_opens_at_the_first_request_not_the_announced_start`: m3fwi3's shape (13 idle seconds, then a load with 4 edge-0 seconds) is invalid from the announced start and valid from the first request, and `first` takes the earliest sample, not the file's first line. It fails without `outagecut.first`.
+
+**Flip.** A row whose driver sends requests before its announced start (the window would then cut real seconds), or one where a dropped host is seen in the setup seconds and lost from the record: then the window should open at the announced start again and the setup seconds be judged by rule 5 alone.
