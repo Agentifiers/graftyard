@@ -167,6 +167,32 @@ pub async fn post_by(
     deadline: Duration,
     by: SentBy,
 ) -> Option<(u16, Value)> {
+    post_kind(b, to, do_name, path, body, deadline, by).await.filter(|(s, _)| *s != THROWN)
+}
+
+/// The status `post_kind` answers when the stub's fetch threw: never an HTTP status.
+const THROWN: u16 = 0;
+
+/// What a thrown fetch said (lookup-miss-kind): its message and the flags Cloudflare sets on it. `overloaded` is not
+/// to be retried, since retrying worsens the overload; `retryable` is transient; `remote` came from the object's own
+/// code or its CPU or memory limit [doc, Durable Objects, "Error handling"].
+fn thrown(message: &str, overloaded: bool, retryable: bool, remote: bool) -> Value {
+    json!({ "thrown": message, "overloaded": overloaded, "retryable": retryable, "remote": remote })
+}
+
+/// `post_by`, and a fetch that threw as `(THROWN, thrown(..))` in place of `None`, so `call_opt` can tell an
+/// overloaded object from a missing one. On B0-35 m60, 125 cached-leader posts to a leader whose turns were blocked
+/// for about 5 s of CPU missed in 2 to 98 ms, logged only as "no answer" (`decisions/OPEN-QUESTIONS.md`, F104).
+#[allow(clippy::too_many_arguments)]
+async fn post_kind(
+    b: &Bindings<'_>,
+    to: SiteId,
+    do_name: &str,
+    path: &str,
+    body: &[u8],
+    deadline: Duration,
+    by: SentBy,
+) -> Option<(u16, Value)> {
     let stub = b.member(to, do_name).ok()?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
@@ -178,7 +204,14 @@ pub async fn post_by(
     init.with_headers(h);
     let req = Request::new_with_init(&format!("https://member{path}"), &init).ok()?;
     let call = async move {
-        let mut res = stub.fetch_with_request(req).await.ok()?;
+        let mut res = match stub.fetch_with_request(req).await {
+            Ok(r) => r,
+            Err(e) => {
+                let js = e.to_js_value();
+                let flag = |k: &str| js_sys::Reflect::get(&js, &k.into()).ok().and_then(|v| v.as_bool()) == Some(true);
+                return Some((THROWN, thrown(&e.to_string(), flag("overloaded"), flag("retryable"), flag("remote"))));
+            }
+        };
         let status = res.status_code();
         let v = res.json::<Value>().await.unwrap_or(Value::Null);
         Some((status, v))
@@ -481,7 +514,7 @@ pub async fn call_opt(
         chain,
         now_ms,
         |k| candidates(b, chain, record, k),
-        move |s, name: String, by| async move { post_by(b, s, &name, path, body, CALL, by).await },
+        move |s, name: String, by| async move { post_kind(b, s, &name, path, body, CALL, by).await },
         move |about: Target, term, all| async move { suspect(b, chain, &about, term, colo, all).await },
         Delay::from,
     )
@@ -616,6 +649,8 @@ where
     // Whether this request already kept a named leader past a pass (`keep_named_leader`): once only, so a leader
     // that keeps missing is walked away from on the pass after.
     let mut kept_once = false;
+    // Answers this request had from an object that threw `overloaded`, for OBJECT_WAIT's doubling.
+    let mut held_off = 0u32;
     while now() < end {
         let mut k = 0;
         let mut cands = candidates(k).await.unwrap_or_default();
@@ -754,6 +789,19 @@ where
                 Answer::Skip(why) => {
                     last = format!("{name}: {why}");
                     others += 1;
+                    continue;
+                }
+                // lookup-miss-kind: an object whose fetch threw `overloaded` is waited for, not retried at once, walked
+                // away from or reported, since every post adds to its overload [doc, Durable Objects, "Error handling"].
+                Answer::ObjectOverloaded(why) => {
+                    let wait = (OBJECT_WAIT.as_millis() as u64 * (1 << held_off.min(3))).min(SHED_BACKOFF_MAX_MS);
+                    held_off += 1;
+                    if now() + wait >= end {
+                        return Err(format!("{chain}: {name}: {OVERLOADED} ({why})"));
+                    }
+                    delay(Duration::from_millis(wait)).await;
+                    tried.remove(&name);
+                    queue.push_front((s, name, step));
                     continue;
                 }
                 // The leader is alive and shedding heavy reads: no `suspect`, not missed, not leaderless. The same
@@ -1297,6 +1345,9 @@ async fn refresh_config(b: &Bindings<'_>, chain: ChainId, from: &Target, v: &Val
 pub const OVERLOADED: &str = "overloaded";
 /// How many times `call_opt` asks a member that answered `overloaded` again before it gives up.
 const OVERLOAD_TRIES: u32 = 4;
+/// The first wait before `call_opt` asks an object whose fetch threw `overloaded` again, doubled per such answer up to
+/// SHED_BACKOFF_MAX_MS [guess]: on B0-35 m60 the leader's turns were blocked for 2.7 s, then 2.5 s.
+const OBJECT_WAIT: Duration = Duration::from_millis(250);
 /// The wait before a shed spread read is asked again when no member named one (`Spread::Shed`): it timed out or was
 /// `busy`. The members' own `retryAfterMs` for a shed read.
 const OVERLOAD_RETRY_MS: u64 = 250;
@@ -1318,12 +1369,22 @@ enum Answer {
     Skip(String),
     /// Shed by the member's heavy-read cap: asked again after this many ms, with no report.
     Overloaded(u64),
+    /// The object itself is overloaded (a thrown fetch with `overloaded`): not missed, not walked away from, and not
+    /// asked again until OBJECT_WAIT has passed, doubling per answer, within LOOKUP_FOR.
+    ObjectOverloaded(String),
     /// An answer to read: the value, or `NotLeader`.
     Reply,
 }
 
 fn classify(r: Option<(u16, &Value)>, bootstrap: bool) -> Answer {
     let Some((status, v)) = r else { return Answer::Missed("no answer".into()) };
+    if status == THROWN {
+        let mut why = format!("thrown {:?}", v["thrown"].as_str().unwrap_or_default());
+        for k in ["retryable", "remote"].into_iter().filter(|k| v[*k] == true) {
+            why += &format!(" {k}");
+        }
+        return if v["overloaded"] == true { Answer::ObjectOverloaded(why) } else { Answer::Missed(why) };
+    }
     if status == 409 && bootstrap {
         return Answer::NotJoined;
     }
@@ -3639,6 +3700,47 @@ mod tests {
             assert_eq!(reports, want, "{first:?}: a miss is reported once, a `busy` not at all");
             assert_eq!(cached_leader(chain).map(|l| l.site), Some(SiteId(0)), "{first:?}: the leader stays cached");
         }
+    }
+
+    /// lookup-miss-kind: a cached leader whose fetch throws `overloaded` (B0-35 m60's f0, CPU-blocked for about 5 s)
+    /// is waited for and asked again, OBJECT_WAIT doubling, with no follower walked and no `suspect` sent: main read
+    /// every thrown fetch as a miss, reported it, and after the second walked both followers. A thrown fetch without
+    /// the flag is still a miss, now with its message and flags.
+    #[test]
+    fn an_overloaded_leader_is_waited_for_not_walked_away_from() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(53)));
+        let over = thrown("Durable Object is overloaded. Too many requests queued.", true, false, false);
+        let ok = json!({ "value": 3, "meta": { "term": 2, "leader": 0 } });
+        let (o2, ok2) = (over.clone(), ok.clone());
+        let (out, at, posts, reports) = drive_leader_lookup(chain, move |s, n| match (s.0, n) {
+            (0, 0..=2) => (5, Some((THROWN, o2.clone()))),
+            (0, _) => (50, Some((200, ok2.clone()))),
+            _ => panic!("follower {s:?} walked for an overloaded leader"),
+        });
+        let (v, _, t) = out.expect("answered").expect("a group");
+        assert_eq!((t.site, v["value"].clone()), (SiteId(0), json!(3)));
+        assert_eq!(posts, [4, 0, 0]);
+        assert!(reports.is_empty(), "an overloaded object is not reported: {reports:?}");
+        let waits = (0..3).map(|n| (OBJECT_WAIT.as_millis() as u64) << n).sum::<u64>();
+        assert!(at >= waits, "asked again after {at} ms, not after {waits} ms of waits");
+        assert_eq!(cached_leader(chain).map(|l| l.site), Some(SiteId(0)));
+        // One that stays overloaded ends the request as OVERLOADED, which callers answer 503, inside LOOKUP_FOR.
+        let o3 = over.clone();
+        let (out, at, posts, _) = drive_leader_lookup(chain, move |s, _| match s.0 {
+            0 => (5, Some((THROWN, o3.clone()))),
+            _ => panic!("follower {s:?} walked for an overloaded leader"),
+        });
+        assert!(out.is_err_and(|e| e.contains(OVERLOADED)), "{at} ms");
+        assert!(at < LOOKUP_FOR.as_millis() as u64 && posts[0] > 3, "{at} ms, {posts:?}");
+        let lost = thrown("Network connection lost.", false, true, false);
+        assert_eq!(
+            classify(Some((THROWN, &lost)), false),
+            Answer::Missed("thrown \"Network connection lost.\" retryable".into())
+        );
+        assert_eq!(
+            classify(Some((THROWN, &over)), true),
+            Answer::ObjectOverloaded("thrown \"Durable Object is overloaded. Too many requests queued.\"".into())
+        );
     }
 
     /// lookup-retry, the reverse: a cached leader that is gone (every post to it misses) is walked away from after its

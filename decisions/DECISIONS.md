@@ -6360,3 +6360,22 @@ Branch `git-read-class`, code only, no hosted row (second-opinion review T-01a1f
 **Evidence.** `crates/git/src/repo.rs` (`REPO_FORMAT_SSH`), `crates/identity/src/credential.rs`, `crates/types/src/credential.rs`; `crates/git/tests/push.rs`, `a_push_over_ssh_is_format_26_and_round_trips_with_its_key` and the `bf52_*` tests.
 
 **Flip.** None expected; a later SSH change that needs more fields takes 32.27 by the same rule.
+
+### `lookup-miss-kind`: a lookup logs what a thrown fetch said, and waits for an object that threw `overloaded`, 2026-11-20
+
+**Status.** Asked for by the orchestrator after B0-35 m60. Built on branch `lookup-miss-kind`, not deployed. `crates/lookup` only, so it ships on a site day, and on the edge with it. Nothing in `crates/raft` changes.
+
+**Decision.**
+- **Kind.** `call_opt`'s posts keep a fetch that threw, not only `None`. A cached-leader miss, and every traced walk post, logs the thrown message and the `overloaded`, `retryable` and `remote` flags the runtime sets on it (`Answer::Missed("thrown \"…\" retryable")`). A deadline with no answer stays "no answer". `post_by`'s other callers (`read_spread`, `commit_hedged`, `post`) are unchanged.
+- **Overloaded.** A post whose fetch threw with `overloaded` set is not a miss. It is not reported with `suspect`, does not count toward LEADER_RETRY's second miss, and starts no walk. The same member is asked again after OBJECT_WAIT (250 ms [guess]), doubled per such answer up to SHED_BACKOFF_MAX_MS (2 s), and when the next wait would pass LOOKUP_FOR the request ends with an OVERLOADED error, which every caller already answers 503 with a short `Retry-After`.
+
+**Why.** On B0-35 m60, 125 posts from site a's shard isolate to the cached leader f0 missed in 2 to 98 ms each, 05:23:25.2 to 27.5Z, logged as "no answer". Their own posts to f0 that the walks sent answered only after 05:23:27.8Z. Each miss sent a request into LEADER_RETRY, a `suspect`, and then a walk, and the walks ran one at a time on the mark: 130 waits, p50 5.8 s, and 193 gave up at LOOKUP_FOR [measured, `tests/m4/results/m4-wp4.md`, "B0-35 on a test-faults build after site day 60"]. Over those seconds f0 ran no invocation but two long ones: a learner `/raft` of 2,652 ms CPU (05:23:23.784 to 26.522Z) and its alarm of 2,288 ms CPU (05:23:27.121 to 29.583Z) [measured, Workers Logs for f0's object]. That fits the runtime refusing calls queued behind a blocked object, which it marks `overloaded` [doc, Durable Objects, "Error handling" and "Troubleshooting"]; that these 125 carried the flag is an inference, because `post_by` dropped the error, and this change logs it. The docs say an `overloaded` error should not be retried because retrying worsens the overload, and the lookup's answer to one was a retry, a report and a walk that also posts the object.
+
+**What it beat.**
+- **Logging only:** the next row would name the error, and m60's behaviour (a report, a retry and a walk per miss) would stay on a flag the docs say not to retry.
+- **A fresh stub per retry (stub-refresh):** the lookup already builds a new stub for every post (`Bindings::member`), so a broken stub is not the cause [read from the code].
+- **Treating every thrown fetch as overloaded:** a `Network connection lost` without the flag, or a member that is gone, would never be walked away from inside LOOKUP_FOR, which is lookup-retry's case.
+
+**Evidence.** `crates/lookup/src/lib.rs`: `an_overloaded_leader_is_waited_for_not_walked_away_from` (a cached leader that throws `overloaded` three times answers on the fourth post, with no follower posted, no report, and at least 250 + 500 + 1,000 ms of waits; one that stays overloaded ends OVERLOADED inside LOOKUP_FOR; a thrown fetch without the flag is a miss with its message). It fails on main, where the thrown fetch is "no answer", reported, and walked from. Plants 158 to 161 in `tests/m4/wp4/plant.py`, 4 of 4 caught.
+
+**Flip.** A row whose new lines show cached-leader misses with `overloaded` set while the leader was not blocked (no long invocation on its object), or requests ending OVERLOADED where a walk would have found a new leader inside LOOKUP_FOR: then the overload flag is not the object's state and the wait should be bounded by one LEADER_RETRY instead.

@@ -462,6 +462,17 @@ MUTANTS = [
     ('a follower serves any read that names ranges', F,
      '    if q.get("lsRefs").is_some() || *q == serde_json::json!({ "ranges": true }) {',
      '    if q.get("lsRefs").is_some() || q.get("ranges").is_some() {', SITE[:3] + ['a_follower_serves_only']),
+    # ---- lookup-miss-kind (B0-35 m60): a thrown fetch's kind, and an overloaded object waited for, 158 and up ----
+    ('an overloaded object is a miss, as on main', 'crates/lookup/src/lib.rs',
+     '        return if v["overloaded"] == true { Answer::ObjectOverloaded(why) } else { Answer::Missed(why) };',
+     '        return Answer::Missed(why);', LK),
+    ('an overloaded object is asked again at once', 'crates/lookup/src/lib.rs',
+     '                    delay(Duration::from_millis(wait)).await;', '', LK),
+    ('a thrown fetch\'s message is dropped', 'crates/lookup/src/lib.rs',
+     '        let mut why = format!("thrown {:?}", v["thrown"].as_str().unwrap_or_default());',
+     '        let mut why = String::from("no answer");', LK),
+    ('an overloaded object is waited for past LOOKUP_FOR', 'crates/lookup/src/lib.rs',
+     '                    if now() + wait >= end {', '                    if false {', LK),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
