@@ -147,7 +147,9 @@ class Run {
     let s = this.now();
     try {
       const sent = await this.send(c, "git", `${this.spec.edge}/${repo}.git/git-upload-pack`, { method: "POST", signal: AbortSignal.timeout(120_000),
-        headers: { ...auth(tok), "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
+        // workerd's fetch sends no User-Agent of its own, as Node's does, and the edge answers a request without one
+        // 403 (`graftyard_wire::serve`): mt8's 5,071 clones all were.
+        headers: { ...auth(tok), "user-agent": "git/2.56.0", "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
         body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), ...(firstByte ? [pkt("ofs-delta\n")] : []),
           pkt(`want ${want}\n`), ...(firstByte ? [pkt("deepen 1\n")] : []), pkt("done\n"), Buffer.from("0000")]) });
       const r = sent.r;
