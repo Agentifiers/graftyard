@@ -366,36 +366,39 @@ pub struct OpenPack {
 
 /// Every chain pack a manifest names, opened in `bucket` before the answer starts, as the container opens its files
 /// before it sends: a fold that deletes them meanwhile leaves the reads already open, and each one's header is checked
-/// against the manifest's count. `None` when one is missing, short, or not the pack the manifest counted, so the
-/// caller asks the shard instead and no client sees a cut answer.
+/// against the manifest's count. They open `CHAIN_OPEN_AT_ONCE` at a time and stay in the manifest's order
+/// (`crate::compose::open_in_order`); one after another, a base and 19 parts each waited for its first chunk before any
+/// header left (`decisions/DECISIONS.md`, "`chain-open`"). `None` when one is missing, short, or not the pack the
+/// manifest counted, so the caller asks the shard instead and no client sees a cut answer.
 pub async fn open_chain(bucket: &R2, m: &crate::compose::Manifest) -> Result<Option<Vec<OpenPack>>, StoreError> {
+    crate::compose::open_in_order(m.packs.iter().map(|p| open_pack(bucket, &p.key, p.n))).await
+}
+
+/// One chain pack opened in `bucket`, its 12-byte header read and checked against `n`; `None` as `open_chain` says.
+async fn open_pack(bucket: &R2, key: &str, n: u32) -> Result<Option<OpenPack>, StoreError> {
     use wasm_bindgen::JsCast;
-    let mut out = Vec::with_capacity(m.packs.len());
-    for p in &m.packs {
-        let Some(o) = bucket.0.get(&p.key).execute().await.map_err(err)? else { return Ok(None) };
-        if o.size() < 32 {
-            return Ok(None);
-        }
-        let raw = o.body().ok_or_else(|| StoreError(format!("{}: no body", p.key)))?.response_body().map_err(err)?;
-        let worker::ResponseBody::Stream(raw) = raw else { return Ok(None) };
-        let mut chunks = wasm_streams::ReadableStream::from_raw(raw).into_stream();
-        let mut head: Vec<u8> = Vec::with_capacity(12);
-        let mut rest = None;
-        while head.len() < 12 {
-            let Some(c) = futures_util::StreamExt::next(&mut chunks).await else { return Ok(None) };
-            let v: js_sys::Uint8Array = c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into();
-            let k = (12 - head.len()).min(v.length() as usize) as u32;
-            head.extend(v.subarray(0, k).to_vec());
-            if k < v.length() {
-                rest = Some(v.subarray(k, v.length()));
-            }
-        }
-        if crate::compose::pack_count(&head) != Some(p.n) {
-            return Ok(None);
-        }
-        out.push(OpenPack { key: p.key.clone(), chunks, first: rest, body: o.size() - 32 });
+    let Some(o) = bucket.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+    if o.size() < 32 {
+        return Ok(None);
     }
-    Ok(Some(out))
+    let raw = o.body().ok_or_else(|| StoreError(format!("{key}: no body")))?.response_body().map_err(err)?;
+    let worker::ResponseBody::Stream(raw) = raw else { return Ok(None) };
+    let mut chunks = wasm_streams::ReadableStream::from_raw(raw).into_stream();
+    let mut head: Vec<u8> = Vec::with_capacity(12);
+    let mut rest = None;
+    while head.len() < 12 {
+        let Some(c) = futures_util::StreamExt::next(&mut chunks).await else { return Ok(None) };
+        let v: js_sys::Uint8Array = c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into();
+        let k = (12 - head.len()).min(v.length() as usize) as u32;
+        head.extend(v.subarray(0, k).to_vec());
+        if k < v.length() {
+            rest = Some(v.subarray(k, v.length()));
+        }
+    }
+    if crate::compose::pack_count(&head) != Some(n) {
+        return Ok(None);
+    }
+    Ok(Some(OpenPack { key: key.to_owned(), chunks, first: rest, body: o.size() - 32 }))
 }
 
 /// The composed answer a manifest describes, from the chain packs `open_chain` opened (`decisions/DECISIONS.md`,
@@ -1483,6 +1486,8 @@ impl ShardIo for Io<'_, '_> {
             results: Vec<String>,
             #[serde(default)]
             lock_wait_ms: u64,
+            #[serde(default)]
+            midx_ms: u64,
         }
         let heads: Vec<String> = packs.iter().map(|(s, b)| format!("{} {}\n", s.hex(), b.len())).collect();
         let total: usize = packs.iter().zip(&heads).map(|((_, b), h)| h.len() + b.len()).sum();
@@ -1519,6 +1524,7 @@ impl ShardIo for Io<'_, '_> {
             let mut st = self.stored.borrow_mut();
             st.lock_wait_ms += o.lock_wait_ms;
             st.lock_excl_wait_ms += o.lock_wait_ms;
+            st.midx_ms += o.midx_ms;
         }
         o.results
             .iter()

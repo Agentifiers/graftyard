@@ -46,7 +46,7 @@ MUTANTS = [
     ('every step a base', CG,
      '\t\t} else {\n\t\t\tparts = objs\n\t\t}', '\t\t} else {\n\t\t\tparts = objs\n\t\t\tbase = true\n\t\t}', G),
     ('midx_ms dropped', GO,
-     '\treturn max(time.Since(t0).Milliseconds(), 1)', '\treturn 0 * max(time.Since(t0).Milliseconds(), 1)', G),
+     '\t\tm.ms.Add(max(time.Since(t0).Milliseconds(), 1))', '\t\tm.ms.Add(0 * max(time.Since(t0).Milliseconds(), 1))', G),
 ]
 
 ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '.worktrees/target-am1')), PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')

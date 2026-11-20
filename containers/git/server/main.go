@@ -37,14 +37,17 @@
 //	                                 or an object its objects name is not here yet, 422 on a checksum mismatch.
 //	                                 Idempotent per H. {"ingested": true,"adopted": true,"lock_wait_ms"} for a kept
 //	                                 pack; otherwise {"ingested","bytes","spool_ms","index_ms","lock_ms","midx_ms",
-//	                                 "lock_wait_ms","lock_excl_wait_ms"}: lock_wait_ms sums every wait for the
+//	                                 "lock_wait_ms","lock_excl_wait_ms"}: midx_ms the background multi-pack-index
+//	                                 writes (one per midxEvery ingests, outside the section) that ended since the
+//	                                 network's last ingest answer, 0 for none; lock_wait_ms sums every wait for the
 //	                                 network's locks (the writer's section for the adopt check, the lock shared for
 //	                                 index-pack, the section for the move), lock_excl_wait_ms the section's waits.
 //	                                 The section (`writeLock`) is the writer lock, then the lock shared: a writer
 //	                                 waits for other writers and the deleters, not for validates and readers
 //	POST /ingest-batch?net=N         body: per pack, "<sha256> <bytes>\n" and its bytes. Each ingested as /ingest
-//	                                 does, in order; {"results": ["done"|"later", ...],"lock_wait_ms"}, "later" for
-//	                                 /ingest's 409; lock_wait_ms the wait for the writer's section.
+//	                                 does, in order; {"results": ["done"|"later", ...],"lock_wait_ms","midx_ms"},
+//	                                 "later" for /ingest's 409; lock_wait_ms the wait for the writer's section,
+//	                                 midx_ms as /ingest's.
 //	                                 422 for the call on a checksum mismatch or another index-pack failure
 //	POST /spool?net=N&sha256=H       body: a stored pack, streamed. Spools it, holding no lock, to
 //	                                 <data>/spool/stored-<net>-<H>.pack for a later /ingest &spooled=1, so a
@@ -59,8 +62,8 @@
 //	                                 staged idx that passes checkIdx against the pack is loaded instead of running
 //	                                 index-pack: the lock is held only to rename the pack and idx into objects/pack
 //	                                 and record them. {"ingested","bytes","idx": "used","index_ms": 0,"lock_ms",
-//	                                 "midx_ms","lock_wait_ms","lock_excl_wait_ms"} (midx_ms the multi-pack-index
-//	                                 write's part of lock_ms, 0 when none ran; both waits the writer's section's);
+//	                                 "midx_ms","lock_wait_ms","lock_excl_wait_ms"} (midx_ms as /ingest's; both
+//	                                 waits the writer's section's);
 //	                                 otherwise /ingest's index-pack and its answer (409, 422) plus "idx": "none" or
 //	                                 "rejected" (with "idxError") and "lock_ms", the time the network's lock was
 //	                                 held. The spooled files are deleted when done, except on 409, so the same call
@@ -483,6 +486,13 @@ func handleEvict(w http.ResponseWriter, r *http.Request) {
 	}
 	defer repacking.Unlock()
 	rp := repo(net)
+	// A multi-pack-index write runs in the background too (midxAfterIngest).
+	if m := midxOf(rp); !m.mu.TryLock() {
+		fail(w, 409, "network %s is in use", net)
+		return
+	} else {
+		defer m.mu.Unlock()
+	}
 	freed := dirBytes(rp) + dirBytes(composeDir(net))
 	os.RemoveAll(composeDir(net))
 	if err := os.RemoveAll(rp); err != nil {
@@ -745,9 +755,12 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	l.Lock()
 	defer l.Unlock()
 	if r.URL.Query().Get("fresh") == "1" {
-		repacking.Lock() // a repack holds no network lock (startRepack)
+		repacking.Lock() // a repack holds no network lock (startRepack), nor does a midx write (midxAfterIngest)
+		m := midxOf(rp)
+		m.mu.Lock()
 		os.RemoveAll(rp)
 		os.RemoveAll(composeDir(net))
+		m.mu.Unlock()
 		repacking.Unlock()
 	}
 	if _, err := os.Stat(rp); err == nil {
@@ -1696,15 +1709,16 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 
 // indexIngest is /ingest's tail: index-pack --strict --fix-thin of file into a quarantine with the repository's objects
 // as its alternate, under the network's lock shared, as /validate indexes; then, in the writer's section
-// (`writeLock`), the pack moved in, its objects recorded under sum, and the multi-pack-index's count. Readers and
+// (`writeLock`), the pack moved in, its objects recorded under sum, and counted toward the multi-pack-index. Readers and
 // validates of the network run through both: with all of it under the lock alone, B0-34 m41's catch-ups held the lock
 // 5.5 to 13.5 s for packs of 0.1 to 2.3 MB, and every ls-refs, upload-pack and validate queued behind them
-// (`TestIngestIndexesOutsideTheLock`). It answers index-pack's time (to the end of the midx step, as /ingest always
-// reported it), how long it held the writer's section, how long it waited for the lock shared and for the section,
-// summed, and for the section alone, or the status to
+// (`TestIngestIndexesOutsideTheLock`). It answers index-pack's time (to the end of the section, as /ingest always
+// reported it), how long it held the writer's section, the background multi-pack-index writes that ended since the
+// last answer (`midxMs`), how long it waited for the lock shared and for the section, summed, and for the section
+// alone, or the status to
 // answer and the error: 409 when a thin pack's bases or a named object are not here yet, 422 for another index-pack
 // failure. A failed index leaves no quarantine.
-func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midxMs, waitMs, exclWaitMs int64, code int, err error) {
+func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midx, waitMs, exclWaitMs int64, code int, err error) {
 	t0 := time.Now()
 	st, err := os.Stat(file)
 	if err != nil {
@@ -1735,8 +1749,8 @@ func indexIngest(net, rp, file, sum string) (indexMs, lockMs, midxMs, waitMs, ex
 	if err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {
 		return 0, 0, 0, 0, 0, 500, err
 	}
-	midxMs = midxAfterIngest(net, rp)
-	return time.Since(t0).Milliseconds(), 0, midxMs, sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil
+	midxAfterIngest(net, rp)
+	return time.Since(t0).Milliseconds(), 0, midxMs(rp), sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil
 }
 
 // indexQuarantined indexes file into a new quarantine under the repository's graft directory (`incoming-*`, which
@@ -1974,7 +1988,6 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64
 	wait, unlock := writeLock(net)
 	t0 := time.Now()
 	waitMs := adoptWaitMs + wait
-	var midxMs int64
 	err = func() error {
 		dst := filepath.Join(rp, "objects", "pack", "pack-"+name)
 		// Only a promotion stores an `.idx`, and its pack is complete and already delta-searched, so it is kept: the
@@ -2003,7 +2016,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64
 		if err := record(rp, sum, name, filepath.Join(rp, "objects"), n); err != nil {
 			return err
 		}
-		midxMs = midxAfterIngest(net, rp)
+		midxAfterIngest(net, rp)
 		return nil
 	}()
 	lockMs := time.Since(t0).Milliseconds()
@@ -2013,7 +2026,7 @@ func ingestSpooled(w http.ResponseWriter, net, rp, sum string, adoptWaitMs int64
 		return
 	}
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "idx": "used", "index_ms": 0, "lock_ms": lockMs,
-		"midx_ms": midxMs, "lock_wait_ms": waitMs, "lock_excl_wait_ms": waitMs})
+		"midx_ms": midxMs(rp), "lock_wait_ms": waitMs, "lock_excl_wait_ms": waitMs})
 }
 
 // packVisible runs once a spooled promotion's index is renamed in, the moment git and a lock-free repack can see the
@@ -2188,7 +2201,7 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		fail(w, 422, "%v", err)
 		return
 	}
-	jsonOut(w, map[string]any{"results": results, "lock_wait_ms": lockWaitMs})
+	jsonOut(w, map[string]any{"results": results, "lock_wait_ms": lockWaitMs, "midx_ms": midxMs(rp)})
 }
 
 // One pack of an /ingest-batch call, spooled to file.
@@ -2379,29 +2392,51 @@ func writeObjs(r, sum string, objs []string) error {
 // midx chain grew instead, 81 s per 1,000 at 7,000 [measured].
 const midxEvery = 50
 
-// Ingests per repository path since its last multi-pack-index; the count starts over with the process.
-var sinceMidx sync.Map
-
-// midxAfterIngest writes the repository's multi-pack-index after every midxEvery-th ingest. The caller holds the
-// writer's section (`writeLock`), so no two writes overlap; git writes the file beside it and renames it in, so a
-// reader sees the old one or the new one. A repack that deletes packs drops it, and git reads the packs it does not
-// cover as before.
-// It answers the write's time, 0 when this ingest wrote none: B0-34 m1b34's two 35 s exclusive sections on site b
-// lined up with a midx write starved by stock upload-packs, which no field could confirm (tests/am1/results/b034-attr.md).
-func midxAfterIngest(net, rp string) int64 {
-	v, _ := sinceMidx.LoadOrStore(rp, new(int))
-	n := v.(*int)
-	*n++
-	if *n < midxEvery {
-		return 0
-	}
-	*n = 0
-	t0 := time.Now()
-	if _, err := git(rp, []string{derivedEnv}, nil, "multi-pack-index", "write"); err != nil {
-		fmt.Fprintf(os.Stderr, "multi-pack-index %s: %v\n", net, err)
-	}
-	return max(time.Since(t0).Milliseconds(), 1)
+// midxState is one repository's multi-pack-index bookkeeping. n counts its ingests since the last write started and
+// is touched only inside the writer's section (`writeLock`); mu is held for the whole background write; ms sums the
+// writes that ended and were not yet reported. It starts over with the process.
+type midxState struct {
+	n  int
+	mu sync.Mutex
+	ms atomic.Int64
 }
+
+var midxes sync.Map
+
+func midxOf(rp string) *midxState {
+	v, _ := midxes.LoadOrStore(rp, &midxState{})
+	return v.(*midxState)
+}
+
+// midxAfterIngest counts an ingest and, once midxEvery have gone in since the last write started, starts
+// `git multi-pack-index write` in the background unless one runs for the repository (`midx-background`,
+// decisions/DECISIONS.md). In the writer's section it held every other writer of the network, and B0-34 mt7's
+// monorepo catch-ups ran 5 to 17.6 s with the time outside every timed step (tests/am1/results/b034-mt7.md). A trigger
+// that finds a write running is skipped, not queued, and the count stays past midxEvery, so the next ingest tries
+// again. git writes the file beside the old one and renames it in, so a reader sees the old index or the new one, and a
+// pack ingested meanwhile is read from its own `.idx` until the next write. Evict and a fresh init, which delete the
+// repository, and the repack, which writes its own and deletes packs, wait for the write (mu). The caller holds the
+// writer's section, which guards n. Each ingest's answer reports midxMs, the writes that ended since the last answer.
+func midxAfterIngest(net, rp string) {
+	m := midxOf(rp)
+	m.n++
+	if m.n < midxEvery || !m.mu.TryLock() {
+		return
+	}
+	m.n = 0
+	go func() {
+		defer m.mu.Unlock()
+		t0 := time.Now()
+		if _, err := git(rp, []string{derivedEnv}, nil, "multi-pack-index", "write"); err != nil {
+			fmt.Fprintf(os.Stderr, "multi-pack-index %s: %v\n", net, err)
+		}
+		m.ms.Add(max(time.Since(t0).Milliseconds(), 1))
+	}()
+}
+
+// midxMs answers the time of the repository's background multi-pack-index writes that ended since it last answered:
+// an ingest's `midx_ms`, so a catch-up still reports what the writes cost, now beside its lock time, not in it.
+func midxMs(rp string) int64 { return midxOf(rp).ms.Swap(0) }
 
 func listRefs(rp string, env []string) (map[string]string, error) {
 	out, err := git(rp, env, nil, "for-each-ref", "--format=%(objectname) %(refname)")
@@ -2667,6 +2702,11 @@ func startRepack(net, rp string) bool {
 	}
 	go func() {
 		defer repacking.Unlock()
+		// The repack writes its own multi-pack-index and deletes the packs it rolled: not beside a midx write, which
+		// would fail on git's lock file or name a deleted pack (midxAfterIngest).
+		m := midxOf(rp)
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		if _, err := os.Stat(rp); err != nil {
 			return
 		}

@@ -83,6 +83,9 @@ struct Disk {
     fetch_ms: Cell<u64>,
     slow: RefCell<BTreeMap<PackId, u64>>,
     index_ms: Cell<u64>,
+    /// How long a `/refs` call and a `make_room` take on the clock.
+    refs_ms: Cell<u64>,
+    room_ms: Cell<u64>,
     /// Fetches in flight now, and the most at once.
     in_flight: Cell<usize>,
     in_flight_max: Cell<usize>,
@@ -294,6 +297,7 @@ impl ShardIo for Disk {
     }
     async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError> {
         self.tick()?;
+        self.clock.sleep(self.refs_ms.get()).await;
         if let Some(h) = head {
             self.head_calls.set(self.head_calls.get() + 1);
             *self.head.borrow_mut() = Some(h.to_owned());
@@ -313,6 +317,7 @@ impl ShardIo for Disk {
         Ok(())
     }
     async fn make_room(&self, _incoming: u64) -> Result<Vec<i64>, StoreError> {
+        self.clock.sleep(self.room_ms.get()).await;
         Ok(Vec::new())
     }
     async fn markers(&self) -> Result<Vec<(PackId, Marker)>, StoreError> {
@@ -953,7 +958,8 @@ fn a_shard_reads_its_own_sites_bucket_first_and_falls_back() {
 
 impl Bed {
     fn run_timed(&self) -> Result<Report, StoreError> {
-        self.disk.clock.run(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], &|| 0))
+        let now = || self.disk.clock.now.get();
+        self.disk.clock.run(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], &now))
     }
 
     /// Stores the `.idx` of promotion `1_000_000 + to`, good or not, with the range its metadata names.
@@ -1385,4 +1391,35 @@ fn the_head_parameter_is_percent_encoded() {
     assert_eq!(head_param(Some("refs/heads/v1.x")), "&head=refs/heads/v1.x");
     assert_eq!(head_param(Some("refs/heads/a&b+c#d%e")), "&head=refs/heads/a%26b%2Bc%23d%25e");
     assert_eq!(head_param(Some("refs/heads/é")), "&head=refs/heads/%C3%A9");
+}
+
+/// A catch-up's page time splits into `make_room`, the ingests, the `/refs` calls and the cursor saves (`PageMs`), so a
+/// row can tell which one ran long: B0-34 mt7's monorepo catch-ups ran 5 to 17.6 s with most of it in no timed lap
+/// (`tests/am1/results/b034-mt7.md`). Each part takes its own time here, so a part counted in another, or a page timed
+/// once instead of per part, gives other sums.
+#[test]
+fn a_catch_up_times_room_ingest_and_refs_apart() {
+    let b = bed(30, 0, 5);
+    b.log.entries.borrow_mut().truncate(10);
+    b.disk.markers.borrow_mut().retain(|(_, m)| m.index.0 <= 10);
+    b.run().unwrap();
+    b.log.entries.replace(bed(30, 0, 5).log.entries.into_inner());
+    *b.disk.markers.borrow_mut() = bed(30, 0, 5).disk.markers.into_inner();
+    b.disk.fetch_ms.set(300);
+    b.disk.index_ms.set(0);
+    b.disk.refs_ms.set(1_700);
+    b.disk.room_ms.set(900);
+    let (t0, calls) = (b.disk.clock.now.get(), b.log.calls.get());
+    let r = b.run_timed().unwrap_or_else(|e| panic!("{}", e.0));
+    assert_eq!(r.entries, 20);
+    let pages = b.log.calls.get() - calls;
+    let p = &r.pages_ms;
+    assert_eq!(pages, 1, "20 small entries are one page");
+    assert_eq!(p.room, 900, "one make_room for the page");
+    assert_eq!(p.refs, 1_700, "one /refs call for the page's ref changes");
+    // Entries 15, 20, 25 and 30 are stored: one fetch round at FETCH_AT_ONCE, then the inline batch at once.
+    assert_eq!(p.ingest, 300);
+    assert_eq!(p.save, 0);
+    assert_eq!(p.room + p.ingest + p.refs + p.save, b.disk.clock.now.get() - t0, "the parts cover the page");
+    b.assert_serves_head();
 }

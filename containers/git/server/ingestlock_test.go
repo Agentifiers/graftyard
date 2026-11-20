@@ -145,6 +145,7 @@ func TestIngestIndexesOutsideTheLock(t *testing.T) {
 	if inc, _ := filepath.Glob(filepath.Join(rp, "graft", "incoming-*")); len(inc) != 0 {
 		t.Fatalf("quarantines left behind: %v", inc)
 	}
+	midxWait(rp)
 	b, err := os.ReadFile(filepath.Join(rp, "objects", "pack", "multi-pack-index"))
 	if err != nil {
 		t.Fatalf("no multi-pack-index after %d ingests: %v", midxEvery+1, err)

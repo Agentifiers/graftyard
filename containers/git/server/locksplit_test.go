@@ -242,11 +242,11 @@ func TestValidateSerialEquivalence(t *testing.T) {
 			return refsPost(n, "", zero40+" refs/heads/a", cs[3]+" refs/heads/a/b", cs[3]+" refs/heads/main")
 		}},
 		{"ingest C4 with a multi-pack-index", nil, func(n string) error {
-			v, _ := sinceMidx.LoadOrStore(repo(n), new(int))
-			*v.(*int) = midxEvery - 1
+			midxOf(repo(n)).n = midxEvery - 1
 			if err := ingest(n, packs[4]); err != nil {
 				return err
 			}
+			midxWait(repo(n))
 			if _, err := os.Stat(filepath.Join(repo(n), "objects", "pack", "multi-pack-index")); err != nil {
 				return fmt.Errorf("no multi-pack-index: %v", err)
 			}

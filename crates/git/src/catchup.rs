@@ -178,7 +178,8 @@ pub struct StoredMs {
     pub idx_rejected: u32,
     /// The writer's section's hold time over the stored packs' ingests (the container's `writeLock`).
     pub lock_ms: u64,
-    /// The multi-pack-index writes' part of `lock_ms` (one every `midxEvery` ingests in the container).
+    /// The container's background multi-pack-index writes (one every `midxEvery` ingests, outside the writer's section
+    /// since `midx-background`) that ended during the catch-up's ingests, stored and inline.
     pub midx_ms: u64,
     /// The waits for the network's locks, index-pack's shared one and the writer's section, over every ingest of the
     /// catch-up, stored and inline.
@@ -268,6 +269,29 @@ pub struct Report {
     pub ms: Vec<(&'static str, u64)>,
     /// The stored packs' fetch and index time (`StoredMs`).
     pub stored: StoredMs,
+    /// Where the log pages' time went (`PageMs`).
+    pub pages_ms: PageMs,
+}
+
+/// A catch-up's or a rehydrate tail's time per part of applying its log pages, summed over the pages: `make_room`
+/// (the LRU's disk walk and any evict), the ingests (stored packs' fetches and every ingest call), the ref changes'
+/// `/refs` calls, and the cursor or place saves. B0-34 mt7's monorepo catch-ups ran 5 to 17.6 s, most of it outside
+/// every timed lap (`tests/am1/results/b034-mt7.md`, "1. Catch-up wait is now the tail").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PageMs {
+    pub room: u64,
+    pub ingest: u64,
+    pub refs: u64,
+    pub save: u64,
+}
+
+impl PageMs {
+    fn add(&mut self, o: &PageMs) {
+        self.room += o.room;
+        self.ingest += o.ingest;
+        self.refs += o.refs;
+        self.save += o.save;
+    }
 }
 
 /// The last index of `page`, a run of entries that must start at `from`, be contiguous, and end at or before `to`.
@@ -515,6 +539,7 @@ struct Tally {
     calls: usize,
     room: u64,
     evicted: Vec<i64>,
+    ms: PageMs,
 }
 
 /// Why a range stopped early.
@@ -544,6 +569,7 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
     to: Index,
     mode: &mut Mode<'_>,
     t: &mut Tally,
+    now: &dyn Fn() -> u64,
 ) -> Result<(), Stop> {
     let mut ahead: Option<Result<Vec<LogPacks>, StoreError>> = None;
     while from <= to {
@@ -555,7 +581,7 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
         let next = Index(last.0 + 1);
         let held = inline_bytes(&page);
         let mut most = held;
-        let apply = apply_page(io, saved, disk, chain, from, last, page, mode, t);
+        let apply = apply_page(io, saved, disk, chain, from, last, page, mode, t, now);
         if next <= to {
             let (r, p) = futures_util::future::join(apply, log.entries(chain, next, to)).await;
             if let Ok(p) = &p {
@@ -597,14 +623,22 @@ async fn apply_page<I: ShardIo, S: Saved>(
     page: Vec<LogPacks>,
     mode: &mut Mode<'_>,
     t: &mut Tally,
+    now: &dyn Fn() -> u64,
 ) -> Result<(), Stop> {
     t.entries += page.len();
     let bytes = inline_bytes(&page) as u64;
+    let mut at = now();
+    let mut lap = |part: &mut u64| {
+        let n = now();
+        *part += n.saturating_sub(at);
+        at = n;
+    };
     if t.room == 0 || t.room < bytes {
         t.evicted.extend(io.make_room(ROOM_EVERY.max(bytes)).await?);
         t.room = ROOM_EVERY.max(bytes);
     }
     t.room -= bytes;
+    lap(&mut t.ms.room);
     match mode {
         Mode::CatchUp { cursor, seen } => {
             let changes = ref_changes(&page, cursor.at(chain), last).ok_or(Stop::NoRefs)?;
@@ -617,14 +651,18 @@ async fn apply_page<I: ShardIo, S: Saved>(
                 .filter(|l| l.stored_id().is_none_or(|id| !promoted.contains(&id) && seen.insert(id)))
                 .collect();
             drop(page);
-            match ingest_all(io, &plan, &BTreeSet::new(), &mut t.calls).await? {
+            let ingested = ingest_all(io, &plan, &BTreeSet::new(), &mut t.calls).await?;
+            lap(&mut t.ms.ingest);
+            match ingested {
                 Ok(n) => t.packs += n,
                 Err(n) => return Err(Stop::Unresolved(unresolved(chain, n, from, last))),
             }
             t.refs += changes.len();
             io.apply_refs(&changes, None).await?;
+            lap(&mut t.ms.refs);
             cursor.advance(chain, last);
             saved.put_cursor(disk, cursor).await?;
+            lap(&mut t.ms.save);
         }
         Mode::Tail { state, seen, consumed } => {
             let promoted: BTreeSet<PackId> =
@@ -643,11 +681,14 @@ async fn apply_page<I: ShardIo, S: Saved>(
                     Load::Stored { .. } => t.packs += 1,
                 }
             }
-            if let Err(n) = ingest_all(io, &plan, &promoted, &mut t.calls).await? {
+            let ingested = ingest_all(io, &plan, &promoted, &mut t.calls).await?;
+            lap(&mut t.ms.ingest);
+            if let Err(n) = ingested {
                 return Err(Stop::Unresolved(unresolved(chain, n, from, last)));
             }
             state.tail.advance(chain, last);
             saved.put_rehydrating(disk, state).await?;
+            lap(&mut t.ms.save);
         }
     }
     Ok(())
@@ -694,7 +735,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     for (chain, head) in chains.iter().zip(hs) {
         let Some(range) = cursor.behind(*chain, head.applied) else { continue };
         let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
-        match follow(io, saved, log, &disk, *chain, *range.start(), *range.end(), &mut mode, &mut t).await {
+        match follow(io, saved, log, &disk, *chain, *range.start(), *range.end(), &mut mode, &mut t, now).await {
             Ok(()) => {}
             Err(Stop::Err(e)) => return Err(e),
             // Either way the next rehydrate starts from nothing, so a place left by an earlier one goes too.
@@ -714,7 +755,9 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     // HEAD follows a `Settings` entry that changed the default branch, which carries no ref change; one call, only
     // when it changed since the disk's HEAD was last set.
     if head_ref.is_some() && cursor.head != head_ref {
+        let at = now();
         io.apply_refs(&[], head_ref.as_deref()).await?;
+        t.ms.refs += now().saturating_sub(at);
         cursor.head = head_ref;
         saved.put_cursor(&disk, &cursor).await?;
     }
@@ -732,6 +775,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         disk,
         ms,
         stored: StoredMs::default(),
+        pages_ms: t.ms,
     })
 }
 
@@ -936,7 +980,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let from = Index(tail_start(last.as_ref()).0.max(state.tail.at(*chain).0 + 1));
         let mut mode = Mode::Tail { state: &mut state, seen: &mut seen, consumed: &consumed };
-        match follow(io, saved, log, &disk, *chain, from, head.applied, &mut mode, &mut t).await {
+        match follow(io, saved, log, &disk, *chain, from, head.applied, &mut mode, &mut t, now).await {
             Ok(()) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),
             Err(Stop::NoRefs) => unreachable!("a tail applies no ref changes"),
@@ -984,7 +1028,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let from = Index(cursor.at(*chain).0 + 1);
         let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
-        match follow(io, saved, log, &disk, *chain, from, end, &mut mode, &mut c).await {
+        match follow(io, saved, log, &disk, *chain, from, end, &mut mode, &mut c, now).await {
             Ok(()) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),
             Err(Stop::NoRefs) => {
@@ -1033,6 +1077,8 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     evicted.extend(t.evicted);
     evicted.extend(c.evicted);
     lap(&mut ms, "catch_up");
+    let mut pages_ms = t.ms;
+    pages_ms.add(&c.ms);
     Ok(Report {
         entries: c.entries,
         packs: c.packs,
@@ -1044,5 +1090,6 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         ms,
         rehydrated: Some(r),
         stored: StoredMs::default(),
+        pages_ms,
     })
 }
