@@ -61,7 +61,7 @@ Liveness, `leaders_leave_a_site_whose_calls_fail` (30% call failures), release, 
 
 ## Plants
 
-`tests/m0carried/plant68.py`, 6 of 6 caught:
+`tests/m0carried/plant68.py`, 6 of 6 caught (rerun on the rebased head, exit 0):
 
 | # | Mutant | Verdict |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ said.
 ## Long sweep and Porcupine
 
 `RAFT_HISTORY=/tmp/sw/hist.jsonl RAFT_SEEDS=2000 RAFT_STEPS=10000 cargo test -q -p graftyard-raft --release --test sim
--- --ignored --nocapture` on the branch: exit 0, 1,388 s.
+-- --ignored --nocapture` on the branch: exit 0, 1,388 s; again on the rebased head, exit 0, 1,047 s, every count below the same.
 
 | phase | step-downs / holds | longest stuck stretch |
 | --- | --- | --- |
@@ -94,14 +94,48 @@ site-wide, and its groups carry no backlog of more than HOME_QUIET_QUEUE command
 step-busy never holds there [inference]. The rule is pinned by the targeted tests, not by the sweep.
 
 Porcupine (`tests/m0/porcupine`, built, `-seg 2000`), each exit 0: `hist.jsonl` Ok, 146,836 operations; `.gray` Ok,
-2,336,111; `.live` Ok, 5,476,993 (12,000 segments).
+2,336,111; `.live` Ok, 5,476,993 (12,000 segments). The same on the rebased head's histories.
 
 ## Checks
 
-Each by its exit code, on the branch from main `479aff21`:
+Each by its exit code. First on the branch from main `479aff21`, then again after its rebase onto main `c60051c9`
+(f108-stepdown-log, whose own `plant67.py` moved this branch's plants to `plant68.py`), with the same results except
+the test count:
 - `cargo fmt --all -- --check` 0; `cargo clippy --workspace --all-targets -- -D warnings` 0;
 - wasm32 clippy `-D warnings`: site 0 and 0 with `test-faults`; edge 0 and 0; ops 0, and 101 with `test-faults`, which
   ops does not have (expected);
-- `cargo test --workspace --no-fail-fast` 0: 1,324 passed, 0 failed;
+- `cargo test --workspace --no-fail-fast` 0: 1,324 passed, 0 failed (1,327 on the rebased head);
 - `go test ./...` in `containers/git/server` 0;
 - `scripts/check_design.py` 0, `check_names.py` 0, `check_links.py` 0 (with `.worktrees` moved aside).
+
+## Change 2, the Human and MergeQueue lane: not built, because main already has it
+
+The orchestrator allowed only the second form: each cut takes the queued Human and MergeQueue commands first, within
+the entry's byte bounds, then fills Agent up to AGENT_CMDS_ENTRY. That is `cut` on main
+(`crates/raft/src/member/leader.rs`): its first loop drains `first_lanes = [Human, MergeQueue]` while `fits`, then
+AGENT_FLOOR, Bot, and Agent to AGENT_CMDS_ENTRY. `soft-grow` sits in the same lines. The guard test exists too:
+`a_burst_of_agent_commands_is_cut_at_agent_cmds_entry_per_entry` (`crates/raft/tests/admission.rs`) asserts the Human
+push queued with 307 agent pushes goes in the first cut after it arrives.
+
+m63r33's cut trace agrees [measured, `tests/fanout/raw/tsave-m63r33.jsonl.xz`, kind 29]:
+- 402 cuts; Human taken 437 (site a) and 684 (site b), at most 15 a cut; Human or MergeQueue left queued after a cut:
+  **0 in every one of the 402 cuts**. No Human command ever waited for a later cut.
+- So Human's 4.2 s commit p50 is not a wait behind full agent entries in the queue. It is the wait for the cuts ahead
+  of it to commit, one entry in flight:
+  - Of 343 cuts that took a Human or MergeQueue command, 110 had no frozen batch ahead, 207 had one and 26 had two.
+    Each frozen batch ahead held a full 64-command agent batch (p50 64, max 128 across two).
+  - Cut to own apply, by batches frozen ahead (cut matched to its entry by index): 0 ahead p50 1,000 ms (p99 4,061 /
+    2,568 by site); 1 ahead p50 1,806 / 1,671 (p99 3,876 / 4,322); 2 ahead p50 2,472 (p99 7,478).
+  - The entry's own round (append to apply): p50 300 to 642 ms, p99 2.4 to 2.9 s. The gap between cuts was p50 500 to
+    510 ms, p90 1.5 to 1.8 s.
+- a1's Human pushes: commit stage p50 2,300, p99 5,397 ms (n 119); merges p50 2,664, p99 9,964 (n 41).
+
+What would shorten that is a Human command joining a batch already frozen (B0-29's option (b), "B0-29 late join
+deferred", which breaks read-after-admission unless it reads its own dependency), or fewer frozen batches ahead
+(`read_ahead`), or shorter rounds. Each is a different decision from the one asked for, so none is built here. The
+in-memory load I drafted to prove change 2 confirmed this: on main, with 120 agent side commands a second against a
+fixed capacity of 165 and 4 Human pushes a second, Human p99 was 665 ms at a 330 ms round and 1,845 ms at a 925 ms
+round, about two rounds, with every cut ending `AgentTokens` or `AgentCmds`.
+
+The authz-source counter on `commit_issue_rid` rode change 2's branch, so it is not built either; it is a small
+edge-only change and can go on whichever branch the orchestrator names.
