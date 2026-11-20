@@ -1,0 +1,10 @@
+2026-11-20T04:56:51.455Z seed: 7 of 7 ok
+2026-11-20T04:56:53.894Z key add: 201
+2026-11-20T04:57:28.930Z repo create: 201 m6-ssh-suspend/bf52-1795150613
+2026-11-20T04:57:45.626Z push before suspension: ok
+2026-11-20T04:57:46.164Z suspend: {"ok":{"ack":{"acks":[{"at":1795150667141,"durable":6,"site":0},{"at":1795150667240,"durable":6,"site":1}],"commitAt":1795150667240,"commitIndex":6,"entryAt":1795150667123,"index":6,"selfSyncedAt":1795150667141,"sentAt":1795150667240,"site":0},"index":6,"out":"Done","quorum":[0,1]}}
+2026-11-20T04:57:56.230Z push 1 while suspended: refused rc128 moved=no Bad credentials
+2026-11-20T05:01:00.539Z while suspended: 20 of 20 pushes over ssh refused with no ref moved, 0 accepted or moved
+2026-11-20T05:01:01.168Z unsuspend: {"ok":{"ack":{"acks":[{"at":1795150862148,"durable":7,"site":0},{"at":1795150862247,"durable":7,"site":1}],"commitAt":1795150862247,"commitIndex":7,"entryAt":1795150862131,"index":7,"selfSyncedAt":1795150862148,"sentAt":1795150862247,"site":0},"index":7,"out":"Done","quorum":[0,1]}}
+2026-11-20T05:01:10.588Z push after unsuspend: ok
+exit 0

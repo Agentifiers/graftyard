@@ -1,0 +1,47 @@
+{
+ "when": "2026-11-20T01:41Z-01:43Z",
+ "worker": "graft-sshprobe (deleted)",
+ "hop": "Worker fetch -> DO.connect(\"ssh:22\") -> ctx.container.getTcpPort(22).connect -> socat echo",
+ "runs": [
+  {
+   "n": 65536,
+   "cold": true,
+   "openedMs": 198,
+   "echoMs": 2047,
+   "got": 0
+  },
+  {
+   "n": 1048576,
+   "openedMs": 23,
+   "echoMs": 18,
+   "got": 1048576,
+   "ok": true
+  },
+  {
+   "n": 4194304,
+   "openedMs": 22,
+   "echoMs": 853,
+   "ok": true
+  },
+  {
+   "n": 4194304,
+   "openedMs": 137,
+   "echoMs": 991,
+   "ok": true
+  },
+  {
+   "n": 4194304,
+   "openedMs": 20,
+   "echoMs": 839,
+   "ok": true
+  },
+  {
+   "n": 65536,
+   "cold": true,
+   "after": "destroy",
+   "openedMs": 17,
+   "echoMs": 223,
+   "got": 0
+  }
+ ]
+}
