@@ -1,0 +1,7 @@
+6467 /commit at a0b85daa86db; saturated slices 0; top isolate 2295467361
+minute edge/top/other: 19:16 74/46/57 19:17 189/195/67 19:18 233/304/24 19:19 217/311/35 19:20 220/278/205 19:21 223/300/150 19:22 213/275/94 19:23 223/293/37 19:24 218/308/42 19:25 228/263/39 19:26 228/261/32 19:27 89/168/113 19:28 0/0/179 19:29 0/0/36
+steps (1 Leader, 4 Send, edge no header): {1: 4112, 'edge': 2355}
+edge: 2355 calls, wall p50 492 ms p90 830 ms, >=1 s 3%
+top: 3002 calls, wall p50 447 ms p90 747 ms, >=1 s 1%
+other: 1110 calls, wall p50 318 ms p90 572 ms, >=1 s 0%
+peak a second: 26
