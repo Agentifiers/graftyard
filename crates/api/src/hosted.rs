@@ -105,6 +105,26 @@ pub struct TierRows {
     pub picks: Option<Vec<(String, crate::view::Pick)>>,
 }
 
+/// What a command read asks a member for (`TierRows::command_rows`, `decisions/DECISIONS.md`, "`command-rows`"): a
+/// lease, task, or token-claim command, or a REST write whose plan reads no row, reads the read gate's rows and the one
+/// task it names, not the whole tiers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CommandSpec {
+    /// The session whose `agent_task` and `lease_by_session` rows the command reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<graftyard_identity::SessionId>,
+    /// Whether the command needs the metadata tier loaded, as its whole-tier read did: every command but a lease
+    /// command and a token claim. Only a loaded member answers it, and its answer carries the login picks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub loaded: bool,
+    /// Accounts the reply names that the edge knows and the rows do not: a task create's requester.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<i64>,
+    /// The repository's owner as the edge resolved it, whose login the edge holds from the request path.
+    #[serde(default)]
+    pub owner: i64,
+}
+
 /// Metadata tables no `Repo` view, directory, or planner reads, which `TierRows::dump` leaves out: each agent ref's
 /// `PathSet` (the feed takes it from the entry's events) and each pushed commit's provenance. At 500 agents `path_set`
 /// was 1.12 MB of a 1.6 MB whole-tier read (500 rows), and each REST, GraphQL, task, and lease request reads the tiers.
@@ -195,6 +215,50 @@ impl TierRows {
             .collect();
         c.extend(core.prefix("agent_task", &[]).into_iter().map(|(k, cols)| ("agent_task".to_owned(), k, cols)));
         c
+    }
+
+    /// The answer to a command read (`{"rows": {"access": true, "command": spec}}`, `CommandSpec`): the read gate's
+    /// access rows, the named session's `agent_task` row and its `lease_by_session` rows, and no metadata row. `meta`
+    /// is the member's metadata tier when it is loaded: the answer's `meta` is then empty, else `None`, so the edge
+    /// knows the tier is loading. With `spec.loaded`, and only on a loaded member, the answer carries the login picks
+    /// a narrow read sends (`narrow::login_picks`) for the accounts the reply may name: the task's requester, its
+    /// creator when a user, and `spec.accounts`. `named` is every account the whole tiers name (`accounts`). Without
+    /// it the reply names no account, and its picks are empty, so the edge reads only the viewer's login.
+    pub fn command_rows(
+        core: &dyn Read,
+        meta: Option<&dyn Read>,
+        index: u64,
+        spec: &CommandSpec,
+        named: &dyn Fn() -> std::collections::BTreeSet<AccountId>,
+    ) -> TierRows {
+        let mut c = TierRows::access_rows(core);
+        let mut asked: std::collections::BTreeSet<AccountId> =
+            spec.accounts.iter().map(|a| AccountId(DbId(*a))).collect();
+        if let Some(s) = &spec.session {
+            let key = graftyard_git::task::task_key(s);
+            if let Some(cols) = core.get("agent_task", &key) {
+                c.push(("agent_task".to_owned(), key.clone(), cols));
+            }
+            c.extend(
+                core.prefix("lease_by_session", &key).into_iter().map(|(k, v)| ("lease_by_session".to_owned(), k, v)),
+            );
+            if let Some(t) = graftyard_git::task::task_core(core, s) {
+                asked.extend(t.requester.map(|u| u.0));
+            }
+            if let Some(graftyard_git::task::TaskActor::User(u)) =
+                meta.and_then(|m| graftyard_git::task::task_meta(m, s)).map(|m| m.creator)
+            {
+                asked.insert(u.0);
+            }
+        }
+        let owner = AccountId(DbId(spec.owner));
+        let picks = match (spec.loaded, meta) {
+            (true, Some(_)) => Some(crate::narrow::login_picks(named(), owner, &asked).into()),
+            (true, None) => None,
+            // A reply that names no account: the edge reads only the viewer's login.
+            (false, _) => Some(crate::narrow::login_picks(Default::default(), owner, &Default::default()).into()),
+        };
+        TierRows { index, core: c, meta: meta.map(|_| Vec::new()), complete: true, picks }
     }
 
     /// The core rows `acquirejob` reads for a job's secrets and variables: `settings` for the visibility, and every
@@ -598,6 +662,25 @@ fn graphql(v: Value) -> WireReply {
 /// edge or the leader refused it (`write-identity`); every other refusal is GraphQL's error shape at 200.
 fn graphql_refused(v: Value, credential: bool) -> WireReply {
     WireReply::of(&Reply::json(if credential { 401 } else { 200 }, v))
+}
+
+/// An issue command's render with the owner's `Authz` filled in (`decisions/DECISIONS.md`, "`leader-render`"): the
+/// edge's own, when its render carries one, else the leader's `Authz` dependency for the command's entry
+/// (`IssueCallOut::authz`). Where it came from, `"render"` or `"dep"`, which the member's answer names; `None` when
+/// neither has one, and the reply renders without it.
+pub fn fill_authz(render: &mut Render, dep: Option<&AuthzFold>) -> Option<&'static str> {
+    if render.dir.authz.is_some() {
+        return Some("render");
+    }
+    render.dir.authz = Some(dep?.clone());
+    Some("dep")
+}
+
+/// Whether a committed issue command's answer (`{"ok": {"out": {"issue": ..}}}`) was rendered by a member that names no
+/// `Authz` source (`fill_authz`): a member built before `leader-render`, which rendered a first send's render as it
+/// came, with no owner `Authz`. The edge then asks `outcome_by_request` with the whole render.
+pub fn rendered_without_authz(done: &Value) -> bool {
+    done.pointer("/ok/out/issue").is_some() && done.pointer("/ok/out/issue/authz").is_none()
 }
 
 /// The reply to a committed issue command, from its `&Acked` and the leader's tiers after the entry applied.

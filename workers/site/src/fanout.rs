@@ -856,6 +856,38 @@ mod tests {
         );
     }
 
+    /// `command-rows`: a command read that needs the metadata tier loaded goes only to a loaded member, as the
+    /// whole-tier read it replaces did; one that does not (a lease command, a token claim) is a core-only read served
+    /// while the tier loads. The member answers it with `"command": true`, the access rows, and no metadata row, and a
+    /// loading member's answer says so with no metadata at all.
+    #[test]
+    fn a_command_read_is_answered_with_its_rows_and_the_marker() {
+        use crate::family::follower_query;
+        use graftyard_api::hosted::TierRows;
+        let loaded = json!({ "rows": { "access": true, "command": { "loaded": true, "owner": 1 } }, "ranges": true });
+        let core = json!({ "rows": { "access": true, "command": { "owner": 1 } }, "ranges": true });
+        assert!(follower_query(&loaded, true) && !follower_query(&loaded, false), "loaded members only");
+        assert!(follower_query(&core, true) && follower_query(&core, false), "served while the tier loads");
+        let a = RepoFold::new(RepoId(DbId(81)), AccountId(DbId(1)));
+        let v = Repo::read_json(&a, &loaded);
+        assert_eq!(v["command"], json!(true));
+        let rows = TierRows::from_value(&v).unwrap();
+        assert_eq!(rows.meta, Some(Vec::new()));
+        assert!(rows.core.iter().all(|(t, _, _)| t == "settings" || t == "collaborator"));
+        assert!(rows.picks.is_some(), "a loaded member names the logins");
+        let c = RepoFold::with_tiers(
+            Some(RepoId(DbId(81))),
+            Some(AccountId(DbId(1))),
+            Box::new(graftyard_fold::MemStore::default()),
+            Box::new(Unloaded),
+        );
+        let v = Repo::read_json(&c, &core);
+        assert_eq!(v["command"], json!(true));
+        assert_eq!(TierRows::from_value(&v).unwrap().meta, None, "a loading member says so");
+        let bad = json!({ "rows": { "access": true, "command": { "session": 5 } } });
+        assert!(Repo::read_json(&a, &bad).get("error").is_some());
+    }
+
     /// A metadata tier that has not loaded (`TierStore::loaded`).
     #[derive(Clone, Debug, Default)]
     struct Unloaded;

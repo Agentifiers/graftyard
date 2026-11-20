@@ -20,7 +20,7 @@
 //!   `dequeuePullRequest` commit a `QueueOp`. All are format 32.4, sent only once `FormatsEnable` enabled it.
 
 use graftyard_api::exec::Request as Gql;
-use graftyard_api::hosted::{HostedDir, MergeOf, Render, TierRows, What, WireReply};
+use graftyard_api::hosted::{CommandSpec, HostedDir, MergeOf, Render, TierRows, What, WireReply};
 use graftyard_api::view::{Repo as View, RepoRef};
 use graftyard_api::{graphql, lfs, release, rest};
 use graftyard_fold::MemStore;
@@ -371,6 +371,23 @@ pub(crate) async fn read_core(
     read_repo(c, repo, owner, name, viewer, None, Rows::Core, Gate::Readers).await
 }
 
+/// `read` for a command that reads only the read gate's rows and the one task it names (`Rows::Command`,
+/// `decisions/DECISIONS.md`, "`command-rows`"): a lease, task, or row-free REST write.
+pub(crate) async fn read_command(
+    c: &Ctx<'_>,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+    spec: CommandSpec,
+) -> Result<std::result::Result<Read, Reply>> {
+    let repo = match resolve(c, owner, name).await? {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(Err(Reply::not_found())),
+        Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
+    };
+    read_repo(c, repo, owner, name, viewer, None, Rows::Command(spec), Gate::Readers).await
+}
+
 /// `read` for the invitee's side of a repository invitation (`crate::collab::user_invitation`), with no read gate: an
 /// invitee is not yet a collaborator. The caller answers 404 unless the viewer holds an invitation or `readable`.
 pub(crate) async fn read_for_invitee(
@@ -429,10 +446,10 @@ pub(crate) async fn read_repo(
     gate: Gate,
 ) -> Result<std::result::Result<Read, Reply>> {
     let merge = match &rows {
-        Rows::All | Rows::Core | Rows::Api(_) => None,
+        Rows::All | Rows::Core | Rows::Api(_) | Rows::Command(_) => None,
         Rows::Merge(of, _) => Some(*of),
     };
-    let core_only = matches!(rows, Rows::Core);
+    let core_only = matches!(&rows, Rows::Core) || matches!(&rows, Rows::Command(s) if !s.loaded);
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
     let read_authz = timed(c, "authz", async {
         match known {
@@ -456,6 +473,10 @@ pub(crate) async fn read_repo(
                     }
                     v => Ok(v),
                 }
+            }
+            Rows::Command(mut spec) => {
+                spec.owner = repo.owner.0.0;
+                command_tier_rows(c, &repo, &spec).await
             }
             _ => tier_rows(c, &repo, merge).await,
         }
@@ -531,6 +552,9 @@ pub(crate) enum Rows {
     Core,
     Merge(MergeOf, Option<Result<std::result::Result<Value, Reply>>>),
     Api(graftyard_api::narrow::Route),
+    /// A command's read (`CommandSpec`): the read gate's rows and the one task it names. `served_meta` serves it with
+    /// an empty metadata view while that tier loads unless the spec needs it loaded.
+    Command(CommandSpec),
 }
 
 /// The member's split of a read it answered (`stages`, `[grant, waited]` ms): `tier_grant`, the wait for the
@@ -550,9 +574,26 @@ async fn api_rows(
     repo: &Repo,
     spec: &graftyard_api::narrow::Spec,
 ) -> Result<std::result::Result<Value, Reply>> {
+    rows_read(c, repo, &json!({ "q": { "rows": { "api": spec } } })).await
+}
+
+/// A command read (`{"rows": {"access": true, "command": spec}}`, `hosted::TierRows::command_rows`), or both whole
+/// tiers from a member that answers it without `"command": true`, which a member built before it does.
+async fn command_tier_rows(c: &Ctx<'_>, repo: &Repo, spec: &CommandSpec) -> Result<std::result::Result<Value, Reply>> {
+    let q = json!({ "q": { "rows": { "access": true, "command": spec }, "ranges": true } });
+    match rows_read(c, repo, &q).await? {
+        Ok(v) if v["value"]["command"] == json!(true) => Ok(Ok(v)),
+        Ok(_) => tier_rows(c, repo, None).await,
+        Err(r) => Ok(Err(r)),
+    }
+}
+
+/// A rows read `q` on the repository's learners and followers by read-index, as `tier_rows` reads, creating its group
+/// on first use.
+async fn rows_read(c: &Ctx<'_>, repo: &Repo, q: &Value) -> Result<std::result::Result<Value, Reply>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
-    let q = json!({ "q": { "rows": { "api": spec } } });
+    let q = q.clone();
     let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
     if let Ok(None) = v {
         if let Err(r) = first_use(c, repo).await? {
@@ -901,17 +942,30 @@ async fn commit_issue_rid(
     if let Some(a) = crate::admission(c, who, &[], false, 0).await {
         body["admit"] = serde_json::to_value(a)?;
     }
+    // `leader-render`: the first send carries the render without the owner's `Authz`, which the leader fills from its
+    // own dependency read; a later send and `outcome_by_request` carry the whole render, for a duplicate answered from
+    // its `request` row, which has no dependency.
+    let first = without_authz(&body).to_string();
+    let whole = body.to_string();
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
-    let r = graftyard_lookup::commit_hedged(
-        &c.bindings(),
-        ChainId::Repo(rd.repo.id),
-        &rd.repo.record,
-        body.to_string().as_bytes(),
-        c.colo,
-        60_000,
-        graftyard_lookup::Hooks::default(),
-    )
-    .await;
+    let hooks = graftyard_lookup::Hooks { first: Some(first.as_bytes()), trace: None, lookup: None };
+    let (b, chain) = (c.bindings(), ChainId::Repo(rd.repo.id));
+    let mut r =
+        graftyard_lookup::commit_hedged(&b, chain, &rd.repo.record, whole.as_bytes(), c.colo, 60_000, hooks).await;
+    // A member built before `leader-render` rendered the first send as it came, with no owner `Authz`: its answer
+    // names no source. The command committed, so its outcome by request id renders it again with the whole render.
+    if let Ok(done) = &r
+        && graftyard_api::hosted::rendered_without_authz(done)
+    {
+        r = match graftyard_lookup::call_raw(&b, chain, &rd.repo.record, "/outcome_by_request", whole.as_bytes()).await
+        {
+            Ok((v, _, _)) => match v.get("done") {
+                Some(d) => Ok(d.clone()),
+                None => Err(Err(format!("the leader answered no outcome for the committed command: {v}"))),
+            },
+            Err(e) => Err(Err(e)),
+        };
+    }
     Ok(match r {
         Ok(done) => {
             // The refusal's cause (`IssueErr`) is not in the client's reply, so it is logged.
@@ -933,6 +987,16 @@ async fn commit_issue_rid(
         },
         Err(Err(e)) => unavailable(&e),
     })
+}
+
+/// An issue command's `/commit` body with its render's owner `Authz` left out (`decisions/DECISIONS.md`,
+/// "`leader-render`"): about 10 KB of each command, which the leader fills from its own dependency read.
+fn without_authz(body: &Value) -> Value {
+    let mut b = body.clone();
+    if let Some(dir) = b.pointer_mut("/cmd/issue/render/dir") {
+        dir["authz"] = Value::Null;
+    }
+    b
 }
 
 /// `GET` and `PUT /api/graftyard/v1/repos/{o}/{r}/agents/policy` (`crate::agents`): the repository's `AgentPolicy`,
@@ -993,7 +1057,23 @@ pub(crate) async fn tasks(
     | Route::Task { owner, repo, .. }
     | Route::Cancel { owner, repo, .. }
     | Route::Log { owner, repo, .. }) = route;
-    let rd = match read(c, owner, repo, who.as_ref()).await? {
+    let caller = who.as_ref().and_then(|p| match p.actor {
+        Actor::App { app, .. } => Some(app),
+        _ => None,
+    });
+    // A create's requester, by login, before the read: its reply names the account (`CommandSpec::accounts`).
+    let requester = match (&route, &method, body.get("requester").and_then(Value::as_str)) {
+        (Route::Tasks { .. }, Method::Post, Some(login)) => match crate::account_of(c, login).await {
+            Ok(a) => a,
+            Err(e) => return Ok(unavailable(&e)),
+        },
+        _ => None,
+    };
+    let rd = match task_command(&route, &method, caller, requester) {
+        None => read(c, owner, repo, who.as_ref()).await?,
+        Some(spec) => read_command(c, owner, repo, who.as_ref(), spec).await?,
+    };
+    let rd = match rd {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
@@ -1004,10 +1084,6 @@ pub(crate) async fn tasks(
     let reader = t::Reader::of(who.as_ref(), authz, &access);
     let Ok(host) = Host::new(&c.cfg.host, false) else { return Ok(unavailable("the install's host is not valid")) };
     let view = rd.view(&host);
-    let caller = who.as_ref().and_then(|p| match p.actor {
-        Actor::App { app, .. } => Some(app),
-        _ => None,
-    });
     let op = match (route, method) {
         (Route::Tasks { .. }, Method::Get) => {
             let f = match t::parse_filter(query, &|l| graftyard_api::view::Directory::by_login(&rd.dir, l)) {
@@ -1019,14 +1095,7 @@ pub(crate) async fn tasks(
         (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, authz, crate::now(), id, reader)),
         (Route::Log { id, .. }, Method::Get) => return Ok(t::log(&view, id, reader)),
         (Route::Tasks { .. }, Method::Post) => {
-            let requester = match body.get("requester").and_then(Value::as_str) {
-                Some(login) => match crate::account_of(c, login).await {
-                    Ok(a) => a.map(graftyard_identity::UserId),
-                    Err(e) => return Ok(unavailable(&e)),
-                },
-                None => None,
-            };
-            t::parse_create(body, requester).map(IssueOp::CreateTask)
+            t::parse_create(body, requester.map(graftyard_identity::UserId)).map(IssueOp::CreateTask)
         }
         (Route::Task { id, .. }, Method::Patch) => match t::path_id(id, caller) {
             Some(id) => t::parse_patch(id, body),
@@ -1045,6 +1114,27 @@ pub(crate) async fn tasks(
     let Some(who) = who else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
     let created = matches!(op, IssueOp::CreateTask(_));
     commit_issue(c, &rd, &who, op, What::Task { created, contents: reader.contents }).await
+}
+
+/// The command read a task request makes (`command-rows`): none for a `GET`, which renders the tiers here; a write
+/// reads the read gate's rows and the task it names, with the metadata tier loaded and the logins its reply may name
+/// (a create's requester, resolved before the read), and its reply renders on the leader.
+fn task_command(
+    route: &graftyard_api::tasks::Route<'_>,
+    method: &Method,
+    caller: Option<graftyard_git::issues::AppId>,
+    requester: Option<graftyard_types::AccountId>,
+) -> Option<CommandSpec> {
+    use graftyard_api::tasks::Route;
+    if *method == Method::Get {
+        return None;
+    }
+    let session = match route {
+        Route::Task { id, .. } | Route::Cancel { id, .. } => graftyard_api::tasks::path_id(id, caller),
+        _ => None,
+    };
+    let accounts = requester.map(|a| a.0.0).into_iter().collect();
+    Some(CommandSpec { session, loaded: true, accounts, owner: 0 })
 }
 
 /// The `graftyard_task` field of an installation token request (AM1-WP3, `design/SHARED.md`, "Identity and tokens"):
@@ -1078,7 +1168,9 @@ pub(crate) async fn task_claim(
         return Ok(Err(Reply::error(422, "no such repository", doc)));
     };
     let repo = crate::Repo { id: repo, owner, record };
-    let (rows, install) = futures_util::future::join(tier_rows(c, &repo, None), crate::install_authz(c)).await;
+    // The task's own rows (`command-rows`): `token_task` reads only its `agent_task` row.
+    let spec = CommandSpec { session: Some(session.clone()), owner: owner.0.0, ..CommandSpec::default() };
+    let (rows, install) = futures_util::future::join(command_tier_rows(c, &repo, &spec), crate::install_authz(c)).await;
     let rows = match rows? {
         Ok(v) => match TierRows::from_value(&v["value"]) {
             Ok(r) if r.complete => r,
@@ -1548,6 +1640,13 @@ fn graphql_decided(gq: &Gql<'_>) -> bool {
         })
 }
 
+/// Whether a REST write plans from no row of the tiers, so it reads the read gate's rows alone (`Rows::Command`): a
+/// check run, a commit status, and a label create. Each reply renders on the leader; it needs the metadata tier
+/// loaded, as its whole-tier read did, and the login picks for the status's creator.
+fn rest_command(method: &Method, tail: &[&str]) -> bool {
+    matches!((method, tail), (Method::Post, ["check-runs"] | ["statuses", _] | ["labels"]))
+}
+
 /// The pull request a REST merge (`PUT pulls/{n}/merge`) names; `None` for every other request.
 fn rest_merge(method: &Method, tail: &[&str]) -> Option<MergeOf> {
     match (method, tail) {
@@ -1722,7 +1821,13 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     }
     // A merge reads only the rows it plans from (`TierRows::merge_rows`), as `mergePullRequest` does: read whole,
     // each one parsed a 1 MB dump at journey 9, and REST merges ran 1.2 to 4.4 s at 500 agents (LM-1 round 7).
-    let rows = || merge_of.map_or(Rows::All, |of| Rows::Merge(of, None));
+    // A write whose plan reads no row reads the read gate's rows alone (`command-rows`).
+    let command = rest_command(&method, tail);
+    let rows = || match merge_of {
+        Some(of) => Rows::Merge(of, None),
+        None if command => Rows::Command(CommandSpec { loaded: true, ..CommandSpec::default() }),
+        None => Rows::All,
+    };
     let rd = match (at, found) {
         (graftyard_wire::RepoPath::Name { owner, name }, Some(Ok(Some(repo)))) if ahead.is_some() => {
             let (of, v, authz) = ahead.expect("checked");
@@ -2463,5 +2568,85 @@ mod tests {
         assert_eq!(super::tier_off_line("rows", &shed), None, "a members' shed is not tierOff");
         let r = super::read_failed("rows", "repo:9: repo:9#1#f0: no answer");
         assert_eq!((r.status, r.header("retry-after")), (503, Some("5")));
+    }
+
+    /// `command-rows`: a task or lease write reads its one task and the read gate's rows, never the whole tiers, which
+    /// main read for every one of them; a task GET and the list still read the tiers here. A create asks for its
+    /// requester's login, a PATCH and a cancel name their task, and every task write needs the metadata tier loaded.
+    #[test]
+    fn task_and_lease_writes_read_their_command_rows() {
+        use graftyard_api::tasks::Route;
+        use graftyard_git::issues::AppId;
+        use graftyard_types::{AccountId, DbId};
+        use worker::Method::{Get, Patch, Post};
+        let app = Some(AppId(DbId(3)));
+        let tasks = Route::Tasks { owner: "o", repo: "r" };
+        let task = Route::Task { owner: "o", repo: "r", id: "a" };
+        let cancel = Route::Cancel { owner: "o", repo: "r", id: "a" };
+        assert_eq!(super::task_command(&tasks, &Get, app, None), None);
+        assert_eq!(super::task_command(&task, &Get, app, None), None);
+        let created = super::task_command(&tasks, &Post, app, Some(AccountId(DbId(101)))).expect("a command read");
+        assert_eq!((created.session, created.loaded, created.accounts), (None, true, vec![101]));
+        let s = graftyard_api::tasks::path_id("a", app);
+        assert!(s.is_some());
+        for r in [&task, &cancel] {
+            let spec = super::task_command(r, if matches!(r, Route::Task { .. }) { &Patch } else { &Post }, app, None);
+            let spec = spec.expect("a command read");
+            assert_eq!((spec.session.clone(), spec.loaded, spec.accounts.is_empty()), (s.clone(), true, true));
+        }
+        // The member answers the spec as JSON; a lease command's default asks for no session and no logins, and is
+        // served while the metadata tier loads.
+        let q = serde_json::json!({ "rows": { "access": true, "command": super::CommandSpec::default() } });
+        assert_eq!(q["rows"]["command"], serde_json::json!({ "owner": 0 }));
+    }
+
+    /// Only a check run, a commit status, and a label create read command rows among REST writes: each plans from no
+    /// row. An issue's labels, a review comment, a release, a merge, and every read keep their reads.
+    #[test]
+    fn only_row_free_rest_writes_read_command_rows() {
+        use worker::Method::{Delete, Get, Patch, Post, Put};
+        let rest = |m: worker::Method, p: &str| super::rest_command(&m, &p.split('/').collect::<Vec<_>>());
+        for p in ["check-runs", "statuses/abc", "labels"] {
+            assert!(rest(Post, p), "{p}");
+        }
+        for (m, p) in [
+            (Get, "labels"),
+            (Get, "check-runs"),
+            (Post, "issues/1/labels"),
+            (Put, "issues/1/labels"),
+            (Delete, "issues/1/labels/bug"),
+            (Post, "pulls/2/comments"),
+            (Post, "releases"),
+            (Patch, "releases/4"),
+            (Put, "pulls/2/merge"),
+            (Post, "check-runs/5"),
+            (Patch, "check-runs/5"),
+            (Post, "statuses"),
+        ] {
+            assert!(!rest(m.clone(), p), "{m:?} {p}");
+        }
+    }
+
+    /// `leader-render`: the first send of an issue command leaves out only the render's owner `Authz`; the command,
+    /// its request id, and the rest of the render cross as before. An answer that names no `Authz` source, from a
+    /// member built before, is asked again; one that names either is not, and neither is a refusal or a merge.
+    #[test]
+    fn the_first_send_leaves_out_only_the_owner_authz() {
+        use serde_json::json;
+        let body = json!({ "rid": "01", "admit": { "class": 1 },
+            "cmd": { "issue": { "op": { "Close": 1 }, "render": { "host": "h", "dir": { "home": 1, "authz": "abcd",
+                "logins": { "5": "e" } }, "what": "Deleted" } } } });
+        let first = super::without_authz(&body);
+        assert_eq!(first["cmd"]["issue"]["render"]["dir"]["authz"], serde_json::Value::Null);
+        let mut back = first.clone();
+        back["cmd"]["issue"]["render"]["dir"]["authz"] = json!("abcd");
+        assert_eq!(back, body, "nothing else changed");
+        assert!(first.to_string().len() < body.to_string().len());
+        let done = |issue: serde_json::Value| json!({ "ok": { "out": { "issue": issue } } });
+        assert!(graftyard_api::hosted::rendered_without_authz(&done(json!({ "reply": {} }))));
+        assert!(!graftyard_api::hosted::rendered_without_authz(&done(json!({ "reply": {}, "authz": "dep" }))));
+        assert!(!graftyard_api::hosted::rendered_without_authz(&done(json!({ "reply": {}, "authz": "render" }))));
+        assert!(!graftyard_api::hosted::rendered_without_authz(&json!({ "err": { "issue": {} } })));
+        assert!(!graftyard_api::hosted::rendered_without_authz(&json!({ "ok": { "out": { "merge": {} } } })));
     }
 }

@@ -242,8 +242,14 @@ async fn leases(
         let (token, ip) = poll_keys(c, &who, ip);
         return activity(c, &rd, &view, &q, reader.contents, &token, &ip).await;
     }
-    // A lease command, and the list, read the core tier alone (L0-16): served while the metadata tier loads.
-    let rd = match crate::api::read_core(c, owner, repo, Some(&who)).await? {
+    // The list reads the core tier alone (L0-16), served while the metadata tier loads; a lease command reads only the
+    // read gate's rows (`command-rows`), as served, and its reply renders on the leader.
+    let rd = if method == Method::Get {
+        crate::api::read_core(c, owner, repo, Some(&who)).await?
+    } else {
+        crate::api::read_command(c, owner, repo, Some(&who), graftyard_api::hosted::CommandSpec::default()).await?
+    };
+    let rd = match rd {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };

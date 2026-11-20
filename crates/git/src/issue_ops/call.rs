@@ -78,6 +78,10 @@ pub struct IssueCall {
 pub struct IssueCallOut {
     pub out: IssueOut,
     pub render: Value,
+    /// The owner's `Authz` dependency of the command's entry, when its render carries none: the leader's member renders
+    /// the reply from it (`graftyard_api::hosted::fill_authz`, `decisions/DECISIONS.md`, "`leader-render`"). One `Rc`
+    /// for every command `decide` saw it for, so the resolved tickets a leader keeps hold one fold. None on `replay`.
+    pub authz: Option<std::rc::Rc<graftyard_identity::AuthzFold>>,
 }
 
 impl IssueCall {
@@ -332,7 +336,13 @@ impl IssueCall {
         } else {
             cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases, self.reviews)?
         };
-        Ok((evs, IssueCallOut { out, render: self.render.clone() }))
+        let authz = self.render_lacks_authz().then(|| owner_authz(s.fold(), deps)).flatten();
+        Ok((evs, IssueCallOut { out, render: self.render.clone(), authz }))
+    }
+
+    /// Whether the edge sent the render without the owner's `Authz` (`HostedDir.authz` null), for the leader to fill.
+    pub fn render_lacks_authz(&self) -> bool {
+        self.render.get("dir").is_some_and(|d| d.get("authz").is_none_or(Value::is_null))
     }
 
     /// Whether the command's entry may carry the agent events: formats 32.8, 32.12, and 32.14.
@@ -364,8 +374,35 @@ impl IssueCall {
             _ => IssueOp::Close { n: crate::issues::IssueNumber(0) },
         };
         let out = IssueCmd { op, actor: self.actor.clone(), request: self.request }.replay(events);
-        IssueCallOut { out, render: self.render.clone() }
+        IssueCallOut { out, render: self.render.clone(), authz: None }
     }
+}
+
+thread_local! {
+    /// The owner `Authz` fold the last `decide` that filled one shared (`owner_authz`).
+    static LAST_AUTHZ: std::cell::RefCell<Option<std::rc::Rc<graftyard_identity::AuthzFold>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The owner's `Authz` dependency among `deps`, for the chain `deps()` names on `fold` (`authz_owner`): the fold
+/// shared by the last command that found an equal one, so commands decided against one fold hold one copy.
+fn owner_authz(fold: &RepoFold, deps: &[(ChainId, IdentityDep)]) -> Option<std::rc::Rc<graftyard_identity::AuthzFold>> {
+    let owner = fold.authz_owner()?;
+    let f = deps.iter().find_map(|(c, d)| match (c, d) {
+        (ChainId::Authz(o), IdentityDep::Authz(f)) if *o == owner && f.owner == Some(owner) => Some(f),
+        _ => None,
+    })?;
+    LAST_AUTHZ.with(|last| {
+        let mut last = last.borrow_mut();
+        match last.as_ref() {
+            Some(rc) if **rc == *f => Some(rc.clone()),
+            _ => {
+                let rc = std::rc::Rc::new(f.clone());
+                *last = Some(rc.clone());
+                Some(rc)
+            }
+        }
+    })
 }
 
 #[cfg(test)]
