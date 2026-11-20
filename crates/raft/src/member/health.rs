@@ -197,6 +197,16 @@ impl<C: Command> Member<C> {
         self.finish(())
     }
 
+    /// The other sites' `SiteHealth` verdict on this member's site (`design/DESIGN.md`, Shape, `SiteHealth`): both other
+    /// sites count it failing their calls and receipts. A leader reads it only to let a hot group's own `STEP_DOWN`
+    /// trip move it (`step-agree`); the host sets it when the verdict changes.
+    pub fn set_site_sick(&mut self, now: Timestamp, sick: bool) -> Ready<C, ()> {
+        self.begin(now);
+        self.site_sick = sick;
+        self.tick_health();
+        self.finish(())
+    }
+
     /// The sites whose members may not lead (drained, or under the first day's lead limit), from the `Release`
     /// group's site modes. A leader on such a site hands off within one LEASE.
     pub fn set_drained(&mut self, now: Timestamp, sites: impl IntoIterator<Item = SiteId>) -> Ready<C, ()> {
@@ -401,6 +411,15 @@ impl<C: Command> Member<C> {
             return;
         }
         let Some(why) = self.tripped() else { return };
+        // step-agree: a hot group's own tail moves its leader only when the other sites agree its site is sick or the
+        // group stopped committing. `hot` counts committed pushes over HOT_WINDOW, so a group that stops committing
+        // stops being hot within it, and its next trip after this hold moves it as before. A loaded leader that still
+        // commits holds: B0-35 m60's term 3 was such a leader, and the move cost the load a term change
+        // (`decisions/DECISIONS.md`, `step-agree`).
+        if self.hot() && !self.site_sick {
+            self.hold(why);
+            return;
+        }
         let failing = |s: SiteId| self.link_failing(s);
         let errors_trip = matches!(why, StepDownWhy::CommitErrors { .. });
         // A follower that may lead, outside RESET_QUARANTINE; on a confirm or loop-lag trip also one whose link from

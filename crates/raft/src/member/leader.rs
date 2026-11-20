@@ -815,7 +815,7 @@ impl<C: Command> Member<C> {
     }
 
     /// Pushes a second over the last HOT_WINDOW of committed entries, above HOT_PUSHES.
-    fn hot(&self) -> bool {
+    pub(super) fn hot(&self) -> bool {
         let w = HOT_WINDOW.as_millis() as u64;
         let n = self.fold.pushes(Timestamp(self.now.0.saturating_sub(w)), Timestamp(self.now.0 + 1));
         n as f32 / HOT_WINDOW.as_secs_f32() > HOT_PUSHES

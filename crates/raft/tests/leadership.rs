@@ -2000,3 +2000,122 @@ fn a_leader_hands_off_to_no_follower_whose_answers_it_loses() {
         }
     }
 }
+
+// ---- step-agree: a hot group's own tail moves its leader only with the other sites' word or no commit progress ----
+
+/// A push as admission counts one (`KvCmd::Write { push: true }`): a key per write, so none is refused `Stale`.
+fn push(id: u128) -> KvCmd {
+    KvCmd::Write {
+        key: format!("p{id}"),
+        expect: None,
+        value: id.to_string(),
+        actor: Some(7),
+        push: true,
+        pack: 0,
+        render: 0,
+    }
+}
+
+/// `drive` with three pushes a step (30 a second, past HOT_PUSHES' 2 a second over HOT_WINDOW): a hot group.
+fn drive_hot(c: &mut Cluster, total: u64, next_id: &mut u128, mut fail: impl FnMut(&Envelope<KvEvent>) -> bool) {
+    let mut t = 0;
+    while t < total {
+        c.advance(100);
+        if let Some(l) = c.leader() {
+            for _ in 0..3 {
+                *next_id += 1;
+                let id = RequestId(graftyard_raft::Ulid(*next_id));
+                let _ = c.on(l, |m, now| m.commit(now, id, push(*next_id)));
+            }
+        }
+        for _ in 0..200 {
+            if c.inbox.is_empty() {
+                break;
+            }
+            for e in std::mem::take(&mut c.inbox) {
+                if c.members[e.to.0 as usize].is_none() || fail(&e) {
+                    if let Some(f) = e.failure(false)
+                        && c.members[e.from.0 as usize].is_some()
+                    {
+                        let from = e.from;
+                        c.on(from, |m, now| m.call_failed(now, f));
+                    }
+                    continue;
+                }
+                let Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+        t += 100;
+    }
+}
+
+/// A hot group's leader, A, after 3 s of pushes, then six storage confirms of 750 ms each (`six_slow_confirms_trip`'s
+/// trip), then 3 s more of pushes. `sick` sets the other sites' verdict on A's site first; `stall` loses every
+/// AppendEntries reply from then on, so nothing commits, and keeps A's confirms slow for about 20 s more.
+fn hot_confirm_trip(sick: bool, stall: bool) -> (Cluster, u64) {
+    let mut c = Cluster::new(53);
+    let mut id = 0;
+    c.elect(A);
+    drive_hot(&mut c, 3_000, &mut id, |_| false);
+    let commit = c.m(A).state().commit.0;
+    if sick {
+        c.on(A, |m, now| m.set_site_sick(now, true));
+    }
+    let lost = |e: &Envelope<KvEvent>| stall && matches!(e.msg, Message::AppendRes(_));
+    for _ in 0..6 {
+        c.slow_confirm(A, 750);
+        c.deliver(|e| !lost(e));
+    }
+    drive_hot(&mut c, 3_000, &mut id, lost);
+    // A stalled leader's storage stays slow: six more slow confirms each STEP_DOWN window, for two windows past the hold.
+    for _ in 0..if stall { 24 } else { 0 } {
+        c.slow_confirm(A, 750);
+        c.deliver(|e| !lost(e));
+        drive_hot(&mut c, 100, &mut id, lost);
+    }
+    (c, commit)
+}
+
+/// step-agree: a hot group whose leader still commits holds through its own Confirm trip, with `to: None`, and keeps
+/// committing. On main it transferred, as every `STEP_DOWN` of M0's kept runs and B0-35 m60's term 3 did with no
+/// fault injected (`decisions/DECISIONS.md`, `step-agree`).
+#[test]
+fn a_loaded_leader_that_still_commits_holds_through_its_own_confirm_trip() {
+    let (c, before) = hot_confirm_trip(false, false);
+    let sd = step_downs(&c);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, None))), "{sd:?}");
+    assert_eq!(sd.len(), 1, "one hold for the window, never a transfer: {sd:?}");
+    assert_eq!(c.leader(), Some(A));
+    assert!(c.m(A).state().commit.0 > before + 50, "the group kept committing");
+}
+
+/// step-agree's other half: the same trip moves the leader once both other sites' `SiteHealth` agree its site is
+/// sick, as B0-06's slow-storage leader must move.
+#[test]
+fn a_hot_leader_on_a_site_the_others_call_sick_still_moves() {
+    let (c, _) = hot_confirm_trip(true, false);
+    let sd = step_downs(&c);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, Some(t))) if *t != A), "{sd:?}");
+    assert_ne!(c.leader(), Some(A));
+}
+
+/// step-agree: a hot leader whose group stops committing (every AppendEntries reply lost) is held on its own trip, but
+/// is not kept: with no commit it stops being hot (`hot` counts committed pushes) and loses leadership within about 3 s
+/// of the stall, whatever `SiteHealth` says.
+#[test]
+fn a_hot_leader_that_stopped_committing_is_not_kept() {
+    let (c, before) = hot_confirm_trip(false, true);
+    let sd = step_downs(&c);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, None))), "{sd:?}");
+    assert_eq!(c.m(A).state().commit.0, before, "the stall committed nothing");
+    assert_ne!(c.m(A).role(), Role::Leader, "a stuck hot leader kept leading: {sd:?}");
+}
+
+/// step-agree leaves a group that is not hot as it was: a quiet group's leader still transfers on its own trip.
+#[test]
+fn a_quiet_groups_own_trip_still_transfers() {
+    let c = six_timed_confirms(750);
+    let sd = step_downs(&c);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, Some(_)))), "{sd:?}");
+}

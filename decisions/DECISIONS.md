@@ -6474,3 +6474,24 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 - A covered write that a revoked or suspended token gets through: a `decide` that skips `check_credential`, or a command that does something irreversible before it.
 - A GHES client that treats the decide-time 401 differently from the front's.
 - A hosted row where covered writes' `auth` does not fall toward zero on warm isolates, or where revoked tokens' pushes show as measurable git cache or bucket load.
+
+### `step-agree`: a hot group's own `STEP_DOWN` trip moves its leader only when the other sites call its site sick or the group stopped committing, 2026-11-20
+
+**Status.** Asked for by the orchestrator as Fable's recommendation 4, "stop self-inflicted leader changes". Built on branch `r32-stepdown-agree`, not deployed. `crates/raft`, so it ships on a site day. B0-06's gray-site row must rerun under it, after F105 wires the verdict.
+
+**Decision.**
+- **Hold.** When a leader's own measure trips `STEP_DOWN` (Confirm, LoopLag or CommitErrors) and its group is hot (`hot`: pushes committed over HOT_WINDOW, 5 s, above HOT_PUSHES, 2 a second), it holds for one window (`Alarm::StepDown { to: None }`) instead of transferring.
+- **Unless the other sites agree.** It transfers as before when the host has told it, through `Member::set_site_sick`, that both other sites' `SiteHealth` call its site sick.
+- **Or the group stopped committing.** `hot` counts committed pushes only, so a group that stops committing stops being hot within HOT_WINDOW, and its next trip after the hold moves it. No separate progress clock is kept.
+- A group that is not hot transfers on its own trip, as on main.
+
+**Why.** No hosted row since M0 injected a fault, yet leaders kept moving under load on their own measures. On B0-35 m57, f0's Confirm trip at 18:46:33Z (no `/suspect` before it) started three leader changes, and those changes and the shard warm-ups after them were the row's 184 s dispatch tail [measured, `tests/m4/results/m4-wp4.md`, "Deeper analysis of m57"]. On m60, f0's `CommitErrors` trip at 05:23:33Z moved a leader whose group committed to the last push (05:23:34Z), and sites b and c then rehydrated for about 34 s and answered 15 `warming` 503s [measured, same file, row m60]. A transfer cures a sick site, not a busy group: the new leader inherits the same load and adds a term change and a warm-up. The rule's other two arms keep what STEP_DOWN is for: a sick site, which the other sites see too, and a stuck leader, which stops committing.
+
+**What it beat.**
+- **Always transferring (main):** every self-tripped hot leader moved, which on m57 and m60 cost a term change with no fault to cure.
+- **A separate commit-progress clock** (hold only while the last commit is under a window old): redundant with `hot`, which already falls once commits stop, and one more clock to keep across boots.
+- **Raising STEP_DOWN's thresholds for hot groups:** it would also slow the move off a truly sick site, which is B0-06's 20 s line.
+
+**Evidence.** `crates/raft/tests/leadership.rs`, under "step-agree": `a_loaded_leader_that_still_commits_holds_through_its_own_confirm_trip` (fails on main, which transfers), `a_hot_leader_on_a_site_the_others_call_sick_still_moves`, `a_hot_leader_that_stopped_committing_is_not_kept`, and `a_quiet_groups_own_trip_still_transfers`. Plants in `tests/m0carried/plant60.py`, 6 of 6 caught. The long sweep and Porcupine on the branch and on main are in `tests/m0/results/step-agree.md`.
+
+**Flip.** A hot leader held while its group's commits stall for longer than HOT_WINDOW plus one STEP_DOWN window, or B0-06's rerun moving a group off its gray site later than 20 s: then the hold needs its own progress bound, or the verdict must come from the other sites before the first trip.
