@@ -6560,3 +6560,5 @@ Capping the count keeps a burst's entries in the size range that measured under 
 - The long sweep and Porcupine on this branch and on main are in `tests/m0/results/agent-cmds-entry.md`.
 
 **Flip.** A B0-32 rerun where an entry of at most 64 Agent commands still stalls the leader's ticker over 1 s (the cost is per turn, not per command), or where the burst's queue drains slower than about 3 s (the cap is too low, or the cost is elsewhere).
+
+**First rerun, B0-32 m3fac1 (2026-11-20): the flip did not fire.** Three cuts ended `AgentCmds` (64 agent commands each), and those entries' rounds were 100, 100 and 1,003 ms with no ticker stall inside; the row's stalls were 306 and 269 ms. The queue went from 195 agent commands to 0 in 1.2 s, 2.2 s after the first capped cut. The row still failed, 311 of 500 within 5 s, on one 2,436 ms leader `sync()` that held all input for 2 s (`decisions/OPEN-QUESTIONS.md`, F106) [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fac1"].

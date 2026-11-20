@@ -175,6 +175,122 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **The driver** now reads `move_step`'s `{step, ok}` shape, which m3fg11's 200-character cut lost, and times `heldS` and the hand-off.
 - **Tests:** four new on real members (`crates/identity/tests/group_move.rs`), one changed unit test, and `plant49.py` 8 of 8.
 
+## Row m3fac1: B0-32 on main `eaac204b` (`agent-cmds-entry`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** The orchestrator granted one site day and edge day from main `eaac204b` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (12:38:08Z). The measure is `agent-cmds-entry` alone: at most 64 Agent commands per entry (`decisions/DECISIONS.md`, "`agent-cmds-entry`").
+
+**Committed raw files:**
+- `tests/fanout/raw/rows-m3fac1.status`
+- `{admit,terms,vmem}-m3fac1-b0-32.jsonl`
+- `tsave-m3fac1-b0-32.jsonl.xz`
+- `arrivals-m3fac1.jsonl`
+- `shardgate-m3fac1-b0-32-*.jsonl`
+- `lm1-rows-m3f-data/m3fac1-raw/a1-b0-32-mwozv8cb.jsonl`, which holds every burst push's `server-timing` and `x-graft-spread`
+
+- **Site day and edge day** m3fac from `eaac204b`, each exit 0. The launcher ran as an orb service, which restarted it each time it exited, so the day ran three times before it was stopped (edge versions at 12:51:55Z, 12:57:04Z and 13:02:37Z); no group existed then. Final: sites a/b/c `232c5d18` / `71d80615` / `b609bf53`, edge `a06a4309`, each at 100%. Images reused; `--ssh` on. The launcher now ends in `sleep infinity`, as `rows.sh` does.
+- **Row:** repo 65601 (run `mwozv8cb`), 8 learners, k 4, leader site 0 term 2, shards warm. The first request was at 13:11:14Z; the burst reached the leader at 13:12:25Z to 13:12:28Z on the server clock, 14.1 s ahead of the orb's (`tsave` clock row). The row was done at 13:15:01Z.
+- **Harness outage:** from the first request, 3 s, share 0.0181. Valid.
+- **Spend:** $2.22 for the whole account from 12:38:08Z to 13:16:39Z, $0.67 of it on graft-m3f (stop $8). The account was at $24.53 for the UTC day at 13:06Z.
+- **Close-out:** group torn down; second sweep OK.
+- **SSH:** `ssh-keyscan ssh.graftyard.dev` at 13:05Z and 13:17Z gave slot A's three fingerprints: Ed25519 `SHA256:TMEOnX…`, ECDSA `SHA256:XEJXBQ…`, RSA `SHA256:qgOnPP…`.
+
+### Result: fail, valid [measured]
+
+Edge clock (`server-timing` `total`); `full` counts as meeting the line.
+
+| Gate line | m3fac1 | m3fgt1 | m3fwi3 |
+|---|---|---|---|
+| Every push acknowledged within 5 s, or `ng … agent admission full` | **Fail: 311 of 500 (62.2%)**: 25 of 214 `ok` within 5 s, plus 286 `full`; 0 unanswered. `ok` edge total p50 7,272 ms, p99 8,329 ms | 135 of 500 (27.0%) | 442 of 500 (88.4%) |
+| No other refusal shape | Pass | Pass | Pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | Pass: peak 166,121 B, 180 queued at 13:12:13.8Z (server clock) | Pass: 108,508 B | Pass: 112,715 B |
+| Every merge in one of the next 2 entries, none over 2 s | **Fail:** 3 of 27 merge pushes over 2 s on the edge clock (max 5,896 ms); `merge:only` 22 × 200, 1 × 409 | Fail: 2 of 22 | Fail: 1 of 23 |
+| Zero leader changes | Pass: term 2, site 0 | Pass | Pass |
+| Zero `suspect` | **Fail: 69 `suspect`** from 69 burst pushes, one each; the voters logged 81 `Reported` rows (LAX, 80 promised) | Fail: 169 | Pass: 0 |
+| No object reset from memory | Pass: wasm high 34.9 MB | Pass | Pass |
+
+**The 286 `full` answers.** None is a leader refusal at admission time; they are AGENT_PUSH_BOUND (5 s from the push's arrival) running out:
+- 75 refused at the edge (`bound`) before any send: 69 at the commit send, 6 at the read gate. All 75 had a read gate in the slow mode.
+- 211 refused by the leader after a send whose `budget_ms` ran out in the queue (`expire_agents`): their commit stage p50 1,899 ms, p99 3,746 ms; budget at send p50 2,505 ms. 140 of them had staged once (`AdmitError::Stage`, `stage` p50 539 ms) and sent again.
+- `full` by send order: 13, 17, 17, 20, 28, 38, 34, 40, 41, 38 per block of 50. Late arrivals had less budget left.
+
+**Burst `ok` pushes, p50 / p99 ms, edge clock:**
+
+| | m3fac1 | m3fgt1 | m3fwi3 |
+|---|---|---|---|
+| Committed twice | **77 of 214 (36.0%)**; flip line 5% | 0 of 490 | 206 of 489 |
+| `stagefirst` | 137 of 214 (213 of all 500) | 490 of 490 | 283 of 489 |
+| front | 688 / 977 | 920 / 1,278 | 695 / 1,149 |
+| auth | 121 / 263 | 135 / 353 | 128 / 300 |
+| resolve | 435 / 893 | 636 / 1,174 | 438 / 995 |
+| gate, when it read rows | 288 / 1,353 (106 pushes) | 600 / 854 | 720 / 2,152 |
+| gate's slow mode (1.5 s or more), all 500 pushes | **134**, every one `full` | 0 | 57 |
+| first commit | 4,157 / 5,668 | 6,651 / 7,977 | 973 / 1,712 |
+| leader commit (`/stats`, whole row) | 394 / 3,549 | 377 / 5,490 | 498 / 1,345 |
+| leader round p50 (whole row) | 159 | 146 | 204 |
+
+`stagefirst` came back because main reverted `agent-stage-first` but the edge's `hot` rule still stages first on a group whose leader asked it to stage within HOT_WINDOW. One-commit and two-commit `ok` pushes took about the same (p50 6,976 and 7,666 ms): the second commit is not the cost here.
+
+### `agent-cmds-entry`'s flip [measured from the leader's cut and turn traces, `tsave-m3fac1-b0-32.jsonl.xz`]
+
+Times are seconds from 13:12:25.5Z on the server clock.
+
+**Cut ends over the whole row:** 889 cuts, 886 `Empty`, **3 `AgentCmds`**, none `Soft`, `EntryMax` or `AgentTokens`. The burst's three cuts of 64 agent commands ended `AgentCmds`.
+
+**The burst's entries:**
+
+| Entry | Cut at | Commands (agent) | Soft bytes | Cut to append | Round | Ticker stalls inside |
+|---|---|---|---|---|---|---|
+| 421 | 0.99 | 68 (64) | 13,430 | 446 ms | 100 ms | none |
+| 422 | 1.54 | 67 (64) | 73,549 | 554 ms | 100 ms | none |
+| 423 | 1.54 | 64 (64) | 48,376 | 100 ms | 1,003 ms | none |
+| 424 | 2.76 | 39 (37) | 26,624 | 1,103 ms | 496 ms | 306 ms |
+| 425 | 3.05 | 14 (11) | 42,948 | 2,817 ms | 614 ms | none |
+
+Entry and round times come from `entries2.py`'s join of cut to append to apply. By size, over the 15 s from 1.5: entries of 1 to 4 commands had round p50 213 ms, 5 to 15 213 ms, 16 to 50 300 ms, 51 to 120 496 ms (max 1,003 ms).
+
+**Ticker stalls:** 306 ms (ending 2.95) and 269 ms (3.51). No stall over 1 s. That half of the flip does not fire.
+
+**The agent queue's drain:** the queue peaked at 195 agent commands left after the cuts at 1.54, and was 0 after the cut at 2.76: 1.2 s from the peak, and 2.2 s from the first 64-command cut at 0.99. `/stats` read 180 queued at 13:12:13.8Z and 27 at 13:12:16.5Z on its own sample clock. Under 3 s, so that half of the flip does not fire either. **`agent-cmds-entry`'s flip did not fire.**
+
+**What held the burst instead: one 2,436 ms storage confirm.** Entry 424's transaction (211 statements, 163,535 B, deferred at 2.65, flushed at 2.95) called `sync()` at 3.14. That confirm took 2,436 ms and ended at 5.58. From 3.51 to 5.58 the leader logged no row at all: no `Entered`, no `/raft`, no ticker wake. Entry 425's append waited behind it (cut to append 2,817 ms), and resolutions went 68 in 3.0 to 3.5, then 1 by 5.58, then 42.
+- Its followers had applied entry 423 by 5.44 to 5.54, and their own confirms took 2 to 13 ms. The stall was the leader's storage, not its peers.
+- No other leader confirm in the row went over 1,000 ms; the whole-row p50 was 44 ms and p99 138 ms (1,429 confirms). m3fwi2 and m3fwi3's largest were 319 and 192 ms; m3fgt1's 1,799 ms was entry 446's 600-statement flush.
+- Site a's member logs for 13:12:24Z to 13:12:36Z (Workers Logs, on the server clock): `/commit` wall p50 861 ms, p90 3,320 ms, p99 3,826 ms; `/outcome_by_request` p50 329 ms, p99 900 ms; `/raft` p99 615 ms. Followers b and c logged `/raft` walls of about 3.1 s at p90: the calls the leader held.
+- Why one `sync()` of 211 statements took 2.4 s while the row's others took under 140 ms is not attributed. `decisions/OPEN-QUESTIONS.md`, F106.
+
+### The read gate's slow mode: `FOLLOWER_WAIT`, behind the leader's stall [measured from `x-graft-spread`]
+
+- 134 pushes had a gate of 1.5 s or more, every one of them `full`. In each, the slowest pass was the gate's own `repo:65601` read; 128 of 134 used a second or third member (69 three tries, 59 two), and 6 were shed.
+- Their member tries: 209 followers answered `overloaded` at about 1 s (203 in 900 to 1,300 ms, 6 over), then the next member answered `ok`. That is the `FOLLOWER_WAIT` mechanism m3fgt1 could not test.
+- Followers wait for the leader's index, and from 3.51 to 5.58 the leader took no input, so the followers' `overloaded` answers are F106's stall seen through the gate [inference]. No gate fix is built; the cause is upstream.
+
+### A34: the asks and misses against flush waits [measured from the same trace]
+
+**Joined at the leader.** Each `/commit` and `/outcome_by_request` `Entered` row is matched to the deferred flush pending when its answer could leave (`settled()`): arrival plus `COMMIT_HOLD` for `/commit`, arrival for an ask (`tests/fanout/a34.py`, which reads `Trace::Flushed`'s deferral span).
+
+| | m3fac1 | m3fgt1 |
+|---|---|---|
+| `/commit` arrivals in the burst | 492: 490 no flush pending, 2 under 500 ms | 226: 199 none, 9 under 1 s, 18 at 1 to 2 s |
+| `/outcome_by_request` arrivals | 193: 173 none, 20 under 500 ms | 431: 331 none, 100 at 500 to 1,000 ms |
+| Deferred flushes 500 ms late or more | none | 2 (1,515 and 1,730 ms) |
+
+**At the edge** (`server-timing` marks):
+
+| Marks | Pushes | Result |
+|---|---|---|
+| `send ask` | 146 | 98 `ok`, 48 `full` |
+| `send stage send` | 93 | 92 `full`, 1 `ok` |
+| `send stage send ask` | 89 | 41 `ok`, 48 `full` |
+| `bound` | 75 | `full` |
+| `send stage send ask missed suspect send` | 35 | `ok` |
+| `send ask missed suspect send` | 29 | `ok` |
+| `send` | 28 | 23 `full`, 5 `ok` |
+| `send ask missed suspect send ask` | 5 | `ok` |
+
+- 304 pushes asked; 69 missed a receipt, each once, each after an ask; none after a send alone.
+- **No miss follows a flush wait.** The deferred flushes ran on time throughout (none 500 ms late), while the 2,436 ms `sync()` happened after its flush, which `settled()` does not wait for. The asks that missed met a leader that took no input at all from 3.51 to 5.58, so answering `admitted`/`pending` without `settled()` (A34) would not have answered them either [inference from the trace: the leader logged no `Entered` in that span].
+- So A34 is not confirmed by this row, and the misses point to F106's stall.
+
 ## Row m3fgt1: B0-32 on main `19b4385f` (`agent-stage-first`) with gate tracing (2026-11-20, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** The orchestrator granted one site day and edge day from `19b4385f` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (10:43:34Z). The day ran from branch `gate-trace` (`fe3f8c64`): `19b4385f` plus test-faults-only tracing. Each push answers `x-graft-spread`, which lists every spread read pass with its member tries, and `server-timing` gains `gate_rows` and `gate_authz`. The measures are `agent-stage-first` and the `FOLLOWER_WAIT` hypothesis for the read gate's slow mode.
