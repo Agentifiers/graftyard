@@ -593,6 +593,13 @@ fn graphql(v: Value) -> WireReply {
     WireReply::of(&Reply::json(200, v))
 }
 
+/// A refused GraphQL mutation's reply. A credential refusal is HTTP 401 with GitHub's `{"message": "Bad credentials"}`
+/// body, as the edge answers a token it refuses at the front, so a revoked token gets the same answer whether the
+/// edge or the leader refused it (`write-identity`); every other refusal is GraphQL's error shape at 200.
+fn graphql_refused(v: Value, credential: bool) -> WireReply {
+    WireReply::of(&Reply::json(if credential { 401 } else { 200 }, v))
+}
+
 /// The reply to a committed issue command, from its `&Acked` and the leader's tiers after the entry applied.
 pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta: &dyn Read) -> WireReply {
     let Some(at) = render.dir.home.clone() else { return WireReply::of(&Reply::error(500, "no repository", "rest")) };
@@ -669,7 +676,9 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
 /// The reply to a refused issue command.
 pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
     match &render.what {
-        What::Graphql { field, .. } => graphql(crate::graphql::refused_field(field, e)),
+        What::Graphql { field, .. } => {
+            graphql_refused(crate::graphql::refused_field(field, e), matches!(e, IssueErr::Unauthorized(_)))
+        }
         What::ReleaseCreated | What::ReleaseUpdated | What::Deleted => WireReply::of(&crate::release::refused(e)),
         What::LfsVerified => WireReply::of(&crate::lfs::not_verified()),
         What::LfsLocked | What::LfsUnlocked { .. } => WireReply::of(&crate::lfs::refused(e)),
@@ -740,7 +749,10 @@ pub fn render_merge_ok(
 /// The reply to a refused merge command: GraphQL's error with GitHub's text, or REST's 405, 409, 403, or 404.
 pub fn render_merge_err(render: &Render, e: &graftyard_git::merge::MergeError) -> WireReply {
     match &render.what {
-        What::Graphql { field, .. } => graphql(crate::graphql::refused_merge_field(field, e)),
+        What::Graphql { field, .. } => graphql_refused(
+            crate::graphql::refused_merge_field(field, e),
+            matches!(e, graftyard_git::merge::MergeError::Unauthorized(_)),
+        ),
         _ => WireReply::of(&crate::rest::refused_merge(e)),
     }
 }

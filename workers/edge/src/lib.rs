@@ -927,7 +927,8 @@ async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
         let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
         Ok::<_, Error>(serde_json::from_value::<Option<TokenRow>>(v["token"].clone())?)
     };
-    let row = rcache::through(&rcache::TOKENS, hash, at, c.read_class.get(), &c.timing, read).await?;
+    let row =
+        rcache::through_bound(&rcache::TOKENS, hash, at, c.read_class.get(), c.decided.get(), &c.timing, read).await?;
     // A `ghr_` only refreshes (`usertok`), and a lapsed token is no caller: `decide` sees no clock. Checked on every
     // use, so a cached row lapses at its `expires`.
     let row = row.filter(|r| !r.revoked && usertok::usable(r.kind, r.expires, now()));
@@ -1310,6 +1311,11 @@ struct Ctx<'a> {
     /// placement, `Authz`, and login reads may use `rcache` entries up to `READ_CACHE` old. False for every other
     /// request, which reads them as before.
     read_class: std::cell::Cell<bool>,
+    /// A write whose command's `decide` reads the caller's credential shard and answers a refusal with the front's
+    /// 401 (`write-identity`; `git_bound`, `api::rest_bound`, `api::graphql_bound`, `agents::serve`): its token row
+    /// and a `ghs_` `jti` row may come from `rcache` within `READ_CACHE`, since the leader's read binds. False for
+    /// every other request.
+    decided: std::cell::Cell<bool>,
     /// A write (a push, a REST call other than `GET`, a GraphQL mutation): a read its members shed is asked again,
     /// backing off, within SHED_RETRY_FOR, before the write fails 503 (`spread_read`).
     write: std::cell::Cell<bool>,
@@ -3074,6 +3080,15 @@ fn git_class(route: &Route) -> (bool, bool) {
     }
 }
 
+/// Whether a git request may take its token row from `rcache` though it is a write (`Ctx::decided`,
+/// `write-identity`): receive-pack's POST, whose `Push::decide` reads the token or `jti` row and the actor's `Account`
+/// row once the entry's commands are frozen and answers 401 (`push_reply`). A pack sent under a token revoked within
+/// `READ_CACHE` is placed and validated before that refusal, and the sweeper deletes it. The advertisement commits
+/// nothing, so nothing but the front would refuse a revoked token there: it reads fresh.
+fn git_decided(route: &Route) -> bool {
+    matches!(route, Route::Rpc { service: Service::ReceivePack, .. })
+}
+
 /// A request's route class for `fivexx_line`, from its method and path.
 fn route_kind(method: &Method, path: &str) -> &'static str {
     let agents = path.starts_with(graftyard_api::agents::PREFIX);
@@ -3137,6 +3152,7 @@ async fn serve(
         leader_reads: std::cell::Cell::new(false),
         timing: api::Timing::default(),
         bound: std::cell::Cell::new(None),
+        decided: std::cell::Cell::new(false),
         push_rows: std::cell::RefCell::new(None),
         install: std::cell::RefCell::new(None),
         ssh_front: ssh::from_front(ctx),
@@ -3285,6 +3301,7 @@ async fn serve(
     let (read_class, write) = git_class(&route);
     c.read_class.set(read_class);
     c.write.set(write);
+    c.decided.set(git_decided(&route));
     let rpc_push = matches!(route, Route::Rpc { service: Service::ReceivePack, .. });
     if rpc_push || matches!(route, Route::Rpc { service: Service::UploadPack, .. }) {
         c.timing.start();
@@ -3776,6 +3793,20 @@ mod tests {
         assert_eq!(class("/o/r.git/git-receive-pack", ""), (false, true));
         assert_eq!(class("/o/r.git/info/refs", ""), (false, false));
         assert_eq!(class("/o/r.git/HEAD", ""), (false, false));
+    }
+
+    /// `write-identity`: of git's requests only receive-pack's POST takes its token row from `rcache`, since
+    /// `Push::decide` reads the credential again; its advertisement commits nothing and a fetch is read-class.
+    #[test]
+    fn only_a_push_s_post_is_decided_among_git_requests() {
+        let decided = |path: &str, query: &str| {
+            super::git_decided(&graftyard_git::smart::route(path, query).expect("a git route"))
+        };
+        assert!(decided("/o/r.git/git-receive-pack", ""));
+        assert!(!decided("/o/r.git/info/refs", "service=git-receive-pack"));
+        assert!(!decided("/o/r.git/git-upload-pack", ""));
+        assert!(!decided("/o/r.git/info/refs", "service=git-upload-pack"));
+        assert!(!decided("/o/r.git/HEAD", ""));
     }
 
     /// One read of `chained`'s harness: its name and arguments, and the ms it started.

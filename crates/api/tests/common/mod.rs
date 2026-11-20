@@ -206,6 +206,15 @@ impl Chain {
         Ok(out)
     }
 
+    /// Revokes `account`'s token on every `Tokens` dep the leader reads, as a `Revoked` entry on its shard does.
+    pub fn revoke(&mut self, account: i64) {
+        for (_, d) in &mut self.deps {
+            if let IdentityDep::Tokens(t) = d {
+                t.apply(&TokensEvent::Revoked { hash: [account as u8; 32] });
+            }
+        }
+    }
+
     pub fn commit(&mut self, actor: i64, op: IssueOp) -> Result<IssueOut, IssueErr> {
         self.commit_all(vec![(actor, op)]).pop().unwrap()
     }

@@ -2033,3 +2033,63 @@ fn branch_protection_put_edits_the_branch_s_rule_and_delete_removes_it() {
     put(&mut c, &with).unwrap();
     assert!(queue(&c).is_none(), "null removes it");
 }
+
+/// `write-identity`: a write whose token row the edge took from its cache is refused at `decide` once the token is
+/// revoked, and the member renders that refusal as the edge renders a token it refuses at the front: HTTP 401 with
+/// GHES's `basic-error` "Bad credentials" for every REST and API write the edge may take from the cache, and HTTP 401
+/// with `{"message": "Bad credentials"}` for a GraphQL mutation. On main a GraphQL mutation answered it at 200, and a
+/// label or issue-labels write at 403.
+#[test]
+fn a_revoked_tokens_write_is_refused_at_decide_with_the_fronts_401() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_merge_err};
+    let mut c = seeded();
+    let label = |name: &str| IssueOp::DefineLabel {
+        id: None,
+        name: LabelName(name.into()),
+        color: [0x11, 0x22, 0x33],
+        description: None,
+    };
+    // The same write passes before the revocation, so the refusal below is the revocation's.
+    assert!(c.commit(WRITER, label("before")).is_ok());
+    c.revoke(WRITER);
+    let refused = c.commit(WRITER, label("after")).expect_err("decide reads the revoked row");
+    assert!(matches!(refused, IssueErr::Unauthorized(_)), "{refused:?}");
+    // The owner's token is not revoked: only the revoked caller is refused.
+    assert!(c.commit(OWNER, label("owner")).is_ok());
+
+    let render =
+        |what: What| Render { host: host().name().to_owned(), isolation: false, dir: HostedDir::default(), what };
+    let rest = json!({ "message": "Bad credentials", "documentation_url":
+        "https://docs.github.com/enterprise-server@3.22/rest", "status": "401" });
+    for what in [
+        What::LabelCreated,
+        What::IssueLabels { n: 1, empty: false },
+        What::ReviewCommentCreated { n: 2 },
+        What::CheckRunCreated { id: 0 },
+        What::ReleaseCreated,
+        What::ReleaseUpdated,
+        What::Deleted,
+        What::StatusCreated { sha: oid(2), id: 1 },
+        What::Protection { branch: "main".into() },
+        What::AgentPolicy,
+        What::Task { created: true, contents: true },
+        What::Lease { created: true },
+    ] {
+        let w = render_err(&render(what.clone()), &refused);
+        assert_eq!((w.status, w.body.as_ref()), (401, Some(&rest)), "{what:?}");
+    }
+    let gql = What::Graphql {
+        query: "mutation { addComment { clientMutationId } }".into(),
+        variables: Value::Null,
+        field: "addComment".into(),
+        subject: Some(1),
+    };
+    let bad = json!({ "message": "Bad credentials", "status": "401" });
+    let w = render_err(&render(gql.clone()), &refused);
+    assert_eq!((w.status, w.body.as_ref()), (401, Some(&bad)));
+    let merge = graftyard_git::merge::MergeError::Unauthorized(graftyard_identity::CredentialRefusal::Revoked);
+    let w = render_merge_err(&render(gql.clone()), &merge);
+    assert_eq!((w.status, w.body.as_ref()), (401, Some(&bad)));
+    // Any other refusal of a mutation keeps GraphQL's error shape at 200.
+    assert_eq!(render_err(&render(gql), &IssueErr::NotFound).status, 200);
+}
