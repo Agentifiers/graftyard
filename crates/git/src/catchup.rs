@@ -14,6 +14,9 @@
 //! - **The cursor moves only past what was applied.** Each page's packs are ingested and its ref changes applied
 //!   before the cursor moves, and only to the last index the page held, never to the end of the range asked for. A
 //!   short or empty page from a newly elected leader cannot skip an entry (blocker 12).
+//! - **A run goes in pieces.** One call applies at most a `Piece` of whole entries and saves its cursor; the shard
+//!   wakes whoever waits and calls again toward the same head (`until`), so a validate or merge waiting on the disk
+//!   gets a turn between pieces instead of waiting out a burst's whole catch-up.
 //! - **Every page is saved before the next is applied.** Catch-up saves its cursor after each page. Rehydrate saves its
 //!   tail cursor after each page and skips the stored packs the container already holds (`ShardIo::have`), so a run
 //!   cut off at any point, by a caller's deadline or an isolate reset, resumes on the same disk where it stopped.
@@ -68,6 +71,25 @@ pub const AHEAD_PACKS: usize = 8;
 /// 155 s of the cold warm on m35 (`tests/am1/results/lm1-memory.md`, round 23). So the disk holds four packs of any
 /// size ahead, or up to `AHEAD_PACKS` within this.
 pub const AHEAD_BYTES: u64 = 64 << 20;
+
+/// The most one `catch_up` call applies: whole log entries, from the cursor on, until the next would take its packs
+/// past `packs` or their bytes past `bytes`, and always at least one entry. It then saves its cursor and answers
+/// `Report::behind`, and the shard starts the next piece at once, so a validate or merge waiting on the shard gets a
+/// turn between pieces instead of waiting out the whole run (`decisions/DECISIONS.md`, "`catchup-pieces`").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub packs: usize,
+    pub bytes: u64,
+}
+
+/// A hosted catch-up's piece: about 1.5 to 1.7 s of a burst's staged packs. B0-32 m3fst1's longest catch-up ingested
+/// 294 packs, 74.5 MB, in 15.8 s, and two others 164 packs (40.8 MB) in 8.2 s and 350 (86.7 MB) in 15.9 s, so 45 to
+/// 54 ms and 0.25 MB a pack, 4.7 to 5.5 MB/s [measured, `tests/fanout/raw/shardev-m3fst1-b0-32.jsonl.xz`]; 32 packs
+/// or 8 MiB is 1.4 to 1.8 s at those rates [inference].
+pub const PIECE: Piece = Piece { packs: 32, bytes: 8 << 20 };
+
+/// No cap: the call runs to the head it read.
+pub const WHOLE: Piece = Piece { packs: usize::MAX, bytes: u64::MAX };
 
 /// The container's answer to one ingest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,6 +293,10 @@ pub struct Report {
     pub stored: StoredMs,
     /// Where the log pages' time went (`PageMs`).
     pub pages_ms: PageMs,
+    /// The call stopped at its `Piece` before `until`: the cursor is saved there, and the next call goes on.
+    pub behind: bool,
+    /// The index each chain is caught up to by this run: the head its first piece read (`catch_up`'s `until`).
+    pub until: IngestCursor,
 }
 
 /// A catch-up's or a rehydrate tail's time per part of applying its log pages, summed over the pages: `make_room`
@@ -305,6 +331,36 @@ pub fn page_end(chain: ChainId, from: Index, to: Index, page: &[LogPacks]) -> Re
             Err(StoreError(format!("{chain}: log entries from {} through {} answered {got:?}", from.0, to.0)))
         }
     }
+}
+
+/// An entry's packs and their bytes, inline or stored, as a `Piece` counts them.
+fn weight(e: &LogPacks) -> (usize, u64) {
+    let bytes = e
+        .packs
+        .iter()
+        .map(|p| match p {
+            crate::pack::PackRef::Inline(b) => b.len() as u64,
+            crate::pack::PackRef::Stored { bytes, .. } => *bytes,
+        })
+        .sum();
+    (e.packs.len(), bytes)
+}
+
+/// How many of `page`'s entries fit in what is left of `cap` after `took`, the packs and bytes this call applied so
+/// far: whole entries, and the first entry of a call that took nothing whatever its size.
+fn fits(page: &[LogPacks], took: (usize, u64), cap: Piece) -> usize {
+    let (mut n, mut b) = took;
+    let mut k = 0;
+    for e in page {
+        let (pn, pb) = weight(e);
+        if (n > 0 || b > 0 || k > 0) && (n.saturating_add(pn) > cap.packs || b.saturating_add(pb) > cap.bytes) {
+            break;
+        }
+        n = n.saturating_add(pn);
+        b = b.saturating_add(pb);
+        k += 1;
+    }
+    k
 }
 
 fn inline_bytes(page: &[LogPacks]) -> usize {
@@ -540,6 +596,8 @@ struct Tally {
     room: u64,
     evicted: Vec<i64>,
     ms: PageMs,
+    /// The packs and bytes this call applied, against its `Piece`.
+    took: (usize, u64),
 }
 
 /// Why a range stopped early.
@@ -557,7 +615,8 @@ impl From<StoreError> for Stop {
     }
 }
 
-/// Applies `chain`'s entries `from..=to` a page at a time, reading the next page while it applies one.
+/// Applies `chain`'s entries `from..=to` a page at a time, reading the next page while it applies one, until `cap`:
+/// `Ok(true)` when it stopped there, at an entry boundary with the cursor saved, before `to`.
 #[allow(clippy::too_many_arguments)]
 async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
     io: &I,
@@ -567,22 +626,40 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
     chain: ChainId,
     mut from: Index,
     to: Index,
+    cap: Piece,
     mode: &mut Mode<'_>,
     t: &mut Tally,
     now: &dyn Fn() -> u64,
-) -> Result<(), Stop> {
+) -> Result<bool, Stop> {
     let mut ahead: Option<Result<Vec<LogPacks>, StoreError>> = None;
     while from <= to {
-        let page = match ahead.take() {
+        // A later chain of a call whose piece an earlier chain filled.
+        if t.took != (0, 0) && (t.took.0 >= cap.packs || t.took.1 >= cap.bytes) {
+            return Ok(true);
+        }
+        let mut page = match ahead.take() {
             Some(p) => p?,
             None => log.entries(chain, from, to).await?,
         };
+        page_end(chain, from, to, &page)?;
+        let k = fits(&page, t.took, cap);
+        if k == 0 {
+            return Ok(true);
+        }
+        let capped = k < page.len();
+        page.truncate(k);
         let last = page_end(chain, from, to, &page)?;
+        for e in &page {
+            let (n, b) = weight(e);
+            t.took = (t.took.0.saturating_add(n), t.took.1.saturating_add(b));
+        }
+        let full = capped || t.took.0 >= cap.packs || t.took.1 >= cap.bytes;
         let next = Index(last.0 + 1);
         let held = inline_bytes(&page);
         let mut most = held;
         let apply = apply_page(io, saved, disk, chain, from, last, page, mode, t, now);
-        if next <= to {
+        // The next page is read beside this one only when this piece goes on to it.
+        if next <= to && !full {
             let (r, p) = futures_util::future::join(apply, log.entries(chain, next, to)).await;
             if let Ok(p) = &p {
                 most = held + inline_bytes(p);
@@ -594,8 +671,11 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
         }
         t.held_max = t.held_max.max(most);
         from = next;
+        if full && from <= to {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// `&head=<ref>`, percent-encoded, for `/refs` (G26): a branch name may hold `&`, `+`, `#` or `%`.
@@ -695,15 +775,21 @@ async fn apply_page<I: ShardIo, S: Saved>(
 }
 
 /// Catch-up before serving: for each chain whose leader's applied index is past the cursor, its entries a page at a
-/// time. No cursor for the container's disk, a cursor below a chain's first log index, or an entry from a member
-/// release that sends no ref changes, means a rehydrate. Packs whose bases the disk lacks mean the disk skipped an
+/// time, at most `piece` of them (`Report::behind` when it stopped there). A run's first piece reads the heads; its
+/// later ones pass the first's `Report::until` and go no further, so the run ends at the head it started from however
+/// fast the log moves, which is what a caller waiting for a run that started after it needs. No cursor for the
+/// container's disk, a cursor below a chain's first log index, or an entry from a member release that sends no ref
+/// changes, means a rehydrate. Packs whose bases the disk lacks mean the disk skipped an
 /// entry below its cursor: the cursor is dropped, so the next call rehydrates instead of failing on the same pack.
+#[allow(clippy::too_many_arguments)]
 pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     io: &I,
     saved: &S,
     log: &L,
     network: NetworkId,
     chains: &[ChainId],
+    piece: Piece,
+    until: Option<&IngestCursor>,
     now: &dyn Fn() -> u64,
 ) -> Result<Report, StoreError> {
     let t0 = now();
@@ -713,15 +799,22 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     lap(&mut ms, "up");
     let mut cursor = saved.cursor().await?.filter(|(d, _)| *d == disk).map(|(_, c)| c);
     lap(&mut ms, "cursor");
-    let mut hs = Vec::with_capacity(chains.len());
-    for (chain, head) in chains.iter().zip(heads(log, chains).await) {
-        let head = head?;
-        if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < head.first.0) {
-            cursor = None;
+    // A run's later pieces read no heads: `until` names where the run ends and HEAD's branch. One heads read is a
+    // member round trip, 85 to 122 ms on m3fst1, about a tenth of a piece.
+    let mut ends: Vec<(Index, Option<String>)> = Vec::with_capacity(chains.len());
+    match until.filter(|_| cursor.is_some()) {
+        Some(u) => ends.extend(chains.iter().enumerate().map(|(i, c)| (u.at(*c), u.head.clone().filter(|_| i == 0)))),
+        None => {
+            for (chain, head) in chains.iter().zip(heads(log, chains).await) {
+                let head = head?;
+                if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < head.first.0) {
+                    cursor = None;
+                }
+                ends.push((head.applied, head.default_branch));
+            }
+            lap(&mut ms, "heads");
         }
-        hs.push(head);
     }
-    lap(&mut ms, "heads");
     let Some(mut cursor) = cursor else {
         return rehydrate(io, saved, log, network, chains, disk, ms, t0, now).await;
     };
@@ -731,12 +824,19 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     let mut t = Tally::default();
     let mut seen = BTreeSet::new();
     // The network's own chain, first, names its default branch (G26).
-    let head_ref = hs.first().and_then(|h| h.default_branch.clone());
-    for (chain, head) in chains.iter().zip(hs) {
-        let Some(range) = cursor.behind(*chain, head.applied) else { continue };
+    let head_ref = ends.first().and_then(|(_, b)| b.clone());
+    let mut behind = false;
+    let mut to = IngestCursor::new(network);
+    to.head = head_ref.clone();
+    for (chain, (end, _)) in chains.iter().zip(ends) {
+        to.advance(*chain, end);
+        let Some(range) = cursor.behind(*chain, end) else { continue };
+        if behind {
+            continue;
+        }
         let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
-        match follow(io, saved, log, &disk, *chain, *range.start(), *range.end(), &mut mode, &mut t, now).await {
-            Ok(()) => {}
+        match follow(io, saved, log, &disk, *chain, *range.start(), *range.end(), piece, &mut mode, &mut t, now).await {
+            Ok(capped) => behind = capped,
             Err(Stop::Err(e)) => return Err(e),
             // Either way the next rehydrate starts from nothing, so a place left by an earlier one goes too.
             Err(Stop::NoRefs) => {
@@ -753,18 +853,21 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         lap(&mut ms, "ingest");
     }
     // HEAD follows a `Settings` entry that changed the default branch, which carries no ref change; one call, only
-    // when it changed since the disk's HEAD was last set.
-    if head_ref.is_some() && cursor.head != head_ref {
+    // when it changed since the disk's HEAD was last set, and only once the run's last piece applied its refs.
+    if !behind && head_ref.is_some() && cursor.head != head_ref {
         let at = now();
         io.apply_refs(&[], head_ref.as_deref()).await?;
         t.ms.refs += now().saturating_sub(at);
         cursor.head = head_ref;
         saved.put_cursor(&disk, &cursor).await?;
     }
-    if finishing {
+    // A rehydrate's place goes only once the disk reached the head (`rehydrate`, its last catch-up).
+    if finishing && !behind {
         saved.drop_rehydrating().await?;
     }
     Ok(Report {
+        behind,
+        until: to,
         rehydrated: None,
         entries: t.entries,
         packs: t.packs,
@@ -980,8 +1083,8 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let from = Index(tail_start(last.as_ref()).0.max(state.tail.at(*chain).0 + 1));
         let mut mode = Mode::Tail { state: &mut state, seen: &mut seen, consumed: &consumed };
-        match follow(io, saved, log, &disk, *chain, from, head.applied, &mut mode, &mut t, now).await {
-            Ok(()) => {}
+        match follow(io, saved, log, &disk, *chain, from, head.applied, WHOLE, &mut mode, &mut t, now).await {
+            Ok(_) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),
             Err(Stop::NoRefs) => unreachable!("a tail applies no ref changes"),
         }
@@ -1028,8 +1131,8 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let from = Index(cursor.at(*chain).0 + 1);
         let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
-        match follow(io, saved, log, &disk, *chain, from, end, &mut mode, &mut c, now).await {
-            Ok(()) => {}
+        match follow(io, saved, log, &disk, *chain, from, end, WHOLE, &mut mode, &mut c, now).await {
+            Ok(_) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),
             Err(Stop::NoRefs) => {
                 return Err(StoreError("an entry carries no ref changes (an older member release)".into()));
@@ -1080,6 +1183,8 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     let mut pages_ms = t.ms;
     pages_ms.add(&c.ms);
     Ok(Report {
+        behind: false,
+        until: cursor.clone(),
         entries: c.entries,
         packs: c.packs,
         refs: c.refs,

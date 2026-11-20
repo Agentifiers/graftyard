@@ -216,7 +216,7 @@ Where B0-32 stands on main `b8e555df`, line by line, and which open question own
 - Three catch-up attempts on site a failed first, at 9.1, 9.3 and 13.5 s, each with `get: We encountered an internal error. Please try again. (10001)` from a bucket read. Whether those failures lengthened the run is an inference: the 294-pack run's first spool began at 9.75 s.
 - None of this touches the leader: its storage confirms from 7 to 40 s were all under 300 ms, and it had no ticker stall and no input gap of 400 ms or more.
 - **It recurs.** The merge's shard `waited`: m3fwi3 11,247 ms, m3fwi2 about the same (12,279 ms total), m3fac1 2,381, m3fgt1 1,093 (plus `merge_plan` 6,257), m3fst1 14,421; m3fe2 passed. Merge pushes with validate over 5 s: m3fwi3 2, m3fgt1 2, m3fst1 1.
-- **Owner:** new `decisions/OPEN-QUESTIONS.md` G34. Neither F106 nor `soft-grow` touches it.
+- **Owner:** new `decisions/OPEN-QUESTIONS.md` G34. Neither F106 nor `soft-grow` touches it. Branch `catchup-pieces` builds the fix: catch-ups in pieces of at most 32 packs or 8 MiB, with held validates and `PUT …/merge` trying again between pieces (`decisions/DECISIONS.md`, "`catchup-pieces`"); no hosted row has run it yet.
 - **Other `merge:only` answers:** 3,064 ms with commit 2,810 is the leader's queue (F106). 5,890 ms on the client was 632 ms on the edge, so the time was client-side.
 
 **Summary of owners:**

@@ -6686,3 +6686,34 @@ The lead's decision after B0-35 m62: raise bytes per round while the queue is de
 - The long sweep, Porcupine and the full checks are in `tests/m4/results/m4-wp4.md`, "`soft-grow`".
 
 **Flip.** Compare the same burst before and after. A row where grown entries (over 100 KB) have a higher confirm or `sync` p99, or more confirms of 1 s or more, than the same row's entries of 100 KB or less, while the flat rule's row did not, reverses this. So does a far voter's AppendEntries missing `CALL_DEADLINE` on grown entries. B0-02's m3fst1 found that confirm time did not track size at 8 to 191 KB (F106), so one row's confirm p99 alone is noisy, and the comparison is within the row and against the flat rule's row. Also reversing: a row whose queue wait does not fall against the flat rule at the same offered load.
+
+### `catchup-pieces`: a git shard's catch-up runs in pieces of at most 32 packs or 8 MiB, and its waiters try again between pieces, 2026-11-20
+
+**Decision.** One `catch_up` call applies whole log entries from the cursor until the next entry would take its packs past `PIECE.packs` (32) or their bytes past `PIECE.bytes` (8 MiB), stored and inline alike, and always at least one entry (`crates/git/src/catchup.rs`). It saves its cursor and answers `Report::behind` with `Report::until`, the head its first piece read. The shard's `Jobs` (`workers/site/src/shard.rs`) starts the next piece at once toward that head, wakes every waiter after each piece, and counts the run as one `CatchUps` run, so `wait_from`'s rule (only a run that started after the caller arrived settles it) is unchanged. Two waiters change:
+- A held validate (`MissingBase`) is asked again after each piece, with `held=<id>&disk=1`, on the disk as it stands. The container keeps it again under a new id while its base is still missing (`containers/git/server/main.go`, `hold`), and the old id is gone. After the settling run it is asked with `held=` alone, as before, and every failure is the pack's.
+- `PUT …/merge` (`merge_cache::merge_then_catch_up`) merges again after each piece once it has missed. It no longer waits out the run in flight (`idle`) and then a whole new one. A miss after the settling run is an error, as before.
+
+The test merge (`prsync::merge_disk_first`), reads, and a validate that catches up first still wait for the whole settling run. A rehydrate is not cut into pieces.
+
+**Why.** On B0-32 m3fst1 site a's shards each caught up the burst's staged packs in one run: 294 packs (74.5 MB) in 15.8 s, and 164 packs (40.8 MB) in 8.2 s and 350 packs (86.7 MB) in 15.9 s on others. All ended 25.3 to 25.5 s from the burst [measured, `tests/fanout/raw/shardev-m3fst1-b0-32.jsonl.xz`]:
+- 53 first-shard validates of 5 s or more started 9.6 to 21.4 s and ended 24.7 to 27.6 s, with 65 agent pushes `full` at `AGENT_PUSH_BOUND`.
+- One merge push took 15,215 ms (validate 14,116). `PUT …/merge` answered once 503 `warming` at 15,008 ms, and once 200 after `waited` 14,421 ms.
+- The merge's shard wait recurs on earlier rows: m3fwi3 11,247 ms, m3fac1 2,381, m3fgt1 1,093 [measured, `tests/am1/results/lm1-rows-m3f.md`, "B0-32 status after m3fst1"].
+
+Those runs cost 45 to 54 ms and 0.25 MB a pack, 4.7 to 5.5 MB/s. So 32 packs or 8 MiB is a piece of about 1.4 to 1.8 s, and a caller whose base or commits landed early in the run waits about one piece, not the run [inference until a row]. A piece's overhead is its cursor save and the next piece's first page read, with no `heads` read: later pieces take the run's head from `until`. On m3fst1 a heads read was 85 to 122 ms, so reading it per piece would have cost about a tenth of each.
+
+**What it beat.**
+- **Waking waiters per page without a cap.** A page of a burst's log holds up to `ENTRIES_PAGE_BYTES` of entries, but stored packs count about 100 B each in a page. m3fst1's 294-pack run was 11 entries, likely one or two pages, so per-page wakes would have changed nothing.
+- **A smaller piece (8 packs).** Each piece pays a cursor save and a page read, and the run reads its next page beside the current one only within a piece. Hosted wall per piece is unmeasured, so a cap near 1.5 s keeps the overhead small.
+- **Letting the merge read the disk with no wait at all.** It already does before its first miss (`disk-first-reads`). Its commits are missing exactly while the catch-up runs, so it needs a turn, not a skip.
+- **Cutting the test merge and reads into pieces too.** They wait through `wait`/`wait_from` for a whole settling run. m3fst1's tail was the held validates and `PUT …/merge`, so this branch changes only those two.
+
+**Evidence.**
+- `crates/git/tests/catchup.rs`, `a_burst_catch_up_goes_in_capped_pieces_to_the_head_its_first_piece_read`: 90 stored packs past the cursor go 32, 32, 26, each piece saving its cursor. Later pieces stop at the first piece's head while the log moves on, and a lone entry over the cap still goes. On main, the first call takes all 90.
+- `crates/git/src/merge_cache.rs`, `a_merge_goes_after_the_piece_that_brings_its_commit`: a merge that misses during a five-piece run merges after piece 2.
+- `containers/git/server/disk_test.go`, `TestValidateOnTheDiskAsItStands`: `held=<id>&disk=1` on a disk still missing the base holds the request again under a new id, the old id answers 503, and the new id answers 200 once the base is there.
+
+**Flip.** A B0-32 row on this rule where:
+- a held validate or `PUT …/merge` still waits more than 5 s on one catch-up run while the run's first pieces held its base or commits, which means the turn between pieces did not reach it; or
+- a burst's whole catch-up (the run's pieces end to end) takes more than 25% longer than m3fst1's 15.8 s for the same packs, which means the pieces cost more than they free; or
+- the held validates' re-asks between pieces fill the container's validate queue, so pushes answer 429 `Busy` during the burst where m3fst1 had none. Each re-ask runs `index-pack` on its pack again: m3fst1's 53 held validates over a run of about 10 pieces would be about 500 re-asks of 256 KiB packs [inference]. If it fires, re-ask only the validates whose base the piece's entries could hold.
