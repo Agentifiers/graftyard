@@ -2,7 +2,7 @@
 import os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from purge import prefixes, purge, purge_twice, retired, second_pass_at  # noqa: E402
+from purge import prefixes, purge, purge_twice, retired, second_pass_at, site_buckets  # noqa: E402
 
 NJ = {"joined": False}
 
@@ -53,6 +53,16 @@ class PurgeTest(unittest.TestCase):
         self.assertEqual(b.keys, set(mine + others), "a dry run deletes nothing")
         self.assertEqual(purge(b, "x", 131322, dry=False), (len(mine), 0))
         self.assertEqual(b.keys, set(others))
+
+    def test_every_site_bucket_of_the_install_is_purged_and_no_other(self):
+        # graft-m1's fourth site d holds every pack; purging a, b and c alone left 1048577's to be refilled from d.
+        names = ["graft-m1-packs-a", "graft-m1-packs-b", "graft-m1-packs-c", "graft-m1-packs-d", "graft-m1-load",
+                 "graft-m1-lin-packs-a", "graft-m1-wp6-a", "graft-m2b-site-a-packs", "graft-m1-packs-ab"]
+        self.assertEqual(site_buckets(names, "graft-m1", "{install}-packs-{site}"),
+                         [("a", "graft-m1-packs-a"), ("b", "graft-m1-packs-b"), ("c", "graft-m1-packs-c"),
+                          ("d", "graft-m1-packs-d")])
+        self.assertEqual(site_buckets(names, "graft-m2b", "{install}-site-{site}-packs"),
+                         [("a", "graft-m2b-site-a-packs")])
 
     def test_prefixes_end_in_a_slash(self):
         self.assertTrue(all(p.endswith(("/131322/", ":131322/")) for p in prefixes(131322)))

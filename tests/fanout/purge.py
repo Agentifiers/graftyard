@@ -16,6 +16,10 @@ in a log. Log: $PURGE_LOG (default tests/fanout/raw/purge-m2b.log)."""
 import datetime, hashlib, json, os, sys, time, urllib.request
 
 INSTALL = os.environ.get("INSTALL", "graft-m2b")
+# Voter sites, whose members the gate reads. The buckets purged are every site bucket of the install (`site_buckets`):
+# graft-m1 has a fourth site, d, holding no voter but every pack, and a purge of a, b and c left 1048577's pack and
+# marker there, which site a's sweep copied back into a, b and c at 08:15:37Z on 2026-11-20 (`decisions/DECISIONS.md`,
+# "`retire-sticks`").
 SITES = "abc"
 # Each site's pack bucket: graft-m2b's are `graft-m2b-site-a-packs`; graft-m1's are `graft-m1-packs-a`
 # (tests/m3/finish/sites4.json), so B0-30 runs it with BUCKET='{install}-packs-{site}'.
@@ -55,6 +59,13 @@ def prefixes(net):
     by_net = ["pack", "committed/pack", "upload", "compose", "clone", "archive-cache", "blob", "committed/blob"]
     by_chain = ["archive", "snapshot", "inline-idx"]
     return [f"{p}/{n}/" for p in by_net] + [f"{p}/{c}:{n}/" for p in by_chain for c in ("repo", "repo-meta")]
+
+
+def site_buckets(names, install=None, pattern=None):
+    """Every bucket in `names` that is one of the install's site buckets: `BUCKET` with any one-letter site."""
+    install, pattern = install or INSTALL, pattern or BUCKET
+    want = {pattern.format(install=install, site=c): c for c in "abcdefghijklmnopqrstuvwxyz"}
+    return sorted((want[n], n) for n in names if n in want)
 
 
 def retired(answers):
@@ -117,6 +128,10 @@ def main():
         timeout=30))
     s3 = boto3.client("s3", endpoint_url=f"https://{acct}.r2.cloudflarestorage.com", region_name="auto",
                       aws_access_key_id=v["result"]["id"], aws_secret_access_key=hashlib.sha256(tok.encode()).hexdigest())
+    buckets = site_buckets([b["Name"] for b in s3.list_buckets()["Buckets"]])
+    if not {site for site, _ in buckets} >= set(SITES):
+        sys.exit(f"the install's site buckets {buckets} lack a voter site of {SITES}")
+    log(f"buckets: {', '.join(n for _, n in buckets)}")
     totals = {"purged": [], "refused": []}
     gated = []
     for net in nets:
@@ -141,7 +156,7 @@ def main():
     second = 0
     if dry:
         for net in gated:
-            counts = {site: purge(s3, BUCKET.format(install=INSTALL, site=site), net, True) for site in SITES}
+            counts = {site: purge(s3, name, net, True) for site, name in buckets}
             log(f"{net} would delete: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in counts.items()))
             totals["purged"].append([net, {s: b for s, (b, _) in counts.items()}])
     else:
@@ -151,7 +166,7 @@ def main():
             time.sleep(s)
 
         results = purge_twice(
-            lambda net: {site: purge(s3, BUCKET.format(install=INSTALL, site=site), net, False) for site in SITES},
+            lambda net: {site: purge(s3, name, net, False) for site, name in buckets},
             gated, now=time.time, sleep=logged_sleep)
         for net, first_counts, second_counts in results:
             log(f"{net} purged: " + ", ".join(f"{s} {b} -> {a}" for s, (b, a) in first_counts.items()))

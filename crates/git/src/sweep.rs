@@ -52,6 +52,12 @@ pub enum Lookup {
 #[allow(async_fn_in_trait)]
 pub trait RequestSource {
     async fn request(&self, chain: ChainId, id: RequestId) -> Result<Option<RequestRow>, StoreError>;
+    /// Whether `chain` has no group: the lookup reached its members and every one answered not joined, as a retired or
+    /// purged group's do. A sweep writes no marker or copy for such a chain (`sweep`). Any other answer, an outage
+    /// included, is `false`, and the sweep goes on as before.
+    async fn gone(&self, _chain: ChainId) -> bool {
+        false
+    }
 }
 
 /// One bucket's listing of one network.
@@ -107,6 +113,10 @@ pub enum Alarm {
     BadCopy {
         site: SiteId,
         id: PackId,
+    },
+    /// The chain's group is gone (retired or purged): its markers and fills were dropped from the plan.
+    Gone {
+        chain: ChainId,
     },
 }
 
@@ -258,6 +268,14 @@ pub fn decide(
     plan
 }
 
+/// The chain a marker put or a fill writes for, from its marker.
+fn write_chain(a: &Action) -> Option<ChainId> {
+    match a {
+        Action::PutMarker { marker, .. } | Action::Fill { marker, .. } => Some(marker.chain),
+        Action::Delete { .. } | Action::Abort { .. } => None,
+    }
+}
+
 /// Markers, then fills, then aborts, then deletes: the order `sweep` runs a plan in.
 fn phase(a: &Action) -> u8 {
     match a {
@@ -393,7 +411,19 @@ pub async fn sweep<B: Bucket, R: RequestSource>(
         .buffer_unordered(CONCURRENCY)
         .collect()
         .await;
-    let plan = decide(network, &views, &lookups, now);
+    let mut plan = decide(network, &views, &lookups, now);
+    // A retired or purged group's chain gets no marker and no copy: a purge that missed one bucket (graft-m1's site d,
+    // 2026-11-20) had its packs copied back into the others, 1048577's at 08:15:37Z and 3473415's at 13:47Z.
+    let mut gone: BTreeSet<ChainId> = BTreeSet::new();
+    for chain in plan.actions.iter().filter_map(write_chain).collect::<BTreeSet<_>>() {
+        if requests.gone(chain).await {
+            gone.insert(chain);
+        }
+    }
+    if !gone.is_empty() {
+        plan.actions.retain(|a| write_chain(a).is_none_or(|c| !gone.contains(&c)));
+        plan.alarms.extend(gone.into_iter().map(|chain| Alarm::Gone { chain }));
+    }
     let bucket = |s: SiteId| buckets.iter().find(|(x, _)| *x == s).map(|(_, b)| *b).expect("planned site");
     let mut report = SweepReport { plan: Plan::default(), done: 0, failed: Vec::new() };
     let chosen: Vec<&Action> = plan.actions.iter().take(budget).collect();
@@ -494,6 +524,15 @@ impl<R: RequestSource, C: Fn() -> u64> RequestSource for RunRows<'_, R, C> {
             self.dead.borrow_mut().insert(chain);
         }
         r
+    }
+
+    /// Asked once per chain a network's plan writes for, even when its `request` lookup failed this run: a purged
+    /// group's lookup fails that way, and it is the chain this check exists for. Past the run's wall: not gone.
+    async fn gone(&self, chain: ChainId) -> bool {
+        if (self.clock)() >= self.deadline {
+            return false;
+        }
+        self.inner.gone(chain).await
     }
 }
 
@@ -644,7 +683,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Rows(BTreeMap<RequestId, RequestRow>, bool);
+    struct Rows(BTreeMap<RequestId, RequestRow>, bool, BTreeSet<ChainId>);
 
     impl RequestSource for Rows {
         async fn request(&self, _chain: ChainId, id: RequestId) -> Result<Option<RequestRow>, StoreError> {
@@ -652,6 +691,9 @@ mod tests {
                 return Err(StoreError("leader down".into()));
             }
             Ok(self.0.get(&id).cloned())
+        }
+        async fn gone(&self, chain: ChainId) -> bool {
+            self.2.contains(&chain)
         }
     }
 
@@ -740,6 +782,69 @@ mod tests {
         assert!(bed.run(&Rows::default(), T0 + 101 * H).plan.actions.is_empty());
     }
 
+    /// `retire-sticks`: a purge that missed one bucket (graft-m1's site d) left a committed pack and its marker there,
+    /// and site a's sweep copied them back into a, b and c: 1048577 at 08:15:37Z and 3473415 at 13:47Z on 2026-11-20,
+    /// both retired and purged. A chain whose group is gone gets no fill and no marker, and the sweep alarms instead;
+    /// another network's chain in the same run is filled as before.
+    #[test]
+    fn a_gone_chain_s_packs_are_not_filled_or_marked() {
+        let bed = Bed::new();
+        let (id, unmarked) = (pid(2, T0), pid(3, T0));
+        put_pack(&bed.b[1], id, 2, rid(2), T0);
+        put_mark(&bed.b[1], id, &marker(2, 504));
+        // A copy with no marker in another bucket, which a marker put would mark.
+        put_pack(&bed.b[2], id, 2, rid(2), T0);
+        put_pack(&bed.b[0], unmarked, 3, rid(3), T0);
+        let mut rows = Rows::default();
+        rows.0.insert(rid(3), RequestRow { index: Index(9), packs: vec![(unmarked, marker(3, 9))] });
+        rows.2.insert(CHAIN);
+        let before: Vec<Vec<String>> = bed.b.iter().map(MemBucket::keys).collect();
+        let r = bed.run(&rows, T0 + 100 * H);
+        assert_eq!((r.done, r.failed.len()), (0, 0), "{:?}", r.plan.actions);
+        assert!(r.plan.actions.is_empty(), "{:?}", r.plan.actions);
+        assert!(r.plan.alarms.contains(&Alarm::Gone { chain: CHAIN }), "{:?}", r.plan.alarms);
+        let after: Vec<Vec<String>> = bed.b.iter().map(MemBucket::keys).collect();
+        assert_eq!(before, after, "a gone chain's buckets changed");
+        // The same buckets with the group alive: filled and marked, as before.
+        let r = bed.run(&Rows(rows.0.clone(), false, BTreeSet::new()), T0 + 100 * H);
+        assert!(r.failed.is_empty() && r.done > 0, "{r:?}");
+        assert!((0..3).all(|s| bed.has(s, &pack_key(id)) && bed.has(s, &mark_key(id))));
+        assert!(bed.has(0, &mark_key(unmarked)));
+    }
+
+    /// Through a cron run: the gone chain's `request` lookup fails first (its unmarked pack's), which puts it in the
+    /// run's `dead` set, and its marked pack still gets no fill.
+    #[test]
+    fn a_gone_chain_whose_lookup_failed_this_run_is_still_not_filled() {
+        struct Gone;
+        impl RequestSource for Gone {
+            async fn request(&self, chain: ChainId, _id: RequestId) -> Result<Option<RequestRow>, StoreError> {
+                Err(StoreError(format!("{chain}: no group")))
+            }
+            async fn gone(&self, _chain: ChainId) -> bool {
+                true
+            }
+        }
+        let bed = Bed::new();
+        let (id, unmarked) = (pid(2, T0), pid(3, T0));
+        put_pack(&bed.b[1], id, 2, rid(2), T0);
+        put_mark(&bed.b[1], id, &marker(2, 504));
+        put_pack(&bed.b[0], unmarked, 3, rid(3), T0);
+        let before: Vec<Vec<String>> = bed.b.iter().map(MemBucket::keys).collect();
+        let all = block_on(sweep_all(
+            &bed.buckets(),
+            &Gone,
+            Timestamp(T0 + 100 * H),
+            CronBudget::SITE_CRON,
+            None,
+            |_| true,
+            || 0,
+        ))
+        .unwrap();
+        assert_eq!(all.dead, [CHAIN]);
+        assert_eq!(before, bed.b.iter().map(MemBucket::keys).collect::<Vec<_>>(), "{:?}", all.swept);
+    }
+
     #[test]
     fn young_unmarked_pack_with_no_row_is_kept() {
         let bed = Bed::new();
@@ -809,7 +914,7 @@ mod tests {
         assert!(r.plan.alarms.contains(&Alarm::PastRetention { site: SiteId(0), id: old }));
         assert!(r.plan.alarms.iter().any(|a| matches!(a, Alarm::NoMetadata { .. })));
         assert!(bed.has(0, &pack_key(old)) && bed.has(0, &pack_key(bare)));
-        let down = Rows(BTreeMap::new(), true);
+        let down = Rows(BTreeMap::new(), true, BTreeSet::new());
         let fresh = pid(9, T0);
         put_pack(&bed.b[1], fresh, 9, rid(9), T0);
         let r = bed.run(&down, T0 + 25 * H);

@@ -95,9 +95,78 @@ pub fn floor(max_bytes: u64) -> u64 {
 /// not until the log is under it: input goes on while each step runs, so a run held to "under the floor" would take
 /// a step of one object after each step for as long as pushes come, the per-entry cost the drain was built to avoid.
 /// A step that finds nothing due ends the run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Run {
+    #[serde(skip)]
     draining: bool,
+    /// The last promotion that failed, kept across the steps that find nothing to do (`retry`).
+    failed: Option<Failed>,
+}
+
+/// A promotion that failed: the first entry of its range, how many tries of that range failed in a row, when the last
+/// one ended, and when the last try that could start a stopped shard ran (wall ms, `ArchiveHost::wall_ms`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Failed {
+    from: Index,
+    times: u32,
+    at: u64,
+    started: u64,
+}
+
+/// A failed promotion's range is tried again after `RETRY_FIRST_MS`, doubling with each failure in a row up to
+/// `RETRY_MAX_MS` [guess]. Without it, a range whose promotion could never succeed was tried at every alarm: on
+/// graft-m1, `repo:1048577`'s range (1, 4) asked every site's shard for entry 504 of a 4-entry log, failed the same way
+/// each time, and started all three containers on each try (`decisions/DECISIONS.md`, "`retire-sticks`").
+pub const RETRY_FIRST_MS: u64 = 60_000;
+pub const RETRY_MAX_MS: u64 = 8 * 60_000;
+/// A retry of a failed range is a warm call, which starts no stopped shard, unless this long has passed since the last
+/// try that could [guess]. The shards a failed try started stay up `PROMOTE_LAPSE` (10 minutes), past the first
+/// retries, so a failure that passes is retried on them; one that repeats starts containers four times a day, not at
+/// every alarm.
+pub const RESTART_EVERY_MS: u64 = 6 * 3_600_000;
+
+/// How the next promotion of the range starting at `from` may go, given the run's last failure, at wall time `now`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Retry {
+    /// Not yet: the step is idle.
+    Wait,
+    /// A warm call only (`ArchiveHost::promote`'s `warm`).
+    Warm,
+    /// As a first try: a due range's promotion may start a stopped shard.
+    Start,
+}
+
+fn backoff(times: u32) -> u64 {
+    RETRY_FIRST_MS.saturating_mul(1 << times.saturating_sub(1).min(16)).min(RETRY_MAX_MS)
+}
+
+impl Run {
+    /// What the site keeps in the member's storage across isolate resets: the last failure alone (`Run`'s serde form
+    /// skips the band). An idle leader's isolate is often gone by its next alarm, and a failure kept in memory only
+    /// would start every shard again on each new isolate's first try.
+    pub fn kept(&self) -> Run {
+        Run { draining: false, failed: self.failed }
+    }
+
+    fn retry(&self, from: Index, now: u64) -> Retry {
+        match self.failed.filter(|f| f.from == from) {
+            None => Retry::Start,
+            Some(f) if now < f.at.saturating_add(backoff(f.times)) => Retry::Wait,
+            Some(f) if now >= f.started.saturating_add(RESTART_EVERY_MS) => Retry::Start,
+            Some(_) => Retry::Warm,
+        }
+    }
+
+    /// A promotion of the range starting at `from` failed at `now`; `started`: it could start a stopped shard.
+    fn fail(&mut self, from: Index, now: u64, started: bool) {
+        let last = self.failed.filter(|f| f.from == from);
+        self.failed = Some(Failed {
+            from,
+            times: last.map_or(1, |f| f.times.saturating_add(1)),
+            at: now,
+            started: if started { now } else { last.map_or(0, |f| f.started) },
+        });
+    }
 }
 
 impl Run {
@@ -435,6 +504,9 @@ pub trait ArchiveHost {
     async fn put(&self, key: &str, bytes: &[u8], digest: Digest) -> Result<usize, String>;
     /// Records the events under `request` in `format` and waits for the entry: its index.
     async fn record(&self, request: RequestId, format: Format, events: Vec<RepoEvent>) -> Result<Index, String>;
+    /// The wall clock in ms, which paces a failed promotion's retries (`RETRY_FIRST_MS`). Not the fold's time, which an
+    /// idle group does not move.
+    fn wall_ms(&self) -> u64;
     /// Lets the member's other work run: a promotion decodes and hashes its range on the leader, about 4 ms a MiB
     /// in wasm, and pauses every `PAUSE_EVERY` bytes of rows so its loop never falls behind by a whole range.
     async fn pause(&self) {}
@@ -524,7 +596,8 @@ pub async fn step<H: ArchiveHost>(
 ) -> Result<Step, String> {
     let s = step_in(h, run, max_bytes, range_max, promote_max).await;
     match &s {
-        Ok(Step::Idle) => *run = Run::default(),
+        // A step with nothing to do ends the run's band, but a failed range keeps its retry pacing.
+        Ok(Step::Idle) => *run = Run { failed: run.failed, ..Run::default() },
         Ok(Step::Archived { reached: true, .. }) => run.draining = false,
         _ => {}
     }
@@ -599,10 +672,29 @@ async fn step_in<H: ArchiveHost>(
     let (from, to) = (Index(done.0 + 1), plan.to);
     let request = promote_request(v.chain, from, to);
     // Promote-ahead is no client's work, so it runs only on a shard already running; a due range starts one, since
-    // the log cannot archive past it otherwise.
-    let Some(pack) = h.promote(&plan.sums, from, to, request, warm).await? else {
-        return Ok(Step::Idle);
+    // the log cannot archive past it otherwise. A range whose promotion failed waits `backoff`, and is then a warm call
+    // until `RESTART_EVERY_MS` has passed since a try that could start a shard.
+    let now = h.wall_ms();
+    let warm = match run.retry(from, now) {
+        Retry::Wait => return Ok(Step::Idle),
+        Retry::Warm => true,
+        Retry::Start => warm,
     };
+    let pack = match h.promote(&plan.sums, from, to, request, warm).await {
+        Err(e) => {
+            run.fail(from, now, !warm);
+            return Err(e);
+        }
+        // Every shard stopped: the range's next warm try waits its backoff again.
+        Ok(None) => {
+            if let Some(f) = run.failed.as_mut().filter(|f| f.from == from) {
+                f.at = now;
+            }
+            return Ok(Step::Idle);
+        }
+        Ok(Some(pack)) => pack,
+    };
+    run.failed = None;
     if !matches!(pack, PackRef::Stored { .. }) {
         return Err("a promoted pack is always stored".into());
     }
