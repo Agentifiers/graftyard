@@ -1,0 +1,4 @@
+cycle fit over 1979 entries: 260 ms + 0.72 ms per KB (at 100 KB 332 ms, at 150 KB 368 ms)
+1974 cuts, 14420 commands arrived, 181 KB/s offered
+flat ENTRY_SOFT: 1925 entries, 14420 committed, wait p50 0.5 s p99 3.4 s, peak queue 84 commands at 579 s, back under one entry 4.0 s after the peak
+soft-grow: 1931 entries, 14420 committed, wait p50 0.5 s p99 2.3 s, peak queue 39 commands at 442 s, back under one entry 0.5 s after the peak

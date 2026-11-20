@@ -1,0 +1,4 @@
+traced: IndexSent 49522 hedges 2145 total 51667
+{'main_copy': 5700, 'copy_dropped': 5497, 'main_resend': 538, 'resend_dropped': 533, 'resend_copy_dropped': 97, 'calls': 49520}
+batch wait p50/p90/p99 main [166, 539, 1156] new [165, 500, 1090]
+duplicates main 6238 (of which resends 538); dropped 6127; leader ReadIndex calls 51667 -> 45540 (11.9% fewer)

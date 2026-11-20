@@ -828,6 +828,33 @@ Site day 63 (17:02:58Z to 17:04:00Z, exit 0) shipped main `63e82533` as a **test
 
 **The end-of-load `/commit` storm did not recur** (`tests/fanout/commitsenders.py`, f0's object, 17:15:30 to 17:28Z, no saturated slice) [measured]. f0 received 6,212 `/commit`s: 2,501 from the edge, 3,711 with step `Leader` (`commit_as`), of which 2,809 came from the top isolate, and none with step `Send`. The top isolate peaked at 287 a minute and 27 a second (m62: 1,605 and 123). Calls of 1 s or more: edge 24%, top isolate 14%. Nothing is built. If the storm returns, the lead's preferred fix is `commit_as` asking by request id.
 
+### Row m64 (same site day, no redeploy)
+
+Granted by the lead with a $10 stop on graft-m4a plus the runner account from m64's start, later raised to $12 for m65. `b035.sh` at `67700476` (driver unchanged since m63) ran on `m3org/b035-m64` = repo 65578, with 8 learners and `ISOLATES=1`. Run `mwpb99mz`: started 18:26:07Z, load 18:32:45.269Z to 18:42:45Z, done 19:03:41Z, exit 0; the sweep tore down shard 65578 and the canary burst's leftover shard 65569 (both 200), no container running, shardkill deleted (19:04:05Z). Raw files: `tests/m4/raw/wp4/b035-m64/` (as m63's, plus `softgrow.txt`, `readnewest.txt`, `isolates.txt`, `hedge.txt`, `cost.txt`, `alarm-steps-all.txt`), `b035-m64.{status,lead,watch}`, `tests/fanout/raw/tsave-m64.jsonl.xz`. Verdict lines went to the lead at about 19:12Z, inside 30 minutes of the done line.
+
+| Line | m64 |
+| --- | --- |
+| Dispatch, driver | p50 5.4 s, **p99 9.9 s**, max 12.2 s, 2,500 of 2,500 paired |
+| Dispatch, site entry-to-run / demand | p99 7.4 s / 5.6 s |
+| Dispatch p99 by minute of load | 4.5 to 5.0 s through minute 4, then 6.2, 5.6, 7.7, 5.6, 8.4 s |
+| Leader commit | p50 621 ms, p99 2,675 ms |
+| Leader queue (slot) | p99 2,459 ms (2,375 ms) |
+| Round / confirm / deps | p99 776 ms / 373 ms / 695 ms |
+| f0's vCPU (CPU-s per minute from 18:33) | 23.5, 24.8, 27.7, 29.2, 30.6, 30.8, 31.7, 33.0, 33.5, 25.4: mean 0.48, peak 0.56 |
+| Learner read-index calls to f0 | 49,522 sent, plus 2,145 `HEDGE` copies (4.3%); 964 past `CALL_DEADLINE` |
+| Leader changes in the load | **0**, term 2. Holds: 18:40:27 LoopLag (clamped 2), 18:42:14 CommitErrors [(f1, 25, 3), (f2, 21, 3)], each `to: None` |
+| After the load (observed, outside the gate window) | During the driver's run cancellation, 19:02:27 CommitErrors [(f1, 29, 3), (f2, 24, 3)] with `to: Some(SiteId(2))`, and the transfer completed: f2 led term 3 from 19:02:24Z (the lead watcher's sample), and the transfer home put f0 at term 4 by 19:07:22Z. The first completed step-down transfer on these rows; no action (lead, 2026-11-20) |
+| `suspect` | none in the load window |
+| f0 alarm-steps lines | in the load, `actions_trigger` 389 ms (18:42:00); after it, during the cancel, `load` 1,556, 3,026, 2,796, 2,649 and 3,305 ms (19:01:53 to 19:03:16) |
+| Pushes | 2,500 of 2,500 agent ok; human 333 ok, 24 `stale:race`, 29 skipped at the cap; `mergeable` 503s 30; api 503s 61; merges 66 × 200, 13 × 409 |
+| Cuts | 1,974: 655 `Soft` (503 at 100 KB or less, 152 grown, max 150 KB), 1,319 `Empty` |
+| Queue replay on its own trace | flat p99 3.4 s, `soft-grow` p99 2.3 s; measured 2.46 s; cycle fit 260 ms + 0.72 ms per KB |
+| `/commit` at f0 | 6,182: edge 2,586, step `Leader` 3,596 (top isolate 2,832), `Send` 0; top isolate peak 341 a minute and 28 a second. Not recurred |
+| Shared isolates | none (11 members, 11 isolates) |
+| Spend | graft-m4a $5.08 (18:26:07Z to 19:05Z, prefix; $7.72 for the whole account), runner account $0 |
+
+**The watcher's dollar stop never fired** (found starting m65). Since `f88f1a48`, `b035watch.sh` reassigned `STOP` to the stop file's path after reading it as dollars, so each pass's comparison raised a `NameError` and wrote no stop file; the sandbox-running stop still worked. The watchers for rows m54 to m64 therefore logged spend but would not have stopped a row on cost. No row reached its stop: the largest watcher reading was m64's $5.20 against $10, and m54 and m57 to m63 read $4.04 to $4.94 against $8. Fixed in `ffc28b71`: the stop file has its own variable; m65's watcher has run with it since 19:16:45Z.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
