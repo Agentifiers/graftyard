@@ -1,0 +1,6 @@
+miss lines 0 in the window, over 0 networks
+{"phase": "j9", "misses": 0, "answers": {}, "chain_wait_ms": {"p50": null, "p99": null, "max": null}, "catch_up_p99_ms": null, "composed_container_to_headers_p99_ms": null}
+{"phase": "kill", "misses": 0, "answers": {}, "chain_wait_ms": {"p50": null, "p99": null, "max": null}, "catch_up_p99_ms": null, "composed_container_to_headers_p99_ms": null}
+{"phase": "second", "misses": 0, "answers": {}, "chain_wait_ms": {"p50": null, "p99": null, "max": null}, "catch_up_p99_ms": null, "composed_container_to_headers_p99_ms": null}
+{"phase": "hostile", "misses": 0, "answers": {}, "chain_wait_ms": {"p50": null, "p99": null, "max": null}, "catch_up_p99_ms": null, "composed_container_to_headers_p99_ms": null}
+{"upload_pack_503": 0, "at once (cold)": 0, "at the deadline": 0, "deadline split": {}, "deadline with no miss line": 0}

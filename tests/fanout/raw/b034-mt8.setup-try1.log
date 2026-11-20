@@ -1,0 +1,19 @@
+edge: graft-m1-edge serves 96380e29 at 100% (rev e5590f366), as tests/am1/raw/b034y-siteday.log deployed
+node:fs:624
+    return binding.readFileUtf8(path, stringToFlags(options.flag));
+                   ^
+
+Error: ENOENT: no such file or directory, open '.worktrees/mt8/tests/m3/rows/../../m0/.m0-token'
+    at readFileSync (node:fs:624:20)
+    at file://.worktrees/mt8/tests/m3/rows/lib.mjs:11:21
+    at ModuleJobSync.run (node:internal/modules/esm/module_job:679:46)
+    at node:internal/modules/run_main:199:19
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:105:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '.worktrees/mt8/tests/m3/rows/../../m0/.m0-token'
+}
+
+Node.js v26.12.0
+setup failed
