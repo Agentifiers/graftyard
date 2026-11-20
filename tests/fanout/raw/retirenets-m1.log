@@ -64,3 +64,7 @@
 2026-11-18T05:22:19.275Z repo:2424833: 3 names, 3 were joined, all not joined
 2026-11-18T05:22:26.064Z repo:3211264: 3 names, 3 were joined, all not joined
 2026-11-18T05:22:34.713Z repo:3211265: 4 names, 4 were joined, all not joined
+2026-11-20T07:09:25.886Z repo:1048577: 3 names, 3 were joined, all not joined
+2026-11-20T07:10:48.666Z purge: 1048577 purged: a 2 -> 0, b 6 -> 0, c 6 -> 0
+2026-11-20T07:10:48.666Z purge: 1048577 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-20T07:10:48.667Z purge: {"dry": false, "purged": 1, "objects": 14, "refused": [], "second": 0}

@@ -1,0 +1,16 @@
+2026-11-20T10:27:42.545Z repo:1048601: 4 names, 4 were joined, all not joined
+2026-11-20T10:27:53.601Z repo:3473414: 4 names, 4 were joined, all not joined
+2026-11-20T10:28:03.780Z repo:3538962: 4 names, 4 were joined, all not joined
+2026-11-20T10:28:13.816Z repo:3538963: 4 names, 4 were joined, all not joined
+2026-11-20T10:28:23.506Z repo:3538964: 4 names, 4 were joined, all not joined
+2026-11-20T10:34:49.245Z purge: 1048601 purged: a 1320 -> 0, b 1314 -> 0, c 1319 -> 0
+2026-11-20T10:34:49.245Z purge: 1048601 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-20T10:34:49.245Z purge: 3473414 purged: a 36 -> 0, b 37 -> 0, c 34 -> 0
+2026-11-20T10:34:49.245Z purge: 3473414 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-20T10:34:49.245Z purge: 3538962 purged: a 36 -> 0, b 35 -> 0, c 34 -> 0
+2026-11-20T10:34:49.246Z purge: 3538962 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-20T10:34:49.246Z purge: 3538963 purged: a 34 -> 0, b 35 -> 0, c 37 -> 0
+2026-11-20T10:34:49.246Z purge: 3538963 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-20T10:34:49.246Z purge: 3538964 purged: a 34 -> 0, b 38 -> 0, c 34 -> 0
+2026-11-20T10:34:49.246Z purge: 3538964 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-20T10:34:49.246Z purge: {"dry": false, "purged": 5, "objects": 4377, "refused": [], "second": 0}

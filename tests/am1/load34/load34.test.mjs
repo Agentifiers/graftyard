@@ -122,6 +122,11 @@ test("the client in workerd", { skip: existsSync(WRANGLER) ? false : "tests/m0 h
   // The repository keeps main between rounds, so the run starts mid-history (round 26's 60 refused moves from index 0).
   await w.fetch(`/edge/_fake/main?sha=${future[1]}`);
 
+  // The pre-row smoke clone goes through the client's own fetch, so it fails as the row's clones would (mt8's 403s).
+  const sm = await post("/smoke", { spec: { edge: `http://${w.address}:${w.port}/edge`, repo: "o/mono", chain: "repo:77", want: future[2],
+    tokens: { admin: "adm1nPAT" }, b034: {} } });
+  assert.deepEqual([sm.code, sm.status, sm.cache, sm.bytes], ["200", 200, "hit", 4096], JSON.stringify(sm));
+
   const plan = { ...b034Plan(12), pushEvery: 2, apiReads: 120, refReads: 4, pollers: 4, human: 4, tipMovesPerMin: 120, clones: 4,
     side: { taskEdit: 1, comment: 1, label: 1, draftPr: 0.5, leaseAcquire: 1, leaseRelease: 1, leaseRenew: 1, sessionPush: 0, standIn: 1 } };
   const hot = [{ repo: "o/second", chain: "repo:2", who: "member" }];

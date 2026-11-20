@@ -1,0 +1,22 @@
+harness outages (2026-11-20T09:30:04Z to 2026-11-20T09:45:04Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-20T09:30:04Z", "2026-11-20T09:30:06Z"], ["2026-11-20T09:30:07Z", "2026-11-20T09:30:11Z"], ["2026-11-20T09:30:12Z", "2026-11-20T09:30:15Z"], ["2026-11-20T09:30:16Z", "2026-11-20T09:30:18Z"]], "outageSeconds": 11.0, "share": 0.0122, "valid": true}
+{"kind": "push:human@j9", "measured": {"n": 187, "served": 0.9037, "p50": 2302, "p99": 4545, "cap": 11}, "outagesRemoved": {"n": 187, "served": 0.9037, "p50": 2302, "p99": 4545, "cap": 11}}
+{"kind": "push:human:edge@j9", "measured": {"n": 187, "served": 0.9037, "p50": 1853, "p99": 4059, "cap": 0}, "outagesRemoved": {"n": 187, "served": 0.9037, "p50": 1853, "p99": 4059, "cap": 0}}
+{"kind": "push:human:tip@j9", "measured": {"n": 189, "served": 0.8889, "p50": 399, "p99": 1405, "cap": 0}, "outagesRemoved": {"n": 189, "served": 0.8889, "p50": 399, "p99": 1405, "cap": 0}}
+{"kind": "read:cloneTtfb@j9", "measured": {"n": 303, "served": 0.0, "p50": 5, "p99": 144, "cap": 0}, "outagesRemoved": {"n": 303, "served": 0.0, "p50": 5, "p99": 144, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@j9", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "push:human@kill", "measured": {"n": 74, "served": 0.9324, "p50": 2180, "p99": 5565, "cap": 1}, "outagesRemoved": {"n": 74, "served": 0.9324, "p50": 2180, "p99": 5565, "cap": 1}}
+{"kind": "push:human:edge@kill", "measured": {"n": 74, "served": 0.9324, "p50": 1725, "p99": 4841, "cap": 0}, "outagesRemoved": {"n": 74, "served": 0.9324, "p50": 1725, "p99": 4841, "cap": 0}}
+{"kind": "push:human:tip@kill", "measured": {"n": 75, "served": 1.0, "p50": 410, "p99": 1517, "cap": 0}, "outagesRemoved": {"n": 75, "served": 1.0, "p50": 410, "p99": 1517, "cap": 0}}
+{"kind": "read:cloneTtfb@kill", "measured": {"n": 121, "served": 0.0, "p50": 5, "p99": 11, "cap": 0}, "outagesRemoved": {"n": 121, "served": 0.0, "p50": 5, "p99": 11, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@kill", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "push:human@second", "measured": {"n": 110, "served": 0.9182, "p50": 2129, "p99": 3382, "cap": 1}, "outagesRemoved": {"n": 110, "served": 0.9182, "p50": 2129, "p99": 3382, "cap": 1}}
+{"kind": "push:human:edge@second", "measured": {"n": 110, "served": 0.9182, "p50": 1678, "p99": 2514, "cap": 0}, "outagesRemoved": {"n": 110, "served": 0.9182, "p50": 1678, "p99": 2514, "cap": 0}}
+{"kind": "push:human:tip@second", "measured": {"n": 108, "served": 1.0, "p50": 564, "p99": 1685, "cap": 0}, "outagesRemoved": {"n": 108, "served": 1.0, "p50": 564, "p99": 1685, "cap": 0}}
+{"kind": "read:cloneTtfb@second", "measured": {"n": 161, "served": 0.0, "p50": 5, "p99": 9, "cap": 0}, "outagesRemoved": {"n": 161, "served": 0.0, "p50": 5, "p99": 9, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@second", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "push:human@hostile", "measured": {"n": 206, "served": 0.9126, "p50": 2142, "p99": 3388, "cap": 7}, "outagesRemoved": {"n": 206, "served": 0.9126, "p50": 2142, "p99": 3388, "cap": 7}}
+{"kind": "push:human:edge@hostile", "measured": {"n": 206, "served": 0.9126, "p50": 1654, "p99": 2435, "cap": 0}, "outagesRemoved": {"n": 206, "served": 0.9126, "p50": 1654, "p99": 2435, "cap": 0}}
+{"kind": "push:human:tip@hostile", "measured": {"n": 205, "served": 1.0, "p50": 635, "p99": 2516, "cap": 0}, "outagesRemoved": {"n": 205, "served": 1.0, "p50": 635, "p99": 2516, "cap": 0}}
+{"kind": "read:cloneTtfb@hostile", "measured": {"n": 355, "served": 0.0, "p50": 5, "p99": 9, "cap": 0}, "outagesRemoved": {"n": 355, "served": 0.0, "p50": 5, "p99": 9, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@hostile", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}

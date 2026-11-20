@@ -1,0 +1,15 @@
+edge: graft-m1-edge serves 96380e29 at 100% (rev e5590f366), as tests/am1/raw/b034y-siteday.log deployed
+2026-11-20T10:43:55Z meter (account, run) 79.51 0.0 before b034, expected +$4, stop $170 account, $8 run
+2026-11-20T10:44:57Z meter (account, run) 79.51 0.0
+2026-11-20T10:45:59Z meter (account, run) 79.52 0.02
+2026-11-20T10:47:01Z meter (account, run) 79.53 0.02
+2026-11-20T10:48:05Z meter (account, run) 79.55 0.03
+2026-11-20T10:49:07Z meter (account, run) 79.56 0.04
+2026-11-20T10:49:25Z b034 ended: 2026-11-20T10:49:22Z b0-34 stopped: the Load34 smoke clone failed
+site fault off: 200
+git#0#net:3473415 200
+{"torn_down": 1, "codes": {"200": 1}}
+sweep: no shard container running
+2026-11-20T10:49:45Z sweep exit 0
+2026-11-20T10:49:47Z meter (account, run) 79.56 0.04 after b034 and the sweep
+DONE

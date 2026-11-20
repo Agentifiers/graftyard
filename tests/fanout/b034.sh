@@ -113,6 +113,11 @@ node tests/fanout/memguard.mjs "$chain" 1100 2 120 > tests/fanout/raw/memguard-b
 node tests/fanout/terms.mjs "$chain" 1100 > tests/fanout/raw/terms-b034$TAG.jsonl 2>&1 &
 if [ -n "${HOSTED:-}" ]; then
   node tests/am1/load34/driver.mjs stage tests/fanout/raw/b034-$TAG.json >> "$ST" 2>&1 || { s "b0-34 stopped: tip:move packs not staged"; echo DONE >> "$ST"; exec sleep infinity; }
+  # One depth-1 clone of the warm monorepo from a Load34 object (mt8's clones were all 403 from the clients, and the row
+  # ran on): the row stops unless it is a 200 with pack bytes. After the warm, as the row's own probes: a depth-1 clone
+  # of a network no warm caught up got no byte in 120 s, from the orb as from Load34 (mt9's first try, 10:47Z).
+  node tests/am1/load34/driver.mjs smoke "$(q "d['mono']['repo']")" admin >> "$ST" 2>&1 \
+    || { s "b0-34 stopped: the Load34 smoke clone failed"; echo DONE >> "$ST"; exec sleep infinity; }
   bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json --hosted "$HOSTED" --hints "${HINTS:-wnam}"
 else
   bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
