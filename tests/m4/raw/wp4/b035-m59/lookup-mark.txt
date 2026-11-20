@@ -1,0 +1,80 @@
+00:01:34.904 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15104 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 110 ms 
+00:01:35.160 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15104 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 256 ms 
+00:01:35.381 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15104 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:36.586 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15104 found 0/repo:65573#1#f0 by Cached 
+00:01:36.586 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15104 post 0/repo:65573#1#f0 Cached Leader: Reply in 955 ms 
+00:01:36.725 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15112 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 135 ms 
+00:01:36.964 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15112 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 239 ms 
+00:01:37.453 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15112 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:37.966 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15112 found 0/repo:65573#1#f0 by Cached 
+00:01:37.966 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15112 post 0/repo:65573#1#f0 Cached Leader: Reply in 263 ms 
+00:01:38.087 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15117 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 120 ms 
+00:01:38.344 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15117 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 257 ms 
+00:01:38.872 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15117 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:39.203 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15108 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 108 ms 
+00:01:39.502 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15117 found 0/repo:65573#1#f0 by Cached 
+00:01:39.502 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15117 post 0/repo:65573#1#f0 Cached Leader: Reply in 380 ms 
+00:01:39.505 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15108 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 302 ms 
+00:01:40.002 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15108 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:40.325 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15109 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 120 ms 
+00:01:40.580 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15109 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader None) in 255 ms 
+00:01:41.118 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15108 found 0/repo:65573#1#f0 by Cached 
+00:01:41.118 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15108 post 0/repo:65573#1#f0 Cached Leader: Reply in 866 ms 
+00:01:41.312 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15109 pass ended with no leader: repo:65573#1#f2: not leader 
+00:01:41.448 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15111 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 117 ms 
+00:01:41.690 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15111 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 242 ms 
+00:01:42.030 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15109 found 0/repo:65573#1#f0 by Cached 
+00:01:42.030 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15109 post 0/repo:65573#1#f0 Cached Walk: Reply in 468 ms 
+00:01:42.164 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15111 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:43.221 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15111 found 0/repo:65573#1#f0 by Cached 
+00:01:43.221 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15111 post 0/repo:65573#1#f0 Cached Leader: Reply in 807 ms 
+00:01:43.346 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15103 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 114 ms 
+00:01:43.616 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15103 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 270 ms 
+00:01:44.095 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15103 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:44.539 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15103 found 0/repo:65573#1#f0 by Cached 
+00:01:44.539 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15103 post 0/repo:65573#1#f0 Cached Leader: Reply in 194 ms 
+00:01:44.670 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15113 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 118 ms 
+00:01:44.915 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15113 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 245 ms 
+00:01:45.392 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15113 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:45.814 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15113 found 0/repo:65573#1#f0 by Cached 
+00:01:45.814 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15113 post 0/repo:65573#1#f0 Cached Leader: Reply in 172 ms 
+00:01:45.922 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15110 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 103 ms 
+00:01:46.164 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15110 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 242 ms 
+00:01:46.637 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15110 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:47.145 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15110 found 0/repo:65573#1#f0 by Cached 
+00:01:47.145 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15110 post 0/repo:65573#1#f0 Cached Leader: Reply in 258 ms 
+00:01:47.272 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15105 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 116 ms 
+00:01:47.523 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15105 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 251 ms 
+00:01:47.998 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15105 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:48.528 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15105 found 0/repo:65573#1#f0 by Cached 
+00:01:48.528 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15105 post 0/repo:65573#1#f0 Cached Leader: Reply in 280 ms 
+00:01:48.639 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15107 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 104 ms 
+00:01:48.879 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15107 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 240 ms 
+00:01:49.350 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15107 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:49.988 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15107 found 0/repo:65573#1#f0 by Cached 
+00:01:49.988 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15107 post 0/repo:65573#1#f0 Cached Leader: Reply in 388 ms 
+00:01:50.122 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15114 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 115 ms 
+00:01:50.371 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15114 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 249 ms 
+00:01:50.837 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15114 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:51.690 graft-m4a-site-b None cf-worker lookup mark repo:65573: t1 found 0/repo:65573#1#f0 by Bootstrap { depth: 0 } 
+00:01:51.690 graft-m4a-site-b None cf-worker lookup mark repo:65573: t1 post 0/repo:65573#1#f0 Bootstrap { depth: 0 } Walk: Reply in 78 ms 
+00:01:51.799 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15114 found 0/repo:65573#1#f0 by Cached 
+00:01:51.799 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15114 post 0/repo:65573#1#f0 Cached Leader: Reply in 712 ms 
+00:01:51.913 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15115 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 103 ms 
+00:01:52.155 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15115 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 242 ms 
+00:01:52.630 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15115 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:53.245 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15115 found 0/repo:65573#1#f0 by Cached 
+00:01:53.245 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15115 post 0/repo:65573#1#f0 Cached Leader: Reply in 365 ms 
+00:01:53.358 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15116 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 96 ms 
+00:01:53.409 graft-m4a-site-c None cf-worker lookup mark repo:65573: t1 found 0/repo:65573#1#f0 by Bootstrap { depth: 0 } 
+00:01:53.409 graft-m4a-site-c None cf-worker lookup mark repo:65573: t1 post 0/repo:65573#1#f0 Bootstrap { depth: 0 } Walk: Reply in 155 ms 
+00:01:53.597 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15116 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 239 ms 
+00:01:54.072 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15116 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:54.417 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15116 found 0/repo:65573#1#f0 by Cached 
+00:01:54.417 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15116 post 0/repo:65573#1#f0 Cached Leader: Reply in 95 ms 
+00:01:54.535 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15106 post 1/repo:65573#1#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 116 ms 
+00:01:54.752 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15106 post 2/repo:65573#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 217 ms 
+00:01:55.198 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15106 pass ended with no leader, leader kept: repo:65573#1#f2: not leader 
+00:01:55.448 graft-m4a-site-a None cf-worker lookup mark repo:65573: t15106 gave up: repo:65573#1#f2: not leader 
+00:02:20.109 graft-m4a-site-a None cf-worker lookup mark repo:65573: t1 found 0/repo:65573#1#f0 by Bootstrap { depth: 0 } 
+00:02:20.109 graft-m4a-site-a None cf-worker lookup mark repo:65573: t1 post 0/repo:65573#1#f0 Bootstrap { depth: 0 } Walk: Reply in 53 ms 

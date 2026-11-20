@@ -565,6 +565,34 @@ Site day 58 (21:24:11Z to 21:25:13Z) shipped main `f50ad36b` as a **test-faults*
 
 **Cost** (`tests/fanout/acctcost.py`, from the site day's start at 21:24:11Z to 22:03:51Z): graft-m4a **$5.13**, the runner account $0.00, total $5.13 against the $8 stop; the account $49.69 for the UTC day, under $170. The watcher's last reading was $4.94 at 22:01:56Z; the shards idled while a1 cancelled the row's runs (21:45 to 22:02Z). The teardown sweep tore down `git#0#net:65572` and `git#1#net:65572` (both 200) at 22:03:00Z and found no shard container running; the containers API shows no m4a gitshard instance in a running state. The M2 canary's comparison excludes 21:24:11Z to 22:32:37Z.
 
+## B0-35 on a test-faults build after site day 59 (2026-11-20, row m59)
+
+Site day 59 (2026-11-19 23:42:54Z to 23:43:47Z) shipped main `857c4f02` as a **test-faults** build, with `home-quiet` and `lookup-keep`, and image `m4a56` (no `containers/git` change since it was built), with day 58's flags. Edge day 28 stayed. `tests/m4/wp4/b035.sh` ran on a new repository, `m3org/b035-m59` = repo 65573, with 8 learners. Run `mwo77i3i`: 500 of 500 PRs opened, the learner gate passed 8 of 8 in 503 ms, then 600 s from 23:51:25.434Z; done at 00:18:46Z. A first start at 23:44:01Z stopped before any repository because the service had no `TOOLS_TOKEN_FILE` (m57's cause again). The trace saver stopped after its first pull: the script reused m58's done file. A second pull at 00:14Z kept each voter's ring, which on site 0 reached back only to 00:10:51Z. Raw files: `tests/m4/raw/wp4/b035-m59/`, `b035-m59.{status,lead,watch}`, `tests/fanout/raw/tsave-m59.jsonl.xz`.
+
+**Verdict: fails dispatch** (p99 18.6 s at the driver, against 10 s; fail over 30 s). Through minute 8 of the load it held p99 2.4 to 3.7 s, the best of any row. The tail is the last 30 s of the load, when f0 raised three held `STEP_DOWN` alarms. Budget, list-field, memory, warming and isolate-error lines pass.
+
+| Line | Value | Source |
+| --- | --- | --- |
+| Dispatch p50 / p99 / max, push acknowledgment to run listed (driver) | 3.3 s / **18.6 s** / 25.1 s, 2,486 of 2,486 paired (m58: 3.0 / 9.1 / 17.6 s) | `a1.mjs` `dispatch` |
+| Dispatch, entry to run (site) | p50 1.8 s, p99 17.3 s (2,983 runs, 9 `no run`); `splitMs` p50 / p99: wait 0 / 0.5 s, demand 1.0 / 6.7 s, reads 0.5 / 1.7 s, create 0.4 / 2.6 s | `dispatchlog.py` |
+| By entry time | t0 to t0 + 570 s: p99 3.7 s (2,330; m58 8.1 s); per minute p99 2.4 to 3.7 s through minute 8, 7.8 s in minute 9; entries from 00:00:55Z: p99 24.7 s (182), demand and reads. Around the LoopLag alarm: before p99 4.9 s; from 5 s before to 60 s after, p99 24.7 s (91) | `dispatch-lines.jsonl` |
+| `warming` 503s, "no member answered" | **0** and 0 on all three sites | Workers Logs |
+| Test-merge vCPU (1 vCPU budget) | **0.59** over merge wall (379 s CPU over 639 s), 0.63 over 600 s; 11,646 computed, 1,781 shed `late`; `inFlightMax` 318, wait max 15.7 s | leader `/stats` `testMerges.shard` |
+| List-field computes | **0** of 77,684 asks | same |
+| `mergeable` polls | 4,562 `MERGEABLE`, 54,639 `UNKNOWN`, 397 × 503 | `a1.mjs` `pollAnswers` |
+| Agent pushes | 2,986 of 3,000 ok, p50 1.6 s, p99 4.3 s; 10 × 503 (access rows shed), 4 `fetch failed` | `a1-pushes-…jsonl` |
+| Leader commit p50 / p99 | 503 / **2,829 ms** (round p99 580, confirm p99 279) | leader `/stats` |
+| Leader changes | **0**: f0 (home) led at term 2 throughout | `b035-m59.lead` |
+| `STEP_DOWN` alarms | 3 on f0, all held: 00:01:18.265Z `LoopLag { clamped: 2 }` (to None); 00:01:42.9Z `CommitErrors` (site 1: 34 calls, 3 failed; site 2: 22, 3), to None; 00:01:58.6Z `CommitErrors` (11/3, 11/3), to Some(1), no term change after it | Workers Logs, `stepdown-alarms.jsonl` |
+| Transfer home | none; home led, so `home-quiet` was not exercised | |
+| Lookup-mark walks | 16 on site a, 00:01:34 to 00:01:55Z, 0.9 to 1.9 s each (m58: 6.4 and 9.0 s); 14 passes "leader kept", each followed by f0 as cached leader; `#1#f1` posted 15 times, but as this group's live site-1 voter (Cached, never replaced); no superseded name posted | `lookup-mark.txt` |
+| Isolate errors | "closure invoked recursively or after being dropped" **0**, "Cannot perform I/O on behalf of a different Durable Object" **0**, on site-a, site-b, site-c and the edge (23:42 to 00:06Z) | Workers Logs |
+| Other | "Subrequest depth limit exceeded" 70 on site a (62 at 23:49 to 23:51Z in setup, 8 at 00:01Z); no `exceededMemory`; 0 Sandboxes | Workers Logs |
+
+The same two error strings in the m58 window (21:24 to 22:04Z, build `f50ad36b`, disk-first without looplag-clock) were 0 on every m4a service. They were asked for after B0-29 m3fp3 on graft-m3f logged 220,515 and 3,897 on site a.
+
+**Cost** (`tests/fanout/acctcost.py`, 23:42:54Z to 00:22:25Z): graft-m4a **$4.94**, the runner account $0.00, against the $8 stop. `b035.sh`'s sweep failed on shardkill's read-after-upload 10007, twice; a rerun of `teardown.py --sweep --shardkill` tore down 3 shards (200), found no shard container running and deleted shardkill (`b035-m59/sweep-rerun.log`). The M2 canary's comparison window excludes 23:30:00Z to 00:48:46Z.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.

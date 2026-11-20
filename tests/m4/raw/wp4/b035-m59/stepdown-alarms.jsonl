@@ -1,0 +1,3 @@
+{"svc": "a", "t": "00:01:18.265", "alarm": "member alarm: StepDown { why: LoopLag { clamped: 2 }, to: None }"}
+{"svc": "a", "t": "00:01:42.882", "alarm": "member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 34, 3), (SiteId(2), 22, 3)] }, to: None }"}
+{"svc": "a", "t": "00:01:58.625", "alarm": "member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 11, 3), (SiteId(2), 11, 3)] }, to: Some(SiteId(1)) }"}

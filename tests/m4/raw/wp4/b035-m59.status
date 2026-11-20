@@ -1,0 +1,16 @@
+2026-11-19T23:45:04Z start 857c4f02
+2026-11-19T23:45:33.003Z m3org/b035-m59 = 65573
+2026-11-19T23:45:40.360Z repo:65573 leader 0: config 8 learners [{"addr":192,"doName":"repo:65573#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65573#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65573#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65573#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65573#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65573#2#l5","join":200,"sit
+2026-11-19T23:45:40Z b0-35 b035-m59 65573 start
+2026-11-20T00:18:46Z b0-35 b035-m59 65573 done exit 0
+shardkill deploy failed: o the Cloudflare API (/accounts/<cf-account-id>/workers/workers/graft-m4a-shardkill) failed.[0m
+
+  This Worker does not exist on your account. [code: 10007]
+  
+  If you think this is a bug, please open an issue at: [4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose[0m
+
+
+🪵  Logs were written to "~/.config/.wrangler/logs/wrangler-2026-11-20_00-18-59_709.log"
+
+2026-11-20T00:19:11Z SWEEP FAILED
+ALLDONE
