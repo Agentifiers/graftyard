@@ -656,6 +656,70 @@ Site day 60 (05:05:21Z to 05:06:27Z) shipped main `96a91d58` as a **test-faults*
 
 **Cost** (`tests/fanout/acctcost.py`, 05:05:21Z to 05:48:05Z): graft-m4a **$5.43** (account $5.47), the runner account $0.00, against the $8 stop. Teardown: 3 shards 200, no shard container running, shardkill deleted; the b035 services stopped. The M2 canary's comparison window excludes 04:53:00Z to 06:10:24Z.
 
+## B0-35 on a test-faults build after site day 61 (2026-11-20, row m61)
+
+Site day 61 (09:34:49Z to 09:35:47Z) shipped main `9d6fdb71` as a **test-faults** build, with `step-agree` and `alarm-steps`. Day 60's flags; edge day 28 stayed. `tests/m4/wp4/b035.sh` ran on a new repository, `m3org/b035-m61` = repo 65575, with 8 learners, and `b035tsave.sh` with `ISOLATES=1`. Run `mwoscm62`: load 09:44:21.8Z to about 09:54:22Z; done at 10:14:54Z, exit 0. Raw files: `tests/m4/raw/wp4/b035-m61/`, `b035-m61.{status,lead,watch}`, `siteday61.log`, `tests/fanout/raw/tsave-m61.jsonl.xz`.
+
+**Verdict: fails dispatch** (driver p99 90.2 s, p50 10.3 s, 2,285 of 2,285 paired; site entry-to-run p50 7.2 s, p99 107 s). The verdict lines went to the lead within 30 minutes of the done line. In short:
+- Leader commit p99 10.9 s, almost all of it queueing.
+- Term 3 at 09:52:49.1Z was a transfer (TimeoutNow, no pre-vote), after `step-agree`'s hold window lapsed and the group was no longer hot. 302 `suspect` reports started no pre-vote.
+- Term 4 at about 09:57:30Z was the transfer home.
+- f0 logged 29 alarm-steps lines. `activity` (15.7 s in all) and `load` (8.3 s) are mostly waiting, not CPU.
+- Cost: graft-m4a $4.68 to 10:23:39Z, the runner account $0; teardown clean.
+
+**Correction to the verdict.** The interim line said f0's `/raft` burned "20 to 34 CPU-s per 10 s". That came from a two-key groupBy in the Workers calculations view, which double-counts, and it is wrong. GraphQL `durableObjectsPeriodicGroups` for f0's object gives CPU-s per minute: 09:44 19.3, 09:45 29.7, 09:46 37.1, 09:47 34.3, 09:48 35.8, 09:49 34.3, 09:50 36.2, 09:51 35.8, 09:52 24.0. So f0 used **about 0.6 vCPU sustained** against 60 s of active time a minute, for the whole object and not `/raft` alone [measured].
+
+### f0's `/raft` CPU on m61, by call kind
+
+Raw Workers events for f0, read in 1 s slices, which are near complete (the calculations view sampled about a quarter of the `/raft` calls), 09:48:00 to 09:49:39Z, joined to the learners' and the leader's trace rows (`tsave-m61`). Of 45.5 s of f0 CPU in that window [measured]:
+
+| Kind | Calls | CPU | CPU a call | Bytes a call | Source |
+| --- | --- | --- | --- | --- | --- |
+| Learner `/raft` carrying a `ReadIndex` | 7,970 | **22.9 s (50%)** | 2.87 ms | request under 100 B. The response holds the `ReadIndexRes` and any held appends: 4,520 had none, 4,107 had one and 1,120 two or more, at 64 to 101 KB each | learner `CallSent` + `IndexSent`, leader `ResSent`/`AppendTaken` |
+| Learner `/raft` with no `ReadIndex` (`AppendRes`, answers) | 2,947 | 4.6 s (10%) | 1.58 ms | under 100 B in, the same held appends out | same |
+| AppendEntries to the voters (f0's own calls) and their answers in f0's handlers | 523 inbound voter `/raft` | 1.3 s (3%) inbound. The encode and send run in f0's `/commit` and alarm turns, counted below | 2.5 ms | 83 to 87 KB a call: 1,373 calls to f1 and 1,421 to f2 over the load, 113 and 124 MB | leader `AppendQueued` |
+| Votes and heartbeats | 0 votes in the window; empty rounds ride the voter row | ~0 | | | |
+| `/commit` (admission, cut, apply, the voter appends' encode) | 3,032 | 7.1 s (16%) | 2.3 ms | about 90 KB pack | raw events |
+| `/read` (leader reads) | 1,112 | 3.9 s (9%) | 3.5 ms | | raw events |
+| `/entries` | 139 | 1.6 s (4%) | 11.3 ms | | raw events |
+| alarm | 210 | 1.2 s (3%) | 5.7 ms | | raw events |
+| other (`/outcome`, `/status`, `/stats`) | | 0.9 s+ | | | raw events |
+
+Learner `/raft` was 27.5 s (60%) of f0's CPU in the window. 31 of those calls took 100 ms or more of CPU, 10.4 s together, and the rest took 1.57 ms each. The heaviest, 2,015 ms, was a learner call at 09:48:53.9Z whose span held one leader step sending 754 KB of appends. It covered a 2,056 ms ticker stall.
+
+**Duplicates.** Over the whole load f0 received 46,250 learner read-index calls. 9,535 of them, 21%, were copies of batches already in flight: 7,089 `HEDGE` copies and 2,446 `CALL_DEADLINE` resends [measured, learner traces]. By minute, the share of copies (HEDGE copies plus calls past 1 s, each resent) against the mean admission queue:
+
+| Minute of load | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Copies, % of read-index calls | 7.2 | 13.6 | 35.0 | 28.4 | 31.4 | 40.7 | 38.1 | 40.1 | 37.7 |
+| Mean queued commands | 9 | 18 | 91 | 50 | 39 | 159 | 23 | 44 | 83 |
+
+**Does the read-index rate grow with the queue?** Not the base rate: learner batches to the leader ran 39/s, then 65 to 88/s for all 8 learners, and their correlation with the queue is −0.32. The copies do grow, from 1.4/s to 40/s at the peak, correlation +0.51. Queued commands make the leader slow to answer, and every batch slower than `HEDGE` is copied, so the retries add calls exactly when the leader is slowest. Learner ReadIndex call time, 09:46 to 09:52Z: p50 261 ms, p90 1,000 ms, p99 2,427 ms [measured].
+
+**Entry sizes (the lead's question after B0-02's m3fgt1 finding).** f0's cut trace (`Trace::Cut`, `tests/m0/cuttrace/cuts.py`) over the load shows 1,296 entries. Commands per entry: p50 7, p90 20, p99 48, max 80; 1 entry over 64, none at 100 or more. Bytes per entry: p50 75.7 KB, p90 102 KB, p99 116 KB, max 147 KB. 969 cuts ended `Soft` and 327 `Empty`. Every command was classed Human in the cut columns, so an Agent-only cap binds on none of them. The 34 f0 `/raft` turns with 100 ms or more of CPU in the window had at most 24 commands in any entry cut within their span, and no cut of 40 or more commands fell in any of them [measured]. So on m61 **f0's CPU-heavy turns do not line up with big entries**. m61's entries are 2 to 4 times smaller than m3fgt1's 160 and 191, and its CPU is many small learner calls, not a few large applies. B0-02's `AGENT_CMDS_ENTRY` cap and this change are complementary. File ownership in `crates/raft` was agreed with B0-02: this branch touches `install.rs` and `tests/leadership.rs` only, and admission, the cut, and `lib.rs` are B0-02's.
+
+### `read-newest`: the change
+
+The dominant kind is learner read-index calls, and about a fifth of them were copies of batches in flight. Design first (`design/DESIGN.md`, Shape `fresh`, "Follower read", the Scale learners row; `decisions/DECISIONS.md`, "`read-newest`"):
+- an answer to batch b at index i grants b's reads and those of every batch sent before b, never a later one (`crates/raft/src/member/install.rs`, `on_read_index_res`). The earlier reads arrived before b left, so before the leader took it and confirmed i;
+- `tick_remote` resends only the newest batch in flight once it is `CALL_DEADLINE` old;
+- the site host copies a learner's `ReadIndex` call at `HEDGE` only while its batch is the newest it sent (`workers/site/src/host.rs`, `hedge_due`). Other learner calls are hedged as before.
+
+**Replay** (`tests/fanout/readnewest.py tests/fanout/raw/tsave-m61.jsonl.xz 1795167860000 510`, every call's traced time held, so the leader's lighter load is not credited) [inference]:
+- f0's learner read-index calls fall from 46,250 to 36,467 (21% fewer). 6,751 of the 7,089 copies and 2,440 of the 2,446 resends are dropped, and 592 copies of dropped resends with them.
+- Batch waits fall from p50 / p90 / p99 222 / 796 / 2,256 ms to 218 / 713 / 1,778 ms, since a slow batch is now granted by a later answer.
+- At 2.87 ms a call, that is about 28 s of f0's CPU over the 510 s load, 0.055 vCPU or about 9% of its 0.6 vCPU. The fix takes away the retry loop that feeds on the leader's slowness, not most of its CPU. The rest of the learner call cost, 1.6 to 2.9 ms each at 110 to 140 calls/s, is per call, not per byte, and the next lever would be fewer learner calls per read.
+
+**Expected effect on dispatch** [guess]: small on its own. The m61 tail is queueing behind one entry in flight at about 0.6 vCPU. This change removes about a fifth of the learner calls at the moments of highest queue, which helps the leader's input queue, and does not change the commit path.
+
+**Results.**
+- `a_later_read_index_answer_grants_earlier_batches_and_only_the_newest_is_resent` (`crates/raft/tests/leadership.rs`) fails on main (main resends all three batches) and passes on the branch. It checks that every read is granted at or above a write acknowledged before the answer.
+- `each_read_index_answer_grants_only_its_own_batch` keeps every floor check. Reversed, it now also sees the first read granted by the second answer.
+- `a_learner_hedges_only_its_newest_read_index_batch` (`workers/site/src/host.rs`).
+- Plants: `tests/m0carried/plant63.py`, 6 of 6 caught (the oldest batch resent; no earlier batch granted; later batches granted; the resend ignoring `CALL_DEADLINE`; every read-index call hedged; none hedged). `tests/nr3/plant.py`'s read-index and floor mutants (0, 28 to 32): 6 of 6 caught. Its `--check` names one residue, mutant 7 in `workers/site/src/family.rs`, and that residue is also on main `9a6db022`: the mutant's original line now appears there twice, which is not a planted file.
+- Long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, release), on the branch: harsh 0 step-downs and 8,206 holds, longest stuck stretch 14,707 ms (seed 10439); gray 2,133 and 10,374, 28,501 ms (seed 11893); live 1,747 and 10,251, 27,362 ms (seed 12553); passed in 949 s. Main `9a6db022`, same command in a worktree: harsh and gray identical to the branch; live 1,782 step-downs and 10,443 holds, 25,191 ms (seed 13897); passed in 999 s. Harsh and gray are identical, counter for counter. In live the branch completes more reads: 3,800,585 against main's 3,602,538 (+5.5%), because a late answer now grants the batches behind it. Porcupine (`tests/m0/porcupine`, built, `-seg 2000`) on the branch's histories, each exit 0: `hist.jsonl` Ok, 146,836 operations; `.gray` Ok, 2,336,111; `.live` Ok, 5,476,993 (12,000 segments).
+- Checks, each by its exit code, all 0: `cargo fmt --check`; workspace clippy `-D warnings`; wasm32 clippy for site and edge with and without `test-faults`, and for front and runners; `cargo test --workspace` 1,306 passed, 0 failed; `node --test workers/runners/tests/*.test.mjs` 11 of 11; `go test ./...` in `containers/git/server`, `containers/ssh/server` and `tests/m0/porcupine`; `check_design.py`, `check_names.py`, `check_links.py`.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
