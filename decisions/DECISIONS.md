@@ -6561,6 +6561,8 @@ Capping the count keeps a burst's entries in the size range that measured under 
 
 **Flip.** A B0-32 rerun where an entry of at most 64 Agent commands still stalls the leader's ticker over 1 s (the cost is per turn, not per command), or where the burst's queue drains slower than about 3 s (the cap is too low, or the cost is elsewhere).
 
+**First rerun, B0-32 m3fac1 (2026-11-20): the flip did not fire.** Three cuts ended `AgentCmds` (64 agent commands each), and those entries' rounds were 100, 100 and 1,003 ms with no ticker stall inside; the row's stalls were 306 and 269 ms. The queue went from 195 agent commands to 0 in 1.2 s, 2.2 s after the first capped cut. The row still failed, 311 of 500 within 5 s, on one 2,436 ms leader `sync()` that held all input for 2 s (`decisions/OPEN-QUESTIONS.md`, F106) [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fac1"].
+
 ### `read-newest`: a later read-index answer grants the earlier batches, and only the newest batch is resent or hedged, 2026-11-20
 
 The lead's request after B0-35 m61: attribute f0's `/raft` CPU by call kind and fix the kind that dominates (`tests/m4/results/m4-wp4.md`, "f0's `/raft` CPU on m61").
