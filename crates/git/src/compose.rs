@@ -184,6 +184,31 @@ where
 /// `warming` and the step goes on in the background (`decisions/DECISIONS.md`, "`chain-wait`").
 pub const CHAIN_WAIT_FORWARDED: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How many chain packs a composed answer opens in R2 at once [guess] (`decisions/DECISIONS.md`, "`chain-open`"): a
+/// Workers invocation has six connections waiting for headers [doc], and an R2 `get` holds one until its headers come,
+/// so four leave two for the request's other subrequests, as `crate::catchup::FETCH_AT_ONCE` does.
+pub const CHAIN_OPEN_AT_ONCE: usize = 4;
+
+/// Runs `opens`, at most `CHAIN_OPEN_AT_ONCE` at a time, and answers their values in the order given: the edge's
+/// `open_chain`, which opened a base and up to 19 parts one after another, each waiting for its first chunk before the
+/// next began, while no header left. `None` as soon as one answers `None` (a chain pack missing or not the one the
+/// manifest counted), and the first error, either way without starting the rest.
+pub async fn open_in_order<T, E, F>(opens: impl IntoIterator<Item = F>) -> Result<Option<Vec<T>>, E>
+where
+    F: std::future::Future<Output = Result<Option<T>, E>>,
+{
+    use futures_util::StreamExt;
+    let mut opened = futures_util::stream::iter(opens).buffered(CHAIN_OPEN_AT_ONCE);
+    let mut out = Vec::new();
+    while let Some(r) = opened.next().await {
+        match r? {
+            Some(t) => out.push(t),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
 /// Whether a composable miss's chain is ready (`ready` ended) before its wait runs out. `follows`: the edge has another
 /// site to try (`next=1`), so the wait is at most `CHAIN_WAIT_FORWARDED`; the last site waits all `left`, what remains
 /// of the upload-pack's deadline, so a miss never runs out of sites that would wait for a chain. `false` means the

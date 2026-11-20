@@ -485,7 +485,7 @@ impl Jobs {
             console_log!(
                 "shard catch-up stored {}: {}",
                 self.net.0.0,
-                serde_json::json!({ "ms": c.ms, "stored": c.stored, "entries": c.entries, "obj": self.obj,
+                serde_json::json!({ "ms": c.ms, "pages_ms": c.pages_ms, "stored": c.stored, "entries": c.entries, "obj": self.obj,
                     "from": before, "to": to, "refetched": refetched })
             );
         }

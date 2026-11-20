@@ -6224,3 +6224,55 @@ the bug needed the platform's placement to show.
 **Flip.** A row where `isolates.py` shows a learner and its voter sharing an isolate and site Workers Logs still show
 "closure invoked recursively or after being dropped" or "different Durable Object" on Member routes, or a feed
 whose poll misses an event its own member applied because of the boot key (a boot change with no reset).
+
+### `midx-background`: the multi-pack-index write runs in the background, not in the writer's section, 2026-11-20 (built 2026-11-20)
+
+**Status.** Built on branch `b034-midx`, not yet on a hosted row. Container only (`containers/git/server/main.go`, `midxAfterIngest`), so it ships with a new image on a site day; the timing it adds on the shard side (`PageMs`, `/ingest-batch`'s `midx_ms`) ships in the site script.
+
+**Decision.** After every `midxEvery` (50) ingests, the container starts `git multi-pack-index write` in a goroutine under the repository's own `midxState.mu`, taken with `TryLock`, as `startRepack` takes `repacking`. The ingest that triggered it answers at once. A trigger that finds a write running is skipped, not queued, and its count stays at or past `midxEvery`, so the next ingest after the write ends starts one. The three deleters of the repository's files wait for a running write: evict refuses with 409 (it already uses `TryLock`), a fresh init takes `mu` after `repacking`, and the background repack takes `mu` before `runRepack`, since it writes its own multi-pack-index and deletes the packs it rolled. `midx_ms` in `/ingest`, `&spooled=1` and now `/ingest-batch` answers the writes that ended since the network's last ingest answer, once each.
+
+**Why it is safe outside the section.** `lock-split` made the writer's section (`writeLock`: `writer(net)`, then `lock(net)` shared) the only thing that orders additive writers; readers and validates already run beside it. The multi-pack-index needs none of that order:
+- git writes `multi-pack-index` to a temporary file and renames it in [measured, git 2.56.0: `multi-pack-index.lock` beside it during the write, and a second writer fails on that lock rather than interleaving]. A reader sees the old file or the new one, never neither (`TestReadersSeeTheOldMultiPackIndexOrTheNew`).
+- A pack ingested while the write runs is not in it, and git reads that pack from its own `.idx`, as it reads every pack after the last write today.
+- A stale index naming a pack that no longer exists only logs "failed to load pack entry" and git falls back to the packs [measured, git 2.56.0], and the only deleters of packs (the repack, evict, fresh init) now wait for the write.
+
+**Why.** B0-34 mt7's monorepo catch-ups ran 5 to 17.6 s, most of it outside every timed lap; in the longest the stored packs took 37 to 59 ms. Where the write was timed (the stored path) it was p50 4.6 s and p99 10.2 s, held inside the section at nice 0, where it held every other writer of the network; `shardprocs` sampled one with 7.62 CPU-s 2.9 s into the 17.6 s catch-up that j9's slowest misses waited on (`tests/am1/results/b034-mt7.md`, "1. The catch-up tail"). That is an inference until timed, so the same branch times the rest: `catch_up` reports `pages_ms` (`make_room`, the ingests, `/refs`, the cursor saves, summed over the pages), and `/ingest-batch` reports `midx_ms`, which it dropped.
+
+**What it beat.**
+- **The write in the section (main).** Correct, and it holds every writer for up to 10 s every 50 ingests.
+- **Queueing a trigger that finds a write running.** Two writes back to back cover almost the same packs; the next ingest starts one anyway.
+- **An incremental midx chain.** It grew to 81 s per 1,000 packs at 7,000 [measured, `hot-shards-2`].
+- **Running it at nice 19.** The write keeps index-pack's lookups flat during a rehydrate (`MIDX_EVERY`), so it should not starve; the repack and commit-graph stay at nice 19.
+
+**Evidence.** `containers/git/server/midxbg_test.go`, each test failing with the write back in the section:
+- `TestAMidxWriteHoldsNoIngestOrValidate`: a git on PATH holds the write; the ingest that started it, a second ingest and a validate all answer, and evict answers 409; once released the index verifies and fsck is clean.
+- `TestASecondMidxTriggerIsSkippedNotQueued`: 52 ingests beside a held write start no second one, none starts when it ends, and the next ingest starts one.
+- `TestReadersSeeTheOldMultiPackIndexOrTheNew`: a `cat-file --batch-check` loop over every ingested object beside a held write and five real writes never finds the file missing or an object missing.
+- `TestRepackAndFreshInitWaitForAMidxWrite`: the repack and a fresh init each wait for a held write, then run.
+- `TestIngestReportsTheMidxWrite` now checks `/ingest` and `/ingest-batch`: `midx_ms` 0 until the write ended, its time once, then 0.
+- `a_catch_up_times_room_ingest_and_refs_apart` (`crates/git/tests/catchup.rs`): `make_room`, the ingest and `/refs` each take their own time on a virtual clock, and `pages_ms` reports each and covers the page.
+- Plants (`tests/midxbg/plant.py`), 11 of 11 caught: the write in the section; a second trigger queued; a skipped trigger resetting the count; the old index removed before the write; evict, fresh init and the repack each ignoring a running write; `midx_ms` never cleared; `/ingest-batch` without `midx_ms`; `/refs` counted with the ingest; `make_room` untimed. `tests/locksplit/plant.py` and `tests/b034tails/plant.py` (anchor moved to the background write's `ms.Add`) have no residue.
+
+**Flip.**
+- The next B0-34 row's `pages_ms` puts the monorepo's long catch-ups somewhere other than the ingest, or `midx_ms` beside them is small: the hypothesis is dead and the next suspect is the part `pages_ms` names.
+- A row where a rehydrate's per-pack ingest grows with the pack count again, as before `MIDX_EVERY`: the background write is falling behind, and it needs a priority or a stricter cadence.
+- Any reader in a test or a row that fails on a missing `multi-pack-index` or a pack it names.
+
+### `chain-open`: the edge opens a composed answer's chain packs four at a time, 2026-11-20 (built 2026-11-20)
+
+**Status.** Built on branch `b034-midx`, from the second-opinion review (thread T-01a1f697-3c0e-7728-b532-d291447f507b, recommendation 3). Edge only (`crates/git/src/host.rs`, `open_chain`; `workers/edge/src/lib.rs`), so it ships on an edge day. The `chain_open` stage in `server-timing` ships with it, so the next row confirms or refutes the cause.
+
+**Decision.** `open_chain` opens the manifest's chain packs (a base and up to 19 parts) `CHAIN_OPEN_AT_ONCE` (4) at a time and hands them on in the manifest's order (`graftyard_git::compose::open_in_order`, a `buffered` stream). It still checks each pack's 12-byte header against the manifest's count before the answer starts, and one missing or wrong pack still declines the manifest without starting the opens past the window. On a test install the edge's `server-timing` carries `chain_open`, the wall from after the manifest's read to the composed answer's headers, on both the hit path and the composed-miss path.
+
+**Why.** Clone-cache hits went from p50 0.6 s on m1b34 and mt4 to 1.6 s on mt5 and 2.0 s on mt6, once `edge-compose` served them from a manifest [measured, the review's rec 3]. The code confirms the review's reading: `open_chain` awaited each `bucket.get(...).execute()` and then its first chunk, in a `for` loop, before it asked for the next pack, and no header leaves before `open_chain` returns. A chain of 20 packs was 20 R2 round trips, plus the time to each body's first chunk, before the first byte [inference until `chain_open` is read on a row]. Four at a time makes it about five round trips.
+
+**What it beat.**
+- **One at a time (main).** The regression above.
+- **All at once.** A Workers invocation has six connections waiting for headers [doc, Workers limits, "Simultaneous open connections"], and a seventh queues. Twenty R2 gets at once would queue the request's other subrequests behind them. Four leave two, as `FETCH_AT_ONCE` does for a catch-up's fetches.
+- **Opening lazily as the answer streams.** That would send headers before every pack was checked, so a missing pack would cut a client's answer, which `edge-compose` rules out.
+
+**Evidence.** `a_composed_answer_opens_its_chain_packs_at_once_and_keeps_their_order` (`crates/git/tests/shard.rs`): 20 opens on a virtual clock, each with its own time, later ones faster. They come back in manifest order, in under a third of the serial time, with at most 4 waiting at once. A missing pack answers `None` without starting all 20. It fails on main's rule. Plants (`tests/chainopen/plant.py`), 4 of 4 caught: one at a time; out of order (`buffer_unordered`); every pack at once; a missing pack skipped.
+
+**Flip.**
+- The next row's `chain_open` on manifest hits is small (p50 under 100 ms) while hits stay at p50 1.6 s or more: the cause is elsewhere, and the next suspect is the manifest's own read.
+- A row where composed answers decline (fall back to the shard) more often than mt6's: a bound that interacts with R2's connection limit; drop it to 2.

@@ -696,3 +696,78 @@ fn shard_stats_count_each_kind_within_the_day() {
     assert!(!stats_due(now, Some(Timestamp(now.0 - 24 * H + 1))));
     assert!(stats_due(now, Some(Timestamp(now.0 - 24 * H))));
 }
+
+/// The edge's composed answer opens its chain packs `CHAIN_OPEN_AT_ONCE` at a time, not one after another, and hands
+/// them on in the manifest's order (`decisions/DECISIONS.md`, "`chain-open`"). On main `open_chain` waited for each
+/// pack's first chunk before it asked for the next: a base and 19 parts were 20 R2 round trips before any header,
+/// and clone-cache hits went from p50 0.6 s (m1b34, mt4) to 1.6 and 2.0 s once edge-compose served them (mt5, mt6).
+/// Here each open takes its own time on a virtual clock, the later ones faster, so a run that waits on each in turn,
+/// or hands them on as they finish, or opens them all at once, gives a different answer.
+#[test]
+fn a_composed_answer_opens_its_chain_packs_at_once_and_keeps_their_order() {
+    use graftyard_git::compose::{CHAIN_OPEN_AT_ONCE, open_in_order};
+    use std::cell::{Cell, RefCell};
+    use std::task::Poll;
+    assert_eq!(CHAIN_OPEN_AT_ONCE, 4);
+    // A virtual clock: `run` moves it to the next timer whenever every open waits.
+    #[derive(Default)]
+    struct Clock {
+        now: Cell<u64>,
+        timers: RefCell<Vec<(u64, std::task::Waker)>>,
+        in_flight: Cell<usize>,
+        most: Cell<usize>,
+        started: Cell<usize>,
+    }
+    impl Clock {
+        async fn open(&self, i: usize, ms: u64, missing: bool) -> Result<Option<usize>, String> {
+            self.started.set(self.started.get() + 1);
+            self.in_flight.set(self.in_flight.get() + 1);
+            self.most.set(self.most.get().max(self.in_flight.get()));
+            let until = self.now.get() + ms;
+            std::future::poll_fn(|cx| {
+                if self.now.get() >= until {
+                    return Poll::Ready(());
+                }
+                self.timers.borrow_mut().push((until, cx.waker().clone()));
+                Poll::Pending
+            })
+            .await;
+            self.in_flight.set(self.in_flight.get() - 1);
+            Ok((!missing).then_some(i))
+        }
+        fn run<T>(&self, f: impl std::future::Future<Output = T>) -> T {
+            let mut f = std::pin::pin!(f);
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            loop {
+                if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                    return v;
+                }
+                let mut t = self.timers.borrow_mut();
+                let next = t.iter().map(|(u, _)| *u).min().expect("every open waits and no timer is set");
+                self.now.set(next);
+                let due: Vec<_> = t.extract_if(.., |(u, _)| *u <= next).collect();
+                drop(t);
+                for (_, w) in due {
+                    w.wake();
+                }
+            }
+        }
+    }
+    // A base and 19 parts; open i takes 200 - 5i ms, so later packs open first.
+    let ms = |i: usize| 200 - 5 * i as u64;
+    let c = Clock::default();
+    let got = c.run(open_in_order((0..20).map(|i| c.open(i, ms(i), false)))).unwrap();
+    assert_eq!(got, Some((0..20).collect::<Vec<_>>()), "the packs in the manifest's order");
+    let serial: u64 = (0..20).map(ms).sum();
+    assert!(c.now.get() <= serial / 3, "{} ms to open 20 packs, {serial} ms one after another", c.now.get());
+    assert_eq!(c.most.get(), CHAIN_OPEN_AT_ONCE, "at most CHAIN_OPEN_AT_ONCE R2 gets wait for headers at once");
+    // A missing pack: no answer, and the opens past the window are never started.
+    let c = Clock::default();
+    let got = c.run(open_in_order((0..20).map(|i| c.open(i, ms(i), i == 2)))).unwrap();
+    assert_eq!(got, None);
+    assert!(c.started.get() < 20, "{} opens started after a missing pack", c.started.get());
+    // One pack, as a fresh chain's base alone: its own time.
+    let c = Clock::default();
+    assert_eq!(c.run(open_in_order([c.open(0, 120, false)])).unwrap(), Some(vec![0]));
+    assert_eq!(c.now.get(), 120);
+}

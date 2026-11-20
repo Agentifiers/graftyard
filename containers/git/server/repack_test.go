@@ -104,7 +104,7 @@ func putRefs(t *testing.T, url, tip string) {
 }
 
 // A rehydrate's ingests write a multi-pack-index every midxEvery packs, so index-pack's object lookups stop scanning
-// every pack (per-pack ingest grew linearly with the pack count). Every ingested pack but the last few is in it, the
+// every pack (per-pack ingest grew linearly with the pack count). Every ingested pack up to the last write's start is in it, the
 // repository stays whole, and the repack at the end of the catch-up leaves no index naming a deleted pack.
 func TestIngestWritesAMultiPackIndexEveryMidxEveryPacks(t *testing.T) {
 	s := serve(t)
@@ -132,13 +132,15 @@ func TestIngestWritesAMultiPackIndexEveryMidxEveryPacks(t *testing.T) {
 		prev = tip
 	}
 	midx := filepath.Join(repo("7"), "objects", "pack", "multi-pack-index")
+	midxWait(repo("7"))
 	b, err := os.ReadFile(midx)
 	if err != nil {
 		t.Fatalf("no multi-pack-index after %d ingests: %v", n, err)
 	}
-	// The header: "MIDX", version, hash version, chunk count, base count, then the pack count.
-	if covered := int(binary.BigEndian.Uint32(b[8:12])); covered != 2*midxEvery {
-		t.Fatalf("the multi-pack-index covers %d packs of %d, want %d", covered, n, 2*midxEvery)
+	// The header: "MIDX", version, hash version, chunk count, base count, then the pack count. The second write
+	// started at ingest 2*midxEvery, in the background, so it holds those packs and may hold a few ingested beside it.
+	if covered := int(binary.BigEndian.Uint32(b[8:12])); covered < 2*midxEvery || covered > n {
+		t.Fatalf("the multi-pack-index covers %d packs of %d, want %d to %d", covered, n, 2*midxEvery, n)
 	}
 	if out := run(t, repo("7"), "", "multi-pack-index", "verify"); strings.Contains(out, "error") {
 		t.Fatalf("verify: %s", out)

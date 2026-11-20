@@ -2127,11 +2127,18 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         h.set("x-graft-clone-cache", "hit")?;
         // A composed miss's entry is a manifest (`edge-compose`), streamed from the chain in the same bucket. One whose
         // chain has moved on (a fold deleted its files) is a miss, which writes a new one.
+        // `chain_open` in `server-timing`: the chain packs' opens, from after the manifest's read to the answer's
+        // headers, recorded whether the manifest served or was declined (`chain-open`).
         if let Some(o) = cache.0.get(k.manifest_key().to_string()).execute().await.map_err(|e| e.to_string())?
             && o.size() <= graftyard_git::compose::TAIL_ANSWER_MAX
             && let Some(b) = o.body()
-            && let Some(r) =
-                graftyard_git::host::manifest_answer(&cache, net, b.bytes().await?, h.clone()).await.map_err(|e| e.0)?
+            && let Some(r) = api::timed(
+                c,
+                "chain_open",
+                graftyard_git::host::manifest_answer(&cache, net, b.bytes().await?, h.clone()),
+            )
+            .await
+            .map_err(|e| e.0)?
         {
             return Ok(r);
         }
@@ -2161,7 +2168,9 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         }
         if len.is_some_and(|n| n <= graftyard_git::compose::TAIL_ANSWER_MAX)
             && let Some(a) =
-                graftyard_git::host::manifest_answer(&cache, net, r.bytes().await?, h).await.map_err(|e| e.0)?
+                api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&cache, net, r.bytes().await?, h))
+                    .await
+                    .map_err(|e| e.0)?
         {
             return Ok(a);
         }

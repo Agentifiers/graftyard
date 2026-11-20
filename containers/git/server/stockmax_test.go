@@ -148,38 +148,55 @@ func TestComposeStepOnAFarChainBuildsABase(t *testing.T) {
 	}
 }
 
-// /ingest answers midx_ms, the multi-pack-index write's part of the ingest, on the midxEvery-th ingest and 0 on the
-// others, beside lock_ms, which covers it: m1b34's 35 s exclusive sections on site b could not be pinned on the midx
-// write without it.
+// /ingest and /ingest-batch answer midx_ms, the background multi-pack-index writes that ended since the network's last
+// answer: 0 until the midxEvery-th ingest's write has ended, then its time once, on the next answer, and 0 again.
+// m1b34's 35 s exclusive sections on site b could not be pinned on the midx write without it, and mt7's
+// /ingest-batch catch-ups reported none (tests/am1/results/b034-mt7.md).
 func TestIngestReportsTheMidxWrite(t *testing.T) {
 	s := serve(t)
 	call(t, s, "POST", "/init?net=7")
-	wt := t.TempDir()
-	run(t, wt, "", "init", "-q", "-b", "main")
-	prev := ""
-	for i := 1; i <= midxEvery; i++ {
-		tip := commit(t, wt, map[string]string{"f": strings.Repeat("y", i) + "\n"})
-		var pack []byte
-		if prev == "" {
-			pack = selfPack(t, wt, tip)
-		} else {
-			pack = packOfWt(t, wt, tip, prev)
-		}
-		code, body := postBody(t, s.URL+"/ingest?net=7&sha256="+sumOf(pack), pack)
-		if code != 200 {
-			t.Fatalf("ingest %d: %d %s", i, code, body)
-		}
+	r := newMidxRepo(t, s.URL)
+	midx := func(code int, body []byte, what string) float64 {
+		t.Helper()
 		var o struct {
 			Midx *float64 `json:"midx_ms"`
-			Lock *float64 `json:"lock_ms"`
 		}
 		json.Unmarshal(body, &o)
-		if o.Midx == nil || o.Lock == nil {
-			t.Fatalf("ingest %d answered no midx_ms or lock_ms: %s", i, body)
+		if code != 200 || o.Midx == nil {
+			t.Fatalf("%s answered no midx_ms: %d %s", what, code, body)
 		}
-		if wrote := i == midxEvery; wrote != (*o.Midx > 0) || *o.Midx > *o.Lock+1 {
-			t.Fatalf("ingest %d: midx_ms %v, lock_ms %v (%s)", i, *o.Midx, *o.Lock, fmt.Sprint(wrote))
+		return *o.Midx
+	}
+	ingest := func(i int) float64 {
+		_, pack := r.next()
+		code, body := postBody(t, s.URL+"/ingest?net=7&sha256="+sumOf(pack), pack)
+		return midx(code, body, fmt.Sprintf("ingest %d", i))
+	}
+	for i := 2; i <= midxEvery; i++ {
+		if ms := ingest(i); ms != 0 {
+			t.Fatalf("ingest %d: midx_ms %v before any write ended", i, ms)
 		}
-		prev = tip
+	}
+	midxWait(repo("7"))
+	if ms := ingest(midxEvery + 1); ms <= 0 {
+		t.Fatalf("the ingest after the write ended: midx_ms %v, want its time", ms)
+	}
+	if ms := ingest(midxEvery + 2); ms != 0 {
+		t.Fatalf("the next ingest: midx_ms %v, want 0 (the write reported once)", ms)
+	}
+	// /ingest-batch the same way.
+	midxOf(repo("7")).n = midxEvery - 1
+	batch := func() float64 {
+		_, pack := r.next()
+		body, _ := batchBody(pack)
+		code, out := postBody(t, s.URL+"/ingest-batch?net=7", body)
+		return midx(code, out, "ingest-batch")
+	}
+	if ms := batch(); ms != 0 {
+		t.Fatalf("the batch that started a write: midx_ms %v", ms)
+	}
+	midxWait(repo("7"))
+	if ms := batch(); ms <= 0 {
+		t.Fatalf("the batch after the write ended: midx_ms %v, want its time", ms)
 	}
 }
