@@ -626,6 +626,36 @@ What f0 did in that minute:
 
 **Ranked change.** Make the git shard's catch-up independent of the isolate's lookup walk. Read the log's `ranges` and pages from this site's member first, as `GroupLog::page` already does for `/entries`, and fall back to the leader only on a miss. Log the wait when a fallback queues behind another request's walk. Expected effect [inference, the counterfactual above]: dispatch p99 about 7 s against 18.6 s. That holds only if the 19 s really was that wait, which the new log line would show on the next row. F104 asks what drops the cached leader. Second, not ranked: run actions dispatch's shard calls in a fresh invocation (`in_band`), which would remove the setup depth errors.
 
+## B0-35 on a test-faults build after site day 60 (2026-11-20, row m60)
+
+Site day 60 (05:05:21Z to 05:06:27Z) shipped main `96a91d58` as a **test-faults** build, with `catchup-local`, `midx-background` and `chain-open`, and git shard image `m4a60`, rebuilt because `containers/git` changed in b034-midx (`gitimage-m4a60.log`). Day 59's flags; edge day 28 stayed. `tests/m4/wp4/b035.sh` ran on a new repository, `m3org/b035-m60` = repo 65574, with 8 learners, and `b035tsave.sh` with `ISOLATES=1`. Run `mwoipaxb`: 500 of 500 PRs opened, the learner gate passed 8 of 8 in 482 ms, then 600 s of load (agent pushes 05:10:08Z to 05:23:34Z); done at 05:40:24Z. Raw files: `tests/m4/raw/wp4/b035-m60/`, `b035-m60.{status,lead,watch}`, `siteday60.log`, `tests/fanout/raw/tsave-m60.jsonl.xz`.
+
+**Verdict: fails dispatch** (p99 26.2 s at the driver, against 10 s; fail over 30 s). Up to 05:23:20Z the site's p99 was 5.4 s, and from 05:10:30Z 3.2 s (per minute 1.8 to 3.7 s). The tail is one event at the end of the load, 05:23:20 to 05:23:50Z on site a. Site a's posts to its cached leader f0 failed at once. A chain of lookup-mark walks followed, then f0's `CommitErrors` trip moved the leader to f2. Budget, list-field, memory and isolate-error lines pass.
+
+| Line | Value | Source |
+| --- | --- | --- |
+| Dispatch p50 / p99 / max, push acknowledgment to run listed (driver) | 3.0 s / **26.2 s** / 70.6 s, 2,485 of 2,485 paired (m59: 3.3 / 18.6 / 25.1 s) | `a1.mjs` `dispatch` |
+| Dispatch, entry to run (site) | p50 1.5 s, p99 66.3 s (2,991 runs, 16 `no run`); `splitMs` p50 / p99: wait 0 / 3.8 s, demand 1.0 / 52.0 s, reads 0.5 / 1.8 s, create 0.3 / 9.7 s | `dispatchlog.py` |
+| By entry time | to 05:23:20Z: p99 5.4 s (2,966); 05:10:30 to 05:23:20Z: p99 3.2 s (2,916); entries 05:23:20 to 05:23:50Z: p99 88.4 s (74), demand p99 74 s. No entries after term 3 or term 4: the load had ended | `dispatch-lines.jsonl` |
+| Leader changes | **2**. Term 3 at about 05:23:32Z, f0 to f2, on `StepDown { CommitErrors { (1, 26, 3), (2, 27, 3) }, to: Some(2) }` at 05:23:33.683Z, the row's only alarm. Term 4 by 05:28:29Z, f2 to f0, no alarm: the transfer back to `home` about 5 min (RESET_QUARANTINE) after f0's step-down. The load was over, so it was not deferred [inference; `home-quiet` logs no line] | `b035-m60.lead`, `stepdown-alarms.jsonl` |
+| Cached-leader post misses | **125**, all `0/repo:65574#1#f0: Missed("no answer")` on site a, 05:23:25.285 to 05:24:50Z, each in **2 to 98 ms**: the call threw at once, not a CALL timeout. Site a logged "Network connection lost" at 05:23:23.591Z (activity 65574) and three at 05:23:29.586Z | `lookup-mark.txt`, Workers Logs |
+| Mark waits | 130 (site a 106, site c 24), p50 5.8 s, max 19.3 s; 123 with "cached leader tried by it: false". The holders were a chain of 17 or more walks (t11608, t11612, t11627, …), each 1 to 2 s. Then 193 "gave up" at LOOKUP_FOR (20 s) on site a, 05:23:45 to 05:24:22Z. The walks' own posts to f0 answered (`Reply` in 0.3 to 1.7 s) | `lookup-mark.txt` |
+| Local catch-up reads not taken | 1: site a 05:23:25.794Z, "local /read at 0/…#f0: no answer in 2000 ms, to the leader" (site a's member was f0) | `lookup-mark.txt` |
+| `chain_open` / `pages_ms` | `chain_open` 0 lines (not exercised). `pages_ms` 3,288 lines: site a ingest p50 / p99 22 / 226 ms, room p99 85 ms, catch-up p50 / p99 183 / 683 ms; sites b and c one rehydrate each at 05:24:30Z with ingest about 34 s, after term 3 | Workers Logs |
+| Shared isolates | none: 11 members, 12 isolates | `isolates.py` on `tsave-m60` |
+| Isolate errors | "closure invoked recursively or after being dropped" **0**, "Cannot perform I/O on behalf of a different Durable Object" **0**, on sites a, b and c (05:05 to 05:42Z) | Workers Logs |
+| `warming` 503s | **15** (m58, m59: 0): 14 `shard tree` on site c at 05:24:07Z, during its warm after term 3; 1 `demand` on site a at 05:23:45Z. "no member answered" 0 | Workers Logs |
+| Test-merge vCPU (1 vCPU budget) | **0.60** (370 s CPU over 616 s wall); 11,781 computed, 1,360 shed `late`; `inFlightMax` 305 | leader `/stats` `testMerges.shard` |
+| List-field computes | **0** of 77,162 asks | same |
+| `mergeable` polls | 3,586 `MERGEABLE`, 55,875 `UNKNOWN`, **796 × 503** (m59: 397) | `a1.mjs` |
+| Agent pushes | 2,485 of 2,500 ok, p50 1.6 s, p99 3.8 s; 15 × 503 (access rows shed) | `a1-pushes-…jsonl` |
+| Leader commit p50 / p99 | 441 / **1,690 ms** (round p99 553, confirm p99 210); isolate lag max 1,777 ms. Read at the end, from f2 | leader `/stats` |
+| Other | "Subrequest depth limit exceeded" 15, all on site c at 05:24:13Z (site a 0; m59 70). No `exceededMemory`. Site a's member of `actions:7100001.1` reset at 05:24:57.756Z on "fold storage lost … Network connection lost". 0 Sandboxes | Workers Logs |
+
+**F104.** The hypothesis holds: every walk started with the request's own post to its cached leader missing, and none started with a dropped cache. This time the miss was a call that threw within milliseconds on site a's isolate, beside "Network connection lost" there, while the walks' posts to the same member answered. Why the cached post fails and the walk's does not is in `decisions/OPEN-QUESTIONS.md`, F104.
+
+**Cost** (`tests/fanout/acctcost.py`, 05:05:21Z to 05:48:05Z): graft-m4a **$5.43** (account $5.47), the runner account $0.00, against the $8 stop. Teardown: 3 shards 200, no shard container running, shardkill deleted; the b035 services stopped. The M2 canary's comparison window excludes 04:53:00Z to 06:10:24Z.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.

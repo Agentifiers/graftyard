@@ -1,0 +1,761 @@
+05:07:14.649 a lookup mark repo:65574: t1 found 0/repo:65574#1#f0 by Cached
+05:07:14.649 a lookup mark repo:65574: t1 post 0/repo:65574#1#f0 Cached Walk: Reply in 34 ms
+05:23:25.285 a lookup mark repo:65574: t11607 cached leader 0/repo:65574#1#f0: Missed("no answer") in 23 ms
+05:23:25.340 a lookup mark repo:65574: t11608 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.396 a lookup mark repo:65574: t11609 cached leader 0/repo:65574#1#f0: Missed("no answer") in 23 ms
+05:23:25.451 a lookup mark repo:65574: t11610 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.505 a lookup mark repo:65574: t11611 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.560 a lookup mark repo:65574: t11612 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.593 a lookup mark repo:65574: t11608 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:25.616 a lookup mark repo:65574: t11613 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.648 a lookup mark repo:65574: t11609 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:25.670 a lookup mark repo:65574: t11614 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.703 a lookup mark repo:65574: t11610 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:25.724 a lookup mark repo:65574: t11615 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.758 a lookup mark repo:65574: t11611 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:25.779 a lookup mark repo:65574: t11616 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:25.785 a lookup mark repo:65574: t11607 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:25.787 a lookup mark repo:65574: t11608 post 1/repo:65574#1#f1 Cached Walk: Reply notLeader(leader None) in 194 ms
+05:23:25.794 a lookup mark repo:65574: local /read at 0/repo:65574#1#f0: no answer in 2000 ms, to the leader
+05:23:25.797 a lookup mark repo:65574: t11617 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:25.908 a lookup mark repo:65574: t11613 cached leader 0/repo:65574#1#f0: Missed("no answer") in 42 ms
+05:23:25.908 a lookup mark repo:65574: t11618 cached leader 0/repo:65574#1#f0: Missed("no answer") in 98 ms
+05:23:25.908 a lookup mark repo:65574: t11612 cached leader 0/repo:65574#1#f0: Missed("no answer") in 98 ms
+05:23:25.922 a lookup mark repo:65574: t11614 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:25.963 a lookup mark repo:65574: t11619 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:25.977 a lookup mark repo:65574: t11615 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:26.017 a lookup mark repo:65574: t11620 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:26.032 a lookup mark repo:65574: t11616 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:26.049 a lookup mark repo:65574: t11617 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:26.062 a lookup mark repo:65574: t11608 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 275 ms
+05:23:26.069 a lookup mark repo:65574: t11621 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:26.125 a lookup mark repo:65574: t11622 cached leader 0/repo:65574#1#f0: Missed("no answer") in 23 ms
+05:23:26.180 a lookup mark repo:65574: t11618 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:26.180 a lookup mark repo:65574: t11623 cached leader 0/repo:65574#1#f0: Missed("no answer") in 24 ms
+05:23:26.184 a lookup mark repo:65574: t11608 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 122 ms
+05:23:26.231 a lookup mark repo:65574: t11619 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:26.231 a lookup mark repo:65574: t11624 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:26.284 a lookup mark repo:65574: t11620 cached leader 0/repo:65574#1#f0: Missed("no answer") in 17 ms
+05:23:26.284 a lookup mark repo:65574: t11625 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:26.337 a lookup mark repo:65574: t11621 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:26.337 a lookup mark repo:65574: t11626 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:26.389 a lookup mark repo:65574: t11627 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:26.389 a lookup mark repo:65574: t11622 cached leader 0/repo:65574#1#f0: Missed("no answer") in 14 ms
+05:23:26.443 a lookup mark repo:65574: t11623 cached leader 0/repo:65574#1#f0: Missed("no answer") in 13 ms
+05:23:26.443 a lookup mark repo:65574: t11628 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:26.496 a lookup mark repo:65574: t11629 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:26.496 a lookup mark repo:65574: t11624 cached leader 0/repo:65574#1#f0: Missed("no answer") in 15 ms
+05:23:26.549 a lookup mark repo:65574: t11625 cached leader 0/repo:65574#1#f0: Missed("no answer") in 15 ms
+05:23:26.549 a lookup mark repo:65574: t11630 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:26.604 a lookup mark repo:65574: t11631 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:26.659 a lookup mark repo:65574: t11627 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:26.659 a lookup mark repo:65574: t11632 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:26.695 a lookup mark repo:65574: t11628 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:26.715 a lookup mark repo:65574: t11633 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:26.723 a lookup mark repo:65574: t11608 pass ended with no leader, leader kept: repo:65574#3#f1: not leader
+05:23:26.748 a lookup mark repo:65574: t11629 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:26.771 a lookup mark repo:65574: t11634 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:26.801 a lookup mark repo:65574: t11630 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:26.825 a lookup mark repo:65574: t11635 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:26.825 a lookup mark repo:65574: t11626 cached leader 0/repo:65574#1#f0: Missed("no answer") in 6 ms
+05:23:26.856 a lookup mark repo:65574: t11631 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:26.881 a lookup mark repo:65574: t11636 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:26.912 a lookup mark repo:65574: t11632 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:26.934 a lookup mark repo:65574: t11637 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:26.966 a lookup mark repo:65574: t11633 cached leader 0/repo:65574#1#f0: Missed("no answer") in 1 ms
+05:23:26.987 a lookup mark repo:65574: t11608 post 0/repo:65574#1#f0 Cached Leader: Missed("no answer") in 14 ms
+05:23:26.987 a lookup mark repo:65574: t11638 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.039 a lookup mark repo:65574: t11639 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.039 a lookup mark repo:65574: t11634 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.068 a lookup mark repo:65574: t11608 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 81 ms
+05:23:27.087 a lookup mark repo:65574: t11635 cached leader 0/repo:65574#1#f0: Missed("no answer") in 12 ms
+05:23:27.087 a lookup mark repo:65574: t11640 cached leader 0/repo:65574#1#f0: Missed("no answer") in 19 ms
+05:23:27.141 a lookup mark repo:65574: t11636 cached leader 0/repo:65574#1#f0: Missed("no answer") in 10 ms
+05:23:27.141 a lookup mark repo:65574: t11641 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.194 a lookup mark repo:65574: t11637 cached leader 0/repo:65574#1#f0: Missed("no answer") in 10 ms
+05:23:27.194 a lookup mark repo:65574: t11642 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.216 a lookup mark repo:65574: t11644 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.216 a lookup mark repo:65574: t11643 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.249 a lookup mark repo:65574: t11645 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.249 a lookup mark repo:65574: t11638 cached leader 0/repo:65574#1#f0: Missed("no answer") in 12 ms
+05:23:27.275 a lookup mark repo:65574: t11649 cached leader 0/repo:65574#1#f0: Missed("no answer") in 16 ms
+05:23:27.275 a lookup mark repo:65574: t11651 cached leader 0/repo:65574#1#f0: Missed("no answer") in 13 ms
+05:23:27.275 a lookup mark repo:65574: t11647 cached leader 0/repo:65574#1#f0: Missed("no answer") in 17 ms
+05:23:27.275 a lookup mark repo:65574: t11650 cached leader 0/repo:65574#1#f0: Missed("no answer") in 14 ms
+05:23:27.275 a lookup mark repo:65574: t11648 cached leader 0/repo:65574#1#f0: Missed("no answer") in 17 ms
+05:23:27.275 a lookup mark repo:65574: t11646 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.277 a lookup mark repo:65574: t11652 cached leader 0/repo:65574#1#f0: Missed("no answer") in 15 ms
+05:23:27.281 a lookup mark repo:65574: t11654 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.281 a lookup mark repo:65574: t11653 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.281 a lookup mark repo:65574: t11655 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.283 a lookup mark repo:65574: t11661 cached leader 0/repo:65574#1#f0: Missed("no answer") in 15 ms
+05:23:27.283 a lookup mark repo:65574: t11659 cached leader 0/repo:65574#1#f0: Missed("no answer") in 17 ms
+05:23:27.283 a lookup mark repo:65574: t11660 cached leader 0/repo:65574#1#f0: Missed("no answer") in 16 ms
+05:23:27.283 a lookup mark repo:65574: t11658 cached leader 0/repo:65574#1#f0: Missed("no answer") in 17 ms
+05:23:27.283 a lookup mark repo:65574: t11656 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.283 a lookup mark repo:65574: t11657 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.298 a lookup mark repo:65574: t11666 cached leader 0/repo:65574#1#f0: Missed("no answer") in 11 ms
+05:23:27.298 a lookup mark repo:65574: t11665 cached leader 0/repo:65574#1#f0: Missed("no answer") in 11 ms
+05:23:27.298 a lookup mark repo:65574: t11662 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:27.298 a lookup mark repo:65574: t11667 cached leader 0/repo:65574#1#f0: Missed("no answer") in 11 ms
+05:23:27.298 a lookup mark repo:65574: t11663 cached leader 0/repo:65574#1#f0: Missed("no answer") in 11 ms
+05:23:27.298 a lookup mark repo:65574: t11664 cached leader 0/repo:65574#1#f0: Missed("no answer") in 11 ms
+05:23:27.300 a lookup mark repo:65574: t11639 cached leader 0/repo:65574#1#f0: Missed("no answer") in 11 ms
+05:23:27.300 a lookup mark repo:65574: t11670 cached leader 0/repo:65574#1#f0: Missed("no answer") in 13 ms
+05:23:27.300 a lookup mark repo:65574: t11668 cached leader 0/repo:65574#1#f0: Missed("no answer") in 13 ms
+05:23:27.300 a lookup mark repo:65574: t11669 cached leader 0/repo:65574#1#f0: Missed("no answer") in 13 ms
+05:23:27.350 a lookup mark repo:65574: t11608 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 282 ms
+05:23:27.355 a lookup mark repo:65574: t11671 cached leader 0/repo:65574#1#f0: Missed("no answer") in 20 ms
+05:23:27.355 a lookup mark repo:65574: t11640 cached leader 0/repo:65574#1#f0: Missed("no answer") in 18 ms
+05:23:27.410 a lookup mark repo:65574: t11641 cached leader 0/repo:65574#1#f0: Missed("no answer") in 19 ms
+05:23:27.411 a lookup mark repo:65574: t11672 cached leader 0/repo:65574#1#f0: Missed("no answer") in 22 ms
+05:23:27.465 a lookup mark repo:65574: t11642 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.465 a lookup mark repo:65574: t11673 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.468 a lookup mark repo:65574: t11644 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.468 a lookup mark repo:65574: t11643 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.501 a lookup mark repo:65574: t11645 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.522 a lookup mark repo:65574: t11674 cached leader 0/repo:65574#1#f0: Missed("no answer") in 21 ms
+05:23:27.526 a lookup mark repo:65574: t11648 cached leader 0/repo:65574#1#f0: Missed("no answer") in 1 ms
+05:23:27.527 a lookup mark repo:65574: t11647 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.527 a lookup mark repo:65574: t11650 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.528 a lookup mark repo:65574: t11649 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:27.528 a lookup mark repo:65574: t11651 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:27.530 a lookup mark repo:65574: t11652 cached leader 0/repo:65574#1#f0: Missed("no answer") in 3 ms
+05:23:27.533 a lookup mark repo:65574: t11654 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.533 a lookup mark repo:65574: t11653 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.533 a lookup mark repo:65574: t11655 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.533 a lookup mark repo:65574: t11658 cached leader 0/repo:65574#1#f0: Missed("no answer") in 0 ms
+05:23:27.533 a lookup mark repo:65574: t11656 cached leader 0/repo:65574#1#f0: Missed("no answer") in 0 ms
+05:23:27.533 a lookup mark repo:65574: t11657 cached leader 0/repo:65574#1#f0: Missed("no answer") in 0 ms
+05:23:27.538 a lookup mark repo:65574: t11661 cached leader 0/repo:65574#1#f0: Missed("no answer") in 5 ms
+05:23:27.538 a lookup mark repo:65574: t11659 cached leader 0/repo:65574#1#f0: Missed("no answer") in 5 ms
+05:23:27.549 a lookup mark repo:65574: t11663 cached leader 0/repo:65574#1#f0: Missed("no answer") in 1 ms
+05:23:27.550 a lookup mark repo:65574: t11666 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.550 a lookup mark repo:65574: t11665 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.550 a lookup mark repo:65574: t11667 cached leader 0/repo:65574#1#f0: Missed("no answer") in 2 ms
+05:23:27.608 a lookup mark repo:65574: t11608 pass ended with no leader: repo:65574#1#f2: not leader
+05:23:28.858 a lookup mark repo:65574: t11612 waited 2950 ms on t11608, then took the mark (cached leader tried by it: false)
+05:23:29.002 a lookup mark repo:65574: t11612 post 1/repo:65574#1#f1 Cached Walk: Reply notLeader(leader None) in 144 ms
+05:23:29.109 a lookup mark repo:65574: t11612 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 107 ms
+05:23:29.483 a lookup mark repo:65574: t11612 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader None) in 374 ms
+05:23:29.541 a lookup mark repo:65574: t11704 waited 400 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.542 a lookup mark repo:65574: t11693 waited 1000 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.543 a lookup mark repo:65574: t11684 waited 1500 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.544 a lookup mark repo:65574: t11705 waited 350 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.545 a lookup mark repo:65574: t11608 found 0/repo:65574#1#f0 by Cached
+05:23:29.545 a lookup mark repo:65574: t11608 post 0/repo:65574#1#f0 Cached Walk: Reply in 1687 ms
+05:23:29.546 a lookup mark repo:65574: t11694 waited 950 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.547 a lookup mark repo:65574: t11685 waited 1450 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.547 a lookup mark repo:65574: t11706 waited 300 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.549 a lookup mark repo:65574: t11686 waited 1400 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.550 a lookup mark repo:65574: t11707 waited 250 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.551 a lookup mark repo:65574: t11695 waited 900 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.553 a lookup mark repo:65574: t11708 waited 200 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.555 a lookup mark repo:65574: t11687 waited 1350 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.556 a lookup mark repo:65574: t11696 waited 850 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.560 a lookup mark repo:65574: t11677 waited 1900 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.560 a lookup mark repo:65574: t11709 waited 150 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.561 a lookup mark repo:65574: t11672 waited 1900 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.561 a lookup mark repo:65574: t11697 waited 800 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.563 a lookup mark repo:65574: t11688 waited 1300 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.564 a lookup mark repo:65574: t11710 waited 100 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.565 a lookup mark repo:65574: t11698 waited 750 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.565 a lookup mark repo:65574: t11673 waited 1850 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.566 a lookup mark repo:65574: t11678 waited 1850 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.568 a lookup mark repo:65574: t11699 waited 700 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.570 a lookup mark repo:65574: t11689 waited 1250 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.571 a lookup mark repo:65574: t11679 waited 1800 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.571 a lookup mark repo:65574: t11711 waited 50 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.572 a lookup mark repo:65574: t11674 waited 1800 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.573 a lookup mark repo:65574: t11700 waited 650 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.573 a lookup mark repo:65574: t11671 waited 1750 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.576 a lookup mark repo:65574: t11690 waited 1200 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.577 a lookup mark repo:65574: t11680 waited 1750 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.577 a lookup mark repo:65574: t11701 waited 600 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.580 a lookup mark repo:65574: t11681 waited 1700 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.580 a lookup mark repo:65574: t11691 waited 1150 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.581 a lookup mark repo:65574: t11702 waited 550 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.584 a lookup mark repo:65574: t11682 waited 1650 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.586 a lookup mark repo:65574: t11703 waited 500 ms on t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.586 a lookup mark repo:65574: t11692 waited 1100 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:29.587 a lookup mark repo:65574: t11683 waited 1600 ms on t11608,t11612, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:30.109 a lookup mark repo:65574: t11627 waited 3450 ms on t11608,t11612, then took the mark (cached leader tried by it: true)
+05:23:30.200 a lookup mark repo:65574: t11627 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 91 ms
+05:23:30.250 a lookup mark repo:65574: t11612 pass ended with no leader: repo:65574#1#f2: not leader
+05:23:30.361 a lookup mark repo:65574: t11741 waited 100 ms on t11627, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:30.366 a lookup mark repo:65574: t11742 waited 50 ms on t11627, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:30.473 a lookup mark repo:65574: t11627 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader None) in 273 ms
+05:23:30.712 a lookup mark repo:65574: t11627 pass ended with no leader: repo:65574#1#f2: not leader
+05:23:30.830 a lookup mark repo:65574: t11753 waited 100 ms on t11627, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:30.846 a lookup mark repo:65574: t11754 waited 50 ms on t11627, then found 0/repo:65574#1#f0 (cached leader tried by it: false)
+05:23:30.963 a lookup mark repo:65574: t11612 found 0/repo:65574#1#f0 by Cached
+05:23:30.963 a lookup mark repo:65574: t11612 post 0/repo:65574#1#f0 Cached Leader: Reply in 463 ms
+05:23:31.291 a lookup mark repo:65574: t11627 found 0/repo:65574#1#f0 by Cached
+05:23:31.291 a lookup mark repo:65574: t11627 post 0/repo:65574#1#f0 Cached Leader: Reply in 329 ms
+05:23:31.293 a lookup mark repo:65574: t11623 waited 4850 ms on t11608,t11612,t11627, then took the mark (cached leader tried by it: true)
+05:23:31.422 a lookup mark repo:65574: t11623 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 129 ms
+05:23:31.844 a lookup mark repo:65574: t11623 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 422 ms
+05:23:32.349 a lookup mark repo:65574: t11623 pass ended with no leader, leader kept: repo:65574#1#f2: not leader
+05:23:32.422 a lookup mark repo:65574: t11614 waited 6500 ms on t11608,t11612,t11627,t11623, then took the mark (cached leader tried by it: true)
+05:23:32.581 a lookup mark repo:65574: t11614 post 1/repo:65574#1#f1 Cached Walk: Reply notLeader(leader None) in 159 ms
+05:23:32.683 a lookup mark repo:65574: t11614 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 102 ms
+05:23:33.030 a lookup mark repo:65574: t11614 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 347 ms
+05:23:33.203 a lookup mark repo:65574: t11623 found 0/repo:65574#1#f0 by Cached
+05:23:33.203 a lookup mark repo:65574: t11623 post 0/repo:65574#1#f0 Cached Leader: Reply in 604 ms
+05:23:33.494 a lookup mark repo:65574: t11614 pass ended with no leader, leader kept: repo:65574#1#f2: not leader
+05:23:33.683 a lookup mark repo:65574: t11655 waited 6150 ms on t11608,t11612,t11627,t11623,t11614, then took the mark (cached leader tried by it: true)
+05:23:33.836 a lookup mark repo:65574: t11655 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 153 ms
+05:23:34.114 a lookup mark repo:65574: t11655 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 278 ms
+05:23:34.667 a lookup mark repo:65574: t11655 pass ended with no leader, leader kept: repo:65574#1#f2: not leader
+05:23:34.717 a lookup mark repo:65574: t11614 found 0/repo:65574#1#f0 by Cached
+05:23:34.717 a lookup mark repo:65574: t11614 post 0/repo:65574#1#f0 Cached Leader: Reply in 973 ms
+05:23:34.837 a lookup mark repo:65574: t11621 waited 8500 ms on t11608,t11612,t11627,t11623,t11614,t11655, then took the mark (cached leader tried by it: true)
+05:23:34.988 a lookup mark repo:65574: t11621 post 1/repo:65574#1#f1 Cached Walk: Reply notLeader(leader None) in 151 ms
+05:23:35.086 a lookup mark repo:65574: t11621 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 98 ms
+05:23:35.374 a lookup mark repo:65574: t11621 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 288 ms
+05:23:35.860 a lookup mark repo:65574: t11655 found 0/repo:65574#1#f0 by Cached
+05:23:35.860 a lookup mark repo:65574: t11655 post 0/repo:65574#1#f0 Cached Leader: Reply in 943 ms
+05:23:35.993 a lookup mark repo:65574: t11621 pass ended with no leader, leader kept: repo:65574#1#f2: not leader
+05:23:36.087 a lookup mark repo:65574: t11635 waited 9000 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621, then took the mark (cached leader tried by it: true)
+05:23:36.207 a lookup mark repo:65574: t11635 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(0))) in 120 ms
+05:23:36.534 a lookup mark repo:65574: t11635 post 2/repo:65574#1#f2 Cached Walk: Reply notLeader(leader Some(Number(0))) in 327 ms
+05:23:36.691 a lookup mark repo:65574: t11621 post 0/repo:65574#1#f0 Cached Leader: Reply notLeader(leader None) in 448 ms
+05:23:36.786 a lookup mark repo:65574: t11621 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader None) in 95 ms
+05:23:36.998 a lookup mark repo:65574: t11635 pass ended with no leader, leader kept: repo:65574#1#f2: not leader
+05:23:37.208 a lookup mark repo:65574: t11613 waited 11300 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635, then took the mark (cached leader tried by it: true)
+05:23:37.263 a lookup mark repo:65574: t11635 post 0/repo:65574#1#f0 Cached Leader: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:23:37.358 a lookup mark repo:65574: t11613 post 1/repo:65574#1#f1 Cached Walk: Reply notLeader(leader None) in 150 ms
+05:23:37.451 a lookup mark repo:65574: t11613 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 93 ms
+05:23:37.822 a lookup mark repo:65574: t11621 found 2/repo:65574#1#f2 by Cached
+05:23:37.822 a lookup mark repo:65574: t11621 post 2/repo:65574#1#f2 Cached Walk: Reply in 1036 ms
+05:23:38.451 a lookup mark repo:65574: t11630 waited 11650 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613, then took the mark (cached leader tried by it: false)
+05:23:38.473 a lookup mark repo:65574: t11635 found 2/repo:65574#1#f2 by Cached
+05:23:38.473 a lookup mark repo:65574: t11635 post 2/repo:65574#1#f2 Cached Walk: Reply in 1210 ms
+05:23:38.560 a lookup mark repo:65574: t11630 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 109 ms
+05:23:38.653 a lookup mark repo:65574: t11613 found 2/repo:65574#1#f2 by Cached
+05:23:38.653 a lookup mark repo:65574: t11613 post 2/repo:65574#1#f2 Cached Walk: Reply in 1202 ms
+05:23:39.560 a lookup mark repo:65574: t11641 waited 12150 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630, then took the mark (cached leader tried by it: false)
+05:23:39.649 a lookup mark repo:65574: t11641 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 89 ms
+05:23:39.741 a lookup mark repo:65574: t11630 found 2/repo:65574#1#f2 by Cached
+05:23:39.741 a lookup mark repo:65574: t11630 post 2/repo:65574#1#f2 Cached Walk: Reply in 1181 ms
+05:23:40.649 a lookup mark repo:65574: t11625 waited 14100 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641, then took the mark (cached leader tried by it: false)
+05:23:40.752 a lookup mark repo:65574: t11625 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 103 ms
+05:23:40.964 a lookup mark repo:65574: t11641 found 2/repo:65574#1#f2 by Cached
+05:23:40.964 a lookup mark repo:65574: t11641 post 2/repo:65574#1#f2 Cached Walk: Reply in 1315 ms
+05:23:41.753 a lookup mark repo:65574: t11913 waited 4900 ms on t11635,t11613,t11630,t11641,t11625, then took the mark (cached leader tried by it: false)
+05:23:41.841 a lookup mark repo:65574: t11913 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 88 ms
+05:23:41.984 a lookup mark repo:65574: t11625 found 2/repo:65574#1#f2 by Cached
+05:23:41.984 a lookup mark repo:65574: t11625 post 2/repo:65574#1#f2 Cached Walk: Reply in 1232 ms
+05:23:42.771 a lookup mark repo:65574: t11913 found 2/repo:65574#1#f2 by Cached
+05:23:42.771 a lookup mark repo:65574: t11913 post 2/repo:65574#1#f2 Cached Walk: Reply in 930 ms
+05:23:42.773 a lookup mark repo:65574: t11908 waited 6000 ms on t11635,t11613,t11630,t11641,t11625,t11913, then took the mark (cached leader tried by it: false)
+05:23:42.878 a lookup mark repo:65574: t11908 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 105 ms
+05:23:43.878 a lookup mark repo:65574: t11651 waited 16350 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908, then took the mark (cached leader tried by it: false)
+05:23:43.971 a lookup mark repo:65574: t11651 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 93 ms
+05:23:44.503 a lookup mark repo:65574: t11651 found 2/repo:65574#1#f2 by Cached
+05:23:44.503 a lookup mark repo:65574: t11651 post 2/repo:65574#1#f2 Cached Walk: Reply in 532 ms
+05:23:44.505 a lookup mark repo:65574: t11640 waited 17150 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651, then took the mark (cached leader tried by it: false)
+05:23:44.512 a lookup mark repo:65574: t11908 found 2/repo:65574#1#f2 by Cached
+05:23:44.512 a lookup mark repo:65574: t11908 post 2/repo:65574#1#f2 Cached Walk: Reply in 1634 ms
+05:23:44.596 a lookup mark repo:65574: t11640 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 91 ms
+05:23:45.146 a lookup mark repo:65574: t11640 found 2/repo:65574#1#f2 by Cached
+05:23:45.146 a lookup mark repo:65574: t11640 post 2/repo:65574#1#f2 Cached Walk: Reply in 550 ms
+05:23:45.148 a lookup mark repo:65574: t11629 waited 18400 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640, then took the mark (cached leader tried by it: false)
+05:23:45.252 a lookup mark repo:65574: t11629 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 104 ms
+05:23:45.285 a lookup mark repo:65574: t11607 gave up after 19500 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.398 a lookup mark repo:65574: t11609 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.453 a lookup mark repo:65574: t11610 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.508 a lookup mark repo:65574: t11611 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.727 a lookup mark repo:65574: t11615 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.782 a lookup mark repo:65574: t11616 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.799 a lookup mark repo:65574: t11617 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.830 a lookup mark repo:65574: t11618 gave up after 19650 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:45.981 a lookup mark repo:65574: t11619 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:46.034 a lookup mark repo:65574: t11620 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:46.139 a lookup mark repo:65574: t11622 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629
+05:23:46.155 a lookup mark repo:65574: t11629 found 2/repo:65574#1#f2 by Cached
+05:23:46.155 a lookup mark repo:65574: t11629 post 2/repo:65574#1#f2 Cached Walk: Reply in 903 ms
+05:23:46.156 a lookup mark repo:65574: t11631 waited 19300 ms on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629, then took the mark (cached leader tried by it: false)
+05:23:46.223 a lookup mark repo:65574: t11631 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 67 ms
+05:23:46.246 a lookup mark repo:65574: t11624 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.325 a lookup mark repo:65574: t11626 gave up after 19500 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.445 a lookup mark repo:65574: t11628 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.662 a lookup mark repo:65574: t11632 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.716 a lookup mark repo:65574: t11633 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.789 a lookup mark repo:65574: t11634 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.891 a lookup mark repo:65574: t11636 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.944 a lookup mark repo:65574: t11637 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:46.999 a lookup mark repo:65574: t11638 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:47.050 a lookup mark repo:65574: t11639 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631
+05:23:47.087 a lookup mark repo:65574: t11631 found 2/repo:65574#1#f2 by Cached
+05:23:47.087 a lookup mark repo:65574: t11631 post 2/repo:65574#1#f2 Cached Walk: Reply in 864 ms
+05:23:47.088 a lookup mark repo:65574: t11906 waited 10350 ms on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631, then took the mark (cached leader tried by it: false)
+05:23:47.178 a lookup mark repo:65574: t11906 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 90 ms
+05:23:47.215 a lookup mark repo:65574: t11642 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.218 a lookup mark repo:65574: t11644 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.218 a lookup mark repo:65574: t11643 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.251 a lookup mark repo:65574: t11645 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.276 a lookup mark repo:65574: t11648 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.277 a lookup mark repo:65574: t11647 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.277 a lookup mark repo:65574: t11650 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.278 a lookup mark repo:65574: t11649 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.280 a lookup mark repo:65574: t11652 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.283 a lookup mark repo:65574: t11658 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.283 a lookup mark repo:65574: t11656 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.283 a lookup mark repo:65574: t11657 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.283 a lookup mark repo:65574: t11654 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.283 a lookup mark repo:65574: t11653 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.288 a lookup mark repo:65574: t11661 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.288 a lookup mark repo:65574: t11659 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.299 a lookup mark repo:65574: t11663 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.300 a lookup mark repo:65574: t11666 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.300 a lookup mark repo:65574: t11665 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:47.300 a lookup mark repo:65574: t11667 gave up after 19750 ms waiting on t11608,t11612,t11627,t11623,t11614,t11655,t11621,t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906
+05:23:48.066 a lookup mark repo:65574: t11934 waited 1150 ms on t11631,t11906, then took the mark (cached leader tried by it: false)
+05:23:48.066 a lookup mark repo:65574: t11906 found 2/repo:65574#1#f2 by Cached
+05:23:48.066 a lookup mark repo:65574: t11906 post 2/repo:65574#1#f2 Cached Walk: Reply in 888 ms
+05:23:48.080 a lookup mark repo:65574: t11934 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 14 ms
+05:23:49.080 a lookup mark repo:65574: t11952 waited 1600 ms on t11906,t11934, then took the mark (cached leader tried by it: false)
+05:23:49.087 a lookup mark repo:65574: t11934 found 2/repo:65574#1#f2 by Cached
+05:23:49.087 a lookup mark repo:65574: t11934 post 2/repo:65574#1#f2 Cached Walk: Reply in 1007 ms
+05:23:49.101 a lookup mark repo:65574: t11952 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 21 ms
+05:23:49.443 a lookup mark repo:65574: t11912 waited 12600 ms on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952, then took the mark (cached leader tried by it: false)
+05:23:49.443 a lookup mark repo:65574: t11952 found 2/repo:65574#1#f2 by Cached
+05:23:49.443 a lookup mark repo:65574: t11952 post 2/repo:65574#1#f2 Cached Walk: Reply in 342 ms
+05:23:49.534 a lookup mark repo:65574: t11912 post 1/repo:65574#3#f1 Cached Walk: Reply notLeader(leader Some(Number(2))) in 91 ms
+05:23:50.109 a lookup mark repo:65574: t11971 waited 2100 ms on t11906,t11934,t11952,t11912, then took the mark (cached leader tried by it: false)
+05:23:50.109 a lookup mark repo:65574: t11912 found 2/repo:65574#1#f2 by Cached
+05:23:50.109 a lookup mark repo:65574: t11912 post 2/repo:65574#1#f2 Cached Walk: Reply in 575 ms
+05:23:50.125 a lookup mark repo:65574: t11971 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:23:51.077 a lookup mark repo:65574: t11924 waited 5150 ms on t11629,t11631,t11906,t11934,t11952,t11912,t11971, then took the mark (cached leader tried by it: false)
+05:23:51.077 a lookup mark repo:65574: t11971 found 2/repo:65574#1#f2 by Cached
+05:23:51.077 a lookup mark repo:65574: t11971 post 2/repo:65574#1#f2 Cached Walk: Reply in 952 ms
+05:23:51.096 a lookup mark repo:65574: t11924 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 19 ms
+05:23:52.096 a lookup mark repo:65574: t11930 waited 5650 ms on t11631,t11906,t11934,t11952,t11912,t11971,t11924, then took the mark (cached leader tried by it: false)
+05:23:52.112 a lookup mark repo:65574: t11930 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:23:52.322 a lookup mark repo:65574: t11924 found 2/repo:65574#1#f2 by Cached
+05:23:52.322 a lookup mark repo:65574: t11924 post 2/repo:65574#1#f2 Cached Walk: Reply in 1226 ms
+05:23:53.078 a lookup mark repo:65574: t11951 waited 5600 ms on t11906,t11934,t11952,t11912,t11971,t11924,t11930, then took the mark (cached leader tried by it: false)
+05:23:53.078 a lookup mark repo:65574: t11930 found 2/repo:65574#1#f2 by Cached
+05:23:53.078 a lookup mark repo:65574: t11930 post 2/repo:65574#1#f2 Cached Walk: Reply in 966 ms
+05:23:53.111 a lookup mark repo:65574: t11951 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 33 ms
+05:23:53.703 a lookup mark repo:65574: t11916 waited 14850 ms on t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951, then took the mark (cached leader tried by it: false)
+05:23:53.703 a lookup mark repo:65574: t11951 found 2/repo:65574#1#f2 by Cached
+05:23:53.703 a lookup mark repo:65574: t11951 post 2/repo:65574#1#f2 Cached Walk: Reply in 592 ms
+05:23:53.719 a lookup mark repo:65574: t11916 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:23:54.404 a lookup mark repo:65574: t11916 found 2/repo:65574#1#f2 by Cached
+05:23:54.404 a lookup mark repo:65574: t11916 post 2/repo:65574#1#f2 Cached Walk: Reply in 685 ms
+05:23:54.408 a lookup mark repo:65574: t11923 waited 8700 ms on t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916, then took the mark (cached leader tried by it: false)
+05:23:54.424 a lookup mark repo:65574: t11923 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:23:55.424 a lookup mark repo:65574: t11978 waited 7000 ms on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923, then took the mark (cached leader tried by it: false)
+05:23:55.439 a lookup mark repo:65574: t11978 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:23:55.479 a lookup mark repo:65574: t11923 found 2/repo:65574#1#f2 by Cached
+05:23:55.479 a lookup mark repo:65574: t11923 post 2/repo:65574#1#f2 Cached Walk: Reply in 1055 ms
+05:23:55.741 a lookup mark repo:65574: t11857 gave up after 19050 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.791 a lookup mark repo:65574: t11858 gave up after 19100 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.841 a lookup mark repo:65574: t11859 gave up after 19150 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.841 a lookup mark repo:65574: t11860 gave up after 19150 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.891 a lookup mark repo:65574: t11861 gave up after 19200 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.891 a lookup mark repo:65574: t11862 gave up after 19200 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.941 a lookup mark repo:65574: t11863 gave up after 19250 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.941 a lookup mark repo:65574: t11864 gave up after 19250 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:55.991 a lookup mark repo:65574: t11865 gave up after 19300 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.041 a lookup mark repo:65574: t11867 gave up after 19350 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.041 a lookup mark repo:65574: t11866 gave up after 19350 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.091 a lookup mark repo:65574: t11872 gave up after 19400 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.091 a lookup mark repo:65574: t11868 gave up after 19400 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.091 a lookup mark repo:65574: t11869 gave up after 19400 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.091 a lookup mark repo:65574: t11871 gave up after 19400 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.091 a lookup mark repo:65574: t11873 gave up after 19400 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.091 a lookup mark repo:65574: t11870 gave up after 19400 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978
+05:23:56.108 a lookup mark repo:65574: t11978 found 2/repo:65574#1#f2 by Cached
+05:23:56.108 a lookup mark repo:65574: t11978 post 2/repo:65574#1#f2 Cached Walk: Reply in 669 ms
+05:23:56.109 a lookup mark repo:65574: t11977 waited 7750 ms on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978, then took the mark (cached leader tried by it: false)
+05:23:56.141 a lookup mark repo:65574: t11875 gave up after 19450 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.141 a lookup mark repo:65574: t11874 gave up after 19450 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.143 a lookup mark repo:65574: t11977 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 34 ms
+05:23:56.191 a lookup mark repo:65574: t11878 gave up after 19500 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.191 a lookup mark repo:65574: t11877 gave up after 19500 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.191 a lookup mark repo:65574: t11876 gave up after 19500 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.241 a lookup mark repo:65574: t11879 gave up after 19550 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.241 a lookup mark repo:65574: t11880 gave up after 19550 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.291 a lookup mark repo:65574: t11881 gave up after 19600 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.291 a lookup mark repo:65574: t11883 gave up after 19600 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.291 a lookup mark repo:65574: t11882 gave up after 19600 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.341 a lookup mark repo:65574: t11884 gave up after 19650 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.341 a lookup mark repo:65574: t11886 gave up after 19650 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.341 a lookup mark repo:65574: t11885 gave up after 19650 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.391 a lookup mark repo:65574: t11887 gave up after 19700 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.391 a lookup mark repo:65574: t11889 gave up after 19700 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.391 a lookup mark repo:65574: t11888 gave up after 19700 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.441 a lookup mark repo:65574: t11890 gave up after 19750 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.441 a lookup mark repo:65574: t11892 gave up after 19750 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.441 a lookup mark repo:65574: t11891 gave up after 19750 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.491 a lookup mark repo:65574: t11894 gave up after 19800 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.491 a lookup mark repo:65574: t11893 gave up after 19800 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.541 a lookup mark repo:65574: t11895 gave up after 19850 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.541 a lookup mark repo:65574: t11896 gave up after 19850 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.591 a lookup mark repo:65574: t11900 gave up after 19900 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.591 a lookup mark repo:65574: t11898 gave up after 19900 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.591 a lookup mark repo:65574: t11897 gave up after 19900 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.591 a lookup mark repo:65574: t11899 gave up after 19900 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.641 a lookup mark repo:65574: t11902 gave up after 19950 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.641 a lookup mark repo:65574: t11901 gave up after 19950 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.691 a lookup mark repo:65574: t11905 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.691 a lookup mark repo:65574: t11904 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.691 a lookup mark repo:65574: t11903 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.768 a lookup mark repo:65574: t11907 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.790 a lookup mark repo:65574: t11909 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.801 a lookup mark repo:65574: t11910 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.843 a lookup mark repo:65574: t11911 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:56.894 a lookup mark repo:65574: t11914 gave up after 20000 ms waiting on t11635,t11613,t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977
+05:23:57.042 a lookup mark repo:65574: t11975 waited 8800 ms on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977, then took the mark (cached leader tried by it: false)
+05:23:57.042 a lookup mark repo:65574: t11977 found 2/repo:65574#1#f2 by Cached
+05:23:57.042 a lookup mark repo:65574: t11977 post 2/repo:65574#1#f2 Cached Walk: Reply in 899 ms
+05:23:57.117 a lookup mark repo:65574: t11975 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 75 ms
+05:23:57.983 a lookup mark repo:65574: t11955 waited 10500 ms on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975, then took the mark (cached leader tried by it: false)
+05:23:57.983 a lookup mark repo:65574: t11975 found 2/repo:65574#1#f2 by Cached
+05:23:57.983 a lookup mark repo:65574: t11975 post 2/repo:65574#1#f2 Cached Walk: Reply in 866 ms
+05:23:57.998 a lookup mark repo:65574: t11955 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:23:58.654 a lookup mark repo:65574: t11955 found 2/repo:65574#1#f2 by Cached
+05:23:58.654 a lookup mark repo:65574: t11955 post 2/repo:65574#1#f2 Cached Walk: Reply in 656 ms
+05:23:58.658 a lookup mark repo:65574: t11947 waited 11200 ms on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955, then took the mark (cached leader tried by it: false)
+05:23:58.673 a lookup mark repo:65574: t11915 gave up after 20000 ms waiting on t11630,t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947
+05:23:58.681 a lookup mark repo:65574: t11947 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 23 ms
+05:23:59.629 a lookup mark repo:65574: t11947 found 2/repo:65574#1#f2 by Cached
+05:23:59.629 a lookup mark repo:65574: t11947 post 2/repo:65574#1#f2 Cached Walk: Reply in 948 ms
+05:23:59.630 a lookup mark repo:65574: t11926 waited 13600 ms on t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947, then took the mark (cached leader tried by it: false)
+05:23:59.644 a lookup mark repo:65574: t11926 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 14 ms
+05:23:59.941 a lookup mark repo:65574: t11917 gave up after 20000 ms waiting on t11641,t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926
+05:24:00.327 a lookup mark repo:65574: t11950 waited 12850 ms on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926, then took the mark (cached leader tried by it: false)
+05:24:00.327 a lookup mark repo:65574: t11926 found 2/repo:65574#1#f2 by Cached
+05:24:00.327 a lookup mark repo:65574: t11926 post 2/repo:65574#1#f2 Cached Walk: Reply in 683 ms
+05:24:00.345 a lookup mark repo:65574: t11950 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 18 ms
+05:24:00.967 a lookup mark repo:65574: t11950 found 2/repo:65574#1#f2 by Cached
+05:24:00.967 a lookup mark repo:65574: t11950 post 2/repo:65574#1#f2 Cached Walk: Reply in 622 ms
+05:24:00.968 a lookup mark repo:65574: t11968 waited 13150 ms on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950, then took the mark (cached leader tried by it: false)
+05:24:00.983 a lookup mark repo:65574: t11968 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:01.164 a lookup mark repo:65574: t11918 gave up after 20000 ms waiting on t11625,t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968
+05:24:01.902 a lookup mark repo:65574: t11968 found 2/repo:65574#1#f2 by Cached
+05:24:01.902 a lookup mark repo:65574: t11968 post 2/repo:65574#1#f2 Cached Walk: Reply in 919 ms
+05:24:01.903 a lookup mark repo:65574: t11922 waited 16250 ms on t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968, then took the mark (cached leader tried by it: false)
+05:24:01.918 a lookup mark repo:65574: t11922 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:02.184 a lookup mark repo:65574: t11919 gave up after 20000 ms waiting on t11913,t11908,t11651,t11640,t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922
+05:24:02.918 a lookup mark repo:65574: t12030 waited 5950 ms on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922, then took the mark (cached leader tried by it: false)
+05:24:02.944 a lookup mark repo:65574: t11922 found 2/repo:65574#1#f2 by Cached
+05:24:02.944 a lookup mark repo:65574: t11922 post 2/repo:65574#1#f2 Cached Walk: Reply in 1026 ms
+05:24:02.961 a lookup mark repo:65574: t12030 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 43 ms
+05:24:03.962 a lookup mark repo:65574: t11933 waited 17100 ms on t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030, then took the mark (cached leader tried by it: false)
+05:24:03.979 a lookup mark repo:65574: t11933 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 17 ms
+05:24:04.066 a lookup mark repo:65574: t12030 found 2/repo:65574#1#f2 by Cached
+05:24:04.066 a lookup mark repo:65574: t12030 post 2/repo:65574#1#f2 Cached Walk: Reply in 1105 ms
+05:24:04.668 a lookup mark repo:65574: t11944 waited 17250 ms on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933, then took the mark (cached leader tried by it: false)
+05:24:04.668 a lookup mark repo:65574: t11933 found 2/repo:65574#1#f2 by Cached
+05:24:04.668 a lookup mark repo:65574: t11933 post 2/repo:65574#1#f2 Cached Walk: Reply in 689 ms
+05:24:04.686 a lookup mark repo:65574: t11944 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 18 ms
+05:24:05.485 a lookup mark repo:65574: t11920 gave up after 20000 ms waiting on t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944
+05:24:05.540 a lookup mark repo:65574: t12031 waited 8550 ms on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944, then took the mark (cached leader tried by it: false)
+05:24:05.540 a lookup mark repo:65574: t11944 found 2/repo:65574#1#f2 by Cached
+05:24:05.540 a lookup mark repo:65574: t11944 post 2/repo:65574#1#f2 Cached Walk: Reply in 854 ms
+05:24:05.556 a lookup mark repo:65574: t12031 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:24:05.598 a lookup mark repo:65574: t11921 gave up after 20000 ms waiting on t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031
+05:24:05.982 a lookup mark repo:65574: t11925 gave up after 20000 ms waiting on t11629,t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031
+05:24:06.181 a lookup mark repo:65574: t11927 gave up after 20000 ms waiting on t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031
+05:24:06.234 a lookup mark repo:65574: t11928 gave up after 20000 ms waiting on t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031
+05:24:06.339 a lookup mark repo:65574: t11929 gave up after 20000 ms waiting on t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031
+05:24:06.485 a lookup mark repo:65574: t12031 found 2/repo:65574#1#f2 by Cached
+05:24:06.485 a lookup mark repo:65574: t12031 post 2/repo:65574#1#f2 Cached Walk: Reply in 929 ms
+05:24:06.486 a lookup mark repo:65574: t11965 waited 18850 ms on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031, then took the mark (cached leader tried by it: false)
+05:24:06.501 a lookup mark repo:65574: t11965 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:06.525 a lookup mark repo:65574: t11931 gave up after 20000 ms waiting on t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:06.645 a lookup mark repo:65574: t11932 gave up after 20000 ms waiting on t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:06.989 a lookup mark repo:65574: t11935 gave up after 20000 ms waiting on t11631,t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.091 a lookup mark repo:65574: t11936 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.144 a lookup mark repo:65574: t11937 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.199 a lookup mark repo:65574: t11938 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.250 a lookup mark repo:65574: t11939 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.273 a lookup mark repo:65574: t11940 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.334 a lookup mark repo:65574: t11941 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.396 a lookup mark repo:65574: t11942 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.415 a lookup mark repo:65574: t11943 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.418 a lookup mark repo:65574: t11945 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.451 a lookup mark repo:65574: t11946 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.476 a lookup mark repo:65574: t11948 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.477 a lookup mark repo:65574: t11949 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.483 a lookup mark repo:65574: t11957 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.483 a lookup mark repo:65574: t11956 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.483 a lookup mark repo:65574: t11954 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.483 a lookup mark repo:65574: t11953 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.488 a lookup mark repo:65574: t11959 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.488 a lookup mark repo:65574: t11958 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.499 a lookup mark repo:65574: t11960 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.500 a lookup mark repo:65574: t11963 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.500 a lookup mark repo:65574: t11962 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.500 a lookup mark repo:65574: t11961 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965
+05:24:07.501 a lookup mark repo:65574: t11976 waited 19200 ms on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965, then took the mark (cached leader tried by it: false)
+05:24:07.516 a lookup mark repo:65574: t11976 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:07.570 a lookup mark repo:65574: t11965 found 2/repo:65574#1#f2 by Cached
+05:24:07.570 a lookup mark repo:65574: t11965 post 2/repo:65574#1#f2 Cached Walk: Reply in 1069 ms
+05:24:07.576 a lookup mark repo:65574: t11964 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976
+05:24:07.697 a lookup mark repo:65574: t11966 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976
+05:24:07.760 a lookup mark repo:65574: t11967 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976
+05:24:07.856 a lookup mark repo:65574: t11976 found 2/repo:65574#1#f2 by Cached
+05:24:07.856 a lookup mark repo:65574: t11976 post 2/repo:65574#1#f2 Cached Walk: Reply in 340 ms
+05:24:07.857 a lookup mark repo:65574: t12039 waited 5900 ms on t11922,t12030,t11933,t11944,t12031,t11965,t11976, then took the mark (cached leader tried by it: false)
+05:24:07.872 a lookup mark repo:65574: t12039 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:07.882 a lookup mark repo:65574: t11969 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039
+05:24:07.947 a lookup mark repo:65574: t11970 gave up after 20000 ms waiting on t11906,t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039
+05:24:08.069 a lookup mark repo:65574: t11972 gave up after 20000 ms waiting on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039
+05:24:08.126 a lookup mark repo:65574: t11973 gave up after 20000 ms waiting on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039
+05:24:08.184 a lookup mark repo:65574: t11974 gave up after 20000 ms waiting on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039
+05:24:08.488 a lookup mark repo:65574: t11979 gave up after 20000 ms waiting on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039
+05:24:08.549 a lookup mark repo:65574: t11980 gave up after 20000 ms waiting on t11934,t11952,t11912,t11971,t11924,t11930,t11951,t11916,t11923,t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039
+05:24:08.830 a lookup mark repo:65574: t12039 found 2/repo:65574#1#f2 by Cached
+05:24:08.830 a lookup mark repo:65574: t12039 post 2/repo:65574#1#f2 Cached Walk: Reply in 958 ms
+05:24:08.832 a lookup mark repo:65574: t12047 waited 750 ms on t12039, then took the mark (cached leader tried by it: false)
+05:24:08.846 a lookup mark repo:65574: t12047 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 14 ms
+05:24:09.846 a lookup mark repo:65574: t12036 waited 10500 ms on t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047, then took the mark (cached leader tried by it: false)
+05:24:09.862 a lookup mark repo:65574: t12036 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:24:09.991 a lookup mark repo:65574: t12047 found 2/repo:65574#1#f2 by Cached
+05:24:09.991 a lookup mark repo:65574: t12047 post 2/repo:65574#1#f2 Cached Walk: Reply in 1145 ms
+05:24:10.665 a lookup mark repo:65574: t12036 found 2/repo:65574#1#f2 by Cached
+05:24:10.665 a lookup mark repo:65574: t12036 post 2/repo:65574#1#f2 Cached Walk: Reply in 803 ms
+05:24:10.669 a lookup mark repo:65574: t12049 waited 2400 ms on t12039,t12047,t12036, then took the mark (cached leader tried by it: false)
+05:24:10.684 a lookup mark repo:65574: t12049 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:11.595 a lookup mark repo:65574: t12049 found 2/repo:65574#1#f2 by Cached
+05:24:11.595 a lookup mark repo:65574: t12049 post 2/repo:65574#1#f2 Cached Walk: Reply in 911 ms
+05:24:11.596 a lookup mark repo:65574: t12043 waited 4000 ms on t11976,t12039,t12047,t12036,t12049, then took the mark (cached leader tried by it: false)
+05:24:11.697 a lookup mark repo:65574: t12043 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 101 ms
+05:24:12.522 a lookup mark repo:65574: t12043 found 2/repo:65574#1#f2 by Cached
+05:24:12.522 a lookup mark repo:65574: t12043 post 2/repo:65574#1#f2 Cached Walk: Reply in 825 ms
+05:24:12.523 a lookup mark repo:65574: t12041 waited 5050 ms on t11965,t11976,t12039,t12047,t12036,t12049,t12043, then took the mark (cached leader tried by it: false)
+05:24:12.538 a lookup mark repo:65574: t12041 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:13.115 a lookup mark repo:65574: t12041 found 2/repo:65574#1#f2 by Cached
+05:24:13.115 a lookup mark repo:65574: t12041 post 2/repo:65574#1#f2 Cached Walk: Reply in 577 ms
+05:24:13.123 a lookup mark repo:65574: t12035 waited 14250 ms on t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041, then took the mark (cached leader tried by it: false)
+05:24:13.140 a lookup mark repo:65574: t12035 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 17 ms
+05:24:14.141 a lookup mark repo:65574: t12037 waited 14000 ms on t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035, then took the mark (cached leader tried by it: false)
+05:24:14.155 a lookup mark repo:65574: t12037 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 14 ms
+05:24:14.275 a lookup mark repo:65574: t12035 found 2/repo:65574#1#f2 by Cached
+05:24:14.275 a lookup mark repo:65574: t12035 post 2/repo:65574#1#f2 Cached Walk: Reply in 1135 ms
+05:24:14.607 a lookup mark repo:65574: t12037 found 2/repo:65574#1#f2 by Cached
+05:24:14.607 a lookup mark repo:65574: t12037 post 2/repo:65574#1#f2 Cached Walk: Reply in 452 ms
+05:24:14.610 a lookup mark repo:65574: t12046 waited 6650 ms on t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037, then took the mark (cached leader tried by it: false)
+05:24:14.626 a lookup mark repo:65574: t12046 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:24:15.555 a lookup mark repo:65574: t12046 found 2/repo:65574#1#f2 by Cached
+05:24:15.555 a lookup mark repo:65574: t12046 post 2/repo:65574#1#f2 Cached Walk: Reply in 929 ms
+05:24:15.564 a lookup mark repo:65574: t12038 waited 14200 ms on t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046, then took the mark (cached leader tried by it: false)
+05:24:15.579 a lookup mark repo:65574: t12038 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:15.941 a lookup mark repo:65574: t11981 gave up after 20000 ms waiting on t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:15.991 a lookup mark repo:65574: t11982 gave up after 20000 ms waiting on t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:16.041 a lookup mark repo:65574: t11984 gave up after 20000 ms waiting on t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:16.041 a lookup mark repo:65574: t11983 gave up after 20000 ms waiting on t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:16.091 a lookup mark repo:65574: t11986 gave up after 20000 ms waiting on t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:16.091 a lookup mark repo:65574: t11985 gave up after 20000 ms waiting on t11978,t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:16.141 a lookup mark repo:65574: t11988 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:16.141 a lookup mark repo:65574: t11987 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038
+05:24:16.183 a lookup mark repo:65574: t12038 found 2/repo:65574#1#f2 by Cached
+05:24:16.183 a lookup mark repo:65574: t12038 post 2/repo:65574#1#f2 Cached Walk: Reply in 604 ms
+05:24:16.184 a lookup mark repo:65574: t12051 waited 7800 ms on t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038, then took the mark (cached leader tried by it: false)
+05:24:16.191 a lookup mark repo:65574: t11989 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.214 a lookup mark repo:65574: t12051 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 30 ms
+05:24:16.241 a lookup mark repo:65574: t11991 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.241 a lookup mark repo:65574: t11990 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.291 a lookup mark repo:65574: t11997 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.291 a lookup mark repo:65574: t11996 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.291 a lookup mark repo:65574: t11995 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.291 a lookup mark repo:65574: t11994 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.291 a lookup mark repo:65574: t11993 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.291 a lookup mark repo:65574: t11992 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.341 a lookup mark repo:65574: t11999 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.341 a lookup mark repo:65574: t11998 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.391 a lookup mark repo:65574: t12002 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.391 a lookup mark repo:65574: t12001 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.391 a lookup mark repo:65574: t12000 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.441 a lookup mark repo:65574: t12004 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.441 a lookup mark repo:65574: t12003 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.491 a lookup mark repo:65574: t12007 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.491 a lookup mark repo:65574: t12006 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.491 a lookup mark repo:65574: t12005 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.541 a lookup mark repo:65574: t12010 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.541 a lookup mark repo:65574: t12009 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.541 a lookup mark repo:65574: t12008 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.591 a lookup mark repo:65574: t12013 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.591 a lookup mark repo:65574: t12012 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.591 a lookup mark repo:65574: t12011 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.641 a lookup mark repo:65574: t12016 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.641 a lookup mark repo:65574: t12015 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.641 a lookup mark repo:65574: t12014 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.691 a lookup mark repo:65574: t12018 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.691 a lookup mark repo:65574: t12017 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.741 a lookup mark repo:65574: t12020 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.741 a lookup mark repo:65574: t12019 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.791 a lookup mark repo:65574: t12024 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.791 a lookup mark repo:65574: t12023 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.791 a lookup mark repo:65574: t12022 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.791 a lookup mark repo:65574: t12021 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.841 a lookup mark repo:65574: t12026 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.841 a lookup mark repo:65574: t12025 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.891 a lookup mark repo:65574: t12029 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.891 a lookup mark repo:65574: t12028 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:16.891 a lookup mark repo:65574: t12027 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:17.001 a lookup mark repo:65574: t12032 gave up after 20000 ms waiting on t11977,t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:17.043 a lookup mark repo:65574: t12033 gave up after 20000 ms waiting on t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:17.094 a lookup mark repo:65574: t12034 gave up after 20000 ms waiting on t11975,t11955,t11947,t11926,t11950,t11968,t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051
+05:24:17.103 a lookup mark repo:65574: t12051 found 2/repo:65574#1#f2 by Cached
+05:24:17.103 a lookup mark repo:65574: t12051 post 2/repo:65574#1#f2 Cached Walk: Reply in 889 ms
+05:24:17.125 a lookup mark repo:65574: t12054 waited 4800 ms on t12043,t12041,t12035,t12037,t12046,t12038,t12051, then took the mark (cached leader tried by it: false)
+05:24:17.149 a lookup mark repo:65574: t12054 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 24 ms
+05:24:18.149 a lookup mark repo:65574: t12053 waited 9400 ms on t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054, then took the mark (cached leader tried by it: false)
+05:24:18.166 a lookup mark repo:65574: t12053 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 17 ms
+05:24:18.220 a lookup mark repo:65574: t12054 found 2/repo:65574#1#f2 by Cached
+05:24:18.220 a lookup mark repo:65574: t12054 post 2/repo:65574#1#f2 Cached Walk: Reply in 1071 ms
+05:24:19.065 a lookup mark repo:65574: t12053 found 2/repo:65574#1#f2 by Cached
+05:24:19.065 a lookup mark repo:65574: t12053 post 2/repo:65574#1#f2 Cached Walk: Reply in 899 ms
+05:24:19.076 a lookup mark repo:65574: t12044 waited 11300 ms on t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054,t12053, then took the mark (cached leader tried by it: false)
+05:24:19.091 a lookup mark repo:65574: t12044 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:19.997 a lookup mark repo:65574: t12048 waited 11850 ms on t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054,t12053,t12044, then took the mark (cached leader tried by it: false)
+05:24:19.997 a lookup mark repo:65574: t12044 found 2/repo:65574#1#f2 by Cached
+05:24:19.997 a lookup mark repo:65574: t12044 post 2/repo:65574#1#f2 Cached Walk: Reply in 906 ms
+05:24:20.013 a lookup mark repo:65574: t12048 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:24:20.957 a lookup mark repo:65574: t12048 found 2/repo:65574#1#f2 by Cached
+05:24:20.957 a lookup mark repo:65574: t12048 post 2/repo:65574#1#f2 Cached Walk: Reply in 944 ms
+05:24:20.976 a lookup mark repo:65574: t12050 waited 12650 ms on t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054,t12053,t12044,t12048, then took the mark (cached leader tried by it: false)
+05:24:20.991 a lookup mark repo:65574: t12050 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:21.739 a lookup mark repo:65574: t12050 found 2/repo:65574#1#f2 by Cached
+05:24:21.739 a lookup mark repo:65574: t12050 post 2/repo:65574#1#f2 Cached Walk: Reply in 748 ms
+05:24:21.747 a lookup mark repo:65574: t12045 waited 13850 ms on t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054,t12053,t12044,t12048,t12050, then took the mark (cached leader tried by it: false)
+05:24:21.764 a lookup mark repo:65574: t12045 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 17 ms
+05:24:22.384 a lookup mark repo:65574: t12040 gave up after 20000 ms waiting on t11922,t12030,t11933,t11944,t12031,t11965,t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054,t12053,t12044,t12048,t12050,t12045
+05:24:22.728 a lookup mark repo:65574: t12045 found 2/repo:65574#1#f2 by Cached
+05:24:22.728 a lookup mark repo:65574: t12045 post 2/repo:65574#1#f2 Cached Walk: Reply in 964 ms
+05:24:22.734 a lookup mark repo:65574: t12042 waited 15200 ms on t11976,t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054,t12053,t12044,t12048,t12050,t12045, then took the mark (cached leader tried by it: false)
+05:24:22.749 a lookup mark repo:65574: t12042 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 15 ms
+05:24:23.755 a lookup mark repo:65574: t12042 found 2/repo:65574#1#f2 by Cached
+05:24:23.755 a lookup mark repo:65574: t12042 post 2/repo:65574#1#f2 Cached Walk: Reply in 1006 ms
+05:24:23.755 a lookup mark repo:65574: t12055 waited 5800 ms on t12054,t12053,t12044,t12048,t12050,t12045,t12042, then took the mark (cached leader tried by it: false)
+05:24:23.774 a lookup mark repo:65574: t12055 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 19 ms
+05:24:24.723 a lookup mark repo:65574: t12055 found 2/repo:65574#1#f2 by Cached
+05:24:24.723 a lookup mark repo:65574: t12055 post 2/repo:65574#1#f2 Cached Walk: Reply in 949 ms
+05:24:24.738 a lookup mark repo:65574: t12052 waited 16050 ms on t12039,t12047,t12036,t12049,t12043,t12041,t12035,t12037,t12046,t12038,t12051,t12054,t12053,t12044,t12048,t12050,t12045,t12042,t12055, then took the mark (cached leader tried by it: false)
+05:24:24.754 a lookup mark repo:65574: t12052 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 16 ms
+05:24:25.772 a lookup mark repo:65574: t12052 found 2/repo:65574#1#f2 by Cached
+05:24:25.772 a lookup mark repo:65574: t12052 post 2/repo:65574#1#f2 Cached Walk: Reply in 1018 ms
+05:24:25.788 a lookup mark repo:65574: t12056 waited 600 ms on t12052, then took the mark (cached leader tried by it: false)
+05:24:25.805 a lookup mark repo:65574: t12056 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 17 ms
+05:24:26.867 a lookup mark repo:65574: t12056 found 2/repo:65574#1#f2 by Cached
+05:24:26.867 a lookup mark repo:65574: t12056 post 2/repo:65574#1#f2 Cached Walk: Reply in 1062 ms
+05:24:28.086 a lookup mark repo:65574: t12057 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 34 ms
+05:24:28.842 a lookup mark repo:65574: t12057 found 2/repo:65574#1#f2 by Cached
+05:24:28.842 a lookup mark repo:65574: t12057 post 2/repo:65574#1#f2 Cached Walk: Reply in 756 ms
+05:24:34.135 a lookup mark repo:65574: t12058 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 23 ms
+05:24:34.391 a lookup mark repo:65574: t12058 found 2/repo:65574#1#f2 by Cached
+05:24:34.391 a lookup mark repo:65574: t12058 post 2/repo:65574#1#f2 Cached Walk: Reply in 256 ms
+05:24:26.756 b lookup mark repo:65574: t1 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 131 ms
+05:24:27.203 b lookup mark repo:65574: t1 found 2/repo:65574#1#f2 by Cached
+05:24:27.203 b lookup mark repo:65574: t1 post 2/repo:65574#1#f2 Cached Walk: Reply in 447 ms
+05:24:26.664 c lookup mark repo:65574: t5 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 292 ms
+05:24:26.753 c lookup mark repo:65574: t5 found 2/repo:65574#1#f2 by Cached
+05:24:26.753 c lookup mark repo:65574: t5 post 2/repo:65574#1#f2 Cached Walk: Reply in 89 ms
+05:24:30.406 c lookup mark repo:65574: t6 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 261 ms
+05:24:30.809 c lookup mark repo:65574: t6 found 2/repo:65574#1#f2 by Cached
+05:24:30.809 c lookup mark repo:65574: t6 post 2/repo:65574#1#f2 Cached Walk: Reply in 403 ms
+05:24:30.813 c lookup mark repo:65574: t10 waited 350 ms on t6, then took the mark (cached leader tried by it: false)
+05:24:31.069 c lookup mark repo:65574: t10 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 256 ms
+05:24:31.438 c lookup mark repo:65574: t10 found 2/repo:65574#1#f2 by Cached
+05:24:31.438 c lookup mark repo:65574: t10 post 2/repo:65574#1#f2 Cached Walk: Reply in 369 ms
+05:24:31.701 c lookup mark repo:65574: t25 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 260 ms
+05:24:32.408 c lookup mark repo:65574: t25 found 2/repo:65574#1#f2 by Cached
+05:24:32.408 c lookup mark repo:65574: t25 post 2/repo:65574#1#f2 Cached Walk: Reply in 707 ms
+05:24:32.409 c lookup mark repo:65574: t7 waited 2200 ms on t6,t10,t25, then took the mark (cached leader tried by it: false)
+05:24:32.647 c lookup mark repo:65574: t7 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 238 ms
+05:24:33.015 c lookup mark repo:65574: t7 found 2/repo:65574#1#f2 by Cached
+05:24:33.015 c lookup mark repo:65574: t7 post 2/repo:65574#1#f2 Cached Walk: Reply in 368 ms
+05:24:33.016 c lookup mark repo:65574: t13 waited 2350 ms on t6,t10,t25,t7, then took the mark (cached leader tried by it: false)
+05:24:33.341 c lookup mark repo:65574: t13 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 325 ms
+05:24:33.819 c lookup mark repo:65574: t13 found 2/repo:65574#1#f2 by Cached
+05:24:33.819 c lookup mark repo:65574: t13 post 2/repo:65574#1#f2 Cached Walk: Reply in 478 ms
+05:24:33.823 c lookup mark repo:65574: t17 waited 2900 ms on t10,t25,t7,t13, then took the mark (cached leader tried by it: false)
+05:24:34.061 c lookup mark repo:65574: t17 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 238 ms
+05:24:34.319 c lookup mark repo:65574: t17 found 2/repo:65574#1#f2 by Cached
+05:24:34.319 c lookup mark repo:65574: t17 post 2/repo:65574#1#f2 Cached Walk: Reply in 258 ms
+05:24:34.326 c lookup mark repo:65574: t8 waited 4050 ms on t6,t10,t25,t7,t13,t17, then took the mark (cached leader tried by it: false)
+05:24:34.568 c lookup mark repo:65574: t8 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 242 ms
+05:24:35.537 c lookup mark repo:65574: t8 found 2/repo:65574#1#f2 by Cached
+05:24:35.537 c lookup mark repo:65574: t8 post 2/repo:65574#1#f2 Cached Walk: Reply in 969 ms
+05:24:35.542 c lookup mark repo:65574: t29 waited 3850 ms on t25,t7,t13,t17,t8, then took the mark (cached leader tried by it: false)
+05:24:35.806 c lookup mark repo:65574: t29 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 264 ms
+05:24:36.692 c lookup mark repo:65574: t29 found 2/repo:65574#1#f2 by Cached
+05:24:36.692 c lookup mark repo:65574: t29 post 2/repo:65574#1#f2 Cached Walk: Reply in 886 ms
+05:24:36.694 c lookup mark repo:65574: t15 waited 5900 ms on t6,t10,t25,t7,t13,t17,t8,t29, then took the mark (cached leader tried by it: false)
+05:24:36.923 c lookup mark repo:65574: t15 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 229 ms
+05:24:37.472 c lookup mark repo:65574: t15 found 2/repo:65574#1#f2 by Cached
+05:24:37.472 c lookup mark repo:65574: t15 post 2/repo:65574#1#f2 Cached Walk: Reply in 549 ms
+05:24:37.476 c lookup mark repo:65574: t24 waited 6100 ms on t10,t25,t7,t13,t17,t8,t29,t15, then took the mark (cached leader tried by it: false)
+05:24:37.720 c lookup mark repo:65574: t24 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 244 ms
+05:24:38.203 c lookup mark repo:65574: t19 waited 7150 ms on t10,t25,t7,t13,t17,t8,t29,t15,t24, then took the mark (cached leader tried by it: false)
+05:24:38.203 c lookup mark repo:65574: t24 found 2/repo:65574#1#f2 by Cached
+05:24:38.203 c lookup mark repo:65574: t24 post 2/repo:65574#1#f2 Cached Walk: Reply in 483 ms
+05:24:38.444 c lookup mark repo:65574: t19 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 241 ms
+05:24:39.013 c lookup mark repo:65574: t23 waited 7700 ms on t10,t25,t7,t13,t17,t8,t29,t15,t24,t19, then took the mark (cached leader tried by it: false)
+05:24:39.013 c lookup mark repo:65574: t19 found 2/repo:65574#1#f2 by Cached
+05:24:39.013 c lookup mark repo:65574: t19 post 2/repo:65574#1#f2 Cached Walk: Reply in 569 ms
+05:24:39.255 c lookup mark repo:65574: t23 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 242 ms
+05:24:39.626 c lookup mark repo:65574: t23 found 2/repo:65574#1#f2 by Cached
+05:24:39.626 c lookup mark repo:65574: t23 post 2/repo:65574#1#f2 Cached Walk: Reply in 371 ms
+05:24:39.631 c lookup mark repo:65574: t14 waited 8900 ms on t6,t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23, then took the mark (cached leader tried by it: false)
+05:24:39.910 c lookup mark repo:65574: t14 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 279 ms
+05:24:40.330 c lookup mark repo:65574: t14 found 2/repo:65574#1#f2 by Cached
+05:24:40.330 c lookup mark repo:65574: t14 post 2/repo:65574#1#f2 Cached Walk: Reply in 420 ms
+05:24:40.332 c lookup mark repo:65574: t28 waited 8700 ms on t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14, then took the mark (cached leader tried by it: false)
+05:24:40.581 c lookup mark repo:65574: t28 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 249 ms
+05:24:41.368 c lookup mark repo:65574: t28 found 2/repo:65574#1#f2 by Cached
+05:24:41.368 c lookup mark repo:65574: t28 post 2/repo:65574#1#f2 Cached Walk: Reply in 787 ms
+05:24:41.369 c lookup mark repo:65574: t27 waited 9800 ms on t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28, then took the mark (cached leader tried by it: false)
+05:24:41.607 c lookup mark repo:65574: t27 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 238 ms
+05:24:42.304 c lookup mark repo:65574: t26 waited 10800 ms on t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27, then took the mark (cached leader tried by it: false)
+05:24:42.304 c lookup mark repo:65574: t27 found 2/repo:65574#1#f2 by Cached
+05:24:42.304 c lookup mark repo:65574: t27 post 2/repo:65574#1#f2 Cached Walk: Reply in 697 ms
+05:24:42.542 c lookup mark repo:65574: t26 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 238 ms
+05:24:43.315 c lookup mark repo:65574: t26 found 2/repo:65574#1#f2 by Cached
+05:24:43.315 c lookup mark repo:65574: t26 post 2/repo:65574#1#f2 Cached Walk: Reply in 773 ms
+05:24:43.317 c lookup mark repo:65574: t20 waited 12200 ms on t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26, then took the mark (cached leader tried by it: false)
+05:24:43.571 c lookup mark repo:65574: t20 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 254 ms
+05:24:44.338 c lookup mark repo:65574: t20 found 2/repo:65574#1#f2 by Cached
+05:24:44.338 c lookup mark repo:65574: t20 post 2/repo:65574#1#f2 Cached Walk: Reply in 767 ms
+05:24:44.348 c lookup mark repo:65574: t22 waited 13100 ms on t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20, then took the mark (cached leader tried by it: false)
+05:24:44.695 c lookup mark repo:65574: t22 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 347 ms
+05:24:45.107 c lookup mark repo:65574: t16 waited 14250 ms on t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22, then took the mark (cached leader tried by it: false)
+05:24:45.107 c lookup mark repo:65574: t22 found 2/repo:65574#1#f2 by Cached
+05:24:45.107 c lookup mark repo:65574: t22 post 2/repo:65574#1#f2 Cached Walk: Reply in 412 ms
+05:24:45.336 c lookup mark repo:65574: t16 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 229 ms
+05:24:46.285 c lookup mark repo:65574: t11 waited 15750 ms on t6,t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22,t16, then took the mark (cached leader tried by it: false)
+05:24:46.285 c lookup mark repo:65574: t16 found 2/repo:65574#1#f2 by Cached
+05:24:46.285 c lookup mark repo:65574: t16 post 2/repo:65574#1#f2 Cached Walk: Reply in 949 ms
+05:24:46.527 c lookup mark repo:65574: t11 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 242 ms
+05:24:47.021 c lookup mark repo:65574: t11 found 2/repo:65574#1#f2 by Cached
+05:24:47.021 c lookup mark repo:65574: t11 post 2/repo:65574#1#f2 Cached Walk: Reply in 494 ms
+05:24:47.032 c lookup mark repo:65574: t21 waited 15850 ms on t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22,t16,t11, then took the mark (cached leader tried by it: false)
+05:24:47.268 c lookup mark repo:65574: t21 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 236 ms
+05:24:47.685 c lookup mark repo:65574: t21 found 2/repo:65574#1#f2 by Cached
+05:24:47.685 c lookup mark repo:65574: t21 post 2/repo:65574#1#f2 Cached Walk: Reply in 417 ms
+05:24:47.687 c lookup mark repo:65574: t18 waited 16700 ms on t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22,t16,t11,t21, then took the mark (cached leader tried by it: false)
+05:24:47.933 c lookup mark repo:65574: t18 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 246 ms
+05:24:48.633 c lookup mark repo:65574: t18 found 2/repo:65574#1#f2 by Cached
+05:24:48.633 c lookup mark repo:65574: t18 post 2/repo:65574#1#f2 Cached Walk: Reply in 700 ms
+05:24:48.634 c lookup mark repo:65574: t9 waited 18300 ms on t6,t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22,t16,t11,t21,t18, then took the mark (cached leader tried by it: false)
+05:24:48.872 c lookup mark repo:65574: t9 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 238 ms
+05:24:48.961 c lookup mark repo:65574: t9 found 2/repo:65574#1#f2 by Cached
+05:24:48.961 c lookup mark repo:65574: t9 post 2/repo:65574#1#f2 Cached Walk: Reply in 89 ms
+05:24:48.967 c lookup mark repo:65574: t31 waited 17150 ms on t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22,t16,t11,t21,t18,t9, then took the mark (cached leader tried by it: false)
+05:24:49.212 c lookup mark repo:65574: t31 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 245 ms
+05:24:49.651 c lookup mark repo:65574: t31 found 2/repo:65574#1#f2 by Cached
+05:24:49.651 c lookup mark repo:65574: t31 post 2/repo:65574#1#f2 Cached Walk: Reply in 439 ms
+05:24:49.653 c lookup mark repo:65574: t12 waited 19050 ms on t6,t10,t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22,t16,t11,t21,t18,t9,t31, then took the mark (cached leader tried by it: false)
+05:24:50.264 c lookup mark repo:65574: t12 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 611 ms
+05:24:50.624 c lookup mark repo:65574: t12 found 2/repo:65574#1#f2 by Cached
+05:24:50.624 c lookup mark repo:65574: t12 post 2/repo:65574#1#f2 Cached Walk: Reply in 360 ms
+05:24:50.656 c lookup mark repo:65574: t30 waited 18900 ms on t25,t7,t13,t17,t8,t29,t15,t24,t19,t23,t14,t28,t27,t26,t20,t22,t16,t11,t21,t18,t9,t31,t12, then took the mark (cached leader tried by it: false)
+05:24:50.893 c lookup mark repo:65574: t30 post 0/repo:65574#1#f0 Cached Walk: Reply notLeader(leader Some(Number(2))) in 237 ms
+05:24:51.309 c lookup mark repo:65574: t30 found 2/repo:65574#1#f2 by Cached
+05:24:51.309 c lookup mark repo:65574: t30 post 2/repo:65574#1#f2 Cached Walk: Reply in 416 ms
