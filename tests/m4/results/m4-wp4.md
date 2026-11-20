@@ -804,7 +804,7 @@ Site day 63 (17:02:58Z to 17:04:00Z, exit 0) shipped main `63e82533` as a **test
 | Round / confirm / deps | p99 477 ms / 292 ms / 578 ms | p99 880 ms / 898 ms / 1.4 s |
 | f0's vCPU (`tests/fanout/docpumin.py`, CPU-s per minute from 17:16) | 17.8, 18.3, 18.0, 19.3, 19.8, 19.4, 20.4, 20.0, 18.9, 14.6: mean 0.31, peak 0.34 | mean 0.49, peak 0.67 |
 | Learner read-index calls to f0 | 50,537 sent, plus 1,033 `HEDGE` copies (**2.0%**); 170 past `CALL_DEADLINE` | 44,515, 4.1% `HEDGE`; 2,543 past `CALL_DEADLINE` |
-| Leader changes | **0**, term 2 throughout. No hold in the load. One setup-time trip (below) | 0; three holds |
+| Leader changes | **0**, term 2 throughout. No hold in the load. One setup-time trip, in the Actions shard group (below) | 0; three holds |
 | `suspect` | 10 lines in the load window; no pre-vote | 2,000 or more per follower |
 | f0 alarm-steps lines | 2, both `load`: 1,408 ms (17:16:41) and 2,047 ms (17:16:43). f1 logged `snap` 1,648 and 7,530 ms at 17:08, in setup | 17 |
 | Pushes | 2,500 of 2,500 agent ok; human 318 ok, 7 `stale`, 29 `stale:race`; `mergeable` 503s 2; api 503s 5 | 2,423 of 2,500 ok; `mergeable` 503s 5,089 |
@@ -812,7 +812,7 @@ Site day 63 (17:02:58Z to 17:04:00Z, exit 0) shipped main `63e82533` as a **test
 | Spend | graft-m4a **$4.03** (17:02:58Z to 17:45Z, `acctcost.py` prefix; $4.87 for the whole account in that window), runner account $0 | $4.41 |
 | Teardown | 1 shard 200, no container running, shardkill deleted (17:44:25Z) | clean |
 
-**The setup-time trip.** At 17:14:21.741Z, before load, f0 logged `StepDown { why: CommitErrors { calls: [(SiteId(1), 20, 3), (SiteId(2), 19, 3)] }, to: Some(SiteId(1)) }`. `step_down_to` logs `to: Some` only after `start_transfer` succeeds, so a transfer to f1 began. The term stayed 2 through 17:14:50 and the whole row, so the transfer was abandoned within its LEASE [inference]. No line says why: the host logs no `abandon_transfer`, and tsave traces no `TimeoutNow`. Recorded as a logging gap (`decisions/OPEN-QUESTIONS.md`, F107), to be fixed only if it recurs in a load window.
+**The setup-time trip was another group's.** At 17:14:21.741Z, before load, a site-a member logged `StepDown { why: CommitErrors { calls: [(SiteId(1), 20, 3), (SiteId(2), 19, 3)] }, to: Some(SiteId(1)) }`. It was first read as repo 65577's f0 with an abandoned transfer, since repo 65577's term stayed 2. The event's Durable Object id names `actions:7100001.5#1#f0`, the Actions shard group, and its transfer completed: f1 led its term 5 by 17:14:23.153Z [measured]. The line names no group, which is the logging gap in `decisions/OPEN-QUESTIONS.md`, F107.
 
 **Cuts** (`tests/fanout/grown.py tests/fanout/raw/tsave-m63.jsonl.xz 1795194971086 600 0`) [measured]: 1,932 cuts, 693 ended `Soft` and 1,239 `Empty`. Of the `Soft` cuts, 556 ended at 100 KB or less and 137 grew past it, to at most 150 KB. Soft bytes p50 60 KB, p99 145 KB. Commands left queued after a cut: p99 17, max 25 (m62: 350).
 
