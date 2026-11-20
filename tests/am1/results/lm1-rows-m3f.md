@@ -175,6 +175,56 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **The driver** now reads `move_step`'s `{step, ok}` shape, which m3fg11's 200-character cut lost, and times `heldS` and the hand-off.
 - **Tests:** four new on real members (`crates/identity/tests/group_move.rs`), one changed unit test, and `plant49.py` 8 of 8.
 
+## B0-32 status after m3fst1 (2026-11-20, analysis only, no hosted spend)
+
+Where B0-32 stands on main `b8e555df`, line by line, and which open question owns each loss that is left. The figures come from m3fst1's committed raw files. Two new files are committed with this section: `lm1-rows-m3f-data/m3fst1-raw/merge-pushes-b0-32-mwp3ub25.jsonl` (the row's 30 merge pushes from the client's push log) and `tests/fanout/raw/shardev-m3fst1-b0-32.jsonl.xz` (graft-m3f's `GitShard` events for repo 65602, 15:03:28Z to 15:04:15Z, from Workers Logs).
+
+### Fixed: these lines pass on m3fst1 and stayed passed
+
+| Line | Since | What fixed it |
+|---|---|---|
+| Zero `suspect` | m3fst1 (m3fac1 had 69) | `burst-receipts` (ask before reporting), `b032-shed`, `agent-cmds-entry`; A34's flush waits ruled out |
+| Zero leader changes | m3fe2 | `step-agree` and the receipt rules |
+| No other refusal shape; queued agent bytes under `AGENT_QUEUE_MAX`; no object reset from memory | m3fr13 to m3fe2 | the read cap, `b032-shed`, `AGENT_PUSH_BOUND` |
+
+### Left: within 5 s (332 of 500) and merges (5 of 30 over 2 s)
+
+**The 168 `ok` pushes over 5 s lost it in the commit stage** [measured, `server-timing`]:
+- Their commit stage took p50 3,383 ms, against 2,410 ms for the 153 `ok` pushes within 5 s. Their other stages are ordinary: front 692, gate 291, validate 597.
+- For each of the 168, the commit stage's time past 1 s alone exceeds its overage, which is p50 1,483 ms and at most 2,409 ms. With every commit stage capped at 1,500 ms, 130 of the 168 come in under 5 s.
+- 118 of them committed twice (the leader's `Stage` answer, then the staged command). The `hot` stage-first rule causes none of these (Row m3fac1), and `agent-stage-first`, which removed them, cost more than it saved.
+- **Owner:** F106 for the slow confirms, which the platform owns, and M4-WP4's `soft-grow` (branch `soft-grow`) for the queue behind them. **Across rows** [measured, each row's `tsave`, leader confirms of 500 ms or more in the 15 s from the burst]: m3fe2 0, m3fwi2 0, m3fwi3 0, m3fb32 1, m3fr17 2, m3fgt1 2, m3fac1 2, m3fst1 4. The three rows with none reached 87 to 99% within 5 s; the rows with them reached 27 to 66%. Other changes landed between those rows, so this is a correlation, not a controlled result.
+
+**The 179 `full` pushes lost their budget before the send** [measured]:
+- 155 of 179 spent 1.5 s or more on their core-rows read (in `gate` if the isolate's gate cache missed, else in `context`). Their read p50 was 1,858 ms, against 607 ms for `ok` pushes. That is 112 in `gate` and most of the other 67 in `context` (p50 2,002 ms).
+- These are the late read-index grants behind the same slow confirms (A35, settled: no gate change).
+- **Owner:** F106 and A35. Nothing is left to build at the gate.
+
+**The merge pushes: two causes, and one of them is not the leader** [measured, the client's push log and the shard events]:
+
+| Merge push (s from the burst) | Total | Largest stage | Cause |
+|---|---|---|---|
+| −71.5 (warm-up) | 2,438 ms | front 1,611 | A cold edge isolate on the row's first merge, before the burst |
+| −2.0 | 2,460 ms | commit 1,046 | The leader's queue in the burst's first second |
+| 4.1 | 3,976 ms | commit 2,844 | The leader's queue behind the 1,000 ms and 1,449 ms confirms (F106) |
+| 6.1 | 2,703 ms | commit 2,260 | Same |
+| 11.3 | **15,215 ms** | validate 14,116 | **Site a's git shard catch-up** |
+
+- **The 15.2 s push is its own cause.** Site a's network shard and pool shards each caught up the burst's staged packs in one long run: one 11-entry catch-up ingested 294 packs (74.5 MB, index 4.2 s, spool 3.8 s) in 15.8 s and ended at 25.4 s. The others ran 8.2 to 11.7 s and also ended at 25.3 to 25.5 s.
+- Validates and merges that arrived during these runs waited for them: 53 first-shard validates of 5 s or more, started 9.6 to 21.4 s and ended 24.7 to 27.6 s. They were 65 `full` agent pushes, 1 human and this merge push. Their `full` comes from `AGENT_PUSH_BOUND`, not the leader.
+- The same run held `PUT …/merge`: one answered 503 `warming` after 15,008 ms and one 200 after 14,582 ms with `waited` 14,421.
+- Three catch-up attempts on site a failed first, at 9.1, 9.3 and 13.5 s, each with `get: We encountered an internal error. Please try again. (10001)` from a bucket read. Whether those failures lengthened the run is an inference: the 294-pack run's first spool began at 9.75 s.
+- None of this touches the leader: its storage confirms from 7 to 40 s were all under 300 ms, and it had no ticker stall and no input gap of 400 ms or more.
+- **It recurs.** The merge's shard `waited`: m3fwi3 11,247 ms, m3fwi2 about the same (12,279 ms total), m3fac1 2,381, m3fgt1 1,093 (plus `merge_plan` 6,257), m3fst1 14,421; m3fe2 passed. Merge pushes with validate over 5 s: m3fwi3 2, m3fgt1 2, m3fst1 1.
+- **Owner:** new `decisions/OPEN-QUESTIONS.md` G34. Neither F106 nor `soft-grow` touches it.
+- **Other `merge:only` answers:** 3,064 ms with commit 2,810 is the leader's queue (F106). 5,890 ms on the client was 632 ms on the edge, so the time was client-side.
+
+**Summary of owners:**
+- F106 (platform storage confirms) plus `soft-grow` own the commit-stage loss, the `full` budget loss and 3 of the 5 merge pushes.
+- A35 records that the gate has nothing left to change.
+- G34 owns the shard catch-up stall: 1 merge push, 2 `merge:only` answers and 65 `full` pushes.
+- The cold-isolate merge push in warm-up has no owner; it fell before the burst.
+
 ## Row m3fst1: B0-32 on main `f9b9f50e` (`sync-trace`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** The orchestrator granted one site day and edge day from main `f9b9f50e` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (14:42:42Z). The measures: whether a leader confirm over 1 s recurs and what `Trace::Sync` labels it (`decisions/OPEN-QUESTIONS.md`, F106), and the cap's cut ends again (`agent-cmds-entry`).
