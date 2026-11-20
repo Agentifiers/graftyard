@@ -16,14 +16,17 @@
 
 export const BANNER_WAIT_MS = 45_000; // [guess]: a cold start took about 2 s (B0-24d), and placement can be slower
 export const RETRY_MS = 500; // [guess]
-// The container's inactivity timeout: an hour without a session [guess], so a burst of sessions finds it warm.
+// The container's inactivity timeout: an hour without a session [guess], so a burst of sessions finds it warm. The
+// timer starts when the object goes inactive, which is when its last session's `connect()` ends: the object keeps no
+// promise past a session. A pending `monitor()` held it up to 15 minutes longer [doc: Durable Object Container API,
+// `monitor`], which kept B0-24d's fronts up 1 h 15 min after their last session (tests/m6/results/m6-wp2.md).
 export const IDLE_MS = 3_600_000;
-// A stopped container is started again from the object's alarm this soon, while a session came within IDLE_MS.
-export const RESTART_MS = 2_000;
 export const INSTANCE = "basic";
-const SEEN = "seen";
 
-// Starts the container if it is not running, with its intercepts registered first, as the platform asks.
+// Starts the container if it is not running, with its intercepts registered first, as the platform asks. A container
+// that stopped (a crash, the inactivity timeout, a rollout) is started again by the next session, which waits for the
+// banner (`open`, a cold start of 2 to 6 s in B0-24d): the object needs no alarm and no `monitor()`, whose pending
+// promise would hold it past the session.
 export async function up(o) {
   const c = o.ctx.container;
   if (c.running) return;
@@ -33,8 +36,6 @@ export async function up(o) {
   if (!image) throw new Error('no image "ssh" in this version\'s image map');
   c.start({ image, instance: INSTANCE, enableInternet: false });
   await c.setInactivityTimeout?.(IDLE_MS);
-  // When the container stops, the alarm starts it again while sessions are still coming.
-  c.monitor?.().catch(() => {}).finally(() => o.ctx.storage.setAlarm(Date.now() + RESTART_MS));
 }
 
 // One connection to graft-sshd that has sent its banner: the socket and the first bytes it sent.
@@ -61,7 +62,6 @@ export async function open(o, deadline = Date.now() + BANNER_WAIT_MS) {
 
 // The object's `connect(socket)`: the banner first, then both directions until either side closes.
 export async function connect(o, socket, wait = BANNER_WAIT_MS) {
-  await o.ctx.storage.put(SEEN, Date.now());
   let front;
   try {
     front = await open(o, Date.now() + wait);
@@ -74,11 +74,6 @@ export async function connect(o, socket, wait = BANNER_WAIT_MS) {
   await w.write(front.first);
   w.releaseLock();
   await Promise.allSettled([socket.readable.pipeTo(front.socket.writable), front.socket.readable.pipeTo(socket.writable)]);
-}
-
-export async function alarm(o) {
-  const seen = (await o.ctx.storage.get(SEEN)) ?? 0;
-  if (Date.now() - seen < IDLE_MS && !o.ctx.container.running) await up(o);
 }
 
 // `SshOutbound`'s fetch: `props.host` is the intercept it serves.
