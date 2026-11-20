@@ -64,6 +64,10 @@ struct Bed {
     /// over the rate, as the shard's pack-objects and validate of them take.
     rate: std::cell::Cell<f64>,
     sizes: RefCell<std::collections::HashMap<Digest, u64>>,
+    /// The site's wall clock in ms (`ArchiveHost::wall_ms`), and a planted failure every `/promote` answers after it
+    /// starts the shard, as a shard whose catch-up fails does.
+    wall: std::cell::Cell<u64>,
+    fail: RefCell<Option<String>>,
 }
 
 fn row(e: &LogEntry<RepoEvent>) -> Vec<u8> {
@@ -92,6 +96,8 @@ impl Bed {
             run: RefCell::new(Run::default()),
             rate: Default::default(),
             sizes: Default::default(),
+            wall: Default::default(),
+            fail: Default::default(),
         }
     }
 
@@ -196,6 +202,9 @@ impl ArchiveHost for Bed {
             return Ok(None);
         }
         self.running.set(true);
+        if let Some(e) = self.fail.borrow().clone() {
+            return Err(e);
+        }
         self.promoted.borrow_mut().push(sums.to_vec());
         if self.rate.get() > 0.0 {
             let bytes: u64 = sums.iter().map(|s| self.sizes.borrow().get(s).copied().unwrap_or(0)).sum();
@@ -239,6 +248,10 @@ impl ArchiveHost for Bed {
             bytes: bytes.len() as u64,
             sites: SiteSet(0b11),
         }))
+    }
+
+    fn wall_ms(&self) -> u64 {
+        self.wall.get()
     }
 
     /// A write lands between pieces of the read, as the member's inputs do while it pauses.
@@ -1214,6 +1227,76 @@ fn promote_ahead_starts_no_stopped_shard_and_a_due_range_does() {
     assert!(matches!(s, Step::Promoted { .. }), "{s:?}");
     assert_eq!(*d.warm.borrow(), [false], "a due range's promotion is no warm call");
     assert!(d.running.get(), "and starts the shard");
+}
+
+/// `retire-sticks`: a due range whose promotion fails the same way every time backs off, and its retries start no
+/// stopped shard. On graft-m1, `repo:1048577`'s revived 4-entry log met a stale marker naming entry 504: each alarm's
+/// retry of range (1, 4) posted `/promote?warm=start` to every site's shard, started all three containers, and failed
+/// "entry 504 of a marker was not answered" (Workers Logs, site a, 2026-11-20 10:43:05Z and 10:51:02Z).
+#[test]
+fn a_promotion_that_keeps_failing_backs_off_and_starts_no_stopped_shard_again() {
+    let b = Bed::new();
+    for k in 0..60 {
+        push(&b, k, 1_500);
+    }
+    snapshot(&b);
+    let failed = "repo:7: entry 504 of a marker was not answered";
+    *b.fail.borrow_mut() = Some(failed.into());
+    b.running.set(false);
+    let step = || block_on(log_archive::step(&b, &mut b.run.borrow_mut(), CAP, CAP / 5, log_archive::PROMOTE_MAX));
+    assert_eq!(step(), Err(failed.into()), "the first try of a due range");
+    assert_eq!(*b.warm.borrow(), [false], "starts the stopped shard, as before");
+    // The next alarms, a minute apart on main, find the range in its backoff: no shard call at all.
+    b.wall.set(log_archive::RETRY_FIRST_MS - 1);
+    assert_eq!(step(), Ok(Step::Idle));
+    assert_eq!(b.warm.borrow().len(), 1, "no retry inside the backoff");
+    // The containers were torn down. Past the backoff the retry is a warm call: skipped, and nothing started.
+    b.running.set(false);
+    b.wall.set(log_archive::RETRY_FIRST_MS);
+    assert_eq!(step(), Ok(Step::Idle));
+    assert_eq!(*b.warm.borrow(), [false, true]);
+    assert!(!b.running.get(), "a retry started a stopped shard");
+    // Hours of alarms with the failure unchanged: a stopped shard is started only once every RESTART_EVERY_MS, and
+    // the backoff doubles up to RETRY_MAX_MS while the shards run.
+    // For the first two hours a client keeps the shards running, so the warm retries reach them and fail too; a
+    // failed warm retry is no start, and the next start still comes RESTART_EVERY_MS after the first.
+    let (mut starts, mut calls, mut first_restart) = (0, 0, None);
+    let hours = 24 * 3_600_000;
+    for t in (log_archive::RETRY_FIRST_MS..hours).step_by(60_000) {
+        b.wall.set(t);
+        let client = t < 2 * 3_600_000;
+        b.running.set(b.running.get() || client);
+        let before = b.warm.borrow().len();
+        let _ = step();
+        let w = b.warm.borrow();
+        if w.len() > before {
+            calls += 1;
+            if !w[w.len() - 1] {
+                starts += 1;
+                first_restart.get_or_insert(t);
+            }
+        }
+        drop(w);
+        // The shard a start brought up lapses before the next one (`promote-lapse`).
+        if !client && (!b.running.get() || t % (10 * 60_000) == 0) {
+            b.running.set(false);
+        }
+    }
+    let r = first_restart.expect("no restart in a day");
+    assert!(
+        (log_archive::RESTART_EVERY_MS..=log_archive::RESTART_EVERY_MS + log_archive::RETRY_MAX_MS).contains(&r),
+        "the first restart came at {r} ms, not RESTART_EVERY_MS after the first start"
+    );
+    // The first try started the shards at 0; a day holds three more restarts, each a little past its 6 h.
+    let most_starts = (hours / log_archive::RESTART_EVERY_MS) as usize;
+    assert!((most_starts - 1..most_starts).contains(&starts), "{starts} restarts in a day, want {}", most_starts - 1);
+    assert!(calls <= 1 + (hours / log_archive::RETRY_FIRST_MS) as usize / 2, "{calls} calls in a day");
+    // The failure clears: the next retry past its backoff, on a running shard, promotes the same range from entry 1.
+    *b.fail.borrow_mut() = None;
+    b.running.set(true);
+    b.wall.set(hours + log_archive::RETRY_MAX_MS);
+    let Ok(Step::Promoted { from, .. }) = step() else { panic!("the range never promoted once its failure cleared") };
+    assert_eq!(from, Index(1));
 }
 
 /// The promote-ahead trigger against push rates, on a virtual clock: stored pushes arrive at a rate, and each

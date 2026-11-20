@@ -118,7 +118,9 @@ kept serving, and 924 API reads, 510 ref reads and 71 agent pushes ended `fetch 
      retired answers "not joined"; it checks the group itself and refuses a network with any member joined). A
      retired group's packs left in the buckets make every `*/15` sweep ask its dead group and alarm each pack
      (`decisions/OPEN-QUESTIONS.md`, R25). Only networks the run itself created are purged; the sweeper never
-     deletes a group's packs on its own;
+     deletes a group's packs on its own. `purge.py` purges every site bucket of the install, a voterless site's too
+     (graft-m1's `graft-m1-packs-d`): one it skipped was copied back into the others by the sweep
+     (`decisions/DECISIONS.md`, "`retire-sticks`");
   4. `joined.mjs` over every repository the run created, including ones a driver created and then skipped, ending
      "none joined". A test repository left joined is refolded by the site's fold audit once a day (`fold_audit.rs`,
      4 chains each `*/15` run): on `graft-m3f` 40 leftovers from 2026-11-13 to 11-16 wrote 501,211 rows in one

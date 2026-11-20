@@ -201,6 +201,9 @@ pub struct ReplyMeta { pub term: Term, pub leader: Option<SiteId>, pub config_in
 /// built two groups in 20 of 20 rounds [measured, `tests/m1/results/m1-wp7.md`, BF-10]. Two edges creating a group at
 /// once propose the same entry; the member called to create it campaigns for term 2 once a quorum stores it, commits
 /// its `Noop`, decides the call's command, and transfers leadership to `home`. `Release`'s record is its genesis.
+/// A retired member (a purge's `/purge_retire`, the test route `/retire`) deletes its storage and keeps one `retired`
+/// row, and refuses every `/join` after it: retired without it, `repo:1048577`'s members were joined again by the next
+/// read's create on first use, at generation 1 with an empty log [measured, `decisions/DECISIONS.md`, `retire-sticks`].
 pub fn bootstrap(chain: ChainId, record: &PlacementRecord) -> LogEntry;
 pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);    // [guess]
 /// A home's most RTT to its nearest voter; other regions unbounded [measured: B0-02's tail follows it, B0-12 medians]
@@ -1061,7 +1064,9 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 /// The sweeper deletes a pack or blob older than 24 h only when it has no marker and the chain named in its custom
 /// metadata has no `request` row for its `RequestId` naming its `PackId` (a retry's row names the retry's pack, not the
 /// first placement's orphan). When one exists, it writes the missing marker. An object older than REQUEST_RETENTION
-/// with neither is kept and alarmed [measured, `tests/m1/results/m1-wp4.md`, BF-19, `request` table stubbed]. Each site sweeps the networks it homes, and keeps each network's home (`RepoOwner`, then `Placement`, on `Names`) in its cursor object for HOME_FOR_MS (24 h [guess]), reading at most HOMES_PER_RUN (64 [guess]) new or day-old homes a run: read every 15-minute run, the two `Names` reads per network woke idle `Names` members, which wrote about 2.6 k rows a run, four runs an hour, on an idle `graft-m2b` [measured, `tests/am1/results/lm1-memory.md`, "Idle Durable Object rows" and `sweep-quiet`]. A run asks a chain whose `request` lookup failed nothing more that run, so its other packs are unavailable (kept and alarmed) and a group no member answers costs the lookups in flight when the first fails, one LOOKUP_FOR of wall time, not one per pack, and it starts no network and asks no lookup once SWEEP_WALL (8 minutes [guess]) of the Cron Trigger's 15 [doc, `research/cloudflare.md`] have passed, then stores its cursor, leaving the network in flight and the fold audit their time: a run cancelled at 15 minutes stores nothing, so every later run died at the same network, which on `graft-m2b` site a was retired test group `repo:131322`, whose packs cost LOOKUP_FOR each, 16 at a time [measured, `tests/am1/results/lm1-memory.md`, "Site a's sweep wall"].
+/// with neither is kept and alarmed [measured, `tests/m1/results/m1-wp4.md`, BF-19, `request` table stubbed]. A chain
+/// whose group is gone (every member reached answers not joined) gets no marker or fill: a purge that missed one bucket
+/// had its packs copied back into the others [measured, `retire-sticks`]. Each site sweeps the networks it homes, and keeps each network's home (`RepoOwner`, then `Placement`, on `Names`) in its cursor object for HOME_FOR_MS (24 h [guess]), reading at most HOMES_PER_RUN (64 [guess]) new or day-old homes a run: read every 15-minute run, the two `Names` reads per network woke idle `Names` members, which wrote about 2.6 k rows a run, four runs an hour, on an idle `graft-m2b` [measured, `tests/am1/results/lm1-memory.md`, "Idle Durable Object rows" and `sweep-quiet`]. A run asks a chain whose `request` lookup failed nothing more that run, so its other packs are unavailable (kept and alarmed) and a group no member answers costs the lookups in flight when the first fails, one LOOKUP_FOR of wall time, not one per pack, and it starts no network and asks no lookup once SWEEP_WALL (8 minutes [guess]) of the Cron Trigger's 15 [doc, `research/cloudflare.md`] have passed, then stores its cursor, leaving the network in flight and the fold audit their time: a run cancelled at 15 minutes stores nothing, so every later run died at the same network, which on `graft-m2b` site a was retired test group `repo:131322`, whose packs cost LOOKUP_FOR each, 16 at a time [measured, `tests/am1/results/lm1-memory.md`, "Site a's sweep wall"].
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// Before archiving a range, the home shard packs the objects its packs brought (no `--fix-thin` bases), named by tree
 /// entry, into one self-contained `DurablePack` [measured, `lm1-memory` 23b]; the leader commits `Promoted`, then
@@ -1070,7 +1075,10 @@ pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// first past LOG_MAX_BYTES / 32 above the last `Promoted` [guess] until a run passes its trigger, warm (no stopped
 /// shard starts, `lm1-memory` 28); a promotion takes 8 ranges, an `Archived` 8 objects [inference]. Streamed unlocked
 /// in parts to buckets and a validate that catches up first; PROMOTE_MAX batches, an entry over it alone [measured,
-/// `lm1-memory` 20]. `Compacted.consumed` names promoted packs; restore checks inline ones by digest chain.
+/// `lm1-memory` 20]. `Compacted.consumed` names promoted packs; restore checks inline ones by digest chain. A failed
+/// promotion's range retries after 1 minute, doubling to 8 [guess], warm (no stopped shard starts) unless 6 h [guess]
+/// passed since a try that could start one; the member keeps that state across isolates. Retried at every alarm, one
+/// that could never pass started three containers a try [measured, `retire-sticks`].
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
 /// each chain names after its last `Promoted`, a page at a time with the next read meanwhile (two pages held), saving

@@ -6560,3 +6560,37 @@ Capping the count keeps a burst's entries in the size range that measured under 
 - The long sweep and Porcupine on this branch and on main are in `tests/m0/results/agent-cmds-entry.md`.
 
 **Flip.** A B0-32 rerun where an entry of at most 64 Agent commands still stalls the leader's ticker over 1 s (the cost is per turn, not per command), or where the burst's queue drains slower than about 3 s (the cap is too low, or the cost is elsewhere).
+
+### `retire-sticks`: a retired member refuses `/join`, a failed promotion backs off warm, and the sweep writes nothing for a gone chain, 2026-11-20
+
+**Status.** Code-only, on branch `retire-sticks`, not deployed. All three halves are site code and ship on a site day; `tests/fanout/purge.py` is harness and applies at once.
+
+**What happened on graft-m1** [measured, Workers Logs and read-only R2 listings, 2026-11-20]:
+- `repo:1048577` is `m3org/lf1-0`, an LF-1 test repository that was never deleted. Its group was retired 11-18 and again at 07:09:25Z, and purged at 07:10:48Z from `graft-m1-packs-{a,b,c}`. `tests/fanout/purge.py` purged only sites a, b and c (`SITES = "abc"`), but graft-m1 has a fourth site, d, whose bucket `graft-m1-packs-d` holds every network's packs.
+- **The stale marker.** Site a's `*/15` sweep, started 08:15:17Z, logged `network 1048577: fills 3, done 3`. Its plan found the committed pack `01M724JD…` (an empty 32-byte PACK) and its marker `{"chain":"repo:1048577","index":504}` in bucket d only, and filled them into a, b and c, written 08:15:37–39Z. Those six objects were the only changes in all three buckets from 08:14 to 08:17Z.
+- **The revive.** At 10:41:39Z one `POST /m3org/lf1-0.git/git-upload-pack` (trace `204ab325`, colo LAX) read the repository. Its members answered not joined, so `refs_page` called `ensure_group`, which is `graftyard_lookup::create`. That posted `/join` to the three bootstrap names. Each checked the repository's live `RepoOwner` row, claimed generation 1 (the registry `claim` row from the first bootstrap still named generation 1), and at 10:41:48Z built an empty group ("fold tables made again"). A retire deletes the member's storage and nothing else, so nothing said "retired".
+- **The containers.** The revived group's archive alarm found range (1, 4) due. Each try posted `/promote?warm=start` to every site's shard, starting all three containers, and the catch-up's probe read the marker's entry 504 from a 4-entry log: "entry 504 of a marker was not answered". It retried at 10:43:05, 10:51:02, 11:38:01 and 13:51:13Z, with no backoff, and the containers were running again at 13:51Z and 14:04Z after B0-34's teardowns.
+- **3473415, the same fill without a revive.** It was retired at 13:19Z and purged at 13:26:58Z. Site a's sweep from 13:45:17Z logged `fills 15, done 3, failed 12` and wrote 6 `pack/` and 3 `committed/pack/` objects into a and b at 13:47:57–13:48:01Z, copies of bucket d's 10:48Z objects. The same run filled the purged 3473414 (7 done) and 3538957 (6 done). After 13:20Z, 3473415's members saw only registry reads: no `/join`, catch-up or promotion. A sweep's write does not revive a group; it leaves stale markers that a later revive trips on.
+
+**Decision.**
+- **A retire sticks** (`workers/site/src/retire.rs`). `/purge_retire` and the test route `/retire` delete the alarm and storage, then write one row, `retired` in `me`, which outlives the object's reset. A member with the row refuses every `/join` with 409 `{"refused": {"retired": at}}`, and its `/status` names it. A placement try the group never took is cleared with `{"reuse": true}`, which writes no row, because the next re-placement joins the same names from the committed placement's next generation.
+- **A failed promotion backs off** (`graftyard_git::log_archive`, `Run::retry`). A failed range waits `RETRY_FIRST_MS` (1 minute), doubling per failure in a row up to `RETRY_MAX_MS` (8 minutes) [guess]. Past the wait its retry is a warm call, which starts no stopped shard, unless `RESTART_EVERY_MS` (6 h) [guess] has passed since the last try that could. The state is kept in the member's `me` row `archive_run` across isolates, and cleared when the range promotes.
+- **The sweep writes nothing for a gone chain** (`graftyard_git::sweep`, `RequestSource::gone`). Before it runs a network's plan, the sweep asks each chain its markers and fills write for whether its group is gone, a probe read that ends `no group` (every member reached not joined). It drops that chain's markers and fills and alarms `Gone`. An outage or any other answer is not gone, and nothing changes. Deletes and aborts are unchanged.
+- **The harness purges every site bucket** (`tests/fanout/purge.py`, `site_buckets`).
+
+**Why.** Each half closes one link of the loop. The missing bucket left a marker; the sweep spread it; create-on-first-use rebuilt the retired group; and the alarm started three containers per retry against a marker that could never be answered. Without the backoff, any promotion that always fails (a bad marker, a corrupt pack) would cost a cold start of every shard per alarm.
+
+**Beat.**
+- **Deleting the registry rows and `claim` row on retire.** That only moves the problem: a create then claims afresh and rebuilds the group anyway.
+- **Making the edge refuse create for a retired chain.** The edge cannot tell a retired group from an unborn one without a member's own word, which this row is.
+- **Treating an unanswerable marker as foreign and skipping it in `catchup`.** A shard that drops a committed marker could serve a repository missing packs; the backoff stops the cost without touching what a shard trusts.
+- **A sweep that refuses a fill when the source bucket is a voterless site.** Too narrow: any bucket a purge missed does the same.
+
+**Evidence.**
+- `a_promotion_that_keeps_failing_backs_off_and_starts_no_stopped_shard_again` (`crates/git/tests/log_archive.rs`) fails on main at the first retry inside the backoff (`Err("…entry 504…")` where it wants `Idle`).
+- `a_gone_chain_s_packs_are_not_filled_or_marked` and `a_gone_chain_whose_lookup_failed_this_run_is_still_not_filled` (`crates/git/src/sweep.rs`) fail on main's plan, which writes the fills.
+- `tests/retirebed/run.sh`, on a real Durable Object in local workerd: after a retire and reset, and again after a workerd restart, `fix` refuses `/join`, `main` (storage deleted only, as main's `/retire`) joins, which is the revive, and `reuse` joins.
+- `tests/m0carried/plant63.py` catches 10 of 10 mutants across the three halves.
+- `test_every_site_bucket_of_the_install_is_purged_and_no_other` (`tests/fanout/test_purge.py`).
+
+**Flip.** A retired name that must be joined again by a route other than a placement's own tries (then that route needs `reuse` or a generation above the row's); a promotion failure that clears within the backoff often enough to slow a B0-30 drain past the log cap; or a hosted sweep that leaves a live chain unfilled because its probe answered `no group` during a move.

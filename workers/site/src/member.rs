@@ -13,6 +13,7 @@
 //! - `POST /transfer`, `/reconfigure`, `/replace`: leadership transfer, one config change, and a member replaced on
 //!   its own site with a new generation (BF-11's member retry and `ReplaceMember` stub).
 //! - `GET /status` and `/stats`: the member's role, log position, and latency samples.
+//! - A retired member (`/retire`, `/purge_retire`) refuses every `/join` (`crate::retire`).
 //! - With the `test-faults` feature only: `GET /log`, `/audit`, `/faults`, `/deps_log`, `/isolate`, and `POST /reset`,
 //!   `/retire`, `/probe_vote`, the test harness's reads, kill, lost-member stub, BF-10's vote-and-read probe, and the
 //!   per-isolate fault counters; and the commit fields `kill`, `down_ms`, `hold_deps_ms`, `hold_ms`, the `/join` field
@@ -520,6 +521,9 @@ impl DurableObject for Member {
         let url = req.url()?;
         if let (Method::Post, "/join") = (req.method(), url.path()) {
             let join: Join = req.json().await?;
+            if let Some(why) = crate::retire::refusal(crate::retire::at(&self.state.storage().sql())) {
+                return Response::from_json(&json!({ "refused": why })).map(|r| r.with_status(409));
+            }
             if self.hosts.borrow().is_none() {
                 let Some(h) = Hosted::build(self.state.clone(), self.env.clone(), &join) else {
                     return Response::error(format!("no member family hosts {} as joined", join.chain), 400);
@@ -532,7 +536,9 @@ impl DurableObject for Member {
         let Some(h) = self.hosts.borrow().as_ref().map(Hosted::clone) else {
             return match (req.method(), url.path()) {
                 (Method::Get, "/ping") => Response::empty(),
-                (Method::Get, "/status") => Response::from_json(&json!({ "joined": false })),
+                (Method::Get, "/status") => Response::from_json(
+                    &json!({ "joined": false, "retired": crate::retire::at(&self.state.storage().sql()) }),
+                ),
                 (Method::Get, "/rtt") => Response::from_json(&rtt_rows(&self.state, &self.env)?),
                 _ => Response::error("member not joined", 409),
             };
@@ -919,8 +925,9 @@ impl<F: Family> Steps for RouteSteps<'_, F> {
     }
 
     async fn clear(&self, m: &MemberRef) {
+        // The next re-placement joins the same names again, from the committed placement's next generation.
         #[cfg(feature = "test-faults")]
-        let _ = self.r.post_member(m, "/retire", &json!({})).await;
+        let _ = self.r.post_member(m, "/retire", &json!({ "reuse": true })).await;
         #[cfg(not(feature = "test-faults"))]
         let _ = m;
     }
@@ -1358,8 +1365,7 @@ impl<F: Family> Routes<F> {
                     return Response::from_json(&json!({ "refused": why })).map(|r| r.with_status(409));
                 }
                 self.host.dying.set(true);
-                self.host.state.storage().delete_alarm().await?;
-                self.host.state.storage().delete_all().await?;
+                crate::retire::wipe(&self.host.state, now_ms(), false).await?;
                 host::abort(&self.host.state, "graftyard member purged");
                 Response::from_json(&json!({ "retired": true }))
             }
@@ -1457,12 +1463,14 @@ impl<F: Family> Routes<F> {
                 host::abort(&self.host.state, "graftyard member reset");
                 Response::error("reset", 503)
             }
-            // Test stub of a lost member (BF-11's `ReplaceMember`): its storage is deleted and the object resets, so
-            // it answers as a member that was never joined.
+            // Test stub of a lost member (BF-11's `ReplaceMember`) and the harness's retire of a finished test group:
+            // its storage is deleted and the object resets, so it answers as not joined, and it refuses every later
+            // `/join` (`crate::retire`). `{"reuse": true}` (a placement try the group never took, or a harness
+            // recreate of the same names) leaves no such refusal.
             (Method::Post, "/retire") => {
-                let _ = &mut req;
+                let reuse = req.json::<Value>().await.ok().and_then(|b| b["reuse"].as_bool()).unwrap_or(false);
                 self.host.dying.set(true);
-                self.host.state.storage().delete_all().await?;
+                crate::retire::wipe(&self.host.state, now_ms(), reuse).await?;
                 host::abort(&self.host.state, "graftyard member retired");
                 Response::from_json(&json!({ "retired": true }))
             }

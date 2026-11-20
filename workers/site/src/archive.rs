@@ -91,11 +91,17 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
     RUNNING.with(|r| r.borrow_mut().insert(key.clone()));
     let w = Rc::downgrade(h);
     spawn_local(async move {
-        let mut run = RUN.with(|r| r.borrow().get(&key).copied().unwrap_or_default());
+        let kept = RUN.with(|r| r.borrow().get(&key).copied()).or_else(|| w.upgrade().map(|h| stored_run(&h)));
+        let mut run = kept.unwrap_or_default();
         let r = match w.upgrade() {
             Some(h) => drain(&h, &mut run).await,
             None => Ok(Step::Idle),
         };
+        if run.kept() != kept.unwrap_or_default().kept()
+            && let Some(h) = w.upgrade()
+        {
+            store_run(&h, &run);
+        }
         RUN.with(|r| r.borrow_mut().insert(key.clone(), run));
         RUNNING.with(|r| r.borrow_mut().remove(&key));
         LEFT.with(|l| match &r {
@@ -118,6 +124,27 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
             }
         }
     });
+}
+
+/// The member's stored `Run::kept`, read once per isolate: a failed promotion's retry pacing outlives an isolate.
+fn stored_run(h: &Rc<Host<Repo>>) -> Run {
+    let q = "SELECT v FROM me WHERE k = 'archive_run'";
+    rows(&h.state.storage().sql(), q, vec![])
+        .ok()
+        .and_then(|r| r.first().and_then(|r| crate::host::text(&r[0]).ok().and_then(|t| serde_json::from_str(t).ok())))
+        .unwrap_or_default()
+}
+
+/// Stores `Run::kept`, only when it changed: a promotion failed, or a failed range promoted.
+fn store_run(h: &Rc<Host<Repo>>, run: &Run) {
+    let sql = h.state.storage().sql();
+    let r = match serde_json::to_string(&run.kept()) {
+        Ok(v) => sql.exec("INSERT OR REPLACE INTO me (k, v) VALUES ('archive_run', ?)", vec![v.into()]).map(|_| ()),
+        Err(e) => Err(Error::RustError(e.to_string())),
+    };
+    if let Err(e) = r {
+        note(h, format!("archive: storing the retry state: {e}"));
+    }
 }
 
 /// Whether this member's last archive run as leader, within `LEFT_FOR`, stopped with a range still due or failed:
@@ -293,6 +320,10 @@ impl ArchiveHost for SiteHost<'_> {
             roll: true,
         };
         in_band(&self.h.env, &p).await
+    }
+
+    fn wall_ms(&self) -> u64 {
+        now_ms()
     }
 
     /// One timer turn, so the member's inputs and its Raft tick run between pieces of a promotion's read.

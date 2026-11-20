@@ -14,7 +14,8 @@ for (const g of groups) {
   log(`${g.name} before: ${(await statuses(g.chain, 4)).map((s) => `${s.site}:${brief(s)}`).join(" | ")}`);
   for (const site of [0, 1, 2, 3]) {
     // The object resets inside the call, so the answer is often no answer at all; `/status` after says what happened.
-    const r = await member(g.chain, site, "/retire", {}).catch((e) => ({ status: String(e).slice(0, 60) }));
+    // `reuse`: the create below joins the same names, which a plain retire now refuses (`retire-sticks`).
+    const r = await member(g.chain, site, "/retire", { reuse: true }).catch((e) => ({ status: String(e).slice(0, 60) }));
     log(`${g.name} site ${site} /retire: ${r?.status} ${String(JSON.stringify(r?.v)).slice(0, 80)}`);
   }
   const git = new Git(`m3org/${g.name}`).as(tokens.admin);

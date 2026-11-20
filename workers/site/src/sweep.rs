@@ -46,6 +46,25 @@ impl RequestSource for Rows<'_> {
         let (v, _) = crate::lookup::call(self.env, chain, &record, "/read", &q).await.map_err(StoreError)?;
         row_of(chain, &v)
     }
+
+    /// A probe read through the lookup: gone only when it ends no group, every member it reached not joined
+    /// (`graftyard_lookup::is_no_group`). A chain whose record cannot be read, or any other failure, is not gone.
+    async fn gone(&self, chain: ChainId) -> bool {
+        let ChainId::Repo(repo) = chain else { return false };
+        let cached = self.records.borrow().get(&chain).cloned();
+        let record = match cached {
+            Some(r) => r,
+            None => {
+                let Ok(owner) = crate::member::repo_owner(self.env, repo).await else { return false };
+                let Ok(r) = crate::member::owner_record(self.env, owner).await else { return false };
+                self.records.borrow_mut().insert(chain, r.clone());
+                r
+            }
+        };
+        let probe = json!({ "q": { "probe": true } });
+        matches!(crate::lookup::call(self.env, chain, &record, "/read", &probe).await,
+            Err(e) if graftyard_lookup::is_no_group(&e))
+    }
 }
 
 /// A `/read` answer to `{"q": {"request": id}}`: `{"value": null}` for no row, or the row's index and packs.
