@@ -13,7 +13,7 @@ use crate::quorum;
 use crate::types::{Term, TransferError, TransferId};
 use crate::{CALL_DEADLINE, LEASE, RESET_QUARANTINE, after};
 
-use super::{Member, Message, Ready, Role};
+use super::{AbandonWhy, Alarm, Member, Message, Ready, Role};
 
 pub(super) struct Transfer {
     pub(super) id: TransferId,
@@ -129,8 +129,12 @@ impl<C: Command> Member<C> {
         // A `/transfer` or drain hand-off stops once its target's link would refuse it, as it would not have started
         // (F67 rule 13): a target that went half-hung after it began held the group for the whole LEASE, and the
         // hand-off's reports barred this leader after it.
-        if now >= after(t.started, LEASE) || (t.guarded && self.link_refused(t.to)) {
-            self.abandon_transfer();
+        if now >= after(t.started, LEASE) {
+            self.abandon_transfer(AbandonWhy::Lease);
+            return;
+        }
+        if t.guarded && self.link_refused(t.to) {
+            self.abandon_transfer(AbandonWhy::LinkRefused);
             return;
         }
         let last = self.last();
@@ -155,13 +159,14 @@ impl<C: Command> Member<C> {
     }
 
     /// Ends the transfer with this member still leading: `transfer: None`, no lease, and `fresh` only after a round
-    /// sent from now.
-    pub(super) fn abandon_transfer(&mut self) {
+    /// sent from now. The host logs `why` (`Alarm::TransferAbandoned`, F108).
+    pub(super) fn abandon_transfer(&mut self, why: AbandonWhy) {
         let Some(lead) = self.lead.as_mut() else { return };
         let Some(t) = lead.transfer.take() else { return };
         lead.reset_lease(self.now);
         self.state.transfer = None;
         self.dirty = true;
+        self.out.alarms.push(Alarm::TransferAbandoned { to: t.to, step_down: t.step_down, why });
         self.health_transfer_failed(t.to, t.step_down);
         self.broadcast_all();
         self.pump_after_transfer();
@@ -193,7 +198,7 @@ impl<C: Command> Member<C> {
         if term != self.state.term || self.transferring().is_none_or(|(_, id)| id != transfer) {
             return;
         }
-        self.abandon_transfer();
+        self.abandon_transfer(AbandonWhy::Refused);
     }
 
     /// Whether this member may campaign, resume `led_term`, or take a transfer: it has a committed config, its site is

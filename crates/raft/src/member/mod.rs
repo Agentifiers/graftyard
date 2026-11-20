@@ -448,6 +448,20 @@ pub enum Alarm {
     OwnDefect { index: Index },
     /// `STEP_DOWN` tripped. `to` is the transfer target, or `None` when the leader holds for one window.
     StepDown { why: StepDownWhy, to: Option<SiteId> },
+    /// A transfer to `to` ended with this member still leading (`abandon_transfer`), for the host's log only (F108).
+    /// `step_down` says `STEP_DOWN` started it.
+    TransferAbandoned { to: SiteId, step_down: bool, why: AbandonWhy },
+}
+
+/// Why a transfer was abandoned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbandonWhy {
+    /// It did not complete within one LEASE.
+    Lease,
+    /// The target answered `TransferRefused`.
+    Refused,
+    /// A `/transfer` or drain hand-off's target link turned lossy while another follower's did not (F67 rule 13).
+    LinkRefused,
 }
 
 /// What tripped `STEP_DOWN`, with the window's numbers.
