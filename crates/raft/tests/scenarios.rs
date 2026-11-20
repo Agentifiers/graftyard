@@ -1441,11 +1441,19 @@ fn a_backlog_splits_into_entries_within_entry_soft_in_order() {
             }
         }
     }
-    // Every entry fits ENTRY_SOFT, with its encoding's overhead, and all but the last have no room for one more
+    // Every entry fits its bound, with its encoding's overhead: ENTRY_SOFT_DEEP while more than DEEP_QUEUE entries'
+    // worth was still queued behind it (soft-grow), else ENTRY_SOFT. All but the last have no room for one more
     // command: a cap that never binds or one that splits early both fail here.
+    use graftyard_raft::{DEEP_QUEUE, ENTRY_SOFT_DEEP};
     let lens: Vec<usize> = entries.iter().map(|e| encode_entry(e).len()).collect();
-    assert!(lens.iter().all(|l| *l <= ENTRY_SOFT + 3_000), "entries of {lens:?} bytes");
-    assert!(lens[..lens.len() - 1].iter().all(|l| *l > ENTRY_SOFT - 2_000), "an entry split early: {lens:?}");
+    let mut queued: usize = lens.iter().sum();
+    for (i, l) in lens.iter().enumerate() {
+        let bound = if queued > DEEP_QUEUE * ENTRY_SOFT + 3_000 { ENTRY_SOFT_DEEP } else { ENTRY_SOFT };
+        // The encoding adds about 30 bytes a command past what the cut counts.
+        assert!(*l <= bound + bound / 30, "entry {i} of {l} bytes from {queued} queued: {lens:?}");
+        assert!(i + 1 == lens.len() || *l > bound - 2_000, "entry {i} split early: {lens:?}");
+        queued -= l;
+    }
     assert_eq!(seen, (0..300).collect::<Vec<_>>(), "every command once, in admission order");
     for t in tickets {
         assert!(c.ticket_results(t).iter().any(|r| matches!(r, Resolution::Ticket { result: Ok(_), .. })));

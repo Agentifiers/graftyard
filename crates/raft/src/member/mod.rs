@@ -397,7 +397,8 @@ pub struct DepsWanted {
 pub enum CutEnd {
     /// Every queued command was taken.
     Empty = 0,
-    /// The next command would take the batch past its soft bytes (ENTRY_SOFT unless the host set it).
+    /// The next command would take the batch past its soft bytes (ENTRY_SOFT unless the host set it, ENTRY_SOFT_DEEP
+    /// while the queue is deep).
     Soft = 1,
     /// The next command would take the batch past ENTRY_MAX, counting agent inline packs.
     EntryMax = 2,

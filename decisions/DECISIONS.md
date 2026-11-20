@@ -6661,3 +6661,28 @@ Open question G33, found in `retire-sticks`: since a retired member refuses ever
 
 **Flip.** A retired group that must serve reads again without a new create, so a 404 would hide a repository that exists; or a hosted read that 404s while a majority of members answered `retired` for a group that was not retired (none is known: only `/retire` and `/purge_retire` write the row).
 
+### `soft-grow`: an entry fills to `ENTRY_SOFT_DEEP` (150 KB) while more than `DEEP_QUEUE` (2) entries' worth of Human and MergeQueue bytes waits, 2026-11-20
+
+The lead's decision after B0-35 m62: raise bytes per round while the queue is deep, not entries in flight, which stays one (`tests/m4/results/m4-wp4.md`, "B0-35 on a test-faults build after site day 62").
+
+**Decision.** When the leader cuts an entry, it sums the stored bytes (`soft_bytes`) of the Human and MergeQueue commands queued. If they exceed `DEEP_QUEUE` times its soft bound, the cut fills to `ENTRY_SOFT_DEEP` instead of `ENTRY_SOFT` (`crates/raft/src/lib.rs`; `cut` in `crates/raft/src/member/leader.rs`). The next cut that finds the queue at or under that depth is back at `ENTRY_SOFT`. Admission capacity, and so the agent bucket, is still sized from `ENTRY_SOFT`. Agent and Bot commands do not count toward depth, though they may fill a grown entry's room after the first lanes. `ENTRY_MAX`, `AGENT_INLINE_ENTRY`, `AGENT_CMDS_ENTRY` and one entry in flight are unchanged.
+
+**Why.**
+- On m62 every cut that ended on bytes ended at `ENTRY_SOFT` (1,037 of 1,763 cuts; Soft on 158 of 159 by minute 9), and commands left queued after a cut rose from 33 to 350 [measured].
+- The round barely tracks entry size: p50 198 ms under 40 KB and 257 ms over 130 KB. A least-squares fit over m62's 1,760 entries gives a cycle of 306 ms plus 0.49 ms per KB, so a 150 KB entry costs about 7% more cycle than a 100 KB one for 50% more bytes [measured, `tests/fanout/softgrow.py`].
+- One 100 KB entry a round is about 200 KB/s against about 209 KB/s offered at m62's peak, so any slip in the round grows the queue.
+- Replaying m62's traced arrivals through each rule, with each entry's cycle being the row's own cycle at that moment moved by the fit: the flat cut gives queue wait p50 0.7 s, p99 18.0 s, peak 357 commands, 49 s to drain under one entry. That matches the row's measured queue p99 of 17.8 s. soft-grow gives p50 0.6 s, p99 5.6 s, peak 134 commands, 1.5 s to drain. On m61's trace the same replay gives p99 15.7 against 7.3 s [inference].
+
+**What it beat.**
+- **More than one entry in flight:** ruled out by the invariant (AGENTS.md, "A group has one entry in flight").
+- **Raising `ENTRY_SOFT` flat to 150 KB:** it raises admission capacity and the agent bucket with it, and puts every light-load entry over the body step that set the cap (`m0-carried-7`). Growing only on a deep first-lane queue leaves light load and agent admission as they were.
+- **Growing toward `ENTRY_MAX` in proportion to the queue:** a far voter's call first missed `CALL_DEADLINE` at 150 KB (`APPEND_BYTES_MAX`, `m0-carried-8`), and entries past that are unmeasured. One bounded step is enough by the replay.
+- **Counting commands for depth:** pushes run 1 to 100 KB, so bytes are what the bound limits.
+
+**Evidence.**
+- `a_deep_human_queue_fills_entries_to_entry_soft_deep_and_drains` (`crates/raft/tests/admission.rs`) fails on main: the first deep cut takes 9 pushes, not 14. In its load half (40 pushes/s of 10 KiB for 20 s, round p50 about 350 ms), main reaches commit p50 6,090 ms, p99 11,470 ms and 286 queued; the branch reaches 1,205, 1,800 and 44.
+- `each_cut_records_what_ended_it` and `a_backlog_splits_into_entries_within_entry_soft_in_order` now check both bounds.
+- `tests/m0carried/plant65.py`, 6 of 6 caught.
+- The long sweep, Porcupine and the full checks are in `tests/m4/results/m4-wp4.md`, "`soft-grow`".
+
+**Flip.** Compare the same burst before and after. A row where grown entries (over 100 KB) have a higher confirm or `sync` p99, or more confirms of 1 s or more, than the same row's entries of 100 KB or less, while the flat rule's row did not, reverses this. So does a far voter's AppendEntries missing `CALL_DEADLINE` on grown entries. B0-02's m3fst1 found that confirm time did not track size at 8 to 191 KB (F106), so one row's confirm p99 alone is noisy, and the comparison is within the row and against the flat rule's row. Also reversing: a row whose queue wait does not fall against the flat rule at the same offered load.
