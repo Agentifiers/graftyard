@@ -317,6 +317,11 @@ pub(crate) fn alarm_line(do_name: &str, do_id: &str, a: &graftyard_raft::Alarm) 
     format!("member alarm {do_name} {do_id}: {a:?}")
 }
 
+/// F109: a member alarm that ran ALARM_SLOW_MS or more, by group, with every await's ms (`AlarmSteps::slow_line`).
+pub(crate) fn slow_alarm_line(do_name: &str, do_id: &str, steps: &str) -> String {
+    format!("member {do_name} {do_id} {steps}")
+}
+
 pub(crate) fn step_down_line(w: &graftyard_raft::StepDownWindow) -> String {
     let slow = w.confirms.iter().filter(|c| c.1 > graftyard_raft::STEP_DOWN.confirm_p99_ms).count();
     let pairs = |v: &[(graftyard_types::Timestamp, u32)]| -> Vec<[u64; 2]> {
@@ -3859,7 +3864,10 @@ impl<F: Family> Host<F> {
 
     /// The leader's alarm: one `tick`, then re-armed only while the member leads and served in the last 60 s. The
     /// family's own alarm work (a snapshot writer's batches) runs first and asks for the next alarm itself.
-    pub async fn alarm(self: &Rc<Self>) {
+    pub async fn alarm(self: &Rc<Self>) -> crate::alarm_steps::AlarmSteps {
+        // F109: each await's ms, so the caller logs a long alarm by its steps (`AlarmSteps::slow_line`). `note` adds
+        // no timer, so the alarm runs as before; the family's alarm and `set_alarm` are its only awaits.
+        let mut steps = crate::alarm_steps::AlarmSteps::start(now_ms());
         self.alarm_at.set(0);
         {
             let mut s = self.stats.borrow_mut();
@@ -3867,6 +3875,7 @@ impl<F: Family> Host<F> {
             s.alarm_last = now_ms();
         }
         F::on_alarm(self).await;
+        steps.note("family");
         // A follower woken only for its fold work does not run Raft's timers: before the family's alarms, only a
         // member that served had one.
         let recent = now_ms().saturating_sub(self.served_at.get()) < DRAIN_IDLE_MS;
@@ -3880,6 +3889,7 @@ impl<F: Family> Host<F> {
         if !leading {
             self.keep_led();
         }
+        steps.note("tick");
         // The alarm this invocation armed is set again, awaited, before it returns. One armed only from the task
         // `arm_in` spawns can be lost as the invocation ends [inference]: in BF-57 run 10 (graft-m4a) a leader's alarm
         // armed `arm` 2 s out at 90 s, none ran after it, and five committed entries waited 137 s for an unrelated
@@ -3893,6 +3903,16 @@ impl<F: Family> Host<F> {
             if s.alarms.len() < 50 {
                 s.alarms.push(format!("{} set alarm at end: {e}", now_ms()));
             }
+        }
+        steps.note("set_alarm");
+        steps
+    }
+
+    /// F109's line for a member alarm of ALARM_SLOW_MS or more, named as `alarm_line` names its group.
+    pub fn log_slow_alarm(&self, steps: &crate::alarm_steps::AlarmSteps) {
+        if let Some(line) = steps.slow_line() {
+            let name = self.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
+            console_log!("{}", slow_alarm_line(&name, &self.state.id().to_string(), &line));
         }
     }
 
@@ -4369,6 +4389,11 @@ mod tests {
         assert_eq!(
             super::alarm_line("repo:65579#1#f0", "a0b85daa", &ab),
             "member alarm repo:65579#1#f0 a0b85daa: TransferAbandoned { to: SiteId(2), step_down: true, why: Lease }"
+        );
+        // F109: a slow alarm's line names its group the same way.
+        assert_eq!(
+            super::slow_alarm_line("authz:1#1#f0", "56454535", "alarm slow over 500ms: family 3784ms; alarm 3784ms"),
+            "member authz:1#1#f0 56454535 alarm slow over 500ms: family 3784ms; alarm 3784ms"
         );
     }
 
