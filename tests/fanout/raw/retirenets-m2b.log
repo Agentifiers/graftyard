@@ -127,3 +127,7 @@
 2026-11-19T19:55:22.474Z purge: 65596 purged: a 869 -> 0, b 871 -> 0, c 836 -> 0
 2026-11-19T19:55:22.474Z purge: 65596 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-19T19:55:22.474Z purge: {"dry": false, "purged": 1, "objects": 2576, "refused": [], "second": 0}
+2026-11-19T23:24:10.620Z repo:65597: 12 names, 12 were joined, all not joined
+2026-11-19T23:25:34.754Z purge: 65597 purged: a 1007 -> 0, b 933 -> 0, c 964 -> 0
+2026-11-19T23:25:34.754Z purge: 65597 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:25:34.754Z purge: {"dry": false, "purged": 1, "objects": 2904, "refused": [], "second": 0}
