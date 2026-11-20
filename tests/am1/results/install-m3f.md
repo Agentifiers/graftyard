@@ -85,6 +85,7 @@ graft-m3f is shared by merge-p99 and rehydrate-batch. A site day resets every me
 | 2026-11-19 19:10Z | confirm-storage B0-29 ([thread](https://ampcode.com/threads/T-01a1ccdd-804f-769d-b81a-5f937e3309df)) | site day m3fp2 from main `d8dcd513` (`confirm-storage`, `lock-split`), test-faults, image `sha256:1984a852…` built from `d8dcd513` (`containers/git` changed since `f466a39e`, lock-split), standard-4; no edge day (edge `e25b8638` from m3fhg, main `ab6086b4`); then one B0-29 row on m3fhg's script (fresh repo) through the egress proxy under the harness-outage rule; stop m3f at $6 from the site day's start | site exit 0 (19:22:30Z); sites a/b/c `7e673088` / `9c9381ea` / `3c903ade`, edge `e25b8638` unchanged. Row m3fp2 (repo:65596, run `mwnxzqr1`, load 19:35:18.8–19:45:18.8Z): `/stats` commit p99 1,160 ms (p50 480), a fail over 1 s, with no stall of 10 s or more and no leader confirm of 2 s or more; leader confirm p99 273 ms against m3fhg's 80–107, slower from setup (1-statement p50 23 against 16); one step-down, `LoopLag { clamped: 2 }` at 19:44:03.680 on member-clock samples of 500 / 500 (isolate clock 532 / 533), 0 → 1 at term 3; no Confirm trip; held-grant's flip 0 of 223; round p50 / p99 196 / 429; 0 edge 500s or exceptions; outages 5 s (0.8%, valid); merge:only p99 15,836 ms. Retired, purged (2,576 objects, then 0), none joined of 1, two sweeps with no shard running | $2.46 on graft-m3f from 19:10:37Z (`acctcost.py`, 20:33Z), under the $6 stop. `tests/m0/results/confirm-storage-m3f.md` |
 | 2026-11-19 22:22Z | looplag-clock B0-29 rerun ([thread](https://ampcode.com/threads/T-01a1ccdd-804f-769d-b81a-5f937e3309df)) | site day m3fp3 from main `3e521931` (`looplag-clock`, `disk-first-reads`), test-faults, image `sha256:1984a852…` reused (`containers/git` builds the same digest as m3fp2's), standard-4; no edge day (edge `e25b8638` from m3fhg, main `ab6086b4`); then one B0-29 row on m3fhg's script on a fresh network, through the egress proxy under the harness-outage rule; stop m3f at $6 from the site day's start. The SSH thread (T-01a1f5ba) holds off graft-m3f until this row is torn down | site day took four tries: two with wrangler 4.165.0 (npx, no `tests/m0/node_modules`: "Container application settings were not fully applied"), one API timeout at site c phase 2 after `npm ci` pinned 4.153.0, then `deploy.mjs --only 2 --skip-build` at 22:58:28Z; sites a/b/c `28b8fd64` / `ae942427` / `ff9ddeae`; row repo:65597, run `mwo5m105`, load 23:08:42–23:18:42Z, harness outages 1% (valid) | **Fail** on commit p99 (modelled 1,793 ms; `/stats` 4,435, site 0's terms 2 and 4) and 3 leader changes; held-grant's flip passes (1 of 123); site a's two Member objects logged 220,515 × "closure invoked recursively or after being dropped" (`tests/m0/results/looplag-clock-m3f.md`). Network retired and purged (2,904 → 0), none joined, two sweeps with no shard running; $2.57 on graft-m3f (22:22:48Z → 23:29:54Z) |
 | 2026-11-20 04:20Z | ssh-spectrum-worker M6-WP2 ([thread](https://ampcode.com/threads/T-01a1f5ba-537c-7710-8108-fe6017b7e9ec)) | site day and edge day m3fssh from branch `ssh-spectrum-worker` (main `f413f2ac` plus native SSH), test-faults, `--anchor`, new shard image built from `f413f2ac`'s `containers/git`, standard-4, `--ssh` (the `SshFront` class, migration v6, image `sshfront` from `containers/ssh`, host-key slots `SSH_HOST_KEY_A`/`_B`), `--edge graft-m3f-edge`; edge with `--ssh` and FORMATS through 32.26; then a Spectrum Worker app on a test hostname in graftyard.dev: clone, push, a key refused after its removal, a session held 10 minutes; stop m3f at $5 from the site day's start; tear down the app and its DNS record | site day done 04:33:40Z; sites a/b/c `56a05191` / `3ab5c062` / `a4b629fc`, edge `7cb336fc` then `44921364` (the key route read `cf.colo` on a service-binding request and panicked, refusing the first clone); shard image `sha256:076a16ee…`, sshfront `sha256:fc6eda91…`; Spectrum app on `sshtest.graftyard.dev` 04:36:56Z. **B0-24d passes**: clone 5.6 s, push 9.5 s read back over HTTPS, a removed key refused for clone and push, one session 633 s; BF-51's client half (1 → 6 known host keys) and BF-52's suspension half (20 of 20 SSH pushes refused) pass (`tests/m6/results/m6-wp2.md`). Spectrum app deleted (0 apps, no `sshtest` record); repo:3932160, 3932161, 3997696 retired and purged (58 → 0), none joined of 3; shard containers swept; the three `SshFront` containers stop on their 1 h idle timeout (the instance delete answers `NOT_ENABLED`); `SSH_HOST_KEY_A`/`_B` left in the store | $0.17 on graft-m3f from 04:21:12Z (`acctcost.py`, 05:12Z), under the $5 stop |
+| 2026-11-20 06:59Z | ssh cutover ([thread](https://ampcode.com/threads/T-01a1f5ba-537c-7710-8108-fe6017b7e9ec)) | site day and edge day m3fcut from main `e5590f36` (`ssh-front-idle`, `b034-load`) plus the SSH-off guard, test-faults, `--anchor`, shard image `sha256:076a16ee…` and sshfront `sha256:fc6eda91…` reused (`containers/git` and `containers/ssh` unchanged in what they build since `f413f2ac`), standard-4, `--ssh`, `--edge graft-m3f-edge`; edge with `--ssh`, FORMATS through 32.26; then the Spectrum app on `ssh.graftyard.dev` (the public SSH hostname, replacing the Oracle VM's A record); stop m3f at $5 from the site day's start. **From now on `ssh.graftyard.dev` depends on graft-m3f**: every later m3f site day and edge day needs `--ssh` (the deploy scripts refuse without it while the Spectrum app points here; `--ssh-off` turns SSH off on purpose) | site day took three tries (two "Container application settings were not fully applied" on site a with wrangler 4.153.0, then `--skip-build`), exit 0 at 07:13:15Z; sites a/b/c `a266ac23` / `0af66f09` / `8631a3b6`, edge `c736b6e8` (07:15:49Z). A record deleted and Spectrum app `1c5b8da1…` on `ssh.graftyard.dev` created 07:16Z; stock clone 8.7 s and push 9.3 s through it, main read back over HTTPS, host key `SHA256:TMEOnX…` (slot A, in meta/ssh), deleted key refused; the guard refused both deploy scripts without `--ssh` against the live app. Then the Oracle VM, its VCN, Tunnel `graft-m0-ssh` (route and virtual network too) and `ssh-m0.graftyard.dev` deleted (`tests/m6/results/m6-wp2.md`, "Cutover"). repo:3932162 retired and purged. **The Spectrum app stays: `ssh.graftyard.dev` is live on this install** | $0.03 on graft-m3f from 06:58:36Z (`acctcost.py`, 07:31Z), under the $5 stop |
 
 ## Point the drivers at it
 
@@ -96,13 +97,19 @@ Fetch the state: `download_thread_file` of `.amp/xfer/graft-m3f.tgz` from the bu
 
 ### Site day
 
-Every new site-script version resets the site's members, so this is a site day (`AGENTS.md`). Pass `--vars` every time, or the shards fall back to `standard-2`:
+Every new site-script version resets the site's members, so this is a site day (`AGENTS.md`). Pass `--vars` every time, or the shards fall back to `standard-2`.
+
+**`ssh.graftyard.dev` is served by this install** since 2026-11-20 (a Spectrum Worker app whose origin is `graft-m3f-edge`; `tests/m6/results/m6-wp2.md`, "Cutover"). Every site day and edge day must keep SSH on with `--ssh`. Without it, both deploy scripts list the account's Spectrum apps and refuse (`workers/site/sshguard.mjs`). `--ssh-off` turns the public SSH hostname off on purpose. If wrangler fails with "Container application settings were not fully applied", rerun the same command with `--skip-build`.
 
 ```
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:15f6ed1b1d4b2b08c8adccbce713e89762677c3656dd7ee9a99bdd4bcab025c5
+A=<cf-account-id>
+IMG=registry.cloudflare.com/$A/graft-m3f-gitshard@sha256:076a16eea7eacc39e8d0b79e1951ca31cad6e5e69252d18c0010756768fe9799
+SIMG=registry.cloudflare.com/$A/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
 node workers/site/deploy.mjs ~/.graft-m3f/sites.json --test-faults --anchor ~/.graft-m3f/install.toml --image "$IMG" \
-  --vars ~/.graft-m3f/site-vars.json
+  --vars ~/.graft-m3f/site-vars.json --ssh bfaa0c1573de4775b1b92a12fb89acb4 --ssh-image "$SIMG" --edge graft-m3f-edge
 ```
+
+A change to `containers/ssh` needs a new `sshfront` image: `docker build -t graft-m3f-sshfront:<tag> containers/ssh`, then `wrangler containers push` with tests/m0's pinned wrangler.
 
 With a new image or instance size, add `--roll-shards https://graft-m3f-edge.<workers-subdomain>.workers.dev` (needs `BED_TOKEN_FILE`), or tear the running shards down after (`INSTALL=graft-m3f python3 tests/fanout/teardown.py --all-nets --pools`).
 
@@ -111,9 +118,10 @@ With a new image or instance size, add `--roll-shards https://graft-m3f-edge.<wo
 The edge's `OPS` binding and `FORMATS_ENABLED` are kept only if every deploy passes them again:
 
 ```
-FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18
+FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.26
 node tests/m1/integ/deploy-edge.mjs ~/.graft-m3f/sites.json graft-m3f-edge --test-faults \
-  --anchor ~/.graft-m3f/install.toml --ops graft-m3f-ops --var FORMATS_ENABLED=$FORMATS
+  --anchor ~/.graft-m3f/install.toml --ops graft-m3f-ops --ssh ~/.graft-m3f/ssh/hostkeys.json \
+  --var FORMATS_ENABLED=$FORMATS
 ```
 
 `BED_TOKEN` survives a redeploy. A new edge name needs it put once: `cd tests/m1/integ/.gen && npx --prefix ../../../m0 wrangler secret put BED_TOKEN -c <name>.jsonc < ~/.graft-m3f/bed.token`.
@@ -130,11 +138,12 @@ Cost: `INSTALL=graft-m3f python3 tests/fanout/m2bcost.py <from ISO> <to ISO>`.
 
 Run these in order. Each step is safe to repeat.
 
+0. First move `ssh.graftyard.dev` to another install, or delete its Spectrum app (`graftyard ssh spectrum --account <id> --zone <graftyard.dev zone id> --hostname ssh.graftyard.dev --edge graft-m3f-edge --delete`). Deleting the edge with the app in place leaves the public SSH hostname with no origin.
 1. Delete the scripts `graft-m3f-edge`, `graft-m3f-tools-edge`, `graft-m3f-ops`, `graft-m3f-site-a`, `graft-m3f-site-b`, and `graft-m3f-site-c` (`npx --prefix tests/m0 wrangler delete --name <script>`). Delete the edge before `graft-m3f-ops`, which it binds. Deleting a site script deletes its Durable Objects and their storage.
-2. Delete the container applications `graft-m3f-site-{a,b,c}-gitshard` (`wrangler containers list`, then `wrangler containers delete <id>`).
+2. Delete the container applications `graft-m3f-site-{a,b,c}-gitshard` and `graft-m3f-site-{a,b,c}-sshfront` (`wrangler containers list`, then `wrangler containers delete <id>`).
 3. Empty and delete the buckets `graft-m3f-site-{a,b,c}-packs` (`wrangler r2 bucket delete <name>` after removing their objects).
 4. Delete the queues `graft-m3f-prsync-{a,b,c}` (`wrangler queues delete <name>`).
-5. Delete the secret `graft-m3f-mint-wrap-key` (id `65116cae…`) from store `bfaa0c1573de4775b1b92a12fb89acb4`. Do not delete the store: it holds other installs' secrets.
+5. Delete the secrets `graft-m3f-mint-wrap-key` (id `65116cae…`), `SSH_HOST_KEY_A`, and `SSH_HOST_KEY_B` from store `bfaa0c1573de4775b1b92a12fb89acb4`. Do not delete the store: it holds other installs' secrets.
 6. Remove `~/.graft-m3f` and every staged copy of it. It holds the install's private keys and tokens.
 
 The git shard image lives in `graft-m1`'s registry repository. Do not delete it.

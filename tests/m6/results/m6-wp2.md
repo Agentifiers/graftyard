@@ -82,3 +82,66 @@ The begin times and wall times are from Workers Logs, entrypoint `SshFront`, eve
 **Cause.** `up()` left a `monitor()` pending to arm a restart alarm when the container stopped. A pending `monitor()` "prevents eviction until the container exits or for up to 15 minutes, whichever comes first" [doc: https://developers.cloudflare.com/containers/api/durable-object-container/, `monitor`]. That is the 900 s on each last invocation. The inactivity timeout runs only once the object is inactive [doc, same page, `setInactivityTimeout`], so b and c stopped 1 h after the hold ended, to within 2 s. Site a stopped 25 s after its hold. Its object had been reset since its container started (an object that restarts "starts without" a timeout, same page), so the platform stopped its container "shortly after" the object went inactive [inference].
 
 **Fix** (`decisions/DECISIONS.md`, "An SSH front holds nothing past its session"). `SshFront` keeps no alarm and calls no `monitor()`. A stopped container is started again by the next session, which already waits for the banner. A test models the stop as the latest of the session's end, a pending `monitor()`'s 15 minutes, and a pending alarm, plus the inactivity timeout (`workers/site/tests/ssh.test.mjs`, "a front's container stops within IDLE_MS of its last session's end"). It reports 75 minutes on the code before the change and 60 after. Not yet hosted: it ships on the next `graft-m3f` site day.
+
+## Cutover: `ssh.graftyard.dev` moves to the Spectrum Worker app, and the Oracle VM retires (2026-11-20)
+
+The operator approved it on 2026-11-20: "Yes you can take out the oracle vm and go pure cloudflare for ssh" (`FRAME.md`, "Operator decision, 2026-11-20, SSH on Cloudflare only"). The orchestrator chose `graft-m3f` as the install behind the hostname.
+
+**Before.**
+- `graftyard.dev` (Pro) held two DNS records:
+  - `ssh.graftyard.dev`: A to the VM's ephemeral IP, DNS only, TTL 300, comment `graft-ssh-proxy (deploy/oci-ssh)`;
+  - `ssh-m0.graftyard.dev`: a proxied CNAME to Tunnel `graft-m0-ssh`, whose ingress was `ssh://localhost:22`, with one private-network route on virtual network `graft-m0-ssh-vnet` (M0-WP7).
+- The zone had no Worker routes, custom domains or Spectrum apps, and no Graftyard install served it.
+- The Tunnel had 0 connectors, because the M0 bed was stopped. So the hostname served nothing: `ssh -v` connected, then got `kex_exchange_identification: read: Connection reset by peer` before any banner.
+- The VM path never terminated SSH. Clients that reached the bed saw its Ed25519 key, `SHA256:GCDfbpG3KG4ODrXC4LI4nA1yUYacmDBWuzGJA1xH4u4` (`tests/m0/results/m0-wp7.md`).
+- The rollback copies are kept outside the repository on the building orb: the A record, the `ssh-m0` record, the Tunnel's configuration, its route, and the virtual networks.
+
+**Deploy.**
+- Site day m3fcut from main `e5590f36` plus the SSH-off guard, started 06:58:36Z.
+- It took three tries. The first two failed on site a with wrangler 4.153.0's "Container application settings were not fully applied"; the third (`--skip-build`) ran both phases and exited 0 at 07:13:15Z.
+- Sites a/b/c are `a266ac23` / `0af66f09` / `8631a3b6`, with the shard image `sha256:076a16ee…` and sshfront `sha256:fc6eda91…` reused.
+- Edge day: `c736b6e8` at 07:15:49Z, with `--ssh` and FORMATS through 32.26.
+
+**Cutover.**
+1. 07:16:05Z: deleted the A record.
+2. 07:16:07Z: `graftyard ssh spectrum --hostname ssh.graftyard.dev --edge graft-m3f-edge` created app `1c5b8da1…` (`tcp/22`, `traffic_type: worker`, origin the edge's tag).
+3. From 07:17:15Z, `ssh-keyscan` returned the ED25519 key `SHA256:TMEOnXhyIwFeNgR39+c4dKwYPTRbXGjPtP2AM3twOoU`.
+
+**Verification** (`tests/m6/raw/cutover/e2e-m3fcut.log`; stock OpenSSH and git, no `cloudflared`):
+
+| Step | Result |
+|---|---|
+| `git clone git@ssh.graftyard.dev:m3-member/ssh-m3fcut.git` | rc 0, 8.7 s |
+| Host key | ED25519 `SHA256:TMEOnX…`, slot A. It is one of the six fingerprints `GET /api/graftyard/v1/meta/ssh` lists (both slots' ED25519, ECDSA, and RSA) |
+| Commit and `git push` | rc 0, 9.3 s; main read back over HTTPS matches the pushed commit `284be970` |
+| Fetch, a second push with a new branch, and the branch delete | all rc 0 |
+| A session held 60 s with `ls-refs` | 1 of 1 answered |
+| Key deleted, then clone and push | both refused "Permission denied (publickey)", main unchanged |
+
+**The host key changed.**
+- Clients that once reached `ssh.graftyard.dev` through the VM saw the M0 bed's key, `SHA256:GCDfbpG3KG4ODrXC4LI4nA1yUYacmDBWuzGJA1xH4u4`. They now see `graft-sshd`'s slot-A ED25519 key, `SHA256:TMEOnXhyIwFeNgR39+c4dKwYPTRbXGjPtP2AM3twOoU`.
+- OpenSSH warns "REMOTE HOST IDENTIFICATION HAS CHANGED" for anyone with the old entry. Fix it with `ssh-keygen -R ssh.graftyard.dev` and check the new key against `/api/graftyard/v1/meta/ssh`.
+- The operator accepted the change.
+
+**Retired, after the verification passed.**
+- **Oracle:** `deploy/oci-ssh/teardown.sh` with the 1Password `Oracle` API key.
+  - Instance `graft-ssh-proxy` TERMINATED (07:20 to 07:22Z), boot volume TERMINATED; subnet, internet gateway and VCN deleted; no reserved public IP existed.
+  - The $1 budget `graftyard-oci-1usd` is kept, as the runbook says, and so is the tenancy.
+  - The script's first run exited silently: its `oci()` wrapper hides stderr under `set -e`. The terminate was then issued by hand, and the script rerun with stderr shown finished the network.
+- **Cloudflare:**
+  - The `ssh-m0.graftyard.dev` record deleted.
+  - Tunnel `graft-m0-ssh` deleted. The first delete was refused (1023, private network routes), so its route went first, then the tunnel, then its virtual network `graft-m0-ssh-vnet`.
+  - The account now has 0 tunnels, 0 routes, and only the default virtual network.
+- **1Password:** the SSH Key item `graftyard-ssh-proxy` is kept. The 1Password CLI refuses to edit SSH Key items ("SSH Key item editing in the CLI is not yet supported"), so a Secure Note, "graftyard-ssh-proxy RETIRED 2026-11-20", tagged `graftyard` and `retired`, marks it. The vault had no other retire convention.
+- **Orb:** `~/.oci` removed.
+
+**After.**
+- The zone holds one record, the Spectrum app's own `ssh.graftyard.dev`, and one Spectrum app.
+- Cloudflare is the only product in any serving path.
+- **`ssh.graftyard.dev` now depends on `graft-m3f`.** Every later m3f site day and edge day must pass `--ssh`. Both deploy scripts list the account's Spectrum apps and refuse without it while an app's origin is the install (`workers/site/sshguard.mjs`); `--ssh-off` turns SSH off on purpose. Against the live app, both scripts refused a deploy without `--ssh`: "a deploy without --ssh turns native SSH off for ssh.graftyard.dev (origin graft-m3f-edge)".
+
+**Spend.** $0.03 on `graft-m3f` from 06:58:36Z to 07:31:28Z (`acctcost.py`, `prefix_usd`), under the $5 stop. Oracle billed nothing: the VM was Always Free.
+
+**Cleanup.**
+- The test repository `m3-member/ssh-m3fcut` (repo:3932162) was retired (`retirenets.mjs`: 4 names, all not joined) and purged (28 objects, then 0 on the second pass).
+- The three `SshFront` containers are left as they are. `ssh.graftyard.dev` is a live hostname now, and with the idle fix each stops 1 h after its last session.
