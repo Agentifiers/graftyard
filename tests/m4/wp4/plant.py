@@ -473,6 +473,13 @@ MUTANTS = [
      '        let mut why = String::from("no answer");', LK),
     ('an overloaded object is waited for past LOOKUP_FOR', 'crates/lookup/src/lib.rs',
      '                    if now() + wait >= end {', '                    if false {', LK),
+    # ---- alarm-steps (B0-35 m60's 2,288 ms alarm): each slow alarm step names itself, 162 and up ----
+    ('a step of exactly ALARM_STEP_LOG_MS is left out', 'workers/site/src/alarm_steps.rs',
+     '        if ms >= ALARM_STEP_LOG_MS {', '        if ms > ALARM_STEP_LOG_MS {', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
+    ('a step is timed from the alarm\'s start, not the step before', 'workers/site/src/alarm_steps.rs',
+     '        self.at = now;\n', '', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
+    ('a quick alarm logs an empty line', 'workers/site/src/alarm_steps.rs',
+     '        if self.slow.is_empty() {\n            return None;\n        }\n', '', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],

@@ -777,6 +777,8 @@ pub struct Member<C: Command> {
     /// Sites whose members may not lead: drained, or under the first day's lead limit. The host sets it from the
     /// `Release` group's site modes.
     drained: BTreeSet<SiteId>,
+    /// The other sites' `SiteHealth` agree this member's site is sick (`Member::set_site_sick`, `step-agree`).
+    site_sick: bool,
     /// A voter refused this member's pre-vote as `Suspected`: until then it denies no rival as `Contending`.
     stand_aside_until: Timestamp,
     /// The leader this member forgot because its read-index call to it failed (F67): reports about it still count.
@@ -937,6 +939,7 @@ impl<C: Command> Member<C> {
             probed: None,
             refuser_release: BTreeMap::new(),
             drained: BTreeSet::new(),
+            site_sick: false,
             stand_aside_until: Timestamp(0),
             forgot: None,
             last_trip: None,
