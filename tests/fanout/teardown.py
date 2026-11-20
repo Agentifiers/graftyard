@@ -11,6 +11,9 @@ BED_TOKEN_FILE and sent on curl's stdin, never on argv.
 `--sweep` (no ranges): every network and pool shard, then a recheck of the install's running containers; exits 2 and
 names each one still running after a minute. rows.sh and smoke.sh end every run with it.
 
+KEEP_NETS (comma-separated network ids, such as 1048603): those networks' shards are left running and not counted by
+the sweep's recheck, as costrow.sh's HOLD_MONO uses for a cost measurement's 24 h hold. Pool shards are torn down.
+
 `--shardkill`: for a product install, whose edge has no `/_bed/kill` and no bed token (graft-m4a). The teardowns go
 through a scratch Worker `$INSTALL-shardkill` (tests/fanout/shardkill), bound to each site script's `GitShard` class,
 to the shard's own `/teardown`, as M4's graft-m4a-shardkill did. It is deployed with a one-time token (a secrets file,
@@ -23,6 +26,7 @@ nums = [int(a) for a in sys.argv[1:] if not a.startswith("--")]
 if len(nums) % 2 or (not nums and "--all-nets" not in sys.argv[1:] and not sweep):
     sys.exit(__doc__)
 ranges = [(0, 2**63)] if "--all-nets" in sys.argv[1:] or sweep else list(zip(nums[::2], nums[1::2]))
+keep = {n for n in os.environ.get("KEEP_NETS", "").split(",") if n}
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
 edge = os.environ["GRAFT_EDGE"]
 install = os.environ.get("INSTALL", "graft-m2b")
@@ -98,6 +102,9 @@ for app in api("applications"):
             continue
         m = re.match(r"^git#(\d+)#net:(\d+)$", i.get("name") or "")
         p = re.match(r"^git#(\d+)#pool:(\d+)$", i.get("name") or "")
+        if m and m[2] in keep:
+            print(f"kept: {i.get('name')}", flush=True)
+            continue
         if m and any(a <= int(m[2]) <= b for a, b in ranges):
             url = f"{edge}/_bed/kill?repo={m[2]}&shard={m[1]}"
         elif p and pools:
@@ -132,7 +139,8 @@ if "--sweep" in sys.argv[1:]:
         left = [(app["name"], i.get("name")) for app in api("applications")
                 if shard_app(app)
                 for i in api(f"applications/{app['id']}/instances?per_page=1000")["instances"]
-                if i["status"].get("state") == "running"]
+                if i["status"].get("state") == "running"
+                and not ((m := re.match(r"^git#\d+#net:(\d+)$", i.get("name") or "")) and m[1] in keep)]
         if not left:
             break
     if left:

@@ -1,0 +1,155 @@
+edge: graft-m1-edge serves 13dcd868 at 100% (rev b8e555dfa), as tests/am1/raw/b034ma-siteday.log deployed
+2026-11-20T16:46:26Z meter (account, run) 91.24 0.0 before b034, expected +$4, stop $170 account, $8 run
+2026-11-20T16:47:29Z meter (account, run) 91.25 0.0
+2026-11-20T16:48:31Z meter (account, run) 91.26 0.01
+2026-11-20T16:49:34Z meter (account, run) 91.27 0.02
+2026-11-20T16:50:37Z meter (account, run) 91.28 0.02
+2026-11-20T16:51:39Z meter (account, run) 91.31 0.04
+2026-11-20T16:52:42Z meter (account, run) 91.33 0.06
+2026-11-20T16:53:45Z meter (account, run) 91.34 0.06
+2026-11-20T16:54:48Z meter (account, run) 91.37 0.08
+2026-11-20T16:55:50Z meter (account, run) 91.39 0.1
+2026-11-20T16:56:52Z meter (account, run) 91.4 0.1
+2026-11-20T16:57:56Z meter (account, run) 91.42 0.12
+2026-11-20T16:58:58Z meter (account, run) 91.44 0.14
+2026-11-20T17:00:01Z meter (account, run) 91.45 0.15
+2026-11-20T17:01:05Z meter (account, run) 91.48 0.17
+2026-11-20T17:02:09Z meter (account, run) 91.51 0.19
+2026-11-20T17:03:12Z meter (account, run) 91.53 0.21
+2026-11-20T17:04:14Z meter (account, run) 91.55 0.22
+2026-11-20T17:05:17Z meter (account, run) 91.58 0.25
+2026-11-20T17:06:20Z meter (account, run) 91.6 0.27
+2026-11-20T17:07:23Z meter (account, run) 91.61 0.29
+2026-11-20T17:08:25Z meter (account, run) 91.65 0.32
+2026-11-20T17:09:28Z meter (account, run) 91.68 0.34
+2026-11-20T17:10:30Z meter (account, run) 91.69 0.36
+2026-11-20T17:11:32Z meter (account, run) 91.74 0.39
+2026-11-20T17:12:35Z meter (account, run) 91.77 0.4
+2026-11-20T17:13:38Z meter (account, run) 91.82 0.42
+2026-11-20T17:14:41Z meter (account, run) 91.95 0.44
+2026-11-20T17:15:43Z meter (account, run) 92.09 0.47
+2026-11-20T17:16:45Z meter (account, run) 92.21 0.47
+2026-11-20T17:17:47Z meter (account, run) 92.4 0.5
+2026-11-20T17:18:50Z meter (account, run) 92.63 0.53
+2026-11-20T17:19:53Z meter (account, run) 92.84 0.53
+2026-11-20T17:20:55Z meter (account, run) 93.09 0.56
+2026-11-20T17:21:57Z meter (account, run) 93.31 0.58
+2026-11-20T17:23:00Z meter (account, run) 93.52 0.59
+2026-11-20T17:24:04Z meter (account, run) 93.79 0.61
+2026-11-20T17:25:08Z meter (account, run) 94.02 0.65
+2026-11-20T17:26:12Z meter (account, run) 94.24 0.67
+2026-11-20T17:27:14Z meter (account, run) 94.47 0.67
+2026-11-20T17:28:17Z meter (account, run) 94.65 0.7
+2026-11-20T17:29:21Z meter (account, run) 94.78 0.73
+2026-11-20T17:32:34Z meter (account, run) 95.11 0.79
+2026-11-20T17:33:36Z meter (account, run) 95.22 0.8
+2026-11-20T17:34:39Z meter (account, run) 95.32 0.82
+2026-11-20T17:35:42Z meter (account, run) 95.43 0.84
+2026-11-20T17:36:49Z meter (account, run) 95.56 0.88
+2026-11-20T17:37:51Z meter (account, run) 95.65 0.89
+2026-11-20T17:38:54Z meter (account, run) 95.76 0.92
+2026-11-20T17:39:57Z meter (account, run) 95.89 0.94
+2026-11-20T17:41:00Z meter (account, run) 95.98 0.96
+2026-11-20T17:42:04Z meter (account, run) 96.08 0.97
+2026-11-20T17:43:07Z meter (account, run) 96.2 1.0
+2026-11-20T17:44:09Z meter (account, run) 96.3 1.02
+2026-11-20T17:45:14Z meter (account, run) 96.41 1.04
+2026-11-20T17:46:18Z meter (account, run) 96.54 1.06
+2026-11-20T17:47:21Z meter (account, run) 96.63 1.08
+2026-11-20T17:48:24Z meter (account, run) 96.74 1.09
+2026-11-20T17:49:27Z meter (account, run) 96.88 1.12
+2026-11-20T17:50:30Z meter (account, run) 96.96 1.14
+2026-11-20T17:51:33Z meter (account, run) 97.05 1.15
+2026-11-20T17:52:35Z meter (account, run) 97.15 1.18
+2026-11-20T17:53:37Z meter (account, run) 97.25 1.2
+2026-11-20T17:54:44Z meter (account, run) 97.34 1.22
+2026-11-20T17:55:48Z meter (account, run) 97.41 1.24
+2026-11-20T17:56:51Z meter (account, run) 97.44 1.26
+2026-11-20T17:57:54Z meter (account, run) 97.46 1.28
+2026-11-20T17:58:57Z meter (account, run) 97.47 1.3
+2026-11-20T18:00:00Z meter (account, run) 97.5 1.32
+2026-11-20T18:01:14Z meter (account, run) 97.52 1.35
+2026-11-20T18:02:16Z meter (account, run) 97.55 1.37
+2026-11-20T18:03:18Z meter (account, run) 97.57 1.38
+2026-11-20T18:04:20Z meter (account, run) 97.6 1.41
+2026-11-20T18:05:23Z meter (account, run) 97.62 1.42
+2026-11-20T18:06:27Z meter (account, run) 97.64 1.44
+2026-11-20T18:07:29Z meter (account, run) 97.66 1.46
+2026-11-20T18:08:31Z meter (account, run) 97.68 1.48
+2026-11-20T18:09:33Z meter (account, run) 97.71 1.51
+2026-11-20T18:10:38Z meter (account, run) 97.73 1.52
+2026-11-20T18:11:42Z meter (account, run) 97.76 1.55
+2026-11-20T18:12:44Z meter (account, run) 97.77 1.57
+2026-11-20T18:13:46Z meter (account, run) 97.79 1.59
+2026-11-20T18:14:49Z meter (account, run) 97.82 1.61
+2026-11-20T18:15:51Z meter (account, run) 97.84 1.63
+2026-11-20T18:16:55Z meter (account, run) 97.87 1.65
+2026-11-20T18:17:58Z meter (account, run) 97.91 1.67
+2026-11-20T18:19:00Z meter (account, run) 97.93 1.69
+2026-11-20T18:20:08Z meter (account, run) 97.97 1.71
+2026-11-20T18:21:11Z meter (account, run) 98.0 1.75
+2026-11-20T18:22:15Z meter (account, run) 98.03 1.77
+2026-11-20T18:23:18Z meter (account, run) 98.04 1.77
+2026-11-20T18:24:20Z meter (account, run) 98.06 1.79
+2026-11-20T18:25:23Z meter (account, run) 98.08 1.81
+2026-11-20T18:26:25Z meter (account, run) 98.08 1.81
+2026-11-20T18:27:28Z meter (account, run) 98.1 1.82
+2026-11-20T18:28:30Z meter (account, run) 98.13 1.84
+2026-11-20T18:29:32Z meter (account, run) 98.15 1.84
+2026-11-20T18:30:35Z meter (account, run) 98.24 1.86
+2026-11-20T18:31:38Z meter (account, run) 98.45 1.93
+2026-11-20T18:32:41Z meter (account, run) 98.66 1.99
+2026-11-20T18:33:44Z meter (account, run) 98.91 2.08
+2026-11-20T18:34:47Z meter (account, run) 99.2 2.16
+2026-11-20T18:35:49Z meter (account, run) 99.49 2.22
+2026-11-20T18:36:52Z meter (account, run) 99.79 2.3
+2026-11-20T18:37:55Z meter (account, run) 100.11 2.4
+2026-11-20T18:38:58Z meter (account, run) 100.44 2.49
+2026-11-20T18:40:03Z meter (account, run) 100.72 2.57
+2026-11-20T18:41:06Z meter (account, run) 101.17 2.69
+2026-11-20T18:42:10Z meter (account, run) 101.57 2.8
+2026-11-20T18:43:14Z meter (account, run) 101.91 2.94
+2026-11-20T18:44:17Z meter (account, run) 102.26 3.1
+2026-11-20T18:45:20Z meter (account, run) 102.52 3.26
+2026-11-20T18:46:23Z meter (account, run) 102.67 3.29
+2026-11-20T18:47:26Z meter (account, run) 102.84 3.36
+2026-11-20T18:48:29Z meter (account, run) 103.05 3.44
+2026-11-20T18:49:32Z meter (account, run) 103.18 3.47
+2026-11-20T18:50:35Z meter (account, run) 103.33 3.5
+2026-11-20T18:51:38Z meter (account, run) 103.49 3.55
+2026-11-20T18:52:41Z meter (account, run) 103.64 3.6
+2026-11-20T18:53:44Z meter (account, run) 103.74 3.61
+2026-11-20T18:54:47Z meter (account, run) 103.9 3.65
+2026-11-20T18:55:50Z meter (account, run) 104.06 3.69
+2026-11-20T18:56:53Z meter (account, run) 104.17 3.7
+2026-11-20T18:57:55Z meter (account, run) 104.32 3.74
+2026-11-20T18:58:58Z meter (account, run) 104.44 3.78
+2026-11-20T19:00:00Z meter (account, run) 104.56 3.8
+2026-11-20T19:01:03Z meter (account, run) 104.71 3.84
+2026-11-20T19:02:07Z meter (account, run) 104.84 3.86
+2026-11-20T19:03:09Z meter (account, run) 105.03 3.89
+2026-11-20T19:04:12Z meter (account, run) 105.24 3.93
+2026-11-20T19:05:15Z meter (account, run) 105.37 3.97
+2026-11-20T19:06:17Z meter (account, run) 105.73 3.99
+2026-11-20T19:07:11Z b034 ended: Node.js v26.12.0
+site fault off: 200
+git#2#net:3538968 200
+git#2#net:3538969 200
+git#2#net:3538970 200
+git#2#net:3473416 200
+kept: git#2#net:1048603
+git#1#net:3538968 200
+git#1#net:3538969 200
+git#1#net:3538970 200
+git#1#net:3473416 200
+kept: git#1#net:1048603
+git#0#net:3538969 200
+git#0#net:3538968 200
+git#0#net:3538970 200
+git#0#net:3473416 200
+kept: git#0#net:1048603
+{"torn_down": 12, "codes": {"200": 12}}
+sweep: no shard container running
+2026-11-20T19:07:50Z sweep exit 0 (kept: 1048603)
+2026-11-20T19:07:52Z meter (account, run) 106.24 4.03 after b034 and the sweep
+DONE
