@@ -40,13 +40,14 @@ if "--shardkill" in sys.argv[1:]:
     os.write(fd, json.dumps({"TOKEN": tok_k}).encode()); os.close(fd)
     # Wrangler reads the new Worker back right after its upload, and on 2026-11-19 that read answered 10007 ("does
     # not exist") though the upload had answered 200; the same deploy a minute later went through. Deploy is
-    # idempotent, so one more try after 10 s.
-    for _ in range(2):
+    # idempotent, so it is tried 3 times, 10 s and then 30 s apart: m59's teardown failed both of two tries 10 s apart,
+    # and a rerun 3 minutes later went through.
+    for wait in (10, 30, None):
         r = subprocess.run([wrangler, "deploy", "-c", f"{work}/wrangler.json", "--secrets-file", f"{work}/secrets.json"],
                            capture_output=True, text=True)
-        if not r.returncode or "10007" not in r.stderr:
+        if not r.returncode or "10007" not in r.stderr or wait is None:
             break
-        time.sleep(10)
+        time.sleep(wait)
     if r.returncode:
         sys.exit(f"shardkill deploy failed: {r.stderr[-400:]}")
     base = f"https://{name}." + edge.split("://")[1].split(".", 1)[1]

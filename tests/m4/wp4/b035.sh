@@ -4,7 +4,8 @@
 # k.mjs's `/bench_seed` is test-faults only), then `a1.mjs b0-35 --workflow --as-admin` (500 open PRs, 600 s,
 # 500 `mergeable` pollers every 5 s; graft-m4a's product edge mints no task-scoped App tokens for a confined fleet, so
 # pushes are Human class, as LM-1's B0-35 rounds on product builds ran), then the teardown sweep through the scratch
-# shardkill Worker. The stop watcher (b035watch.sh) runs beside it.
+# shardkill Worker. The stop watcher (b035watch.sh), the voter watch (b035lead.sh) and, on a test-faults build, the
+# trace saver (b035tsave.sh) run beside it, each as its own service with the same TAG.
 #   TAG=<tag> bash tests/m4/wp4/b035.sh   -> tests/m4/raw/wp4/b035-<tag>.status
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
