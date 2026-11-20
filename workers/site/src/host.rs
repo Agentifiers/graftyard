@@ -689,6 +689,14 @@ pub enum Trace {
     /// not move inside a turn, so `tests/fanout/work.py` joins these rows to ticker stalls (`Lag`) by order and time.
     #[cfg(feature = "test-faults")]
     Work = 30,
+    /// sync-trace (`decisions/OPEN-QUESTIONS.md`, F106): one storage confirm, logged when `sync()` resolves, packed by
+    /// `sync_row`. `peer` is the ticker wakes that ran while it was pending, `batch` the requests that entered this
+    /// host's handler meanwhile and the isolate's event-loop lag (`loop_lag`) when it began and when it resolved, `index`
+    /// its transaction's statements and bytes, `ms` its wall time. A runtime that holds the input gate for the whole
+    /// `sync()` shows no wakes or requests inside it and a lag at its end near its wall; an isolate that was not run
+    /// shows the lag already at its start; slow storage with the isolate free shows wakes and requests inside it.
+    #[cfg(feature = "test-faults")]
+    Sync = 31,
 }
 
 /// `Trace::Cut`'s columns (`peer`, `batch`, `index`, `ms`) for one cut; `tests/m0/cuttrace/cuts.py` unpacks them.
@@ -720,6 +728,25 @@ fn work_row(
     let index = sat(u64::from(stmts.0), 20) | sat(u64::from(stmts.1), 32) << 20;
     let ms = sat(applied, 16) | sat(events as u64, 16) << 16 | sat(resolutions as u64, 16) << 32;
     (peer, batch, index, ms)
+}
+
+/// One storage confirm, as `Trace::Sync`'s columns: (`peer`, `batch`, `index`, `ms`). `tests/fanout/syncs.py` unpacks
+/// them; each column stays under 2^53 so the JS number the trace passes through holds it exactly, and counts and lags
+/// saturate at their field's width.
+#[cfg(any(test, feature = "test-faults"))]
+fn sync_row(
+    wall: u64,
+    stmts: (u32, u32),
+    ticks: u64,
+    inputs: u64,
+    lag_begin: u64,
+    lag_end: u64,
+) -> (u8, u64, u64, u64) {
+    let sat = |v: u64, bits: u32| v.min((1 << bits) - 1);
+    let peer = ticks.min(255) as u8;
+    let batch = sat(inputs, 20) | sat(lag_begin, 16) << 20 | sat(lag_end, 16) << 36;
+    let index = sat(u64::from(stmts.0), 20) | sat(u64::from(stmts.1), 32) << 20;
+    (peer, batch, index, sat(wall, 52))
 }
 
 /// F74's inbound trace: route codes in `Trace::Entered`, code `i + 1` for `ROUTES[i]` and 0 for any other path.
@@ -812,6 +839,12 @@ impl Inbound {
         let code = ROUTES.iter().position(|r| *r == path).map_or(0, |i| i as u64 + 1);
         let open = Counted::new(&self.open, 1);
         (seq * 64 + code, self.open.get() as u64, open)
+    }
+
+    /// Requests that have entered so far (sync-trace counts the ones inside a `sync()`).
+    #[cfg(feature = "test-faults")]
+    pub fn entered(&self) -> u64 {
+        self.seq.get()
     }
 }
 
@@ -1310,6 +1343,9 @@ pub struct Host<F: Family> {
     /// F74: the ticker's last wake lateness and its pending tick's due time, 0 when stopped (`loop_lag`).
     #[cfg(feature = "test-faults")]
     tick_lag: Rc<Cell<(u64, u64)>>,
+    /// sync-trace: the ticker's wakes so far (`Trace::Sync` counts the ones inside a `sync()`).
+    #[cfg(feature = "test-faults")]
+    tick_wakes: Rc<Cell<u64>>,
     /// F74: the inbound trace's arrival numbers and open requests (`Trace::Entered`).
     #[cfg(feature = "test-faults")]
     pub inbound_log: Inbound,
@@ -2022,6 +2058,8 @@ impl<F: Family> Host<F> {
             #[cfg(feature = "test-faults")]
             tick_lag: Rc::new(Cell::new((0, 0))),
             #[cfg(feature = "test-faults")]
+            tick_wakes: Rc::new(Cell::new(0)),
+            #[cfg(feature = "test-faults")]
             inbound_log: Inbound::default(),
         });
         #[cfg(feature = "test-faults")]
@@ -2719,11 +2757,27 @@ impl<F: Family> Host<F> {
                     turned.set(Some(now_ms()));
                 });
             }
+            // sync-trace: what ran in this isolate while the `sync()` was pending, and its loop lag either side.
+            #[cfg(feature = "test-faults")]
+            let at_begin = (h.tick_wakes.get(), h.inbound_log.entered(), h.loop_lag());
             spawn_local(async move {
                 if h.state.storage().sync().await.is_err() || h.dying.get() {
                     return;
                 }
                 let synced_at = now_ms();
+                #[cfg(feature = "test-faults")]
+                {
+                    let (wakes, entered, lag) = at_begin;
+                    let (peer, batch, index, ms) = sync_row(
+                        synced_at.saturating_sub(began),
+                        (n_stmts, n_bytes),
+                        h.tick_wakes.get().saturating_sub(wakes),
+                        h.inbound_log.entered().saturating_sub(entered),
+                        lag,
+                        h.loop_lag(),
+                    );
+                    h.trace_at(synced_at, Trace::Sync, peer, batch, index, ms);
+                }
                 let sync = synced_at.saturating_sub(began) as u32;
                 let turn = turned.get().map_or(sync, |t: u64| (t.saturating_sub(began) as u32).min(sync));
                 let applied = h.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.applied.0)).unwrap_or(0);
@@ -3690,7 +3744,7 @@ impl<F: Family> Host<F> {
         // that held it across one kept the whole reset member in the isolate's memory (F47).
         let w = Rc::downgrade(self);
         #[cfg(feature = "test-faults")]
-        let tick_lag = self.tick_lag.clone();
+        let (tick_lag, tick_wakes) = (self.tick_lag.clone(), self.tick_wakes.clone());
         spawn_local(async move {
             #[cfg(feature = "test-faults")]
             let mut late = 0;
@@ -3704,6 +3758,7 @@ impl<F: Family> Host<F> {
                 #[cfg(feature = "test-faults")]
                 {
                     late = lag;
+                    tick_wakes.set(tick_wakes.get() + 1);
                 }
                 if lag >= 20 {
                     h.trace(Trace::Lag, 0, 0, 0, lag);
@@ -4720,6 +4775,25 @@ mod tests {
         assert_eq!(peer, 255, "appends saturate at 255");
         assert_eq!((index & 0xf_ffff, index >> 20), ((1 << 20) - 1, u64::from(u32::MAX)));
         assert_eq!((ms & 0xffff, (ms >> 16) & 0xffff, ms >> 32), (0xffff, 0xffff, 0xffff));
+        for v in [batch, index, ms] {
+            assert_eq!(v as f64 as u64, v, "{v} does not survive a JS number");
+        }
+    }
+
+    /// sync-trace: `tests/fanout/syncs.py` unpacks kind 31's columns by these bit positions. m3fac1's 2,436 ms confirm
+    /// of 211 statements and 163,535 B reads back whole, with its wakes, requests and both lags apart; past a field's
+    /// width a value saturates, and every column survives a JS number.
+    #[test]
+    fn a_sync_row_packs_a_confirm_where_the_trace_reader_looks() {
+        let (peer, batch, index, ms) = super::sync_row(2_436, (211, 163_535), 3, 17, 40, 2_090);
+        assert_eq!((peer, ms), (3, 2_436));
+        assert_eq!((index & 0xf_ffff, index >> 20), (211, 163_535));
+        assert_eq!((batch & 0xf_ffff, (batch >> 20) & 0xffff, batch >> 36), (17, 40, 2_090));
+        let (peer, batch, index, ms) = super::sync_row(u64::MAX, (u32::MAX, u32::MAX), 300, 1 << 21, 70_000, 1 << 17);
+        assert_eq!(peer, 255, "wakes saturate at 255");
+        assert_eq!((batch & 0xf_ffff, (batch >> 20) & 0xffff, batch >> 36), (0xf_ffff, 0xffff, 0xffff));
+        assert_eq!((index & 0xf_ffff, index >> 20), ((1 << 20) - 1, u64::from(u32::MAX)));
+        assert_eq!(ms, (1 << 52) - 1);
         for v in [batch, index, ms] {
             assert_eq!(v as f64 as u64, v, "{v} does not survive a JS number");
         }

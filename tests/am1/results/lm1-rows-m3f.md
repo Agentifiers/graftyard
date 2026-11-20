@@ -230,6 +230,22 @@ Edge clock (`server-timing` `total`); `full` counts as meeting the line.
 
 `stagefirst` came back because main reverted `agent-stage-first` but the edge's `hot` rule still stages first on a group whose leader asked it to stage within HOT_WINDOW. One-commit and two-commit `ok` pushes took about the same (p50 6,976 and 7,666 ms): the second commit is not the cost here.
 
+### Where the double commits came from: not the `hot` stage-first rule [measured from the a1 `server-timing` marks; one inference marked]
+
+Added 2026-11-20 at the orchestrator's request, from the committed `a1-b0-32-mwozv8cb.jsonl`, with no new spend. Each burst push falls in one of four paths:
+
+| Path | `ok` | `full` | Commits |
+|---|---|---|---|
+| `stagefirst`: the edge's `hot` rule staged the pack before the first commit | 137 | 76 | one |
+| Inline commit answered `Stage` by the leader, then staged and sent again | 77 | 140 | two |
+| Inline, never staged | 0 | 13 | one |
+| No commit sent (`bound` at the gate or at the send) | 0 | 57 | none |
+
+- **All 77 `ok` pushes that committed twice took the leader's `Stage` answer**, and none was `stagefirst`. A push the `hot` rule stages first never commits twice. So the rule causes 0 of the 36%. It removed the second commit from 213 pushes that would otherwise have been sent inline into the same `Stage` answer.
+- Counting every push that sent a commit, 217 of 443 (49%) committed twice; 140 of those ended `full`.
+- The two paths interleave through the burst: first sends at p50 34.6 s (`stagefirst`) and 34.9 s (`Stage` answer) from the client's start, in every half-second. The `hot` rule is per edge isolate (`hot::STAGED`, a `thread_local`), so an isolate stages first only once one of its own pushes got `Stage` within HOT_WINDOW. With 500 connections spread over many isolates, each isolate's first hot push or pushes still commit twice [inference: the trace does not name the isolate].
+- One-commit and two-commit `ok` pushes took about the same edge total (p50 6,976 and 7,666 ms), so on this row the second commit is not where the time went.
+
 ### `agent-cmds-entry`'s flip [measured from the leader's cut and turn traces, `tsave-m3fac1-b0-32.jsonl.xz`]
 
 Times are seconds from 13:12:25.5Z on the server clock.
