@@ -16,9 +16,13 @@ alarm invocations (each `setAlarm` is one row written). Since R23 (`RunnerBox`, 
 counts, per image, the starts that launched, exited within 3 s, or gave up: the canary check before a
 `graftyard runners upgrade` goes to 100% (`decisions/DECISIONS.md`, "`r23-runnerbox`"). Prints one JSON summary. The first `BURST` Sandboxes (default
 20, the cap) are reported apart from the later ones, which each start as a slot frees. Account and token from the
-environment (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`), the token only as a header.
+environment (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`), the token only as a header. The summary ends with
+`chunks`, `failed` and `complete` (`runnerlogs.py`); the exit is 3 when any hour of the window never answered.
 """
-import json, os, statistics, sys, urllib.request
+import json, os, statistics, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runnerlogs  # noqa: E402
 from datetime import datetime, timezone
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
@@ -30,29 +34,12 @@ NO_INSTANCE = "no container instance that can be provided"
 RATE = "too many containers per second"
 
 
-def query(lo, hi):
-    body = {"queryId": "q", "timeframe": {"from": lo, "to": hi}, "view": "events", "limit": 100, "parameters": {
-        "filters": [{"key": "$metadata.service", "operation": "eq", "type": "string", "value": "graft-runners"}]}}
-    r = urllib.request.Request(
-        f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
-        data=json.dumps(body).encode(), method="POST",
-        headers={"authorization": f"Bearer {tok}", "content-type": "application/json"})
-    return json.load(urllib.request.urlopen(r, timeout=60))["result"]["events"]["events"]
-
-
 # The events view answers at most 100 a query, newest first, and one walk back through a busy window can end early
-# (the F80 burst: 990 of its events, 14 of 50 `launched` lines). Walk back through each 30 s slice on its own.
-events, seen = [], set()
-for lo in range(ms(a), ms(b), 30_000):
-    hi = min(lo + 30_000, ms(b))
-    while hi > lo:
-        got = query(lo, hi)
-        new = [e for e in got if e["$metadata"]["id"] not in seen]
-        seen.update(e["$metadata"]["id"] for e in new)
-        events += new
-        if len(got) < 100 or not new:
-            break
-        hi = min(e["timestamp"] for e in got) + 1
+# (the F80 burst: 990 of its events, 14 of 50 `launched` lines). `runnerlogs.fetch` reads the window in chunks of at
+# most 1 h, each with its own deadline, each query with up to 3 tries and backoff, splits busy spans down to 30 s slices, and names any chunk
+# that never answered, so one slow API call no longer fails the whole check (both canary wakes on 2026-11-20).
+events, failed = runnerlogs.fetch(ms(a), ms(b), runnerlogs.api_query(acct, tok),
+                                 progress=lambda l: print(l, file=sys.stderr, flush=True))
 
 addressed, errors, destroyed, alarms, cancelled, launched, by_image = {}, {}, set(), 0, 0, {}, {}
 for e in sorted(events, key=lambda e: e["timestamp"]):
@@ -107,4 +94,7 @@ print(json.dumps({
     "launched_twice": sum(1 for n in launched.values() if n > 1),
     "sandbox_alarm_invocations": alarms,
     "by_image": by_image,
+    # The canary promotes only when this is true: a failed chunk's events are missing from every count above.
+    **runnerlogs.chunks_line(ms(a), ms(b), failed),
 }, indent=1))
+sys.exit(0 if not failed else 3)

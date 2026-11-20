@@ -834,6 +834,29 @@ The operator CLI now prepares every image a version names before it uploads (`cl
 
 **Close-out.** At 11:03Z the runner account listed 0 running on all three applications (`runnerbox` 8 `stopped`, `sandboxstd3` 299 and `sandboxstd4` 2 `inactive`), hosted demand was empty, and graft-m4a's three gitshard applications listed 0 running. Cost from 09:51Z to 11:03:41Z (`tests/fanout/acctcost.py`): the runner account $0.02, graft-m4a $0.16 (the leaked shard included), **$0.18 of the $2 stop** for both tries, the rerun, and the third run.
 
+### M2 canary reads, chunked (2026-11-20)
+
+The M2 canary check (13193b05 at 10%) read the runner account's Workers Logs for the whole window since 2026-11-19 11:34:56Z, 26 hours and more, in one pass of 30 s slices with no retry. Both wakes that day, at 09:11Z and 13:14Z, failed on one TLS handshake timeout to the observability API and gave no verdict. The lead asked for a harness-only fix:
+- `tests/m4/wp4/runnerlogs.py` reads the window in chunks of at most 1 h.
+- Each chunk has its own deadline (900 s), and each query in it has its own timeout (30 s) and up to 3 tries, with 5 s then 20 s backoff.
+- A span that answers fewer than 100 events is complete. A span that answers 100 splits down to 30 s slices, and a 30 s slice is walked back by timestamp, as before.
+- A chunk that never answers is named by its bounds in a `chunks` line (`chunks`, `failed`, `complete`), and the exit is 3. The rest of the window is still read.
+- `sandboxstarts.py` uses the same fetch and ends its summary with the same three fields.
+- The canary's schedule now promotes only when both reads report `complete` true. It reads the runner account's credentials first, since `env-m4a.sh` also sets `CLOUDFLARE_ACCOUNT_ID` to graft-m4a.
+
+Measured on the runner account: a quiet hour is one query in about 1 s. The site day 56 hour (17:35Z) is 183 events, 23 queries and 15 s. The m57 hour (18:35Z) is 11,156 events, 181 queries and 140 s. The old one-pass read made about 3,100 queries for the same window, and a single failed call ended it. A first version retried a whole chunk and gave it 300 s, which the m57 hour could not meet. Retries are now per query, so one failed call costs one retry, not the hour's work so far.
+
+Tests: `python3 -m unittest tests/m4/wp4/test_runnerlogs.py`, 7 tests on a fake API. They cover:
+- hour chunks, with a quiet hour costing one query;
+- a query retried twice with backoff;
+- a chunk that never answers named while the rest is read;
+- a busy hour split with no event lost;
+- a failure deep in a busy hour retrying that query, not the hour;
+- a chunk past its deadline named;
+- a busy 30 s slice walked back.
+
+Seven planted bugs, each caught: one chunk for the whole window; no retry; a failed chunk failing the whole check; no split; no walk-back; no backoff; no chunk deadline.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |
