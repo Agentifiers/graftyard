@@ -1,0 +1,16 @@
+2026-11-20T19:20:53.243Z repo:131377: 7 names, 7 were joined, all not joined
+2026-11-20T19:25:22.341Z purge: buckets: graft-m2b-site-a-packs, graft-m2b-site-b-packs, graft-m2b-site-c-packs
+2026-11-20T19:25:22.342Z purge: waiting 99 s for sweep runs started before the first pass (until 2026-11-20T19:25:00.000011+00:00)
+2026-11-20T19:25:22.343Z purge: 131377 purged: a 7608 -> 0, b 7531 -> 0, c 6765 -> 0
+2026-11-20T19:25:22.343Z purge: 131377 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-20T19:25:22.343Z purge: {"dry": false, "purged": 1, "objects": 21904, "refused": [], "second": 0}
+retire exit 0
+repo:131377 ---
+none joined of 1
+joined exit 0
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+sweep exit 0
+2026-11-20T19:25:41Z
+RETIREDONE

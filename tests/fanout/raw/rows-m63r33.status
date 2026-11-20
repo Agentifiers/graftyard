@@ -1,0 +1,83 @@
+2026-11-20T18:59:53Z start a7ae728b6 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-20T19:00:11Z start sweep ok
+2026-11-20T19:00:00Z cost account 45.3 since 2026-11-20T00:00:00Z, run 0.0 since 2026-11-20T18:41:25Z, at b0-33
+2026-11-20T19:00:45.596Z m3org/fm63r33-b033 = 131377
+2026-11-20T19:00:50.069Z repo:131377 leader 0: config 6 learners [{"addr":192,"doName":"repo:131377#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131377#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131377#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131377#2#l3","join":200,"site":0,"slot":3}]
+2026-11-20T19:00:50.620Z repo:131377 site 0: arrival mem (asked mem, status 200)
+2026-11-20T19:00:50.857Z repo:131377 site 1: arrival mem (asked mem, status 200)
+2026-11-20T19:00:51.009Z repo:131377 site 2: arrival mem (asked mem, status 200)
+2026-11-20T19:00:54.192Z repo:131377 leader 0: set k 4: {"grants":[[0,[2,0,4]],[2,[2,0,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-20T19:01:04.572Z repo:131377 leader 0: set k 4: {"grants":[[0,[2,0,4]],[2,[2,0,4]]],"k":1,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-20T19:01:15.133Z repo:131377 leader 0: set k 4: {"grants":[[0,[2,0,4]],[2,[2,0,4]]],"k":4,"meta":{"configIndex":6,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-20T19:01:15.265Z repo:131377 leader 0: k 4 at 8
+2026-11-20T19:01:39Z b0-33 shard gate site 0: warm site 0 after 1.1 s
+2026-11-20T19:01:39Z b0-33 shard gate site 1: warm site 1 after 9.2 s
+2026-11-20T19:01:39Z b0-33 shard gate site 2: warm site 2 after 5.0 s
+2026-11-20T19:01:39Z b0-33 fm63r33-b033 131377 start
+2026-11-20T19:09:44.681Z repo:131377 leader 1: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":6,"leader":1,"term":3},"stepped":true,"want":0}
+2026-11-20T19:09:44.884Z repo:131377 leader 1: k 1 at 557
+2026-11-20T19:09:59Z b0-33 fm63r33-b033 131377 done exit 0
+2026-11-20T19:10:08Z torn down 131377
+site fault off: 200
+git#2#pool:6 200
+git#2#pool:3 200
+git#2#pool:1 200
+git#2#pool:5 200
+git#0#pool:6 200
+git#0#pool:5 200
+git#0#pool:3 500
+git#0#pool:1 200
+{"torn_down": 8, "codes": {"200": 7, "500": 1}}
+sweep: no shard container running
+2026-11-20T19:10:42Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 1448 {'leader': 126, 'promised': 1322}
+  colo site 4 {'promised': 4}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 17 (n 100) p90 20 (placement baseline); unpaired p50 44 (n 100); pooled p50 39 (n 200)
+  load: 1-statement p50 61 (n 50); unpaired p50 18 (n 375); pooled p50 19 p99 981 (n 494)
+isolates: 7 members, 7 distinct ids, 1 changes; shared: none
+shared isolates:
+tsave-m63r33.jsonl: 7 members, 8 isolates; no shared isolate
+harness outages (2026-11-20T19:04:31Z, the first request, to 2026-11-20T19:09:16Z; announced 2026-11-20T19:04:16Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-20T19:04:31Z", "2026-11-20T19:04:32Z"]], "outageSeconds": 1.0, "share": 0.0035, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 7239, "served": 0.9797, "p50": 1215, "p99": 9044, "cap": 0}, "outagesRemoved": {"n": 7207, "served": 0.9796, "p50": 1214, "p99": 9044, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 32, "served": 0.6562, "p50": 3001, "p99": 11833, "cap": 0}, "outagesRemoved": {"n": 32, "served": 0.6562, "p50": 3001, "p99": 11833, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 12498, "served": 0.1247, "p50": 3756, "p99": 8970, "cap": 0}, "outagesRemoved": {"n": 12453, "served": 0.1217, "p50": 3750, "p99": 8970, "cap": 0}}
+5xx by reason (2026-11-20T19:04:31Z to 2026-11-20T19:09:35Z):
+{"logged": 1993, "edge5xx": 1993, "byStatus": {"503": 1993}}
+    597 503 task
+    481 503 graphql
+    341 503 rest-repo-write
+    308 503 renew
+    148 503 upload-pack
+    113 503 lease
+      4 503 receive-pack
+      1 503 info-refs
+by reason:
+    509 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    407 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    309 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    252 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    148 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     90 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     88 503 task             the member answered {"full":{"retry_after_s":N}}
+     74 503 graphql          the member answered {"full":{"retry_after_s":N}}
+     56 503 renew            the member answered {"full":{"retry_after_s":N}}
+     32 503 rest-repo-write  the member answered {"full":{"retry_after_s":N}}
+     23 503 lease            the member answered {"full":{"retry_after_s":N}}
+      4 503 receive-pack     the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      1 503 info-refs        the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 1559, "full": 10938, "other": 1}, "fullBy": {"admission": 5863, "expire_agents (queued)": 4785, "edge (bound_at_send)": 290}, "fullMarks": {"ask": 839, "stagefirst": 299, "busy": 0, "missed": 66, "suspect": 66}}
+budget left at the first send | ok / full
+  under 1 s  | 0 / 988
+  1 to 2 s   | 13 / 1303
+  2 to 3 s   | 232 / 2713
+  3 to 5 s   | 1314 / 5934
+B033DONE
