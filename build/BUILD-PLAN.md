@@ -249,6 +249,8 @@ Every package ran on prototype code in the one Milestone 0 account, M0-WP6 and M
 
 **Flip condition.** B0-33's Fail value reopens ref lanes with a parent `Abort { txn }` record (`design/AGENT-LAYER.md`, "Alternatives considered", ref lanes). B0-29 and B0-34 decide the A1 verdict and the guessed git CPU constants (`design/AGENT-LAYER.md`, "Open questions and risks").
 
+**B0-34's every-clone line and the 90% rule (2026-11-20).** "Every clone's time to first byte at most 5 s through the kill and cold phases" is a count line, so the 90% rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a daily spend limit"; `AGENTS.md`, "How to pick work", item 5) reads it as at least 90% of the clone probes, hits and misses together, at most 5 s, in each of the kill and second phases on the client clock. The hits line is a p99 and is judged at 1 s. `tests/fanout/clonelines.py` writes both lines into the verdict, as measured and with harness outages removed, and prints the share against 100% beside it. From the first Load34 row on, the clients run inside Cloudflare (`decisions/DECISIONS.md`, "`load34`").
+
 ### M0-WP10. Agent refusals and provenance on the base
 
 **Build.** Prototypes of `ActorKind`, `AgentActor`, the refusal list for `ActorKind::Agent` in `decide`, the `AgentsExclusive` check, `validate`'s `ProtectedHits`, `ChangedPaths`, and `Provenance` outputs, `Source`, `TrailerKey`, and the advertisement rules of `SESSION_REFS` (`design/DESIGN.md`, Shape, "Agent load and agent safety").

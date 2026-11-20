@@ -33,6 +33,9 @@
 //     [--ls-refs-shard-every S]  # F91's within-network control: the off arm only in odd S-second windows of
 //                        # Cloudflare's clock (floor(ms / (S * 1000)) odd), so one network carries both arms and a
 //                        # trace's own timestamps say which arm each row is in (`tests/fanout/lsrefsab.py`)
+//     [--hosted N]       # B0-34 with --b034: the load runs in N Load34 clients on Cloudflare (tests/am1/load34/), not
+//                        # here; this process does setup, the kill, k, the leader reads, and the row, from their
+//                        # samples in R2 (decisions/DECISIONS.md, `load34`). [--hints wnam,...] their location hints.
 //     [--b034 FILE]      # B0-34 as written, on the seeded 5 GB monorepo (tests/fanout/b034.sh). FILE is JSON:
 //                        # `bare` (the local torvalds/linux clone) and `future` (the first-parent commits after the
 //                        # seeded main), which replace the PR merges: 10 a minute push the next one to main, so the
@@ -55,16 +58,17 @@
 // GRAFT_TOOLS_EDGE, M3_STATE, BED_TOKEN_FILE); every token comes from those files or a mint, goes only in an
 // `authorization` header, and every log line passes `scan`. Rows go to tests/am1/raw/a1-<row>-<run>.jsonl.
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { parseArgs } from "node:util";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
+import { cloneKeyHex, journey9, onePack, pkt, pushResult, receiveBody } from "./wire.mjs";
 import { edgeInvocations, postH1, tagLost } from "./h1.mjs";
 import { r2list } from "../../fanout/r2list.mjs";
 import { serverClock } from "../../fanout/srvclock.mjs";
@@ -75,29 +79,12 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
   "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" },
-  "ls-refs-shard": { type: "boolean" }, "ls-refs-shard-every": { type: "string" } } });
+  "ls-refs-shard": { type: "boolean" }, "ls-refs-shard-every": { type: "string" }, hosted: { type: "string" },
+  hints: { type: "string" } } });
+if (opt.hosted && !opt.b034) throw new Error("--hosted runs B0-34's load only: pass --b034");
 if (opt["ls-refs-shard"] && opt["ls-refs-shard-every"]) throw new Error("--ls-refs-shard and --ls-refs-shard-every exclude each other");
 
 // ---- the plan, from the rows ----
-
-/** Journey 9 at `agents` (B0-29; `cost_agents.py --a1`): pushes every 120 s (40 KB mean, 5% at 1 MiB), the A1 agent
- *  side-command mix per 500 agents, 1.25 human and 1.0 bot commands/s, 10 merges/min, 33 ref reads/s, 200 API
- *  reads/s, 500 pollers. Rates are whole-fleet per second. */
-export function journey9(agents) {
-  const f = agents / 500;
-  return {
-    agents, pushEvery: 120, packMin: 10_000, packMax: 70_000, bigShare: 0.05, bigBytes: 1 << 20,
-    // cost_agents.py --a1, agent class per 500 agents, the parts the edge serves a route for. PrSync and test-merge
-    // records (4.17/s each) are the host's own commands after each push; RequiredCheck and check runs (3.33/s) have
-    // no edge route and are not offered (`unserved`).
-    // `standIn` is task summary edits at the unserved rate, so the group sees the row's command rate; they are
-    // agent-class commands of one small entry each, as a check run is.
-    side: { taskEdit: 1.67 * f, comment: 1.88 * f, label: 1.87 * f, draftPr: 0.42 * f, leaseAcquire: 0.42 * f,
-      leaseRelease: 0.41 * f, leaseRenew: 2.5 * f, sessionPush: 0.21 * f, standIn: 3.33 * f },
-    hostMade: 8.34 * f, unserved: 3.33 * f,
-    human: 1.25, bot: 1.0, mergesPerMin: 10, refReads: 33, apiReads: 200, clones: 0, pollers: 500,
-  };
-}
 
 export function planFor(row, { agents, seconds, apiReads, refReads }) {
   const base = { row, seconds, ...journey9(agents ?? 500), ...(apiReads !== undefined ? { apiReads } : {}), ...(refReads !== undefined ? { refReads } : {}) };
@@ -229,16 +216,11 @@ export function overlapMs(heldId, ttlS, grantedId) {
   return a === null || b === null ? null : a + ttlS * 1000 - b;
 }
 
-// ---- packs: one blob, its tree, and a commit, as git writes them ----
-
 /** B0-35's workflow (`--workflow`): one job per `pull_request` event, on a label no runner has, so no runner, hosted or
  *  self-hosted, ever takes it and `graft-runners` starts no Sandbox; the driver cancels every run after the window. */
 export const WF_PATH = ".github/workflows/b035.yml";
 export const WF_SRC = Buffer.from("on: pull_request\njobs:\n  t:\n    runs-on: [self-hosted, b035-dispatch]\n    steps:\n      - run: \"true\"\n");
 
-const sha1 = (b) => createHash("sha1").update(b).digest();
-const obj = (type, body) => sha1(Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body]));
-const TYPE = { commit: 1, tree: 2, blob: 3 };
 /** merge:only's time by stage (`merge-p99`): each `server-timing` and `x-graft-shard-timing` stage's n, p50, p99
  * and max over the merges that carried it, and `gap`, what `total` leaves after `auth`, the longer of `tier` and
  * `authz` (they run at once), `merge_plan`, and `commit`: an untimed stage. Nearest rank, as the run's other p99s. */
@@ -253,75 +235,6 @@ export function mergeSplit(steps) {
   }
   const at = (xs, q) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
   return Object.fromEntries(Object.entries(by).map(([k, xs]) => [k, { n: xs.length, p50: at(xs, 0.5), p99: at(xs, 0.99), max: Math.max(...xs) }]));
-}
-
-function entryHeader(type, size) {
-  const out = [];
-  let b = (TYPE[type] << 4) | (size & 15);
-  size >>= 4;
-  while (size) { out.push(b | 0x80); b = size & 0x7f; size >>= 7; }
-  out.push(b);
-  return Buffer.from(out);
-}
-/** The tree of `files` ([path parts, blob id]), its subtrees pushed to `objects`; entries sorted as git sorts them
- *  (a directory's name compares as if it ended in "/"). */
-function treeOf(files, objects) {
-  const groups = new Map();
-  for (const [[h, ...rest], id] of files) (groups.get(h) ?? groups.set(h, []).get(h)).push([rest, id]);
-  const entries = [...groups].map(([name, xs]) => (xs.length === 1 && xs[0][0].length === 0
-    ? { mode: "100644", name, id: xs[0][1] } : { mode: "40000", name, id: treeOf(xs, objects) }));
-  const key = (e) => Buffer.from(e.mode === "40000" ? `${e.name}/` : e.name);
-  entries.sort((a, b) => Buffer.compare(key(a), key(b)));
-  const body = Buffer.concat(entries.map((e) => Buffer.concat([Buffer.from(`${e.mode} ${e.name}\0`), e.id])));
-  objects.push(["tree", body]);
-  return obj("tree", body);
-}
-/** The pack and the commit id of one commit on `parent` (hex, or null) holding `bytes` at `path`, and each `extra`
- *  [path, bytes] beside it (B0-35's workflow file, so every commit and every test merge keeps it). */
-export function onePack(path, bytes, parent, message, at = 1_700_000_000, extra = []) {
-  const files = [[path, bytes], ...extra];
-  const blobs = files.map(([, b]) => ["blob", b]);
-  const objects = [];
-  const root = treeOf(files.map(([p, b]) => [p.split("/"), obj("blob", b)]), objects);
-  const who = `a1 <a1@graftyard.invalid> ${at} +0000`;
-  const commit = Buffer.from(`tree ${root.toString("hex")}\n${parent ? `parent ${parent}\n` : ""}author ${who}\ncommitter ${who}\n\n${message}\n`);
-  const all = [...blobs, ...objects, ["commit", commit]];
-  const head = Buffer.alloc(12);
-  head.write("PACK"); head.writeUInt32BE(2, 4); head.writeUInt32BE(all.length, 8);
-  const body = Buffer.concat([head, ...all.flatMap(([t, b]) => [entryHeader(t, b.length), deflateSync(b, { level: 1 })])]);
-  return { pack: Buffer.concat([body, sha1(body)]), commit: obj("commit", commit).toString("hex") };
-}
-const pkt = (s) => { const b = Buffer.from(s); return Buffer.concat([Buffer.from((b.length + 4).toString(16).padStart(4, "0")), b]); };
-const ZERO = "0".repeat(40);
-/** The receive-pack request body for one ref update, with report-status and no side-band. */
-export const receiveBody = (ref, old, nu, pack) =>
-  Buffer.concat([pkt(`${old ?? ZERO} ${nu} ${ref}\0report-status agent=graftyard-a1\n`), Buffer.from("0000"), pack]);
-/** The payloads of a pkt-line stream (flushes dropped); stops at the first malformed length. */
-function pktLines(s) {
-  const out = [];
-  for (let i = 0; i + 4 <= s.length;) {
-    const n = parseInt(s.slice(i, i + 4), 16);
-    if (!/^[0-9a-f]{4}$/.test(s.slice(i, i + 4)) || (n > 0 && n < 4)) break;
-    if (n === 0) { i += 4; continue; }
-    out.push(s.slice(i + 4, i + n));
-    i += n;
-  }
-  return out;
-}
-/** `ok`, or the `ng` reason, from a report-status reply, side-band framed or not. A status line is read by its
- * pkt-line length, not by the text before it, since a length can end in a hex letter (`002cok refs/...`). */
-export function pushResult(text) {
-  const raw = pktLines(text);
-  const band1 = raw.filter((l) => l[0] === "\x01").map((l) => l.slice(1)).join("");
-  const lines = raw.some((l) => l[0] === "\x01") ? pktLines(band1) : raw.filter((l) => l[0] !== "\x02" && l[0] !== "\x03");
-  const ng = lines.map((l) => l.match(/^ng (\S+) ([^\n]*)/)).find(Boolean);
-  // Any other refusal keeps its reason, ids and numbers masked, so a row says why (B0-31's 1,484 were unexplained).
-  const mask = (x) => x.replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 80).trim();
-  // `unpacker error` names its cause on the `unpack <why>` line (`Refusal::unpack_failed`).
-  const unpack = lines.map((l) => l.match(/^unpack (?!ok\n)([^\n]*)/)).find(Boolean);
-  if (ng) return ng[2].includes("admission full") ? "full" : /stale|fetch first|non-fast-forward/.test(ng[2]) ? "stale"
-    : `refused ${mask(ng[2])}${unpack ? `: ${mask(unpack[1])}` : ""}`;
-  return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";
 }
 
 if (opt.selftest) {
@@ -762,7 +675,8 @@ const LEARNER_WAIT_MS = 300_000;
     log(`learner gate: ${ls.length}/${ls.length} learners within one entry of ${commit} (applied ${JSON.stringify(at)}) in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
   }
 }
-t0 = Date.now() + 5_000;
+// Hosted clients start from an alarm set at begin, so they get time to be created and placed.
+t0 = Date.now() + (opt.hosted ? 90_000 : 5_000);
 end = t0 + seconds * 1000;
 // The driver's own event-loop delay over the load window, in the row (`loopDelay`): a timer or fetch the loop could
 // not run on time ends late, so every client-side latency is at least this late. m41's `tip:move` pushes through
@@ -813,15 +727,15 @@ let labelN = 0;
 // with its reason) and whether the shard's spool left `clone/<net>/<key>/0` in R2 within a minute of the cancel.
 const missRows = [];
 const fillChecks = [];
-/** The edge's CloneKey digest (crates/git/src/clone.rs `CloneKey::digest`) for the probe's fetch: one want, depth 1,
- *  no filter, caps `no-progress` and `ofs-delta`, no `include-tag` (so no tags digest). */
-function cloneKeyHex(net, want) {
-  const wants = createHash("sha256").update(Buffer.from(want, "hex")).digest();
-  const be64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
-  const h = createHash("sha256").update("graftyard/clone/1\0").update(be64(net)).update(wants).update(be64(2))
-    .update("\0none").update("\0");
-  for (const c of ["no-progress", "ofs-delta"]) h.update(c).update("\0");
-  return h.update(Buffer.alloc(32)).digest("hex");
+/** Whether the shard's spool left a miss's `clone/<net>/<key>/0` in R2 within a minute of `s`. */
+async function fillCheck(row, s) {
+  const by = Date.now() + 60_000;
+  while (Date.now() < by) {
+    await sleep(10_000);
+    const found = (await r2list(`clone/${CHAIN.split(":")[1]}/${row.key}/0`)).filter((x) => x.keys?.length).map((x) => x.site);
+    if (found.length) { row.filled = { sites: found, afterS: Math.round((Date.now() - s) / 1000) }; return; }
+  }
+  row.filled = false;
 }
 /** A v2 fetch of `want` from `repo`: time to its first byte as `kind`. `firstByte` (B0-34's 5 GB network) asks depth
  *  1 with `ofs-delta` (the composable shape a `git clone --depth 1` sends) and cancels after the first byte; otherwise
@@ -845,18 +759,12 @@ async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
     if (firstByte && b034) {
       const cache = r.headers.get("x-graft-clone-cache"), compose = r.headers.get("x-graft-compose");
       note(`${kind}:${cache ?? "nocache"}`, ms, compose ?? String(r.status));
+      // The edge clock split the same way, so hits and misses each have both clocks (tests/fanout/clonelines.py).
+      if (edge) note(`${kind}:${cache ?? "nocache"}:edge`, Number(edge[1]), compose ?? String(r.status));
       if (cache === "miss") {
         const row = { at: new Date(s).toISOString(), ms, status: r.status, compose, want, key: cloneKeyHex(Number(CHAIN.split(":")[1]), want), filled: null };
         missRows.push(row);
-        fillChecks.push((async () => {
-          const by = Date.now() + 60_000;
-          while (Date.now() < by) {
-            await sleep(10_000);
-            const found = (await r2list(`clone/${CHAIN.split(":")[1]}/${row.key}/0`)).filter((x) => x.keys?.length).map((x) => x.site);
-            if (found.length) { row.filled = { sites: found, afterS: Math.round((Date.now() - s) / 1000) }; return; }
-          }
-          row.filled = false;
-        })());
+        fillChecks.push(fillCheck(row, s));
       }
     }
     if (firstByte) await reader.cancel();
@@ -880,7 +788,9 @@ const pollRuns = async () => {
     if (!dispatchRuns.has(x.id)) dispatchRuns.set(x.id, { n, seenAt: Date.now(), trigger: x.trigger, status: x.status });
   }
 };
-const jobs = [
+const hosted = opt.hosted ? await import("../load34/a1hosted.mjs") : null;
+let hostedSummary = null;
+const jobs = hosted ? [] : [
   ...(opt.workflow ? [(async () => {
     while (Date.now() < end + DISPATCH_TAIL_MS) {
       const s = Date.now();
@@ -1131,7 +1041,7 @@ function b034Phase() {
   return past(b034.hostileAt) ? "@hostile" : past(b034.secondAt) ? "@second" : past(opt["kill-shard-at"]) ? "@kill" : "@j9";
 }
 const kTimeline = []; // [s since t0, chain, k]
-if (b034) {
+if (b034 && !hosted) {
   // The tip: the next real first-parent commit, fast-forwarded onto main under the admin's PAT from the bare clone.
   const g = new (await import("../hosted/lib.mjs")).Git(R).as(admin);
   // From the commit after main's place in that history: the repository keeps main between rounds, so from index 0
@@ -1172,6 +1082,8 @@ if (b034) {
   };
   if (b034.second) jobs.push(...hot(b034.second, b034.secondAt, ":second"));
   for (const [i, h] of (b034.hostile ?? []).entries()) jobs.push(...hot(h, b034.hostileAt, `:hostile${i + 1}`));
+}
+if (b034) {
   // k of every network, every 30 s, from each group's leader (`ranges`, as tests/fanout/k.mjs reads it).
   const nets = [CHAIN, b034.second?.chain, ...(b034.hostile ?? []).map((h) => h.chain)].filter(Boolean);
   jobs.push((async () => {
@@ -1218,7 +1130,7 @@ const killRow = async (sent, ms, res, seenAt) => {
   return r;
 };
 const KILL_SETTLE_MS = 5_000;
-if (plan.pollers) {
+if (plan.pollers && !hosted) {
   // The members a poll may go to, as the edge's `feed_members` lists them (workers/edge/src/agents.rs): learners
   // first, then the voters that do not lead, re-read every 60 s and at once when a voter answers `notServing` (it
   // leads now).
@@ -1386,8 +1298,27 @@ jobs.push((async () => {
     (await budgets()).forEach((b, s) => { if (b && (!budgetSeen[s] || b.since === budgetSeen[s].since || b.computed >= budgetSeen[s].computed)) budgetSeen[s] = b; });
   }
 })());
+// The hosted load: N clients started now for t0 on Cloudflare's clock, read every 15 s until they finish, then collected
+// into this run's samples, pushes, misses and feed events, as the in-process load would have left them.
+const hostedRun = hosted ? hosted.run({ n: Number(opt.hosted), hints: (opt.hints ?? "wnam").split(","), RUN, plan, b034, seconds,
+  t0Cf: cfClock.now() + (t0 - Date.now()), t0, end: () => end, edge: EDGE, repo: R, chain: CHAIN, repoId, target, main,
+  tasks: agents.filter((a) => a.task).map((a) => [a.i, a.task]), tokens: { ...tokens, app: (await refreshApp(), app) },
+  killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null, statuses, log, writeRow: (v) => writeRow(OUT, v),
+  onMiss: (row) => { missRows.push(row); fillChecks.push(fillCheck(row, Date.parse(row.at))); } }) : null;
+if (hostedRun) jobs.push(hostedRun.done);
 await Promise.all(jobs);
 loopDelay.disable();
+if (hostedRun) {
+  const h = await hostedRun.collect();
+  for (const [at, k, ms, code] of h.samples) {
+    (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1;
+    samples.push([at, k, ms, code]);
+  }
+  for (const p of h.pushes) writeRow(PUSHES, p);
+  seen.push(...h.seen);
+  for (const [k, n] of Object.entries(h.lsRefsBy)) lsRefsBy[k] = (lsRefsBy[k] ?? 0) + n;
+  hostedSummary = h.summary;
+}
 // The last first-byte misses' R2 checks run up to a minute past the window.
 await Promise.all(fillChecks);
 const killLog = await Promise.all(killRows);
@@ -1466,6 +1397,7 @@ const v = {
       filled: missRows.filter((x) => x.filled).length, notFilled: missRows.filter((x) => x.filled === false).length }, kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
   lsRefsBy,
+  ...(hostedSummary ? { hosted: hostedSummary } : {}),
   ...(LS_EVERY_MS ? { lsRefsEvery: LS_EVERY_MS / 1000, lsRefsWindows } : {}),
   loopDelay: { p50: Math.round(loopDelay.percentile(50) / 1e6), p99: Math.round(loopDelay.percentile(99) / 1e6),
     max: Math.round(loopDelay.max / 1e6) },
