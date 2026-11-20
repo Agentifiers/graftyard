@@ -628,11 +628,12 @@ pub(crate) async fn tier_rows(
 
 /// A repository read's group, created on first use (`crate::ensure_group`). A repository whose create has not
 /// committed its `RepoOwner` row yet is 404, as GitHub answers a repository no one can see yet: its members refuse to
-/// join for that reason alone (`graftyard_lookup::NOT_CREATED`). Any other failure stays an error, a 503.
+/// join for that reason alone (`graftyard_lookup::NOT_CREATED`). So is one whose group was retired, as a deleted one
+/// reads (`graftyard_lookup::RETIRED`). Any other failure stays an error, a 503.
 async fn first_use(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<(), Reply>> {
     match ensure_group(c, repo).await {
         Ok(()) => Ok(Ok(())),
-        Err(e) if graftyard_lookup::is_not_created(&e) => Ok(Err(Reply::not_found())),
+        Err(e) if graftyard_lookup::is_gone(&e) => Ok(Err(Reply::not_found())),
         Err(e) => Err(Error::RustError(e)),
     }
 }
@@ -686,8 +687,8 @@ async fn core_rows_q(c: &Ctx<'_>, repo: &Repo, rows: Value) -> Result<std::resul
     let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
     if let Ok(None) = v {
         if let Err(e) = ensure_group(c, repo).await {
-            // `crate::read_gate` reads "not created yet" as a repository the caller cannot see.
-            return if graftyard_lookup::is_not_created(&e) { Ok(Err(e)) } else { Err(Error::RustError(e)) };
+            // `crate::read_gate` reads "not created yet" and a retired group as a repository the caller cannot see.
+            return if graftyard_lookup::is_gone(&e) { Ok(Err(e)) } else { Err(Error::RustError(e)) };
         }
         v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
     }

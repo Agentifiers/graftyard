@@ -22,6 +22,7 @@
 
 use futures_util::StreamExt;
 use graftyard_git::clone::{CloneKey, tags_digest};
+use graftyard_git::compose::ChainCheck;
 use graftyard_git::group::{CallErrorWire, CommitReq, PushOutcome, RefsPage, RefsReply};
 use graftyard_git::host::R2;
 use graftyard_git::refs::{Atomicity, ObjectId, RefName};
@@ -293,9 +294,9 @@ async fn read_gate(
         futures_util::future::join(api::timed(c, "gate_rows", rows), api::timed(c, "gate_authz", owner)).await;
     let core = match rows? {
         Ok(core) => core,
-        // A repository whose create has not committed `RepoOwner` yet: hidden from every caller, as GitHub hides one
-        // that does not exist yet, and not cached, so it shows as soon as the create commits.
-        Err(e) if graftyard_lookup::is_not_created(&e) => return Ok(Ok(graftyard_identity::Decision::Hidden)),
+        // A repository whose create has not committed `RepoOwner` yet, or whose group was retired: hidden from every
+        // caller, as GitHub hides one that does not exist, and not cached, so it shows as soon as a create commits.
+        Err(e) if graftyard_lookup::is_gone(&e) => return Ok(Ok(graftyard_identity::Decision::Hidden)),
         Err(e) => return Ok(Err(e)),
     };
     let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core: &core };
@@ -867,6 +868,16 @@ fn shard_unavailable(rid: RequestId, why: &str) -> Result<Response> {
     Ok(Response::ok(format!("git cache: no shard could check the pack ({why}); retry\n"))?
         .with_status(503)
         .with_headers(h))
+}
+
+/// A composed answer whose chain checks did not end within `CHAIN_CHECK_WITHIN`: 503 with `Retry-After: 1`, before
+/// any byte of a git result, so the client fails fast and tries again instead of waiting for bytes that may never come
+/// (`decisions/DECISIONS.md`, "`chain-hold`").
+fn chain_late(rid: RequestId) -> Result<Response> {
+    let h = headers(rid)?;
+    h.set("retry-after", "1")?;
+    h.set("content-type", "text/plain; charset=utf-8")?;
+    Ok(Response::ok("git cache: the clone's chain did not answer in time; retry\n")?.with_status(503).with_headers(h))
 }
 
 /// `Unsupported` (`design/DESIGN.md`, Shape, the write path): 503 with `Retry-After`, a retryable error, never a
@@ -2226,15 +2237,16 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         if let Some(o) = cache.0.get(k.manifest_key().to_string()).execute().await.map_err(|e| e.to_string())?
             && o.size() <= graftyard_git::compose::TAIL_ANSWER_MAX
             && let Some(b) = o.body()
-            && let Some(r) = api::timed(
-                c,
-                "chain_open",
-                graftyard_git::host::manifest_answer(&cache, net, b.bytes().await?, h.clone()),
-            )
-            .await
-            .map_err(|e| e.0)?
         {
-            return Ok(r);
+            let bytes = b.bytes().await?;
+            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&cache, net, bytes, h.clone()))
+                .await
+                .map_err(|e| e.0)?
+            {
+                ChainCheck::Checked(r) => return Ok(r),
+                ChainCheck::Late => return chain_late(c.rid),
+                ChainCheck::Declined => {}
+            }
         }
         if let Some(r) =
             graftyard_git::host::cached_response(&cache, &k.r2_key(0).to_string(), h).await.map_err(|e| e.0)?
@@ -2260,13 +2272,16 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         if let Some(v) = r.headers().get("x-graft-cursor")? {
             h.set("x-graft-cursor", &v)?;
         }
-        if len.is_some_and(|n| n <= graftyard_git::compose::TAIL_ANSWER_MAX)
-            && let Some(a) =
-                api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&cache, net, r.bytes().await?, h))
-                    .await
-                    .map_err(|e| e.0)?
-        {
-            return Ok(a);
+        if len.is_some_and(|n| n <= graftyard_git::compose::TAIL_ANSWER_MAX) {
+            let bytes = r.bytes().await?;
+            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&cache, net, bytes, h))
+                .await
+                .map_err(|e| e.0)?
+            {
+                ChainCheck::Checked(a) => return Ok(a),
+                ChainCheck::Late => return chain_late(c.rid),
+                ChainCheck::Declined => {}
+            }
         }
         r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
     }

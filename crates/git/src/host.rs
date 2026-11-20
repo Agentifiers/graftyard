@@ -336,86 +336,85 @@ pub async fn cached_response(b: &R2, key: &str, headers: Headers) -> Result<Opti
 }
 
 /// The composed answer a manifest and tail describe (`crate::compose::Manifest`), streamed from the chain's packs in
-/// `bucket`, every one opened and checked first (`open_chain`, `composed_answer`): the edge's answer to a composed miss
-/// and to a manifest hit under `edge-compose`. `None`, and nothing sent, when the bytes are not a manifest of this
-/// network, the tail's length is not the manifest's, or a chain pack is missing or not the one the manifest counted.
+/// `bucket`, every one checked first (`open_chain`, `composed_answer`): the edge's answer to a composed miss and to a
+/// manifest hit under `edge-compose`. `Declined`, and nothing sent, when the bytes are not a manifest of this network,
+/// the tail's length is not the manifest's, or a chain pack is missing or not the one the manifest counted; `Late` when
+/// the checks did not end within `CHAIN_CHECK_WITHIN` (`decisions/DECISIONS.md`, "`chain-hold`").
 pub async fn manifest_answer(
     bucket: &R2,
     network: NetworkId,
     bytes: Vec<u8>,
     headers: Headers,
-) -> Result<Option<Response>, StoreError> {
-    use crate::compose::{Manifest, ManifestLine};
-    let ManifestLine::Read(m, at) = Manifest::read(&bytes, network) else { return Ok(None) };
+) -> Result<crate::compose::ChainCheck<Response>, StoreError> {
+    use crate::compose::{ChainCheck, Manifest, ManifestLine};
+    let ManifestLine::Read(m, at) = Manifest::read(&bytes, network) else { return Ok(ChainCheck::Declined) };
     if (bytes.len() - at) as u64 != m.tail || m.count().is_none() {
-        return Ok(None);
+        return Ok(ChainCheck::Declined);
     }
-    let Some(packs) = open_chain(bucket, &m).await? else { return Ok(None) };
+    let packs = match open_chain(bucket, &m).await? {
+        ChainCheck::Checked(p) => p,
+        ChainCheck::Declined => return Ok(ChainCheck::Declined),
+        ChainCheck::Late => return Ok(ChainCheck::Late),
+    };
     let tail = bytes[at..].to_vec();
-    composed_answer(m, packs, tail, headers).map(Some)
+    composed_answer(bucket, m, packs, tail, headers).map(ChainCheck::Checked)
 }
 
-/// One chain pack of a manifest, open in its bucket: its stream positioned after the 12-byte header, any bytes of the
-/// first chunk past the header, and its body's length (the object less header and trailer).
-pub struct OpenPack {
+/// One chain pack of a manifest, checked in its bucket: its key, the R2 etag its check read, and its body's length
+/// (the object less header and trailer).
+pub struct CheckedPack {
     key: String,
-    chunks: wasm_streams::readable::IntoStream<'static>,
-    first: Option<js_sys::Uint8Array>,
+    etag: String,
     body: u64,
 }
 
-/// Every chain pack a manifest names, opened in `bucket` before the answer starts, as the container opens its files
-/// before it sends: a fold that deletes them meanwhile leaves the reads already open, and each one's header is checked
-/// against the manifest's count. They open `CHAIN_OPEN_AT_ONCE` at a time and stay in the manifest's order
-/// (`crate::compose::open_in_order`); one after another, a base and 19 parts each waited for its first chunk before any
-/// header left (`decisions/DECISIONS.md`, "`chain-open`"). `None` when one is missing, short, or not the pack the
-/// manifest counted, so the caller asks the shard instead and no client sees a cut answer.
-pub async fn open_chain(bucket: &R2, m: &crate::compose::Manifest) -> Result<Option<Vec<OpenPack>>, StoreError> {
-    crate::compose::open_in_order(m.packs.iter().map(|p| open_pack(bucket, &p.key, p.n))).await
+/// Every chain pack a manifest names, checked in `bucket` before the answer starts: each one's first 12 bytes, read
+/// whole by a ranged `get`, against the manifest's count. They are checked `CHAIN_OPEN_AT_ONCE` at a time in the
+/// manifest's order (`crate::compose::open_in_order`, `decisions/DECISIONS.md`, "`chain-open`"), within
+/// `CHAIN_CHECK_WITHIN`. No body stays open: one invocation that held eight R2 bodies got no ninth, and main, which
+/// opened every pack's whole body here and held it to its turn, hung every chain of nine packs or more
+/// (`decisions/DECISIONS.md`, "`chain-hold`"). `Declined` when one is missing, short, or not the pack the manifest
+/// counted, so the caller asks the shard instead and no client sees a cut answer.
+pub async fn open_chain(
+    bucket: &R2,
+    m: &crate::compose::Manifest,
+) -> Result<crate::compose::ChainCheck<Vec<CheckedPack>>, StoreError> {
+    crate::compose::check_in_time(m.packs.iter().map(|p| check_pack(bucket, &p.key, p.n)), worker::Delay::from).await
 }
 
-/// One chain pack opened in `bucket`, its 12-byte header read and checked against `n`; `None` as `open_chain` says.
-async fn open_pack(bucket: &R2, key: &str, n: u32) -> Result<Option<OpenPack>, StoreError> {
-    use wasm_bindgen::JsCast;
-    let Some(o) = bucket.0.get(key).execute().await.map_err(err)? else { return Ok(None) };
+/// One chain pack's 12-byte header read from `bucket` and checked against `n`; `None` as `open_chain` says.
+async fn check_pack(bucket: &R2, key: &str, n: u32) -> Result<Option<CheckedPack>, StoreError> {
+    let range = worker::Range::OffsetWithLength { offset: 0, length: 12 };
+    let Some(o) = bucket.0.get(key).range(range).execute().await.map_err(err)? else { return Ok(None) };
     if o.size() < 32 {
         return Ok(None);
     }
-    let raw = o.body().ok_or_else(|| StoreError(format!("{key}: no body")))?.response_body().map_err(err)?;
-    let worker::ResponseBody::Stream(raw) = raw else { return Ok(None) };
-    let mut chunks = wasm_streams::ReadableStream::from_raw(raw).into_stream();
-    let mut head: Vec<u8> = Vec::with_capacity(12);
-    let mut rest = None;
-    while head.len() < 12 {
-        let Some(c) = futures_util::StreamExt::next(&mut chunks).await else { return Ok(None) };
-        let v: js_sys::Uint8Array = c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into();
-        let k = (12 - head.len()).min(v.length() as usize) as u32;
-        head.extend(v.subarray(0, k).to_vec());
-        if k < v.length() {
-            rest = Some(v.subarray(k, v.length()));
-        }
-    }
+    let head = o.body().ok_or_else(|| StoreError(format!("{key}: no body")))?.bytes().await.map_err(err)?;
     if crate::compose::pack_count(&head) != Some(n) {
         return Ok(None);
     }
-    Ok(Some(OpenPack { key: key.to_owned(), chunks, first: rest, body: o.size() - 32 }))
+    Ok(Some(CheckedPack { key: key.to_owned(), etag: o.etag(), body: o.size() - 32 }))
 }
 
-/// The composed answer a manifest describes, from the chain packs `open_chain` opened (`decisions/DECISIONS.md`,
+/// The composed answer a manifest describes, from the chain packs `open_chain` checked (`decisions/DECISIONS.md`,
 /// `edge-compose`): the prefix, the pack header's packet, each pack's body, then `tail`, framed in side-band packets
 /// (`crate::compose::Framer`) and closed by the SHA-1 trailer of the pack and a flush, the same bytes as the
 /// container's composed answer. The body goes through a `FixedLengthStream` of `answer_len`, so a read that fails
-/// midway ends the answer short and the client's index-pack refuses it, never a pack that looks whole. R2's chunks stay
-/// JavaScript values written as views, and each pack's 20-byte trailer is dropped unsent: the isolate holds one chunk
-/// and the tail, never the pack.
+/// midway ends the answer short and the client's index-pack refuses it, never a pack that looks whole. Each pack's body
+/// is one ranged `get` opened only when the pack before it has been sent and let go (`crate::compose::stream_in_turn`),
+/// on the etag its check read, so a pack replaced since ends the answer short; a `get` or chunk that waits past
+/// `CHAIN_STALL` does too. R2's chunks stay JavaScript values written as views: the isolate holds one chunk and the
+/// tail, never the pack.
 pub fn composed_answer(
+    bucket: &R2,
     m: crate::compose::Manifest,
-    packs: Vec<OpenPack>,
+    packs: Vec<CheckedPack>,
     tail: Vec<u8>,
     headers: Headers,
 ) -> Result<Response, StoreError> {
-    use crate::compose::{Framer, Piece, answer_len, header_packet};
+    use crate::compose::{CHAIN_STALL, Framer, Piece, answer_len, header_packet, within};
     use wasm_bindgen::JsCast;
+    let bucket = bucket.0.clone();
     let count = m.count().ok_or_else(|| StoreError("manifest count past u32".into()))?;
     let prefix = m.prefix();
     let pack = 12 + packs.iter().map(|p| p.body).sum::<u64>() + tail.len() as u64 + 20;
@@ -453,24 +452,37 @@ pub fn composed_answer(
                 frame(framer, &v).await?;
                 write(&hasher, &v).await
             };
-            for mut p in packs {
-                let mut left = p.body;
-                let mut next = p.first.take();
+            let stalled = |what: &str| StoreError(format!("{what}: no R2 read in {} s", CHAIN_STALL.as_secs()));
+            // One pack's body: a ranged `get` of bytes 12 to its length less 20, on the etag its check read.
+            let open = async |p: CheckedPack| -> Result<(String, u64, wasm_streams::readable::IntoStream<'static>), StoreError> {
+                let range = worker::Range::OffsetWithLength { offset: 12, length: p.body };
+                let only = worker::Conditional { etag_matches: Some(p.etag.clone()), ..Default::default() };
+                let get = bucket.get(&p.key).range(range).only_if(only).execute();
+                let o = within(CHAIN_STALL, get, worker::Delay::from).await.ok_or_else(|| stalled(&p.key))?.map_err(err)?;
+                let o = o.ok_or_else(|| StoreError(format!("{}: gone since its check", p.key)))?;
+                let raw = o.body().ok_or_else(|| StoreError(format!("{}: changed since its check", p.key)))?;
+                let worker::ResponseBody::Stream(raw) = raw.response_body().map_err(err)? else {
+                    return Err(StoreError(format!("{}: no stream", p.key)));
+                };
+                Ok((p.key, p.body, wasm_streams::ReadableStream::from_raw(raw).into_stream()))
+            };
+            // Its bytes to the client; the read is let go when this returns, before the next pack's `get`.
+            let each = async |(key, body, mut chunks): (String, u64, wasm_streams::readable::IntoStream<'static>)| {
+                let mut left = body;
                 while left > 0 {
-                    let v = match next.take() {
-                        Some(v) => v,
-                        None => match futures_util::StreamExt::next(&mut p.chunks).await {
-                            Some(c) => c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into(),
-                            None => return Err(StoreError(format!("{}: {left} body bytes short", p.key))),
-                        },
+                    let next = futures_util::StreamExt::next(&mut chunks);
+                    let v: js_sys::Uint8Array = match within(CHAIN_STALL, next, worker::Delay::from).await {
+                        None => return Err(stalled(&key)),
+                        Some(Some(c)) => c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into(),
+                        Some(None) => return Err(StoreError(format!("{key}: {left} body bytes short"))),
                     };
                     let k = left.min(u64::from(v.length()));
                     send(&mut framer, v.subarray(0, k as u32)).await?;
                     left -= k;
                 }
-                // The pack's own trailer and anything past it: not sent, and the read is let go.
-                drop(p.chunks);
-            }
+                Ok(())
+            };
+            crate::compose::stream_in_turn(packs, open, each).await?;
             send(&mut framer, js_sys::Uint8Array::from(tail.as_slice())).await?;
             js(Ok(hasher.close())).await?;
             let sum = digest.digest().await.map_err(err)?;

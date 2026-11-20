@@ -697,6 +697,56 @@ fn shard_stats_count_each_kind_within_the_day() {
     assert!(stats_due(now, Some(Timestamp(now.0 - 24 * H))));
 }
 
+/// A virtual clock for the edge's composed-answer rules: `run` moves it to the next timer whenever every future waits,
+/// and panics when every future waits on something no timer will end (a hang).
+#[derive(Default)]
+struct Clock {
+    now: std::cell::Cell<u64>,
+    timers: std::cell::RefCell<Vec<(u64, std::task::Waker)>>,
+    in_flight: std::cell::Cell<usize>,
+    most: std::cell::Cell<usize>,
+    started: std::cell::Cell<usize>,
+}
+
+impl Clock {
+    async fn sleep(&self, ms: u64) {
+        let until = self.now.get() + ms;
+        std::future::poll_fn(|cx| {
+            if self.now.get() >= until {
+                return std::task::Poll::Ready(());
+            }
+            self.timers.borrow_mut().push((until, cx.waker().clone()));
+            std::task::Poll::Pending
+        })
+        .await
+    }
+    async fn open(&self, i: usize, ms: u64, missing: bool) -> Result<Option<usize>, String> {
+        self.started.set(self.started.get() + 1);
+        self.in_flight.set(self.in_flight.get() + 1);
+        self.most.set(self.most.get().max(self.in_flight.get()));
+        self.sleep(ms).await;
+        self.in_flight.set(self.in_flight.get() - 1);
+        Ok((!missing).then_some(i))
+    }
+    fn run<T>(&self, f: impl std::future::Future<Output = T>) -> T {
+        let mut f = std::pin::pin!(f);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                return v;
+            }
+            let mut t = self.timers.borrow_mut();
+            let next = t.iter().map(|(u, _)| *u).min().expect("every future waits and no timer is set: a hang");
+            self.now.set(next);
+            let due: Vec<_> = t.extract_if(.., |(u, _)| *u <= next).collect();
+            drop(t);
+            for (_, w) in due {
+                w.wake();
+            }
+        }
+    }
+}
+
 /// The edge's composed answer opens its chain packs `CHAIN_OPEN_AT_ONCE` at a time, not one after another, and hands
 /// them on in the manifest's order (`decisions/DECISIONS.md`, "`chain-open`"). On main `open_chain` waited for each
 /// pack's first chunk before it asked for the next: a base and 19 parts were 20 R2 round trips before any header,
@@ -706,53 +756,7 @@ fn shard_stats_count_each_kind_within_the_day() {
 #[test]
 fn a_composed_answer_opens_its_chain_packs_at_once_and_keeps_their_order() {
     use graftyard_git::compose::{CHAIN_OPEN_AT_ONCE, open_in_order};
-    use std::cell::{Cell, RefCell};
-    use std::task::Poll;
     assert_eq!(CHAIN_OPEN_AT_ONCE, 4);
-    // A virtual clock: `run` moves it to the next timer whenever every open waits.
-    #[derive(Default)]
-    struct Clock {
-        now: Cell<u64>,
-        timers: RefCell<Vec<(u64, std::task::Waker)>>,
-        in_flight: Cell<usize>,
-        most: Cell<usize>,
-        started: Cell<usize>,
-    }
-    impl Clock {
-        async fn open(&self, i: usize, ms: u64, missing: bool) -> Result<Option<usize>, String> {
-            self.started.set(self.started.get() + 1);
-            self.in_flight.set(self.in_flight.get() + 1);
-            self.most.set(self.most.get().max(self.in_flight.get()));
-            let until = self.now.get() + ms;
-            std::future::poll_fn(|cx| {
-                if self.now.get() >= until {
-                    return Poll::Ready(());
-                }
-                self.timers.borrow_mut().push((until, cx.waker().clone()));
-                Poll::Pending
-            })
-            .await;
-            self.in_flight.set(self.in_flight.get() - 1);
-            Ok((!missing).then_some(i))
-        }
-        fn run<T>(&self, f: impl std::future::Future<Output = T>) -> T {
-            let mut f = std::pin::pin!(f);
-            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-            loop {
-                if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                    return v;
-                }
-                let mut t = self.timers.borrow_mut();
-                let next = t.iter().map(|(u, _)| *u).min().expect("every open waits and no timer is set");
-                self.now.set(next);
-                let due: Vec<_> = t.extract_if(.., |(u, _)| *u <= next).collect();
-                drop(t);
-                for (_, w) in due {
-                    w.wake();
-                }
-            }
-        }
-    }
     // A base and 19 parts; open i takes 200 - 5i ms, so later packs open first.
     let ms = |i: usize| 200 - 5 * i as u64;
     let c = Clock::default();
@@ -770,4 +774,88 @@ fn a_composed_answer_opens_its_chain_packs_at_once_and_keeps_their_order() {
     let c = Clock::default();
     assert_eq!(c.run(open_in_order([c.open(0, 120, false)])).unwrap(), Some(vec![0]));
     assert_eq!(c.now.get(), 120);
+}
+
+/// A composed answer holds at most one chain pack's R2 body at a time, so a chain of any length streams, and its chain
+/// checks refuse within `CHAIN_CHECK_WITHIN` instead of waiting (`decisions/DECISIONS.md`, "`chain-hold`"). One Workers
+/// invocation that held eight R2 bodies open got no ninth `get` (graft-m1, 2026-11-20), and main's `open_chain` held
+/// every pack's body from its check to its turn in the answer, so B0-34 mt9's clones of a 9-pack chain or more hung 120
+/// s with no byte. Here R2 is that model: a body is held from its `get` until `send` lets it go, and a `get` past eight
+/// held never answers, which `Clock::run` reports as a hang.
+#[test]
+fn a_composed_answer_streams_a_long_chain_holding_one_body_and_refuses_a_slow_check_in_time() {
+    use graftyard_git::compose::{CHAIN_CHECK_WITHIN, ChainCheck, check_in_time, stream_in_turn};
+    use std::cell::{Cell, RefCell};
+    const HELD_MAX: usize = 8;
+    let c = Clock::default();
+    let (held, most, sent) = (Cell::new(0usize), Cell::new(0usize), RefCell::new(Vec::new()));
+    // A body `get`: 30 ms, then held; with HELD_MAX held already it waits on nothing, as R2 did.
+    let get = async |i: usize| -> Result<usize, String> {
+        if held.get() >= HELD_MAX {
+            std::future::pending::<()>().await;
+        }
+        c.sleep(30).await;
+        held.set(held.get() + 1);
+        most.set(most.get().max(held.get()));
+        Ok(i)
+    };
+    // Sending a body takes 50 ms, then lets it go.
+    let send = async |i: usize| -> Result<(), String> {
+        c.sleep(50).await;
+        sent.borrow_mut().push(i);
+        held.set(held.get() - 1);
+        Ok(())
+    };
+    // A base and 19 parts, as a chain is before its fold.
+    c.run(stream_in_turn(0..20, get, send)).unwrap();
+    assert_eq!(*sent.borrow(), (0..20).collect::<Vec<_>>(), "every pack, in the manifest's order");
+    assert_eq!(most.get(), 1, "one body held at a time");
+    assert_eq!(held.get(), 0);
+    // A failed send ends the answer there: no later pack is opened.
+    let opened = Cell::new(0);
+    let r = c.run(stream_in_turn(
+        0..20,
+        async |i: usize| {
+            opened.set(opened.get() + 1);
+            Ok::<_, String>(i)
+        },
+        async |i: usize| if i == 3 { Err(format!("pack {i} cut")) } else { Ok(()) },
+    ));
+    assert_eq!((r, opened.get()), (Err("pack 3 cut".into()), 4));
+
+    // The checks: within the clone line, with room for the first bytes after them.
+    assert!(CHAIN_CHECK_WITHIN <= std::time::Duration::from_secs(4), "{CHAIN_CHECK_WITHIN:?}");
+    let bound = CHAIN_CHECK_WITHIN.as_millis() as u64;
+    // 20 checks at 100 ms, four at a time: checked, in order, well inside the bound.
+    let c = Clock::default();
+    let got = c.run(check_in_time((0..20).map(|i| c.open(i, 100, false)), |d| c.sleep(d.as_millis() as u64)));
+    assert_eq!(got, Ok(ChainCheck::Checked((0..20).collect())));
+    assert_eq!(c.now.get(), 500);
+    // One check that never answers: refused at the bound, not at the client's timeout.
+    let c = Clock::default();
+    let hung = async |i: usize| -> Result<Option<usize>, String> {
+        if i == 6 {
+            std::future::pending::<()>().await;
+        }
+        c.open(i, 100, false).await
+    };
+    let got = c.run(check_in_time((0..20).map(hung), |d| c.sleep(d.as_millis() as u64)));
+    assert_eq!((got, c.now.get()), (Ok(ChainCheck::Late), bound));
+    // Checks that end just inside the bound are taken; just past it, refused.
+    let c = Clock::default();
+    let got = c.run(check_in_time([c.open(0, bound - 1, false)], |d| c.sleep(d.as_millis() as u64)));
+    assert_eq!(got, Ok(ChainCheck::Checked(vec![0])));
+    let c = Clock::default();
+    let got = c.run(check_in_time([c.open(0, bound + 1, false)], |d| c.sleep(d.as_millis() as u64)));
+    assert_eq!(got, Ok(ChainCheck::Late));
+    // A missing pack declines (the shard answers instead), and an error is an error, both before the bound.
+    let c = Clock::default();
+    let got = c.run(check_in_time((0..20).map(|i| c.open(i, 100, i == 9)), |d| c.sleep(d.as_millis() as u64)));
+    assert_eq!(got, Ok(ChainCheck::Declined));
+    let c = Clock::default();
+    let got: Result<ChainCheck<Vec<usize>>, String> = c
+        .run(check_in_time([async { Err::<Option<usize>, _>("r2 down".to_owned()) }], |d| {
+            c.sleep(d.as_millis() as u64)
+        }));
+    assert_eq!(got, Err("r2 down".into()));
 }

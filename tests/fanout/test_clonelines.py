@@ -20,6 +20,13 @@ class Lines(unittest.TestCase):
         self.assertTrue(v["hits"]["pass"])
         self.assertEqual((v["hits"]["p99"], v["hits"]["n"]), (900, 100))
         self.assertEqual(by["j9"]["miss"]["p99"], 9000)
+        # The edge's stages are their own columns, apart from the clone's time and from each other.
+        st = [[0, "read:cloneTtfb:hit:front@j9", 40, "200"], [0, "read:cloneTtfb:hit:chain_open@j9", 700, "200"],
+              [0, "read:cloneTtfb:miss:front@j9", 55, "composed"]]
+        by, v = clonelines.lines(s + st)
+        self.assertEqual((by["j9"]["hitFront"]["p99"], by["j9"]["hitChainOpen"]["p99"], by["j9"]["missFront"]["p99"]),
+                         (40, 700, 55))
+        self.assertEqual((by["j9"]["missChainOpen"]["n"], v["hits"]["p99"], v["hits"]["n"]), (0, 900, 100))
         # p99 is a1's nearest rank, the value at floor(0.99 n): of 200 hits, two over 1 s put it at 1,001 ms and fail,
         # and one over leaves it at 900 and passes.
         _, v = clonelines.lines(probes("j9", hits=[900] * 198 + [1001, 1200]))

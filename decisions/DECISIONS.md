@@ -6624,6 +6624,43 @@ The lead's request after B0-35 m61: attribute f0's `/raft` CPU by call kind and 
 
 **Flip.** A retired name that must be joined again by a route other than a placement's own tries (then that route needs `reuse` or a generation above the row's); a promotion failure that clears within the backoff often enough to slow a B0-30 drain past the log cap; or a hosted sweep that leaves a live chain unfilled because its probe answered `no group` during a move.
 
+### `chain-hold`: a composed answer checks its chain packs with ranged reads, streams them one at a time, and refuses within 3 s, 2026-11-20
+
+**Status.** Built on branch `b034-hang`. Edge only (`crates/git/src/host.rs`, `open_chain` and `composed_answer`; `crates/git/src/compose.rs`, `check_in_time` and `stream_in_turn`; `workers/edge/src/lib.rs`), so it ships on an edge day.
+
+**Decision.** `open_chain` checks each chain pack a manifest names with a ranged `get` of its first 12 bytes, read whole, and keeps its etag and length, not its body. The checks still run `CHAIN_OPEN_AT_ONCE` (4) at a time in the manifest's order (`chain-open`), and they are bounded by `CHAIN_CHECK_WITHIN` (3 s [guess]). Checks that end in time start the answer as before. A missing or miscounted pack still declines the manifest to the shard (`edge-compose`). Checks that run past the bound refuse the clone with 503 and `Retry-After: 1` before any byte of a git result (`chain_late`), on the hit path and the composed-miss path. While the answer streams, `composed_answer` opens each pack's body as one ranged `get` of bytes 12 to its length less 20, under `onlyIf: etagMatches` on its check's etag, only after the pack before it has been sent and let go (`stream_in_turn`). A pack replaced or deleted since its check, or an R2 `get` or chunk that waits past `CHAIN_STALL` (20 s [guess]), ends the answer short through its `FixedLengthStream`, so the client's index-pack refuses it.
+
+**Why.** B0-34 mt9's cold-phase clones hung 113 to 120 s with no byte: 20 in j9 and 5 in kill, all hits served from a manifest or composed misses. The edge invocations were canceled at about 120 s with 5 to 28 ms of CPU, and their trace shows the shard's `tail` answer at 12:29:28Z and nothing after it [measured, `tests/am1/results/b034-mt9.md`, "The cold depth-1 hang"]. Main's `open_chain` opened every pack's body, read its first chunk and held the body open until the pack's turn in the answer. A probe Worker on the same account, against 20 objects of 2 MiB in R2, opened bodies the same way, and the 9th `get` never answered while 8 bodies were held: 8 s and, on an earlier probe, 170 s [measured, 2026-11-20, scratch Worker `graft-probe-r2hold`, since deleted]. So a manifest of 9 or more packs (a base and 8 parts) waited forever before its headers. Twenty 12-byte ranged checks followed by one body at a time read 41,942,400 of 41,942,400 bytes in about 2.0 s, the checks in 0.4 to 0.5 s, and a conditional `get` on a wrong etag returned no body [measured, same probe]. Holding no body while checking removes the hang. The bound makes any other stalled check a fast refusal within B0-34's 5 s clone line (FRAME, "Operator decision, 2026-11-20"), not a 120 s client timeout.
+
+**What it beat.**
+- **A bound alone, with bodies still held.** Every chain of 9 or more packs would answer 503 every time, so its clones never succeed.
+- **Fewer bodies at once, still held to their turn.** The limit is on bodies held, not on gets in flight, so any chain longer than the limit still hangs.
+- **Opening lazily with no checks (rejected in `chain-open`).** It would cut a client's answer whenever a pack is missing. Here every pack is still checked before the first byte, and the etag ties each body to its check. The one case left is a fold that deletes a pack mid-answer, which cuts that answer where main's held body did not. A fold deletes a base's files only after the new head is put, and the 503 path makes git retry, so that cut is a retry, not a wrong pack.
+- **Declining a late check to the shard.** The shard's composed answer waits on the same chain and container. A refusal makes git retry against the edge, which by then may serve the hit.
+
+**Evidence.** `a_composed_answer_streams_a_long_chain_holding_one_body_and_refuses_a_slow_check_in_time` (`crates/git/tests/shard.rs`) models R2 on a virtual clock, where a `get` past eight held bodies never answers. 20 packs stream in order holding one body at a time. A check that never answers is refused at the bound. Checks just inside the bound are taken and just past it refused. A missing pack declines, and an error stays an error. On main's rule (every body opened, then sent) the test's clock reports a hang. Plants (`tests/chainhold/plant.py`), 5 of 5 caught: main's rule; the next body opened ahead; checks with no bound; a late check declined, not refused; a bound of 10 s. `tests/composed/edgebed/run.sh` gives byte-identical answers in local workerd. Load34 records `read:cloneTtfb:front` and `:chain_open` from `server-timing`, and `tests/fanout/clonelines.py` prints them per phase.
+
+**Flip.**
+- A row whose `chain_open` p99 on hits passes 2 s while clones succeed: the bound is close to the work, so raise it toward the 5 s line.
+- More than 1% of clones in a phase answered `chain_late` 503: the checks are slow for another reason; read `chain_open` before raising the bound.
+- Clients refusing answers cut by `CHAIN_STALL` or a changed etag more often than once a row: hold one body ahead again, within the 8.
+
+### `retired-gone`: a repository whose group is retired reads as gone, 404, 2026-11-20
+
+Open question G33, found in `retire-sticks`: since a retired member refuses every `/join`, the edge's create on first use for a live repository whose voters are all retired fails, and the edge answered it 503. On graft-m1 the harness retired the groups of live test repositories (`m3org/lf1-0` is `repo:1048577`, retired twice and never deleted), so every read of one got a 503 with `Retry-After` [inference from the code: `graftyard_lookup::create`, `Routes::join`].
+
+**Decision.** `graftyard_lookup::create` names `RETIRED` in its error when a majority of the bootstrap members refused as `retired`, or as `retired` and `noRepoOwner` between them. `is_gone` (which replaces `is_not_created`) is true for that and for `NOT_CREATED`. The edge's paths that create on first use (`first_use`, `core_rows`, and the read gate) answer it as they answer a repository not created yet: 404 on REST, the GraphQL `NOT_FOUND`, and git's "Repository not found." The read gate returns `Hidden` and does not cache it, so a recreate shows at once. A minority retired, members that did not answer, and every other refusal stay 503.
+
+**Why.** An operator decision on G33 (2026-11-20): a retired test repository should read like a deleted one, and a 503 invites the client to retry a group that will never answer.
+
+**Beat.**
+- **Deleting retired test repositories, so their reads are 404 before any create.** That needs a harness step on every retire and leaves any repository it misses at 503.
+- **Keeping the 503.** It tells a client to retry something that cannot come back.
+
+**Evidence.** `only_a_majority_that_cannot_join_is_gone` (`crates/lookup/src/lib.rs`): with main's `refused` rule, three `retired` refusals read as an outage (`is_gone` false where the test wants true), so the test fails. With the fix it passes all 15 answer sets, including a retired minority that stays an outage. Not run hosted [inference].
+
+**Flip.** A retired group that must serve reads again without a new create, so a 404 would hide a repository that exists; or a hosted read that 404s while a majority of members answered `retired` for a group that was not retired (none is known: only `/retire` and `/purge_retire` write the row).
+
 ### `soft-grow`: an entry fills to `ENTRY_SOFT_DEEP` (150 KB) while more than `DEEP_QUEUE` (2) entries' worth of Human and MergeQueue bytes waits, 2026-11-20
 
 The lead's decision after B0-35 m62: raise bytes per round while the queue is deep, not entries in flight, which stays one (`tests/m4/results/m4-wp4.md`, "B0-35 on a test-faults build after site day 62").
