@@ -275,6 +275,22 @@ impl StandIn {
         self.identity.tokens.apply(&ev);
     }
 
+    /// Registers an SSH key for `account`, as `AddSshKey` commits on its `fingerprint_shard`; `repo` makes it a deploy
+    /// key. The stand-in answers every `Tokens` read from one fold.
+    pub fn add_ssh_key(
+        &mut self,
+        fingerprint: graftyard_identity::Fingerprint,
+        account: AccountId,
+        repo: Option<RepoId>,
+    ) {
+        self.identity.tokens.apply(&TokensEvent::SshKey { fingerprint, account, repo });
+    }
+
+    /// Removes an SSH key, as `RemoveSshKey` commits: every command decided after this reads the missing row.
+    pub fn remove_ssh_key(&mut self, fingerprint: graftyard_identity::Fingerprint) {
+        self.identity.tokens.apply(&TokensEvent::SshKeyRemoved { fingerprint });
+    }
+
     /// Revokes a stored token, as `Revoke` commits on its shard: every command decided after this reads the row.
     pub fn revoke(&mut self, hash: [u8; 32]) {
         self.identity.tokens.apply(&TokensEvent::Revoked { hash });

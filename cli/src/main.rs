@@ -11,6 +11,7 @@ mod placement;
 mod release;
 mod runners;
 mod sites;
+mod ssh;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -101,6 +102,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RunnersCmd,
     },
+    /// Native git over SSH (`cli/src/ssh.rs`).
+    Ssh {
+        #[command(subcommand)]
+        cmd: SshCmd,
+    },
     /// Sends the signed genesis to the edge, which writes it to the empty Release group.
     Install {
         #[arg(long)]
@@ -108,6 +114,26 @@ enum Cmd {
         /// The edge's base URL (default: https://<zone>).
         #[arg(long)]
         edge: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SshCmd {
+    /// Creates (or rewrites, or with --delete removes) the zone's Spectrum TCP app on port 22 whose Worker origin is
+    /// the edge. Needs a token with zone Spectrum edit and account Workers Scripts read.
+    Spectrum {
+        #[arg(long)]
+        account: String,
+        #[arg(long)]
+        zone: String,
+        /// The SSH hostname clients use, such as ssh.example.com.
+        #[arg(long)]
+        hostname: String,
+        /// The edge script.
+        #[arg(long)]
+        edge: String,
+        #[arg(long)]
+        delete: bool,
     },
 }
 
@@ -373,6 +399,11 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Release { cmd: ReleaseCmd::Post { input, edge } } => release::post(config, &input, edge.as_deref()),
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
+        Cmd::Ssh { cmd: SshCmd::Spectrum { account, zone, hostname, edge, delete } } => {
+            let done = ssh::spectrum(&cf::Cf::from_env(&account)?, &zone, &hostname, &edge, delete)?;
+            println!("{done:?}");
+            Ok(())
+        }
         Cmd::Runners { cmd: RunnersCmd::Init { account, spec, bundle, image, app_key, webhook_secret } } => {
             runners::init(runners::InitArgs {
                 account: &account,

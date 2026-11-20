@@ -74,6 +74,11 @@ pub const REPO_FORMAT_FANOUT: Format = Format { family: 0x20, version: 15 };
 /// `roll-up`: `RepoEvent::Compacted`, tag 47, which only a leader of this release records itself
 /// (`crate::log_archive`).
 pub const REPO_FORMAT_ROLLUP: Format = Format { family: 0x20, version: 25 };
+/// M6-WP2's pushes over SSH: a push whose principal's credential is an SSH key (credential tag 3, its fingerprint).
+/// Laid out as 32.8 (the `validate` outputs, any principal), with no task claim and no lease mark: a push over SSH
+/// keeps no `PathSet` and stores no `Leased` refusal [inference: leases are AM1-WP4's HTTPS agent path]. An edge sends
+/// it only once `FormatsEnable` has enabled it; a push under any other credential never takes it.
+pub const REPO_FORMAT_SSH: Format = Format { family: 0x20, version: 26 };
 /// The format a scratch view (`RepoScratch`, `crate::issue_ops::RepoView`) writes events at: the newest. `decide`
 /// sees the entry's format only once its last command is in, and `verify` writes stored entries above `applied` at the
 /// checked entry's time, not theirs. Only `promoted_log` depends on the format (F88), and only `check_compacted`
@@ -1348,6 +1353,7 @@ impl Push {
             REPO_FORMAT_AGENT,
             REPO_FORMAT_TASKS,
             REPO_FORMAT_LEASES,
+            REPO_FORMAT_SSH,
         ];
         if !reads.contains(&format) {
             return Err(WireError::Format(format));
@@ -1367,7 +1373,11 @@ impl Push {
         }
         let pack = d.option(decode_pack)?;
         let stateless = [REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS, REPO_FORMAT_LEASES];
-        let mut actor = decode_principal(&mut d, stateless.contains(&format))?;
+        let mut actor = if format == REPO_FORMAT_SSH {
+            decode_ssh_principal(&mut d)?
+        } else {
+            decode_principal(&mut d, stateless.contains(&format))?
+        };
         if format == REPO_FORMAT_TASKS || format == REPO_FORMAT_LEASES {
             decode_task_claim(&mut d, &mut actor)?;
         }
@@ -1567,6 +1577,10 @@ fn encode_principal(e: &mut Enc, p: &Principal) {
             e.u8(2);
             encode_claims(e, c);
         }
+        Credential::Ssh(f) => {
+            e.u8(3);
+            e.0.extend_from_slice(&f.0);
+        }
     }
     e.count(p.sso_orgs.len());
     for o in &p.sso_orgs {
@@ -1722,6 +1736,10 @@ pub fn principal_bytes(p: &Principal) -> Vec<u8> {
 pub fn principal_from_bytes(b: &[u8]) -> Result<Principal, WireError> {
     let mut d = Dec(b);
     let mut p = decode_principal(&mut d, true)?;
+    // Only a push carries an SSH key's principal (format 32.26).
+    if matches!(p.credential, Credential::Ssh(_)) {
+        return Err(WireError::Malformed("an SSH key's principal outside a push"));
+    }
     if !d.0.is_empty() {
         decode_task_claim(&mut d, &mut p)?;
         if crate::task::claim(&p).is_none() {
@@ -1761,7 +1779,20 @@ fn decode_session(d: &mut Dec) -> Result<SessionId, WireError> {
 
 /// Whether a push of `format` stores a per-ref agent refusal: 32.8 and its supersets 32.12 and 32.14.
 fn per_ref_agent(format: Format) -> bool {
-    format == REPO_FORMAT_AGENT || format == REPO_FORMAT_TASKS || format == REPO_FORMAT_LEASES
+    format == REPO_FORMAT_AGENT
+        || format == REPO_FORMAT_TASKS
+        || format == REPO_FORMAT_LEASES
+        || format == REPO_FORMAT_SSH
+}
+
+/// A format-32.26 principal: a user's, with credential tag 3 and the key's fingerprint. Any other actor or credential
+/// is malformed there, so a push over SSH has one encoding.
+fn decode_ssh_principal(d: &mut Dec) -> Result<Principal, WireError> {
+    let p = decode_principal(d, false)?;
+    match (p.actor, &p.credential) {
+        (Actor::User(_), Credential::Ssh(_)) => Ok(p),
+        _ => Err(WireError::Malformed("format 32.26 carries a user's SSH key")),
+    }
 }
 
 fn decode_principal(d: &mut Dec, stateless: bool) -> Result<Principal, WireError> {
@@ -1779,6 +1810,7 @@ fn decode_principal(d: &mut Dec, stateless: bool) -> Result<Principal, WireError
         0 => Credential::Stored(d.take(32)?.try_into().expect("32")),
         1 => Credential::Session(graftyard_identity::WebSessionId(graftyard_types::Ulid(d.u128()?))),
         2 if stateless => Credential::Stateless(Box::new(decode_claims(d)?)),
+        3 => Credential::Ssh(graftyard_identity::Fingerprint(d.take(32)?.try_into().expect("32"))),
         _ => return Err(WireError::Malformed("credential tag")),
     };
     let n = d.u32()? as usize;
@@ -1946,7 +1978,9 @@ impl Command for Push {
     fn format(&self) -> Format {
         let stateless =
             matches!(self.actor.credential, Credential::Stateless(_)) || matches!(self.actor.actor, Actor::App { .. });
-        if self.leases && self.validated() {
+        if matches!(self.actor.credential, Credential::Ssh(_)) {
+            REPO_FORMAT_SSH
+        } else if self.leases && self.validated() {
             REPO_FORMAT_LEASES
         } else if crate::task::claim(&self.actor).is_some() {
             REPO_FORMAT_TASKS

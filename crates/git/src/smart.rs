@@ -582,22 +582,15 @@ impl Plan {
 }
 
 /// How the edge's cap refusal reads (`design/DESIGN.md`, journey 1, step 2): HTTPS stays the default it names. On
-/// Enterprise it points to SSH; on Pro and Business it points to the `cloudflared` SSH option when the install has it
-/// on, and otherwise to Enterprise or splitting the push.
+/// Enterprise, or on any plan where the install has SSH on (the Spectrum Worker ingress), it points to SSH, and
+/// otherwise to Enterprise or splitting the push.
 pub fn cap_refusal(plan: Plan, ssh_option: bool, cap: u64, host: &str, path: &str) -> Refusal {
     let mb = cap / 1_000_000;
     let head = format!("Push refused: over {mb} MB, this install's limit for one push over HTTPS.");
     let keep = "HTTPS stays the default for every other push.";
     let ssh = format!("git push git@{host}:{path}.git");
     let (how, reason) = match (plan, ssh_option) {
-        (Plan::Enterprise, _) => (format!("Push this one over SSH: {ssh}"), "push over HTTPS cap, use SSH"),
-        (_, true) => (
-            format!(
-                "Push this one over SSH through cloudflared (see the install's SSH docs: ProxyCommand cloudflared \
-                 access ssh --hostname %h): {ssh}"
-            ),
-            "push over HTTPS cap, use SSH",
-        ),
+        (Plan::Enterprise, _) | (_, true) => (format!("Push this one over SSH: {ssh}"), "push over HTTPS cap, use SSH"),
         (_, false) => (
             "Split it into smaller pushes, or ask your admin about the Enterprise plan, which takes larger pushes \
              and SSH."
@@ -944,7 +937,7 @@ mod tests {
         assert!(pro.contains("80 MB") && pro.contains("smaller pushes") && pro.contains("Enterprise"));
         assert!(!pro.contains("git@"), "no SSH without the option: {pro}");
         let opt = text(Plan::Business, true);
-        assert!(opt.contains("cloudflared") && opt.contains("git@git.example.com:o/r.git"));
+        assert!(opt.contains("SSH: git push git@git.example.com:o/r.git") && !opt.contains("cloudflared"), "{opt}");
         let ent = text(Plan::Enterprise, false);
         assert!(ent.contains("SSH: git push git@git.example.com:o/r.git") && !ent.contains("cloudflared"));
         for t in [pro, opt, ent] {

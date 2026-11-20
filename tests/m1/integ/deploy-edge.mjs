@@ -3,7 +3,7 @@
 //   node tests/m1/integ/deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis <genesis.json>]
 //                                       [--anchor <install.toml>] [--genesis-signed <genesis.signed>] [--no-shard]
 //                                       [--ops <graft-ops name>] [--var K=V ...] [--web <web/dist/client>]
-//                                       [--upload-only]
+//                                       [--upload-only] [--ssh <hostkeys public JSON>]
 // `--genesis` (test-faults only) is the test install's stand-in for the Release view; `--anchor` sets the trust anchor
 // a product edge accepts the Release group's genesis against. `--genesis-signed` (with `--anchor`) writes the committed
 // signed genesis into GRAFTYARD_GENESIS_SIGNED, hex, after checking its SHA-256 is install.toml's `genesis` digest,
@@ -11,6 +11,10 @@
 // with no `GitShard` class (git requests then fail; the release endpoint does not need a shard). `graftyard sites
 // add` deploys the class, so an install it built needs no `--no-shard`. `--upload-only` uploads a version without
 // deploying it (`wrangler versions upload`), so an `EdgeRoll` can deploy it beside N by percentage (M5-WP2).
+// `--ssh <file>` turns native SSH on (M6-WP2): `SSH_OPTION=on`, one `SSHFRONT_<n>` binding per site to its `SshFront`
+// class, which the edge's `connect()` handler opens, and `SSH_HOST_KEYS`, the public half of both host-key slots that
+// deploy/ssh-front/hostkeys.mjs wrote, served at /api/graftyard/v1/meta/ssh. The sites must have been deployed with
+// `--ssh` first, so the class exists.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -60,6 +64,7 @@ const cfg = {
   workers_dev: true,
   preview_urls: false,
   durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"], ["SEARCH", "SearchShard"], ["INBOX", "Inbox"], ["LOGRELAY", "LogRelay"], ["BROKER", "RunnerBroker"]]
+    .concat(flag("--ssh") ? [["SSHFRONT", "SshFront"]] : [])
     .filter(([b]) => !(noShard && b === "SHARD")).map(([b, cls]) => ({ name: `${b}_${s.id}`, class_name: cls, script_name: s.script }))) },
   r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
   // `--web <dir>`: the web app's build (`npm run build` in web/, `VITE_MOCK_API=false`) as the `ASSETS` binding, with
@@ -77,6 +82,7 @@ const cfg = {
     ...(anchor ? { GRAFTYARD_INSTALL: anchor.install, GRAFTYARD_CUSTOMER_KEY: anchor.customer_key } : {}),
     ...(genesisSigned ? { GRAFTYARD_GENESIS_SIGNED: genesisSigned } : {}),
     ...(flag("--ops") ? { OPS_SCRIPT: flag("--ops") } : {}),
+    ...(flag("--ssh") ? { SSH_OPTION: "on", SSH_HOST_KEYS: readFileSync(flag("--ssh"), "utf8").trim() } : {}),
     ...extra,
   },
   limits: { cpu_ms: 300000 },

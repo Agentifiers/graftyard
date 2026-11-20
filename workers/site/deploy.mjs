@@ -6,6 +6,7 @@
 //                                [--image <digest-pinned image>] [--anchor <install.toml>] [--roll-shards <edge url>]
 //                                [--ops <graft-ops script>] [--var K=V ...] [--only <site id>] [--down <site id>]
 //                                [--audit-stream <Basin Pipelines stream id>] [--run-key <store id>/<secret name>]
+//                                [--ssh <store id> --ssh-image <digest-pinned image> --edge <edge script>]
 // `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
 // (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S, and `GRAFTYARD_HOST`, the API host webhook
 // payloads name). `--ops` binds the install's `graft-ops` as `OPS`, which `HookSequencer` unwraps hook secrets with.
@@ -17,6 +18,13 @@
 // config), leaving the others' versions and members untouched. `--down <id>` sets `GRAFTYARD_SITE_DOWN=1` on that
 // site, which stops every class it hosts as if the site were lost (workers/site/src/lib.rs, `site_down`); the next
 // deploy without it brings the site back.
+// `--ssh <store id>` turns the SSH front on (design/DESIGN.md, Shape, "SSH front"): the script's entry becomes
+// `entry.mjs`, which adds the JS classes `SshFront` and `SshOutbound` (`ssh.mjs`); `SshFront` (migration v6) gets the
+// `sshfront` container from `--ssh-image` (or, without it, an image built from containers/ssh); the Secrets Store
+// secrets `SSH_HOST_KEY_A` and `SSH_HOST_KEY_B` of that store are bound by the same names, which
+// deploy/ssh-front/hostkeys.mjs writes; and `--edge <script>` binds the edge as `EDGE` with props `{"ssh": true}`, the
+// only way a front's request reaches the edge as one. `--var SSH_HOST_KEY_ACTIVE=B` makes slot B the one key exchange
+// serves (a rotation).
 // `--genesis` (test-faults installs only) names the system chains' records, which each site reads from
 // GRAFTYARD_GENESIS in place of the `Release` view; a product install reads them from the genesis its `Release`
 // group accepted, and needs `--anchor` (the trust anchor `graftyard init` wrote: GRAFTYARD_INSTALL and
@@ -52,6 +60,11 @@ const si = flags.indexOf("--audit-stream");
 const auditStream = si >= 0 ? flags[si + 1] : null;
 const rki = flags.indexOf("--run-key");
 const runKey = rki >= 0 ? flags[rki + 1].split("/") : null;
+const flagValue = (name) => (flags.indexOf(name) >= 0 ? flags[flags.indexOf(name) + 1] : null);
+const sshStore = flagValue("--ssh");
+const sshImage = flagValue("--ssh-image");
+const edgeScript = flagValue("--edge");
+if (sshStore && !edgeScript) throw new Error("--ssh needs --edge <edge script>, which the SSH front's git requests go to");
 const oi = flags.indexOf("--ops");
 const ops = oi >= 0 ? flags[oi + 1] : null;
 const ai = flags.indexOf("--anchor");
@@ -84,8 +97,10 @@ function bindings(self, targets, phase1 = false) {
   const own = targets.filter((s) => s.id === self.id);
   const order = [...own, ...targets.filter((s) => s.id !== self.id)];
   return [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"],
-    ["SEARCH", "SearchShard"], ["INBOX", "Inbox"], ["LOGRELAY", "LogRelay"], ["BROKER", "RunnerBroker"]].flatMap(([b, cls]) =>
-    order.filter((s) => !(phase1 && NEW_CLASSES.includes(b) && s.id !== self.id)).map((s) => ({
+    ["SEARCH", "SearchShard"], ["INBOX", "Inbox"], ["LOGRELAY", "LogRelay"], ["BROKER", "RunnerBroker"],
+    // A site binds only its own SSH front: the edge picks the site, and the front never calls another's.
+    ...(sshStore ? [["SSHFRONT", "SshFront"]] : [])].flatMap(([b, cls]) =>
+    order.filter((s) => !(phase1 && NEW_CLASSES.includes(b) && s.id !== self.id) && !(b === "SSHFRONT" && s.id !== self.id)).map((s) => ({
       name: `${b}_${s.id}`,
       class_name: cls,
       ...(s.id === self.id ? {} : { script_name: s.script }),
@@ -97,7 +112,8 @@ function bindings(self, targets, phase1 = false) {
 function config(site, targets, own = true, phase1 = false) {
   return {
     name: site.script,
-    main: "../build/index.js",
+    // With SSH on, `entry.mjs` re-exports the Rust build and adds the SSH front's JS classes.
+    main: sshStore ? "../entry.mjs" : "../build/index.js",
     compatibility_date: COMPAT_DATE,
     workers_dev: false,
     preview_urls: false,
@@ -115,15 +131,25 @@ function config(site, targets, own = true, phase1 = false) {
     services: [
       ...(own ? [{ binding: "SITE", service: site.script }] : []),
       ...(ops ? [{ binding: "OPS", service: ops }] : []),
+      ...(edgeScript && sshStore ? [{ binding: "EDGE", service: edgeScript, props: { ssh: true } }] : []),
     ],
     r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
-    ...(runKey ? { secrets_store_secrets: [{ binding: "RUN_SERVICE_KEY", store_id: runKey[0], secret_name: runKey[1] }] } : {}),
+    ...((runKey || sshStore) ? { secrets_store_secrets: [
+      ...(runKey ? [{ binding: "RUN_SERVICE_KEY", store_id: runKey[0], secret_name: runKey[1] }] : []),
+      ...(sshStore ? ["SSH_HOST_KEY_A", "SSH_HOST_KEY_B"].map((n) => ({ binding: n, store_id: sshStore, secret_name: n })) : []),
+    ] } : {}),
     ...(auditStream ? { pipelines: [{ binding: "AUDIT_STREAM", stream: auditStream }] } : {}),
     containers: [{
       class_name: "GitShard",
       scheduling_policy: "durable_object",
       images: { git: image ? { image } : { dockerfile: resolve(here, "../../containers/git/Dockerfile") } },
-    }],
+    },
+    // The SSH front's one container per site, `graft-sshd` (containers/ssh), started by its `SshFront` object.
+    ...(sshStore ? [{
+      class_name: "SshFront",
+      scheduling_policy: "durable_object",
+      images: { ssh: sshImage ? { image: sshImage } : { dockerfile: resolve(here, "../../containers/ssh/Dockerfile") } },
+    }] : [])],
     // One queue per site (design/DESIGN.md, Scale, fan-out): its repository leaders produce `PrSync` batches, and this
     // script consumes them (workers/site/src/prsync.rs). Batches of one message wait at most 0 s, so a head push's
     // batch is handled at once [guess]; Queues retries a failed message 10 times, 2 s apart.
@@ -143,6 +169,8 @@ function config(site, targets, own = true, phase1 = false) {
       { tag: "v3", new_sqlite_classes: ["HookSequencer"] },
       { tag: "v4", new_sqlite_classes: ["SearchShard", "Inbox"] },
       { tag: "v5", new_sqlite_classes: ["LogRelay", "RunnerBroker"] },
+      // v6: the SSH front (M6-WP2), only on scripts that turn it on.
+      ...(sshStore ? [{ tag: "v6", new_sqlite_classes: ["SshFront"] }] : []),
     ],
     observability: { enabled: true },
   };

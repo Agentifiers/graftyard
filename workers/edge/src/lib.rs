@@ -64,6 +64,7 @@ mod rcache;
 mod release;
 mod repos;
 mod secrets;
+mod ssh;
 mod transfer;
 mod ui;
 mod usertok;
@@ -910,6 +911,9 @@ struct TokenRow {
 /// `Tokens` shard, never a cache, or a `ghs_` token verified offline (`ident::stateless`). The leader re-reads the
 /// row, or the `jti` row, at `decide` either way.
 async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
+    if c.ssh_front {
+        return ssh::principal(c, req).await;
+    }
     let Some(t) = token_of(req)? else { return ui::session(c, req).await };
     if t.starts_with("ghs_") {
         return ident::stateless(c, &t).await;
@@ -1323,6 +1327,10 @@ struct Ctx<'a> {
     /// The install's `Authz` (`install_authz`), read once per request: a push starts it with its first reads, and
     /// `push_context` and `admission` both take it from here.
     install: std::cell::RefCell<Option<Option<graftyard_identity::AuthzFold>>>,
+    /// The request came from a site's `SshOutbound` over its `EDGE` binding, whose `props` are `{"ssh": true}`
+    /// (`ssh`): its caller is the SSH key in `x-graftyard-ssh-key`, and no other credential counts. A public request
+    /// has no props, so no client can set this.
+    ssh_front: bool,
 }
 
 impl Ctx<'_> {
@@ -1447,8 +1455,12 @@ async fn receive_pack(
         leases: false,
     };
     // A push under a `ghs_` token is format 32.7, sent only once `FormatsEnable` enabled it (M3-WP4); one whose token
-    // carries a `task` claim is 32.12 (AM1-WP3), on the same terms.
-    let late = [graftyard_git::repo::REPO_FORMAT_STATELESS, graftyard_git::repo::REPO_FORMAT_TASKS];
+    // carries a `task` claim is 32.12 (AM1-WP3), on the same terms; one over SSH is 32.26 (M6-WP2).
+    let late = [
+        graftyard_git::repo::REPO_FORMAT_STATELESS,
+        graftyard_git::repo::REPO_FORMAT_TASKS,
+        graftyard_git::repo::REPO_FORMAT_SSH,
+    ];
     let f = graftyard_raft::Command::format(&push);
     if late.contains(&f) && !c.cfg.enabled.contains(&f) {
         return after_body(c, &mut tail, path, unsupported(c.rid, f.family, f.version)).await;
@@ -2971,9 +2983,19 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
     }
 }
 
+/// The colo's IATA code from the request's `cf` object, or "" when it has none. A request over a service binding (a
+/// site's SSH front, `ssh`) has a `cf` object without `colo`, and worker-rs's `Cf::colo` panics on that.
+fn colo(req: &Request) -> String {
+    let cf = js_sys::Reflect::get(req.inner().as_ref(), &"cf".into()).unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
+    if cf.is_undefined() || cf.is_null() {
+        return String::new();
+    }
+    js_sys::Reflect::get(&cf, &"colo".into()).ok().and_then(|c| c.as_string()).unwrap_or_default()
+}
+
 /// Packs the colo's IATA code into the integer `Colo` a `suspect` report carries.
 fn colo_id(req: &Request) -> u32 {
-    let colo = req.cf().map(|c| c.colo()).unwrap_or_default();
+    let colo = colo(req);
     colo.bytes().take(4).fold(0u32, |n, b| n.wrapping_mul(256).wrapping_add(u32::from(b)))
 }
 
@@ -3117,6 +3139,7 @@ async fn serve(
         bound: std::cell::Cell::new(None),
         push_rows: std::cell::RefCell::new(None),
         install: std::cell::RefCell::new(None),
+        ssh_front: ssh::from_front(ctx),
         #[cfg(feature = "test-faults")]
         kill: req.headers().get("x-graft-kill")?,
         #[cfg(feature = "test-faults")]
@@ -3140,6 +3163,16 @@ async fn serve(
         #[cfg(feature = "test-faults")]
         push_end: std::cell::RefCell::new(None),
     };
+    // A site's SSH front reaches the key lookup and git, and nothing else (`ssh`).
+    if c.ssh_front && !ssh::front_path(&path) {
+        return text(rid, 404, "Not Found\n");
+    }
+    if path == ssh::KEY_PATH {
+        return ssh::key(&c, &req).await;
+    }
+    if path == ssh::META_PATH && req.method() == Method::Get {
+        return ssh::meta(&c);
+    }
     if path == release::ENTRIES_PATH {
         return release::entries(&c, &mut req).await;
     }

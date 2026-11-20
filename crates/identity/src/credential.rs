@@ -17,7 +17,7 @@ use crate::authz::AuthzFold;
 use crate::enc;
 use crate::names::{NamesFold, NamesRead, account_shard};
 use crate::stateless::InstallationClaims;
-use crate::tokens::{Jti, ScopeSet, TokensFold, TokensRead, jti_shard, shard_of_hash};
+use crate::tokens::{Fingerprint, Jti, ScopeSet, TokensFold, TokensRead, fingerprint_shard, jti_shard, shard_of_hash};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct UserId(pub AccountId);
@@ -25,14 +25,16 @@ pub struct UserId(pub AccountId);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct OrgId(pub AccountId);
 
-/// SHARED's `Credential`. `Ssh` comes with SSH pushes (M6-WP2), and `RunnerJwt` and `RuntimeToken` with Actions
-/// (Milestone 4).
+/// SHARED's `Credential`. `RunnerJwt` and `RuntimeToken` come with Actions (Milestone 4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Credential {
     Stored([u8; 32]),
     /// A verified `ghs_` installation token's claims: the edge checked the signature and the window.
     Stateless(Box<InstallationClaims>),
     Session(WebSessionId),
+    /// An SSH key, by its fingerprint: a push over SSH (M6-WP2). The SSH front authenticated the client's signature
+    /// with this key; the leader re-reads the key's row on its `fingerprint_shard` once per entry, as for a token.
+    Ssh(Fingerprint),
 }
 
 /// A web sign-in session on the `Identity` chain. Its time part is when it was issued.
@@ -68,7 +70,7 @@ impl Credential {
     pub fn wire(&self) -> ([u8; 32], Option<graftyard_types::Ulid>) {
         match self {
             Credential::Stored(h) => (*h, None),
-            Credential::Stateless(_) => ([0; 32], None),
+            Credential::Stateless(_) | Credential::Ssh(_) => ([0; 32], None),
             Credential::Session(s) => ([0; 32], Some(s.0)),
         }
     }
@@ -102,6 +104,7 @@ impl Principal {
             Credential::Stored(hash) => Some(CredentialKey::Token { shard: shard_of_hash(hash), hash: *hash }),
             Credential::Stateless(c) => Some(CredentialKey::Jti { shard: jti_shard(&c.jti), jti: c.jti.0 }),
             Credential::Session(s) => Some(CredentialKey::Session { issued: s.0.time() }),
+            Credential::Ssh(f) => Some(CredentialKey::SshKey { shard: fingerprint_shard(f), fingerprint: f.0 }),
         };
         CredentialShard { account, key }
     }
@@ -166,7 +169,9 @@ pub fn credential_chains(cred: &CredentialShard, own: Option<ChainId>) -> SmallV
         push(account_chain(a));
     }
     match cred.key {
-        Some(CredentialKey::Token { shard, .. } | CredentialKey::Jti { shard, .. }) => push(ChainId::Tokens(shard)),
+        Some(
+            CredentialKey::Token { shard, .. } | CredentialKey::Jti { shard, .. } | CredentialKey::SshKey { shard, .. },
+        ) => push(ChainId::Tokens(shard)),
         Some(CredentialKey::Session { .. }) | None => {}
     }
     out
@@ -249,6 +254,20 @@ pub fn check_credential(
                 return Err(CredentialRefusal::Revoked);
             }
         }
+        // A key removed (`SshKeyRemoved`) has no row; a deploy key (`repo` set) never acts as a user.
+        Some(CredentialKey::SshKey { shard, fingerprint }) => {
+            let fp = Fingerprint(fingerprint);
+            if fingerprint_shard(&fp) != shard {
+                return Err(CredentialRefusal::WrongShard);
+            }
+            match on_tokens(shard, own, deps, |r| r.ssh_key(&fp))? {
+                None => return Err(CredentialRefusal::NoToken),
+                Some(k) if k.repo.is_some() || Some(k.account) != cred.account => {
+                    return Err(CredentialRefusal::WrongAccount);
+                }
+                Some(_) => {}
+            }
+        }
         // A session names its account; without one it is nobody's.
         Some(CredentialKey::Session { issued }) => match row {
             None => return Err(CredentialRefusal::NoToken),
@@ -273,6 +292,11 @@ pub(crate) fn encode_cred(e: &mut Enc, c: &CredentialShard) {
             e.u8(1);
             e.u16(shard.0);
             e.u128(jti.0);
+        }
+        CredentialKey::SshKey { shard, fingerprint } => {
+            e.u8(2);
+            e.u16(shard.0);
+            e.0.extend_from_slice(fingerprint);
         }
         CredentialKey::Session { issued } => {
             e.u8(3);

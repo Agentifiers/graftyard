@@ -14,9 +14,8 @@ pub struct CredentialShard {
     pub key: Option<CredentialKey>,
 }
 
-/// A stored token's row, a stateless installation token's `jti` row, or a web session, which names no row of its own
-/// and is checked against the `Account` row's `sessions_not_before` by its issue time. The design's `SshKey` comes with
-/// SSH pushes (M6-WP2).
+/// A stored token's row, a stateless installation token's `jti` row, an SSH key's row, or a web session, which names no
+/// row of its own and is checked against the `Account` row's `sessions_not_before` by its issue time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CredentialKey {
     Token {
@@ -33,6 +32,12 @@ pub enum CredentialKey {
     Jti {
         shard: TokenShard,
         jti: crate::Ulid,
+    },
+    /// DESIGN's `SshKey`: an SSH key's row on `fingerprint_shard(fingerprint)` (M6-WP2), which a key removal deletes.
+    /// Added last, so the variants before it keep their serde positions.
+    SshKey {
+        shard: TokenShard,
+        fingerprint: [u8; 32],
     },
 }
 
