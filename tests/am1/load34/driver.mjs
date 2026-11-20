@@ -36,6 +36,8 @@ export const start = (spec, hints) => call("/start", { spec, hints }, { timeout:
 export const progress = (run, n, members) => call("/progress", { run, n, members }, { timeout: 60_000 });
 export const stop = (run, n) => call("/stop", { run, n });
 export const forget = (run, n) => call("/forget", { run, n });
+/** One depth-1 clone from a Load34 object through the run's own fetch: `{code, status, cache, bytes, pack, head}`. */
+export const smoke = (spec, hint) => call("/smoke", { spec, hint }, { timeout: 150_000 });
 export const purge = (prefix) => call("/purge", { prefix });
 /** One client's chunks from R2, in order: `[{seq, done, samples, pushes, acks, seen, summary?, misses?}]`. */
 export async function collect(run, i) {
@@ -115,8 +117,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const h = rows.filter((r) => r.hosted?.clients).pop()?.hosted;
     const req = Object.fromEntries((h?.clients ?? []).map((c) => [c.i, c.requests ?? {}]));
     console.log(JSON.stringify({ step: "load34 cpu", run: a[0], ...(await clientCpu(a[0], a[1], a[2], req)) }));
+  } else if (cmd === "smoke") {
+    // One depth-1 clone of REPO's main from a Load34 object, under WHO's token: exits 1 unless a 200 with pack bytes.
+    const { EDGE, tokens } = await import("../hosted/lib.mjs");
+    const [repo, who] = a, tok = tokens[who];
+    const pkt = (s) => Buffer.from(`${(s.length + 4).toString(16).padStart(4, "0")}${s}`);
+    const ls = await fetch(`${EDGE}/${repo}.git/git-upload-pack`, { method: "POST", signal: AbortSignal.timeout(60_000),
+      headers: { authorization: `Basic ${Buffer.from(`x:${tok}`).toString("base64")}`, "user-agent": "git/2.56.0", "git-protocol": "version=2",
+        "content-type": "application/x-git-upload-pack-request" },
+      body: Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt("ref-prefix refs/heads/main\n"), Buffer.from("0000")]) });
+    const want = Buffer.from(await ls.arrayBuffer()).toString("latin1").match(/([0-9a-f]{40}) refs\/heads\/main/)?.[1];
+    if (!want) { console.log(JSON.stringify({ step: "load34 smoke", repo, ls: ls.status, error: "no main" })); process.exit(1); }
+    const r = await smoke({ edge: EDGE, repo, chain: "repo:0", want, tokens: { admin: tok }, b034: {} }, "wnam");
+    console.log(JSON.stringify({ step: "load34 smoke", repo, ...r }));
+    process.exit(r.status === 200 && r.pack ? 0 : 1);
   } else {
-    console.error("usage: driver.mjs stage B034_JSON | cpu RUN FROM TO A1_ROWS");
+    console.error("usage: driver.mjs stage B034_JSON | cpu RUN FROM TO A1_ROWS | smoke REPO WHO");
     process.exit(2);
   }
 }

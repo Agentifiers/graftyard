@@ -155,8 +155,18 @@ class Run {
       const r = sent.r;
       s = sent.t;
       const reader = r.body.getReader();
-      await reader.read();
+      const first = await reader.read();
       const ms = this.now() - s;
+      // `/smoke`: up to 64 KB of the answer, so the row starts only on a 200 that carries pack bytes (after the timing).
+      if (c.smoke) {
+        let got = Buffer.from(first.value ?? []);
+        for (let more = first; !more.done && !got.includes("PACK") && got.length < 65_536;) {
+          more = await reader.read();
+          if (more.value) got = Buffer.concat([got, Buffer.from(more.value)]);
+        }
+        Object.assign(c.smoke, { status: r.status, cache: r.headers.get("x-graft-clone-cache"), ms, bytes: got.length,
+          pack: got.includes("PACK"), head: got.toString("latin1").slice(0, 80).replace(/[^\x20-\x7e]/g, ".") });
+      }
       this.note(kind, ms, String(r.status));
       const edge = /total;dur=(\d+)/.exec(r.headers.get("server-timing") ?? "");
       if (edge) this.note(`${kind}:edge`, Number(edge[1]), String(r.status));
@@ -537,6 +547,13 @@ export class Load34 extends DurableObject {
     const spec = await this.ctx.storage.get("spec");
     return { state: (await this.ctx.storage.get("done")) ? "done" : !spec ? "idle" : spec.t0 < Date.now() ? "lost" : "waiting" };
   }
+  /** One depth-1 clone probe through the run's own `cloneTtfb`, from this object, before a row (`/smoke`). */
+  async smoke(spec) {
+    const run = new Run(this, { ...spec, t0: Date.now(), seconds: 0, marks: {} });
+    const c = { waited: 0, smoke: {} };
+    const code = await run.cloneTtfb(c, spec.repo, spec.want, "read:cloneTtfb", true);
+    return { code, ...c.smoke, samples: run.samples.map((s) => s[1]) };
+  }
   stop() { if (this.run) this.run.stopped = true; }
   /** After the orb has collected the run: nothing of it stays in the object. */
   async forget() { this.run = null; await this.ctx.storage.deleteAlarm(); await this.ctx.storage.deleteAll(); }
@@ -563,6 +580,10 @@ export default {
         case "/progress": {
           const { run, n, members } = await req.json();
           return json(await Promise.all(Array.from({ length: n }, (_, i) => stub(run, i).progress(members).catch((e) => ({ i, state: `unreachable ${String(e).slice(0, 80)}` })))));
+        }
+        case "/smoke": {
+          const { spec, hint } = await req.json();
+          return json(await stub(`smoke-${Date.now()}`, 0, hint).smoke(spec));
         }
         case "/forget": {
           const { run, n } = await req.json();

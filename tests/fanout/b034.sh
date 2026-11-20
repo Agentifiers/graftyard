@@ -37,6 +37,12 @@ J=$M3_STATE/b034.json
 seed() { node tests/fanout/b034seed.mjs "$1" "$2" "$3" "$4" > "tests/fanout/raw/b034-seed-${3//\//_}.log" 2>&1; s "seed $3 exit $?"; }
 q() { python3 -c "import json,sys; d=json.load(open('$J')); print(eval(sys.argv[1]))" "$1"; }
 seed "$D/git.git" "$D/plan-git.txt" "$(q "d['second']['repo']")" member
+# HOSTED: one depth-1 clone from a Load34 object of the seeded second network before anything else bills (mt8's clones
+# were all 403 from the clients, and the row ran on): the row stops unless it is a 200 with pack bytes.
+if [ -n "${HOSTED:-}" ]; then
+  node tests/am1/load34/driver.mjs smoke "$(q "d['second']['repo']")" "$(q "d['second']['who']")" >> "$ST" 2>&1 \
+    || { s "b0-34 stopped: the Load34 smoke clone failed"; echo DONE >> "$ST"; exec sleep infinity; }
+fi
 for i in 0 1 2; do seed "$D/git.git" "$D/plan-git.txt" "$(q "d['hostile'][$i]['repo']")" hostile; done
 seed "$D/linux.git" "$D/plan.txt" "$(q "d['mono']['repo']")" admin
 mono=$(q "d['mono']['repo'].split('/')[1]"); chain=$(q "d['mono']['chain']")
