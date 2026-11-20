@@ -35,7 +35,9 @@ export class FakeEdge extends DurableObject {
     {
       const text = new TextDecoder("latin1").decode(body);
       const e = { at: Date.now(), method: req.method, path: url.pathname + url.search, auth: req.headers.get("authorization") ?? "", bytes: body.byteLength };
-      const answer = await this.answer(url, text, body, e);
+      // The edge's wire gate: every surface needs a User-Agent (`graftyard_wire::serve`), and workerd adds none.
+      const answer = req.headers.get("user-agent")?.trim() ? await this.answer(url, text, body, e)
+        : new Response("Request forbidden by administrative rules. Please make sure your request has a User-Agent header.\n", { status: 403 });
       this.ctx.storage.sql.exec("INSERT INTO log VALUES (?)", JSON.stringify(e));
       return answer;
     }
