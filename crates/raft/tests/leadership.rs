@@ -2210,3 +2210,197 @@ fn a_quiet_groups_own_trip_still_transfers() {
     let sd = step_downs(&c);
     assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, Some(_)))), "{sd:?}");
 }
+
+// ---- step-busy: a loaded leader that still commits holds through its own CommitErrors trip ----
+
+/// `drive` for B0-33 m63's leader: each step offers `per_step` Agent commands that are not pushes (task, lease and check
+/// writes), so `hot` stays false, against an admission capacity of 100 commands a second, so the agent bucket drains 50
+/// a second and a backlog stays queued. Every request `fail` accepts fails as an error reported to its sender.
+fn drive_agents(
+    c: &mut Cluster,
+    total: u64,
+    per_step: u64,
+    next_id: &mut u128,
+    mut fail: impl FnMut(&Envelope<KvEvent>) -> bool,
+) {
+    let mut t = 0;
+    while t < total {
+        c.advance(100);
+        offer_agents(c, per_step, next_id);
+        for _ in 0..200 {
+            if c.inbox.is_empty() {
+                break;
+            }
+            for e in std::mem::take(&mut c.inbox) {
+                if c.members[e.to.0 as usize].is_none() || fail(&e) {
+                    if let Some(f) = e.failure(false)
+                        && c.members[e.from.0 as usize].is_some()
+                    {
+                        let from = e.from;
+                        c.on(from, |m, now| m.call_failed(now, f));
+                    }
+                    continue;
+                }
+                let Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+        t += 100;
+    }
+}
+
+/// `per_step` Agent commands to the leader that are not pushes, from 500 agents, at a fixed capacity of 100 a second.
+fn offer_agents(c: &mut Cluster, per_step: u64, next_id: &mut u128) {
+    use graftyard_raft::admit::{ActorKey, Admit, AdmitClass};
+    let Some(l) = c.leader() else { return };
+    c.m_mut(l).set_admit_capacity(Some(100.0));
+    for _ in 0..per_step {
+        *next_id += 1;
+        let id = RequestId(graftyard_raft::Ulid(*next_id));
+        let actor = 1_000 + (*next_id % 500) as u64;
+        let cmd = KvCmd::Write {
+            key: format!("t{next_id}"),
+            expect: None,
+            value: next_id.to_string(),
+            actor: Some(actor),
+            push: false,
+            pack: 0,
+            render: 0,
+        };
+        let a = Admit {
+            class: AdmitClass::Agent,
+            actor: Some(ActorKey(actor)),
+            push: false,
+            inline: 0,
+            placement_ok: true,
+            budget: None,
+        };
+        let _ = c.on(l, |m, now| m.commit_as(now, id, cmd, a));
+    }
+}
+
+/// Fails every `n`th AppendEntries `from` sends to each follower: m63r33's trips were 3 failed of 18 to 22 calls per
+/// follower, 14 to 17%.
+fn every_nth_append(from: SiteId, n: u32) -> impl FnMut(&Envelope<KvEvent>) -> bool {
+    let mut sent = std::collections::BTreeMap::<SiteId, u32>::new();
+    move |e| {
+        if e.from != from || !matches!(e.msg, Message::Append(_)) {
+            return false;
+        }
+        let k = sent.entry(e.to).or_default();
+        *k += 1;
+        k.is_multiple_of(n)
+    }
+}
+
+/// step-busy, B0-33 m63r33's 19:06:18 shape: a leader with hundreds of agent commands queued, no pushes (so `hot` is
+/// false), and every sixth call to each follower failing, trips `CommitErrors` while its entries still commit. It
+/// holds, `to: None`, and keeps leading and committing. On main, which held only a hot group, the trip probed a target
+/// and moved the leader, as m63r33's site a moved to b at term 3 (`decisions/DECISIONS.md`, `step-busy`).
+#[test]
+fn a_loaded_leader_that_still_commits_holds_through_its_own_commit_errors_trip() {
+    let mut c = Cluster::new(57);
+    let mut id = 0;
+    c.elect(A);
+    drive_agents(&mut c, 3_000, 8, &mut id, |_| false);
+    let before = c.m(A).state().commit.0;
+    drive_agents(&mut c, 20_000, 8, &mut id, every_nth_append(A, 6));
+    let sd = step_downs(&c);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::CommitErrors { .. }, None))), "{sd:?}");
+    assert!(sd.iter().all(|s| s.2.is_none()), "a held trip never transfers: {sd:?}");
+    assert_eq!(c.leader(), Some(A));
+    let v = c.m(A).admission().expect("leading");
+    assert!(!v.hot, "the group must not read hot: the hold is step-busy's");
+    assert!(v.queued > 100, "a backlog stays queued: {}", v.queued);
+    assert!(c.m(A).state().commit.0 > before + 100, "the group kept committing");
+}
+
+/// step-busy's limit: a loaded leader whose window no longer holds `HOLD_ENTRIES` commits is not busy. After 10 s of
+/// m63's shape every follower answer reaches it 3 s late, past CALL_DEADLINE: it commits about one entry a round, under
+/// HOLD_ENTRIES a window, with its backlog growing, and it still hears a quorum, so check-quorum keeps it. Its next trip
+/// after the first hold probes a target and transfers. A rule that counted the leadership's earlier commits would hold
+/// it for good.
+#[test]
+fn a_loaded_leader_that_stops_committing_is_not_kept() {
+    let mut c = Cluster::new(58);
+    let mut id = 0;
+    c.elect(A);
+    drive_agents(&mut c, 3_000, 8, &mut id, |_| false);
+    drive_agents(&mut c, 10_000, 8, &mut id, every_nth_append(A, 6));
+    let (commit, held) = (c.m(A).state().commit.0, step_downs(&c).len());
+    let mut probed = false;
+    let mut late: Vec<(u64, Envelope<KvEvent>)> = Vec::new();
+    let mut led = commit;
+    for _ in 0..300 {
+        if c.m(A).role() == Role::Leader {
+            led = c.m(A).state().commit.0;
+        }
+        c.advance(100);
+        offer_agents(&mut c, 8, &mut id);
+        let now = c.now.0;
+        let (due, wait): (Vec<_>, Vec<_>) = late.drain(..).partition(|(at, _)| *at <= now);
+        late = wait;
+        for (_, Envelope { from, to, msg }) in due {
+            c.on(to, |m, now| m.step(now, from, msg));
+        }
+        for _ in 0..200 {
+            if c.inbox.is_empty() {
+                break;
+            }
+            for e in std::mem::take(&mut c.inbox) {
+                probed |= e.from == A && matches!(e.msg, Message::Probe { .. });
+                if e.from == A && matches!(e.msg, Message::Append(_)) {
+                    let f = e.failure(true).expect("a call");
+                    c.on(A, |m, now| m.call_failed(now, f));
+                }
+                if e.to == A && matches!(e.msg, Message::AppendRes(_)) {
+                    late.push((now + 3_000, e));
+                    continue;
+                }
+                let Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+    }
+    let sd = step_downs(&c);
+    let gained = led - commit;
+    assert!(gained <= 12, "{gained} entries while A led: not a slowed group");
+    let after: Vec<_> = sd[held..].iter().filter(|s| s.0 == A).collect();
+    assert!(!after.is_empty(), "it never tripped again: {sd:?}");
+    assert!(probed && after.iter().any(|s| s.2.is_some()), "a stuck loaded leader held through every trip: {sd:?}");
+    assert_ne!(c.leader(), Some(A));
+}
+
+/// step-busy keeps step-agree's other arm: a loaded leader whose site both other sites call sick still moves on its
+/// `CommitErrors` trip, though it commits.
+#[test]
+fn a_loaded_leader_on_a_site_the_others_call_sick_still_moves() {
+    let mut c = Cluster::new(57);
+    let mut id = 0;
+    c.elect(A);
+    drive_agents(&mut c, 3_000, 8, &mut id, |_| false);
+    c.on(A, |m, now| m.set_site_sick(now, true));
+    drive_agents(&mut c, 20_000, 8, &mut id, every_nth_append(A, 6));
+    let sd = step_downs(&c);
+    assert!(sd.iter().any(|s| matches!(s, (_, StepDownWhy::CommitErrors { .. }, Some(t)) if *t != A)), "{sd:?}");
+    assert_ne!(c.leader(), Some(A));
+}
+
+/// step-busy holds only `CommitErrors` trips: the same loaded, not hot leader whose own storage trips the confirm rule
+/// still transfers, as B0-06's slow-storage leader must, though it commits.
+#[test]
+fn a_loaded_leader_whose_storage_trips_still_moves() {
+    let mut c = Cluster::new(59);
+    let mut id = 0;
+    c.elect(A);
+    drive_agents(&mut c, 3_000, 8, &mut id, |_| false);
+    // The load goes on between the slow confirms, so the backlog stays (`busy` would hold a CommitErrors trip here).
+    for _ in 0..6 {
+        c.timed_confirm(A, 750, 750);
+        c.deliver_all();
+        drive_agents(&mut c, 300, 40, &mut id, |_| false);
+    }
+    let sd = step_downs(&c);
+    assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, Some(t))) if *t != A), "{sd:?}");
+    assert_ne!(c.leader(), Some(A));
+}

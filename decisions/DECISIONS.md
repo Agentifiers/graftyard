@@ -6522,6 +6522,40 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 
 **Flip.** A hot leader held while its group's commits stall for longer than HOT_WINDOW plus one STEP_DOWN window, or B0-06's rerun moving a group off its gray site later than 20 s: then the hold needs its own progress bound, or the verdict must come from the other sites before the first trip.
 
+### `step-busy`: a loaded leader that still commits holds through its own `CommitErrors` trip, hot or not, 2026-11-20
+
+**Status.** Asked for by the orchestrator after B0-33 m63r33, as the step-down fix FRAME's re-base waits on. Built on branch `r33-step-hold`, not deployed. `crates/raft`, so it ships on a site day.
+
+**Decision.**
+- **Hold.** When a leader's `CommitErrors` trip fires, it holds for one window (`Alarm::StepDown { to: None }`) instead of probing and transferring if it is `busy`: it committed at least `HOLD_ENTRIES` (5) entries in the `STEP_DOWN` window, counted on the commit-advance path in this leadership, and it is not `quiet` (more than HOME_QUIET_QUEUE commands queued, or an entry in flight over half of ENTRY_SOFT). This is in addition to step-agree's `hot` arm, which is unchanged.
+- **Unless the other sites agree.** `site_sick` still moves it, as for step-agree.
+- **Or it stopped committing.** Five entries in 10 s is a group that commits; a stuck one commits none, stops being busy within one window, and its next trip after the hold moves it.
+- **Only `CommitErrors`.** Confirm and LoopLag trips keep step-agree's rule. They measure the leader's own storage and loop, which commits do not clear, and `confirm-storage`'s flip is still open on them.
+
+**Why.** m63r33's only leader change was this rule's case [measured, `tests/am1/results/b033-m63.md`; `tests/fanout/raw/tsave-m63r33.jsonl.xz`]:
+- Site a held `CommitErrors [(1,22,3),(2,22,3)]` at 19:05:41 and moved on `[(1,18,3),(2,18,3)]` at 19:06:18 to site b, term 3.
+- In the 10 s before 19:06:18 it applied 13 entries (262 to 272 plus the cut at 19:06:18), with 247 to 379 agent commands left after every cut; every cut from 19:05:56 to 19:06:18 ended `AgentCmds` or `AgentTokens` with an entry in flight. Over the whole leadership no 10 s window held fewer than 8 applied entries (p10 10).
+- None of its traced AppendEntries failed in either trip's window (`AppendEnded`, 42 and 34 calls); 10 and 8 ended ok after 1 s or more. The counted failures were late answers to calls that missed CALL_DEADLINE while the leader's queue was deep [inference].
+- `hot` read the group as cold: acknowledged pushes in the 5 s before 19:06:18 fell to 36, between bursts of up to 147 in 5 s, because agent pushes commit in bursts between AgentCmds cuts and side commands (task, lease, check) are not pushes. The new leader b then held 8 trips with `to: None` over 2.5 minutes while it committed 12 to 19 entries in each trip's window; whether `hot` or a's RESET_QUARANTINE held them is not traced. Either way the same load read hot at one instant and cold at another: the verdict tracked burst timing, not the group's health.
+- A transfer cures a sick site, not a busy group: b inherited the same backlog, and the term change cost a lease and warm-up.
+
+**What it beat.**
+- **Lowering HOT_PUSHES or widening HOT_WINDOW:** `hot` also sizes INLINE_MAX_HOT staging, so changing it moves admission too; and m63's leader committed side commands that are never pushes.
+- **Holding every trip on commit progress (Confirm and LoopLag too):** B0-06's slow-storage leader still commits, only slower, and must move in 20 s; the Confirm trip's own revert rule (`confirm-storage`) is still being measured.
+- **Committed entries alone, without `quiet`:** a quiet group on a gray link (B0-06's 30% call failures at 10 to 18 writes/s) commits more than 5 entries in 10 s and would never move. With the backlog test, `leaders_leave_a_site_whose_calls_fail` still moves every seed.
+- **A separate progress clock:** the window's commits are the clock; nothing new survives a boot.
+
+**Evidence.**
+- `crates/raft/tests/leadership.rs`, under "step-busy", through `step` on a three-member cluster:
+  - `a_loaded_leader_that_still_commits_holds_through_its_own_commit_errors_trip`: Agent side commands, no pushes (so `hot` is false), a backlog of more than 100, and every sixth call to each follower failing. On main it moves, `CommitErrors { calls: [(1, 72, 4), (2, 72, 4)] }, Some(SiteId(1))`; on the branch it holds with `to: None` and commits more than 100 entries. The same test failing every third or fourth call also fails on main and passes on the branch.
+  - `a_loaded_leader_that_stops_committing_is_not_kept`: then every follower answer arrives 3 s late, so it commits 5 entries in about 20 s while it still hears a quorum. Its next trip probes and transfers.
+  - `a_loaded_leader_on_a_site_the_others_call_sick_still_moves` and `a_loaded_leader_whose_storage_trips_still_moves` (the Confirm trip keeps step-agree's rule).
+  - Step-agree's four tests and the liveness gray-site tests pass unchanged: `leaders_leave_a_site_whose_calls_fail` moved 12 of 12 seeds by STEP_DOWN at 16 clients (p50 5.8 s, max 9.6 s) and at 32 clients (p50 5.6 s, max 9.8 s), one leader change each.
+- Plants in `tests/m0carried/plant68.py`.
+- The long sweep, Porcupine and the full checks are in `tests/am1/results/step-busy.md`.
+
+**Flip.** A row where a held `CommitErrors` trip's leader stops committing (no entry applied for longer than one `STEP_DOWN` window) and the group goes more than HOT_WINDOW plus one window without a commit before it moves; or B0-06's gray-site rerun moving a loaded group off its failing site later than 20 s. Either means commits are not evidence enough, and the hold needs the other sites' verdict (F105) instead.
+
 ### `outage-window`: a gate row's harness-outage window opens at the client's first request, 2026-11-20
 
 **Decision.** The load window that the harness-outage rule's 5% share is taken over opens at the client's first request (a1's earliest sample in `a1-samples-<row>-<run>.jsonl.gz`), not at the driver's announced start, and still ends at the announced end. `tests/fanout/outages.sh` computes it with `outagecut.py --first` and passes it to `arrivals.py`, so every later row applies it with no hand recount; a row with no samples file keeps the announced start. Rules 1 to 3 and 5 are unchanged: a second counts only when the main edge got 0 invocations while the sites served (`tests/fanout/README.md`, "Harness outages on gate rows", rule 4).

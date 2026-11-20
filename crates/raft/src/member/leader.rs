@@ -1949,7 +1949,9 @@ impl<C: Command> Member<C> {
             acked.insert(self.cfg.me);
             if quorum::commit(self.log_config(), &acked) {
                 let proof = self.proof_for(n, &acked);
+                let entries = n.0 - self.state.commit.0;
                 self.set_commit(n);
+                self.note_commit(entries);
                 let lead = self.lead.as_mut().expect("leading");
                 lead.proof = Some(proof.clone());
                 if let Some((index, _)) = &lead.pending

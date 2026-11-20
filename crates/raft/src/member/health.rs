@@ -35,6 +35,10 @@ pub const HOME_QUIET_QUEUE: usize = 16;
 /// How long the transfer back to `home` waits for a quiet leader after it is first due, before it goes anyway [guess]:
 /// `home` is always regained.
 pub const HOME_DEFER_MAX: Duration = Duration::from_secs(600);
+/// step-busy: a loaded leader that committed at least this many entries in its `STEP_DOWN` window holds through its own
+/// `CommitErrors` trip [guess: B0-33 m63's loaded leaders committed 7 to 19 entries in every 10 s, and a stuck one
+/// commits none] (`decisions/DECISIONS.md`, `step-busy`).
+pub const HOLD_ENTRIES: u64 = 5;
 
 fn window() -> Duration {
     Duration::from_secs(u64::from(STEP_DOWN.window_s))
@@ -61,6 +65,8 @@ pub(super) struct LeaderHealth {
     /// Per answered AppendEntries in the window: when it was answered, by whom, and its round trip in ms. A follower
     /// answers after its own storage confirms the entries, so its slow confirms show here.
     rtts: VecDeque<(Timestamp, SiteId, u32)>,
+    /// Per commit this leadership counted in the window: when, and how many entries it committed (`busy`).
+    commits: VecDeque<(Timestamp, u64)>,
     hold_until: Option<Timestamp>,
     probe: Option<LeaderProbe>,
     /// From each follower's AppendEntries replies: its `stepped_down_at` and `boots`.
@@ -276,6 +282,9 @@ impl<C: Command> Member<C> {
         while h.rtts.front().is_some_and(|c| c.0 < since) {
             h.rtts.pop_front();
         }
+        while h.commits.front().is_some_and(|c| c.0 < since) {
+            h.commits.pop_front();
+        }
         while h.confirms.front().is_some_and(|c| c.at < since) {
             h.confirms.pop_front();
         }
@@ -357,6 +366,24 @@ impl<C: Command> Member<C> {
         slow >= usize::from(STEP_DOWN.commit_fail_min)
     }
 
+    /// The commit-advance path committed `entries` more entries in this leadership.
+    pub(super) fn note_commit(&mut self, entries: u64) {
+        let now = self.now;
+        if let Some(lead) = self.lead.as_mut() {
+            lead.health.commits.push_back((now, entries));
+        }
+    }
+
+    /// step-busy's loaded leader: it committed at least `HOLD_ENTRIES` entries in the `STEP_DOWN` window and is not
+    /// `quiet` (more than HOME_QUIET_QUEUE commands queued, or a large entry in flight), so a transfer would move a
+    /// backlog that keeps committing. A quiet leader on a gray link still commits too, and moves as before.
+    /// Read after `prune`, which keeps only the window's commits.
+    fn busy(&self) -> bool {
+        let Some(lead) = &self.lead else { return false };
+        let committed: u64 = lead.health.commits.iter().map(|c| c.1).sum();
+        committed >= HOLD_ENTRIES && !self.quiet(HOME_QUIET_QUEUE)
+    }
+
     pub(super) fn quarantined(&self, s: SiteId) -> bool {
         let inside = |t: Timestamp| t.0 != 0 && after(t, RESET_QUARANTINE) > self.now;
         let Some((stepped, boots)) = self.lead.as_ref().and_then(|l| l.health.peer_quarantine.get(&s)) else {
@@ -413,15 +440,18 @@ impl<C: Command> Member<C> {
         let Some(why) = self.tripped() else { return };
         // step-agree: a hot group's own tail moves its leader only when the other sites agree its site is sick or the
         // group stopped committing. `hot` counts committed pushes over HOT_WINDOW, so a group that stops committing
-        // stops being hot within it, and its next trip after this hold moves it as before. A loaded leader that still
+        // stops being hot within it, and its next trip after this hold moves it. A loaded leader that still
         // commits holds: B0-35 m60's term 3 was such a leader, and the move cost the load a term change
-        // (`decisions/DECISIONS.md`, `step-agree`).
-        if self.hot() && !self.site_sick {
+        // (`decisions/DECISIONS.md`, `step-agree`). step-busy: a `CommitErrors` trip also holds, hot or not, on a loaded
+        // leader that committed entries in the window. B0-33 m63's leader committed 13 entries in the window of the
+        // trip that moved it, with agent commands queued, while `hot` read its bursts of pushes as cold
+        // (`decisions/DECISIONS.md`, `step-busy`).
+        let errors_trip = matches!(why, StepDownWhy::CommitErrors { .. });
+        if (self.hot() || (errors_trip && self.busy())) && !self.site_sick {
             self.hold(why);
             return;
         }
         let failing = |s: SiteId| self.link_failing(s);
-        let errors_trip = matches!(why, StepDownWhy::CommitErrors { .. });
         // A follower that may lead, outside RESET_QUARANTINE; on a confirm or loop-lag trip also one whose link from
         // this leader is not failing and whose own storage does not look as slow.
         let candidates: Vec<SiteId> = self
