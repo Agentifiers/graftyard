@@ -516,7 +516,9 @@ async function push(tok, ref, from, path, bytes, extra = {}, agent = null) {
     // why-logs: a test edge's `server-timing`, so each refusal's stage is read from the push (tests/fanout/pushfull.py).
     timing: r.headers?.get?.("server-timing") ?? null });
   notePushTiming(r.headers?.get?.("server-timing"), res);
-  return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null, { client, start, end: cfClock.now() }];
+  // gate-trace: a test edge's spread read passes (`x-graft-spread`), each with its member tries, kept per burst push.
+  const spread = r.headers?.get?.("x-graft-spread") ?? null;
+  return [res, r.ms, res === "ok" ? commit : from, r.err, r.headers?.get?.("server-timing") ?? null, { client, start, end: cfClock.now(), spread }];
 }
 // push-reads: a test edge's `server-timing` on every push (resolve, auth, install, gate, context, validate, admission,
 // commit, stage, total), each stage's ms by name, plus how many commits ran the create probe (`probe`) and how many
@@ -969,7 +971,7 @@ if (plan.burst) jobs.push((async () => {
     unanswered: lost.reduce((m, x) => ((m[x.edge] = (m[x.edge] ?? 0) + 1), m), {}),
     unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")).map((x) => (tagged.has(x.k) ? { ...x, edge: tagged.get(x.k) } : x)) });
   // Every burst push's stages, in send order, for where each one's time went.
-  writeRow(OUT, { step: "burst timing", pushes: sent.sort((x, y) => x.k - y.k).map(({ k, ms, res, timing }) => ({ k, ms, res: String(res).slice(0, 40), timing })) });
+  writeRow(OUT, { step: "burst timing", pushes: sent.sort((x, y) => x.k - y.k).map(({ k, ms, res, timing, spread }) => ({ k, ms, res: String(res).slice(0, 40), timing, spread })) });
 })());
 // L0-12's overlap probe. Pair k's holder takes `a1p/<RUN>/<k>/**` Exclusive for PROBE_TTL_S and never renews it;
 // from 2 s before its end the other task asks for the same scope every PROBE_EVERY_MS until it gets a 201, which is

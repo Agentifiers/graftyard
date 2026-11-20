@@ -288,7 +288,9 @@ async fn read_gate(
             None => fresh().await,
         }
     };
-    let (rows, owner) = futures_util::future::join(rows, owner).await;
+    // The two reads' own walls (`gate_rows`, `gate_authz`), so a slow gate names which read was slow (`gate-trace`).
+    let (rows, owner) =
+        futures_util::future::join(api::timed(c, "gate_rows", rows), api::timed(c, "gate_authz", owner)).await;
     let core = match rows? {
         Ok(core) => core,
         // A repository whose create has not committed `RepoOwner` yet: hidden from every caller, as GitHub hides one
@@ -456,14 +458,12 @@ mod push_log {
 /// 1): for HOT_WINDOW after it, a push that would send an inline pack over INLINE_MAX_HOT stages it first, as the
 /// leader would ask, instead of a commit the leader refuses and a second one. A group with no `Stage` here in the last
 /// HOT_WINDOW is cool and its pushes commit inline as before, so a cool group's push never pays the bucket place; the
-/// entry lapses on its own, and the first push after it learns again from the leader. An Agent-class push with an
-/// inline pack over AGENT_INLINE_ENTRY stages first on any group, because the leader's per-entry budget answers such a
-/// pack `Stage` whatever its group (`decisions/DECISIONS.md`, "`agent-stage-first`").
+/// entry lapses on its own, and the first push after it learns again from the leader.
 mod hot {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
-    use graftyard_raft::admit::{AGENT_INLINE_ENTRY, HOT_WINDOW, INLINE_MAX_HOT};
+    use graftyard_raft::admit::{HOT_WINDOW, INLINE_MAX_HOT};
     use graftyard_types::{RepoId, Timestamp};
 
     /// The most groups one isolate remembers; past it the map starts empty again.
@@ -484,20 +484,18 @@ mod hot {
         });
     }
 
-    /// Whether a push to `repo` at `now` with `inline` pack bytes stages its pack before its first commit; `agent` is
-    /// whether the edge classes it Agent. Only a push sent with an admission class can get `Stage`, which the caller
-    /// checks.
-    pub(crate) fn stage_first(repo: RepoId, now: Timestamp, inline: usize, agent: bool) -> bool {
+    /// Whether a push to `repo` at `now` with `inline` pack bytes stages its pack before its first commit. Only a push
+    /// sent with an admission class can get `Stage`, which the caller checks.
+    pub(crate) fn stage_first(repo: RepoId, now: Timestamp, inline: usize) -> bool {
         let w = HOT_WINDOW.as_millis() as u64;
-        (agent && inline > AGENT_INLINE_ENTRY)
-            || inline > INLINE_MAX_HOT
-                && STAGED.with(|m| m.borrow().get(&repo).is_some_and(|at| now.0.saturating_sub(at.0) <= w))
+        inline > INLINE_MAX_HOT
+            && STAGED.with(|m| m.borrow().get(&repo).is_some_and(|at| now.0.saturating_sub(at.0) <= w))
     }
 }
 
 #[cfg(test)]
 mod hot_tests {
-    use graftyard_raft::admit::{AGENT_INLINE_ENTRY, INLINE_MAX_HOT};
+    use graftyard_raft::admit::INLINE_MAX_HOT;
     use graftyard_types::{DbId, RepoId, Timestamp};
 
     use super::hot::{stage_first, staged};
@@ -509,30 +507,14 @@ mod hot_tests {
         let (cool, hot) = (RepoId(DbId(301)), RepoId(DbId(302)));
         let big = INLINE_MAX_HOT + 1;
         for size in [1, INLINE_MAX_HOT, big, 1 << 20] {
-            assert!(!stage_first(cool, Timestamp(10_000), size, false), "a cool group never stages first ({size} B)");
+            assert!(!stage_first(cool, Timestamp(10_000), size), "a cool group never stages first ({size} B)");
         }
         staged(hot, Timestamp(10_000));
-        assert!(stage_first(hot, Timestamp(10_000), big, false));
-        assert!(stage_first(hot, Timestamp(15_000), big, false), "at HOT_WINDOW");
-        assert!(!stage_first(hot, Timestamp(15_001), big, false), "past HOT_WINDOW the group is cool again");
-        assert!(!stage_first(hot, Timestamp(12_000), INLINE_MAX_HOT, false), "a pack the leader keeps inline");
-        assert!(!stage_first(cool, Timestamp(12_000), big, false), "another group is not hot by this one");
-    }
-
-    /// The leader answers `Stage` to every Agent inline pack over AGENT_INLINE_ENTRY, hot group or not (B0-32 m3fwi3:
-    /// 206 of 489 pushes committed twice), so such a push stages first on a cool group; a pack at the budget, and a
-    /// Human or Bot push of any size, keeps its inline pack there.
-    #[test]
-    fn an_agent_pack_past_the_entry_budget_stages_first_on_a_cool_group() {
-        let cool = RepoId(DbId(303));
-        let now = Timestamp(50_000);
-        assert!(stage_first(cool, now, 256 << 10, true), "B0-32's 256 KiB agent push");
-        assert!(stage_first(cool, now, AGENT_INLINE_ENTRY + 1, true));
-        assert!(!stage_first(cool, now, AGENT_INLINE_ENTRY, true), "at AGENT_INLINE_ENTRY the leader keeps it inline");
-        assert!(!stage_first(cool, now, INLINE_MAX_HOT + 1, true), "past INLINE_MAX_HOT alone is the hot rule's");
-        for size in [AGENT_INLINE_ENTRY + 1, 256 << 10, 1 << 20] {
-            assert!(!stage_first(cool, now, size, false), "a push not classed Agent ({size} B)");
-        }
+        assert!(stage_first(hot, Timestamp(10_000), big));
+        assert!(stage_first(hot, Timestamp(15_000), big), "at HOT_WINDOW");
+        assert!(!stage_first(hot, Timestamp(15_001), big), "past HOT_WINDOW the group is cool again");
+        assert!(!stage_first(hot, Timestamp(12_000), INLINE_MAX_HOT), "a pack the leader keeps inline");
+        assert!(!stage_first(cool, Timestamp(12_000), big), "another group is not hot by this one");
     }
 }
 
@@ -789,7 +771,13 @@ pub(crate) async fn spread_read(
     record: &PlacementRecord,
     q: &serde_json::Value,
 ) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
-    graftyard_lookup::read_spread_for(b, chain, record, q, shed_retry_for(c.write.get(), budget_left(c))).await
+    // A test install keeps each pass's member tries for `x-graft-spread` (`gate-trace`).
+    #[cfg(feature = "test-faults")]
+    let trace = Some(&c.timing.spread);
+    #[cfg(not(feature = "test-faults"))]
+    let trace = None;
+    let retry = shed_retry_for(c.write.get(), budget_left(c));
+    graftyard_lookup::read_spread_traced(b, chain, record, q, retry, trace).await
 }
 
 /// How long `spread_read` asks again for a shed read: not at all for a read-class request; SHED_RETRY_FOR for a write,
@@ -1518,14 +1506,12 @@ async fn receive_pack(
         // Inline only when the pack fits INLINE_MAX and the push with it stays under COMMAND_MAX. A pack that streams
         // has more than INLINE_MAX.
         let inline = tail.is_none() && pack.len() <= INLINE_MAX && alone + pack.len() + 16 < COMMAND_MAX;
-        // A group whose leader asked this isolate to stage within HOT_WINDOW, or an Agent pack past
-        // AGENT_INLINE_ENTRY: stage now rather than after a refused commit (`hot`). Any other push keeps its inline
-        // pack. A Human push classes without a read, and `admission` reads the install's `Authz` once per request.
+        // A group whose leader asked this isolate to stage within HOT_WINDOW: stage now rather than after a refused
+        // commit (`hot`). A cool group's push keeps its inline pack.
         let first = inline
+            && hot::stage_first(repo.id, now(), pack.len())
             && !placement_failing(c)
-            && admission(c, &push.actor, &[], true, 0).await.is_some_and(|a| {
-                hot::stage_first(repo.id, now(), pack.len(), a.class == graftyard_git::group::ClassWire::Agent)
-            });
+            && admission(c, &push.actor, &[], true, 0).await.is_some();
         let inline = inline && !first;
         if first {
             // B0-32's count of pushes that staged before their first commit (`stagefirst` in `server-timing`).
@@ -3428,6 +3414,7 @@ async fn serve(
                 push_log::closed();
                 if let Ok(r) = &r {
                     r.headers().set("server-timing", &c.timing.header())?;
+                    r.headers().set("x-graft-spread", &c.timing.spread_header())?;
                 }
                 let status = r.as_ref().map_or(500, |r| r.status_code());
                 let end = c.push_end.borrow().clone();
