@@ -6361,6 +6361,20 @@ Branch `git-read-class`, code only, no hosted row (second-opinion review T-01a1f
 
 **Flip.** None expected; a later SSH change that needs more fields takes 32.27 by the same rule.
 
+#### An SSH front holds nothing past its session (2026-11-20)
+
+**Decision.** `SshFront` keeps no alarm and calls no `monitor()`. A container that stopped (a crash, the inactivity timeout, a rollout) is started again by the next session, which waits for `graft-sshd`'s banner as a cold start already does. With nothing holding the object, it goes inactive when its last session's `connect()` ends, and its container's inactivity timeout, `IDLE_MS` (1 h [guess]), runs from there.
+
+**Why.** On `graft-m3f` the fronts whose last sessions ended at 05:01:41Z and 05:01:58Z (sites b and c) stopped at 06:16:40Z and 06:17:02Z, 1 h 15 min after them. Each object's last `connect()` invocation ran 900,691 and 904,936 ms past its session, and the 1 h timeout ran after that, to within 5 s [measured, `tests/m6/results/m6-wp2.md`, "Idle stop"]. A pending `monitor()` prevents eviction until the container exits or for up to 15 minutes [doc: https://developers.cloudflare.com/containers/api/durable-object-container/, `monitor`], and `up()` left one pending to arm the restart alarm. The alarm was its only use: the alarm restarted a container only while a session came within `IDLE_MS`, which is when the next session restarts it anyway.
+
+**Beat.** Counting the 15 minutes in `IDLE_MS` (45 min plus the hold), which keeps a pending promise whose only job was a restart ahead of demand, and gets the idle time right only while the platform's hold stays 15 minutes. Keeping the restart alarm armed some other way, which wakes the object and so restarts the inactivity timer on every alarm.
+
+**Cost accepted.** After a crash, the next session to reach that front pays the cold start (about 2 to 6 s) instead of finding a container the alarm restarted within about 2 s. Clients see a slower connect, not a failure, within `BANNER_WAIT_MS` (45 s). B0-24a's kill run on this ingress measures it.
+
+**Evidence.** `workers/site/tests/ssh.test.mjs`, "a front's container stops within IDLE_MS of its last session's end, with nothing holding the object", which fails on the code before this change (75 min).
+
+**Flip.** B0-24a on the Spectrum ingress missing its gate on sessions that land on a just-killed front, which would bring back a restart ahead of demand that ends with the session.
+
 ### `load34`: B0-34's load runs in Load34 clients on Cloudflare, 2026-11-20 (built 2026-11-20)
 
 **Status.** Harness only (`tests/am1/load34/`, `tests/am1/rest/wire.mjs`, `a1.mjs --hosted N`, `tests/fanout/b034.sh` with `HOSTED=N`, `tests/fanout/clonelines.py`). Built on branch `b034-load`. It changes no site or edge script, and its Worker `graft-m1-load` is a test script, so deploying it resets no member and needs no site day. The B0-34 gate is unchanged; the clone line it reads is the one re-based on 2026-11-20.

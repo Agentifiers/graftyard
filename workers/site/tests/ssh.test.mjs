@@ -36,8 +36,16 @@ function object({ coldTries = 2, image = "registry/sshfront@sha256:1" } = {}) {
       starts.push(o);
       this.running = true;
     },
-    async setInactivityTimeout() {},
-    monitor: () => new Promise(() => {}),
+    timeout: 0,
+    async setInactivityTimeout(ms) {
+      this.timeout = ms;
+    },
+    // Settles only when the container stops, which no test does, so each call stays pending.
+    monitors: 0,
+    monitor() {
+      this.monitors++;
+      return new Promise(() => {});
+    },
     getTcpPort(p) {
       assert.equal(p, 22);
       return { connect: () => (++tries <= coldTries ? socket([]) : socket(["SSH-2.0-graftyard\r\n", "rest"])) };
@@ -102,13 +110,23 @@ test("SshOutbound serves the host-key slots on keys.graft and forwards git.graft
   assert.equal((await ssh.outbound({ host: "git" }, { ...env, EDGE: undefined }, req)).status, 503);
 });
 
-test("the alarm restarts a stopped container only while sessions came within IDLE_MS", async () => {
-  const f = object();
-  await f.o.ctx.storage.put("seen", Date.now());
-  await ssh.alarm(f.o);
-  assert.equal(f.starts.length, 1);
-  const g = object();
-  await g.o.ctx.storage.put("seen", Date.now() - ssh.IDLE_MS - 1);
-  await ssh.alarm(g.o);
-  assert.equal(g.starts.length, 0);
+// When the platform stops the container after its last session, from the session's end: the object goes inactive
+// only once nothing holds it, a pending `monitor()` holds it up to 15 minutes and an alarm wakes it [doc: Durable
+// Object Container API, `monitor` and `setInactivityTimeout`], and the container then runs its inactivity timeout.
+const MONITOR_HOLD_MS = 15 * 60_000;
+function stopsAfter(f, sessionEnd) {
+  const c = f.o.ctx.container;
+  const inactive = Math.max(sessionEnd, c.monitors ? sessionEnd + MONITOR_HOLD_MS : 0, f.alarm() ?? 0);
+  return inactive + c.timeout - sessionEnd;
+}
+
+test("a front's container stops within IDLE_MS of its last session's end, with nothing holding the object", async () => {
+  // B0-24d: fronts whose last session ended at 05:01Z stopped at 06:16Z and 06:17Z, an hour and 15 minutes later.
+  const f = object({ coldTries: 1 });
+  await ssh.connect(f.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
+  await ssh.connect(f.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
+  const end = Date.now();
+  assert.equal(f.starts.length, 1, "the second session reused the running container");
+  assert.equal(f.o.ctx.container.timeout, ssh.IDLE_MS);
+  assert.ok(stopsAfter(f, end) <= ssh.IDLE_MS, `stops ${stopsAfter(f, end) / 60_000} min after the session`);
 });

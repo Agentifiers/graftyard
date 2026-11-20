@@ -64,5 +64,21 @@ The driver used a new member account and repository (`m6-ssh-suspend/bf52-179515
 - **Spend.** $0.17 on `graft-m3f` from the site day's start, 04:21:12Z to 05:12:43Z (`PREFIX=graft-m3f tests/fanout/acctcost.py`), under the $5 stop. That covers containers, Durable Object rows, and requests. The Spectrum app's own billing line was not read [unverified]. The traffic was a few MiB, inside Pro's 5 GB allowance.
 - **Spectrum app.** Deleted with `graftyard ssh spectrum --delete`. Afterwards the zone lists 0 Spectrum apps and no `sshtest` DNS record. `ssh.graftyard.dev`, `ssh-m0.graftyard.dev`, and the Oracle VM were not touched.
 - **Repositories.** repo:3932160, 3932161, and 3997696 were retired and purged: 58 objects, then 0 on the second pass. The first pass refused 3997696 on a registry TLS timeout, and a rerun purged it. `joined.mjs` reports none joined of 3.
-- **Containers.** The teardown sweep killed the three git shard containers. The three `SshFront` containers (`ssh#0`, `ssh#1`, `ssh#2`) were still running at 05:12Z. The Containers API refuses an instance delete (`NOT_ENABLED`), so they stop when their 1 h inactivity timeout runs out. Their alarm restarts a container only within an hour of the last session, so none restarts.
+- **Containers.** The teardown sweep killed the three git shard containers. The three `SshFront` containers (`ssh#0`, `ssh#1`, `ssh#2`) were still running at 05:12Z. The Containers API refuses an instance delete (`NOT_ENABLED`), so they were left to their inactivity timeout. Site a's stopped at 05:17:28Z and sites b's and c's at 06:16:40Z and 06:17:02Z, later than the 1 h expected ("Idle stop" below).
 - **Left in place.** The secrets `SSH_HOST_KEY_A` and `SSH_HOST_KEY_B` stay in the install's Secrets Store, so a later site day with `--ssh` serves the same host keys.
+
+## Idle stop: why two fronts ran 1 h 15 min past their last session (2026-11-20)
+
+The fronts were left to stop on their own after the teardown. `IDLE_MS`, the container's inactivity timeout, is 1 h, so all three should have stopped by about 06:02Z. Instead:
+
+| Front | Last `connect()` began | Its wall time | It ended | Container stopped | Stop after that end |
+|---|---|---|---|---|---|
+| site a, `ssh#0` | 05:01:59Z | 904,404 ms | 05:17:03Z | 05:17:28Z | 25 s |
+| site b, `ssh#1` | 05:01:41Z | 900,691 ms | 05:16:42Z | 06:16:40Z | 3,598 s |
+| site c, `ssh#2` | 05:01:58Z | 904,936 ms | 05:17:03Z | 06:17:02Z | 3,599 s |
+
+The begin times and wall times are from Workers Logs, entrypoint `SshFront`, event type `connect`. The stop times are each instance's `status.updated_at` in the Containers API. Every earlier `connect()` on these objects ended within seconds of its session (the 632,712 ms one on site b is the 633 s held session), so only the last invocation on each object ran about 900 s past its socket [measured].
+
+**Cause.** `up()` left a `monitor()` pending to arm a restart alarm when the container stopped. A pending `monitor()` "prevents eviction until the container exits or for up to 15 minutes, whichever comes first" [doc: https://developers.cloudflare.com/containers/api/durable-object-container/, `monitor`]. That is the 900 s on each last invocation. The inactivity timeout runs only once the object is inactive [doc, same page, `setInactivityTimeout`], so b and c stopped 1 h after the hold ended, to within 2 s. Site a stopped 25 s after its hold. Its object had been reset since its container started (an object that restarts "starts without" a timeout, same page), so the platform stopped its container "shortly after" the object went inactive [inference].
+
+**Fix** (`decisions/DECISIONS.md`, "An SSH front holds nothing past its session"). `SshFront` keeps no alarm and calls no `monitor()`. A stopped container is started again by the next session, which already waits for the banner. A test models the stop as the latest of the session's end, a pending `monitor()`'s 15 minutes, and a pending alarm, plus the inactivity timeout (`workers/site/tests/ssh.test.mjs`, "a front's container stops within IDLE_MS of its last session's end"). It reports 75 minutes on the code before the change and 60 after. Not yet hosted: it ships on the next `graft-m3f` site day.

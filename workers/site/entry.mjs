@@ -11,9 +11,6 @@ export class SshFront extends DurableObject {
   async connect(socket) {
     return ssh.connect(this, socket);
   }
-  async alarm() {
-    return ssh.alarm(this);
-  }
   sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
   }
