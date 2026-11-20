@@ -17,6 +17,8 @@
 //	                                 joins the repository only when /ingest names it after the push committed, so a
 //	                                 push that never commits leaves no object a later push could lean on
 //	     validated packs older than an hour (PACK_COMMIT_WINDOW) are deleted
+//	     [&headsum=S][&packsum=P]    the SHA-256 of the tips and detail, and of the pack, as sent: a body that
+//	                                 does not match came through changed, 502, which is not the pack's answer
 //	     [&detailn=D]                after the tips, D bytes of "<new> <old> <ref>" lines: the reply's "detail" holds,
 //	                                 per update with a new tip, its new commits (raw, newest first), the paths it
 //	                                 changes against its merge base with HEAD and against the old tip, whether it is a
@@ -972,6 +974,18 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		if t := query.Get("tips"); t != "" {
 			tips = strings.Split(t, ",")
 		}
+		// headsum and packsum: the SHA-256 of the body's tips and detail and of its pack, as the edge sent them. A
+		// body that does not match came through changed, which is no answer about the pack: 502, so the shard answers
+		// 503 and the edge tries again elsewhere. On B0-32 m3fpc1 and m3fr13, 4 pushes' detail regions held pack
+		// bytes and were refused "bad update line" (decisions/OPEN-QUESTIONS.md, G35).
+		headSum := sha256.New()
+		changed := func(what, got, want string, first []byte) bool {
+			if want == "" || got == want {
+				return false
+			}
+			fail(w, 502, "validate: body changed in transit: %s sha256 %s, sent %s, began %x", what, got, want, first)
+			return true
+		}
 		if k := query.Get("tipsn"); k != "" {
 			var n int64
 			if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
@@ -983,6 +997,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 				fail(w, 400, "body shorter than tipsn")
 				return
 			}
+			headSum.Write(head)
 			tips = append(tips, strings.Fields(string(head))...)
 		}
 		// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
@@ -997,12 +1012,19 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 				fail(w, 400, "body shorter than detailn")
 				return
 			}
+			headSum.Write(head)
+			if changed("head", hex.EncodeToString(headSum.Sum(nil)), query.Get("headsum"), head[:min(len(head), 16)]) {
+				return
+			}
 			us, err := parseUpdates(string(head))
 			if err != nil {
 				fail(w, 400, "%v", err)
 				return
 			}
 			updates = us
+		}
+		if query.Get("detailn") == "" && changed("head", hex.EncodeToString(headSum.Sum(nil)), query.Get("headsum"), nil) {
+			return
 		}
 		for _, t := range tips {
 			if !hexRe.MatchString(t) {
@@ -1020,6 +1042,9 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer os.Remove(file)
+		if changed("pack", sum, query.Get("packsum"), nil) {
+			return
+		}
 	}
 	// A disk=1 failure on an object the disk lacks keeps the request for the shard's retry; any other is the pack's.
 	refuse := func(what string, err error) {

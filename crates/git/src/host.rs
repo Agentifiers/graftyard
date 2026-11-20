@@ -917,7 +917,8 @@ impl ShardHost<'_> {
     /// `Validated::Busy`; a human's waits. `derived` marks the shard's own archive promotion, whose CPU the container
     /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
     /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`, and a
-    /// 409 `missingBase` on `OnDisk::AsItStands` is `MissingBase`.
+    /// 409 `missingBase` on `OnDisk::AsItStands` is `MissingBase`. `sums` are the edge's `headsum` and `packsum`,
+    /// passed on so the container answers a body changed on the way 502, not the pack's 4xx (G35).
     #[allow(clippy::too_many_arguments)]
     pub async fn validate(
         &self,
@@ -928,9 +929,13 @@ impl ShardHost<'_> {
         derived: bool,
         disk: OnDisk<'_>,
         body: Option<wasm_bindgen::JsValue>,
+        sums: &[(&str, String)],
     ) -> Result<Validated, (Option<u16>, StoreError)> {
         let none = |e: StoreError| (None, e);
         let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
+        for (k, v) in sums {
+            path.push_str(&format!("&{k}={v}"));
+        }
         match disk {
             OnDisk::CaughtUp => {}
             OnDisk::AsItStands => path.push_str("&disk=1"),

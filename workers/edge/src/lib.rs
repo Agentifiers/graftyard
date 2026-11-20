@@ -1761,12 +1761,25 @@ impl std::fmt::Display for ShardRefusal {
 /// placement record, which saves the shard its two `Names` reads, as `/merge` and `/demand` do: on B0-32 m3fr8 the
 /// network shard took p50 3,038 ms to forward a burst push, most of it in those reads' gaps, against the pool shard's
 /// 370 ms (`tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run").
-fn validate_url(repo: &Repo, tipsn: usize, detailn: usize, agent: bool, pack: &[u8]) -> String {
+///
+/// `head` is the body's tips and detail, its first `tipsn` bytes and the rest: the URL names its SHA-256
+/// (`headsum`), and a pack's when the edge holds it whole (`packsum`), so the container answers a body that came
+/// through changed 502, which moves the push to the next shard, rather than refusing it `unpacker error`: on B0-32
+/// m3fpc1 and m3fr13, 4 pushes' bodies reached a pool shard's container with pack bytes where their detail lines
+/// had been framed (`decisions/OPEN-QUESTIONS.md`, G35).
+fn validate_url(repo: &Repo, head: &[u8], tipsn: usize, agent: bool, pack: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    let sum = |b: &[u8]| Digest(Sha256::digest(b).into()).hex();
     let record = serde_json::to_string(&repo.record).unwrap_or_default();
     let record: String = url::form_urlencoded::byte_serialize(record.as_bytes()).collect();
     let mut url = format!("https://shard/validate?repo={}&record={record}&tipsn={tipsn}", repo.id.0.0);
+    let detailn = head.len() - tipsn;
     if detailn > 0 {
         url.push_str(&format!("&detailn={detailn}"));
+    }
+    url.push_str(&format!("&headsum={}", sum(head)));
+    if !pack.is_empty() {
+        url.push_str(&format!("&packsum={}", sum(pack)));
     }
     if agent {
         url.push_str("&class=agent");
@@ -1880,8 +1893,9 @@ pub(crate) async fn validate(
     if !tips.is_empty() || detail.is_empty() {
         head.push(b'\n');
     }
-    let url = validate_url(repo, head.len(), detail.len(), agent, pack);
+    let tipsn = head.len();
     head.extend_from_slice(detail.as_bytes());
+    let url = validate_url(repo, &head, tipsn, agent, pack);
     head.extend_from_slice(pack);
     #[cfg(feature = "test-faults")]
     let pinned = c.shard;
@@ -1928,8 +1942,9 @@ async fn validate_streamed(
     if !tips.is_empty() || detail.is_empty() {
         head.push(b'\n');
     }
-    let url = validate_url(repo, head.len(), detail.len(), agent, &[]);
+    let tipsn = head.len();
     head.extend_from_slice(detail.as_bytes());
+    let url = validate_url(repo, &head, tipsn, agent, &[]);
     let chunks = futures_util::stream::once(std::future::ready(Ok(head)))
         .chain(pack)
         .map(|c| c.map(|b| js_sys::Uint8Array::from(&b[..]).into()).map_err(|e| wasm_bindgen::JsValue::from_str(&e)));
@@ -3630,7 +3645,8 @@ mod tests {
             let u = url::Url::parse(u).unwrap();
             u.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect::<Vec<_>>()
         };
-        let pairs = q(&validate_url(&repo, 41, 0, true, &pack));
+        let tip = [b'a'; 41];
+        let pairs = q(&validate_url(&repo, &tip, 41, true, &pack));
         let get = |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get("trailer"), Some("01".repeat(20)));
         assert_eq!(
@@ -3640,9 +3656,15 @@ mod tests {
         let sent: PlacementRecord =
             serde_json::from_str(&get("record").expect("the record rides on validate")).unwrap();
         assert_eq!(sent, rec);
-        let pairs = q(&validate_url(&repo, 1, 9, false, &[]));
+        // The head's and the pack's SHA-256 ride too, so the container tells a body changed in transit from a bad
+        // push (G35): the digests of these exact bytes, the head being the tips and detail, never the pack.
+        let hex = |b: &[u8]| graftyard_types::Digest(<sha2::Sha256 as sha2::Digest>::digest(b).into()).hex();
+        assert_eq!((get("headsum"), get("packsum")), (Some(hex(&tip)), Some(hex(&pack))));
+        let head = b"\nabcdefghi";
+        let pairs = q(&validate_url(&repo, head, 1, false, &[]));
         assert!(pairs.iter().any(|(k, v)| k == "detailn" && v == "9"));
-        assert!(!pairs.iter().any(|(k, _)| k == "class" || k == "trailer"));
+        assert!(pairs.iter().any(|(k, v)| k == "headsum" && *v == hex(head)));
+        assert!(!pairs.iter().any(|(k, _)| k == "class" || k == "trailer" || k == "packsum"));
     }
 
     /// The body a push's commit asks `/outcome_by_request` with while its send is open names the same request id and
