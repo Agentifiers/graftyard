@@ -445,6 +445,14 @@ pub fn clone_cache_buckets(network: NetworkId, home: SiteId, sites: &[SiteId], h
     if hot && a != b { vec![a, b] } else { vec![home] }
 }
 
+/// The sites whose buckets hold a network's composed-miss chain (`crate::compose`): its warm sites, home first, once
+/// each. The builder writes the chain to these buckets, every shard installs from them, and the edge checks a
+/// manifest's chain packs in them in this order (`crate::compose::check_in_time`).
+pub fn chain_buckets(network: NetworkId, home: SiteId, sites: &[SiteId]) -> Vec<SiteId> {
+    let [a, b] = warm_sites(network, home, sites);
+    if a == b { vec![a] } else { vec![a, b] }
+}
+
 /// The warm sites of a network: its group's home, then the next site by rendezvous among the others.
 pub fn warm_sites(network: NetworkId, home: SiteId, sites: &[SiteId]) -> [SiteId; 2] {
     let key = network_key(network);

@@ -2227,11 +2227,19 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     let cache_binding = format!("BUCKET_{}", repo.record.home.0);
     let cache = R2(c.env.bucket(&cache_binding)?);
     let net = NetworkId(repo.id.0);
+    // A manifest's chain packs are checked in the network's chain buckets, home first (`chain-warm`): after a fold
+    // the home bucket can lack a chain the other warm bucket still holds whole, and its shards still name it.
+    let ids: Vec<SiteId> = c.sites.0.iter().map(|s| s.id).collect();
+    let chain: Vec<R2> = graftyard_git::chain_buckets(net, repo.record.home, &ids)
+        .into_iter()
+        .map(|s| Ok(R2(c.env.bucket(&format!("BUCKET_{}", s.0))?)))
+        .collect::<Result<_>>()?;
+    let chain: Vec<&R2> = chain.iter().collect();
     if let Some(k) = &key {
         let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
         h.set("x-graft-clone-cache", "hit")?;
-        // A composed miss's entry is a manifest (`edge-compose`), streamed from the chain in the same bucket. One whose
-        // chain has moved on (a fold deleted its files) is a miss, which writes a new one.
+        // A composed miss's entry is a manifest (`edge-compose`), streamed from the chain in the chain buckets. One
+        // whose chain has moved on in every one (a fold deleted its files) is a miss, which writes a new one.
         // `chain_open` in `server-timing`: the chain packs' opens, from after the manifest's read to the answer's
         // headers, recorded whether the manifest served or was declined (`chain-open`).
         if let Some(o) = cache.0.get(k.manifest_key().to_string()).execute().await.map_err(|e| e.to_string())?
@@ -2239,7 +2247,7 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
             && let Some(b) = o.body()
         {
             let bytes = b.bytes().await?;
-            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&cache, net, bytes, h.clone()))
+            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&chain, net, bytes, h.clone()))
                 .await
                 .map_err(|e| e.0)?
             {
@@ -2258,8 +2266,8 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     // that stops reading still leaves an entry. The edge's own tee stored only answers a client read to the end, and
     // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard"). With
     // `tail=1` (`edge-compose`) a composed miss comes back as the chain's manifest and the want's own objects, and the
-    // edge streams the chain's packs from the home bucket, so only the tail leaves the container. A chain file the
-    // bucket lacks sends the miss back to the shard for the composed pack, as before.
+    // edge streams the chain's packs from the first chain bucket that holds them all, so only the tail leaves the
+    // container. A chain file that no chain bucket holds sends the miss back to the shard for the composed pack.
     let fill = key.as_ref().map_or(String::new(), |k| format!("&fill={}", k.digest().hex()));
     let url = format!("https://shard/upload-pack?repo={}{fill}", repo.id.0.0);
     let tail_url = format!("{url}{}", if key.is_some() { "&tail=1" } else { "" });
@@ -2274,7 +2282,7 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         }
         if len.is_some_and(|n| n <= graftyard_git::compose::TAIL_ANSWER_MAX) {
             let bytes = r.bytes().await?;
-            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&cache, net, bytes, h))
+            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&chain, net, bytes, h))
                 .await
                 .map_err(|e| e.0)?
             {

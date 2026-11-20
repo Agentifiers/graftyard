@@ -6671,6 +6671,23 @@ The lead's request after B0-35 m61: attribute f0's `/raft` CPU by call kind and 
 - More than 1% of clones in a phase answered `chain_late` 503: the checks are slow for another reason; read `chain_open` before raising the bound.
 - Clients refusing answers cut by `CHAIN_STALL` or a changed etag more often than once a row: hold one body ahead again, within the 8.
 
+### `chain-warm`: the edge checks a manifest's chain packs in both warm buckets, home first, 2026-11-20
+
+**Status.** Built on branch `b034-warm`. Edge and site code (`crates/git/src/compose.rs`, `check_in_time`; `crates/git/src/host.rs`, `manifest_answer` and `open_chain`; `crates/git/src/shard.rs`, `chain_buckets`; `workers/edge/src/lib.rs`; `workers/site/src/shard.rs`), so it ships on a site day. The site's change only names the same buckets it used before.
+
+**Decision.** A composed answer's chain packs are checked in the network's chain buckets (`chain_buckets`: the warm sites, home first, once each), the same buckets the builder writes the chain to and every shard installs it from. The answer streams from the first bucket that holds every pack the manifest names, as counted; one bucket's decline goes on to the next; `Declined`, and the shard's own composed answer, only when every bucket declines. Packs never come from two buckets. One `CHAIN_CHECK_WITHIN` bounds all the checks together (`chain-hold`). The clone cache's manifest entries stay in the home bucket.
+
+**Why.** B0-34 mt10's kill and second phases composed every miss on the shard (284 of 284), p50 5.5 s against 2.0 s for j9's misses from R2, and failed the every-clone line at 47.5 % and 32.6 % [measured, `tests/am1/results/b034-mt10.md`, "Why kill and second composed on the shard"]. At 18:33:53Z the builder folded the chain; its step put bucket a's new head at 18:34:19 and deleted the old chain's files there. The home shard's kill at 18:34:39 stopped the step before bucket b, which kept the old chain whole until 18:42. Site b's shards install from their own warm bucket first, so they answered `tail=1` with manifests naming the old chain, and the edge, checking only the home bucket, got 404 for those packs 1,591 times in 18:34:45–18:38 and fell back to the shard for the whole pack [measured, R2 operation analytics by object name].
+
+**What it beat.**
+- **The builder keeps the old chain's files until every bucket has the new head.** It closes the window only when the step completes; a kill mid-step leaves it open, which is the mt10 case.
+- **Shards install from the home bucket first.** Every non-home shard would wait for the builder, and a home bucket that lost its chain would leave every site with none.
+- **Mixing packs from both buckets.** Each pack streams from the bucket that checked it, on that check's etag, so one answer stays one bucket's chain.
+
+**Evidence.** `a_manifests_chain_is_checked_in_every_chain_bucket_home_first` (`crates/git/tests/shard.rs`): the mt10 case (home lacks the first four packs, the other holds all) is served from the other bucket; both whole is served from home with the other never asked; each bucket missing a different pack declines; a home bucket that declines late leaves the other only the rest of the one bound. On main's rule (home bucket alone) it fails. Plants (`tests/chainwarm/plant.py`), 5 of 5 caught: main's rule; the first decline ends the checks; the bound on the home bucket only; chain buckets of home only; the other bucket first.
+
+**Flip.** A row where answers served from the second bucket are cut short (a changed etag or `CHAIN_STALL`) more than once: the second bucket's chain is moving under the answer, so serve it only while that bucket's head names the manifest's base.
+
 ### `retired-gone`: a repository whose group is retired reads as gone, 404, 2026-11-20
 
 Open question G33, found in `retire-sticks`: since a retired member refuses every `/join`, the edge's create on first use for a live repository whose voters are all retired fails, and the edge answered it 503. On graft-m1 the harness retired the groups of live test repositories (`m3org/lf1-0` is `repo:1048577`, retired twice and never deleted), so every read of one got a 503 with `Retry-After` [inference from the code: `graftyard_lookup::create`, `Routes::join`].

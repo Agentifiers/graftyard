@@ -828,8 +828,8 @@ fn a_composed_answer_streams_a_long_chain_holding_one_body_and_refuses_a_slow_ch
     let bound = CHAIN_CHECK_WITHIN.as_millis() as u64;
     // 20 checks at 100 ms, four at a time: checked, in order, well inside the bound.
     let c = Clock::default();
-    let got = c.run(check_in_time((0..20).map(|i| c.open(i, 100, false)), |d| c.sleep(d.as_millis() as u64)));
-    assert_eq!(got, Ok(ChainCheck::Checked((0..20).collect())));
+    let got = c.run(check_in_time([0], |_| (0..20).map(|i| c.open(i, 100, false)), |d| c.sleep(d.as_millis() as u64)));
+    assert_eq!(got, Ok(ChainCheck::Checked((0, (0..20).collect()))));
     assert_eq!(c.now.get(), 500);
     // One check that never answers: refused at the bound, not at the client's timeout.
     let c = Clock::default();
@@ -839,23 +839,77 @@ fn a_composed_answer_streams_a_long_chain_holding_one_body_and_refuses_a_slow_ch
         }
         c.open(i, 100, false).await
     };
-    let got = c.run(check_in_time((0..20).map(hung), |d| c.sleep(d.as_millis() as u64)));
+    let got = c.run(check_in_time([0], |_| (0..20).map(hung), |d| c.sleep(d.as_millis() as u64)));
     assert_eq!((got, c.now.get()), (Ok(ChainCheck::Late), bound));
     // Checks that end just inside the bound are taken; just past it, refused.
     let c = Clock::default();
-    let got = c.run(check_in_time([c.open(0, bound - 1, false)], |d| c.sleep(d.as_millis() as u64)));
-    assert_eq!(got, Ok(ChainCheck::Checked(vec![0])));
+    let got = c.run(check_in_time([0], |_| [c.open(0, bound - 1, false)], |d| c.sleep(d.as_millis() as u64)));
+    assert_eq!(got, Ok(ChainCheck::Checked((0, vec![0]))));
     let c = Clock::default();
-    let got = c.run(check_in_time([c.open(0, bound + 1, false)], |d| c.sleep(d.as_millis() as u64)));
+    let got = c.run(check_in_time([0], |_| [c.open(0, bound + 1, false)], |d| c.sleep(d.as_millis() as u64)));
     assert_eq!(got, Ok(ChainCheck::Late));
     // A missing pack declines (the shard answers instead), and an error is an error, both before the bound.
     let c = Clock::default();
-    let got = c.run(check_in_time((0..20).map(|i| c.open(i, 100, i == 9)), |d| c.sleep(d.as_millis() as u64)));
+    let got = c.run(check_in_time([0], |_| (0..20).map(|i| c.open(i, 100, i == 9)), |d| c.sleep(d.as_millis() as u64)));
     assert_eq!(got, Ok(ChainCheck::Declined));
     let c = Clock::default();
-    let got: Result<ChainCheck<Vec<usize>>, String> = c
-        .run(check_in_time([async { Err::<Option<usize>, _>("r2 down".to_owned()) }], |d| {
-            c.sleep(d.as_millis() as u64)
-        }));
+    let got: Result<ChainCheck<(u8, Vec<usize>)>, String> = c.run(check_in_time(
+        [0],
+        |_| [async { Err::<Option<usize>, _>("r2 down".to_owned()) }],
+        |d| c.sleep(d.as_millis() as u64),
+    ));
     assert_eq!(got, Err("r2 down".into()));
+}
+
+/// A manifest's chain packs are checked in the network's chain buckets, home first, and the answer comes from the
+/// first bucket that holds every one (`decisions/DECISIONS.md`, "`chain-warm`"). On B0-34 mt10 a fold's step deleted
+/// the old chain's files from the home bucket, the home shard's kill stopped it before bucket b, and site b's shards
+/// named the old chain for eight minutes: checked in the home bucket alone, all 284 kill and second misses declined
+/// and composed on the shard, 5.5 s p50 against 2.0 s from R2.
+#[test]
+fn a_manifests_chain_is_checked_in_every_chain_bucket_home_first() {
+    use graftyard_git::compose::{CHAIN_CHECK_WITHIN, ChainCheck, check_in_time};
+    use graftyard_git::{chain_buckets, warm_sites};
+    use std::future::Future;
+    // Bucket `b` holds packs 0..20 except those in `missing[b]`; each check takes 100 ms.
+    fn checks<'a>(c: &'a Clock, missing: [&'a [usize]; 2]) -> impl FnMut(usize) -> Vec<ChainOpen<'a>> {
+        move |b| (0..20).map(|i| Box::pin(c.open(i, 100, missing[b].contains(&i))) as ChainOpen<'a>).collect()
+    }
+    type ChainOpen<'a> = std::pin::Pin<Box<dyn Future<Output = Result<Option<usize>, String>> + 'a>>;
+    // The named lifetime is needed: elided, `'_` in the `Fn` sugar's return names no input (E0106).
+    #[allow(clippy::needless_lifetimes)]
+    fn sleep<'a>(c: &'a Clock) -> impl FnOnce(std::time::Duration) -> std::pin::Pin<Box<dyn Future<Output = ()> + 'a>> {
+        move |d| Box::pin(c.sleep(d.as_millis() as u64))
+    }
+    // mt10: the home bucket lacks the old chain's first packs, the other holds it whole: served from the other.
+    let c = Clock::default();
+    let got = c.run(check_in_time([0, 1], checks(&c, [&[0, 1, 2, 3], &[]]), sleep(&c)));
+    assert_eq!(got, Ok(ChainCheck::Checked((1, (0..20).collect()))), "the chain from the bucket that holds it");
+    // Both hold it: the home bucket, and the other is never asked.
+    let c = Clock::default();
+    let got = c.run(check_in_time([0, 1], checks(&c, [&[], &[]]), sleep(&c)));
+    assert_eq!((got, c.started.get()), (Ok(ChainCheck::Checked((0, (0..20).collect()))), 20));
+    // Each bucket lacks a different pack: no bucket holds the chain whole, so the shard answers. Packs are never
+    // taken from two buckets, since an answer streams every pack from the bucket that checked it.
+    let c = Clock::default();
+    let got = c.run(check_in_time([0, 1], checks(&c, [&[5], &[12]]), sleep(&c)));
+    assert_eq!(got, Ok(ChainCheck::Declined));
+    // The bound is one for both buckets: a home that declines late leaves the other only what is left.
+    let bound = CHAIN_CHECK_WITHIN.as_millis() as u64;
+    let c = Clock::default();
+    let slow = |b: usize| [c.open(0, if b == 0 { bound - 100 } else { 200 }, b == 0)];
+    assert_eq!(c.run(check_in_time([0, 1], slow, sleep(&c))), Ok(ChainCheck::Late));
+    assert_eq!(c.now.get(), bound);
+
+    // The chain buckets are the warm sites, home first, once each.
+    let sites = [SiteId(0), SiteId(1), SiteId(2)];
+    for n in 1..200 {
+        for home in sites {
+            let [h, next] = warm_sites(net(n), home, &sites);
+            assert_eq!(chain_buckets(net(n), home, &sites), vec![h, next]);
+            assert_eq!(h, home);
+            assert_ne!(next, home);
+        }
+    }
+    assert_eq!(chain_buckets(net(7), SiteId(0), &[SiteId(0)]), vec![SiteId(0)]);
 }

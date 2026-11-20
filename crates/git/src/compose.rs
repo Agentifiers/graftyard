@@ -241,15 +241,35 @@ pub enum ChainCheck<T> {
     Late,
 }
 
-/// `opens` run as `open_in_order` runs them, bounded by `CHAIN_CHECK_WITHIN` on `sleep`'s clock: the edge's
-/// `open_chain`.
-pub async fn check_in_time<T, E, F, S, D>(opens: impl IntoIterator<Item = F>, sleep: S) -> Result<ChainCheck<Vec<T>>, E>
+/// The edge's `open_chain`: each of `buckets` in turn, its `opens` run as `open_in_order` runs them, and the first
+/// bucket whose checks all pass with their values; `Declined` only when every bucket declines, and all of it bounded
+/// once by `CHAIN_CHECK_WITHIN` on `sleep`'s clock. `buckets` are the network's warm buckets, home first
+/// (`chain_buckets`): a shard installs its chain from its own warm bucket, and the builder brings the buckets up one at
+/// a time, so after a fold the home bucket can lack a chain the other still holds whole. On B0-34 mt10 the home shard's
+/// kill stopped a fold's step after it deleted the old chain's files from the home bucket and before it reached
+/// bucket b, whose shards then named the old chain for eight minutes; checked in the home bucket alone, every one of
+/// those misses declined and composed on the shard (`decisions/DECISIONS.md`, "`chain-warm`").
+pub async fn check_in_time<B, T, E, I, S, D>(
+    buckets: impl IntoIterator<Item = B>,
+    mut opens: impl FnMut(B) -> I,
+    sleep: S,
+) -> Result<ChainCheck<(B, Vec<T>)>, E>
 where
-    F: std::future::Future<Output = Result<Option<T>, E>>,
+    B: Copy,
+    I: IntoIterator,
+    I::Item: std::future::Future<Output = Result<Option<T>, E>>,
     S: FnOnce(std::time::Duration) -> D,
     D: std::future::Future<Output = ()>,
 {
-    Ok(match within(CHAIN_CHECK_WITHIN, open_in_order(opens), sleep).await {
+    let first = async {
+        for b in buckets {
+            if let Some(v) = open_in_order(opens(b)).await? {
+                return Ok(Some((b, v)));
+            }
+        }
+        Ok(None)
+    };
+    Ok(match within(CHAIN_CHECK_WITHIN, first, sleep).await {
         None => ChainCheck::Late,
         Some(r) => r?.map_or(ChainCheck::Declined, ChainCheck::Checked),
     })
