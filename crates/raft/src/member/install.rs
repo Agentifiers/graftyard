@@ -271,7 +271,15 @@ impl<C: Command> Member<C> {
                 if i > self.state.commit && self.digest_at(i) == Some(d) {
                     self.set_commit(i);
                 }
-                self.remote.waiting.extend(reads.into_iter().map(|(id, at)| (id, at, i)));
+                // `read-newest`: every batch sent before this one is granted at `i` too. Its reads arrived here
+                // before this batch left, so before the leader took it and confirmed `i`; a write acknowledged before
+                // any of them is at or below `i`. A later batch is never granted by an earlier answer.
+                // Batch numbers rise with each send in a boot (`next_batch`), so "sent before" is "numbered lower".
+                let (earlier, later): (Vec<_>, Vec<_>) =
+                    std::mem::take(&mut self.remote.inflight).into_iter().partition(|b| b.0 < batch);
+                self.remote.inflight = later;
+                let granted = earlier.into_iter().flat_map(|b| b.2).chain(reads);
+                self.remote.waiting.extend(granted.map(|(id, at)| (id, at, i)));
             }
             None => {
                 // That member does not lead: the reads fail, and the caller asks the leader it names.
@@ -347,20 +355,19 @@ impl<C: Command> Member<C> {
         }
     }
 
-    /// Time passing for remote reads: a batch unanswered after CALL_DEADLINE is sent again, and queued reads go out.
+    /// Time passing for remote reads: queued reads go out, and the newest batch in flight, unanswered after
+    /// CALL_DEADLINE, is sent again. Its answer grants every batch sent before it (`on_read_index_res`), so resending
+    /// those as well only adds calls to a leader that is already slow: on B0-35 m61 such resends were 2,446 of the
+    /// 46,250 learner read-index calls f0 took, beside 7,089 `HEDGE` copies (`read-newest`).
     pub(super) fn tick_remote(&mut self) {
         let now = self.now;
-        let mut resend = Vec::new();
-        for (batch, sent, _) in &mut self.remote.inflight {
-            if now >= after(*sent, CALL_DEADLINE) {
-                *sent = now;
-                resend.push(*batch);
-            }
-        }
-        if let Some(l) = self.leader.filter(|l| *l != self.cfg.me) {
-            for batch in resend {
-                self.send(l, Message::ReadIndex { batch });
-            }
+        let resend = self.remote.inflight.iter_mut().max_by_key(|b| b.0).filter(|b| now >= after(b.1, CALL_DEADLINE));
+        let resend = resend.map(|b| {
+            b.1 = now;
+            b.0
+        });
+        if let (Some(l), Some(batch)) = (self.leader.filter(|l| *l != self.cfg.me), resend) {
+            self.send(l, Message::ReadIndex { batch });
         }
         self.check_remote();
         self.send_batch();

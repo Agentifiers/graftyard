@@ -1808,7 +1808,9 @@ fn each_read_index_answer_grants_only_its_own_batch() {
             assert_eq!(granted(&c, second), None, "the second read waits for its own answer");
             step_all(&mut c, held2);
         }
-        assert!(granted(&c, first).is_some(), "reversed {reversed}: the first answer grants the first read");
+        if !reversed {
+            assert!(granted(&c, first).is_some(), "the first answer grants the first read");
+        }
         let below = granted(&c, second).filter(|f| *f < acked);
         assert_eq!(
             below, None,
@@ -1818,6 +1820,60 @@ fn each_read_index_answer_grants_only_its_own_batch() {
         c.sync(A);
         let f = granted(&c, second).expect("the second answer grants the second read once B applied it");
         assert!(f >= acked, "reversed {reversed}: the second read's floor {f:?} is below the write ({acked:?})");
+        // Reversed, the second answer granted the first read as well, at its own index (`read-newest`).
+        assert!(granted(&c, first).is_some(), "reversed {reversed}: the first read is granted");
+    }
+}
+
+/// `read-newest`: an answer to a later batch grants every batch sent before it, and only the newest batch in flight
+/// is resent. On B0-35 m61 a learner's ReadIndex calls each waited for their own answer, so every call still open at
+/// HEDGE was copied and every batch open at CALL_DEADLINE was resent: duplicates were 30 to 40% of the learners'
+/// read-index calls to a loaded leader (`decisions/DECISIONS.md`, "`read-newest`").
+#[test]
+fn a_later_read_index_answer_grants_earlier_batches_and_only_the_newest_is_resent() {
+    let mut c = Cluster::new(74);
+    c.elect(A);
+    c.sync(A);
+    let take_asks = |c: &mut Cluster| {
+        let is_ask = |e: &Envelope<KvEvent>| e.from == B && matches!(e.msg, Message::ReadIndex { .. });
+        let asks: Vec<_> = c.inbox.iter().filter(|e| is_ask(e)).cloned().collect();
+        c.inbox.retain(|e| !is_ask(e));
+        asks
+    };
+    // Three reads on B, each in its own batch; A hears none of them yet.
+    c.resolutions.clear();
+    let mut reads = Vec::new();
+    for _ in 0..3 {
+        reads.push(c.on(B, |m, now| m.read_index(now)).expect("queued for A"));
+        c.advance(graftyard_raft::LEARNER_READ_EVERY.as_millis() as u64);
+    }
+    let asks = take_asks(&mut c);
+    assert_eq!(asks.len(), 3, "three batches in flight");
+    // CALL_DEADLINE passes with no answer: only the newest batch goes again.
+    c.advance(ms(graftyard_raft::CALL_DEADLINE));
+    let again = take_asks(&mut c);
+    let newest =
+        asks.iter().filter_map(|e| if let Message::ReadIndex { batch } = e.msg { Some(batch) } else { None }).max();
+    let resent: Vec<_> = again
+        .iter()
+        .filter_map(|e| if let Message::ReadIndex { batch } = e.msg { Some(batch) } else { None })
+        .collect();
+    assert_eq!(resent, newest.into_iter().collect::<Vec<_>>(), "only the newest batch is resent");
+    // A write commits through A and C, then A answers the newest batch alone; B applies the write.
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(7_400)), put("k", "new"))).expect("admitted");
+    c.deliver(|e| e.to != B && e.from != B);
+    let acked = c.m(A).state().commit;
+    for graftyard_raft::Envelope { from, to, msg } in again {
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    c.sync(A);
+    for id in reads {
+        let f = c.resolutions.iter().find_map(|(s, r)| match r {
+            Resolution::Read { id: i, result: Ok(g) } if *s == B && *i == id => Some(g.floor()),
+            _ => None,
+        });
+        let f = f.unwrap_or_else(|| panic!("read {id:?} granted by the newest batch's answer"));
+        assert!(f >= acked, "read {id:?} granted at {f:?}, below the write acknowledged before the answer ({acked:?})");
     }
 }
 
