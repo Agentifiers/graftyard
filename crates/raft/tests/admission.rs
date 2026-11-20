@@ -9,7 +9,9 @@
 mod common;
 
 use common::load::{Done, End, Kind, Load, Op, acked_ms, pct};
-use graftyard_raft::admit::{AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_WAIT, AdmitClass, INLINE_MAX_HOT};
+use graftyard_raft::admit::{
+    AGENT_CMDS_ENTRY, AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_WAIT, AdmitClass, INLINE_MAX_HOT,
+};
 use graftyard_raft::{CutEnd, ENTRY_SOFT};
 use graftyard_types::SiteId;
 
@@ -737,4 +739,34 @@ fn each_cut_records_what_ended_it() {
         assert!(c.tokens < 1.0, "{c:?}");
     }
     assert_eq!((last.end, last.taken), (CutEnd::Empty, [0, 0, 0, 1]));
+}
+
+/// agent-cmds-entry: B0-32 m3fgt1's burst put 307 staged agent pushes in the leader's queue at once, and its cuts took
+/// 191 and 160 of them, whose entries took 2.6 and 2.8 s. With the cap, no cut takes more than AGENT_CMDS_ENTRY Agent
+/// commands; a cut it ended says `AgentCmds`; the Human push queued with them still goes in the first cut after it
+/// arrives; and every agent push commits. Capacity is fixed high so the token bucket, which never bound on m3fgt1, does
+/// not bind here either.
+#[test]
+fn a_burst_of_agent_commands_is_cut_at_agent_cmds_entry_per_entry() {
+    let mut l = Load::new(1, ENAM);
+    l.set_capacity(Some(2_000.0));
+    l.cuts.clear();
+    let t0 = l.now + 100;
+    let mut ops: Vec<Op> = (0..307u64)
+        .map(|k| op(t0 + k % 5, AdmitClass::Agent, Some(1_000 + k), Kind::Push, format!("refs/heads/b/{k}"), 0))
+        .collect();
+    ops.push(op(t0 + 3, AdmitClass::Human, None, Kind::Push, "refs/heads/human".into(), 0));
+    l.offer(ops);
+    l.drain(60_000);
+    let agent = l.cuts.iter().map(|c| c.taken[3] as usize).collect::<Vec<_>>();
+    let most = agent.iter().copied().max().unwrap_or(0);
+    println!("agent-cmds-entry: {} cuts, agent commands per cut {agent:?}", l.cuts.len());
+    assert_eq!((AGENT_CMDS_ENTRY, most), (64, 64), "the largest cut takes the cap, no more: {agent:?}");
+    // The first push is cut alone as it arrives; the other 306 queue behind its entry and leave 64 at a time.
+    assert_eq!(agent, [1, 64, 64, 64, 64, 50], "every agent push is cut once, 64 to an entry");
+    assert!(l.cuts.iter().any(|c| c.end == CutEnd::AgentCmds), "{:?}", l.cuts);
+    let human = l.cuts.iter().position(|c| c.taken[0] == 1).expect("the human push is cut");
+    assert!(human <= 1, "the human push waits behind no agent cut: cut {human} of {:?}", l.cuts);
+    let pushes = of(&l.done, Kind::Push);
+    assert_eq!(pushes.iter().filter(|d| matches!(d.end, End::Acked { .. })).count(), 308, "every push commits");
 }

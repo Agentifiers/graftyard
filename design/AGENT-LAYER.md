@@ -67,7 +67,7 @@ pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);     // queued agent
 /// a hot group INLINE_MAX_HOT stages a 256 KiB burst before the budget: at 64 KiB merges took 129 to 227 ms, at 256 KiB
 /// up to 2.3 s [measured, B0-32, eighth pass]; `cost.py` prices a Class A write a push [inference].
 pub const INLINE_MAX_HOT: usize = 64 << 10;                      // [measured, B0-32]; INLINE_MAX stays 1 MiB
-pub const AGENT_INLINE_ENTRY: usize = 128 << 10;                 // [guess]
+pub const AGENT_INLINE_ENTRY: usize = 128 << 10;                 // [guess]; and AGENT_CMDS_ENTRY = 64 agent commands per entry, every group: 191 in one entry took 2.6 s (B0-32 m3fgt1) [guess]
 pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
 /// Per member, beside the 30-day rule. Above it the leader archives the oldest entries to `R2Key::Archive` in two
 /// buckets before followers truncate them, so RPO stays zero. Check runs and statuses are kept 90 days (settable from 1

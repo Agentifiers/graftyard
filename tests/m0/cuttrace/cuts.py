@@ -3,7 +3,7 @@ import json, lzma, sys, collections
 # leader, and what it took and left, from a tsave trace. Usage: cuts.py TRACE.jsonl.xz LOAD_START_MS [SECONDS]
 path, t0 = sys.argv[1], int(sys.argv[2])
 t1 = t0 + 1000 * int(sys.argv[3] if len(sys.argv) > 3 else 600)
-ENDS = ['Empty', 'Soft', 'EntryMax', 'AgentTokens']
+ENDS = ['Empty', 'Soft', 'EntryMax', 'AgentTokens', 'AgentCmds']
 CLASSES = ['human', 'mergeq', 'bot', 'agent']
 seen = set()
 raw = []

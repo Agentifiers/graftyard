@@ -403,6 +403,8 @@ pub enum CutEnd {
     EntryMax = 2,
     /// Only agent commands were left, and the AGENT_SHARE bucket held no token.
     AgentTokens = 3,
+    /// Only agent commands were left, and the batch held AGENT_CMDS_ENTRY of them.
+    AgentCmds = 4,
 }
 
 /// One batch the leader cut for an entry, and why the cut stopped, for test hosts' traces (cut-trace: what ends each

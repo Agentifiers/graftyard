@@ -6534,3 +6534,29 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 **Flip.** A B0-32 rerun where more than 5% of `ok` burst pushes still commit twice, which would mean the leader's `Stage` comes from a rule the edge does not see, such as demotion. Or one where pushes that stage first take longer, at p50, than m3fwi3's two-commit pushes did, which would mean the bucket place costs more than the refused round. If the read gate's slow mode still keeps more than 10% of burst pushes over 5 s, that is the next change, not a reason to revert this one.
 
 **Flip fired, 2026-11-20 (B0-32 m3fgt1, graft-m3f, main `19b4385f` plus test-faults tracing; reverted on branch `gate-trace`).** Every `ok` burst push staged first (490 of 490) and none committed twice (0 of 490, against m3fwi3's 206 of 489), so the change did what it said. But its second flip condition holds: stage-first pushes took edge total p50 8,713 ms (p99 10,539), against 4,582 ms for m3fwi3's two-commit pushes, and the row's within-5 s share fell to 27.0% (135 of 500) from 88.4%. The time moved into the commit stage: the first 50 burst pushes committed at p50 1.3 s and the rest at 6.7 to 7.3 s; 266 pushes waited past `COMMIT_RECEIPT` and asked `/outcome_by_request` once (commit p50 6,355 ms), and 115 missed a receipt and sent 169 `suspect` between them, which fails the zero-`suspect` line. The leader queued 307 agent commands at once (m3fwi3: 74) and its commit p99 rose to 5,490 ms from 1,345 [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fgt1"]. Staging first took away the refused round that had spread the burst's commits over about 1 s, so all 500 small `Stored` commits reached the leader's queue together [inference]. The `push-reads` rule (stage first only on a group seen hot) is back; the leader's admission queue under a burst is the next target.
+
+### `agent-cmds-entry`: an entry holds at most `AGENT_CMDS_ENTRY` (64) Agent commands, on every group, 2026-11-20
+
+**Decision.** The leader's cut takes at most `AGENT_CMDS_ENTRY` Agent-class commands into one entry, counting both the `AGENT_FLOOR` loop and the `AGENT_SHARE` loop. The cap applies on every group, whatever the commands' bytes (`crates/raft/src/admit.rs`, `crates/raft/src/member/leader.rs`, `cut`). A cut it ends records `CutEnd::AgentCmds` (4, appended). Human, MergeQueue and Bot are unchanged, and so are the token bucket, `ENTRY_SOFT` and `ENTRY_MAX` (`design/DESIGN.md`, Shape, agent block, and the noisy-tenant row for chain groups).
+
+**Why.** In B0-32 m3fgt1, `agent-stage-first` sent all 500 burst pushes to the leader as small `Stored` commands. 307 reached its queue within half a second [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fgt1"]:
+- The cuts took them as entries of 74, 35, 191 and 160 commands. The 191-command cut ended `Soft` at 99,892 B. No cut ended `AgentTokens`, so the bucket never bound.
+- Those entries' rounds were 259 ms, 1,549 ms, 2,553 ms and 2,844 ms. Ticker stalls of 2,492, 1,731 and 822 ms fell inside the last three.
+- Entry 446's apply was one turn of 600 statements, 374 events and 191 resolutions. Deferred flushes ran 1.5 to 1.7 s late.
+- On m3fwi3 the same burst arrived over about 3 s. It made 13 entries of 31 to 106 commands, rounds at most 578 ms, and no stall.
+- The burst resolved in three lumps over about 9 s, where admission capacity read 750 to 875 commands/s. The late hold answers made 430 pushes ask by request id, and the asks that met a stall made 115 misses and 169 `suspect`.
+
+Capping the count keeps a burst's entries in the size range that measured under 600 ms. 307 agent commands drain in five entries of about 0.3 to 0.5 s, about 2 to 2.5 s [inference until a row].
+
+**What it beat.**
+- **Pricing `capacity` per command, so the bucket binds for big entries.** Softer: it bounds the release rate, not one turn's work, and its effect depends on a `round_ms` measured mostly on small entries.
+- **Answering `admitted` and `pending` without `settled()`.** Recorded as `decisions/OPEN-QUESTIONS.md`, A34. It is the next change if the rerun still shows asks behind flush waits; one change at a time.
+- **A longer ask deadline, or two missed asks before `suspect`.** That would reverse `receipt-rule` without meeting its flip, and hide the stall.
+- **A cap on every class.** B0-02's Human entries carried 441 commands per entry at 573 commands/s, and B0-35 m61's leader, all Human in its cut columns, had 1 entry over 64 commands in 1,296 (p50 7, p99 48, max 80). On m61 its heavy `/raft` turns had at most 24 commands per entry in their span (M4-WP4, T-01a1dd0e), so m61's queue is not this cause and an Agent-only cap does not bind there.
+
+**Evidence.**
+- `crates/raft/tests/admission.rs`, `a_burst_of_agent_commands_is_cut_at_agent_cmds_entry_per_entry`: 307 agent pushes and one Human push queued together, at a fixed capacity of 2,000 commands/s so the bucket does not bind. Cuts take `[1, 64, 64, 64, 64, 50]` agent commands; a cut ends `AgentCmds`; the Human push goes in the first cut after it arrives; all 308 commit. It fails on main (`[1, 306]`).
+- `tests/m0carried/plant62.py`.
+- The long sweep and Porcupine on this branch and on main are in `tests/m0/results/agent-cmds-entry.md`.
+
+**Flip.** A B0-32 rerun where an entry of at most 64 Agent commands still stalls the leader's ticker over 1 s (the cost is per turn, not per command), or where the burst's queue drains slower than about 3 s (the cap is too low, or the cost is elsewhere).
