@@ -225,6 +225,41 @@ Where B0-32 stands on main `b8e555df`, line by line, and which open question own
 - G34 owns the shard catch-up stall: 1 merge push, 2 `merge:only` answers and 65 `full` pushes.
 - The cold-isolate merge push in warm-up has no owner; it fell before the burst.
 
+## Row m3fpc1: B0-32 on main `a3430143` (`catchup-pieces`, `soft-grow`, `chain-hold`, `command-rows`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** One site day and edge day from main `a3430143` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (19:09:03Z). It is the first B0-32 row on `soft-grow`, `chain-hold`, `command-rows` and `catchup-pieces`.
+
+**Committed raw files:** `tests/fanout/raw/rows-m3fpc1.status`, `{admit,terms,vmem}-m3fpc1-b0-32.jsonl`, `tsave-m3fpc1-b0-32.jsonl.xz`, `arrivals-m3fpc1.jsonl`, `shardgate-m3fpc1-b0-32-*.jsonl`, `shardev-m3fpc1-b0-32.jsonl.xz` (`GitShard` events for repo 65603, 19:30:00Z to 19:31:40Z), and `lm1-rows-m3f-data/m3fpc1-raw/` (the client's summary and its 32 merge pushes). `tests/fanout/pieces.py` reads the shard events into runs and pieces.
+
+- **Site day and edge day** m3fpc, 19:09:03Z to 19:23:23Z, both exit 0, one run (one-shot launcher). Images are the m3fst ones, since no container code changed.
+- **Row:** repo 65603 (run `mwpde1fv`), 8 learners, k 4, leader site 0 term 2. The burst reached the leader at about 19:30:56Z on the server clock; done 19:33:34Z. Harness outage 4 s (2.4%), valid.
+- **Spend:** $4.92 from 19:09:03Z to 19:35:28Z (graft-m3f prefix $0.70). Group torn down 19:33:39Z; SWEEP2 OK. `ssh.graftyard.dev` gave slot A's three fingerprints at 19:52Z.
+
+| Line | Measured | Verdict |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | **251 of 500** (92 `ok` within 5 s, 159 `full`); m3fst1 332 | Fail (450 needed) |
+| No other refusal shape | **3** refused `unpacker error: validate: bad update line` with garbage bytes, container 422 at 2.8 to 3.2 s; seen once before, on m3fr13 | Fail |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | peak 128,488 B | Pass |
+| Every merge in one of the next 2 entries, none over 2 s | **4 of 32** merge pushes over 2 s (3,160, 2,402, 3,525, 4,972 ms); max down from 15,215 ms. `merge:only` 26 × 200, 3 × 409, **no 503**; p99 10,492 ms | Fail |
+| Zero leader changes | term 2, leader site 0 throughout | Pass |
+| Zero `suspect` | **0**, no misses | Pass |
+
+**Late `ok` and `full`, against m3fst1** [measured, `server-timing`]:
+- 246 of 338 `ok` pushes took over 5 s. In 243 of them, the commit stage alone exceeds the overage (all sends: p50 3,132 ms, against 3,383 on m3fst1's late ones). None had validate over 2 s.
+- Committed twice: 204 of 338 (60%), against 43%. Stage answer p50 637 ms, second commit p50 2,512 ms. Of the 204, 30 came in within 5 s; of the 134 committed once, 62 did.
+- `full`: 116 after a commit and 43 at `bound` (m3fst1: 177 and 2). 90 of 159 spent 1.5 s or more reading core rows (gate p50 2,411 ms), the late read-index grants A35 and F106 own.
+- Leader commit p50/p99 438/1,781 ms (483/2,448); round p50 158 ms (185). Leader confirms of 500 ms or more in the burst's first 15 s: **2** (1,033 ms on 33 statements and 5.6 KB; 794 ms on 1 statement and 148 KB), both labelled `storage`, against 4 on m3fst1. No ticker stall of 200 ms or more.
+
+**`catchup-pieces`** [measured, `shardev-m3fpc1-b0-32.jsonl.xz`, `tests/fanout/pieces.py`]:
+- Each burst entry carried 49 to 61 staged packs (12.6 to 17.4 MB), over the 32-pack cap, so one piece was one entry. On site a a piece took about 1.8 to 2.3 s.
+- Site a's four objects caught the burst up in two runs each, of 2 to 3 and 5 to 6 pieces: 340 to 346 packs (90 to 92 MB) in **14.9 s end to end**, against 15.8 s for m3fst1's 294 packs. Site b took 368 packs in 20.7 s (56 ms a pack, against 45 ms on m3fst1's b, +24%). Site c took 31.6 s (86 ms a pack), with no comparable run on m3fst1.
+- First-shard validates of 5 s or more: **25, against 53**, max 9.8 s. Of the 46 site-a validates of 2 s or more that answered 200, 30 ended between pieces: after the piece that applied entry 409 (18.1 to 18.6 s from the burst) and before their run's last piece (19.0 to 21.9 s). One ended earlier, 15 later.
+- The two slow `PUT …/merge` took 8,637 and 9,584 ms (`waited` 472 and 212, `catchup` 7,930 and 8,947). They ended at 18.2 and 19.4 s, also right after that piece.
+- So the turns between pieces reached the waiters. What they waited for was in the burst's last large entry, and entries 404 to 409 (330 packs) applied 8 to 18 s after the burst. The remaining wait is the catch-up's speed, not the turns.
+- 429 `Busy`: 0 on the edge's calls. The held re-asks are shard-to-container calls, which Workers Logs does not show.
+
+**`soft-grow`: not exercised.** No cut grew: the largest took 45,411 soft bytes, 879 of 881 cuts ended `Empty` and 2 `AgentCmds` (64 agent commands each). The burst is Agent class, and the queue's depth counts only Human and MergeQueue bytes. So its flip cannot be judged on this row.
+
 ## Row m3fst1: B0-32 on main `f9b9f50e` (`sync-trace`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** The orchestrator granted one site day and edge day from main `f9b9f50e` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (14:42:42Z). The measures: whether a leader confirm over 1 s recurs and what `Trace::Sync` labels it (`decisions/OPEN-QUESTIONS.md`, F106), and the cap's cut ends again (`agent-cmds-entry`).
