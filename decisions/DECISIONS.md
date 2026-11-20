@@ -6644,3 +6644,20 @@ The lead's request after B0-35 m61: attribute f0's `/raft` CPU by call kind and 
 - A row whose `chain_open` p99 on hits passes 2 s while clones succeed: the bound is close to the work, so raise it toward the 5 s line.
 - More than 1% of clones in a phase answered `chain_late` 503: the checks are slow for another reason; read `chain_open` before raising the bound.
 - Clients refusing answers cut by `CHAIN_STALL` or a changed etag more often than once a row: hold one body ahead again, within the 8.
+
+### `retired-gone`: a repository whose group is retired reads as gone, 404, 2026-11-20
+
+Open question G33, found in `retire-sticks`: since a retired member refuses every `/join`, the edge's create on first use for a live repository whose voters are all retired fails, and the edge answered it 503. On graft-m1 the harness retired the groups of live test repositories (`m3org/lf1-0` is `repo:1048577`, retired twice and never deleted), so every read of one got a 503 with `Retry-After` [inference from the code: `graftyard_lookup::create`, `Routes::join`].
+
+**Decision.** `graftyard_lookup::create` names `RETIRED` in its error when a majority of the bootstrap members refused as `retired`, or as `retired` and `noRepoOwner` between them. `is_gone` (which replaces `is_not_created`) is true for that and for `NOT_CREATED`. The edge's paths that create on first use (`first_use`, `core_rows`, and the read gate) answer it as they answer a repository not created yet: 404 on REST, the GraphQL `NOT_FOUND`, and git's "Repository not found." The read gate returns `Hidden` and does not cache it, so a recreate shows at once. A minority retired, members that did not answer, and every other refusal stay 503.
+
+**Why.** An operator decision on G33 (2026-11-20): a retired test repository should read like a deleted one, and a 503 invites the client to retry a group that will never answer.
+
+**Beat.**
+- **Deleting retired test repositories, so their reads are 404 before any create.** That needs a harness step on every retire and leaves any repository it misses at 503.
+- **Keeping the 503.** It tells a client to retry something that cannot come back.
+
+**Evidence.** `only_a_majority_that_cannot_join_is_gone` (`crates/lookup/src/lib.rs`): with main's `refused` rule, three `retired` refusals read as an outage (`is_gone` false where the test wants true), so the test fails. With the fix it passes all 15 answer sets, including a retired minority that stays an outage. Not run hosted [inference].
+
+**Flip.** A retired group that must serve reads again without a new create, so a 404 would hide a repository that exists; or a hosted read that 404s while a majority of members answered `retired` for a group that was not retired (none is known: only `/retire` and `/purge_retire` write the row).
+
