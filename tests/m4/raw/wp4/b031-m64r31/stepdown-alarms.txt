@@ -1,0 +1,2 @@
+21:23:45.935 a member alarm repo:65580#1#f0 c17206d46214734b3455655fe86991ff3f77527f8cc0bb25ebfec98e73c99881: StepDown { why: CommitErrors { calls: [(SiteId(1), 35, 3), (SiteId(2), 31, 3)] }, to: None }
+21:23:24.913 c member alarm repo:65580#1#f2 bc84fa6531e7ed5422a2ab81e7e99b85b84bbe91572831dce62f23f25d457686: StepDown { why: CommitErrors { calls: [(SiteId(0), 26, 3), (SiteId(1), 26, 3)] }, to: Some(SiteId(0)) }

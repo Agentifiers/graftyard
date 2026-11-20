@@ -924,6 +924,58 @@ The lead's call after m65 (`decisions/OPEN-QUESTIONS.md`, F108): logging only, w
 - **Tests.** `a_transfer_abandoned_on_its_targets_lossy_link_says_so` (new): a `/transfer` whose target's AppendEntries all fail is abandoned before its LEASE with `LinkRefused`. A plant that skips the link-refused branch fails it, since that transfer then waits out the LEASE. `an_unreachable_target_is_retried_until_the_lease_then_abandoned` now also checks `Lease`, and `a_refused_transfer_is_abandoned_at_once_and_leaves_no_lease` checks `Refused` as its only alarm (it checked no alarm before). `a_member_alarm_line_names_its_group` checks the line for a step-down and an abandonment.
 - **Plants.** `tests/m0carried/plant67.py`, **7 of 7 caught**: an abandonment logs nothing; the LEASE path names `Refused`; a refusal names `Lease`; the lossy-link path names `Lease`; the alarm names the leader, not the target; the line names no group; the line names the group but not its object id.
 
+## B0-31 on graft-m4a after test-faults site day 64 (2026-11-20, row m64r31)
+
+Site day 64 (21:04:06Z to 21:05:13Z, exit 0, `tests/m4/raw/wp4/siteday64.log`) shipped main `c60051c9` (`f108-stepdown-log` on `soft-grow`, `command-rows` and `catchup-pieces`) to all three sites as a **test-faults** build, with day 63's flags and image `m4a60`. Edge day 28 stayed, and it is a product build. This is the first B0-31 on those changes; the last one was LM-1's round 5 on graft-m2b (1,163 ms). Granted by the lead with a $10 stop on graft-m4a plus the runner account from the site day's start. The stop watcher ran as `b035watch.sh` with `STOP=10` (`b031-m64r31.watch`).
+
+`tests/m4/wp4/b031.sh` (`044f7973`) runs rows.sh's B0-31 steps on an install whose edge serves no `/_bed` route. It created `m3org/b031-m64r31` = repo 65580 and rehomed it on apac (`transfer.mjs`; terms 2 → 3, f2 leading, `home` 2). One client clone (3.2 s) stood in for `shardwarm.mjs` and the shard gate. It then placed 8 learners (enam 4, weur 2, apac 2) and set k 4 through the sites' test-faults `/bench_seed`. `a1.mjs b0-31 --seconds 600` ran as run `mwph4tu0`, 500 agents pushing 1 MiB under the confined m3-ci App, with the load window 21:15:24.078Z to 21:25:24Z. The done line was at 21:26:23Z, exit 0. Raw files are in `tests/m4/raw/wp4/b031-m64r31/`, and the trace is `tests/fanout/raw/tsave-m64r31-b0-31.jsonl.xz`.
+
+**Verdict (lead, 2026-11-20): valid and between the lines on its buckets-up half.** The product edge ignores `x-graft-place-fail`, so buckets were up for all 600 s. The second half is not B0-31's placement-failing line, and that line was not measured.
+
+| Line | m64r31 | Line (fail) |
+| --- | --- | --- |
+| Commit p99, buckets up (first 300 s, leader f2 on apac) | **2,590 ms** (p50 897, n 5,808, max 4,207) | 1 s; 2 s for a rehomed group (`FRAME.md`, 2026-11-18); fail 3 s |
+| Commit, second 300 s (buckets still up; holds the step-down) | p99 3,468 ms (p50 1,064, n 3,034) | not the placement line |
+| Split, first half | queue p99 2,361 (slot 2,109, post 425); round p99 684; confirm p99 181; deps:all p99 985 (authz 873, tokens 524, names 514) | |
+| Leader changes in the load | **1**: f2 term 3 → f0 term 4 at 21:23:29.9Z | |
+| Step-down lines, by group | 21:23:24.913 site c `member alarm repo:65580#1#f2 bc84fa65…: StepDown { why: CommitErrors { calls: [(SiteId(0), 26, 3), (SiteId(1), 26, 3)] }, to: Some(SiteId(0)) }`, completed as a transfer; 21:23:45.935 site a `member alarm repo:65580#1#f0 c17206d4…: StepDown { why: CommitErrors { calls: [(SiteId(1), 35, 3), (SiteId(2), 31, 3)] }, to: None }`, a hold; no other group's alarm line from 21:04Z | |
+| `TransferAbandoned` | 0 lines | |
+| Confirm p99 | f2 279 ms (n 2,410, 4 of 1 s or more, max 2,129); f0 233 ms (3 of 1 s or more); f1 28 ms. Every entry 100 KB or less, so no grown split | |
+| `suspect` | 412 lines in the load: 12 at 21:16 (one per object), 84 at 21:19:24–26 on `authz:1#4#f1` and `authz:1#1#f2` (the install's Authz group, not repo 65580), 366 after the 21:23:24.9 trip on repo 65580's members (`suspect-by-object.txt`) | |
+| Cut ends | f2: 1,379 cuts, all `Empty`, 0 `Soft`, 0 grown (soft bytes p50 3.0 KB, p99 44.7 KB, max 70.6 KB); f0 after the change: 424, all `Empty`. `soft-grow` never engaged | |
+| Calls past `CALL_DEADLINE` | f2→f0 18, f2→f1 20, f0→f1 8, none with a grown entry; the driver's 63 deadline failures in all | |
+| Alarm-steps | f2 `activity` 445 ms (21:23:18), f0 `activity` 893 ms (21:23:27) | |
+| Pushes | agent 1,147 of 1,265 ok in the first half (99 `full`), 772 of 1,235 in the second (460 `full`); merges 63 × 200; feed p99 1,888 ms | |
+| f2's vCPU (CPU-s per minute from 21:15) | 6.8, 13.9, 16.1, 19.7, 19.0, 22.9, (21:21 no sample), 25.3, then 9.8 after the change: peak 0.42 | |
+| Spend | 21:04:06Z to 21:28:53Z: graft-m4a $2.05 by prefix ($2.27 for the account), runner account $0.00, against the $10 stop | |
+| Teardown | `git#2` and `git#0#net:65580` 200; no shard container running; shardkill deleted (21:28:12Z) | |
+
+**The step-down is LM-1's case** (lead, 2026-11-20). f2 tripped `CommitErrors` at 3 failed calls of 26 per follower while the group was still committing. That is the shape LM-1's step-agree change holds, so nothing is built for it here. 0 of the minute's `suspect` reports came before the trip.
+
+### Why the first half's `queue:slot` tail is 2,109 ms against a round of 684 (analysis, $0)
+
+This section is analysis only, with no code (lead, 2026-11-20). Sources: f2's trace (`slotdeps.py`, `slotdeps.txt`) and f2's test-faults `/deps_log` for each entry's per-chain reads (`deps-log-f2.json`, read after the row). Workers Logs events of the install's Authz group's members are in `authz1-f0-long.txt` and `authz1-f0-alarms.txt`.
+
+- **The cycle is the round almost always.** 929 entries in the first half, append to append: round (append to apply) p50 256, p99 504 ms. The apply-to-next-append gap was 20 ms or less on 642 of them; `read-ahead` held 1 batch behind 872 of 930 cuts. So the dependency reads overlapped the round in flight and were off the critical path on about 70% of entries [measured].
+- **Every entry reads its deps, not only the first after a change.** Every one of the 931 entries carried reads of `authz:7100001` (the owner) and `tokens`, and 904 also read **`authz:1`, the install's own `Authz`**. `with_install` adds it for every App actor's command, and every agent push here is the m3-ci App's (`crates/git/src/repo.rs`). `names` was read on 488.
+- **`authz:1` is the slowest read on 897 of 931 entries.** p50 404, p90 593, p99 912 ms, max 3,513. The owner's `authz` read is p50 200, p99 536. Per entry, `authz:1` ran p50 205 ms longer than the owner's read, issued at the same moment. The owner's record is the member's joined record (`owner_chain_record`). `authz:1` has none, so each read first asks `Names` shard 24 for account 1's `Placement` row (`owner_record`), then reads the group. That is one more hop per read, on every entry [measured from `deps_log`; inference for the hop from the code].
+- **The tail is 6 stalls of that one group, not the round and not the confirms.** In 6 entries, `authz:1` took over 1 s:
+  - 3,513 ms (21:19:20 → 21:19:23.8), with an apply-to-append gap of 3,000;
+  - 3,405 ms (21:20:04 → 21:20:07.1), gap 2,641;
+  - 1,847, 1,585, 1,161 and 1,009 ms.
+  
+  At both long stalls, `authz:1#1#f0` (site a), the member the reads reached, ran a 3,784 ms and a 2,451 ms alarm with 0 ms CPU. Every `/raft` and `/read` fetch it had open (18 and 4, then 15 and 4) ended within 70 ms of the alarm's end. The group was otherwise quiet: 0.02 vCPU, no `suspect`, no leader change. So the reads were held behind an alarm that waited on I/O, not one that computed. Which await it was is not logged: the Authz alarm runs `audit::on_alarm`, then `tick_once` and `set_alarm`. No `audit authz:1` line, near check or `SQLITE` line appeared. **Unattributed** [measured for the timing; the await is unknown].
+- **Slot model.** Commands spread between cuts ride the entry `held` appends later. The model gives slot p50 577 and p99 1,423, queue p99 1,888 (the host measured 2,361). The model's slot p99 is lower than the host's 2,109, because it spreads admissions evenly. Without the commands admitted in the 6 stall cycles (396 of 5,726), slot p99 falls to 1,167 and queue p99 to 1,193.
+  - A cycle-level replay that trims each cycle's gap by the read's excess gives these slot p99s: 1,756 as measured; 437 with `authz:1` no slower than the entry's other reads; 520 with only the stalls capped at `authz:1`'s p90 (593 ms); 1,617 with only the extra `Names` hop removed.
+  - **The stalls carry the tail; the hop moves the median.**
+- **The 4 confirms over 1 s at 21:21:50–22:45 are in the second half**, after 21:20:24, so they cannot explain the first half's tail. The first half's leader confirms were p99 181 ms, max 365, none over 1 s (1,314 rows). In the second half they come with `authz:1` reads of 1.7 to 2.7 s at the same entries (1518/1519, 1595/1596, 1618, 1656). They are part of the slower second half, with the commit errors that led to the trip.
+
+**Smallest change, proposed, not built.** Commit p99 is 2,590 ms against the rehomed group's 2 s. Two changes, each small:
+1. **Bound the install `Authz` read's wait.** `dep-hedge-adaptive` already sends a second request after the chain's p90. Here that is about 600 ms (202 hedges asked in the run, 24 won), but the second goes to the same group's leader by the same lookup, so it waits behind the same alarm [inference from `call_hedged`]. Sending it to another member would get past a held leader: a follower read-index, or the group's other voters by the read-index path that learners use. In the replay this one change takes slot p99 from 1,756 to about 520, so commit p99 would be about round p99 plus that, roughly 1.2 s [inference from the replay].
+2. **Keep the install account's placement record in the member** the way the owner's is (`owner_chain_record` for `Authz(install_account())`, from the release view or the first lookup). This drops the `Names` hop, about 200 ms per entry at the median. Alone, it moves the replay's slot p99 only from 1,756 to 1,617.
+
+Change 1 decides the gate; change 2 alone does not. Before 1 is built, the 3.8 s Authz alarm on `authz:1#1#f0` needs one step log (which await held it), because a fix there may be smaller still. `decisions/OPEN-QUESTIONS.md` F109 carries it.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
