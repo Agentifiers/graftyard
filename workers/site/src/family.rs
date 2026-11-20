@@ -595,6 +595,8 @@ pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
         Some(r) if r.get("api").is_some() => meta_loaded,
         // A metadata child's rows (`crate::split::child_rows`): any member whose restored tier is loaded.
         Some(r) if r.get("child").is_some() => meta_loaded,
+        // A command read that needs the metadata tier (`CommandSpec::loaded`): a loaded member, as its whole-tier read.
+        Some(r) if r.get("command").and_then(|c| c.get("loaded")) == Some(&Value::Bool(true)) => meta_loaded,
         Some(r) => r.get("access").is_some() || r.get("agent").is_some() || r.get("actions").is_some(),
         None => false,
     }
@@ -667,6 +669,21 @@ fn repo_read(fold: &git::repo::RepoFold, q: &Value) -> Value {
             let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(m);
             graftyard_api::narrow::answer(&fold.core, meta, index, spec, &|| named_accounts(fold))
         });
+    }
+    // A command read (`hosted::CommandSpec`, `command-rows`): the access rows, the one task the command names and its
+    // leases, and the login picks, with `"command": true` so the edge knows this member answered it.
+    if let Some(spec) = q.get("rows").filter(|r| r.get("access").is_some()).and_then(|r| r.get("command")) {
+        let Ok(spec) = serde_json::from_value::<graftyard_api::hosted::CommandSpec>(spec.clone()) else {
+            return json!({ "error": "not a command read spec" });
+        };
+        let index = graftyard_fold::meta(&*fold.core).applied.0;
+        let rows = crate::split::with_filled(fold, |m| {
+            let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(m);
+            graftyard_api::hosted::TierRows::command_rows(&fold.core, meta, index, &spec, &|| named_accounts(fold))
+        });
+        let mut v = serde_json::to_value(rows).unwrap_or(Value::Null);
+        v["command"] = json!(true);
+        return v;
     }
     if let Some(r) = q.get("rows").filter(|r| r.get("access").is_some()) {
         // A push's read gate and its agent rows in one read (`{"access": true, "agent": true}`): both sets, and
@@ -1171,10 +1188,15 @@ impl Family for Repo {
             git::repo::RepoOut::RunChecks(o) => json!({ "RunChecks": o }),
             git::repo::RepoOut::Issue(o) => {
                 let m0 = crate::split::mark();
+                // `leader-render`: a first send's render carries no owner `Authz`; the entry's dependency fills it.
+                let mut source = None;
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
-                    Ok(r) => crate::split::with_filled(fold, |m| {
-                        graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, m)
-                    }),
+                    Ok(mut r) => {
+                        source = graftyard_api::hosted::fill_authz(&mut r, o.authz.as_deref());
+                        crate::split::with_filled(fold, |m| {
+                            graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, m)
+                        })
+                    }
                     Err(e) => graftyard_api::hosted::WireReply {
                         status: 500,
                         headers: Vec::new(),
@@ -1182,6 +1204,9 @@ impl Family for Repo {
                     },
                 };
                 let mut v = json!({ "issue": { "out": format!("{:?}", o.out), "reply": reply } });
+                if let Some(s) = source {
+                    v["issue"]["authz"] = json!(s);
+                }
                 // A reply that missed a child row says so; the member reads the rows and renders it again.
                 if let Some(mut miss) = crate::split::since(m0) {
                     v["missedChild"] = miss["missedChild"].take();

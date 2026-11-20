@@ -384,3 +384,222 @@ fn the_read_endpoints_serve_the_reference_shape() {
     // The owner fold read through `AuthzRead` is what decides the derived state.
     let _: &dyn AuthzRead = &w.ident.owner;
 }
+
+// ---- `command-rows` and `leader-render` (`decisions/DECISIONS.md`) ----
+
+/// The rows a member answers to a command read (`TierRows::command_rows`), round-tripped as the edge parses them, and
+/// a store of its core rows.
+fn command_answer(
+    w: &mut World,
+    spec: &graftyard_api::hosted::CommandSpec,
+) -> (graftyard_api::hosted::TierRows, graftyard_fold::MemStore) {
+    use graftyard_api::hosted::{TierRows, accounts};
+    let f = w.fold();
+    let named = || accounts(&f.core, &f.meta);
+    let t = TierRows::command_rows(&f.core, Some(&f.meta), 9, spec, &named);
+    let t = TierRows::from_value(&serde_json::to_value(&t).unwrap()).unwrap();
+    let core = TierRows::store(&t.core);
+    (t, core)
+}
+
+/// A task or lease command reads the read gate's rows, its one task's `agent_task` row, and that task's leases, and
+/// never the metadata tier: on main the edge read both whole tiers for these commands (`read`, `read_core`), and a
+/// lease command dropped the metadata tier after streaming it. A command that names no task reads no task row. The
+/// logins a task command's reply names are the ones a whole-tier read of the same tiers named: the requester and a
+/// user creator, and a create's requester the edge resolved; an account the tiers do not name is not one.
+#[test]
+fn a_command_reads_its_task_and_the_gate_not_the_tiers() {
+    use graftyard_api::hosted::CommandSpec;
+    use graftyard_api::narrow::{LOGIN_SHARDS, LOGINS};
+    let mut w = World::new();
+    w.flag(claude_row());
+    named_by_an_issue(&mut w, &[WRITER, READER]);
+    w.commit_all(vec![issue(app(CLAUDE), create("a", WRITER)), issue(app(CLAUDE), create("b", WRITER2))]);
+    let lease = IssueOp::AcquireLease(graftyard_git::lease::NewLease {
+        paths: vec!["pkg/**".into()],
+        refs: Vec::new(),
+        mode: graftyard_git::lease::LeaseMode::Exclusive,
+        ttl_seconds: None,
+        intent: "x".into(),
+        session: Some("a".into()),
+    });
+    w.commit(issue(app(CLAUDE), lease)).expect("a lease");
+    let other = IssueOp::AcquireLease(graftyard_git::lease::NewLease {
+        paths: vec!["docs/**".into()],
+        refs: Vec::new(),
+        mode: graftyard_git::lease::LeaseMode::Exclusive,
+        ttl_seconds: None,
+        intent: "y".into(),
+        session: Some("b".into()),
+    });
+    w.commit(issue(app(CLAUDE), other)).expect("another task's lease");
+    let a = SessionId::parse(&format!("{}.a", CLAUDE.0.0), None).unwrap();
+    let spec = CommandSpec { session: Some(a.clone()), loaded: true, accounts: vec![WRITER2], owner: OWNER };
+    let (t, core) = command_answer(&mut w, &spec);
+    assert!(t.complete);
+    assert_eq!(t.meta, Some(Vec::new()), "no metadata row, and the tier is loaded");
+    let f = w.fold();
+    let gate = graftyard_api::hosted::TierRows::access_rows(&f.core);
+    assert!(!gate.is_empty());
+    assert!(gate.iter().all(|r| t.core.contains(r)), "the read gate's rows");
+    assert!(
+        t.core
+            .iter()
+            .all(|(t, _, _)| ["settings", "collaborator", "agent_task", "lease_by_session"].contains(&t.as_str())),
+        "no other core row: no refs, pull heads, or other tasks"
+    );
+    assert!(graftyard_fold::Read::prefix(&f.core, "agent_task", &[]).len() == 2, "two tasks on the whole tier");
+    assert_eq!(task_rules::task_core(&core, &a), task_rules::task_core(&*f.core, &a), "the task's own row");
+    assert_eq!(t.core.iter().filter(|(t, _, _)| t == "agent_task").count(), 1, "only the named task");
+    assert_eq!(graftyard_git::lease::session_rows(&core, &a).len(), 0, "the lease rows themselves are not read");
+    assert_eq!(t.core.iter().filter(|(t, _, _)| t == "lease_by_session").count(), 1, "not task b's lease");
+    // `lease::marks` reads the same for an update of the task on these rows as on the whole tiers.
+    let patch: IssueOp<graftyard_git::blob::BlobRef> =
+        IssueOp::UpdateTask { id: a.clone(), state: None, pr: None, summary: Some("s".into()) };
+    assert!(graftyard_git::lease::marks(&patch, &core));
+    assert_eq!(graftyard_git::lease::marks(&patch, &core), graftyard_git::lease::marks(&patch, &*f.core));
+    // The logins the reply may name, as a whole-tier read knew them: of the task's requester and the create's
+    // (WRITER2), those the tiers name. WRITER2 names no row, so a whole-tier read rendered it `ghost` too, and READER,
+    // named but not asked, is not read.
+    let picks = graftyard_api::narrow::Picks::of(t.picks.clone());
+    let named = picks.login_accounts(None, AccountId(DbId(OWNER))).unwrap();
+    assert_eq!(named, vec![AccountId(DbId(WRITER))]);
+    assert!(t.picks.as_ref().unwrap().iter().any(|(k, _)| k == LOGIN_SHARDS));
+    assert!(t.picks.as_ref().unwrap().iter().any(|(k, _)| k == LOGINS));
+    drop(f);
+    // A lease command and a token claim name no task row's account: no picks but the empty ones, and the edge reads
+    // only the viewer's login. A command that names no task reads none.
+    let (t, _) = command_answer(&mut w, &CommandSpec { owner: OWNER, ..CommandSpec::default() });
+    assert!(t.core.iter().all(|(t, _, _)| t == "settings" || t == "collaborator"));
+    let picks = graftyard_api::narrow::Picks::of(t.picks.clone());
+    assert_eq!(picks.login_accounts(None, AccountId(DbId(OWNER))), Some(Vec::new()));
+    // A member whose metadata tier is loading answers no metadata, and a command that needs it gets no picks.
+    let f = w.fold();
+    let named = || graftyard_api::hosted::accounts(&f.core, &f.meta);
+    let loading = graftyard_api::hosted::TierRows::command_rows(&f.core, None, 9, &spec, &named);
+    assert_eq!((loading.meta, loading.picks), (None, None));
+}
+
+/// A task `PATCH`'s reply, rendered on the leader over the logins the edge read from a command answer's picks, is the
+/// bytes it renders over the logins a whole-tier read gave the edge: every account a task names is either one the
+/// tiers name or one the edge asked for. The no-response-change invariant: the same `requester` login, the same
+/// `creator`, and the agent's own fields.
+#[test]
+fn a_patch_reply_over_the_command_logins_is_the_whole_tier_reply() {
+    use graftyard_api::hosted::{CommandSpec, HostedDir, Render, What, accounts, fill_authz, render_ok};
+    let mut w = World::new();
+    w.flag(claude_row());
+    named_by_an_issue(&mut w, &[WRITER]);
+    w.commit_all(vec![issue(app(CLAUDE), create("a", WRITER)), issue(app(CLAUDE), create("b", WRITER2))]);
+    let login = |id: i64| format!("login{id}");
+    for (name, requester) in [("a", Some(login(WRITER))), ("b", None)] {
+        let id = SessionId::parse(&format!("{}.{name}", CLAUDE.0.0), None).unwrap();
+        let patch = IssueOp::UpdateTask { id: id.clone(), state: None, pr: None, summary: Some("s".into()) };
+        let acked = w.commit_all_acked(vec![issue(app(CLAUDE), patch)]).pop().unwrap().expect("patched");
+        let acked = acked.map(|o| match o {
+            RepoOut::Issue(c) => c.out.clone(),
+            x => panic!("{x:?}"),
+        });
+        // The whole-tier edge (`read_logins` on main): every account the tiers name, but the owner from the path.
+        let f = w.fold();
+        let mut whole: Vec<AccountId> = accounts(&f.core, &f.meta).into_iter().collect();
+        whole.retain(|a| a.0.0 != OWNER);
+        drop(f);
+        // The command edge: the accounts its picks name.
+        let spec = CommandSpec { session: Some(id), loaded: true, accounts: Vec::new(), owner: OWNER };
+        let (t, _) = command_answer(&mut w, &spec);
+        let picked = graftyard_api::narrow::Picks::of(t.picks).login_accounts(None, AccountId(DbId(OWNER))).unwrap();
+        let f = w.fold();
+        let render = |ids: &[AccountId]| {
+            let mut dir = HostedDir { home: Some(at(REPO)), authz: None, ..HostedDir::default() };
+            dir.logins = ids.iter().map(|a| (a.0.0, login(a.0.0))).collect();
+            dir.logins.insert(OWNER, "o".into());
+            let what = What::Task { created: false, contents: true };
+            let mut r = Render { host: "graftyard.example".into(), isolation: false, dir, what };
+            fill_authz(&mut r, Some(&w.ident.owner));
+            render_ok(&r, &acked, &f.core, &f.meta)
+        };
+        let (by_whole, by_command) = (render(&whole), render(&picked));
+        assert_eq!(by_whole.status, 200);
+        assert_eq!(serde_json::to_vec(&by_command).unwrap(), serde_json::to_vec(&by_whole).unwrap(), "{name}");
+        let body = by_command.body.unwrap();
+        assert_eq!(body["requester"]["login"].as_str().map(str::to_owned), requester.or(Some("ghost".into())));
+        assert_eq!(body["summary"], "s");
+        assert_eq!(body["creator"], json!({ "type": "App", "id": CLAUDE.0.0 }));
+        assert_eq!(body["state"], "queued");
+    }
+}
+
+/// Issues opened by `authors`, so the tiers name them (`hosted::accounts`).
+fn named_by_an_issue(w: &mut World, authors: &[i64]) {
+    for a in authors {
+        let op =
+            IssueOp::OpenIssue { title: "t".into(), body: "b".into(), labels: smallvec![], assignees: smallvec![] };
+        w.commit(issue(user(*a), op)).expect("an issue");
+    }
+}
+
+/// `leader-render`: an issue command whose render carries no owner `Authz` gets the leader's `Authz` dependency of its
+/// entry in its output, one fold for every command of the entry, and its reply, filled from it, is the bytes the
+/// edge's render with the same fold gives. A render that carries one keeps it; a replay carries none. The render
+/// without the fold is about the fold's hex shorter, so `ENTRY_MAX`, which counts `encoded_len`, no longer counts it.
+#[test]
+fn a_leader_rendered_reply_is_the_edge_rendered_reply() {
+    use graftyard_api::hosted::{HostedDir, Render, What, fill_authz, render_ok};
+    let mut w = World::new();
+    w.flag(claude_row());
+    let render = |authz: Option<AuthzFold>, what: What| Render {
+        host: "graftyard.example".into(),
+        isolation: false,
+        dir: HostedDir { home: Some(at(REPO)), authz, ..HostedDir::default() },
+        what,
+    };
+    let call = |op, r: &Render, rid| {
+        let mut c = IssueCall::new(op, app(CLAUDE), RequestId(Ulid(rid)), serde_json::to_value(r).unwrap());
+        c.agent = false;
+        RepoCmd::Issue(Box::new(c))
+    };
+    let created = What::Task { created: true, contents: true };
+    let bare = render(None, created.clone());
+    let edge = render(Some(w.ident.owner.clone()), created.clone());
+    let (with, without) = (call(create("a", WRITER), &edge, 1), call(create("b", WRITER), &bare, 2));
+    // ENTRY_MAX counts `encoded_len`: the bare render is shorter by about the fold's hex.
+    use graftyard_raft::Record;
+    let hex = graftyard_raft::codec::to_bytes(&w.ident.owner).len() * 2;
+    assert!(hex > 100, "the owner's fold is not trivial");
+    assert!(with.encoded_len() >= without.encoded_len() + hex - 8, "{} {}", with.encoded_len(), without.encoded_len());
+    let acks = w.commit_all_acked(vec![with, without, call(create("c", WRITER2), &bare, 3)]);
+    let outs: Vec<_> = acks
+        .into_iter()
+        .map(|a| {
+            let a = a.expect("created");
+            match &a.out {
+                RepoOut::Issue(c) => (a.map(|_| c.out.clone()), c.authz.clone()),
+                x => panic!("{x:?}"),
+            }
+        })
+        .collect();
+    assert!(outs[0].1.is_none(), "an edge render with its own fold gets none");
+    let dep = outs[1].1.clone().expect("the leader's Authz dependency");
+    assert_eq!(*dep, w.ident.owner, "the owner's fold, the one the edge would have sent");
+    assert!(std::rc::Rc::ptr_eq(&dep, outs[2].1.as_ref().unwrap()), "one fold for every command decided against it");
+    let f = w.fold();
+    for (acked, authz) in &outs[1..] {
+        let mut by_leader = bare.clone();
+        assert_eq!(fill_authz(&mut by_leader, authz.as_deref()), Some("dep"));
+        let leader = render_ok(&by_leader, acked, &f.core, &f.meta);
+        let edge_reply = render_ok(&edge, acked, &f.core, &f.meta);
+        assert_eq!(leader.status, 201);
+        assert_eq!(serde_json::to_vec(&leader).unwrap(), serde_json::to_vec(&edge_reply).unwrap());
+    }
+    let mut kept = edge.clone();
+    assert_eq!(fill_authz(&mut kept, Some(&AuthzFold::new(AccountId(DbId(1))))), Some("render"));
+    assert_eq!(kept.dir.authz.as_ref(), Some(&w.ident.owner), "the edge's own fold wins");
+    // Unfilled, a task's reply is the 503 it was before: the fold matters to the reply.
+    let none = render_ok(&bare, &outs[1].0, &f.core, &f.meta);
+    assert_eq!(none.status, 503);
+    // A replay (a duplicate answered from its `request` row) carries no dependency.
+    let RepoCmd::Issue(c) = call(create("b", WRITER), &bare, 2) else { unreachable!() };
+    assert!(c.render_lacks_authz());
+    assert!(c.replay(&[]).authz.is_none());
+}

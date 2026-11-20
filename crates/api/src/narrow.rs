@@ -263,21 +263,33 @@ pub fn answer(
         return json!({ "whole": true });
     }
     let mut picks = dir.picks.into_inner();
-    let mut named = named();
-    named.remove(&spec.at.owner_id);
-    let asked = dir.asked.into_inner();
+    picks.extend(login_picks(named(), spec.at.owner_id, &dir.asked.into_inner()));
+    let mut core_rows = c.into_rows();
+    access.retain(|(t, k, _)| !core_rows.iter().any(|(t2, k2, _)| t2 == t && k2 == k));
+    core_rows.extend(access);
+    to_value(TierRows { index, core: core_rows, meta: Some(m.into_rows()), complete: true, picks: Some(picks) })
+}
+
+/// The picks that tell the edge which logins a whole-tier read knew (`LOGINS`, `LOGIN_SHARDS`): of the accounts a reply
+/// asks for, those the whole tiers name (`named`, `hosted::accounts`), and the lowest LOGIN_SHARDS_MAX name shards of
+/// every named account but the repository's `owner`, whose login the edge holds from the request path. A narrow API
+/// read and a command read (`hosted::CommandSpec`) both send them.
+pub fn login_picks(
+    mut named: std::collections::BTreeSet<AccountId>,
+    owner: AccountId,
+    asked: &std::collections::BTreeSet<AccountId>,
+) -> [(String, Pick); 2] {
+    named.remove(&owner);
     let mut shards: Vec<i64> = named.iter().map(|a| i64::from(graftyard_identity::account_shard(*a).0)).collect();
     shards.sort_unstable();
     shards.dedup();
     shards.truncate(LOGIN_SHARDS_MAX);
     let ids = |v: Vec<i64>| -> Vec<Key> { v.into_iter().map(|i| vec![Val::Int(i)]).collect() };
     let known: Vec<i64> = asked.intersection(&named).map(|a| a.0.0).collect();
-    picks.push((LOGINS.into(), Pick { total: known.len(), items: ids(known), more: false }));
-    picks.push((LOGIN_SHARDS.into(), Pick { total: shards.len(), items: ids(shards), more: false }));
-    let mut core_rows = c.into_rows();
-    access.retain(|(t, k, _)| !core_rows.iter().any(|(t2, k2, _)| t2 == t && k2 == k));
-    core_rows.extend(access);
-    to_value(TierRows { index, core: core_rows, meta: Some(m.into_rows()), complete: true, picks: Some(picks) })
+    [
+        (LOGINS.into(), Pick { total: known.len(), items: ids(known), more: false }),
+        (LOGIN_SHARDS.into(), Pick { total: shards.len(), items: ids(shards), more: false }),
+    ]
 }
 
 fn to_value(t: TierRows) -> Value {
