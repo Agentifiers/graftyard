@@ -90,6 +90,9 @@ pub(crate) struct Timing {
     shard: std::cell::RefCell<String>,
     /// `edge-read-batch`: this request's write-class `rcache` reads it ran, shared, and the ms it waited in batches.
     rc: std::cell::Cell<(u32, u32, f64)>,
+    /// Test installs: each spread read pass this request ran, with its ms and its member tries
+    /// (`graftyard_lookup::read_spread_traced`), for `x-graft-spread` (`gate-trace`).
+    pub(crate) spread: std::cell::RefCell<Vec<(u64, String)>>,
 }
 
 impl Timing {
@@ -100,6 +103,7 @@ impl Timing {
         self.phases.borrow_mut().clear();
         self.trace.borrow_mut().clear();
         self.shard.borrow_mut().clear();
+        self.spread.borrow_mut().clear();
         self.rc.set((0, 0, 0.0));
     }
     /// One write-class `rcache` read: its own (`shared` false) or another call's, after `waited` ms in its batch.
@@ -141,6 +145,11 @@ impl Timing {
     #[cfg(feature = "test-faults")]
     pub(crate) fn header(&self) -> String {
         self.phases().iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", ")
+    }
+    /// Test installs: the spread passes as `x-graft-spread`, `<ms> <chain> <tries> <end>` joined by `; `.
+    #[cfg(feature = "test-faults")]
+    pub(crate) fn spread_header(&self) -> String {
+        self.spread.borrow().iter().map(|(ms, l)| format!("{ms} {l}")).collect::<Vec<_>>().join("; ")
     }
 }
 

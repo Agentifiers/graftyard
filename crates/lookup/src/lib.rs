@@ -1128,11 +1128,40 @@ pub async fn read_spread_for(
     body: &Value,
     retry_for: Duration,
 ) -> std::result::Result<Option<(Value, Step, Target)>, String> {
+    read_spread_traced(b, chain, record, body, retry_for, None).await
+}
+
+/// `read_spread_for`, and each pass's tries as one line in `trace` (`try_line`), with the pass's ms: the member
+/// asked, whether a learner, how long it took, what it answered, and so whether the read moved on to the next member.
+/// Logging only: the reads and their order are `read_spread_for`'s (`gate-trace`).
+pub async fn read_spread_traced(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    body: &Value,
+    retry_for: Duration,
+    trace: Option<&RefCell<Vec<(u64, String)>>>,
+) -> std::result::Result<Option<(Value, Step, Target)>, String> {
     let until = now_ms() + retry_for.as_millis() as u64;
     let wait = |ms| Delay::from(Duration::from_millis(ms));
-    retry_shed(until, now_ms, || spread_once(b, chain, record, body, true), wait, js_sys::Math::random)
+    retry_shed(until, now_ms, || spread_once(b, chain, record, body, true, trace), wait, js_sys::Math::random)
         .await
         .and_then(|r| r)
+}
+
+/// One member try of a spread pass as a trace names it: `L1:1003:ov` is a learner on site 1 that answered
+/// `overloaded` after 1,003 ms. `ok` is a value, `nl` a `notLeader`, `ov` `overloaded`, `none` no answer within
+/// FOLLOWER_CALL (or a fetch that threw), and anything else the status or skip reason. Only `ok` ends the pass.
+fn try_line(site: SiteId, learner: bool, ms: u64, r: Option<(u16, &Value)>) -> String {
+    let what = match classify(r, false) {
+        Answer::Reply if follower_answer_usable(r) => "ok".to_owned(),
+        Answer::Reply => "nl".to_owned(),
+        Answer::Overloaded(_) => "ov".to_owned(),
+        Answer::Missed(_) if r.is_none() => "none".to_owned(),
+        Answer::Missed(w) | Answer::Skip(w) | Answer::ObjectOverloaded(w) => w.replace([' ', ',', '"'], "_"),
+        Answer::NotJoined => "nj".to_owned(),
+    };
+    format!("{}{}:{ms}:{what}", if learner { 'L' } else { 'F' }, site.0)
 }
 
 /// `read_spread` without the leader: one pass over the learners and followers, and `Ok(None)` where `read_spread`
@@ -1144,7 +1173,7 @@ pub async fn read_off_leader(
     record: &PlacementRecord,
     body: &Value,
 ) -> std::result::Result<Option<(Value, Step, Target)>, String> {
-    spread_once(b, chain, record, body, false).await.map_err(|(why, _)| why).and_then(|r| r)
+    spread_once(b, chain, record, body, false, None).await.map_err(|(why, _)| why).and_then(|r| r)
 }
 
 /// How long a write asks again for a read its members shed (`read_spread_for`) [guess]: a few backed-off tries, then a
@@ -1205,7 +1234,15 @@ async fn spread_once(
     record: &PlacementRecord,
     body: &Value,
     to_leader: bool,
+    trace: Option<&RefCell<Vec<(u64, String)>>>,
 ) -> std::result::Result<std::result::Result<Option<(Value, Step, Target)>, String>, (String, u64)> {
+    let pass = now_ms();
+    let mut tries: Vec<String> = Vec::new();
+    let note = |tries: &[String], end: &str| {
+        if let Some(t) = trace {
+            t.borrow_mut().push((now_ms().saturating_sub(pass), format!("{chain} {} {end}", tries.join(" "))));
+        }
+    };
     let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
     let voters = if known.voters.is_empty() {
         record.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string())).collect()
@@ -1232,6 +1269,9 @@ async fn spread_once(
         let start = now_ms();
         let r = post_by(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL, SentBy::Spread).await;
         let seen = r.as_ref().map(|(s, v)| (*s, v));
+        if trace.is_some() {
+            tries.push(try_line(t.site, i < n_learners, now_ms().saturating_sub(start), seen));
+        }
         if i < n_learners {
             let sample = answer_sample(seen, now_ms().saturating_sub(start) as f64);
             ANSWER_MS.with(|m| {
@@ -1257,12 +1297,20 @@ async fn spread_once(
             let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
             learn_leader_from_follower(chain, &v);
             refresh_config(b, chain, &t, &v).await;
+            note(&tries, "use");
             return Ok(Ok(Some((v, Step::Cached, t))));
         }
     }
     let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
     let verdict = spread_verdict(&seen, leader_ok);
     let to_leader_body = leader_body(&verdict, body);
+    if trace.is_some() && !(to_leader && verdict == Spread::Leader) {
+        let end = match &verdict {
+            Spread::Shed(ms) => format!("shed:{ms}"),
+            v => format!("{v:?}").to_lowercase(),
+        };
+        note(&tries, &end);
+    }
     match verdict {
         Spread::Use(_) => unreachable!("a usable answer returned above"),
         Spread::Absent => Ok(Ok(None)),
@@ -1286,7 +1334,12 @@ async fn spread_once(
             Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms))
         }
         Spread::Leader if !to_leader => Ok(Ok(None)),
-        Spread::Leader => Ok(call_opt(b, chain, record, "/read", to_leader_body.unwrap_or_default().as_bytes()).await),
+        Spread::Leader => {
+            let at = now_ms();
+            let r = call_opt(b, chain, record, "/read", to_leader_body.unwrap_or_default().as_bytes()).await;
+            note(&tries, &format!("leader:{}", now_ms().saturating_sub(at)));
+            Ok(r)
+        }
     }
 }
 

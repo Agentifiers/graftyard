@@ -288,7 +288,9 @@ async fn read_gate(
             None => fresh().await,
         }
     };
-    let (rows, owner) = futures_util::future::join(rows, owner).await;
+    // The two reads' own walls (`gate_rows`, `gate_authz`), so a slow gate names which read was slow (`gate-trace`).
+    let (rows, owner) =
+        futures_util::future::join(api::timed(c, "gate_rows", rows), api::timed(c, "gate_authz", owner)).await;
     let core = match rows? {
         Ok(core) => core,
         // A repository whose create has not committed `RepoOwner` yet: hidden from every caller, as GitHub hides one
@@ -789,7 +791,13 @@ pub(crate) async fn spread_read(
     record: &PlacementRecord,
     q: &serde_json::Value,
 ) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
-    graftyard_lookup::read_spread_for(b, chain, record, q, shed_retry_for(c.write.get(), budget_left(c))).await
+    // A test install keeps each pass's member tries for `x-graft-spread` (`gate-trace`).
+    #[cfg(feature = "test-faults")]
+    let trace = Some(&c.timing.spread);
+    #[cfg(not(feature = "test-faults"))]
+    let trace = None;
+    let retry = shed_retry_for(c.write.get(), budget_left(c));
+    graftyard_lookup::read_spread_traced(b, chain, record, q, retry, trace).await
 }
 
 /// How long `spread_read` asks again for a shed read: not at all for a read-class request; SHED_RETRY_FOR for a write,
@@ -3428,6 +3436,7 @@ async fn serve(
                 push_log::closed();
                 if let Ok(r) = &r {
                     r.headers().set("server-timing", &c.timing.header())?;
+                    r.headers().set("x-graft-spread", &c.timing.spread_header())?;
                 }
                 let status = r.as_ref().map_or(500, |r| r.status_code());
                 let end = c.push_end.borrow().clone();
