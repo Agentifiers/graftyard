@@ -19,7 +19,7 @@ use crate::types::{
     Admitted, CallError, CommitError, EntryBody, ExtendLeases, Format, GroupConfig, Index, LogEntry, Next, NotLeader,
     RequestId, Term, Ticket, TierSet,
 };
-use crate::{CALL_DEADLINE, COMMAND_MAX, DRIFT, ENTRY_MAX, LEASE, after};
+use crate::{CALL_DEADLINE, COMMAND_MAX, DEEP_QUEUE, DRIFT, ENTRY_MAX, ENTRY_SOFT_DEEP, LEASE, after};
 
 use super::election::CAMPAIGN_DEADLINE;
 use super::{
@@ -1194,7 +1194,8 @@ impl<C: Command> Member<C> {
     /// The next entry's commands, by admission: Human and MergeQueue, then Agent up to AGENT_FLOOR of capacity over
     /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token, at most
     /// AGENT_CMDS_ENTRY Agent commands in all. All within `soft`
-    /// bytes (ENTRY_SOFT unless the host set it) not counting Agent inline packs, and within ENTRY_MAX counting them;
+    /// bytes (ENTRY_SOFT unless the host set it, ENTRY_SOFT_DEEP while the queue is deep) not counting Agent inline
+    /// packs, and within ENTRY_MAX counting them;
     /// the first command of an entry always goes, up to ENTRY_MAX. Agent packs have their own bound: admission stages
     /// any that would take the queued ones past AGENT_INLINE_ENTRY. Counted against `soft` as well, one 10 to 70 KB
     /// agent pack filled an entry, and B0-29's commit p99 at 500 agents went from 702 to 1,718 ms (LM-1,
@@ -1204,6 +1205,12 @@ impl<C: Command> Member<C> {
         let (held, in_flight) = (lead.deciding.len(), lead.pending.is_some());
         let ad = &mut lead.admission;
         let cap = ad.capacity(fixed, soft);
+        // soft-grow: with more than DEEP_QUEUE entries' worth of Human and MergeQueue bytes waiting, this entry fills
+        // to ENTRY_SOFT_DEEP; the next cut that finds the queue shallow is back at `soft`. Capacity, and so the agent
+        // bucket, stays sized from `soft`.
+        let first_lanes = [AdmitClass::Human, AdmitClass::MergeQueue];
+        let queued: usize = first_lanes.iter().flat_map(|c| ad.lanes[c.lane()].iter()).map(|q| q.soft_bytes).sum();
+        let soft = if queued > DEEP_QUEUE * soft { soft.max(ENTRY_SOFT_DEEP) } else { soft };
         ad.refill(now, cap);
         let mut batch: Vec<Queued<C>> = Vec::new();
         let mut taken = [0u32; 4];
@@ -1213,7 +1220,7 @@ impl<C: Command> Member<C> {
             q.is_some_and(|q| batch.is_empty() || (b.0 + q.soft_bytes <= soft && b.1 + q.bytes <= ENTRY_MAX))
         };
         let add = |b: (usize, usize), q: &Queued<C>| (b.0 + q.soft_bytes, b.1 + q.bytes);
-        for class in [AdmitClass::Human, AdmitClass::MergeQueue] {
+        for class in first_lanes {
             while fits(ad.lanes[class.lane()].front(), &batch, bytes) {
                 let q = ad.take(class).expect("front");
                 (bytes, taken[class.lane()]) = (add(bytes, &q), taken[class.lane()] + 1);

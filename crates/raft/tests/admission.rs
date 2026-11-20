@@ -696,8 +696,8 @@ fn a_command_appended_before_its_budget_lapses_commits_after_it_and_is_acked() {
 }
 
 /// cut-trace: each cut records what ended it. Commands arriving a second apart are each cut alone with nothing left
-/// (`Empty`); twenty 10 KiB Human pushes queued behind one entry fill the next to ENTRY_SOFT, 9 of them, since a
-/// tenth would make 102,400 bytes (`Soft`); and at a capacity of 2 commands/s the agent bucket holds one token, so
+/// (`Empty`); fifteen 10 KiB Human pushes queued behind one entry, under DEEP_QUEUE entries' worth, fill the next to
+/// ENTRY_SOFT, 9 of them, since a tenth would make 102,400 bytes (`Soft`); and at a capacity of 2 commands/s the agent bucket holds one token, so
 /// each cut of a queue of agent commands takes one and stops with the rest queued (`AgentTokens`).
 #[test]
 fn each_cut_records_what_ended_it() {
@@ -716,11 +716,11 @@ fn each_cut_records_what_ended_it() {
     let mut l = Load::new(1, ENAM);
     l.cuts.clear();
     let t0 = l.now + 100;
-    l.offer((0..21).map(|k| human(t0, k, 10 * KIB)));
+    l.offer((0..16).map(|k| human(t0, k, 10 * KIB)));
     l.drain(10_000);
-    // The first push is cut alone as it arrives; the other twenty queue behind its entry.
+    // The first push is cut alone as it arrives; the other fifteen, 154 KB, queue behind its entry: not deep.
     let c = l.cuts[1];
-    assert_eq!((c.end, c.taken, c.left), (CutEnd::Soft, [9, 0, 0, 0], [11, 0, 0, 0]), "{:?}", l.cuts);
+    assert_eq!((c.end, c.taken, c.left), (CutEnd::Soft, [9, 0, 0, 0], [6, 0, 0, 0]), "{:?}", l.cuts);
     assert!(c.soft_bytes <= ENTRY_SOFT && c.soft_bytes + 10 * KIB > ENTRY_SOFT, "{c:?}");
 
     let mut l = Load::new(1, ENAM);
@@ -739,6 +739,66 @@ fn each_cut_records_what_ended_it() {
         assert!(c.tokens < 1.0, "{c:?}");
     }
     assert_eq!((last.end, last.taken), (CutEnd::Empty, [0, 0, 0, 1]));
+}
+
+/// soft-grow: B0-35 m62's queue. With more than DEEP_QUEUE entries' worth of Human bytes waiting, a cut fills to
+/// ENTRY_SOFT_DEEP, and the first cut that finds the queue shallow is back within ENTRY_SOFT. Then m62's load in
+/// shape: 10 KiB Human pushes offered faster than one ENTRY_SOFT entry a round carries, for 20 s, at a hosted round.
+/// At a flat ENTRY_SOFT the queue grows for the whole burst; growing, it stays within a few entries. Offered here is
+/// about 1.3 times what ENTRY_SOFT entries carry at this round, as m62's minutes 7 to 9 were [inference]; at under
+/// 1.5 times, ENTRY_SOFT_DEEP entries carry it.
+#[test]
+fn a_deep_human_queue_fills_entries_to_entry_soft_deep_and_drains() {
+    use graftyard_raft::{DEEP_QUEUE, ENTRY_SOFT_DEEP};
+    let human =
+        |at: u64, k: u64, pack: usize| op(at, AdmitClass::Human, None, Kind::Push, format!("refs/heads/h{k}"), pack);
+    let mut l = Load::new(1, ENAM);
+    l.cuts.clear();
+    let t0 = l.now + 100;
+    l.offer((0..41).map(|k| human(t0, k, 10 * KIB)));
+    l.drain(20_000);
+    assert_eq!(l.done.iter().filter(|d| matches!(d.end, End::Acked { .. })).count(), 41);
+    // The first push is cut alone; 40, about 420 KB, wait behind it. A cut whose queue (its batch plus what it left)
+    // held more than DEEP_QUEUE entries' worth fills to ENTRY_SOFT_DEEP, with no room for one more push; any other
+    // cut stays within ENTRY_SOFT.
+    let cuts = &l.cuts[1..];
+    assert_eq!(cuts.iter().map(|c| c.taken[0]).sum::<u32>(), 40, "{:?}", l.cuts);
+    let one = cuts[0].soft_bytes / cuts[0].taken[0] as usize;
+    for c in cuts {
+        let queued = c.soft_bytes + c.left[0] as usize * one;
+        let deep = queued > DEEP_QUEUE * ENTRY_SOFT + one;
+        let bound = if deep { ENTRY_SOFT_DEEP } else { ENTRY_SOFT };
+        assert!(c.soft_bytes <= bound, "a cut of {} bytes from {queued} queued: {:?}", c.soft_bytes, l.cuts);
+        if deep {
+            assert!(c.soft_bytes + one > bound, "a deep cut stopped early at {}: {:?}", c.soft_bytes, l.cuts);
+        }
+    }
+    assert!(cuts[0].soft_bytes > ENTRY_SOFT, "the first cut of a deep queue did not grow: {:?}", l.cuts);
+    assert!(cuts.last().is_some_and(|c| c.soft_bytes <= ENTRY_SOFT), "the bound did not drop back: {:?}", l.cuts);
+
+    // 40 pushes a second of 10 KiB for 20 s, about 420 KB/s, against about 330 KB/s that ENTRY_SOFT entries carry at
+    // this round.
+    let mut l = Load::new(3, ENAM);
+    l.slow_ms = 110;
+    let t0 = l.now + 100;
+    l.offer((0..800u64).map(|k| human(t0 + k * 25, k, 10 * KIB)));
+    l.drain(80_000);
+    let mut ms = acked_ms(&l.done, |_| true);
+    let left_max = l.cuts.iter().map(|c| c.left[0]).max().unwrap_or(0);
+    let round = pct(&mut l.rounds.clone(), 50.0);
+    let (p50, p99) = (pct(&mut ms, 50.0), pct(&mut ms, 99.0));
+    println!(
+        "soft-grow at 40 pushes/s of 10 KiB for 20 s: {} acked, commit p50 {p50} ms p99 {p99} ms, at most {left_max} \
+         queued after a cut, round p50 {round} ms, {} leader changes",
+        ms.len(),
+        l.changes()
+    );
+    assert_eq!(ms.len(), 800);
+    assert_eq!(l.changes(), 0, "{:?}", l.leaders);
+    assert!((250..=450).contains(&round), "round p50 {round} ms, not a hosted one");
+    // Main's flat cut on this load: commit p50 6,090 ms, p99 11,470 ms, 286 queued; this rule: 1,205, 1,800 and 44.
+    assert!(left_max <= 80, "the queue grew to {left_max} pushes");
+    assert!(p99 <= 3_000, "commit p99 {p99} ms");
 }
 
 /// agent-cmds-entry: B0-32 m3fgt1's burst put 307 staged agent pushes in the leader's queue at once, and its cuts took

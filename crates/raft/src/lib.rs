@@ -120,6 +120,19 @@ pub const ENTRY_MAX: usize = 1_500_000;
 /// 90 to 110 KB carried about 92 commands in a near round of p50 234 ms, 393 commands/s, a utilization of 0.78 at 308
 /// committed (`tests/m0/results/carried-8.md`) [measured].
 pub const ENTRY_SOFT: usize = 100_000;
+/// Where the leader stops filling an entry while the queue is deep (`soft-grow`): more than DEEP_QUEUE times its soft
+/// bound of Human and MergeQueue bytes waiting when it cuts. It falls back at the next cut that finds the queue shallow.
+/// On B0-35 m62 every cut that ended on bytes ended at ENTRY_SOFT, one entry of about 100 KB a round carried about 200
+/// KB a second against about 209 KB offered, and the round grew only from p50 198 to 257 ms between entries under 40
+/// KB and over 130 KB (largest 148 KB) [measured, `tests/m4/results/m4-wp4.md`, "B0-35 on a test-faults build after
+/// site day 62"]. Bounded at 150 KB, not ENTRY_MAX: a far voter's call first missed CALL_DEADLINE at 150 KB
+/// (`APPEND_BYTES_MAX`). Storage confirms do not track entry size at this scale: on B0-32 m3fst1 the leader's three
+/// confirms of 1 s or more were 8.1, 75.5 and 175.5 KB, and one of 191 KB took 579 ms (F106) [measured,
+/// `tests/am1/results/lm1-rows-m3f.md`, "Row m3fst1"]. Past 150 KB is unmeasured [guess].
+pub const ENTRY_SOFT_DEEP: usize = 150_000;
+/// Queued Human and MergeQueue bytes, in multiples of the soft bound, past which a cut uses ENTRY_SOFT_DEEP: two
+/// entries already waiting behind the one being cut [guess].
+pub const DEEP_QUEUE: usize = 2;
 /// A boot more than this long after the member last saved its state is an idle eviction, not a reset
 /// (`MemberState.boots`).
 pub const BOOT_IDLE: Duration = Duration::from_secs(5);
