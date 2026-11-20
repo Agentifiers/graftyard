@@ -25,6 +25,11 @@ pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);
 pub const INLINE_MAX_HOT: usize = 64 << 10;
 /// Agent-class inline pack bytes per entry, on every group.
 pub const AGENT_INLINE_ENTRY: usize = 128 << 10;
+/// Agent-class commands per entry, on every group (`decisions/DECISIONS.md`, "`agent-cmds-entry`"): B0-32 m3fgt1's
+/// burst entries of 191 and 160 agent commands took 2.6 and 2.8 s beside ticker stalls of 1.7 and 0.8 s, where entries
+/// of 31 to 106 took at most 578 ms on m3fwi3 [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fgt1"; 64 is a
+/// guess between them].
+pub const AGENT_CMDS_ENTRY: usize = 64;
 /// A group above this many pushes a second, over `HOT_WINDOW`, is hot.
 pub const HOT_PUSHES: f32 = 2.0;
 /// The window `hot` counts pushes over (the M0-WP9 prototype's 5 s; the design gives no window).

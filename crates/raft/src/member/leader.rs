@@ -7,8 +7,9 @@ use graftyard_types::{ChainId, IdBlock, SiteId, Timestamp};
 use smallvec::SmallVec;
 
 use crate::admit::{
-    AGENT_FLOOR, AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_SHARE, AGENT_WAIT, ActorKey, Admit, AdmitClass, AdmitError,
-    DEMOTE_PER_MIN, DEMOTE_WINDOW, HOT_PUSHES, HOT_WINDOW, INLINE_MAX_HOT, Lane, PRESSURE_AGE, retry_after_s,
+    AGENT_CMDS_ENTRY, AGENT_FLOOR, AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_SHARE, AGENT_WAIT, ActorKey, Admit,
+    AdmitClass, AdmitError, DEMOTE_PER_MIN, DEMOTE_WINDOW, HOT_PUSHES, HOT_WINDOW, INLINE_MAX_HOT, Lane, PRESSURE_AGE,
+    retry_after_s,
 };
 use crate::fold::{Command, Fold, Scratch};
 use crate::outcome::{self, Acked};
@@ -1191,7 +1192,8 @@ impl<C: Command> Member<C> {
     }
 
     /// The next entry's commands, by admission: Human and MergeQueue, then Agent up to AGENT_FLOOR of capacity over
-    /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token. All within `soft`
+    /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token, at most
+    /// AGENT_CMDS_ENTRY Agent commands in all. All within `soft`
     /// bytes (ENTRY_SOFT unless the host set it) not counting Agent inline packs, and within ENTRY_MAX counting them;
     /// the first command of an entry always goes, up to ENTRY_MAX. Agent packs have their own bound: admission stages
     /// any that would take the queued ones past AGENT_INLINE_ENTRY. Counted against `soft` as well, one 10 to 70 KB
@@ -1221,7 +1223,7 @@ impl<C: Command> Member<C> {
         let since = (now.0.saturating_sub(ad.cut_at.0) as f32).max(ad.round_ms);
         let floor = (AGENT_FLOOR * cap * since / 1000.0).floor() as usize;
         let mut n = 0;
-        while n < floor && ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
+        while n < floor.min(AGENT_CMDS_ENTRY) && ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Agent).expect("front");
             (bytes, n, ad.tokens) = (add(bytes, &q), n + 1, ad.tokens - 1.0);
             taken[AdmitClass::Agent.lane()] += 1;
@@ -1232,7 +1234,10 @@ impl<C: Command> Member<C> {
             (bytes, taken[AdmitClass::Bot.lane()]) = (add(bytes, &q), taken[AdmitClass::Bot.lane()] + 1);
             batch.push(q);
         }
-        while ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
+        while taken[AdmitClass::Agent.lane()] < AGENT_CMDS_ENTRY as u32
+            && ad.tokens >= 1.0
+            && fits(ad.agent().front(), &batch, bytes)
+        {
             let q = ad.take(AdmitClass::Agent).expect("front");
             (bytes, ad.tokens) = (add(bytes, &q), ad.tokens - 1.0);
             taken[AdmitClass::Agent.lane()] += 1;
@@ -1247,6 +1252,7 @@ impl<C: Command> Member<C> {
         let end = match (first.into_iter().flatten().next(), ad.agent().front()) {
             (Some(q), _) => past(q),
             (None, Some(_)) if ad.tokens < 1.0 => CutEnd::AgentTokens,
+            (None, Some(_)) if taken[AdmitClass::Agent.lane()] >= AGENT_CMDS_ENTRY as u32 => CutEnd::AgentCmds,
             (None, Some(q)) => past(q),
             (None, None) => CutEnd::Empty,
         };
