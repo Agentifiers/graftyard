@@ -720,6 +720,45 @@ The dominant kind is learner read-index calls, and about a fifth of them were co
 - Long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, release), on the branch: harsh 0 step-downs and 8,206 holds, longest stuck stretch 14,707 ms (seed 10439); gray 2,133 and 10,374, 28,501 ms (seed 11893); live 1,747 and 10,251, 27,362 ms (seed 12553); passed in 949 s. Main `9a6db022`, same command in a worktree: harsh and gray identical to the branch; live 1,782 step-downs and 10,443 holds, 25,191 ms (seed 13897); passed in 999 s. Harsh and gray are identical, counter for counter. In live the branch completes more reads: 3,800,585 against main's 3,602,538 (+5.5%), because a late answer now grants the batches behind it. Porcupine (`tests/m0/porcupine`, built, `-seg 2000`) on the branch's histories, each exit 0: `hist.jsonl` Ok, 146,836 operations; `.gray` Ok, 2,336,111; `.live` Ok, 5,476,993 (12,000 segments).
 - Checks, each by its exit code, all 0: `cargo fmt --check`; workspace clippy `-D warnings`; wasm32 clippy for site and edge with and without `test-faults`, and for front and runners; `cargo test --workspace` 1,306 passed, 0 failed; `node --test workers/runners/tests/*.test.mjs` 11 of 11; `go test ./...` in `containers/git/server`, `containers/ssh/server` and `tests/m0/porcupine`; `check_design.py`, `check_names.py`, `check_links.py`.
 
+## B0-35 on a test-faults build after site day 62 (2026-11-20, row m62)
+
+Site day 62 (14:14:19Z to 14:15:44Z, exit 0, 6 versions) shipped main `99f614ee` as a **test-faults** build, with `read-newest` on top of `agent-cap`; image `m4a60` (`sha256:e55ab2ad…`) and edge day 28 stayed. `tests/m4/wp4/b035.sh` (driver commit `90c01b5c`) ran on a new repository, `m3org/b035-m62` = repo 65576, with 8 learners, and `b035tsave.sh` with `ISOLATES=1`. Run `mwp2c2od`: load 14:25:12.929Z to 14:35:13Z; done at 14:52:53Z, exit 0. Raw files: `tests/m4/raw/wp4/b035-m62/` (`dispatchlog-whole.json`, `dispatch-lines.jsonl`, `stepdown-alarms.txt`, `alarm-steps-f0.txt`), `b035-m62.{status,lead,watch}`, `siteday62.log`, `tests/fanout/raw/tsave-m62.jsonl.xz`.
+
+**Verdict: fails dispatch** (driver p99 38.6 s against 10 s, past the 30 s fail line; m61 was 90.2 s). The verdict lines went to the lead at about 14:55Z, inside 30 minutes of the done line.
+
+| Line | m62 | m61 |
+| --- | --- | --- |
+| Dispatch, driver | p50 5.5 s, **p99 38.6 s**, 2,415 of 2,423 paired | p50 10.3 s, p99 90.2 s |
+| Dispatch, site entry-to-run / demand | p99 32.9 s / 30.6 s | p99 107 s |
+| Dispatch p99 by minute of load | 4.1 to 5.4 s through minute 4; 18.2 s (5), 20.9 s (7), 45.8 s (8), 44.0 s (9) | |
+| Leader commit | p50 1.0 s, p99 18.0 s | p99 10.9 s |
+| Leader queue (slot) | p99 17.8 s (17.6 s) | |
+| Round / confirm / deps | p99 880 ms / 898 ms / 1.4 s | |
+| f0's vCPU (GraphQL CPU-s per minute from 14:25) | 23.4, 23.6, 26.3, 27.1, 31.2, 31.0, 33.5, 40.0, 31.0, 27.1: mean 0.49, peak 0.67 | about 0.6 sustained |
+| Learner read-index calls to f0 | 44,515 sent, plus 1,904 `HEDGE` copies (**4.1%**); 2,543 past `CALL_DEADLINE` | 46,250, 15.3% `HEDGE` copies, 21% copies in all |
+| Leader changes | **0**. Holds: 14:32:43 CommitErrors, 14:33:07 LoopLag, 14:35:19 CommitErrors (each `to: None`); no step-down | 2 (a transfer and the transfer home) |
+| `suspect` | each follower logged 2,000 or more reports from 14:33:35 to 14:35:00; no pre-vote | 302, no pre-vote |
+| f0 alarm-steps lines | 17: `activity` 8 lines and 8,363 ms; `load` 4 and 4,075 ms; `prsync` 3 and 2,028 ms; `actions_trigger` 4 and 1,088 ms; `split` 157 ms; `hookseq` 111 ms | 29 |
+| Pushes | 2,423 of 2,500 ok, 76 answered 503; `mergeable` 503s 5,089 | |
+| Shared isolates (`isolates.py`) | none | |
+| Spend | graft-m4a **$4.41** (14:14:19Z to 14:54:51Z, `acctcost.py`), runner account $0 | $4.68 |
+| Teardown | 1 shard 200, no container running, shardkill deleted (14:53:20Z) | clean |
+
+`read-newest` did what its replay said: `HEDGE` copies fell from 15.3% to 4.1% of learner read-index calls, and f0 averaged 0.49 vCPU against m61's 0.6. Dispatch improved from 90.2 to 38.6 s, but the tail is still queueing behind one entry in flight, and the step-agree rule held three times with no leader change.
+
+### What the queue waits behind at about 0.5 vCPU
+
+From f0's cut and append trace (`Trace::Cut` and the leader rows in `tsave-m62`, `tests/fanout/entrycycle.py tests/fanout/raw/tsave-m62.jsonl.xz 1795184712929 600 0`) [measured]:
+- **Round time does not track commands.** Round p50 is 206 to 245 ms across command bands, and it rises only from 198 to 257 ms between entries under 40 KB and entries over 130 KB.
+- **The cut is byte-bound.** Cuts that ended `Soft` rose to 158 of 159 by minute 9, and commands left queued after a cut rose from 33 to 350.
+- **Apply does not block the next cut.** The append-to-append cycle is p50 273 ms: the voter round is 80% of it, apply about 1%, and apply-to-next-append 19%.
+- **The voter round is wire and queues, not the follower's handler.** Follower handler p50 is 24 ms. Send-to-answer less the handler is p50 235 ms, with p90 rising to about 1 s in minutes 7 and 8.
+- **Ceiling.** One entry of about 100 KB a round is about 200 KB a second, against about 209 KB a second offered, so the queue grows whenever the round slips.
+
+The lever this points to is bytes per round while the queue is deep, not more entries in flight, which AGENTS.md rules out.
+
+**End-of-load `/commit` storm.** `/commit` arrivals at f0 reached 152 a second near the end of the load, and site a logged 1,755 "Durable Object is overloaded. Requests queued for too long" throws on cached-leader posts to f0 from 14:30:40 to 14:34:59Z (35, 118, 62, 664 and 876 a minute). Whether these are edge receipt re-sends (`commit_hedged` sends `/commit` to the same member again after a missed receipt) is not settled here; the analysis follows on the soft-cut branch.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
