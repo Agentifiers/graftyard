@@ -1,0 +1,15 @@
+cycles 929: round p50 256 p99 504; gap p50 0 p99 420 max 3000; cycle p99 711
+wall 282593 ms: round 241937, gap 40656; cycles with a gap over 20 ms 287
+  slow cycle round 302 gap 3000: slowest read authz:1 3513 ms
+  slow cycle round 292 gap 2641: slowest read authz:1 3405 ms
+  slow cycle round 469 gap 1378: slowest read authz:1 1847 ms
+  slow cycle round 49 gap 1376: slowest read authz:1 1585 ms
+  slow cycle round 0 gap 905: slowest read authz:1 905 ms
+  slow cycle round 515 gap 382: slowest read authz:1 897 ms
+entries with reads 931; slowest read per entry by chain {'authz:1': 897, 'tokens': 7, 'names': 21, 'authz': 6}
+  authz: n 931 p50 200 p90 293 p99 536 max 671, over 1 s 0
+  authz:1: n 904 p50 404 p90 593 p99 912 max 3513, over 1 s 6
+  names: n 488 p50 202 p90 281 p99 498 max 616, over 1 s 0
+  tokens: n 1392 p50 183 p90 273 p99 511 max 1009, over 1 s 1
+slot model: 5726 commands, slot p50 577 p99 1423, queue p99 1888
+  without the 6 entries whose authz:1 read took over 1 s (396 commands): slot p99 1167, queue p99 1193

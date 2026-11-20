@@ -1,0 +1,27 @@
+2026-11-20T21:09:42Z start 044f7973
+2026-11-20T21:10:07.263Z m3org/b031-m64r31 = 65580
+before [[0,"leader",2,0],[1,"follower",2,0],[2,"follower",2,0]]
+move on 0 {"meta":{"configIndex":1,"leader":0,"term":2},"ms":5183,"ok":{"site":2,"waitedMs":0,"warming":true},"step":"Home { home: SiteId(2) }"}
+move on 0 {"config":[14,{"normal":{"generation":1,"home":2,"learners":[],"voters":[{"do_name":"repo:65580#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65580#1#f1","generation":1,"kind":"full","site":1,"slot":1},{"do_name":"r
+move on 2 {"config":[14,{"normal":{"generation":1,"home":2,"learners":[],"voters":[{"do_name":"repo:65580#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:65580#1#f1","generation":1,"kind":"full","site":1,"slot":1},{"do_name":"r
+after [[0,"follower",3,2],[1,"follower",3,2],[2,"leader",3,2]]
+rehomed on 2
+2026-11-20T21:10:45.535Z warm clone 0 true 3188 ms 
+2026-11-20T21:10:53.953Z repo:65580 leader 2: config 24 learners [{"addr":192,"doName":"repo:65580#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65580#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65580#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65580#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65580#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65580#2#l5","join":200,"sit
+2026-11-20T21:10:56.657Z repo:65580 leader 2: set k 4: {"grants":[[0,[4,6,3]],[1,[4,6,3]]],"k":1,"meta":{"configIndex":24,"leader":2,"term":3},"stepped":false,"want":3}
+2026-11-20T21:11:07.124Z repo:65580 leader 2: set k 4: {"grants":[[0,[4,6,3]],[1,[4,6,3]]],"k":1,"meta":{"configIndex":24,"leader":2,"term":3},"stepped":false,"want":3}
+2026-11-20T21:11:17.782Z repo:65580 leader 2: set k 4: {"grants":[[0,[4,6,3]],[1,[4,6,3]]],"k":4,"meta":{"configIndex":24,"leader":2,"term":3},"stepped":true,"want":3}
+2026-11-20T21:11:17.944Z repo:65580 leader 2: k 4 at 27
+2026-11-20T21:11:17Z b0-31 b031-m64r31 65580 start
+2026-11-20T21:26:22.997Z repo:65580 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":24,"leader":0,"term":4},"stepped":true,"want":0}
+2026-11-20T21:26:23.167Z repo:65580 leader 0: k 1 at 2332
+2026-11-20T21:26:23Z b0-31 b031-m64r31 65580 done exit 0
+2026-11-20T21:27:33Z row ended
+shardkill deployed: https://graft-m4a-shardkill.<workers-subdomain>.workers.dev
+git#2#net:65580 200
+git#0#net:65580 200
+{"torn_down": 2, "codes": {"200": 2}}
+sweep: no shard container running
+shardkill deleted: True
+2026-11-20T21:28:12Z sweep ok
+ALLDONE

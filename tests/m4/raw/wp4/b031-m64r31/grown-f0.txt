@@ -1,0 +1,9 @@
+424 cuts in the load; ends Soft 0, Empty 424
+  Soft at or under ENTRY_SOFT: 0; grown past it: 0 (of which Soft 0)
+  cut soft bytes p50 2022 p90 22859 p99 44367 max 52656
+confirm wall, leader: grown n 0 p50 None p99 None max None, >=1 s 0; <=100 KB n 2321 p50 23 p99 233 max 1481, >=1 s 3
+confirm wall, followers: grown n 0 p50 None p99 None max None, >=1 s 0; <=100 KB n 4428 p50 12 p99 183 max 2129, >=1 s 4
+sync wall by transaction bytes, leader: >100 KB n 0 p50 None p99 None max None, >=1 s 0; <=100 KB n 2322 p50 23 p99 233 max 1481, >=1 s 3
+sync wall by transaction bytes, followers: >100 KB n 0 p50 None p99 None max None, >=1 s 0; <=100 KB n 4450 p50 12 p99 183 max 2129, >=1 s 4
+voter 1: 431 AppendEntries ended, 0 failed (0 of them carrying a grown entry; 0 calls carried one), call p99 1486 ms, grown-entry calls p99 None ms; answered past CALL_DEADLINE (1 s) 8, of them carrying a grown entry 0
+voter 2: 425 AppendEntries ended, 0 failed (0 of them carrying a grown entry; 0 calls carried one), call p99 1606 ms, grown-entry calls p99 None ms; answered past CALL_DEADLINE (1 s) 8, of them carrying a grown entry 0
