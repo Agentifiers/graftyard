@@ -2238,9 +2238,16 @@ pub const JOINED_FRESH: &str = "x-graft-joined-fresh";
 /// a 503, so an outage never reads as "not found" (`decisions/DECISIONS.md`, "`fresh-repo`").
 pub const NOT_CREATED: &str = "not created yet";
 
-/// Whether `create`'s error says the chain is not created yet (`NOT_CREATED`).
-pub fn is_not_created(e: &str) -> bool {
-    e.contains(NOT_CREATED)
+/// The word in `create`'s error when a majority of the bootstrap members refused to join because they are retired
+/// (`{"refused": {"retired": at}}`, `retire-sticks`), or retired and not created between them: the group was retired
+/// and its repository's reads find nothing to serve. The edge answers it 404 as it does `NOT_CREATED`, so a retired
+/// test repository reads like a deleted one and a client does not retry it (`decisions/DECISIONS.md`, "`retired-gone`").
+pub const RETIRED: &str = "retired group";
+
+/// Whether `create`'s error says the chain has no group to read and never will without a new create: not created yet
+/// (`NOT_CREATED`) or retired (`RETIRED`). The edge answers both as a repository the caller cannot see.
+pub fn is_gone(e: &str) -> bool {
+    e.contains(NOT_CREATED) || e.contains(RETIRED)
 }
 
 /// `create`'s error when too few members joined and no group answered (`probe`). It names `NOT_CREATED` only when a
@@ -2248,9 +2255,14 @@ pub fn is_not_created(e: &str) -> bool {
 /// `Names` leader and found no row, which no outage answers. A member that did not answer, refused for any other
 /// reason, or answered from a release before `noRepoOwner` counts against it.
 fn refused(chain: ChainId, answers: &[Option<(u16, Value)>], probe: &str) -> String {
-    let unsourced =
-        answers.iter().filter(|a| matches!(a, Some((409, v)) if v.pointer("/refused/noRepoOwner").is_some())).count();
-    let why = if unsourced * 2 > answers.len() { format!("{NOT_CREATED}: ") } else { String::new() };
+    let refusing =
+        |key: &str| answers.iter().filter(|a| matches!(a, Some((409, v)) if v["refused"].get(key).is_some())).count();
+    let (unsourced, retired) = (refusing("noRepoOwner"), refusing("retired"));
+    let why = match (unsourced + retired) * 2 > answers.len() {
+        true if retired > 0 => format!("{RETIRED}: "),
+        true => format!("{NOT_CREATED}: "),
+        false => String::new(),
+    };
     let joined = answers.iter().filter(|a| matches!(a, Some((200, _)))).count();
     format!("{chain}: {why}{joined} of {} joined ({answers:?}); {probe}", answers.len())
 }
@@ -2471,15 +2483,23 @@ mod tests {
 
     /// A read during a repository's create, before `RepoOwner` commits, is "not created" only when a majority of the
     /// bootstrap members found no row; members that did not answer, refused for another reason (such as a `Names`
-    /// read that failed), or come from an older release keep it an outage, which the edge answers 503.
+    /// read that failed), or come from an older release keep it an outage, which the edge answers 503. A majority
+    /// retired, or retired and unsourced between them, is a retired group, which the edge answers 404 too.
     #[test]
-    fn only_a_majority_with_no_repo_owner_row_is_not_created() {
+    fn only_a_majority_that_cannot_join_is_gone() {
         let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(131316)));
         let none = || Some((409, json!({ "refused": { "noRepoOwner": 131316 } })));
         let failed = || Some((409, json!({ "refused": { "source": "names:994: no member answered" } })));
         let old = || Some((409, json!({ "refused": { "source": "RepoId(DbId(131316)) has no RepoOwner row" } })));
         let joined = || Some((200, json!([])));
+        let retired = || Some((409, json!({ "refused": { "retired": 1_763_622_565_000u64 } })));
         let cases = [
+            (vec![retired(), retired(), retired()], true),
+            (vec![retired(), retired(), None], true),
+            (vec![retired(), none(), failed()], true),
+            (vec![retired(), joined(), None], false),
+            (vec![retired(), failed(), failed()], false),
+            (vec![retired(), None, None], false),
             (vec![none(), none(), none()], true),
             (vec![none(), none(), None], true),
             (vec![none(), none(), failed()], true),
@@ -2492,7 +2512,10 @@ mod tests {
         ];
         for (answers, want) in cases {
             let e = refused(chain, &answers, "repo:131316: no group");
-            assert_eq!(is_not_created(&e), want, "{e}");
+            assert_eq!(is_gone(&e), want, "{e}");
+            let any_retired =
+                answers.iter().any(|a| matches!(a, Some((409, v)) if v["refused"].get("retired").is_some()));
+            assert_eq!(e.contains(RETIRED), want && any_retired, "{e}");
             assert!(e.starts_with("repo:131316: "), "{e}");
         }
     }
