@@ -1,5 +1,5 @@
 import bisect, json, lzma, sys
-# grown.py TRACE.jsonl[.xz] LOAD_START_MS SECONDS [SITE]: soft-grow's verdict lines from a leader's trace
+# grown.py TRACE.jsonl[.xz] LOAD_START_MS SECONDS [SITE [SAMPLES.json]]: soft-grow's verdict lines from a leader's trace
 # (`decisions/DECISIONS.md`, "`soft-grow`", its flip). Uses the leader site's rows (default 0) and the followers'.
 #   Cuts (`Cut`, kind 29): how many ended `Soft` within ENTRY_SOFT and how many grew past it (soft bytes over
 #   ENTRY_SOFT), by soft bytes; and every cut's taken commands.
@@ -12,6 +12,8 @@ import bisect, json, lzma, sys
 #   carried a grown entry (joined by round to `AppendQueued`'s `batch`).
 #   Also counts calls answered past CALL_DEADLINE (1 s), which the driver reports as `deadline` failures (m63: 3 and 4
 #   in both).
+# SAMPLES.json, when given, gets the raw samples behind these lines (leader and follower confirms and syncs, grown or
+# not, and each voter call's ms with whether it carried a grown entry), so `growpool.py` pools rows.
 ENTRY_SOFT = 100_000
 path, t0 = sys.argv[1], int(sys.argv[2])
 t1 = t0 + 1000 * int(sys.argv[3])
@@ -69,9 +71,11 @@ def grown_at(applied):
     return None if j >= len(idx) else size[idx[j]] > ENTRY_SOFT
 
 
+out = {}
 for name, rows in (('leader', [c for c in confirms if c[0] == LEAD]), ('followers', [c for c in confirms if c[0] != LEAD])):
     g = [c[3] for c in rows if grown_at(c[2]) is True]
     s = [c[3] for c in rows if grown_at(c[2]) is False]
+    out[f'confirm:{name}'] = {'grown': g, 'small': s}
     print(f'confirm wall, {name}: grown n {len(g)} p50 {pc(g, .5)} p99 {pc(g, .99)} max {max(g, default=None)}, '
           f'>=1 s {sum(1 for x in g if x >= 1000)}; <=100 KB n {len(s)} p50 {pc(s, .5)} p99 {pc(s, .99)} '
           f'max {max(s, default=None)}, >=1 s {sum(1 for x in s if x >= 1000)}')
@@ -79,6 +83,7 @@ for name, rows in (('leader', [c for c in confirms if c[0] == LEAD]), ('follower
 for name, rows in (('leader', [s for s in syncs if s[0] == LEAD]), ('followers', [s for s in syncs if s[0] != LEAD])):
     g = [s[2] for s in rows if s[4] > ENTRY_SOFT]
     sm = [s[2] for s in rows if s[4] <= ENTRY_SOFT]
+    out[f'sync:{name}'] = {'grown': g, 'small': sm}
     print(f'sync wall by transaction bytes, {name}: >100 KB n {len(g)} p50 {pc(g, .5)} p99 {pc(g, .99)} '
           f'max {max(g, default=None)}, >=1 s {sum(1 for x in g if x >= 1000)}; <=100 KB n {len(sm)} p50 {pc(sm, .5)} '
           f'p99 {pc(sm, .99)} max {max(sm, default=None)}, >=1 s {sum(1 for x in sm if x >= 1000)}')
@@ -89,7 +94,11 @@ for peer in sorted({e[1] for e in ended}):
     fails = [e for e in es if e[3] == 1]
     gf = [e for e in fails if (peer, e[2]) in rounds and size.get(rounds[(peer, e[2])], 0) > ENTRY_SOFT]
     calls_g = [e for e in es if (peer, e[2]) in rounds and size.get(rounds[(peer, e[2])], 0) > ENTRY_SOFT]
+    gset = {id(e) for e in calls_g}
+    out[f'calls:{peer}'] = {'grown': [e[4] for e in calls_g], 'small': [e[4] for e in es if id(e) not in gset]}
     print(f'voter {peer}: {len(es)} AppendEntries ended, {len(fails)} failed ({len(gf)} of them carrying a grown '
           f'entry; {len(calls_g)} calls carried one), call p99 {pc([e[4] for e in es], .99)} ms, '
           f'grown-entry calls p99 {pc([e[4] for e in calls_g], .99)} ms; answered past CALL_DEADLINE (1 s) '
           f'{sum(1 for e in es if e[4] >= 1000)}, of them carrying a grown entry {sum(1 for e in calls_g if e[4] >= 1000)}')
+if len(sys.argv) > 5:
+    json.dump(out, open(sys.argv[5], 'w'))
