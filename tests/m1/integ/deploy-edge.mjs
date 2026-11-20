@@ -3,7 +3,7 @@
 //   node tests/m1/integ/deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis <genesis.json>]
 //                                       [--anchor <install.toml>] [--genesis-signed <genesis.signed>] [--no-shard]
 //                                       [--ops <graft-ops name>] [--var K=V ...] [--web <web/dist/client>]
-//                                       [--upload-only] [--ssh <hostkeys public JSON>]
+//                                       [--upload-only] [--ssh <hostkeys public JSON>] [--ssh-off]
 // `--genesis` (test-faults only) is the test install's stand-in for the Release view; `--anchor` sets the trust anchor
 // a product edge accepts the Release group's genesis against. `--genesis-signed` (with `--anchor`) writes the committed
 // signed genesis into GRAFTYARD_GENESIS_SIGNED, hex, after checking its SHA-256 is install.toml's `genesis` digest,
@@ -15,11 +15,15 @@
 // class, which the edge's `connect()` handler opens, and `SSH_HOST_KEYS`, the public half of both host-key slots that
 // deploy/ssh-front/hostkeys.mjs wrote, served at /api/graftyard/v1/meta/ssh. The sites must have been deployed with
 // `--ssh` first, so the class exists.
+// Without `--ssh`, the deploy lists the account's Spectrum apps and refuses while one has this edge (or a script
+// binding this install's `SshFront`) as its Worker origin; `--ssh-off` turns SSH off on purpose
+// (workers/site/sshguard.mjs).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { refuseSshOff } from "../../../workers/site/sshguard.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
@@ -47,6 +51,8 @@ if (signedFile) {
   if (digest !== committed) throw new Error(`${signedFile} is not the committed genesis (${digest.slice(0, 8)}…, install.toml has ${committed.slice(0, 8)}…)`);
   genesisSigned = bytes.toString("hex");
 }
+// Without `--ssh`, refuse while a Spectrum app points at this edge, unless `--ssh-off` (workers/site/sshguard.mjs).
+await refuseSshOff(flags, { edge: name, siteScripts: sites.map((s) => s.script) });
 const extra = Object.fromEntries(flags.flatMap((f, i) => flags[i - 1] === "--var" ? [f.split(/=(.*)/s).slice(0, 2)] : []));
 
 const edge = join(root, "workers/edge");

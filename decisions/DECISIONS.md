@@ -1048,6 +1048,8 @@ Each decision below was made by the run under that delegation (`FRAME.md`, "Oper
 
 **Retires, 2026-11-19** (`FRAME.md`, "Operator decision, 2026-11-19, native SSH on Pro"). Its flip fired in a form it did not name: not an Enterprise zone but a Spectrum Worker application on the Pro zone itself, which gives a stock `git clone git@graftyard.dev:...` native SSH with no relay (B0-24c, B0-24d). The flip is fired, pending the operator: the VM retires once the operator points `graftyard.dev`'s SSH hostname at the Spectrum app. This change does not touch the VM, `ssh.graftyard.dev`, or `deploy/oci-ssh/`; the `ssh relay` rows in `design/DESIGN.md`, "Failure modes" and "Deployment modes", stay, marked retiring, until it is removed.
 
+**Flip fired, 2026-11-20** (`FRAME.md`, "Operator decision, 2026-11-20, SSH on Cloudflare only"). The operator pointed the hostname: `ssh.graftyard.dev` is a Spectrum Worker app on port 22 with `graft-m3f-edge` as its origin. A stock clone and push through it passed with no `cloudflared`, the pushed commit read back over HTTPS, and the host key matched `/api/graftyard/v1/meta/ssh` [measured, `tests/m6/results/m6-wp2.md`, "Cutover"]. Then the VM was terminated and its VCN deleted, Tunnel `graft-m0-ssh` with its route and virtual network and `ssh-m0.graftyard.dev` were deleted, and the 1Password key was marked retired. The `ssh relay` component is gone from `design/DESIGN.md`. `deploy/oci-ssh/` stays as the record of what ran.
+
 ### Decisions for a Pro-only build with no GHES, 2026-10-31
 
 > "ok skip. get it done given our current pro plan. i won't have enterprise for a while, if at all. also don't have an active github enterprise either. just get it done given these limitations."
@@ -6403,6 +6405,25 @@ Branch `git-read-class`, code only, no hosted row (second-opinion review T-01a1f
 - Plants: `tests/am1/load34/plant.py`.
 
 **Flip.** The first hosted row's `slotWaits` p99 over 100 ms, or a client's `lagMs` p99 over 200 ms (its isolate is busy): add clients, or move that kind to clients of its own. The row's `load34 cpu` per operation over 5 ms, or its estimate over today's rate: ask the operator before the next row (`FRAME.md`, item 3's condition).
+
+### `lookup-miss-kind`: a lookup logs what a thrown fetch said, and waits for an object that threw `overloaded`, 2026-11-20
+
+**Status.** Asked for by the orchestrator after B0-35 m60. Built on branch `lookup-miss-kind`, not deployed. `crates/lookup` only, so it ships on a site day, and on the edge with it. Nothing in `crates/raft` changes.
+
+**Decision.**
+- **Kind.** `call_opt`'s posts keep a fetch that threw, not only `None`. A cached-leader miss, and every traced walk post, logs the thrown message and the `overloaded`, `retryable` and `remote` flags the runtime sets on it (`Answer::Missed("thrown \"…\" retryable")`). A deadline with no answer stays "no answer". `post_by`'s other callers (`read_spread`, `commit_hedged`, `post`) are unchanged.
+- **Overloaded.** A post whose fetch threw with `overloaded` set is not a miss. It is not reported with `suspect`, does not count toward LEADER_RETRY's second miss, and starts no walk. The same member is asked again after OBJECT_WAIT (250 ms [guess]), doubled per such answer up to SHED_BACKOFF_MAX_MS (2 s), and when the next wait would pass LOOKUP_FOR the request ends with an OVERLOADED error, which every caller already answers 503 with a short `Retry-After`.
+
+**Why.** On B0-35 m60, 125 posts from site a's shard isolate to the cached leader f0 missed in 2 to 98 ms each, 05:23:25.2 to 27.5Z, logged as "no answer". Their own posts to f0 that the walks sent answered only after 05:23:27.8Z. Each miss sent a request into LEADER_RETRY, a `suspect`, and then a walk, and the walks ran one at a time on the mark: 130 waits, p50 5.8 s, and 193 gave up at LOOKUP_FOR [measured, `tests/m4/results/m4-wp4.md`, "B0-35 on a test-faults build after site day 60"]. Over those seconds f0 ran no invocation but two long ones: a learner `/raft` of 2,652 ms CPU (05:23:23.784 to 26.522Z) and its alarm of 2,288 ms CPU (05:23:27.121 to 29.583Z) [measured, Workers Logs for f0's object]. That fits the runtime refusing calls queued behind a blocked object, which it marks `overloaded` [doc, Durable Objects, "Error handling" and "Troubleshooting"]; that these 125 carried the flag is an inference, because `post_by` dropped the error, and this change logs it. The docs say an `overloaded` error should not be retried because retrying worsens the overload, and the lookup's answer to one was a retry, a report and a walk that also posts the object.
+
+**What it beat.**
+- **Logging only:** the next row would name the error, and m60's behaviour (a report, a retry and a walk per miss) would stay on a flag the docs say not to retry.
+- **A fresh stub per retry (stub-refresh):** the lookup already builds a new stub for every post (`Bindings::member`), so a broken stub is not the cause [read from the code].
+- **Treating every thrown fetch as overloaded:** a `Network connection lost` without the flag, or a member that is gone, would never be walked away from inside LOOKUP_FOR, which is lookup-retry's case.
+
+**Evidence.** `crates/lookup/src/lib.rs`: `an_overloaded_leader_is_waited_for_not_walked_away_from` (a cached leader that throws `overloaded` three times answers on the fourth post, with no follower posted, no report, and at least 250 + 500 + 1,000 ms of waits; one that stays overloaded ends OVERLOADED inside LOOKUP_FOR; a thrown fetch without the flag is a miss with its message). It fails on main, where the thrown fetch is "no answer", reported, and walked from. Plants 158 to 161 in `tests/m4/wp4/plant.py`, 4 of 4 caught.
+
+**Flip.** A row whose new lines show cached-leader misses with `overloaded` set while the leader was not blocked (no long invocation on its object), or requests ending OVERLOADED where a walk would have found a new leader inside LOOKUP_FOR: then the overload flag is not the object's state and the wait should be bounded by one LEADER_RETRY instead.
 
 ### `write-identity`: a write whose `decide` binds the caller's credential takes its token row from the edge's cache, 2026-11-20
 
