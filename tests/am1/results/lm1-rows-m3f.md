@@ -202,7 +202,7 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **`full`:** 177 refused by the leader after a send whose budget ran out in its queue, 2 at the edge (`bound`). Their read gate took p50 1,682 ms, so they reached the commit send with p50 1,535 ms of AGENT_PUSH_BOUND left (the `ok` pushes, 3,033 ms). 112 of the 120 pushes in the gate's slow mode ended `full`, all from send position 200 on.
 - **Stages, `ok` pushes, p50 / p99 ms:** front 696 / 1,040; auth 120 / 340; resolve 446 / 946; gate when it read rows 610 / 1,748 (108 pushes); first commit 2,178 / 3,544. Committed twice: 138 of 321 (43%); `stagefirst` 228 of 500. Leader commit (`/stats`, whole row) 483 / 2,448; round p50 185.
 - **Gate slow mode:** 120 pushes at 1.5 s or more. Their slowest `repo:65602` pass: 69 follower tries answered `overloaded` at 900 to 1,300 ms (`FOLLOWER_WAIT`), and 32 more answered `ok` after 1.3 s.
-- **A34:** of 573 `/commit` and ask arrivals at the leader in the burst, none met a pending deferred flush; no flush ran 500 ms late; no push missed a receipt.
+- **A34:** of 1,254 `/commit` and ask arrivals at the leader in the burst (1,126 and 128; counted with `a34.py`'s corrected route codes), none met a pending deferred flush; no flush ran 500 ms late; no push missed a receipt.
 
 ### Confirms of 1 s or more, with `syncs.py`'s label [measured, `Trace::Sync`]
 
@@ -234,6 +234,31 @@ Leader (site 0): 1,251 confirms in the row, wall p50 51 ms, p99 243 ms, max 1,44
 
 - Entry rounds, whole burst, by size: 1 to 4 commands p50 187 ms; 5 to 15, 226 ms; 16 to 50, 281 ms; 51 to 120, 394 ms (max 1,216 ms). The long rounds and appends sit on the slow confirms above.
 - **Agent queue:** at most 68 left after a cut (at 1.75), 7 after the next cut 0.09 s later. Arrivals kept coming until about 5 s, so the queue rose again to 42 and 40 after the cuts at 3.69 and 4.09, and was empty after the cut at 5.48: 3.7 s after the first capped cut, behind the 1,000 ms confirm that ended at 5.48. `/stats` never sampled more than 4 agent commands queued.
+
+### `FOLLOWER_WAIT` attributed: the grant was late, not the apply (code-only follow-up, branch `follower-fast`) [measured from `tsave-m3fst1-b0-32.jsonl.xz` and the a1 file; one inference marked]
+
+The operator asked how far behind the followers that answered `overloaded` at about 1 s were, and whether an immediate answer, or going at once to the leader or another member, would have kept the late pushes' budget. The script that joins each member's read-index reads (`Trace::ReadQuery` with `ms` 1) to its next answered `ReadIndex` call (`IndexSent`/`IndexEnded`/`ResStepped`) and to its applied index (`Applied`) was scratch work and is not committed. The figures below are its output.
+
+- **Read-index reads in the first 30 s of the burst:** 7,982 on the ten non-leader members (374 on the two followers, 7,608 on the eight learners). 791 of them were served 1 s or more after they entered, or not at all (92 on followers, 699 on learners). 751 of those 791 entered between 0.59 and 6.71 s, the same span as the leader's four slow confirms (900 ms ending at 1.64, 579 ms at 3.81, 1,000 ms at 5.48, 1,449 ms at 6.93) and its input gaps of 300 ms or more (1.94 to 2.61, 3.25 to 3.60, 4.73 to 5.23, 5.48 to 6.95).
+- **How the 791 split:** waiting for a call slot took p50 54 ms; the read-index round trip took p50 1,152 ms (p90 1,510); applying after the grant took p50 0 ms (0 for 511 of them, p90 271). 498 of their calls ran past `CALL_DEADLINE`.
+- **Followers:** at its grant, each of the 92 late follower reads was **0 entries behind**. The round trip was p50 1,187 ms. So the "how far behind" answer is zero: the follower already had the index and waited for the leader to answer.
+- **The leader answered at once and the answer reached the follower late.** The leader logged `IndexTaken` and `ResSent` for each call in the same millisecond. Answers then came back in bunches: site b's calls sent from 1.08 to 1.22 s were all answered at 1.51 s, and those sent from 1.51 to 2.16 s at 2.95 s; site c's matched within 25 ms. The bunches end with the leader's 900 ms confirm and its 668 ms gap with no rows at all. That the leader's output gate held the answers until its storage confirms ended is an inference: the two isolates' clocks could not be aligned closely enough to place each answer's departure.
+- **The other members were held by the same leader at the same time.** A read arriving at 1.9 s would have been served on the ten members at 2.87 to 3.29 s. One arriving at 5.5 s, at 6.78 to 10.9 s. For 85 of the 92 late follower reads, the other follower, asked 130 ms after the first, would also have taken 1 s or more.
+
+**The fix as asked, replayed.** A 35% sample of the reads was replayed against each member's measured serve times. A member answers `overloaded` after the bound W; the edge then tries the members of the same kind in random order, with `retry_shed`'s pause after every three tries:
+
+| W (follower bound) | Reads 1 s or more | Reads 1.5 s or more | p90 | Member tries per read |
+|---|---|---|---|---|
+| 1,000 ms (main) | 274 | 193 | 995 ms | 1.11 |
+| 600 ms | 405 | 288 | 1,523 ms | 1.41 |
+| 400 ms | 544 | 423 | 1,890 ms | 1.93 |
+| 250 ms | 739 | 564 | 2,779 ms | 3.05 |
+
+A shorter bound makes the gate slower and multiplies the member reads, because each member it moves to is behind the same late grant. A variant that answers early only while the member's oldest pending read is past a threshold (250 to 600 ms) was worse still: 614 to 915 reads of 1 s or more. Asking a second member at the same time after 150 ms, while the first one's answer is still pending, cut the reads of 1 s or more from 270 to 200 and p90 from 972 to 851 ms: a 26% cut for one extra read per hedged try.
+
+**Budget.** The 112 slow-gate pushes that ended `full` reached the commit send with p50 1,656 ms of `AGENT_PUSH_BOUND` left. Suppose each of their `overloaded` tries had come at 150 ms and the next member had still answered when it actually did: they would have had p50 2,117 ms. At this row's `ok` rate per 250 ms of budget, that is about 51 of 112 kept. That is an upper bound the replay rules out: asked 850 ms sooner, the next member is that much earlier in the same stall and waits that much longer.
+
+**Verdict:** the gate's slow mode on m3fst1 is the leader's late read-index grants during its slow storage confirms (F106), seen through every member at once. It is not a follower that holds a read it cannot serve. The fix as asked (answer at once past a short bound) does not pass this replay, so no gate change was built. Recorded in `decisions/OPEN-QUESTIONS.md`, A35.
 
 ## Row m3fac1: B0-32 on main `eaac204b` (`agent-cmds-entry`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
 
@@ -346,9 +371,11 @@ Entry and round times come from `entries2.py`'s join of cut to append to apply. 
 
 | | m3fac1 | m3fgt1 |
 |---|---|---|
-| `/commit` arrivals in the burst | 492: 490 no flush pending, 2 under 500 ms | 226: 199 none, 9 under 1 s, 18 at 1 to 2 s |
-| `/outcome_by_request` arrivals | 193: 173 none, 20 under 500 ms | 431: 331 none, 100 at 500 to 1,000 ms |
+| `/commit` arrivals in the burst | 1,105: 1,103 no flush pending, 2 under 500 ms | 1,040: 923 none, 9 under 500 ms, 32 at 500 to 1,000 ms, 76 at 1 to 2 s |
+| `/outcome_by_request` arrivals | 367: all none | 682: 424 none, 168 under 500 ms, 15 at 500 to 1,000 ms, 75 at 1 to 2 s |
 | Deferred flushes 500 ms late or more | none | 2 (1,515 and 1,730 ms) |
+
+Corrected 2026-11-20: the first version of this table read route codes 2 and 5 (`/read` and `/outcome`) as `/commit` and `/outcome_by_request`. Route codes are `ROUTES`' index + 1 (3 and 6), fixed in `tests/fanout/a34.py`. The conclusion stands: m3fac1's arrivals met almost no flush waits, and m3fgt1's met real ones.
 
 **At the edge** (`server-timing` marks):
 
