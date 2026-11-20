@@ -175,6 +175,66 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **The driver** now reads `move_step`'s `{step, ok}` shape, which m3fg11's 200-character cut lost, and times `heldS` and the hand-off.
 - **Tests:** four new on real members (`crates/identity/tests/group_move.rs`), one changed unit test, and `plant49.py` 8 of 8.
 
+## Row m3fst1: B0-32 on main `f9b9f50e` (`sync-trace`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** The orchestrator granted one site day and edge day from main `f9b9f50e` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (14:42:42Z). The measures: whether a leader confirm over 1 s recurs and what `Trace::Sync` labels it (`decisions/OPEN-QUESTIONS.md`, F106), and the cap's cut ends again (`agent-cmds-entry`).
+
+**Committed raw files:** `tests/fanout/raw/rows-m3fst1.status`, `{admit,terms,vmem}-m3fst1-b0-32.jsonl`, `tsave-m3fst1-b0-32.jsonl.xz`, `arrivals-m3fst1.jsonl`, `shardgate-m3fst1-b0-32-*.jsonl`, and `lm1-rows-m3f-data/m3fst1-raw/a1-b0-32-mwp3ub25.jsonl`.
+
+- **Site day and edge day** m3fst, 14:42:42Z to 14:56:51Z, both exit 0, one run (one-shot launcher). Sites a/b/c `396cc0ba` / `68fd6150` / `a12767e8`, edge `8e393245`.
+- **Row:** repo 65602 (run `mwp3ub25`), 8 learners, k 4, leader site 0 term 2, shards warm. First request 15:02:32Z; the burst reached the leader at 15:03:44Z to 15:03:49Z on the server clock (14.3 s ahead of the orb's). Done 15:06:19Z.
+- **Harness outage:** from the first request, 3 s, share 0.0181. Valid.
+- **Spend:** $2.84 for the whole account from 14:42:42Z to 15:08:10Z, $0.67 of it on graft-m3f (stop $8).
+- **Close-out:** group torn down; second sweep OK. `ssh.graftyard.dev` gave slot A's three fingerprints at 14:57Z and 15:11Z.
+
+### Result: fail, valid [measured]
+
+| Gate line | m3fst1 | m3fac1 |
+|---|---|---|
+| Every push acknowledged within 5 s, or `full` | **Fail: 332 of 500 (66.4%)**: 153 of 321 `ok` within 5 s, plus 179 `full`; 0 unanswered. `ok` edge total p50 5,161 ms, p99 7,355 ms | 311 of 500 |
+| No other refusal shape | Pass | Pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | Pass: peak 197,509 B | Pass |
+| Every merge in one of the next 2 entries, none over 2 s | **Fail:** 5 of 30 merge pushes over 2 s on the edge clock (max 15,215 ms); `merge:only` 21 × 200, 3 × 409, 1 × 503 `warming` | Fail |
+| Zero leader changes | Pass: term 2, site 0 | Pass |
+| Zero `suspect` | **Pass: 0** from the edge; no push missed a receipt. The voters' 3 `Reported` rows fell at 14:58:43Z, in group setup | Fail: 69 |
+| No object reset from memory | Pass: wasm high 37.4 MB | Pass |
+
+- **`full`:** 177 refused by the leader after a send whose budget ran out in its queue, 2 at the edge (`bound`). Their read gate took p50 1,682 ms, so they reached the commit send with p50 1,535 ms of AGENT_PUSH_BOUND left (the `ok` pushes, 3,033 ms). 112 of the 120 pushes in the gate's slow mode ended `full`, all from send position 200 on.
+- **Stages, `ok` pushes, p50 / p99 ms:** front 696 / 1,040; auth 120 / 340; resolve 446 / 946; gate when it read rows 610 / 1,748 (108 pushes); first commit 2,178 / 3,544. Committed twice: 138 of 321 (43%); `stagefirst` 228 of 500. Leader commit (`/stats`, whole row) 483 / 2,448; round p50 185.
+- **Gate slow mode:** 120 pushes at 1.5 s or more. Their slowest `repo:65602` pass: 69 follower tries answered `overloaded` at 900 to 1,300 ms (`FOLLOWER_WAIT`), and 32 more answered `ok` after 1.3 s.
+- **A34:** of 573 `/commit` and ask arrivals at the leader in the burst, none met a pending deferred flush; no flush ran 500 ms late; no push missed a receipt.
+
+### Confirms of 1 s or more, with `syncs.py`'s label [measured, `Trace::Sync`]
+
+Leader (site 0): 1,251 confirms in the row, wall p50 51 ms, p99 243 ms, max 1,449 ms. Followers: max 270 and 227 ms.
+
+| At (s from 15:03:44Z) | Wall | Statements | Bytes | Wakes inside | Requests inside | Lag start / end | Label |
+|---|---|---|---|---|---|---|---|
+| 5.48 | 1,000 ms | 221 | 75,532 | 10 | 101 | 0 / 0 | `storage` |
+| 6.93 | 1,449 ms | 67 | 8,143 | 14 | 60 | 0 / 0 | `storage` |
+
+- In the burst also: 900 ms (34 statements, 15.9 KB; 9 wakes, 334 requests) and two of 579 ms (1 statement of 191 KB, and 211 of 80.7 KB). All `storage`.
+- One confirm outside the burst reached 1,039 ms (1 statement, 175,513 B), also `storage`.
+- **So a confirm over 1 s recurred, and this time the isolate stayed free:** the ticker woke and requests entered throughout, and the loop lag was 0 at both ends. The time was the storage write itself. Its size does not predict it: 8 KB took 1.4 s where 191 KB took 0.6 s. m3fac1's 2,436 ms, in which nothing ran, is not repeated; whether that one was `gate held` cannot be told from its trace.
+- No ticker stall of 200 ms or more in the burst (m3fac1: 306 and 269 ms).
+
+### Cut ends and the burst's entries [measured, cut trace]
+
+- **Whole row:** 770 cuts, 766 `Empty`, **4 `AgentCmds`**, none `Soft`, `EntryMax` or `AgentTokens`.
+- **Burst entries** (s from 15:03:44Z):
+
+| Entry | Cut at | Commands | Soft bytes | Cut to append | Round |
+|---|---|---|---|---|---|
+| 389 | 0.84 | 59 | 44,309 | 900 ms | 100 ms |
+| 390 | 1.75 (`AgentCmds`) | 66 | 47,614 | 90 ms | 1,216 ms |
+| 391 | 1.84 (`AgentCmds`) | 65 | 27,187 | 1,216 ms | 169 ms |
+| 392 | 3.13 | 44 | 18,009 | 100 ms | 859 ms |
+| 393 | 3.69 (`AgentCmds`) | 67 | 47,827 | 392 ms | 394 ms |
+| 396 | 4.09 (`AgentCmds`) then 5.48 | 33 | 20,784 | 1,691 ms | 281 ms |
+
+- Entry rounds, whole burst, by size: 1 to 4 commands p50 187 ms; 5 to 15, 226 ms; 16 to 50, 281 ms; 51 to 120, 394 ms (max 1,216 ms). The long rounds and appends sit on the slow confirms above.
+- **Agent queue:** at most 68 left after a cut (at 1.75), 7 after the next cut 0.09 s later. Arrivals kept coming until about 5 s, so the queue rose again to 42 and 40 after the cuts at 3.69 and 4.09, and was empty after the cut at 5.48: 3.7 s after the first capped cut, behind the 1,000 ms confirm that ended at 5.48. `/stats` never sampled more than 4 agent commands queued.
+
 ## Row m3fac1: B0-32 on main `eaac204b` (`agent-cmds-entry`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** The orchestrator granted one site day and edge day from main `eaac204b` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (12:38:08Z). The measure is `agent-cmds-entry` alone: at most 64 Agent commands per entry (`decisions/DECISIONS.md`, "`agent-cmds-entry`").
