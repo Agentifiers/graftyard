@@ -161,9 +161,14 @@ test("the client in workerd", { skip: existsSync(WRANGLER) ? false : "tests/m0 h
   }
   const kinds = new Set(samples.map((s) => s[1].split("@")[0]));
   for (const k of ["push:agent", "push:human", "push:human:tip", "push:human:edge", "read:api", "read:ref", "feed", "tip:move", "read:clone",
-    "read:cloneTtfb", "read:cloneTtfb:hit", "read:cloneTtfb:miss", "read:cloneTtfb:hit:edge", "read:cloneTtfb:miss:edge", "hot:push:second", "hot:cloneTtfb:second"])
+    "read:cloneTtfb", "read:cloneTtfb:hit", "read:cloneTtfb:miss", "read:cloneTtfb:hit:edge", "read:cloneTtfb:miss:edge", "read:cloneTtfb:front", "read:cloneTtfb:hit:front",
+    "read:cloneTtfb:miss:front", "read:cloneTtfb:chain_open", "read:cloneTtfb:hit:chain_open", "hot:push:second", "hot:cloneTtfb:second"])
     assert.ok(kinds.has(k), `no ${k} sample (${[...kinds].join(" ")})`);
   assert.ok(samples.some((s) => s[1].endsWith("@kill")) && samples.some((s) => s[1].endsWith("@second")));
+  // The edge's stages carry their own durations, not the clone's: the fake edge sends front 4 and chain_open 6 ms.
+  for (const [k, v] of [["front", 4], ["chain_open", 6]])
+    assert.deepEqual([...new Set(samples.filter((s) => s[1].split("@")[0] === `read:cloneTtfb:${k}`).map((s) => s[2]))], [v], k);
+  assert.ok(!kinds.has("read:cloneTtfb:miss:chain_open"), "a miss with no chain_open stage records none");
   assert.ok(!samples.some((s) => s[1].startsWith("hot:") && s[1].endsWith("@j9")), "a hot network before its mark");
 
   // tip:move: the staged pack's exact receive-pack body, old = the advertised main, after an advertisement GET.

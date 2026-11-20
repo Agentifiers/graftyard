@@ -14,7 +14,8 @@ The lines, judged on the client clock:
   every     every clone's TTFB <= 5 s through the kill and cold phases, read with the 90% rule as a count line: the share
             of probes (hits and misses) <= 5 s in each of kill and second, passing at >= 90% (AGENTS.md, "How to pick
             work", item 5; BUILD-PLAN B0-34 notes). The share is printed beside "every" as written (100%).
-Per phase it also prints hits and misses each with n, p50, p99 and max on both clocks, and the count over 5 s.
+Per phase it also prints hits and misses each with n, p50, p99 and max on both clocks, and the count over 5 s, and
+the same for the edge's `front` and `chain_open` stages.
 """
 import gzip
 import json
@@ -25,6 +26,10 @@ from outagecut import cut, ms
 PHASES = ["j9", "kill", "second", "hostile"]
 STEADY, COLD = ["j9"], ["kill", "second"]
 HIT_P99_MS, EVERY_MS, SHARE = 1000, 5000, 0.90
+# Each printed column and the sample kind it reads: the client and edge clocks, then the edge's `front` (resolve and
+# auth) and `chain_open` (a manifest's chain checks) stages, which Load34 records from `server-timing`.
+PARTS = {"hit": "hit", "miss": "miss", "hitEdge": "hit:edge", "missEdge": "miss:edge", "hitFront": "hit:front",
+         "missFront": "miss:front", "hitChainOpen": "hit:chain_open", "missChainOpen": "miss:chain_open"}
 
 
 def pct(xs, q):
@@ -44,10 +49,9 @@ def lines(samples):
             continue
         kind, phase = k.split("@", 1)
         part = kind[len("read:cloneTtfb:"):]
-        if part in ("hit", "miss", "hit:edge", "miss:edge"):
+        if part in PARTS.values():
             by.setdefault(phase, {}).setdefault(part, []).append(v)
-    out = {p: {name: stat(by.get(p, {}).get(part, [])) for name, part in
-               (("hit", "hit"), ("miss", "miss"), ("hitEdge", "hit:edge"), ("missEdge", "miss:edge"))} for p in PHASES}
+    out = {p: {name: stat(by.get(p, {}).get(part, [])) for name, part in PARTS.items()} for p in PHASES}
     hits = [v for p in STEADY for v in by.get(p, {}).get("hit", [])]
     cold = {p: by.get(p, {}).get("hit", []) + by.get(p, {}).get("miss", []) for p in COLD}
     share = {p: (round(sum(1 for v in xs if v <= EVERY_MS) / len(xs), 4) if xs else None) for p, xs in cold.items()}
