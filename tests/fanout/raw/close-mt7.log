@@ -1,0 +1,30 @@
+2026-11-19T23:17:58.575Z repo:1048600: 4 names, 4 were joined, all not joined
+2026-11-19T23:18:05.670Z repo:3473413: 3 names, 3 were joined, all not joined
+2026-11-19T23:18:14.631Z repo:3538959: 4 names, 4 were joined, all not joined
+2026-11-19T23:18:22.597Z repo:3538960: 4 names, 4 were joined, all not joined
+2026-11-19T23:18:29.315Z repo:3538961: 3 names, 3 were joined, all not joined
+2026-11-19T23:27:13.155Z purge: waiting 171 s for sweep runs started before the first pass (until 2026-11-19T23:25:00.000011+00:00)
+2026-11-19T23:27:13.155Z purge: 1048600 purged: a 1542 -> 0, b 1148 -> 0, c 1434 -> 0
+2026-11-19T23:27:13.155Z purge: 1048600 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:27:13.155Z purge: 3473413 purged: a 37 -> 0, b 34 -> 0, c 32 -> 0
+2026-11-19T23:27:13.155Z purge: 3473413 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:27:13.155Z purge: 3538959 purged: a 36 -> 0, b 36 -> 0, c 33 -> 0
+2026-11-19T23:27:13.155Z purge: 3538959 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:27:13.155Z purge: 3538960 purged: a 37 -> 0, b 36 -> 0, c 33 -> 0
+2026-11-19T23:27:13.155Z purge: 3538960 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:27:13.155Z purge: 3538961 purged: a 37 -> 0, b 32 -> 0, c 37 -> 0
+2026-11-19T23:27:13.155Z purge: 3538961 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-19T23:27:13.155Z purge: {"dry": false, "purged": 5, "objects": 4544, "refused": [], "second": 0}
+RETIRE EXIT 0
+JOINED EXIT 0
+repo:1048600 ---
+repo:3473413 ---
+repo:3538959 ---
+repo:3538960 ---
+repo:3538961 ---
+none joined of 5
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+SWEEP EXIT 0
+DONE
