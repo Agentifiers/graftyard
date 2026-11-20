@@ -1,0 +1,68 @@
+2026-11-20T08:27:16Z start df0f5253 ~/workspace/repo/.worktrees/wid
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-20T08:27:32Z start sweep ok
+2026-11-20T08:27:20Z cost account 10.23 since 2026-11-20T00:00:00Z, run 0.02 since 2026-11-20T08:08:24Z, at b0-32
+2026-11-20T08:28:01.817Z m3org/fm3fwi2-b032 = 65598
+2026-11-20T08:28:02.224Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:05.455Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:08.673Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:11.884Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:15.095Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:18.313Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:21.506Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:24.722Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:27.931Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:31.135Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:34.335Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:37.624Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:40.822Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:44.016Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:47.216Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:50.413Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:53.610Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:28:56.801Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:00.004Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:03.202Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:06.399Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:09.597Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:12.799Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:15.998Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:19.422Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:22.619Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:25.822Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:29.012Z repo:65598 leader 0 placing since 1795163291395: waiting
+2026-11-20T08:29:38.995Z repo:65598 leader 0: config 11 learners [{"addr":192,"doName":"repo:65598#10#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65598#10#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65598#10#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65598#10#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65598#10#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65598#10#l5","join":20
+2026-11-20T08:29:45.355Z repo:65598 leader 0: set k 4: {"grants":[[0,[5,0,3]],[2,[5,0,3]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-20T08:29:55.788Z repo:65598 leader 0: set k 4: {"grants":[[0,[5,0,3]],[2,[5,0,3]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-20T08:30:06.234Z repo:65598 leader 0: set k 4: {"grants":[[0,[5,0,3]],[2,[5,0,3]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-20T08:30:16.857Z repo:65598 leader 0: set k 4: {"grants":[[0,[5,0,3]],[2,[5,0,3]]],"k":4,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-20T08:30:16.972Z repo:65598 leader 0: k 4 at 12
+2026-11-20T08:30:43Z b0-32 shard gate site 0: warm site 0 after 0.9 s
+2026-11-20T08:30:43Z b0-32 shard gate site 1: warm site 1 after 13.3 s
+2026-11-20T08:30:43Z b0-32 shard gate site 2: warm site 2 after 7.8 s
+2026-11-20T08:30:43Z b0-32 fm3fwi2-b032 65598 start
+2026-11-20T08:37:17.429Z repo:65598 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":11,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-20T08:37:17.549Z repo:65598 leader 0: k 1 at 808
+2026-11-20T08:37:31Z b0-32 fm3fwi2-b032 65598 done exit 0
+2026-11-20T08:37:36Z torn down 65598
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-20T08:39:02Z sweep ok
+ALLDONE
+b0-32 colos (voters' Reported rows):
+  colo LAX 2 {'leader': 1, 'promised': 1}
+harness outages (2026-11-20T08:33:29Z to 2026-11-20T08:36:29Z, edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-20T08:33:31Z", "2026-11-20T08:33:32Z"], ["2026-11-20T08:33:34Z", "2026-11-20T08:33:36Z"], ["2026-11-20T08:33:38Z", "2026-11-20T08:33:39Z"], ["2026-11-20T08:33:40Z", "2026-11-20T08:33:44Z"], ["2026-11-20T08:34:48Z", "2026-11-20T08:34:51Z"]], "outageSeconds": 11.0, "share": 0.0611, "valid": false}
+{"kind": "read:api", "measured": {"n": 32464, "served": 0.9995, "p50": 218, "p99": 1899, "cap": 0}, "outagesRemoved": {"n": 32357, "served": 0.9995, "p50": 217, "p99": 1855, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 5578, "served": 0.9995, "p50": 251, "p99": 2198, "cap": 0}, "outagesRemoved": {"n": 5561, "served": 0.9995, "p50": 251, "p99": 2122, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 27, "served": 0.8519, "p50": 900, "p99": 12299, "cap": 0}, "outagesRemoved": {"n": 27, "served": 0.8519, "p50": 900, "p99": 12299, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 740, "served": 0.9595, "p50": 1810, "p99": 12444, "cap": 0}, "outagesRemoved": {"n": 733, "served": 0.9591, "p50": 1802, "p99": 12444, "cap": 0}}
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-20T08:39:17Z SWEEP2 OK
+2026-11-20T08:39:17Z cost {"from": "2026-11-20T08:08:24Z", "to": "2026-11-20T08:39:18Z", "containers": 0.57, "do_rows": 0.49, "do_duration": 0.06, "do_requests": 0.04, "workers": 0.03, "usd": 1.19, "prefix": "graft-m3f", "prefix_usd": 0.7}
+FINISHED

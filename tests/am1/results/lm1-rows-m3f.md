@@ -175,6 +175,58 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **The driver** now reads `move_step`'s `{step, ok}` shape, which m3fg11's 200-character cut lost, and times `heldS` and the hand-off.
 - **Tests:** four new on real members (`crates/identity/tests/group_move.rs`), one changed unit test, and `plant49.py` 8 of 8.
 
+## Rows m3fwi2 and m3fwi3: B0-32 on main `b655c323` (identity recs 2a, 2b, 2c) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** Granted by the orchestrator after `write-identity` merged: one site day and edge day from main `b655c323` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (08:08:24Z), through the egress proxy under the harness-outage rule. The measure is the three review recs together: `git-read-class` (2a, git fetches read-class; 2b, `resolve`'s reads started at once), and `write-identity` (2c, a decided write takes its token or `jti` row from the edge's cache). Committed raw files: `tests/fanout/raw/rows-m3fwi{2,3}.status`, `{terms,admit,vmem}-m3fwi{2,3}-b0-32.jsonl`, `tsave-m3fwi{2,3}-b0-32.jsonl.xz`, `arrivals-m3fwi{2,3}.jsonl`, `shardgate-m3fwi{2,3}-b0-32-*.jsonl`. The a1 files (`a1-b0-32-mwopyfzd.jsonl`, `a1-b0-32-mwoqek4r.jsonl`, their `a1-pushes-` and `a1-samples-`) are under the ignored `tests/am1/raw/` on this thread's orb.
+
+- **Site day and edge day** m3fwi, 08:08:24Z to 08:23:16Z, both exit 0 on the first try: sites a/b/c `76098911` / `1551dcbb` / `ddc3e0b7` (phase 1 `925df47a` / `743752d9` / `9b1de312`), edge `448bc161`, each at 100%. Shard image `sha256:076a16ee…` and sshfront `sha256:fc6eda91…` reused (`containers` unchanged since `f413f2ac`). The edge's `--ssh` public JSON was read back from the live `meta/ssh` (slot A active).
+- **Sweep fix.** `teardown.py --sweep` counted the three always-on `-sshfront` containers (`ssh#0..2`) as shards and failed, which would stop `rows.sh` at its start. The sweep and teardown now skip a site's `-sshfront` application (`df0f5253`).
+- **First try, m3fwi:** `mkrepos.mjs` read the tools token from the main checkout and created nothing ("no repo"); no group, no spend. The launcher now sets `TOOLS_TOKEN_FILE`.
+- **m3fwi2:** repo 65598 (run `mwopyfzd`), 8 learners, k 4, leader site 0 term 2, shards warm, burst 08:34:43–51Z. **Invalid by the rule** (outages 16 s, share 0.0611), so rerun.
+- **m3fwi3:** repo 65599 (run `mwoqek4r`), the same setup, burst 08:47:16–25Z. **Invalid by the rule** (outages 19 s, share 0.0667).
+- **Spend:** $1.39 on graft-m3f by `PREFIX` from 08:08:24Z to 09:01Z (stop $8); the account $12.20 for the UTC day at 09:01Z.
+- **Close-out:** both groups retired, 12 of 12 names each; purged 5,671 objects, second pass 0, none refused; none joined of 2; sweeps with no shard container running (09:00Z).
+- **SSH after the row:** `ssh-keyscan ssh.graftyard.dev` at 09:01:13Z gave slot A's three fingerprints (Ed25519 `SHA256:TMEOnX…`, ECDSA `SHA256:XEJXBQ…`, RSA `SHA256:qgOnPP…`), and `meta/ssh` answers `active: A`.
+
+### The outage windows fall mostly before the client's first request [measured]
+
+`outages.sh` opens the window at a1's announced start (08:46:02Z and 08:33:29Z). a1's first sample started 13 and 14 s later (08:46:15Z, 08:33:43Z), after its setup. Of m3fwi3's 12 edge-0 seconds, 8 fell before the first request; of m3fwi2's 11, 7. Those are the client's idle seconds, which rule 5 already says do not mean a dropped host. The other 4 in each row are in the burst's upload, when one orb sends 125 MiB on 500 connections (edge 0 to 8 invocations a second while the sites serve), and the second at the first request. Counted from the first request, each row has about 4 to 5 outage seconds of 167, a share near 0.03, which would be valid. The rule was applied as written; whether the window should start at the client's first request is the orchestrator's call. Every burst line below reads the same either way, because the gate judges each burst push by its own edge `total`.
+
+### Result: fail on both runs [measured]
+
+Edge clock (`server-timing` `total`). `full` counts as meeting the line (the `ng` answer). The client clock includes one orb uploading 500 × 256 KiB through the egress proxy: 0 of 500 within 5 s on it in both runs (client p50 11.2 s and 10.5 s).
+
+| Gate line | m3fwi3 | m3fwi2 | m3fe2 |
+|---|---|---|---|
+| Every push acknowledged within 5 s, or `ng … agent admission full` | **Fail: 442 of 500 (88.4%)**, 431 of 489 `ok` within 5 s plus 11 `full`; 0 unanswered; edge total p50 4,092, p99 5,684, max 5,859 ms | **Fail: 436 of 500 (87.2%)**, 411 of 475 `ok` plus 25 `full`; 0 unanswered; p50 4,034, p99 5,736 | 496 of 500, met at 90% |
+| No other refusal shape | Pass | Pass | Pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | Pass: peak 112,715 B, 10 queued | Pass: 110,487 B | Pass |
+| Every merge in one of the next 2 entries, none over 2 s | **Fail:** 1 of 23 at 12,077 ms (`merge_plan` 11,480: the shard's `waited` 11,247), the rest under 2 s; 4 × 409 | **Fail:** 4 of 27 over 2 s (max 12,279, the same shard wait) | Pass |
+| Zero leader changes | Pass: term 2, site 0 | Pass | Pass |
+| Zero `suspect` | Pass: 0 from the edge; the voters' 2 `Reported` rows fell at 08:41:14Z, in group setup before the row (as m3fe2's) | Pass: same, 08:28:10Z | Pass |
+| No object reset from memory | Pass: no voter's wasm dropped, high 35.1 MB | Pass: 33.3 MB | Pass |
+
+Leader commit p50 / p99 498 / 1,345 ms (m3fwi2 454 / 1,207), against m3fe2's 332 / 856.
+
+### The front, with recs 2a, 2b and 2c
+
+Burst pushes' `server-timing` (`ok` only), p50 / p99 in ms. The front is max(auth + install, resolve).
+
+| Stage | m3fwi3 | m3fwi2 | m3fe2 |
+|---|---|---|---|
+| auth | 128 / 300 | 200 / 400 | 120 / 280 |
+| install | 557 / 888 | 649 / 940 | 600 / 994 |
+| resolve | **438** / 995 | 545 / 1,589 | 551 / 949 |
+| front | **695** / 1,149 | 894 / 1,589 | 767 / 1,180 |
+| wall before the first send | 2,010 / 3,756 | 2,000 / 3,834 | 1,885 / 3,434 |
+| after the first send | 1,652 / 2,755 | 1,828 / 2,764 | 1,338 / 2,539 |
+| total | 4,092 / 5,684 | 4,034 / 5,736 | 3,541 / 4,863 |
+
+- **auth did not move, as built** [inference from the code]. Every burst push is the vendor App's `ghs_` token. `write-identity` caches the `jti` row for a decided write, but the verifying keys stay fresh for every write (only the edge checks a key's retirement), so `ident::stateless` still reads TokenShard(0) per push. None of 489 pushes had auth at or under 20 ms. A stored-token push would take the held row; this row has none.
+- **resolve (2b)** came down on m3fwi3 (p50 438 against 551) and not on m3fwi2 (545). The front followed it: 695 and 894 against 767. Two runs do not separate rec 2b from run-to-run spread.
+- **The tail is after the front.** Of m3fwi3's 58 `ok` pushes over 5 s, 39 waited on a read gate that read its rows (gate p50 720 ms when it read, p99 2,152), and 36 ran two commits (staged, then committed). Commit p50 rose to 498 ms from 332, so "after the first send" rose by about 300 ms. That, not the front, sets the 58.
+- **rcread** p50 2 (m3fe2 5): fewer fresh reads per push, from the read-class and held entries.
+
 ## G11 built: a planned rehome warms the target's shard first (2026-11-19, code-only, branch `g11-warm`)
 
 Approved by the orchestrator after B0-31 was met on m3fr16, which left no other B0-31 item in BUILD-PLAN. `decisions/DECISIONS.md`, "`g11-warm`", has the decision and its flip.

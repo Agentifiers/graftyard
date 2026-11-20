@@ -84,8 +84,14 @@ if sweep and not kill:
     r = subprocess.run(["curl", "-s", "-m", "60", "-H", "@-", "-o", "/dev/null", "-w", "%{http_code}",
                         f"{edge}/_bed/fault?off=1"], input=f"x-bed-token: {bed}\n", capture_output=True, text=True)
     print(f"site fault off: {r.stdout or f'fail({r.returncode})'}", flush=True)
+# A site's `-sshfront` application is the SSH front (`ssh#<site>`), always on while `ssh.graftyard.dev` points at the
+# install (tests/m6/results/m6-wp2.md, "Cutover"); it is not a shard, so neither the teardown nor the sweep counts it.
+def shard_app(app):
+    return app["name"].startswith(install + "-site-") and not app["name"].endswith("-sshfront")
+
+
 for app in api("applications"):
-    if not app["name"].startswith(install + "-site-"):
+    if not shard_app(app):
         continue
     for i in api(f"applications/{app['id']}/instances?per_page=1000")["instances"]:
         if i["status"].get("state") != "running":
@@ -124,7 +130,7 @@ if "--sweep" in sys.argv[1:]:
     for attempt in range(6):
         time.sleep(10)
         left = [(app["name"], i.get("name")) for app in api("applications")
-                if app["name"].startswith(install + "-site-")
+                if shard_app(app)
                 for i in api(f"applications/{app['id']}/instances?per_page=1000")["instances"]
                 if i["status"].get("state") == "running"]
         if not left:
