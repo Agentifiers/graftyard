@@ -229,6 +229,37 @@ pub(crate) async fn through<K: Ord + Clone + 'static, V: Clone + 'static, E: std
     b.answer
 }
 
+/// `through` for a write whose command's `decide` reads this answer again and binds (`write-identity`, `Ctx::decided`): an
+/// entry at most `READ_CACHE` old answers it, as for a read-class request, and a miss reads through the key's batch,
+/// as any write does, so a burst of such writes on a cold isolate still shares its reads. Any other request is
+/// `through`.
+pub(crate) async fn through_bound<K: Ord + Clone + 'static, V: Clone + 'static, E: std::fmt::Display + From<String>>(
+    cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>,
+    k: K,
+    at: Timestamp,
+    read_class: bool,
+    decided: bool,
+    t: &crate::api::Timing,
+    read: impl Future<Output = Result<Option<V>, E>>,
+) -> Result<Option<V>, E> {
+    if let Some(v) = held(cache, &k, at, read_class, decided) {
+        return Ok(Some(v));
+    }
+    through(cache, k, at, read_class, t, read).await
+}
+
+/// The entry a write `decide` binds takes in place of its fresh read (`through_bound`): one at most `READ_CACHE` old,
+/// for a `decided` write only. A read-class request goes through `through`, which reads the same entry.
+pub(crate) fn held<K: Ord, V: Clone>(
+    cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>,
+    k: &K,
+    at: Timestamp,
+    read_class: bool,
+    decided: bool,
+) -> Option<V> {
+    (decided && !read_class).then(|| get(cache, k, at, true)).flatten()
+}
+
 /// A write-class call's answer from its key's batch, whether it was another call's read, and how long it waited
 /// before its own read started or a shared answer came.
 pub(crate) struct Batched<V, E> {
@@ -348,6 +379,25 @@ mod tests {
             batched(&T, 1, Timestamp(at), r, || at, |_| std::future::ready(())).now_or_never().map(|b| b.answer)
         };
         (out.expect("ready").expect("ok"), read)
+    }
+
+    /// `write-identity`: a write whose `decide` binds takes an entry at most `READ_CACHE` old in place of its fresh
+    /// read; past it, or with no entry, it reads (`through_bound` then goes through the batch, as any write does). A
+    /// write `decide` does not cover never takes one, and an answer that does not let a request through (a revoked
+    /// row) is never kept, so the next covered write reads it again. On main every write read fresh.
+    #[test]
+    fn a_covered_write_takes_a_held_token_entry_and_reads_nothing_fresh() {
+        T.with(|t| *t.borrow_mut() = Ttl::new(8, not_revoked));
+        put(&T, 1, Timestamp(1_000), false);
+        assert_eq!(held(&T, &1, Timestamp(11_000), false, true), Some(false));
+        assert_eq!(held(&T, &1, Timestamp(11_000), false, false), None);
+        assert_eq!(held(&T, &1, Timestamp(11_001), false, true), None);
+        assert_eq!(held(&T, &2, Timestamp(1_000), false, true), None);
+        // A read-class request is `through`'s, not `held`'s.
+        assert_eq!(held(&T, &1, Timestamp(1_000), true, true), None);
+        // A revoked answer read fresh by any request is never kept, so it cannot be held.
+        put(&T, 3, Timestamp(1_000), true);
+        assert_eq!(held(&T, &3, Timestamp(1_000), false, true), None);
     }
 
     #[test]

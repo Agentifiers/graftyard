@@ -6403,3 +6403,53 @@ Branch `git-read-class`, code only, no hosted row (second-opinion review T-01a1f
 - Plants: `tests/am1/load34/plant.py`.
 
 **Flip.** The first hosted row's `slotWaits` p99 over 100 ms, or a client's `lagMs` p99 over 200 ms (its isolate is busy): add clients, or move that kind to clients of its own. The row's `load34 cpu` per operation over 5 ms, or its estimate over today's rate: ask the operator before the next row (`FRAME.md`, item 3's condition).
+
+### `write-identity`: a write whose `decide` binds the caller's credential takes its token row from the edge's cache, 2026-11-20
+
+Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f697, rec 2c). The operator ruled that `FRAME.md`'s 2026-11-20 decision ("leader-side render") already moves this authorization work into `decide`.
+
+**Decision.**
+- A write whose command's `decide` reads the caller's credential shard (the token or `jti` row and the actor's `Account` row, `graftyard_identity::check_credential`), renders that refusal as the front's 401, and does nothing under the caller's authority that a later refusal would not undo, sets `Ctx::decided`. Its stored-token row and a `ghs_` token's `jti` row may then come from the edge's `rcache` entry at most `READ_CACHE` old (`rcache::through_bound`). A miss reads through the key's batch, as every write did (`edge-read-batch`). The leader's per-entry read is the one that binds.
+- The `ghs_` verifying keys stay fresh for every write: only the edge checks a key's retirement. Expiry stays checked on every use (`usertok::usable`, a `ghs_`'s `exp` in `verify`): the cache keeps the row, not the decision. The read gate's 10 s decision cache for pushes is unchanged.
+- **Renderers.** A credential refusal at `decide` now answers what the front answers:
+  - a GraphQL mutation: HTTP 401 `{"message": "Bad credentials", "status": "401"}`, where it was HTTP 200;
+  - a label, issue-labels, or REST `git/refs` write: 401 `basic-error` "Bad credentials" with `documentation_url` `.../rest`, where they were 403, 403, and 422 (or 401 with the leader's `unauthorized: Revoked` text for `DELETE git/refs`);
+  - review comments, check runs, and branch protection now carry `.../rest` as their `documentation_url`, as the front's does.
+
+**The audit.** Every edge write route, its command, and what decides it [code reading, the audit of 2026-11-20 on `01e27277`]. "Covered" means `decide` runs `check_credential` on stored tokens, `ghs_` claims (format 32.7 pushes, 32.9 issue commands), and sessions, and refuses a suspended account.
+
+| Write | Command, chain | `decide` checks the credential | Before `decide` | Front read |
+| --- | --- | --- | --- | --- |
+| git receive-pack POST | `Push`, Repo (`repo.rs`, `Push::decide`) | yes | pack placed in the buckets and validated on a git cache shard | cached (`git_decided`) |
+| git receive-pack advertisement | none | no command | refs advertised | fresh |
+| REST `POST labels`, `POST pulls/{n}/comments`, `POST check-runs`, issue labels, releases (`POST`, `PATCH`, `DELETE`, asset `DELETE`), `POST statuses/{sha}`, branch protection `PUT`/`DELETE` | issue command, Repo (`issue_ops.rs`, `decide_in`) | yes | nothing | cached (`rest_decided`) |
+| REST `POST`/`PATCH`/`DELETE git/refs` | `Push` with no pack, Repo | yes | an empty-pack validate for `POST`/`PATCH`, read-only | cached |
+| REST `PUT pulls/{n}/merge`, GraphQL `mergePullRequest` | `Merge`, Repo (`merge.rs`, `authorize`) | yes | merge-tree on a git cache shard | fresh |
+| GraphQL issue mutations, `enqueuePullRequest`, `dequeuePullRequest` | issue or `Queue` command, Repo | yes | nothing | cached (`graphql_decided`) |
+| GraphQL `createRepository`, REST repository create, update, delete | `CreateRepo`, `RenameRepo`, `DeleteRepo`, Authz (`authz.rs`) | yes | nothing | fresh: refusal rendered 200 `UNPROCESSABLE` or 503 |
+| tasks, leases, agent policy | issue command, Repo (`decide_task`, `decide_lease`) | yes | nothing | cached (`agents::serve`) |
+| collaborators, invitations, teams, memberships | issue or Authz command | yes | none, but some no-op answers commit nothing | fresh |
+| hooks, repository and org Actions secrets and variables, transfer, agent Apps, keys, user tokens, OAuth codes, instance auth, password, stars, watches, notifications | issue, Authz, Tokens, or Identity command | yes | none, or a `graft-ops` call | fresh: refusals render 403, 422, or 503 on several, or the route reads its rows back first |
+| hook pings and redeliveries, Actions cancel, runners, dispatch, hosted runners, LFS batch and transfer `PUT`, release asset upload, purge, seal-key rotation and rewrap | none, or an `ActionsCmd` whose `decide` reads no credential | no | outbound calls, R2 puts, `graft-ops` calls | fresh |
+| `DELETE /installation/token` | `RevokeJti`, Tokens | yes | nothing | fresh keys, no `jti` read, unchanged |
+
+**Why.**
+- A write read its token row fresh at the edge, and the leader read it again per entry. That second read is the one BF-15 and BF-27 rest on: it refuses every command decided after a revocation, however long the command queued (`crates/identity/tests/raft.rs`, `crates/identity/tests/wp4.rs`, `crates/git/tests/push.rs`). The edge's read added a member round trip to every write's front for an answer the leader read again.
+- On B0-32's burst a push's `auth` stage was p50 / p99 120 / 280 ms on m3fe2 with batching and 591 / 754 ms on m3fb32 without it, and the front, max(auth + install, resolve), 767 / 1,180 ms [measured, `tests/am1/results/lm1-rows-m3f.md`, "The front, with `edge-read-batch`"]. With the row held, a covered write's `auth` is the isolate's own lookup. A push's front then is the larger of `install` (p50 600 ms) and `resolve` (551 ms), so this alone takes the front down by at most what `auth` added to `install` [inference: no hosted row has run this].
+- `TokenFields`, the kind, the account, and `expires` never change once stored (`Store`, `StoreWith`, and `StorePair` refuse a hash already held; `Revoked` only sets `revoked`), so the cached row's reach and App cannot go stale; only `revoked` can, and `decide` reads it.
+
+**What it beat.**
+- **Caching for every write.** The no-decide routes would let a revoked token through for `READ_CACHE` with nothing behind them.
+- **Leaving receive-pack fresh** because a revoked token's pack is placed and validated before `decide` refuses it. A push is the write the review named, the bytes are swept after 24 h with no `request` row naming them (`crates/git/src/store.rs`, `place_teed`), and the refusal is the same 401 with `WWW-Authenticate`. The cost is up to `READ_CACHE` of git cache and bucket work for a revoked token's pushes.
+- **Re-rendering every refusal path first** (Authz, Tokens, Identity commands' 403, 422, and 503). Those routes keep their fresh reads until their refusals are fixed.
+
+**Evidence.**
+- `crates/api/tests/surfaces.rs`, `a_revoked_tokens_write_is_refused_at_decide_with_the_fronts_401`: a label write passes, the token is revoked in the leader's `Tokens` dep, the next write is refused `Unauthorized` at `decide`, and every covered route's renderer answers 401 with GHES's `basic-error`, a GraphQL mutation HTTP 401. It fails on main (GraphQL 200, labels 403).
+- `workers/edge/src/rcache.rs`, `a_covered_write_takes_a_held_token_entry_and_reads_nothing_fresh`; `workers/edge/src/api.rs`, `only_writes_whose_decide_binds_the_credential_take_the_cached_token`; `workers/edge/src/lib.rs`, `only_a_push_s_post_is_decided_among_git_requests`. Each fails on main.
+- BF-15 and BF-27's tests pass unchanged; they test `decide`, which now binds alone for covered writes. BM-3's hosted `journey4.sh` accepts a 401 from either place.
+- `tests/m0carried/plant59.py`.
+
+**Flip.**
+- A covered write that a revoked or suspended token gets through: a `decide` that skips `check_credential`, or a command that does something irreversible before it.
+- A GHES client that treats the decide-time 401 differently from the front's.
+- A hosted row where covered writes' `auth` does not fall toward zero on warm isolates, or where revoked tokens' pushes show as measurable git cache or bucket load.

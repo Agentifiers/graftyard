@@ -40,8 +40,13 @@ fn off(f: graftyard_raft::Format) -> Reply {
 
 pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Response> {
     let Some(route) = agents::route(rest) else { return respond(c, Reply::not_found()) };
-    let who = crate::authenticate(c, req).await?;
     let method = req.method();
+    // A task, lease, or policy write commits one issue command whose `decide` reads the caller's credential shard and
+    // renders its refusal 401 (`tasks::refused`, `leases::refused`, `release::refused`), so its token row may come from
+    // `rcache` (`Ctx::decided`, `write-identity`). The `Authz` routes read fresh: their refusal renders as
+    // `agents::refused` gives it, and they read the owner's rows back after the commit.
+    c.decided.set(writes(&method) && matches!(route, Route::Policy { .. } | Route::Tasks(_) | Route::Leases(_)));
+    let who = crate::authenticate(c, req).await?;
     c.write.set(writes(&method));
     let body = match method {
         Method::Put | Method::Patch | Method::Post => {
@@ -470,10 +475,19 @@ pub(crate) async fn write_ref(
         Ok(PushOutcome::Refused(x)) if x.status == 403 => {
             Reply::error(403, "Resource not accessible by integration", doc)
         }
-        Ok(PushOutcome::Refused(x)) => Reply::error(422, &x.err, doc),
+        Ok(PushOutcome::Refused(x)) => ref_refused(x.status, &x.err, doc),
         Ok(PushOutcome::Full(f)) => Reply::secondary_rate_limit(f.retry_after_s),
         Ok(PushOutcome::NotLeader(_)) | Err(_) => unavailable("the repository's group has no leader; retry"),
     })
+}
+
+/// A REST ref write's `Push` that `decide` refused, other than 403: a credential refusal (401) is GitHub's "Bad
+/// credentials", as the edge answers a token it refuses at the front, and any other is 422 with the leader's reason.
+pub(crate) fn ref_refused(status: u16, err: &str, doc: &str) -> Reply {
+    match status {
+        401 => Reply::error(401, "Bad credentials", "rest"),
+        _ => Reply::error(422, err, doc),
+    }
 }
 
 /// A REST ref write goes ahead when it creates the ref, when `force` is set, or when the git cache found the new tip

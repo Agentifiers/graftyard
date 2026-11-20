@@ -915,7 +915,8 @@ pub fn check_run_created(
 pub fn write_refused(e: &graftyard_git::issue_ops::IssueErr, doc: &str) -> Reply {
     use graftyard_git::issue_ops::IssueErr as E;
     match e {
-        E::Unauthorized(_) => Reply::error(401, "Bad credentials", doc),
+        // The front's body for a refused credential, whatever the route (`write-identity`).
+        E::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
         E::Forbidden => Reply::error(403, "Resource not accessible by integration", doc),
         E::Agent(a) => Reply::error(403, &a.text, doc),
         E::NotFound | E::NotPull => Reply::not_found(),
@@ -1111,7 +1112,8 @@ pub fn label_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
                 "documentation_url": format!("https://docs.github.com/enterprise-server@3.22/{LABELS_DOC}"),
                 "status": "422" }),
         ),
-        E::Forbidden | E::Unauthorized(_) => Reply::error(403, "Resource not accessible by integration", LABELS_DOC),
+        E::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
+        E::Forbidden => Reply::error(403, "Resource not accessible by integration", LABELS_DOC),
         E::Agent(a) => Reply::error(403, &a.text, LABELS_DOC),
         E::NotFound => Reply::not_found(),
         _ => Reply::error(422, "Validation Failed", LABELS_DOC),
@@ -1233,9 +1235,8 @@ pub fn issue_labels_ok(after: &Repo<'_>, n: u32, empty: bool) -> Reply {
 pub fn issue_labels_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
     use graftyard_git::issue_ops::IssueErr as E;
     match e {
-        E::Forbidden | E::Unauthorized(_) => {
-            Reply::error(403, "Resource not accessible by integration", ISSUE_LABELS_DOC)
-        }
+        E::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
+        E::Forbidden => Reply::error(403, "Resource not accessible by integration", ISSUE_LABELS_DOC),
         E::Agent(a) => Reply::error(403, &a.text, ISSUE_LABELS_DOC),
         E::NotFound => Reply::not_found(),
         _ => Reply::error(422, "Validation Failed", ISSUE_LABELS_DOC),

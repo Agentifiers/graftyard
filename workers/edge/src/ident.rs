@@ -79,7 +79,17 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
             }
         }
     };
-    let revoked = crate::rcache::through(&crate::rcache::JTIS, jti.0.0, at, read_class, &c.timing, read_jti);
+    // A write whose `decide` reads the `jti` row again may take it from the cache (`write-identity`); the keys stay
+    // fresh for every write, since only the edge checks a key's retirement.
+    let revoked = crate::rcache::through_bound(
+        &crate::rcache::JTIS,
+        jti.0.0,
+        at,
+        read_class,
+        c.decided.get(),
+        &c.timing,
+        read_jti,
+    );
     let (keys, revoked) = futures_util::future::join(keys, revoked).await;
     let Some(keys) = keys.map_err(Error::RustError)? else { return Ok(None) };
     let claims = match stateless::verify(text, &keys, now()) {

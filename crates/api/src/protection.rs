@@ -153,7 +153,7 @@ pub fn saved(acked: &Acked<IssueOut>, after: &Repo<'_>, branch: &str) -> Reply {
 /// A refused `SetRule`.
 pub fn refused(e: &IssueErr) -> Reply {
     match e {
-        IssueErr::Unauthorized(_) => Reply::error(401, "Bad credentials", DOC),
+        IssueErr::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
         IssueErr::Forbidden | IssueErr::Agent(_) => Reply::error(403, "Must have admin rights to Repository.", DOC),
         IssueErr::NotFound => Reply::error(404, "Branch not protected", DOC),
         IssueErr::NeedIdBlock | IssueErr::Unavailable => Reply::error(503, "Service Unavailable", "rest"),

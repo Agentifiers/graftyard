@@ -1282,7 +1282,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
         Ok(PushOutcome::Refused(r)) if r.status == 403 => {
             Reply::error(403, "Resource not accessible by integration", "rest/git/refs")
         }
-        Ok(PushOutcome::Refused(r)) => Reply::error(r.status, &r.err, "rest/git/refs"),
+        Ok(PushOutcome::Refused(r)) => crate::agents::ref_refused(r.status, &r.err, "rest/git/refs"),
         Ok(PushOutcome::Full(f)) => Reply::secondary_rate_limit(f.retry_after_s),
         Ok(PushOutcome::NotLeader(_)) | Err(_) => unavailable("the repository's group has no leader; retry"),
     })
@@ -1344,6 +1344,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     // A query is read-class (`Ctx::read_class`); a mutation, including a merge, reads everything fresh.
     c.read_class.set(!gq.is_mutation().unwrap_or(true));
     c.write.set(!c.read_class.get());
+    c.decided.set(graphql_decided(&gq));
     // The caller's token and the repository are read at once: neither read needs the other.
     let find = async {
         match &target {
@@ -1500,6 +1501,43 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     }
 }
 
+/// Whether a repository REST write is one whose token row may come from `rcache` (`Ctx::decided`, `write-identity`):
+/// it commits one command on the repository's chain, an issue command or a `Push` with no pack, whose `decide` reads
+/// the caller's credential shard first and whose refusal renders 401 "Bad credentials", and it does nothing under the
+/// caller's authority before that commit. A merge plans on the git cache shard first, a run's cancel commits on the
+/// Actions shard, whose `decide` reads no credential, and the routes `collab`, `repos`, `hooks`, `secrets`, and
+/// `activity` serve may answer without a command or render the refusal as another status, so they read fresh.
+fn rest_decided(method: &Method, tail: &[&str]) -> bool {
+    matches!(
+        (method, tail),
+        (Method::Post, ["labels"])
+            | (Method::Post, ["pulls", _, "comments"])
+            | (Method::Post, ["check-runs"])
+            | (Method::Post | Method::Put | Method::Delete, ["issues", _, "labels"] | ["issues", _, "labels", _])
+            | (Method::Post, ["releases"])
+            | (Method::Patch, ["releases", _])
+            | (Method::Delete, ["releases", _] | ["releases", "assets", _])
+            | (Method::Post, ["statuses", _])
+            | (Method::Put | Method::Delete, ["branches", .., "protection"])
+            | (Method::Post, ["git", "refs"])
+            | (Method::Patch, ["git", "refs", ..])
+            | (Method::Delete, ["git", "refs", ..])
+    )
+}
+
+/// Whether a GraphQL request is a mutation whose token row may come from `rcache` (`Ctx::decided`): every root field
+/// plans one command on the repository's chain whose `decide` reads the caller's credential shard and whose refusal
+/// renders 401 (`refused_field`, `refused_merge_field`), with nothing done first. `mergePullRequest` plans on the git
+/// cache shard first, and `createRepository` commits on the owner's `Authz` and renders its refusal 200
+/// `UNPROCESSABLE`, so both read fresh, as a query is read-class anyway.
+fn graphql_decided(gq: &Gql<'_>) -> bool {
+    gq.is_mutation().unwrap_or(false)
+        && gq.roots().is_ok_and(|roots| {
+            !roots.is_empty()
+                && roots.iter().all(|(f, _)| !matches!(f.as_str(), "mergePullRequest" | "createRepository"))
+        })
+}
+
 /// The pull request a REST merge (`PUT pulls/{n}/merge`) names; `None` for every other request.
 fn rest_merge(method: &Method, tail: &[&str]) -> Option<MergeOf> {
     match (method, tail) {
@@ -1627,6 +1665,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // neither needs the other. A write used to resolve after its token, untimed (`merge-p99`).
     c.read_class.set(method == Method::Get);
     c.write.set(method != Method::Get);
+    c.decided.set(rest_decided(&method, tail));
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
     let find = async {
@@ -2270,6 +2309,61 @@ async fn codeload(c: &Ctx<'_>, req: &Request, host: &Host, owner: &str, name: &s
 
 #[cfg(test)]
 mod tests {
+    /// `write-identity`'s audit as the edge applies it: only the REST writes that commit one credential-checked
+    /// command on the repository's chain, with nothing done first, take the token row from `rcache`; a merge (git
+    /// cache plan first), a run's cancel (no credential in `decide`), a read, and every route `collab`, `repos`,
+    /// `hooks`, `secrets`, and `activity` serve read fresh. A GraphQL mutation does, but not `mergePullRequest` or
+    /// `createRepository`, alone or beside another field; a query is read-class, not decided.
+    #[test]
+    fn only_writes_whose_decide_binds_the_credential_take_the_cached_token() {
+        use worker::Method::{Delete, Get, Patch, Post, Put};
+        let rest = |m: worker::Method, path: &str| super::rest_decided(&m, &path.split('/').collect::<Vec<_>>());
+        for (m, p) in [
+            (Post, "labels"),
+            (Post, "pulls/2/comments"),
+            (Post, "check-runs"),
+            (Post, "issues/1/labels"),
+            (Put, "issues/1/labels"),
+            (Delete, "issues/1/labels/bug"),
+            (Post, "releases"),
+            (Patch, "releases/4"),
+            (Delete, "releases/4"),
+            (Delete, "releases/assets/9"),
+            (Post, "statuses/abc"),
+            (Put, "branches/main/protection"),
+            (Delete, "branches/rel/v1/protection"),
+            (Post, "git/refs"),
+            (Patch, "git/refs/heads/main"),
+            (Delete, "git/refs/heads/main"),
+        ] {
+            assert!(rest(m.clone(), p), "{m:?} {p}");
+        }
+        for (m, p) in [
+            (Put, "pulls/2/merge"),
+            (Post, "actions/runs/5/cancel"),
+            (Get, "labels"),
+            (Get, "branches/main/protection"),
+            (Put, "collaborators/u"),
+            (Delete, "invitations/3"),
+            (Patch, ""),
+            (Delete, ""),
+            (Post, "hooks"),
+            (Put, "actions/secrets/S"),
+            (Put, "subscription"),
+            (Post, "issues/1/comments/extra/x"),
+        ] {
+            assert!(!rest(m.clone(), p), "{m:?} {p}");
+        }
+        let gql = |q: &str| super::graphql_decided(&super::Gql::parse(q, None, None).expect("parses"));
+        assert!(gql("mutation { addComment(input: {subjectId: \"I\", body: \"x\"}) { clientMutationId } }"));
+        assert!(gql("mutation { enqueuePullRequest(input: {pullRequestId: \"P\"}) { clientMutationId } }"));
+        assert!(!gql("mutation { mergePullRequest(input: {pullRequestId: \"P\"}) { clientMutationId } }"));
+        assert!(!gql("mutation { createRepository(input: {name: \"r\"}) { clientMutationId } }"));
+        assert!(!gql("mutation { addComment(input: {subjectId: \"I\", body: \"x\"}) { clientMutationId } \
+             mergePullRequest(input: {pullRequestId: \"P\"}) { clientMutationId } }"));
+        assert!(!gql("query { viewer { login } }"));
+    }
+
     /// The whole-tier read asks for the packed answer, so the leader builds one string, not a `Value` tree of 18 times
     /// its size; a merge's narrow read asks for it too, which a member answers unpacked.
     #[test]
