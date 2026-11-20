@@ -37,6 +37,9 @@ J=$M3_STATE/b034.json
 seed() { node tests/fanout/b034seed.mjs "$1" "$2" "$3" "$4" > "tests/fanout/raw/b034-seed-${3//\//_}.log" 2>&1; s "seed $3 exit $?"; }
 q() { python3 -c "import json,sys; d=json.load(open('$J')); print(eval(sys.argv[1]))" "$1"; }
 seed "$D/git.git" "$D/plan-git.txt" "$(q "d['second']['repo']")" member
+# ORBCLONE=1: the cold depth-1 hang's failing case (`chain-hold`): one depth-1 clone from the orb of the second network
+# just after its seed, cold, as mt9's first try's gate hung 120 s with no byte. Not a gate: its line goes to the status.
+[ -n "${ORBCLONE:-}" ] && s "b0-34 orbclone $(node tests/fanout/orbclone.mjs "$(q "d['second']['repo']")" member 2>&1 | tail -1)"
 for i in 0 1 2; do seed "$D/git.git" "$D/plan-git.txt" "$(q "d['hostile'][$i]['repo']")" hostile; done
 seed "$D/linux.git" "$D/plan.txt" "$(q "d['mono']['repo']")" admin
 mono=$(q "d['mono']['repo'].split('/')[1]"); chain=$(q "d['mono']['chain']")

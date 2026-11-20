@@ -52,7 +52,11 @@ w=$!
 until grep -q "$done_mark\$" "$done_file" 2>/dev/null; do sleep 10; done
 kill $w 2>/dev/null
 s "$ROW ended: $(tail -2 "$done_file" | head -1)"
-python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "sweep exit $?"
+# HOLD_MONO=1: the row's monorepo network keeps its shards for a 24 h idle measurement (cost thread, 2026-11-20); every
+# other shard and pool goes.
+keep=""
+[ -n "${HOLD_MONO:-}" ] && keep=$(python3 -c "import json,os;print(json.load(open(os.environ['M3_STATE']+'/b034.json'))['mono']['chain'].split(':')[1])")
+KEEP_NETS=$keep python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "sweep exit $? (kept: ${keep:-none})"
 u=$(meter); s "meter (account, run) $u after $ROW and the sweep"
 echo DONE >> "$ST"
 exec sleep infinity

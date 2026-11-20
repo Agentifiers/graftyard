@@ -7,7 +7,7 @@
 # its log ends in DONE.
 #   amp orb service start b030r4-siteday --command 'bash tests/am1/b030split/siteday-r4.sh'
 cd "$(dirname "$0")/../../.."
-export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/home/user/workspace/repo/.worktrees/target-am1
+export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.worktrees/target-am1
 export BED_TOKEN_FILE=$HOME/.graft-wp6/bed.token CARGO_PROFILE_RELEASE_DEBUG=0
 EDGE=https://graft-m1-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev
 RUN=${RUN:-b030r4}
@@ -38,4 +38,7 @@ if ! grep -q '^DONE' "$L" 2>/dev/null; then
     echo "acctcost after: $(python3 tests/fanout/acctcost.py | head -1)"
     echo "exit $((s | e))"; date -u +%FT%TZ; echo DONE; } > "$L" 2>&1
 fi
+# SITEDAY_RETURN=1: return to the caller (tests/fanout/b034go.sh). Without it the script holds its orb service open, and
+# a caller that ran it inline never got past this line: mt10's row waited 17 minutes after its site day's DONE.
+[ -n "${SITEDAY_RETURN:-}" ] && exit 0
 exec sleep infinity

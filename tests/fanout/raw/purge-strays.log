@@ -1,0 +1,46 @@
+2026-11-20T17:08:10Z buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-20T17:08:43Z waiting 76 s for sweep runs started before the first pass (until 2026-11-20T17:10:00.000010+00:00)
+2026-11-20T17:10:39Z buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-20T17:15:12Z 1048577 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:15:12Z 1048577 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:15:12Z 3473415 purged: a 10 -> 0, b 5 -> 0, c 5 -> 0, d 15 -> 0
+2026-11-20T17:15:12Z 3473415 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:15:12Z 3473414 purged: a 16 -> 0, b 16 -> 0, c 16 -> 0, d 16 -> 0
+2026-11-20T17:15:12Z 3473414 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:15:12Z 3538957 purged: a 17 -> 0, b 17 -> 0, c 17 -> 0, d 17 -> 0
+2026-11-20T17:15:12Z 3538957 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:15:12Z {"dry": false, "purged": 4, "objects": 167, "refused": [], "second": 0}
+2026-11-20T17:15:15Z buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-20T17:17:26Z waiting 453 s for sweep runs started before the first pass (until 2026-11-20T17:25:00.000010+00:00)
+2026-11-20T17:27:02Z 1048577 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z 1048577 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z 3473415 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z 3473415 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z 3473414 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z 3473414 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z 3538957 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z 3538957 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:27:02Z {"dry": false, "purged": 4, "objects": 0, "refused": [], "second": 0}
+2026-11-20T17:27:05Z buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-20T17:31:22Z 1048577 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z 1048577 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z 3473415 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z 3473415 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z 3473414 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z 3473414 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z 3538957 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z 3538957 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:31:22Z {"dry": false, "purged": 4, "objects": 0, "refused": [], "second": 0}
+2026-11-20T17:31:25Z buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-20T17:33:38Z waiting 381 s for sweep runs started before the first pass (until 2026-11-20T17:40:00.000011+00:00)
+2026-11-20T17:42:03Z 1048577 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z 1048577 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z 3473415 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z 3473415 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z 3473414 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z 3473414 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z 3538957 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z 3538957 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-20T17:42:03Z {"dry": false, "purged": 4, "objects": 0, "refused": [], "second": 0}
+2026-11-20T17:42:06Z buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-20T17:43:19Z 3538957 REFUSED: not retired (0:registry: <urlopen error _ssl.c:1064: The handshake operation timed ou)
