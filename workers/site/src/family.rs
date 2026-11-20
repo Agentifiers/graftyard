@@ -951,15 +951,29 @@ impl Family for Repo {
         true
     }
     async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        // Each step's ms, logged when one is long (`crate::alarm_steps`).
+        let mut steps = crate::alarm_steps::AlarmSteps::start(crate::now_ms());
         crate::split::on_alarm(host).await;
+        steps.mark("split").await;
         crate::load::on_alarm(host).await;
+        steps.mark("load").await;
         crate::prsync::on_alarm(host).await;
+        steps.mark("prsync").await;
         crate::merge_queue::on_alarm(host).await;
+        steps.mark("merge_queue").await;
         crate::hookseq::on_alarm(host).await;
+        steps.mark("hookseq").await;
         crate::activity::on_alarm(host).await;
+        steps.mark("activity").await;
         crate::actions_trigger::on_alarm(host).await;
+        steps.mark("actions_trigger").await;
         crate::snap::on_alarm(host).await;
+        steps.mark("snap").await;
         crate::archive::on_alarm(host);
+        if let Some(line) = steps.line() {
+            let name = host.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
+            worker::console_log!("{name} {line}");
+        }
     }
     fn schema() -> &'static [&'static str] {
         crate::snap::SCHEMA
