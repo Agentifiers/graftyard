@@ -6,7 +6,7 @@
 //                                [--image <digest-pinned image>] [--anchor <install.toml>] [--roll-shards <edge url>]
 //                                [--ops <graft-ops script>] [--var K=V ...] [--only <site id>] [--down <site id>]
 //                                [--audit-stream <Basin Pipelines stream id>] [--run-key <store id>/<secret name>]
-//                                [--ssh <store id> --ssh-image <digest-pinned image> --edge <edge script>]
+//                                [--ssh <store id> --ssh-image <digest-pinned image> --edge <edge script>] [--ssh-off]
 // `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
 // (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S, and `GRAFTYARD_HOST`, the API host webhook
 // payloads name). `--ops` binds the install's `graft-ops` as `OPS`, which `HookSequencer` unwraps hook secrets with.
@@ -25,6 +25,9 @@
 // deploy/ssh-front/hostkeys.mjs writes; and `--edge <script>` binds the edge as `EDGE` with props `{"ssh": true}`, the
 // only way a front's request reaches the edge as one. `--var SSH_HOST_KEY_ACTIVE=B` makes slot B the one key exchange
 // serves (a rotation).
+// A run without `--ssh` lists the account's Spectrum apps first and refuses while one has this install as its Worker
+// origin, since the new versions would turn SSH off on that hostname; `--ssh-off` turns it off on purpose
+// (`sshguard.mjs`).
 // `--genesis` (test-faults installs only) names the system chains' records, which each site reads from
 // GRAFTYARD_GENESIS in place of the `Release` view; a product install reads them from the genesis its `Release`
 // group accepted, and needs `--anchor` (the trust anchor `graftyard init` wrote: GRAFTYARD_INSTALL and
@@ -38,11 +41,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { refuseSshOff } from "./sshguard.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const [sitesPath, ...flags] = process.argv.slice(2);
 if (!sitesPath) throw new Error("usage: node workers/site/deploy.mjs <sites.json> [--genesis <genesis.json>] [--skip-build] [--test-faults] [--vars <vars.json>]");
 const sites = JSON.parse(readFileSync(sitesPath, "utf8"));
+// Without `--ssh`, refuse while a Spectrum app points at this install, unless `--ssh-off` (sshguard.mjs).
+await refuseSshOff(flags, { siteScripts: sites.map((s) => s.script) });
 const gi = flags.indexOf("--genesis");
 const genesis = gi >= 0 ? JSON.parse(readFileSync(flags[gi + 1], "utf8")).placements : null;
 const vi = flags.indexOf("--vars");
