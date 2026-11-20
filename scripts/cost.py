@@ -4,7 +4,7 @@
 Usage:
 	python3 scripts/cost.py                       # summary for every tier and variant, shard counts, egress split
 	python3 scripts/cost.py --detail large design
-	python3 scripts/cost.py --ssh-option            # what the opt-in cloudflared SSH option adds on Pro and Business
+	python3 scripts/cost.py --ssh-option            # what turning the off-by-default SSH option on adds
 	python3 scripts/cost.py --lever shard-mem,edge-compose --detail large design   # with cost levers on (LEVERS below)
 
 Workload comes from scripts/cost_model.py (TIERS, ACTIVITY). Prices are the cf.* entries in research/prices.json.
@@ -102,19 +102,21 @@ BASE_RENEW_VCPU_S = 45             # one stock depth-1 build of a 6 GB network, 
                                    # network is priced as the 6 GB one, an upper bound
 FETCH_VCPU_S = 0.3
 REPACK_VCPU_S_PER_GB = 30
-SSH_SHARE = 0.2                    # share of developer git bytes over SSH (Spectrum), on plans in SSH_PLANS
-SSH_PLANS = ()                     # SSH needs Enterprise for BYOC: Spectrum refuses a Tunnel origin on Pro [measured,
-                                   # tests/m0/results/m0-wp7.md, B0-24], Business until measured [unverified]. No
-                                   # tier here is on Enterprise, so the default tiers are HTTPS only: no SSH fronts, bytes or fee
-SSH_OPTION_PLANS = ("cf.plan.pro.monthly", "cf.plan.business.monthly")  # the opt-in SSH option: a Tunnel public
-                                   # hostname of type ssh, reached by `cloudflared access ssh` (FRAME.md, "Operator
-                                   # decision, 2026-10-31, SSH ingress"). Off by default, so the default totals exclude
-                                   # it; --ssh-option prices it. Tunnel bytes are not billed and Spectrum is not in the
-                                   # path, so it adds the SSH fronts and the SSH bytes crossing them (container egress)
+SSH_SHARE = 0.2                    # share of developer git bytes over SSH (Spectrum), where SSH is on [guess]
+SSH_PLANS = ()                     # plans whose default tiers run SSH: none. SSH is off by default per install
+                                   # (FRAME.md, "Operator decision, 2026-11-19, native SSH on Pro"), so the default tiers
+                                   # are HTTPS only: no SSH fronts, Spectrum bytes, or fee
+SSH_OPTION_PLANS = ("cf.plan.pro.monthly", "cf.plan.business.monthly")  # plans --ssh-option prices SSH on: a
+                                   # Spectrum TCP application on port 22 with a Worker origin (the edge's connect()),
+                                   # which a Pro zone accepted [measured, tests/m0/results/m0-wp7.md, B0-24c]; Business
+                                   # by the same plan table [unverified]. It adds the SSH fronts, the SSH bytes above the
+                                   # plan's monthly Spectrum SSH allowance at cf.spectrum.ssh.overage (Worker-origin apps
+                                   # have no published price, so that SSH price is [unverified] for them), and the SSH
+                                   # bytes leaving the front containers (container egress). No Tunnel is in the path
 SSH_OPTION = False                 # set by --ssh-option only
 PLAN = {"small": "cf.plan.pro.monthly", "medium": "cf.plan.pro.monthly", "large": "cf.plan.pro.monthly"}
                                    # Pro at every tier (FRAME.md, "Operator decision, 2026-11-19, Pro plan"): 100 MB
-                                   # HTTPS pushes; Business (200 MB) and Enterprise (5 GB, Spectrum SSH) stay install options
+                                   # HTTPS pushes; Business (200 MB) and Enterprise (5 GB) stay install options
 VARIANTS = ("design", "separate", "solo", "artifacts")
 
 # ---- git cache shards (CF-ACT-9) ----
@@ -125,7 +127,7 @@ WORKING_SET = {"small": 0.30, "medium": 0.20, "large": 0.10}   # share of git_gb
 INSTANCE = {"small": ("standard-2", 1, 6, 12), "medium": ("standard-3", 2, 8, 16), "large": ("standard-4", 4, 12, 20)}
 SCRATCH_GB = 4                     # disk per shard kept free for index-pack, repack, and upload-pack scratch [guess]
 WARM_COPIES = 2                    # each network is warm on its home site and one more
-SSH_CONTAINERS = (3, 0.25, 1, 4)   # basic instances running sshd and cloudflared replicas, one per site
+SSH_CONTAINERS = (3, 0.25, 1, 4)   # basic instances (0.25 vCPU, 1 GiB, 4 GB) running graft-sshd, one SshFront per site
 ACCOUNT_VCPU = 15000               # Containers default account limit (limits page, 2026-11-15)
 # Hot pool (FX-11): counted in each site's shard start cap at every tier, so it uses the tier's
 # instance size. Expected hot networks [guess 1] times FANOUT_MAX - 1.
@@ -150,7 +152,7 @@ LEADER_SPLIT = {"A": 0.5, "B": 0.3, "C": 0.2}                   # an NA-heavy in
 APAC_LED = {"A": 0.15, "B": 0.05, "C": 0.8}                     # sensitivity: an install whose owners sit in APAC
 
 # ---- Spectrum, spare sites, ReplaceMember, vault, runner account (CF-ACT-7, 10, 12, 13) ----
-SPECTRUM_ADDON_USD = 0.0           # [unverified] the Spectrum "Paid add-on" fee: no list price found; Enterprise only
+SPECTRUM_ADDON_USD = 0.0           # [unverified] a fee for a Worker-origin Spectrum application: no price published
 SPARE_SITES = 3                    # eeur, wnam, oc: script and empty bucket, no members and no containers
 CANARY_PER_HOUR = 6                # readiness canary put and get per spare bucket
 SITE_LOSS_PER_YEAR = 1             # `ReplaceMember` runs (signed SiteLost or 24 h of zero acks) [guess]
@@ -285,19 +287,19 @@ def workload(tier):
 	return t, w
 
 
-def ssh_share(tier):
-	"""Share of developer git bytes over SSH: zero on plans where SSH cannot run (SSH_PLANS)."""
-	return SSH_SHARE if PLAN[tier] in SSH_PLANS else 0
-
-
 def ssh_option(tier):
-	"""True when the opt-in cloudflared SSH option is priced for this tier's plan."""
-	return SSH_OPTION and PLAN[tier] in SSH_OPTION_PLANS
+	"""True when SSH is on for this tier: by default on plans in SSH_PLANS, or priced by --ssh-option."""
+	return PLAN[tier] in SSH_PLANS or (SSH_OPTION and PLAN[tier] in SSH_OPTION_PLANS)
+
+
+def ssh_share(tier):
+	"""Share of developer git bytes over SSH: zero where SSH is off."""
+	return SSH_SHARE if ssh_option(tier) else 0
 
 
 def ssh_fronts(tier):
-	"""SSH front containers (sshd and cloudflared, one per site), on plans in SSH_PLANS or with the SSH option."""
-	return SSH_CONTAINERS[0] if PLAN[tier] in SSH_PLANS or ssh_option(tier) else 0
+	"""SSH front containers (graft-sshd, one SshFront per site), where SSH is on."""
+	return SSH_CONTAINERS[0] if ssh_option(tier) else 0
 
 
 def kind_rows(kind):
@@ -505,7 +507,7 @@ def model(tier, variant="design", split=None):
 		# upload-once: a repacked pack leaves the container once, to its home bucket, and the second copy is an R2 read.
 		egress_gb = (w["dev_gb"] + w["ci_gb"] * (1 - CI_HIT) * miss_out()
 			+ repack_gb * (1 if "upload-once" in LEVERS else min(copies, 2))
-			+ (w["dev_gb"] + w["push_gb"]) * (SSH_SHARE if ssh_option(tier) else ssh_share(tier)))
+			+ (w["dev_gb"] + w["push_gb"]) * ssh_share(tier))
 		site_split = {"A": 1.0} if variant == "solo" else split
 		lines["Containers memory (provisioned)"] = over(mem_gibs, INCLUDED["c_mem_gibs"] * site_inc) * price("cf.containers.memory")
 		lines["Containers vCPU (active)"] = over(vcpu_s, INCLUDED["c_vcpu_s"] * site_inc) * price("cf.containers.vcpu")
@@ -523,7 +525,7 @@ def model(tier, variant="design", split=None):
 	ssh_gb = (w["dev_gb"] + w["push_gb"]) * ssh_share(tier)
 	ssh_inc = 5 if PLAN[tier] == "cf.plan.pro.monthly" else 10
 	lines["Spectrum SSH data"] = over(ssh_gb, ssh_inc) * price("cf.spectrum.ssh.overage")
-	lines["Spectrum SSH add-on fee [unverified, no list price found]"] = SPECTRUM_ADDON_USD if PLAN[tier] in SSH_PLANS else 0
+	lines["Spectrum Worker application fee [unverified, no price published]"] = SPECTRUM_ADDON_USD if ssh_option(tier) else 0
 	lines["Queues (webhooks, notifications, indexing)"] = over(queue_msgs * 3, INCLUDED["queues"]) / 1e6 * price("cf.queues.operations")
 	lines["Email Sending"] = over(w["emails"], INCLUDED["email"]) / 1000 * price("cf.email.sending")
 	lines["Analytics Engine (per-repo counters, SLO points)"] = over(w["reads"] + w["entries"], INCLUDED["ae"]) / 1e6 * price(
@@ -605,12 +607,14 @@ def detail(tier, variant):
 
 
 def ssh_option_report():
-	"""What turning on the cloudflared SSH option adds to the default install, per tier, without changing the defaults."""
+	"""What turning SSH on adds to the default install, per tier, without changing the defaults."""
 	global SSH_OPTION
-	print("| Developers | Plan | Default | With the SSH option | Added | Of which SSH front containers | Of which egress |")
-	print("| --- | --- | --- | --- | --- | --- | --- |")
+	print("| Developers | Plan | Default | With the SSH option | Added | Of which SSH front containers "
+		"| Of which Spectrum SSH data | Of which egress |")
+	print("| --- | --- | --- | --- | --- | --- | --- | --- |")
 	keys = ("Containers memory (provisioned)", "Containers disk (provisioned)", "Containers vCPU (active)")
 	egress = "Containers egress by site region and leader split"
+	spectrum = "Spectrum SSH data"
 	for tier in TIERS:
 		base = model(tier)
 		SSH_OPTION = True
@@ -622,7 +626,8 @@ def ssh_option_report():
 		added = sum(with_opt.values()) - sum(base.values())
 		plan = PLAN[tier].split(".")[2].capitalize()
 		print(f"| {TIERS[tier]['devs']:,} | {plan} | {money(sum(base.values()))} | {money(sum(with_opt.values()))} "
-			f"| {money(added)} | {money(fronts)} | {money(with_opt[egress] - base[egress])} |")
+			f"| {money(added)} | {money(fronts)} | {money(with_opt[spectrum] - base[spectrum])} "
+			f"| {money(with_opt[egress] - base[egress])} |")
 
 
 def set_levers(args):

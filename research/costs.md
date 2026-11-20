@@ -175,7 +175,7 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | Containers egress by site region and leader split | $0 | 0% |
 | Containers: hot pool kept warm for hot networks, working hours | $0 | 0% |
 | Spectrum SSH data | $0 | 0% |
-| Spectrum SSH add-on fee [unverified, no list price found] | $0 | 0% |
+| Spectrum Worker application fee [unverified, no price published] | $0 | 0% |
 | Queues (webhooks, notifications, indexing) | $0 | 0% |
 | Analytics Engine (per-repo counters, SLO points) | $0 | 0% |
 | Workers Logs ingest and storage | $0 | 0% |
