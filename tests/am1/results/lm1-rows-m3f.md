@@ -182,17 +182,17 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **Site day and edge day** m3fwi, 08:08:24Z to 08:23:16Z, both exit 0 on the first try: sites a/b/c `76098911` / `1551dcbb` / `ddc3e0b7` (phase 1 `925df47a` / `743752d9` / `9b1de312`), edge `448bc161`, each at 100%. Shard image `sha256:076a16ee…` and sshfront `sha256:fc6eda91…` reused (`containers` unchanged since `f413f2ac`). The edge's `--ssh` public JSON was read back from the live `meta/ssh` (slot A active).
 - **Sweep fix.** `teardown.py --sweep` counted the three always-on `-sshfront` containers (`ssh#0..2`) as shards and failed, which would stop `rows.sh` at its start. The sweep and teardown now skip a site's `-sshfront` application (`df0f5253`).
 - **First try, m3fwi:** `mkrepos.mjs` read the tools token from the main checkout and created nothing ("no repo"); no group, no spend. The launcher now sets `TOOLS_TOKEN_FILE`.
-- **m3fwi2:** repo 65598 (run `mwopyfzd`), 8 learners, k 4, leader site 0 term 2, shards warm, burst 08:34:43–51Z. **Invalid by the rule** (outages 16 s, share 0.0611), so rerun.
-- **m3fwi3:** repo 65599 (run `mwoqek4r`), the same setup, burst 08:47:16–25Z. **Invalid by the rule** (outages 19 s, share 0.0667).
+- **m3fwi2:** repo 65598 (run `mwopyfzd`), 8 learners, k 4, leader site 0 term 2, shards warm, burst 08:34:43–51Z. Invalid by the rule as first applied (share 0.0611 from the announced start), so rerun; **valid** once the window opens at the first request (share 0.0241, below).
+- **m3fwi3:** repo 65599 (run `mwoqek4r`), the same setup, burst 08:47:16–25Z. Invalid as first applied (0.0667); **valid** from the first request (0.024).
 - **Spend:** $1.39 on graft-m3f by `PREFIX` from 08:08:24Z to 09:01Z (stop $8); the account $12.20 for the UTC day at 09:01Z.
 - **Close-out:** both groups retired, 12 of 12 names each; purged 5,671 objects, second pass 0, none refused; none joined of 2; sweeps with no shard container running (09:00Z).
 - **SSH after the row:** `ssh-keyscan ssh.graftyard.dev` at 09:01:13Z gave slot A's three fingerprints (Ed25519 `SHA256:TMEOnX…`, ECDSA `SHA256:XEJXBQ…`, RSA `SHA256:qgOnPP…`), and `meta/ssh` answers `active: A`.
 
-### The outage windows fall mostly before the client's first request [measured]
+### The outage windows fall mostly before the client's first request; re-judged valid (operator, 2026-11-20) [measured]
 
-`outages.sh` opens the window at a1's announced start (08:46:02Z and 08:33:29Z). a1's first sample started 13 and 14 s later (08:46:15Z, 08:33:43Z), after its setup. Of m3fwi3's 12 edge-0 seconds, 8 fell before the first request; of m3fwi2's 11, 7. Those are the client's idle seconds, which rule 5 already says do not mean a dropped host. The other 4 in each row are in the burst's upload, when one orb sends 125 MiB on 500 connections (edge 0 to 8 invocations a second while the sites serve), and the second at the first request. Counted from the first request, each row has about 4 to 5 outage seconds of 167, a share near 0.03, which would be valid. The rule was applied as written; whether the window should start at the client's first request is the orchestrator's call. Every burst line below reads the same either way, because the gate judges each burst push by its own edge `total`.
+`outages.sh` opens the window at a1's announced start (08:46:02Z and 08:33:29Z). a1's first sample started 13 and 14 s later (08:46:15Z, 08:33:43Z), after its setup. Of m3fwi3's 12 edge-0 seconds, 8 fell before the first request; of m3fwi2's 11, 7. Those are the client's idle seconds, which rule 5 already says do not mean a dropped host. The other 4 in each row are in the burst's upload, when one orb sends 125 MiB on 500 connections (edge 0 to 8 invocations a second while the sites serve), and the second at the first request. Counted from the first request, each row has about 4 to 5 outage seconds of 167, a share near 0.03, which would be valid. **Re-judged (operator, 2026-11-20; `decisions/DECISIONS.md`, "`outage-window`").** The window opens at the client's first request. Recomputed with `arrivals.py`'s own `outages` and `summary` over the committed arrivals: m3fwi3 from 08:46:15Z, windows 08:46:15–16Z, 08:47:19–20Z and 08:47:23–25Z, 4 s, share 0.024; m3fwi2 from 08:33:43Z, windows 08:33:43–44Z and 08:34:48–51Z, 4 s, share 0.0241. **Both rows are valid, and both fail.** Every burst line below reads the same either way, because the gate judges each burst push by its own edge `total`. `outages.sh` now computes this window itself.
 
-### Result: fail on both runs [measured]
+### Result: fail on both runs, both valid [measured]
 
 Edge clock (`server-timing` `total`). `full` counts as meeting the line (the `ng` answer). The client clock includes one orb uploading 500 × 256 KiB through the egress proxy: 0 of 500 within 5 s on it in both runs (client p50 11.2 s and 10.5 s).
 
@@ -226,6 +226,22 @@ Burst pushes' `server-timing` (`ok` only), p50 / p99 in ms. The front is max(aut
 - **resolve (2b)** came down on m3fwi3 (p50 438 against 551) and not on m3fwi2 (545). The front followed it: 695 and 894 against 767. Two runs do not separate rec 2b from run-to-run spread.
 - **The tail is after the front.** Of m3fwi3's 58 `ok` pushes over 5 s, 39 waited on a read gate that read its rows (gate p50 720 ms when it read, p99 2,152), and 36 ran two commits (staged, then committed). Commit p50 rose to 498 ms from 332, so "after the first send" rose by about 300 ms. That, not the front, sets the 58.
 - **rcread** p50 2 (m3fe2 5): fewer fresh reads per push, from the read-class and held entries.
+
+### Where m3fwi's slow pushes lost their time (code-only follow-up, branch `tail-attr`)
+
+Each lever is judged against the `ok` burst pushes over 5 s on the edge clock (`server-timing` `total`), from the a1 files' `burst timing` steps. A push is rescued when its total less the lever's saving is at or under 5 s. "ms over" is the sum of each slow push's time past 5 s.
+
+| Lever | m3fwi3 (58 slow of 489 `ok`, 16,508 ms over) | m3fwi2 (64 slow of 475, 22,652 ms over) |
+|---|---|---|
+| Read gate's slow mode (gate 1,500 ms or more) cut to 720 ms | 35 rescued, 13,415 ms removed (57 pushes in the mode) | 54 rescued, 21,587 ms |
+| No second commit round (stage first) | 33 rescued, 13,123 ms (206 pushes committed twice) | 51 rescued, 20,231 ms |
+| Leader commit at m3fe2's speed (scaled estimate) | 48 rescued | 44 rescued |
+| Gate and second round together | 40 rescued; 18 slow pushes had neither | 52 had both; every slow push read its gate |
+
+- **The read gate is bimodal:** one mode at 250 to 1,000 ms, and one at 1,500 to 2,300 ms. The slow mode is cold isolates (`rcread` 7). That it is a learner read waiting `FOLLOWER_WAIT` (1 s) and then trying the next member is a hypothesis; followers' `/read` p99 was about 1 s.
+- **The second round is deterministic.** 191 of the 206 two-commit pushes also read their gate, and stage-first pushes almost all had a cached gate. So a cold isolate pays both. The leader's `agent_stage` rule answers `Stage` to every Agent inline pack past `AGENT_INLINE_ENTRY` (128 KiB) on any group, and the edge staged first only after it had seen a `Stage`. Per push, a two-commit push paid p50 287 ms for the refused commit, 543 ms to place, and 1,385 ms for the second commit. A push that staged first paid p50 1,351 ms for its one commit. The round cost p50 900 to 1,164 ms.
+- **Leader admission** (hot samples): round p50 218 ms against m3fe2's 133, and queued p99 74 against 10. About 210 of the burst's commits carried a 256 KiB inline pack the leader then refused.
+- **Fix built:** `agent-stage-first` (`decisions/DECISIONS.md`). An Agent push with an inline pack over `AGENT_INLINE_ENTRY` stages first on any group. It removes the second round with no new read, and takes the refused 256 KiB bodies off the leader. Its effect on the burst, and on leader commit p50, is [inference] until a B0-32 rerun. The gate's slow mode is the next lever. It needs its cause measured first.
 
 ## G11 built: a planned rehome warms the target's shard first (2026-11-19, code-only, branch `g11-warm`)
 

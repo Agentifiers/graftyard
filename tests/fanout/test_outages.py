@@ -37,6 +37,25 @@ class Outages(unittest.TestCase):
         s = arrivals.summary(arrivals.outages(busy), T, T + 60_000, busy)
         self.assertEqual((s["outageSeconds"], s["valid"]), (10.0, False))
 
+    def test_the_window_opens_at_the_first_request_not_the_announced_start(self):
+        # m3fwi3's shape: the driver announced at T, its first request left 13.5 s later, and the edge was idle until
+        # then while the sites served. From T the idle seconds read as outages (over 5%); from the first request the
+        # burst's own 4 edge-0 seconds remain, a valid row.
+        idle, load = 13, 167
+        r = rows([(0, 90)] * idle + [(200, 800)] * 64 + [(0, 100)] * 4 + [(200, 800)] * (load - 64 - 4))
+        b = T + (idle + load) * 1000
+        self.assertFalse(arrivals.summary(arrivals.outages(r), T, b, r)["valid"])
+        samples = [[T + 14_000, "read:api", 9, "200"], [T + 13_500, "side:human", 2202, "ok"], [T + 90_000, "push:burst", 4092, "ok"]]
+        f = tempfile.NamedTemporaryFile("wb", suffix=".gz", delete=False)
+        f.write(gzip.compress("\n".join(json.dumps(s) for s in samples).encode()))
+        f.close()
+        a = outagecut.first(f.name)
+        self.assertEqual(a, T + 13_500, "the earliest sample, not the file's first line")
+        a -= a % 1000
+        late = [x for x in r if x["t"] >= a]
+        s = arrivals.summary(arrivals.outages(late), a, b, late)
+        self.assertEqual((s["outageSeconds"], s["valid"]), (4.0, True))
+
     def test_cut_removes_samples_in_and_just_before_a_window(self):
         samples = [[T + 1000, "read:api", 300, "200"],  # 4 s before the window: kept
                    [T + 3000, "read:api", 2000, "0"],  # 2 s before: its retries ran into it, removed

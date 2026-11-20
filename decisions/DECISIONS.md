@@ -6495,3 +6495,40 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 **Evidence.** `crates/raft/tests/leadership.rs`, under "step-agree": `a_loaded_leader_that_still_commits_holds_through_its_own_confirm_trip` (fails on main, which transfers), `a_hot_leader_on_a_site_the_others_call_sick_still_moves`, `a_hot_leader_that_stopped_committing_is_not_kept`, and `a_quiet_groups_own_trip_still_transfers`. Plants in `tests/m0carried/plant60.py`, 6 of 6 caught. The long sweep and Porcupine on the branch and on main are in `tests/m0/results/step-agree.md`.
 
 **Flip.** A hot leader held while its group's commits stall for longer than HOT_WINDOW plus one STEP_DOWN window, or B0-06's rerun moving a group off its gray site later than 20 s: then the hold needs its own progress bound, or the verdict must come from the other sites before the first trip.
+
+### `outage-window`: a gate row's harness-outage window opens at the client's first request, 2026-11-20
+
+**Decision.** The load window that the harness-outage rule's 5% share is taken over opens at the client's first request (a1's earliest sample in `a1-samples-<row>-<run>.jsonl.gz`), not at the driver's announced start, and still ends at the announced end. `tests/fanout/outages.sh` computes it with `outagecut.py --first` and passes it to `arrivals.py`, so every later row applies it with no hand recount; a row with no samples file keeps the announced start. Rules 1 to 3 and 5 are unchanged: a second counts only when the main edge got 0 invocations while the sites served (`tests/fanout/README.md`, "Harness outages on gate rows", rule 4).
+
+**Why.** The seconds between the announced start and the first request are the driver's own setup, when no request is sent and the edge is idle by design, so they measure nothing about the harness. On B0-32 m3fwi3 the first request left 13 s after the announced start (08:46:02Z, then 08:46:15Z), and 8 of the row's 12 edge-0 seconds fell before it; on m3fwi2, 14 s and 7 of 11. Counted from the announced start the shares were 0.0667 and 0.0611, invalid; from the first request each is 4 s, share 0.024, valid [measured, `tests/fanout/raw/arrivals-m3fwi{2,3}.jsonl`, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fwi2 and m3fwi3"]. The operator ruled both rows valid fails on this basis (2026-11-20).
+
+**What it beat.**
+- **Opening the window at the burst or at the first load sample:** it would leave the warm-up out, where a dropped host is as real as in the burst.
+- **Rule 5's low-rate exemption for the setup seconds:** it judges a whole row by its mean rate, and a busy row's setup seconds would still count.
+- **A recount by hand per row:** m3fwi's recount was by hand, and a later row would apply the old window by default.
+
+**Evidence.** `tests/fanout/test_outages.py`, `test_the_window_opens_at_the_first_request_not_the_announced_start`: m3fwi3's shape (13 idle seconds, then a load with 4 edge-0 seconds) is invalid from the announced start and valid from the first request, and `first` takes the earliest sample, not the file's first line. It fails without `outagecut.first`.
+
+**Flip.** A row whose driver sends requests before its announced start (the window would then cut real seconds), or one where a dropped host is seen in the setup seconds and lost from the record: then the window should open at the announced start again and the setup seconds be judged by rule 5 alone.
+
+### `agent-stage-first`: an Agent push whose inline pack is over `AGENT_INLINE_ENTRY` stages it before its first commit on any group, 2026-11-20
+
+**Decision.** In `receive_pack`, a push that the edge's `admission` classes Agent and whose inline pack is over `AGENT_INLINE_ENTRY` (128 KiB) places its pack in the buckets before its first commit, and commits a `Stored` pack (`workers/edge/src/lib.rs`, `hot::stage_first`). Before this change, a push staged first only on a group whose leader had answered this isolate `Stage` within `HOT_WINDOW` (`push-reads`, item 4). That rule stays for every other push, and so does placement: while placement fails nothing stages first. The leader is unchanged. Its `agent_stage` rule (`crates/raft/src/member/leader.rs`, `admission_check`) still decides, and a pack staged early is a `Stored` pack it takes as it does any other (`design/DESIGN.md`, journey 1, step 1).
+
+**Why.** The leader answers `Stage` to every Agent inline pack that would take the entry past `AGENT_INLINE_ENTRY`, whatever the group's heat. A 256 KiB pack is past it alone. The edge learned that only from a refused first commit, per isolate, so each cold isolate's first push paid a second commit round. In B0-32's burst on main `b655c323` [measured, `tests/am1/results/lm1-rows-m3f.md`, "Where m3fwi's slow pushes lost their time"]:
+- m3fwi3: 206 of 489 `ok` pushes committed twice (commit, `Stage`, place, commit). A two-commit push paid p50 287 ms for the refused commit, 543 ms to place, and 1,385 ms for the second commit, against 1,351 ms for one commit after staging first. The second round cost p50 900 to 1,164 ms.
+- Of the 58 `ok` pushes over 5 s on the edge clock, staging first would have brought 33 under it and removed 13,123 of their 16,508 ms over 5 s. On m3fwi2, 51 of 64, and 20,231 of 22,652 ms.
+- Every one of those pushes is an Agent push of 256 KiB, so the leader's own rule says in advance what it will answer. It also takes about 210 inline 256 KiB `/commit` bodies per burst off the leader, whose commit p50 rose to 498 ms from m3fe2's 332 [inference that this lowers it].
+
+**What it beat.**
+- **The read gate's slow mode.** 57 of m3fwi3's pushes had a gate of 1,500 ms or more, on cold isolates (`rcread` 7). Cutting it to the 720 ms mode would have rescued 35 of the 58 and 13,415 ms, about as much as staging first. But its cause is a hypothesis (a learner read waiting `FOLLOWER_WAIT` and then trying the next member), not measured, and a fix needs that measured first. The gate is the next lever, and this change does not touch it.
+- **A hot flag or a `Stage` hint in the leader's replies:** a raft change for a rule the edge can compute from the constants it already shares with the leader.
+- **Raising `AGENT_INLINE_ENTRY`:** it moves B0-33's per-entry budget, which B0-31 and the fresh-group rows rest on.
+- **The `KEYS` cache:** the operator ruled the front is not where the slow pushes lose time (auth p50 128 ms of a 4 s total).
+
+**Evidence.**
+- `an_agent_pack_past_the_entry_budget_stages_first_on_a_cool_group` (`workers/edge/src/lib.rs`, `hot_tests`) fails on main: a cool group's 256 KiB Agent push stages first, one at `AGENT_INLINE_ENTRY` or just past `INLINE_MAX_HOT` does not, and a push not classed Agent does not at any size.
+- `tests/m0carried/plant61.py` catches 5 of 5, the first being main's rule.
+- The effect on the burst is [inference] until a B0-32 rerun reads `stagefirst` and `commit` from `server-timing`.
+
+**Flip.** A B0-32 rerun where more than 5% of `ok` burst pushes still commit twice, which would mean the leader's `Stage` comes from a rule the edge does not see, such as demotion. Or one where pushes that stage first take longer, at p50, than m3fwi3's two-commit pushes did, which would mean the bucket place costs more than the refused round. If the read gate's slow mode still keeps more than 10% of burst pushes over 5 s, that is the next change, not a reason to revert this one.
