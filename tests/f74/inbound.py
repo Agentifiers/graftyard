@@ -156,7 +156,7 @@ for addr in sorted(rows, key=str):
 # `graftyard_lookup::SENT_BY`, with steps from `graftyard_lookup::SentBy` (append-only). Per member: requests a second
 # by step, the distinct sending isolates, and the busiest isolate's share, so walks from many isolates and repeated
 # walks from a few tell apart.
-STEPS = ["other", "leader", "walk", "spread", "send", "ask"]
+STEPS = ["other", "leader", "walk", "spread", "send", "ask", "hedge"]
 step = lambda code: STEPS[code] if 0 <= code < len(STEPS) else "other"
 shown = False
 for addr in sorted(rows, key=str):

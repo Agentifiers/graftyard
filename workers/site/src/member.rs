@@ -553,10 +553,12 @@ impl DurableObject for Member {
         let hosted = self.hosts.borrow().as_ref().map(Hosted::clone);
         if let Some(h) = hosted {
             each!(&h, x => if x.joined() {
-                x.alarm().await;
+                let mut steps = x.alarm().await;
                 if let Err(e) = (Routes { host: x.clone() }).recheck().await {
                     console_error!("daily near check: {e}");
                 }
+                steps.note("near_check");
+                x.log_slow_alarm(&steps);
             });
         }
         Response::empty()
