@@ -175,6 +175,119 @@ The operator's rule (`FRAME.md`, "Operator decision, 2026-11-16, 90% gates and a
 - **The driver** now reads `move_step`'s `{step, ok}` shape, which m3fg11's 200-character cut lost, and times `heldS` and the hand-off.
 - **Tests:** four new on real members (`crates/identity/tests/group_move.rs`), one changed unit test, and `plant49.py` 8 of 8.
 
+## Row m3fgt1: B0-32 on main `19b4385f` (`agent-stage-first`) with gate tracing (2026-11-20, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** The orchestrator granted one site day and edge day from `19b4385f` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (10:43:34Z). The day ran from branch `gate-trace` (`fe3f8c64`): `19b4385f` plus test-faults-only tracing. Each push answers `x-graft-spread`, which lists every spread read pass with its member tries, and `server-timing` gains `gate_rows` and `gate_authz`. The measures are `agent-stage-first` and the `FOLLOWER_WAIT` hypothesis for the read gate's slow mode.
+
+**Committed raw files:**
+- `tests/fanout/raw/rows-m3fgt1.status`
+- `{admit,terms,vmem}-m3fgt1-b0-32.jsonl`
+- `tsave-m3fgt1-b0-32.jsonl.xz`
+- `arrivals-m3fgt1.jsonl`
+- `shardgate-m3fgt1-b0-32-*.jsonl`
+- `lm1-rows-m3f-data/m3fgt1-raw/a1-b0-32-mwovbevd.jsonl`, which holds every burst push's `server-timing` and `x-graft-spread`
+
+- **Site day and edge day** m3fgt, 10:43:35Z to 10:56:55Z, both exit 0 on the first try. Images were reused (`containers` unchanged since `b655c323`). `--ssh` was on.
+- **Row:** repo 65600 (run `mwovbevd`), 8 learners, k 4, leader site 0 term 2, shards warm. The run started 11:03:29Z; the burst was 11:04:29Z to about 11:04:31Z on the client clock. The row was done at 11:07:28Z.
+- **Harness outage:** the window opens at the first request, 11:03:42Z, under `outage-window`. 6 s of outage, share 0.0361. Valid.
+- **Spend:** $0.89 for the whole account from 10:43:34Z to 11:09Z, $0.69 of it on graft-m3f (stop $8).
+- **Close-out:** group torn down; second sweep OK.
+- **SSH:** `ssh-keyscan ssh.graftyard.dev` at 10:57Z and 11:15Z gave slot A's three fingerprints: Ed25519 `SHA256:TMEOnX…`, ECDSA `SHA256:XEJXBQ…`, RSA `SHA256:qgOnPP…`.
+
+### Result: fail, valid; `agent-stage-first`'s flip fired [measured]
+
+Edge clock (`server-timing` `total`); `full` counts as meeting the line.
+
+| Gate line | m3fgt1 | m3fwi3 |
+|---|---|---|
+| Every push acknowledged within 5 s, or `ng … agent admission full` | **Fail: 135 of 500 (27.0%)**: 125 of 490 `ok` within 5 s, plus 10 `full`; 0 unanswered. Edge total p50 8,713 ms, p99 10,539 ms | 442 of 500 (88.4%); p50 4,092 ms, p99 5,684 ms |
+| No other refusal shape | Pass | Pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | Pass: peak 108,508 B. The leader's queue peaked at 307 commands at 11:04:42Z | Pass: 112,715 B, 74 queued |
+| Every merge in one of the next 2 entries, none over 2 s | **Fail:** 2 of 22 over 2 s, max 6,803 ms; 1 × 409 | Fail: 1 of 23 |
+| Zero leader changes | Pass: term 2, site 0 | Pass |
+| Zero `suspect` | **Fail: 169 `suspect`** from 115 burst pushes that missed a receipt | Pass: 0 |
+| No object reset from memory | Pass | Pass |
+
+**Burst `ok` pushes, p50 / p99 ms, edge clock:**
+
+| | m3fgt1 | m3fwi3 |
+|---|---|---|
+| Committed twice | **0 of 490** | 206 of 489 |
+| `stagefirst` | 490 of 490 | 283 of 489 |
+| front | 920 / 1,278 | 695 / 1,149 |
+| auth | 135 / 353 | 128 / 300 |
+| resolve | 636 / 1,174 | 438 / 995 |
+| gate, when it read rows | 600 / 854 (270 pushes); max 1,347 | 720 / 2,152 |
+| gate's slow mode (1.5 s or more) | **0** | 57 |
+| first commit | 6,651 / 7,977 | 973 / 1,712 |
+| leader commit (`/stats`, whole row) | 377 / 5,490 | 498 / 1,345 |
+| leader round p50 (whole row) | 146 | 204 |
+
+- `agent-stage-first` removed the second commit round as built: 0 pushes committed twice. But pushes that staged first took edge p50 8,713 ms, against 4,582 ms for m3fwi3's two-commit pushes. That meets its flip (`decisions/DECISIONS.md`, "`agent-stage-first`", "Flip fired"), and it is reverted on branch `gate-trace`.
+- **Commit time by send order:** the first 50 burst pushes had commit p50 1.3 s; every later block of 50 had 6.7 to 7.3 s.
+- **Commit time by the edge's marks:** 266 pushes had one send and one ask (commit p50 6,355 ms); 60 had no ask (976 ms); 115 missed a receipt (61 with one miss, 54 with two).
+
+### `FOLLOWER_WAIT` and the read gate's slow mode: not confirmed on this row [measured]
+
+- **Passes:** 1,569 spread passes on burst pushes. 1,548 used their first member (followers 1,311, learners 254).
+- **Moved on:** 21 passes moved to a second member, every one after learner site 2 answered `overloaded` at 1,115 to 1,258 ms. That is the `FOLLOWER_WAIT` mechanism. 4 of the 21 were gate reads; 17 were the push's own agent-rows read.
+- **Shed:** 4 passes were shed after three tries, at about 3.3 s.
+- **Slow mode:** the gate never reached 1.5 s (max 1,347 ms), so this row cannot attribute m3fwi3's slow mode. No gate fix was built.
+
+### Where the burst's commit time went [measured from the leader's cut and turn traces, `tsave-m3fgt1-b0-32.jsonl.xz`]
+
+**Clocks.** Trace times are the server's clock, 13.8 s ahead of the orb's (`tsave` clock row). The burst's commits reached the leader at about 11:04:54Z on the server clock.
+
+**Arrival at the leader:**
+- **m3fgt1:** 406 `/commit` and 322 `/outcome_by_request` reached the leader in one half-second, beside 538 `/raft` (`Trace::Entered`).
+- **m3fwi3:** the refused first commits and the bucket places spread the same burst over about 3 s, and the leader's queue peaked at 74.
+
+**Entries and rounds.** Each entry is one leader cut (`Trace::Cut`), joined to its append (`Stepped`) and apply (`Applied`).
+
+| Commands per entry | m3fgt1: entries, round p50 (max) | m3fwi3: entries, round p50 (max) |
+|---|---|---|
+| 1 to 4 | 581, 143 ms (1,177) | 349, 193 ms (583) |
+| 5 to 15 | 249, 152 ms (1,305) | 301, 214 ms (731) |
+| 16 to 50 | 1, 1,549 ms | 7, 248 ms (329) |
+| 51 to 120 | 2, 259 ms | 6, 471 ms (578) |
+| over 120 | 2, 2,553 and 2,844 ms | 0 |
+
+**The burst's entries** (server clock from 11:04:54Z):
+
+| Entry | Commands | Soft bytes | Cut to append | Round | Ticker stalls inside |
+|---|---|---|---|---|---|
+| 444 | 74 | 71,570 | 214 ms | 259 ms | none |
+| 445 | 35 | 14,227 | 1,343 ms | 1,549 ms | 2,492 ms |
+| 446 | 191 | 99,892 | 2,842 ms | 2,553 ms | 1,731 ms |
+| 447 | 160 | 66,268 | 5,395 ms | 2,844 ms | 822 ms |
+
+- **Cut ends:** the 191-command cut ended `Soft`, at 99,892 of `ENTRY_SOFT`, with 157 left and 248 agent tokens unspent. The 160-command cut ended `Empty`. No burst cut ended `AgentTokens`, so the token bucket never bound.
+- **The agent queue drained faster than admission capacity allows.** It went from 307 queued to 0 within one 1 s sample, because `cut_early` froze batches of 191 and 160 behind entry 445. The wait was in frozen batches behind slow entries, not in the lane. `/stats` `queue` (admission to append) p99 was 3,113 ms.
+- **Resolutions answered per second** (`Trace::Work`): 146 in the first second, none for 2 s, 191, none for 2 s, 160, then 45 and 47. The burst resolved in three lumps over about 9 s. Admission capacity read 750 to 875 commands/s during the burst; the burst drained at about 55/s.
+- **Ticker stalls:** three, of 2,492, 1,731 and 822 ms, fell inside the three slow burst entries. m3fwi3 had none in its burst.
+- **Work in those turns:**
+  - Entry 446's apply was one turn of 600 statements (430,767 B), 374 events and 191 resolutions.
+  - Its deferred transaction ran 1,730 ms after it was deferred; entry 445's ran 1,515 ms after.
+  - Entries 445 to 447 were each encoded to 7 to 10 peers per step, 1.48 to 2.07 MB per step.
+  - Workers Logs show leader-site `/raft` invocations of 557 and 615 ms CPU at 11:04:58Z to 11:04:59Z.
+  - Which of these stalls the turn is [inference]: M4-WP4's B0-35 attribution of the same leader's `/raft` CPU is the owner of that question.
+
+**Why 430 pushes asked and 115 missed a receipt:**
+- **Asks.** The member's `/commit` answers after `COMMIT_HOLD` (1 s) with `admitted`, but only once `ready_or` sees `settled()`. In the burst's seconds, site A's member `/commit` wall was p50 3,709 ms and p99 4,551 ms (Workers Logs, sampled, 11:04:51Z to 11:05:00Z). The deferred flush and the stalls held the hold's answer past the edge's `COMMIT_RECEIPT` (2 s). So most pushes asked `/outcome_by_request`, which answered `pending` (wall p90 603 ms in the sample).
+- **The pushes' receipt marks, in order** (`server-timing`):
+
+  | Marks | Pushes |
+  |---|---|
+  | `send ask` | 266 |
+  | `send` | 60 |
+  | `send ask missed suspect send ask missed suspect send` | 54 |
+  | `send ask ask` | 49 |
+  | `send ask ask missed suspect send` | 39 |
+  | `send ask missed suspect send ask` | 22 |
+
+  Every miss followed an ask, and none followed a send alone.
+- **Misses.** An ask has `CALL_DEADLINE` (1 s). One that met a stall had no answer in time, and an isolate whose last 200 from the leader was more than 2 s old is not `busy`, so the edge reported `suspect` and sent again. A queued, admitted command therefore read as a dead leader. DESIGN's write path says queue time counts against no receipt; that holds for the queue itself, but not for a hold answer that a turn stall delays [inference from the code path and the logs; per-push last-heard times are not traced].
+
 ## Rows m3fwi2 and m3fwi3: B0-32 on main `b655c323` (identity recs 2a, 2b, 2c) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** Granted by the orchestrator after `write-identity` merged: one site day and edge day from main `b655c323` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (08:08:24Z), through the egress proxy under the harness-outage rule. The measure is the three review recs together: `git-read-class` (2a, git fetches read-class; 2b, `resolve`'s reads started at once), and `write-identity` (2c, a decided write takes its token or `jti` row from the edge's cache). Committed raw files: `tests/fanout/raw/rows-m3fwi{2,3}.status`, `{terms,admit,vmem}-m3fwi{2,3}-b0-32.jsonl`, `tsave-m3fwi{2,3}-b0-32.jsonl.xz`, `arrivals-m3fwi{2,3}.jsonl`, `shardgate-m3fwi{2,3}-b0-32-*.jsonl`. The a1 files (`a1-b0-32-mwopyfzd.jsonl`, `a1-b0-32-mwoqek4r.jsonl`, their `a1-pushes-` and `a1-samples-`) are under the ignored `tests/am1/raw/` on this thread's orb.
