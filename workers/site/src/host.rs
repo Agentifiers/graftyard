@@ -310,6 +310,13 @@ use crate::faults::{Fault, Kill};
 /// kept}}`, where `slow` counts the confirms whose storage took over `confirm_p99_ms`, `confirms` lists each as [end,
 /// storage ms] on the member clock, `whole` as [end, ms from the step], `isolate` as [end, ms from the step on the
 /// isolate's clock, sync] (`LOOP_LAG`'s samples; sync -1 for none), and `kept` the last 30 s from the step.
+/// The log line of a member alarm. It names the member, by Durable Object name and id, ahead of the alarm, so a reader
+/// can tell which group stepped down: m63's and m65's setup-time trips were the Actions shard's, not the repository's
+/// (`decisions/OPEN-QUESTIONS.md`, F108). `tests/fanout/stepdown.py` reads the line from `StepDown` on.
+pub(crate) fn alarm_line(do_name: &str, do_id: &str, a: &graftyard_raft::Alarm) -> String {
+    format!("member alarm {do_name} {do_id}: {a:?}")
+}
+
 pub(crate) fn step_down_line(w: &graftyard_raft::StepDownWindow) -> String {
     let slow = w.confirms.iter().filter(|c| c.1 > graftyard_raft::STEP_DOWN.confirm_p99_ms).count();
     let pairs = |v: &[(graftyard_types::Timestamp, u32)]| -> Vec<[u64; 2]> {
@@ -2976,8 +2983,9 @@ impl<F: Family> Host<F> {
             }
             if !out.alarms.is_empty() {
                 let mut s = self.stats.borrow_mut();
+                let group = (core.join.me.do_name.to_string(), self.state.id().to_string());
                 for a in out.alarms {
-                    console_log!("member alarm: {a:?}");
+                    console_log!("{}", alarm_line(&group.0, &group.1, &a));
                     // why-logs: the window the trip judged, its own samples, so a candidate rule is replayed on them.
                     if let (graftyard_raft::Alarm::StepDown { .. }, Some(w)) = (&a, core.m.step_down_window()) {
                         console_log!("{}", step_down_line(w));
@@ -4344,6 +4352,24 @@ mod tests {
         assert!(!super::hedge_due(Some(6), 7), "a batch with a later one sent is not");
         assert!(super::hedge_due(None, 7), "a call carrying no ReadIndex is copied as before");
         assert!(super::hedge_due(Some(1), 0), "nothing sent yet counts as newest");
+    }
+
+    /// F108: a member alarm names its group, by Durable Object name and id, ahead of the alarm, for a step-down and for
+    /// an abandoned transfer and its cause.
+    #[test]
+    fn a_member_alarm_line_names_its_group() {
+        use graftyard_raft::{AbandonWhy, Alarm, StepDownWhy};
+        use graftyard_types::SiteId;
+        let sd = Alarm::StepDown { why: StepDownWhy::LoopLag { clamped: 2 }, to: Some(SiteId(1)) };
+        assert_eq!(
+            super::alarm_line("actions:7100001.5#1#f0", "f30d1cad", &sd),
+            "member alarm actions:7100001.5#1#f0 f30d1cad: StepDown { why: LoopLag { clamped: 2 }, to: Some(SiteId(1)) }"
+        );
+        let ab = Alarm::TransferAbandoned { to: SiteId(2), step_down: true, why: AbandonWhy::Lease };
+        assert_eq!(
+            super::alarm_line("repo:65579#1#f0", "a0b85daa", &ab),
+            "member alarm repo:65579#1#f0 a0b85daa: TransferAbandoned { to: SiteId(2), step_down: true, why: Lease }"
+        );
     }
 
     /// A trip's window logs its bounds and every sample, and `slow` counts only confirms whose storage took over

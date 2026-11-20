@@ -8,8 +8,8 @@ use common::cluster::Cluster;
 use common::kv::{FUTURE_FORMAT, KV_FORMAT, KvCmd, KvEvent};
 use common::sim::{SITES, config};
 use graftyard_raft::{
-    Alarm, Colo, CommitError, ConfirmTimes, Deny, Envelope, LEASE, Message, Receipt, ReleaseTag, RequestId, Resolution,
-    Role, StepDownWhy, Term, TransferError, Verdict, VoteReq,
+    AbandonWhy, Alarm, Colo, CommitError, ConfirmTimes, Deny, Envelope, LEASE, Message, Receipt, ReleaseTag, RequestId,
+    Resolution, Role, StepDownWhy, Term, TransferError, Verdict, VoteReq,
 };
 use graftyard_types::{ReleaseId, SiteId, Timestamp};
 
@@ -78,6 +78,17 @@ fn step_downs(c: &Cluster) -> Vec<(SiteId, StepDownWhy, Option<SiteId>)> {
         .iter()
         .filter_map(|(s, a)| match a {
             Alarm::StepDown { why, to } => Some((*s, why.clone(), *to)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Each `Alarm::TransferAbandoned`, as (leader, target, started by STEP_DOWN, cause).
+fn abandoned(c: &Cluster) -> Vec<(SiteId, SiteId, bool, AbandonWhy)> {
+    c.alarms()
+        .iter()
+        .filter_map(|(s, a)| match a {
+            Alarm::TransferAbandoned { to, step_down, why } => Some((*s, *to, *step_down, *why)),
             _ => None,
         })
         .collect()
@@ -241,6 +252,8 @@ fn an_unreachable_target_is_retried_until_the_lease_then_abandoned() {
     }
     assert_eq!(c.m(A).transferring(), None, "not abandoned after one LEASE");
     assert_eq!(c.m(A).role(), Role::Leader);
+    // F108: the host logs the abandonment and its cause; no `STEP_DOWN` started this one.
+    assert_eq!(abandoned(&c), [(A, B, false, AbandonWhy::Lease)]);
     // The rounds after it carry `transfer: None`, and C took the None.
     assert!(!after_abandon.is_empty() && after_abandon.iter().all(Option::is_none), "{after_abandon:?}");
     assert_eq!(c.m(C).state().transfer, None);
@@ -277,7 +290,8 @@ fn a_refused_transfer_is_abandoned_at_once_and_leaves_no_lease() {
     assert_eq!(c.m(A).transferring(), None, "not abandoned");
     assert!(t < ms(LEASE), "waited out the LEASE for a refusing target");
     assert_eq!(c.m(A).role(), Role::Leader);
-    assert!(c.alarms().is_empty());
+    assert_eq!(c.alarms().len(), 1, "{:?}", c.alarms());
+    assert_eq!(abandoned(&c), [(A, B, false, AbandonWhy::Refused)]);
     let id = c.on(A, |m, now| m.read(now)).expect("leader");
     assert!(
         !c.resolutions.iter().any(|(_, r)| matches!(r, Resolution::Read { id: i, .. } if *i == id)),
@@ -2055,6 +2069,27 @@ fn a_leader_hands_off_to_no_follower_whose_answers_it_loses() {
             assert!(r.is_ok(), "{r:?}");
         }
     }
+}
+
+/// F108: a `/transfer` whose target's link turns lossy while it runs (C's stays clean) is abandoned before its LEASE,
+/// and the host's alarm names that cause, not the LEASE. The target is kept from catching up (its TimeoutNow never
+/// goes) by losing every answer it sends.
+#[test]
+fn a_transfer_abandoned_on_its_targets_lossy_link_says_so() {
+    let mut c = Cluster::new(81);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    let mut waited = 0;
+    while c.m(A).transferring().is_some() && waited < ms(LEASE) {
+        drive(&mut c, 100, false, &mut id, |e| e.to == B && matches!(e.msg, Message::Append(_)));
+        waited += 100;
+    }
+    assert_eq!(c.m(A).transferring(), None, "not abandoned");
+    assert!(waited < ms(LEASE), "waited out the LEASE: {waited} ms");
+    assert_eq!(c.m(A).role(), Role::Leader);
+    assert_eq!(abandoned(&c), [(A, B, false, AbandonWhy::LinkRefused)]);
 }
 
 // ---- step-agree: a hot group's own tail moves its leader only with the other sites' word or no commit progress ----

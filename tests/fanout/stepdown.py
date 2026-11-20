@@ -2,7 +2,7 @@
 """stepdown.py ALARMS RUN=DAY,FROM,TO [RUN=...] -> STEP_DOWN's confirm rule against candidate rules, offline, on the
 B0-33 rows' logged trips (the orchestrator's ask after m54, 2026-11-19: site b tripped it 15 times in 184 s).
 
-ALARMS is the sites' `member alarm: StepDown` lines from Workers Logs, under `== <run>` headers
+ALARMS is the sites' `member alarm` StepDown lines (with or without F108's group name) from Workers Logs, under `== <run>` headers
 (`raw/stepdown-alarms-m50-m54.txt`). Each Confirm line carries the rule's own window: `slow` confirms over 500 ms of
 `of`, and `to` (a transfer, or `None`, a hold). A candidate that only raises the slow count a trip needs is judged
 exactly from those numbers: a logged trip it keeps, it would have made. A trip it drops starts no hold, so a later
@@ -52,7 +52,9 @@ def main():
         if line.startswith("=="):
             run = line.split()[1]
             continue
-        m = re.match(r"(\S+) (\w) StepDown \{ why: (\w+) \{ (.*?) \}, to: (.*) \}", line.strip())
+        # Since F108 the host line is `member alarm <do name> <do id>: StepDown { ... }`; older lines lack the name.
+        m = re.match(r"(\S+) (\w) (?:member alarm(?: \S+ \S+)?: )?StepDown \{ why: (\w+) \{ (.*?) \}, to: (.*) \}",
+                     line.strip())
         if m:
             alarms[run].append({"at": m[1], "site": "abc".index(m[2]), "why": m[3], "to": m[5],
                                 **{k: int(v) for k, v in re.findall(r"(\w+): (\d+)", m[4]) if m[3] == "Confirm"}})
