@@ -28,3 +28,6 @@ exit 0
 == R23 M2 10% 2026-11-19T11:34:43Z from 66755ddd, bundle /tmp/m2-bundle, runner_box true, release 78ee8b483cdd
   graft-runners: release 78ee8b483cdd56dd2999762d1b2d238d4ea5e9761a24ef1afc0535c35664d99d uploaded as 13193b05-5b77-4e07-b63d-75f2b50d7a34, at 10%; rerun after 86400 s
 exit 0
+== R23 M2 100% 2026-11-20T18:25:06Z by the lead's 50% rule (run 1713035: 3 of 8 jobs on RunnerBox, 8 of 8 Success, gave_up 0, 18:20:46Z sweep destroyed 0); same deploy_versions [(13193b05, 100)] as upgrade's runner_box path (its canary-age check counts from the 18:14:27Z 50% deployment)
+  graft-runners: 13193b05 at 100% from 2026-11-20T18:25:14.811191Z [('13193b05', 100)]
+exit 0
