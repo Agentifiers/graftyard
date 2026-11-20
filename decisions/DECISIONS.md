@@ -1048,6 +1048,8 @@ Each decision below was made by the run under that delegation (`FRAME.md`, "Oper
 
 **Retires, 2026-11-19** (`FRAME.md`, "Operator decision, 2026-11-19, native SSH on Pro"). Its flip fired in a form it did not name: not an Enterprise zone but a Spectrum Worker application on the Pro zone itself, which gives a stock `git clone git@graftyard.dev:...` native SSH with no relay (B0-24c, B0-24d). The flip is fired, pending the operator: the VM retires once the operator points `graftyard.dev`'s SSH hostname at the Spectrum app. This change does not touch the VM, `ssh.graftyard.dev`, or `deploy/oci-ssh/`; the `ssh relay` rows in `design/DESIGN.md`, "Failure modes" and "Deployment modes", stay, marked retiring, until it is removed.
 
+**Flip fired, 2026-11-20** (`FRAME.md`, "Operator decision, 2026-11-20, SSH on Cloudflare only"). The operator pointed the hostname: `ssh.graftyard.dev` is a Spectrum Worker app on port 22 with `graft-m3f-edge` as its origin. A stock clone and push through it passed with no `cloudflared`, the pushed commit read back over HTTPS, and the host key matched `/api/graftyard/v1/meta/ssh` [measured, `tests/m6/results/m6-wp2.md`, "Cutover"]. Then the VM was terminated and its VCN deleted, Tunnel `graft-m0-ssh` with its route and virtual network and `ssh-m0.graftyard.dev` were deleted, and the 1Password key was marked retired. The `ssh relay` component is gone from `design/DESIGN.md`. `deploy/oci-ssh/` stays as the record of what ran.
+
 ### Decisions for a Pro-only build with no GHES, 2026-10-31
 
 > "ok skip. get it done given our current pro plan. i won't have enterprise for a while, if at all. also don't have an active github enterprise either. just get it done given these limitations."
