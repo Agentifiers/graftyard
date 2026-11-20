@@ -1147,6 +1147,15 @@ pub async fn answer<T>(
 /// F43 logs took 2.0 s on the callee (`tests/m1/results/m1-f43.md`).
 const LATE_LIMIT: Duration = Duration::from_secs(10);
 
+/// Whether a learner's call still open at HEDGE is copied: any call but a `ReadIndex` is, and a `ReadIndex` only while
+/// its batch is the newest this member sent. A later batch's answer grants this one's reads too (`raft`'s
+/// `on_read_index_res`), so its copy only adds a call to a leader already slow to answer: on B0-35 m61, 6,751 of the
+/// 7,089 copies replayed under load were of batches with a later one already sent (`decisions/DECISIONS.md`,
+/// "`read-newest`").
+fn hedge_due(read: Option<u64>, newest: u64) -> bool {
+    read.is_none_or(|b| b >= newest)
+}
+
 /// How long a learner's call waits for its answer before the same envelope is sent once more (`Host::hedge`)
 /// [guess]: past the slowest answer an apac learner had from an enam leader in a normal second of B0-18 (p99 330 ms,
 /// `tests/m3/results/m3-wp5.md`), and half of CALL_DEADLINE.
@@ -1196,6 +1205,8 @@ pub struct Host<F: Family> {
     requests: RefCell<Option<RequestSql<F::Ev>>>,
     pub restore_error: RefCell<Option<String>>,
     pub dying: Cell<bool>,
+    /// The newest `ReadIndex` batch this member sent as a call (`hedge_due`).
+    newest_read: Cell<u64>,
     ticking: Cell<bool>,
     active_until: Cell<u64>,
     alarm_at: Cell<u64>,
@@ -1958,6 +1969,7 @@ impl<F: Family> Host<F> {
             requests: RefCell::new(None),
             restore_error: RefCell::new(None),
             dying: Cell::new(false),
+            newest_read: Cell::new(0),
             ticking: Cell::new(false),
             active_until: Cell::new(0),
             alarm_at: Cell::new(0),
@@ -3066,6 +3078,13 @@ impl<F: Family> Host<F> {
             if let Some((round, _, last)) = traced {
                 h.trace_at(queued, Trace::AppendQueued, call.to, round, last, body.len() as u64);
             }
+            let read_batch = match e.msg {
+                raft::Message::ReadIndex { batch } => Some(batch),
+                _ => None,
+            };
+            if let Some(b) = read_batch {
+                h.newest_read.set(h.newest_read.get().max(b));
+            }
             match (&e.msg, call.batch) {
                 (raft::Message::ReadIndex { .. }, Some(b)) => h.trace(Trace::IndexSent, e.to.0, b, 0, 0),
                 (raft::Message::ReadIndexRes { index, .. }, Some(b)) => {
@@ -3115,7 +3134,7 @@ impl<F: Family> Host<F> {
             call.hop.set(h.hop.get() + 1);
             let answered = Rc::new(Cell::new(false));
             if h.is_learner() {
-                h.hedge(to, body.clone(), call.hop.get(), answered.clone());
+                h.hedge(to, body.clone(), call.hop.get(), answered.clone(), read_batch);
             }
             let missed = || {
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Deadline, "no answer within CALL_DEADLINE")));
@@ -3371,12 +3390,13 @@ impl<F: Family> Host<F> {
     /// queued behind it until the call ends or CALL_DEADLINE resends it: B0-18's last failures on `graft-m2b` were
     /// single calls between apac and enam that took 1.1 to 2 s (`tests/m3/results/m3-wp5.md`). Raft takes the copy as
     /// it takes any duplicate: a second answer to one batch or round is ignored. Both responses are stepped, so what
-    /// a leader held for this learner reaches it in either one.
-    fn hedge(self: &Rc<Self>, to: SiteId, body: Vec<u8>, hop: u64, answered: Rc<Cell<bool>>) {
+    /// a leader held for this learner reaches it in either one. A `ReadIndex` call is copied only while its batch is
+    /// the newest this member sent (`hedge_due`).
+    fn hedge(self: &Rc<Self>, to: SiteId, body: Vec<u8>, hop: u64, answered: Rc<Cell<bool>>, read: Option<u64>) {
         let h = self.clone();
         spawn_local(async move {
             Delay::from(HEDGE).await;
-            if answered.get() || h.dying.get() {
+            if answered.get() || h.dying.get() || !hedge_due(read, h.newest_read.get()) {
                 return;
             }
             let at = now_ms();
@@ -4261,6 +4281,16 @@ fn log_take(rows: impl Iterator<Item = Result<(Value, usize)>>, n: usize, cap: u
 
 #[cfg(test)]
 mod tests {
+    /// `read-newest`: a learner copies a `ReadIndex` call at HEDGE only while no later batch has left, and copies
+    /// every other call as before.
+    #[test]
+    fn a_learner_hedges_only_its_newest_read_index_batch() {
+        assert!(super::hedge_due(Some(7), 7), "the newest batch is copied");
+        assert!(!super::hedge_due(Some(6), 7), "a batch with a later one sent is not");
+        assert!(super::hedge_due(None, 7), "a call carrying no ReadIndex is copied as before");
+        assert!(super::hedge_due(Some(1), 0), "nothing sent yet counts as newest");
+    }
+
     /// A trip's window logs its bounds and every sample, and `slow` counts only confirms whose storage took over
     /// `confirm_p99_ms`: one of exactly 500 ms is not slow, nor one whose step-to-end time alone is over it, as
     /// `STEP_DOWN`'s rule reads them.

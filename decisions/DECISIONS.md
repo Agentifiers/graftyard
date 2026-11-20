@@ -6560,3 +6560,30 @@ Capping the count keeps a burst's entries in the size range that measured under 
 - The long sweep and Porcupine on this branch and on main are in `tests/m0/results/agent-cmds-entry.md`.
 
 **Flip.** A B0-32 rerun where an entry of at most 64 Agent commands still stalls the leader's ticker over 1 s (the cost is per turn, not per command), or where the burst's queue drains slower than about 3 s (the cap is too low, or the cost is elsewhere).
+
+### `read-newest`: a later read-index answer grants the earlier batches, and only the newest batch is resent or hedged, 2026-11-20
+
+The lead's request after B0-35 m61: attribute f0's `/raft` CPU by call kind and fix the kind that dominates (`tests/m4/results/m4-wp4.md`, "f0's `/raft` CPU on m61").
+
+**Decision.** A follower or learner's `ReadIndexRes` at index i grants its own batch's reads and those of every batch it sent before that one, and never a later batch's (`crates/raft/src/member/install.rs`, `on_read_index_res`). `tick_remote` resends only the newest batch in flight once it is `CALL_DEADLINE` old, and the site host copies a learner's `ReadIndex` call at `HEDGE` only while its batch is the newest the member sent (`workers/site/src/host.rs`, `hedge_due`). Other learner calls are hedged as before, F67 rule 12 still fails each batch's reads past CAMPAIGN_DEADLINE, and batch numbers stay per boot. No message or wire format changes.
+
+**Why.**
+- Learner read-index calls were f0's largest CPU kind on m61: 7,970 of 10,921 learner `/raft` calls in 09:48:00 to 09:49:39 carried one, at 22.9 of the window's 45.5 s of f0's CPU [measured].
+- 9,535 of the 46,250 learner read-index calls f0 received over the load were copies: 7,089 `HEDGE` copies and 2,446 `CALL_DEADLINE` resends. That was 30 to 40% of the calls in each minute once the admission queue built. The base batch rate did not grow with the queue (correlation −0.32), and the hedge rate did (+0.51) [measured, `tsave-m61`].
+- Each batch waited for its own answer, so every slow batch was copied, although a later batch's answer would have served it. The earlier batches' reads arrived before the later batch left, so before the leader took it and confirmed i. A write acknowledged before any of them is therefore at or below i, which is the same floor rule as one batch.
+- A replay with every call's traced time sends 36,467 calls instead of 46,250 (21% fewer), and batch waits fall from p99 2.26 s to 1.78 s [inference, `tests/fanout/readnewest.py`]. It does not credit the leader's lighter load.
+
+**What it beat.**
+- **A longer `HEDGE` or an adaptive one (p90 of recent calls):** in the same replay, max(500 ms, p90) still copies 4,217 calls and slows the straggler case the hedge exists for.
+- **Hedging only a learner's lone open call:** 88 of 7,089 copies remain, but `CALL_DEADLINE` resends of older batches stay, and an older batch is still granted only by its own answer.
+- **Granting every batch in flight on any answer:** `narrow-reads-3` rejected it. A later batch's reads may have arrived after the answered batch's index, and `each_read_index_answer_grants_only_its_own_batch` still fails it.
+- **Capping commands per entry:** B0-02's `AGENT_CMDS_ENTRY` covers that. On m61 every command was Human, f0's entries were p99 48 commands and 116 KB, and the heavy turns are not where the big entries are.
+
+**Evidence.**
+- `a_later_read_index_answer_grants_earlier_batches_and_only_the_newest_is_resent` (`crates/raft/tests/leadership.rs`) fails on main: main resends all three batches.
+- `each_read_index_answer_grants_only_its_own_batch` keeps its floor checks, reversed and in order.
+- `a_learner_hedges_only_its_newest_read_index_batch` (`workers/site/src/host.rs`).
+- `tests/m0carried/plant63.py` plants mutants of each rule.
+- The long sweep, Porcupine, and the full checks are in `tests/m4/results/m4-wp4.md`.
+
+**Flip.** A row whose learner read-index calls to a loaded leader are still more than 10% copies or resends, which would mean the duplicates come from elsewhere. Or one whose learner grant wait rises against the row before it at the same load, which would mean the copies of older batches were winning races this rule now forgoes.
