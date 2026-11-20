@@ -1,0 +1,17 @@
+14:30:38.608 a repo:65576#1#f0 alarm steps over 100ms: activity 474ms; alarm 498ms
+14:30:59.621 a repo:65576#1#f0 alarm steps over 100ms: activity 945ms; alarm 1022ms
+14:31:49.858 a repo:65576#1#f0 alarm steps over 100ms: actions_trigger 554ms; alarm 645ms
+14:31:50.322 a repo:65576#1#f0 alarm steps over 100ms: split 157ms; alarm 345ms
+14:32:33.582 a repo:65576#1#f0 alarm steps over 100ms: load 1192ms; alarm 1192ms
+14:32:37.692 a repo:65576#1#f0 alarm steps over 100ms: load 1745ms; alarm 1802ms
+14:32:51.450 a repo:65576#1#f0 alarm steps over 100ms: load 1025ms, prsync 163ms; alarm 1446ms
+14:32:52.039 a repo:65576#1#f0 alarm steps over 100ms: hookseq 111ms; alarm 141ms
+14:32:52.373 a repo:65576#1#f0 alarm steps over 100ms: load 113ms; alarm 127ms
+14:32:59.099 a repo:65576#1#f0 alarm steps over 100ms: activity 107ms; alarm 170ms
+14:33:17.565 a repo:65576#1#f0 alarm steps over 100ms: prsync 1632ms; alarm 1632ms
+14:33:22.179 a repo:65576#1#f0 alarm steps over 100ms: activity 1295ms, actions_trigger 114ms; alarm 1412ms
+14:33:33.619 a repo:65576#1#f0 alarm steps over 100ms: activity 2378ms, actions_trigger 169ms; alarm 2551ms
+14:33:42.599 a repo:65576#1#f0 alarm steps over 100ms: activity 1012ms; alarm 1090ms
+14:33:45.809 a repo:65576#1#f0 alarm steps over 100ms: prsync 233ms; alarm 233ms
+14:33:51.726 a repo:65576#1#f0 alarm steps over 100ms: activity 125ms; alarm 184ms
+14:34:23.080 a repo:65576#1#f0 alarm steps over 100ms: activity 2027ms, actions_trigger 251ms; alarm 2300ms
