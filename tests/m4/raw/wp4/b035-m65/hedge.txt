@@ -1,0 +1,1 @@
+read-index sent 49291 hedge 1106 (2.2%) past CALL_DEADLINE 178

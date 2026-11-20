@@ -1,0 +1,15 @@
+2026-11-20T18:15:18.176 e05903aa fetch   cf-worker graft-runners pass: started 2 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:15:18.908 e05903aa fetch   cf-worker graft-runners pass: started 2 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:15:19.091 13193b05 fetch   cf-worker graft-runners pass: started 2 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:15:19.093 13193b05 fetch   cf-worker graft-runners pass: started 3 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:15:19.105 13193b05 fetch   cf-worker graft-runners pass: started 3 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:15:19.238 13193b05 fetch   cf-worker graft-runners pass: started 2 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:15:19.257 e05903aa fetch   cf-worker graft-runners pass: started 3 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:15:19.656 e05903aa fetch   cf-worker graft-runners pass: started 3 destroyed 0 kept_busy 0 full 2 vcpu_stopped 0
+2026-11-20T18:16:33.923 13193b05 scheduled   cf-worker graft-runners pass: started 2 destroyed 10 kept_busy 0 full 0 vcpu_stopped 0
+2026-11-20T18:17:12.777 e05903aa fetch   cf-worker graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0
+2026-11-20T18:17:13.356 e05903aa fetch   cf-worker graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0
+2026-11-20T18:17:50.473 13193b05 fetch   cf-worker graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0
+2026-11-20T18:17:52.080 e05903aa fetch   cf-worker graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0
+2026-11-20T18:20:46.379 e05903aa scheduled   cf-worker graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0
+{"chunks": 1, "failed": [], "complete": true}

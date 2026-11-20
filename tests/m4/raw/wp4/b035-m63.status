@@ -1,0 +1,39 @@
+2026-11-20T17:07:36Z start 63e82533
+2026-11-20T17:08:02.049Z m3org/b035-m63 = 65577
+2026-11-20T17:08:02.460Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:05.701Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:08.947Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:12.188Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:15.417Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:18.651Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:21.859Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:25.061Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:28.294Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:31.529Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:34.742Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:37.949Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:41.161Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:44.390Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:47.605Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:50.802Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:54.009Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:08:57.222Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:00.430Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:03.695Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:06.905Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:10.105Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:13.310Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:16.561Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:19.765Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:22.978Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:26.186Z repo:65577 leader 0 placing since 1795194491307: waiting
+2026-11-20T17:09:37.054Z repo:65577 leader 0: config 26 learners [{"addr":192,"doName":"repo:65577#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65577#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65577#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65577#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65577#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65577#3#l5","join":200,"sit
+2026-11-20T17:09:37Z b0-35 b035-m63 65577 start
+2026-11-20T17:44:03Z b0-35 b035-m63 65577 done exit 0
+shardkill deployed: https://graft-m4a-shardkill.<workers-subdomain>.workers.dev
+git#0#net:65577 200
+{"torn_down": 1, "codes": {"200": 1}}
+sweep: no shard container running
+shardkill deleted: True
+2026-11-20T17:44:25Z sweep ok
+ALLDONE

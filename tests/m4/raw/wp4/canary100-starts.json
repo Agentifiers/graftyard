@@ -1,0 +1,42 @@
+{
+ "window": [
+  "2026-11-20T18:25:14Z",
+  "2026-11-20T19:31:03Z"
+ ],
+ "first_start": null,
+ "burst": {
+  "sandboxes": 0,
+  "spread_s": 0,
+  "no_instance": 0,
+  "too_many_per_second": 0,
+  "with_rate_error": 0,
+  "placement_wait_s": {
+   "p50": 0,
+   "max": 0,
+   "over_30": 0,
+   "all": []
+  }
+ },
+ "later": {
+  "sandboxes": 0,
+  "spread_s": 0,
+  "no_instance": 0,
+  "too_many_per_second": 0,
+  "with_rate_error": 0,
+  "placement_wait_s": {
+   "p50": 0,
+   "max": 0,
+   "over_30": 0,
+   "all": []
+  }
+ },
+ "destroyed": 0,
+ "delivery_passes_cancelled_at_30s": 0,
+ "launched": 0,
+ "launched_twice": 0,
+ "sandbox_alarm_invocations": 0,
+ "by_image": {},
+ "chunks": 2,
+ "failed": [],
+ "complete": true
+}

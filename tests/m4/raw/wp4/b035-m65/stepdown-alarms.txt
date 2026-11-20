@@ -1,0 +1,3 @@
+19:15:01.785 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 20, 3), (SiteId(2), 20, 3)] }, to: Some(SiteId(1)) }
+19:32:56.127 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 35, 3), (SiteId(2), 29, 3)] }, to: Some(SiteId(1)) }
+19:15:13.005 b member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 23, 3), (SiteId(2), 22, 3)] }, to: Some(SiteId(2)) }

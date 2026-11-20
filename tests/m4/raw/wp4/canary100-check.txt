@@ -1,0 +1,7 @@
+2026-11-20T18:25:14Z 14514 events in 166 s
+2026-11-20T19:25:14Z 1723 events in 15 s
+ "chunks": 2,
+2026-11-20T18:25:14Z 14456 events in 210 s
+2026-11-20T19:25:14Z 1723 events in 17 s
+{"chunks": 2, "failed": [], "complete": true}
+pass lines 8077, all on 13193b05, non-zero started/destroyed 0, Image not found / exited within / gave up 0

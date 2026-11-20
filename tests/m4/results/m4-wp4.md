@@ -788,6 +788,134 @@ The flat replay's p99 of 18.0 s matches m62's measured leader queue p99 of 17.8 
 - Porcupine (`tests/m0/porcupine`, built, `-seg 2000`) on the branch's histories, each exit 0: `hist.jsonl` Ok, 146,836 operations; `.gray` Ok, 2,336,111; `.live` Ok, 5,476,993 (12,000 segments).
 - Checks, each by its exit code, all 0: `cargo fmt --check`; workspace clippy `-D warnings`; wasm32 clippy for site and edge with and without `test-faults`, and for front and runners; `cargo test --workspace` 1,312 passed, 0 failed (on the merge with main `b8e555df`); `node --test workers/runners/tests/*.test.mjs`; `go test ./...` in `containers/git/server`, `containers/ssh/server` and `tests/m0/porcupine`; `check_design.py`, `check_names.py`, `check_links.py`.
 
+## B0-35 on a test-faults build after site day 63 (2026-11-20, rows m63, m64 and m65)
+
+Site day 63 (17:02:58Z to 17:04:00Z, exit 0) shipped main `63e82533` as a **test-faults** build, with `soft-grow` on top of `read-newest` and `agent-cap`. Image `m4a60` (`sha256:e55ab2ad…`) and edge day 28 stayed. `tests/m4/wp4/b035.sh` ran on a new repository, `m3org/b035-m63` = repo 65577, with 8 learners, and `b035tsave.sh` ran with `ISOLATES=1`. Run `mwp8i0vt`: load 17:16:11.086Z to 17:26:11Z; done at 17:44:03Z, exit 0. Raw files: `tests/m4/raw/wp4/b035-m63/` (`dispatchlog-whole.json`, `dispatch-lines.jsonl`, `stepdown-alarms.txt`, `alarm-steps-f0.txt`, `grown.txt`, `commitsenders.txt`, `f0cpu.txt`), `b035-m63.{status,lead,watch}`, `siteday63.log`, `tests/fanout/raw/tsave-m63.jsonl.xz`.
+
+**Verdict: B0-35 passes, on the median of three runs** (m63, m64 and m65, below), under FRAME's rule that a row is judged over three runs and passes when the median run meets the line and no run passes its fail line (`FRAME.md`, "Operator decision, 2026-11-20"). The lead accepted it on 2026-11-20.
+
+| Gate line | m63 | m64 | m65 | Median | Line (fail) |
+| --- | --- | --- | --- | --- | --- |
+| Actions dispatch p99, driver | 6.6 s | 9.9 s | 7.2 s | **7.2 s** | 10 s (30 s) |
+| Test-merge vCPU, leader's shard (spent over merge wall) | 0.58 | 0.58 | 0.61 | 0.58 | within the 1 vCPU budget |
+| Computes from list fields | 0 | 0 | 0 | 0 | 0 |
+
+No run passed a fail line. Every shed on m63 and m64 was `late` (its turn came past TURN_WAIT_MS); on m65, 34 of 3,227 were refused by the budget itself (`MergeBudget::decide`), the first budget refusals on these rows, which is the budget working as designed. m63 alone passed dispatch at 6.6 s against m62's 38.6 s. Each row's verdict lines went to the lead within 30 minutes of its done line (m63 at about 17:47Z, m64 at about 19:12Z, m65 at about 19:57Z).
+
+| Line | m63 | m62 |
+| --- | --- | --- |
+| Dispatch, driver | p50 3.8 s, **p99 6.6 s**, max 10.4 s, 2,500 of 2,500 paired | p50 5.5 s, p99 38.6 s |
+| Dispatch, site entry-to-run / demand | p99 4.7 s / 3.2 s | p99 32.9 s / 30.6 s |
+| Dispatch p99 by minute of load | 3.4 to 4.9 s, except minute 8 at 8.1 s | 18.2 to 45.8 s from minute 5 |
+| Leader commit | p50 631 ms, p99 1,487 ms | p50 1.0 s, p99 18.0 s |
+| Leader queue (slot) | p99 1,175 ms (1,103 ms) | p99 17.8 s (17.6 s) |
+| Round / confirm / deps | p99 477 ms / 292 ms / 578 ms | p99 880 ms / 898 ms / 1.4 s |
+| f0's vCPU (`tests/fanout/docpumin.py`, CPU-s per minute from 17:16) | 17.8, 18.3, 18.0, 19.3, 19.8, 19.4, 20.4, 20.0, 18.9, 14.6: mean 0.31, peak 0.34 | mean 0.49, peak 0.67 |
+| Learner read-index calls to f0 | 50,537 sent, plus 1,033 `HEDGE` copies (**2.0%**); 170 past `CALL_DEADLINE` | 44,515, 4.1% `HEDGE`; 2,543 past `CALL_DEADLINE` |
+| Leader changes | **0**, term 2 throughout. No hold in the load. One setup-time trip, in the Actions shard group (below) | 0; three holds |
+| `suspect` | 10 lines in the load window; no pre-vote | 2,000 or more per follower |
+| f0 alarm-steps lines | 2, both `load`: 1,408 ms (17:16:41) and 2,047 ms (17:16:43). f1 logged `snap` 1,648 and 7,530 ms at 17:08, in setup | 17 |
+| Pushes | 2,500 of 2,500 agent ok; human 318 ok, 7 `stale`, 29 `stale:race`; `mergeable` 503s 2; api 503s 5 | 2,423 of 2,500 ok; `mergeable` 503s 5,089 |
+| Shared isolates (`isolates.py`) | none (11 members, 11 isolates) | none |
+| Spend | graft-m4a **$4.03** (17:02:58Z to 17:45Z, `acctcost.py` prefix; $4.87 for the whole account in that window), runner account $0 | $4.41 |
+| Teardown | 1 shard 200, no container running, shardkill deleted (17:44:25Z) | clean |
+
+**The setup-time trip was another group's.** At 17:14:21.741Z, before load, a site-a member logged `StepDown { why: CommitErrors { calls: [(SiteId(1), 20, 3), (SiteId(2), 19, 3)] }, to: Some(SiteId(1)) }`. It was first read as repo 65577's f0 with an abandoned transfer, since repo 65577's term stayed 2. The event's Durable Object id names `actions:7100001.5#1#f0`, the Actions shard group, and its transfer completed: f1 led its term 5 by 17:14:23.153Z [measured]. The line names no group, which is the logging gap in `decisions/OPEN-QUESTIONS.md`, F108.
+
+**Cuts** (`tests/fanout/grown.py tests/fanout/raw/tsave-m63.jsonl.xz 1795194971086 600 0`) [measured]: 1,932 cuts, 693 ended `Soft` and 1,239 `Empty`. Of the `Soft` cuts, 556 ended at 100 KB or less and 137 grew past it, to at most 150 KB. Soft bytes p50 60 KB, p99 145 KB. Commands left queued after a cut: p99 17, max 25 (m62: 350).
+
+**Queue wait against the replay.** Measured leader queue p99 1.18 s, against the 5.6 s the m62 replay predicted. `softgrow.py` on m63's own trace gives flat 1.9 s and `soft-grow` 1.2 s, with a cycle fit of 310 ms plus 0.00 ms per KB. So m63's offered load ran under the m62 model, and the grown entries did not lengthen the cycle [measured].
+
+**The `soft-grow` flip line, grown against 100 KB or less** [measured]:
+- Leader confirm wall: grown n 183, p50 57 ms, p99 476 ms, max 530 ms, none of 1 s or more. 100 KB or less: n 2,722, p99 356 ms, max 2,037 ms, 2 of 1 s or more.
+- Followers: grown p99 77 ms; 100 KB or less p99 99 ms.
+- Leader sync by transaction bytes: over 100 KB p99 359 ms; 100 KB or less p99 357 ms. The driver's `confirmSplit` gives sync p99 282 ms under 100 KB and 359 ms from 100 KB to 1 MB.
+- Grown entries' confirm p99 is above the smaller entries' on the same row, but no grown entry took 1 s, and both are under m62's flat 966 ms (24 of 1 s or more). One row does not meet the flip; the lead asked for the comparison on each of three rows.
+
+**Far voter.** No AppendEntries failed in the trace. The driver counted `CALL_DEADLINE` misses of 3 to f1, 4 to f2, and 1 and 2 to learners 198 and 199. f2's call p99 was 665 ms, and 660 ms for its 141 calls that carried a grown entry. f1's was 515 ms.
+
+**The end-of-load `/commit` storm did not recur** (`tests/fanout/commitsenders.py`, f0's object, 17:15:30 to 17:28Z, no saturated slice) [measured]. f0 received 6,212 `/commit`s: 2,501 from the edge, 3,711 with step `Leader` (`commit_as`), of which 2,809 came from the top isolate, and none with step `Send`. The top isolate peaked at 287 a minute and 27 a second (m62: 1,605 and 123). Calls of 1 s or more: edge 24%, top isolate 14%. Nothing is built. If the storm returns, the lead's preferred fix is `commit_as` asking by request id.
+
+### Row m64 (same site day, no redeploy)
+
+Granted by the lead with a $10 stop on graft-m4a plus the runner account from m64's start, later raised to $12 for m65. `b035.sh` at `67700476` (driver unchanged since m63) ran on `m3org/b035-m64` = repo 65578, with 8 learners and `ISOLATES=1`. Run `mwpb99mz`: started 18:26:07Z, load 18:32:45.269Z to 18:42:45Z, done 19:03:41Z, exit 0; the sweep tore down shard 65578 and the canary burst's leftover shard 65569 (both 200), no container running, shardkill deleted (19:04:05Z). Raw files: `tests/m4/raw/wp4/b035-m64/` (as m63's, plus `softgrow.txt`, `readnewest.txt`, `isolates.txt`, `hedge.txt`, `cost.txt`, `alarm-steps-all.txt`), `b035-m64.{status,lead,watch}`, `tests/fanout/raw/tsave-m64.jsonl.xz`. Verdict lines went to the lead at about 19:12Z, inside 30 minutes of the done line.
+
+| Line | m64 |
+| --- | --- |
+| Dispatch, driver | p50 5.4 s, **p99 9.9 s**, max 12.2 s, 2,500 of 2,500 paired |
+| Dispatch, site entry-to-run / demand | p99 7.4 s / 5.6 s |
+| Dispatch p99 by minute of load | 4.5 to 5.0 s through minute 4, then 6.2, 5.6, 7.7, 5.6, 8.4 s |
+| Leader commit | p50 621 ms, p99 2,675 ms |
+| Leader queue (slot) | p99 2,459 ms (2,375 ms) |
+| Round / confirm / deps | p99 776 ms / 373 ms / 695 ms |
+| f0's vCPU (CPU-s per minute from 18:33) | 23.5, 24.8, 27.7, 29.2, 30.6, 30.8, 31.7, 33.0, 33.5, 25.4: mean 0.48, peak 0.56 |
+| Learner read-index calls to f0 | 49,522 sent, plus 2,145 `HEDGE` copies (4.3%); 964 past `CALL_DEADLINE` |
+| Leader changes in the load | **0**, term 2. Holds: 18:40:27 LoopLag (clamped 2), 18:42:14 CommitErrors [(f1, 25, 3), (f2, 21, 3)], each `to: None` |
+| After the load (observed, outside the gate window) | During the driver's run cancellation, 19:02:27 CommitErrors [(f1, 29, 3), (f2, 24, 3)] with `to: Some(SiteId(2))`, and the transfer completed: f2 led term 3 from 19:02:24Z (the lead watcher's sample), and the transfer home put f0 at term 4 by 19:07:22Z. The first completed step-down transfer on these rows; no action (lead, 2026-11-20) |
+| `suspect` | none in the load window |
+| f0 alarm-steps lines | in the load, `actions_trigger` 389 ms (18:42:00); after it, during the cancel, `load` 1,556, 3,026, 2,796, 2,649 and 3,305 ms (19:01:53 to 19:03:16) |
+| Pushes | 2,500 of 2,500 agent ok; human 333 ok, 24 `stale:race`, 29 skipped at the cap; `mergeable` 503s 30; api 503s 61; merges 66 × 200, 13 × 409 |
+| Cuts | 1,974: 655 `Soft` (503 at 100 KB or less, 152 grown, max 150 KB), 1,319 `Empty` |
+| Queue replay on its own trace | flat p99 3.4 s, `soft-grow` p99 2.3 s; measured 2.46 s; cycle fit 260 ms + 0.72 ms per KB |
+| `/commit` at f0 | 6,182: edge 2,586, step `Leader` 3,596 (top isolate 2,832), `Send` 0; top isolate peak 341 a minute and 28 a second. Not recurred |
+| Shared isolates | none (11 members, 11 isolates) |
+| Spend | graft-m4a $5.08 (18:26:07Z to 19:05Z, prefix; $7.72 for the whole account), runner account $0 |
+
+**The watcher's dollar stop never fired** (found starting m65). Since `f88f1a48`, `b035watch.sh` reassigned `STOP` to the stop file's path after reading it as dollars, so each pass's comparison raised a `NameError` and wrote no stop file; the sandbox-running stop still worked. The watchers for rows m54 to m64 therefore logged spend but would not have stopped a row on cost. No row reached its stop: the largest watcher reading was m64's $5.20 against $10, and m54 and m57 to m63 read $4.04 to $4.94 against $8. Fixed in `ffc28b71`: the stop file has its own variable; m65's watcher has run with it since 19:16:45Z.
+
+### Row m65 (same site day, no redeploy)
+
+`b035.sh` at `3a23f392` (driver unchanged) ran on `m3org/b035-m65` = repo 65579, with 8 learners and `ISOLATES=1`, under the fixed watcher from 19:16:45Z with a $12 stop counted from m64's start. Run `mwpcurq9`: started 19:10:54Z, load 19:17:12.017Z to 19:27:12Z, done 19:45:56Z, exit 0; the sweep tore down shard 65579 (200), no container running, shardkill deleted (19:46:18Z). Raw files: `tests/m4/raw/wp4/b035-m65/` (as m64's, plus `growpool.txt`), `b035-m65.{status,lead,watch}`, `tests/fanout/raw/tsave-m65.jsonl.xz`.
+
+| Line | m65 |
+| --- | --- |
+| Dispatch, driver | p50 3.6 s, **p99 7.2 s**, max 12.0 s, 2,499 of 2,499 paired (one agent push failed with a fetch error) |
+| Dispatch, site entry-to-run / demand | p99 6.4 s / 3.8 s |
+| Dispatch p99 by minute of load | 3.0 to 4.9 s, except minute 2 at 9.9 s |
+| Leader commit | p50 447 ms, p99 1,084 ms |
+| Leader queue (slot) | p99 836 ms (804 ms) |
+| Round / confirm / deps | p99 441 ms / 243 ms / 351 ms |
+| f0's vCPU (CPU-s per minute from 19:17) | 17.9, 22.2, 23.1, 25.1, 25.4, 26.9, 28.2, (no sample for 19:24), 28.8, 29.9: mean 0.42, peak 0.50 |
+| Learner read-index calls to f0 | 49,291 sent, plus 1,106 `HEDGE` copies (2.2%); 178 past `CALL_DEADLINE` |
+| Leader changes in the load | **0**, term 2, no hold |
+| After the load (observed, outside the gate window) | During the driver's run cancellation, 19:32:56 CommitErrors [(f1, 35, 3), (f2, 29, 3)] with `to: Some(SiteId(1))`, and the transfer completed: f1 led term 3 from 19:32:56Z, and f0 was back at term 4 by 19:37:53Z. Same pattern as m64's |
+| `suspect` | 10 lines at 19:25 and 19:26; no pre-vote |
+| f0 alarm-steps lines | none in the load; after it, `load` 1,356 and 1,428 ms (19:32:23, 19:32:57) |
+| Pushes | 2,499 of 2,500 agent ok; human 318 ok, 16 `stale:race`, 1 `stale`, 8 skipped at the cap; `mergeable` and api 503s 0; merges 74 × 200, 11 × 409 |
+| Cuts | 2,562: 543 `Soft` (476 at 100 KB or less, 67 grown), 2,019 `Empty` |
+| Queue replay on its own trace | flat p99 1.2 s, `soft-grow` p99 0.8 s; measured 0.84 s; cycle fit 217 ms + 0.30 ms per KB |
+| `/commit` at f0 | 6,467: edge 2,355, step `Leader` 4,112 (top isolate 3,002), `Send` 0; top isolate peak 311 a minute and 26 a second. Not recurred |
+| Shared isolates | none (11 members, 11 isolates) |
+| Spend | graft-m4a $5.31 (19:10:54Z to 19:48Z, prefix; $6.25 for the whole account). From m64's start to 19:48Z: graft-m4a $10.79 plus runner $0.01, so $10.80 against the $12 stop |
+
+**Setup-time trips in other groups.** m65's site-a trip at 19:15:01.785Z and site-b trip at 19:15:13.005Z, each `CommitErrors` with `to: Some`, came from the Actions shard group `actions:7100001.2` (object ids by `durableObjectsPeriodicGroups` name), not repo 65579's. As with m63's, the line names no group (`decisions/OPEN-QUESTIONS.md`, F108).
+
+**The completed post-load transfers, m64 and m65** (observed; outside the gate window, so no action, lead 2026-11-20). In both rows f0 tripped `CommitErrors` while the driver cancelled about 2,750 runs after the load, with `to: Some` and a completed transfer, then the transfer home: m64 terms 2 → 3 (f2) → 4 (f0) from 19:02:24Z to 19:07:22Z; m65 terms 2 → 3 (f1) → 4 (f0) from 19:32:56Z to 19:37:53Z. LM-1 is building a step-agree change that holds a `CommitErrors` trip while the group keeps committing; the lead will judge whether it covers these once it lands.
+
+### `soft-grow`'s flip across the three rows
+
+`tests/fanout/growpool.py` pools `grown.py`'s samples (`growsamples.json` in each row's raw folder; output in `b035-m65/growpool.txt`) [measured]. Leader confirm wall and `sync` by transaction bytes, grown (over 100 KB) against 100 KB or less, and far-voter calls answered past `CALL_DEADLINE` (1 s, the driver's `deadline` failures), as a rate per call:
+
+| Row | Grown confirm p99 (n, 1 s or more) | 100 KB or less confirm p99 (n, 1 s or more) | Sync p99, grown / 100 KB or less | f1 past deadline, grown / small | f2 past deadline, grown / small |
+| --- | --- | --- | --- | --- | --- |
+| m62 (flat, main before `soft-grow`) | none | 966 ms (2,539, 24 = 0.95%) | not traced | none / 58 of 1,815 (3.2%) | none / 72 of 1,802 (4.0%) |
+| m63 | 476 ms (183, 0) | 356 ms (2,722, 2) | 359 / 357 ms | 0 of 141 / 3 of 1,796 | 0 of 141 / 4 of 1,799 |
+| m64 | 1,011 ms (188, 2 = 1.06%) | 459 ms (2,669, 9) | 346 / 474 ms | 2 of 147 / 17 of 1,851 | 6 of 155 / 20 of 1,877 |
+| m65 | 408 ms (87, 0) | 268 ms (3,826, 0) | 279 / 270 ms | 0 of 65 / 0 of 2,501 | 0 of 66 / 0 of 2,509 |
+| **Pooled m63 to m65** | **434 ms (458, 2 = 0.44%)** | **353 ms (9,217, 11 = 0.12%)** | **338 / 365 ms** | **2 of 353 (0.6%) / 20 of 6,148 (0.3%)** | **6 of 362 (1.7%) / 24 of 6,185 (0.4%)** |
+
+**The flip is not tripped; `soft-grow` stays as built, and `ENTRY_SOFT_DEEP` stays 150 KB** (lead, 2026-11-20). Pooled grown confirm p99 (434 ms) is above the same rows' 100 KB-or-less entries (353 ms) but under m62's flat 966 ms. Pooled grown `sync` p99 is lower than the smaller transactions' (338 against 365 ms), so the confirm gap is not storage. **What would reopen it:** the 8 grown calls past `CALL_DEADLINE`, all on m64 (2 to f1, 6 to f2; 1.4% and 3.9% of that row's grown calls), against 0 on m63 and m65. A later row that repeats them, a grown-call rate past deadline above the same row's small-call rate on both voters, reopens the flip.
+
+### The M2 canary's outcome
+
+Under the lead's decision after the 10% burst put no job on RunnerBox: after window (9) ended (18:14:03Z), `13193b05` went to 50% with `e05903aa` at 18:14:27Z, and one manual 8-job burst ran, run 1713035 on `m3org/wp4-r23`, dispatched 18:14:50Z (`tests/m4/raw/wp4/canary50-{burst,starts,passes}.txt`).
+- **8 of 8 Success; 3 ran on RunnerBox** (std3 (5), std4 (6) and std4 (7): each job log's `r23 pid1` reads `/bin/bash /home/runner/run.sh`), 5 on legacy Sandboxes (`/container-server/sandbox`).
+- gave_up 0: the RunnerBox image `d0652a89` launched 12, none exited within 3 s, none gave up; no "Image not found".
+- Nothing stale: the 18:16:33Z sweep destroyed 10 surplus runners, and the next, 18:20:46Z, logged `started 0 destroyed 0`. Instances since 18:14Z: RunnerBox 3 `stopped` exit 0 and 9 `failed` exit 137 (surplus destroyed), std3 10 `inactive`; none running.
+- **Promoted to 100% at 18:25:14Z**, by the same `deploy_versions [(13193b05, 100)]` as `graftyard runners upgrade`'s RunnerBox path (`tests/m4/raw/wp4/runners-init.log`, "R23 M2 100%").
+- Post-100% check at 19:30Z (`canary100-check.txt`, `canary100-starts.json`): 8,077 sweep and webhook passes from 18:25:14Z to 19:31:03Z, all on `13193b05`, none starting or destroying; no "Image not found", exit within 3 s or gave_up; 2 of 2 chunks complete; runner account $0.00. The canary watch schedule is cleared.
+- Runner-account spend for the canary step: $0.02 from 17:02:58Z, inside the $12 stop shared with m4a.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.

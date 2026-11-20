@@ -1,0 +1,25 @@
+m62
+  confirm:leader: grown n 0 p99 None >=1 s 0 (-); <=100 KB n 2539 p99 966 >=1 s 24 (0.95%)
+  sync:leader: grown n 0 p99 None >=1 s 0 (-); <=100 KB n 0 p99 None >=1 s 0 (-)
+  voter 1: past CALL_DEADLINE grown 0 of 0 (-); small 58 of 1815 (3.2%)
+  voter 2: past CALL_DEADLINE grown 0 of 0 (-); small 72 of 1802 (4.0%)
+m63
+  confirm:leader: grown n 183 p99 476 >=1 s 0 (0.00%); <=100 KB n 2722 p99 356 >=1 s 2 (0.07%)
+  sync:leader: grown n 567 p99 359 >=1 s 1 (0.18%); <=100 KB n 2375 p99 357 >=1 s 1 (0.04%)
+  voter 1: past CALL_DEADLINE grown 0 of 141 (0.0%); small 3 of 1796 (0.2%)
+  voter 2: past CALL_DEADLINE grown 0 of 141 (0.0%); small 4 of 1799 (0.2%)
+m64
+  confirm:leader: grown n 188 p99 1011 >=1 s 2 (1.06%); <=100 KB n 2669 p99 459 >=1 s 9 (0.34%)
+  sync:leader: grown n 600 p99 346 >=1 s 1 (0.17%); <=100 KB n 2305 p99 474 >=1 s 11 (0.48%)
+  voter 1: past CALL_DEADLINE grown 2 of 147 (1.4%); small 17 of 1851 (0.9%)
+  voter 2: past CALL_DEADLINE grown 6 of 155 (3.9%); small 20 of 1877 (1.1%)
+m65
+  confirm:leader: grown n 87 p99 408 >=1 s 0 (0.00%); <=100 KB n 3826 p99 268 >=1 s 0 (0.00%)
+  sync:leader: grown n 451 p99 279 >=1 s 0 (0.00%); <=100 KB n 3513 p99 270 >=1 s 0 (0.00%)
+  voter 1: past CALL_DEADLINE grown 0 of 65 (0.0%); small 0 of 2501 (0.0%)
+  voter 2: past CALL_DEADLINE grown 0 of 66 (0.0%); small 0 of 2509 (0.0%)
+pooled (rows with grown entries)
+  confirm:leader: grown n 458 p99 434 >=1 s 2 (0.44%); <=100 KB n 9217 p99 353 >=1 s 11 (0.12%)
+  sync:leader: grown n 1618 p99 338 >=1 s 2 (0.12%); <=100 KB n 8193 p99 365 >=1 s 12 (0.15%)
+  voter 1: past CALL_DEADLINE grown 2 of 353 (0.6%); small 20 of 6148 (0.3%)
+  voter 2: past CALL_DEADLINE grown 6 of 362 (1.7%); small 24 of 6185 (0.4%)

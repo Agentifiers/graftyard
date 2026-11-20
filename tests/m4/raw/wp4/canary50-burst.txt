@@ -1,0 +1,9 @@
+1713036 std3 (0) completed/success  legacy 2026-11-20T18:15:25.8948525Z r23 pid1 /container-server/sandbox
+1713037 std3 (1) completed/success  legacy 2026-11-20T18:15:25.7180679Z r23 pid1 /container-server/sandbox
+1713038 std3 (2) completed/success  legacy 2026-11-20T18:15:25.5371787Z r23 pid1 /container-server/sandbox
+1713039 std3 (3) completed/success  legacy 2026-11-20T18:15:26.9177803Z r23 pid1 /container-server/sandbox
+1713040 std3 (4) completed/success  legacy 2026-11-20T18:15:26.4412805Z r23 pid1 /container-server/sandbox
+1713041 std3 (5) completed/success  RunnerBox 2026-11-20T18:15:28.3112062Z r23 pid1 /bin/bash /home/runner/run.sh
+1713042 std4 (6) completed/success  RunnerBox 2026-11-20T18:17:09.5684773Z r23 pid1 /bin/bash /home/runner/run.sh
+1713043 std4 (7) completed/success  RunnerBox 2026-11-20T18:17:10.7016971Z r23 pid1 /bin/bash /home/runner/run.sh
+2026-11-20T18:18:39.569Z run 1713035 200 jobs {"completed/success":8} images {"legacy":5,"RunnerBox":3}

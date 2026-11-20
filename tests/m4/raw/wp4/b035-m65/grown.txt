@@ -1,0 +1,9 @@
+2562 cuts in the load; ends Soft 543, Empty 2019
+  Soft at or under ENTRY_SOFT: 476; grown past it: 67 (of which Soft 67)
+  cut soft bytes p50 42787 p90 89087 p99 131848 max 149730
+confirm wall, leader: grown n 87 p50 42 p99 408 max 408, >=1 s 0; <=100 KB n 3826 p50 37 p99 268 max 447, >=1 s 0
+confirm wall, followers: grown n 135 p50 13 p99 31 max 33, >=1 s 0; <=100 KB n 5497 p50 12 p99 34 max 194, >=1 s 0
+sync wall by transaction bytes, leader: >100 KB n 451 p50 39 p99 279 max 408, >=1 s 0; <=100 KB n 3513 p50 37 p99 270 max 447, >=1 s 0
+sync wall by transaction bytes, followers: >100 KB n 920 p50 12 p99 35 max 194, >=1 s 0; <=100 KB n 4716 p50 11 p99 33 max 175, >=1 s 0
+voter 1: 2566 AppendEntries ended, 0 failed (0 of them carrying a grown entry; 65 calls carried one), call p99 430 ms, grown-entry calls p99 622 ms; answered past CALL_DEADLINE (1 s) 0, of them carrying a grown entry 0
+voter 2: 2575 AppendEntries ended, 0 failed (0 of them carrying a grown entry; 66 calls carried one), call p99 541 ms, grown-entry calls p99 857 ms; answered past CALL_DEADLINE (1 s) 0, of them carrying a grown entry 0

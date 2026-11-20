@@ -1,0 +1,74 @@
+2026-11-20T18:14:00Z 652 events in 15 s
+{
+ "window": [
+  "2026-11-20T18:14:00Z",
+  "2026-11-20T18:22:30Z"
+ ],
+ "first_start": "18:15:13",
+ "burst": {
+  "sandboxes": 20,
+  "spread_s": 3.6,
+  "no_instance": 392,
+  "too_many_per_second": 0,
+  "with_rate_error": 0,
+  "placement_wait_s": {
+   "p50": 0.0,
+   "max": 59,
+   "over_30": 5,
+   "all": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    53,
+    57,
+    58,
+    59,
+    59
+   ]
+  }
+ },
+ "later": {
+  "sandboxes": 2,
+  "spread_s": 1.5,
+  "no_instance": 0,
+  "too_many_per_second": 0,
+  "with_rate_error": 0,
+  "placement_wait_s": {
+   "p50": 0.0,
+   "max": 0,
+   "over_30": 0,
+   "all": [
+    0,
+    0
+   ]
+  }
+ },
+ "destroyed": 20,
+ "delivery_passes_cancelled_at_30s": 12,
+ "launched": 22,
+ "launched_twice": 0,
+ "sandbox_alarm_invocations": 44,
+ "by_image": {
+  "registry.cloudflare.com/<cf-account-id>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea": {
+   "launched": 12,
+   "exited": 0,
+   "gave_up": 0
+  }
+ },
+ "chunks": 1,
+ "failed": [],
+ "complete": true
+}
+rc=0
