@@ -357,9 +357,7 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 /// counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first entry
 /// with `at >= expires`; clients time it from `expires`. An install or a first poll (fed, a backlog cost 46 s, LM-1)
 /// restarts the ring with its live leases (`9d59283`). An older cursor gets 410; the client reloads leases and tasks.
-/// Each member keeps its own ring, held polls, and owner read, keyed by its object and boot, never shared by members of
-/// one group in one isolate: shared by repository, a voter's inputs woke a learner's held polls from the voter's object
-/// [measured, B0-29 m3fp3: 220,515 cross-object closure errors; `decisions/DECISIONS.md`, "`feed-per-member`"].
+/// Each member keeps its own ring and polls, keyed by object and boot [measured, m3fp3; DECISIONS, `feed-per-member`].
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
                          AgentPush { refname: RefName, head: Oid, paths: SmallVec<[Box<str>; 8]> },
