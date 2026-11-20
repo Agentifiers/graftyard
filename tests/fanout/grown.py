@@ -10,6 +10,8 @@ import bisect, json, lzma, sys
 #   row is joined to the Confirm row on the same site at the same time (both are logged when `sync()` resolves).
 #   Far-voter misses: `AppendEnded` (kind 14) with `index` 1 (the call failed), by peer, and how many of those calls
 #   carried a grown entry (joined by round to `AppendQueued`'s `batch`).
+#   Also counts calls answered past CALL_DEADLINE (1 s), which the driver reports as `deadline` failures (m63: 3 and 4
+#   in both).
 ENTRY_SOFT = 100_000
 path, t0 = sys.argv[1], int(sys.argv[2])
 t1 = t0 + 1000 * int(sys.argv[3])
@@ -89,4 +91,5 @@ for peer in sorted({e[1] for e in ended}):
     calls_g = [e for e in es if (peer, e[2]) in rounds and size.get(rounds[(peer, e[2])], 0) > ENTRY_SOFT]
     print(f'voter {peer}: {len(es)} AppendEntries ended, {len(fails)} failed ({len(gf)} of them carrying a grown '
           f'entry; {len(calls_g)} calls carried one), call p99 {pc([e[4] for e in es], .99)} ms, '
-          f'grown-entry calls p99 {pc([e[4] for e in calls_g], .99)} ms')
+          f'grown-entry calls p99 {pc([e[4] for e in calls_g], .99)} ms; answered past CALL_DEADLINE (1 s) '
+          f'{sum(1 for e in es if e[4] >= 1000)}, of them carrying a grown entry {sum(1 for e in calls_g if e[4] >= 1000)}')
