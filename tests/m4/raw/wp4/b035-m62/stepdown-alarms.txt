@@ -1,0 +1,3 @@
+14:32:43.230 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 32, 3), (SiteId(2), 31, 3)] }, to: None }
+14:33:07.448 a member alarm: StepDown { why: LoopLag { clamped: 2 }, to: None }
+14:35:19.681 a member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 25, 3), (SiteId(2), 23, 3)] }, to: None }
