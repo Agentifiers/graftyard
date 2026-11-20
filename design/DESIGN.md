@@ -1133,9 +1133,9 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// next site by rendezvous, on one shard per warm site, or on k shards when its git CPU passes one. The first of the k
 /// is its rendezvous shard among `count`, and the others come from the site's hot pool by rendezvous, so `count` never
 /// changes and no other network moves. A push validates on the shard of the k that rendezvous on its pack's trailer
-/// picks (else the first), on its disk as it stands (journey 1). Shards stream bodies on unread, validate concurrently,
-/// 16 at most; an agent's waits 2 s, then `agent admission full` (Scale). Inline `.idx` go to `R2Key::InlineIdx` (thin
-/// packs; `rehydrate`, G5). Upload-pack and predictions spread over all k; merges run on the leader's shard (BM-2).
+/// picks (else the first), on its disk as it stands (journey 1). Shards stream bodies on unread; the URL names the
+/// SHA-256 of the body's head and buffered pack, and a body that does not match is a 503, never the pack's 422 (G35).
+/// They validate concurrently, 16 at most; an agent's waits 2 s, then `agent admission full` (Scale). Inline `.idx` go to `R2Key::InlineIdx` (thin packs; `rehydrate`, G5). Upload-pack and predictions spread over all k; merges run on the leader's shard (BM-2).
 /// `AdmitClass` rides into each shard's work queue, so Human and MergeQueue validates and merges run first, and agent
 /// test merges, predictions, and clone misses are shed first. A hot network's clone-cache entries are written to both
 /// warm sites' buckets. A depth-1 miss with one want, no haves or filter, SHA-1, and `ofs-delta` is composed: a base of

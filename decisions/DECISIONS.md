@@ -6794,3 +6794,38 @@ Those runs cost 45 to 54 ms and 0.25 MB a pack, 4.7 to 5.5 MB/s. So 32 packs or 
 - a held validate or `PUT …/merge` still waits more than 5 s on one catch-up run while the run's first pieces held its base or commits, which means the turn between pieces did not reach it; or
 - a burst's whole catch-up (the run's pieces end to end) takes more than 25% longer than m3fst1's 15.8 s for the same packs, which means the pieces cost more than they free; or
 - the held validates' re-asks between pieces fill the container's validate queue, so pushes answer 429 `Busy` during the burst where m3fst1 had none. Each re-ask runs `index-pack` on its pack again: m3fst1's 53 held validates over a run of about 10 pieces would be about 500 re-asks of 256 KiB packs [inference]. If it fires, re-ask only the validates whose base the piece's entries could hold.
+
+### `garbled-body`: a validate's URL names its body's SHA-256, and a body that does not match is the call's failure, not the pack's, 2026-11-20
+
+**Decision.** The edge's validate URL carries `headsum`, the SHA-256 of the body's tips and detail (its first `tipsn + detailn` bytes), and `packsum`, the SHA-256 of the pack when the edge holds it whole (`workers/edge/src/lib.rs`, `validate_url`). A streamed pack has no `packsum`: its bytes are known only at its end, and `PackStore::place_streamed` already checks the shard's index against the bytes it tees.
+- The shard passes both on to its container (`crate::host::ShardHost::validate`'s `sums`), and still never reads the body.
+- The container hashes the head as it reads it and the pack as it spools it (`containers/git/server/main.go`, `handleValidate`). On a mismatch it answers 502 `validate: body changed in transit`, with the digests and the head's first 16 bytes, before it parses the detail or indexes the pack.
+- The shard logs that answer and returns 503 with `x-graft-body-changed: 1`. `validate_status` makes any 5xx a 503, and the header stops a first shard from marking the pool shard `POOL_COLD`. A first shard that forwarded the push answers the edge 503 `x-graft-fanout-failed`, so the edge sends the body again with `via=0` from a fresh copy. A direct call moves on to the next site's shard.
+- A caller that sends no digest (the shard's own promotion, a held request asked again) is checked as before.
+
+**Why.** 4 agent pushes of B0-32 burst bodies were refused `unpacker error: validate: bad update line "<binary>"`: 3 on m3fpc1 (k 408, 417 and 473, 2026-11-20 19:30:58.8 to 59.2Z) and 1 on m3fr13 (k 227, 2026-11-17 17:57:25.7Z) [measured, `tests/am1/raw/a1-pushes-b0-32-mwpde1fv.jsonl`, `tests/am1/raw/a1-b0-32-mwkzph1o.jsonl`, and site a's Workers Logs]. Each was a valid push:
+- Every one went through a pool shard (`via=0&pool=1`) with `tipsn=41&detailn=118`, which is right for one tip and its 35-byte ref. Its detail region held compressed, pack-like bytes, not the `PACK` header, so the bytes were changed, not shifted.
+- The pool shard's container answered 400, so `validate_status` made it 422. The first shard passed that 422 back, and the edge took it as the pack's answer and tried no other shard. The client got a refusal shape the gate does not allow.
+- Over seven B0-32 rows, site a logged about 3,800 pool-forwarded validates and about 6,000 direct ones. Only these 4 pool hops went wrong, and no direct one did [measured, Workers Logs, `/validate` by status, 2026-11-17 to 2026-11-20].
+- In the edge, each try copies one immutable buffer into a fresh `Uint8Array`. The detail's length is in bytes. The framing test `a_validate_url_names_the_packs_trailer_its_class_and_the_record` holds.
+- 450 bodies relayed locally through two Durable Object hops under `wrangler dev` 4.153 all arrived intact.
+- So the change is in a hosted hop or in the platform [inference]. Which hop it is cannot be told from these logs, because the container logged only its error string.
+
+**What it beat.**
+- **Fixing the framing.** Nothing in the edge's or the shard's code is wrong for these 4 bodies [measured, above], so there is nothing to fix there.
+- **Retrying any 422 on another shard.** The pack's own 422 is the same on every shard, so a bad push would run `index-pack` three times, and the rule `hot-shards-2` set would be undone.
+- **Buffering the body in the first shard and forwarding the copy.** Buffered bodies put the shard's isolate over 128 MB on LM-1 round 6 (`design/DESIGN.md`, "Git cache shards (derived)").
+- **Checking only the head.** That would leave a changed pack to `index-pack`, whose refusal is also a 422.
+
+**Evidence.**
+- `containers/git/server/detail_test.go`, `TestValidateBodyChangedInTransit`:
+  - pack bytes framed where the detail was answer 502, and on main 400 `bad update line "PACK…"`;
+  - an intact head with one pack byte changed answers 502;
+  - the same body intact answers 200.
+- `workers/edge/src/lib.rs`, `a_validate_url_names_the_packs_trailer_its_class_and_the_record`: `headsum` and `packsum` are the digests of the head and the pack, and a detail-only call has no `packsum`.
+- `tests/m0carried/plant69.py`: 7 of 7 planted bugs caught, mutant 0 being main's rule.
+
+**Flip.**
+- If a row shows `body changed in transit` on direct (`next=1`, no `via`) calls as well as pool hops, the change is before the shard, and the edge's copy is the place to look.
+- If a row shows a pool-forwarded push's re-send from the first shard changed too, the check moves the failure but does not end it, and the next step is to make that re-send a fresh copy from the edge as well.
+- If `x-graft-body-changed` 503s pass 1 in 1,000 burst validates, the hop is unreliable enough that the forward is the problem, and pools should take only bodies a shard holds.

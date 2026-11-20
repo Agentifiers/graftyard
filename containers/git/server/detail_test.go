@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -156,4 +158,50 @@ func packOfWt(t *testing.T, wt, tip, base string) []byte {
 
 func gitOut(dir, stdin string, args ...string) ([]byte, error) {
 	return git(dir, nil, strings.NewReader(stdin), args...)
+}
+
+// A body whose detail or pack changed between the edge and the container is not the pack's answer: with headsum and
+// packsum in the URL, the container answers 502 (the shard's 503, which moves the push on), never the 400 "bad update
+// line" that became `unpacker error` on B0-32 m3fpc1 and m3fr13 (decisions/OPEN-QUESTIONS.md, G35). The same body
+// unchanged still validates.
+func TestValidateBodyChangedInTransit(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	base := commitMsg(t, wt, map[string]string{"README": "r\n"}, "base")
+	run(t, wt, "", "push", "-q", repo("7"), "main")
+	tip := commitMsg(t, wt, map[string]string{"a.txt": "a\n"}, "work")
+	pack := packOfWt(t, wt, tip, base)
+	z := strings.Repeat("0", 40)
+	head := tip + "\n"
+	detail := tip + " " + z + " refs/heads/claude/x\n"
+	sum := func(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+	post := func(body []byte, headsum, packsum string) (int, string) {
+		q := fmt.Sprintf("/validate?net=7&tipsn=%d&detailn=%d&headsum=%s&packsum=%s", len(head), len(detail), headsum, packsum)
+		r, err := http.Post(s.URL+q, "", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var b bytes.Buffer
+		b.ReadFrom(r.Body)
+		return r.StatusCode, b.String()
+	}
+	hs, ps := sum([]byte(head+detail)), sum(pack)
+	// The m3fpc1 shape: pack bytes where the detail lines were framed, same lengths.
+	garbled := append([]byte(head), pack[:len(detail)]...)
+	garbled = append(garbled, pack...)
+	if code, body := post(garbled, hs, ps); code != 502 || !strings.Contains(body, "changed in transit") {
+		t.Fatalf("garbled detail answered %d %s", code, body)
+	}
+	// A pack byte changed after an intact head.
+	bad := append([]byte(head+detail), pack...)
+	bad[len(head)+len(detail)+20] ^= 0xff
+	if code, body := post(bad, hs, ps); code != 502 {
+		t.Fatalf("changed pack answered %d %s", code, body)
+	}
+	if code, body := post(append([]byte(head+detail), pack...), hs, ps); code != 200 {
+		t.Fatalf("intact body answered %d %s", code, body)
+	}
 }

@@ -1119,7 +1119,7 @@ impl DurableObject for GitShard {
                             }
                             // A pool shard still catching up gets no pushes for a while (`graftyard_git::pool_forward`);
                             // this one goes back to the caller to send again with `via`, as any failed forward does.
-                            Ok(r) if r.status_code() == 503 => {
+                            Ok(r) if r.status_code() == 503 && r.headers().get("x-graft-body-changed")?.is_none() => {
                                 POOL_COLD.with(|m| m.borrow_mut().insert(name.clone(), now_ms()));
                                 console_log!(
                                     "fanout: {name} is warming; pushes validate on the first shard for a while"
@@ -1146,7 +1146,12 @@ impl DurableObject for GitShard {
                 // mid-push) is this shard's, a 503 the edge moves past (`graftyard_git::validate_status`).
                 use graftyard_git::host::{OnDisk, Validated};
                 let disk = if on_disk { OnDisk::AsItStands } else { OnDisk::CaughtUp };
-                let r = match host.validate(net, tipsn, detailn, agent, derived, disk, body()).await {
+                // The edge's digests of the body (G35), only from a caller that sent them and only hex.
+                let sums: Vec<(&str, String)> = ["headsum", "packsum"]
+                    .into_iter()
+                    .filter_map(|k| q(&url, k).filter(|v| v.bytes().all(|b| b.is_ascii_hexdigit())).map(|v| (k, v)))
+                    .collect();
+                let r = match host.validate(net, tipsn, detailn, agent, derived, disk, body(), &sums).await {
                     // The container sweeps the request it kept within the hour.
                     Ok(Validated::MissingBase { .. }) if back => return sent_back(),
                     // The container kept the request: once a catch-up that started after it ran, the same request is
@@ -1176,7 +1181,7 @@ impl DurableObject for GitShard {
                                 Err(e) => return Response::error(e, graftyard_git::validate_status(None)),
                             };
                             let disk = if caught { OnDisk::Held(&held) } else { OnDisk::HeldOnDisk(&held) };
-                            match host.validate(net, tipsn, detailn, agent, derived, disk, None).await {
+                            match host.validate(net, tipsn, detailn, agent, derived, disk, None, &[]).await {
                                 Ok(Validated::MissingBase { held: again }) if !caught => held = again,
                                 Ok(Validated::Busy { .. }) if !caught => {}
                                 r => break r,
@@ -1204,6 +1209,15 @@ impl DurableObject for GitShard {
                         h.set("retry-after", &retry_after_s.to_string())?;
                         Ok(Response::error(format!("validate queue full; retry after {retry_after_s} s"), 429)?
                             .with_headers(h))
+                    }
+                    // The container found the body's head or pack changed in transit (`headsum`, G35): this call's
+                    // fault, not the pack's, so 503, marked so a first shard that forwarded it does not take this pool
+                    // shard for warming, and logged with what came through.
+                    Err((Some(502), e)) => {
+                        console_error!("validate {}: {}", net.0.0, e.0);
+                        let h = Headers::new();
+                        h.set("x-graft-body-changed", "1")?;
+                        Ok(Response::error(e.0, 503)?.with_headers(h))
                     }
                     Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
                 }
