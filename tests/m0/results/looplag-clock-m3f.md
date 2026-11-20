@@ -139,7 +139,12 @@ Workers Logs, `$metadata.message` counts:
 - That the voter's outbound calls and timers failed because they ran under the learner's context fits
   "fetch 26, deadline 37" to its peers, but it is not shown [inference].
 
-### Proposed fix (not built)
+### Fix: `feed-per-member` (built after this row, code-only)
+
+Built on branch `feeds-member` (`decisions/DECISIONS.md`, "`feed-per-member`"), keyed by object name and boot.
+The workerd bed (`tests/feedbed/run.sh`) gave 90 different-object errors keyed by repository and 0 keyed by member.
+The plan as proposed:
+
 
 - Key the feed's state by member, not by repository.
   - `FEEDS` becomes `BTreeMap<Box<str>, Rc<RefCell<Feed>>>`, keyed by `join.me.do_name`.

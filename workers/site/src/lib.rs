@@ -181,5 +181,145 @@ pub(crate) fn site_down(env: &Env) -> bool {
 }
 
 pub(crate) fn now_ms() -> u64 {
-    Date::now().as_millis()
+    #[cfg(target_arch = "wasm32")]
+    return Date::now().as_millis();
+    // Unit tests run `Family::stepped` and other input-time code natively, where `Date` panics.
+    #[cfg(not(target_arch = "wasm32"))]
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+#[cfg(test)]
+mod isolate_state {
+    /// `lookup-poll` and `feed-per-member`: a Workers isolate hosts many requests and many Durable Objects, and runs a
+    /// woken future in the context of whatever wakes it. Isolate-wide state (`thread_local!`) that holds a waker, a
+    /// future, a JS object, or a `oneshot::Sender` (directly or through a struct that holds one) carries one object's
+    /// I/O into another's, as `FEEDS` keyed by repository did on B0-29 m3fp3. Such state may exist only keyed by one
+    /// object instance: each entry below names its static and the start of its declared type, which holds that key.
+    /// A new static of this kind fails here until it is keyed per object and added.
+    const PER_OBJECT: &[(&str, &str)] = &[
+        // Member object name and boot (`crate::feed`).
+        ("FEEDS", "RefCell<BTreeMap<Box<str>, Kept>>"),
+        // Shard object instance (`GitShard::run_key`) and network.
+        ("RUNS", "std::cell::RefCell<std::collections::HashMap<(String, i64), Run>>"),
+        ("COMPOSES", "std::cell::RefCell<std::collections::HashMap<(String, i64), ComposeRun>>"),
+    ];
+    const BANNED: &[&str] = &["Waker", "Future", "Promise", "Stream", "Closure", "Request", "Response", "Stub", "Pin<"];
+
+    fn sources() -> Vec<(String, String)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(d).expect("src").flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push((p.display().to_string(), std::fs::read_to_string(&p).expect("a source file")));
+                }
+            }
+        }
+        out
+    }
+
+    /// Every struct whose fields hold a `oneshot::Sender`, with its file: a static's type names a struct of its own
+    /// file or a `crate::` path (`crate::feed::Feed`).
+    fn sender_holders(srcs: &[(String, String)]) -> Vec<(String, String)> {
+        let mut names = Vec::new();
+        for (f, s) in srcs {
+            let mut rest = s.as_str();
+            while let Some(i) = rest.find("struct ") {
+                let after = &rest[i + 7..];
+                let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let body = after.find("\n}\n").map_or(after, |end| &after[..end]);
+                if !name.is_empty() && body.find('{').is_some_and(|b| body[b..].contains("Sender<")) {
+                    names.push((f.clone(), name));
+                }
+                rest = &after[1..];
+            }
+        }
+        // A `type` alias over such a struct holds one too (`crate::feed`'s `Kept`).
+        for (f, s) in srcs {
+            for line in s.lines() {
+                let Some(def) = line.trim_start().strip_prefix("type ") else { continue };
+                let Some((name, rhs)) = def.split_once(" = ") else { continue };
+                if rhs.contains("Sender<") || names.iter().any(|(nf, n)| nf == f && holds(rhs, n)) {
+                    names.push((f.clone(), name.trim().to_owned()));
+                }
+            }
+        }
+        names
+    }
+
+    /// Every `static NAME: TYPE =` inside a `thread_local!` block, with its file.
+    fn statics(srcs: &[(String, String)]) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        for (f, s) in srcs {
+            let mut rest = s.as_str();
+            while let Some(i) = rest.find("thread_local!") {
+                let body = &rest[i..];
+                let end = body.find("\n}\n").or_else(|| body.find(");\n")).unwrap_or(body.len());
+                let block = &body[..end];
+                let mut b = block;
+                while let Some(j) = b.find("static ") {
+                    let decl = &b[j + 7..];
+                    let (Some(colon), Some(eq)) = (decl.find(':'), decl.find(" =")) else { break };
+                    if colon < eq {
+                        let name = decl[..colon].trim().to_owned();
+                        let ty = decl[colon + 1..eq].split_whitespace().collect::<Vec<_>>().join(" ");
+                        out.push((f.clone(), name, ty));
+                    }
+                    b = &decl[eq.max(1)..];
+                }
+                rest = &body[end.max(1)..];
+            }
+        }
+        out
+    }
+
+    /// The module of a `crate::<module>::<word>` path in `ty`.
+    fn ty_module<'a>(ty: &'a str, word: &str) -> Option<&'a str> {
+        let i = ty.find(&format!("::{word}"))?;
+        let path = &ty[..i];
+        let start = path.rfind("crate::")? + 7;
+        Some(&path[start..]).filter(|m| !m.contains("::") && !m.is_empty())
+    }
+
+    fn holds(ty: &str, word: &str) -> bool {
+        ty.match_indices(word).any(|(i, _)| {
+            let before = ty[..i].chars().last();
+            let after = ty[i + word.len()..].chars().next();
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    }
+
+    #[test]
+    fn no_isolate_state_carries_one_objects_io_into_another() {
+        let srcs = sources();
+        let holders = sender_holders(&srcs);
+        assert!(holders.iter().any(|(_, h)| h == "Feed"), "the scan finds `Feed`'s waiters: {holders:?}");
+        let found = statics(&srcs);
+        assert!(found.len() >= 40, "found {} isolate-wide statics", found.len());
+        let mut seen = Vec::new();
+        for (file, name, ty) in &found {
+            let carries = BANNED.iter().find(|b| ty.contains(**b)).copied().or_else(|| {
+                let named = |(f, h): &(String, String)| {
+                    (f == file && holds(ty, h)) || f.ends_with(&format!("{}.rs", ty_module(ty, h).unwrap_or("-")))
+                };
+                (ty.contains("Sender<") || holders.iter().any(named)).then_some("oneshot::Sender")
+            });
+            let Some(what) = carries else { continue };
+            match PER_OBJECT.iter().find(|(n, _)| n == name) {
+                Some((_, want)) => {
+                    assert!(ty.starts_with(want), "{file}: {name} holds a {what} but is not keyed per object: {ty}");
+                    seen.push(name.as_str());
+                }
+                None => panic!("{file}: isolate-wide {name} holds a {what}, keyed by no object instance: {ty}"),
+            }
+        }
+        for (n, _) in PER_OBJECT {
+            assert!(seen.contains(n), "{n} is listed but was not found holding a sender");
+        }
+    }
 }

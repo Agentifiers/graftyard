@@ -2180,7 +2180,7 @@ impl<F: Family> Routes<F> {
             "restores": self.host.stats.borrow().restores,
             // A repository member's activity feed: held, peak held, refusals, and its ring, for `place_learners`.
             "feed": match c.join.chain {
-                graftyard_types::ChainId::Repo(r) => crate::feed::FEEDS.with(|f| f.borrow().get(&r).map(|f| f.borrow().status())),
+                graftyard_types::ChainId::Repo(_) => crate::feed::status_of(&c.join.me.do_name, c.m.boot()),
                 _ => None,
             },
             // The leader's admission as `capacity` sizes it, cheap enough to poll every second: LM-1's B0-31 trace

@@ -23,6 +23,8 @@ sleep 70
 # The leader's setup-phase confirm beside its load confirm (tests/fanout/README.md, "Placement baseline"); with
 # LS_EVERY (a1.mjs --ls-refs-shard-every, through A1_EXTRA), the paired minutes and the isolates too.
 { echo "placement baseline:"; python3 tests/fanout/lsrefsab.py $R/tsave-$TAG.jsonl ${LS_EVERY:-}; } >> $R/rows-$TAG.status 2>&1
+# Members of the group that shared an isolate (isolates.py): read before trusting a site's tail (feed-per-member).
+{ echo "shared isolates:"; python3 tests/fanout/isolates.py $R/tsave-$TAG.jsonl; } >> $R/rows-$TAG.status 2>&1
 # Harness outages: the edge's arrivals per second and every line with the outage windows removed (outages.sh).
 bash tests/fanout/outages.sh "$TAG" b0-33 "f$TAG-b033"
 # why-logs: the edge's 5xx by reason over the row (fivexxwhy.py), and where each refused agent push was refused

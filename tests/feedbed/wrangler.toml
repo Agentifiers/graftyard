@@ -1,0 +1,11 @@
+name = "feedbed"
+main = "./build/index.js"
+compatibility_date = "2026-10-01"
+[vars]
+KEY = "member"
+[[durable_objects.bindings]]
+name = "MEMBER"
+class_name = "Member"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Member"]

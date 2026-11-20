@@ -835,7 +835,7 @@ impl Family for Repo {
     /// read on the first poll) and keeps the entries meanwhile.
     fn stepped(m: &raft::Member<Self::C>, join: &Join, from: raft::Index, to: raft::Index, out: &raft::Out<Self::C>) {
         let ChainId::Repo(repo) = join.chain else { return };
-        let f = crate::feed::of(repo);
+        let f = crate::feed::of(&join.me.do_name, m.boot());
         let mut f = f.borrow_mut();
         let gap = out.early.iter().chain(&out.messages).any(|e| matches!(&e.msg, raft::Message::AppendRes(r) if !r.ok));
         let ok = out.early.iter().chain(&out.messages).any(|e| matches!(&e.msg, raft::Message::AppendRes(r) if r.ok));
