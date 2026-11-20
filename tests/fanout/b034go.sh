@@ -2,7 +2,8 @@
 # One B0-34 hosted row with its own site day on graft-m1 (mt10's run): the site day from the main checked out here
 # (tests/am1/b030split/siteday-r4.sh, returning when done), Load34's deploy, a1's selftest, the edge check, setup, then
 # costrow.sh's row. Each step that fails writes its line to $GO_STATUS and stops before anything else bills.
-#   RUN=b034ma TAG=mt10 SUFFIX=-a1 [ORBCLONE=1] [HOLD_MONO=1] amp orb service start b034ma --command 'bash tests/fanout/b034go.sh'
+#   RUN=b034ma TAG=mt10 SUFFIX=-a1 [ORBCLONE=1] [HOLD_MONO=1] [KEEP_NETS=<held net> HOLD_USD_H=<its $/h>] \
+#     amp orb service start b034ma --command 'bash tests/fanout/b034go.sh'
 cd "$(dirname "$0")/../.."
 source /tmp/proxyenv.sh
 source tests/fanout/env-m1.sh
