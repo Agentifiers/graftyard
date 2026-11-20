@@ -4,7 +4,10 @@
 # killed at 300 s, the second network hot from 420 s and the hostile owner's three from 600 s, over 900 s. The repos
 # are kept between rounds. Before the run, a static check that no request path can call the Cloudflare API.
 #   EDGE_LOG=tests/am1/raw/runs/fanout-mNN-edge.log [SEED_ONLY=1] [LEARNERS=...] [PROCS_S=3600] [POOL_PROBE=2:7] B034_DIR=$HOME/b034 \
-#     bash tests/fanout/b034.sh <tag>
+#     [HOSTED=N [HINTS=wnam,...]] bash tests/fanout/b034.sh <tag>
+# HOSTED=N runs the load in N Load34 clients on Cloudflare (tests/am1/load34/, deployed with its deploy.sh; FRAME.md,
+# "Operator decision, 2026-11-20", item 3): the tip:move packs are staged first, and after the row each client's CPU per
+# operation is read from the account's analytics.
 # Needs $B034_DIR/linux.git and $B034_DIR/git.git (bare clones). Output: tests/fanout/raw/b034-<tag>.status.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -108,7 +111,12 @@ s "b0-34 $mono $chain start"
 # The row's memory guard: 2 s samples of every voter, a1.mjs stopped past 120 MiB (round 17's instruments).
 node tests/fanout/memguard.mjs "$chain" 1100 2 120 > tests/fanout/raw/memguard-b034$TAG.jsonl 2> tests/fanout/raw/memguard-b034$TAG.err &
 node tests/fanout/terms.mjs "$chain" 1100 > tests/fanout/raw/terms-b034$TAG.jsonl 2>&1 &
-bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
+if [ -n "${HOSTED:-}" ]; then
+  node tests/am1/load34/driver.mjs stage tests/fanout/raw/b034-$TAG.json >> "$ST" 2>&1 || { s "b0-34 stopped: tip:move packs not staged"; echo DONE >> "$ST"; exec sleep infinity; }
+  bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json --hosted "$HOSTED" --hints "${HINTS:-wnam}"
+else
+  bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
+fi
 s "b0-34 done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-34-$mono.log)"
 # Harness outages (tests/fanout/README.md): the edge's arrivals per second and each line with the outage windows
 # removed, to tests/fanout/raw/rows-<tag>.status (outages.sh, as b029.sh and b033.sh). B0-34's two latency lines per
@@ -117,6 +125,16 @@ s "b0-34 done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-34-$mono.log)"
 # (decisions/DECISIONS.md, `git-shaped-push`).
 KINDS=$(for p in j9 kill second hostile; do printf 'push:human@%s push:human:edge@%s push:human:tip@%s read:cloneTtfb@%s read:cloneTtfb:edge@%s ' $p $p $p $p $p; done) \
   bash tests/fanout/outages.sh "$TAG" b0-34 "$mono"
+# The clone lines as re-based on 2026-11-20, hits and misses apart on both clocks, as measured and outages removed.
+run=$(grep -oE "b0-34 run [a-z0-9]+" tests/am1/raw/runs/a1-b0-34-$mono.log | tail -1 | cut -d' ' -f3)
+outs=$(grep -h '^{"outages"' tests/fanout/raw/rows-$TAG.status 2>/dev/null | tail -1)
+python3 tests/fanout/clonelines.py tests/am1/raw/a1-samples-b0-34-$run.jsonl.gz ${outs:+"$outs"} >> "$ST" 2>&1
+# Load34's own cost: each client's CPU and active time, per operation (driver.mjs cpu).
+if [ -n "${HOSTED:-}" ]; then
+  rows=$(ls -t tests/am1/raw/a1-b0-34-$run.jsonl | head -1)
+  node tests/am1/load34/driver.mjs cpu "$run" "$(date -u -d '-40 min' +%FT%TZ)" "$(date -u +%FT%TZ)" "$rows" > tests/fanout/raw/load34cpu-$TAG.json 2>&1
+  s "b0-34 load34 cpu: $(head -c 400 tests/fanout/raw/load34cpu-$TAG.json | jq -c 'del(.clients)' 2>/dev/null)"
+fi
 # The miss-log branch's line per clone-cache miss (`shard miss <net> <key>`), joined to each probe row: container,
 # shard transit, and edge plus network, by compose answer. Workers Logs lag a few minutes, so it runs after a wait.
 rows=$(ls -t tests/am1/raw/a1-b0-34-*.jsonl | head -1)

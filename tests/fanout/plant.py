@@ -27,6 +27,7 @@ EDGE = ['cargo', '-p', 'graftyard-edge', '--lib', 'api::tests']
 SURF = ['cargo', '-p', 'graftyard-api', '--test', 'surfaces', 'a_hosted_mutation']
 SURF2 = ['cargo', '-p', 'graftyard-api', '--test', 'surfaces', '']
 A1 = 'tests/am1/rest/a1.mjs'
+WIRE = 'tests/am1/rest/wire.mjs'
 SELF = ['node', A1, '--selftest']
 
 MUTANTS = [
@@ -98,7 +99,7 @@ MUTANTS = [
     ('api: the tier read serves path_set again', 'crates/api/src/hosted.rs',
      'pub const UNSERVED: &[&str] = &["path_set", "provenance"];', 'pub const UNSERVED: &[&str] = &["provenance"];',
      SURF2),
-    ('driver: a push result is matched by its text, so `002cok refs/...` reads as an error', A1,
+    ('driver: a push result is matched by its text, so `002cok refs/...` reads as an error', WIRE,
      '  return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";',
      '  return /(^|[^a-z])ok refs\\//.test(text) ? "ok" : "error";', SELF),
 ]

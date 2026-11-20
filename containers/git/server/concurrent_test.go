@@ -84,15 +84,18 @@ func TestConcurrentValidatesOfOneNetwork(t *testing.T) {
 			mu.Unlock()
 			body := main + " refs/heads/main\n"
 			for ref, sum := range ingest {
-				if c, v := call(t, s, "POST", "/ingest?net=7&sha256="+sum); c != 200 {
-					errs <- fmt.Sprintf("ingest %s: %d %v", ref, c, v)
-					return
-				}
 				for _, p := range pushes {
-					if p.ref == ref {
-						body += p.tip + " " + ref + "\n"
-						break
+					if p.ref != ref {
+						continue
 					}
+					// The pack's bytes go with the sum, as a catch-up sends them: a validate between its discard
+					// and its rename has no aside for adopt to find yet, and /ingest then indexes the body.
+					if c, v := postBody(t, s.URL+"/ingest?net=7&sha256="+sum, p.pack); c != 200 {
+						errs <- fmt.Sprintf("ingest %s: %d %s", ref, c, v)
+						return
+					}
+					body += p.tip + " " + ref + "\n"
+					break
 				}
 			}
 			req, _ := http.NewRequest("PUT", s.URL+"/refs?net=7", strings.NewReader(body))

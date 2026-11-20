@@ -19,6 +19,7 @@ GQL = 'crates/api/src/graphql.rs'
 REST = 'crates/api/src/rest.rs'
 GO = 'containers/git/server/main.go'
 A1 = 'tests/am1/rest/a1.mjs'
+WIRE = 'tests/am1/rest/wire.mjs'
 RAFT_INSTALL = 'crates/raft/src/member/install.rs'
 
 ARCHIVE = ['cargo', '-p', 'graftyard-git', '--test', 'log_archive', '']
@@ -91,10 +92,10 @@ MUTANTS = [
      '\tif false {\n\t\t// An ls-refs reply: small, so buffered and cut.', GOT),
     ('go: a fetch command unhides the sessions', GO,
      '\t\tcase strings.HasPrefix(line, "command="):\n\t\t\treturn nil', '\t\tcase strings.HasPrefix(line, "command="):\n\t\t\tls = true', GOT),
-    ('a1: pack entries carry the wrong object type', A1,
+    ('a1: pack entries carry the wrong object type', WIRE,
      'const TYPE = { commit: 1, tree: 2, blob: 3 };', 'const TYPE = { commit: 1, tree: 3, blob: 2 };', SELF),
-    ('a1: an ng reply reads as ok', A1,
-     '  const ng = text.match(/ng (\\S+) ([^\\n]*)/);', '  const ng = null;', SELF),
+    ('a1: an ng reply reads as ok', WIRE,
+     '  const ng = lines.map((l) => l.match(/^ng (\\S+) ([^\\n]*)/)).find(Boolean);', '  const ng = null;', SELF),
     ('raft (LF-13 premise): a follower behind the archive is sent entries, not an install', RAFT_INSTALL,
      '        if prev >= source.through {\n            return false;',
      '        if prev >= source.through || true {\n            return false;', LF13),
