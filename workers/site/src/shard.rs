@@ -163,8 +163,7 @@ impl Compose {
             return Ok(None);
         }
         let ids: Vec<SiteId> = site.sites.0.iter().map(|s| s.id).collect();
-        let mut warm = graftyard_git::warm_sites(self.net, home, &ids).to_vec();
-        warm.dedup();
+        let warm = graftyard_git::chain_buckets(self.net, home, &ids);
         let raw: Vec<(SiteId, R2)> = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site))
             .into_iter()
             .filter(|(s, _)| warm.contains(s))

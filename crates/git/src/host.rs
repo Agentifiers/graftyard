@@ -336,12 +336,14 @@ pub async fn cached_response(b: &R2, key: &str, headers: Headers) -> Result<Opti
 }
 
 /// The composed answer a manifest and tail describe (`crate::compose::Manifest`), streamed from the chain's packs in
-/// `bucket`, every one checked first (`open_chain`, `composed_answer`): the edge's answer to a composed miss and to a
-/// manifest hit under `edge-compose`. `Declined`, and nothing sent, when the bytes are not a manifest of this network,
-/// the tail's length is not the manifest's, or a chain pack is missing or not the one the manifest counted; `Late` when
-/// the checks did not end within `CHAIN_CHECK_WITHIN` (`decisions/DECISIONS.md`, "`chain-hold`").
+/// the first of `buckets` that holds every one, every one checked first (`open_chain`, `composed_answer`): the edge's
+/// answer to a composed miss and to a manifest hit under `edge-compose`. `buckets` are the network's chain buckets,
+/// home first (`crate::chain_buckets`). `Declined`, and nothing sent, when the bytes are not a manifest of this
+/// network, the tail's length is not the manifest's, or no bucket holds every chain pack as the manifest counted it;
+/// `Late` when the checks did not end within `CHAIN_CHECK_WITHIN` (`decisions/DECISIONS.md`, "`chain-hold`" and
+/// "`chain-warm`").
 pub async fn manifest_answer(
-    bucket: &R2,
+    buckets: &[&R2],
     network: NetworkId,
     bytes: Vec<u8>,
     headers: Headers,
@@ -351,7 +353,7 @@ pub async fn manifest_answer(
     if (bytes.len() - at) as u64 != m.tail || m.count().is_none() {
         return Ok(ChainCheck::Declined);
     }
-    let packs = match open_chain(bucket, &m).await? {
+    let (bucket, packs) = match open_chain(buckets, &m).await? {
         ChainCheck::Checked(p) => p,
         ChainCheck::Declined => return Ok(ChainCheck::Declined),
         ChainCheck::Late => return Ok(ChainCheck::Late),
@@ -368,18 +370,24 @@ pub struct CheckedPack {
     body: u64,
 }
 
-/// Every chain pack a manifest names, checked in `bucket` before the answer starts: each one's first 12 bytes, read
-/// whole by a ranged `get`, against the manifest's count. They are checked `CHAIN_OPEN_AT_ONCE` at a time in the
+/// Every chain pack a manifest names, checked before the answer starts in the first of `buckets` that holds them all
+/// (`crate::compose::check_in_time`): each one's first 12 bytes, read whole by a ranged `get`, against the manifest's
+/// count. They are checked `CHAIN_OPEN_AT_ONCE` at a time in the
 /// manifest's order (`crate::compose::open_in_order`, `decisions/DECISIONS.md`, "`chain-open`"), within
 /// `CHAIN_CHECK_WITHIN`. No body stays open: one invocation that held eight R2 bodies got no ninth, and main, which
 /// opened every pack's whole body here and held it to its turn, hung every chain of nine packs or more
-/// (`decisions/DECISIONS.md`, "`chain-hold`"). `Declined` when one is missing, short, or not the pack the manifest
-/// counted, so the caller asks the shard instead and no client sees a cut answer.
-pub async fn open_chain(
-    bucket: &R2,
+/// (`decisions/DECISIONS.md`, "`chain-hold`"). `Declined` when every bucket lacks one, holds it short, or holds
+/// another pack than the manifest counted, so the caller asks the shard instead and no client sees a cut answer.
+pub async fn open_chain<'b>(
+    buckets: &[&'b R2],
     m: &crate::compose::Manifest,
-) -> Result<crate::compose::ChainCheck<Vec<CheckedPack>>, StoreError> {
-    crate::compose::check_in_time(m.packs.iter().map(|p| check_pack(bucket, &p.key, p.n)), worker::Delay::from).await
+) -> Result<crate::compose::ChainCheck<(&'b R2, Vec<CheckedPack>)>, StoreError> {
+    crate::compose::check_in_time(
+        buckets.iter().copied(),
+        |b| m.packs.iter().map(move |p| check_pack(b, &p.key, p.n)),
+        worker::Delay::from,
+    )
+    .await
 }
 
 /// One chain pack's 12-byte header read from `bucket` and checked against `n`; `None` as `open_chain` says.

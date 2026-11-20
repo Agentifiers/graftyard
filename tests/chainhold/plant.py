@@ -45,8 +45,8 @@ MUTANTS = [
     }
 """),
     # no bound on the checks: a check that never answers holds the clone.
-    ('checks with no bound', 'Ok(match within(CHAIN_CHECK_WITHIN, open_in_order(opens), sleep).await {',
-     'let _ = &sleep;\n    Ok(match Some(open_in_order(opens).await) {'),
+    ('checks with no bound', 'Ok(match within(CHAIN_CHECK_WITHIN, first, sleep).await {',
+     'let _ = &sleep;\n    Ok(match Some(first.await) {'),
     # a late check declined to the shard, which waits on the same chain, instead of refused.
     ('a late check declined, not refused', '        None => ChainCheck::Late,', '        None => ChainCheck::Declined,'),
     # a bound past the clone line.
