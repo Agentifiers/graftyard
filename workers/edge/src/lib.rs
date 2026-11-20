@@ -161,18 +161,54 @@ struct Repo {
 /// `o/r` through `Names` then `Authz` (`design/DESIGN.md`, Shape, the lookup rule: "the owner's `Names` rows for
 /// `o/r`"): the owner's login row on `name_shard(Login(o))`, the owner's `Placement` row on `account_shard(owner)`, then
 /// the repository's name on the owner's `Authz` chain. `None` for an unknown owner or repository, which git sees as 404.
+/// The three reads are a chain; with this isolate's last login and `Placement` answers for the owner held, at any age,
+/// they start at once on them (`chained`).
 async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Result<Option<Repo>, String>> {
     let Ok(name) = RepoName::parse(repo) else { return Ok(Ok(None)) };
-    let account = match account_of(c, owner).await {
-        Ok(Some(a)) => a,
-        Ok(None) => return Ok(Ok(None)),
-        Err(e) => return Ok(Err(e)),
+    let guess = Login::parse(owner).ok().and_then(|l| {
+        let account = rcache::last(&rcache::LOGINS, &l.key())?;
+        Some((account, rcache::last(&rcache::PLACEMENTS, &account)?))
+    });
+    Ok(chained(guess, account_of(c, owner), |a| placement(c, a), |a, r| named(c, a, r, &name)).await)
+}
+
+/// A chain of three reads, each addressed by the answers before it (`resolve`'s login, `Placement`, and name). With
+/// no `guess` they run in turn. With one, all three start at once, the later two on the guessed answers, and a later
+/// read is kept only if every read before it answered what its guess said; otherwise it is read again on the fresh
+/// answers. So the answer is always the one the reads in turn would give, a guessed read that was not kept counts
+/// for nothing, its error included, and a right guess costs the longest of the three reads, not their sum.
+async fn chained<A, R, T, E, F1, F2, F3>(
+    guess: Option<(A, R)>,
+    first: F1,
+    second: impl Fn(A) -> F2,
+    third: impl Fn(A, R) -> F3,
+) -> std::result::Result<Option<T>, E>
+where
+    A: Copy + PartialEq,
+    R: Clone + PartialEq,
+    F1: std::future::Future<Output = std::result::Result<Option<A>, E>>,
+    F2: std::future::Future<Output = std::result::Result<Option<R>, E>>,
+    F3: std::future::Future<Output = std::result::Result<Option<T>, E>>,
+{
+    let Some((ga, gr)) = guess else {
+        let Some(a) = first.await? else { return Ok(None) };
+        let Some(r) = second(a).await? else { return Ok(None) };
+        return third(a, r).await;
     };
-    let record = match placement(c, account).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return Ok(Ok(None)),
-        Err(e) => return Ok(Err(e)),
-    };
+    let (a, r, t) = futures_util::future::join3(first, second(ga), third(ga, gr.clone())).await;
+    let Some(a) = a? else { return Ok(None) };
+    let r = if a == ga { r } else { second(a).await };
+    let Some(r) = r? else { return Ok(None) };
+    if a == ga && r == gr { t } else { third(a, r).await }
+}
+
+/// The repository `name` on `account`'s `Authz` chain, found by `record`: `resolve`'s third read.
+async fn named(
+    c: &Ctx<'_>,
+    account: AccountId,
+    record: PlacementRecord,
+    name: &RepoName,
+) -> std::result::Result<Option<Repo>, String> {
     // A read-class request resolves the name in the owner's `Authz` fold, which its read gate needs anyway: from
     // `rcache` when one is at most `READ_CACHE` old, else one read that the gate then reuses. A name the fold does
     // not hold is read again fresh below, so a repository created since resolves at once.
@@ -180,7 +216,7 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
         && let Ok(Some(f)) = authz_read(c, account, &record).await
         && let Some((r, _)) = graftyard_identity::AuthzRead::resolve(&f, &name.key())
     {
-        return Ok(Ok(Some(Repo { id: r, owner: account, record })));
+        return Ok(Some(Repo { id: r, owner: account, record }));
     }
     let authz = ChainId::Authz(account);
     let b = c.bindings();
@@ -191,14 +227,14 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
     let v = match authz_get(c, &b, authz, &record, &q).await {
         Ok(Some((v, _, _))) => v,
         // An owner whose `Authz` chain was never created holds no repository.
-        Ok(None) => return Ok(Ok(None)),
-        Err(e) => return Ok(Err(e)),
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(e),
     };
-    Ok(Ok(v.pointer("/value/repo/repo").and_then(serde_json::Value::as_i64).map(|r| Repo {
+    Ok(v.pointer("/value/repo/repo").and_then(serde_json::Value::as_i64).map(|r| Repo {
         id: RepoId(DbId(r)),
         owner: account,
         record,
-    })))
+    }))
 }
 
 /// `resolve` from this isolate's `rcache` entries alone, whatever the request's class, or `None` when one is missing
@@ -240,7 +276,18 @@ async fn read_gate(
             core
         }))
     };
-    let (rows, owner) = futures_util::future::join(rows, authz_read(c, repo.owner, &repo.record)).await;
+    // A read-class request may decide on the owner's `Authz` from `rcache`, and the decision is then cached from that
+    // fold's read, not from now, so a revocation still binds within one `READ_CACHE` (`reopened`).
+    let at = now();
+    let held = if c.read_class.get() { rcache::stamped(&rcache::AUTHZ, &repo.owner, at) } else { None };
+    let fresh = || authz_read_as(c, repo.owner, &repo.record, false);
+    let owner = async {
+        match &held {
+            Some((_, f)) => Ok(Some(f.clone())),
+            None => fresh().await,
+        }
+    };
+    let (rows, owner) = futures_util::future::join(rows, owner).await;
     let core = match rows? {
         Ok(core) => core,
         // A repository whose create has not committed `RepoOwner` yet: hidden from every caller, as GitHub hides one
@@ -248,17 +295,38 @@ async fn read_gate(
         Err(e) if graftyard_lookup::is_not_created(&e) => return Ok(Ok(graftyard_identity::Decision::Hidden)),
         Err(e) => return Ok(Err(e)),
     };
-    let owner = match gate_owner(owner) {
-        Ok(o) => o,
+    let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core: &core };
+    let decide = |owner| {
+        let owner = gate_owner(owner)?;
+        let folds: [&dyn graftyard_identity::AuthzRead; 1] = [&owner];
+        Ok(graftyard_identity::authorize_read(who, c.token_fields.borrow().as_ref(), &folds, &access))
+    };
+    let (d, stamp) = match reopened(held.map(|(t, _)| t), at, decide(owner), fresh, decide).await {
+        Ok(d) => d,
         Err(e) => return Ok(Err(e)),
     };
-    let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core: &core };
-    let folds: [&dyn graftyard_identity::AuthzRead; 1] = [&owner];
-    let d = graftyard_identity::authorize_read(who, c.token_fields.borrow().as_ref(), &folds, &access);
     if let Some(k) = key {
-        gate::put(k, now(), d);
+        gate::put(k, stamp, d);
     }
     Ok(Ok(d))
+}
+
+/// The read gate's decision and the time it ages from. `held` is when the cached `Authz` it was first made on was read
+/// (`None` for a fresh read started at `at`). A decision on a cached fold that does not allow is made again on a
+/// `fresh` read, so a grant opens at once and only a revocation waits out the cache, as for API reads; one that allows
+/// ages from the fold's read, so caching it again never stretches the bound past one `READ_CACHE`. A failed read is
+/// not read again: a cache never holds an error, so it was a fresh read already.
+async fn reopened<V, E, F: std::future::Future<Output = V>>(
+    held: Option<Timestamp>,
+    at: Timestamp,
+    first: std::result::Result<graftyard_identity::Decision, E>,
+    fresh: impl FnOnce() -> F,
+    decide: impl FnOnce(V) -> std::result::Result<graftyard_identity::Decision, E>,
+) -> std::result::Result<(graftyard_identity::Decision, Timestamp), E> {
+    match (held, first) {
+        (Some(_), Ok(d)) if d != graftyard_identity::Decision::Allow => Ok((decide(fresh().await)?, at)),
+        (held, first) => Ok((first?, held.unwrap_or(at))),
+    }
 }
 
 /// The owner's `Authz` for the read gate, or why it failed. A read its members shed keeps its OVERLOADED reason, so
@@ -1234,9 +1302,9 @@ struct Ctx<'a> {
     token_fields: std::cell::RefCell<Option<graftyard_identity::TokenFields>>,
     /// The request sent `X-Graftyard-Agent-Session`, which classes a user token's commands Agent and grants nothing.
     agent_session: bool,
-    /// A read-class request (a REST `GET` or a GraphQL query on `api`): its token, name, placement, `Authz`, and
-    /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
-    /// as before.
+    /// A read-class request (a REST `GET` or a GraphQL query on `api`, a git fetch, `git_class`): its token, name,
+    /// placement, `Authz`, and login reads may use `rcache` entries up to `READ_CACHE` old. False for every other
+    /// request, which reads them as before.
     read_class: std::cell::Cell<bool>,
     /// A write (a push, a REST call other than `GET`, a GraphQL mutation): a read its members shed is asked again,
     /// backing off, within SHED_RETRY_FOR, before the write fails 503 (`spread_read`).
@@ -2970,6 +3038,20 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
 }
 
+/// A git request's class, (read-class, write). A fetch, upload-pack's advertisement and its POSTs (a v2 `ls-refs`
+/// among them), is read-class (`Ctx::read_class`): its token, login, `Placement`, and `Authz` may come from `rcache`
+/// within `READ_CACHE`, as an API read's do (`design/DESIGN.md`, "Follower read"). Receive-pack is a write, which reads
+/// them fresh. Dumb HTTP is neither: it is refused after the name resolves.
+fn git_class(route: &Route) -> (bool, bool) {
+    match route {
+        Route::InfoRefs { service: Some(Service::UploadPack), .. }
+        | Route::Rpc { service: Service::UploadPack, .. } => (true, false),
+        Route::InfoRefs { service: Some(Service::ReceivePack), .. }
+        | Route::Rpc { service: Service::ReceivePack, .. } => (false, true),
+        Route::InfoRefs { service: None, .. } | Route::Dumb { .. } => (false, false),
+    }
+}
+
 /// A request's route class for `fivexx_line`, from its method and path.
 fn route_kind(method: &Method, path: &str) -> &'static str {
     let agents = path.starts_with(graftyard_api::agents::PREFIX);
@@ -3167,10 +3249,9 @@ async fn serve(
             (owner.clone(), repo.clone())
         }
     };
-    c.write.set(matches!(
-        route,
-        Route::InfoRefs { service: Some(Service::ReceivePack), .. } | Route::Rpc { service: Service::ReceivePack, .. }
-    ));
+    let (read_class, write) = git_class(&route);
+    c.read_class.set(read_class);
+    c.write.set(write);
     let rpc_push = matches!(route, Route::Rpc { service: Service::ReceivePack, .. });
     if rpc_push || matches!(route, Route::Rpc { service: Service::UploadPack, .. }) {
         c.timing.start();
@@ -3188,7 +3269,8 @@ async fn serve(
         }
         Ok::<_, Error>(who)
     };
-    let (repo, who) = futures_util::future::join(api::timed(&c, "resolve", resolve(&c, &owner, &name)), auth).await;
+    let both = futures_util::future::join(api::timed(&c, "resolve", resolve(&c, &owner, &name)), auth);
+    let (repo, who) = api::timed(&c, "front", both).await;
     let repo = match repo? {
         Ok(Some(r)) => r,
         Ok(None) => return text(rid, 404, "Repository not found.\n"),
@@ -3298,9 +3380,9 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        CommitFail, Cut, ShardRefusal, bound_at_send, capped, client_push_id, commit_result, fivexx_line, gate_ng,
-        gunzip, ls_refs_at_edge, route_kind, shard_fail_line, shard_refusal, shard_url, streamed_site, validate_failed,
-        validate_sites, validate_timing, validate_url, warm_first,
+        CommitFail, Cut, ShardRefusal, bound_at_send, capped, chained, client_push_id, commit_result, fivexx_line,
+        gate_ng, git_class, gunzip, ls_refs_at_edge, reopened, route_kind, shard_fail_line, shard_refusal, shard_url,
+        streamed_site, validate_failed, validate_sites, validate_timing, validate_url, warm_first,
     };
 
     /// A commit that gave no outcome in time is a `CommitFail::NoOutcome` the push answers 503 with `Retry-After`,
@@ -3645,6 +3727,162 @@ mod tests {
         let e = gunzip(&z, (1 << 20) - 1).expect_err("past the cap").to_string();
         assert!(e.starts_with("gzip: "), "{e}");
         assert!(gunzip(b"not gzip", 1 << 20).expect_err("corrupt").to_string().starts_with("gzip: "));
+    }
+
+    /// A fetch is read-class and never a write: upload-pack's advertisement and POSTs, a v2 `ls-refs` among them,
+    /// may take `rcache` entries. Receive-pack's advertisement and POST stay write-class, so a push reads its token and
+    /// grants fresh, and dumb HTTP is neither. On main every git request was write-class or neither.
+    #[test]
+    fn a_fetch_is_read_class_and_a_push_stays_a_write() {
+        let class =
+            |path: &str, query: &str| git_class(&graftyard_git::smart::route(path, query).expect("a git route"));
+        assert_eq!(class("/o/r.git/info/refs", "service=git-upload-pack"), (true, false));
+        assert_eq!(class("/o/r.git/git-upload-pack", ""), (true, false));
+        assert_eq!(class("/o/r/git-upload-pack", ""), (true, false));
+        assert_eq!(class("/o/r.git/info/refs", "service=git-receive-pack"), (false, true));
+        assert_eq!(class("/o/r.git/git-receive-pack", ""), (false, true));
+        assert_eq!(class("/o/r.git/info/refs", ""), (false, false));
+        assert_eq!(class("/o/r.git/HEAD", ""), (false, false));
+    }
+
+    /// One read of `chained`'s harness: its name and arguments, and the ms it started.
+    type Started = Vec<(String, u64)>;
+
+    /// Runs `resolve`'s chain on a clock, each read taking 100 ms, over a store where login `o` is account `a`, `a`'s
+    /// record is `r`, and the name read on (account, record) answers `names`. Returns the answer, the ms it came, and
+    /// each read with its start.
+    fn run_chain(
+        guess: Option<(u8, u8)>,
+        a: Option<u8>,
+        r: Option<u8>,
+        names: fn(u8, u8) -> Result<Option<u32>, String>,
+    ) -> (Result<Option<u32>, String>, u64, Started) {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        use futures_util::FutureExt;
+
+        struct At(Rc<Cell<u64>>, u64);
+        impl std::future::Future for At {
+            type Output = ();
+            fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0.get() >= self.1 { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+            }
+        }
+        let clock = Rc::new(Cell::new(0u64));
+        let log = Rc::new(RefCell::new(Started::new()));
+        let read = |what: String| {
+            let (clock, log) = (clock.clone(), log.clone());
+            async move {
+                let at = clock.get();
+                log.borrow_mut().push((what, at));
+                At(clock, at + 100).await;
+            }
+        };
+        let first = {
+            let r = read("login".into());
+            async move {
+                r.await;
+                Ok::<_, String>(a)
+            }
+        };
+        let second = |acct: u8| {
+            let rd = read(format!("placement {acct}"));
+            async move {
+                rd.await;
+                Ok(if Some(acct) == a { r } else { None })
+            }
+        };
+        let third = |acct: u8, rec: u8| {
+            let rd = read(format!("name {acct} {rec}"));
+            async move {
+                rd.await;
+                names(acct, rec)
+            }
+        };
+        let mut f = Box::pin(chained(guess, first, second, third));
+        for _ in 0..1_000 {
+            if let Some(out) = f.as_mut().now_or_never() {
+                return (out, clock.get(), log.borrow().clone());
+            }
+            clock.set(clock.get() + 1);
+        }
+        panic!("the chain never answered");
+    }
+
+    /// `resolve`'s three reads: with no guess they run in turn (300 ms); with a right guess all three start at once
+    /// and the answer comes in one read's time (100 ms), which main's serial resolve never did. A wrong guess never
+    /// changes the answer: a moved account reads its record and name again, a moved record its name, a guessed read
+    /// that failed or answered for the old account counts for nothing, and a login that no longer resolves answers
+    /// `None` even when the guessed name read found a repository.
+    #[test]
+    fn resolve_starts_its_three_reads_at_once_on_a_held_guess_and_keeps_only_what_the_chain_confirms() {
+        let names = |a: u8, r: u8| Ok(Some(u32::from(a) * 100 + u32::from(r)));
+        let s = |v: &[(&str, u64)]| v.iter().map(|(n, t)| (n.to_string(), *t)).collect::<Started>();
+        assert_eq!(
+            run_chain(None, Some(1), Some(7), names),
+            (Ok(Some(107)), 300, s(&[("login", 0), ("placement 1", 100), ("name 1 7", 200)]))
+        );
+        assert_eq!(
+            run_chain(Some((1, 7)), Some(1), Some(7), names),
+            (Ok(Some(107)), 100, s(&[("login", 0), ("placement 1", 0), ("name 1 7", 0)]))
+        );
+        // The login now names account 2: its record and name are read again, on the fresh answers.
+        assert_eq!(
+            run_chain(Some((1, 7)), Some(2), Some(9), names),
+            (
+                Ok(Some(209)),
+                300,
+                s(&[("login", 0), ("placement 1", 0), ("name 1 7", 0), ("placement 2", 100), ("name 2 9", 200)])
+            )
+        );
+        // Same account, moved record: only the name is read again.
+        assert_eq!(
+            run_chain(Some((1, 7)), Some(1), Some(8), names),
+            (Ok(Some(108)), 200, s(&[("login", 0), ("placement 1", 0), ("name 1 7", 0), ("name 1 8", 100)]))
+        );
+        // The guessed name read failed on the old record: not kept, so not an error.
+        let stale =
+            |a: u8, r: u8| if r == 7 { Err("old members".into()) } else { Ok(Some(u32::from(a) * 100 + u32::from(r))) };
+        assert_eq!(run_chain(Some((1, 7)), Some(1), Some(8), stale).0, Ok(Some(108)));
+        // A guessed read that answers is still dropped when the login no longer resolves.
+        assert_eq!(run_chain(Some((1, 7)), None, Some(7), names).0, Ok(None));
+        // A fresh read that fails fails the chain, guess or not.
+        let down = |_: u8, _: u8| Err::<Option<u32>, _>("down".to_string());
+        assert_eq!(run_chain(Some((1, 7)), Some(1), Some(7), down).0, Err("down".into()));
+    }
+
+    /// The git read gate on a cached `Authz`: a decision that does not allow is made again on a fresh read (a grant
+    /// opens at once), and one that allows is kept from the fold's read, not from now, so a revocation binds within one
+    /// `READ_CACHE`. A fresh first read is never read again, and a failure is not retried.
+    #[test]
+    fn a_gate_closed_on_a_cached_authz_reads_it_fresh_and_an_open_one_ages_from_the_folds_read() {
+        use futures_util::FutureExt;
+        use graftyard_identity::Decision::{Allow, Hidden};
+
+        let at = Timestamp(20_000);
+        let run = |held: Option<Timestamp>, first: Result<graftyard_identity::Decision, String>, fresh: bool| {
+            let read = std::cell::Cell::new(0);
+            let out = reopened(
+                held,
+                at,
+                first,
+                || {
+                    read.set(read.get() + 1);
+                    std::future::ready(fresh)
+                },
+                |open: bool| Ok(if open { Allow } else { Hidden }),
+            )
+            .now_or_never()
+            .expect("ready");
+            (out, read.get())
+        };
+        assert_eq!(run(Some(Timestamp(12_000)), Ok(Hidden), true), (Ok((Allow, at)), 1));
+        assert_eq!(run(Some(Timestamp(12_000)), Ok(Hidden), false), (Ok((Hidden, at)), 1));
+        assert_eq!(run(Some(Timestamp(12_000)), Ok(Allow), false), (Ok((Allow, Timestamp(12_000))), 0));
+        assert_eq!(run(None, Ok(Hidden), true), (Ok((Hidden, at)), 0));
+        assert_eq!(run(None, Ok(Allow), true), (Ok((Allow, at)), 0));
+        assert_eq!(run(Some(Timestamp(12_000)), Err("down".into()), true), (Err("down".into()), 0));
     }
 
     /// An owner's `Authz` read its members shed keeps the shed reason through the read gate, so the git and LFS gates
