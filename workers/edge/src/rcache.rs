@@ -1,5 +1,5 @@
 //! The edge's per-isolate read caches (`design/DESIGN.md`, Shape, Identity, `READ_CACHE`, and "Follower read"): a
-//! read-class request (a repository `GET`, a GraphQL query) may use an answer up to `READ_CACHE` old for a stored
+//! read-class request (a repository `GET`, a GraphQL query, a git fetch) may use an answer up to `READ_CACHE` old for a stored
 //! token's row, the `ghs_` verifying keys and a `jti`'s revocation, a login's account, an owner's `Placement` row, the
 //! owner's `Authz` fold, and an account's login. A write-class request reads each one fresh, and its answer refreshes
 //! the entry.
@@ -124,6 +124,18 @@ impl<K: Ord, V: Clone> Ttl<K, V> {
         self.entries.get(k).filter(|(at, _)| now.0.saturating_sub(at.0) <= ttl).map(|(_, v)| v.clone())
     }
 
+    /// The entry for `k` and when its read started, if it is at most `READ_CACHE` old: for a decision made on it that
+    /// is cached in turn, which must age from the same moment (`crate::read_gate`).
+    pub(crate) fn stamped(&self, k: &K, now: Timestamp) -> Option<(Timestamp, V)> {
+        let at = self.entries.get(k)?.0;
+        Some((at, self.get(k, now, true)?))
+    }
+
+    /// The entry for `k` at any age, for any request: a guess of which record to read, never an answer (`chained`).
+    pub(crate) fn last(&self, k: &K) -> Option<V> {
+        self.entries.get(k).map(|(_, v)| v.clone())
+    }
+
     /// Stores an answer whose read started at `read_at`, unless the entry holds a newer one. Past `cap` entries the
     /// map starts empty again, as the read gate's does.
     pub(crate) fn put(&mut self, k: K, read_at: Timestamp, v: V) {
@@ -165,6 +177,20 @@ pub(crate) fn get<K: Ord, V: Clone>(
     read_class: bool,
 ) -> Option<V> {
     cache.with(|c| c.borrow().get(k, now, read_class))
+}
+
+/// `cache`'s entry for `k` with its stamp, as `Ttl::stamped`.
+pub(crate) fn stamped<K: Ord, V: Clone>(
+    cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>,
+    k: &K,
+    now: Timestamp,
+) -> Option<(Timestamp, V)> {
+    cache.with(|c| c.borrow().stamped(k, now))
+}
+
+/// `cache`'s entry for `k` at any age, as `Ttl::last`.
+pub(crate) fn last<K: Ord, V: Clone>(cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>, k: &K) -> Option<V> {
+    cache.with(|c| c.borrow().last(k))
 }
 
 /// Stores `v` in `cache`, as `Ttl::put`.

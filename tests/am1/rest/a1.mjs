@@ -842,6 +842,9 @@ async function cloneTtfb(repo, want, kind, firstByte, tok = admin) {
     // A test install's edge answers its own time to the shard's headers, its time to first byte.
     const edge = /total;dur=(\d+)/.exec(r.headers.get("server-timing") ?? "");
     if (edge) note(`${kind}:edge`, Number(edge[1]), String(r.status));
+    // git-read-class: the edge's front (token and name, both answered) on the same fetch.
+    const front = /front;dur=(\d+)/.exec(r.headers.get("server-timing") ?? "");
+    if (front) note(`${kind}:front`, Number(front[1]), String(r.status));
     if (firstByte && b034) {
       const cache = r.headers.get("x-graft-clone-cache"), compose = r.headers.get("x-graft-compose");
       note(`${kind}:${cache ?? "nocache"}`, ms, compose ?? String(r.status));
@@ -981,7 +984,13 @@ const jobs = [
     if (m.status === 200) main = (await tip("refs/heads/main")) ?? main;
     return st(m);
   }, 3),
-  every("read:ref", plan.refReads, async () => st(await lsRefs(admin, "refs/heads/"))),
+  every("read:ref", plan.refReads, async () => {
+    const r = await lsRefs(admin, "refs/heads/");
+    // git-read-class: a test edge's front on the ls-refs, as `read:ref:front`.
+    const front = /front;dur=(\d+)/.exec(r.headers?.get?.("server-timing") ?? "");
+    if (front) note("read:ref:front", Number(front[1]), String(r.status));
+    return st(r);
+  }),
   every("read:api", plan.apiReads, async () => stages(Math.random() < 0.5
     ? await api("GET", `/api/v3/repos/${R}/issues?per_page=30`, admin)
     : await api("POST", "/api/graphql", admin, { query: `query { repository(owner: "m3org", name: "${opt.repo}") { pullRequests(last: 10) { nodes { number isDraft${plan.openPrs ? " mergeable" : ""} } } } }` }))),

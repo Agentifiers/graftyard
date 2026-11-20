@@ -6295,3 +6295,36 @@ whose poll misses an event its own member applied because of the boot key (a boo
 **Evidence.** `crates/lookup/src/lib.rs`: `a_catch_up_read_answers_from_its_site_while_another_walk_holds_the_mark` holds the mark with another request's walk for 15 s of virtual time. The local `ranges` answer returns at 0 ms with no post the leader's way; main's path, the fallback here, waits the 15 s and logs "waited … on t7". `a_local_catch_up_read_is_taken_only_at_or_above_what_was_asked` checks that `NotLeader`, `overloaded`, `busy`, a null value, an empty page and a page starting above or below `from` all go to the leader. `a_wait_on_another_requests_mark_is_logged_with_its_holder` checks both new trace lines. `fanout::tests::a_follower_serves_only_the_designs_reads` now has a follower serve `{"ranges": true}`. Plants 150 to 157 (`tests/m4/wp4/plant.py`).
 
 **Flip.** A catch-up that applied a page or a `ranges` answer below the index it asked for. Or a B0-35 row whose new lines show the catch-up's local reads missing while its fallback still waits on the mark; then the fix belongs in the lookup's waiter rule (F104).
+
+### `git-read-class`: a git fetch is read-class, and `resolve` starts its three reads at once on a held guess, 2026-11-20
+
+Branch `git-read-class`, code only, no hosted row (second-opinion review T-01a1f697, recommendations 2a and 2b).
+
+**Decision.**
+- **A fetch is read-class.** upload-pack's advertisement (`info/refs?service=git-upload-pack`) and its POSTs, a v2 `ls-refs` among them, set `Ctx::read_class` (`git_class` in `workers/edge/src/lib.rs`). Their token row, `ghs_` keys and `jti`, login, `Placement`, and owner's `Authz` may come from `rcache` within `READ_CACHE`, as a REST `GET`'s do. Receive-pack's advertisement and POST stay write-class and read fresh. Dumb HTTP is neither, as before.
+- **The git read gate re-reads a closed gate.** A gate decision made on a cached `Authz` that does not allow is made again on a fresh read, as `api::read_repo` does for API reads, so a grant opens at once. A decision that allows on a cached fold is kept in the gate's cache from that fold's read, not from the decision, so a revocation binds git reads within one `READ_CACHE`, not two (`reopened`).
+- **`resolve` starts its reads at once on a held guess.** Login, `Placement`, and the `Authz` name are a chain: the login names the account, whose `Placement` row addresses the `Authz` group. When the isolate holds a login and `Placement` answer for the owner, at any age (`rcache::last`), all three start at once on them (`chained`). A later read is kept only if every read before it answered what its guess said; otherwise it is read again on the fresh answers. A kept read is one the serial chain would have made, so the answer is the serial answer, and a write still reads fresh. A guess costs one or two wasted reads when an owner's login or placement moved.
+- **`front` stage.** A push's and an upload-pack POST's `server-timing` carries `front`: the wall until the token, the name, and a push's install `Authz` have all answered. `a1.mjs` keeps it as `read:cloneTtfb:front` and `read:ref:front`.
+
+**Why.**
+- DESIGN's fetch path names a token cache ("Dominant access patterns", *Fetch or clone*), and SHARED's "Token revocation" and journey 4 step 4 already allow reads 10 s. Yet git requests never set `read_class` (`rg read_class.set workers/edge/src` found only `api`, `ui` and `actions`), so each of a clone's three requests read token, login, `Placement`, and the name fresh, through `edge-read-batch`'s write-class batches. `narrow-reads-2.md` recorded the gap and left it.
+- On B0-34 mt6, 26,395 answered monorepo upload-pack POSTs took p05 792 ms and p50 1,181 ms on the edge (718 to 898 ms p05 by phase), at 11 to 13 ms of CPU [measured, `tests/fanout/raw/edgecpu-mt6.json.xz`]. That the identity and name reads set that floor is an inference: upload-pack's `server-timing` held only `total`, which is why `front` is added.
+- Serial, a push's `resolve` was p50 551 ms on m3fe2 against auth 120 ms, so it set the push front [measured, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fe2"]. Started at once on a right guess, it costs the longest of its three reads instead of their sum [inference; the chain test shows 100 ms against 300 ms on equal reads].
+
+**What it beat.**
+- **Reading login and `Placement` from the cache outright for writes.** It breaks "a write reads fresh" (SHARED, "Token revocation"; DESIGN, Identity), and a moved placement would send a push's reads to the old record for up to `READ_CACHE`.
+- **Parallel reads with no guess.** None is possible: each read is addressed by the one before it.
+- **Making receive-pack's advertisement or POST read-class.** Both are a push's and stay write-class. Whether a write may trust its leader's identity read instead (the review's rec 2c) awaits an operator decision.
+
+**Evidence.**
+- `workers/edge/src/lib.rs` tests, each failing on main:
+  - `a_fetch_is_read_class_and_a_push_stays_a_write` (main: every git request is `(false, _)`);
+  - `resolve_starts_its_three_reads_at_once_on_a_held_guess_and_keeps_only_what_the_chain_confirms` (main's serial chain answers at 300 ms, not 100; moved account and moved record each re-read, a failed or stale guessed read never shows);
+  - `a_gate_closed_on_a_cached_authz_reads_it_fresh_and_an_open_one_ages_from_the_folds_read`.
+- `tests/m0carried/plant58.py` catches 9 of 9, three of them main's behaviour put back.
+- No hosted row yet. The next B0-34 or B0-29 row reads `read:cloneTtfb:front`, `read:ref:front`, and push `front` against m3fe2's 767 ms.
+
+**Flip.**
+- A hosted row whose fetch `front` p50 is not well under main's serial resolve (about 550 ms) on warm isolates. The cost was then elsewhere.
+- Guesses that miss often enough to show as extra `Names` or `Authz` reads on their leaders.
+- A revocation or removed grant that a git client must see on fetches in under `READ_CACHE`, which would make fetches write-class again.
