@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use futures_executor::block_on;
 use graftyard_git::catchup::{
-    Fetched, INGEST_BATCH_BYTES, IdxRange, Ingested, Rehydrating, Report, Saved, ShardIo, catch_up,
+    Fetched, INGEST_BATCH_BYTES, IdxRange, Ingested, PIECE, Piece, Rehydrating, Report, Saved, ShardIo, WHOLE, catch_up,
 };
 use graftyard_git::group::RefsPage;
 use graftyard_git::{ChainLog, Compacted, Head, IngestCursor, LogPacks, Marker, PackId, PackRef, Promoted, StoreError};
@@ -520,7 +520,7 @@ fn bed(n: u64, pad: usize, stored_every: u64) -> Bed {
 
 impl Bed {
     fn run(&self) -> Result<Report, StoreError> {
-        block_on(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], &|| 0))
+        block_on(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], WHOLE, None, &|| 0))
     }
 
     /// Promotes entries 1..=to into one stored, complete pack, as the archive alarm does, and records `Promoted` at a
@@ -959,7 +959,7 @@ fn a_shard_reads_its_own_sites_bucket_first_and_falls_back() {
 impl Bed {
     fn run_timed(&self) -> Result<Report, StoreError> {
         let now = || self.disk.clock.now.get();
-        self.disk.clock.run(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], &now))
+        self.disk.clock.run(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], WHOLE, None, &now))
     }
 
     /// Stores the `.idx` of promotion `1_000_000 + to`, good or not, with the range its metadata names.
@@ -1422,4 +1422,59 @@ fn a_catch_up_times_room_ingest_and_refs_apart() {
     assert_eq!(p.save, 0);
     assert_eq!(p.room + p.ingest + p.refs + p.save, b.disk.clock.now.get() - t0, "the parts cover the page");
     b.assert_serves_head();
+}
+
+/// G34: a catch-up behind a burst of staged packs goes in pieces. Each call applies whole entries up to `PIECE`, saves
+/// its cursor, and says another follows; the later pieces go to the head the first read and no further, however far the
+/// log moved meanwhile, and a lone entry over the cap still goes. On B0-32 m3fst1 one call ingested 294 packs (74.5 MB)
+/// in 15.8 s while 53 validates and a merge waited on it (`decisions/DECISIONS.md`, "`catchup-pieces`").
+#[test]
+fn a_burst_catch_up_goes_in_capped_pieces_to_the_head_its_first_piece_read() {
+    let b = bed(120, 0, 1);
+    let all = b.log.entries.replace(Vec::new());
+    let marks = b.disk.markers.borrow().clone();
+    b.log.entries.borrow_mut().extend(all.iter().take(10).cloned());
+    b.disk.markers.borrow_mut().retain(|(_, m)| m.index.0 <= 10);
+    b.run().unwrap();
+    *b.disk.markers.borrow_mut() = marks;
+    b.log.entries.borrow_mut().extend(all.iter().skip(10).take(90).cloned());
+    let piece = |until: Option<&IngestCursor>| {
+        block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, until, &|| 0)).unwrap()
+    };
+    let at = || b.store.cursor.borrow().clone().unwrap().1.at(CHAIN).0;
+    // 90 stored packs past the cursor, one an entry: 32, 32, then 26.
+    let first = piece(None);
+    assert!(first.behind, "the first piece stops at the cap");
+    assert_eq!((first.packs, at()), (PIECE.packs, 10 + PIECE.packs as u64), "the cursor is saved at the cap");
+    assert_eq!(first.until.at(CHAIN), Index(100), "the run ends at the head the first piece read");
+    // The log moves on while the run goes; its pieces still end at 100.
+    b.log.entries.borrow_mut().extend(all.iter().skip(100).cloned());
+    let second = piece(Some(&first.until));
+    assert!(second.behind);
+    assert_eq!((second.packs, at()), (PIECE.packs, 10 + 2 * PIECE.packs as u64));
+    let last = piece(Some(&second.until));
+    assert!(!last.behind, "the run ends at its head");
+    assert_eq!((last.packs, at()), (90 - 2 * PIECE.packs, 100));
+    assert!(b.disk.objects.borrow().contains(&100) && !b.disk.objects.borrow().contains(&101));
+    // The next run reads the head again and goes past it.
+    while piece(None).behind {}
+    b.assert_serves_head();
+    // A lone entry past the cap goes alone, never zero entries a call.
+    let big = Piece { packs: 1, bytes: 1 };
+    let c = bed(4, 2_000, 0);
+    let more = c.log.entries.replace(Vec::new());
+    c.log.entries.borrow_mut().push(more[0].clone());
+    c.run().unwrap();
+    c.log.entries.borrow_mut().extend(more.into_iter().skip(1));
+    let mut calls = 0;
+    loop {
+        calls += 1;
+        let r = block_on(catch_up(&c.disk, &c.store, &c.log, NET, &[CHAIN], big, None, &|| 0)).unwrap();
+        assert_eq!(r.entries, 1, "one entry a call at a cap below one entry's bytes");
+        if !r.behind {
+            break;
+        }
+    }
+    assert_eq!(calls, 3);
+    c.assert_serves_head();
 }

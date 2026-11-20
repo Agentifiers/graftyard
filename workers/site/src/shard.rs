@@ -450,7 +450,9 @@ impl Jobs {
     }
 
     /// Starts a catch-up unless one runs. It runs to its end whoever waits, under `wait_until`, and keeps the
-    /// `warming` key while it runs so the shard's alarm can restart it after a reset.
+    /// `warming` key while it runs so the shard's alarm can restart it after a reset. It runs in pieces of at most
+    /// `graftyard_git::catchup::PIECE`, each toward the head the first read, and wakes every waiter after each piece,
+    /// so a held validate or a merge that misses a commit tries again on the disk between pieces (`catchup-pieces`).
     fn start(&self) {
         let started = RUNS.with(|r| {
             let mut r = r.borrow_mut();
@@ -461,24 +463,39 @@ impl Jobs {
         }
         let me = self.clone();
         self.state.wait_until(async move {
-            let r = me.run().await;
+            let mut until = None;
+            let r = loop {
+                match me.run(until.as_ref()).await {
+                    Ok(Some(u)) => {
+                        until = Some(u);
+                        me.wake(&Ok(()));
+                    }
+                    Ok(None) => break Ok(()),
+                    Err(e) => break Err(e),
+                }
+            };
             if let Err(e) = &r {
                 console_error!("shard catch-up {}: {e}", me.net.0.0);
             }
-            let ok = r.is_ok();
-            let waiters = RUNS.with(|m| {
-                let mut m = m.borrow_mut();
-                let run = m.entry(me.key()).or_default();
-                run.runs.end(ok);
-                std::mem::take(&mut run.waiters)
-            });
-            for w in waiters {
-                let _ = w.send(r.clone());
-            }
+            RUNS.with(|m| m.borrow_mut().entry(me.key()).or_default().runs.end(r.is_ok()));
+            me.wake(&r);
         });
     }
 
-    async fn run(&self) -> std::result::Result<(), String> {
+    /// Answers every caller waiting on this network's catch-ups, which each check again what they wait for.
+    fn wake(&self, r: &std::result::Result<(), String>) {
+        let waiters = RUNS.with(|m| std::mem::take(&mut m.borrow_mut().entry(self.key()).or_default().waiters));
+        for w in waiters {
+            let _ = w.send(r.clone());
+        }
+    }
+
+    /// One piece of a run: `until` is the head the run's first piece read, `None` for the first. `Some` with it when
+    /// the piece stopped before it, so another follows.
+    async fn run(
+        &self,
+        until: Option<&graftyard_git::IngestCursor>,
+    ) -> std::result::Result<Option<graftyard_git::IngestCursor>, String> {
         let site = SiteEnv::read(&self.env).map_err(|e| e.to_string())?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let instance = instance(&self.env).map_err(|e| e.to_string())?.0;
@@ -492,14 +509,19 @@ impl Jobs {
         let raw = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site));
         let bs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
         let s = self.state.storage();
-        s.put(WARMING_KEY, (self.net.0.0, &self.record)).await.map_err(|e| e.to_string())?;
-        if s.get_alarm().await.ok().flatten().is_none_or(|at| at > (now_ms() + WARMING_ALARM_MS) as i64) {
-            let _ = s.set_alarm(std::time::Duration::from_millis(WARMING_ALARM_MS)).await;
+        if until.is_none() {
+            s.put(WARMING_KEY, (self.net.0.0, &self.record)).await.map_err(|e| e.to_string())?;
+            if s.get_alarm().await.ok().flatten().is_none_or(|at| at > (now_ms() + WARMING_ALARM_MS) as i64) {
+                let _ = s.set_alarm(std::time::Duration::from_millis(WARMING_ALARM_MS)).await;
+            }
         }
         // The page-overlap trace: this object's cursor before the run, as its last run in this isolate left it.
         let before = CURSORS.with(|m| m.borrow().get(&self.key()).copied());
-        let r = host.catch_up(self.net, &[chain], &bs, &log).await;
-        let _ = s.delete(WARMING_KEY).await;
+        let r = host.catch_up(self.net, &[chain], &bs, &log, graftyard_git::catchup::PIECE, until).await;
+        // The key stays between a run's pieces: a reset there leaves the alarm to start the run again.
+        if !r.as_ref().is_ok_and(|c| c.behind) {
+            let _ = s.delete(WARMING_KEY).await;
+        }
         let c = r.map_err(|e| e.0)?;
         CURSORS.with(|m| m.borrow_mut().insert(self.key(), c.cursor.at(chain).0));
         let v = serde_json::to_value(&c).unwrap_or(Value::Null);
@@ -519,10 +541,13 @@ impl Jobs {
                 "shard catch-up stored {}: {}",
                 self.net.0.0,
                 serde_json::json!({ "ms": c.ms, "pages_ms": c.pages_ms, "stored": c.stored, "entries": c.entries, "obj": self.obj,
-                    "from": before, "to": to, "refetched": refetched })
+                    "from": before, "to": to, "refetched": refetched, "behind": c.behind })
             );
         }
         REPORTS.with(|m| m.borrow_mut().insert(self.key(), v));
+        if c.behind {
+            return Ok(Some(c.until));
+        }
         // The builder takes the composed-miss chain's next step in the background, its base on a network with none;
         // the catch-up does not wait for it.
         Compose {
@@ -533,37 +558,16 @@ impl Jobs {
             record: self.record.clone(),
         }
         .start(false);
-        Ok(())
+        Ok(None)
     }
 
     /// Waits for a catch-up that started after this call arrived, at most `wait` when given: `Err` with the reply to
     /// send, 503 `warming` past the wait, and 503 when the catch-up failed too: a failed catch-up is this shard's, not
-    /// the pack's, so the caller tries another site's shard (`graftyard_git::validate_status`).
+    /// the pack's, so the caller tries another site's shard (`graftyard_git::validate_status`). A catch-up that is
+    /// running started before this call: this waits for it, then for the next one.
     async fn wait(&self, wait: Option<std::time::Duration>) -> std::result::Result<(), Result<Response>> {
-        let (tx, rx) = futures_channel::oneshot::channel();
-        RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
-        // A catch-up that is running started before this call: this waits for it, then for the next one.
-        let running = RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.runs.running));
-        let next = async {
-            if running {
-                let _ = rx.await;
-                let (tx2, rx2) = futures_channel::oneshot::channel();
-                RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx2));
-                self.start();
-                rx2.await.unwrap_or_else(|_| Err("the catch-up ended".into()))
-            } else {
-                self.start();
-                rx.await.unwrap_or_else(|_| Err("the catch-up ended".into()))
-            }
-        };
-        let r = match wait {
-            Some(d) => match crate::host::within(d, next).await {
-                Some(r) => r,
-                None => return Err(warming()),
-            },
-            None => next.await,
-        };
-        r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
+        let from = self.start_from();
+        self.wait_from(from, wait).await
     }
 
     /// Starts a catch-up unless one runs, and answers the number of the first run to start after this call, which
@@ -590,9 +594,7 @@ impl Jobs {
                     CatchUpStep::Start => self.start(),
                     CatchUpStep::Await => {}
                 }
-                let (tx, rx) = futures_channel::oneshot::channel();
-                RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
-                rx.await.unwrap_or_else(|_| Err("the catch-up ended".into()))?;
+                self.woken(from).await?;
             }
         };
         let r = match wait {
@@ -605,14 +607,41 @@ impl Jobs {
         r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
     }
 
-    /// Ends once no catch-up of the network runs here.
+    /// Ends once no catch-up of the network runs here, whole runs, not pieces.
     async fn idle(&self) {
-        if !RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.runs.running)) {
-            return;
+        while RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.runs.running)) {
+            let (tx, rx) = futures_channel::oneshot::channel();
+            RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
+            let _ = rx.await;
         }
+    }
+
+    /// The next turn of a caller that needs a catch-up numbered `from` or later (`start_from`): `Ok(true)` once one has
+    /// ended without an error, else `Ok(false)` when the running run's next piece ends, so the caller tries again on
+    /// the disk between pieces; a failed run's error (`graftyard_git::CatchUps::step`).
+    async fn turn(&self, from: u64) -> std::result::Result<bool, String> {
+        use graftyard_git::CatchUpStep;
+        let runs = RUNS.with(|r| r.borrow().get(&self.key()).map(|run| run.runs).unwrap_or_default());
+        match runs.step(from) {
+            CatchUpStep::Done => return Ok(true),
+            CatchUpStep::Start => self.start(),
+            CatchUpStep::Await => {}
+        }
+        self.woken(from).await?;
+        let runs = RUNS.with(|r| r.borrow().get(&self.key()).map(|run| run.runs).unwrap_or_default());
+        Ok(runs.step(from) == CatchUpStep::Done)
+    }
+
+    /// Waits for the next piece or run of this network's catch-ups to end. A failed run is an error only to a caller
+    /// it was for, one numbered `from` or later; a caller that arrived while it ran goes on to the next run, as `wait`
+    /// did.
+    async fn woken(&self, from: u64) -> std::result::Result<(), String> {
         let (tx, rx) = futures_channel::oneshot::channel();
         RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
-        let _ = rx.await;
+        match rx.await.unwrap_or_else(|_| Err("the catch-up ended".into())) {
+            Err(e) if RUNS.with(|r| r.borrow().get(&self.key()).is_some_and(|run| run.runs.started >= from)) => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// The latest catch-up's report here: what it read, ingested, and applied, and how much it held at once.
@@ -1123,11 +1152,37 @@ impl DurableObject for GitShard {
                     Ok(Validated::MissingBase { .. }) if back => return sent_back(),
                     // The container kept the request: once a catch-up that started after it ran, the same request is
                     // checked again, and every failure then is the pack's, as on a shard caught up first.
-                    Ok(Validated::MissingBase { held }) => {
-                        if let Err(r) = jobs.wait_from(from, wait).await {
-                            return r;
+                    // Between the pieces of a catch-up still short of that one it is checked again on the disk as
+                    // it stands, so a base the next piece brings serves it then, not at the run's end
+                    // (`catchup-pieces`). A base still missing keeps it again; a full validate queue leaves it held
+                    // for the next piece.
+                    Ok(Validated::MissingBase { mut held }) => {
+                        let until = wait.map(|d| now_ms() + d.as_millis() as u64);
+                        loop {
+                            let turn = jobs.turn(from);
+                            let caught = match until {
+                                Some(u) => match crate::host::within(
+                                    std::time::Duration::from_millis(u.saturating_sub(now_ms())),
+                                    turn,
+                                )
+                                .await
+                                {
+                                    Some(c) => c,
+                                    None => return warming(),
+                                },
+                                None => turn.await,
+                            };
+                            let caught = match caught {
+                                Ok(c) => c,
+                                Err(e) => return Response::error(e, graftyard_git::validate_status(None)),
+                            };
+                            let disk = if caught { OnDisk::Held(&held) } else { OnDisk::HeldOnDisk(&held) };
+                            match host.validate(net, tipsn, detailn, agent, derived, disk, None).await {
+                                Ok(Validated::MissingBase { held: again }) if !caught => held = again,
+                                Ok(Validated::Busy { .. }) if !caught => {}
+                                r => break r,
+                            }
                         }
-                        host.validate(net, tipsn, detailn, agent, derived, OnDisk::Held(&held), None).await
                     }
                     r => r,
                 };
@@ -1438,27 +1493,32 @@ impl DurableObject for GitShard {
                 let caught = std::cell::Cell::new(0);
                 let waited = std::cell::Cell::new(0);
                 let warming_too = std::cell::Cell::new(false);
+                // A miss waits for this network's catch-ups a piece at a time and merges again after each piece:
+                // `waited` while the run in flight at the miss goes on, `catchup` for runs that started after it.
+                let from = std::cell::Cell::new(None);
                 let a = graftyard_git::merge_cache::merge_then_catch_up(
                     worker::Delay::from(graftyard_git::merge_cache::MERGE_WAIT),
                     || async { host.up().await.map(|_| ()) },
+                    || host.merge_chain(net, base, &chain, method),
                     || {
-                        let idle = jobs.idle();
-                        let waited = &waited;
+                        let from = from.get().unwrap_or_else(|| {
+                            let f = RUNS.with(|r| r.borrow().get(&jobs.key()).map_or(1, |run| run.runs.next()));
+                            from.set(Some(f));
+                            f
+                        });
+                        let (waited, caught, warming_too, jobs) = (&waited, &caught, &warming_too, &jobs);
                         async move {
                             let w0 = now_ms();
-                            idle.await;
-                            waited.set(now_ms() - w0);
+                            let after =
+                                RUNS.with(|r| r.borrow().get(&jobs.key()).is_some_and(|run| run.runs.started >= from));
+                            let r = jobs.turn(from).await;
+                            let cell = if after { caught } else { waited };
+                            cell.set(cell.get() + now_ms() - w0);
+                            r.map_err(|_| {
+                                warming_too.set(true);
+                                graftyard_git::StoreError("warming".into())
+                            })
                         }
-                    },
-                    || host.merge_chain(net, base, &chain, method),
-                    || async {
-                        let c0 = now_ms();
-                        let r = caught_up().await;
-                        caught.set(now_ms() - c0);
-                        r.map_err(|_| {
-                            warming_too.set(true);
-                            graftyard_git::StoreError("warming".into())
-                        })
                     },
                 )
                 .await;

@@ -649,6 +649,9 @@ pub enum OnDisk<'a> {
     CaughtUp,
     AsItStands,
     Held(&'a str),
+    /// A kept request checked again on the disk as it stands, between catch-up pieces: a base still missing keeps it
+    /// again, under a new id (`MissingBase`), and every other failure is the pack's, as on `AsItStands`.
+    HeldOnDisk(&'a str),
 }
 
 #[derive(Debug, Deserialize)]
@@ -924,6 +927,7 @@ impl ShardHost<'_> {
             OnDisk::CaughtUp => {}
             OnDisk::AsItStands => path.push_str("&disk=1"),
             OnDisk::Held(id) => path.push_str(&format!("&held={id}")),
+            OnDisk::HeldOnDisk(id) => path.push_str(&format!("&held={id}&disk=1")),
         }
         if detailn > 0 {
             path.push_str(&format!("&detailn={detailn}"));
@@ -943,7 +947,7 @@ impl ShardHost<'_> {
             let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
             return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
         }
-        if r.status_code() == 409 && matches!(disk, OnDisk::AsItStands) {
+        if r.status_code() == 409 && matches!(disk, OnDisk::AsItStands | OnDisk::HeldOnDisk(_)) {
             #[derive(Deserialize)]
             struct Held {
                 #[serde(rename = "missingBase")]
@@ -1403,7 +1407,9 @@ impl ShardHost<'_> {
     }
 
     /// Catch-up before serving, and `rehydrate` when the disk has no cursor (`crate::catchup`): a page of the log at a
-    /// time, stored packs streamed from a bucket to the container, and every page saved before the next.
+    /// time, stored packs streamed from a bucket to the container, and every page saved before the next. One call is
+    /// at most `piece` (`crate::catchup::PIECE` on the site, `WHOLE` for one call to the head); `Report::behind` says
+    /// another follows, toward `until`.
     ///
     /// `buckets` is read in the order given for a stored pack (`crate::catchup::own_first`: the shard's own site's
     /// first), and all of them for the markers.
@@ -1413,9 +1419,13 @@ impl ShardHost<'_> {
         chains: &[ChainId],
         buckets: &[(SiteId, &R2)],
         log: &impl ChainLog,
+        piece: crate::catchup::Piece,
+        until: Option<&crate::shard::IngestCursor>,
     ) -> Result<Report, StoreError> {
         let io = Io { host: self, network, buckets, stored: Default::default(), direct: Default::default() };
-        let mut r = crate::catchup::catch_up(&io, &io, log, network, chains, &|| js_sys::Date::now() as u64).await?;
+        let mut r =
+            crate::catchup::catch_up(&io, &io, log, network, chains, piece, until, &|| js_sys::Date::now() as u64)
+                .await?;
         r.stored = io.stored.take();
         Ok(r)
     }

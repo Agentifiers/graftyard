@@ -79,6 +79,17 @@ func TestValidateOnTheDiskAsItStands(t *testing.T) {
 		t.Fatalf("refs behind the push answered %d %s", code, body)
 	}
 
+	// Between catch-up pieces (G34) the shard asks a held request again on the disk as it stands: still missing, it is
+	// kept again under a new id, and the old id is gone; the new one answers once its base is there.
+	code, _, again, body := validateDisk(t, s.URL, "&held="+h.Held+"&disk=1", nil, nil, nil)
+	if code != 409 || !again.MissingBase || !heldRe.MatchString(again.Held) || again.Held == h.Held {
+		t.Fatalf("a held request asked on the disk before its base answered %d %s", code, body)
+	}
+	if code, _, _, body := validateDisk(t, s.URL, "&held="+h.Held, nil, nil, nil); code != 503 {
+		t.Fatalf("the old id of a request held again answered %d %s", code, body)
+	}
+	h = again
+
 	// The catch-up applies main = c1; the held request is checked again with no body and answers as a caught-up
 	// validate does, with the merge base the leader's refs give.
 	run(t, wt, "", "push", "-q", repo("7"), "main")

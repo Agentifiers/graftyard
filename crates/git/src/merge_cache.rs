@@ -173,53 +173,53 @@ pub fn chain_of(ask: &CacheAsk) -> (ObjectId, Vec<(IssueNumber, ObjectId)>, Merg
     }
 }
 
-/// `GitCacheShard::merge`'s order: wait for a catch-up already in flight on this shard, merge, and catch the shard up
-/// behind its `IngestCursor` only if the container answers that a commit is not there (`merge` answers `None`), then
-/// merge again. A merge names its commits by id, so a shard that holds them answers the same before or after a
-/// catch-up; `PrSync`'s test merge has usually caught it up already. Catching up first cost two to three leader reads,
-/// 300 to 600 ms of every merge once leadership moved (`tests/m2/results/m2-wp6.md`, "Merge latency"). `up` starts
-/// the container first (`ShardHost::up`): the catch-up used to, so without it a merge on a stopped container failed
-/// "has not been started" and no catch-up followed, which stalled the `MergeQueue` consumer until another route
-/// started the container (same file, BF-21). A merge that finds a commit missing waits for the catch-up in flight
-/// (`in_flight`), such as the one a new leadership starts on its own site's shard (`workers/site/src/prsync.rs`,
-/// `warm`), and merges again before it catches up itself: racing it cost a second catch-up, 250 to 700 ms on 38 of
-/// 105 weur samples (same file, bm2-latency). It waits only after a miss: under journey 9's pushes some validate's
-/// catch-up is nearly always running, and a merge that waited first waited 64 to 2,151 ms for commits it already had
-/// (LM-1 round 7, 500 agents). All of it ends at `deadline` with `Err(StoreError("warming"))`, so the caller answers
-/// a 503 its client retries while the catch-up goes on: unbounded, a merge on a shard behind a hot group's log waited
-/// out the edge's 180 s on catch-ups of 172 to 581 s and the client got no answer (B0-31, `tests/am1/results/
-/// lm1-rows-m3f.md`).
-pub async fn merge_then_catch_up<D, U, Fu, W, Fw, M, Fm, C, Fc>(
+/// `GitCacheShard::merge`'s order: merge, and only if the container answers that a commit is not there (`merge`
+/// answers `None`) wait on the shard's catch-ups, a piece at a time, merging again after each piece. A merge names its
+/// commits by id, so a shard that holds them answers the same before or after a catch-up; `PrSync`'s test merge has
+/// usually caught it up already. Catching up first cost two to three leader reads, 300 to 600 ms of every merge once
+/// leadership moved (`tests/m2/results/m2-wp6.md`, "Merge latency"). `up` starts the container first
+/// (`ShardHost::up`): the catch-up used to, so without it a merge on a stopped container failed "has not been started"
+/// and no catch-up followed, which stalled the `MergeQueue` consumer until another route started the container (same
+/// file, BF-21). It waits only after a miss: under journey 9's pushes some validate's catch-up is nearly always
+/// running, and a merge that waited first waited 64 to 2,151 ms for commits it already had (LM-1 round 7, 500 agents).
+///
+/// `turn` waits for the next piece of the shard's catch-ups to end and answers `Ok(true)` once a run that started
+/// after the miss has ended: a merge that misses then too is an error. Before, a miss waited out the whole run in
+/// flight (`waited`), then a whole new one: on B0-32 m3fst1 a burst's catch-up of 294 staged packs held a merge
+/// 14,421 ms and answered another `warming` at 15 s, while the merge's commits had landed in the first seconds of the
+/// run (`decisions/DECISIONS.md`, "`catchup-pieces`"). All of it ends at `deadline` with `Err(StoreError("warming"))`,
+/// so the caller answers a 503 its client retries while the catch-up goes on: unbounded, a merge on a shard behind a
+/// hot group's log waited out the edge's 180 s on catch-ups of 172 to 581 s and the client got no answer (B0-31,
+/// `tests/am1/results/lm1-rows-m3f.md`).
+pub async fn merge_then_catch_up<D, U, Fu, M, Fm, T, Ft>(
     deadline: D,
     up: U,
-    in_flight: W,
     mut merge: M,
-    catch_up: C,
+    mut turn: T,
 ) -> Result<ChainAnswer, StoreError>
 where
     D: std::future::Future<Output = ()>,
     U: FnOnce() -> Fu,
     Fu: std::future::Future<Output = Result<(), StoreError>>,
-    W: FnOnce() -> Fw,
-    Fw: std::future::Future<Output = ()>,
     M: FnMut() -> Fm,
     Fm: std::future::Future<Output = Result<Option<ChainAnswer>, StoreError>>,
-    C: FnOnce() -> Fc,
-    Fc: std::future::Future<Output = Result<(), StoreError>>,
+    T: FnMut() -> Ft,
+    Ft: std::future::Future<Output = Result<bool, StoreError>>,
 {
     let work = async {
         up().await?;
         if let Some(a) = merge().await? {
             return Ok(a);
         }
-        in_flight().await;
-        if let Some(a) = merge().await? {
-            return Ok(a);
+        loop {
+            let caught = turn().await?;
+            if let Some(a) = merge().await? {
+                return Ok(a);
+            }
+            if caught {
+                return Err(StoreError("a commit of the merge is not in the git cache after catching up".into()));
+            }
         }
-        catch_up().await?;
-        merge()
-            .await?
-            .ok_or_else(|| StoreError("a commit of the merge is not in the git cache after catching up".into()))
     };
     match futures_util::future::select(std::pin::pin!(work), std::pin::pin!(deadline)).await {
         futures_util::future::Either::Left((r, _)) => r,
@@ -417,12 +417,12 @@ mod tests {
         assert!(!needs_catch_up(200) && !needs_catch_up(400) && !needs_catch_up(500));
     }
 
-    /// A shard that holds both commits merges with no catch-up; one that lacks one catches up once, then merges. The
-    /// container is stopped at first (its inactivity timeout, or a new image), and a merge on it fails.
+    /// A shard that holds both commits merges with no catch-up; one that lacks one waits for a catch-up, then merges.
+    /// The container is stopped at first (its inactivity timeout, or a new image), and a merge on it fails.
     #[test]
     fn a_merge_catches_up_only_when_a_commit_is_missing() {
         let run = |held: bool| {
-            let (merges, catchups) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+            let (merges, turns) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
             let (caught, running) = (std::cell::Cell::new(held), std::cell::Cell::new(false));
             let r = futures_executor::block_on(merge_then_catch_up(
                 std::future::pending(),
@@ -430,7 +430,6 @@ mod tests {
                     running.set(true);
                     async { Ok(()) }
                 },
-                || async {},
                 || {
                     merges.set(merges.get() + 1);
                     let a = if running.get() {
@@ -441,106 +440,54 @@ mod tests {
                     async move { a }
                 },
                 || {
-                    catchups.set(catchups.get() + 1);
-                    running.set(true);
+                    turns.set(turns.get() + 1);
                     caught.set(true);
-                    async { Ok(()) }
+                    async { Ok(true) }
                 },
             ));
-            (r, merges.get(), catchups.get())
+            (r, merges.get(), turns.get())
         };
         assert_eq!(run(true), (Ok(answer()), 1, 0), "both commits held: no catch-up");
-        // Missing: the merge, again after any catch-up in flight (none here), then one catch-up and the merge again.
-        assert_eq!(run(false), (Ok(answer()), 3, 1), "a commit missing: one catch-up, then the merge again");
+        assert_eq!(run(false), (Ok(answer()), 2, 1), "a commit missing: one catch-up, then the merge again");
         let still_missing = futures_executor::block_on(merge_then_catch_up(
             std::future::pending(),
             || async { Ok(()) },
-            || async {},
             || async { Ok(None) },
-            || async { Ok(()) },
+            || async { Ok(true) },
         ));
-        assert!(still_missing.is_err());
+        assert!(still_missing.is_err(), "missing after a catch-up that started after the miss");
     }
 
-    /// A merge that arrives while the new leadership's catch-up runs on the shard and misses a commit waits for it,
-    /// then merges with no catch-up of its own: the running catch-up brings the commits. Racing it, the merge catches
-    /// up a second time. A merge whose commits are already here answers without waiting for the catch-up at all.
+    /// G34: a merge that misses while the shard catches a burst up in pieces merges after the piece that brings its
+    /// commit, not at the run's end. The run here is five pieces; the commit lands in the second. Before
+    /// `catchup-pieces` the merge waited out the run in flight and then a whole new one (m3fst1: 14,421 ms).
     #[test]
-    fn a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it() {
-        use futures_util::task::LocalSpawnExt;
-        let run = |wait: bool| {
-            let mut pool = futures_executor::LocalPool::new();
-            let sp = pool.spawner();
-            let gate = CatchUps::default();
-            let caught = std::rc::Rc::new(std::cell::Cell::new(false));
-            let (merges, catchups) =
-                (std::rc::Rc::new(std::cell::Cell::new(0)), std::rc::Rc::new(std::cell::Cell::new(0)));
-            // The new leadership's catch-up: running before the merge arrives, done a few polls later.
-            let running = gate.start();
-            let c = caught.clone();
-            sp.spawn_local(async move {
-                for _ in 0..3 {
-                    futures_util::future::ready(()).await;
-                    yield_once().await;
-                }
-                c.set(true);
-                drop(running);
-            })
-            .unwrap();
-            let out = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let (o, g, m, k, c2) = (out.clone(), gate.clone(), merges.clone(), catchups.clone(), caught.clone());
-            sp.spawn_local(async move {
-                let c3 = c2.clone();
-                let r = merge_then_catch_up(
-                    std::future::pending(),
-                    || async { Ok(()) },
-                    || {
-                        let idle = g.idle();
-                        async move {
-                            if wait {
-                                idle.await
-                            }
-                        }
-                    },
-                    || {
-                        m.set(m.get() + 1);
-                        let a = Ok(c2.get().then(answer));
-                        async move { a }
-                    },
-                    || {
-                        k.set(k.get() + 1);
-                        c3.set(true);
-                        async { Ok(()) }
-                    },
-                )
-                .await;
-                *o.borrow_mut() = Some(r);
-            })
-            .unwrap();
-            pool.run();
-            let r = out.borrow_mut().take();
-            (r, merges.get(), catchups.get())
-        };
-        assert_eq!(run(true), (Some(Ok(answer())), 2, 0), "misses, waits, then merges with no catch-up of its own");
-        assert_eq!(run(false), (Some(Ok(answer())), 3, 1), "racing it: a second catch-up");
-        // The commits are already here while some other catch-up runs (a validate's, under journey 9's pushes): the
-        // merge answers at once, before that catch-up ends, and never waits for it (LM-1 round 7).
-        use futures_util::FutureExt;
-        let gate = CatchUps::default();
-        let running = gate.start();
-        let r = merge_then_catch_up(
+    fn a_merge_goes_after_the_piece_that_brings_its_commit() {
+        let (merges, turns) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+        let r = futures_executor::block_on(merge_then_catch_up(
             std::future::pending(),
             || async { Ok(()) },
-            || gate.idle(),
-            || async { Ok(Some(answer())) },
+            || {
+                merges.set(merges.get() + 1);
+                let a = Ok((turns.get() >= 2).then(answer));
+                async move { a }
+            },
+            || {
+                turns.set(turns.get() + 1);
+                // Pieces 1 to 4 of the run in flight end short of it; the fifth ends a run that started after the miss.
+                let caught = turns.get() >= 5;
+                async move { Ok(caught) }
+            },
+        ));
+        assert_eq!((r, merges.get(), turns.get()), (Ok(answer()), 3, 2), "merged after piece 2 of 5");
+        // A failed catch-up is the shard's: the merge answers its error, as `warming` on the site.
+        let failed = futures_executor::block_on(merge_then_catch_up(
+            std::future::pending(),
             || async { Ok(()) },
-        )
-        .now_or_never();
-        assert_eq!(r, Some(Ok(answer())), "merged in one poll while the catch-up still runs");
-        drop(running);
-        // No catch-up running: the merge does not wait.
-        let idle = CatchUps::default().idle();
-        assert_eq!(futures_executor::block_on(idle), ());
+            || async { Ok(None) },
+            || async { Err(StoreError(WARMING.into())) },
+        ));
+        assert_eq!(failed, Err(StoreError(WARMING.into())));
     }
 
     /// A merge whose commit is missing while the shard's catch-up never ends (a rehydrate, or a hot group's log
@@ -554,20 +501,14 @@ mod tests {
                 let _ = rx.await;
             },
             || async { Ok(()) },
-            std::future::pending,
             || async { Ok(None) },
-            || async { Ok(()) },
+            std::future::pending,
         ));
         assert_eq!(f.as_mut().now_or_never(), None, "waiting on the catch-up in flight");
         tx.send(()).unwrap();
         assert_eq!(futures_executor::block_on(f), Err(StoreError(WARMING.into())));
-        let merged = merge_then_catch_up(
-            async {},
-            || async { Ok(()) },
-            std::future::pending,
-            || async { Ok(Some(answer())) },
-            || async { Ok(()) },
-        );
+        let merged =
+            merge_then_catch_up(async {}, || async { Ok(()) }, || async { Ok(Some(answer())) }, std::future::pending);
         assert_eq!(
             futures_executor::block_on(merged),
             Ok(answer()),
