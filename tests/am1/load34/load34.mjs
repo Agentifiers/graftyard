@@ -552,7 +552,7 @@ export class Load34 extends DurableObject {
     const run = new Run(this, { ...spec, t0: Date.now(), seconds: 0, marks: {} });
     const c = { waited: 0, smoke: {} };
     const code = await run.cloneTtfb(c, spec.repo, spec.want, "read:cloneTtfb", true);
-    return { code, ...c.smoke, samples: run.samples.map((s) => s[1]) };
+    return { code, ...c.smoke, samples: run.samples.map((s) => [s[1], s[2], s[3]]) };
   }
   stop() { if (this.run) this.run.stopped = true; }
   /** After the orb has collected the run: nothing of it stays in the object. */
