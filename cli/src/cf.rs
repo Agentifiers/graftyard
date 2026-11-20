@@ -52,7 +52,18 @@ impl Cf {
     }
 
     fn call(&self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<(&str, &[u8])>) -> Res<Value> {
-        let mut req = ureq::request(method, &self.url(path)).set("authorization", &format!("Bearer {}", self.token));
+        self.call_url(method, &self.url(path), path, headers, body)
+    }
+
+    fn call_url(
+        &self,
+        method: &str,
+        url: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<(&str, &[u8])>,
+    ) -> Res<Value> {
+        let mut req = ureq::request(method, url).set("authorization", &format!("Bearer {}", self.token));
         for (k, v) in headers {
             req = req.set(k, v);
         }
@@ -74,6 +85,44 @@ impl Cf {
 
     fn json(&self, method: &str, path: &str, headers: &[(&str, &str)], body: &Value) -> Res<Value> {
         self.call(method, path, headers, Some(("application/json", body.to_string().as_bytes())))
+    }
+
+    // ---- Spectrum (zone-scoped) ----
+
+    fn zone(&self, method: &str, zone: &str, path: &str, body: Option<&Value>) -> Res<Value> {
+        let url = format!("{}/zones/{zone}{path}", self.base);
+        let b = body.map(|b| b.to_string());
+        self.call_url(method, &url, path, &[], b.as_deref().map(|b| ("application/json", b.as_bytes())))
+    }
+
+    /// Every Spectrum application on the zone.
+    pub fn spectrum_apps(&self, zone: &str) -> Res<Vec<Value>> {
+        let v = self.zone("GET", zone, "/spectrum/apps", None)?;
+        Ok(v["result"].as_array().cloned().unwrap_or_default())
+    }
+
+    pub fn create_spectrum_app(&self, zone: &str, body: &Value) -> Res<Value> {
+        Ok(self.zone("POST", zone, "/spectrum/apps", Some(body))?["result"].clone())
+    }
+
+    pub fn update_spectrum_app(&self, zone: &str, id: &str, body: &Value) -> Res<Value> {
+        Ok(self.zone("PUT", zone, &format!("/spectrum/apps/{id}"), Some(body))?["result"].clone())
+    }
+
+    pub fn delete_spectrum_app(&self, zone: &str, id: &str) -> Res<()> {
+        self.zone("DELETE", zone, &format!("/spectrum/apps/{id}"), None).map(|_| ())
+    }
+
+    /// A script's tag, the id a Spectrum Worker application names as its origin.
+    pub fn script_tag(&self, script: &str) -> Res<String> {
+        let v = self.call("GET", "/workers/scripts", &[], None)?;
+        v["result"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| s["id"] == json!(script))
+            .and_then(|s| s["tag"].as_str().map(String::from))
+            .ok_or_else(|| format!("no script {script} in the account"))
     }
 
     // ---- Workers scripts ----

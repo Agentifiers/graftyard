@@ -1,0 +1,4 @@
+2026-11-20T04:37:30.351Z key add: 201 id 207517489593518 fingerprint SHA256:vLxuQHyulRo3NUcbpqAcbxjklrlTLHtHS2t1597RX9U
+2026-11-20T04:38:10.630Z repo create: 201 m3-member/ssh-m3fssh1 id 3932160
+2026-11-20T04:38:36.751Z clone over ssh: rc 128 in 26113 ms; Cloning into '/tmp/tmp.crfh5GkIwJ/c'... Warning: Permanently added 'sshtest.graftyard.dev' (ED25519) to the list of known hosts. git@sshtest.graftyard.dev: Permission denied (publickey). fatal: Could not read from remote repository.  Please make sure you have the correct access rights and the repo
+exit 1

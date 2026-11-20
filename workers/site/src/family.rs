@@ -772,7 +772,8 @@ impl Family for Repo {
     /// M4-WP3's `RunChecksCmd`, which only `RunOwner` sends, from a release whose Actions leaders run it. 32.22 is a
     /// review comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
     /// 32.24 is R24's `RunChecksCmd` with `workflow_job` steps, which `RunOwner` sends only where `GRAFTYARD_APP_HOOKS` is set.
-    /// 32.25 is `RepoEvent::Compacted`, which only a leader of this release records itself.
+    /// 32.25 is `RepoEvent::Compacted`, which only a leader of this release records itself. 32.26 is a push over SSH
+    /// (M6-WP2), whose principal is an SSH key, sent once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -799,6 +800,7 @@ impl Family for Repo {
             git::secrets::REPO_FORMAT_SECRETS,
             git::workflow_job::REPO_FORMAT_WORKFLOW_JOB,
             git::repo::REPO_FORMAT_ROLLUP,
+            git::repo::REPO_FORMAT_SSH,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

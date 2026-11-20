@@ -21,7 +21,7 @@ use crate::ident::{commit_owner, commit_system};
 const DOC_LIST: &str = "rest/users/keys#list-public-ssh-keys-for-the-authenticated-user";
 const DOC_ADD: &str = "rest/users/keys#create-a-public-ssh-key-for-the-authenticated-user";
 
-fn key_id(fp: &Fingerprint) -> i64 {
+pub(crate) fn key_id(fp: &Fingerprint) -> i64 {
     let mut b = [0u8; 8];
     b[2..].copy_from_slice(&fp.0[..6]);
     i64::from_be_bytes(b)
@@ -74,6 +74,24 @@ pub async fn list(c: &Ctx<'_>, req: &Request) -> Result<Reply> {
         })
         .collect();
     Ok(Reply::json(200, Value::Array(keys)))
+}
+
+/// The fingerprints of every SSH key on `account`'s `Identity` fold, read through `fresh`, with or without text.
+pub(crate) async fn listed(c: &Ctx<'_>, account: AccountId) -> Result<Vec<Fingerprint>> {
+    let Some(record) = crate::placement(c, account).await.map_err(Error::RustError)? else { return Ok(Vec::new()) };
+    let body = json!({ "q": {} }).to_string();
+    let chain = ChainId::Identity(account);
+    let v = match graftyard_lookup::call_opt(&c.bindings(), chain, &record, "/read", body.as_bytes()).await {
+        Ok(Some((v, _, _))) => v["value"].clone(),
+        Ok(None) => return Ok(Vec::new()),
+        Err(e) => return Err(Error::RustError(e)),
+    };
+    Ok(v["credentials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|k| graftyard_types::Digest::parse_hex(k["sshKey"].as_str()?).map(|d| Fingerprint(d.0)))
+        .collect())
 }
 
 fn invalid(message: &str, code: &'static str) -> Reply {

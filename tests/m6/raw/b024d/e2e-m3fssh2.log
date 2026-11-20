@@ -1,0 +1,19 @@
+2026-11-20T04:43:36.177Z key add: 201 id 56943195751351 fingerprint SHA256:M8oe9IO3hD2odgIlWVcdEJhSdLKHiw18iNmlhFrzN4w
+2026-11-20T04:44:10.078Z repo create: 201 m3-member/ssh-m3fssh2 id 3932161
+2026-11-20T04:44:15.684Z clone over ssh: rc 0 in 5601 ms; Cloning into '/tmp/tmp.w8kwNkwl9m/c'... Warning: Permanently added 'sshtest.graftyard.dev' (ED25519) to the list of known hosts. 
+2026-11-20T04:44:15.689Z host key learned: SHA256:TMEOnXhyIwFeNgR39+c4dKwYPTRbXGjPtP2AM3twOoU (ED25519) 
+2026-11-20T04:44:25.197Z push over ssh: rc 0 in 9488 ms; To sshtest.graftyard.dev:m3-member/ssh-m3fssh2.git    2dd8809..4b27228  HEAD -> main 
+2026-11-20T04:44:27.072Z main over https after the push: 4b27228521e93b2dea371fa54e7cb0ebec71717f; local 4b27228521e93b2dea371fa54e7cb0ebec71717f; MATCH
+2026-11-20T04:44:29.822Z fetch over ssh: rc 0 in 2744 ms
+2026-11-20T04:44:39.385Z second push (main + new branch): rc 0
+2026-11-20T04:44:43.667Z branch delete: rc 0
+2026-11-20T04:44:46.742Z held session: advertisement 6 lines, first b'version 2\n'
+2026-11-20T04:44:48.344Z held session: ls-refs 1 ok at 5 s, 1 refs
+2026-11-20T04:49:00.400Z held session: ls-refs 5 ok at 257 s, 1 refs
+2026-11-20T04:54:13.358Z held session: ls-refs 10 ok at 570 s, 1 refs
+2026-11-20T04:55:16.316Z held session: 633 s, 11 of 11 ls-refs answered, ssh exit 0; PASS
+2026-11-20T04:55:19.112Z key delete: 204
+2026-11-20T04:55:20.556Z clone after delete: rc 128; Permission denied (publickey)
+2026-11-20T04:55:24.786Z push after delete: rc 128; Permission denied (publickey); main unchanged
+2026-11-20T04:55:24.790Z repo id 3932161
+exit 0

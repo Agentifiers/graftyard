@@ -64,7 +64,7 @@ The `paired-design` detail row in `research/costs.md` reads $2,301 at 50 develop
 Read the table with these limits, all from `research/costs.md`:
 
 - AWS figures exclude the vendor's fee, CI runner compute, an AWS Support plan, and tax. Workload and node sizes are guesses until Milestone 0 and a load test measure them.
-- Cloudflare figures exclude an Enterprise contract, which has no list price and which managed cells and pushes over 200 MB need. The Spectrum add-on fee is priced at $0 because no list price was found [unverified].
+- Cloudflare figures exclude an Enterprise contract, which has no list price and which managed cells and pushes over 200 MB need. SSH is off by default, so no tier pays for Spectrum; Worker-origin Spectrum apps have no published price [unverified].
 - The agent-layer row excludes runner compute and model compute.
 - The AWS figures include no agent layer. The AWS design was never priced with agents, so compare the AWS rows with the Cloudflare base row.
 - `scrappy` is not RPO zero for a Region loss, because its recovery Region is cold. `scrappy-paired` is RPO zero across two Regions. The Cloudflare base is RPO zero for the loss of any one of its three sites, which sit on three continents.
@@ -82,7 +82,7 @@ These rows come from `design/DESIGN.md`, "Compared with the AWS design".
 | Surviving a continent | Managed `global` only. Paired cells stay in one continent | Every `Tri` chain |
 | Provider-wide outage | AWS Regions fail separately | Cloudflare fails globally. Only a read-only lifeboat serves |
 | Push size | Unbounded by the front | 100 MB on Pro, 200 MB on Business, 5 GB on Enterprise, refused at the edge with a message that names SSH where the install has it on, and otherwise Enterprise or splitting the push, since native SSH needs Enterprise (`tests/m0/results/m0-wp7.md`) |
-| SSH path | NLB to nodes | HTTPS by default. Native SSH on Enterprise, Spectrum to Tunnel to containers; on Pro and Business an opt-in Tunnel public hostname that each client reaches with `cloudflared access ssh` (`FRAME.md`, "Operator decision, 2026-10-31, SSH ingress") |
+| SSH path | NLB to nodes | HTTPS by default. Native SSH where an install turns it on: a Spectrum TCP app on port 22 whose Worker origin is the edge, then a per-site SSH front container, with no client helper; measured on Pro, Business by the same plan table [unverified] (`FRAME.md`, "Operator decision, 2026-11-19, native SSH on Pro") |
 | Largest repository | Node NVMe | 20 GB shard disk, about 15 GB of packs |
 | Token revocation | 5 s for writes, 60 s for reads | Immediate for writes, 10 s for reads |
 
@@ -96,13 +96,13 @@ The operator never said to use Cloudflare instead of AWS. Choosing the Cloudflar
 
 ## When the AWS design would be the better choice
 
-Each condition below would favor the AWS design. Only condition 5 holds today, for BYOC customers on Pro who need SSH from stock clients with no `cloudflared`.
+Each condition below would favor the AWS design. None holds today; condition 5 held until 2026-11-19, when native SSH on Pro became possible through a Spectrum Worker application.
 
 1. **The Cloudflare consensus gate fails and its fallback is not acceptable.** Cloudflare Milestone 0 runs 48 hours of Porcupine-checked histories under dropped calls, member resets, and leadership transfers. Any linearizability violation, or a `Tri` commit p99 above 1 s, makes candidate 1 the Cloudflare base (`design/DESIGN.md`, "Synthesis decision", flip condition 1). Candidate 1 still acknowledges on one region's copy after any failover. An operator who needs RPO zero across regions after that flip has it in AWS Paired, where the store provides it [inference].
 2. **Writes must survive a provider-wide outage.** Cloudflare fails globally, the lifeboat is read-only, and managed users have no service during a Cloudflare-wide outage (`design/DESIGN.md`, "Tradeoffs accepted"). AWS Regions fail separately, so a Paired cell keeps writing through the loss of one Region.
 3. **The commit point must rest on a provider SLA.** AWS Paired gets RPO zero from the 99.999% Global Tables SLA. On Cloudflare no SLA covers Durable Objects, and Graftyard's own Raft carries that promise.
 4. **Pushes above 200 MB are needed without an Enterprise contract.** Pro caps HTTPS pushes at 100 MB and Business at 200 MB, and Enterprise raises the cap to 5 GB (`design/DESIGN.md`, "Compared with the AWS design"). Enterprise has no list price (`research/costs.md`). The AWS front does not bound push size.
-5. **SSH fails Cloudflare Milestone 0 on the customer's plan.** If Spectrum cannot reach a Tunnel origin on Pro or Business, SSH is dropped or needs Enterprise there (`design/DESIGN.md`, "Tradeoffs accepted"). On Pro this has happened for native SSH: the Spectrum API refuses a Tunnel origin, so native SSH needs Enterprise (`tests/m0/results/m0-wp7.md`); Business is not run. Pro and Business installs may turn on SSH through `cloudflared access ssh`, which needs `cloudflared` on every client and its own Milestone 0 row (B0-24a). The AWS design serves SSH from an NLB to its nodes with no client helper.
+5. **SSH fails on the customer's plan.** From 2026-10-31 to 2026-11-19 this held on Pro: the Spectrum API refused a Tunnel origin, and SSH there needed `cloudflared` on every client (`tests/m0/results/m0-wp7.md`). A Spectrum TCP app with a Worker origin now reaches the edge on Pro (B0-24c), and the edge passes the socket through a Durable Object to the SSH front container (B0-24d, `tests/m6/results/m6-wp2.md`), so a stock `git clone git@host:...` works there with no client helper (`design/DESIGN.md`, "Tradeoffs accepted"). The condition would hold again if that path, private beta per Cloudflare's blog, were withdrawn on Pro, or if the Spectrum ingress failed its session gate in M6-WP2. The AWS design serves SSH from an NLB to its nodes with no client helper.
 6. **A repository is larger than a Cloudflare shard can hold.** A git cache shard has a 20 GB disk, which holds about 15 GB of packs. The AWS design keeps packs in S3 and caches them on node NVMe.
 7. **A 50-developer install accepts that a Region loss is not RPO zero.** AWS `scrappy` costs $226 a month against the Cloudflare base's $236, with a cold recovery Region instead of RPO zero.
 

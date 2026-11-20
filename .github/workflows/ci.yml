@@ -40,6 +40,7 @@ jobs:
         with:
           node-version: 24
       - run: node --test 'workers/runners/tests/*.test.mjs'
+      - run: node --test 'workers/site/tests/*.test.mjs'
 
   web:
     name: Web format, typecheck, build
@@ -89,7 +90,7 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        dir: [tests/m0/porcupine, containers/git/server]
+        dir: [tests/m0/porcupine, containers/git/server, containers/ssh/server]
     steps:
       - uses: actions/checkout@v4
         with:

@@ -193,7 +193,7 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     let m = Meta { rid: c.rid, version, rate: RateLimits::Off };
     // The colo this edge ran in, so a latency gate can show where the client entered (BM-2's home-site clause).
     #[cfg(feature = "test-faults")]
-    let colo = req.cf().map(|c| c.colo()).unwrap_or_default();
+    let colo = crate::colo(req);
     c.timing.start();
     let kind = match &e {
         Endpoint::Graphql => "graphql",
@@ -756,6 +756,7 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             }
             (Method::Get, ["user", "keys"]) => crate::keys::list(c, req).await,
             (Method::Post, ["user", "keys"]) => crate::keys::add(c, req).await,
+            (Method::Delete, ["user", "keys", id]) => crate::ssh::delete_key(c, req, id).await,
             (_, ["orgs", _, "teams", ..] | ["user", "memberships", "orgs", _]) => {
                 crate::collab::org_route(c, req, p).await
             }

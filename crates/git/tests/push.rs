@@ -1030,3 +1030,116 @@ fn a_fanout_entry_sets_the_committed_k() {
     assert!(fold.refs().is_empty());
     assert_eq!(graftyard_git::tiers::tier_of(&RepoEvent::Fanout { k: 2 }), graftyard_raft::TierSet::CORE);
 }
+
+fn fp(n: u8) -> graftyard_identity::Fingerprint {
+    graftyard_identity::Fingerprint([n; 32])
+}
+
+/// A group whose members read format 32.26, as after a site day onto a release that lists it.
+fn ssh_group() -> StandIn {
+    let mut s = seed();
+    let f = graftyard_git::repo::REPO_FORMAT_SSH;
+    s.reads.push((f.family, f.version));
+    let mut g = StandIn::restore(&s, Vec::new(), Timestamp(10_000));
+    assert!(g.ensure_leader());
+    g
+}
+
+fn by_key(account: i64, n: u8) -> Principal {
+    Principal { credential: Credential::Ssh(fp(n)), ..who(account, 0) }
+}
+
+/// A push over SSH is format 32.26 and round-trips with its key; any other actor or credential is not 32.26, and the
+/// key's principal is refused outside a push.
+#[test]
+fn a_push_over_ssh_is_format_26_and_round_trips_with_its_key() {
+    use graftyard_git::repo::REPO_FORMAT_SSH;
+    use graftyard_raft::Command;
+    let mut p = push(vec![up("refs/heads/main", None, Some(oid(1)))], Atomicity::PerRef, by_key(WRITER, 7));
+    p.agent = Some("git/2.56.0".into());
+    assert_eq!(p.format(), REPO_FORMAT_SSH);
+    assert_eq!(Push::from_wire(&p.to_wire()), Ok(p.clone()));
+    // The same bytes with a token's credential tag in place of the key's are malformed under 32.26.
+    let mut tokened = p.clone();
+    tokened.actor = who(WRITER, 7);
+    assert_ne!(tokened.format(), REPO_FORMAT_SSH);
+    let mut forged = tokened.to_wire();
+    forged[2..4].copy_from_slice(&REPO_FORMAT_SSH.version.to_be_bytes());
+    assert!(Push::from_wire(&forged).is_err());
+    let b = graftyard_git::repo::principal_bytes(&by_key(WRITER, 7));
+    assert!(graftyard_git::repo::principal_from_bytes(&b).is_err());
+}
+
+/// BF-52, push half, over SSH: a key's pushes commit while its owner may write; after the owner is suspended, every
+/// push with the key is refused 401, those admitted before the suspension included. A key registered to another
+/// account, or a deploy key, never pushes as a user.
+#[test]
+fn bf52_a_suspended_users_ssh_pushes_are_all_refused() {
+    let mut g = ssh_group();
+    g.add_ssh_key(fp(7), AccountId(DbId(WRITER)), None);
+    g.add_ssh_key(fp(8), AccountId(DbId(OWNER)), None);
+    g.add_ssh_key(fp(9), AccountId(DbId(WRITER)), Some(graftyard_types::RepoId(DbId(7))));
+    let refused = |o: &PushOutcome| matches!(o, PushOutcome::Refused(r) if r.status == 401);
+    let (_, o) =
+        commit(&mut g, push(vec![up("refs/heads/k0", None, Some(oid(1)))], Atomicity::PerRef, by_key(WRITER, 7)));
+    assert_eq!(refs_of(&o), [RefOutcome::Ok]);
+    // WRITER with OWNER's key, an unknown key, and WRITER's deploy key.
+    for actor in [by_key(WRITER, 8), by_key(WRITER, 6), by_key(WRITER, 9)] {
+        let (_, o) = commit(&mut g, push(vec![up("refs/heads/x", None, Some(oid(2)))], Atomicity::PerRef, actor));
+        assert!(refused(&o), "{o:?}");
+    }
+    let waiting: Vec<_> = (0..100u32)
+        .map(|i| {
+            let r = rid();
+            let mut p = push(
+                vec![up(&format!("refs/heads/w{i}"), None, Some(oid(i + 10)))],
+                Atomicity::PerRef,
+                by_key(WRITER, 7),
+            );
+            p.request = r;
+            g.admit(r, p).expect("admitted")
+        })
+        .collect();
+    g.suspend(AccountId(DbId(WRITER)));
+    g.run();
+    for t in &waiting {
+        assert!(refused(g.resolved(*t).expect("resolved")));
+    }
+    for i in 0..100u32 {
+        let (_, o) = commit(
+            &mut g,
+            push(vec![up(&format!("refs/heads/f{i}"), None, Some(oid(i + 10)))], Atomicity::PerRef, by_key(WRITER, 7)),
+        );
+        assert!(refused(&o), "{o:?}");
+    }
+    assert_eq!(g.refs().len(), 1, "only the push before the suspension moved a ref: {:?}", g.refs());
+    let (_, o) =
+        commit(&mut g, push(vec![up("refs/heads/o", None, Some(oid(3)))], Atomicity::PerRef, by_key(OWNER, 8)));
+    assert_eq!(refs_of(&o), [RefOutcome::Ok]);
+}
+
+/// BF-52, revocation half: 1,000 pushes with one key are queued at the leader, the key is removed, and every one
+/// decided after the removal is refused 401. None of them is decided before it, so all 1,000 are.
+#[test]
+fn bf52_every_ssh_push_decided_after_its_keys_removal_is_refused() {
+    let mut g = ssh_group();
+    g.add_ssh_key(fp(7), AccountId(DbId(WRITER)), None);
+    let waiting: Vec<_> = (0..1_000u32)
+        .map(|i| {
+            let r = rid();
+            let mut p = push(
+                vec![up(&format!("refs/heads/q{i}"), None, Some(oid(i + 1)))],
+                Atomicity::PerRef,
+                by_key(WRITER, 7),
+            );
+            p.request = r;
+            g.admit(r, p).expect("admitted")
+        })
+        .collect();
+    g.remove_ssh_key(fp(7));
+    g.run();
+    let refused =
+        waiting.iter().filter(|t| matches!(g.resolved(**t), Some(PushOutcome::Refused(r)) if r.status == 401)).count();
+    assert_eq!(refused, 1_000);
+    assert!(g.refs().is_empty(), "{:?}", g.refs());
+}
