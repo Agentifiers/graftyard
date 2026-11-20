@@ -952,6 +952,11 @@ async fn commit_issue_rid(
     let (b, chain) = (c.bindings(), ChainId::Repo(rd.repo.id));
     let mut r =
         graftyard_lookup::commit_hedged(&b, chain, &rd.repo.record, whole.as_bytes(), c.colo, 60_000, hooks).await;
+    // Test installs: which `Authz` the committed reply rendered from (`authz_source`), one Workers Logs line per command.
+    #[cfg(feature = "test-faults")]
+    if let Some(source) = r.as_ref().ok().and_then(authz_source) {
+        worker::console_log!("{}", json!({ "authzSource": source, "rid": rid.to_string() }));
+    }
     // A member built before `leader-render` rendered the first send as it came, with no owner `Authz`: its answer
     // names no source. The command committed, so its outcome by request id renders it again with the whole render.
     if let Ok(done) = &r
@@ -991,6 +996,22 @@ async fn commit_issue_rid(
 
 /// An issue command's `/commit` body with its render's owner `Authz` left out (`decisions/DECISIONS.md`,
 /// "`leader-render`"): about 10 KB of each command, which the leader fills from its own dependency read.
+/// Where a committed issue command's reply took the owner's `Authz` from (`leader-render`): `"dep"`, the leader's own
+/// dependency read; `"render"`, the edge's render (a later send or an `outcome_by_request`); `"fallback"`, a member that
+/// names no source, which the edge then asks `outcome_by_request` with the whole render. `None` for a refusal or any
+/// answer that is not an issue command's.
+#[cfg(any(test, feature = "test-faults"))]
+fn authz_source(done: &Value) -> Option<&'static str> {
+    if graftyard_api::hosted::rendered_without_authz(done) {
+        return Some("fallback");
+    }
+    match done.pointer("/ok/out/issue/authz")?.as_str()? {
+        "dep" => Some("dep"),
+        "render" => Some("render"),
+        _ => None,
+    }
+}
+
 fn without_authz(body: &Value) -> Value {
     let mut b = body.clone();
     if let Some(dir) = b.pointer_mut("/cmd/issue/render/dir") {
@@ -2648,5 +2669,19 @@ mod tests {
         assert!(!graftyard_api::hosted::rendered_without_authz(&done(json!({ "reply": {}, "authz": "render" }))));
         assert!(!graftyard_api::hosted::rendered_without_authz(&json!({ "err": { "issue": {} } })));
         assert!(!graftyard_api::hosted::rendered_without_authz(&json!({ "ok": { "out": { "merge": {} } } })));
+    }
+
+    /// The authz-source counter's classes: a member's named source, a member that names none (the fallback the edge
+    /// asks again), and nothing for a refusal or a merge, so those are not counted.
+    #[test]
+    fn a_committed_issue_reply_names_its_authz_source() {
+        use serde_json::json;
+        let done = |issue: serde_json::Value| json!({ "ok": { "out": { "issue": issue } } });
+        assert_eq!(super::authz_source(&done(json!({ "reply": {}, "authz": "dep" }))), Some("dep"));
+        assert_eq!(super::authz_source(&done(json!({ "reply": {}, "authz": "render" }))), Some("render"));
+        assert_eq!(super::authz_source(&done(json!({ "reply": {} }))), Some("fallback"));
+        assert_eq!(super::authz_source(&done(json!({ "reply": {}, "authz": "other" }))), None);
+        assert_eq!(super::authz_source(&json!({ "refused": { "issue": {} } })), None);
+        assert_eq!(super::authz_source(&json!({ "ok": { "out": { "merge": {} } } })), None);
     }
 }
