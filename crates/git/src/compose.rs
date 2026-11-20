@@ -190,8 +190,7 @@ pub const CHAIN_WAIT_FORWARDED: std::time::Duration = std::time::Duration::from_
 pub const CHAIN_OPEN_AT_ONCE: usize = 4;
 
 /// Runs `opens`, at most `CHAIN_OPEN_AT_ONCE` at a time, and answers their values in the order given: the edge's
-/// `open_chain`, which opened a base and up to 19 parts one after another, each waiting for its first chunk before the
-/// next began, while no header left. `None` as soon as one answers `None` (a chain pack missing or not the one the
+/// `open_chain`, which checked a base and up to 19 parts one after another while no header left. `None` as soon as one answers `None` (a chain pack missing or not the one the
 /// manifest counted), and the first error, either way without starting the rest.
 pub async fn open_in_order<T, E, F>(opens: impl IntoIterator<Item = F>) -> Result<Option<Vec<T>>, E>
 where
@@ -207,6 +206,69 @@ where
         }
     }
     Ok(Some(out))
+}
+
+/// How long the edge waits for a composed answer's chain checks (`open_chain`) before it refuses the clone with 503 and
+/// `Retry-After` [guess: 20 checks took 0.4 to 0.5 s on graft-m1's R2, and the clone line is 5 s to the first byte]
+/// (`decisions/DECISIONS.md`, "`chain-hold`"). The answer's first bytes leave as soon as the checks end.
+pub const CHAIN_CHECK_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a composed answer's stream waits for R2's next read (a pack's `get` or its next chunk) before it cuts the
+/// answer short, which the client's index-pack refuses [guess] (`decisions/DECISIONS.md`, "`chain-hold`"): before it,
+/// a stalled read held the client until its own timeout.
+pub const CHAIN_STALL: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `f`'s value, or `None` once `sleep(d)` ends first.
+pub async fn within<T, S, D>(d: std::time::Duration, f: impl std::future::Future<Output = T>, sleep: S) -> Option<T>
+where
+    S: FnOnce(std::time::Duration) -> D,
+    D: std::future::Future<Output = ()>,
+{
+    match futures_util::future::select(std::pin::pin!(f), std::pin::pin!(sleep(d))).await {
+        futures_util::future::Either::Left((v, _)) => Some(v),
+        futures_util::future::Either::Right(_) => None,
+    }
+}
+
+/// What a composed answer's chain checks found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChainCheck<T> {
+    /// Every pack is there and is the one the manifest counted.
+    Checked(T),
+    /// One is missing or another pack: the edge asks the shard instead, as before.
+    Declined,
+    /// The checks did not end within `CHAIN_CHECK_WITHIN`: the edge refuses the clone with 503 and `Retry-After`.
+    Late,
+}
+
+/// `opens` run as `open_in_order` runs them, bounded by `CHAIN_CHECK_WITHIN` on `sleep`'s clock: the edge's
+/// `open_chain`.
+pub async fn check_in_time<T, E, F, S, D>(opens: impl IntoIterator<Item = F>, sleep: S) -> Result<ChainCheck<Vec<T>>, E>
+where
+    F: std::future::Future<Output = Result<Option<T>, E>>,
+    S: FnOnce(std::time::Duration) -> D,
+    D: std::future::Future<Output = ()>,
+{
+    Ok(match within(CHAIN_CHECK_WITHIN, open_in_order(opens), sleep).await {
+        None => ChainCheck::Late,
+        Some(r) => r?.map_or(ChainCheck::Declined, ChainCheck::Checked),
+    })
+}
+
+/// Streams a composed answer's chain packs one after another: `open` one, hand it to `send`, which lets its R2 body
+/// go when it returns, and only then open the next. One invocation that holds eight R2 bodies open never gets a ninth
+/// (graft-m1, 2026-11-20), and main's `open_chain` held every pack's body from its check to its turn, so a chain of nine
+/// or more packs hung the clone with no byte sent (`decisions/DECISIONS.md`, "`chain-hold`"). The first error ends it.
+pub async fn stream_in_turn<P, B, E>(
+    packs: impl IntoIterator<Item = P>,
+    mut open: impl AsyncFnMut(P) -> Result<B, E>,
+    mut send: impl AsyncFnMut(B) -> Result<(), E>,
+) -> Result<(), E> {
+    for p in packs {
+        let b = open(p).await?;
+        send(b).await?;
+    }
+    Ok(())
 }
 
 /// Whether a composable miss's chain is ready (`ready` ended) before its wait runs out. `follows`: the edge has another

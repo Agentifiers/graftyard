@@ -175,6 +175,12 @@ class Run {
         this.note(`${kind}:${cache}`, ms, compose ?? String(r.status));
         // The edge clock split the same way, so hits and misses each have both clocks (clonelines.py).
         if (edge) this.note(`${kind}:${cache}:edge`, Number(edge[1]), compose ?? String(r.status));
+        // The edge's own stages: `front` (resolve and auth) and `chain_open` (a manifest's chain checks), so a row
+        // reports both beside the clone lines (decisions/DECISIONS.md, `chain-open` and `chain-hold`).
+        for (const m of (r.headers.get("server-timing") ?? "").matchAll(/(front|chain_open);dur=(\d+)/g)) {
+          this.note(`${kind}:${m[1]}`, Number(m[2]), String(r.status));
+          this.note(`${kind}:${cache}:${m[1]}`, Number(m[2]), compose ?? String(r.status));
+        }
         if (cache === "miss") {
           this.misses.push({ at: new Date(s).toISOString(), ms, status: r.status, compose, want,
             key: cloneKeyHex(Number(this.spec.chain.split(":")[1]), want), filled: null });
