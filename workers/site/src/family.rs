@@ -582,10 +582,11 @@ pub fn dump_wait(fold: &git::repo::RepoFold, floor: u64, now: u64, every: u64) -
 
 /// The repository reads a follower serves by read-index (`design/DESIGN.md`, "Follower read"): whole-tier and merge
 /// rows once its metadata tier is loaded, the core-only access, agent, and actions rows, and the edge's `ls-refs`
-/// read (`graftyard_git::ls_refs::read`, HEAD and its pages from the core tier). Paged `refs`, `ranges`, `dep`,
-/// `prsync`, `mergequeue`, `tiers`, and `settings` reads stay on the leader.
+/// read (`graftyard_git::ls_refs::read`, HEAD and its pages from the core tier), and a git cache shard's `ranges` read
+/// on its own site's member (core rows only, `decisions/DECISIONS.md`, `catchup-local`). Paged `refs`, `dep`, `prsync`,
+/// `mergequeue`, `tiers`, and `settings` reads stay on the leader.
 pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
-    if q.get("lsRefs").is_some() {
+    if q.get("lsRefs").is_some() || *q == serde_json::json!({ "ranges": true }) {
         return true;
     }
     match q.get("rows") {

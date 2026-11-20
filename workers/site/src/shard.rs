@@ -277,6 +277,47 @@ impl GroupLog<'_> {
         Ok(v)
     }
 
+    /// This site's member of the group, by the committed config this isolate holds, else the record's bootstrap name.
+    async fn local(&self) -> Option<graftyard_lookup::Target> {
+        let b = Bindings { env: self.env, sites: self.sites };
+        graftyard_lookup::learn_voters(&b, self.chain, &self.record).await;
+        graftyard_lookup::known_voters(self.chain)
+            .into_iter()
+            .chain(
+                self.record
+                    .bootstrap_members(self.chain)
+                    .into_iter()
+                    .map(|m| graftyard_lookup::Target { site: m.site, do_name: m.do_name.to_string() }),
+            )
+            .find(|t| t.site == self.me)
+    }
+
+    /// `local_path` on this site's member first, taken when `usable`; else, and when that read misses `deadline`,
+    /// `path` and `leader_body` on the leader (`graftyard_lookup::local_first`, `decisions/DECISIONS.md`,
+    /// `catchup-local`).
+    async fn local_first(
+        &self,
+        (path, local_path): (&str, &str),
+        body: &[u8],
+        deadline: std::time::Duration,
+        usable: impl Fn(&Value) -> bool,
+        leader_body: &Value,
+    ) -> std::result::Result<Value, StoreError> {
+        let b = Bindings { env: self.env, sites: self.sites };
+        let local = self.local().await;
+        graftyard_lookup::local_first(
+            self.chain,
+            now_ms,
+            local,
+            local_path,
+            usable,
+            |t| async move { graftyard_lookup::post_within(&b, t.site, &t.do_name, local_path, body, deadline).await },
+            || async { self.call(path, leader_body).await.map_err(|e| e.0) },
+        )
+        .await
+        .map_err(StoreError)
+    }
+
     /// One `/entries` page: from this site's member of the group when it has committed `from` (committed entries are
     /// the same on every member, and the local one is a call inside the site rather than across regions to the
     /// leader), as a page of up to `ENTRIES_LOCAL_PAGE_BYTES_MAX`; else, or when that read misses the lookup's CALL,
@@ -284,26 +325,18 @@ impl GroupLog<'_> {
     async fn page(&self, from: Index, to: Index) -> std::result::Result<Value, StoreError> {
         let path = format!("/entries?from={}&to={}", from.0, to.0);
         let local_path = format!("{path}&local=1&bytes={}", crate::host::ENTRIES_LOCAL_PAGE_BYTES_MAX);
-        let b = Bindings { env: self.env, sites: self.sites };
-        let me = Some(self.me);
-        graftyard_lookup::learn_voters(&b, self.chain, &self.record).await;
-        let local = graftyard_lookup::known_voters(self.chain)
-            .into_iter()
-            .map(|t| (t.site, t.do_name))
-            .chain(self.record.bootstrap_members(self.chain).into_iter().map(|m| (m.site, m.do_name.to_string())))
-            .find(|(s, _)| Some(*s) == me);
-        if let Some((site, name)) = local
-            && let Some((200, v)) = graftyard_lookup::post(&b, site, &name, &local_path, b"{}").await
-            && v["entries"].as_array().and_then(|a| a.first()).and_then(|e| e["index"].as_u64()) == Some(from.0)
-        {
-            return Ok(v);
-        }
-        self.call(&path, &json!({})).await
+        let usable = |v: &Value| graftyard_lookup::local_page_usable(v, from.0);
+        self.local_first((&path, &local_path), b"{}", graftyard_lookup::CALL, usable, &json!({})).await
     }
 
-    /// The fold's last `Promoted` and `Archived` and its first log index, through `fresh`, with the read's index.
+    /// The fold's last `Promoted` and `Archived` and its first log index, with the read's index: by read-index on this
+    /// site's member, which answers at or above the commit index the leader confirmed, within `FOLLOWER_CALL`; else
+    /// through `fresh` on the leader.
     async fn ranges(&self) -> std::result::Result<Value, StoreError> {
-        let v = self.call("/read", &json!({ "q": { "ranges": true } })).await?;
+        let body = graftyard_lookup::LOCAL_RANGES.as_bytes();
+        let leader = json!({ "q": { "ranges": true } });
+        let usable = graftyard_lookup::local_ranges_usable;
+        let v = self.local_first(("/read", "/read"), body, graftyard_lookup::FOLLOWER_CALL, usable, &leader).await?;
         let mut r = v["value"].clone();
         if !r.is_object() {
             return Err(StoreError(format!("{}: ranges read answered {v}", self.chain)));

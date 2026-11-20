@@ -622,6 +622,8 @@ What f0 did in that minute:
 
 **4. Harness fixes.** These are on this branch (`b035tsave.sh`, `env-m4a.sh`, `teardown.py`).
 
+**Built after the analysis (branch `r31-catchup-local`, code only, `decisions/DECISIONS.md`, `catchup-local`).** The catch-up's `ranges` reads go by read-index to this site's member first, and pages keep going there first with `local=1`; neither takes the lookup mark, and each falls back to the lookup as before. A wait on another request's mark now logs its time and holders, and a traced post to the cached leader that is not a reply logs its answer. For m59's own case, site a's member was the leader f0, and main already sent the page read there first; no `local=1` read of 3529 reached f0 in those 19 s [measured], so the next row's lines must show whether that post missed (F104). Plants 150 to 157, 8 of 8 caught.
+
 **Ranked change.** Make the git shard's catch-up independent of the isolate's lookup walk. Read the log's `ranges` and pages from this site's member first, as `GroupLog::page` already does for `/entries`, and fall back to the leader only on a miss. Log the wait when a fallback queues behind another request's walk. Expected effect [inference, the counterfactual above]: dispatch p99 about 7 s against 18.6 s. That holds only if the 19 s really was that wait, which the new log line would show on the next row. F104 asks what drops the cached leader. Second, not ranked: run actions dispatch's shard calls in a fresh invocation (`in_band`), which would remove the setup depth errors.
 
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
@@ -824,6 +826,14 @@ Plants 25 to 30 (F77, branch `f77-acquire`): 6 of 6 caught. 21 of 21 caught afte
 | 147 | A rehydrating shard reads from its disk | the missing-commit test |
 | 148 | A merge still missing a commit after the catch-up answers shed | the same |
 | 149 | The lookup-mark trace logs none of the holder's posts | `a_traced_lookup_logs_its_walk_and_answers_the_same` |
+| 150 | A catch-up read never takes its site member's answer (main's `ranges` read, `catchup-local`) | `a_catch_up_read_answers_from_its_site_while_another_walk_holds_the_mark` |
+| 151 | A local `ranges` read takes a shed or `busy` answer | `a_local_catch_up_read_is_taken_only_at_or_above_what_was_asked`, the catch-up test |
+| 152 | A local `ranges` read takes an answer with no value | `a_local_catch_up_read_is_taken_only_at_or_above_what_was_asked` |
+| 153 | A local page that starts past the index asked for is taken | the same |
+| 154 | A wait on another request's mark is not logged (F104) | `a_wait_on_another_requests_mark_is_logged_with_its_holder`, the catch-up test |
+| 155 | A traced cached leader's miss is not logged (F104) | `a_wait_on_another_requests_mark_is_logged_with_its_holder` |
+| 156 | A follower answers a shard's `ranges` read `NotLeader` (main's rule) | `a_follower_serves_only_the_designs_reads` |
+| 157 | A follower serves any read that names `ranges` | the same |
 
 ## Cost estimate for the hosted runs
 
