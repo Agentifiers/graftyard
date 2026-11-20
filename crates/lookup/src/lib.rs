@@ -511,7 +511,8 @@ thread_local! {
 }
 
 /// Logs `chain`'s lookup marks in this isolate from now on: each post the mark's holder sends, with its member, step,
-/// answer and time, how the holder's lookup ended, and each request that gave up waiting on another's mark. A git
+/// answer and time, how the holder's lookup ended, each wait on another request's mark with its time and the requests
+/// that held it, each miss of a post to the cached leader, and each `local_first` read not taken locally. A git
 /// cache shard turns it on for its network's chain, so a row shows why its catch-up's lookups found no member for
 /// about 2 min after B0-35 m57's term change (`decisions/OPEN-QUESTIONS.md`, F101). Logging only: no rule changes.
 pub fn trace_marks(chain: ChainId) {
@@ -526,6 +527,11 @@ fn mark_trace(chain: ChainId, line: impl FnOnce() -> String) {
         #[cfg(not(target_arch = "wasm32"))]
         MARK_LINES.with(|l| l.borrow_mut().push(line));
     }
+}
+
+/// Request tokens as a trace names them: `t12,t15`.
+fn tokens(t: &[u64]) -> String {
+    t.iter().map(|t| format!("t{t}")).collect::<Vec<_>>().join(",")
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -650,11 +656,17 @@ where
                 // leader, or the mark is free or stale.
                 let mut found = None;
                 let waited_from = now();
+                // Each request that held the mark while this one waited, in turn (F104).
+                let mut holders: Vec<u64> = Vec::new();
                 while !mark(chain, token, now()) {
+                    if let Some(h) = LOOKUP_MARKS.with(|m| m.borrow().get(&chain).map(|(t, _)| *t))
+                        && holders.last() != Some(&h)
+                    {
+                        holders.push(h);
+                    }
                     if now() >= end {
                         mark_trace(chain, || {
-                            let holder = LOOKUP_MARKS.with(|m| m.borrow().get(&chain).map(|(t, _)| *t));
-                            format!("t{token} gave up after {} ms waiting on t{holder:?}", now() - waited_from)
+                            format!("t{token} gave up after {} ms waiting on {}", now() - waited_from, tokens(&holders))
                         });
                         return Err(format!("{chain}: {last}"));
                     }
@@ -663,6 +675,19 @@ where
                     if found.is_some() {
                         break;
                     }
+                }
+                if !holders.is_empty() {
+                    mark_trace(chain, || {
+                        let then = found
+                            .as_ref()
+                            .map_or("took the mark".into(), |l| format!("found {}/{}", l.site.0, l.do_name));
+                        let tried_leader = cached_leader(chain).is_some_and(|l| tried.contains(&l.do_name));
+                        format!(
+                            "t{token} waited {} ms on {}, then {then} (cached leader tried by it: {tried_leader})",
+                            now() - waited_from,
+                            tokens(&holders)
+                        )
+                    });
                 }
                 if let Some(l) = found {
                     queue.push_front((s, name, step));
@@ -688,6 +713,11 @@ where
                         nl.map(|_| format!(" notLeader(leader {leader:?})")).unwrap_or_default(),
                         now() - posted
                     )
+                });
+            } else if by == SentBy::Leader && answer != Answer::Reply {
+                // A post to the cached leader takes no mark; its miss is what sends a request into the walk (F104).
+                mark_trace(chain, || {
+                    format!("t{token} cached leader {}/{name}: {answer:?} in {} ms", s.0, now() - posted)
                 });
             }
             // lookup-retry: the first miss of a post to the cached leader, or its `busy`, is reported (a miss only) at
@@ -1564,6 +1594,64 @@ pub async fn learn_voters(b: &Bindings<'_>, chain: ChainId, record: &PlacementRe
     for st in futures_util::future::join_all(asks).await.into_iter().flatten() {
         if let Some(config) = st.get("config").filter(|c| !c.is_null()) {
             learn(chain, &json!({ "config": config }));
+        }
+    }
+}
+
+/// The body of a git cache shard's `ranges` read on its own site's member: by read-index, so a follower answers it at
+/// or above the commit index the leader confirmed when it arrived, as the leader would (`local_first`).
+pub const LOCAL_RANGES: &str = r#"{"q":{"ranges":true},"index":true}"#;
+
+/// Whether a member's answer to `LOCAL_RANGES` is the fold's ranges: a 200 with a value, not `NotLeader`, `busy`, or
+/// `overloaded` (a follower behind the leader's read index, or an older release that keeps `ranges` on the leader).
+pub fn local_ranges_usable(v: &Value) -> bool {
+    follower_answer_usable(Some((200, v))) && v.get("error").is_none() && v["value"].is_object()
+}
+
+/// Whether a member's `/entries?local=1` answer is the page that starts at `from`: committed entries are the same on
+/// every member, and one whose commit is below `from` answers a page that does not start there.
+pub fn local_page_usable(v: &Value, from: u64) -> bool {
+    v["entries"].as_array().and_then(|a| a.first()).and_then(|e| e["index"].as_u64()) == Some(from)
+}
+
+/// A git cache shard's catch-up read of its group's log, its own site's member first (`decisions/DECISIONS.md`,
+/// `catchup-local`): `post` sends the read, `path` in the trace, to `local`, and its answer is the read's when `usable`
+/// takes it.
+/// No local member, a miss, or any other answer goes to `leader`, the lookup to the group's leader, which is the read
+/// before this rule and waits on the isolate's lookup mark while another request's walk holds it; the local read
+/// takes no mark. On B0-35 m59 one catch-up of a single entry took 21 s while 13 walks in a row held its chain's mark
+/// in the shard isolate (F104). A local read not taken is logged for a traced chain (`trace_marks`).
+pub async fn local_first<P, PF, L, LF>(
+    chain: ChainId,
+    now: impl Fn() -> u64,
+    local: Option<Target>,
+    path: &str,
+    usable: impl Fn(&Value) -> bool,
+    post: P,
+    leader: L,
+) -> std::result::Result<Value, String>
+where
+    P: FnOnce(Target) -> PF,
+    PF: Future<Output = Option<(u16, Value)>>,
+    L: FnOnce() -> LF,
+    LF: Future<Output = std::result::Result<Value, String>>,
+{
+    let Some(t) = local else {
+        mark_trace(chain, || format!("local {path}: no member on this site, to the leader"));
+        return leader().await;
+    };
+    let t0 = now();
+    let r = post(t.clone()).await;
+    match r {
+        Some((200, v)) if usable(&v) => Ok(v),
+        r => {
+            mark_trace(chain, || {
+                let why = r.map_or("no answer".into(), |(s, v)| {
+                    format!("{s} {}", v.to_string().chars().take(120).collect::<String>())
+                });
+                format!("local {path} at {}/{}: {why} in {} ms, to the leader", t.site.0, t.do_name, now() - t0)
+            });
+            leader().await
         }
     }
 }
@@ -3779,6 +3867,157 @@ mod tests {
         let lines = MARK_LINES.with(|l| std::mem::take(&mut *l.borrow_mut()));
         assert!(lines.iter().any(|l| l.contains("post 1/") && l.contains("Reply")), "{lines:#?}");
         assert!(lines.last().is_some_and(|l| l.contains("found 1/")), "{lines:#?}");
+    }
+
+    /// `catchup-local`'s harness: a shard catch-up's read of `chain` while another request's walk (token 7) holds the
+    /// chain's mark, touching it every poll until 15 s, as 13 walks in a row held `repo:65573`'s on B0-35 m59. The
+    /// isolate holds the config but no leader, as each of those walks began. `local` is this site's member's answer,
+    /// `None` for no member here; the leader (voter 0) answers `{"value": "leader"}` through `lookup`. Returns the
+    /// answer, the virtual time it took, the posts to the leader's way, and the mark lines.
+    fn drive_local_first(
+        chain: ChainId,
+        local: Option<Option<(u16, Value)>>,
+        usable: impl Fn(&Value) -> bool,
+    ) -> (std::result::Result<Value, String>, u64, u32, Vec<String>) {
+        use futures_util::FutureExt;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        trace_marks(chain);
+        let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, 1);
+        let config = json!({ "index": 5, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        learn(chain, &json!({ "config": config }));
+        let names: Vec<(SiteId, String)> = KNOWN.with(|k| k.borrow()[&chain].voters.clone());
+        let here = Target { site: names[1].0, do_name: names[1].1.clone() };
+        assert!(mark(chain, 7, 0), "the other walk holds the mark");
+        let clock = Rc::new(Cell::new(0u64));
+        let walked = Rc::new(Cell::new(0u32));
+        let (c0, c1, c2, w) = (clock.clone(), clock.clone(), clock.clone(), walked.clone());
+        let leader = move || {
+            lookup(
+                chain,
+                move || c1.get(),
+                move |k| {
+                    let v = names.iter().map(|(s, n)| (*s, n.clone(), Step::Cached)).collect::<Vec<_>>();
+                    async move { (k == 0).then_some(v) }
+                },
+                move |s, _name, _by| {
+                    w.set(w.get() + 1);
+                    async move {
+                        Some((
+                            200,
+                            if s == SiteId(0) {
+                                json!({ "value": "leader", "meta": { "term": 3, "leader": 0 } })
+                            } else {
+                                json!({ "error": { "notLeader": { "term": 3, "leader": 0 } } })
+                            },
+                        ))
+                    }
+                },
+                |_about: Target, _term, _all| async { None },
+                move |d: Duration| {
+                    c2.set(c2.get() + d.as_millis() as u64);
+                    if c2.get() < 15_000 {
+                        mark(chain, 7, c2.get());
+                    }
+                    async {}
+                },
+            )
+            .map(|r| r.and_then(|o| o.map(|(v, _, _)| v).ok_or_else(|| "no group".to_string())))
+        };
+        let out = local_first(
+            chain,
+            move || c0.get(),
+            local.as_ref().map(|_| here.clone()),
+            "/read",
+            usable,
+            move |t: Target| {
+                assert_eq!(t.site, SiteId(1), "the local read goes to this site's member");
+                async move { local.flatten() }
+            },
+            leader,
+        )
+        .now_or_never()
+        .expect("every mock is ready");
+        let lines = MARK_LINES.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        unmark(chain, 7);
+        (out, clock.get(), walked.get(), lines)
+    }
+
+    /// `catchup-local`: a catch-up's `ranges` read on its own site's member answers at once while another request's
+    /// walk holds the chain's mark, and nothing goes the leader's way. Main sent it through the lookup, which waited
+    /// on the mark until the walk let it go (15 s here, 19 s on B0-35 m59); that wait is the fallback's, and it is
+    /// logged with the request that held the mark.
+    #[test]
+    fn a_catch_up_read_answers_from_its_site_while_another_walk_holds_the_mark() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(49)));
+        let ranges =
+            json!({ "value": { "first": 1, "promoted": null }, "index": 3529, "meta": { "term": 3, "leader": 0 } });
+        let (out, ms, walked, lines) = drive_local_first(chain, Some(Some((200, ranges.clone()))), local_ranges_usable);
+        assert_eq!((out, ms, walked), (Ok(ranges), 0, 0), "{lines:#?}");
+        assert!(!lines.iter().any(|l| l.contains("waited")), "{lines:#?}");
+        // A follower behind the leader's read index sheds it; the read then waits on the walk and is logged.
+        let shed = json!({ "overloaded": { "retryAfterMs": 250 }, "meta": { "term": 3, "leader": 0 } });
+        let (out, ms, walked, lines) = drive_local_first(chain, Some(Some((200, shed))), local_ranges_usable);
+        assert_eq!((out, walked), (Ok(json!({ "value": "leader", "meta": { "term": 3, "leader": 0 } })), 1));
+        assert!(ms >= 15_000, "the fallback waits out the walk: {ms} ms");
+        assert!(lines.iter().any(|l| l.starts_with("local /read at 1/") && l.contains("to the leader")), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("waited") && l.contains("on t7, then took the mark")), "{lines:#?}");
+        // No member on this site: the leader's way, as before.
+        let (out, _, walked, _) = drive_local_first(chain, None, local_ranges_usable);
+        assert_eq!((out.map(|v| v["value"].clone()), walked), (Ok(json!("leader")), 1));
+    }
+
+    /// `catchup-local`'s guards: a local `ranges` answer is taken only as a read-index value, never a `NotLeader`, a
+    /// `busy` or a shed; a local page only when it starts at `from`, so a member whose commit is below the entry asked
+    /// for is never read past.
+    #[test]
+    fn a_local_catch_up_read_is_taken_only_at_or_above_what_was_asked() {
+        let v = json!({ "value": { "first": 1 }, "index": 9 });
+        assert!(local_ranges_usable(&v));
+        for bad in [
+            json!({ "error": { "notLeader": { "term": 3, "leader": 0 } } }),
+            json!({ "overloaded": { "retryAfterMs": 250 } }),
+            json!({ "busy": true }),
+            json!({ "value": null, "index": 9 }),
+        ] {
+            assert!(!local_ranges_usable(&bad), "{bad}");
+        }
+        let page = |first: Option<u64>| json!({ "entries": first.map_or(vec![], |i| vec![json!({ "index": i })]) });
+        assert!(local_page_usable(&page(Some(3529)), 3529));
+        for (p, why) in
+            [(page(None), "empty: commit below from"), (page(Some(3530)), "a gap"), (page(Some(3528)), "below")]
+        {
+            assert!(!local_page_usable(&p, 3529), "{why}");
+        }
+        // A page that is not taken goes to the leader.
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(50)));
+        let (out, _, walked, _) =
+            drive_local_first(chain, Some(Some((200, page(None)))), |v| local_page_usable(v, 3529));
+        assert_eq!((out.map(|v| v["value"].clone()), walked), (Ok(json!("leader")), 1));
+        let (out, _, _, _) = drive_local_first(chain, Some(None), |v| local_page_usable(v, 3529));
+        assert_eq!(out.map(|v| v["value"].clone()), Ok(json!("leader")), "a missed local read goes to the leader");
+    }
+
+    /// The mark-wait log (F104): a request that waits on another's mark logs how long and on whom once the wait ends,
+    /// and a miss of a post to the cached leader, which is what sends a request into a walk, is logged too.
+    #[test]
+    fn a_wait_on_another_requests_mark_is_logged_with_its_holder() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(51)));
+        let (_, ms, _, lines) = drive_local_first(chain, None, local_ranges_usable);
+        let line = lines.iter().find(|l| l.contains(" waited ")).unwrap_or_else(|| panic!("{lines:#?}"));
+        assert!(line.contains(&format!("waited {ms} ms on t7, then took the mark")), "{line}");
+        assert!(lines.iter().any(|l| l.contains("found 0/")), "{lines:#?}");
+        // A traced cached leader that misses is logged even though its post takes no mark.
+        let traced = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(52)));
+        trace_marks(traced);
+        let (_, _, posts, _) = drive_leader_lookup(traced, |s, n| match (s.0, n) {
+            (0, 0) => (CALL.as_millis() as u64, None),
+            _ => (50, Some((200, json!({ "value": 1, "meta": { "term": 2, "leader": 0 } })))),
+        });
+        assert_eq!(posts[0], 2);
+        let lines = MARK_LINES.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        assert!(lines.iter().any(|l| l.contains("cached leader 0/") && l.contains("Missed")), "{lines:#?}");
     }
 
     /// No future, waker or I/O object crosses requests through this crate's isolate-wide state: a Workers request owns

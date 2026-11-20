@@ -45,6 +45,7 @@ PU = 'crates/git/src/purge.rs'
 PG = ['-p', 'graftyard-git', '--lib', 'purge::']
 PGL = ['-p', 'graftyard-git', '--lib', '--test', 'lifecycle']
 RAFT = ['-p', 'graftyard-raft', '--test', 'scenarios', '--test', 'leadership']
+LK = ['-p', 'graftyard-lookup', '--lib']
 
 # (name, file, old, new, test args)
 MUTANTS = [
@@ -440,6 +441,27 @@ MUTANTS = [
     ('the lookup-mark trace logs nothing for the holder\'s posts', 'crates/lookup/src/lib.rs',
      '            let posted = now();\n            let r = post(s, name.clone(), by).await;\n            let answer = classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. }));\n            if held.is_some() {',
      '            let posted = now();\n            let r = post(s, name.clone(), by).await;\n            let answer = classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. }));\n            if held.is_none() {', ['-p', 'graftyard-lookup', '--lib', 'a_traced_lookup']),
+    # ---- catchup-local (B0-35 m59): a catch-up's reads on its own site's member, and the mark-wait log, 150 and up ----
+    ('a catch-up read never takes its site member\'s answer, always the lookup (main\'s ranges read)', 'crates/lookup/src/lib.rs',
+     '        Some((200, v)) if usable(&v) => Ok(v),', '        Some((200, v)) if false && usable(&v) => Ok(v),', LK),
+    ('a local ranges read takes a shed or busy answer', 'crates/lookup/src/lib.rs',
+     '    follower_answer_usable(Some((200, v))) && v.get("error").is_none() && v["value"].is_object()',
+     '    v.get("error").is_none() && v["value"].is_object() || v.get("overloaded").is_some() || v.get("busy").is_some()', LK),
+    ('a local ranges read takes an answer with no value', 'crates/lookup/src/lib.rs',
+     '    follower_answer_usable(Some((200, v))) && v.get("error").is_none() && v["value"].is_object()',
+     '    follower_answer_usable(Some((200, v))) && v.get("error").is_none()', LK),
+    ('a local page that starts past the index asked for is taken', 'crates/lookup/src/lib.rs',
+     '.and_then(|e| e["index"].as_u64()) == Some(from)', '.and_then(|e| e["index"].as_u64()) >= Some(from)', LK),
+    ('a wait on another request\'s mark is not logged', 'crates/lookup/src/lib.rs',
+     '                if !holders.is_empty() {', '                if false {', LK),
+    ('a traced cached leader\'s miss is not logged', 'crates/lookup/src/lib.rs',
+     '            } else if by == SentBy::Leader && answer != Answer::Reply {', '            } else if false {', LK),
+    ('a follower answers a shard\'s ranges read NotLeader (main\'s rule)', F,
+     '    if q.get("lsRefs").is_some() || *q == serde_json::json!({ "ranges": true }) {', '    if q.get("lsRefs").is_some() {',
+     SITE[:3] + ['a_follower_serves_only']),
+    ('a follower serves any read that names ranges', F,
+     '    if q.get("lsRefs").is_some() || *q == serde_json::json!({ "ranges": true }) {',
+     '    if q.get("lsRefs").is_some() || q.get("ranges").is_some() {', SITE[:3] + ['a_follower_serves_only']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
