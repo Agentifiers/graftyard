@@ -227,6 +227,22 @@ Burst pushes' `server-timing` (`ok` only), p50 / p99 in ms. The front is max(aut
 - **The tail is after the front.** Of m3fwi3's 58 `ok` pushes over 5 s, 39 waited on a read gate that read its rows (gate p50 720 ms when it read, p99 2,152), and 36 ran two commits (staged, then committed). Commit p50 rose to 498 ms from 332, so "after the first send" rose by about 300 ms. That, not the front, sets the 58.
 - **rcread** p50 2 (m3fe2 5): fewer fresh reads per push, from the read-class and held entries.
 
+### Where m3fwi's slow pushes lost their time (code-only follow-up, branch `tail-attr`)
+
+Each lever is judged against the `ok` burst pushes over 5 s on the edge clock (`server-timing` `total`), from the a1 files' `burst timing` steps. A push is rescued when its total less the lever's saving is at or under 5 s. "ms over" is the sum of each slow push's time past 5 s.
+
+| Lever | m3fwi3 (58 slow of 489 `ok`, 16,508 ms over) | m3fwi2 (64 slow of 475, 22,652 ms over) |
+|---|---|---|
+| Read gate's slow mode (gate 1,500 ms or more) cut to 720 ms | 35 rescued, 13,415 ms removed (57 pushes in the mode) | 54 rescued, 21,587 ms |
+| No second commit round (stage first) | 33 rescued, 13,123 ms (206 pushes committed twice) | 51 rescued, 20,231 ms |
+| Leader commit at m3fe2's speed (scaled estimate) | 48 rescued | 44 rescued |
+| Gate and second round together | 40 rescued; 18 slow pushes had neither | 52 had both; every slow push read its gate |
+
+- **The read gate is bimodal:** one mode at 250 to 1,000 ms, and one at 1,500 to 2,300 ms. The slow mode is cold isolates (`rcread` 7). That it is a learner read waiting `FOLLOWER_WAIT` (1 s) and then trying the next member is a hypothesis; followers' `/read` p99 was about 1 s.
+- **The second round is deterministic.** 191 of the 206 two-commit pushes also read their gate, and stage-first pushes almost all had a cached gate. So a cold isolate pays both. The leader's `agent_stage` rule answers `Stage` to every Agent inline pack past `AGENT_INLINE_ENTRY` (128 KiB) on any group, and the edge staged first only after it had seen a `Stage`. Per push, a two-commit push paid p50 287 ms for the refused commit, 543 ms to place, and 1,385 ms for the second commit. A push that staged first paid p50 1,351 ms for its one commit. The round cost p50 900 to 1,164 ms.
+- **Leader admission** (hot samples): round p50 218 ms against m3fe2's 133, and queued p99 74 against 10. About 210 of the burst's commits carried a 256 KiB inline pack the leader then refused.
+- **Fix built:** `agent-stage-first` (`decisions/DECISIONS.md`). An Agent push with an inline pack over `AGENT_INLINE_ENTRY` stages first on any group. It removes the second round with no new read, and takes the refused 256 KiB bodies off the leader. Its effect on the burst, and on leader commit p50, is [inference] until a B0-32 rerun. The gate's slow mode is the next lever. It needs its cause measured first.
+
 ## G11 built: a planned rehome warms the target's shard first (2026-11-19, code-only, branch `g11-warm`)
 
 Approved by the orchestrator after B0-31 was met on m3fr16, which left no other B0-31 item in BUILD-PLAN. `decisions/DECISIONS.md`, "`g11-warm`", has the decision and its flip.

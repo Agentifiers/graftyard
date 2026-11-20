@@ -6510,3 +6510,25 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 **Evidence.** `tests/fanout/test_outages.py`, `test_the_window_opens_at_the_first_request_not_the_announced_start`: m3fwi3's shape (13 idle seconds, then a load with 4 edge-0 seconds) is invalid from the announced start and valid from the first request, and `first` takes the earliest sample, not the file's first line. It fails without `outagecut.first`.
 
 **Flip.** A row whose driver sends requests before its announced start (the window would then cut real seconds), or one where a dropped host is seen in the setup seconds and lost from the record: then the window should open at the announced start again and the setup seconds be judged by rule 5 alone.
+
+### `agent-stage-first`: an Agent push whose inline pack is over `AGENT_INLINE_ENTRY` stages it before its first commit on any group, 2026-11-20
+
+**Decision.** In `receive_pack`, a push that the edge's `admission` classes Agent and whose inline pack is over `AGENT_INLINE_ENTRY` (128 KiB) places its pack in the buckets before its first commit, and commits a `Stored` pack (`workers/edge/src/lib.rs`, `hot::stage_first`). Before this change, a push staged first only on a group whose leader had answered this isolate `Stage` within `HOT_WINDOW` (`push-reads`, item 4). That rule stays for every other push, and so does placement: while placement fails nothing stages first. The leader is unchanged. Its `agent_stage` rule (`crates/raft/src/member/leader.rs`, `admission_check`) still decides, and a pack staged early is a `Stored` pack it takes as it does any other (`design/DESIGN.md`, journey 1, step 1).
+
+**Why.** The leader answers `Stage` to every Agent inline pack that would take the entry past `AGENT_INLINE_ENTRY`, whatever the group's heat. A 256 KiB pack is past it alone. The edge learned that only from a refused first commit, per isolate, so each cold isolate's first push paid a second commit round. In B0-32's burst on main `b655c323` [measured, `tests/am1/results/lm1-rows-m3f.md`, "Where m3fwi's slow pushes lost their time"]:
+- m3fwi3: 206 of 489 `ok` pushes committed twice (commit, `Stage`, place, commit). A two-commit push paid p50 287 ms for the refused commit, 543 ms to place, and 1,385 ms for the second commit, against 1,351 ms for one commit after staging first. The second round cost p50 900 to 1,164 ms.
+- Of the 58 `ok` pushes over 5 s on the edge clock, staging first would have brought 33 under it and removed 13,123 of their 16,508 ms over 5 s. On m3fwi2, 51 of 64, and 20,231 of 22,652 ms.
+- Every one of those pushes is an Agent push of 256 KiB, so the leader's own rule says in advance what it will answer. It also takes about 210 inline 256 KiB `/commit` bodies per burst off the leader, whose commit p50 rose to 498 ms from m3fe2's 332 [inference that this lowers it].
+
+**What it beat.**
+- **The read gate's slow mode.** 57 of m3fwi3's pushes had a gate of 1,500 ms or more, on cold isolates (`rcread` 7). Cutting it to the 720 ms mode would have rescued 35 of the 58 and 13,415 ms, about as much as staging first. But its cause is a hypothesis (a learner read waiting `FOLLOWER_WAIT` and then trying the next member), not measured, and a fix needs that measured first. The gate is the next lever, and this change does not touch it.
+- **A hot flag or a `Stage` hint in the leader's replies:** a raft change for a rule the edge can compute from the constants it already shares with the leader.
+- **Raising `AGENT_INLINE_ENTRY`:** it moves B0-33's per-entry budget, which B0-31 and the fresh-group rows rest on.
+- **The `KEYS` cache:** the operator ruled the front is not where the slow pushes lose time (auth p50 128 ms of a 4 s total).
+
+**Evidence.**
+- `an_agent_pack_past_the_entry_budget_stages_first_on_a_cool_group` (`workers/edge/src/lib.rs`, `hot_tests`) fails on main: a cool group's 256 KiB Agent push stages first, one at `AGENT_INLINE_ENTRY` or just past `INLINE_MAX_HOT` does not, and a push not classed Agent does not at any size.
+- `tests/m0carried/plant61.py` catches 5 of 5, the first being main's rule.
+- The effect on the burst is [inference] until a B0-32 rerun reads `stagefirst` and `commit` from `server-timing`.
+
+**Flip.** A B0-32 rerun where more than 5% of `ok` burst pushes still commit twice, which would mean the leader's `Stage` comes from a rule the edge does not see, such as demotion. Or one where pushes that stage first take longer, at p50, than m3fwi3's two-commit pushes did, which would mean the bucket place costs more than the refused round. If the read gate's slow mode still keeps more than 10% of burst pushes over 5 s, that is the next change, not a reason to revert this one.
