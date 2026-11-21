@@ -1315,9 +1315,14 @@ impl DurableObject for GitShard {
                         record: log.record.clone(),
                     };
                     // With another site after this one (`next=1`) the chain gets `CHAIN_WAIT_FORWARDED`, not the whole
-                    // deadline: the next site's chain is usually synced (`graftyard_git::compose::chain_ready`).
+                    // deadline: the next site's chain is usually synced. A site whose bucket holds no chain (not a
+                    // warm site) waits for none (`graftyard_git::compose::chain_ready`, `chain-site`).
                     let follows = q(&url, "next").is_some();
-                    if !graftyard_git::compose::chain_ready(follows, left(), compose.ready(), worker::Delay::from).await
+                    let ids: Vec<SiteId> = site.sites.0.iter().map(|s| s.id).collect();
+                    let chain_site = graftyard_git::chain_buckets(net, log.record.home, &ids).contains(&site.id);
+                    let ready = compose.ready();
+                    if !graftyard_git::compose::chain_ready(follows, chain_site, left(), ready, worker::Delay::from)
+                        .await
                     {
                         return Ok(line.forward(warming()?));
                     }

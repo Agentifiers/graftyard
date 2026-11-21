@@ -536,7 +536,7 @@ fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_dead
             (Some(w), Some(r)) if r <= w => Poll::Ready(()),
             _ => Poll::Pending,
         });
-        let composed = futures_executor::block_on(chain_ready(follows, left, ready, |w| {
+        let composed = futures_executor::block_on(chain_ready(follows, true, left, ready, |w| {
             slept.set(Some(w));
             std::future::poll_fn(
                 move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
@@ -558,6 +558,57 @@ fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_dead
     assert_eq!(run(true, s(15), Some(Duration::ZERO)), (true, s(2)));
     assert_eq!(run(false, s(15), Some(Duration::ZERO)), (true, s(15)));
     assert_eq!(run(true, s(15), Some(Duration::from_millis(1_500))), (true, s(2)));
+}
+
+/// A composable miss on a site whose bucket holds no chain (`chain_ready` with `chain_site` false, a site that is not
+/// one of `chain_buckets`) waits for no chain step. As the last site it asks its container at once, which composes
+/// from a chain it already holds or serves stock; forwarded, it answers `warming` at once so the edge asks the next
+/// site, unless a chain is already synced there. B0-34 mt11's case: site c, last in kill's order and not a warm site,
+/// waited `COMPOSE_WAIT`'s whole 20 s (`ready_ms` 20000) for each of 5 misses, then served stock or composed at 22 to
+/// 32 s; 4 of them took kill's every-clone share from 92 % to 88.2 % (`tests/am1/results/b034-mt11.md`). On main's
+/// rule the last site waits all that is left of its deadline, which fails here.
+#[test]
+fn a_miss_on_a_site_that_holds_no_chain_waits_for_no_chain_step() {
+    use graftyard_git::compose::chain_ready;
+    use graftyard_types::{DbId, NetworkId, SiteId};
+    use std::cell::Cell;
+    use std::task::Poll;
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    // mt11's monorepo network on graft-m1's three sites, home a: the chain sites are a and b, not c.
+    let (net, home, sites) = (NetworkId(DbId(1048604)), SiteId(0), [SiteId(0), SiteId(1), SiteId(2)]);
+    let chain = graftyard_git::chain_buckets(net, home, &sites);
+    let chain_site = |s: SiteId| chain.contains(&s);
+    let c = SiteId(2);
+    assert_eq!(chain, [SiteId(0), SiteId(1)], "mt11's chain buckets: a and b");
+    // (asks its container, the wait the shard slept for)
+    let run = |follows: bool, on: SiteId, left: Duration, ready_at: Option<Duration>| {
+        let slept = Cell::new(None::<Duration>);
+        let ready = std::future::poll_fn(|_| match (slept.get(), ready_at) {
+            (Some(w), Some(r)) if r <= w => Poll::Ready(()),
+            _ => Poll::Pending,
+        });
+        let go = futures_executor::block_on(chain_ready(follows, chain_site(on), left, ready, |w| {
+            slept.set(Some(w));
+            std::future::poll_fn(
+                move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
+            )
+        }));
+        (go, slept.get().expect("the shard sleeps for its wait"))
+    };
+    // mt11's case: site c last (wait=60, no next), no chain ever. It asks its container at once, not after 20 s or 60 s.
+    assert_eq!(run(false, c, s(60), None), (true, Duration::ZERO));
+    // Forwarded (next=1) from site c: warming at once, not after the 2 s bound.
+    assert_eq!(run(true, c, s(15), None), (false, Duration::ZERO));
+    // A chain already synced on site c still answers there, last or forwarded.
+    assert_eq!(run(false, c, s(60), Some(Duration::ZERO)), (true, Duration::ZERO));
+    assert_eq!(run(true, c, s(15), Some(Duration::ZERO)), (true, Duration::ZERO));
+    // The chain sites keep `chain-wait`'s rule: a forwarded miss waits the bound, the last site its whole deadline.
+    for on in chain.iter().copied() {
+        assert_eq!(run(true, on, s(15), None), (false, s(2)), "chain site {on:?} forwarded");
+        assert_eq!(run(false, on, s(60), None), (false, s(60)), "chain site {on:?} last");
+        assert_eq!(run(false, on, s(60), Some(s(14))), (true, s(60)), "chain site {on:?} composes a chain 14 s away");
+    }
 }
 
 /// Stock upload-packs past the container's `STOCK_MAX` wait in the shard object in arrival order: the head of the

@@ -291,23 +291,39 @@ pub async fn stream_in_turn<P, B, E>(
     Ok(())
 }
 
-/// Whether a composable miss's chain is ready (`ready` ended) before its wait runs out. `follows`: the edge has another
-/// site to try (`next=1`), so the wait is at most `CHAIN_WAIT_FORWARDED`; the last site waits all `left`, what remains
-/// of the upload-pack's deadline, so a miss never runs out of sites that would wait for a chain. `false` means the
-/// shard answers 503 `warming`. As `crate::warming_now` does for a rehydrate: on B0-34 mt6 a builder whose chain had
-/// not stepped after its rehydrate held 38 misses for the home's whole 15 s, each then composed on site b in under
-/// 1 s (`tests/am1/results/b034-mt6.md`, "1. Where the clone TTFB tail goes").
-pub async fn chain_ready<R, S, D>(follows: bool, left: std::time::Duration, ready: R, sleep: S) -> bool
+/// Whether a composable miss goes on to ask its container (`true`) or the shard answers 503 `warming` (`false`), once
+/// its chain is ready (`ready` ended) or its wait runs out. `follows`: the edge has another site to try (`next=1`).
+/// `chain_site`: this site's bucket holds the network's chain (`crate::chain_buckets`, its warm sites).
+/// - On a chain site, a forwarded miss waits at most `CHAIN_WAIT_FORWARDED` and the last site all `left`, what remains
+///   of the upload-pack's deadline, so a miss never runs out of sites that would wait for a chain. As
+///   `crate::warming_now` does for a rehydrate: on B0-34 mt6 a builder whose chain had not stepped after its rehydrate
+///   held 38 misses for the home's whole 15 s, each then composed on site b in under 1 s
+///   (`tests/am1/results/b034-mt6.md`, "1. Where the clone TTFB tail goes").
+/// - On any other site it waits for nothing: a chain already synced there answers, a forwarded miss is otherwise sent
+///   on at once, and the last site asks its container at once, which composes from a chain it holds or serves stock.
+///   On B0-34 mt11 site c, which is not a warm site and holds no chain, waited `COMPOSE_WAIT`'s whole 20 s for each of
+///   kill's last-site misses and 2 s for each forwarded one (`decisions/DECISIONS.md`, "`chain-site`").
+pub async fn chain_ready<R, S, D>(
+    follows: bool,
+    chain_site: bool,
+    left: std::time::Duration,
+    ready: R,
+    sleep: S,
+) -> bool
 where
     R: std::future::Future<Output = ()>,
     S: FnOnce(std::time::Duration) -> D,
     D: std::future::Future<Output = ()>,
 {
-    let wait = if follows { left.min(CHAIN_WAIT_FORWARDED) } else { left };
+    let wait = match (chain_site, follows) {
+        (false, _) => std::time::Duration::ZERO,
+        (true, true) => left.min(CHAIN_WAIT_FORWARDED),
+        (true, false) => left,
+    };
     let ready = std::pin::pin!(ready);
     match futures_util::future::select(ready, std::pin::pin!(sleep(wait))).await {
         futures_util::future::Either::Left(_) => true,
-        futures_util::future::Either::Right(_) => false,
+        futures_util::future::Either::Right(_) => !chain_site && !follows,
     }
 }
 

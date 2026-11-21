@@ -6899,3 +6899,20 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 - `tests/m0carried/plant72.py`, 6 of 6 caught: never kept (main's rule), never used, kept after a failed read under it, a failed read under a held record returned with no lookup, any chain's record kept as the install's, and a record kept after a failed read.
 
 **Flip.** A B0-31 row on this rule where the install `Authz` read's p50 stays more than 100 ms above the owner's `Authz` read issued beside it, which means the kept record is not being used; or where `depFails` for `authz` rises above the same row's other chains', which means a stale kept record fails reads instead of falling back.
+
+### `chain-site`: a composable miss on a site that holds no chain waits for no chain step, 2026-11-21
+
+**Status.** Built on branch `b034-two`. Site script only (`workers/site/src/shard.rs`; the rule is `chain_ready` in `crates/git/src/compose.rs`), so it ships on a site day.
+
+**Decision.** `chain_ready` takes whether this site is a chain site: one of `chain_buckets`, the network's warm sites, whose buckets the builder writes the chain to and every shard installs from. On a chain site nothing changes from `chain-wait`: a forwarded miss (`next=1`) waits at most `CHAIN_WAIT_FORWARDED` for its chain step, and the last site all that is left of its deadline. On any other site the miss waits for nothing. A chain already synced there still answers. Otherwise a forwarded miss answers 503 `warming` at once and the edge asks the next site, and the last site asks its container at once, which composes from a chain it holds or serves stock.
+
+**Why.** On B0-34 mt11 the kill sent 5 composable misses past sites a and b to site c, last in the order. Site c is not a warm site, and its bucket held no chain files all row. Each miss waited the shard's whole 20 s `COMPOSE_WAIT` (`ready_ms` 20000), then served stock at 22 s or composed from its own repository at 30–32 s [measured, `tests/fanout/raw/misslines-mt11.jsonl`]. Four of those were 4 of kill's 13 probes over 5 s, and kill's every-clone share was 88.2 % against a 90 % line [measured, `tests/am1/results/b034-mt11.md`]. Each forwarded miss that reached site c also waited 2 s for a chain site c never builds. Without the 20 s, those probes end at the earlier sites' time plus site c's catch-up and answer, about 3.7 to 7.8 s each [inference from the same lines], so kill's share goes to about 89.1 %, still short of 90 % alone.
+
+**What it beat.**
+- **Ordering composable misses to chain sites first at the edge.** That moves the problem when both chain sites are down or warming, and the last site must still answer something. The shard's rule covers every order.
+- **Installing the chain on every site.** That puts the builder's output in a third bucket and a third install path for a site that serves only the kill's tail.
+- **Answering `warming` from the last site.** That leaves the client a 503 where its container could serve stock in about 2 s.
+
+**Evidence.** `a_miss_on_a_site_that_holds_no_chain_waits_for_no_chain_step` (`crates/git/tests/shard.rs`) runs `chain_ready` on a virtual clock with mt11's network and sites. Site c, last with no chain, asks its container at once (main waits 60 s); forwarded, it answers `warming` at once (main waits 2 s); a chain already synced there answers; chain sites a and b keep `chain-wait`'s waits. On main's rule (every site waits as a chain site) it fails. Plants (`tests/hitgate/plant.py`): mutants 0 to 4, 5 of 5 caught, with mutant 0 main's rule: every site waits as a chain site, a site with no chain waits the forwarded bound, the last site with no chain answers warming, a forwarded miss with no chain goes to its container, a chain site counted as none.
+
+**Flip.** A row where a site that is not a chain site serves stock for a miss that a chain site composed within 2 s after it: send such a miss to the chain sites first instead.
