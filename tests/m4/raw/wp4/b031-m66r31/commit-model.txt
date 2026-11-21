@@ -1,0 +1,5 @@
+up
+model: n 5383 queue p99 988 commit p50 650 p99 1254 over 2 s 22
+fail
+model: n 4717 queue p99 1350 commit p50 772 p99 1903 over 2 s 38
+  without commands admitted from 2 s before to 3 s after each long call (162 commands): queue p99 1298 commit p99 1558 over 2 s 1
