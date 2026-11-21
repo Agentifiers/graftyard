@@ -268,12 +268,44 @@ struct Deciding<C: Command> {
     batch: Vec<Queued<C>>,
     /// Every chain a `DepsWanted` asked for this batch.
     chains: SmallVec<[ChainId; 3]>,
-    /// The folds the host read, without the chains it could not read.
-    deps: Vec<(ChainId, C::Dep)>,
+    /// The folds the host read, each with the `DepsWanted` it answered, without the chains it could not read.
+    deps: Vec<(ChainId, u64, C::Dep)>,
     /// When the outstanding `DepsWanted` left, for `deps_ms`.
     asked: Timestamp,
     /// Every `DepsWanted` whose reads `deps` holds, for `DepsUsed`.
     ids: SmallVec<[u64; 2]>,
+    /// The cut stopped at a byte cap (ENTRY_SOFT, ENTRY_SOFT_DEEP, ENTRY_MAX), so the batch takes no joiner. A batch
+    /// cut at AGENT_CMDS_ENTRY or for want of agent tokens still takes one (`human-join`).
+    capped: bool,
+    /// Human and MergeQueue commands admitted after the batch froze, in admission order (`human-join`).
+    joiners: Vec<Joiner<C>>,
+    /// The joiners' outstanding `DepsWanted`, at most one: a joiner admitted while it is out waits for the next, asked
+    /// when it answers, so a burst of joiners costs a read per read time, not one each.
+    join_ask: Option<u64>,
+    /// The folds the joiners' reads answered, each with its `DepsWanted`.
+    join_deps: Vec<(ChainId, u64, C::Dep)>,
+}
+
+impl<C: Command> Deciding<C> {
+    /// The batch's bytes with its joiners: as ENTRY_SOFT counts them, and all of them.
+    fn bytes(&self) -> (usize, usize) {
+        let qs = self.batch.iter().chain(self.joiners.iter().map(|j| &j.q));
+        qs.fold((0, 0), |(s, b), q| (s + q.soft_bytes, b + q.bytes))
+    }
+}
+
+/// A late joiner (`human-join`): a Human or MergeQueue command admitted after its batch froze. The batch's read was
+/// asked before it, so it is covered only by a read asked at or after its admission: the joiners' read asked then, or
+/// the next one if one was already out. It is decided after the batch's commands only if, for every chain it names on
+/// the fold then, a read of that chain asked no earlier than its own answered; otherwise it goes back to the front of
+/// its lane and rides a later entry, so it never delays the batch's append.
+struct Joiner<C: Command> {
+    q: Queued<C>,
+    class: AdmitClass,
+    actor: Option<ActorKey>,
+    /// The first `DepsWanted` asked at or after its admission for its chains; `None` until one is asked, and for a
+    /// joiner that named no chain.
+    read: Option<u64>,
 }
 
 /// A decided command: its seq, the bytes its outcome keeps that no event stores (`Lead::done`), and its result.
@@ -517,7 +549,9 @@ impl<C: Command> Member<C> {
             .admission
             .drain()
             .map(|q| q.seq)
-            .chain(lead.deciding.iter().flat_map(|d| d.batch.iter().map(|q| q.seq)))
+            .chain(
+                lead.deciding.iter().flat_map(|d| d.batch.iter().chain(d.joiners.iter().map(|j| &j.q)).map(|q| q.seq)),
+            )
             .chain(lead.pending.iter().flat_map(|(_, d)| d.iter().map(|(s, _, _)| *s)));
         // Each ticket as it was issued: `step_down` raised the term first, and a host keys its waiters and admitted
         // commands by the issued ticket (LM-1 round 19, `tests/m0/results/admitted-bytes.md`).
@@ -810,7 +844,7 @@ impl<C: Command> Member<C> {
     pub fn admitted_bytes(&self) -> usize {
         let Some(lead) = &self.lead else { return 0 };
         let queued: usize = lead.admission.lanes.iter().flat_map(Lane::iter).map(|q| q.bytes).sum();
-        let frozen: usize = lead.deciding.iter().flat_map(|d| &d.batch).map(|q| q.bytes).sum();
+        let frozen: usize = lead.deciding.iter().map(|d| d.bytes().1).sum();
         let decided: usize = lead.pending.iter().flat_map(|(_, d)| d).map(|(_, unstored, _)| unstored).sum();
         queued + frozen + decided
     }
@@ -927,7 +961,9 @@ impl<C: Command> Member<C> {
                 };
                 let until = Timestamp(now.0 + wait.as_millis() as u64);
                 let q = Queued { seq, id, cmd, bytes: len, agent_inline, soft_bytes, until };
-                ad.lanes[class.lane()].push(a.actor, q);
+                if let Some(q) = self.late_join(class, a.actor, q) {
+                    self.lead.as_mut().expect("leading").admission.lanes[class.lane()].push(a.actor, q);
+                }
                 seq
             }
         };
@@ -1022,15 +1058,15 @@ impl<C: Command> Member<C> {
             if lead.admission.is_empty() {
                 return;
             }
-            let Some(fresh) = self.cut_fresh() else { return };
+            let Some((fresh, end)) = self.cut_fresh() else { return };
             if fresh.is_empty() {
                 continue;
             }
             let chains = self.chains(&fresh);
             if chains.is_empty() {
-                self.decide(fresh, Vec::new(), SmallVec::new());
+                self.decide(fresh, Vec::new(), SmallVec::new(), SmallVec::new());
             } else {
-                self.hold_batch(fresh);
+                self.hold_batch(fresh, end);
                 self.ask_deps(chains);
             }
             return;
@@ -1064,12 +1100,12 @@ impl<C: Command> Member<C> {
         if !lead.admission.lanes.iter().flat_map(Lane::iter).any(|q| !q.cmd.deps(fold).is_empty()) {
             return;
         }
-        let Some(fresh) = self.cut_fresh() else { return };
+        let Some((fresh, end)) = self.cut_fresh() else { return };
         if fresh.is_empty() {
             return;
         }
         let chains = self.chains(&fresh);
-        self.hold_batch(fresh);
+        self.hold_batch(fresh, end);
         if !chains.is_empty() {
             self.ask_deps(chains);
         }
@@ -1077,15 +1113,15 @@ impl<C: Command> Member<C> {
 
     /// The next batch by admission (`cut`), less the commands whose request already has a row, which are answered
     /// from their stored events. `None` when admission gave nothing: only agent commands wait, and the bucket is empty,
-    /// so `tick` cuts again once it refills.
-    fn cut_fresh(&mut self) -> Option<Vec<Queued<C>>> {
+    /// so `tick` cuts again once it refills. With what ended the cut.
+    fn cut_fresh(&mut self) -> Option<(Vec<Queued<C>>, CutEnd)> {
         let lead = self.lead.as_mut().expect("leading");
         let (batch, note) = Self::cut(lead, self.now, self.admit_capacity, self.entry_soft);
         if batch.is_empty() {
             return None;
         }
         self.out.cuts.push(note);
-        Some(self.drop_replays(batch))
+        Some((self.drop_replays(batch), note.end))
     }
 
     /// A command whose id has a row is not decided again: answer it from the stored events.
@@ -1117,7 +1153,7 @@ impl<C: Command> Member<C> {
         chains
     }
 
-    fn hold_batch(&mut self, batch: Vec<Queued<C>>) {
+    fn hold_batch(&mut self, batch: Vec<Queued<C>>, end: CutEnd) {
         let now = self.now;
         let lead = self.lead.as_mut().expect("leading");
         lead.deciding.push_back(Deciding {
@@ -1127,7 +1163,87 @@ impl<C: Command> Member<C> {
             deps: Vec::new(),
             asked: now,
             ids: SmallVec::new(),
+            capped: matches!(end, CutEnd::Soft | CutEnd::EntryMax),
+            joiners: Vec::new(),
+            join_ask: None,
+            join_deps: Vec::new(),
         });
+    }
+
+    /// `human-join`: a Human or MergeQueue command admitted while a batch is frozen behind the entry in flight joins the
+    /// newest frozen batch, unless that batch was cut at a byte cap, a Human or MergeQueue command is still queued (so
+    /// none goes ahead of an earlier one), a transfer runs, the leader would still freeze another batch behind it
+    /// (`read_ahead`), or it would take the batch past `entry_soft` or ENTRY_MAX. With no entry in flight the batch
+    /// waits only on its own read, which a joiner's, asked later, would not beat. The batch's read was asked before the
+    /// joiner was admitted, so the joiners' `DepsWanted` is asked now for the chains it names on the fold at `applied`,
+    /// or, if one is already out, when that one answers. Agent and Bot commands never join. Returns the command when
+    /// it does not join.
+    fn late_join(&mut self, class: AdmitClass, actor: Option<ActorKey>, q: Queued<C>) -> Option<Queued<C>> {
+        if !matches!(class, AdmitClass::Human | AdmitClass::MergeQueue) || self.fold.request(q.id).is_some() {
+            return Some(q);
+        }
+        let mut chains: SmallVec<[ChainId; 3]> = SmallVec::new();
+        for c in q.cmd.deps(&self.fold.fold) {
+            if !chains.contains(&c) {
+                chains.push(c);
+            }
+        }
+        // While the leader would still freeze another batch behind this one (`read_ahead`: reads that outlast a round,
+        // as on B0-31's apac leader), the command stays queued for that batch, whose read is asked a round ahead.
+        let lead = self.lead.as_ref().expect("leading");
+        let ad = &lead.admission;
+        if lead.pending.is_none() || lead.deciding.len() < ad.deps_ms.map_or(1, |d| read_ahead(ad.round_ms, d)) {
+            return Some(q);
+        }
+        let soft = self.entry_soft;
+        let lead = self.lead.as_mut().expect("leading");
+        let queued =
+            [AdmitClass::Human, AdmitClass::MergeQueue].iter().any(|c| !lead.admission.lanes[c.lane()].is_empty());
+        let Some(d) = lead.deciding.back_mut() else { return Some(q) };
+        let (s, b) = d.bytes();
+        if queued || lead.transfer.is_some() || d.capped || s + q.soft_bytes > soft || b + q.bytes > ENTRY_MAX {
+            return Some(q);
+        }
+        let ask = !chains.is_empty() && d.join_ask.is_none();
+        let read = ask.then(|| {
+            self.next_deps = self.next_deps.wrapping_add(1);
+            self.next_deps
+        });
+        d.join_ask = d.join_ask.or(read);
+        d.joiners.push(Joiner { q, class, actor, read });
+        if let Some(id) = read {
+            self.out.deps.push(DepsWanted { id, chains });
+        }
+        None
+    }
+
+    /// The joiners' read `id` answered: keeps its folds, and asks the next one for every joiner admitted while it was
+    /// out, with the chains each names on the fold at `applied`.
+    fn join_read(&mut self, id: u64, deps: Vec<(ChainId, C::Dep)>) {
+        let lead = self.lead.as_mut().expect("leading");
+        let Some(at) = lead.deciding.iter().position(|d| d.join_ask == Some(id)) else { return };
+        let d = &mut lead.deciding[at];
+        d.join_ask = None;
+        d.join_deps.extend(deps.into_iter().map(|(c, dep)| (c, id, dep)));
+        let mut chains: SmallVec<[ChainId; 3]> = SmallVec::new();
+        for j in d.joiners.iter().filter(|j| j.read.is_none()) {
+            for c in j.q.cmd.deps(&self.fold.fold) {
+                if !chains.contains(&c) {
+                    chains.push(c);
+                }
+            }
+        }
+        if chains.is_empty() {
+            return;
+        }
+        self.next_deps = self.next_deps.wrapping_add(1);
+        let next = self.next_deps;
+        let d = &mut self.lead.as_mut().expect("leading").deciding[at];
+        d.join_ask = Some(next);
+        for j in d.joiners.iter_mut().filter(|j| j.read.is_none() && !j.q.cmd.deps(&self.fold.fold).is_empty()) {
+            j.read = Some(next);
+        }
+        self.out.deps.push(DepsWanted { id: next, chains });
     }
 
     /// Asks the host to read `chains` for the batch cut last, under an id no earlier ask of this member used.
@@ -1160,10 +1276,6 @@ impl<C: Command> Member<C> {
         }
         let batch = std::mem::take(&mut d.batch);
         let batch = self.drop_replays(batch);
-        if batch.is_empty() {
-            self.lead.as_mut().expect("leading").deciding.pop_front();
-            return true;
-        }
         let chains = self.chains(&batch);
         let d = self.lead.as_mut().and_then(|l| l.deciding.front_mut()).expect("a held batch");
         d.batch = batch;
@@ -1172,11 +1284,56 @@ impl<C: Command> Member<C> {
             self.ask_deps_for(true, missing);
             return false;
         }
-        let Deciding { batch, deps: mut have, ids, .. } =
+        let Deciding { mut batch, deps: mut have, mut ids, joiners, join_deps, .. } =
             self.lead.as_mut().expect("leading").deciding.pop_front().expect("a held batch");
-        let deps =
-            chains.iter().filter_map(|c| have.iter().position(|(k, _)| k == c).map(|i| have.swap_remove(i))).collect();
-        self.decide(batch, deps, ids);
+        // Late joiners go after the batch's commands, each only if every chain it names on the fold now has an answered
+        // read asked no earlier than its own (ids rise with time); the rest go back to the front of their lanes, in
+        // order.
+        let mut left = Vec::new();
+        let mut joined = false;
+        for j in joiners {
+            if self.fold.request(j.q.id).is_some() {
+                self.drop_replays(vec![j.q]);
+                continue;
+            }
+            let named = j.q.cmd.deps(&self.fold.fold);
+            let covered = |c: &ChainId| j.read.is_some_and(|r| join_deps.iter().any(|(k, id, _)| k == c && *id >= r));
+            // Once one goes back, every later one does, so joiners keep their admission order.
+            if !left.is_empty() || !named.iter().all(covered) {
+                left.push(j);
+                continue;
+            }
+            joined = true;
+            batch.push(j.q);
+        }
+        if joined {
+            for (_, id, _) in &join_deps {
+                if !ids.contains(id) {
+                    ids.push(*id);
+                }
+            }
+            have.extend(join_deps);
+        }
+        let lanes = &mut self.lead.as_mut().expect("leading").admission.lanes;
+        for j in left.into_iter().rev() {
+            lanes[j.class.lane()].push_front(j.actor, j.q);
+        }
+        if batch.is_empty() {
+            return true;
+        }
+        // Each chain the entry names gets the newest read of it any of its commands holds: every command naming the
+        // chain was admitted before some read of it, and so before the newest.
+        let chains = self.chains(&batch);
+        let (mut deps, mut reads) = (Vec::new(), SmallVec::new());
+        for c in &chains {
+            let newest = (0..have.len()).filter(|i| have[*i].0 == *c).max_by_key(|i| have[*i].1);
+            if let Some(i) = newest {
+                let (c, id, dep) = have.swap_remove(i);
+                reads.push((c, id));
+                deps.push((c, dep));
+            }
+        }
+        self.decide(batch, deps, ids, reads);
         false
     }
 
@@ -1188,6 +1345,12 @@ impl<C: Command> Member<C> {
             d.chains.clear();
             d.deps.clear();
             d.ids.clear();
+            // A joiner with a chain then goes back to its lane at the decide, and is read again with a later batch.
+            d.join_ask = None;
+            d.join_deps.clear();
+            for j in &mut d.joiners {
+                j.read = None;
+            }
         }
     }
 
@@ -1301,12 +1464,14 @@ impl<C: Command> Member<C> {
     pub fn deps_read(&mut self, now: Timestamp, id: u64, deps: Vec<(ChainId, C::Dep)>) -> Ready<C, ()> {
         self.begin(now);
         let now = self.now;
-        if let Some(lead) = self.lead.as_mut()
+        if self.lead.as_ref().is_some_and(|l| l.deciding.iter().any(|d| d.join_ask == Some(id))) {
+            self.join_read(id, deps);
+        } else if let Some(lead) = self.lead.as_mut()
             && let Some(d) = lead.deciding.iter_mut().find(|d| d.id == Some(id))
         {
             d.id = None;
             d.ids.push(id);
-            d.deps.extend(deps);
+            d.deps.extend(deps.into_iter().map(|(c, dep)| (c, id, dep)));
             let ms = now.0.saturating_sub(d.asked.0) as f32;
             let ad = &mut lead.admission;
             ad.deps_ms = Some(ad.deps_ms.map_or(ms, |m| 0.9 * m + 0.1 * ms));
@@ -1317,8 +1482,15 @@ impl<C: Command> Member<C> {
 
     /// Each command's `decide` sees the fold at `applied` plus the earlier commands of the same entry. The entry is
     /// appended even if every command was refused. Runs only with no entry in flight, so `applied` is the log's end.
-    /// `ids` are the `DepsWanted` whose reads `deps` holds, reported as `DepsUsed` with the entry's index.
-    fn decide(&mut self, batch: Vec<Queued<C>>, deps: Vec<(ChainId, C::Dep)>, ids: SmallVec<[u64; 2]>) {
+    /// `ids` are the `DepsWanted` whose reads `deps` holds, and `reads` which one each chain's fold came from, reported
+    /// as `DepsUsed` with the entry's index.
+    fn decide(
+        &mut self,
+        batch: Vec<Queued<C>>,
+        deps: Vec<(ChainId, C::Dep)>,
+        ids: SmallVec<[u64; 2]>,
+        reads: SmallVec<[(ChainId, u64); 3]>,
+    ) {
         debug_assert!(self.lead.as_ref().is_some_and(|l| l.pending.is_none()), "one entry in flight");
         debug_assert_eq!(self.fold.applied(), self.last(), "decide on the fold at the log's end");
         let deps = &deps[..];
@@ -1368,7 +1540,7 @@ impl<C: Command> Member<C> {
         let index = e.index;
         self.push_entry(e);
         if !ids.is_empty() {
-            self.out.deps_used.push(DepsUsed { ids, index });
+            self.out.deps_used.push(DepsUsed { ids, index, reads });
         }
         self.lead.as_mut().expect("leading").pending = Some((index, decided));
         self.broadcast(false);
