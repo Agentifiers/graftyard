@@ -225,6 +225,52 @@ Where B0-32 stands on main `b8e555df`, line by line, and which open question own
 - G34 owns the shard catch-up stall: 1 merge push, 2 `merge:only` answers and 65 `full` pushes.
 - The cold-isolate merge push in warm-up has no owner; it fell before the burst.
 
+## Row m3fgb1: B0-32 on main `1a9209c3` (`garbled-body`) (2026-11-21, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** One site day and edge day from main `1a9209c3` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (00:58:23Z). The measures: `garbled-body`'s check (G35), and the row's verdict lines against m3fpc1. **The row ran on the old shard image `076a16ee`**, so the container's half of `garbled-body` (the 502 on a changed body) was not deployed, and its 0 `changed in transit` lines do not test G35. The next B0-32 row runs on image `6ee7a5ab` or later.
+
+**Committed raw files:** `tests/fanout/raw/rows-m3fgb1.status`, `{admit,terms,vmem}-m3fgb1-b0-32.jsonl`, `tsave-m3fgb1-b0-32.jsonl.xz`, `arrivals-m3fgb1.jsonl`, `shardgate-m3fgb1-b0-32-*.jsonl`, and `lm1-rows-m3f-data/m3fgb1-raw/` (the client's summary and its 26 merge pushes). `tests/fanout/grantgate.py` is A37's replay.
+
+- **Site day and edge day** m3fgb, 00:58:23Z to 01:12:01Z, both exit 0, one run (one-shot launcher). Sites a `a9258288`, b `22bda52f`, c `5bd9394d`; edge `45cfaa90` at 100%.
+- **Row:** repo 65605 (run `mwpptg8s`), 8 learners, k 4, leader site 0 term 2. The burst's first leader cut was at 01:18:50Z on the leader's clock. Start 01:14:39Z, done 01:21:08Z (exit 0). Harness outage 3 s (1.8%), valid.
+- **Spend:** $0.90 from 00:58:23Z to 01:23:13Z (graft-m3f prefix $0.65). SWEEP2 OK. 12 names retired, none joined; purge 0 objects, second pass 0; no shard running at 01:28:03Z.
+
+| Line | Measured | Verdict |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | **422 of 500**, all of them `full`: 0 `ok` within 5 s, 78 `ok` later (p50 7,159, p99 7,856 ms); m3fpc1 251 | Fail (450 needed) |
+| No other refusal shape | `full` only in the burst; 8 Human pushes `stale` outside it; 0 `bad update line`, no validate 422 | Pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | peak 133,857 B, 31 commands; `pressure` never true (526 samples) | Pass |
+| Every merge in one of the next 2 entries, none over 2 s | **4 of 26** merge pushes over 2 s, max 6,142 ms (m3fpc1 4,972). `merge:only` 20 × 200, 5 × 409, no 503; p50 990, p99 1,611 ms | Fail |
+| Zero leader changes | term 2, leader site 0 throughout | Pass |
+| Zero `suspect` | **18** pushes with a miss, each after an ask | Fail |
+
+**Where the 5 s went** [measured, `server-timing` and `x-graft-spread`]:
+- `full`: 308 at the bound, before any send (gate p50 4,157 ms, total p50 5,372), and 114 after a commit; m3fpc1 had 43 and 116.
+- Late `ok`: in all 78 the commit stage alone exceeds the overage. Committed twice: 46 of 78.
+- **The read gate is the new main loss.** `gate_rows` p50 4,210, p90 4,416, p99 4,852 ms for the 284 pushes that read it (216 hit the isolate's gate cache), against 972 / 2,881 / 3,840 on m3fpc1. The owner's `Authz` read is unchanged (p50 394 ms). The repository chain's spread read took p50 3,439 ms against 762 to 802 on m3fst1 and m3fpc1. 346 of its 500 reads needed three member tries (15 to 52 before), and 922 tries answered `overloaded` at about 1.1 to 1.2 s (519 learners, 403 followers); 99 had no answer within 2 s.
+- **Not `dep-hedge-other`.** No request on any of the repository group's 11 members carried `SentBy::Hedge` (step 6): its hedges go to the leader's dependencies, here the `Authz` groups.
+- **The cause is a 2,457 ms leader confirm (F106).** The leader's storage confirm of 219 statements and 107,808 B ran from T+2.75 to 5.21 s on its clock, with 24 ticker wakes and 283 requests inside it and loop lag 174 then 0 ms: `syncs.py` labels it `storage`. More followed, of 503, 1,093, 370, 400 and 492 ms; m3fpc1's worst was 1,033 ms. The leader cut no entry from T+2.50 to 5.87 s.
+- **Every member waited for the same grant (A35's mechanism).** Member read-index calls of 1 s or more: 390 of 1,018, all sent in T+3 to 9 s, against 135 of 1,195 on m3fpc1. The leader logged each `IndexTaken` and `ResSent` in the same millisecond, and the members were 0 entries behind. So each try answered `overloaded` at `FOLLOWER_WAIT`, and three tries make the chain's p50.
+- **Leader confirms of 500 ms or more in the burst's first 15 s:** 3 (2,457, 503, 1,093 ms), all `storage`. m3fpc1 had 2.
+- **Cut ends:** 98 burst cuts, 97 `Empty` and 1 `AgentCmds` (at T+1.96 s). The largest took 59,319 soft bytes, so `soft-grow` did not grow.
+
+**Staged first against isolates** [measured, `Trace::SentBy` step 4 on the leader]: 628 `/commit` sends from 77 edge isolates (m3fpc1: 979 from 230); 12 sent one `/commit` (67). 216 of 500 pushes hit the isolate's gate cache (m3fpc1 114), and 204 staged first (145). Of the cache hits, 193 staged first; of the pushes that read the gate, 11 did. So fewer cold isolates restored stage-first, which is A36's finding: the Stage rule did not change.
+
+**`garbled-body`:** 0 `bad update line` refusals; 0 `changed in transit` lines on sites a, b and c; no validate 422. The image was `076a16ee`, so the container's side was not deployed (above). Site a validates (first 2,000 events): pool 200 × 816, direct 200 × 1,136, pool 409 × 16, via 200 × 16, direct 503 × 16, every one carrying `headsum`. Site c answered `/catchup` 503 × 6.
+
+### A37: a read-index grant past the output gate (design note, $0)
+
+The operator reopened F106 on this row and asked whether a read-index grant can leave the leader while an unrelated log write is unconfirmed, without breaking the acknowledgment rule. The note is `decisions/OPEN-QUESTIONS.md`, A37. Its numbers come from `tests/fanout/grantgate.py` on this row's trace.
+
+- **Where a member's round trip to the leader went.** Calls sent T+2 to 9 s: 602, p50 843 ms, 245 of 1 s or more. On the members' own clocks the round trip by send second was p50 1,142, 1,977, 1,658 and 1,133 ms in seconds 2 to 5, against 186 ms in second 1. The leader's clock read up to 3.3 s behind its callers' (p50 3,265 ms in its second 2), which a clock held still while the isolate is not run explains [inference]. So each call's leader side is bounded from the callers' clocks: the time before the leader handled it is at least p50 260 / p90 801 ms, and the rest, the wire back plus anything that held the answer, is at most p50 595 / p90 1,094 ms.
+- **Replay.** A gate read starting each 5 ms in T+2.7 to 6.0 s, up to three tries, with the round trips of calls sent within 150 ms:
+  - as traced: p50 2,927 ms, 43% at 3 s or more;
+  - with the answer leaving 80 ms after the leader handled the call, for calls the leader took within 300 ms (conservative): p50 300, p90 1,499, 1%;
+  - with each call's leader side capped at the leader's own input stops (least gain): p50 541, p90 1,803, 0%.
+  - Over the pushes that read the gate, the same replay gives `gate_rows` p50 288 and p90 1,499 ms, against 4,210 and 4,416.
+  - m3fpc1, as traced: p50 592, 0% at 3 s.
+- **What the replay assumes.** It takes all of each call's after-handling time to be the output gate, which the trace cannot separate from the wire. It also does not model the input stop: the leader took no input from T+2.97 to 5.08 s inside the confirm. That stop would hold the grants whatever the gate does, and the least-gain replay is the one that keeps it. So the true gain lies between the two replays, and the input stop may take most of it [inference].
+
 ## Row m3fpc1: B0-32 on main `a3430143` (`catchup-pieces`, `soft-grow`, `chain-hold`, `command-rows`) (2026-11-20, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** One site day and edge day from main `a3430143` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (19:09:03Z). It is the first B0-32 row on `soft-grow`, `chain-hold`, `command-rows` and `catchup-pieces`.
