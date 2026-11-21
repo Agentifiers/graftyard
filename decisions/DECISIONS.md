@@ -7318,7 +7318,21 @@ arm A; `tests/am1/results/learner-cadence.md`, "The row") [measured]:
 
 ### `commit-hold`: the leader holds a `/commit` 1.5 s for its outcome, and the edge's receipt waits 2.5 s, 2026-11-21
 
-**Status.** Built on branch `r33-commit-hold` from main `e11285da`, code only, from the lead's ruling on
+**Status.** Reversed 2026-11-21: its flip fired on B0-33 chA (`tests/am1/results/combined-row.md`). `COMMIT_HOLD` is
+1 s again, and `COMMIT_RECEIPT`, still the hold plus `CALL_DEADLINE`, is 2 s; BF-14's `delay` fault holds 2.6 s;
+plant80 is removed with the revert. The rest of this entry is the record. Evidence [measured unless tagged]:
+- The leader's `/outcome` inputs per `/commit` were 0.596 (78.5 a second of 131.7), against sabA's 0.518 and the 0.33
+  line; its inputs were 314.0 a second against sabA's 314.2 and the 286 line (−9%). `/outcome_by_request` tripled,
+  12.6 → 37.6 a second, lcA2's amplification (OPEN-QUESTIONS A39).
+- No `ERR_HTTP2_STREAM_ERROR` (0); the second flip line did not fire.
+- Why the hold covered fewer `/commit`s [inference, `tests/fanout/holdmodel.py`]: the trace commit wait W lengthened,
+  p50 849 against 579 ms, and 26% of W passed 1.5 s against 7.7% on sabA, so more commands outlived the 1.5 s hold
+  than outlived 1 s on the trace the prediction used. The leader's answer also trailed W by about 861 ms at the 1.5 s
+  hold, against the 441 ms the model fitted on sabA. The row also ran `human-join` and had a slower leader (81 ticker
+  stalls ≥ 500 ms against 10), so it cannot say whether the hold caused that slowdown; one row against one row.
+- OPEN-QUESTIONS A40 stays open.
+
+Built on branch `r33-commit-hold` from main `e11285da`, code only, from the lead's ruling on
 `tests/am1/results/b033-rebase.md`, item 2. Not measured hosted. It rides one combined B0-33 row on graft-m2b with late
 join, once B0-02's late-join branch merges, so that row cannot attribute the leader-input change to the hold alone; the
 row's leader inputs by route can.

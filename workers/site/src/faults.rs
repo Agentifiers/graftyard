@@ -71,7 +71,7 @@ impl Receipt {
     }
 }
 
-/// How long a `delay` holds the reply: 600 ms past the edge's COMMIT_RECEIPT (2.5 s).
+/// How long a `delay` holds the reply: 600 ms past the edge's COMMIT_RECEIPT (2 s).
 pub const RECEIPT_DELAY_MS: u64 = graftyard_lookup::COMMIT_RECEIPT.as_millis() as u64 + 600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
