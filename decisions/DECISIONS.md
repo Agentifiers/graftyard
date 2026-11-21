@@ -7237,3 +7237,72 @@ arrived, past one retry: then `resume` is not reached on that path.
 - A row where the colo `match` p99 eats the read it saves: `match` p99 at or above the gate's member-read p50 on hits, or j9 hit p99 not better than the same build with the colo share off.
 - Any served decision whose stamp is older than `READ_CACHE` at the time it was served, in a test or in a row's logs: the stamp rule is broken, so turn the share off until it is fixed.
 - A clone cut mid-answer by a pack whose header came from a set: the head etag no longer covers the files, so check every pack as before.
+
+### `learner-cadence`: a learner sends read-index batches at most every 200 ms, and its append replies ride them, 2026-11-21
+
+**Status.** Reversed 2026-11-21: its flip fired on lcA2. Built on branch `r33-learner-cadence` from main `059378d2`
+and merged as main `c6e123eb`; reverted by `git revert -m 1 c6e123eb` on branch `r33-cadence-revert`, both halves:
+`LEARNER_READ_EVERY` is 50 ms again, and a learner's append replies leave as calls of their own again. The ack riding
+was built around the 200 ms hold (`Acks::new` took `LEARNER_READ_EVERY`); at 50 ms it would be a change no row measured,
+so main returns to the code arm A ran. Ack riding may come back as its own change with its own row. The entry below is
+kept as the record of what was built and why.
+
+**Reversal evidence** (B0-33 lcA2 on graft-m2b, site day from `c6e123eb`, m64 shape with four learners, against `sync-ab`
+arm A; `tests/am1/results/learner-cadence.md`, "The row") [measured]:
+- Learner calls to the leader 15.6 a second, under the flip's 30, against 56.1.
+- Leader confirm p90 612 and 799 ms in the load window's two leaderships of site 0 at term 2, against 379: not under
+  300 ms. Ticker stalls of 500 ms or more 69 against 10.
+- `queue:slot` p99 28.6 s against 5.8 s; human commit stage p99 29.3 s against 3.6 s; merge 11.2 s against 2.7 s.
+- Edge 503s 9,948 against the 1,050 guard (2 × arm A's 525), all "every member asked shed the read: overloaded".
+- Learner read wait, queue before the batch leaves plus its call, p50 902 and p99 4,011 ms against 365 and 1,568
+  (`readwait.py`, on the results branch `r33-cadence-row`).
+- The leader's inputs did not fall (261 to 373 a second against 314): its `/outcome_by_request` rose from 12.6 to 40 to
+  93 a second. Why is an open question, A39 [inference there]; one row against one row.
+
+**Status when built.** Built on branch `r33-learner-cadence` from main `059378d2`, from the lead's ruling on
+`tests/am1/results/learner-cadence.md`. It changes `crates/raft/src` (`LEARNER_READ_EVERY`) and the site's call path
+(`workers/site/src/callers.rs`, `Acks`; `Host::send`, `call_many`), so it ships on a site day.
+
+**Decision.**
+- `LEARNER_READ_EVERY` goes from 50 to 200 ms: a learner sends at most five read-index batches a second. Followers
+  stay at `FOLLOWER_READ_EVERY` (10 ms). `READ_PIPELINE` (8), `QUIET` (1 s), `HEDGE` and the learner count stay.
+- A learner holds each AppendEntries reply to the member that sent it (`Acks`). Its next read-index call to that
+  member carries the held replies ahead of the `ReadIndex` in one body, which the callee steps in order
+  (`raft_steps`). A reply held for the floor with no such call leaves alone from the 100 ms ticker. The call is timed,
+  traced, hedged and judged as its `ReadIndex`.
+- Read-index linearizability is unchanged: a read is granted only at an index the leader confirmed after its batch
+  arrived, and an answer grants its own batch and earlier ones, never a later one (`read-newest`).
+
+**Why.**
+- Arm C of `sync-ab`, which removed the learners, took the leader's confirm p90 from 379 to 136 ms, and learner
+  `/raft` was 87% of the log-fall. B0-02 found learner `/raft` 40.7% of B0-32's logged leader CPU at 1.95 ms a call,
+  against 2 to 3 µs of modelled logic, so the cost is per call, not per byte.
+- At 50 ms the four learners made 56.1 calls a second: 47.5 read-index batches (the floor binds at 32 to 63 reads a
+  second each), about 5.7 append replies, 2.9 hedges and the rest re-sends [measured, arm A's learner rows].
+- Keeping the learners keeps the followers at arm A's 1 to 2 open requests, not C's and B's 37 to 54, and A's 525 edge
+  503s, not C's 5,434.
+
+**Beat.**
+- **Dropping the learners** (arm C). Lighter leader, but the tier reads fell on two followers and the edge 503s rose
+  tenfold.
+- **Outcome polling off the leader.** The smaller lever (136 → 101 ms), with a client-visible cost (`sync-ab`).
+- **Leader-side batching of learner appends.** They already ride the learners' calls (held → taken p50 0 ms).
+
+**Evidence.**
+- `tests/am1/results/learner-cadence.md`, section 1; `tests/am1/results/sync-ab.md`.
+- `crates/raft/tests/scenarios.rs`, `a_learners_reads_within_the_floor_leave_as_one_batch_and_stay_linearizable`:
+  two reads 50 and 150 ms after a batch leave as one at the floor, and the earlier answer, sent before a write was
+  acknowledged, grants neither.
+- `workers/site/src/callers.rs`, `a_learners_append_replies_ride_its_next_read_call_to_their_leader`.
+- plant76 (`tests/m0carried`, removed with the revert): main's 50 ms floor, a follower's floor, an answer granting queued reads, replies sent
+  at once, a read call carrying none or another member's, replies leaving before the floor, and the read ahead of its
+  replies.
+- Prediction for an m64-shaped B0-33 row [inference]: learner calls to the leader about 20 to 25 a second (20
+  read-index batches, hedges and re-sends scaled with them; the 5.7 append replies ride the read calls, and the 2.4
+  others, hedges and resends of the newest batch, stay as they are); leader inputs about 280 a second; confirm p90 200
+  to 260 ms.
+
+**Flip.**
+- A row where the leader's confirm p90 does not fall under 300 ms, or where learner calls to the leader do not fall
+  under 30 a second: the floor is not what drives the learners' calls, or their count does not set the confirm wall.
+- If confirm p90 falls and the round p50 does not, the round is the followers', not the leader's lateness.
