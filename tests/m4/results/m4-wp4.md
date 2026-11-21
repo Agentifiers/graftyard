@@ -1169,6 +1169,59 @@ So each comment cost rows in proportion to the comments before it, and a row's t
 
 **Built: `round-memo`** (`decisions/DECISIONS.md`). A round reads each thread's readers and each document once for its whole batch, from the tier as it stands now, which is what every entry already read. Proposed confirm: the next graft-m4a site day from merged main, then `reretire.sh`, then a B0-31 row, under the $10 stop. What it leaves: each round still reads the busy issue's comments about three times, once per consumer read, so a round's rows still grow with the issue. m66r31's leader wrote to the search shard 12 to 19 times a minute, which is about one round every 4 s. At that rate, with about 2,100 comments at the row's end, the rule reads about 15 × 3 × 2,100 ≈ 95k rows a minute, against 2.0M. If rounds speed up to 40 a minute once they stop reading, it is about 250k [inference]. Its flip line: the leader's rows read per minute stay under 300k in the row's last minute, against 2.0M on m66r31.
 
+## B0-31 on graft-m4a after test-faults site day 67 (2026-11-21, row m67r31)
+
+Site day 67 (07:20:07Z to 07:21:01Z, exit 0, `tests/m4/raw/wp4/siteday67.log`) shipped main `b67d6d22` (`round-memo`) to all three sites as a test-faults build, with day 66's flags and image `m4a60`. There was no edge day: the edge has stayed test-faults since edge day 29. The row ran under the standing row queue (`FRAME.md`, "Operator decision, 2026-11-21, a standing row queue"), with a $10 stop on graft-m4a plus the runner account from 07:20:07Z, watched by `b035watch.sh` with `STOP=10` (`b031-m67r31.watch`). Right after the site day, `bash tests/fanout/reretire.sh tests/fanout/reretire/graft-m4a.txt` printed **RERETIRE OK graft-m4a**: all 35 networks answered not joined, with the retired row (`tests/fanout/raw/reretire-graft-m4a.log`).
+
+`tests/m4/wp4/b031.sh` at `b67d6d22` created `m3org/b031-m67r31` = repo 65583 and rehomed it on apac (terms 2 → 3, f2 leading, `home` 2). It placed 8 learners, set k 4, and ran `a1.mjs b0-31 --seconds 600` as run `mwq34twn`. Load ran 07:30:23.9Z to 07:40:23.9Z on the driver's clock; Cloudflare's clock was 16,523 ms ahead. From 07:35:24Z, 1,247 of 1,247 agent pushes answered `full`. Done line 07:41:09Z, exit 0. Raw files are in `tests/m4/raw/wp4/b031-m67r31/`, and the trace is `tests/fanout/raw/tsave-m67r31-b0-31.jsonl.xz`.
+
+**Verdict (lead, 2026-11-21): valid. B0-31 meets the rehomed group's 2 s bound in both halves**, buckets up at 1,595 ms and placement failing at 1,115 ms, with 0 leader changes. The 1 s line is not met and stays as a long-tail gap under the 90% rule (`decisions/OPEN-QUESTIONS.md`, F110). This re-confirms m3fr16's pass on current main, after the m64r31 to m66r31 rows that missed it; `round-memo` is the fix.
+
+| Line | m67r31 | m66r31 | Line (fail) |
+| --- | --- | --- | --- |
+| Commit p99, buckets up (leader f2 on apac) | **1,595 ms** (p50 613, n 5,788, max 3,851) | 1,408 | 1 s; 2 s for a rehomed group; fail 3 s |
+| Commit p99, placement failing | **1,115 ms** (p50 590, n 4,571) | 2,396 | 1 s; 2 s rehomed; fail 3 s |
+| Split, up half | queue p99 1,271 (slot 1,088, post 228); round p99 460; confirm p99 134; deps:all p99 747 | queue 1,174; round 539 | |
+| Split, failing half | queue p99 864 (slot 764, post 225); round p99 420; confirm p99 120; deps:all p99 493 | queue 1,949 (slot 1,946, post 620); round 976 | |
+| Leader rows read per minute (f2, `rows-by-minute.txt`) | 142k at 07:31, 306k to 403k from 07:33 to 07:39 (last full minute 395k) | 207k → 2.09M | `round-memo`'s flip, below |
+| Leader CPU-s per minute | 10.3 at 07:31, 10.0 to 11.3 throughout, 10.6 at 07:39 | 10.3 → 22.7 | |
+| Followers f0, f1 | 39k to 104k rows, 2.3 to 5.2 CPU-s a minute | 30k to 100k, 1.3 to 3 | |
+| Search writes from the leader (Workers Logs, `search-writes.txt`) | 20 to 26 a minute | 12 to 19 | |
+| Install `Authz` against the owner's read issued beside it (`install-record`'s flip) | up: `authz:1` p50 191 / p99 666 against 188 / 396, same-entry difference p50 **0**, p99 +245; failing: 190 / 486 against 190 / 412, difference p50 0, p99 +187; `depFails` empty. **Not tripped** | +2 at p50 | p50 more than 100 ms above the owner's |
+| Dep reads p99, up / failing (f2's `/deps_log`) | `tokens` 405 / 382; `names` 396 / 396; owner `authz` 396 / 412; `authz:1` 666 / 486 | `tokens` 676 / 918 | |
+| Hedges (same-leader, `depHedges`) | won 32 of 485 | 49 of 423 | |
+| Leader changes in the load | **0** (f2, term 3 throughout) | 0 | |
+| Leader's failed calls | 1, `deadline`, to f1 | 19 | |
+| `suspect` | false; leader clock `lagMax` 216 ms | 212 reports at 02:21:17 | |
+| Leader wasm memory (`vmem`) | 5.9 MB before the driver's reset, 12.2 after it, 26.3 MB in load, 38.7 MB after the peers read ("What holds the leader's wasm memory") | 12 → 31 MB | F111 |
+| Merges | 40 and 43 × 200 by half; 9 and 3 × 409 | 32 and 31 × 200 | |
+| Spend | 07:20:07Z to 07:45:37Z: graft-m4a $1.84 by prefix, runner account $0.00, against the $10 stop; graft-m4a $6.21 for the UTC day against $40 | $1.82 | |
+| Teardown | `git#2#net:65583` and `git#0#net:65583` 200; no shard container running; sweep ok (07:42:41Z); 0 Sandboxes | | |
+
+**`round-memo` worked, and its flip is restated.** The leader's rows read per minute stop climbing after the third minute, and its CPU per minute stays flat, against a tenfold climb on m66r31. The flip as first written, under 300k in the last minute, reads 395k here. That line came from a wrong rate: it took 12 to 19 rounds a minute from m66r31, and with reads cut this row ran 20 to 26. Each round still reads the busy issue's comments about three times, so 23 rounds × 3 × about 2,000 comments is about 140k rows a minute for the busy issue alone. So the line did not trip on a different cause, and the lead restated the flip in the slope form (`decisions/DECISIONS.md`, "`round-memo`").
+
+**The placement-failing half's tail is gone with the slope.** Its queue p99 fell from 1,949 to 864 ms and its round p99 from 976 to 420 ms. That fits m66r31's tail being row age, not placement, and the halves-swapped control is not needed [inference: the halves were not swapped].
+
+### What holds the leader's wasm memory (analysis, $0)
+
+`wasmMemMb` is the isolate's linear memory, `memory_size` × 64 KiB (`workers/site/src/load.rs`). Linear memory only grows, so the series is a high-water mark, not the live heap. vmem's `at` is on the driver's clock, 16,523 ms behind Cloudflare's. Below, each step is matched to the leader's Workers Logs events (`b59b9550…`) on Cloudflare's clock.
+
+**The two largest steps are the driver's raw `/stats` reads, not the load** [measured].
+- **+6.3 MB, 5.9 → 12.2 MB**, between vmem samples 07:30:19 and 07:30:21 (07:30:35.5 to 07:30:37.5 Cloudflare). The leader served `/stats?reset=1` at 07:30:36.725, 14 ms CPU. That is `a1.mjs`'s reset at load start (`tests/am1/rest/a1.mjs`, `member(CHAIN, leader, "/stats?reset=1")`). Without `summary=1`, `stats` serializes every sample array, `calls`, `peers` and the trace (up to `TRACE_MAX`, 60,000 rows of six numbers) into one `serde_json::Value` and a string before it resets (`workers/site/src/member.rs`, `stats`).
+- **+12.4 MB, 26.3 → 38.7 MB, after the load**, between samples 07:41:04 and 07:41:06 (07:41:20.5 to 07:41:22.5). The leader served a raw `/stats` at 07:41:22.227, 30 ms CPU and 634 ms wall. That is `a1.mjs`'s "leader peers" read after the window, which asks for the whole `/stats` to get `peers`. By then the trace was full, so the transient was twice the first.
+- Nothing else ran on the leader in either window but `/status`, `/stats?summary=1` polls, alarms and a few `/raft` and `/read` calls of 0 to 3 ms CPU.
+- m66r31 has the same two steps: 5.8 → 12.1 MB with its raw `/stats?reset=1` at 02:12:38.3, and 31.5 → 38.0 MB with its raw `/stats` at 02:23:35.4 (Cloudflare's clock, 15,821 ms ahead of vmem's).
+
+**In load, memory follows the in-memory log** [measured]. From 12.2 MB it rose in 2.16 MB steps as `logBytes` rose: 14.4 MB at 1.26 MB of log, 17.6 at 2.54, 19.8 at 3.87, 22.0 at 4.47, 24.1 at 6.10 and 26.3 at 7.11. That is about 2 MB of memory per MB of encoded log. It stopped growing at 07:37:19, when the log peaked at 7.1 to 7.8 MB, just under `LOG_BYTES` (8 MB). It stayed at 26.3 MB through compaction at 07:38:03 (7.77 → 4.45 MB) and to the end of the load. That fits decoded entries costing about twice their encoded length, with `push_entry`'s `Write::Append` clone per entry until it is flushed, and the bounded stats samples and trace filling beside it [inference].
+
+**Ruled out.**
+- **A leak after the load.** The only step after the load is the peers read, and memory is flat for the 50 s of samples after it.
+- **The search consumer's batches.** Before `round-memo` they grew with the issue (m66r31), but m67r31 grew the same 5.9 → 26.3 MB with the rows-read slope gone. A batch's `Doc.comments` holds about 2,000 two-byte comment bodies, a few KB.
+- **A per-thread document cache.** None exists. `activity.rs` keeps only `RECORDS` and `OWNERS`, one entry per account and repository, and `round-memo`'s thread reads live for one call.
+- **The caches.** The narrow cache stayed at 37 to 38 KB and the dump cache at 266 bytes. `held`, admitted bytes and statements stayed under 33 KB.
+
+**No fix built.** Every MB is accounted for, and the high-water is under a third of the isolate's 128 MB. The cheap change, if the lead wants it, is in the driver, not the member: send `a1.mjs`'s reset as `/stats?summary=1&reset=1`, and have the peers read ask for `peers` only. That would take about 18 MB off every row's leader high-water. It changes no product code.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
