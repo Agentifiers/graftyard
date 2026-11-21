@@ -1,0 +1,11 @@
+per entry authz:1 - owner authz: n 799 p10 198 p50 277 p90 470 p99 724
+entry other-reads max: p50 269 p99 719 ; deps:all now p50 563 p99 1123
+as measured             slot p50/p99, queue p99, wall s, gap ms cut: (175, 655, 795, 279.7, 0)
+record kept: = owner read (155, 467, 473, 247.5, 32257)
+record kept: minus p50 hop 277 (159, 546, 624, 250.6, 29183)
+authz:1 gone (bound)     (155, 467, 473, 247.5, 32257)
+slotdeps model, first order: slot p50/p99, queue p50/p99
+  as measured               (766, 1422, 805, 1620)
+  record kept, -p50 hop 277 (657, 1294, 695, 1476)
+  record kept, = owner read (649, 1246, 689, 1287)
+  authz:1 gone (bound)      (649, 1246, 689, 1287)
