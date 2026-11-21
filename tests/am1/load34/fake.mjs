@@ -66,7 +66,7 @@ export class FakeEdge extends DurableObject {
         e.want = text.match(/want ([0-9a-f]{40})/)?.[1];
         e.deepen = text.includes("deepen 1");
         const miss = e.want?.endsWith("0");
-        return new Response(new Uint8Array(4096), { headers: { "x-graft-clone-cache": miss ? "miss" : "hit", ...(miss ? { "x-graft-compose": "composed" } : {}), "server-timing": `front;dur=4, ${miss ? "" : "chain_open;dur=6, "}total;dur=11` } });
+        return new Response(new Uint8Array(4096), { headers: { "x-graft-clone-cache": miss ? "miss" : "hit", ...(miss ? { "x-graft-compose": "composed" } : {}), "server-timing": `front;dur=4, gate;dur=5, ${miss ? "" : "chain_open;dur=6, "}total;dur=11` } });
       }
       if (url.pathname.startsWith("/api/")) return Response.json(url.pathname.endsWith("/leases") ? { lease: { id: `L${e.at}${Math.random()}` } } : { data: { addComment: {}, createPullRequest: { pullRequest: { id: "p", number: 1 } } } }, { status: url.pathname.endsWith("/leases") ? 201 : 200, headers: { "server-timing": "auth;dur=3, total;dur=5" } });
       return new Response("not found", { status: 404 });
