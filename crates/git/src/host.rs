@@ -336,30 +336,78 @@ pub async fn cached_response(b: &R2, key: &str, headers: Headers) -> Result<Opti
 }
 
 /// The composed answer a manifest and tail describe (`crate::compose::Manifest`), streamed from the chain's packs in
-/// the first of `buckets` that holds every one, every one checked first (`open_chain`, `composed_answer`): the edge's
-/// answer to a composed miss and to a manifest hit under `edge-compose`. `buckets` are the network's chain buckets,
-/// home first (`crate::chain_buckets`). `Declined`, and nothing sent, when the bytes are not a manifest of this
-/// network, the tail's length is not the manifest's, or no bucket holds every chain pack as the manifest counted it;
-/// `Late` when the checks did not end within `CHAIN_CHECK_WITHIN` (`decisions/DECISIONS.md`, "`chain-hold`" and
-/// "`chain-warm`").
+/// the first of `buckets` that holds every one, every one checked first (`manifest_check`, `composed_answer`): the
+/// edge's answer to a composed miss. `body` is the manifest answer's stream and `total` its length.
 pub async fn manifest_answer(
     buckets: &[&R2],
     network: NetworkId,
-    bytes: Vec<u8>,
+    body: worker::web_sys::ReadableStream,
+    total: u64,
     headers: Headers,
 ) -> Result<crate::compose::ChainCheck<Response>, StoreError> {
-    use crate::compose::{ChainCheck, Manifest, ManifestLine};
-    let ManifestLine::Read(m, at) = Manifest::read(&bytes, network) else { return Ok(ChainCheck::Declined) };
-    if (bytes.len() - at) as u64 != m.tail || m.count().is_none() {
+    use crate::compose::ChainCheck;
+    Ok(match manifest_check(buckets, network, body, total).await? {
+        ChainCheck::Checked(a) => ChainCheck::Checked(composed_answer(a, headers)?),
+        ChainCheck::Declined => ChainCheck::Declined,
+        ChainCheck::Late => ChainCheck::Late,
+    })
+}
+
+/// A manifest answer whose chain packs `open_chain` checked, ready for `composed_answer`: the manifest, the bucket and
+/// packs to stream, and the tail still unread in `body` after `first`, the rest of the chunk the line ended in.
+pub struct ChainAnswer {
+    bucket: worker::Bucket,
+    m: crate::compose::Manifest,
+    packs: Vec<CheckedPack>,
+    first: js_sys::Uint8Array,
+    body: wasm_streams::readable::IntoStream<'static>,
+}
+
+/// Reads a manifest answer's line from `body` (a manifest clone-cache entry, or a shard's `compose=only&tail=1`
+/// answer, of `total` bytes) and checks its chain packs (`open_chain`). Only the line enters wasm memory, at most
+/// `MANIFEST_MAX` bytes (`crate::compose::LineSplit`); the tail stays in `body` and streams on in `composed_answer`.
+/// Read whole and copied once more, as main did, a tail held twice its size in the isolate: 16.8 MB for an 8 MiB tail
+/// in the edgebed (`decisions/DECISIONS.md`, "`hit-gate`"). `Declined`, and nothing sent, when the line is not a manifest
+/// of this network, the tail's length is not the manifest's, or no bucket holds every chain pack as the manifest
+/// counted it; `Late` when the checks did not end within `CHAIN_CHECK_WITHIN` (`decisions/DECISIONS.md`,
+/// "`chain-hold`" and "`chain-warm`").
+pub async fn manifest_check(
+    buckets: &[&R2],
+    network: NetworkId,
+    body: worker::web_sys::ReadableStream,
+    total: u64,
+) -> Result<crate::compose::ChainCheck<ChainAnswer>, StoreError> {
+    use crate::compose::{CHAIN_STALL, ChainCheck, LineSplit, LineStep, Manifest, ManifestLine, within};
+    use wasm_bindgen::JsCast;
+    let mut body = wasm_streams::ReadableStream::from_raw(body).into_stream();
+    let mut split = LineSplit::default();
+    let (line, first) = loop {
+        let next = futures_util::StreamExt::next(&mut body);
+        let v: js_sys::Uint8Array = match within(CHAIN_STALL, next, worker::Delay::from).await {
+            None => return Err(StoreError(format!("manifest: no read in {} s", CHAIN_STALL.as_secs()))),
+            Some(None) => return Ok(ChainCheck::Declined),
+            Some(Some(c)) => c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into(),
+        };
+        // Only the chunk's bytes up to its first newline enter wasm, and never more than `MANIFEST_MAX` of them.
+        let nl = v.index_of(b'\n', 0);
+        let end = if nl >= 0 { nl as u32 + 1 } else { v.length() };
+        match split.push(&v.subarray(0, end.min(crate::compose::MANIFEST_MAX as u32)).to_vec()) {
+            LineStep::More => {}
+            LineStep::TooLong => return Ok(ChainCheck::Declined),
+            LineStep::Line(line, at) => break (line, v.subarray(at as u32, v.length())),
+        }
+    };
+    let ManifestLine::Read(m, _) = Manifest::read(&line, network) else { return Ok(ChainCheck::Declined) };
+    if total.checked_sub(line.len() as u64) != Some(m.tail) || m.count().is_none() {
         return Ok(ChainCheck::Declined);
     }
-    let (bucket, packs) = match open_chain(buckets, &m).await? {
-        ChainCheck::Checked(p) => p,
-        ChainCheck::Declined => return Ok(ChainCheck::Declined),
-        ChainCheck::Late => return Ok(ChainCheck::Late),
-    };
-    let tail = bytes[at..].to_vec();
-    composed_answer(bucket, m, packs, tail, headers).map(ChainCheck::Checked)
+    Ok(match open_chain(buckets, &m).await? {
+        ChainCheck::Checked((bucket, packs)) => {
+            ChainCheck::Checked(ChainAnswer { bucket: bucket.0.clone(), m, packs, first, body })
+        }
+        ChainCheck::Declined => ChainCheck::Declined,
+        ChainCheck::Late => ChainCheck::Late,
+    })
 }
 
 /// One chain pack of a manifest, checked in its bucket: its key, the R2 etag its check read, and its body's length
@@ -404,28 +452,23 @@ async fn check_pack(bucket: &R2, key: &str, n: u32) -> Result<Option<CheckedPack
     Ok(Some(CheckedPack { key: key.to_owned(), etag: o.etag(), body: o.size() - 32 }))
 }
 
-/// The composed answer a manifest describes, from the chain packs `open_chain` checked (`decisions/DECISIONS.md`,
-/// `edge-compose`): the prefix, the pack header's packet, each pack's body, then `tail`, framed in side-band packets
+/// The composed answer a manifest describes, from the chain packs `manifest_check` checked (`decisions/DECISIONS.md`,
+/// `edge-compose`): the prefix, the pack header's packet, each pack's body, then the tail, framed in side-band packets
 /// (`crate::compose::Framer`) and closed by the SHA-1 trailer of the pack and a flush, the same bytes as the
 /// container's composed answer. The body goes through a `FixedLengthStream` of `answer_len`, so a read that fails
 /// midway ends the answer short and the client's index-pack refuses it, never a pack that looks whole. Each pack's body
 /// is one ranged `get` opened only when the pack before it has been sent and let go (`crate::compose::stream_in_turn`),
 /// on the etag its check read, so a pack replaced since ends the answer short; a `get` or chunk that waits past
-/// `CHAIN_STALL` does too. R2's chunks stay JavaScript values written as views: the isolate holds one chunk and the
-/// tail, never the pack.
-pub fn composed_answer(
-    bucket: &R2,
-    m: crate::compose::Manifest,
-    packs: Vec<CheckedPack>,
-    tail: Vec<u8>,
-    headers: Headers,
-) -> Result<Response, StoreError> {
+/// `CHAIN_STALL` does too. The tail streams last from the manifest answer's own body, counted against the manifest's
+/// length, under the same `CHAIN_STALL`. R2's chunks and the tail's stay JavaScript values written as views: the
+/// isolate holds one chunk, never a pack or the tail.
+pub fn composed_answer(a: ChainAnswer, headers: Headers) -> Result<Response, StoreError> {
     use crate::compose::{CHAIN_STALL, Framer, Piece, answer_len, header_packet, within};
     use wasm_bindgen::JsCast;
-    let bucket = bucket.0.clone();
+    let ChainAnswer { bucket, m, packs, first, body: mut tail } = a;
     let count = m.count().ok_or_else(|| StoreError("manifest count past u32".into()))?;
     let prefix = m.prefix();
-    let pack = 12 + packs.iter().map(|p| p.body).sum::<u64>() + tail.len() as u64 + 20;
+    let pack = 12 + packs.iter().map(|p| p.body).sum::<u64>() + m.tail + 20;
     let len = answer_len(prefix.len() as u64, pack);
     let fixed = worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len))
         .map_err(|e| err(worker::Error::from(e)))?;
@@ -491,7 +534,25 @@ pub fn composed_answer(
                 Ok(())
             };
             crate::compose::stream_in_turn(packs, open, each).await?;
-            send(&mut framer, js_sys::Uint8Array::from(tail.as_slice())).await?;
+            // The tail: the rest of the line's chunk, then the body's chunks, exactly the manifest's length.
+            let mut got = u64::from(first.length());
+            if got > m.tail {
+                return Err(StoreError("the tail is longer than the manifest's".into()));
+            }
+            send(&mut framer, first).await?;
+            while got < m.tail {
+                let next = futures_util::StreamExt::next(&mut tail);
+                let v: js_sys::Uint8Array = match within(CHAIN_STALL, next, worker::Delay::from).await {
+                    None => return Err(stalled("the tail")),
+                    Some(Some(c)) => c.map_err(|e| err(worker::Error::from(e)))?.unchecked_into(),
+                    Some(None) => return Err(StoreError(format!("the tail: {} bytes short", m.tail - got))),
+                };
+                got += u64::from(v.length());
+                if got > m.tail {
+                    return Err(StoreError("the tail is longer than the manifest's".into()));
+                }
+                send(&mut framer, v).await?;
+            }
             js(Ok(hasher.close())).await?;
             let sum = digest.digest().await.map_err(err)?;
             frame(&mut framer, &sum).await?;

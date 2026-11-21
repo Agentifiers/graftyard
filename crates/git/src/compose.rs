@@ -327,6 +327,75 @@ where
     }
 }
 
+/// `gate` and `lookup` run at once, and `lookup`'s value is kept only when `allows` holds of the gate's answer
+/// (`decisions/DECISIONS.md`, "`hit-gate`"): the edge checks a clone-cache hit's manifest while its read gate reads the
+/// repository's access rows, and sends nothing before the gate allows. A gate that refuses first drops the lookup
+/// unfinished; one that refuses after it drops its value. On B0-34 mt11 a manifest hit ran the two one after the other,
+/// and the gate's cold read (front p99 1,078 ms in j9) and the manifest's own read and chain checks summed into hits
+/// over 1 s [measured, `tests/am1/results/b034-mt11.md`, "Hits over 1 s, by stage"].
+pub async fn beside_gate<G, L>(
+    gate: G,
+    lookup: L,
+    allows: impl FnOnce(&G::Output) -> bool,
+) -> (G::Output, Option<L::Output>)
+where
+    G: std::future::Future,
+    L: std::future::Future,
+{
+    use futures_util::future::{Either, select};
+    match select(std::pin::pin!(gate), std::pin::pin!(lookup)).await {
+        Either::Left((g, l)) => {
+            if allows(&g) {
+                let v = l.await;
+                (g, Some(v))
+            } else {
+                (g, None)
+            }
+        }
+        Either::Right((v, g)) => {
+            let g = g.await;
+            let ok = allows(&g);
+            (g, ok.then_some(v))
+        }
+    }
+}
+
+/// The manifest line at the start of an answer read in chunks: the bytes before the first newline are held, at most
+/// `MANIFEST_MAX` of them, and nothing after it, so the tail streams on from the chunk the line ended in.
+#[derive(Debug, Default)]
+pub struct LineSplit {
+    held: Vec<u8>,
+}
+
+/// What one chunk did to a `LineSplit`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LineStep {
+    /// No newline yet: read the next chunk.
+    More,
+    /// The line, its newline included, and where the tail starts in the chunk just pushed.
+    Line(Vec<u8>, usize),
+    /// No newline within `MANIFEST_MAX`: not a manifest answer.
+    TooLong,
+}
+
+impl LineSplit {
+    pub fn push(&mut self, chunk: &[u8]) -> LineStep {
+        match chunk.iter().position(|b| *b == b'\n') {
+            Some(i) if self.held.len() + i < MANIFEST_MAX => {
+                let mut line = std::mem::take(&mut self.held);
+                line.extend_from_slice(&chunk[..=i]);
+                LineStep::Line(line, i + 1)
+            }
+            Some(_) => LineStep::TooLong,
+            None if self.held.len() + chunk.len() >= MANIFEST_MAX => LineStep::TooLong,
+            None => {
+                self.held.extend_from_slice(chunk);
+                LineStep::More
+            }
+        }
+    }
+}
+
 /// Stock upload-packs one shard container runs at once [guess], as the container's `stockMax`: linux's took 2.6 GB of
 /// RSS each, and m1b34's monorepo container ran 15 to 21 of them in 12 GiB, holding the network's lock shared 20 to
 /// 99 s each, while catch-ups and every validate queued behind them (`tests/am1/results/b034-attr.md`). The next B0-34

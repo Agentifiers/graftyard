@@ -5,7 +5,8 @@
 # must take it with the wanted commit's tree. At three stages: a base alone, two parts and a want past the chain, and
 # after a fold. Then the declines: a chain pack missing, a chain pack whose count is not the manifest's, another
 # network's manifest. The chain carries a 3 MiB random blob, so each answer spans about 50 side-band packets and R2
-# reads each base in several chunks. Exits 1 on any mismatch. KEEP=1 keeps the temp dir and prints its path.
+# reads each base in several chunks. Exits 1 on any mismatch. KEEP=1 keeps the temp dir and prints its path. PEAK=1 also measures the
+# most bytes one answer holds at once (`/peak`) for tails of 1 to 8 MiB, and fails past 1 MiB.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../../.." && pwd)
 P=${P:-8797}; W=$root/tests/m0/node_modules/.bin/wrangler
@@ -66,6 +67,26 @@ put "$pk" "$B/bad.pack"
 declined "a chain pack whose count is not the manifest's ($ms)" 7 "m/$ms"
 curl -sf "$u/delete?key=$pk" >/dev/null
 declined "a chain pack missing ($ms)" 7 "m/$ms"
+# hit-gate: the most bytes one answer held at once, for tails of 1, 4 and 8 MiB and four slow 8 MiB answers together.
+# Main read a tail whole and copied it, 16.8 MB for an 8 MiB tail; streamed, a few KB (decisions/DECISIONS.md, `hit-gate`).
+if [ -n "${PEAK:-}" ]; then
+  put "$pk" "$part"   # the declines above broke and then deleted this chain pack
+  for mb in 1 4 8; do
+    python3 - "$D/manifest-parts" "$B/big-$mb" "$mb" <<'PY'
+import sys, json, os
+b = open(sys.argv[1], 'rb').read(); m = json.loads(b[:b.index(b'\n')]); n = int(sys.argv[3]) << 20
+m['tail'] = n; open(sys.argv[2], 'wb').write(json.dumps(m, separators=(',', ':')).encode() + b'\n' + os.urandom(n))
+PY
+    put "m/big$mb" "$B/big-$mb"; curl -s "$u/peak" >/dev/null
+    c=$(curl -s -o /dev/null -w '%{http_code}' "$u/composed?net=7&key=m/big$mb")
+    peak=$(curl -s "$u/peak" | cut -d' ' -f1); echo "tail ${mb} MiB: $c, peak held bytes $peak"
+    [ "$c" = 200 ] && [ "$peak" -lt $((1 << 20)) ] || { echo "tail ${mb} MiB: FAIL, held $peak bytes at once"; ok=0; }
+  done
+  slow=(); for i in 1 2 3 4; do curl -s -o /dev/null --limit-rate 2M "$u/composed?net=7&key=m/big8" & slow+=($!); done
+  sleep 3; peak=$(curl -s "$u/peak" | cut -d' ' -f1); wait "${slow[@]}"
+  echo "4 slow 8 MiB answers at once: peak held bytes $peak"
+  [ "$peak" -lt $((4 << 20)) ] || { echo "4 slow 8 MiB answers: FAIL, held $peak bytes at once"; ok=0; }
+fi
 wasm=$(curl -s "$u/mem"); echo "wasm_mb=$wasm"
 [ "$wasm" -lt 32 ] || { echo "wasm memory $wasm MiB: the pack went through the isolate"; ok=0; }
 [ $ok = 1 ] && echo PASS || { echo FAIL; exit 1; }

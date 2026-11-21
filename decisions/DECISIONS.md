@@ -6916,3 +6916,29 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 **Evidence.** `a_miss_on_a_site_that_holds_no_chain_waits_for_no_chain_step` (`crates/git/tests/shard.rs`) runs `chain_ready` on a virtual clock with mt11's network and sites. Site c, last with no chain, asks its container at once (main waits 60 s); forwarded, it answers `warming` at once (main waits 2 s); a chain already synced there answers; chain sites a and b keep `chain-wait`'s waits. On main's rule (every site waits as a chain site) it fails. Plants (`tests/hitgate/plant.py`): mutants 0 to 4, 5 of 5 caught, with mutant 0 main's rule: every site waits as a chain site, a site with no chain waits the forwarded bound, the last site with no chain answers warming, a forwarded miss with no chain goes to its container, a chain site counted as none.
 
 **Flip.** A row where a site that is not a chain site serves stock for a miss that a chain site composed within 2 s after it: send such a miss to the chain sites first instead.
+
+### `hit-gate`: a clone-cache hit's lookup runs beside its read gate, and a manifest's tail streams, 2026-11-21
+
+**Status.** Built on branch `b034-two`. Edge and shared code (`workers/edge/src/lib.rs`, `upload_front` and `clone_hit`; `crates/git/src/compose.rs`, `beside_gate` and `LineSplit`; `crates/git/src/host.rs`, `manifest_check` and `composed_answer`), so it ships on a site day.
+
+**Decision.**
+- An upload-pack reads its body, keys it, and looks up the clone cache (a manifest read and its chain checks, or a whole entry) while the read gate reads the repository's access rows (`beside_gate`). Nothing is sent and no answer stream starts until the gate allows. A gate that refuses first drops the lookup unfinished; one that refuses after it drops what it found.
+- A manifest answer, from the clone cache or from the shard's `compose=only&tail=1`, is read as a stream. Only its first line, at most `MANIFEST_MAX`, enters wasm memory (`LineSplit`). The tail stays a JavaScript stream and is written on last, counted against the manifest's length under `CHAIN_STALL`.
+
+**Why.**
+- On B0-34 mt11 the hits line failed at p99 1.77 s in j9. All 211 hits over 1 s were manifest hits. Their time was the edge's `front` 19 %, `chain_open` 32 %, and the rest 46 %: the gate's access read, which Load34 recorded no stage for, plus the manifest's own `get` and the first chunk. 183 of the 211 had a cold `front`, and their rest was p50 605 ms against 488 ms with a warm one [measured, `tests/am1/results/b034-mt11.md`, "Hits over 1 s, by stage", corrected]. The gate and the lookup ran one after the other, though neither needs the other's answer. Overlapping them on mt11's traces gives hits p99 about 1.53 s in j9 [inference, with the gate's share taken as a cold-front probe's rest less a warm-front probe's rest p50]. That alone is short of the 1 s line.
+- Read whole, a manifest's tail entered wasm memory twice: the body, then a copy of the tail for the answer. In the edgebed (`PEAK=1 tests/composed/edgebed/run.sh`, with a counting allocator) an 8 MiB tail held 16.8 MB at once in one request, a 4 MiB tail 8.4 MB, and four slow 8 MiB answers held 42.0 MB and grew the isolate's memory from 20 to 44 MiB [measured, `tests/hitgate/raw/edgebed-peak.txt`]. With the tail streamed, one request held about 4.2 KB at its peak, the four slow answers 12.3 KB together, and memory stayed at 16 MiB [measured]. Whether mt11's six edge 500s ("Promise will never complete", "hung") were an isolate reset from memory is unproven; no memory-limit outcome was logged [measured, Workers Logs], so this is a bound on what one request can hold, not a proven cause.
+
+**What it beat.**
+- **Starting the manifest `get` and the whole-entry `get` together.** On mt11 no slow hit was a whole entry.
+- **Caching the gate's decision longer.** That changes how soon a revocation binds (`READ_CACHE`), which this does not.
+- **Streaming the answer before the gate decides.** That would send repository bytes to a caller the gate may refuse.
+
+**Evidence.**
+- `a_hits_lookup_runs_beside_its_gate_and_a_refused_gate_keeps_nothing` (`crates/git/tests/shard.rs`): on a virtual clock, mt11's slow hit (gate 470 ms, lookup 800 ms) is ready at 800, not 1,270; a refused gate keeps nothing and does not wait for the lookup. On main's rule (gate, then lookup) it fails.
+- `a_manifest_line_is_split_from_its_tail_across_chunks`: the line across chunks, the tail's start in the chunk the line ended in, and `MANIFEST_MAX` across chunks and in one.
+- The edgebed's three stages stay byte-identical to the container's composed answer, and index-pack and fsck take each; the declines still decline.
+- Plants (`tests/hitgate/plant.py`): mutants 5 to 10, 6 of 6 caught, with mutant 5 main's rule (the lookup after the gate): a lookup kept though the gate refused after it, a refused gate that waits for the lookup, a split that keeps the newline in the tail, no `MANIFEST_MAX` across chunks, a split that forgets the bytes held before its newline.
+- `PEAK=1` in the edgebed fails if one answer holds 1 MiB or more at once.
+
+**Flip.** A row where hits refused by the gate (401 or 404) cost R2 reads at a rate that shows up in its bill, or where a hit's `gate` stage, now measured, stays under 50 ms at p99 so the overlap buys nothing.

@@ -611,6 +611,100 @@ fn a_miss_on_a_site_that_holds_no_chain_waits_for_no_chain_step() {
     }
 }
 
+/// A clone-cache hit's lookup runs beside its read gate (`beside_gate`, `hit-gate`), on a virtual clock: the hit's
+/// time to an answer is the longer of the two, not their sum, and a gate that does not allow keeps nothing the lookup
+/// found. B0-34 mt11's slow manifest hits: gate 0.47 s (a cold access read) then manifest read and chain checks 0.8 s
+/// gave 1.27 s one after the other; beside each other, 0.8 s. On main's rule (gate, then lookup) this fails.
+#[test]
+fn a_hits_lookup_runs_beside_its_gate_and_a_refused_gate_keeps_nothing() {
+    use graftyard_git::compose::beside_gate;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    // A virtual clock in ms: each future ends at its own time, and only the future whose end is the earliest pending
+    // one moves the clock there, so a future still pending never moves time past one that ends sooner.
+    #[derive(Clone)]
+    struct Clock(Rc<Cell<u64>>, Rc<std::cell::RefCell<Vec<u64>>>);
+    impl Clock {
+        fn at(&self, end: u64) -> impl std::future::Future<Output = u64> + use<> {
+            let (now, ends) = (self.0.clone(), self.1.clone());
+            ends.borrow_mut().push(end);
+            std::future::poll_fn(move |cx| {
+                if now.get() >= end {
+                    let mut e = ends.borrow_mut();
+                    if let Some(i) = e.iter().position(|x| *x == end) {
+                        e.remove(i);
+                    }
+                    return std::task::Poll::Ready(end);
+                }
+                if ends.borrow().iter().copied().filter(|e| *e >= now.get()).min() == Some(end) {
+                    now.set(end);
+                }
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            })
+        }
+    }
+    let run = |gate_ms: u64, allow: bool, lookup_ms: u64| {
+        let clock = Clock(Rc::new(Cell::new(0)), Rc::default());
+        let looked = Rc::new(Cell::new(false));
+        let gate = {
+            let g = clock.at(gate_ms);
+            async move {
+                g.await;
+                allow
+            }
+        };
+        let lookup = {
+            let (l, looked) = (clock.at(lookup_ms), looked.clone());
+            async move {
+                l.await;
+                looked.set(true);
+                "hit"
+            }
+        };
+        let (g, hit) = futures_executor::block_on(beside_gate(gate, lookup, |g| *g));
+        (g, hit, clock.0.get(), looked.get())
+    };
+    // mt11's slow hit: the answer is ready at the lookup's 800 ms, not at 470 + 800.
+    assert_eq!(run(470, true, 800), (true, Some("hit"), 800, true));
+    // A lookup quicker than the gate waits for the gate's allow before it counts.
+    assert_eq!(run(900, true, 300), (true, Some("hit"), 900, true));
+    // A gate that refuses first drops the lookup unfinished: nothing kept, and no wait for it.
+    assert_eq!(run(200, false, 800), (false, None, 200, false));
+    // A gate that refuses after the lookup ended drops its value.
+    assert_eq!(run(900, false, 300), (false, None, 900, true));
+}
+
+/// A manifest answer's line read from chunks (`LineSplit`, `hit-gate`): the line is held across chunks, the tail starts
+/// in the chunk the line ended in, and a line past `MANIFEST_MAX` is refused without holding more. Main read the whole
+/// answer, line and tail, into one buffer and copied the tail once more, so an 8 MiB tail held 16.8 MB in the edgebed.
+#[test]
+fn a_manifest_line_is_split_from_its_tail_across_chunks() {
+    use graftyard_git::compose::{LineSplit, LineStep, MANIFEST_MAX};
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(b"{\"v\":1,"), LineStep::More);
+    assert_eq!(s.push(b"\"x\":2}\nTAIL"), LineStep::Line(b"{\"v\":1,\"x\":2}\n".to_vec(), 7));
+    // A line that ends a chunk leaves the tail to the next one.
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(b"{}\n"), LineStep::Line(b"{}\n".to_vec(), 3));
+    // A line in one chunk with its tail.
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(b"{}\n\nmore\n"), LineStep::Line(b"{}\n".to_vec(), 3));
+    // No newline within MANIFEST_MAX: refused, across chunks or in one.
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(&vec![b'a'; MANIFEST_MAX - 1]), LineStep::More);
+    assert_eq!(s.push(b"a"), LineStep::TooLong);
+    let mut s = LineSplit::default();
+    let mut long = vec![b'a'; MANIFEST_MAX];
+    long.push(b'\n');
+    assert_eq!(s.push(&long), LineStep::TooLong);
+    // One byte under the limit still reads.
+    let mut s = LineSplit::default();
+    let mut ok = vec![b'a'; MANIFEST_MAX - 1];
+    ok.push(b'\n');
+    assert_eq!(s.push(&ok), LineStep::Line(ok.clone(), MANIFEST_MAX));
+}
+
 /// Stock upload-packs past the container's `STOCK_MAX` wait in the shard object in arrival order: the head of the
 /// line asks the container, later ones never jump it, one past its deadline leaves without holding the next one up,
 /// and with nobody waiting a request asks at once. A wait, not a 429 to the client: git retries neither by default.
