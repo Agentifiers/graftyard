@@ -54,6 +54,7 @@ mod api;
 #[cfg(feature = "test-faults")]
 mod bed_rows;
 mod collab;
+mod colo;
 mod hooks;
 mod hosted;
 mod ident;
@@ -88,6 +89,7 @@ fn rand10() -> [u8; 10] {
 }
 
 /// The edge's configuration, from the script's version.
+#[derive(Clone)]
 struct Config {
     plan: Plan,
     ssh_option: bool,
@@ -263,9 +265,120 @@ async fn read_gate(
     who: Option<&Principal>,
 ) -> Result<std::result::Result<graftyard_identity::Decision, String>> {
     let key = gate::key(repo.id, who);
-    if let Some(d) = key.as_ref().and_then(|k| gate::get(k, now())) {
-        return Ok(Ok(d));
+    // The test arm with the share off (`x-graft-colo: off` with the bed token) keeps the isolate cache alone, under its
+    // own keys, so it never takes an entry the shared arm copied (`colo-gate`'s flip compares the two in one row).
+    #[cfg(feature = "test-faults")]
+    let key = if c.colo_off { key.map(gate::off_key) } else { key };
+    let Some(k) = key else {
+        return Ok(match fresh_gate(c, repo, who).await {
+            Ok((d, _)) => Ok(d),
+            Err(GateFail::Read(e)) => Err(e),
+            Err(GateFail::Edge(e)) => return Err(e),
+        });
+    };
+    // Only a read-class request shares (`colo-gate`); a write reads members as before, its leader binding the answer.
+    let share = c.read_class.get() && !colo_off(c);
+    let io = GateIo { c, repo, who, key: k, url: colo::gate_url(repo.id, k.1, &repo.record) };
+    let g = colo::gate(&io, share).await;
+    match g.served {
+        colo::Served::Read => {}
+        colo::Served::Isolate(age) => c.timing.put("gate_iso", age as f64),
+        colo::Served::Colo(age) => c.timing.put("gate_colo", age as f64),
     }
+    if g.ahead && colo::begin(k) {
+        reread_ahead(c, repo, who, k);
+    }
+    match g.decision {
+        Ok(d) => Ok(Ok(d)),
+        Err(GateFail::Read(e)) => Ok(Err(e)),
+        Err(GateFail::Edge(e)) => Err(e),
+    }
+}
+
+/// Whether this request is the test arm with the share off. Always false on a product edge.
+fn colo_off(c: &Ctx<'_>) -> bool {
+    #[cfg(feature = "test-faults")]
+    return c.colo_off;
+    #[cfg(not(feature = "test-faults"))]
+    {
+        let _ = c;
+        false
+    }
+}
+
+/// Why the read gate's fresh read gave no decision: a member read that failed (the caller answers 503), or the edge's
+/// own error.
+enum GateFail {
+    Read(String),
+    Edge(Error),
+}
+
+/// The read gate's effects for `colo::gate`: this request's clock, `gate`'s isolate entry, the data center's entry
+/// at `url`, and `fresh_gate`.
+struct GateIo<'a, 'c> {
+    c: &'a Ctx<'c>,
+    repo: &'a Repo,
+    who: Option<&'a Principal>,
+    key: gate::Key,
+    url: String,
+}
+
+impl colo::GateFx for GateIo<'_, '_> {
+    type Err = GateFail;
+    fn now(&self) -> Timestamp {
+        now()
+    }
+    fn held(&self) -> Option<(Timestamp, graftyard_identity::Decision, bool)> {
+        gate::get(&self.key)
+    }
+    fn hold(&self, at: Timestamp, d: graftyard_identity::Decision, foreign: bool) {
+        gate::put(self.key, at, d, foreign);
+    }
+    async fn matched(&self) -> Option<Timestamp> {
+        api::timed(self.c, "gate_match", colo::match_gate(&self.url)).await
+    }
+    async fn share(&self, at: Timestamp) {
+        let url = self.url.clone();
+        self.c.ctx.wait_until(colo::put_gate(url, at));
+    }
+    async fn read(&self) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
+        fresh_gate(self.c, self.repo, self.who).await
+    }
+}
+
+/// `COLO_AHEAD`'s re-read, after this request: a fresh gate read in its own context that outlives the reply
+/// (`waitUntil`), at most one per key in flight in this isolate. Its `Allow` replaces both entries with its own stamp,
+/// and a refusal is held in the isolate and not put (`colo::reread`).
+fn reread_ahead(c: &Ctx<'_>, repo: &Repo, who: Option<&Principal>, k: gate::Key) {
+    let (env, js, cfg, sites, anchor, colo) = (
+        c.env.clone(),
+        worker::wasm_bindgen::JsCast::unchecked_into::<worker::worker_sys::Context>(
+            worker::wasm_bindgen::JsValue::from(c.ctx.as_ref()),
+        ),
+        c.cfg.clone(),
+        c.sites.clone(),
+        c.anchor,
+        c.colo,
+    );
+    let (repo, who, fields, ssh_front) = (repo.clone(), who.cloned(), c.token_fields.borrow().clone(), c.ssh_front);
+    c.ctx.wait_until(async move {
+        let ctx = Context::new(js);
+        let bg = Ctx::background(&env, &ctx, &cfg, &sites, anchor, colo, fields, ssh_front);
+        let io =
+            GateIo { c: &bg, repo: &repo, who: who.as_ref(), key: k, url: colo::gate_url(repo.id, k.1, &repo.record) };
+        colo::reread(&io).await;
+        colo::end(&k);
+    });
+}
+
+/// The gate's fresh read: the repository's access rows and the owner's `Authz` (from `rcache` for a read-class
+/// request), decided by `authorize_read`, and the time of the oldest fold read under the decision (`reopened`).
+/// `None` for a repository whose group is not created yet or was retired: hidden, and never cached.
+async fn fresh_gate(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    who: Option<&Principal>,
+) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
     // A push that reads the access rows reads its agent rows in the same read, which the push keeps
     // (`Ctx::push_rows`); with the decision cached it reads no rows here, and `agents::push_context` reads its own.
     let push = c.write.get() && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT);
@@ -292,12 +405,12 @@ async fn read_gate(
     // The two reads' own walls (`gate_rows`, `gate_authz`), so a slow gate names which read was slow (`gate-trace`).
     let (rows, owner) =
         futures_util::future::join(api::timed(c, "gate_rows", rows), api::timed(c, "gate_authz", owner)).await;
-    let core = match rows? {
+    let core = match rows.map_err(GateFail::Edge)? {
         Ok(core) => core,
         // A repository whose create has not committed `RepoOwner` yet, or whose group was retired: hidden from every
         // caller, as GitHub hides one that does not exist, and not cached, so it shows as soon as a create commits.
-        Err(e) if graftyard_lookup::is_gone(&e) => return Ok(Ok(graftyard_identity::Decision::Hidden)),
-        Err(e) => return Ok(Err(e)),
+        Err(e) if graftyard_lookup::is_gone(&e) => return Ok((graftyard_identity::Decision::Hidden, None)),
+        Err(e) => return Err(GateFail::Read(e)),
     };
     let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core: &core };
     let decide = |owner| {
@@ -305,14 +418,8 @@ async fn read_gate(
         let folds: [&dyn graftyard_identity::AuthzRead; 1] = [&owner];
         Ok(graftyard_identity::authorize_read(who, c.token_fields.borrow().as_ref(), &folds, &access))
     };
-    let (d, stamp) = match reopened(held.map(|(t, _)| t), at, decide(owner), fresh, decide).await {
-        Ok(d) => d,
-        Err(e) => return Ok(Err(e)),
-    };
-    if let Some(k) = key {
-        gate::put(k, stamp, d);
-    }
-    Ok(Ok(d))
+    let (d, stamp) = reopened(held.map(|(t, _)| t), at, decide(owner), fresh, decide).await.map_err(GateFail::Read)?;
+    Ok((d, Some(stamp)))
 }
 
 /// The read gate's decision and the time it ages from. `held` is when the cached `Authz` it was first made on was read
@@ -354,7 +461,7 @@ mod gate {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
-    use graftyard_identity::{Actor, Credential, Decision, Principal, READ_CACHE, stateless::InstallationClaims};
+    use graftyard_identity::{Actor, Credential, Decision, Principal, stateless::InstallationClaims};
     use graftyard_types::{RepoId, Timestamp};
     use sha2::{Digest, Sha256};
 
@@ -364,7 +471,7 @@ mod gate {
     pub(crate) type Key = (RepoId, Option<[u8; 32]>);
 
     thread_local! {
-        static CACHE: RefCell<BTreeMap<Key, (Timestamp, Decision)>> = const { RefCell::new(BTreeMap::new()) };
+        static CACHE: RefCell<BTreeMap<Key, (Timestamp, Decision, bool)>> = const { RefCell::new(BTreeMap::new()) };
     }
 
     fn stateless_key(claims: &InstallationClaims) -> [u8; 32] {
@@ -385,18 +492,30 @@ mod gate {
         }
     }
 
-    pub(crate) fn get(k: &Key, now: Timestamp) -> Option<Decision> {
-        let ttl = u64::try_from(READ_CACHE.as_millis()).unwrap_or(u64::MAX);
-        CACHE.with(|c| c.borrow().get(k).filter(|(at, _)| now.0.saturating_sub(at.0) <= ttl).map(|(_, d)| *d))
+    /// The decision held for `k` at any age, the time of the oldest fold read it was made on, and whether it was
+    /// copied from the data center's entry; `colo::gate` decides whether it may serve (`colo::servable`).
+    pub(crate) fn get(k: &Key) -> Option<(Timestamp, Decision, bool)> {
+        CACHE.with(|c| c.borrow().get(k).copied())
     }
 
-    pub(crate) fn put(k: Key, now: Timestamp, d: Decision) {
+    /// The share-off arm's key on a test install (`x-graft-colo: off`): the same credential and repository under
+    /// another hash, so the arm never takes an entry the shared arm copied into this isolate.
+    #[cfg(feature = "test-faults")]
+    pub(crate) fn off_key(k: Key) -> Key {
+        let mut hash = Sha256::new();
+        hash.update(b"graftyard-read-gate-off\0");
+        hash.update(k.1.unwrap_or([0; 32]));
+        (k.0, Some(hash.finalize().into()))
+    }
+
+    /// Holds `d` for `k`, stamped `at` (the oldest fold read under it); `foreign` when copied from the data center.
+    pub(crate) fn put(k: Key, at: Timestamp, d: Decision, foreign: bool) {
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= ENTRIES_MAX {
                 c.clear();
             }
-            c.insert(k, (now, d));
+            c.insert(k, (at, d, foreign));
         });
     }
 }
@@ -1337,6 +1456,10 @@ struct Ctx<'a> {
     client_push: Option<String>,
     #[cfg(feature = "test-faults")]
     push_end: std::cell::RefCell<Option<serde_json::Value>>,
+    /// `colo-gate`'s flip arm (`x-graft-colo: off` with the bed token): this request's read gate and chain checks keep
+    /// the isolate's caches alone, as before the share, so one row measures both arms.
+    #[cfg(feature = "test-faults")]
+    colo_off: bool,
     /// `authenticate`'s token's App, when it is a user-to-server token.
     token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
     /// `authenticate`'s token's optional fields: a `github_pat_`'s scope, which REST reads check (`usertok::reaches`).
@@ -1373,6 +1496,68 @@ struct Ctx<'a> {
     /// (`ssh`): its caller is the SSH key in `x-graftyard-ssh-key`, and no other credential counts. A public request
     /// has no props, so no client can set this.
     ssh_front: bool,
+}
+
+impl<'a> Ctx<'a> {
+    /// A context for work after a request's reply (`reread_ahead`): the request's bindings, config, sites, anchor,
+    /// colo, and token reach, and none of its per-request state or test switches. Not read-class, so its owner's
+    /// `Authz` is read fresh and the decision is stamped now: on a cached fold the re-read would carry the fold's old
+    /// stamp and refresh nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn background(
+        env: &'a Env,
+        ctx: &'a Context,
+        cfg: &'a Config,
+        sites: &'a SiteTable,
+        anchor: Option<Anchor>,
+        colo: u32,
+        token_fields: Option<graftyard_identity::TokenFields>,
+        ssh_front: bool,
+    ) -> Ctx<'a> {
+        Ctx {
+            env,
+            ctx,
+            cfg,
+            rid: RequestId(graftyard_types::Ulid(u128::from_be_bytes({
+                let mut b = [0u8; 16];
+                b[6..].copy_from_slice(&rand10());
+                b
+            }))),
+            sites,
+            anchor,
+            colo,
+            #[cfg(feature = "test-faults")]
+            kill: None,
+            #[cfg(feature = "test-faults")]
+            down_ms: 0,
+            #[cfg(feature = "test-faults")]
+            shard: None,
+            #[cfg(feature = "test-faults")]
+            place_fail: false,
+            #[cfg(feature = "test-faults")]
+            ls_refs_edge: true,
+            #[cfg(feature = "test-faults")]
+            lean: false,
+            #[cfg(feature = "test-faults")]
+            client_push: None,
+            #[cfg(feature = "test-faults")]
+            push_end: std::cell::RefCell::new(None),
+            #[cfg(feature = "test-faults")]
+            colo_off: false,
+            token_app: std::cell::Cell::new(None),
+            token_fields: std::cell::RefCell::new(token_fields),
+            agent_session: false,
+            read_class: std::cell::Cell::new(false),
+            decided: std::cell::Cell::new(false),
+            write: std::cell::Cell::new(false),
+            leader_reads: std::cell::Cell::new(false),
+            timing: api::Timing::default(),
+            bound: std::cell::Cell::new(None),
+            push_rows: std::cell::RefCell::new(None),
+            install: std::cell::RefCell::new(None),
+            ssh_front,
+        }
+    }
 }
 
 impl Ctx<'_> {
@@ -2282,6 +2467,13 @@ fn chain_r2(c: &Ctx<'_>, repo: &Repo) -> Result<Vec<R2>> {
         .collect()
 }
 
+/// The chain buckets' header sets (`colo-gate`), in `chain_r2`'s order: in the isolate and, unless this is the
+/// share-off arm, the data center's Cache API.
+fn chain_sets<'a>(c: &'a Ctx<'a>, repo: &Repo) -> colo::ChainSets<'a> {
+    let network = NetworkId(repo.id.0);
+    colo::ChainSets { c, network, sites: graftyard_git::chain_buckets(network, &repo.record), share: !colo_off(c) }
+}
+
 /// A clone-cache hit for `k`, from the home site's bucket: a composed miss's entry is a manifest (`edge-compose`),
 /// checked in the chain buckets; one whose chain has moved on in every one (a fold deleted its files) is not a hit,
 /// and neither is no entry. `chain_open` in `server-timing`: the manifest's chain checks, recorded whether the manifest
@@ -2298,7 +2490,8 @@ async fn clone_hit(c: &Ctx<'_>, repo: &Repo, k: &CloneKey) -> Result<Option<Hit>
         && let worker::ResponseBody::Stream(body) = b.response_body()?
     {
         let net = NetworkId(repo.id.0);
-        match api::timed(c, "chain_open", graftyard_git::host::manifest_check(&chain, net, body, o.size()))
+        let sets = chain_sets(c, repo);
+        match api::timed(c, "chain_open", graftyard_git::host::manifest_check(&chain, net, body, o.size(), &sets))
             .await
             .map_err(|e| e.0)?
         {
@@ -2361,7 +2554,8 @@ async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Res
         if let Some(n) = len.filter(|n| *n <= graftyard_git::compose::TAIL_ANSWER_MAX)
             && let worker::ResponseBody::Stream(b) = r.body().clone()
         {
-            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&chain, net, b, n, h))
+            let sets = chain_sets(c, repo);
+            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&chain, net, b, n, h, &sets))
                 .await
                 .map_err(|e| e.0)?
             {
@@ -3294,6 +3488,12 @@ async fn serve(
         client_push: client_push_id(req.headers().get("x-graft-client-push")?.as_deref()),
         #[cfg(feature = "test-faults")]
         push_end: std::cell::RefCell::new(None),
+        #[cfg(feature = "test-faults")]
+        colo_off: lean_asked(
+            req.headers().get("x-graft-colo")?.as_deref() == Some("off"),
+            req.headers().get("x-bed-token")?.as_deref(),
+            env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
+        ),
     };
     // A site's SSH front reaches the key lookup and git, and nothing else (`ssh`).
     if c.ssh_front && !ssh::front_path(&path) {

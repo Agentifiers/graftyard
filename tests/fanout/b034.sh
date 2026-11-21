@@ -4,7 +4,9 @@
 # killed at 300 s, the second network hot from 420 s and the hostile owner's three from 600 s, over 900 s. The repos
 # are kept between rounds. Before the run, a static check that no request path can call the Cloudflare API.
 #   EDGE_LOG=tests/am1/raw/runs/fanout-mNN-edge.log [SEED_ONLY=1] [LEARNERS=...] [PROCS_S=3600] [POOL_PROBE=2:7] B034_DIR=$HOME/b034 \
-#     [HOSTED=N [HINTS=wnam,...]] bash tests/fanout/b034.sh <tag>
+#     [HOSTED=N [HINTS=wnam,...] [COLO_OFF=0.25]] bash tests/fanout/b034.sh <tag>
+# COLO_OFF=F sends that share of Load34 clone probes with `x-graft-colo: off` and the bed token, as `read:cloneOff`
+# (`colo-gate`'s flip arm: the read gate and chain checks keep the isolate caches alone).
 # HOSTED=N runs the load in N Load34 clients on Cloudflare (tests/am1/load34/, deployed with its deploy.sh; FRAME.md,
 # "Operator decision, 2026-11-20", item 3): the tip:move packs are staged first, and after the row each client's CPU per
 # operation is read from the account's analytics.
@@ -122,7 +124,8 @@ if [ -n "${HOSTED:-}" ]; then
   # of a network no warm caught up got no byte in 120 s, from the orb as from Load34 (mt9's first try, 10:47Z).
   node tests/am1/load34/driver.mjs smoke "$(q "d['mono']['repo']")" admin >> "$ST" 2>&1 \
     || { s "b0-34 stopped: the Load34 smoke clone failed"; echo DONE >> "$ST"; exec sleep infinity; }
-  bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json --hosted "$HOSTED" --hints "${HINTS:-wnam}"
+  bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json --hosted "$HOSTED" --hints "${HINTS:-wnam}" \
+    ${COLO_OFF:+--colo-off "$COLO_OFF"}
 else
   bash tests/am1/runs/a1.sh b0-34 "$mono" "${chain#repo:}" --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-$TAG.json
 fi

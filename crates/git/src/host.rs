@@ -344,9 +344,10 @@ pub async fn manifest_answer(
     body: worker::web_sys::ReadableStream,
     total: u64,
     headers: Headers,
+    sets: &impl crate::compose::SetStore,
 ) -> Result<crate::compose::ChainCheck<Response>, StoreError> {
     use crate::compose::ChainCheck;
-    Ok(match manifest_check(buckets, network, body, total).await? {
+    Ok(match manifest_check(buckets, network, body, total, sets).await? {
         ChainCheck::Checked(a) => ChainCheck::Checked(composed_answer(a, headers)?),
         ChainCheck::Declined => ChainCheck::Declined,
         ChainCheck::Late => ChainCheck::Late,
@@ -376,6 +377,7 @@ pub async fn manifest_check(
     network: NetworkId,
     body: worker::web_sys::ReadableStream,
     total: u64,
+    sets: &impl crate::compose::SetStore,
 ) -> Result<crate::compose::ChainCheck<ChainAnswer>, StoreError> {
     use crate::compose::{CHAIN_STALL, ChainCheck, LineSplit, LineStep, Manifest, ManifestLine, within};
     use wasm_bindgen::JsCast;
@@ -401,7 +403,12 @@ pub async fn manifest_check(
     if total.checked_sub(line.len() as u64) != Some(m.tail) || m.count().is_none() {
         return Ok(ChainCheck::Declined);
     }
-    Ok(match open_chain(buckets, &m).await? {
+    let opened = if sets.enabled() {
+        open_chain_sets(buckets, network, &m, sets).await?
+    } else {
+        open_chain(buckets, &m).await?
+    };
+    Ok(match opened {
         ChainCheck::Checked((bucket, packs)) => {
             ChainCheck::Checked(ChainAnswer { bucket: bucket.0.clone(), m, packs, first, body })
         }
@@ -436,6 +443,39 @@ pub async fn open_chain<'b>(
         worker::Delay::from,
     )
     .await
+}
+
+/// `open_chain` with header sets (`colo-gate`, `crate::compose::check_with_sets`): each bucket's `head` is read, and a
+/// pack that head names comes from the set kept under the head object's version, so a set never outlives the head it
+/// was checked under. Every pack still streams on the etag its check read (`composed_answer`).
+pub async fn open_chain_sets<'b>(
+    buckets: &[&'b R2],
+    network: NetworkId,
+    m: &crate::compose::Manifest,
+    sets: &impl crate::compose::SetStore,
+) -> Result<crate::compose::ChainCheck<(&'b R2, Vec<CheckedPack>)>, StoreError> {
+    use crate::compose::{ChainCheck, ChainHead, Header};
+    let head_key = R2Key::Compose { network, file: "head".into() }.to_string();
+    let head = async |b: &R2| -> Result<Option<(String, ChainHead)>, StoreError> {
+        let Some(o) = b.0.get(&head_key).execute().await.map_err(err)? else { return Ok(None) };
+        let version = o.version();
+        let Some(body) = o.body() else { return Ok(None) };
+        let bytes = body.bytes().await.map_err(err)?;
+        Ok(serde_json::from_slice::<ChainHead>(&bytes).ok().and_then(ChainHead::checked).map(|h| (version, h)))
+    };
+    let check = async |b: &R2, key: String, n: u32| -> Result<Option<Header>, StoreError> {
+        Ok(check_pack(b, &key, n).await?.map(|p| Header { n, etag: p.etag, body: p.body }))
+    };
+    let got =
+        crate::compose::check_with_sets(buckets.iter().copied(), m, head, check, sets, worker::Delay::from).await?;
+    Ok(match got {
+        ChainCheck::Checked((b, packs)) => ChainCheck::Checked((
+            b,
+            packs.into_iter().map(|(key, h)| CheckedPack { key, etag: h.etag, body: h.body }).collect(),
+        )),
+        ChainCheck::Declined => ChainCheck::Declined,
+        ChainCheck::Late => ChainCheck::Late,
+    })
 }
 
 /// One chain pack's 12-byte header read from `bucket` and checked against `n`; `None` as `open_chain` says.

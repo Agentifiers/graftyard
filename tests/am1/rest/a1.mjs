@@ -78,7 +78,7 @@ import { serverClock } from "../../fanout/srvclock.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
-  repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
+  repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" }, "colo-off": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
   "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" },
@@ -1323,6 +1323,7 @@ const hostedRun = hosted ? hosted.run({ n: Number(opt.hosted), hints: (opt.hints
   t0Cf: cfClock.now() + (t0 - Date.now()), t0, end: () => end, edge: EDGE, repo: R, chain: CHAIN, repoId, target, main,
   tasks: agents.filter((a) => a.task).map((a) => [a.i, a.task]), tokens: { ...tokens, app: (await refreshApp(), app) },
   killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null, statuses, log, writeRow: (v) => writeRow(OUT, v),
+  coloOff: opt["colo-off"] ? Number(opt["colo-off"]) : 0, bed: BED,
   onMiss: (row) => { missRows.push(row); fillChecks.push(fillCheck(row, Date.parse(row.at))); } }) : null;
 if (hostedRun) jobs.push(hostedRun.done);
 await Promise.all(jobs);

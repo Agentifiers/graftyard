@@ -269,10 +269,128 @@ where
         }
         Ok(None)
     };
+    bounded(first, sleep).await
+}
+
+/// The chain checks' one bound: `first` (the first bucket that holds every pack, or none) within `CHAIN_CHECK_WITHIN`,
+/// or `Late`.
+async fn bounded<T, E, S, D>(
+    first: impl std::future::Future<Output = Result<Option<T>, E>>,
+    sleep: S,
+) -> Result<ChainCheck<T>, E>
+where
+    S: FnOnce(std::time::Duration) -> D,
+    D: std::future::Future<Output = ()>,
+{
     Ok(match within(CHAIN_CHECK_WITHIN, first, sleep).await {
         None => ChainCheck::Late,
         Some(r) => r?.map_or(ChainCheck::Declined, ChainCheck::Checked),
     })
+}
+
+/// No header sets: every pack is checked, as before `colo-gate` (the test arm with the share off, and the edgebed).
+pub struct NoSets;
+
+impl SetStore for NoSets {
+    fn enabled(&self) -> bool {
+        false
+    }
+    async fn get(&self, _: usize, _: &str) -> Option<HeaderSet> {
+        None
+    }
+    fn put(&self, _: usize, _: &str, _: HeaderSet) {}
+    fn served(&self, _: usize, _: usize) {}
+}
+
+/// One chain pack's checked header as a header set keeps it: the manifest's count, the R2 etag the check read, and the
+/// body's length (the object less header and trailer).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Header {
+    pub n: u32,
+    pub etag: String,
+    pub body: u64,
+}
+
+/// A chain bucket's checked headers under one version of its `head` object (`colo-gate`): only packs that head names,
+/// each one checked after the head was read. Chain pack keys name commits, not bytes, and a fold deletes them, so a set
+/// is never keyed by pack key alone; every put of `head` changes its version, and the builder puts a head's files
+/// before that head and deletes an old base's files only after the head that replaces it, so every pack of the head an
+/// edge read was there when it read it (`decisions/DECISIONS.md`, "`colo-gate`").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderSet {
+    pub packs: std::collections::BTreeMap<String, Header>,
+}
+
+/// Where a chain bucket's header sets live (the isolate, and the data center's Cache API), by bucket index in the
+/// order `check_with_sets` takes them and the head's version.
+#[allow(async_fn_in_trait)]
+pub trait SetStore {
+    /// False: no head is read and no set is used, every pack is checked as before `colo-gate`.
+    fn enabled(&self) -> bool;
+    async fn get(&self, bucket: usize, version: &str) -> Option<HeaderSet>;
+    fn put(&self, bucket: usize, version: &str, set: HeaderSet);
+    /// How many of the answer's packs came from a set and how many were checked, for `server-timing`.
+    fn served(&self, from_set: usize, checked: usize);
+}
+
+/// `check_in_time` with header sets. For each of `buckets` in turn, `head(b)` reads its `head` object's version and
+/// chain (`None`: no head); a manifest pack that head names and whose set entry has the manifest's count comes from
+/// the set, and every other pack is checked by `check(b, key, n)`, `CHAIN_OPEN_AT_ONCE` at a time, in order. A
+/// bucket whose every check passed puts the set again with each newly checked pack its head names; a failed check
+/// puts nothing. All of it is bounded once by `CHAIN_CHECK_WITHIN`, as before.
+pub async fn check_with_sets<B, E, HF, CF, S, D>(
+    buckets: impl IntoIterator<Item = B>,
+    m: &Manifest,
+    head: impl Fn(B) -> HF,
+    check: impl Fn(B, String, u32) -> CF,
+    store: &impl SetStore,
+    sleep: S,
+) -> Result<ChainCheck<(B, Vec<(String, Header)>)>, E>
+where
+    B: Copy,
+    HF: std::future::Future<Output = Result<Option<(String, ChainHead)>, E>>,
+    CF: std::future::Future<Output = Result<Option<Header>, E>>,
+    S: FnOnce(std::time::Duration) -> D,
+    D: std::future::Future<Output = ()>,
+{
+    use futures_util::future::{Either, ready};
+    let first = async {
+        for (i, b) in buckets.into_iter().enumerate() {
+            let named = head(b).await?;
+            let set = match &named {
+                Some((v, _)) => store.get(i, v).await.unwrap_or_default(),
+                None => HeaderSet::default(),
+            };
+            let files: Vec<String> = named.as_ref().map(|(_, h)| h.packs()).unwrap_or_default();
+            let in_head = |key: &str| files.iter().any(|f| key.ends_with(&format!("/{f}.pack")));
+            let from_set = |p: &ManifestPack| set.packs.get(&p.key).filter(|h| h.n == p.n && in_head(&p.key)).cloned();
+            let opens = m.packs.iter().map(|p| match from_set(p) {
+                Some(h) => Either::Left(ready(Ok(Some((p.key.clone(), h, false))))),
+                None => {
+                    let key = p.key.clone();
+                    let c = check(b, key.clone(), p.n);
+                    Either::Right(async move { Ok(c.await?.map(|h| (key, h, true))) })
+                }
+            });
+            let Some(got) = open_in_order(opens).await? else { continue };
+            let checked = got.iter().filter(|(_, _, c)| *c).count();
+            store.served(got.len() - checked, checked);
+            if let Some((v, _)) = &named {
+                let mut next = set.clone();
+                for (key, h, c) in &got {
+                    if *c && in_head(key) {
+                        next.packs.insert(key.clone(), h.clone());
+                    }
+                }
+                if next != set {
+                    store.put(i, v, next);
+                }
+            }
+            return Ok(Some((b, got.into_iter().map(|(k, h, _)| (k, h)).collect())));
+        }
+        Ok(None)
+    };
+    bounded(first, sleep).await
 }
 
 /// Streams a composed answer's chain packs one after another: `open` one, hand it to `send`, which lets its R2 body

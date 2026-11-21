@@ -1190,3 +1190,212 @@ fn a_torn_down_shard_that_held_warming_schedules_no_alarm() {
     o.teardown();
     assert_eq!(o.runs.step(from + 1), CatchUpStep::Done);
 }
+
+/// Header sets (`decisions/DECISIONS.md`, "`colo-gate`"): a manifest's packs come from the set kept under the version of
+/// its bucket's `head` they were checked under, and every other pack is checked. Chain pack keys name commits, not
+/// bytes: after a fold rewrites a key under a new head, the set of the old head never answers for it, and a pack the
+/// head no longer names is checked, so a deleted pack declines as today instead of streaming from a stale header. A
+/// set is put only when every check passed, and the bound is still one `CHAIN_CHECK_WITHIN`.
+#[test]
+fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
+    use graftyard_git::compose::{
+        CHAIN_CHECK_WITHIN, ChainCheck, ChainHead, Header, HeaderSet, Manifest, ManifestPack, SetStore, check_with_sets,
+    };
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    /// The world: per bucket, a head (version and chain) and its pack objects (key to count, etag).
+    struct Bucket {
+        head: Option<(String, ChainHead)>,
+        packs: BTreeMap<String, (u32, String)>,
+    }
+    #[derive(Default)]
+    struct Sets {
+        held: RefCell<BTreeMap<(usize, String), HeaderSet>>,
+        puts: RefCell<usize>,
+        served: RefCell<Vec<(usize, usize)>>,
+    }
+    impl SetStore for Sets {
+        fn enabled(&self) -> bool {
+            true
+        }
+        async fn get(&self, b: usize, v: &str) -> Option<HeaderSet> {
+            self.held.borrow().get(&(b, v.to_owned())).cloned()
+        }
+        fn put(&self, b: usize, v: &str, s: HeaderSet) {
+            *self.puts.borrow_mut() += 1;
+            self.held.borrow_mut().insert((b, v.to_owned()), s);
+        }
+        fn served(&self, from_set: usize, checked: usize) {
+            self.served.borrow_mut().push((from_set, checked));
+        }
+    }
+    let id = |c: char| c.to_string().repeat(40);
+    let key = |p: &str| format!("compose/77/{p}.pack");
+    let chain = |base: char, parts: &[char]| ChainHead {
+        base: id(base),
+        parts: parts.iter().map(|c| id(*c)).collect(),
+        tree: id('f'),
+    };
+    let manifest = |h: &ChainHead| Manifest {
+        v: 1,
+        want: id('e'),
+        packs: h.packs().iter().map(|p| ManifestPack { key: key(p), n: 10, len: 100 }).collect(),
+        tail_n: 1,
+        tail: 5,
+    };
+    let bucket = |v: &str, h: &ChainHead, etag: &str| Bucket {
+        head: Some((v.to_owned(), h.clone())),
+        packs: h.packs().iter().map(|p| (key(p), (10, format!("{etag}-{p}")))).collect(),
+    };
+    fn check<'c>(
+        c: &'c Clock,
+        w: &RefCell<Vec<Bucket>>,
+        b: usize,
+        k: String,
+        n: u32,
+    ) -> impl std::future::Future<Output = Result<Option<Header>, String>> + 'c {
+        let got =
+            w.borrow()[b].packs.get(&k).filter(|(m, _)| *m == n).map(|(_, e)| Header { n, etag: e.clone(), body: 68 });
+        async move {
+            c.open(0, 100, false).await?;
+            Ok(got)
+        }
+    }
+    let head = |w: &RefCell<Vec<Bucket>>, b: usize| {
+        let h = w.borrow()[b].head.clone();
+        async move { Ok::<_, String>(h) }
+    };
+    #[allow(clippy::needless_lifetimes)]
+    fn sleep<'a>(
+        c: &'a Clock,
+    ) -> impl FnOnce(std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+        move |d| Box::pin(c.sleep(d.as_millis() as u64))
+    }
+    let etags = |r: &ChainCheck<(usize, Vec<(String, Header)>)>| match r {
+        ChainCheck::Checked((b, ps)) => Some((*b, ps.iter().map(|(_, h)| h.etag.clone()).collect::<Vec<_>>())),
+        _ => None,
+    };
+
+    // Head v1: a base and two parts. The first answer checks all three and puts the set.
+    let h1 = chain('a', &['b', 'c']);
+    let w = RefCell::new(vec![bucket("v1", &h1, "x")]);
+    let sets = Sets::default();
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0],
+        &manifest(&h1),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    assert_eq!(etags(&r.unwrap()).unwrap().1.len(), 3);
+    assert_eq!((*sets.puts.borrow(), sets.served.borrow().clone()), (1, vec![(0, 3)]));
+    // The second answer under v1 takes every pack from the set and checks none.
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0],
+        &manifest(&h1),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    assert!(matches!(r, Ok(ChainCheck::Checked(_))));
+    assert_eq!((c.started.get(), sets.served.borrow()[1]), (0, (3, 0)), "no check under the same head version");
+    assert_eq!(*sets.puts.borrow(), 1, "a set that gained nothing is not put again");
+    // Under the same version, a manifest that gives a pack another count is checked, not served from the set: the
+    // object holds 10, so the check finds no match and the answer declines.
+    let mut m11 = manifest(&h1);
+    m11.packs[1].n = 11;
+    let c = Clock::default();
+    let r = c.run(check_with_sets([0], &m11, |b| head(&w, b), |b, k, n| check(&c, &w, b, k, n), &sets, sleep(&c)));
+    assert_eq!(r, Ok(ChainCheck::Declined), "a set entry answers only for the count it was checked at");
+    assert_eq!(c.started.get(), 1);
+
+    // A rebuild rewrites the same keys with new bytes (new etags) and puts head v2. The v1 set never answers for them.
+    w.borrow_mut()[0] = bucket("v2", &h1, "y");
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0],
+        &manifest(&h1),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    let (_, got) = etags(&r.unwrap()).unwrap();
+    assert!(got.iter().all(|e| e.starts_with("y-")), "a rewritten pack streams on its new etag: {got:?}");
+    assert_eq!(c.started.get(), 3);
+
+    // A fold: head v3 names a new base alone and the old files are deleted. A manifest of the old chain is checked,
+    // not served from the v2 set, and declines to the shard as today.
+    let h3 = chain('d', &[]);
+    w.borrow_mut()[0] = bucket("v3", &h3, "z");
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0],
+        &manifest(&h1),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    assert_eq!(r, Ok(ChainCheck::Declined), "a deleted pack is never served from an older head's set");
+
+    // A set whose head no longer names a pack does not answer for it, even under the same version: a manifest pack
+    // outside the head is checked (here, bucket v4 names only the base; the part is checked and found).
+    let h4 = chain('a', &['b']);
+    let mut b4 = bucket("v4", &chain('a', &[]), "q");
+    b4.packs.insert(key(&format!("part-{}-{}", id('a'), id('b'))), (10, "q-part".into()));
+    w.borrow_mut()[0] = b4;
+    sets.held.borrow_mut().insert(
+        (0, "v4".into()),
+        HeaderSet {
+            packs: h4.packs().iter().map(|p| (key(p), Header { n: 10, etag: "stale".into(), body: 68 })).collect(),
+        },
+    );
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0],
+        &manifest(&h4),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    let (_, got) = etags(&r.unwrap()).unwrap();
+    assert_eq!(got, vec!["stale".to_owned(), "q-part".to_owned()], "only the head's own pack comes from the set");
+    assert_eq!(c.started.get(), 1);
+
+    // A failed check puts nothing; the other bucket answers and puts its own set.
+    let puts = *sets.puts.borrow();
+    let mut gap = bucket("v5", &h1, "g");
+    gap.packs.remove(&key(&format!("part-{}-{}", id('a'), id('b'))));
+    *w.borrow_mut() = vec![gap, bucket("v6", &h1, "k")];
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0, 1],
+        &manifest(&h1),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    assert_eq!(etags(&r.unwrap()).unwrap().0, 1);
+    assert!(!sets.held.borrow().contains_key(&(0, "v5".into())), "a bucket whose check failed puts no set");
+    assert_eq!(*sets.puts.borrow(), puts + 1);
+
+    // The bound is still one CHAIN_CHECK_WITHIN.
+    let bound = CHAIN_CHECK_WITHIN.as_millis() as u64;
+    let h = chain('a', &[]);
+    let w = RefCell::new(vec![bucket("v7", &h, "s")]);
+    let c = Clock::default();
+    let slow = |_: usize, _: String, _: u32| async {
+        c.sleep(bound + 1).await;
+        Ok::<Option<Header>, String>(None)
+    };
+    let r = c.run(check_with_sets([0], &manifest(&h), |b| head(&w, b), slow, &Sets::default(), sleep(&c)));
+    assert_eq!(r, Ok(ChainCheck::Late));
+}
