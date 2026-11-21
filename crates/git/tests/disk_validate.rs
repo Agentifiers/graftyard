@@ -108,6 +108,7 @@ impl Replay {
                 self.shards[s].waiters.push((i, from, then));
             }
             CatchUpStep::Await => self.shards[s].waiters.push((i, from, then)),
+            CatchUpStep::Stopped => unreachable!("this replay tears no shard down"),
         }
     }
 
