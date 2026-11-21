@@ -6943,6 +6943,36 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 
 **Flip.** A row where hits refused by the gate (401 or 404) cost R2 reads at a rate that shows up in its bill, or where a hit's `gate` stage, now measured, stays under 50 ms at p99 so the overlap buys nothing.
 
+### `round-memo`: a `Notify` or `Search` round reads each thread once for its batch, 2026-11-21
+
+**Status.** Built on branch `lead-cpu` from main `476ff72b`, code only, from the lead's leader-CPU look after B0-31 m66r31. Site script and shared code (`crates/git/src/inbox.rs`, `notices`; `crates/git/src/search.rs`, `docs_for`; `workers/site/src/activity.rs`), so it ships on a site day. Not yet run hosted.
+
+**Decision.** `inbox::notices` and `search::docs_for` take a round's batch of committed entries, not one entry.
+- `notices` reads each touched thread's issue row, assignees, commenters and thread subscriptions once, and the repository's watchers once, then gives each entry's notices from those reads. It answers each account's notices by entry, as `Inbox::apply` takes them.
+- `docs_for` builds each touched issue's document once, in the order the batch first touched it. A `Settings` or `Deleted` entry still asks for `DocOp::Repo`.
+- The `Notify` and `Search` rounds, and the `/activity` notices replay, pass the batch they already read.
+
+**Why.** On B0-31 m66r31 the leader's rows read per minute grew from 207k to 2.09M over the row, while its rows written stayed at 11k to 15k. Its CPU per minute followed them at r = 0.981, about 6.1 CPU-s per million rows. Its followers stayed at 30k to 100k rows. m65r31 and m64r31 show the same slope [measured, `tests/m4/results/m4-wp4.md`, "Why the leader's CPU per request grows across a B0-31 row"]. The load posts about 210 comments a minute on one issue. Per comment entry, `Notify` scanned that issue's comments and read each comment's row to find its commenters, and `Search` read every comment's body again to build the document. So each comment cost three rows per earlier comment, and a row's reads grew with the square of its comments [measured in memory: 20 comment entries on 320 comments read 21,945 rows one at a time and 1,379 as a batch].
+
+**Invariant.** Every entry of a batch already read the tier as it stood when the round ran, not as it stood after that entry: the round runs after `applied` passed the whole batch. So reading a thread once for the batch gives each entry the readers and document it read before. Delivery is unchanged: the same notices reach the same `Inbox`es under the same indexes, the cursor commits as before, and `Inbox::apply` and the shard's delete-then-insert keep a redelivery idempotent.
+
+**What it beat.**
+- **A per-issue index kept by `apply`, like `NamedIndex`.** It would make a round's reads independent of the issue's size, but a document still carries every comment body, so `Search` stays linear in the issue anyway. It adds a derived structure for a cost the batch already cuts about twentyfold.
+- **An incremental search document.** It would change the shard's format and its rebuild for the same cut.
+- **Turning the consumers off for B0-31.** The row would then no longer measure the install it gates.
+
+**Evidence.**
+- `a_batch_on_a_busy_issue_reads_its_comments_once_and_sends_what_each_entry_owes` (`crates/api/tests/activity_gates.rs`) fails on main's rule. 20 comment entries on two threads, after 300 earlier comments, owe the same notices and documents as one entry at a time, at 733 rows for `Notify` and 646 for `Search`. One at a time they read 21,945. The test also checks a watcher, a thread unsubscriber, a mention and the author by expected values.
+- `tests/roundmemo/plant.py`, 6 of 6 caught:
+  - mutants 0 and 1 are main's rule, rereading each entry's thread and building a document per entry;
+  - one thread's reads used for every thread;
+  - a thread unsubscription ignored;
+  - the repository's watchers dropped after the first thread;
+  - `Search` reading only the batch's first entry.
+- BF-5, BF-67 and BF-68's in-memory gates pass unchanged in rule (`activity_gates.rs`).
+
+**Flip.** A B0-31 row on this rule where the leader's rows read per minute exceed 300k in the row's last minute, against 2.0M on m66r31. That would mean the reads are not the consumers' and the CPU slope has another cause. Or a row where a batch's notices or documents differ from what its entries owe one at a time.
+
 ### Not adopted: a KV-backed log so read grants leave past the output gate, 2026-11-21
 
 **Status.** Closed by the operator from A37's design note and two rows (`decisions/OPEN-QUESTIONS.md`, A37). No code.

@@ -291,12 +291,16 @@ pub enum DocOp {
     Repo,
 }
 
-/// The documents one committed entry changes, read from the tiers after it applied, in order.
-pub fn docs_for(info: RepoInfo, meta: &(impl Read + ?Sized), e: &LogEntry<RepoEvent>) -> Vec<DocOp> {
-    let EntryBody::Events(evs) = &e.body else { return Vec::new() };
+/// The documents a batch of committed entries changes, read from the tiers as they stand now, once each: two entries
+/// of one issue read the same document, so on a busy issue a batch builds it once, not once per entry, and each build
+/// reads every comment of the issue (`decisions/DECISIONS.md`, "`round-memo`").
+pub fn docs_for(info: RepoInfo, meta: &(impl Read + ?Sized), es: &[LogEntry<RepoEvent>]) -> Vec<DocOp> {
     let mut ns: Vec<IssueNumber> = Vec::new();
     let mut repo = false;
-    for ev in evs {
+    for ev in es.iter().flat_map(|e| match &e.body {
+        EntryBody::Events(evs) => evs.as_slice(),
+        _ => &[],
+    }) {
         let n = match ev {
             RepoEvent::IssueOpened { n, .. }
             | RepoEvent::PrOpened { n, .. }
