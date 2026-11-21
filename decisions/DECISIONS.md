@@ -4804,7 +4804,7 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **What it beat.**
 - **A shorter `CALL`.** After `CALL` (3.5 s) the lookup abandons the held request and walks the voters: on m3fr12 it asked `#1#f1` at 39.973 and `#1#f2` at 40.632, and the leader again only at 41.923 [measured, the sites' Workers Logs]. A shorter `CALL` would also drop a slow leader answer that the hedge keeps waiting for.
-- **A hedge to a follower or learner** (reversed by `dep-hedge-other`, 2026-11-20, on F109's holds). A dependency read is the leader's own `fresh` read (`design/DESIGN.md`, "Follower read": "A command's `fresh` deps ... stay on the leader"), and a read-index read from a follower crosses the same ocean to the leader (F81, What it beat).
+- **A hedge to a follower or learner** (reversed by `dep-hedge-other`, 2026-11-20, on F109's holds; that reversal was itself reversed on 2026-11-21, so this rejection stands). A dependency read is the leader's own `fresh` read (`design/DESIGN.md`, "Follower read": "A command's `fresh` deps ... stay on the leader"), and a read-index read from a follower crosses the same ocean to the leader (F81, What it beat).
 - **Hedging at the p99 (about 700 ms).** It doubles the hedged share for a read that would mostly answer anyway, while the cost of a stall like F83's is set by the hold, not by 300 ms of bound.
 
 **Cost.** On B0-31 m3fr12's buckets-up half, the leader made 4,329 chain reads in 300 s (`deps:authz` 2,205, `deps:tokens` 1,609, `deps:names` 515), 14.4 a second, with every kind's p99 under 725 ms [measured, `tests/am1/raw/a1-b0-31-mwkwap5z.jsonl`]. So under 1% pass `DEP_HEDGE`, and the hedge adds at most 0.14 reads a second, under one in 7 s, on identity leaders that each serve hundreds [inference from the percentiles; the run kept no per-read times].
@@ -6795,9 +6795,21 @@ Those runs cost 45 to 54 ms and 0.25 MB a pack, 4.7 to 5.5 MB/s. So 32 packs or 
 - a burst's whole catch-up (the run's pieces end to end) takes more than 25% longer than m3fst1's 15.8 s for the same packs, which means the pieces cost more than they free; or
 - the held validates' re-asks between pieces fill the container's validate queue, so pushes answer 429 `Busy` during the burst where m3fst1 had none. Each re-ask runs `index-pack` on its pack again: m3fst1's 53 held validates over a run of about 10 pieces would be about 500 re-asks of 256 KiB packs [inference]. If it fires, re-ask only the validates whose base the piece's entries could hold.
 
-### `dep-hedge-other`: a dependency read's hedge is a read-index read to another member of the dependency's group, 2026-11-20
+### `dep-hedge-other`: a dependency read's hedge is a read-index read to another member of the dependency's group, 2026-11-20 (reversed 2026-11-21)
 
-**Status.** Built on branch `f109-hedge-other` from main `b59defee`, code only, as the lead ordered after B0-31 m64r31 (F109); on main from `81f241e7`. **Run hosted on two rows, and its flip's first condition is met on both:** B0-31 m65r31 on graft-m4a won 7 of 354 asked (2.0%, its placement-failing half) with `authz:1` p99 1,210 to 1,356 ms, and B0-29 m3fb29 on graft-m3f won 0 of 844 (lead's count) with dep p99 under 1 s. 30% of m65r31's hedge requests went to members an older config named, and the `tokens` and `names` followers answered most at `FOLLOWER_CALL` (`tests/m4/results/m4-wp4.md`, "Where the hedges went"). Recommended back to the same-leader hedge; left in place until the lead decides.
+**Status.** **Reversed on 2026-11-21** (branch `install-record` from main `54638269`) by its own flip: the hedge goes back to a second request to the leader the isolate holds (`dep-hedge`, `dep-hedge-adaptive`), and the F109 step log stays. It was built on branch `f109-hedge-other` from main `b59defee` after B0-31 m64r31 (F109) and on main from `81f241e7` to `54638269`.
+
+**Reversed, with the evidence.** Two rows met the flip's first condition, won near zero while dependency reads stayed slow:
+- **B0-31 m65r31** on graft-m4a won 7 of 354 asked (2.0%, its placement-failing half), with `authz:1` p99 1,210 to 1,356 ms.
+- **B0-29 m3fb29** on graft-m3f won 0 of 844, about 8% of 10,168 dependency reads, with dependency p99 under 1 s (`tests/am1/results/b029-m3f.md`). Across the two, 7 of 1,198 [measured].
+
+Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the hedges went"):
+- **224 (30%) to members a later config had replaced.** `authz:1#1#f1`, `tokens:2655#1#f1` and `names:369#1#f1`, where the configs name `#4#f1`, `#3#f1` and `#2#f1`; 164 of them ended at `FOLLOWER_CALL` (2 s).
+- **The `tokens` and `names` followers were slow on their own.** Their current members answered 152 of 261 hedges at `FOLLOWER_CALL` while their leaders' `/raft` calls kept arriving: `tokens:2655#1#f2` ran alarms of 1.2 to 1.8 s and `/raft` turns of 2.2 to 3.1 s back to back. What fills those turns is not attributed.
+- **Live, fast members lost the race.** `authz:1#1#f2` and the owner's two followers answered 263 of 267 hedges in under 500 ms, but the leader's first answer usually came first: the hedge fires at the chain's p90.
+- **The hold it was built for did not recur.** No `authz:1` member logged an alarm of 500 ms or more, and 10 of 752 answers sat at `FOLLOWER_WAIT`.
+
+**Finding, not fixed: the hedge never learned from a `notLeader` config.** A replaced member answers a read-index read `notLeader` with the config it holds, and `hedge_read` counted that unusable without calling `learn`. `hedge_target` took the voters from the config the isolate last learned, so the next hedge went to the same old member. Any later read sent to a follower by a dependency read would need that learning first.
 
 **Decision.** When `dep-hedge-adaptive`'s delay passes with no answer (the chain's p90, about one read in ten), `dep_read` (`crates/lookup/src/lib.rs`) sends its second request not to the same leader but as a read-index read (`"index": true`) to another member of the dependency's group, `hedge_target`: the first member a follower read would ask (`timed_spread_order`: a learner this isolate scored first, else a follower), never the leader the isolate holds, rotated at random. Only a value is used (`follower_answer_usable`); an `overloaded`, `notLeader`, `busy`, error status, or no answer within `FOLLOWER_CALL` is an error, so the read waits for the leader's answer, and none is reported with `suspect`. A group with no other member the isolate knows of (`Solo`) gets the old same-leader hedge. The first answer of the two wins, as before. The delay, the one hedge per read, and its accounting (`depHedges`) are unchanged; the call counts as `SentBy::Hedge` in the members' inbound log (`tests/f74/inbound.py`).
 
@@ -6854,3 +6866,24 @@ Those runs cost 45 to 54 ms and 0.25 MB a pack, 4.7 to 5.5 MB/s. So 32 packs or 
 - If a row shows `body changed in transit` on direct (`next=1`, no `via`) calls as well as pool hops, the change is before the shard, and the edge's copy is the place to look.
 - If a row shows a pool-forwarded push's re-send from the first shard changed too, the check moves the failure but does not end it, and the next step is to make that re-send a fresh copy from the edge as well.
 - If `x-graft-body-changed` 503s pass 1 in 1,000 burst validates, the hop is unreliable enough that the forward is the problem, and pools should take only bodies a shard holds.
+
+### `install-record`: a repository leader keeps the install account's placement record for its install `Authz` reads, 2026-11-21
+
+**Status.** Built on branch `install-record` from main `54638269`, code only, as the lead ordered after B0-31 m65r31. Not yet run hosted; the next graft-m4a site day plus a B0-31 row measures it.
+
+**Decision.** `read_dep_under` (`workers/site/src/host.rs`) reads a dependency chain under the record the member already holds: the joined record for its owner's `Authz` (`owner_chain_record`, as before), and for `Authz(install_account())` the install account's record kept in `Host::install_record`. With no record held, or when the read under it fails, it looks the chain up (`release::record_for`: a `Placement` read on `Names` for an account's chain) and reads under that. A read of the install `Authz` that succeeds under a looked-up record keeps it, and one that fails under the kept record drops it first. The kept record is in memory only, so an isolate that resets reads it again once. Nothing is stored and no format changes.
+
+**Why.** An App command's entry reads the install's own `Authz` (`with_install`, `crates/git/src/repo.rs`), on 1,568 of 1,589 entries in m65r31's load. With no record held, each read first asked `Names` shard 24 for account 1's `Placement` row through its leader's `fresh`, then read the group, both from apac. Per entry, the install `Authz` read took p10 198, p50 277, p90 470 and p99 724 ms longer than the owner's `Authz` read issued beside it, and it was the slowest read on 798 of 808 entries in the buckets-up half [measured, `tests/m4/results/m4-wp4.md`, "The install `Authz` read's extra hop"]. In the slot model, reading it as fast as the owner's takes the up half's queue p99 from 1,620 to 1,287 ms, so commit p99 from 1,947 to about 1.6 s: under the rehomed group's 2 s, not under 1 s [inference, `tests/m4/wp4/hopreplay.py`].
+
+**Invariant.** The record only finds the group: which members to ask, at which generation. The read is the same leader `fresh` read of the same chain, asked after the batch's commands were admitted, so `decide` sees the same deps. A read under a record the account has since moved from may fail; it then looks the record up again, as a read under the owner's joined record already did.
+
+**What it beat.**
+- **A per-entry lookup (main).** One cross-region `Placement` read on every App entry.
+- **Storing the record in the member's stored join.** It would change a stored format for a record that one lookup per isolate recovers.
+- **Reading the record from the `Release` view.** The install account is an owner account, so its record is its `Placement` row, as for any owner; the `Release` view holds system chains' records.
+
+**Evidence.**
+- `the_install_authz_record_is_looked_up_once_and_kept_until_a_read_under_it_fails` (`workers/site/src/host.rs`) fails on main's rule. Six reads of the install `Authz` make one lookup, where main makes six. The owner's `Authz` and a `Tokens` shard leave the kept record alone. A move drops it and looks it up again. A failed lookup, or a looked-up record the group does not answer under, keeps nothing. `the_owners_authz_is_read_under_the_joined_record` still passes.
+- `tests/m0carried/plant72.py`, 6 of 6 caught: never kept (main's rule), never used, kept after a failed read under it, a failed read under a held record returned with no lookup, any chain's record kept as the install's, and a record kept after a failed read.
+
+**Flip.** A B0-31 row on this rule where the install `Authz` read's p50 stays more than 100 ms above the owner's `Authz` read issued beside it, which means the kept record is not being used; or where `depFails` for `authz` rises above the same row's other chains', which means a stale kept record fails reads instead of falling back.

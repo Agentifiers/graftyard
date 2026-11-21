@@ -70,3 +70,17 @@ print('  as measured              ', first_order(lambda r: r['authz:1']))
 print(f'  record kept, -p50 hop {med}', first_order(lambda r: max(0,r['authz:1']-med)))
 print('  record kept, = owner read', first_order(lambda r: r.get('authz:7100001', r['authz:1'])))
 print('  authz:1 gone (bound)     ', first_order(lambda r: 0))
+# What is left after the hop: every dep read as fast as it can be (the cycle a round alone, no gap at all), and
+# the round's parts, from the row's split.
+def no_gap():
+    ends=[c[0]+c[3] for c in cycles]; sav=[c[2] for c in cycles]
+    cum=[0]
+    for x in sav: cum.append(cum[-1]+x)
+    sl=[]; q=[]
+    for adm,slot,qq,ap in samples:
+        a=bisect.bisect_right(ends,adm); b=bisect.bisect_right(ends,ap); d=cum[b]-cum[a]
+        sl.append(max(0,slot-d)); q.append(max(0,qq-d))
+    return P(sl,.5),P(sl,.99),P(q,.5),P(q,.99)
+print('  every gap gone (bound)   ', no_gap())
+rr=[c[1] for c in cycles]
+print('round (append to apply) p50/p90/p99', P(rr,.5), P(rr,.9), P(rr,.99), '; gap total ms', sum(c[2] for c in cycles), 'of wall', sum(c[3] for c in cycles))

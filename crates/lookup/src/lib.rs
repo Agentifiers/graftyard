@@ -149,8 +149,6 @@ pub enum SentBy {
     Send = 4,
     /// `commit_hedged`'s `/outcome_by_request` ask.
     Ask = 5,
-    /// `call_hedged`'s second request, a read-index read to another member (`dep-hedge-other`).
-    Hedge = 6,
 }
 
 #[cfg(feature = "test-faults")]
@@ -1262,7 +1260,9 @@ async fn spread_once(
     // (a `Solo` group: one voter, no learners), whose leader serves every read.
     let alone = voters.len() <= 1 && n_learners == 0;
     let leader_ok = alone || !body.get("q").is_some_and(leader_never_serves);
-    let bytes = index_body(body);
+    let mut indexed = body.clone();
+    indexed["index"] = json!(true);
+    let bytes = indexed.to_string();
     let mut answers = Vec::new();
     // The learners come first in the order, so the first `n_learners` asked are learners, and only they are timed.
     for (i, t) in timed_spread_order(learners, voters, known.leader, pick).into_iter().enumerate() {
@@ -1548,15 +1548,13 @@ where
     }
 }
 
-/// A leader's dependency read (`design/DESIGN.md`, Shape, \"The write path\", `dep-hedge`, `dep-hedge-other`): `call`
-/// of `body` on `chain`'s leader through `fresh`, and if it has not answered within the chain's delay
-/// (`dep_hedge_after`), a second request beside it, then the first answer of the two. The second is a read-index read
-/// (`\"index\": true`) to another member of the group (`hedge_target`), not a new request to the same leader: on B0-31
-/// m64r31 the install `Authz` leader was held in 3.8 s and 2.5 s alarms, and every request to it, a same-leader hedge
-/// included, ended with the alarm (F109). Both start after the read was asked. A read-index answer holds every entry
-/// acknowledged before it arrived, as a `fresh` read does (\"Follower read\"), so whichever answers, the read the caller
-/// keeps is one linearizable read made after the batch's commands were admitted. F83: single requests to an identity
-/// leader were held 4.6 to 5.4 s before its handler while it served a later request from the same isolate in 186 ms.
+/// A leader's dependency read (`design/DESIGN.md`, Shape, \"The write path\", `dep-hedge`): `call` of `body` on
+/// `chain`, and if it has not answered within the chain's delay (`dep_hedge_after`), a second `call` beside it, a new request to the leader the
+/// isolate then holds (a dependency read is the leader's own `fresh`, so no follower may answer it), and the first
+/// answer of the two. Both start after the read was asked, and each is answered
+/// only by a leader through `fresh`, so the read the caller keeps is one `fresh` read made after the batch's commands
+/// were admitted, whichever it is. F83: single requests to an identity leader were held 4.6 to 5.4 s before its
+/// handler while it served a later request from the same isolate in 186 ms.
 pub async fn call_hedged(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -1565,84 +1563,26 @@ pub async fn call_hedged(
     body: &Value,
 ) -> (std::result::Result<(Value, Step), String>, Hedged) {
     let bytes = body.to_string();
-    let to = hedge_target(chain, record, (js_sys::Math::random() * 1024.0) as usize, now_ms());
-    let read = |at: Option<Target>| {
-        let bytes = &bytes;
-        async move {
-            match at {
-                Some(t) => hedge_read(b, chain, &t, path, body).await,
-                None => call_raw(b, chain, record, path, bytes.as_bytes()).await.map(|(v, s, _)| (v, s)),
-            }
-        }
-    };
-    dep_read(chain, read, to, Delay::from, now_ms).await
+    let one = || async { call_raw(b, chain, record, path, bytes.as_bytes()).await.map(|(v, s, _)| (v, s)) };
+    dep_read(chain, one, Delay::from, now_ms).await
 }
 
-/// The member a dependency read's hedge goes to (`dep-hedge-other`): the first a read-index read would ask
-/// (`timed_spread_order`: a timed learner, else a follower), never the leader this isolate holds, rotated by `pick`.
-/// `None` when the group has no other member this isolate knows of (a `Solo` group): the hedge then asks the leader
-/// again, as `dep-hedge` did. With no leader held, any voter may come first, and one that leads serves the read itself.
-fn hedge_target(chain: ChainId, record: &PlacementRecord, pick: usize, now: u64) -> Option<Target> {
-    let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
-    let voters = if known.voters.is_empty() {
-        record.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string())).collect()
-    } else {
-        known.voters
-    };
-    let learners = ANSWER_MS.with(|m| {
-        let m = m.borrow();
-        known.learners.into_iter().map(|(s, n)| (s, n.clone(), m.get(&(s, n)).and_then(|t| t.score(now)))).collect()
-    });
-    timed_spread_order(learners, voters, known.leader, pick).into_iter().next()
-}
-
-/// The hedge's request: `body` with `\"index\": true` to `to`, answered only with a value (`follower_answer_usable`).
-/// `notLeader`, `overloaded`, `busy`, an error status, or no answer within FOLLOWER_CALL is an error, so the read
-/// waits for the leader's answer instead (`hedge`), and none is reported with `suspect`.
-async fn hedge_read(
-    b: &Bindings<'_>,
-    chain: ChainId,
-    to: &Target,
-    path: &str,
-    body: &Value,
-) -> std::result::Result<(Value, Step), String> {
-    let r = post_by(b, to.site, &to.do_name, path, index_body(body).as_bytes(), FOLLOWER_CALL, SentBy::Hedge).await;
-    let v = hedge_answer(r).ok_or_else(|| format!("{chain}: hedge to site {} unusable", to.site.0))?;
-    learn_leader_from_follower(chain, &v);
-    Ok((v, Step::Cached))
-}
-
-/// The hedge's answer if its value is used (`follower_answer_usable`), else `None`.
-fn hedge_answer(r: Option<(u16, Value)>) -> Option<Value> {
-    follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v))).then(|| r.map(|(_, v)| v)).flatten()
-}
-
-/// A read-index read's body: `body` with `"index": true`, so the member that gets it waits for the leader's
-/// confirmed commit index before it answers ("Follower read").
-fn index_body(body: &Value) -> String {
-    let mut indexed = body.clone();
-    indexed["index"] = json!(true);
-    indexed.to_string()
-}
-
-/// `call_hedged`'s rule over any read, sleep and clock: `read(None)`, the leader's `fresh` read, now, and after
-/// `dep_hedge_after(chain)` `read(to)` beside it, a read-index read to `to` (`hedge_target`), or with no other member
-/// `read(None)` again; the first answer of the two. An answer's time joins the chain's window, whichever gave it.
+/// `call_hedged`'s rule over any read, sleep and clock: `read()` now, and `read()` again beside it after
+/// `dep_hedge_after(chain)`; an answer's time joins the chain's window.
 async fn dep_read<T, E, R, RF, D, DF>(
     chain: ChainId,
     read: R,
-    to: Option<Target>,
     delay: D,
     now: impl Fn() -> u64,
 ) -> (Result<T, E>, Hedged)
 where
-    R: Fn(Option<Target>) -> RF,
+    R: Fn() -> RF,
     RF: Future<Output = Result<T, E>>,
     D: Fn(Duration) -> DF,
     DF: Future<Output = ()>,
 {
     let began = now();
-    let got = hedge(read(None), delay(dep_hedge_after(chain)), || read(to)).await;
+    let got = hedge(read(), delay(dep_hedge_after(chain)), &read).await;
     if got.0.is_ok() {
         dep_read_took(chain, now().saturating_sub(began));
     }
@@ -4306,73 +4246,44 @@ mod tests {
     }
 
     /// `dep_read` driven by hand: request `i` (in the order sent) is sent at the clock's time and ends `ends[i]` ms
-    /// later with its result, or never. The hedge goes to `to`. Returns the answer, how the hedge ended, the requests
-    /// sent, and the clock then.
-    fn run_dep_read_to(
-        chain: ChainId,
-        to: Option<Target>,
-        ends: Vec<Option<(u64, Result<u32, &'static str>)>>,
-    ) -> (Result<u32, &'static str>, Hedged, usize, u64) {
-        use std::cell::Cell;
-        let clock = std::rc::Rc::new(Cell::new(0u64));
-        let sent = Cell::new(0usize);
-        let read = |_: Option<Target>| {
-            let i = sent.get();
-            sent.set(i + 1);
-            on_clock(clock.clone(), ends.get(i).cloned().flatten())
-        };
-        let (r, how, at) = drive_dep(&clock, |delay, now| dep_read(chain, read, to.clone(), delay, now));
-        (r, how, sent.get(), at)
-    }
-
+    /// later with its result, or never. Returns the answer, how the hedge ended, the requests sent, and the clock then.
     fn run_dep_read(
         chain: ChainId,
         ends: Vec<Option<(u64, Result<u32, &'static str>)>>,
     ) -> (Result<u32, &'static str>, Hedged, usize, u64) {
-        run_dep_read_to(chain, None, ends)
-    }
-
-    /// A fake clock's future that is ready once the clock reaches its time.
-    struct DepAt(std::rc::Rc<std::cell::Cell<u64>>, u64);
-    impl Future for DepAt {
-        type Output = ();
-        fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
-            if self.0.get() >= self.1 { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
-        }
-    }
-
-    /// A request on the fake clock: `end` ms from now with its result, or never.
-    async fn on_clock(
-        clock: std::rc::Rc<std::cell::Cell<u64>>,
-        end: Option<(u64, Result<u32, &'static str>)>,
-    ) -> Result<u32, &'static str> {
-        match end {
-            Some((ms, r)) => {
-                let at = clock.get() + ms;
-                DepAt(clock, at).await;
-                r
-            }
-            None => std::future::pending().await,
-        }
-    }
-
-    /// Polls the future `make` builds, given the fake clock's sleep and time, a millisecond at a time until it ends.
-    fn drive_dep<F>(
-        clock: &std::rc::Rc<std::cell::Cell<u64>>,
-        make: impl FnOnce(Box<dyn Fn(Duration) -> DepAt>, Box<dyn Fn() -> u64>) -> F,
-    ) -> (Result<u32, &'static str>, Hedged, u64)
-    where
-        F: Future<Output = (Result<u32, &'static str>, Hedged)>,
-    {
         use futures_util::FutureExt;
-        let (c1, c2) = (clock.clone(), clock.clone());
-        let delay: Box<dyn Fn(Duration) -> DepAt> =
-            Box::new(move |d| DepAt(c1.clone(), c1.get() + d.as_millis() as u64));
-        let now: Box<dyn Fn() -> u64> = Box::new(move || c2.get());
-        let mut f = Box::pin(make(delay, now));
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct At(Rc<Cell<u64>>, u64);
+        impl Future for At {
+            type Output = ();
+            fn poll(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0.get() >= self.1 { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+            }
+        }
+        let clock = Rc::new(Cell::new(0u64));
+        let sent = Cell::new(0usize);
+        let read = || {
+            let i = sent.get();
+            sent.set(i + 1);
+            let (c, end) = (clock.clone(), ends.get(i).cloned().flatten());
+            async move {
+                match end {
+                    Some((ms, r)) => {
+                        let at = c.get() + ms;
+                        At(c, at).await;
+                        r
+                    }
+                    None => std::future::pending().await,
+                }
+            }
+        };
+        let delay = |d: Duration| At(clock.clone(), clock.get() + d.as_millis() as u64);
+        let now = || clock.get();
+        let mut f = Box::pin(dep_read(chain, read, delay, now));
         for _ in 0..20_000 {
             if let Some((r, how)) = (&mut f).now_or_never() {
-                return (r, how, clock.get());
+                return (r, how, sent.get(), clock.get());
             }
             clock.set(clock.get() + 1);
         }
@@ -4418,117 +4329,6 @@ mod tests {
             run_dep_read(vec![Some((40, Err("first"))), Some((10, Ok(2)))]),
             (Err("first"), Hedged::First, 1, 40)
         );
-    }
-
-    /// `dep-hedge-other` (F109): on B0-31 m64r31 the install `Authz` leader `authz:1#1#f0` was held in alarms of
-    /// 3,784 and 2,451 ms, and every request to it, a second one from the same isolate included, ended with the
-    /// alarm. The repository leader's read of `authz:1` started 21:20:03.685Z took 3,405 ms; the followers' own
-    /// read-index reads started within 300 ms of its hedge time answered in 169 to 292 ms (6 of 6). Here the leader is
-    /// held 3,784 ms and the other member answers in 245 ms, so the read ends at the chain's p90 (593 ms) plus 245,
-    /// where main's rule (a second request to the same leader) waits out the hold. When the other member's read index
-    /// waits on the same held leader, as for the read started 21:19:20.279Z (7 follower read-index reads near its
-    /// hedge, 0 usable, each about 1 s at FOLLOWER_WAIT), its error does not end the read, which takes the leader's
-    /// answer as before. With no other member the hedge asks the leader again. `tests/m0carried/plant69.py` mutant 0 is
-    /// main's rule [measured, `tests/m4/results/m4-wp4.md`, "B0-31 on graft-m4a after test-faults site day 64"].
-    #[test]
-    fn a_dependency_reads_hedge_goes_to_another_member_past_a_held_leader() {
-        use std::cell::Cell;
-        let chain = ChainId::Authz(graftyard_types::AccountId(graftyard_types::DbId(1)));
-        for t in 0..64 {
-            dep_read_took(chain, 251 + 6 * t);
-        }
-        let follower = Target { site: SiteId(1), do_name: "authz:1#4#f1".into() };
-        // `leader` ends every leader request at the alarm's end (3,784 ms on the read's clock); `other` is the other
-        // member's answer, `None` for never.
-        let run = |to: Option<Target>, other: Option<(u64, Result<u32, &'static str>)>| {
-            let clock = std::rc::Rc::new(Cell::new(0u64));
-            let asked = std::cell::RefCell::new(Vec::new());
-            let read = |at: Option<Target>| {
-                asked.borrow_mut().push(at.as_ref().map(|t| t.site.0));
-                let end = match at {
-                    None => Some((3_784u64.saturating_sub(clock.get()), Ok(1))),
-                    Some(_) => other,
-                };
-                on_clock(clock.clone(), end)
-            };
-            let (r, how, at) = drive_dep(&clock, |delay, now| dep_read(chain, read, to, delay, now));
-            (r, how, at, asked.into_inner())
-        };
-        // The chain's p90, 593 ms, as m64r31's apac `Authz` reads had it.
-        assert_eq!(dep_hedge_after(chain), Duration::from_millis(593));
-        let h = 593;
-        // The other member answers in 245 ms: its answer, at the hedge plus 245, and the hedge went to it.
-        assert_eq!(run(Some(follower.clone()), Some((245, Ok(2)))), (Ok(2), Hedged::Won, h + 245, vec![None, Some(1)]));
-        // Its read index is held too: `overloaded` at FOLLOWER_WAIT is an error, and the read takes the leader's.
-        assert_eq!(
-            run(Some(follower.clone()), Some((1_000, Err("unusable")))),
-            (Ok(1), Hedged::Asked, 3_784, vec![None, Some(1)])
-        );
-        // No answer at all from it: the leader's, as before.
-        assert_eq!(run(Some(follower), None), (Ok(1), Hedged::Asked, 3_784, vec![None, Some(1)]));
-        // A `Solo` group, no other member: the hedge asks the leader again.
-        assert_eq!(run(None, Some((9, Ok(2)))), (Ok(1), Hedged::Asked, 3_784, vec![None, None]));
-    }
-
-    /// The hedge's member (`hedge_target`): never the leader this isolate holds; a learner it scored first; `None` for a
-    /// group whose only member it knows is that leader; and with no leader held, any voter, the record's bootstrap
-    /// members when no config is known.
-    #[test]
-    fn a_dependency_reads_hedge_never_asks_the_held_leader() {
-        let chain = ChainId::Authz(graftyard_types::AccountId(graftyard_types::DbId(7_100_777)));
-        let record = PlacementRecord {
-            name: graftyard_types::PlacementName::Tri,
-            sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
-            home: SiteId(0),
-            generation: 1,
-            moving_from: None,
-            at: graftyard_types::Timestamp(0),
-        };
-        let v = |s: u8| (SiteId(s), format!("authz:7100777#1#f{s}"));
-        let all: std::collections::BTreeSet<u8> =
-            (0..64).filter_map(|p| hedge_target(chain, &record, p, 0)).map(|t| t.site.0).collect();
-        assert_eq!(all, [0, 1, 2].into_iter().collect(), "no config, no leader: any bootstrap member");
-        KNOWN.with(|k| {
-            k.borrow_mut().insert(
-                chain,
-                Known {
-                    voters: vec![v(0), v(1), v(2)],
-                    leader: Some(SiteId(0)),
-                    config_index: 3,
-                    ..Default::default()
-                },
-            )
-        });
-        let picked: std::collections::BTreeSet<u8> =
-            (0..64).filter_map(|p| hedge_target(chain, &record, p, 0)).map(|t| t.site.0).collect();
-        assert_eq!(picked, [1, 2].into_iter().collect(), "never the held leader");
-        let l = (SiteId(192), "authz:7100777#2#l0".to_owned());
-        KNOWN.with(|k| k.borrow_mut().get_mut(&chain).unwrap().learners = vec![l.clone()]);
-        ANSWER_MS.with(|m| m.borrow_mut().insert(l.clone(), Timed { mean: 40.0, dev: 0.0, at: 0 }));
-        assert!((0..8).all(|p| hedge_target(chain, &record, p, 0).is_some_and(|t| t.site == SiteId(192))));
-        KNOWN.with(|k| {
-            k.borrow_mut().insert(
-                chain,
-                Known { voters: vec![v(0)], leader: Some(SiteId(0)), config_index: 4, ..Default::default() },
-            )
-        });
-        assert_eq!(hedge_target(chain, &record, 0, 0), None, "a Solo group: the hedge asks the leader again");
-        // The hedge is a read-index read, and only a value ends the read; an `overloaded` or `notLeader` answer, an
-        // error status, or none waits for the leader.
-        let body: Value = serde_json::from_str(&index_body(&json!({ "q": { "authz": 1 } }))).unwrap();
-        assert_eq!(body, json!({ "q": { "authz": 1 }, "index": true }));
-        assert_eq!(
-            hedge_answer(Some((200, json!({ "value": 1, "index": 3 })))),
-            Some(json!({ "value": 1, "index": 3 }))
-        );
-        for r in [
-            Some((200, overloaded_reply(250))),
-            Some((200, json!({ "error": { "notLeader": { "leader": 0, "term": 2 } } }))),
-            Some((503, json!({}))),
-            None,
-        ] {
-            assert_eq!(hedge_answer(r.clone()), None, "{r:?}");
-        }
     }
 
     /// `dep-hedge-adaptive`: each chain's hedge waits the p90 of its own last 64 read times in this isolate, within
