@@ -242,7 +242,8 @@ second opinion's:
   leg outside the handler that the idle 94 ms leg does not explain. The between-arm contrast puts the follower read
   load at about 100 to 190 ms of the round [inference]. The rest of the leg is wire both ways, the follower's wait
   before its handler, and the leader taking the answer late, which this trace cannot split, since its cross-clock
-  stamps drift by about 1 s. `b033-rebase.md`, item 3, has the Workers Logs split where it exists.
+  stamps drift by about 1 s. `b033-rebase.md`, item 3, splits it from Workers Logs: the followers' qin plus handler is p50 23 to 64 ms a leg
+  in A, C and B2, so the follower's own queue is smaller still than the 100 to 190 ms inferred here.
 - **"Two p99 rounds plus one median" uses rounds that are not p99.** The mechanism stands (a Human waits out the entry
   in flight and then its own entry). The arithmetic does not. The `/stats` round p99s used above (1,136 / 943 / 1,067
   ms) sit at p96.2, p93.1 and p96.3 of the leader trace's entry rounds (first `AppendQueued` to first ok voter
