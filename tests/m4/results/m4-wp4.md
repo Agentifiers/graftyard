@@ -986,6 +986,86 @@ The lead's call after the slot analysis above: both, on one branch from main `b5
 - **Plants.** `tests/m0carried/plant69.py`, **7 of 7 caught**: the hedge asks the same leader (main's rule); the target may be the held leader; no read-index flag; an unusable answer ends the read; an alarm of exactly 500 ms logs nothing; the line leaves out the quick awaits; the line names no group.
 - `crates/raft` is unchanged, so the long sweep and Porcupine were not rerun.
 
+## B0-31 on graft-m4a after test-faults edge day 29 and site day 65 (2026-11-21, row m65r31)
+
+Edge day 29 (23:55:45Z to 23:58:30Z, exit 0, version `e395548c`, `tests/m4/raw/wp4/edgeday29.log`) put a **test-faults** build of main `81f241e7` on `graft-m4a-edge`, with edge day 28's `FORMATS_ENABLED`, `RUN_SERVICE_PUBLIC`, `OPS` and web build. Site day 65 (23:59:16Z to 00:00:22Z, exit 0, `siteday65.log`) shipped the same commit (`step-busy` and `dep-hedge-other`) to all three sites as a test-faults build, with day 64's flags and image `m4a60` (`containers/git` changed only in tests since `96a91d58`). Granted by the lead with a $10 stop on graft-m4a plus the runner account from 23:55:45Z, watched by `b035watch.sh` with `STOP=10` (`b031-m65r31.watch`).
+
+`tests/m4/wp4/b031.sh` at `81f241e7` created `m3org/b031-m65r31` = repo 65581 and rehomed it on apac (terms 2 → 3, f2 leading, `home` 2). It placed 8 learners and set k 4, then ran `a1.mjs b0-31 --seconds 600` as run `mwpn8ro9`: 500 agents pushing 1 MiB under the confined m3-ci App. Load ran 00:06:05.731Z to 00:16:05.7Z. From 00:11:05.7Z the test-faults edge honoured `x-graft-place-fail`, so 1,261 of 1,262 agent pushes in the second half answered `full`. Done line 00:16:52Z, exit 0. Raw files are in `tests/m4/raw/wp4/b031-m65r31/`, and the trace is `tests/fanout/raw/tsave-m65r31-b0-31.jsonl.xz`.
+
+**Verdict (lead, 2026-11-21): valid; both halves between the 1 s line and the 3 s fail line, and the buckets-up half under the rehomed group's 2 s.** This is the first B0-31 on graft-m4a with the placement-failing half measured.
+
+| Line | m65r31 | m64r31 | Line (fail) |
+| --- | --- | --- | --- |
+| Commit p99, buckets up (leader f2 on apac) | **1,947 ms** (p50 1,141, n 5,735, max 2,913) | 2,590 | 1 s; 2 s for a rehomed group (`FRAME.md`, 2026-11-18); fail 3 s |
+| Commit p99, placement failing | **2,185 ms** (p50 1,221, n 4,574) | not measured | 1 s; fail 3 s |
+| Split, up half | queue p99 1,637 (slot 1,477, post 375); round p99 649; confirm p99 280; deps:all p99 1,123 | queue 2,361 (slot 2,109); round 684; confirm 181; deps:all 985 | |
+| Split, failing half | queue p99 1,872 (slot 1,845, post 510); round p99 1,084; confirm p99 402; deps:all p99 1,360 | | |
+| Leader changes in the load | **0** (f2, term 3 throughout) | 1 | |
+| Step-down lines | 1: 00:06:52.579 site c `member alarm repo:65581#1#f2 …: StepDown { why: LoopLag { clamped: 2 }, to: None }`, a hold 47 s into the load; no `CommitErrors` trip | 2 | |
+| `TransferAbandoned` | 0 lines | 0 | |
+| `suspect` | 0 in the load window | 412 | |
+| Leader's failed calls | 2 (1 `deadline` per follower) | 63 | |
+| Hedges, failing half (`depHedges`, from the end read, which the row reset at `placeFailAt`) | **won 7 of 354 asked** (2.0%) | 24 of 202 (11.9%), its second half | |
+| Dep reads, up half (n, p50, p99, max, over 1 s) | `authz:1` 799, 565, 1,210, 2,456, 17; owner `authz` 808, 258, 640, 999, 0; `tokens` 1,270, 261, 707, 986, 0; `names` 471, 256, 715, 758, 0 | `authz:1` 906, 404, 912, 3,513, 6; owner 933, 201, 536, 671, 0 | |
+| Dep reads, failing half | `authz:1` 769, 581, 1,356, 1,791, 43; owner 781, 273, 841, 1,109, 3; `tokens` 1,266, 275, 905, 1,117, 4; `names` 497, 269, 848, 1,086, 1 | | |
+| Pushes | agent 1,231 of 1,237 ok in the first half (6 `full`); merges 35 and 32 × 200 | agent 1,147 of 1,265 | |
+| Spend | 23:55:45Z to 00:20:38Z: graft-m4a $1.75 by prefix ($3.80 for the account, with graft-m2b's $1.54), runner account $0.00, against the $10 stop | $2.05 | |
+| Teardown | `git#2` and `git#0#net:65581` 200; no shard container running; shardkill deleted (00:18:24Z) | | |
+
+**Slow-alarm step lines (F109), every one from 23:55:45Z** (`alarm-slow.txt`). `tick` and `set_alarm` read 0 ms on every line.
+- Before the load: `actions:7100001.4#1#f0` `family` 540 ms (00:00:52); `names:973#1#f0` `near_check` 5,499 ms (00:01:08); `tokens:2655#1#f0` `near_check` 5,693 ms (00:02:52); `repo:65581#1#f1` `family` 847, 4,955 and 512 ms (00:01:22 to 00:01:28, the old step line names it `snap`); `repo:65581#1#f2` `family` 742 ms (00:02:43, `load`).
+- In the load: `actions:7100001.4#1#f0` `family` 588 ms and `actions:7100001.9#1#f0` `family` 609 ms (00:15:45 to 00:15:46).
+- **No `authz:1` member logged an alarm of 500 ms or more.** m64r31's 3.8 s and 2.5 s holds did not recur, so F109's await is still unnamed.
+
+**Step-busy.** There was no `CommitErrors` trip and no leader change in either half, where m64r31 had a trip and a transfer at 21:23:24. The one hold was `LoopLag`, which step-busy does not cover.
+
+### Where the hedges went (analysis, $0)
+
+Sources: every request a member took with `x-graft-sent-by` step 6 (`SentBy::Hedge`) in the load window, from the three sites' Workers Logs (`tests/m4/wp4/hedges.py`, `hedges.jsonl`, 752 requests in 2 s chunks, none at the 500-event cap), named by object id from the account's Durable Object analytics; the leader's `/deps_log`; and each group's `/status` and a direct read-index `{"dep": true}` read after the row.
+
+- **Every hedge came from one isolate**, f2's (752 of 752), as the dep reads do: 400 in the up half and 352 in the failing half. The leader's `depHedges` (354 asked, 7 won) covers only the failing half, because `a1.mjs` resets the leader's stats at `placeFailAt` and reads `depHedges` from the end read; 352 logged hedge requests against 354 counted hedges agree with one request per hedged read. m64r31's 202 and 24 are likewise its second half.
+- **By target and answer time** (wall at the member; FOLLOWER_CALL is 2 s):
+
+| Member | Generation | Requests | Under 500 ms | 500 to 949 | 950 to 1,099 (FOLLOWER_WAIT) | 1,100 to 1,989 | 1,990 or more (FOLLOWER_CALL) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `authz:1#1#f2` | current | 84 | 82 | 2 | 0 | 0 | 0 |
+| `authz:1#1#f1` | **old** (current is `#4#f1`) | 82 | 11 | 3 | 3 | 14 | 51 |
+| `authz:7100001#1#f1` | current | 98 | 97 | 1 | 0 | 0 | 0 |
+| `authz:7100001#1#f2` | current | 85 | 84 | 1 | 0 | 0 | 0 |
+| `tokens:2655#1#f1` | **old** (current is `#3#f1`) | 92 | 4 | 3 | 1 | 13 | 71 |
+| `tokens:2655#1#f2` | current | 86 | 17 | 8 | 0 | 13 | 48 |
+| `tokens:3067#1#f1`, `#1#f2` | current | 112 | 15 | 11 | 3 | 16 | 67 |
+| `names:369#1#f1` | **old** (current is `#2#f1`) | 50 | 1 | 2 | 1 | 4 | 42 |
+| `names:369#1#f2` | current | 63 | 7 | 5 | 2 | 12 | 37 |
+| **All** | | **752** | **318** | **36** | **10** | **72** | **316** |
+
+- **Why so few won.** Three things, in order of size [measured for the answers; the code paths are read from `crates/lookup`]:
+  1. **The `tokens` and `names` followers were slow members, not held behind a leader.** Their hedges mostly ended at FOLLOWER_CALL (2 s, the caller's deadline): 316 of 752 in all. In the load these groups had leaders. `tokens:2655#1#f2`'s Workers Logs from 00:08:00 to 00:09:00 show its leader f0's `/raft` calls arriving throughout. But the member ran alarms of 1.2 to 1.8 s and `/raft` turns of 2.2 to 3.1 s wall back to back, and the hedges and the repository leader's own spread reads to it waited behind them (12 `/read`, 12 `/raft` and 9 alarms in that minute). What fills those turns is not attributed; no slow-alarm line fired on these members in the load, so their alarms' awaits were each under 500 ms or the time was outside the alarm. After the row, a read-index `{"dep": true}` to any of these followers answered `notLeader` naming no leader: the groups had gone leaderless once the reads stopped. That is the post-load state, not the load's.
+  2. **The isolate's `Known.voters` holds old-generation members.** `hedge_target` takes the voters from the config this isolate last learned, and 224 of the 752 hedges (30%) went to members a later config replaced (`authz:1#1#f1`, `tokens:2655#1#f1`, `names:369#1#f1`). A replaced member answers `notLeader` with its old config, after 2 to 3 s here; `hedge_read` never calls `learn` with it, so the next hedge goes to the same old member.
+  3. **Where the target was live and led, the hedge was fast but too late.** `authz:1#1#f2` and the owner's two followers answered 263 of 267 hedges in under 500 ms (p50 85 to 242 ms). But the leader's first request answered too: the owner's `authz` read has p99 640 ms on this row and the hedge fires at its p90, so the first answer usually came within the hedge's own round trip. Of the 60 `authz:1` reads over 1 s, 23 had a hedge to an `authz:1` member, and 8 of those hedges answered before the read ended.
+- **Held behind the same leader?** Not on this row. No `authz:1` member had a 500 ms alarm and its leader answered every read; most of `authz:1`'s excess over the owner's read is the extra `Names` hop below. The 60 `authz:1` reads over 1 s are not each attributed. The FOLLOWER_WAIT bucket (950 to 1,099 ms, the read-index wait on a held leader) holds 10 of 752.
+- **graft-m3f m3fb29** (lead's data, main `a1e431a6`): 0 won of 844 asked, about 8% of some 10,170 dep reads, with deps p99 under 1 s. That fits the same mechanism: with deps under 1 s the first answer arrives inside the hedge's round trip, and the hedge's target has to have a leader and be the current generation to answer at all.
+
+**Recommendation: go back to the same-leader hedge, and keep `hedge_target` out of `call_hedged`** (`decisions/DECISIONS.md`, "`dep-hedge-other`", flip). Across two rows the hedge to another member won 7 of 1,198 counted, 0.6% (m65r31's failing half and m3fb29). Its one case, a leader held by an alarm whose followers' read index is not, has not recurred since m64r31, and that row showed half such holds also hold the followers. Raising the threshold would hedge fewer reads, but each would still go to a member that, on this row, mostly could not answer. A follower hedge that could win needs at least two fixes first: `learn` from a hedge's `notLeader` config, and followers of the `tokens` and `names` groups that answer a read-index read in time, which on this row they did not. That is more than the 3 of 6 stalls it helped on m64r31 is worth. The F109 step log stays; it is how a recurrence of the hold gets named.
+
+### The install `Authz` read's extra hop (analysis, $0)
+
+Source: f2's `/deps_log` for the up half (`hop-replay.txt`, `tests/m4/wp4/hopreplay.py`, on `slotdeps.py`'s cycles and slot model).
+
+- **`authz:1` is read on 1,568 of 1,589 entries in the load** and is the slowest read on 798 of 808 entries in the up half.
+- **What the hop costs.** Per entry, `authz:1` took p10 198, p50 **277**, p90 470 and p99 724 ms longer than the owner's `Authz` read issued with it. The owner's record is the member's joined record (`owner_chain_record`). `authz:1` has none, so each read first asks `Names` shard 24 for account 1's `Placement` row (`member::owner_record`, through `release::record_for`), then reads the group, from apac to both. The `Names` read is a leader `fresh` read of shard 24's leader, so it costs a round trip plus a lease or quorum round [measured for the difference; the hop from the code].
+- **What keeping the record would buy** (slot model, first order: each command's slot loses the gap savings of the cycles that end before its entry):
+
+| Variant | slot p50 | slot p99 | queue p99 |
+| --- | --- | --- | --- |
+| As measured | 766 | 1,422 (host 1,477) | 1,620 (host 1,637) |
+| Record kept, `authz:1` minus the median 277 ms | 657 | 1,294 | 1,476 |
+| Record kept, `authz:1` as fast as the owner's read | 649 | 1,246 | 1,287 |
+| `authz:1` gone (bound) | 649 | 1,246 | 1,287 |
+
+- **Does it decide the 1 s line?** No, not alone. Commit is queue plus round, p50 1,141 and p99 1,947 here. Taking about 330 ms off the queue p99 brings the commit p99 to about 1.6 s and p50 to about 1.0 s: under the 2 s bound with room, not under 1 s. With `authz:1` as fast as the owner's read, the entry's dep wait is the owner's and tokens' p99 of 640 to 707 ms, and the round p99 649 ms comes on top of it [inference from the model].
+- **Proposed, not built:** `owner_chain_record` also answers `Authz(install_account())` from a record the member holds, the way it answers the owner's. The member reads account 1's `Placement` row once, when it joins or on its first dep read, keeps it with the join, and drops it when a read against it answers `NotLeader` with a newer generation or no group, then reads the row again. That is the same fallback `read_deps` uses for the owner's record today. A move of account 1 then costs one failed read and one `Names` read, as a moved owner does. No format changes, and nothing `decide` sees changes: the record only addresses the group, and the read is the same `fresh` read.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.
