@@ -1,1 +1,13 @@
 2026-11-21T08:02:42Z buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-21T08:05:30Z waiting 269 s for sweep runs started before the first pass (until 2026-11-21T08:10:00.000010+00:00)
+2026-11-21T08:12:38Z 1048605 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 1048605 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3473418 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3473418 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3538974 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3538974 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3538975 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3538975 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3538976 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z 3538976 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:12:38Z {"dry": false, "purged": 5, "objects": 0, "refused": [], "second": 0}
