@@ -41,7 +41,7 @@ So the learners' calls are their reads, not the leader's appends [measured]:
 "Fewer, larger learner `/raft` calls" therefore means a slower learner read-index cadence, not leader-side batching of
 appends. The appends already ride the learners' calls.
 
-### The change (built on `r33-learner-cadence`, not yet measured hosted)
+### The change (proposed, not built)
 
 - **`LEARNER_READ_EVERY` from 50 to 200 ms.** A learner's reads queue up to 200 ms and leave as one batch. That bounds
   read-index calls at 5 a second per learner, 20 for four, against 37.2 sent now.
@@ -86,13 +86,6 @@ A read's grant is unchanged: it still waits for a read index from the leader and
   scale. Taking 34 fewer inputs at that rate gives about 230 ms. Each remaining learner call carries a larger
   response, and B0-02 found the hosted cost per call is mostly a per-event floor (`tests/am1/results/lm1-rows-m3f.md`, `commit_profile.rs`: learner `/raft` 1.95 ms hosted against 2 to 3 µs modelled).
   So **200 to 260 ms**, a 1.5 to 1.9× fall, and ticker stalls of 500 ms or more falling from 10 to a few [inference].
-- **The 8 calls a second with neither a batch nor a hedge** (the lead's question): split by trace order in arm A,
-  about 5.7 a second leave right after an `AppendStepped` on the learner, which makes them its append replies, and
-  about 2.4 are re-sends of the newest batch at `CALL_DEADLINE` and calls that carry nothing else. As built, the append
-  replies ride the learner's next read-index call to the leader, which leaves at most every 200 ms, or leave alone
-  once one has waited 200 ms; the other 2.4 stay as they are. So the prediction above is about 20 read-index calls,
-  hedges and re-sends falling with them to about 2 to 4, and 0 to 2 lone reply calls from learners with no read due:
-  **20 to 25 learner calls a second** [inference] (`decisions/DECISIONS.md`, "`learner-cadence`").
 - **Flip, written now:** a row where the leader's confirm p90 does not fall under 300 ms, or where learner calls do
   not fall under 30/s, means the floor is not what drives the learners' calls.
 - Reaching B's 3.75× would need learner calls near zero, which only C's no-learner shape gave.

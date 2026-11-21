@@ -19,8 +19,7 @@ use futures_channel::oneshot;
 use graftyard_types::{SiteId, learner_slot};
 
 /// How long after a learner's last call this member still holds its messages for the next one: a learner sends a
-/// read-index batch at most every `raft::LEARNER_READ_EVERY` (200 ms), plus its round trip, so a busy learner calls
-/// well within this
+/// read-index batch at most every 50 ms, plus its round trip, so a busy learner calls well within this
 /// (`raft::CALL_DEADLINE`, [guess]).
 pub const QUIET: u64 = 1_000;
 
@@ -174,67 +173,11 @@ impl<E> Callers<E> {
     }
 }
 
-/// What a message is to `Acks::send`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Leg {
-    /// An append reply from a learner.
-    LearnerReply,
-    /// A read-index call.
-    Read,
-    /// Anything else.
-    Other,
-}
-
-/// A learner's append replies to the member that sent the appends, held for its next read-index call to that member
-/// (`learner-cadence`): the call's body is a list of envelopes, which the callee steps in order, so the replies ride
-/// it instead of leaving as calls of their own. On B0-33 sab about 5.7 of the 56.1 calls a second that four learners
-/// made to the leader were such replies (`tests/am1/results/learner-cadence.md`). A reply held `hold` with no read
-/// call is sent alone (`due`), so an idle learner's acks still reach the leader, at most `hold` late. A learner never
-/// counts for a commit or a lease, so a late ack moves neither [doc, `design/DESIGN.md`, \"Follower read\"].
-pub struct Acks<E> {
-    hold: u64,
-    by: BTreeMap<SiteId, (u64, Vec<E>)>,
-}
-
-impl<E> Acks<E> {
-    pub fn new(hold: u64) -> Acks<E> {
-        Acks { hold, by: BTreeMap::new() }
-    }
-
-    /// What leaves now for `e`, addressed to `to`, as one call's body in order: nothing for a learner's append reply,
-    /// which is held; a read-index call behind the replies held for `to`; anything else alone.
-    pub fn send(&mut self, to: SiteId, e: E, leg: Leg, now: u64) -> Vec<E> {
-        match leg {
-            Leg::LearnerReply => {
-                self.by.entry(to).or_insert((now, Vec::new())).1.push(e);
-                Vec::new()
-            }
-            Leg::Read => {
-                let mut es = self.by.remove(&to).map(|(_, v)| v).unwrap_or_default();
-                es.push(e);
-                es
-            }
-            Leg::Other => vec![e],
-        }
-    }
-
-    /// The replies whose oldest has waited `hold`, per peer, to send as calls of their own.
-    pub fn due(&mut self, now: u64) -> Vec<Vec<E>> {
-        let late: Vec<SiteId> = self.by.iter().filter(|(_, (at, _))| now >= at + self.hold).map(|(s, _)| *s).collect();
-        late.into_iter().filter_map(|s| self.by.remove(&s).map(|(_, v)| v)).collect()
-    }
-
-    /// Whether any reply is held, so the ticker keeps running until `due` sends it.
-    pub fn holding(&self) -> bool {
-        !self.by.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use graftyard_types::{SiteId, learner_addr};
 
-    use super::{Acks, Callers, Leg, QUIET};
+    use super::{Callers, QUIET};
 
     const LEADER: SiteId = SiteId(0);
     /// Nested calls the runtime allows; the 17th is refused.
@@ -339,33 +282,5 @@ mod tests {
         c.began(l, 2_000);
         c.route(l, 6, 0, 2_001);
         assert_eq!(c.take(l, |_| None), vec![6], "its next call takes what was held");
-    }
-
-    /// `learner-cadence`: a learner's append replies ride its next read-index call to the member that sent the appends,
-    /// ahead of the read and only to that member; a reply with no such call within `hold` leaves alone, not before.
-    #[test]
-    fn a_learners_append_replies_ride_its_next_read_call_to_their_leader() {
-        let (leader, other) = (SiteId(0), SiteId(1));
-        let mut a: Acks<u32> = Acks::new(200);
-        assert!(a.send(leader, 1, Leg::LearnerReply, 1_000).is_empty(), "a reply is held");
-        assert!(a.send(leader, 2, Leg::LearnerReply, 1_050).is_empty());
-        assert!(a.send(other, 9, Leg::LearnerReply, 1_020).is_empty());
-        assert!(a.holding());
-        assert_eq!(a.send(leader, 5, Leg::Other, 1_060), vec![5], "another message leaves alone and takes nothing");
-        assert!(a.due(1_199).is_empty(), "nothing leaves alone before the oldest has waited the floor");
-        assert_eq!(
-            a.send(leader, 7, Leg::Read, 1_100),
-            vec![1, 2, 7],
-            "the read call carries its replies, oldest first"
-        );
-        assert_eq!(a.send(leader, 8, Leg::Read, 1_110), vec![8], "taken once");
-        assert_eq!(a.due(1_219), Vec::<Vec<u32>>::new(), "the other member's reply has its own clock");
-        assert!(a.holding());
-        assert_eq!(a.due(1_220), vec![vec![9]], "a reply no read call took leaves alone at the floor");
-        assert!(!a.holding());
-        // A new reply after a take starts its own wait.
-        assert!(a.send(leader, 3, Leg::LearnerReply, 1_300).is_empty());
-        assert!(a.due(1_499).is_empty());
-        assert_eq!(a.due(1_500), vec![vec![3]]);
     }
 }

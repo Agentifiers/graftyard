@@ -743,10 +743,9 @@ fn a_learner_behind_grants_no_read_from_its_older_fold() {
     assert_eq!(seen, Some(Some(2)), "once back, the learner's read sees the write made while it was away");
 }
 
-/// A learner sends read-index batches at most every `LEARNER_READ_EVERY` (200 ms, `learner-cadence`); a follower
-/// batches every 10 ms.
+/// A learner sends one read-index request at a time and at most one every 50 ms; a follower batches every 10 ms.
 #[test]
-fn learner_read_index_keeps_its_floor_and_a_follower_its_own() {
+fn learner_read_index_keeps_one_in_flight_and_a_50_ms_floor() {
     let mut n = Net::new();
     n.elect(A);
     n.write(A, 2);
@@ -762,11 +761,10 @@ fn learner_read_index_keeps_its_floor_and_a_follower_its_own() {
     let sent = |n: &Net, from: SiteId, since: Timestamp| {
         n.sent.iter().filter(|(t, f, _, k)| *f == from && *t >= since && *k == "readIndex").map(|(t, ..)| *t).collect()
     };
-    let learner_floor = graftyard_raft::LEARNER_READ_EVERY.as_millis() as u64;
-    for (who, floor) in [(l, learner_floor), (B, 10)] {
+    for (who, floor) in [(l, 50), (B, 10)] {
         let t0 = n.now;
-        // Each read arrives 2 ms after the last, answered 1 ms after each step: 300 reads over 600 ms.
-        for _ in 0..300 {
+        // Each read arrives 2 ms after the last, answered 1 ms after each step: 40 reads over 80 ms.
+        for _ in 0..40 {
             n.on(who, |m, now| m.read_index(now)).unwrap();
             n.advance(2);
         }
@@ -776,14 +774,13 @@ fn learner_read_index_keeps_its_floor_and_a_follower_its_own() {
             times.windows(2).all(|w| w[1].0 - w[0].0 >= floor),
             "{who:?} batches at most every {floor} ms: {times:?}"
         );
-        assert!(times.len() as u64 <= 600 / floor + 1, "{who:?} sent more batches than its floor allows: {times:?}");
-        n.advance(300);
+        n.advance(100);
         let reads: Vec<_> =
             n.resolutions.iter().filter(|(s, r)| *s == who && matches!(r, Resolution::Read { .. })).collect();
         let ok = reads.iter().filter(|(_, r)| matches!(r, Resolution::Read { result: Ok(_), .. })).count();
-        assert_eq!((reads.len(), ok), (300, 300), "every read of {who:?} was granted: {reads:?}");
+        assert_eq!((reads.len(), ok), (40, 40), "every read of {who:?} was granted: {reads:?}");
         println!(
-            "read-index from {who:?}: {} batches for 300 reads, gaps {:?} ms",
+            "read-index from {who:?}: {} batches for 40 reads, gaps {:?} ms",
             times.len(),
             times.windows(2).map(|w| w[1].0 - w[0].0).collect::<Vec<_>>()
         );
