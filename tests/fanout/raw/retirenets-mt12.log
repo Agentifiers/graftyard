@@ -1,0 +1,17 @@
+2026-11-21T07:54:28.496Z repo:1048605: 4 names, 4 were joined, all not joined, all with the retired row
+2026-11-21T07:54:37.980Z repo:3473418: 4 names, 4 were joined, all not joined, all with the retired row
+2026-11-21T07:54:46.842Z repo:3538974: 4 names, 4 were joined, all not joined, all with the retired row
+2026-11-21T07:54:54.624Z repo:3538975: 3 names, 3 were joined, all not joined, all with the retired row
+2026-11-21T07:55:03.579Z repo:3538976: 4 names, 4 were joined, all not joined, all with the retired row
+2026-11-21T08:02:41.658Z purge: buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-21T08:02:41.659Z purge: 1048605 purged: a 1394 -> 0, b 1275 -> 0, c 1294 -> 0, d 10 -> 0
+2026-11-21T08:02:41.659Z purge: 1048605 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:02:41.659Z purge: 3473418 purged: a 38 -> 0, b 35 -> 0, c 34 -> 0, d 17 -> 0
+2026-11-21T08:02:41.659Z purge: 3473418 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:02:41.659Z purge: 3538974 purged: a 37 -> 0, b 35 -> 0, c 37 -> 0, d 14 -> 0
+2026-11-21T08:02:41.659Z purge: 3538974 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:02:41.659Z purge: 3538975 purged: a 37 -> 0, b 35 -> 0, c 34 -> 0, d 17 -> 0
+2026-11-21T08:02:41.659Z purge: 3538975 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:02:41.659Z purge: 3538976 purged: a 37 -> 0, b 38 -> 0, c 34 -> 0, d 13 -> 0
+2026-11-21T08:02:41.659Z purge: 3538976 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T08:02:41.659Z purge: {"dry": false, "purged": 5, "objects": 4465, "refused": [], "second": 0}

@@ -1,0 +1,202 @@
+{"probes": 180, "lines": 214, "joined": 180, "probes_without_line": 0, "lines_without_probe": 34}
+{"answers": {"tail": 143, "composed": 12, "status 503": 24, "stock: no chain": 1}}
+{"part": "probe_ms", "answer": "composed", "n": 12, "p50": 2394, "p99": 3208, "max": 3208}
+{"part": "probe_ms", "answer": "status 503", "n": 24, "p50": 3943, "p99": 12266, "max": 12266}
+{"part": "probe_ms", "answer": "stock: no chain", "n": 1, "p50": 3807, "p99": 3807, "max": 3807}
+{"part": "probe_ms", "answer": "tail", "n": 143, "p50": 1406, "p99": 12427, "max": 14952}
+{"part": "to_shard", "answer": "composed", "n": 12, "p50": 165, "p99": 872, "max": 872}
+{"part": "to_shard", "answer": "status 503", "n": 24, "p50": -120, "p99": 1679, "max": 1679}
+{"part": "to_shard", "answer": "stock: no chain", "n": 1, "p50": -1488, "p99": -1488, "max": -1488}
+{"part": "to_shard", "answer": "tail", "n": 143, "p50": 85, "p99": 2057, "max": 2652}
+{"part": "container", "answer": "composed", "n": 12, "p50": 870, "p99": 7735, "max": 7735}
+{"part": "container", "answer": "status 503", "n": 24, "p50": 2000, "p99": 2001, "max": 2001}
+{"part": "container", "answer": "stock: no chain", "n": 1, "p50": 21, "p99": 21, "max": 21}
+{"part": "container", "answer": "tail", "n": 143, "p50": 413, "p99": 2438, "max": 2549}
+{"part": "transit", "answer": "composed", "n": 12, "p50": 0, "p99": 0, "max": 0}
+{"part": "transit", "answer": "status 503", "n": 0, "p50": null, "p99": null, "max": null}
+{"part": "transit", "answer": "stock: no chain", "n": 1, "p50": 0, "p99": 0, "max": 0}
+{"part": "transit", "answer": "tail", "n": 0, "p50": null, "p99": null, "max": null}
+{"part": "edge_net", "answer": "composed", "n": 12, "p50": 186, "p99": 1952, "max": 1952}
+{"part": "edge_net", "answer": "status 503", "n": 0, "p50": null, "p99": null, "max": null}
+{"part": "edge_net", "answer": "stock: no chain", "n": 1, "p50": 5138, "p99": 5138, "max": 5138}
+{"part": "edge_net", "answer": "tail", "n": 0, "p50": null, "p99": null, "max": null}
+{"at": "2026-11-21T07:10:45.280Z", "probe_ms": 922, "probe_compose": "composed", "answer": "tail", "site": "a", "to_shard": 164, "container": 15, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:10:45.351Z", "probe_ms": 523, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 183, "container": 12, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:15.517Z", "probe_ms": 827, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -41, "container": 413, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:15.880Z", "probe_ms": 719, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -61, "container": 338, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:21.630Z", "probe_ms": 596, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -23, "container": 92, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:28.579Z", "probe_ms": 647, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -360, "container": 384, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:28.924Z", "probe_ms": 659, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -492, "container": 403, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:28.228Z", "probe_ms": 959, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 537, "container": 329, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:28.892Z", "probe_ms": 853, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -4, "container": 317, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:49.177Z", "probe_ms": 1585, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 293, "container": 720, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:49.747Z", "probe_ms": 1088, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -76, "container": 551, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:49.737Z", "probe_ms": 1387, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 6, "container": 484, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:11:50.507Z", "probe_ms": 1137, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -65, "container": 781, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:04.488Z", "probe_ms": 771, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -47, "container": 264, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:04.816Z", "probe_ms": 794, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -108, "container": 460, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:24.742Z", "probe_ms": 810, "probe_compose": "composed", "answer": "composed", "site": "a", "to_shard": -122, "container": 394, "transit": 0, "edge_net": 167, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 142, "status": 409}}
+{"at": "2026-11-21T07:12:26.191Z", "probe_ms": 748, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -813, "container": 440, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:31.497Z", "probe_ms": 1825, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 286, "container": 647, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:37.606Z", "probe_ms": 1634, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -81, "container": 1083, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:38.124Z", "probe_ms": 1407, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -27, "container": 923, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:38.314Z", "probe_ms": 1340, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 26, "container": 840, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:25.306Z", "probe_ms": 1331, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 768, "container": 406, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:31.805Z", "probe_ms": 1215, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 278, "container": 538, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:12:38.509Z", "probe_ms": 2133, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 538, "container": 551, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:13:07.328Z", "probe_ms": 1344, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 290, "container": 201, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:13:41.973Z", "probe_ms": 954, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 35, "container": 300, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:13:46.252Z", "probe_ms": 1496, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 337, "container": 128, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:14.094Z", "probe_ms": 1406, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 100, "container": 145, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:17.465Z", "probe_ms": 763, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -19, "container": 244, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:13.595Z", "probe_ms": 1515, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 1063, "container": 157, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:35.611Z", "probe_ms": 1685, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -258, "container": 458, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:34.847Z", "probe_ms": 1808, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 1204, "container": 540, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:54.144Z", "probe_ms": 1017, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -120, "container": 667, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:47.386Z", "probe_ms": 1207, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -36, "container": 499, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:50.990Z", "probe_ms": 1207, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -22, "container": 189, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:14:51.166Z", "probe_ms": 1645, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 239, "container": 348, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:09.725Z", "probe_ms": 1331, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -133, "container": 534, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:00.631Z", "probe_ms": 1235, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -43, "container": 407, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:00.931Z", "probe_ms": 1219, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 11, "container": 328, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:21.370Z", "probe_ms": 1219, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -44, "container": 668, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:27.054Z", "probe_ms": 1776, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 262, "container": 602, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:27.252Z", "probe_ms": 1637, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 99, "container": 549, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:27.245Z", "probe_ms": 1774, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 410, "container": 339, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:39.246Z", "probe_ms": 1696, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 401, "container": 487, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:48.901Z", "probe_ms": 3421, "probe_compose": "stock: no chain", "answer": "status 503", "site": "b", "to_shard": -1709, "container": 0, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:49.788Z", "probe_ms": 2998, "probe_compose": "stock: no chain", "answer": "status 503", "site": "c", "to_shard": -171, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:47.211Z", "probe_ms": 14952, "probe_compose": "composed: r2", "answer": "tail", "site": "c", "to_shard": 509, "container": 108, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:59.772Z", "probe_ms": 2815, "probe_compose": "composed: r2", "answer": "composed", "site": "b", "to_shard": -1797, "container": 7735, "transit": 0, "edge_net": -3607, "only": {"compose": "stock: no chain", "ms": 9, "status": 409}}
+{"at": "2026-11-21T07:15:51.680Z", "probe_ms": 11012, "probe_compose": "composed: r2", "answer": "status 503", "site": "c", "to_shard": -1735, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:56.904Z", "probe_ms": 5794, "probe_compose": "composed: r2", "answer": "status 503", "site": "b", "to_shard": -1922, "container": 0, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:50.627Z", "probe_ms": 12266, "probe_compose": "composed", "answer": "status 503", "site": "b", "to_shard": -448, "container": 0, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:54.293Z", "probe_ms": 8314, "probe_compose": "composed: r2", "answer": "status 503", "site": "b", "to_shard": -158, "container": 0, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:00.766Z", "probe_ms": 1913, "probe_compose": "composed: r2", "answer": "status 503", "site": "c", "to_shard": -1844, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:01.944Z", "probe_ms": 985, "probe_compose": "composed: r2", "answer": "tail", "site": "c", "to_shard": -1699, "container": 216, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:50.063Z", "probe_ms": 12427, "probe_compose": "composed: r2", "answer": "tail", "site": "c", "to_shard": 649, "container": 143, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:58.483Z", "probe_ms": 4138, "probe_compose": "composed: r2", "answer": "status 503", "site": "b", "to_shard": -1560, "container": 0, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:54.278Z", "probe_ms": 9406, "probe_compose": "composed", "answer": "tail", "site": "c", "to_shard": 270, "container": 178, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:53.970Z", "probe_ms": 8601, "probe_compose": "composed: r2", "answer": "status 503", "site": "c", "to_shard": 1258, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:59.747Z", "probe_ms": 2888, "probe_compose": "composed: r2", "answer": "status 503", "site": "b", "to_shard": -1050, "container": 0, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:55.213Z", "probe_ms": 9422, "probe_compose": "composed", "answer": "tail", "site": "c", "to_shard": 34, "container": 205, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:56.857Z", "probe_ms": 10299, "probe_compose": "composed", "answer": "status 503", "site": "c", "to_shard": -1437, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:07.278Z", "probe_ms": 2046, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 466, "container": 837, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:08.931Z", "probe_ms": 1753, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -978, "container": 856, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:54.912Z", "probe_ms": 10655, "probe_compose": "composed", "answer": "status 503", "site": "c", "to_shard": 527, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:55.631Z", "probe_ms": 10791, "probe_compose": "composed", "answer": "status 503", "site": "c", "to_shard": 245, "container": 2001, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:07.304Z", "probe_ms": 2384, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 1659, "container": 797, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:57.033Z", "probe_ms": 11161, "probe_compose": "composed", "answer": "status 503", "site": "c", "to_shard": 75, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:15:58.689Z", "probe_ms": 10650, "probe_compose": "composed", "answer": "tail", "site": "c", "to_shard": -1424, "container": 205, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:41.526Z", "probe_ms": 2522, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 548, "container": 618, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:58.930Z", "probe_ms": 1511, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -86, "container": 684, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:59.867Z", "probe_ms": 1374, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -895, "container": 689, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:16:58.267Z", "probe_ms": 2528, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 1739, "container": 513, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:10.801Z", "probe_ms": 1776, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 10, "container": 529, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:11.452Z", "probe_ms": 1371, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -140, "container": 593, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:10.204Z", "probe_ms": 2384, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 1374, "container": 686, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:22.002Z", "probe_ms": 1666, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 349, "container": 464, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:22.704Z", "probe_ms": 1405, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -217, "container": 520, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:27.431Z", "probe_ms": 1490, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 35, "container": 820, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:22.664Z", "probe_ms": 1660, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 35, "container": 650, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:21.782Z", "probe_ms": 2344, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 927, "container": 656, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:46.709Z", "probe_ms": 2338, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -391, "container": 1021, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:36.950Z", "probe_ms": 2363, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 725, "container": 824, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:37.829Z", "probe_ms": 2470, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 466, "container": 974, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:38.548Z", "probe_ms": 2459, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 451, "container": 969, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:46.269Z", "probe_ms": 2190, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 961, "container": 1074, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:54.770Z", "probe_ms": 2224, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 27, "container": 1426, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:58.090Z", "probe_ms": 3525, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -301, "container": 2549, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:03.388Z", "probe_ms": 2269, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -78, "container": 1651, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:49.967Z", "probe_ms": 3441, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 581, "container": 2120, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:57.880Z", "probe_ms": 3300, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 85, "container": 2438, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:50.389Z", "probe_ms": 3436, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 178, "container": 2289, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:55.588Z", "probe_ms": 3606, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 444, "container": 2175, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:55.910Z", "probe_ms": 3565, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 300, "container": 2074, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:57.588Z", "probe_ms": 3706, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 990, "container": 2321, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:17:59.764Z", "probe_ms": 3097, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 139, "container": 2017, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:16.891Z", "probe_ms": 3807, "probe_compose": "composed: r2", "answer": "stock: no chain", "site": "a", "to_shard": -1488, "container": 21, "transit": 0, "edge_net": 5138, "only": {"compose": "stock: no chain", "ms": 3, "status": 409}}
+{"at": "2026-11-21T07:18:19.058Z", "probe_ms": 2285, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": -48, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:15.301Z", "probe_ms": 424, "probe_compose": "stock: no chain", "answer": "status 503", "site": "a", "to_shard": 1679, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:18.472Z", "probe_ms": 4432, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 722, "container": 842, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:24.040Z", "probe_ms": 4157, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 198, "container": 927, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:25.119Z", "probe_ms": 3413, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": -676, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:27.950Z", "probe_ms": 2506, "probe_compose": "composed", "answer": "composed", "site": "b", "to_shard": 165, "container": 948, "transit": 0, "edge_net": 159, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 28, "status": 409}}
+{"at": "2026-11-21T07:18:24.112Z", "probe_ms": 1854, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": 859, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:25.397Z", "probe_ms": 1803, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 205, "container": 847, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:33.160Z", "probe_ms": 2394, "probe_compose": "composed", "answer": "composed", "site": "b", "to_shard": 872, "container": 1029, "transit": 0, "edge_net": 97, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 30, "status": 409}}
+{"at": "2026-11-21T07:18:20.059Z", "probe_ms": 4518, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": -384, "container": 1022, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:31.189Z", "probe_ms": 2652, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 786, "container": 1007, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:40.312Z", "probe_ms": 2460, "probe_compose": "composed: r2", "answer": "composed", "site": "b", "to_shard": -1046, "container": 997, "transit": 0, "edge_net": 1952, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 42, "status": 409}}
+{"at": "2026-11-21T07:18:48.355Z", "probe_ms": 1881, "probe_compose": "composed: r2", "answer": "composed", "site": "b", "to_shard": -1767, "container": 1013, "transit": 0, "edge_net": 1683, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 36, "status": 409}}
+{"at": "2026-11-21T07:18:51.339Z", "probe_ms": 1855, "probe_compose": "composed", "answer": "status 503", "site": "a", "to_shard": 715, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:53.494Z", "probe_ms": 1178, "probe_compose": "composed: r2", "answer": "composed", "site": "b", "to_shard": -1251, "container": 475, "transit": 0, "edge_net": 1565, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 33, "status": 409}}
+{"at": "2026-11-21T07:18:38.794Z", "probe_ms": 2761, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 808, "container": 22, "transit": null, "edge_net": null, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 33, "status": 409}}
+{"at": "2026-11-21T07:18:47.666Z", "probe_ms": 1932, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 208, "container": 1086, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:37.856Z", "probe_ms": 2051, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 227, "container": 998, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:39.077Z", "probe_ms": 1844, "probe_compose": "composed", "answer": "tail", "site": "b", "to_shard": 2057, "container": 1026, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:45.876Z", "probe_ms": 2767, "probe_compose": "composed", "answer": "tail", "site": "b", "to_shard": 2652, "container": 1142, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:53.196Z", "probe_ms": 3943, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": 349, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:05.602Z", "probe_ms": 3208, "probe_compose": "composed: r2", "answer": "composed", "site": "b", "to_shard": 490, "container": 839, "transit": 0, "edge_net": 761, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 16, "status": 409}}
+{"at": "2026-11-21T07:18:52.226Z", "probe_ms": 3579, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 1426, "container": 490, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:05.832Z", "probe_ms": 2305, "probe_compose": "composed", "answer": "tail", "site": "b", "to_shard": 923, "container": 22, "transit": null, "edge_net": null, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 20, "status": 409}}
+{"at": "2026-11-21T07:19:06.376Z", "probe_ms": 2790, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 515, "container": 27, "transit": null, "edge_net": null, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 16, "status": 409}}
+{"at": "2026-11-21T07:19:06.218Z", "probe_ms": 3001, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 1108, "container": 770, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:07.382Z", "probe_ms": 2034, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 276, "container": 595, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:18:53.562Z", "probe_ms": 4531, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": 687, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:06.773Z", "probe_ms": 2443, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 906, "container": 562, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:17.846Z", "probe_ms": 3842, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": -154, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:17.830Z", "probe_ms": 3866, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": -120, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:17.904Z", "probe_ms": 3831, "probe_compose": "composed: r2", "answer": "status 503", "site": "a", "to_shard": -80, "container": 2000, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:22.991Z", "probe_ms": 2503, "probe_compose": "composed", "answer": "composed", "site": "b", "to_shard": 664, "container": 781, "transit": 0, "edge_net": 94, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 19, "status": 409}}
+{"at": "2026-11-21T07:19:19.338Z", "probe_ms": 1836, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 246, "container": 734, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:19:24.652Z", "probe_ms": 2012, "probe_compose": "composed", "answer": "composed", "site": "b", "to_shard": 233, "container": 870, "transit": 0, "edge_net": 186, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 19, "status": 409}}
+{"at": "2026-11-21T07:19:24.824Z", "probe_ms": 2548, "probe_compose": "composed: r2", "answer": "tail", "site": "b", "to_shard": 236, "container": 46, "transit": null, "edge_net": null, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 19, "status": 409}}
+{"at": "2026-11-21T07:20:16.254Z", "probe_ms": 806, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 65, "container": 185, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:20:37.839Z", "probe_ms": 1084, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -33, "container": 0, "transit": null, "edge_net": null, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 389, "status": 409}}
+{"at": "2026-11-21T07:20:40.877Z", "probe_ms": 736, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -17, "container": 83, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:20:41.069Z", "probe_ms": 777, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -122, "container": 336, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:20:50.922Z", "probe_ms": 691, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -143, "container": 88, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:08.433Z", "probe_ms": 702, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -77, "container": 146, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:08.779Z", "probe_ms": 635, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -140, "container": 326, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:00.082Z", "probe_ms": 1323, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -122, "container": 835, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:00.220Z", "probe_ms": 1397, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -51, "container": 870, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:15.298Z", "probe_ms": 1593, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -328, "container": 353, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:14.726Z", "probe_ms": 1288, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 1264, "container": 360, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:28.414Z", "probe_ms": 876, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -167, "container": 298, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:32.916Z", "probe_ms": 826, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -55, "container": 404, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:38.065Z", "probe_ms": 742, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -53, "container": 310, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:33.100Z", "probe_ms": 1553, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 632, "container": 270, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:40.373Z", "probe_ms": 934, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 78, "container": 127, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:45.587Z", "probe_ms": 824, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 70, "container": 208, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:21:45.361Z", "probe_ms": 1803, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 815, "container": 350, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:15.176Z", "probe_ms": 822, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -56, "container": 202, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:01.943Z", "probe_ms": 1566, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 57, "container": 482, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:01.995Z", "probe_ms": 1516, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 67, "container": 420, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:15.079Z", "probe_ms": 1165, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 81, "container": 241, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:26.060Z", "probe_ms": 1210, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -114, "container": 646, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:26.226Z", "probe_ms": 1155, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -68, "container": 539, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:53.948Z", "probe_ms": 1088, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -95, "container": 199, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:22:51.156Z", "probe_ms": 1082, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -78, "container": 176, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:15.594Z", "probe_ms": 793, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -141, "container": 242, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:10.369Z", "probe_ms": 1209, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -16, "container": 281, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:33.661Z", "probe_ms": 704, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -6, "container": 206, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:21.123Z", "probe_ms": 969, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": -20, "container": 179, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:39.118Z", "probe_ms": 2050, "probe_compose": "composed", "answer": "tail", "site": "a", "to_shard": 808, "container": 305, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:46.010Z", "probe_ms": 524, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 110, "container": 210, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:40.081Z", "probe_ms": 1692, "probe_compose": "composed: r2", "answer": "composed", "site": "a", "to_shard": 619, "container": 331, "transit": 0, "edge_net": 742, "only": null}
+{"at": "2026-11-21T07:23:42.707Z", "probe_ms": 778, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 130, "container": 373, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:51.123Z", "probe_ms": 548, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 125, "container": 242, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:24:04.654Z", "probe_ms": 1072, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 774, "container": 148, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:23:51.015Z", "probe_ms": 1684, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 1140, "container": 174, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:24:00.889Z", "probe_ms": 721, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 60, "container": 208, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:24:16.875Z", "probe_ms": 464, "probe_compose": "composed", "answer": "composed", "site": "a", "to_shard": 60, "container": 58, "transit": 0, "edge_net": 74, "only": {"compose": "stock: not a ref tip or behind HEAD", "ms": 24, "status": 409}}
+{"at": "2026-11-21T07:24:18.191Z", "probe_ms": 1202, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 793, "container": 39, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:24:42.685Z", "probe_ms": 1046, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 599, "container": 40, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:24:43.764Z", "probe_ms": 1271, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 825, "container": 50, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:24:58.723Z", "probe_ms": 861, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 62, "container": 106, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:24:58.395Z", "probe_ms": 1204, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 591, "container": 56, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:25:21.740Z", "probe_ms": 702, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 159, "container": 77, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:25:37.686Z", "probe_ms": 637, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 7, "container": 41, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:25:29.485Z", "probe_ms": 1290, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 789, "container": 35, "transit": null, "edge_net": null, "only": null}
+{"at": "2026-11-21T07:25:40.530Z", "probe_ms": 1104, "probe_compose": "composed: r2", "answer": "tail", "site": "a", "to_shard": 426, "container": 54, "transit": null, "edge_net": null, "only": null}
