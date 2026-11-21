@@ -1,0 +1,378 @@
+2026-11-21T02:05:25Z
+8c59344e
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-site-a.jsonc
+
+ ⛅️ wrangler 4.166.0
+────────────────────
+
+Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+Total Upload: 17504.80 KiB / gzip: 4926.61 KiB
+Worker Startup Time: 8 ms
+Your Worker has access to the following bindings:
+Binding                                                                                      Resource                  
+env.MEMBER_0 (Member)                                                                        Durable Object            
+env.MEMBER_1 (Member, defined in graft-m4a-site-b)                                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m4a-site-c)                                           Durable Object            
+env.REGISTRY_0 (Registry)                                                                    Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m4a-site-b)                                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m4a-site-c)                                       Durable Object            
+env.SHARD_0 (GitShard)                                                                       Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m4a-site-b)                                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m4a-site-c)                                          Durable Object            
+env.HOOKSEQ_0 (HookSequencer)                                                                Durable Object            
+env.SEARCH_0 (SearchShard)                                                                   Durable Object            
+env.INBOX_0 (Inbox)                                                                          Durable Object            
+env.LOGRELAY_0 (LogRelay)                                                                    Durable Object            
+env.BROKER_0 (RunnerBroker)                                                                  Durable Object            
+env.PRSYNC (inherited)                                                                       Queue                     
+env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                 
+env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                 
+env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                 
+env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret      
+env.SITE (graft-m4a-site-a)                                                                  Worker                    
+env.OPS (graft-m4a-ops)                                                                      Worker                    
+env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                  
+env.SITE_ID ("0")                                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")                             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")                      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                            Environment Variable      
+env.GRAFTYARD_HOST ("graft-m4a-edge.<workers-subdomain>.work...")                              Environment Variable      
+env.GRAFTYARD_ACTIVITY ("1")                                                                 Environment Variable      
+env.GRAFTYARD_AUDIT ("1")                                                                    Environment Variable      
+env.GRAFTYARD_APP_HOOKS ("1")                                                                Environment Variable      
+env.GRAFTYARD_PR_TRIGGER ("1")                                                               Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m4a-site-a (9.66 sec)
+Deployed graft-m4a-site-a triggers (5.37 sec)
+  schedule: */15 * * * *
+  Producer for graft-m4a-prsync-a
+  Consumer for graft-m4a-prsync-a
+Current Version ID: 97c4d249-d533-4ed8-a0aa-b645660fdeb4
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-site-b.jsonc
+
+ ⛅️ wrangler 4.166.0
+────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+Total Upload: 17504.80 KiB / gzip: 4926.61 KiB
+Worker Startup Time: 17 ms
+Your Worker has access to the following bindings:
+Binding                                                                                      Resource                  
+env.MEMBER_1 (Member)                                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m4a-site-a)                                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m4a-site-c)                                           Durable Object            
+env.REGISTRY_1 (Registry)                                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m4a-site-a)                                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m4a-site-c)                                       Durable Object            
+env.SHARD_1 (GitShard)                                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m4a-site-a)                                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m4a-site-c)                                          Durable Object            
+env.HOOKSEQ_1 (HookSequencer)                                                                Durable Object            
+env.SEARCH_1 (SearchShard)                                                                   Durable Object            
+env.INBOX_1 (Inbox)                                                                          Durable Object            
+env.LOGRELAY_1 (LogRelay)                                                                    Durable Object            
+env.BROKER_1 (RunnerBroker)                                                                  Durable Object            
+env.PRSYNC (inherited)                                                                       Queue                     
+env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                 
+env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                 
+env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                 
+env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret      
+env.SITE (graft-m4a-site-b)                                                                  Worker                    
+env.OPS (graft-m4a-ops)                                                                      Worker                    
+env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                  
+env.SITE_ID ("1")                                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")                             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")                      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                            Environment Variable      
+env.GRAFTYARD_HOST ("graft-m4a-edge.<workers-subdomain>.work...")                              Environment Variable      
+env.GRAFTYARD_ACTIVITY ("1")                                                                 Environment Variable      
+env.GRAFTYARD_AUDIT ("1")                                                                    Environment Variable      
+env.GRAFTYARD_APP_HOOKS ("1")                                                                Environment Variable      
+env.GRAFTYARD_PR_TRIGGER ("1")                                                               Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m4a-site-b (5.64 sec)
+Deployed graft-m4a-site-b triggers (1.90 sec)
+  schedule: */15 * * * *
+  Producer for graft-m4a-prsync-b
+  Consumer for graft-m4a-prsync-b
+Current Version ID: 8af942a8-43cf-4b53-b5ef-2815662091ac
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-site-c.jsonc
+
+ ⛅️ wrangler 4.166.0
+────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+Total Upload: 17504.80 KiB / gzip: 4926.61 KiB
+Worker Startup Time: 12 ms
+Your Worker has access to the following bindings:
+Binding                                                                                      Resource                  
+env.MEMBER_2 (Member)                                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m4a-site-a)                                           Durable Object            
+env.MEMBER_1 (Member, defined in graft-m4a-site-b)                                           Durable Object            
+env.REGISTRY_2 (Registry)                                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m4a-site-a)                                       Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m4a-site-b)                                       Durable Object            
+env.SHARD_2 (GitShard)                                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m4a-site-a)                                          Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m4a-site-b)                                          Durable Object            
+env.HOOKSEQ_2 (HookSequencer)                                                                Durable Object            
+env.SEARCH_2 (SearchShard)                                                                   Durable Object            
+env.INBOX_2 (Inbox)                                                                          Durable Object            
+env.LOGRELAY_2 (LogRelay)                                                                    Durable Object            
+env.BROKER_2 (RunnerBroker)                                                                  Durable Object            
+env.PRSYNC (inherited)                                                                       Queue                     
+env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                 
+env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                 
+env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                 
+env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret      
+env.SITE (graft-m4a-site-c)                                                                  Worker                    
+env.OPS (graft-m4a-ops)                                                                      Worker                    
+env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                  
+env.SITE_ID ("2")                                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")                             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")                      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                            Environment Variable      
+env.GRAFTYARD_HOST ("graft-m4a-edge.<workers-subdomain>.work...")                              Environment Variable      
+env.GRAFTYARD_ACTIVITY ("1")                                                                 Environment Variable      
+env.GRAFTYARD_AUDIT ("1")                                                                    Environment Variable      
+env.GRAFTYARD_APP_HOOKS ("1")                                                                Environment Variable      
+env.GRAFTYARD_PR_TRIGGER ("1")                                                               Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m4a-site-c (10.31 sec)
+Deployed graft-m4a-site-c triggers (2.95 sec)
+  schedule: */15 * * * *
+  Producer for graft-m4a-prsync-c
+  Consumer for graft-m4a-prsync-c
+Current Version ID: 5c2b5bdb-eb18-477d-b31c-0d9f04dea70f
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-site-a.jsonc
+
+ ⛅️ wrangler 4.166.0
+────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+Total Upload: 17504.80 KiB / gzip: 4926.61 KiB
+Worker Startup Time: 8 ms
+Your Worker has access to the following bindings:
+Binding                                                                                      Resource                  
+env.MEMBER_0 (Member)                                                                        Durable Object            
+env.MEMBER_1 (Member, defined in graft-m4a-site-b)                                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m4a-site-c)                                           Durable Object            
+env.REGISTRY_0 (Registry)                                                                    Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m4a-site-b)                                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m4a-site-c)                                       Durable Object            
+env.SHARD_0 (GitShard)                                                                       Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m4a-site-b)                                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m4a-site-c)                                          Durable Object            
+env.HOOKSEQ_0 (HookSequencer)                                                                Durable Object            
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m4a-site-b)                                   Durable Object            
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m4a-site-c)                                   Durable Object            
+env.SEARCH_0 (SearchShard)                                                                   Durable Object            
+env.SEARCH_1 (SearchShard, defined in graft-m4a-site-b)                                      Durable Object            
+env.SEARCH_2 (SearchShard, defined in graft-m4a-site-c)                                      Durable Object            
+env.INBOX_0 (Inbox)                                                                          Durable Object            
+env.INBOX_1 (Inbox, defined in graft-m4a-site-b)                                             Durable Object            
+env.INBOX_2 (Inbox, defined in graft-m4a-site-c)                                             Durable Object            
+env.LOGRELAY_0 (LogRelay)                                                                    Durable Object            
+env.LOGRELAY_1 (LogRelay, defined in graft-m4a-site-b)                                       Durable Object            
+env.LOGRELAY_2 (LogRelay, defined in graft-m4a-site-c)                                       Durable Object            
+env.BROKER_0 (RunnerBroker)                                                                  Durable Object            
+env.BROKER_1 (RunnerBroker, defined in graft-m4a-site-b)                                     Durable Object            
+env.BROKER_2 (RunnerBroker, defined in graft-m4a-site-c)                                     Durable Object            
+env.PRSYNC (inherited)                                                                       Queue                     
+env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                 
+env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                 
+env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                 
+env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret      
+env.SITE (graft-m4a-site-a)                                                                  Worker                    
+env.OPS (graft-m4a-ops)                                                                      Worker                    
+env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                  
+env.SITE_ID ("0")                                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")                             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")                      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                            Environment Variable      
+env.GRAFTYARD_HOST ("graft-m4a-edge.<workers-subdomain>.work...")                              Environment Variable      
+env.GRAFTYARD_ACTIVITY ("1")                                                                 Environment Variable      
+env.GRAFTYARD_AUDIT ("1")                                                                    Environment Variable      
+env.GRAFTYARD_APP_HOOKS ("1")                                                                Environment Variable      
+env.GRAFTYARD_PR_TRIGGER ("1")                                                               Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m4a-site-a (4.63 sec)
+Deployed graft-m4a-site-a triggers (1.25 sec)
+  schedule: */15 * * * *
+  Producer for graft-m4a-prsync-a
+  Consumer for graft-m4a-prsync-a
+Current Version ID: 1cd3f0b2-70cf-4114-8015-ea034b420e99
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-site-b.jsonc
+
+ ⛅️ wrangler 4.166.0
+────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+Total Upload: 17504.80 KiB / gzip: 4926.61 KiB
+Worker Startup Time: 12 ms
+Your Worker has access to the following bindings:
+Binding                                                                                      Resource                  
+env.MEMBER_1 (Member)                                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m4a-site-a)                                           Durable Object            
+env.MEMBER_2 (Member, defined in graft-m4a-site-c)                                           Durable Object            
+env.REGISTRY_1 (Registry)                                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m4a-site-a)                                       Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m4a-site-c)                                       Durable Object            
+env.SHARD_1 (GitShard)                                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m4a-site-a)                                          Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m4a-site-c)                                          Durable Object            
+env.HOOKSEQ_1 (HookSequencer)                                                                Durable Object            
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m4a-site-a)                                   Durable Object            
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m4a-site-c)                                   Durable Object            
+env.SEARCH_1 (SearchShard)                                                                   Durable Object            
+env.SEARCH_0 (SearchShard, defined in graft-m4a-site-a)                                      Durable Object            
+env.SEARCH_2 (SearchShard, defined in graft-m4a-site-c)                                      Durable Object            
+env.INBOX_1 (Inbox)                                                                          Durable Object            
+env.INBOX_0 (Inbox, defined in graft-m4a-site-a)                                             Durable Object            
+env.INBOX_2 (Inbox, defined in graft-m4a-site-c)                                             Durable Object            
+env.LOGRELAY_1 (LogRelay)                                                                    Durable Object            
+env.LOGRELAY_0 (LogRelay, defined in graft-m4a-site-a)                                       Durable Object            
+env.LOGRELAY_2 (LogRelay, defined in graft-m4a-site-c)                                       Durable Object            
+env.BROKER_1 (RunnerBroker)                                                                  Durable Object            
+env.BROKER_0 (RunnerBroker, defined in graft-m4a-site-a)                                     Durable Object            
+env.BROKER_2 (RunnerBroker, defined in graft-m4a-site-c)                                     Durable Object            
+env.PRSYNC (inherited)                                                                       Queue                     
+env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                 
+env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                 
+env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                 
+env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret      
+env.SITE (graft-m4a-site-b)                                                                  Worker                    
+env.OPS (graft-m4a-ops)                                                                      Worker                    
+env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                  
+env.SITE_ID ("1")                                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")                             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")                      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                            Environment Variable      
+env.GRAFTYARD_HOST ("graft-m4a-edge.<workers-subdomain>.work...")                              Environment Variable      
+env.GRAFTYARD_ACTIVITY ("1")                                                                 Environment Variable      
+env.GRAFTYARD_AUDIT ("1")                                                                    Environment Variable      
+env.GRAFTYARD_APP_HOOKS ("1")                                                                Environment Variable      
+env.GRAFTYARD_PR_TRIGGER ("1")                                                               Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m4a-site-b (9.07 sec)
+Deployed graft-m4a-site-b triggers (3.15 sec)
+  schedule: */15 * * * *
+  Producer for graft-m4a-prsync-b
+  Consumer for graft-m4a-prsync-b
+Current Version ID: 4b97df7a-6edf-44ce-9d42-3488cac9630b
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-site-c.jsonc
+
+ ⛅️ wrangler 4.166.0
+────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+├ git is ready to run
+│   registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
+│
+Total Upload: 17504.80 KiB / gzip: 4926.61 KiB
+Worker Startup Time: 7 ms
+Your Worker has access to the following bindings:
+Binding                                                                                      Resource                  
+env.MEMBER_2 (Member)                                                                        Durable Object            
+env.MEMBER_0 (Member, defined in graft-m4a-site-a)                                           Durable Object            
+env.MEMBER_1 (Member, defined in graft-m4a-site-b)                                           Durable Object            
+env.REGISTRY_2 (Registry)                                                                    Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m4a-site-a)                                       Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m4a-site-b)                                       Durable Object            
+env.SHARD_2 (GitShard)                                                                       Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m4a-site-a)                                          Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m4a-site-b)                                          Durable Object            
+env.HOOKSEQ_2 (HookSequencer)                                                                Durable Object            
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m4a-site-a)                                   Durable Object            
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m4a-site-b)                                   Durable Object            
+env.SEARCH_2 (SearchShard)                                                                   Durable Object            
+env.SEARCH_0 (SearchShard, defined in graft-m4a-site-a)                                      Durable Object            
+env.SEARCH_1 (SearchShard, defined in graft-m4a-site-b)                                      Durable Object            
+env.INBOX_2 (Inbox)                                                                          Durable Object            
+env.INBOX_0 (Inbox, defined in graft-m4a-site-a)                                             Durable Object            
+env.INBOX_1 (Inbox, defined in graft-m4a-site-b)                                             Durable Object            
+env.LOGRELAY_2 (LogRelay)                                                                    Durable Object            
+env.LOGRELAY_0 (LogRelay, defined in graft-m4a-site-a)                                       Durable Object            
+env.LOGRELAY_1 (LogRelay, defined in graft-m4a-site-b)                                       Durable Object            
+env.BROKER_2 (RunnerBroker)                                                                  Durable Object            
+env.BROKER_0 (RunnerBroker, defined in graft-m4a-site-a)                                     Durable Object            
+env.BROKER_1 (RunnerBroker, defined in graft-m4a-site-b)                                     Durable Object            
+env.PRSYNC (inherited)                                                                       Queue                     
+env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                 
+env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                 
+env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                 
+env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret      
+env.SITE (graft-m4a-site-c)                                                                  Worker                    
+env.OPS (graft-m4a-ops)                                                                      Worker                    
+env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                  
+env.SITE_ID ("2")                                                                            Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")                             Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                                         Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")                      Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                            Environment Variable      
+env.GRAFTYARD_HOST ("graft-m4a-edge.<workers-subdomain>.work...")                              Environment Variable      
+env.GRAFTYARD_ACTIVITY ("1")                                                                 Environment Variable      
+env.GRAFTYARD_AUDIT ("1")                                                                    Environment Variable      
+env.GRAFTYARD_APP_HOOKS ("1")                                                                Environment Variable      
+env.GRAFTYARD_PR_TRIGGER ("1")                                                               Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+
+Uploaded graft-m4a-site-c (4.31 sec)
+Deployed graft-m4a-site-c triggers (1.24 sec)
+  schedule: */15 * * * *
+  Producer for graft-m4a-prsync-c
+  Consumer for graft-m4a-prsync-c
+Current Version ID: 30f34310-ef3f-4564-9184-4e62d0ef48e9
+exit 0
+2026-11-21T02:06:52Z

@@ -1083,6 +1083,74 @@ Source: m65r31's up half (`hop-replay.txt`, `tests/m4/wp4/hopreplay.py`), and th
 - **A cache with an invalidation the design already has?** None that `decide` may use. The edge's `READ_CACHE` (10 s, Shape, Identity) serves read-class requests only. The design binds a command's credential shard, owner `Authz` and install `Authz` to one leader `fresh` read per entry, so a revocation binds every command decided after it. Admission's cached copy of the `AgentApp` rows (DESIGN, the agent block) is admission's, not `decide`'s. The recorded fallback that would remove the read, the dependency lease (`decisions/DECISIONS.md`, "F81", What it beat; `FRAME.md`, 2026-11-18), changes the `decide` invariant's wording. By the bound above it too would buy nothing on this row, since the reads are already off the critical path once the hop is gone.
 - **What would reach 1 s on a rehomed group.** A shorter round: a quorum whose nearest follower is not across an ocean from the leader. Or fewer rounds per command. One entry in flight is an invariant, so that leaves fewer frozen batches ahead of a new command. Both are placement and pipeline questions, not reads. The rehomed bound is 2 s for this reason (`FRAME.md`, 2026-11-18).
 
+## B0-31 on graft-m4a after test-faults site day 66 (2026-11-21, row m66r31)
+
+Site day 66 (02:05:25Z to 02:06:52Z, exit 0, `tests/m4/raw/wp4/siteday66.log`) shipped main `8c59344e` (`install-record`, with `dep-hedge-other` reversed to the same-leader hedge) to all three sites as a test-faults build, with day 65's flags and image `m4a60`. There was no edge day: the edge has stayed test-faults since edge day 29 (`e395548c`). Granted by the lead with a $10 stop on graft-m4a plus the runner account from 02:05:24Z, watched by `b035watch.sh` with `STOP=10` (`b031-m66r31.watch`).
+
+`tests/m4/wp4/b031.sh` at `8c59344e` created `m3org/b031-m66r31` = repo 65582 and rehomed it on apac (terms 2 → 3, f2 leading, `home` 2). It placed 8 learners and set k 4, then ran `a1.mjs b0-31 --seconds 600` as run `mwprrhgo`: 500 agents pushing 1 MiB under the confined m3-ci App. Load ran 02:12:25.554Z to 02:22:25.6Z. From 02:17:25.6Z the test-faults edge honoured `x-graft-place-fail`, so 1,245 of 1,246 agent pushes in the second half answered `full` (1 `fetch failed`). Done line 02:23:24Z, exit 0. Load times are the driver's (orb) clock; the trace, the members' `/deps_log` and Workers Logs run on Cloudflare's, 15,821 ms ahead (the trace's first line), so the halves split the trace and `/deps_log` at load start 02:12:41.375Z on that clock. m65r31's dep-read split used the orb clock, 15.5 s early. On Cloudflare's clock its medians move by 1 to 2 ms (`authz:1` p50 567 against 565, same-entry difference +278 against +277) and its up-half `authz:1` p99 by 87 ms (1,123 against 1,210). Raw files are in `tests/m4/raw/wp4/b031-m66r31/`, and the trace is `tests/fanout/raw/tsave-m66r31-b0-31.jsonl.xz`.
+
+**Verdict (lead, 2026-11-21): valid. The buckets-up half meets the rehomed group's 2 s at 1,408 ms. The placement-failing half does not, at 2,396 ms, so B0-31 is not recorded as meeting the rehomed bound yet.** Both halves are between the 1 s line and the 3 s fail line. `install-record` worked and its flip did not trip, and the same-leader hedge is back to its old rate.
+
+| Line | m66r31 | m65r31 | Line (fail) |
+| --- | --- | --- | --- |
+| Commit p99, buckets up (leader f2 on apac) | **1,408 ms** (p50 691, n 5,767, max 1,709) | 1,947 | 1 s; 2 s for a rehomed group (`FRAME.md`, 2026-11-18); fail 3 s |
+| Commit p99, placement failing | **2,396 ms** (p50 837, n 4,599) | 2,185 | 1 s; 2 s rehomed; fail 3 s |
+| Split, up half | queue p99 1,174 (slot 1,009, post 445); round p99 539; confirm p99 128; deps:all p99 739 | queue 1,637 (slot 1,477, post 375); round 649; confirm 280; deps:all 1,123 | |
+| Split, failing half | queue p99 1,949 (slot 1,946, post 620); round p99 976; confirm p99 190; deps:all p99 958 | queue 1,872 (slot 1,845, post 510); round 1,084; confirm 402; deps:all 1,360 | |
+| Slot model (`slotdeps.py`), failing half | queue p99 1,350; 1,270 without the 5 entries whose `authz:1` read took over 1 s; cycle p99 808, gap max 724 | | |
+| Install `Authz` against the owner's read issued beside it (`install-record`'s flip) | up: `authz:1` p50 262 / p99 724 against 259 / 657, same-entry difference p50 **+2**, p99 +245; failing: 296 / 953 against 289 / 873, difference p50 +3, p99 +266; `depFails` empty. **Not tripped** | +277 at p50 | p50 more than 100 ms above the owner's, or `authz` depFails above the other chains' |
+| Leader changes in the load | **0** (f2, term 3 throughout) | 0 | |
+| Step-down lines | 0 | 1 (`LoopLag`) | |
+| `TransferAbandoned` | 0 lines | 0 | |
+| `suspect` | 16 objects, 1 each, at 02:12 and 02:17, then 106 reports each at both followers `repo:65582#1#f0` and `#1#f1` (by object id) at 02:21:17.1 to 02:21:22.2, with no term change (`suspect-by-object.txt`) | 0 | |
+| Leader's failed calls | 19, all `deadline`: 7 per follower, and 1 each to learners 192, 195, 197, 198 and 199 | 2 | |
+| Hedges, failing half (same-leader, `depHedges`) | **won 49 of 423** (11.6%) | 7 of 354 (hedge to another member) | |
+| Dep reads, up half (n, p50, p99, max, over 1 s) | `authz:1` 1,103, 262, 724, 844, 0; owner `authz` 1,125, 259, 657, 770, 0; `tokens` 1,632, 260, 676, 900, 0; `names` 529, 260, 607, 900, 0 | `authz:1` 799, 565, 1,210, 2,456, 17 | |
+| Dep reads, failing half | `authz:1` 895, 296, 953, 2,127, 6; owner 931, 289, 873, 2,121, 4; `tokens` 1,382, 293, 918, 2,127, 8; `names` 487, 291, 742, 2,131, 3 | `authz:1` 769, 581, 1,356, 1,791, 43 | |
+| Pushes | agent 1,253 of 1,254 ok in the first half (1 `full`); merges 32 and 31 × 200 | agent 1,231 of 1,237 | |
+| Spend | 02:05:24Z to 02:27:43Z: graft-m4a $1.82 by prefix ($4.64 for the account, with graft-m3f's $2.24), runner account $0.00, against the $10 stop (`cost.txt`) | $1.75 | |
+| Teardown | `git#2#net:65582` and `git#0#net:65582` 200; no shard container running; shardkill deleted (02:24:57Z) | | |
+
+**Slow-alarm step lines (F109), every one from 02:05:24Z** (`alarm-slow.txt`). `tick` and `set_alarm` read 0 ms on every line.
+- Before the load: `tokens:2829#1#f0` `near_check` 6,539 ms (02:05:48), `names:554#1#f0` `near_check` 7,423 ms (02:07:49), and `repo:65582#1#f1` `family` 913, 4,909 and 1,064 ms (02:08:02 to 02:08:08, the old step line names it `snap`) during setup.
+- In the load: `tokens:572#1#f0` `near_check` 5,200 ms (02:15:46).
+- **No `authz:1` member logged an alarm of 500 ms or more**, for the second row running.
+
+### The placement-failing half's tail (analysis, $0)
+
+Sources: the leader's and voters' trace (`tsave-m66r31-b0-31.jsonl.xz`), f2's `/deps_log`, the driver's samples and push timings, the three sites' Workers Logs, and `durableObjectsPeriodicGroups`. Everything below is on Cloudflare's clock, with load start 02:12:41.375Z and the failing half from 02:17:41.4Z. The lead's "about 530 s" for the `suspect` burst is 02:21:17 less the orb-clock load start; on Cloudflare's clock it is 516 to 521 s. The trace has one 31 s gap, 284 to 316 s, where tsave's poll did not return (the leader applied on both sides of it), so its minute is left out below. Files are `commit-model.txt`, `forward-excess.txt`, `forward-by-open.txt`, `long-calls.txt`, `deps-vs-forward.txt`, `suspect-senders.json` and `f0cpu.txt` to `f2cpu.txt` in `tests/m4/raw/wp4/b031-m66r31/`.
+
+**The tail grows with the row's age, not at the half boundary.** The commit model (`slotdeps.py`'s commands, each riding to the apply of its own entry) gives a p99 per minute of 1,055, 1,267, 1,254 and 1,079 ms for the first four minutes, then 1,322, 1,482, 2,081, 1,998 and 2,286 ms from 300 s (240 s is the trace gap). m65r31 rose the same way, from 1,686 to 2,188 [measured]. Placement failing adds nothing per command at the leader:
+- **Refused pushes take no slot.** The edge refuses a stored pack while placement fails, before any commit (`placement_failing`, `workers/edge/src/lib.rs`). 1,244 of 1,245 agent pushes answered `full` with no `commit` stage (total p50 1,006 ms). The leader's own check (`admission_check`, `!placement_ok`) refuses at admission, so there are no bucket place retries and no held slot. The group's commands fell from about 1,230 to about 960 a minute.
+- **Admission does not hold commands across entries.** All 898 cuts in the failing half ended `Empty`, with 0 commands left for every class. The `queued` 6 to 11 is commands waiting for the next cut, which the slot model already counts.
+- **`queue:post` (p99 620 against the up half's 445) is the dep reads outlasting the round.** Dep-read p99 per minute rose from 498 to 1,054 ms (1,556 at 480 s), and the cut-to-append gap p99 from 407 to 536.
+
+**What grows is the leader's forward leg.** On each AppendEntries, the follower's arrival minus the leader's `x-graft-sent` stamp, less its median, gives the call's excess. Its p90 per minute rose on f0 from 9 to 757 ms and its p99 from 493 to 1,515. f1 is the same within 50 ms. The followers did not cause it:
+- Their handlers ran in 0 ms at p50, their body reads under 100 ms, and the answers back had no excess at all.
+- In 250 of 251 sends to f0 and f1 together where either had 400 ms or more, both had 300 ms or more.
+- The learners' copies were slow at the same moments.
+
+The leader had 2 to 3 `/raft` fetches open at p90, but the excess rises sharply with 9 or more of its fetches in flight, counting dep reads (share of sends 400 ms or more late: 0.09 to 0.16 up to 8 in flight, 0.57 at 9, 0.84 at 10). Its CPU per request tripled over the row for the same request mix: `/raft` 0.5 → 1.7 ms, `/read` 1.6 → 4.7, alarm 1.0 → 5.5 ms (02:13:00 against 02:21:30, 20 s each). Its wasm memory went from 12 to 31 MB and its log bytes reached about 7 MB, while its CPU stayed under 0.38 vCPU a minute.
+- **Where the late send waits after `CallSent` is not measured** [unverified]. It may be the isolate's outbound queue or the colo's egress.
+- **Why per-request CPU grows with the row** [unverified]. It may be something that scales with log or memory size.
+
+**The 19 failed leader calls are all `deadline`, calls past CALL_DEADLINE (1 s), and they line up with both.** In the load the trace has 6 of the 7 per follower: 1 at 02:20:40.464 (1,697 and 1,618 ms), 2 at 02:21:15.140 (1,556 to 1,869), and 3 at 02:22:39 to 40 (1,065 to 2,382, the row's last 4 s). The 5 learner calls are all 02:22:40.092. The 7th per follower is not in the trace; it is likely in the gap at 284 to 316 s, which spans the stats reset at 300 s [inference]. At 02:21:15 nothing applied from 15.090 to 16.696, and that is the `suspect` burst's start.
+
+**The `suspect` burst is the edge's receipt rule, after that stall.** The leader logged only 1, 4 and 14 `/commit`s in 02:21:17, 18 and 19 against 29 in 02:21:16, while its `/raft` traffic kept flowing (108 to 149 a second).
+- 23 edge isolates (step `Other`, `suspect` itself; `suspect-senders.json`) found their `/commit` send and `/outcome_by_request` ask unanswered within COMMIT_RECEIPT (2 s). Each reported the leader to both followers: 212 reports, 106 per follower, all `about` 2, 120 at term 0 and 64 at term 3 (the isolate's known term).
+- Both followers answered `promised` (verdict 4), so no campaign started and the term stayed 3.
+- One push (`mwprrhgo-2525`) re-sent 15 times with 13 `missed` and 13 `suspect` in 4.5 s, as COMMIT_RECEIPT's re-send rule makes it.
+- 45 side commands took 6 s or more, all started at 511 to 515 s and ended at 518 to 521 s. The burst is in the commit tail: 8 of the 73 modelled commands near it are over 2 s. But it is one of three windows: 02:20:40 has 10 over 2 s, and 02:22:39 has 19 with no `suspect`.
+- Why the edge's sends reached the leader late in the same seconds as its own calls left late is not measured [unverified].
+
+**The three long-call windows set most of the model's tail.** Without the 162 commands admitted from 2 s before to 3 s after each, the model's commit p99 drops from 1,903 to 1,558 ms and its count over 2 s from 38 to 1. The model reads about 500 ms under the host on both halves (1,254 against 1,408 up; 1,903 against 2,396 failing). It spreads admissions evenly between cuts and reads one clock, so it misses bursts such as the edge's re-sends (1,747 sends for 1,688 commits, 33 `busy`, 25 `missed`). Taking 1,558 plus that 500 ms puts the host near 2.0 to 2.1 s, so removing the windows alone is borderline under 2 s [inference from the model].
+
+**Proposed, not built: hedge the leader's voter AppendEntries, as learners already do.** `call` copies a learner's call still open at HEDGE (500 ms) to the same member (`Host::hedge`, `workers/site/src/host.rs`); the leader's calls to voters are never copied. The change extends that copy to a voter `Append` from the leader. A repeat AppendEntries is harmless at the follower: `on_append` (`crates/raft/src/member/follower.rs`) matches entries it holds by digest and answers `ok` with the same `matched`. At the leader, the second answer for a round finds `calls_out` and `sent` already cleared, as a late answer does (`on_append_res`). So nothing `decide`, the commit index or the quorum rule sees changes [inference from the code; a test would have to show it]. One copy per call, as for learners. Only `call` and `Host::hedge` in `workers/site/src/host.rs` change; `crates/raft` does not.
+- On this row, the learners' copies were answered on 880 of 881 hedges. In the 02:21:17 stall their copies took 1,101 to 1,358 ms, so a copy only helps where the stall is per call, not per isolate. Whether it beats the original is not recorded [unverified].
+- Its flip: a row whose voter copies answer under half the hedges, or whose voter calls past CALL_DEADLINE do not fall.
+- **Second, at $0 before any code:** what grows the leader's per-request CPU threefold across the row. That is the slope under the whole tail, and it is not split by half.
+- **Third, a cheap control for the gate itself:** one B0-31 row with the halves swapped (placement failing first) would show whether the 2,396 ms is placement or row age. On this row and m65r31 the evidence says row age.
+
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
 The route has no gate row, so this is a hosted check of `POST /api/graftyard/v1/admin/repos/{id}/purge` (`decisions/DECISIONS.md`, "`repo-purge`"), granted to stop the fold audit's daily refolds of 35 leftover test repositories (65537 to 65567, 589824 to 589827). Site day 52 and edge day 25 shipped main `703a9642` as product builds (`tests/am1/results/install-m4a.md`). Driver: `tests/m4/wp4/purge35.mjs`; every reply is in `tests/m4/raw/wp4/purge35.jsonl`.

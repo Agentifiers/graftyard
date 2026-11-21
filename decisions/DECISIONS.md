@@ -6881,7 +6881,7 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 
 ### `install-record`: a repository leader keeps the install account's placement record for its install `Authz` reads, 2026-11-21
 
-**Status.** Built on branch `install-record` from main `54638269`, code only, as the lead ordered after B0-31 m65r31. Not yet run hosted; the next graft-m4a site day plus a B0-31 row measures it.
+**Status.** Built on branch `install-record` from main `54638269`, code only, as the lead ordered after B0-31 m65r31; on main from `8c59344e`. **Run hosted on B0-31 m66r31 (2026-11-21), and its flip did not trip:** the install `Authz` read's p50 was 262 ms against the owner's 259 (same-entry difference +2 ms at p50, +245 at p99; failing half +3 at p50), against +277 at p50 on m65r31, and `depFails` was empty. The buckets-up commit p99 fell from 1,947 to 1,408 ms, under the model's 1.6 s (`tests/m4/results/m4-wp4.md`, "B0-31 on graft-m4a after test-faults site day 66").
 
 **Decision.** `read_dep_under` (`workers/site/src/host.rs`) reads a dependency chain under the record the member already holds: the joined record for its owner's `Authz` (`owner_chain_record`, as before), and for `Authz(install_account())` the install account's record kept in `Host::install_record`. With no record held, or when the read under it fails, it looks the chain up (`release::record_for`: a `Placement` read on `Names` for an account's chain) and reads under that. A read of the install `Authz` that succeeds under a looked-up record keeps it, and one that fails under the kept record drops it first. The kept record is in memory only, so an isolate that resets reads it again once. Nothing is stored and no format changes.
 
