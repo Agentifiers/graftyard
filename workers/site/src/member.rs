@@ -3496,7 +3496,7 @@ mod tests {
         let hold = |b: &str| super::commit_hold(serde_json::from_str::<Req>(b).expect("decodes").hold_ms);
         assert_eq!(hold(&plain), graftyard_raft::COMMIT_HOLD, "no field: today's hold");
         assert_eq!(hold(&lean), Duration::from_secs(6), "a lean send's hold");
-        assert_eq!(graftyard_raft::COMMIT_HOLD, Duration::from_secs(1));
+        assert_eq!(graftyard_raft::COMMIT_HOLD, Duration::from_millis(1_500), "commit-hold");
     }
 
     /// The daily near check moves a member only on readings past the pair's own spread, twice a day apart: an enam
