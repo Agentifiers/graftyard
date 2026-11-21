@@ -1,11 +1,12 @@
-# `colo-gate`: a data-center share of the read gate's decisions and of checked chain headers (design and probe, nothing built)
+# `colo-gate`: a data-center share of the read gate's decisions and of checked chain headers (design, probe, and build)
 
 The orchestrator's ruling on `b034-gate` (2026-11-21) approved option 3 for design and a probe, not a build: share the
 read gate's `Allow` decisions between the edge isolates of one data center through the Workers Cache API. It also asked
 whether `chain_open`'s checked pack headers can use the same store. This file holds the probe, the replay, and the
-answer. Nothing in `workers/` or `crates/` changed. The design text is in `design/DESIGN.md` ("Stack", "Follower read",
-Shape's git caches paragraph, "Failure modes", "Deployment modes"), and the decision is `decisions/DECISIONS.md`,
-"`colo-gate`".
+answer. The ruling on `b034-colo` (main `1748a520`) approved the build, which is on branch `b034-colo-build`. "The
+build" below describes it; it has not been measured hosted yet. The design text is in `design/DESIGN.md` ("Stack",
+"Follower read", Shape's git caches paragraph, "Failure modes", "Deployment modes"), and the decision is
+`decisions/DECISIONS.md`, "`colo-gate`".
 
 **Short answer.**
 - The Cache API works on the hostname kind the test edge uses (`*.workers.dev`). In LAX a `match` took p50 6 / p99
@@ -18,6 +19,7 @@ Shape's git caches paragraph, "Failure modes", "Deployment modes"), and the deci
 - A checked chain header is **not** immutable, so it does not hold the way the ruling hoped. Chain files are named by
   commits, not by their bytes, and a fold deletes them. A header set keyed by the bucket's `head` etag does hold,
   because every put of `head` changes that etag. With that key, one product row (the Cache API) serves both caches.
+  The build keys it by the head's R2 `version` instead, since an etag repeats for identical bytes ("The build").
 
 ## The probe (2026-11-21, `tests/colo/probe.sh`)
 
@@ -131,15 +133,111 @@ the colo share, an isolate cache under the same key also works, but it keeps the
 - The Cache API has no price line on the Workers pricing page. Its calls count against per-request limits, not as
   billed requests [inference].
 
-## What a build would be (not started)
+## The build (branch `b034-colo-build`, not yet measured hosted)
 
-1. In the edge, `mod gate` (`workers/edge/src/lib.rs`): `colo_key(repo, who, record)`, the SHA-256 path on a fixed
-   origin plus the edge's key version; `colo_get` bounded by `COLO_MATCH_WITHIN`, serving only `Allow` with a stamp
-   under `READ_CACHE` less `COLO_SKEW`; `colo_put` after `reopened`'s `Allow`; and the `waitUntil` re-read at
-   `COLO_AHEAD`.
-2. In the chain path, `crates/git/src/host.rs` `manifest_check`: a `head` read beside the manifest and a header set
-   keyed by the head etag, in the isolate and the Cache API.
-3. Tests that fail on plausible wrong builds: a key that drops the credential, repository, or record; a put of
-   `Hidden`; a stamp taken from the put time instead of the fold read; a match served past `READ_CACHE` less
-   `COLO_SKEW`; a header set keyed by pack key; and a set put after a failed check.
-4. It ships on an edge day, not a site day.
+It ships on an edge day: every change is in the edge's script and the `crates/git` chain path the edge runs.
+
+**The shared gate decision** (`workers/edge/src/colo.rs`, `read_gate` in `workers/edge/src/lib.rs`).
+- `colo::gate` holds the rules over a `GateFx` trait, so the tests run the served path itself:
+  - An isolate entry still servable serves.
+  - Otherwise, a read-class request matches the data center's entry within `COLO_MATCH_WITHIN` (50 ms). A servable
+    match is copied into the isolate with the entry's own stamp and marked foreign.
+  - Otherwise the gate reads members fresh. Only an `Allow` is put, stamped with the fold read's time from
+    `reopened`, never the put's.
+- `servable`: the isolate's own read serves up to `READ_CACHE`. A foreign stamp serves while under `READ_CACHE` less
+  `COLO_SKEW` (1 s), and never when stamped more than the skew in the future.
+- `COLO_AHEAD` (5 s): an `Allow` served from an entry at least that old starts one fresh gate read after the answer
+  (`waitUntil`, at most one per key in flight in an isolate). The re-read runs in a background context that is not
+  read-class, so it reads the owner's `Authz` fresh. Its `Allow` replaces both entries with its own stamp. Its
+  refusal is held in the isolate only, so the data center's entry lapses on its old stamp.
+- The key is a SHA-256 of the key version, the credential hash `gate::key` already makes (never a session, never a raw
+  token), the repository, and the placement record, on the fixed origin `https://colo.graftyard.invalid`.
+- A write, a session, a group that is not created yet or retired (`Hidden`, never cached), and a member-read failure
+  behave as before. `GateFail` keeps a member read's failure (503) apart from the edge's own error.
+- `server-timing` gains `gate_iso` and `gate_colo` (the served entry's age) and `gate_match` (the match's wall).
+
+**Header sets for chain packs** (`crates/git/src/compose.rs` `check_with_sets`, `crates/git/src/host.rs`,
+`colo::ChainSets`).
+- `manifest_check` and `manifest_answer` read each chain bucket's `head` object first and key a set by
+  `(site, network, head's R2 version)`. Keyed by version, not etag: an etag repeats for identical bytes, and R2's
+  version is a random string unique to each upload of a key [doc].
+- A manifest pack comes from the set only if that head names it and the set's count matches the manifest's. Every
+  other pack is checked as before.
+- A bucket puts its set again only when every check passed and the set gained a pack. The put goes in `waitUntil`, to
+  the isolate and the data center.
+- The whole check is still bounded once by `CHAIN_CHECK_WITHIN`.
+- `server-timing` gains `chain_set` and `chain_chk`: packs from a set, and packs checked. The edgebed passes `NoSets`.
+
+**The share-off arm** (test-faults only).
+- `x-graft-colo: off` with the bed token (`lean_asked`, as `x-graft-lean` does) sets `Ctx::colo_off`. That request
+  neither matches nor puts, and keeps the isolate cache under separate keys (`gate::off_key`), so it never takes an
+  entry the shared arm copied in. Its chain checks use no sets.
+- `colo_off(c)` is always false in the product build.
+- Load34's `spec.coloOff {share, bed}` sends that share of clone probes with the header, as kind `read:cloneOff`.
+  `a1.mjs --colo-off F` and `COLO_OFF=F bash tests/fanout/b034.sh` pass it through. `cloneTtfb` records the new stages.
+
+**Product wasm with the switch off.** Two product builds (`worker-build --release`, no features):
+A is this branch, and B is the same tree with every `test-faults` `colo_off` line blanked so line numbers match
+(`colo_off()` returns false). The two `index_bg.wasm` files are byte-identical at 5,706,249 bytes, so every section
+is the same: `code` 3,899,172, `data` 660,735, and `name` 1,125,042. The switch adds nothing to a product edge.
+
+**Tests.**
+- `colo::tests::a_shared_decision_is_served_only_while_its_stamp_is_under_read_cache_less_the_skew`: both sides of
+  `READ_CACHE` for an own read, `READ_CACHE` less `COLO_SKEW` for a foreign one, and a future stamp.
+- `colo::tests::the_shared_gate_serves_by_the_fold_reads_stamp_on_every_path` (the age rule on the served path):
+  - the shared stamp is the fold read's, not the put's;
+  - an isolate copy keeps the entry's stamp and lapses with it;
+  - the re-read's `Allow` replaces the stamp in both entries;
+  - its refusal leaves the shared entry to lapse;
+  - no served stamp is older than `READ_CACHE` less `COLO_SKEW`;
+  - a refusal is never put.
+- `colo::tests::a_revoked_grant_is_never_served_past_read_cache_from_any_entry` (revocation): five isolates, a grant
+  removed at t. A fresh read after t refuses. No request after t + `READ_CACHE` is served `Allow` from any entry. The
+  shared entry is never stamped at or after t, so a refused re-read never extends it.
+- `colo::tests::a_gate_key_names_the_credential_the_repository_and_the_record`, and no raw credential in the URL.
+- `crates/git/tests/shard.rs`,
+  `a_header_set_answers_only_for_the_head_version_it_was_checked_under`. It covers:
+  - a second answer under one version checks nothing;
+  - a pack whose manifest count differs is checked;
+  - a rebuild under a new version streams the new etags;
+  - a fold's deleted packs decline, not served;
+  - a pack outside the head is checked;
+  - a failed check puts no set;
+  - the bound is still one `CHAIN_CHECK_WITHIN`.
+
+**Plants** (`tests/m0carried/plant79.py`): 13 of 13 caught. Each plant below makes a test fail:
+- the key drops the credential, the repository, or the record;
+- a refusal is put;
+- the stamp is the put's time;
+- no skew;
+- the re-read's refusal is put;
+- an isolate copy restamps at copy time;
+- a copy is held as its own read;
+- the share-off arm still matches;
+- the chain key drops the head's version;
+- a header set answers for packs its head does not name;
+- a header set ignores the manifest's count.
+
+The last one was missed on the first run. The case "a pack whose manifest count differs is checked" was added, and the
+plant is caught now.
+
+**Checks.** All pass:
+- `cargo fmt`;
+- workspace clippy;
+- wasm32 clippy for site and edge, each with and without test-faults, and for ops;
+- `cargo test --workspace`;
+- `go test` in `containers/git/server`;
+- the three design checks;
+- the load34 node tests, the clone-lines tests, and the plant-residue checks;
+- edgebed (`PEAK=1`).
+
+`check_with_sets` shares `check_in_time`'s one bound (`compose::bounded`), so the chainhold plants still guard both.
+After that change they catch 5 of 5.
+
+**The row after the merge** (under the standing queue): an edge day from merged main, then a B0-34 row with
+`COLO_OFF=0.25`, $10 stop. Its verdict leads with these lines:
+- hits p99 with the share on, beside the share-off probes' p99;
+- colo hit share;
+- the oldest served stamp, which must be under `READ_CACHE`;
+- `chain_open` p99 and the header-set hit share;
+- member reads per minute against mt14.

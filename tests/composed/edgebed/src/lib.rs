@@ -60,7 +60,7 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
             };
             let h = Headers::new();
             h.set("content-type", "application/x-git-upload-pack-result")?;
-            match graftyard_git::host::manifest_answer(&[&b], net, body, size, h).await.map_err(|e| Error::RustError(e.0))? {
+            match graftyard_git::host::manifest_answer(&[&b], net, body, size, h, &graftyard_git::compose::NoSets).await.map_err(|e| Error::RustError(e.0))? {
                 graftyard_git::compose::ChainCheck::Checked(r) => Ok(r),
                 graftyard_git::compose::ChainCheck::Declined => Response::error("declined", 404),
                 graftyard_git::compose::ChainCheck::Late => Response::error("late", 503),

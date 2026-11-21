@@ -143,13 +143,13 @@ class Run {
       variables: { i: { repositoryId: this.spec.repoId, baseRefName: "main", headRefName: branch, title: branch, body: "a1", draft } } });
   }
   /** a1's `cloneTtfb`: a v2 fetch of `want`, timed to its first byte; `firstByte` asks depth 1 and cancels after it. */
-  async cloneTtfb(c, repo, want, kind, firstByte, tok = this.spec.tokens.admin) {
+  async cloneTtfb(c, repo, want, kind, firstByte, tok = this.spec.tokens.admin, extra = {}) {
     let s = this.now();
     try {
       const sent = await this.send(c, "git", `${this.spec.edge}/${repo}.git/git-upload-pack`, { method: "POST", signal: AbortSignal.timeout(120_000),
         // workerd's fetch sends no User-Agent of its own, as Node's does, and the edge answers a request without one
         // 403 (`graftyard_wire::serve`): mt8's 5,071 clones all were.
-        headers: { ...auth(tok), "user-agent": "git/2.56.0", "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
+        headers: { ...auth(tok), "user-agent": "git/2.56.0", "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request", ...extra },
         body: Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt("no-progress\n"), ...(firstByte ? [pkt("ofs-delta\n")] : []),
           pkt(`want ${want}\n`), ...(firstByte ? [pkt("deepen 1\n")] : []), pkt("done\n"), Buffer.from("0000")]) });
       const r = sent.r;
@@ -178,7 +178,10 @@ class Run {
         // The edge's own stages: `front` (resolve and auth), `gate` (the read gate's access read) and `chain_open` (a
         // manifest's chain checks), so a row reports each beside the clone lines (decisions/DECISIONS.md, `chain-open`,
         // `chain-hold` and `hit-gate`).
-        for (const m of (r.headers.get("server-timing") ?? "").matchAll(/(front|gate|chain_open);dur=(\d+)/g)) {
+        // `colo-gate`'s stages too: the age of a decision served from the isolate (`gate_iso`) or the data center
+        // (`gate_colo`), the data-center match (`gate_match`), and the packs a header set served (`chain_set`) or
+        // that were checked (`chain_chk`).
+        for (const m of (r.headers.get("server-timing") ?? "").matchAll(/(front|gate|chain_open|gate_iso|gate_colo|gate_match|chain_set|chain_chk);dur=(\d+)/g)) {
           this.note(`${kind}:${m[1]}`, Number(m[2]), String(r.status));
           this.note(`${kind}:${cache}:${m[1]}`, Number(m[2]), compose ?? String(r.status));
         }
@@ -369,7 +372,11 @@ class Run {
       const t = this.now();
       const want = await this.mainNow();
       c.waited += this.now() - t;
-      return this.cloneTtfb(c, spec.repo, want, "read:cloneTtfb", true);
+      // `colo-gate`'s flip arm: a share of probes ask the edge to keep its isolate caches alone (`x-graft-colo: off`
+      // with the bed token), under their own sample kind, so one row measures both arms.
+      const off = spec.coloOff && Math.random() < spec.coloOff.share;
+      return off ? this.cloneTtfb(c, spec.repo, want, "read:cloneOff", true, spec.tokens.admin, { "x-graft-colo": "off", "x-bed-token": spec.coloOff.bed })
+        : this.cloneTtfb(c, spec.repo, want, "read:cloneTtfb", true);
     }, role.cap);
     if (role.role === "human") {
       // Humans share 20 refs, so two pushes to one ref can race and the later one is `stale:race`, as a1 counts it.

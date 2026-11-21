@@ -27,6 +27,8 @@ export function run(o) {
     b034: { future: b034.future, packs: packsPrefix(b034.future), second: b034.second, hostile: b034.hostile,
       hotPushPerS: b034.hotPushPerS, hotClonePerS: b034.hotClonePerS, hotReadMBps: b034.hotReadMBps ?? 8 },
     marks: { killAt: o.killAt, secondAt: b034.secondAt, hostileAt: b034.hostileAt },
+    // `colo-gate`'s flip arm (`--colo-off SHARE`): that share of clone probes carry the bed token with `x-graft-colo: off`.
+    ...(o.coloOff ? { coloOff: { share: o.coloOff, bed: o.bed } } : {}),
   };
   const states = {};
   // Each clone-cache miss once: from a progress read while the run goes, or from the last chunk after it.

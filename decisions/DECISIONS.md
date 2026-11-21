@@ -7206,7 +7206,7 @@ arrived, past one retry: then `resume` is not reached on that path.
 
 ### `colo-gate`: the edge shares the read gate's `Allow` decisions and checked chain headers in its data center's Cache API, 2026-11-21
 
-**Status.** Designed, not built, on branch `b034-colo`, from the lead's ruling on `tests/am1/results/b034-gate.md` (option 3, approved for design and a probe). It adds the Workers Cache API to `research/cloudflare.md`'s first table and to `design/DESIGN.md`, "Stack" (GA [inference]), with failure-mode rows for every class and a Deployment modes row (`colo cache`). A build would change the edge only (`workers/edge/src/lib.rs`, `mod gate`; `crates/git/src/host.rs`, `manifest_check`), so it would ship on an edge day.
+**Status.** Designed on branch `b034-colo` (merged, main `1748a520`) from the lead's ruling on `tests/am1/results/b034-gate.md` (option 3), and built on branch `b034-colo-build` (edge and `crates/git`'s chain path; an edge day), with a test-faults switch for the share-off arm. Not yet measured hosted. It adds the Workers Cache API to `research/cloudflare.md`'s first table and to `design/DESIGN.md`, "Stack" (GA [inference]), with failure-mode rows for every class and a Deployment modes row (`colo cache`). The build changes the edge only (`workers/edge/src/colo.rs`, `read_gate`; `crates/git`'s `check_with_sets` and `open_chain_sets`, which only the edge runs), so it ships on an edge day.
 
 **Decision.**
 - A read-class request's read gate matches a data-center entry before it reads members, and puts one after a fresh `Allow`.
@@ -7215,14 +7215,14 @@ arrived, past one retry: then `resume` is not reached on that path.
 - Only `Allow` is put. A miss, a refusal, an error, or a match not answered within `COLO_MATCH_WITHIN` (50 ms [guess]) reads fresh, as today.
 - A request served from an entry at least `COLO_AHEAD` (5 s [guess]) old starts one fresh gate read after its answer (`waitUntil`), at most one per key in flight per isolate. Its `Allow` replaces the entry with its own stamp; a refusal is not put, so the entry lapses.
 - No revocation relies on `delete`, which purges one data center only [doc].
-- Chain headers: the edge reads the bucket's `head` beside a hit's manifest. It keeps that head's checked headers (key, count, etag, length) in the isolate and the Cache API under the bucket and the head object's etag, and only a set whose every check passed. A pack the head names comes from the set, any other is checked as today, and every body still streams on its etag.
+- Chain headers: the edge reads the bucket's `head` beside a hit's manifest. It keeps that head's checked headers (key, count, etag, length) in the isolate and the Cache API under the bucket and the head object's R2 `version`, and only a set whose every check passed. A pack the head names comes from the set, any other is checked as today, and every body still streams on its etag.
 
 **Why.**
 - A third of B0-34's hits read members in the gate (`gate_rows`, p50 634 ms on mt14), and every hit with a cached decision was under 1 s at p99 (`b034-gate.md`). The isolate cache is per isolate, and Load34's probes reach about 8 isolates per key in 10 s.
 - The probe on `workers.dev`: in LAX a `match` took p50 6 / p99 12 ms and a `put` p50 7 / p99 17 ms, and an entry one isolate put matched from 9 others [measured, `tests/am1/results/b034-colo.md`].
 - Replayed over mt12 to mt14, a shared entry with the re-read ahead and `chain_open` at most 300 ms gives j9 hit p99 813 / 1,021 / 864 ms, with 4 to 8 hits a row waiting on members for 52 member reads, against 65 to 92 measured. mt13's 1,021 ms is set by `front` and the stages after the gate, not by the gate [inference, same].
 - The stamp rule keeps the bound: a decision is never served when the oldest fold read under it is older than `READ_CACHE`, so a revocation binds within one `READ_CACHE` whichever isolate or colo holds the entry.
-- Chain headers: a header is not content-addressed. `base-<tip>` and `part-<from>-<to>` name commits, a fold deletes them, and a rebuilt step rewrites a key with another etag. So a set keyed by pack key could name a deleted pack and cut an answer that today's check declines. The `head` etag changes on every put, and the builder puts a head's files before that head and deletes an old base's files only after its replacement, so a set under that etag names files that were there when the head was read. 13 packs' checks took p50 374 / p99 1,399 ms in one probe; a `head` get and a match replace them [measured, same].
+- Chain headers: a header is not content-addressed. `base-<tip>` and `part-<from>-<to>` name commits, a fold deletes them, and a rebuilt step rewrites a key with another etag. So a set keyed by pack key could name a deleted pack and cut an answer that today's check declines. The `head` object's R2 `version` is unique to each upload [doc] (its etag can repeat when the same bytes are put again), and the builder puts a head's files before that head and deletes an old base's files only after its replacement, so a set under that version names files that were there when the head was read. 13 packs' checks took p50 374 / p99 1,399 ms in one probe; a `head` get and a match replace them [measured, same].
 - Keying on the request's URL failed through a service binding, where the URL carries the caller's hostname [measured, same]. So the key origin is fixed.
 
 **What it beat.**
@@ -7237,13 +7237,15 @@ arrived, past one retry: then `resume` is not reached on that path.
 - `tests/am1/results/b034-colo.md` (probe table, replay tables, the chain-header argument).
 - `tests/colo/probe.sh` with `probe.js`, `front.js` and `r2probe.js` (the scratch Workers, rerunnable and deleted after use).
 - `tests/colo/replay.py` (the replay over `tests/am1/raw/a1-samples-b0-34-*.jsonl.gz`).
-- Docs quoted in `research/cloudflare.md`, "Cache API".
+- Docs quoted in `research/cloudflare.md`, "Cache API". R2 `version`: "Random unique string associated with a specific upload of a key" (https://developers.cloudflare.com/r2/api/workers/workers-api-reference/).
+- Build: `workers/edge/src/colo.rs` (`gate`, `reread`, the keys, the glue) and `crates/git/src/compose.rs` (`check_with_sets`). Tests: `the_shared_gate_serves_by_the_fold_reads_stamp_on_every_path` (stamp from the fold read; an isolate copy keeps it; lapse at `READ_CACHE` less `COLO_SKEW`; the re-read's `Allow` restamps and its refusal is not put; a refusal is never put; the share off never matches), `a_revoked_grant_is_never_served_past_read_cache_from_any_entry`, `a_shared_decision_is_served_only_while_its_stamp_is_under_read_cache_less_the_skew`, `a_gate_key_names_the_credential_the_repository_and_the_record`, and `a_header_set_answers_only_for_the_head_version_it_was_checked_under` (`crates/git/tests/shard.rs`). Plants: `tests/m0carried/plant79.py`.
+- Share-off arm: `x-graft-colo: off` with the bed token on test installs (Load34 `--colo-off`, sampled as `read:cloneOff`); product wasm checked unchanged when off (`tests/am1/results/b034-colo.md`, "The build").
 - [inference] Load34 sends one PAT and its probes stick to about 8 isolates, so B0-34's 28 to 36% read share is this harness's. Real clients spread over more isolates, read members more often, and gain more.
 
 **Flip.**
 - A row where the colo `match` p99 eats the read it saves: `match` p99 at or above the gate's member-read p50 on hits, or j9 hit p99 not better than the same build with the colo share off.
 - Any served decision whose stamp is older than `READ_CACHE` at the time it was served, in a test or in a row's logs: the stamp rule is broken, so turn the share off until it is fixed.
-- A clone cut mid-answer by a pack whose header came from a set: the head etag no longer covers the files, so check every pack as before.
+- A clone cut mid-answer by a pack whose header came from a set: the head's version no longer covers the files, so check every pack as before.
 
 ### `learner-cadence`: a learner sends read-index batches at most every 200 ms, and its append replies ride them, 2026-11-21
 

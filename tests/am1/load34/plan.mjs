@@ -56,7 +56,7 @@ export function phaseOf(now, t0, { killAt, secondAt, hostileAt }) {
 }
 
 /** a1.mjs's phased kinds: each one measured in B0-34 carries its phase. */
-export const PHASED = /^(push:|read:clone|tip:move|hot:)/;
+export const PHASED = /^(push:|read:clone|tip:move|hot:)/; // read:clone covers read:cloneOff too
 
 /** At most SLOTS fetches out; a fetch that finds them full waits, and the wait is counted apart, never in a sample.
  *  `take` resolves when a slot is free and answers how long it waited; `give` frees one at the response's headers. */
