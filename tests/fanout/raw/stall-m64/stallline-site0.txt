@@ -1,0 +1,29 @@
+stall to 1795219931455   774 ms: 1 confirms cover   330 ms; largest 337 ms, 209 stmts 147763 B, wakes 0 requests 282; work rows 7, entered 84
+stall to 1795219932647  1092 ms: 1 confirms cover    10 ms; largest 232 ms, 231 stmts 158096 B, wakes 1 requests 76; work rows 14, entered 302
+stall to 1795219934744  1997 ms: 2 confirms cover  1233 ms; largest 1111 ms, 234 stmts 27622 B, wakes 0 requests 423; work rows 12, entered 592
+stall to 1795219944879   754 ms: 1 confirms cover   532 ms; largest 725 ms, 278 stmts 19307 B, wakes 1 requests 268; work rows 3, entered 201
+stall to 1795219946350  1371 ms: 1 confirms cover    93 ms; largest 725 ms, 278 stmts 19307 B, wakes 1 requests 268; work rows 2, entered 476
+stall to 1795219947289   639 ms: 1 confirms cover    20 ms; largest 120 ms, 242 stmts 17840 B, wakes 1 requests 14; work rows 0, entered 152
+stall to 1795219949522  1103 ms: 1 confirms cover   578 ms; largest 678 ms, 224 stmts 16847 B, wakes 0 requests 364; work rows 3, entered 130
+stall to 1795219950704  1082 ms: 1 confirms cover   280 ms; largest 379 ms, 231 stmts 16966 B, wakes 0 requests 120; work rows 5, entered 80
+stall to 1795219955748   564 ms: 1 confirms cover    62 ms; largest 161 ms, 1 stmts 4404 B, wakes 0 requests 35; work rows 7, entered 115
+stall to 1795219957369  1521 ms: 2 confirms cover   652 ms; largest 531 ms, 206 stmts 10564 B, wakes 0 requests 150; work rows 3, entered 439
+stall to 1795219958104   635 ms: 1 confirms cover    58 ms; largest 58 ms, 1 stmts 30766 B, wakes 0 requests 6; work rows 5, entered 119
+stall to 1795219959779  1575 ms: 2 confirms cover   561 ms; largest 244 ms, 230 stmts 19512 B, wakes 0 requests 153; work rows 8, entered 561
+stall to 1795220014032  3301 ms: 1 confirms cover  2049 ms; largest 2729 ms, 232 stmts 125419 B, wakes 5 requests 817; work rows 16, entered 675
+stall to 1795220015153   537 ms: 1 confirms cover    96 ms; largest 2729 ms, 232 stmts 125419 B, wakes 5 requests 817; work rows 4, entered 36
+stall to 1795220018658   605 ms: 0 confirms cover     0 ms; no confirm; work rows 3, entered 86
+stall to 1795220019777  1019 ms: 1 confirms cover   111 ms; largest 111 ms, 127 stmts 174223 B, wakes 0 requests 14; work rows 4, entered 107
+stall to 1795220021374   668 ms: 1 confirms cover   309 ms; largest 368 ms, 230 stmts 204634 B, wakes 0 requests 72; work rows 1, entered 48
+stall to 1795220027813   908 ms: 1 confirms cover   908 ms; largest 990 ms, 251 stmts 215114 B, wakes 1 requests 191; work rows 2, entered 19
+stall to 1795220032108   538 ms: 1 confirms cover    17 ms; largest 24 ms, 240 stmts 44934 B, wakes 0 requests 394; work rows 5, entered 352
+stall to 1795220038165  1064 ms: 3 confirms cover   608 ms; largest 423 ms, 1 stmts 4024 B, wakes 0 requests 88; work rows 6, entered 324
+stall to 1795220039301  1036 ms: 1 confirms cover    64 ms; largest 64 ms, 1 stmts 38161 B, wakes 0 requests 15; work rows 5, entered 169
+stall to 1795220040022   621 ms: 1 confirms cover   184 ms; largest 275 ms, 198 stmts 53036 B, wakes 0 requests 91; work rows 4, entered 50
+stall to 1795220041855  1733 ms: 2 confirms cover  1572 ms; largest 1056 ms, 195 stmts 10504 B, wakes 0 requests 208; work rows 7, entered 220
+stall to 1795220042523   568 ms: 1 confirms cover   143 ms; largest 181 ms, 1 stmts 3999 B, wakes 0 requests 54; work rows 5, entered 67
+24 stalls, 25705 ms; covered by a pending confirm 10470 ms (41%)
+confirms of 0 to 100 ms: 264; requests entered while pending 3153, at the resolve time 2025 (64%)
+confirms of 100 to 300 ms: 42; requests entered while pending 5074, at the resolve time 2865 (56%)
+confirms of 300 to 1000000000 ms: 37; requests entered while pending 5754, at the resolve time 2394 (42%)
+baseline: resolve times are 0.25% of the window's milliseconds
