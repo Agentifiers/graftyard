@@ -831,12 +831,14 @@ pub fn validate_status(container: Option<u16>) -> u16 {
 }
 
 /// One shard object's catch-ups of one network, numbered from 1 as they start (`workers/site/src/shard.rs`, `Jobs`):
-/// whether one runs, the number of the latest started, and of the latest that ended without an error.
+/// whether one runs, the number of the latest started, and of the latest that ended without an error, and whether the
+/// shard was torn down since a caller that may start its container last came (`tear_down`, `resume`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CatchUps {
     pub running: bool,
     pub started: u64,
     pub ok: u64,
+    pub torn: bool,
 }
 
 /// What a caller that needs a catch-up numbered `from` or later does next: go on, start one, or wait for the running
@@ -846,6 +848,8 @@ pub enum CatchUpStep {
     Done,
     Start,
     Await,
+    /// The shard was torn down: no catch-up starts for this caller, which answers as a stopped shard does.
+    Stopped,
 }
 
 impl CatchUps {
@@ -860,14 +864,16 @@ impl CatchUps {
             CatchUpStep::Done
         } else if self.running {
             CatchUpStep::Await
+        } else if self.torn {
+            CatchUpStep::Stopped
         } else {
             CatchUpStep::Start
         }
     }
 
-    /// Starts one unless one runs; true when it did.
+    /// Starts one unless one runs or the shard was torn down; true when it did.
     pub fn start(&mut self) -> bool {
-        if self.running {
+        if self.running || self.torn {
             return false;
         }
         self.running = true;
@@ -880,6 +886,20 @@ impl CatchUps {
         if ok {
             self.ok = self.started;
         }
+    }
+
+    /// `/teardown`: no run starts and no running run takes another piece until `resume`. Each run puts the `warming`
+    /// key and arms the object's alarm, and its first piece starts the container. On B0-33 sab, a keep-warm caller
+    /// still waiting when the teardown's kill failed the running run started the next one, which armed the alarm the
+    /// teardown had just deleted and started site c's container again (`tests/am1/results/sync-ab.md`, "Close-out").
+    pub fn tear_down(&mut self) {
+        self.torn = true;
+    }
+
+    /// A caller that may start the container (a client request, a pool warm, or a due range's promotion) came after a
+    /// teardown, so catch-ups run again. A keep-warm call (`Caller::Warm`) never resumes one.
+    pub fn resume(&mut self) {
+        self.torn = false;
     }
 }
 

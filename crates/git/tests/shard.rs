@@ -1130,3 +1130,63 @@ fn a_networks_chain_buckets_are_among_its_groups_sites_not_the_installs() {
     let home_c = graftyard_types::PlacementRecord { home: c, ..tri(&[a, b, c]) };
     assert_eq!(chain_buckets(net(1048606), &home_c)[0], c);
 }
+
+/// `teardown-stops-runs`: a torn-down shard that held `warming` schedules no alarm. Each catch-up run puts `warming` and
+/// arms the object's alarm, and its first piece starts the container, so after `/teardown` no run may start or take
+/// another piece until a caller that may start the container comes. On B0-33 sab the teardown's kill failed the
+/// running run, a keep-warm caller still waiting started the next one, and that run armed the alarm the teardown had
+/// deleted; the alarm restarted site c's container 3 minutes after the sweep found none running
+/// (`tests/am1/results/sync-ab.md`, "Close-out"). The object is modelled by its storage: `warming` and the alarm.
+#[test]
+fn a_torn_down_shard_that_held_warming_schedules_no_alarm() {
+    #[derive(Default)]
+    struct Object {
+        runs: CatchUps,
+        warming: bool,
+        alarm: bool,
+    }
+    impl Object {
+        // `Jobs::start`, then the run's first piece (`Jobs::run`): `warming` put and the alarm armed.
+        fn start(&mut self) {
+            if self.runs.start() {
+                self.warming = true;
+                self.alarm = true;
+            }
+        }
+        // A waiting caller's next turn (`Jobs::wait_from`): it starts a run when the step says so.
+        fn turn(&mut self, from: u64) -> CatchUpStep {
+            let s = self.runs.step(from);
+            if s == CatchUpStep::Start {
+                self.start();
+            }
+            s
+        }
+        // `/teardown`: runs stopped, the container killed, `warming` and the alarm deleted.
+        fn teardown(&mut self) {
+            self.runs.tear_down();
+            self.warming = false;
+            self.alarm = false;
+        }
+    }
+    let mut o = Object::default();
+    // A keep-warm caller waits on run 1, as the leader's `/catchup?warm=1` did from 12:16:39Z.
+    let from = o.runs.next();
+    o.start();
+    assert_eq!(o.turn(from + 1), CatchUpStep::Await);
+    o.teardown();
+    // The kill fails the running run's piece ("The container has not been started").
+    o.runs.end(false);
+    assert_eq!(o.turn(from + 1), CatchUpStep::Stopped, "a waiting caller starts no run after a teardown");
+    assert!(!o.warming && !o.alarm, "nothing is armed to restart the container");
+    // A run already past its teardown check does not start another, and the alarm's own restart is refused too.
+    o.start();
+    assert!(!o.warming && !o.alarm && !o.runs.running);
+    // A client request resumes catch-ups: the shard starts as it would from cold.
+    o.runs.resume();
+    assert_eq!(o.turn(from + 1), CatchUpStep::Start);
+    assert!(o.warming && o.alarm && o.runs.running);
+    // A finished run still covers its callers after a teardown, so a caller it served answers at once.
+    o.runs.end(true);
+    o.teardown();
+    assert_eq!(o.runs.step(from + 1), CatchUpStep::Done);
+}

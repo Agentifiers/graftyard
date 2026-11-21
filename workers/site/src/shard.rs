@@ -229,6 +229,8 @@ const WARMING_ALARM_MS: u64 = 30_000;
 const ALARM_HOLDS: std::time::Duration = std::time::Duration::from_secs(600);
 /// Storage key: a catch-up is running or was cut off, with the record it reads the group through.
 const WARMING_KEY: &str = "warming";
+/// The error of a catch-up stopped or refused by `/teardown` (`graftyard_git::CatchUps::tear_down`).
+const TORN: &str = "the shard was torn down";
 /// The container's read-only routes for the web app (`containers/git/server/ui.go`), forwarded as `/ui/<route>`.
 const UI_ROUTES: [&str; 8] = ["resolve", "tree", "blame", "diff", "compare", "readme", "commits", "blob"];
 
@@ -464,6 +466,10 @@ impl Jobs {
         self.state.wait_until(async move {
             let mut until = None;
             let r = loop {
+                // A teardown stops the run between pieces: its next piece would start the container again.
+                if RUNS.with(|m| m.borrow().get(&me.key()).is_some_and(|run| run.runs.torn)) {
+                    break Err(TORN.to_string());
+                }
                 match me.run(until.as_ref()).await {
                     Ok(Some(u)) => {
                         until = Some(u);
@@ -509,6 +515,11 @@ impl Jobs {
         let bs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
         let s = self.state.storage();
         if until.is_none() {
+            // Checked again here, after the awaits above: a teardown in between deleted `warming` and the alarm, and
+            // putting them back would let the alarm restart the container.
+            if RUNS.with(|m| m.borrow().get(&self.key()).is_some_and(|run| run.runs.torn)) {
+                return Err(TORN.to_string());
+            }
             s.put(WARMING_KEY, (self.net.0.0, &self.record)).await.map_err(|e| e.to_string())?;
             if s.get_alarm().await.ok().flatten().is_none_or(|at| at > (now_ms() + WARMING_ALARM_MS) as i64) {
                 let _ = s.set_alarm(std::time::Duration::from_millis(WARMING_ALARM_MS)).await;
@@ -592,6 +603,7 @@ impl Jobs {
                     CatchUpStep::Done => return Ok::<(), String>(()),
                     CatchUpStep::Start => self.start(),
                     CatchUpStep::Await => {}
+                    CatchUpStep::Stopped => return Err(TORN.to_string()),
                 }
                 self.woken(from).await?;
             }
@@ -603,6 +615,10 @@ impl Jobs {
             },
             None => next.await,
         };
+        // A torn-down shard answers as a stopped one, so the caller tries the next site's.
+        if matches!(&r, Err(e) if e == TORN) {
+            return Err(warming());
+        }
         r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
     }
 
@@ -625,6 +641,7 @@ impl Jobs {
             CatchUpStep::Done => return Ok(true),
             CatchUpStep::Start => self.start(),
             CatchUpStep::Await => {}
+            CatchUpStep::Stopped => return Err(TORN.into()),
         }
         self.woken(from).await?;
         let runs = RUNS.with(|r| r.borrow().get(&self.key()).map(|run| run.runs).unwrap_or_default());
@@ -877,7 +894,15 @@ impl DurableObject for GitShard {
             return self.pool(&mut req, &path, &site).await;
         }
         if path == "/teardown" {
+            // First, so no catch-up of this object starts or takes another piece while the container stops: on B0-33
+            // sab a keep-warm caller still waiting when the kill failed the running run started the next, which put
+            // `warming` and armed the alarm again, and the alarm restarted site c's container 3 minutes after the
+            // sweep found none running (`tests/am1/results/sync-ab.md`, "Close-out").
+            let me = self.run_key.clone();
+            RUNS.with(|m| m.borrow_mut().iter_mut().filter(|(k, _)| k.0 == me).for_each(|(_, r)| r.runs.tear_down()));
             host.destroy().await.map_err(se)?;
+            // `warming` goes with the alarm: left, the next alarm (a pool ledger's beat) would restart the catch-up.
+            self.state.storage().delete(WARMING_KEY).await?;
             self.state.storage().delete_alarm().await?;
             // A pool ledger outlives its shard's container: its heartbeat goes on while it holds a lease.
             self.rearm_beat().await?;
@@ -939,6 +964,11 @@ impl DurableObject for GitShard {
         // The network leader's warm of a pool slot its network holds (`warm=pool`, `crate::fanout`) starts a stopped
         // container: a pool shard nobody started never becomes warm.
         let caller = graftyard_git::caller(&path, q(&url, "warm").as_deref());
+        // A caller that may start the container lets this network's catch-ups run again after a teardown; a
+        // keep-warm call does not (`graftyard_git::CatchUps::resume`).
+        if caller != graftyard_git::Caller::Warm {
+            RUNS.with(|m| m.borrow_mut().entry((self.run_key.clone(), net.0.0)).or_default().runs.resume());
+        }
         let running = self.state.container().is_some_and(|c| c.running());
         match graftyard_git::serve(caller, running) {
             // The header tells a skip from a route's own 200, such as `/promote`'s pack or `/idx`'s bytes.

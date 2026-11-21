@@ -7151,3 +7151,48 @@ on `tests/fanout/raw/tsave-sab{A,C,B2}.jsonl.xz`.
   2× against arm A's 379 ms at the same input mix: the learners' calls were not the cause, only correlated with it.
 - Or a row where the leader's confirm p90 stays at or under 140 ms while its inputs are at A's 314/s: the count alone
   does not set the confirm wall.
+
+### `teardown-stops-runs`: a shard's `/teardown` stops its catch-ups and deletes `warming`, 2026-11-21
+
+**Status.** Built on branch `r33-teardown-warming` from main `68996d20`, from B0-33 sab's leftover shard
+(`tests/am1/results/sync-ab.md`, "Close-out"). Site script and shared code (`crates/git/src/shard.rs`, `CatchUps`;
+`workers/site/src/shard.rs`, `/teardown`, `Jobs`), so it ships on a site day.
+
+**Decision.**
+- `/teardown` marks every catch-up of the object torn (`CatchUps::tear_down`) before it kills the container, then
+  deletes `warming` along with the alarm.
+- While torn, no run starts (`start`) and a waiting caller's step is `Stopped`, not `Start`; it answers 503 `warming`,
+  as a stopped shard does, so the caller tries the next site's shard. A running run stops between pieces, and a run
+  checks again before it puts `warming` and arms the alarm.
+- A caller that may start the container (a client request, a pool warm, a due range's promotion) resumes catch-ups.
+  A keep-warm call (`warm=1`) never does: it already skips a stopped shard (`serve`).
+- A run that finished before the teardown still covers its callers (`Done`).
+
+**Why.**
+- On B0-33 sab, costrow's sweep tore down `git#2#net:131381` and its recheck found no shard running at 12:18:36Z. The
+  teardown ran 12:18:22 to 12:19:49Z. Its kill failed the running catch-up's piece. A keep-warm caller still waiting
+  on that run started the next one, which put `warming` and armed the alarm the teardown had deleted. The alarm at
+  12:19:49Z restarted the catch-up, its first piece started the container, and site c's instance billed from 12:22Z
+  until the 12:37:53Z sweep, $0.04 [measured, Workers Logs and `containersUsageAdaptiveGroups` by minute].
+- Deleting `warming` alone does not cover that order: the run the waiting caller started puts it back.
+
+**What it beat.**
+- **Deleting `warming` and the alarm only** (the first form of the lead's fix). A run started after the teardown, by
+  a caller already waiting, writes both again.
+- **Deleting the alarm again at the end of `/teardown`.** The run the kill failed is replaced after `/teardown`
+  returns, so the order still loses.
+- **Failing waiting callers at the teardown.** They would answer 503 as they do now, but the run they would start
+  is what the rule stops; the step's `Stopped` does both.
+
+**Evidence.**
+- `a_torn_down_shard_that_held_warming_schedules_no_alarm` (`crates/git/tests/shard.rs`). It models the object by
+  `CatchUps`, `warming` and the alarm through sab's order: a caller waits, the teardown runs, the kill fails the
+  run. Then no run starts and nothing is armed. A direct start is refused, a client request resumes, and a run that
+  finished before a teardown still answers `Done`. Main's rule fails it.
+- `tests/m0carried/plant77.py`, 5 of 5 caught. Mutant 0 is main's rule (no stop). The others: a waiting caller still
+  starting a run; a direct start on a torn shard; no resume; a teardown hiding a finished run.
+- The site's wiring runs only in wasm. The next sweep checks it: each torn-down shard's `/status` reads `alarm` null.
+
+**Flip.** A torn-down shard whose container runs again with no client request after the teardown, or whose `/status`
+shows an alarm after its sweep. Or a client request that answers 503 `warming` from a shard torn down before it
+arrived, past one retry: then `resume` is not reached on that path.
