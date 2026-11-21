@@ -24,7 +24,7 @@ use crate::{CALL_DEADLINE, COMMAND_MAX, DEEP_QUEUE, DRIFT, ENTRY_MAX, ENTRY_SOFT
 use super::election::CAMPAIGN_DEADLINE;
 use super::{
     AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CutEnd, CutNote, DepsUsed, DepsWanted, IdBlockError, Member,
-    Message, ReadId, ReadStart, Ready, ReconfigError, Refusal, Resolution, Role,
+    Message, ReadId, ReadStart, Ready, ReconfigError, Refusal, Resolution, Role, TransferWhy,
 };
 
 /// Entries per AppendEntries when a follower is behind.
@@ -1822,7 +1822,7 @@ impl<C: Command> Member<C> {
             self.dirty = true;
             self.out.alarms.push(Alarm::NoLead { site, refusal });
             self.lead.as_mut().expect("leading").refuser = Some(site);
-            self.hand_off();
+            self.hand_off(TransferWhy::NoLead);
             return;
         }
         let own: Vec<&Refusal> = refusals
@@ -1892,7 +1892,7 @@ impl<C: Command> Member<C> {
 
     /// A leader that must not lead (`no_lead_until`, or its site drained) transfers to a follower that may lead: the
     /// refuser when it qualifies, else the most caught up.
-    pub(super) fn hand_off(&mut self) {
+    pub(super) fn hand_off(&mut self, why: TransferWhy) {
         let Some(lead) = &self.lead else { return };
         if lead.transfer.is_some() {
             return;
@@ -1905,7 +1905,7 @@ impl<C: Command> Member<C> {
         let refuser = lead.refuser;
         to.sort_by_key(|s| (Some(*s) != refuser, std::cmp::Reverse(lead.matched(*s))));
         if let Some(t) = to.first().copied() {
-            let _ = self.start_transfer(t, false, true);
+            let _ = self.start_transfer(t, why, true);
         }
     }
 

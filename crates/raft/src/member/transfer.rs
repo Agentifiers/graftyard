@@ -13,7 +13,7 @@ use crate::quorum;
 use crate::types::{Term, TransferError, TransferId};
 use crate::{CALL_DEADLINE, LEASE, RESET_QUARANTINE, after};
 
-use super::{AbandonWhy, Alarm, Member, Message, Ready, Role};
+use super::{AbandonWhy, Alarm, Member, Message, Ready, Role, TransferWhy};
 
 pub(super) struct Transfer {
     pub(super) id: TransferId,
@@ -39,7 +39,7 @@ impl<C: Command> Member<C> {
     /// `to` wins `term + 1` (this member then follows), or is abandoned after one LEASE.
     pub fn transfer(&mut self, now: Timestamp, to: SiteId) -> Ready<C, Result<TransferId, TransferError>> {
         self.begin(now);
-        let r = self.start_transfer(to, false, true);
+        let r = self.start_transfer(to, TransferWhy::Asked, true);
         self.finish(r)
     }
 
@@ -64,12 +64,14 @@ impl<C: Command> Member<C> {
     /// `guarded`: a `/transfer` or drain hand-off, which F67 rule 13 holds to a target whose link from this leader does
     /// not lose answers while another's does not. `STEP_DOWN` picks its target by its own measure or by probes, and the
     /// move `home` by HOME_CALLS answered with none failed, so neither is guarded.
+    /// `why` is logged (`Alarm::TransferStarted`); `TransferWhy::StepDown` makes it a `STEP_DOWN` transfer.
     pub(super) fn start_transfer(
         &mut self,
         to: SiteId,
-        step_down: bool,
+        why: TransferWhy,
         guarded: bool,
     ) -> Result<TransferId, TransferError> {
+        let step_down = why == TransferWhy::StepDown;
         let Some(lead) = &self.lead else { return Err(TransferError::NotLeader(self.not_leader())) };
         if !lead.ready() {
             return Err(TransferError::NotLeader(self.not_leader()));
@@ -104,6 +106,7 @@ impl<C: Command> Member<C> {
         // The followers disregard their promises for the target's transfer vote, so no lease holds from now.
         lead.reset_lease(self.now);
         self.drop_held_deps();
+        self.out.alarms.push(Alarm::TransferStarted { to, why });
         self.broadcast_all();
         Ok(id)
     }

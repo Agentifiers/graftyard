@@ -37,7 +37,7 @@ pub use member::{
     InstallWanted, LEARNER_READ_EVERY, LEARNERS_OUT_MAX, LogBase, Member, MemberConfig, Message, OUT_KEEP, OUT_MAX,
     OUTCOME_KEEP, Out, PEER_OUT_MAX, PIPELINE, READ_PIPELINE, READ_RESEND, READ_ROUND_GAP, ReadId, ReadStart, Ready,
     ReconfigError, Refusal, Resolution, RestoreError, Role, SelfAck, StepDownWhy, StepDownWindow, Storage, Stored,
-    Verdict, VoteReq, VoteRes, Write, verify,
+    TransferWhy, Verdict, VoteReq, VoteRes, Write, verify,
 };
 pub use outcome::Acked;
 pub use quorum::{DurableAck, QuorumProof};

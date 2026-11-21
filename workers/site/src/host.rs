@@ -709,6 +709,24 @@ pub enum Trace {
     /// shows the lag already at its start; slow storage with the isolate free shows wakes and requests inside it.
     #[cfg(feature = "test-faults")]
     Sync = 31,
+    /// transfer-why: this leader started a transfer (`raft::Alarm::TransferStarted`). `peer` is the target, `batch`
+    /// the cause (`transfer_why_code`). The `member alarm` line says the same; this row keeps it with the trace, beside
+    /// the cuts and rounds around it, when Workers Logs drops a line.
+    #[cfg(feature = "test-faults")]
+    Transfer = 32,
+}
+
+/// `Trace::Transfer`'s cause code: `raft::TransferWhy` in declaration order, from 1. Append-only, as trace kinds are.
+#[cfg(any(test, feature = "test-faults"))]
+fn transfer_why_code(w: raft::TransferWhy) -> u64 {
+    use raft::TransferWhy::*;
+    match w {
+        StepDown => 1,
+        Drained => 2,
+        NoLead => 3,
+        Home => 4,
+        Asked => 5,
+    }
 }
 
 /// `Trace::Cut`'s columns (`peer`, `batch`, `index`, `ms`) for one cut; `tests/m0/cuttrace/cuts.py` unpacks them.
@@ -2426,6 +2444,12 @@ impl<F: Family> Host<F> {
         for n in &out.cuts {
             let (peer, batch, index, ms) = cut_row(n);
             self.trace(Trace::Cut, peer, batch, index, ms);
+        }
+        #[cfg(feature = "test-faults")]
+        for a in &out.alarms {
+            if let raft::Alarm::TransferStarted { to, why } = a {
+                self.trace(Trace::Transfer, to.0, transfer_why_code(*why), 0, 0);
+            }
         }
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
         #[cfg(feature = "test-faults")]
@@ -4410,11 +4434,11 @@ mod tests {
         assert!(super::hedge_due(Some(1), 0), "nothing sent yet counts as newest");
     }
 
-    /// F108: a member alarm names its group, by Durable Object name and id, ahead of the alarm, for a step-down and for
-    /// an abandoned transfer and its cause.
+    /// F108: a member alarm names its group, by Durable Object name and id, ahead of the alarm, for a step-down, for an
+    /// abandoned transfer and its cause, and for a transfer's start and its cause.
     #[test]
     fn a_member_alarm_line_names_its_group() {
-        use graftyard_raft::{AbandonWhy, Alarm, StepDownWhy};
+        use graftyard_raft::{AbandonWhy, Alarm, StepDownWhy, TransferWhy};
         use graftyard_types::SiteId;
         let sd = Alarm::StepDown { why: StepDownWhy::LoopLag { clamped: 2 }, to: Some(SiteId(1)) };
         assert_eq!(
@@ -4425,6 +4449,16 @@ mod tests {
         assert_eq!(
             super::alarm_line("repo:65579#1#f0", "a0b85daa", &ab),
             "member alarm repo:65579#1#f0 a0b85daa: TransferAbandoned { to: SiteId(2), step_down: true, why: Lease }"
+        );
+        // B0-33 m64r33: a transfer's start names its target and cause, and its trace row codes the cause apart.
+        let codes =
+            [TransferWhy::StepDown, TransferWhy::Drained, TransferWhy::NoLead, TransferWhy::Home, TransferWhy::Asked]
+                .map(super::transfer_why_code);
+        assert_eq!(codes, [1, 2, 3, 4, 5]);
+        let st = Alarm::TransferStarted { to: SiteId(1), why: TransferWhy::Home };
+        assert_eq!(
+            super::alarm_line("repo:131378#1#f0", "538bf40f", &st),
+            "member alarm repo:131378#1#f0 538bf40f: TransferStarted { to: SiteId(1), why: Home }"
         );
         // F109: a slow alarm's line names its group the same way.
         assert_eq!(

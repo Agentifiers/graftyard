@@ -451,6 +451,24 @@ pub enum Alarm {
     /// A transfer to `to` ended with this member still leading (`abandon_transfer`), for the host's log only (F108).
     /// `step_down` says `STEP_DOWN` started it.
     TransferAbandoned { to: SiteId, step_down: bool, why: AbandonWhy },
+    /// A transfer to `to` started (`start_transfer`), for the host's log only: B0-33 m64r33's one leader change was a
+    /// transfer that no line named.
+    TransferStarted { to: SiteId, why: TransferWhy },
+}
+
+/// What started a transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferWhy {
+    /// `STEP_DOWN` tripped and a target qualified.
+    StepDown,
+    /// This leader's site is drained.
+    Drained,
+    /// `no_lead_until` holds: this leader may not lead its release.
+    NoLead,
+    /// The group's `home` recovered and caught up.
+    Home,
+    /// A `/transfer` request, or a placement move's step (`Member::transfer`).
+    Asked,
 }
 
 /// Why a transfer was abandoned.

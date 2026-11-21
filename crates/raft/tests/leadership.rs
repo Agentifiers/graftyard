@@ -9,7 +9,7 @@ use common::kv::{FUTURE_FORMAT, KV_FORMAT, KvCmd, KvEvent};
 use common::sim::{SITES, config};
 use graftyard_raft::{
     AbandonWhy, Alarm, Colo, CommitError, ConfirmTimes, Deny, Envelope, LEASE, Message, Receipt, ReleaseTag, RequestId,
-    Resolution, Role, StepDownWhy, Term, TransferError, Verdict, VoteReq,
+    Resolution, Role, StepDownWhy, Term, TransferError, TransferWhy, Verdict, VoteReq,
 };
 use graftyard_types::{ReleaseId, SiteId, Timestamp};
 
@@ -94,6 +94,17 @@ fn abandoned(c: &Cluster) -> Vec<(SiteId, SiteId, bool, AbandonWhy)> {
         .collect()
 }
 
+/// Each `Alarm::TransferStarted`, as (leader, target, cause).
+fn started(c: &Cluster) -> Vec<(SiteId, SiteId, TransferWhy)> {
+    c.alarms()
+        .iter()
+        .filter_map(|(s, a)| match a {
+            Alarm::TransferStarted { to, why } => Some((*s, *to, *why)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn vote_res(c: &Cluster, from: SiteId, to: SiteId) -> Option<graftyard_raft::VoteRes> {
     c.inbox.iter().rev().find_map(|e| match &e.msg {
         Message::VoteRes(r) if e.from == from && e.to == to => Some(r.clone()),
@@ -133,6 +144,8 @@ fn transfer_hands_leadership_to_a_caught_up_target() {
     assert!(matches!(c.on(B, |m, now| m.transfer(now, C)), Err(TransferError::NotLeader(_))));
     let id = c.on(A, |m, now| m.transfer(now, B)).expect("started");
     assert!(matches!(c.on(A, |m, now| m.transfer(now, C)), Err(TransferError::Busy(i)) if i == id));
+    // The host logs the start and its cause once; a transfer refused before it starts logs nothing.
+    assert_eq!(started(&c), [(A, B, TransferWhy::Asked)]);
     // Every AppendEntries while it runs carries the target and id, and no follower promises on it.
     let mut seen = 0;
     c.deliver(|e| {
@@ -290,7 +303,8 @@ fn a_refused_transfer_is_abandoned_at_once_and_leaves_no_lease() {
     assert_eq!(c.m(A).transferring(), None, "not abandoned");
     assert!(t < ms(LEASE), "waited out the LEASE for a refusing target");
     assert_eq!(c.m(A).role(), Role::Leader);
-    assert_eq!(c.alarms().len(), 1, "{:?}", c.alarms());
+    assert_eq!(c.alarms().len(), 2, "{:?}", c.alarms());
+    assert_eq!(started(&c), [(A, B, TransferWhy::Asked)]);
     assert_eq!(abandoned(&c), [(A, B, false, AbandonWhy::Refused)]);
     let id = c.on(A, |m, now| m.read(now)).expect("leader");
     assert!(
@@ -724,6 +738,7 @@ fn commit_errors_trip_and_the_probe_picks_a_healthy_target() {
     assert!(matches!(to, Some(t) if t != A));
     assert_ne!(c.leader(), Some(A));
     assert!(c.m(A).state().stepped_down_at.is_some());
+    assert_eq!(started(&c), [(A, to.unwrap(), TransferWhy::StepDown)]);
 }
 
 /// One or two failed calls per follower never trip the commit-error rule, whatever the rate (`commit_fail_min`,
@@ -1191,8 +1206,10 @@ fn leadership_returns_home_after_it_recovers_and_catches_up() {
     let mut r = common::sim::Rng::new(3);
     drive(&mut c, 15_000, true, &mut id, |e| request(e) && e.to == A && r.chance(200));
     assert_eq!(c.leader(), Some(B), "moved home onto a failing site");
+    assert!(started(&c).is_empty(), "{:?}", started(&c));
     drive(&mut c, 15_000, true, &mut id, |_| false);
     assert_eq!(c.leader(), Some(A), "did not return home");
+    assert_eq!(started(&c), [(B, A, TransferWhy::Home)]);
     // Nothing committed was lost on the way.
     c.sync(A);
     assert!(SITES.iter().all(|s| c.value(*s, "sync").is_some()));
@@ -1314,6 +1331,7 @@ fn a_drained_site_hands_off_and_takes_no_leadership() {
     // B is drained too, so A must pick C.
     drive(&mut c, ms(LEASE), true, &mut id, |_| false);
     assert_eq!(c.leader(), Some(C));
+    assert_eq!(started(&c), [(A, C, TransferWhy::Drained)]);
     // A transfer to drained B is refused.
     assert!(matches!(c.on(C, |m, now| m.transfer(now, B)), Err(TransferError::Target(t)) if t == B));
     // Pre-vote refuses drained A.
@@ -1371,6 +1389,7 @@ fn an_older_refuser_makes_the_leader_truncate_and_hand_off() {
     c.run(4_000, 100, |_| true);
     assert!(c.alarms().iter().any(|(s, a)| *s == A && matches!(a, Alarm::NoLead { .. })), "{:?}", c.alarms());
     assert_eq!(c.m(A).state().no_lead_until, Some(ReleaseId([2; 32])));
+    assert!(matches!(started(&c).first(), Some((A, _, TransferWhy::NoLead))), "{:?}", started(&c));
     assert!(
         c.ticket_results(t)
             .iter()
