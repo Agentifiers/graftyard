@@ -370,6 +370,8 @@ pub struct Stats {
     pub early_asks: u64,
     pub deps_entries: u64,
     pub rereads: u64,
+    /// Requests decided on a read asked after their entry's first one: late joiners (`human-join`).
+    pub joins: u64,
     /// Gets a follower answered by read-index, and those it shed (503, no report).
     pub spread_reads: u64,
     pub shed: u64,
@@ -449,8 +451,9 @@ pub struct Sim {
     dep_reads: Vec<(Timestamp, SiteId, u64, graftyard_raft::DepsWanted)>,
     /// When each `DepsWanted` was asked for, by (site, id).
     deps_asked: BTreeMap<(SiteId, u64), Timestamp>,
-    /// When each request was first admitted, by (site, ticket term, ticket boot, request id).
-    admitted_at: BTreeMap<(SiteId, Term, u64, RequestId), Timestamp>,
+    /// When each request was first admitted, by (site, ticket term, ticket boot, request id), and whether its command
+    /// names a dependency chain.
+    admitted_at: BTreeMap<(SiteId, Term, u64, RequestId), (Timestamp, bool)>,
     /// Per site, the host's own record of its storage confirms: (the disk's last index once a confirm that appended
     /// ended, the site's clock then), for `Ack::self_synced_at`. Reset on restart.
     synced: [Vec<(u64, u64)>; 3],
@@ -762,23 +765,28 @@ impl Sim {
         let seed = self.seed;
         for used in std::mem::take(&mut out.deps_used) {
             self.stats.deps_entries += 1;
-            self.stats.rereads += u64::from(used.ids.len() > 1);
-            let asked = used
-                .ids
-                .iter()
-                .map(|id| *self.deps_asked.get(&(s, *id)).unwrap_or_else(|| panic!("seed {seed}: {id} never asked")))
-                .min()
-                .expect("an entry decided on reads names one");
             let m = self.member(s).expect("up");
             let e = m.entry_at(used.index).expect("the decided entry is held");
+            // `human-join`: each request's admission precedes the read of the chain `decide` was given, whichever
+            // command of the entry asked it. A request whose admission postdates the entry's first read joined late.
+            let asked_at =
+                |id: u64| *self.deps_asked.get(&(s, id)).unwrap_or_else(|| panic!("seed {seed}: {id} never asked"));
+            let first = used.ids.iter().map(|id| asked_at(*id)).min().expect("an entry decided on reads names one");
+            let newest = used.reads.iter().map(|(_, id)| asked_at(*id)).min();
+            let mut joined = 0;
             for (rid, _) in &e.requests {
-                let at = self.admitted_at.get(&(s, e.term, m.boot(), *rid)).copied();
+                let a = self.admitted_at.get(&(s, e.term, m.boot(), *rid)).copied();
+                let bound = newest.unwrap_or(first);
+                // A command that names no chain reads nothing, so a late joiner without one has no bound.
                 assert!(
-                    at.is_some_and(|t| t <= asked),
-                    "seed {seed}: {s:?} entry {:?} decided {rid:?}, admitted at {at:?}, on reads asked at {asked:?}",
+                    a.is_some_and(|(t, named)| t <= bound || !named),
+                    "seed {seed}: {s:?} entry {:?} decided {rid:?}, admitted at {a:?}, on reads asked at {bound:?}",
                     used.index
                 );
+                joined += u64::from(a.is_some_and(|(t, _)| t > first));
             }
+            self.stats.rereads += u64::from(used.ids.len() > 1 + joined as usize);
+            self.stats.joins += joined;
         }
     }
 
@@ -1466,11 +1474,12 @@ impl Sim {
                 if fails {
                     return;
                 }
+                let named = matches!(cmd, KvCmd::PutDep { .. });
                 let Some((r, res)) = self.call(to, |m, now| m.commit(now, rid, cmd)) else { return };
                 match r {
                     Ok(Admitted { ticket, .. }) => {
                         let now = self.now;
-                        self.admitted_at.entry((to, ticket.term, ticket.boot, rid)).or_insert(now);
+                        self.admitted_at.entry((to, ticket.term, ticket.boot, rid)).or_insert((now, named));
                         let o = self.ops[c].as_mut().expect("op");
                         o.wait = Some(Wait::Ticket(ticket));
                         o.term = o.term.max(ticket.term);

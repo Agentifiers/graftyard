@@ -6001,6 +6001,8 @@ The six slow merges in the three traces are exactly the six held-and-stepped mer
 
 ### B0-29 late join deferred, 2026-11-19
 
+**Superseded, 2026-11-21.** See "`human-join`": option (b), narrowed to Human and MergeQueue commands, is built.
+
 **Decision.** Option (b) is not built: a command admitted after a batch froze does not join it. B0-29's freeze stays as built, and that is option (a): the first frozen batch is cut at the in-flight entry's append + `round_ms` − `deps_ms`, which is its expected apply less the measured read (`crates/raft/src/member/leader.rs`, `cut_early`).
 
 **Why.** (b) would let a command admitted after a batch froze join the newest frozen batch until `decide_held` runs, with its own `DepsWanted` asked at admission, since reusing the batch's read breaks read-after-admission. It would be decided after the batch's earlier commands on the post-apply fold. A joiner whose read is late, or that gains a chain at apply, rides the next entry, and a capped batch takes no joiner. By the replay it gains about 60–100 ms: main 722 / 839 / 725 against (b) 663 / 732 / 643 on run 7, row 1 and the control, with 14–15% of commands joining. The predicted `/stats` commit p99 is 758 / 610 / 699 against the 660 line at 90%, under it on one row of three [inference]. It is a `crates/raft` change beside the read-after-admission invariant (BF-15/BF-27, `read-ahead`'s flip, `a_command_admitted_after_the_early_cut_waits_for_the_next_entry`), and it adds about 0.15 `Authz` dependency reads per command. That is a lot of risk for a line it does not clear alone.
@@ -7359,3 +7361,82 @@ row's leader inputs by route can.
   0.52 to 0.14), or its leader inputs do not fall at least 9% (half of 18%) from sabA's 314 a second at the same
   offered load, once late join's own change is set aside: the trace shift was wrong, so go back to 1 s.
 - Any `fetch failed` with `ERR_HTTP2_STREAM_ERROR` above sabA's 3 on the same driver: A38's mechanism reaches 1.5 s.
+
+### `human-join`: a Human or MergeQueue command admitted after a freeze joins the newest frozen batch on its own read, 2026-11-21
+
+**Status.** Built code-only on branch `human-join` at the lead's request. It supersedes "B0-29 late join deferred",
+option (b), narrowed to two classes. Not measured hosted: the lead routes the rows after review.
+
+**Decision.** In `crates/raft/src/member/leader.rs` (`late_join`, `decide_held`, `deps_read`):
+- **Who joins.** A Human or MergeQueue command admitted while a batch is frozen joins the newest frozen batch until
+  `decide_held` runs. Agent and Bot commands never join.
+- **When it does not.** The batch was cut at a byte cap (`CutEnd::Soft` or `EntryMax`, which covers ENTRY_SOFT,
+  ENTRY_SOFT_DEEP and ENTRY_MAX), or the joiner would take it past `entry_soft` or ENTRY_MAX. A batch cut at
+  AGENT_CMDS_ENTRY or for want of agent tokens still takes one. It also stays queued while an earlier Human or
+  MergeQueue command waits in its lane (so it never goes ahead of one), while a transfer runs, while the leader
+  would still freeze another batch behind this one (`read_ahead`), whose read is asked a round ahead for it, and while
+  no entry is in flight, when the batch waits only on its own read.
+- **Read-after-admission (BF-15, BF-27).** A joiner is bound only by a read asked at or after its admission. The
+  batch's joiners share one `DepsWanted` at a time (`join_ask`): the first joiner asks it at admission, and joiners
+  admitted while it is out wait for the next, asked as soon as it answers. At `decide_held` a joiner is decided after
+  the batch's commands, on the post-apply fold, only if a read asked no earlier than its own answered for every chain
+  it names on that fold. A joiner whose read is late, or that names a new chain after the apply, goes back to the
+  front of its lane (`Lane::push_front`) with every joiner after it, and rides a later entry; it never delays an
+  append.
+- **One fold per chain.** The entry passes `decide` the newest read of each chain any of its commands holds, by
+  `DepsWanted` id. Every command naming that chain was admitted before some read of it, so before the newest.
+  `DepsUsed.reads` names which read each chain's fold came from (not a wire type).
+
+Unchanged: one entry in flight, `decide` pure on the fold at `applied`, the entry's earlier commands and reads asked
+after the command's admission, and a follower verifies k+1 only after it applies k.
+
+**Why.**
+- A command admitted just after a freeze waits out the frozen batch's whole cycle and then its own. On sync-ab, a frozen
+  batch waited 72% of wall time in arm A and 39% in C and B.
+- The learner-cadence change was reverted because slowing reads amplified leader input (`learner-cadence`, Status).
+  This lever slows no read, and adds at most one dependency read per read time while joiners wait.
+- Replayed with a 75 ms read and joiners sharing one read at a time (`tests/m0/cuttrace/humanjoin.py`,
+  `tests/m0/results/human-join.md`) [inference]:
+  - sync-ab A / C / B2: Human p50 863 → 617, 989 → 875 and 1,007 → 900 ms; p99 3,863 → 3,278, 2,423 → 2,325 and
+    2,352 → 2,240 ms; within 1 s 61 → 81%, 51 → 64% and 49 → 60%. Fable 5.2's replay, with a read per joiner, had
+    p50 12–21 ms lower and p99 71–241 ms lower; sharing the read costs most on sabC.
+  - B0-29 m3fb29 / m3fb2r2 / m3fb2r3: Human p99 1,128 → 778, 653 → 593 and 1,131 → 958 ms; p50 448 → 404,
+    352 → 344 and 458 → 417. All-command p99 moves 1,130 → 1,066, 714 → 688 and 1,289 → 1,261, so the B0-29 median
+    run's commit p99 falls about 60 ms, from 1,102 to about 1,040. That is still over the 1 s fail line, because
+    Agent commands, about 84% of the row, do not join.
+
+**What it beat.**
+- **Joining on the batch's own read.** That breaks read-after-admission: a revocation acknowledged after the batch's
+  read and before the joiner's admission would not bind it.
+- **A read per joiner, asked at its admission.** The first build did this. BF-15's identity test
+  (`crates/identity/tests/raft.rs`, `bf15_revoked_token_with_1000_commands_queued`) queued 1,000 Human commands
+  behind one frozen batch and read 2,002 chains for 7 entries, against its bound of two per entry. One read out at a
+  time keeps reads per read time, and the test passes again.
+- **Joining only if the read is expected before the due time.** It broke the `read-ahead` cycle on a slow read; the
+  held-count rule replaced it.
+- **Every class joins.** That would let the agent backlog refill each frozen batch and lengthen its decide, and Agent
+  commands were never the latency the line names.
+- **"A capped batch takes no joiner" including `AgentCmds`.** By Fable's replay, about two thirds of the gain is in
+  `AgentCmds`-capped batches, which are most of B0-33's cuts (366 of 748 on sabA).
+
+**Evidence.**
+- `crates/raft/tests/deps.rs`:
+  - `a_human_admitted_after_the_freeze_rides_the_frozen_batch_on_its_own_read`: a Human admitted behind a frozen agent
+    batch rides k+1, and the joiners' read, asked at its admission and answered revoked after the batch's read,
+    refuses all of k+1, with `DepsUsed.reads` naming that read. It fails on main, where the Human rides k+2.
+  - `a_late_joiner_whose_read_is_late_rides_the_next_entry`, `an_agent_cmds_capped_batch_takes_a_human_joiner_and_a_soft_capped_one_does_not`,
+    `a_joiner_that_gains_a_chain_at_apply_rides_the_next_entry` and `a_joiner_joins_the_newest_frozen_batch`.
+- The simulator's dependency check (`crates/raft/tests/common/sim.rs`, `deps_out`) now checks each request against the
+  read its entry's fold of each chain came from: every request naming a chain was admitted at or before that read was
+  asked.
+- `joiners_admitted_while_a_join_read_is_out_wait_for_the_next` (`crates/raft/tests/deps.rs`) and BF-15's identity
+  tests: reads stay per read time, not per joiner.
+- `tests/m0carried/plant78.py`: 13 of 13 caught.
+- The long sweep passed (stalls 15.8 / 24.8 / 24.5 s; 781 / 43,045 / 10,553 late joins), and Porcupine is Ok on all
+  three histories.
+- Details in `tests/m0/results/human-join.md`.
+
+**Flip.**
+- On the next B0-33 or B0-29 row, Human commit p99 or the frozen-batch wait does not fall against the same build
+  without it.
+- Any read-after-admission violation in the simulator sweep.

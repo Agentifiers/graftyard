@@ -188,6 +188,17 @@ impl<T> Lane<T> {
         self.len += 1;
     }
 
+    /// Puts `t` back at the front of its actor's queue, and the actor at the front of the order if it had nothing
+    /// queued: a late joiner that left its batch is the next command cut (`human-join`).
+    pub(crate) fn push_front(&mut self, actor: Option<ActorKey>, t: T) {
+        let q = self.queues.entry(actor).or_default();
+        if q.is_empty() {
+            self.order.push_front(actor);
+        }
+        q.push_front(t);
+        self.len += 1;
+    }
+
     pub(crate) fn front(&self) -> Option<&T> {
         self.order.front().and_then(|a| self.queues.get(a)).and_then(VecDeque::front)
     }
