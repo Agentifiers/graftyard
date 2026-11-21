@@ -9,7 +9,7 @@
 //!   the same way.
 //! - **Read index.** A follower or learner answers a read by asking the leader for a read index and waiting until it
 //!   has applied it. Reads are batched: up to `READ_PIPELINE` batches in flight, each answered on its own, sent at
-//!   most every `FOLLOWER_READ_EVERY` (10 ms) from a follower and `LEARNER_READ_EVERY` (50 ms) from a learner.
+//!   most every `FOLLOWER_READ_EVERY` (10 ms) from a follower and `LEARNER_READ_EVERY` (200 ms) from a learner.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -28,8 +28,12 @@ use crate::{CALL_DEADLINE, after};
 
 /// A follower's read-index batches: at most one every 10 ms.
 const FOLLOWER_READ_EVERY: Duration = Duration::from_millis(10);
-/// A learner's: at most one every 50 ms.
-pub const LEARNER_READ_EVERY: Duration = Duration::from_millis(50);
+/// A learner's: at most one every 200 ms (`learner-cadence`). At 50 ms, B0-33 sab's four learners called the leader
+/// 55.8 times a second, 47.5 of them read-index batches, and those calls were most of the input whose removal cut the
+/// leader's confirm p90 from 379 to 136 ms (`tests/am1/results/sync-ab.md`; `tests/am1/results/learner-cadence.md`).
+/// A read waits up to this before its batch leaves; it is still granted only at an index the leader confirmed after
+/// the batch arrived, so the floor moves latency, not freshness.
+pub const LEARNER_READ_EVERY: Duration = Duration::from_millis(200);
 /// Read-index batches one member keeps in flight at most [guess]. The send floor above bounds the calls a second, so
 /// this bounds only how long a read waits behind a slow round trip: with one in flight, a read that arrived waited out
 /// the batch ahead of it and then its own, and a near learner's grant wait reached p99 0.9 to 1.6 s at 500 agents

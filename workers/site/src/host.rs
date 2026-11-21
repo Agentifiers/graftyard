@@ -1328,6 +1328,8 @@ pub struct Host<F: Family> {
     leasing: Cell<bool>,
     /// Messages for learners that are calling this member, held for their next call (`crate::callers`).
     pub callers: RefCell<crate::callers::Callers<Envelope<F>>>,
+    /// On a learner: its append replies, held for its next read-index call to their leader (`crate::callers::Acks`).
+    acks: RefCell<crate::callers::Acks<Envelope<F>>>,
     /// The highest commit index a peer told this member this boot (`heard`): a member behind its leader's appends
     /// commits only what it holds, and the feed tells a cursor the group committed from one it never did by this.
     heard_commit: Cell<u64>,
@@ -2069,6 +2071,7 @@ impl<F: Family> Host<F> {
             blocked: RefCell::new(Vec::new()),
             leasing: Cell::new(false),
             callers: RefCell::new(Default::default()),
+            acks: RefCell::new(crate::callers::Acks::new(raft::LEARNER_READ_EVERY.as_millis() as u64)),
             heard_commit: Cell::new(0),
             #[cfg(feature = "test-faults")]
             abandon: RefCell::new(BTreeSet::new()),
@@ -3149,6 +3152,19 @@ impl<F: Family> Host<F> {
             raft::Message::Append(a) => a.entries.iter().map(|x| raft::encode_entry(x).len()).sum(),
             _ => 0,
         };
+        // A learner's append reply waits for its next read-index call to that member, or `LEARNER_READ_EVERY`; that
+        // call carries the replies held for it (`crate::callers::Acks`).
+        let leg = match e.msg {
+            raft::Message::AppendRes(_) if self.is_learner() => crate::callers::Leg::LearnerReply,
+            raft::Message::ReadIndex { .. } => crate::callers::Leg::Read,
+            _ => crate::callers::Leg::Other,
+        };
+        let mut es = self.acks.borrow_mut().send(e.to, e, leg, now_ms());
+        let Some(e) = es.pop() else { return self.kick() };
+        if !es.is_empty() {
+            es.push(e);
+            return self.call_many(es);
+        }
         let Some(e) = self.callers.borrow_mut().route(e.to, e, bytes, now_ms()) else {
             if let Some((to, round, last, commit)) = held {
                 self.trace(Trace::AppendHeld, to, round, last, commit);
@@ -3162,10 +3178,19 @@ impl<F: Family> Host<F> {
 
     /// Sends `e` as a member-to-member call and steps the replies.
     fn call(self: &Rc<Self>, e: Envelope<F>) {
+        self.call_many(vec![e]);
+    }
+
+    /// Sends `es`, all to one member, as one call whose body lists them in order; the callee steps each
+    /// (`crate::member`, `raft_steps`). The call is timed and judged as its last envelope's: a learner's read-index call
+    /// carrying the append replies it held (`crate::callers::Acks`).
+    fn call_many(self: &Rc<Self>, mut es: Vec<Envelope<F>>) {
         let h = self.clone();
         let queued = now_ms();
         spawn_local(async move {
-            let body = codec::to_bytes(std::slice::from_ref(&e));
+            let body = codec::to_bytes(&es);
+            let Some(e) = es.pop() else { return };
+            drop(es);
             let _counted = Counted::new(&h.call_bytes, body.len());
             #[cfg(feature = "test-faults")]
             h.mark_mem();
@@ -3763,6 +3788,7 @@ impl<F: Family> Host<F> {
     fn has_waiters(&self) -> bool {
         self.core.borrow().as_ref().is_some_and(|c| !c.waiters.is_empty() || !c.reads.is_empty())
             || self.callers.borrow().holding()
+            || self.acks.borrow().holding()
     }
 
     /// Keeps `tick` running while inputs arrive or calls are held.
@@ -3840,6 +3866,10 @@ impl<F: Family> Host<F> {
         let due = self.callers.borrow_mut().due(now_ms());
         for e in due {
             self.call(e);
+        }
+        let acks = self.acks.borrow_mut().due(now_ms());
+        for es in acks {
+            self.call_many(es);
         }
         Ok(())
     }
