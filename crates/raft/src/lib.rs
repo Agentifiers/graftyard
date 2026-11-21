@@ -92,8 +92,11 @@ pub const STEP_DOWN: Health =
 pub const LOOP_LAG: (u32, Duration, u32) = (2, Duration::from_secs(2), 200);
 /// Distinct colos reporting, and the window.
 pub const SUSPECT: (usize, Duration) = (2, Duration::from_secs(10));
-/// [guess]
-pub const COMMIT_HOLD: Duration = Duration::from_secs(1);
+/// How long the leader holds a `/commit` for its outcome before it answers `Admitted` (`commit-hold`). At 1 s, 52% of
+/// B0-33 sabA's commands outlived the hold and cost the leader one `/outcome` input each, 76 a second of 314; replayed
+/// from that row's trace, 1.5 s leaves 14% and cuts the leader's inputs about 18% [inference,
+/// `tests/am1/results/b033-rebase.md`, item 2]. The edge's receipt deadline moves with it (`COMMIT_RECEIPT`).
+pub const COMMIT_HOLD: Duration = Duration::from_millis(1_500);
 /// [guess]; above the 24 h orphan sweep.
 pub const REQUEST_RETENTION: Duration = Duration::from_secs(48 * 3600);
 /// Applied entries a Durable Object member keeps in memory (`Member::set_log_window`); older ones are read from

@@ -7311,3 +7311,51 @@ arm A; `tests/am1/results/learner-cadence.md`, "The row") [measured]:
 - A row where the leader's confirm p90 does not fall under 300 ms, or where learner calls to the leader do not fall
   under 30 a second: the floor is not what drives the learners' calls, or their count does not set the confirm wall.
 - If confirm p90 falls and the round p50 does not, the round is the followers', not the leader's lateness.
+
+### `commit-hold`: the leader holds a `/commit` 1.5 s for its outcome, and the edge's receipt waits 2.5 s, 2026-11-21
+
+**Status.** Built on branch `r33-commit-hold` from main `e11285da`, code only, from the lead's ruling on
+`tests/am1/results/b033-rebase.md`, item 2. Not measured hosted. It rides one combined B0-33 row on graft-m2b with late
+join, once B0-02's late-join branch merges, so that row cannot attribute the leader-input change to the hold alone; the
+row's leader inputs by route can.
+
+**Decision.**
+- `COMMIT_HOLD` goes from 1 s to 1.5 s (`crates/raft/src/lib.rs`): the leader holds each `/commit` up to 1.5 s for its
+  ticket's outcome, then answers `admitted` as before.
+- `COMMIT_RECEIPT` becomes `COMMIT_HOLD + CALL_DEADLINE`, 2.5 s (`crates/lookup/src/lib.rs`), so a held `/commit`
+  answered within one call of the hold's end is the send's reply with no `/outcome_by_request` ask. BF-14's `delay`
+  fault holds its reply 600 ms past it (`RECEIPT_DELAY_MS`, 3.1 s).
+- Nothing else changes. `Acked` is still built only inside `outcome`; a held call answers `done` only when its ticket
+  resolved, which is only after the quorum rule holds, and `admitted` otherwise. `RECEIPT_OPEN` (8 s) still bounds
+  every send, and `LEAN_HOLD_MS` stays test-only.
+
+**Why.**
+- On B0-33 sabA, 52% of `/commit`s outlived the 1 s hold, and each cost the leader one `/outcome` input: 75.7 a second
+  of its 314 [measured]. The trace's apply passes 1 s for 15% of them; the leader's answer trails the apply by about
+  0.4 s (a fitted shift that reproduces the measured ask rate on sabA and lcA2) [inference].
+- Replayed from sabA's trace with that shift, a 1.5 s hold leaves 14% of commands asking, and cuts the leader's inputs
+  by about 18%, from 314 to 259 a second. On lcA2's deep-backlog shape it is 8% [inference, `tests/fanout/holdmodel.py`].
+- The leader's open requests barely change: a held `/commit` replaces the `/outcome` long-poll that follows it.
+- A38's resets came with a 6 s edge-to-leader hold; client streams as many and as long, without it, had 1 to 3
+  `fetch failed` (sabA, sabC). At 1.5 s no command is held at the leader past a quarter of that [measured, push logs].
+
+**Beat.**
+- **2 s or 3 s.** 21% and 23% on sabA: 3 to 5 points more for longer held calls and a later receipt (3 s and 4 s).
+- **Outcome polling off the leader** (sync-ab arm B). It is test-only, and its 6 s hold is A38's likely cause.
+- **Leaving it at 1 s.** It is not a confirm-p90 lever on its own (sync-ab C → B: removing every `/outcome` input moved
+  round p50 from 472 to 480 ms), but it is the cheapest input cut left beside late join.
+
+**Evidence.**
+- `tests/am1/results/b033-rebase.md`, item 2; `tests/fanout/holdmodel.py`.
+- `crates/lookup/src/lib.rs`, `a_commit_held_its_whole_hold_is_the_reply_with_no_ask`: a leader that resolves at 1.4 s
+  answers `done`, one that resolves after the hold answers `admitted` at 1.5 s, and either is the send's reply with no
+  ask within the 2.5 s receipt; a leader that never answers still ends the send at `RECEIPT_OPEN`, asked twice.
+- `tests/m0carried/plant80.py`, 6 of 6 caught: the hold at 1 s, the receipt at 2 s, the receipt as the hold with no
+  call after it, an `unknown` by request id ending the send, a send open past `RECEIPT_OPEN`, and the site's product
+  hold left at 1 s.
+
+**Flip.**
+- The combined row's leader `/outcome` inputs per `/commit` do not fall to 0.33 or below (half the predicted fall from
+  0.52 to 0.14), or its leader inputs do not fall at least 9% (half of 18%) from sabA's 314 a second at the same
+  offered load, once late join's own change is set aside: the trace shift was wrong, so go back to 1 s.
+- Any `fetch failed` with `ERR_HTTP2_STREAM_ERROR` above sabA's 3 on the same driver: A38's mechanism reaches 1.5 s.

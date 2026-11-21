@@ -1660,8 +1660,11 @@ pub async fn commit(
 
 // ---- the edge's commit: one member at a time, hedged only by `suspect` ----
 
-/// The receipt deadline of a commit: COMMIT_HOLD plus CALL_DEADLINE.
-pub const COMMIT_RECEIPT: Duration = Duration::from_millis(2_000);
+/// The receipt deadline of a commit: COMMIT_HOLD plus CALL_DEADLINE, so a `/commit` held its whole hold and answered
+/// within one call is the send's reply with no ask (`commit-hold`).
+pub const COMMIT_RECEIPT: Duration = Duration::from_millis(
+    graftyard_raft::COMMIT_HOLD.as_millis() as u64 + graftyard_raft::CALL_DEADLINE.as_millis() as u64,
+);
 /// How long one `/commit` send stays open while its member is `busy` (`receipt`) [guess]: past B0-32 m3fr8's longest
 /// leader handler, 3.8 s, plus both legs (`tests/am1/results/lm1-rows-m3f.md`, "m3fr8 after the run"). Past it the
 /// command is sent again, so a send whose reply was lost costs this at most once.
@@ -2052,8 +2055,8 @@ pub async fn commit_hedged(
             let (t, note) = (&t, &note);
             async move {
                 note(json!({ "ask": t.site.0 }));
-                // CALL_DEADLINE, not COMMIT_RECEIPT: a member with no 200 to it is reported 3 s after the send, not
-                // 4 s. B0-32 m3fr11's leader answered these within 625 ms while its held `/commit`s took up to 4.6 s.
+                // CALL_DEADLINE, not COMMIT_RECEIPT: a member with no 200 to it is reported 3.5 s after the send, not
+                // 5 s. B0-32 m3fr11's leader answered these within 625 ms while its held `/commit`s took up to 4.6 s.
                 let r = post_by(
                     b,
                     t.site,
@@ -2859,15 +2862,18 @@ mod tests {
         let done = Some((200, json!({ "done": { "ok": 2 }, "meta": { "term": 2 } })));
         let (r, _, at) = run_receipt(None, vec![done], 300, |_| true);
         assert_eq!(r, Receipt::Reply(json!({ "done": { "ok": 2 }, "meta": { "term": 2 } })));
-        assert_eq!(at, 2_300);
+        assert_eq!(at, COMMIT_RECEIPT.as_millis() as u64 + 300);
         // `pending` is a ticket to wait on through `outcome`, as `admitted` is; never a success by itself.
         let pending = Some((200, json!({ "pending": { "seq": 4 }, "meta": { "term": 2 } })));
         let (r, _, _) = run_receipt(None, vec![pending], 300, |_| true);
         assert_eq!(r, Receipt::Reply(json!({ "admitted": { "seq": 4 }, "meta": { "term": 2 } })));
         // Nothing but `done`, `NotLeader`, or `pending` ends it: an `error` other than `NotLeader`, a 503, and no
-        // answer leave the send open, and its own late 200 is still the reply.
+        // answer leave the send open, and its own late 200, after all three asks and inside RECEIPT_OPEN, is still the
+        // reply.
         let odd = vec![Some((200, json!({ "error": { "busy": true } }))), Some((503, Value::Null)), None];
-        let (r, asked, _) = run_receipt(Some((7_000, Some((200, ok.clone())))), odd, 300, |_| true);
+        let late = 3 * COMMIT_RECEIPT.as_millis() as u64 + 2 * 100 + 200;
+        assert!(late < RECEIPT_OPEN.as_millis() as u64);
+        let (r, asked, _) = run_receipt(Some((late, Some((200, ok.clone())))), odd, 100, |_| true);
         assert_eq!((r, asked), (Receipt::Reply(ok.clone()), 3));
         // B0-32 m3fr11: the isolate's last 200 from the leader is older than COMMIT_RECEIPT at the deadline (no `busy`),
         // because every held `/commit` there took 2 to 4.6 s, but the leader answers the ask by request id in 300 ms.
@@ -2879,7 +2885,8 @@ mod tests {
         let (r, _, at) = run_receipt(Some((8_000, None)), vec![unknown.clone(); 8], 300, |_| true);
         assert_eq!((r, at), (Receipt::Missed { report: false }, 8_000));
         // An error status is reported however busy the member was: a sick leader's 5xx is still the gray case.
-        let (r, _, _) = run_receipt(Some((2_500, Some((503, Value::Null)))), vec![unknown; 8], 300, |_| true);
+        let after_ask = COMMIT_RECEIPT.as_millis() as u64 + 400;
+        let (r, _, _) = run_receipt(Some((after_ask, Some((503, Value::Null)))), vec![unknown; 8], 300, |_| true);
         assert_eq!(r, Receipt::Missed { report: true });
     }
 
@@ -2921,8 +2928,42 @@ mod tests {
         assert_eq!(lean(None, false), Receipt::Missed { report: true }, "no answer, not busy: reported");
         // The same late 200 under `receipt` (flag off) is asked about every COMMIT_RECEIPT while it is open.
         let unknown = Some((200, json!({ "unknown": true, "meta": { "term": 2 } })));
-        let (r, asked, _) = run_receipt(Some((5_000, Some((200, ok.clone())))), vec![unknown; 8], 300, |_| true);
+        let at = 2 * COMMIT_RECEIPT.as_millis() as u64 + 1_000;
+        let (r, asked, _) = run_receipt(Some((at, Some((200, ok.clone())))), vec![unknown; 8], 300, |_| true);
         assert_eq!((r, asked), (Receipt::Reply(ok), 2), "flag off: today's asks");
+    }
+
+    /// `commit-hold`: the leader holds a `/commit` 1.5 s for its outcome and the edge's receipt waits that hold plus one
+    /// call. A leader modelled as `commit_all_held` answers: `done` when the ticket resolved inside the hold, else
+    /// `admitted` at the hold's end, either one leg later. Each is the send's reply as it came, with no ask by request
+    /// id, and an `admitted` stays a ticket the edge waits on through `outcome`, never a success by itself. A send the
+    /// leader never answers still ends at RECEIPT_OPEN, asked by request id at most once per COMMIT_RECEIPT.
+    #[test]
+    fn a_commit_held_its_whole_hold_is_the_reply_with_no_ask() {
+        assert_eq!(graftyard_raft::COMMIT_HOLD, Duration::from_millis(1_500));
+        assert_eq!(COMMIT_RECEIPT, Duration::from_millis(2_500), "the hold plus one call");
+        assert!(COMMIT_RECEIPT < RECEIPT_OPEN, "a held answer comes back before the send's own deadline");
+        let hold = graftyard_raft::COMMIT_HOLD.as_millis() as u64;
+        let meta = json!({ "term": 2 });
+        let leader = |resolves_at: u64, leg: u64| {
+            let (at, v) = if resolves_at <= hold {
+                (resolves_at + leg, json!({ "done": { "ok": 1 }, "meta": meta }))
+            } else {
+                (hold + leg, json!({ "admitted": { "seq": 7 }, "meta": meta }))
+            };
+            run_receipt(Some((at, Some((200, v)))), vec![Some((200, json!({ "unknown": true })))], 300, |_| true)
+        };
+        // Resolved at 1.4 s, past the old 1 s hold: `done` now, with no `/outcome` to follow.
+        let (r, asked, at) = leader(1_400, 400);
+        assert_eq!((r, asked, at), (Receipt::Reply(json!({ "done": { "ok": 1 }, "meta": meta })), 0, 1_800));
+        // Resolved after the hold: `admitted` at 1.5 s, and its slowest leg inside the receipt is not asked about.
+        let (r, asked, at) = leader(1_600, 900);
+        assert_eq!((r, asked, at), (Receipt::Reply(json!({ "admitted": { "seq": 7 }, "meta": meta })), 0, 2_400));
+        // A leader that never answers: the send ends at RECEIPT_OPEN, asked at 2.5 and 5.3 s, and never at 8.1 s.
+        let open = RECEIPT_OPEN.as_millis() as u64;
+        let unknown = Some((200, json!({ "unknown": true, "meta": meta })));
+        let (r, asked, at) = run_receipt(Some((open, None)), vec![unknown; 8], 300, |_| true);
+        assert_eq!((r, asked, at), (Receipt::Missed { report: false }, 2, open));
     }
 
     /// A member that never answered this isolate a 200 in this term within COMMIT_RECEIPT is gone as far as the edge
@@ -2933,24 +2974,25 @@ mod tests {
     fn a_member_that_never_answered_is_still_reported() {
         let ok = json!({ "done": { "ok": 1 }, "meta": { "term": 2 } });
         // No 200 before the deadline and none to the ask by request id: reported when the ask ends.
+        let r_ms = COMMIT_RECEIPT.as_millis() as u64;
         let (r, asked, at) = run_receipt(Some((3_100, Some((200, ok.clone())))), vec![], 300, |_| false);
-        assert_eq!((r, asked, at), (Receipt::Missed { report: true }, 1, 2_300));
+        assert_eq!((r, asked, at), (Receipt::Missed { report: true }, 1, r_ms + 300));
         // An error status to the ask is no answer either.
         let (r, _, at) = run_receipt(None, vec![Some((503, Value::Null))], 300, |_| false);
-        assert_eq!((r, at), (Receipt::Missed { report: true }, 2_300));
-        // Answering at the first deadline, then silent: asked at 2.0 s, answered at 2.3 s; asked again at 4.3 s, no
-        // answer by 4.6 s, and no longer busy then, so it is reported.
+        assert_eq!((r, at), (Receipt::Missed { report: true }, r_ms + 300));
+        // Answering at the first deadline, then silent: asked at 2.5 s, answered at 2.8 s; asked again at 5.3 s, no
+        // answer by 5.6 s, and no longer busy then, so it is reported.
         let unknown = Some((200, json!({ "unknown": true })));
         let mut asks = vec![None; 7];
         asks.push(unknown);
         let (r, _, at) = run_receipt(None, asks, 300, |now| now < 3_600);
-        assert_eq!((r, at), (Receipt::Missed { report: true }, 4_600));
+        assert_eq!((r, at), (Receipt::Missed { report: true }, 2 * r_ms + 600));
         // `busy` itself: a 200 in this term within COMMIT_RECEIPT, and nothing else.
         let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(91)));
         assert!(!busy(chain, SiteId(0), 2, 10_000), "never heard");
         heard(chain, SiteId(0), &json!({ "meta": { "term": 2 } }), 10_000);
-        assert!(busy(chain, SiteId(0), 2, 12_000));
-        assert!(!busy(chain, SiteId(0), 2, 12_001), "heard more than COMMIT_RECEIPT ago");
+        assert!(busy(chain, SiteId(0), 2, 10_000 + r_ms));
+        assert!(!busy(chain, SiteId(0), 2, 10_000 + r_ms + 1), "heard more than COMMIT_RECEIPT ago");
         assert!(!busy(chain, SiteId(1), 2, 10_500), "heard from another member");
         assert!(!busy(chain, SiteId(0), 3, 10_500), "heard in an older term than the send's");
         heard(chain, SiteId(0), &json!({ "done": {} }), 30_000);
