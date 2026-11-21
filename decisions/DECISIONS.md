@@ -6947,7 +6947,7 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 
 ### `round-memo`: a `Notify` or `Search` round reads each thread once for its batch, 2026-11-21
 
-**Status.** Built on branch `lead-cpu` from main `476ff72b`, code only, from the lead's leader-CPU look after B0-31 m66r31. Site script and shared code (`crates/git/src/inbox.rs`, `notices`; `crates/git/src/search.rs`, `docs_for`; `workers/site/src/activity.rs`), so it ships on a site day. Not yet run hosted.
+**Status.** Built on branch `lead-cpu` from main `476ff72b`, code only, from the lead's leader-CPU look after B0-31 m66r31; on main from `b67d6d22`. Site script and shared code (`crates/git/src/inbox.rs`, `notices`; `crates/git/src/search.rs`, `docs_for`; `workers/site/src/activity.rs`), so it ships on a site day. **Run hosted on B0-31 m67r31 (2026-11-21):** the leader's rows read per minute plateaued at 306k to 403k from the third minute (m66r31 climbed from 207k to 2.09M), and its CPU stayed at 10.0 to 11.3 CPU-s a minute (m66r31 10.3 → 22.7). Both halves met the rehomed bound, 1,595 and 1,115 ms [measured, `tests/m4/results/m4-wp4.md`, "B0-31 on graft-m4a after test-faults site day 67"].
 
 **Decision.** `inbox::notices` and `search::docs_for` take a round's batch of committed entries, not one entry.
 - `notices` reads each touched thread's issue row, assignees, commenters and thread subscriptions once, and the repository's watchers once, then gives each entry's notices from those reads. It answers each account's notices by entry, as `Inbox::apply` takes them.
@@ -6973,7 +6973,8 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
   - `Search` reading only the batch's first entry.
 - BF-5, BF-67 and BF-68's in-memory gates pass unchanged in rule (`activity_gates.rs`).
 
-**Flip.** A B0-31 row on this rule where the leader's rows read per minute exceed 300k in the row's last minute, against 2.0M on m66r31. That would mean the reads are not the consumers' and the CPU slope has another cause. Or a row where a batch's notices or documents differ from what its entries owe one at a time.
+**Flip.** Restated by the lead after m67r31 (2026-11-21): a B0-31 row on this rule where the leader's rows read per minute rise minute over minute through the row's second half, or where the leader's CPU-s per minute rise more than 50% from the first full minute of load to the last. That would mean the reads are not the consumers', and the CPU slope has another cause. Or a row where a batch's notices or documents differ from what its entries owe one at a time.
+- The first flip line, under 300k rows in the last minute, read 395k on m67r31. That came from a wrong rate in the estimate, not a different cause. It assumed m66r31's 12 to 19 search writes a minute; with reads cut, rounds ran 20 to 26 a minute. Each still reads the busy issue's comments about three times, about 140k rows a minute at 2,000 comments. The slope it was meant to catch is gone.
 
 ### Not adopted: a KV-backed log so read grants leave past the output gate, 2026-11-21
 
