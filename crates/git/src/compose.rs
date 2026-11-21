@@ -291,6 +291,22 @@ pub async fn stream_in_turn<P, B, E>(
     Ok(())
 }
 
+/// Whether a shard takes the composed-miss chain's step after its own catch-up, before any miss asks for it: the
+/// builder builds the next step, and a shard on a chain site (one of `crate::chain_buckets`) installs the
+/// chain from the warm buckets, so a chain site that takes the misses when the home shard goes already holds a chain to
+/// answer from (`decisions/DECISIONS.md`, "`chain-install`"). Any other shard installs only when a miss asks. On B0-34
+/// mt12 site c, the other chain site, served none of the 46 misses before the kill and so held no chain; at the kill its
+/// first miss waited 13.8 s for the install, and the misses behind it 0.5 to 10.9 s (`tests/am1/results/b034-mt12.md`).
+pub fn steps_after_catch_up(
+    network: graftyard_types::NetworkId,
+    home: graftyard_types::SiteId,
+    site: graftyard_types::SiteId,
+    sites: &[graftyard_types::SiteId],
+    builder: bool,
+) -> bool {
+    builder || crate::chain_buckets(network, home, sites).contains(&site)
+}
+
 /// Whether a composable miss goes on to ask its container (`true`) or the shard answers 503 `warming` (`false`), once
 /// its chain is ready (`ready` ended) or its wait runs out. `follows`: the edge has another site to try (`next=1`).
 /// `chain_site`: this site's bucket holds the network's chain (`crate::chain_buckets`, its warm sites).

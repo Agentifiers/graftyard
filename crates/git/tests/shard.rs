@@ -560,6 +560,35 @@ fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_dead
     assert_eq!(run(true, s(15), Some(Duration::from_millis(1_500))), (true, s(2)));
 }
 
+/// After its own catch-up, which shard takes the composed-miss chain's step before any miss asks
+/// (`steps_after_catch_up`, `chain-install`): the builder builds, and every shard on a chain site installs, so the chain
+/// site that takes the misses when the home shard goes already holds a chain. B0-34 mt12's case: network 1048605, home
+/// a, chain sites a and c. Site c served none of the 46 misses before the kill, so on main's rule (only the builder)
+/// its shards held no chain at the kill, and its first miss waited 13.8 s for the install. A shard on b, which holds no
+/// chain, still waits for a miss to ask.
+#[test]
+fn a_shard_on_a_chain_site_installs_the_chain_after_its_catch_up() {
+    use graftyard_git::compose::steps_after_catch_up;
+    use graftyard_types::{DbId, NetworkId, SiteId};
+    let (net, home) = (NetworkId(DbId(1048605)), SiteId(0));
+    let sites = [SiteId(0), SiteId(1), SiteId(2)];
+    let chain = graftyard_git::chain_buckets(net, home, &sites);
+    assert_eq!(chain, [SiteId(0), SiteId(2)], "mt12's chain buckets: a and c");
+    // (site, builder) -> steps after a catch-up
+    let steps = |site: SiteId, builder: bool| steps_after_catch_up(net, home, site, &sites, builder);
+    assert!(steps(SiteId(0), true), "the builder steps");
+    assert!(steps(SiteId(2), false), "a shard on chain site c installs before the kill sends it misses");
+    assert!(steps(SiteId(0), false), "another shard on the home site, a chain site, installs too");
+    assert!(!steps(SiteId(1), false), "a shard on b, which holds no chain, waits for a miss");
+    // Another network whose chain sites are a and b: c, not a chain site there, does not step.
+    let other = (1..2_000_000)
+        .map(|n| NetworkId(DbId(n)))
+        .find(|n| graftyard_git::chain_buckets(*n, home, &sites) == [SiteId(0), SiteId(1)]);
+    let other = other.expect("a network whose chain sites are a and b");
+    assert!(!steps_after_catch_up(other, home, SiteId(2), &sites, false), "c holds no chain for that network");
+    assert!(steps_after_catch_up(other, home, SiteId(1), &sites, false), "b does");
+}
+
 /// A composable miss on a site whose bucket holds no chain (`chain_ready` with `chain_site` false, a site that is not
 /// one of `chain_buckets`) waits for no chain step. As the last site it asks its container at once, which composes
 /// from a chain it already holds or serves stock; forwarded, it answers `warming` at once so the edge asks the next
