@@ -1,0 +1,87 @@
+2026-11-21T16:49:42Z start c6e123eba ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-21T16:49:59Z start sweep ok
+2026-11-21T16:49:45Z cost account 40.05 since 2026-11-21T00:00:00Z, run 0.01 since 2026-11-21T15:56:41Z, at b0-33
+2026-11-21T16:50:25.249Z m3org/flcA2-b033 = 131382
+2026-11-21T16:50:25.708Z repo:131382 leader 0 placing since 1795279838914: waiting
+2026-11-21T16:50:29.097Z repo:131382 leader 0 placing since 1795279838914: waiting
+2026-11-21T16:50:37.240Z repo:131382 leader 0: config 9 learners [{"addr":192,"doName":"repo:131382#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131382#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131382#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131382#3#l3","join":200,"site":0,"slot":3}]
+2026-11-21T16:50:37.881Z repo:131382 site 0: arrival mem (asked mem, status 200)
+2026-11-21T16:50:38.082Z repo:131382 site 1: arrival mem (asked mem, status 200)
+2026-11-21T16:50:38.307Z repo:131382 site 2: arrival mem (asked mem, status 200)
+2026-11-21T16:50:42.891Z repo:131382 leader 0: set k 4: {"grants":[[0,[3,5,6]],[1,[3,5,6]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-21T16:50:53.197Z repo:131382 leader 0: set k 4: {"grants":[[0,[3,5,6]],[1,[3,5,6]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-21T16:51:03.651Z repo:131382 leader 0: set k 4: {"grants":[[0,[3,5,6]],[1,[3,5,6]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-21T16:51:03.748Z repo:131382 leader 0: k 4 at 10
+2026-11-21T16:51:28Z b0-33 shard gate site 0: warm site 0 after 1.3 s
+2026-11-21T16:51:28Z b0-33 shard gate site 1: warm site 1 after 4.7 s
+2026-11-21T16:51:28Z b0-33 shard gate site 2: warm site 2 after 6.5 s
+2026-11-21T16:51:28Z b0-33 flcA2-b033 131382 start
+2026-11-21T16:59:21.777Z repo:131382 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":4},"stepped":true,"want":0}
+2026-11-21T16:59:21.902Z repo:131382 leader 0: k 1 at 532
+2026-11-21T16:59:39Z b0-33 flcA2-b033 131382 done exit 0
+2026-11-21T16:59:44Z torn down 131382
+site fault off: 200
+git#1#pool:7 200
+git#1#pool:4 200
+git#1#pool:6 200
+git#0#pool:4 200
+git#0#pool:7 200
+git#0#pool:6 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-21T17:00:07Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 13576 {'leader': 254, 'promised': 13240, 'started': 2, 'busy': 80}
+  colo site 51 {'promised': 47, 'leader': 1, 'busy': 3}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 22 (n 102) p90 26 (placement baseline); unpaired p50 46 (n 102); pooled p50 42 (n 204)
+  load: 1-statement p50 81 (n 149); unpaired p50 187 (n 116); pooled p50 77 p99 3182 (n 471)
+isolates: 7 members, 7 distinct ids, 4 changes; shared: none
+shared isolates:
+tsave-lcA2.jsonl: 7 members, 9 isolates; no shared isolate
+harness outages (2026-11-21T16:54:10Z, the first request, to 2026-11-21T16:58:52Z; announced 2026-11-21T16:53:52Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-21T16:55:00Z", "2026-11-21T16:55:01Z"]], "outageSeconds": 1.0, "share": 0.0035, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 7584, "served": 0.7873, "p50": 1431, "p99": 26343, "cap": 0}, "outagesRemoved": {"n": 7490, "served": 0.7864, "p50": 1425, "p99": 26352, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 28, "served": 0.75, "p50": 3302, "p99": 9830, "cap": 0}, "outagesRemoved": {"n": 28, "served": 0.75, "p50": 3302, "p99": 9830, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 12382, "served": 0.1152, "p50": 3736, "p99": 25153, "cap": 0}, "outagesRemoved": {"n": 12214, "served": 0.1168, "p50": 3704, "p99": 25360, "cap": 0}}
+5xx by reason (2026-11-21T16:54:10Z to 2026-11-21T16:59:21Z):
+{"logged": 9948, "edge5xx": 9948, "byStatus": {"503": 9948}}
+   2813 503 task
+   1950 503 graphql
+   1628 503 renew
+   1628 503 upload-pack
+   1275 503 rest-repo-write
+    628 503 lease
+     17 503 receive-pack
+      9 503 info-refs
+by reason:
+   2525 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1723 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1628 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1451 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1187 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    563 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    286 503 task             the member answered {"full":{"retry_after_s":N}}
+    226 503 graphql          the member answered {"full":{"retry_after_s":N}}
+    175 503 renew            the member answered {"full":{"retry_after_s":N}}
+     88 503 rest-repo-write  the member answered {"full":{"retry_after_s":N}}
+     63 503 lease            the member answered {"full":{"retry_after_s":N}}
+     17 503 receive-pack     the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      9 503 info-refs        the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      2 503 lease            repo:N: no outcome: repo:N#N#fN: missed
+      2 503 task             repo:N: no outcome: repo:N#N#fN: missed
+      2 503 renew            repo:N: no outcome: repo:N#N#fN: missed
+      1 503 graphql          repo:N: no outcome: repo:N#N#fN: missed
+push refusals by stage:
+{"agentPushes": {"ok": 1426, "full": 10956}, "fullBy": {"admission": 4591, "expire_agents (queued)": 3752, "edge (bound_at_send)": 2575, "no commit stage": 38}, "fullMarks": {"ask": 1111, "stagefirst": 189, "busy": 168, "missed": 451, "suspect": 451}}
+budget left at the first send | ok / full
+  under 1 s  | 6 / 3206
+  1 to 2 s   | 45 / 1208
+  2 to 3 s   | 187 / 2484
+  3 to 5 s   | 1188 / 4020
+B033DONE
