@@ -7110,3 +7110,44 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 **Evidence.** `a_networks_chain_buckets_are_among_its_groups_sites_not_the_installs` (`crates/git/tests/shard.rs`): 1048606 on record [a, b, c] gives [a, b], and mt12's and mt11's networks keep [a, c] and [a, b]; for 399 networks no bucket is outside the record, a record [b, c, d] never names a and spreads its second bucket over c and d, and the record's home leads wherever it sits. Main's rule fails it. Plants (`tests/chainrecord/plant.py`): 4 of 4 caught, mutant 0 main's rule; `tests/chaininstall/plant.py` 4 of 4 with the new signature. The callers run only in wasm; the next row checks them by bucket b's chain-pack reads after a catch-up and before the kill.
 
 **Flip.** A placement whose git caches warm on a site outside the group's record: then chain buckets follow wherever `fanout` warms, not the record. Open, not built: in a two-site-and-witness record (`Us2w`, `Eu2w`, `Apac2w`) `warm_sites` can pick the Witness, which has no git cache (`promote_sites`), for `fanout` and the chain alike; graft-m1's groups are `Tri`.
+
+### `sync-ab`: the leader's confirm wall follows its input count, and learner `/raft` is most of it, 2026-11-21
+
+**Status.** The lead's ruling on the B0-33 leader-sync A/B (`tests/am1/results/sync-ab.md`). No product code changed.
+The lean switch, `x-graft-lean` (`Hooks::lean`, `CommitReq::hold_ms`, `lean_asked`), stays test-faults only.
+
+**Decision.**
+- F106's leader confirms on B0-33 are not recorded as the platform's. The flip written before the row fired: arm B's
+  confirm p90 fell 3.75× against arm A's.
+- The next lever studied is learner AppendEntries cadence: fewer, larger `/raft` calls from the same learners. It
+  starts as a $0 design note the lead reads first. That note also says what holds `queue:slot`'s tail.
+- Taking outcome polling off the leader (`/outcome` and `/outcome_by_request`) is not pursued.
+
+**Why.**
+- On site 0, leading at term 2 in all three arms with no leader change, the leader's inputs fell 314.2 → 244.0 →
+  167.4 a second (A → C → B). Its confirm wall p50/p90/p99 went 52/379/2,076 → 52/136/997 → 58/101/204 ms. Ticker
+  stalls of 500 ms or more went 10 → 0 → 0, and held-input batches 464 → 251 → 60. The followers confirmed the same
+  transactions at p90 13 to 108 ms in every arm [measured].
+- C, which removed only the learners (55.8 learner `/raft` a second), accounts for most of the fall. The lead puts it
+  at 87% of the log-fall, from the learner rows. B over C (outcome polling) took p90 from 136 to 101 ms.
+- Outcome polling off the leader is the smaller lever, and as tested it holds each lean `/commit` up to 6 s. Arm B had
+  203 agent pushes end in HTTP/2 `fetch failed`, against 3 and 1 in A and C. The hold is the likely cause
+  (`decisions/OPEN-QUESTIONS.md`, A38).
+
+**Beat.**
+- **Recording F106 as the platform's and stopping.** The row's flip refuted it.
+- **Outcome polling off the leader** (held `/commit`, no receipt asks). Smaller effect, and a client-visible cost in
+  long-held streams.
+- **Dropping the learners.** Arm C's leader was lighter, but its edge 503s rose from 525 to 5,434. The tier reads then
+  fell on two followers, which shed them (125 to 137 `/read`/s each). That is not a product shape.
+
+**Evidence.** `tests/am1/results/sync-ab.md`, "Verdict lines" and "The flip and the ruling"; `tests/fanout/syncab.py`
+on `tests/fanout/raw/tsave-sab{A,C,B2}.jsonl.xz`.
+- Agent commands a second fell 103.2 → 94.3 → 88.8. That is confounded by C's and B's tier-row 503s, and is not a
+  throughput cost of a lighter leader.
+
+**Flip.**
+- A B0-33 row with the learners' `/raft` cut by a cadence change, where the leader's confirm p90 does not fall at least
+  2× against arm A's 379 ms at the same input mix: the learners' calls were not the cause, only correlated with it.
+- Or a row where the leader's confirm p90 stays at or under 140 ms while its inputs are at A's 314/s: the count alone
+  does not set the confirm wall.
