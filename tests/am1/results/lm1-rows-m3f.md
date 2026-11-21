@@ -225,6 +225,53 @@ Where B0-32 stands on main `b8e555df`, line by line, and which open question own
 - G34 owns the shard catch-up stall: 1 merge push, 2 `merge:only` answers and 65 `full` pushes.
 - The cold-isolate merge push in warm-up has no owner; it fell before the burst.
 
+## Row m3fhs1: B0-32 on main `771e07e9`, shard image `6ee7a5ab` (A37's instrument row) (2026-11-21, graft-m3f, `ROWS="b0-32"`)
+
+**Slot.** One site day and edge day from main `771e07e9` with `--ssh` and test-faults, then `retire-unjoined`'s sweep, then one B0-32 row, stop $8 on graft-m3f from the site day's start (03:29:51Z). It is A37's instrument row: it splits a slow leader confirm into the leader's input stop and its output hold. It is also the first B0-32 row on shard image `6ee7a5ab`, so `garbled-body`'s container side (G35) runs.
+
+**No new log line was needed.** The leader object's Workers Logs events already carry what the member trace could not: each event's start on the platform's clock, its wall up to when the response left (output gate included), and for a `/raft` call the caller's `x-graft-call`, `x-graft-from` and `x-graft-sent`. `tests/fanout/leaderwl.py` joins them to the trace's `CallArrived` and `CallLeft` (A37).
+
+**Committed raw files:** `tests/fanout/raw/rows-m3fhs1.status`, `{admit,terms,vmem}-m3fhs1-b0-32.jsonl`, `tsave-m3fhs1-b0-32.jsonl.xz`, `arrivals-m3fhs1.jsonl`, `shardgate-m3fhs1-b0-32-*.jsonl`, `reretire-graft-m3f.log`, `retirenets-m3fhs1.log`, and `lm1-rows-m3f-data/m3fhs1-raw/` (the client's summary and its 33 merge pushes).
+
+- **Site day and edge day** m3fhs, 03:29:51Z to 03:43:36Z, both exit 0, one run (one-shot launcher). Sites a `49bf8560`, b `bff0bc8b`, c `6a006b9a`; edge `0e02f71e`. Shard image `sha256:6ee7a5ab…`.
+- **`retire-unjoined`'s sweep:** `bash tests/fanout/reretire.sh tests/fanout/reretire/graft-m3f.txt`, 03:44:22Z to 03:49:45Z, printed **RERETIRE OK graft-m3f**: 50 networks, each with every name not joined and carrying the retired row.
+- **Row:** repo 65608 (run `mwpvfxxn`), 8 learners, k 4, leader site 0 term 2. Done line 03:58:24Z (exit 0). Harness outage 5 s (3.1%), valid.
+- **Spend and teardown:** $0.97 from 03:29:51Z to 04:10:40Z (graft-m3f prefix $0.70). SWEEP2 OK at 04:00:27Z. 65608 retired: 11 names, 11 were joined, all now not joined with the row. Purged 2,472 objects, second pass 0. No shard running at 04:10:31Z.
+
+| Line | Measured | Verdict |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `ng … admission full` | **364 of 500** (157 `ok` within 5 s, 207 `full`); m3fgb1 422, m3fpc1 251 | Fail (450 needed) |
+| No other refusal shape | `full` only in the burst; outside it 9 Human `stale`, 1 Human 503 (`every member asked shed the read`) and 1 client fetch error; 0 `bad update line` | Pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | peak 99,690 B, 29 commands; `pressure` never true | Pass |
+| Every merge in one of the next 2 entries, none over 2 s | **3 of 33** merge pushes over 2 s (3,859, 2,598, 2,133 ms). `merge:only` 27 × 200, 3 × 409, no 503; p50 804, p99 9,541 ms | Fail |
+| Zero leader changes | term 2, leader site 0 throughout | Pass |
+| Zero `suspect` | **1** push with a miss after an ask | Fail |
+
+**No leader confirm reached 1 s.** The leader's largest was 348 ms, at T+2.43 s (`syncs.py`: site 0, 1,769 confirms, p50 33, p99 54 ms). Site b's largest was 216 ms and site c's 193 ms. So this row has no slow confirm to split, and A37's question waits for one. It still counts as a B0-32 sample.
+
+**Where the 5 s went** [measured, `server-timing`, `x-graft-spread`]:
+- `full`: 70 at the bound and 137 after a commit.
+- Late `ok`: in all 136 the commit stage alone exceeds the overage. Committed twice: 148 of 293. `ok` total p50 4,939, p99 6,612 ms.
+- Leader commit p50 315, p99 3,016 ms. Round p50 138, p99 317 ms.
+- The read gate: `gate_rows` p50 1,110, p90 4,052 ms on the 313 pushes that read it (m3fgb1: 4,210 / 4,416). The repository chain's spread read p50 862 ms; 376 of 500 needed one try and 39 needed three.
+- **Without a slow confirm, the gate still slowed in seconds 1 to 4 of the burst.** Member round trips to the leader by send second ran p50 92, 628, 1,600, 1,411 and 748 ms. On the platform's clock the leader's `/raft` handlers were not held after they returned: hold p50 23 to 191 ms, at most 812 ms, against 731 and 560 ms p50 on m3fgb1 inside its 2,457 ms confirm. The leader also never stopped taking input for long: its longest span with no event start was 686 ms. So the late answers here are neither a held output gate nor an input stop. The trace puts the wait on the members' side of the call or on the wire [inference: `x-graft-sent` is the sender's clock, so the wire there and the caller's own queue are not separated].
+- **Cuts:** 154 in the burst, 152 `Empty` and 2 `AgentCmds`. The largest took 49,929 soft bytes, so `soft-grow` did not grow.
+
+**Staged first against isolates:** 163 of 500 pushes staged first; 151 of the 187 that hit the isolate's gate cache did, and 12 of the 313 that read the gate. As on m3fgb1, staging first follows the gate cache (A36).
+
+**`garbled-body` on image `6ee7a5ab` (G35):**
+- 0 `changed in transit`, 0 `body-changed` and 0 `bad update line` lines on sites a, b and c and on the edge, from 03:54:30Z to 03:58:30Z (Workers Logs, message search).
+- Site a's `GitShard` validates in the burst's first minute: 1,650, every one carrying `headsum`, and 1,635 carrying `packsum` (the 15 without are detail-only calls). By route and answer: direct 200 × 747, pool 200 × 536, pool 409 × 41, via 200 × 41, direct 503 × 41; 244 had no response logged.
+- So no body changed in transit on this row, and none of its validates answered 422.
+
+### A37 from m3fgb1, re-read with Workers Logs
+
+The same split, run on m3fgb1's leader (`leaderwl.py`, events fetched for 01:18:50Z to 01:19:00Z), corrects A37's first estimate:
+- **The leader's clock was not frozen.** Each event's real start matched the trace's `CallArrived` to within 22 to 144 ms until T+2 s, then ran 0.8 to 2.8 s ahead of it. The callers' `x-graft-sent` stamps ran up to 1.3 s ahead of the platform's clock. So the "3.3 s behind" in A37's note was mostly the callers' clocks, not the leader's.
+- **Inside the 2,457 ms confirm the output gate did hold answers.** `/raft` handlers took 0 ms on the leader's clock but ran p50 731 ms (max 961) at T+2.0 s and p50 560 ms (max 925) at T+3.5 s of wall. That is the response held after the handler returned. Outside the confirm, hold was p50 5 to 195 ms.
+- **The leader kept taking input.** Its longest span with no event start was 818 ms, at T+2.76 s. The 2.1 s "input stop" in A37's note was the trace's own clock standing still, not the leader refusing input.
+- So inside m3fgb1's slow confirm the output hold was about 0.6 to 0.7 s a call, and the rest of each 1.6 to 2.0 s round trip was the members' side and the wire. A grant past the gate would cut about that 0.6 to 0.7 s from a member's round trip during a slow confirm, not the whole round trip as the conservative replay assumed. The replay's gate p50 of 300 ms is then too low; the true figure needs the members' side of the call split too [inference].
+
 ## Row m3fgb1: B0-32 on main `1a9209c3` (`garbled-body`) (2026-11-21, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** One site day and edge day from main `1a9209c3` with `--ssh`, then one B0-32 row, stop $8 on graft-m3f from the site day's start (00:58:23Z). The measures: `garbled-body`'s check (G35), and the row's verdict lines against m3fpc1. **The row ran on the old shard image `076a16ee`**, so the container's half of `garbled-body` (the 502 on a changed body) was not deployed, and its 0 `changed in transit` lines do not test G35. The next B0-32 row runs on image `6ee7a5ab` or later.
