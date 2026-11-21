@@ -1,0 +1,92 @@
+2026-11-21T00:07:37Z start a1e431a65 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-21T00:07:54Z start sweep ok
+2026-11-21T00:07:41Z cost account 63.49 since 2026-11-20T00:00:00Z, run 0.0 since 2026-11-20T23:49:36Z, at b0-33
+2026-11-21T00:08:21.285Z m3org/fm64r33-b033 = 131378
+2026-11-21T00:08:21.959Z repo:131378 leader 0 placing since 1795219712166: waiting
+2026-11-21T00:08:25.208Z repo:131378 leader 0 placing since 1795219712166: waiting
+2026-11-21T00:08:32.730Z repo:131378 leader 0: config 7 learners [{"addr":192,"doName":"repo:131378#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131378#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131378#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131378#3#l3","join":200,"site":0,"slot":3}]
+2026-11-21T00:08:33.391Z repo:131378 site 0: arrival mem (asked mem, status 200)
+2026-11-21T00:08:33.570Z repo:131378 site 1: arrival mem (asked mem, status 200)
+2026-11-21T00:08:33.738Z repo:131378 site 2: arrival mem (asked mem, status 200)
+2026-11-21T00:08:37.136Z repo:131378 leader 0: set k 4: {"grants":[[0,[0,4,2]],[2,[0,4,2]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-21T00:08:47.484Z repo:131378 leader 0: set k 4: {"grants":[[0,[0,4,2]],[2,[0,4,2]]],"k":1,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-21T00:08:57.980Z repo:131378 leader 0: set k 4: {"grants":[[0,[0,4,2]],[2,[0,4,2]]],"k":4,"meta":{"configIndex":7,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-21T00:08:58.152Z repo:131378 leader 0: k 4 at 10
+2026-11-21T00:09:23Z b0-33 shard gate site 0: warm site 0 after 1.5 s
+2026-11-21T00:09:23Z b0-33 shard gate site 1: warm site 1 after 5.5 s
+2026-11-21T00:09:23Z b0-33 shard gate site 2: warm site 2 after 9.6 s
+2026-11-21T00:09:23Z b0-33 fm64r33-b033 131378 start
+2026-11-21T00:18:18.364Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:18:28.637Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:18:38.887Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:18:49.141Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:18:59.430Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:19:09.709Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:19:19.958Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:19:30.224Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:19:40.482Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:19:50.731Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:20:01.007Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:20:11.268Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:20:21.515Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:20:31.764Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:20:42.008Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:20:52.251Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:21:02.486Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:21:12.760Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:21:22.991Z repo:131378 leader 1: set k 1: {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313
+2026-11-21T00:21:23.181Z repo:131378 leader 1: k {"error":{"notLeader":{"config":{"config":{"normal":{"generation":1,"home":0,"learners":[],"voters":[{"do_name":"repo:131378#1#f0","generation":1,"kind":"full","site":0,"slot":0},{"do_name":"repo:1313 at undefined
+2026-11-21T00:21:38Z b0-33 fm64r33-b033 131378 done exit 0
+2026-11-21T00:21:47Z torn down 131378
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-21T00:22:04Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 1357 {'promised': 1172, 'leader': 185}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 22 (n 103) p90 24 (placement baseline); unpaired p50 48 (n 103); pooled p50 41 (n 206)
+  load: 1-statement p50 36 (n 96); unpaired p50 34 (n 481); pooled p50 38 p99 1277 (n 675)
+isolates: 7 members, 7 distinct ids, 1 changes; shared: none
+shared isolates:
+tsave-m64r33.jsonl: 7 members, 8 isolates; no shared isolate
+harness outages (2026-11-21T00:12:01Z, the first request, to 2026-11-21T00:16:46Z; announced 2026-11-21T00:11:46Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-21T00:12:01Z", "2026-11-21T00:12:02Z"], ["2026-11-21T00:13:09Z", "2026-11-21T00:13:10Z"]], "outageSeconds": 2.0, "share": 0.007, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 5812, "served": 0.9723, "p50": 1149, "p99": 13893, "cap": 0}, "outagesRemoved": {"n": 5803, "served": 0.9724, "p50": 1148, "p99": 13839, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 23, "served": 0.6087, "p50": 4511, "p99": 15438, "cap": 0}, "outagesRemoved": {"n": 23, "served": 0.6087, "p50": 4511, "p99": 15438, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 12421, "served": 0.3228, "p50": 5594, "p99": 78755, "cap": 0}, "outagesRemoved": {"n": 12300, "served": 0.325, "p50": 5573, "p99": 78793, "cap": 0}}
+5xx by reason (2026-11-21T00:12:01Z to 2026-11-21T00:18:13Z):
+{"logged": 1332, "edge5xx": 1332, "byStatus": {"503": 1332}}
+    392 503 task
+    304 503 graphql
+    204 503 renew
+    197 503 rest-repo-write
+    144 503 upload-pack
+     80 503 lease
+      6 503 receive-pack
+      4 503 merge
+      1 503 info-refs
+by reason:
+    392 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    304 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    204 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    197 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    144 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     80 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      6 503 receive-pack     the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      4 503 merge            the git cache: N {"warming":true}
+      1 503 info-refs        the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 4010, "full": 7456, "other": 955}, "fullBy": {"admission": 2360, "expire_agents (queued)": 2139, "edge (bound_at_send)": 2009, "no commit stage": 948}, "fullMarks": {"ask": 528, "stagefirst": 187, "busy": 0, "missed": 97, "suspect": 97}}
+budget left at the first send | ok / full
+  under 1 s  | 12 / 2861
+  1 to 2 s   | 201 / 1170
+  2 to 3 s   | 1116 / 1345
+  3 to 5 s   | 2681 / 1132
+B033DONE
+POST64DONE

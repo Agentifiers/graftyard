@@ -202,3 +202,7 @@
 2026-11-20T19:25:22Z 131377 purged: a 7608 -> 0, b 7531 -> 0, c 6765 -> 0
 2026-11-20T19:25:22Z 131377 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-20T19:25:22Z {"dry": false, "purged": 1, "objects": 21904, "refused": [], "second": 0}
+2026-11-21T00:22:36Z buckets: graft-m2b-site-a-packs, graft-m2b-site-b-packs, graft-m2b-site-c-packs
+2026-11-21T00:25:25Z 131378 purged: a 9678 -> 0, b 8642 -> 0, c 7076 -> 0
+2026-11-21T00:25:25Z 131378 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T00:25:25Z {"dry": false, "purged": 1, "objects": 25396, "refused": [], "second": 0}
