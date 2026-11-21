@@ -7196,3 +7196,53 @@ on `tests/fanout/raw/tsave-sab{A,C,B2}.jsonl.xz`.
 **Flip.** A torn-down shard whose container runs again with no client request after the teardown, or whose `/status`
 shows an alarm after its sweep. Or a client request that answers 503 `warming` from a shard torn down before it
 arrived, past one retry: then `resume` is not reached on that path.
+
+### `learner-cadence`: a learner sends read-index batches at most every 200 ms, and its append replies ride them, 2026-11-21
+
+**Status.** Built on branch `r33-learner-cadence` from main `059378d2`, from the lead's ruling on
+`tests/am1/results/learner-cadence.md`. It changes `crates/raft/src` (`LEARNER_READ_EVERY`) and the site's call path
+(`workers/site/src/callers.rs`, `Acks`; `Host::send`, `call_many`), so it ships on a site day. Not yet measured hosted.
+
+**Decision.**
+- `LEARNER_READ_EVERY` goes from 50 to 200 ms: a learner sends at most five read-index batches a second. Followers
+  stay at `FOLLOWER_READ_EVERY` (10 ms). `READ_PIPELINE` (8), `QUIET` (1 s), `HEDGE` and the learner count stay.
+- A learner holds each AppendEntries reply to the member that sent it (`Acks`). Its next read-index call to that
+  member carries the held replies ahead of the `ReadIndex` in one body, which the callee steps in order
+  (`raft_steps`). A reply held for the floor with no such call leaves alone from the 100 ms ticker. The call is timed,
+  traced, hedged and judged as its `ReadIndex`.
+- Read-index linearizability is unchanged: a read is granted only at an index the leader confirmed after its batch
+  arrived, and an answer grants its own batch and earlier ones, never a later one (`read-newest`).
+
+**Why.**
+- Arm C of `sync-ab`, which removed the learners, took the leader's confirm p90 from 379 to 136 ms, and learner
+  `/raft` was 87% of the log-fall. B0-02 found learner `/raft` 40.7% of B0-32's logged leader CPU at 1.95 ms a call,
+  against 2 to 3 µs of modelled logic, so the cost is per call, not per byte.
+- At 50 ms the four learners made 56.1 calls a second: 47.5 read-index batches (the floor binds at 32 to 63 reads a
+  second each), about 5.7 append replies, 2.9 hedges and the rest re-sends [measured, arm A's learner rows].
+- Keeping the learners keeps the followers at arm A's 1 to 2 open requests, not C's and B's 37 to 54, and A's 525 edge
+  503s, not C's 5,434.
+
+**Beat.**
+- **Dropping the learners** (arm C). Lighter leader, but the tier reads fell on two followers and the edge 503s rose
+  tenfold.
+- **Outcome polling off the leader.** The smaller lever (136 → 101 ms), with a client-visible cost (`sync-ab`).
+- **Leader-side batching of learner appends.** They already ride the learners' calls (held → taken p50 0 ms).
+
+**Evidence.**
+- `tests/am1/results/learner-cadence.md`, section 1; `tests/am1/results/sync-ab.md`.
+- `crates/raft/tests/scenarios.rs`, `a_learners_reads_within_the_floor_leave_as_one_batch_and_stay_linearizable`:
+  two reads 50 and 150 ms after a batch leave as one at the floor, and the earlier answer, sent before a write was
+  acknowledged, grants neither.
+- `workers/site/src/callers.rs`, `a_learners_append_replies_ride_its_next_read_call_to_their_leader`.
+- `tests/m0carried/plant76.py`: main's 50 ms floor, a follower's floor, an answer granting queued reads, replies sent
+  at once, a read call carrying none or another member's, replies leaving before the floor, and the read ahead of its
+  replies.
+- Prediction for an m64-shaped B0-33 row [inference]: learner calls to the leader about 20 to 25 a second (20
+  read-index batches, hedges and re-sends scaled with them; the 5.7 append replies ride the read calls, and the 2.4
+  others, hedges and resends of the newest batch, stay as they are); leader inputs about 280 a second; confirm p90 200
+  to 260 ms.
+
+**Flip.**
+- A row where the leader's confirm p90 does not fall under 300 ms, or where learner calls to the leader do not fall
+  under 30 a second: the floor is not what drives the learners' calls, or their count does not set the confirm wall.
+- If confirm p90 falls and the round p50 does not, the round is the followers', not the leader's lateness.

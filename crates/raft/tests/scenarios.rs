@@ -2191,6 +2191,132 @@ fn with_learners(c: &mut Cluster, l: SiteId, n: u8) -> Vec<SiteId> {
     addrs
 }
 
+/// `learner-cadence`: a learner's reads that arrive within `LEARNER_READ_EVERY` (200 ms) of its last batch leave
+/// together as one batch at the floor, not one call each, and the floor moves only latency: a read that arrived after
+/// a write was acknowledged is granted at or above that write, never by the answer to a batch sent before it arrived.
+/// A real learner member follows A here; the voters run in the cluster.
+#[test]
+fn a_learners_reads_within_the_floor_leave_as_one_batch_and_stay_linearizable() {
+    use graftyard_raft::{Envelope, LEARNER_READ_EVERY, ReadId, Ready, Stored};
+    use graftyard_types::learner_addr;
+    type Env = Envelope<common::kv::KvEvent>;
+    /// The learner, outside the cluster: its read-index calls are kept in `asks` as they leave.
+    struct L {
+        m: Member<KvCmd>,
+        disk: Stored<common::kv::Kv>,
+        granted: Vec<(ReadId, Index)>,
+        asks: Vec<Env>,
+    }
+    impl L {
+        fn on<R>(&mut self, c: &mut Cluster, f: impl FnOnce(&mut Member<KvCmd>, Timestamp) -> Ready<KvCmd, R>) -> R {
+            let (r, out) = f(&mut self.m, c.now).persist(&mut self.disk);
+            for e in out.early.into_iter().chain(out.messages) {
+                if matches!(e.msg, Message::ReadIndex { .. }) { self.asks.push(e) } else { c.inbox.push(e) }
+            }
+            for r in out.resolutions {
+                if let Resolution::Read { id, result: Ok(g) } = r {
+                    self.granted.push((id, g.floor()));
+                }
+            }
+            r
+        }
+        /// Delivers everything queued; to the learner only when `hear`.
+        fn pump(&mut self, c: &mut Cluster, hear: bool) {
+            let me = self.m.me();
+            for _ in 0..200 {
+                let batch = std::mem::take(&mut c.inbox);
+                if batch.is_empty() {
+                    return;
+                }
+                for Envelope { from, to, msg } in batch {
+                    if to != me {
+                        c.on(to, |m, t| m.step(t, from, msg));
+                    } else if hear {
+                        self.on(c, |m, t| m.step(t, from, msg));
+                    }
+                }
+            }
+        }
+        fn tick(&mut self, c: &mut Cluster, ms: u64, hear: bool) {
+            c.advance(ms);
+            self.on(c, |m, t| m.tick(t));
+            self.pump(c, hear);
+        }
+        fn floor(&self, r: ReadId) -> Option<Index> {
+            self.granted.iter().find(|(id, _)| *id == r).map(|(_, f)| *f)
+        }
+    }
+    let floor = LEARNER_READ_EVERY.as_millis() as u64;
+    let mut c = Cluster::new(96);
+    c.elect(A);
+    c.sync(A);
+    let addr = learner_addr(0);
+    assert_eq!(with_learners(&mut c, A, 1), vec![addr]);
+    let mut l = L {
+        m: Member::new(config(addr), 96_000).unwrap(),
+        disk: Stored::new(common::kv::Kv::default()),
+        granted: Vec::new(),
+        asks: Vec::new(),
+    };
+    for _ in 0..20 {
+        l.tick(&mut c, 100, true);
+    }
+    assert_eq!(l.m.leader(), Some(A), "the learner follows A");
+    assert!(l.m.group_fold().applied() >= c.m(A).state().commit, "the learner caught up");
+    l.asks.clear();
+    // The first read leaves at once, in its own batch.
+    let r1 = l.on(&mut c, |m, t| m.read_index(t)).expect("A leads");
+    let first = std::mem::take(&mut l.asks);
+    assert_eq!(first.len(), 1, "a read after an idle floor leaves at once");
+    // A answers it before the write below; the answer is held back.
+    for Envelope { from, to, msg } in first {
+        c.on(to, |m, t| m.step(t, from, msg));
+    }
+    let answers: Vec<_> = c.inbox.iter().filter(|e| matches!(e.msg, Message::ReadIndexRes { .. })).cloned().collect();
+    c.inbox.retain(|e| e.to != addr);
+    assert_eq!(answers.len(), 1, "A answered at once, inside its lease");
+    // A write commits through A and B while the learner hears nothing.
+    admit(&mut c, A, 9_600, put("k", "new"));
+    l.pump(&mut c, false);
+    let acked = c.m(A).state().commit;
+    assert!(l.m.group_fold().applied() < acked, "the learner has not applied the write");
+    // Two more reads 50 and 150 ms after the first: both wait for the floor.
+    let mut later = Vec::new();
+    for step in [50, 100] {
+        l.tick(&mut c, step, false);
+        later.push(l.on(&mut c, |m, t| m.read_index(t)).expect("A leads"));
+        assert!(l.asks.is_empty(), "a read {step} ms into the floor waits");
+    }
+    l.tick(&mut c, floor - 151, false);
+    assert!(l.asks.is_empty(), "nothing leaves before the floor: {:?}", l.asks);
+    // The first answer, from before the write, arrives: it grants the first read only.
+    for Envelope { from, msg, .. } in answers {
+        l.on(&mut c, |m, t| m.step(t, from, msg));
+    }
+    assert!(l.floor(r1).is_some(), "the first answer grants the first read");
+    assert!(
+        later.iter().all(|r| l.floor(*r).is_none()),
+        "a read that arrived after the write was granted by an answer to a batch sent before it: {:?}",
+        l.granted
+    );
+    // At the floor the two later reads leave as one batch, and its answer grants both at or above the write.
+    l.tick(&mut c, 1, false);
+    let more = std::mem::take(&mut l.asks);
+    assert_eq!(more.len(), 1, "two reads within the floor leave as one batch: {more:?}");
+    for Envelope { from, to, msg } in more {
+        c.on(to, |m, t| m.step(t, from, msg));
+    }
+    l.pump(&mut c, true);
+    // A's appends the learner missed above are resent once their calls pass CALL_DEADLINE.
+    for _ in 0..25 {
+        l.tick(&mut c, 100, true);
+    }
+    for r in &later {
+        let f = l.floor(*r);
+        assert!(f.is_some_and(|f| f >= acked), "read {r:?} granted at {f:?}, below the write at {acked:?}");
+    }
+}
+
 /// The outgoing byte budget across peers (`LEARNERS_OUT_MAX`, `OUT_MAX`): a new leader that must catch up eight
 /// learners, none of which answers, keeps at most LEARNERS_OUT_MAX alive to them and OUT_MAX in all, and still
 /// commits through the healthy voter. Before, each learner got its own catch-up calls and their resends, and B0-33's
