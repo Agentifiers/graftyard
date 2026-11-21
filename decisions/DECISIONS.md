@@ -6942,3 +6942,23 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 - `PEAK=1` in the edgebed fails if one answer holds 1 MiB or more at once.
 
 **Flip.** A row where hits refused by the gate (401 or 404) cost R2 reads at a rate that shows up in its bill, or where a hit's `gate` stage, now measured, stays under 50 ms at p99 so the overlap buys nothing.
+
+### Not adopted: a KV-backed log so read grants leave past the output gate, 2026-11-21
+
+**Status.** Closed by the operator from A37's design note and two rows (`decisions/OPEN-QUESTIONS.md`, A37). No code.
+
+**Decision.** The Raft log stays in SQL through `transactionSync`, so a leader's `ReadIndexRes`, like every other message it sends, waits at the output gate for its earlier writes' confirm.
+
+**Why.**
+- **A grant would be safe to send early.** It names `fold.applied()`, at or below a commit that `advance_commit` made only up to `own_durable`, so everything it states is already durable on a quorum, the leader's own copy included [inference, `crates/raft/src/member/leader.rs`, `check_reads` and `advance_commit`].
+- **The platform has no narrow way to send it.** A write that asks for confirmation locks the whole object's output gate until it confirms. SQL always asks: `transactionSync` notifies the write with `allowUnconfirmed` false, and `sql.exec` takes no option. Only the KV `put`, `delete` and alarm calls accept `allowUnconfirmed` [doc, workerd `src/workerd/io/actor-sqlite.c++`, `onWrite`, and `src/workerd/api/actor-state.c++` at `84c16be`]. So the change is a new log format on the KV API, plus an explicit `sync()` await on every path the gate covers today: a follower's AppendEntries reply, votes, every 2xx from `outcome`, the `request` row behind a replay, alarms, snapshots and the shard's cursor writes.
+- **What it would buy is small.** In B0-32 m3fgb1's 2,457 ms leader confirm, the leader kept taking input (longest gap 818 ms) and its `/raft` answers were held p50 731 and 560 ms after the handler returned, against p50 5 to 195 ms outside the confirm [measured, `tests/fanout/leaderwl.py`]. So a grant past the gate saves about 0.6 to 0.7 s of each member round trip, and only while a confirm over 1 s is pending. Those hold figures are on the leader isolate's own clock, which Workers Logs also uses and which stalls under load [measured, m3fhs1 split, `tests/fanout/callclock.py`]. On m3fhs1, answers given while a leader confirm was pending took the same round trip as answers given with none pending, which supports "small".
+- **The gate is not B0-32's main loss.** B0-32 m3fhs1 had no leader confirm over 348 ms and still failed, 364 of 500 within 5 s or `full` [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fhs1"].
+
+**Beat.** The KV-backed log with `sync()` awaits on the gated paths. A 150 ms read hedge to a second member was beaten earlier (A35).
+
+**Evidence.** `tests/am1/results/lm1-rows-m3f.md`, "Row m3fgb1", its A37 note, and "Row m3fhs1" with "A37 from m3fgb1, re-read with Workers Logs"; `tests/fanout/grantgate.py`; `tests/fanout/leaderwl.py`.
+
+**Flip.**
+- A row where confirms over 1 s hold the leader's `/raft` answers for 1 s or more on most member round trips (on the members' clocks: `callclock.py`'s pending-confirm split, since `leaderwl.py`'s hold column uses the leader's stalling clock); or
+- leader confirms over 1 s on two consecutive B0-32 rows.
