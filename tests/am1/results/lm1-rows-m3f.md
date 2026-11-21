@@ -264,7 +264,66 @@ Where B0-32 stands on main `b8e555df`, line by line, and which open question own
 - Site a's `GitShard` validates in the burst's first minute: 1,650, every one carrying `headsum`, and 1,635 carrying `packsum` (the 15 without are detail-only calls). By route and answer: direct 200 × 747, pool 200 × 536, pool 409 × 41, via 200 × 41, direct 503 × 41; 244 had no response logged.
 - So no body changed in transit on this row, and none of its validates answered 422.
 
+### m3fhs1's two biggest losses, split ($0, 2026-11-21)
+
+**Loss 1: member round trips p50 628 to 1,600 ms in burst seconds 1 to 4.** `tests/fanout/callclock.py` reads each call on the members' clocks, each shifted by its quiet-time offset to the leader. A Workers clock can only read behind real time, never ahead [doc, https://developers.cloudflare.com/workers/reference/security-model/], so a leader stamp that reads earlier than the caller's send measures how far the leader's clock was behind.
+
+| Send second | Calls | Round trip p50 / p90 | Member's own confirm pending at send, p50 / p90 | Leader `Entered` behind the send, p50 / p90 | Leader Workers Logs start behind the send, p50 / p90 |
+|---|---|---|---|---|---|
+| 0 | 160 | 92 / 295 | 0 / 19 | 102 / 246 | 96 / 216 |
+| 1 | 150 | 628 / 926 | 0 / 18 | 495 / 730 | 334 / 437 |
+| 2 | 132 | 1,600 / 1,801 | 0 / 20 | 781 / 1,091 | 342 / 524 |
+| 3 | 45 | 1,411 / 1,611 | 0 / 44 | 1,304 / 1,547 | −103 / 370 |
+| 4 | 116 | 748 / 1,060 | 0 / 28 | 2,142 / 2,424 | 410 / 665 |
+| 5 | 142 | 311 / 523 | 0 / 22 | 2,271 / 2,644 | 703 / 817 |
+| 8 | 120 | 44 / 225 | 0 / 25 | 251 / 364 | 237 / 353 |
+
+- **The members do not hold the call** [measured]: their own pending confirm at the send is p50 0 ms in every second.
+- **The leader's clock fell behind the callers'** [measured]: by 0.5 to 2.3 s for the trace stamps and by 0.3 to 0.7 s for its Workers Logs starts. It caught up by T+9 s. Workers Logs stamps come from the isolate's clock too: 429 leader events share the start stamp T+4,058, and hundreds of trace rows share T+2,026, 2,326 and 3,026. So during a stall, the "real start" and "hold" that `leaderwl.py` takes from Workers Logs are not real time. That voids two earlier readings in this file: m3fhs1's hold of p50 23 to 191 ms, and the m3fgb1 correction to A37 below [measured].
+- **The leader's confirms were not the cause** [measured, `Trace::Sync` placed on the callers' clocks]:
+  - In real time the 348 ms confirm lasted at least 1,197 ms. Every other confirm that can be bounded took 3 to 182 ms.
+  - Calls sent in seconds 1 to 4: 106 were answered while a leader confirm was pending and 82 with none pending. Their round trips matched, p50 586 vs 565, 1,490 vs 1,540 and 1,400 vs 1,387 ms.
+- **The bounds** [measured, members' clocks]:
+  - From send until the leader took the call: at most p50 543, 1,466, 1,387 and 740 ms in seconds 1 to 4.
+  - From taking it until the answer arrived: at least p50 46, 9, 2 and 39 ms.
+  - So the bounds alone do not split the round trip.
+- **Most likely, the calls waited inside the leader isolate before it ran them** [inference]. The leader's clock ran 0.5 to 2.3 s behind and it took the calls in batches, which points at its input side, not its output gate.
+- **The leader's input** [measured, `Entered`]: 2,745 inputs from T to T+7 s on its clock, arriving in batches of up to 379 at one clock value. By kind:
+  - 876 `/commit`
+  - 810 learner `/raft`
+  - 319 `/read`
+  - 253 `/outcome_by_request`
+  - 177 `/status`
+  - 176 `/outcome`
+  - 98 voter `/raft`
+  - 36 others
+- **CPU is not known.** Workers Logs CPU totals 2,886 ms from T to T+6 s, but most events log 0 ms, so that is a floor. That the isolate was saturated is an [inference]: no record shows its run queue or real CPU.
+
+**Loss 2: committed twice on 148 of 293 `ok`.**
+- **What makes a second commit** [measured, `server-timing`; the rule is A36's]:
+  - The edge isolate has seen no `Stage` for the group recently, so an Agent push sends its pack inline.
+  - A 256 KiB pack is over `AGENT_INLINE_ENTRY`, so the leader answers `Stage`.
+  - The edge places the pack in R2 and commits again.
+  - All 145 single-commit `ok` pushes staged first, and none of the 148 two-commit pushes did.
+- **It is on the late path, but it is not the largest part.** Of the 136 late `ok` pushes, 88 committed twice and 48 committed once (staged first).
+
+  | Late `ok` | n | First commit (`Stage`) p50 | R2 place p50 | Last commit p50 / p90 | Total p50 |
+  |---|---|---|---|---|---|
+  | Committed twice | 88 | 808 | 530 | 2,937 / 3,154 | 5,881 |
+  | Committed once | 48 | n/a | n/a | 3,033 / 3,216 | 5,595 |
+
+- **The last commit sits in loss 1's stall** [measured]:
+  - 130 of 136 late `ok` pushes waited past `COMMIT_RECEIPT` and asked (last commit p50 2,955 ms).
+  - 131 of 136 had their last commit in flight across T+4.15 to 4.25 s, when the leader's held answers came out.
+- **Counterfactuals** [inference, from the same marks]:
+  - Without the `Stage` round trip (stage first by size), 27 of the 88 two-commit pushes land within 5 s. The line goes from 364 to at most 391.
+  - With the last commit capped at 1.5 s, 124 of 136 land within 5 s. The line goes from 364 to as much as 488.
+
+**Which dominates: loss 1** [inference from the two splits]. It sets the last commit of nearly every late `ok`. The second commit adds about 1.3 s, and only to 88 of them. Neither trace says what the leader isolate spent its time on, so no code fix for loss 1 rests on evidence yet. Stage-first by size (A36's option) is the smallest change on loss 2. It moves the line to at most 391, and on m3fgt1 it bunched arrivals and failed, so it does not fix this row.
+
 ### A37 from m3fgb1, re-read with Workers Logs
+
+*Caveat added with the split above: the "real start" used here is the isolate's own clock, which stalls. Read the figures below as the leader's clock, not real time.*
 
 The same split, run on m3fgb1's leader (`leaderwl.py`, events fetched for 01:18:50Z to 01:19:00Z), corrects A37's first estimate:
 - **The leader's clock was not frozen.** Each event's real start matched the trace's `CallArrived` to within 22 to 144 ms until T+2 s, then ran 0.8 to 2.8 s ahead of it. The callers' `x-graft-sent` stamps ran up to 1.3 s ahead of the platform's clock. So the "3.3 s behind" in A37's note was mostly the callers' clocks, not the leader's.
