@@ -1,0 +1,12 @@
+edge: graft-m1-edge serves f255ace2 at 100% (rev 59b6d0a87), as tests/am1/raw/b034mb-siteday.log deployed
+2026-11-20T20:57:06Z meter (account, run) 114.87 0.0 before b034, expected +$4, stop $170 account, $8 run
+2026-11-20T20:58:36Z b034 ended: 2026-11-20T20:58:29Z b0-34 a shard of the network runs before the cold warm
+site fault off: 200
+kept: git#2#net:1048603
+kept: git#1#net:1048603
+kept: git#0#net:1048603
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-20T20:58:53Z sweep exit 0 (kept: 1048603,)
+2026-11-20T20:58:55Z meter (account, run) 114.89 0.0 after b034 and the sweep
+DONE

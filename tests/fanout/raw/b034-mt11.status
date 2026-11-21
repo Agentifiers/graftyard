@@ -1,0 +1,78 @@
+2026-11-20T21:20:43Z api.cloudflare.com in request paths: 0 files
+edge: graft-m1-edge serves f255ace2 at 100% (rev 59b6d0a87), as tests/am1/raw/b034mb-siteday.log deployed
+2026-11-20T21:20:29.147Z b034 networks: {"mono":{"repo":"m3org/b034-mono-b1","chain":"repo:1048604","who":"admin"},"second":{"repo":"m3-member/b034-second-b1","chain":"repo:3473417","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-b1-1","chain":"repo:3538971","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-b1-2","chain":"repo:3538972","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-b1-3","chain":"repo:3538973","who":"hostile"}]}
+2026-11-20T21:24:41Z seed m3-member/b034-second-b1 exit 0
+2026-11-20T21:24:43Z b0-34 orbclone {"R":"m3-member/b034-second-b1","want":"e1ec09b23c8e0deb21a0b95ac5996422277395d4","status":200,"ttfbMs":579,"cache":"miss","retryAfter":null,"bytes":103,"timing":"resolve;dur=0, auth;dur=0, front;dur=0, gate;dur=0, total;dur=509"}
+2026-11-20T21:28:13Z seed m3r-b034-hostile/b034-hostile-b1-1 exit 0
+2026-11-20T21:31:50Z seed m3r-b034-hostile/b034-hostile-b1-2 exit 0
+2026-11-20T21:35:10Z seed m3r-b034-hostile/b034-hostile-b1-3 exit 0
+2026-11-20T22:48:12Z seed m3org/b034-mono-b1 exit 0
+2026-11-20T22:48:12Z b0-34 drain start
+2026-11-20T22:50:50Z b0-34 drain exit 0 {"at":"2026-11-20T22:50:35.614Z","s":158.3,"kind":"summary","drained":true,"stalled":false,"firstS":64.4,"drainS":93.9,"promotedFrom0":299,"promotedTo":313,"target":316,"unpromoted":20905397,"unpromotedPacks":3,"alarms":[]}
+site fault off: 200
+kept: git#2#net:1048603
+kept: git#1#net:1048603
+git#0#net:1048604 200
+git#0#net:3538973 200
+git#0#net:3538972 200
+git#0#net:3538971 200
+git#0#net:3473417 200
+kept: git#0#net:1048603
+{"torn_down": 5, "codes": {"200": 5}}
+sweep: no shard container running
+2026-11-20T22:51:26Z b0-34 shards torn down before the cold warm (kept: 1048603)
+{"net": "1048604", "running": 0, "other_image": 0}
+2026-11-20T22:51:29Z b0-34 warm start
+2026-11-20T22:53:20Z b0-34 warm exit 0 {"at":"2026-11-20T22:53:05.524Z","s":110.7,"kind":"summary","mainS":3.2,"catchupS":{"0":82.8,"1":65.9,"2":110.7},"limitMin":45}
+site 0: 62 spools, 6.04 GB in 40.2 s = 150.0 MB/s in total; per stream p50 44.6 MB/s, bytes-weighted 43.5 MB/s; streams busy mean 3.45, most 4; peak 5 s bin 181.5 MB/s; from site {0: 60, 1: 2}
+  MB/s by bin: 121 182 155 161 160 117 155 143 13
+site 1: 62 spools, 6.04 GB in 34.0 s = 177.4 MB/s in total; per stream p50 54.4 MB/s, bytes-weighted 53.2 MB/s; streams busy mean 3.33, most 4; peak 5 s bin 213.7 MB/s; from site {1: 62}
+  MB/s by bin: 100 189 166 176 214 202 156 4
+site 2: 62 spools, 6.04 GB in 66.4 s = 91.0 MB/s in total; per stream p50 29.3 MB/s, bytes-weighted 28.2 MB/s; streams busy mean 3.22, most 4; peak 5 s bin 109.5 MB/s; from site {0: 1, 2: 61}
+  MB/s by bin: 97 101 92 88 58 105 102 100 109 109 104 106 28 9
+site 2 pool:7: 62 spools, 6.04 GB in 69.1 s = 87.3 MB/s in total; per stream p50 27.6 MB/s, bytes-weighted 26.4 MB/s; streams busy mean 3.30, most 4; peak 5 s bin 108.9 MB/s; from site {0: 1, 2: 61}
+  MB/s by bin: 21 86 95 93 85 62 100 103 102 107 109 103 105 28 9
+site 2 pool:7 beside site 2, 14 bins both busy: site 2 86.2 MB/s + site 2 pool:7 84.8 MB/s = 171.0 MB/s; site 2 alone nan MB/s
+b0-34 pool probe torn down {"status":200,"body":"{\"torn_down\":true}"}
+{"name": "git#2#net:1048604", "started": "2026-11-20T22:51:32.965Z", "image": "sha256:44580b11ab1ba44fa6f67737ecfee013ceab6c67bc28c69b0a0eb65fbe574208"}
+{"name": "git#1#net:1048604", "started": "2026-11-20T22:51:31.673Z", "image": "sha256:44580b11ab1ba44fa6f67737ecfee013ceab6c67bc28c69b0a0eb65fbe574208"}
+{"name": "git#0#net:1048604", "started": "2026-11-20T22:51:31.423Z", "image": "sha256:44580b11ab1ba44fa6f67737ecfee013ceab6c67bc28c69b0a0eb65fbe574208"}
+{"net": "1048604", "running": 3, "other_image": 0}
+2026-11-20T22:53:27Z b0-34 warm images exit 0
+b0-34 kept packs after the warm: {"0": {"kept": 59, "count": 62}, "1": {"kept": 59, "count": 62}, "2": {"kept": 59, "count": 62}}
+b0-34 compose after the warm site a {"n": 3, "bytes": 260792709, "files": [["base-75afd029e607623df50", 2473024, "2026-11-20T22:53:20.477Z"], ["base-75afd029e607623df50", 258319573, "2026-11-20T22:53:20.195Z"], ["head", 112, "2026-11-20T22:53:20.662Z"]]}
+b0-34 compose after the warm site b {"n": 3, "bytes": 260792709, "files": [["base-75afd029e607623df50", 2473024, "2026-11-20T22:53:28.040Z"], ["base-75afd029e607623df50", 258319573, "2026-11-20T22:53:27.392Z"], ["head", 112, "2026-11-20T22:53:28.607Z"]]}
+b0-34 compose after the warm site c {"n": 0, "bytes": 0, "files": []}
+2026-11-20T22:53:33.762Z repo:1048604 leader 0: k 1 at 318
+2026-11-20T22:53:48Z b0-34 b034-mono-b1 repo:1048604 start
+{"step":"load34 stage","prefix":"tip/79e30470ebc66da5","n":600,"staged":0,"bytes":0,"maxBytes":0}
+{"step":"load34 smoke","repo":"m3org/b034-mono-b1","code":"200","status":200,"cache":"miss","ms":2885,"bytes":103,"pack":true,"head":"0011shallow-info.0034shallow 75afd029e607623df50495ec6acefe82138d69350001000dpac","samples":[["read:cloneTtfb@j9",2885,"200"],["read:cloneTtfb:edge@j9",2690,"200"],["read:cloneTtfb:miss@j9",2885,"composed: r2"],["read:cloneTtfb:miss:edge@j9",2690,"composed: r2"],["read:cloneTtfb:front@j9",918,"200"],["read:cloneTtfb:miss:front@j9",918,"composed: r2"],["read:cloneTtfb:chain_open@j9",324,"200"],["read:cloneTtfb:miss:chain_open@j9",324,"composed: r2"]]}
+2026-11-20T23:24:59Z b0-34 done exit 0
+{"clone": "measured", "phase": "j9", "hit": {"n": 217, "p50": 696, "p99": 1768, "max": 2066, "over5s": 0}, "miss": {"n": 66, "p50": 1664, "p99": 4286, "max": 4286, "over5s": 0}, "hitEdge": {"n": 217, "p50": 659, "p99": 1702, "max": 1953, "over5s": 0}, "missEdge": {"n": 66, "p50": 1632, "p99": 4131, "max": 4131, "over5s": 0}, "hitFront": {"n": 217, "p50": 0, "p99": 1078, "max": 1208, "over5s": 0}, "missFront": {"n": 66, "p50": 0, "p99": 328, "max": 328, "over5s": 0}, "hitChainOpen": {"n": 217, "p50": 383, "p99": 977, "max": 1080, "over5s": 0}, "missChainOpen": {"n": 66, "p50": 489, "p99": 1091, "max": 1091, "over5s": 0}}
+{"clone": "measured", "phase": "kill", "hit": {"n": 66, "p50": 1106, "p99": 2361, "max": 2361, "over5s": 0}, "miss": {"n": 44, "p50": 3588, "p99": 37623, "max": 37623, "over5s": 13}, "hitEdge": {"n": 66, "p50": 1046, "p99": 2309, "max": 2309, "over5s": 0}, "missEdge": {"n": 44, "p50": 3512, "p99": 37612, "max": 37612, "over5s": 13}, "hitFront": {"n": 66, "p50": 0, "p99": 553, "max": 553, "over5s": 0}, "missFront": {"n": 44, "p50": 0, "p99": 556, "max": 556, "over5s": 0}, "hitChainOpen": {"n": 66, "p50": 530, "p99": 784, "max": 784, "over5s": 0}, "missChainOpen": {"n": 37, "p50": 548, "p99": 720, "max": 720, "over5s": 0}}
+{"clone": "measured", "phase": "second", "hit": {"n": 149, "p50": 447, "p99": 2224, "max": 2437, "over5s": 0}, "miss": {"n": 44, "p50": 1727, "p99": 7810, "max": 7810, "over5s": 5}, "hitEdge": {"n": 149, "p50": 424, "p99": 2175, "max": 2421, "over5s": 0}, "missEdge": {"n": 44, "p50": 1722, "p99": 7704, "max": 7704, "over5s": 5}, "hitFront": {"n": 149, "p50": 0, "p99": 345, "max": 348, "over5s": 0}, "missFront": {"n": 44, "p50": 0, "p99": 696, "max": 696, "over5s": 0}, "hitChainOpen": {"n": 149, "p50": 255, "p99": 1425, "max": 1690, "over5s": 0}, "missChainOpen": {"n": 42, "p50": 368, "p99": 1944, "max": 1944, "over5s": 0}}
+{"clone": "measured", "phase": "hostile", "hit": {"n": 253, "p50": 663, "p99": 2121, "max": 2440, "over5s": 0}, "miss": {"n": 54, "p50": 995, "p99": 2033, "max": 2033, "over5s": 0}, "hitEdge": {"n": 253, "p50": 633, "p99": 2078, "max": 2416, "over5s": 0}, "missEdge": {"n": 54, "p50": 969, "p99": 2020, "max": 2020, "over5s": 0}, "hitFront": {"n": 253, "p50": 0, "p99": 329, "max": 360, "over5s": 0}, "missFront": {"n": 54, "p50": 0, "p99": 304, "max": 304, "over5s": 0}, "hitChainOpen": {"n": 253, "p50": 420, "p99": 728, "max": 801, "over5s": 0}, "missChainOpen": {"n": 58, "p50": 413, "p99": 825, "max": 825, "over5s": 0}}
+{"clone": "measured", "line": "hits p99 <= 1 s in steady state", "p99": 1768, "n": 217, "verdict": "fail"}
+{"clone": "measured", "line": "every clone <= 5 s through kill and cold (>= 90% of clones)", "share": {"kill": 0.8818, "second": 0.9741}, "verdict": "fail", "asWritten": "fail"}
+{"clone": "outagesRemoved", "phase": "j9", "hit": {"n": 211, "p50": 668, "p99": 1605, "max": 1746, "over5s": 0}, "miss": {"n": 66, "p50": 1664, "p99": 4286, "max": 4286, "over5s": 0}, "hitEdge": {"n": 211, "p50": 631, "p99": 1562, "max": 1714, "over5s": 0}, "missEdge": {"n": 66, "p50": 1632, "p99": 4131, "max": 4131, "over5s": 0}, "hitFront": {"n": 211, "p50": 0, "p99": 421, "max": 499, "over5s": 0}, "missFront": {"n": 66, "p50": 0, "p99": 328, "max": 328, "over5s": 0}, "hitChainOpen": {"n": 217, "p50": 383, "p99": 977, "max": 1080, "over5s": 0}, "missChainOpen": {"n": 66, "p50": 489, "p99": 1091, "max": 1091, "over5s": 0}}
+{"clone": "outagesRemoved", "phase": "kill", "hit": {"n": 66, "p50": 1106, "p99": 2361, "max": 2361, "over5s": 0}, "miss": {"n": 44, "p50": 3588, "p99": 37623, "max": 37623, "over5s": 13}, "hitEdge": {"n": 66, "p50": 1046, "p99": 2309, "max": 2309, "over5s": 0}, "missEdge": {"n": 44, "p50": 3512, "p99": 37612, "max": 37612, "over5s": 13}, "hitFront": {"n": 66, "p50": 0, "p99": 553, "max": 553, "over5s": 0}, "missFront": {"n": 44, "p50": 0, "p99": 556, "max": 556, "over5s": 0}, "hitChainOpen": {"n": 66, "p50": 530, "p99": 784, "max": 784, "over5s": 0}, "missChainOpen": {"n": 37, "p50": 548, "p99": 720, "max": 720, "over5s": 0}}
+{"clone": "outagesRemoved", "phase": "second", "hit": {"n": 149, "p50": 447, "p99": 2224, "max": 2437, "over5s": 0}, "miss": {"n": 44, "p50": 1727, "p99": 7810, "max": 7810, "over5s": 5}, "hitEdge": {"n": 149, "p50": 424, "p99": 2175, "max": 2421, "over5s": 0}, "missEdge": {"n": 44, "p50": 1722, "p99": 7704, "max": 7704, "over5s": 5}, "hitFront": {"n": 149, "p50": 0, "p99": 345, "max": 348, "over5s": 0}, "missFront": {"n": 44, "p50": 0, "p99": 696, "max": 696, "over5s": 0}, "hitChainOpen": {"n": 149, "p50": 255, "p99": 1425, "max": 1690, "over5s": 0}, "missChainOpen": {"n": 42, "p50": 368, "p99": 1944, "max": 1944, "over5s": 0}}
+{"clone": "outagesRemoved", "phase": "hostile", "hit": {"n": 253, "p50": 663, "p99": 2121, "max": 2440, "over5s": 0}, "miss": {"n": 54, "p50": 995, "p99": 2033, "max": 2033, "over5s": 0}, "hitEdge": {"n": 253, "p50": 633, "p99": 2078, "max": 2416, "over5s": 0}, "missEdge": {"n": 54, "p50": 969, "p99": 2020, "max": 2020, "over5s": 0}, "hitFront": {"n": 253, "p50": 0, "p99": 329, "max": 360, "over5s": 0}, "missFront": {"n": 54, "p50": 0, "p99": 304, "max": 304, "over5s": 0}, "hitChainOpen": {"n": 253, "p50": 420, "p99": 728, "max": 801, "over5s": 0}, "missChainOpen": {"n": 58, "p50": 413, "p99": 825, "max": 825, "over5s": 0}}
+{"clone": "outagesRemoved", "line": "hits p99 <= 1 s in steady state", "p99": 1605, "n": 211, "verdict": "fail"}
+{"clone": "outagesRemoved", "line": "every clone <= 5 s through kill and cold (>= 90% of clones)", "share": {"kill": 0.8818, "second": 0.9741}, "verdict": "fail", "asWritten": "fail"}
+2026-11-20T23:25:18Z b0-34 load34 cpu: 
+2026-11-20T23:30:00Z b0-34 misses: {"probes": 208, "lines": 245, "joined": 206, "probes_without_line": 2, "lines_without_probe": 39} {"answers": {"tail": 171, "status 503": 17, "no answer": 4, "stock: no chain": 1, "composed": 13}} 
+2026-11-20T23:36:02Z b0-34 503s: {"upload_pack_503": 108, "at once (cold)": 63, "at the deadline": 45, "deadline split": {"deadline: catch-up wait (cold)": 25, "deadline: chain wait (cold)": 19, "deadline: stock slot queue (capacity)": 9}, "deadline with no miss line": 0}
+b0-34 compose at the row's end site a {"n": 7, "bytes": 261747006, "files": [["base-8c6f6a76465a4c00177", 2477700, "2026-11-20T23:13:53.005Z"], ["base-8c6f6a76465a4c00177", 258702644, "2026-11-20T23:13:52.727Z"], ["head", 197, "2026-11-20T23:14:15.012Z"], ["part-8c6f6a76465a4c00177", 2976, "2026-11-20T23:14:08.029Z"], ["part-8c6f6a76465a4c00177", 531757, "2026-11-20T23:14:07.883Z"], ["part-9d451912dbef72b4b4d", 1212, "2026-11-20T23:14:14.719Z"], ["part-9d451912dbef72b4b4d", 30520, "2026-11-20T23:14:14.558Z"]]}
+b0-34 compose at the row's end site b {"n": 7, "bytes": 261747006, "files": [["base-8c6f6a76465a4c00177", 2477700, "2026-11-20T23:14:05.680Z"], ["base-8c6f6a76465a4c00177", 258702644, "2026-11-20T23:14:05.170Z"], ["head", 197, "2026-11-20T23:14:16.700Z"], ["part-8c6f6a76465a4c00177", 2976, "2026-11-20T23:14:09.221Z"], ["part-8c6f6a76465a4c00177", 531757, "2026-11-20T23:14:08.772Z"], ["part-9d451912dbef72b4b4d", 1212, "2026-11-20T23:14:16.169Z"], ["part-9d451912dbef72b4b4d", 30520, "2026-11-20T23:14:15.640Z"]]}
+b0-34 compose at the row's end site c {"n": 0, "bytes": 0, "files": []}
+file://.worktrees/mt8/tests/am1/hosted/lib.mjs:126
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:1048604
+    at leaderOf (file://.worktrees/mt8/tests/am1/hosted/lib.mjs:126:9)
+    at async file://.worktrees/mt8/tests/fanout/k.mjs:14:16
+
+Node.js v26.12.0
+DONE
