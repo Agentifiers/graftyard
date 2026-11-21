@@ -1,0 +1,6 @@
+miss lines 292 in the window, over 5 networks
+{"phase": "j9", "misses": 45, "answers": {"tail": 43, "composed": 2}, "chain_wait_ms": {"p50": 0, "p99": 616, "max": 616}, "catch_up_p99_ms": 371, "composed_container_to_headers_p99_ms": 1083}
+{"phase": "kill", "misses": 60, "answers": {"tail": 30, "status 503": 20, "composed": 8, "stock: no chain": 2}, "chain_wait_ms": {"p50": 0, "p99": 13798, "max": 13798}, "catch_up_p99_ms": 982, "composed_container_to_headers_p99_ms": 9015}
+{"phase": "second", "misses": 82, "answers": {"status 503": 23, "stock: no chain": 1, "stock: not composable": 8, "tail": 42, "composed": 8}, "chain_wait_ms": {"p50": 0, "p99": 1, "max": 1}, "catch_up_p99_ms": 26319, "composed_container_to_headers_p99_ms": 2549}
+{"phase": "hostile", "misses": 105, "answers": {"tail": 45, "status 503": 37, "stock: not composable": 21, "composed": 2}, "chain_wait_ms": {"p50": 0, "p99": 0, "max": 0}, "catch_up_p99_ms": 31652, "composed_container_to_headers_p99_ms": 870}
+{"upload_pack_503": 150, "at once (cold)": 89, "at the deadline": 61, "deadline split": {"deadline: chain wait (cold)": 31, "deadline: catch-up wait (cold)": 27, "deadline: stock slot queue (capacity)": 22}, "deadline with no miss line": 0}
