@@ -1,0 +1,40 @@
+site 0: 343 confirms, wall p50 50 p99 1798 max 2729 ms
+  at 1795219924977 wall 533 ms, 136 stmts 9476 B, wakes 5 requests 41, lag 0 -> 0 ms: storage
+  at 1795219925981 wall 537 ms, 208 stmts 28684 B, wakes 6 requests 107, lag 0 -> 0 ms: storage
+  at 1795219927198 wall 992 ms, 236 stmts 24363 B, wakes 10 requests 159, lag 0 -> 0 ms: storage
+  at 1795219930667 wall 508 ms, 212 stmts 40699 B, wakes 5 requests 46, lag 0 -> 0 ms: storage
+  at 1795219931011 wall 337 ms, 209 stmts 147763 B, wakes 0 requests 282, lag 0 -> 330 ms: storage
+  at 1795219933980 wall 1111 ms, 234 stmts 27622 B, wakes 0 requests 423, lag 1092 -> 1233 ms: isolate late
+  at 1795219936761 wall 2015 ms, 1 stmts 93062 B, wakes 20 requests 0, lag 1997 -> 0 ms: isolate late
+  at 1795219940016 wall 821 ms, 1 stmts 4232 B, wakes 9 requests 2, lag 361 -> 0 ms: storage
+  at 1795219941370 wall 1354 ms, 215 stmts 12292 B, wakes 13 requests 55, lag 0 -> 0 ms: storage
+  at 1795219942142 wall 346 ms, 200 stmts 13835 B, wakes 3 requests 43, lag 0 -> 0 ms: storage
+  at 1795219943055 wall 744 ms, 124 stmts 6888 B, wakes 7 requests 34, lag 0 -> 0 ms: storage
+  at 1795219945072 wall 725 ms, 278 stmts 19307 B, wakes 1 requests 268, lag 313 -> 754 ms: storage
+  at 1795219948997 wall 678 ms, 224 stmts 16847 B, wakes 0 requests 364, lag 466 -> 578 ms: isolate late
+  at 1795219949902 wall 379 ms, 231 stmts 16966 B, wakes 0 requests 120, lag 1103 -> 1103 ms: isolate late
+  at 1795219953506 wall 1472 ms, 252 stmts 25439 B, wakes 15 requests 46, lag 0 -> 0 ms: storage
+  at 1795219954742 wall 900 ms, 286 stmts 14784 B, wakes 8 requests 28, lag 0 -> 0 ms: storage
+  at 1795219956500 wall 531 ms, 206 stmts 10564 B, wakes 0 requests 150, lag 564 -> 652 ms: isolate late
+  at 1795219960770 wall 453 ms, 192 stmts 11482 B, wakes 4 requests 44, lag 336 -> 0 ms: isolate late
+  at 1795219960770 wall 318 ms, 1 stmts 4373 B, wakes 3 requests 5, lag 137 -> 0 ms: storage
+  at 1795220008152 wall 1277 ms, 77 stmts 30668 B, wakes 12 requests 25, lag 0 -> 0 ms: storage
+  at 1795220010168 wall 457 ms, 212 stmts 108561 B, wakes 5 requests 37, lag 0 -> 0 ms: storage
+  at 1795220014712 wall 2729 ms, 232 stmts 125419 B, wakes 5 requests 817, lag 1252 -> 96 ms: storage
+  at 1795220016953 wall 1798 ms, 1 stmts 41692 B, wakes 17 requests 0, lag 537 -> 0 ms: storage
+  at 1795220017623 wall 570 ms, 282 stmts 82023 B, wakes 5 requests 162, lag 0 -> 0 ms: storage
+  at 1795220021015 wall 368 ms, 230 stmts 204634 B, wakes 0 requests 72, lag 345 -> 345 ms: isolate late
+  at 1795220023080 wall 1305 ms, 265 stmts 29915 B, wakes 12 requests 94, lag 56 -> 0 ms: storage
+  at 1795220024380 wall 1100 ms, 275 stmts 17322 B, wakes 11 requests 201, lag 0 -> 0 ms: storage
+  at 1795220027813 wall 990 ms, 251 stmts 215114 B, wakes 1 requests 191, lag 347 -> 908 ms: storage
+  at 1795220035429 wall 592 ms, 1 stmts 3421 B, wakes 6 requests 11, lag 0 -> 0 ms: storage
+  at 1795220035429 wall 592 ms, 199 stmts 12477 B, wakes 6 requests 99, lag 0 -> 0 ms: storage
+  at 1795220036788 wall 487 ms, 213 stmts 12472 B, wakes 5 requests 31, lag 0 -> 0 ms: storage
+  at 1795220037598 wall 423 ms, 1 stmts 4024 B, wakes 0 requests 88, lag 74 -> 497 ms: storage
+  at 1795220040638 wall 607 ms, 264 stmts 29644 B, wakes 0 requests 299, lag 621 -> 621 ms: isolate late
+  at 1795220041694 wall 1056 ms, 195 stmts 10504 B, wakes 0 requests 208, lag 621 -> 1572 ms: isolate late
+  at 1795220045503 wall 1567 ms, 1 stmts 3809 B, wakes 15 requests 0, lag 0 -> 0 ms: storage
+  at 1795220046214 wall 304 ms, 272 stmts 13842 B, wakes 0 requests 216, lag 0 -> 204 ms: storage
+  at 1795220049135 wall 2340 ms, 267 stmts 14291 B, wakes 22 requests 319, lag 0 -> 0 ms: storage
+site 1: 269 confirms, wall p50 12 p99 29 max 44 ms
+site 2: 303 confirms, wall p50 12 p99 30 max 58 ms
