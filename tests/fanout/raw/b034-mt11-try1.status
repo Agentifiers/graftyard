@@ -1,0 +1,24 @@
+2026-11-20T20:57:06Z api.cloudflare.com in request paths: 0 files
+edge: graft-m1-edge serves f255ace2 at 100% (rev 59b6d0a87), as tests/am1/raw/b034mb-siteday.log deployed
+2026-11-20T20:56:51.769Z b034 networks: {"mono":{"repo":"m3org/b034-mono-a1","chain":"repo:1048603","who":"admin"},"second":{"repo":"m3-member/b034-second-a1","chain":"repo:3473416","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-a1-1","chain":"repo:3538968","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-a1-2","chain":"repo:3538969","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-a1-3","chain":"repo:3538970","who":"hostile"}]}
+2026-11-20T20:57:07Z seed m3-member/b034-second-a1 exit 0
+2026-11-20T20:57:56Z b0-34 orbclone {"R":"m3-member/b034-second-a1","status":503,"ttfbMs":21172,"cache":null,"retryAfter":"5","bytes":90,"timing":null}
+2026-11-20T20:57:56Z seed m3r-b034-hostile/b034-hostile-a1-1 exit 0
+2026-11-20T20:57:56Z seed m3r-b034-hostile/b034-hostile-a1-2 exit 0
+2026-11-20T20:57:56Z seed m3r-b034-hostile/b034-hostile-a1-3 exit 0
+2026-11-20T20:57:56Z seed m3org/b034-mono-a1 exit 0
+2026-11-20T20:57:57Z b0-34 drain start
+2026-11-20T20:58:08Z b0-34 drain exit 0 {"at":"2026-11-20T20:57:53.060Z","s":11.1,"kind":"summary","drained":true,"stalled":false,"firstS":null,"drainS":null,"promotedFrom0":1832,"promotedTo":1832,"target":2737,"unpromoted":3465226,"unpromotedPacks":98,"alarms":[]}
+site fault off: 200
+kept: git#2#net:1048603
+kept: git#1#net:1048603
+kept: git#0#net:1048603
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-20T20:58:27Z b0-34 shards torn down before the cold warm (kept: 1048603)
+{"name": "git#2#net:1048603", "started": "2026-11-20T18:21:30.592Z", "image": "sha256:44580b11ab1ba44fa6f67737ecfee013ceab6c67bc28c69b0a0eb65fbe574208"}
+{"name": "git#1#net:1048603", "started": "2026-11-20T18:21:30.536Z", "image": "sha256:44580b11ab1ba44fa6f67737ecfee013ceab6c67bc28c69b0a0eb65fbe574208"}
+{"name": "git#0#net:1048603", "started": "2026-11-20T18:34:42.059Z", "image": "sha256:44580b11ab1ba44fa6f67737ecfee013ceab6c67bc28c69b0a0eb65fbe574208"}
+{"net": "1048603", "running": 3, "other_image": 0}
+2026-11-20T20:58:29Z b0-34 a shard of the network runs before the cold warm
+DONE
