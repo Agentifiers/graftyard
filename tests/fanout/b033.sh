@@ -3,6 +3,7 @@
 # eight learners, k 4, 300 s, 5,000 agents), beside memguard.mjs (every voter's wasmMemMb and memSplit every 2 s,
 # SIGTERMs a1.mjs past 120 MiB, and keeps BF-14's arrival rows in memory), terms.mjs (leader timeline) and tsave.mjs (each voter's trace each minute).
 #   bash tests/fanout/b033.sh <tag>   -> tests/fanout/raw/{rows,memguard,terms,tsave}-<tag>.*
+# LEARNERS= (set and empty) places no learners; unset keeps the eight. A1_EXTRA=--lean is the leader-sync A/B's arm B.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source tests/m3/rows/env.sh
@@ -12,7 +13,7 @@ node tests/fanout/memguard.mjs "$repo" 1200 2 120 mem > $R/memguard-$TAG.jsonl 2
 node tests/fanout/terms.mjs "$repo" 1200 > $R/terms-$TAG.jsonl 2>&1 &
 ( while ! rid=$(awk -v n="$repo" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt") || [ -z "$rid" ]; do sleep 2; done
   LEARNERS=1 ISOLATES=1 EVERY=10000 DONE_FILE=$R/.tsave-$TAG.done node tests/nr3/tsave.mjs "repo:$rid" > $R/tsave-$TAG.jsonl 2>&1 ) &
-T0_FILE=${T0_FILE:-tests/fanout/raw/mem7-t0.t0} ROWS=b0-33 K=4 TEARDOWN=1 NO_LF13=1 STOP_USD=${STOP_USD:-137} LEARNERS=${LEARNERS:-enam:4000,weur:2000,apac:2000} \
+T0_FILE=${T0_FILE:-tests/fanout/raw/mem7-t0.t0} ROWS=b0-33 K=4 TEARDOWN=1 NO_LF13=1 STOP_USD=${STOP_USD:-137} LEARNERS=${LEARNERS-enam:4000,weur:2000,apac:2000} \
   bash tests/fanout/rows.sh "$TAG" &
 until grep -q ALLDONE $R/rows-$TAG.status 2>/dev/null; do sleep 5; done
 touch $R/.tsave-$TAG.done

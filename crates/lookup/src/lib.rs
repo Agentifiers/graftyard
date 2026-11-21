@@ -1838,6 +1838,32 @@ pub struct Hooks<'a> {
     pub first: Option<&'a [u8]>,
     pub trace: Option<&'a RefCell<Vec<Value>>>,
     pub lookup: Option<&'a [u8]>,
+    /// Test installs, the leader-sync A/B's arm B (`tests/am1/results/sync-ab.md`): each `/commit` send asks the
+    /// leader to hold it up to LEAN_HOLD_MS for its outcome (`held_body`), so a commit slower than COMMIT_HOLD needs no
+    /// `/outcome` call, and no `/outcome_by_request` ask goes out while a send is open (`send_only`). The client's
+    /// answer is the same outcome or the same `admitted` ticket; only the number of calls to the leader changes.
+    #[cfg(any(test, feature = "test-faults"))]
+    pub lean: bool,
+}
+
+/// How long a lean send asks its leader to hold a `/commit` for its outcome (`Hooks::lean`) [guess]: under
+/// RECEIPT_OPEN by both legs and a slow turn, so the held answer comes back before the send's own deadline.
+#[cfg(any(test, feature = "test-faults"))]
+pub const LEAN_HOLD_MS: u64 = 6_000;
+
+/// A `/commit` body (`{"rid", "cmd", ..}`) with `"hold_ms": LEAN_HOLD_MS` first, for a lean send (`Hooks::lean`). The
+/// field is spliced after the opening brace, so a push's inline pack is not parsed again. A body that is not a JSON
+/// object goes as it came.
+#[cfg(any(test, feature = "test-faults"))]
+fn held_body(body: &[u8]) -> Vec<u8> {
+    match body.strip_prefix(b"{") {
+        Some(rest) => {
+            let field = format!("{{\"hold_ms\":{LEAN_HOLD_MS}");
+            let comma = if rest.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'}') { "" } else { "," };
+            [field.as_bytes(), comma.as_bytes(), rest].concat()
+        }
+        None => body.to_vec(),
+    }
 }
 
 thread_local! {
@@ -1926,6 +1952,17 @@ where
     }
 }
 
+/// `receipt` with no ask (`Hooks::lean`): the send's 200 is the reply, an error status is reported, and a send with
+/// no answer by RECEIPT_OPEN is sent again, reported only when the member is not `busy`, as `receipt` ends a send.
+#[cfg(any(test, feature = "test-faults"))]
+async fn send_only(send: impl Future<Output = Option<(u16, Value)>>, busy: impl Fn() -> bool) -> Receipt {
+    match send.await {
+        Some((200, v)) => Receipt::Reply(v),
+        Some(_) => Receipt::Missed { report: true },
+        None => Receipt::Missed { report: !busy() },
+    }
+}
+
 /// A command's commit as the edge runs it (`design/DESIGN.md`, "Commit and read paths"): the leader is found with
 /// `/outcome_by_request`, which only a leader answers and which returns the request's outcome if a re-send finds it
 /// already decided; the command (`body`, `{"rid", "cmd"}` under one request id) then goes to that one member. A
@@ -1944,6 +1981,9 @@ pub async fn commit_hedged(
     for_ms: u64,
     hooks: Hooks<'_>,
 ) -> std::result::Result<Value, std::result::Result<Value, String>> {
+    #[cfg(any(test, feature = "test-faults"))]
+    let Hooks { first, trace, lookup, lean } = hooks;
+    #[cfg(not(any(test, feature = "test-faults")))]
     let Hooks { first, trace, lookup } = hooks;
     let lookup = lookup.unwrap_or(body);
     let start = now_ms();
@@ -1999,7 +2039,15 @@ pub async fn commit_hedged(
         target = Some(t.clone());
         prev = Some(t.clone());
         note(json!({ "send": t.site.0, "name": t.do_name, "why": why }));
+        #[cfg(not(any(test, feature = "test-faults")))]
         let send = post_by(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), RECEIPT_OPEN, SentBy::Send);
+        #[cfg(any(test, feature = "test-faults"))]
+        let sent: std::borrow::Cow<[u8]> = match first.take().unwrap_or(body) {
+            s if lean => held_body(s).into(),
+            s => s.into(),
+        };
+        #[cfg(any(test, feature = "test-faults"))]
+        let send = post_by(b, t.site, &t.do_name, "/commit", &sent, RECEIPT_OPEN, SentBy::Send);
         let ask = || {
             let (t, note) = (&t, &note);
             async move {
@@ -2022,6 +2070,13 @@ pub async fn commit_hedged(
                 r
             }
         };
+        #[cfg(any(test, feature = "test-faults"))]
+        let r = if lean {
+            send_only(send, || busy(chain, t.site, term, now_ms())).await
+        } else {
+            receipt(send, ask, || busy(chain, t.site, term, now_ms()), Delay::from).await
+        };
+        #[cfg(not(any(test, feature = "test-faults")))]
         let r = receipt(send, ask, || busy(chain, t.site, term, now_ms()), Delay::from).await;
         let v = match r {
             Receipt::Reply(v) => v,
@@ -2826,6 +2881,48 @@ mod tests {
         // An error status is reported however busy the member was: a sick leader's 5xx is still the gray case.
         let (r, _, _) = run_receipt(Some((2_500, Some((503, Value::Null)))), vec![unknown; 8], 300, |_| true);
         assert_eq!(r, Receipt::Missed { report: true });
+    }
+
+    /// The leader-sync A/B's arm B (`Hooks::lean`): a lean send carries `hold_ms` and makes no `/outcome_by_request`
+    /// ask. Its receipt is the send's own answer: a late 200 is the reply as `receipt` takes it, but with no ask, and a
+    /// send with no answer is sent again, reported only when the member is not busy. With the flag off (`Hooks`'
+    /// default) the asks are `receipt`'s, as on every product edge.
+    #[test]
+    fn a_lean_send_holds_its_commit_and_asks_nothing() {
+        use futures_util::FutureExt;
+        assert!(!Hooks::default().lean, "off unless a test edge's request asks");
+        // The body keeps every field byte for byte, `hold_ms` first, and still parses.
+        let body = br#"{"rid":"r1","cmd":{"push":"QUJD"},"admit":{"inline":3}}"#;
+        let held = held_body(body);
+        assert_eq!(
+            held,
+            format!("{{\"hold_ms\":{LEAN_HOLD_MS},{}", &std::str::from_utf8(body).unwrap()[1..]).into_bytes()
+        );
+        let v: Value = serde_json::from_slice(&held).unwrap();
+        assert_eq!(v["hold_ms"], json!(6_000));
+        assert_eq!(
+            (&v["rid"], &v["cmd"], &v["admit"]),
+            (&json!("r1"), &json!({ "push": "QUJD" }), &json!({ "inline": 3 }))
+        );
+        assert_eq!(serde_json::from_slice::<Value>(&held_body(b"{}")).unwrap(), json!({ "hold_ms": LEAN_HOLD_MS }));
+        assert_eq!(held_body(b"[1]"), b"[1]", "not an object: as it came");
+        assert!(
+            LEAN_HOLD_MS < RECEIPT_OPEN.as_millis() as u64,
+            "the held answer comes back before the send's deadline"
+        );
+        // The receipt: the send's 200, held past COMMIT_RECEIPT, is the reply, done or admitted, as it came.
+        let ok = json!({ "done": { "ok": 1 }, "meta": { "term": 2 } });
+        let lean = |r: Option<(u16, Value)>, busy: bool| send_only(async { r }, || busy).now_or_never().unwrap();
+        assert_eq!(lean(Some((200, ok.clone())), false), Receipt::Reply(ok.clone()));
+        let ticket = json!({ "admitted": { "seq": 4 }, "meta": { "term": 2 } });
+        assert_eq!(lean(Some((200, ticket.clone())), false), Receipt::Reply(ticket));
+        assert_eq!(lean(Some((503, Value::Null)), true), Receipt::Missed { report: true }, "an error status");
+        assert_eq!(lean(None, true), Receipt::Missed { report: false }, "no answer while busy: sent again");
+        assert_eq!(lean(None, false), Receipt::Missed { report: true }, "no answer, not busy: reported");
+        // The same late 200 under `receipt` (flag off) is asked about every COMMIT_RECEIPT while it is open.
+        let unknown = Some((200, json!({ "unknown": true, "meta": { "term": 2 } })));
+        let (r, asked, _) = run_receipt(Some((5_000, Some((200, ok.clone())))), vec![unknown; 8], 300, |_| true);
+        assert_eq!((r, asked), (Receipt::Reply(ok), 2), "flag off: today's asks");
     }
 
     /// A member that never answered this isolate a 200 in this term within COMMIT_RECEIPT is gone as far as the edge

@@ -439,6 +439,17 @@ struct CommitReq<F: Family> {
     #[cfg(feature = "test-faults")]
     #[serde(default)]
     no_marker: bool,
+    /// The leader-sync A/B's arm B (`graftyard_lookup::Hooks::lean`): `/commit` holds this command this long for its
+    /// outcome, instead of COMMIT_HOLD, and past it answers its ticket as before (`commit_hold`).
+    #[cfg(any(test, feature = "test-faults"))]
+    hold_ms: Option<u64>,
+}
+
+/// How long a test install's `/commit` or `/commit_many` holds its commands for their outcome: the body's `hold_ms`,
+/// else COMMIT_HOLD, as a product build always does.
+#[cfg(any(test, feature = "test-faults"))]
+fn commit_hold(hold_ms: Option<u64>) -> Duration {
+    hold_ms.map_or(raft::COMMIT_HOLD, Duration::from_millis)
 }
 
 /// `POST /record` (test installs): events the leader records with `Member::record` under request id `rid`, checked
@@ -1164,8 +1175,14 @@ impl<F: Family> Routes<F> {
                     (body.rid.clone(), body.receipt.as_deref().and_then(crate::faults::Receipt::parse));
                 #[cfg(feature = "test-faults")]
                 let role = self.role_name();
+                // The leader-sync A/B's arm B: the send names its own hold (`CommitReq::hold_ms`).
+                #[cfg(feature = "test-faults")]
+                let hold = commit_hold(body.hold_ms);
                 let r = self
                     .ready_or(|| async {
+                        #[cfg(feature = "test-faults")]
+                        let mut r = self.commit_all_held(vec![body], hold).await?;
+                        #[cfg(not(feature = "test-faults"))]
                         let mut r = self.commit_all(vec![body]).await?;
                         self.reply(r.pop().expect("one result"))
                     })
@@ -1184,7 +1201,7 @@ impl<F: Family> Routes<F> {
                     core.hold_deps_until = now_ms() + ms;
                 }
                 #[cfg(feature = "test-faults")]
-                let hold = body.hold_ms.map_or(raft::COMMIT_HOLD, Duration::from_millis);
+                let hold = commit_hold(body.hold_ms);
                 #[cfg(not(feature = "test-faults"))]
                 let hold = raft::COMMIT_HOLD;
                 self.ready_or(|| async {
@@ -1814,10 +1831,12 @@ impl<F: Family> Routes<F> {
 
     /// `commit` for each command in order, each its own input, with no await between them; each is held up to
     /// COMMIT_HOLD for its outcome, and past that answers its ticket.
+    #[cfg(not(feature = "test-faults"))]
     async fn commit_all(&self, cmds: Vec<CommitReq<F>>) -> Result<Vec<Value>> {
         self.commit_all_held(cmds, raft::COMMIT_HOLD).await
     }
 
+    /// `commit_all` with each command held up to `hold`: a test install's `/commit_many` and arm-B `/commit` name it.
     async fn commit_all_held(&self, cmds: Vec<CommitReq<F>>, hold: Duration) -> Result<Vec<Value>> {
         let mut waits = Vec::with_capacity(cmds.len());
         for c in cmds {
@@ -3462,6 +3481,23 @@ mod tests {
         percentiles, read_kind, read_wait, shed_by_json, site_field,
     };
     use crate::host;
+
+    /// The leader-sync A/B's arm B: a lean send's `/commit` body, as `graftyard_lookup`'s `held_body` writes it with
+    /// `hold_ms` first, is held that long for its outcome; a body without it, every product edge's, keeps COMMIT_HOLD.
+    #[test]
+    fn a_commit_names_its_hold_only_on_a_lean_send() {
+        use std::time::Duration;
+        type Req = super::CommitReq<crate::family::Ids>;
+        let cmd = graftyard_identity::IdsCmd {
+            to: graftyard_types::ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9))),
+        };
+        let plain = json!({ "rid": "r", "cmd": cmd }).to_string();
+        let lean = format!("{{\"hold_ms\":6000,{}", &plain[1..]);
+        let hold = |b: &str| super::commit_hold(serde_json::from_str::<Req>(b).expect("decodes").hold_ms);
+        assert_eq!(hold(&plain), graftyard_raft::COMMIT_HOLD, "no field: today's hold");
+        assert_eq!(hold(&lean), Duration::from_secs(6), "a lean send's hold");
+        assert_eq!(graftyard_raft::COMMIT_HOLD, Duration::from_secs(1));
+    }
 
     /// The daily near check moves a member only on readings past the pair's own spread, twice a day apart: an enam
     /// home's weur follower at 131 ms, the top of what re-placed healthy groups on 2026-11-16 read, never moves; one at

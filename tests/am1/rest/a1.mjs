@@ -33,6 +33,9 @@
 //     [--ls-refs-shard-every S]  # F91's within-network control: the off arm only in odd S-second windows of
 //                        # Cloudflare's clock (floor(ms / (S * 1000)) odd), so one network carries both arms and a
 //                        # trace's own timestamps say which arm each row is in (`tests/fanout/lsrefsab.py`)
+//     [--lean]           # the leader-sync A/B's arm B: every push and API call carries `x-graft-lean` with the bed
+//                        # token, so a test edge holds its commits on the leader to their outcome and asks nothing by
+//                        # request id (`graftyard_lookup::Hooks::lean`, tests/am1/results/sync-ab.md)
 //     [--hosted N]       # B0-34 with --b034: the load runs in N Load34 clients on Cloudflare (tests/am1/load34/), not
 //                        # here; this process does setup, the kill, k, the leader reads, and the row, from their
 //                        # samples in R2 (decisions/DECISIONS.md, `load34`). [--hints wnam,...] their location hints.
@@ -80,7 +83,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
   "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" },
   "ls-refs-shard": { type: "boolean" }, "ls-refs-shard-every": { type: "string" }, hosted: { type: "string" },
-  hints: { type: "string" } } });
+  hints: { type: "string" }, lean: { type: "boolean" } } });
 if (opt.hosted && !opt.b034) throw new Error("--hosted runs B0-34's load only: pass --b034");
 if (opt["ls-refs-shard"] && opt["ls-refs-shard-every"]) throw new Error("--ls-refs-shard and --ls-refs-shard-every exclude each other");
 
@@ -363,7 +366,10 @@ if (opt.dry) {
 // ---- the live run ----
 
 if (!opt.repo || !opt.chain) throw new Error("--repo NAME and --chain repo:ID are required for a live run");
-const { api, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens, voterAt } = await import("../hosted/lib.mjs");
+const { api: api0, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens, voterAt } = await import("../hosted/lib.mjs");
+// The leader-sync A/B's arm B (`--lean`): the header rides on every git and API request this driver sends.
+const leanHeaders = opt.lean ? { "x-graft-lean": "1", "x-bed-token": BED } : {};
+const api = (method, path, token, body, extra = {}) => api0(method, path, token, body, { ...leanHeaders, ...extra });
 const RUN = opt.run ?? Date.now().toString(36);
 const R = `m3org/${opt.repo}`;
 const CHAIN = opt.chain;
@@ -469,12 +475,12 @@ async function gitOnce(path, tok, body, headers = {}, repo = R, agent = null) {
   const t = Date.now();
   if (agent) {
     try {
-      const r = await postH1(`${EDGE}/${repo}.git/${path}`, body, { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...lsHeaders(path), ...headers }, agent, GIT_TIMEOUT_MS);
+      const r = await postH1(`${EDGE}/${repo}.git/${path}`, body, { ...auth(tok), "user-agent": "git/2.56.0", ...leanHeaders, ...failHeaders(), ...lsHeaders(path), ...headers }, agent, GIT_TIMEOUT_MS);
       return { status: r.status, text: r.buf.toString("latin1"), ms: Date.now() - t, headers: r.headers };
     } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
   }
   try {
-    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...lsHeaders(path), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
+    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...leanHeaders, ...failHeaders(), ...lsHeaders(path), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
   } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.cause?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
 }
