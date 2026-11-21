@@ -1331,6 +1331,7 @@ impl<F: Family> Routes<F> {
                     crate::registry::query(&url, "reset").is_ok(),
                     crate::registry::query(&url, "summary").is_ok(),
                     crate::registry::query(&url, "high").is_ok(),
+                    crate::registry::query(&url, "peers").is_ok(),
                 )
             }
             (Method::Post, p) if F::route_paths().contains(&p) => {
@@ -2290,7 +2291,7 @@ impl<F: Family> Routes<F> {
         })
     }
 
-    fn stats(&self, reset: bool, summary: bool, #[allow(unused)] high: bool) -> Result<Response> {
+    fn stats(&self, reset: bool, summary: bool, #[allow(unused)] high: bool, peers: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
         // `?summary=1`: percentiles in place of the sample arrays, and no trace, calls, or peers. A loaded leader's raw
         // `/stats` serialized megabytes, and its wasm instance was rebuilt right after (LM-1 round 6, B0-29).
@@ -2351,6 +2352,11 @@ impl<F: Family> Routes<F> {
                 "memSplit": self.mem_split(),
             });
             let mut v = v;
+            // `?peers=1`: the per-peer call counts too, a few hundred bytes a peer, so a driver's end read gets them
+            // without the raw arrays and trace, which held about 12 MB of a loaded leader's wasm memory at once (F111).
+            if peers {
+                v["peers"] = json!(s.peers);
+            }
             v["busyPages"] = json!(s.busy_pages);
             v["readsBy"] = json!(s.reads_by);
             #[cfg(feature = "test-faults")]

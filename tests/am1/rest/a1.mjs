@@ -1248,7 +1248,9 @@ const leaderBefore = await statuses(CHAIN);
 // stats), so `leaderOf` asks again, up to 20 s.
 const leader = leaderBefore.find((s) => s.role === "leader")?.site
   ?? await (await import("../hosted/lib.mjs")).leaderOf(CHAIN).catch(() => undefined);
-if (leader !== undefined) await member(CHAIN, leader, "/stats?reset=1", undefined, 15_000);
+// With `summary=1`: a raw reset serialized every sample array and the trace first, and took a loaded leader's wasm
+// memory from 5.9 to 12.2 MB on B0-31 m67r31 (`decisions/OPEN-QUESTIONS.md`, F111).
+if (leader !== undefined) await member(CHAIN, leader, "/stats?summary=1&reset=1", undefined, 15_000);
 // `--first-for`: round 5's concurrent re-sends, on purpose. Every member gets it, so a leader elected mid-run has it too.
 if (opt["first-for"]) for (const s of [0, 1, 2]) {
   const v = (await member(CHAIN, s, "/bench_seed", { prsyncFirstFor: Number(opt["first-for"]) }, 15_000).catch((e) => ({ v: String(e) }))).v;
@@ -1340,11 +1342,15 @@ const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
 // Always `?summary=1`: a loaded leader's raw arrays (megabytes) rebuilt its wasm instance (round 6, B0-29).
 const endStats = (leader !== undefined ? (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
-// The leader's failed calls by peer (B0-32 m3fr2: 1,032 `failedCalls`, no target named): the full `/stats` `peers`
-// (per peer ok, sent, failed and late by cause, newest errors), read once after the window so a raw read's reset
-// cannot fall inside it, and before teardown, so the leader object has not restarted yet. Written as its own row.
+// The leader's failed calls by peer (B0-32 m3fr2: 1,032 `failedCalls`, no target named): `/stats` `peers` (per peer
+// ok, sent, failed and late by cause, newest errors), read once after the window and before teardown, so the leader
+// object has not restarted yet. Written as its own row. `summary=1&peers=1` answers them without the raw arrays and
+// trace, whose read took a loaded leader from 26.3 to 38.7 MB on m67r31 (F111); a member from before it answers no
+// `peers` to that, and only then is the raw read sent.
 if (leader !== undefined) {
-  const full = (await member(CHAIN, leader, "/stats", undefined, 30_000).catch((e) => ({ v: { error: String(e).slice(0, 120) } }))).v ?? {};
+  const read = (q, ms) => member(CHAIN, leader, q, undefined, ms).catch((e) => ({ v: { error: String(e).slice(0, 120) } }));
+  let full = (await read("/stats?summary=1&peers=1", 15_000)).v ?? {};
+  if (!full.peers && !full.error) full = (await read("/stats", 30_000)).v ?? {};
   writeRow(OUT, { step: "leader peers", site: leader, failedCalls: full.failedCalls, peers: full.peers ?? null, error: full.error });
   log(`leader peers: failedCalls ${full.failedCalls} ${JSON.stringify(Object.fromEntries(Object.entries(full.peers ?? {}).map(([p, c]) => [p, { ok: c.ok, failed: c.failed, late: c.late, lateFailed: c.lateFailed }]))).slice(0, 600)}`);
 }
