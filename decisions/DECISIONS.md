@@ -1030,6 +1030,8 @@ Each decision below was made by the run under that delegation (`FRAME.md`, "Oper
 
 **Flip.** A B0-33 rerun with the budget where Human and merge-queue p99 stays over 1 s with a stable leader, or staging p99 that pushes agent push p99 over B0-29's lines.
 
+**Approval reversed, 2026-11-21.** The lead approved `AGENT_INLINE_ENTRY` 128 → 32 KiB on the leader-cycle proposal (`tests/am1/results/leader-cycle.md`), then dropped it after `tests/am1/results/inline-cut.md` showed two things. The proposal was mis-scaled: an inline pack is base64 inside the postcard entry, so 30,000 B encodes to 40,005 B, and 150 of m3fb29's entries, not 15, stay over 64 KiB at 32 KiB [measured]. And 32 KiB fails the in-memory B0-29 line (commit p99 700 ms against its 600 ms line, 179 staged against 13 at 128 KiB) [measured, simulator], while 24 KiB stages 72% of journey 9's agent pushes [inference, from its 10,000 to 70,000 B draw]. The bound stays 128 KiB. Storing inline packs as raw bytes is drafted as `raw-inline` below.
+
 ### Plain SSH through an Oracle Cloud Always Free VM until go-live (2026-11-02)
 
 > "oracle has the free for forever tier ... spin up a subagent - use the oracle credentials to deploy a server that is free eligible. save the ssh key in 1password. use that server as the proxy for ssh as we can't have ssh unless on enterprise. i recognize this defeats the point of 'cloudflare' only but will make this an exception until go-live. eventually i will have the enterprise conversation with cloudflare."
@@ -6942,3 +6944,77 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 - `PEAK=1` in the edgebed fails if one answer holds 1 MiB or more at once.
 
 **Flip.** A row where hits refused by the gate (401 or 404) cost R2 reads at a rate that shows up in its bill, or where a hit's `gate` stage, now measured, stays under 50 ms at p99 so the overlap buys nothing.
+
+### `raw-inline` (draft, not built): an inline pack is stored and sent as raw bytes, not base64, 2026-11-21
+
+**Status.** Draft for the lead's read before any code (T-01a17bda, after main `55aae8af`). It changes a stored and member-sent record format, so nothing is built and `design/DESIGN.md` is not edited yet. If it is approved, the design edit (`design/SHARED.md`, "Record formats and the two-release rule", plus the `PackRef` line in `design/DESIGN.md`, Shape) lands first, then the code.
+
+**Decision (proposed).**
+- **Record and codec.** `PackRef` keeps one Rust variant, `Inline(Vec<u8>)`, so none of its 36 uses in `crates/*/src` and `workers/*/src` change. Its serde impls become hand-written over a wire enum with one appended variant: tag 0 `inline` (a base64 string, as today), tag 1 `stored`, and **tag 2 `inline_raw`** (postcard bytes). Deserializing either tag 0 or tag 2 gives `PackRef::Inline`. The tag 2 line is appended to `crates/git/tests/wire_tags.golden`, so the append-only rule holds. `CODEC_VERSION` stays 1. The variant tag already says which form follows, so no version byte is needed.
+- **Why a tag and not a codec version or `is_human_readable`.** Postcard writes a `str` and `bytes` the same way, as a varint length and the bytes. A scratch test through `graftyard_raft::codec` showed that a v1 row read by a raw decoder decodes *without error*, its pack being the base64 text's bytes, and that a raw row read by today's decoder fails with "invalid utf-8" [measured]. So an unmarked form would silently corrupt old rows. An `is_human_readable` branch, as in `SessionId`, cannot tell postcard from `graftyard_fold::canon`, because both are binary. `CODEC_VERSION` 2 would change the framing of every type behind `codec::to_bytes` (71 uses), and the version would have to reach `PackRef`'s deserializer through global state.
+- **What writes tag 2.** Only the postcard paths: log rows, request rows, AppendEntries (learners' included), and archive objects, whose rows are the stored row bytes. They write it only while the site variable `GRAFTYARD_RAW_INLINE` is `1`. A site day sets it only after `FormatsEnable` enabled a marker format (0x20.27, which no command carries, as 32.15 `fanout` and 32.25 `roll-up` do), the same pattern as `GRAFTYARD_ROLLUP`. Unset, every member writes tag 0 as today.
+- **JSON is unchanged.** Every JSON path (a member's `/entries` page, which the git shard's catch-up reads, the sweeper's `packs`, the Go container's packs) keeps `{"inline": "<base64>"}`. So there is no Go change and no GHES response change.
+
+**Old entries and rollout.**
+- Every stored row, archive object and request row written before the flag keeps tag 0 and decodes as it does now, forever. A row written after it decodes only on a release that reads tag 2.
+- Rollout is the two-release rule (`design/SHARED.md`): release N+1 reads tag 2 and writes tag 0. `FormatsEnable` enables 0x20.27 once every site, spare canary and registered lifeboat runs N+1. A later site day then sets the variable.
+- **No mixed-version break.**
+  - During the site day that ships N+1, no member writes tag 2, so an N follower never receives one.
+  - Each member re-encodes what it stores (`Write::Append`, `codec::to_bytes(e)`), so members of one group may store different forms without harm. The digest does not depend on the form (below).
+  - After enable, rule 4 refuses swap-back below N+1, which covers a lifeboat restore of a tag 2 archive.
+  - A member that somehow received tag 2 without reading it would fail the envelope's decode and change nothing. The design's answer is `Unsupported`, which the gate makes unreachable.
+- Turning raw off later is unsetting the variable on a site day. Tag 2 rows already written stay readable.
+
+**What verifies the digest.** The digest stays SHA-256 of `encode::encode_entry`, the canonical form. It must not move for any existing entry.
+- `Refs` and `Promoted` hash their pack through `encode_pack`, which already writes the raw bytes (tag 0, `e.bytes(b)`). They are unaffected.
+- `TestMerged` (21), `Merged` (23) and `Queue(GroupBuilt)` (24) hash through `canon::write` over serde, so they hash today's base64 string. With a raw serde form their canonical bytes moved, 40,076 → 30,076 for a 30,000-byte pack [measured, scratch test]. The build pins them: those three `tagged` calls hash the pack in its tag 0 base64 form explicitly, so their digests stay byte-identical on old and new entries alike.
+- Checks after the change, unchanged in code:
+  - A follower's next entry must chain to the leader's digest (`verify`'s `prev`).
+  - A member's restore rehashes every row against its stored digest (`workers/site/src/host.rs`, "does not match its stored digest").
+  - `promotion_sums` and the shard's ingest hash the pack bytes themselves.
+- A pack misread in either direction fails the first two. A golden digest test (`fold_corpus`, with inline packs added to all three canon-hashed events) pins the canonical form.
+
+**Bytes and rounds (from the tsave traces, entries' AppendEntries bodies, packs at 3/4 of their base64 length).**
+
+| | m3fb29 (B0-29, 3,383 entries) | m64r33 (B0-33, 716 entries) |
+|---|---|---|
+| Body mean, now → raw | 35,839 → 28,330 B | 75,402 → 67,143 B |
+| Body p90 | 106,753 → 82,473 | 189,302 → 148,906 |
+| Body max | 231,501 → 184,635 | 254,703 → 204,250 |
+| AppendEntries total | 121 → 95 MB (−21%) | 54 → 48 MB (−11%) |
+| Entries over 64 KiB: now / raw / raw + 48 KiB | 843 / 507 / 128 | 305 / 285 / 176 |
+| Mean first-ack round, all entries: now / raw / raw + 48 KiB | 170 / 166 / 164 ms | 322 / 314 / 298 ms |
+| Mean round, entries ≥ 50 KB: now / raw / raw + 48 KiB | 199 / 191 / 183 ms (1,055 entries) | 390 / 347 / 313 ms (330 entries) |
+
+- The round figures are a bucket model [inference]. Each entry takes its trace's mean round for the body bucket its new size falls in (buckets 0, 20, 40, 64 KiB, 100 and 150 KB), so it assumes the round tracks body size as it did in the trace.
+- On m3fb29 the round grows only about 0.6 ms per KB of body (p90 200 ms under 20 KB, 340 ms over 150 KB). Raw bytes are therefore a 2 to 4% round cut on B0-29, about 4 to 8 ms per cycle, and up to 43 ms per large entry on m64r33.
+- **This is not the B0-29 or B0-33 gate fix.** m3fb29's tail commands waited behind entries of p50 62 KB in flight. Raw bytes take about 8 ms off such an entry's round in this model.
+- Secondary gains, not measured: a quarter less SQLite row bytes per inline pack, and no base64 decode per row read. That decode is the cost `hot-shards` found over a hot leader's CPU limit when it searched per character (`crates/git/src/pack.rs`, `b64::VALUE`).
+
+**Raw bytes plus a 48 KiB `AGENT_INLINE_ENTRY`: not worth it.**
+- Its extra round gain over raw alone is 2 ms mean on m3fb29 and 16 ms on m64r33 (8 and 34 ms on entries ≥ 50 KB).
+- Its staging cost lands on every push it newly stages. In the in-memory admission model (`crates/raft/tests/admission.rs`, `STAGE_MS` 500), 48 KiB put B0-29's commit p99 at 700 ms with 112 staged, against 260 ms with 13 at 128 KiB (`tests/am1/results/inline-cut.md`). The bound counts raw pack bytes in both, so raw encoding does not change that cost.
+- So: raw bytes alone, with `AGENT_INLINE_ENTRY` kept at 128 KiB.
+
+**What it beat.**
+- **`CODEC_VERSION` 2**, which changes every stored type's framing for one field and passes the version to `PackRef` through global state.
+- **An `is_human_readable` branch**, which cannot tell the canonical digest writer from postcard and would move three events' digests.
+- **A second Rust variant (`InlineRaw`)**, which would touch every match site for no semantic difference.
+- **Lowering `AGENT_INLINE_ENTRY`** to 48, 32 or 24 KiB, dropped below.
+
+**Tests it would need.**
+- A tag 0 row written by main decodes on the branch to the same `PackRef` and the same digest.
+- With the flag on, a tag 2 row roundtrips and its digest equals the tag 0 row's.
+- With the flag off, the branch writes byte-identical rows to main.
+- JSON is unchanged.
+- `fold_corpus` digests for `TestMerged`, `Merged` and `GroupBuilt` with inline packs are unchanged.
+- Main's decoder refuses a tag 2 row, never misreads it.
+- Plants:
+  - raw written with the flag off;
+  - tag 2 decoded as base64;
+  - canon pinning dropped from one of the three events;
+  - a raw decoder that accepts a tag 0 base64 string as raw (the silent-corruption case above);
+  - JSON switched to raw.
+- It changes no `crates/raft/src` logic. If the flag ends up read in `codec`, also run the long sweep and Porcupine.
+
+**Flip.** A hosted B0-29 row with the flag on where the mean AppendEntries body is not at least 15% under the same journey's flag-off figure (m3fb29: 35,839 B), which would mean inline packs are not the bytes. Or one where the mean round of entries ≥ 50 KB is not lower than flag-off at matched load. Then unset the variable on a site day and keep the reader.
