@@ -342,6 +342,43 @@ Read-only, from the GraphQL analytics API. `tests/fanout/docpumin.py` gives CPU-
 - **Learner calls are steady background, not a burst spike** [measured]. The leader took 7,132, 6,507 and 4,980 learner `/raft` calls in the minutes 03:55, 03:56 and 03:57Z, before the burst as much as during it. What the burst adds is `/commit`, `/outcome`, `/outcome_by_request` and the entries they append.
 - **So a learner throttle would buy little.** It would cut at most about 5% to 25% of the burst's CPU, and it would delay learner catch-up and push their reads to the leader. It is not proposed. The burst's own commit path (decide, apply, append encoding to ten members, held-output release) is the likelier cost. Pricing its parts needs a local profile of that path under a burst, not another hosted row [inference].
 
+### The leader's commit path, profiled locally: it is not where the burst's CPU goes ($0, 2026-11-21)
+
+`crates/git/tests/commit_profile.rs` (ignored; `cargo test -p graftyard-git --release --test commit_profile -- --ignored --nocapture`, `SHAPE=b033`, `N`, `BURST_MS`, `LAT_MS`). It runs three real `Member<RepoCmd>` voters and seven learners (stubs that store any chained call) on a simulated clock: dependency reads 100 ms, the edge's place 1.2 s, the host's 100 ms tick, and learner reads every 60 ms each (m3fhs1's about 115 per second). It sends 500 agent pushes over 4 s. B0-32's shape has 256 KiB packs, half inline first (`Stage`, then a stored resend) and half stored first. B0-33's shape has 10 to 70 KB packs, all inline first. Beside each core input it times what `workers/site` does for that input: the `/commit` body's JSON decode and pricing; `SqlStore`'s log and request row encodings and digest; `send`'s `encode_entry` per entry per peer and `call`'s body codec; the reply render; the host's linear scans (`note`, `release`, `Member::outcome`); `/outcome` after COMMIT_HOLD; and `/outcome_by_request`. It does not run SQLite statements, the Workers runtime, or held-output release.
+
+B0-32 shape, one-way latency 300 ms (10 entries of 50 commands, as on the hosted leader; acks p50 2,124 ms on the simulated clock) [measured, native, x86-64]:
+
+| Part | ms | share | µs per acked command | µs per call by commands open: <50 / 50–149 / 150–299 |
+|---|---|---|---|---|
+| `/commit` body decode and price, inline 256 KiB pack | 278.2 | 90.0% | 556 | 1,099 / 1,121 / 1,110 |
+| `/commit` body decode and price, stored pack | 3.2 | 1.0% | 6 | 8 / 6 / 6 |
+| `commit_as` (admission, cut) | 8.3 | 2.7% | 17 | 15 / 10 / 11 |
+| `AppendRes` that applies (commit, apply, outcomes) | 8.3 | 2.7% | 17 | 188 / 658 / 1,092 per entry |
+| `/outcome_by_request` (decode and lookup) | 2.1 | 0.7% | 4 | – / 4.5 / 4.1 |
+| Per-peer call body codec | 1.9 | 0.6% | 4 | 1.0 / 3.3 / 1.3 |
+| Reply render | 1.6 | 0.5% | 3 | 9.6 / 3.2 / 3.3 |
+| Learner ReadIndex (712 calls) | 1.6 | 0.5% | 3 | 2.9 / 2.2 / 2.1 |
+| Log and request row encode, digest | 1.2 | 0.4% | 2 | 0.2 / 0.4 / 1.3 |
+| Everything else (deps, ticks, scans, `self_ack`, `/outcome`) | 2.6 | 0.8% | 5 | |
+| **Total** | **309** | | **618** | about 75 ms per burst second |
+
+- **B0-33 shape** (LM-1's input): 158 ms total at 300 ms latency, and 302 ms at 50 ms. Inline decode is 45% and 24% of it; the per-peer call codec, which carries the 81 to 87 KB entries to nine peers, is 19% and 31%; the applying `AppendRes` is 17% and 16%.
+- **The inline decode is base64.** Of one 256 KiB inline body's 911 µs, 807 µs is `pack::b64::decode`. The JSON parse is 65 µs and `Push::from_wire` 13 µs [measured].
+- **Native to wasm ratio: 1.37.** The same `b64` code built for wasm32 and run under V8 in node takes 1,128 µs for decode and 1,015 µs for encode, against 823 and 710 µs native [measured; V8 in node, not workerd].
+- **The modelled path reaches about a tenth of the hosted load.** In the burst seconds it is 72 to 77 ms of CPU per second native, about 0.1 CPU-s per second at the wasm ratio. docpusec measured 0.79 to 1.05 CPU-s per second on m3fhs1's leader. At 1,000 pushes over 4 s it is 0.14 to 0.16 native, about 0.2 wasm.
+- **The profile does match `/commit`'s own hosted CPU.** Workers Logs gives m3fhs1's leader 0.98 ms per `/commit` in burst seconds 0 to 4 (731 calls), against the model's 0.62 ms mean per send natively, about 0.85 ms as wasm. The parts that grow per call with commands open (an applying `AppendRes` with 50 commands, `commit_as` at 300 or more queued, from 12.5 to 26.5 µs, and the tick, from 7.7 to 34 µs) stay flat or small per command.
+- **Where the hosted CPU goes instead** [measured, Workers Logs, m3fhs1 leader, 03:56:09 to :14Z]:
+  - Learner `/raft`: 505 calls, 985 ms (1.95 ms a call). The model's learner input costs 2 to 3 µs.
+  - `/commit`: 731 calls, 713 ms (0.98).
+  - `/read`: 243 calls, 271 ms (1.12).
+  - `/outcome`: 154 calls, 139 ms (0.90).
+  - Voter `/raft`: 58 calls, 105 ms (1.81).
+  - `/outcome_by_request`: 238 calls, 73 ms (0.31). The model gives it 4 µs.
+  - `/status`: 145 calls, 0.19 ms each, with almost no work.
+
+  Workers Logs bills spawned work (the input's flush, held-output release, catch-up reads) to the current event (M4-WP4's note). So the cost beyond the Rust logic is that work plus the runtime's per-request floor [inference]. The model runs neither, and neither shows in native Rust.
+- **Verdict.** One modelled part, the inline base64 decode, is over 40% of the model. But the whole model is about 10% to 15% of the leader's hosted CPU. A 4× faster decode would take about 0.25 s of wasm CPU from a burst that spent about 4 to 5 CPU-s, under 6% [inference]. Nothing modelled grows with requests in flight enough to matter. So no fix is built from this profile, and B0-32 work stops here under the stop rule. The leader's CPU is in what the native path cannot run. LM-1's B0-33 A/B, which keeps edge `/read` and `/outcome_by_request` off the leader, tests the input-count side of that directly. It is LM-1's to run.
+
 ### A37 from m3fgb1, re-read with Workers Logs
 
 *Caveat added with the split above: the "real start" used here is the isolate's own clock, which stalls. Read the figures below as the leader's clock, not real time.*
