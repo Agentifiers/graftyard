@@ -1,0 +1,21 @@
+2026-11-21T02:31:08.618Z repo:65600: 11 names, 11 were joined, all not joined
+2026-11-21T02:31:43.468Z repo:65601: 12 names, 12 were joined, all not joined
+2026-11-21T02:32:25.335Z repo:65602: 11 names, 11 were joined, STILL JOINED repo:65602#2#l5 undefined tundefined
+2026-11-21T02:32:45.541Z repo:65603: 12 names, 12 were joined, all not joined
+2026-11-21T02:33:04.306Z repo:65606: 12 names, 12 were joined, all not joined
+2026-11-21T02:33:15.602Z repo:65607: 12 names, 12 were joined, all not joined
+2026-11-21T02:42:04.542Z purge: buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-21T02:42:04.542Z purge: waiting 139 s for sweep runs started before the first pass (until 2026-11-21T02:40:00.000012+00:00)
+2026-11-21T02:42:04.543Z purge: 65600 purged: a 1241 -> 0, b 1241 -> 0, c 1236 -> 0
+2026-11-21T02:42:04.543Z purge: 65600 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T02:42:04.543Z purge: 65601 purged: a 896 -> 0, b 891 -> 0, c 894 -> 0
+2026-11-21T02:42:04.543Z purge: 65601 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T02:42:04.543Z purge: 65602 purged: a 1052 -> 0, b 1061 -> 0, c 1100 -> 0
+2026-11-21T02:42:04.543Z purge: 65602 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T02:42:04.543Z purge: 65603 purged: a 1035 -> 0, b 1036 -> 0, c 1016 -> 0
+2026-11-21T02:42:04.543Z purge: 65603 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T02:42:04.543Z purge: 65606 purged: a 830 -> 0, b 809 -> 0, c 830 -> 0
+2026-11-21T02:42:04.543Z purge: 65606 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T02:42:04.543Z purge: 65607 purged: a 824 -> 0, b 799 -> 0, c 824 -> 0
+2026-11-21T02:42:04.543Z purge: 65607 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T02:42:04.543Z purge: {"dry": false, "purged": 6, "objects": 17615, "refused": [], "second": 0}

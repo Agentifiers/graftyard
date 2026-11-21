@@ -44,7 +44,7 @@ Each path goes through `start_transfer` (`crates/raft/src/member/transfer.rs`), 
     SiteId(1), why: StepDown }`.
   - On a test-faults build, `Trace::Transfer` (kind 32, appended) has `peer` = the target and `batch` =
     `transfer_why_code` (1 to 5, in declaration order, append-only).
-- `decisions/OPEN-QUESTIONS.md`, F108: the row names the new line and the trace row. The row count is unchanged (221).
+- `decisions/OPEN-QUESTIONS.md`, F108: the row names the new line and the trace row. The row count is unchanged (223 on main `771e07e9`).
 
 ## Tests
 
@@ -61,7 +61,7 @@ Each path goes through `start_transfer` (`crates/raft/src/member/transfer.rs`), 
 
 ## Plants
 
-`tests/m0carried/plant72.py`: 10 of 10 caught on the final tree, exit 0.
+`tests/m0carried/plant74.py` (`plant72.py` before main took that number): 10 of 10 caught on the branch tree, exit 0.
 
 | # | Mutant | Verdict |
 |---|---|---|
@@ -93,7 +93,7 @@ Porcupine (`tests/m0/porcupine`, `-seg 2000`), each exit 0: `hist.jsonl` Ok, 146
 
 ## Checks
 
-Each by its exit code, on the branch from main `546382691`:
+Each by its exit code, on the branch from main `546382691`, and again after merging main `771e07e9` with the same results:
 - `cargo fmt --all -- --check` 0; `cargo clippy --workspace --all-targets -- -D warnings` 0;
 - wasm32 clippy `-D warnings`: site 0, and 0 with `test-faults`; edge 0 and 0; ops 0, and 101 with `test-faults`,
   which ops does not have ("does not contain this feature: test-faults"; expected);

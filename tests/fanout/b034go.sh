@@ -2,7 +2,8 @@
 # One B0-34 hosted row with its own site day on graft-m1 (mt10's run): the site day from the main checked out here
 # (tests/am1/b030split/siteday-r4.sh, returning when done), Load34's deploy, a1's selftest, the edge check, setup, then
 # costrow.sh's row. Each step that fails writes its line to $GO_STATUS and stops before anything else bills.
-#   RUN=b034ma TAG=mt10 SUFFIX=-a1 [ORBCLONE=1] [HOLD_MONO=1] amp orb service start b034ma --command 'bash tests/fanout/b034go.sh'
+#   RUN=b034ma TAG=mt10 SUFFIX=-a1 [ORBCLONE=1] [HOLD_MONO=1] [KEEP_NETS=<held net> HOLD_USD_H=<its $/h>] \
+#     amp orb service start b034ma --command 'bash tests/fanout/b034go.sh'
 cd "$(dirname "$0")/../.."
 source /tmp/proxyenv.sh
 source tests/fanout/env-m1.sh
@@ -19,6 +20,11 @@ st "site day ok, image $IMG"
 bash tests/am1/load34/deploy.sh > "/tmp/$RUN-load34deploy.log" 2>&1 || stop "load34 deploy failed"
 node tests/am1/rest/a1.mjs --selftest > "/tmp/$RUN-selftest.log" 2>&1 || stop "a1 selftest failed"
 python3 tests/fanout/edgever.py "$L" >> "$GO_STATUS" 2>&1 || stop "the edge is not the site day's"
+# b034setup.mjs keeps any network already in $M3_STATE/b034.json, so a previous row's file left there makes this row
+# reuse that row's networks, retired or held (mt11's first try took mt10's held 1048603 and its retired, purged
+# networks, and stopped at the cold-warm check). The row's networks must be the suffix's.
+J=$M3_STATE/b034.json
+[ -e "$J" ] && ! grep -q "b034-mono$SUFFIX\"" "$J" && stop "$J holds another row's networks: archive it first"
 B034_SUFFIX=$SUFFIX node tests/fanout/b034setup.mjs >> "tests/fanout/raw/b034-$TAG.setup.log" 2>&1 || stop "setup failed"
 st "row start"
 export ROWS_ENV=tests/fanout/env-m1.sh

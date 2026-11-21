@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""transfer-why: planted bugs in the transfer-start alarm (`decisions/OPEN-QUESTIONS.md`, F108, and
-`tests/am1/results/transfer-why.md`). Plants one mutant at a time, runs the tests that guard it, and restores the file
-byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
+"""`install-record`: planted bugs in the dependency read that keeps the install account's placement record
+(`decisions/DECISIONS.md`, "`install-record`"; `workers/site/src/host.rs`, `read_dep_under`). Plants one mutant at a time,
+runs the tests that guard it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT
+COMPILE. Run from the repository root:
 
     python3 tests/m0carried/plant72.py          # every mutant
     python3 tests/m0carried/plant72.py 0 3      # by number
@@ -11,40 +12,21 @@ import subprocess
 import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-TRANSFER = 'crates/raft/src/member/transfer.rs'
-HEALTH = 'crates/raft/src/member/health.rs'
-LEADER = 'crates/raft/src/member/leader.rs'
 HOST = 'workers/site/src/host.rs'
-RAFT = ['cargo', 'test', '-q', '-p', 'graftyard-raft', '--test', 'leadership', '--',
-        'transfer_hands_leadership', 'a_refused_transfer', 'commit_errors_trip_and_the_probe',
-        'leadership_returns_home', 'a_drained_site_hands_off', 'an_older_refuser']
-SITE = ['cargo', 'test', '-q', '-p', 'graftyard-site', '--lib', '--', 'a_member_alarm_line_names_its_group']
-PUSH = '        self.out.alarms.push(Alarm::TransferStarted { to, why });\n'
+SITE = ['cargo', 'test', '-q', '-p', 'graftyard-site', '--lib', '--', 'install_authz_record', 'owners_authz']
 
 MUTANTS = [
-    ("a started transfer logs nothing", TRANSFER, PUSH, '', RAFT),
-    ("the alarm names the leader, not the target", TRANSFER, 'Alarm::TransferStarted { to, why }',
-     'Alarm::TransferStarted { to: self.cfg.me, why }', RAFT),
-    ("the alarm is pushed before the checks, so a refused transfer logs a start", TRANSFER,
-     '        let step_down = why == TransferWhy::StepDown;\n',
-     '        let step_down = why == TransferWhy::StepDown;\n        self.out.alarms.push(Alarm::TransferStarted { to, why });\n',
-     RAFT),
-    ("/transfer names another cause", TRANSFER, '        let r = self.start_transfer(to, TransferWhy::Asked, true);',
-     '        let r = self.start_transfer(to, TransferWhy::Home, true);', RAFT),
-    ("a step-down names another cause", HEALTH, '        match self.start_transfer(to, TransferWhy::StepDown, false) {',
-     '        match self.start_transfer(to, TransferWhy::Asked, false) {', RAFT),
-    ("the move home names another cause", HEALTH, '            let _ = self.start_transfer(home, TransferWhy::Home, false);',
-     '            let _ = self.start_transfer(home, TransferWhy::Asked, false);', RAFT),
-    ("a drained hand-off is logged as no_lead", HEALTH,
-     '            self.hand_off(if self.no_lead() { TransferWhy::NoLead } else { TransferWhy::Drained });',
-     '            self.hand_off(TransferWhy::NoLead);', RAFT),
-    ("a refusal's hand-off is logged as drained", LEADER, '            self.hand_off(TransferWhy::NoLead);\n            return;',
-     '            self.hand_off(TransferWhy::Drained);\n            return;', RAFT),
-    ("the trace row's cause codes shift", HOST, '        Asked => 5,', '        Asked => 4,', SITE),
-    ("the line names no group", HOST, '    format!("member alarm {do_name} {do_id}: {a:?}")',
-     '    format!("member alarm: {a:?}")', SITE),
+    ("main's rule: the install record is never kept", HOST, '        *install.borrow_mut() = Some(r);\n', '', SITE),
+    ("the kept record is never used", HOST, '.or_else(|| is_install.then(|| install.borrow().clone()).flatten());',
+     '.or_else(|| None);', SITE),
+    ("a read that fails under the kept record keeps it", HOST, '            install.borrow_mut().take();\n', '', SITE),
+    ("a failed read under a held record is the answer, with no lookup", HOST,
+     '        if let Ok(v) = read(r).await {\n            return Ok(v);\n        }',
+     '        return read(r).await;', SITE),
+    ("any chain's looked-up record is kept as the install's", HOST, '    if is_install && got.is_ok() {',
+     '    if got.is_ok() {', SITE),
+    ("the record is kept after a failed read too", HOST, '    if is_install && got.is_ok() {', '    if is_install {', SITE),
 ]
-
 
 def main():
     pick = [int(a) for a in sys.argv[1:]] or range(len(MUTANTS))

@@ -9,3 +9,5 @@ slotdeps model, first order: slot p50/p99, queue p50/p99
   record kept, -p50 hop 277 (657, 1294, 695, 1476)
   record kept, = owner read (649, 1246, 689, 1287)
   authz:1 gone (bound)      (649, 1246, 689, 1287)
+  every gap gone (bound)    (649, 1246, 688, 1287)
+round (append to apply) p50/p90/p99 298 416 568 ; gap total ms 32455 of wall 279738

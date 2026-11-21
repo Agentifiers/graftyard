@@ -238,12 +238,19 @@ if (ri >= 0) {
   const bed = readFileSync(process.env.BED_TOKEN_FILE, "utf8").trim();
   const api = (path) => JSON.parse(cfApi(`containers/${path}`)).result;
   const apps = api("applications");
+  // KEEP_NETS (comma-separated network ids): a held network's shards keep running on their image, as
+  // tests/fanout/teardown.py's KEEP_NETS leaves them (mt10's 1048603, held 24 h for a cost measurement).
+  const keep = new Set((process.env.KEEP_NETS ?? "").split(",").filter(Boolean));
   for (const site of sites) {
     const app = apps.find((a) => a.name === `${site.script}-gitshard`);
     if (!app) continue;
     for (const i of api(`applications/${app.id}/instances?per_page=1000`).instances) {
       const m = i.name.match(/^git#(\d+)#net:(\d+)$/);
       if (!m || i.status.state !== "running" || i.image === image) continue;
+      if (keep.has(m[2])) {
+        console.log(`roll ${i.name}: kept (KEEP_NETS)`);
+        continue;
+      }
       const q = `repo=${m[2]}&shard=${m[1]}`;
       // A slow catchup (repo:65536's rehydrate took 140 s, and over 300 s while another ran) is reported and the roll
       // goes on, so one repository does not leave every later instance on the old image.

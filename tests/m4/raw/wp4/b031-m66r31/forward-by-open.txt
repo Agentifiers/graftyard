@@ -1,0 +1,16 @@
+joined 3970 of 4021
+excess (ms) by leader /raft fetches open at send, this one included:
+  open  1  n   566 p50 29 p90 478 p99 1079
+  open  2  n  1946 p50 -2 p90 446 p99 994
+  open  3  n  1408 p50 -14 p90 450 p99 1014
+  open  4  n    32 p50 365 p90 1168 p99 1742
+  open  5  n     7 p50 536 p90 1000 p99 1000
+  open  6  n     3 p50 701 p90 996 p99 996
+  open  7  n     1 p50 956 p90 956 p99 956
+  open  8  n     1 p50 947 p90 947 p99 947
+  open  9  n     1 p50 927 p90 927 p99 927
+  open 10  n     2 p50 924 p90 924 p99 924
+  open 11  n     1 p50 853 p90 853 p99 853
+  open 12+ n     2 p50 207 p90 207 p99 207
+open at send p90/max per 60 s: [(0, 3, 3), (60, 3, 5), (120, 3, 4), (180, 3, 3), (240, 3, 3), (300, 3, 3), (360, 3, 4), (420, 3, 11), (480, 3, 13), (540, 3, 5)]
+pairs sent together 1981 with either excess >=400: 251 of those both >=300: 250

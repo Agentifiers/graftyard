@@ -6,6 +6,8 @@
 //   - each site's first-generation voter (`repo:N#1#f<site>`).
 // Each is sent `/retire` (test route: storage deleted, object reset), then `/status` again; a network purges only when
 // purge.py's own gate finds every voter "not joined". `repo-meta:N` is handled the same way when a registry row names it.
+// A member already not joined is sent `/retire` too, which writes its `retired` row, and the run exits 1 if any name
+// is still joined or has no row (`decisions/DECISIONS.md`, "`retire-sticks`"; `tests/fanout/reretire.sh`).
 //   node tests/fanout/retirenets.mjs FIRST-LAST|N ...      (NO_PURGE=1: retire only)
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -47,16 +49,24 @@ for (const net of nets) {
     const names = await members(chain);
     let joined = 0;
     for (const [n, s] of names) {
+      // A member already not joined is retired too: a group retired before `retire-sticks` left its members
+      // without the `retired` row, and only the retire writes it (`decisions/DECISIONS.md`, "`retire-sticks`").
       const before = await status(chain, s, n);
-      if (before?.joined === false) continue;
-      joined++;
+      if (before?.joined !== false) joined++;
       // The member aborts as it answers, so the reply is often empty: the `/status` after is the check.
       await member(chain, s, "/retire", {}, 60_000, n).catch(() => null);
     }
     await new Promise((r) => setTimeout(r, 2_000));
-    const left = [];
-    for (const [n, s] of names) { const b = brief(await status(chain, s, n)); if (b !== "not joined") left.push(`${n} ${b}`); }
-    log(`${chain}: ${names.size} names, ${joined} were joined, ${left.length ? `STILL JOINED ${left.join("; ")}` : "all not joined"}`);
+    const left = [], unmarked = [];
+    for (const [n, s] of names) {
+      const v = await status(chain, s, n);
+      if (brief(v) !== "not joined") left.push(`${n} ${brief(v)}`);
+      else if (!v.retired) unmarked.push(n);
+    }
+    // A name left without the `retired` row can be joined again by a create on first use (`retire-sticks`).
+    if (left.length || unmarked.length) process.exitCode = 1;
+    log(`${chain}: ${names.size} names, ${joined} were joined, ${left.length ? `STILL JOINED ${left.join("; ")}` : "all not joined"}` +
+      `, ${unmarked.length ? `NO RETIRED ROW ${unmarked.join("; ")}` : "all with the retired row"}`);
   }
   done.push(net);
 }

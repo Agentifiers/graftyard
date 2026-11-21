@@ -1,0 +1,9 @@
+{"from": "2026-11-21T02:05:24Z", "to": "2026-11-21T02:27:43Z", "containers": 0.79, "do_rows": 3.4, "do_duration": 0.13, "do_requests": 0.17, "workers": 0.15, "usd": 4.64, "prefix": "graft-m4a", "prefix_usd": 1.82}
+  graft-m3f-site-a                         $1.18
+  graft-m4a-site-a                         $0.65
+  graft-m3f-site-b                         $0.53
+  graft-m3f-site-c                         $0.53
+  graft-m4a-site-c                         $0.43
+runner
+{"from": "2026-11-21T02:05:24Z", "to": "2026-11-21T02:27:43Z", "workers": 0.0, "usd": 0.0}
+  graft-runners                            $0.00

@@ -67,7 +67,8 @@ if [ -n "${DRAIN:-}" ]; then
   node tests/fanout/b034drain.mjs "$chain" "$(q "d['mono']['repo']")" "${DRAIN_MIN:-90}" > tests/fanout/raw/b034drain-$TAG.jsonl 2>&1
   w=$?; kill $KEEP 2>/dev/null; s "b0-34 drain exit $w $(tail -1 tests/fanout/raw/b034drain-$TAG.jsonl)"
   [ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
-  python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "b0-34 shards torn down before the cold warm"
+  # KEEP_NETS (an earlier row's held network) passes through: only this row's network must be cold.
+  python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "b0-34 shards torn down before the cold warm (kept: ${KEEP_NETS:-none})"
   # Round 23: the warm must rehydrate cold, so no shard of the network may run when it starts (exit 2 otherwise).
   python3 tests/fanout/netimages.py "${chain#repo:}" --none >> "$ST" 2>&1 || { s "b0-34 a shard of the network runs before the cold warm"; echo DONE >> "$ST"; exec sleep infinity; }
 fi

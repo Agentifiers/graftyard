@@ -18,6 +18,14 @@ s() { echo "$(stamp) $*" >> "$ST"; }
 acct() { python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r '.usd // 999' 2>/dev/null || echo 999; }
 # With RUN_PREFIX (graft-m2b) the run's delta counts only that install's scripts, for a slot that shares the account.
 runusd() { PREFIX=${RUN_PREFIX:-} python3 tests/fanout/acctcost.py "$1" 2>/dev/null | head -1 | jq -r "${RUN_PREFIX:+.prefix_usd // }.usd // 999" 2>/dev/null || echo 999; }
+# HOLD_USD_H: an earlier row's held network bills on the same install while this one runs (mt10's 1048603, kept out of
+# mt11's stop, 2026-11-20): the run's delta less that rate times the hours since RUN_FROM [inference from list prices].
+if [ -n "${HOLD_USD_H:-}" ]; then
+  eval "_runusd() $(declare -f runusd | tail -n +2)"
+  runusd() { local v; v=$(_runusd "$1"); [ "$v" = 999 ] && { echo 999; return; }
+    python3 -c 'import sys,datetime as d; v,h,f=float(sys.argv[1]),float(sys.argv[2]),d.datetime.fromisoformat(sys.argv[3].replace("Z","+00:00"))
+print(round(max(0.0, v-h*(d.datetime.now(d.timezone.utc)-f).total_seconds()/3600), 4))' "$v" "$HOLD_USD_H" "$1"; }
+fi
 # A failed read is 999, which stops the row; the mt row's seeds were stopped at $0.16 by one read that failed while the
 # orb's proxy dropped workers.dev and the API (2026-11-18 18:12Z). A read is retried three times, 20 s apart, before
 # 999 stands, so a lasting outage still stops the row and a passing one does not.
@@ -56,6 +64,8 @@ s "$ROW ended: $(tail -2 "$done_file" | head -1)"
 # other shard and pool goes.
 keep=""
 [ -n "${HOLD_MONO:-}" ] && keep=$(python3 -c "import json,os;print(json.load(open(os.environ['M3_STATE']+'/b034.json'))['mono']['chain'].split(':')[1])")
+# KEEP_NETS from the caller (an earlier row's hold) is kept too, here and in b034.sh's sweep before the cold warm.
+keep=${KEEP_NETS:+$KEEP_NETS,}$keep
 KEEP_NETS=$keep python3 tests/fanout/teardown.py --sweep >> "$ST" 2>&1; s "sweep exit $? (kept: ${keep:-none})"
 u=$(meter); s "meter (account, run) $u after $ROW and the sweep"
 echo DONE >> "$ST"
