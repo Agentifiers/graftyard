@@ -16,6 +16,7 @@ use crate::{CALL_DEADLINE, LOOP_LAG, RESET_QUARANTINE, STEP_DOWN, after};
 
 use super::{
     Alarm, CallFailure, ConfirmId, ConfirmTimes, FailedCall, Member, Message, Ready, Role, StepDownWhy, StepDownWindow,
+    TransferWhy,
 };
 
 /// Pings in a `linkErrors` probe, five at a time: one failure in 20 is the 5% threshold.
@@ -522,7 +523,7 @@ impl<C: Command> Member<C> {
             self.hold(why);
             return;
         };
-        match self.start_transfer(to, true, false) {
+        match self.start_transfer(to, TransferWhy::StepDown, false) {
             Ok(_) => {
                 self.note_trip();
                 self.out.alarms.push(Alarm::StepDown { why, to: Some(to) })
@@ -592,7 +593,7 @@ impl<C: Command> Member<C> {
             return;
         }
         if self.drained.contains(&self.cfg.me) || self.no_lead() {
-            self.hand_off();
+            self.hand_off(if self.no_lead() { TransferWhy::NoLead } else { TransferWhy::Drained });
             return;
         }
         let home = self.home();
@@ -622,7 +623,7 @@ impl<C: Command> Member<C> {
         let now = self.now;
         let due = *self.lead.as_mut().expect("leading").health.home_due.get_or_insert(now);
         if self.quiet(HOME_QUIET_QUEUE) || now >= after(due, HOME_DEFER_MAX) {
-            let _ = self.start_transfer(home, false, false);
+            let _ = self.start_transfer(home, TransferWhy::Home, false);
         }
     }
 
