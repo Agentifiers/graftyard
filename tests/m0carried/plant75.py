@@ -8,6 +8,7 @@ the repository root:
     python3 tests/m0carried/plant75.py 0 3      # by number
 """
 import os
+import signal
 import subprocess
 import sys
 
@@ -48,6 +49,9 @@ MUTANTS = [
 
 
 def main():
+    # A stop (SIGTERM, as an orb service's stop sends) ends in SystemExit, so `finally` restores the file: a killed run
+    # once left mutant 4 in the tree, and it was committed (`tests/am1/results/sync-ab.md`, "The plant left in").
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     pick = [int(a) for a in sys.argv[1:]] or range(len(MUTANTS))
     caught = 0
     for i in pick:

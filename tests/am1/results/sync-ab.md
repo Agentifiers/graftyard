@@ -79,9 +79,19 @@ edge sends to a leader is the one `read_spread` already sent there after every f
   - the site ignoring the hold;
   - a product body held longer.
 
+**The plant left in (fixed, 2026-11-21).** The first push, `2f4014d9`, carried plant75's mutant 4: `send_only`
+took any status as the reply (`Some((_, v)) => Reply(v)`), so in arm B a sick leader's 503 would have been the commit's
+reply. Its own test fails on it (the lead's catch). The checks I reported had run on the clean tree. Then the orb
+service that ran them restarted its script, plant75 ran again, and my commit step stopped the service while mutant 4
+was planted. SIGTERM skips Python's `finally`, so the file was never restored, and the commit took it. The fix
+restores `Some((200, v)) => Reply`, `Some(_) => Missed { report: true }`. plant75 now turns SIGTERM into `SystemExit`,
+so a stopped run restores its file, and the check service ends in `sleep` so it never reruns. Mutant 4 is that exact
+plant, and it is caught on the fixed tree.
+
 **Full checks** on this branch: fmt 0; workspace clippy 0; wasm32 clippy `-D warnings` site 0 and 0 with
 `test-faults`, edge 0 and 0, ops 0 (no `test-faults` feature, 101 with it as before); `cargo test --workspace`
-1,337 passed, 0 failed; `go test` 0; `check_design`, `check_names`, `check_links` 0. `crates/raft` is untouched.
+1,338 passed, 0 failed, with `a_lean_send_holds_its_commit_and_asks_nothing` and
+`a_commit_names_its_hold_only_on_a_lean_send` among them (on main 5108240b, after the fix); `go test` 0; `check_design`, `check_names`, `check_links` 0. `crates/raft` is untouched.
 
 ## Row plan (after the merge, standing queue)
 

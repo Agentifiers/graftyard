@@ -1957,7 +1957,8 @@ where
 #[cfg(any(test, feature = "test-faults"))]
 async fn send_only(send: impl Future<Output = Option<(u16, Value)>>, busy: impl Fn() -> bool) -> Receipt {
     match send.await {
-        Some((_, v)) => Receipt::Reply(v),
+        Some((200, v)) => Receipt::Reply(v),
+        Some(_) => Receipt::Missed { report: true },
         None => Receipt::Missed { report: !busy() },
     }
 }
