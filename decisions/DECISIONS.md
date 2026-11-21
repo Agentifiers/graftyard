@@ -6945,9 +6945,9 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 
 **Flip.** A row where hits refused by the gate (401 or 404) cost R2 reads at a rate that shows up in its bill, or where a hit's `gate` stage, now measured, stays under 50 ms at p99 so the overlap buys nothing.
 
-### `raw-inline` (draft, not built): an inline pack is stored and sent as raw bytes, not base64, 2026-11-21
+### `raw-inline` (parked, not built): an inline pack is stored and sent as raw bytes, not base64, 2026-11-21
 
-**Status.** Draft for the lead's read before any code (T-01a17bda, after main `55aae8af`). It changes a stored and member-sent record format, so nothing is built and `design/DESIGN.md` is not edited yet. If it is approved, the design edit (`design/SHARED.md`, "Record formats and the two-release rule", plus the `PackRef` line in `design/DESIGN.md`, Shape) lands first, then the code.
+**Status.** Parked, not built (the lead, 2026-11-21): a 2 to 4% round cut on B0-29 does not pay for a stored and member-sent format change, a new marker format, and digest pinning on three events. `design/DESIGN.md` and `design/SHARED.md` are unchanged. **Reopen** when the round remainder is shown to be bytes on the wire, or when SQLite row bytes of inline packs become a measured cost. If reopened, the design edit (`design/SHARED.md`, "Record formats and the two-release rule", plus the `PackRef` line in `design/DESIGN.md`, Shape) lands first, then the code.
 
 **Decision (proposed).**
 - **Record and codec.** `PackRef` keeps one Rust variant, `Inline(Vec<u8>)`, so none of its 36 uses in `crates/*/src` and `workers/*/src` change. Its serde impls become hand-written over a wire enum with one appended variant: tag 0 `inline` (a base64 string, as today), tag 1 `stored`, and **tag 2 `inline_raw`** (postcard bytes). Deserializing either tag 0 or tag 2 gives `PackRef::Inline`. The tag 2 line is appended to `crates/git/tests/wire_tags.golden`, so the append-only rule holds. `CODEC_VERSION` stays 1. The variant tag already says which form follows, so no version byte is needed.
