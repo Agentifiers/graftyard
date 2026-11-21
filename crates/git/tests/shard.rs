@@ -11,6 +11,18 @@ fn net(n: i64) -> NetworkId {
     NetworkId(DbId(n))
 }
 
+/// A Tri group's record on `sites`, home first.
+fn tri(sites: &[SiteId]) -> graftyard_types::PlacementRecord {
+    graftyard_types::PlacementRecord {
+        name: graftyard_types::PlacementName::Tri,
+        sites: sites.iter().copied().collect(),
+        home: sites[0],
+        generation: 1,
+        moving_from: None,
+        at: Timestamp(1),
+    }
+}
+
 #[test]
 fn shards_counts_are_the_b0_14_values() {
     assert_eq!(SHARDS, [2, 5, 25]);
@@ -570,12 +582,12 @@ fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_dead
 fn a_shard_on_a_chain_site_installs_the_chain_after_its_catch_up() {
     use graftyard_git::compose::steps_after_catch_up;
     use graftyard_types::{DbId, NetworkId, SiteId};
-    let (net, home) = (NetworkId(DbId(1048605)), SiteId(0));
-    let sites = [SiteId(0), SiteId(1), SiteId(2)];
-    let chain = graftyard_git::chain_buckets(net, home, &sites);
+    let net = NetworkId(DbId(1048605));
+    let rec = tri(&[SiteId(0), SiteId(1), SiteId(2)]);
+    let chain = graftyard_git::chain_buckets(net, &rec);
     assert_eq!(chain, [SiteId(0), SiteId(2)], "mt12's chain buckets: a and c");
     // (site, builder) -> steps after a catch-up
-    let steps = |site: SiteId, builder: bool| steps_after_catch_up(net, home, site, &sites, builder);
+    let steps = |site: SiteId, builder: bool| steps_after_catch_up(net, &rec, site, builder);
     assert!(steps(SiteId(0), true), "the builder steps");
     assert!(steps(SiteId(2), false), "a shard on chain site c installs before the kill sends it misses");
     assert!(steps(SiteId(0), false), "another shard on the home site, a chain site, installs too");
@@ -583,10 +595,10 @@ fn a_shard_on_a_chain_site_installs_the_chain_after_its_catch_up() {
     // Another network whose chain sites are a and b: c, not a chain site there, does not step.
     let other = (1..2_000_000)
         .map(|n| NetworkId(DbId(n)))
-        .find(|n| graftyard_git::chain_buckets(*n, home, &sites) == [SiteId(0), SiteId(1)]);
+        .find(|n| graftyard_git::chain_buckets(*n, &rec) == [SiteId(0), SiteId(1)]);
     let other = other.expect("a network whose chain sites are a and b");
-    assert!(!steps_after_catch_up(other, home, SiteId(2), &sites, false), "c holds no chain for that network");
-    assert!(steps_after_catch_up(other, home, SiteId(1), &sites, false), "b does");
+    assert!(!steps_after_catch_up(other, &rec, SiteId(2), false), "c holds no chain for that network");
+    assert!(steps_after_catch_up(other, &rec, SiteId(1), false), "b does");
 }
 
 /// A composable miss on a site whose bucket holds no chain (`chain_ready` with `chain_site` false, a site that is not
@@ -605,8 +617,8 @@ fn a_miss_on_a_site_that_holds_no_chain_waits_for_no_chain_step() {
     use std::time::Duration;
     let s = Duration::from_secs;
     // mt11's monorepo network on graft-m1's three sites, home a: the chain sites are a and b, not c.
-    let (net, home, sites) = (NetworkId(DbId(1048604)), SiteId(0), [SiteId(0), SiteId(1), SiteId(2)]);
-    let chain = graftyard_git::chain_buckets(net, home, &sites);
+    let net = NetworkId(DbId(1048604));
+    let chain = graftyard_git::chain_buckets(net, &tri(&[SiteId(0), SiteId(1), SiteId(2)]));
     let chain_site = |s: SiteId| chain.contains(&s);
     let c = SiteId(2);
     assert_eq!(chain, [SiteId(0), SiteId(1)], "mt11's chain buckets: a and b");
@@ -1075,15 +1087,46 @@ fn a_manifests_chain_is_checked_in_every_chain_bucket_home_first() {
     assert_eq!(c.run(check_in_time([0, 1], slow, sleep(&c))), Ok(ChainCheck::Late));
     assert_eq!(c.now.get(), bound);
 
-    // The chain buckets are the warm sites, home first, once each.
+    // The chain buckets are the warm sites among the group's record, home first, once each.
     let sites = [SiteId(0), SiteId(1), SiteId(2)];
     for n in 1..200 {
         for home in sites {
             let [h, next] = warm_sites(net(n), home, &sites);
-            assert_eq!(chain_buckets(net(n), home, &sites), vec![h, next]);
+            let mut order = vec![home];
+            order.extend(sites.iter().copied().filter(|s| *s != home));
+            assert_eq!(chain_buckets(net(n), &tri(&order)), vec![h, next]);
             assert_eq!(h, home);
             assert_ne!(next, home);
         }
     }
-    assert_eq!(chain_buckets(net(7), SiteId(0), &[SiteId(0)]), vec![SiteId(0)]);
+    assert_eq!(chain_buckets(net(7), &tri(&[SiteId(0)])), vec![SiteId(0)]);
+}
+
+/// A network's chain buckets are among its group's sites, never the install's (`chain-record`). graft-m1 has four
+/// sites, a to d, and its groups sit on a, b, and c. B0-34 mt13's monorepo network 1048606, home a: main took the
+/// install's four sites and named a and d, so the builder wrote 258 chain files to bucket d, a site that runs no
+/// shard of the group, chain-install never ran on b or c, and the edge checked d second. Among the record's sites
+/// its chain buckets are a and b. mt12's 1048605 (a, c) and mt11's 1048604 (a, b) keep theirs, which main's rule
+/// also gave them by luck of the hash. Every network on every home stays inside its record: d, outside it, never.
+#[test]
+fn a_networks_chain_buckets_are_among_its_groups_sites_not_the_installs() {
+    let (a, b, c, d) = (SiteId(0), SiteId(1), SiteId(2), SiteId(3));
+    let rec = tri(&[a, b, c]);
+    assert_eq!(chain_buckets(net(1048606), &rec), [a, b], "mt13's monorepo: a and b, not a and d");
+    assert_eq!(chain_buckets(net(1048605), &rec), [a, c], "mt12's monorepo keeps a and c");
+    assert_eq!(chain_buckets(net(1048604), &rec), [a, b], "mt11's monorepo keeps a and b");
+    // The record's order and home, not the install's: home b on [b, c, d] never names a, and a later record site can
+    // be the second bucket.
+    let mut seconds = std::collections::BTreeSet::new();
+    for n in 1..400 {
+        assert!(chain_buckets(net(n), &rec).iter().all(|s| *s != d), "net {n}: d is outside the group");
+        let other = chain_buckets(net(n), &tri(&[b, c, d]));
+        assert_eq!(other[0], b, "net {n}: the record's home first");
+        assert!(!other.contains(&a), "net {n}: a is outside that group");
+        seconds.insert(other[1]);
+    }
+    assert_eq!(seconds, [c, d].into(), "both of that record's other sites take networks");
+    // The record's home, wherever it sits in the record: home c on [a, b, c] names c first.
+    let home_c = graftyard_types::PlacementRecord { home: c, ..tri(&[a, b, c]) };
+    assert_eq!(chain_buckets(net(1048606), &home_c)[0], c);
 }

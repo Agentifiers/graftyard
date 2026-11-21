@@ -1130,7 +1130,7 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// account cannot create an application under `default` [measured, B0-16]. Networks map to shards by rendezvous hashing
 /// of (network, shard) within a site. Each shard keeps an LRU of bare repositories with reftable on its ephemeral disk,
 /// rebuilt by `rehydrate` (Packs), and holds nothing canonical. Each network is warm on its group's home site and the
-/// next site by rendezvous, on one shard per warm site, or on k shards when its git CPU passes one. The first of the k
+/// next of its group's sites by rendezvous, never a site outside the group (`chain-record`), on one shard per warm site, or on k shards when its git CPU passes one. The first of the k
 /// is its rendezvous shard among `count`, and the others come from the site's hot pool by rendezvous, so `count` never
 /// changes and no other network moves. A push validates on the shard of the k that rendezvous on its pack's trailer
 /// picks (else the first), on its disk as it stands (journey 1). Shards stream bodies on unread; the URL names the

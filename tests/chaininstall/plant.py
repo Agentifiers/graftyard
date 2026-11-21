@@ -18,15 +18,15 @@ BUILD = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', '--no-
 ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '.worktrees/target-am1')),
            PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
 
-RULE = '    builder || crate::chain_buckets(network, home, sites).contains(&site)'
+RULE = '    builder || crate::chain_buckets(network, record).contains(&site)'
 MUTANTS = [
     ("main's rule, only the builder steps after a catch-up", COMPOSE, RULE,
-     '    let _ = (network, home, site, sites);\n    builder'),
+     '    let _ = (network, record, site);\n    builder'),
     ('every shard installs after a catch-up, on a site with no chain too', COMPOSE, RULE,
-     '    let _ = (network, home, site, sites, builder);\n    true'),
+     '    let _ = (network, record, site, builder);\n    true'),
     ('only the first chain bucket, the home, installs', COMPOSE, RULE,
-     '    builder || crate::chain_buckets(network, home, sites).first() == Some(&site)'),
-    ('the home site stands for the chain sites', COMPOSE, RULE, '    let _ = sites;\n    builder || site == home'),
+     '    builder || crate::chain_buckets(network, record).first() == Some(&site)'),
+    ('the home site stands for the chain sites', COMPOSE, RULE, '    let _ = network;\n    builder || site == record.home'),
 ]
 
 

@@ -299,12 +299,11 @@ pub async fn stream_in_turn<P, B, E>(
 /// first miss waited 13.8 s for the install, and the misses behind it 0.5 to 10.9 s (`tests/am1/results/b034-mt12.md`).
 pub fn steps_after_catch_up(
     network: graftyard_types::NetworkId,
-    home: graftyard_types::SiteId,
+    record: &graftyard_types::PlacementRecord,
     site: graftyard_types::SiteId,
-    sites: &[graftyard_types::SiteId],
     builder: bool,
 ) -> bool {
-    builder || crate::chain_buckets(network, home, sites).contains(&site)
+    builder || crate::chain_buckets(network, record).contains(&site)
 }
 
 /// Whether a composable miss goes on to ask its container (`true`) or the shard answers 503 `warming` (`false`), once
