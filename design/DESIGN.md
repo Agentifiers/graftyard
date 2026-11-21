@@ -201,9 +201,9 @@ pub struct ReplyMeta { pub term: Term, pub leader: Option<SiteId>, pub config_in
 /// built two groups in 20 of 20 rounds [measured, `tests/m1/results/m1-wp7.md`, BF-10]. Two edges creating a group at
 /// once propose the same entry; the member called to create it campaigns for term 2 once a quorum stores it, commits
 /// its `Noop`, decides the call's command, and transfers leadership to `home`. `Release`'s record is its genesis.
-/// A retired member (`/purge_retire`, the test route `/retire`) deletes its storage, keeps one `retired` row, and
-/// refuses every `/join`: without it, `repo:1048577`'s members were joined again by a read's create on first use, at
-/// generation 1 with an empty log [measured, `decisions/DECISIONS.md`, `retire-sticks`]. A create a majority refuses
+/// A retired member (`/purge_retire`, the test route `/retire`, joined or not) deletes its storage, keeps one `retired`
+/// row, and refuses every `/join`: without it, `repo:1048577`'s and `repo:1048597`'s members were joined again by a
+/// read's create on first use [measured, `decisions/DECISIONS.md`, `retire-sticks`]. A create a majority refuses
 /// as retired names `RETIRED`, and the edge reads that repository 404, as a deleted one [inference, `retired-gone`].
 pub fn bootstrap(chain: ChainId, record: &PlacementRecord) -> LogEntry;
 pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);    // [guess]
