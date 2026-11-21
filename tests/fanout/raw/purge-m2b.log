@@ -202,6 +202,10 @@
 2026-11-20T19:25:22Z 131377 purged: a 7608 -> 0, b 7531 -> 0, c 6765 -> 0
 2026-11-20T19:25:22Z 131377 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-20T19:25:22Z {"dry": false, "purged": 1, "objects": 21904, "refused": [], "second": 0}
+2026-11-21T00:22:36Z buckets: graft-m2b-site-a-packs, graft-m2b-site-b-packs, graft-m2b-site-c-packs
+2026-11-21T00:25:25Z 131378 purged: a 9678 -> 0, b 8642 -> 0, c 7076 -> 0
+2026-11-21T00:25:25Z 131378 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T00:25:25Z {"dry": false, "purged": 1, "objects": 25396, "refused": [], "second": 0}
 2026-11-21T00:49:33Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
 2026-11-21T00:50:14Z waiting 285 s for sweep runs started before the first pass (until 2026-11-21T00:55:00.000007+00:00)
 2026-11-21T00:55:21Z 65604 purged: a 814 -> 0, b 777 -> 0, c 814 -> 0
