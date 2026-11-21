@@ -379,6 +379,28 @@ B0-32 shape, one-way latency 300 ms (10 entries of 50 commands, as on the hosted
   Workers Logs bills spawned work (the input's flush, held-output release, catch-up reads) to the current event (M4-WP4's note). So the cost beyond the Rust logic is that work plus the runtime's per-request floor [inference]. The model runs neither, and neither shows in native Rust.
 - **Verdict.** One modelled part, the inline base64 decode, is over 40% of the model. But the whole model is about 10% to 15% of the leader's hosted CPU. A 4× faster decode would take about 0.25 s of wasm CPU from a burst that spent about 4 to 5 CPU-s, under 6% [inference]. Nothing modelled grows with requests in flight enough to matter. So no fix is built from this profile, and B0-32 work stops here under the stop rule. The leader's CPU is in what the native path cannot run. LM-1's B0-33 A/B, which keeps edge `/read` and `/outcome_by_request` off the leader, tests the input-count side of that directly. It is LM-1's to run.
 
+### Row m3fhs1, inputs from slow commits ($0, 2026-11-21)
+
+These counts come from the leader's Workers Logs (`repo:65608#1#f0`), for burst seconds 03:56:09 to :14Z: 2,112 inputs and 2,420 CPU-ms logged [measured]. They answer one question: how much of the burst's input exists only because commits were slow?
+
+| Input | Inputs | Share | CPU-ms | Share |
+|---|---|---|---|---|
+| `/commit` | 730 | 34.6% | 711 | 29.4% |
+| Learner `/raft` | 505 | 23.9% | 985 | 40.7% |
+| `/outcome_by_request` receipt asks (`SentBy::Ask`) | 238 | 11.3% | 73 | 3.0% |
+| Spread `/read` | 225 | 10.7% | 253 | 10.5% |
+| `/outcome` ticket waits | 154 | 7.3% | 139 | 5.7% |
+| `/status`, voter `/raft`, `/entries`, other | 260 | 12.3% | 259 | 10.7% |
+
+- **The slow-commit inputs** are the asks (sent when a send has no reply by COMMIT_RECEIPT, 2 s) and the ticket waits (sent when `/commit` answers `admitted` after COMMIT_HOLD, 1 s).
+  - Together they are 392 inputs (18.6%) and 212 CPU-ms (8.7%).
+  - Over 03:56:09 to :30Z, burst and tail, they are 8.3% of inputs and 5% of CPU.
+  - All the asks came in burst seconds 2 to 3, and 66 of them were canceled when the `/commit` reply came first. All the ticket waits came in seconds 3 to 4.
+- **Second `/commit` sends do not come from slowness.** The edge sent 701 for 500 pushes. 270 were Stage resends (A36), and 1 push resent after a missed send.
+- **So faster commits alone would cut about a fifth of the burst's inputs and a tenth of its logged CPU** [inference].
+- **Sizing LM-1's input cut on B0-32.** Keeping only edge `/read` and `/outcome_by_request` off the leader removes about 22% of the burst's inputs and 14% of its logged CPU, against 55% to 80% of inputs on B0-33. On B0-32 the largest CPU line is learner `/raft`: 1.95 ms a call hosted, against 2 to 3 µs for its Rust logic in the local profile above [inference].
+- **Caveat.** Workers Logs records 46% to 67% of the analytics CPU per minute on this leader, and it bills spawned work (the input's flush, held-output release, catch-up reads) to whichever event is current. These are shares of logged CPU, not of the 0.79 to 1.05 CPU-s per second.
+
 ### A37 from m3fgb1, re-read with Workers Logs
 
 *Caveat added with the split above: the "real start" used here is the isolate's own clock, which stalls. Read the figures below as the leader's clock, not real time.*
