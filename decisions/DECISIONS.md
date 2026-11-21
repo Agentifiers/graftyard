@@ -7192,6 +7192,11 @@ on `tests/fanout/raw/tsave-sab{A,C,B2}.jsonl.xz`.
 - `tests/m0carried/plant77.py`, 5 of 5 caught. Mutant 0 is main's rule (no stop). The others: a waiting caller still
   starting a run; a direct start on a torn shard; no resume; a teardown hiding a finished run.
 - The site's wiring runs only in wasm. The next sweep checks it: each torn-down shard's `/status` reads `alarm` null.
+- **Hosted, 2026-11-21, B0-33 lcA2 on graft-m2b** (site day from `c6e123eb`, which carries this change) [measured]: the
+  row's network 131382 was torn down at 16:59:44Z. After the end sweep, its shards on sites 0, 1 and 2 each read
+  `/status` running false and `alarm` null (`tests/fanout/tornalarm.py`, TORNALARM OK), and the end sweep found no
+  shard container running. No client request answered 503 `warming` (0 in the row's push log and edge 5xx reasons)
+  (`tests/am1/results/learner-cadence.md`, "The row").
 
 **Flip.** A torn-down shard whose container runs again with no client request after the teardown, or whose `/status`
 shows an alarm after its sweep. Or a client request that answers 503 `warming` from a shard torn down before it

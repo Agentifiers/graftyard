@@ -1,0 +1,20 @@
+edge: graft-m2b-edge serves d8330fb6 at 100% (rev c6e123eba), as tests/am1/raw/runs/fanout-lc-edge.log deployed
+2026-11-21T16:49:41Z meter (account, run) 40.05 0.01 before b033, expected +$2.2, stop $170 account, $10 run
+2026-11-21T16:50:44Z meter (account, run) 40.05 0.01
+2026-11-21T16:51:47Z meter (account, run) 40.06 0.01
+2026-11-21T16:52:50Z meter (account, run) 40.08 0.02
+2026-11-21T16:53:52Z meter (account, run) 40.1 0.04
+2026-11-21T16:54:56Z meter (account, run) 40.17 0.09
+2026-11-21T16:55:58Z meter (account, run) 40.31 0.26
+2026-11-21T16:57:00Z meter (account, run) 40.63 0.54
+2026-11-21T16:58:03Z meter (account, run) 41.01 0.92
+2026-11-21T16:59:05Z meter (account, run) 41.28 1.23
+2026-11-21T17:00:10Z meter (account, run) 41.55 1.45
+2026-11-21T17:01:13Z meter (account, run) 41.63 1.52
+2026-11-21T17:01:32Z b033 ended:   3 to 5 s   | 1188 / 4020
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-21T17:01:47Z sweep exit 0 (kept: none)
+2026-11-21T17:01:50Z meter (account, run) 41.78 1.66 after b033 and the sweep
+DONE

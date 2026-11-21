@@ -172,6 +172,94 @@ Inside the round:
   tail"), all cuts `Empty`. The cadence change helps it only through a shorter round on a leader whose learners are
   busy reading. It does nothing for the large-entry wait.
 
+## The row: B0-33 lcA2, and the reversal
+
+Built on `r33-learner-cadence` and merged as main `c6e123eb`; measured on graft-m2b on 2026-11-21; **reversed** by
+`git revert -m 1 c6e123eb` (branch `r33-cadence-revert`) because its flip fired. DECISIONS `learner-cadence` holds the
+record; A39 holds the open question.
+
+**Setup.** Site day from `c6e123eb`, siteday exit 0; edge `d8330fb6` at 100% (rev `c6e123eba`). `reretire.sh` printed
+RERETIRE OK graft-m2b. One B0-33 row, m64 shape, four learners (`enam:2000,weur:1000,apac:1000`), flag off: tag lcA2,
+repository 131382, run `mwqna5p0`, load 16:53:52 to 16:58:52Z. Site 0 led at term 2 through the load window, in three
+stretches cut by `terms.mjs` gaps, with five LoopLag StepDown alarms, all held. After the load, site 1 won term 3
+(16:59:12Z, after a CommitErrors hold on site 1) and site 0 term 4 (16:59:36Z). A first start, tag lcA, refused
+before any request because the reretire log left the tree dirty (`rows.sh`'s clean-tree check). Run cost $1.66;
+graft-m2b $8.34 that UTC day.
+
+**Verdict lines** against `sync-ab` arm A (sabA, same shape on main `c4d5a133`) [measured]:
+
+| Line | lcA2 (200 ms) | Arm A (50 ms) | Flip line |
+|---|---|---|---|
+| Learner calls to the leader (`CallSent`, 4 learners) | **15.6/s** | 56.1/s | under 30: met |
+| of which read-index batches / hedges | 15.0 / 0.3 | 37.2 / 2.8 | |
+| Leader learner `/raft` (`Entered`) | 14.6 / 16.7 / 13.8 | 55.8 | |
+| Leader confirm wall p50 / p90 / p99 ms | 48 / **612** / 2,249 and 77 / **799** / 2,258 | 52 / 379 / 2,076 | p90 under 300: **failed** |
+| Leader inputs/s | 261 / 333 / 373 | 314 | |
+| Leader `/outcome_by_request`/s | 40.1 / 43.2 / 92.9 | 12.6 | |
+| Ticker stalls ≥ 500 ms | 69 (75.2 s) | 10 (9.1 s) | |
+| Held-input batches (requests held) | 415 (71,574 of 87,929) | 464 (61,315 of 94,258) | |
+| Round p50 / p99 ms (`/stats`) | 498 / 3,820 | 359 / 1,136 | |
+| Cycle p50 / p99 ms (`/stats`); full cycle p50 (`leadcycle.py`) | 567 / 3,756; 707 to 735 | 420 / 1,223; 560 | |
+| `queue:slot` p99 ms | 28,644 | 5,798 | |
+| Human / merge commit stage p99 ms | 29,303 / 11,197 | 3,589 / 2,728 | |
+| Agent commands/s cut | 70.8 | 103.2 | |
+| Agent pushes ok | 1,426 of 12,382 | 5,477 of 12,547 | |
+| Edge 503s | **9,948** | 525 | under 1,050: **failed** |
+| Learner read wait p50 / p90 / p99 ms (queue + call) | **902 / 2,019 / 4,011** | 365 / 1,000 / 1,568 | |
+| of which queue before the batch leaves, p50 / p99 | 139 / 3,275 | 6 / 764 | |
+| of which the read-index call, p50 / p99 | 592 / 1,000 | 321 / 1,000 | |
+| Learners' inbound `/read`/s | 300.4 | 193.2 | |
+
+Sources: `tests/fanout/syncab.py` (inputs, confirms, stalls, held batches; three stretches of site 0's term-2
+leadership, 16:53:52 to 16:55:51, 16:55:54 to 16:58:08 and 16:58:19 to 16:58:52Z); the a1 row's leader `/stats`; the
+push log; `tests/m0/cuttrace/cuts.py`; `tests/fanout/leadcycle.py`; `tests/fanout/readwait.py` (new); the edge's 5xx
+reasons in `rows-lcA2.status`, all "every member asked shed the read: overloaded" on task 2,813, graphql 1,950, renew
+1,628, upload-pack 1,628, rest-repo-write 1,275, lease 628 and receive-pack 17. The second flip line (confirm p90
+falls, round p50 does not) does not apply: confirm p90 rose.
+
+**The flip fired.** Learner calls fell under 30 a second and the leader's confirm p90 rose instead of falling under
+300 ms; every later line is worse than arm A's. The floor removed the calls it was meant to remove; their count
+was not what set the confirm wall at this shape.
+
+**Reading** [inference; one row against one row, run-to-run variance unmeasured; A39]: the floor added p50 133 ms of
+queue to every learner read and the slower leader added 271 ms to its call. More reads passed `FOLLOWER_WAIT` and were
+shed, the edge's shed retries raised the learners' inbound `/read` by half, and writes on longer paths asked their
+outcomes on the leader three to seven times as often. So the leader's input did not fall though learner `/raft` did.
+This is risk (a) above, at full strength.
+
+**Teardown check** (`teardown-stops-runs`, shipped on the same site day) [measured]: network 131382 was torn down at
+16:59:44Z; after the end sweep its shards on sites 0, 1 and 2 read `/status` running false, `alarm` null
+(`tests/fanout/tornalarm.py`: TORNALARM OK), and no shard container ran. No client request answered 503 `warming`.
+
+**Corrections to sections 1 and 2**, from the second opinion (thread T-01a1f697). The `Lag` rows and the round ranks are
+rechecked here on `tsave-*.jsonl.xz` [measured]; the handler p50, the 163 to 238 ms and the autocorrelations are the
+second opinion's:
+
+- **Section 2 overstates the follower input queue.** It read the 427 and 444 ms outside the follower's handler in arm
+  B as the followers' inputs queueing under the tier reads. The traces do not carry that much. The followers (sites 1
+  and 2) logged no `Lag` row (kind 8) in any of sabA, sabC, sabB2 or lcA2; only the leader did (43 in A, 144 in lcA2).
+  Their handler p50 was at most 53 ms. And arm A, whose followers had 1 to 2 requests open, still has 163 to 238 ms per
+  leg outside the handler that the idle 94 ms leg does not explain. The between-arm contrast puts the follower read
+  load at about 100 to 190 ms of the round [inference]. The rest of the leg is wire both ways, the follower's wait
+  before its handler, and the leader taking the answer late, which this trace cannot split, since its cross-clock
+  stamps drift by about 1 s. `b033-rebase.md`, item 3, has the Workers Logs split where it exists.
+- **"Two p99 rounds plus one median" uses rounds that are not p99.** The mechanism stands (a Human waits out the entry
+  in flight and then its own entry). The arithmetic does not. The `/stats` round p99s used above (1,136 / 943 / 1,067
+  ms) sit at p96.2, p93.1 and p96.3 of the leader trace's entry rounds (first `AppendQueued` to first ok voter
+  `AppendEnded`, 30 to 270 s), whose p50 / p90 / p99 are 292 / 766 / 2,108 (A), 472 / 819 / 1,779 (C) and 480 / 847 /
+  1,507 ms (B). With those p99s the formula gives 4,508 / 4,030 / 3,494 ms, not 2,631 / 2,377 / 2,625. lcA2's `/stats`
+  round p99 of 3,820 sits at p99.4 of its 323 entry rounds (p50 / p90 / p99 365 / 1,342 / 2,974). The round lag-1
+  autocorrelation is −0.01, 0.04 and 0.31, so slow rounds mostly do not come in pairs, and a tail Human is one slow
+  round plus ordinary parts. Which sampler the re-based line uses is `b033-rebase.md`, item 1.
+- lcA2's Human p99 of 29.3 s cannot be built from rounds: it matches `queue:slot` (28.6 s), and its Humans were admitted
+  16:58:45.5 to 16:58:49.5Z and answered 16:59:13 to 19Z, across the end of load and site 1's term 3 at 16:59:12Z
+  [inference from the push log and the terms file].
+
+**Raws** (`tests/fanout/raw/`): `costrow-lcA2.status`, `rows-lcA2.status`, `terms-lcA2.jsonl`, `tsave-lcA2.jsonl.xz`,
+`memguard-lcA2.{err,jsonl.xz}`, `arrivals-lcA2.jsonl`, `shardgate-lcA2-b0-33-{0,1,2}.jsonl`, `siteday-lc.status`,
+`reretire-graft-m2b.log`; `tests/am1/raw/a1-b0-33-mwqna5p0.jsonl`, `tests/am1/raw/runs/a1-b0-33-flcA2-b033.log`,
+`fanout-lc-{edge,siteday}.log`.
+
 ## Files
 
 - `tests/fanout/agentbacklog.py` (new): the agent lane's arrival → cut wait, rebuilt from cut rows.
@@ -179,3 +267,5 @@ Inside the round:
   leader's call.
 - `tests/fanout/leadcycle.py`, `tests/m0/cuttrace/cuts.py`, `tests/fanout/learnerrates.py`, `tests/fanout/slotsplit.py`
   (existing), on `tests/fanout/raw/tsave-sab{A,C,B2}.jsonl.xz` from branch `r33-sab-row`.
+- `tests/fanout/readwait.py` (new, the row): each learner read's queue before its batch leaves, plus that call.
+- `tests/fanout/tornalarm.py` (new, the row): each site's shard `/status` for a torn-down network.
