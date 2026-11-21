@@ -257,6 +257,19 @@ The orchestrator brought the operator an independent review of the failing Miles
 
 The 90% rule, the daily spend limit, and every invariant in `AGENTS.md` are unchanged.
 
+### Operator decision, 2026-11-21, a standing row queue
+
+> "Yes, apply option 3 with those guardrails"
+
+The operator asked how to speed the run up. The orchestrator measured that hosted rows cost $1 to $5 each and take 30 to 40 minutes, and that most of the wait was a finished thread waiting for the orchestrator to read its verdict and grant its next row. It proposed a standing pre-approved queue, and the operator approved it with two guardrails:
+
+- A thread that owns an install may run its next hosted row as soon as the fix that row tests is merged, without a per-row grant. It sends verdict lines within 30 minutes of the row's done line, as before.
+- Each row stops at $10, and each install stops at $40 per UTC day, read with `tests/fanout/acctcost.py` by script prefix (the runner account counts toward `graft-m4a`). Within these caps this replaces item 3's approval for each row above the current rate. A row whose estimate is above $10 still needs the operator's approval.
+- A row runs only from merged `main`, never from an unmerged branch. Its site day is from `main`.
+- A thread whose rows fail twice in a row on the same cause stops, and brings the orchestrator its analysis before a third row.
+
+The orchestrator still reviews and merges every code change. The account-wide limit of $200 a day, the $180 hard stop, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
