@@ -534,13 +534,24 @@ impl DurableObject for Member {
             return each!(&h, x => Routes { host: x.clone() }.join(join).await);
         }
         let Some(h) = self.hosts.borrow().as_ref().map(Hosted::clone) else {
-            return match (req.method(), url.path()) {
-                (Method::Get, "/ping") => Response::empty(),
-                (Method::Get, "/status") => Response::from_json(
+            use crate::retire::Unjoined;
+            return match crate::retire::unjoined(&req.method(), url.path(), cfg!(feature = "test-faults")) {
+                Unjoined::Ping => Response::empty(),
+                Unjoined::Status => Response::from_json(
                     &json!({ "joined": false, "retired": crate::retire::at(&self.state.storage().sql()) }),
                 ),
-                (Method::Get, "/rtt") => Response::from_json(&rtt_rows(&self.state, &self.env)?),
-                _ => Response::error("member not joined", 409),
+                Unjoined::Rtt => Response::from_json(&rtt_rows(&self.state, &self.env)?),
+                // A group retired before the `retired` row existed left this member not joined and without it; a
+                // second retire writes it, so the next create on first use is refused (`crate::retire`).
+                Unjoined::Retire { purge } => {
+                    let reuse =
+                        !purge && req.json::<Value>().await.ok().and_then(|b| b["reuse"].as_bool()).unwrap_or(false);
+                    crate::retire::wipe(&self.state, now_ms(), reuse).await?;
+                    // The wipe dropped the `rtt` table too; the reset object's `new` makes it again.
+                    host::abort(&self.state, "graftyard unjoined member retired");
+                    Response::from_json(&json!({ "retired": true, "joined": false }))
+                }
+                Unjoined::Refuse => Response::error("member not joined", 409),
             };
         };
         each!(&h, x => Routes { host: x.clone() }.fetch(req, url).await)

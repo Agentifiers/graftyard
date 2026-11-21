@@ -1,0 +1,4 @@
+# graft-m3f: 50 networks retired before retire-sticks deployed; none joined, none with the retired row. 65600-65603 were retired with the row on 2026-11-21 and are not listed.
+65536-65576
+65588-65594
+65598-65599

@@ -2,7 +2,9 @@
 //! storage and reset. `/seed` joins (a `join` row and a log row, as `/join` stores them); `/retire?arm=` retires and
 //! resets the object as `host::abort` does: `main` deletes the storage only, as main's `/retire` did, `fix` and
 //! `reuse` through `workers/site/src/retire.rs`'s `wipe`. `/join` answers as the member's `/join` gate does, through
-//! `retire::refusal`, and stores the `join` row when it may join. `/status` names the rows left.
+//! `retire::refusal`, and stores the `join` row when it may join. `/unjoined?p=` is a request to a member that holds
+//! no group, routed by `retire::unjoined` as the member's `fetch` routes it: a retire wipes and writes the row,
+//! anything else answers 409 and writes nothing. `/status` names the rows left.
 use wasm_bindgen::JsCast;
 use worker::*;
 
@@ -50,6 +52,17 @@ impl DurableObject for M {
                 }
                 abort(&self.state);
                 Response::ok("retired")
+            }
+            "/unjoined" => {
+                let p = url.query_pairs().find(|(k, _)| k == "p").map(|(_, v)| v.to_string()).unwrap_or_default();
+                match retire::unjoined(&Method::Post, &p, true) {
+                    retire::Unjoined::Retire { .. } => {
+                        retire::wipe(&self.state, Date::now().as_millis(), false).await?;
+                        abort(&self.state);
+                        Response::ok("retired")
+                    }
+                    _ => Ok(Response::ok("member not joined")?.with_status(409)),
+                }
             }
             "/join" => match retire::refusal(retire::at(&sql)) {
                 Some(why) => Response::ok(format!("refused {why}")),
