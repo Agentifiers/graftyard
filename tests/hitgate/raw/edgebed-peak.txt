@@ -1,0 +1,20 @@
+# tests/composed/edgebed/run.sh with PEAK=1 (the counting allocator and `/peak` in its src/lib.rs). Main's run used
+# main ac8939a4's host::manifest_answer under the same bed; columns: code, bytes, wasm memory before -> after, peak held bytes.
+# edgebed, main ac8939a4 (tail read whole)
+base: PASS, 3210438 bytes, byte-identical, index-pack --strict and fsck took it
+parts: PASS, 3211646 bytes, byte-identical, index-pack --strict and fsck took it
+fold: PASS, 3184490 bytes, byte-identical, index-pack --strict and fsck took it
+mem after small answers: 4 MiB
+tail 1 MiB: 200 4259943, wasm 4 -> 4 MiB, peak held bytes 2101355 2102
+tail 4 MiB: 200 7405911, wasm 8 -> 12 MiB, peak held bytes 8392814 2105
+tail 8 MiB: 200 11600535, wasm 12 -> 20 MiB, peak held bytes 16781425 2108
+4 slow 8 MiB answers at once: wasm 20 -> 44 MiB, peak held bytes 41951164 2120
+# edgebed, b034-two (tail streamed)
+base: PASS, 3210438 bytes, byte-identical, index-pack --strict and fsck took it
+parts: PASS, 3211646 bytes, byte-identical, index-pack --strict and fsck took it
+fold: PASS, 3184490 bytes, byte-identical, index-pack --strict and fsck took it
+mem after small answers: 4 MiB
+tail 1 MiB: 200 4259943, wasm 4 -> 4 MiB, peak held bytes 4192 2282
+tail 4 MiB: 200 7405911, wasm 8 -> 8 MiB, peak held bytes 4196 2286
+tail 8 MiB: 200 11600535, wasm 16 -> 16 MiB, peak held bytes 4200 2290
+4 slow 8 MiB answers at once: wasm 16 -> 16 MiB, peak held bytes 12325 2306

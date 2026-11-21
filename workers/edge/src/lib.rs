@@ -2191,7 +2191,30 @@ pub(crate) async fn push_init(
 
 // ---- upload-pack ----
 
-async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Response> {
+/// An upload-pack's request, read and keyed before its read gate decides, and its clone-cache answer if one was found
+/// (`upload_front`).
+struct UploadFront {
+    proto: String,
+    body: Vec<u8>,
+    v2: Option<graftyard_git::smart::V2Request>,
+    key: Option<CloneKey>,
+    answer: Option<Hit>,
+}
+
+/// What `upload_front` found before the gate decided. Neither starts a stream: a `Composed` hit's answer is built only
+/// once the gate allows, so a refused request leaves no writer waiting on a reader.
+enum Hit {
+    /// A manifest entry whose chain packs were checked, and the hit's headers.
+    Composed(graftyard_git::host::ChainAnswer, Headers),
+    /// A whole entry's R2 body, `chain_late`, or the 503 of a tag read with no leader.
+    Ready(Response),
+}
+
+/// The part of an upload-pack that runs beside its read gate (`graftyard_git::compose::beside_gate`, `hit-gate`): the
+/// body, its `CloneKey`, and the clone-cache lookup, a manifest checked in the chain buckets or a whole entry. Nothing
+/// it finds is sent before the gate allows. On B0-34 mt11 the lookup ran after the gate, and a manifest hit's gate read
+/// (front p99 1,078 ms in j9), manifest read and chain checks summed into hits over 1 s.
+async fn upload_front(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<UploadFront> {
     let proto = req.headers().get("git-protocol")?.unwrap_or_default();
     let enc = req.headers().get("content-encoding")?.unwrap_or_default();
     let raw = req.bytes().await?;
@@ -2204,6 +2227,78 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
     #[cfg(not(feature = "test-faults"))]
     let cache_ok = true;
     let v2 = if wants_v2(Some(&proto)) { parse_v2(&body).ok() } else { None };
+    let mut answer = None;
+    let key = match v2.as_ref() {
+        Some(v) if cache_ok => {
+            // The tags are read only for a key that holds them (`CloneKey::needs_tags`): an ls-refs read them from the
+            // leader and threw them away.
+            if CloneKey::needs_tags(NetworkId(repo.id.0), v) {
+                match read_refs(c, repo, b"refs/tags/").await {
+                    Ok(Ok((_, refs))) => CloneKey::of(
+                        NetworkId(repo.id.0),
+                        v,
+                        tags_digest(refs.iter().map(|(n, o)| (n.as_str(), o.as_str()))),
+                    ),
+                    _ => {
+                        answer = Some(Hit::Ready(text(c.rid, 503, "the repository's group has no leader; retry\n")?));
+                        None
+                    }
+                }
+            } else {
+                CloneKey::of(NetworkId(repo.id.0), v, graftyard_types::Digest([0; 32]))
+            }
+        }
+        _ => None,
+    };
+    if let Some(k) = &key {
+        answer = clone_hit(c, repo, k).await?;
+    }
+    Ok(UploadFront { proto, body, v2, key, answer })
+}
+
+/// The network's chain buckets as R2 handles, home first (`chain-warm`): after a fold the home bucket can lack a chain
+/// the other warm bucket still holds whole, and its shards still name it.
+fn chain_r2(c: &Ctx<'_>, repo: &Repo) -> Result<Vec<R2>> {
+    let ids: Vec<SiteId> = c.sites.0.iter().map(|s| s.id).collect();
+    graftyard_git::chain_buckets(NetworkId(repo.id.0), repo.record.home, &ids)
+        .into_iter()
+        .map(|s| Ok(R2(c.env.bucket(&format!("BUCKET_{}", s.0))?)))
+        .collect()
+}
+
+/// A clone-cache hit for `k`, from the home site's bucket: a composed miss's entry is a manifest (`edge-compose`),
+/// checked in the chain buckets; one whose chain has moved on in every one (a fold deleted its files) is not a hit,
+/// and neither is no entry. `chain_open` in `server-timing`: the manifest's chain checks, recorded whether the manifest
+/// served or was declined (`chain-open`). The manifest's tail stays in its entry's body, never held whole (`hit-gate`).
+async fn clone_hit(c: &Ctx<'_>, repo: &Repo, k: &CloneKey) -> Result<Option<Hit>> {
+    let cache = R2(c.env.bucket(&format!("BUCKET_{}", repo.record.home.0))?);
+    let chain = chain_r2(c, repo)?;
+    let chain: Vec<&R2> = chain.iter().collect();
+    let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
+    h.set("x-graft-clone-cache", "hit")?;
+    if let Some(o) = cache.0.get(k.manifest_key().to_string()).execute().await.map_err(|e| e.to_string())?
+        && o.size() <= graftyard_git::compose::TAIL_ANSWER_MAX
+        && let Some(b) = o.body()
+        && let worker::ResponseBody::Stream(body) = b.response_body()?
+    {
+        let net = NetworkId(repo.id.0);
+        match api::timed(c, "chain_open", graftyard_git::host::manifest_check(&chain, net, body, o.size()))
+            .await
+            .map_err(|e| e.0)?
+        {
+            ChainCheck::Checked(a) => return Ok(Some(Hit::Composed(a, h))),
+            ChainCheck::Late => return Ok(Some(Hit::Ready(chain_late(c.rid)?))),
+            ChainCheck::Declined => {}
+        }
+    }
+    Ok(graftyard_git::host::cached_response(&cache, &k.r2_key(0).to_string(), h)
+        .await
+        .map_err(|e| e.0)?
+        .map(Hit::Ready))
+}
+
+async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Response> {
+    let UploadFront { proto, body, v2, key, answer } = front;
     let is_ls = v2.as_ref().is_some_and(|v| v.command == "ls-refs");
     #[cfg(feature = "test-faults")]
     let edge_ls = c.ls_refs_edge;
@@ -2221,62 +2316,14 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         h.set("x-graft-ls-refs", "edge")?;
         return Ok(Response::from_bytes(answer)?.with_headers(h));
     }
-    let key = if cache_ok && wants_v2(Some(&proto)) {
-        match v2.ok_or(()) {
-            // The tags are read only for a key that holds them (`CloneKey::needs_tags`): an ls-refs read them from the
-            // leader and threw them away.
-            Ok(v) if CloneKey::needs_tags(NetworkId(repo.id.0), &v) => {
-                let tags = match read_refs(c, repo, b"refs/tags/").await {
-                    Ok(Ok((_, refs))) => tags_digest(refs.iter().map(|(n, o)| (n.as_str(), o.as_str()))),
-                    _ => return text(c.rid, 503, "the repository's group has no leader; retry\n"),
-                };
-                CloneKey::of(NetworkId(repo.id.0), &v, tags)
-            }
-            Ok(v) => CloneKey::of(NetworkId(repo.id.0), &v, graftyard_types::Digest([0; 32])),
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
-    // The clone cache lives in the home site's bucket.
-    let cache_binding = format!("BUCKET_{}", repo.record.home.0);
-    let cache = R2(c.env.bucket(&cache_binding)?);
-    let net = NetworkId(repo.id.0);
-    // A manifest's chain packs are checked in the network's chain buckets, home first (`chain-warm`): after a fold
-    // the home bucket can lack a chain the other warm bucket still holds whole, and its shards still name it.
-    let ids: Vec<SiteId> = c.sites.0.iter().map(|s| s.id).collect();
-    let chain: Vec<R2> = graftyard_git::chain_buckets(net, repo.record.home, &ids)
-        .into_iter()
-        .map(|s| Ok(R2(c.env.bucket(&format!("BUCKET_{}", s.0))?)))
-        .collect::<Result<_>>()?;
-    let chain: Vec<&R2> = chain.iter().collect();
-    if let Some(k) = &key {
-        let h = git_headers(c.rid, &Service::UploadPack.result_type())?;
-        h.set("x-graft-clone-cache", "hit")?;
-        // A composed miss's entry is a manifest (`edge-compose`), streamed from the chain in the chain buckets. One
-        // whose chain has moved on in every one (a fold deleted its files) is a miss, which writes a new one.
-        // `chain_open` in `server-timing`: the chain packs' opens, from after the manifest's read to the answer's
-        // headers, recorded whether the manifest served or was declined (`chain-open`).
-        if let Some(o) = cache.0.get(k.manifest_key().to_string()).execute().await.map_err(|e| e.to_string())?
-            && o.size() <= graftyard_git::compose::TAIL_ANSWER_MAX
-            && let Some(b) = o.body()
-        {
-            let bytes = b.bytes().await?;
-            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&chain, net, bytes, h.clone()))
-                .await
-                .map_err(|e| e.0)?
-            {
-                ChainCheck::Checked(r) => return Ok(r),
-                ChainCheck::Late => return chain_late(c.rid),
-                ChainCheck::Declined => {}
-            }
-        }
-        if let Some(r) =
-            graftyard_git::host::cached_response(&cache, &k.r2_key(0).to_string(), h).await.map_err(|e| e.0)?
-        {
-            return Ok(r);
-        }
+    match answer {
+        Some(Hit::Composed(a, h)) => return graftyard_git::host::composed_answer(a, h).map_err(|e| e.0.into()),
+        Some(Hit::Ready(r)) => return Ok(r),
+        None => {}
     }
+    let net = NetworkId(repo.id.0);
+    let chain = chain_r2(c, repo)?;
+    let chain: Vec<&R2> = chain.iter().collect();
     // A miss names its key (`fill=`): the shard spools the whole answer and puts it to the cache itself, so a client
     // that stops reading still leaves an entry. The edge's own tee stored only answers a client read to the end, and
     // B0-34's first-byte probe never did (`decisions/DECISIONS.md`, "The clone cache fills from the shard"). With
@@ -2295,9 +2342,10 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Resp
         if let Some(v) = r.headers().get("x-graft-cursor")? {
             h.set("x-graft-cursor", &v)?;
         }
-        if len.is_some_and(|n| n <= graftyard_git::compose::TAIL_ANSWER_MAX) {
-            let bytes = r.bytes().await?;
-            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&chain, net, bytes, h))
+        if let Some(n) = len.filter(|n| *n <= graftyard_git::compose::TAIL_ANSWER_MAX)
+            && let worker::ResponseBody::Stream(b) = r.body().clone()
+        {
+            match api::timed(c, "chain_open", graftyard_git::host::manifest_answer(&chain, net, b, n, h))
                 .await
                 .map_err(|e| e.0)?
             {
@@ -3384,6 +3432,8 @@ async fn serve(
         c.timing.bound_from_start(&c.bound);
     }
     let mut early = None;
+    let upload = matches!(route, Route::Rpc { service: Service::UploadPack, .. }) && req.method() == Method::Post;
+    let mut front = None;
     // The read gate, before any byte of the repository: an anonymous request for a repository that is not visibly
     // public gets 401 at once, so git asks for credentials, and a caller who may not read it gets the 404 an unknown
     // repository gets (`design/SHARED.md`, "Identity and tokens", `authorize`). A push needs read too.
@@ -3393,7 +3443,17 @@ async fn serve(
             Route::InfoRefs { service: Some(Service::ReceivePack), .. }
                 | Route::Rpc { service: Service::ReceivePack, .. }
         );
-        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref())).await?;
+        // An upload-pack's body, key and clone-cache lookup run beside the gate, and are kept only if it allows
+        // (`hit-gate`): no byte of the repository leaves before the gate decides.
+        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref()));
+        let gate = if upload {
+            let allows = |g: &Result<_>| matches!(g, Ok(Ok(graftyard_identity::Decision::Allow)));
+            let (g, f) = graftyard_git::compose::beside_gate(gate, upload_front(&c, &mut req, repo), allows).await;
+            front = f;
+            g
+        } else {
+            gate.await
+        }?;
         // AGENT_PUSH_BOUND at the read gate: an authenticated push the edge classes Agent, whose gate read its members
         // shed until the bound, answers B0-32's `ng` once git has sent its commands, not 503. The repository resolved,
         // so the `ng` says no more than the 503 did: an unknown repository is 404 before the gate.
@@ -3430,7 +3490,14 @@ async fn serve(
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
-            let r = upload_pack(&c, &mut req, repo).await;
+            let r = async {
+                let front = match front.take() {
+                    Some(f) => f?,
+                    None => upload_front(&c, &mut req, repo).await?,
+                };
+                upload_pack(&c, repo, front).await
+            }
+            .await;
             // A test install answers each fetch with its stages: `total` is the edge's time to the shard's headers,
             // its time to first byte.
             #[cfg(feature = "test-faults")]

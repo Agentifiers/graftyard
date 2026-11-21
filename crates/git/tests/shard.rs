@@ -536,7 +536,7 @@ fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_dead
             (Some(w), Some(r)) if r <= w => Poll::Ready(()),
             _ => Poll::Pending,
         });
-        let composed = futures_executor::block_on(chain_ready(follows, left, ready, |w| {
+        let composed = futures_executor::block_on(chain_ready(follows, true, left, ready, |w| {
             slept.set(Some(w));
             std::future::poll_fn(
                 move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
@@ -558,6 +558,151 @@ fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_dead
     assert_eq!(run(true, s(15), Some(Duration::ZERO)), (true, s(2)));
     assert_eq!(run(false, s(15), Some(Duration::ZERO)), (true, s(15)));
     assert_eq!(run(true, s(15), Some(Duration::from_millis(1_500))), (true, s(2)));
+}
+
+/// A composable miss on a site whose bucket holds no chain (`chain_ready` with `chain_site` false, a site that is not
+/// one of `chain_buckets`) waits for no chain step. As the last site it asks its container at once, which composes
+/// from a chain it already holds or serves stock; forwarded, it answers `warming` at once so the edge asks the next
+/// site, unless a chain is already synced there. B0-34 mt11's case: site c, last in kill's order and not a warm site,
+/// waited `COMPOSE_WAIT`'s whole 20 s (`ready_ms` 20000) for each of 5 misses, then served stock or composed at 22 to
+/// 32 s; 4 of them took kill's every-clone share from 92 % to 88.2 % (`tests/am1/results/b034-mt11.md`). On main's
+/// rule the last site waits all that is left of its deadline, which fails here.
+#[test]
+fn a_miss_on_a_site_that_holds_no_chain_waits_for_no_chain_step() {
+    use graftyard_git::compose::chain_ready;
+    use graftyard_types::{DbId, NetworkId, SiteId};
+    use std::cell::Cell;
+    use std::task::Poll;
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    // mt11's monorepo network on graft-m1's three sites, home a: the chain sites are a and b, not c.
+    let (net, home, sites) = (NetworkId(DbId(1048604)), SiteId(0), [SiteId(0), SiteId(1), SiteId(2)]);
+    let chain = graftyard_git::chain_buckets(net, home, &sites);
+    let chain_site = |s: SiteId| chain.contains(&s);
+    let c = SiteId(2);
+    assert_eq!(chain, [SiteId(0), SiteId(1)], "mt11's chain buckets: a and b");
+    // (asks its container, the wait the shard slept for)
+    let run = |follows: bool, on: SiteId, left: Duration, ready_at: Option<Duration>| {
+        let slept = Cell::new(None::<Duration>);
+        let ready = std::future::poll_fn(|_| match (slept.get(), ready_at) {
+            (Some(w), Some(r)) if r <= w => Poll::Ready(()),
+            _ => Poll::Pending,
+        });
+        let go = futures_executor::block_on(chain_ready(follows, chain_site(on), left, ready, |w| {
+            slept.set(Some(w));
+            std::future::poll_fn(
+                move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
+            )
+        }));
+        (go, slept.get().expect("the shard sleeps for its wait"))
+    };
+    // mt11's case: site c last (wait=60, no next), no chain ever. It asks its container at once, not after 20 s or 60 s.
+    assert_eq!(run(false, c, s(60), None), (true, Duration::ZERO));
+    // Forwarded (next=1) from site c: warming at once, not after the 2 s bound.
+    assert_eq!(run(true, c, s(15), None), (false, Duration::ZERO));
+    // A chain already synced on site c still answers there, last or forwarded.
+    assert_eq!(run(false, c, s(60), Some(Duration::ZERO)), (true, Duration::ZERO));
+    assert_eq!(run(true, c, s(15), Some(Duration::ZERO)), (true, Duration::ZERO));
+    // The chain sites keep `chain-wait`'s rule: a forwarded miss waits the bound, the last site its whole deadline.
+    for on in chain.iter().copied() {
+        assert_eq!(run(true, on, s(15), None), (false, s(2)), "chain site {on:?} forwarded");
+        assert_eq!(run(false, on, s(60), None), (false, s(60)), "chain site {on:?} last");
+        assert_eq!(run(false, on, s(60), Some(s(14))), (true, s(60)), "chain site {on:?} composes a chain 14 s away");
+    }
+}
+
+/// A clone-cache hit's lookup runs beside its read gate (`beside_gate`, `hit-gate`), on a virtual clock: the hit's
+/// time to an answer is the longer of the two, not their sum, and a gate that does not allow keeps nothing the lookup
+/// found. B0-34 mt11's slow manifest hits: gate 0.47 s (a cold access read) then manifest read and chain checks 0.8 s
+/// gave 1.27 s one after the other; beside each other, 0.8 s. On main's rule (gate, then lookup) this fails.
+#[test]
+fn a_hits_lookup_runs_beside_its_gate_and_a_refused_gate_keeps_nothing() {
+    use graftyard_git::compose::beside_gate;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    // A virtual clock in ms: each future ends at its own time, and only the future whose end is the earliest pending
+    // one moves the clock there, so a future still pending never moves time past one that ends sooner.
+    #[derive(Clone)]
+    struct Clock(Rc<Cell<u64>>, Rc<std::cell::RefCell<Vec<u64>>>);
+    impl Clock {
+        fn at(&self, end: u64) -> impl std::future::Future<Output = u64> + use<> {
+            let (now, ends) = (self.0.clone(), self.1.clone());
+            ends.borrow_mut().push(end);
+            std::future::poll_fn(move |cx| {
+                if now.get() >= end {
+                    let mut e = ends.borrow_mut();
+                    if let Some(i) = e.iter().position(|x| *x == end) {
+                        e.remove(i);
+                    }
+                    return std::task::Poll::Ready(end);
+                }
+                if ends.borrow().iter().copied().filter(|e| *e >= now.get()).min() == Some(end) {
+                    now.set(end);
+                }
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            })
+        }
+    }
+    let run = |gate_ms: u64, allow: bool, lookup_ms: u64| {
+        let clock = Clock(Rc::new(Cell::new(0)), Rc::default());
+        let looked = Rc::new(Cell::new(false));
+        let gate = {
+            let g = clock.at(gate_ms);
+            async move {
+                g.await;
+                allow
+            }
+        };
+        let lookup = {
+            let (l, looked) = (clock.at(lookup_ms), looked.clone());
+            async move {
+                l.await;
+                looked.set(true);
+                "hit"
+            }
+        };
+        let (g, hit) = futures_executor::block_on(beside_gate(gate, lookup, |g| *g));
+        (g, hit, clock.0.get(), looked.get())
+    };
+    // mt11's slow hit: the answer is ready at the lookup's 800 ms, not at 470 + 800.
+    assert_eq!(run(470, true, 800), (true, Some("hit"), 800, true));
+    // A lookup quicker than the gate waits for the gate's allow before it counts.
+    assert_eq!(run(900, true, 300), (true, Some("hit"), 900, true));
+    // A gate that refuses first drops the lookup unfinished: nothing kept, and no wait for it.
+    assert_eq!(run(200, false, 800), (false, None, 200, false));
+    // A gate that refuses after the lookup ended drops its value.
+    assert_eq!(run(900, false, 300), (false, None, 900, true));
+}
+
+/// A manifest answer's line read from chunks (`LineSplit`, `hit-gate`): the line is held across chunks, the tail starts
+/// in the chunk the line ended in, and a line past `MANIFEST_MAX` is refused without holding more. Main read the whole
+/// answer, line and tail, into one buffer and copied the tail once more, so an 8 MiB tail held 16.8 MB in the edgebed.
+#[test]
+fn a_manifest_line_is_split_from_its_tail_across_chunks() {
+    use graftyard_git::compose::{LineSplit, LineStep, MANIFEST_MAX};
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(b"{\"v\":1,"), LineStep::More);
+    assert_eq!(s.push(b"\"x\":2}\nTAIL"), LineStep::Line(b"{\"v\":1,\"x\":2}\n".to_vec(), 7));
+    // A line that ends a chunk leaves the tail to the next one.
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(b"{}\n"), LineStep::Line(b"{}\n".to_vec(), 3));
+    // A line in one chunk with its tail.
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(b"{}\n\nmore\n"), LineStep::Line(b"{}\n".to_vec(), 3));
+    // No newline within MANIFEST_MAX: refused, across chunks or in one.
+    let mut s = LineSplit::default();
+    assert_eq!(s.push(&vec![b'a'; MANIFEST_MAX - 1]), LineStep::More);
+    assert_eq!(s.push(b"a"), LineStep::TooLong);
+    let mut s = LineSplit::default();
+    let mut long = vec![b'a'; MANIFEST_MAX];
+    long.push(b'\n');
+    assert_eq!(s.push(&long), LineStep::TooLong);
+    // One byte under the limit still reads.
+    let mut s = LineSplit::default();
+    let mut ok = vec![b'a'; MANIFEST_MAX - 1];
+    ok.push(b'\n');
+    assert_eq!(s.push(&ok), LineStep::Line(ok.clone(), MANIFEST_MAX));
 }
 
 /// Stock upload-packs past the container's `STOCK_MAX` wait in the shard object in arrival order: the head of the
