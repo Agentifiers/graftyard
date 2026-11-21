@@ -171,73 +171,100 @@ fn assignees(meta: &(impl Read + ?Sized), n: IssueNumber) -> Vec<AccountId> {
         .collect()
 }
 
-/// The notifications one committed entry owes, by account, read from the repository's metadata tier on a follower
-/// that has applied the entry. `login` resolves a mention to an account (the `Names` shards).
+/// Who may hear of thread `n`, read once per batch from the tier as it stands: on a busy issue the commenters are a
+/// scan of every comment, which a batch read once for each entry that touched the issue (`decisions/DECISIONS.md`,
+/// "`round-memo`").
+struct Thread {
+    row: IssueRow,
+    assignees: Vec<AccountId>,
+    commenters: Vec<AccountId>,
+    subs: Vec<(AccountId, bool)>,
+}
+
+/// The notifications a batch of committed entries owes, each account's by entry, read from the repository's metadata
+/// tier on a member that has applied them, as it stands now. `login` resolves a mention to an account (the `Names`
+/// shards).
 pub fn notices(
     repo: RepoId,
     meta: &(impl Read + ?Sized),
-    e: &LogEntry<RepoEvent>,
+    es: &[LogEntry<RepoEvent>],
     login: &dyn Fn(&str) -> Option<AccountId>,
-) -> Vec<(AccountId, Notice)> {
-    let mut out: Vec<(AccountId, Notice)> = Vec::new();
-    for t in touches(e) {
-        let Some(row) = get_rec::<IssueRow>(meta, "issue", &[n_key(t.n)]) else { continue };
-        let thread = ThreadId { repo, number: t.n.0 };
-        // Strongest reason first: a reader keeps the first reason it is given.
-        let mut readers: Vec<(AccountId, Reason)> = Vec::new();
-        let mut add = |a: AccountId, r: Reason| {
-            if !readers.iter().any(|(x, _)| *x == a) {
-                readers.push((a, r));
-            }
-        };
-        let mentioned: Vec<AccountId> =
-            t.body.as_deref().map(mentions).unwrap_or_default().into_iter().filter_map(login).collect();
-        for a in &mentioned {
-            add(*a, Reason::Mention);
-        }
-        for a in &t.review_requested {
-            add(*a, Reason::ReviewRequested);
-        }
-        for a in assignees(meta, t.n) {
-            add(a, Reason::Assign);
-        }
-        if let Some(a) = row.author {
-            add(a, if t.state_change { Reason::StateChange } else { Reason::Author });
-        }
-        for a in commenters(meta, t.n) {
-            add(a, if t.state_change { Reason::StateChange } else { Reason::Comment });
-        }
-        for (a, subscribed) in watch::thread_subs(meta, t.n) {
-            if subscribed {
-                add(a, Reason::Manual);
-            }
-        }
-        for a in watch::subscribers(meta) {
-            add(a, Reason::Subscribed);
-        }
-        for (a, reason) in readers {
-            if Some(a) == t.actor {
-                continue;
-            }
-            let w = watch::watcher(meta, a);
-            if w.is_some_and(|w| w.ignored) {
-                continue;
-            }
-            let unsubscribed = watch::thread_sub(meta, t.n, a).is_some_and(|s| !s.subscribed);
-            if unsubscribed && reason != Reason::Mention {
-                continue;
-            }
-            let latest_comment = t.comment;
-            let notice = Notice {
-                thread,
-                reason,
-                at: e.at,
-                index: e.index,
-                title: row.title.clone(),
-                kind: row.kind,
-                latest_comment,
+) -> BTreeMap<AccountId, Vec<(Index, Vec<Notice>)>> {
+    let mut threads: BTreeMap<IssueNumber, Option<Thread>> = BTreeMap::new();
+    let mut subscribers: Option<Vec<AccountId>> = None;
+    let mut out: BTreeMap<AccountId, Vec<(Index, Vec<Notice>)>> = BTreeMap::new();
+    for e in es {
+        let mut by: BTreeMap<AccountId, Vec<Notice>> = BTreeMap::new();
+        for t in touches(e) {
+            let read = || {
+                Some(Thread {
+                    row: get_rec::<IssueRow>(meta, "issue", &[n_key(t.n)])?,
+                    assignees: assignees(meta, t.n),
+                    commenters: commenters(meta, t.n),
+                    subs: watch::thread_subs(meta, t.n),
+                })
             };
-            out.push((a, notice));
+            let Some(th) = threads.entry(t.n).or_insert_with(read) else { continue };
+            let subscribers = subscribers.get_or_insert_with(|| watch::subscribers(meta));
+            let thread = ThreadId { repo, number: t.n.0 };
+            // Strongest reason first: a reader keeps the first reason it is given.
+            let mut readers: Vec<(AccountId, Reason)> = Vec::new();
+            let mut add = |a: AccountId, r: Reason| {
+                if !readers.iter().any(|(x, _)| *x == a) {
+                    readers.push((a, r));
+                }
+            };
+            let mentioned: Vec<AccountId> =
+                t.body.as_deref().map(mentions).unwrap_or_default().into_iter().filter_map(login).collect();
+            for a in &mentioned {
+                add(*a, Reason::Mention);
+            }
+            for a in &t.review_requested {
+                add(*a, Reason::ReviewRequested);
+            }
+            for a in &th.assignees {
+                add(*a, Reason::Assign);
+            }
+            if let Some(a) = th.row.author {
+                add(a, if t.state_change { Reason::StateChange } else { Reason::Author });
+            }
+            for a in &th.commenters {
+                add(*a, if t.state_change { Reason::StateChange } else { Reason::Comment });
+            }
+            for (a, subscribed) in &th.subs {
+                if *subscribed {
+                    add(*a, Reason::Manual);
+                }
+            }
+            for a in subscribers.iter() {
+                add(*a, Reason::Subscribed);
+            }
+            for (a, reason) in readers {
+                if Some(a) == t.actor {
+                    continue;
+                }
+                let w = watch::watcher(meta, a);
+                if w.is_some_and(|w| w.ignored) {
+                    continue;
+                }
+                let unsubscribed = th.subs.iter().any(|(x, s)| *x == a && !s);
+                if unsubscribed && reason != Reason::Mention {
+                    continue;
+                }
+                let notice = Notice {
+                    thread,
+                    reason,
+                    at: e.at,
+                    index: e.index,
+                    title: th.row.title.clone(),
+                    kind: th.row.kind,
+                    latest_comment: t.comment,
+                };
+                by.entry(a).or_default().push(notice);
+            }
+        }
+        for (a, ns) in by {
+            out.entry(a).or_default().push((e.index, ns));
         }
     }
     out

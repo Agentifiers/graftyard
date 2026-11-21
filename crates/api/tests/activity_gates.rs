@@ -414,21 +414,17 @@ impl Bed {
             let owner = s.owner;
             let logins = self.logins.clone();
             let login = |l: &str| logins.get(l).copied();
-            for e in entries.iter().filter(|e| e.index > notify_from) {
-                let mut by: BTreeMap<AccountId, Vec<Notice>> = BTreeMap::new();
-                for (a, n) in inbox::notices(repo, &f.meta, e, &login) {
-                    by.entry(a).or_default().push(n);
-                }
-                for (a, ns) in by {
-                    self.inboxes.entry(a.0.0).or_default().apply(ChainId::Repo(repo), e.index, &ns);
+            let fresh: Vec<_> = entries.iter().filter(|e| e.index > notify_from).cloned().collect();
+            for (a, by_entry) in inbox::notices(repo, &f.meta, &fresh, &login) {
+                for (index, ns) in by_entry {
+                    self.inboxes.entry(a.0.0).or_default().apply(ChainId::Repo(repo), index, &ns);
                 }
             }
             let info = RepoInfo { repo, owner, public };
             let mut reached = true;
-            for e in entries.iter().filter(|e| e.index > search_from) {
-                for op in search::docs_for(info, &f.meta, e) {
-                    reached &= self.search_write(info, op, &f);
-                }
+            let fresh: Vec<_> = entries.iter().filter(|e| e.index > search_from).cloned().collect();
+            for op in search::docs_for(info, &f.meta, &fresh) {
+                reached &= self.search_write(info, op, &f);
             }
             let rid = self.rid();
             let moving: &[Consumer] = if reached { &[Consumer::Notify, Consumer::Search] } else { &[Consumer::Notify] };
@@ -580,12 +576,14 @@ impl Bed {
             let Some((g, _)) = self.repos.get(&repo) else { continue };
             let fl = SITES.iter().find(|x| **x != g.leader()).copied().unwrap();
             let f = g.members[fl.0 as usize].group_fold().fold.clone();
-            for e in committed(g, fl).iter().filter(|e| inbox::replays(from, e)) {
-                let ns: Vec<Notice> = inbox::notices(repo, &f.meta, e, &login)
-                    .into_iter()
-                    .filter(|(x, _)| *x == acct(a))
-                    .map(|(_, n)| n)
-                    .collect();
+            let es: Vec<_> = committed(g, fl).into_iter().filter(|e| inbox::replays(from, e)).collect();
+            let mut mine = inbox::notices(repo, &f.meta, &es, &login).remove(&acct(a)).unwrap_or_default();
+            for e in &es {
+                // An entry that owes this account nothing still moves `sources`, as before.
+                let ns = match mine.first() {
+                    Some((i, _)) if *i == e.index => mine.remove(0).1,
+                    _ => Vec::new(),
+                };
                 ib.apply(chain, e.index, &ns);
             }
         }
@@ -1156,11 +1154,10 @@ fn notify_skips_the_actor_ignorers_and_unsubscribers_but_not_a_mention_and_curso
     let fl = g.leader();
     let logins = b.logins.clone();
     let login = |l: &str| logins.get(l).copied();
-    let got: BTreeMap<AccountId, inbox::Reason> = committed(g, fl)
-        .iter()
-        .filter(|e| e.index > from)
-        .flat_map(|e| inbox::notices(REPO, &f.meta, e, &login))
-        .map(|(a, nt)| (a, nt.reason))
+    let es: Vec<_> = committed(g, fl).into_iter().filter(|e| e.index > from).collect();
+    let got: BTreeMap<AccountId, inbox::Reason> = inbox::notices(REPO, &f.meta, &es, &login)
+        .into_iter()
+        .flat_map(|(a, by)| by.into_iter().flat_map(|(_, ns)| ns).map(move |nt| (a, nt.reason)))
         .collect();
     let want: BTreeMap<AccountId, inbox::Reason> =
         [(acct(BOB), inbox::Reason::Author), (mentioned, inbox::Reason::Mention)].into_iter().collect();
@@ -1324,4 +1321,144 @@ fn eu_shards_bind_on_eu_regions_when_no_site_is_eu_and_names_round_trip() {
     }
     assert_eq!(SearchShard::parse("search#eu#3"), None);
     assert_eq!(SearchShard::parse("search#mars#3#1"), None);
+}
+
+/// A `Read` that counts the rows it reads: one per `get`, and one per row a `scan` answers (at least one per call).
+struct Counting<'a>(&'a dyn graftyard_fold::Read, std::cell::Cell<usize>);
+
+impl graftyard_fold::Read for Counting<'_> {
+    fn get(&self, t: &str, k: &[graftyard_fold::Val]) -> Option<Vec<graftyard_fold::Val>> {
+        self.1.set(self.1.get() + 1);
+        self.0.get(t, k)
+    }
+    fn scan(
+        &self,
+        t: &str,
+        from: &[graftyard_fold::Val],
+        limit: usize,
+    ) -> Vec<(graftyard_fold::Key, Vec<graftyard_fold::Val>)> {
+        let r = self.0.scan(t, from, limit);
+        self.1.set(self.1.get() + r.len().max(1));
+        r
+    }
+}
+
+/// `round-memo`: a `Notify` and `Search` batch of comment entries on one busy issue reads the issue's comments once
+/// for the batch, not once per entry, and owes what its entries owe one at a time. B0-31 posts about 210 comments a minute
+/// on one issue, and the per-entry rule read two rows per earlier comment for each comment entry in `Notify` and one
+/// in `Search`, so the leader's rows read per minute grew from 207k to 2.09M over a 600 s row
+/// (`decisions/DECISIONS.md`, "`round-memo`").
+#[test]
+fn a_batch_on_a_busy_issue_reads_its_comments_once_and_sends_what_each_entry_owes() {
+    const PRIOR: u32 = 300;
+    const BATCH: usize = 20;
+    let mut b = Bed::new();
+    b.add_repo(REPO, OWNER, true);
+    let n = number(b.issue(REPO, OWNER, open_issue("busy", "one issue every agent comments on")));
+    // A second thread, by another author, that a few of the batch's entries touch.
+    let quiet = number(b.issue(REPO, ALICE, open_issue("quiet", "another")));
+    // More earlier comments than one 256-row scan page, by two authors, so `prefix` pages and readers repeat.
+    for i in 0..PRIOR {
+        b.issue(REPO, if i % 2 == 0 { ALICE } else { BOB }, comment(n, "a1"));
+    }
+    // A repository watcher, and a watcher who unsubscribed from the busy thread only.
+    let (watcher, quiet_only) = (acct(404), acct(405));
+    let w = |a: AccountId| watch::WatcherUpdate::Watcher {
+        account: a,
+        row: watch::WatcherRow { starred_at: None, watching: true, ignored: false, src: graftyard_types::Index(1) },
+    };
+    let off = watch::WatcherUpdate::ThreadSub {
+        n: IssueNumber(n),
+        account: quiet_only,
+        row: watch::ThreadSubRow { subscribed: false, src: graftyard_types::Index(1) },
+    };
+    let rid = b.rid();
+    b.repo_cmd(REPO, RepoCmd::Counts(CountsCmd { updates: vec![w(watcher), w(quiet_only), off], request: rid }));
+    let from = {
+        let (g, _) = &b.repos[&REPO];
+        g.members[g.leader().0 as usize].group_fold().applied()
+    };
+    for i in 0..BATCH {
+        let body = if i == 3 { "cc @alice".to_owned() } else { format!("a1 {i}") };
+        let on = if i % 7 == 5 { quiet } else { n };
+        b.issue(REPO, if i % 2 == 0 { BOB } else { OWNER }, comment(on, &body));
+    }
+    let f = b.leader_fold(REPO);
+    let (g, _) = &b.repos[&REPO];
+    let es: Vec<_> = committed(g, g.leader()).into_iter().filter(|e| e.index > from).collect();
+    assert!(es.len() >= BATCH, "{} entries", es.len());
+    let logins = b.logins.clone();
+    let login = |l: &str| logins.get(l).copied();
+    let info = RepoInfo { repo: REPO, owner: acct(OWNER), public: true };
+
+    // What each entry owes, each read on its own, as the rounds read them before.
+    let mut want_notices: BTreeMap<AccountId, Vec<(graftyard_types::Index, Vec<Notice>)>> = BTreeMap::new();
+    let mut want_docs: Vec<DocOp> = Vec::new();
+    let one_by_one = Counting(&f.meta, std::cell::Cell::new(0));
+    for e in &es {
+        for (a, by) in inbox::notices(REPO, &one_by_one, std::slice::from_ref(e), &login) {
+            want_notices.entry(a).or_default().extend(by);
+        }
+        for op in search::docs_for(info, &one_by_one, std::slice::from_ref(e)) {
+            if !want_docs.contains(&op) {
+                want_docs.push(op);
+            }
+        }
+    }
+    let notices_reads = Counting(&f.meta, std::cell::Cell::new(0));
+    let got_notices = inbox::notices(REPO, &notices_reads, &es, &login);
+    let docs_reads = Counting(&f.meta, std::cell::Cell::new(0));
+    let got_docs = search::docs_for(info, &docs_reads, &es);
+    assert_eq!(got_notices, want_notices, "the batch owes each account what its entries owe");
+    assert_eq!(got_docs, want_docs, "one document per issue, at the tier's state");
+    assert!(
+        want_notices[&acct(ALICE)].iter().any(|(_, ns)| ns.iter().any(|x| x.reason == inbox::Reason::Mention)),
+        "the mention reached Alice"
+    );
+    match &got_docs[..] {
+        [DocOp::Put(d), DocOp::Put(q)] => {
+            assert_eq!((d.number, q.number), (n, quiet), "each thread's document, in the batch's order");
+            assert_eq!(d.comment_count, PRIOR + BATCH as u32 - 3, "the busy document holds every comment");
+            assert_eq!(q.title.as_ref(), "quiet");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Written out, not read from the code: the watcher hears of every comment, the unsubscriber only of the quiet
+    // thread's, and the busy thread's author of every busy comment but its own.
+    let threads_of = |a: AccountId| -> Vec<u32> {
+        got_notices
+            .get(&a)
+            .map_or(Vec::new(), |by| by.iter().flat_map(|(_, ns)| ns.iter().map(|x| x.thread.number)).collect())
+    };
+    let quiet_count = (0..BATCH).filter(|i| i % 7 == 5).count();
+    assert_eq!(threads_of(watcher).len(), BATCH, "the watcher hears of every comment");
+    assert_eq!(threads_of(quiet_only), vec![quiet; quiet_count], "the unsubscriber hears only of the quiet thread");
+    let owner_busy = (0..BATCH).filter(|i| i % 7 != 5 && i % 2 == 0).count();
+    assert_eq!(threads_of(acct(OWNER)).iter().filter(|t| **t == n).count(), owner_busy, "the author, not of its own");
+    let quiet_notices: Vec<&Notice> =
+        got_notices.values().flatten().flat_map(|(_, ns)| ns).filter(|x| x.thread.number == quiet).collect();
+    assert!(
+        !quiet_notices.is_empty() && quiet_notices.iter().all(|x| x.title.as_ref() == "quiet"),
+        "the quiet thread's notices carry its own title"
+    );
+
+    // Reads: each comment row a few times for the batch, plus a few rows per entry. The per-entry rule read
+    // `BATCH` times the comments in Notify and again in Search.
+    let comments = (PRIOR as usize) + BATCH;
+    let (nr, dr) = (notices_reads.1.get(), docs_reads.1.get());
+    println!(
+        "round-memo: {} entries on {comments} comments: Notify read {nr} rows and Search {dr}; one entry at a time read {}",
+        es.len(),
+        one_by_one.1.get()
+    );
+    assert!(
+        nr <= 3 * comments + 20 * es.len(),
+        "Notify read {nr} rows for {} entries on {comments} comments",
+        es.len()
+    );
+    assert!(
+        dr <= 2 * comments + 10 * es.len(),
+        "Search read {dr} rows for {} entries on {comments} comments",
+        es.len()
+    );
 }

@@ -262,17 +262,7 @@ async fn notices_of(
     let c = core.as_ref().ok_or("not joined")?;
     let meta = &c.m.group_fold().fold.meta;
     let login = |l: &str| logins.iter().find(|(k, _)| k.eq_ignore_ascii_case(l)).map(|(_, a)| *a);
-    let mut out: BTreeMap<AccountId, Vec<(Index, Vec<Notice>)>> = BTreeMap::new();
-    for e in es {
-        let mut by: BTreeMap<AccountId, Vec<Notice>> = BTreeMap::new();
-        for (a, n) in git::inbox::notices(repo, &**meta, e, &login) {
-            by.entry(a).or_default().push(n);
-        }
-        for (a, ns) in by {
-            out.entry(a).or_default().push((e.index, ns));
-        }
-    }
-    Ok(out)
+    Ok(git::inbox::notices(repo, &**meta, es, &login))
 }
 
 fn body_of(ev: &git::repo::RepoEvent) -> Option<&str> {
@@ -314,19 +304,16 @@ async fn search_round(h: &Rc<Host<Repo>>, info: RepoInfo, es: &[LogEntry<git::re
         let core = h.core.borrow();
         let c = core.as_ref().ok_or("not joined")?;
         let f = &c.m.group_fold().fold;
-        let mut v = Vec::new();
-        for e in es {
-            for op in search::docs_for(info, &*f.meta, e) {
-                v.push(match op {
-                    search::DocOp::Put(d) => crate::search::Op::Put(d),
-                    search::DocOp::Delete(n) => crate::search::Op::Delete { repo: info.repo, number: n },
-                    search::DocOp::Repo => {
-                        crate::search::Op::Repo { repo: info.repo, docs: search::all_docs(info, &*f.core, &*f.meta) }
-                    }
-                });
-            }
-        }
-        v
+        search::docs_for(info, &*f.meta, es)
+            .into_iter()
+            .map(|op| match op {
+                search::DocOp::Put(d) => crate::search::Op::Put(d),
+                search::DocOp::Delete(n) => crate::search::Op::Delete { repo: info.repo, number: n },
+                search::DocOp::Repo => {
+                    crate::search::Op::Repo { repo: info.repo, docs: search::all_docs(info, &*f.core, &*f.meta) }
+                }
+            })
+            .collect()
     };
     if ops.is_empty() {
         return Ok(true);
@@ -456,11 +443,13 @@ fn leader_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let sql = h.state.storage().sql();
     let first = f.first_index();
     let applied = c.m.state().applied;
-    let mut out = Vec::new();
     let start = match from {
         git::inbox::From::After(i) => i.0 + 1,
         git::inbox::From::Since(_) => first.0,
     };
+    // A `BATCH` of entries at a time, as a round reads them, so a long replay holds no more of the log at once.
+    let mut out: Vec<(Index, Vec<Notice>)> = Vec::new();
+    let mut es = Vec::new();
     for i in start.max(first.0)..=applied.0 {
         let e = match c.m.entry_at(Index(i)) {
             Some(e) => e.clone(),
@@ -469,16 +458,12 @@ fn leader_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
                 None => continue,
             },
         };
-        if !git::inbox::replays(from, &e) {
-            continue;
+        if git::inbox::replays(from, &e) {
+            es.push(e);
         }
-        let ns: Vec<Notice> = git::inbox::notices(repo, &*f.meta, &e, &login)
-            .into_iter()
-            .filter(|(a, _)| *a == account)
-            .map(|(_, n)| n)
-            .collect();
-        if !ns.is_empty() {
-            out.push((e.index, ns));
+        if es.len() as u64 == BATCH || i == applied.0 {
+            out.extend(git::inbox::notices(repo, &*f.meta, &es, &login).remove(&account).unwrap_or_default());
+            es.clear();
         }
     }
     Ok(json!({ "notices": crate::host::hex(&codec::to_bytes(&out)) }))
