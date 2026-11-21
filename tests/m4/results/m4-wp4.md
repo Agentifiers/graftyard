@@ -1193,7 +1193,7 @@ Site day 67 (07:20:07Z to 07:21:01Z, exit 0, `tests/m4/raw/wp4/siteday67.log`) s
 | Leader changes in the load | **0** (f2, term 3 throughout) | 0 | |
 | Leader's failed calls | 1, `deadline`, to f1 | 19 | |
 | `suspect` | false; leader clock `lagMax` 216 ms | 212 reports at 02:21:17 | |
-| Leader wasm memory (`vmem`) | 5.9 MB at load start, 26.3 MB in load, 38.7 MB at 07:42:18 after it | 12 → 31 MB | F111 |
+| Leader wasm memory (`vmem`) | 5.9 MB before the driver's reset, 12.2 after it, 26.3 MB in load, 38.7 MB after the peers read ("What holds the leader's wasm memory") | 12 → 31 MB | F111 |
 | Merges | 40 and 43 × 200 by half; 9 and 3 × 409 | 32 and 31 × 200 | |
 | Spend | 07:20:07Z to 07:45:37Z: graft-m4a $1.84 by prefix, runner account $0.00, against the $10 stop; graft-m4a $6.21 for the UTC day against $40 | $1.82 | |
 | Teardown | `git#2#net:65583` and `git#0#net:65583` 200; no shard container running; sweep ok (07:42:41Z); 0 Sandboxes | | |
@@ -1201,6 +1201,26 @@ Site day 67 (07:20:07Z to 07:21:01Z, exit 0, `tests/m4/raw/wp4/siteday67.log`) s
 **`round-memo` worked, and its flip is restated.** The leader's rows read per minute stop climbing after the third minute, and its CPU per minute stays flat, against a tenfold climb on m66r31. The flip as first written, under 300k in the last minute, reads 395k here. That line came from a wrong rate: it took 12 to 19 rounds a minute from m66r31, and with reads cut this row ran 20 to 26. Each round still reads the busy issue's comments about three times, so 23 rounds × 3 × about 2,000 comments is about 140k rows a minute for the busy issue alone. So the line did not trip on a different cause, and the lead restated the flip in the slope form (`decisions/DECISIONS.md`, "`round-memo`").
 
 **The placement-failing half's tail is gone with the slope.** Its queue p99 fell from 1,949 to 864 ms and its round p99 from 976 to 420 ms. That fits m66r31's tail being row age, not placement, and the halves-swapped control is not needed [inference: the halves were not swapped].
+
+### What holds the leader's wasm memory (analysis, $0)
+
+`wasmMemMb` is the isolate's linear memory, `memory_size` × 64 KiB (`workers/site/src/load.rs`). Linear memory only grows, so the series is a high-water mark, not the live heap. vmem's `at` is on the driver's clock, 16,523 ms behind Cloudflare's. Below, each step is matched to the leader's Workers Logs events (`b59b9550…`) on Cloudflare's clock.
+
+**The two largest steps are the driver's raw `/stats` reads, not the load** [measured].
+- **+6.3 MB, 5.9 → 12.2 MB**, between vmem samples 07:30:19 and 07:30:21 (07:30:35.5 to 07:30:37.5 Cloudflare). The leader served `/stats?reset=1` at 07:30:36.725, 14 ms CPU. That is `a1.mjs`'s reset at load start (`tests/am1/rest/a1.mjs`, `member(CHAIN, leader, "/stats?reset=1")`). Without `summary=1`, `stats` serializes every sample array, `calls`, `peers` and the trace (up to `TRACE_MAX`, 60,000 rows of six numbers) into one `serde_json::Value` and a string before it resets (`workers/site/src/member.rs`, `stats`).
+- **+12.4 MB, 26.3 → 38.7 MB, after the load**, between samples 07:41:04 and 07:41:06 (07:41:20.5 to 07:41:22.5). The leader served a raw `/stats` at 07:41:22.227, 30 ms CPU and 634 ms wall. That is `a1.mjs`'s "leader peers" read after the window, which asks for the whole `/stats` to get `peers`. By then the trace was full, so the transient was twice the first.
+- Nothing else ran on the leader in either window but `/status`, `/stats?summary=1` polls, alarms and a few `/raft` and `/read` calls of 0 to 3 ms CPU.
+- m66r31 has the same two steps: 5.8 → 12.1 MB with its raw `/stats?reset=1` at 02:12:38.3, and 31.5 → 38.0 MB with its raw `/stats` at 02:23:35.4 (Cloudflare's clock, 15,821 ms ahead of vmem's).
+
+**In load, memory follows the in-memory log** [measured]. From 12.2 MB it rose in 2.16 MB steps as `logBytes` rose: 14.4 MB at 1.26 MB of log, 17.6 at 2.54, 19.8 at 3.87, 22.0 at 4.47, 24.1 at 6.10 and 26.3 at 7.11. That is about 2 MB of memory per MB of encoded log. It stopped growing at 07:37:19, when the log peaked at 7.1 to 7.8 MB, just under `LOG_BYTES` (8 MB). It stayed at 26.3 MB through compaction at 07:38:03 (7.77 → 4.45 MB) and to the end of the load. That fits decoded entries costing about twice their encoded length, with `push_entry`'s `Write::Append` clone per entry until it is flushed, and the bounded stats samples and trace filling beside it [inference].
+
+**Ruled out.**
+- **A leak after the load.** The only step after the load is the peers read, and memory is flat for the 50 s of samples after it.
+- **The search consumer's batches.** Before `round-memo` they grew with the issue (m66r31), but m67r31 grew the same 5.9 → 26.3 MB with the rows-read slope gone. A batch's `Doc.comments` holds about 2,000 two-byte comment bodies, a few KB.
+- **A per-thread document cache.** None exists. `activity.rs` keeps only `RECORDS` and `OWNERS`, one entry per account and repository, and `round-memo`'s thread reads live for one call.
+- **The caches.** The narrow cache stayed at 37 to 38 KB and the dump cache at 266 bytes. `held`, admitted bytes and statements stayed under 33 KB.
+
+**No fix built.** Every MB is accounted for, and the high-water is under a third of the isolate's 128 MB. The cheap change, if the lead wants it, is in the driver, not the member: send `a1.mjs`'s reset as `/stats?summary=1&reset=1`, and have the peers read ask for `peers` only. That would take about 18 MB off every row's leader high-water. It changes no product code.
 
 ## Repository purge route, hosted check on graft-m4a (2026-11-18)
 
