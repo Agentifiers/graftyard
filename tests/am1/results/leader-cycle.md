@@ -111,6 +111,8 @@ The round's loaded excess has two measured parts:
 
 Separately, upstream `validate` starvation took about a third of leader time out of backlog.
 
+**Superseded by `tests/am1/results/inline-cut.md`:** the bound below was scaled in raw bytes against base64 entry bytes, so at 32 KiB 150 m3fb29 entries stay over 64 KiB, not 15, and 59% of journey 9's agent pushes would stage. The proposal as first written:
+
 **Proposed (not built): lower `AGENT_INLINE_ENTRY` from 128 KiB to 32 KiB,** so an entry's Agent inline packs keep its
 AppendEntries body under the 64 KiB step. An Agent pack that would pass the bound is staged (`PackRef::Stored`) as
 today. It is a one-constant change in `crates/raft/src/lib.rs`, plus its design line and a DECISIONS entry with a flip.
