@@ -602,6 +602,14 @@ fn ls_refs_at_edge(header: Option<&str>, token: Option<&str>, secret: Option<&st
     !matches!((header, token, secret), (Some("shard"), Some(t), Some(s)) if t == s)
 }
 
+/// The leader-sync A/B's arm B on a test install: `x-graft-lean` with the bed token makes this request's commits lean
+/// (`graftyard_lookup::Hooks::lean`): held on the leader to their outcome, with no `/outcome_by_request` asks. Off by
+/// default, so one edge build serves both arms and a product edge never reads the header.
+#[cfg_attr(not(feature = "test-faults"), allow(dead_code))]
+fn lean_asked(header: bool, token: Option<&str>, secret: Option<&str>) -> bool {
+    header && matches!((token, secret), (Some(t), Some(s)) if t == s)
+}
+
 /// The driver's push id from `x-graft-client-push` as the push's log line carries it: at most 64 of
 /// `[A-Za-z0-9._-]`, else none, so a header cannot write anything else into the line.
 #[cfg_attr(not(feature = "test-faults"), allow(dead_code))]
@@ -1126,7 +1134,13 @@ async fn commit(
         &bytes,
         c.colo,
         60_000,
-        graftyard_lookup::Hooks { first: first.as_deref(), trace, lookup },
+        graftyard_lookup::Hooks {
+            first: first.as_deref(),
+            trace,
+            lookup,
+            #[cfg(feature = "test-faults")]
+            lean: c.lean,
+        },
     )
     .await;
     #[cfg(feature = "test-faults")]
@@ -1314,6 +1328,9 @@ struct Ctx<'a> {
     /// v2 `ls-refs` goes to the shard as before `b034-reads`. True for every other request.
     #[cfg(feature = "test-faults")]
     ls_refs_edge: bool,
+    /// The leader-sync A/B's arm B (`lean_asked`): this request's repository commits are lean.
+    #[cfg(feature = "test-faults")]
+    lean: bool,
     /// stale-log: the client's push id (`x-graft-client-push`, `client_push_id`) and the leader's answer to the push,
     /// for its `push_log` line, so a driver's per-push log joins the edge's answer to each push it sent.
     #[cfg(feature = "test-faults")]
@@ -2799,7 +2816,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             &bytes,
             c.colo,
             60_000,
-            graftyard_lookup::Hooks { first: first.as_deref(), trace: Some(&trace), lookup: None },
+            graftyard_lookup::Hooks { first: first.as_deref(), trace: Some(&trace), lookup: None, lean: false },
         )
         .await;
         return Response::from_json(&json!({
@@ -3269,6 +3286,12 @@ async fn serve(
             env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
         ),
         #[cfg(feature = "test-faults")]
+        lean: lean_asked(
+            req.headers().has("x-graft-lean")?,
+            req.headers().get("x-bed-token")?.as_deref(),
+            env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
+        ),
+        #[cfg(feature = "test-faults")]
         client_push: client_push_id(req.headers().get("x-graft-client-push")?.as_deref()),
         #[cfg(feature = "test-faults")]
         push_end: std::cell::RefCell::new(None),
@@ -3545,8 +3568,8 @@ mod tests {
 
     use super::{
         CommitFail, Cut, ShardRefusal, bound_at_send, capped, chained, client_push_id, commit_result, fivexx_line,
-        gate_ng, git_class, gunzip, ls_refs_at_edge, reopened, route_kind, shard_fail_line, shard_refusal, shard_url,
-        streamed_site, validate_failed, validate_sites, validate_timing, validate_url, warm_first,
+        gate_ng, git_class, gunzip, lean_asked, ls_refs_at_edge, reopened, route_kind, shard_fail_line, shard_refusal,
+        shard_url, streamed_site, validate_failed, validate_sites, validate_timing, validate_url, warm_first,
     };
 
     /// A commit that gave no outcome in time is a `CommitFail::NoOutcome` the push answers 503 with `Retry-After`,
@@ -3645,6 +3668,11 @@ mod tests {
         assert!(ls_refs_at_edge(Some("shard"), None, Some("bed")), "no token");
         assert!(ls_refs_at_edge(Some("shard"), Some("bed"), None), "an install with no bed token");
         assert!(ls_refs_at_edge(Some("edge"), Some("bed"), Some("bed")), "only `shard` turns it off");
+        assert!(lean_asked(true, Some("bed"), Some("bed")), "the A/B's arm B");
+        assert!(!lean_asked(false, Some("bed"), Some("bed")), "off by default, the token alone switches nothing");
+        assert!(!lean_asked(true, Some("guess"), Some("bed")), "a wrong token");
+        assert!(!lean_asked(true, None, Some("bed")), "no token");
+        assert!(!lean_asked(true, Some("bed"), None), "an install with no bed token");
         assert_eq!(client_push_id(Some("mwm4d2ho-a17-3")).as_deref(), Some("mwm4d2ho-a17-3"));
         assert_eq!(client_push_id(Some("x\", \"end\": 1")), None);
         assert_eq!(client_push_id(Some(&"a".repeat(65))), None);

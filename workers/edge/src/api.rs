@@ -948,7 +948,13 @@ async fn commit_issue_rid(
     let first = without_authz(&body).to_string();
     let whole = body.to_string();
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
-    let hooks = graftyard_lookup::Hooks { first: Some(first.as_bytes()), trace: None, lookup: None };
+    let hooks = graftyard_lookup::Hooks {
+        first: Some(first.as_bytes()),
+        trace: None,
+        lookup: None,
+        #[cfg(feature = "test-faults")]
+        lean: c.lean,
+    };
     let (b, chain) = (c.bindings(), ChainId::Repo(rd.repo.id));
     let mut r =
         graftyard_lookup::commit_hedged(&b, chain, &rd.repo.record, whole.as_bytes(), c.colo, 60_000, hooks).await;
@@ -1342,6 +1348,8 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
         first: None,
         trace: cfg!(feature = "test-faults").then_some(&trace_steps),
         lookup: None,
+        #[cfg(feature = "test-faults")]
+        lean: c.lean,
     };
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
