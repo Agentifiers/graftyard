@@ -321,6 +321,27 @@ Where B0-32 stands on main `b8e555df`, line by line, and which open question own
 
 **Which dominates: loss 1** [inference from the two splits]. It sets the last commit of nearly every late `ok`. The second commit adds about 1.3 s, and only to 88 of them. Neither trace says what the leader isolate spent its time on, so no code fix for loss 1 rests on evidence yet. Stage-first by size (A36's option) is the smallest change on loss 2. It moves the line to at most 391, and on m3fgt1 it bunched arrivals and failed, so it does not fix this row.
 
+### Loss 1's CPU check: the leader DO runs near 1 vCPU in the burst ($0, 2026-11-21)
+
+Read-only, from the GraphQL analytics API. `tests/fanout/docpumin.py` gives CPU-seconds per minute. `tests/fanout/docpusec.py` (new) estimates CPU-seconds per second: invocation CPU quantiles times requests, scaled to the minute's periodic `cpuTime`.
+
+| Row, leader object | Minutes around the burst, CPU-s | Burst seconds, CPU-s per second | Outside the burst |
+|---|---|---|---|
+| m3fhs1, `repo:65608#1#f0` (IAD) | 03:53 to 03:57Z: 1.5, 2.7, 11.1, 14.7, 12.3 | 03:56:09 to :13Z: 0.79 to 1.05 | 0.15 to 0.3 |
+| m3fgb1, `repo:65605#1#f0` (ORD) | 01:16 to 01:20Z: 3.0, 20.2, 24.8, 22.8, 3.6 | 01:18:51 to :59Z: 0.48 to 1.02 | 0.4 to 0.6, with spikes to 1.0 to 1.4 at 01:17:44 to :57 |
+
+- **CPU saturation is supported** [measured, estimate]. In both rows the leader spent most burst seconds near one vCPU, in the seconds its clock fell 0.5 to 2.3 s behind its callers'. That fits input waiting on a busy isolate [inference].
+- **Storage reads are not the cost** [measured]. Rows read peaked at 230k per minute on m3fhs1 and 243k on m3fgb1. At M4-WP4's 6 µs per row that is about 1.4 to 1.5 CPU-s of each burst minute.
+- **M4-WP4's cause does not apply here** [measured]. graft-m3f's site variables set only `SHARD_INSTANCE`, so no activity consumer runs, and B0-32 piles no comments on one issue.
+- **Which input costs it is not settled.**
+  - Workers Logs bills spawned work, such as the deferred flush, held-output release and catch-up reads, to whichever event is current (M4-WP4's note). So per-path `cpuTimeMs` does not price a path.
+  - Workers Logs records 46% to 67% of the analytics CPU per minute on m3fhs1 (7.4 of 11.1, 8.9 of 14.7, and 5.7 of 12.3 CPU-s).
+  - A nonnegative fit of CPU per second on request counts per path explains little: R² 0.64 on m3fhs1 and 0.49 on m3fgb1.
+  - Its per-request costs: `/commit` 2.3 and 4.8 ms, learner `/raft` 0.33 and 1.9 ms, `/outcome` 3.7 and 0.8 ms.
+- **The learner share of the burst's CPU is small** [inference from the fit]. In the burst's hottest seconds it is 0.03 to 0.06 CPU-s per second on m3fhs1 and 0.14 to 0.26 on m3fgb1, against `/commit` at 0.3 to 0.8.
+- **Learner calls are steady background, not a burst spike** [measured]. The leader took 7,132, 6,507 and 4,980 learner `/raft` calls in the minutes 03:55, 03:56 and 03:57Z, before the burst as much as during it. What the burst adds is `/commit`, `/outcome`, `/outcome_by_request` and the entries they append.
+- **So a learner throttle would buy little.** It would cut at most about 5% to 25% of the burst's CPU, and it would delay learner catch-up and push their reads to the leader. It is not proposed. The burst's own commit path (decide, apply, append encoding to ten members, held-output release) is the likelier cost. Pricing its parts needs a local profile of that path under a burst, not another hosted row [inference].
+
 ### A37 from m3fgb1, re-read with Workers Logs
 
 *Caveat added with the split above: the "real start" used here is the isolate's own clock, which stalls. Read the figures below as the leader's clock, not real time.*
