@@ -1,0 +1,22 @@
+harness outages (2026-11-21T10:57:09Z, the first request, to 2026-11-21T11:11:52Z; announced 2026-11-21T10:56:52Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [], "outageSeconds": 0.0, "share": 0.0, "valid": true}
+{"kind": "push:human@j9", "measured": {"n": 195, "served": 0.9538, "p50": 1745, "p99": 3415, "cap": 4}, "outagesRemoved": {"n": 195, "served": 0.9538, "p50": 1745, "p99": 3415, "cap": 4}}
+{"kind": "push:human:edge@j9", "measured": {"n": 195, "served": 0.9538, "p50": 1368, "p99": 2759, "cap": 0}, "outagesRemoved": {"n": 195, "served": 0.9538, "p50": 1368, "p99": 2759, "cap": 0}}
+{"kind": "push:human:tip@j9", "measured": {"n": 196, "served": 0.8929, "p50": 432, "p99": 1466, "cap": 0}, "outagesRemoved": {"n": 196, "served": 0.8929, "p50": 432, "p99": 1466, "cap": 0}}
+{"kind": "read:cloneTtfb@j9", "measured": {"n": 304, "served": 1.0, "p50": 608, "p99": 2270, "cap": 0}, "outagesRemoved": {"n": 304, "served": 1.0, "p50": 608, "p99": 2270, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@j9", "measured": {"n": 304, "served": 1.0, "p50": 588, "p99": 2241, "cap": 0}, "outagesRemoved": {"n": 304, "served": 1.0, "p50": 588, "p99": 2241, "cap": 0}}
+{"kind": "push:human@kill", "measured": {"n": 72, "served": 0.9722, "p50": 1849, "p99": 3146, "cap": 2}, "outagesRemoved": {"n": 72, "served": 0.9722, "p50": 1849, "p99": 3146, "cap": 2}}
+{"kind": "push:human:edge@kill", "measured": {"n": 72, "served": 0.9722, "p50": 1463, "p99": 2741, "cap": 0}, "outagesRemoved": {"n": 72, "served": 0.9722, "p50": 1463, "p99": 2741, "cap": 0}}
+{"kind": "push:human:tip@kill", "measured": {"n": 74, "served": 1.0, "p50": 485, "p99": 1442, "cap": 0}, "outagesRemoved": {"n": 74, "served": 1.0, "p50": 485, "p99": 1442, "cap": 0}}
+{"kind": "read:cloneTtfb@kill", "measured": {"n": 103, "served": 0.9903, "p50": 2072, "p99": 10203, "cap": 0}, "outagesRemoved": {"n": 103, "served": 0.9903, "p50": 2072, "p99": 10203, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@kill", "measured": {"n": 103, "served": 0.9903, "p50": 2065, "p99": 10199, "cap": 0}, "outagesRemoved": {"n": 103, "served": 0.9903, "p50": 2065, "p99": 10199, "cap": 0}}
+{"kind": "push:human@second", "measured": {"n": 110, "served": 0.9364, "p50": 1657, "p99": 3053, "cap": 0}, "outagesRemoved": {"n": 110, "served": 0.9364, "p50": 1657, "p99": 3053, "cap": 0}}
+{"kind": "push:human:edge@second", "measured": {"n": 110, "served": 0.9364, "p50": 1250, "p99": 2675, "cap": 0}, "outagesRemoved": {"n": 110, "served": 0.9364, "p50": 1250, "p99": 2675, "cap": 0}}
+{"kind": "push:human:tip@second", "measured": {"n": 109, "served": 1.0, "p50": 494, "p99": 1561, "cap": 0}, "outagesRemoved": {"n": 109, "served": 1.0, "p50": 494, "p99": 1561, "cap": 0}}
+{"kind": "read:cloneTtfb@second", "measured": {"n": 173, "served": 1.0, "p50": 682, "p99": 5682, "cap": 0}, "outagesRemoved": {"n": 173, "served": 1.0, "p50": 682, "p99": 5682, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@second", "measured": {"n": 173, "served": 1.0, "p50": 662, "p99": 5672, "cap": 0}, "outagesRemoved": {"n": 173, "served": 1.0, "p50": 662, "p99": 5672, "cap": 0}}
+{"kind": "push:human@hostile", "measured": {"n": 202, "served": 0.9109, "p50": 1702, "p99": 2618, "cap": 5}, "outagesRemoved": {"n": 202, "served": 0.9109, "p50": 1702, "p99": 2618, "cap": 5}}
+{"kind": "push:human:edge@hostile", "measured": {"n": 202, "served": 0.9109, "p50": 1293, "p99": 2221, "cap": 0}, "outagesRemoved": {"n": 202, "served": 0.9109, "p50": 1293, "p99": 2221, "cap": 0}}
+{"kind": "push:human:tip@hostile", "measured": {"n": 200, "served": 1.0, "p50": 554, "p99": 1553, "cap": 0}, "outagesRemoved": {"n": 200, "served": 1.0, "p50": 554, "p99": 1553, "cap": 0}}
+{"kind": "read:cloneTtfb@hostile", "measured": {"n": 287, "served": 1.0, "p50": 569, "p99": 1934, "cap": 0}, "outagesRemoved": {"n": 287, "served": 1.0, "p50": 569, "p99": 1934, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@hostile", "measured": {"n": 287, "served": 1.0, "p50": 545, "p99": 1614, "cap": 0}, "outagesRemoved": {"n": 287, "served": 1.0, "p50": 545, "p99": 1614, "cap": 0}}
