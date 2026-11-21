@@ -445,11 +445,14 @@ pub fn clone_cache_buckets(network: NetworkId, home: SiteId, sites: &[SiteId], h
     if hot && a != b { vec![a, b] } else { vec![home] }
 }
 
-/// The sites whose buckets hold a network's composed-miss chain (`crate::compose`): its warm sites, home first, once
-/// each. The builder writes the chain to these buckets, every shard installs from them, and the edge checks a
-/// manifest's chain packs in them in this order (`crate::compose::check_in_time`).
-pub fn chain_buckets(network: NetworkId, home: SiteId, sites: &[SiteId]) -> Vec<SiteId> {
-    let [a, b] = warm_sites(network, home, sites);
+/// The sites whose buckets hold a network's composed-miss chain (`crate::compose`): its warm sites among its group's
+/// `record`, home first, once each. The builder writes the chain to these buckets, every shard installs from them, and
+/// the edge checks a manifest's chain packs in them in this order (`crate::compose::check_in_time`). It takes the
+/// record, not a list of sites, so no caller can pass the install's: on graft-m1, with four sites and the group on
+/// three, main took the install's and put monorepo 1048606's chain in bucket d, a site with no shard of the group, and
+/// none on b or c (`decisions/DECISIONS.md`, "`chain-record`").
+pub fn chain_buckets(network: NetworkId, record: &graftyard_types::PlacementRecord) -> Vec<SiteId> {
+    let [a, b] = warm_sites(network, record.home, &record.sites);
     if a == b { vec![a] } else { vec![a, b] }
 }
 

@@ -2276,8 +2276,7 @@ async fn upload_front(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Upl
 /// The network's chain buckets as R2 handles, home first (`chain-warm`): after a fold the home bucket can lack a chain
 /// the other warm bucket still holds whole, and its shards still name it.
 fn chain_r2(c: &Ctx<'_>, repo: &Repo) -> Result<Vec<R2>> {
-    let ids: Vec<SiteId> = c.sites.0.iter().map(|s| s.id).collect();
-    graftyard_git::chain_buckets(NetworkId(repo.id.0), repo.record.home, &ids)
+    graftyard_git::chain_buckets(NetworkId(repo.id.0), &repo.record)
         .into_iter()
         .map(|s| Ok(R2(c.env.bucket(&format!("BUCKET_{}", s.0))?)))
         .collect()

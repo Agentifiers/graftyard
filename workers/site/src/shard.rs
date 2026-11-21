@@ -158,11 +158,10 @@ impl Compose {
         let ns = self.env.durable_object(&format!("SHARD_{}", site.id.0)).map_err(|e| e.to_string())?;
         let first = ns.id_from_name(&format!("git#{}#net:{}", site.id.0, self.net.0.0)).map_err(|e| e.to_string())?;
         let builder = site.id == home && first.to_string() == self.state.id().to_string();
-        let ids: Vec<SiteId> = site.sites.0.iter().map(|s| s.id).collect();
-        let warm = graftyard_git::chain_buckets(self.net, home, &ids);
+        let warm = graftyard_git::chain_buckets(self.net, &self.record);
         // After a catch-up the builder steps and every shard on a chain site installs; any other shard installs the
         // chain when a miss asks for it (`graftyard_git::compose::steps_after_catch_up`, `chain-install`).
-        if !miss && !graftyard_git::compose::steps_after_catch_up(self.net, home, site.id, &ids, builder) {
+        if !miss && !graftyard_git::compose::steps_after_catch_up(self.net, &self.record, site.id, builder) {
             return Ok(None);
         }
         let raw: Vec<(SiteId, R2)> = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site))
@@ -1319,8 +1318,7 @@ impl DurableObject for GitShard {
                     // deadline: the next site's chain is usually synced. A site whose bucket holds no chain (not a
                     // warm site) waits for none (`graftyard_git::compose::chain_ready`, `chain-site`).
                     let follows = q(&url, "next").is_some();
-                    let ids: Vec<SiteId> = site.sites.0.iter().map(|s| s.id).collect();
-                    let chain_site = graftyard_git::chain_buckets(net, log.record.home, &ids).contains(&site.id);
+                    let chain_site = graftyard_git::chain_buckets(net, &log.record).contains(&site.id);
                     let ready = compose.ready();
                     if !graftyard_git::compose::chain_ready(follows, chain_site, left(), ready, worker::Delay::from)
                         .await
