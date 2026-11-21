@@ -1252,6 +1252,10 @@ pub struct Host<F: Family> {
     pub dying: Cell<bool>,
     /// The newest `ReadIndex` batch this member sent as a call (`hedge_due`).
     newest_read: Cell<u64>,
+    /// `install-record`: the install account's placement record, kept beside the join after the first dependency read
+    /// of `Authz(install_account())` that succeeded under it, so later entries read that chain with no `Placement` read
+    /// on `Names` first (`read_dep_under`). In memory only: an isolate that resets reads it again once.
+    install_record: RefCell<Option<graftyard_types::PlacementRecord>>,
     ticking: Cell<bool>,
     active_until: Cell<u64>,
     alarm_at: Cell<u64>,
@@ -2018,6 +2022,7 @@ impl<F: Family> Host<F> {
             restore_error: RefCell::new(None),
             dying: Cell::new(false),
             newest_read: Cell::new(0),
+            install_record: RefCell::new(None),
             ticking: Cell::new(false),
             active_until: Cell::new(0),
             alarm_at: Cell::new(0),
@@ -3595,8 +3600,7 @@ impl<F: Family> Host<F> {
             let began = now_ms();
             let joined = h.core.borrow().as_ref().map(|c| c.join.clone());
             let one = |chain: graftyard_types::ChainId| {
-                let (env, hedges) = (&h.env, &h.stats);
-                let known = joined.as_ref().and_then(|j| owner_chain_record(j, chain));
+                let (env, hedges, install, joined) = (&h.env, &h.stats, &h.install_record, joined.as_ref());
                 async move {
                     let t0 = now_ms();
                     let q = &json!({ "q": { "dep": true } });
@@ -3610,18 +3614,8 @@ impl<F: Family> Host<F> {
                         }
                         r
                     };
-                    // The joined record finds the group with no `Names` read first; a record the owner has since
-                    // moved from may not, and then the owner's current record is read and tried.
-                    let mut got = match known {
-                        Some(r) => read(r).await,
-                        None => Err(String::new()),
-                    };
-                    if got.is_err() {
-                        got = match crate::release::record_for(env, chain).await {
-                            Ok(r) => read(r).await,
-                            Err(e) => return (None, json!({ "chain": chain, "error": format!("no record: {e}") })),
-                        };
-                    }
+                    let got =
+                        read_dep_under(joined, install, chain, read, || crate::release::record_for(env, chain)).await;
                     match got {
                         Ok((v, _)) => {
                             let bytes = v.get("value").and_then(Value::as_str).and_then(unhex);
@@ -4312,6 +4306,48 @@ fn owner_chain_record(join: &Join, chain: graftyard_types::ChainId) -> Option<gr
     }
 }
 
+/// One dependency read of `chain` (`read_deps`). It goes under the record this member already holds for the chain: the
+/// joined record for its owner's `Authz` (`owner_chain_record`), or `install`, the install account's record kept after
+/// an earlier read (`install-record`). With none, or when the read under it fails (a record the account has since
+/// moved from may not reach the group), it goes under the chain's current record from `lookup` (`release::record_for`:
+/// a `Placement` read on `Names` for an account's chain). A read of `Authz(install_account())` that succeeds under a
+/// looked-up record keeps that record in `install`, and one that fails under the kept record drops it. On B0-31
+/// m65r31 that `Placement` read made every entry's install `Authz` read p50 277 ms slower than the owner's, read beside
+/// it (`tests/m4/results/m4-wp4.md`, "The install `Authz` read's extra hop"). The record only addresses the group, and
+/// the read is the same `fresh` read either way, so nothing `decide` sees changes.
+async fn read_dep_under<T, R, RF, L, LF>(
+    joined: Option<&Join>,
+    install: &RefCell<Option<graftyard_types::PlacementRecord>>,
+    chain: graftyard_types::ChainId,
+    read: R,
+    lookup: L,
+) -> std::result::Result<T, String>
+where
+    R: Fn(graftyard_types::PlacementRecord) -> RF,
+    RF: std::future::Future<Output = std::result::Result<T, String>>,
+    L: FnOnce() -> LF,
+    LF: std::future::Future<Output = std::result::Result<graftyard_types::PlacementRecord, String>>,
+{
+    let is_install = chain == graftyard_types::ChainId::Authz(graftyard_identity::install_account());
+    let held = joined
+        .and_then(|j| owner_chain_record(j, chain))
+        .or_else(|| is_install.then(|| install.borrow().clone()).flatten());
+    if let Some(r) = held {
+        if let Ok(v) = read(r).await {
+            return Ok(v);
+        }
+        if is_install {
+            install.borrow_mut().take();
+        }
+    }
+    let r = lookup().await.map_err(|e| format!("no record: {e}"))?;
+    let got = read(r.clone()).await;
+    if is_install && got.is_ok() {
+        *install.borrow_mut() = Some(r);
+    }
+    got
+}
+
 /// `read` of every chain, all started at once and awaited together, in `chains` order (`design/DESIGN.md`, "The write
 /// path": "the leader reads each distinct dependency ... once through `fresh`, in parallel").
 async fn each_at_once<T, Fut: std::future::Future<Output = T>>(
@@ -4777,7 +4813,7 @@ mod tests {
         assert_eq!(page(false, Some(u64::MAX), 5), STD);
     }
 
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::pin::pin;
     use std::task::{Context, Poll, Waker};
 
@@ -5080,6 +5116,93 @@ mod tests {
         assert_eq!(super::owner_chain_record(&join, ChainId::Authz(owner)), Some(record));
         assert_eq!(super::owner_chain_record(&join, ChainId::Authz(other)), None);
         assert_eq!(super::owner_chain_record(&join, ChainId::Tokens(graftyard_types::TokenShard(3))), None);
+    }
+
+    /// `install-record`: an App command's entry reads the install's own `Authz` (`with_install`). On main every such
+    /// read looked the install account's record up first, one `Placement` read on `Names` per entry: B0-31 m65r31's
+    /// install `Authz` read ran p50 277 ms longer than the owner's beside it. Here the first read looks it up and keeps
+    /// it, later reads use it with no lookup, a read that fails under the kept record drops it and looks it up again,
+    /// a failed lookup keeps nothing, and the owner's `Authz` and another chain never touch the kept record.
+    #[test]
+    fn the_install_authz_record_is_looked_up_once_and_kept_until_a_read_under_it_fails() {
+        use futures_util::FutureExt;
+        use graftyard_types::{AccountId, ChainId, DbId, MemberKind, PlacementName, PlacementRecord, RepoId, SiteId};
+        let rec = |generation: u32| PlacementRecord {
+            name: PlacementName::Tri,
+            sites: [0, 1, 2].into_iter().map(SiteId).collect(),
+            home: SiteId(0),
+            generation,
+            moving_from: None,
+            at: graftyard_types::Timestamp(1),
+        };
+        let owner = AccountId(DbId(7_100_001));
+        let chain = ChainId::Repo(RepoId(DbId(65_581)));
+        let join = super::Join {
+            chain,
+            me: graftyard_types::Member::new(chain, SiteId(2), MemberKind::Full, 2, 1),
+            record: rec(1),
+            peers: Vec::new(),
+            owner: Some(owner),
+            genesis: None,
+            #[cfg(feature = "test-faults")]
+            no_claim: false,
+        };
+        let install = ChainId::Authz(graftyard_identity::install_account());
+        let kept = RefCell::new(None);
+        // The group answers only under the record of generation `live`; the lookup names generation `named`, and
+        // `lookups` counts `Placement` reads.
+        let (live, named, lookups, reads) = (Cell::new(4u32), Cell::new(4u32), Cell::new(0), RefCell::new(Vec::new()));
+        let run = |chain: ChainId, lookup_ok: bool| {
+            super::read_dep_under(
+                Some(&join),
+                &kept,
+                chain,
+                |r: PlacementRecord| {
+                    reads.borrow_mut().push(r.generation);
+                    let ok = r.generation == live.get() || (chain != install && r.generation == 1);
+                    async move { if ok { Ok(r.generation) } else { Err("no group".to_owned()) } }
+                },
+                || {
+                    lookups.set(lookups.get() + 1);
+                    let g = named.get();
+                    async move { if lookup_ok { Ok(rec(g)) } else { Err("no answer".to_owned()) } }
+                },
+            )
+            .now_or_never()
+            .expect("ready")
+        };
+        assert_eq!(run(install, true), Ok(4));
+        assert_eq!((lookups.get(), kept.borrow().as_ref().map(|r| r.generation)), (1, Some(4)));
+        for _ in 0..5 {
+            assert_eq!(run(install, true), Ok(4));
+        }
+        assert_eq!(lookups.get(), 1, "later entries read the install Authz with no Placement read");
+        // The owner's Authz reads under the joined record, and a chain looked up (a `Tokens` shard's) is not kept as the
+        // install's: both leave the kept record alone.
+        assert_eq!(run(ChainId::Authz(owner), true), Ok(1));
+        assert_eq!(lookups.get(), 1);
+        named.set(2);
+        assert_eq!(run(ChainId::Tokens(graftyard_types::TokenShard(3)), true), Err("no group".to_owned()));
+        named.set(1);
+        assert_eq!(run(ChainId::Tokens(graftyard_types::TokenShard(3)), true), Ok(1));
+        assert_eq!((lookups.get(), kept.borrow().as_ref().map(|r| r.generation)), (3, Some(4)));
+        // Account 1 moves: the read under the kept record fails, the record is looked up again and kept.
+        live.set(5);
+        named.set(5);
+        reads.borrow_mut().clear();
+        assert_eq!(run(install, true), Ok(5));
+        assert_eq!((lookups.get(), reads.borrow().clone()), (4, vec![4, 5]));
+        assert_eq!(kept.borrow().as_ref().map(|r| r.generation), Some(5));
+        // It moves again and the lookup fails: the read fails, and nothing stale is kept.
+        live.set(6);
+        assert_eq!(run(install, false), Err("no record: no answer".to_owned()));
+        assert_eq!(*kept.borrow(), None);
+        // A lookup that names a record the group does not answer under keeps nothing either.
+        assert_eq!(run(install, true), Err("no group".to_owned()));
+        assert_eq!(*kept.borrow(), None);
+        named.set(6);
+        assert_eq!(run(install, true), Ok(6));
+        assert_eq!((lookups.get(), kept.borrow().as_ref().map(|r| r.generation)), (7, Some(6)));
     }
 
     #[test]
