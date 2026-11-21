@@ -1,0 +1,45 @@
+2026-11-21T10:46:24Z
+c4d5a1333
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+sha256:3aec73249ca89b8225e3fe107328427aedfe2f75360f94096bc0d6895e6b8284
+npm notice run npx
+npm notice run 'wrangler' containers push graft-m1-site-gitshard-git:am1runs
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0
+────────────────────
+
+WARNING! Your credentials are stored unencrypted in '<home>/.docker/config.json'.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/go/credential-store/
+
+Login Succeeded
+The push refers to repository [registry.cloudflare.com/<account>/graft-m1-site-gitshard-git]
+5681c59cd025: Waiting
+2f018d8389bf: Waiting
+710f3da1112f: Waiting
+652267fc5b16: Waiting
+2f018d8389bf: Waiting
+710f3da1112f: Layer already exists
+652267fc5b16: Layer already exists
+5681c59cd025: Layer already exists
+098625056be1: Waiting
+2f018d8389bf: Waiting
+098625056be1: Waiting
+098625056be1: Waiting
+2f018d8389bf: Waiting
+098625056be1: Waiting
+098625056be1: Pushed
+2f018d8389bf: Pushed
+am1runs: digest: sha256:3aec73249ca89b8225e3fe107328427aedfe2f75360f94096bc0d6895e6b8284 size: 1411
+Pushed image: registry.cloudflare.com/<account>/graft-m1-site-gitshard-git:am1runs
+exit 0
+graft-m1-site-gitshard-git@sha256:3aec73249ca89b8225e3fe107328427aedfe2f75360f94096bc0d6895e6b8284
+registry.cloudflare.com/<account>/graft-m1-site-gitshard-git@sha256:3aec73249ca89b8225e3fe107328427aedfe2f75360f94096bc0d6895e6b8284
+2026-11-21T10:46:56Z
+DONE

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """syncab.py TSAVE SITE@FROM@TO [SITE@FROM@TO ...] -> the leader-sync A/B's per-arm verdict lines from one row's trace
 (`tests/am1/results/sync-ab.md`), for each leadership given: the leader's input requests a second by route (kind 25
-`Entered`, route code `index % 64` in `ROUTES`), its storage confirm walls (kind 31 `Sync`) at p50, p90 and p99, its
+`Entered`, route code `index % 64` in `ROUTES`; `/raft` from learners, peer 192 and up, apart), its storage confirm walls (kind 31 `Sync`) at p50, p90 and p99, its
 ticker stalls of 500 ms or more (kind 8 `Lag`), and its held-input batches (one millisecond in which 50 or more
 requests entered, `stallline.py`'s test). FROM and TO are ISO times on Cloudflare's clock, as the trace's rows are.
 Commit p99 and agent commands a second come from the a1 row and `cuts.py`, not from here."""
@@ -46,7 +46,9 @@ def main(trace, spans):
         batches = [n for n in per_ms.values() if n >= 50]
         print(f'site {site} {datetime.datetime.fromtimestamp(a / 1000, datetime.UTC):%H:%M:%S} to '
               f'{datetime.datetime.fromtimestamp(b / 1000, datetime.UTC):%H:%M:%S} ({secs:.0f} s)')
-        print(f'  inputs {total / secs:.1f}/s: ' + ', '.join(f'{k} {v / secs:.1f}' for k, v in ent.most_common()))
+        learner_raft = sum(1 for r in R if r[1] == 25 and int(r[4]) % 64 == 1 and int(r[2]) >= 192)
+        print(f'  inputs {total / secs:.1f}/s: ' + ', '.join(f'{k} {v / secs:.1f}' for k, v in ent.most_common())
+              + f'; of /raft, from learners {learner_raft / secs:.1f}')
         print(f'  confirm wall n {len(confirms)} p50 {pct(confirms, .5)} p90 {pct(confirms, .9)} p99 {pct(confirms, .99)} '
               f'max {max(confirms) if confirms else None} ms')
         print(f'  ticker stalls >= 500 ms: {len(stalls)}, {sum(stalls)} ms in total, max {max(stalls) if stalls else 0}')

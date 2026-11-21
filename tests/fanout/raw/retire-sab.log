@@ -1,0 +1,19 @@
+2026-11-21T12:40:25.538Z repo:131379: 7 names, 7 were joined, all not joined, all with the retired row
+2026-11-21T12:40:33.735Z repo:131380: 3 names, 3 were joined, all not joined, all with the retired row
+2026-11-21T12:40:41.639Z repo:131381: 3 names, 3 were joined, all not joined, all with the retired row
+2026-11-21T12:40:44Z buckets: graft-m2b-site-a-packs, graft-m2b-site-b-packs, graft-m2b-site-c-packs
+2026-11-21T12:53:00Z 131379 purged: a 13015 -> 0, b 12567 -> 0, c 11386 -> 0
+2026-11-21T12:53:00Z 131379 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T12:53:00Z 131380 purged: a 16126 -> 0, b 14666 -> 0, c 10455 -> 0
+2026-11-21T12:53:00Z 131380 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T12:53:00Z 131381 purged: a 15819 -> 0, b 14369 -> 0, c 10507 -> 0
+2026-11-21T12:53:00Z 131381 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T12:53:00Z {"dry": false, "purged": 3, "objects": 118910, "refused": [], "second": 0}
+2026-11-21T12:53:00.423Z purge: buckets: graft-m2b-site-a-packs, graft-m2b-site-b-packs, graft-m2b-site-c-packs
+2026-11-21T12:53:00.424Z purge: 131379 purged: a 13015 -> 0, b 12567 -> 0, c 11386 -> 0
+2026-11-21T12:53:00.424Z purge: 131379 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T12:53:00.424Z purge: 131380 purged: a 16126 -> 0, b 14666 -> 0, c 10455 -> 0
+2026-11-21T12:53:00.424Z purge: 131380 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T12:53:00.424Z purge: 131381 purged: a 15819 -> 0, b 14369 -> 0, c 10507 -> 0
+2026-11-21T12:53:00.424Z purge: 131381 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-21T12:53:00.424Z purge: {"dry": false, "purged": 3, "objects": 118910, "refused": [], "second": 0}

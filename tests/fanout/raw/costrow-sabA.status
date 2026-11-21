@@ -1,0 +1,20 @@
+edge: graft-m2b-edge serves e7997554 at 100% (rev c4d5a1333), as tests/am1/raw/runs/fanout-sab-edge.log deployed
+2026-11-21T11:33:17Z meter (account, run) 29.23 0.01 before b033, expected +$2.2, stop $170 account, $10 run
+2026-11-21T11:34:19Z meter (account, run) 29.28 0.01
+2026-11-21T11:35:21Z meter (account, run) 29.32 0.01
+2026-11-21T11:36:23Z meter (account, run) 29.34 0.02
+2026-11-21T11:37:25Z meter (account, run) 29.38 0.05
+2026-11-21T11:38:29Z meter (account, run) 29.45 0.11
+2026-11-21T11:39:31Z meter (account, run) 29.88 0.54
+2026-11-21T11:40:33Z meter (account, run) 30.24 0.94
+2026-11-21T11:41:35Z meter (account, run) 30.79 1.45
+2026-11-21T11:42:37Z meter (account, run) 31.18 1.87
+2026-11-21T11:43:40Z meter (account, run) 31.55 2.18
+2026-11-21T11:44:42Z meter (account, run) 31.63 2.25
+2026-11-21T11:44:47Z b033 ended:   3 to 5 s   | 4401 / 2381
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-21T11:45:06Z sweep exit 0 (kept: none)
+2026-11-21T11:45:08Z meter (account, run) 31.64 2.26 after b033 and the sweep
+DONE

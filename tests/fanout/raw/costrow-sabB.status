@@ -1,0 +1,7 @@
+edge: graft-m2b-edge serves e7997554 at 100% (rev c4d5a1333), as tests/am1/raw/runs/fanout-sab-edge.log deployed
+2026-11-21T11:59:33Z meter (account, run) 32.88 3.4 before b033, expected +$2.2, stop $170 account, $10 run
+2026-11-21T12:00:37Z meter (account, run) 32.89 3.4
+2026-11-21T12:01:39Z meter (account, run) 32.9 3.4
+2026-11-21T12:02:42Z meter (account, run) 32.92 3.41
+2026-11-21T12:03:44Z meter (account, run) 32.94 3.42
+2026-11-21T12:04:45Z meter (account, run) 32.95 3.42
