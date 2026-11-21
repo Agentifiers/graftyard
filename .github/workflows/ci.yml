@@ -36,6 +36,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # tests/fanout/raw is 465 MB of measurement logs that only the design checks read.
+          sparse-checkout: |
+            /*
+            !/tests/fanout/raw/
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -53,6 +58,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # tests/fanout/raw is 465 MB of measurement logs that only the design checks read.
+          sparse-checkout: |
+            /*
+            !/tests/fanout/raw/
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -67,11 +77,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # tests/fanout/raw is 465 MB of measurement logs that only the design checks read.
+          sparse-checkout: |
+            /*
+            !/tests/fanout/raw/
+          sparse-checkout-cone-mode: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
+      # A restore normally takes under a minute; one hung for 16. Past 3 minutes, build cold instead.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 3
+        continue-on-error: true
         with:
           key: lint
       - run: cargo fmt --check
@@ -86,23 +104,41 @@ jobs:
           (cd workers/runners && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
 
   rust-test:
-    name: Rust tests
+    name: Rust tests (${{ matrix.shard }}/4)
     runs-on: [self-hosted, srv]
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      # Line tables keep file and line in panics while cutting the debug info the 86 test binaries link.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # tests/fanout/raw is 465 MB of measurement logs that only the design checks read.
+          sparse-checkout: |
+            /*
+            !/tests/fanout/raw/
+          sparse-checkout-cone-mode: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 3
+        continue-on-error: true
         with:
           key: test
+          # The shards build the same thing, so one upload is enough.
+          save-if: ${{ matrix.shard == 1 }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # nextest runs every test binary in parallel; it skips doc tests, so they run separately.
-      - run: cargo nextest run --workspace --no-fail-fast
-      - run: cargo test --workspace --doc
+      # Each shard builds every test binary from the shared cache and runs a quarter of the tests; nextest skips
+      # doc tests, so shard 1 runs them.
+      - run: cargo nextest run --workspace --no-fail-fast --partition hash:${{ matrix.shard }}/4
+      - if: matrix.shard == 1
+        run: cargo test --workspace --doc
 
   go:
     name: Go tests
@@ -115,6 +151,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # tests/fanout/raw is 465 MB of measurement logs that only the design checks read.
+          sparse-checkout: |
+            /*
+            !/tests/fanout/raw/
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: ${{ matrix.dir }}/go.mod
