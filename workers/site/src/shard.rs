@@ -86,8 +86,8 @@ impl Compose {
         (self.obj.clone(), self.net.0.0)
     }
 
-    /// Starts a step unless one runs. `miss`: a composable upload-pack asks, so a shard other than the builder installs
-    /// the chain too; after a catch-up (`!miss`) only the builder steps.
+    /// Starts a step unless one runs. `miss`: a composable upload-pack asks, so any shard installs the chain; after a
+    /// catch-up (`!miss`) only the builder and the chain sites' shards step (`compose::steps_after_catch_up`).
     fn start(&self, miss: bool) {
         let started = COMPOSES.with(|m| {
             let mut m = m.borrow_mut();
@@ -158,12 +158,13 @@ impl Compose {
         let ns = self.env.durable_object(&format!("SHARD_{}", site.id.0)).map_err(|e| e.to_string())?;
         let first = ns.id_from_name(&format!("git#{}#net:{}", site.id.0, self.net.0.0)).map_err(|e| e.to_string())?;
         let builder = site.id == home && first.to_string() == self.state.id().to_string();
-        // After a catch-up only the builder steps; any other shard installs the chain when a miss asks for it.
-        if !builder && !miss {
-            return Ok(None);
-        }
         let ids: Vec<SiteId> = site.sites.0.iter().map(|s| s.id).collect();
         let warm = graftyard_git::chain_buckets(self.net, home, &ids);
+        // After a catch-up the builder steps and every shard on a chain site installs; any other shard installs the
+        // chain when a miss asks for it (`graftyard_git::compose::steps_after_catch_up`, `chain-install`).
+        if !miss && !graftyard_git::compose::steps_after_catch_up(self.net, home, site.id, &ids, builder) {
+            return Ok(None);
+        }
         let raw: Vec<(SiteId, R2)> = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site))
             .into_iter()
             .filter(|(s, _)| warm.contains(s))
@@ -547,8 +548,8 @@ impl Jobs {
         if c.behind {
             return Ok(Some(c.until));
         }
-        // The builder takes the composed-miss chain's next step in the background, its base on a network with none;
-        // the catch-up does not wait for it.
+        // The builder takes the composed-miss chain's next step in the background, its base on a network with none,
+        // and a shard on the other chain site installs it; the catch-up does not wait for either.
         Compose {
             state: self.state.clone(),
             env: self.env.clone(),

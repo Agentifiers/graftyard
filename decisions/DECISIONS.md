@@ -7069,3 +7069,24 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 - It changes no `crates/raft/src` logic. If the flag ends up read in `codec`, also run the long sweep and Porcupine.
 
 **Flip.** A hosted B0-29 row with the flag on where the mean AppendEntries body is not at least 15% under the same journey's flag-off figure (m3fb29: 35,839 B), which would mean inline packs are not the bytes. Or one where the mean round of entries ≥ 50 KB is not lower than flag-off at matched load. Then unset the variable on a site day and keep the reader.
+
+### `chain-install`: every shard on a chain site installs the chain after its catch-ups, 2026-11-21
+
+**Status.** Built on branch `b034-follow`. Site script only (`workers/site/src/shard.rs`, `Compose::run`; the rule is `steps_after_catch_up` in `crates/git/src/compose.rs`), so it ships on a site day.
+
+**Decision.** After its own catch-up a shard takes the composed-miss chain's step in the background when it is the builder, which builds the step, or when its site is a chain site (one of `chain_buckets`), where it installs the chain from the warm buckets. A shard on any other site still installs only when a miss asks. No miss waits for this step; `chain_ready`'s waits do not change.
+
+**Why.**
+- On B0-34 mt12 the chain sites of the monorepo network 1048605 were a, the home, and c. All 46 misses before the kill at 07:15:44Z went to site a, so site c's shards never ran a miss and never installed the chain: bucket c saw only `head` reads from 07:05 to 07:15Z, and its first chain-part `get`s came at 07:15:51Z [measured, R2 `GetObject` on `compose/1048605/` in `graft-m1-packs-c`].
+- At the kill, site c took the misses as the last chain site. Its first miss waited 13.8 s (`ready_ms`) for that install, and the misses behind it 0.5 to 10.9 s. Then each answered `tail` and streamed from R2 [measured, `tests/fanout/raw/misslines-mt12.jsonl`]. 6 of kill's 14 misses over 5 s were these.
+- The other 8 over 5 s were site b's container composing from its own repository at 6.1 to 10.0 s, after site c's 2 s forwarded waits and b's `stock: no chain` (`chain-site`: b holds no chain and waits for none). They queued behind site c's install on the same two wants: misses that site c could have answered at once from an installed chain went on to b [inference from the same lines].
+- With the chain installed before the kill, site c answers from it at once, as site a did all of j9: j9's misses p99 2.13 s, and site c's misses after its install 0.1 to 1.2 s to headers [measured]. That takes kill's 6 R2 misses over 5 s and most of b's 8 under 5 s, against the 2 kill needs to reach 90 % [inference].
+
+**What it beat.**
+- **Serving a chain site's miss from R2 at once while its chain step runs.** The edge streams the chain from R2, but the shard's `tail` needs the chain installed in the container to cut the want's own objects from it, so there is nothing to answer before the install ends.
+- **Starting the install at the kill.** Nothing on the surviving site sees the kill; it sees the first miss, which is when it starts now.
+- **Installing on every site's shards.** That puts every chain pack in a third container and fetches it from a bucket the site does not hold, for a site that takes no composed misses.
+
+**Evidence.** `a_shard_on_a_chain_site_installs_the_chain_after_its_catch_up` (`crates/git/tests/shard.rs`) runs `steps_after_catch_up` with mt12's network, home and sites, and another network whose chain sites are a and b. It fails on main's rule (only the builder steps), on every shard stepping, on only the home bucket stepping, and on the home site standing for the chain sites. Plants (`tests/chaininstall/plant.py`): 4 of 4 caught, mutant 0 main's rule. The site script's one call to the rule runs only in wasm and no host test reaches it: reverting it to main's builder-only check passes every test, so the next row checks it, by bucket c's chain-pack reads after a catch-up and before the kill.
+
+**Flip.** A row where a chain site's shards install the chain after their catch-ups and its kill-phase misses still wait more than 2 s for a step (`ready_ms`): then the wait is the step's own catch-up to the moved want, not the install. Or one where the installs' R2 reads after catch-ups show up in its bill.
