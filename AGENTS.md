@@ -63,6 +63,7 @@ Implementation will find places where the design is wrong. When it does, fix the
 - Run workerd only for the lifeboat and evaluation installs (`FRAME.md`, "Four Cloudflare questions still carry the run's defaults").
 - Cite paths in this folder's layout, and cite design sections by heading, not by line number.
 - Never write the project's old name. `scripts/check_names.py` lists any occurrence outside `history/`.
+- A change under `workers/edge/` or any crate the edge links runs `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` before it merges (CI job `edgeboot`): they serve the edge's own wasm in local workerd, which no native test or clippy does, and fail on a 500 or a wasm trap.
 
 ## What not to do
 
