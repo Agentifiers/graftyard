@@ -339,6 +339,21 @@ impl Intent {
         }
     }
 
+    /// The script whose deployment the intent moves: a site's or the Workflows script for a day, the rolled script for
+    /// a roll. `None` for a container day, which moves no script version, and for intents that deploy nothing.
+    pub fn script(&self) -> Option<Script> {
+        match self {
+            Intent::SiteDay { target: DayTarget::Site(s), .. } => Some(Script::Site(*s)),
+            Intent::SiteDay { target: DayTarget::Workflows, .. } => Some(Script::Workflows),
+            Intent::EdgeRoll { .. } => Some(Script::Edge),
+            Intent::FrontRoll { .. } => Some(Script::Front),
+            Intent::OpsRoll { .. } => Some(Script::Ops),
+            Intent::McpRoll { .. } => Some(Script::Mcp),
+            Intent::ControllerRoll { .. } => Some(Script::Controller),
+            _ => None,
+        }
+    }
+
     /// The pinned script the intent rolls, whose pointer its commit clears.
     pub fn pinned(&self) -> Option<Script> {
         match self {

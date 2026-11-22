@@ -41,7 +41,13 @@ fn answer(status: u16, v: Value) -> Result<Response> {
     Ok(Response::from_json(&v)?.with_status(status))
 }
 
+/// 422 with the refusal. A refusal the group pages on (`graftyard_release::pages`: a release, pointer, `Rollback`, or
+/// `Abort` below an enabled format, or a second drain-key drain) also writes a `PAGE` line, which the install's log
+/// alert matches (`design/DESIGN.md`, Shape, "Release group").
 fn refused(variant: &str, message: String) -> Result<Response> {
+    if graftyard_release::pages(variant) {
+        console_error!("PAGE release {variant}: {message}");
+    }
     answer(422, json!({ "message": message, "refusal": variant }))
 }
 

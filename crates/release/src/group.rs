@@ -48,6 +48,9 @@ pub fn formats_enable_message(f: Format) -> Vec<u8> {
 pub struct Upload {
     pub versions: Vec<(Script, VersionId)>,
     pub reads: FormatSet,
+    /// Every file the signed record lists, with its SHA-256, which `release roll` compares per script.
+    pub files: Vec<(Box<str>, [u8; 32])>,
+    pub images: Vec<crate::types::ImageRef>,
 }
 
 /// A site's drain: which key class set it (a drain-key drain ends only by a drain-key `Normal`, an intent-key one only
@@ -105,6 +108,9 @@ pub struct Current {
     pub used: Vec<ReleaseEntry>,
     /// Whether the vendor key signed the intent.
     pub vendor_signed: bool,
+    /// The time of the entry that last moved it: the intent, its last `IntentStep`, an undo, `Resume`, or `Abort`.
+    /// `graft-ops` judges a step that changes no deployment (a drain, the first day) from it.
+    pub since: Timestamp,
 }
 
 /// What the `Release` group's fold holds. `Noop` and `Config` entries never reach it, so `last` is the digest of the
@@ -131,6 +137,14 @@ pub struct ReleaseFold {
     pub deployed: BTreeMap<Script, (Option<ReleaseId>, ReleaseId)>,
     pub lifeboats: BTreeMap<Box<str>, KeyId>,
     pub stale: Vec<(Scope, Timestamp)>,
+    /// The release each script runs as its last finished intent left it, recorded at `IntentDone`: the intent's release
+    /// after its forward steps, N after an undo, the target after an `Abort`. What `release roll` and `graft-ops` read
+    /// as the release a script runs (`ops::running`).
+    pub rolled: BTreeMap<Script, ReleaseId>,
+    /// The same for each site's container images, from a finished `ContainerDay` or its undo or `Abort`.
+    pub containers: BTreeMap<u8, ReleaseId>,
+    /// The release each registered lifeboat's decoder reports (`LifeboatDecoder`), which `FormatsEnable` waits for.
+    pub lifeboat_release: BTreeMap<Box<str>, ReleaseId>,
 }
 
 /// The one event an accepted entry commits: the entry's canonical stored bytes, so every member applies and digests
@@ -525,7 +539,7 @@ impl ReleaseFold {
                 if self.enabled.contains(format) {
                     return Err(refuse(format!("format {format} is already enabled")));
                 }
-                Ok(())
+                self.check_reported(*format)
             }
             ReleaseEntry::RepoRestore { repos, reason, .. } => {
                 if repos.is_empty() || reason.is_empty() {
@@ -574,6 +588,22 @@ impl ReleaseFold {
             | ReleaseEntry::McpPointer { .. }
             | ReleaseEntry::ControllerPointer { .. } => unreachable!("handled before"),
         }
+    }
+
+    /// SHARED rule 3: a format is enabled only once every component that reads chains reports a release that reads
+    /// it: every site, spares included, by its `SiteRelease`, and every registered lifeboat by its `LifeboatDecoder`
+    /// (`design/DESIGN.md`, "Failure modes", `release control`).
+    fn check_reported(&self, f: Format) -> Result<(), Refusal> {
+        let reads =
+            |r: Option<&ReleaseId>| r.and_then(|r| self.uploads.get(&r.0)).is_some_and(|u| u.reads.contains(&f));
+        let g = self.genesis.as_ref().expect("installed");
+        if let Some(s) = g.sites.iter().find(|s| !reads(self.site_release.get(&s.id.0))) {
+            return Err(Refusal::NotReported { format: f, by: format!("site {}", s.id.0).into() });
+        }
+        if let Some(h) = self.lifeboats.keys().find(|h| !reads(self.lifeboat_release.get(*h))) {
+            return Err(Refusal::NotReported { format: f, by: format!("lifeboat {h}").into() });
+        }
+        Ok(())
     }
 
     fn check_upload(&self, u: &ReleaseUploaded) -> Result<(), Refusal> {
@@ -726,6 +756,7 @@ impl ReleaseFold {
                     next: 0,
                     used: Vec::new(),
                     vendor_signed,
+                    since: at,
                     intent: *i,
                 });
                 if let Some(mut prev) = self.current.take() {
@@ -747,16 +778,73 @@ impl ReleaseFold {
                 }
             },
             ReleaseEntry::ReleaseUploaded(u) => {
-                self.uploads.insert(u.release.0, Upload { versions: u.versions.to_vec(), reads: u.reads.clone() });
+                let rec: serde_json::Value = serde_json::from_slice(&u.record).unwrap_or_default();
+                let files = rec["files"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| {
+                        let sha = Digest::parse_hex(f["sha256"].as_str()?)?;
+                        Some((Box::from(f["name"].as_str()?), sha.0))
+                    })
+                    .collect();
+                let up =
+                    Upload { versions: u.versions.to_vec(), reads: u.reads.clone(), files, images: u.images.to_vec() };
+                self.uploads.insert(u.release.0, up);
             }
             ReleaseEntry::IntentStep { .. } => {
                 let c = self.current.as_mut().expect("checked");
                 c.next += 1;
+                c.since = at;
                 if let IntentState::Running { step } = &mut c.state {
                     *step = c.next;
                 }
             }
-            ReleaseEntry::IntentDone { .. } => self.current = self.under.take(),
+            ReleaseEntry::IntentDone { .. } => {
+                if let Some(c) = self.current.as_deref() {
+                    let i = &c.intent.intent;
+                    // Where the intent left each thing it moved: R after its forward steps, N after an undo, the
+                    // target after an `Abort`.
+                    let mut moved: Vec<(Option<Script>, Option<u8>, ReleaseId)> = Vec::new();
+                    let containers = |i: &Intent| match i {
+                        Intent::ContainerDay { site, .. } => Some(site.0),
+                        _ => None,
+                    };
+                    match c.state {
+                        IntentState::Running { .. } | IntentState::Halted { .. } => {
+                            if let Some(r) = i.release() {
+                                moved.push((i.script(), containers(i), r));
+                            }
+                        }
+                        IntentState::Aborting { target } => moved.push((i.script(), containers(i), target)),
+                        IntentState::Undoing => {
+                            for u in &c.used {
+                                match u {
+                                    ReleaseEntry::Rollback { target: DayTarget::Containers(s), release } => {
+                                        moved.push((None, Some(s.0), *release));
+                                    }
+                                    ReleaseEntry::Rollback { target: DayTarget::Site(s), release } => {
+                                        moved.push((Some(Script::Site(*s)), None, *release));
+                                    }
+                                    ReleaseEntry::Rollback { target: DayTarget::Workflows, release } => {
+                                        moved.push((Some(Script::Workflows), None, *release));
+                                    }
+                                    u => moved.extend(u.pointer().map(|(s, pin)| (Some(s), None, pin))),
+                                }
+                            }
+                        }
+                    }
+                    for (script, site, r) in moved {
+                        if let Some(s) = script {
+                            self.rolled.insert(s, r);
+                        }
+                        if let Some(site) = site {
+                            self.containers.insert(site, r);
+                        }
+                    }
+                }
+                self.current = self.under.take();
+            }
             ReleaseEntry::SiteRelease { site, release } => {
                 self.site_release.insert(site.0, release);
             }
@@ -783,6 +871,7 @@ impl ReleaseFold {
                     .find(|c| c.intent.id == parent)
                     .expect("checked");
                 c.used.push(u.clone());
+                c.since = at;
                 if !matches!(c.state, IntentState::Undoing) {
                     c.state = IntentState::Undoing;
                     c.next = 0;
@@ -797,10 +886,12 @@ impl ReleaseFold {
             }
             ReleaseEntry::LifeboatRemove { host } => {
                 self.lifeboats.remove(&host);
+                self.lifeboat_release.remove(&host);
             }
-            ReleaseEntry::LifeboatDecoder { .. }
-            | ReleaseEntry::RepoRestore { .. }
-            | ReleaseEntry::RepoReset { .. } => {}
+            ReleaseEntry::LifeboatDecoder { host, release } => {
+                self.lifeboat_release.insert(host, release);
+            }
+            ReleaseEntry::RepoRestore { .. } | ReleaseEntry::RepoReset { .. } => {}
             ReleaseEntry::FormatsEnable { format } => {
                 self.enabled.insert(format);
             }
@@ -816,15 +907,23 @@ impl ReleaseFold {
                 if let IntentState::Halted { step } = c.state {
                     c.state = IntentState::Running { step };
                 }
+                c.since = at;
                 if !undo.is_empty() {
                     c.undo = undo;
                     c.undo_key = customer;
                 }
             }
             ReleaseEntry::Abort { target, .. } => {
+                // A pinned script returns to `target` at 100% with the rolled release kept beside it, so the next
+                // roll of the script keeps `target`, as after a pointer undo.
+                let cur = self.current.as_deref().expect("checked");
+                if let (Some(s), Some(r)) = (cur.intent.intent.pinned(), cur.intent.intent.release()) {
+                    self.deployed.insert(s, (Some(r), target));
+                }
                 let c = self.current.as_mut().expect("checked");
                 c.state = IntentState::Aborting { target };
                 c.next = 0;
+                c.since = at;
             }
         }
     }
