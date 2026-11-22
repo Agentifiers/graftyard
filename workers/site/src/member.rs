@@ -1147,7 +1147,9 @@ impl<F: Family> Routes<F> {
                     // while `raft` decoded it again (gate 16's storm, `tests/am1/results/narrow-reads-3.md`).
                     self.host.trace_at(t0, Trace::CallArrived, from, id, sent, t1 - t0);
                 }
-                let r = self.raft(&body).await;
+                #[cfg(not(feature = "test-faults"))]
+                let id = 0;
+                let r = self.raft(&body, id).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
                 #[cfg(feature = "test-faults")]
                 let r = r.and_then(|mut res| {
@@ -1737,22 +1739,37 @@ impl<F: Family> Routes<F> {
     /// what this member held for it (`crate::callers`), and a `ReadIndex` the leader could not answer at once, because
     /// it needs a round, keeps the call open up to `READ_INDEX_HOLD` for its answer: this member never calls a learner
     /// back while it calls.
-    async fn raft(&self, body: &[u8]) -> Result<Response> {
+    /// `call` is the caller's `x-graft-call` id on a test install (0 otherwise), for `Trace::RaftCall`.
+    async fn raft(&self, body: &[u8], call: u64) -> Result<Response> {
         if !self.host.joined() {
             return Response::error("member not joined", 409);
         }
         let envs: Vec<raft::Envelope<F::Ev>> = raft::codec::from_bytes(body).map_err(|e| err(e.to_string()))?;
         let Some(from) = envs.first().map(|e| e.from) else { return self.raft_reply(Vec::new()) };
+        #[cfg(feature = "test-faults")]
+        let mut split = host::RaftCall::decoded(body.len(), &envs);
+        #[cfg(not(feature = "test-faults"))]
+        let _ = call;
         self.host.callers.borrow_mut().began(from, now_ms());
         let r = self.raft_steps(from, envs).await;
         // The output gate: the reply leaves only after the writes it may rest on.
+        #[cfg(feature = "test-faults")]
+        let gate_from = now_ms();
         self.host.settled().await;
+        #[cfg(feature = "test-faults")]
+        {
+            split.gate_ms = now_ms().saturating_sub(gate_from);
+        }
         let r = match r {
             Ok(mut back) => {
                 let batch_of = |e: &raft::Envelope<F::Ev>| match e.msg {
                     raft::Message::ReadIndexRes { batch, .. } => Some(batch),
                     _ => None,
                 };
+                #[cfg(feature = "test-faults")]
+                {
+                    (split.held, split.held_bytes) = self.host.callers.borrow().held_for(from);
+                }
                 let mut out = self.host.callers.borrow_mut().take(from, batch_of);
                 // This call's own answers count as sent too: a sibling call held on one of them ends.
                 let own: Vec<u64> = back.iter().filter_map(batch_of).collect();
@@ -1780,7 +1797,16 @@ impl<F: Family> Routes<F> {
                         _ => {}
                     }
                 }
-                self.raft_reply(out)
+                let bytes = raft::codec::to_bytes(&out);
+                #[cfg(feature = "test-faults")]
+                {
+                    split.out = out.len();
+                    split.answer = bytes.len();
+                    let (index, ms) = split.row();
+                    self.host.trace(Trace::RaftCall, from.0, call, index, ms);
+                }
+                drop(out);
+                self.raft_bytes(bytes)
             }
             Err(e) => Err(e),
         };
@@ -1832,7 +1858,11 @@ impl<F: Family> Routes<F> {
     }
 
     fn raft_reply(&self, back: Vec<raft::Envelope<F::Ev>>) -> Result<Response> {
-        let mut res = Response::from_bytes(raft::codec::to_bytes(&back))?;
+        self.raft_bytes(raft::codec::to_bytes(&back))
+    }
+
+    fn raft_bytes(&self, bytes: Vec<u8>) -> Result<Response> {
+        let mut res = Response::from_bytes(bytes)?;
         res.headers_mut().set("content-type", "application/octet-stream")?;
         res.headers_mut().set(crate::clock::STAMP, &self.host.now().to_string())?;
         Ok(res)

@@ -714,6 +714,53 @@ pub enum Trace {
     /// the cuts and rounds around it, when Workers Logs drops a line.
     #[cfg(feature = "test-faults")]
     Transfer = 32,
+    /// raft-split (`tests/am1/results/b033-profile.md`): one `/raft` call's sizes by stage, packed by
+    /// `RaftCall::row` when its answer is built. `peer` is the caller, `batch` its call id (`x-graft-call`), which
+    /// joins the row to the call's Workers Logs CPU. The isolate's clock does not move inside a turn, so the stages are
+    /// sized, not timed; `tests/fanout/raftcalls.py` fits the logged CPU on these sizes.
+    #[cfg(feature = "test-faults")]
+    RaftCall = 33,
+}
+
+/// raft-split: what one `/raft` call carried at each stage of `Routes::raft`. `body` and `envs` are what it decoded,
+/// `asks` its `ReadIndex` batches (stepped), `held` and `held_bytes` the messages held for the caller that its
+/// answer took (`crate::callers`, at their encoded lengths), `out` every message in the answer, `answer` the
+/// answer's encoded bytes, and `gate_ms` the wall time the answer waited on the output gate (`Host::settled`).
+#[cfg(any(test, feature = "test-faults"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RaftCall {
+    pub body: usize,
+    pub envs: usize,
+    pub asks: usize,
+    pub held: usize,
+    pub held_bytes: usize,
+    pub out: usize,
+    pub answer: usize,
+    pub gate_ms: u64,
+}
+
+#[cfg(any(test, feature = "test-faults"))]
+impl RaftCall {
+    /// A call's decode stage: its body length, and of the envelopes it decoded, how many and how many ask a read index.
+    pub fn decoded<E>(body: usize, envs: &[raft::Envelope<E>]) -> RaftCall {
+        let asks = envs.iter().filter(|e| matches!(e.msg, raft::Message::ReadIndex { .. })).count();
+        RaftCall { body, envs: envs.len(), asks, ..RaftCall::default() }
+    }
+
+    /// `Trace::RaftCall`'s `index` and `ms`: `index` is body (22 bits), envs (6), asks (6), held (6) and gate_ms (12)
+    /// from bit 0 up; `ms` is answer (23), held_bytes (23) and out (6). Each saturates at its width, and each column
+    /// stays under 2^53, so the JS number the trace passes through holds it exactly.
+    pub fn row(&self) -> (u64, u64) {
+        let sat = |v: u64, bits: u32| v.min((1 << bits) - 1);
+        let u = |v: usize| v as u64;
+        let index = sat(u(self.body), 22)
+            | sat(u(self.envs), 6) << 22
+            | sat(u(self.asks), 6) << 28
+            | sat(u(self.held), 6) << 34
+            | sat(self.gate_ms, 12) << 40;
+        let ms = sat(u(self.answer), 23) | sat(u(self.held_bytes), 23) << 23 | sat(u(self.out), 6) << 46;
+        (index, ms)
+    }
 }
 
 /// `Trace::Transfer`'s cause code: `raft::TransferWhy` in declaration order, from 1. Append-only, as trace kinds are.
@@ -5031,6 +5078,58 @@ mod tests {
         assert_eq!(ms, (1 << 52) - 1);
         for v in [batch, index, ms] {
             assert_eq!(v as f64 as u64, v, "{v} does not survive a JS number");
+        }
+    }
+
+    /// raft-split: a learner's `/raft` call counts what it decoded, the `ReadIndex` asks among its envelopes, and the
+    /// messages and bytes held for that learner that its answer takes, which are gone once taken; and
+    /// `tests/fanout/raftcalls.py` unpacks kind 33's columns by these bit positions, each saturating at its width.
+    #[test]
+    fn a_raft_call_row_counts_its_stages_where_the_trace_reader_looks() {
+        use graftyard_raft::{Envelope, Message};
+        use graftyard_types::{SiteId, learner_addr};
+        let l = learner_addr(2);
+        let ask = |batch| Envelope::<u32> { from: l, to: SiteId(0), msg: Message::ReadIndex { batch } };
+        let res = Envelope::<u32> { from: l, to: SiteId(0), msg: Message::ReadIndexRes { batch: 1, index: None } };
+        let envs = vec![ask(4), res, ask(5)];
+        let mut split = super::RaftCall::decoded(1_234, &envs);
+        assert_eq!((split.body, split.envs, split.asks), (1_234, 3, 2), "two asks among three envelopes");
+        // Two messages held for this learner, one for another; the call's answer takes this learner's only.
+        let mut c: crate::callers::Callers<u32> = Default::default();
+        c.began(l, 0);
+        c.began(learner_addr(3), 0);
+        assert_eq!(c.route(l, 10, 700, 1), None);
+        assert_eq!(c.route(l, 11, 52_000, 2), None);
+        assert_eq!(c.route(learner_addr(3), 12, 9, 2), None);
+        (split.held, split.held_bytes) = c.held_for(l);
+        assert_eq!((split.held, split.held_bytes), (2, 52_700));
+        assert_eq!(c.take(l, |_| None), vec![10, 11]);
+        assert_eq!(c.held_for(l), (0, 0), "read after the answer took them, the row would count nothing");
+        split.out = 4;
+        split.answer = 53_100;
+        split.gate_ms = 37;
+        let (index, ms) = split.row();
+        let field = |v: u64, at: u32, bits: u32| (v >> at) & ((1 << bits) - 1);
+        assert_eq!(
+            (field(index, 0, 22), field(index, 22, 6), field(index, 28, 6), field(index, 34, 6), field(index, 40, 12)),
+            (1_234, 3, 2, 2, 37)
+        );
+        assert_eq!((field(ms, 0, 23), field(ms, 23, 23), field(ms, 46, 6)), (53_100, 52_700, 4));
+        let full = super::RaftCall {
+            body: usize::MAX,
+            envs: 100,
+            asks: 100,
+            held: 100,
+            held_bytes: usize::MAX,
+            out: 100,
+            answer: usize::MAX,
+            gate_ms: u64::MAX,
+        };
+        let (index, ms) = full.row();
+        assert_eq!((field(index, 0, 22), field(index, 22, 6), field(index, 40, 12)), ((1 << 22) - 1, 63, 4_095));
+        assert_eq!((field(ms, 0, 23), field(ms, 23, 23), field(ms, 46, 6)), ((1 << 23) - 1, (1 << 23) - 1, 63));
+        for v in [index, ms] {
+            assert!(v < 1 << 53, "{v} does not survive a JS number");
         }
     }
 

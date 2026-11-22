@@ -170,6 +170,14 @@ fills them is [unverified]:
   of workerd process CPU per request, all threads.
 - **Learner `/raft` beyond its answer.** Each call is a fetch into the leader. It is decoded, stepped through
   `Member`, and its response is built from held messages (`crate::callers`). The hedge path copies some calls.
+  - Hosted CPU per learner call is skewed [measured, `wl-bl/blB-f0`, `wl-ql/qlC-f0`, 90 to 300 s]. The p50 is 0 ms
+    and the p90 is 1 to 3 ms. The p99 is 43 ms on blB and 26 ms on qlC. Calls of 20 ms or more carry 86% of blB's
+    learner `/raft` CPU (243 of 12,340 calls) and 36% of qlC's (181 of 10,947).
+  - The next row splits them. A test install logs one `Trace::RaftCall` row (kind 33) per `/raft` call: its body and
+    envelopes, its `ReadIndex` asks, the messages and bytes held for the caller that its answer took, the answer's
+    messages and bytes, and the output gate's wall time. `tests/fanout/raftcalls.py` joins each row to the call's
+    Workers Logs CPU on (caller, `x-graft-call`) and fits CPU per call, per KB decoded, per ask, per held message
+    and per KB answered. The isolate's clock does not move inside a turn, so stages are sized and fitted, not timed.
 - **Held-output release and `/outcome`.** Completing commit waiters, `outcome()` scans, and at full load 95
   `/outcome` calls a second at 0.37 ms each, plus `/outcome_by_request`.
 - **`deps` reads.** Per entry, `fresh` reads the identity folds' chains. The native profile put deps_read at 1.1 ms an
