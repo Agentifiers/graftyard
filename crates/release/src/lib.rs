@@ -12,6 +12,7 @@
 //! digest, which the next entry's `Bound.prev` names, is SHA-256 of the whole stored form, signatures included.
 
 mod codec;
+pub mod gate;
 mod group;
 pub mod ops;
 mod types;

@@ -45,14 +45,14 @@ MUTANTS = [
      '            if !same(have, split) {\n                return Action::Deploy',
      '            if true {\n                return Action::Deploy', REL),
     ("the dwell runs from the step's last entry, so a restart after the deploy shortens nothing but a late deploy dwells less",
-     OPS, 'let until = Timestamp(c.since.0.max(dep.created.0).saturating_add(*dwell));',
-     'let until = Timestamp(c.since.0.saturating_add(*dwell));', REL),
+     OPS, 'let start = Timestamp(c.since.0.max(dep.created.0));',
+     'let start = c.since;', REL),
     ("a gate breach waits instead of running the undo", OPS,
      '            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);',
      '            if *gated && let Gate::Breach(_) = &w.gate {\n                return Action::Wait { until: None, why: "breach".into() };', REL),
     ("the first day is not gated", OPS,
-     '            if let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }\n            let until',
-     '            let until', REL),
+     '            if let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }\n            let until = Timestamp(c.since.0.saturating_add(*d));',
+     '            let until = Timestamp(c.since.0.saturating_add(*d));', REL),
     ("a pinned script's 100% drops N, so its pointer undo can never apply", OPS,
      '                    Some(n) if p < 100 || pinned => vec![(v, p), (n, 100 - p)],',
      '                    Some(n) if p < 100 => vec![(v, p), (n, 100 - p)],', REL),
@@ -60,7 +60,7 @@ MUTANTS = [
      '                && fold.site_release.get(&s.0) != Some(release)\n',
      '                && fold.site_release.get(&s.0) != Some(release)\n                && false\n', REL),
     ("an undrain of a site drained by an intent key is signed by the drain key", OPS,
-     '            Some(d) if d.by_drain_key => Action::Commit {', '            Some(_) => Action::Commit {', REL),
+     '            Some(d) if d.by_drain_key => undrain(*s),', '            Some(_) => undrain(*s),', REL),
     ("release roll puts the spares before the member sites", OPS,
      'let sites = g.sites.iter().filter(|s| !s.spare).chain(g.sites.iter().filter(|s| s.spare));',
      'let sites = g.sites.iter().filter(|s| s.spare).chain(g.sites.iter().filter(|s| !s.spare));', REL),
@@ -89,9 +89,13 @@ MUTANTS = [
     ("a refused bundle ends the run before the intents", OPS,
      '                Ok(Some(r)) | Err(r) => {\n                    log.push(r);\n                    uploads = false;\n                }',
      '                Ok(Some(r)) | Err(r) => {\n                    log.push(r);\n                    break;\n                }', REL),
+    # Two edits in one plant (old and new are lists): the early breach check goes, and the same check runs after the
+    # deployment read instead.
     ("a breach waits for a deployment read, so no undo goes in while the API is down", OPS,
-     '            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }\n            let Some(dep) = w.deployments.get(script) else {\n                return Action::Wait { until: None, why: format!("no deployment of {script:?} read").into() };\n            };',
-     '            let Some(dep) = w.deployments.get(script) else {\n                return Action::Wait { until: None, why: format!("no deployment of {script:?} read").into() };\n            };\n            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }', REL),
+     ['            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }\n            if *gated\n',
+      '            let have = &dep.split;\n'],
+     ['            if *gated\n',
+      '            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }\n            let have = &dep.split;\n'], REL),
 ]
 
 
@@ -104,11 +108,14 @@ def main():
         p = os.path.join(ROOT, f)
         orig = open(p, 'rb').read()
         text = orig.decode()
-        if text.count(old) != 1:
-            print(f'{i} {name}: anchor found {text.count(old)} times')
-            sys.exit(2)
+        olds, news = (old, new) if isinstance(old, list) else ([old], [new])
+        for o, n in zip(olds, news):
+            if text.count(o) != 1:
+                print(f'{i} {name}: anchor found {text.count(o)} times')
+                sys.exit(2)
+            text = text.replace(o, n)
         try:
-            open(p, 'w').write(text.replace(old, new))
+            open(p, 'w').write(text)
             r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=1800)
             out = r.stdout + r.stderr
             if r.returncode == 0:

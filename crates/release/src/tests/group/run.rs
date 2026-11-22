@@ -28,6 +28,9 @@ struct Fake {
     lose_next: bool,
     /// The Cloudflare API refuses every call: no deployment read, no deploy.
     api_down: bool,
+    /// Calls this run may still make before `graft-ops` is killed: a killed isolate's deploys and commits never
+    /// happen, and every later call of that run fails. `None` never kills.
+    kill_after: Option<usize>,
     next_v: u8,
 }
 
@@ -52,6 +55,7 @@ impl Fake {
             lag: None,
             lose_next: false,
             api_down: false,
+            kill_after: None,
             next_v: 1,
         }
     }
@@ -73,6 +77,20 @@ impl Fake {
     }
 }
 
+impl Fake {
+    /// Whether the run was killed before this call.
+    fn killed(&mut self) -> bool {
+        match &mut self.kill_after {
+            Some(0) => true,
+            Some(n) => {
+                *n -= 1;
+                false
+            }
+            None => false,
+        }
+    }
+}
+
 impl Exec for Fake {
     fn now(&self) -> Timestamp {
         self.g.at
@@ -83,6 +101,9 @@ impl Exec for Fake {
     }
 
     async fn view(&mut self) -> Result<ReleaseFold, String> {
+        if self.killed() {
+            return Err("killed".into());
+        }
         Ok(self.lag.take().unwrap_or_else(|| self.g.f.clone()))
     }
 
@@ -97,8 +118,12 @@ impl Exec for Fake {
         self.gate.clone()
     }
 
+    async fn health(&mut self, _fold: &ReleaseFold) -> BTreeMap<u8, crate::gate::Verdict> {
+        BTreeMap::new()
+    }
+
     async fn deploy(&mut self, s: Script, split: &Split) -> Result<(), String> {
-        if self.api_down {
+        if self.api_down || self.killed() {
             return Err("HTTP 503".into());
         }
         self.deps.insert(s, Deployment { split: split.clone(), created: self.g.at });
@@ -107,6 +132,9 @@ impl Exec for Fake {
     }
 
     async fn submit(&mut self, bytes: &[u8]) -> Submit {
+        if self.killed() {
+            return Submit::Failed("killed".into());
+        }
         let before = self.g.f.clone();
         let r = match self.g.try_(bytes) {
             Ok(()) => Submit::Committed,
@@ -363,4 +391,77 @@ fn bf7_a_refused_rollback_pages_from_the_run_and_moves_nothing() {
     assert!(f.pages[0].contains("Rollback refused, UnreadableFormat"), "{}", f.pages[0]);
     assert_eq!(f.g.f, before.0, "nothing committed");
     assert_eq!(f.deploys.len(), before.1, "nothing deployed");
+}
+
+/// BF-39 in memory: `graft-ops` killed in every cron run after one to three of its calls (a view read, a deploy, or
+/// a commit), across a release's four site days, its `EdgeRoll` and its `OpsRoll`, from three seeds, over 100 kills.
+/// Each restart resumes after the last `IntentStep`; no step is skipped or doubled, each intent gets one `IntentDone`,
+/// and the deployments end where an unkilled run leaves them.
+#[test]
+fn bf39_graft_ops_killed_at_every_step_resumes_after_the_last_intent_step() {
+    let mut kills = 0;
+    for seed in 0..3u64 {
+        kills += killed_roll(seed);
+    }
+    assert!(kills >= 100, "{kills} kills");
+}
+
+/// One release rolled with `graft-ops` killed in every run; returns the kills.
+fn killed_roll(seed: u64) -> usize {
+    let mut f = Fake::new(G::new());
+    let b1 = raw("k1", 3, &RELEASE);
+    let r1 = release_of(&b1);
+    f.bucket.push(b1);
+    f.cron(10);
+    let mut n = 0;
+    while roll(&mut f, r1, 120 + n) {
+        n += 1;
+        f.cron(40);
+    }
+    let b2 = raw("k2", 3, &RELEASE);
+    let r2 = release_of(&b2);
+    f.bucket.push(b2);
+    f.cron(10);
+    let start = f.g.log.len();
+    let mut rng: u64 = 0x05ee_db39 + seed;
+    let mut kills = 0;
+    let mut i = 0;
+    while roll(&mut f, r2, 140 + i) {
+        i += 1;
+        for _ in 0..400 {
+            if f.g.f.current.is_none() {
+                break;
+            }
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            f.kill_after = Some(1 + ((rng >> 33) % 3) as usize);
+            kills += 1;
+            block_on(ops::run(&mut f, Dwell { step: 0, first_day: 0 }));
+            f.kill_after = None;
+            f.g.at = Timestamp(f.g.at.0 + 60_000);
+        }
+        assert!(f.g.f.current.is_none(), "seed {seed}: intent {i} did not finish");
+    }
+    assert_eq!(i, 6, "four site days, then the edge and graft-ops");
+    // Per intent, in log order: its IntentSteps and IntentDone.
+    let mut per: Vec<(Vec<u8>, usize)> = Vec::new();
+    for b in &f.g.log[start..] {
+        match SignedEntry::decode(b).unwrap().body {
+            ReleaseEntry::Intent(_) => per.push((Vec::new(), 0)),
+            ReleaseEntry::IntentStep { step, .. } => per.last_mut().unwrap().0.push(step),
+            ReleaseEntry::IntentDone { .. } => per.last_mut().unwrap().1 += 1,
+            _ => {}
+        }
+    }
+    let want: Vec<(Vec<u8>, usize)> = [7u8, 7, 7, 7, 4, 2].iter().map(|k| ((0..*k).collect(), 1)).collect();
+    assert_eq!(per, want, "seed {seed}: each step once and in order, one IntentDone per intent");
+    for s in 0..4 {
+        assert_eq!(f.g.f.site_release.get(&s), Some(&r2));
+        let v = f.g.f.uploads[&r2.0].versions.iter().find(|(x, _)| *x == Script::Site(SiteId(s))).unwrap().1;
+        assert_eq!(f.deps[&Script::Site(SiteId(s))].split, vec![(v, 100)]);
+    }
+    assert!(f.g.f.drained.is_empty());
+    let edge = |r: &ReleaseId| f.g.f.uploads[&r.0].versions.iter().find(|(x, _)| *x == Script::Edge).unwrap().1;
+    assert_eq!(f.deps[&Script::Edge].split, vec![(edge(&r2), 100), (edge(&r1), 0)]);
+    assert!(f.pages.is_empty(), "{:?}", f.pages);
+    kills
 }

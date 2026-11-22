@@ -3352,6 +3352,35 @@ The fold gains what the executor needs: where each finished intent left each scr
 - The hosted BF-7 or BF-43 run shows a version uploaded with `keep_bindings` lacks a binding the deployed version had.
 - A run's 32 actions do not fit in one cron invocation's limits.
 
+### M5-WP4: site days and automatic drain, as built (2026-11-22)
+
+#### The gates and the burn are pure functions `graft-ops` asks
+
+**Decision.** `graftyard_release::gate` holds M5-WP4's rules, and `ops::next` acts on them:
+- `judge_site(N+1, N)` breaches on `GATE_EXCEPTIONS`, `GATE_STEP_DOWN`, `GATE_APPLY_LAG` (over twice N's p99 or over 500 ms) and `GATE_ACK_RATE`; under `STEP_MIN_ENTRIES` it is `Starved`, which dwells up to twice `STEP_DWELL` and then pages. `judge_errors` is `GATE_ERRORS`.
+- `verdict` calls a site burning when both other voter sites report it at `DRAIN_BURN` over 5 minutes, and calm when both report it under `UNDRAIN_BURN` over 30 minutes. Burn is the missed share of calls over 1 in 2,000, the write journey's 99.95%, and a report under 100 calls is no evidence.
+- Before any step, a burning site is drained with the drain key. If the current site day's own drain holds, its `Normal` goes in first. A drain-key drain other than the day's own ends once the site is calm. A burning site while another is drained for any other reason pages, because the group refuses a second drain.
+- A site day waits while another site is drained, at its drain step and its deploys. One that cannot advance for `STUCK_DAY` (no deployment read, or a pending gate) undrains its site and resumes later from the same step.
+- `lead_limited` is the current site day's site once its drain step is done and while it is not drained: its first day, or the rest of a day an automatic drain preempted. `may_not_lead` adds it, except for 1% of chains by FNV-1a hash, to the drained sites, which is what a member steps into `set_drained`.
+- `ContainerDay` runs 10, 50, then 100% of the site's shards as `IntentStep`s with no API call. `shard_day` is the `day_step` `image_for` reads, and is `None`, meaning `git_prev`, during its undo or `Abort`.
+
+**Why.** The host then only reads counters, and the rules are tested in memory against the real group, as M5-WP3's executor is. Taking drains before intent steps is the design's "an automatic drain preempts a site day".
+
+**Beat.**
+- A burn threshold per journey. The member calls `SiteHealth` counts serve the write path [inference].
+- A lead limit stored in the group, which would mean a new entry kind. The fold already says which day is current.
+- Draining the sick site while the day's site is still drained. The group refuses it (`DrainGuard`).
+
+**Evidence.**
+- `crates/release/src/tests/group/sitedays.rs`, eight tests: each gate input at its bound; burn from both sites and `MIN_CALLS`; the health window; drain and undrain of a burning site; preemption under the lead limit; `STUCK_DAY` on both causes; a starved step; and a `ContainerDay` with its rollback, with no deployment change.
+- `bf39_graft_ops_killed_at_every_step_resumes_after_the_last_intent_step` (`run.rs`): 3 seeds of a release's six intents, with `graft-ops` killed in every cron run after one to three calls. Each step was committed once and in order, with one `IntentDone` each.
+- `tests/m0carried/plant87.py`: 29 of 29 caught.
+
+**Flip.**
+- The hosted rows show a step's gate breaching on N's own noise, for example apply lag p99 on a quiet step.
+- A drain at `DRAIN_BURN` slower than the B0-07 stand-in's 13.7 s plus 5 minutes.
+- `MIN_CALLS` leaves a sick, quiet site undrained.
+
 ### M4-WP2's hosted half, as built (2026-11-13)
 
 #### M4-WP2's consumers run in band on the leader alarm
