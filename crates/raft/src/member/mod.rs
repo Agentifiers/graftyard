@@ -433,9 +433,6 @@ pub struct CutNote {
 pub struct DepsUsed {
     pub ids: SmallVec<[u64; 2]>,
     pub index: Index,
-    /// Per chain passed to `decide`, the `DepsWanted` id its fold came from: the newest read of that chain the batch
-    /// or a late joiner holds (`human-join`). A command must have been admitted before the read of each chain it names.
-    pub reads: SmallVec<[(ChainId, u64); 3]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
