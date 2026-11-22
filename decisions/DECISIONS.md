@@ -7207,6 +7207,10 @@ Where m65r31's 752 hedge requests went (`tests/m4/results/m4-wp4.md`, "Where the
 
 **Status.** The lead's ruling on the B0-33 leader-sync A/B (`tests/am1/results/sync-ab.md`). No product code changed.
 The lean switch, `x-graft-lean` (`Hooks::lean`, `CommitReq::hold_ms`, `lean_asked`), stays test-faults only.
+Clock correction, 2026-11-22 (`tests/am1/results/b033-percmd.md`, "The leader's clock"): the confirm walls and stall
+counts below are stamped on the leader's own clock, which read 0.8 to 2.8 s behind at p50 under arm A's load and about
+0 on arm B2's [measured, `tests/fanout/b033probes/host/stale.py`]. So the flip shows the leader's loop running less
+late as its inputs fell, not confirms 3.75× shorter [inference]. The decision stands on that reading.
 
 **Decision.**
 - F106's leader confirms on B0-33 are not recorded as the platform's. The flip written before the row fired: arm B's
