@@ -1,0 +1,85 @@
+2026-11-22T16:19:18Z start e31c8c1b9 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-22T16:19:35Z start sweep ok
+2026-11-22T16:19:16Z cost account 21.32 since 2026-11-22T00:00:00Z, run 0.04 since 2026-11-22T15:29:31Z, at b0-33
+2026-11-22T16:19:56.709Z m3org/fqlA-b033 = 131389
+2026-11-22T16:19:57.275Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:00.511Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:03.759Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:06.978Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:10.194Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:13.416Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:16.632Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:19.847Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:23.094Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:26.303Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:29.509Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:32.723Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:35.941Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:39.159Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:42.456Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:45.671Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:48.887Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:52.087Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:55.299Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:20:58.509Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:21:01.721Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:21:04.936Z repo:131389 leader 0 placing since 1795364411590: waiting
+2026-11-22T16:21:12.620Z repo:131389 leader 0: config 9 learners [{"addr":192,"doName":"repo:131389#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131389#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131389#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131389#2#l3","join":200,"site":0,"slot":3}]
+2026-11-22T16:21:13.114Z repo:131389 site 0: arrival mem (asked mem, status 200)
+2026-11-22T16:21:13.300Z repo:131389 site 1: arrival mem (asked mem, status 200)
+2026-11-22T16:21:13.527Z repo:131389 site 2: arrival mem (asked mem, status 200)
+2026-11-22T16:21:18.460Z repo:131389 leader 0: set k 4: {"grants":[[0,[0,2,1]],[2,[0,2,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-22T16:21:28.815Z repo:131389 leader 0: set k 4: {"grants":[[0,[0,2,1]],[2,[0,2,1]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-22T16:21:39.387Z repo:131389 leader 0: set k 4: {"grants":[[0,[0,2,1]],[2,[0,2,1]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-22T16:21:39.500Z repo:131389 leader 0: k 4 at 10
+2026-11-22T16:22:02Z b0-33 shard gate site 0: warm site 0 after 1.4 s
+2026-11-22T16:22:02Z b0-33 shard gate site 1: warm site 1 after 2.0 s
+2026-11-22T16:22:02Z b0-33 shard gate site 2: warm site 2 after 2.3 s
+2026-11-22T16:22:02Z b0-33 fqlA-b033 131389 start
+2026-11-22T16:30:01.075Z repo:131389 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-22T16:30:01.229Z repo:131389 leader 0: k 1 at 1221
+2026-11-22T16:30:22Z b0-33 fqlA-b033 131389 done exit 0
+2026-11-22T16:30:28Z torn down 131389
+site fault off: 200
+git#2#pool:2 200
+git#2#pool:3 200
+git#2#pool:1 200
+git#0#pool:2 200
+git#0#pool:3 200
+git#0#pool:1 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-22T16:30:49Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 3 {'leader': 1, 'promised': 2}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 30 (n 104) p90 32 (placement baseline); unpaired p50 62 (n 102); pooled p50 60 (n 212)
+  load: 1-statement p50 43 (n 460); unpaired p50 68 (n 433); pooled p50 62 p99 167 (n 1327)
+isolates: 7 members, 7 distinct ids, 0 changes; shared: none
+shared isolates:
+tsave-qlA.jsonl: 7 members, 7 isolates; no shared isolate
+harness outages (2026-11-22T16:24:56Z, the first request, to 2026-11-22T16:29:35Z; announced 2026-11-22T16:24:35Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-22T16:24:56Z", "2026-11-22T16:24:57Z"]], "outageSeconds": 1.0, "share": 0.0036, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 8988, "served": 0.9999, "p50": 347, "p99": 1705, "cap": 0}, "outagesRemoved": {"n": 8982, "served": 0.9999, "p50": 347, "p99": 1705, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 43, "served": 0.8372, "p50": 967, "p99": 1476, "cap": 0}, "outagesRemoved": {"n": 43, "served": 0.8372, "p50": 967, "p99": 1476, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 3122, "served": 1.0, "p50": 2078, "p99": 3836, "cap": 0}, "outagesRemoved": {"n": 3120, "served": 1.0, "p50": 2077, "p99": 3790, "cap": 0}}
+5xx by reason (2026-11-22T16:24:56Z to 2026-11-22T16:29:58Z):
+{"logged": 95, "edge5xx": 95, "byStatus": {"503": 95}}
+     63 503 graphql
+     32 503 rest-repo-write
+by reason:
+     63 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     32 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 3122}, "fullBy": {}, "fullMarks": {}}
+budget left at the first send | ok / full
+  under 1 s  | 0 / 0
+  1 to 2 s   | 10 / 0
+  2 to 3 s   | 254 / 0
+  3 to 5 s   | 2858 / 0
+B033DONE

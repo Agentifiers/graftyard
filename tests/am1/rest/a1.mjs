@@ -602,6 +602,12 @@ if (!target) {
   target = c.body?.data?.createIssue?.issue;
 }
 await api("POST", `/api/v3/repos/${R}/labels`, admin, { name: "a1", color: "ededed" });
+// B0-33: `a1` in the agent label allowlist, so `side:label` commits instead of every add answering 403 (not in the
+// allowlist) and every remove 404 (never added). The quarter-load set's qlA ran without it: 1,338 labels, 0 committed.
+if (row === "b0-33") {
+  const pol = await api("PUT", `${V1}/agents/policy`, admin, { labels: ["a1"] });
+  if (pol.status !== 200) throw new Error(`agents/policy labels: ${pol.status}`);
+}
 const openPrs = [];
 const openPr = async (tok, branch, draft) => {
   const r = await api("POST", "/api/graphql", tok, { query: "mutation($i: CreatePullRequestInput!) { createPullRequest(input: $i) { pullRequest { id number } } }",
@@ -821,6 +827,7 @@ const jobs = hosted ? [] : [
       const [res, ms, nu] = await push(app, a.ref, a.tip, `a1/${a.group}/${a.i}/f.txt`, randomBytes(size()), kill ? { "x-graft-kill": "after_quorum" } : {});
       if (opt.workflow && res === "ok" && a.prN) dispatchAcks.push({ n: a.prN, at: Date.now() });
       a.tip = nu;
+      if (nu && !a.firstOk) a.firstOk = Date.now();
       if (kill) { kills.push(s); killRows.push(killRow(s, ms, res, seenAt)); }
       note(k, ms, res);
       if (!kill) { recentAgent.push([res === "ok", ms]); if (recentAgent.length > 200) recentAgent.splice(0, 100); }
@@ -838,7 +845,9 @@ const jobs = hosted ? [] : [
   }),
   every("side:standIn", plan.side.standIn, async () => { const a = pick(agents.filter((x) => x.task)); return a ? st(await api("PATCH", `${V1}/tasks/${a.task}`, app, { summary: `a1 stand-in ${Date.now()}` })) : "no task"; }),
   every("side:draftPr", plan.side.draftPr, async () => {
-    const a = pick(agents.filter((x) => x.tip && !x.pr));
+    // A branch whose first push landed at least 10 s ago: on qlA 70 of 298 opens on a just-pushed branch answered
+    // "Head sha can't be blank" [inference: the edge's ref read was behind the push].
+    const a = pick(agents.filter((x) => x.tip && !x.pr && Date.now() - x.firstOk > 10_000));
     if (!a) return "no branch";
     a.pr = true;
     const [r, pr] = await openPr(app, a.ref.slice(11), true);

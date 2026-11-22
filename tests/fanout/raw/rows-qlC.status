@@ -1,0 +1,70 @@
+2026-11-22T17:48:25Z start 4dfefa0b1 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-22T17:48:41Z start sweep ok
+2026-11-22T17:48:22Z cost account 24.84 since 2026-11-22T00:00:00Z, run 0.22 since 2026-11-22T17:17:09Z, at b0-33
+2026-11-22T17:48:47.612Z m3org/fqlC-b033 = 131391
+2026-11-22T17:48:48.048Z repo:131391 leader 0 placing since 1795369745081: waiting
+2026-11-22T17:48:51.463Z repo:131391 leader 0 placing since 1795369745081: waiting
+2026-11-22T17:48:54.716Z repo:131391 leader 0 placing since 1795369745081: waiting
+2026-11-22T17:48:57.922Z repo:131391 leader 0 placing since 1795369745081: waiting
+2026-11-22T17:49:01.136Z repo:131391 leader 0 placing since 1795369745081: waiting
+2026-11-22T17:49:08.443Z repo:131391 leader 0: config 9 learners [{"addr":192,"doName":"repo:131391#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131391#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131391#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131391#4#l3","join":200,"site":0,"slot":3}]
+2026-11-22T17:49:09.235Z repo:131391 site 0: arrival mem (asked mem, status 200)
+2026-11-22T17:49:09.431Z repo:131391 site 1: arrival mem (asked mem, status 200)
+2026-11-22T17:49:09.664Z repo:131391 site 2: arrival mem (asked mem, status 200)
+2026-11-22T17:49:14.236Z repo:131391 leader 0: set k 4: {"grants":[[0,[5,4,6]],[1,[5,4,6]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-22T17:49:24.559Z repo:131391 leader 0: set k 4: {"grants":[[0,[5,4,6]],[1,[5,4,6]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-22T17:49:35.018Z repo:131391 leader 0: set k 4: {"grants":[[0,[5,4,6]],[1,[5,4,6]]],"k":4,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-22T17:49:35.130Z repo:131391 leader 0: k 4 at 10
+2026-11-22T17:49:59Z b0-33 shard gate site 0: warm site 0 after 1.4 s
+2026-11-22T17:49:59Z b0-33 shard gate site 1: warm site 1 after 2.9 s
+2026-11-22T17:49:59Z b0-33 shard gate site 2: warm site 2 after 2.7 s
+2026-11-22T17:49:59Z b0-33 fqlC-b033 131391 start
+2026-11-22T17:57:43.247Z repo:131391 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-22T17:57:43.391Z repo:131391 leader 0: k 1 at 1352
+2026-11-22T17:58:04Z b0-33 fqlC-b033 131391 done exit 0
+2026-11-22T17:58:09Z torn down 131391
+site fault off: 200
+git#1#pool:5 200
+git#1#pool:7 200
+git#1#pool:6 200
+git#0#pool:5 200
+git#0#pool:7 200
+git#0#pool:6 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-22T17:58:30Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 3 {'leader': 1, 'promised': 2}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 21 (n 102) p90 22 (placement baseline); unpaired p50 45 (n 102); pooled p50 42 (n 204)
+  load: 1-statement p50 30 (n 524); unpaired p50 50 (n 504); pooled p50 45 p99 209 (n 1496)
+isolates: 7 members, 7 distinct ids, 3 changes; shared: none
+shared isolates:
+tsave-qlC.jsonl: 7 members, 10 isolates; no shared isolate
+harness outages (2026-11-22T17:52:35Z, the first request, to 2026-11-22T17:57:13Z; announced 2026-11-22T17:52:13Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-22T17:52:35Z", "2026-11-22T17:52:36Z"]], "outageSeconds": 1.0, "share": 0.0036, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 8344, "served": 1.0, "p50": 271, "p99": 2131, "cap": 0}, "outagesRemoved": {"n": 8301, "served": 1.0, "p50": 270, "p99": 1874, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 51, "served": 0.8431, "p50": 944, "p99": 1499, "cap": 0}, "outagesRemoved": {"n": 51, "served": 0.8431, "p50": 944, "p99": 1499, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 3158, "served": 0.9997, "p50": 1979, "p99": 3459, "cap": 0}, "outagesRemoved": {"n": 3148, "served": 0.9997, "p50": 1978, "p99": 3403, "cap": 0}}
+5xx by reason (2026-11-22T17:52:35Z to 2026-11-22T17:57:37Z):
+{"logged": 14, "edge5xx": 14, "byStatus": {"503": 14}}
+      8 503 graphql
+      5 503 rest-repo-write
+      1 503 task
+by reason:
+      8 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      5 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      1 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 3157, "other": 1}, "fullBy": {}, "fullMarks": {}}
+budget left at the first send | ok / full
+  under 1 s  | 1 / 0
+  1 to 2 s   | 3 / 0
+  2 to 3 s   | 91 / 0
+  3 to 5 s   | 3062 / 0
+B033DONE
