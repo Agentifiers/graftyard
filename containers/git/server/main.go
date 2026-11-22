@@ -3107,11 +3107,13 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	release := sync.OnceFunc(func() {})
 	out := io.Writer(flushOnWrite{w})
 	var done func(bool)
+	spooled := false
 	if id := r.URL.Query().Get("spool"); !advertise && spoolRe.MatchString(id) {
 		var f *os.File
 		if f, done = startSpool(id); f != nil {
 			w.Header().Set("x-graft-spool", id)
 			out = &tee{file: f, client: out, gone: func() { release() }}
+			spooled = true
 		}
 	}
 	ended := false
@@ -3169,6 +3171,9 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	args = append(args, rp)
 	cmd := exec.Command("git", args...)
 	cmd.Env = append(os.Environ(), "GIT_PROTOCOL="+proto)
+	// Its own process group, so a kill reaches pack-objects too: upload-pack's child holds the stderr pipe Wait reads,
+	// and killed alone it went on spending CPU on a pack nobody would read.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if !advertise {
 		cmd.Stdin = bytes.NewReader(body)
 	}
@@ -3179,6 +3184,18 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		fail(w, 500, "%v", err)
 		return
 	}
+	kill := func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// A caller that goes away ends the answer at once, not at git's next write: while pack-objects counted or
+	// compressed, the copy below sat reading the pipe with the lock held, past the client's cancel and up to
+	// stockHoldMax (`TestCancelledCloneReleasesTheLock`, a CI flake on 2026-11-22 whenever pack-objects was slow to
+	// write). A spooled answer goes on to its file's end and only gives the lock back, as `tee` does on a failed write.
+	stop := context.AfterFunc(r.Context(), func() {
+		if spooled {
+			release()
+		} else {
+			kill()
+		}
+	})
 	w.Header().Set("content-type", "application/x-git-upload-pack-result")
 	if advertise {
 		w.Header().Set("content-type", "application/x-git-upload-pack-advertisement")
@@ -3195,8 +3212,9 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		// pipe again, so upload-pack blocked on it, `Wait` never returned, and the shared lock stalled the next /ingest
 		// and every validate queued behind that writer, on all three shards of the network (LM-1 round 18c,
 		// `TestCancelledCloneReleasesTheLock`). A spooled answer reaches here only when its file fails.
-		cmd.Process.Kill()
+		kill()
 	}
+	stop()
 	err := cmd.Wait()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "upload-pack: %v: %s\n", err, errb.String())
