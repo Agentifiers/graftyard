@@ -7539,3 +7539,58 @@ after the command's admission, and a follower verifies k+1 only after it applies
 - On the next B0-33 or B0-29 row, Human commit p99 or the frozen-batch wait does not fall against the same build
   without it.
 - Any read-after-admission violation in the simulator sweep.
+
+### `export-feed`: the change feed writes its object, then its `FeedState`, and export tokens are signed JSON, 2026-11-22
+
+**Decision.** M5-WP5's pure half (`crates/git/src/export.rs`, `crates/git/src/key.rs`,
+`crates/identity/src/export_token.rs`):
+- **Feed state.** The consumer keeps `FeedState` (the newest batch it folded in, and one `ExportCursor` per chain)
+  under `R2Key::ExportState` in the export bucket. A round reads it, folds in any `Export` object stored after its
+  position, plans, writes the object, then writes the state. `Export` keys are `export/<minute:012>/<seq:010>`, so a
+  listing after a key runs in feed order; `seq` follows the newest object within its minute, and a clock behind that
+  minute keeps it.
+- **Bounded batches.** A batch names at most 2,000 chains [guess], the furthest behind first; the rest go in the next
+  rounds. The consumer checks each object holds exactly each chain's entries after its cursor before writing it.
+- **Bodies.** A frame is a 4-byte big-endian length, the stored bytes, and their SHA-256. An object is a JSON frame
+  of the batch and each chain's first index and count, then one frame per entry. A snapshot reply is, per tier
+  (core first), a frame of its key and a frame of its bytes.
+- **Errors.** 422 for any cursor, index, limit, chain, or pack id that does not parse (entries start at 1, a limit is
+  1 to 1,000); 410 for an `after` older than the bucket's 7-day lifecycle or entries below a member's first with no
+  archive; 404 for a chain or pack outside the token's scope, the same answer as a chain with no group. 405 for a
+  method the path does not take.
+- **Export tokens.** The claims as JSON (`scope` is `install`, `owner:<id>`, or `repo:<id>`; times in seconds),
+  base64url, a `.`, and the customer key's Ed25519 signature over that part. `Install` covers every `ChainId`,
+  `Release` included; a narrower scope covers what a `StaleMode` flag of that scope does. `DELETE export/token`
+  commits `RevokeJti` on `jti_shard(jti)` under the token's own `CredentialKey::Jti`, so no new command or event.
+
+**Why.**
+- A round can die between writing its object and writing its state. Folding in later objects makes the next round
+  repeat no entry and skip none, with one object key written once.
+- `graftyard_release::view::covers` answers no for `Release` under every scope, but DESIGN's vault exports every
+  `ChainId`, so the export needs its own rule for `Install`.
+- Reusing `RevokeJti` keeps the wire enums as they are and the edge's `jti` read and cache (`rcache::JTIS`) as they
+  are.
+
+**What it beat.**
+- **Cursors in a member's SQLite, as other consumers keep them.** The feed reads every chain and belongs to no group;
+  a group of its own would add a failure domain for state the export bucket can hold.
+- **One object per chain.** Each round would then write one object per moved chain, against DESIGN's one per batch
+  and `scripts/cost.py`'s `FEED_OBJECTS`.
+- **A JWS header, as `ghs_` tokens carry.** One key signs export tokens and DESIGN names no `kid`, so the header would
+  carry nothing.
+
+**Evidence.**
+- `crates/git/tests/export.rs`, `bf49_vault_pulls_every_endpoint_then_the_revoked_jti_is_refused_within_read_cache`:
+  231 rounds over five chains, `Release`, `Tokens` and `Ids` among them, with every 17th round losing its state
+  write; the vault pulls every batch page by `Link`, gets every chain's every entry once, pages a 2,345-entry chain,
+  reads a snapshot and a pack. After `RevokeJti`, an edge that cached "not revoked" serves no request more than
+  READ_CACHE after its read and refuses at every later probe; a cold isolate refuses at once.
+- Unit tests in `export.rs`, `key.rs` and `export_token.rs`; `tests/m0carried/plant83.py`.
+- Cost: `scripts/cost.py` priced the vault's copy of each feed object but not the install's own write. It now counts an
+  `Export` object and an `ExportState` write per round, 0.52M Class A a month: the base moves $236 → $238,
+  $1,013 → $1,016 and $9,323 → $9,325.
+
+**Flip.**
+- The hosted BF-49 serves any export request more than READ_CACHE after the revocation, or a vault pull finds an entry
+  missing or repeated against the chain's log.
+- A feed round on a real install takes longer than `FEED_EVERY_MS` at 2,000 chains: lower the cap.

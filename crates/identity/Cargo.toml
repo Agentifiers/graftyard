@@ -13,6 +13,8 @@ ed25519-dalek = { version = "2.2", default-features = false }
 graftyard-raft = { path = "../raft" }
 # The canonical encoding of M4-WP3's Authz events and ops, as the repository chain's newer events use.
 graftyard-fold = { path = "../fold" }
+# `InstallId`, `KeyId`, and `Scope` for export tokens (`export_token`).
+graftyard-release = { path = "../release" }
 # Verifies App JWTs (RS256) against `AppRecord.keys`: public-key operations only, so RUSTSEC-2023-0071's decryption
 # timing does not apply. No default features, so it builds for wasm32 with no randomness.
 rsa = { version = "0.9", default-features = false, features = ["sha2"] }

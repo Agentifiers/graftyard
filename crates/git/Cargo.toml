@@ -19,6 +19,8 @@ graftyard-identity = { path = "../identity" }
 graftyard-raft = { path = "../raft" }
 graftyard-types.workspace = true
 postcard.workspace = true
+# `tests/export.rs` signs and checks export tokens (`InstallId`, `KeyId`, `Scope`).
+graftyard-release = { path = "../release" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -36,3 +38,5 @@ futures-executor = "0.3"
 # `tests/wire_tags.rs` pins the Actions family's enums beside the others; a dev-only cycle, which integration tests allow.
 graftyard-actions = { path = "../actions" }
 postcard.workspace = true
+# `tests/export.rs` signs and checks export tokens (`InstallId`, `KeyId`, `Scope`).
+graftyard-release = { path = "../release" }

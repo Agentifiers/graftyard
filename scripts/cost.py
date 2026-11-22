@@ -477,6 +477,9 @@ def model(tier, variant="design", split=None):
 	else:
 		r2_gb = t["git_gb"] * churn * copies + t["git_gb"] * 0.1 + t["actions_gb"]
 	r2_a = w["pushes"] * 2 * min(copies, 2) + w["jobs"] * (1 - CI_HIT) + w["jobs"] * 20 + w["entries"] / 500
+	if vault:
+		# The install's export bucket: one `Export` object and one `ExportState` write per feed round (`export-feed`).
+		r2_a += FEED_OBJECTS * 2
 	r2_b = w["jobs"] * CI_HIT + w["fetches"] * 0.2 + w["jobs"] * 20 + vault_pulls
 	if "edge-compose" in LEVERS:
 		r2_b += w["jobs"] * (1 - CI_HIT) * COMPOSED_SHARE * CHAIN_READS

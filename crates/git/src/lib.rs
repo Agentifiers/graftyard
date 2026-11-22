@@ -13,6 +13,7 @@ pub mod catchup;
 pub mod clone;
 pub mod commit_fetch;
 pub mod compose;
+pub mod export;
 pub mod feed;
 pub mod group;
 pub mod hooks;
