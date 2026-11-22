@@ -281,6 +281,21 @@ The 2026-11-20 decision left B0-33's Human and merge-queue line to be measured o
 
 The daily spend limit, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
 
+### Operator decision, 2026-11-22, B0-33 measured before a design flip, and a $50 research budget
+
+> "I will take your recommendation for all decisions" and "You may spend up to $50 for the research you need"
+
+The three-run baseline admitted 76.5, 98.0, and 79.0 agent commands a second, under B0-33's 100 fail line, which reopens ref lanes (`build/BUILD-PLAN.md`, B0-33) [measured, `tests/am1/results/b033-baseline.md`]. A second opinion found that one group cannot reach 140 a second on any host measured, that the leader takes 78 to 88% of every round, and that about 6 ms per command sits in series with the round even on a leader whose loop is on time [inference, from the baseline's traces]. The orchestrator recommended measuring before a design change, and the operator took every recommendation:
+
+- **No design flip yet.** Ref lanes, and any rewording of B0-33's pass or fail lines, wait for three $0 measurements: what the leader's 6 ms per command is made of, joined from Workers Logs' invocation times to the baseline traces; what share of B0-33's commands ref lanes would move, since pull request records stay on the base branch's group (`decisions/DECISIONS.md`, "One group per repository, one entry in flight, and group commit", Beat); and the leader-clock finding recorded against A41 and the confirm results that rest on the leader's clock.
+- **Edge refusal at the leader's advertised rate is built,** because every outcome needs it: it keeps an over-offered leader's loop on time, so `suspect` reports fall, and it adds no throughput.
+- **One quarter-load row runs:** one group at about 63 agent commands a second (1,250 agents) on three fresh placements, to measure a leader below its capacity.
+- **Then the orchestrator brings the operator one of three calls:** cut the per-command cost and rerun; take the ref-lanes flip; or reword the fail lines and record the slow-host gap.
+- **Research budget.** B0-33's research rows may spend up to $50 in total from 2026-11-22 15:30Z, beyond what the install had spent that day, and `graft-m2b`'s $40 daily cap rises by that amount while the budget lasts. Each row still stops at $10.
+- **L0-15's remaining halves stay where the plan builds them.** The feed half passed hosted in LM-1. The `AgentGate` half needs `graft-mcp` (AM2), the `/log` and prompt halves need session logs (AM3-WP4), and the Code Mode half needs Code Mode (AM4-WP3), so LM-2, LM-3, and LM-4 carry them. AM2-WP1 starts now, since it depends on M3-WP3, M3-WP4, and AM1-WP2 and not on Milestone 5.
+
+The daily spend limit, the $180 hard stop, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
