@@ -75,6 +75,21 @@ pub(crate) trait GateFx {
     async fn matched(&self) -> Option<Timestamp>;
     async fn share(&self, at: Timestamp);
     async fn read(&self) -> Result<(Decision, Option<Timestamp>), Self::Err>;
+    /// The decision on the access rows read beside the front on the guessed repository (`beside`), kept only when
+    /// the resolve named that repository: when those rows' read started, and the decision with the stamp a fresh read
+    /// at the gate would give it. `None` when no rows were read beside, or they were dropped.
+    async fn beside(&self) -> Option<(Timestamp, Result<(Decision, Option<Timestamp>), Self::Err>)>;
+}
+
+/// The gate's fresh decision: on the rows read beside the front when they allow, stamped no later than their read's
+/// start, since the front ran between that read and the gate; else a fresh read. A refusal on them, or a repository
+/// not created yet, is read again fresh, as a refusal on a cached fold is (`beside`).
+async fn fresh<F: GateFx>(fx: &F) -> Result<(Decision, Option<Timestamp>), F::Err> {
+    match fx.beside().await {
+        Some((start, Ok((Decision::Allow, Some(at))))) => Ok((Decision::Allow, Some(at.min(start)))),
+        Some((_, Err(e))) => Err(e),
+        _ => fx.read().await,
+    }
 }
 
 /// The read gate on the served path. `share` is false for a write, a session, or the test arm with the share off,
@@ -96,7 +111,7 @@ pub(crate) async fn gate<F: GateFx>(fx: &F, share: bool) -> Gated<F::Err> {
             return Gated { decision: Ok(Decision::Allow), served: Served::Colo(age), ahead: age >= ms(COLO_AHEAD) };
         }
     }
-    let decision = match fx.read().await {
+    let decision = match fresh(fx).await {
         Ok((d, Some(at))) => {
             fx.hold(at, d, false);
             if share && d == Decision::Allow {
@@ -154,6 +169,39 @@ pub(crate) fn chain_url(site: SiteId, network: NetworkId, version: &str) -> Stri
     h.update(network.0.0.to_be_bytes());
     h.update(version.as_bytes());
     format!("{ORIGIN}/chain/{}", graftyard_lookup::hex(&h.finalize()))
+}
+
+/// The data center's key for a link guess (`beside`): the owner's login and the repository's name, both in their
+/// compared forms. Its value names the repository, its owner and placement record that a fresh `resolve` last
+/// answered, a guess at any age that addresses reads and never answers one; a guess for another login or name is
+/// under another key, and one for another repository, owner or record is not kept (`crate::beside_rows`).
+pub(crate) fn link_url(login: &graftyard_identity::LoginKey, name: &graftyard_identity::RepoNameKey) -> String {
+    let mut h = Sha256::new();
+    h.update(b"graftyard-colo-link\0");
+    h.update([KEY_VERSION]);
+    h.update((login.as_str().len() as u32).to_be_bytes());
+    h.update(login.as_str().as_bytes());
+    h.update(name.as_str().as_bytes());
+    format!("{ORIGIN}/link/{}", graftyard_lookup::hex(&h.finalize()))
+}
+
+/// How long the data center keeps a link guess. A moved or renamed repository costs one read again until it lapses.
+const LINK_KEEP: Duration = Duration::from_secs(3600);
+
+/// The data center's link guess at `url`.
+pub(crate) async fn match_link(url: &str) -> Option<crate::Repo> {
+    let v: serde_json::Value = serde_json::from_str(&match_text(url).await?).ok()?;
+    Some(crate::Repo {
+        id: serde_json::from_value(v["id"].clone()).ok()?,
+        owner: serde_json::from_value(v["owner"].clone()).ok()?,
+        record: serde_json::from_value(v["record"].clone()).ok()?,
+    })
+}
+
+/// Puts the repository a fresh `resolve` answered as `url`'s link guess.
+pub(crate) async fn put_link(url: String, r: crate::Repo) {
+    let body = serde_json::json!({ "id": r.id, "owner": r.owner, "record": r.record }).to_string();
+    put_text(url, body, LINK_KEEP).await;
 }
 
 thread_local! {
@@ -249,9 +297,10 @@ impl graftyard_git::compose::SetStore for ChainSets<'_> {
         hold_set(url, set);
     }
 
-    fn served(&self, from_set: usize, checked: usize) {
-        self.c.timing.put("chain_set", from_set as f64);
-        self.c.timing.put("chain_chk", checked as f64);
+    fn served(&self, s: graftyard_git::compose::Served) {
+        self.c.timing.put("chain_set", s.set as f64);
+        self.c.timing.put("chain_head", s.head as f64);
+        self.c.timing.put("chain_chk", s.checked as f64);
     }
 }
 
@@ -286,6 +335,9 @@ mod tests {
     struct Isolate<'w> {
         w: &'w World,
         held: RefCell<Option<(Timestamp, Decision, bool)>>,
+        /// Rows read beside the front: their read's start, and whether they granted (`Err`: the read failed).
+        beside: RefCell<Option<(u64, Result<bool, ()>)>>,
+        reads: Cell<u32>,
     }
 
     impl GateFx for Isolate<'_> {
@@ -307,10 +359,18 @@ mod tests {
         }
         /// The fold read starts now, takes `read_ms`, and is stamped at its start.
         async fn read(&self) -> Result<(Decision, Option<Timestamp>), String> {
+            self.reads.set(self.reads.get() + 1);
             let start = self.w.now.get();
             self.w.now.set(start + self.w.read_ms);
             let granted = self.w.revoked.get().is_none_or(|t| start < t);
             Ok((if granted { Allow } else { Hidden }, Some(Timestamp(start))))
+        }
+        /// Rows read beside the front from `beside`'s start, decided at the gate as a fresh read there would stamp
+        /// it (now), or the error they answered.
+        async fn beside(&self) -> Option<(Timestamp, Result<(Decision, Option<Timestamp>), String>)> {
+            let (start, rows) = self.beside.borrow_mut().take()?;
+            let d = |granted| (if granted { Allow } else { Hidden }, Some(Timestamp(self.w.now.get())));
+            Some((Timestamp(start), rows.map(d).map_err(|()| "shed".to_string())))
         }
     }
 
@@ -319,7 +379,7 @@ mod tests {
     }
 
     fn iso(w: &World) -> Isolate<'_> {
-        Isolate { w, held: RefCell::new(None) }
+        Isolate { w, held: RefCell::new(None), beside: RefCell::new(None), reads: Cell::new(0) }
     }
 
     fn at(w: &World, t: u64) {
@@ -396,6 +456,74 @@ mod tests {
         let g = run(gate(&d, false));
         assert_eq!(g.served, Served::Read, "the share off reads members as before");
         assert_eq!(*w.colo.borrow(), Some(Timestamp(900)), "and puts nothing");
+    }
+
+    /// A link guess's key names the login and the name in their compared forms, so `O/R` and `o/r` share one, and
+    /// no other login or name, nor a split that moves a character between them, shares it.
+    #[test]
+    fn a_link_key_names_the_login_and_the_repository_name() {
+        let k = |l: &str, n: &str| {
+            link_url(
+                &graftyard_identity::Login::parse(l).unwrap().key(),
+                &graftyard_identity::RepoName::parse(n).unwrap().key(),
+            )
+        };
+        assert_eq!(k("Octo", "Repo"), k("octo", "repo"));
+        assert_ne!(k("octo", "repo"), k("octo", "repo2"));
+        assert_ne!(k("octo", "repo"), k("octa", "repo"));
+        assert_ne!(k("octo", "arepo"), k("octoa", "repo"));
+        assert!(k("octo", "repo").starts_with("https://colo.graftyard.invalid/link/"));
+    }
+
+    /// `beside`: the rows read beside the front decide at the gate, stamped at their read's start, not at the gate
+    /// after the front; a refusal on them is read again fresh and never put; an error on them fails the gate as a
+    /// fresh read's would; and a removed grant is never served past READ_CACHE from the read that preceded it.
+    #[test]
+    fn a_gate_on_rows_read_beside_the_front_keeps_their_reads_stamp_and_rereads_a_refusal() {
+        let w = world(600);
+        let a = iso(&w);
+        // The rows' read started at 1,000; the front (1.2 s cold) ends at 2,200, when the gate runs.
+        *a.beside.borrow_mut() = Some((1_000, Ok(true)));
+        at(&w, 2_200);
+        let g = run(gate(&a, true));
+        assert_eq!((g.decision, g.served), (Ok(Allow), Served::Read));
+        assert_eq!(a.reads.get(), 0, "the rows read beside are the gate's read");
+        assert_eq!(a.held(), Some((Timestamp(1_000), Allow, false)), "stamped at the rows' read, not at the gate");
+        assert_eq!(*w.colo.borrow(), Some(Timestamp(1_000)));
+        // The grant is removed at 1,500: the entry from the read at 1,000 lapses for every isolate by 10,000.
+        w.revoked.set(Some(1_500));
+        let b = iso(&w);
+        at(&w, 9_999);
+        assert_eq!(run(gate(&b, true)).served, Served::Colo(8_999));
+        let b = iso(&w);
+        at(&w, 10_000);
+        assert_eq!(run(gate(&b, true)).decision, Ok(Hidden), "past READ_CACHE less the skew from the rows' read");
+        at(&w, 11_000);
+        assert_eq!(run(gate(&a, true)).served, Served::Isolate(10_000));
+        at(&w, 11_001);
+        assert_eq!(run(gate(&a, true)).decision, Ok(Hidden), "the isolate's own copy lapses past READ_CACHE");
+        // Rows read after the removal refuse: the gate reads again fresh, refuses, and puts nothing.
+        let w = world(100);
+        w.revoked.set(Some(500));
+        let c = iso(&w);
+        *c.beside.borrow_mut() = Some((1_000, Ok(false)));
+        at(&w, 2_000);
+        assert_eq!(run(gate(&c, true)).decision, Ok(Hidden));
+        assert_eq!((c.reads.get(), *w.colo.borrow()), (1, None), "a refusal on the rows read beside is read fresh");
+        // A grant given since the rows' read opens on the fresh read.
+        let w = world(100);
+        w.revoked.set(Some(0));
+        let d = iso(&w);
+        *d.beside.borrow_mut() = Some((1_000, Ok(false)));
+        at(&w, 2_000);
+        w.revoked.set(None);
+        assert_eq!((run(gate(&d, true)).decision, d.reads.get()), (Ok(Allow), 1));
+        // An error on the rows read beside fails the gate; it is not hidden by another read.
+        let w = world(100);
+        let e = iso(&w);
+        *e.beside.borrow_mut() = Some((1_000, Err(())));
+        at(&w, 2_000);
+        assert_eq!((run(gate(&e, true)).decision, e.reads.get()), (Err("shed".into()), 0));
     }
 
     /// A revocation: the grant is removed at t. Five isolates serve a request every 700 ms each way it can be served,

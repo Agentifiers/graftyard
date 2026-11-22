@@ -722,11 +722,32 @@ pub(crate) async fn push_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::R
 }
 
 async fn core_rows_q(c: &Ctx<'_>, repo: &Repo, rows: Value) -> Result<std::result::Result<(MemStore, bool), String>> {
+    core_rows_at(c, repo, rows, true).await
+}
+
+/// The read gate's access rows on a guessed repository (`beside`): `core_rows`, but a group that answers no leader is
+/// not created on a guess; `None` then, and the gate reads again on the resolved repository.
+pub(crate) async fn guessed_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<Option<MemStore>, String>> {
+    Ok(match core_rows_at(c, repo, json!({ "access": true }), false).await? {
+        Ok((store, _)) => Ok(Some(store)),
+        Err(e) if e == NO_LEADER => Ok(None),
+        Err(e) => Err(e),
+    })
+}
+
+const NO_LEADER: &str = "the repository's group has no leader";
+
+async fn core_rows_at(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    rows: Value,
+    create: bool,
+) -> Result<std::result::Result<(MemStore, bool), String>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let q = json!({ "q": { "rows": rows, "ranges": true } });
     let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
-    if let Ok(None) = v {
+    if create && let Ok(None) = v {
         if let Err(e) = ensure_group(c, repo).await {
             // `crate::read_gate` reads "not created yet" and a retired group as a repository the caller cannot see.
             return if graftyard_lookup::is_gone(&e) { Ok(Err(e)) } else { Err(Error::RustError(e)) };
@@ -738,7 +759,7 @@ async fn core_rows_q(c: &Ctx<'_>, repo: &Repo, rows: Value) -> Result<std::resul
             Ok(rows) => Ok((TierRows::store(&rows.core), v["value"]["agent"] == json!(true))),
             Err(_) => Err("the repository's members do not serve tier rows yet (site release)".into()),
         },
-        Ok(None) => Err("the repository's group has no leader".into()),
+        Ok(None) => Err(NO_LEADER.into()),
         Err(e) => Err(e),
     })
 }
@@ -2337,7 +2358,7 @@ async fn transfer(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, method: 
     let Ok(repo) = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(repo_id))).await else {
         return Ok(Reply::not_found());
     };
-    match crate::read_gate(c, &repo, Some(&who)).await? {
+    match crate::read_gate(c, &repo, Some(&who), None).await? {
         Ok(graftyard_identity::Decision::Allow) => {}
         Ok(_) => return Ok(Reply::not_found()),
         Err(e) => return Ok(read_failed("the repository's access rows did not answer; retry", &e)),

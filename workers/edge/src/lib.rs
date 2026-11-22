@@ -156,7 +156,7 @@ fn buckets(env: &Env, sites: &SiteTable) -> Result<Vec<(SiteId, R2)>> {
 
 /// A repository the edge serves: its id, its owner, and the owner's placement record.
 #[derive(Clone, Debug, PartialEq)]
-struct Repo {
+pub(crate) struct Repo {
     id: RepoId,
     owner: AccountId,
     record: PlacementRecord,
@@ -168,19 +168,149 @@ struct Repo {
 /// The three reads are a chain; with this isolate's last login and `Placement` answers for the owner held, at any age,
 /// they start at once on them (`chained`).
 async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Result<Option<Repo>, String>> {
+    resolve_on(c, owner, repo, None).await
+}
+
+/// `resolve`, guessing from the data center's link entry (`linked`) when this isolate holds no login and `Placement`
+/// answer for the owner (`beside`). The entry is a guess at any age, never an answer: `chained` keeps a read made on
+/// it only when the reads before it answer the same.
+async fn resolve_on(
+    c: &Ctx<'_>,
+    owner: &str,
+    repo: &str,
+    linked: Option<&Repo>,
+) -> Result<std::result::Result<Option<Repo>, String>> {
     let Ok(name) = RepoName::parse(repo) else { return Ok(Ok(None)) };
-    let guess = Login::parse(owner).ok().and_then(|l| {
-        let account = rcache::last(&rcache::LOGINS, &l.key())?;
-        Some((account, rcache::last(&rcache::PLACEMENTS, &account)?))
-    });
+    let guess = held_guess(owner).or_else(|| linked.map(|r| (r.owner, r.record.clone())));
     Ok(chained(guess, account_of(c, owner), |a| placement(c, a), |a, r| named(c, a, r, &name)).await)
 }
 
-/// A chain of three reads, each addressed by the answers before it (`resolve`'s login, `Placement`, and name). With
-/// no `guess` they run in turn. With one, all three start at once, the later two on the guessed answers, and a later
-/// read is kept only if every read before it answered what its guess said; otherwise it is read again on the fresh
-/// answers. So the answer is always the one the reads in turn would give, a guessed read that was not kept counts
-/// for nothing, its error included, and a right guess costs the longest of the three reads, not their sum.
+/// This isolate's last login and `Placement` answers for `owner`, at any age: `resolve`'s guess.
+fn held_guess(owner: &str) -> Option<(AccountId, PlacementRecord)> {
+    let l = Login::parse(owner).ok()?;
+    let account = rcache::last(&rcache::LOGINS, &l.key())?;
+    Some((account, rcache::last(&rcache::PLACEMENTS, &account)?))
+}
+
+/// Starts the read gate's access rows on `guessed` beside the front (`beside`).
+fn beside_start<'a>(c: &'a Ctx<'_>, guessed: Repo) -> Beside<'a> {
+    use futures_util::FutureExt;
+    let r = guessed.clone();
+    let read = async move { api::timed(c, "beside_rows", api::guessed_rows(c, &r)).await };
+    Beside { repo: guessed, start: now(), rows: Box::pin(futures_util::future::maybe_done(read.boxed_local())) }
+}
+
+/// Whether this isolate's or the data center's gate entry for `guessed` and this request's credential would answer
+/// the gate now, so rows read beside the front would go unused. A credential it cannot key before `authenticate` (a `ghs_`, a session) counts
+/// as answered, and reads nothing beside.
+async fn gate_shared(c: &Ctx<'_>, req: &Request, guessed: &Repo) -> Result<bool> {
+    let key = match token_of(req)? {
+        None => None,
+        Some(t) if t.starts_with("ghs_") => return Ok(true),
+        Some(t) => match OpaqueToken::parse(&t) {
+            Ok(tok) => Some(tok.hash()),
+            Err(_) => return Ok(true),
+        },
+    };
+    if gate::get(&(guessed.id, key)).is_some_and(|(at, _, foreign)| colo::servable(at, now(), foreign)) {
+        return Ok(true);
+    }
+    let at = api::timed(c, "beside_match", colo::match_gate(&colo::gate_url(guessed.id, key, &guessed.record))).await;
+    Ok(at.is_some_and(|at| colo::servable(at, now(), true)))
+}
+
+/// `main`, polling `side` beside it until `main` answers, so rows read beside the front keep reading while it runs.
+async fn driving<F: std::future::Future, S: std::future::Future<Output = ()>>(
+    main: F,
+    side: Option<std::pin::Pin<&mut S>>,
+) -> F::Output {
+    let mut main = std::pin::pin!(main);
+    let mut side = side;
+    std::future::poll_fn(|cx| {
+        if let Some(s) = side.as_mut() {
+            let _ = s.as_mut().poll(cx);
+        }
+        main.as_mut().poll(cx)
+    })
+    .await
+}
+
+/// The access rows read beside the front on a guessed repository (`beside`): the guess, when that read started, and
+/// the read, polled beside the front and taken by the read gate only if it reads members.
+struct Beside<'a> {
+    repo: Repo,
+    start: Timestamp,
+    rows: std::pin::Pin<Box<futures_util::future::MaybeDone<futures_util::future::LocalBoxFuture<'a, GuessedRows>>>>,
+}
+
+type RowsRead = Result<std::result::Result<graftyard_fold::MemStore, String>>;
+
+/// The rows read beside the front: `None` when the guessed group answered no leader, which is not created on a guess.
+type GuessedRows = Result<std::result::Result<Option<graftyard_fold::MemStore>, String>>;
+
+/// The access rows the gate decides on, given rows `started` on `guessed` beside the front: those, through `link`
+/// (the rule `resolve`'s guesses follow) with `resolved` as the answer before them, so they are kept only when the
+/// resolve named the same repository, owner and placement record, else read again on `resolved` by `read`. With
+/// whether the started read was kept.
+async fn beside_rows<T, E, F, G>(
+    guessed: Repo,
+    started: F,
+    resolved: &Repo,
+    read: impl Fn(Repo) -> G,
+) -> (std::result::Result<Option<T>, E>, bool)
+where
+    F: std::future::Future<Output = std::result::Result<Option<T>, E>>,
+    G: std::future::Future<Output = std::result::Result<Option<T>, E>>,
+{
+    use futures_util::future::Either;
+    let again = std::cell::Cell::new(false);
+    let next = |r: Repo| {
+        again.set(true);
+        Either::Right(read(r))
+    };
+    let got = link(Some((guessed, Either::Left(started))), std::future::ready(Ok(Some(resolved.clone()))), next).await;
+    (got.map(|g| g.map(|(_, t)| t)), !again.get())
+}
+
+/// One link of a chain of reads: `next` is addressed by `prev`'s answer. With no `guess` they run in turn. With one,
+/// `guess` is the guessed answer and `next`'s read on it, which runs beside `prev`; it is kept only if `prev` answered
+/// what the guess said, else dropped once `prev` answers and read again on `prev`'s answer. So the pair is always the
+/// one the reads in turn would give, a guessed read that was not kept counts for nothing, its error included, and the
+/// answer is never the guess.
+async fn link<A, T, E, F1, F2>(
+    guess: Option<(A, F2)>,
+    prev: F1,
+    next: impl Fn(A) -> F2,
+) -> std::result::Result<Option<(A, T)>, E>
+where
+    A: Clone + PartialEq,
+    F1: std::future::Future<Output = std::result::Result<Option<A>, E>>,
+    F2: std::future::Future<Output = std::result::Result<Option<T>, E>>,
+{
+    use futures_util::future::{Either, select};
+    let Some((g, started)) = guess else {
+        let Some(a) = prev.await? else { return Ok(None) };
+        return Ok(next(a.clone()).await?.map(|t| (a, t)));
+    };
+    let (prev, started) = (std::pin::pin!(prev), std::pin::pin!(started));
+    let (a, started) = match select(prev, started).await {
+        Either::Left((a, started)) => (a, Either::Left(started)),
+        Either::Right((t, prev)) => (prev.await, Either::Right(t)),
+    };
+    let Some(a) = a? else { return Ok(None) };
+    if a != g {
+        return Ok(next(a.clone()).await?.map(|t| (a, t)));
+    }
+    let t = match started {
+        Either::Left(running) => running.await,
+        Either::Right(t) => t,
+    };
+    Ok(t?.map(|t| (a, t)))
+}
+
+/// A chain of three reads, each addressed by the answers before it (`resolve`'s login, `Placement`, and name): two
+/// `link`s. With a `guess`, all three start at once, and a right guess costs the longest of the three reads, not
+/// their sum.
 async fn chained<A, R, T, E, F1, F2, F3>(
     guess: Option<(A, R)>,
     first: F1,
@@ -194,16 +324,14 @@ where
     F2: std::future::Future<Output = std::result::Result<Option<R>, E>>,
     F3: std::future::Future<Output = std::result::Result<Option<T>, E>>,
 {
-    let Some((ga, gr)) = guess else {
-        let Some(a) = first.await? else { return Ok(None) };
-        let Some(r) = second(a).await? else { return Ok(None) };
-        return third(a, r).await;
+    let (ga, gr) = guess.unzip();
+    let (second, third) = (&second, &third);
+    let rest = move |a: A| {
+        let g = gr.clone().filter(|_| Some(a) == ga).map(|r| (r.clone(), third(a, r)));
+        link(g, second(a), move |r| third(a, r))
     };
-    let (a, r, t) = futures_util::future::join3(first, second(ga), third(ga, gr.clone())).await;
-    let Some(a) = a? else { return Ok(None) };
-    let r = if a == ga { r } else { second(a).await };
-    let Some(r) = r? else { return Ok(None) };
-    if a == ga && r == gr { t } else { third(a, r).await }
+    let got = link(ga.map(|a| (a, rest(a))), first, rest).await?;
+    Ok(got.map(|(_, (_, t))| t))
 }
 
 /// The repository `name` on `account`'s `Authz` chain, found by `record`: `resolve`'s third read.
@@ -263,6 +391,7 @@ async fn read_gate(
     c: &Ctx<'_>,
     repo: &Repo,
     who: Option<&Principal>,
+    beside: Option<Beside<'_>>,
 ) -> Result<std::result::Result<graftyard_identity::Decision, String>> {
     let key = gate::key(repo.id, who);
     // The test arm with the share off (`x-graft-colo: off` with the bed token) keeps the isolate cache alone, under its
@@ -278,7 +407,8 @@ async fn read_gate(
     };
     // Only a read-class request shares (`colo-gate`); a write reads members as before, its leader binding the answer.
     let share = c.read_class.get() && !colo_off(c);
-    let io = GateIo { c, repo, who, key: k, url: colo::gate_url(repo.id, k.1, &repo.record) };
+    let url = colo::gate_url(repo.id, k.1, &repo.record);
+    let io = GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside) };
     let g = colo::gate(&io, share).await;
     match g.served {
         colo::Served::Read => {}
@@ -315,15 +445,16 @@ enum GateFail {
 
 /// The read gate's effects for `colo::gate`: this request's clock, `gate`'s isolate entry, the data center's entry
 /// at `url`, and `fresh_gate`.
-struct GateIo<'a, 'c> {
+struct GateIo<'a, 'c, 'b> {
     c: &'a Ctx<'c>,
     repo: &'a Repo,
     who: Option<&'a Principal>,
     key: gate::Key,
     url: String,
+    beside: std::cell::RefCell<Option<Beside<'b>>>,
 }
 
-impl colo::GateFx for GateIo<'_, '_> {
+impl colo::GateFx for GateIo<'_, '_, '_> {
     type Err = GateFail;
     fn now(&self) -> Timestamp {
         now()
@@ -343,6 +474,38 @@ impl colo::GateFx for GateIo<'_, '_> {
     }
     async fn read(&self) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
         fresh_gate(self.c, self.repo, self.who).await
+    }
+    async fn beside(
+        &self,
+    ) -> Option<(Timestamp, std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail>)> {
+        let Beside { repo: guessed, start, mut rows } = self.beside.borrow_mut().take()?;
+        let started = async move {
+            rows.as_mut().await;
+            match rows.as_mut().take_output().expect("polled to the end") {
+                Ok(r) => r,
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        let (c, mismatch) = (self.c, guessed != *self.repo);
+        // A guessed read answered after its resolve dropped it is read again through `fresh_gate`'s own read, which
+        // creates a group that answers no leader, as before `beside`.
+        let read = |_: Repo| std::future::ready(Ok(None));
+        let (got, kept) = beside_rows(guessed, started, self.repo, read).await;
+        let Ok(Some(store)) = got else {
+            c.timing.put("gate_beside", 2.0);
+            return match got {
+                Err(e) if kept => Some((start, Err(GateFail::Read(e)))),
+                _ => None,
+            };
+        };
+        // `gate_beside`: 1 when the gate decided on the rows read beside the front, 2 when they were read again on
+        // the resolved repository; `beside_bad` counts a kept read whose guess was not the resolved repository, which
+        // must never happen (`beside`'s flip).
+        c.timing.put("gate_beside", if kept { 1.0 } else { 2.0 });
+        if kept && mismatch {
+            c.timing.put("beside_bad", 1.0);
+        }
+        Some((start, fresh_gate_on(c, self.repo, self.who, std::future::ready(Ok(Ok(store)))).await))
     }
 }
 
@@ -364,8 +527,8 @@ fn reread_ahead(c: &Ctx<'_>, repo: &Repo, who: Option<&Principal>, k: gate::Key)
     c.ctx.wait_until(async move {
         let ctx = Context::new(js);
         let bg = Ctx::background(&env, &ctx, &cfg, &sites, anchor, colo, fields, ssh_front);
-        let io =
-            GateIo { c: &bg, repo: &repo, who: who.as_ref(), key: k, url: colo::gate_url(repo.id, k.1, &repo.record) };
+        let url = colo::gate_url(repo.id, k.1, &repo.record);
+        let io = GateIo { c: &bg, repo: &repo, who: who.as_ref(), key: k, url, beside: Default::default() };
         colo::reread(&io).await;
         colo::end(&k);
     });
@@ -391,6 +554,16 @@ async fn fresh_gate(
             core
         }))
     };
+    fresh_gate_on(c, repo, who, rows).await
+}
+
+/// `fresh_gate` on the access rows `rows` answers: its own read, or the rows read beside the front (`beside`).
+async fn fresh_gate_on(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    who: Option<&Principal>,
+    rows: impl std::future::Future<Output = RowsRead>,
+) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
     // A read-class request may decide on the owner's `Authz` from `rcache`, and the decision is then cached from that
     // fold's read, not from now, so a revocation still binds within one `READ_CACHE` (`reopened`).
     let at = now();
@@ -3635,8 +3808,39 @@ async fn serve(
         }
         Ok::<_, Error>(who)
     };
-    let both = futures_util::future::join(api::timed(&c, "resolve", resolve(&c, &owner, &name)), auth);
-    let (repo, who) = api::timed(&c, "front", both).await;
+    // `beside`: a fetch on an isolate that holds no guess of its own for the owner guesses the repository from the
+    // data center's link entry, and starts the read gate's access rows on it beside the front, unless a shared gate
+    // entry will answer the gate; the gate keeps those rows only if the resolve names the same repository.
+    let own = held_guess(&owner).is_some();
+    let link = (read_class && !dumb && !own && !colo_off(&c))
+        .then(|| Some(colo::link_url(&Login::parse(&owner).ok()?.key(), &RepoName::parse(&name).ok()?.key())))
+        .flatten();
+    let linked = match &link {
+        Some(u) => colo::match_link(u).await,
+        None => None,
+    };
+    c.timing.put(
+        "resolve_guess",
+        if own {
+            1.0
+        } else if linked.is_some() {
+            2.0
+        } else {
+            0.0
+        },
+    );
+    let mut side = match &linked {
+        Some(g) if !gate_shared(&c, &req, g).await? => Some(beside_start(&c, g.clone())),
+        _ => None,
+    };
+    let both =
+        futures_util::future::join(api::timed(&c, "resolve", resolve_on(&c, &owner, &name, linked.as_ref())), auth);
+    let (repo, who) = api::timed(&c, "front", driving(both, side.as_mut().map(|s| s.rows.as_mut()))).await;
+    if let (Some(u), Ok(Ok(Some(r)))) = (&link, &repo)
+        && linked.as_ref() != Some(r)
+    {
+        c.ctx.wait_until(colo::put_link(u.clone(), r.clone()));
+    }
     let repo = match repo? {
         Ok(Some(r)) => r,
         Ok(None) => return text(rid, 404, "Repository not found.\n"),
@@ -3667,7 +3871,7 @@ async fn serve(
         );
         // An upload-pack's body, key and clone-cache lookup run beside the gate, and are kept only if it allows
         // (`hit-gate`): no byte of the repository leaves before the gate decides.
-        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref()));
+        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref(), side.take()));
         let gate = if upload {
             let allows = |g: &Result<_>| matches!(g, Ok(Ok(graftyard_identity::Decision::Allow)));
             let (g, f) = graftyard_git::compose::beside_gate(gate, upload_front(&c, &mut req, repo), allows).await;
@@ -3763,12 +3967,13 @@ async fn serve(
 mod tests {
     use std::io::Write;
 
-    use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
+    use graftyard_types::{AccountId, DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        CommitFail, Cut, ShardRefusal, bound_at_send, capped, chained, client_push_id, commit_result, fivexx_line,
-        gate_ng, git_class, gunzip, lean_asked, ls_refs_at_edge, reopened, route_kind, shard_fail_line, shard_refusal,
-        shard_url, streamed_site, validate_failed, validate_sites, validate_timing, validate_url, warm_first,
+        CommitFail, Cut, Repo, ShardRefusal, beside_rows, bound_at_send, capped, chained, client_push_id,
+        commit_result, fivexx_line, gate_ng, git_class, gunzip, lean_asked, ls_refs_at_edge, reopened, route_kind,
+        shard_fail_line, shard_refusal, shard_url, streamed_site, validate_failed, validate_sites, validate_timing,
+        validate_url, warm_first,
     };
 
     /// A commit that gave no outcome in time is a `CommitFail::NoOutcome` the push answers 503 with `Retry-After`,
@@ -4262,6 +4467,45 @@ mod tests {
         // A fresh read that fails fails the chain, guess or not.
         let down = |_: u8, _: u8| Err::<Option<u32>, _>("down".to_string());
         assert_eq!(run_chain(Some((1, 7)), Some(1), Some(7), down).0, Err("down".into()));
+    }
+
+    /// `beside`: rows read beside the front on a guessed repository are kept only when the resolve answered that same
+    /// repository, owner and placement record. Any other answer reads them again on the resolved repository, and a
+    /// guessed read that failed counts for nothing then. A kept read is never waited on twice.
+    #[test]
+    fn rows_read_beside_the_front_are_kept_only_for_the_repository_the_resolve_named() {
+        use futures_util::FutureExt;
+        let rec = |g| PlacementRecord { generation: g, ..record(PlacementName::Tri, &[0, 1, 2], 0) };
+        let repo =
+            |id: i64, owner: i64, g| Repo { id: RepoId(DbId(id)), owner: AccountId(DbId(owner)), record: rec(g) };
+        let run = |guessed: Repo, started: Result<Option<i64>, String>, resolved: Repo| {
+            let reads = std::cell::RefCell::new(Vec::new());
+            let read = |r: Repo| {
+                reads.borrow_mut().push(r.id.0.0);
+                std::future::ready(Ok::<_, String>(Some(r.id.0.0 * 10)))
+            };
+            let out = beside_rows(guessed, std::future::ready(started), &resolved, read).now_or_never().expect("ready");
+            (out, reads.into_inner())
+        };
+        let g = repo(7, 1, 1);
+        assert_eq!(run(g.clone(), Ok(Some(70)), g.clone()), ((Ok(Some(70)), true), vec![]));
+        // Another repository, another owner, another record: read again on the resolved one, never kept.
+        for other in [repo(8, 1, 1), repo(7, 2, 1), repo(7, 1, 2)] {
+            let id = other.id.0.0;
+            assert_eq!(run(g.clone(), Ok(Some(70)), other), ((Ok(Some(id * 10)), false), vec![id]));
+        }
+        // A guessed read that failed is not the gate's error when it was not kept; it is when it was.
+        assert_eq!(run(g.clone(), Err("shed".into()), repo(8, 1, 1)), ((Ok(Some(80)), false), vec![8]));
+        assert_eq!(run(g.clone(), Err("shed".into()), g.clone()), ((Err("shed".into()), true), vec![]));
+        // A guess, at any age, is never the answer: a fresh read that fails fails the link, and one that finds nothing
+        // answers nothing, whatever the guessed read found.
+        let next = |a: i64| std::future::ready(Ok::<_, String>(Some(a * 10)));
+        let link = |prev: Result<Option<i64>, String>| {
+            super::link(Some((1, next(1))), std::future::ready(prev), next).now_or_never().expect("ready")
+        };
+        assert_eq!(link(Err("down".into())), Err("down".into()));
+        assert_eq!(link(Ok(None)), Ok(None));
+        assert_eq!(link(Ok(Some(2))), Ok(Some((2, 20))));
     }
 
     /// The git read gate on a cached `Authz`: a decision that does not allow is made again on a fresh read (a grant

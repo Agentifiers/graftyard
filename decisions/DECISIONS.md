@@ -7247,6 +7247,64 @@ arrived, past one retry: then `resume` is not reached on that path.
 - Any served decision whose stamp is older than `READ_CACHE` at the time it was served, in a test or in a row's logs: the stamp rule is broken, so turn the share off until it is fixed.
 - A clone cut mid-answer by a pack whose header came from a set: the head's version no longer covers the files, so check every pack as before.
 
+### `head-etags`: a chain bucket's `head` records each pack's etag, size and count, and the edge checks none it names, 2026-11-22
+
+**Status.** Built on branch `b034-tailbuild` from the lead's ruling on `tests/am1/results/b034-tail.md` (lever (b2)), not yet measured hosted. The builder half runs in the site's shard object and ships on a site day; the edge half on an edge day.
+
+**Decision.**
+- The builder puts `compose/<net>/head` as `HeadObject`: the container's `ChainHead`, flat, and beside it `packs`, one `[etag, size, count]` per pack in `ChainHead::packs` order, as that bucket held each pack after this step's puts.
+- A pack this step did not put keeps the old head's record (the same object); any other is read back with one 12-byte ranged get. A pack that cannot be read, records that do not cover the chain, or a head past `HEAD_MAX` (2,048 bytes) puts the chain alone.
+- `ready_chain` compares chains only (`HeadObject::plan`), so a head whose records differ is the same step and is not put again, and a shard installs `chain` alone.
+- `check_with_sets` takes a pack the head names from the version's set, else from the head's record at the manifest's count, else checks it. Only checked packs are added to the set. Every body still streams on the etag it came with.
+- `server-timing` gains `chain_head`, the packs served from the head's record, beside `chain_set` and `chain_chk`.
+
+**Why.**
+- Each tip move puts a new head version, so each data center rebuilt its set per version. mt15's hits that checked 11 to 20 packs had `chain_open` p50 469 to 695 ms and up to 1,209 ms (`b034-tail.md`, (b)).
+- The head is put after its files, so its records are the objects R2 held when it was put. A later put under the same key changes the etag, and the conditional get on the recorded etag ends the answer short, as a stale check did before.
+- R2 writes are strongly consistent and `version` is unique per upload [doc, https://developers.cloudflare.com/r2/api/workers/workers-api-reference/]; the set stays keyed by version.
+- A 20-pack head with realistic etags, sizes and counts is about 1.9 to 2.0 KB; with u32-max sizes and counts it passes `HEAD_MAX` and falls back [computed, `compose::tests::a_heads_pack_records_sit_beside_its_chain`].
+
+**What it beat.**
+- **(b1), a `list` of `compose/<net>/` beside the head get.** It adds a Class A list and its wall to every first hit on a version (`b034-tail.md`).
+- **Records inside `ChainHead`.** `ready_chain` compares `ChainHead` whole against the container's `/compose-head`, which has no records, so every step would put the head again. The wrapper type keeps the comparison on the chain by construction.
+
+**Evidence.**
+- `crates/git/src/compose.rs` (`HeadObject`, `HeadPack`, `check_with_sets`), `crates/git/src/host.rs` (`ready_chain`, `pack_object`, `open_chain_sets`).
+- Tests: `a_heads_pack_records_sit_beside_its_chain` (records outside the comparison, carry only for packs not re-put, `HEAD_MAX`, the wire), `a_header_set_answers_only_for_the_head_version_it_was_checked_under` (a recorded head checks none and puts no set; another count is checked; a pack outside the head is checked). `tests/composed/edgebed/run.sh` serves a recorded head byte for byte with no check and ends short on a pack rewritten since. Plants: `tests/m0carried/plant81.py` 6 to 9 (a pack put again carrying the old record, another count, a pack outside the head, a body read without `etag_matches`, the last through the edgebed), all caught; `plant79.py` 13 of 13 with its two `check_with_sets` anchors moved to the new code.
+
+**Flip.**
+- `chain_open` p99 on a new head version above 400 ms in a row: back it out and check every pack as before.
+- A clone cut mid-answer by a pack whose header came from a head's record: the records no longer name the objects.
+
+### `beside`: a cold isolate guesses the repository from the data center, and the read gate's rows start beside the front, 2026-11-22
+
+**Status.** Built on branch `b034-tailbuild` from the lead's ruling on `tests/am1/results/b034-tail.md` (lever (a), `beside`), not yet measured hosted. Edge only; it ships on an edge day.
+
+**Decision.**
+- A fetch on an isolate with no login and `Placement` answer for the owner (`rcache::last`) matches a link entry in the data center's Cache API: a SHA-256 of the login and the repository name in their compared forms, on `colo-gate`'s fixed origin. Its value is the repository, owner and placement record a fresh `resolve` last answered, put after a resolve that answered another.
+- `resolve` takes the entry as its guess, so its three reads start at once (`chained`).
+- Unless this isolate's or the data center's gate entry would answer the gate, the gate's access rows start on the guessed repository beside the front. They are kept only when the resolve names the same repository, owner and record, through `link`, the rule `chained` is built from; otherwise the gate reads as before.
+- The decision is still made at the gate, on the owner's `Authz` as before, and stamped no later than the start of the rows' read. A refusal on them is read again fresh. A guessed group that answers no leader is not created.
+- `server-timing`: `resolve_guess` (0 none, 1 the isolate's, 2 the link entry), `gate_beside` (1 kept, 2 read again), `beside_rows`, `beside_match`, and `beside_bad`, a kept read on another repository, which must never appear.
+- The share-off arm (`x-graft-colo: off`) reads no link entry.
+
+**Why.**
+- mt15's first four j9 hits paid a front of 905 to 1,216 ms (login, `Placement`, name in turn on a cold isolate) and then a gate of up to 1,031 ms, in turn (`b034-tail.md`, (a)).
+- `tailcf.py` puts `beside` with `head-etags` at measured j9 p99 1,027 ms, against 2,189 measured; `beside` alone at 1,279.
+- A guess never answers: every kept read is one the reads in turn would have made, so the revocation bound and the rule that a refusal reads fresh do not change.
+
+**What it beat.**
+- **Warming the shared gate entry on the edge day.** It cannot hold a client's credential, and it would be 50 minutes stale by t0 (`b034-tail.md`).
+- **`links` alone (login and placement as guesses, the gate after the front).** 1,415 ms predicted.
+
+**Evidence.**
+- `workers/edge/src/lib.rs` (`link`, `chained`, `resolve_on`, `beside_rows`, `beside_start`, `gate_shared`, `GateIo::beside`), `workers/edge/src/colo.rs` (`fresh`, `link_url`), `workers/edge/src/api.rs` (`guessed_rows`).
+- Tests: `rows_read_beside_the_front_are_kept_only_for_the_repository_the_resolve_named`, `a_gate_on_rows_read_beside_the_front_keeps_their_reads_stamp_and_rereads_a_refusal`, `a_link_key_names_the_login_and_the_repository_name`, and `resolve_starts_its_three_reads_at_once_on_a_held_guess_and_keeps_only_what_the_chain_confirms`, unchanged with `chained` rebuilt on `link`. Plants: `tests/m0carried/plant81.py` 0 to 5 (a guessed read kept on another repository or record, a guess served when the fresh read fails, the stamp taken at the gate, a refusal not re-read, a link entry answering for a login the fresh read no longer finds, a link key without the login), all caught; the colo revocation test and `plant79.py` pass.
+
+**Flip.**
+- Any guessed read kept on a mismatch (`beside_bad` in a row's samples, or a test): back it out.
+- First-second front p50 that does not fall against mt15's 1,178 ms: back it out.
+
 ### `learner-cadence`: a learner sends read-index batches at most every 200 ms, and its append replies ride them, 2026-11-21
 
 **Status.** Reversed 2026-11-21: its flip fired on lcA2. Built on branch `r33-learner-cadence` from main `059378d2`

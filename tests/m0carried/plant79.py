@@ -49,10 +49,9 @@ MUTANTS = [
     ("a chain set's key drops the head's version", COLO, '    h.update(version.as_bytes());',
      '    let _ = version;', ED),
     ("a header set answers for packs its head does not name", COMPOSE,
-     '            let in_head = |key: &str| files.iter().any(|f| key.ends_with(&format!("/{f}.pack")));',
-     '            let in_head = |_key: &str| !files.is_empty() || files.is_empty();', GIT),
+     '                let name = name_of(&p.key)?;', '                let name = name_of(&p.key).unwrap_or_default();', GIT),
     ("a header set ignores the manifest's count", COMPOSE,
-     '.filter(|h| h.n == p.n && in_head(&p.key)).cloned();', '.filter(|_| in_head(&p.key)).cloned();', GIT),
+     '                match set.packs.get(&p.key).filter(at_count) {', '                match set.packs.get(&p.key) {', GIT),
 ]
 
 
