@@ -64,6 +64,7 @@ Implementation will find places where the design is wrong. When it does, fix the
 - Cite paths in this folder's layout, and cite design sections by heading, not by line number.
 - Never write the project's old name. `scripts/check_names.py` lists any occurrence outside `history/`.
 - A change under `workers/edge/` or any crate the edge links runs `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` before it merges (CI job `edgeboot`): they serve the edge's own wasm in local workerd, which no native test or clippy does, and fail on a 500 or a wasm trap.
+- A change to `workers/site/src/export_feed.rs` or `workers/site/src/registry.rs` runs `bash tests/exportbed/run.sh` before it merges (not in CI: it builds the site, about 11 minutes): it runs the site's own build as three scripts in local workerd with a local export bucket and fails unless one leader report, one round claim, one `export/` object and the queued round after it go through. m3fx49's feed carried nothing because of SQL that no native test ran, and m3fx49b's queued round arrived as `{}`.
 
 ## What not to do
 

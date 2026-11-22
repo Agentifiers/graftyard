@@ -1,0 +1,7 @@
+2026-11-22T13:24:37Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-22T13:24:38Z 65609 REFUSED: not retired (0:follower, 1:follower, 2:follower)
+2026-11-22T13:24:38Z {"dry": false, "purged": 0, "objects": 0, "refused": [65609], "second": 0}
+2026-11-22T13:24:56Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-22T13:25:36Z 65609 purged: a 13 -> 0, b 8 -> 0, c 12 -> 0
+2026-11-22T13:25:36Z 65609 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-22T13:25:36Z {"dry": false, "purged": 1, "objects": 33, "refused": [], "second": 0}
