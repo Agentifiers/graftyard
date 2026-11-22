@@ -26,6 +26,8 @@ struct Fake {
     lag: Option<ReleaseFold>,
     /// The next `submit` is lost after it committed: the run sees no answer.
     lose_next: bool,
+    /// The Cloudflare API refuses every call: no deployment read, no deploy.
+    api_down: bool,
     next_v: u8,
 }
 
@@ -49,6 +51,7 @@ impl Fake {
             pages: Vec::new(),
             lag: None,
             lose_next: false,
+            api_down: false,
             next_v: 1,
         }
     }
@@ -84,6 +87,9 @@ impl Exec for Fake {
     }
 
     async fn deployment(&mut self, s: Script) -> Result<Deployment, String> {
+        if self.api_down {
+            return Err("HTTP 503".into());
+        }
         self.deps.get(&s).cloned().ok_or_else(|| format!("no {s:?}"))
     }
 
@@ -92,6 +98,9 @@ impl Exec for Fake {
     }
 
     async fn deploy(&mut self, s: Script, split: &Split) -> Result<(), String> {
+        if self.api_down {
+            return Err("HTTP 503".into());
+        }
         self.deps.insert(s, Deployment { split: split.clone(), created: self.g.at });
         self.deploys.push((s, split.clone()));
         Ok(())
@@ -257,6 +266,52 @@ fn a_lost_commit_answer_is_resent_meets_409_and_the_run_goes_on() {
         .collect();
     assert_eq!(step_entries, (0..7).collect::<Vec<_>>(), "each step committed once, in order");
     assert_eq!(decoded.iter().filter(|b| matches!(b, ReleaseEntry::IntentDone { .. })).count(), 1);
+}
+
+/// BF-43's undo with the Cloudflare API down: an `EdgeRoll` at 1% breaches while no deployment can be read. The run
+/// still submits the pre-signed `EdgePointer` to N, a signed entry that needs no API call, so the pin moves at once;
+/// the return to N at 100% waits for the API and then finishes the intent.
+#[test]
+fn an_edge_breach_with_the_api_down_commits_the_pointer_undo_and_deploys_later() {
+    let mut f = Fake::new(G::new());
+    let b1 = raw("e1", 3, &RELEASE);
+    let r1 = release_of(&b1);
+    f.bucket.push(b1);
+    f.cron(10);
+    let mut n = 0;
+    while roll(&mut f, r1, 90 + n) {
+        n += 1;
+        f.cron(40);
+    }
+    let b2 = raw("e2", 3, &RELEASE);
+    let r2 = release_of(&b2);
+    f.bucket.push(b2);
+    f.cron(10);
+    for i in 0..4 {
+        assert!(roll(&mut f, r2, 100 + i));
+        f.cron(40);
+    }
+    assert!(roll(&mut f, r2, 110));
+    assert!(matches!(f.g.f.current.as_deref().unwrap().intent.intent, Intent::EdgeRoll { .. }));
+    // The 1% step deploys, then the API goes down and the gate breaches.
+    block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR }));
+    let e1 = f.tags[&(r1.0, Script::Edge)];
+    let e2 = f.tags[&(r2.0, Script::Edge)];
+    assert_eq!(f.deps[&Script::Edge].split, vec![(e2, 1), (e1, 99)]);
+    f.api_down = true;
+    f.gate = Gate::Breach("GATE_EXCEPTIONS".into());
+    let deploys = f.deploys.len();
+    let log = block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR }));
+    assert!(log.contains(&Ran::Committed("EdgePointer")), "{log:?}");
+    assert_eq!(f.g.f.pointers.edge, Some(e1), "the pin moved to N with the API down");
+    assert_eq!(f.deploys.len(), deploys, "nothing deployed while the API was down");
+    assert!(f.g.f.current.is_some(), "the return to N waits for the API");
+    f.api_down = false;
+    f.gate = Gate::Pass;
+    f.cron(10);
+    assert!(f.g.f.current.is_none());
+    assert_eq!(f.deps[&Script::Edge].split, vec![(e1, 100), (e2, 0)]);
+    assert!(f.pages.is_empty(), "{:?}", f.pages);
 }
 
 /// BF-7 through the host: after `FormatsEnable`, a breach makes the run submit the pre-signed `Rollback` to N. The group
