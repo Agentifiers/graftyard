@@ -277,3 +277,25 @@ probes and reads in one pass per chain.
 **Teardown.** `teardown.py --sweep` tore down `git#0#net:65610`, and a second sweep found no shard running. Both tokens
 are revoked. `repo:65610` was retired at 16:58:30Z (3 members), then purged at 16:59:53Z: 35 objects, second pass 0
 (`raw/bf49/retire-65610.log`, `raw/bf49/purge-65610.log`). The ssh fronts were not touched.
+
+## export-period (code only, 2026-11-22): rounds start FEED_EVERY_MS apart (R37)
+
+Built on branch `export-period` from main `74c7c232`; nothing has run hosted yet. Each round's next-round message is now
+due `FEED_EVERY_MS` after that round's claim (`export::next_round_delay_s`). A round that ran past the period sends the
+next at once, with delay 0. Before this change the message waited 10 s after the round ended, which is how m3fx49c's
+15.5 s rounds came out 28 s apart. The delay is rounded up to whole seconds, the queue's unit. Rounding down could land
+the message under `round_due`'s 9 s bar, and the claim would refuse it and stop the chain until the next cron.
+
+- **Native test.** `export.rs` `rounds_start_a_period_apart_and_a_long_round_starts_the_next_at_once` covers rounds of
+  0, 4.3, 9.001 and 9.999 s, whose next round arrives 10 to 11 s after the claim and is taken. It also covers rounds of
+  10, 15.5 and 26.8 s, whose next round is sent at once and taken.
+- **exportbed.** It now times the queued idle rounds as their log lines appear. On this build: 3 idle rounds, gaps of
+  10.1 s and 9.9 s, PASS. The bed fails if a gap falls outside 9 to 12.5 s.
+- **plant84.** 35 of 35 caught, including two new mutants: the old full-period wait after the round, and rounding the delay down.
+- **The backlog.** A backlog now runs rounds back to back instead of with 10 s of rest between them. Each round is still
+  capped at 200 chains and 8 MiB. Its probes and reads go to followers and learners, six at a time, so leaders see
+  nothing from it. On m3fx49c this would have halved the time to drain the first sweep. R37 stays open until a timed
+  window, taken after a sweep's backlog drains, shows whether a steady round fits in the period.
+- **Checks.** These pass: fmt; workspace clippy; wasm32 clippy for site and edge, with and without `test-faults`, and for
+  ops, front and runners; `cargo test --workspace`; `go test` in the server and porcupine; the three
+  `scripts/check_*.py`; and h1. Edgeboot passes for both builds with 0 traps, run because `crates/git` moved.

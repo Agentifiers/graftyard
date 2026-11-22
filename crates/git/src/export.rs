@@ -692,6 +692,14 @@ pub fn round_due(last_ms: Option<u64>, now_ms: u64) -> bool {
     last_ms.is_none_or(|l| now_ms.saturating_sub(l) >= FEED_EVERY_MS - 1_000)
 }
 
+/// The seconds a round's next-round message waits, sent at `now_ms` by a round claimed at `claimed_ms`: the rest of
+/// `FEED_EVERY_MS` from the claim, so rounds start a period apart, and 0 once the round ran past the period, so the
+/// next starts at once. Rounded up: a message that arrived under `round_due`'s bar would be refused and end the chain of
+/// rounds until the cron's next kick. R37: m3fx49c's rounds of 15.5 s waited a further 10 s each, 28 s apart.
+pub fn next_round_delay_s(claimed_ms: u64, now_ms: u64) -> u32 {
+    (claimed_ms + FEED_EVERY_MS).saturating_sub(now_ms).div_ceil(1000) as u32
+}
+
 /// Whether a leader's commit report replaces the one held for its chain: only a higher commit index, so a deposed
 /// leader's late report never moves the feed's view back.
 pub fn report_newer(held: Option<Index>, reported: Index) -> bool {
@@ -850,6 +858,28 @@ mod tests {
 
     fn state(at: &[(ChainId, u64)], last: Option<(u64, u32)>) -> FeedState {
         FeedState { last: last.map(|(minute, seq)| FeedPosition { minute, seq }), cursors: cursors(at) }
+    }
+
+    /// Rounds start `FEED_EVERY_MS` apart, measured from each claim: a short round's next message waits out the rest
+    /// of the period, never less, so `round_due` takes it; a round that ran past the period sends the next at once.
+    #[test]
+    fn rounds_start_a_period_apart_and_a_long_round_starts_the_next_at_once() {
+        let claimed = 1_700_000_000_000u64;
+        for took in [0, 4_300, 9_001, 9_999] {
+            let sent = claimed + took;
+            let arrives = sent + u64::from(next_round_delay_s(claimed, sent)) * 1000;
+            assert!(arrives >= claimed + FEED_EVERY_MS, "a {took} ms round's next arrives at +{}", arrives - claimed);
+            assert!(
+                arrives < claimed + FEED_EVERY_MS + 1000,
+                "a {took} ms round's next arrives at +{}",
+                arrives - claimed
+            );
+            assert!(round_due(Some(claimed), arrives), "a {took} ms round's next is refused");
+        }
+        for took in [FEED_EVERY_MS, 15_500, 26_800] {
+            assert_eq!(next_round_delay_s(claimed, claimed + took), 0, "a {took} ms round");
+            assert!(round_due(Some(claimed), claimed + took));
+        }
     }
 
     /// The sweep visits every site's every shard exactly once per 192 rounds, then starts again; it probes a chain on
