@@ -193,3 +193,45 @@ stay the freshness signal; each round also covers the system chains from the gen
 sweep covers the repository chains from the `Names` and `Placement` folds, reading `/log_rows` from a non-leader up to
 that member's commit. The next rerun must show `release` and `ids` in the feed, matched byte for byte against the
 entries endpoint.
+
+## export-sweep (code only, 2026-11-22): a chain reaches the feed whether or not anyone leads it
+
+The ruling above, built on branch `export-sweep` from main `898dd7af`; no hosted run yet.
+
+- **What a round covers.** The leaders' reports stay the freshness signal. Each round also probes a non-leader's
+  commit index with an empty `/log_rows` range (`from` = cursor + 1, `to` = cursor, so no rows move). It probes
+  `Release` and `Ids` from the genesis records every round (`export::ROUND_PROBES`), and the chains of one
+  `MemberRegistry` shard of one site (`SWEEP_SHARDS` = 1, `sweep_slots`). Each chain is probed on the site its row names
+  first (`swept`), under its row's record (`RegistryRow::record`, which `registry_record` now shares). The `export`
+  object's new `export_sweep` table counts rounds, so a sweep of 3 × 64 shards takes 192 rounds, 32 minutes [guess].
+  `with_probes` merges probes into the reports with the higher index winning. A reported chain is probed too, because a
+  leader that resets before its next report would otherwise leave that report behind its log for good.
+- **Why the registry rows, not the `Names` and `Placement` folds.** The ruling named the folds as the repository
+  chains' source. The sweep reads `MemberRegistry` rows instead, for two reasons. Each group's members write their row
+  before they store an entry, so the rows list every group with entries: repositories, networks, owner, Actions,
+  `Names`, and `Tokens` chains alike. Reading a fold goes to its `Names` leader through `fresh`, which would elect every
+  `Names` shard the sweep touches after a site day. The rows are read from each site's own registry objects, with no
+  election. One probe per chain per sweep keeps an idle chain at one cheap read every 32 minutes (`scripts/cost.py`:
+  the base moves $238 → $239, $1,017 → $1,018 and $9,330 → $9,335). Probing all 1,024 + 3,072 `Names` and `Tokens`
+  shards every round would cost a read per shard per round.
+- **Tests.**
+  - `crates/git/tests/export.rs`, `a_chain_whose_leader_never_reports_still_reaches_the_feed_exactly_once`: 39 chains
+    nothing reports, plus `Release`, `Ids`, and one chain whose leader reports. Over two sweeps, with a lost state write
+    every 23 rounds, every entry is in the feed exactly once, and `Release` and `Ids` are in the first object.
+  - `export.rs` unit `the_sweep_visits_each_shard_once_and_a_probe_never_lowers_a_report`.
+  - `tests/exportbed/run.sh` drives a second group, `repo:900099` in registry shard 0, which is the sweep's first slot.
+    After its put, every member resets (`/abort`), so it never elects again. On this branch the round's object carries
+    it from 1 to 3 with all three members followers (`reports=1 probed=1/1 planned=2`), and the bed passes. On main
+    `898dd7af`'s build the same bed fails: the object holds only the led group, and the idle group is "carried []".
+    workerd has no trust anchor, so the bed's rounds log "no record for release/ids". The hosted sites deploy with
+    `--anchor`.
+  - `tests/m0carried/plant84.py`: 33 of 33 caught, including six new sweep mutants: planning from reports only, a
+    probe lowering a report, `Ids` not probed, the sweep stuck on site 0, a chain probed on every site that holds it,
+    and the sweep counter's SQL.
+  - The full checks pass: fmt; workspace clippy; wasm32 clippy for site and edge, with and without `test-faults`, and
+    for ops, front and runners; `cargo test --workspace`; `go test` in `containers/git/server` and
+    `tests/m0/porcupine`; the three `scripts/check_*.py`; and `tests/am1/rest/h1.test.mjs`. The edge is unchanged, so
+    edgeboot did not run.
+- **The rerun after merge** is a site-only day with a fresh seed. It must show `release` and `ids` in the feed, matched
+  byte for byte against the entries endpoint. After the day's reset their groups have no leader, so only the probes can
+  carry them.

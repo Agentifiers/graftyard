@@ -170,6 +170,10 @@ AVG_PACK_MB = 50                   # average stored pack, for per-object pack co
 VAULT_LOCK_DAYS = 35               # bucket lock retention in the vault account
 FEED_OBJECTS = DAYS * 24 * 360     # ChangeBatch objects, one every 10 s
 FEED_CHAINS_MAX = 200              # `export::BATCH_CHAINS_MAX`: chains one round reads at most (`export-host`)
+FEED_SWEEP_ROUNDS = 64 * 3         # rounds one sweep of every site's `MemberRegistry` shards takes, one shard a round
+                                   # (`export::SWEEP_SHARDS`): each round probes `Release`, `Ids`, and the chains of one
+                                   # shard of one site, so every group once a sweep (`export-host`, the sweep)
+FEED_ROUND_PROBES = 2              # `export::ROUND_PROBES`: `Release` and `Ids`, every round
 
 # ---- user records and the Inbox (FX-7) ----
 # Stars, watches, subscriptions, follows, and notification thread state are `IdentityEvent`s on the actor's group, and
@@ -417,8 +421,14 @@ def model(tier, variant="design", split=None):
 		# `export-host`: each round's claim on site A's `export` registry object, and per moved chain one leader report
 		# and one `/log_rows` source read, at most one each per entry and FEED_CHAINS_MAX a round.
 		do_reqs += FEED_OBJECTS + 2 * min(w["entries"], FEED_OBJECTS * FEED_CHAINS_MAX)
+		# The sweep: per round one registry shard read and one commit probe (`/log_rows`, an empty range) per chain it
+		# names, plus `Release` and `Ids`. An idle chain costs one probe a sweep, and the probe wakes its member.
+		feed_probes = FEED_OBJECTS * (1 + FEED_ROUND_PROBES + w["groups"] / FEED_SWEEP_ROUNDS)
+		do_reqs += feed_probes
 	gbs = DO_GB * (w["reads"] * WALL_S["read"] + w["entries"] * WALL_S["commit"]
 		+ append_rpcs * WALL_S["append"] + lease_rpcs * WALL_S["lease"])
+	if vault:
+		gbs += DO_GB * feed_probes * WALL_S["read"]
 	if "edge-compose" in LEVERS:
 		gbs += DO_GB * w["jobs"] * (1 - CI_HIT) * COMPOSED_SHARE * COMPOSE_WALL_S
 	rows_w = w["rows"] * members

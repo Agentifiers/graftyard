@@ -7692,6 +7692,14 @@ after the command's admission, and a follower verifies k+1 only after it applies
   up to `LOG_PAGE_BYTES` 1 MiB, and the archive range holding `from` when it is below the stored log). A leader with
   any other member answers `{"error": "leader"}` (`serves_log`); the lookup asks learners, then followers, never the
   cached leader. A chain the feed never carried may start at the source's first stored index (`check_object`).
+- **Unled chains (the sweep, since `export-sweep`).** A report needs a leader, and a site day resets every member, so
+  a group nothing calls never reports (m3fx49b: `release` and `ids`). Each round also probes a non-leader's commit
+  index with an empty `/log_rows` range (`from` = cursor + 1, `to` = cursor), for `Release` and `Ids` from the genesis
+  (`export::ROUND_PROBES`) and for the chains of one `MemberRegistry` shard of one site (`SWEEP_SHARDS` = 1), each on
+  the site its row names first (`swept`), under the row's record. `export_sweep` in the `export` object counts the
+  rounds (`sweep_slots`), so the 64 × 3 shards take 192 rounds, 32 minutes [guess]. A probe is taken with the reports,
+  the higher winning (`with_probes`); a reported chain is probed too, since a leader reset before its next report
+  leaves its last report behind the log.
 - **Caps.** `BATCH_CHAINS_MAX` is 200, not 2,000 [guess]: each chain is one source read, six at a time, about 3.5 s of
   the 10 s round at 100 ms a read [inference]. A batches page also stops at 8 MiB (`BATCHES_PAGE_BYTES`).
 - **Edge.** `GET export/batches` needs an `Install` token (`in_scope` asks `covers(Release)`), since batches name every
@@ -7714,8 +7722,11 @@ after the command's admission, and a follower verifies k+1 only after it applies
 
 **What it beat.**
 - **A per-family alarm hook.** Every family would need it; the host's alarm already knows the role and commit index.
-- **The registry rows' enumeration.** Rows say where members are, not how far they are; reading every chain's status
-  each round costs one call per group whether it moved or not.
+- **The registry rows' enumeration every round.** Rows say where members are, not how far they are; probing every
+  chain each round costs one call per group a round whether it moved or not. The sweep probes each group once per 192
+  rounds instead, and the reports keep led chains fresh.
+- **Electing the unled groups.** A read through the leader would elect each one, adding leaders' input load and
+  campaigns across the install after every site day for a backup that a follower can serve.
 - **A Workflow per round.** A new product and failure domain for a loop the queue already runs.
 
 **Evidence.** Unit tests in `export.rs` (fill, check_object from a first carry, log_page, the page round trip,
@@ -7735,12 +7746,22 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
   leader after the site day's reset, so no report (the ruling for that is the next change). The round's queued next
   round arrived as `{}` (`json!` through worker 0.8's queue send makes a JS `Map`), so only the cron's rounds ran; it is
   a `Serialize` struct since `export-next-round`, and `tests/exportbed/run.sh` waits for the queued round.
+- The sweep (`export-sweep`): `crates/git/tests/export.rs`
+  `a_chain_whose_leader_never_reports_still_reaches_the_feed_exactly_once` (39 chains no leader reports plus `Release`,
+  `Ids` and one that does, over two sweeps with lost state writes: every entry once, `Release` and `Ids` in the first
+  object); `tests/exportbed/run.sh` now resets a second group's members after its put, so it never elects, and passes
+  only if the round carries it from 1 to a member's commit with no leader; plant84's sweep mutants. Cost: per round one
+  registry shard read and one probe per `Release`, `Ids` and swept chain (`groups / 192`), as DO requests and read
+  wall: the base moves $238 → $239, $1,017 → $1,018 and $9,330 → $9,335.
 
 **Flip.**
 - The hosted BF-49 finds an entry missing or repeated against a chain's log, or a round longer than `FEED_EVERY_MS`:
   lower `BATCH_CHAINS_MAX` or raise the reads at once.
 - A leader's commit p99 rises on a row with the feed on against the same build with it off: the reports move off the
   alarm.
+- A hosted row finds a chain in the registry missing from the feed a full sweep (192 rounds) after its last commit, or
+  the probes take more than half of a round's `FEED_EVERY_MS`: read more shards a round, or move the sweep to its own
+  cadence.
 
 ### `validate-hedge`: a human push's buffered validate asks the next site's shard after 1 s, beside the first, 2026-11-22
 

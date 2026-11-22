@@ -1332,12 +1332,12 @@ pub const READ_CACHE: Duration = Duration::from_secs(10);
 pub const IDENTITY_BUDGET_PER_ISOLATE: u32 = 50;   // group reads per second; compiled, never config
 
 // ---- Lifeboat feed ----
-/// A round on site A every 10 s (cron-started, then a delayed message on A's queue) reads the commit indexes leaders
-/// report to A's `export` registry object (once a round, on change, higher wins): which chains moved and to what index
-/// (at most 200, furthest behind first [guess]). Each batch is one `R2Key::Export` object, put create-only in the
-/// install's export bucket, one bucket in site A's region with a 7-day lifecycle rule [guess], made by Terraform. It
-/// holds the batch plus each chain's stored entries after the previous batch's index (at most 8 MiB [guess]), read by
-/// `/log_rows` from a learner or follower, never the leader. `FeedState` follows under `ExportState`, folded forward.
+/// A round on site A every 10 s (cron, then a delayed message on A's queue) takes the commit indexes leaders report to
+/// A's `export` registry object (higher wins), raised by probing a non-leader's commit: `Release` and `Ids` each round,
+/// one `MemberRegistry` shard a round, so an unled chain is carried within a sweep [guess: 32 min]. Moved chains, at
+/// most 200, furthest behind first [guess], form one `R2Key::Export` object, put create-only in site A's export bucket
+/// (7-day lifecycle [guess], made by Terraform) with each chain's stored entries after its cursor (8 MiB [guess]) from
+/// `/log_rows` on a learner or follower, never the leader. `FeedState` follows under `ExportState`, folded forward.
 pub struct ChangeBatch { pub minute: u64, pub seq: u32, pub chains: Vec<(ChainId, Index)> }
 pub struct ExportObject { pub batch: ChangeBatch, pub entries: Vec<(ChainId, Index /* first */, Vec<Bytes>)> }
 pub struct ExportCursor { pub chain: ChainId, pub index: Index }   // FeedState { last: Option<(minute, seq)>, cursors }
@@ -1814,9 +1814,9 @@ The plan line uses Pro list at every tier (`FRAME.md`, "Operator decision, 2026-
 
 | Developers | Default, one account (`Tri`) | Account-separated sites (`Tri`, four accounts) | `Solo` (evaluation) | Git in Artifacts, one DO per repository |
 | --- | --- | --- | --- | --- |
-| 50 | $238 | $248 | $133 | $81 |
-| 300 | $1,017 | $929 | $599 | $517 |
-| 2,000 | $9,330 | $9,227 | $5,395 | $4,602 |
+| 50 | $239 | $249 | $133 | $81 |
+| 300 | $1,018 | $931 | $599 | $517 |
+| 2,000 | $9,335 | $9,231 | $5,395 | $4,602 |
 
 Git cache shards come from a guessed daily working set, the bytes of networks fetched at least once a day, which Milestone 0 measures. Each shard keeps 4 GB of its disk for scratch, and each network is warm on two sites.
 
@@ -1852,11 +1852,11 @@ At 2,000 developers the largest lines of the default are:
 
 Agents add $22, $329, and $2,935 a month at 50, 300, and 2,000 developers on top of the default, 9%, 32%, and 31% (`python3 scripts/cost_agents.py`); the largest network places no learners on cost grounds, because its API reads are narrow reads counted once in `GroupLoad`, not 1 MB whole-tier reads counted 50 times (K9, `tests/am1/results/narrow-reads.md`). Monthly lines use 5 pushes a task. With git CPU measured on torvalds/linux and composed clone-cache misses, `fanout` keeps the largest network at k = 1 at 2,000 developers, so the layer adds no extra warm shards ($0), and test merges on agent head pushes cost $1. The conflict predictor, at a measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), costs $54. They include agent CI egress with every agent CI checkout missing the clone cache, the `Inbox` line grown by agent activity, and $342 as an upper bound for members held active by activity feed long-polls. At journey 9's push every 2 minutes k is also 1, with 0 extra shards ($0 a month), by git CPU. The validate lock that held one network to about 2 pushes/s hosted is gone: one shard now validates 39 a second on 1 vCPU, about 9 times journey 9's 4.17/s [measured, container bench, `tests/am1/results/fanout.md`]. Hosted, at 100 agents every push landed with k = 1 (commit p99 885 ms), and the 500-agent rows failed on the read gate, not on validates, so the $0 line stands but is not yet shown hosted at 500 agents; LM-1's load rows are being rerun. Sandbox compute and model tokens for Graftyard-run agents, $2,827 and $182,400 a month at 2,000 developers with a guessed $2 of tokens a task, sit outside this comparison as runner compute does, and opt-in Code Mode is excluded. Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Line items are in `design/AGENT-LAYER.md`, "Cost".
 
-The quorum costs $3,928 a month over `Solo` at 2,000 developers, 73% more, most of it the second warm copy of every shard. At 50 developers it costs $103 more. That buys RPO zero and an RTO of about 11.5 s per request for the loss of any one region, continent, or site release, and a vault copy outside the install account. `Solo` costs $133, $599, and $5,395 a month at the three tiers. It has one member per chain, one pack bucket, one warm copy of each shard on one site, and a runner account, and it carries no vault. Its RPO is zero for a machine or data center and not covered for a region, because a write is confirmed by followers in the object's own region (`tests/m0/results/wp11.md`, (b)) [measured]. Its RTO is Cloudflare's restart, or the region's return. It carries no availability SLO, so it is not a reliable setup.
+The quorum costs $3,940 a month over `Solo` at 2,000 developers, 73% more, most of it the second warm copy of every shard. At 50 developers it costs $106 more. That buys RPO zero and an RTO of about 11.5 s per request for the loss of any one region, continent, or site release, and a vault copy outside the install account. `Solo` costs $133, $599, and $5,395 a month at the three tiers. It has one member per chain, one pack bucket, one warm copy of each shard on one site, and a runner account, and it carries no vault. Its RPO is zero for a machine or data center and not covered for a region, because a write is confirmed by followers in the object's own region (`tests/m0/results/wp11.md`, (b)) [measured]. Its RTO is Cloudflare's restart, or the region's return. It carries no availability SLO, so it is not a reliable setup.
 
 The SSH option is off by default and outside every total above. Turning it on runs the 3 `basic` SSH front containers and sends SSH bytes (20% of developer git bytes [guess]) through Spectrum to the edge and the fronts. Spectrum does not publish a price for Worker-origin apps, so the script prices their data as Spectrum's SSH app: 5 GB a month on Pro (10 GB on Business), then $1 per GB [unverified for Worker-origin apps], plus the bytes leaving the containers (`python3 scripts/cost.py --ssh-option`). SSH option on Pro: +$33 a month at 50 developers, +$114 at 300, and +$664 at 2,000; the containers are $22 at each tier, Spectrum SSH data $11, $89, and $624, and egress $0, $3, and $18.
 
-**Cheapest reliable setup for 50 developers: $238 a month** (`--detail small design`). It is the default itself. It runs one install account with three site scripts in three hinted regions, which keeps the quorum across regions and release days, plus the vault and runner accounts. It uses the Pro plan, with 100 MB pushes over HTTPS, the default transport; SSH, through a Spectrum Worker app on the same Pro zone, is off by default and adds $33 a month when on. It has four `standard-2` shards, two on each of two sites.
+**Cheapest reliable setup for 50 developers: $239 a month** (`--detail small design`). It is the default itself. It runs one install account with three site scripts in three hinted regions, which keeps the quorum across regions and release days, plus the vault and runner accounts. It uses the Pro plan, with 100 MB pushes over HTTPS, the default transport; SSH, through a Spectrum Worker app on the same Pro zone, is off by default and adds $33 a month when on. It has four `standard-2` shards, two on each of two sites.
 
 66% of that bill is container memory. A shard slept overnight would halve that line, but it would add 1 to 3 s cold starts plus rehydration to the first morning fetch (`research/cloudflare.md`, Containers), and it would need new instance starts, which a control-plane outage may block. I keep them warm.
 
@@ -2015,8 +2015,8 @@ Rows added after the final pass gate the milestone named in the first column. Th
 | SSH | NLB to nodes | HTTPS by default. Where the install turns SSH on, a stock `git clone git@host:...` reaches a Spectrum TCP app on port 22 whose Worker origin is the edge, then the site's SSH front container [measured on Pro, B0-24c and B0-24d; Business by the same plan table, unverified]. Writes run as the edge's own receive-pack | Users whose install leaves SSH off | `tests/m0/results/m0-wp7.md`, B0-24c |
 | Largest repository | Node NVMe | 20 GB shard disk, about 15 GB of packs | Monorepo owners | `research/cloudflare-git.md` finding 16 |
 | Self-hosted | Same binary in the customer's account | Same artifact in the customer's own Cloudflare account, no vendor token; workerd on customer hardware for evaluation and the lifeboat only | Self-hosters who wanted their own hardware | `history/review/cloudflare-selfhost-walk.md` F1 |
-| Monthly cost, 2,000 developers | $12,432 one Region, $20,636 Paired | $9,330 on three continents in one account, with vault and runner accounts (Enterprise excluded) | Operator | `research/costs.md`; `cost.py` |
-| Monthly cost, 50 developers, cheapest reliable | $226 for `scrappy` (one Region with a cold recovery Region, so a Region loss is not RPO zero); $388 for `scrappy-paired` (RPO zero) | $238 for the default (RPO zero across three continents), on Pro with a 100 MB HTTPS push cap; SSH, off by default, adds $33 a month when on (`cost.py --ssh-option`) | Operator | Same |
+| Monthly cost, 2,000 developers | $12,432 one Region, $20,636 Paired | $9,335 on three continents in one account, with vault and runner accounts (Enterprise excluded) | Operator | `research/costs.md`; `cost.py` |
+| Monthly cost, 50 developers, cheapest reliable | $226 for `scrappy` (one Region with a cold recovery Region, so a Region loss is not RPO zero); $388 for `scrappy-paired` (RPO zero) | $239 for the default (RPO zero across three continents), on Pro with a 100 MB HTTPS push cap; SSH, off by default, adds $33 a month when on (`cost.py --ssh-option`) | Operator | Same |
 
 ## Tradeoffs accepted
 

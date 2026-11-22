@@ -10,13 +10,19 @@
 //!   reads each chain's rows from a learner or follower (`graftyard_lookup::log_rows`, never the leader), six at a time,
 //!   fills and checks the object, writes it create-only, and then writes the state. A round that dies between the two
 //!   writes is recovered by the next one's fold.
+//! - **Chains no leader reports.** A site day resets every member, and a group nothing calls elects no leader, so it
+//!   never reports (m3fx49b: `release` and `ids`). Each round also probes, through the same non-leader source read
+//!   with an empty range, the commit index of `Release`, `Ids`, and the chains of one sweep slot, reported or not (a
+//!   report can be left behind by a leader reset before its next one): one `MemberRegistry` shard of one site (`export::sweep_slots`, the claim's counter), each chain on
+//!   its first site (`export::swept`). A probe that passed the cursor plans the chain as a report would
+//!   (`export::with_probes`), so every chain reaches the feed within one sweep, led or not.
 
 use std::collections::BTreeMap;
 
 use graftyard_git::export::{self, FeedState};
 use graftyard_git::key::R2Key;
 use graftyard_lookup::Bindings;
-use graftyard_types::{ChainId, Index, PlacementRecord, SiteId};
+use graftyard_types::{ChainId, Index, MemberRegistry, PlacementRecord, RegistryRow, SiteId};
 use serde_json::{Value, json};
 use worker::*;
 
@@ -38,6 +44,11 @@ pub(crate) const ROUND_SCHEMA: &str =
     "CREATE TABLE IF NOT EXISTS export_round (k INTEGER PRIMARY KEY CHECK (k = 0), last INTEGER NOT NULL)";
 pub(crate) const ROUND_LAST: &str = "SELECT last FROM export_round WHERE k = 0";
 pub(crate) const ROUND_PUT: &str = "INSERT OR REPLACE INTO export_round (k, last) VALUES (0, ?)";
+// The sweep's round counter, its own table so the `export_round` rows an install already holds keep their shape.
+pub(crate) const SWEEP_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS export_sweep (k INTEGER PRIMARY KEY CHECK (k = 0), n INTEGER NOT NULL)";
+pub(crate) const SWEEP_N: &str = "SELECT n FROM export_sweep WHERE k = 0";
+pub(crate) const SWEEP_PUT: &str = "INSERT OR REPLACE INTO export_sweep (k, n) VALUES (0, ?)";
 
 /// The next round's queue message, `{"exportFeed": true}`. A struct, not `json!`: the queue binding serializes its body
 /// through `serde_wasm_bindgen`, which makes a `serde_json` map a JS `Map`, and the JSON content type sends a `Map` as
@@ -71,12 +82,12 @@ pub async fn report(env: &Env, chain: ChainId, commit: Index, record: &Placement
 /// bucket does nothing.
 pub async fn kick(env: &Env) {
     let Ok(bucket) = env.bucket("EXPORT") else { return };
-    let reports = match claim(env).await {
+    let (reports, sweep) = match claim(env).await {
         Ok(Some(r)) => r,
         Ok(None) => return,
         Err(e) => return console_error!("export feed: the round claim failed: {e}"),
     };
-    match Box::pin(round(env, &bucket, reports)).await {
+    match Box::pin(round(env, &bucket, reports, sweep)).await {
         Ok(line) => console_log!("export feed {line}"),
         Err(e) => console_error!("export feed round failed: {e}"),
     }
@@ -88,8 +99,12 @@ pub async fn kick(env: &Env) {
     }
 }
 
-/// The round claim: the reports when a round is due, `None` when another started within FEED_EVERY_MS.
-async fn claim(env: &Env) -> Result<Option<Vec<(ChainId, Index, PlacementRecord)>>> {
+/// A round's reports, each a chain's commit index and the record its members are found under.
+type Reports = Vec<(ChainId, Index, PlacementRecord)>;
+
+/// The round claim: the reports and the sweep's round number when a round is due, `None` when another started within
+/// FEED_EVERY_MS.
+async fn claim(env: &Env) -> Result<Option<(Reports, u64)>> {
     let site = SiteEnv::read(env)?;
     let stub = site.registry(env, feed_site(&site), OBJECT)?;
     let mut init = RequestInit::new();
@@ -100,16 +115,42 @@ async fn claim(env: &Env) -> Result<Option<Vec<(ChainId, Index, PlacementRecord)
         return Ok(None);
     }
     let reports = v["reports"].as_array().cloned().unwrap_or_default();
-    Ok(Some(
-        reports
-            .into_iter()
-            .filter_map(|r| {
-                let chain = r["chain"].as_str()?.parse().ok()?;
-                let record = serde_json::from_value(r["record"].clone()).ok()?;
-                Some((chain, Index(r["commit"].as_u64()?), record))
-            })
-            .collect(),
-    ))
+    let reports = reports
+        .into_iter()
+        .filter_map(|r| {
+            let chain = r["chain"].as_str()?.parse().ok()?;
+            let record = serde_json::from_value(r["record"].clone()).ok()?;
+            Some((chain, Index(r["commit"].as_u64()?), record))
+        })
+        .collect();
+    Ok(Some((reports, v["sweep"].as_u64().unwrap_or(0))))
+}
+
+/// The chains round `sweep` probes, each with the record it is read under: `Release` and `Ids` from the genesis
+/// (`release::system_record`), then the chains of the sweep's slot from that site's `MemberRegistry` shard, under
+/// their rows' records. A record or a registry read that fails is logged and skipped; the next sweep asks again.
+async fn probe_targets(env: &Env, site: &SiteEnv, sweep: u64) -> Vec<(ChainId, PlacementRecord)> {
+    let mut out = Vec::new();
+    for c in export::ROUND_PROBES {
+        match crate::release::system_record(env, c).await {
+            Ok(r) => out.push((c, r)),
+            Err(e) => console_error!("export feed: no record for {c}: {e}"),
+        }
+    }
+    let live: Vec<SiteId> = site.sites.0.iter().filter(|s| !s.spare).map(|s| s.id).collect();
+    for (i, shard) in export::sweep_slots(sweep, export::SWEEP_SHARDS, live.len()) {
+        let at = live[i];
+        let read = async {
+            let stub = site.registry(env, at, &MemberRegistry { site: at, shard }.do_name())?;
+            let mut res = stub.fetch_with_str(&format!("https://registry/rows?site={}", at.0)).await?;
+            res.json::<Vec<RegistryRow>>().await
+        };
+        match read.await {
+            Ok(rows) => out.extend(export::swept(&rows, at).into_iter().filter_map(|r| Some((r.chain, r.record()?)))),
+            Err(e) => console_error!("export feed: the sweep's registry#{shard} read on site {} failed: {e}", at.0),
+        }
+    }
+    out
 }
 
 async fn get(bucket: &Bucket, key: &str) -> Result<Option<Vec<u8>>> {
@@ -120,7 +161,7 @@ async fn get(bucket: &Bucket, key: &str) -> Result<Option<Vec<u8>>> {
 }
 
 /// One round, as `export::plan`, `fill`, and `check_object` decide it. Returns its log line.
-async fn round(env: &Env, bucket: &Bucket, reports: Vec<(ChainId, Index, PlacementRecord)>) -> Result<String> {
+async fn round(env: &Env, bucket: &Bucket, reports: Reports, sweep: u64) -> Result<String> {
     let site = SiteEnv::read(env)?;
     let b = Bindings { env, sites: &site.sites };
     let err = |e: String| Error::RustError(e);
@@ -141,16 +182,36 @@ async fn round(env: &Env, bucket: &Bucket, reports: Vec<(ChainId, Index, Placeme
     }
     let recovered = later.len();
     state.recover(&later);
-    let commits: Vec<(ChainId, Index)> = reports.iter().map(|(c, i, _)| (*c, *i)).collect();
-    let records: BTreeMap<ChainId, &PlacementRecord> = reports.iter().map(|(c, _, r)| (*c, r)).collect();
+    let reported: Vec<(ChainId, Index)> = reports.iter().map(|(c, i, _)| (*c, *i)).collect();
+    let mut records: BTreeMap<ChainId, &PlacementRecord> = reports.iter().map(|(c, _, r)| (*c, r)).collect();
+    // The probes: an empty range (`to` = the cursor) from a non-leader, for its commit. A chain with a report is probed
+    // too: a leader that reported once and reset before its next report leaves the report behind its log for good.
+    let targets = probe_targets(env, &site, sweep).await;
+    let b = &b;
+    let mut probes = Vec::new();
+    for part in targets.chunks(READS_AT_ONCE) {
+        let reads = part.iter().map(|(c, record)| {
+            let at = state.cursors.get(*c).0;
+            async move { (*c, graftyard_lookup::log_rows(b, *c, record, at + 1, at).await) }
+        });
+        for (c, got) in futures_util::future::join_all(reads).await {
+            if let Some(p) = got.and_then(|(_, bytes)| export::decode_log_page(&bytes).ok()) {
+                probes.push((c, p.commit));
+            }
+        }
+    }
+    for (c, r) in &targets {
+        records.entry(*c).or_insert(r);
+    }
+    let probed = format!("reports={} probed={}/{}", reports.len(), probes.len(), targets.len());
+    let commits = export::with_probes(&reported, &probes);
     let Some(batch) = export::plan(&state, &commits, crate::now_ms()) else {
         if recovered > 0 {
             bucket.put(R2Key::ExportState.to_string(), state.encode()).execute().await?;
         }
-        return Ok(format!("idle reports={} recovered={recovered}", reports.len()));
+        return Ok(format!("idle {probed} recovered={recovered}"));
     };
     let mut fetched = BTreeMap::new();
-    let b = &b;
     for part in batch.chains.chunks(READS_AT_ONCE) {
         let reads = part.iter().filter_map(|(c, to)| {
             let record = records.get(c)?;
@@ -182,7 +243,7 @@ async fn round(env: &Env, bucket: &Bucket, reports: Vec<(ChainId, Index, Placeme
     bucket.put(R2Key::ExportState.to_string(), state.encode()).execute().await?;
     let rows: usize = object.entries.iter().map(|(_, _, r)| r.len()).sum();
     Ok(format!(
-        "{key} planned={} read={read} chains={} entries={rows} recovered={recovered}",
+        "{key} {probed} planned={} read={read} chains={} entries={rows} recovered={recovered}",
         batch.chains.len(),
         object.batch.chains.len()
     ))
@@ -192,7 +253,10 @@ async fn round(env: &Env, bucket: &Bucket, reports: Vec<(ChainId, Index, Placeme
 mod tests {
     use rusqlite::{Connection, params};
 
-    use super::{REPORT_HELD, REPORT_PUT, REPORTS_ALL, REPORTS_SCHEMA, ROUND_LAST, ROUND_PUT, ROUND_SCHEMA};
+    use super::{
+        REPORT_HELD, REPORT_PUT, REPORTS_ALL, REPORTS_SCHEMA, ROUND_LAST, ROUND_PUT, ROUND_SCHEMA, SWEEP_N, SWEEP_PUT,
+        SWEEP_SCHEMA,
+    };
 
     /// Every statement the registry object runs for the feed prepares and round-trips in SQLite. No other native
     /// test runs this SQL, and a reserved word as a column fails only here or on a hosted install.
@@ -217,5 +281,10 @@ mod tests {
         db.execute(ROUND_PUT, [7_i64]).unwrap();
         let last: i64 = db.query_row(ROUND_LAST, [], |r| r.get(0)).unwrap();
         assert_eq!(last, 7);
+        db.execute(SWEEP_SCHEMA, []).unwrap();
+        db.execute(SWEEP_PUT, [1_i64]).unwrap();
+        db.execute(SWEEP_PUT, [2_i64]).unwrap();
+        let n: i64 = db.query_row(SWEEP_N, [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
     }
 }

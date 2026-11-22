@@ -372,6 +372,15 @@ impl DurableObject for Registry {
                     return Response::from_json(&serde_json::json!({ "due": false }));
                 }
                 sql.exec(crate::export_feed::ROUND_PUT, vec![(now as i64).into()])?;
+                // The sweep's round number: this round's, then the next one's for the next claim.
+                #[derive(Deserialize)]
+                struct Sweep {
+                    n: i64,
+                }
+                sql.exec(crate::export_feed::SWEEP_SCHEMA, None)?;
+                let sweep: Vec<Sweep> = sql.exec(crate::export_feed::SWEEP_N, None)?.to_array()?;
+                let sweep = sweep.first().map_or(0, |s| s.n);
+                sql.exec(crate::export_feed::SWEEP_PUT, vec![(sweep + 1).into()])?;
                 let reports: Vec<Report> = sql.exec(crate::export_feed::REPORTS_ALL, None)?.to_array()?;
                 let reports: Vec<serde_json::Value> = reports
                     .into_iter()
@@ -380,7 +389,7 @@ impl DurableObject for Registry {
                         serde_json::json!({ "chain": r.chain, "commit": r.idx, "record": record })
                     })
                     .collect();
-                Response::from_json(&serde_json::json!({ "due": true, "reports": reports }))
+                Response::from_json(&serde_json::json!({ "due": true, "reports": reports, "sweep": sweep }))
             }
             (Method::Get, "/sweep") | (Method::Put, "/sweep") => {
                 #[derive(Deserialize)]
