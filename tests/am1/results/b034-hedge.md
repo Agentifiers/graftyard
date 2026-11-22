@@ -49,7 +49,7 @@ straddled the kill, at −1,056, −93 and −65 ms, with validates of 2,087, 1,
 
 ## Tests and plants
 
-- `a_human_validate_asks_the_next_shard_beside_a_slow_one_and_the_last_try_keeps_its_wait` drives `hedged` on a fake
+- `a_human_validate_asks_every_shard_left_beside_a_slow_one_and_the_last_try_keeps_its_wait` (renamed when mt17 widened the hedge; `b034-mt17.md`) drives `hedged` on a fake
   clock. Its cases:
   - mt16's straddler: hedged, it decides on site b at 1,250 ms; unhedged, on the home at 2,087.
   - A slow home that still answers first decides.

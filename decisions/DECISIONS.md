@@ -7733,16 +7733,26 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A leader's commit p99 rises on a row with the feed on against the same build with it off: the reports move off the
   alarm.
 
-### `validate-hedge`: a human push's buffered validate asks the next site's shard after 1 s, beside the first, 2026-11-22
+### `validate-hedge`: a human push's buffered validate asks every site left after 1 s, beside the first, 2026-11-22
 
 **Status.** Built on branch `validate-fallback`, not yet on a hosted row. Edge only (`workers/edge/src/lib.rs`,
 `validate`, `hedged`, `VALIDATE_HEDGE`), so it ships on an edge day. The lead asked for it after B0-34 mt16's kill
 line failed: a receive-pack should not depend on one shard's life.
 
 **Decision.** A human push's validate of a buffered pack (up to `INLINE_MAX`, 1 MiB) that one site's shard has not
-answered in `VALIDATE_HEDGE` (1 s) also goes to the next site's shard in `shard_order`, with the same body, and the
-first try keeps running. The first 200, 422 or 429 from any try decides and drops the others. Any other answer moves on
-at once, as a failed shard always has, unless a hedge already started the next try. The passed shard is marked cold, so
+answered in `VALIDATE_HEDGE` (1 s) also goes, at once, to every site left in `shard_order`, with the same body, and
+every try keeps running. The first 200, 422 or 429 from any try decides and drops the others. Before the hedge, any
+other answer moves on at once, as a failed shard always has.
+
+**Amended 2026-11-22 after B0-34 mt17** (`tests/am1/results/b034-mt17.md`): the hedge first asked only the next site,
+with a second hedge 1 s later.
+- **What happened.** The push started at the kill call had a home try that was still unanswered at 2.8 s. Site b,
+  hedged at 1 s, was taking the killed home's load and also passed 1 s. Site c, hedged at 2 s, answered about 0.3 s
+  after its start, so the validate took 2,294 ms and the push 3,486 ms client.
+- **What changed.** The lead ruled to keep the hedge and widen it: at the first hedge every site left starts.
+- **Prediction.** That push's validate would be about 1.3 s and its client about 2.5 s [inference].
+- **The cost.** Extra tries are at most n − 2 per hedged push: one more on a three-site record. Hedged pushes were
+  1.9% of human validates on mt17. The passed shard is marked cold, so
 for `COLD_SHARD_MS` this isolate tries it last. Three rules stay as they were:
 - **Agents.** An agent's validate gets no hedge.
 - **The last site.** It is never hedged past and keeps its whole wait. That keeps `chain-wait` and G30 consistent: a
@@ -7789,19 +7799,24 @@ first shard staged. They keep today's rule: probe, then send once.
 - **Agent validates (mt16):** p50 1,500, p99 5,129.
 - **The straddler** is from `tests/am1/results/b034-mt16.md`, "The kill phase's push p99".
 - **The test.**
-  `workers/edge/src/lib.rs`, `a_human_validate_asks_the_next_shard_beside_a_slow_one_and_the_last_try_keeps_its_wait`,
-  drives `hedged` on a fake clock with mt16's case:
-  - The home answers at 2,087 ms and site b in 250. Hedged, it decides at 1,250 on site b; unhedged, at 2,087 on the
-    home.
+  `workers/edge/src/lib.rs`, `a_human_validate_asks_every_shard_left_beside_a_slow_one_and_the_last_try_keeps_its_wait`,
+  drives `hedged` on a fake clock with mt16's and mt17's cases:
+  - mt16: the home answers at 2,087 ms and site b in 250. Hedged, it decides at 1,250 on site b; unhedged, at 2,087
+    on the home.
+  - mt17: the home never answers and site b takes 1,500 ms. The hedge starts b and c together, and c decides at
+    1,300 ms.
   - A slow home still decides first, a failure moves on with no hedge, and a hedge's 422 decides.
   - The last try waits 9 s unpassed, and every failure is kept.
 - **Plants.** `tests/m0carried/plant85.py`: no hedge, a hedged agent, a hedged last try, the passed shard not marked
-  cold, the slow try dropped at the hedge, a passed try's failure starting a second try, and a 422 that does not
-  decide. 7 of 7 caught.
+  cold, the slow try dropped at the hedge, the hedge starting only the next site (mt17's case), and a 422 that does not
+  decide.
 
 **Flip.**
 - **Back the hedge out** if the next full B0-34 row shows any of these:
-  - a human push that straddles the kill with `validate_hedge` 1 still over 3 s, and its validate past 1.5 s;
-  - `validate_tries` over 1 on more than 10% of human pushes outside the kill;
-  - human push p99 outside the kill higher than mt16's with the same load.
+  - a human push that straddles the kill with `validate_hedge` 1 still over 3 s, its validate past 1.5 s, and its
+    home try answered (or failed) before the try that decided, so the hedge did not shorten its wait;
+  - `validate_tries` over 1 on more than 10% of human pushes outside the kill, or hedged pushes whose losing tries
+    also answered 200 (`tests/fanout/hedgerow.py`, `PAIRS`) on more than 5% of human validates;
+  - human push p99 outside the kill higher than mt16's with the same load, and validate the stage that rose. (mt17's
+    rise was front, gate and commit, with validate p99 lower, so it backed nothing out: the lead's ruling, 2026-11-22.)
 - **Lower `VALIDATE_HEDGE`** if straddling pushes meet the line but the kill-phase p99 sits within 10% of 3 s.
