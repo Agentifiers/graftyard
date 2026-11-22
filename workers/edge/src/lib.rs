@@ -2287,25 +2287,123 @@ pub(crate) async fn validate(
     let pinned = c.shard;
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
-    let mut tries = Vec::new();
     let sites = shard_order(repo, pinned);
-    for (i, site) in sites.iter().copied().enumerate() {
-        let body = || Some(js_sys::Uint8Array::from(&head[..]).into());
-        let r = validate_on(c, repo, site, &shard_url(&url, i, sites.len()), &body, detail).await;
-        let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
-        mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
-        match r {
-            Ok(r) => return Ok(r),
-            // The pack's own answer, the same on every shard: no other site is tried.
-            Err((422, e)) => {
-                tries.push((site, 422, e));
-                break;
-            }
-            Err((429, s)) => return Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
-            Err((status, e)) => tries.push((site, status, e)),
+    let n = sites.len();
+    let (head, url) = (&head, &url);
+    let start = |i: usize| {
+        let site = sites[i];
+        async move {
+            let body = || Some(js_sys::Uint8Array::from(&head[..]).into());
+            let r = validate_on(c, repo, site, &shard_url(url, i, n), &body, detail).await;
+            let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
+            mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
+            r
         }
+    };
+    let t = hedged(n, start, validate_hedge(agent), |i| mark_shard(repo, sites[i], true), worker::Delay::from).await;
+    // Which site answered, how many tries started, and whether a hedge started one (`validate-hedge`).
+    c.timing.put("validate_site", t.answer.as_ref().map_or(-1.0, |(i, _)| f64::from(sites[*i].0)));
+    c.timing.put("validate_tries", t.started as f64);
+    c.timing.put("validate_hedge", if t.hedged { 1.0 } else { 0.0 });
+    let mut tries: Vec<_> = t.failed.into_iter().map(|(i, (status, e))| (sites[i], status, e)).collect();
+    match t.answer {
+        None => {}
+        Some((_, Ok(r))) => return Ok(r),
+        Some((_, Err((429, s)))) => return Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
+        // The pack's own answer, the same on every shard: no other site is tried.
+        Some((i, Err((status, e)))) => tries.push((sites[i], status, e)),
     }
     Err(validate_failed(tries))
+}
+
+/// How long a validate's try of a shard runs unanswered before the next site's shard is asked beside it (a hedge), on
+/// every try but the last. Human pushes' validates outside a kill took p50 295, p95 1,122, p99 1,725 ms (2,105
+/// pushes, B0-34 mt13 to mt16), and 7.0% passed 1 s; the push that straddled mt16's kill waited 2,087 ms on the shard
+/// being torn down (`decisions/DECISIONS.md`, "`validate-hedge`").
+const VALIDATE_HEDGE: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// The hedge a validate gets: none for an agent's, which the container already bounds with its 2 s admission wait and
+/// whose p50 is 1.5 s, so a hedge would double most of them.
+fn validate_hedge(agent: bool) -> Option<std::time::Duration> {
+    (!agent).then_some(VALIDATE_HEDGE)
+}
+
+/// One try's answer: the shard's value, or `(status, body)` with status 0 for a failed call.
+type TryAnswer<A> = std::result::Result<A, (u16, String)>;
+
+/// What `hedged` ended with: the deciding try's index and answer (`None` when every try failed), the tries that
+/// failed before it, in the order they answered, how many tries started, and whether a hedge started one.
+struct Hedged<A> {
+    answer: Option<(usize, TryAnswer<A>)>,
+    failed: Vec<(usize, (u16, String))>,
+    started: usize,
+    hedged: bool,
+}
+
+/// `n` tries, `start(i)` starting try `i`: an answer, or `(status, body)` with status 0 for a failed call. A 200, 422
+/// or 429 from any try decides and ends the rest; any other answer starts the next try at once, as a failed shard
+/// always has. With `hedge`, a try that has run that long unanswered while another try is left is passed: `passed(i)`
+/// is told (the edge marks its shard cold) and the next try starts beside it, and every try started keeps running, so a
+/// slow shard that answers first still decides. The last try is never passed and keeps its whole wait, so a push never
+/// runs out of shards that would wait (`chain-wait`, G30).
+async fn hedged<A, F, Fut, P, S, D>(
+    n: usize,
+    mut start: F,
+    hedge: Option<std::time::Duration>,
+    mut passed: P,
+    sleep: S,
+) -> Hedged<A>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = TryAnswer<A>>,
+    P: FnMut(usize),
+    S: Fn(std::time::Duration) -> D,
+    D: std::future::Future<Output = ()>,
+{
+    use futures_util::future::{Either, select};
+    use futures_util::stream::FuturesUnordered;
+    let tagged = |i: usize, f: Fut| async move { (i, f.await) };
+    let mut running = FuturesUnordered::new();
+    let mut out = Hedged { answer: None, failed: Vec::new(), started: 0, hedged: false };
+    // The try started last and its hedge timer, while a later try is left.
+    let mut timer: Option<(usize, std::pin::Pin<Box<D>>)> = None;
+    let mut due = n > 0;
+    loop {
+        if due {
+            let i = out.started;
+            running.push(tagged(i, start(i)));
+            out.started += 1;
+            timer = hedge.filter(|_| out.started < n).map(|d| (i, Box::pin(sleep(d))));
+        }
+        if running.is_empty() {
+            return out;
+        }
+        let tick = match timer.as_mut() {
+            Some((_, t)) => Either::Left(t.as_mut()),
+            None => Either::Right(std::future::pending::<()>()),
+        };
+        let event = match select(running.next(), tick).await {
+            Either::Left((r, _)) => r,
+            Either::Right(_) => None,
+        };
+        match event {
+            Some((i, r @ (Ok(_) | Err((422 | 429, _))))) => {
+                out.answer = Some((i, r));
+                return out;
+            }
+            // A failed try starts the next at once, unless it was one a hedge already passed: the try after it runs.
+            Some((i, Err(e))) => {
+                out.failed.push((i, e));
+                due = i + 1 == out.started && out.started < n;
+            }
+            None => {
+                let (i, _) = timer.take().expect("only a timer or an empty set ends the select without a try");
+                passed(i);
+                out.hedged = true;
+                due = true;
+            }
+        }
+    }
 }
 
 /// `validate` for a pack that streams (`PackStore::place_streamed`): the body is the tips and detail, then the pack as
@@ -4303,6 +4401,91 @@ mod tests {
         let u = validate_failed(vec![t(0, 503, "warming"), t(1, 0, "Network connection lost")]);
         assert_eq!(u, ShardRefusal::Unavailable("site 1's shard: Network connection lost".into()));
         assert!(matches!(validate_failed(vec![]), ShardRefusal::Unavailable(_)));
+    }
+
+    /// A human validate is never held on one shard past `VALIDATE_HEDGE`: the next site's shard is asked beside it and
+    /// the first deciding answer wins, while the last try keeps its whole wait. mt16's straddling push waited 2,087 ms
+    /// on the shard being torn down (`decisions/DECISIONS.md`, "`validate-hedge`"). Each script entry is when try `i`
+    /// answers after it starts and with what, or `None` for a shard that never answers.
+    #[test]
+    fn a_human_validate_asks_the_next_shard_beside_a_slow_one_and_the_last_try_keeps_its_wait() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use std::time::Duration;
+
+        use futures_util::FutureExt;
+
+        use super::{VALIDATE_HEDGE, hedged, validate_hedge};
+        // Wakes itself while pending, so `FuturesUnordered` polls it again on the next tick of the clock.
+        struct At(Rc<Cell<u64>>, u64);
+        impl std::future::Future for At {
+            type Output = ();
+            fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0.get() >= self.1 {
+                    return std::task::Poll::Ready(());
+                }
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+        type Out = (Option<(usize, std::result::Result<(), u16>)>, Vec<(usize, u16)>, usize, Vec<(usize, u64)>, u64);
+        // (deciding try and status, failed tries, tries started, (passed try, ms), ms at the end)
+        let run = |script: &[Option<(u64, u16)>], hedge: Option<Duration>| -> Out {
+            let clock = Rc::new(Cell::new(0u64));
+            let passed = std::cell::RefCell::new(Vec::new());
+            let start = |i: usize| {
+                let (clock, step) = (clock.clone(), script[i]);
+                async move {
+                    let Some((after, status)) = step else { return std::future::pending().await };
+                    At(clock.clone(), clock.get() + after).await;
+                    if status == 200 { Ok(()) } else { Err((status, String::new())) }
+                }
+            };
+            let sleep = |d: Duration| At(clock.clone(), clock.get() + d.as_millis() as u64);
+            let mut f =
+                Box::pin(hedged(script.len(), start, hedge, |i| passed.borrow_mut().push((i, clock.get())), sleep));
+            for _ in 0..20_000 {
+                if let Some(t) = f.as_mut().now_or_never() {
+                    let answer = t.answer.map(|(i, r)| (i, r.map_err(|(s, _)| s)));
+                    let failed = t.failed.into_iter().map(|(i, (s, _))| (i, s)).collect();
+                    assert_eq!(t.hedged, !passed.borrow().is_empty());
+                    return (answer, failed, t.started, passed.borrow().clone(), clock.get());
+                }
+                clock.set(clock.get() + 1);
+            }
+            panic!("the validate never answered");
+        };
+        let h = validate_hedge(false);
+        assert_eq!(h, Some(VALIDATE_HEDGE));
+        assert!(VALIDATE_HEDGE < Duration::from_millis(1_380), "the straddling push must land under 3 s");
+        // An agent's validate is never hedged: the container bounds it, and its p50 is 1.5 s.
+        assert_eq!(validate_hedge(true), None);
+        // mt16's straddler: the home answers at 2,087 ms, site b in 250. Hedged at 1,000, b answers at 1,250, and the
+        // home is passed (marked cold) at the hedge.
+        let kill = [Some((2_087, 200)), Some((250, 200)), Some((250, 200))];
+        assert_eq!(run(&kill, h), (Some((1, Ok(()))), vec![], 2, vec![(0, 1_000)], 1_250));
+        // Unhedged (an agent's), the same push waits the home out.
+        assert_eq!(run(&kill, None), (Some((0, Ok(()))), vec![], 1, vec![], 2_087));
+        // A slow home that still answers first decides: the hedge keeps it running rather than dropping it.
+        let slow = [Some((1_100, 200)), Some((500, 200)), Some((50, 200))];
+        assert_eq!(run(&slow, h), (Some((0, Ok(()))), vec![], 2, vec![(0, 1_000)], 1_100));
+        // A failed shard moves on at once, as before, with no hedge spent.
+        let failed = [Some((200, 503)), Some((300, 200)), Some((50, 200))];
+        assert_eq!(run(&failed, h), (Some((1, Ok(()))), vec![(0, 503)], 2, vec![], 500));
+        // A passed shard that then fails starts nothing: the try after it is already running, and it gets its own
+        // hedge, which starts the third at 2,000.
+        let late = [Some((1_500, 503)), Some((2_000, 200)), Some((200, 200))];
+        assert_eq!(run(&late, h), (Some((2, Ok(()))), vec![(0, 503)], 3, vec![(0, 1_000), (1, 2_000)], 2_200));
+        // The pack's 422 from the hedged shard decides; the home is never waited out.
+        let bad = [None, Some((100, 422)), Some((50, 200))];
+        assert_eq!(run(&bad, h), (Some((1, Err(422))), vec![], 2, vec![(0, 1_000)], 1_100));
+        // The last try is never passed: one site (pinned or Solo), or the last of two, waits all of its time (G30).
+        assert_eq!(run(&[Some((5_000, 200))], h), (Some((0, Ok(()))), vec![], 1, vec![], 5_000));
+        let two = [None, Some((9_000, 200))];
+        assert_eq!(run(&two, h), (Some((1, Ok(()))), vec![], 2, vec![(0, 1_000)], 10_000));
+        // Every shard fails: each failure is kept, in the order they answered.
+        let none = [Some((100, 503)), Some((100, 500)), Some((100, 0))];
+        assert_eq!(run(&none, h), (None, vec![(0, 503), (1, 500), (2, 0)], 3, vec![], 300));
     }
 
     /// A streamed pack can be sent once, so it fails over before its first byte: it goes to the first site whose

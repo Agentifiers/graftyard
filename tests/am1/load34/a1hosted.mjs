@@ -25,7 +25,8 @@ export function run(o) {
     run: RUN, n, t0: o.t0Cf, seconds: o.seconds, edge: o.edge, repo: o.repo, chain: o.chain, repoId: o.repoId, target: o.target,
     main: o.main, tasks: o.tasks, plan: o.plan, tokens: { admin: o.tokens.admin, app: o.tokens.app, ...Object.fromEntries(who.map((w) => [w, o.tokens[w]])) },
     b034: { future: b034.future, packs: packsPrefix(b034.future), second: b034.second, hostile: b034.hostile,
-      hotPushPerS: b034.hotPushPerS, hotClonePerS: b034.hotClonePerS, hotReadMBps: b034.hotReadMBps ?? 8 },
+      hotPushPerS: b034.hotPushPerS, hotClonePerS: b034.hotClonePerS, hotReadMBps: b034.hotReadMBps ?? 8,
+      hostileClonePerS: b034.hostileClonePerS, hostileCap: b034.hostileCap },
     marks: { killAt: o.killAt, secondAt: b034.secondAt, hostileAt: b034.hostileAt },
     // `colo-gate`'s flip arm (`--colo-off SHARE`): that share of clone probes carry the bed token with `x-graft-colo: off`.
     ...(o.coloOff ? { coloOff: { share: o.coloOff, bed: o.bed } } : {}),

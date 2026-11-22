@@ -301,7 +301,10 @@ class Run {
     const V1 = `/api/graftyard/v1/repos/${R}`;
     const hot = [spec.b034.second && { ...spec.b034.second, at: spec.marks.secondAt, tag: ":second" },
       ...(spec.b034.hostile ?? []).map((h, j) => ({ ...h, at: spec.marks.hostileAt, tag: `:hostile${j + 1}` }))].filter(Boolean)
-      .map((h) => ({ ...h, pushPerS: spec.b034.hotPushPerS ?? 1, clonePerS: spec.b034.hotClonePerS ?? 3 }));
+      .map((h) => ({ ...h, pushPerS: spec.b034.hotPushPerS ?? 1, clonePerS: spec.b034.hotClonePerS ?? 3,
+        // `validate-hedge`'s row: a heavier hostile owner (tests/fanout/b034.sh, HOSTILE_CLONE_PER_S and HOSTILE_CAP).
+        ...(h.tag.startsWith(":hostile") ? { clonePerS: spec.b034.hostileClonePerS ?? spec.b034.hotClonePerS ?? 3,
+          cloneCap: spec.b034.hostileCap ?? 8 } : {}) }));
     const mine = clientPlan(spec.i, spec.n, p, hot);
     const tasks = spec.tasks ?? [];
     const agents = mine.agents.map((i) => ({ i, ref: `refs/heads/claude/a1-${spec.run}-${i}`, tip: null, group: i % 50, pr: false }));
