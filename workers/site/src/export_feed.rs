@@ -39,6 +39,15 @@ pub(crate) const ROUND_SCHEMA: &str =
 pub(crate) const ROUND_LAST: &str = "SELECT last FROM export_round WHERE k = 0";
 pub(crate) const ROUND_PUT: &str = "INSERT OR REPLACE INTO export_round (k, last) VALUES (0, ?)";
 
+/// The next round's queue message, `{"exportFeed": true}`. A struct, not `json!`: the queue binding serializes its body
+/// through `serde_wasm_bindgen`, which makes a `serde_json` map a JS `Map`, and the JSON content type sends a `Map` as
+/// `{}`, which the consumer read as a `PrSync` batch missing `repo` (m3fx49b: no round but the cron's).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextRound {
+    export_feed: bool,
+}
+
 /// The feed site: the install's first site, which holds the export bucket.
 fn feed_site(site: &SiteEnv) -> SiteId {
     site.sites.0.iter().map(|s| s.id).min().unwrap_or(SiteId(0))
@@ -71,8 +80,9 @@ pub async fn kick(env: &Env) {
         Ok(line) => console_log!("export feed {line}"),
         Err(e) => console_error!("export feed round failed: {e}"),
     }
-    let next =
-        MessageBuilder::new(json!({ "exportFeed": true })).delay_seconds((export::FEED_EVERY_MS / 1000) as u32).build();
+    let next = MessageBuilder::new(NextRound { export_feed: true })
+        .delay_seconds((export::FEED_EVERY_MS / 1000) as u32)
+        .build();
     if let Err(e) = async { env.queue("PRSYNC")?.send(next).await }.await {
         console_error!("export feed: the next round's message failed, the cron restarts it: {e}");
     }

@@ -152,3 +152,44 @@ export bucket and the org token. The install token is revoked. The ssh fronts we
 `--export-bucket graft-m3f-export`, a fresh install token, two rounds, then `pull.py --revoke` with the org control on
 `identity:7100002` (m3-member, not owned by m3org), and the org token revoked at the end. A second fail on the same
 cause stops the row.
+
+## Hosted BF-49 m3fx49b (graft-m3f, 2026-11-22): fail on the Release line, a new cause
+
+Recorded (operator) as a fail on "every chain's entries exactly once, Release included", on a cause other than m3fx49's, so
+the two-in-a-row stop did not trip. The org, revocation and pack lines pass; the revocation's last 200 at 9,394 ms is
+606 ms inside READ_CACHE.
+
+Site-only day m3fx49b from main `6f60e609` (`export-commit-col`; `raw/bf49/siteday-m3fx49b.log`): 12:49:25Z to
+13:01:28Z, exit 0, with `--export-bucket graft-m3f-export`; edge `0b02633c` kept (no edge change since `70c4f7ca`). One
+push to the held `repo:65609` at 13:02:15Z (head `ce60842b`). A fresh install token (jti `01M81MXXV7YN46HQPQAKW9PW7J`);
+the org token from m3fx49. Pull at 13:19:37Z (`raw/bf49/rerun/report.json`) after two rounds.
+
+| Check | Result |
+|---|---|
+| Every chain's entries exactly once, Release included | **Release not carried.** Two cron rounds (13:04:22Z, 13:18:58Z) wrote 2 objects: 11 chains, 6,557 entries, 569,255 bytes, each chain contiguous from index 1. The 6 chains pulled through the entries endpoint match the feed byte for byte: `names:708` 1..1791, `names:727` 1..901, `names:500` 1..897, `names:661` 1..895, `tokens:482` 1..425, `repo:65609` 1..19. `release` (1..657) and `ids` (1..214) are served by the entries endpoint but were in no object |
+| Org token's 404s | batches, `release`, `tokens:0` and `identity:7100002` (m3-member, a user m3org does not own, from `/api/v3/users/m3-member`) each 404; its own `repo:65609` 200 |
+| Revocation against READ_CACHE (10,000 ms) | Install token: DELETE 204 in 555 ms; of 100 probes, 12 answered 200, the last sent at 9,394 ms, and 88 answered 401, the first at 527 ms. Org token: DELETE 204 in 782 ms at 13:21:08Z, 401 12 s later |
+| Pack and snapshot | pack 200, 3,146,983 bytes, checksum equal to the body's SHA-256; `repo:65609` snapshot 200 |
+| Cost | graft-m3f $0.05 from 12:49:25Z to 13:22Z |
+
+**Why Release was not carried.** The feed takes a chain only once its leader reports (`Host::report_commit`, from the
+leader's alarm). A site day resets every member, and a group with no traffic elects no leader: at 13:21Z `release`,
+`ids` and `repo:65609` each had three followers and no leader. The chains that were carried are the ones the site
+day's own reads and the 13:02 push woke. The SQL fix holds: no `commit` error after the deploy, and the reports land.
+
+**Second fault: the queued next round never ran.** Each round sends the next as a queue message delayed 10 s; it
+arrived as `{}` (site a, 13:04:38Z: `prsync: a message that does not decode: missing field repo`), so only the cron's
+rounds ran, one per 15 minutes. `json!` built the body, and worker 0.8's queue send turns a `serde_json` map into a JS
+`Map`, which the JSON content type sends as `{}`. Fixed on branch `export-next-round` with a struct, as the PrSync and
+MergeQueue messages already are; `tests/exportbed/run.sh` now also waits for the queued round and fails on main.
+
+**Teardown.** `teardown.py --sweep` tore down `git#0#net:65609` (the push started it) and found no shard container
+running. Both tokens are revoked. `repo:65609` retired at 13:24:41Z (`tests/fanout/retirenets.mjs`, 3 members) and
+purged at 13:25:36Z (`purge.py`, 33 objects, second pass 0; `raw/bf49/purge-65609.log`); a sweep at 13:26Z found no
+shard running. The next rerun reseeds. The ssh fronts were not touched (slot A still `SHA256:TMEOnX…`).
+
+**Ruling (operator):** a chain reaches the feed whether or not anyone has led it since the feed came on. Leader reports
+stay the freshness signal; each round also covers the system chains from the genesis and `Keys` records, and a slower
+sweep covers the repository chains from the `Names` and `Placement` folds, reading `/log_rows` from a non-leader up to
+that member's commit. The next rerun must show `release` and `ids` in the feed, matched byte for byte against the
+entries endpoint.

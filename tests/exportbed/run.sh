@@ -4,9 +4,10 @@
 # bucket on site 0, local PRSYNC queues and GRAFTYARD_EXPORT=1. `driver.mjs` joins one
 # test-register group and commits a put; then the leader's report (`Host::report_commit` to the registry object
 # `export`), the cron's round claim (`export_feed::kick`, through wrangler's /__scheduled) and the round's object in
-# the bucket are each checked. Exits 1 unless the round wrote one `export/` object and the state, and workerd logged
-# no "export report" or "round claim failed" error. m3fx49's reports all failed on SQL no native test ran (`commit` as
-# a column); this is the binding-level check of that path. Needs worker-build and tests/m0's wrangler. Run from the
+# the bucket are each checked. Exits 1 unless the round wrote one `export/` object and the state, a queued round followed
+# it, and workerd logged no feed error or undecodable queue message. m3fx49's reports all failed on SQL no native test ran (`commit` as
+# a column), and m3fx49b's queued next round arrived as `{}`; this is the binding-level check of that path, including
+# the queued round that follows the cron's. Needs worker-build and tests/m0's wrangler. Run from the
 # repository root.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
@@ -61,8 +62,12 @@ print(f"export objects: {len(o)}")
 sys.exit(0 if len(o) == 1 and o[0]["size"] > 0 else 1)
 PY
 [ "$state" != "[]" ] || { echo "FAIL: no feed state written"; ok=0; }
-grep -E "export (feed|report)" "$B/dev.log" | sed 's/^/log: /' | head -8
-if grep -qE "export report .*Error|round claim failed|export feed round failed" "$B/dev.log"; then
+# The round sends the next one as a queue message delayed FEED_EVERY_MS (10 s); with no new commit it logs `idle`.
+# m3fx49b's message arrived as `{}` and the consumer read it as a PrSync batch, so no round followed the cron's.
+sleep 15
+grep -qE "export feed idle" "$B/dev.log" || { echo "FAIL: no queued round followed the cron's"; ok=0; }
+grep -E "export (feed|report)|does not decode" "$B/dev.log" | sed 's/^/log: /' | head -8
+if grep -qE "export report .*Error|round claim failed|export feed round failed|does not decode" "$B/dev.log"; then
   echo "FAIL: the feed logged an error"; ok=0
 fi
 n=$(grep -c 'out of bounds\|RuntimeError' "$B/dev.log"); echo "wasm traps: $n"; [ "$n" = 0 ] || ok=0

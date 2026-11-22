@@ -7726,6 +7726,11 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
   in rusqlite. `tests/exportbed/run.sh` runs the site's own build as three scripts in local workerd with a local
   `EXPORT` bucket: on the fix one group's report, one round claim and one 482-byte `export/` object; on the old schema
   the same two errors, no object, exit 1.
+- Hosted, m3fx49b from `6f60e609` (`tests/m5/results/m5-wp5-hosted.md`): the reports land; two cron rounds carried 11
+  chains and 6,557 entries, each exactly once and byte-equal where pulled. `release` and `ids` were never carried: no
+  leader after the site day's reset, so no report (the ruling for that is the next change). The round's queued next
+  round arrived as `{}` (`json!` through worker 0.8's queue send makes a JS `Map`), so only the cron's rounds ran; it is
+  a `Serialize` struct since `export-next-round`, and `tests/exportbed/run.sh` waits for the queued round.
 
 **Flip.**
 - The hosted BF-49 finds an entry missing or repeated against a chain's log, or a round longer than `FEED_EVERY_MS`:

@@ -1,0 +1,795 @@
+{
+ "batches": {
+  "pages": 1,
+  "status": 200,
+  "errors": []
+ },
+ "feed": {
+  "objects": 2,
+  "chains": 11,
+  "entries": 6557,
+  "bytes": 569255,
+  "position": "29922558.0",
+  "per_chain": {
+   "authz:1": [
+    1,
+    324
+   ],
+   "authz:7100001": [
+    1,
+    390
+   ],
+   "names:152": [
+    1,
+    295
+   ],
+   "names:24": [
+    1,
+    225
+   ],
+   "names:369": [
+    1,
+    395
+   ],
+   "names:500": [
+    1,
+    897
+   ],
+   "names:661": [
+    1,
+    895
+   ],
+   "names:708": [
+    1,
+    1791
+   ],
+   "names:727": [
+    1,
+    901
+   ],
+   "repo:65609": [
+    1,
+    19
+   ],
+   "tokens:482": [
+    1,
+    425
+   ]
+  }
+ },
+ "entries": [
+  {
+   "chain": "names:708",
+   "errors": [],
+   "start": 1,
+   "pages": 2,
+   "entries": 1791,
+   "compared": 1791,
+   "mismatched": [],
+   "status": 200,
+   "last": 1791
+  },
+  {
+   "chain": "names:727",
+   "errors": [],
+   "start": 1,
+   "pages": 1,
+   "entries": 901,
+   "compared": 901,
+   "mismatched": [],
+   "status": 200,
+   "last": 901
+  },
+  {
+   "chain": "names:500",
+   "errors": [],
+   "start": 1,
+   "pages": 1,
+   "entries": 897,
+   "compared": 897,
+   "mismatched": [],
+   "status": 200,
+   "last": 897
+  },
+  {
+   "chain": "names:661",
+   "errors": [],
+   "start": 1,
+   "pages": 1,
+   "entries": 895,
+   "compared": 895,
+   "mismatched": [],
+   "status": 200,
+   "last": 895
+  },
+  {
+   "chain": "tokens:482",
+   "errors": [],
+   "start": 1,
+   "pages": 1,
+   "entries": 425,
+   "compared": 425,
+   "mismatched": [],
+   "status": 200,
+   "last": 425
+  },
+  {
+   "chain": "repo:65609",
+   "errors": [],
+   "start": 1,
+   "pages": 1,
+   "entries": 19,
+   "compared": 19,
+   "mismatched": [],
+   "status": 200,
+   "last": 19
+  },
+  {
+   "chain": "release",
+   "errors": [],
+   "start": 1,
+   "pages": 1,
+   "entries": 657,
+   "compared": 0,
+   "mismatched": [],
+   "status": 200,
+   "last": 657
+  },
+  {
+   "chain": "ids",
+   "errors": [],
+   "start": 1,
+   "pages": 1,
+   "entries": 214,
+   "compared": 0,
+   "mismatched": [],
+   "status": 200,
+   "last": 214
+  }
+ ],
+ "snapshots": [
+  {
+   "chain": "repo:65609",
+   "status": 200,
+   "errors": [],
+   "keys": [
+    "snapshot/repo:65609/core/00000000000000000000-00000000000000000004-cafa435ff090909484e95d37fd63f8b13e8f8252ccf25df6ace2ad4e73860d19",
+    "snapshot/repo:65609/metadata/00000000000000000000-00000000000000000004-3e92fb6009645087c125a7af52ca04c4b5e75e026e58c446e460a12a3e6a2da0"
+   ],
+   "bytes": 834
+  }
+ ],
+ "packs": [
+  {
+   "pack": "65609:01M81F6HSG87RDP8AG8306QRY7",
+   "errors": [],
+   "status": 200,
+   "bytes": 3146983,
+   "checksum": "273b00649bc4e6b98c84a7f1d3e5dcfe0e17cf0550d2abb17204a507f4c590e4",
+   "sha256": "273b00649bc4e6b98c84a7f1d3e5dcfe0e17cf0550d2abb17204a507f4c590e4"
+  }
+ ],
+ "org": [
+  {
+   "name": "batches",
+   "want": 404,
+   "got": 404,
+   "pass": true,
+   "body": ""
+  },
+  {
+   "name": "release entries",
+   "want": 404,
+   "got": 404,
+   "pass": true,
+   "body": ""
+  },
+  {
+   "name": "tokens:0 entries",
+   "want": 404,
+   "got": 404,
+   "pass": true,
+   "body": ""
+  },
+  {
+   "name": "identity:7100002 entries",
+   "want": 404,
+   "got": 404,
+   "pass": true,
+   "body": ""
+  },
+  {
+   "name": "repo:65609 entries",
+   "want": 200,
+   "got": 200,
+   "pass": true,
+   "body": ""
+  }
+ ],
+ "revoke": {
+  "delete_status": 204,
+  "delete_ms": 555,
+  "probes": [
+   {
+    "sent_ms": 0,
+    "done_ms": 262,
+    "status": 200
+   },
+   {
+    "sent_ms": 262,
+    "done_ms": 527,
+    "status": 200
+   },
+   {
+    "sent_ms": 527,
+    "done_ms": 893,
+    "status": 401
+   },
+   {
+    "sent_ms": 893,
+    "done_ms": 1043,
+    "status": 401
+   },
+   {
+    "sent_ms": 1043,
+    "done_ms": 1227,
+    "status": 401
+   },
+   {
+    "sent_ms": 1250,
+    "done_ms": 1522,
+    "status": 200
+   },
+   {
+    "sent_ms": 1522,
+    "done_ms": 1746,
+    "status": 200
+   },
+   {
+    "sent_ms": 1750,
+    "done_ms": 1912,
+    "status": 401
+   },
+   {
+    "sent_ms": 2000,
+    "done_ms": 2177,
+    "status": 401
+   },
+   {
+    "sent_ms": 2250,
+    "done_ms": 2688,
+    "status": 200
+   },
+   {
+    "sent_ms": 2688,
+    "done_ms": 2864,
+    "status": 401
+   },
+   {
+    "sent_ms": 2864,
+    "done_ms": 3161,
+    "status": 200
+   },
+   {
+    "sent_ms": 3161,
+    "done_ms": 3512,
+    "status": 401
+   },
+   {
+    "sent_ms": 3512,
+    "done_ms": 3734,
+    "status": 200
+   },
+   {
+    "sent_ms": 3734,
+    "done_ms": 4000,
+    "status": 200
+   },
+   {
+    "sent_ms": 4001,
+    "done_ms": 4239,
+    "status": 200
+   },
+   {
+    "sent_ms": 4239,
+    "done_ms": 4394,
+    "status": 401
+   },
+   {
+    "sent_ms": 4394,
+    "done_ms": 4540,
+    "status": 401
+   },
+   {
+    "sent_ms": 4540,
+    "done_ms": 4896,
+    "status": 401
+   },
+   {
+    "sent_ms": 4896,
+    "done_ms": 5026,
+    "status": 401
+   },
+   {
+    "sent_ms": 5026,
+    "done_ms": 5397,
+    "status": 401
+   },
+   {
+    "sent_ms": 5397,
+    "done_ms": 5573,
+    "status": 401
+   },
+   {
+    "sent_ms": 5573,
+    "done_ms": 5915,
+    "status": 401
+   },
+   {
+    "sent_ms": 5915,
+    "done_ms": 6275,
+    "status": 401
+   },
+   {
+    "sent_ms": 6275,
+    "done_ms": 6569,
+    "status": 200
+   },
+   {
+    "sent_ms": 6569,
+    "done_ms": 6703,
+    "status": 401
+   },
+   {
+    "sent_ms": 6703,
+    "done_ms": 6902,
+    "status": 401
+   },
+   {
+    "sent_ms": 6902,
+    "done_ms": 7040,
+    "status": 401
+   },
+   {
+    "sent_ms": 7041,
+    "done_ms": 7188,
+    "status": 401
+   },
+   {
+    "sent_ms": 7250,
+    "done_ms": 7404,
+    "status": 401
+   },
+   {
+    "sent_ms": 7500,
+    "done_ms": 7650,
+    "status": 401
+   },
+   {
+    "sent_ms": 7750,
+    "done_ms": 8129,
+    "status": 401
+   },
+   {
+    "sent_ms": 8129,
+    "done_ms": 8278,
+    "status": 401
+   },
+   {
+    "sent_ms": 8278,
+    "done_ms": 8451,
+    "status": 401
+   },
+   {
+    "sent_ms": 8500,
+    "done_ms": 8894,
+    "status": 200
+   },
+   {
+    "sent_ms": 8894,
+    "done_ms": 9208,
+    "status": 401
+   },
+   {
+    "sent_ms": 9208,
+    "done_ms": 9394,
+    "status": 401
+   },
+   {
+    "sent_ms": 9394,
+    "done_ms": 9613,
+    "status": 200
+   },
+   {
+    "sent_ms": 9613,
+    "done_ms": 9882,
+    "status": 401
+   },
+   {
+    "sent_ms": 9882,
+    "done_ms": 10018,
+    "status": 401
+   },
+   {
+    "sent_ms": 10018,
+    "done_ms": 10175,
+    "status": 401
+   },
+   {
+    "sent_ms": 10250,
+    "done_ms": 10420,
+    "status": 401
+   },
+   {
+    "sent_ms": 10500,
+    "done_ms": 10692,
+    "status": 401
+   },
+   {
+    "sent_ms": 10750,
+    "done_ms": 10906,
+    "status": 401
+   },
+   {
+    "sent_ms": 11000,
+    "done_ms": 11149,
+    "status": 401
+   },
+   {
+    "sent_ms": 11250,
+    "done_ms": 11643,
+    "status": 401
+   },
+   {
+    "sent_ms": 11643,
+    "done_ms": 11793,
+    "status": 401
+   },
+   {
+    "sent_ms": 11793,
+    "done_ms": 11954,
+    "status": 401
+   },
+   {
+    "sent_ms": 12000,
+    "done_ms": 12142,
+    "status": 401
+   },
+   {
+    "sent_ms": 12250,
+    "done_ms": 12415,
+    "status": 401
+   },
+   {
+    "sent_ms": 12500,
+    "done_ms": 12680,
+    "status": 401
+   },
+   {
+    "sent_ms": 12750,
+    "done_ms": 12898,
+    "status": 401
+   },
+   {
+    "sent_ms": 13000,
+    "done_ms": 13166,
+    "status": 401
+   },
+   {
+    "sent_ms": 13250,
+    "done_ms": 13409,
+    "status": 401
+   },
+   {
+    "sent_ms": 13500,
+    "done_ms": 13655,
+    "status": 401
+   },
+   {
+    "sent_ms": 13750,
+    "done_ms": 13898,
+    "status": 401
+   },
+   {
+    "sent_ms": 14000,
+    "done_ms": 14299,
+    "status": 401
+   },
+   {
+    "sent_ms": 14299,
+    "done_ms": 14452,
+    "status": 401
+   },
+   {
+    "sent_ms": 14500,
+    "done_ms": 14689,
+    "status": 401
+   },
+   {
+    "sent_ms": 14750,
+    "done_ms": 14916,
+    "status": 401
+   },
+   {
+    "sent_ms": 15000,
+    "done_ms": 15312,
+    "status": 401
+   },
+   {
+    "sent_ms": 15312,
+    "done_ms": 15478,
+    "status": 401
+   },
+   {
+    "sent_ms": 15500,
+    "done_ms": 15662,
+    "status": 401
+   },
+   {
+    "sent_ms": 15750,
+    "done_ms": 15905,
+    "status": 401
+   },
+   {
+    "sent_ms": 16000,
+    "done_ms": 16177,
+    "status": 401
+   },
+   {
+    "sent_ms": 16250,
+    "done_ms": 16391,
+    "status": 401
+   },
+   {
+    "sent_ms": 16500,
+    "done_ms": 16803,
+    "status": 401
+   },
+   {
+    "sent_ms": 16803,
+    "done_ms": 16959,
+    "status": 401
+   },
+   {
+    "sent_ms": 17000,
+    "done_ms": 17155,
+    "status": 401
+   },
+   {
+    "sent_ms": 17250,
+    "done_ms": 17388,
+    "status": 401
+   },
+   {
+    "sent_ms": 17500,
+    "done_ms": 17645,
+    "status": 401
+   },
+   {
+    "sent_ms": 17750,
+    "done_ms": 17893,
+    "status": 401
+   },
+   {
+    "sent_ms": 18000,
+    "done_ms": 18155,
+    "status": 401
+   },
+   {
+    "sent_ms": 18250,
+    "done_ms": 18527,
+    "status": 401
+   },
+   {
+    "sent_ms": 18527,
+    "done_ms": 18874,
+    "status": 401
+   },
+   {
+    "sent_ms": 18874,
+    "done_ms": 19027,
+    "status": 401
+   },
+   {
+    "sent_ms": 19027,
+    "done_ms": 19437,
+    "status": 401
+   },
+   {
+    "sent_ms": 19437,
+    "done_ms": 19585,
+    "status": 401
+   },
+   {
+    "sent_ms": 19585,
+    "done_ms": 19771,
+    "status": 401
+   },
+   {
+    "sent_ms": 19771,
+    "done_ms": 19903,
+    "status": 401
+   },
+   {
+    "sent_ms": 20000,
+    "done_ms": 20193,
+    "status": 401
+   },
+   {
+    "sent_ms": 20250,
+    "done_ms": 20393,
+    "status": 401
+   },
+   {
+    "sent_ms": 20500,
+    "done_ms": 20651,
+    "status": 401
+   },
+   {
+    "sent_ms": 20750,
+    "done_ms": 20937,
+    "status": 401
+   },
+   {
+    "sent_ms": 21000,
+    "done_ms": 21314,
+    "status": 401
+   },
+   {
+    "sent_ms": 21314,
+    "done_ms": 21459,
+    "status": 401
+   },
+   {
+    "sent_ms": 21500,
+    "done_ms": 21683,
+    "status": 401
+   },
+   {
+    "sent_ms": 21750,
+    "done_ms": 21967,
+    "status": 401
+   },
+   {
+    "sent_ms": 22000,
+    "done_ms": 22146,
+    "status": 401
+   },
+   {
+    "sent_ms": 22250,
+    "done_ms": 22725,
+    "status": 401
+   },
+   {
+    "sent_ms": 22725,
+    "done_ms": 22899,
+    "status": 401
+   },
+   {
+    "sent_ms": 22899,
+    "done_ms": 23241,
+    "status": 401
+   },
+   {
+    "sent_ms": 23241,
+    "done_ms": 23392,
+    "status": 401
+   },
+   {
+    "sent_ms": 23392,
+    "done_ms": 23709,
+    "status": 401
+   },
+   {
+    "sent_ms": 23709,
+    "done_ms": 23858,
+    "status": 401
+   },
+   {
+    "sent_ms": 23858,
+    "done_ms": 24007,
+    "status": 401
+   },
+   {
+    "sent_ms": 24008,
+    "done_ms": 24139,
+    "status": 401
+   },
+   {
+    "sent_ms": 24250,
+    "done_ms": 24578,
+    "status": 401
+   },
+   {
+    "sent_ms": 24578,
+    "done_ms": 24720,
+    "status": 401
+   },
+   {
+    "sent_ms": 24750,
+    "done_ms": 24910,
+    "status": 401
+   }
+  ],
+  "last_ok_ms": 9394,
+  "first_401_ms": 527,
+  "n_200": 12,
+  "n_401": 88,
+  "n_other": 0,
+  "pass": true,
+  "errors": []
+ },
+ "checks": [
+  {
+   "name": "batches",
+   "pass": true
+  },
+  {
+   "name": "entries names:708",
+   "pass": true
+  },
+  {
+   "name": "entries names:727",
+   "pass": true
+  },
+  {
+   "name": "entries names:500",
+   "pass": true
+  },
+  {
+   "name": "entries names:661",
+   "pass": true
+  },
+  {
+   "name": "entries tokens:482",
+   "pass": true
+  },
+  {
+   "name": "entries repo:65609",
+   "pass": true
+  },
+  {
+   "name": "entries release",
+   "pass": true
+  },
+  {
+   "name": "entries ids",
+   "pass": true
+  },
+  {
+   "name": "snapshots repo:65609 (200)",
+   "pass": true
+  },
+  {
+   "name": "pack 65609:01M81F6HSG87RDP8AG8306QRY7",
+   "pass": true
+  },
+  {
+   "name": "org token batches 404",
+   "pass": true
+  },
+  {
+   "name": "org token release entries 404",
+   "pass": true
+  },
+  {
+   "name": "org token tokens:0 entries 404",
+   "pass": true
+  },
+  {
+   "name": "org token identity:7100002 entries 404",
+   "pass": true
+  },
+  {
+   "name": "org token repo:65609 entries 200",
+   "pass": true
+  },
+  {
+   "name": "revoke",
+   "pass": true
+  }
+ ],
+ "pass": true,
+ "edge": "https://graft-m3f-edge.<subdomain>.workers.dev",
+ "at": "2026-11-22T13:20:20Z"
+}
