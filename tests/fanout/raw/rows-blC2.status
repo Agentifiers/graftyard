@@ -1,0 +1,80 @@
+2026-11-22T04:11:25Z start 06581e8e2 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-22T04:11:41Z start sweep ok
+2026-11-22T04:11:24Z cost account 7.53 since 2026-11-22T00:00:00Z, run 0 since 2026-11-22T04:11:01Z, at b0-33
+2026-11-22T04:11:49.184Z m3org/fblC2-b033 = 131388
+2026-11-22T04:11:53.405Z repo:131388 leader 0: config 5 learners [{"addr":192,"doName":"repo:131388#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131388#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131388#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131388#2#l3","join":200,"site":0,"slot":3}]
+2026-11-22T04:11:54.003Z repo:131388 site 0: arrival mem (asked mem, status 200)
+2026-11-22T04:11:54.215Z repo:131388 site 1: arrival mem (asked mem, status 200)
+2026-11-22T04:11:54.401Z repo:131388 site 2: arrival mem (asked mem, status 200)
+2026-11-22T04:11:57.208Z repo:131388 leader 0: set k 4: {"grants":[[0,[6,1,3]],[1,[6,1,3]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-22T04:12:07.491Z repo:131388 leader 0: set k 4: {"grants":[[0,[6,1,3]],[1,[6,1,3]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-22T04:12:17.916Z repo:131388 leader 0: set k 4: {"grants":[[0,[6,1,3]],[1,[6,1,3]]],"k":4,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-22T04:12:18.021Z repo:131388 leader 0: k 4 at 8
+2026-11-22T04:12:45Z b0-33 shard gate site 0: warm site 0 after 1.0 s
+2026-11-22T04:12:45Z b0-33 shard gate site 1: warm site 1 after 3.8 s
+2026-11-22T04:12:45Z b0-33 shard gate site 2: warm site 2 after 7.7 s
+2026-11-22T04:12:45Z b0-33 fblC2-b033 131388 start
+2026-11-22T04:20:31.396Z repo:131388 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"configIndex":5,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-22T04:20:31.493Z repo:131388 leader 0: k 1 at 584
+2026-11-22T04:20:50Z b0-33 fblC2-b033 131388 done exit 0
+2026-11-22T04:20:56Z torn down 131388
+site fault off: 200
+git#1#pool:6 200
+git#1#pool:2 200
+git#1#pool:4 200
+git#1#pool:7 200
+git#0#pool:6 200
+git#0#pool:2 200
+git#0#pool:4 200
+git#0#pool:7 200
+{"torn_down": 8, "codes": {"200": 8}}
+sweep: no shard container running
+2026-11-22T04:21:16Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 1093 {'leader': 1, 'promised': 1091, 'busy': 1}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 16 (n 89) p90 17 (placement baseline); unpaired p50 37 (n 89); pooled p50 33 (n 178)
+  load: 1-statement p50 52 (n 181); unpaired p50 189 (n 157); pooled p50 93 p99 2096 (n 566)
+isolates: 7 members, 7 distinct ids, 0 changes; shared: none
+shared isolates:
+tsave-blC2.jsonl: 7 members, 7 isolates; no shared isolate
+harness outages (2026-11-22T04:15:21Z, the first request, to 2026-11-22T04:20:02Z; announced 2026-11-22T04:15:02Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-22T04:15:21Z", "2026-11-22T04:15:22Z"]], "outageSeconds": 1.0, "share": 0.0036, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 7206, "served": 0.9989, "p50": 860, "p99": 19165, "cap": 0}, "outagesRemoved": {"n": 7204, "served": 0.9989, "p50": 860, "p99": 19165, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 33, "served": 0.6667, "p50": 2866, "p99": 18279, "cap": 0}, "outagesRemoved": {"n": 33, "served": 0.6667, "p50": 2866, "p99": 18279, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 12349, "served": 0.1145, "p50": 3696, "p99": 13866, "cap": 0}, "outagesRemoved": {"n": 12348, "served": 0.1144, "p50": 3696, "p99": 13866, "cap": 0}}
+5xx by reason (2026-11-22T04:15:21Z to 2026-11-22T04:20:29Z):
+{"logged": 1168, "edge5xx": 1168, "byStatus": {"503": 1168}}
+    355 503 graphql
+    347 503 task
+    189 503 rest-repo-write
+    178 503 renew
+     95 503 lease
+      3 503 receive-pack
+      1 503 info-refs
+by reason:
+    255 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    235 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    152 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    112 503 task             the member answered {"full":{"retry_after_s":N}}
+    101 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    100 503 graphql          the member answered {"full":{"retry_after_s":N}}
+     77 503 renew            the member answered {"full":{"retry_after_s":N}}
+     54 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     41 503 lease            the member answered {"full":{"retry_after_s":N}}
+     37 503 rest-repo-write  the member answered {"full":{"retry_after_s":N}}
+      3 503 receive-pack     the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      1 503 info-refs        the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 1414, "full": 10588, "other": 347}, "fullBy": {"admission": 5842, "expire_agents (queued)": 4125, "edge (bound_at_send)": 470, "no commit stage": 151}, "fullMarks": {"ask": 833, "stagefirst": 299, "busy": 123, "missed": 105, "suspect": 105}}
+budget left at the first send | ok / full
+  under 1 s  | 3 / 1110
+  1 to 2 s   | 115 / 1143
+  2 to 3 s   | 275 / 2870
+  3 to 5 s   | 1021 / 5314
+B033DONE
