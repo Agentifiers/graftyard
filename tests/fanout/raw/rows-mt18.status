@@ -1,0 +1,22 @@
+harness outages (2026-11-22T19:09:20Z, the first request, to 2026-11-22T19:23:59Z; announced 2026-11-22T19:08:59Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-22T19:09:20Z", "2026-11-22T19:09:22Z"]], "outageSeconds": 2.0, "share": 0.0023, "valid": true}
+{"kind": "push:human@j9", "measured": {"n": 192, "served": 0.9531, "p50": 1984, "p99": 3329, "cap": 3}, "outagesRemoved": {"n": 192, "served": 0.9531, "p50": 1984, "p99": 3329, "cap": 3}}
+{"kind": "push:human:edge@j9", "measured": {"n": 192, "served": 0.9531, "p50": 1569, "p99": 2903, "cap": 0}, "outagesRemoved": {"n": 192, "served": 0.9531, "p50": 1569, "p99": 2903, "cap": 0}}
+{"kind": "push:human:tip@j9", "measured": {"n": 193, "served": 0.886, "p50": 485, "p99": 1794, "cap": 0}, "outagesRemoved": {"n": 191, "served": 0.8953, "p50": 485, "p99": 1324, "cap": 0}}
+{"kind": "read:cloneTtfb@j9", "measured": {"n": 278, "served": 1.0, "p50": 299, "p99": 2125, "cap": 0}, "outagesRemoved": {"n": 272, "served": 1.0, "p50": 297, "p99": 2125, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@j9", "measured": {"n": 278, "served": 1.0, "p50": 291, "p99": 2118, "cap": 0}, "outagesRemoved": {"n": 272, "served": 1.0, "p50": 290, "p99": 2118, "cap": 0}}
+{"kind": "push:human@kill", "measured": {"n": 63, "served": 0.9524, "p50": 1790, "p99": 4025, "cap": 1}, "outagesRemoved": {"n": 63, "served": 0.9524, "p50": 1790, "p99": 4025, "cap": 1}}
+{"kind": "push:human:edge@kill", "measured": {"n": 63, "served": 0.9524, "p50": 1409, "p99": 3312, "cap": 0}, "outagesRemoved": {"n": 63, "served": 0.9524, "p50": 1409, "p99": 3312, "cap": 0}}
+{"kind": "push:human:tip@kill", "measured": {"n": 62, "served": 1.0, "p50": 525, "p99": 2492, "cap": 0}, "outagesRemoved": {"n": 62, "served": 1.0, "p50": 525, "p99": 2492, "cap": 0}}
+{"kind": "read:cloneTtfb@kill", "measured": {"n": 77, "served": 1.0, "p50": 5721, "p99": 11142, "cap": 0}, "outagesRemoved": {"n": 77, "served": 1.0, "p50": 5721, "p99": 11142, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@kill", "measured": {"n": 77, "served": 1.0, "p50": 5711, "p99": 11138, "cap": 0}, "outagesRemoved": {"n": 77, "served": 1.0, "p50": 5711, "p99": 11138, "cap": 0}}
+{"kind": "push:human@second", "measured": {"n": 22, "served": 0.9545, "p50": 1698, "p99": 3016, "cap": 0}, "outagesRemoved": {"n": 22, "served": 0.9545, "p50": 1698, "p99": 3016, "cap": 0}}
+{"kind": "push:human:edge@second", "measured": {"n": 22, "served": 0.9545, "p50": 1312, "p99": 2625, "cap": 0}, "outagesRemoved": {"n": 22, "served": 0.9545, "p50": 1312, "p99": 2625, "cap": 0}}
+{"kind": "push:human:tip@second", "measured": {"n": 25, "served": 1.0, "p50": 555, "p99": 1690, "cap": 0}, "outagesRemoved": {"n": 25, "served": 1.0, "p50": 555, "p99": 1690, "cap": 0}}
+{"kind": "read:cloneTtfb@second", "measured": {"n": 41, "served": 1.0, "p50": 10814, "p99": 15592, "cap": 0}, "outagesRemoved": {"n": 41, "served": 1.0, "p50": 10814, "p99": 15592, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@second", "measured": {"n": 41, "served": 1.0, "p50": 10807, "p99": 15585, "cap": 0}, "outagesRemoved": {"n": 41, "served": 1.0, "p50": 10807, "p99": 15585, "cap": 0}}
+{"kind": "push:human@hostile", "measured": {"n": 253, "served": 0.9407, "p50": 1914, "p99": 3092, "cap": 5}, "outagesRemoved": {"n": 253, "served": 0.9407, "p50": 1914, "p99": 3092, "cap": 5}}
+{"kind": "push:human:edge@hostile", "measured": {"n": 253, "served": 0.9407, "p50": 1507, "p99": 2695, "cap": 0}, "outagesRemoved": {"n": 253, "served": 0.9407, "p50": 1507, "p99": 2695, "cap": 0}}
+{"kind": "push:human:tip@hostile", "measured": {"n": 250, "served": 1.0, "p50": 734, "p99": 2674, "cap": 0}, "outagesRemoved": {"n": 250, "served": 1.0, "p50": 734, "p99": 2674, "cap": 0}}
+{"kind": "read:cloneTtfb@hostile", "measured": {"n": 343, "served": 1.0, "p50": 285, "p99": 13599, "cap": 0}, "outagesRemoved": {"n": 343, "served": 1.0, "p50": 285, "p99": 13599, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@hostile", "measured": {"n": 343, "served": 1.0, "p50": 273, "p99": 13593, "cap": 0}, "outagesRemoved": {"n": 343, "served": 1.0, "p50": 273, "p99": 13593, "cap": 0}}
