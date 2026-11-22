@@ -171,7 +171,7 @@ It ships on an edge day: every change is in the edge's script and the `crates/gi
 **The share-off arm** (test-faults only).
 - `x-graft-colo: off` with the bed token (`lean_asked`, as `x-graft-lean` does) sets `Ctx::colo_off`. That request
   neither matches nor puts, and keeps the isolate cache under separate keys (`gate::off_key`), so it never takes an
-  entry the shared arm copied in. Its chain checks use no sets.
+  entry the shared arm copied in. Its chain checks use the isolate's header sets only, not the data center's.
 - `colo_off(c)` is always false in the product build.
 - Load34's `spec.coloOff {share, bed}` sends that share of clone probes with the header, as kind `read:cloneOff`.
   `a1.mjs --colo-off F` and `COLO_OFF=F bash tests/fanout/b034.sh` pass it through. `cloneTtfb` records the new stages.
