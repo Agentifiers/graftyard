@@ -1,0 +1,4 @@
+edge: graft-m1-edge serves 7a5c37fc at 100% (rev 46c3873b6), as tests/am1/raw/b034mf-siteday.log deployed
+2026-11-21T21:50:46Z meter (account, run) 167.4 0.0 before b034, expected +$4, stop $170 account, $10 run
+2026-11-21T21:50:46Z stopped: 167.4 0.0 + $4 would reach a stop
+DONE

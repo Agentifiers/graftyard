@@ -1,0 +1,7 @@
+2026-11-21T21:18:34.449Z repo:1048603: 4 names, 0 were joined, all not joined, all with the retired row
+2026-11-21T21:25:32.349Z purge: buckets: graft-m1-packs-a, graft-m1-packs-b, graft-m1-packs-c, graft-m1-packs-d
+2026-11-21T21:25:32.350Z purge: waiting 314 s for sweep runs started before the first pass (until 2026-11-21T21:25:00.000010+00:00)
+2026-11-21T21:25:32.351Z purge: 1048603 purged: a 0 -> 0, b 0 -> 0, c 849 -> 0, d 719 -> 0
+2026-11-21T21:25:32.351Z purge: 1048603 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
+2026-11-21T21:25:32.351Z purge: {"dry": false, "purged": 1, "objects": 1568, "refused": [], "second": 0}
+EXIT 0
