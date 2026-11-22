@@ -52,6 +52,13 @@ pub trait Store {
     fn put(&mut self, table: &str, key: Key, row: Stored);
     fn delete(&mut self, table: &str, key: &[Val]);
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)>;
+    /// Every row whose key starts with `prefix`, in key order, and no row past it. A store that can bound its read to
+    /// the prefix does (`MemStore`, the site's `TierSql`): `scan` alone reads a whole batch from `prefix`, and a
+    /// `pull_by_head` lookup for a branch with no pull request read up to 256 other pull requests' rows, four times a
+    /// push (`tests/am1/results/b033-profile.md`; `decisions/DECISIONS.md`, "`exact-prefix`").
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
+        prefix_by_scan(prefix, |from, n| self.scan(table, from, n))
+    }
     /// Told of each row `apply` (`crate::tier::Writer`) or `seed` changes, with its old and new value, before the
     /// change: a host keeps a derived index of the tier this way without reading the row again.
     fn wrote(&mut self, _table: &str, _key: &[Val], _old: Option<&Stored>, _new: Option<&Stored>) {}
@@ -99,6 +106,9 @@ impl Store for Box<dyn TierStore> {
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)> {
         (**self).scan(table, from, limit)
     }
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
+        (**self).prefix(table, prefix)
+    }
     fn wrote(&mut self, table: &str, key: &[Val], old: Option<&Stored>, new: Option<&Stored>) {
         (**self).wrote(table, key, old, new)
     }
@@ -145,6 +155,37 @@ impl Store for MemStore {
         let Some(t) = self.0.get(table) else { return Vec::new() };
         t.range(from.to_vec()..).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect()
     }
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
+        let Some(t) = self.0.get(table) else { return Vec::new() };
+        t.range(prefix.to_vec()..)
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+}
+
+/// `prefix` over a store that can only `scan`: batches from `prefix` until a key leaves it. Each batch past the first
+/// starts at the last key read, which it reads again and skips.
+pub fn prefix_by_scan<V>(prefix: &[Val], mut scan: impl FnMut(&[Val], usize) -> Vec<(Key, V)>) -> Vec<(Key, V)> {
+    let mut out: Vec<(Key, V)> = Vec::new();
+    let mut from = prefix.to_vec();
+    loop {
+        let batch = scan(&from, 256);
+        let full = batch.len() == 256;
+        for (k, v) in batch {
+            if !k.starts_with(prefix) {
+                return out;
+            }
+            if out.last().is_some_and(|(l, _)| *l == k) {
+                continue;
+            }
+            from = k.clone();
+            out.push((k, v));
+        }
+        if !full {
+            return out;
+        }
+    }
 }
 
 /// The tier's own row: `applied`, the digest of entry `applied`, its `at`, the row-hash accumulator, and the running
@@ -161,27 +202,10 @@ pub trait Read {
     fn get(&self, table: &str, key: &[Val]) -> Option<Vec<Val>>;
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Vec<Val>)>;
 
-    /// Every row whose key starts with `prefix`, in key order.
+    /// Every row whose key starts with `prefix`, in key order. A view over a store forwards to the store's own
+    /// `Store::prefix`, which reads no row past the prefix; this default reads whole batches with `scan`.
     fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Vec<Val>)> {
-        let mut out = Vec::new();
-        let mut from = prefix.to_vec();
-        loop {
-            let batch = self.scan(table, &from, 256);
-            let full = batch.len() == 256;
-            for (k, v) in batch {
-                if !k.starts_with(prefix) {
-                    return out;
-                }
-                if out.last().is_some_and(|(l, _): &(Key, Vec<Val>)| *l == k) {
-                    continue;
-                }
-                from = k.clone();
-                out.push((k, v));
-            }
-            if !full {
-                return out;
-            }
-        }
+        prefix_by_scan(prefix, |from, n| self.scan(table, from, n))
     }
 }
 
@@ -243,6 +267,19 @@ impl<R: Read + ?Sized> Read for Overlay<'_, R> {
         }
         merged.into_iter().take(limit).collect()
     }
+
+    /// The base's rows under `prefix` with the overlay's writes under it merged in: neither side reads past it.
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Vec<Val>)> {
+        let mut merged: BTreeMap<Key, Vec<Val>> = self.base.prefix(table, prefix).into_iter().collect();
+        let lo = (table.to_owned(), prefix.to_vec());
+        for ((_, k), v) in self.over.range(lo..).take_while(|((t, k), _)| t == table && k.starts_with(prefix)) {
+            match v {
+                Some(v) => merged.insert(k.clone(), v.clone()),
+                None => merged.remove(k),
+            };
+        }
+        merged.into_iter().collect()
+    }
 }
 
 impl<R: Read + ?Sized> Rows for Overlay<'_, R> {
@@ -294,6 +331,46 @@ mod tests {
             let expect: Vec<(Key, Vec<Val>)> =
                 want.range(from.clone()..).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect();
             assert_eq!(got, expect, "from {from:?} limit {limit}");
+        }
+    }
+
+    /// `prefix` on a store and on an overlay over it answers exactly the rows `prefix_by_scan` finds, for two-column
+    /// keys whose first column repeats, under any mix of the overlay's puts and deletes, including writes just outside
+    /// the prefix.
+    #[test]
+    fn prefix_is_the_scanned_rows_under_the_prefix() {
+        let mut x: u64 = 11;
+        let mut next = move |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        let key = |a: u64, b: u64| vec![Val::Int(a as i64), Val::Int(b as i64)];
+        for _ in 0..500 {
+            let mut base = MemStore::default();
+            for _ in 0..next(40) {
+                let k = key(next(6), next(20));
+                base.put("t", k.clone(), Stored { written: Index(1), cols: k });
+            }
+            let mut o = Overlay::new(&base as &dyn Read);
+            for _ in 0..next(20) {
+                let k = key(next(6), next(20));
+                if next(3) == 0 {
+                    o.delete("t", &k);
+                } else {
+                    o.put("t", k, vec![Val::Int(-1)]);
+                }
+            }
+            let p = match next(3) {
+                0 => vec![],
+                1 => vec![Val::Int(next(6) as i64)],
+                _ => key(next(6), next(20)),
+            };
+            let scan_base = prefix_by_scan(&p, |f, n| Read::scan(&base, "t", f, n));
+            assert_eq!(Read::prefix(&base, "t", &p), scan_base, "store, prefix {p:?}");
+            let scan_over = prefix_by_scan(&p, |f, n| o.scan("t", f, n));
+            assert_eq!(o.prefix("t", &p), scan_over, "overlay, prefix {p:?}");
         }
     }
 }

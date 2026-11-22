@@ -186,6 +186,40 @@ SQLite, no JS) gave 315 µs a command at 50 commands an entry and 781 µs at 10.
 - The native per-peer call codec at 29 to 69 µs a call agrees with the bed's 0.4 to 0.5 ms a peer only within an order
   of magnitude. wasm under V8 is the hosted runtime, so use the bed's figure.
 
+## After `exact-prefix`
+
+Branch `r33-pullhead` bounds every fold prefix read to its prefix's rows (`decisions/DECISIONS.md`, `exact-prefix`).
+The same bed on it, against main `c279386a` [measured, `tests/fanout/raw/leaderprof-c279386a.out` and
+`leaderprof-exact-prefix.out`; the orb was at load 8 to 10 on 4 cores both times, so single stages carry ±30%]:
+
+| Stage at N=60 | main, 91 open PRs | main, 991 | `exact-prefix`, 91 | `exact-prefix`, 991 |
+|---|---|---|---|---|
+| fold apply, ms/entry | 8.13 | 31.33 | 6.37 | 7.20 |
+| PrSync scan, ms/entry | 1.93 | 17.63 | 0.30 | 0.27 |
+| merge-queue scan, ms/entry | 2.27 | 18.77 | 0.60 | 0.70 |
+| one `pulls_from`, branch with no PR among the heads, ms | 0.11 | 1.31 | 0.017 | 0.023 |
+| all stages, ms/command | 0.58 | 1.65 | 0.50 | 0.57 |
+
+| Stage at N=11 | main, 18 open PRs | main, 183 | `exact-prefix`, 18 | `exact-prefix`, 183 |
+|---|---|---|---|---|
+| fold apply, ms/entry | 3.30 | 4.23 | 4.27 | 9.03 |
+| PrSync scan, ms/entry | 0.33 | 0.77 | 0.13 | 0.50 |
+| merge-queue scan, ms/entry | 0.30 | 0.90 | 0.07 | 0.10 |
+| one `pulls_from`, ms | 0.060 | 0.253 | 0.023 | 0.050 |
+| all stages, ms/command | 1.81 | 2.01 | 2.09 | 4.39 |
+
+- **At 60 an entry the growth is gone.** From 91 to 991 open pull requests, fold apply moves 6.4 → 7.2 ms an entry
+  (main: 8.1 → 31.3), the consumer scans 0.9 → 1.0 (main: 4.2 → 36.4), and `pulls_from` stays at about 0.02 ms a call.
+- **The N=11 grow=300 row of this run reads as noise from a loaded orb, not growth from reads** [inference]. Every
+  stage in it doubled together, including ones that read no fold: `commit_decode` (1.1 → 2.2), `log_row` (1.6 → 3.4),
+  `peer_encode` (3.4 → 7.4) and `peer_send_wall` (22 → 79). `pulls_from` stayed at 0.05 ms, and the merge-queue scan
+  at 0.1. At 183 open PRs no branch's read fills a 256-row batch, so this shape could not show the fix in any case.
+- **Gates.** `crates/git/tests/lease_gates.rs`, `a_push_reads_only_its_own_branchs_pull_requests_whatever_the_open_count`,
+  counts the rows the core store returns. With 1,000 open draft PRs, a push to a branch with no PR reads 0
+  `pull_by_head` rows in decide, apply, PrSync's scan and the merge-queue scan, and a push to a PR head reads 1 in
+  each. The plants that restore the batched read in any one layer fail it. `tests/prefix/plant.py`: 8 of 8 mutants
+  CAUGHT.
+
 ## What a cut would pay, from these numbers
 
 Stated as arithmetic on the measurements above, not as a design [inference]:

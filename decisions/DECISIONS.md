@@ -8030,3 +8030,64 @@ Plants are in `tests/m0carried/plant86.py`.
     above mt17's.
 - **Shorten `MAINT_DEFER_MAX`** if a held shard's pack count reaches 751 within it.
 - **Lengthen it** if a site loss outlasts it and the repack that then runs puts the every-clone line under 90%.
+
+### `exact-prefix`: a fold read by key prefix reads only that prefix's rows, 2026-11-22
+
+**Status.** Built on branch `r33-pullhead`, not yet on a hosted row. The fold crates are linked into the site and
+the edge, so the site half ships on a site day and the edge half on an edge day. The lead ruled it the first CPU cut
+after `tests/am1/results/b033-profile.md`.
+
+**Decision.**
+- `graftyard_fold::Store` has `prefix(table, prefix)`: every row whose key starts with `prefix`, in key order, and no
+  row past it. Its default batches `scan` (`prefix_by_scan`), as `Read::prefix` always did.
+- `MemStore` answers it from one range of its map. The site's `TierSql` answers it with one query,
+  `WHERE k0 = ? [AND k1 = ?] ORDER BY` the key, which is a range of the table's primary key, with its buffered writes
+  under the prefix on top.
+- Every read layer passes it down instead of falling back to batches: `Read` over a `Store`, `apply`'s `Writer`,
+  `decide`'s `Overlay` (the base's prefix with its own writes under the prefix merged in), the boxed tier, and
+  `split`'s `Filled`.
+- `LeaseView::exclusive_conflicts`'s read of the leases under a literal prefix reads 8 rows at a time and stops at the
+  run's end. Before, it asked `scan(..., usize::MAX)`, which in SQL is `LIMIT -1`: every row past its start.
+
+**Why.**
+- `tiers::pulls_from(branch)` reads `pull_by_head` by `[repo, branch]`. In 256-row batches, a branch with no pull
+  request read up to the next 256 rows of other branches' pull requests.
+- Each agent push asks it four times: in `decide` (a 32.14 push's `PathSet`), in `apply` (`write_ref`), and in the
+  leader's PrSync and merge-queue scans of the entry.
+- In local workerd with the member's own tier code, one call cost 1.31 ms at 991 open pull requests against 0.11 ms
+  at 91. At 60 commands an entry, fold apply rose from 8.1 to 31.3 ms an entry and the two consumer scans from 4.2 to
+  36.4 ms [measured, `tests/am1/results/b033-profile.md`].
+- The hosted leader's `/commit` CPU per call rose from 1.1 to 1.4 ms at 30 s to 1.5 to 2.3 ms by 270 s on all six
+  B0-33 runs with flat load. a1 opens draft PRs and never closes them, so that fits [measured; the link is an
+  inference].
+- The cost grew with run length and repository age, not with load, so no admission rate could hold it.
+
+**What it beat.**
+- **Fixing `pulls_from` alone** with a narrower scan. The batch is in `Read::prefix`, which 20-odd callers use with
+  multi-column prefixes (`open_head`, `required_check`, `comment_by_issue`, `issue_assignee`, `review_verdict`,
+  `queue`, `lease_by_session`). Each of those over-read the same way once its table outgrew the prefix's run.
+- **A smaller fixed batch** (4 rows planted in the bed, `b033-profile.md`). It removes the growth, but costs one more
+  SQL statement per 4 rows for a prefix that does have many rows, such as `refs/heads/` reads.
+
+**Evidence.**
+- `crates/fold/src/store.rs` (`Store::prefix`, `prefix_by_scan`, `Overlay::prefix`), `crates/fold/src/tier.rs`,
+  `crates/git/src/split.rs`, `crates/git/src/lease.rs`, `workers/site/src/tier.rs` (`TierSql::prefix`,
+  `sql_prefix`).
+- Tests:
+  - `crates/git/tests/lease_gates.rs`, `a_push_reads_only_its_own_branchs_pull_requests_whatever_the_open_count`:
+    1,000 open draft PRs on agent branches. An agent push to a branch with none reads 0 `pull_by_head` rows in
+    decide, apply, PrSync's scan and the merge-queue scan. A push to a PR's head reads 1 in each.
+  - `an_exclusive_acquire_finds_every_lease_under_its_prefix`: 12 leases under `docs/` across two batches.
+  - `crates/fold/src/store.rs`, `prefix_is_the_scanned_rows_under_the_prefix`: on a store and on an overlay with
+    random puts and deletes, `prefix` equals the batched answer.
+- Plants: `tests/prefix/plant.py`, a read layer that batches again (four layers), the overlay dropping its deletes
+  or taking writes past the prefix, `MemStore` stopping early, and the lease read stopping after one batch.
+- The leaderprof bed before and after, at 91 and 991 open pull requests: `tests/am1/results/b033-profile.md`,
+  "After `exact-prefix`".
+
+**Flip.**
+- A hosted B0-33 row on this build whose `/commit` CPU per call still rises through the run as it did (1.1 to 2.3
+  ms) with open pull requests counted rising: something else grows, and this entry's cause is wrong.
+- A table whose prefix reads return so many rows in one query that a member's memory or CPU per read is worse than
+  batched (a `refs/heads/` read on a 500,000-ref repository): page that caller, as `refs_page` does, rather than
+  return to batches everywhere.
