@@ -35,3 +35,6 @@ smallvec.workspace = true
 wasm-bindgen-futures = "0.4"
 wasm-streams = "0.7"
 worker = { workspace = true, features = ["queue"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }

@@ -7718,8 +7718,14 @@ after the command's admission, and a follower verifies k+1 only after it applies
 `ArchiveRows` across chunk splits, `in_scope` refusing the feed to an org token), `graftyard-lookup`
 `export_sources_skip_the_leader`, the CLI's two vault tests; `crates/git/tests/export.rs` 2/2; `tests/m0carried/plant84.py`.
 Cost: `scripts/cost.py` adds per round one claim and per moved chain one report and one source read as DO requests,
-and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $9,330, agents $2,931 → $2,935. Nothing
-hosted has run.
+and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $9,330, agents $2,931 → $2,935.
+- Hosted, m3fx49 on graft-m3f (2026-11-22, `tests/m5/results/m5-wp5-hosted.md`): the feed carried 0 entries. The
+  registry object's `export_report` table named a column `commit`, which SQLite reserves, so every leader report and the
+  cron's round claim failed with `near "commit": syntax error at offset 66`; no native test ran that SQL. The column is
+  `idx` since `export-commit-col`, the seven statements are constants in `export_feed.rs`, and `sql_prepares` runs each
+  in rusqlite. `tests/exportbed/run.sh` runs the site's own build as three scripts in local workerd with a local
+  `EXPORT` bucket: on the fix one group's report, one round claim and one 482-byte `export/` object; on the old schema
+  the same two errors, no object, exit 1.
 
 **Flip.**
 - The hosted BF-49 finds an entry missing or repeated against a chain's log, or a round longer than `FEED_EVERY_MS`:

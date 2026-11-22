@@ -27,8 +27,17 @@ const OBJECT: &str = "export";
 /// How many source reads a round runs at once: a Worker's connections waiting for headers.
 const READS_AT_ONCE: usize = 6;
 
+// The registry object's SQL (`crate::registry`, `/export_report` and `/export_round`). The column is `idx`, not
+// `commit`, which SQLite reserves: m3fx49's reports all failed on it. `tests::sql_prepares` runs each in SQLite.
 pub(crate) const REPORTS_SCHEMA: &str =
-    "CREATE TABLE IF NOT EXISTS export_report (chain TEXT PRIMARY KEY, commit INTEGER NOT NULL, record TEXT NOT NULL)";
+    "CREATE TABLE IF NOT EXISTS export_report (chain TEXT PRIMARY KEY, idx INTEGER NOT NULL, record TEXT NOT NULL)";
+pub(crate) const REPORT_HELD: &str = "SELECT idx FROM export_report WHERE chain = ?";
+pub(crate) const REPORT_PUT: &str = "INSERT OR REPLACE INTO export_report (chain, idx, record) VALUES (?, ?, ?)";
+pub(crate) const REPORTS_ALL: &str = "SELECT chain, idx, record FROM export_report";
+pub(crate) const ROUND_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS export_round (k INTEGER PRIMARY KEY CHECK (k = 0), last INTEGER NOT NULL)";
+pub(crate) const ROUND_LAST: &str = "SELECT last FROM export_round WHERE k = 0";
+pub(crate) const ROUND_PUT: &str = "INSERT OR REPLACE INTO export_round (k, last) VALUES (0, ?)";
 
 /// The feed site: the install's first site, which holds the export bucket.
 fn feed_site(site: &SiteEnv) -> SiteId {
@@ -167,4 +176,36 @@ async fn round(env: &Env, bucket: &Bucket, reports: Vec<(ChainId, Index, Placeme
         batch.chains.len(),
         object.batch.chains.len()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{Connection, params};
+
+    use super::{REPORT_HELD, REPORT_PUT, REPORTS_ALL, REPORTS_SCHEMA, ROUND_LAST, ROUND_PUT, ROUND_SCHEMA};
+
+    /// Every statement the registry object runs for the feed prepares and round-trips in SQLite. No other native
+    /// test runs this SQL, and a reserved word as a column fails only here or on a hosted install.
+    #[test]
+    fn sql_prepares() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute(REPORTS_SCHEMA, []).unwrap();
+        db.execute(ROUND_SCHEMA, []).unwrap();
+        db.execute(REPORT_PUT, params!["repo:65609", 10, "{}"]).unwrap();
+        db.execute(REPORT_PUT, params!["repo:65609", 12, "{\"r\":1}"]).unwrap();
+        let held: i64 = db.query_row(REPORT_HELD, ["repo:65609"], |r| r.get(0)).unwrap();
+        assert_eq!(held, 12);
+        let all: Vec<(String, i64, String)> = db
+            .prepare(REPORTS_ALL)
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(all, vec![("repo:65609".to_owned(), 12, "{\"r\":1}".to_owned())]);
+        db.execute(ROUND_PUT, [5_i64]).unwrap();
+        db.execute(ROUND_PUT, [7_i64]).unwrap();
+        let last: i64 = db.query_row(ROUND_LAST, [], |r| r.get(0)).unwrap();
+        assert_eq!(last, 7);
+    }
 }

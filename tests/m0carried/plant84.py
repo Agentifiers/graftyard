@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """M5-WP5's hosted half, code only: planted bugs in the change feed's consumer rules and the export routes' reads
-(`crates/git/src/export.rs`, `crates/lookup/src/lib.rs`, `crates/identity/src/export_token.rs`; `decisions/DECISIONS.md`,
-`export-host`). Plants one mutant at a time, runs the tests that guard it, and restores the file byte for byte. Each line
+(`crates/git/src/export.rs`, `crates/lookup/src/lib.rs`, `crates/identity/src/export_token.rs`, and the registry
+object's feed SQL in `workers/site/src/export_feed.rs`; `decisions/DECISIONS.md`, `export-host`). Plants one mutant at a time, runs the tests that guard it, and restores the file byte for byte. Each line
 prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
 
     python3 tests/m0carried/plant84.py          # every mutant
@@ -16,9 +16,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 EXP = 'crates/git/src/export.rs'
 LOOK = 'crates/lookup/src/lib.rs'
 TOK = 'crates/identity/src/export_token.rs'
+FEED = 'workers/site/src/export_feed.rs'
 GIT = ['sh', '-c', 'cargo test -q -p graftyard-git --test export && cargo test -q -p graftyard-git --lib -- export::']
 LOOKUP = ['cargo', 'test', '-q', '-p', 'graftyard-lookup', '--lib', '--', 'export_sources']
 CLI = ['cargo', 'test', '-q', '-p', 'graftyard', '--', 'vault']
+SITE = ['cargo', 'test', '-q', '-p', 'graftyard-site', '--lib', '--', 'export_feed']
 
 MUTANTS = [
     # The consumer's rules.
@@ -81,6 +83,11 @@ MUTANTS = [
     ("a Solo group has no source", LOOK, 'if others.is_empty() { voters.to_vec() } else { others }', 'others', LOOKUP),
     ("a token's scope text does not round-trip", TOK,
      'Scope::Owner(a) => format!("owner:{}", a.0.0),', 'Scope::Owner(a) => format!("org:{}", a.0.0),', CLI),
+    # The registry object's feed SQL (m3fx49: every report and claim failed on `commit` as a column).
+    ("the reports table names a reserved word as a column", FEED,
+     '(chain TEXT PRIMARY KEY, idx INTEGER NOT NULL', '(chain TEXT PRIMARY KEY, commit INTEGER NOT NULL', SITE),
+    ("a report's held index reads another column", FEED,
+     '"SELECT idx FROM export_report WHERE chain = ?"', '"SELECT rowid FROM export_report WHERE chain = ?"', SITE),
 ]
 
 

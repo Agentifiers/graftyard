@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# The change feed end to end in local workerd, on the site script's own build (workers/site, test-faults): one script
+# runs as three scripts, one per site, bound to each other's classes as deploy.mjs binds them, with a local EXPORT
+# bucket on site 0, local PRSYNC queues and GRAFTYARD_EXPORT=1. `driver.mjs` joins one
+# test-register group and commits a put; then the leader's report (`Host::report_commit` to the registry object
+# `export`), the cron's round claim (`export_feed::kick`, through wrangler's /__scheduled) and the round's object in
+# the bucket are each checked. Exits 1 unless the round wrote one `export/` object and the state, and workerd logged
+# no "export report" or "round claim failed" error. m3fx49's reports all failed on SQL no native test ran (`commit` as
+# a column); this is the binding-level check of that path. Needs worker-build and tests/m0's wrangler. Run from the
+# repository root.
+set -uo pipefail
+here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
+P=${P:-8794}; W=${WRANGLER:-$root/tests/m0/node_modules/.bin/wrangler}
+[ -x "$W" ] || { echo "no wrangler at $W (npm ci in tests/m0, or WRANGLER=)"; exit 1; }
+B=$(mktemp -d); cp "$here/driver.mjs" "$B/"
+(cd "$root/workers/site" && worker-build --release --out-dir "$B/out" --features test-faults) >"$B/build.log" 2>&1 \
+  || { tail -20 "$B/build.log"; exit 1; }
+python3 - "$B" "$root" <<'PY'
+import json, sys
+b, root = sys.argv[1], sys.argv[2]
+sites = json.load(open(f"{root}/tests/m3/finish/sites4.json"))[:3]
+for s in sites:
+    s["script"] = f"exportbed-{s['id']}"
+classes = [("MEMBER", "Member"), ("REGISTRY", "Registry"), ("SHARD", "GitShard"), ("HOOKSEQ", "HookSequencer"),
+           ("SEARCH", "SearchShard"), ("INBOX", "Inbox"), ("LOGRELAY", "LogRelay"), ("BROKER", "RunnerBroker")]
+# One script per site, as deploy.mjs builds them: each binds its own classes and the other sites' by `script_name`.
+# Site 0 is the feed site: the EXPORT bucket and the driver's routes. wrangler dev runs the first config's script as
+# the one it serves, and the others beside it.
+for s in sites:
+    me = s["id"]
+    json.dump({
+        "name": s["script"], "main": f"{b}/driver.mjs", "compatibility_date": "2026-10-01",
+        "vars": {"SITE_ID": str(me), "GRAFTYARD_SITES": json.dumps(sites), "GRAFTYARD_EXPORT": "1"},
+        "durable_objects": {"bindings": [
+            {"name": f"{n}_{t['id']}", "class_name": c, **({} if t["id"] == me else {"script_name": t["script"]})}
+            for n, c in classes for t in sites]},
+        "r2_buckets": [{"binding": f"BUCKET_{t['id']}", "bucket_name": f"exportbed-{t['id']}"} for t in sites]
+                      + ([{"binding": "EXPORT", "bucket_name": "exportbed-export"}] if me == 0 else []),
+        "queues": {"producers": [{"binding": "PRSYNC", "queue": f"exportbed-q{me}"}],
+                   "consumers": [{"queue": f"exportbed-q{me}", "max_batch_size": 10, "max_batch_timeout": 0}]},
+        "triggers": {"crons": ["*/15 * * * *"]},
+        "migrations": [{"tag": "v1", "new_sqlite_classes": [c for _, c in classes]}],
+    }, open(f"{b}/wrangler{me}.json", "w"))
+PY
+setsid "$W" dev --port $P -c "$B/wrangler0.json" -c "$B/wrangler1.json" -c "$B/wrangler2.json" --test-scheduled --persist-to "$B/state" >"$B/dev.log" 2>&1 & DEV=$!
+trap 's=$?; kill -- -$DEV 2>/dev/null; wait $DEV 2>/dev/null; rm -rf "$B"; exit $s' EXIT
+for _ in $(seq 120); do grep -q "Ready on" "$B/dev.log" && break; sleep 1; done
+u() { curl -s -m 60 "http://127.0.0.1:$P$1"; }
+ok=1
+d=$(u "/drive?chain=repo:900001"); echo "drive: $d"
+grep -q '"role":"leader"' <<<"$d" && grep -q '"put":200' <<<"$d" || { echo "FAIL: no leader or the put failed"; ok=0; }
+# The leader reports from its alarm, beside its tick: give it a few ticks.
+sleep 5
+u "/__scheduled?cron=*/15+*+*+*+*" >/dev/null; sleep 5
+objs=$(u "/objects?prefix=export/"); state=$(u "/objects?prefix=export-state")
+echo "objects: $objs"; echo "state: $state"
+python3 - "$objs" <<'PY' || ok=0
+import json, sys
+o = [x for x in json.loads(sys.argv[1]) if x["key"].startswith("export/")]
+print(f"export objects: {len(o)}")
+sys.exit(0 if len(o) == 1 and o[0]["size"] > 0 else 1)
+PY
+[ "$state" != "[]" ] || { echo "FAIL: no feed state written"; ok=0; }
+grep -E "export (feed|report)" "$B/dev.log" | sed 's/^/log: /' | head -8
+if grep -qE "export report .*Error|round claim failed|export feed round failed" "$B/dev.log"; then
+  echo "FAIL: the feed logged an error"; ok=0
+fi
+n=$(grep -c 'out of bounds\|RuntimeError' "$B/dev.log"); echo "wasm traps: $n"; [ "$n" = 0 ] || ok=0
+[ $ok = 1 ] && echo PASS || { echo FAIL; exit 1; }

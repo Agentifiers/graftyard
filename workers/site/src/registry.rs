@@ -333,22 +333,21 @@ impl DurableObject for Registry {
             (Method::Put, "/export_report") => {
                 #[derive(Deserialize)]
                 struct Held {
-                    commit: i64,
+                    idx: i64,
                 }
                 sql.exec(crate::export_feed::REPORTS_SCHEMA, None)?;
                 let v: serde_json::Value = req.json().await?;
                 let chain = v["chain"].as_str().unwrap_or_default().to_owned();
                 let commit = graftyard_types::Index(v["commit"].as_u64().unwrap_or(0));
-                let held: Vec<Held> = sql
-                    .exec("SELECT commit FROM export_report WHERE chain = ?", vec![chain.clone().into()])?
-                    .to_array()?;
+                let held: Vec<Held> =
+                    sql.exec(crate::export_feed::REPORT_HELD, vec![chain.clone().into()])?.to_array()?;
                 let newer = graftyard_git::export::report_newer(
-                    held.first().map(|h| graftyard_types::Index(h.commit as u64)),
+                    held.first().map(|h| graftyard_types::Index(h.idx as u64)),
                     commit,
                 );
                 if newer {
                     sql.exec(
-                        "INSERT OR REPLACE INTO export_report (chain, commit, record) VALUES (?, ?, ?)",
+                        crate::export_feed::REPORT_PUT,
                         vec![chain.into(), (commit.0 as i64).into(), v["record"].to_string().into()],
                     )?;
                 }
@@ -362,24 +361,23 @@ impl DurableObject for Registry {
                 #[derive(Deserialize)]
                 struct Report {
                     chain: String,
-                    commit: i64,
+                    idx: i64,
                     record: String,
                 }
                 sql.exec(crate::export_feed::REPORTS_SCHEMA, None)?;
-                sql.exec("CREATE TABLE IF NOT EXISTS export_round (k INTEGER PRIMARY KEY CHECK (k = 0), last INTEGER NOT NULL)", None)?;
+                sql.exec(crate::export_feed::ROUND_SCHEMA, None)?;
                 let now = crate::now_ms();
-                let last: Vec<Last> = sql.exec("SELECT last FROM export_round WHERE k = 0", None)?.to_array()?;
+                let last: Vec<Last> = sql.exec(crate::export_feed::ROUND_LAST, None)?.to_array()?;
                 if !graftyard_git::export::round_due(last.first().map(|l| l.last as u64), now) {
                     return Response::from_json(&serde_json::json!({ "due": false }));
                 }
-                sql.exec("INSERT OR REPLACE INTO export_round (k, last) VALUES (0, ?)", vec![(now as i64).into()])?;
-                let reports: Vec<Report> =
-                    sql.exec("SELECT chain, commit, record FROM export_report", None)?.to_array()?;
+                sql.exec(crate::export_feed::ROUND_PUT, vec![(now as i64).into()])?;
+                let reports: Vec<Report> = sql.exec(crate::export_feed::REPORTS_ALL, None)?.to_array()?;
                 let reports: Vec<serde_json::Value> = reports
                     .into_iter()
                     .map(|r| {
                         let record: serde_json::Value = serde_json::from_str(&r.record).unwrap_or_default();
-                        serde_json::json!({ "chain": r.chain, "commit": r.commit, "record": record })
+                        serde_json::json!({ "chain": r.chain, "commit": r.idx, "record": record })
                     })
                     .collect();
                 Response::from_json(&serde_json::json!({ "due": true, "reports": reports }))
