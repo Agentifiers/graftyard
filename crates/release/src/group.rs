@@ -20,11 +20,14 @@ pub const ZERO_ACKS: u64 = 24 * 3_600_000;
 /// The longest an uncommitted `StaleMode` is honored after it arrives (Shape, "The read path") [guess].
 pub const STALE_MAX: u64 = 24 * 3_600_000;
 /// `ROLL_STEPS` for the scripts that roll by percentage ("Install operations", Site day): the share of requests the
-/// rolled version serves at each step, N kept in the deployment beside it. An `EdgeRoll` runs 1%, 10%, 50%, then 100%;
+/// rolled version serves at each step, N kept in the deployment beside it, or a `ContainerDay`'s share of shards. An
+/// `EdgeRoll` runs 1%, 10%, 50%, then 100%, and a `ContainerDay` 10%, 50%, then 100%;
 /// `FrontRoll`, `OpsRoll`, `McpRoll`, and `ControllerRoll` run 1% for `FIRST_DAY`, then 100%.
 pub fn roll_steps(i: &Intent) -> Option<&'static [u8]> {
     match i {
         Intent::EdgeRoll { .. } => Some(&[1, 10, 50, 100]),
+        // Shares of the site's shards, in rendezvous order, each restarting onto the new image.
+        Intent::ContainerDay { .. } => Some(&[10, 50, 100]),
         Intent::FrontRoll { .. } | Intent::OpsRoll { .. } | Intent::McpRoll { .. } | Intent::ControllerRoll { .. } => {
             Some(&[1, 100])
         }

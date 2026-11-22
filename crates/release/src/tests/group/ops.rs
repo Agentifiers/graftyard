@@ -5,25 +5,27 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::gate::Verdict;
 use crate::ops::{self, Action, Deployment, Dwell, Gate, Roll, Signer, UploadStep, World};
 
 /// The world `graft-ops` reads: every script's deployment, the gate, and the time, which is the group's next entry
 /// time (`G.at`), so `since` and `now` are one clock.
-struct Ops {
-    g: G,
-    deps: BTreeMap<Script, Deployment>,
-    gate: Gate,
+pub(super) struct Ops {
+    pub(super) g: G,
+    pub(super) deps: BTreeMap<Script, Deployment>,
+    pub(super) gate: Gate,
+    pub(super) health: BTreeMap<u8, Verdict>,
     /// Every deployment created, in order.
-    deployed: Vec<(Script, ops::Split)>,
+    pub(super) deployed: Vec<(Script, ops::Split)>,
     /// The intents `release roll` submitted, in order.
-    rolled: Vec<Intent>,
-    next_id: u8,
+    pub(super) rolled: Vec<Intent>,
+    pub(super) next_id: u8,
 }
 
-const OLD: VersionId = VersionId([0xee; 16]);
+pub(super) const OLD: VersionId = VersionId([0xee; 16]);
 
 impl Ops {
-    fn new(g: G) -> Ops {
+    pub(super) fn new(g: G) -> Ops {
         let mut deps = BTreeMap::new();
         for s in [
             Script::Site(SiteId(0)),
@@ -36,11 +38,19 @@ impl Ops {
         ] {
             deps.insert(s, Deployment { split: vec![(OLD, 100)], created: T0 });
         }
-        Ops { g, deps, gate: Gate::Pass, deployed: Vec::new(), rolled: Vec::new(), next_id: 100 }
+        Ops {
+            g,
+            deps,
+            gate: Gate::Pass,
+            health: BTreeMap::new(),
+            deployed: Vec::new(),
+            rolled: Vec::new(),
+            next_id: 100,
+        }
     }
 
-    fn world(&self) -> World {
-        World { now: self.g.at, deployments: self.deps.clone(), gate: self.gate.clone() }
+    pub(super) fn world(&self) -> World {
+        World { now: self.g.at, deployments: self.deps.clone(), gate: self.gate.clone(), health: self.health.clone() }
     }
 
     fn seed(s: Signer) -> &'static [u8; 32] {
@@ -51,7 +61,7 @@ impl Ops {
     }
 
     /// Does what `next` says once. Returns the action.
-    fn act(&mut self) -> Action {
+    pub(super) fn act(&mut self) -> Action {
         let a = ops::next(&self.g.f, &self.world(), Dwell::default());
         match &a {
             Action::Deploy { script, split } => {
@@ -75,7 +85,7 @@ impl Ops {
     }
 
     /// Runs the current intent to its `IntentDone`.
-    fn finish(&mut self) {
+    pub(super) fn finish(&mut self) {
         for _ in 0..200 {
             if self.g.f.current.is_none() {
                 return;
@@ -86,7 +96,7 @@ impl Ops {
     }
 
     /// `release roll R` once: signs and commits the next intent.
-    fn roll(&mut self, r: u8) -> Roll {
+    pub(super) fn roll(&mut self, r: u8) -> Roll {
         let next = ops::next_roll(&self.g.f, rel(r).0);
         if let Roll::Next { intent, undo } = &next {
             self.next_id += 1;
@@ -99,7 +109,7 @@ impl Ops {
     }
 
     /// `release roll R` until done, running each intent to its end.
-    fn roll_all(&mut self, r: u8) {
+    pub(super) fn roll_all(&mut self, r: u8) {
         for _ in 0..30 {
             match self.roll(r) {
                 Roll::Next { .. } => self.finish(),
@@ -121,16 +131,16 @@ const ALL: [Script; 6] = [
     Script::Edge,
 ];
 
-fn upload_all(g: &mut G, n: u8) {
+pub(super) fn upload_all(g: &mut G, n: u8) {
     let b = g.entry(G::upload_body(n, &[&ALL[..], &[Script::Ops]].concat()), &[&EXECUTOR]);
     g.ok(b);
 }
 
-fn site_day(s: u8, n: u8) -> Intent {
+pub(super) fn site_day(s: u8, n: u8) -> Intent {
     Intent::SiteDay { target: DayTarget::Site(SiteId(s)), release: rel(n).0 }
 }
 
-fn version_of(n: u8, s: Script) -> VersionId {
+pub(super) fn version_of(n: u8, s: Script) -> VersionId {
     let all = [&ALL[..], &[Script::Ops]].concat();
     vid(n, all.iter().position(|x| *x == s).unwrap() as u8)
 }

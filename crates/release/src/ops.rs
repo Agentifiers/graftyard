@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use graftyard_types::{ReleaseId, SiteId, Timestamp};
 use sha2::{Digest as _, Sha256};
 
+use crate::gate::{STUCK_DAY, Verdict};
 use crate::group::{Current, ReleaseFold, Upload, roll_steps, undo_entry, verify_raw};
 use crate::types::{
     DayTarget, Format, FormatSet, ImageRef, Intent, IntentState, ReleaseEntry, ReleaseUploaded, Script, Signature,
@@ -61,12 +62,14 @@ pub struct Deployment {
     pub created: Timestamp,
 }
 
-/// The current step's gate on the N+1 members or version, as `graft-ops` read it (the gates are M5-WP4's).
+/// The current step's gate on the N+1 members or version, as `graft-ops` read it (`crate::gate` judges it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Gate {
     Pass,
-    /// Not judged yet, or too few entries in the step.
+    /// Not judged: the inputs could not be read.
     Pending,
+    /// No breach, but the N+1 members applied only this many entries, under `STEP_MIN_ENTRIES`.
+    Starved(u64),
     Breach(Box<str>),
 }
 
@@ -77,6 +80,9 @@ pub struct World {
     /// Each script's deployment, from the deployments API. A script missing here is one the API did not answer for.
     pub deployments: BTreeMap<Script, Deployment>,
     pub gate: Gate,
+    /// Each voter site's verdict from both other sites' `SiteHealth` (`crate::gate::verdict`); a site missing here is
+    /// one with no verdict, which drains and undrains nothing.
+    pub health: BTreeMap<u8, Verdict>,
 }
 
 /// The key a commit takes: the executor key, or the drain key for a site day's `SiteMode`.
@@ -116,6 +122,9 @@ pub enum Step {
     Deploy { script: Script, split: Split, release: ReleaseId, dwell: u64, gated: bool, pct: u8 },
     /// A wait with no deployment change: a site's first day.
     Hold(u64),
+    /// A `ContainerDay` step: `pct` of the site's shards, in rendezvous order, restart onto the new image as they read
+    /// the view (`ReleaseFold::shard_day`); no API call. Then `dwell` from the step's start and the gate.
+    Shards { pct: u8, dwell: u64 },
 }
 
 fn version(fold: &ReleaseFold, r: &ReleaseId, s: Script) -> Option<VersionId> {
@@ -199,6 +208,10 @@ pub fn steps(fold: &ReleaseFold, c: &Current, dwell: Dwell) -> Result<Vec<Step>,
                 None => Err(format!("an Abort of a {} moves nothing this executor runs", i.kind()).into()),
             },
         },
+        IntentState::Running { .. } | IntentState::Halted { .. } if matches!(i, Intent::ContainerDay { .. }) => {
+            let ps = roll_steps(i).expect("a ContainerDay has roll steps");
+            Ok(ps.iter().map(|p| Step::Shards { pct: *p, dwell: if *p < 100 { dwell.step } else { 0 } }).collect())
+        }
         IntentState::Running { .. } | IntentState::Halted { .. } => {
             let r = i.release().ok_or_else(|| format!("{} is not run by this executor", i.kind()))?;
             let s = i.script().ok_or_else(|| format!("{} is M5-WP4's", i.kind()))?;
@@ -253,6 +266,9 @@ fn same(have: &Split, want: &Split) -> bool {
 
 /// The one thing `graft-ops` does now for the current intent.
 pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
+    if let Some(a) = auto_drain(fold, w) {
+        return a;
+    }
     let Some(c) = fold.current.as_deref() else { return Action::Idle };
     if let IntentState::Halted { .. } = c.state {
         return Action::Idle;
@@ -267,18 +283,36 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
         return Action::Commit { body: ReleaseEntry::IntentDone { intent: id }, signer: Signer::Executor };
     };
     let done = Action::Commit { body: ReleaseEntry::IntentStep { intent: id, step: c.next }, signer: Signer::Executor };
+    // Another site drained (an automatic drain, or a human's) stops a site day's drain and forward deploys: the group
+    // refuses a second drain-key drain, and the day's N+1 members stay under the 1% lead limit until it ends.
+    let other_drained = |s: SiteId| fold.drained.keys().find(|d| **d != s.0).copied();
+    let undrain = |s: SiteId| Action::Commit {
+        body: ReleaseEntry::SiteMode(crate::types::SiteMode { site: s, mode: crate::types::Mode::Normal }),
+        signer: Signer::Drain,
+    };
+    // `STUCK_DAY`: a site day drained by the drain key that cannot advance from `from` undrains its site under the 1%
+    // lead limit, and goes on from the same step once it can.
+    let stuck = |script: &Script, from: Timestamp| match script {
+        Script::Site(s)
+            if fold.drained.get(&s.0).is_some_and(|d| d.by_drain_key)
+                && w.now.0 >= from.0.saturating_add(STUCK_DAY) =>
+        {
+            Some(undrain(*s))
+        }
+        _ => None,
+    };
     match step {
         Step::Drain(s) if fold.drained.contains_key(&s.0) => done,
+        Step::Drain(s) if let Some(d) = other_drained(*s) => {
+            Action::Wait { until: None, why: format!("site {d} is drained; site {} waits to drain", s.0).into() }
+        }
         Step::Drain(s) => Action::Commit {
             body: ReleaseEntry::SiteMode(crate::types::SiteMode { site: *s, mode: crate::types::Mode::Drain }),
             signer: Signer::Drain,
         },
         Step::Undrain(s) => match fold.drained.get(&s.0) {
             None => done,
-            Some(d) if d.by_drain_key => Action::Commit {
-                body: ReleaseEntry::SiteMode(crate::types::SiteMode { site: *s, mode: crate::types::Mode::Normal }),
-                signer: Signer::Drain,
-            },
+            Some(d) if d.by_drain_key => undrain(*s),
             Some(_) => {
                 Action::Page(format!("site {} was drained by an intent key; its Normal is a human's", s.0).into())
             }
@@ -291,13 +325,35 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
             let until = Timestamp(c.since.0.saturating_add(*d));
             if w.now < until { Action::Wait { until: Some(until), why: "first day".into() } } else { done }
         }
+        Step::Shards { pct, dwell } => {
+            if let Gate::Breach(why) = &w.gate {
+                return breach(fold, c, why);
+            }
+            let until = Timestamp(c.since.0.saturating_add(*dwell));
+            if w.now < until {
+                return Action::Wait { until: Some(until), why: format!("STEP_DWELL at {pct}% of shards").into() };
+            }
+            if w.gate == Gate::Pending {
+                return Action::Wait { until: None, why: "gate pending".into() };
+            }
+            done
+        }
         Step::Deploy { script, split, release, dwell, gated, pct } => {
             // A breach needs no deployment read: the undo is a signed entry, so it goes in while the API is down
             // ("Install operations", the November 2, 2023 class), and its return steps wait for the API.
             if *gated && let Gate::Breach(why) = &w.gate {
                 return breach(fold, c, why);
             }
+            if *gated
+                && let Script::Site(s) = script
+                && let Some(d) = other_drained(*s)
+            {
+                return Action::Wait { until: None, why: format!("site {d} is drained; the site day waits").into() };
+            }
             let Some(dep) = w.deployments.get(script) else {
+                if let Some(a) = stuck(script, c.since) {
+                    return a;
+                }
                 return Action::Wait { until: None, why: format!("no deployment of {script:?} read").into() };
             };
             let have = &dep.split;
@@ -318,14 +374,35 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
                 return Action::Deploy { script: *script, split: split.clone() };
             }
             if *gated {
-                if w.gate == Gate::Pending {
-                    return Action::Wait { until: None, why: "gate pending".into() };
-                }
                 // The dwell runs from when the split took effect, which a restart between the deploy and the step
                 // cannot shorten.
-                let until = Timestamp(c.since.0.max(dep.created.0).saturating_add(*dwell));
+                let start = Timestamp(c.since.0.max(dep.created.0));
+                if w.gate == Gate::Pending {
+                    if let Some(a) = stuck(script, start) {
+                        return a;
+                    }
+                    return Action::Wait { until: None, why: "gate pending".into() };
+                }
+                let until = Timestamp(start.0.saturating_add(*dwell));
                 if w.now < until {
                     return Action::Wait { until: Some(until), why: "STEP_DWELL".into() };
+                }
+                // Too few entries: dwell on, up to twice the step's dwell, then page.
+                if let Gate::Starved(n) = w.gate
+                    && *dwell > 0
+                {
+                    let cap = Timestamp(start.0.saturating_add(2 * *dwell));
+                    if w.now < cap {
+                        return Action::Wait { until: Some(cap), why: "STEP_MIN_ENTRIES".into() };
+                    }
+                    return Action::Page(
+                        format!(
+                            "intent {}: {script:?}'s {pct}% step applied {n} entries in 2 x its dwell, under \
+                             STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic",
+                            id.0
+                        )
+                        .into(),
+                    );
                 }
             }
             if let Script::Site(s) = script
@@ -340,6 +417,45 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
             done
         }
     }
+}
+
+/// The site the current intent's site day rolls.
+fn day_site(fold: &ReleaseFold) -> Option<SiteId> {
+    match fold.current.as_deref()?.intent.intent {
+        Intent::SiteDay { target: DayTarget::Site(s), .. } => Some(s),
+        _ => None,
+    }
+}
+
+/// Automatic drain and undrain by the drain key (journey 5, \"Automatic drain\"), before any intent's step:
+/// - a drain-key drain that is not the current site day's own ends once both other sites call the site calm;
+/// - a site both other sites call burning is drained, unless one is drained already;
+/// - a drain-key drain of the current site day's site gives way first: its `Normal` goes in, the day's N+1 members
+///   stay under the 1% lead limit (`ReleaseFold::lead_limited`), and the sick site is drained on the next action;
+/// - a burning site with another site drained by any other cause pages, because the group refuses a second drain.
+fn auto_drain(fold: &ReleaseFold, w: &World) -> Option<Action> {
+    let day = day_site(fold);
+    let mode = |site: u8, mode: crate::types::Mode| Action::Commit {
+        body: ReleaseEntry::SiteMode(crate::types::SiteMode { site: SiteId(site), mode }),
+        signer: Signer::Drain,
+    };
+    let verdict = |s: &u8| w.health.get(s).copied().unwrap_or_default();
+    if let Some((s, _)) = fold
+        .drained
+        .iter()
+        .find(|(s, d)| d.by_drain_key && day != Some(SiteId(**s)) && verdict(s).calm && !verdict(s).burning)
+    {
+        return Some(mode(*s, crate::types::Mode::Normal));
+    }
+    let (sick, _) =
+        w.health.iter().find(|(s, v)| v.burning && !fold.drained.contains_key(*s) && !fold.lost.contains(*s))?;
+    Some(match fold.drained.iter().next() {
+        None => mode(*sick, crate::types::Mode::Drain),
+        Some((s, d)) if d.by_drain_key && day == Some(SiteId(*s)) => mode(*s, crate::types::Mode::Normal),
+        Some((s, _)) => Action::Page(
+            format!("site {sick} burns DRAIN_BURN, but site {s} is drained, so the drain key cannot drain it").into(),
+        ),
+    })
 }
 
 /// A gate breach on a forward step: the intent's first pre-signed undo not yet committed, or, for an intent that
@@ -636,8 +752,10 @@ pub trait Exec {
     /// The group's view, refreshed from a member this run.
     async fn view(&mut self) -> Result<ReleaseFold, String>;
     async fn deployment(&mut self, s: Script) -> Result<Deployment, String>;
-    /// The current step's gate (M5-WP4 builds its inputs).
+    /// The current step's gate (`crate::gate::judge_site`, `judge_errors`).
     async fn gate(&mut self, fold: &ReleaseFold) -> Gate;
+    /// Each voter site's verdict from both other sites' `SiteHealth` objects (`crate::gate::verdict`).
+    async fn health(&mut self, fold: &ReleaseFold) -> BTreeMap<u8, Verdict>;
     async fn deploy(&mut self, s: Script, split: &Split) -> Result<(), String>;
     async fn submit(&mut self, bytes: &[u8]) -> Submit;
     fn sign(&self, signer: Signer, e: &mut SignedEntry) -> Result<(), String>;
@@ -721,7 +839,8 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
             }
         }
         let gate = if fold.current.is_some() { e.gate(&fold).await } else { Gate::Pending };
-        let w = World { now: e.now(), deployments, gate };
+        let health = e.health(&fold).await;
+        let w = World { now: e.now(), deployments, gate, health };
         let (bytes, kind) = match next(&fold, &w, dwell) {
             Action::Idle => {
                 log.push(Ran::Idle);

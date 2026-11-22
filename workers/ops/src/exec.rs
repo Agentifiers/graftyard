@@ -201,6 +201,12 @@ impl Exec for Live<'_> {
         }
     }
 
+    /// No verdict yet: the site's `SiteHealth` object (M5-WP4's hosted half) is not built, so this host drains and
+    /// undrains nothing on its own; `crate::gate::verdict` judges the objects once it reads them.
+    async fn health(&mut self, _fold: &ReleaseFold) -> BTreeMap<u8, graftyard_release::gate::Verdict> {
+        BTreeMap::new()
+    }
+
     async fn deploy(&mut self, s: Script, split: &Split) -> std::result::Result<(), String> {
         let body = json!({
             "strategy": "percentage",
