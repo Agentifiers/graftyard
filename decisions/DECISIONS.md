@@ -7753,6 +7753,11 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
   only if the round carries it from 1 to a member's commit with no leader; plant84's sweep mutants. Cost: per round one
   registry shard read and one probe per `Release`, `Ids` and swept chain (`groups / 192`), as DO requests and read
   wall: the base moves $238 → $239, $1,017 → $1,018 and $9,330 → $9,335.
+- Hosted, m3fx49c from `ce7b3878` (`tests/m5/results/m5-wp5-hosted.md`): BF-49 passes. `release` 1..659 and `ids`
+  1..214 reached the first round's object with no leader, byte-equal to the entries endpoint, and the seed and 12
+  reported chains rode the same object. Self-queued rounds chained with no cron, but every 28 s median: a round took
+  15.5 s while the first sweep drained every group's log from index 1. That is this entry's flip on a round longer than
+  `FEED_EVERY_MS`, still open (OPEN-QUESTIONS R37).
 
 **Flip.**
 - The hosted BF-49 finds an entry missing or repeated against a chain's log, or a round longer than `FEED_EVERY_MS`:

@@ -235,3 +235,45 @@ The ruling above, built on branch `export-sweep` from main `898dd7af`; no hosted
 - **The rerun after merge** is a site-only day with a fresh seed. It must show `release` and `ids` in the feed, matched
   byte for byte against the entries endpoint. After the day's reset their groups have no leader, so only the probes can
   carry them.
+
+## Hosted BF-49 m3fx49c (graft-m3f, 2026-11-22): pass, with self-queued rounds every 28 s, not 10 s
+
+Site-only day m3fx49c from main `ce7b3878` (`export-sweep`; `raw/bf49/siteday-m3fx49c.log`), with
+`--export-bucket graft-m3f-export`. It ran from 16:30:30Z to 16:43:00Z and exited 0. The edge was kept, since no edge
+change shipped. The fresh seed was `m3org/bf49-mws2g6dy`, `repo:65610`, with an inline push and a stored push by
+16:44:25Z (`raw/bf49/seed-m3fx49c.log`). The fresh install token was jti `01M822AQE8VCBDMYY6BSQ16127`, and a fresh org
+token (`owner:7100001`) was jti `01M822RNB8CWN63WM4DWAR8DMR`. The pull started at 16:54:10Z after 9 rounds
+(`raw/bf49/m3fx49c/report.json`). The done line is 16:59:53Z: purge finished and no shard running.
+
+| Check | Result |
+|---|---|
+| `release` and `ids` in the feed, contiguous from 1 and byte-matched | **Pass.** Both are in the first round's object, `export/000029922770/0000000000`, written at 16:50:09Z: `release` 1..659 and `ids` 1..214. The entries endpoint serves the same 659 and 214 rows byte for byte. The pull's batches cover 25 objects, 520 chain carries and 13,197 entries, every chain contiguous with no repeat |
+| The seeded repository carried | **Pass.** `repo:65610` 1..10 is in the same first object and byte-equal to the entries endpoint. Its snapshot is 200, and pack `01M822BZETCWKT92V02SD01AN1` is 200 at 3,149,446 bytes, with a checksum equal to the body's SHA-256 |
+| Self-queued rounds about every 10 s | **Rounds chain themselves, but every 28 s.** 13 rounds ran from 16:50:11Z to 16:55:59Z, and 3 more by 16:56:57Z, with no cron in between. The gap between round lines is a median 28.2 s (25.0 to 35.6). Each round takes a median 15.5 s from claim to its log line (13.4 to 26.8), and the next claim follows 10.3 to 16.3 s after it. So `FEED_EVERY_MS` is a delay after each round, not a period |
+| Org token's 404s | **Pass.** batches, `release`, `tokens:0` and `identity:7100002` (m3-member, id 7100002, a `User`, confirmed through `/api/v3/users/m3-member`) each return 404. Its own `repo:65610` returns 200 |
+| Revocation against READ_CACHE (10,000 ms) | **Pass.** The install token's DELETE returned 204 in 424 ms. Of 100 probes, 13 answered 200, the last sent at 8,740 ms. 87 answered 401, the first at 250 ms. The org token's DELETE returned 204 at 16:55:53Z, and the token got 401 12 s later |
+| Cost | graft-m3f $0.05 from 16:30Z to 16:58Z (`tests/fanout/m2bcost.py`) |
+
+**When release and ids appeared.** 7 min 9 s after the site day's exit, in the first round the new version ran. That
+round came from the 16:45 cron: its pack sweep and fold audit ran first, so the feed's claim was at 16:49:44Z. The
+feed had no round between the deploy at 16:43:00Z and that kick, because the old version's self-queued chain had
+stopped (m3fx49b's `{}` message bug), so only the cron could start the new one.
+
+**Probes per round.** 671 answered of 685 asked over the 13 rounds: 66/66 in the first, then 43 to 62 of 45 to 63. One
+to three probes a round gave no page. The first round's 66 are `release`, `ids`, and the 64 chains of site a's
+registry shard 0.
+
+**Reports before the sweep.** Yes. The first object's 78 chains include 12 that neither `ROUND_PROBES` nor the first
+sweep slot covers, so their leaders' reports carried them: `repo:65610`, `authz:1`, `authz:7100001`, `tokens:482`, and
+eight `names` shards (24, 152, 277, 369, 500, 661, 708, 727). The seed's pushes and the site day's own reads elected
+those groups. 17 to 21 reports were held per round.
+
+**Why the rounds take 15 s.** About 50 probes and 45 to 80 source reads each round, six at a time
+(`READS_AT_ONCE`), at roughly 150 ms per call. The sweep is draining the backlog: every group's whole log since index 1
+is moving into the feed for the first time. That is the `export-host` flip's second condition, "a round longer than
+`FEED_EVERY_MS`", and the sweep's own flip, "probes more than half a round". The levers are more reads at once, or
+probes and reads in one pass per chain.
+
+**Teardown.** `teardown.py --sweep` tore down `git#0#net:65610`, and a second sweep found no shard running. Both tokens
+are revoked. `repo:65610` was retired at 16:58:30Z (3 members), then purged at 16:59:53Z: 35 objects, second pass 0
+(`raw/bf49/retire-65610.log`, `raw/bf49/purge-65610.log`). The ssh fronts were not touched.
