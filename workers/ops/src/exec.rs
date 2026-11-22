@@ -33,6 +33,8 @@ use worker::*;
 const API: &str = "https://api.cloudflare.com/client/v4";
 /// How long one commit waits for the group's outcome.
 const COMMIT_MS: u64 = 20_000;
+/// Refreshes a run tries before it gives up on the view, each VIEW_CALL_MS at most.
+const VIEW_TRIES: usize = 4;
 
 /// The script name key `OPS_SCRIPTS` uses for each script.
 fn key(s: Script) -> String {
@@ -162,13 +164,20 @@ impl Exec for Live<'_> {
     }
 
     async fn view(&mut self) -> std::result::Result<ReleaseFold, String> {
-        let before = view::status()["fails"].as_u64();
-        view::refresh_now(&self.bindings(), &self.anchor).await;
-        let st = view::status();
-        if st["fails"].as_u64() != before {
-            return Err(st["lastError"].as_str().unwrap_or("the refresh failed").to_string());
+        // A cron run starts on a cold isolate with no view, so its first refresh reads a registry and then a member
+        // in turn, from wherever the cron runs, and can pass refresh_now's VIEW_CALL_MS: graft-m4a's first two runs
+        // stopped at 1,014 and 1,008 ms. A try keeps the pages it applied and leaves the stubs warm, so it tries again.
+        let mut err = String::new();
+        for _ in 0..VIEW_TRIES {
+            let before = view::status()["fails"].as_u64();
+            view::refresh_now(&self.bindings(), &self.anchor).await;
+            let st = view::status();
+            if st["fails"].as_u64() == before {
+                return Ok(view::with(|r| r.fold.clone()));
+            }
+            err = st["lastError"].as_str().unwrap_or("the refresh failed").to_string();
         }
-        Ok(view::with(|r| r.fold.clone()))
+        Err(err)
     }
 
     async fn deployment(&mut self, s: Script) -> std::result::Result<Deployment, String> {
