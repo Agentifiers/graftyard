@@ -1044,12 +1044,26 @@ if (plan.leases) jobs.push((async () => {
   }
   driverClock.after = await driverOffset(`${EDGE}/api/v3/meta`);
 })());
+// `validate-hedge`: human pushes aimed to straddle the kill, each on its own new branch, started STRADDLE_MS before
+// the kill call (default 1,000, 500 and 0 ms; mt16's straddler started 1,056 ms before it). Each is its own line,
+// `push:human:straddle`, and its row in the pushes file keeps its `server-timing`, whose `validate_site`,
+// `validate_tries` and `validate_hedge` say where it validated.
+const STRADDLE_MS = (process.env.STRADDLE_MS ?? "1000,500,0").split(",").filter(Boolean).map(Number);
 if (opt["kill-shard-at"]) jobs.push((async () => {
-  await sleep(Math.max(0, t0 + Number(opt["kill-shard-at"]) * 1000 - Date.now()));
+  const killAt = t0 + Number(opt["kill-shard-at"]) * 1000;
+  const straddles = STRADDLE_MS.map(async (before, i) => {
+    await sleep(Math.max(0, killAt - before - Date.now()));
+    const s = Date.now();
+    const [res, , , , timing] = await push(admin, `refs/heads/a1s-${RUN}-${i}`, null, `a1s/${i}.txt`, randomBytes(20_000));
+    note("push:human:straddle", Date.now() - s, res);
+    writeRow(OUT, { step: "straddle", before, start: s - killAt, ms: Date.now() - s, result: res, timing });
+  });
+  await sleep(Math.max(0, killAt - Date.now()));
   const { bedGet } = await import("../hosted/lib.mjs");
   const id = CHAIN.split(":")[1];
   const r = await bedGet(`/_bed/kill?repo=${id}`);
   writeRow(OUT, { step: "shard kill", status: r.status, at: Date.now() - t0 });
+  await Promise.all(straddles);
 })());
 
 // B0-34 as written. Phase marks go in the row's file; every kind measured in a phase is suffixed with it.
@@ -1077,7 +1091,10 @@ if (b034 && !hosted) {
   const hot = (n, from, tag) => {
     const tips = {};
     const tok = tokens[n.who];
-    const pushPerS = b034.hotPushPerS ?? 1, clonePerS = b034.hotClonePerS ?? 3;
+    const hostile = tag.startsWith(":hostile");
+    const pushPerS = b034.hotPushPerS ?? 1;
+    const clonePerS = hostile ? b034.hostileClonePerS ?? b034.hotClonePerS ?? 3 : b034.hotClonePerS ?? 3;
+    const cloneCap = hostile ? b034.hostileCap ?? 8 : 8;
     const at = async () => { await sleep(Math.max(0, t0 + from * 1000 - Date.now())); };
     return [
       (async () => { await at(); await every(`hot:push${tag}`, pushPerS, async () => {
@@ -1094,12 +1111,29 @@ if (b034 && !hosted) {
         const t = (await git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt("ref-prefix refs/heads/main\n"), Buffer.from("0000")]),
           { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" }, n.repo)).text.match(/([0-9a-f]{40}) refs\/heads\/main\n/)?.[1];
         return t ? cloneTtfb(n.repo, t, `hot:cloneTtfb${tag}`, false, tok) : "no main";
-      }, 8); })(),
+      }, cloneCap); })(),
     ];
   };
   if (b034.second) jobs.push(...hot(b034.second, b034.secondAt, ":second"));
   for (const [i, h] of (b034.hostile ?? []).entries()) jobs.push(...hot(h, b034.hostileAt, `:hostile${i + 1}`));
 }
+// `validate-hedge`'s row: at hostileAt, each hostile network's leader is asked for k `hostileK` through `/bench_seed`
+// (tests/fanout/k.mjs), which asks both warm sites' pool ledgers; each answer's grants are the row's record of the
+// owner held to `owner_share`. Asked again every 10 s for 3 minutes, as k.mjs does, since a step commits only to warm
+// slots.
+if (b034?.hostileK > 1) jobs.push((async () => {
+  await sleep(Math.max(0, t0 + b034.hostileAt * 1000 - Date.now()));
+  for (const stop = Date.now() + 180_000; Date.now() < stop; await sleep(10_000)) {
+    for (const h of b034.hostile ?? []) {
+      try {
+        const l = (await statuses(h.chain)).filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
+        const r = l ? await member(h.chain, l.site, "/bench_seed", { fanout: b034.hostileK }, 20_000) : null;
+        writeRow(OUT, { step: "hostile k", chain: h.chain, at: Date.now() - t0, k: r?.v?.k ?? null, grants: r?.v?.grants ?? null,
+          status: r?.status ?? "no leader" });
+      } catch (e) { writeRow(OUT, { step: "hostile k", chain: h.chain, at: Date.now() - t0, err: String(e).slice(0, 120) }); }
+    }
+  }
+})());
 if (b034) {
   // k of every network, every 30 s, from each group's leader (`ranges`, as tests/fanout/k.mjs reads it).
   const nets = [CHAIN, b034.second?.chain, ...(b034.hostile ?? []).map((h) => h.chain)].filter(Boolean);

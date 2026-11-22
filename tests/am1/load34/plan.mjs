@@ -24,7 +24,7 @@ export function roles(p, hot) {
     { role: "probe", kind: "read:clone", perS: p.clones, cap: 20 },
     { role: "human", kind: "push:human", perS: p.human / 2, cap: 5 },
     ...hot.flatMap((h, net) => [{ role: "hotPush", kind: `hot:push${h.tag}`, net, perS: h.pushPerS ?? 1, cap: 8 },
-      { role: "hotClone", kind: `hot:clone${h.tag}`, net, perS: h.clonePerS ?? 3, cap: 8 }])];
+      { role: "hotClone", kind: `hot:clone${h.tag}`, net, perS: h.clonePerS ?? 3, cap: h.cloneCap ?? 8 }])];
   return kinds.flatMap((k) => {
     const parts = Math.ceil(k.cap / SLOTS);
     return Array.from({ length: parts }, (_, part) => ({ ...k, perS: k.perS / parts,

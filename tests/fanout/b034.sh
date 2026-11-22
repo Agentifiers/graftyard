@@ -51,8 +51,16 @@ python3 - "$J" "$D" > tests/fanout/raw/b034-$TAG.json <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); D = sys.argv[2]
 fut = [l for l in open(f"{D}/plan.txt") if l.startswith("# future ")][0].split()[2:]
+# `validate-hedge`'s row: HOSTILE_AT (s), HOSTILE_CLONE_PER_S and HOSTILE_CAP (each hostile network's clone rate and
+# in-flight cap) make the hostile owner's load heavier than the second network's, and HOSTILE_K asks each hostile
+# network's leader for that k at HOSTILE_AT through `/bench_seed`, which goes through both warm sites' pool ledgers
+# (`pool_grants`, `owner_share`), so the budget binds whether or not the load steps k by itself (mt16: kMax 1).
+import os
+e = lambda k, d: type(d)(os.environ.get(k, d))
 print(json.dumps({"bare": f"{D}/linux.git", "future": fut, "second": d["second"], "secondAt": 420,
-                  "hostile": d["hostile"], "hostileAt": 600, "hotPushPerS": 1, "hotClonePerS": 3}))
+                  "hostile": d["hostile"], "hostileAt": e("HOSTILE_AT", 600), "hotPushPerS": 1, "hotClonePerS": 3,
+                  "hostileClonePerS": e("HOSTILE_CLONE_PER_S", 3.0), "hostileCap": e("HOSTILE_CAP", 8),
+                  "hostileK": e("HOSTILE_K", 0)}))
 PY
 # The warm step (round 18): every site's shard of the monorepo caught up and ls-refs listing main before the window,
 # at most WARM_MIN minutes (default 45); its time is not the row's. Past the limit the row is not run. It runs before
