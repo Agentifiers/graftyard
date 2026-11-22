@@ -1,0 +1,32 @@
+09:57:35 probe -> {"index":600,"prev":"8b2f42786806766dd255188a3d9a9a8553ad4bfe1461209732946f750627f8e1","status":409}
+09:57:35 start: prev 8b2f42786806766dd255188a3d9a9a8553ad4bfe1461209732946f750627f8e1
+09:57:36 keys-gen2 -> {"digest":"f2e3082158a4b5e4e57d60bd2f8c26a4df24e8d9207bb464a87931908c3daaf7","index":601,"status":201}
+release roll: intent 01M81DXR8T7T1767WT97E04VAF SiteDay { target: Site(SiteId(0)), release: ReleaseId([189, 248, 84, 127, 81, 28, 75, 153, 19, 135, 105, 94, 58, 204, 196, 15, 29, 68, 9, 163, 74, 238, 10, 185, 248, 225, 32, 11, 138, 176, 168, 223]) }, 0 undo(s)
+{"answer":{"digest":"f553eac3ef64a0917f270b689ee32a6bba24ca958999834270f5548a767a9bec","index":607,"status":201},"intent":"01M81DXR8T7T1767WT97E04VAF"}
+11:10:33 roll bdf8547f: release roll: intent 01M81F6QH3GXCGJ3NGXZD2VYZJ SiteDay { target: Site(SiteId(1)), release
+11:10:34 intent-bdf8547f -> {"digest":"39f124a81c82cff4fc9e9414f3635ed184349b72a7fedbfef4854e9cec4c1379","index":630,"status":201}
+11:35:00 roll bdf8547f: release roll: intent 01M81GKGAHEGM4H3FZRTE9A3HZ SiteDay { target: Site(SiteId(2)), release
+11:35:01 intent-bdf8547f -> {"digest":"7c07fd8457741041e8ff760fd683f82af30a6ae21a5d30a583e409512a510ff9","index":653,"status":201}
+12:00:29 roll bdf8547f done
+12:00:30 roll a3a1f620: release roll: intent 01M81J25TGGJE111MZY3X421PM SiteDay { target: Site(SiteId(0)), release
+12:00:30 intent-a3a1f620 -> {"digest":"7d7145dcfe46f0609927461c4111357c80f4449822d1bcb13c92a0667ae76642","index":675,"status":201}
+12:26:00 roll a3a1f620: release roll: intent 01M81KGW24QANPC10WFAMVX16S SiteDay { target: Site(SiteId(1)), release
+12:26:00 intent-a3a1f620 -> {"digest":"b176e994893c85e2ab903073301df25fbc29fc16a6ffb63918c91b6efb1f76c9","index":697,"status":201}
+12:50:27 redeploy graft-m4a-ops with FIRST_DAY_MS=21600000 before R2's site c day
+12:50:37 ops redeploy rc=0 Current Version ID: b637865e-8c57-4e0f-ad5d-5718c57c0d28
+12:50:37 roll a3a1f620: release roll: intent 01M81MXN44YHGEK4WKPR1CDEP9 SiteDay { target: Site(SiteId(2)), release
+12:50:38 intent-a3a1f620 -> {"digest":"9c0351615ba5d75cd4d3fb3416189d43ae51a17f1b18488c6b8453a4b7466359","index":719,"status":201}
+12:50:38 posted R2 site c day; driver stops
+13:15:39 BF-7 breach: splits before
+site-a ["2026-11-22T12:20:17.049509Z",["6331c773=100"]]
+site-b ["2026-11-22T12:45:18.135156Z",["afdaf2a9=100"]]
+site-c ["2026-11-22T13:10:17.509314Z",["39439670=100"]]
+13:15:50 probe -> {"index":739,"prev":"6510d8a5d0ea775e8560e1abd71cd0165bd27e76bace03e43a2f13f8848c1050","status":409}
+FormatsEnable 65000.1 prev Some("6510d8a5d0ea775e8560e1abd71cd0165bd27e76bace03e43a2f13f8848c1050") digest bd3571d312730540dbdd25035f5cf175e16c17d2712666514c98e206050d7d3c
+13:15:51 formats-enable-65000.1 -> {"digest":"bd3571d312730540dbdd25035f5cf175e16c17d2712666514c98e206050d7d3c","index":740,"status":201}
+13:15:51 Abort { intent 01M81MXN44YHGEK4WKPR1CDEP9, target R1 } at 13:15:51
+13:15:51 abort-to-r1 -> {"message":"release bdf8547f511c4b991387695e3accc40f1d4409a34aee0ab9f8e1200b8ab0a8df cannot read enabled format 65000.1","refusal":"UnreadableFormat","status":422}
+13:16:01 ops redeploy GATE=breach:bf7 rc=0 Current Version ID: c378b478-d814-4218-b232-1cb62b2e99cc
+site-a ["2026-11-22T12:20:17.049509Z",["6331c773=100"]]
+site-b ["2026-11-22T12:45:18.135156Z",["afdaf2a9=100"]]
+site-c ["2026-11-22T13:10:17.509314Z",["39439670=100"]]

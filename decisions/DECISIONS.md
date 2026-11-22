@@ -3298,7 +3298,7 @@ The fold gains what the executor needs: where each finished intent left each scr
 
 **Evidence.** `crates/release/src/tests/group/ops.rs` (10 tests: the roll order to `IntentDone`; BF-7 in memory; a `graft-ops` killed after every action, with each deploy late by 30 minutes, reruns only the first unrecorded step; breach then undo; an edge `Abort` to N and to a third release; a `FrontRoll` breach pages; bundle checks; unchanged scripts skipped; an intent-key drain pages at undrain; lifeboat reports). `cli/src/release.rs`, `release_roll_signs_the_next_intent_on_the_last_digest_and_posts_it`. `tests/m0carried/plant82.py`: 19 of 19 caught.
 
-**Flip.** The hosted BF-7 on graft-m4a refuses neither undo, or pages on neither. BF-43 rerun with `graft-ops` executing ("The run stands in for `graft-ops`'s executor") is that entry's flip, and stays pending until it runs.
+**Flip.** The hosted BF-7 on graft-m4a refuses neither undo, or pages on neither; it refused and paged on both (2026-11-22, `tests/m5/results/m5-wp3.md`). BF-43 rerun with `graft-ops` executing ("The run stands in for `graft-ops`'s executor") is that entry's flip, and stays pending until it runs.
 
 #### `FormatsEnable` waits for every reader's report
 

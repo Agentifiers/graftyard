@@ -1,0 +1,167 @@
+== 10:25:13 wall 1014 ms cpu 26 ms version 52fece5b
+   graft-ops Error("view: no member answered within 1000 ms")
+== 10:30:13 wall 1008 ms cpu 24 ms version 52fece5b
+   graft-ops Error("view: no member answered within 1000 ms")
+== 10:35:13 wall 87464 ms cpu 1105 ms version 52fece5b
+   graft-ops Uploaded(Site(SiteId(0)))
+   graft-ops Uploaded(Site(SiteId(1)))
+   graft-ops Uploaded(Site(SiteId(2)))
+   graft-ops Committed("ReleaseUploaded")
+   graft-ops Idle
+== 10:40:13 wall 1023 ms cpu 37 ms version 52fece5b
+   graft-ops Error("view: no member answered within 1000 ms")
+== 10:45:13 wall 1087 ms cpu 26 ms version 52fece5b
+   graft-ops Error("view: no member answered within 1000 ms")
+== 10:50:13 wall 4440 ms cpu 53 ms version 34dd0642
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(18a2efbf-624a-4ef8-843d-a8699cf59bc4), 1), (VersionId(c007c2bf-0c2e-490e-8663-ca7132d24f9e), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795344677144)), why: "STEP_DWELL" }
+== 10:55:13 wall 54520 ms cpu 1039 ms version 34dd0642
+   graft-ops Uploaded(Site(SiteId(0)))
+   graft-ops Uploaded(Site(SiteId(1)))
+   graft-ops Uploaded(Site(SiteId(2)))
+   graft-ops Committed("ReleaseUploaded")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(18a2efbf-624a-4ef8-843d-a8699cf59bc4), 10), (VersionId(c007c2bf-0c2e-490e-8663-ca7132d24f9e), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795345026591)), why: "STEP_DWELL" }
+== 11:00:13 wall 7534 ms cpu 109 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(18a2efbf-624a-4ef8-843d-a8699cf59bc4), 50), (VersionId(c007c2bf-0c2e-490e-8663-ca7132d24f9e), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795345279900)), why: "STEP_DWELL" }
+== 11:05:13 wall 5908 ms cpu 123 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(18a2efbf-624a-4ef8-843d-a8699cf59bc4), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795345578605)), why: "first day" }
+== 11:15:13 wall 12280 ms cpu 80 ms version 34dd0642
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 1), (VersionId(e68905b4-4c40-428c-9184-f1b701a74fd6), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795346184297)), why: "STEP_DWELL" }
+== 11:20:13 wall 3729 ms cpu 50 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 10), (VersionId(e68905b4-4c40-428c-9184-f1b701a74fd6), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795346476194)), why: "STEP_DWELL" }
+== 11:25:13 wall 4687 ms cpu 103 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 50), (VersionId(e68905b4-4c40-428c-9184-f1b701a74fd6), 50)])
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 50), (VersionId(e68905b4-4c40-428c-9184-f1b701a74fd6), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795346777154)), why: "STEP_DWELL" }
+== 11:30:13 wall 6280 ms cpu 154 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795347079257)), why: "first day" }
+== 11:35:13 wall 3846 ms cpu 58 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 11:40:13 wall 9125 ms cpu 148 ms version 34dd0642
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(8f0a0f82-5929-419e-b425-a3fc10e19e60), 1), (VersionId(3a5b1157-9056-4123-b1f5-1ead576f004c), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795347680918)), why: "STEP_DWELL" }
+== 11:45:13 wall 4026 ms cpu 87 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(8f0a0f82-5929-419e-b425-a3fc10e19e60), 10), (VersionId(3a5b1157-9056-4123-b1f5-1ead576f004c), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795347976541)), why: "STEP_DWELL" }
+== 11:50:13 wall 7840 ms cpu 96 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(8f0a0f82-5929-419e-b425-a3fc10e19e60), 50), (VersionId(3a5b1157-9056-4123-b1f5-1ead576f004c), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795348279839)), why: "STEP_DWELL" }
+== 11:55:13 wall 4921 ms cpu 72 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(8f0a0f82-5929-419e-b425-a3fc10e19e60), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795348577645)), why: "first day" }
+== 12:00:13 wall 4274 ms cpu 58 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 12:05:13 wall 4379 ms cpu 58 ms version 34dd0642
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(6331c773-9bfd-4249-bfd6-b46ec371c29e), 1), (VersionId(18a2efbf-624a-4ef8-843d-a8699cf59bc4), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795349176937)), why: "STEP_DWELL" }
+== 12:10:13 wall 7026 ms cpu 115 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(6331c773-9bfd-4249-bfd6-b46ec371c29e), 10), (VersionId(18a2efbf-624a-4ef8-843d-a8699cf59bc4), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795349478798)), why: "STEP_DWELL" }
+== 12:15:13 wall 6254 ms cpu 70 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(6331c773-9bfd-4249-bfd6-b46ec371c29e), 50), (VersionId(18a2efbf-624a-4ef8-843d-a8699cf59bc4), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795349778273)), why: "STEP_DWELL" }
+== 12:20:13 wall 5819 ms cpu 68 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(0)), [(VersionId(6331c773-9bfd-4249-bfd6-b46ec371c29e), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795350078983)), why: "first day" }
+== 12:25:13 wall 5622 ms cpu 86 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 12:30:13 wall 5777 ms cpu 65 ms version 34dd0642
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(afdaf2a9-c90d-4844-8ae4-650e493647f3), 1), (VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795350677482)), why: "STEP_DWELL" }
+== 12:35:13 wall 4721 ms cpu 110 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(afdaf2a9-c90d-4844-8ae4-650e493647f3), 10), (VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795350977070)), why: "STEP_DWELL" }
+== 12:40:13 wall 5259 ms cpu 78 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(afdaf2a9-c90d-4844-8ae4-650e493647f3), 50), (VersionId(683b9704-94af-4ca5-885b-9c661a9a6c0d), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795351277858)), why: "STEP_DWELL" }
+== 12:45:13 wall 8275 ms cpu 87 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(afdaf2a9-c90d-4844-8ae4-650e493647f3), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795351581405)), why: "first day" }
+== 12:50:13 wall 3543 ms cpu 66 ms version 34dd0642
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 12:55:13 wall 8779 ms cpu 75 ms version b637865e
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 1), (VersionId(8f0a0f82-5929-419e-b425-a3fc10e19e60), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795352180540)), why: "STEP_DWELL" }
+== 13:00:13 wall 7784 ms cpu 114 ms version b637865e
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 10), (VersionId(8f0a0f82-5929-419e-b425-a3fc10e19e60), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795352479816)), why: "STEP_DWELL" }
+== 13:05:13 wall 9794 ms cpu 104 ms version b637865e
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 50), (VersionId(8f0a0f82-5929-419e-b425-a3fc10e19e60), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795352781312)), why: "STEP_DWELL" }
+== 13:10:13 wall 6666 ms cpu 117 ms version b637865e
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795374619640)), why: "first day" }
+== 13:15:13 wall 2618 ms cpu 68 ms version b637865e
+   graft-ops Wait { until: Some(Timestamp(1795374619640)), why: "first day" }
+== 13:20:13 wall 3415 ms cpu 68 ms version c378b478
+   PAGE graft-ops: Rollback refused, UnreadableFormat: release bdf8547f511c4b991387695e3accc40f1d4409a34aee0ab9f8e1200b8ab0a8df cannot read enabled format 65000.1
+   graft-ops Paged("Rollback refused, UnreadableFormat: release bdf8547f511c4b991387695e3accc40f1d4409a34aee0ab9f8e1200b8ab0a8df cannot read enabled format 65000.1")
+   graft-ops Refused { kind: "Rollback", variant: "UnreadableFormat" }
