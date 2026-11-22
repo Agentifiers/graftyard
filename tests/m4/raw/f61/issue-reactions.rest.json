@@ -1,0 +1,6 @@
+{
+ "method": "get",
+ "path": "/repos/{owner}/{repo}/issues/{issue_number}/reactions",
+ "status": 200,
+ "body": []
+}

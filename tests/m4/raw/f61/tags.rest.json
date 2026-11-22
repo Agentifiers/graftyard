@@ -1,0 +1,17 @@
+{
+ "method": "get",
+ "path": "/repos/{owner}/{repo}/tags",
+ "status": 200,
+ "body": [
+  {
+   "commit": {
+    "sha": "0494ec753008b557db37685dbb9bc7c2bbf0fc4b",
+    "url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/commits/0494ec753008b557db37685dbb9bc7c2bbf0fc4b"
+   },
+   "name": "v0.1.0",
+   "node_id": "MDM6UmVmNjU1ODQ6cmVmcy90YWdzL3YwLjEuMA==",
+   "tarball_url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/tarball/refs/tags/v0.1.0",
+   "zipball_url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/zipball/refs/tags/v0.1.0"
+  }
+ ]
+}

@@ -1,0 +1,18 @@
+{
+ "method": "get",
+ "path": "/repos/{owner}/{repo}/labels",
+ "status": 200,
+ "body": [
+  {
+   "archived_at": null,
+   "archived_by": null,
+   "color": "ededed",
+   "default": false,
+   "description": null,
+   "id": 3342340,
+   "name": "f61",
+   "node_id": "LA_kwDOAAEAMM4AMwAE",
+   "url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/labels/f61"
+  }
+ ]
+}

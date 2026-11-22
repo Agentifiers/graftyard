@@ -1,0 +1,6 @@
+{
+ "method": "get",
+ "path": "/repos/{owner}/{repo}/teams",
+ "status": 200,
+ "body": []
+}
