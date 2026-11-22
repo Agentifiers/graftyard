@@ -74,6 +74,21 @@ MUTANTS = [
     ("release roll signs from entries it did not check against the anchor", CLI,
      '    r.extend(&t.anchor()?, 0, &entries)', '    r.extend(&graftyard_release::Anchor { customer: graftyard_release::public_key(&[0; 32]), ..t.anchor()? }, 0, &entries)',
      ROLL),
+    # The host's run loop (`ops::run`), guarded by crates/release/src/tests/group/run.rs.
+    ("a run stops at the first 409 instead of reading the view again", OPS,
+     '        Submit::Stale => {\n            log.push(Ran::Stale(kind));\n            true',
+     '        Submit::Stale => {\n            log.push(Ran::Stale(kind));\n            false', REL),
+    ("a refusal the group pages on writes no page", OPS,
+     '            if crate::pages(&variant) {\n                let why', '            if false {\n                let why', REL),
+    ("a refused commit lets the run go on", OPS,
+     '            log.push(Ran::Refused { kind, variant });\n            false',
+     '            log.push(Ran::Refused { kind, variant });\n            true', REL),
+    ("a bundle that fails its checks is uploaded anyway", OPS,
+     '    let c = check_bundle(fold, &b.record, b.sig, &b.files, &e.scripts())\n        .map_err(|r| Ran::Error(format!("release bundle refused: {r}").into()))?;',
+     '    let c = match check_bundle(fold, &b.record, b.sig, &b.files, &e.scripts()) {\n        Ok(c) => c,\n        Err(_) => { let k = fold.keys.clone().unwrap(); let mut f2 = fold.clone(); f2.keys = Some(crate::Keys { release: crate::public_key(&[8; 32]), ..k }); check_bundle(&f2, &b.record, b.sig, &b.files, &e.scripts()).map_err(|r| Ran::Error(format!("{r}").into()))? }\n    };', REL),
+    ("a refused bundle ends the run before the intents", OPS,
+     '                Ok(Some(r)) | Err(r) => {\n                    log.push(r);\n                    uploads = false;\n                }',
+     '                Ok(Some(r)) | Err(r) => {\n                    log.push(r);\n                    break;\n                }', REL),
 ]
 
 

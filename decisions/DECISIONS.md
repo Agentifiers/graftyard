@@ -3308,7 +3308,7 @@ The fold gains what the executor needs: where each finished intent left each scr
 
 **Beat.** Checking in `graftyard formats enable` only. A CLI check is advisory, and the group is where the rule holds.
 
-**Evidence.** `formats_enable_waits_for_every_registered_lifeboat` and `a_release_or_undo_that_cannot_read_an_enabled_format_is_refused`; plant82 mutants 0 and 1. No committed `FormatsEnable` exists on any install (M5-WP1's only one was refused for a missing release half, `tests/m5/results/m5-wp1.md`), so no replay changes [inference from the run records].
+**Evidence.** `formats_enable_waits_for_every_registered_lifeboat` and `a_release_or_undo_that_cannot_read_an_enabled_format_is_refused`; plant82 mutants 0 and 1. No committed `FormatsEnable` exists on any install (M5-WP1's only one was refused for a missing release half, `tests/m5/results/m5-wp1.md`), so no replay changes [inference from the run records]. graft-m4a's `Release` group holds 8 committed entries, the same on all three members, and none is a `FormatsEnable` [measured 2026-11-22: each member's `/view`, decoded with `SignedEntry::decode`: Genesis, Keys, ReleaseUploaded, Intent, IntentStep, Halt, Abort, IntentDone].
 
 **Flip.** A component that reads the chain but reports no release, which would make the rule unsatisfiable.
 
@@ -3323,6 +3323,34 @@ The fold gains what the executor needs: where each finished intent left each scr
 **Evidence.** plant82 mutant 11; `release_roll_runs_the_order_and_graft_ops_runs_each_intent_to_done`.
 
 **Flip.** The hosted BF-43 rerun shows a pin to a 0% version is not applied.
+
+#### The `graft-ops` host is one cron run of `ops::run` (2026-11-22)
+
+**Decision.** `ops::run` is the loop, in plain Rust over an `Exec` trait, and `workers/ops/src/exec.rs` is its Workers host on a 5-minute Cron Trigger:
+- Each run takes at most 32 actions (`RUN_MAX`) and reads the view from a member before each one, through the isolate's `graftyard_lookup::view` replica, against the script's own anchor.
+- Uploads come first. A bundle that fails `check_bundle` uploads nothing, and the run goes on to the current intent.
+- A 409 rereads the view and goes on. A 422 ends the run, and one the group pages on (`pages`) writes `PAGE graft-ops: ...`.
+- Commits go through `commit_hedged`, as the edge's release endpoint sends them.
+- Versions upload with `keep_bindings` for every binding type and the release id as `workers/tag`, which is how a restart finds what an earlier run uploaded.
+- The gate is the `GATE` variable (`pending` by default) until M5-WP4 builds the real inputs, so no forward step passes on a product install.
+
+**Why.** The host must hold no state (DESIGN, Failure modes, `release control`, instance). A run that decides each action on a fresh view, and a group that refuses a stale `prev`, leave nothing to recover after a kill. This is the same split `graft-runners` uses (`control::pass` over `Host`).
+
+**Beat.**
+- A Durable Object holding the executor's state. It would be a second record of progress beside the group.
+- One action per cron tick. A site day at 7 steps plus deploys would take over half an hour of cron time even with test dwells.
+
+**Evidence.** `crates/release/src/tests/group/run.rs`, four tests:
+- cron runs upload a bundle and run every intent to `IntentDone`;
+- a forged bundle uploads nothing;
+- a lost commit answer is resent, meets 409, and the run goes on;
+- BF-7: the refused `Rollback` pages from the run and moves nothing.
+
+`tests/m0carried/plant82.py` mutants 19 to 23. The Worker builds for wasm32, and a local `wrangler dev --test-scheduled` run with no secrets bound paged `cannot start: DEPLOY_TOKEN` and trapped nothing.
+
+**Flip.**
+- The hosted BF-7 or BF-43 run shows a version uploaded with `keep_bindings` lacks a binding the deployed version had.
+- A run's 32 actions do not fit in one cron invocation's limits.
 
 ### M4-WP2's hosted half, as built (2026-11-13)
 

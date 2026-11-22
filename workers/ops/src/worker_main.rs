@@ -1,5 +1,5 @@
 //! The Worker: `POST /mint` and `POST /wrap` from the edge's `OPS` binding, and `POST /unwrap` from the site scripts'. Answers 503 when the signing key cannot be read, so the
-//! edge mints nothing then.
+//! edge mints nothing then. The Cron Trigger runs the executor (`crate::exec`) when the version binds `OPS_SCRIPTS`.
 
 use std::cell::RefCell;
 
@@ -194,5 +194,12 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
             "fetches": MINTER.with(|m| m.borrow().fetches),
         })),
         Err(e) => Response::error(e.to_string(), 503),
+    }
+}
+
+#[event(scheduled)]
+async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    if env.var("OPS_SCRIPTS").is_ok() {
+        crate::exec::run(&env).await;
     }
 }

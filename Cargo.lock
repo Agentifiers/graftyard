@@ -868,10 +868,13 @@ dependencies = [
  "aes-gcm",
  "crypto_box",
  "graftyard-identity",
+ "graftyard-lookup",
+ "graftyard-release",
  "graftyard-types",
  "js-sys",
  "serde",
  "serde_json",
+ "sha2",
  "web-sys",
  "worker",
 ]
@@ -893,6 +896,7 @@ name = "graftyard-release"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "futures-executor",
  "graftyard-types",
  "serde",
  "serde_json",

@@ -20,4 +20,11 @@ serde.workspace = true
 serde_json.workspace = true
 worker.workspace = true
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Crypto"] }
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Crypto", "FormData"] }
+
+# The executor (M5-WP3, `src/exec.rs`): `graftyard_release::ops` decides; the `Release` view and commits go through the
+# lookup. Only the Worker build runs it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+graftyard-lookup = { path = "../../crates/lookup" }
+graftyard-release = { path = "../../crates/release" }
+sha2.workspace = true
