@@ -1,0 +1,25 @@
+{
+ "method": "get",
+ "path": "/repos/{owner}/{repo}/branches",
+ "status": 200,
+ "body": [
+  {
+   "commit": {
+    "sha": "0494ec753008b557db37685dbb9bc7c2bbf0fc4b",
+    "url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/commits/0494ec753008b557db37685dbb9bc7c2bbf0fc4b"
+   },
+   "name": "main",
+   "protected": false,
+   "protection_url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/branches/main/protection"
+  },
+  {
+   "commit": {
+    "sha": "9364071fcc5a2cc514576dde08134a8cee81d5e8",
+    "url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/commits/9364071fcc5a2cc514576dde08134a8cee81d5e8"
+   },
+   "name": "web38/retry-after",
+   "protected": false,
+   "protection_url": "https://graft-m4a-edge.<workers-subdomain>.workers.dev/api/v3/repos/m3org/web38-f61/branches/web38%2Fretry-after/protection"
+  }
+ ]
+}
