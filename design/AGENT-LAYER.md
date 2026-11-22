@@ -874,7 +874,7 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 | Install: `Release` reads by the agents account (edge and member requests) | $0 | $0 | $1 |
 | Agents account: Workflow steps | $0 | $0 | $7 |
 | **Added total** | **$22** | **$329** | **$2,935** |
-| Base total (`scripts/cost.py`, design) | $239 | $1,018 | $9,335 |
+| Base total (`scripts/cost.py`, design) | $238 | $1,016 | $9,332 |
 | Added share of base | 9% | 32% | 31% |
 | Added cost per agent task | $0.0047 | $0.0120 | $0.0161 |
 | MCP cost per session (30 calls) | $0.00008 | $0.00028 | $0.00028 |

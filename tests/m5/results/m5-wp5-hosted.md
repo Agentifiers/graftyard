@@ -324,3 +324,8 @@ claim (`next_round_delay_s`). The next claim then comes a median 15.4 s after th
 a delayed message about 5 s after its delay ends [measured, here]. Local workerd delivers it on time (exportbed:
 10.1 s and 9.9 s). A delay shorter than the period cannot make up the difference: a message that arrives under
 `round_due`'s 9 s bar is refused, and that ends the chain until the next cron.
+
+**Ruling (operator, 2026-11-22): R37 closed on option (a), the measured period.** The 18:30Z window counts, since the
+backlog had drained by then. `FEED_EVERY_MS` stays 10 s, and rounds land about 15 s apart. DESIGN's "Lifeboat feed"
+says so, `scripts/cost.py` prices a 15 s period, and `decisions/DECISIONS.md` `export-host` holds the flip to a
+Durable Object alarm: vault lag over 30 s on a vault row, or a delivery delay that grows.
