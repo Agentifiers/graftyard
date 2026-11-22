@@ -1,0 +1,2 @@
+{"at":"2026-11-21T23:46:26.363Z","site":1,"status":200,"ms":3752,"rehydrating":false,"v":{"entries":0,"ms":[["up",358],["cursor",358],["heads",704],["markers",1574],["marked",1796],["tail",1922],["refs",2041],["catch_up",2041]],"rehydrated":true}}
+warm site 1 after 3.8 s
