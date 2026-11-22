@@ -1,0 +1,438 @@
+2026-11-22T17:56:46Z
+0d870643
+?? tests/m5/results/raw/bf49/siteday-m3fr37.log
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling graftyard-identity v0.1.0 (~/workspace/repo/.worktrees/fx3/crates/identity)
+   Compiling graftyard-lookup v0.1.0 (~/workspace/repo/.worktrees/fx3/crates/lookup)
+   Compiling graftyard-git v0.1.0 (~/workspace/repo/.worktrees/fx3/crates/git)
+   Compiling graftyard-actions v0.1.0 (~/workspace/repo/.worktrees/fx3/crates/actions)
+   Compiling graftyard-api v0.1.0 (~/workspace/repo/.worktrees/fx3/crates/api)
+   Compiling graftyard-site v0.1.0 (~/workspace/repo/.worktrees/fx3/workers/site)
+    Finished `release` profile [optimized] target(s) in 7m 58s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 11m 57s
+[INFO]: 📦   Your wasm pkg is ready to publish at ~/workspace/repo/.worktrees/fx3/workers/site/build/.tmp.
+
+  index.js  47.3kb
+
+⚡ Done in 11ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-site-a.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ git is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ Preparing ssh for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+├ ssh is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+Total Upload: 17568.51 KiB / gzip: 4936.87 KiB
+Worker Startup Time: 14 ms
+Your Worker has access to the following bindings:
+Binding                                                                           Resource                  
+env.MEMBER_0 (Member)                                                             Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3f-site-b)                                Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3f-site-c)                                Durable Object            
+env.REGISTRY_0 (Registry)                                                         Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3f-site-b)                            Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3f-site-c)                            Durable Object            
+env.SHARD_0 (GitShard)                                                            Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3f-site-b)                               Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3f-site-c)                               Durable Object            
+env.HOOKSEQ_0 (HookSequencer)                                                     Durable Object            
+env.SEARCH_0 (SearchShard)                                                        Durable Object            
+env.INBOX_0 (Inbox)                                                               Durable Object            
+env.LOGRELAY_0 (LogRelay)                                                         Durable Object            
+env.BROKER_0 (RunnerBroker)                                                       Durable Object            
+env.SSHFRONT_0 (SshFront)                                                         Durable Object            
+env.PRSYNC (inherited)                                                            Queue                     
+env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                 
+env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                 
+env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                 
+env.EXPORT (graft-m3f-export)                                                     R2 Bucket                 
+env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret      
+env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret      
+env.SITE (graft-m3f-site-a)                                                       Worker                    
+env.EDGE (graft-m3f-edge)                                                         Worker                    
+env.SITE_ID ("0")                                                                 Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3f-site-a",...")                  Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79DGV5P3MW57AHRM1EGVD34")                              Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("9aeafcdc2bd3fa004632a04a0763f66f7ad1c...")           Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                 Environment Variable      
+env.GRAFTYARD_EXPORT ("1")                                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+- SshFront (durable_object)
+
+Uploaded graft-m3f-site-a (5.38 sec)
+Deployed graft-m3f-site-a triggers (1.05 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3f-prsync-a
+  Consumer for graft-m3f-prsync-a
+Current Version ID: c29db2fa-bd15-44c5-b44c-6bfc6b9971e6
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-site-b.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ git is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ Preparing ssh for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+├ ssh is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+Total Upload: 17568.51 KiB / gzip: 4936.87 KiB
+Worker Startup Time: 11 ms
+Your Worker has access to the following bindings:
+Binding                                                                           Resource                  
+env.MEMBER_1 (Member)                                                             Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3f-site-a)                                Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3f-site-c)                                Durable Object            
+env.REGISTRY_1 (Registry)                                                         Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3f-site-a)                            Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3f-site-c)                            Durable Object            
+env.SHARD_1 (GitShard)                                                            Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3f-site-a)                               Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3f-site-c)                               Durable Object            
+env.HOOKSEQ_1 (HookSequencer)                                                     Durable Object            
+env.SEARCH_1 (SearchShard)                                                        Durable Object            
+env.INBOX_1 (Inbox)                                                               Durable Object            
+env.LOGRELAY_1 (LogRelay)                                                         Durable Object            
+env.BROKER_1 (RunnerBroker)                                                       Durable Object            
+env.SSHFRONT_1 (SshFront)                                                         Durable Object            
+env.PRSYNC (inherited)                                                            Queue                     
+env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                 
+env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                 
+env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                 
+env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret      
+env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret      
+env.SITE (graft-m3f-site-b)                                                       Worker                    
+env.EDGE (graft-m3f-edge)                                                         Worker                    
+env.SITE_ID ("1")                                                                 Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3f-site-a",...")                  Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79DGV5P3MW57AHRM1EGVD34")                              Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("9aeafcdc2bd3fa004632a04a0763f66f7ad1c...")           Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                 Environment Variable      
+env.GRAFTYARD_EXPORT ("1")                                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+- SshFront (durable_object)
+
+Uploaded graft-m3f-site-b (4.17 sec)
+Deployed graft-m3f-site-b triggers (1.23 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3f-prsync-b
+  Consumer for graft-m3f-prsync-b
+Current Version ID: 87f17c32-6556-4cf5-98ba-49b22627c5ce
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-site-c.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ git is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ Preparing ssh for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+├ ssh is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+Total Upload: 17568.51 KiB / gzip: 4936.87 KiB
+Worker Startup Time: 15 ms
+Your Worker has access to the following bindings:
+Binding                                                                           Resource                  
+env.MEMBER_2 (Member)                                                             Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3f-site-a)                                Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3f-site-b)                                Durable Object            
+env.REGISTRY_2 (Registry)                                                         Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3f-site-a)                            Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3f-site-b)                            Durable Object            
+env.SHARD_2 (GitShard)                                                            Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3f-site-a)                               Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3f-site-b)                               Durable Object            
+env.HOOKSEQ_2 (HookSequencer)                                                     Durable Object            
+env.SEARCH_2 (SearchShard)                                                        Durable Object            
+env.INBOX_2 (Inbox)                                                               Durable Object            
+env.LOGRELAY_2 (LogRelay)                                                         Durable Object            
+env.BROKER_2 (RunnerBroker)                                                       Durable Object            
+env.SSHFRONT_2 (SshFront)                                                         Durable Object            
+env.PRSYNC (inherited)                                                            Queue                     
+env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                 
+env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                 
+env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                 
+env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret      
+env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret      
+env.SITE (graft-m3f-site-c)                                                       Worker                    
+env.EDGE (graft-m3f-edge)                                                         Worker                    
+env.SITE_ID ("2")                                                                 Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3f-site-a",...")                  Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79DGV5P3MW57AHRM1EGVD34")                              Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("9aeafcdc2bd3fa004632a04a0763f66f7ad1c...")           Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                 Environment Variable      
+env.GRAFTYARD_EXPORT ("1")                                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+- SshFront (durable_object)
+
+Uploaded graft-m3f-site-c (4.23 sec)
+Deployed graft-m3f-site-c triggers (1.22 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3f-prsync-c
+  Consumer for graft-m3f-prsync-c
+Current Version ID: cbd934b2-cbdf-48de-b125-3f68c373e20a
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-site-a.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ git is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ Preparing ssh for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+├ ssh is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+Total Upload: 17568.51 KiB / gzip: 4936.87 KiB
+Worker Startup Time: 16 ms
+Your Worker has access to the following bindings:
+Binding                                                                           Resource                  
+env.MEMBER_0 (Member)                                                             Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3f-site-b)                                Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3f-site-c)                                Durable Object            
+env.REGISTRY_0 (Registry)                                                         Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3f-site-b)                            Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3f-site-c)                            Durable Object            
+env.SHARD_0 (GitShard)                                                            Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3f-site-b)                               Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3f-site-c)                               Durable Object            
+env.HOOKSEQ_0 (HookSequencer)                                                     Durable Object            
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m3f-site-b)                        Durable Object            
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m3f-site-c)                        Durable Object            
+env.SEARCH_0 (SearchShard)                                                        Durable Object            
+env.SEARCH_1 (SearchShard, defined in graft-m3f-site-b)                           Durable Object            
+env.SEARCH_2 (SearchShard, defined in graft-m3f-site-c)                           Durable Object            
+env.INBOX_0 (Inbox)                                                               Durable Object            
+env.INBOX_1 (Inbox, defined in graft-m3f-site-b)                                  Durable Object            
+env.INBOX_2 (Inbox, defined in graft-m3f-site-c)                                  Durable Object            
+env.LOGRELAY_0 (LogRelay)                                                         Durable Object            
+env.LOGRELAY_1 (LogRelay, defined in graft-m3f-site-b)                            Durable Object            
+env.LOGRELAY_2 (LogRelay, defined in graft-m3f-site-c)                            Durable Object            
+env.BROKER_0 (RunnerBroker)                                                       Durable Object            
+env.BROKER_1 (RunnerBroker, defined in graft-m3f-site-b)                          Durable Object            
+env.BROKER_2 (RunnerBroker, defined in graft-m3f-site-c)                          Durable Object            
+env.SSHFRONT_0 (SshFront)                                                         Durable Object            
+env.PRSYNC (inherited)                                                            Queue                     
+env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                 
+env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                 
+env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                 
+env.EXPORT (graft-m3f-export)                                                     R2 Bucket                 
+env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret      
+env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret      
+env.SITE (graft-m3f-site-a)                                                       Worker                    
+env.EDGE (graft-m3f-edge)                                                         Worker                    
+env.SITE_ID ("0")                                                                 Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3f-site-a",...")                  Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79DGV5P3MW57AHRM1EGVD34")                              Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("9aeafcdc2bd3fa004632a04a0763f66f7ad1c...")           Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                 Environment Variable      
+env.GRAFTYARD_EXPORT ("1")                                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+- SshFront (durable_object)
+
+Uploaded graft-m3f-site-a (4.41 sec)
+Deployed graft-m3f-site-a triggers (1.05 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3f-prsync-a
+  Consumer for graft-m3f-prsync-a
+Current Version ID: 8f83a719-67a7-4325-a30e-cf8fc120bdc5
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-site-b.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ git is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ Preparing ssh for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+├ ssh is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+Total Upload: 17568.51 KiB / gzip: 4936.87 KiB
+Worker Startup Time: 17 ms
+Your Worker has access to the following bindings:
+Binding                                                                           Resource                  
+env.MEMBER_1 (Member)                                                             Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3f-site-a)                                Durable Object            
+env.MEMBER_2 (Member, defined in graft-m3f-site-c)                                Durable Object            
+env.REGISTRY_1 (Registry)                                                         Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3f-site-a)                            Durable Object            
+env.REGISTRY_2 (Registry, defined in graft-m3f-site-c)                            Durable Object            
+env.SHARD_1 (GitShard)                                                            Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3f-site-a)                               Durable Object            
+env.SHARD_2 (GitShard, defined in graft-m3f-site-c)                               Durable Object            
+env.HOOKSEQ_1 (HookSequencer)                                                     Durable Object            
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m3f-site-a)                        Durable Object            
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m3f-site-c)                        Durable Object            
+env.SEARCH_1 (SearchShard)                                                        Durable Object            
+env.SEARCH_0 (SearchShard, defined in graft-m3f-site-a)                           Durable Object            
+env.SEARCH_2 (SearchShard, defined in graft-m3f-site-c)                           Durable Object            
+env.INBOX_1 (Inbox)                                                               Durable Object            
+env.INBOX_0 (Inbox, defined in graft-m3f-site-a)                                  Durable Object            
+env.INBOX_2 (Inbox, defined in graft-m3f-site-c)                                  Durable Object            
+env.LOGRELAY_1 (LogRelay)                                                         Durable Object            
+env.LOGRELAY_0 (LogRelay, defined in graft-m3f-site-a)                            Durable Object            
+env.LOGRELAY_2 (LogRelay, defined in graft-m3f-site-c)                            Durable Object            
+env.BROKER_1 (RunnerBroker)                                                       Durable Object            
+env.BROKER_0 (RunnerBroker, defined in graft-m3f-site-a)                          Durable Object            
+env.BROKER_2 (RunnerBroker, defined in graft-m3f-site-c)                          Durable Object            
+env.SSHFRONT_1 (SshFront)                                                         Durable Object            
+env.PRSYNC (inherited)                                                            Queue                     
+env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                 
+env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                 
+env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                 
+env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret      
+env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret      
+env.SITE (graft-m3f-site-b)                                                       Worker                    
+env.EDGE (graft-m3f-edge)                                                         Worker                    
+env.SITE_ID ("1")                                                                 Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3f-site-a",...")                  Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79DGV5P3MW57AHRM1EGVD34")                              Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("9aeafcdc2bd3fa004632a04a0763f66f7ad1c...")           Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                 Environment Variable      
+env.GRAFTYARD_EXPORT ("1")                                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+- SshFront (durable_object)
+
+Uploaded graft-m3f-site-b (4.43 sec)
+Deployed graft-m3f-site-b triggers (1.01 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3f-prsync-b
+  Consumer for graft-m3f-prsync-b
+Current Version ID: 49e271cb-d8d2-4af3-a66f-bc2e1374e09f
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-site-c.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+├ Preparing git for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ git is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-gitshard@sha256:6ee7a5abf57fbd2962f0dd8e213cbdf0b943b14944b6413de2dec41b5bf02e27
+│
+├ Preparing ssh for Cloudflare Containers
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+├ ssh is ready to run
+│   registry.cloudflare.com/<account>/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
+│
+Total Upload: 17568.51 KiB / gzip: 4936.87 KiB
+Worker Startup Time: 7 ms
+Your Worker has access to the following bindings:
+Binding                                                                           Resource                  
+env.MEMBER_2 (Member)                                                             Durable Object            
+env.MEMBER_0 (Member, defined in graft-m3f-site-a)                                Durable Object            
+env.MEMBER_1 (Member, defined in graft-m3f-site-b)                                Durable Object            
+env.REGISTRY_2 (Registry)                                                         Durable Object            
+env.REGISTRY_0 (Registry, defined in graft-m3f-site-a)                            Durable Object            
+env.REGISTRY_1 (Registry, defined in graft-m3f-site-b)                            Durable Object            
+env.SHARD_2 (GitShard)                                                            Durable Object            
+env.SHARD_0 (GitShard, defined in graft-m3f-site-a)                               Durable Object            
+env.SHARD_1 (GitShard, defined in graft-m3f-site-b)                               Durable Object            
+env.HOOKSEQ_2 (HookSequencer)                                                     Durable Object            
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m3f-site-a)                        Durable Object            
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m3f-site-b)                        Durable Object            
+env.SEARCH_2 (SearchShard)                                                        Durable Object            
+env.SEARCH_0 (SearchShard, defined in graft-m3f-site-a)                           Durable Object            
+env.SEARCH_1 (SearchShard, defined in graft-m3f-site-b)                           Durable Object            
+env.INBOX_2 (Inbox)                                                               Durable Object            
+env.INBOX_0 (Inbox, defined in graft-m3f-site-a)                                  Durable Object            
+env.INBOX_1 (Inbox, defined in graft-m3f-site-b)                                  Durable Object            
+env.LOGRELAY_2 (LogRelay)                                                         Durable Object            
+env.LOGRELAY_0 (LogRelay, defined in graft-m3f-site-a)                            Durable Object            
+env.LOGRELAY_1 (LogRelay, defined in graft-m3f-site-b)                            Durable Object            
+env.BROKER_2 (RunnerBroker)                                                       Durable Object            
+env.BROKER_0 (RunnerBroker, defined in graft-m3f-site-a)                          Durable Object            
+env.BROKER_1 (RunnerBroker, defined in graft-m3f-site-b)                          Durable Object            
+env.SSHFRONT_2 (SshFront)                                                         Durable Object            
+env.PRSYNC (inherited)                                                            Queue                     
+env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                 
+env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                 
+env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                 
+env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret      
+env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret      
+env.SITE (graft-m3f-site-c)                                                       Worker                    
+env.EDGE (graft-m3f-edge)                                                         Worker                    
+env.SITE_ID ("2")                                                                 Environment Variable      
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m3f-site-a",...")                  Environment Variable      
+env.GRAFTYARD_INSTALL ("01M79DGV5P3MW57AHRM1EGVD34")                              Environment Variable      
+env.GRAFTYARD_CUSTOMER_KEY ("9aeafcdc2bd3fa004632a04a0763f66f7ad1c...")           Environment Variable      
+env.SHARD_INSTANCE ("standard-4")                                                 Environment Variable      
+env.GRAFTYARD_EXPORT ("1")                                                        Environment Variable      
+
+The following containers are available:
+- GitShard (durable_object)
+- SshFront (durable_object)
+
+Uploaded graft-m3f-site-c (3.87 sec)
+Deployed graft-m3f-site-c triggers (1.18 sec)
+  schedule: */15 * * * *
+  Producer for graft-m3f-prsync-c
+  Consumer for graft-m3f-prsync-c
+Current Version ID: cd20b5ba-1f2c-458c-a205-7983c3d995d5
+site exit 0
+2026-11-22T18:09:37Z
+DONE

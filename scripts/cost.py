@@ -168,7 +168,9 @@ ROW_KB = 0.62                      # member SQLite bytes per fold row, in KB: (d
 REMOVED_DAYS = 35                  # removed members run deleteAll() after 35 days
 AVG_PACK_MB = 50                   # average stored pack, for per-object pack copies [guess]
 VAULT_LOCK_DAYS = 35               # bucket lock retention in the vault account
-FEED_OBJECTS = DAYS * 24 * 360     # ChangeBatch objects, one every 10 s
+FEED_OBJECTS = DAYS * 24 * 240     # feed rounds and ChangeBatch objects at most, one every 15 s: a round is due
+                                   # FEED_EVERY_MS (10 s) after the last claim, and hosted queue delivery adds about
+                                   # 5 s [measured, m3fr37, tests/m5/results/m5-wp5-hosted.md]
 FEED_CHAINS_MAX = 200              # `export::BATCH_CHAINS_MAX`: chains one round reads at most (`export-host`)
 FEED_SWEEP_ROUNDS = 64 * 3         # rounds one sweep of every site's `MemberRegistry` shards takes, one shard a round
                                    # (`export::SWEEP_SHARDS`): each round probes `Release`, `Ids`, and the chains of one

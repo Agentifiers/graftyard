@@ -299,3 +299,33 @@ the message under `round_due`'s 9 s bar, and the claim would refuse it and stop 
 - **Checks.** These pass: fmt; workspace clippy; wasm32 clippy for site and edge, with and without `test-faults`, and for
   ops, front and runners; `cargo test --workspace`; `go test` in the server and porcupine; the three
   `scripts/check_*.py`; and h1. Edgeboot passes for both builds with 0 traps, run because `crates/git` moved.
+
+## Hosted R37 m3fr37 (graft-m3f, 2026-11-22): steady rounds fit the period; gaps are 15.4 s, not 10 to 11 s
+
+Site-only day m3fr37 from main `0d870643` (`export-period`; `raw/bf49/siteday-m3fr37.log`): 17:56:46Z to 18:09:37Z,
+exit 0, `--export-bucket graft-m3f-export`. There was no seed and the edge was kept. The window ran from 18:30:02Z to
+18:41:57Z, 32 minutes after the exit: 48 rounds (`raw/bf49/rounds-m3fr37.log`, `raw/bf49/claims-m3fr37.log`). The done
+line is 18:42:53Z, with teardown sweeping and no shard running.
+
+| Check | Result |
+|---|---|
+| Steady rounds fit in `FEED_EVERY_MS` | **Pass.** Claim to log line took a median 0.75 s and 0.48 to 2.3 s, except one round of 7.26 s, all far under 10 s |
+| Gaps of about 10 to 11 s | **Fail.** Gaps between round lines were a median 15.4 s, ranging 4.1 to 22.4 s. Claim to claim was also a median 15.4 s. Long stretches sit at 15.1 to 15.8 s, and some alternate between 11 and 19 s |
+| New commits | Almost none. 45 of 48 rounds were idle. The 18:30 cron's activity moved 2 chains in three rounds (4, 2 and 2 entries) |
+| Probes | 2/2 or 3/3 each round: `release`, `ids`, and at most one swept chain. The probes alone set the round's length |
+| Cost | graft-m3f $0.02 from 17:56Z to 18:43Z |
+
+**The backlog had drained before the window.** The old version's self-queued rounds swept from 17:00Z, and the new
+version's first rounds after the deploy (18:09:44Z on) were already idle at 40 to 63 probes. From 18:17Z every round
+probed only 2 or 3 chains.
+
+**Where the 5 s goes.** Rounds take under a second, so each round's message asks for a delay of 9 or 10 s after the
+claim (`next_round_delay_s`). The next claim then comes a median 15.4 s after the last one. The hosted queue delivers
+a delayed message about 5 s after its delay ends [measured, here]. Local workerd delivers it on time (exportbed:
+10.1 s and 9.9 s). A delay shorter than the period cannot make up the difference: a message that arrives under
+`round_due`'s 9 s bar is refused, and that ends the chain until the next cron.
+
+**Ruling (operator, 2026-11-22): R37 closed on option (a), the measured period.** The 18:30Z window counts, since the
+backlog had drained by then. `FEED_EVERY_MS` stays 10 s, and rounds land about 15 s apart. DESIGN's "Lifeboat feed"
+says so, `scripts/cost.py` prices a 15 s period, and `decisions/DECISIONS.md` `export-host` holds the flip to a
+Durable Object alarm: vault lag over 30 s on a vault row, or a delivery delay that grows.

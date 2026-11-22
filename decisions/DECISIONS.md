@@ -7787,12 +7787,22 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
   1..214 reached the first round's object with no leader, byte-equal to the entries endpoint, and the seed and 12
   reported chains rode the same object. Self-queued rounds chained with no cron, but every 28 s median: a round took
   15.5 s while the first sweep drained every group's log from index 1. That is this entry's flip on a round longer than
-  `FEED_EVERY_MS`, still open (OPEN-QUESTIONS R37).
+  `FEED_EVERY_MS` (R37, closed below).
 - `export-period`: the next round is due `FEED_EVERY_MS` after its claim, and at once after a round that ran past it,
   with the delay rounded up so `round_due` never refuses it and ends the chain. `export.rs`
   `rounds_start_a_period_apart_and_a_long_round_starts_the_next_at_once`; plant84's two period mutants. A backlog now
-  runs rounds back to back: each is still capped at 200 chains and 8 MiB, and its reads go to non-leaders. A timed
-  window after a sweep's backlog drains settles R37.
+  runs rounds back to back: each is still capped at 200 chains and 8 MiB, and its reads go to non-leaders.
+- Hosted, m3fr37 from `0d870643` (`tests/m5/results/m5-wp5-hosted.md`): with the backlog drained, 48 rounds from
+  18:30:02Z took a median 0.75 s (0.48 to 2.3 s, one of 7.26 s), probing only `release`, `ids` and one swept chain; 45
+  were idle. They landed a median 15.4 s apart (4.1 to 22.4 s): the hosted queue delivers each 9 to 10 s delayed
+  message about 5 s late, which local workerd does not (exportbed, 10.1 and 9.9 s). A shorter delay cannot recover it,
+  since a message under `round_due`'s 9 s bar is refused and the chain stops until the cron.
+- **R37 closed (operator, 2026-11-22): the measured period stands.** Was OPEN-QUESTIONS R37, "should a feed round's
+  period be `FEED_EVERY_MS` rather than its delay?". `FEED_EVERY_MS` stays 10 s in code and rounds land about 15 s
+  apart. DESIGN puts the vault's RPO and the lifeboat's lag at about 30 s [guess], which a 15 s round keeps; an
+  alarm-driven round would buy at most about 5 s for a design change and another hosted window. `scripts/cost.py`
+  prices the feed at one round and object a 15 s period: the base moves $239 → $238, $1,018 → $1,016 and $9,335 →
+  $9,332.
 
 **Flip.**
 - The hosted BF-49 finds an entry missing or repeated against a chain's log, or a round longer than `FEED_EVERY_MS`:
@@ -7802,6 +7812,8 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A hosted row finds a chain in the registry missing from the feed a full sweep (192 rounds) after its last commit, or
   the probes take more than half of a round's `FEED_EVERY_MS`: read more shards a round, or move the sweep to its own
   cadence.
+- A vault row measures vault lag over 30 s, or the queue's delivery delay past a round's requested delay grows beyond
+  m3fr37's about 5 s: rounds move to a Durable Object alarm on site A's `export` registry object.
 
 ### `validate-hedge`: a human push's buffered validate asks every site left after 1 s, beside the first, 2026-11-22
 
