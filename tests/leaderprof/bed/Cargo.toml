@@ -1,0 +1,28 @@
+[package]
+name = "leaderprof"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker = "0.8.7"
+js-sys = "0.3"
+graftyard-api = { path = "../../../crates/api" }
+graftyard-fold = { path = "../../../crates/fold" }
+graftyard-git = { path = "../../../crates/git" }
+graftyard-identity = { path = "../../../crates/identity" }
+graftyard-raft = { path = "../../../crates/raft" }
+graftyard-types = { path = "../../../crates/types" }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smallvec = { version = "1", features = ["serde", "union"] }
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1
