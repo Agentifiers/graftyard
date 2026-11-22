@@ -1,0 +1,60 @@
+blB: 533 CPU ms/s over 118.3 commands cut/s = 4.50 ms per command; invocations under 5 ms carry 62 ms/s (12%)
+  /commit                 159.2/s  278.8 ms/s  1.75 ms a call  2.36 ms per command
+  /raft learner            58.8/s   87.2 ms/s  1.48 ms a call  0.74 ms per command
+  /entries                 17.6/s   83.8 ms/s  4.76 ms a call  0.71 ms per command
+  /outcome                 94.8/s   35.1 ms/s  0.37 ms a call  0.30 ms per command
+  /read                     2.1/s   15.4 ms/s  7.35 ms a call  0.13 ms per command
+  /raft voter               3.2/s   12.0 ms/s  3.80 ms a call  0.10 ms per command
+  /outcome_by_request       8.1/s    9.7 ms/s  1.20 ms a call  0.08 ms per command
+  30 s buckets from load start: CPU ms/s, /commit ms a call
+  0s 82 1.08  30s 310 1.40  60s 348 1.30  90s 489 1.47  120s 449 1.53  150s 528 1.50  180s 530 1.47  210s 589 2.33  240s 580 2.24  270s 564 1.90
+blA: 390 CPU ms/s over 84.0 commands cut/s = 4.65 ms per command; invocations under 5 ms carry 51 ms/s (13%)
+  /commit                 118.3/s  205.4 ms/s  1.74 ms a call  2.45 ms per command
+  /raft learner            36.4/s   64.2 ms/s  1.76 ms a call  0.76 ms per command
+  /outcome_by_request      27.4/s   52.1 ms/s  1.90 ms a call  0.62 ms per command
+  /read                     6.3/s   21.7 ms/s  3.44 ms a call  0.26 ms per command
+  /outcome                 72.2/s   19.7 ms/s  0.27 ms a call  0.23 ms per command
+  /entries                  3.2/s   12.4 ms/s  3.84 ms a call  0.15 ms per command
+  other                     1.9/s    5.0 ms/s  2.61 ms a call  0.06 ms per command
+  30 s buckets from load start: CPU ms/s, /commit ms a call
+  0s 124 1.04  30s 362 1.33  60s 327 1.35  90s 396 1.63  120s 494 2.00  150s 388 1.51  180s 380 1.97  210s 268 1.10  240s 352 1.61  270s 454 2.20  300s 0 0.00
+blC2: 451 CPU ms/s over 82.7 commands cut/s = 5.45 ms per command; invocations under 5 ms carry 51 ms/s (11%)
+  /commit                 124.5/s  208.6 ms/s  1.67 ms a call  2.52 ms per command
+  /raft learner            41.0/s  113.4 ms/s  2.76 ms a call  1.37 ms per command
+  /outcome_by_request      28.6/s   41.0 ms/s  1.43 ms a call  0.50 ms per command
+  /entries                  6.1/s   27.8 ms/s  4.57 ms a call  0.34 ms per command
+  /read                     6.0/s   20.5 ms/s  3.43 ms a call  0.25 ms per command
+  /outcome                 73.6/s   19.3 ms/s  0.26 ms a call  0.23 ms per command
+  /status                   2.3/s    6.7 ms/s  2.91 ms a call  0.08 ms per command
+  30 s buckets from load start: CPU ms/s, /commit ms a call
+  0s 128 0.91  30s 327 1.23  60s 388 1.59  90s 406 1.40  120s 383 1.59  150s 505 2.09  180s 590 3.16  210s 506 1.63  240s 378 1.28  270s 389 1.34
+qlA: 212 CPU ms/s over 43.7 commands cut/s = 4.86 ms per command; invocations under 5 ms carry 55 ms/s (26%)
+  /raft learner            51.8/s   70.9 ms/s  1.37 ms a call  1.62 ms per command
+  /commit                  45.9/s   63.5 ms/s  1.38 ms a call  1.45 ms per command
+  /entries                  9.1/s   39.9 ms/s  4.38 ms a call  0.91 ms per command
+  /read                     9.2/s   21.4 ms/s  2.33 ms a call  0.49 ms per command
+  other                     5.5/s    7.0 ms/s  1.26 ms a call  0.16 ms per command
+  /raft voter               4.6/s    4.8 ms/s  1.05 ms a call  0.11 ms per command
+  /status                   2.7/s    3.2 ms/s  1.22 ms a call  0.07 ms per command
+  30 s buckets from load start: CPU ms/s, /commit ms a call
+  0s 40 0.80  30s 153 0.87  60s 168 1.10  90s 177 1.00  120s 171 1.10  150s 196 1.15  180s 219 1.72  210s 231 1.56  240s 221 1.54  270s 271 1.56  300s 175 1.95
+qlB: 196 CPU ms/s over 45.1 commands cut/s = 4.35 ms per command; invocations under 5 ms carry 51 ms/s (26%)
+  /raft learner            49.1/s   74.2 ms/s  1.51 ms a call  1.65 ms per command
+  /commit                  47.2/s   63.0 ms/s  1.34 ms a call  1.40 ms per command
+  /entries                  7.5/s   29.9 ms/s  3.99 ms a call  0.66 ms per command
+  /read                     8.4/s   16.7 ms/s  1.99 ms a call  0.37 ms per command
+  other                     5.5/s    7.1 ms/s  1.29 ms a call  0.16 ms per command
+  /status                   2.6/s    2.7 ms/s  1.04 ms a call  0.06 ms per command
+  /stats                    0.6/s    1.4 ms/s  2.41 ms a call  0.03 ms per command
+  30 s buckets from load start: CPU ms/s, /commit ms a call
+  0s 42 0.87  30s 161 1.12  60s 179 1.25  90s 196 1.24  120s 183 1.38  150s 183 1.29  180s 195 1.33  210s 215 1.46  240s 201 1.21  270s 201 1.43  300s 172 1.57
+qlC: 206 CPU ms/s over 41.8 commands cut/s = 4.94 ms per command; invocations under 5 ms carry 53 ms/s (25%)
+  /raft learner            52.1/s   75.7 ms/s  1.45 ms a call  1.81 ms per command
+  /commit                  43.6/s   62.5 ms/s  1.43 ms a call  1.49 ms per command
+  /entries                  8.3/s   32.8 ms/s  3.96 ms a call  0.79 ms per command
+  /read                     9.7/s   21.5 ms/s  2.22 ms a call  0.51 ms per command
+  other                     6.1/s    7.8 ms/s  1.28 ms a call  0.19 ms per command
+  /status                   2.6/s    3.0 ms/s  1.15 ms a call  0.07 ms per command
+  /raft voter               0.8/s    1.2 ms/s  1.50 ms a call  0.03 ms per command
+  30 s buckets from load start: CPU ms/s, /commit ms a call
+  0s 45 0.87  30s 166 1.06  60s 220 1.42  90s 192 1.22  120s 203 1.41  150s 212 1.39  180s 222 1.55  210s 193 1.34  240s 208 1.56  270s 216 1.57  300s 189 1.93

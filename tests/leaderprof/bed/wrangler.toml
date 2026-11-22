@@ -1,0 +1,12 @@
+name = "leaderprof"
+main = "./build/index.js"
+compatibility_date = "2026-10-01"
+[[durable_objects.bindings]]
+name = "L"
+class_name = "L"
+[[durable_objects.bindings]]
+name = "S"
+class_name = "S"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["L", "S"]
