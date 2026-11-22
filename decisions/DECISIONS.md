@@ -3403,6 +3403,12 @@ The fold gains what the executor needs: where each finished intent left each scr
 - Edges' receipt misses, which DESIGN also counts into `SiteHealth`, show a gray site that member calls miss.
 - One isolate's 30 s flush leaves a 5-minute window under `MIN_CALLS` on a quiet site.
 
+**Caveat: a `verify` refusal counts against the refuser's version.** The refusal is counted where it happens: in the AppendEntries answer of the member that refused, under that member's `VERSION`. When an N+1 leader's entry is refused by an N follower (the older-follower case that deposes the leader), the exception lands on N, not N+1, so `judge_site`'s `GATE_EXCEPTIONS` on N+1 misses it. The leader steps down instead, which `GATE_STEP_DOWN` counts on N+1. A refusal by an N+1 follower of an N leader's entry counts on N+1, as the gate wants.
+
+*Why kept.* The refusing member is the only one that knows it refused. Counting against the writer's version needs the leader's version in every AppendEntries, a wire change for one counter. The deposing case already trips `GATE_STEP_DOWN` on N+1.
+
+*Flip.* A hosted site day where an N follower refuses an N+1 entry and the N+1 step passes without a `STEP_DOWN` trip. Then the refusal answer carries the writer's version (the leader's `VERSION`, sent in AppendEntries), and the exception counts there.
+
 ### M4-WP2's hosted half, as built (2026-11-13)
 
 #### M4-WP2's consumers run in band on the leader alarm

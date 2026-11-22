@@ -8,6 +8,12 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Test installs only (M5-WP4, BF-39): `OPS_KILL` and `OPS_STEP_MIN_ENTRIES` in `src/exec.rs`. A product build has neither,
+# so no variable can kill a run or lower a gate. `node deploy.mjs` builds with it when the executor file sets
+# `test_faults`.
+test-faults = []
+
 [dependencies]
 # Unwraps the installation-token signing key with the `MintWrapKey` wrap key: AES-256-GCM, pure Rust, for wasm32.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }

@@ -10,7 +10,8 @@
 // Cron Trigger. The file holds `{"sites": <sites.json path>, "anchor": <install.toml path>, "scripts": {"site/0":
 // "<name>", ..., "edge": "<name>"}, "deploy_token": <secret name>, "executor_key": <secret name>, "drain_key": <secret
 // name>, "releases": <release bucket>, "gate": "pending", "step_dwell_ms": n, "first_day_ms": n}`; the last three are
-// optional, and the dwells are for test installs only.
+// optional, and the dwells are for test installs only. BF-39's `"test_faults": true` builds the test-faults Worker and
+// takes `"ops_kill": n`, `"step_min_entries": n` and `"cron"`, each ignored without it.
 // Needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. The secret itself is written by `wrangler secrets-store secret
 // create` with its value on stdin, never here.
 
@@ -26,7 +27,11 @@ const executor = ex >= 0 ? JSON.parse(readFileSync(args.splice(ex, 2)[1], "utf8"
 const [name, storeId, secretName, wrapA, wrapB, current] = args;
 if (!name || !storeId || !secretName) throw new Error("usage: deploy.mjs <name> <secrets store id> <secret name>");
 const out = join(here, "build");
-execFileSync("worker-build", ["--release", "--out-dir", out], { cwd: here, stdio: "inherit" });
+// `"test_faults": true` in the executor file: a test install's build, with BF-39's `ops_kill` and
+// `step_min_entries` (`src/exec.rs`). A product build ignores both variables, and this script sets them only here.
+const faults = executor?.test_faults === true;
+execFileSync("worker-build", ["--release", "--out-dir", out, ...(faults ? ["--features", "test-faults"] : [])],
+  { cwd: here, stdio: "inherit" });
 const gen = join(here, ".gen");
 mkdirSync(gen, { recursive: true });
 const cfg = {
@@ -68,8 +73,11 @@ if (executor) {
     ...(executor.gate ? { GATE: executor.gate } : {}),
     ...(executor.step_dwell_ms != null ? { STEP_DWELL_MS: String(executor.step_dwell_ms) } : {}),
     ...(executor.first_day_ms != null ? { FIRST_DAY_MS: String(executor.first_day_ms) } : {}),
+    ...(faults && executor.ops_kill != null ? { OPS_KILL: String(executor.ops_kill) } : {}),
+    ...(faults && executor.step_min_entries != null ? { OPS_STEP_MIN_ENTRIES: String(executor.step_min_entries) } : {}),
   };
-  cfg.triggers = { crons: ["*/5 * * * *"] };
+  // `"cron": "* * * * *"` for BF-39's kills on a test install; the design's cadence otherwise.
+  cfg.triggers = { crons: [faults && executor.cron ? executor.cron : "*/5 * * * *"] };
 }
 writeFileSync(join(gen, `${name}.jsonc`), JSON.stringify(cfg, null, 2));
 execFileSync("npx", ["--prefix", resolve(here, "../../tests/m0"), "wrangler", "deploy", "-c", `${name}.jsonc`], { cwd: gen, stdio: "inherit" });

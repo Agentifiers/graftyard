@@ -16,6 +16,11 @@
 //!   version's bindings and changes only code [inference: a release that changes a binding is a separate operation].
 //! - **Pages** are `console_error!("PAGE graft-ops ...")` lines, which the install's log alert matches.
 //! - **Dwell.** `STEP_DWELL_MS` and `FIRST_DAY_MS` lower the dwells on a test install only.
+//! - **BF-39 (`test-faults` builds only).** `OPS_KILL=<n>` kills each run after a uniform 0 to n of its view reads,
+//!   deploys, and commits: that call and every later one fail unsent, as `crates/release`'s in-memory BF-39 kills its
+//!   fake, so a run can die between a deploy and its `IntentStep`. `OPS_STEP_MIN_ENTRIES=<n>` passes a step that
+//!   `judge_site` found `Starved` with at least n entries, for a test install whose 1% step carries too little traffic
+//!   (OPEN-QUESTIONS R38).
 //!
 //! - **Gates and drain (M5-WP4).** A site day's step reads the rolling site's `gate` object and asks
 //!   `graftyard_release::gate::judge_site`; every other intent's gate is pending until its inputs are counted. Each
@@ -75,6 +80,9 @@ pub struct Live<'a> {
     scripts: BTreeMap<String, String>,
     executor: [u8; 32],
     drain: Option<[u8; 32]>,
+    /// `OPS_KILL`'s draw for this run: calls left before the kill.
+    #[cfg(feature = "test-faults")]
+    kill_after: Option<usize>,
 }
 
 async fn secret(env: &Env, binding: &str) -> std::result::Result<String, String> {
@@ -108,7 +116,27 @@ impl<'a> Live<'a> {
             executor: seed(env, "EXECUTOR_KEY").await?,
             // A drain key is needed only at a site day's drain and undrain; a missing one fails those steps alone.
             drain: seed(env, "DRAIN_KEY").await.ok(),
+            #[cfg(feature = "test-faults")]
+            kill_after: env.var("OPS_KILL").ok().and_then(|v| v.to_string().parse::<usize>().ok()).map(|n| {
+                let k = (js_sys::Math::random() * (n + 1) as f64) as usize;
+                console_log!("graft-ops OPS_KILL: this run dies after {k} calls");
+                k
+            }),
         })
+    }
+
+    /// Whether `OPS_KILL` has killed this run before `call`; on a product build, never.
+    fn killed(&mut self, _call: &str) -> bool {
+        #[cfg(feature = "test-faults")]
+        match &mut self.kill_after {
+            Some(0) => {
+                console_log!("graft-ops OPS_KILL: killed before {_call}");
+                return true;
+            }
+            Some(n) => *n -= 1,
+            None => {}
+        }
+        false
     }
 
     fn bindings(&self) -> Bindings<'_> {
@@ -171,6 +199,9 @@ impl Exec for Live<'_> {
         // A cron run starts on a cold isolate with no view, so its first refresh reads a registry and then a member
         // in turn, from wherever the cron runs, and can pass refresh_now's VIEW_CALL_MS: graft-m4a's first two runs
         // stopped at 1,014 and 1,008 ms. A try keeps the pages it applied and leaves the stubs warm, so it tries again.
+        if self.killed("view") {
+            return Err("OPS_KILL".into());
+        }
         let mut err = String::new();
         for _ in 0..VIEW_TRIES {
             let before = view::status()["fails"].as_u64();
@@ -233,6 +264,11 @@ impl Exec for Live<'_> {
             None => gate::Counters::default(),
         };
         let g = gate::judge_site(&c1.side(), &c0.side());
+        #[cfg(feature = "test-faults")]
+        let g = {
+            let floor = self.env.var("OPS_STEP_MIN_ENTRIES").ok().and_then(|v| v.to_string().parse::<u64>().ok());
+            if matches!(g, Gate::Starved(n) if floor.is_some_and(|f| n >= f)) { Gate::Pass } else { g }
+        };
         console_log!("graft-ops gate site {}: N+1 {:?} N {:?} -> {g:?}", site.0, c1.side(), c0.side());
         g
     }
@@ -267,6 +303,9 @@ impl Exec for Live<'_> {
     }
 
     async fn deploy(&mut self, s: Script, split: &Split) -> std::result::Result<(), String> {
+        if self.killed("deploy") {
+            return Err("OPS_KILL".into());
+        }
         let body = json!({
             "strategy": "percentage",
             "versions": split.iter().map(|(v, p)| json!({ "version_id": v.to_string(), "percentage": p })).collect::<Vec<_>>(),
@@ -277,6 +316,9 @@ impl Exec for Live<'_> {
     }
 
     async fn submit(&mut self, bytes: &[u8]) -> Submit {
+        if self.killed("commit") {
+            return Submit::Failed("OPS_KILL".into());
+        }
         let Some(record) = view::release_record() else {
             return Submit::Failed("no Release record in the view".into());
         };
