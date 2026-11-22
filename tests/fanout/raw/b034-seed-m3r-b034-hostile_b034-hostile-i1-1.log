@@ -1,0 +1,15 @@
+2026-11-22T17:35:10.459Z 1/13 refs/heads/main est 22.1 MB: fatal: unable to access 'https://<edge host>/m3r-b034-hostile/b034-hostile-i1-1.git/': The requested URL returned error: 500 20473 ms
+2026-11-22T17:35:59.374Z 1/13 refs/heads/main est 22.1 MB: ok 33892 ms
+2026-11-22T17:36:18.677Z 2/13 refs/heads/main est 24.0 MB: ok 19301 ms
+2026-11-22T17:36:47.032Z 3/13 refs/heads/main est 43.6 MB: ok 28355 ms
+2026-11-22T17:37:09.199Z 4/13 refs/heads/main est 43.7 MB: ok 22166 ms
+2026-11-22T17:37:33.897Z 5/13 refs/heads/main est 56.5 MB: ok 24697 ms
+2026-11-22T17:37:50.423Z 6/13 refs/heads/main est 35.0 MB: ok 16525 ms
+2026-11-22T17:38:14.428Z 7/13 refs/heads/main est 59.8 MB: ok 24005 ms
+2026-11-22T17:38:21.909Z 8/13 refs/heads/main est 14.8 MB: ok 7480 ms
+2026-11-22T17:38:29.061Z 9/13 refs/heads/main est 9.0 MB: ok 7152 ms
+2026-11-22T17:38:35.063Z 10/13 refs/heads/main est 5.4 MB: ok 6002 ms
+2026-11-22T17:38:39.453Z 11/13 refs/heads/main est 1.8 MB: ok 4390 ms
+2026-11-22T17:38:42.991Z 12/13 refs/heads/main est 0.3 MB: ok 3538 ms
+2026-11-22T17:38:45.293Z 13/13 refs/heads/main est 0.1 MB: ok 2301 ms
+2026-11-22T17:38:45.294Z seeded m3r-b034-hostile/b034-hostile-i1-1: 0.32 GB in 235 s
