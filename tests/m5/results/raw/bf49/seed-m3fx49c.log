@@ -1,0 +1,4 @@
+2026-11-22T16:44:11.619Z created m3org/bf49-mws2g6dy id 65610
+2026-11-22T16:44:20.495Z push small.txt 2000 B: ok
+2026-11-22T16:44:25.433Z push big.bin 3145728 B: ok
+{"repo":"m3org/bf49-mws2g6dy","id":65610,"head":"0b6a83d28aff76fbc1fd4795b1e483fbc569d656","pushes":[{"file":"small.txt","bytes":2000,"ok":true,"ms":5961,"out":""},{"file":"big.bin","bytes":3145728,"ok":true,"ms":4850,"out":""}]}
