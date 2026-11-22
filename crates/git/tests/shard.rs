@@ -1199,7 +1199,8 @@ fn a_torn_down_shard_that_held_warming_schedules_no_alarm() {
 #[test]
 fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
     use graftyard_git::compose::{
-        CHAIN_CHECK_WITHIN, ChainCheck, ChainHead, Header, HeaderSet, Manifest, ManifestPack, SetStore, check_with_sets,
+        CHAIN_CHECK_WITHIN, ChainCheck, ChainHead, HeadObject, HeadPack, Header, HeaderSet, Manifest, ManifestPack,
+        Served, SetStore, check_with_sets,
     };
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -1208,12 +1209,15 @@ fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
     struct Bucket {
         head: Option<(String, ChainHead)>,
         packs: BTreeMap<String, (u32, String)>,
+        /// The head object's own pack records (`head-etags`), empty for a head put without them.
+        recs: Vec<HeadPack>,
     }
     #[derive(Default)]
     struct Sets {
         held: RefCell<BTreeMap<(usize, String), HeaderSet>>,
         puts: RefCell<usize>,
         served: RefCell<Vec<(usize, usize)>>,
+        from_head: RefCell<Vec<usize>>,
     }
     impl SetStore for Sets {
         fn enabled(&self) -> bool {
@@ -1226,8 +1230,9 @@ fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
             *self.puts.borrow_mut() += 1;
             self.held.borrow_mut().insert((b, v.to_owned()), s);
         }
-        fn served(&self, from_set: usize, checked: usize) {
-            self.served.borrow_mut().push((from_set, checked));
+        fn served(&self, s: Served) {
+            self.served.borrow_mut().push((s.set, s.checked));
+            self.from_head.borrow_mut().push(s.head);
         }
     }
     let id = |c: char| c.to_string().repeat(40);
@@ -1247,6 +1252,7 @@ fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
     let bucket = |v: &str, h: &ChainHead, etag: &str| Bucket {
         head: Some((v.to_owned(), h.clone())),
         packs: h.packs().iter().map(|p| (key(p), (10, format!("{etag}-{p}")))).collect(),
+        recs: vec![],
     };
     fn check<'c>(
         c: &'c Clock,
@@ -1263,7 +1269,8 @@ fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
         }
     }
     let head = |w: &RefCell<Vec<Bucket>>, b: usize| {
-        let h = w.borrow()[b].head.clone();
+        let bk = &w.borrow()[b];
+        let h = bk.head.clone().map(|(v, chain)| (v, HeadObject { chain, packs: bk.recs.clone() }));
         async move { Ok::<_, String>(h) }
     };
     #[allow(clippy::needless_lifetimes)]
@@ -1368,6 +1375,54 @@ fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
     let (_, got) = etags(&r.unwrap()).unwrap();
     assert_eq!(got, vec!["stale".to_owned(), "q-part".to_owned()], "only the head's own pack comes from the set");
     assert_eq!(c.started.get(), 1);
+
+    // `head-etags`: a head that records its packs answers a new version with no check and puts no set, each pack
+    // on the etag the head recorded. A record answers only at the manifest's count, and only for a pack that head
+    // names: a manifest pack outside the head is checked.
+    let h8 = chain('a', &['b', 'c']);
+    let mut b8 = bucket("v8", &h8, "r");
+    b8.recs = h8.packs().iter().map(|p| HeadPack(format!("r-{p}"), 100, 10)).collect();
+    w.borrow_mut()[0] = b8;
+    let puts = *sets.puts.borrow();
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0],
+        &manifest(&h8),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    let (_, got) = etags(&r.unwrap()).unwrap();
+    assert!(got.iter().all(|e| e.starts_with("r-")), "{got:?}");
+    assert_eq!(c.started.get(), 0, "a head that records every pack checks none");
+    assert_eq!(*sets.from_head.borrow().last().unwrap(), 3);
+    assert_eq!(*sets.puts.borrow(), puts, "packs from the head are not put into a set");
+    // Another count than the head recorded: that pack is checked (and declines, the object holds 10).
+    let mut m9 = manifest(&h8);
+    m9.packs[2].n = 9;
+    let c = Clock::default();
+    let r = c.run(check_with_sets([0], &m9, |b| head(&w, b), |b, k, n| check(&c, &w, b, k, n), &sets, sleep(&c)));
+    assert_eq!(r, Ok(ChainCheck::Declined), "a head record answers only at its own count");
+    assert_eq!(c.started.get(), 1);
+    // A head that names only the base records only the base: the part beyond it is checked, on its object's etag.
+    let h10 = chain('a', &['b']);
+    let mut b10 = bucket("v10", &chain('a', &[]), "s");
+    b10.recs = vec![HeadPack("s-base".into(), 100, 10)];
+    b10.packs.insert(key(&format!("part-{}-{}", id('a'), id('b'))), (10, "s-part".into()));
+    w.borrow_mut()[0] = b10;
+    let c = Clock::default();
+    let r = c.run(check_with_sets(
+        [0],
+        &manifest(&h10),
+        |b| head(&w, b),
+        |b, k, n| check(&c, &w, b, k, n),
+        &sets,
+        sleep(&c),
+    ));
+    let (_, got) = etags(&r.unwrap()).unwrap();
+    assert_eq!(got, vec!["s-base".to_owned(), "s-part".to_owned()]);
+    assert_eq!((c.started.get(), *sets.from_head.borrow().last().unwrap()), (1, 1));
 
     // A failed check puts nothing; the other bucket answers and puts its own set.
     let puts = *sets.puts.borrow();

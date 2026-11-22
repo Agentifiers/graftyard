@@ -54,6 +54,23 @@ EOF
   echo "$s: PASS, $(stat -c %s "$B/got-$s") bytes, byte-identical, index-pack --strict and fsck took it"
 }
 for s in base parts fold; do check $s; done
+# head-etags: a head that records each pack's object answers from that record with no check, byte for byte; a pack
+# whose bytes were replaced since (same count) ends the answer short on its recorded etag, never streams the new bytes.
+n=$(curl -sf -X POST "$u/head?net=7&key=m/parts") || { echo "head: FAIL, no head put"; ok=0; }
+curl -s -D "$B/h-rec" -o "$B/got-rec" "$u/composed?net=7&key=m/parts&sets=1"
+src=$(grep -i '^x-chain:' "$B/h-rec" | tr -d '\r' | cut -d' ' -f2)
+if cmp -s "$B/got-rec" "$D/composed-parts" && [ "$src" = "0,${n%$'\n'},0" ]; then
+  echo "head record: PASS, $n packs from the head, none checked, byte-identical"
+else echo "head record: FAIL, x-chain $src, $(stat -c %s "$B/got-rec") bytes"; ok=0; fi
+rp=$(python3 -c "import json,sys; l=open(sys.argv[1],'rb').readline(); print(json.loads(l)['packs'][-1]['key'])" "$D/manifest-parts")
+python3 -c "
+import sys; b = bytearray(open(sys.argv[1], 'rb').read()); b[20] ^= 1; open(sys.argv[2], 'wb').write(b)" "$D/chain/${rp##*/}" "$B/rewritten.pack"
+put "$rp" "$B/rewritten.pack"
+curl -s -o "$B/got-rw" "$u/composed?net=7&key=m/parts&sets=1"
+if [ "$(stat -c %s "$B/got-rw")" -lt "$(stat -c %s "$D/composed-parts")" ]; then
+  echo "head record, pack rewritten since: PASS, the answer ended short"
+else echo "head record, pack rewritten since: FAIL, $(stat -c %s "$B/got-rw") bytes streamed"; ok=0; fi
+put "$rp" "$D/chain/${rp##*/}"
 declined() {   # what: the edge must decline, answering 404 and no pack
   local c; c=$(curl -s -o /dev/null -w '%{http_code}' "$u/composed?net=$2&key=$3")
   [ "$c" = 404 ] && echo "$1: PASS, declined" || { echo "$1: FAIL, answered $c"; ok=0; }

@@ -7247,6 +7247,35 @@ arrived, past one retry: then `resume` is not reached on that path.
 - Any served decision whose stamp is older than `READ_CACHE` at the time it was served, in a test or in a row's logs: the stamp rule is broken, so turn the share off until it is fixed.
 - A clone cut mid-answer by a pack whose header came from a set: the head's version no longer covers the files, so check every pack as before.
 
+### `head-etags`: a chain bucket's `head` records each pack's etag, size and count, and the edge checks none it names, 2026-11-22
+
+**Status.** Built on branch `b034-tailbuild` from the lead's ruling on `tests/am1/results/b034-tail.md` (lever (b2)), not yet measured hosted. The builder half runs in the site's shard object and ships on a site day; the edge half on an edge day.
+
+**Decision.**
+- The builder puts `compose/<net>/head` as `HeadObject`: the container's `ChainHead`, flat, and beside it `packs`, one `[etag, size, count]` per pack in `ChainHead::packs` order, as that bucket held each pack after this step's puts.
+- A pack this step did not put keeps the old head's record (the same object); any other is read back with one 12-byte ranged get. A pack that cannot be read, records that do not cover the chain, or a head past `HEAD_MAX` (2,048 bytes) puts the chain alone.
+- `ready_chain` compares chains only (`HeadObject::plan`), so a head whose records differ is the same step and is not put again, and a shard installs `chain` alone.
+- `check_with_sets` takes a pack the head names from the version's set, else from the head's record at the manifest's count, else checks it. Only checked packs are added to the set. Every body still streams on the etag it came with.
+- `server-timing` gains `chain_head`, the packs served from the head's record, beside `chain_set` and `chain_chk`.
+
+**Why.**
+- Each tip move puts a new head version, so each data center rebuilt its set per version. mt15's hits that checked 11 to 20 packs had `chain_open` p50 469 to 695 ms and up to 1,209 ms (`b034-tail.md`, (b)).
+- The head is put after its files, so its records are the objects R2 held when it was put. A later put under the same key changes the etag, and the conditional get on the recorded etag ends the answer short, as a stale check did before.
+- R2 writes are strongly consistent and `version` is unique per upload [doc, https://developers.cloudflare.com/r2/api/workers/workers-api-reference/]; the set stays keyed by version.
+- A 20-pack head with realistic etags, sizes and counts is about 1.9 to 2.0 KB; with u32-max sizes and counts it passes `HEAD_MAX` and falls back [computed, `compose::tests::a_heads_pack_records_sit_beside_its_chain`].
+
+**What it beat.**
+- **(b1), a `list` of `compose/<net>/` beside the head get.** It adds a Class A list and its wall to every first hit on a version (`b034-tail.md`).
+- **Records inside `ChainHead`.** `ready_chain` compares `ChainHead` whole against the container's `/compose-head`, which has no records, so every step would put the head again. The wrapper type keeps the comparison on the chain by construction.
+
+**Evidence.**
+- `crates/git/src/compose.rs` (`HeadObject`, `HeadPack`, `check_with_sets`), `crates/git/src/host.rs` (`ready_chain`, `pack_object`, `open_chain_sets`).
+- Tests: `a_heads_pack_records_sit_beside_its_chain` (records outside the comparison, carry only for packs not re-put, `HEAD_MAX`, the wire), `a_header_set_answers_only_for_the_head_version_it_was_checked_under` (a recorded head checks none and puts no set; another count is checked; a pack outside the head is checked). `tests/composed/edgebed/run.sh` serves a recorded head byte for byte with no check and ends short on a pack rewritten since. Plants: `tests/m0carried/plant81.py`.
+
+**Flip.**
+- `chain_open` p99 on a new head version above 400 ms in a row: back it out and check every pack as before.
+- A clone cut mid-answer by a pack whose header came from a head's record: the records no longer name the objects.
+
 ### `learner-cadence`: a learner sends read-index batches at most every 200 ms, and its append replies ride them, 2026-11-21
 
 **Status.** Reversed 2026-11-21: its flip fired on lcA2. Built on branch `r33-learner-cadence` from main `059378d2`

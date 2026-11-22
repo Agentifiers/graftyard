@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 graftyard-git = { path = "../../../crates/git", features = ["worker"] }
 graftyard-types = { path = "../../../crates/types" }
 worker = "0.8.7"
+serde_json = "1"
 
 [profile.release]
 lto = true

@@ -249,9 +249,10 @@ impl graftyard_git::compose::SetStore for ChainSets<'_> {
         hold_set(url, set);
     }
 
-    fn served(&self, from_set: usize, checked: usize) {
-        self.c.timing.put("chain_set", from_set as f64);
-        self.c.timing.put("chain_chk", checked as f64);
+    fn served(&self, s: graftyard_git::compose::Served) {
+        self.c.timing.put("chain_set", s.set as f64);
+        self.c.timing.put("chain_head", s.head as f64);
+        self.c.timing.put("chain_chk", s.checked as f64);
     }
 }
 

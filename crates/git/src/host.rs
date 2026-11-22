@@ -454,14 +454,15 @@ pub async fn open_chain_sets<'b>(
     m: &crate::compose::Manifest,
     sets: &impl crate::compose::SetStore,
 ) -> Result<crate::compose::ChainCheck<(&'b R2, Vec<CheckedPack>)>, StoreError> {
-    use crate::compose::{ChainCheck, ChainHead, Header};
+    use crate::compose::{ChainCheck, HeadObject, Header};
     let head_key = R2Key::Compose { network, file: "head".into() }.to_string();
-    let head = async |b: &R2| -> Result<Option<(String, ChainHead)>, StoreError> {
+    let head = async |b: &R2| -> Result<Option<(String, HeadObject)>, StoreError> {
         let Some(o) = b.0.get(&head_key).execute().await.map_err(err)? else { return Ok(None) };
         let version = o.version();
         let Some(body) = o.body() else { return Ok(None) };
         let bytes = body.bytes().await.map_err(err)?;
-        Ok(serde_json::from_slice::<ChainHead>(&bytes).ok().and_then(ChainHead::checked).map(|h| (version, h)))
+        let Ok(h) = serde_json::from_slice::<HeadObject>(&bytes) else { return Ok(None) };
+        Ok(h.chain.clone().checked().map(|chain| (version, HeadObject { chain, packs: h.packs })))
     };
     let check = async |b: &R2, key: String, n: u32| -> Result<Option<Header>, StoreError> {
         Ok(check_pack(b, &key, n).await?.map(|p| Header { n, etag: p.etag, body: p.body }))
@@ -480,16 +481,23 @@ pub async fn open_chain_sets<'b>(
 
 /// One chain pack's 12-byte header read from `bucket` and checked against `n`; `None` as `open_chain` says.
 async fn check_pack(bucket: &R2, key: &str, n: u32) -> Result<Option<CheckedPack>, StoreError> {
+    let Some(p) = pack_object(bucket, key).await? else { return Ok(None) };
+    if p.2 != n {
+        return Ok(None);
+    }
+    Ok(Some(CheckedPack { key: key.to_owned(), etag: p.0, body: p.1 - 32 }))
+}
+
+/// One chain pack's object in `bucket` as a head records it (`crate::compose::HeadPack`): its etag, size, and its
+/// header's object count, from one 12-byte ranged read; `None` when it is missing or not a pack.
+pub async fn pack_object(bucket: &R2, key: &str) -> Result<Option<crate::compose::HeadPack>, StoreError> {
     let range = worker::Range::OffsetWithLength { offset: 0, length: 12 };
     let Some(o) = bucket.0.get(key).range(range).execute().await.map_err(err)? else { return Ok(None) };
     if o.size() < 32 {
         return Ok(None);
     }
     let head = o.body().ok_or_else(|| StoreError(format!("{key}: no body")))?.bytes().await.map_err(err)?;
-    if crate::compose::pack_count(&head) != Some(n) {
-        return Ok(None);
-    }
-    Ok(Some(CheckedPack { key: key.to_owned(), etag: o.etag(), body: o.size() - 32 }))
+    Ok(crate::compose::pack_count(&head).map(|n| crate::compose::HeadPack(o.etag(), o.size(), n)))
 }
 
 /// The composed answer a manifest describes, from the chain packs `manifest_check` checked (`decisions/DECISIONS.md`,
@@ -1372,11 +1380,12 @@ impl ShardHost<'_> {
         builder: bool,
         synced: Option<&crate::compose::ChainHead>,
     ) -> Result<Option<crate::compose::ChainHead>, StoreError> {
-        use crate::compose::ChainHead;
+        use crate::compose::HeadObject;
         let head_key = R2Key::Compose { network, file: "head".into() }.to_string();
-        let read_head = async |b: &R2| -> Result<Option<ChainHead>, StoreError> {
+        let read_head = async |b: &R2| -> Result<Option<HeadObject>, StoreError> {
             let v = Bucket::get(b, &head_key).await?;
-            Ok(v.and_then(|v| serde_json::from_slice::<ChainHead>(&v).ok()).and_then(ChainHead::checked))
+            let Some(h) = v.and_then(|v| serde_json::from_slice::<HeadObject>(&v).ok()) else { return Ok(None) };
+            Ok(h.chain.clone().checked().map(|chain| HeadObject { chain, packs: h.packs }))
         };
         if builder {
             let (Some(head), _) = self.compose_step(network).await? else { return Ok(None) };
@@ -1385,14 +1394,28 @@ impl ShardHost<'_> {
             }
             for b in buckets {
                 let old = read_head(b).await?;
-                if old.as_ref() == Some(&head) {
-                    continue;
+                let Some(fetch) = HeadObject::plan(old.as_ref(), &head) else { continue };
+                for f in &fetch {
+                    self.store_chain_file(network, b, f).await?;
                 }
-                for f in head.to_fetch(old.as_ref()) {
-                    self.store_chain_file(network, b, &f).await?;
+                // `head-etags`: each pack's object as this bucket holds it after the puts, so an edge takes its header
+                // from the head and checks none. A pack this step did not put keeps the old head's record, which named
+                // the same object; any other is read back once. One that cannot be read leaves the head without packs,
+                // and the edge checks every pack as before.
+                let mut packs = Vec::new();
+                for (p, kept) in HeadObject::carried(old.as_ref(), &head, &fetch) {
+                    let key = R2Key::Compose { network, file: format!("{p}.pack") }.to_string();
+                    let Some(k) = (match kept {
+                        Some(k) => Some(k),
+                        None => pack_object(b, &key).await?,
+                    }) else {
+                        break;
+                    };
+                    packs.push(k);
                 }
-                b.0.put(&head_key, serde_json::to_vec(&head).map_err(err)?).execute().await.map_err(err)?;
-                if old.is_some_and(|o| o.base != head.base) {
+                let object = HeadObject::new(head.clone(), packs);
+                b.0.put(&head_key, serde_json::to_vec(&object).map_err(err)?).execute().await.map_err(err)?;
+                if old.is_some_and(|o| o.chain.base != head.base) {
                     let keep = head.files();
                     let stale: Vec<String> = Bucket::list(*b, &format!("compose/{}/", network.0.0))
                         .await?
@@ -1408,7 +1431,7 @@ impl ShardHost<'_> {
         let mut head = None;
         for b in buckets {
             if let Some(h) = read_head(b).await? {
-                head = Some(h);
+                head = Some(h.chain);
                 break;
             }
         }

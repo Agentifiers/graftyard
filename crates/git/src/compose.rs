@@ -60,6 +60,81 @@ impl ChainHead {
     }
 }
 
+/// R2's `compose/<net>/head` as the builder puts it: the container's chain, and beside it each chain pack's object as
+/// the builder found it in that bucket after putting it, in `ChainHead::packs` order (`head-etags`). The container
+/// never sees `packs`: `ready_chain` compares and installs `chain` alone, so two heads whose chains match are the same
+/// step whatever their packs say, and a head without packs (an older builder, or one past `HEAD_MAX`) reads as one
+/// with none, whose every pack the edge checks as before.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadObject {
+    #[serde(flatten)]
+    pub chain: ChainHead,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packs: Vec<HeadPack>,
+}
+
+/// One chain pack's object as a head names it: its R2 etag, its size, and its pack header's object count. A tuple on
+/// the wire, so a head of `foldEvery` packs stays under `HEAD_MAX`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadPack(pub String, pub u64, pub u32);
+
+/// The most bytes a head object may take with its packs; past it the builder puts the chain alone.
+pub const HEAD_MAX: usize = 2_048;
+
+impl HeadObject {
+    /// `chain`'s head with `packs`, or with none when they do not name every pack of the chain or would take the head
+    /// past `HEAD_MAX`.
+    pub fn new(chain: ChainHead, packs: Vec<HeadPack>) -> HeadObject {
+        let full = HeadObject { packs, chain };
+        if full.packs.len() == full.chain.packs().len()
+            && serde_json::to_vec(&full).map_or(usize::MAX, |b| b.len()) <= HEAD_MAX
+        {
+            return full;
+        }
+        HeadObject { chain: full.chain, packs: Vec::new() }
+    }
+
+    /// What the builder does to a bucket whose head is `old` to bring it to `chain`: `None` when `old` is already that
+    /// step, else the files to put before the head. The chains alone are compared, never the packs, so a head the
+    /// builder put with its packs is the same step as the container's chain without them, and a builder never puts a
+    /// head again only because the packs it would record differ.
+    pub fn plan(old: Option<&HeadObject>, chain: &ChainHead) -> Option<Vec<String>> {
+        if old.is_some_and(|o| &o.chain == chain) {
+            return None;
+        }
+        Some(chain.to_fetch(old.map(|o| &o.chain)))
+    }
+
+    /// The packs record for `chain` once `put` were put: each pack of `chain`, with the old head's record of it when
+    /// this step did not put it (the same object the old head named), else `None`, for the builder to read back.
+    pub fn carried(old: Option<&HeadObject>, chain: &ChainHead, put: &[String]) -> Vec<(String, Option<HeadPack>)> {
+        let kept = |name: &str| {
+            let o = old?;
+            let names = o.chain.packs();
+            if names.len() != o.packs.len() || put.iter().any(|f| f == &format!("{name}.pack")) {
+                return None;
+            }
+            names.iter().position(|n| n == name).map(|i| o.packs[i].clone())
+        };
+        chain.packs().into_iter().map(|p| (p.clone(), kept(&p))).collect()
+    }
+
+    /// Each named pack's header as a header set would hold it, by pack name (`ChainHead::packs`); none when the head
+    /// names no packs or not one for each of the chain's.
+    pub fn headers(&self) -> std::collections::BTreeMap<String, Header> {
+        let names = self.chain.packs();
+        if names.len() != self.packs.len() {
+            return Default::default();
+        }
+        names
+            .into_iter()
+            .zip(&self.packs)
+            .filter(|(_, p)| p.1 >= 32)
+            .map(|(n, p)| (n, Header { n: p.2, etag: p.0.clone(), body: p.1 - 32 }))
+            .collect()
+    }
+}
+
 /// Whether `name` is a chain file name: `base-<tip>` or `part-<from>-<to>`, then `.pack` or `.idx`.
 pub fn file_name_ok(name: &str) -> bool {
     let hex = |s: &str| s.len() == 40 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
@@ -299,7 +374,16 @@ impl SetStore for NoSets {
         None
     }
     fn put(&self, _: usize, _: &str, _: HeaderSet) {}
-    fn served(&self, _: usize, _: usize) {}
+    fn served(&self, _: Served) {}
+}
+
+/// Where an answer's chain packs' headers came from, for `server-timing`: a header set, the head object
+/// (`head-etags`), or a check.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Served {
+    pub set: usize,
+    pub head: usize,
+    pub checked: usize,
 }
 
 /// One chain pack's checked header as a header set keeps it: the manifest's count, the R2 etag the check read, and the
@@ -329,15 +413,17 @@ pub trait SetStore {
     fn enabled(&self) -> bool;
     async fn get(&self, bucket: usize, version: &str) -> Option<HeaderSet>;
     fn put(&self, bucket: usize, version: &str, set: HeaderSet);
-    /// How many of the answer's packs came from a set and how many were checked, for `server-timing`.
-    fn served(&self, from_set: usize, checked: usize);
+    /// Where the answer's packs' headers came from, for `server-timing`.
+    fn served(&self, served: Served);
 }
 
 /// `check_in_time` with header sets. For each of `buckets` in turn, `head(b)` reads its `head` object's version and
-/// chain (`None`: no head); a manifest pack that head names and whose set entry has the manifest's count comes from
-/// the set, and every other pack is checked by `check(b, key, n)`, `CHAIN_OPEN_AT_ONCE` at a time, in order. A
-/// bucket whose every check passed puts the set again with each newly checked pack its head names; a failed check
-/// puts nothing. All of it is bounded once by `CHAIN_CHECK_WITHIN`, as before.
+/// contents (`None`: no head). A manifest pack that head names comes, at the manifest's count, from the set kept under
+/// that version, else from the head's own record of the pack (`HeadObject::packs`, `head-etags`); every other pack is
+/// checked by `check(b, key, n)`, `CHAIN_OPEN_AT_ONCE` at a time, in order. Either way each body still streams on the
+/// etag it came with, so a pack replaced since ends the answer short. A bucket whose every check passed puts the set
+/// again with each newly checked pack its head names; a failed check puts nothing. All of it is bounded once by
+/// `CHAIN_CHECK_WITHIN`, as before.
 pub async fn check_with_sets<B, E, HF, CF, S, D>(
     buckets: impl IntoIterator<Item = B>,
     m: &Manifest,
@@ -348,7 +434,7 @@ pub async fn check_with_sets<B, E, HF, CF, S, D>(
 ) -> Result<ChainCheck<(B, Vec<(String, Header)>)>, E>
 where
     B: Copy,
-    HF: std::future::Future<Output = Result<Option<(String, ChainHead)>, E>>,
+    HF: std::future::Future<Output = Result<Option<(String, HeadObject)>, E>>,
     CF: std::future::Future<Output = Result<Option<Header>, E>>,
     S: FnOnce(std::time::Duration) -> D,
     D: std::future::Future<Output = ()>,
@@ -361,24 +447,33 @@ where
                 Some((v, _)) => store.get(i, v).await.unwrap_or_default(),
                 None => HeaderSet::default(),
             };
-            let files: Vec<String> = named.as_ref().map(|(_, h)| h.packs()).unwrap_or_default();
-            let in_head = |key: &str| files.iter().any(|f| key.ends_with(&format!("/{f}.pack")));
-            let from_set = |p: &ManifestPack| set.packs.get(&p.key).filter(|h| h.n == p.n && in_head(&p.key)).cloned();
-            let opens = m.packs.iter().map(|p| match from_set(p) {
-                Some(h) => Either::Left(ready(Ok(Some((p.key.clone(), h, false))))),
+            let files: Vec<String> = named.as_ref().map(|(_, h)| h.chain.packs()).unwrap_or_default();
+            let named_by_head = named.as_ref().map(|(_, h)| h.headers()).unwrap_or_default();
+            let name_of = |key: &str| files.iter().find(|f| key.ends_with(&format!("/{f}.pack"))).cloned();
+            let in_head = |key: &str| name_of(key).is_some();
+            let known = |p: &ManifestPack| {
+                let name = name_of(&p.key)?;
+                let at_count = |h: &&Header| h.n == p.n;
+                match set.packs.get(&p.key).filter(at_count) {
+                    Some(h) => Some((h.clone(), Src::Set)),
+                    None => named_by_head.get(&name).filter(at_count).map(|h| (h.clone(), Src::Head)),
+                }
+            };
+            let opens = m.packs.iter().map(|p| match known(p) {
+                Some((h, src)) => Either::Left(ready(Ok(Some((p.key.clone(), h, src))))),
                 None => {
                     let key = p.key.clone();
                     let c = check(b, key.clone(), p.n);
-                    Either::Right(async move { Ok(c.await?.map(|h| (key, h, true))) })
+                    Either::Right(async move { Ok(c.await?.map(|h| (key, h, Src::Checked))) })
                 }
             });
             let Some(got) = open_in_order(opens).await? else { continue };
-            let checked = got.iter().filter(|(_, _, c)| *c).count();
-            store.served(got.len() - checked, checked);
+            let count = |s: Src| got.iter().filter(|(_, _, c)| *c == s).count();
+            store.served(Served { set: count(Src::Set), head: count(Src::Head), checked: count(Src::Checked) });
             if let Some((v, _)) = &named {
                 let mut next = set.clone();
                 for (key, h, c) in &got {
-                    if *c && in_head(key) {
+                    if *c == Src::Checked && in_head(key) {
                         next.packs.insert(key.clone(), h.clone());
                     }
                 }
@@ -391,6 +486,14 @@ where
         Ok(None)
     };
     bounded(first, sleep).await
+}
+
+/// Where `check_with_sets` took one pack's header from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Src {
+    Set,
+    Head,
+    Checked,
 }
 
 /// Streams a composed answer's chain packs one after another: `open` one, hand it to `send`, which lets its R2 body
@@ -949,6 +1052,74 @@ mod tests {
         assert_eq!(h.to_fetch(Some(&h)), Vec::<String>::new());
         let base_only = ChainHead { base: id('a'), parts: vec![], tree: id('d') };
         assert_eq!(base_only.tip(), id('a'));
+    }
+
+    /// `head-etags`: the packs a head records sit outside every chain comparison, carry only for objects this step
+    /// did not put, and never take the head past `HEAD_MAX`.
+    #[test]
+    fn a_heads_pack_records_sit_beside_its_chain() {
+        let h = ChainHead { base: id('a'), parts: vec![id('b'), id('c')], tree: id('d') };
+        let rec = |e: &str| HeadPack(format!("\"{e}\""), 4_000, 7);
+        let old = HeadObject::new(h.clone(), vec![rec("1"), rec("2"), rec("3")]);
+        assert_eq!(old.packs.len(), 3);
+        // The same chain with other records is the same step: the builder puts nothing again.
+        assert_eq!(HeadObject::plan(Some(&old), &h), None);
+        let bare = HeadObject::new(h.clone(), vec![]);
+        assert_eq!(HeadObject::plan(Some(&bare), &h), None, "a head without packs is the same step too");
+        // A moved chain puts only its new files, and carries the records of the packs it did not put.
+        let next = ChainHead { base: id('a'), parts: vec![id('b'), id('c'), id('e')], tree: id('f') };
+        let put = HeadObject::plan(Some(&old), &next).unwrap();
+        let new_part = format!("part-{}-{}", id('c'), id('e'));
+        assert_eq!(put, [format!("{new_part}.pack"), format!("{new_part}.idx")]);
+        let carried = HeadObject::carried(Some(&old), &next, &put);
+        assert_eq!(
+            carried,
+            vec![
+                (format!("base-{}", id('a')), Some(rec("1"))),
+                (format!("part-{}-{}", id('a'), id('b')), Some(rec("2"))),
+                (format!("part-{}-{}", id('b'), id('c')), Some(rec("3"))),
+                (new_part.clone(), None),
+            ]
+        );
+        // A pack put again under its old name (a rebuild) is read back, never carried.
+        let again = [format!("base-{}.pack", id('a'))];
+        assert_eq!(HeadObject::carried(Some(&old), &h, &again)[0].1, None);
+        assert_eq!(HeadObject::carried(Some(&old), &h, &again)[1].1, Some(rec("2")));
+        // An old head without records, or whose records do not cover its chain, carries nothing.
+        assert!(HeadObject::carried(Some(&bare), &h, &[]).iter().all(|(_, k)| k.is_none()));
+        let short = HeadObject { chain: h.clone(), packs: vec![rec("1")] };
+        assert!(HeadObject::carried(Some(&short), &h, &[]).iter().all(|(_, k)| k.is_none()));
+        // After a fold the new base is put and nothing carries.
+        let folded = ChainHead { base: id('c'), parts: vec![], tree: id('d') };
+        let put = HeadObject::plan(Some(&old), &folded).unwrap();
+        assert_eq!(HeadObject::carried(Some(&old), &folded, &put), vec![(format!("base-{}", id('c')), None)]);
+
+        // Records that do not name every pack are dropped, and so are records past HEAD_MAX.
+        assert!(HeadObject::new(h.clone(), vec![rec("1"), rec("2")]).packs.is_empty());
+        // A chain holds at most `foldEvery` (20) packs. Twenty with realistic etags, sizes and counts fit; twenty with
+        // u32-max sizes and counts do not, and fall back to the chain alone.
+        let hex = |i: usize| format!("{i:040x}");
+        let deep = ChainHead { base: hex(1), parts: (2..21).map(hex).collect(), tree: hex(0) };
+        let recs = |size: u64, n: u32| (0..20).map(|i| HeadPack(format!("{i:032x}"), size, n)).collect();
+        let fits = HeadObject::new(deep.clone(), recs(90_000_000, 40_000));
+        assert_eq!(fits.packs.len(), 20);
+        assert!(serde_json::to_vec(&fits).unwrap().len() <= HEAD_MAX);
+        let over = HeadObject::new(deep.clone(), recs(u32::MAX as u64, u32::MAX));
+        assert!(over.packs.is_empty(), "a head past HEAD_MAX keeps its chain alone");
+        assert_eq!(over.chain, deep);
+
+        // On the wire: the chain's fields flat, so the container's ChainHead reads a head with records as its chain,
+        // and a head without records reads back as one with none.
+        let bytes = serde_json::to_vec(&old).unwrap();
+        assert_eq!(serde_json::from_slice::<ChainHead>(&bytes).unwrap(), h);
+        assert_eq!(serde_json::from_slice::<HeadObject>(&bytes).unwrap(), old);
+        let plain = serde_json::to_vec(&h).unwrap();
+        assert_eq!(serde_json::from_slice::<HeadObject>(&plain).unwrap(), bare);
+        assert_eq!(serde_json::to_vec(&bare).unwrap(), plain);
+        // Headers: by pack name, body less the 32 bytes a check also takes off.
+        let hs = old.headers();
+        assert_eq!(hs[&format!("base-{}", id('a'))], Header { n: 7, etag: "\"1\"".into(), body: 3_968 });
+        assert!(bare.headers().is_empty() && short.headers().is_empty());
     }
 
     #[test]
