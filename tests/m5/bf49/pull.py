@@ -13,6 +13,9 @@ checks what it gets. The pure half and its reference test are crates/git/src/exp
 - `GET chains/{chain}/snapshots?at=<large>` for up to 3 `repo:<id>` chains: 404 (no snapshot) is accepted; a 200's
   frames are verified as (key, object) pairs, core tier first.
 - `GET packs/{pack_id}?network=<id>` for each --pack: `X-Graftyard-Checksum` equals the body's SHA-256.
+- --chain CHAIN (repeatable): pull these chains' entries too, whatever the feed's top N, such as `release`.
+- --org-token-file PATH with --org-own CHAIN and --org-other CHAIN: an org-scoped token gets 404 for `batches`, for
+  `release`, for `tokens:0`, and for the other owner's chain, and not 404 for its own chain.
 - --revoke: `DELETE token`, then `GET batches` every 250 ms for --probe-s seconds. PASS iff no 200 for a probe sent
   later than 10,000 ms (READ_CACHE) after the 204 arrived, and at least one 401.
 
@@ -370,7 +373,24 @@ def revoke(client, feed, probe_s):
     return r
 
 
-def run(client, chains_n, packs, do_revoke, probe_s):
+def org_checks(org, own, other):
+    """The org token's answers: 404 wherever its scope does not reach, and its own chain served."""
+    q = lambda c: urllib.parse.quote(c, safe=":.")
+    want = [("batches", "batches", 404), ("release entries", "chains/release/entries?from=1", 404),
+            ("tokens:0 entries", "chains/tokens:0/entries?from=1", 404)]
+    if other:
+        want.append((f"{other} entries", f"chains/{q(other)}/entries?from=1", 404))
+    if own:
+        want.append((f"{own} entries", f"chains/{q(own)}/entries?from=1", 200))
+    out = []
+    for name, path, status in want:
+        got, _, body = org.request(path)
+        out.append({"name": name, "want": status, "got": got, "pass": got == status,
+                    "body": "" if got == status else body[:160].decode(errors="replace")})
+    return out
+
+
+def run(client, chains_n, packs, do_revoke, probe_s, force=(), org=None, own=None, other=None):
     feed = Feed()
     report = {"batches": pull_batches(client, feed)}
     report["batches"]["errors"] += feed.errors
@@ -378,16 +398,20 @@ def run(client, chains_n, packs, do_revoke, probe_s):
     report["feed"]["position"] = f"{feed.position[0]}.{feed.position[1]}" if feed.position else None
     report["feed"]["per_chain"] = {c: [feed.first[c], feed.last[c]] for c in sorted(feed.last)}
     top = sorted(feed.last, key=lambda c: (-len(feed.rows[c]), c))[:chains_n]
+    top += [c for c in force if c not in top]
     report["entries"] = [pull_entries(client, c, feed) for c in top]
     repos = sorted((c for c in feed.last if re.fullmatch(r"repo:\d+", c)), key=lambda c: int(c[5:]))[:3]
     report["snapshots"] = [pull_snapshot(client, c) for c in repos]
     report["packs"] = [pull_pack(client, p) for p in packs]
+    if org:
+        report["org"] = org_checks(org, own, other)
     if do_revoke:
         report["revoke"] = revoke(client, feed, probe_s)
     checks = [("batches", not report["batches"]["errors"] and feed.objects > 0)]
     checks += [(f"entries {e['chain']}", not e["errors"]) for e in report["entries"]]
     checks += [(f"snapshots {s['chain']} ({s['status']})", not s["errors"]) for s in report["snapshots"]]
     checks += [(f"pack {p['pack']}", not p["errors"]) for p in report["packs"]]
+    checks += [(f"org token {o['name']} {o['want']}", o["pass"]) for o in report.get("org", [])]
     if do_revoke:
         checks.append(("revoke", report["revoke"]["pass"]))
     report["checks"] = [{"name": n, "pass": bool(ok)} for n, ok in checks]
@@ -431,13 +455,21 @@ def main(argv=None):
     ap.add_argument("--pack", action="append", default=[], metavar="NETWORK:PACK_ID", help="a pack to fetch")
     ap.add_argument("--revoke", action="store_true", help="revoke the token and probe until it is refused")
     ap.add_argument("--probe-s", type=float, default=30.0)
+    ap.add_argument("--chain", action="append", default=[], help="a chain whose entries to pull whatever the top N")
+    ap.add_argument("--org-token-file", help="an org-scoped export token, checked for its 404s")
+    ap.add_argument("--org-own", help="a chain the org token covers")
+    ap.add_argument("--org-other", help="a chain of another owner")
     a = ap.parse_args(argv)
     with open(a.token_file, encoding="utf-8") as f:
         token = f.read().strip()
     if not token or any(c.isspace() for c in token):
         print("pull.py: the token file does not hold one token", file=sys.stderr)
         return 2
-    report = run(Client(a.edge, token), a.chains, a.pack, a.revoke, a.probe_s)
+    org = None
+    if a.org_token_file:
+        with open(a.org_token_file, encoding="utf-8") as f:
+            org = Client(a.edge, f.read().strip())
+    report = run(Client(a.edge, token), a.chains, a.pack, a.revoke, a.probe_s, a.chain, org, a.org_own, a.org_other)
     report["edge"] = a.edge
     report["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     os.makedirs(a.out, exist_ok=True)
