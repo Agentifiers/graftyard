@@ -6,7 +6,13 @@ causes that still set the hits tail:
 - (b) `chain_open` on a new head version.
 
 No row runs until it is approved. Every number below is from mt15's samples (`tests/am1/raw/a1-samples-b0-34-mwr1wmg9.jsonl.gz`,
-run `mwr1wmg9`, the colo arm `read:cloneTtfb`). The counterfactual is `tests/fanout/tailcf.py`.
+run `mwr1wmg9`, the colo arm `read:cloneTtfb`). The counterfactual is `tests/fanout/tailcf.py`, whose default input is
+that file.
+
+**Where the samples live.** `tests/am1/raw/` is gitignored under the raw-samples policy (`tests/am1/.gitignore`), so
+the file is not in the repository. It exists only in the orb of thread T-01a1ccdd-6620-71fb-83ab-1b0ad470eb03, at
+`.worktrees/mt15/tests/am1/raw/a1-samples-b0-34-mwr1wmg9.jsonl.gz` under its repository root. A reviewer without it
+cannot rerun `tailcf.py`; the tables below are its printed output.
 
 **The model.** A hit's wall is client + front + max(gate, `chain_open`) + rest:
 - `gate` and `chain_open` run at once (`hit-gate`);

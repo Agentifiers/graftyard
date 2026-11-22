@@ -181,7 +181,11 @@ class Run {
         // `colo-gate`'s stages too: the age of a decision served from the isolate (`gate_iso`) or the data center
         // (`gate_colo`), the data-center match (`gate_match`), and the packs a header set served (`chain_set`) or
         // that were checked (`chain_chk`).
-        for (const m of (r.headers.get("server-timing") ?? "").matchAll(/(front|gate|chain_open|gate_iso|gate_colo|gate_match|chain_set|chain_chk);dur=(\d+)/g)) {
+        // b034-tail's too: whether `resolve` ran on a guess (`resolve_guess`: 0 none, 1 the isolate's, 2 the data
+        // center's link entry), whether the gate decided on rows read beside the front (`gate_beside`: 1 kept, 2 read
+        // again), a kept read on another repository (`beside_bad`, must stay absent), and packs a head's records
+        // served (`chain_head`).
+        for (const m of (r.headers.get("server-timing") ?? "").matchAll(/\b(front|gate|chain_open|gate_iso|gate_colo|gate_match|chain_set|chain_chk|chain_head|resolve_guess|gate_beside|beside_bad|beside_rows);dur=(\d+)/g)) {
           this.note(`${kind}:${m[1]}`, Number(m[2]), String(r.status));
           this.note(`${kind}:${cache}:${m[1]}`, Number(m[2]), compose ?? String(r.status));
         }
