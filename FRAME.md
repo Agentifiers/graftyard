@@ -270,6 +270,17 @@ The operator asked how to speed the run up. The orchestrator measured that hoste
 
 The orchestrator still reviews and merges every code change. The account-wide limit of $200 a day, the $180 hard stop, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
 
+### Operator decision, 2026-11-22, B0-33's commit line and three-run medians
+
+> "Approve both: line A and three-run medians"
+
+The 2026-11-20 decision left B0-33's Human and merge-queue line to be measured on the first valid run and recorded here. The orchestrator brought two readings of that run, sabA (`tests/am1/results/b033-rebase.md`), and the operator chose the first:
+
+- **B0-33's Human and merge-queue commit p99 is at most 3,912 ms.** That is B0-29's sampler on sabA's trace: two loaded rounds at p99 (3,620 ms) plus one median round (292 ms) [measured]. The alternative was the `/stats` reading, 2 × 1,136 + 359 = 2,631 ms. The 90% rule applies, so a run meets it at 4,347 ms. It replaces the 1 s line. The row's other pass lines and its fail column are unchanged.
+- **B0-33 is judged on the median of three runs on fresh placements,** as the 2026-11-20 decision sets for every row gated on commit p99. The run passes when the median run's p99 meets the line and no run passes its fail line. The reason is placement variance: across five m64-shaped rows the leader took about the same inputs (306 to 347 a second) at the same CPU, and its ticker stalls ran from 2.0 to 19.2 a minute by colo (EWR, IAD, ORD, ATL) [measured, `tests/am1/results/nochange-row.md`]. The cause is [inference] (`decisions/OPEN-QUESTIONS.md`, A41). One row against one row cannot measure a lever at this load.
+
+The daily spend limit, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
