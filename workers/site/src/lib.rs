@@ -28,6 +28,7 @@ mod fanout;
 mod faults;
 mod feed;
 mod fold_audit;
+mod gatecount;
 mod hookseq;
 mod host;
 mod inbox;

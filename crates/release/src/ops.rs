@@ -127,7 +127,7 @@ pub enum Step {
     Shards { pct: u8, dwell: u64 },
 }
 
-fn version(fold: &ReleaseFold, r: &ReleaseId, s: Script) -> Option<VersionId> {
+pub(crate) fn version(fold: &ReleaseFold, r: &ReleaseId, s: Script) -> Option<VersionId> {
     fold.uploads.get(&r.0)?.versions.iter().find(|(x, _)| *x == s).map(|(_, v)| *v)
 }
 

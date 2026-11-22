@@ -3,7 +3,7 @@
 // bindings"). A class must exist before another script binds it, so a site that is new to the install is first deployed
 // binding only its own classes. Usage:
 //   node workers/site/deploy.mjs <sites.json> [--genesis <genesis.json>] [--skip-build] [--test-faults] [--vars <vars.json>]
-//                                [--image <digest-pinned image>] [--anchor <install.toml>] [--roll-shards <edge url>]
+//                                [--image <digest-pinned image>] [--image-prev <image>] [--anchor <install.toml>] [--roll-shards <edge url>]
 //                                [--ops <graft-ops script>] [--var K=V ...] [--only <site id>] [--down <site id>]
 //                                [--audit-stream <Basin Pipelines stream id>] [--run-key <store id>/<secret name>]
 //                                [--ssh <store id> --ssh-image <digest-pinned image> --edge <edge script>] [--ssh-off]
@@ -67,6 +67,9 @@ const only = idFlag("--only");
 const down = idFlag("--down");
 const ii = flags.indexOf("--image");
 const image = ii >= 0 ? flags[ii + 1] : null;
+// `--image-prev <digest-pinned image>`: the previous release's git image as `git_prev`, which a shard starts until its
+// site's `ContainerDay` covers it (M5-WP4, `src/shard.rs`, `image`). Without it a shard asked for `git_prev` starts `git`.
+const imagePrev = flags.indexOf("--image-prev") >= 0 ? flags[flags.indexOf("--image-prev") + 1] : null;
 const si = flags.indexOf("--audit-stream");
 const auditStream = si >= 0 ? flags[si + 1] : null;
 const rki = flags.indexOf("--run-key");
@@ -140,6 +143,8 @@ function config(site, targets, own = true, phase1 = false) {
       ...(exportBucket ? { GRAFTYARD_EXPORT: "1" } : {}),
     },
     durable_objects: { bindings: bindings(site, targets, phase1) },
+    // The version id each member's gate counters are kept under (M5-WP4, `src/gatecount.rs`).
+    version_metadata: { binding: "VERSION" },
     // The script's own fetch handler, which runs each `PrSync` first attempt in a new invocation (prsync.rs, `in_band`),
     // and `--ops <name>`'s `graft-ops`, which unwraps hook secrets for `HookSequencer` (hookseq.rs).
     services: [
@@ -157,7 +162,10 @@ function config(site, targets, own = true, phase1 = false) {
     containers: [{
       class_name: "GitShard",
       scheduling_policy: "durable_object",
-      images: { git: image ? { image } : { dockerfile: resolve(here, "../../containers/git/Dockerfile") } },
+      images: {
+        git: image ? { image } : { dockerfile: resolve(here, "../../containers/git/Dockerfile") },
+        ...(imagePrev ? { git_prev: { image: imagePrev } } : {}),
+      },
     },
     // The SSH front's one container per site, `graft-sshd` (containers/ssh), started by its `SshFront` object.
     ...(sshStore ? [{

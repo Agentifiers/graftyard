@@ -913,8 +913,7 @@ impl ShardHost<'_> {
         // worker-rs 0.8.7's options carry no image or instance, so the object is built here.
         let o = js_sys::Object::new();
         let set = |k: &str, v: wasm_bindgen::JsValue| js_sys::Reflect::set(&o, &k.into(), &v).map(|_| ());
-        let images = js_sys::Reflect::get(c.as_ref(), &"images".into()).map_err(|_| StoreError("images".into()))?;
-        let image = js_sys::Reflect::get(&images, &self.image.into()).map_err(|_| StoreError("image".into()))?;
+        let image = self.image_value(&c)?;
         if image.is_undefined() {
             return Err(StoreError(format!("no image {:?} in this version's image map", self.image)));
         }
@@ -925,6 +924,13 @@ impl ShardHost<'_> {
         let start = js_sys::Reflect::get(c.as_ref(), &"start".into()).map_err(|_| StoreError("start".into()))?;
         js_sys::Function::from(start).call1(c.as_ref(), &o).map_err(|e| StoreError(format!("start: {e:?}")))?;
         Ok(())
+    }
+
+    /// The image map's entry this shard starts. The caller already turned `git_prev` into `git` for a map without it.
+    fn image_value(&self, c: &worker::Container) -> Result<wasm_bindgen::JsValue, StoreError> {
+        let images = js_sys::Reflect::get(c.as_ref(), &"images".into()).map_err(|_| StoreError("images".into()))?;
+        let get = |k: &str| js_sys::Reflect::get(&images, &k.into()).map_err(|_| StoreError("image".into()));
+        get(self.image)
     }
 
     /// Sets the container's inactivity timeout (the API's maximum, 6 h).

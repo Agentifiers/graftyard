@@ -64,7 +64,8 @@ if (executor) {
     GRAFTYARD_CUSTOMER_KEY: anchor.customer_key,
     CF_ACCOUNT: process.env.CLOUDFLARE_ACCOUNT_ID,
     OPS_SCRIPTS: JSON.stringify(executor.scripts),
-    GATE: executor.gate ?? "pending",
+    // M5-WP4: unset reads the real gate; a test install may force `pass`, `pending`, or `breach:<why>`.
+    ...(executor.gate ? { GATE: executor.gate } : {}),
     ...(executor.step_dwell_ms != null ? { STEP_DWELL_MS: String(executor.step_dwell_ms) } : {}),
     ...(executor.first_day_ms != null ? { FIRST_DAY_MS: String(executor.first_day_ms) } : {}),
   };
