@@ -7340,7 +7340,7 @@ arrived, past one retry: then `resume` is not reached on that path.
 
 ### `beside`: a cold isolate guesses the repository from the data center, and the read gate's rows start beside the front, 2026-11-22
 
-**Status.** Built on branch `b034-tailbuild` from the lead's ruling on `tests/am1/results/b034-tail.md` (lever (a), `beside`), not yet measured hosted. Edge only; it ships on an edge day.
+**Status.** Built on branch `b034-tailbuild` from the lead's ruling on `tests/am1/results/b034-tail.md` (lever (a), `beside`), not yet measured hosted. Edge only; it ships on an edge day. As merged (main `c3952949`) its edge trapped on every request on graft-m1, "memory access out of bounds" (Workers error 1101): the `fetch` future grew from 142 KB to 1.39 MB, past wasm's 1 MiB stack, because `chained` and the gate each held their guessed and fresh reads inline in every caller [measured, `-Zprint-type-sizes`; a 4 MiB stack served the same build]. Branch `b034-tailfix` boxes the `chained` future in `resolve_on` and `colo::gate` in `read_gate`, which brings `fetch` to 129 KB, and adds `tests/edgeboot/run.sh`, the edge's wasm in local workerd on the cold-guess path, as a required check and a CI job.
 
 **Decision.**
 - A fetch on an isolate with no login and `Placement` answer for the owner (`rcache::last`) matches a link entry in the data center's Cache API: a SHA-256 of the login and the repository name in their compared forms, on `colo-gate`'s fixed origin. Its value is the repository, owner and placement record a fresh `resolve` last answered, put after a resolve that answered another.

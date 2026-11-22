@@ -103,6 +103,41 @@ jobs:
           (cd workers/front && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
           (cd workers/runners && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
 
+  edgeboot:
+    # The edge's own wasm, served in local workerd with no bindings, answers without a trap on the cold-guess path
+    # (tests/edgeboot/run.sh). Native tests and clippy never run the wasm: mt16's edge (c3952949) overflowed wasm's 1 MiB
+    # stack on every request and passed every other check.
+    name: Edge wasm boot (workerd)
+    runs-on: [self-hosted, srv]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # tests/fanout/raw is 465 MB of measurement logs that only the design checks read.
+          sparse-checkout: |
+            /*
+            !/tests/fanout/raw/
+          sparse-checkout-cone-mode: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 3
+        continue-on-error: true
+        with:
+          key: edgeboot
+      - uses: taiki-e/install-action@v2
+        with:
+          # Not in install-action's own list: it falls back to cargo-binstall. Pinned to the version the orbs build with.
+          tool: worker-build@0.8.7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --prefix tests/m0
+      - run: bash tests/edgeboot/run.sh
+      - run: PRODUCT=1 bash tests/edgeboot/run.sh
+
   rust-test:
     name: Rust tests (${{ matrix.shard }}/4)
     runs-on: [self-hosted, srv]

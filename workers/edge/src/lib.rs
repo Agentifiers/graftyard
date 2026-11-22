@@ -182,7 +182,9 @@ async fn resolve_on(
 ) -> Result<std::result::Result<Option<Repo>, String>> {
     let Ok(name) = RepoName::parse(repo) else { return Ok(Ok(None)) };
     let guess = held_guess(owner).or_else(|| linked.map(|r| (r.owner, r.record.clone())));
-    Ok(chained(guess, account_of(c, owner), |a| placement(c, a), |a, r| named(c, a, r, &name)).await)
+    // Boxed: `chained` holds each read twice (its guessed and its fresh run), and inline in every caller's future it
+    // took the edge past wasm's 1 MiB stack on every request (mt16's first edge, `beside`).
+    Ok(Box::pin(chained(guess, account_of(c, owner), |a| placement(c, a), |a, r| named(c, a, r, &name))).await)
 }
 
 /// This isolate's last login and `Placement` answers for `owner`, at any age: `resolve`'s guess.
@@ -409,7 +411,8 @@ async fn read_gate(
     let share = c.read_class.get() && !colo_off(c);
     let url = colo::gate_url(repo.id, k.1, &repo.record);
     let io = GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside) };
-    let g = colo::gate(&io, share).await;
+    // Boxed for the same reason: with `beside` the gate holds both its fresh read and the rows read beside the front.
+    let g = Box::pin(colo::gate(&io, share)).await;
     match g.served {
         colo::Served::Read => {}
         colo::Served::Isolate(age) => c.timing.put("gate_iso", age as f64),
@@ -1633,6 +1636,11 @@ struct Ctx<'a> {
     /// the isolate's caches alone, as before the share, so one row measures both arms.
     #[cfg(feature = "test-faults")]
     colo_off: bool,
+    /// `tests/edgeboot/run.sh` (`x-graft-link: <repo id>,<owner id>` with the bed token): this request's link guess, as
+    /// if the data center's entry named that repository on the genesis `names` record, so a bed with no Cache API entry
+    /// and no members still takes `beside`'s cold-guess path.
+    #[cfg(feature = "test-faults")]
+    link_guess: Option<(i64, i64)>,
     /// `authenticate`'s token's App, when it is a user-to-server token.
     token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
     /// `authenticate`'s token's optional fields: a `github_pat_`'s scope, which REST reads check (`usertok::reaches`).
@@ -1717,6 +1725,8 @@ impl<'a> Ctx<'a> {
             push_end: std::cell::RefCell::new(None),
             #[cfg(feature = "test-faults")]
             colo_off: false,
+            #[cfg(feature = "test-faults")]
+            link_guess: None,
             token_app: std::cell::Cell::new(None),
             token_fields: std::cell::RefCell::new(token_fields),
             agent_session: false,
@@ -3667,6 +3677,21 @@ async fn serve(
             req.headers().get("x-bed-token")?.as_deref(),
             env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
         ),
+        #[cfg(feature = "test-faults")]
+        link_guess: req
+            .headers()
+            .get("x-graft-link")?
+            .filter(|_| {
+                lean_asked(
+                    true,
+                    req.headers().get("x-bed-token").ok().flatten().as_deref(),
+                    env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
+                )
+            })
+            .and_then(|v| {
+                let (r, o) = v.split_once(',')?;
+                Some((r.trim().parse().ok()?, o.trim().parse().ok()?))
+            }),
     };
     // A site's SSH front reaches the key lookup and git, and nothing else (`ssh`).
     if c.ssh_front && !ssh::front_path(&path) {
@@ -3819,6 +3844,15 @@ async fn serve(
         Some(u) => colo::match_link(u).await,
         None => None,
     };
+    #[cfg(feature = "test-faults")]
+    let linked = match (linked, c.link_guess.filter(|_| link.is_some())) {
+        (None, Some((r, o))) => c.system_record(ChainId::Ids).await.ok().map(|record| Repo {
+            id: RepoId(DbId(r)),
+            owner: AccountId(DbId(o)),
+            record,
+        }),
+        (l, _) => l,
+    };
     c.timing.put(
         "resolve_guess",
         if own {
@@ -3848,6 +3882,10 @@ async fn serve(
             let r = api::read_failed("the repository lookup failed; retry", &e);
             let res = text(rid, 503, &format!("the repository lookup failed; retry ({e})\n"))?;
             res.headers().set("retry-after", r.header("retry-after").unwrap_or("5"))?;
+            // A test install names the stages a failed lookup ran, so a bed shows whether it took a guess
+            // (`resolve_guess`) and read the gate's rows beside it (`beside_rows`), `tests/edgeboot/run.sh`.
+            #[cfg(feature = "test-faults")]
+            res.headers().set("server-timing", &c.timing.header())?;
             return Ok(res);
         }
     };
