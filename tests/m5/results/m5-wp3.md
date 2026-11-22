@@ -58,3 +58,48 @@ Raw records:
 - `raw/bf7/bf7.log`: the driver and the assertions.
 - `raw/bf7/answers.jsonl`: every edge answer.
 - `raw/bf7/crons.txt`: every `graft-ops` cron run's log lines, from `wrangler tail`. The 11:10:13Z run is missing because the tail dropped it; its `IntentDone` for R1 site a is in the group.
+
+## BF-43 rerun with `graft-ops` executing (2026-11-22)
+
+`build/BUILD-PLAN.md`, M5-WP2, row BF-43: an `EdgePointer` undo under a 1% `EdgeRoll` with the API blocked, then the next `EdgeRoll`. Pass: every request pins to N within `POINTER_TTL`, and the next `EdgeRoll` sets `None`. Fail: any request off N while pinned, or the pin survives.
+
+**Result: pass (done line 16:00:49Z).** `graft-m4a-ops` from main `dce09ec2` ran every step: the uploads and `ReleaseUploaded`, every split, every `IntentStep` and `IntentDone`, and the undo. With `DEPLOY_TOKEN` invalid and `GATE=breach:bf43`, its 15:35:45Z cron run committed the intent's pre-signed `EdgePointer` to N. It then waited with "no deployment of Edge read", because the API was blocked. Below, Workers-clock times have a Z; orb times are 20.75 s behind them (measured against the API's `Date` header).
+- **Breach to `EdgePointer` committed:** at most 5.6 s. The run was scheduled at 15:35:44.08Z, and site 0's `/view`, polled every second, first held the entry 4.6 s after the run started.
+- **`EdgePointer` committed to the pointer serving N:** 1.16 s to the first pinned request. 297 requests in that 1.16 s went unpinned, and 5 of them ran N+1, the last starting at +1.0 s. From +1.16 s to the API's restore, 36,391 of 36,391 requests ran N, and 36,390 carried the pin. From +5 s to the next roll, 0 of 99,936 requests were off N or unpinned.
+- **0 Cloudflare API calls on the request path while blocked.** `graft-front` and `graft-m4a-edge` bind no API token. The only token that could reach the API, `DEPLOY_TOKEN`, was invalid from 15:31:30Z to 15:37:57Z (the API answered it 400). It was restored 128 s after the commit was seen, once the pointer was serving N. In that 387 s window, 107,419 requests were answered (all 405 from the edge, none failed), and the edge's `wrangler tail` logged 0 exceptions. The edge's deployment did not move until the API came back (`5276c3ee`=1, `c343923c`=99 from 15:30:45Z to 15:40:45Z).
+- **Return and the next roll.** At 15:40:44Z `graft-ops` deployed N at 100% with N+1 at 0%, committed `IntentStep` and `IntentDone`, and went `Idle`. The next `EdgeRoll`, to e3, got 201 at 15:41:22Z. The last pinned request started 0.35 s after it, and 0 were pinned after +5 s. Under its 1% split, 199 of 19,514 requests ran e3. `graft-ops` then walked e3 at 10, 50 and 100%, and committed `IntentDone` at 16:00:49Z.
+- **Final edge:** `dd713c1c` (e3) at 100%, with `c343923c` (e1) at 0%. 0 alarms in 631,663 requests.
+
+The releases are three bundles of the same edge build, main `8561eaea` test-faults (wasm sha256 `712756282d42e336…`, the same as edge day 30's `5aa333b8`). Both edgeboot runs passed on that tree with 0 traps before any deploy. Each bundle's `formats.txt` lists edge day 30's 26 formats plus 65000.1, and each is signed by m4a's release key:
+
+| Bundle | Release id | Edge version | Difference |
+| --- | --- | --- | --- |
+| e1 (N) | `44c04e9b…` | `c343923c` | none |
+| e2 (N+1) | `5af23a25…` | `5276c3ee` | `edge/marker.js` |
+| e3 (the next roll) | `28af528e…` | `dd713c1c` | `edge/marker.js`, another label |
+
+| Time (Workers) | Step | Who | Answer |
+| --- | --- | --- | --- |
+| 14:56:20Z | `graft-m4a-ops` `4dec375f`, `OPS_SCRIPTS` + `edge`, `GATE=pass`, 60 s dwells, cron | deploy | — |
+| 15:06:01Z–15:06:43Z | e1, e2, e3 uploaded with `keep_bindings`, then `ReleaseUploaded` ×3 | `graft-ops` | group 84 → 87 |
+| 15:07:55Z | `EdgeRoll` e1, no undo (the edge's first roll in the group) | `release roll`, customer key | 201, index 754 |
+| 15:10:44Z–15:25:44Z | e1 at 1, 10, 50, 100%, then `IntentDone` | `graft-ops` | `c343923c`=100 |
+| 15:27:06Z | `EdgeRoll` e2, undo `EdgePointer { pin: e1 }` | `release roll` | 201, index 762 |
+| 15:30:44Z | e2 at 1% | `graft-ops` | `5276c3ee`=1, `c343923c`=99 |
+| 15:31:30Z | `DEPLOY_TOKEN` set to an invalid value | Secrets Store PATCH | API answers it 400 |
+| 15:31:48Z | `graft-m4a-ops` `cbb689e0`, `GATE=breach:bf43` | deploy | — |
+| 15:35:45Z | breach: the pre-signed `EdgePointer` to e1 | `graft-ops` | committed (entry 95); then "no deployment of Edge read" |
+| 15:37:57Z | real `DEPLOY_TOKEN` restored; `af566775` with `GATE=pass` | Secrets Store PATCH, deploy | — |
+| 15:40:44Z | e1 at 100%, e2 at 0%, `IntentStep`, `IntentDone` | `graft-ops` | `c343923c`=100, `5276c3ee`=0 |
+| 15:41:22Z | `EdgeRoll` e3, undo `EdgePointer { pin: e1 }` | `release roll` | 201, index 768; pin cleared |
+| 15:45:44Z–16:00:45Z | e3 at 1, 10, 50, 100%, then `IntentDone` | `graft-ops` | `dd713c1c`=100, `c343923c`=0 |
+| 16:01:35Z | `graft-m4a-ops` `5c8c0d16`, `GATE=pending`; Cron Trigger removed | deploy, `schedules` `[]` | — |
+
+Notes:
+- **The fix this needed.** Before `dce09ec2`, `ops::next` read the deployment before it checked the gate on a gated step. With the API blocked, that read is empty, so it waited and never committed the undo. A breach now goes first (`ops-breach-api-down`; `an_edge_breach_with_the_api_down_commits_the_pointer_undo_and_deploys_later`; plant82 mutant 24).
+- **The sampler** read `GET /api/graftyard/v1/release/entries` through a scratch `graft-m4a-front` (`c0c16374`, `EDGE` bound to `graft-m4a-edge`), at 8 at once. That route answers 405 with `x-graftyard-edge-version` for any host, which avoided an edge `HOST` change. The other front paths answer 404 here, because the edge routes by `HOST`. `graft-m4a-front` was deleted at 16:02:59Z.
+- **Gaps.** An orb executor restart at 15:35:21Z stopped the sampler, the tails and the view poller for 25 s. The breach run fell in that gap, but all three were back 3 s before the `EdgePointer` reached the view, so the numbers above are unaffected. The tail also dropped the 15:05Z cron, which did the uploads, and the 15:55Z cron; the group and the deployments API hold both.
+- **`keep_bindings`** held: each uploaded edge version has the same 42 bindings, compatibility date 2026-10-01 and `FORMATS_ENABLED` as `5aa333b8`.
+- **Spend:** 14:55Z to 16:02Z was $0.66 on graft-m4a, against the $10 stop (`tests/fanout/acctcost.py`); the install's day to 16:02Z was $3.67.
+
+Raw records in `raw/bf43/`: `bf43.log` (the driver), `answers.jsonl` (the posts, plus `bf43-undo` derived from `counts.jsonl` and the cron's scheduled time), `counts.jsonl` (site 0's entry count per second), `events.jsonl`, `crons.txt` (`graft-ops` log lines from `wrangler tail`), `per-second.jsonl.gz` (sampled requests per second by status, version and pin), and `report.txt`, which is `python3 tests/m5/wp2-report.py tests/m5/results/raw/bf43 --ok 405 --n c343923c-b7db-4555-a06d-8f137effdb01`. That report needs the per-request rows. They are 5.5 MB compressed, so they were not committed; they stay in the orb as `/tmp/bf43/bf43-rows.jsonl.gz`.

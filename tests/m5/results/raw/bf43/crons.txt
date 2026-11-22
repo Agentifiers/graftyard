@@ -1,0 +1,45 @@
+== 15:10:44 wall 2879 cpu 73 4dec375f ok
+   graft-ops Deployed(Edge, [(VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 1), (VersionId(5aa333b8-0af5-432f-9b26-3bc992180fe7), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795360306126)), why: "STEP_DWELL" }
+== 15:15:44 wall 4757 cpu 104 4dec375f ok
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Edge, [(VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 10), (VersionId(5aa333b8-0af5-432f-9b26-3bc992180fe7), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795360608065)), why: "STEP_DWELL" }
+== 15:20:44 wall 6581 cpu 74 4dec375f ok
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Edge, [(VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 50), (VersionId(5aa333b8-0af5-432f-9b26-3bc992180fe7), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795360909644)), why: "STEP_DWELL" }
+== 15:25:44 wall 3321 cpu 114 4dec375f ok
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Edge, [(VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 100)])
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 15:30:44 wall 2608 cpu 84 4dec375f ok
+   graft-ops Deployed(Edge, [(VersionId(5276c3ee-0ea5-4822-813e-12be87c92dbf), 1), (VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795361505985)), why: "STEP_DWELL" }
+== 15:35:45 wall 4519 cpu 104 cbb689e0 ok
+   graft-ops Committed("EdgePointer")
+   graft-ops Wait { until: None, why: "no deployment of Edge read" }
+== 15:40:44 wall 3291 cpu 91 af566775 ok
+   graft-ops Deployed(Edge, [(VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 100), (VersionId(5276c3ee-0ea5-4822-813e-12be87c92dbf), 0)])
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 15:45:44 wall 2084 cpu 128 af566775 ok
+   graft-ops Deployed(Edge, [(VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 1), (VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795362405690)), why: "STEP_DWELL" }
+== 15:50:44 wall 3202 cpu 92 af566775 ok
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Edge, [(VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 10), (VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795362707145)), why: "STEP_DWELL" }
+== 15:55:44 wall 6055 cpu 91 af566775 ok
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Edge, [(VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 50), (VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795363009141)), why: "STEP_DWELL" }
+== 16:00:45 wall 7697 cpu 210 af566775 ok
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Edge, [(VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 100), (VersionId(c343923c-b7db-4555-a06d-8f137effdb01), 0)])
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
