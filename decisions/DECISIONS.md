@@ -7684,7 +7684,8 @@ after the command's admission, and a follower verifies k+1 only after it applies
   (`export::report_due`). The object keeps the highest index per chain (`report_newer`), so a deposed leader's late
   report never moves the feed back.
 - **Rounds.** The `*/15` cron kicks a round on the site that binds `EXPORT` (site A); each round sends the next as a
-  `{"exportFeed": true}` message on site A's existing queue, delayed 10 s. The object's `export_round` claim
+  `{"exportFeed": true}` message on site A's existing queue, due 10 s after the round's own claim and sent at once
+  when the round ran longer (`next_round_delay_s`, since `export-period`; it was a 10 s delay after the round, R37). The object's `export_round` claim
   (`round_due`, 9 s) collapses a kick and a message that meet. A round folds in later objects, plans, reads each
   chain's rows six at a time, fills (`fill`, at most `OBJECT_BYTES_MAX` 8 MiB), checks, puts the object with
   `If-None-Match: *`, then writes the state.
@@ -7758,6 +7759,11 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
   reported chains rode the same object. Self-queued rounds chained with no cron, but every 28 s median: a round took
   15.5 s while the first sweep drained every group's log from index 1. That is this entry's flip on a round longer than
   `FEED_EVERY_MS`, still open (OPEN-QUESTIONS R37).
+- `export-period`: the next round is due `FEED_EVERY_MS` after its claim, and at once after a round that ran past it,
+  with the delay rounded up so `round_due` never refuses it and ends the chain. `export.rs`
+  `rounds_start_a_period_apart_and_a_long_round_starts_the_next_at_once`; plant84's two period mutants. A backlog now
+  runs rounds back to back: each is still capped at 200 chains and 8 MiB, and its reads go to non-leaders. A timed
+  window after a sweep's backlog drains settles R37.
 
 **Flip.**
 - The hosted BF-49 finds an entry missing or repeated against a chain's log, or a round longer than `FEED_EVERY_MS`:

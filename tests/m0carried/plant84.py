@@ -66,6 +66,12 @@ MUTANTS = [
      "rows.iter().filter(|r| !ROUND_PROBES.contains(&r.chain)).collect()", GIT),
     ("the sweep's counter reads another column", FEED,
      '"SELECT n FROM export_sweep WHERE k = 0"', '"SELECT k FROM export_sweep WHERE k = 0"', SITE),
+    # The round period (R37): the next round is due FEED_EVERY_MS after the claim, not after the round.
+    ("the next round waits a full period after the round ends", EXP,
+     '(claimed_ms + FEED_EVERY_MS).saturating_sub(now_ms).div_ceil(1000) as u32', '(FEED_EVERY_MS / 1000) as u32', GIT),
+    ("the next round's delay rounds down, under round_due's bar", EXP,
+     '(claimed_ms + FEED_EVERY_MS).saturating_sub(now_ms).div_ceil(1000) as u32',
+     '((claimed_ms + FEED_EVERY_MS).saturating_sub(now_ms) / 1000) as u32', GIT),
     # The member's `/log_rows` page.
     ("a leader with followers serves /log_rows", EXP,
      '!leading || (voters <= 1 && learners == 0)', '!leading || voters <= 3', GIT),

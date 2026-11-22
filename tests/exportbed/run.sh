@@ -84,8 +84,23 @@ grep -qE "export feed .*probed=[1-9]" "$B/dev.log" || { echo "FAIL: the round pr
 [ "$state" != "[]" ] || { echo "FAIL: no feed state written"; ok=0; }
 # The round sends the next one as a queue message delayed FEED_EVERY_MS (10 s); with no new commit it logs `idle`.
 # m3fx49b's message arrived as `{}` and the consumer read it as a PrSync batch, so no round followed the cron's.
-sleep 15
-grep -qE "export feed idle" "$B/dev.log" || { echo "FAIL: no queued round followed the cron's"; ok=0; }
+# Each queued round is due FEED_EVERY_MS after the last one's claim (`export::next_round_delay_s`, R37), so idle rounds,
+# which take well under a second here, start about 10 s apart: timed as their log lines appear.
+end=$(( $(date +%s) + 35 )); seen=0; times=()
+while [ "$(date +%s)" -lt "$end" ]; do
+  n=$(grep -c "export feed idle" "$B/dev.log")
+  while [ "$n" -gt "$seen" ]; do seen=$((seen + 1)); times+=("$(date +%s.%N)"); done
+  sleep 0.2
+done
+[ "$seen" -ge 1 ] || { echo "FAIL: no queued round followed the cron's"; ok=0; }
+if [ "$seen" -ge 2 ]; then
+  gaps=$(python3 -c "import sys; t=[float(x) for x in sys.argv[1:]]; print(' '.join(f'{b-a:.1f}' for a,b in zip(t,t[1:])))" "${times[@]}")
+  echo "idle rounds $seen, gaps s: $gaps"
+  python3 -c "import sys; sys.exit(0 if all(9.0 <= float(g) <= 12.5 for g in sys.argv[1:]) else 1)" $gaps \
+    || { echo "FAIL: queued rounds are not FEED_EVERY_MS apart"; ok=0; }
+else
+  echo "FAIL: fewer than two queued rounds in 35 s"; ok=0
+fi
 grep -E "export (feed|report)|does not decode" "$B/dev.log" | sed 's/^/log: /' | head -8
 if grep -qE "export report .*Error|round claim failed|export feed round failed|does not decode" "$B/dev.log"; then
   echo "FAIL: the feed logged an error"; ok=0

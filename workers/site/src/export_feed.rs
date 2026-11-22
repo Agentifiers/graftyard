@@ -4,8 +4,9 @@
 //! - **Reports.** Each leader sends its commit index and record to the feed site's registry object `export`
 //!   (`Host::report_commit`), at most once a round and only once it moved. The object keeps the highest per chain.
 //! - **Rounds.** Only the site that binds the export bucket (`EXPORT`, site A) runs them. The cron kicks one, and each
-//!   round that ran sends the next as a queue message delayed by FEED_EVERY_MS. The object's `export_round` claim
-//!   collapses a kick and a message that meet into one round (`export::round_due`).
+//!   round that ran sends the next as a queue message due FEED_EVERY_MS after its own claim, at once if it ran longer
+//!   (`export::next_round_delay_s`). The object's `export_round` claim collapses a kick and a message that meet into
+//!   one round (`export::round_due`).
 //! - **One round.** It reads `FeedState`, folds in any object written after it, plans the next batch from the reports,
 //!   reads each chain's rows from a learner or follower (`graftyard_lookup::log_rows`, never the leader), six at a time,
 //!   fills and checks the object, writes it create-only, and then writes the state. A round that dies between the two
@@ -87,12 +88,13 @@ pub async fn kick(env: &Env) {
         Ok(None) => return,
         Err(e) => return console_error!("export feed: the round claim failed: {e}"),
     };
+    let claimed = crate::now_ms();
     match Box::pin(round(env, &bucket, reports, sweep)).await {
         Ok(line) => console_log!("export feed {line}"),
         Err(e) => console_error!("export feed round failed: {e}"),
     }
     let next = MessageBuilder::new(NextRound { export_feed: true })
-        .delay_seconds((export::FEED_EVERY_MS / 1000) as u32)
+        .delay_seconds(export::next_round_delay_s(claimed, crate::now_ms()))
         .build();
     if let Err(e) = async { env.queue("PRSYNC")?.send(next).await }.await {
         console_error!("export feed: the next round's message failed, the cron restarts it: {e}");
