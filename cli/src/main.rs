@@ -157,6 +157,25 @@ enum ReleaseCmd {
         #[arg(long)]
         edge: Option<String>,
     },
+    /// Signs and submits release R's next intent in the roll order (`cli/src/release.rs`, `roll`).
+    Roll {
+        /// R: the release id, the SHA-256 of its `release.json`.
+        release: String,
+        /// The group's entries: a member's `/view` answers from position 0.
+        #[arg(long)]
+        entries: PathBuf,
+        /// The intent key (vendor or customer), which also pre-signs the undos.
+        #[arg(long)]
+        key: PathBuf,
+        /// How long the intent stays valid (`not_after`).
+        #[arg(long, default_value_t = 86_400 * 7)]
+        ttl_s: u64,
+        /// Write the signed intent here instead of posting it.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        edge: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -398,6 +417,9 @@ fn run(cli: Cli) -> Res<()> {
             release::entry(config, &spec, &out, prev.as_deref(), keys.as_deref())
         }
         Cmd::Release { cmd: ReleaseCmd::Post { input, edge } } => release::post(config, &input, edge.as_deref()),
+        Cmd::Release { cmd: ReleaseCmd::Roll { release, entries, key, ttl_s, out, edge } } => {
+            release::roll(config, &release, &entries, &key, ttl_s, out.as_deref(), edge.as_deref())
+        }
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
         Cmd::Ssh { cmd: SshCmd::Spectrum { account, zone, hostname, edge, delete } } => {
             let done = ssh::spectrum(&cf::Cf::from_env(&account)?, &zone, &hostname, &edge, delete)?;

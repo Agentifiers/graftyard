@@ -13,6 +13,7 @@
 
 mod codec;
 mod group;
+pub mod ops;
 mod types;
 pub mod view;
 
@@ -224,6 +225,9 @@ pub enum Refusal {
     PastLastStep { kind: &'static str, steps: u8 },
     #[error("{0}")]
     BadState(&'static str),
+    /// `FormatsEnable` before every site and lifeboat reports a release that reads the format (SHARED rule 3).
+    #[error("format {format} is not read by the release {by} reports")]
+    NotReported { format: Format, by: Box<str> },
     #[error("bad release record: {0}")]
     BadRecord(Box<str>),
     #[error("{0}")]
@@ -261,6 +265,7 @@ impl Refusal {
             Refusal::WrongStep { .. } => "WrongStep",
             Refusal::PastLastStep { .. } => "PastLastStep",
             Refusal::BadState(_) => "BadState",
+            Refusal::NotReported { .. } => "NotReported",
             Refusal::BadRecord(_) => "BadRecord",
             Refusal::Rejected(_) => "Rejected",
         }
@@ -274,6 +279,13 @@ impl Refusal {
         }
     }
 
+    /// Whether the refusal pages: the group refuses and pages on a release, pointer, `Rollback`, or `Abort` that cannot
+    /// read an enabled format (rule 4), and on a second drain-key drain (`design/DESIGN.md`, Shape, "Release group").
+    /// The edge and `graft-ops` write a `PAGE` line for each.
+    pub fn pages(&self) -> bool {
+        pages(self.variant())
+    }
+
     /// The digest a 409 names: the last committed entry, or the held genesis for a second one.
     pub fn current(&self) -> Option<Digest> {
         match self {
@@ -281,6 +293,11 @@ impl Refusal {
             _ => None,
         }
     }
+}
+
+/// `Refusal::pages` by the variant name a member's answer carries.
+pub fn pages(variant: &str) -> bool {
+    matches!(variant, "UnreadableFormat" | "DrainGuard")
 }
 
 fn bad_genesis(why: impl Into<String>) -> Refusal {

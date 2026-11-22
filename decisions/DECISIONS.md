@@ -3276,6 +3276,54 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** M5-WP3's gate, which reruns BF-43 with `graft-ops` executing.
 
+### M5-WP3: `graft-ops` executes intents, as built (2026-11-22)
+
+#### The executor is a pure function from the view and the deployments to one action
+
+**Decision.** `graftyard_release::ops` holds the executor's logic, and the `graft-ops` Worker is only its host:
+- `next(fold, world, dwell)` reads the `Release` fold, each script's deployment (`Split`, `created`) and the step's gate, and returns one action: deploy, commit (`IntentStep`, `SiteRelease`, `IntentDone`, the drain key's `SiteMode`), submit an undo, wait, or page.
+- `steps()` gives each intent kind its `ROLL_STEPS`. An undo or `Abort` runs drain, the target at 100%, then undrain; a pinned script's undo deploys the target at 100% and keeps the rolled release at 0%.
+- `upload_next` checks the bundle (the record verifies under `Keys.release`, every file it lists is present with its SHA-256, nothing else), uploads one script at a time, reuses a version already tagged with the release, and then commits `ReleaseUploaded`.
+- `next_roll` is `graftyard release roll`: the first intent of the Release roll order that R has not finished, skipping a script whose files R leaves unchanged.
+
+The fold gains what the executor needs: where each finished intent left each script and site (`rolled`, `containers`), each lifeboat's reported release, and `since`, the time of the last entry that moved the current intent.
+
+**Why.**
+- A restarted `graft-ops` must rerun only the first unrecorded step (`build/BUILD-PLAN.md`, M5-WP3). A host that keeps no state and asks one pure function the next action gets that from the fold.
+- The step's dwell counts from the later of `since` and the deployment's `created`, so a run that died between a deploy and its entry neither redeploys nor dwells less.
+
+**Beat.**
+- A Workflows instance per intent. It would keep step state outside the group, and a lost instance would need the fold to recover anyway.
+- Dwelling from `since` alone. A deploy that lands late would be judged early.
+
+**Evidence.** `crates/release/src/tests/group/ops.rs` (10 tests: the roll order to `IntentDone`; BF-7 in memory; a `graft-ops` killed after every action, with each deploy late by 30 minutes, reruns only the first unrecorded step; breach then undo; an edge `Abort` to N and to a third release; a `FrontRoll` breach pages; bundle checks; unchanged scripts skipped; an intent-key drain pages at undrain; lifeboat reports). `cli/src/release.rs`, `release_roll_signs_the_next_intent_on_the_last_digest_and_posts_it`. `tests/m0carried/plant82.py`: 19 of 19 caught.
+
+**Flip.** The hosted BF-7 on graft-m4a refuses neither undo, or pages on neither. BF-43 rerun with `graft-ops` executing ("The run stands in for `graft-ops`'s executor") is that entry's flip, and stays pending until it runs.
+
+#### `FormatsEnable` waits for every reader's report
+
+**Decision.** The group refuses `FormatsEnable` (`Refusal::NotReported`, no page) unless every site of the view, spares and residency sites included, has a `SiteRelease`, and every registered lifeboat a `LifeboatDecoder`, naming a release whose `ReleaseUploaded.reads` holds the format.
+
+**Why.** SHARED rule 3: a format is enabled only when every component that can read the chain reports a release that reads it. M5-WP1 checked only the two signatures, so a customer could enable a format a spare cannot read, and `ReplaceMember` would then refuse that spare.
+
+**Beat.** Checking in `graftyard formats enable` only. A CLI check is advisory, and the group is where the rule holds.
+
+**Evidence.** `formats_enable_waits_for_every_registered_lifeboat` and `a_release_or_undo_that_cannot_read_an_enabled_format_is_refused`; plant82 mutants 0 and 1. No committed `FormatsEnable` exists on any install (M5-WP1's only one was refused for a missing release half, `tests/m5/results/m5-wp1.md`), so no replay changes [inference from the run records].
+
+**Flip.** A component that reads the chain but reports no release, which would make the rule unsatisfiable.
+
+#### A pinned script keeps N at 0% after its roll
+
+**Decision.** An `EdgeRoll`, `OpsRoll` or `McpRoll` ends with R at 100% and N at 0% in the deployment.
+
+**Why.** The intent's pre-signed pointer back to N must still work after 100%, and "A version override will only be applied if the specified version is in the current deployment" (https://developers.cloudflare.com/workers/configuration/versions-and-deployments/gradual-deployments/) [doc]. The group already refuses an `EdgeRoll` that drops a version an undo names.
+
+**Beat.** A 100% deployment of R alone, which strands the undo.
+
+**Evidence.** plant82 mutant 11; `release_roll_runs_the_order_and_graft_ops_runs_each_intent_to_done`.
+
+**Flip.** The hosted BF-43 rerun shows a pin to a 0% version is not applied.
+
 ### M4-WP2's hosted half, as built (2026-11-13)
 
 #### M4-WP2's consumers run in band on the leader alarm

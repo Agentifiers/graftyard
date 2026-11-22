@@ -321,3 +321,186 @@ pub fn post(config: &Path, input: &Path, edge: Option<&str>) -> Res<()> {
     println!("{line}");
     Ok(())
 }
+
+/// The group's committed entries from a file of `/view` answers (`{"count", "entries": [[hex, at], ...]}`, one answer
+/// or a list of them, from position 0), replayed against this install's anchor: what `release roll` decides on. Every
+/// entry passes the group's own `check`, so a file another install wrote, or one with an entry changed, is refused.
+pub fn replay(t: &InstallToml, path: &Path) -> Res<graftyard_release::view::Replica> {
+    let v: Value = serde_json::from_slice(&fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let pages = match &v {
+        Value::Array(a) => a.clone(),
+        _ => vec![v],
+    };
+    let mut entries = Vec::new();
+    for p in &pages {
+        for e in p["entries"].as_array().into_iter().flatten() {
+            let bytes = e[0].as_str().and_then(unhex).ok_or("an entry is [hex, at]")?;
+            entries.push((bytes, Timestamp(e[1].as_u64().ok_or("an entry is [hex, at]")?)));
+        }
+    }
+    let mut r = graftyard_release::view::Replica::default();
+    r.extend(&t.anchor()?, 0, &entries).map_err(|e| format!("{}: {}: {e}", path.display(), e.variant()))?;
+    if r.fold.genesis.is_none() {
+        return Err(format!("{}: no genesis", path.display()));
+    }
+    Ok(r)
+}
+
+/// `graftyard release roll R`: from the group's entries (`--entries`), signs the first intent of the roll order that R
+/// has not finished, with its pre-signed undos, by `key`, bound to the last digest, and posts it, or writes it to
+/// `out`. One intent per run: the operator, or the vendor's release service, runs it again after each `IntentDone`.
+pub fn roll(
+    config: &Path,
+    release: &str,
+    entries: &Path,
+    key: &Path,
+    ttl_s: u64,
+    out: Option<&Path>,
+    edge: Option<&str>,
+) -> Res<()> {
+    use graftyard_release::ops::{Roll, next_roll, sign_intent};
+    let t = InstallToml::load(config)?;
+    let r = replay(&t, entries)?;
+    let rid = ReleaseId(h32(release)?);
+    let (intent, undo) = match next_roll(&r.fold, rid) {
+        Roll::Done => {
+            println!("{{\"roll\": \"done\", \"release\": \"{release}\"}}");
+            return Ok(());
+        }
+        Roll::Wait(why) => return Err(format!("release roll waits: {why}")),
+        Roll::Next { intent, undo } => (intent, undo),
+    };
+    let seed = read_private_key(key)?;
+    let id = IntentId(Ulid::new(now(), random()));
+    let e = sign_intent(&r.fold, intent, &undo, &seed, id, now(), ttl_s * 1000);
+    let kind = match &e.body {
+        ReleaseEntry::Intent(i) => format!("{:?}", i.intent),
+        _ => unreachable!("sign_intent signs an intent"),
+    };
+    eprintln!("release roll: intent {} {kind}, {} undo(s)", id.0, undo.len());
+    if let Some(out) = out {
+        fs::write(out, e.encode()).map_err(|e| format!("{}: {e}", out.display()))?;
+        println!("{}", serde_json::json!({ "intent": id.0.to_string(), "wrote": out.display().to_string() }));
+        return Ok(());
+    }
+    let edge = edge.map(String::from).unwrap_or_else(|| format!("https://{}", t.zone));
+    let line = match post_entry(&edge, &e.encode())? {
+        Answer::Created { index, digest } => serde_json::json!({ "status": 201, "index": index, "digest": digest }),
+        Answer::Stale { prev, index } => serde_json::json!({ "status": 409, "prev": prev, "index": index }),
+        Answer::Refused { status, message, refusal } => {
+            serde_json::json!({ "status": status, "refusal": refusal, "message": message })
+        }
+    };
+    println!("{}", serde_json::json!({ "intent": id.0.to_string(), "answer": line }));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use graftyard_release::{Format, FormatSet, ReleaseFold, sign_record};
+    use serde_json::json;
+    use sha2::Digest as _;
+
+    use super::*;
+    use crate::genesis::sign;
+    use crate::genesis::tests::{install_toml, key_file, make_genesis, scratch, serve};
+
+    const CUSTOMER: [u8; 32] = [7; 32];
+
+    /// A `/view` answer of `entries` with their times, as a member gives it.
+    fn view(entries: &[(Vec<u8>, Timestamp)]) -> Value {
+        let e: Vec<Value> = entries.iter().map(|(b, at)| json!([crate::config::hex(b), at.0])).collect();
+        json!({ "count": e.len(), "entries": e, "pending": [] })
+    }
+
+    /// `release roll` reads the group's entries, signs the first unfinished intent with its undo to the release the
+    /// site runs, binds it to the last digest, and posts it; the edge's group accepts it. A file with a changed entry
+    /// is refused before anything is signed.
+    #[test]
+    fn release_roll_signs_the_next_intent_on_the_last_digest_and_posts_it() {
+        let dir = scratch();
+        let config = install_toml(&dir, &CUSTOMER);
+        let unsigned = make_genesis(&dir, &config, "genesis.unsigned");
+        let ckey = key_file(&dir, "customer.key", &CUSTOMER, false);
+        let signed = dir.join("genesis.signed");
+        sign(&unsigned, &signed, &ckey, None).unwrap();
+        let t = InstallToml::load(&config).unwrap();
+        let anchor = t.anchor().unwrap();
+        let mut fold = ReleaseFold::default();
+        let mut log: Vec<(Vec<u8>, Timestamp)> = Vec::new();
+        let mut at = Timestamp(1_790_000_000_000);
+        let mut commit = |fold: &mut ReleaseFold, b: Vec<u8>, log: &mut Vec<_>| {
+            at = Timestamp(at.0 + 60_000);
+            let ev = fold.decide(&anchor, at, &b).unwrap();
+            fold.apply(&ev, at);
+            log.push((b, at));
+        };
+        commit(&mut fold, fs::read(&signed).unwrap(), &mut log);
+        // Release R's upload, signed by the executor key `graftyard genesis` made; offline keys are lost, so a
+        // `Keys` names a known executor first.
+        let exec = [5u8; 32];
+        let mut k = fold.keys.clone().unwrap();
+        k.generation += 1;
+        k.executor = graftyard_release::public_key(&exec);
+        let bound =
+            |f: &ReleaseFold| Bound { install: anchor.install, group: ChainId::Release, prev: f.last, parent: None };
+        let mut e = SignedEntry::unsigned(bound(&fold), ReleaseEntry::Keys(Box::new(k)));
+        e.sign(&CUSTOMER);
+        commit(&mut fold, e.encode(), &mut log);
+        let reads = FormatSet::new([Format { family: 32, version: 1 }]);
+        let rec = format!(
+            r#"{{"files":[{{"name":"formats.txt","sha256":"{}"}}]}}"#,
+            crate::config::hex(&sha2::Sha256::digest(reads.file().as_bytes()))
+        )
+        .into_bytes();
+        let rid = ReleaseId(sha2::Sha256::digest(&rec).into());
+        let up = ReleaseUploaded {
+            release: rid,
+            record_sig: sign_record(&[3; 32], &rec),
+            record: rec.into(),
+            versions: (0..4).map(|s| (Script::Site(SiteId(s)), graftyard_release::VersionId([s + 1; 16]))).collect(),
+            images: smallvec::SmallVec::new(),
+            reads,
+        };
+        let mut e = SignedEntry::unsigned(bound(&fold), ReleaseEntry::ReleaseUploaded(Box::new(up)));
+        e.sign(&exec);
+        commit(&mut fold, e.encode(), &mut log);
+        let entries = dir.join("view.json");
+        fs::write(&entries, serde_json::to_vec(&view(&log)).unwrap()).unwrap();
+
+        let last = fold.last;
+        let (url, seen) = serve(1, move |s| {
+            let e = SignedEntry::decode(&s.body).unwrap();
+            assert_eq!(e.bound.prev, last, "bound to the group's last digest");
+            match fold.decide(&anchor, Timestamp(at.0 + 60_000), &s.body) {
+                Ok(ev) => (201, json!({ "index": 9, "digest": ev.digest().hex() }).to_string()),
+                Err(e) => (422, json!({ "message": e.to_string(), "refusal": e.variant() }).to_string()),
+            }
+        });
+        roll(
+            &config,
+            &rid.0.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            &entries,
+            &ckey,
+            3_600,
+            None,
+            Some(&url),
+        )
+        .unwrap();
+        let s = seen.recv().unwrap();
+        let e = SignedEntry::decode(&s.body).unwrap();
+        let ReleaseEntry::Intent(i) = e.body else { panic!("not an intent") };
+        assert_eq!(i.intent, graftyard_release::Intent::SiteDay { target: DayTarget::Site(SiteId(0)), release: rid });
+        assert!(i.undo.is_empty(), "no site reports a release yet, so there is no N to roll back to");
+
+        // One entry changed in the file: the replay refuses it, and nothing is signed.
+        let mut bad = log.clone();
+        bad[2].0[40] ^= 1;
+        fs::write(&entries, serde_json::to_vec(&view(&bad)).unwrap()).unwrap();
+        let r = roll(&config, &"00".repeat(32), &entries, &ckey, 3_600, Some(&dir.join("x")), None);
+        assert!(r.is_err(), "{r:?}");
+        assert!(!dir.join("x").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

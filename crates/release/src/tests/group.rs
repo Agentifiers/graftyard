@@ -433,6 +433,11 @@ fn a_release_or_undo_that_cannot_read_an_enabled_format_is_refused() {
     let mut e = SignedEntry::decode(&g.entry(ReleaseEntry::FormatsEnable { format: f }, &[&CUSTOMER])).unwrap();
     e.sigs.push((public_key(&RELEASE), Signature([0; 64])));
     assert_eq!(g.no(e.encode()), Refusal::BadSignature);
+    // Every site, the spare included, reports release 3, which reads 32.3 (SHARED rule 3).
+    for site in 0..4 {
+        let b = g.entry(ReleaseEntry::SiteRelease { site: SiteId(site), release: rel(3).0 }, &[&EXECUTOR]);
+        g.ok(b);
+    }
     let mut e = SignedEntry::decode(&g.entry(ReleaseEntry::FormatsEnable { format: f }, &[&CUSTOMER])).unwrap();
     e.sigs.push((public_key(&RELEASE), half));
     g.ok(e.encode());
@@ -1214,3 +1219,7 @@ fn the_edge_prechecks_signers_against_its_cached_keys() {
     let k = SignedEntry::decode(&g.entry(ReleaseEntry::Keys(Box::new(rotated)), &[&CUSTOMER, &NEW_CUSTOMER])).unwrap();
     assert_eq!(r.precheck(&k), Ok(()));
 }
+
+// ---- graft-ops, the executor (M5-WP3) ----
+
+mod ops;

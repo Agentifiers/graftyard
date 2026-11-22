@@ -460,13 +460,13 @@ pub(crate) mod tests {
         })
     }
 
-    fn scratch() -> std::path::PathBuf {
+    pub(crate) fn scratch() -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("graftyard-cli-test-{}", hex(&random::<6>())));
         fs::create_dir_all(&d).unwrap();
         d
     }
 
-    fn install_toml(dir: &Path, customer: &[u8; 32]) -> std::path::PathBuf {
+    pub(crate) fn install_toml(dir: &Path, customer: &[u8; 32]) -> std::path::PathBuf {
         use graftyard_types::{Region, Site, SiteLink, Timestamp};
         let site = |id: u8, region: Region, spare: bool| Site {
             id: SiteId(id),
@@ -506,14 +506,14 @@ pub(crate) mod tests {
         p
     }
 
-    fn key_file(dir: &Path, name: &str, seed: &[u8; 32], public: bool) -> std::path::PathBuf {
+    pub(crate) fn key_file(dir: &Path, name: &str, seed: &[u8; 32], public: bool) -> std::path::PathBuf {
         let p = dir.join(name);
         let text = if public { public_key(seed).hex() } else { hex(seed) };
         fs::write(&p, text + "\n").unwrap();
         p
     }
 
-    fn make_genesis(dir: &Path, config: &Path, out: &str) -> std::path::PathBuf {
+    pub(crate) fn make_genesis(dir: &Path, config: &Path, out: &str) -> std::path::PathBuf {
         let release = key_file(dir, "release.pub", &[3; 32], true);
         let out = dir.join(out);
         let args = GenesisArgs { out: &out, release_key: &release, vendor_key: None, sites: None, offline_keys: true };
