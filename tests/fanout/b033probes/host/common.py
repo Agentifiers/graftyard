@@ -1,0 +1,25 @@
+import bisect, collections, json, lzma, os, sys
+# Raw traces: tests/fanout/raw under the current directory (run from the repository root), or $B033_RAW.
+RAW = os.environ.get('B033_RAW', 'tests/fanout/raw')
+def raw_path(tag): return os.path.join(RAW, f'tsave-{tag}.jsonl.xz')
+from datetime import datetime
+RUNS = {  # tag: (load start ISO, leader site, seconds of site-0 leadership to use)
+    'sabA': ('2026-11-21T11:37:06Z', 300), 'blA': ('2026-11-22T02:44:24Z', 300), 'blB': ('2026-11-22T03:25:41Z', 300),
+    'blC2': ('2026-11-22T04:15:03Z', 300), 'ncA': ('2026-11-22T01:32:10Z', 216), 'chA': ('2026-11-21T22:07:57Z', 300),
+    'crA': ('2026-11-21T23:49:06Z', 300), 'm64r33': ('2026-11-21T00:11:46Z', 144)}
+COLO = {'sabA': 'EWR', 'blB': 'EWR', 'blA': 'IAD', 'blC2': 'IAD', 'chA': 'IAD', 'm64r33': 'IAD', 'crA': 'ORD', 'ncA': 'ATL'}
+def ms(s): return int(datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp() * 1000)
+def pc(xs, q):
+    xs = sorted(xs); return round(xs[min(len(xs) - 1, int(q * len(xs)))]) if xs else None
+def load(tag, sites=(0,), pad=0):
+    a = ms(RUNS[tag][0]); b = a + 1000 * RUNS[tag][1]
+    rows, seen = collections.defaultdict(list), set()
+    for line in lzma.open(raw_path(tag), 'rt'):
+        d = json.loads(line)
+        if 'rows' not in d or 'learner' in d or d.get('site') not in sites: continue
+        for r in d['rows']:
+            k = (d['site'],) + tuple(r)
+            if k not in seen and a - pad <= r[0] < b + pad: seen.add(k); rows[d['site']].append(r)
+    for s in rows: rows[s].sort(key=lambda r: r[0])
+    return a, b, rows
+def I(x): return int(float(x))
