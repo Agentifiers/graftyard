@@ -153,7 +153,7 @@ impl Compose {
         let site = SiteEnv::read(&self.env).map_err(|e| e.to_string())?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let instance = instance(&self.env).map_err(|e| e.to_string())?.0;
-        let host = ShardHost { state: &self.state, region, image: "git", instance };
+        let host = ShardHost { state: &self.state, region, image: image(&self.env, &self.state, site.id), instance };
         let home = self.record.home;
         let ns = self.env.durable_object(&format!("SHARD_{}", site.id.0)).map_err(|e| e.to_string())?;
         let first = ns.id_from_name(&format!("git#{}#net:{}", site.id.0, self.net.0.0)).map_err(|e| e.to_string())?;
@@ -249,6 +249,51 @@ fn instance(env: &Env) -> Result<(&'static str, f32)> {
         .ok_or_else(|| Error::RustError(format!("SHARD_INSTANCE {name:?} is not a Containers instance type")))?;
     let vcpu = graftyard_git::prsync::instance_vcpu(name).expect("listed above");
     Ok((name, vcpu))
+}
+
+/// The image map key this shard object starts (`graftyard_git::image_for`): `git` once its site's `ContainerDay` step
+/// covers it, `git_prev` before and after that day's rollback (`graftyard_release::gate::shard_day` on the `Release`
+/// view, refreshed beside the request when due). A container already running another image is stopped once, at its
+/// next fetch or alarm, so it restarts on this one (`restart_on_image`).
+fn image(env: &Env, state: &State, site: SiteId) -> &'static str {
+    if graftyard_lookup::view::due()
+        && let (Some(anchor), Ok(se)) = (crate::release::anchor(env), SiteEnv::read(env))
+    {
+        graftyard_lookup::view::refresh_beside(env, &se.sites, &anchor, None, true);
+    }
+    // An install with no `Release` group (a test install's genesis shortcut) has no ContainerDay: every shard on `git`.
+    if graftyard_lookup::view::with(|r| r.fold.genesis.is_none()) {
+        return "git";
+    }
+    let step = graftyard_lookup::view::with(|r| graftyard_release::gate::shard_day(&r.fold, site));
+    let want = graftyard_git::image_for(site, &state.id().to_string(), step).name();
+    // A version whose image map has no `git_prev` (deployed without `--image-prev`) starts `git` for it, so the key
+    // compared and stored is the one that starts.
+    let has = |k: &str| {
+        state.container().is_some_and(|c| {
+            js_sys::Reflect::get(c.as_ref(), &"images".into())
+                .and_then(|m| js_sys::Reflect::get(&m, &k.into()))
+                .is_ok_and(|v| !v.is_undefined())
+        })
+    };
+    if want == "git_prev" && !has("git_prev") { "git" } else { want }
+}
+
+/// The image a running container was started on, in the object's storage, and a stop when the view names another.
+async fn restart_on_image(state: &State, image: &str) -> Result<()> {
+    let s = state.storage();
+    let ran: Option<String> = s.get("image").await.ok().flatten();
+    let running = state.container().is_some_and(|c| c.running());
+    if running && ran.as_deref().is_some_and(|r| r != image) {
+        console_log!("shard image {} -> {image}: restarting", ran.as_deref().unwrap_or("?"));
+        if let Some(c) = state.container() {
+            c.destroy(Some("ContainerDay: another image")).await?;
+        }
+    }
+    if ran.as_deref() != Some(image) {
+        s.put("image", image).await?;
+    }
+    Ok(())
 }
 
 #[durable_object]
@@ -504,7 +549,7 @@ impl Jobs {
         let site = SiteEnv::read(&self.env).map_err(|e| e.to_string())?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let instance = instance(&self.env).map_err(|e| e.to_string())?.0;
-        let host = ShardHost { state: &self.state, region, image: "git", instance };
+        let host = ShardHost { state: &self.state, region, image: image(&self.env, &self.state, site.id), instance };
         let chain = ChainId::Repo(RepoId(self.net.0));
         // Logs this chain's lookup-mark holders in this isolate: B0-35 m57's catch-ups failed "no member answered" for
         // about 2 min after a term change while the group committed (`decisions/OPEN-QUESTIONS.md`, F101).
@@ -832,7 +877,9 @@ impl DurableObject for GitShard {
         let url = req.url()?;
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
-        let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };
+        let img = image(&self.env, &self.state, site.id);
+        restart_on_image(&self.state, img).await?;
+        let host = ShardHost { state: &self.state, region, image: img, instance: instance(&self.env)?.0 };
         let path = url.path().to_owned();
         // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments) and the
         // container's running git processes and the network's pack counts, all and kept (`procs`).
@@ -1311,7 +1358,7 @@ impl DurableObject for GitShard {
                     let (state, env, home) = (self.state.clone(), self.env.clone(), log.record.home);
                     let inst = instance(&self.env)?.0;
                     self.state.wait_until(async move {
-                        let host = ShardHost { state: &state, region, image: "git", instance: inst };
+                        let host = ShardHost { state: &state, region, image: img, instance: inst };
                         let Ok(b) = env.bucket(&format!("BUCKET_{}", home.0)).map(R2) else { return };
                         if let Err(e) = host.put_spooled(spool, &[&b], &key.to_string()).await {
                             console_error!("shard clone-cache fill {}: {e}", net.0.0);
@@ -1704,7 +1751,9 @@ impl DurableObject for GitShard {
         }
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
-        let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };
+        let img = image(&self.env, &self.state, site.id);
+        restart_on_image(&self.state, img).await?;
+        let host = ShardHost { state: &self.state, region, image: img, instance: instance(&self.env)?.0 };
         let renewed = host.on_alarm(Timestamp(now_ms())).await.map_err(se);
         // Once a day, the disk's networks with their bytes and last fetch, push, and catch-up, which measure the daily
         // working set (`decisions/OPEN-QUESTIONS.md`, G1). It never fails the alarm.

@@ -639,19 +639,17 @@ impl ImageSlot {
     }
 }
 
-/// Which image a shard starts. `day_step` is how far the site's `ContainerDay` has rolled (0 to 2, covering 10%,
-/// 50%, and 100% of the site's shards in rendezvous order); `None` before the day. A committed `Rollback` returns
-/// every shard to `git_prev`.
-pub fn image_for(shard: GitCacheShard, count: u16, day_step: Option<u8>, rolled_back: bool) -> ImageSlot {
-    if rolled_back {
-        return ImageSlot::GitPrev;
-    }
+/// Which image a shard object starts. `day_step` is how far the site's `ContainerDay` has rolled
+/// (`graftyard_release::gate::shard_day`: 0 to 2, covering 10%, 50%, and 100% of the site's shards); `None` before
+/// the day and after its rollback. Shards run one object per network (`object_name`), so a step covers the objects
+/// whose weight on `day#<site>` falls in its share, by the object's id: each step covers every object of the one
+/// before, and about its share of them [inference: the design's rendezvous order over `count + HOT_POOL` slots would
+/// put every network's first shard, slot 0, in one step].
+pub fn image_for(site: SiteId, object: &str, day_step: Option<u8>) -> ImageSlot {
     let Some(step) = day_step else { return ImageSlot::GitPrev };
-    let total = count + HOT_POOL;
-    let pct = [10u32, 50, 100][usize::from(step.min(2))];
-    let covered = (u32::from(total) * pct).div_ceil(100) as usize;
-    let order = by_weight(format!("day#{}", shard.site.0).as_bytes(), 0..total);
-    if order.iter().take(covered).any(|s| *s == shard.shard) { ImageSlot::Git } else { ImageSlot::GitPrev }
+    let pct = [10u64, 50, 100][usize::from(step.min(2))];
+    let key = format!("day#{}#{object}", site.0);
+    if weight(key.as_bytes(), 0) % 100 < pct { ImageSlot::Git } else { ImageSlot::GitPrev }
 }
 
 /// Per (shard, network), in the shard's own SQLite: the index through which the shard has read each member chain's

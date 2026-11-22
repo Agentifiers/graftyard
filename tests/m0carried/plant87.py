@@ -17,15 +17,17 @@ GATE = 'crates/release/src/gate.rs'
 OPS = 'crates/release/src/ops.rs'
 GROUP = 'crates/release/src/group.rs'
 REL = ['cargo', 'test', '-q', '-p', 'graftyard-release', '--lib']
+SHARD = 'crates/git/src/shard.rs'
+GIT = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard']
 
 MUTANTS = [
     ("apply lag is judged against N alone, not the 500 ms cap", GATE,
-     'if n1.apply_lag_p99_ms > GATE_APPLY_LAG_MS || n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms {',
-     'if n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms {', REL),
+     'if n1.apply_lag_p99_ms > GATE_APPLY_LAG_MS || (has_n && n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms) {',
+     'if has_n && n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms {', REL),
     ("apply lag may be three times N's", GATE,
-     'n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms {', 'n1.apply_lag_p99_ms > 3 * n.apply_lag_p99_ms {', REL),
+     'n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms) {', 'n1.apply_lag_p99_ms > 3 * n.apply_lag_p99_ms) {', REL),
     ("an ack rate exactly 0.1 points under N breaches", GATE,
-     'if n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {', 'if n1.ack_bp + GATE_ACK_RATE_BP <= n.ack_bp {', REL),
+     'if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {', 'if has_n && n1.ack_bp + GATE_ACK_RATE_BP <= n.ack_bp {', REL),
     ("STEP_DOWN trips on N+1 do not breach", GATE,
      '    if n1.step_downs > 0 {', '    if n1.step_downs > 1 {', REL),
     ("a starved step passes", GATE,
@@ -89,6 +91,24 @@ MUTANTS = [
      ') if c.next >= 1 && !fold.drained.contains_key(&s.0) => Some(*s),', ') if !fold.drained.contains_key(&s.0) => Some(*s),', REL),
     ("a restart redoes a committed step", OPS,
      '    let k = usize::from(c.next);', '    let k = usize::from(c.next.saturating_sub(u8::from(c.next % 3 == 2)));', REL),
+    # The hosted half's pure parts (2026-11-22): the counters the host sums, the missing N baseline, the day's versions,
+    # and the shard objects a ContainerDay step covers.
+    ("with no N baseline the apply-lag ratio still breaches", GATE,
+     '(has_n && n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms)', '(n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms)', REL),
+    ("with no N baseline the ack-rate rule still breaches", GATE,
+     'if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {', 'if n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {', REL),
+    ("the p99 bucket is the one at 98%", GATE,
+     'if *n > 0 && seen * 100 >= total * 99 {', 'if *n > 0 && seen * 100 >= total * 98 {', REL),
+    ("no AppendEntries answered reads as a 0% ack rate", GATE,
+     '.checked_div(self.appends).map_or(10_000, |b| b as u32);', '.checked_div(self.appends).map_or(0, |b| b as u32);', REL),
+    ("summing counters drops the other isolate's lag", GATE,
+     '        for (a, b) in self.lag.iter_mut().zip(&o.lag) {\n            *a += b;\n        }', '', REL),
+    ("the day's N is the intent's own release", GATE,
+     'crate::ops::running(fold, script).filter(|n| n != release)', 'Some(*release)', REL),
+    ("a ContainerDay's 10% step covers half the shard objects", SHARD,
+     'let pct = [10u64, 50, 100][usize::from(step.min(2))];', 'let pct = [50u64, 50, 100][usize::from(step.min(2))];', GIT),
+    ("the 50% step picks shards apart from the 10% step's", SHARD,
+     'if weight(key.as_bytes(), 0) % 100 < pct', 'if weight(format!("{key}#{pct}").as_bytes(), 0) % 100 < pct', GIT),
 ]
 
 

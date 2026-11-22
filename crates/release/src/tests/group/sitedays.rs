@@ -59,6 +59,56 @@ fn a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_en
     assert!(matches!(gate::judge_errors(21, 10), Gate::Breach(_)));
 }
 
+/// The host's counters: summed across isolates, read back as the p99 bucket's upper bound and the ack rate; with no N
+/// baseline (a site's first release, or 100% where no member runs N) only the 500 ms cap and the absolute inputs hold.
+#[test]
+fn counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_leaves_only_the_cap() {
+    let mut a = gate::Counters::default();
+    for _ in 0..990 {
+        a.applied(40);
+    }
+    let mut b = gate::Counters { appends: 1_000, acks: 998, ..Default::default() };
+    for _ in 0..9 {
+        b.applied(40);
+    }
+    b.applied(260); // the 1,000th entry: in the 300 ms bucket, past the 99th percentile
+    a.add(&b);
+    let side = a.side();
+    assert_eq!((side.entries, side.ack_bp), (1_000, 9_980));
+    assert_eq!(side.apply_lag_p99_ms, 50, "990 + 9 of 1,000 entries at 40 ms: p99 is the 50 ms bucket");
+    a.applied(260);
+    assert_eq!(a.side().apply_lag_p99_ms, 50, "2 of 1,001 above the bucket still leave p99 in it");
+    for _ in 0..9 {
+        a.applied(260);
+    }
+    assert_eq!(a.side().apply_lag_p99_ms, 300, "11 of 1,010 above: p99 moves to their bucket");
+    assert_eq!(gate::Counters::default().side().ack_bp, 10_000, "no AppendEntries answered is not a 0% ack rate");
+    // No N: a lag that would be over twice N's, and an ack rate far under it, pass; the cap still breaches.
+    let none = gate::Counters::default().side();
+    let n1 = Side { apply_lag_p99_ms: 400, exceptions: 0, ack_bp: 9_000, step_downs: 0, entries: 5_000 };
+    assert_eq!(gate::judge_site(&n1, &none), Gate::Pass);
+    assert!(matches!(gate::judge_site(&Side { apply_lag_p99_ms: 501, ..n1 }, &none), Gate::Breach(_)));
+    assert!(matches!(gate::judge_site(&Side { exceptions: 1, ..n1 }, &none), Gate::Breach(_)));
+}
+
+/// `day_versions` names the rolling site with the intent's version as N+1 and the running release's as N, only while
+/// a site day runs.
+#[test]
+fn day_versions_names_the_site_days_n1_and_n_versions_only_while_a_site_day_runs() {
+    let mut o = Ops::new(G::new());
+    upload_all(&mut o.g, 1);
+    assert_eq!(gate::day_versions(&o.g.f), None);
+    o.roll_all(1);
+    upload_all(&mut o.g, 2);
+    o.next_id += 1;
+    let b = o.g.intent(o.next_id, super::ops::site_day(1, 2), &[], &VENDOR);
+    o.g.ok(b);
+    let s = Script::Site(SiteId(1));
+    assert_eq!(gate::day_versions(&o.g.f), Some((SiteId(1), version_of(2, s), Some(version_of(1, s)))));
+    o.finish();
+    assert_eq!(gate::day_versions(&o.g.f), None, "no site day current");
+}
+
 #[test]
 fn a_site_burns_only_when_both_other_sites_report_it_and_each_report_counts_once_it_has_min_calls() {
     let voters = [SiteId(0), SiteId(1), SiteId(2)];

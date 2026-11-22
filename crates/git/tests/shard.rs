@@ -264,23 +264,19 @@ fn a_due_range_promotion_starts_a_shard_and_lets_a_quiet_one_lapse() {
 }
 
 #[test]
-fn container_day_covers_10_50_100_percent_in_rendezvous_order_and_rollback_wins() {
-    let count = 25;
-    let all: Vec<GitCacheShard> = (0..count + HOT_POOL).map(|s| GitCacheShard { site: SiteId(1), shard: s }).collect();
-    let on = |step: Option<u8>, back: bool| {
-        all.iter().filter(|s| image_for(**s, count, step, back) == ImageSlot::Git).count()
+fn container_day_covers_about_10_50_100_percent_of_shard_objects_each_step_covering_the_last() {
+    let all: Vec<String> = (0..2_000).map(|i| format!("{:064x}", i * 7919 + 13)).collect();
+    let on = |site: u8, step: Option<u8>| {
+        all.iter().filter(|o| image_for(SiteId(site), o, step) == ImageSlot::Git).collect::<Vec<_>>()
     };
-    assert_eq!(on(None, false), 0);
-    assert_eq!(on(Some(0), false), 4, "ceil(10% of 32)");
-    assert_eq!(on(Some(1), false), 16);
-    assert_eq!(on(Some(2), false), 32);
-    assert_eq!(on(Some(2), true), 0);
-    // Each step covers every shard of the step before.
-    for s in &all {
-        if image_for(*s, count, Some(0), false) == ImageSlot::Git {
-            assert_eq!(image_for(*s, count, Some(1), false), ImageSlot::Git);
-        }
-    }
+    assert!(on(1, None).is_empty(), "before the day, and after its rollback: git_prev");
+    let (ten, half, full) = (on(1, Some(0)), on(1, Some(1)), on(1, Some(2)));
+    assert!((140..=260).contains(&ten.len()), "{} of 2,000 at 10%", ten.len());
+    assert!((900..=1_100).contains(&half.len()), "{} of 2,000 at 50%", half.len());
+    assert_eq!(full.len(), 2_000);
+    assert!(ten.iter().all(|o| half.contains(o)), "50% covers every shard 10% did");
+    // Another site's day picks other objects: the share is drawn per site.
+    assert_ne!(on(2, Some(0)), ten);
     assert_eq!(ImageSlot::GitPrev.name(), "git_prev");
 }
 

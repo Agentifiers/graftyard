@@ -18,7 +18,7 @@ use graftyard_types::SiteId;
 
 use crate::ReleaseFold;
 use crate::ops::Gate;
-use crate::types::{DayTarget, Intent, IntentState};
+use crate::types::{DayTarget, Intent, IntentState, Script, VersionId};
 
 /// Entries the N+1 members must apply in a step before its gate is judged (`STEP_MIN_ENTRIES`) [guess].
 pub const STEP_MIN_ENTRIES: u64 = 1_000;
@@ -64,18 +64,135 @@ pub fn judge_site(n1: &Side, n: &Side) -> Gate {
     if n1.step_downs > 0 {
         return Gate::Breach(format!("GATE_STEP_DOWN: {} on N+1 leaders", n1.step_downs).into());
     }
-    if n1.apply_lag_p99_ms > GATE_APPLY_LAG_MS || n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms {
+    // An N that applied nothing in the window (at 100% and on the first day, when no member runs N) is no baseline:
+    // only the 500 ms cap applies.
+    let has_n = n.entries > 0;
+    if n1.apply_lag_p99_ms > GATE_APPLY_LAG_MS || (has_n && n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms) {
         return Gate::Breach(
             format!("GATE_APPLY_LAG: N+1 p99 {} ms, N {} ms", n1.apply_lag_p99_ms, n.apply_lag_p99_ms).into(),
         );
     }
-    if n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {
+    if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {
         return Gate::Breach(format!("GATE_ACK_RATE: N+1 {} bp, N {} bp", n1.ack_bp, n.ack_bp).into());
     }
     if n1.entries < STEP_MIN_ENTRIES {
         return Gate::Starved(n1.entries);
     }
     Gate::Pass
+}
+
+/// Upper bounds, in ms, of the apply-lag histogram's buckets; the last holds everything above.
+pub const LAG_EDGES: [u64; 24] = [
+    1,
+    2,
+    5,
+    10,
+    20,
+    30,
+    50,
+    70,
+    100,
+    150,
+    200,
+    250,
+    300,
+    400,
+    500,
+    600,
+    800,
+    1_000,
+    1_500,
+    2_000,
+    3_000,
+    5_000,
+    10_000,
+    u64::MAX,
+];
+
+/// One script version's members' gate counters on one site over a window, as each isolate counts them and the site's
+/// `gate` registry object sums them: entries applied with their apply lag, apply and verify exceptions, AppendEntries
+/// answered and acked, and `STEP_DOWN` trips.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Counters {
+    pub entries: u64,
+    pub exceptions: u64,
+    /// AppendEntries this version's members answered, and how many of those answers acked.
+    pub appends: u64,
+    pub acks: u64,
+    pub step_downs: u64,
+    /// Entries applied per `LAG_EDGES` bucket; shorter when the top buckets are empty.
+    pub lag: Vec<u64>,
+}
+
+impl Counters {
+    /// One entry applied `ms` after its leader appended it.
+    pub fn applied(&mut self, ms: u64) {
+        let b = LAG_EDGES.iter().position(|e| ms <= *e).unwrap_or(LAG_EDGES.len() - 1);
+        if self.lag.len() <= b {
+            self.lag.resize(b + 1, 0);
+        }
+        self.lag[b] += 1;
+        self.entries += 1;
+    }
+
+    pub fn add(&mut self, o: &Counters) {
+        self.entries += o.entries;
+        self.exceptions += o.exceptions;
+        self.appends += o.appends;
+        self.acks += o.acks;
+        self.step_downs += o.step_downs;
+        if self.lag.len() < o.lag.len() {
+            self.lag.resize(o.lag.len(), 0);
+        }
+        for (a, b) in self.lag.iter_mut().zip(&o.lag) {
+            *a += b;
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Counters::default()
+    }
+
+    /// The window as `judge_site` reads one side: the p99 lag is its bucket's upper bound, and with no AppendEntries
+    /// answered the ack rate is 100%.
+    pub fn side(&self) -> Side {
+        let total: u64 = self.lag.iter().sum();
+        let mut seen = 0;
+        let mut p99 = 0;
+        for (i, n) in self.lag.iter().enumerate() {
+            seen += n;
+            if *n > 0 && seen * 100 >= total * 99 {
+                p99 = LAG_EDGES[i];
+                break;
+            }
+        }
+        let ack_bp = (self.acks * 10_000).checked_div(self.appends).map_or(10_000, |b| b as u32);
+        Side {
+            apply_lag_p99_ms: p99,
+            exceptions: self.exceptions,
+            ack_bp,
+            step_downs: self.step_downs,
+            entries: self.entries,
+        }
+    }
+}
+
+/// The current site day's site with its N+1 version and its N version: the version the intent's release uploaded for
+/// the site, and the one the release the site runs uploaded, if it differs. `None` with no running site day.
+pub fn day_versions(fold: &ReleaseFold) -> Option<(SiteId, VersionId, Option<VersionId>)> {
+    let c = fold.current.as_deref()?;
+    let (
+        IntentState::Running { .. } | IntentState::Halted { .. },
+        Intent::SiteDay { target: DayTarget::Site(s), release },
+    ) = (c.state, &c.intent.intent)
+    else {
+        return None;
+    };
+    let script = Script::Site(*s);
+    let n1 = crate::ops::version(fold, release, script)?;
+    let n =
+        crate::ops::running(fold, script).filter(|n| n != release).and_then(|n| crate::ops::version(fold, &n, script));
+    Some((*s, n1, n))
 }
 
 /// A pinned or front script's step gate: N+1's 5xx rate against N's, in basis points.

@@ -17,14 +17,16 @@
 //! - **Pages** are `console_error!("PAGE graft-ops ...")` lines, which the install's log alert matches.
 //! - **Dwell.** `STEP_DWELL_MS` and `FIRST_DAY_MS` lower the dwells on a test install only.
 //!
-//! The gate is M5-WP4's: until it is built, every step's gate reads `GATE` (`pass`, `pending`, or `breach:<why>`, default
-//! `pending`), so no forward step passes on its own on a product install.
+//! - **Gates and drain (M5-WP4).** A site day's step reads the rolling site's `gate` object and asks
+//!   `graftyard_release::gate::judge_site`; every other intent's gate is pending until its inputs are counted. Each
+//!   run reads every voter site's `site_health` object and asks `gate::verdict`. A test install's `GATE` variable
+//!   (`pass`, `pending`, or `breach:<why>`) overrides the gate; unset, the gate is read.
 
 use std::collections::BTreeMap;
 
-use graftyard_lookup::{Bindings, Hooks, commit_hedged, now_ms, view};
+use graftyard_lookup::{Bindings, Hooks, commit_hedged, now_ms, view, within};
 use graftyard_release::ops::{self, Deployment, Dwell, Exec, Gate, Ran, RawBundle, Signer, Split, Submit};
-use graftyard_release::{Anchor, ReleaseFold, Script, Signature, SignedEntry, VersionId};
+use graftyard_release::{Anchor, ReleaseFold, Script, Signature, SignedEntry, VersionId, gate};
 use graftyard_types::{ChainId, ReleaseId, SiteId, SiteTable, Timestamp};
 use serde_json::{Value, json};
 use worker::wasm_bindgen::JsValue;
@@ -35,6 +37,8 @@ const API: &str = "https://api.cloudflare.com/client/v4";
 const COMMIT_MS: u64 = 20_000;
 /// Refreshes a run tries before it gives up on the view, each VIEW_CALL_MS at most.
 const VIEW_TRIES: usize = 4;
+/// How long one gate or health read of a `Registry` object waits [guess]: a run reads at most 2 gate and 6 health.
+const VIEW_CALL: std::time::Duration = std::time::Duration::from_millis(2_000);
 
 /// The script name key `OPS_SCRIPTS` uses for each script.
 fn key(s: Script) -> String {
@@ -193,18 +197,73 @@ impl Exec for Live<'_> {
         Ok(Deployment { split, created: Timestamp(created) })
     }
 
-    async fn gate(&mut self, _fold: &ReleaseFold) -> Gate {
+    /// A site day's gate from the site's `gate` object (`graftyard_release::gate::judge_site`), N+1's version against
+    /// N's over the step, from the current intent's last entry. Every other intent's gate input (5xx rates for
+    /// `GATE_ERRORS`, a `ContainerDay`'s shards) is not counted yet, so it is pending and its step waits. A test install's
+    /// `GATE` (`pass`, `pending`, or `breach:<why>`) overrides the reading.
+    async fn gate(&mut self, fold: &ReleaseFold) -> Gate {
         match self.env.var("GATE").map(|v| v.to_string()).as_deref() {
-            Ok("pass") => Gate::Pass,
-            Ok(b) if b.starts_with("breach:") => Gate::Breach(b["breach:".len()..].into()),
-            _ => Gate::Pending,
+            Ok("pass") => return Gate::Pass,
+            Ok("pending") => return Gate::Pending,
+            Ok(b) if b.starts_with("breach:") => return Gate::Breach(b["breach:".len()..].into()),
+            _ => {}
         }
+        let (Some((site, n1, n)), Some(c)) = (gate::day_versions(fold), fold.current.as_deref()) else {
+            return Gate::Pending;
+        };
+        let since = c.since.0;
+        let stub = match self.bindings().registry(site, "gate") {
+            Ok(s) => s,
+            Err(_) => return Gate::Pending,
+        };
+        let read = |v: graftyard_release::VersionId| {
+            let (stub, path) = (&stub, format!("https://registry/gate?version={v}&since={since}"));
+            async move {
+                let mut r = within(VIEW_CALL, stub.fetch_with_str(&path)).await?.ok()?;
+                (r.status_code() == 200).then_some(())?;
+                r.json::<gate::Counters>().await.ok()
+            }
+        };
+        let Some(c1) = read(n1).await else { return Gate::Pending };
+        let c0 = match n {
+            Some(n) => match read(n).await {
+                Some(c) => c,
+                None => return Gate::Pending,
+            },
+            None => gate::Counters::default(),
+        };
+        let g = gate::judge_site(&c1.side(), &c0.side());
+        console_log!("graft-ops gate site {}: N+1 {:?} N {:?} -> {g:?}", site.0, c1.side(), c0.side());
+        g
     }
 
-    /// No verdict yet: the site's `SiteHealth` object (M5-WP4's hosted half) is not built, so this host drains and
-    /// undrains nothing on its own; `crate::gate::verdict` judges the objects once it reads them.
-    async fn health(&mut self, _fold: &ReleaseFold) -> BTreeMap<u8, graftyard_release::gate::Verdict> {
-        BTreeMap::new()
+    /// Each voter site's verdict (`graftyard_release::gate::verdict`) from the other voter sites' `site_health`
+    /// objects, over `DRAIN_WINDOW` and `UNDRAIN_AFTER`. An observer that does not answer reports nothing, so its
+    /// targets get no verdict: a drain needs both other sites.
+    async fn health(&mut self, fold: &ReleaseFold) -> BTreeMap<u8, gate::Verdict> {
+        let Some(g) = fold.genesis.as_ref() else { return BTreeMap::new() };
+        let voters: Vec<SiteId> = g.sites.iter().filter(|s| !s.spare).map(|s| s.id).collect();
+        let now = now_ms();
+        let (mut fast, mut slow) = (Vec::new(), Vec::new());
+        for o in &voters {
+            for (window, out) in [(gate::DRAIN_WINDOW, &mut fast), (gate::UNDRAIN_AFTER, &mut slow)] {
+                let path = format!("https://registry/site_health?since={}", now.saturating_sub(window));
+                let Ok(stub) = self.bindings().registry(*o, "site_health") else { continue };
+                let Some(Ok(mut r)) = within(VIEW_CALL, stub.fetch_with_str(&path)).await else { continue };
+                let Ok(rows) = r.json::<Vec<(u8, u64, u64)>>().await else { continue };
+                out.extend(rows.into_iter().map(|(t, calls, missed)| gate::SiteHealth {
+                    observer: *o,
+                    target: SiteId(t),
+                    calls,
+                    missed,
+                }));
+            }
+        }
+        let v = gate::verdict(&voters, &fast, &slow);
+        if v.values().any(|x| x.burning) {
+            console_log!("graft-ops health: {v:?} from {fast:?}");
+        }
+        v
     }
 
     async fn deploy(&mut self, s: Script, split: &Split) -> std::result::Result<(), String> {

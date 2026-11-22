@@ -3381,6 +3381,28 @@ The fold gains what the executor needs: where each finished intent left each scr
 - A drain at `DRAIN_BURN` slower than the B0-07 stand-in's 13.7 s plus 5 minutes.
 - `MIN_CALLS` leaves a sick, quiet site undrained.
 
+#### The hosted half's inputs are counted in the site's registry objects (2026-11-22)
+
+**Decision.** The host half of M5-WP4, built code-only:
+- Each member isolate counts its version's gate inputs (`workers/site/src/gatecount.rs`): applied entries with their apply lag in 24 buckets, `verify` refusals and fold storage losses as exceptions, AppendEntries answers and acks, and `STEP_DOWN` trips. It also counts `SiteHealth` per target site, each voter call once at its first outcome, a call that missed `CALL_DEADLINE` counting as missed. Every 30 s it adds them to the site's `Registry` objects `gate` (one row per minute and version, the `VERSION` version metadata binding) and `site_health` (one row per 10 s and target).
+- `graft-ops` judges a site day's step on the rolling site's `gate` object from the step's start, N+1's version against N's, with `judge_site`. With no N baseline (a first release, or 100%, where no member runs N) only `GATE_APPLY_LAG`'s 500 ms cap, exceptions and `STEP_DOWN` apply. Every other intent's gate stays pending until its inputs are counted (5xx rates for `GATE_ERRORS`, a canary for spares). Each run reads every voter's `site_health` object over `DRAIN_WINDOW` and `UNDRAIN_AFTER` and asks `verdict`. `GATE` remains a test install's override, unset by default.
+- Every member steps `may_not_lead` from the `Release` view into `set_drained` on each tick, so the 1% lead limit is the FNV-1a hash of the chain's text form mod 100, now the chosen rule (DESIGN, journey 7). A `Release` member reads no view of its own group.
+- A shard object starts `image_for(site, object id, shard_day)`: about 10%, 50% and 100% of the site's objects by weight on `day#<site>`, each step covering the last. A running container on another image is stopped at its next fetch or alarm and restarts on the new one. A version deployed without `--image-prev` has no `git_prev`, and its shards start `git`.
+
+**Why.** The registry objects already sit on each site and `graft-ops` already binds them, so no new class or failure domain is needed. The sick site never judges itself, because each object holds only its own site's calls. The design's rendezvous order over `count + HOT_POOL` slots does not fit shards, which run one object per network: every network's first shard is slot 0.
+
+**Beat.** Analytics Engine for the counters. Its reads need the Cloudflare API, which the gate must not depend on (the November 2, 2023 class).
+
+**Evidence.**
+- `sitedays.rs`: `counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_leaves_only_the_cap` and `day_versions_names_the_site_days_n1_and_n_versions_only_while_a_site_day_runs`.
+- `crates/git/tests/shard.rs`: `container_day_covers_about_10_50_100_percent_of_shard_objects_each_step_covering_the_last`.
+- `tests/m0carried/plant87.py`: 37 of 37, 8 of them new.
+- Hosted: pending, with BF-39.
+
+**Flip.**
+- Edges' receipt misses, which DESIGN also counts into `SiteHealth`, show a gray site that member calls miss.
+- One isolate's 30 s flush leaves a 5-minute window under `MIN_CALLS` on a quiet site.
+
 ### M4-WP2's hosted half, as built (2026-11-13)
 
 #### M4-WP2's consumers run in band on the leader alarm

@@ -1365,10 +1365,10 @@ pub struct Host<F: Family> {
     /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
     #[cfg(feature = "test-faults")]
     pub hop: Cell<u64>,
-    /// B0-07: the sites this member last told the core may not lead (`crate::faults::SiteModes`), so `tick` steps
-    /// `set_drained` only when they change.
-    #[cfg(feature = "test-faults")]
-    drained: RefCell<Option<(String, BTreeSet<u8>)>>,
+    /// The sites this member last told the core may not lead (`graftyard_release::gate::may_not_lead` from the
+    /// `Release` view, and on a test install B0-07's `crate::faults::SiteModes`), so `tick` steps `set_drained` only
+    /// when they change.
+    drained: RefCell<Option<(String, std::collections::BTreeSet<u8>)>>,
     /// F74: the last `/raft` call id this host issued (`Trace::CallSent`). It starts at the host's build time in ms
     /// times 1,000, so ids stay unique across the object's resets and under 2^53, where a JSON trace keeps them exact.
     #[cfg(feature = "test-faults")]
@@ -2087,7 +2087,6 @@ impl<F: Family> Host<F> {
             half_hung_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
-            #[cfg(feature = "test-faults")]
             drained: RefCell::new(None),
             #[cfg(feature = "test-faults")]
             call_seq: Cell::new(now_ms() * 1_000),
@@ -2350,12 +2349,18 @@ impl<F: Family> Host<F> {
                     }
                 }
                 Write::Apply(to) => {
+                    let mut lags = Vec::new();
                     for idx in core.applied.0 + 1..=to.0 {
-                        if let Some(e) = core.m.entry_at(Index(idx))
-                            && s.apply_ms.len() < SAMPLES_MAX
-                        {
-                            s.apply_ms.push(t.saturating_sub(e.at.0) as u32);
+                        if let Some(e) = core.m.entry_at(Index(idx)) {
+                            lags.push(t.saturating_sub(e.at.0));
+                            if s.apply_ms.len() < SAMPLES_MAX {
+                                s.apply_ms.push(t.saturating_sub(e.at.0) as u32);
+                            }
                         }
+                    }
+                    // M5-WP4's apply lag, per version (`crate::gatecount`).
+                    if !lags.is_empty() {
+                        crate::gatecount::count(&self.env, |c| lags.iter().for_each(|ms| c.applied(*ms)));
                     }
                     let done: Vec<u64> = s.appended.iter().filter(|(x, _)| *x <= to.0).map(|(_, at)| *at).collect();
                     s.appended.retain(|(x, _)| *x > to.0);
@@ -3018,6 +3023,8 @@ impl<F: Family> Host<F> {
                     Resolution::Campaign(_) => {}
                 }
             }
+            let trips =
+                out.alarms.iter().filter(|a| matches!(a, graftyard_raft::Alarm::StepDown { .. })).count() as u64;
             if !out.alarms.is_empty() {
                 let mut s = self.stats.borrow_mut();
                 let group = (core.join.me.do_name.to_string(), self.state.id().to_string());
@@ -3031,6 +3038,21 @@ impl<F: Family> Host<F> {
                         s.alarms.push(format!("{now} {a:?}"));
                     }
                 }
+            }
+            // M5-WP4's gate counters (`crate::gatecount`): this version's `STEP_DOWN` trips, and the AppendEntries
+            // answers it sends, acked or refused by `verify`.
+            let (appends, acks, refusals) =
+                out.early.iter().chain(&out.messages).fold((0, 0, 0), |(n, a, r), e| match &e.msg {
+                    raft::Message::AppendRes(x) => (n + 1, a + u64::from(x.ok), r + u64::from(x.refused.is_some())),
+                    _ => (n, a, r),
+                });
+            if trips + appends > 0 {
+                crate::gatecount::count(&self.env, |c| {
+                    c.step_downs += trips;
+                    c.appends += appends;
+                    c.acks += acks;
+                    c.exceptions += refusals;
+                });
             }
             for e in out.early.into_iter().chain(out.messages) {
                 if Some(e.to) == reply_to { back.push(e) } else { send.push(e) }
@@ -3307,7 +3329,12 @@ impl<F: Family> Host<F> {
     fn ended(&self, c: &Call, end: End) {
         let now = now_ms();
         let ms = now.saturating_sub(c.at) as u32;
-        // B0-07's `SiteHealth` stand-in: each call to a voter's site, once, at its first outcome.
+        // `SiteHealth` (`crate::gatecount`): each call to a voter's site, once, at its first outcome. A call that
+        // missed CALL_DEADLINE ended `Failed` then, so its late answer (`Late`, `LateFailed`) is not counted again.
+        if c.to < graftyard_types::LEARNER_ADDR && matches!(end, End::Ok | End::Failed(_)) {
+            crate::gatecount::call(&self.env, c.to, matches!(end, End::Ok));
+        }
+        // B0-07's `SiteHealth` stand-in, kept for its harness.
         #[cfg(feature = "test-faults")]
         if c.to < graftyard_types::LEARNER_ADDR && matches!(end, End::Ok | End::Failed(_)) {
             crate::faults::site_health(&self.env, c.to, matches!(end, End::Ok));
@@ -3807,17 +3834,33 @@ impl<F: Family> Host<F> {
         });
     }
 
-    /// B0-07: the site modes' stand-in, read on every tick (every TICK while active, and from the leader's drain-check
-    /// alarm), stepped into the core when the sites that may not lead this group change.
-    #[cfg(feature = "test-faults")]
+    /// The sites that may not lead this group, read on every tick (every TICK while active, and from the leader's
+    /// drain-check alarm) and stepped into the core when they change: the `Release` view's drained sites and the
+    /// current site day's lead-limited site, but for 1% of chains (`graftyard_release::gate::may_not_lead`), so a
+    /// drain moves this group's leader within one lease of the view showing it. A `Release` member reads no view of
+    /// its own group (it would call itself), so the group's own leader follows only a human's transfer [inference].
+    /// On a test install B0-07's site modes add their sites.
     fn apply_site_modes(self: &Rc<Self>) -> Result<()> {
         // Keyed by the core's boot, so a core rebuilt in this object gets the set again.
-        let Some((chain, boot)) =
-            self.core.borrow().as_ref().map(|c| (c.join.chain.to_string(), c.m.boot().to_string()))
-        else {
+        let Some((chain, boot)) = self.core.borrow().as_ref().map(|c| (c.join.chain, c.m.boot().to_string())) else {
             return Ok(());
         };
-        let set = crate::faults::site_modes(&self.env).may_not_lead(&chain);
+        let text = chain.to_string();
+        let mut set = std::collections::BTreeSet::new();
+        if chain != graftyard_types::ChainId::Release {
+            if graftyard_lookup::view::due()
+                && let (Some(anchor), Ok(site)) = (crate::release::anchor(&self.env), SiteEnv::read(&self.env))
+            {
+                graftyard_lookup::view::refresh_beside(&self.env, &site.sites, &anchor, None, true);
+            }
+            set.extend(
+                graftyard_lookup::view::with(|r| graftyard_release::gate::may_not_lead(&r.fold, &text))
+                    .iter()
+                    .map(|s| s.0),
+            );
+        }
+        #[cfg(feature = "test-faults")]
+        set.extend(crate::faults::site_modes(&self.env).may_not_lead(&text));
         let key = (boot, set.clone());
         if self.drained.borrow().as_ref() == Some(&key) {
             return Ok(());
@@ -3833,7 +3876,6 @@ impl<F: Family> Host<F> {
 
     /// One `tick`, which does not count as activity, so the ticker winds down when inputs stop.
     fn tick_once(self: &Rc<Self>) -> Result<()> {
-        #[cfg(feature = "test-faults")]
         self.apply_site_modes()?;
         let until = self.active_until.get();
         let r = self.step(|m, t| m.tick(t));
@@ -4046,6 +4088,7 @@ impl<F: Family> Host<F> {
     /// resets; a panic would rebuild the wasm instance and reset every member in the isolate (F47's site a panic).
     fn fail_lost(self: &Rc<Self>, why: &str) {
         console_error!("member reset: fold storage lost: {why}");
+        crate::gatecount::count(&self.env, |c| c.exceptions += 1);
         // A dump read since the loss may lack rows: none is served again from the isolate's cache.
         crate::family::forget_dumps();
         self.dying.set(true);
