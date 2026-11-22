@@ -16,6 +16,9 @@ args = [a for i, a in enumerate(sys.argv[1:]) if not a.startswith("--") and not 
 D = Path(args[0] if args else "tests/m5/results/raw/wp2")
 OFFSET = int(sys.argv[sys.argv.index("--offset") + 1]) if "--offset" in sys.argv else 0
 N = sys.argv[sys.argv.index("--n") + 1] if "--n" in sys.argv else "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7"
+# The status a sampled request answers when it reaches the edge: 200 on /api/v3, 405 on M5-WP3's
+# /api/graftyard/v1/release/entries GET, which carries the edge version whatever the edge's HOST.
+OK = int(sys.argv[sys.argv.index("--ok") + 1]) if "--ok" in sys.argv else 200
 
 
 def rows(name):
@@ -45,8 +48,8 @@ def bf43():
         return
     undo = answers["bf43-undo"]["t1"]
     roll2 = answers["bf43-roll-n2"]["t1"]
-    ok = [x for x in r if x["s"] == 200]
-    print(f"BF-43: {len(r)} requests, {len(ok)} 200")
+    ok = [x for x in r if x["s"] == OK]
+    print(f"BF-43: {len(r)} requests, {len(ok)} {OK}")
     before = [x for x in ok if x["t0"] < undo]
     off = [x for x in before if x["ran"] != N]
     print(f"  before the undo: {len(before)} requests, {len(off)} on N+1 ({100 * len(off) / max(1, len(before)):.2f}%)")
