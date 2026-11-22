@@ -417,18 +417,7 @@ pub async fn registry_reads(b: &Bindings<'_>, chain: ChainId) -> Vec<graftyard_t
 pub async fn registry_record(b: &Bindings<'_>, chain: ChainId) -> Option<PlacementRecord> {
     for s in &b.sites.0 {
         if let Some(row) = registry_row(b, s.id, chain).await {
-            let name = match row.sites.len() {
-                1 => graftyard_types::PlacementName::Solo,
-                _ => graftyard_types::PlacementName::Tri,
-            };
-            return Some(PlacementRecord {
-                name,
-                home: row.sites.first().copied()?,
-                sites: row.sites.clone(),
-                generation: row.generation,
-                moving_from: None,
-                at: Timestamp(0),
-            });
+            return row.record();
         }
     }
     None

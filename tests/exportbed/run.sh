@@ -4,7 +4,8 @@
 # bucket on site 0, local PRSYNC queues and GRAFTYARD_EXPORT=1. `driver.mjs` joins one
 # test-register group and commits a put; then the leader's report (`Host::report_commit` to the registry object
 # `export`), the cron's round claim (`export_feed::kick`, through wrangler's /__scheduled) and the round's object in
-# the bucket are each checked. Exits 1 unless the round wrote one `export/` object and the state, a queued round followed
+# the bucket are each checked. A second group commits, then every member resets and it never elects again: the round
+# must carry it by its probe (the sweep, `decisions/DECISIONS.md`, `export-host`), as m3fx49b's `release` was not. Exits 1 unless the round wrote one `export/` object and the state, a queued round followed
 # it, and workerd logged no feed error or undecodable queue message. m3fx49's reports all failed on SQL no native test ran (`commit` as
 # a column), and m3fx49b's queued next round arrived as `{}`; this is the binding-level check of that path, including
 # the queued round that follows the cron's. Needs worker-build and tests/m0's wrangler. Run from the
@@ -50,17 +51,36 @@ u() { curl -s -m 60 "http://127.0.0.1:$P$1"; }
 ok=1
 d=$(u "/drive?chain=repo:900001"); echo "drive: $d"
 grep -q '"role":"leader"' <<<"$d" && grep -q '"put":200' <<<"$d" || { echo "FAIL: no leader or the put failed"; ok=0; }
+# A second group whose leader never reports: it commits, then every member resets at once, before the leader's alarm
+# (DRAIN_CHECK_MS, 2 s) could report, and nothing calls it again, so it never elects. `repo:900099` is in
+# `MemberRegistry` shard 0, the sweep's first slot (site 0's), so the first round probes it (`export::sweep_slots`).
+d2=$(u "/drive?chain=repo:900099"); a2=$(u "/abort?chain=repo:900099"); echo "drive idle: $d2 abort: $a2"
+grep -q '"put":200' <<<"$d2" || { echo "FAIL: the idle group's put failed"; ok=0; }
 # The leader reports from its alarm, beside its tick: give it a few ticks.
 sleep 5
 u "/__scheduled?cron=*/15+*+*+*+*" >/dev/null; sleep 5
 objs=$(u "/objects?prefix=export/"); state=$(u "/objects?prefix=export-state")
-echo "objects: $objs"; echo "state: $state"
-python3 - "$objs" <<'PY' || ok=0
+roles=$(u "/roles?chain=repo:900099"); batches=$(u "/batches")
+echo "objects: $objs"; echo "state: $state"; echo "idle roles: $roles"; echo "batches: $batches"
+python3 - "$objs" "$roles" "$batches" <<'PY' || ok=0
 import json, sys
 o = [x for x in json.loads(sys.argv[1]) if x["key"].startswith("export/")]
+roles, batches = json.loads(sys.argv[2]), json.loads(sys.argv[3])
 print(f"export objects: {len(o)}")
-sys.exit(0 if len(o) == 1 and o[0]["size"] > 0 else 1)
+ok = len(o) == 1 and o[0]["size"] > 0
+# The idle group stayed leaderless, and the round carried it anyway, each entry once, to its highest member commit.
+if any(r["role"] == "leader" for r in roles):
+    print("FAIL: repo:900099 elected a leader, so the control does not hold"); ok = False
+top = max(r["commit"] or 0 for r in roles)
+got = [(e[1], e[2]) for b in batches for e in b["entries"] if e[0] == "repo:900099"]
+print(f"repo:900099 commit {top}, carried {got}")
+n = got[0][1] if len(got) == 1 and got[0][0] == 1 else 0
+if not 2 <= n <= top:
+    print("FAIL: the leaderless chain is not in the feed exactly once, 1..commit"); ok = False
+sys.exit(0 if ok else 1)
 PY
+# The round probed: `Release` and `Ids` have no group here, so only the sweep slot's chains answer.
+grep -qE "export feed .*probed=[1-9]" "$B/dev.log" || { echo "FAIL: the round probed no chain"; ok=0; }
 [ "$state" != "[]" ] || { echo "FAIL: no feed state written"; ok=0; }
 # The round sends the next one as a queue message delayed FEED_EVERY_MS (10 s); with no new commit it logs `idle`.
 # m3fx49b's message arrived as `{}` and the consumer read it as a PrSync batch, so no round followed the cron's.

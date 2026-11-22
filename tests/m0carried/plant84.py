@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """M5-WP5's hosted half, code only: planted bugs in the change feed's consumer rules and the export routes' reads
 (`crates/git/src/export.rs`, `crates/lookup/src/lib.rs`, `crates/identity/src/export_token.rs`, and the registry
-object's feed SQL in `workers/site/src/export_feed.rs`; `decisions/DECISIONS.md`, `export-host`). Plants one mutant at a time, runs the tests that guard it, and restores the file byte for byte. Each line
+object's feed SQL in `workers/site/src/export_feed.rs`; `decisions/DECISIONS.md`, `export-host`, with the sweep of chains
+no leader reports). Plants one mutant at a time, runs the tests that guard it, and restores the file byte for byte. Each line
 prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
 
     python3 tests/m0carried/plant84.py          # every mutant
@@ -51,6 +52,20 @@ MUTANTS = [
      'held.is_none_or(|h| reported > h)', 'held.is_none_or(|h| reported != h)', GIT),
     ("a kick and a queued round both run", EXP,
      'last_ms.is_none_or(|l| now_ms.saturating_sub(l) >= FEED_EVERY_MS - 1_000)', 'true', GIT),
+    # The sweep (`export-sweep`): chains no leader reports.
+    ("a round plans from the leaders' reports only", EXP,
+     'for (c, i) in reports.iter().chain(probes) {', 'for (c, i) in reports.iter().chain(probes.iter().take(0)) {', GIT),
+    ("a probe lowers a leader's higher report", EXP, '*e = (*e).max(*i);', '*e = *i;', GIT),
+    ("Ids is not probed every round", EXP,
+     'pub const ROUND_PROBES: [ChainId; 2] = [ChainId::Release, ChainId::Ids];',
+     'pub const ROUND_PROBES: [ChainId; 2] = [ChainId::Release, ChainId::Release];', GIT),
+    ("the sweep reads only the first site's shards", EXP,
+     'let total = per * sites as u64;', 'let total = per * (sites as u64).min(1);', GIT),
+    ("the sweep probes a chain on every site that holds it", EXP,
+     "rows.iter().filter(|r| r.sites.first() == Some(&site) && !ROUND_PROBES.contains(&r.chain)).collect()",
+     "rows.iter().filter(|r| !ROUND_PROBES.contains(&r.chain)).collect()", GIT),
+    ("the sweep's counter reads another column", FEED,
+     '"SELECT n FROM export_sweep WHERE k = 0"', '"SELECT k FROM export_sweep WHERE k = 0"', SITE),
     # The member's `/log_rows` page.
     ("a leader with followers serves /log_rows", EXP,
      '!leading || (voters <= 1 && learners == 0)', '!leading || voters <= 3', GIT),

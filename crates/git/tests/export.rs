@@ -42,6 +42,12 @@ impl Install {
     /// One feed round, as the consumer runs it: read the state and fold in objects written after it, plan, read the
     /// entries from the follower, check, write the object, then write the state. `crash` stops before the state write.
     fn feed(&mut self, now_ms: u64, crash: bool) -> Option<ChangeBatch> {
+        let commits = self.commits();
+        self.feed_from(now_ms, crash, &commits)
+    }
+
+    /// `feed`, planned from `commits`: what the round's reports and probes gave it.
+    fn feed_from(&mut self, now_ms: u64, crash: bool, commits: &[(ChainId, Index)]) -> Option<ChangeBatch> {
         let mut st = self.state.clone();
         let later: Vec<ChangeBatch> = self
             .objects_after(st.last.unwrap_or_default(), usize::MAX)
@@ -49,7 +55,7 @@ impl Install {
             .map(|o| export::decode_object(o).unwrap().batch)
             .collect();
         st.recover(&later);
-        let batch = export::plan(&st, &self.commits(), now_ms)?;
+        let batch = export::plan(&st, commits, now_ms)?;
         let entries = batch
             .chains
             .iter()
@@ -315,4 +321,73 @@ fn a_batches_cursor_past_retention_is_410_and_the_newest_is_empty() {
     // No cursor reads from the oldest object kept, whatever the clock.
     let r = export::serve(&route(FeedPosition::default()), &all, &inst, now + 120_000, ROOT).unwrap();
     assert_eq!(export::unframe(&r.body).unwrap().len(), 1);
+}
+
+/// The ruling after m3fx49b: a chain reaches the feed whether or not anyone leads it. `Release` and `Ids` have no
+/// leader and are probed every round; the repository chains of a site's registry shard are probed once a sweep; only
+/// `repo:1` has a leader that reports. Over one sweep and a second, every chain's every entry is in the feed exactly
+/// once, and the probed system chains are in the first round's object.
+#[test]
+fn a_chain_whose_leader_never_reports_still_reaches_the_feed_exactly_once() {
+    use graftyard_types::{MemberRegistry, REGISTRY_SHARDS, RegistryRow, SiteId};
+    let mut inst = Install::default();
+    let led = repo(1);
+    let idle: Vec<ChainId> = (2..40).map(repo).chain([ChainId::Names(graftyard_types::NameShard(7))]).collect();
+    for c in [led, ChainId::Release, ChainId::Ids].iter().chain(&idle) {
+        inst.commit(*c, 3);
+    }
+    // Every group has a row on each of its three sites; the first names the site the sweep probes it on.
+    let sites = [SiteId(0), SiteId(1), SiteId(2)];
+    let chains: Vec<ChainId> = inst.logs.keys().copied().collect();
+    let rows = |site: SiteId, shard: u8| -> Vec<RegistryRow> {
+        chains
+            .iter()
+            .filter(|c| MemberRegistry::for_chain(site, **c).shard == shard)
+            .enumerate()
+            .map(|(k, c)| RegistryRow {
+                chain: *c,
+                do_name: format!("{c}#1#f{}", site.0).into(),
+                generation: 1,
+                sites: [0, 1, 2].iter().cycle().skip(k % 3).take(3).map(|s| SiteId(*s)).collect(),
+            })
+            .collect()
+    };
+    let sweep = u64::from(REGISTRY_SHARDS) * sites.len() as u64 / export::SWEEP_SHARDS;
+    let mut now = 1_700_000_000_000u64;
+    let mut first = None;
+    for n in 0..2 * sweep {
+        // The leader commits and reports; nothing else ever reports.
+        if n % 5 == 0 {
+            inst.commit(led, 1);
+        }
+        let reports = vec![(led, Index(inst.logs[&led].len() as u64))];
+        let mut probed: Vec<ChainId> = export::ROUND_PROBES.to_vec();
+        for (i, shard) in export::sweep_slots(n, export::SWEEP_SHARDS, sites.len()) {
+            let rows = rows(sites[i], shard);
+            probed.extend(export::swept(&rows, sites[i]).into_iter().map(|r| r.chain));
+        }
+        // A probe reads a follower's commit index, which here is the chain's.
+        let probes: Vec<(ChainId, Index)> = probed
+            .into_iter()
+            .filter(|c| !reports.iter().any(|(r, _)| r == c))
+            .map(|c| (c, Index(inst.logs[&c].len() as u64)))
+            .collect();
+        let commits = export::with_probes(&reports, &probes);
+        let b = inst.feed_from(now, n % 23 == 4, &commits);
+        first = first.or(b);
+        now += export::FEED_EVERY_MS;
+    }
+    let first = first.expect("the first round wrote an object");
+    for c in [ChainId::Release, ChainId::Ids] {
+        assert!(first.chains.iter().any(|(x, _)| *x == c), "{c} is in the first round's object: {first:?}");
+    }
+    let mut pulled: BTreeMap<ChainId, Vec<Vec<u8>>> = BTreeMap::new();
+    for o in inst.objects.values() {
+        for (c, first, rows) in export::decode_object(o).unwrap().entries {
+            let have = pulled.entry(c).or_default();
+            assert_eq!(first.0, have.len() as u64 + 1, "{c}: no gap or repeat");
+            have.extend(rows);
+        }
+    }
+    assert_eq!(pulled, inst.logs, "every chain, led or not, exactly once");
 }

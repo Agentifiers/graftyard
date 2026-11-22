@@ -1,7 +1,8 @@
 // exportbed's entry (`run.sh`): the site script's own build (`workers/site`, test-faults) with a driver route in front.
 // `/drive` joins one test-register group (`repo:<n>` with no owner, which `Kind::of` hosts as the register and
 // `Source::Given` trusts) on the three sites' `Member` bindings, campaigns until a member leads, and commits one put.
-// Every other request, the cron and the queue go to the site script unchanged. The members' leader report and the
+// `/abort` resets a group's members, and `/roles` and `/batches` read a group's members and the feed's objects. Every other request, the cron and the queue go
+// to the site script unchanged. The members' leader report and the
 // feed's round are the product's: `Host::report_commit`, the registry object `export`, `export_feed::kick`.
 import site, * as classes from "./out/index.js";
 
@@ -48,6 +49,44 @@ export default class extends site {
     const env = this.env;
     const url = new URL(req.url);
     if (url.pathname === "/drive") return Response.json(await drive(env, url.searchParams.get("chain") ?? "repo:900001"));
+    // Resets every member of a chain (`/abort`, BF-56's kill): each restores as a follower from storage, and with no
+    // caller its group never elects again, so no leader of it reports.
+    if (url.pathname === "/abort") {
+      const chain = url.searchParams.get("chain");
+      const out = [];
+      for (const s of [0, 1, 2]) {
+        try {
+          const r = await env[`MEMBER_${s}`].getByName(`${chain}#1#f${s}`).fetch("https://member/abort", { method: "POST" });
+          out.push(r.status);
+        } catch (e) {
+          out.push(String(e));
+        }
+      }
+      return Response.json(out);
+    }
+    // A chain's members' roles and commit indexes, as `/status` answers them.
+    if (url.pathname === "/roles") {
+      const chain = url.searchParams.get("chain");
+      const out = [];
+      for (const s of [0, 1, 2]) {
+        const r = await env[`MEMBER_${s}`].getByName(`${chain}#1#f${s}`).fetch("https://member/status");
+        const v = await r.json();
+        out.push({ site: s, role: v.role ?? null, commit: v.commit ?? null });
+      }
+      return Response.json(out);
+    }
+    // The chains each `export/` object's batch names: its first frame is the batch's JSON (`export::encode_object`).
+    if (url.pathname === "/batches") {
+      const l = await env.EXPORT.list({ prefix: "export/" });
+      const out = [];
+      for (const o of l.objects) {
+        const b = new Uint8Array(await (await env.EXPORT.get(o.key)).arrayBuffer());
+        const n = new DataView(b.buffer).getUint32(0);
+        const head = JSON.parse(new TextDecoder().decode(b.subarray(4, 4 + n)));
+        out.push({ key: o.key, chains: head.batch.chains, entries: head.entries });
+      }
+      return Response.json(out);
+    }
     if (url.pathname === "/objects") {
       const l = await env.EXPORT.list({ prefix: url.searchParams.get("prefix") ?? "" });
       const out = [];

@@ -38,6 +38,25 @@ pub struct RegistryRow {
     pub sites: SmallVec<[SiteId; 3]>,
 }
 
+impl RegistryRow {
+    /// The record a caller with no other one reads the chain under: the row's sites in its order, at its generation,
+    /// `Solo` for one site and `Tri` otherwise. A lookup learns the group's real config from the members it names.
+    pub fn record(&self) -> Option<crate::PlacementRecord> {
+        let name = match self.sites.len() {
+            1 => crate::PlacementName::Solo,
+            _ => crate::PlacementName::Tri,
+        };
+        Some(crate::PlacementRecord {
+            name,
+            home: self.sites.first().copied()?,
+            sites: self.sites.clone(),
+            generation: self.generation,
+            moving_from: None,
+            at: crate::Timestamp(0),
+        })
+    }
+}
+
 /// One site's registry answer for a chain, as `repo-gone` reads it (`decisions/DECISIONS.md`, "`repo-gone`"): a row, a
 /// definite no row (404), or no answer (any other status, or none within the lookup's `CALL`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

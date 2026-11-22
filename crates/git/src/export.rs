@@ -698,6 +698,47 @@ pub fn report_newer(held: Option<Index>, reported: Index) -> bool {
     held.is_none_or(|h| reported > h)
 }
 
+/// The chains every round probes beside the reports (`decisions/DECISIONS.md`, `export-host`, the sweep): the system
+/// chains with one group each, whose records the genesis holds. A site day resets every member, and a group nothing
+/// calls elects no leader, so no report would ever name them (m3fx49b).
+pub const ROUND_PROBES: [ChainId; 2] = [ChainId::Release, ChainId::Ids];
+/// `MemberRegistry` shards the sweep reads a round [guess]: one, so a sweep of three sites' 64 shards takes 192 rounds,
+/// 32 minutes, and probes each chain once in that time, about 100 chains a round at 2,000 developers
+/// (`scripts/cost.py`, the sweep).
+pub const SWEEP_SHARDS: u64 = 1;
+
+/// The registry slots `(site, shard)` the sweep's round `n` reads, `k` of them, over `sites` sites in the table's
+/// order: round `n` takes slots `n·k` to `n·k + k − 1` of the sweep, which visits every site's every shard once.
+pub fn sweep_slots(n: u64, k: u64, sites: usize) -> Vec<(usize, u8)> {
+    let per = u64::from(graftyard_types::REGISTRY_SHARDS);
+    let total = per * sites as u64;
+    if total == 0 {
+        return Vec::new();
+    }
+    let start = n.wrapping_mul(k) % total;
+    (0..k.min(total)).map(|j| (start + j) % total).map(|i| ((i / per) as usize, (i % per) as u8)).collect()
+}
+
+/// The chains a sweep slot probes, from one site's registry rows: each on the site its row names first, so the sweep
+/// probes a chain once whichever sites hold it, and none of the round's own probes.
+pub fn swept(
+    rows: &[graftyard_types::RegistryRow],
+    site: graftyard_types::SiteId,
+) -> Vec<&graftyard_types::RegistryRow> {
+    rows.iter().filter(|r| r.sites.first() == Some(&site) && !ROUND_PROBES.contains(&r.chain)).collect()
+}
+
+/// The commit indexes a round plans from: each chain's leader report, raised by a probe of a non-leader's commit, the
+/// higher winning, so a chain no leader reports is planned from its probe and a report is never moved back.
+pub fn with_probes(reports: &[(ChainId, Index)], probes: &[(ChainId, Index)]) -> Vec<(ChainId, Index)> {
+    let mut at: BTreeMap<ChainId, Index> = BTreeMap::new();
+    for (c, i) in reports.iter().chain(probes) {
+        let e = at.entry(*c).or_insert(*i);
+        *e = (*e).max(*i);
+    }
+    at.into_iter().collect()
+}
+
 /// Whether a batches page that already holds `held` objects of `bytes` takes another: under `BATCHES_PAGE` objects
 /// and `BATCHES_PAGE_BYTES`, so a page always holds its first object.
 pub fn batches_take(held: usize, bytes: usize) -> bool {
@@ -809,6 +850,40 @@ mod tests {
 
     fn state(at: &[(ChainId, u64)], last: Option<(u64, u32)>) -> FeedState {
         FeedState { last: last.map(|(minute, seq)| FeedPosition { minute, seq }), cursors: cursors(at) }
+    }
+
+    /// The sweep visits every site's every shard exactly once per 192 rounds, then starts again; it probes a chain on
+    /// its first site only, never `Release` or `Ids` (probed every round); and a probe only ever raises a report.
+    #[test]
+    fn the_sweep_visits_each_shard_once_and_a_probe_never_lowers_a_report() {
+        use graftyard_types::{REGISTRY_SHARDS, RegistryRow, SiteId};
+        let per = u64::from(REGISTRY_SHARDS);
+        let rounds = per * 3 / SWEEP_SHARDS;
+        let seen: Vec<(usize, u8)> = (0..rounds).flat_map(|n| sweep_slots(n, SWEEP_SHARDS, 3)).collect();
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!((seen.len(), sorted.len()), (192, 192), "every slot once a sweep");
+        assert_eq!(sweep_slots(rounds, SWEEP_SHARDS, 3), sweep_slots(0, SWEEP_SHARDS, 3), "then again from the start");
+        assert_eq!(
+            (sweep_slots(0, 1, 3), sweep_slots(64, 1, 3), sweep_slots(65, 1, 3)),
+            (vec![(0, 0)], vec![(1, 0)], vec![(1, 1)])
+        );
+        assert_eq!(sweep_slots(5, 1, 0), vec![]);
+        let row = |c: ChainId, sites: &[u8]| RegistryRow {
+            chain: c,
+            do_name: "x".into(),
+            generation: 1,
+            sites: sites.iter().map(|s| SiteId(*s)).collect(),
+        };
+        let rows = [row(repo(1), &[1, 0, 2]), row(repo(2), &[0, 1, 2]), row(ChainId::Release, &[0, 1, 2])];
+        let got: Vec<ChainId> = swept(&rows, SiteId(0)).into_iter().map(|r| r.chain).collect();
+        assert_eq!(got, vec![repo(2)]);
+        let merged = with_probes(
+            &[(repo(1), Index(9)), (repo(2), Index(4))],
+            &[(repo(1), Index(7)), (repo(2), Index(6)), (ChainId::Ids, Index(3))],
+        );
+        assert_eq!(merged, vec![(repo(1), Index(9)), (repo(2), Index(6)), (ChainId::Ids, Index(3))]);
     }
 
     #[test]
