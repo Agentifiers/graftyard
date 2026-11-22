@@ -21,6 +21,7 @@ mod b030;
 mod broker;
 mod callers;
 mod clock;
+mod export_feed;
 mod family;
 mod fanout;
 #[cfg(feature = "test-faults")]
@@ -161,10 +162,14 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         Ok(r) => console_log!("fold audit {r}"),
         Err(e) => console_error!("fold audit failed: {e}"),
     }
+    // The change feed's kick: a round, which keeps itself going every FEED_EVERY_MS through the queue. Only the site
+    // that binds the export bucket runs it.
+    export_feed::kick(&env).await;
 }
 
 /// The site's queue: `PrSync` and `MergeQueue` batches its repository leaders sent again (`crate::prsync`,
-/// `crate::merge_queue`). A `MergeQueue` message carries `mergeQueue`; every other is a `PrSync` batch.
+/// `crate::merge_queue`). A `MergeQueue` message carries `mergeQueue`, the change feed's next round `exportFeed`
+/// (`crate::export_feed`); every other is a `PrSync` batch.
 #[event(queue)]
 async fn queue(batch: MessageBatch<serde_json::Value>, env: Env, _ctx: Context) -> Result<()> {
     if site_down(&env) {

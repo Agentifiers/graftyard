@@ -1285,6 +1285,8 @@ pub struct Host<F: Family> {
     /// While this voter has leader-only work and hears no leader: when it first found so, and when it last acted
     /// (`keep_led`); (0, 0) otherwise.
     unheard: Cell<(u64, u64)>,
+    /// The commit index this leader last reported to the change feed, and when (`export::report_due`).
+    fed: Cell<Option<(Index, u64)>>,
     /// Whole-tier reads in flight on this member (`crate::member::HEAVY_READS`).
     pub heavy_reads: Rc<Cell<u32>>,
     /// Reads of any kind in flight on this member, until their answer is sent (`crate::member::READS_MAX`).
@@ -2047,6 +2049,7 @@ impl<F: Family> Host<F> {
             served_at: Cell::new(0),
             client_at: Cell::new(0),
             unheard: Cell::new((0, 0)),
+            fed: Cell::new(None),
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
             clock: RefCell::new(crate::clock::Clock::default()),
@@ -3907,6 +3910,9 @@ impl<F: Family> Host<F> {
         if !leading {
             self.keep_led();
         }
+        if leading {
+            self.report_commit();
+        }
         steps.note("tick");
         // The alarm this invocation armed is set again, awaited, before it returns. One armed only from the task
         // `arm_in` spawns can be lost as the invocation ends [inference]: in BF-57 run 10 (graft-m4a) a leader's alarm
@@ -3924,6 +3930,31 @@ impl<F: Family> Host<F> {
         }
         steps.note("set_alarm");
         steps
+    }
+
+    /// `export-host`: on an install with the change feed (`GRAFTYARD_EXPORT=1`), a leader reports its commit index and
+    /// record to site A's `export` registry object (`crate::export_feed`), at most once a round and only once it moved
+    /// (`export::report_due`). Sent beside the alarm: a lost report is sent again with the next commit.
+    fn report_commit(self: &Rc<Self>) {
+        if !self.env.var("GRAFTYARD_EXPORT").is_ok_and(|v| v.to_string() == "1") {
+            return;
+        }
+        let Some((chain, commit, record)) =
+            self.core.borrow().as_ref().map(|c| (c.join.chain, c.m.state().commit, c.join.record.clone()))
+        else {
+            return;
+        };
+        let now = now_ms();
+        if !graftyard_git::export::report_due(self.fed.get(), commit, now) {
+            return;
+        }
+        self.fed.set(Some((commit, now)));
+        let env = self.env.clone();
+        spawn_local(async move {
+            if let Err(e) = crate::export_feed::report(&env, chain, commit, &record).await {
+                console_error!("export report {chain} {}: {e}", commit.0);
+            }
+        });
     }
 
     /// F109's line for a member alarm of ALARM_SLOW_MS or more, named as `alarm_line` names its group.
@@ -4053,6 +4084,46 @@ impl<F: Family> Host<F> {
             }
             abort(&h.state, "graftyard member fault");
         });
+    }
+
+    /// `/log_rows`: the stored rows from `from` through `min(to, commit)` as an encoded `LogPage`, with the archive
+    /// range that holds `from` when it is below the stored log. `None` from a leader that has another member to ask.
+    pub fn log_rows(&self, from: u64, to: u64) -> Result<Option<Vec<u8>>> {
+        use graftyard_git::export;
+        let (commit, leading, voters, learners) = {
+            let core = self.core.borrow();
+            let Some(c) = core.as_ref() else { return Ok(None) };
+            let (v, l) = match c.m.committed_config().map(|(_, cfg)| cfg) {
+                Some(raft::GroupConfig::Normal(p) | raft::GroupConfig::Degraded { placement: p, .. }) => {
+                    (p.voters().len(), p.learners().len())
+                }
+                Some(raft::GroupConfig::Joint { old, new }) => {
+                    (old.voters().len().max(new.voters().len()), old.learners().len().max(new.learners().len()))
+                }
+                None => (1, 0),
+            };
+            (c.m.state().commit, c.m.role() == Role::Leader, v, l)
+        };
+        if !export::serves_log(leading, voters, learners) {
+            return Ok(None);
+        }
+        let sql = self.state.storage().sql();
+        let from = from.max(1);
+        let stored = crate::logread::log_after(&sql, "row", from - 1)
+            .map_while(|r| r.ok())
+            .map_while(|r| Some((Index(int(&r[0]).ok()? as u64), blob(&r[1]).ok()?.to_vec())));
+        let mut page = export::log_page(stored, Index(from), Index(to), commit, export::LOG_PAGE_BYTES);
+        if page.first.0 > from {
+            let q = "SELECT from_idx, to_idx, key FROM archive_keys WHERE from_idx <= ? AND to_idx >= ? LIMIT 1";
+            if let Some(r) = rows(&sql, q, vec![i(from), i(from)])?.first() {
+                let key = match &r[2] {
+                    SqlStorageValue::String(k) => k.clone(),
+                    _ => return Err(err("archive_keys key")),
+                };
+                page.archive = Some((Index(int(&r[0])? as u64), Index(int(&r[1])? as u64), key));
+            }
+        }
+        Ok(Some(export::encode_log_page(&page)))
     }
 
     /// Committed entries `from..=to` from storage, at most 2,000 and about `page_bytes` of stored rows (always one), each with its index and the family's fields

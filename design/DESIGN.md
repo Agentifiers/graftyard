@@ -1332,11 +1332,12 @@ pub const READ_CACHE: Duration = Duration::from_secs(10);
 pub const IDENTITY_BUDGET_PER_ISOLATE: u32 = 50;   // group reads per second; compiled, never config
 
 // ---- Lifeboat feed ----
-/// Written every 10 s by a Queue consumer from leader cursors: which chains moved and to what index (at most 2,000,
-/// furthest behind first [guess]). Each batch is one `R2Key::Export` object in the install's export bucket, a single
-/// bucket in site A's region with a 7-day lifecycle rule [guess], created by Terraform. It holds the batch plus, per
-/// chain, the stored bytes of every entry after the previous batch's index, read from a follower. `FeedState` follows
-/// under `ExportState`, and a round first folds in later objects. Packs stay in the site buckets, fetched via the edge.
+/// A round on site A every 10 s (cron-started, then a delayed message on A's queue) reads the commit indexes leaders
+/// report to A's `export` registry object (once a round, on change, higher wins): which chains moved and to what index
+/// (at most 200, furthest behind first [guess]). Each batch is one `R2Key::Export` object, put create-only in the
+/// install's export bucket, one bucket in site A's region with a 7-day lifecycle rule [guess], made by Terraform. It
+/// holds the batch plus each chain's stored entries after the previous batch's index (at most 8 MiB [guess]), read by
+/// `/log_rows` from a learner or follower, never the leader. `FeedState` follows under `ExportState`, folded forward.
 pub struct ChangeBatch { pub minute: u64, pub seq: u32, pub chains: Vec<(ChainId, Index)> }
 pub struct ExportObject { pub batch: ChangeBatch, pub entries: Vec<(ChainId, Index /* first */, Vec<Bytes>)> }
 pub struct ExportCursor { pub chain: ChainId, pub index: Index }   // FeedState { last: Option<(minute, seq)>, cursors }
@@ -1345,18 +1346,17 @@ pub struct ExportCursor { pub chain: ChainId, pub index: Index }   // FeedState 
 /// objects for archived indexes, never from the leader. Bodies are `application/octet-stream` frames, each a 4-byte
 /// length, the stored bytes, and their SHA-256. Pages follow GitHub's `Link` header with `rel="next"`. A bad cursor is
 /// 422, a range past retention 410, and a chain outside the token's scope 404, as a chain with no group is. - `GET
-/// /api/graftyard/v1/export/batches?after=<minute>.<seq>`: up to 100 `ExportObject`s in order. - `GET
-/// /api/graftyard/v1/export/chains/{chain}/entries?from=<index>&limit=<n>`: stored `LogEntry` bytes from `from`, at
-/// most 1,000 entries or 8 MiB a page [guess]. - `GET /api/graftyard/v1/export/chains/{chain}/snapshots?at=<index>`:
-/// the newest snapshot at or below `at`, in the format a member installs. - `GET
-/// /api/graftyard/v1/export/packs/{pack_id}`: the pack bytes, with its checksum in `X-Graftyard-Checksum`. `{chain}` is
-/// `repo:<id>`, `network:<id>`, `authz:<id>`, `identity:<id>`, `tokens:<shard>`, `names:<shard>`,
-/// `actions:<id>.<shard>`, `repo-meta:<id>`, `ids`, or `release`. An export token is these claims as JSON,
-/// base64url-encoded, a `.`, and the customer key's signature, sent as a bearer token. The edge verifies it against its
-/// cached `Keys` and refuses any chain outside `scope`; `Install` covers every `ChainId`, `Release` included. It is
-/// revoked like an installation token, by `JtiRevoked` on `jti_shard(jti)` through `DELETE
-/// /api/graftyard/v1/export/token`, and export reads honor that row within READ_CACHE. `graftyard vault init` mints the
-/// install-scoped one. A managed tenant's org token (`scope: Owner(org)`) uses the cell's customer key.
+/// export/batches?after=<minute>.<seq>`: up to 100 `ExportObject`s or 8 MiB, `Install` tokens only. - `GET
+/// export/chains/{chain}/entries?from=<index>&limit=<n>`: stored `LogEntry` bytes, at most 1,000 or 8 MiB a page
+/// [guess]. - `GET export/chains/{chain}/snapshots?at=<index>`: the newest snapshot at or below `at`, as a member
+/// installs it. - `GET export/packs/{pack_id}?network=<id>`: a pack a `Committed` marker names, its checksum in
+/// `X-Graftyard-Checksum`. Paths are under `/api/graftyard/v1/`. `{chain}` is `repo:<id>`,
+/// `network:<id>`, `authz:<id>`, `identity:<id>`, `tokens:<shard>`, `names:<shard>`, `actions:<id>.<shard>`,
+/// `repo-meta:<id>`, `ids`, or `release`. An export token is these claims as JSON, base64url-encoded, a `.`, and the
+/// customer key's signature, sent as a bearer token. The edge verifies it against its cached `Keys` and refuses any
+/// chain outside `scope`; `Install` covers every `ChainId`, `Release` included. It is revoked like an installation
+/// token, by `JtiRevoked` on `jti_shard(jti)` through `DELETE /api/graftyard/v1/export/token`, and export reads honor
+/// that row within READ_CACHE. `graftyard vault init` mints the install-scoped one; a tenant's org token, the cell's.
 pub struct ExportClaims { pub install: InstallId, pub scope: Scope, pub holder: Box<str> /* "vault", or the org */,
                           pub jti: Ulid, pub iat: Timestamp, pub exp: Timestamp /* <= 400 days [guess] */ }
 /// A `lifeboat:read` token is an `OpaqueToken` of kind `Pat` (`ghp_`), so gh and git accept it. Its only claim is the
@@ -1814,9 +1814,9 @@ The plan line uses Pro list at every tier (`FRAME.md`, "Operator decision, 2026-
 
 | Developers | Default, one account (`Tri`) | Account-separated sites (`Tri`, four accounts) | `Solo` (evaluation) | Git in Artifacts, one DO per repository |
 | --- | --- | --- | --- | --- |
-| 50 | $238 | $247 | $133 | $81 |
-| 300 | $1,016 | $928 | $599 | $517 |
-| 2,000 | $9,325 | $9,222 | $5,395 | $4,602 |
+| 50 | $238 | $248 | $133 | $81 |
+| 300 | $1,017 | $929 | $599 | $517 |
+| 2,000 | $9,330 | $9,227 | $5,395 | $4,602 |
 
 Git cache shards come from a guessed daily working set, the bytes of networks fetched at least once a day, which Milestone 0 measures. Each shard keeps 4 GB of its disk for scratch, and each network is warm on two sites.
 
@@ -1828,7 +1828,7 @@ Git cache shards come from a guessed daily working set, the bytes of networks fe
 
 The hot pool counts in each site's start cap. Its idle shards keep hot networks warm, so a step up in k needs no rehydrate (Shape, `HOT_POOL`). The tables price that as the pool of 7 per site running on both warm sites for a 9-hour working day, warm only for networks hot in the last hour, at the tier's instance size, memory and disk with no active vCPU [guess: 8 working hours plus the hour]. Only the 2,000-developer tier has a hot network: at 50 and 300 developers the largest network's git CPU, 0.05 and 0.32 vCPU (`scripts/cost_agents.py`), never reaches `fanout`'s up line, so the pool stays reserved there and bills nothing. The line adds $433 a month to the default at 2,000 developers and $217 to `Solo`. The agent layer prices any extra warm shards it holds.
 
-Container egress is priced by each site's region, at $0.025 per GB in North America and Europe with 1 TB included and $0.04 elsewhere with 500 GB included (https://developers.cloudflare.com/containers/platform/pricing/), and split by where leaders sit. Leaders sit on each group's home site, so the default assumes an NA-heavy split of 50% enam, 30% weur, and 20% apac [guess; apac priced at the "elsewhere" rate, inference]. An APAC-led install (15%, 5%, 80%) pays $137 instead of $92 at 300 developers, and $2,271 instead of $1,708 at 2,000, for a total of $9,889.
+Container egress is priced by each site's region, at $0.025 per GB in North America and Europe with 1 TB included and $0.04 elsewhere with 500 GB included (https://developers.cloudflare.com/containers/platform/pricing/), and split by where leaders sit. Leaders sit on each group's home site, so the default assumes an NA-heavy split of 50% enam, 30% weur, and 20% apac [guess; apac priced at the "elsewhere" rate, inference]. An APAC-led install (15%, 5%, 80%) pays $137 instead of $92 at 300 developers, and $2,271 instead of $1,708 at 2,000, for a total of $9,894.
 
 Account separation costs $9 more at 50 developers. At 300 it costs $88 less and at 2,000 $103 less, because three site accounts each get their own free Durable Object, R2, and Containers allowances, which outweigh three more subscriptions and the site Worker requests ($134 a month against the default's $48 at 2,000, `--detail large separate`).
 
@@ -1846,11 +1846,11 @@ At 2,000 developers the largest lines of the default are:
 | `ReplaceMember` and `RestorePlacement`, one site loss a year amortized | $63 |
 | `Inbox` Durable Objects (notifications, feeds, cross-repository lists) | $32 |
 | Runner account (Workers Paid only) | $5 |
-| Agent layer on top of the default, from `scripts/cost_agents.py` (not in the totals above) | $2,931 |
+| Agent layer on top of the default, from `scripts/cost_agents.py` (not in the totals above) | $2,935 |
 | Spare sites (canary operations on three empty buckets) | under $1 |
 | Spectrum SSH data, SSH fronts, and any Spectrum Worker-app fee: SSH is off by default per install, so no tier here runs it (`SSH_PLANS` in `scripts/cost.py`); `--ssh-option` prices it below | $0 in the table |
 
-Agents add $21, $328, and $2,931 a month at 50, 300, and 2,000 developers on top of the default, 9%, 32%, and 31% (`python3 scripts/cost_agents.py`); the largest network places no learners on cost grounds, because its API reads are narrow reads counted once in `GroupLoad`, not 1 MB whole-tier reads counted 50 times (K9, `tests/am1/results/narrow-reads.md`). Monthly lines use 5 pushes a task. With git CPU measured on torvalds/linux and composed clone-cache misses, `fanout` keeps the largest network at k = 1 at 2,000 developers, so the layer adds no extra warm shards ($0), and test merges on agent head pushes cost $1. The conflict predictor, at a measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), costs $54. They include agent CI egress with every agent CI checkout missing the clone cache, the `Inbox` line grown by agent activity, and $342 as an upper bound for members held active by activity feed long-polls. At journey 9's push every 2 minutes k is also 1, with 0 extra shards ($0 a month), by git CPU. The validate lock that held one network to about 2 pushes/s hosted is gone: one shard now validates 39 a second on 1 vCPU, about 9 times journey 9's 4.17/s [measured, container bench, `tests/am1/results/fanout.md`]. Hosted, at 100 agents every push landed with k = 1 (commit p99 885 ms), and the 500-agent rows failed on the read gate, not on validates, so the $0 line stands but is not yet shown hosted at 500 agents; LM-1's load rows are being rerun. Sandbox compute and model tokens for Graftyard-run agents, $2,827 and $182,400 a month at 2,000 developers with a guessed $2 of tokens a task, sit outside this comparison as runner compute does, and opt-in Code Mode is excluded. Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Line items are in `design/AGENT-LAYER.md`, "Cost".
+Agents add $22, $329, and $2,935 a month at 50, 300, and 2,000 developers on top of the default, 9%, 32%, and 31% (`python3 scripts/cost_agents.py`); the largest network places no learners on cost grounds, because its API reads are narrow reads counted once in `GroupLoad`, not 1 MB whole-tier reads counted 50 times (K9, `tests/am1/results/narrow-reads.md`). Monthly lines use 5 pushes a task. With git CPU measured on torvalds/linux and composed clone-cache misses, `fanout` keeps the largest network at k = 1 at 2,000 developers, so the layer adds no extra warm shards ($0), and test merges on agent head pushes cost $1. The conflict predictor, at a measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), costs $54. They include agent CI egress with every agent CI checkout missing the clone cache, the `Inbox` line grown by agent activity, and $342 as an upper bound for members held active by activity feed long-polls. At journey 9's push every 2 minutes k is also 1, with 0 extra shards ($0 a month), by git CPU. The validate lock that held one network to about 2 pushes/s hosted is gone: one shard now validates 39 a second on 1 vCPU, about 9 times journey 9's 4.17/s [measured, container bench, `tests/am1/results/fanout.md`]. Hosted, at 100 agents every push landed with k = 1 (commit p99 885 ms), and the 500-agent rows failed on the read gate, not on validates, so the $0 line stands but is not yet shown hosted at 500 agents; LM-1's load rows are being rerun. Sandbox compute and model tokens for Graftyard-run agents, $2,827 and $182,400 a month at 2,000 developers with a guessed $2 of tokens a task, sit outside this comparison as runner compute does, and opt-in Code Mode is excluded. Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Line items are in `design/AGENT-LAYER.md`, "Cost".
 
 The quorum costs $3,928 a month over `Solo` at 2,000 developers, 73% more, most of it the second warm copy of every shard. At 50 developers it costs $103 more. That buys RPO zero and an RTO of about 11.5 s per request for the loss of any one region, continent, or site release, and a vault copy outside the install account. `Solo` costs $133, $599, and $5,395 a month at the three tiers. It has one member per chain, one pack bucket, one warm copy of each shard on one site, and a runner account, and it carries no vault. Its RPO is zero for a machine or data center and not covered for a region, because a write is confirmed by followers in the object's own region (`tests/m0/results/wp11.md`, (b)) [measured]. Its RTO is Cloudflare's restart, or the region's return. It carries no availability SLO, so it is not a reliable setup.
 
@@ -2015,7 +2015,7 @@ Rows added after the final pass gate the milestone named in the first column. Th
 | SSH | NLB to nodes | HTTPS by default. Where the install turns SSH on, a stock `git clone git@host:...` reaches a Spectrum TCP app on port 22 whose Worker origin is the edge, then the site's SSH front container [measured on Pro, B0-24c and B0-24d; Business by the same plan table, unverified]. Writes run as the edge's own receive-pack | Users whose install leaves SSH off | `tests/m0/results/m0-wp7.md`, B0-24c |
 | Largest repository | Node NVMe | 20 GB shard disk, about 15 GB of packs | Monorepo owners | `research/cloudflare-git.md` finding 16 |
 | Self-hosted | Same binary in the customer's account | Same artifact in the customer's own Cloudflare account, no vendor token; workerd on customer hardware for evaluation and the lifeboat only | Self-hosters who wanted their own hardware | `history/review/cloudflare-selfhost-walk.md` F1 |
-| Monthly cost, 2,000 developers | $12,432 one Region, $20,636 Paired | $9,325 on three continents in one account, with vault and runner accounts (Enterprise excluded) | Operator | `research/costs.md`; `cost.py` |
+| Monthly cost, 2,000 developers | $12,432 one Region, $20,636 Paired | $9,330 on three continents in one account, with vault and runner accounts (Enterprise excluded) | Operator | `research/costs.md`; `cost.py` |
 | Monthly cost, 50 developers, cheapest reliable | $226 for `scrappy` (one Region with a cold recovery Region, so a Region loss is not RPO zero); $388 for `scrappy-paired` (RPO zero) | $238 for the default (RPO zero across three continents), on Pro with a 100 MB HTTPS push cap; SSH, off by default, adds $33 a month when on (`cost.py --ssh-option`) | Operator | Same |
 
 ## Tradeoffs accepted

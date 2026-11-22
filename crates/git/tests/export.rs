@@ -90,8 +90,8 @@ impl ExportSource for Install {
     fn object(&self, key: &R2Key) -> Option<Vec<u8>> {
         self.snapshots.get(key).cloned()
     }
-    fn pack(&self, id: PackId) -> Option<(NetworkId, Digest, Vec<u8>)> {
-        self.packs.get(&id).cloned()
+    fn pack(&self, network: NetworkId, id: PackId) -> Option<(Digest, Vec<u8>)> {
+        self.packs.get(&id).filter(|p| p.0 == network).map(|p| (p.1, p.2.clone()))
     }
 }
 
@@ -233,7 +233,14 @@ fn bf49_vault_pulls_every_endpoint_then_the_revoked_jti_is_refused_within_read_c
     assert_eq!(get(&mut edge, &tokens, &path, &[("at".into(), "49".into())], at), Err(404));
 
     // 4. A pack, with its checksum.
-    let r = get(&mut edge, &tokens, &format!("/api/graftyard/v1/export/packs/{pack}"), &[], at).unwrap();
+    let r = get(
+        &mut edge,
+        &tokens,
+        &format!("/api/graftyard/v1/export/packs/{pack}"),
+        &[("network".into(), "1".into())],
+        at,
+    )
+    .unwrap();
     assert_eq!((r.body.as_slice(), r.checksum), (&b"PACK...."[..], Some(Digest([0xab; 32]).hex())));
 
     // An org-scoped token from the same customer key sees its own repositories only, and nothing else exists for it.
@@ -252,8 +259,13 @@ fn bf49_vault_pulls_every_endpoint_then_the_revoked_jti_is_refused_within_read_c
         assert_eq!(export::serve(&route, &covers, &inst, at.0, ROOT).is_ok(), ok, "{ch}");
     }
     let covers = |c| export_token::covers(org_claims.scope, c, owner(c));
+    // The feed names every chain of the install: an org's token never reads it.
+    let feed = Route::Batches { after: FeedPosition::default() };
+    assert_eq!(export::serve(&feed, &covers, &inst, at.0, ROOT).map(|_| ()).map_err(|e| e.status()), Err(404));
     assert_eq!(
-        export::serve(&Route::Pack { id: foreign }, &covers, &inst, at.0, ROOT).map(|_| ()).map_err(|e| e.status()),
+        export::serve(&Route::Pack { network: NetworkId(DbId(77)), id: foreign }, &covers, &inst, at.0, ROOT)
+            .map(|_| ())
+            .map_err(|e| e.status()),
         Err(404)
     );
 

@@ -50,8 +50,8 @@ Monthly list prices in US dollars for one install. Both designs are priced on th
 
 | Setup | 50 developers | 300 developers | 2,000 developers |
 | --- | --- | --- | --- |
-| Cloudflare default, one account and three sites (the base) | $238 | $1,016 | $9,325 |
-| Cloudflare default with the agent layer | $259 | $1,344 | $12,256 |
+| Cloudflare default, one account and three sites (the base) | $238 | $1,017 | $9,330 |
+| Cloudflare default with the agent layer | $260 | $1,346 | $12,265 |
 | AWS, one Region | $1,287 | $2,573 | $12,432 |
 | AWS, Paired (two Regions plus a witness) | $2,292 | $4,466 | $20,636 |
 | AWS `scrappy`: small-install profile, one Region with a cold recovery Region | $226 | not priced | not priced |
@@ -69,7 +69,7 @@ Read the table with these limits, all from `research/costs.md`:
 - The AWS figures include no agent layer. The AWS design was never priced with agents, so compare the AWS rows with the Cloudflare base row.
 - `scrappy` is not RPO zero for a Region loss, because its recovery Region is cold. `scrappy-paired` is RPO zero across two Regions. The Cloudflare base is RPO zero for the loss of any one of its three sites, which sit on three continents.
 
-At 50 developers, AWS `scrappy` costs less than the Cloudflare base, but a Region loss is not RPO zero for it. At 300 and 2,000 developers the Cloudflare base costs less than either AWS setup ($1,016 against $2,573 and $9,325 against $12,432 for one Region). The fold audit's refolds, priced at a measured row size, briefly made the base the costlier one at 300 developers ($3,726); since they stage snapshots as pages instead of restoring them into scratch tables, the line is $2.26 and $9.29 a month there (`decisions/DECISIONS.md`, "`refold-stream`"; `decisions/OPEN-QUESTIONS.md`, K10). Compare base with base: the AWS rows carry no agent layer. Beside them, the Cloudflare default with the agent layer at 2,000 developers ($12,254) costs less than AWS one Region without agents ($12,432). It cost a little more ($12,802) while every entry was priced at the 17 member rows a repository `DefineLabel` writes; most entries are Actions and Identity entries, which write 8.3, so the rows are now priced by family and kind (`decisions/DECISIONS.md`, "`k12-rows`"; `decisions/OPEN-QUESTIONS.md`, K12).
+At 50 developers, AWS `scrappy` costs less than the Cloudflare base, but a Region loss is not RPO zero for it. At 300 and 2,000 developers the Cloudflare base costs less than either AWS setup ($1,017 against $2,573 and $9,330 against $12,432 for one Region). The fold audit's refolds, priced at a measured row size, briefly made the base the costlier one at 300 developers ($3,726); since they stage snapshots as pages instead of restoring them into scratch tables, the line is $2.26 and $9.29 a month there (`decisions/DECISIONS.md`, "`refold-stream`"; `decisions/OPEN-QUESTIONS.md`, K10). Compare base with base: the AWS rows carry no agent layer. Beside them, the Cloudflare default with the agent layer at 2,000 developers ($12,265) costs less than AWS one Region without agents ($12,432). It cost a little more ($12,802) while every entry was priced at the 17 member rows a repository `DefineLabel` writes; most entries are Actions and Identity entries, which write 8.3, so the rows are now priced by family and kind (`decisions/DECISIONS.md`, "`k12-rows`"; `decisions/OPEN-QUESTIONS.md`, K12).
 
 ## The differences that decide between them
 

@@ -7,6 +7,7 @@
 //                                [--ops <graft-ops script>] [--var K=V ...] [--only <site id>] [--down <site id>]
 //                                [--audit-stream <Basin Pipelines stream id>] [--run-key <store id>/<secret name>]
 //                                [--ssh <store id> --ssh-image <digest-pinned image> --edge <edge script>] [--ssh-off]
+//                                [--export-bucket <bucket>]
 // `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
 // (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S, and `GRAFTYARD_HOST`, the API host webhook
 // payloads name). `--ops` binds the install's `graft-ops` as `OPS`, which `HookSequencer` unwraps hook secrets with.
@@ -14,6 +15,10 @@
 // scanned identity entry's rows to before it moves its cursor (workers/site/src/audit.rs).
 // `--run-key <store id>/<secret name>` binds that Secrets Store secret as `RUN_SERVICE_KEY`, the run-service key the
 // Actions leaders sign runner and job tokens with (decisions/DECISIONS.md, "M4-WP3: the run service's signing key").
+// `--export-bucket <bucket>` turns the change feed on (design/DESIGN.md, Shape, "Lifeboat feed"): every site gets
+// `GRAFTYARD_EXPORT=1`, so its leaders report commit indexes, and the install's first site binds the bucket as `EXPORT`
+// and runs the rounds (workers/site/src/export_feed.rs). The bucket is created in that site's region if missing, with
+// the 7-day lifecycle rule `expire7` on `export/`.
 // `--var K=V` adds one more variable to every site deployed. `--only <id>` deploys that site alone (its phase 2
 // config), leaving the others' versions and members untouched. `--down <id>` sets `GRAFTYARD_SITE_DOWN=1` on that
 // site, which stops every class it hosts as if the site were lost (workers/site/src/lib.rs, `site_down`); the next
@@ -71,6 +76,8 @@ const sshStore = flagValue("--ssh");
 const sshImage = flagValue("--ssh-image");
 const edgeScript = flagValue("--edge");
 if (sshStore && !edgeScript) throw new Error("--ssh needs --edge <edge script>, which the SSH front's git requests go to");
+const exportBucket = flagValue("--export-bucket");
+const feedSite = Math.min(...sites.map((s) => s.id));
 const oi = flags.indexOf("--ops");
 const ops = oi >= 0 ? flags[oi + 1] : null;
 const ai = flags.indexOf("--anchor");
@@ -130,6 +137,7 @@ function config(site, targets, own = true, phase1 = false) {
       ...(anchor ? { GRAFTYARD_INSTALL: anchor.install, GRAFTYARD_CUSTOMER_KEY: anchor.customer_key } : {}),
       ...Object.fromEntries(Object.entries(extraVars).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])),
       ...(site.id === down ? { GRAFTYARD_SITE_DOWN: "1" } : {}),
+      ...(exportBucket ? { GRAFTYARD_EXPORT: "1" } : {}),
     },
     durable_objects: { bindings: bindings(site, targets, phase1) },
     // The script's own fetch handler, which runs each `PrSync` first attempt in a new invocation (prsync.rs, `in_band`),
@@ -139,7 +147,8 @@ function config(site, targets, own = true, phase1 = false) {
       ...(ops ? [{ binding: "OPS", service: ops }] : []),
       ...(edgeScript && sshStore ? [{ binding: "EDGE", service: edgeScript, props: { ssh: true } }] : []),
     ],
-    r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
+    r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket }))
+      .concat(exportBucket && site.id === feedSite ? [{ binding: "EXPORT", bucket_name: exportBucket }] : []),
     ...((runKey || sshStore) ? { secrets_store_secrets: [
       ...(runKey ? [{ binding: "RUN_SERVICE_KEY", store_id: runKey[0], secret_name: runKey[1] }] : []),
       ...(sshStore ? ["SSH_HOST_KEY_A", "SSH_HOST_KEY_B"].map((n) => ({ binding: n, store_id: sshStore, secret_name: n })) : []),
@@ -193,6 +202,12 @@ const buckets = JSON.parse(
 ).result.buckets.map((b) => b.name);
 for (const s of sites.filter((s) => !buckets.includes(s.bucket))) {
   wrangler(["r2", "bucket", "create", s.bucket, "--location", s.region]);
+}
+if (exportBucket && !buckets.includes(exportBucket)) {
+  wrangler(["r2", "bucket", "create", exportBucket, "--location", sites.find((s) => s.id === feedSite).region]);
+  // Only the batches expire: `export-state` is rewritten only by a round that moved, so an install idle for 7 days
+  // would otherwise lose its cursors.
+  wrangler(["r2", "bucket", "lifecycle", "add", exportBucket, "expire7", "export/", "--expire-days", "7", "--force"]);
 }
 
 const listed = JSON.parse(

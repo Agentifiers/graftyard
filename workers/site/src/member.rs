@@ -1314,6 +1314,15 @@ impl<F: Family> Routes<F> {
                 let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX), page)?;
                 self.reply(json!({ "entries": e }))
             }
+            // The stored log rows from `from` (`graftyard_git::export::LogPage`): what the change feed and the export
+            // endpoints read, from a learner or follower, never a leader that has another member to ask.
+            (_, "/log_rows") => {
+                let q = |k: &str| crate::registry::query(&url, k).ok().and_then(|v| v.parse::<u64>().ok());
+                match self.host.log_rows(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX))? {
+                    Some(b) => Response::from_bytes(b),
+                    None => self.reply(json!({ "error": "leader" })),
+                }
+            }
             (Method::Get, "/stats") => {
                 // Test installs, B0-02's A/B: `body=array` or `body=stream` sets how this member's calls send their
                 // body until it changes or the object resets (`Host::array_body`).
