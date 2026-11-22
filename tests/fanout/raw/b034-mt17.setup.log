@@ -1,0 +1,18 @@
+node:fs:624
+    return binding.readFileUtf8(path, stringToFlags(options.flag));
+                   ^
+
+Error: ENOENT: no such file or directory, open '~/workspace/repo/.worktrees/hrow/tests/m3/rows/../../m0/.m0-token'
+    at readFileSync (node:fs:624:20)
+    at file://~/workspace/repo/.worktrees/hrow/tests/m3/rows/lib.mjs:11:21
+    at ModuleJobSync.run (node:internal/modules/esm/module_job:679:46)
+    at node:internal/modules/run_main:199:19
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:105:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '~/workspace/repo/.worktrees/hrow/tests/m3/rows/../../m0/.m0-token'
+}
+
+Node.js v26.12.0
+2026-11-22T14:18:02.728Z b034 networks: {"mono":{"repo":"m3org/b034-mono-h1","chain":"repo:1048611","who":"admin"},"second":{"repo":"m3-member/b034-second-h1","chain":"repo:3473423","who":"member"},"hostile":[{"repo":"m3r-b034-hostile/b034-hostile-h1-1","chain":"repo:3538989","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-h1-2","chain":"repo:3538990","who":"hostile"},{"repo":"m3r-b034-hostile/b034-hostile-h1-3","chain":"repo:3538991","who":"hostile"}]}

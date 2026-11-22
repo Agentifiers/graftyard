@@ -1,0 +1,22 @@
+harness outages (2026-11-22T15:50:26Z, the first request, to 2026-11-22T16:05:06Z; announced 2026-11-22T15:50:06Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-22T15:50:26Z", "2026-11-22T15:50:28Z"]], "outageSeconds": 2.0, "share": 0.0023, "valid": true}
+{"kind": "push:human@j9", "measured": {"n": 175, "served": 0.9543, "p50": 1753, "p99": 3033, "cap": 1}, "outagesRemoved": {"n": 175, "served": 0.9543, "p50": 1753, "p99": 3033, "cap": 1}}
+{"kind": "push:human:edge@j9", "measured": {"n": 175, "served": 0.9543, "p50": 1355, "p99": 2687, "cap": 0}, "outagesRemoved": {"n": 175, "served": 0.9543, "p50": 1355, "p99": 2687, "cap": 0}}
+{"kind": "push:human:tip@j9", "measured": {"n": 177, "served": 0.887, "p50": 449, "p99": 1663, "cap": 0}, "outagesRemoved": {"n": 176, "served": 0.892, "p50": 449, "p99": 1663, "cap": 0}}
+{"kind": "read:cloneTtfb@j9", "measured": {"n": 293, "served": 1.0, "p50": 288, "p99": 2057, "cap": 0}, "outagesRemoved": {"n": 288, "served": 1.0, "p50": 282, "p99": 2057, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@j9", "measured": {"n": 293, "served": 1.0, "p50": 278, "p99": 2047, "cap": 0}, "outagesRemoved": {"n": 288, "served": 1.0, "p50": 275, "p99": 2047, "cap": 0}}
+{"kind": "push:human@kill", "measured": {"n": 77, "served": 0.961, "p50": 1777, "p99": 3128, "cap": 1}, "outagesRemoved": {"n": 77, "served": 0.961, "p50": 1777, "p99": 3128, "cap": 1}}
+{"kind": "push:human:edge@kill", "measured": {"n": 77, "served": 0.961, "p50": 1376, "p99": 2683, "cap": 0}, "outagesRemoved": {"n": 77, "served": 0.961, "p50": 1376, "p99": 2683, "cap": 0}}
+{"kind": "push:human:tip@kill", "measured": {"n": 76, "served": 1.0, "p50": 524, "p99": 2704, "cap": 0}, "outagesRemoved": {"n": 76, "served": 1.0, "p50": 524, "p99": 2704, "cap": 0}}
+{"kind": "read:cloneTtfb@kill", "measured": {"n": 119, "served": 1.0, "p50": 312, "p99": 2866, "cap": 0}, "outagesRemoved": {"n": 119, "served": 1.0, "p50": 312, "p99": 2866, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@kill", "measured": {"n": 119, "served": 1.0, "p50": 305, "p99": 2861, "cap": 0}, "outagesRemoved": {"n": 119, "served": 1.0, "p50": 305, "p99": 2861, "cap": 0}}
+{"kind": "push:human@second", "measured": {"n": 30, "served": 0.9667, "p50": 1908, "p99": 2573, "cap": 0}, "outagesRemoved": {"n": 30, "served": 0.9667, "p50": 1908, "p99": 2573, "cap": 0}}
+{"kind": "push:human:edge@second", "measured": {"n": 30, "served": 0.9667, "p50": 1503, "p99": 2182, "cap": 0}, "outagesRemoved": {"n": 30, "served": 0.9667, "p50": 1503, "p99": 2182, "cap": 0}}
+{"kind": "push:human:tip@second", "measured": {"n": 31, "served": 1.0, "p50": 507, "p99": 739, "cap": 0}, "outagesRemoved": {"n": 31, "served": 1.0, "p50": 507, "p99": 739, "cap": 0}}
+{"kind": "read:cloneTtfb@second", "measured": {"n": 65, "served": 1.0, "p50": 302, "p99": 2312, "cap": 0}, "outagesRemoved": {"n": 65, "served": 1.0, "p50": 302, "p99": 2312, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@second", "measured": {"n": 65, "served": 1.0, "p50": 293, "p99": 2305, "cap": 0}, "outagesRemoved": {"n": 65, "served": 1.0, "p50": 293, "p99": 2305, "cap": 0}}
+{"kind": "push:human@hostile", "measured": {"n": 280, "served": 0.95, "p50": 1811, "p99": 2963, "cap": 8}, "outagesRemoved": {"n": 280, "served": 0.95, "p50": 1811, "p99": 2963, "cap": 8}}
+{"kind": "push:human:edge@hostile", "measured": {"n": 280, "served": 0.95, "p50": 1381, "p99": 2577, "cap": 0}, "outagesRemoved": {"n": 280, "served": 0.95, "p50": 1381, "p99": 2577, "cap": 0}}
+{"kind": "push:human:tip@hostile", "measured": {"n": 278, "served": 1.0, "p50": 539, "p99": 1101, "cap": 0}, "outagesRemoved": {"n": 278, "served": 1.0, "p50": 539, "p99": 1101, "cap": 0}}
+{"kind": "read:cloneTtfb@hostile", "measured": {"n": 420, "served": 1.0, "p50": 307, "p99": 6178, "cap": 0}, "outagesRemoved": {"n": 420, "served": 1.0, "p50": 307, "p99": 6178, "cap": 0}}
+{"kind": "read:cloneTtfb:edge@hostile", "measured": {"n": 420, "served": 1.0, "p50": 296, "p99": 6173, "cap": 0}, "outagesRemoved": {"n": 420, "served": 1.0, "p50": 296, "p99": 6173, "cap": 0}}

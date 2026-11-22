@@ -4,6 +4,14 @@
 before the kill call and still running at it) with where it validated (`validate_site`, `validate_tries`,
 `validate_hedge` in `server-timing`); human validates outside the kill that took more than one try; and each hostile
 network's `/bench_seed` grants against `owner_share` (HOT_POOL - 1 = 6). RAW_DIR defaults to tests/am1/raw/.
+
+With PAIRS=1 (and CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in the environment, the token sent only as a header),
+also the hedged validates whose losing shard answered 200 too, the doubled work the hedge costs. Workers Logs stores
+the URL's hex parameters (`headsum`, `trailer`) as "REDACTED", so tries are paired by time, not by hash: for each
+hedged human push, the `GitShard` `/validate` events with no `class` (a human's) that started inside the push's
+window on each site of SITES (default graft-m1-site-a,b,c). A pair is counted when two sites each logged one that
+answered 200; a hedged push with a 200 on only one site had a losing try that failed, was still running when the
+logs end, or was not logged. Human validates run about one a second, so a stray match is possible [inference].
 """
 import datetime
 import json
@@ -24,7 +32,10 @@ print(f"kill-phase push:human p99 {kill_kind.get('p99')} ms (n {kill_kind.get('n
       f" ({'met' if (kill_kind.get('p99') or 9e9) <= 3000 else 'not met'})")
 pushes = [json.loads(l) for l in open(f"{raw}a1-pushes-b0-34-{run}.jsonl") if l.strip()]
 human = [p for p in pushes if p["kind"] == "human"]
-straddle = [p for p in human if kill_at - 5000 <= p["start"] <= kill_at and p["end"] >= kill_at]
+# Straddling: started within 5 s before the kill call and still running at it, or started while the call ran (it
+# returned at the `shard kill` row's `at`; mt17: + 3,992 ms).
+kill_end = t0 + next((r["at"] for r in rows if r.get("step") == "shard kill"), kill_at - t0)
+straddle = [p for p in human if (kill_at - 5000 <= p["start"] <= kill_at and p["end"] >= kill_at) or kill_at < p["start"] <= kill_end]
 print(f"straddled the kill: {len(straddle)}")
 for p in sorted(straddle, key=lambda p: p["start"]):
     t = timing(p["timing"])
@@ -50,3 +61,27 @@ for c, gs in by.items():
         slots[site] = slots.get(site, 0) + len(held or [])
 print(f"hostile owner's pool slots per warm site {json.dumps(slots)} against owner_share 6")
 print(f"kMax {json.dumps(summary.get('b034', {}).get('kMax') or summary.get('kMax'))}")
+
+hedged = [p for p in human if timing(p["timing"]).get("validate_hedge") == 1]
+print(f"hedged human validates: {len(hedged)} of {len(human)}")
+import os
+if os.environ.get("PAIRS"):
+    import urllib.request
+    acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+    sites = os.environ.get("SITES", "graft-m1-site-a,graft-m1-site-b,graft-m1-site-c").split(",")
+    def events(svc, a, b):
+        f = [{"key": "$metadata.service", "operation": "eq", "type": "string", "value": svc},
+             {"key": "$workers.event.path", "operation": "eq", "type": "string", "value": "/validate"}]
+        body = {"queryId": "q", "timeframe": {"from": a, "to": b}, "view": "events", "limit": 100, "parameters": {"filters": f}}
+        r = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query",
+            data=json.dumps(body).encode(), method="POST", headers={"authorization": f"Bearer {tok}", "content-type": "application/json"})
+        ev = json.load(urllib.request.urlopen(r, timeout=60)).get("result", {}).get("events", {}).get("events", [])
+        return [(e["$workers"]["event"].get("response", {}).get("status"), e["$workers"].get("wallTimeMs")) for e in ev
+                if "class" not in e["$workers"]["event"].get("search", {})]
+    both = 0
+    for p in hedged:
+        per = {svc[-1]: events(svc, p["start"], p["end"]) for svc in sites}
+        ok = [k for k, v in per.items() if any(st == 200 for st, _ in v)]
+        both += len(ok) >= 2
+        print(f"  {p['client']} start {p['start'] - kill_at:+.0f} ms: human validates by site {json.dumps(per)}")
+    print(f"hedged validates whose losing shard also answered 200: {both} of {len(hedged)} (paired by time)")
