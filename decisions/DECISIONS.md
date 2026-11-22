@@ -6001,7 +6001,7 @@ The six slow merges in the three traces are exactly the six held-and-stepped mer
 
 ### B0-29 late join deferred, 2026-11-19
 
-**Superseded, 2026-11-21.** See "`human-join`": option (b), narrowed to Human and MergeQueue commands, is built.
+**Status.** Current again, 2026-11-22: "`human-join`" built option (b) for Human and MergeQueue commands, and it was reversed on B0-33 crA (see its Status). Option (b) is not built.
 
 **Decision.** Option (b) is not built: a command admitted after a batch froze does not join it. B0-29's freeze stays as built, and that is option (a): the first frozen batch is cut at the in-flight entry's append + `round_ms` − `deps_ms`, which is its expected apply less the measured read (`crates/raft/src/member/leader.rs`, `cut_early`).
 
@@ -7380,8 +7380,19 @@ row's leader inputs by route can.
 
 ### `human-join`: a Human or MergeQueue command admitted after a freeze joins the newest frozen batch on its own read, 2026-11-21
 
-**Status.** Built code-only on branch `human-join` at the lead's request. It supersedes "B0-29 late join deferred",
-option (b), narrowed to two classes. Not measured hosted: the lead routes the rows after review.
+**Status.** Reversed 2026-11-22: its flip fired on B0-33 chA and crA, and crA failed the lead's keep rule (Human
+commit p99 at or below sabA's 3,589 ms and wall time with a frozen batch waiting under 69%). "B0-29 late join
+deferred" is the current entry again; plant78 is removed with the revert. The rest of this entry is the record.
+Evidence, against sync-ab arm A (sabA) [measured unless tagged]:
+- chA (with `commit-hold`, `tests/am1/results/combined-row.md`): Human commit-stage p99 5,780 ms, merge 5,848; frozen
+  batch waiting 95% of wall time; ticker stalls ≥ 500 ms 81, against 10.
+- crA (`commit-hold` reverted, `tests/am1/results/control-row.md`): Human p99 3,968, merge 4,197, against 3,589 and
+  2,728; frozen batch waiting 81%, against 69%; ticker stalls 36; confirm p90 555 ms, against 379; edge 503s 607.
+- About 21% of Humans joined a frozen batch on crA (23% on chA) [inference: Humans admitted less Humans taken at cuts;
+  the same count on sabA, with no join, leaves 1.5%]. Yet the Human median freeze wait rose to 601 ms, against sabA's
+  304, and the replay's predicted Human p99 of 3,278 was not reached.
+- Both rows had a slower leader than sabA's. crA also ran colo-gate (`292c432e`), so neither row alone separates the
+  join from placement variance; the lead's no-change control row after this revert does [one row against one row].
 
 **Decision.** In `crates/raft/src/member/leader.rs` (`late_join`, `decide_held`, `deps_read`):
 - **Who joins.** A Human or MergeQueue command admitted while a batch is frozen joins the newest frozen batch until

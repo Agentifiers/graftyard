@@ -33,8 +33,6 @@ pub struct Cluster {
     /// Every dependency read asked for, and every entry decided on reads, with the site and time.
     pub deps: Vec<(SiteId, Timestamp, DepsWanted)>,
     pub deps_used: Vec<(SiteId, DepsUsed)>,
-    /// Every batch a leader cut (`Out::cuts`).
-    pub cuts: Vec<graftyard_raft::CutNote>,
     boots: u64,
     alarms: Vec<(SiteId, graftyard_raft::Alarm)>,
 }
@@ -50,7 +48,6 @@ impl Cluster {
             refused: Vec::new(),
             deps: Vec::new(),
             deps_used: Vec::new(),
-            cuts: Vec::new(),
             boots: seed * 1000,
             alarms: Vec::new(),
         }
@@ -75,7 +72,6 @@ impl Cluster {
             self.refused.extend(out.refused.drain(..).map(|(i, r, _)| (s, i, r)));
             self.deps.extend(out.deps.drain(..).map(|d| (s, now, d)));
             self.deps_used.extend(out.deps_used.drain(..).map(|d| (s, d)));
-            self.cuts.append(&mut out.cuts);
             self.inbox.extend(out.early.drain(..).chain(out.messages.drain(..)));
             self.resolutions.extend(out.resolutions.drain(..).map(|r| (s, r)));
             self.alarms.extend(out.alarms.drain(..).map(|a| (s, a)));
