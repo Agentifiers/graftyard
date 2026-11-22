@@ -7902,3 +7902,103 @@ first shard staged. They keep today's rule: probe, then send once.
   - human push p99 outside the kill higher than mt16's with the same load, and validate the stage that rose. (mt17's
     rise was front, gate and commit, with validate p99 lower, so it backed nothing out: the lead's ruling, 2026-11-22.)
 - **Lower `VALIDATE_HEDGE`** if straddling pushes meet the line but the kill-phase p99 sits within 10% of 3 s.
+
+### `maint-yield`: a git cache shard's maintenance yields to moved load, for at most 10 minutes, 2026-11-22
+
+**Status.** Design for review; not built. It changes the container, the site script and `crates/git`, so it ships
+through a site day. The edge's binary changes only by naming a shared constant, with no change in what it sends. The
+lead ruled for it after B0-34 mt18 (2026-11-22): DESIGN's noisy-tenant row bounded a repack's CPU but never made it
+yield.
+
+**Decision.** Maintenance is the geometric repack (`startRepack`, `runRepack`), the commit-graph write after it, and
+a roll-up's build (`handleRoll`). A shard container holds maintenance in two cases.
+- **Moved load.** This is a client push or fetch that reaches a shard on a site other than the record's home as the
+  edge's first try:
+  - It covers `/validate`, `/upload-pack`, `/info-refs`, and the streamed probe's `/catchup`. A derived promotion and
+    a warm call do not count.
+  - The shard object knows all of this from the call itself: its own site, the record the edge sends, and `wait`. The
+    edge sets `wait` to `VALIDATE_WAIT_HOME_S` (15 s) only on its first try (`shard_url`). The edge tries the home first
+    unless the home failed it within `COLD_SHARD_MS`. So such a call means the home's shard is down, cold or failing,
+    and this site is carrying its work.
+  - A hedge's try waits 60 s, not 15, so it does not count. A slow but healthy home's 2 to 7% of hedged human validates
+    hold nothing.
+  - The two waits become one constant, `graftyard_git::FIRST_TRY_WAIT_S`, which the edge's `VALIDATE_WAIT_HOME_S`
+    names. The edge gets no new behaviour and needs no edge day.
+  - The object tells its container with `POST /maint/hold`, at most once per 10 s, off the request's path, and only
+    while the container runs. A pool shard that a moved first shard forwards to also holds, because the forward keeps
+    `wait`.
+  - Each call holds maintenance for `YIELD_HOLD` (60 s [guess], two of the kill phase's tip moves). While held, the
+    container starts no maintenance and stops a running one.
+- **Client CPU.** The container's client CPU p99 (`/load`'s `cpu_p99`, derived work excluded) is above `FANOUT_UP`
+  (0.75), the line where `fanout` would add shards. Then no new maintenance starts. A running one is not stopped:
+  its own CPU is excluded from the measure, so only clients drive the signal.
+
+**Stopping.** A running repack, or the commit-graph after it, is stopped by SIGTERM to its process group, which frees
+the repack slot (`repacking`) and the midx lock. Git builds each new pack, index, midx and commit-graph under a
+temporary name and renames it in only when it is complete, and `repack -d` deletes rolled packs only after the new midx
+is in. So any point is a safe point:
+- **100 stops, all clean** [measured, local, git 2.56.0, `tests/maintyield/stop.sh`]. SIGTERM went to a geometric repack with three kept packs and
+  the commit-graph after it, at random points: 40 in the first 2.5 s and 60 over the whole 12 s run. Every stop left
+  fsck clean, the midx verifying, every object reachable, the three `.keep` files in place, and a later repack that
+  succeeded. A stop sent to a commit-graph write mid-run left the old chain verifying.
+- **A stopped repack starts over** at the next catch-up's `/refs`, with the same packs and more. Geometric progression
+  keeps the redo bounded: the tail it rolls is what came in since the last completed roll.
+- **A held roll-up answers 503 `maint-held`.** Like any 503, the roll then tries the next site's shard
+  (`promote_moves_on`). If every shard is held, the step fails and the next alarm tries again. Archiving and
+  promotion still run: they are not maintenance, and the log needs them.
+
+**The deferral bound.** `MAINT_DEFER_MAX` is 10 minutes [guess], counted from the first time maintenance was held
+since the last one completed. Past it, moved load no longer stops the next repack, though client CPU can still delay
+its start by at most another `YIELD_HOLD`. Against what the deferral costs:
+- **Pack growth.** On mt18 the surviving site's shard went from 122 to 268 unkept packs in 230 s while its repack
+  starved, about 0.6 packs a second. Ten minutes at that rate adds about 380 packs [inference]. Merge-tree slowed from
+  2.0 to 8.7 ms over 751 packs (`tests/m2/results/m2-wp6.md`), so 10 minutes stays under the measured slow case.
+- **The kill phase.** B0-34's window from the kill to the second phase is 120 s, and a rehydrated home shard is warm in
+  166 to 207 s (Failure modes, git caches, data-center). After that the edge's first tries go home again, and the hold
+  ends 60 s later, well inside the bound.
+- **A longer outage.** A site lost for more than 10 minutes gets its repack anyway. The shard then pays it once at
+  nice 19, as it did before this change.
+
+**Why.** On B0-34 mt18 (`tests/am1/results/b034-mt18.md`), site b's shard started a geometric repack 152 s before the
+kill and was still running it 178 s after. At nice 19, behind the kill's moved load, it got little CPU: 144 CPU-s by
+the kill and none for the next 180 s. Then came a commit-graph write at 2 to 6 GB RSS. Meanwhile:
+- its unkept packs grew from 122 to 268, and 15 midx writes queued behind the repack's hold on the midx lock;
+- every clone miss after the kill went to site b, where the container's time per miss had minute medians of 3.3,
+  6.6, 12.6 and 3.3 s. On mt17 it was about 1 s, and no repack on site b ran past 31 CPU-s in that window;
+- the every-clone line fell to 46.8% in kill and 14.6% in second.
+
+Nice 19 bounds CPU only. A starved repack still holds the slot and the midx lock and lets packs pile up, and those
+slowed the misses [inference: the miss path's time is in `container`, and pack count and midx are its inputs].
+
+**What it beat.**
+- **Nicer still, or a CPU cap.** Nice 19 is already the floor, and the container is one cgroup with no delegation
+  (`repack-keep`). Neither would free the lock or the slot.
+- **Defer only on client CPU.** mt18 did not log the shard's client CPU. Its k stayed at 3, and the kill moved load
+  onto it within seconds, before a minute's p99 could show it. The moved-load signal is immediate, and it is the
+  case the row exists for.
+- **Defer until idle** (`repack-keep`, Beat). A hot shard is never idle, so that has no bound.
+- **Pause with SIGSTOP.** A stopped repack keeps its memory (up to 1.7 GB at bounded settings, `repack-keep`) and its
+  locks, so it fixes only the CPU.
+- **Peer liveness from the ledger or the leader's load reports.** That adds a call to the maintenance path, and a
+  report can be up to `LOAD_STALE` (180 s) late. The edge already knows, when it sends, that it went past home.
+- **A new `moved=1` mark from the edge.** Clearer, but it needs an edge day beside the site day, and the first-try
+  `wait` already says the same thing.
+
+**Evidence.** `tests/am1/results/b034-mt18.md`, "The every-clone regression"; `tests/fanout/raw/shardprocs-mt18.jsonl`
+(site 1, from 152 s before the kill to 223 s after); and the 100 stops above. The code's test plants a repack during
+a kill. A slow `runRepack` starts, then a moved-load call arrives, and the test requires:
+- the repack stopped and the midx lock free within 1 s;
+- no new repack before `YIELD_HOLD` ends;
+- after `MAINT_DEFER_MAX`, a repack that a moved call does not stop;
+- the repository whole after each step.
+
+Plants are in `tests/m0carried/plant86.py`.
+
+**Flip.**
+- **Back it out** if the next full B0-34 row shows either of:
+  - the every-clone line failing in kill or second while the surviving site's shards run no maintenance, so
+    maintenance was not the cause;
+  - a shard whose unkept packs pass 751 (the measured slow-merge count) while held, or merge p99 on the surviving site
+    above mt17's.
+- **Shorten `MAINT_DEFER_MAX`** if a held shard's pack count reaches 751 within it.
+- **Lengthen it** if a site loss outlasts it and the repack that then runs puts the every-clone line under 90%.
