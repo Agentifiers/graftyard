@@ -85,6 +85,14 @@ pub enum R2Key {
         network: NetworkId,
         id: PackId,
     },
+    /// One change-feed batch, an `ExportObject`, in the install's export bucket (`crate::export`). Minute and seq are
+    /// zero-padded, so a listing after a key returns batches in feed order.
+    Export {
+        minute: u64,
+        seq: u32,
+    },
+    /// The change-feed consumer's `FeedState` in the export bucket: the newest batch it folded in and its cursors.
+    ExportState,
 }
 
 impl R2Key {
@@ -139,6 +147,8 @@ impl fmt::Display for R2Key {
                 other => unreachable!("a marker names only a pack or a blob, not {other:?}"),
             },
             R2Key::Upload { network, id } => write!(f, "upload/{}/{id}", network.0.0),
+            R2Key::Export { minute, seq } => write!(f, "export/{minute:012}/{seq:010}"),
+            R2Key::ExportState => f.write_str("export-state"),
         }
     }
 }
@@ -214,6 +224,12 @@ impl FromStr for R2Key {
                 R2Key::committed(R2Key::Blob { repo: RepoId(id(r)?), oid: digest(o)? }).unwrap()
             }
             ["upload", n, i] => R2Key::Upload { network: net(n)?, id: pack_id(i)? },
+            ["export", m, q]
+                if m.len() == 12 && q.len() == 10 && (m.bytes().chain(q.bytes())).all(|b| b.is_ascii_digit()) =>
+            {
+                R2Key::Export { minute: m.parse().map_err(|_| bad())?, seq: q.parse().map_err(|_| bad())? }
+            }
+            ["export-state"] => R2Key::ExportState,
             _ => return Err(bad()),
         };
         Ok(key)
@@ -275,6 +291,8 @@ mod tests {
             R2Key::committed(R2Key::Pack { network, id }).unwrap(),
             R2Key::committed(R2Key::Blob { repo: RepoId(DbId(5)), oid: digest }).unwrap(),
             R2Key::Upload { network, id },
+            R2Key::Export { minute: 29_891_520, seq: 3 },
+            R2Key::ExportState,
         ]
     }
 
@@ -321,6 +339,10 @@ mod tests {
         let id = PackId(Ulid(u128::MAX >> 3)).to_string();
         for bad in [
             format!("pack/77/{id}.zip"),
+            "export/29891520/0000000003".to_owned(),
+            "export/000029891520/3".to_owned(),
+            "export/00002989152a/0000000003".to_owned(),
+            "export/000029891520/9999999999".to_owned(),
             format!("pack/077/{id}.pack"),
             format!("pack/-1/{id}.pack"),
             format!("pack/77/{id}"),

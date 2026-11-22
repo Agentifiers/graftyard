@@ -20,6 +20,7 @@ mod compat;
 mod credential;
 pub mod edge;
 mod enc;
+pub mod export_token;
 pub mod finish;
 pub mod glob;
 pub mod group_move;
