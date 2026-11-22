@@ -603,3 +603,227 @@ pub fn sign_intent(
     e.sign(seed);
     e
 }
+
+/// How a commit `graft-ops` sent ended: 201, 409 (another writer moved the group since its view), 422 with the
+/// refusal's variant and text, or no outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Submit {
+    Committed,
+    Stale,
+    Refused { variant: Box<str>, message: Box<str> },
+    Failed(Box<str>),
+}
+
+/// A release's files as the release bucket holds them: `release.json`, its signature, and every other file by name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawBundle {
+    pub record: Vec<u8>,
+    pub sig: Signature,
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// What one `graft-ops` run reads and does. The Worker (`workers/ops`) reaches the `Release` group, the deployments
+/// API with the customer's deploy token, Secrets Store, and the release bucket; the tests use a fake world over the
+/// real group.
+#[allow(async_fn_in_trait)]
+pub trait Exec {
+    fn now(&self) -> Timestamp;
+    /// The non-site scripts this `graft-ops` deploys (`check_bundle`'s `scripts`).
+    fn scripts(&self) -> Vec<Script>;
+    /// The group's view, refreshed from a member this run.
+    async fn view(&mut self) -> Result<ReleaseFold, String>;
+    async fn deployment(&mut self, s: Script) -> Result<Deployment, String>;
+    /// The current step's gate (M5-WP4 builds its inputs).
+    async fn gate(&mut self, fold: &ReleaseFold) -> Gate;
+    async fn deploy(&mut self, s: Script, split: &Split) -> Result<(), String>;
+    async fn submit(&mut self, bytes: &[u8]) -> Submit;
+    fn sign(&self, signer: Signer, e: &mut SignedEntry) -> Result<(), String>;
+    fn page(&mut self, why: &str);
+    /// The first release in the bucket that the group holds no `ReleaseUploaded` for.
+    async fn bundle(&mut self, fold: &ReleaseFold) -> Result<Option<RawBundle>, String>;
+    /// The versions an earlier run uploaded for `release`, by the release's tag.
+    async fn tagged(&mut self, release: ReleaseId, scripts: &[Script]) -> Result<BTreeMap<Script, VersionId>, String>;
+    /// Uploads one script's modules as a version tagged with `release`, without deploying it.
+    async fn upload(&mut self, s: Script, release: ReleaseId, modules: &[(String, Vec<u8>)]) -> Result<(), String>;
+}
+
+/// What a run did, one line per action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ran {
+    Uploaded(Script),
+    Deployed(Script, Split),
+    Committed(&'static str),
+    /// A 409: the next pass of the run reads the view again.
+    Stale(&'static str),
+    Refused {
+        kind: &'static str,
+        variant: Box<str>,
+    },
+    Paged(Box<str>),
+    Wait {
+        until: Option<Timestamp>,
+        why: Box<str>,
+    },
+    Idle,
+    Error(Box<str>),
+}
+
+/// Most actions one run takes; the next cron run goes on from the group.
+pub const RUN_MAX: usize = 32;
+
+/// One `graft-ops` run: up to RUN_MAX actions, each decided on a view read just before it, so a run killed anywhere
+/// leaves nothing a later run must know. Uploads come first, one script at a time; a bundle that fails its checks is
+/// reported and the run goes on to the current intent. A commit the group refuses ends the run, and a refusal the
+/// group pages on (`pages`) writes a page.
+pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
+    let mut log = Vec::new();
+    let mut uploads = true;
+    for _ in 0..RUN_MAX {
+        let fold = match e.view().await {
+            Ok(f) => f,
+            Err(x) => {
+                log.push(Ran::Error(format!("view: {x}").into()));
+                break;
+            }
+        };
+        if uploads {
+            match upload_step(e, &fold).await {
+                Ok(None) => uploads = false,
+                Ok(Some(Ran::Stale(k))) => {
+                    log.push(Ran::Stale(k));
+                    continue;
+                }
+                Ok(Some(r @ (Ran::Uploaded(_) | Ran::Committed(_)))) => {
+                    log.push(r);
+                    continue;
+                }
+                Ok(Some(r)) | Err(r) => {
+                    log.push(r);
+                    uploads = false;
+                }
+            }
+        }
+        let mut deployments = BTreeMap::new();
+        if let Some(c) = fold.current.as_deref()
+            && let Ok(steps) = steps(&fold, c, dwell)
+        {
+            for s in steps.iter().filter_map(|s| if let Step::Deploy { script, .. } = s { Some(*script) } else { None })
+            {
+                if deployments.contains_key(&s) {
+                    continue;
+                }
+                if let Ok(d) = e.deployment(s).await {
+                    deployments.insert(s, d);
+                }
+            }
+        }
+        let gate = if fold.current.is_some() { e.gate(&fold).await } else { Gate::Pending };
+        let w = World { now: e.now(), deployments, gate };
+        let (bytes, kind) = match next(&fold, &w, dwell) {
+            Action::Idle => {
+                log.push(Ran::Idle);
+                break;
+            }
+            Action::Wait { until, why } => {
+                log.push(Ran::Wait { until, why });
+                break;
+            }
+            Action::Page(why) => {
+                e.page(&why);
+                log.push(Ran::Paged(why));
+                break;
+            }
+            Action::Deploy { script, split } => {
+                match e.deploy(script, &split).await {
+                    Ok(()) => log.push(Ran::Deployed(script, split)),
+                    Err(x) => {
+                        log.push(Ran::Error(format!("deploy {script:?}: {x}").into()));
+                        break;
+                    }
+                }
+                continue;
+            }
+            Action::Commit { body, signer } => {
+                let kind = body.kind();
+                match signed(e, &fold, body, signer) {
+                    Ok(b) => (b, kind),
+                    Err(r) => {
+                        log.push(r);
+                        break;
+                    }
+                }
+            }
+            Action::Undo(u) => {
+                let kind = u.body.kind();
+                (u.encode(), kind)
+            }
+        };
+        if !submitted(e, &bytes, kind, &mut log).await {
+            break;
+        }
+    }
+    log
+}
+
+fn signed<E: Exec>(e: &E, fold: &ReleaseFold, body: ReleaseEntry, signer: Signer) -> Result<Vec<u8>, Ran> {
+    let install = fold.genesis.as_ref().ok_or(Ran::Error("no genesis in the view".into()))?.install;
+    let bound = crate::Bound { install, group: graftyard_types::ChainId::Release, prev: fold.last, parent: None };
+    let mut s = SignedEntry::unsigned(bound, body);
+    e.sign(signer, &mut s).map_err(|x| Ran::Error(format!("sign: {x}").into()))?;
+    Ok(s.encode())
+}
+
+/// Sends one entry. True when the run goes on: it committed, or it met 409 and the next pass reads the view again.
+async fn submitted<E: Exec>(e: &mut E, bytes: &[u8], kind: &'static str, log: &mut Vec<Ran>) -> bool {
+    match e.submit(bytes).await {
+        Submit::Committed => {
+            log.push(Ran::Committed(kind));
+            true
+        }
+        Submit::Stale => {
+            log.push(Ran::Stale(kind));
+            true
+        }
+        Submit::Refused { variant, message } => {
+            if crate::pages(&variant) {
+                let why = format!("{kind} refused, {variant}: {message}");
+                e.page(&why);
+                log.push(Ran::Paged(why.into()));
+            }
+            log.push(Ran::Refused { kind, variant });
+            false
+        }
+        Submit::Failed(x) => {
+            log.push(Ran::Error(format!("{kind}: {x}").into()));
+            false
+        }
+    }
+}
+
+/// One upload action, or `None` when the bucket holds no release the group lacks.
+async fn upload_step<E: Exec>(e: &mut E, fold: &ReleaseFold) -> Result<Option<Ran>, Ran> {
+    let b = match e.bundle(fold).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return Ok(None),
+        Err(x) => return Err(Ran::Error(format!("release bucket: {x}").into())),
+    };
+    let c = check_bundle(fold, &b.record, b.sig, &b.files, &e.scripts())
+        .map_err(|r| Ran::Error(format!("release bundle refused: {r}").into()))?;
+    let scripts: Vec<Script> = c.scripts.keys().copied().collect();
+    let tagged = e.tagged(c.release, &scripts).await.map_err(|x| Ran::Error(format!("versions: {x}").into()))?;
+    match upload_next(fold, &c, &tagged) {
+        UploadStep::Done => Ok(None),
+        UploadStep::Upload(s) => {
+            e.upload(s, c.release, &c.scripts[&s])
+                .await
+                .map_err(|x| Ran::Error(format!("upload {s:?}: {x}").into()))?;
+            Ok(Some(Ran::Uploaded(s)))
+        }
+        UploadStep::Commit(u) => {
+            let bytes = signed(e, fold, ReleaseEntry::ReleaseUploaded(u), Signer::Executor)?;
+            let mut log = Vec::new();
+            submitted(e, &bytes, "ReleaseUploaded", &mut log).await;
+            Ok(log.pop())
+        }
+    }
+}

@@ -6,7 +6,8 @@
 //! "kid"}`. The signing key is the `MintWrapKey` secret unwrapped (`MintKeySource`), held by the isolate's `Minter`
 //! for at most `SIGNING_KEY_CACHE`, so a rotated secret is read within that long without a new script version.
 //!
-//! The rest of `graft-ops` (signed intents, the API-calling crons, `graftyard mint-key rotate`) is not built.
+//! The executor of signed intents runs on the Cron Trigger (`exec`, M5-WP3). The API-calling crons and `graftyard
+//! mint-key rotate` are not built.
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -219,6 +220,8 @@ pub fn rewrap(src: &WrapKeySource, w: &Wrapped, nonce: [u8; 12]) -> Result<Wrapp
     src.wrap(&src.unwrap(w)?.0, nonce)
 }
 
+#[cfg(target_arch = "wasm32")]
+mod exec;
 #[cfg(target_arch = "wasm32")]
 mod worker_main;
 
