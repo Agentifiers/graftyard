@@ -30,8 +30,11 @@ def excess(rows, ldr, f, t0, t1, rt):
             g = ent[c2] - left[c]
             if g < 6000: V.append((g - rt, ent[c2] - ent[c], left[c] - ent[c]))
     return V
+ONLY = sys.argv[1:]
 for tag, ldr, f, frm, to in (('sabA', 0, 1, 90, 300), ('blB', 0, 1, 90, 300), ('crA', 0, 1, 90, 300), ('blA', 0, 1, 90, 300), ('blC2', 0, 1, 90, 300), ('chA', 0, 1, 90, 300),
-                             ('ncA', 0, 1, 90, 216), ('ncA', 0, 2, 90, 216), ('ncA', 2, 0, 225, 300), ('m64r33', 0, 1, 60, 144), ('m64r33', 0, 2, 60, 144), ('m64r33', 1, 0, 155, 300)):
+                             ('ncA', 0, 1, 90, 216), ('ncA', 0, 2, 90, 216), ('ncA', 2, 0, 225, 300), ('m64r33', 0, 1, 60, 144), ('m64r33', 0, 2, 60, 144), ('m64r33', 1, 0, 155, 300),
+                             *[(q, 0, 1, 90, 300) for q in sys.argv[1:]]):
+    if ONLY and tag not in ONLY: continue
     rows = allrows(tag); a = ms(RUNS[tag][0])
     other = f if ldr == 0 else ldr
     sent = {I(r[3]): r[0] for r in rows[0] if r[1] == 23 and r[2] == other and r[0] < a - 2000}
