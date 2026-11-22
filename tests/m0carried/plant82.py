@@ -48,8 +48,8 @@ MUTANTS = [
      OPS, 'let until = Timestamp(c.since.0.max(dep.created.0).saturating_add(*dwell));',
      'let until = Timestamp(c.since.0.saturating_add(*dwell));', REL),
     ("a gate breach waits instead of running the undo", OPS,
-     '                    Gate::Breach(why) => return breach(fold, c, why),',
-     '                    Gate::Breach(_) => return Action::Wait { until: None, why: "breach".into() },', REL),
+     '            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);',
+     '            if *gated && let Gate::Breach(_) = &w.gate {\n                return Action::Wait { until: None, why: "breach".into() };', REL),
     ("the first day is not gated", OPS,
      '            if let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }\n            let until',
      '            let until', REL),
@@ -89,6 +89,9 @@ MUTANTS = [
     ("a refused bundle ends the run before the intents", OPS,
      '                Ok(Some(r)) | Err(r) => {\n                    log.push(r);\n                    uploads = false;\n                }',
      '                Ok(Some(r)) | Err(r) => {\n                    log.push(r);\n                    break;\n                }', REL),
+    ("a breach waits for a deployment read, so no undo goes in while the API is down", OPS,
+     '            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }\n            let Some(dep) = w.deployments.get(script) else {\n                return Action::Wait { until: None, why: format!("no deployment of {script:?} read").into() };\n            };',
+     '            let Some(dep) = w.deployments.get(script) else {\n                return Action::Wait { until: None, why: format!("no deployment of {script:?} read").into() };\n            };\n            if *gated && let Gate::Breach(why) = &w.gate {\n                return breach(fold, c, why);\n            }', REL),
 ]
 
 

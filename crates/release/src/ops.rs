@@ -292,6 +292,11 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
             if w.now < until { Action::Wait { until: Some(until), why: "first day".into() } } else { done }
         }
         Step::Deploy { script, split, release, dwell, gated, pct } => {
+            // A breach needs no deployment read: the undo is a signed entry, so it goes in while the API is down
+            // ("Install operations", the November 2, 2023 class), and its return steps wait for the API.
+            if *gated && let Gate::Breach(why) = &w.gate {
+                return breach(fold, c, why);
+            }
             let Some(dep) = w.deployments.get(script) else {
                 return Action::Wait { until: None, why: format!("no deployment of {script:?} read").into() };
             };
@@ -313,10 +318,8 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
                 return Action::Deploy { script: *script, split: split.clone() };
             }
             if *gated {
-                match &w.gate {
-                    Gate::Breach(why) => return breach(fold, c, why),
-                    Gate::Pending => return Action::Wait { until: None, why: "gate pending".into() },
-                    Gate::Pass => {}
+                if w.gate == Gate::Pending {
+                    return Action::Wait { until: None, why: "gate pending".into() };
                 }
                 // The dwell runs from when the split took effect, which a restart between the deploy and the step
                 // cannot shorten.

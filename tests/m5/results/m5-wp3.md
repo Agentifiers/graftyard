@@ -52,6 +52,8 @@ After the run:
 
 Then `graft-m4a-ops` `31251d43` was deployed with `GATE=pending`, and its Cron Trigger was removed (`schedules` = `[]`) at 13:21Z, so `graft-ops` cannot step on its own. R2's site c intent stays current, held at its first day.
 
+**Ending the held intent (13:29Z to 13:37Z, approved).** `graft-m4a-ops` `b6d7cd9f` ran with `FIRST_DAY_MS=60000`, `GATE=pass` and the cron. Its 13:35:13Z run committed `IntentStep` step 6 (the first-day hold) and then `IntentDone` for R2's site c `SiteDay`, both signed by the executor key `d387253b…`, and went `Idle`. The group went from 82 to 84 entries, so those two were the only entries in the window; the run changed no deployment. Then `7cc9b100` with `GATE=pending`, and the Cron Trigger was removed at 13:37Z.
+
 Raw records:
 - `raw/bf7/bf7.log`: the driver and the assertions.
 - `raw/bf7/answers.jsonl`: every edge answer.
