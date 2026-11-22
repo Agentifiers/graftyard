@@ -7726,3 +7726,76 @@ hosted has run.
   lower `BATCH_CHAINS_MAX` or raise the reads at once.
 - A leader's commit p99 rises on a row with the feed on against the same build with it off: the reports move off the
   alarm.
+
+### `validate-hedge`: a human push's buffered validate asks the next site's shard after 1 s, beside the first, 2026-11-22
+
+**Status.** Built on branch `validate-fallback`, not yet on a hosted row. Edge only (`workers/edge/src/lib.rs`,
+`validate`, `hedged`, `VALIDATE_HEDGE`), so it ships on an edge day. The lead asked for it after B0-34 mt16's kill
+line failed: a receive-pack should not depend on one shard's life.
+
+**Decision.** A human push's validate of a buffered pack (up to `INLINE_MAX`, 1 MiB) that one site's shard has not
+answered in `VALIDATE_HEDGE` (1 s) also goes to the next site's shard in `shard_order`, with the same body, and the
+first try keeps running. The first 200, 422 or 429 from any try decides and drops the others. Any other answer moves on
+at once, as a failed shard always has, unless a hedge already started the next try. The passed shard is marked cold, so
+for `COLD_SHARD_MS` this isolate tries it last. Three rules stay as they were:
+- **Agents.** An agent's validate gets no hedge.
+- **The last site.** It is never hedged past and keeps its whole wait. That keeps `chain-wait` and G30 consistent: a
+  rehydrating last-site shard still holds its push.
+- **Streamed packs.** Packs over `INLINE_MAX` keep the probe-first failover (`streamed_site`) and get no hedge.
+
+A test install's `server-timing` carries `validate_site` (the site that answered, −1 for none), `validate_tries` and
+`validate_hedge` (1 when a hedge started a try).
+
+**Why a hedge and not a deadline.** The ruling asked for a deadline past which the push moves to the next shard, set
+from the human validate p99 outside the kill plus margin. That deadline is about 1.8 s, and at 1.8 s the straddler
+would not meet the line:
+- **The straddler's arithmetic.** mt16's straddling push spent 331 ms in front, 2,087 in validate (36 of it the shard's
+  work), 642 in commit, and about 394 ms on the client outside the edge's 3,060.
+- **The budget.** With a deadline D and a second validate of about 250 ms, the client total is about
+  331 + D + 250 + 642 + 394 = 1,617 + D ms. Meeting 3 s needs D ≤ 1,380 ms, and the 90% line of 3.33 s needs D ≤ 1,710.
+- **Why 1.8 s fails.** At D = 1.8 s the straddler answers at about 3.4 s.
+- **Why a lower deadline is wrong.** A deadline that low would abandon a slow but healthy shard on 2 to 5% of human
+  validates and pay their whole wait again. A hedge keeps the slow try, so a 1,100 ms home answer still decides at
+  1,100 ms.
+- **The predicted result.** At 1 s the straddler's validate is about 1,250 ms, and its client total about 2.6 s
+  [inference].
+
+**Why buffered and not streamed.** The ruling said "a streamed human validate". The straddler was buffered: a1.mjs and
+Load34 push 20 KB human packs, under `INLINE_MAX`, so they go through `place_teed` and `validate`, whose body was
+already replayable. Every buffered try resends the same bytes (`Uint8Array::from(&head)`), so no cap or re-read is
+needed. Streamed packs are over 1 MiB: none of B0-34's human pushes, and only journey 9's 5% of agent pushes at 1 MiB
+that pass `INLINE_MAX` with their commands. Hedging those would need the body buffered or re-read from the bucket the
+first shard staged. They keep today's rule: probe, then send once.
+
+**What it beat.**
+- **A deadline that abandons the first try.** Above.
+- **Hedging agents too.** Their p50 is 1.5 s against a 2 s admission wait in the container (`agentValidateWait`), so a
+  1 s hedge would double most agent validates.
+- **Hedging the last site.** That breaks `chain-wait`'s rule.
+- **Buffering streamed packs at the edge.** That costs up to the plan limit in the isolate, and no B0-34 push needs it.
+
+**Evidence.**
+- **Human validate ms outside kills** (each row's −5 s to +60 s around the kill dropped), mt13 to mt16 pooled, 2,105
+  pushes: p50 295, p95 1,122, p99 1,725, p99.9 2,763.
+- **Share over each line:** 7.0% over 1,000 ms, 5.1% over 1,100, 3.4% over 1,250, 2.0% over 1,500.
+- **The extra cost.** At 1 s, about 7% of human pushes send a second validate, about 0.04 a second at journey 9's 1.25
+  human pushes a second [inference].
+- **Agent validates (mt16):** p50 1,500, p99 5,129.
+- **The straddler** is from `tests/am1/results/b034-mt16.md`, "The kill phase's push p99".
+- **The test.**
+  `workers/edge/src/lib.rs`, `a_human_validate_asks_the_next_shard_beside_a_slow_one_and_the_last_try_keeps_its_wait`,
+  drives `hedged` on a fake clock with mt16's case:
+  - The home answers at 2,087 ms and site b in 250. Hedged, it decides at 1,250 on site b; unhedged, at 2,087 on the
+    home.
+  - A slow home still decides first, a failure moves on with no hedge, and a hedge's 422 decides.
+  - The last try waits 9 s unpassed, and every failure is kept.
+- **Plants.** `tests/m0carried/plant85.py`: no hedge, a hedged agent, a hedged last try, the passed shard not marked
+  cold, the slow try dropped at the hedge, a passed try's failure starting a second try, and a 422 that does not
+  decide. 7 of 7 caught.
+
+**Flip.**
+- **Back the hedge out** if the next full B0-34 row shows any of these:
+  - a human push that straddles the kill with `validate_hedge` 1 still over 3 s, and its validate past 1.5 s;
+  - `validate_tries` over 1 on more than 10% of human pushes outside the kill;
+  - human push p99 outside the kill higher than mt16's with the same load.
+- **Lower `VALIDATE_HEDGE`** if straddling pushes meet the line but the kill-phase p99 sits within 10% of 3 s.
