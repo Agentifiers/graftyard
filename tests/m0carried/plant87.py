@@ -19,6 +19,9 @@ GROUP = 'crates/release/src/group.rs'
 REL = ['cargo', 'test', '-q', '-p', 'graftyard-release', '--lib']
 SHARD = 'crates/git/src/shard.rs'
 GIT = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard']
+OPS_TOML = 'workers/ops/Cargo.toml'
+EXEC = 'workers/ops/src/exec.rs'
+OPSFAULTS = ['bash', 'tests/m5/opsfaults.sh']
 
 MUTANTS = [
     ("apply lag is judged against N alone, not the 500 ms cap", GATE,
@@ -109,6 +112,11 @@ MUTANTS = [
      'let pct = [10u64, 50, 100][usize::from(step.min(2))];', 'let pct = [50u64, 50, 100][usize::from(step.min(2))];', GIT),
     ("the 50% step picks shards apart from the 10% step's", SHARD,
      'if weight(key.as_bytes(), 0) % 100 < pct', 'if weight(format!("{key}#{pct}").as_bytes(), 0) % 100 < pct', GIT),
+    # BF-39's test hooks (2026-11-22): a product graft-ops must not read OPS_KILL or OPS_STEP_MIN_ENTRIES.
+    ("the product graft-ops builds with test-faults", OPS_TOML,
+     'test-faults = []', 'default = ["test-faults"]\ntest-faults = []', OPSFAULTS),
+    ("the product graft-ops lowers a starved gate", EXEC,
+     '        #[cfg(feature = "test-faults")]\n        let g = {', '        let g = {', OPSFAULTS),
 ]
 
 
