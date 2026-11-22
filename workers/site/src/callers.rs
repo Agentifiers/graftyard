@@ -161,6 +161,12 @@ impl<E> Callers<E> {
         rx
     }
 
+    /// The messages and encoded bytes held for `from` now: what its call's response would take (raft-split).
+    #[cfg(any(test, feature = "test-faults"))]
+    pub fn held_for(&self, from: SiteId) -> (usize, usize) {
+        self.by.get(&from).map_or((0, 0), |c| (c.held.len(), c.held_bytes))
+    }
+
     /// The encoded bytes held for every learner now (`Host::mark_mem`).
     #[cfg(feature = "test-faults")]
     pub fn held_total(&self) -> usize {
