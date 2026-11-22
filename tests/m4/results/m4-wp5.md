@@ -181,7 +181,7 @@ Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2
 
 ## Pending
 
-- The chrome widgets whose REST routes the edge does not serve yet (F61) render nothing.
+- The chrome widgets whose REST routes the edge did not serve (F61) rendered nothing. Branch `f61-reads` (2026-11-22, code only) serves the last eight: branches, tags, labels, assignees, teams, check suites, and issue and comment reactions, each validated against the pinned description; notifications were already served behind 32.19 and 0x14.3. An edge day on graft-m4a and a BF-38 rerun confirm it hosted.
 
 ## Open items
 

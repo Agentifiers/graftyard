@@ -1955,6 +1955,22 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         (Method::Get, ["pulls", n, "comments"]) => rest::list_review_comments(&r, n, query),
         (Method::Get, ["commits", reference, "check-runs"]) => rest::list_check_runs_for_ref(&r, reference, query),
         (Method::Get, ["check-runs", id]) => rest::get_check_run(&r, id),
+        // The web app's chrome reads (`decisions/OPEN-QUESTIONS.md`, F61).
+        (Method::Get, ["branches"]) => rest::list_branches(&r, query),
+        (Method::Get, ["tags"]) => match peeled_tags(c, &rd, &r).await {
+            Ok(peeled) => rest::list_tags(&r, query, &peeled),
+            Err(e) => unavailable(&format!("the git cache: {e}")),
+        },
+        (Method::Get, ["labels"]) => rest::list_labels(&r, query),
+        (Method::Get, ["commits", reference, "check-suites"]) => match rest::resolve(&r, reference) {
+            Some(sha) => match commit_object(c, &rd.repo, sha).await {
+                Ok(Some(raw)) => rest::list_check_suites_for_ref(&r, sha, &raw, query),
+                Ok(None) => rest::commit_not_found(reference),
+                Err(e) => unavailable(&format!("the git cache: {e}")),
+            },
+            None => rest::commit_not_found(reference),
+        },
+        (Method::Get, [on @ .., "reactions"]) => rest::list_reactions(&r, on, query),
         (Method::Get, ["commits", reference]) => match rest::resolve(&r, reference) {
             Some(sha) => match commit_object(c, &rd.repo, sha).await {
                 Ok(Some(raw)) => rest::get_commit(&r, sha, &raw),
@@ -2447,6 +2463,27 @@ async fn commit_object(
         Err(e) if e.contains("not our ref") || e.contains("no pack") => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// The commit each annotated tag peels to, by short name, from the git cache's v2 `ls-refs` with `peel`
+/// (`graftyard_git::ls_refs::peeled`). A repository with no tag asks nothing.
+async fn peeled_tags(
+    c: &Ctx<'_>,
+    rd: &Read,
+    r: &View<'_>,
+) -> std::result::Result<std::collections::BTreeMap<String, graftyard_git::refs::ObjectId>, String> {
+    use graftyard_git::ls_refs;
+    if rest::refs_under(r, "refs/tags/").is_empty() {
+        return Ok(Default::default());
+    }
+    let err = |e: worker::Error| e.to_string();
+    let url = format!("https://shard/upload-pack?repo={}", rd.repo.id.0.0);
+    let body = ls_refs::peel_request("refs/tags/");
+    let mut r = crate::shard_read(c, &rd.repo, &url, Method::Post, "version=2", Some(&body)).await.map_err(err)?;
+    if r.status_code() != 200 {
+        return Err(format!("{} {}", r.status_code(), r.text().await.unwrap_or_default()));
+    }
+    ls_refs::peeled(&r.bytes().await.map_err(err)?, "refs/tags/")
 }
 
 /// Read-gated like the API: the redirect from `/repos/{o}/{r}/tarball` lands on the same host, so the client sends

@@ -939,20 +939,25 @@ fn raw_commit_user(raw: &[u8]) -> Option<Value> {
     }))
 }
 
-/// `GET /repos/{owner}/{repo}/commits/{ref}` from the raw commit object.
-pub fn get_commit(r: &Repo<'_>, sha: ObjectId, raw: &[u8]) -> Reply {
-    let internal = || Reply::error(500, "Internal Server Error", "rest");
-    let Some(split) = raw.windows(2).position(|w| w == b"\n\n") else { return internal() };
+/// A raw commit object's fields, as REST renders them: tree, parents, author and committer (`{name, email, date}`),
+/// and the message without its last newline. `None` for an object that is not a well-formed commit.
+struct RawCommit {
+    tree: ObjectId,
+    parents: Vec<ObjectId>,
+    author: Value,
+    committer: Value,
+    message: String,
+}
+
+fn parse_commit(raw: &[u8]) -> Option<RawCommit> {
+    let split = raw.windows(2).position(|w| w == b"\n\n")?;
     let (headers, message) = (&raw[..split], &raw[split + 2..]);
-    let mut tree = None;
-    let mut parents = Vec::new();
-    let mut author = None;
-    let mut committer = None;
+    let (mut tree, mut parents, mut author, mut committer) = (None, Vec::new(), None, None);
     for line in headers.split(|b| *b == b'\n') {
         if let Some(hex) = line.strip_prefix(b"tree ") {
             tree = ObjectId::parse_hex(hex);
         } else if let Some(hex) = line.strip_prefix(b"parent ") {
-            let Some(parent) = ObjectId::parse_hex(hex) else { return internal() };
+            let parent = ObjectId::parse_hex(hex)?;
             parents.push(parent);
         } else if let Some(user) = line.strip_prefix(b"author ") {
             author = raw_commit_user(user);
@@ -960,8 +965,15 @@ pub fn get_commit(r: &Repo<'_>, sha: ObjectId, raw: &[u8]) -> Reply {
             committer = raw_commit_user(user);
         }
     }
-    let (Some(tree), Some(author), Some(committer)) = (tree, author, committer) else { return internal() };
-    let message = String::from_utf8_lossy(message.strip_suffix(b"\n").unwrap_or(message));
+    let message = String::from_utf8_lossy(message.strip_suffix(b"\n").unwrap_or(message)).into_owned();
+    Some(RawCommit { tree: tree?, parents, author: author?, committer: committer?, message })
+}
+
+/// `GET /repos/{owner}/{repo}/commits/{ref}` from the raw commit object.
+pub fn get_commit(r: &Repo<'_>, sha: ObjectId, raw: &[u8]) -> Reply {
+    let Some(RawCommit { tree, parents, author, committer, message }) = parse_commit(raw) else {
+        return Reply::error(500, "Internal Server Error", "rest");
+    };
     let (api, web) = (r.host.api(), r.host.web());
     let (o, name) = (&r.at.owner, &r.at.name);
     let sha = sha.hex();
@@ -1071,6 +1083,240 @@ pub fn list_issues(r: &Repo<'_>, query: &str) -> Reply {
         Some(l) => reply.with("link", l),
         None => reply,
     }
+}
+
+// ---- the web app's chrome reads (`decisions/OPEN-QUESTIONS.md`, F61) ----
+
+/// Every ref under `prefix` (`refs/heads/` or `refs/tags/`) and its object, in name order.
+pub fn refs_under(r: &Repo<'_>, prefix: &str) -> Vec<(String, ObjectId)> {
+    let mut out = Vec::new();
+    for (k, _) in r.core.prefix("ref", &[]) {
+        let Some(Val::Blob(b)) = k.first() else { continue };
+        let Some(short) = b.strip_prefix(prefix.as_bytes()) else { continue };
+        let (Ok(name), Ok(short)) = (RefName::parse(b), std::str::from_utf8(short)) else { continue };
+        if let Some(sha) = r.ref_value(&name) {
+            out.push((short.to_owned(), sha));
+        }
+    }
+    out
+}
+
+/// `GET /repos/{owner}/{repo}/branches` (`rest:branches`, T0): each branch as the pinned `short-branch` schema renders
+/// it, in name order, `protected` when a branch rule matches it. `?protected=true` or `false` filters on it.
+pub fn list_branches(r: &Repo<'_>, query: &str) -> Reply {
+    let (api, o, n) = (r.host.api(), &r.at.owner, &r.at.name);
+    let want = match param(query, "protected") {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    };
+    let all = refs_under(r, "refs/heads/")
+        .into_iter()
+        .filter_map(|(branch, sha)| {
+            let full = RefName::parse(format!("refs/heads/{branch}").as_bytes()).ok()?;
+            let protected = !r.protections(&full).is_empty();
+            if want.is_some_and(|w| w != protected) {
+                return None;
+            }
+            Some(json!({
+                "name": branch, "protected": protected,
+                "commit": { "sha": sha.hex(), "url": format!("{api}/repos/{o}/{n}/commits/{}", sha.hex()) },
+                "protection_url": format!("{api}/repos/{o}/{n}/branches/{}/protection", js_path(&branch)),
+            }))
+        })
+        .collect();
+    paged_values(r, "/branches", query, all)
+}
+
+/// `GET /repos/{owner}/{repo}/tags` (`rest:repos`, T0): each tag as the pinned `tag` schema renders it, newest name
+/// first as GHES lists them, its `commit` the commit the tag peels to. `peeled` holds the commit of each annotated tag,
+/// from the git cache's `ls-refs` (`peel`); a lightweight tag names its commit itself.
+pub fn list_tags(r: &Repo<'_>, query: &str, peeled: &std::collections::BTreeMap<String, ObjectId>) -> Reply {
+    let (api, o, n) = (r.host.api(), &r.at.owner, &r.at.name);
+    let mut tags = refs_under(r, "refs/tags/");
+    tags.reverse();
+    let all = tags
+        .into_iter()
+        .map(|(tag, oid)| {
+            let sha = peeled.get(&tag).copied().unwrap_or(oid);
+            json!({
+                "name": tag, "node_id": graftyard_git::pack::b64::encode(format!("03:Ref{}:refs/tags/{tag}", r.at.id.0.0).as_bytes()),
+                "commit": { "sha": sha.hex(), "url": format!("{api}/repos/{o}/{n}/commits/{}", sha.hex()) },
+                "zipball_url": format!("{api}/repos/{o}/{n}/zipball/refs/tags/{tag}"),
+                "tarball_url": format!("{api}/repos/{o}/{n}/tarball/refs/tags/{tag}"),
+            })
+        })
+        .collect();
+    paged_values(r, "/tags", query, all)
+}
+
+/// `GET /repos/{owner}/{repo}/labels` (`rest:labels`, T0): the repository's labels in name order, case-folded.
+pub fn list_labels(r: &Repo<'_>, query: &str) -> Reply {
+    let all = r.labels().iter().map(|(id, l)| label_json(r, *id, l)).collect();
+    paged_values(r, "/labels", query, all)
+}
+
+/// `GET /repos/{owner}/{repo}/commits/{ref}/check-suites` (`rest:checks`, T0): the commit's suites as the pinned
+/// `check-suite` schema renders them, newest first, each with the count of its latest runs. `?app_id=` and
+/// `?check_name=` filter as GHES does. `raw` is commit `sha`'s object, read from the git cache for `head_commit`; the
+/// edge answers an unresolvable ref, or a commit the cache does not hold, 422 (`commit_not_found`).
+pub fn list_check_suites_for_ref(r: &Repo<'_>, sha: ObjectId, raw: &[u8], query: &str) -> Reply {
+    let Some(c) = parse_commit(raw) else { return Reply::error(500, "Internal Server Error", "rest") };
+    // GHES's `simple-commit`: the `commit` schema's names, with `{name, email}` people and the committer's date.
+    let person = |p: &Value| json!({ "name": p["name"], "email": p["email"] });
+    let head_commit = json!({
+        "id": sha.hex(), "tree_id": c.tree.hex(), "message": c.message, "timestamp": c.committer["date"],
+        "author": person(&c.author), "committer": person(&c.committer),
+    });
+    let (api, o, n) = (r.host.api(), &r.at.owner, &r.at.name);
+    let runs = r.check_runs(&sha);
+    let app = param(query, "app_id").and_then(|a| a.parse::<i64>().ok());
+    let check = param(query, "check_name").map(unpercent);
+    let mut suites = r.check_suites(&sha);
+    // A run made through `POST /check-runs` names a suite of its own id and writes no suite row: its suite is
+    // rendered from the run, as `check_run_json` renders `check_suite`.
+    for t in &runs {
+        if !suites.iter().any(|s| s.rec.suite == t.rec.suite) {
+            suites.push(graftyard_git::tiers::Timed {
+                rec: graftyard_git::issues::CheckSuiteUpdate {
+                    suite: t.rec.suite,
+                    app: t.rec.app,
+                    head_sha: sha,
+                    head_branch: None,
+                    version: t.rec.version,
+                    status: t.rec.status,
+                    conclusion: t.rec.conclusion,
+                },
+                at: t.at,
+            });
+        }
+    }
+    suites.retain(|s| {
+        app.is_none_or(|a| s.rec.app.0.0 == a)
+            && check.as_ref().is_none_or(|c| runs.iter().any(|t| t.rec.suite == s.rec.suite && *t.rec.name == **c))
+    });
+    suites.sort_by_key(|s| std::cmp::Reverse(s.rec.suite));
+    let total_count = suites.len();
+    let page = Page::parse(query);
+    let more = total_count > page.end();
+    let repository = crate::activity::minimal_repository(r);
+    let check_suites: Vec<Value> = suites
+        .iter()
+        .skip(page.skip())
+        .take(page.per_page)
+        .map(|t| {
+            let s = &t.rec;
+            let id = s.suite.0.0;
+            json!({
+                "id": id, "node_id": scoped(NodeType::CheckRun, r, id),
+                "head_branch": s.head_branch.as_ref().map(|b| String::from_utf8_lossy(
+                    b.as_bytes().strip_prefix(b"refs/heads/").unwrap_or(b.as_bytes())).into_owned()),
+                "head_sha": s.head_sha.hex(), "status": check_status(s.status), "conclusion": s.conclusion.map(conclusion),
+                "url": format!("{api}/repos/{o}/{n}/check-suites/{id}"), "before": null, "after": s.head_sha.hex(),
+                "pull_requests": [], "app": null, "repository": repository, "created_at": iso(t.at), "updated_at": iso(t.at),
+                "head_commit": head_commit,
+                "latest_check_runs_count": runs.iter().filter(|r| r.rec.suite == s.suite).count(),
+                "check_runs_url": format!("{api}/repos/{o}/{n}/check-suites/{id}/check-runs"),
+            })
+        })
+        .collect();
+    let link =
+        graftyard_wire::link(&api, r.at.id.0.0, &format!("/commits/{}/check-suites", sha.hex()), &[], page, more, None);
+    let reply = Reply::json(200, json!({ "total_count": total_count, "check_suites": check_suites }));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/assignees` (`rest:issues`, T0): the accounts an issue may be assigned to, each as the
+/// pinned `simple-user`, in login order: every account in `people` with write access or more [inference: GHES's
+/// "available assignees" are the users with push access; this install has no public-repository commenter rule].
+/// The edge reads `people` (collaborators, org members, and the owner) and their logins.
+pub fn list_assignees(
+    r: &Repo<'_>,
+    people: &[(graftyard_types::AccountId, Option<graftyard_identity::RepoPermission>)],
+    query: &str,
+) -> Reply {
+    let mut who: Vec<(String, graftyard_types::AccountId)> = people
+        .iter()
+        .filter(|(_, p)| *p >= Some(graftyard_identity::RepoPermission::Write))
+        .map(|(a, _)| (r.dir.login(*a).unwrap_or_default().to_lowercase(), *a))
+        .collect();
+    who.sort();
+    who.dedup();
+    let all = who.into_iter().map(|(_, a)| simple_user(r.host, r.dir, Some(a))).collect();
+    paged_values(r, "/assignees", query, all)
+}
+
+/// A team with a grant on this repository, as `GET /repos/{owner}/{repo}/teams` lists it.
+pub struct RepoTeam {
+    pub id: i64,
+    pub name: String,
+    pub slug: String,
+    pub permission: graftyard_identity::RepoPermission,
+}
+
+/// GHES's `team` object for a team of org `org` (`org_id`). The org's own routes add `team-full`'s fields to it.
+pub fn team_json(api: &str, web: &str, org: &str, org_id: i64, id: i64, name: &str, slug: &str) -> Value {
+    json!({
+        // `graftyard_wire` has no team node type; a team id never collides with an org's, both being `DbId`s.
+        "id": id, "node_id": graftyard_wire::NodeId::top(NodeType::Organization, id).encode(),
+        "name": name, "slug": slug, "description": null, "privacy": "closed",
+        "notification_setting": "notifications_enabled", "permission": "pull",
+        "url": format!("{api}/teams/{id}"), "html_url": format!("{web}/orgs/{org}/teams/{slug}"),
+        "members_url": format!("{api}/teams/{id}/members{{/member}}"),
+        "repositories_url": format!("{api}/teams/{id}/repos"), "type": "organization",
+        "organization_id": org_id, "parent": null,
+    })
+}
+
+/// `GET /repos/{owner}/{repo}/teams` (`rest:teams`, T0): the owner org's teams with a grant on this repository, in
+/// name order, each as the pinned `team` with its grant as `permission` and `permissions`, as GHES lists them. A
+/// repository a user owns has none.
+pub fn list_teams(r: &Repo<'_>, mut teams: Vec<RepoTeam>, query: &str) -> Reply {
+    use graftyard_identity::RepoPermission as P;
+    teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.id.cmp(&b.id)));
+    let (api, web) = (r.host.api(), r.host.web());
+    let all = teams
+        .iter()
+        .map(|t| {
+            let mut v = team_json(&api, &web, &r.at.owner, r.at.owner_id.0.0, t.id, &t.name, &t.slug);
+            let at = |x| t.permission >= x;
+            v["permission"] = json!(match t.permission {
+                P::Read => "pull",
+                P::Triage => "triage",
+                P::Write => "push",
+                P::Maintain => "maintain",
+                P::Admin => "admin",
+            });
+            v["permissions"] = json!({ "pull": at(P::Read), "triage": at(P::Triage), "push": at(P::Write),
+                "maintain": at(P::Maintain), "admin": at(P::Admin) });
+            v
+        })
+        .collect();
+    paged_values(r, "/teams", query, all)
+}
+
+/// `GET /repos/{owner}/{repo}/issues/{issue_number}/reactions` and `.../issues/comments/{comment_id}/reactions`
+/// (`rest:reactions`, T1): no fold holds a reaction row yet, so every issue, pull request, and comment has none, as
+/// the `reactions` rollup on each of them says. An unknown issue or comment is 404.
+pub fn list_reactions(r: &Repo<'_>, on: &[&str], query: &str) -> Reply {
+    let found = match on {
+        ["issues", n] => n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))).is_some(),
+        ["issues", "comments", id] => id
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| {
+                graftyard_git::tiers::get_rec::<CommentRow>(r.meta, "comment", &[graftyard_git::tiers::int(id)])
+            })
+            .is_some_and(|c| matches!(c.on, CommentTarget::Issue(_))),
+        _ => false,
+    };
+    if !found {
+        return Reply::not_found();
+    }
+    paged_values(r, &format!("/{}/reactions", on.join("/")), query, Vec::new())
 }
 
 /// `POST /repos/{o}/{r}/labels`'s command: a `DefineLabel`. `color` is six hex digits, as `gh label create` sends it.
