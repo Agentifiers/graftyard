@@ -1,0 +1,4 @@
+2026-11-22T11:09:53.983Z created m3org/bf49-mwrqiiup id 65609
+2026-11-22T11:10:03.034Z push small.txt 2000 B: ok
+2026-11-22T11:10:09.558Z push big.bin 3145728 B: ok
+{"repo":"m3org/bf49-mwrqiiup","id":65609,"head":"8e984d01012450e065626442dfd67c4d90871236","pushes":[{"file":"small.txt","bytes":2000,"ok":true,"ms":6547,"out":""},{"file":"big.bin","bytes":3145728,"ok":true,"ms":6427,"out":""}]}

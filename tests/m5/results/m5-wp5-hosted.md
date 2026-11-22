@@ -112,3 +112,43 @@ queue. BF-47 and `graftyard vault upgrade` still wait on M5-WP4. The design chan
 3. **Pull.** Wait for two rounds, then run `python3 tests/m5/bf49/pull.py --edge <edge> --token-file <file>
    --pack <net>:<id> --revoke`. Record `report.json` here.
 4. **Teardown.** Teardown and purge as graft-m3f's other rows do; the bucket goes with the install.
+
+## Hosted BF-49 m3fx49 (graft-m3f, 2026-11-22): fail, the feed carried nothing
+
+Site day and edge day m3fx49 from main `70c4f7ca` (`tests/m5/bf49/siteday-m3f.sh`, log
+`raw/bf49/siteday-m3fx49.log`): start 10:54:42Z, site exit 0 at 11:06:28Z, edge exit 0 (DONE) at 11:08:08Z; sites
+`15312ada` / `cca26544` / `dc7f578a`, edge `0b02633c`; edgeboot passed on both builds first (test-faults and product, 0
+traps). `graft-m3f-export` was created in enam with `expire7` on `export/`; `EXPORT` is bound on site a and
+`GRAFTYARD_EXPORT=1` is set on every site. Seed (`tests/m5/bf49/seed.mjs`, `raw/bf49/seed.log`): `m3org/bf49-mwrqiiup` =
+`repo:65609`, an inline push (2 KB) and a stored push (3 MiB), head `8e984d01`, pack
+`01M81F6HSG87RDP8AG8306QRY7`. Tokens from `graftyard vault token`, mode 0600: install scope (jti
+`01M81F1ME0D4J1VE5AA70377ZH`) and `owner:7100001` (m3org, jti `01M81F1MHG1SEWA5WWR35ZRTEH`). Pull at 11:12:41Z
+(`raw/bf49/try1/report.json`).
+
+| Check | Result |
+|---|---|
+| Every chain's entries exactly once, Release included | **Not measured: the feed carried 0 entries.** `batches` answered one page with 0 objects |
+| Entries read straight from non-leaders | `repo:65609` 1..10, `release` 1..657, `ids` 1..214, each contiguous; not compared with the feed |
+| Pack | 200, 3,146,983 bytes, checksum equal to the body's SHA-256 |
+| Org token's 404s | batches 404, `release` entries 404, `tokens:0` entries 404; its own `repo:65609` 200 |
+| Org token, another owner's chain | Not measured: the control `repo:65536` is m3org's own (`m3org/j4`) and is retired (purged 2026-11-18), so it answered 503 "no learner or follower answered" |
+| Revocation against READ_CACHE (10,000 ms) | DELETE 204 in 533 ms; of 100 probes over 25 s, 4 answered 200 (sent at 250, 1,250, 4,750 and 5,000 ms), 96 answered 401 (the first sent at 0 ms). Last 200 at 5.0 s, inside READ_CACHE |
+| Cost | graft-m3f $0.18 from 10:54:42Z to 12:37Z (containers $0.15, about one standard-4 hour, see below); the account $0.83 over the same window, mostly other installs |
+
+**Why the feed was empty** (site a's Workers Logs): every leader report failed with `near "commit": syntax error at
+offset 66: SQLITE_ERROR` (repo:65609 indexes 1 to 10, authz:1, names:*, tokens:*), and the cron's round claim at
+11:18:52Z failed with the same error. The registry object's `export_report` table named a column `commit`, which
+SQLite reserves; no native test ran that SQL. Fixed on branch `export-commit-col` (column `idx`, the statements as
+constants, rusqlite `sql_prepares`, and `tests/exportbed/run.sh`, which runs the site build in local workerd: on the
+fix one report, one round, one 482-byte `export/` object; on the old schema both errors and no object).
+
+**Teardown.** Shards torn down at 11:24Z with `KEEP_NETS=65609`, which left `git#0#net:65609` running until
+12:04:41Z (a mistake: holding the seed needs the members, not the shard); then `teardown.py 65609 65609` (200, 1)
+and a sweep with no shard running at 12:06Z. Held for the rerun: `repo:65609` (joined on all three sites), the
+export bucket and the org token. The install token is revoked. The ssh fronts were not touched;
+`ssh.graftyard.dev:22` answered throughout.
+
+**Rerun** (approved under the standing queue once `export-commit-col` merges): a site-only day from merged main with
+`--export-bucket graft-m3f-export`, a fresh install token, two rounds, then `pull.py --revoke` with the org control on
+`identity:7100002` (m3-member, not owned by m3org), and the org token revoked at the end. A second fail on the same
+cause stops the row.
