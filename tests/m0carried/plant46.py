@@ -25,9 +25,10 @@ MUTANTS = [
      '                if line.is_some_and(|o| Some(o) != h.oid.as_ref()) {\n',
      '                if false && line.is_some_and(|o| Some(o) != h.oid.as_ref()) {\n', LST),
     ('the member leaves HEAD out of its read', LS,
-     '        .map(|s| HeadRead {\n', '        .filter(|_| false)\n        .map(|s| HeadRead {\n', LST),
+     '        .map(|b| HeadRead {', '        .filter(|_| false)\n        .map(|b| HeadRead {', LST),
     ('a follower declines the ls-refs read, so it never leaves the leader', FAM,
-     '    if q.get("lsRefs").is_some() {\n        return true;\n    }\n', '', FANT),
+     '    if q.get("lsRefs").is_some() || *q == serde_json::json!({ "ranges": true }) {\n',
+     '    if *q == serde_json::json!({ "ranges": true }) {\n', FANT),
 ]
 
 

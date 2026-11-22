@@ -39,11 +39,10 @@ MUTANTS = [
      '        if false {\n            page.drain(..total.saturating_sub(n));', API),
     # Filters applied after paging.
     ('rest list: the label filter runs after the page is cut', REST,
-     '            all.extend(r.list(kind, state, None, usize::MAX, &has).0);',
-     '            all.extend(r.list(kind, state, None, usize::MAX, &|_| true).0);', API),
+     '                all.extend(r.list(kind, state, None, usize::MAX, &has).0.into_iter()',
+     '                all.extend(r.list(kind, state, None, usize::MAX, &|_| true).0.into_iter()', API),
     ('graphql: the state filter is dropped from the selection', GQL,
-     '        let (all, _) = r.list(kind, state, None, usize::MAX, &keep);\n        let total = all.len();\n        let page',
-     '        let (all, _) = r.list(kind, StateFilter::All, None, usize::MAX, &keep);\n        let total = all.len();\n        let page', API),
+     '            r.numbers(kind, state)\n', '            r.numbers(kind, StateFilter::All)\n', API),
     # The selection key: two different lists must not share one pick.
     ('rest list: the pick key ignores the query (another page answered)', REST,
      'r.dir.pick(&format!("issues?{query}"), &mut select)', 'r.dir.pick("issues", &mut select)', API),
