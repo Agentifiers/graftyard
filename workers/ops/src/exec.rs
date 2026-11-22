@@ -329,13 +329,25 @@ impl Exec for Live<'_> {
             .map(|(n, _)| n.as_str())
             .find(|n| *n == "index.js" || *n == "entry.js" || *n == "worker.js")
             .ok_or("the script's modules have no index.js")?;
-        let meta = json!({
+        // A version upload keeps no runtime settings from the version before it: it falls back to the 2021-11-02
+        // compatibility date, the default CPU limit, and no containers. So the upload carries the running version's
+        // date, flags, limits, and container map, as wrangler's `--containers-rollout=none` carries the containers.
+        let d = self.deployment(s).await?;
+        let (live, _) = d.split.iter().max_by_key(|(_, p)| *p).ok_or("a deployment with no versions")?;
+        let one = self.api(Method::Get, &format!("/workers/scripts/{name}/versions/{live}"), None, false).await?;
+        let rt = &one["result"]["resources"]["script_runtime"];
+        let mut meta = json!({
             "main_module": main,
             "keep_bindings": ["plain_text", "secret_text", "json", "durable_object_namespace", "service", "r2_bucket",
                               "queue", "secrets_store_secret", "pipelines", "version_metadata", "assets", "workflow"],
             "keep_assets": true,
             "annotations": { "workers/tag": graftyard_lookup::hex(&release.0), "workers/message": "graft-ops upload" },
         });
+        for k in ["compatibility_date", "compatibility_flags", "limits", "containers"] {
+            if !rt[k].is_null() {
+                meta[k] = rt[k].clone();
+            }
+        }
         let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
         form.append_with_str("metadata", &meta.to_string()).map_err(|e| format!("{e:?}"))?;
         for (n, b) in modules {
