@@ -388,6 +388,11 @@ pub async fn consume(batch: MessageBatch<Value>, env: Env) -> Result<()> {
                 continue;
             }
         };
+        if m.body().get("exportFeed").is_some() {
+            crate::export_feed::kick(&env).await;
+            m.ack();
+            continue;
+        }
         if m.body().get("mergeQueue").is_some() {
             let q: crate::merge_queue::Message = match serde_json::from_value(m.body().clone()) {
                 Ok(q) => q,

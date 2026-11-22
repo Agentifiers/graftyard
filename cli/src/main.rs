@@ -12,6 +12,7 @@ mod release;
 mod runners;
 mod sites;
 mod ssh;
+mod vault;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -107,6 +108,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SshCmd,
     },
+    /// Export tokens for the lifeboat feed (`cli/src/vault.rs`).
+    Vault {
+        #[command(subcommand)]
+        cmd: VaultCmd,
+    },
     /// Sends the signed genesis to the edge, which writes it to the empty Release group.
     Install {
         #[arg(long)]
@@ -114,6 +120,26 @@ enum Cmd {
         /// The edge's base URL (default: https://<zone>).
         #[arg(long)]
         edge: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum VaultCmd {
+    /// Signs an export token offline and writes it to --out (mode 0600). Never prints the token or the key.
+    Token {
+        /// The customer's Ed25519 private key: a 64-hex-character seed or a PEM PRIVATE KEY.
+        #[arg(long)]
+        key: PathBuf,
+        /// install, owner:<id>, or repo:<id>.
+        #[arg(long, default_value = "install")]
+        scope: String,
+        #[arg(long, default_value = "vault")]
+        holder: String,
+        /// The token's life in days, at most 400.
+        #[arg(long, default_value_t = 365)]
+        days: u64,
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -421,6 +447,9 @@ fn run(cli: Cli) -> Res<()> {
             release::roll(config, &release, &entries, &key, ttl_s, out.as_deref(), edge.as_deref())
         }
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
+        Cmd::Vault { cmd: VaultCmd::Token { key, scope, holder, days, out } } => {
+            vault::token(config, &vault::TokenArgs { key: &key, scope: &scope, holder: &holder, days, out: &out })
+        }
         Cmd::Ssh { cmd: SshCmd::Spectrum { account, zone, hostname, edge, delete } } => {
             let done = ssh::spectrum(&cf::Cf::from_env(&account)?, &zone, &hostname, &edge, delete)?;
             println!("{done:?}");

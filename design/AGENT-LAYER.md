@@ -9,7 +9,7 @@ Agents are clients of the GHES 3.22 surface Graftyard must serve anyway (`resear
 - **New surfaces.** (1) A remote MCP server at `mcp.<host>` on spec 2026-07-28, with a consent page per client, per-client grants, narrowed refreshes, static toolsets by default, and Code Mode as a priced opt-in per org. (2) An opt-in media type that returns hidden-content-stripped text, author trust, overlaps, and provenance beside the untouched `body`. (3) Chain-resident provenance, with trailers and `refs/notes/ai` parsed during `validate`, sessions linked only when authenticated, and session logs as stored blobs under a host-owned ref, readable as JSON. (4) Neutral `graftyard/overlap` and `graftyard/provenance` check runs posted before a PR exists, ordinary `agent:` and `overlap:` labels, an agents page per repository, and an advisory conflict predictor. (5) Leases on paths and refs, kept as chain state on the repository's group, a long-polled activity feed, and a task API with GitHub's agent task states, all under `/api/graftyard/v1`, where leases are advisory unless a repository makes them refuse agent pushes.
 - **Artifacts plays no role.** The 1 GB cap rules out the A1 monorepo, a repository is one logical instance in a beta with no SLA, prediction needs branches in the network's shard, and same-network forks already share packs, so best-of-N attempts fit in a workspace fork (`research/artifacts-recheck.md` sections 1 and 3).
 - **A1 on the base.** 500 agents put 27.6 commands/s on the monorepo's group, 25.2/s of it agent class with lease renewals and task updates, 11 times under the base's 300 commands/s Milestone 0 gate, and about 305 req/s on its leader against 1,000. Feed polls, 45/s, go to learners, or to followers while a group has none, and never to the leader (`cost_agents.py --a1`) [inference]. With git CPU measured on torvalds/linux and composed clone-cache misses, the network's git cache needs 2.68 vCPU and k = 1 shard per warm site (`cost_agents.py --a1`; `tests/m0/results/m0-wp9.md`, B0-34) [measured constants]. Recomputing every open PR's test merge on each base move would need 4 vCPU, and test merges stay lazy, coalesced, and budgeted. `LOG_MAX_BYTES` caps each member's log at 2 GB, and Milestone 0 measured a member seeded with a 3.93 GB metadata tier at 8.45 GB after 30 days, reaching `CHILD_GROUP_AT` (8 GiB) in about 32 days (B0-30) [measured].
-- **Cost.** The layer adds $21, $328, and $2,931 a month at 50, 300, and 2,000 developers, 9% to 32% of the base, with the largest network's fan-out shards (none, at measured git CPU), its learners (none at 2,000 developers, since API reads are narrow; K9), and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
+- **Cost.** The layer adds $22, $329, and $2,935 a month at 50, 300, and 2,000 developers, 9% to 32% of the base, with the largest network's fan-out shards (none, at measured git CPU), its learners (none at 2,000 developers, since API reads are narrow; K9), and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
 
 ## Artifacts' role
 
@@ -855,7 +855,7 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 
 | Added line item | 50 devs | 300 devs | 2,000 devs |
 | --- | --- | --- | --- |
-| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $5 | $248 | $2,389 |
+| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $5 | $249 | $2,392 |
 | Containers: test merges on agent head pushes (active vCPU) | $0 | $0 | $1 |
 | Hot-network fan-out: extra warm shards for the largest network | $0 | $0 | $0 |
 | Clone cache: agent-tip entries in the first warm bucket | $0 | $2 | $25 |
@@ -873,8 +873,8 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 | Agents account: front, outbound router, webhooks, Workflow requests and CPU | $0 | $0 | $4 |
 | Install: `Release` reads by the agents account (edge and member requests) | $0 | $0 | $1 |
 | Agents account: Workflow steps | $0 | $0 | $7 |
-| **Added total** | **$21** | **$328** | **$2,931** |
-| Base total (`scripts/cost.py`, design) | $238 | $1,016 | $9,325 |
+| **Added total** | **$22** | **$329** | **$2,935** |
+| Base total (`scripts/cost.py`, design) | $238 | $1,017 | $9,330 |
 | Added share of base | 9% | 32% | 31% |
 | Added cost per agent task | $0.0047 | $0.0120 | $0.0161 |
 | MCP cost per session (30 calls) | $0.00008 | $0.00028 | $0.00028 |
@@ -889,7 +889,7 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 | Inbox Durable Objects (notifications, feeds, cross-repository lists) | $0 | $7 | $46 |
 | Containers vCPU (active) | $1 | $4 | $28 |
 | Fold audit refolds (repository chains that moved since their last match) | $0 | $4 | $27 |
-| Durable Objects requests | $0 | $2 | $14 |
+| Durable Objects requests | $0 | $3 | $18 |
 | Workers requests | $0 | $2 | $13 |
 | Analytics Engine (per-repo counters, SLO points) | $0 | $2 | $12 |
 | Vault account (plan, locked R2 copy, writes) | $0 | $0 | $9 |

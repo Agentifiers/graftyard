@@ -31,7 +31,9 @@ MUTANTS = [
     ("recovery folds in objects the state already holds", EXP,
      'if self.last.is_none_or(|l| b.position() > l) {', 'if true {', GIT),
     ("the state's position is not advanced", EXP, 'self.last = self.last.max(Some(batch.position()));', '', GIT),
-    ("check_object accepts a gap after the cursor", EXP, 'if first.0 != from || rows.len()', 'if first.0 < from || rows.len()', GIT),
+    ("check_object accepts a gap after the cursor", EXP,
+     'let starts = if from == 1 { first.0 >= 1 && first.0 <= to.0 } else { first.0 == from };',
+     'let starts = if from == 1 { first.0 >= 1 && first.0 <= to.0 } else { first.0 >= from };', GIT),
     ("a frame's digest is not checked", EXP, 'if Sha256::digest(body).as_slice() != sum {', 'if false && Sha256::digest(body).as_slice() != sum {', GIT),
     ("decode ignores frames past the last chain", EXP, '''    if frames.next().is_some() {
         return Err("frames past the last chain's entries".into());
@@ -52,13 +54,13 @@ MUTANTS = [
     ("an entries page serves a gap", EXP, '''        if i != want {
             return Err(ExportError::Gone(format!("entry {} is missing from the stored log", want.0)));
         }''', '', GIT),
-    ("an out-of-scope chain's entries are served", EXP, '''        Route::Entries { chain, from, limit } => {
-            if !covers(*chain) {''', '''        Route::Entries { chain, from, limit } => {
-            if false && !covers(*chain) {''', GIT),
-    ("a pack outside the scope is served", EXP, 'if !covers(ChainId::Network(network)) {', 'if false {', GIT),
+    ("an out-of-scope chain's entries are served", EXP, '(_, Some(c)) if !covers(c) => Err(ExportError::NotFound),',
+     '(_, Some(c)) if false && !covers(c) => Err(ExportError::NotFound),', GIT),
+    ("a pack outside the scope is served", EXP,
+     'Route::Pack { network, .. } => Some(ChainId::Network(*network)),', 'Route::Pack { .. } => None,', GIT),
     ("a batches cursor past retention is served", EXP,
      '(after.minute * 60_000).saturating_add(EXPORT_RETENTION_MS) < now_ms', 'false', GIT),
-    ("the batches page has no Link next", EXP, 'let next = (objects.len() == BATCHES_PAGE)', 'let next = (objects.len() > BATCHES_PAGE)', GIT),
+    ("the batches page has no Link next", EXP, 'objects.len() >= BATCHES_PAGE || objects.iter()', 'objects.len() > BATCHES_PAGE || objects.iter()', GIT),
     ("the snapshot is the newest at all, not at or below", EXP, '&& *to <= at', '', GIT),
     ("a token's signature is not checked", TOK, '''    vk.verify_strict(head.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig))
         .map_err(|_| ExportTokenError::Signature)?;''', '    let _ = (vk, sig);', ID),

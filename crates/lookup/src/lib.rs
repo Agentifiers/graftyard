@@ -1670,6 +1670,63 @@ pub const COMMIT_RECEIPT: Duration = Duration::from_millis(
 /// command is sent again, so a send whose reply was lost costs this at most once.
 pub const RECEIPT_OPEN: Duration = Duration::from_millis(8_000);
 
+/// The change feed's and the export endpoints' source read (`design/DESIGN.md`, Shape, "Lifeboat feed"): a member's
+/// `/log_rows?from=&to=` page as its bytes, from `chain`'s learners, then its followers, never the member the
+/// caller knows leads; a leader answers JSON (`{"error": "leader"}`), which is not a page, and the next is asked.
+/// `None` when no member gave a page, so the caller retries later rather than read the leader.
+pub async fn log_rows(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    from: u64,
+    to: u64,
+) -> Option<(Target, Vec<u8>)> {
+    learn_voters(b, chain, record).await;
+    let (voters, learners, leader) = KNOWN.with(|k| {
+        let k = k.borrow();
+        let e = k.get(&chain).cloned().unwrap_or_default();
+        let as_t = |v: Vec<(SiteId, String)>| {
+            v.into_iter().map(|(site, do_name)| Target { site, do_name }).collect::<Vec<Target>>()
+        };
+        (as_t(e.voters), as_t(e.learners), e.leader)
+    });
+    let voters: Vec<Target> = if voters.is_empty() {
+        record
+            .bootstrap_members(chain)
+            .into_iter()
+            .map(|m| Target { site: m.site, do_name: m.do_name.into() })
+            .collect()
+    } else {
+        voters
+    };
+    let leader = leader.and_then(|l| voters.iter().find(|t| t.site == l).cloned());
+    let path = format!("https://member/log_rows?from={from}&to={to}");
+    for t in sources_of(&learners, &voters, leader.as_ref()) {
+        let call = async {
+            let stub = b.member(t.site, &t.do_name).ok()?;
+            let mut init = RequestInit::new();
+            init.with_method(Method::Get).with_headers(call_headers()?);
+            let mut res = stub.fetch_with_request(Request::new_with_init(&path, &init).ok()?).await.ok()?;
+            let json = res.headers().get("content-type").ok().flatten().is_some_and(|c| c.contains("json"));
+            if res.status_code() != 200 || json {
+                return None;
+            }
+            res.bytes().await.ok()
+        };
+        if let Some(Some(bytes)) = within(CALL, call).await {
+            return Some((t, bytes));
+        }
+    }
+    None
+}
+
+/// The members an export source read goes to, in order: learners, then voters, never `leader`; a `Solo` group's one
+/// voter when no other member is known, which serves only while it is alone (`graftyard_git::export::serves_log`).
+fn sources_of(learners: &[Target], voters: &[Target], leader: Option<&Target>) -> Vec<Target> {
+    let others: Vec<Target> = learners.iter().chain(voters).filter(|m| Some(*m) != leader).cloned().collect();
+    if others.is_empty() { voters.to_vec() } else { others }
+}
+
 /// The member the caller last saw lead `chain`: from its config, else the member that answered as leader.
 pub fn cached_leader(chain: ChainId) -> Option<Target> {
     let k = KNOWN.with(|k| k.borrow().get(&chain).cloned())?;
@@ -2519,6 +2576,16 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `export-host`: an export source read never goes to the leader, whose sync() it would load; learners first.
+    #[test]
+    fn export_sources_skip_the_leader() {
+        let t = |s: u8, n: &str| Target { site: SiteId(s), do_name: n.into() };
+        let (l, v) = ([t(3, "l1"), t(4, "l2")], [t(0, "a"), t(1, "b"), t(2, "c")]);
+        let got = sources_of(&l, &v, Some(&t(1, "b")));
+        assert_eq!(got, vec![t(3, "l1"), t(4, "l2"), t(0, "a"), t(2, "c")]);
+        assert_eq!(sources_of(&[], &[t(0, "a")], Some(&t(0, "a"))), vec![t(0, "a")], "a Solo group's one voter");
+    }
 
     /// `repo-gone`: only a call or commit whose last error is no group reads as no group; the stuck graft-m4a round's
     /// error does, and an outage's or a leaderless group's does not.

@@ -137,9 +137,9 @@ The first cost model found three costs that the DSQL design hid.
 
 | Developers | Cloudflare default (one account, three sites) | Cloudflare, account-separated sites | Cloudflare `Solo` (evaluation, no SLO) | AWS design, one Region | AWS design, Paired |
 | --- | --- | --- | --- | --- | --- |
-| 50 | $238 | $247 | $133 | $1,287 | $2,292 |
-| 300 | $1,016 | $928 | $599 | $2,573 | $4,466 |
-| 2,000 | $9,325 | $9,222 | $5,395 | $12,432 | $20,636 |
+| 50 | $238 | $248 | $133 | $1,287 | $2,292 |
+| 300 | $1,017 | $929 | $599 | $2,573 | $4,466 |
+| 2,000 | $9,330 | $9,227 | $5,395 | $12,432 | $20,636 |
 
 At 50 developers the cheapest reliable setups are the Cloudflare default at $238 (RPO zero across three continents, on the Pro plan with a 100 MB HTTPS push cap and an unpriced Spectrum add-on), AWS `scrappy` at $226 (one Region with a cold recovery Region, so a Region loss is not RPO zero), and AWS `scrappy-paired` at $388 (RPO zero across two Regions).
 
@@ -150,7 +150,7 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | Line item | Per month | Share |
 | --- | --- | --- |
 | Containers memory (provisioned) | $157 | 66% |
-| Zone plan (Pro list; Business, Enterprise, and managed cells not priced) | $25 | 11% |
+| Zone plan (Pro list; Business, Enterprise, and managed cells not priced) | $25 | 10% |
 | Containers disk (provisioned) | $9 | 4% |
 | R2 storage (pack copies, clone cache, Actions) | $9 | 4% |
 | Durable Objects SQLite storage | $8 | 3% |
@@ -160,9 +160,10 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | ReplaceMember and RestorePlacement (one site loss a year, amortized) | $5 | 2% |
 | Email Sending | $4 | 2% |
 | R2 Class A | $2 | 1% |
-| Durable Objects requests | $1 | 0% |
+| Durable Objects requests | $1 | 1% |
 | Fold live-row check, weekly per voter (K11) | $1 | 0% |
 | Inbox Durable Objects (notifications, feeds, cross-repository lists) | $1 | 0% |
+| Queues (webhooks, notifications, indexing) | $0 | 0% |
 | Spare sites (eeur, wnam, oc; scripts and empty buckets) | $0 | 0% |
 | Containers vCPU (active) | $0 | 0% |
 | Basin Pipelines (audit and SLO history) | $0 | 0% |
@@ -176,7 +177,6 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | Containers: hot pool kept warm for hot networks, working hours | $0 | 0% |
 | Spectrum SSH data | $0 | 0% |
 | Spectrum Worker application fee [unverified, no price published] | $0 | 0% |
-| Queues (webhooks, notifications, indexing) | $0 | 0% |
 | Analytics Engine (per-repo counters, SLO points) | $0 | 0% |
 | Workers Logs ingest and storage | $0 | 0% |
 | Total | $238 | 100% |
@@ -187,6 +187,6 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 
 | Developers | Cloudflare default | Agent layer added | Default with agents | Added share |
 | --- | --- | --- | --- | --- |
-| 50 | $238 | $21 | $259 | 9% |
-| 300 | $1,016 | $328 | $1,344 | 32% |
-| 2,000 | $9,325 | $2,931 | $12,257 | 31% |
+| 50 | $238 | $22 | $260 | 9% |
+| 300 | $1,017 | $329 | $1,345 | 32% |
+| 2,000 | $9,330 | $2,935 | $12,265 | 31% |

@@ -55,6 +55,38 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
         &c.timing,
         dep_fold::<TokensFold>(c, ChainId::Tokens(TokenShard(0))),
     );
+    let revoked = jti_revoked(c, jti, at, read_class);
+    let (keys, revoked) = futures_util::future::join(keys, revoked).await;
+    let Some(keys) = keys.map_err(Error::RustError)? else { return Ok(None) };
+    let claims = match stateless::verify(text, &keys, now()) {
+        Ok(claims) => claims,
+        // Refused on keys up to `READ_CACHE` old: read them again, so a key added since (a rotation) verifies at once.
+        Err(_) if read_class => {
+            let Some(keys) =
+                dep_fold::<TokensFold>(c, ChainId::Tokens(TokenShard(0))).await.map_err(Error::RustError)?
+            else {
+                return Ok(None);
+            };
+            crate::rcache::put(&crate::rcache::KEYS, (), now(), keys.clone());
+            let Ok(claims) = stateless::verify(text, &keys, now()) else { return Ok(None) };
+            claims
+        }
+        Err(_) => return Ok(None),
+    };
+    if revoked.map_err(Error::RustError)? != Some(false) {
+        return Ok(None);
+    }
+    Ok(Some(Principal::installation(&claims)))
+}
+
+/// Whether `jti` is revoked: its row on `jti_shard`, through `rcache::JTIS`, so a read-class request may use a
+/// not-revoked answer up to READ_CACHE old and a revocation is honored within it. `ghs_` and export tokens share it.
+pub async fn jti_revoked(
+    c: &Ctx<'_>,
+    jti: graftyard_identity::Jti,
+    at: graftyard_types::Timestamp,
+    read_class: bool,
+) -> std::result::Result<Option<bool>, String> {
     let read_jti = async {
         // Most `jti` shards hold no group until a token there is revoked. One is created on first use, as every
         // sharded system chain is, so the leader of the caller's next write can read it as a dependency; until then
@@ -81,7 +113,7 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
     };
     // A write whose `decide` reads the `jti` row again may take it from the cache (`write-identity`); the keys stay
     // fresh for every write, since only the edge checks a key's retirement.
-    let revoked = crate::rcache::through_bound(
+    Box::pin(crate::rcache::through_bound(
         &crate::rcache::JTIS,
         jti.0.0,
         at,
@@ -89,28 +121,8 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
         c.decided.get(),
         &c.timing,
         read_jti,
-    );
-    let (keys, revoked) = futures_util::future::join(keys, revoked).await;
-    let Some(keys) = keys.map_err(Error::RustError)? else { return Ok(None) };
-    let claims = match stateless::verify(text, &keys, now()) {
-        Ok(claims) => claims,
-        // Refused on keys up to `READ_CACHE` old: read them again, so a key added since (a rotation) verifies at once.
-        Err(_) if read_class => {
-            let Some(keys) =
-                dep_fold::<TokensFold>(c, ChainId::Tokens(TokenShard(0))).await.map_err(Error::RustError)?
-            else {
-                return Ok(None);
-            };
-            crate::rcache::put(&crate::rcache::KEYS, (), now(), keys.clone());
-            let Ok(claims) = stateless::verify(text, &keys, now()) else { return Ok(None) };
-            claims
-        }
-        Err(_) => return Ok(None),
-    };
-    if revoked.map_err(Error::RustError)? != Some(false) {
-        return Ok(None);
-    }
-    Ok(Some(Principal::installation(&claims)))
+    ))
+    .await
 }
 
 fn enabled(c: &Ctx<'_>, f: Format) -> std::result::Result<(), Reply> {
@@ -356,7 +368,20 @@ pub async fn delete_installation_token(c: &Ctx<'_>, req: &Request) -> Result<Rep
         Err(_) => return Ok(bad_credentials()),
     };
     let cmd = stateless::revoke_command(&claims);
-    let chain = ChainId::Tokens(graftyard_identity::jti_shard(&claims.jti));
+    revoke_jti(c, claims.jti, cmd).await
+}
+
+/// A token's `RevokeJti` on its `jti_shard`, sent under the token's own `jti` credential: 204 once it committed.
+/// `DELETE /installation/token` and `DELETE /api/graftyard/v1/export/token` (`crate::export`) send it.
+pub async fn revoke_jti(
+    c: &Ctx<'_>,
+    jti: graftyard_identity::Jti,
+    cmd: graftyard_identity::TokensCmd,
+) -> Result<Reply> {
+    if let Err(x) = enabled(c, graftyard_identity::TOKENS_FORMAT_V2) {
+        return Ok(x);
+    }
+    let chain = ChainId::Tokens(graftyard_identity::jti_shard(&jti));
     let done = match commit_system(c, chain, serde_json::to_value(&cmd)?).await {
         Ok(d) => d,
         Err(x) => return Ok(x),

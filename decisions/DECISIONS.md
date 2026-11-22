@@ -7625,8 +7625,8 @@ after the command's admission, and a follower verifies k+1 only after it applies
   position, plans, writes the object, then writes the state. `Export` keys are `export/<minute:012>/<seq:010>`, so a
   listing after a key runs in feed order; `seq` follows the newest object within its minute, and a clock behind that
   minute keeps it.
-- **Bounded batches.** A batch names at most 2,000 chains [guess], the furthest behind first; the rest go in the next
-  rounds. The consumer checks each object holds exactly each chain's entries after its cursor before writing it.
+- **Bounded batches.** A batch names at most 2,000 chains [guess] (200 since `export-host`), the furthest behind
+  first; the rest go in the next rounds. The consumer checks each object holds exactly each chain's entries after its cursor before writing it.
 - **Bodies.** A frame is a 4-byte big-endian length, the stored bytes, and their SHA-256. An object is a JSON frame
   of the batch and each chain's first index and count, then one frame per entry. A snapshot reply is, per tier
   (core first), a frame of its key and a frame of its bytes.
@@ -7670,3 +7670,59 @@ after the command's admission, and a follower verifies k+1 only after it applies
 - The hosted BF-49 serves any export request more than READ_CACHE after the revocation, or a vault pull finds an entry
   missing or repeated against the chain's log.
 - A feed round on a real install takes longer than `FEED_EVERY_MS` at 2,000 chains: lower the cap.
+
+### `export-host`: leaders report commit indexes to site A, a self-scheduling round there reads `/log_rows` from non-leaders, and the feed is install-only, 2026-11-22
+
+**Decision.** M5-WP5's hosted half, code only (`workers/site/src/export_feed.rs`, `workers/edge/src/export.rs`,
+`crates/git/src/export.rs`, `crates/lookup/src/lib.rs`, `log_rows`):
+- **Reports.** On an install with the feed (`GRAFTYARD_EXPORT=1`), a leader's alarm sends its commit index and record
+  to site A's `Registry` object `export`, at most once every `FEED_EVERY_MS` and only past its last report
+  (`export::report_due`). The object keeps the highest index per chain (`report_newer`), so a deposed leader's late
+  report never moves the feed back.
+- **Rounds.** The `*/15` cron kicks a round on the site that binds `EXPORT` (site A); each round sends the next as a
+  `{"exportFeed": true}` message on site A's existing queue, delayed 10 s. The object's `export_round` claim
+  (`round_due`, 9 s) collapses a kick and a message that meet. A round folds in later objects, plans, reads each
+  chain's rows six at a time, fills (`fill`, at most `OBJECT_BYTES_MAX` 8 MiB), checks, puts the object with
+  `If-None-Match: *`, then writes the state.
+- **Source reads.** A member's new `/log_rows?from=&to=` answers a `LogPage` (first stored index, commit index, rows
+  up to `LOG_PAGE_BYTES` 1 MiB, and the archive range holding `from` when it is below the stored log). A leader with
+  any other member answers `{"error": "leader"}` (`serves_log`); the lookup asks learners, then followers, never the
+  cached leader. A chain the feed never carried may start at the source's first stored index (`check_object`).
+- **Caps.** `BATCH_CHAINS_MAX` is 200, not 2,000 [guess]: each chain is one source read, six at a time, about 3.5 s of
+  the 10 s round at 100 ms a read [inference]. A batches page also stops at 8 MiB (`BATCHES_PAGE_BYTES`).
+- **Edge.** `GET export/batches` needs an `Install` token (`in_scope` asks `covers(Release)`), since batches name every
+  chain: an org token reading them would see other owners' chains and entries. A pack route takes `?network=<id>`,
+  because every pack and marker key starts with its network, and a pack is served only when a `Committed` marker in
+  some site bucket names it. Snapshots and packs stream from the bucket; archived entries stream through
+  `ArchiveRows`. The `jti` read is `ghs_`'s (`ident::jti_revoked`, `rcache::JTIS`), and `DELETE export/token` shares
+  `DELETE /installation/token`'s commit (`ident::revoke_jti`).
+- **Bucket.** No Terraform exists in the repository: `workers/site/deploy.mjs --export-bucket <name>` creates the bucket
+  in site A's region with the lifecycle rule `expire7` on `export/` only, binds it as `EXPORT` on site A, and sets
+  `GRAFTYARD_EXPORT=1` on every site; `tests/m1/integ/deploy-edge.mjs --export-bucket` binds it on the edge. The rule
+  leaves `export-state` alone, since an install idle for 7 days writes no state and would lose its cursors.
+
+**Why.**
+- Leader cursors live in each leader's memory; the round needs them in one place without calling every leader. One
+  registry object on site A is a store the feed already depends on (site A's region holds the bucket).
+- A source read from the leader would add to the leader's input load, which B0-32 and B0-33 measured as the commit
+  path's cost (`decisions/DECISIONS.md`, `learner-cadence` and `human-join`).
+- A queue message delayed 10 s keeps rounds at DESIGN's cadence with no Durable Object alarm and no new class.
+
+**What it beat.**
+- **A per-family alarm hook.** Every family would need it; the host's alarm already knows the role and commit index.
+- **The registry rows' enumeration.** Rows say where members are, not how far they are; reading every chain's status
+  each round costs one call per group whether it moved or not.
+- **A Workflow per round.** A new product and failure domain for a loop the queue already runs.
+
+**Evidence.** Unit tests in `export.rs` (fill, check_object from a first carry, log_page, the page round trip,
+`ArchiveRows` across chunk splits, `in_scope` refusing the feed to an org token), `graftyard-lookup`
+`export_sources_skip_the_leader`, the CLI's two vault tests; `crates/git/tests/export.rs` 2/2; `tests/m0carried/plant84.py`.
+Cost: `scripts/cost.py` adds per round one claim and per moved chain one report and one source read as DO requests,
+and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $9,330, agents $2,931 → $2,935. Nothing
+hosted has run.
+
+**Flip.**
+- The hosted BF-49 finds an entry missing or repeated against a chain's log, or a round longer than `FEED_EVERY_MS`:
+  lower `BATCH_CHAINS_MAX` or raise the reads at once.
+- A leader's commit p99 rises on a row with the feed on against the same build with it off: the reports move off the
+  alarm.

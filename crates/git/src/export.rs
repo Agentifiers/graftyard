@@ -32,8 +32,17 @@ pub const ENTRIES_PAGE: u64 = 1_000;
 /// An entries page holds at most this many bytes of frames [guess]: a page always holds its first entry.
 pub const ENTRIES_PAGE_BYTES: usize = 8 << 20;
 /// The most chains one batch names [guess]: an install with more moved chains in 10 s writes them over the next
-/// batches, oldest cursor first, so one object stays bounded.
-pub const BATCH_CHAINS_MAX: usize = 2_000;
+/// batches, furthest behind first. Each costs the round one source read, six at a time (a Worker's connections waiting
+/// for headers), so 200 reads of about 100 ms across regions take about 3.5 s of the 10 s round [inference].
+pub const BATCH_CHAINS_MAX: usize = 200;
+/// The most stored bytes one source read asks a member for (`/log_rows`), inside the lookup's 3.5 s CALL [guess].
+pub const LOG_PAGE_BYTES: usize = 1 << 20;
+/// A batches page also stops once it holds this many bytes of objects (always one), so a page of large objects
+/// stays inside an edge isolate's memory [guess].
+pub const BATCHES_PAGE_BYTES: usize = 8 << 20;
+/// The most entry bytes one `ExportObject` holds (always one entry) [guess]: a round past it trims its later chains'
+/// ranges and writes the rest in the next rounds, so the consumer and every reader hold one bounded object.
+pub const OBJECT_BYTES_MAX: usize = 8 << 20;
 /// The export bucket's lifecycle rule [guess]: an object older than this is gone, so a cursor before the oldest
 /// object is a range past retention.
 pub const EXPORT_RETENTION_MS: u64 = 7 * 24 * 3600 * 1000;
@@ -177,7 +186,9 @@ pub fn plan(state: &FeedState, commits: &[(ChainId, Index)], now_ms: u64) -> Opt
 }
 
 /// Checks an `ExportObject` before it is written: every chain the batch names has exactly the entries from its
-/// cursor + 1 through its index, in order, and no other chain has any.
+/// cursor + 1 through its index, in order, and no other chain has any. A chain the feed has never carried (cursor 0)
+/// may start at the first index its source still stores: entries archived and dropped before the feed existed are
+/// the vault's to read from the entries endpoint or a snapshot. Once carried, a chain never skips an index.
 pub fn check_object(o: &ExportObject, cursors: &ExportCursors) -> Result<(), String> {
     if o.entries.len() != o.batch.chains.len() {
         return Err(format!("{} chains named, {} with entries", o.batch.chains.len(), o.entries.len()));
@@ -187,11 +198,130 @@ pub fn check_object(o: &ExportObject, cursors: &ExportCursors) -> Result<(), Str
             return Err(format!("entries for {ec} where the batch names {c}"));
         }
         let from = cursors.get(*c).0 + 1;
-        if first.0 != from || rows.len() as u64 != to.0 + 1 - from {
+        let starts = if from == 1 { first.0 >= 1 && first.0 <= to.0 } else { first.0 == from };
+        if !starts || rows.len() as u64 != to.0 + 1 - first.0 {
             return Err(format!("{c}: entries {}..+{} where the feed needs {from}..={}", first.0, rows.len(), to.0));
         }
     }
     Ok(())
+}
+
+/// What one source read gave for a chain: the first index it holds at or after the asked one, and the stored rows
+/// from there in order, stopping at its own commit index or its page's end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fetched {
+    pub first: Index,
+    pub rows: Vec<Vec<u8>>,
+}
+
+/// The object a round writes from its planned batch and what its sources gave: each chain to the last row fetched,
+/// in the batch's order, until `OBJECT_BYTES_MAX` of rows (always one row). A chain with no rows, one whose source
+/// skipped past its cursor + 1 after the feed carried it, or one past the byte cap, is left out, so its cursor stays
+/// and a later round carries it. `None` when nothing is left.
+pub fn fill(
+    batch: &ChangeBatch,
+    cursors: &ExportCursors,
+    fetched: &BTreeMap<ChainId, Fetched>,
+) -> Option<ExportObject> {
+    let (mut chains, mut entries, mut bytes) = (Vec::new(), Vec::new(), 0usize);
+    for (c, to) in &batch.chains {
+        let Some(f) = fetched.get(c) else { continue };
+        let from = cursors.get(*c).0 + 1;
+        if f.first.0 < from || (from > 1 && f.first.0 != from) || f.first > *to {
+            continue;
+        }
+        let mut rows = Vec::new();
+        for r in f.rows.iter().take((to.0 + 1 - f.first.0) as usize) {
+            if bytes > 0 && bytes + r.len() > OBJECT_BYTES_MAX {
+                break;
+            }
+            bytes += r.len();
+            rows.push(r.clone());
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        chains.push((*c, Index(f.first.0 + rows.len() as u64 - 1)));
+        entries.push((*c, f.first, rows));
+        if bytes >= OBJECT_BYTES_MAX {
+            break;
+        }
+    }
+    (!chains.is_empty())
+        .then_some(ExportObject { batch: ChangeBatch { minute: batch.minute, seq: batch.seq, chains }, entries })
+}
+
+/// Whether a leader reports its commit index to the feed now: only past the last index it reported, and at most once
+/// every `FEED_EVERY_MS`, so an idle group sends nothing and a busy one one report per round.
+pub fn report_due(last: Option<(Index, u64)>, commit: Index, now_ms: u64) -> bool {
+    match last {
+        None => commit.0 > 0,
+        Some((i, at)) => commit > i && now_ms.saturating_sub(at) >= FEED_EVERY_MS,
+    }
+}
+
+/// A member's `/log_rows` answer: the first index it holds at or after the asked one, its commit index, and the stored
+/// rows from there; or, when the asked index is below its stored log, the archive object that holds it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogPage {
+    pub first: Index,
+    pub commit: Index,
+    #[serde(skip)]
+    pub rows: Vec<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<(Index, Index, String)>,
+}
+
+/// The rows a member answers from its stored log `(index, row)` read from `from` in order: from the first stored
+/// index at or after `from`, through `min(to, commit)`, stopping before `page_bytes` (always one row) and at a gap.
+pub fn log_page(
+    stored: impl IntoIterator<Item = (Index, Vec<u8>)>,
+    from: Index,
+    to: Index,
+    commit: Index,
+    page_bytes: usize,
+) -> LogPage {
+    let end = to.min(commit);
+    let (mut first, mut rows, mut bytes) = (None, Vec::new(), 0usize);
+    for (i, row) in stored {
+        if i < from {
+            continue;
+        }
+        if i > end || first.is_some_and(|f: Index| i.0 != f.0 + rows.len() as u64) {
+            break;
+        }
+        if !rows.is_empty() && bytes + row.len() > page_bytes {
+            break;
+        }
+        first.get_or_insert(i);
+        bytes += row.len();
+        rows.push(row);
+    }
+    LogPage { first: first.unwrap_or(Index(end.0 + 1)), commit, rows, archive: None }
+}
+
+/// A `LogPage` as bytes: one JSON frame of its header, then one frame per row.
+pub fn encode_log_page(p: &LogPage) -> Vec<u8> {
+    let mut out = Vec::new();
+    frame(&mut out, &serde_json::to_vec(p).expect("json"));
+    for r in &p.rows {
+        frame(&mut out, r);
+    }
+    out
+}
+
+pub fn decode_log_page(b: &[u8]) -> Result<LogPage, String> {
+    let mut frames = unframe(b)?.into_iter();
+    let mut p: LogPage = serde_json::from_slice(&frames.next().ok_or("no header frame")?).map_err(|e| e.to_string())?;
+    p.rows = frames.collect();
+    Ok(p)
+}
+
+impl LogPage {
+    /// The rows as a source read's `Fetched`, or `None` for a page that holds none.
+    pub fn fetched(self) -> Option<Fetched> {
+        (!self.rows.is_empty()).then_some(Fetched { first: self.first, rows: self.rows })
+    }
 }
 
 /// One frame: a 4-byte big-endian length, the bytes, and their SHA-256.
@@ -272,7 +402,10 @@ pub enum Route {
         chain: ChainId,
         at: Index,
     },
+    /// A pack's network comes with it (`?network=<id>`): every pack key starts with its network, so the edge reads
+    /// the pack and its `Committed` marker by key, and the scope check names the network's chain.
     Pack {
+        network: graftyard_types::NetworkId,
         id: PackId,
     },
     /// `DELETE export/token`: the token revokes itself.
@@ -351,7 +484,14 @@ impl Route {
             }
             ["", "chains", c, "snapshots"] => Route::Snapshots { chain: chain(c)?, at: index("at", q("at"))? },
             ["", "packs", id] => {
-                Route::Pack { id: id.parse().map_err(|_| ExportError::BadCursor(format!("pack id {id:?}")))? }
+                let n = q("network").ok_or_else(|| ExportError::BadCursor("network is required".into()))?;
+                let ok = !n.is_empty() && n.len() <= 19 && n.bytes().all(|b| b.is_ascii_digit());
+                let network = ok
+                    .then(|| n.parse::<i64>().ok())
+                    .flatten()
+                    .map(|v| graftyard_types::NetworkId(graftyard_types::DbId(v)))
+                    .ok_or_else(|| ExportError::BadCursor(format!("network {n:?}")))?;
+                Route::Pack { network, id: id.parse().map_err(|_| ExportError::BadCursor(format!("pack id {id:?}")))? }
             }
             ["", "token"] => Route::RevokeToken,
             _ => return Err(ExportError::NotFound),
@@ -367,7 +507,8 @@ impl Route {
     pub fn chain(&self) -> Option<ChainId> {
         match self {
             Route::Entries { chain, .. } | Route::Snapshots { chain, .. } => Some(*chain),
-            Route::Batches { .. } | Route::Pack { .. } | Route::RevokeToken => None,
+            Route::Pack { network, .. } => Some(ChainId::Network(*network)),
+            Route::Batches { .. } | Route::RevokeToken => None,
         }
     }
 }
@@ -381,7 +522,8 @@ pub fn next_link(root: &str, path: &str, next: &str) -> String {
 /// An entries page from stored rows `(index, bytes)` read from `from`, in order: at most `limit` entries and
 /// `ENTRIES_PAGE_BYTES` of frames, always holding its first entry. `first` is the member's first stored index: a
 /// `from` below it is past retention unless an archive object serves it (`archived`). Returns the body and the next
-/// index when the member holds more within `to`, its commit index.
+/// index when more lies within `to`, its commit index: a page cut at `limit` or the byte bound, or rows that ended
+/// before `to` (the member's own page bound), links on from the next index.
 pub fn entries_page(
     rows: impl IntoIterator<Item = (Index, Vec<u8>)>,
     from: Index,
@@ -411,7 +553,7 @@ pub fn entries_page(
         n += 1;
         want = Index(i.0 + 1);
     }
-    Ok((out, None))
+    Ok((out, (n > 0 && want <= to).then_some(want)))
 }
 
 /// The newest snapshot key at or below `at` for `chain` among `keys`, as a member installs it: its core tier and its
@@ -439,7 +581,8 @@ pub fn checksum_header(d: &Digest) -> String {
 /// What a member, learner, or archive gives the export endpoints. The edge implements it over a follower's reads and
 /// the export and site buckets; it never asks the leader.
 pub trait ExportSource {
-    /// Stored `ExportObject` bytes after `after`, in order, at most `n`.
+    /// Stored `ExportObject` bytes after `after`, in order: at most `n` objects, stopping once they hold
+    /// `BATCHES_PAGE_BYTES` (`batches_take`).
     fn objects_after(&self, after: FeedPosition, n: usize) -> Vec<Vec<u8>>;
     /// The chain's stored log rows from `from`: `None` for a chain with no group. `first` is the member's first stored
     /// index, `archived` whether archive objects serve the indexes below it, and `to` the member's commit index.
@@ -448,10 +591,120 @@ pub trait ExportSource {
     fn snapshots(&self, chain: ChainId) -> Vec<R2Key>;
     /// A snapshot object's bytes.
     fn object(&self, key: &R2Key) -> Option<Vec<u8>>;
-    /// A pack's network, checksum, and bytes.
-    fn pack(&self, id: PackId) -> Option<(graftyard_types::NetworkId, Digest, Vec<u8>)>;
+    /// A stored pack's checksum and bytes, by its network and id: `None` when no `Committed` marker names it, so an
+    /// uncommitted or swept pack is never served.
+    fn pack(&self, network: graftyard_types::NetworkId, id: PackId) -> Option<(Digest, Vec<u8>)>;
 }
 
+/// What the edge read for one request, as a source for `serve`: it reads asynchronously from members and buckets
+/// first, then answers through the same rules the model install uses.
+#[derive(Clone, Debug, Default)]
+pub struct Prefetched {
+    pub objects: Vec<Vec<u8>>,
+    pub log: Option<StoredLog>,
+    pub snapshots: Vec<R2Key>,
+    pub snapshot_bytes: BTreeMap<R2Key, Vec<u8>>,
+}
+
+impl ExportSource for Prefetched {
+    fn objects_after(&self, _after: FeedPosition, n: usize) -> Vec<Vec<u8>> {
+        self.objects.iter().take(n).cloned().collect()
+    }
+    fn log(&self, _chain: ChainId, _from: Index, _limit: u64) -> Option<StoredLog> {
+        self.log.clone()
+    }
+    fn snapshots(&self, _chain: ChainId) -> Vec<R2Key> {
+        self.snapshots.clone()
+    }
+    fn object(&self, key: &R2Key) -> Option<Vec<u8>> {
+        self.snapshot_bytes.get(key).cloned()
+    }
+    /// The edge streams packs itself (`in_scope`, then the marker and the bucket).
+    fn pack(&self, _network: graftyard_types::NetworkId, _id: PackId) -> Option<(Digest, Vec<u8>)> {
+        None
+    }
+}
+
+/// An archive object's rows `from..` read as its bytes arrive, so the edge never holds the whole object: the object
+/// starts at `first` (its range's first index) after `graftyard_fold::ARCHIVE_HEADER`, and each row is a 4-byte length
+/// and the stored bytes. It keeps rows from `from` through `to`, at most `limit` of them and about
+/// `ENTRIES_PAGE_BYTES`, which is as much as one entries page serves.
+#[derive(Clone, Debug)]
+pub struct ArchiveRows {
+    at: Index,
+    from: Index,
+    to: Index,
+    limit: u64,
+    header: bool,
+    buf: Vec<u8>,
+    bytes: usize,
+    pub rows: Vec<(Index, Vec<u8>)>,
+}
+
+impl ArchiveRows {
+    pub fn new(first: Index, from: Index, to: Index, limit: u64) -> ArchiveRows {
+        ArchiveRows { at: first, from, to, limit, header: false, buf: Vec::new(), bytes: 0, rows: Vec::new() }
+    }
+
+    /// Takes the next chunk of the object. `Ok(true)` once the page is full or the range is past `to`, so the caller
+    /// stops reading.
+    pub fn push(&mut self, chunk: &[u8]) -> Result<bool, String> {
+        self.buf.extend_from_slice(chunk);
+        if !self.header {
+            if self.buf.len() < graftyard_fold::ARCHIVE_HEADER {
+                return Ok(false);
+            }
+            graftyard_fold::check_archive_header(&self.buf).map_err(|e| e.to_string())?;
+            self.buf.drain(..graftyard_fold::ARCHIVE_HEADER);
+            self.header = true;
+        }
+        let (rows, used, _) = graftyard_fold::decode_archive_some(&self.buf);
+        let rows: Vec<Vec<u8>> = rows.into_iter().map(<[u8]>::to_vec).collect();
+        self.buf.drain(..used);
+        for row in rows {
+            if self.done() {
+                break;
+            }
+            if self.at >= self.from {
+                self.bytes += row.len();
+                self.rows.push((self.at, row));
+            }
+            self.at = Index(self.at.0 + 1);
+        }
+        Ok(self.done())
+    }
+
+    fn done(&self) -> bool {
+        self.at > self.to || self.rows.len() as u64 >= self.limit || self.bytes >= ENTRIES_PAGE_BYTES
+    }
+}
+
+/// Whether a member answers `/log_rows`: never a leader of a group that has another member to ask, so neither the
+/// feed nor an export read lands on a leader (`design/DESIGN.md`, Shape, "Lifeboat feed"). A group of one voter and
+/// no learner (`Solo`) has no other member.
+pub fn serves_log(leading: bool, voters: usize, learners: usize) -> bool {
+    !leading || (voters <= 1 && learners == 0)
+}
+
+/// Whether a feed round may start: at least `FEED_EVERY_MS` less a second after the last one started, so the cron's
+/// kick and a delayed queue message that meet collapse into one chain of rounds.
+pub fn round_due(last_ms: Option<u64>, now_ms: u64) -> bool {
+    last_ms.is_none_or(|l| now_ms.saturating_sub(l) >= FEED_EVERY_MS - 1_000)
+}
+
+/// Whether a leader's commit report replaces the one held for its chain: only a higher commit index, so a deposed
+/// leader's late report never moves the feed's view back.
+pub fn report_newer(held: Option<Index>, reported: Index) -> bool {
+    held.is_none_or(|h| reported > h)
+}
+
+/// Whether a batches page that already holds `held` objects of `bytes` takes another: under `BATCHES_PAGE` objects
+/// and `BATCHES_PAGE_BYTES`, so a page always holds its first object.
+pub fn batches_take(held: usize, bytes: usize) -> bool {
+    held < BATCHES_PAGE && (held == 0 || bytes < BATCHES_PAGE_BYTES)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredLog {
     pub first: Index,
     pub archived: bool,
@@ -467,6 +720,18 @@ pub struct ExportReply {
     pub checksum: Option<String>,
 }
 
+/// A route's chain (`Route::chain`) outside the token's scope answers 404, before any read: the edge streams packs
+/// itself and checks this first, as `serve` does. The feed (`Batches`) names every chain of the install, so only a
+/// token that covers every chain reads it; `covers(ChainId::Release)` holds only for such a token
+/// (`graftyard_identity::export_token::covers`), so an org's token reads its chains' entries and never the feed.
+pub fn in_scope(route: &Route, covers: &dyn Fn(ChainId) -> bool) -> Result<(), ExportError> {
+    match (route, route.chain()) {
+        (Route::Batches { .. }, _) if !covers(ChainId::Release) => Err(ExportError::NotFound),
+        (_, Some(c)) if !covers(c) => Err(ExportError::NotFound),
+        _ => Ok(()),
+    }
+}
+
 /// Serves a parsed read route. `covers` is the token's scope over a chain (`export_token::covers` with the chain's
 /// owner); `now_ms` dates the feed's retention. A chain or pack outside `covers` answers as one that does not exist.
 pub fn serve(
@@ -477,6 +742,7 @@ pub fn serve(
     root: &str,
 ) -> Result<ExportReply, ExportError> {
     let reply = |body, next| ExportReply { body, next, checksum: None };
+    in_scope(route, covers)?;
     match route {
         Route::Batches { after } => {
             if *after != FeedPosition::default() && (after.minute * 60_000).saturating_add(EXPORT_RETENTION_MS) < now_ms
@@ -490,15 +756,14 @@ pub fn serve(
             for o in &objects {
                 frame(&mut body, o);
             }
-            let next = (objects.len() == BATCHES_PAGE).then(|| {
+            let full =
+                objects.len() >= BATCHES_PAGE || objects.iter().map(Vec::len).sum::<usize>() >= BATCHES_PAGE_BYTES;
+            let next = full.then(|| {
                 next_link(root, &format!("{EXPORT_PREFIX}/batches"), &format!("after={}", last.expect("a page").text()))
             });
             Ok(reply(body, next))
         }
         Route::Entries { chain, from, limit } => {
-            if !covers(*chain) {
-                return Err(ExportError::NotFound);
-            }
             let log = src.log(*chain, *from, *limit).ok_or(ExportError::NotFound)?;
             let (body, next) = entries_page(log.rows, *from, *limit, log.first, log.archived, log.to)?;
             let next = next.map(|i| {
@@ -511,9 +776,6 @@ pub fn serve(
             Ok(reply(body, next))
         }
         Route::Snapshots { chain, at } => {
-            if !covers(*chain) {
-                return Err(ExportError::NotFound);
-            }
             let keys = snapshot_at(&src.snapshots(*chain), *chain, *at).ok_or(ExportError::NotFound)?;
             let mut body = Vec::new();
             for k in &keys {
@@ -523,11 +785,8 @@ pub fn serve(
             }
             Ok(reply(body, None))
         }
-        Route::Pack { id } => {
-            let (network, sum, bytes) = src.pack(*id).ok_or(ExportError::NotFound)?;
-            if !covers(ChainId::Network(network)) {
-                return Err(ExportError::NotFound);
-            }
+        Route::Pack { network, id } => {
+            let (sum, bytes) = src.pack(*network, *id).ok_or(ExportError::NotFound)?;
             Ok(ExportReply { body: bytes, next: None, checksum: Some(checksum_header(&sum)) })
         }
         Route::RevokeToken => Err(ExportError::Method),
@@ -623,6 +882,151 @@ mod tests {
         }
     }
 
+    fn fetched(first: u64, rows: &[&[u8]]) -> Fetched {
+        Fetched { first: Index(first), rows: rows.iter().map(|r| r.to_vec()).collect() }
+    }
+
+    #[test]
+    fn fill_carries_what_sources_gave_and_never_skips_a_carried_index() {
+        let cur = cursors(&[(repo(1), 10), (repo(2), 4)]);
+        let batch = ChangeBatch {
+            minute: 7,
+            seq: 2,
+            chains: vec![(repo(1), Index(14)), (repo(2), Index(9)), (repo(3), Index(30)), (repo(4), Index(5))],
+        };
+        let f = BTreeMap::from([
+            // A follower behind the leader's report: 11 and 12 only, so repo:1 goes to 12, not 14.
+            (repo(1), fetched(11, &[b"11", b"12"])),
+            // A source whose log starts past the cursor: carried, it must not skip 5..=6.
+            (repo(2), fetched(7, &[b"7", b"8"])),
+            // Never carried: it may start where its source's stored log starts.
+            (repo(3), fetched(21, &[b"21", b"22", b"23"])),
+            // No rows: left out.
+            (repo(4), fetched(1, &[])),
+        ]);
+        let o = fill(&batch, &cur, &f).unwrap();
+        assert_eq!((o.batch.minute, o.batch.seq), (7, 2));
+        assert_eq!(o.batch.chains, vec![(repo(1), Index(12)), (repo(3), Index(23))]);
+        assert_eq!(check_object(&o, &cur), Ok(()));
+        // Rows past the batch's index are not taken.
+        let more = BTreeMap::from([(repo(1), fetched(11, &[b"11", b"12", b"13", b"14", b"15"]))]);
+        assert_eq!(fill(&batch, &cur, &more).unwrap().batch.chains, vec![(repo(1), Index(14))]);
+        // A row at or below the cursor (an overlap) is refused, not re-sent.
+        let back = BTreeMap::from([(repo(1), fetched(10, &[b"10", b"11"]))]);
+        assert_eq!(fill(&batch, &cur, &back), None);
+        // The byte cap: the first row always goes; repo:1 is trimmed at the row that would pass it, a later chain's
+        // row that fits still goes, and one that does not waits.
+        let big = vec![0u8; OBJECT_BYTES_MAX - 10];
+        let capped = BTreeMap::from([
+            (repo(1), Fetched { first: Index(11), rows: vec![big.clone(), vec![1; 20]] }),
+            (repo(2), Fetched { first: Index(5), rows: vec![vec![2; 11]] }),
+            (repo(3), fetched(21, &[b"21"])),
+        ]);
+        let o = fill(&batch, &cur, &capped).unwrap();
+        assert_eq!(o.batch.chains, vec![(repo(1), Index(11)), (repo(3), Index(21))]);
+        assert_eq!(check_object(&o, &cur), Ok(()));
+        let huge = BTreeMap::from([(repo(1), Fetched { first: Index(11), rows: vec![vec![0; OBJECT_BYTES_MAX + 5]] })]);
+        assert_eq!(fill(&batch, &cur, &huge).unwrap().batch.chains, vec![(repo(1), Index(11))]);
+        // check_object holds a carried chain to its cursor + 1 and a new one to an index inside its batch range.
+        let late = ExportObject {
+            batch: ChangeBatch { minute: 7, seq: 2, chains: vec![(repo(2), Index(8))] },
+            entries: vec![(repo(2), Index(7), vec![b"7".to_vec(), b"8".to_vec()])],
+        };
+        assert!(check_object(&late, &cur).is_err());
+        let past = ExportObject {
+            batch: ChangeBatch { minute: 7, seq: 2, chains: vec![(repo(3), Index(20))] },
+            entries: vec![(repo(3), Index(21), vec![])],
+        };
+        assert!(check_object(&past, &cur).is_err());
+    }
+
+    #[test]
+    fn reports_are_paced() {
+        assert!(report_due(None, Index(1), 0));
+        assert!(!report_due(None, Index(0), 0));
+        assert!(!report_due(Some((Index(5), 1_000)), Index(5), 99_000), "nothing new");
+        assert!(!report_due(Some((Index(5), 1_000)), Index(9), 1_000 + FEED_EVERY_MS - 1), "within a round");
+        assert!(report_due(Some((Index(5), 1_000)), Index(9), 1_000 + FEED_EVERY_MS));
+    }
+
+    #[test]
+    fn batches_pages_stop_at_the_count_or_the_bytes() {
+        assert!(batches_take(0, usize::MAX), "a page always holds one");
+        assert!(batches_take(BATCHES_PAGE - 1, 0));
+        assert!(!batches_take(BATCHES_PAGE, 0));
+        assert!(batches_take(3, BATCHES_PAGE_BYTES - 1));
+        assert!(!batches_take(3, BATCHES_PAGE_BYTES));
+        let pack = Route::Pack { network: NetworkId(DbId(9)), id: PackId(graftyard_types::Ulid(1)) };
+        assert_eq!(in_scope(&pack, &|c| c != ChainId::Network(NetworkId(DbId(9)))), Err(ExportError::NotFound));
+        assert_eq!(in_scope(&pack, &|_| true), Ok(()));
+        let feed = Route::Batches { after: FeedPosition::default() };
+        assert_eq!(in_scope(&feed, &|c| c == ChainId::Release), Ok(()));
+        assert_eq!(in_scope(&feed, &|c| c != ChainId::Release), Err(ExportError::NotFound), "an org token");
+        assert_eq!(in_scope(&Route::RevokeToken, &|_| false), Ok(()));
+    }
+
+    #[test]
+    fn a_log_page_starts_at_the_first_stored_index_and_stops_at_commit_bytes_or_a_gap() {
+        let stored =
+            |idx: &[u64], size: usize| idx.iter().map(|i| (Index(*i), vec![*i as u8; size])).collect::<Vec<_>>();
+        // A truncated log starting at 40: a read from 1 starts there.
+        let p = log_page(stored(&[40, 41, 42, 43], 3), Index(1), Index(100), Index(42), 1 << 20);
+        assert_eq!((p.first, p.rows.len(), p.commit), (Index(40), 3, Index(42)), "never past commit");
+        let p = log_page(stored(&[40, 41, 42, 43], 3), Index(41), Index(41), Index(43), 1 << 20);
+        assert_eq!((p.first, p.rows.len()), (Index(41), 1), "never past to");
+        let p = log_page(stored(&[1, 2, 3], 10), Index(1), Index(9), Index(9), 15);
+        assert_eq!(p.rows.len(), 1, "the byte bound, always one row");
+        let p = log_page(stored(&[5, 6, 8, 9], 1), Index(5), Index(9), Index(9), 1 << 20);
+        assert_eq!((p.first, p.rows.len()), (Index(5), 2), "stops at a gap");
+        let p = log_page(stored(&[], 1), Index(7), Index(9), Index(5), 1 << 20);
+        assert_eq!((p.first, p.rows.len(), p.clone().fetched()), (Index(6), 0, None));
+        let mut p = log_page(stored(&[3, 4], 2), Index(3), Index(9), Index(9), 1 << 20);
+        p.archive = Some((Index(1), Index(2), "archive/repo:1/x".into()));
+        let b = encode_log_page(&p);
+        assert_eq!(decode_log_page(&b), Ok(p.clone()));
+        let mut bad = b.clone();
+        *bad.last_mut().unwrap() ^= 1;
+        assert!(decode_log_page(&bad).is_err());
+        assert_eq!(p.fetched(), Some(Fetched { first: Index(3), rows: vec![vec![3, 3], vec![4, 4]] }));
+    }
+
+    #[test]
+    fn a_page_cut_short_by_the_member_links_on_and_the_hosted_rules_hold() {
+        let rows = |a: u64, b: u64| (a..=b).map(|i| (Index(i), vec![i as u8])).collect::<Vec<_>>();
+        // The member's page ended at 7 below commit 20: the client is sent on from 8.
+        let (body, next) = entries_page(rows(5, 7), Index(5), 1_000, Index(1), false, Index(20)).unwrap();
+        assert_eq!((unframe(&body).unwrap().len(), next), (3, Some(Index(8))));
+        // At commit: the end.
+        assert_eq!(entries_page(rows(5, 7), Index(5), 1_000, Index(1), false, Index(7)).unwrap().1, None);
+        // A member that holds nothing at `from` (behind) gives an empty page with no link, not a loop.
+        assert_eq!(entries_page(rows(1, 0), Index(5), 1_000, Index(1), false, Index(20)), Ok((Vec::new(), None)));
+        assert!(serves_log(false, 3, 2));
+        assert!(!serves_log(true, 3, 0));
+        assert!(!serves_log(true, 1, 1));
+        assert!(serves_log(true, 1, 0), "Solo");
+        assert!(round_due(None, 0));
+        assert!(!round_due(Some(100_000), 100_000 + FEED_EVERY_MS - 1_001));
+        assert!(round_due(Some(100_000), 100_000 + FEED_EVERY_MS - 1_000));
+        assert!(report_newer(None, Index(0)));
+        assert!(report_newer(Some(Index(4)), Index(5)));
+        assert!(!report_newer(Some(Index(5)), Index(5)));
+        assert!(!report_newer(Some(Index(6)), Index(5)));
+        // A prefetched page serves through the same rules as the model.
+        let src = Prefetched {
+            log: Some(StoredLog { first: Index(3), archived: false, to: Index(9), rows: rows(3, 4) }),
+            ..Default::default()
+        };
+        let r = serve(&Route::Entries { chain: repo(1), from: Index(3), limit: 10 }, &|_| true, &src, 0, "https://h")
+            .unwrap();
+        assert_eq!(
+            r.next.as_deref(),
+            Some("<https://h/api/graftyard/v1/export/chains/repo:1/entries?from=5&limit=10>; rel=\"next\"")
+        );
+        let gone =
+            serve(&Route::Entries { chain: repo(1), from: Index(2), limit: 10 }, &|_| true, &src, 0, "https://h");
+        assert_eq!(gone.map(|_| ()).map_err(|e| e.status()), Err(410));
+    }
+
     #[test]
     fn objects_and_frames_round_trip_and_a_flipped_byte_fails() {
         let o = ExportObject {
@@ -698,7 +1102,10 @@ mod tests {
             Ok(Route::Snapshots { chain: repo(9), at: Index(400) })
         );
         let id = PackId(graftyard_types::Ulid(0x0190_0000_0000_0000_0000_0000_0000_0042));
-        assert_eq!(p("GET", &format!("/api/graftyard/v1/export/packs/{id}"), &[]), Ok(Route::Pack { id }));
+        assert_eq!(
+            p("GET", &format!("/api/graftyard/v1/export/packs/{id}"), &[("network", "77")]),
+            Ok(Route::Pack { network: NetworkId(DbId(77)), id })
+        );
         assert_eq!(p("DELETE", "/api/graftyard/v1/export/token", &[]), Ok(Route::RevokeToken));
         for (path, query) in [
             ("/api/graftyard/v1/export/batches", &[("after", "3")][..]),
@@ -711,7 +1118,9 @@ mod tests {
             ("/api/graftyard/v1/export/chains/repo:9/entries", &[("from", "5"), ("limit", "0")]),
             ("/api/graftyard/v1/export/chains/nosuch:9/entries", &[("from", "5")]),
             ("/api/graftyard/v1/export/chains/repo:9/snapshots", &[]),
-            ("/api/graftyard/v1/export/packs/not-a-ulid", &[]),
+            ("/api/graftyard/v1/export/packs/not-a-ulid", &[("network", "77")]),
+            ("/api/graftyard/v1/export/packs/01J0000000000000000000000A", &[]),
+            ("/api/graftyard/v1/export/packs/01J0000000000000000000000A", &[("network", "-1")]),
         ] {
             assert_eq!(p("GET", path, query).map_err(|e| e.status()), Err(422), "{path} {query:?}");
         }
@@ -748,6 +1157,30 @@ mod tests {
             "a gap is never served"
         );
         assert_eq!(entries_page(stored(5, 3, 1), Index(9), 10, Index(1), false, Index(7)), Ok((Vec::new(), None)));
+    }
+
+    /// An archive range 10..=14 read in chunks that split the header and rows: only `from..=to` comes back, in
+    /// order, at most `limit`, and a bad header is refused.
+    #[test]
+    fn archive_rows_keep_the_asked_range_across_chunks() {
+        let mut obj = graftyard_fold::archive_header();
+        for i in 10u8..=14 {
+            graftyard_fold::encode_archive_row(&vec![i; i as usize], &mut obj);
+        }
+        let read = |from, to, limit, step: usize| {
+            let mut r = ArchiveRows::new(Index(10), Index(from), Index(to), limit);
+            for c in obj.chunks(step) {
+                if r.push(c).unwrap() {
+                    break;
+                }
+            }
+            r.rows.into_iter().map(|(i, row)| (i.0, row[0], row.len())).collect::<Vec<_>>()
+        };
+        assert_eq!(read(12, 13, 10, 3), vec![(12, 12, 12), (13, 13, 13)]);
+        assert_eq!(read(11, 99, 2, 7), vec![(11, 11, 11), (12, 12, 12)]);
+        assert_eq!(read(10, 14, 10, 1000), (10..=14).map(|i| (i, i as u8, i as usize)).collect::<Vec<_>>());
+        let mut bad = ArchiveRows::new(Index(1), Index(1), Index(9), 10);
+        assert!(bad.push(&[0u8; 32]).is_err());
     }
 
     #[test]

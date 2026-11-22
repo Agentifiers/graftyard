@@ -66,7 +66,8 @@ struct Payload {
     exp: u64,
 }
 
-fn scope_text(s: Scope) -> String {
+/// A scope as the token spells it: `install`, `owner:<id>`, or `repo:<id>`.
+pub fn scope_text(s: Scope) -> String {
     match s {
         Scope::Install => "install".into(),
         Scope::Owner(a) => format!("owner:{}", a.0.0),
@@ -74,7 +75,8 @@ fn scope_text(s: Scope) -> String {
     }
 }
 
-fn parse_scope(s: &str) -> Option<Scope> {
+/// `scope_text`'s inverse.
+pub fn parse_scope(s: &str) -> Option<Scope> {
     let id = |v: &str| (!v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())).then(|| v.parse().ok()).flatten();
     match s.split_once(':') {
         None if s == "install" => Some(Scope::Install),

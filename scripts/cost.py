@@ -169,6 +169,7 @@ REMOVED_DAYS = 35                  # removed members run deleteAll() after 35 da
 AVG_PACK_MB = 50                   # average stored pack, for per-object pack copies [guess]
 VAULT_LOCK_DAYS = 35               # bucket lock retention in the vault account
 FEED_OBJECTS = DAYS * 24 * 360     # ChangeBatch objects, one every 10 s
+FEED_CHAINS_MAX = 200              # `export::BATCH_CHAINS_MAX`: chains one round reads at most (`export-host`)
 
 # ---- user records and the Inbox (FX-7) ----
 # Stars, watches, subscriptions, follows, and notification thread state are `IdentityEvent`s on the actor's group, and
@@ -412,6 +413,10 @@ def model(tier, variant="design", split=None):
 	# Durable Objects: leaders, followers, identity and Authz reads, lease rounds. Allowances are per account; the
 	# account-separated option holds members in three site accounts.
 	do_reqs = w["reads"] * 1.5 + w["entries"] * members + lease_rpcs
+	if vault:
+		# `export-host`: each round's claim on site A's `export` registry object, and per moved chain one leader report
+		# and one `/log_rows` source read, at most one each per entry and FEED_CHAINS_MAX a round.
+		do_reqs += FEED_OBJECTS + 2 * min(w["entries"], FEED_OBJECTS * FEED_CHAINS_MAX)
 	gbs = DO_GB * (w["reads"] * WALL_S["read"] + w["entries"] * WALL_S["commit"]
 		+ append_rpcs * WALL_S["append"] + lease_rpcs * WALL_S["lease"])
 	if "edge-compose" in LEVERS:
@@ -529,7 +534,8 @@ def model(tier, variant="design", split=None):
 	ssh_inc = 5 if PLAN[tier] == "cf.plan.pro.monthly" else 10
 	lines["Spectrum SSH data"] = over(ssh_gb, ssh_inc) * price("cf.spectrum.ssh.overage")
 	lines["Spectrum Worker application fee [unverified, no price published]"] = SPECTRUM_ADDON_USD if ssh_option(tier) else 0
-	lines["Queues (webhooks, notifications, indexing)"] = over(queue_msgs * 3, INCLUDED["queues"]) / 1e6 * price("cf.queues.operations")
+	# `export-host`: each feed round sends the next as one delayed message on site A's queue.
+	lines["Queues (webhooks, notifications, indexing)"] = over((queue_msgs + (FEED_OBJECTS if vault else 0)) * 3, INCLUDED["queues"]) / 1e6 * price("cf.queues.operations")
 	lines["Email Sending"] = over(w["emails"], INCLUDED["email"]) / 1000 * price("cf.email.sending")
 	lines["Analytics Engine (per-repo counters, SLO points)"] = over(w["reads"] + w["entries"], INCLUDED["ae"]) / 1e6 * price(
 		"cf.analytics_engine.writes")

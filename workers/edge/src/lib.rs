@@ -55,6 +55,7 @@ mod api;
 mod bed_rows;
 mod collab;
 mod colo;
+mod export;
 mod hooks;
 mod hosted;
 mod ident;
@@ -3715,6 +3716,9 @@ async fn serve(
     }
     if path == oidc::INSTANCE_AUTH_PATH {
         return oidc::instance_auth(&c, &mut req).await;
+    }
+    if let Some(r) = Box::pin(export::route(&c, &mut req, &path)).await? {
+        return Ok(r);
     }
     if let Some(r) = purge::route(&c, &mut req, &path).await? {
         return agents::respond(&c, r);
