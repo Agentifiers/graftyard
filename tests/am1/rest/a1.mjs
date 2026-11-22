@@ -602,6 +602,12 @@ if (!target) {
   target = c.body?.data?.createIssue?.issue;
 }
 await api("POST", `/api/v3/repos/${R}/labels`, admin, { name: "a1", color: "ededed" });
+// B0-33: `a1` in the agent label allowlist, so `side:label` commits instead of every add answering 403 (not in the
+// allowlist) and every remove 404 (never added). The quarter-load set's qlA ran without it: 1,338 labels, 0 committed.
+if (row === "b0-33") {
+  const pol = await api("PUT", `${V1}/agents/policy`, admin, { labels: ["a1"] });
+  if (pol.status !== 200) throw new Error(`agents/policy labels: ${pol.status}`);
+}
 const openPrs = [];
 const openPr = async (tok, branch, draft) => {
   const r = await api("POST", "/api/graphql", tok, { query: "mutation($i: CreatePullRequestInput!) { createPullRequest(input: $i) { pullRequest { id number } } }",
