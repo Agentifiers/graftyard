@@ -520,6 +520,60 @@ impl Inner {
         }
     }
 
+    /// The stored rows whose first `prefix.len()` key columns equal `prefix`, in key order: one indexed range of the
+    /// primary key, so it reads no row past the prefix (`Store::prefix`).
+    fn sql_prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
+        let n = self.arity(table);
+        let m = prefix.len().min(n);
+        if n == 0 {
+            return if prefix.is_empty() {
+                self.sql_get(table, &[]).map(|r| (Vec::new(), r)).into_iter().collect()
+            } else {
+                Vec::new()
+            };
+        }
+        let k = cols(n);
+        let q = format!(
+            "SELECT {}, written, v FROM \"{}\"{} ORDER BY {}",
+            k.join(", "),
+            self.name(table),
+            prefix_eq(m),
+            k.join(", ")
+        );
+        let args: Vec<SqlStorageValue> = prefix[..m].iter().map(to_sql).collect();
+        let mut out = Vec::new();
+        let rows = match self.sql.exec(&self.query(q), args) {
+            Ok(r) => r,
+            Err(e) => {
+                self.refused("a fold prefix read", table, e);
+                return out;
+            }
+        };
+        for r in rows.raw() {
+            let mut r = match r {
+                Ok(r) => r,
+                Err(e) => {
+                    self.refused("a fold row", table, e);
+                    return out;
+                }
+            };
+            let v = r.pop().expect("v");
+            let w = r.pop().expect("written");
+            let key: Key = r.into_iter().map(from_sql).collect();
+            if !key.starts_with(prefix) {
+                continue;
+            }
+            match row_of(w, v) {
+                Ok(s) => out.push((key, s)),
+                Err(e) => {
+                    self.refused("a fold row", table, e);
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
     fn sql_scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)> {
         let n = self.arity(table);
         let t = self.name(table);
@@ -570,6 +624,15 @@ impl Inner {
         }
         out
     }
+}
+
+/// `WHERE k0 = ? AND ...` over a key's first `m` columns, `=` so SQLite takes the primary key's range (a fold key
+/// holds no NULL); nothing for `m == 0`.
+fn prefix_eq(m: usize) -> String {
+    if m == 0 {
+        return String::new();
+    }
+    format!(" WHERE {}", cols(m).iter().map(|c| format!("{c} = ?")).collect::<Vec<_>>().join(" AND "))
 }
 
 fn where_eq(n: usize) -> String {
@@ -635,6 +698,23 @@ impl Store for TierSql {
             };
         }
         merged.into_iter().take(limit).collect()
+    }
+
+    /// The stored rows under `prefix` with every buffered write under it on top, oldest batch first so the newest
+    /// wins: no row past the prefix is read, stored or buffered.
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
+        let inner = self.0.borrow();
+        let mut merged: BTreeMap<Key, Stored> = inner.sql_prefix(table, prefix).into_iter().collect();
+        let lo = (table.to_owned(), prefix.to_vec());
+        for b in inner.sealed.iter().chain(std::iter::once(&inner.open)) {
+            for ((_, k), v) in b.range(lo.clone()..).take_while(|((t, k), _)| t == table && k.starts_with(prefix)) {
+                match v {
+                    Some(v) => merged.insert(k.clone(), v.clone()),
+                    None => merged.remove(k),
+                };
+            }
+        }
+        merged.into_iter().collect()
     }
 
     /// One `DELETE` for the stored rows, run at once: only `end_snapshot` clears, and only undo tables, which no

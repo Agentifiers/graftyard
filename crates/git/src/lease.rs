@@ -420,11 +420,26 @@ impl LeaseView<'_> {
             for i in 1..=segs.len() {
                 ids.extend(ids_in(self.core, "lease_exclusive", &[text(&segs[..i].join("/"))], 1));
             }
+            // Those under it: one run of text keys from `under`, read a few rows at a time, so the read ends at the
+            // run's end and not the table's (`usize::MAX` is SQLite's `LIMIT -1`, every row past `under`).
             let under = format!("{lp}/");
-            for (k, _) in self.core.scan("lease_exclusive", &[text(&under)], usize::MAX) {
-                match k.first() {
-                    Some(Val::Text(t)) if t.starts_with(&under) => ids.extend(id_of(k.get(1))),
-                    _ => break,
+            // Each batch after the first starts at the last key read, which it reads again and skips.
+            let mut from = vec![text(&under)];
+            'under: loop {
+                let batch = self.core.scan("lease_exclusive", &from, 8);
+                let full = batch.len() == 8;
+                for (k, _) in batch {
+                    if k == from {
+                        continue;
+                    }
+                    match k.first() {
+                        Some(Val::Text(t)) if t.starts_with(&under) => ids.extend(id_of(k.get(1))),
+                        _ => break 'under,
+                    }
+                    from = k;
+                }
+                if !full {
+                    break;
                 }
             }
         }

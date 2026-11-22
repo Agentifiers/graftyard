@@ -169,6 +169,10 @@ impl Read for Writer<'_> {
         assert!(self.known(table), "table {table} is not in the {:?} tier", self.schema.tier);
         self.store.scan(table, from, limit).into_iter().map(|(k, s)| (k, s.cols)).collect()
     }
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Vec<Val>)> {
+        assert!(self.known(table), "table {table} is not in the {:?} tier", self.schema.tier);
+        self.store.prefix(table, prefix).into_iter().map(|(k, s)| (k, s.cols)).collect()
+    }
 }
 
 impl Rows for Writer<'_> {
@@ -197,6 +201,9 @@ impl<S: Store + ?Sized> Read for S {
     }
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Vec<Val>)> {
         Store::scan(self, table, from, limit).into_iter().map(|(k, s)| (k, s.cols)).collect()
+    }
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Vec<Val>)> {
+        Store::prefix(self, table, prefix).into_iter().map(|(k, s)| (k, s.cols)).collect()
     }
 }
 

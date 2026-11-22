@@ -1256,3 +1256,170 @@ fn repeated_stalls_under_extend_min_leave_an_unrenewed_lease_at_its_wall_clock_e
     w.now = moved;
     assert!(!live(&mut w).iter().any(|r| r.lease.id == id), "lapsed at its moved expiry");
 }
+
+// ---- reads bounded by the branch, not the open pull requests ----
+
+/// A core tier that counts the rows storage reads for each table, as the site's `TierSql` reads them: one per `get`
+/// that finds a row, every row a `scan` reads up to its limit, and for `prefix` only the rows under the prefix (one
+/// indexed range of the primary key). A read layer that does not pass `prefix` down to the store reads whole `scan`
+/// batches here, as it did in SQL.
+#[derive(Debug, Clone)]
+struct Counted(MemStore, Rc<std::cell::RefCell<std::collections::BTreeMap<String, usize>>>);
+
+impl Counted {
+    fn add(&self, table: &str, n: usize) {
+        *self.1.borrow_mut().entry(table.to_owned()).or_default() += n;
+    }
+    fn take(&self, table: &str) -> usize {
+        std::mem::take(self.1.borrow_mut().entry(table.to_owned()).or_default())
+    }
+}
+
+impl Store for Counted {
+    fn get(&self, t: &str, k: &[graftyard_fold::Val]) -> Option<graftyard_fold::Stored> {
+        let r = self.0.get(t, k);
+        self.add(t, usize::from(r.is_some()));
+        r
+    }
+    fn put(&mut self, t: &str, k: graftyard_fold::Key, r: graftyard_fold::Stored) {
+        self.0.put(t, k, r)
+    }
+    fn delete(&mut self, t: &str, k: &[graftyard_fold::Val]) {
+        self.0.delete(t, k)
+    }
+    fn scan(&self, t: &str, f: &[graftyard_fold::Val], n: usize) -> Vec<(graftyard_fold::Key, graftyard_fold::Stored)> {
+        let r = self.0.scan(t, f, n);
+        self.add(t, r.len());
+        r
+    }
+    fn prefix(&self, t: &str, p: &[graftyard_fold::Val]) -> Vec<(graftyard_fold::Key, graftyard_fold::Stored)> {
+        let r = self.0.prefix(t, p);
+        self.add(t, r.len());
+        r
+    }
+}
+
+impl TierStore for Counted {
+    fn clone_box(&self) -> Box<dyn TierStore> {
+        Box::new(self.clone())
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// `exact-prefix`: with 1,000 open pull requests, an agent push to a branch that has none reads no other pull
+/// request's `pull_by_head` row in `decide` (its `PathSet`), in `apply` (`write_ref`), or in the leader's PrSync and
+/// merge-queue scans (`prsync::touched`, `queue_consumer::touched`), and a push to a pull request's head reads only
+/// that pull request's row. Read in 256-row batches, each of the four read up to 256 rows that belong to other
+/// branches, and the leader's CPU per push grew with the repository's open pull requests
+/// (`tests/am1/results/b033-profile.md`).
+#[test]
+fn a_push_reads_only_its_own_branchs_pull_requests_whatever_the_open_count() {
+    const OPEN: u32 = 1_000;
+    let mut w = lease_world();
+    // 1,000 open pull requests on agent branches `claude/a1-<i>`, as a1 opens them, 100 an entry.
+    let main = w.get("refs/heads/main").unwrap();
+    for chunk in 0..OPEN / 100 {
+        let evs = (0..100)
+            .map(|j| {
+                let i = chunk * 100 + j;
+                let capture = graftyard_git::issues::PrCapture {
+                    head_sha: oid(20_000 + i),
+                    base_sha: main,
+                    state: graftyard_git::issues::PrState::Open { draft: true },
+                    labels: Vec::new(),
+                    issue: graftyard_git::issues::IssueCapture {
+                        id: DbId((1 << 40) + i64::from(i)),
+                        author: None,
+                        title: "a1".into(),
+                        body: "".into(),
+                        labels: Default::default(),
+                        assignees: Default::default(),
+                    },
+                    changes_from: None,
+                };
+                RepoEvent::PrOpened {
+                    n: IssueNumber(10 + i),
+                    head: HeadSpec { repo: REPO, branch: name(&format!("refs/heads/claude/a1-{i:04}")) },
+                    base: name("refs/heads/main"),
+                    capture,
+                }
+            })
+            .collect();
+        w.record(evs);
+    }
+    // A branch with no pull request that sorts among the heads (the next agent's), then the head of PR 10 + 500.
+    for (branch, own) in [("refs/heads/claude/a1-0500x", 0usize), ("refs/heads/claude/a1-0500", 1)] {
+        let before = w.fold();
+        let rows = Rc::new(std::cell::RefCell::new(std::collections::BTreeMap::new()));
+        let mut core = MemStore::default();
+        let all: &dyn Store = &*before.core;
+        for t in graftyard_git::tiers::CORE.tables.iter().map(|t| t.name).chain([graftyard_fold::META]) {
+            for (k, v) in all.scan(t, &[], usize::MAX) {
+                core.put(t, k, v);
+            }
+        }
+        let counted = Counted(core, rows.clone());
+        let fold = RepoFold { core: Box::new(counted.clone()), ..before.clone() };
+        let mut p = push(app(CLAUDE), vec![up(branch, None, Some(oid(31_000 + own as u32)))], &["a1/x.rs"]);
+        p.leases = true;
+        let c = RepoCmd::Push(p);
+        // `decide`, on the leader's scratch view.
+        let install = w.install.fresh(w.now);
+        let deps: Vec<_> = c.deps(&fold).into_iter().map(|ch| (ch, w.ident.dep(ch, &install))).collect();
+        let s = graftyard_raft::Fold::scratch_at(&fold, w.now, graftyard_raft::TierSet(u8::MAX));
+        let (evs, _) = c.decide(&s, &deps).expect("the push decides");
+        drop(s);
+        assert!(evs.iter().any(|e| matches!(e, RepoEvent::PathSet(_))), "a 32.14 push writes PathSet: {evs:?}");
+        assert_eq!(counted.take("pull_by_head"), own, "{branch}: decide");
+        // `apply`, of the entry the leader committed for it, on the fold as it stood before.
+        let applied = graftyard_fold::meta(&*before.core).applied;
+        assert!(w.commit(c).is_ok());
+        let l = w.repo.leader();
+        let log: Vec<_> = w.repo.members[l.0 as usize].log().iter().filter(|e| e.index > applied).cloned().collect();
+        let e = log
+            .iter()
+            .find(|e| {
+                matches!(&e.body, graftyard_raft::EntryBody::Events(evs)
+            if evs.iter().any(|ev| matches!(ev, RepoEvent::Refs { .. })))
+            })
+            .expect("the push's entry");
+        let mut fold = fold;
+        for x in log.iter().take_while(|x| x.index <= e.index) {
+            counted.take("pull_by_head");
+            graftyard_raft::Fold::apply_entry(&mut fold, x);
+        }
+        assert_eq!(counted.take("pull_by_head"), own, "{branch}: apply");
+        // The leader's consumer scans of the entry.
+        let at: &dyn graftyard_fold::Read = &fold.core;
+        assert_eq!(graftyard_git::prsync::touched(at, REPO, e).len(), own, "{branch}: PrSync's pull requests");
+        assert_eq!(counted.take("pull_by_head"), own, "{branch}: PrSync scan");
+        graftyard_git::queue_consumer::touched(at, REPO, e);
+        assert_eq!(counted.take("pull_by_head"), own, "{branch}: merge-queue scan");
+    }
+}
+
+/// An Exclusive acquire over `docs/**` finds every live Exclusive lease under it, however many batches of the
+/// `lease_exclusive` index they span: 12 tasks each hold one under `docs/<k>/`.
+#[test]
+fn an_exclusive_acquire_finds_every_lease_under_its_prefix() {
+    let mut w = lease_world();
+    let mut held = Vec::new();
+    for k in 0..12 {
+        let name = format!("under{k}");
+        create_ext(&mut w, CLAUDE, &name, Some(WRITER));
+        let path = format!("docs/d{k:02}/**");
+        held.push(lease_id(&w.commit(issue(app(CLAUDE), exclusive(&[&path], Some(&name))))));
+    }
+    create_ext(&mut w, CLAUDE, "over", Some(WRITER));
+    match lease_err(&w.commit(issue(app(CLAUDE), exclusive(&["docs/**"], Some("over"))))) {
+        Some(LeaseErr::Conflict(c)) => {
+            let mut got: Vec<LeaseId> = c.iter().map(|l| l.id).collect();
+            got.sort();
+            held.sort();
+            assert_eq!(got, held);
+        }
+        other => panic!("{other:?}"),
+    }
+}

@@ -723,6 +723,9 @@ function every(kind, perS, f, cap = 400) {
   })();
 }
 const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
+// exact-prefix's flip: the window's draft PR opens answered ok, ms from t0, so the row reports how many pull requests
+// were open at each point (`openPrsAt`, every 15 s, with those opened before the window), never closed in a run.
+const draftOpened = [];
 // tier-read-batch: each answered API request's tier batch counters (`trread`, `trshare`, `trwait` in a test edge's
 // `server-timing`), so the row reports them for writes beside pushes' (`pushTiming`).
 const tierStages = {};
@@ -851,6 +854,7 @@ const jobs = hosted ? [] : [
     if (!a) return "no branch";
     a.pr = true;
     const [r, pr] = await openPr(app, a.ref.slice(11), true);
+    if (pr) draftOpened.push(Date.now() - t0);
     return pr ? "ok" : `gql ${String(r.body?.errors?.[0]?.message ?? r.status).slice(0, 40)}`;
   }),
   every("side:lease", plan.side.leaseAcquire + plan.side.leaseRelease, async () => {
@@ -1425,6 +1429,7 @@ const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.
 const feedLat = seen.map((x) => x[2]);
 const v = {
   row, run: RUN, seconds, ...(stopped ? { stopped, ranSeconds: +ran.toFixed(1) } : {}), agents: plan.agents, offered: offered(plan), byKind: sum,
+  openPrsAt: Array.from({ length: Math.floor(ran / 15) + 1 }, (_, i) => [i * 15, openPrs.length + draftOpened.filter((ms) => ms <= i * 15_000).length]),
   ...(killLog.length ? { kills: killLog.map(({ sent, before, after, reset, killed, res }) => ({ sent, leader: before.leader, term: before.term, killed, reset, after: after.leader, termAfter: after.term, res })) } : {}),
   feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null, byMember: feedAnswers,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);

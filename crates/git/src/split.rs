@@ -426,4 +426,14 @@ impl Read for Filled<'_> {
             })
             .collect()
     }
+    fn prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Vec<Val>, Vec<Val>)> {
+        self.meta
+            .prefix(table, prefix)
+            .into_iter()
+            .map(|(k, c)| {
+                let c = self.row(table, &k, c);
+                (k, c)
+            })
+            .collect()
+    }
 }
