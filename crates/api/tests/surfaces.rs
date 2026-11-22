@@ -2093,3 +2093,174 @@ fn a_revoked_tokens_write_is_refused_at_decide_with_the_fronts_401() {
     // Any other refusal of a mutation keeps GraphQL's error shape at 200.
     assert_eq!(render_err(&render(gql), &IssueErr::NotFound).status, 200);
 }
+
+/// The web app's chrome reads (`decisions/OPEN-QUESTIONS.md`, F61): branches, tags, labels, assignees, teams, check
+/// suites, and reactions, each kept for `gh/validate.py` against the pinned description. The data is uneven on
+/// purpose: a branch whose name sorts before `main` and is protected by a rule on `main` only, an annotated tag whose
+/// object is not its commit, labels whose case-folded order differs from their byte order, suites from two Apps on
+/// one commit and a run whose suite has no row, and a comment on another issue.
+#[test]
+fn the_web_apps_chrome_reads_render_ghes_shapes() {
+    use graftyard_api::rest::{
+        RepoTeam, list_assignees, list_branches, list_check_suites_for_ref, list_labels, list_reactions, list_tags,
+        list_teams,
+    };
+    use graftyard_identity::RepoPermission as P;
+    let mut c = Chain::new(1);
+    c.push("refs/heads/main", oid(1));
+    c.push("refs/heads/Feature", oid(2));
+    c.push("refs/heads/zed", oid(3));
+    c.push("refs/tags/v1", oid(7));
+    c.push("refs/tags/v2", oid(3));
+    c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
+    c.commit(OWNER, protect(&["ci"])).unwrap();
+    for (name, color) in [("bug", [1, 2, 3]), ("Alpha", [4, 5, 6]), ("beta", [7, 8, 9])] {
+        c.commit(OWNER, IssueOp::DefineLabel { id: None, name: LabelName(name.into()), color, description: None })
+            .unwrap();
+    }
+    c.commit(
+        READER,
+        IssueOp::OpenIssue { title: "t".into(), body: "b".into(), labels: SmallVec::new(), assignees: SmallVec::new() },
+    )
+    .unwrap();
+    let comment = match c
+        .commit(READER, IssueOp::Comment { on: CommentTarget::Issue(IssueNumber(1)), body: "c".into(), reply_to: None })
+        .unwrap()
+    {
+        IssueOut::Id(id) => id.0,
+        other => panic!("{other:?}"),
+    };
+    // Two suites on commit 3: App 5's suite 1 (row and two runs), and App 6's run 50 whose suite 9 has no row, as a
+    // `POST /check-runs` run makes. Commit 1 has a run of its own, which must not be counted on commit 3.
+    let mut other_app = run(50, 3, "lint", None);
+    if let IssueOp::RecordCheck(u) = &mut other_app {
+        u.app = AppId(DbId(6));
+        u.suite = CheckSuiteId(DbId(9));
+    }
+    c.commit(WRITER, run(40, 3, "build", Some(CheckConclusion::Success))).unwrap();
+    c.commit(WRITER, run(41, 3, "test", Some(CheckConclusion::Failure))).unwrap();
+    c.commit(WRITER, other_app).unwrap();
+    c.commit(WRITER, run(42, 1, "build", Some(CheckConclusion::Success))).unwrap();
+    c.entry(
+        EntryBody::Events(vec![graftyard_git::repo::RepoEvent::CheckSuite(graftyard_git::issues::CheckSuiteUpdate {
+            suite: CheckSuiteId(DbId(1)),
+            app: AppId(DbId(5)),
+            head_sha: oid(3),
+            head_branch: Some(name("refs/heads/zed")),
+            version: 1,
+            status: CheckStatus::Completed,
+            conclusion: Some(CheckConclusion::Failure),
+        })]),
+        TierSet::METADATA,
+    );
+
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+
+    let branches = list_branches(&r, "");
+    let got: Vec<(&str, bool, &str)> = branches
+        .value()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["name"].as_str().unwrap(), b["protected"].as_bool().unwrap(), b["commit"]["sha"].as_str().unwrap()))
+        .collect();
+    let hex = |n: u8| oid(n).hex();
+    assert_eq!(got, [("Feature", false, &*hex(2)), ("main", true, &*hex(1)), ("zed", false, &*hex(3))]);
+    keep_rest("web-branches", "/repos/{owner}/{repo}/branches", &branches);
+    let only = |q: &str| -> Vec<String> {
+        list_branches(&r, q).value().as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap().into()).collect()
+    };
+    assert_eq!(only("protected=true"), ["main"]);
+    assert_eq!(only("protected=false"), ["Feature", "zed"]);
+    let paged = list_branches(&r, "per_page=2&page=1");
+    assert_eq!(paged.value().as_array().unwrap().len(), 2);
+    assert!(next(&paged).is_some_and(|l| l.contains("page=2")), "{:?}", paged.header("link"));
+
+    // v1 is annotated: its ref names the tag object 7, which peels to commit 1. v2 is lightweight.
+    let peeled: std::collections::BTreeMap<String, graftyard_git::refs::ObjectId> =
+        [("v1".to_owned(), oid(1))].into_iter().collect();
+    let tags = list_tags(&r, "", &peeled);
+    let got: Vec<(&str, &str)> = tags
+        .value()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap(), t["commit"]["sha"].as_str().unwrap()))
+        .collect();
+    assert_eq!(got, [("v2", &*hex(3)), ("v1", &*hex(1))]);
+    keep_rest("web-tags", "/repos/{owner}/{repo}/tags", &tags);
+
+    let labels = list_labels(&r, "");
+    let got: Vec<&str> = labels.value().as_array().unwrap().iter().map(|l| l["name"].as_str().unwrap()).collect();
+    assert_eq!(got, ["Alpha", "beta", "bug"]);
+    keep_rest("web-labels", "/repos/{owner}/{repo}/labels", &labels);
+
+    // A reader cannot be assigned; the owner and a writer can, in login order, each once.
+    let (o, w, rd) = (AccountId(DbId(OWNER)), AccountId(DbId(WRITER)), AccountId(DbId(READER)));
+    let people = [(rd, Some(P::Read)), (w, Some(P::Write)), (o, Some(P::Admin)), (w, Some(P::Write))];
+    let assignees = list_assignees(&r, &people, "");
+    let got: Vec<&str> = assignees.value().as_array().unwrap().iter().map(|u| u["login"].as_str().unwrap()).collect();
+    assert_eq!(got, ["alice", "o"]);
+    keep_rest("web-assignees", "/repos/{owner}/{repo}/assignees", &assignees);
+
+    let team = |id, name: &str, permission| RepoTeam { id, name: name.into(), slug: name.to_lowercase(), permission };
+    let teams = list_teams(&r, vec![team(12, "ops", P::Maintain), team(11, "Core", P::Write)], "");
+    let got: Vec<(&str, &str, bool, bool)> = teams
+        .value()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            let p = &t["permissions"];
+            (t["slug"].as_str().unwrap(), t["permission"].as_str().unwrap(), p["push"] == true, p["admin"] == true)
+        })
+        .collect();
+    assert_eq!(got, [("core", "push", true, false), ("ops", "maintain", true, false)]);
+    keep_rest("web-teams", "/repos/{owner}/{repo}/teams", &teams);
+    assert_eq!(list_teams(&r, Vec::new(), "").value(), &json!([]));
+
+    // Commit 3's raw object, as the edge reads it from the git cache for `head_commit`.
+    let raw = format!(
+        "tree {}\nparent {}\nauthor A U <a@example.com> 1700000000 +0000\ncommitter C M <c@example.com> 1700000100 +0000\n\nthe subject\n",
+        hex(9),
+        hex(1)
+    );
+    let suites_of = |q: &str| list_check_suites_for_ref(&r, oid(3), raw.as_bytes(), q);
+    let suites = suites_of("");
+    let v = suites.value();
+    let got: Vec<(i64, &str, Option<&str>, u64)> = v["check_suites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            let runs = s["latest_check_runs_count"].as_u64().unwrap();
+            (s["id"].as_i64().unwrap(), s["status"].as_str().unwrap(), s["head_branch"].as_str(), runs)
+        })
+        .collect();
+    assert_eq!(v["total_count"], 2);
+    let head = &v["check_suites"][1]["head_commit"];
+    assert_eq!((head["id"].as_str(), head["tree_id"].as_str()), (Some(&*hex(3)), Some(&*hex(9))));
+    assert_eq!((&head["message"], &head["author"]["email"]), (&json!("the subject"), &json!("a@example.com")));
+    assert_eq!(head["committer"]["name"], "C M");
+    assert_eq!(got, [(9, "in_progress", None, 1), (1, "completed", Some("zed"), 2)]);
+    keep_rest("web-check-suites", "/repos/{owner}/{repo}/commits/{ref}/check-suites", &suites);
+    let ids = |q: &str| -> Vec<i64> {
+        let reply = suites_of(q);
+        reply.value()["check_suites"].as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect()
+    };
+    assert_eq!(ids("app_id=6"), [9]);
+    assert_eq!(ids("check_name=test"), [1]);
+    assert_eq!(ids("check_name=nope"), Vec::<i64>::new());
+    assert_eq!(list_check_suites_for_ref(&r, oid(1), raw.as_bytes(), "").value()["total_count"], 1, "commit 1's run");
+
+    let on_issue = list_reactions(&r, &["issues", "1"], "");
+    assert_eq!((on_issue.status, on_issue.value()), (200, &json!([])));
+    keep_rest("web-issue-reactions", "/repos/{owner}/{repo}/issues/{issue_number}/reactions", &on_issue);
+    let id = comment.to_string();
+    let on_comment = list_reactions(&r, &["issues", "comments", &id], "");
+    assert_eq!(on_comment.status, 200);
+    keep_rest("web-comment-reactions", "/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions", &on_comment);
+    assert_eq!(list_reactions(&r, &["issues", "9"], "").status, 404);
+    assert_eq!(list_reactions(&r, &["issues", "comments", "424242"], "").status, 404);
+}

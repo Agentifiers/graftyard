@@ -1110,7 +1110,7 @@ Graftyard ships one signed release in every mode. `design/DESIGN.md`, "Deploymen
   - `GET pulls/{n}/viewed` answers `{"paths": []}`, because no fold holds viewed files yet; its `PUT` and the other writes the mock has (thread resolution, draft, auto-merge) are not served.
   - `GET subscription/events` answers `{"events": null}` (no custom watch).
   - `POST login/session` and `PUT settings/password`, above.
-- *The client.* Only `GET` queries retry, and only on a network error or a 5xx: at most 2 retries per query, from a budget of 10 retry tokens per page that refills by 0.1 per successful response, each delay the larger of full jitter (300 ms doubling, capped at 4 s) and the reply's `Retry-After`, capped at 10 s. A pull request whose `mergeable` is `null` (GraphQL `UNKNOWN`) is polled every 3 s until it is computed. Every region keeps its own boundary, so a read the edge does not serve yet (`decisions/OPEN-QUESTIONS.md`, F61) fails only its region.
+- *The client.* Only `GET` queries retry, and only on a network error or a 5xx: at most 2 retries per query, from a budget of 10 retry tokens per page that refills by 0.1 per successful response, each delay the larger of full jitter (300 ms doubling, capped at 4 s) and the reply's `Retry-After`, capped at 10 s. A pull request whose `mergeable` is `null` (GraphQL `UNKNOWN`) is polled every 3 s until it is computed. Every region keeps its own boundary, so a read the edge does not serve fails only its region (`decisions/OPEN-QUESTIONS.md`, F61, which `f61-reads` closed for the chrome's reads).
 
 **Staying up when backends degrade.**
 

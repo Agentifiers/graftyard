@@ -233,6 +233,10 @@ pub async fn repo_route(
 ) -> Result<Option<Reply>> {
     let doc = "rest/collaborators/collaborators";
     let method = req.method();
+    // The web app's chrome reads (`decisions/OPEN-QUESTIONS.md`, F61), for any caller who passed the read gate.
+    if method == Method::Get && matches!(tail, ["assignees"] | ["teams"]) {
+        return Ok(Some(people_list(c, req, rd, tail[0]).await?));
+    }
     if !matches!(tail.first(), Some(&"collaborators" | &"invitations")) {
         return Ok(None);
     }
@@ -413,20 +417,10 @@ fn team_by_slug<'a>(a: &'a AuthzFold, s: &str) -> Option<(TeamId, &'a graftyard_
     a.org().teams.iter().find(|(_, t)| slug(&t.name) == s).map(|(id, t)| (*id, t))
 }
 
-/// GitHub's `team`, or `team-full` with the org.
+/// GitHub's `team` (`graftyard_api::rest::team_json`), or `team-full` with the org.
 fn team_json(c: &Ctx<'_>, org: &str, o: AccountId, id: TeamId, t: &graftyard_identity::TeamRow, full: bool) -> Value {
     let (api, web) = (format!("https://{}/api/v3", c.cfg.host), format!("https://{}", c.cfg.host));
-    let s = slug(&t.name);
-    let mut v = json!({
-        // `graftyard_wire` has no team node type; a team id never collides with an org's, both being `DbId`s.
-        "id": id.0.0, "node_id": graftyard_wire::NodeId::top(graftyard_wire::NodeType::Organization, id.0.0).encode(),
-        "name": t.name.as_ref(), "slug": s, "description": null, "privacy": "closed",
-        "notification_setting": "notifications_enabled", "permission": "pull",
-        "url": format!("{api}/teams/{}", id.0.0), "html_url": format!("{web}/orgs/{org}/teams/{s}"),
-        "members_url": format!("{api}/teams/{}/members{{/member}}", id.0.0),
-        "repositories_url": format!("{api}/teams/{}/repos", id.0.0), "type": "organization",
-        "organization_id": o.0.0, "parent": null,
-    });
+    let mut v = graftyard_api::rest::team_json(&api, &web, org, o.0.0, id.0.0, &t.name, &slug(&t.name));
     if full {
         let org_v = json!({
             "login": org, "id": o.0.0, "node_id": graftyard_wire::NodeId::top(graftyard_wire::NodeType::Organization, o.0.0).encode(),
@@ -458,6 +452,46 @@ fn authz_refusal(done: &Value, doc: &str) -> Option<Reply> {
         "AlreadyMember" | "NotAMember" | "NoTeam" => Reply::error(422, "Validation Failed", doc),
         e => crate::api::unavailable(&format!("the command did not commit: {e}")),
     })
+}
+
+/// `GET /repos/{o}/{r}/assignees` or `/teams`, rendered by `graftyard_api::rest`.
+async fn people_list(c: &Ctx<'_>, req: &Request, rd: &Read, what: &str) -> Result<Reply> {
+    let host = graftyard_wire::Host::new(&c.cfg.host, false).map_err(|e| Error::RustError(e.to_string()))?;
+    let query = req.url()?.query().unwrap_or("").to_owned();
+    if what == "teams" {
+        let teams = rd.dir.authz.as_ref().map_or_else(Vec::new, |a| {
+            let org = a.org();
+            org.team_grants
+                .iter()
+                .filter(|((repo, _), _)| *repo == rd.repo.id)
+                .filter_map(|((_, id), p)| {
+                    let t = org.teams.get(id)?;
+                    let (name, slug) = (t.name.to_string(), slug(&t.name));
+                    Some(graftyard_api::rest::RepoTeam { id: id.0.0, name, slug, permission: *p })
+                })
+                .collect()
+        });
+        return Ok(graftyard_api::rest::list_teams(&rd.view(&host), teams, &query));
+    }
+    // Collaborators, org members, and the owner, each with the permission `authorize` gives.
+    let mut ids = collaborators(rd);
+    ids.push(rd.repo.owner);
+    if let Some(a) = &rd.dir.authz {
+        ids.extend(a.members.keys().map(|u| u.0));
+    }
+    ids.sort();
+    ids.dedup();
+    let mut dir = rd.dir.clone();
+    let mut people = Vec::new();
+    for a in ids {
+        let p = permission(rd, a);
+        if p >= Some(RepoPermission::Write) && !dir.logins.contains_key(&a.0.0) {
+            dir.logins.insert(a.0.0, login(c, rd, a).await);
+        }
+        people.push((a, p));
+    }
+    let view = graftyard_api::view::Repo { host: &host, at: rd.at.clone(), core: &rd.core, meta: &rd.meta, dir: &dir };
+    Ok(graftyard_api::rest::list_assignees(&view, &people, &query))
 }
 
 /// The caller's pending invitation to the org, by account.

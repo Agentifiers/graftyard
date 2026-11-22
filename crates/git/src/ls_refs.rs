@@ -207,6 +207,42 @@ impl LsRefs {
     }
 }
 
+/// A v2 `ls-refs` request with `peel` for the refs under `prefix`, which the edge sends to the git cache shard for what
+/// the group does not know: the commit each annotated tag names (REST's `GET /repos/{o}/{r}/tags`).
+pub fn peel_request(prefix: &str) -> Vec<u8> {
+    let mut b = Vec::new();
+    pkt::line(&mut b, "command=ls-refs");
+    pkt::line(&mut b, "object-format=sha1");
+    pkt::delim(&mut b);
+    pkt::line(&mut b, "peel");
+    pkt::line(&mut b, &format!("ref-prefix {prefix}"));
+    pkt::flush(&mut b);
+    b
+}
+
+/// The ` peeled:<oid>` of each ref under `prefix` in an `ls-refs` answer to `peel_request`, by the name after `prefix`.
+/// A ref with no `peeled` attribute (a lightweight tag) is left out: the object it names is the commit.
+pub fn peeled(answer: &[u8], prefix: &str) -> Result<std::collections::BTreeMap<String, ObjectId>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut r = pkt::Reader::new(answer);
+    while let Some(p) = r.next_pkt().map_err(|e| e.to_string())? {
+        let Some(line) = p.text() else { break };
+        if let Some(e) = line.strip_prefix(b"ERR ") {
+            return Err(String::from_utf8_lossy(e).into_owned());
+        }
+        let mut fields = line.split(|b| *b == b' ');
+        let (Some(_), Some(name)) = (fields.next(), fields.next()) else { continue };
+        let Some(short) = name.strip_prefix(prefix.as_bytes()) else { continue };
+        for attr in fields {
+            if let Some(hex) = attr.strip_prefix(b"peeled:") {
+                let oid = ObjectId::parse_hex(hex).ok_or("a peeled id that is not hex")?;
+                out.insert(String::from_utf8_lossy(short).into_owned(), oid);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Whether a ref under `refs/` can start with `p`.
 fn may_list(p: &[u8]) -> bool {
     p.starts_with(b"refs/") || b"refs/".starts_with(p)
@@ -240,6 +276,28 @@ mod tests {
         assert!(!LsRefs::parse(&req(&["ref-prefix refs/heads/main"])).unwrap().wants_head());
         assert!(LsRefs::parse(&req(&["ref-prefix H"])).unwrap().reads().is_empty());
         assert_eq!(LsRefs::parse(&req(&[])).unwrap().reads(), vec![Vec::<u8>::new()]);
+    }
+
+    /// The tags list's peel: the request asks for tags with `peel`, and only a tag's `peeled` attribute is read.
+    #[test]
+    fn the_tags_peel_asks_for_tags_and_reads_only_peeled_tags() {
+        let q = crate::smart::parse_v2(&peel_request("refs/tags/")).unwrap();
+        assert_eq!(q.command, "ls-refs");
+        assert_eq!(q.args, [b"peel".to_vec(), b"ref-prefix refs/tags/".to_vec()]);
+        let (tag, commit, light) = ("aa".repeat(20), "bb".repeat(20), "cc".repeat(20));
+        let mut a = Vec::new();
+        pkt::data(&mut a, format!("{tag} refs/tags/v1 peeled:{commit}\n").as_bytes());
+        pkt::data(&mut a, format!("{light} refs/tags/v0\n").as_bytes());
+        pkt::data(&mut a, format!("{tag} refs/heads/x peeled:{light}\n").as_bytes());
+        pkt::flush(&mut a);
+        let got = peeled(&a, "refs/tags/").unwrap();
+        assert_eq!(
+            got.into_iter().collect::<Vec<_>>(),
+            [("v1".to_owned(), ObjectId::parse_hex(commit.as_bytes()).unwrap())]
+        );
+        let mut e = Vec::new();
+        pkt::data(&mut e, b"ERR upload-pack: not our ref\n");
+        assert!(peeled(&e, "refs/tags/").is_err());
     }
 
     #[test]
