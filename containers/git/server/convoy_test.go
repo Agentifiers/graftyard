@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -167,6 +168,15 @@ func TestCancelledCloneReleasesTheLock(t *testing.T) {
 	run(t, wt, "", "push", "-q", repo("7"), "main")
 	putRefs(t, s.URL, base)
 
+	// pack-objects starts a second after upload-pack's first lines, as a slow runner's did: upload-pack then writes
+	// nothing while the client goes, and a handler that learned of the cancel only at its next write held the lock
+	// until git wrote again (CI, 2026-11-22: "still held" at fcab840c and 76e3b2a3). Only protected config may set
+	// the hook, so it goes in the test's global config.
+	g := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(g, []byte("[uploadpack]\n\tpackObjectsHook = \"sh -c 'sleep 1; exec \\\"$@\\\"' hook\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", g)
 	pkt := func(l string) string { return fmt.Sprintf("%04x%s", len(l)+4, l) }
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "POST", s.URL+"/upload-pack?net=7", strings.NewReader(
@@ -181,7 +191,13 @@ func TestCancelledCloneReleasesTheLock(t *testing.T) {
 	}
 	cancel()
 	resp.Body.Close()
-	time.Sleep(200 * time.Millisecond)
+	// The cancelled clone gives the lock back once its handler sees the cancel, well inside pack-objects' second.
+	for deadline := time.Now().Add(500 * time.Millisecond); !lock("7").TryLock(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the network's lock is still held 500 ms after the clone's client went away")
+		}
+	}
+	lock("7").Unlock()
 
 	run(t, wt, "", "checkout", "-q", "-B", "one", base)
 	t1 := commit(t, wt, map[string]string{"one": "1\n"})
