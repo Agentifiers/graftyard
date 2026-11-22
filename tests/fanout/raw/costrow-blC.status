@@ -1,0 +1,7 @@
+edge: graft-m2b-edge serves baa617cb at 100% (rev 06581e8e2), as tests/am1/raw/runs/fanout-bl-edge.log deployed
+2026-11-22T04:05:34Z meter (account, run) 7.53 0.02 before b033, expected +$2.2, stop $170 account, $10 run
+2026-11-22T04:06:35Z meter (account, run) 7.53 0.02
+2026-11-22T04:07:37Z meter (account, run) 7.53 0.02
+2026-11-22T04:08:41Z meter (account, run) 7.53 0.02
+2026-11-22T04:09:43Z meter (account, run) 7.53 0.02
+2026-11-22T04:10:45Z meter (account, run) 7.53 0.02
