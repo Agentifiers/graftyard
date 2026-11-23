@@ -176,7 +176,7 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
 /// `resolve`, guessing from the data center's link entry (`linked`) when this isolate holds no login and `Placement`
 /// answer for the owner (`beside`). The entry is a guess at any age, never an answer: `chained` keeps a read made on
 /// it only when the reads before it answer the same.
-async fn resolve_on(
+pub(crate) async fn resolve_on(
     c: &Ctx<'_>,
     owner: &str,
     repo: &str,
@@ -375,16 +375,28 @@ async fn named(
     }))
 }
 
-/// `resolve` from this isolate's `rcache` entries alone, whatever the request's class, or `None` when one is missing
-/// or past `READ_CACHE`: a write's guess, which it reads ahead on and keeps only if its own fresh `resolve` names the
-/// same repository and record (`api::rest_repo`).
-fn resolve_cached(owner: &str, repo: &str) -> Option<Repo> {
+/// A REST merge's guess at `owner/repo` (`api::rest_repo`), which it reads ahead on and keeps only if its own fresh
+/// `resolve` names the same repository and record: this isolate's `rcache` entries at any age, as `resolve`'s own
+/// guess (`held_guess`), else the data center's link entry (`beside`). With the link entry's key when this isolate
+/// held no guess, for `put_link` once the resolve answers. A guess never answers a read, so its age does not matter
+/// (`merge-front`); on main it was the isolate's entries within `READ_CACHE` only.
+async fn merge_guess(c: &Ctx<'_>, owner: &str, repo: &str) -> (Option<Repo>, Option<String>) {
+    if let Some(g) = held_repo(owner, repo) {
+        return (Some(g), None);
+    }
+    let (Ok(login), Ok(name)) = (Login::parse(owner), RepoName::parse(repo)) else { return (None, None) };
+    if colo_off(c) {
+        return (None, None);
+    }
+    let url = colo::link_url(&login.key(), &name.key());
+    (colo::match_link(&url).await, Some(url))
+}
+
+/// `owner/repo` from this isolate's login, `Placement` and `Authz` entries at any age (`rcache::last`): a guess.
+fn held_repo(owner: &str, repo: &str) -> Option<Repo> {
     let name = RepoName::parse(repo).ok()?;
-    let at = now();
-    let account = rcache::get(&rcache::LOGINS, &Login::parse(owner).ok()?.key(), at, true)?;
-    let record = rcache::get(&rcache::PLACEMENTS, &account, at, true)?;
-    let fold = rcache::get(&rcache::AUTHZ, &account, at, true)?;
-    let (id, _) = graftyard_identity::AuthzRead::resolve(&fold, &name.key())?;
+    let (account, record) = held_guess(owner)?;
+    let (id, _) = graftyard_identity::AuthzRead::resolve(&rcache::last(&rcache::AUTHZ, &account)?, &name.key())?;
     Some(Repo { id, owner: account, record })
 }
 
@@ -1384,7 +1396,7 @@ async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<Acco
             _ => None,
         })
     };
-    rcache::through(&rcache::LOGINS, l.key(), now(), c.read_class.get(), &c.timing, read).await
+    rcache::through(&rcache::LOGINS, l.key(), now(), c.read_class.get(), c.leader_reads.get(), &c.timing, read).await
 }
 
 /// `owner`'s `Authz` fold, read as a `dep` by read-index on the group's learners and followers
@@ -1414,7 +1426,7 @@ pub(crate) async fn authz_read_as(
         let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
         graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
     };
-    rcache::through(&rcache::AUTHZ, owner, now(), cached, &c.timing, read).await
+    rcache::through(&rcache::AUTHZ, owner, now(), cached, c.leader_reads.get(), &c.timing, read).await
 }
 
 /// One read of an owner's `Authz` group: on its leader for a REST merge (`Ctx::leader_reads`), else by read-index on
@@ -1476,7 +1488,7 @@ async fn placement(c: &Ctx<'_>, owner: AccountId) -> std::result::Result<Option<
         let v = system_read(c, ChainId::Names(account_shard(owner)), json!({ "placement": owner.0.0 })).await?;
         serde_json::from_value(v["placement"].clone()).map_err(|e| e.to_string())
     };
-    rcache::through(&rcache::PLACEMENTS, owner, now(), c.read_class.get(), &c.timing, read).await
+    rcache::through(&rcache::PLACEMENTS, owner, now(), c.read_class.get(), c.leader_reads.get(), &c.timing, read).await
 }
 
 /// A `fresh` read of a system chain's group, found by its record in the `Release` view. A shard with no group holds
@@ -1618,8 +1630,8 @@ async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
         let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
         Ok::<_, Error>(serde_json::from_value::<Option<TokenRow>>(v["token"].clone())?)
     };
-    let row =
-        rcache::through_bound(&rcache::TOKENS, hash, at, c.read_class.get(), c.decided.get(), &c.timing, read).await?;
+    let (read_class, decided, alone) = (c.read_class.get(), c.decided.get(), c.leader_reads.get());
+    let row = rcache::through_bound(&rcache::TOKENS, hash, at, read_class, decided, alone, &c.timing, read).await?;
     // A `ghr_` only refreshes (`usertok`), and a lapsed token is no caller: `decide` sees no clock. Checked on every
     // use, so a cached row lapses at its `expires`.
     let row = row.filter(|r| !r.revoked && usertok::usable(r.kind, r.expires, now()));
@@ -5268,6 +5280,28 @@ mod tests {
         // A fresh read that fails fails the chain, guess or not.
         let down = |_: u8, _: u8| Err::<Option<u32>, _>("down".to_string());
         assert_eq!(run_chain(Some((1, 7)), Some(1), Some(7), down).0, Err("down".into()));
+    }
+
+    /// `merge-front`: a merge guesses its repository from this isolate's login, `Placement` and `Authz` entries at
+    /// any age, which `resolve_cached` refused past READ_CACHE, so a merge an isolate meets more than 10 s after its
+    /// last read of the owner still reads ahead. The guess is the entries' repository and record, and a name or login
+    /// the entries do not hold gives none.
+    #[test]
+    fn a_merge_guesses_from_its_isolates_entries_at_any_age() {
+        use crate::rcache;
+        use graftyard_identity::{AuthzFold, Login, NameEpoch, RepoEntry, RepoName};
+        let (owner, rec) = (AccountId(DbId(4_100)), record(PlacementName::Tri, &[0, 1, 2], 1));
+        let mut fold = AuthzFold::new(owner);
+        let repo = RepoId(DbId(65_586));
+        fold.names.insert(RepoName::parse("fleet").unwrap().key(), RepoEntry::Live { repo, epoch: NameEpoch(1) });
+        let old = Timestamp(1);
+        rcache::put(&rcache::LOGINS, Login::parse("m9fleet").unwrap().key(), old, owner);
+        rcache::put(&rcache::PLACEMENTS, owner, old, rec.clone());
+        rcache::put(&rcache::AUTHZ, owner, old, fold);
+        assert!(rcache::get(&rcache::AUTHZ, &owner, Timestamp(60_000), true).is_none(), "past READ_CACHE");
+        assert_eq!(super::held_repo("m9fleet", "fleet"), Some(Repo { id: repo, owner, record: rec }));
+        assert_eq!(super::held_repo("m9fleet", "other"), None, "a name the fold does not hold");
+        assert_eq!(super::held_repo("m9other", "fleet"), None, "a login the isolate never read");
     }
 
     /// cw3: the install's guessed fold read is kept when the real `Placement` row differs from the guess only in `at`,

@@ -52,6 +52,7 @@ pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
         (),
         at,
         read_class,
+        c.leader_reads.get(),
         &c.timing,
         dep_fold::<TokensFold>(c, ChainId::Tokens(TokenShard(0))),
     );
@@ -119,6 +120,7 @@ pub async fn jti_revoked(
         at,
         read_class,
         c.decided.get(),
+        c.leader_reads.get(),
         &c.timing,
         read_jti,
     ))
