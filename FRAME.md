@@ -296,6 +296,15 @@ The three-run baseline admitted 76.5, 98.0, and 79.0 agent commands a second, un
 
 The daily spend limit, the $180 hard stop, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
 
+### Operator decision, 2026-11-23, a leaked workers.dev subdomain stays public
+
+> "Accept the subdomain exposure, no history rewrite"
+
+Commit `5ea920e4` (BF-39 hosted on `graft-m4a`) committed the install account's workers.dev subdomain six times in `tests/m4/raw/wp4/siteday69.log`, and the repository is public. The merge into main (`7db2a284`) redacted it as `<workers-subdomain>`, as days 60 to 68 are, but `5ea920e4` stays in main's history and on branch `m5-wp4-bf39-hosted`.
+
+- **Accepted as public.** The subdomain is an address, not a credential: each test install still needs its own tokens. History is not rewritten, and the subdomain is not changed.
+- **The leak scan before a merge** reads each new or changed file whole, compressed files decompressed, against both account ids, both workers subdomains, the zone id, and the orb's home directory path. Scanning only a diff's added lines missed this one.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
