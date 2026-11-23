@@ -424,6 +424,19 @@ async fn round(
                 d
             }
         };
+        {
+            let core = h.core.borrow();
+            let c = core.as_ref().ok_or("not joined")?;
+            let first = c.m.group_fold().fold.first_index();
+            crate::alarm_steps::note_scan(
+                &h.state.storage().sql(),
+                key,
+                "hookseq",
+                start.0.max(first.0.saturating_sub(1)),
+                through.0,
+                Some(c.m.log_base().index.0),
+            );
+        }
         render(h, repo, &dir, start, through, &apps)?
     } else {
         // Nothing new to render, but the store still takes the chain's hooks as they are: an empty list would read

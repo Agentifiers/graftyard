@@ -192,6 +192,21 @@ fn pump(h: &Rc<Host<Repo>>) {
             // Read the next entries only while a slot is free and every item read has started, so the items waiting
             // for a slot are at most one batch's, and a stream far behind the log reads READS_PER_PUMP batches and
             // comes back on the next alarm rather than reading the whole log in one invocation.
+            if e.stream.queued() == 0 && e.stream.running() < IN_FLIGHT_MAX && e.stream.reached() < f.applied {
+                let core = h.core.borrow();
+                if let Some(c) = core.as_ref() {
+                    let reached = e.stream.reached();
+                    let first = c.m.group_fold().fold.first_index();
+                    crate::alarm_steps::note_scan(
+                        &h.state.storage().sql(),
+                        &f.key,
+                        "actions_trigger",
+                        reached.0.max(first.0.saturating_sub(1)),
+                        f.applied.0.min(reached.0 + BATCH * READS_PER_PUMP as u64),
+                        Some(c.m.log_base().index.0),
+                    );
+                }
+            }
             let mut started = e.stream.start(now);
             for _ in 0..READS_PER_PUMP {
                 if e.stream.queued() > 0 || e.stream.running() >= IN_FLIGHT_MAX || e.stream.reached() >= f.applied {

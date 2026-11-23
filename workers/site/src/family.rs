@@ -1198,6 +1198,10 @@ impl Family for Repo {
                     .await
                     .map(|at| json!({ "alarm": at, "armedAt": host.armed_at(), "now": crate::now_ms() })),
             ),
+            // Test installs (`seal-batch`'s probe): per-call against per-row, and per-transaction against per-byte,
+            // SQLite cost on this member's own storage, in scratch tables dropped before it answers.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("sqlProbe").is_some() => Some(crate::sqlprobe::run(host, &body["sqlProbe"])),
             #[cfg(feature = "test-faults")]
             "/bench_seed" => Some(crate::snap::bench_seed(host, &body)),
             _ => None,

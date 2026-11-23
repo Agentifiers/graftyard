@@ -147,13 +147,24 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         if n >= applied && s >= applied {
             return;
         }
+        let (lo, trailing) = if n >= applied {
+            (s, s)
+        } else if s >= applied {
+            (n, n)
+        } else {
+            (n.min(s), n.max(s))
+        };
+        let from = lo.0.max(fold.first_index().0.saturating_sub(1));
+        let to = applied.0.min(trailing.0 + BATCH);
+        let base = c.m.log_base().index.0;
         let Some(info) = RepoInfo::of(repo, &*fold.core) else { return };
-        (c.join.me.do_name.to_string(), (c.m.term().0, c.m.boot()), info, n, s, applied)
+        (c.join.me.do_name.to_string(), (c.m.term().0, c.m.boot()), info, n, s, applied, from, to, base)
     };
-    let (key, leadership, info, notify_from, search_from, applied) = found;
+    let (key, leadership, info, notify_from, search_from, applied, from, to, base) = found;
     if !start(&key, leadership) {
         return;
     }
+    crate::alarm_steps::note_scan(&h.state.storage().sql(), &key, "activity", from, to, Some(base));
     let w = Rc::downgrade(h);
     spawn_local(async move {
         let Some(h) = w.upgrade() else { return };

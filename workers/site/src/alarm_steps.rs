@@ -2,7 +2,8 @@
 //! alarm names its step. On B0-35 m60 the leader's alarm ran 2,288 ms of CPU (05:23:27.121 to 29.583Z) and nothing
 //! said which of its eight steps it was (`decisions/OPEN-QUESTIONS.md`, F104). The isolate's clock moves only on I/O,
 //! so `mark` ends each step with a zero-length timer [doc, Workers, "Performance and timers"]; that also yields, once
-//! per step.
+//! per step. `note_scan`: each leader alarm step about to read stored log rows logs one line first, with the range and
+//! its bytes, so a reset mid-step shows the step and its scan (`tests/am1/results/seal-bytes-design.md`, section 6).
 
 /// A step that took at least this long is logged [guess: above the leader's longest alarm in each minute of B0-35
 /// m60's load before its last, 40 to 400 ms].
@@ -65,6 +66,30 @@ impl AlarmSteps {
     }
 }
 
+/// The part of an alarm step's read range `(from, to]` it reads from the stored log: the entries at or below `base`,
+/// the member's in-memory window's base index (`raft::Member::log_base().index`), or all of them when `base` is `None`
+/// (a step that reads only the stored log). `None` when nothing of the range is stored.
+pub fn stored_range(from: u64, to: u64, base: Option<u64>) -> Option<(u64, u64)> {
+    let hi = base.map_or(to, |base| to.min(base));
+    (hi > from).then_some((from, hi))
+}
+
+pub fn scan_line(name: &str, step: &str, from: u64, to: u64, bytes: u64) -> String {
+    format!("{name} alarm step {step} scans stored {}..={to}: {bytes} bytes", from + 1)
+}
+
+/// Logs `scan_line` once for the stored part of `(from, to]`, with its bytes summed from the `log` table's row
+/// lengths (length() of a blob does not read its content). Logs nothing when no part is stored.
+pub fn note_scan(sql: &worker::SqlStorage, name: &str, step: &str, from: u64, to: u64, base: Option<u64>) {
+    let Some((lo, hi)) = stored_range(from, to, base) else { return };
+    const Q: &str = "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx > ? AND idx <= ?";
+    let bytes = crate::host::rows(sql, Q, vec![crate::host::i(lo), crate::host::i(hi)])
+        .ok()
+        .and_then(|r| r.first().and_then(|r| r.first()).and_then(|v| crate::host::int(v).ok()))
+        .unwrap_or(0) as u64;
+    worker::console_log!("{}", scan_line(name, step, lo, hi, bytes));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +129,25 @@ mod tests {
         assert_eq!(under.slow_line(), None);
         under.ended("near_check", 500);
         assert!(under.slow_line().is_some_and(|l| l.ends_with("near_check 1ms; alarm 500ms")));
+    }
+
+    #[test]
+    fn stored_ranges_stop_at_the_memory_window() {
+        assert_eq!(stored_range(10, 50, Some(30)), Some((10, 30)));
+        assert_eq!(stored_range(10, 50, Some(10)), None);
+        assert_eq!(stored_range(10, 50, Some(11)), Some((10, 11)));
+        assert_eq!(stored_range(10, 50, Some(5)), None);
+        assert_eq!(stored_range(10, 50, Some(80)), Some((10, 50)));
+        assert_eq!(stored_range(10, 50, None), Some((10, 50)));
+        assert_eq!(stored_range(50, 50, None), None);
+        assert_eq!(stored_range(50, 40, None), None);
+    }
+
+    #[test]
+    fn a_scan_line_names_the_inclusive_range_and_bytes() {
+        assert_eq!(
+            scan_line("repo:7#1#f0", "prsync", 10, 30, 1234),
+            "repo:7#1#f0 alarm step prsync scans stored 11..=30: 1234 bytes"
+        );
     }
 }

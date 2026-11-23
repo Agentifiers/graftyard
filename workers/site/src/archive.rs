@@ -73,13 +73,14 @@ thread_local! {
 /// Starts one run on a leading repository member, unless one is in flight or the log was summed under a minute ago
 /// and the last run found nothing to do.
 pub fn on_alarm(h: &Rc<Host<Repo>>) {
-    let key = {
+    let (key, from, to) = {
         let core = h.core.borrow();
         let Some(c) = core.as_ref().filter(|c| c.m.role() == Role::Leader) else { return };
         if !matches!(c.join.chain, ChainId::Repo(_)) {
             return;
         }
-        c.join.me.do_name.to_string()
+        let fold = &c.m.group_fold().fold;
+        (c.join.me.do_name.to_string(), fold.archived().map_or(0, |a| a.to.0), c.m.state().commit.0)
     };
     if RUNNING.with(|r| r.borrow().contains(&key)) {
         return;
@@ -89,6 +90,7 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
         return;
     }
     RUNNING.with(|r| r.borrow_mut().insert(key.clone()));
+    crate::alarm_steps::note_scan(&h.state.storage().sql(), &key, "archive", from, to, None);
     let w = Rc::downgrade(h);
     spawn_local(async move {
         let kept = RUN.with(|r| r.borrow().get(&key).copied()).or_else(|| w.upgrade().map(|h| stored_run(&h)));
