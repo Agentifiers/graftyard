@@ -817,6 +817,9 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             }
             (Method::Delete, ["installation", "token"]) => crate::ident::delete_installation_token(c, req).await,
             (Method::Delete, ["applications", client, "token"]) => crate::ident::revoke_app_token(c, req, client).await,
+            (Method::Post, ["applications", client, "token", "scoped"]) => {
+                crate::mcp::token_scoped(c, req, client).await
+            }
             (Method::Get, ["user"]) => crate::ident::get_user(c, req).await,
             (Method::Get, ["users", login]) => crate::ident::get_named_user(c, login).await,
             (m @ (Method::Get | Method::Put | Method::Delete), ["orgs", org, "memberships", user]) => {

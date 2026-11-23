@@ -1735,9 +1735,9 @@ impl Family for Tokens {
     type Fold = id::TokensFold;
     type C = id::TokensCmd;
 
-    /// Format 3 is the `Audit` cursor's, as for `Names`.
+    /// Format 3 is the `Audit` cursor's, as for `Names`. Format 4 is `token/scoped`'s narrowed `ghu_` (AM2-WP1).
     fn reads() -> Vec<Format> {
-        vec![id::TOKENS_FORMAT, id::TOKENS_FORMAT_V2, id::TOKENS_FORMAT_V3]
+        vec![id::TOKENS_FORMAT, id::TOKENS_FORMAT_V2, id::TOKENS_FORMAT_V3, id::TOKENS_FORMAT_V4]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`).
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
@@ -1930,9 +1930,10 @@ impl Family for Identity {
     /// 0x14.2 is `AddKey` with its `KeyText` (BF-35), read on the same terms as every M3 format: the edge sends it only
     /// once `FormatsEnable` enabled it. 0x14.3 is M4-WP2's `SetRecord` and the `Counts` consumer's `CountsCursor`, on
     /// the same terms: the edge sends `SetRecord` only once 0x14.3 is enabled, and the consumer runs only under
-    /// `GRAFTYARD_ACTIVITY` (`crate::activity`).
+    /// `GRAFTYARD_ACTIVITY` (`crate::activity`). 0x14.4 is AM2-WP1's `McpGrant` rows, sent by the edge only once
+    /// 0x14.4 is enabled.
     fn reads() -> Vec<Format> {
-        vec![id::IDENTITY_FORMAT, id::IDENTITY_FORMAT_V2, id::IDENTITY_FORMAT_V3]
+        vec![id::IDENTITY_FORMAT, id::IDENTITY_FORMAT_V2, id::IDENTITY_FORMAT_V3, id::IDENTITY_FORMAT_V4]
     }
     /// A leader's alarm right after it applies entries runs the `Counts` consumer (`crate::activity`).
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
@@ -1967,8 +1968,9 @@ impl Family for Identity {
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::IdentityFold> {
         Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
-    fn out_json(_fold: &Self::Fold, _a: &raft::Acked<()>) -> Value {
-        Value::Null
+    /// `Done` for most ops, and a grant's row for the 0x14.4 ops, which the edge renders.
+    fn out_json(_fold: &Self::Fold, a: &raft::Acked<id::IdentityOut>) -> Value {
+        serde_json::to_value(&a.out).unwrap_or(Value::Null)
     }
     fn err_json(e: &id::IdentityErr) -> Value {
         match e {

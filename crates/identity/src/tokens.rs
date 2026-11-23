@@ -26,7 +26,7 @@ use crate::compat::tail_serde;
 use crate::credential::{CredentialRefusal, IdentityDep, OrgId, Own, check_credential, credential_chains, encode_cred};
 use crate::enc;
 use crate::overlay::{Overlay, SetOverlay, Table};
-use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3};
+use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TOKENS_FORMAT_V4};
 
 /// 1,024 shards per home family.
 pub const SHARDS_PER_FAMILY: u16 = 1024;
@@ -281,6 +281,21 @@ pub enum WriteScope {
     WriteApproveMerge,
 }
 
+impl WriteScope {
+    /// The wire name `graftyard_write` and the OAuth scope `write:<name>` carry, lowest first.
+    pub fn wire(self) -> &'static str {
+        match self {
+            WriteScope::Read => "read",
+            WriteScope::Write => "write",
+            WriteScope::WriteApproveMerge => "write_approve_merge",
+        }
+    }
+
+    pub fn parse_wire(s: &str) -> Option<WriteScope> {
+        [WriteScope::Read, WriteScope::Write, WriteScope::WriteApproveMerge].into_iter().find(|w| w.wire() == s)
+    }
+}
+
 /// The repositories a fine-grained PAT reaches [inference: SHARED names `RepoScope` without its shape].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepoScope {
@@ -403,14 +418,19 @@ impl TokenFields {
     /// Which fields a kind may carry (SHARED, "Identity and tokens"; DESIGN, Shape, "Identity", `Stored`):
     /// `app` on a `ghu_` or `ghr_`, `client` on a `gho_`, `ghu_`, or `ghr_`, `resource_owner` and `repos` on a
     /// `github_pat_`, `permissions` on a `github_pat_` or `ghu_`, `paired` on a `ghu_` or `ghr_`, and `grant` and
-    /// `write` only on a `ghu_`. A `github_pat_` names its resource owner.
+    /// `write` only on a `ghu_`. A `github_pat_` names its resource owner. Format 0x11.4 adds `resource_owner` and
+    /// `repos` on a `ghu_`, the target and repositories `token/scoped` narrowed it to (`scoped`).
     fn fits(&self, kind: TokenKind) -> bool {
+        self.fits_at(kind, false)
+    }
+
+    fn fits_at(&self, kind: TokenKind, scoped: bool) -> bool {
         use TokenKind::*;
         let user = matches!(kind, UserToServer | Refresh);
         (self.app.is_none() || user)
             && (self.client.is_none() || matches!(kind, OAuth | UserToServer | Refresh))
-            && (self.resource_owner.is_some() == (kind == FineGrained))
-            && (self.repos.is_none() || kind == FineGrained)
+            && (self.resource_owner.is_some() == (kind == FineGrained) || scoped && kind == UserToServer)
+            && (self.repos.is_none() || kind == FineGrained || scoped && kind == UserToServer)
             && (self.permissions.is_none() || matches!(kind, FineGrained | UserToServer))
             && (self.paired.is_none() || user)
             && (self.grant.is_none() && self.write.is_none() || kind == UserToServer)
@@ -1261,6 +1281,13 @@ impl TokensCmd {
         self.cred.is_operator()
     }
 
+    /// A `StoreWith` of a `ghu_` from `token/scoped`: narrowed to repositories, or under an MCP grant. It takes format
+    /// 0x11.4, whose leaders accept `repos` on a `ghu_`.
+    fn scoped(&self) -> bool {
+        matches!(&self.op, TokensOp::StoreWith { kind: TokenKind::UserToServer, fields, .. }
+            if fields.resource_owner.is_some() || fields.repos.is_some() || fields.grant.is_some())
+    }
+
     fn decide_op(&self, s: &TokensScratch<'_>) -> Result<(SmallVec<[TokensEvent; 4]>, ()), TokensErr> {
         let done = |evs: SmallVec<[TokensEvent; 4]>| Ok((evs, ()));
         let now = s.at;
@@ -1303,7 +1330,7 @@ impl TokensCmd {
                     return Err(TokensErr::NotStored);
                 }
                 // A paired row comes only from `StorePair`, and a `ghr_` never stands alone.
-                if !fields.fits(*kind) || fields.paired.is_some() || *kind == TokenKind::Refresh {
+                if !fields.fits_at(*kind, self.scoped()) || fields.paired.is_some() || *kind == TokenKind::Refresh {
                     return Err(TokensErr::BadFields);
                 }
                 fresh(hash)?;
@@ -1511,6 +1538,7 @@ impl Command for TokensCmd {
         match self.op {
             TokensOp::Store { .. } | TokensOp::Revoke { .. } => TOKENS_FORMAT,
             TokensOp::AuditCursor { .. } => TOKENS_FORMAT_V3,
+            _ if self.scoped() => TOKENS_FORMAT_V4,
             _ => TOKENS_FORMAT_V2,
         }
     }

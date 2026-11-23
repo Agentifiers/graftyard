@@ -408,6 +408,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
+ "pem-rfc7468",
  "zeroize",
 ]
 
@@ -691,6 +692,7 @@ dependencies = [
  "graftyard-raft",
  "graftyard-release",
  "graftyard-types",
+ "rsa",
  "serde",
  "serde_json",
  "sha2",
@@ -858,6 +860,29 @@ dependencies = [
  "graftyard-release",
  "graftyard-types",
  "serde_json",
+ "worker",
+]
+
+[[package]]
+name = "graftyard-mcp"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "futures-executor",
+ "futures-util",
+ "graftyard-api",
+ "graftyard-identity",
+ "graftyard-raft",
+ "graftyard-types",
+ "graftyard-wire",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smallvec",
+ "url",
+ "web-sys",
  "worker",
 ]
 
@@ -1322,6 +1347,15 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
+name = "pem-rfc7468"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+dependencies = [
+ "base64ct",
+]
 
 [[package]]
 name = "percent-encoding"

@@ -8101,3 +8101,54 @@ after `tests/am1/results/b033-profile.md`.
 - A table whose prefix reads return so many rows in one query that a member's memory or CPU per read is worse than
   batched (a `refs/heads/` read on a 500,000-ref repository): page that caller, as `refs_page` does, rather than
   return to batches everywhere.
+
+### `am2-wp1`: `graft-mcp`'s one-use rules live on the host, and a scoped token binds to its grant on `Identity`, 2026-11-22
+
+**Status.** Built on branch `am2-wp1`, the pure half of AM2-WP1, not hosted. LF-6 passes in memory over real members
+(`tests/am2/results/am2-wp1.md`). Routing `mcp.<host>` through `graft-front`, `McpPointer`, and `McpRoll` are
+AM2-WP3's.
+
+**Decision.**
+- **Grant rows.** They live in Identity format 0x14.4, in a trailing part of `UserRows`, so a fold with no grant keeps
+  its bytes.
+  - `PutMcpGrant`: the leader assigns the id, the highest plus 1. Its wire form is `<account>.<n>`, so the generation
+    call, which carries no user token, finds the group.
+  - `McpGeneration`: operator only. The grant's own generation moves it on; any other revokes it in the same entry.
+  - `RevokeMcpGrant`: idempotent.
+  - `McpScoped`: records a scoped token under a live grant, with its write scope within the grant's, under the
+    unscoped token's own credential.
+- **`token/scoped` for `Graftyard MCP`.** It stores the scoped token, then commits `McpScoped`, and revokes the stored
+  token when the leader refuses it. A revocation reads the row fresh and revokes every token recorded under it and
+  the last unscoped `ghu_`, whose `ghr_` goes with it.
+- **"Once" is the host's.** `graft-mcp` keeps no "used" set:
+  - Redeeming our code spends the grant's generation, so a second redemption is stale and revokes the grant.
+  - The callback spends the host's code, which spends once.
+  - A refresh spends the generation before the upstream refresh.
+- **The held `ghu_`** is deleted only after the refresh that spent its `ghr_`.
+- **`token/scoped` for any other client**, and while the App cannot be read, keeps the edge's 404.
+
+**Why.**
+- An isolate-local set is per isolate, so a code or callback replayed to another isolate passed it. M0-WP15 named
+  this as a prototype simplification (`tests/m0/results/m0-wp15.md`, L0-08).
+- A grant check made only on the edge's read lets a scoped token be minted under a grant revoked a moment before.
+  Binding at `McpScoped` on the grant's own leader closes that.
+- Storing before binding means the only token a race can leave is one the edge revokes itself. Binding first left a
+  stored token outside the row the revocation reads, which plant86's race mutant showed.
+
+**Beat.**
+- Isolate-local "used" sets, as the prototype had.
+- A grant check on the edge's read alone.
+- Returning the tokens to revoke in the commit's answer, which a replayed request does not carry, so an edge that died
+  after the commit left them live.
+
+**Evidence.**
+- `workers/mcp/tests/lf6.rs`: LF-6, 100 of 100 each.
+- `workers/mcp/tests/a7.rs`: L0-08's local checks, 100 of 100 where counted.
+- `crates/api/gh/validate.py` passes the `token/scoped` replies against GHES 3.22: 5 checked, 0 failed.
+- `tests/m0carried/plant86.py`: 20 of 20 caught.
+
+**Flip.**
+- **Code use.** If L0-08 hosted shows a real client retrying a code redemption, change the rule. As built, the retry
+  revokes the grant. A code would then need its own once-row on a `Tokens` shard instead of the generation.
+- **Bind order.** Move `McpScoped` before the store if the extra `Tokens` revoke on refusal shows in a hosted row as a
+  cost.

@@ -52,7 +52,7 @@ impl World {
         self.tokens.entry(shard.0).or_insert_with(|| {
             let mut g = Group::reading(
                 ChainId::Tokens(shard),
-                vec![TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3],
+                vec![TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, graftyard_identity::TOKENS_FORMAT_V4],
                 TokensFold::new(shard),
             );
             g.elect(A);
@@ -85,7 +85,12 @@ impl World {
         self.identity.entry(account.0.0).or_insert_with(|| {
             let mut g = Group::reading(
                 ChainId::Identity(account),
-                vec![IDENTITY_FORMAT, IDENTITY_FORMAT_V2, graftyard_identity::IDENTITY_FORMAT_V3],
+                vec![
+                    IDENTITY_FORMAT,
+                    IDENTITY_FORMAT_V2,
+                    graftyard_identity::IDENTITY_FORMAT_V3,
+                    graftyard_identity::IDENTITY_FORMAT_V4,
+                ],
                 IdentityFold::new(account),
             );
             g.elect(A);

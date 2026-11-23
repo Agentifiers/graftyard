@@ -56,10 +56,10 @@ pub use credential::{
     credential_chains,
 };
 pub use identity::{
-    AUDIT_KEEP, AccountCapture, AuditEvent, CredentialEvent, CredentialRef, IDENTITY_FORMAT, IDENTITY_FORMAT_V2,
-    IDENTITY_FORMAT_V3, IdentityCmd, IdentityErr, IdentityEvent, IdentityFold, IdentityMore, IdentityOp,
-    IdentityScratch, RecordAt, SessionEvent, SsoEvent, ThreadId, ThreadRow, UserRecord, UserRows, WatchRow,
-    key_fingerprint,
+    AUDIT_KEEP, AccountCapture, AuditEvent, CredentialEvent, CredentialRef, GrantRow, IDENTITY_FORMAT,
+    IDENTITY_FORMAT_V2, IDENTITY_FORMAT_V3, IDENTITY_FORMAT_V4, IdentityCmd, IdentityErr, IdentityEvent, IdentityFold,
+    IdentityMore, IdentityOp, IdentityOut, IdentityScratch, McpGrant, McpRows, RecordAt, SessionEvent, SsoEvent,
+    ThreadId, ThreadRow, UserRecord, UserRows, WatchRow, key_fingerprint,
 };
 pub use ids::{IdBlock, IdCursor, IdsCmd, IdsErr, IdsEvent, IdsFold, IdsScratch};
 pub use names::{
@@ -120,3 +120,6 @@ pub const AUTHZ_FORMAT_V14: Format = Format { family: 0x12, version: 14 };
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
 pub const TOKENS_FORMAT_V3: Format = Format { family: 0x11, version: 3 };
+/// AM2-WP1: `StoreWith` of a `ghu_` from `token/scoped`, which may carry `repos` and an MCP grant's `grant` and
+/// `write` (`TokenFields::fits_at`). Read and enabled on the same terms as version 2.
+pub const TOKENS_FORMAT_V4: Format = Format { family: 0x11, version: 4 };

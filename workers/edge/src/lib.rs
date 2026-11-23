@@ -60,6 +60,7 @@ mod hooks;
 mod hosted;
 mod ident;
 mod keys;
+mod mcp;
 mod oidc;
 mod precreate;
 mod purge;
@@ -3851,6 +3852,10 @@ async fn serve(
         if let Some(r) = hosted::route(&c, &mut req, &segs).await? {
             return agents::respond(&c, r.with("content-type", "application/json; charset=utf-8"));
         }
+    }
+    if let Some(route) = path.strip_prefix(graftyard_api::agents::PREFIX).and_then(graftyard_api::mcp::route) {
+        let r = mcp::grants(&c, &mut req, route).await?;
+        return agents::respond(&c, r.with("cache-control", "no-store"));
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
         && let Some(r) = actions::graftyard_route(&c, &mut req, rest).await?
