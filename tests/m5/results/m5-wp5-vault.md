@@ -201,6 +201,68 @@ operator's machine (`decisions/DECISIONS.md`, "`vault-roll`"; DESIGN, "Install o
 - `tests/m0carried/plant93.py`: 9 mutants, 9 caught.
 - BF-47's hosted row (a full `release roll` with `SiteDay { Workflows }` and the vault step) is not cleared.
 
+## BF-47 hosted: plan (2026-11-23, not run; waits for the lead's go)
+
+Gate line (`build/BUILD-PLAN.md`, M5-WP5): `release roll` end to end, including `SiteDay { Workflows }` and
+`graftyard vault upgrade`. Pass: the order is as in DESIGN's Release roll, and the vault is upgraded with no install
+token. Fail: any other order, or an install token used.
+
+**The vault account is the runner account, standing in** (`FRAME.md`, "Operator decision, 2026-11-23, the runner
+account stands in as BF-47's vault account"). It also holds `graft-runners`, so the vault is not isolated from Actions
+runners the way a production vault account is. The verdict line says so.
+
+**State read at 13:10Z, read-only, $0.**
+- graft-m4a's `Release` group holds 193 entries, nothing current, nothing drained, and no slot moved.
+- `site_release`: a and b on R2 `a3a1f620`, c on R6 `761a720d`. `rolled`: Edge on e4 `63644eb6`. No Ops, Front, Mcp
+  or Workflows release is recorded.
+- The install has no Workflows script and no export bucket. The runner account holds only `graft-runners`, with no
+  bucket.
+
+**Rows, each with a $5 stop** on graft-m4a's day plus the runner side, counted with `tests/fanout/acctcost.py`
+(`PREFIX=graft-m4a`). They run after BF-46 has restored graft-ops and before anything else on graft-m4a.
+
+1. **Setup (row 47a).** Sets up four things:
+   - **Export bucket:** `graft-m4a-export`.
+   - **Workflows script:** `graft-m4a-workflows`. DESIGN has no `workers/workflows` yet, so it is the site build
+     deployed under that name with no member classes. It is a stand-in that `SiteDay { Workflows }` deploys and gates,
+     and the results label it as one.
+   - **Vault:** `graftyard vault init` into the runner account, with `CLOUDFLARE_VAULT_API_TOKEN` minted for that row
+     and scoped to Workers Scripts Write and R2 Storage Write on that account only, never the runner's own token. The
+     vault Worker and bucket are `graft-m4a-vault-standin`, with `--days 1` for the lock.
+   - **Edge:** an edge day that binds `EXPORT`.
+2. **The roll (row 47b).**
+   - R8 and R9 bundles, signed by m4a's release key, each holding `site/`, `workflows/`, `edge/`, `ops/` and `vault/`
+     files. R9 differs from R8 by a marker in each folder, so nothing is skipped as unchanged.
+   - `graftyard release roll R9 --vault-account <runner> --vault-release R9/ --release-key release.pub` runs after
+     each `IntentDone`, under the customer key, with `CLOUDFLARE_API_TOKEN` set to the install's token.
+   - graft-ops walks each intent at 60 s dwells with `GATE=pass`. Expected order: SiteDay a, b, c, then SiteDay
+     Workflows (no drain), then EdgeRoll, then OpsRoll, then the vault step. There are no Front or Mcp scripts on
+     graft-m4a, so those two are skipped as not in R9's versions.
+   - The vault step prints `{"vault": "upgraded"}` once, then `{"vault": "at"}` on the next run.
+3. **Checks.**
+   - The order, read from the group's entries.
+   - The vault script's deployed `workers/tag` is R9.
+   - Which token made each write on the vault account, from that account's audit log (`GET /logs/audit`, whose
+     `actor` names the API token's id): every upgrade write must name the vault token's id and none the install
+     token's. The install token cannot reach the runner account at all; it answered 403 (code 10000) on a read at
+     13:15Z.
+   - A negative probe: with `CLOUDFLARE_VAULT_API_TOKEN` set to the install's token, `release roll` stops before any
+     API call. That is the fail line, refused.
+4. **Teardown.**
+   - The vault: lock rules emptied, bucket emptied and deleted, the script and its secret deleted, and the vault token
+     revoked.
+   - The Workflows stand-in script and the export bucket are deleted.
+   - Sites, edge and graft-ops are left on R9's build, which is main's.
+   - Then lists of buckets, scripts and tokens on both accounts.
+
+**Cost estimate.** BF-7's four site days, edge roll and ops roll cost $0.66 on graft-m4a (`tests/m5/results/m5-wp3.md`).
+This row adds one more site day, a vault running about 2 hours, and the export feed. The estimate is under $2 for
+47b and under $1 for 47a [inference].
+
+**What only this row shows.** A full `release roll` against live scripts, with `SiteDay { Workflows }` among them, and
+the vault step running from `release roll` itself (not `vault upgrade` by hand, as vh1 ran it), under a token that is
+not the install's.
+
 ## Left
 
 1. **Hosted:** done on a stand-in vault account (vh1, above). A customer-owned vault account, and the export `jti`
