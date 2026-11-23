@@ -330,6 +330,53 @@ alone; gate capped at 300 ms):
 - **Row.** One B0-32 row on graft-m3f, after both users hand it back and the fix is cleared and merged: about $1, with
   a stop at $8. Better still, it runs after LM-1's cut merges, so one row reads both.
 
+## Statement cut priced for B0-32: about 0 on both slow-host rows ($0, 2026-11-23)
+
+Asked by the orchestrator after m3fg3. The question: what would LM-1's statement cut do for B0-32? The cut batches `seal`'s one-row-a-push `INSERT`s into `request`, `c_ref` and `m_provenance`, one multi-row statement per table, which takes 187 statements an entry to about 10 in LM-1's bed. The estimate is read from committed raws only: the a1 files' leader `/stats` `bigTx`, `heavyturns.py`'s joined `/raft` slices, `b032share.py`, and the leaders' Workers Logs. Nothing ran hosted.
+
+**Short answer** [inference, from the measured inputs below]: on these hosts the statement cut is not B0-32's lever. The line holds at 284 on m3fsf2 (52.5 ms) and at 262 on m3fg3 (55.8 ms). There are two reasons: apply is untouched, and the deferred transaction's cost on these hosts is per transaction and per byte, not per statement.
+
+**B0-32's write mix is not the bed's** [measured, the leader's `bigTx`, its newest 20 transactions of 100 KB or more]. Each burst entry's `log` row is about 128 KB, so that sample holds every burst transaction.
+
+| | m3fsf2 | m3fg3 | m3fsf1 |
+|---|---|---|---|
+| Transactions holding only the `INSERT log` row | 12 of 20 (mean 129 KB) | 11 of 20 (mean 128 KB) | 11 of 20 (mean 117 KB) |
+| Transactions with fold writes, statements | 8, 249 (31 each) | 9, 306 (34 each) | 9, 217 |
+| `request` + `c_ref` + `m_provenance` | 39 + 23 + 0 = 62 (25%) | 54 + 17 + 0 = 71 (23%) | |
+| Statements removed by batching those three tables | 18% | 18% | 16% |
+| Statements removed by batching every verb and table | 33% | 36% | 25% |
+
+- A burst entry carries 12 to 22 resolutions, not the bed's 60 pushes. Agent pushes write `m_path_set` (8 and 13 rows), not `m_provenance`.
+- The rest of each transaction is about 7 fixed statements (`log`, `raft_state`, `_fold`, `_digest`, `DELETE request`), plus agent task, comment, FTS, lease and issue rows.
+
+**What the cut reaches** [measured, `heavyturns.py`'s slices for the burst window]:
+- **Apply: nothing.** The apply turn only queues its statements (`host.rs`, the step extends `queue`), and the deferred `flush` runs them. So m3fg3's 3.97 ms an event and m3fsf2's 1.11 do not move.
+- **The deferred transaction: per transaction and per byte.** A least-squares fit of each flush slice's CPU on its statements gives:
+  - m3fsf1 (27.3): 4.8 ms + 0.07 ms a statement;
+  - m3fsf2 (52.5): 19.0 ms + 0.15 ms;
+  - m3fg3 (55.8): 15.9 ms − 0.08 ms (6 slices).
+- **The fixed cost is the `log` row.** A one-row `log` transaction cost 23 ms (m3fsf2) and 16 ms (m3fg3) on average, against 4.4 ms on m3fsf1. Heavyturns' 0.78 and 0.84 ms a statement are CPU divided by statements, and those one-row transactions inflate them.
+- **Apply follows bytes too.** On m3fsf2, apply-slice CPU against KB queued gives r 0.84, against events 0.77 and against statements 0.75.
+
+**Priced** [inference]. The removed CPU is 18% of the fold-write transactions' statements, priced at the marginal fit, at those transactions' own mean (with their `log` row), and at heavyturns' mean. The line comes from `b032share.py`'s commit scale x = 1 − removed ÷ the leader's burst CPU on all routes (Workers Logs, the 6 s window):
+
+| | m3fsf2 (ORD, 52.5) | m3fg3 (IAD, 55.8) |
+|---|---|---|
+| Statements removed | about 64 | about 18 |
+| CPU removed | 10 / 18 / 50 ms of 2,550 | 0 / 7 / 15 ms of 1,835 |
+| x | 0.996 / 0.993 / 0.98 | 1.0 / 0.996 / 0.992 |
+| Line (as run) | 284 to 286 (284) | 262 (262) |
+| `ok` commit p50 | about 3,700 ms (3,757) | about 13.9 s (13,939) |
+
+Batching every table instead stays under 4% of leader CPU on either row. The proportional step from CPU to x is optimistic: over the burst seconds the leader averaged only 0.42 vCPU (m3fsf2) and 0.31 (m3fg3).
+
+**What a lever would need** [measured marks, `b032share.py` commit scale]:
+- **m3fsf2** needs about ×0.63 for 450: ×0.9 gives 289, 0.8 gives 303, 0.75 gives 357, 0.7 gives 383, 0.65 gives 433, 0.62 gives 459, and 0.6 gives 471.
+- **m3fg3** holds at 262 down to ×0.6 (0.4 gives 276, 0.25 gives 327, 0.2 gives 434), so it needs about ×0.2. That is the stall itself gone (A41), not a code lever.
+- A 2 s commit cap gives 499 on both rows.
+
+**The measured candidates on these hosts are the entry's `log`-row bytes and apply cost per KB.** They are LM-1's to design, as input to its own work.
+
 ## Row m3fg3: B0-32 measurement on whatever leader it got, 262 of 500 on a 55.8 ms IAD host (2026-11-23, graft-m3f)
 
 **A measurement, not a gate row** (orchestrator's ruling (b) after m3fg): one placement, loaded whatever hostguard read, to find where B0-32's own line sits. It does not count toward the gate or the two-fails rule.
