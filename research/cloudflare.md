@@ -22,7 +22,7 @@
 | Workers Analytics Engine | GA | Per-repo traffic counters, clone stats | 250 data points per invocation; 3-month retention | $0.25/M points written; $1.00/M queries | https://developers.cloudflare.com/analytics/analytics-engine/pricing/ |
 | Workers Logs | GA | Request and error logs | 7-day retention; 5 billion logs per account per day | $0.60/M events now; from 2026-12-01 $0.25/GB ingest | https://developers.cloudflare.com/workers/observability/logs/workers-logs/ |
 | Logpush | GA | Ship logs to R2 or Basin for audit retention | No R2 jurisdiction support (use S3 endpoint) | Workers Trace Events need Workers Paid | https://developers.cloudflare.com/logs/logpush/ |
-| Secrets Store | beta | Account-level signing keys, webhook secrets | Works with Workers and AI Gateway only | Not found on page | https://developers.cloudflare.com/secrets-store/ |
+| Secrets Store | beta | Account-level signing keys, webhook secrets | Works with Workers and AI Gateway only; in the open beta one store and 100 secrets per account | Not found on page | https://developers.cloudflare.com/secrets-store/ |
 | Access | GA | Staff and admin console SSO | Free under 50 users | $7/user/month above that | https://www.cloudflare.com/pricing/ |
 | WAF and rate limiting rules | GA | Abuse limits on clone, API, login | Rules: 1 Free, 2 Pro, 5 Business, 100 Enterprise; Free counts by IP over 10 s | Included per plan | https://developers.cloudflare.com/waf/rate-limiting-rules/ |
 | Workers for Platforms | GA | Per-tenant user Workers (hooks, apps) | Unlimited scripts | $25/mo; $0.02 per script over 1,000 | https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/ |
@@ -155,7 +155,7 @@ Basin exists and is GA. "Basin was formerly known as Cloudflare Data Platform. C
 - Analytics Engine. "Data written to Workers Analytics Engine is stored for three months." https://developers.cloudflare.com/analytics/analytics-engine/limits/ [doc]
 - Rate limiting. Counting characteristics on Free and Pro: "IP" only; rules "1 | 2 | 5 | 100". https://developers.cloudflare.com/waf/rate-limiting-rules/ [doc]
 - Data Localization Suite. "Enterprise-only paid add-on". https://developers.cloudflare.com/data-localization/ [doc]
-- Secrets Store. "Available in open beta"; "compatible with Cloudflare Workers ... and AI Gateway". https://developers.cloudflare.com/secrets-store/ [doc]
+- Secrets Store. "Available in open beta"; "compatible with Cloudflare Workers ... and AI Gateway". https://developers.cloudflare.com/secrets-store/ [doc] Limits: "Customers who create a secrets store in the open beta can have up to 100 secrets per account. Also, there can only be one store per account." https://developers.cloudflare.com/secrets-store/manage-secrets/ [doc]. The test account holds those limits: `graftyard genesis` for graft-m3c failed with `maximum_stores_exceeded` (`tests/am1/results/install-m3c.md`), and on 2026-11-23 the store list answered one store, `graft-ops-01m6mnqw…`, holding 17 secrets that six test installs share [measured, Secrets Store API `GET /secrets_store/stores` and `GET …/secrets`].
 - workerd. "a JavaScript / Wasm server runtime based on the same code that powers Cloudflare Workers"; "`workerd` is not a hardened sandbox". https://github.com/cloudflare/workerd [doc]
 
 ## Could not verify

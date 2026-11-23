@@ -1884,9 +1884,17 @@ impl Family for Authz {
             _ => refusal(e, 422),
         }
     }
-    /// `{"repo": name}`; always the opened kind, the name count, and the id cursor.
+    /// `{"repo": name}`; `{"app": id}`: the App record's slug, callbacks, and how many client secrets it holds, so a
+    /// script can see that `graftyard apps init` registered it (`tests/am1/rest/apps.mjs` refuses then); always the
+    /// opened kind, the name count, and the id cursor.
     fn read_json(f: &id::AuthzFold, q: &Value) -> Value {
         use id::AuthzRead;
+        let app = q.get("app").and_then(Value::as_i64).map(|a| {
+            f.app(id::AppId(DbId(a))).map(|r| {
+                json!({ "slug": r.slug.as_str(), "callbacks": r.callbacks.iter().map(|u| &*u.0).collect::<Vec<_>>(),
+                        "client_secrets": r.client_secrets.len() })
+            })
+        });
         let repo = q
             .get("repo")
             .and_then(Value::as_str)
@@ -1897,6 +1905,7 @@ impl Family for Authz {
             "opened": f.opened.map(|k| format!("{k:?}")),
             "names": f.names.len(),
             "repo": repo,
+            "app": app,
             "ids": cursor_json(&f.ids),
         })
     }

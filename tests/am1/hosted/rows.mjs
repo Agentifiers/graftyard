@@ -112,14 +112,20 @@ if (which === "l012") {
     ["unflagged App", async () => { await api("DELETE", `/api/graftyard/v1/agents/apps/${state.app}`, admin); return (await ghs({})).body.token; }, (k) => `refs/heads/l012-${tag}-b${k}`],
     ["human PAT", async () => admin, (k) => `refs/heads/l012-${tag}-h${k}`],
     // The install's own Apps (tests/am1/rest/apps.mjs): `graftyard-workspace`, a Graftyard-run App (ActorKind::Agent;
-    // with no task it is refused before the lease, by NoLiveTask), and `Graftyard MCP` (never ActorKind::Agent).
+    // with no task it is refused before the lease, by NoLiveTask), and `Graftyard MCP` (never ActorKind::Agent). An App
+    // `graftyard apps init` took over is marked `moved` in the state (graft-m3f's `Graftyard MCP` since AM2-WP1's
+    // hosted day): its key is in Secrets Store, not on disk, so that kind is skipped and logged.
     ...(process.env.ROWS_INSTALL_APPS ? [
       ["Graftyard-run App (graftyard-workspace)", async () => (await agentToken("graftyard-workspace")).body.token, (k) => `refs/heads/l012-${tag}-w${k}`],
-      ["Graftyard MCP", async () => (await agentToken("graftyard-mcp")).body.token, (k) => `refs/heads/l012-${tag}-m${k}`],
+      ...(state.agentApps?.["graftyard-mcp"]?.moved ? [] :
+        [["Graftyard MCP", async () => (await agentToken("graftyard-mcp")).body.token, (k) => `refs/heads/l012-${tag}-m${k}`]]),
     ] : []),
   ];
   // The policy and holder answers lead the summary: a refusal kind under a policy that did not take measures nothing.
   const summary = { policy: pol.status, holderTask: ht.status, holder: held.status };
+  if (process.env.ROWS_INSTALL_APPS && state.agentApps?.["graftyard-mcp"]?.moved) {
+    row(OUT, { step: "kind moved", kind: "Graftyard MCP", why: state.agentApps["graftyard-mcp"].moved });
+  }
   const only = process.env.ROWS_L012_ONLY;
   // ROWS_COST_CMD (rows.sh: tests/fanout/costok.sh) runs before each kind with the kind as its phase; a nonzero exit
   // is the cost stop, and the kinds not run are logged so the row's results can name them.

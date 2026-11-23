@@ -341,6 +341,16 @@ enum AppsCmd {
         /// The slug claims' answers: graftyard-mcp's App id, then graftyard-insights'.
         #[arg(long, value_delimiter = ',')]
         app_ids: Option<Vec<i64>>,
+        /// The Secrets Store id to write to, instead of finding or creating graft-ops-<install>. The account has one
+        /// store, which installs in it share.
+        #[arg(long, conflicts_with = "app_ids")]
+        store: Option<String>,
+        /// Put this before each secret's name, so installs sharing a store do not collide.
+        #[arg(long, default_value = "", conflicts_with = "app_ids")]
+        secret_prefix: String,
+        /// Where graft-mcp is served, when not at https://mcp.<host>; the callback is <origin>/callback.
+        #[arg(long, conflicts_with = "app_ids")]
+        mcp_origin: Option<String>,
         /// The folder for apps.json and the request files.
         #[arg(long, default_value = ".")]
         out: PathBuf,
@@ -539,11 +549,15 @@ fn run(cli: Cli) -> Res<()> {
         Cmd::Admin { cmd: AdminCmd::Bootstrap { account, link_out, out } } => {
             admin::bootstrap(account, &link_out, &out)
         }
-        Cmd::Apps { cmd: AppsCmd::Init { host, app_ids, out } } => match (host, app_ids) {
-            (_, Some(ids)) => apps::register(&out, &ids),
-            (Some(host), None) => apps::init(config, &host, &out),
-            (None, None) => Err("apps init takes --host or --app-ids".into()),
-        },
+        Cmd::Apps { cmd: AppsCmd::Init { host, app_ids, store, secret_prefix, mcp_origin, out } } => {
+            match (host, app_ids) {
+                (_, Some(ids)) => apps::register(&out, &ids),
+                (Some(host), None) => {
+                    apps::init(config, &host, &apps::InitOpts { store, secret_prefix, mcp_origin }, &out)
+                }
+                (None, None) => Err("apps init takes --host or --app-ids".into()),
+            }
+        }
         Cmd::MintKey { cmd: MintKeyCmd::Rotate { kid, secret_out, out } } => admin::rotate(kid, &secret_out, &out),
         Cmd::MintKey { cmd: MintKeyCmd::Step { old_kid, old_public, new_kid, new_published, switched, out } } => {
             admin::step(&admin::StepArgs {
