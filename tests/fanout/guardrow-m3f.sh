@@ -6,7 +6,7 @@
 # third placement is re-placed too, the set stops without loading; that is not a fail (orchestrator, after m3fsf2).
 # Each placement's repository is retired and purged after its row, loaded or not. A pass on this row reads kept hosts
 # only (`decisions/OPEN-QUESTIONS.md`, A44).
-#   TAG=<prefix> RUN_FROM=<site day start, ISO> [RUN_STOP_USD=3] [STOP_USD=180] bash tests/fanout/guardrow-m3f.sh
+#   TAG=<prefix> RUN_FROM=<site day start, ISO> [RUN_STOP_USD=3] [STOP_USD=180] [FROM=A|B|C] bash tests/fanout/guardrow-m3f.sh
 #   -> tests/fanout/raw/guardrow-<prefix>.log; placements are <prefix>A, <prefix>B, <prefix>C, each with
 #      rows-m3f.sh's tests/fanout/raw/rows-<prefix><R>.status.
 # Run it with the install's env loaded (the account variables and TOOLS_TOKEN_FILE), as rows-m3f.sh needs, from a
@@ -17,6 +17,12 @@ source tests/am1/lf13/env-m3f.sh
 P=${TAG:?} L=tests/fanout/raw/guardrow-$P.log
 export RUN_FROM=${RUN_FROM:?the site day start, ISO} RUN_STOP_USD=${RUN_STOP_USD:-3} RUN_PREFIX=graft-m3f
 export STOP_USD=${STOP_USD:-180} ACCT_FROM=${ACCT_FROM:-$(date -u +%F)T00:00:00Z}
+# purge.py's default log is the tracked tests/fanout/raw/purge-m2b.log: a placement's purge wrote it, and rows.sh then
+# refused the next placement for a dirty tree (m3fg, placement B). This set's purges log to an untracked file.
+export PURGE_LOG=tests/fanout/raw/purge-$P.log
+# FROM=B resumes a set whose earlier placements were already judged: the set still ends at C, so it never takes more
+# than two re-places in all.
+FROM=${FROM:-A}
 log() { echo "$(date -u +%FT%TZ) $*" >> "$L"; }
 log "start $(git rev-parse --short HEAD), run stop \$$RUN_STOP_USD on graft-m3f from $RUN_FROM"
 # A site day resets every member, so the install's finished networks are retired again first, as before every m3f
@@ -25,6 +31,9 @@ RETIRE_LOG=tests/fanout/raw/reretire-graft-m3f-$P.log bash tests/fanout/reretire
   > tests/fanout/raw/reretire-$P.out 2>&1
 grep -q "RERETIRE OK" tests/fanout/raw/reretire-$P.out || { log "RERETIRE FAILED, set stopped"; echo "GUARD${P}DONE" >> "$L"; exit 1; }
 for R in A B C; do
+  [[ $R < $FROM ]] && continue
+  # rows.sh refuses a dirty tree and exits, and rows-m3f.sh would then wait for an ALLDONE that never comes.
+  [ -n "$(git status --porcelain --untracked-files=no)" ] && { log "placement $R: tree dirty, set stopped"; break; }
   T=$P$R ST=tests/fanout/raw/rows-$P$R.status HOLD=tests/fanout/raw/.guard-$P$R.hold RF=$(date -u +%FT%TZ)
   rm -f "$HOLD"
   log "placement $R ($T) starts"
