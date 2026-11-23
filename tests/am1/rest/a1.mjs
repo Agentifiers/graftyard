@@ -80,6 +80,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
 import { cloneKeyHex, journey9, onePack, pkt, pushResult, receiveBody } from "./wire.mjs";
 import { edgeInvocations, postH1, tagLost } from "./h1.mjs";
+import { Refusals, isWrite } from "./refusals.mjs";
 import { r2list } from "../../fanout/r2list.mjs";
 import { serverClock } from "../../fanout/srvclock.mjs";
 
@@ -390,10 +391,20 @@ function flip1(what, timing) {
 }
 // The admin's PAT (humans, merges) and the fast user's are the row's only non-agent tokens; any other is the App's.
 const human = (token) => token === tokens.admin || token === tokens.member;
+// The refusal-shape line (FRAME, "Operator decision, 2026-11-23, B0-33's merge-queue and refusal-shape lines"): every
+// non-2xx answer to a request sent in the load window, by route, class, status and `Retry-After`, as the row's
+// `refusals` (`refusals.mjs`; read by `tests/fanout/refusalshape.py`).
+const refusals = new Refusals();
+let refusalsFrom = Infinity; // set to the load window's start once setup is done
+const noteRefusal = (s, method, path, token, write, r, body) => {
+  if (s >= refusalsFrom) refusals.note({ method, path, cls: human(token) ? "Human" : "Agent", write, status: r.status, headers: r.headers, body });
+};
 const api = async (method, path, token, body, extra = {}) => {
+  const s = Date.now();
   const r = await api0(method, path, token, body, { ...leanHeaders, ...extra });
   const marked = advertMark(r.headers?.["server-timing"]);
   if (extra["x-graft-advert"]) return r; // `--advert-probe`'s forced adverts are the probe's, not the row's
+  noteRefusal(s, method, path, token, isWrite(method, path, body?.query), r, r.body);
   if (r.status === 429) api429[human(token) ? "other" : "agent"][marked ? "advert" : "other"]++;
   if (marked && human(token)) flip1(`${method} ${path.replace(/\d+/g, "N")}`, r.headers["server-timing"]);
   return r;
@@ -495,8 +506,10 @@ const tallyLsRefs = (body, r, win) => {
 };
 async function git(path, tok, body, headers = {}, repo = R, agent = null) {
   const win = LS_EVERY_MS ? lsWindow() : 0;
+  const s = Date.now();
   const r = await gitOnce(path, tok, body, headers, repo, agent);
   tallyLsRefs(body, r, win);
+  noteRefusal(s, "POST", `/${repo}.git/${path}`, tok, path === "git-receive-pack", r, r.text);
   return r;
 }
 async function gitOnce(path, tok, body, headers = {}, repo = R, agent = null) {
@@ -517,9 +530,11 @@ const lsRefs = (tok, prefix) => git("git-upload-pack", tok, Buffer.concat([pkt("
 // The receive-pack advertisement, as `git push` reads it before its POST (`git-shaped-push`): its status, after the whole
 // body, which the edge streams from the group's refs.
 const receiveAdvert = async (tok) => {
+  const s = Date.now();
   try {
-    const r = await fetch(`${EDGE}/${R}.git/info/refs?service=git-receive-pack`, { headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders() }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
-    await r.arrayBuffer();
+    const path = `/${R}.git/info/refs?service=git-receive-pack`;
+    const r = await fetch(`${EDGE}${path}`, { headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders() }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
+    noteRefusal(s, "GET", path, tok, false, r, Buffer.from(await r.arrayBuffer()).toString("latin1"));
     return r.status;
   } catch (e) { return `error ${String(e).slice(0, 30)}`; }
 };
@@ -800,6 +815,7 @@ if (opt["hold-file"]) {
 // Hosted clients start from an alarm set at begin, so they get time to be created and placed.
 t0 = Date.now() + (opt.hosted ? 90_000 : 5_000);
 end = t0 + seconds * 1000;
+refusalsFrom = t0;
 // The driver's own event-loop delay over the load window, in the row (`loopDelay`): a timer or fetch the loop could
 // not run on time ends late, so every client-side latency is at least this late. m41's `tip:move` pushes through
 // `execFileSync` stopped the loop about 6 s each (tests/fanout/loopstall.py); a row whose max is seconds is not
@@ -1594,7 +1610,7 @@ const v = {
     max: Math.round(loopDelay.max / 1e6) },
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
   leaderChanges,
-  api429, flip1: flip1Seen,
+  api429, flip1: flip1Seen, refusals: refusals.rows(),
   ...(Object.keys(tierStages).length ? { apiTierBatch: Object.fromEntries(Object.entries(tierStages).map(([k, xs]) => [k, ps(xs)])) } : {}),
   ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
