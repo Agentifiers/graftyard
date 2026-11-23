@@ -106,7 +106,12 @@ setup)
       "$W/ops/exec-ck-pending.json" >"$W/ops/exec-bf46.json"
     jq -c '{test_faults, gate, cron, rotate_published_ms, step_dwell_ms, slots}' "$W/ops/exec-bf46.json"
     date -u +%s%3N >"$O/start.ms"
-    (cd /tmp && rm -rf bf46-deploy && git -C "$OLDPWD" worktree add -f --detach /tmp/bf46-deploy HEAD >/dev/null 2>&1)
+    # graft-ops is built from merged main (REF, default origin/main), not from this checkout's branch.
+    git fetch -q origin main
+    (cd /tmp && rm -rf bf46-deploy && git -C "$OLDPWD" worktree add -f --detach /tmp/bf46-deploy "${REF:-origin/main}" >/dev/null 2>&1)
+    echo "graft-ops built from $(git -C /tmp/bf46-deploy rev-parse --short HEAD)"
+    grep -q rotate_published_ms /tmp/bf46-deploy/workers/ops/deploy.mjs \
+      && echo "OPS_ROTATE_PUBLISHED_MS: in this build" || echo "OPS_ROTATE_PUBLISHED_MS: not in this build; MintWrapKey waits the full hour"
     (cd /tmp/bf46-deploy && unset CARGO_TARGET_DIR && export PATH=$HOME/.cargo/bin:$PATH \
       && ln -sfn "${NODE_MODULES:?a tests/m0/node_modules with wrangler}" tests/m0/node_modules \
       && node workers/ops/deploy.mjs $OPS $STORE graft-m4a-mint-wrap-key - graft-m4a-secrets-wrap-key-b 1 \
@@ -114,8 +119,8 @@ setup)
     ops_version
     api "/workers/scripts/$OPS/schedules" | jq -c '{schedules: [.result.schedules[]?.cron]}'
     # The minting probe: one installation token through the edge every 10 s, while the rotations run.
-    nohup node tests/m5/bf46/mint.mjs "$O/mint.jsonl" >"$O/mint.out" 2>&1 &
-    echo $! >"$K/mint.pid"; echo "mint probe pid $(cat "$K/mint.pid")"
+    # A supervised service, so an orb or CLI restart does not end it mid-row.
+    amp orb service start bf46-mint --command "cd $PWD && node tests/m5/bf46/mint.mjs $PWD/$O/mint.jsonl" 2>&1 | head -1
   } 2>&1 | log ;;
 rotate)
   S=${3:?secret}; NS=${4:?slot}
@@ -140,7 +145,7 @@ PY
 logs)
   python3 tests/m5/bf46/logs.py "$OPS" "$(cat "$O/start.ms")" "$(date -u +%s%3N)" 2>&1 | log ;;
 teardown)
-  { [ -s "$K/mint.pid" ] && kill "$(cat "$K/mint.pid")" 2>/dev/null; rm -f "$K/mint.pid"; echo "mint probe stopped"
+  { amp orb service stop bf46-mint 2>&1 | tail -1
     cronoff
     (cd /tmp/bf46-deploy && unset CARGO_TARGET_DIR && export PATH=$HOME/.cargo/bin:$PATH && git checkout -q --detach ad8fd52f \
       && node workers/ops/deploy.mjs $OPS $STORE graft-m4a-mint-wrap-key - graft-m4a-secrets-wrap-key-b 1 \

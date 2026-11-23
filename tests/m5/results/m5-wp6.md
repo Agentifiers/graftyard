@@ -53,7 +53,7 @@ Tests (`crates/release/src/tests/group/run.rs`, through `ops::run` against the r
   holds `ROTATE_PUBLISHED_FOR` equal to `INSTALLATION_TOKEN_TTL`.
 - `cli` `a_rotate_intent_names_its_secret_and_slot`: `release entry` builds `{"Rotate": {"secret", "slot"}}`.
 
-plant95 (`tests/m0carried/plant95.py`): 14 of 14 caught.
+plant95 (`tests/m0carried/plant95.py`): 14 of 14 caught; 15 of 15 with BF-46 hosted prep's publish-wait mutant (2026-11-23).
 
 No wire enum changed: `Intent::Rotate`, `SecretName` and every tag are as before. `RotateStep` is new and never
 encoded; `rotate_steps` is a stored format up to each list's switch, because `apply` moves the slot at that index.
