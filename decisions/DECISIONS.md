@@ -8308,6 +8308,59 @@ row with enough open pull requests to test it (below, Evidence).
   batched (a `refs/heads/` read on a 500,000-ref repository): page that caller, as `refs_page` does, rather than
   return to batches everywhere.
 
+### `read-memo` (proposed): a tier's stored fold reads are memoized until the next transaction, 2026-11-23
+
+**Status.** Proposed to the lead. No code yet. The evidence is `tests/am1/results/b033-applyprice.md`.
+
+**Decision (proposed).**
+- `workers/site/src/tier.rs`, `Inner`: a memo of `sql_get` and `sql_prefix` answers, keyed by table and key or prefix.
+  It is shared by every clone of the handle, as the write buffers are.
+- `flushed`, `clear`, and every other path that writes a tier's tables outside the member's transaction drop the memo
+  in the same call. Those paths are a snapshot install, a metadata load, `reshape`, and the scratch swap.
+- A refused read is never memoized, so `lost` keeps its meaning.
+- Buffered writes stay on top of the memo, as they stay on top of SQLite today (`pending`, and `prefix`'s merge).
+  Stored rows change only when a transaction runs, so a memoized stored row is the stored row until `flushed`.
+- The memo is capped in rows and bytes. Past the cap, a read goes to SQLite. `/stats` `memSplit` counts it beside the
+  buffers.
+- No change to `decide`, `apply`, the log, the wire, or any reply byte. The memo is not in `crates/raft`, and not in
+  the functions of `crates/raft/src/member/leader.rs` that B0-29's reask-read touches.
+
+**Why.**
+- Hosted apply cost scales with SQLite calls. A read-only apply slice costs 0.13 to 0.15 ms a read on blB and qlC,
+  0.24 on pgA, and 0.58 on pfA. In local workerd, 0.019 to 0.106 ms covers a read plus all the Rust work. A
+  one-statement transaction costs 1.7 to 18 ms [measured].
+- On B0-33's mix the leader makes 471 fold reads an entry: 139 in apply, 250 in the reply render, 45 in the consumer
+  scans, and 35 in the feed. Only 142 of them are distinct (query, args) pairs [measured, bed].
+- With a memo cleared at `flushed`, render reads fell from 250 to 23 and apply reads from 139 to 112, and every reply
+  status was unchanged [measured, bed, `readprobe.patch`].
+- Followers pay 0.6 to 1.5 ms an event and make no render reads. The leader pays 3.8 to 5.9 [measured].
+
+**What it beat.**
+- **Moving the next entry's decide out of the apply turn.** It moves CPU without removing it: an AS slice is an A
+  slice plus an N slice.
+- **Fewer or batched sends.** Hosted resend-only slices cost 0.7 to 2.4 ms, a small share.
+- **Fewer statements per entry.** This is the next lever (blB writes 206 statements an entry for 61 events), but it
+  changes `seal` and the log rows, and it reaches followers. It comes after this cut.
+- **A render cache keyed by command.** It covers only the render's reads, and it needs its own invalidation.
+
+**Expected effect [inference].** About 40% of a leader apply event's SQL calls go away. That is about 0.6 of pgA's
+2.75 ms an event and about 1.3 of pfA's 3.17. B0-32 needs about 29% off its burst commit stage.
+
+**Plan once approved.**
+- The memo in `tier.rs`.
+- A `test-faults` counter of stored reads in `/stats`, so a hosted row counts reads per event instead of inferring
+  them.
+- Bed checks: each kind's replies are byte-identical with and without the memo; read counts by stage.
+- Plants: a memo `flushed` does not clear; a memo `clear` does not drop; a memoized refused read; a buffered write that
+  the memo shadows.
+- The site wasm clippy both ways and the bed.
+- Then a site day and one B0-33 row with the guard, if the lead clears it.
+
+**Flip.**
+- A hosted row whose leader stored reads per event fall by half or more while CPU per event falls by less than 15%:
+  the cost is not per call, and this entry's cause is wrong.
+- A member whose memory peak rises by more than the memo's cap: lower the cap, or memoize only `get`.
+
 ### `am2-wp1`: `graft-mcp`'s one-use rules live on the host, and a scoped token binds to its grant on `Identity`, 2026-11-22
 
 **Status.** Built on branch `am2-wp1`, the pure half of AM2-WP1, not hosted. LF-6 passes in memory over real members
