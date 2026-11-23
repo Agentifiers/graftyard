@@ -131,7 +131,12 @@ func main() {
 		// list_issues through graft-mcp, interleaved with the same REST read straight to the edge (M0-WP15's method).
 		member, edge := memberToken(), os.Getenv("GRAFT_EDGE")
 		ok, lat, direct, errs := 0, []int64{}, []int64{}, []string{}
-		args := map[string]any{"owner": "m3org", "repo": "j4", "per_page": 5}
+		repo := os.Getenv("AM2_REPO")
+		if repo == "" {
+			repo = "m3org/j4"
+		}
+		owner, name, _ := strings.Cut(repo, "/")
+		args := map[string]any{"owner": owner, "repo": name, "per_page": 5}
 		for i := 0; i < *calls; i++ {
 			s := time.Now()
 			r, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "list_issues", Arguments: args})
@@ -145,7 +150,7 @@ func main() {
 				}
 				errs = append(errs, err.Error())
 			}
-			req, _ := http.NewRequestWithContext(ctx, "GET", edge+"/api/v3/repos/m3org/j4/issues?per_page=5", nil)
+			req, _ := http.NewRequestWithContext(ctx, "GET", edge+"/api/v3/repos/"+repo+"/issues?per_page=5", nil)
 			req.Header.Set("Authorization", "token "+member)
 			req.Header.Set("Accept", "application/vnd.graftyard.agent+json")
 			req.Header.Set("User-Agent", "am2-direct")

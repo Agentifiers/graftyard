@@ -1473,8 +1473,13 @@ and `graft-mcp` as `workers/mcp`, with the metadata, CIMD, PKCE, consent, callba
 **Hosted, auth-only day m3fa2 (2026-11-23, graft-m3f).** LF-6 passes hosted, 100 of 100 each. L0-08's auth cells
 pass: wrong audience, refresh scope, replay, consent, and the held `ghu_`. A43: none of the four SDK clients retries a
 code after a lost `/token` answer; each goes back through consent. The day fixed graft-mcp's CIMD fetch
-(`global_fetch_strictly_public`) and its edge calls (`User-Agent`). L0-08's 30-call cell and the tool-overhead p50
-wait for WP2a (`tests/am2/results/am2-wp1.md`, "Hosted, auth-only day m3fa2").
+(`global_fetch_strictly_public`) and its edge calls (`User-Agent`) (`tests/am2/results/am2-wp1.md`, "Hosted,
+auth-only day m3fa2").
+
+**Hosted, day 2 m3fa3 (2026-11-23, graft-m3f), after WP2a.** L0-08's 30-call cell passes, 30 of 30 in each of the four
+SDK clients, and the tool-overhead p50 is 20, 14, 45, and 17 ms (TypeScript v2, TypeScript v1, Go, Python) against
+50 ms. With m3fa2's auth cells, every L0-08 cell has passed hosted (`tests/am2/results/am2-wp1.md`, "Hosted, day 2
+m3fa3").
 
 The hosted half needs:
 1. A site day onto a release that reads 0x14.4 and 0x11.4, then `FormatsEnable` for both. Until then the grant
@@ -1499,7 +1504,7 @@ The hosted half needs:
   runs once WP2a merges.
   - **Built (code only, branch `am2-wp2a`).** The door in both lanes, 20 tools in six toolsets, the trust view, and
     `ToolError`. The four SDK clients each passed 30 of 30 calls locally, and plant90 catches 23 of 23
-    (`tests/am2/results/am2-wp2a.md`).
+    (`tests/am2/results/am2-wp2a.md`). Hosted on day 2 (m3fa3, above).
 - **WP2b: the tools that need new edge reads.** `coordination.overlaps` and `provenance.why` with their edge reads. The
   edge read's design goes to the lead before any edge change, and is checked with B0-34's work on the edge's
   cold-isolate write path (F112).
