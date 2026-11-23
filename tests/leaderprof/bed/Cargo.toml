@@ -8,6 +8,11 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib"]
 
+# The member's `tier.rs` with its test-install counters and memo switch (`read-memo`).
+[features]
+default = ["test-faults"]
+test-faults = []
+
 [dependencies]
 worker = "0.8.7"
 js-sys = "0.3"

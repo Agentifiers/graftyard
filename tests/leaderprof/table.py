@@ -41,4 +41,13 @@ for n in sorted({r["cmds"] for r in prof}, reverse=True):
             cpu = statistics.median(r["processCpuMs"] / r["entries"] for r in rs)
             line += f"; workerd process CPU {cpu:.1f} ms/entry ({cpu / n:.3f} ms/cmd)"
         print(f"{line}; at the end {rs[0]['openPrs']} open pull requests and {rs[0]['leases']} lease rows; {len(rs)} runs")
+# The leader's render by kind (ms per command, medians), and what each kind answered.
+for n in sorted({r["cmds"] for r in prof}, reverse=True):
+    for g in sorted({r["grow"] for r in prof if r["cmds"] == n}):
+        rs = [r for r in prof if r["cmds"] == n and r["grow"] == g and r["peers"] > 0 and "renderByKind" in r]
+        if not rs:
+            continue
+        kinds = sorted(rs[0]["renderByKind"])
+        cells = ", ".join(f"{k} {statistics.median(r['renderByKind'][k]['msPer'] for r in rs):.3f}" for k in kinds)
+        print(f"N={n} grow={g}: render_ok ms per command by kind: {cells}; statuses {rs[0].get('replyStatus')}")
 print(f"\nruntime floor: {noop} ms of workerd process CPU per /noop request")

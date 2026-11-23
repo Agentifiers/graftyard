@@ -10,6 +10,14 @@
 //!   for the input's one transaction (`host::SqlStore`, `Write::Apply`), so a tier's rows land with the `raft_state`
 //!   row that says they applied, or not at all. Reads see the buffer and every sealed batch until the transaction
 //!   ran (`flushed`).
+//! - Read memo. A stored row or prefix read once is kept (`Memo`) and answered from memory until `flushed`, `clear`,
+//!   a change of `loaded`, or any transaction the isolate starts (`crate::txn::generation`) drops it. Its invariant:
+//!   a stored row differs from its memoized value only while the row is in this handle's open or sealed buffers,
+//!   which every read merges on top. Every writer of a tier's tables either goes through a clone of this handle and
+//!   `flushed`, or runs a transaction, or writes the tier while it is unloaded (`decisions/DECISIONS.md`,
+//!   "`read-memo`", lists them). A refused read is never kept, and nothing is kept while the tier is unloaded. A
+//!   leader's entry read 471 fold rows on B0-33's mix and only 142 distinct ones, and each hosted read costs 0.13 to
+//!   0.58 ms (`tests/am1/results/b033-applyprice.md`).
 //! - Storage loss. `Store`'s reads cannot fail, so a read SQLite refuses ("Network connection lost" when the object
 //!   has moved) marks the tier `lost` and answers no row, logged with its cause. The host checks `lost` before any
 //!   input's writes or outputs, or any reply, leave, and resets the object as it does on a failed write
@@ -30,6 +38,72 @@ use worker::{SqlStorage, SqlStorageValue};
 use crate::family::Stmt;
 
 type Rows = BTreeMap<(String, Key), Option<Stored>>;
+
+/// Rows one tier's read memo keeps at most [guess]: a B0-33 entry read 142 distinct (query, args) pairs, about a
+/// thousand rows with its lease and pull request prefixes.
+pub const MEMO_ROWS: usize = 4_096;
+/// Bytes every read memo of the isolate keeps together, as `buffered` counts them [guess]. An isolate holds many
+/// members against one 128 MB limit (`tests/am1/results/lm1-memory.md`), so the memos' share is fixed per isolate.
+pub const MEMO_ISOLATE_BYTES: usize = 8 << 20;
+
+thread_local!(static MEMO_TOTAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+/// Stored answers read since the tier's tables last changed outside its buffers: `sql_get`'s by (table, key) and
+/// `sql_prefix`'s by (table, prefix), each without the buffered writes, which every read merges on top.
+#[derive(Default)]
+struct Memo {
+    /// `crate::txn::generation()` when the memo started.
+    generation: u64,
+    gets: HashMap<(String, Key), Option<Stored>>,
+    prefixes: HashMap<(String, Key), Vec<(Key, Stored)>>,
+    rows: usize,
+    bytes: usize,
+}
+
+fn val_bytes(v: &Val) -> usize {
+    match v {
+        Val::Null => 1,
+        Val::Int(_) => 8,
+        Val::Text(t) => t.len(),
+        Val::Blob(b) => b.len(),
+    }
+}
+
+fn row_bytes(k: &Key, s: &Stored) -> usize {
+    8 + k.iter().map(val_bytes).sum::<usize>() + s.cols.iter().map(val_bytes).sum::<usize>()
+}
+
+impl Memo {
+    fn fresh() -> Memo {
+        let mut m = Memo::default();
+        m.generation = crate::txn::generation();
+        m
+    }
+
+    /// Whether `rows` more rows of `bytes` fit this memo's rows and the isolate's bytes, counting them if so.
+    fn room(&mut self, rows: usize, bytes: usize) -> bool {
+        let total = MEMO_TOTAL.with(std::cell::Cell::get);
+        if self.rows + rows > MEMO_ROWS || total + bytes > MEMO_ISOLATE_BYTES {
+            return false;
+        }
+        MEMO_TOTAL.with(|t| t.set(total + bytes));
+        self.rows += rows;
+        self.bytes += bytes;
+        true
+    }
+}
+
+/// A dropped memo gives its bytes back to the isolate's share.
+impl Drop for Memo {
+    fn drop(&mut self) {
+        MEMO_TOTAL.with(|t| t.set(t.get().saturating_sub(self.bytes)));
+    }
+}
+
+/// The bytes every read memo of the isolate holds (`/stats` `memSplit`).
+pub fn memo_isolate_bytes() -> usize {
+    MEMO_TOTAL.with(std::cell::Cell::get)
+}
 
 /// How a sealed row is indexed for search: the statements that bring the FTS5 tables in line with it.
 pub type Fts = fn(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt>;
@@ -60,6 +134,14 @@ struct Inner {
     held_unloaded: bool,
     /// The accounts this tier's rows name, kept by `apply` once built (`named`): derived, in memory only.
     named: graftyard_api::hosted::NamedIndex,
+    /// The read memo (`Memo`). Reads borrow `Inner` shared, so it has its own cell.
+    memo: RefCell<Memo>,
+    /// Test installs and the leaderprof bed: whether reads use the memo (`set_memo`).
+    #[cfg(feature = "test-faults")]
+    memo_on: bool,
+    /// Test installs: stored reads that ran in SQLite, and those the memo answered (`/stats` `foldReads`).
+    #[cfg(feature = "test-faults")]
+    counts: std::cell::Cell<(u64, u64)>,
 }
 
 /// A handle on one tier's tables. Clones share the tables and the write buffer, so the fold, the snapshot writer, and
@@ -309,7 +391,33 @@ impl TierSql {
             #[cfg(feature = "test-faults")]
             held_unloaded: false,
             named: Default::default(),
+            memo: RefCell::new(Memo::fresh()),
+            #[cfg(feature = "test-faults")]
+            memo_on: true,
+            #[cfg(feature = "test-faults")]
+            counts: std::cell::Cell::new((0, 0)),
         })))
+    }
+
+    /// The rows the read memo holds and their bytes (`/stats` `memSplit`).
+    pub fn memo_size(&self) -> (usize, usize) {
+        let i = self.0.borrow();
+        let m = i.memo();
+        (m.rows, m.bytes)
+    }
+
+    /// Test installs and the leaderprof bed: reads use the memo or not, which drops it.
+    #[cfg(feature = "test-faults")]
+    pub fn set_memo(&self, on: bool) {
+        let mut i = self.0.borrow_mut();
+        i.memo_on = on;
+        *i.memo.borrow_mut() = Memo::fresh();
+    }
+
+    /// Test installs: (stored reads SQLite ran, stored reads the memo answered) since the handle opened.
+    #[cfg(feature = "test-faults")]
+    pub fn read_counts(&self) -> (u64, u64) {
+        self.0.borrow().counts.get()
     }
 
     /// The accounts this tier's rows name (`graftyard_api::hosted::accounts`, this tier's half). Built from the rows
@@ -344,6 +452,7 @@ impl TierSql {
     #[cfg(feature = "test-faults")]
     pub fn hold_unloaded(&self, hold: bool) -> u64 {
         let mut i = self.0.borrow_mut();
+        *i.memo.borrow_mut() = Memo::fresh();
         i.held_unloaded = hold;
         i.loaded = false;
         if hold {
@@ -378,12 +487,7 @@ impl TierSql {
     /// at their encoded lengths, 8 per integer (`/stats` `memSplit`).
     pub fn buffered(&self) -> (usize, usize) {
         let i = self.0.borrow();
-        let val = |v: &Val| match v {
-            Val::Null => 1,
-            Val::Int(_) => 8,
-            Val::Text(t) => t.len(),
-            Val::Blob(b) => b.len(),
-        };
+        let val = val_bytes;
         let rows = std::iter::once(&i.open).chain(&i.sealed).flat_map(|r| r.iter());
         rows.fold((0, 0), |(n, b), ((t, k), row)| {
             let cols = row.as_ref().map_or(0, |s| 8 + s.cols.iter().map(val).sum::<usize>());
@@ -417,7 +521,9 @@ impl TierSql {
 
     /// Every sealed batch's transaction has run.
     pub fn flushed(&self) {
-        self.0.borrow_mut().sealed.clear();
+        let mut i = self.0.borrow_mut();
+        i.sealed.clear();
+        *i.memo.borrow_mut() = Memo::fresh();
     }
 
     pub fn set_loaded(&self, loaded: bool) {
@@ -426,6 +532,7 @@ impl TierSql {
         if i.held_unloaded {
             return;
         }
+        *i.memo.borrow_mut() = Memo::fresh();
         i.loaded = loaded;
     }
 }
@@ -489,7 +596,79 @@ impl Inner {
         self.sealed.iter().rev().find_map(|b| b.get(&k).cloned())
     }
 
+    /// Whether a stored read may be answered from, or kept in, the memo: the tier is loaded, no read was refused,
+    /// and on a test install the memo is on and no planted read failure is pending.
+    fn memo_ok(&self) -> bool {
+        #[cfg(feature = "test-faults")]
+        if !self.memo_on || self.fail_read.get() {
+            return false;
+        }
+        self.loaded && self.lost.borrow().is_none()
+    }
+
+    /// The memo, dropped first if any transaction started since it did (`crate::txn::generation`).
+    fn memo(&self) -> std::cell::RefMut<'_, Memo> {
+        let mut m = self.memo.borrow_mut();
+        if m.generation != crate::txn::generation() {
+            *m = Memo::fresh();
+        }
+        m
+    }
+
+    #[cfg(feature = "test-faults")]
+    fn count(&self, hit: bool) {
+        let (sql, memo) = self.counts.get();
+        self.counts.set(if hit { (sql, memo + 1) } else { (sql + 1, memo) });
+    }
+
+    /// `stored_get`, answered from the memo when it holds the row.
     fn sql_get(&self, table: &str, key: &[Val]) -> Option<Stored> {
+        let k = (table.to_owned(), key.to_vec());
+        if self.memo_ok()
+            && let Some(v) = self.memo().gets.get(&k).cloned()
+        {
+            #[cfg(feature = "test-faults")]
+            self.count(true);
+            return v;
+        }
+        #[cfg(feature = "test-faults")]
+        self.count(false);
+        let v = self.stored_get(table, key);
+        // Kept only if this read was not refused: `lost` is set before a refused read answers.
+        if self.memo_ok() {
+            let mut m = self.memo();
+            let bytes = v.as_ref().map_or(8, |s| row_bytes(&k.1, s));
+            if m.room(1, bytes) {
+                m.gets.insert(k, v.clone());
+            }
+        }
+        v
+    }
+
+    /// `stored_prefix`, answered from the memo when it holds the prefix.
+    fn sql_prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
+        let k = (table.to_owned(), prefix.to_vec());
+        if self.memo_ok()
+            && let Some(v) = self.memo().prefixes.get(&k).cloned()
+        {
+            #[cfg(feature = "test-faults")]
+            self.count(true);
+            return v;
+        }
+        #[cfg(feature = "test-faults")]
+        self.count(false);
+        let v = self.stored_prefix(table, prefix);
+        if self.memo_ok() {
+            let mut m = self.memo();
+            let bytes = v.iter().map(|(k, s)| row_bytes(k, s)).sum::<usize>();
+            if m.room(v.len().max(1), bytes) {
+                m.prefixes.insert(k, v.clone());
+            }
+        }
+        v
+    }
+
+    fn stored_get(&self, table: &str, key: &[Val]) -> Option<Stored> {
         let n = self.arity(table);
         assert_eq!(key.len(), n, "a {table} key has {n} columns");
         let q = format!("SELECT written, v FROM \"{}\"{}", self.name(table), where_eq(n));
@@ -522,12 +701,12 @@ impl Inner {
 
     /// The stored rows whose first `prefix.len()` key columns equal `prefix`, in key order: one indexed range of the
     /// primary key, so it reads no row past the prefix (`Store::prefix`).
-    fn sql_prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
+    fn stored_prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
         let n = self.arity(table);
         let m = prefix.len().min(n);
         if n == 0 {
             return if prefix.is_empty() {
-                self.sql_get(table, &[]).map(|r| (Vec::new(), r)).into_iter().collect()
+                self.stored_get(table, &[]).map(|r| (Vec::new(), r)).into_iter().collect()
             } else {
                 Vec::new()
             };
@@ -721,6 +900,7 @@ impl Store for TierSql {
     /// transaction of the member's writes touches but `apply`'s copies, buffered here and dropped too.
     fn clear(&mut self, table: &str) {
         let mut inner = self.0.borrow_mut();
+        *inner.memo.borrow_mut() = Memo::fresh();
         inner.open.retain(|(t, _), _| t != table);
         for b in &mut inner.sealed {
             b.retain(|(t, _), _| t != table);

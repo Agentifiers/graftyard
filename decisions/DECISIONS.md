@@ -8526,6 +8526,107 @@ row with enough open pull requests to test it (below, Evidence).
   batched (a `refs/heads/` read on a 500,000-ref repository): page that caller, as `refs_page` does, rather than
   return to batches everywhere.
 
+### `read-memo`: a tier's stored fold reads are memoized until the next transaction, 2026-11-23
+
+**Status.** Approved by the lead on 2026-11-23, with conditions (scratch transactions, every writer listed, reply and
+follower checks, plant 97). Built on `r33-readmemo`, in `workers/site/src/tier.rs` and `txn.rs` only. It ships on a
+site day. The evidence is `tests/am1/results/b033-applyprice.md`.
+
+**Decision.**
+- `workers/site/src/tier.rs`, `Inner`: a memo of `sql_get` and `sql_prefix` answers, keyed by table and key or prefix.
+  It is shared by every clone of the handle, as the write buffers are. `scan` is not memoized.
+- Buffered writes stay on top of the memo, as they stay on top of SQLite (`pending`, and `prefix`'s merge). So a
+  memoized row can differ from the stored row only while that row is in the handle's buffers, which every read
+  merges first.
+- The memo is dropped by `flushed`, by `clear`, by `set_loaded` and `hold_unloaded`, and by any transaction the
+  isolate starts: `crate::txn::commit_tx` counts a generation before it runs, and a memo from an older generation is
+  dropped at its next read. A writer outside the member's transaction therefore needs no call of its own when it uses
+  `commit_tx`.
+- A read is never memoized while the tier is unloaded or after a refused read (`lost`). On a test install it is also
+  skipped while a planted read failure is pending or the memo is switched off (`/bench_seed {"memo": false}`).
+- Caps: 4,096 rows per tier, and 8 MB for every memo of the isolate together, as `buffered` counts bytes. Past the
+  cap, a read goes to SQLite. `/stats` `memSplit.fold` reports `memoRows`, `memoBytes` and `memoIsolateBytes`. A test
+  install's `/stats?summary=1` reports `foldReads` (stored reads SQLite ran, reads the memo answered, events applied
+  since reset).
+- No change to `decide`, `apply`, the log, the wire, or any reply byte. Nothing in `crates/raft`, and none of the
+  functions in `crates/raft/src/member/leader.rs` that B0-29's reask-read touches.
+- **`decide`'s scratch.** There is no SQL scratch transaction. `RepoFold::scratch_at` builds a `RepoScratch` whose
+  tiers are an in-memory `graftyard_fold::Overlay` over the fold, so decide's writes never reach `TierSql`'s buffers
+  or SQLite. A dropped scratch leaves the memo holding only stored rows [verified in code;
+  `tests/leaderprof/memo.sh`'s `scratch` case on real SQLite].
+
+**Every writer of a tier's tables, by grep of `workers/site`** (`commit_tx(`, `sql.exec` of sealed statements, and
+the tier DDL helpers). Add any new writer here, and give it a `memo.sh` case:
+
+| Writer | Statements run by | How the memo is dropped |
+|---|---|---|
+| The member's input transaction (`host::flush`, `Write::Apply` and `Write::Install`, which runs `load::install_stmts`' `swap_in`) | `commit_tx` | generation, then `F::flushed` |
+| `Repo::catch_up` (`family.rs`), the core tier at restore | `commit_tx` | generation, then `core.flushed()` |
+| A load's batches and finish (`load.rs`: the job row, `drop_live` per metadata table, the scratch batches, `finish_stmts`, the `NotNeeded` metadata `swap_in`) | `commit_tx` | generation |
+| `load::reset_scratch` (`drop_scratch`, then `scratch_tiers`' DDL) | `sql.exec` | none needed: scratch tables (`i…`) only, read by the load's own handle, which writes them unmemoized until its `flushed` |
+| A split child's metadata restore (`split.rs`), on its own handle | `commit_tx` | generation, then `store.flushed()` |
+| The snapshot writer (`snap.rs`: `seal` at begin, commit and abort, the slim abort, the metadata load) | `sql.exec` | `flushed` on the same handle, or on a clone of it, right after |
+| `end_snapshot`'s undo-table clear | `TierSql::clear` | `clear` |
+| `live.rs` (L0-16's live check) | `sql.exec` | `flushed` on the same handle, right after |
+| `/bench_seed` seed rows (`snap.rs`, test installs) | `commit_tx` | generation, then `m.flushed()` |
+| `Repo::prepare`'s `reshape` at restore | `sql.exec` | none needed: it runs before any handle opens |
+
+**Why.**
+- Hosted apply cost scales with SQLite calls. A read-only apply slice costs 0.13 to 0.15 ms a read on blB and qlC,
+  0.24 on pgA, and 0.58 on pfA. In local workerd, 0.019 to 0.106 ms covers a read plus all the Rust work. A
+  one-statement transaction costs 1.7 to 18 ms [measured].
+- On B0-33's mix the leader makes 471 fold reads an entry: 139 in apply, 250 in the reply render, 45 in the consumer
+  scans, and 35 in the feed. Only 142 of them are distinct (query, args) pairs [measured, bed].
+- With a memo cleared at `flushed`, render reads fell from 250 to 23 and apply reads from 139 to 112, and every reply
+  status was unchanged [measured, bed, `readprobe.patch`].
+- Followers pay 0.6 to 1.5 ms an event and make no render reads. The leader pays 3.8 to 5.9 [measured].
+
+**What it beat.**
+- **Moving the next entry's decide out of the apply turn.** It moves CPU without removing it: an AS slice is an A
+  slice plus an N slice.
+- **Fewer or batched sends.** Hosted resend-only slices cost 0.7 to 2.4 ms, a small share.
+- **Fewer statements per entry.** This is the next lever (blB writes 206 statements an entry for 61 events), but it
+  changes `seal` and the log rows, and it reaches followers. It comes after this cut.
+- **A render cache keyed by command.** It covers only the render's reads, and it needs its own invalidation.
+
+**Expected effect.**
+- **B0-33's mix** [inference from measured]: about 40% of a leader apply event's SQL calls go. That is about 0.6 of
+  pgA's 2.75 ms an event and about 1.3 of pfA's 3.17.
+- **A push-only entry** (B0-32's burst) [measured, bed, N = 60]: reads fell from 370 to 309 an entry (−17%), apply
+  reads stayed at 185 (0%), prsync's scan stayed at 60, and the merge-queue scan fell from 120 to 60. With 187
+  statements, SQL calls go from 557 to 496 (−11%), and none of that is in the apply turn. The memo is not B0-32's
+  cut: B0-32 needs about 29% off its burst commit stage.
+- **Bed, 300 entries at N = 60** (`memo.sh`): the leader's core-tier stored reads fell from 139,899 to 23,366, and the
+  follower's to 19,879.
+
+**Checks.**
+- `tests/leaderprof/memo.sh` (the member's own `tier.rs` and `txn.rs` in local workerd, real SQLite):
+  - Edge cases: `scratch` (decide reads a ref, the scratch writes it, the scratch drops, and the next stored and
+    scratch reads see the stored value), `buffered`, `flushed` (another handle's transaction), `snapFlushed` (a
+    snapshot writer's own `sql.exec` statements), `clear`, `prefixKey` (two prefixes of one table in one transaction),
+    `refused`.
+  - A memo-on leader and follower against a memo-off member, over 300 entries at N = 60 and at N = 11, and 100
+    push-only entries. Fold digests are equal after every entry, and every reply the leader renders, before and
+    after each flush, is byte-identical.
+- Plant 97 (`tests/m0carried/plant97.py`), six mutants:
+  - `flushed` keeps the memo;
+  - `clear` keeps it;
+  - a refused read is kept;
+  - the memo is read before the buffered writes;
+  - another handle's transaction keeps it;
+  - prefix reads keyed by table alone.
+- `crates/raft` is unchanged, and the lead asked for the long sweep anyway. `RAFT_SEEDS=2000 RAFT_STEPS=10000`: exit 0
+  in 1,083 s. Porcupine (`-seg 2000`): `hist.jsonl` Ok on 146,543 operations, `hist.jsonl.gray` Ok on 2,346,656, and
+  `hist.jsonl.live` Ok on 5,474,828. The longest stretches with a healthy quorum and nothing completing were 14.7 s,
+  25.2 s and 24.9 s, under the 30 s bound [measured].
+- `cargo test --workspace`: 1,481 passed. fmt, workspace clippy, the wasm32 clippy for site, edge and ops both ways,
+  `go test` in `containers/git/server`, and the three docs checks all pass.
+
+**Flip.**
+- A hosted row whose leader stored reads per event fall by half or more while CPU per event falls by less than 15%:
+  the cost is not per call, and this entry's cause is wrong.
+- A member whose memory peak rises by more than the memo's cap: lower the cap, or memoize only `get`.
+
 ### `am2-wp1`: `graft-mcp`'s one-use rules live on the host, and a scoped token binds to its grant on `Identity`, 2026-11-22
 
 **Status.** Built on branch `am2-wp1`, the pure half of AM2-WP1, not hosted. LF-6 passes in memory over real members

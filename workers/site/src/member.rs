@@ -2345,10 +2345,13 @@ impl<F: Family> Routes<F> {
     fn mem_split(&self) -> Value {
         let core = self.host.core.borrow();
         let (rows, row_bytes) = core.as_ref().map_or((0, 0), |c| F::buffered(&c.m.group_fold().fold));
+        let (memo_rows, memo_bytes) = core.as_ref().map_or((0, 0), |c| F::memo(&c.m.group_fold().fold));
         let held = self.host.callers.borrow_mut().held_stats(false);
         let (stmts, stmt_bytes) = self.host.queued();
         json!({
-            "fold": { "rows": rows, "rowBytes": row_bytes, "caches": crate::family::cache_bytes() },
+            "fold": { "rows": rows, "rowBytes": row_bytes, "memoRows": memo_rows, "memoBytes": memo_bytes,
+                "memoIsolateBytes": crate::tier::memo_isolate_bytes(),
+                "caches": crate::family::cache_bytes() },
             "log": core.as_ref().map(|c| c.m.log_bytes()),
             "held": held.iter().map(|h| h.2).sum::<usize>(),
             "inFlight": {
@@ -2437,6 +2440,12 @@ impl<F: Family> Routes<F> {
             #[cfg(feature = "test-faults")]
             {
                 v["leaseClock"] = lease_clock_pcts(&s.lease_clock);
+                // read-memo's hosted count: the fold's stored reads SQLite ran and those the memo answered since the
+                // member's handles opened, beside the events applied (`applySteps`' third column) a driver divides by.
+                let reads = self.host.core.borrow().as_ref().map(|c| F::fold_reads(&c.m.group_fold().fold));
+                let events: u64 = s.apply_steps.iter().map(|x| u64::from(x.2)).sum();
+                v["foldReads"] =
+                    json!({ "sql": reads.map(|r| r.0), "memo": reads.map(|r| r.1), "eventsSinceReset": events });
                 // The counted bytes' high-water since the last `high=1` read (`Host::mark_mem`), and now; `high=1`
                 // starts the next one from now, so each 2 s sample shows the peak of the seconds since the one before.
                 v["memHigh"] = json!(s.mem_high);

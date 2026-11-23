@@ -76,6 +76,15 @@ pub trait Family: 'static {
     fn buffered(_fold: &Self::Fold) -> (usize, usize) {
         (0, 0)
     }
+    /// The rows the fold's read memos hold and their bytes (`crate::tier`, "Read memo").
+    fn memo(_fold: &Self::Fold) -> (usize, usize) {
+        (0, 0)
+    }
+    /// Test installs: the fold's stored reads SQLite ran and those its read memos answered (`/stats` `foldReads`).
+    #[cfg(feature = "test-faults")]
+    fn fold_reads(_fold: &Self::Fold) -> (u64, u64) {
+        (0, 0)
+    }
     /// The fold keeps its own tables beside the log (`crate::tier`): restore does not replay the log into a second
     /// fold to compare, which would write those tables; a tier refuses an entry out of order instead.
     fn tiered() -> bool {
@@ -850,6 +859,15 @@ impl Family for Repo {
         let (c, m) = (crate::tier::handle(&*fold.core).buffered(), crate::tier::handle(&*fold.meta).buffered());
         (c.0 + m.0, c.1 + m.1)
     }
+    fn memo(fold: &git::repo::RepoFold) -> (usize, usize) {
+        let (c, m) = (crate::tier::handle(&*fold.core).memo_size(), crate::tier::handle(&*fold.meta).memo_size());
+        (c.0 + m.0, c.1 + m.1)
+    }
+    #[cfg(feature = "test-faults")]
+    fn fold_reads(fold: &git::repo::RepoFold) -> (u64, u64) {
+        let (c, m) = (crate::tier::handle(&*fold.core).read_counts(), crate::tier::handle(&*fold.meta).read_counts());
+        (c.0 + m.0, c.1 + m.1)
+    }
     /// Feeds the activity feed's ring each applied entry (`crate::feed`), and marks a gap or an install, which stop
     /// the member following until it catches up. The ring waits for the owner's `Authz` (`crate::feed::Feed::owner`,
     /// read on the first poll) and keeps the entries meanwhile.
@@ -1138,6 +1156,18 @@ impl Family for Repo {
                 let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
                 crate::tier::handle(&*c.m.group_fold().fold.core).fail_next_read();
                 Ok(json!({ "failRead": true }))
+            })()),
+            // Test installs (read-memo): `{"memo": false}` turns this member's fold read memos off, `true` back on, so a
+            // row can read the same member both ways; either drops what they held.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("memo").is_some() => Some((|| {
+                let core = host.core.borrow();
+                let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
+                let on = body["memo"].as_bool().unwrap_or(true);
+                let f = &c.m.group_fold().fold;
+                crate::tier::handle(&*f.core).set_memo(on);
+                crate::tier::handle(&*f.meta).set_memo(on);
+                Ok(json!({ "memo": on }))
             })()),
             // Test installs (L0-16): `{"metaUnload": true}` holds this member's metadata tier unloaded and counts
             // every read of it; `false` releases it (the alarm then loads it). Either answers the reads counted.

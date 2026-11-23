@@ -1,0 +1,169 @@
+--- a/tests/leaderprof/bed/src/lib.rs
++++ b/tests/leaderprof/bed/src/lib.rs
+@@ -121,6 +121,8 @@
+ /// Times each probe read (`pulls_from`, `pulls_from_after`, `lease_rows`, `scan_one`) runs per entry.
+ const PROBE_REPS: u64 = 10;
+ 
++thread_local! { static READ_MARK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
++
+ fn now() -> f64 {
+     js_sys::Date::now()
+ }
+@@ -467,6 +469,8 @@
+         let (n, entries, peers, grow) = (q("cmds", 60) as usize, q("entries", 40), q("peers", 6) as u8, q("grow", 0));
+         // `only=KIND` makes every command one kind of the mix, to split `fold_apply` by kind.
+         let only = url.query_pairs().find(|(k, _)| k == "only").map(|(_, v)| v.into_owned());
++        tier::MEMO_ON.with(|c| c.set(url.query_pairs().any(|(k, v)| k == "memo" && v == "1")));
++        tier::memo_clear();
+         let sink = url.query_pairs().find(|(k, _)| k == "sink").map(|(_, v)| v.into_owned());
+         let sql = self.state.storage().sql();
+         for s in SCHEMA {
+@@ -509,6 +513,9 @@
+         let mut ring = graftyard_git::feed::Ring::default();
+         let mut by_kind: BTreeMap<&'static str, (f64, u64)> = BTreeMap::new();
+         let mut issue_cmds = 0u64;
++        let mut apply_reads = 0u64;
++        let mut distinct = 0u64;
++        let mut stage_reads: BTreeMap<&'static str, u64> = BTreeMap::new();
+         let mut statuses: BTreeMap<String, u64> = BTreeMap::new();
+         let mut t: BTreeMap<&str, f64> = STAGES.iter().map(|(s, _)| (*s, 0.0)).collect();
+         let mut units: BTreeMap<&str, u64> = STAGES.iter().map(|(s, _)| (*s, 0)).collect();
+@@ -532,11 +539,16 @@
+             if timed {
+                 pushes += cmds.iter().filter(|c| c.push).count();
+             }
++            tier::SQL_SEEN.with(|s| s.borrow_mut().clear());
++            let d0 = tier::SQL_DISTINCT.with(|c| c.get());
+             let mut add = |s: &'static str, a: f64, u: u64| {
++                let r = tier::SQL_READS.with(|c| c.get());
+                 if timed {
+                     *t.get_mut(s).unwrap() += now() - a;
+                     *units.get_mut(s).unwrap() += u;
++                    *stage_reads.entry(s).or_default() += r - READ_MARK.with(|m| m.get());
+                 }
++                READ_MARK.with(|m| m.set(r));
+             };
+ 
+             let a = now();
+@@ -556,9 +568,11 @@
+                 entry_bytes += graftyard_raft::encode_entry(&e).len();
+             }
+ 
++            let r0 = tier::SQL_READS.with(|c| c.get());
+             let a = now();
+             fold.apply_entry(&e);
+             add("fold_apply", a, 1);
++            if timed { apply_reads += tier::SQL_READS.with(|c| c.get()) - r0; }
+ 
+             let a = now();
+             let mut stmts = Vec::new();
+@@ -860,6 +874,7 @@
+             let EntryBody::Events(evs) = &e.body else { unreachable!() };
+             ring.feed(RepoId(DbId(7)), &*owner, &fold.core, meta, (e.index, e.at, evs));
+             add("feed_ring", a, 1);
++            distinct += tier::SQL_DISTINCT.with(|c| c.get()) - d0;
+             prev = d;
+         }
+         let e = entries as f64;
+@@ -873,7 +888,7 @@
+         Ok(
+             json!({ "cmds": n, "entries": entries, "grow": grow, "peers": peers, "openPrs": open_prs, "leases": lease_n, "pushesPerEntry": pushes as f64 / e,
+             "entryBytes": entry_bytes as f64 / e, "stmtsPerEntry": stmts_n as f64 / e, "stmtBytesPerEntry": stmt_bytes as f64 / e,
+-            "learnerCallsPerEntry": LEARNER_CALLS, "authzBytes": authz_bytes, "replyStatus": statuses, "issueCmds": issue_cmds,
++            "learnerCallsPerEntry": LEARNER_CALLS, "authzBytes": authz_bytes, "applyReadsPerEntry": apply_reads as f64 / entries.max(1) as f64, "allReads": tier::SQL_READS.with(|c| c.get()), "distinctPerEntry": distinct as f64 / entries.max(1) as f64, "readsPerEntry": stage_reads.iter().map(|(k, v)| ((*k).to_owned(), json!(*v as f64 / entries.max(1) as f64))).collect::<Map<String, Value>>(), "replyStatus": statuses, "issueCmds": issue_cmds,
+             "renderByKind": by_kind.iter().map(|(k, (ms, c))| ((*k).to_owned(), json!({ "n": c, "msPer": ms / (*c).max(1) as f64 })))
+                 .collect::<Map<String, Value>>(), "entriesCallsPerEntry": ENTRIES_CALLS,
+             "totalMs": t, "perEntryMs": per_entry, "perUnitMs": per_unit, "unit": unit }),
+--- a/workers/site/src/tier.rs
++++ b/workers/site/src/tier.rs
+@@ -34,6 +34,22 @@
+ /// How a sealed row is indexed for search: the statements that bring the FTS5 tables in line with it.
+ pub type Fts = fn(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt>;
+ 
++thread_local! {
++    pub static SQL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++    pub static SQL_SEEN: RefCell<std::collections::HashSet<String>> = RefCell::new(Default::default());
++    pub static SQL_DISTINCT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++}
++thread_local! {
++    pub static MEMO_GET: RefCell<std::collections::HashMap<String, Option<Stored>>> = RefCell::new(Default::default());
++    pub static MEMO_PRE: RefCell<std::collections::HashMap<String, Vec<(Key, Stored)>>> = RefCell::new(Default::default());
++    pub static MEMO_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++pub fn memo_clear() { MEMO_GET.with(|m| m.borrow_mut().clear()); MEMO_PRE.with(|m| m.borrow_mut().clear()); }
++pub fn note_read(q: &str, args: &[SqlStorageValue]) {
++    let k = format!("{q}|{args:?}");
++    if SQL_SEEN.with(|s| s.borrow_mut().insert(k)) { SQL_DISTINCT.with(|c| c.set(c.get() + 1)); }
++}
++
+ struct Inner {
+     sql: SqlStorage,
+     tier: Tier,
+@@ -417,6 +433,7 @@
+ 
+     /// Every sealed batch's transaction has run.
+     pub fn flushed(&self) {
++        memo_clear();
+         self.0.borrow_mut().sealed.clear();
+     }
+ 
+@@ -440,6 +457,7 @@
+ 
+     /// The query a stored read runs: on test installs, once after `fail_next_read`, one SQLite refuses.
+     fn query(&self, q: String) -> String {
++        SQL_READS.with(|c| c.set(c.get() + 1));
+         #[cfg(feature = "test-faults")]
+         if self.held_unloaded {
+             self.reads.set(self.reads.get() + 1);
+@@ -490,9 +508,19 @@
+     }
+ 
+     fn sql_get(&self, table: &str, key: &[Val]) -> Option<Stored> {
++        if MEMO_ON.with(|c| c.get()) {
++            let mk = format!("{}|{}|{key:?}", self.prefix, self.name(table));
++            if let Some(v) = MEMO_GET.with(|m| m.borrow().get(&mk).cloned()) { return v; }
++            MEMO_ON.with(|c| c.set(false));
++            let v = self.sql_get(table, key);
++            MEMO_ON.with(|c| c.set(true));
++            MEMO_GET.with(|m| m.borrow_mut().insert(mk, v.clone()));
++            return v;
++        }
+         let n = self.arity(table);
+         assert_eq!(key.len(), n, "a {table} key has {n} columns");
+         let q = format!("SELECT written, v FROM \"{}\"{}", self.name(table), where_eq(n));
++        note_read(&q, &key.iter().map(to_sql).collect::<Vec<_>>());
+         let cursor = match self.sql.exec(&self.query(q), key.iter().map(to_sql).collect::<Vec<_>>()) {
+             Ok(c) => c,
+             Err(e) => {
+@@ -523,6 +551,15 @@
+     /// The stored rows whose first `prefix.len()` key columns equal `prefix`, in key order: one indexed range of the
+     /// primary key, so it reads no row past the prefix (`Store::prefix`).
+     fn sql_prefix(&self, table: &str, prefix: &[Val]) -> Vec<(Key, Stored)> {
++        if MEMO_ON.with(|c| c.get()) {
++            let mk = format!("{}|{}|{prefix:?}", self.prefix, self.name(table));
++            if let Some(v) = MEMO_PRE.with(|m| m.borrow().get(&mk).cloned()) { return v; }
++            MEMO_ON.with(|c| c.set(false));
++            let v = self.sql_prefix(table, prefix);
++            MEMO_ON.with(|c| c.set(true));
++            MEMO_PRE.with(|m| m.borrow_mut().insert(mk, v.clone()));
++            return v;
++        }
+         let n = self.arity(table);
+         let m = prefix.len().min(n);
+         if n == 0 {
+@@ -541,6 +578,7 @@
+             k.join(", ")
+         );
+         let args: Vec<SqlStorageValue> = prefix[..m].iter().map(to_sql).collect();
++        note_read(&q, &args);
+         let mut out = Vec::new();
+         let rows = match self.sql.exec(&self.query(q), args) {
+             Ok(r) => r,
+@@ -592,6 +630,7 @@
+         let q = format!("SELECT {}, written, v FROM \"{t}\"{cond} ORDER BY {} LIMIT ?", k.join(", "), k.join(", "));
+         let mut args: Vec<SqlStorageValue> = from[..m].iter().map(to_sql).collect();
+         args.push(SqlStorageValue::Integer(limit as i64));
++        note_read(&q, &args);
+         let mut out = Vec::new();
+         let rows = match self.sql.exec(&self.query(q), args) {
+             Ok(r) => r,
