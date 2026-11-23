@@ -177,9 +177,33 @@ constants stay [guess] until a row times them against feed rounds.
 reads only the status takes it as deleted. The vault deletes only through its binding, and only `RESTORE_WINDOW` (35
 days) after the install's GC, when the lock no longer holds the object; `r2.py` reads the errors.
 
+## BF-47's local half: the vault step of `release roll` (2026-11-23, code only, $0)
+
+Operator ruling: `vault upgrade` stays outside the `Release` group's intents and is a step of `release roll` on the
+operator's machine (`decisions/DECISIONS.md`, "`vault-roll`"; DESIGN, "Install operations", Release roll, step 4).
+
+- `graftyard_release::ops::vault_due` (the order through `McpRoll` is now `next_code`, which `next_roll` and
+  `vault_due` share; `next_roll` is otherwise unchanged): due once R lists a `vault/` module and no code intent is
+  owed for R. A `ContainerDay` does not hold it back.
+- `graftyard release roll R --vault-account A --vault-release DIR --release-key K [--vault-script S]`: when the step
+  is due, it reads the release the vault script serves under `CLOUDFLARE_VAULT_API_TOKEN` and runs `vault upgrade`
+  when that is not R, printing `{"vault": "upgraded"}` or `{"vault": "at"}`; with no vault account or no token it
+  prints `{"vault": "owed", "why": ...}` and goes on. It refuses, before any API call, a vault token equal to
+  `CLOUDFLARE_API_TOKEN` (BF-47's fail line) and a vault account equal to install.toml's, and refuses a folder whose
+  `release.json` is not R's.
+- Tests: `crates/release` `bf47_the_vault_step_follows_the_code_intents_and_does_not_wait_for_container_days` (four
+  site days, `EdgeRoll`, `OpsRoll`, the vault step, then four `ContainerDay`s; no step for a release without `vault/`;
+  not due while a site day is owed). `cli/src/release.rs`
+  `release_roll_upgrades_the_vault_under_its_own_token_once_the_code_intents_are_done` (not due while `FrontRoll` is
+  owed; owed with no account or token; `release roll` stops on the install's token; the install's account refused; an
+  upgrade that keeps the bindings with every request under the vault's bearer token, then "at"; another release's
+  folder refused).
+- `tests/m0carried/plant93.py`: 9 mutants, 9 caught.
+- BF-47's hosted row (a full `release roll` with `SiteDay { Workflows }` and the vault step) is not cleared.
+
 ## Left
 
 1. **Hosted:** done on a stand-in vault account (vh1, above). A customer-owned vault account, and the export `jti`
    revoked against the vault, remain.
-2. BF-47 (`release roll` running `vault upgrade` hosted); `vault upgrade` and the verified `vault init` are built.
+2. BF-47's hosted row; its local half (the vault step of `release roll`) is built.
 3. **Per-org pull caps** (R39 (a)).

@@ -8119,6 +8119,41 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A release needs the vault deployed by `graft-ops`: the vault account would have to trust an install token, which
   DESIGN's failure domain forbids, so this needs an operator decision.
 
+### `vault-roll`: `vault upgrade` is a step of `release roll` on the operator's machine, not a group intent, 2026-11-23
+
+**Decision.** Operator ruling, 2026-11-23, for BF-47. `release roll R` runs the vault step after `McpRoll` and before
+R's `ContainerDay`s, which it does not wait for (`design/DESIGN.md`, "Install operations", Release roll, step 4):
+- `graftyard_release::ops::next_roll` stays group-only. `ops::vault_due` says the step is due once R lists a `vault/`
+  module and every code intent through `McpRoll` is done or skipped for R.
+- When it is due, `release roll` reads the release the vault script serves (its version's `workers/tag`) under
+  `CLOUDFLARE_VAULT_API_TOKEN` with `--vault-account`, `--vault-release` (R's folder) and `--release-key`, and runs
+  `vault upgrade` when that is not R. Without a vault account or that token, it prints `{"vault": "owed"}` and goes
+  on to the next intent.
+- It refuses a vault token equal to the install's token (`CLOUDFLARE_API_TOKEN`) and a vault account equal to the
+  install's, before any API call, and a folder whose `release.json` is not R's.
+
+**Why.**
+- `graft-ops` cannot reach the vault account by design ("Every install runs a vault account"), and no intent should
+  name a script `graft-ops` cannot execute or undo.
+- The vault pulls the edge's export endpoints, so it follows the edge; it reads no container image.
+- An operator-machine call is not a request path, so "No request path calls the Cloudflare API" holds.
+
+**What it beat.**
+- **A `VaultRoll` intent.** `graft-ops` would hold a step it can never take or undo, and `Intent` is a wire enum.
+- **A separate manual `vault upgrade`.** BF-47 checks the vault inside the roll's order.
+
+**Evidence.** `crates/release` `bf47_the_vault_step_follows_the_code_intents_and_does_not_wait_for_container_days`:
+the vault step falls after `OpsRoll` and before four `ContainerDay`s, is owed only by a release with `vault/`, and is
+not due while a site day is owed. `cli/src/release.rs`
+`release_roll_upgrades_the_vault_under_its_own_token_once_the_code_intents_are_done`: owed with no account or token,
+the install's token and account refused, an upgrade under the vault's own token only (every request's bearer), then
+left at R; another release's folder refused. `tests/m0carried/plant93.py`.
+
+**Flip.**
+- The vault account comes within `graft-ops`' reach (a token or binding it holds): the step becomes an intent with a
+  pointer undo, which needs an operator decision since it widens the vault's failure domain.
+- A vault release needs a container image: the step moves after the `ContainerDay`s.
+
 ### `validate-hedge`: a human push's buffered validate asks every site left after 1 s, beside the first, 2026-11-22
 
 **Status.** Built on branch `validate-fallback`, not yet on a hosted row. Edge only (`workers/edge/src/lib.rs`,

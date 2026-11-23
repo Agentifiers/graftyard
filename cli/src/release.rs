@@ -350,6 +350,7 @@ pub fn replay(t: &InstallToml, path: &Path) -> Res<graftyard_release::view::Repl
 /// `graftyard release roll R`: from the group's entries (`--entries`), signs the first intent of the roll order that R
 /// has not finished, with its pre-signed undos, by `key`, bound to the last digest, and posts it, or writes it to
 /// `out`. One intent per run: the operator, or the vendor's release service, runs it again after each `IntentDone`.
+#[allow(clippy::too_many_arguments)]
 pub fn roll(
     config: &Path,
     release: &str,
@@ -358,11 +359,41 @@ pub fn roll(
     ttl_s: u64,
     out: Option<&Path>,
     edge: Option<&str>,
+    vault: Option<&VaultStep>,
 ) -> Res<()> {
-    use graftyard_release::ops::{Roll, next_roll, sign_intent};
+    let token = std::env::var(crate::vault::TOKEN_VAR).ok();
+    let install = std::env::var("CLOUDFLARE_API_TOKEN").ok();
+    let api = std::env::var("GRAFTYARD_CF_API").unwrap_or_else(|_| "https://api.cloudflare.com/client/v4".into());
+    let creds = Creds { vault: token.as_deref(), install: install.as_deref(), api: &api };
+    roll_in(config, release, entries, key, ttl_s, out, edge, vault, &creds)
+}
+
+/// The tokens `release roll`'s vault step sees: the vault account's, the install's (only to refuse it), and the API.
+struct Creds<'a> {
+    vault: Option<&'a str>,
+    install: Option<&'a str>,
+    api: &'a str,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn roll_in(
+    config: &Path,
+    release: &str,
+    entries: &Path,
+    key: &Path,
+    ttl_s: u64,
+    out: Option<&Path>,
+    edge: Option<&str>,
+    vault: Option<&VaultStep>,
+    creds: &Creds,
+) -> Res<()> {
+    use graftyard_release::ops::{Roll, next_roll, sign_intent, vault_due};
     let t = InstallToml::load(config)?;
     let r = replay(&t, entries)?;
     let rid = ReleaseId(h32(release)?);
+    if vault_due(&r.fold, rid) {
+        println!("{}", vault_step(&t, rid, vault, creds)?);
+    }
     let (intent, undo) = match next_roll(&r.fold, rid) {
         Roll::Done => {
             println!("{{\"roll\": \"done\", \"release\": \"{release}\"}}");
@@ -394,6 +425,53 @@ pub fn roll(
     };
     println!("{}", serde_json::json!({ "intent": id.0.to_string(), "answer": line }));
     Ok(())
+}
+
+/// `release roll`'s vault step: the vault account, its script, and R's release folder with the release key.
+pub struct VaultStep<'a> {
+    pub account: &'a str,
+    pub script: &'a str,
+    pub release: &'a Path,
+    pub release_key: &'a Path,
+}
+
+/// `release roll R`'s vault step, once every code intent through `McpRoll` is done for R ("Install operations", Release
+/// roll, step 4). It is no group intent, because graft-ops cannot reach the vault account (`decisions/DECISIONS.md`,
+/// "`vault-roll`"). Under the vault account's own token (`token`, never an install token, BF-47's fail line) it reads
+/// the release the vault script serves, and runs `vault upgrade` with R's release folder when that is not R. With no
+/// `--vault-account` or no token, it reports the step owed and the roll goes on. Answers the line `release roll`
+/// prints.
+fn vault_step(t: &InstallToml, r: ReleaseId, vault: Option<&VaultStep>, creds: &Creds) -> Res<Value> {
+    let rid = r.0.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let owed = |why: &str| serde_json::json!({ "vault": "owed", "release": rid, "why": why });
+    let Some(v) = vault else { return Ok(owed("no --vault-account: run graftyard vault upgrade --release R")) };
+    let Some(token) = creds.vault.filter(|t| !t.is_empty()) else {
+        return Ok(owed(&format!("{} is not set", crate::vault::TOKEN_VAR)));
+    };
+    if v.account == t.account {
+        return Err(format!(
+            "--vault-account is the install's account {}: the vault lives in its own account",
+            t.account
+        ));
+    }
+    if creds.install == Some(token) {
+        return Err(format!(
+            "{} is the install's token: the vault upgrades only under its own",
+            crate::vault::TOKEN_VAR
+        ));
+    }
+    let cf = crate::cf::Cf::with(creds.api, v.account, token);
+    if crate::vault::serving(&cf, v.script)?.as_deref() == Some(rid.as_str()) {
+        return Ok(serde_json::json!({ "vault": "at", "release": rid }));
+    }
+    let record = fs::read(v.release.join("release.json")).map_err(|e| format!("{}: {e}", v.release.display()))?;
+    use sha2::Digest as _;
+    if sha2::Sha256::digest(&record).as_slice() != r.0 {
+        return Err(format!("{} is not release {rid}'s folder", v.release.display()));
+    }
+    let release = crate::vault::Release { dir: v.release, release_key: v.release_key };
+    crate::vault::upgrade_with(&cf, &crate::vault::UpgradeArgs { account: v.account, script: v.script, release })?;
+    Ok(serde_json::json!({ "vault": "upgraded", "release": rid }))
 }
 
 #[cfg(test)]
@@ -486,6 +564,7 @@ mod tests {
             3_600,
             None,
             Some(&url),
+            None,
         )
         .unwrap();
         let s = seen.recv().unwrap();
@@ -498,9 +577,176 @@ mod tests {
         let mut bad = log.clone();
         bad[2].0[40] ^= 1;
         fs::write(&entries, serde_json::to_vec(&view(&bad)).unwrap()).unwrap();
-        let r = roll(&config, &"00".repeat(32), &entries, &ckey, 3_600, Some(&dir.join("x")), None);
+        let r = roll(&config, &"00".repeat(32), &entries, &ckey, 3_600, Some(&dir.join("x")), None, None);
         assert!(r.is_err(), "{r:?}");
         assert!(!dir.join("x").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BF-47's vault step through `release roll`: once R's code intents are done, the roll reads the vault script's
+    /// release under the vault account's token and upgrades it to R's verified `vault/`, keeping its bindings; with no
+    /// vault account or no token it prints the step owed and signs nothing new; it refuses the install's token or
+    /// account, and never calls the API for them.
+    #[test]
+    fn release_roll_upgrades_the_vault_under_its_own_token_once_the_code_intents_are_done() {
+        use std::sync::{Arc, Mutex};
+        let dir = scratch();
+        let config = install_toml(&dir, &CUSTOMER);
+        let unsigned = make_genesis(&dir, &config, "genesis.unsigned");
+        let ckey = key_file(&dir, "customer.key", &CUSTOMER, false);
+        let rkey = key_file(&dir, "release.pub", &[3; 32], true);
+        let signed = dir.join("genesis.signed");
+        sign(&unsigned, &signed, &ckey, None).unwrap();
+        let t = InstallToml::load(&config).unwrap();
+        let anchor = t.anchor().unwrap();
+        let mut fold = ReleaseFold::default();
+        let mut log: Vec<(Vec<u8>, Timestamp)> = Vec::new();
+        let mut at = Timestamp(1_790_000_000_000);
+        let mut commit = |fold: &mut ReleaseFold, b: Vec<u8>, log: &mut Vec<_>| {
+            at = Timestamp(at.0 + 60_000);
+            let ev = fold.decide(&anchor, at, &b).unwrap();
+            fold.apply(&ev, at);
+            log.push((b, at));
+        };
+        commit(&mut fold, fs::read(&signed).unwrap(), &mut log);
+        let exec = [5u8; 32];
+        let mut k = fold.keys.clone().unwrap();
+        k.generation += 1;
+        k.executor = graftyard_release::public_key(&exec);
+        let bound =
+            |f: &ReleaseFold| Bound { install: anchor.install, group: ChainId::Release, prev: f.last, parent: None };
+        let mut e = SignedEntry::unsigned(bound(&fold), ReleaseEntry::Keys(Box::new(k)));
+        e.sign(&CUSTOMER);
+        commit(&mut fold, e.encode(), &mut log);
+        // R's folder: formats.txt and the vault Worker, release.json signed by the genesis's release key. R names no
+        // script graft-ops deploys, so no code intent is owed and the vault step is due at once.
+        let reads = FormatSet::new([Format { family: 32, version: 1 }]);
+        let rel = dir.join("r");
+        fs::create_dir_all(rel.join("vault")).unwrap();
+        let formats = reads.file();
+        let files: [(&str, &[u8]); 3] = [
+            ("formats.txt", formats.as_bytes()),
+            ("vault/entry.js", b"export default {}"),
+            ("vault/ab-index_bg.wasm", b"\0asm"),
+        ];
+        let mut listed = Vec::new();
+        for (n, b) in files {
+            fs::write(rel.join(n), b).unwrap();
+            listed.push(json!({ "name": n, "sha256": crate::config::hex(&sha2::Sha256::digest(b)) }));
+        }
+        let rec = serde_json::to_vec(&json!({ "label": "rv", "files": listed })).unwrap();
+        fs::write(rel.join("release.json"), &rec).unwrap();
+        fs::write(rel.join("release.sig"), sign_record(&[3; 32], &rec).0).unwrap();
+        let rid = ReleaseId(sha2::Sha256::digest(&rec).into());
+        let rhex = crate::config::hex(&rid.0);
+        let up = ReleaseUploaded {
+            release: rid,
+            record_sig: sign_record(&[3; 32], &rec),
+            record: rec.clone().into(),
+            versions: [(Script::Front, graftyard_release::VersionId([9; 16]))].into_iter().collect(),
+            images: smallvec::SmallVec::new(),
+            reads,
+        };
+        let mut e = SignedEntry::unsigned(bound(&fold), ReleaseEntry::ReleaseUploaded(Box::new(up)));
+        e.sign(&exec);
+        commit(&mut fold, e.encode(), &mut log);
+        // FrontRoll is owed first: the vault step is not due, and nothing reaches the vault account.
+        let entries = dir.join("view.json");
+        fs::write(&entries, serde_json::to_vec(&view(&log)).unwrap()).unwrap();
+        let none = Creds { vault: Some("vault-token"), install: Some("install-token"), api: "http://127.0.0.1:9" };
+        let vs = VaultStep { account: "vaultacct", script: "graft-vault", release: &rel, release_key: &rkey };
+        let out1 = dir.join("i1");
+        roll_in(&config, &rhex, &entries, &ckey, 3_600, Some(&out1), None, Some(&vs), &none).unwrap();
+        let e1 = SignedEntry::decode(&fs::read(&out1).unwrap()).unwrap();
+        assert!(
+            matches!(&e1.body, ReleaseEntry::Intent(i) if matches!(i.intent, graftyard_release::Intent::FrontRoll { .. }))
+        );
+        // FrontRoll done.
+        commit(&mut fold, e1.encode(), &mut log);
+        let ReleaseEntry::Intent(i) = &e1.body else { unreachable!() };
+        for step in 0..2 {
+            let mut e = SignedEntry::unsigned(bound(&fold), ReleaseEntry::IntentStep { intent: i.id, step });
+            e.sign(&exec);
+            commit(&mut fold, e.encode(), &mut log);
+        }
+        let mut e = SignedEntry::unsigned(bound(&fold), ReleaseEntry::IntentDone { intent: i.id });
+        e.sign(&exec);
+        commit(&mut fold, e.encode(), &mut log);
+        fs::write(&entries, serde_json::to_vec(&view(&log)).unwrap()).unwrap();
+        let r = replay(&t, &entries).unwrap();
+        assert!(graftyard_release::ops::vault_due(&r.fold, rid));
+        // `release roll` itself takes the step once it is due: under the install's token it stops there.
+        let same = Creds { vault: Some("install-token"), install: Some("install-token"), api: "http://127.0.0.1:9" };
+        let err = roll_in(&config, &rhex, &entries, &ckey, 3_600, Some(&dir.join("i2")), None, Some(&vs), &same);
+        assert!(err.unwrap_err().contains("install's token"));
+        let step = |vault: Option<&VaultStep>, creds: &Creds| vault_step(&t, rid, vault, creds);
+        // Owed: no vault account, or no vault token. No API call (the API is unreachable).
+        let v = step(None, &none).unwrap();
+        assert_eq!(v["vault"], json!("owed"));
+        let no_token = Creds { vault: None, ..none };
+        assert_eq!(step(Some(&vs), &no_token).unwrap()["vault"], json!("owed"));
+        // The install's token or account: refused before any call.
+        assert!(step(Some(&vs), &same).unwrap_err().contains("install's token"));
+        let acct = VaultStep { account: &t.account, ..vs };
+        assert!(step(Some(&acct), &none).unwrap_err().contains("install's account"));
+        // Under its own token: N is served, so it uploads R's vault/ keeping the bindings and deploys it; then R is
+        // served and the step leaves it.
+        let state = Arc::new(Mutex::new(false));
+        let auth = Arc::new(Mutex::new(Vec::new()));
+        let (st, au, rh) = (state.clone(), auth.clone(), rhex.clone());
+        let (url, seen) = serve(10, move |s| {
+            let p = s.line.split(' ').nth(1).unwrap_or("").to_string();
+            au.lock().unwrap().push(s.headers.iter().find(|(k, _)| k == "authorization").map(|(_, v)| v.clone()));
+            let ok = |r: Value| (200, json!({ "success": true, "result": r }).to_string());
+            let v = if *st.lock().unwrap() { "new" } else { "old" };
+            match (s.line.split(' ').next().unwrap(), p.as_str()) {
+                ("GET", "/accounts/vaultacct/workers/scripts/graft-vault/deployments") => ok(json!({ "deployments": [{
+                    "versions": [{ "version_id": v, "percentage": 100 }], "created_on": "2026-11-23T00:00:00Z" }] })),
+                ("GET", "/accounts/vaultacct/workers/scripts/graft-vault/versions/old") => {
+                    ok(json!({ "annotations": { "workers/tag": "aa" } }))
+                }
+                ("GET", "/accounts/vaultacct/workers/scripts/graft-vault/versions/new") => {
+                    ok(json!({ "annotations": { "workers/tag": rh } }))
+                }
+                ("POST", "/accounts/vaultacct/workers/scripts/graft-vault/versions") => ok(json!({ "id": "new" })),
+                ("POST", "/accounts/vaultacct/workers/scripts/graft-vault/deployments") => {
+                    *st.lock().unwrap() = true;
+                    ok(json!({}))
+                }
+                (m, p) => panic!("unexpected {m} {p}"),
+            }
+        });
+        let own = Creds { vault: Some("vault-token"), install: Some("install-token"), api: &url };
+        assert_eq!(step(Some(&vs), &own).unwrap()["vault"], json!("upgraded"));
+        assert_eq!(step(Some(&vs), &own).unwrap()["vault"], json!("at"));
+        let mut calls = Vec::new();
+        while let Ok(s) = seen.try_recv() {
+            calls.push(s);
+        }
+        let upload = calls.iter().find(|s| s.line.starts_with("POST") && s.line.contains("/versions ")).unwrap();
+        let text = String::from_utf8_lossy(&upload.body);
+        assert!(text.contains(r#""keep_bindings":["r2_bucket","plain_text","secret_text"]"#), "{text:.300}");
+        assert!(text.contains(&rhex) && text.contains("filename=\"entry.js\""));
+        assert!(
+            auth.lock().unwrap().iter().all(|a| a.as_deref() == Some("Bearer vault-token")),
+            "only the vault's token"
+        );
+        // Another release's folder for R: refused before any upload.
+        let other = dir.join("o");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("release.json"), b"{}").unwrap();
+        let (url2, _rx2) = serve(2, |s| {
+            let r = if s.line.contains("/versions/") {
+                json!({ "annotations": { "workers/tag": "aa" } })
+            } else {
+                json!({ "deployments": [{ "versions": [{ "version_id": "old", "percentage": 100 }] }] })
+            };
+            (200, json!({ "success": true, "result": r }).to_string())
+        });
+        let own2 = Creds { api: &url2, ..own };
+        let wrong = VaultStep { release: &other, ..vs };
+        let err = step(Some(&wrong), &own2).unwrap_err();
+        assert!(err.contains("is not release"), "{err}");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

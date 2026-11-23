@@ -100,8 +100,8 @@ MUTANTS = [
     ("upgrade resets the bindings", CLI,
      '        "keep_bindings": ["r2_bucket", "plain_text", "secret_text"],', '        "keep_bindings": [],', INIT),
     ("upgrade uploads again a release already at 100%", CLI,
-     '        if *pct >= 100.0 && cf.version_tag(a.script, id)?.as_deref() == Some(release.as_str()) {',
-     '        if *pct > 100.0 && cf.version_tag(a.script, id)?.as_deref() == Some(release.as_str()) {', INIT),
+     '    if serving(cf, a.script)?.as_deref() == Some(release.as_str()) {',
+     '    if false && serving(cf, a.script)?.as_deref() == Some(release.as_str()) {', INIT),
     # `vault init`.
     ("the lock covers 30 days, not 35", CLI,
      '"condition": { "type": "Age", "maxAgeSeconds": LOCK_DAYS * 86_400 },',
