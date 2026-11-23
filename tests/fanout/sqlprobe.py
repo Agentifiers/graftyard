@@ -47,17 +47,17 @@ def probes(path):
 
 
 def join(probe_rows, events):
-    events = [e for e in events if e.get("path") == "/bench_seed"]
-    out = []
-    for p in probe_rows:
-        lo, hi = ms(p["at"]) - 1500, ms(p["end"]) + 1500
-        candidates = [e for e in events if lo <= e["ts"] <= hi]
-        if not candidates:
-            print(f'no Workers Logs invocation for rep {p["rep"]} {p["ask"]}', file=sys.stderr)
-            continue
-        event = max(candidates, key=lambda e: e.get("cpu") or 0)
-        out.append((p, event))
-    return out
+    """In order: sqlprobe.mjs sends one ask at a time, 2 s apart, so the nth probe line is the nth `/bench_seed`
+    invocation. A time window does not work: on run pb Workers Logs stamped each invocation 2.1 to 3.5 s after the
+    client's `at`, and a ±1.5 s window dropped one ask and gave others their neighbour's CPU."""
+    probe_rows = list(probe_rows)
+    events = sorted((e for e in events if e.get("path") == "/bench_seed"), key=lambda e: e["ts"])
+    if len(events) != len(probe_rows):
+        raise SystemExit(f"{len(probe_rows)} probe lines but {len(events)} /bench_seed invocations: fetch the window again")
+    for p, e in zip(probe_rows, events):
+        if not 0 <= e["ts"] - ms(p["at"]) <= 10_000:
+            raise SystemExit(f'rep {p["rep"]} {p["ask"]}: invocation {e["ts"] - ms(p["at"])} ms from its ask')
+    return list(zip(probe_rows, events))
 
 
 def ratio(total, part):

@@ -1,0 +1,19 @@
+2026-11-23T19:13:57Z meter 16.37 before the probe, expected +$0.5, stop $19.37
+2026-11-23T19:14:24.065Z m3org/probe-pb = 131405
+2026-11-23T19:14:24Z repository 131405
+2026-11-23T19:15:15Z meter 16.37
+2026-11-23T19:15:46Z meter 16.4
+2026-11-23T19:15:46Z probe exit 0
+/tmp/gd/wt-day/tests/fanout/wlobj.py:36: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  iso = lambda m: datetime.utcfromtimestamp(m / 1000).strftime("%Y-%m-%dT%H:%M:00Z")
+repo:131405#1#f0 106 invocations
+2026-11-23T19:18:40Z fit exit 0
+site fault off: 200
+git#2#net:131405 200
+git#1#net:131405 200
+git#0#net:131405 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-23T19:19:02Z sweep exit 0
+2026-11-23T19:19:04Z meter 16.43 after
+DONE
