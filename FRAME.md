@@ -322,7 +322,17 @@ B0-33's read-memo set kept two runs, mrB and msA, which admitted 107.3 and 106.8
 
 - **B0-33's pass line is at least 110 agent commands a second admitted** (`build/BUILD-PLAN.md` and `design/DESIGN.md`, B0-33). The fail line stays under 100 a second, which reopens ref lanes, so the pass line keeps 10% above it. mrB and msA are under 110 itself; they meet it under the 90% rule (99), and the fail line still binds below 100.
 - **The hosted figure is about 2,100 agents a group** at journey 9's mix, against the design's 3,000 at 150 a second (`design/AGENT-LAYER.md`, "Journeys", A1, step 11). Fleets above that on one repository wait for metadata child groups, as LM-1 already says.
-- **What 110 does not change.** B0-33's other lines stand as written, including zero `suspect` reports (A48 still asks what that counts), and the gate is still judged as the median of three runs on fresh placements. The daily spend limit, the $180 hard stop, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
+- **What 110 does not change.** B0-33's other lines stand as written, including zero `suspect` reports, read as the next entry says, and the gate is still judged as the median of three runs on fresh placements. The daily spend limit, the $180 hard stop, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
+
+### Operator decision, 2026-11-23, B0-33's `suspect` line counts reports that start an election
+
+> "Get it done. Always be asking how we can move the needle and don't wait for me to approve things unless it is a large cost"
+
+Under that direction the orchestrator settled A48, which asked whether B0-33's "zero `suspect` reports" counts every report a voter steps or only those that move a leader. A report counts toward `SUSPECT` only from two distinct colos, so one colo's reports cannot start an election by design (`decisions/DECISIONS.md`, "`Colo(0)` is `Colo::UNKNOWN`") [doc]. Every B0-33 run since `SUSPECT` had Reported rows from one colo, LAX, all refused: blB 2, pgA 2,262, pfA 8,282 and mrB 8 [measured, `tests/fanout/colos.py` on each run's `tsave`; `tests/am1/results/b033-readmemo.md`]. Read literally, the line failed every run on the edge's colo spread, not on the group.
+
+- **B0-33's line counts `suspect` reports that start an election:** a Reported row whose verdict is `started` or `won`. Refused reports (`promised`, or any other verdict that starts nothing) are recorded beside the verdict and do not fail it. The pass and fail columns say so (`build/BUILD-PLAN.md` and `design/DESIGN.md`, B0-33).
+- **Leader changes still count on their own:** zero in the window, unchanged. A report that starts an election fails the row even if no leader changes.
+- **A48 is closed.** Other rows' `suspect` lines (B0-29, B0-32) are unchanged: they have not met this case.
 
 ## Four Cloudflare questions still carry the run's defaults
 
