@@ -18,7 +18,7 @@ MAINT = 'containers/git/server/maint.go'
 MAIN = 'containers/git/server/main.go'
 SHARD = 'crates/git/src/shard.rs'
 GO = ['go', '-C', 'containers/git/server', 'test', '-count=1', '-run',
-      'TestMaintenanceYieldsToMovedLoad|TestAHeldRollAnswers503', '.']
+      'TestMaintenanceYieldsToMovedLoad|TestAHeldRollAnswers503|TestMaintDeferMaxFitsAFailoverAndThePackLine', '.']
 RS = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', '--', 'only_a_first_try']
 
 MUTANTS = [
@@ -40,6 +40,10 @@ MUTANTS = [
     ("a run past the deferral bound is still stopped by moved load", MAINT,
      'maint.cancel, maint.overdue = cancel, deferred >= maintDeferMax',
      'maint.cancel, maint.overdue = cancel, false', GO),
+    ("MAINT_DEFER_MAX back at 10 min (B0-34 mt19: 786 unkept packs while held, past 751)", MAINT,
+     'var maintDeferMax = 6 * time.Minute', 'var maintDeferMax = 10 * time.Minute', GO),
+    ("MAINT_DEFER_MAX shorter than a kill and a rehydrate (the repack lands inside the failover)", MAINT,
+     'var maintDeferMax = 6 * time.Minute', 'var maintDeferMax = 5 * time.Minute', GO),
     ("client CPU above FANOUT_UP does not hold a start", MAINT,
      '\tbusy := cpuP99() > fanoutUp && deferred < maintDeferMax+yieldHold',
      '\tbusy := false && deferred < maintDeferMax+yieldHold', GO),

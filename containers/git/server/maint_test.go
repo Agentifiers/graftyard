@@ -252,6 +252,22 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	}
 }
 
+// MAINT_DEFER_MAX covers a failover and keeps a held shard under the pack count that slowed merges. It must last
+// B0-34's kill phase (120 s) and a rehydrated home's warm-up (207 s at most, DESIGN's git caches data-center row), so
+// the home takes its load back before a repack runs. And at mt19's rate, site b's unkept packs going from 25 to 786
+// while held from +67 s to +547 s (1.59 a second, tests/am1/results/b034-mt19.md), it must end before a hold that
+// starts at 25 reaches 751 (`decisions/DECISIONS.md`, "`maint-yield`", the flip). 10 minutes failed the second.
+func TestMaintDeferMaxFitsAFailoverAndThePackLine(t *testing.T) {
+	const kill, rehydrate = 120 * time.Second, 207 * time.Second
+	if maintDeferMax < kill+rehydrate {
+		t.Fatalf("maintDeferMax %v is shorter than a kill and a rehydrate, %v", maintDeferMax, kill+rehydrate)
+	}
+	const start, perS, line = 25.0, (786.0 - 25.0) / (547.0 - 67.0), 751.0
+	if at := start + perS*maintDeferMax.Seconds(); at >= line {
+		t.Fatalf("maintDeferMax %v lets a held shard reach %.0f unkept packs at mt19's rate, past %v", maintDeferMax, at, line)
+	}
+}
+
 // A held roll-up answers 503 `maint-held`, so the archive's roll tries the next site's shard (`promote_moves_on`),
 // and once the hold ends the same roll answers its pack.
 func TestAHeldRollAnswers503(t *testing.T) {
