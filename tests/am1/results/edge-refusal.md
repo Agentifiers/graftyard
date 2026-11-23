@@ -225,9 +225,181 @@ Raws in `tests/fanout/raw/`:
 
 The a1 raws stay local (`tests/am1/raw/` is git-ignored): `a1-b0-33-mwt69ks9.jsonl` and its push log.
 
+## The fail-open bound and the send check: design (2026-11-23, before code)
+
+The lead ruled erBA's leader-side refusals a Fail and asked for this design, at $0. It covers the fail-open bound and
+the advert's under-read. Each rule is checked against erBA's raws (`tests/fanout/advertcf.py`). The row reads a slow
+host only.
+
+**The replay.** `advertcf.py` rebuilds the advert from the leader's cuts (`Trace::Cut`):
+- The wait is `expected_wait`: the agent lane, interpolated between cuts by the interval's admitted arrivals, over the
+  leader's `Drain` (saturated time only, DRAIN_WINDOW, DRAIN_MIN), plus a round (a1's `roundMs`).
+- It moves the cuts to Cloudflare's clock by the leader's measured offset per 10 s: the voters' `CallLeft` against the
+  leader's `AnswerArrived`, net of the idle wire, as `b033probes/host/drift.py` does. Under load that offset is -0.6 to
+  -3.2 s at p50.
+- An edge reads the advert 1 s after the leader sent it (`AGE`, run again at 0 and 2 s).
+- Each push's check, sends and answer come from its `server-timing`.
+- The replay refuses 3,516 of the 4,013 pushes the edge refused on the advert (88%), and sends 5,468 of the 6,451 it
+  sent (85%) [measured agreement]. Every count below is first order: a refused push leaves the queue the others met as
+  it was. So the in-time pushes it refuses are upper bounds [inference].
+
+### Why the advert under-read: where the check sits, not the drain or the clock
+
+Of the 6,433 pushes the leader refused, 1,481 were fail-opens. The other 5,352 the edge sent on a live advert
+[measured, the stage marks; the split is the replay]:
+
+| Why the leader refused a push the edge sent within budget | Pushes | Share |
+|---|---|---|
+| Its own budget was spent after the check, at the same advert | 2,959 | 55% |
+| The lane grew between the check and its arrival, at the advertised drain | 1,241 | 23% |
+| The trailing drain fell before it arrived | 129 | 2% |
+| Within budget at arrival on the replayed wait (admission 102, expiry 128) | 230 | 4% |
+| The replay refuses it at the check, but the edge sent it (replay error) | 793 | 15% |
+
+- **The main cause is the check's position.** The check runs at `receive_pack`, before push context, validate and any
+  Stage round. It compares the wait with the budget left there. The push reaches the leader with less budget left.
+  - Between the check and the deciding send, these pushes spent p50 2,071 ms and p90 3,489 ms.
+  - Of that, push context took p50 850 and p90 3,160 ms, validate 213 and 406, and Stage 0 and 582.
+- **The other two hypotheses are small.**
+  - **The trailing drain lagging a falling drain:** 2%. The next 10 s drain over the trailing 10 s drain, sampled
+    every 5 s, reads p10 0.58, p50 0.93, p90 1.73. It falls a little on average, but it explains few refusals.
+  - **The leader's clock lag:** none found.
+    - The drain on the leader's clock and on the corrected clock is 87 and 86 a second at p50.
+    - Over an expired push's wait, the offset moved p50 0 ms, and more than 500 ms for only 9% of them.
+    - An advert read at 0, 1 or 2 s old moves the counterfactual by 4 to 9 points (below).
+- **The 23% is the lane growing between the check and arrival.** This is close to the "queue missing commands already
+  at the edge" hypothesis: commands other isolates had already sent. A check at the send narrows that gap from p50
+  2.1 s to the commit's own wire time. It cannot close it.
+
+### Rule 1, the fail-open bound
+
+- **The rule.** While an isolate's last advert for a chain said full and has lapsed (older than ADVERT_TTL), it acts
+  as follows:
+  - It sends one Agent write a chain an isolate per ADVERT_TTL. That write is the probe.
+  - It refuses every other Agent write in the `full` shape, with that advert's retry hint and the `advert` mark.
+- **The stale bound.** After ADVERT_STALE (10 s [guess]) with no advert heard, the isolate fails fully open, and
+  every write is sent as before. So an advert path that stops answering refuses agents for at most 10 s.
+  - Why 10 s: on erBA a push the leader refused got its answer p99 6.5 s and at most 8.7 s after the edge's check
+    [measured]. Probes every 2 s that hear nothing for 10 s mean the advert is not coming back, not that it is late.
+- **Only an Agent write is ever held.** Human, Bot and MergeQueue writes, and a token that cannot reach the repository,
+  are sent at once on a lapsed advert, as on a fresh one. The hold goes through the same `advert_verdict` that
+  refuses on a fresh advert, so flip 1's invariant covers both. A held refusal carries `advert`, so a1's `flip1`
+  catches a non-Agent one.
+- **A probe the leader refuses.** Every leader answer on the commit path carries `meta.admit`, a refusal at admission
+  and an expiry's answer included (`member.rs` `reply`). The probe's answer therefore sets the isolate's advert again
+  through `heard` and `note_advert`.
+  - If that wait still passes the bound, the isolate refuses on a fresh advert, as today.
+  - If it does not, the isolate sends again.
+  - A probe with no answer leaves the advert lapsed. The next probe goes one ADVERT_TTL later, and ADVERT_STALE ends
+    the hold.
+  - Nothing else about the probe changes the isolate's state.
+- **The bound on what gets through.** A chain gets at most one probe per ADVERT_TTL from each isolate whose advert
+  lapsed. On erBA that is 187 isolates. If all of them lapsed together, that would be about 94 a second, against a
+  drain of p50 77. In the replay they did not lapse together: 736 probes in 300 s, 2.5 a second.
+
+### Rule 2, the send check
+
+- **The rule.** For a push, the edge reads the advert again at each commit send. That is `bound_at_send`'s point, and
+  again before the Stage re-send. It compares the wait with what is left of the bound there.
+  - It refuses in the same shape, `ng <ref> agent admission full, retry after <n>s` with `advert;dur=`, and nothing
+    reaches the group.
+  - This adds no read: the advert is a thread-local value.
+- **REST is not covered.** REST and GraphQL writes keep their one check at the top of `read_repo`. The leader
+  refusals in the 50% line are all pushes.
+
+### Counterfactual on erBA's raws
+
+Leader refusals (admission plus expiry), against pfA's 8,463. The 50% line is 4,231 [inference, the replay]:
+
+| Rules | Leader refusals | Share of pfA | In-time (`ok`) pushes the edge would also refuse, of 1,498 |
+|---|---|---|---|
+| As run | 6,433 | 76% | 0 |
+| Rule 1 alone | 5,976 | 71% | 255 |
+| Rule 2 alone | 2,052 | 24% | 326 |
+| **Rules 1 and 2** | **1,595** | **19%** | **581** |
+| Rules 1 and 2, no credit where the replay disagreed with the edge | 2,356 | 28% | 424 |
+| Rules 1 and 2, advert 2 s old | 2,144 | 25% | 789 |
+| Rules 1 and 2, advert 2 s old, no credit where the replay disagreed | 2,796 | 33% | 407 |
+| Rules 1 and 2, send check 500 ms stricter / looser | 982 / 2,585 | 12% / 31% | 785 / 417 |
+
+- **Rule 1 alone does not pass the 50% line.** The fail-opens were 1,481 pushes and 4,547 REST writes, so holding them
+  removes few push refusals.
+  - In the replay, the hold stops 712 fail-open pushes and 2,612 REST writes.
+  - It sends 312 push and 424 REST probes.
+  - 457 push and 1,511 REST fail-opens fell more than 10 s after their isolate's last refusal, a lower bound on the
+    advert's age, so ADVERT_STALE sends them.
+- **Rule 2 carries the change**, and with both rules every variant is under 50%. The pass line in the plan was 25%:
+  some variants are on it and the stricter readings are over it.
+- **Over-refusal: in-time pushes the edge would refuse.** With both rules this is 424 to 789 of 1,498, against 0 as
+  run. That is flip 2's cost.
+  - Measured in windows, flip 2 stays at 3 of 30: the extra refusals fall in windows that were already refusing.
+  - Per push it is large. An `ok` push refused here would have committed within its bound. But the leader is
+    drain-bound: a push refused at the edge frees a lane slot that a push which would have expired then takes
+    [inference]. First order cannot show that, so the hosted check is the drain (flip 3) and the new flip R2 below.
+
+### Flips for the new rules
+
+These go beside flips 1 to 5:
+- **R1a (invariant).** A Human, Bot or MergeQueue write held on a lapsed advert must be 0. This is flip 1 on the new
+  path. Held refusals carry `advert`, so a1's `flip1` stops the row.
+- **R1b (invariant).** Any `edgefull` `held` line with an advert older than ADVERT_STALE, or a second `probe` line for
+  one chain from one isolate within ADVERT_TTL, must be 0.
+- **R1c.** `stale` sends exceed `held` refusals. Then probes are not bringing adverts back: a probe's answer is not
+  reaching `note_advert`, so the probe path is broken.
+- **R2.** The send check refuses a push in a 10 s window whose leader cuts end `Empty` with fewer than
+  AGENT_CMDS_ENTRY agent commands, read with the window before it. That is the edge refusing while the leader has
+  room. It may not exceed flip 2's 10% of refusing windows.
+- **Under-read left.** The leader still refuses more than 50% of pfA's count with both rules live. Then the remaining
+  cause is the lane growing in flight, the 23%, and the next lever is the leader's own admission arithmetic, not the
+  edge.
+
+### Instruments the code adds
+
+- **`edgefull` lines.** Each line gets an `at` field (`check`, `send`, `stage`) and per-isolate running counts of
+  `held`, `probe` and `stale`, beside `refused` and `failOpen`.
+- **`pushfull.py`.** It reads `advert` as the deciding mark only when it is the push's last mark, so a send-check
+  refusal after a Stage round is not counted as admission. This is B0-32's split by shape, with the same mark.
+- **Plant 99.** Mutants:
+  - hold a Human write on a lapsed advert;
+  - no ADVERT_STALE;
+  - no probe (hold everything);
+  - a probe for every write;
+  - the send check on `receive_pack`'s budget, not the send's;
+  - no check before the Stage re-send.
+
+### The rerun's guard
+
+- **`guardrow.sh` gets `GUARD_WANT=band` with `GUARD_BAND`, the approved bands.**
+  - The bands are 31.0 to 31.5 and 39.7 to 46.1 ms of leader CPU a setup commit. The guard reads the number
+    `hostguard.py` prints.
+  - It keeps a leader inside a band and re-places one outside.
+  - Unknown fails closed.
+  - At most three placements, as before. If none lands in a band, the set stops and is reported, and the bands are not
+    widened.
+- **Each line is judged against its own band's baseline.**
+  - Upper band: pfA and pgA.
+  - Lower band: blA and blC2 for edge 503s and human p99. For leader refusals, blA and blC2 had admission 5,769 and
+    5,842 plus expiry 4,592 and 4,125 (`b033-baseline.md`), but before the drain change.
+- **How likely a placement lands in a band.** Of erBA and the 12 B0-33 runs, 6 read in a band, 3 in each. The lower
+  band is 0.5 ms wide, about the reading's own spread (pfA read 44.1, 45.6 and 44.6 at 30, 60 and 90 s), so a verdict
+  near its edges is fragile. Three placements land in some band about 84% of the time [inference: 6 of 13 a
+  placement].
+- **Cost.** erBA cost $1.63 a placement. Same stops as before: RUN_STOP $4 a placement, and DAY_STOP at the day's
+  start plus $8.
+
+### Text for DESIGN.md, folded into the agent block's existing line
+
+DESIGN.md's agent block, and AGENT-LAYER.md's byte-identical copy, change on the code branch. The sentence that now
+ends "and a lapsed advert are sent" becomes:
+
+> Human, MergeQueue, Bot and a token that cannot reach the repository are sent. A push is checked again at each commit
+> send against what is left of its bound. On a lapsed advert that said full, an isolate sends one Agent write a chain
+> per ADVERT_TTL as a probe, whose answer carries the next advert, and refuses the rest, until ADVERT_STALE (10 s
+> [guess]) with none heard.
+
 ## Open
 
-- The fail-open bound (flip 4), designed before code. Its rerun needs a guard that keeps a leader inside an approved
-  band, and the lead's clearance.
+- **The fail-open bound and the send check, designed above.** They need the lead's ruling before code. The rerun needs
+  the band guard and the lead's clearance after the code merges.
 - Whether human p99 falls on a slow host is the row's question, not this file's. Edge refusal sheds agent work but does
   not cut apply CPU per entry at the same drain [inference].
