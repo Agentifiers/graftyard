@@ -280,3 +280,78 @@ Raw records in `raw/ck2/`:
 - `gate.txt`: a scratch mirror of each minute's counts. Its `judge(...)` lines are the mirror's, not verdicts.
 - `health.txt`: every voter's `site_health` over 5 and 15 minutes, each minute.
 - `crons.txt`: `graft-ops` Workers Logs lines from 07:55Z.
+
+## Gate check row 3: a real N at 100% and on the first day (2026-11-23, main `ad8fd52f`)
+
+**Result: R44's fix is shown hosted.** N was real at every step. The share rule judged 50%, 100% and the first day, and a first-day `GATE_APPLY_LAG` breach against a real N ran the pre-signed `Rollback` to `IntentDone`. Each step committed once and in order. The breach is most likely chance (R46). The lead accepted the row.
+- **Not exercised:** 10% was judged on the override only, because of the dwell slip below, so 10% judged by the share rule at the real floor (R38's open case) is still to come.
+- **Not run:** slow-apply, which the lead's install cap ruled out for the day.
+
+The done line was 11:34Z. Spend was $6.07 on graft-m4a from 10:50Z against the $8 row stop. The install's UTC day reached $35.23, against the lead's $39.5 stop under the $40 cap. Raw records are in `raw/ck3/`. Times are Cloudflare's; `ck.log` stamps lines on the orb's clock, which runs about 23 s behind.
+
+**Setup** (all in `tests/am1/results/install-m4a.md`):
+- Token `graft-m4a-ops-deploy-5` (`56b96bd6…`) was minted at 10:50:50Z and revoked at 11:33:15Z.
+- There was no site day. The sites ran B0-29's site day 74 (main `f129cd16`): a `7a2abd5d`, b `0de60a36`, c `7d9f70f9`. The group's `site_release` for c was R6 from row 2.
+- Load came from the scratch Worker `graft-m4a-ck-edge`. It ran at 2x row 1 until 11:13Z, then 1x to protect the install cap.
+- The orb's executor was replaced at about 11:14Z. That stopped the load and loggers for about a minute, and they were restarted. `graft-ops` on Cloudflare was not touched.
+
+**The judged day:** `SiteDay{c, R5}` with undo `Rollback{c, R6}` and `GATE` unset. N+1 is R5 `1704e715` and N is R6 `c7687c36`; they are the same code plus a marker. The 1% split replaced day 74's `7d9f70f9`.
+
+| Index | Group time | Entry |
+| --- | --- | --- |
+| 175 | 10:57:03Z | `Intent` |
+| 176, 177 | 10:57:50Z, 10:57:52Z | `SiteMode` Drain c, `IntentStep` 0 (1% deployed) |
+| 178 | 11:03:51Z | `IntentStep` 1 (1% passed; 10% deployed) |
+| 179 | 11:05:49Z | `IntentStep` 2 (10% passed; 50% deployed) |
+| 180 | 11:18:52Z | `IntentStep` 3 (50% passed) |
+| 181 to 184 | 11:18:56Z to 11:19:02Z | `SiteRelease` c R5, step 4 (100%), `SiteMode` Normal c, step 5 (the first day starts) |
+| 185 | 11:19:53Z | `Rollback{c, R6}`, pre-signed, on the first day's breach |
+| 186 to 191 | 11:19:56Z to 11:20:09Z | the return steps: Drain c, R6 at 100%, `SiteRelease` c R6, Normal c |
+| 192 | 11:20:11Z | `IntentDone` |
+
+**`graft-ops` redeploys.** All three used the same `ad8fd52f` test-faults build. After each one the next cron run fired within a minute, read the same intent, and re-ran no committed step.
+
+| Config | Version | Deployed (orb) | Vars | For |
+| --- | --- | --- | --- | --- |
+| a | `75b79e2e` | 10:51:21Z | `OPS_STEP_MIN_ENTRIES` 50, `STEP_DWELL_MS` 60000, `FIRST_DAY_MS` 60000 | 1% |
+| b | `673fffbf` | 11:05:41Z | no override, `STEP_DWELL_MS` 720000, `FIRST_DAY_MS` 60000 | meant for 10%; it fell on 50% |
+| pending | `4bbfd9e5` | 11:33:14Z | `GATE=pending`, no cron | cleanup |
+
+**The dwell slip.** 10% was judged on the override only, and the 12-minute dwell fell on 50%.
+- Config b was deployed once 1% had committed, on a guess that 10% would need its full minute.
+- 10% committed at 11:05:49Z on config a's 60 s dwell, by the override at 316 N+1 entries, before b's version served the next run.
+- The runbook now waits on the prior step's commit: deploy the long-dwell config as soon as the step before the target step commits, and confirm the target step's run is on the new version before its dwell can end (`tests/am1/results/install-m4a.md`, the cleanup recipe's paragraph). For a 10% step that means redeploying once step 0 (the drain) commits, so 1% runs on the long dwell too.
+
+**`judge_site`'s real verdicts** (`graft-ops`' own lines, `raw/ck3/verdicts.txt`). Counts are entries / answers / refused:
+
+| Step | Where N came from | N+1 | N | Over N's p99 / over 5 s | Verdict | Judged by |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1% | what c runs (R6) | 0 for 5 min, then 69 / 100 / 0 | 6,119 / 9,901 / 19 | 144 / 0 bp | `Starved(0)`, paged, then `Pass` | **override only** (R38) |
+| 10% | what c runs | 316 / 489 / 0 | 17,670 / 27,082 / 9 | 0 / 0 bp | `Pass` | **override only** (the slip) |
+| 50%, 12 min | what c runs | 3,134 to 27,590 / 43,987 / 18 | 28,774 to 47,469 / 74,001 / 6 | 35 to 7 bp / 0 to 3 bp | `Pass` on every read from 11:09:52Z | **share, ack and backstop** |
+| 100% | N's step window | 1,961 to 2,182 | 1,535 to 1,689 (members not yet moved) | 0 / 0 bp | `Pass` | share, ack and backstop |
+| first day, 60 s | the `Rollback`'s R6 (after `SiteRelease`, the day's own release) | **1,901 / 3,233 / 2** | **1,222 / 2,114 / 0** | **215 / 57 bp** | **`Breach("GATE_APPLY_LAG: 215 bp of N+1 entries over N's p99 1500 ms")`** | **share** (cap 200 bp; backstop cap 100) |
+
+- **R44 hosted.** Row 2 read no N at 100% and on the first day. Here, on the first day, `day_versions` gave the `Rollback`'s R6 after `SiteRelease`, and at 100% N's own window had over `STEP_MIN_ENTRIES`. The gate read N from the intent's start on no step of this day.
+- **The first-day breach is most likely chance** [inference]. Of N+1's 1,901 entries, 37 sat in the 5 s and 10 s buckets (26 and 11), all in the first 60 s after the full-site version change. N had none there. R5 and R6 are the same code. The share was 215 bp against the 200 cap. Recorded as OPEN-QUESTIONS R46; no threshold changed.
+- **The ack rule** judged 50%, 100% and the first day and never breached. z was at most 1.91 against 3.09 (50%'s first judged read, 12 refused of 4,832 against N's 5 of 43,906), then −0.9 to −6.6 as the 50% counts grew, and −0.87 on the first day.
+
+**Cleanup.**
+- Benches stopped. The ops cron was reset at 11:22:38Z and again at 11:26:52Z, and it fired `Idle` runs until 11:29:47Z.
+- Idle to 11:32:51Z. Then `graft-m4a-ops` `4bbfd9e5`, `GATE=pending`, with schedules `[]`.
+- Token revoked at 11:33:15Z, and the scratch Worker deleted.
+- End state at 11:34Z:
+  - count 193, `drained []`;
+  - a `7a2abd5d`, b `0de60a36`, c `c7687c36` (R6, and the group's `site_release` for c is R6);
+  - edge `f4e193b9` at 100%, `/api/v3/meta` answers 200;
+  - c leads 6 of 6 sampled home chains, and every schedule is `[]`.
+- `graft-ops` was handed to BF-46, which the lead moved to after 00:00Z on 2026-11-24. The next check row (a 12-minute 10% step at 2x, plus slow-apply if money allows) runs after BF-46 restores `4bbfd9e5`.
+
+Raw records in `raw/ck3/`:
+- `ck.log`: the driver's milestones, with corrections.
+- `answers.txt`: the intent post.
+- `entries.txt`: entries 174 to 192, decoded with their signers.
+- `verdicts.txt`: each `graft-ops` gate line with the recomputed share and backstop, and every action.
+- `crons.txt`: the Workers Logs lines.
+- `gate.txt`: the scratch mirror. Its `judge(...)` lines are not verdicts.
+- `health.txt`: `site_health` each minute.

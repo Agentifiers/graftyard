@@ -1,0 +1,126 @@
+== 10:56:47 75b79e2e ok
+  10:56:50.091 graft-ops Idle
+== 10:57:47 75b79e2e ok
+  10:57:49.558 N+1 e0 a0 r0 x0 sd0 | N e0 a0 r0 p99 0 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  10:57:51.287 N+1 e0 a0 r0 x0 sd0 | N e0 a0 r0 p99 0 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  10:57:52.874 N+1 e0 a0 r0 x0 sd0 | N e0 a0 r0 p99 0 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  10:57:55.050 N+1 e0 a0 r0 x0 sd0 | N e0 a0 r0 p99 0 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  10:57:55.747 graft-ops Committed("SiteMode")
+  10:57:55.747 graft-ops Committed("IntentStep")
+  10:57:55.747 graft-ops Deployed(Site(SiteId(2)), [(VersionId(1704e715-75d6-4e59-b324-cb8d17aa2255), 1), (VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 99)])
+  10:57:55.747 graft-ops Wait { until: Some(Timestamp(1795431533726)), why: "STEP_DWELL" }
+== 10:58:47 75b79e2e ok
+  10:58:49.789 N+1 e0 a0 r0 x0 sd0 | N e34 a70 r1 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  10:58:50.504 graft-ops Wait { until: Some(Timestamp(1795431533726)), why: "STEP_DWELL" }
+== 10:59:48 75b79e2e ok
+  10:59:52.228 N+1 e0 a0 r0 x0 sd0 | N e386 a703 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  10:59:53.045 graft-ops Wait { until: Some(Timestamp(1795431593726)), why: "STEP_MIN_ENTRIES" }
+== 11:00:47 75b79e2e ok
+  11:00:49.669 N+1 e0 a0 r0 x0 sd0 | N e815 a1492 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  11:00:50.330 PAGE graft-ops: intent 01M840T0T3Y4A1A3TETPESETE5: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+  11:00:50.330 graft-ops Paged("intent 01M840T0T3Y4A1A3TETPESETE5: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+== 11:01:47 75b79e2e ok
+  11:01:50.032 N+1 e0 a0 r0 x0 sd0 | N e1435 a2560 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  11:01:50.636 PAGE graft-ops: intent 01M840T0T3Y4A1A3TETPESETE5: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+  11:01:50.636 graft-ops Paged("intent 01M840T0T3Y4A1A3TETPESETE5: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+== 11:02:47 75b79e2e ok
+  11:02:49.074 N+1 e0 a0 r0 x0 sd0 | N e2132 a3768 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  11:02:49.743 PAGE graft-ops: intent 01M840T0T3Y4A1A3TETPESETE5: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+  11:02:49.743 graft-ops Paged("intent 01M840T0T3Y4A1A3TETPESETE5: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+== 11:03:47 75b79e2e ok
+  11:03:50.614 N+1 e69 a100 r0 x0 sd0 | N e6119 a9901 r19 p99 1500 | over N p99 144 bp, over 5 s 0 bp -> Pass
+  11:03:52.604 N+1 e66 a100 r0 x0 sd0 | N e3898 a6027 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:03:55.818 N+1 e66 a100 r0 x0 sd0 | N e4020 a6219 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:03:56.375 graft-ops Committed("IntentStep")
+  11:03:56.375 graft-ops Deployed(Site(SiteId(2)), [(VersionId(1704e715-75d6-4e59-b324-cb8d17aa2255), 10), (VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 90)])
+  11:03:56.375 graft-ops Wait { until: Some(Timestamp(1795431893797)), why: "STEP_DWELL" }
+== 11:04:47 75b79e2e ok
+  11:04:52.473 N+1 e191 a293 r0 x0 sd0 | N e10773 a16546 r8 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:04:53.194 graft-ops Wait { until: Some(Timestamp(1795431893797)), why: "STEP_DWELL" }
+== 11:05:47 75b79e2e ok
+  11:05:49.190 N+1 e316 a489 r0 x0 sd0 | N e17670 a27082 r9 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:05:50.682 N+1 e125 a196 r0 x0 sd0 | N e5162 a7889 r1 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:05:52.788 N+1 e125 a196 r0 x0 sd0 | N e5177 a7917 r1 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:05:53.481 graft-ops Committed("IntentStep")
+  11:05:53.481 graft-ops Deployed(Site(SiteId(2)), [(VersionId(1704e715-75d6-4e59-b324-cb8d17aa2255), 50), (VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 50)])
+  11:05:53.481 graft-ops Wait { until: Some(Timestamp(1795432011657)), why: "STEP_DWELL" }
+== 11:06:47 673fffbf ok
+  11:06:52.009 N+1 e296 a461 r1 x0 sd0 | N e12023 a18402 r2 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(296)
+  11:06:52.689 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:07:47 673fffbf ok
+  11:07:48.912 N+1 e580 a916 r2 x0 sd0 | N e18767 a28637 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(580)
+  11:07:49.640 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:08:47 673fffbf ok
+  11:08:51.664 N+1 e920 a1496 r2 x0 sd0 | N e25431 a38821 r4 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(920)
+  11:08:52.361 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:09:48 673fffbf ok
+  11:09:52.593 N+1 e3134 a4832 r12 x0 sd0 | N e28774 a43906 r5 p99 1500 | over N p99 35 bp, over 5 s 3 bp -> Pass
+  11:09:53.563 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:10:47 673fffbf ok
+  11:10:52.634 N+1 e7031 a10828 r14 x0 sd0 | N e31890 a48672 r5 p99 1500 | over N p99 22 bp, over 5 s 1 bp -> Pass
+  11:10:53.827 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:11:47 673fffbf ok
+  11:11:49.223 N+1 e11016 a16894 r15 x0 sd0 | N e34790 a53115 r5 p99 1500 | over N p99 16 bp, over 5 s 0 bp -> Pass
+  11:11:49.927 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:12:47 673fffbf ok
+  11:12:51.586 N+1 e14996 a22914 r15 x0 sd0 | N e37864 a57820 r5 p99 1500 | over N p99 12 bp, over 5 s 0 bp -> Pass
+  11:12:52.252 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:13:47 673fffbf ok
+  11:13:49.355 N+1 e18543 a28367 r15 x0 sd0 | N e40232 a61532 r5 p99 1500 | over N p99 10 bp, over 5 s 0 bp -> Pass
+  11:13:49.982 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:15:48 673fffbf ok
+  11:15:51.471 N+1 e21273 a33103 r18 x0 sd0 | N e42416 a65311 r6 p99 1500 | over N p99 10 bp, over 5 s 0 bp -> Pass
+  11:15:52.328 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:16:47 673fffbf ok
+  11:16:52.677 N+1 e23432 a36825 r18 x0 sd0 | N e44129 a68248 r6 p99 1500 | over N p99 9 bp, over 5 s 0 bp -> Pass
+  11:16:53.407 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:17:47 673fffbf ok
+  11:17:49.593 N+1 e25473 a40330 r18 x0 sd0 | N e45802 a71121 r6 p99 1500 | over N p99 8 bp, over 5 s 0 bp -> Pass
+  11:17:50.256 graft-ops Wait { until: Some(Timestamp(1795432671657)), why: "STEP_DWELL" }
+== 11:18:48 673fffbf ok
+  11:18:51.403 N+1 e27590 a43987 r18 x0 sd0 | N e47469 a74001 r6 p99 1500 | over N p99 7 bp, over 5 s 0 bp -> Pass
+  11:18:54.071 N+1 e1961 a3381 r0 x0 sd0 | N e1535 a2650 r0 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:18:56.003 N+1 e2045 a3523 r0 x0 sd0 | N e1595 a2750 r0 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:18:57.927 N+1 e2080 a3588 r0 x0 sd0 | N e1645 a2835 r0 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:18:59.727 N+1 e2147 a3701 r0 x0 sd0 | N e1676 a2886 r0 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:19:01.425 N+1 e2182 a3765 r0 x0 sd0 | N e1689 a2911 r0 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  11:19:03.146 N+1 e67 a122 r0 x0 sd0 | N e62520 a97605 r29 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(67)
+  11:19:04.084 graft-ops Committed("IntentStep")
+  11:19:04.084 graft-ops Deployed(Site(SiteId(2)), [(VersionId(1704e715-75d6-4e59-b324-cb8d17aa2255), 100)])
+  11:19:04.084 graft-ops Committed("SiteRelease")
+  11:19:04.084 graft-ops Committed("IntentStep")
+  11:19:04.084 graft-ops Committed("SiteMode")
+  11:19:04.084 graft-ops Committed("IntentStep")
+  11:19:04.084 graft-ops Wait { until: Some(Timestamp(1795432802385)), why: "first day" }
+== 11:19:47 673fffbf ok
+  11:19:52.947 N+1 e1901 a3233 r2 x0 sd0 | N e1222 a2114 r0 p99 1500 | over N p99 215 bp, over 5 s 57 bp -> Breach("GATE_APPLY_LAG: 215 bp of N+1 entries over N's p99 1500 ms")
+  11:20:12.589 graft-ops Committed("Rollback")
+  11:20:12.589 graft-ops Committed("SiteMode")
+  11:20:12.589 graft-ops Committed("IntentStep")
+  11:20:12.589 graft-ops Deployed(Site(SiteId(2)), [(VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 100)])
+  11:20:12.589 graft-ops Committed("SiteRelease")
+  11:20:12.589 graft-ops Committed("IntentStep")
+  11:20:12.589 graft-ops Committed("SiteMode")
+  11:20:12.589 graft-ops Committed("IntentStep")
+  11:20:12.589 graft-ops Committed("IntentDone")
+  11:20:12.589 graft-ops Idle
+== 11:20:47 673fffbf ok
+  11:20:49.385 graft-ops Idle
+== 11:21:48 673fffbf ok
+  11:21:51.732 graft-ops Idle
+== 11:22:47 673fffbf ok
+  11:22:50.119 graft-ops Idle
+== 11:23:47 673fffbf ok
+  11:23:52.175 graft-ops Idle
+== 11:24:47 673fffbf ok
+  11:24:49.918 graft-ops Idle
+== 11:25:47 673fffbf ok
+  11:25:50.061 graft-ops Idle
+== 11:26:47 673fffbf ok
+  11:26:50.012 graft-ops Idle
+== 11:27:47 673fffbf ok
+  11:27:52.032 graft-ops Idle
+== 11:28:47 673fffbf ok
+  11:28:51.917 graft-ops Idle
+== 11:29:47 673fffbf ok
+  11:29:51.215 graft-ops Idle

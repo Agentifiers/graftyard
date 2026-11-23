@@ -1,0 +1,27 @@
+10:51:33 ROW 3 start, head ad8fd52f (main; 14ca830b's R44 fix plus BF-46's Rotate and BM-5 code). Token graft-m4a-ops-deploy-5 (56b96bd6) minted 10:50:50Z, PATCHed into graft-m4a-ops-deploy-token
+10:51:33 REDEPLOY a: graft-m4a-ops 75b79e2e at 10:51:21Z orb, exec-ck3-a.json: GATE unset, test-faults, OPS_STEP_MIN_ENTRIES 50, STEP_DWELL_MS 60000, FIRST_DAY_MS 60000, 1-minute cron
+10:51:52 ops cron removed and re-added; scratch Worker graft-m4a-ck-edge deployed
+10:52:28 load 2x (as row 2): 4 c-benches (obs 0,1,0,1) x 6 x 5 puts/s, 1 a/b bench 3 x 4
+10:56:38 ops cron first fired 10:56:47Z (Cloudflare), Idle, on 75b79e2e
+10:56:38 JUDGED: posting SiteDay{c, R5}, GATE unset, undo Rollback{c, R6}; N+1 R5 1704e715, N R6 c7687c36 (group site_release c = R6); c runs day 74's 7d9f70f9, which the 1% split replaces
+10:56:40 intent-judged3-c-R5 -> {"digest":"505b305a7212fdd840bd19f367bed7fbf78ea8ae4f3f3d3246e7af91824073f4","index":877,"status":201}
+10:58:02 1% split at 10:57:55Z: N+1 1704e715 (R5) 1%, N c7687c36 (R6, source: running = site_release c) 99%; day 74's 7d9f70f9 replaced
+11:05:15 lead cap: stop the row if graft-m4a's UTC day reaches $39.5; slow-apply not run today (would cross the $40 install cap)
+11:05:29 1% step passed on the override only (R38) at 11:03:50Z run: N+1 69 entries / 100 answers / 0 refused vs N 6,119 / 9,901 / 19; committed 11:03:56Z, 10% deployed
+11:05:49 REDEPLOY b: graft-m4a-ops 673fffbf at 11:05:41Z orb (~11:06:04Z Cloudflare), same ad8fd52f build, exec-ck3-b.json: no OPS_STEP_MIN_ENTRIES, STEP_DWELL_MS 720000, FIRST_DAY_MS 60000, GATE unset, 1-minute cron
+11:07:39 redeploy b check: next run 11:06:47Z fired on 673fffbf within 1 min, same intent, 10% split unchanged, no step re-committed (Wait STEP_DWELL until 11:17:51Z)
+11:13:15 load cut to 1x at 11:13Z (one c-bench per observer, the a/b bench) to keep graft-m4a's UTC day under $39.5; row 4.59, day 33.75
+11:13:25 c-benches restarted at 1x at 11:13:30Z (the cut killed all four; c-homed load paused about 20 s)
+11:14:35 ORB EXECUTOR REPLACED about 11:14Z: benches, loggers and the ops tail died (c-homed load paused about 1 min); restarted at 1x at 11:14:35Z; old tail kept as opstail-1.jsonl. graft-ops runs on Cloudflare and was not touched
+11:20:01 CORRECTION: the 10% step committed at 11:05:53Z (entry 179) on 75b79e2e, before redeploy b took effect, after its 60 s dwell on the override (N+1 316 entries / 489 answers / 0 refused vs N 17,670). So 10% is override-only, and the 12 min dwell (redeploy b) fell on 50%. The 11:07:39 log line called the split 10%; it was 50%
+11:20:01 50% (entries 179 -> 180): judged on the real floor, 12 min dwell, N+1 vs N beside it (source: running = R6 c7687c36); every read from 11:09:52Z passed; last read 11:18:51Z N+1 27,590 / 43,987 / 18 refused vs N 47,469 / 74,001 / 6, 7 bp over N's p99, 0 bp over 5 s -> Pass; step 3 committed 11:18:52Z
+11:20:01 100% (step 4) and first day (step 5) at 11:18:54-11:19:03Z with 60 s first day; N at 100% read from c_start (N 1,535-1,689 entries, the whole intent's 1/10/50% counts? see below)
+11:22:29 FIRST DAY BREACH 11:19:52Z: N+1 1,901 / 3,233 / 2 refused vs N (R6 c7687c36, step window since step 5, 1,222 entries >= floor so not c_start) 1,222 / 2,114 / 0, p99 1500 -> GATE_APPLY_LAG 215 bp over N's p99 (cap 200), 57 bp over 5 s (backstop cap 100). Pre-signed Rollback{c, R6} committed 11:20:12Z (entry 185), return steps 186-191, IntentDone 192; c back on R6 c7687c36
+11:22:41 CLEANUP: benches stopped; ops cron reset (yearly, then []) at 11:22:38Z; row 5.95, day 35.12
+11:26:52 ops cron still firing Idle at 11:26:47Z; second reset at 11:26:52Z
+11:33:03 ops cron runs stopped: last at 11:29:47Z (7 min after the first reset); idle to 11:32:51Z
+11:33:14 graft-m4a-ops redeployed from exec-ck-pending.json (same ad8fd52f build, GATE=pending, OPS_STEP_MIN_ENTRIES 50, 60 s dwells) at 11:33:14Z; trigger removed
+11:33:15 token graft-m4a-ops-deploy-5 (56b96bd6) revoked at 11:33:15Z, file shredded
+11:33:16 scratch Worker deleted
+11:34:20 DONE 11:34Z: graft-m4a-ops 4bbfd9e5 (ad8fd52f test-faults, GATE=pending, no cron), token revoked, scratch Worker deleted, count 193, last SiteMode Normal c at 190 (drained []), a 7a2abd5d b 0de60a36 c c7687c36 (R6), edge f4e193b9, meta 200, c leads 6 of 6 home chains; row $6.07, day $35.23
+11:40:00 CORRECTION to 11:20:01: at 100% N was N's own step window (1,535 to 1,689 entries, the c members not yet moved, over STEP_MIN_ENTRIES), not c_start; the gate read N from c_start at no step of this day
