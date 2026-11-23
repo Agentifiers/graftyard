@@ -1,0 +1,14 @@
+cold first POSTs: 17; front = max(resolve, install) on 17, = resolve + install on 0
+install's Placement read before its authz:1 read again: n 17, median 0, p90 38, p99 45, max 45 ms
+all: front+gate, now: n 17, median 675, p90 1198, p99 2261, max 2261 ms
+all: front+gate, lever 1: n 17, median 675, p90 1198, p99 2261, max 2261 ms
+all: front+gate, lever 2: n 17, median 617, p90 1198, p99 2261, max 2261 ms
+all: front+gate, 1 and 2: n 17, median 617, p90 1198, p99 2261, max 2261 ms
+git: front+gate, now: n 7, median 324, p90 2261, p99 2261, max 2261 ms
+git: front+gate, lever 1: n 7, median 324, p90 2261, p99 2261, max 2261 ms
+git: front+gate, lever 2: n 7, median 324, p90 2261, p99 2261, max 2261 ms
+git: front+gate, 1 and 2: n 7, median 324, p90 2261, p99 2261, max 2261 ms
+fetch, other, ro: front+gate, now: n 10, median 787, p90 1198, p99 1198, max 1198 ms
+fetch, other, ro: front+gate, lever 1: n 10, median 787, p90 1198, p99 1198, max 1198 ms
+fetch, other, ro: front+gate, lever 2: n 10, median 771, p90 1198, p99 1198, max 1198 ms
+fetch, other, ro: front+gate, 1 and 2: n 10, median 771, p90 1198, p99 1198, max 1198 ms
