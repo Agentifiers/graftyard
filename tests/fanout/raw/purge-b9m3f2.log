@@ -1,0 +1,4 @@
+2026-11-23T22:25:43Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T22:26:46Z 65626 purged: a 817 -> 0, b 444 -> 0, c 802 -> 0
+2026-11-23T22:26:46Z 65626 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T22:26:46Z {"dry": false, "purged": 1, "objects": 2063, "refused": [], "second": 0}

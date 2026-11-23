@@ -1,0 +1,52 @@
+2026-11-23T21:52:11Z start bf2b9c9b ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T21:52:28Z start sweep ok
+2026-11-23T21:52:28Z cost account 76.5 since 2026-11-23T00:00:00Z, run 7.75 since 2026-11-23T19:28:30Z, at b0-29
+2026-11-23T21:53:04.384Z m3org/fb9m3f4-b029 = 65628
+2026-11-23T21:53:08Z cost account 76.5 since 2026-11-23T00:00:00Z, run 7.75 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T21:53:11.159Z repo:65628 leader 0: config 6 learners [{"addr":192,"doName":"repo:65628#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65628#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65628#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65628#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65628#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65628#2#l5","join":200,"sit
+2026-11-23T21:53:14.651Z repo:65628 leader 0: set k 4: {"grants":[[0,[2,4,0]],[2,[2,4,0]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":227},"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T21:53:26.564Z repo:65628 leader 0: set k 4: {"grants":[[0,[2,4,0]],[2,[2,4,0]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":227},"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T21:53:37.170Z repo:65628 leader 0: set k 4: {"grants":[[0,[2,4,0]],[2,[2,4,0]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":227},"configIndex":6,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T21:53:37.291Z repo:65628 leader 0: k 4 at 8
+2026-11-23T21:53:42Z b0-29 shard gate site 0: warm site 0 after 1.4 s
+2026-11-23T21:53:42Z b0-29 shard gate site 1: warm site 1 after 1.5 s
+2026-11-23T21:53:42Z b0-29 shard gate site 2: warm site 2 after 1.7 s
+2026-11-23T21:53:42Z b0-29 fb9m3f4-b029 65628 start
+2026-11-23T21:55:11Z cost account 76.52 since 2026-11-23T00:00:00Z, run 7.77 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T21:57:14Z cost account 76.58 since 2026-11-23T00:00:00Z, run 7.84 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T21:59:17Z cost account 76.79 since 2026-11-23T00:00:00Z, run 8.04 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T22:01:19Z cost account 77.02 since 2026-11-23T00:00:00Z, run 8.27 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T22:03:21Z cost account 77.46 since 2026-11-23T00:00:00Z, run 8.71 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T22:05:25Z cost account 77.88 since 2026-11-23T00:00:00Z, run 9.12 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T22:07:27Z cost account 78.32 since 2026-11-23T00:00:00Z, run 9.56 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T22:09:29Z cost account 78.78 since 2026-11-23T00:00:00Z, run 10.03 since 2026-11-23T19:28:30Z, at b0-29 watch
+2026-11-23T22:10:43.057Z repo:65628 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":141},"configIndex":6,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T22:10:43.182Z repo:65628 leader 0: k 1 at 3779
+2026-11-23T22:10:46Z b0-29 fb9m3f4-b029 65628 done exit 0
+2026-11-23T22:10:52Z torn down 65628
+site fault off: 200
+git#2#pool:5 200
+git#2#pool:3 200
+git#2#pool:1 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-23T22:11:09Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 3 {'leader': 1, 'promised': 2}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 17 (n 610) p90 24 (placement baseline); unpaired p50 38 (n 606); pooled p50 34 (n 1376)
+  load: 1-statement p50 22 (n 1757); unpaired p50 43 (n 1689); pooled p50 38 p99 106 (n 4485)
+isolates: 11 members, 11 distinct ids, 6 changes; shared: none
+shared isolates:
+tsave-b9m3f4.jsonl: 11 members, 17 isolates; no shared isolate
+harness outages (2026-11-23T21:59:47Z, the first request, to 2026-11-23T22:09:44Z; announced 2026-11-23T21:59:44Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-23T21:59:47Z", "2026-11-23T21:59:48Z"]], "outageSeconds": 1.0, "share": 0.0017, "valid": true}
+{"kind": "read:api", "measured": {"n": 118118, "served": 1.0, "p50": 250, "p99": 1216, "cap": 0}, "outagesRemoved": {"n": 117976, "served": 1.0, "p50": 250, "p99": 1197, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 19566, "served": 0.9998, "p50": 266, "p99": 1246, "cap": 0}, "outagesRemoved": {"n": 19542, "served": 0.9998, "p50": 266, "p99": 1215, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 83, "served": 0.8916, "p50": 782, "p99": 1664, "cap": 0}, "outagesRemoved": {"n": 83, "served": 0.8916, "p50": 782, "p99": 1664, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 2501, "served": 0.9996, "p50": 1544, "p99": 2671, "cap": 0}, "outagesRemoved": {"n": 2501, "served": 0.9996, "p50": 1544, "p99": 2671, "cap": 0}}
+B029DONE

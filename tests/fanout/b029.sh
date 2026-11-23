@@ -18,7 +18,7 @@ node tests/fanout/terms.mjs "$repo" 2400 > $R/terms-$TAG.jsonl 2>&1 &
 ( sleep 60; while ! grep -q ALLDONE $R/rows-$TAG.status 2>/dev/null; do
     ST=$R/rows-$TAG.status bash tests/fanout/costok.sh "b0-29 watch" || { pkill -f "a1.mjs b0-29 --repo $repo " ; break; }
     sleep 120; done ) &
-ROWS=b0-29 K=4 TEARDOWN=1 NO_LF13=1 ROW_USD="b0-29:4" LEARNERS=${LEARNERS:-enam:4000,weur:2000,apac:2000} \
+ROWS=b0-29 K=4 TEARDOWN=1 NO_LF13=1 ROW_USD="${ROW_USD:-b0-29:4}" LEARNERS=${LEARNERS:-enam:4000,weur:2000,apac:2000} \
   bash tests/fanout/rows.sh "$TAG" &
 until grep -q ALLDONE $R/rows-$TAG.status 2>/dev/null; do sleep 5; done
 touch $R/.tsave-$TAG.done
